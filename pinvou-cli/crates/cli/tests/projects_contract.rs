@@ -524,13 +524,13 @@ fn projects_move_assigns_sessions_and_reports_unknowns() {
     assert_eq!(value["session_id"], session_id);
     assert!(
         value["project_id"].is_null(),
-        "a repeat ungroup stays idempotent: {value}"
+        "a repeat ungroup stays idempotent"
     );
     let value = run_json(&["pinvou", "projects", "list"]);
     let assignment = value["assignments"].get(session_id.as_str());
     assert!(
         assignment.is_none() || assignment == Some(&serde_json::Value::Null),
-        "the ungroup must clear the assignment: {value}"
+        "the ungroup must clear the assignment"
     );
     let error = run(&["pinvou", "projects", "move", "no-such-session"])
         .expect_err("an unknown session is still a failure without a project id");

@@ -687,14 +687,14 @@ fn add_sources_indexes_a_text_file_end_to_end() {
         }
         assert!(
             std::time::Instant::now() < deadline,
-            "index job did not finish in time; last state: {state}"
+            "index job did not finish in time"
         );
         std::thread::sleep(std::time::Duration::from_millis(50));
     };
     assert_eq!(state["jobId"], serde_json::json!(job_id));
     assert!(
         state["completed"].as_u64().unwrap_or(0) >= 1,
-        "expected one completed item: {state}"
+        "expected one completed item"
     );
 
     let documents = run_json(&["pinvou", "knowledge", "documents", &id.to_string()]);
@@ -913,8 +913,12 @@ fn index_resume_and_retry_reject_unknown_ids_without_recovery() {
     assert!(polled.status.success(), "index status must succeed");
     let state: serde_json::Value = serde_json::from_slice(&polled.stdout).unwrap();
     assert_eq!(state["jobId"], serde_json::json!(job_id));
-    assert_ne!(state["phase"], serde_json::json!("interrupted"), "{state}");
-    assert_eq!(state["resumable"], serde_json::json!(false), "{state}");
+    assert_ne!(
+        state["phase"],
+        serde_json::json!("interrupted"),
+        "a stranded job must still read running without boot recovery"
+    );
+    assert_eq!(state["resumable"], serde_json::json!(false));
 
     // `scan start` never touches the import-job store, so it opens without
     // the boot recovery too: the stranded job must still read running after
@@ -931,13 +935,13 @@ fn index_resume_and_retry_reject_unknown_ids_without_recovery() {
         "--output",
         "json",
     ]);
-    assert!(scan.is_object(), "{scan}");
+    assert!(scan.is_object(), "scan start must emit a JSON object");
     let polled = run_child(&["knowledge", "index", "status", "--output", "json"]);
     let state: serde_json::Value = serde_json::from_slice(&polled.stdout).unwrap();
     assert_ne!(
         state["phase"],
         serde_json::json!("interrupted"),
-        "scan start must not run boot recovery: {state}"
+        "scan start must not run boot recovery"
     );
 
     // Cancelling the live job keeps the recovering open (the caller is
@@ -952,11 +956,17 @@ fn index_resume_and_retry_reject_unknown_ids_without_recovery() {
         "--output",
         "json",
     ]);
-    assert!(signalled.is_object(), "{signalled}");
+    assert!(
+        signalled.is_object(),
+        "index cancel must emit a JSON object"
+    );
     let again = run_child(&["knowledge", "index", "cancel", &job_id]);
     assert!(again.status.success(), "second cancel must succeed");
     let text = String::from_utf8(again.stdout).unwrap();
-    assert!(text.contains("nothing was signalled"), "{text}");
+    assert!(
+        text.contains("nothing was signalled"),
+        "a finished-job cancel must report nothing was signalled"
+    );
 }
 
 /// `index failed` for an unknown job must not leak the raw rusqlite driver
@@ -1059,7 +1069,7 @@ fn index_resume_rearms_a_job_stranded_by_a_dead_process() {
         }
         assert!(
             std::time::Instant::now() < deadline,
-            "resumed job never left interrupted; last state: {state}"
+            "resumed job never left interrupted"
         );
         std::thread::sleep(std::time::Duration::from_millis(50));
     };
@@ -1071,7 +1081,7 @@ fn index_resume_rearms_a_job_stranded_by_a_dead_process() {
             || state["phase"] == serde_json::json!("parsing")
             || state["phase"] == serde_json::json!("done")
             || state["phase"] == serde_json::json!("done_with_errors"),
-        "expected the active progression after resume: {state}"
+        "expected the active progression after resume"
     );
     // The resume child may exit (stranding the import thread again) before
     // it re-claims the item, so `total` can transiently read 0 during the
@@ -1084,7 +1094,7 @@ fn index_resume_rearms_a_job_stranded_by_a_dead_process() {
         state["phase"].as_str(),
         Some("done") | Some("done_with_errors")
     ) {
-        assert_eq!(state["running"], serde_json::json!(true), "state: {state}");
+        assert_eq!(state["running"], serde_json::json!(true));
     }
     if state["phase"] == serde_json::json!("done") {
         // Only reachable when the resume child's import finished before the
@@ -1131,7 +1141,7 @@ fn scan_start_persists_its_completion_marker() {
     assert!(
         started["phase"] == serde_json::json!("scanning")
             || started["phase"] == serde_json::json!("done"),
-        "{started}"
+        "scan start must begin scanning or finish immediately"
     );
 
     let deadline = std::time::Instant::now() + std::time::Duration::from_secs(30);
@@ -1140,13 +1150,13 @@ fn scan_start_persists_its_completion_marker() {
         if state["phase"] == serde_json::json!("done") {
             assert!(
                 state["finishedAt"].as_i64().unwrap_or(0) > 0,
-                "finished scan must persist its marker: {state}"
+                "finished scan must persist its marker"
             );
             break;
         }
         assert!(
             std::time::Instant::now() < deadline,
-            "scan did not finish in time; last state: {state}"
+            "scan did not finish in time"
         );
         std::thread::sleep(std::time::Duration::from_millis(50));
     }
@@ -1182,7 +1192,7 @@ fn search_hits_scan_seeded_files_with_nl_merge_and_explicit_flags() {
     assert!(
         started["phase"] == serde_json::json!("scanning")
             || started["phase"] == serde_json::json!("done"),
-        "{started}"
+        "scan start must begin scanning or finish immediately"
     );
     let deadline = std::time::Instant::now() + std::time::Duration::from_secs(30);
     loop {
@@ -1192,7 +1202,7 @@ fn search_hits_scan_seeded_files_with_nl_merge_and_explicit_flags() {
         }
         assert!(
             std::time::Instant::now() < deadline,
-            "scan did not finish in time; last state: {state}"
+            "scan did not finish in time"
         );
         std::thread::sleep(std::time::Duration::from_millis(50));
     }
@@ -1428,15 +1438,21 @@ fn index_cancel_reports_a_signalled_resumable_job() {
     let cancelled = run(&["knowledge", "index", "cancel", &job_id]);
     assert!(cancelled.status.success(), "index cancel must succeed");
     let stdout = String::from_utf8_lossy(&cancelled.stdout);
-    assert!(stdout.contains("signalled"), "{stdout}");
-    assert!(!stdout.contains("nothing was signalled"), "{stdout}");
+    assert!(
+        stdout.contains("signalled"),
+        "the cancel must report the signal it landed"
+    );
+    assert!(!stdout.contains("nothing was signalled"));
 
     // The cancelled job is finished, so a second cancel honestly reports
     // there was nothing left to signal.
     let again = run(&["knowledge", "index", "cancel", &job_id]);
     assert!(again.status.success(), "second index cancel must succeed");
     let stdout = String::from_utf8_lossy(&again.stdout);
-    assert!(stdout.contains("nothing was signalled"), "{stdout}");
+    assert!(
+        stdout.contains("nothing was signalled"),
+        "the second cancel must report nothing was signalled"
+    );
 
     let _ = std::fs::remove_dir_all(&root);
 }
