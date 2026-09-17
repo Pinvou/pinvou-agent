@@ -1652,6 +1652,40 @@ fn failed_delete_restores_the_previous_status() {
 }
 
 #[test]
+fn delete_with_an_unreadable_run_record_restores_the_paused_task() {
+    let _env_guard = ENV_LOCK.lock().unwrap_or_else(|error| error.into_inner());
+    let home = TempHome::new("delete-run-record-restore");
+    let created = create_task(&home, "Run-record task");
+    let task_id = created["id"].as_str().unwrap().to_owned();
+    // A run record the store refuses (newer schema) makes list_runs fail
+    // after the provisional pause was already committed: that failure is a
+    // blocked delete like any other, so the pre-delete status must be
+    // restored instead of leaving the task paused with no next run.
+    std::fs::create_dir_all(home.runs_dir(&task_id)).unwrap();
+    std::fs::write(
+        home.runs_dir(&task_id).join("future-run.json"),
+        serde_json::json!({
+            "schema_version": 99,
+            "id": "future-run",
+            "automation_id": task_id,
+            "scheduled_for": "2026-09-10T08:00:00.000Z",
+            "status": "done",
+            "created_at": "2026-09-10T08:00:00.000Z"
+        })
+        .to_string(),
+    )
+    .unwrap();
+    expect_failed(&["scheduled", "delete", &task_id, "--yes"]);
+    let def: serde_json::Value =
+        serde_json::from_str(&std::fs::read_to_string(home.def_path(&task_id)).unwrap()).unwrap();
+    assert_eq!(
+        def["status"], "active",
+        "a delete blocked by an unreadable run record must not leave the task paused"
+    );
+    assert!(home.def_path(&task_id).exists());
+}
+
+#[test]
 fn unreadable_registries_are_quarantined_before_the_default_is_used() {
     let _env_guard = ENV_LOCK.lock().unwrap_or_else(|error| error.into_inner());
     let home = TempHome::new("registry-quarantine");
