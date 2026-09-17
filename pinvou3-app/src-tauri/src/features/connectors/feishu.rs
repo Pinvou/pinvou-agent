@@ -87,7 +87,7 @@ pub async fn feishu_ensure_cli() -> Result<Value, String> {
 /// 返回 lark-cli 的原始 JSON(含 appId / identities.user.status 等);未配置 app
 /// 或未登录则 connected=false。未装 CLI 时返回结构化 `installed:false`
 /// (与 wecom/dingtalk/tmeet 一致),不向消费方抛 Err。
-/// (仅命令层 `bundle_readiness` 的 CLI 分派内部调用,不再有独立 tauri command。)
+/// (Only called internally by the command layer's `bundle_readiness` CLI dispatch; there is no standalone Tauri command anymore.)
 pub async fn feishu_status() -> Result<Value, String> {
     tokio::task::spawn_blocking(|| {
         // 没装就别 spawn auth status —— 未装用户每次白等子进程且拿到的是 Err,

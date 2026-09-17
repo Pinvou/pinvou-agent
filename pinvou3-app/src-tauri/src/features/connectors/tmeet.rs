@@ -148,7 +148,7 @@ pub async fn tmeet_ensure_cli() -> Result<Value, String> {
 }
 
 /// 查询当前腾讯会议连接状态。只返回布尔,不把身份 / token 信息带进 webview。
-/// (仅命令层 `bundle_readiness` 的 CLI 分派内部调用,不再有独立 tauri command。)
+/// (Only called internally by the command layer's `bundle_readiness` CLI dispatch; there is no standalone Tauri command anymore.)
 pub async fn tmeet_status() -> Result<Value, String> {
     tokio::task::spawn_blocking(|| {
         if tmeet_cli_version().is_none() {

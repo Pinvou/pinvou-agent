@@ -93,8 +93,9 @@ pub async fn set_project_skills_enabled(
     pool.refresh_disallowed_tools().await;
     // 同步 execpolicy 规则集：项目级 skills 重新纳入 deny/allow 集合。
     pool.refresh_permission_rulesets().await;
-    // 广播工具变更：项目级 skills 开关影响 code 会话组合目录，其它窗口/实例
-    // 需借此事件刷新开关状态（与 set_disabled_connectors 对齐）。
+    // Broadcast the tool change: project-level skills toggles affect the
+    // code-session bundle list, so other windows/instances refresh their
+    // toggle state via this event (same pattern as set_disabled_connectors).
     let payload = serde_json::json!({});
     let _ = app.emit("remote_control:tools_changed", payload.clone());
     crate::features::remote_control::forward_app_event(
@@ -171,9 +172,12 @@ pub async fn feishu_ensure_cli(app: AppHandle) -> Result<Value, String> {
 async_command_passthrough!(feishu_domain, feishu_connect_begin(app: AppHandle) -> Result<Value, String>);
 async_command_passthrough!(feishu_domain, feishu_cancel(app: AppHandle) -> Result<Value, String>);
 async_command_passthrough!(feishu_domain, feishu_logout() -> Result<Value, String>);
-/// 连接成功/断开后的技能门控收口：domain 层按 show 增删技能落盘、show=true 时
-/// 同步各 scope 禁用集 → 热刷 execpolicy 规则集（五轮评审 M-6：纯转发不刷
-/// ruleset，在跑引擎 CLI 硬拦截过期 = fail-open）。对照 `ima_connect` 的热刷做法。
+/// Post-connect/disconnect skill-gating funnel: the domain layer writes or
+/// deletes skill files per `show`, and with show=true syncs every scope's
+/// disabled set → hot-reloads the execpolicy rulesets (review round five M-6:
+/// a pure forwarder that skips the ruleset refresh leaves running engines'
+/// CLI hard-deny stale = fail-open). Mirrors the hot-reload pattern of
+/// `ima_connect`.
 #[tauri::command]
 pub async fn feishu_apply_skills(pool: State<'_, EnginePool>) -> Result<Value, String> {
     let result = feishu_domain::feishu_apply_skills().await?;

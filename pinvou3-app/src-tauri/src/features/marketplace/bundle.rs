@@ -717,8 +717,10 @@ fn tool_config_fields(tool: &super::ToolManifest) -> Vec<ConfigFieldSpec> {
 /// - 本地免凭据：恒 Ready
 pub fn readiness_for(bundle: &BundleInfo, credential_has: impl Fn(&str) -> bool) -> Readiness {
     match bundle.kind {
-        // CLI 包授权态由命令层注入：命令层 `bundle_readiness` 的 `BundleKind::Cli`
-        // 分支全量分派到各 `*_status`，Cli 包不会到达本函数（显式钉死该不变式）。
+        // CLI authorization state is injected by the command layer: its
+        // `bundle_readiness` `BundleKind::Cli` arm fully dispatches to the
+        // `*_status` queries, so Cli bundles never reach this function
+        // (the invariant is pinned explicitly below).
         BundleKind::Cli => {
             unreachable!("CLI bundle readiness is dispatched by the command layer")
         }

@@ -282,7 +282,8 @@ impl Store {
         })
     }
 
-    /// 内存库（单测用）。测试桩仅经由本构造器建库；生产路径一律走 [`Store::open`]。
+    /// In-memory store (unit tests only). Test fixtures build stores solely
+    /// through this constructor; production always goes through [`Store::open`].
     #[cfg(test)]
     pub fn open_in_memory() -> rusqlite::Result<Self> {
         Self::from_conn(Connection::open_in_memory()?)

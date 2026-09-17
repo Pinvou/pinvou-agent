@@ -514,22 +514,23 @@ mod tests {
         });
     }
 
-    /// 并集 = 开关关 + 不可见，去重；可见性写入不污染开关集合。
+    /// Unavailable = disabled + hidden, deduped; visibility writes must not
+    /// pollute the disabled set.
     #[test]
     fn unavailable_is_union_deduped() {
         with_temp_home(|| {
-            // 初始：两套集合都空。
+            // Initially both sets are empty.
             assert!(load_disabled_bundles_for(ConnectorScope::Plain).is_empty());
             assert!(load_hidden_bundles_for(ConnectorScope::Plain).is_empty());
 
-            // 关掉 weather 的开关，隐藏 weather + pptx（weather 同时出现在两套集合里）。
+            // Disable weather, hide weather + pptx (weather appears in both sets).
             save_disabled_bundles_for(ConnectorScope::Plain, &["weather".to_string()]);
             save_hidden_bundles_for(
                 ConnectorScope::Plain,
                 &["weather".to_string(), "pptx".to_string()],
             );
 
-            // 可见性写入不污染开关集合。
+            // Visibility writes do not pollute the disabled set.
             assert_eq!(
                 load_disabled_bundles_for(ConnectorScope::Plain),
                 vec!["weather".to_string()]
@@ -539,7 +540,7 @@ mod tests {
                 vec!["weather".to_string(), "pptx".to_string()]
             );
 
-            // 并集去重：weather 只出现一次。
+            // Union dedup: weather appears exactly once.
             let mut u = unavailable_bundles_for(ConnectorScope::Plain);
             u.sort();
             assert_eq!(u, vec!["pptx".to_string(), "weather".to_string()]);

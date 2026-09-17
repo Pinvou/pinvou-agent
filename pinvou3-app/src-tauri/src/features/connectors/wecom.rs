@@ -112,8 +112,8 @@ pub async fn wecom_ensure_cli() -> Result<Value, String> {
 }
 
 /// 查询当前企微连接状态:`wecom-cli auth show --status`。
-/// 装了但低于 [`WECOM_MIN_VERSION`] 时回 `upgrade_required:true`(tmeet 同款三态)。
-/// (仅命令层 `bundle_readiness` 的 CLI 分派内部调用,不再有独立 tauri command。)
+/// Installed but below [`WECOM_MIN_VERSION`] reports `upgrade_required:true` (same three-state shape as tmeet).
+/// (Only called internally by the command layer's `bundle_readiness` CLI dispatch; there is no standalone Tauri command anymore.)
 pub async fn wecom_status() -> Result<Value, String> {
     tokio::task::spawn_blocking(|| {
         // 没装就别 spawn auth show —— 省掉没装连接器的用户每次白等一次子进程;

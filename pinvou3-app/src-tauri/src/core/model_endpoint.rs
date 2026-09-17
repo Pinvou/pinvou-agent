@@ -1847,9 +1847,10 @@ mod tests {
         );
     }
 
-    /// TTL 缓存：同一 base_url 的探测结果缓存 60s。mock 计数 /api/tags 命中：
-    /// 缓存生效时两次调用只发出一次探测请求（此前的“服务已关”前提不成立——
-    /// mock 是持续 accept 的循环，删掉缓存测试也照常通过，故改为计数断言）。
+    /// TTL cache: probe results are cached per base_url for 60s. The mock counts
+    /// /api/tags hits: with the cache active, two calls issue exactly one probe
+    /// (the old "server closed" premise was false — the mock keeps accepting, so
+    /// the test passed even without the cache; hence the hit-count assertion).
     #[tokio::test]
     async fn probe_local_kind_caches_result_per_base_url() {
         let _state = PROBE_STATE_TEST_MUTEX.lock().await;
@@ -1892,13 +1893,13 @@ mod tests {
         let url = format!("http://{addr}/v1");
         let first = probe_local_server_kind(&url, None).await;
         assert_eq!(first, LocalServerKind::Ollama);
-        // 第二次调用命中缓存：结果不变，且不再发出第二次探测请求。
+        // Second call hits the cache: same result, and no second probe request.
         let second = probe_local_server_kind(&url, None).await;
         assert_eq!(second, LocalServerKind::Ollama);
         assert_eq!(
             hits.load(Ordering::SeqCst),
             1,
-            "缓存生效时 /api/tags 只应被探测一次"
+            "with the cache active, /api/tags must be probed exactly once"
         );
         task.abort();
         clear_probe_kind_cache();
