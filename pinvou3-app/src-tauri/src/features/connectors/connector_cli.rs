@@ -143,10 +143,9 @@ pub fn run_with_timeout(mut cmd: Command, secs: u64) -> Result<bool, String> {
                     // (Pinvou/pinvou3#1097).
                     let reap_note = match reap_killed_child(&mut child, REAP_GRACE) {
                         Reap::Reaped => String::new(),
-                        Reap::Abandoned => format!(
-                            ";终止请求已发出但 {}s 内仍未退出,进程可能驻留",
-                            REAP_GRACE.as_secs()
-                        ),
+                        Reap::Abandoned => {
+                            format!(";终止请求已发出但 {:?} 内仍未退出,进程可能驻留", REAP_GRACE)
+                        }
                         Reap::Failed(e) => format!(";回收安装进程失败({e})"),
                     };
                     return Err(format!(
@@ -563,11 +562,14 @@ mod tests {
     /// The timeout path must stay bounded and reap the killed child: a
     /// failed kill() returns immediately instead of waiting on a
     /// still-alive installer, and after a confirmed kill the reap is
-    /// bounded by REAP_GRACE. Reaping is pinned via the error text: an
-    /// abandoned or failed reap appends a note, so its absence proves the
-    /// child was collected. Soft-skips where no `sleep` binary exists
-    /// (Windows). The Abandoned reap branch is induced deterministically
-    /// in the platform::process tests with a zero grace budget; the Failed
+    /// bounded by REAP_GRACE. Kill and reap are both pinned via the error
+    /// text: a failed kill() and an abandoned or failed reap each append
+    /// a clause, so their absence proves the installer was killed and
+    /// collected. Soft-skips when no `sleep` binary is on PATH (bare
+    /// Windows hosts; windows-latest CI bash steps have Git Bash's
+    /// `sleep.exe` on PATH, so the test runs for real there). The
+    /// Abandoned reap branch is induced deterministically in the
+    /// platform::process tests with a zero grace budget; the Failed
     /// branch is not inducible in-process (std caches the exit status, so
     /// a collected child can never report a wait error).
     #[test]
@@ -580,9 +582,11 @@ mod tests {
             .lock()
             .unwrap_or_else(|p| p.into_inner());
         let _env = crate::platform::paths::tests::EnvVarGuard::capture(&["PINVOU3_HOME"]);
-        let root =
-            std::env::temp_dir().join(format!("pinvou3-rwt-reap-test-{}", std::process::id()));
-        let _ = std::fs::remove_dir_all(&root);
+        let root = std::env::temp_dir().join(format!(
+            "pinvou3-rwt-reap-test-{}-{}",
+            std::process::id(),
+            crate::platform::paths::tests::unique_suffix()
+        ));
         std::fs::create_dir_all(&root).expect("create temp PINVOU3_HOME");
         // SAFETY: holding platform::paths::tests::ENV_LOCK; env writes
         // serialized in-process.
@@ -599,8 +603,10 @@ mod tests {
             "unexpected timeout error: {error}"
         );
         assert!(
-            !error.contains("进程可能驻留") && !error.contains("回收安装进程失败"),
-            "a successfully killed child must be reaped, not abandoned: {error}"
+            !error.contains("进程可能驻留")
+                && !error.contains("回收安装进程失败")
+                && !error.contains("终止安装进程失败"),
+            "timeout error must not contain kill or reap failure clauses: {error}"
         );
         let elapsed = started.elapsed();
         // >= 1s proves the timeout poll loop actually ran (a spawn failure

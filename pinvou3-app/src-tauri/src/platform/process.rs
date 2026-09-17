@@ -210,8 +210,11 @@ fn output_with_timeout_inner(
                     // timeout path by joining pipe readers that such a process kept.
                     drop(stdout_reader);
                     drop(stderr_reader);
+                    let tree_note = reap_note
+                        .map(|note| format!("; {note}"))
+                        .unwrap_or_default();
                     return Err(format!(
-                        "{program} timed out after {}s: subprocess tree termination requested",
+                        "{program} timed out after {}s: subprocess tree termination requested{tree_note}",
                         timeout.as_secs()
                     ));
                 }
@@ -284,7 +287,9 @@ pub(crate) enum Reap {
 /// guarantee even when the child cannot exit promptly, and returns the
 /// outcome instead of swallowing wait errors. The child does not have to
 /// have accepted the kill for this to stay bounded: at most `grace` is
-/// spent even on a still-live child.
+/// spent even on a still-live child. Note that `wait_timeout` silently
+/// takes and drops a piped stdin, closing it; callers that feed the
+/// child a pipe must not rely on the handle surviving the reap.
 pub(crate) fn reap_killed_child(child: &mut Child, grace: Duration) -> Reap {
     match child.wait_timeout(grace) {
         Ok(Some(_)) => Reap::Reaped,
@@ -473,8 +478,9 @@ mod tests {
     use super::*;
 
     /// reap_killed_child collects an exited child promptly instead of
-    /// waiting out the grace deadline. Soft-skips where no `sleep` binary
-    /// exists (Windows).
+    /// waiting out the grace deadline. Soft-skips when no `sleep` binary
+    /// is on PATH (bare Windows hosts; windows-latest CI bash steps have
+    /// Git Bash's `sleep.exe` on PATH, so the test runs for real there).
     #[test]
     fn reap_killed_child_reaps_exited_child() {
         if Command::new("sleep").arg("0").status().is_err() {
