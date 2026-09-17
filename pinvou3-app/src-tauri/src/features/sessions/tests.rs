@@ -4,6 +4,7 @@
 //! `sessions/mod.rs`. These tests exercise the full store across every
 //! submodule, so they live next to the facade and pull in the re-exported
 //! public surface plus the few crate-visible helpers they need directly.
+// architecture-guard: allow-target-cfg -- the legacy-table sync-failure regression needs POSIX permission modes to make the atomic rewrite fail deterministically; PermissionsExt/from_mode do not exist on Windows, so the test is cfg(unix)-gated and no platform behavior leaks into shared code.
 
 use super::*;
 use crate::platform::paths;
@@ -4435,13 +4436,12 @@ fn rebind_preserves_corrupt_legacy_workspaces_file() {
 /// Round-5 blocker 1: a legacy-table sync failure must surface in the
 /// outcome — a silent "success" would let the next boot migration re-bind the
 /// old paths over the fresh sidecars. Sessions-dir is made read-only so the
-/// atomic rewrite fails deterministically (POSIX permissions; Windows skips
-/// via a runtime branch per the architecture-guard convention).
+/// atomic rewrite fails deterministically (POSIX permissions; cfg(unix)-gated
+/// under the file-top allow-target-cfg exception — PermissionsExt does not
+/// exist on Windows, a runtime skip would not compile there).
+#[cfg(unix)]
 #[test]
 fn rebind_reports_legacy_table_sync_failure() {
-    if std::env::consts::OS == "windows" {
-        return;
-    }
     let (store, _g) = isolated_store();
     let from = unique_temp_dir("rebind-legacyfail-from");
     std::fs::create_dir_all(&from).expect("create from");
