@@ -352,6 +352,18 @@ pub async fn reveal_model_api_key(id: String) -> Result<Option<String>, String> 
 #[tauri::command]
 pub async fn save_model(model: SavedModel, pool: State<'_, EnginePool>) -> Result<(), String> {
     let model_id = model.id.clone();
+    save_model_inner(model, &SystemCredentialStore::new())?;
+    pool.mark_model_updated(&model_id);
+    Ok(())
+}
+
+/// Testable core of [`save_model`]: the engine-pool notification stays with
+/// the command, mirroring [`delete_model_inner`].
+pub(super) fn save_model_inner(
+    model: SavedModel,
+    store: &dyn CredentialStore,
+) -> Result<(), String> {
+    let model_id = model.id.clone();
     // Same ordering contract as `delete_model`: the destructive keyring
     // delete returned by `apply_model_credential` runs only after the prefs
     // save has committed; a failed delete then only leaves an orphaned
@@ -359,16 +371,15 @@ pub async fn save_model(model: SavedModel, pool: State<'_, EnginePool>) -> Resul
     let mut deferred_delete: Option<CredentialReference> = None;
     UserPrefs::update_transaction(|prefs| {
         let old = prefs.model_by_id(&model.id).cloned();
-        let (model, deferred) =
-            apply_model_credential(model, old.as_ref(), &SystemCredentialStore::new())
-                .map_err(|e| sanitize_command_error("save_model", e))?;
+        let (model, deferred) = apply_model_credential(model, old.as_ref(), store)
+            .map_err(|e| sanitize_command_error("save_model", e))?;
         deferred_delete = deferred;
         prefs.upsert_model(model);
         Ok(())
     })
     .map_err(|e| sanitize_command_error("save_model", e))?;
     if let Some(reference) = deferred_delete {
-        if let Err(error) = SystemCredentialStore::new().delete(&reference) {
+        if let Err(error) = store.delete(&reference) {
             log::warn!(
                 "save_model: model {model_id} saved without its keyring secret (the delete \
                  failed): {}",
@@ -376,7 +387,6 @@ pub async fn save_model(model: SavedModel, pool: State<'_, EnginePool>) -> Resul
             );
         }
     }
-    pool.mark_model_updated(&model_id);
     Ok(())
 }
 

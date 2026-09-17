@@ -2662,3 +2662,44 @@ fn save_model_delete_action_defers_the_keyring_delete() {
         store.ops()
     );
 }
+
+#[test]
+fn save_model_inner_commits_prefs_before_the_deferred_delete() {
+    let _g = crate::platform::paths::tests::ENV_LOCK
+        .lock()
+        .unwrap_or_else(|p| p.into_inner());
+    let _home = TempPinvou3Home::new("save-model-order");
+    seed_model_deletion_prefs(&[
+        model_deletion_test_model("m-keep", false),
+        model_deletion_test_model("m-edit", true),
+    ]);
+    let mut model = model_deletion_test_model("m-edit", true);
+    model.credential_action = Some(CredentialEditAction::Delete);
+    let store = crate::platform::credential_store::RecordingCredentialStore::new();
+    store.fail_delete();
+
+    // With the keyring delete failing, Ok + a committed Missing edit is only
+    // reachable when the prefs save landed BEFORE the delete attempt: a
+    // delete-inside-the-transaction ordering would have failed the command
+    // and left the stale credential reference in place.
+    super::settings::save_model_inner(model, &store).expect("the save must succeed");
+
+    let prefs = UserPrefs::load();
+    let saved = prefs
+        .model_by_id("m-edit")
+        .expect("the edited model must stay in prefs");
+    assert_eq!(
+        saved.credential_state,
+        CredentialState::Missing,
+        "the delete edit must persist the missing state"
+    );
+    assert!(
+        saved.credential_ref.is_none(),
+        "the cleared reference must not survive in prefs"
+    );
+    assert_eq!(
+        store.ops(),
+        vec!["delete:pinvou3-model-api-key:model:m-edit".to_string()],
+        "exactly one deferred keyring delete, attempted after the commit"
+    );
+}
