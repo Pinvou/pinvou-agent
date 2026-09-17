@@ -48,6 +48,14 @@ import { AttachmentChips } from '../attachments/AttachmentChips.jsx';
 import { collectClipboardImages, readPasteImageAsBytes } from '../attachments/paste-image.js';
 import { formatAttachmentLimitError } from '../attachments/attachment-limit-errors.js';
 import { ComposerAttachmentDropOverlay } from '../attachments/ComposerAttachmentDropOverlay.jsx';
+import { SessionMentionChips, SessionMentionMenu, SessionMentionCards } from './SessionMentionControls.jsx';
+import {
+  buildSessionMentionBlock,
+  splitSessionMentionBlock,
+  sessionMentionTriggerAt,
+  filterSessionMentionCandidates,
+  dedupeSessionRefs,
+} from './session-mention.js';
 import { ConversationAttachmentBubble } from '../attachments/ConversationAttachmentBubble.jsx';
 import { splitAttachmentLine } from '../attachments/attachment-message.js';
 import { CHAT_INPUT_MAX_LENGTH, constrainChatInput } from './chat-input-limit.js';
@@ -659,7 +667,7 @@ const ToolWelcomeCard = ({ toolId, _theme, t, onSend }) => {
     };
 
     // eslint-disable-next-line sonarjs/cognitive-complexity -- legacy main view: session/mode/artifact/browser state is highly cohesive; split refactor tracked separately
-    const ChatView = ({ theme, t, bs, prefill, prefillAppend = false, focusComposerTick = 0, onPrefillConsumed, onOpenEditor, justInstalledTool, setJustInstalledTool, onGotoSettings, onGotoModelSettings, onGotoTools, onBackScheduledRun, codeModeAvailable = false, onSwitchHomeMode, browserDockAvailable = false, browserDockOpen = false, rightDockActivePanelId = null, onRightDockPanelSelectionChange, onOpenBrowserDock }) => {
+    const ChatView = ({ theme, t, bs, prefill, prefillAppend = false, focusComposerTick = 0, onPrefillConsumed, onOpenEditor, justInstalledTool, setJustInstalledTool, onGotoSettings, onGotoModelSettings, onGotoTools, onBackScheduledRun, codeModeAvailable = false, onSwitchHomeMode, browserDockAvailable = false, browserDockOpen = false, rightDockActivePanelId = null, onRightDockPanelSelectionChange, onOpenBrowserDock, onSwitchSession = null }) => {
       const chatCopy = t.uiChat;
       const chatViewCopy = t.uiChatView;
       const sceneCopy = chatCopy.sceneModes;
@@ -1007,6 +1015,30 @@ const ToolWelcomeCard = ({ toolId, _theme, t, onSend }) => {
           setPersonalWorkbenchTemplateId(null);
         }
       }, [setInputText]);
+      // 选中 @ 面板候选:删掉输入框末尾的 @token,引用落入 chip 条(发送时序列化进注入块)。
+      const handleSelectMentionCandidate = useCallback((candidate) => {
+        if (!candidate) return;
+        setSessionRefs(current => dedupeSessionRefs([...current, candidate]));
+        setMentionDismissedToken(null);
+        setInputText((current) => {
+          const trigger = sessionMentionTriggerAt(current);
+          return trigger ? current.slice(0, trigger.start) : current;
+        });
+        window.requestAnimationFrame(() => {
+          if (composerRef.current) {
+            composerRef.current.focus();
+            composerRef.current.selectionStart = composerRef.current.value.length;
+            composerRef.current.selectionEnd = composerRef.current.value.length;
+          }
+        });
+      }, [setInputText]);
+      const handleRemoveMentionRef = useCallback((sessionId) => {
+        setSessionRefs(current => current.filter(ref => ref.sessionId !== sessionId));
+      }, []);
+      // 已发送消息里的引用卡片跳转:复用主框架传入的会话切换(带视图路由)。
+      const handleOpenMentionSession = useCallback((sessionId) => {
+        if (onSwitchSession) onSwitchSession(sessionId);
+      }, [onSwitchSession]);
       const handleDesignElementSelected = useCallback((element) => {
         setSelectedDesignElement(element || null);
       }, []);
@@ -1543,6 +1575,9 @@ const ToolWelcomeCard = ({ toolId, _theme, t, onSend }) => {
         return () => window.removeEventListener('pinvou:present-artifact', onPresentArtifact);
       }, [activeSessionId, showArtifactsPreview]);
       const draftEpoch = bs ? bs.draftEpoch : 0;
+      const [sessionRefs, setSessionRefs] = useState([]);
+      const [mentionDismissedToken, setMentionDismissedToken] = useState(null);
+      const [mentionSelection, setMentionSelection] = useState({ token: null, index: 0 });
       // 切换 session / 新建草稿会话时读取各自 working set 里的未发送内容。
       // 从设置、工具商店等页面返回时 ChatView 会重新挂载，初始 state 也从
       // 同一份内存草稿恢复。
@@ -1551,6 +1586,10 @@ const ToolWelcomeCard = ({ toolId, _theme, t, onSend }) => {
           ? bridge.chat.getComposerDraft()
           : ((bs && bs.composerDraft) || '');
         setInputText(restored);
+        // 引用 chips 是会话级草稿的一部分:切会话/新建草稿时一并重置,
+        // 避免把 A 会话里选的引用带进 B 会话(引用块语义绑定发送时的上下文)。
+        setSessionRefs([]);
+        setMentionDismissedToken(null);
       // eslint-disable-next-line react-hooks/exhaustive-deps -- deps reviewed manually: restore only on session and draft epoch; adding bs would reread the draft on every backend snapshot change, overwriting in-progress input
       }, [activeSessionId, draftEpoch, setInputText]);
       const voiceInput = (bs && bs.voiceInput) || { status: 'idle' };
@@ -1559,12 +1598,31 @@ const ToolWelcomeCard = ({ toolId, _theme, t, onSend }) => {
       const voiceBusy = isVoiceBusy(voiceInput);
       const hasDraftText = inputText.trim().length > 0;
       const hasReadyAttachment = attachments.some(a => a.status === 'ready');
+      const hasSessionRefs = sessionRefs.length > 0;
+      // 引用对话(Session Mention):输入框末尾的 @token 驱动候选面板;Escape 关闭后
+      // 同一 token 内保持关闭(token 变化 = 用户继续输入,面板重新出现)。
+      const mentionTrigger = sessionMentionTriggerAt(inputText);
+      const mentionMenuOpen = !!mentionTrigger && mentionTrigger.token !== mentionDismissedToken;
+      const mentionCandidates = filterSessionMentionCandidates((bs && bs.sessions) || [], {
+        query: mentionTrigger ? mentionTrigger.query : '',
+        excludeIds: [activeSessionId, ...sessionRefs.map(ref => ref.sessionId)].filter(Boolean),
+        limit: 8,
+      });
+      // 键盘高亮:token 变化(新触发/继续输入)时归零,纯派生无 effect。
+      const mentionIndex = mentionSelection.token === (mentionTrigger && mentionTrigger.token)
+        ? Math.min(mentionSelection.index, Math.max(0, mentionCandidates.length - 1))
+        : 0;
+      const knownSessionMentionIds = useMemo(
+        () => new Set(((bs && bs.sessions) || []).map(session => session.id)),
+        // eslint-disable-next-line react-hooks/exhaustive-deps -- 只依赖快照里的会话列表切片(引用稳定),与其他 bs 字段无关
+        [bs && bs.sessions],
+      );
       const firstTurnPending = !activeSessionId && chatItems.some(item => (
         item && item.type === 'user' && !!item.deliveryState
       ));
       const canSend = !isMultiAgentReadOnly
         && !firstTurnPending
-        && (hasDraftText || hasReadyAttachment);
+        && (hasDraftText || hasReadyAttachment || hasSessionRefs);
       const sceneCapabilityPreparing = sceneCapabilityStatus && sceneCapabilityStatus.kind === 'preparing';
       // eslint-disable-next-line sonarjs/cognitive-complexity -- scene-capability preflight and send orchestration are cohesive in a single callback; split refactor tracked separately
       const sendChatMessage = useCallback(async (text) => {
@@ -1660,8 +1718,10 @@ const ToolWelcomeCard = ({ toolId, _theme, t, onSend }) => {
           t={t}
           editable={!busy && !isMultiAgentReadOnly && item.id === lastUserId}
           conversationVariant="unified"
+          onOpenSessionMention={handleOpenMentionSession}
+          knownSessionMentionIds={knownSessionMentionIds}
         />
-      ), [activeSessionId, busy, isMultiAgentReadOnly, lastUserId, t, theme]);
+      ), [activeSessionId, busy, handleOpenMentionSession, isMultiAgentReadOnly, knownSessionMentionIds, lastUserId, t, theme]);
       const handleTimelineRenderItem = useCallback((item) => {
         // reasoning items are handled by ConversationTimeline's ReasoningItem and must not be handed to
         // the legacy ChatBubble; the latter does not know the type and would return null, silently
@@ -2084,6 +2144,10 @@ const ToolWelcomeCard = ({ toolId, _theme, t, onSend }) => {
           return;
         }
         const text = constrained.text;
+        // 引用 chips 序列化为前置注入块(只有 sessionId+标题+契约,无正文);chips 在
+        // 发送被真正接受前保持不动——失败/未派发时文本会恢复,chips 也自然保留。
+        const mentionBlock = buildSessionMentionBlock(sessionRefs);
+        const outgoingText = mentionBlock ? mentionBlock + text : text;
         // Clear the composer the moment the button is clicked (before the
         // await returns); on failure (reserve conflict etc.) or a notice-only
         // not-dispatched resolution (attachments still parsing, remote-turn
@@ -2098,7 +2162,8 @@ const ToolWelcomeCard = ({ toolId, _theme, t, onSend }) => {
         // interrupt typing.
         setInputText('');
         try {
-          const accepted = await sendChatMessage(text);
+          const accepted = await sendChatMessage(outgoingText);
+          if (accepted && mentionBlock) setSessionRefs([]);
           if (!accepted) {
             if (inputTextRef.current === '') setInputText(text);
             else if (text) bridge.chat.prefillComposer(text, true);
@@ -2211,6 +2276,30 @@ const ToolWelcomeCard = ({ toolId, _theme, t, onSend }) => {
           if (isPlainEnter(e)) {
             e.preventDefault();
             chatVoice.applyVoiceEditPreview({ send: e.ctrlKey || e.metaKey });
+            return;
+          }
+        }
+        if (mentionMenuOpen) {
+          if (e.key === 'ArrowDown' || e.key === 'ArrowUp') {
+            e.preventDefault();
+            const count = mentionCandidates.length;
+            if (count > 0) {
+              const delta = e.key === 'ArrowDown' ? 1 : -1;
+              setMentionSelection({
+                token: mentionTrigger.token,
+                index: (mentionIndex + delta + count) % count,
+              });
+            }
+            return;
+          }
+          if (e.key === 'Escape') {
+            e.preventDefault();
+            setMentionDismissedToken(mentionTrigger.token);
+            return;
+          }
+          if ((isPlainEnter(e) || e.key === 'Tab') && mentionCandidates.length > 0) {
+            e.preventDefault();
+            handleSelectMentionCandidate(mentionCandidates[mentionIndex] || mentionCandidates[0]);
             return;
           }
         }
@@ -2655,7 +2744,13 @@ const ToolWelcomeCard = ({ toolId, _theme, t, onSend }) => {
                         className="flex-1 min-w-0 resize-none rounded-lg border border-black/10 bg-white/80 px-2 py-1 outline-none focus:border-blue-500 dark:border-white/15 dark:bg-white/5"
                       />
                     ) : (
-                      <span className="flex-1 min-w-0 truncate">{q.displayText}</span>
+                      // 排队 chip 只显示正文:引用注入块(发送时拼在队首)不占用一行,
+                      // 纯引用消息回退显示被引用会话标题(数据,非 UI 文案)。
+                      <span className="flex-1 min-w-0 truncate">{(() => {
+                        const split = splitSessionMentionBlock(q.displayText);
+                        const body = split.text.trim();
+                        return body || split.refs.map(ref => ref.title || ref.sessionId).join(', ') || q.displayText;
+                      })()}</span>
                     )}
                     {queuedEdit && queuedEdit.id === q.id ? (
                       <>
@@ -2740,6 +2835,11 @@ const ToolWelcomeCard = ({ toolId, _theme, t, onSend }) => {
               removeLabel={t.uiAttachments.remove}
               formatError={formatAttachmentError}
               className="mb-2 px-2"
+            />
+            <SessionMentionChips
+              refs={sessionRefs}
+              onRemove={handleRemoveMentionRef}
+              copy={t.uiSessionMention}
             />
             {imageInputWarning && (
               <div data-testid="image-capability-warning"
@@ -2890,6 +2990,23 @@ const ToolWelcomeCard = ({ toolId, _theme, t, onSend }) => {
                 onApplyAndSend={() => chatVoice.applyVoiceEditPreview({ send: true })}
                 onCancel={chatVoice.cancelVoiceEditPreview}
               />
+              <div className="relative">
+                <ComposerPopover
+                  open={mentionMenuOpen}
+                  onClose={() => setMentionDismissedToken(mentionTrigger ? mentionTrigger.token : null)}
+                  triggerRef={composerRef}
+                  compact={composerCompact}
+                  desktopClassName={`absolute bottom-full left-0 mb-2 z-50 w-[320px] max-w-[calc(100vw-24px)] max-h-[320px] overflow-y-auto ${POPOVER_SURFACE}`}
+                >
+                  <SessionMentionMenu
+                    candidates={mentionCandidates}
+                    selectedIndex={mentionIndex}
+                    onSelect={handleSelectMentionCandidate}
+                    onHover={(index) => setMentionSelection({ token: mentionTrigger && mentionTrigger.token, index })}
+                    copy={t.uiSessionMention}
+                  />
+                </ComposerPopover>
+              </div>
               <textarea
                 ref={composerRef}
                 data-testid="chat-composer-input"
@@ -3324,17 +3441,22 @@ const TextareaContextMenu = ({ inputRef, setValue, _theme, t }) => {
     };
 
     // eslint-disable-next-line no-unused-vars -- theme is injected uniformly by the caller; keep the contract slot
-const UserBubble = ({ item, sessionId, _theme, editable, t, conversationVariant }) => {
+const UserBubble = ({ item, sessionId, _theme, editable, t, conversationVariant, onOpenSessionMention = null, knownSessionMentionIds = null }) => {
+  // 引用注入块(发送时前置,见 session-mention.js):渲染时剥离成引用卡片 + 正文,
+  // 编辑时正文不含注入块、提交时按原引用重建,避免用户误编辑 JSON 契约行。
+  const mentionSplit = splitSessionMentionBlock(item.text);
       const unified = conversationVariant === 'unified';
       const deliveryState = item.deliveryState || '';
       const sceneDisplay = pinvouSceneDisplay(item.pinvouScene, t.uiChat.sceneModes);
       const SceneIcon = sceneDisplay && sceneDisplay.Icon;
       const [editing, setEditing] = useState(false);
-      const [val, setVal] = useState(item.text);
+      const [val, setVal] = useState(mentionSplit.text);
       const [copied, copyToClipboard] = useCopyFlash(1200);
-      function commit() { const tx = val.trim(); setEditing(false); if (tx && bridge.available) bridge.interaction.editLastTurn(tx); }
+      function commit() { const tx = val.trim(); setEditing(false); if (tx && bridge.available) bridge.interaction.editLastTurn(mentionSplit.refs.length ? buildSessionMentionBlock(mentionSplit.refs) + tx : tx); }
       function copyText() {
-        copyToClipboard('user-bubble', item.text || '');
+        // 复制给用户的正文:剥离引用注入块(机器契约,不是人写的内容);
+        // useCopyFlash 是上游统一的复制反馈 hook(#539 系列),替换原手写 setCopied。
+        copyToClipboard('user-bubble', mentionSplit.text || '');
       }
       function retryDelivery() {
         if (!item.clientMessageId || !bridge.available || !bridge.chat.retryFirstTurn) return;
@@ -3347,14 +3469,14 @@ const UserBubble = ({ item, sessionId, _theme, editable, t, conversationVariant 
               {/* biome-ignore lint/a11y/noAutofocus: focus the editor immediately on entering message-edit mode; focus is the edit intent */}
               <textarea autoFocus value={val} onChange={e => setVal(e.target.value)}
                 rows={Math.min(6, Math.max(1, val.split('\n').length))}
-                onKeyDown={e => { if (isPlainEnter(e)) { e.preventDefault(); commit(); } else if (e.key === 'Escape') { setEditing(false); setVal(item.text); } }}
+                onKeyDown={e => { if (isPlainEnter(e)) { e.preventDefault(); commit(); } else if (e.key === 'Escape') { setEditing(false); setVal(mentionSplit.text); } }}
                 className={`w-full min-w-0 max-w-full break-words [overflow-wrap:anywhere] rounded-[16px] px-4 py-2 text-[15px] outline-none ${
                   unified
                     ? 'bg-[#E9EEF6] text-[#1F1F1F] dark:bg-[#2A2B2E] dark:text-[#E3E3E3]'
                     : 'bg-[#D3E3FD] text-[#1F1F1F] dark:bg-[#004A77] dark:text-[#E3E3E3]'
                 }`} />
               <div className="flex gap-2 justify-end mt-1">
-                <button type="button" className={cardBtnCls()} onClick={() => { setEditing(false); setVal(item.text); }}>{t.cpCancel}</button>
+                <button type="button" className={cardBtnCls()} onClick={() => { setEditing(false); setVal(mentionSplit.text); }}>{t.cpCancel}</button>
                 <button type="button" className={cardBtnCls('primary')} onClick={commit}>{t.resend}</button>
               </div>
             </div>
@@ -3382,10 +3504,16 @@ const UserBubble = ({ item, sessionId, _theme, editable, t, conversationVariant 
       }
       const actBtn = 'text-[#9AA0A6] hover:text-[#444746] hover:bg-black/[0.06] dark:text-[#8E8E8E] dark:hover:text-[#E3E3E3] dark:hover:bg-white/10';
       // 附件行拆出正文,附件以独立小气泡显示在正文气泡上方(纯附件消息只显示附件气泡)
-      const { text: bodyText, attachments: attachmentNames } = splitAttachmentLine(item.text);
+      const { text: bodyText, attachments: attachmentNames } = splitAttachmentLine(mentionSplit.text);
       return (
         <div className="flex justify-end group min-w-0 max-w-full">
           <div className="flex flex-col items-end max-w-[85%] min-w-0 max-w-full">
+            <SessionMentionCards
+              refs={mentionSplit.refs}
+              knownSessionIds={knownSessionMentionIds}
+              onOpenSession={onOpenSessionMention}
+              copy={t.uiSessionMention}
+            />
             {attachmentNames.length > 0 && (
               <div className={`flex max-w-full flex-wrap justify-end gap-1.5 ${bodyText ? 'mb-1.5' : ''}`}>
                 {attachmentNames.map((name, index) => {
@@ -3461,7 +3589,7 @@ const UserBubble = ({ item, sessionId, _theme, editable, t, conversationVariant 
                 {copied ? <Check size={14} className="text-[#34C759]" /> : <Copy size={14} />}
               </button>
               {editable && !deliveryState && (
-                <button type="button" title={t.editResend} onClick={() => { setVal(item.text); setEditing(true); }}
+                <button type="button" title={t.editResend} onClick={() => { setVal(mentionSplit.text); setEditing(true); }}
                   className={`w-7 h-7 rounded-lg flex items-center justify-center transition-colors ${actBtn}`}>
                   <Edit2 size={14} />
                 </button>
@@ -3574,7 +3702,7 @@ const UserBubble = ({ item, sessionId, _theme, editable, t, conversationVariant 
     }
 
     // eslint-disable-next-line sonarjs/cognitive-complexity -- legacy bubble dispatches rendering by message type; split refactor tracked separately
-    const ChatBubble = React.memo(function ChatBubble({ item, sessionId, theme, onPrefill, onSend, editable, onOpenEditor, t, isLatestArtifact, allowScheduledTaskDraft, conversationVariant, showAssistantActions = true, onPlanStuckGo }) {
+    const ChatBubble = React.memo(function ChatBubble({ item, sessionId, theme, onPrefill, onSend, editable, onOpenEditor, t, isLatestArtifact, allowScheduledTaskDraft, conversationVariant, showAssistantActions = true, onPlanStuckGo, onOpenSessionMention = null, knownSessionMentionIds = null }) {
       const chatCopy = t.uiChat;
       // 后端持久化的记忆状态值是固定中文数据，仅在 UI 边界映射为当前语言；未识别值原样透传
       const memoryStatusLabels = getMemoryStatusLabels(t);
@@ -3591,7 +3719,7 @@ const UserBubble = ({ item, sessionId, _theme, editable, t, conversationVariant 
       if (item.type === 'careful_blocked') return <CarefulBlockedCard item={item} t={t} />;
       if (item.type === 'user_input') return <UserInputCard item={item} t={t} />;
       if (item.type === 'user') {
-        return <UserBubble item={item} sessionId={sessionId} theme={theme} editable={editable} t={t} conversationVariant={conversationVariant} />;
+        return <UserBubble item={item} sessionId={sessionId} theme={theme} editable={editable} t={t} conversationVariant={conversationVariant} onOpenSessionMention={onOpenSessionMention} knownSessionMentionIds={knownSessionMentionIds} />;
       }
 
       if (item.type === 'card_creator_intro') {

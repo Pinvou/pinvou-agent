@@ -829,6 +829,7 @@ dictZh.uiArtifacts = {
   diChangesLog:n=>`设计变更 ${n}`, diEmpty:'空',
 };
 
+dictZh.uiSessionMention = { menuTitle:'引用会话', menuEmpty:'没有匹配的会话', chipRemove:name=>`移除引用 ${name}`, cardJump:label=>`跳转到会话：${label}`, cardUnavailable:'会话已删除' };
 Object.assign(dictZh.uiAttachments, { uploading:pct=>`上传中 ${pct}%`,  deviceUploadEmpty:name=>`${name} 是空文件，无法添加`, deviceUploadUnavailable:'当前无法从此设备上传附件', deviceUploadInvalid:name=>`${name} 不是有效附件`, deviceUploadFailed:name=>`${name} 上传失败，请重试`, deviceUploadDigestInvalid:'附件完整性校验值无效，请重试', deviceUploadIntegrityMismatch:'附件内容在传输中损坏，请重新上传' });
 
 
