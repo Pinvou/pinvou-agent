@@ -1014,9 +1014,12 @@ impl EnginePool {
         tools
     }
 
-    /// 该会话的项目技能来源根：仅当会话绑定了真实目录（原生 code 会话的项目
-    /// 目录，或普通 chat 会话的用户工作目录绑定——显式 `SessionRoots::bound`
-    /// 信号）时返回该目录；未绑定/解析失败 → None（项目级技能不参与组合目录）。
+    /// The session's project-skill source root: only returned when the
+    /// session is bound to a real directory (a native code session's project
+    /// directory, or a plain chat session's user working-directory binding —
+    /// the explicit `SessionRoots::bound` signal); unbound/resolution failure
+    /// → None (project-level skills do not participate in the composed
+    /// directory).
     fn project_workspace_for(&self, session_id: &str) -> Option<std::path::PathBuf> {
         self.store
             .session_roots(session_id)

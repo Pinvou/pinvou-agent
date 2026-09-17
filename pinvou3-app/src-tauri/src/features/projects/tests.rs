@@ -1,5 +1,5 @@
-//! ProjectStore 行为测试。全部走 `from_paths` + 临时目录,不触进程全局
-//! `PINVOU3_HOME`。
+//! ProjectStore behavior tests. Everything goes through `from_paths` + temp
+//! directories, never touching the process-global `PINVOU3_HOME`.
 
 use std::collections::HashSet;
 use std::path::{Path, PathBuf};
@@ -10,10 +10,12 @@ fn store_in(temp: &tempfile::TempDir) -> ProjectStore {
     ProjectStore::from_paths(temp.path().join("projects.json"))
 }
 
-/// 平台中立的不存在绝对路径:锚在 std::env::temp_dir() 下,Windows 上同样
-/// 满足 is_absolute()(此前硬编码 "/pinvou3-projects-test-root" 会让全部
-/// create 用例在 Windows 上被绝对性校验拒掉,套件只能跑 Ubuntu)。
-/// 路径刻意不存在:canonicalize 失败走词法绝对化,身份键仍可判定。
+/// Platform-neutral nonexistent absolute path: anchored under
+/// std::env::temp_dir() so it also satisfies is_absolute() on Windows (the
+/// previously hardcoded "/pinvou3-projects-test-root" got every create case
+/// rejected by the absoluteness check on Windows, so the suite could only run
+/// on Ubuntu). The path deliberately does not exist: canonicalize fails and
+/// falls back to lexical absolutization, and identity keys remain decidable.
 fn abs(name: &str) -> PathBuf {
     std::env::temp_dir()
         .join("pinvou3-projects-test-root")
@@ -39,8 +41,8 @@ fn boot_without_file_starts_empty() {
 fn create_assigns_sequential_positions_and_generated_ids() {
     let temp = tempfile::tempdir().expect("tempdir");
     let store = store_in(&temp);
-    let first = create(&store, "前端", &[abs("web")]);
-    let second = create(&store, "后端", &[abs("api")]);
+    let first = create(&store, "web", &[abs("web")]);
+    let second = create(&store, "api", &[abs("api")]);
 
     assert!(first.id.starts_with("prj-"));
     assert_ne!(first.id, second.id);
@@ -68,7 +70,7 @@ fn create_rejects_relative_root() {
     let temp = tempfile::tempdir().expect("tempdir");
     let store = store_in(&temp);
     let error = store
-        .create_project("相对路径".to_string(), vec![PathBuf::from("repo")])
+        .create_project("relative".to_string(), vec![PathBuf::from("repo")])
         .expect_err("relative root rejected");
     assert!(error.to_string().contains("must be absolute"));
 }
@@ -78,38 +80,40 @@ fn create_rejects_duplicate_and_nested_roots_within_project() {
     let temp = tempfile::tempdir().expect("tempdir");
     let store = store_in(&temp);
     let duplicate = store
-        .create_project("重复".to_string(), vec![abs("a"), abs("a")])
+        .create_project("dup".to_string(), vec![abs("a"), abs("a")])
         .expect_err("duplicate root rejected");
     assert!(duplicate.to_string().contains("duplicate project root"));
 
     let nested = store
-        .create_project("嵌套".to_string(), vec![abs("b"), abs("b").join("sub")])
+        .create_project("nested".to_string(), vec![abs("b"), abs("b").join("sub")])
         .expect_err("nested roots rejected");
     assert!(nested.to_string().contains("must not nest"));
 }
 
 #[test]
 fn create_allows_overlap_across_projects() {
-    // §9.9 根重叠合法化:同一物理文件夹(或互相嵌套的目录)允许被多个项目
-    // 引用;自动归组的归属二义由前端按 position 决胜(最靠前者收编),显式
-    // 归属优先不变。后端不再设跨项目互斥。
+    // §9.9 root-overlap legalization: the same physical folder (or mutually
+    // nested directories) may be referenced by multiple projects;
+    // auto-grouping ambiguity is decided by the frontend via position (the
+    // earliest one adopts), explicit assignment still wins. The backend no
+    // longer enforces cross-project exclusion.
     let temp = tempfile::tempdir().expect("tempdir");
     let store = store_in(&temp);
-    let first = create(&store, "已有项目", &[abs("work")]);
+    let first = create(&store, "existing", &[abs("work")]);
 
-    let same = create(&store, "同路径", &[abs("work")]);
-    let nested = create(&store, "子路径", &[abs("work").join("sub")]);
+    let same = create(&store, "same-path", &[abs("work")]);
+    let nested = create(&store, "sub-path", &[abs("work").join("sub")]);
     let parent = create(
         &store,
-        "父路径",
+        "parent-path",
         &[abs("work").parent().unwrap().to_path_buf()],
     );
-    create(&store, "无关", &[abs("other")]);
+    create(&store, "unrelated", &[abs("other")]);
 
     let projects = store.list();
-    assert_eq!(projects.len(), 5, "全部共存: {projects:?}");
-    // position 依次递增,前端决胜规则(folders 命中多项目时 position 最小者
-    // 收编)依赖该序。
+    assert_eq!(projects.len(), 5, "all coexist: {projects:?}");
+    // Positions increase in order; the frontend tiebreak (when folders hit
+    // multiple projects, the smallest position adopts) depends on this order.
     let positions: Vec<i64> = projects.iter().map(|project| project.position).collect();
     let mut sorted = positions.clone();
     sorted.sort();
@@ -128,13 +132,14 @@ fn canonicalized_real_dirs_coexist_across_projects() {
     std::fs::create_dir_all(&child).expect("create dirs");
 
     let store = store_in(&temp);
-    create(&store, "父", std::slice::from_ref(&parent));
-    // canonicalize 后入库存展示形态;跨项目嵌套不再拒绝。
-    let child_project = create(&store, "子", std::slice::from_ref(&child));
+    create(&store, "parent", std::slice::from_ref(&parent));
+    // Canonicalized before being stored as the display form; cross-project
+    // nesting is no longer rejected.
+    let child_project = create(&store, "child", std::slice::from_ref(&child));
     assert_eq!(
         child_project.roots,
         vec![child.canonicalize().unwrap()],
-        "真实目录 canonicalize 入库"
+        "real directory canonicalized into the store"
     );
     assert_eq!(store.list().len(), 2);
 }
@@ -143,20 +148,21 @@ fn canonicalized_real_dirs_coexist_across_projects() {
 fn update_renames_and_replaces_roots() {
     let temp = tempfile::tempdir().expect("tempdir");
     let store = store_in(&temp);
-    let project = create(&store, "旧名", &[abs("old")]);
+    let project = create(&store, "old-name", &[abs("old")]);
 
     let updated = store
         .update_project(
             &project.id,
-            Some("新名".to_string()),
+            Some("new-name".to_string()),
             Some(vec![abs("new")]),
         )
         .expect("update project");
-    assert_eq!(updated.name, "新名");
+    assert_eq!(updated.name, "new-name");
     assert_eq!(updated.roots, vec![abs("new")]);
-    assert_eq!(store.get(&project.id).unwrap().name, "新名");
+    assert_eq!(store.get(&project.id).unwrap().name, "new-name");
 
-    // None = 保持不变;空 roots 合法(项目退化为纯标签)。
+    // None = keep as-is; empty roots are legal (the project degenerates into
+    // a pure label).
     let kept = store
         .update_project(&project.id, None, None)
         .expect("no-op update");
@@ -181,8 +187,8 @@ fn update_renames_and_replaces_roots() {
 fn delete_expels_all_members_to_ungrouped() {
     let temp = tempfile::tempdir().expect("tempdir");
     let store = store_in(&temp);
-    let project = create(&store, "待删", &[abs("x")]);
-    let other = create(&store, "幸存", &[abs("y")]);
+    let project = create(&store, "to-delete", &[abs("x")]);
+    let other = create(&store, "survivor", &[abs("y")]);
 
     store
         .move_session_to_project("s1", Some(&project.id), None)
@@ -190,7 +196,8 @@ fn delete_expels_all_members_to_ungrouped() {
     store
         .move_session_to_project("s2", Some(&project.id), None)
         .expect("assign s2");
-    // s3 显式移出:语义是"不进任何项目",与目标项目存亡无关。
+    // s3 explicitly moved out: the semantic is "in no project", independent
+    // of the target project's existence.
     store
         .move_session_to_project("s3", Some(&project.id), None)
         .expect("assign s3");
@@ -201,7 +208,8 @@ fn delete_expels_all_members_to_ungrouped() {
         .move_session_to_project("s4", Some(&other.id), None)
         .expect("assign s4");
 
-    // 删除时命令层枚举的自动归组成员(s5:无归属条目)一并传入。
+    // The command layer's enumerated auto-grouped members (s5: no assignment
+    // entry) are passed in at deletion time.
     let report = store
         .delete_project(&project.id, &["s5".to_string()])
         .expect("delete project");
@@ -209,18 +217,22 @@ fn delete_expels_all_members_to_ungrouped() {
     affected.sort();
     assert_eq!(affected, vec!["s1", "s2", "s5"]);
 
-    // 显式成员与自动成员一律写成显式移出:留在未分组,不随该文件夹下一次
-    // 自动物化复活。
+    // Explicit and auto members alike are written as explicit move-outs: they
+    // stay in Ungrouped and do not revive with the folder's next
+    // auto-materialization.
     assert_eq!(store.assignment_of("s1"), Some(None));
     assert_eq!(store.assignment_of("s2"), Some(None));
     assert_eq!(store.assignment_of("s5"), Some(None));
-    // 既有条目不改写:s3 的移出条目保留,s4 的显式归属幸存。
+    // Existing entries are not rewritten: s3's move-out entry survives, s4's
+    // explicit assignment survives.
     assert_eq!(store.assignment_of("s3"), Some(None));
     assert_eq!(store.assignment_of("s4"), Some(Some(other.id.clone())));
     assert!(store.get(&project.id).is_none());
 
-    // 幸存项目删除(无成员)后归属表仍有移出条目,文件保留;条目全部退场
-    // (会话删除钩子)后才回落空状态删文件。
+    // After deleting the surviving (memberless) project the assignment table
+    // still has move-out entries, so the file stays; only when every entry
+    // has left (session delete hook) does it fall back to the empty state
+    // and remove the file.
     store.delete_project(&other.id, &[]).expect("delete other");
     assert!(temp.path().join("projects.json").exists());
     for session_id in ["s1", "s2", "s3", "s4", "s5"] {
@@ -233,7 +245,7 @@ fn delete_expels_all_members_to_ungrouped() {
 fn move_assigns_explicitly_and_unassign_blocks_auto_revival() {
     let temp = tempfile::tempdir().expect("tempdir");
     let store = store_in(&temp);
-    let project = create(&store, "目标", &[]);
+    let project = create(&store, "target", &[]);
 
     store
         .move_session_to_project("s1", Some(&project.id), None)
@@ -241,7 +253,8 @@ fn move_assigns_explicitly_and_unassign_blocks_auto_revival() {
     assert_eq!(store.assignment_of("s1"), Some(Some(project.id.clone())));
     assert_eq!(store.assigned_session_ids(&project.id), vec!["s1"]);
 
-    // 显式移出 = 条目存在且为 None(区别于"无条目走自动归组")。
+    // Explicit move-out = entry exists and is None (as opposed to "no entry,
+    // auto-grouping applies").
     store
         .move_session_to_project("s1", None, None)
         .expect("explicit move out");
@@ -268,16 +281,17 @@ fn move_add_workspace_root_atomically_and_idempotently() {
     let temp = tempfile::tempdir().expect("tempdir");
     let workspace = temp.path().join("workspace");
     std::fs::create_dir_all(&workspace).expect("create workspace");
-    // 他人领地与 workspace 互不重叠,避免测试自触发跨项目重叠规则。
+    // Foreign territory does not overlap the workspace, so the test does not
+    // trip its own cross-project overlap rule.
     let foreign = temp.path().join("foreign").join("nested");
     std::fs::create_dir_all(&foreign).expect("create foreign dirs");
     let canonical = workspace.canonicalize().expect("canonicalize");
 
     let store = store_in(&temp);
-    let project = create(&store, "目标", &[abs("elsewhere")]);
-    let other = create(&store, "他人领地", std::slice::from_ref(&foreign));
+    let project = create(&store, "target", &[abs("elsewhere")]);
+    let other = create(&store, "foreign-territory", std::slice::from_ref(&foreign));
 
-    // 顺带加 root:归并与加目录一次落盘。
+    // Adopt-on-move: assignment merge and folder add persist in one write.
     let outcome = store
         .move_session_to_project("s1", Some(&project.id), Some(&workspace))
         .expect("move with workspace root");
@@ -285,23 +299,32 @@ fn move_add_workspace_root_atomically_and_idempotently() {
     assert_eq!(outcome.added_root, Some(canonical.clone()));
     assert!(store.get(&project.id).unwrap().roots.contains(&canonical));
 
-    // 已被现有 root 覆盖时幂等跳过,不重复添加。
+    // Idempotent skip when already covered by an existing root; not added
+    // again.
     let again = store
         .move_session_to_project("s2", Some(&project.id), Some(&workspace.join("deep")))
         .expect("covered workspace skips add");
     assert_eq!(again.added_root, None);
     assert_eq!(store.get(&project.id).unwrap().roots.len(), 2);
 
-    // 落在他人领地内的目录自 §9.9 起合法(重叠合法化),双方各自持有。
+    // A directory inside foreign territory is legal since §9.9 (overlap
+    // legalization); both sides hold their own reference.
     let shared = store
         .move_session_to_project("s3", Some(&project.id), Some(&foreign.join("deeper")))
         .expect("cross-project overlap legal");
-    // "deeper" 不存在:入库形态 = 最近现存祖先 canonicalize 后拼回缺失后缀。
+    // "deeper" does not exist: the stored form = nearest existing ancestor
+    // canonicalized, with the missing suffix re-appended.
     assert_eq!(
         shared.added_root,
         Some(foreign.canonicalize().unwrap().join("deeper"))
     );
-    assert!(store.get(&other.id).unwrap().roots.contains(&foreign.canonicalize().unwrap()));
+    assert!(
+        store
+            .get(&other.id)
+            .unwrap()
+            .roots
+            .contains(&foreign.canonicalize().unwrap())
+    );
     assert_eq!(store.assignment_of("s3"), Some(Some(project.id.clone())));
     assert_eq!(store.get(&other.id).unwrap().roots.len(), 1);
     assert_eq!(store.get(&project.id).unwrap().roots.len(), 3);
@@ -313,7 +336,7 @@ fn persist_roundtrip_preserves_state_on_reopen() {
     let path = temp.path().join("projects.json");
     let project_id = {
         let store = ProjectStore::from_paths(path.clone());
-        let project = create(&store, "持久化", &[abs("persist")]);
+        let project = create(&store, "persisted", &[abs("persist")]);
         store
             .move_session_to_project("s1", Some(&project.id), None)
             .expect("assign");
@@ -343,8 +366,8 @@ fn corrupt_file_boots_empty_without_panicking() {
 
     let store = ProjectStore::from_paths(path);
     assert!(store.list().is_empty());
-    // 损坏后的首次变更自愈覆盖。
-    create(&store, "自愈", &[]);
+    // The first mutation after the corrupt read self-heals by overwriting.
+    create(&store, "self-heal", &[]);
     assert_eq!(store.list().len(), 1);
 }
 
@@ -361,9 +384,10 @@ fn newer_schema_version_is_rejected_and_never_overwritten() {
     let store = ProjectStore::from_paths(path.clone());
     assert!(store.list().is_empty(), "future schema degrades to empty");
 
-    // 降级进程拒绝一切写入:空状态 + 首次变更不得把新结构文件降级覆盖。
+    // A downgraded process refuses every write: the empty state plus the
+    // first mutation must not downgrade-overwrite the newer file.
     let error = store
-        .create_project("降级写".to_string(), vec![])
+        .create_project("downgrade-write".to_string(), vec![])
         .expect_err("writes refused after newer-schema load");
     assert!(error.to_string().contains("refusing to overwrite"));
     let raw: serde_json::Value =
@@ -380,32 +404,40 @@ fn rebind_roots_rewrites_prefix_and_stays_idempotent() {
     let to = temp.path().join("moved");
     std::fs::create_dir_all(&to).expect("create to dir");
 
-    let project = create(&store, "搬家", &[from.clone(), abs("untouched")]);
-    let other = create(&store, "无关", &[abs("elsewhere")]);
+    let project = create(&store, "moved", &[from.clone(), abs("untouched")]);
+    let other = create(&store, "unrelated", &[abs("elsewhere")]);
 
     let affected = store.rebind_roots(&from, &to).expect("rebind roots");
     assert_eq!(affected, vec![project.id.clone()]);
     let roots = store.get(&project.id).unwrap().roots;
     assert!(roots.contains(&to.canonicalize().unwrap()));
-    assert!(roots.contains(&abs("untouched")), "prefix 外的 root 不动");
+    assert!(
+        roots.contains(&abs("untouched")),
+        "roots outside the prefix untouched"
+    );
     assert_eq!(store.get(&other.id).unwrap().roots, vec![abs("elsewhere")]);
 
-    // 幂等:from 前缀已无命中,再跑为空操作。
+    // Idempotent: no `from`-prefix hits left, so a rerun is a no-op.
     assert!(store.rebind_roots(&from, &to).unwrap().is_empty());
     assert_eq!(store.get(&project.id).unwrap().roots, roots);
 }
 
 #[test]
 fn rebind_roots_allows_overlap_with_other_projects() {
-    // 平移撞上其它项目的领地不再报错(§9.9 跨项目重叠合法),照常改写落盘。
+    // Landing on another project's territory no longer errors (§9.9
+    // cross-project overlap is legal); the rewrite persists as usual.
     let temp = tempfile::tempdir().expect("tempdir");
     let store = store_in(&temp);
     let from = abs("from2");
     let occupied = temp.path().join("occupied");
     std::fs::create_dir_all(&occupied).expect("create occupied dir");
 
-    let project = create(&store, "待搬", std::slice::from_ref(&from));
-    let holder = create(&store, "已有领地", std::slice::from_ref(&occupied));
+    let project = create(&store, "to-move", std::slice::from_ref(&from));
+    let holder = create(
+        &store,
+        "existing-territory",
+        std::slice::from_ref(&occupied),
+    );
 
     let affected = store
         .rebind_roots(&from, &occupied)
@@ -418,7 +450,7 @@ fn rebind_roots_allows_overlap_with_other_projects() {
     assert_eq!(
         store.get(&holder.id).unwrap().roots,
         vec![occupied.canonicalize().unwrap()],
-        "双方各自持有同一目录"
+        "both sides hold the same directory"
     );
 }
 
@@ -426,7 +458,7 @@ fn rebind_roots_allows_overlap_with_other_projects() {
 fn forget_session_and_retain_sessions_prune_orphans() {
     let temp = tempfile::tempdir().expect("tempdir");
     let store = store_in(&temp);
-    let project = create(&store, "项目", &[]);
+    let project = create(&store, "project", &[]);
     store
         .move_session_to_project("s1", Some(&project.id), None)
         .expect("assign s1");
@@ -438,13 +470,13 @@ fn forget_session_and_retain_sessions_prune_orphans() {
     assert_eq!(store.assignment_of("s1"), None);
     assert!(!store.forget_session("unknown"), "unknown id is a no-op");
 
-    // 启动对账:只保留仍存在的会话条目。
+    // Boot reconciliation: keep only entries whose sessions still exist.
     store
         .move_session_to_project("s3", Some(&project.id), None)
         .expect("assign s3");
     let existing: HashSet<String> = ["s3".to_string()].into_iter().collect();
     let pruned = store.retain_sessions(&existing);
-    assert_eq!(pruned, 1, "s2 的显式移出条目被剔除");
+    assert_eq!(pruned, 1, "s2's explicit move-out entry is pruned");
     assert_eq!(store.assignment_of("s2"), None);
     assert_eq!(store.assignment_of("s3"), Some(Some(project.id)));
 }
@@ -457,9 +489,11 @@ fn move_workspace_ancestor_collapses_descendant_roots() {
     std::fs::create_dir_all(&child).expect("create dirs");
 
     let store = store_in(&temp);
-    let project = create(&store, "项目", &[]);
+    let project = create(&store, "project", &[]);
 
-    // 先挂子目录,再把父目录作为工作目录移入:祖先收编后代,组内不得出现嵌套。
+    // Attach the child first, then move a session whose workspace is the
+    // parent: the ancestor adopts the descendant; the set must not end up
+    // nested.
     let child_outcome = store
         .move_session_to_project("s1", Some(&project.id), Some(&child))
         .expect("move with child root");
@@ -478,7 +512,8 @@ fn move_workspace_ancestor_collapses_descendant_roots() {
     assert_eq!(roots.len(), 1, "descendant collapsed into the ancestor");
     assert_eq!(roots[0], parent.canonicalize().expect("canon parent"));
 
-    // 反方向保持幂等:现有 root 是祖先时,子目录工作目录不重复添加。
+    // The other direction stays idempotent: when an existing root is the
+    // ancestor, a child-directory workspace is not added again.
     let nested_again = store
         .move_session_to_project("s3", Some(&project.id), Some(&child))
         .expect("covered workspace skips add");
@@ -488,34 +523,51 @@ fn move_workspace_ancestor_collapses_descendant_roots() {
 
 #[test]
 fn root_keys_fold_case_only_on_windows() {
-    // Windows 大小写不敏感:同一(不存在的)目录的两种大小写/分隔符写法必须
-    // 折叠为同一 root,否则重叠校验对 `C:\Work` vs `c:\work` 失明;
-    // Unix 文件系统大小写敏感,两种写法是两个互不重叠的 root,都允许创建。
-    // 用 std::env::consts::OS 常量分支而非 cfg 语法:平台条件编译不得出现在
-    // 适配层外(architecture-guard rust_target_cfg_outside_adapter)。
+    // Windows is case-insensitive: two spellings of the same (nonexistent)
+    // directory differing in case/separators must fold into the same root key.
+    // Cross-project overlap is legal since the §9.9 (2026-09-11) ruling, so
+    // the fold's remaining enforcement point is the same-set duplicate check
+    // in validate_roots; the two projects below coexist by design.
+    // Uses a std::env::consts::OS constant branch instead of cfg syntax:
+    // platform conditional compilation must not appear outside the adapter
+    // layer (architecture-guard rust_target_cfg_outside_adapter).
     let temp = tempfile::tempdir().expect("tempdir");
     let store = store_in(&temp);
     if std::env::consts::OS == "windows" {
-        let upper = abs("CaseProbe").to_string_lossy().replace('/', "\\");
-        let lower = abs("caseprobe").to_string_lossy().replace('/', "\\");
-        assert_ne!(upper, lower);
+        let backslash_upper = abs("CaseProbe").to_string_lossy().replace('/', "\\");
+        // Same directory in forward-slash + lowercase spelling: only the
+        // folded identity key sees the two as one root.
+        let forward_lower = backslash_upper
+            .replace('\\', "/")
+            .replace("CaseProbe", "caseprobe");
+        assert_ne!(backslash_upper, forward_lower);
 
-        create(&store, "大写", &[PathBuf::from(&upper)]);
+        create(&store, "upper", &[PathBuf::from(&backslash_upper)]);
+        create(&store, "lower", &[PathBuf::from(&forward_lower)]);
+        assert_eq!(store.list().len(), 2, "跨项目重叠自 §9.9 起合法");
         let error = store
-            .create_project("小写".to_string(), vec![PathBuf::from(&lower)])
-            .expect_err("case-folded duplicate root rejected");
-        assert!(error.to_string().contains("overlaps project"));
+            .create_project(
+                "dup".to_string(),
+                vec![
+                    PathBuf::from(&backslash_upper),
+                    PathBuf::from(&forward_lower),
+                ],
+            )
+            .expect_err("case/separator-folded same-set duplicate root rejected");
+        assert!(error.to_string().contains("duplicate project root"));
     } else {
-        create(&store, "大写", &[abs("CaseProbe")]);
-        create(&store, "小写", &[abs("caseprobe")]);
+        create(&store, "upper", &[abs("CaseProbe")]);
+        create(&store, "lower", &[abs("caseprobe")]);
         assert_eq!(store.list().len(), 2);
     }
 }
 
-// ── 文件夹项目自动物化(ensure)──────────────────────────────────────────────
+// ── Folder-project auto-materialization (ensure) ────────────────────────────
 
 fn ensure(store: &ProjectStore, roots: &[PathBuf]) -> Vec<super::EnsureFolderOutcome> {
-    store.ensure_folder_roots(roots).expect("ensure folder roots")
+    store
+        .ensure_folder_roots(roots)
+        .expect("ensure folder roots")
 }
 
 #[test]
@@ -524,13 +576,18 @@ fn ensure_creates_basename_named_folder_projects_idempotently() {
     let store = store_in(&temp);
 
     let outcomes = ensure(&store, &[abs("web"), abs("api")]);
-    assert!(matches!(&outcomes[0], super::EnsureFolderOutcome::Created { project }
-        if project.name == "web" && project.origin.as_deref() == Some("folder")));
-    assert!(matches!(&outcomes[1], super::EnsureFolderOutcome::Created { project }
-        if project.name == "api"));
+    assert!(
+        matches!(&outcomes[0], super::EnsureFolderOutcome::Created { project }
+        if project.name == "web" && project.origin.as_deref() == Some("folder"))
+    );
+    assert!(
+        matches!(&outcomes[1], super::EnsureFolderOutcome::Created { project }
+        if project.name == "api")
+    );
     assert_eq!(store.list().len(), 2);
 
-    // 幂等:同批根重放 → 全部 Covered,不新建。
+    // Idempotent: replaying the same batch of roots → all Covered, nothing
+    // created.
     let replay = ensure(&store, &[abs("web"), abs("api")]);
     let ids: Vec<&str> = replay
         .iter()
@@ -539,16 +596,20 @@ fn ensure_creates_basename_named_folder_projects_idempotently() {
             _ => None,
         })
         .collect();
-    assert_eq!(ids.len(), 2, "重放全为 Covered: {replay:?}");
+    assert_eq!(ids.len(), 2, "replay is all Covered: {replay:?}");
     assert_eq!(store.list().len(), 2);
 
-    // 手工项目引用的文件夹不算锚定覆盖(§9.9):浏览通道一律新建同名物化
-    // 项目,重叠合法并存(详见 ensure_anchor_reuse_only_for_folder_anchored_projects)。
-    let manual = create(&store, "手工", &[abs("manual/root")]);
+    // A folder referenced by a manual project does not count as anchored
+    // coverage (§9.9): the browse channel always creates a same-named
+    // materialized project; overlap coexists legally (see
+    // ensure_anchor_reuse_only_for_folder_anchored_projects for details).
+    let manual = create(&store, "manual", &[abs("manual/root")]);
     let covered = ensure(&store, &[abs("manual/root")]);
-    assert!(matches!(&covered[0], super::EnsureFolderOutcome::Created { project }
-        if project.origin.as_deref() == Some("folder")));
-    assert_eq!(manual.roots.len(), 1, "手工项目不受影响");
+    assert!(
+        matches!(&covered[0], super::EnsureFolderOutcome::Created { project }
+        if project.origin.as_deref() == Some("folder"))
+    );
+    assert_eq!(manual.roots.len(), 1, "manual project unaffected");
     assert_eq!(store.list().len(), 4);
 }
 
@@ -557,11 +618,23 @@ fn ensure_input_dedupes_and_reports_relative_roots() {
     let temp = tempfile::tempdir().expect("tempdir");
     let store = store_in(&temp);
 
-    let outcomes = ensure(&store, &[abs("web"), abs("web"), PathBuf::from("relative/x")]);
-    assert_eq!(outcomes.len(), 2, "重复根折叠为一项: {outcomes:?}");
-    assert!(matches!(outcomes[0], super::EnsureFolderOutcome::Created { .. }));
-    assert!(matches!(&outcomes[1], super::EnsureFolderOutcome::Failed { reason }
-        if reason.contains("absolute")));
+    let outcomes = ensure(
+        &store,
+        &[abs("web"), abs("web"), PathBuf::from("relative/x")],
+    );
+    assert_eq!(
+        outcomes.len(),
+        2,
+        "duplicate roots fold into one: {outcomes:?}"
+    );
+    assert!(matches!(
+        outcomes[0],
+        super::EnsureFolderOutcome::Created { .. }
+    ));
+    assert!(
+        matches!(&outcomes[1], super::EnsureFolderOutcome::Failed { reason }
+        if reason.contains("absolute"))
+    );
     assert_eq!(store.list().len(), 1);
 }
 
@@ -569,14 +642,22 @@ fn ensure_input_dedupes_and_reports_relative_roots() {
 fn ensure_overlap_with_other_project_does_not_block_the_batch() {
     let temp = tempfile::tempdir().expect("tempdir");
     let store = store_in(&temp);
-    // 既有项目占据 abs("nest/child"):为祖先目录 abs("nest") 建文件夹项目在
-    // 重叠合法化后照常创建(手工项目的引用不等于"以该文件夹为锚",见 B4
-    // 锚定复用),同批其它根不受影响。
-    create(&store, "深根", &[abs("nest/child")]);
+    // An existing project occupies abs("nest/child"): creating a folder
+    // project for the ancestor abs("nest") proceeds normally after the
+    // overlap legalization (a manual project's reference is not "anchored at
+    // that folder", see B4 anchored reuse), and the other roots in the batch
+    // are unaffected.
+    create(&store, "deep-root", &[abs("nest/child")]);
 
     let outcomes = ensure(&store, &[abs("nest"), abs("clean")]);
-    assert!(matches!(outcomes[0], super::EnsureFolderOutcome::Created { .. }));
-    assert!(matches!(outcomes[1], super::EnsureFolderOutcome::Created { .. }));
+    assert!(matches!(
+        outcomes[0],
+        super::EnsureFolderOutcome::Created { .. }
+    ));
+    assert!(matches!(
+        outcomes[1],
+        super::EnsureFolderOutcome::Created { .. }
+    ));
     assert_eq!(store.list().len(), 3);
 }
 
@@ -585,20 +666,28 @@ fn ensure_recreates_folder_project_after_delete_for_new_sessions() {
     let temp = tempfile::tempdir().expect("tempdir");
     let store = store_in(&temp);
 
-    // 首次物化 → 删除(成员写成显式移出)。
+    // First materialization → delete (members written as explicit move-outs).
     ensure(&store, &[abs("web")]);
     let created = store.list()[0].clone();
     store
         .delete_project(&created.id, &["s-old".to_string()])
         .expect("delete");
-    assert_eq!(store.assignment_of("s-old"), Some(None), "成员留未分组");
+    assert_eq!(
+        store.assignment_of("s-old"),
+        Some(None),
+        "member stays in Ungrouped"
+    );
 
-    // 无墓碑:同一文件夹再次 ensure 即重建(前端由"新会话"驱动触发;旧会话
-    // 的移出条目压住 tier-②,重建项目只收新会话)。
+    // No tombstone: ensuring the same folder again recreates it (the frontend
+    // triggers this driven by "new sessions"; old sessions' move-out entries
+    // suppress tier-②, so the recreated project only picks up new sessions).
     let recreate = ensure(&store, &[abs("web")]);
-    assert!(matches!(&recreate[0], super::EnsureFolderOutcome::Created { project }
-        if project.name == "web" && project.origin.as_deref() == Some("folder")));
-    // 移出条目跨删除保留:旧会话不因重建复活。
+    assert!(
+        matches!(&recreate[0], super::EnsureFolderOutcome::Created { project }
+        if project.name == "web" && project.origin.as_deref() == Some("folder"))
+    );
+    // The move-out entry survives deletion: old sessions do not revive with
+    // the recreation.
     assert_eq!(store.assignment_of("s-old"), Some(None));
 }
 
@@ -625,31 +714,39 @@ fn origin_and_expelled_assignments_persist_across_reopen() {
     assert_eq!(
         reopened.assignment_of("s-old"),
         Some(None),
-        "移出条目跨进程存活:旧会话不随重建复活"
+        "move-out entry survives across processes: old sessions do not revive with recreation"
     );
 }
 
-// ── 根重叠合法化(§9.9):手工决策与自动物化共存,不再互相让位 ────────────────
+// ── Root-overlap legalization (§9.9): manual decisions and
+//    auto-materialization coexist, neither yields to the other ───────────────
 
 #[test]
 fn manual_add_root_coexists_with_folder_project_root() {
     let temp = tempfile::tempdir().expect("tempdir");
     let store = store_in(&temp);
-    // 文件夹自动项目占住 abs("web");用户把该文件夹的会话移进手工项目并选
-    // "添加文件夹" → 重叠合法:目标获得 root,自动项目原样保留。
+    // The folder-auto project occupies abs("web"); the user moves a session
+    // from that folder into a manual project and picks "add folder" → overlap
+    // is legal: the target gains the root, the auto project stays as-is.
     ensure(&store, &[abs("web")]);
     let folder_project = store.list()[0].clone();
-    let target = create(&store, "目标", &[abs("other")]);
+    let target = create(&store, "target", &[abs("other")]);
 
     let outcome = store
         .move_session_to_project("s1", Some(&target.id), Some(&abs("web")))
         .expect("move with add root");
     assert_eq!(outcome.added_root, Some(abs("web")));
-    assert_eq!(store.get(&target.id).expect("target").roots, vec![abs("other"), abs("web")]);
     assert_eq!(
-        store.get(&folder_project.id).expect("自动项目保留").roots,
+        store.get(&target.id).expect("target").roots,
+        vec![abs("other"), abs("web")]
+    );
+    assert_eq!(
+        store
+            .get(&folder_project.id)
+            .expect("auto project kept")
+            .roots,
         vec![abs("web")],
-        "让位机制已退役:自动项目不被摘除"
+        "the yielding mechanism is retired: the auto project is not stripped"
     );
     assert_eq!(store.assignment_of("s1"), Some(Some(target.id.clone())));
 }
@@ -658,14 +755,17 @@ fn manual_add_root_coexists_with_folder_project_root() {
 fn manual_add_root_allowed_against_manual_project() {
     let temp = tempfile::tempdir().expect("tempdir");
     let store = store_in(&temp);
-    let holder = create(&store, "占位", &[abs("web")]);
-    let target = create(&store, "目标", &[abs("other")]);
+    let holder = create(&store, "holder", &[abs("web")]);
+    let target = create(&store, "target", &[abs("other")]);
 
     let outcome = store
         .move_session_to_project("s1", Some(&target.id), Some(&abs("web")))
-        .expect("手工项目之间同样允许共享 root");
+        .expect("sharing a root between manual projects is equally allowed");
     assert_eq!(outcome.added_root, Some(abs("web")));
-    assert_eq!(store.get(&holder.id).expect("holder").roots, vec![abs("web")]);
+    assert_eq!(
+        store.get(&holder.id).expect("holder").roots,
+        vec![abs("web")]
+    );
     assert_eq!(store.get(&target.id).expect("target").roots.len(), 2);
     assert_eq!(store.assignment_of("s1"), Some(Some(target.id.clone())));
 }
@@ -674,11 +774,12 @@ fn manual_add_root_allowed_against_manual_project() {
 fn manual_add_root_keeps_ancestor_folder_root() {
     let temp = tempfile::tempdir().expect("tempdir");
     let store = store_in(&temp);
-    // 自动项目占住父目录 abs("web");往手工项目加子目录 abs("web/sub"):
-    // 跨项目任一方向的嵌套都合法,双方各自保留。
+    // The auto project occupies the parent abs("web"); adding the child
+    // abs("web/sub") to a manual project: nesting in either direction across
+    // projects is legal, both sides keep their roots.
     ensure(&store, &[abs("web")]);
     let folder_project = store.list()[0].clone();
-    let target = create(&store, "目标", &[abs("other")]);
+    let target = create(&store, "target", &[abs("other")]);
 
     store
         .move_session_to_project("s1", Some(&target.id), Some(&abs("web/sub")))
@@ -688,7 +789,10 @@ fn manual_add_root_keeps_ancestor_folder_root() {
         vec![abs("other"), abs("web/sub")]
     );
     assert_eq!(
-        store.get(&folder_project.id).expect("自动项目保留").roots,
+        store
+            .get(&folder_project.id)
+            .expect("auto project kept")
+            .roots,
         vec![abs("web")]
     );
 }
@@ -697,14 +801,20 @@ fn manual_add_root_keeps_ancestor_folder_root() {
 fn manual_create_and_update_coexist_with_folder_roots() {
     let temp = tempfile::tempdir().expect("tempdir");
     let store = store_in(&temp);
-    // 手工建项目直接携带被自动项目引用的 root(目录视图"转为项目"路径):
-    // 重叠合法,两个项目并存。
+    // Creating a manual project that directly carries a root referenced by an
+    // auto project (the directory view's "convert to project" path): overlap
+    // is legal, both projects coexist.
     ensure(&store, &[abs("web")]);
-    let created = create(&store, "转正", &[abs("web")]);
+    let created = create(&store, "converted", &[abs("web")]);
     assert_eq!(created.roots, vec![abs("web")]);
-    assert_eq!(store.list().len(), 2, "自动项目不再让位退场");
+    assert_eq!(
+        store.list().len(),
+        2,
+        "the auto project no longer yields and exits"
+    );
 
-    // update 改 roots 同理:新 roots 引用另一个自动项目的文件夹也合法。
+    // Same for update changing roots: referencing another auto project's
+    // folder in the new roots is legal.
     ensure(&store, &[abs("api")]);
     let updated = store
         .update_project(&created.id, None, Some(vec![abs("web"), abs("api")]))
@@ -715,26 +825,33 @@ fn manual_create_and_update_coexist_with_folder_roots() {
 
 #[test]
 fn ensure_creates_ancestor_despite_nested_existing_root() {
-    // 重叠合法化后:自动项目引用了子目录,ensure 父目录照常创建(覆盖复用
-    // 的锚定收紧见 B4;此处锁定"不再按嵌套报 Failed")。
+    // After the overlap legalization: an auto project references a child
+    // directory, and ensure of the parent creates as usual (the anchored
+    // tightening of covered-reuse is in B4; this locks "no more Failed on
+    // nesting").
     let temp = tempfile::tempdir().expect("tempdir");
     let store = store_in(&temp);
     ensure(&store, &[abs("nest/child")]);
     let outcomes = ensure(&store, &[abs("nest")]);
-    assert!(matches!(&outcomes[0], super::EnsureFolderOutcome::Created { project }
-        if project.name == "nest"));
-    assert_eq!(store.list().len(), 2, "两个文件夹项目共存");
-    assert_eq!(store.list()[0].roots.len(), 1, "既有 root 不变");
+    assert!(
+        matches!(&outcomes[0], super::EnsureFolderOutcome::Created { project }
+        if project.name == "nest")
+    );
+    assert_eq!(store.list().len(), 2, "both folder projects coexist");
+    assert_eq!(store.list()[0].roots.len(), 1, "existing root unchanged");
 }
 
 #[test]
 fn covered_workspace_skip_survives_symlinked_ancestor() {
-    // 评审 #464 MAJOR 3(macOS /var→/private/var 的同型):root 入库时已
-    // canonicalize,而被覆盖判定的工作区路径不存在时,旧的纯词法回退保留
-    // symlink 形态,身份键不再嵌套,会被当成未覆盖重复添加。用 symlink
-    // 祖先在任意平台复现。用 std::env::consts::OS 常量分支而非 cfg 语法:
-    // 平台条件编译不得出现在适配层外(architecture-guard);Windows 的目录
-    // symlink 需要管理员/开发者模式,该机制由 unix/macOS 覆盖。
+    // Review #464 MAJOR 3 (same shape as macOS /var→/private/var): roots are
+    // canonicalized when stored, but a workspace path under coverage review
+    // that does not exist used to fall back to a purely lexical form that
+    // kept the symlink shape, so identity keys no longer nested and the path
+    // was treated as uncovered and added twice. Reproduced on any platform
+    // with a symlinked ancestor. Uses a std::env::consts::OS constant branch
+    // instead of cfg syntax: platform conditional compilation must not appear
+    // outside the adapter layer (architecture-guard); directory symlinks on
+    // Windows need admin/developer mode, so unix/macOS cover this mechanism.
     if std::env::consts::OS == "windows" {
         return;
     }
@@ -753,23 +870,24 @@ fn covered_workspace_skip_survives_symlinked_ancestor() {
     let store = store_in(&temp);
     let project = create(
         &store,
-        "目标",
+        "target",
         std::slice::from_ref(&link.join("workspace")),
     );
 
-    // 不存在的嵌套路径经 symlink 祖先书写:covered 判定必须命中已有 root。
+    // A nonexistent nested path spelled through a symlinked ancestor: the
+    // covered check must hit the existing root.
     let covered = link.join("workspace").join("deep");
     let outcome = store
         .move_session_to_project("s1", Some(&project.id), Some(&covered))
         .expect("move with covered workspace");
     assert_eq!(
         outcome.added_root, None,
-        "symlink 形态不得绕过 covered 跳过"
+        "the symlink spelling must not bypass the covered skip"
     );
     assert_eq!(store.get(&project.id).unwrap().roots.len(), 1);
 }
 
-// ── 移除根的成员移出(§4)────────────────────────────────────────────────────
+// ── Member expulsion on root removal (§4) ───────────────────────────────────
 
 #[test]
 fn removed_roots_semantics() {
@@ -777,17 +895,19 @@ fn removed_roots_semantics() {
     assert_eq!(
         super::removed_roots(&old, &[abs("keep")]),
         vec![abs("drop")],
-        "未被新集合覆盖的旧 root 即移除"
+        "an old root not covered by the new set is removed"
     );
-    // 新 root 是旧 root 的祖先:旧 root 下的会话仍被项目覆盖,不算移除。
+    // New root is an ancestor of the old root: sessions under the old root
+    // are still covered by the project, so it does not count as removed.
     let parent = abs("keep").parent().unwrap().to_path_buf();
     assert!(super::removed_roots(&[abs("keep")], &[parent]).is_empty());
-    // 新 root 是旧 root 的后代:旧 root 不再覆盖其下全部会话,算移除。
+    // New root is a descendant of the old root: the old root no longer covers
+    // all sessions under it, so it counts as removed.
     assert_eq!(
         super::removed_roots(&[abs("keep")], &[abs("keep/sub")]),
         vec![abs("keep")]
     );
-    // 全新集合为空 = 全部移除。
+    // An empty new set = everything removed.
     assert_eq!(super::removed_roots(&old, &[]), old);
 }
 
@@ -795,10 +915,11 @@ fn removed_roots_semantics() {
 fn expel_unassigned_sessions_writes_move_out_only_for_entryless() {
     let temp = tempfile::tempdir().expect("tempdir");
     let store = store_in(&temp);
-    let project = create(&store, "目标", &[abs("web")]);
-    let elsewhere = create(&store, "别处", &[abs("other")]);
-    // s-explicit:显式归属本项目;s-elsewhere:显式归属别的项目;
-    // s-out:已显式移出;s-auto:无条目(自动归组成员)。
+    let project = create(&store, "target", &[abs("web")]);
+    let elsewhere = create(&store, "elsewhere", &[abs("other")]);
+    // s-explicit: explicitly assigned to this project; s-elsewhere:
+    // explicitly assigned to another project; s-out: already explicitly moved
+    // out; s-auto: no entry (auto-grouped member).
     store
         .move_session_to_project("s-explicit", Some(&project.id), None)
         .expect("explicit member");
@@ -817,29 +938,42 @@ fn expel_unassigned_sessions_writes_move_out_only_for_entryless() {
             "s-auto".to_string(),
         ])
         .expect("expel");
-    assert_eq!(expelled, 1, "只有无条目者被写显式移出");
+    assert_eq!(
+        expelled, 1,
+        "only the entry-less session gets a move-out written"
+    );
     assert_eq!(store.assignment_of("s-auto"), Some(None));
     assert_eq!(
         store.assignment_of("s-explicit"),
         Some(Some(project.id.clone())),
-        "显式归属本项目不动(移除根不驱逐显式成员)"
+        "explicit assignment to this project untouched (root removal does not expel explicit members)"
     );
     assert_eq!(
         store.assignment_of("s-elsewhere"),
         Some(Some(elsewhere.id.clone()))
     );
-    assert_eq!(store.assignment_of("s-out"), Some(None), "已移出保持");
+    assert_eq!(
+        store.assignment_of("s-out"),
+        Some(None),
+        "already moved out stays"
+    );
 
-    // 幂等:重跑零变更。
-    assert_eq!(store.expel_unassigned_sessions(&["s-auto".to_string()]).unwrap(), 0);
+    // Idempotent: a rerun changes nothing.
+    assert_eq!(
+        store
+            .expel_unassigned_sessions(&["s-auto".to_string()])
+            .unwrap(),
+        0
+    );
 }
 
 #[test]
 fn expelled_assignment_survives_ensure_rematerialization() {
     let temp = tempfile::tempdir().expect("tempdir");
     let store = store_in(&temp);
-    let project = create(&store, "目标", &[abs("web")]);
-    // 移除 root:其下自动成员(s-auto)被写显式移出。
+    let project = create(&store, "target", &[abs("web")]);
+    // Root removal: auto members under it (s-auto) are written as explicit
+    // move-outs.
     let removed = super::removed_roots(&[abs("web")], &[]);
     assert_eq!(removed, vec![abs("web")]);
     store
@@ -849,34 +983,38 @@ fn expelled_assignment_survives_ensure_rematerialization() {
         .update_project(&project.id, None, Some(vec![]))
         .expect("remove root");
 
-    // 之后该文件夹出现新会话 → ensure 重新物化( origin=folder 项目);
-    // 旧会话的移出条目压住 tier-②,重建项目只收新会话。
+    // A new session appears in that folder later → ensure rematerializes
+    // (origin=folder project); the old session's move-out entry suppresses
+    // tier-②, so the recreated project only picks up new sessions.
     let outcomes = ensure(&store, &[abs("web")]);
-    assert!(matches!(&outcomes[0], super::EnsureFolderOutcome::Created { project }
-        if project.origin.as_deref() == Some("folder")));
+    assert!(
+        matches!(&outcomes[0], super::EnsureFolderOutcome::Created { project }
+        if project.origin.as_deref() == Some("folder"))
+    );
     assert_eq!(
         store.assignment_of("s-auto"),
         Some(None),
-        "物化重建不得复活被移除根的旧成员"
+        "rematerialization must not revive old members of the removed root"
     );
 }
 
-// ── last_primary_root(§9.2 项目记忆主文件夹)─────────────────────────────────
+// ── last_primary_root (§9.2 remembered primary folder) ─────────────────────
 
 #[test]
 fn last_primary_root_set_validate_and_persist() {
     let temp = tempfile::tempdir().expect("tempdir");
     {
         let store = store_in(&temp);
-        let project = create(&store, "多根", &[abs("web"), abs("api")]);
+        let project = create(&store, "multi-root", &[abs("web"), abs("api")]);
 
-        // 非 roots 成员拒绝。
+        // Non-members are rejected.
         let error = store
             .set_last_primary_root(&project.id, &abs("other"))
             .expect_err("primary root must be a member");
         assert!(error.to_string().contains("project roots"));
 
-        // 成员接受;重复同值幂等;跨重开存活。
+        // Members accepted; same-value repeats are idempotent; survives
+        // reopen.
         let updated = store
             .set_last_primary_root(&project.id, &abs("api"))
             .expect("set primary root");
@@ -891,7 +1029,7 @@ fn last_primary_root_set_validate_and_persist() {
     assert_eq!(
         project.last_primary_root,
         Some(abs("api")),
-        "旧档缺键读为 None,写入后跨进程存活"
+        "old files missing the key read as None; once written it survives across processes"
     );
 }
 
@@ -899,32 +1037,45 @@ fn last_primary_root_set_validate_and_persist() {
 fn legacy_file_without_last_primary_root_reads_as_none() {
     let temp = tempfile::tempdir().expect("tempdir");
     let store = store_in(&temp);
-    let project = create(&store, "旧档", &[abs("web")]);
-    assert_eq!(project.last_primary_root, None, "新字段默认缺省");
-    // 落盘→重开,skip_serializing_if 下旧档无该键,读回 None。
+    let project = create(&store, "legacy", &[abs("web")]);
+    assert_eq!(
+        project.last_primary_root, None,
+        "new field defaults to absent"
+    );
+    // Persist → reopen; under skip_serializing_if old files lack the key and
+    // read back as None.
     let reopened = store_in(&temp);
     assert_eq!(reopened.list()[0].last_primary_root, None);
 }
 
-// ── 反物化排除列表(§3)与锚定复用(§9.9)─────────────────────────────────────
+// ── Anti-materialization exclusion list (§3) and anchored reuse (§9.9) ──────
 
 #[test]
 fn never_materialize_skips_ensure_and_is_revocable() {
     let temp = tempfile::tempdir().expect("tempdir");
     let store = store_in(&temp);
 
-    // 排除:ensure 跳过(无 outcome,与输入去重同款),不建项目。
+    // Excluded: ensure skips it (no outcome, same as input dedup), no project
+    // is created.
     let listed = store
         .set_never_materialize(&abs("scratch"), true)
         .expect("exclude");
     assert_eq!(listed.len(), 1);
     let outcomes = ensure(&store, &[abs("scratch"), abs("web")]);
-    assert_eq!(outcomes.len(), 1, "被排除的根无 outcome: {outcomes:?}");
-    assert!(matches!(outcomes[0], super::EnsureFolderOutcome::Created { .. }));
+    assert_eq!(
+        outcomes.len(),
+        1,
+        "excluded roots produce no outcome: {outcomes:?}"
+    );
+    assert!(matches!(
+        outcomes[0],
+        super::EnsureFolderOutcome::Created { .. }
+    ));
     assert_eq!(store.list().len(), 1);
     assert_eq!(store.list()[0].name, "web");
 
-    // 幂等:重复排除零变更;撤销后 ensure 照常物化。
+    // Idempotent: repeating the exclusion changes nothing; after revoking,
+    // ensure materializes as usual.
     let again = store
         .set_never_materialize(&abs("scratch"), true)
         .expect("idempotent");
@@ -934,10 +1085,12 @@ fn never_materialize_skips_ensure_and_is_revocable() {
         .expect("revoke");
     assert!(revoked.is_empty());
     let outcomes = ensure(&store, &[abs("scratch")]);
-    assert!(matches!(&outcomes[0], super::EnsureFolderOutcome::Created { project }
-        if project.name == "scratch"));
+    assert!(
+        matches!(&outcomes[0], super::EnsureFolderOutcome::Created { project }
+        if project.name == "scratch")
+    );
 
-    // 相对路径拒绝。
+    // Relative paths rejected.
     assert!(
         store
             .set_never_materialize(Path::new("relative/x"), true)
@@ -953,13 +1106,18 @@ fn never_materialize_list_persists_and_keeps_file_alive() {
         store
             .set_never_materialize(&abs("scratch"), true)
             .expect("exclude");
-        // 无项目无归属:排除列表非空时文件必须留存(空状态删文件的惯例
-        // 不能吞掉用户显式表达)。
+        // No projects, no assignments: the file must survive while the
+        // exclusion list is non-empty (the empty-state-removes-file
+        // convention must not swallow the user's explicit statement).
         assert!(temp.path().join("projects.json").exists());
     }
     let reopened = store_in(&temp);
-    assert_eq!(reopened.never_materialize_roots().len(), 1, "跨进程存活");
-    // 撤销到空 + 无项目无归属 → 文件删除。
+    assert_eq!(
+        reopened.never_materialize_roots().len(),
+        1,
+        "survives across processes"
+    );
+    // Revoke to empty + no projects/assignments → file removed.
     reopened
         .set_never_materialize(&abs("scratch"), false)
         .expect("revoke");
@@ -971,51 +1129,64 @@ fn ensure_anchor_reuse_only_for_folder_anchored_projects() {
     let temp = tempfile::tempdir().expect("tempdir");
     let store = store_in(&temp);
 
-    // 物化项目以 F 为锚 → 复用(Covered),幂等。
+    // A materialized project anchored at F → reuse (Covered), idempotent.
     ensure(&store, &[abs("web")]);
     let anchored = store.list()[0].clone();
     let replay = ensure(&store, &[abs("web")]);
-    assert!(matches!(&replay[0], super::EnsureFolderOutcome::Covered { project_id }
-        if *project_id == anchored.id));
+    assert!(
+        matches!(&replay[0], super::EnsureFolderOutcome::Covered { project_id }
+        if *project_id == anchored.id)
+    );
     assert_eq!(store.list().len(), 1);
 
-    // 手工项目引用 F(哪怕 F 是它的唯一/主根)→ 不算锚定覆盖,浏览通道
-    // 一律创建同名物化项目(§9.9 用户裁定),重叠合法并存。
-    create(&store, "手工", &[abs("docs")]);
+    // A manual project referencing F (even as its only/primary root) → not
+    // anchored coverage; the browse channel always creates a same-named
+    // materialized project (§9.9 user decision), overlap coexists legally.
+    create(&store, "manual", &[abs("docs")]);
     let outcomes = ensure(&store, &[abs("docs")]);
-    assert!(matches!(&outcomes[0], super::EnsureFolderOutcome::Created { project }
-        if project.name == "docs" && project.origin.as_deref() == Some("folder")));
+    assert!(
+        matches!(&outcomes[0], super::EnsureFolderOutcome::Created { project }
+        if project.name == "docs" && project.origin.as_deref() == Some("folder"))
+    );
     assert_eq!(store.list().len(), 3);
 
-    // 物化项目加过别的根后,其 roots 精确包含的两个路径都锚定 → 都复用
-    // ("以 F 为锚的物化项目"按 roots 成员资格判定)。
+    // After a materialized project gains another root, both paths its roots
+    // contain exactly are anchors → both are reused ("materialized project
+    // anchored at F" is judged by roots membership).
     store
         .update_project(&anchored.id, None, Some(vec![abs("web"), abs("api")]))
         .expect("add root");
     let replay = ensure(&store, &[abs("web")]);
-    assert!(matches!(&replay[0], super::EnsureFolderOutcome::Covered { .. }));
+    assert!(matches!(
+        &replay[0],
+        super::EnsureFolderOutcome::Covered { .. }
+    ));
     let replay = ensure(&store, &[abs("api")]);
-    assert!(matches!(&replay[0], super::EnsureFolderOutcome::Covered { .. }));
+    assert!(matches!(
+        &replay[0],
+        super::EnsureFolderOutcome::Covered { .. }
+    ));
 }
 
-// ── 对齐到项目(§6/§9.7):归属解析与钥匙串形态 ───────────────────────────────
+// ── Align to project (§6/§9.7): assignment resolution and keychain shape ────
 
 #[test]
 fn resolve_session_project_explicit_then_position_tiebreak() {
     let temp = tempfile::tempdir().expect("tempdir");
     let store = store_in(&temp);
-    // 两个项目引用同一目录(§9.9 重叠合法):无归属条目时 position 最小者收编。
-    let first = create(&store, "靠前", &[abs("web")]);
-    let second = create(&store, "靠后", &[abs("web")]);
+    // Two projects reference the same directory (§9.9 overlap is legal): with
+    // no assignment entry, the smallest position adopts.
+    let first = create(&store, "earlier", &[abs("web")]);
+    let second = create(&store, "later", &[abs("web")]);
     assert!(first.position < second.position);
     assert_eq!(
         store
             .resolve_session_project("s1", &abs("web"))
             .map(|p| p.id),
         Some(first.id.clone()),
-        "tier-② 多命中 position 最小者"
+        "tier-② multi-hit: smallest position"
     );
-    // 显式归属优先(哪怕归属靠后的项目)。
+    // Explicit assignment wins (even to the later project).
     store
         .move_session_to_project("s1", Some(&second.id), None)
         .expect("explicit assign");
@@ -1025,44 +1196,204 @@ fn resolve_session_project_explicit_then_position_tiebreak() {
             .map(|p| p.id),
         Some(second.id.clone())
     );
-    // 显式移出阻止 tier-②。
+    // Explicit move-out blocks tier-②.
     store
         .move_session_to_project("s1", None, None)
         .expect("explicit move-out");
     assert!(store.resolve_session_project("s1", &abs("web")).is_none());
-    // 陈旧归属 id(项目已删)回退 tier-②。
+    // Stale assignment id (project deleted): delete rewrote the member as an
+    // explicit move-out → None.
     store
         .move_session_to_project("s2", Some(&first.id), None)
         .expect("assign");
     store.delete_project(&first.id, &[]).expect("delete");
-    // delete 把成员写成显式移出:s2 是显式移出条目 → None。
     assert!(store.resolve_session_project("s2", &abs("web")).is_none());
-    // 无归属且 path 不落任何 root → None;嵌套命中(折叠键前缀)。
+    // No assignment and path under no root → None; nested paths hit the root
+    // prefix (folded key).
     assert!(store.resolve_session_project("s3", &abs("other")).is_none());
     assert_eq!(
         store
             .resolve_session_project("s3", &abs("web").join("sub/dir"))
             .map(|p| p.id),
         Some(second.id.clone()),
-        "嵌套路径命中 root 前缀"
+        "nested path hits the root prefix"
+    );
+}
+
+/// Golden-vector cross-lock for the frontend's three-tier group resolution
+/// (① explicit assignment → ② root hit decided by position → ③ ungrouped):
+/// the same-semantic resolver in pinvou3-app/src reconciles against this
+/// table case by case; a change on either side that diverges turns this test
+/// red, preventing double-implementation drift (review #484 minor).
+#[test]
+fn resolve_session_project_golden_vectors() {
+    let temp = tempfile::tempdir().expect("tempdir");
+    let store = store_in(&temp);
+    // P0 < P1 < P2 (increasing positions); P0 and P1 cover the same directory
+    // (§9.9 overlap is legal).
+    let p0 = create(&store, "P0", &[abs("a")]);
+    let p1 = create(&store, "P1", &[abs("a"), abs("b")]);
+    let p2 = create(&store, "P2", &[abs("c")]);
+    assert!(p0.position < p1.position && p1.position < p2.position);
+
+    let resolve = |session_id: &str, workspace: &Path| {
+        store
+            .resolve_session_project(session_id, workspace)
+            .map(|p| p.id)
+    };
+
+    // Tier-② vectors without assignment entries:
+    assert_eq!(
+        resolve("g1", &abs("a")),
+        Some(p0.id.clone()),
+        "multi-hit: smallest position"
+    );
+    assert_eq!(
+        resolve("g2", &abs("a").join("deep/nested")),
+        Some(p0.id.clone()),
+        "nested path hits the root prefix"
+    );
+    assert_eq!(resolve("g3", &abs("b")), Some(p1.id.clone()), "single hit");
+    assert_eq!(resolve("g4", &abs("c")), Some(p2.id.clone()));
+    assert_eq!(resolve("g5", &abs("z")), None, "no hit → ungrouped");
+
+    // Tier-① explicit assignment wins, regardless of whether the workspace
+    // hits that project's roots.
+    store
+        .move_session_to_project("g6", Some(&p2.id), None)
+        .expect("assign");
+    assert_eq!(
+        resolve("g6", &abs("a")),
+        Some(p2.id.clone()),
+        "explicit assignment beats tier-②'s position tiebreak"
+    );
+    store
+        .move_session_to_project("g7", Some(&p1.id), None)
+        .expect("assign");
+    assert_eq!(
+        resolve("g7", &abs("z")),
+        Some(p1.id.clone()),
+        "explicit assignment does not depend on a workspace hit"
+    );
+
+    // An explicit move-out (None entry) blocks all auto-grouping, even when
+    // the workspace hits.
+    store
+        .move_session_to_project("g8", None, None)
+        .expect("move out");
+    assert_eq!(
+        resolve("g8", &abs("a")),
+        None,
+        "explicit move-out → ungrouped"
     );
 }
 
 #[test]
+fn update_roots_demotes_stale_last_primary_root() {
+    let temp = tempfile::tempdir().expect("tempdir");
+    let store = store_in(&temp);
+    let project = create(&store, "multi-root", &[abs("web"), abs("api")]);
+    store
+        .set_last_primary_root(&project.id, &abs("api"))
+        .expect("set primary");
+
+    // Removing the root the primary folder lives on: the stale memory demotes
+    // to None and stops serving as the project channel's cwd.
+    let updated = store
+        .update_project(&project.id, None, Some(vec![abs("web")]))
+        .expect("replace roots");
+    assert_eq!(updated.last_primary_root, None, "stale primary demoted");
+
+    // A replacement that keeps the root leaves the memory alone.
+    store
+        .set_last_primary_root(&project.id, &abs("web"))
+        .expect("set primary again");
+    let kept = store
+        .update_project(&project.id, None, Some(vec![abs("web"), abs("api")]))
+        .expect("replace roots keeping primary");
+    assert_eq!(kept.last_primary_root, Some(abs("web")));
+
+    // Same demotion on the update_project_and_expel path.
+    let expelled = store
+        .update_project_and_expel(&project.id, None, vec![abs("api")], &[])
+        .expect("replace and expel");
+    assert_eq!(expelled.last_primary_root, None);
+}
+
+#[test]
+fn update_project_and_expel_is_one_transaction() {
+    let temp = tempfile::tempdir().expect("tempdir");
+    let store = store_in(&temp);
+    let project = create(&store, "old-name", &[abs("web"), abs("api")]);
+    let elsewhere = create(&store, "elsewhere", &[abs("other")]);
+    // Entries that already exist (explicitly assigned to another project /
+    // already moved out) are untouched per tier-① semantics.
+    store
+        .move_session_to_project("s-elsewhere", Some(&elsewhere.id), None)
+        .expect("assign elsewhere");
+    store
+        .move_session_to_project("s-out", None, None)
+        .expect("move out");
+
+    let updated = store
+        .update_project_and_expel(
+            &project.id,
+            Some("new-name".to_string()),
+            vec![abs("api")],
+            &[
+                "s-auto".to_string(),
+                "s-elsewhere".to_string(),
+                "s-out".to_string(),
+            ],
+        )
+        .expect("atomic replace + expel");
+    assert_eq!(updated.name, "new-name");
+    assert_eq!(updated.roots, vec![abs("api")]);
+    assert_eq!(
+        store.assignment_of("s-auto"),
+        Some(None),
+        "entry-less sessions get an explicit move-out"
+    );
+    assert_eq!(
+        store.assignment_of("s-elsewhere"),
+        Some(Some(elsewhere.id.clone())),
+        "explicit assignment to another project untouched"
+    );
+    assert_eq!(
+        store.assignment_of("s-out"),
+        Some(None),
+        "already moved out stays"
+    );
+
+    // Unknown project: neither roots nor assignments are written.
+    let error = store
+        .update_project_and_expel("prj-nope", None, vec![abs("x")], &["s-x".to_string()])
+        .expect_err("unknown project rejected");
+    assert!(error.to_string().contains("project not found"));
+    assert_eq!(store.assignment_of("s-x"), None);
+
+    // Idempotent retry: a replay whose removed set is already empty does not
+    // rewrite existing entries.
+    let replay = store
+        .update_project_and_expel(&project.id, None, vec![abs("api")], &["s-auto".to_string()])
+        .expect("idempotent replay");
+    assert_eq!(replay.roots, vec![abs("api")]);
+    assert_eq!(store.assignment_of("s-auto"), Some(None));
+}
+
+#[test]
 fn keychain_for_workspace_keeps_cwd_first_and_strips_it_from_project_roots() {
-    // 主根槽位 = 会话 cwd(不换门牌);项目 roots 去掉 cwd 后保序。
-    let chain = super::ProjectStore::keychain_for_workspace(
-        &abs("b"),
-        &[abs("a"), abs("b"), abs("c")],
-    );
+    // Primary slot = the session's cwd (no door change); project roots minus
+    // cwd, order preserved.
+    let chain =
+        super::ProjectStore::keychain_for_workspace(&abs("b"), &[abs("a"), abs("b"), abs("c")]);
     assert_eq!(chain, vec![abs("b"), abs("a"), abs("c")]);
-    // cwd 不在项目 roots 中(如跨目录会话对齐)→ cwd 居首,roots 全量跟随。
-    let chain = super::ProjectStore::keychain_for_workspace(
-        &abs("elsewhere"),
-        &[abs("a"), abs("b")],
-    );
+    // cwd not among the project roots (e.g. aligning a cross-directory
+    // session) → cwd first, roots follow in full.
+    let chain =
+        super::ProjectStore::keychain_for_workspace(&abs("elsewhere"), &[abs("a"), abs("b")]);
     assert_eq!(chain, vec![abs("elsewhere"), abs("a"), abs("b")]);
-    // 空项目(纯标签)→ 仅 cwd。
+    // Empty project (pure label) → cwd only.
     let chain = super::ProjectStore::keychain_for_workspace(&abs("x"), &[]);
     assert_eq!(chain, vec![abs("x")]);
 }

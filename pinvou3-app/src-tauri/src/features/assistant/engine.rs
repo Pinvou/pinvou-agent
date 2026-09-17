@@ -1739,7 +1739,7 @@ impl AppEngine {
         reservation.ensure_active()?;
         let actual_user_content = match &op {
             Op::SendMessage { content, .. } => content.clone(),
-            Op::EditLastTurn { new_message } => new_message.clone(),
+            Op::EditLastTurn { new_message, .. } => new_message.clone(),
             _ => anyhow::bail!("reserved turn requires a user-message operation"),
         };
         reservation.prepare_actual_user_content(actual_user_content)?;
@@ -1814,7 +1814,13 @@ impl AppEngine {
     /// 上游 [`Op::EditLastTurn`] 行为：砍掉 session 末尾最近的 user 消息及之后
     /// 所有消息，然后用 `new_message` 当成新 user 消息重新发送。
     pub async fn edit_last_turn(&self, new_message: String) -> Result<()> {
-        self.send_turn_op(Op::EditLastTurn { new_message }).await
+        self.send_turn_op(Op::EditLastTurn {
+            new_message,
+            // No host correlation token: the replayed turn is tracked by the
+            // in-process turn lifecycle, not by a submission echo.
+            submission_id: None,
+        })
+        .await
     }
 
     pub(crate) async fn edit_last_turn_reserved(
@@ -1822,8 +1828,14 @@ impl AppEngine {
         new_message: String,
         reservation: TurnReservation,
     ) -> Result<()> {
-        self.send_reserved_turn_op(Op::EditLastTurn { new_message }, reservation)
-            .await
+        self.send_reserved_turn_op(
+            Op::EditLastTurn {
+                new_message,
+                submission_id: None,
+            },
+            reservation,
+        )
+        .await
     }
 
     /// 手动触发上下文压缩（用户点 token 进度条 → 立即压缩）。
@@ -1883,8 +1895,10 @@ impl AppEngine {
                 system_prompt_override: false,
                 model: self.bridge.model(),
                 workspace: self.workspace.clone(),
-                // 恢复路径钥匙串回填(§6):创建时锁定的全量根,会话重启不丢;
-                // 无快照(旧会话/临时会话)为空 = 单根,底座按 cwd 归一。
+                // Keychain backfill on the resume path (§6): the full root
+                // set locked at creation survives session restarts; sessions
+                // without a snapshot (old/temporary) are empty = single root,
+                // normalized by the foundation per cwd.
                 workspace_roots: self.bridge.session_workspace_roots(&session_id),
                 mode: AppMode::Agent,
             })
@@ -3106,6 +3120,7 @@ mod scheduled_turn_tests {
         let config = Config::default();
         Op::SendMessage {
             content: "scheduled prompt".to_string(),
+            submission_id: None,
             mode: AppMode::Agent,
             route: Box::new(
                 deepseek_tui::route_runtime::resolve_runtime_route(

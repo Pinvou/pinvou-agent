@@ -330,7 +330,8 @@ fn acp_recovery_record(
         acp_config_values: acp_config_values_from_state(state),
         workspace_kind,
         workspace_path: (workspace_kind == CodexWorkspaceKind::Project).then_some(workspace_path),
-        // ACP 恢复路径没有钥匙串快照来源:空 = 单根语义,引擎按 cwd 归一。
+        // The ACP recovery path has no keychain-snapshot source: empty =
+        // single-root semantics, the engine normalizes by cwd.
         workspace_roots: Vec::new(),
         mode: SessionMode::Plain,
     })
@@ -1141,9 +1142,11 @@ impl AcpPool {
         &self.agents
     }
 
-    /// 该 ACP 会话当前是否有进行中的 prompt turn。目录重绑定等改写工作区
-    /// 绑定的操作以此拒绝运行中的会话（与 EnginePool::is_turn_active 同语义,
-    /// 供命令层统一栅栏）。无运行时会话(未启动)返回 false。
+    /// Whether this ACP session currently has a prompt turn in flight.
+    /// Operations that rewrite workspace bindings (e.g. directory rebinding)
+    /// use this to reject running sessions (same semantics as
+    /// EnginePool::is_turn_active, for the command layer's unified fence).
+    /// Sessions without a runtime (not started) return false.
     pub async fn is_turn_active(&self, session_id: &str) -> bool {
         self.sessions
             .lock()
@@ -3268,8 +3271,13 @@ impl AcpPool {
             PROBE_SEQ.fetch_add(1, Ordering::Relaxed),
         );
         // 临时工作区：spawn 时自动创建独立目录，不污染真实项目。
-        self.agents
-            .set_acp_workspace(&probe_id, backend, CodexWorkspaceKind::Temporary, None, Vec::new())?;
+        self.agents.set_acp_workspace(
+            &probe_id,
+            backend,
+            CodexWorkspaceKind::Temporary,
+            None,
+            Vec::new(),
+        )?;
         let result = self.session_info(&probe_id).await;
         // 无论成败都必须收口，不得留下运行中的探针进程或 store 残留记录；
         // 清理失败只告警，主结果（上报或原始错误）优先透传。
@@ -4711,7 +4719,12 @@ mod tests {
         // 写入一个已绑定的原生代码会话（索引 + sidecar）。
         let writer = SessionAgentStore::for_test(path.clone());
         writer
-            .bind_code_native_session("code-1", CodexWorkspaceKind::Project, Some(root.clone()), Vec::new())
+            .bind_code_native_session(
+                "code-1",
+                CodexWorkspaceKind::Project,
+                Some(root.clone()),
+                Vec::new(),
+            )
             .unwrap();
         // 模拟辅助索引丢失：空内存索引 + 磁盘 sidecar 仍在 → 真实恢复一次。
         let agents = SessionAgentStore::for_test(path.clone());

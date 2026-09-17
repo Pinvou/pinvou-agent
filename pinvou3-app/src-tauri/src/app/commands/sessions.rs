@@ -10,12 +10,16 @@ pub struct SessionListItem {
     pub pinned_at: Option<String>,
     #[serde(skip_serializing_if = "Vec::is_empty")]
     pub title_attachment_names: Vec<String>,
-    /// 普通会话的用户工作目录绑定（#445；None = 未绑定）。项目层据此把
-    /// 绑定工作会话纳入项目分组（分组跟随绑定,与安全姿态同一条信号）。
+    /// A plain session's user working-directory binding (#445; None =
+    /// unbound). The project layer uses it to include bound work sessions in
+    /// project grouping (grouping follows binding, the same signal as the
+    /// safety posture).
     #[serde(skip_serializing_if = "Option::is_none")]
     pub workspace_binding: Option<String>,
-    /// 创建时锁定的钥匙串快照(§6,全量可访问根,含主根);空 = 单根语义。
-    /// 选择器/管理面板据此展示"该对话可访问的文件夹集"。
+    /// Keychain snapshot locked at creation (§6, the full set of accessible
+    /// roots including the primary root); empty = single-root semantics. The
+    /// picker/management panel uses it to show "the folder set this
+    /// conversation can access".
     #[serde(skip_serializing_if = "Vec::is_empty")]
     pub workspace_roots: Vec<String>,
 }
@@ -148,13 +152,16 @@ pub async fn list_sessions(
         .into_iter()
         .map(|metadata| {
             let title_attachment_names = session_title_attachment_names(&store, &metadata);
-            // 读缓存 miss 时回读 sidecar;列表 ≤50 条。绑定会话回填后常驻,
-            // 未绑定会话不做负缓存——每次刷新仍有 ≤2 次 syscall × 50 的量级
-            // (成本可接受,评审 #464 nit:注释不得夸大为"一次 N 读后常驻")。
+            // The sidecar is re-read on a read-cache miss; the list is ≤50
+            // entries. Bound sessions stay resident after backfill; unbound
+            // sessions get no negative caching — each refresh still costs
+            // ≤2 syscalls × 50 (acceptable; review #464 nit: the comment
+            // must not overstate this as "resident after one N reads").
             let workspace_binding = store
                 .session_workspace_binding(&metadata.id)
                 .map(|path| path.display().to_string());
-            // 钥匙串快照仅在绑定时存在;冷读 sidecar(列表量级同 binding)。
+            // The keychain snapshot only exists when bound; the sidecar is
+            // read cold (same list magnitude as binding).
             let workspace_roots = if workspace_binding.is_some() {
                 store
                     .session_workspace_roots(&metadata.id)
@@ -347,8 +354,9 @@ pub async fn list_archived_sessions(
 
 /// 新建空 session 并设为 active。返回创建的 SessionMetadata。
 /// 引擎层的 session 状态切换由 chat() 下次发消息时自然处理（暂不发 SyncSession）。
-/// `workspace` 为 Some 时 metadata.workspace 用该目录（展示用），None 保持
-/// 现状（pool.bridge.workspace，home 目录）。
+/// When `workspace` is Some, metadata.workspace uses that directory (for
+/// display); None keeps the status quo (pool.bridge.workspace, the home
+/// directory).
 pub(super) fn create_session_record(
     set_active: bool,
     store: &SessionStore,
@@ -366,6 +374,12 @@ pub(super) fn create_session_record(
     Ok(session.metadata)
 }
 
+/// Create a new plain chat session. The parameters are named parameters of
+/// the Tauri command ABI (invoke maps them by name); this repository's
+/// commands always use flat signatures rather than params-structs, so the
+/// positional form is kept; the 4 Options are all optional-patch semantics
+/// (None = default/unchanged), same convention as
+/// `create_codex_acp_session`.
 #[tauri::command]
 pub async fn create_session(
     set_active: Option<bool>,
@@ -382,17 +396,29 @@ pub async fn create_session(
         .map(crate::features::sessions::validate_user_workspace_path)
         .transpose()
         .map_err(|e| format!("create_session: invalid workspace_path: {e:#}"))?;
-    // 钥匙串快照(§6):绝对路径硬拒;不存在的目录软警告保留(参照 rebind
-    // 的宽松语义,附加根可能稍后重建)。空/未传 = 单根(仅 cwd)。
-    let roots = crate::features::sessions::validate_workspace_roots(
-        workspace_roots.unwrap_or_default(),
-    )
-    .map_err(|e| format!("create_session: invalid workspace_roots: {e:#}"))?;
+    // Keychain snapshot (§6): absolute paths are hard-rejected; nonexistent
+    // directories are kept with a soft warning (following rebind's lenient
+    // semantics, an additional root may be recreated later). Empty/omitted =
+    // single root (cwd only).
+    let roots =
+        crate::features::sessions::validate_workspace_roots(workspace_roots.unwrap_or_default())
+            .map_err(|e| format!("create_session: invalid workspace_roots: {e:#}"))?;
+    // Project channel (§9.3): a bogus project_id is a client error and
+    // fail-fasts before any persistence (review #484); the memory write-back
+    // itself still only logs membership/persist failures without blocking
+    // creation (see the write-back below).
+    if let Some(project_id) = project_id.as_deref() {
+        if projects.get(project_id).is_none() {
+            return Err(format!("create_session: project not found: {project_id}"));
+        }
+    }
     let metadata =
         create_session_record(set_active.unwrap_or(true), &store, &pool, workspace.clone())?;
     if let Some(workspace) = workspace.clone() {
-        // 绑定落盘失败不能留下「看似创建成功、重启后 execution 根回退私有目录」
-        // 的会话:回滚删除刚建的空 session(参照 create_new 的 rollback 风格)。
+        // A binding persist failure must not leave a session that "looks
+        // created but falls back to the private directory as its execution
+        // root on restart": roll back by deleting the just-created empty
+        // session (in the style of create_new's rollback).
         if let Err(error) =
             store.bind_session_workspace_with_roots(&metadata.id, workspace.clone(), roots)
         {
@@ -405,25 +431,33 @@ pub async fn create_session(
                 ),
             });
         }
-        // 项目通道(§9.3):创建即更新项目记忆主文件夹。后端同命令内写比
-        // 前端补一发 update_project 更原子(免二次 RPC/漏写);记忆写失败
-        // 不影响会话创建本身(下次创建重试),只记日志。
-        if let Some(project_id) = project_id {
-            if let Err(error) = projects.set_last_primary_root(&project_id, &workspace) {
+        // Project channel (§9.3): update the project's remembered primary
+        // folder at creation time. Writing it in the same backend command is
+        // more atomic than the frontend sending a follow-up update_project
+        // (no second RPC/missed write); a bogus project_id already fail-fasted
+        // at the entry, so membership/persist failures here do not affect
+        // session creation itself (retried on the next creation) and are only
+        // logged.
+        if let Some(project_id) = project_id.as_deref() {
+            if let Err(error) = projects.set_last_primary_root(project_id, &workspace) {
                 eprintln!(
-                    "[sessions] create_session: record last_primary_root failed: {error:#}"
+                    "[sessions] create_session: record last_primary_root failed (creation unaffected): {error:#}"
                 );
             }
         }
     }
     emit_session_event(&app, "session:list_changed", &metadata.id, "created");
-    // 多 session 并发:不预热 engine(lazy)。新建的空 session 没有历史,首条 chat
-    // 时 EnginePool.get_or_spawn 会为它 spawn 一个带专属 workspace 的 engine。
+    // Multi-session concurrency: no engine pre-warming (lazy). A newly
+    // created empty session has no history; on the first chat,
+    // EnginePool.get_or_spawn spawns an engine with its dedicated workspace
+    // for it.
     Ok(metadata)
 }
 
-/// 查询普通 chat 会话的用户工作目录绑定（无绑定 → None）。前端据此对绑定会话
-/// 套用 code lane 安全姿态（Plan 首启 / YOLO 一次性确认）并展示绑定目录指示。
+/// Query a plain chat session's user working-directory binding (None when
+/// unbound). The frontend uses this to apply the code lane safety posture to
+/// bound sessions (Plan first-run / one-time YOLO confirmation) and to show
+/// the bound-directory indicator.
 #[tauri::command]
 pub async fn get_session_workspace_binding(
     session_id: String,

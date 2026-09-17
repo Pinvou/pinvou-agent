@@ -56,45 +56,13 @@ const JOURNAL_REMOVE_RETRY_DELAY: Duration = Duration::from_millis(120);
 static FAIL_NEXT_INSTALLED_WRITE: std::sync::atomic::AtomicBool =
     std::sync::atomic::AtomicBool::new(false);
 
-/// 「下一次 installed.json 写失败」注入的复位守卫：作用域结束（含 panic
-/// unwind 或安装路径提前失败、未消费注入）时自动清零，防止标志泄漏到后续
-/// 测试（曾在 install 早于 save_installed 失败时泄漏，击穿无关用例）。
-#[cfg(test)]
-pub(crate) struct InstalledWriteFailureGuard;
-
-#[cfg(test)]
-impl Drop for InstalledWriteFailureGuard {
-    fn drop(&mut self) {
-        FAIL_NEXT_INSTALLED_WRITE.store(false, std::sync::atomic::Ordering::SeqCst);
-    }
-}
-
-#[cfg(test)]
-pub(crate) fn fail_next_installed_write_for_test() -> InstalledWriteFailureGuard {
-    FAIL_NEXT_INSTALLED_WRITE.store(true, std::sync::atomic::Ordering::SeqCst);
-    InstalledWriteFailureGuard
-}
-
 #[cfg(test)]
 static FAIL_NEXT_JOURNAL_REMOVAL: std::sync::atomic::AtomicBool =
     std::sync::atomic::AtomicBool::new(false);
 
-/// 与 installed 写失败注入同款的复位守卫:调用点设置标志后、begin(..) 到达
-/// 前失败(或 panic)时自动清零,不再泄漏到无关用例(评审 #445 P2)。
 #[cfg(test)]
-pub(crate) struct JournalRemovalFailureGuard;
-
-#[cfg(test)]
-impl Drop for JournalRemovalFailureGuard {
-    fn drop(&mut self) {
-        FAIL_NEXT_JOURNAL_REMOVAL.store(false, std::sync::atomic::Ordering::SeqCst);
-    }
-}
-
-#[cfg(test)]
-pub(crate) fn fail_next_journal_removal_for_test() -> JournalRemovalFailureGuard {
+pub(crate) fn fail_next_journal_removal_for_test() {
     FAIL_NEXT_JOURNAL_REMOVAL.store(true, std::sync::atomic::Ordering::SeqCst);
-    JournalRemovalFailureGuard
 }
 
 #[cfg(test)]
@@ -2137,7 +2105,7 @@ mod tests {
                 }"#,
             );
 
-            let _installed_write_guard = fail_next_installed_write_for_test();
+            FAIL_NEXT_INSTALLED_WRITE.store(true, std::sync::atomic::Ordering::SeqCst);
             let manager = MarketplaceManager::with_store(MemoryCredentialStore::default());
             let error = manager
                 .install("half-install", &std::collections::HashMap::new())
@@ -2191,7 +2159,7 @@ mod tests {
             )
             .unwrap();
 
-            let _installed_write_guard = fail_next_installed_write_for_test();
+            FAIL_NEXT_INSTALLED_WRITE.store(true, std::sync::atomic::Ordering::SeqCst);
             let manager = MarketplaceManager::with_store(MemoryCredentialStore::default());
             assert!(
                 manager
@@ -2457,7 +2425,7 @@ mod tests {
     #[test]
     fn transaction_commit_retries_transient_journal_removal_failure() {
         with_temp_home(|| {
-            let _journal_removal_guard = fail_next_journal_removal_for_test();
+            fail_next_journal_removal_for_test();
             let installed_file = paths::pinvou3_home()
                 .join("marketplace")
                 .join("installed.json");
@@ -2774,7 +2742,7 @@ mod tests {
             )
             .unwrap();
             let installed_before = manager_installed_bytes();
-            let _installed_write_guard = fail_next_installed_write_for_test();
+            FAIL_NEXT_INSTALLED_WRITE.store(true, std::sync::atomic::Ordering::SeqCst);
 
             let errors = manager
                 .repair_installed_python_tools_with_python(&python)
@@ -3444,8 +3412,10 @@ mod tests {
         });
     }
 
-    /// 旧版双文件时代升级（legacy 文件存在）→ 旧禁用列表迁移进统一文件，
-    /// plain 有效状态保持旧 AllowAll 语义（main 线 plain 默认全开）。
+    /// Upgrade from the legacy dual-file era (legacy file present) → the old
+    /// disabled list migrates into the unified file, and plain's effective
+    /// state keeps the old AllowAll semantics (plain defaults to all-allowed
+    /// on the main line).
     #[test]
     fn migration_from_legacy_files_preserves_disabled_state() {
         with_temp_home(|| {

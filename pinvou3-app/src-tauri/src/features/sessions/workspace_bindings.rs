@@ -1,26 +1,39 @@
-//! 普通 chat 会话的用户工作目录绑定 sidecar（per-session，随会话目录存续）。
+//! User working-directory binding sidecar for plain chat sessions
+//! (per-session, lives and dies with the session directory).
 //!
-//! 普通（assistant/engine）会话创建时，前端可让用户选择一个工作目录；绑定后
-//! [`SessionStore::session_roots`] 把该会话的 execution 根解析到绑定目录
-//! （engine cwd），账本根仍为会话私有目录——与原生代码会话的项目目录绑定共享
-//! `session_roots_for` 的双根语义。app 组合根注入 bridge/SessionStore 的
-//! `execution_root_resolver` 闭包在原生代码会话未命中时回退查这里，故 bridge
-//! 侧（提示词环境段、AGENTS.md 注入、连接器 scope、审计根）对两类绑定会话
-//! 行为一致——绑定目录同为 prompt-injection 面，安全姿态跟绑定不跟模式。
+//! When a plain (assistant/engine) session is created, the frontend may let
+//! the user pick a working directory; once bound,
+//! [`SessionStore::session_roots`] resolves the session's execution root
+//! (engine cwd) to the bound directory while the ledger root stays the
+//! session-private directory — sharing `session_roots_for`'s dual-root
+//! semantics with native code sessions' project-directory binding. The
+//! `execution_root_resolver` closure injected into bridge/SessionStore at the
+//! app composition root falls back to this store when a native code session
+//! misses, so the bridge side (prompt environment section, AGENTS.md
+//! injection, connector scope, audit root) behaves identically for both
+//! binding kinds — a bound directory is equally a prompt-injection surface,
+//! and the safety posture follows the binding, not the mode.
 //!
-//! 存储形态（绑定存储收敛）：绑定记录是会话私有目录内的 per-session sidecar
-//! `<sessions>/<id>/workspace-binding.json`，与原生代码会话的
-//! `code-session.json` 同一机制——绑定随会话目录存续，删目录即随之消失，
-//! 不再有全局表的 boot 期 ghost 清理。内存 `session_workspaces` 退化为读
-//! 缓存：bind 时写入、读 miss 时从 sidecar 回填（跨进程新绑定同样可见）、
-//! 删除/保留策略清理时清除。
+//! Storage shape (binding-store convergence): the binding record is a
+//! per-session sidecar `<sessions>/<id>/workspace-binding.json` inside the
+//! session-private directory — the same mechanism as native code sessions'
+//! `code-session.json`. The binding lives and dies with the session
+//! directory; deleting the directory removes it, and there is no more
+//! boot-time ghost cleanup of a global table. The in-memory
+//! `session_workspaces` degrades to a read cache: written on bind, refilled
+//! from the sidecar on a read miss (bindings made by another process are
+//! equally visible), and cleared on delete/retention cleanup.
 //!
-//! 存量全局表 `_session_workspaces.json` 是本 PR 开发期的中间格式，从未随
-//! `main` 发布（评审 #445 P2）；boot 期
-//! [`SessionStore::migrate_legacy_session_workspaces`] 只为收敛中间版本
-//! dev build 的 home：活会话条目逐条写成 sidecar 后删除旧文件；写失败的
-//! 条目留在旧文件原样不动（本次运行内由内存表接管解析），下次 boot 重试，
-//! 不阻断启动。中间版本存量迁完后该迁移即成恒 no-op（文件缺失直接返回）。
+//! The legacy global table `_session_workspaces.json` was an intermediate
+//! format from this PR's development and never shipped with `main`
+//! (review #445 P2); the boot-time
+//! [`SessionStore::migrate_legacy_session_workspaces`] only converges homes
+//! of intermediate dev builds: live-session entries are written out as
+//! sidecars one by one, then the old file is deleted; entries that fail to
+//! write stay in the old file untouched (resolved by the in-memory table for
+//! this run) and are retried on the next boot without blocking startup. Once
+//! intermediate-version stock is fully migrated, the migration becomes a
+//! permanent no-op (a missing file returns immediately).
 
 use std::collections::HashMap;
 use std::io::ErrorKind;
@@ -29,18 +42,22 @@ use std::path::{Path, PathBuf};
 use anyhow::{Context, Result};
 use serde::{Deserialize, Serialize};
 
-/// rebind_workspace_bindings 的结果:已平移 + 逐条目失败隔离(评审 #464
-/// MAJOR 4:非法 id 或单条写失败不再中断整轮,进失败名单由命令层并入报告)。
+/// Outcome of rebind_workspace_bindings: translated + per-entry failure
+/// isolation (review #464 MAJOR 4: an invalid id or a single failed write no
+/// longer aborts the whole round; failures go into the failed list and the
+/// command layer folds them into the report).
 #[derive(Debug, Default)]
 pub struct RebindBindingsOutcome {
     pub rebound: Vec<(String, PathBuf)>,
     pub failed_session_ids: Vec<String>,
 }
 
-/// 折叠身份键下的「等于或嵌套于」前缀判定:Windows 折叠分隔符与大小写,
-/// 与 store 的 key_is_same_or_nested 同约定;空 from 匹配一切(本文件两处
-/// 候选扫描共用——评审 #464 MINOR 8:同一闭包曾字节级重复且语义已与
-/// 项目层漂移)。
+/// "Equal to or nested under" prefix check under folded identity keys:
+/// Windows folds separators and case, same convention as the store's
+/// key_is_same_or_nested; an empty from matches everything (shared by the two
+/// candidate scans in this file — review #464 MINOR 8: the same closure used
+/// to be byte-duplicated and had already drifted from the project layer's
+/// semantics).
 fn folded_covers(from: &Path, path: &Path) -> bool {
     let from_key = crate::platform::os::filesystem_path_identity_key(&from.to_string_lossy());
     let from_trim = from_key.trim_end_matches('/');
@@ -51,21 +68,26 @@ fn folded_covers(from: &Path, path: &Path) -> bool {
 
 use super::{SessionStore, validate_session_id};
 
-/// 绑定 sidecar 的 schema 版本；未来字段演进时用于迁移。
+/// Schema version of the binding sidecar; used for migration when fields
+/// evolve in the future.
 const SESSION_WORKSPACE_SIDECAR_VERSION: u32 = 1;
-/// 本 PR 中间版本的全局绑定表（从未随 `main` 发布；boot 期迁移成功后删除）。
+/// This PR's intermediate-version global binding table (never shipped with
+/// `main`; deleted after a successful boot-time migration).
 const LEGACY_SESSION_WORKSPACES_FILE: &str = "_session_workspaces.json";
-/// per-session 绑定 sidecar 文件名（位于会话私有目录内）。
+/// Per-session binding sidecar filename (inside the session-private
+/// directory).
 const SESSION_WORKSPACE_SIDECAR_FILE: &str = "workspace-binding.json";
 
-/// 绑定 sidecar 内容。`path` 为 `validate_user_workspace_path` canonicalize
-/// 后的绝对目录；`bound_at` 仅作元信息，不参与恢复语义。
+/// Binding sidecar content. `path` is the absolute directory canonicalized by
+/// `validate_user_workspace_path`; `bound_at` is metadata only and plays no
+/// part in restore semantics.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 struct SessionWorkspaceSidecar {
     version: u32,
     path: PathBuf,
-    /// 创建时锁定的钥匙串快照(§6):全量可访问根(含主根)。旧 sidecar 缺
-    /// 键/空 = 单根语义(仅 path 目录)。
+    /// Keychain snapshot locked at creation (§6): full set of accessible
+    /// roots (including the primary root). Old sidecars missing the key /
+    /// empty = single-root semantics (the `path` directory only).
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     workspace_roots: Vec<PathBuf>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -79,8 +101,9 @@ fn now_unix_secs() -> i64 {
         .unwrap_or_default()
 }
 
-/// 未来高版本格式不能静默按当前版本解析：拒读并按缺失处理（bind 重写为
-/// 当前版本即自愈），解析异常均记日志。
+/// A future higher-version format must not be silently parsed as the current
+/// version: refuse to read and treat as missing (a bind rewrite at the
+/// current version self-heals); parse anomalies are all logged.
 fn read_workspace_sidecar(path: &Path) -> Option<SessionWorkspaceSidecar> {
     let payload = std::fs::read(path).ok()?;
     match serde_json::from_slice::<SessionWorkspaceSidecar>(&payload) {
@@ -112,17 +135,23 @@ impl SessionStore {
             .join(SESSION_WORKSPACE_SIDECAR_FILE)
     }
 
-    /// 绑定会话工作目录并原子落盘到会话私有目录内的 sidecar。要求会话的
-    /// 持久记录（`<id>.json`）已存在——绑定是会话的从属数据，不为未知 id
-    /// 凭空创建目录；调用方（create_session 命令）先建会话再绑定。
-    /// 落盘失败返回 Err 且不触碰内存缓存——调用方（create_session 命令）
-    /// 据此删除刚建的空会话，不留下「看似绑定成功、重启后丢失」的会话。
+    /// Bind a session's working directory and atomically persist it to the
+    /// sidecar inside the session-private directory. Requires the session's
+    /// durable record (`<id>.json`) to already exist — a binding is
+    /// subordinate data of the session, and no directory is created out of
+    /// thin air for an unknown id; the caller (the create_session command)
+    /// creates the session first and binds second.
+    /// A persist failure returns Err without touching the in-memory cache —
+    /// the caller (the create_session command) deletes the just-created empty
+    /// session accordingly, leaving no session that "looks bound but loses
+    /// the binding on restart".
     pub fn bind_session_workspace(&self, id: &str, path: PathBuf) -> Result<()> {
         self.bind_session_workspace_with_roots(id, path, Vec::new())
     }
 
-    /// 绑定 + 钥匙串快照(§6):`workspace_roots` 为全量可访问根(空 = 单根
-    /// 语义,引擎按 cwd 归一)。落盘纪律与 `bind_session_workspace` 相同。
+    /// Bind + keychain snapshot (§6): `workspace_roots` is the full set of
+    /// accessible roots (empty = single-root semantics, the engine normalizes
+    /// by cwd). Same persistence discipline as `bind_session_workspace`.
     pub fn bind_session_workspace_with_roots(
         &self,
         id: &str,
@@ -155,9 +184,12 @@ impl SessionStore {
         Ok(())
     }
 
-    /// 读取会话的用户工作目录绑定（无绑定 → None，execution 根回退会话私有
-    /// 目录）。内存缓存 miss 时回读 sidecar；会话持久记录已不存在的残留
-    /// sidecar（部分删除失败留下的目录）按 None 处理，与旧 ghost 清理同语义。
+    /// Read the session's user working-directory binding (no binding → None,
+    /// and the execution root falls back to the session-private directory).
+    /// The sidecar is re-read on an in-memory cache miss; a leftover sidecar
+    /// whose durable session record no longer exists (a directory left behind
+    /// by a partially failed deletion) is treated as None, same semantics as
+    /// the old ghost cleanup.
     pub fn session_workspace_binding(&self, id: &str) -> Option<PathBuf> {
         if let Some(path) = self.session_workspaces.read().get(id).cloned() {
             return Some(path);
@@ -179,9 +211,10 @@ impl SessionStore {
         Some(path)
     }
 
-    /// 会话创建时锁定的钥匙串快照(§6);无绑定/旧 sidecar/残留目录 = 空
-    /// (单根语义)。冷路径直读 sidecar(引擎 spawn/resume 才调),不进
-    /// `session_workspaces` 路径缓存。
+    /// Keychain snapshot locked at session creation (§6); no binding / old
+    /// sidecar / leftover directory = empty (single-root semantics). The cold
+    /// path reads the sidecar directly (only called on engine spawn/resume)
+    /// and does not populate the `session_workspaces` path cache.
     pub fn session_workspace_roots(&self, id: &str) -> Vec<PathBuf> {
         if validate_session_id(id).is_err()
             || !self
@@ -197,9 +230,10 @@ impl SessionStore {
             .unwrap_or_default()
     }
 
-    /// "对齐到项目"(§9.7)的钥匙串替换:整体改写 sidecar 快照(保留绑定
-    /// 路径与 bound_at)。无绑定返回 Ok(false)——临时会话由命令层先行拒绝,
-    /// 这里是双保险。
+    /// Keychain replacement for "align to project" (§9.7): rewrites the
+    /// sidecar snapshot wholesale (binding path and bound_at preserved).
+    /// Returns Ok(false) when there is no binding — temporary sessions are
+    /// rejected by the command layer first; this is a second line of defense.
     pub fn set_session_workspace_roots(
         &self,
         id: &str,
@@ -223,9 +257,10 @@ impl SessionStore {
         Ok(true)
     }
 
-    /// best-effort 删除绑定 sidecar 文件；NotFound 视为已删除。会话删除
-    /// 路径的目录清理通常已把它带走，这里覆盖「会话仍在、仅解绑」与残留
-    /// 目录兜底两种情况。
+    /// Best-effort removal of the binding sidecar file; NotFound counts as
+    /// already removed. Directory cleanup on the session-delete path usually
+    /// takes it away already; this covers "session still alive, unbind only"
+    /// and the leftover-directory fallback.
     pub(crate) fn remove_workspace_sidecar_file(&self, id: &str) {
         let file = self.session_workspace_sidecar_path(id);
         match std::fs::remove_file(&file) {
@@ -238,13 +273,17 @@ impl SessionStore {
         }
     }
 
-    /// 扫描全部 `workspace-binding.json` sidecar 并并入内存表，列出绑定在
-    /// `from` 前缀下的会话（目录重绑定的栅栏候选集；`from` 通常已消失，
-    /// 匹配在共享折叠键上进行——Windows 折叠分隔符与大小写，与
-    /// SessionAgentStore::sessions_under_workspace 同语义）。不校验
-    /// `<id>.json` 存在——残留 sidecar 同样要被重绑定覆盖，否则旧目录复活。
-    /// 内存表并入是因为存量迁移未完成时，未迁移条目只存在于内存/旧全局表
-    /// （评审 #464 nit：栅栏候选不得漏掉这一组）。
+    /// Scan all `workspace-binding.json` sidecars, merge them into the
+    /// in-memory table, and list sessions bound under the `from` prefix (the
+    /// fence candidate set for directory rebinding; `from` has usually
+    /// vanished, so matching runs on the shared folded keys — Windows folds
+    /// separators and case, same semantics as
+    /// SessionAgentStore::sessions_under_workspace). `<id>.json` existence is
+    /// deliberately not checked — leftover sidecars must be covered by the
+    /// rebind too, otherwise the old directory revives. The in-memory table
+    /// is merged because while the stock migration is incomplete, unmigrated
+    /// entries exist only in memory/the old global table (review #464 nit:
+    /// the fence candidates must not miss this group).
     pub fn workspace_bindings_under(&self, from: &Path) -> Vec<(String, PathBuf)> {
         let covered = |path: &Path| folded_covers(from, path);
         let mut matched = Vec::new();
@@ -266,7 +305,8 @@ impl SessionStore {
                 }
             }
         }
-        // 内存表并集(去重):覆盖迁移降级路径下未落 sidecar 的条目。
+        // Union of the in-memory table (deduplicated): covers entries not yet
+        // persisted as sidecars under the migration fallback path.
         for (id, path) in self.session_workspaces.read().iter() {
             if covered(path) && !matched.iter().any(|(existing_id, _)| existing_id == id) {
                 matched.push((id.clone(), path.clone()));
@@ -275,16 +315,21 @@ impl SessionStore {
         matched
     }
 
-    /// 目录重绑定（修断链通道）：把绑定在 `from` 前缀下的普通会话绑定整体
-    /// 平移到 `to`（sidecar 原子重写 + 内存缓存同步）。与
-    /// SessionAgentStore::rebind_workspace_prefix 同语义、同幂等性——
-    /// from→to 重跑无命中即空操作，失败可整体重试。会话元数据
-    /// （metadata.workspace 展示字段）由命令层统一经 set_workspace 改写。
+    /// Directory rebind (broken-link repair channel): shift plain-session
+    /// bindings under the `from` prefix wholesale to `to` (atomic sidecar
+    /// rewrite + in-memory cache sync). Same semantics and idempotence as
+    /// SessionAgentStore::rebind_workspace_prefix — a from→to rerun with no
+    /// hits is a no-op, and a failure can be retried wholesale. Session
+    /// metadata (the metadata.workspace display field) is rewritten by the
+    /// command layer uniformly via set_workspace.
     ///
-    /// 逐条目隔离（评审 #464 MAJOR 4）：非法 id（boot 迁移会把未校验的失败
-    /// 条目留在内存旧表）与单条写失败不再 `?` 中断整轮——项目 root 与 agent
-    /// 索引此时已平移，中断会让同一条目在每次重试都重复失败；失败进
-    /// `failed_session_ids` 由命令层并入报告。
+    /// Per-entry isolation (review #464 MAJOR 4): an invalid id (boot
+    /// migration keeps failed unvalidated entries in the in-memory legacy
+    /// table) or a single failed write no longer aborts the whole round with
+    /// `?` — the project roots and the agent index have already shifted by
+    /// then, and aborting would make the same entry fail again on every
+    /// retry; failures go into `failed_session_ids` and the command layer
+    /// folds them into the report.
     pub fn rebind_workspace_bindings(
         &self,
         from: &Path,
@@ -293,8 +338,10 @@ impl SessionStore {
         let covered = |path: &Path| folded_covers(from, path);
         let skip = from.components().count();
         let mut outcome = RebindBindingsOutcome::default();
-        // 候选 = sidecar 扫描 ∪ 内存旧表:存量迁移未完成的降级路径下,未迁移
-        // 条目只存在于内存/旧全局表,漏配会在下次 boot 迁移时以旧目录复活。
+        // Candidates = sidecar scan ∪ in-memory legacy table: under the
+        // fallback path of an incomplete stock migration, unmigrated entries
+        // exist only in memory/the old global table, and missing them would
+        // revive the old directory on the next boot's migration.
         let mut candidates: Vec<(String, PathBuf)> = self.workspace_bindings_under(from);
         for (id, path) in self.session_workspaces.read().iter() {
             if !candidates.iter().any(|(existing_id, _)| existing_id == id) {
@@ -305,8 +352,9 @@ impl SessionStore {
             if !covered(&path) {
                 continue;
             }
-            // id 先过校验再拼路径(与 bind_session_workspace 同闸):遍历形态
-            // 的 id 会写出 sessions_dir 之外。
+            // The id passes validation before any path is joined (same gate
+            // as bind_session_workspace): a traversal-shaped id would write
+            // outside sessions_dir.
             if let Err(error) = validate_session_id(&id) {
                 eprintln!("[sessions] rebind skips invalid session id {id:?}: {error:#}");
                 outcome.failed_session_ids.push(id);
@@ -323,8 +371,9 @@ impl SessionStore {
                 .sessions_dir()
                 .join(&id)
                 .join(SESSION_WORKSPACE_SIDECAR_FILE);
-            // 内存旧表条目可能没有会话目录(从未写成 sidecar),atomic_write
-            // 不建父目录,先补(与 bind_session_workspace 同)。
+            // An in-memory legacy-table entry may have no session directory
+            // (never written as a sidecar); atomic_write does not create
+            // parents, so create it first (same as bind_session_workspace).
             if let Some(parent) = sidecar_path.parent() {
                 if let Err(error) = std::fs::create_dir_all(parent) {
                     eprintln!("[sessions] rebind create session dir for {id} failed: {error:#}");
@@ -332,9 +381,10 @@ impl SessionStore {
                     continue;
                 }
             }
-            // bound_at 仅元信息:原样保留,与 codex 存储的 rebind 同口径,
-            // 不再重置为 None(评审 #452 finding 3)。钥匙串快照同步平移:
-            // from 前缀下的根换到 to,其余原样。
+            // bound_at is metadata only: preserved as-is, same convention as
+            // the codex store's rebind, never reset to None (review #452
+            // finding 3). The keychain snapshot shifts along: roots under the
+            // from prefix move to `to`, the rest stay.
             let previous = read_workspace_sidecar(&sidecar_path);
             let bound_at = previous.as_ref().and_then(|s| s.bound_at);
             let rebound_roots: Vec<PathBuf> = previous
@@ -382,16 +432,22 @@ impl SessionStore {
                 .insert(id.clone(), next.clone());
             outcome.rebound.push((id, next));
         }
-        // 降级路径对称(评审 #452 finding 9):旧全局表仍在盘上(存量迁移未
-        // 完成)时同步重写,否则重绑定会在下次 boot 迁移时被旧表复活。
+        // Symmetric fallback path (review #452 finding 9): while the old
+        // global table is still on disk (stock migration incomplete), rewrite
+        // it in sync — otherwise the rebind would be revived from the old
+        // table by the next boot's migration.
         self.rewrite_legacy_session_workspaces_if_present();
         Ok(outcome)
     }
 
-    /// 旧全局表的最小重写(仅重绑定的降级路径对称使用)。#445 round-2 移除了
-    /// 通用持久化(无其它调用面),这里只保留:表非空则整体原子重写为内存表
-    /// 内容,表空则删文件(没有可复活的条目)。写失败只记日志——内存表与
-    /// sidecar 已是权威,旧表本来就只是迁移残留。
+    /// Minimal rewrite of the old global table (only used for the rebind
+    /// fallback-path symmetry). #445 round-2 removed general persistence (no
+    /// other call surface); only this remains: if the table is non-empty it
+    /// is atomically rewritten wholesale with the in-memory table's content,
+    /// and if empty the file is deleted (no revivable entries). Write
+    /// failures are only logged — the in-memory table and the sidecars are
+    /// already authoritative, and the old table is nothing but migration
+    /// residue.
     fn rewrite_legacy_session_workspaces_if_present(&self) {
         let legacy = crate::platform::paths::sessions_root().join(LEGACY_SESSION_WORKSPACES_FILE);
         if !legacy.is_file() {
@@ -418,13 +474,16 @@ impl SessionStore {
         }
     }
 
-
-    /// boot 期存量迁移：全局表 `_session_workspaces.json` → per-session
-    /// sidecar（只服务本 PR 中间版本 dev build 的 home，见模块文档）。活会话
-    /// 条目逐条写成 sidecar（同值重写幂等），全部迁移成功即删除旧文件；任一
-    /// 条目写失败时旧文件原样保留，未迁移条目接管进内存表继续可解析，下次
-    /// boot 重试，不阻断启动。ghost 条目（对应 `<id>.json` 已不存在——会话在
-    /// 进程外被删的残留）直接丢弃，不迁移。
+    /// Boot-time stock migration: the global table `_session_workspaces.json`
+    /// → per-session sidecars (only serves homes of this PR's
+    /// intermediate-version dev builds; see the module docs). Live-session
+    /// entries are written out as sidecars one by one (same-value rewrites
+    /// are idempotent), and once every entry migrated successfully the old
+    /// file is deleted; if any entry fails to write, the old file is kept
+    /// as-is, the unmigrated entries are adopted into the in-memory table and
+    /// stay resolvable, the next boot retries, and startup is not blocked.
+    /// Ghost entries (whose `<id>.json` no longer exists — residue of a
+    /// session deleted outside the process) are dropped, not migrated.
     pub fn migrate_legacy_session_workspaces(&self) {
         let legacy = crate::platform::paths::sessions_root().join(LEGACY_SESSION_WORKSPACES_FILE);
         let Ok(content) = std::fs::read_to_string(&legacy) else {

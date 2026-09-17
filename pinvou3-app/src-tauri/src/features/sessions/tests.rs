@@ -343,11 +343,12 @@ fn session_roots_user_workspace_binding_uses_bound_execution_root() {
 
     let roots = store.session_roots(&s.metadata.id).expect("roots");
     assert_eq!(roots.execution, bound_dir);
-    // 账本根恒为会话私有目录,不污染用户选择的目录。
+    // The ledger root is always the session-private directory and never
+    // pollutes the user-chosen directory.
     let private = paths::session_workspace_dir(&s.metadata.id);
     assert_eq!(roots.ledger, private);
 
-    // 未绑定的会话不受影响,两根仍一致。
+    // Unbound sessions are unaffected; both roots still coincide.
     let other = store
         .create_new("/model".into(), None, std::env::temp_dir())
         .expect("create other");
@@ -398,7 +399,8 @@ fn delete_session_removes_workspace_binding() {
 
     store.delete(&s.metadata.id).expect("delete");
     assert!(store.session_workspace_binding(&s.metadata.id).is_none());
-    // 绑定随会话目录一并删除（无独立全局残留）。
+    // The binding is deleted together with the session directory (no
+    // separate global residue).
     assert!(!sidecar.exists());
 
     let _ = std::fs::remove_dir_all(&bound_dir);
@@ -409,7 +411,8 @@ fn bind_session_workspace_requires_existing_session_record() {
     let (store, _g) = isolated_store();
     let bound_dir = unique_temp_dir("user-workspace-no-record");
     std::fs::create_dir_all(&bound_dir).expect("create bound dir");
-    // 绑定是会话的从属数据：未知 id 拒绝绑定，且不得凭空创建会话目录。
+    // A binding is subordinate data of the session: unknown ids are
+    // refused, and no session directory is created out of thin air.
     assert!(
         store
             .bind_session_workspace("ghost-session-id", bound_dir.clone())
@@ -436,13 +439,14 @@ fn workspace_binding_sidecar_ignores_residue_of_deleted_session() {
     store
         .bind_session_workspace(&s.metadata.id, bound_dir.clone())
         .expect("bind");
-    // 模拟部分删除失败留下的残留：会话 JSON 已删、目录（含 sidecar）还在。
+    // Simulate residue from a partially failed deletion: the session JSON
+    // is gone but the directory (with the sidecar) remains.
     let record = paths::sessions_root().join(format!("{}.json", s.metadata.id));
     std::fs::remove_file(&record).expect("remove record");
     store.session_workspaces.write().clear();
     assert!(
         store.session_workspace_binding(&s.metadata.id).is_none(),
-        "会话记录已删时残留 sidecar 不得复活绑定"
+        "a leftover sidecar must not revive the binding once the session record is deleted"
     );
 
     let _ = std::fs::remove_dir_all(&bound_dir);
@@ -456,7 +460,8 @@ fn migrate_legacy_session_workspaces_converges_to_per_session_sidecars() {
         .expect("create");
     let bound_dir = unique_temp_dir("user-workspace-migrate");
     std::fs::create_dir_all(&bound_dir).expect("create bound dir");
-    // 收敛前的存量格式：全局表 {session_id: path}，含活会话与 ghost 条目。
+    // The pre-convergence stock format: a global table {session_id: path}
+    // with live-session and ghost entries.
     let legacy = paths::sessions_root().join("_session_workspaces.json");
     std::fs::write(
         &legacy,
@@ -469,8 +474,9 @@ fn migrate_legacy_session_workspaces_converges_to_per_session_sidecars() {
     .expect("write legacy");
 
     store.migrate_legacy_session_workspaces();
-    // 活会话条目收敛为 per-session sidecar；内存缓存清空后仍可从 sidecar
-    // 读回（读穿透），execution 根解析不受影响。
+    // Live-session entries converge into per-session sidecars; after the
+    // in-memory cache is cleared they can still be read back from the
+    // sidecar (read-through), and execution-root resolution is unaffected.
     store.session_workspaces.write().clear();
     assert_eq!(
         store.session_workspace_binding(&s.metadata.id),
@@ -482,7 +488,8 @@ fn migrate_legacy_session_workspaces_converges_to_per_session_sidecars() {
     assert!(sidecar.is_file());
     let roots = store.session_roots(&s.metadata.id).expect("roots");
     assert_eq!(roots.execution, bound_dir);
-    // ghost 条目不迁移（不为已删会话创建目录），旧表迁移完成后删除。
+    // Ghost entries are not migrated (no directory is created for deleted
+    // sessions); the old table is deleted once migration completes.
     assert!(!paths::sessions_root().join("ghost-session-id").exists());
     assert!(!legacy.exists());
 
@@ -500,13 +507,13 @@ fn validate_user_workspace_path_rejects_invalid_and_accepts_directory() {
     let missing = unique_temp_dir("user-workspace-missing");
     assert!(validate_user_workspace_path(missing.to_str().expect("utf8")).is_err());
 
-    // 文件而非目录 → 拒绝。
+    // A file rather than a directory → rejected.
     let file = unique_temp_dir("user-workspace-file");
     std::fs::write(&file, b"x").expect("seed file");
     assert!(validate_user_workspace_path(file.to_str().expect("utf8")).is_err());
     let _ = std::fs::remove_file(&file);
 
-    // 合法目录 → canonicalize 后返回。
+    // A legal directory → returned canonicalized.
     let dir = unique_temp_dir("user-workspace-valid");
     std::fs::create_dir_all(&dir).expect("create dir");
     let validated = validate_user_workspace_path(dir.to_str().expect("utf8")).expect("valid dir");
@@ -514,8 +521,9 @@ fn validate_user_workspace_path_rejects_invalid_and_accepts_directory() {
         &dir.canonicalize().expect("canonicalize").to_string_lossy(),
     );
     assert_eq!(validated, expected);
-    // 回归断言:绑定目录不得携带 Windows verbatim 前缀(评审 #445 P1-1),
-    // 与 validate_codex_project_workspace 的既有约定同源。
+    // Regression assertion: the bound directory must not carry a Windows
+    // verbatim prefix (review #445 P1-1), same source convention as
+    // validate_codex_project_workspace.
     assert!(
         !validated.to_string_lossy().starts_with(r"\\?\"),
         "validated workspace must not keep the verbatim prefix: {}",
@@ -3193,8 +3201,9 @@ fn code_session_default_follows_code_lane_default() {
     assert_eq!(store.mode_state("code-2").mode, SerializableMode::Plan);
 }
 
-/// 绑定用户工作目录的普通 chat 会话：默认 mode 对齐 code 安全姿态（首启
-/// Plan、跟随 code lane 全局默认）；未绑定 plain 会话维持 Yolo。
+/// Plain chat sessions bound to a user working directory: the default mode
+/// aligns with the code safety posture (Plan on first run, following the
+/// code lane's global default); unbound plain sessions stay Yolo.
 #[test]
 fn workspace_bound_plain_session_defaults_to_plan_like_code() {
     let (store, _g) = isolated_store();
@@ -3207,7 +3216,8 @@ fn workspace_bound_plain_session_defaults_to_plan_like_code() {
         .bind_session_workspace(&bound.metadata.id, bound_dir.clone())
         .expect("bind");
 
-    // 从未用过（全局 last_mode=None）→ Plan 只读首启；未绑定 plain 维持 Yolo。
+    // Never used before (global last_mode=None) → Plan read-only first run;
+    // unbound plain stays Yolo.
     assert_eq!(
         store.mode_state(&bound.metadata.id).mode,
         SerializableMode::Plan
@@ -3217,7 +3227,7 @@ fn workspace_bound_plain_session_defaults_to_plan_like_code() {
         SerializableMode::Yolo
     );
 
-    // code lane 全局默认对绑定普通会话同样生效。
+    // The code lane's global default applies to bound plain sessions too.
     store.set_mode_default(ModeLane::Code, SerializableMode::Yolo);
     assert_eq!(
         store.mode_state(&bound.metadata.id).mode,
@@ -3940,8 +3950,10 @@ fn truncate_reports_compaction_summary_residue_in_system_prompt() {
     assert!(!outcome.had_compaction, "普通 system_prompt 不得误报");
 }
 
-/// 目录重绑定的元数据写入路径(评审 #463):set_workspace 只改 workspace
-/// 字段并可重读验证;不存在/损坏 JSON 的分类由命令层据此区分孤儿。
+/// The metadata write path for directory rebinding (review #463):
+/// set_workspace only changes the workspace field and can be verified by
+/// re-reading; the command layer distinguishes orphans from
+/// missing/corrupt-JSON cases based on it.
 #[test]
 fn set_workspace_persists_rebound_path() {
     let (store, _guard) = isolated_store();
@@ -3954,12 +3966,14 @@ fn set_workspace_persists_rebound_path() {
         .expect("set workspace");
     let reloaded = store.load(&session.metadata.id).expect("reload");
     assert_eq!(reloaded.metadata.workspace, target);
-    // 同值重复写幂等(重绑定失败重试路径依赖这一点)。
+    // Same-value rewrites are idempotent (the rebind failure-retry path
+    // depends on this).
     store
         .set_workspace(&session.metadata.id, target.clone())
         .expect("idempotent rewrite");
-    // 会话 JSON 不存在 = durable 缺席(孤儿分类只认它);在场(哪怕损坏)
-    // 不得被当孤儿静默跳过。
+    // A missing session JSON = durable absence (the orphan classification
+    // only accepts this); a present (even corrupt) one must not be silently
+    // skipped as an orphan.
     assert!(!store.durable_session_record_is_absent(&session.metadata.id));
     assert!(store.durable_session_record_is_absent("sess-definitely-missing"));
 }
@@ -4005,7 +4019,11 @@ fn rebind_workspace_bindings_moves_plain_bindings_and_stays_idempotent() {
         .expect("bind sibling");
 
     let matched = store.workspace_bindings_under(&bound);
-    assert_eq!(matched.len(), 2, "elsewhere 与 sibling 前缀不得命中");
+    assert_eq!(
+        matched.len(),
+        2,
+        "elsewhere and the sibling prefix must not hit"
+    );
 
     let affected = store
         .rebind_workspace_bindings(&bound, &to)
@@ -4013,8 +4031,10 @@ fn rebind_workspace_bindings_moves_plain_bindings_and_stays_idempotent() {
         .rebound;
     let mut ids: Vec<&str> = affected.iter().map(|(id, _)| id.as_str()).collect();
     ids.sort_unstable();
-    // id 字典序与创建顺序无关(同后缀不同前缀),期望侧同样排序,否则断言
-    // 平台间随机(评审 #452 finding 1:Linux 红 Windows 绿)。
+    // id lexicographic order is unrelated to creation order (same suffix,
+    // different prefixes); the expected side is sorted too, otherwise the
+    // assertion is random across platforms (review #452 finding 1: red on
+    // Linux, green on Windows).
     let mut expected: Vec<&str> = vec![
         bound_session.metadata.id.as_str(),
         nested_session.metadata.id.as_str(),
@@ -4038,17 +4058,18 @@ fn rebind_workspace_bindings_moves_plain_bindings_and_stays_idempotent() {
             .session_workspace_binding(&other_session.metadata.id)
             .as_deref(),
         Some(elsewhere.as_path()),
-        "prefix 外绑定不动",
+        "bindings outside the prefix untouched",
     );
     assert_eq!(
         store
             .session_workspace_binding(&sibling_session.metadata.id)
             .as_deref(),
         Some(sibling.as_path()),
-        "目录边界:sibling 前缀不得误命中",
+        "directory boundary: a sibling prefix must not false-hit",
     );
 
-    // 幂等:再跑无命中;重启(冷缓存)后新值仍然可读。
+    // Idempotent: a rerun hits nothing; after a restart (cold cache) the
+    // new value is still readable.
     assert!(
         store
             .rebind_workspace_bindings(&bound, &to)
@@ -4062,7 +4083,7 @@ fn rebind_workspace_bindings_moves_plain_bindings_and_stays_idempotent() {
             .session_workspace_binding(&nested_session.metadata.id)
             .as_deref(),
         Some(to.join("sub").as_path()),
-        "sidecar 已改写,冷缓存回读不得复活旧目录",
+        "the sidecar was rewritten; a cold-cache re-read must not revive the old directory",
     );
 
     let _ = std::fs::remove_dir_all(&bound);
@@ -4085,7 +4106,8 @@ fn workspace_binding_carries_roots_snapshot_and_rebind_translates_them() {
         .create_new("/model".into(), None, std::env::temp_dir())
         .expect("create");
     let id = session.metadata.id;
-    // 创建时锁定钥匙串:主根 + 主根内附加根 + 主根外附加根。
+    // Keychain locked at creation: primary root + additional root inside
+    // the primary + additional root outside the primary.
     store
         .bind_session_workspace_with_roots(
             &id,
@@ -4096,22 +4118,27 @@ fn workspace_binding_carries_roots_snapshot_and_rebind_translates_them() {
     assert_eq!(
         store.session_workspace_roots(&id),
         vec![main_root.clone(), extra_in.clone(), extra_out.clone()],
-        "读取点透出创建时快照"
+        "the read surface exposes the creation-time snapshot"
     );
 
-    // 重绑定:from 前缀下的根(主根、主根内附加根)平移到 to,外部根原样。
+    // Rebind: roots under the from prefix (primary root, additional root
+    // inside the primary) shift to `to`; the outside root stays as-is.
     store
         .rebind_workspace_bindings(&main_root, &to)
         .expect("rebind");
     assert_eq!(
         store.session_workspace_roots(&id),
         vec![to.clone(), to.join("shared"), extra_out.clone()],
-        "钥匙串随绑定平移,from 外的根不动"
+        "the keychain shifts with the binding; roots outside from are untouched"
     );
     assert_eq!(
         store.session_workspace_binding(&id).as_deref(),
         Some(to.as_path())
     );
+
+    let _ = std::fs::remove_dir_all(&main_root);
+    let _ = std::fs::remove_dir_all(&extra_out);
+    let _ = std::fs::remove_dir_all(&to);
 }
 
 #[test]
@@ -4126,11 +4153,21 @@ fn legacy_binding_sidecar_without_roots_reads_empty() {
     store
         .bind_session_workspace(&id, bound.clone())
         .expect("legacy bind");
-    // 旧档(无 workspace_roots 键)语义 = 单根:读取为空,调用方按 cwd 归一。
-    assert_eq!(store.session_workspace_roots(&id), Vec::<std::path::PathBuf>::new());
-    // 会话记录已删的残留 sidecar 按无绑定处理(ghost 语义同路径读取)。
+    // Old files (no workspace_roots key) mean single-root: the read is
+    // empty and callers normalize by cwd.
+    assert_eq!(
+        store.session_workspace_roots(&id),
+        Vec::<std::path::PathBuf>::new()
+    );
+    // A leftover sidecar whose session record was deleted is treated as
+    // unbound (ghost semantics, same path of reading).
     store.delete(&id).expect("delete session");
-    assert_eq!(store.session_workspace_roots(&id), Vec::<std::path::PathBuf>::new());
+    assert_eq!(
+        store.session_workspace_roots(&id),
+        Vec::<std::path::PathBuf>::new()
+    );
+
+    let _ = std::fs::remove_dir_all(&bound);
 }
 
 #[test]
@@ -4146,27 +4183,39 @@ fn set_session_workspace_roots_rewrites_sidecar_preserving_binding() {
         .bind_session_workspace(&id, bound.clone())
         .expect("bind");
 
-    // 对齐写入:roots 整体替换,绑定路径与 bound_at 保留。
+    // Align write: roots are replaced wholesale; the binding path and
+    // bound_at are preserved.
     let roots = vec![bound.clone(), unique_temp_dir("align-extra")];
-    assert!(store.set_session_workspace_roots(&id, roots.clone()).expect("align"));
+    assert!(
+        store
+            .set_session_workspace_roots(&id, roots.clone())
+            .expect("align")
+    );
     assert_eq!(store.session_workspace_roots(&id), roots);
-    assert_eq!(store.session_workspace_binding(&id).as_deref(), Some(bound.as_path()));
-    // 直读 sidecar 复核(绕过任何缓存):bound_at 未丢。
+    assert_eq!(
+        store.session_workspace_binding(&id).as_deref(),
+        Some(bound.as_path())
+    );
+    // Read the sidecar directly (bypassing any cache) to double-check:
+    // bound_at is not lost.
     let sidecar_path = crate::platform::paths::sessions_root()
         .join(&id)
         .join("workspace-binding.json");
     let raw: serde_json::Value =
         serde_json::from_slice(&std::fs::read(&sidecar_path).expect("sidecar")).unwrap();
-    assert!(raw.get("bound_at").is_some(), "bound_at 保留");
+    assert!(raw.get("bound_at").is_some(), "bound_at preserved");
     assert_eq!(raw["workspace_roots"].as_array().unwrap().len(), 2);
 
-    // 无绑定会话(临时)= Ok(false),不产生文件。
+    // An unbound session (temporary) = Ok(false), no file produced.
     let temp_session = store
         .create_new("/model".into(), None, std::env::temp_dir())
         .expect("create temp");
     assert!(
         !store
-            .set_session_workspace_roots(&temp_session.metadata.id, roots)
+            .set_session_workspace_roots(&temp_session.metadata.id, roots.clone())
             .expect("no binding")
     );
+
+    let _ = std::fs::remove_dir_all(&bound);
+    let _ = std::fs::remove_dir_all(&roots[1]);
 }

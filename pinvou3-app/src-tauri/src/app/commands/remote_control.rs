@@ -363,7 +363,8 @@ pub async fn web_access_create_session(
 ) -> Result<WebSessionMetadata, String> {
     let metadata = web_session_result(
         WebSessionOperation::CreateSession,
-        // Web 端 P1 只有临时/单根会话(§9.8):无钥匙串、无项目记忆写入。
+        // Web-side P1 only has temporary/single-root sessions (§9.8): no
+        // keychain, no project-memory write.
         super::sessions::create_session(Some(false), None, None, None, app, store, pool, projects)
             .await,
     )?;
@@ -915,7 +916,8 @@ pub async fn web_access_create_codex_acp_session(
             super::codex::create_codex_acp_session_with_workspace_binding(
                 workspace_path,
                 Some(agent_id),
-                // Web workspace grant 通道:单根(授权目录本身),无项目记忆。
+                // Web workspace-grant channel: single root (the granted
+                // directory itself), no project memory.
                 None,
                 None,
                 store,

@@ -1,9 +1,11 @@
-//! 项目层命令:跨 store 组合与会话存在性校验在此层完成,
-//! `features::projects` 本体不依赖 sessions/codex_acp(依赖方向约束)。
+//! Project-layer commands: cross-store composition and session existence
+//! checks live in this layer; the `features::projects` core itself depends on
+//! neither sessions nor codex_acp (dependency-direction constraint).
 //!
-//! Phase 0 暴露:list/create/update/delete/move。目录重绑定
-//! (`rebind_workspace_root`)属 Phase 4,其栅栏(活跃回合拒绝、baseline
-//! 重采集)需要 AcpPool 写路径集成,不随本层首发。
+//! Phase 0 exposes: list/create/update/delete/move. Directory rebinding
+//! (`rebind_workspace_root`) belongs to Phase 4; its fences (active-turn
+//! rejection, baseline recapture) need AcpPool write-path integration and did
+//! not ship with this layer.
 
 use std::path::{Path, PathBuf};
 
@@ -19,18 +21,23 @@ use crate::features::sessions::SessionStore;
 
 use super::sessions::ensure_chat_session;
 
-/// 项目事件只走本地 emit:projects 域按 bridge 契约是桌面端专属,
-/// remote-control 的转发白名单没有该事件,转发只会被中继拒绝并每次
-/// 刷一条拒绝日志(评审 #447 finding 11:在消费方出现前不转发)。
+/// Project events only emit locally: the projects domain is desktop-only per
+/// the bridge contract; the remote-control forwarding whitelist has no such
+/// event, so forwarding would only be rejected by the relay and log a
+/// rejection every time (review #447 finding 11: do not forward before a
+/// consumer exists).
 fn emit_project_event(app: &AppHandle, event: &str, action: &str) {
     let _ = app.emit(event, serde_json::json!({ "action": action }));
-    // 只走桌面 webview 通道。projects 域桌面独占(Web 桥整域缺席),远程端
-    // 正式支持项目列表之前不转发——与 remote_control 对代码会话事件的
-    // 同类裁决一致;转发不在 RUST_FORWARDED_EVENTS 白名单内会被拒并刷日志。
+    // Desktop webview channel only. The projects domain is desktop-exclusive
+    // (the Web bridge lacks the whole domain); not forwarded until the remote
+    // side formally supports project lists — consistent with remote_control's
+    // ruling for code-session events; forwarding an event outside the
+    // RUST_FORWARDED_EVENTS whitelist gets rejected and logged.
 }
 
-/// root 的可用性(目录是否仍在磁盘上)——前端据此渲染"文件夹不可用·重新绑定",
-/// 但绝不据此自动删项目。
+/// Root availability (whether the directory is still on disk) — the frontend
+/// renders "folder unavailable · rebind" from this, but a project is never
+/// auto-deleted based on it.
 #[derive(Debug, Clone, Serialize)]
 pub struct ProjectRootStatus {
     pub path: PathBuf,
@@ -45,13 +52,16 @@ pub struct ProjectListItem {
     pub position: i64,
     pub created_at: chrono::DateTime<chrono::Utc>,
     pub updated_at: chrono::DateTime<chrono::Utc>,
-    /// `Some("folder")` = 按文件夹自动物化的项目(前端徽标);None = 手工。
+    /// `Some("folder")` = project auto-materialized from a folder (frontend
+    /// badge); None = manual.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub origin: Option<String>,
-    /// 项目记忆的主文件夹(§9.3 项目通道新建会话的默认 cwd);None = 未记。
+    /// The project's remembered primary folder (§9.3 default cwd when
+    /// creating a session from the project channel); None = not recorded.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub last_primary_root: Option<PathBuf>,
-    /// 显式归属的会话数;自动归组的成员数由前端分组解析计算(Phase 1)。
+    /// Number of explicitly assigned sessions; auto-grouped member counts are
+    /// computed by the frontend's group resolution (Phase 1).
     pub assigned_session_count: usize,
 }
 
@@ -78,9 +88,10 @@ impl ProjectListItem {
     }
 }
 
-/// list_projects 响应:项目列表 + 全量归属映射(前端三层分组解析的原料,
-/// null 归属 = 显式移出) + 反物化排除列表(§3,canonical 键;管理面板
-/// 查看/撤销用)。
+/// list_projects response: project list + the full assignment map (input for
+/// the frontend's three-tier group resolution; null assignment = explicit
+/// move-out) + the anti-materialization exclusion list (§3, canonical keys;
+/// for the management panel to view/revoke).
 #[derive(Debug, Clone, Serialize)]
 pub struct ProjectListResponse {
     pub projects: Vec<ProjectListItem>,
@@ -88,7 +99,8 @@ pub struct ProjectListResponse {
     pub never_materialize_roots: Vec<String>,
 }
 
-/// 项目列表,按 position 有序,含每个 root 的可用性、显式成员数与归属映射。
+/// Project list ordered by position, with each root's availability, explicit
+/// member counts, and the assignment map.
 #[tauri::command]
 pub async fn list_projects(store: State<'_, ProjectStore>) -> Result<ProjectListResponse, String> {
     let assignments = store.assignments_snapshot();
@@ -106,7 +118,8 @@ pub async fn list_projects(store: State<'_, ProjectStore>) -> Result<ProjectList
     })
 }
 
-/// 创建项目。roots 可为空(纯标签项目);非空时逐个过绝对性/重叠校验。
+/// Create a project. roots may be empty (pure-label project); non-empty
+/// roots each pass absoluteness/overlap validation.
 #[tauri::command]
 pub async fn create_project(
     name: String,
@@ -121,12 +134,17 @@ pub async fn create_project(
     Ok(ProjectListItem::from_project(&project, 0))
 }
 
-/// 更新项目:名称与 roots 均为可选补丁,None 保持不变。
+/// Update a project: name and roots are optional patches; None keeps the
+/// current value.
 ///
-/// 移除 root 的成员移出(§4):被移除根之下、尚无归属条目的会话写成显式
-/// 移出(None),进未分组并留住——防止 tier-② 归组或 ensure 物化立即翻案;
-/// 已有条目(显式归属本/他项目、已移出)不动。移除不影响在飞会话(快照
-/// 语义 §6/§9.5),这里只写逻辑层归属,不触碰任何会话的工作目录绑定。
+/// Member expulsion on root removal (§4): sessions under a removed root that
+/// have no assignment entry yet are written as explicit move-outs (None) and
+/// stay in Ungrouped — preventing tier-② grouping or ensure materialization
+/// from immediately overturning the removal; existing entries (explicitly
+/// assigned to this/another project, already moved out) are untouched.
+/// Removal does not affect in-flight sessions (snapshot semantics §6/§9.5);
+/// this only writes logical-layer assignments and never touches any session's
+/// working-directory binding.
 #[tauri::command]
 pub async fn update_project(
     project_id: String,
@@ -138,33 +156,21 @@ pub async fn update_project(
     sessions: State<'_, SessionStore>,
     acp_pool: State<'_, AcpPool>,
 ) -> Result<ProjectListItem, String> {
-    let previous_roots = roots
-        .as_ref()
-        .and_then(|_| store.get(&project_id))
-        .map(|project| project.roots);
-    let project = store
-        .update_project(&project_id, name, roots.clone())
-        .map_err(|e| format!("update_project({project_id}): {e:#}"))?;
-    if let (Some(previous), Some(new_roots)) = (previous_roots, roots) {
-        let removed = crate::features::projects::removed_roots(&previous, &new_roots);
-        if !removed.is_empty() {
-            // 与 delete_project 同款枚举:两类绑定存储里落在被移除 root 之下
-            // 的会话;store 侧按 tier-① 语义跳过已有归属条目。
-            let mut expel_session_ids = Vec::new();
-            for root in &removed {
-                for (session_id, _) in acp_pool.agents().sessions_under_workspace(root) {
-                    expel_session_ids.push(session_id);
-                }
-                for (session_id, _) in sessions.workspace_bindings_under(root) {
-                    expel_session_ids.push(session_id);
-                }
-            }
-            store
-                .expel_unassigned_sessions(&expel_session_ids)
-                .map_err(|e| format!("update_project({project_id}) expel members: {e:#}"))?;
-        }
-    }
-    // 主文件夹记忆(§9.2):显式补丁,必须是 roots 成员(store 校验)。
+    let project = match roots {
+        Some(roots) => replace_project_roots_and_expel(
+            &store,
+            &sessions,
+            acp_pool.agents(),
+            &project_id,
+            name,
+            roots,
+        )?,
+        None => store
+            .update_project(&project_id, name, None)
+            .map_err(|e| format!("update_project({project_id}): {e:#}"))?,
+    };
+    // Remembered primary folder (§9.2): explicit patch, must be a roots
+    // member (validated by the store).
     let project = match last_primary_root {
         Some(root) => store
             .set_last_primary_root(&project_id, &root)
@@ -176,9 +182,55 @@ pub async fn update_project(
     Ok(ProjectListItem::from_project(&project, count))
 }
 
-/// 删除项目:全体成员(显式归属 + 自动归组)写成显式移出,留在未分组且不随
-/// 该文件夹的下一次自动物化复活;之后在该文件夹新建的会话照常自动归组。
-/// 会话本体永不删除;返回受影响会话 id 供前端提示。
+/// `update_project`'s roots-replacement path (extracted for command-level
+/// tests): the payload is first normalized to the store's canonical form and
+/// removed is computed from the normalized result — comparing the raw invoke
+/// payload directly would only key-fold the strings (see store.rs
+/// `removed_roots`) while stored roots are canonicalized; the same directory
+/// spelled differently (macOS /var→/private/var, symlinked home, autofs)
+/// would misjudge a no-op edit as a removal and hard-expel every auto member
+/// under that root (review #484 B3). Root replacement and member expulsion
+/// complete under the same store lock in the same persist: on failure the
+/// retry's removed recomputation still hits, so the expel is never
+/// permanently skipped (review #484 B3).
+pub(crate) fn replace_project_roots_and_expel(
+    store: &ProjectStore,
+    sessions: &SessionStore,
+    agents: &SessionAgentStore,
+    project_id: &str,
+    name: Option<String>,
+    roots: Vec<PathBuf>,
+) -> Result<Project, String> {
+    let normalized = ProjectStore::normalize_roots(&roots)
+        .map_err(|e| format!("update_project({project_id}): {e:#}"))?;
+    let previous_roots = store.get(project_id).map(|project| project.roots);
+    let removed = previous_roots
+        .map(|previous| crate::features::projects::removed_roots(&previous, &normalized))
+        .unwrap_or_default();
+    let mut expel_session_ids = Vec::new();
+    for root in &removed {
+        // Same enumeration as delete_project: sessions under the removed
+        // roots in both binding stores; the store side skips ids that already
+        // have assignment entries per tier-① semantics.
+        for (session_id, _) in agents.sessions_under_workspace(root) {
+            expel_session_ids.push(session_id);
+        }
+        for (session_id, _) in sessions.workspace_bindings_under(root) {
+            expel_session_ids.push(session_id);
+        }
+    }
+    expel_session_ids.sort();
+    expel_session_ids.dedup();
+    store
+        .update_project_and_expel(project_id, name, normalized, &expel_session_ids)
+        .map_err(|e| format!("update_project({project_id}): {e:#}"))
+}
+
+/// Delete a project: all members (explicitly assigned + auto-grouped) are
+/// written as explicit move-outs, stay in Ungrouped, and do not revive with
+/// the folder's next auto-materialization; sessions created later in that
+/// folder auto-group as usual. Sessions themselves are never deleted; the
+/// affected session ids are returned for the frontend to prompt.
 #[tauri::command]
 pub async fn delete_project(
     project_id: String,
@@ -187,9 +239,10 @@ pub async fn delete_project(
     sessions: State<'_, SessionStore>,
     acp_pool: State<'_, AcpPool>,
 ) -> Result<DeleteProjectReport, String> {
-    // 自动归组成员枚举:两类绑定存储里落在该项目任一 root 之下的会话。
-    // 已有归属条目的 id 由 store 侧按 tier-① 语义跳过(显式归属它处/已移出
-    // 都不是本项目成员)。
+    // Auto-grouped member enumeration: sessions under any of the project's
+    // roots in both binding stores. Ids that already have assignment entries
+    // are skipped by the store side per tier-① semantics (explicitly assigned
+    // elsewhere / already moved out are not members of this project).
     let roots = store
         .get(&project_id)
         .map(|project| project.roots.clone())
@@ -210,10 +263,12 @@ pub async fn delete_project(
     Ok(report)
 }
 
-/// 移动会话归属(纯归档操作,运行中的会话同样允许)。
-/// `project_id = None` 表示显式移出;`add_workspace_root = true` 时把该会话
-/// 绑定的项目目录顺带加为目标 root——临时会话没有项目目录,该组合报错。
-/// 物理层(工作目录绑定)永不触碰。
+/// Move a session's assignment (a pure filing operation, allowed for running
+/// sessions too). `project_id = None` means explicit move-out; with
+/// `add_workspace_root = true` the session's bound project directory is also
+/// adopted as a target root — temporary sessions have no project directory,
+/// so that combination errors. The physical layer (working-directory
+/// binding) is never touched.
 #[tauri::command]
 pub async fn move_session_to_project(
     session_id: String,
@@ -224,8 +279,10 @@ pub async fn move_session_to_project(
     sessions: State<'_, SessionStore>,
     acp_pool: State<'_, AcpPool>,
 ) -> Result<MoveSessionOutcome, String> {
-    // 先确认会话存在,避免归属表残留无效 id(同 set_session_pinned 惯例);
-    // scheduled-run 会话与兄弟命令同口径拒绝,防止运行记录被写进归属表。
+    // Confirm the session exists first so the assignment table keeps no
+    // invalid ids (same convention as set_session_pinned); scheduled-run
+    // sessions are rejected with the same rule as the sibling commands so run
+    // records never enter the assignment table.
     ensure_chat_session(&sessions, &session_id, "move_session_to_project")
         .map_err(|e| format!("move_session_to_project({session_id}): {e}"))?;
     let workspace_root = if add_workspace_root.unwrap_or(false) {
@@ -234,11 +291,14 @@ pub async fn move_session_to_project(
                 "move_session_to_project: add_workspace_root requires project_id".to_string(),
             );
         }
-        // 统一工作区探测(跨模式融合):代码/ACP 会话走 agent 记录;普通绑定
-        // 会话回落到双根信号——执行根≠账本根 ⇒ 已绑定,执行根即绑定目录
-        // (#445 的绑定语义)。agent 记录存在但非项目形态(如临时)与记录缺失
-        // (Err)两种缺席模式都穿透到同一回退,不让 Ok(Temporary) 短路成错误
-        // (评审 #452 finding 4)。
+        // Unified workspace detection (cross-mode fusion): code/ACP sessions
+        // go through the agent record; plain bound sessions fall back to the
+        // dual-root signal — execution root ≠ ledger root ⇒ bound, and the
+        // execution root is the bound directory (#445 binding semantics).
+        // Both absence modes — an agent record that exists but is not
+        // project-shaped (e.g. temporary) and a missing record (Err) — fall
+        // through to the same fallback, so Ok(Temporary) does not short-
+        // circuit into an error (review #452 finding 4).
         let detected = match acp_pool.workspace_info(&session_id) {
             Ok(info) if info.workspace_kind == CodexWorkspaceKind::Project => {
                 Some(PathBuf::from(info.workspace_path))
@@ -246,8 +306,9 @@ pub async fn move_session_to_project(
             _ => sessions
                 .session_roots(&session_id)
                 .ok()
-                // bound 标志是权威判定:不得用 ledger != execution 的路径比较
-                // 代打(SessionRoots::bound 的文档约定;评审 #464 MINOR 7)。
+                // The bound flag is authoritative: never substitute a
+                // ledger != execution path comparison (documented contract of
+                // SessionRoots::bound; review #464 MINOR 7).
                 .filter(|roots| roots.bound)
                 .map(|roots| roots.execution),
         };
@@ -273,9 +334,11 @@ pub async fn move_session_to_project(
     Ok(outcome)
 }
 
-/// 文件夹项目自动物化(Codex 客户端式收编):roots 由前端从会话列表的
-/// 工作区聚合(客户端驱动,与 Codex `project/import` 由桌面端发起同构)。
-/// 幂等:覆盖复用 / 冲突逐根上报;有新建才广播列表变更。
+/// Folder-project auto-materialization (Codex-client-style adoption): roots
+/// are aggregated by the frontend from session-list workspaces (client-
+/// driven, isomorphic to Codex `project/import` being initiated by the
+/// desktop). Idempotent: covered roots are reused / conflicts reported per
+/// root; the list-changed broadcast only fires when something was created.
 #[tauri::command]
 pub async fn ensure_folder_projects(
     roots: Vec<PathBuf>,
@@ -294,9 +357,11 @@ pub async fn ensure_folder_projects(
     Ok(outcomes)
 }
 
-/// 反物化排除列表(§3):`never = true` 表示"不再为此文件夹自动建项目",
-/// `false` 撤销。可见、可撤销、幂等;只影响未来的自动物化,不动既有项目。
-/// 返回更新后的排除列表;经 projects:list_changed 让面板/侧栏刷新。
+/// Anti-materialization exclusion list (§3): `never = true` means "never
+/// auto-create a project for this folder again", `false` revokes. Visible,
+/// revocable, idempotent; affects only future auto-materialization and leaves
+/// existing projects untouched. Returns the updated exclusion list; the
+/// panel/sidebar refresh via projects:list_changed.
 #[tauri::command]
 pub async fn projects_set_never_materialize(
     root: PathBuf,
@@ -311,28 +376,36 @@ pub async fn projects_set_never_materialize(
     Ok(roots)
 }
 
-/// `align_session_to_project` 的结果汇报。applied=false 时 reason 区分
-/// `no_project`(无归属)与 `no_change`(钥匙串已与项目一致)。
+/// Result report of `align_session_to_project`. When applied=false, reason
+/// distinguishes `no_project` (no assignment), `no_change` (keychain already
+/// matches the project), and `write_skipped` (the binding store wrote
+/// nothing: agent record gone / sidecar unreadable; disk unchanged).
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 pub struct AlignOutcome {
     pub session_id: String,
-    /// 对齐后(或未变更时的当前)钥匙串快照:主根槽位 = 会话 cwd。
+    /// Keychain snapshot after alignment (or the current one when unchanged):
+    /// primary slot = session cwd.
     pub roots: Vec<PathBuf>,
     pub applied: bool,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub reason: Option<String>,
 }
 
-/// 对齐到项目(§6/§9.7 显式动作):把会话的钥匙串快照替换为其归属项目
-/// **当时**的全部根——主根槽位 = 会话自己的 cwd(不换门牌,§9.2),附加根 =
-/// 项目 roots 去掉 cwd 后保序。项目解析与前端同口径:显式归属优先,
-/// tier-② 多命中按 position 最小者收编(resolve_session_project)。
+/// Align to project (§6/§9.7 explicit action): replace the session's
+/// keychain snapshot with **all** of its assigned project's roots as they are
+/// **at that moment** — primary slot = the session's own cwd (no door change,
+/// §9.2), additional roots = project roots minus cwd, order preserved.
+/// Project resolution uses the same rule as the frontend: explicit
+/// assignment wins, tier-② multi-hits are adopted by the smallest position
+/// (resolve_session_project).
 ///
-/// 写入双存储(agent 记录 / plain 绑定 sidecar,与 rebind 的双存储平移同款);
-/// 在飞引擎经 Op::SyncSession 推送,下回合生效。栅栏:活动回合(ACP prompt /
-/// 原生 turn / scheduled 轮)拒绝,返回 ALIGN_BUSY 类型化错误;无绑定工作区
-/// 的临时/scheduled 会话报 ALIGN_NO_WORKSPACE。幂等:钥匙串与现状相同则
-/// applied=false, reason=no_change。
+/// Written to both stores (agent record / plain binding sidecar, the same
+/// dual-store shift as rebind); live engines are pushed via Op::SyncSession
+/// and it takes effect next turn. Fence: an active turn (ACP prompt / native
+/// turn / scheduled round) rejects with the typed ALIGN_BUSY error;
+/// temporary/scheduled sessions without a bound workspace get
+/// ALIGN_NO_WORKSPACE. Idempotent: a keychain identical to the current one
+/// yields applied=false, reason=no_change.
 #[tauri::command]
 pub async fn align_session_to_project(
     session_id: String,
@@ -342,81 +415,30 @@ pub async fn align_session_to_project(
     acp_pool: State<'_, AcpPool>,
     engines: State<'_, crate::features::assistant::engine_pool::EnginePool>,
 ) -> Result<AlignOutcome, String> {
-    let session_roots = sessions
-        .session_roots(&session_id)
-        .map_err(|e| format!("align_session_to_project: {e:#}"))?;
-    if !session_roots.bound {
-        return Err(format!(
-            "ALIGN_NO_WORKSPACE: 临时会话没有绑定工作区，无法对齐到项目 (session has no bound workspace)"
-        ));
-    }
-    let cwd = session_roots.execution;
-
-    // 当前快照:agent 记录(代码/ACP)或 plain 绑定 sidecar。
-    let agent_bound = acp_pool
-        .agents()
-        .get(&session_id)
-        .workspace_path
-        .is_some();
-    let current = if agent_bound {
-        acp_pool.agents().session_workspace_roots(&session_id)
-    } else {
-        sessions.session_workspace_roots(&session_id)
-    };
-    if !agent_bound && sessions.session_workspace_binding(&session_id).is_none() {
-        return Err(format!(
-            "ALIGN_NO_WORKSPACE: 临时会话没有绑定工作区，无法对齐到项目 (session has no bound workspace)"
-        ));
-    }
-
-    let Some(project) = store.resolve_session_project(&session_id, &cwd) else {
-        return Ok(AlignOutcome {
-            session_id,
-            roots: current,
-            applied: false,
-            reason: Some("no_project".to_string()),
-        });
-    };
-    let next = ProjectStore::keychain_for_workspace(&cwd, &project.roots);
-    let same = current.len() == next.len()
-        && current
-            .iter()
-            .zip(next.iter())
-            .all(|(a, b)| a == b);
-    if same {
-        return Ok(AlignOutcome {
-            session_id,
-            roots: next,
-            applied: false,
-            reason: Some("no_change".to_string()),
-        });
-    }
-
-    // 活跃回合栅栏(同 rebind 门口径):在跑 prompt/turn/scheduled 轮即拒绝。
-    if acp_pool.is_turn_active(&session_id).await
+    // Active-turn fence (same rule as the rebind gate): a running
+    // prompt/turn/scheduled round rejects.
+    let busy = acp_pool.is_turn_active(&session_id).await
         || engines.is_turn_active(&session_id)
-        || engines.is_scheduled_turn_running(&session_id)
-    {
-        return Err(
-            "ALIGN_BUSY: 会话有活动回合，对齐被拒绝，请空闲后重试 (active turn in progress)"
-                .to_string(),
-        );
+        || engines.is_scheduled_turn_running(&session_id);
+    let outcome = align_session_keychain(
+        &session_id,
+        AlignStores {
+            projects: &store,
+            sessions: &sessions,
+            agents: acp_pool.agents(),
+        },
+        busy,
+    )?;
+    if !outcome.applied {
+        // Nothing was written (no_project / no_change / write_skipped): no
+        // live-engine push, no event — runtime state must not diverge from
+        // disk (review #484 B3).
+        return Ok(outcome);
     }
 
-    // 双存储写入:agent 记录(原生代码会话含 sidecar 重写)/ plain sidecar。
-    if agent_bound {
-        acp_pool
-            .agents()
-            .set_session_workspace_roots(&session_id, next.clone())
-            .map_err(|e| format!("align_session_to_project: {e:#}"))?;
-    } else {
-        sessions
-            .set_session_workspace_roots(&session_id, next.clone())
-            .map_err(|e| format!("align_session_to_project: {e:#}"))?;
-    }
-
-    // 在飞引擎推送新根集合(下回合生效);推送失败不阻断——下次 spawn/resume
-    // 从绑定存储回填同一快照。
+    // Push the new root set to a live engine (takes effect next turn); a
+    // push failure does not block — the next spawn/resume backfills the same
+    // snapshot from the binding store.
     if let Some(engine) = engines.handle_for(&session_id).await {
         match sessions.load(&session_id) {
             Ok(saved) => {
@@ -436,36 +458,152 @@ pub async fn align_session_to_project(
             }
         }
     }
-    // 列表透出刷新:workspace_roots 随 list_sessions / 代码会话列表下发,
-    // 经既有 session:list_changed 订阅让 chat 车道桥层重取(代码车道由
-    // 前端 align 调用点自行 refreshSessions)。
+    // List surfacing refresh: workspace_roots ships with list_sessions / the
+    // code-session list, and the chat lane's bridge layer refetches through
+    // the existing session:list_changed subscription (the code lane is
+    // refreshed by the frontend's align call site itself via
+    // refreshSessions).
     super::sessions::emit_session_event(&app, "session:list_changed", &session_id, "aligned");
+    Ok(outcome)
+}
+
+/// The three stores `align_session_to_project` depends on (extracted so
+/// command-level tests can bypass Tauri State/AppHandle).
+pub(crate) struct AlignStores<'a> {
+    pub projects: &'a ProjectStore,
+    pub sessions: &'a SessionStore,
+    pub agents: &'a SessionAgentStore,
+}
+
+/// The align command's decision-and-persist core: the command wrapper owns
+/// active-turn probing (`busy`), the live-engine push, and event emission;
+/// this only reads stores, writes both binding stores, and reports `applied`
+/// honestly.
+///
+/// Difference from rebind (review #484: align has no post-write busy
+/// recheck): rebind's recheck targets the window where a turn starts between
+/// the entry fence and the multi-file migration and executes against the old
+/// directory; align's write is a single atomic record/sidecar rewrite and
+/// never moves the session's own cwd (the keychain only swaps additional
+/// roots, §9.2 no door change) — a turn started inside the fence window
+/// still executes against the same cwd, the new root set takes effect next
+/// turn via SyncSession, and a retry has no value, so there is no post-write
+/// recheck.
+pub(crate) fn align_session_keychain(
+    session_id: &str,
+    stores: AlignStores<'_>,
+    busy: bool,
+) -> Result<AlignOutcome, String> {
+    let session_roots = stores
+        .sessions
+        .session_roots(session_id)
+        .map_err(|e| format!("align_session_to_project: {e:#}"))?;
+    if !session_roots.bound {
+        return Err(format!(
+            "ALIGN_NO_WORKSPACE: 临时会话没有绑定工作区，无法对齐到项目 (session has no bound workspace)"
+        ));
+    }
+    let cwd = session_roots.execution;
+
+    // Current snapshot: agent record (code/ACP) or plain binding sidecar.
+    let agent_bound = stores.agents.get(session_id).workspace_path.is_some();
+    let current = if agent_bound {
+        stores.agents.session_workspace_roots(session_id)
+    } else {
+        stores.sessions.session_workspace_roots(session_id)
+    };
+    if !agent_bound
+        && stores
+            .sessions
+            .session_workspace_binding(session_id)
+            .is_none()
+    {
+        return Err(format!(
+            "ALIGN_NO_WORKSPACE: 临时会话没有绑定工作区，无法对齐到项目 (session has no bound workspace)"
+        ));
+    }
+
+    let Some(project) = stores.projects.resolve_session_project(session_id, &cwd) else {
+        return Ok(AlignOutcome {
+            session_id: session_id.to_string(),
+            roots: current,
+            applied: false,
+            reason: Some("no_project".to_string()),
+        });
+    };
+    let next = ProjectStore::keychain_for_workspace(&cwd, &project.roots);
+    let same = current.len() == next.len() && current.iter().zip(next.iter()).all(|(a, b)| a == b);
+    if same {
+        return Ok(AlignOutcome {
+            session_id: session_id.to_string(),
+            roots: next,
+            applied: false,
+            reason: Some("no_change".to_string()),
+        });
+    }
+
+    if busy {
+        return Err(
+            "ALIGN_BUSY: 会话有活动回合，对齐被拒绝，请空闲后重试 (active turn in progress)"
+                .to_string(),
+        );
+    }
+
+    // Dual-store write: agent record (native code sessions also rewrite the
+    // sidecar) / plain sidecar. Ok(false) = the store wrote nothing (agent
+    // record gone / sidecar unreadable): must not claim applied, and the
+    // command layer skips the live-engine push and event accordingly
+    // (review #484 B3).
+    let written = if agent_bound {
+        stores
+            .agents
+            .set_session_workspace_roots(session_id, next.clone())
+            .map_err(|e| format!("align_session_to_project: {e:#}"))?
+    } else {
+        stores
+            .sessions
+            .set_session_workspace_roots(session_id, next.clone())
+            .map_err(|e| format!("align_session_to_project: {e:#}"))?
+    };
+    if !written {
+        return Ok(AlignOutcome {
+            session_id: session_id.to_string(),
+            roots: current,
+            applied: false,
+            reason: Some("write_skipped".to_string()),
+        });
+    }
     Ok(AlignOutcome {
-        session_id,
+        session_id: session_id.to_string(),
         roots: next,
         applied: true,
         reason: None,
     })
 }
 
-/// rebind_workspace_root 的结果汇报:逐会话结果 + 受影响项目。重绑定幂等,
-/// 失败项可直接重试(候选快照含"已在 to 下但元数据未同步"的重试项,
-/// 已成功的部分重跑为空操作)。
+/// Result report of rebind_workspace_root: per-session results + affected
+/// projects. Rebinding is idempotent, and failed entries can be retried
+/// directly (the candidate snapshot includes retry entries that are "already
+/// under `to` but whose metadata is not synced"; already-succeeded parts
+/// rerun as no-ops).
 #[derive(Debug, Clone, Serialize)]
 pub struct RebindWorkspaceReport {
     pub rebound_session_ids: Vec<String>,
     pub failed_session_ids: Vec<String>,
     pub affected_project_ids: Vec<String>,
-    /// 迁移完成后复查发现已进入活跃回合的会话:它们的绑定已平移,但回合
-    /// 可能仍对着旧目录执行,前端据此提示必要时空闲后重试一次。
+    /// Sessions found by the post-migration recheck to have entered an
+    /// active turn: their bindings have shifted, but the turn may still be
+    /// executing against the old directory; the frontend uses this to prompt
+    /// for one retry when idle if necessary.
     #[serde(default)]
     pub post_busy_session_ids: Vec<String>,
 }
 
-/// `from` 入参校验:空串与文件系统根(Unix `/`、Windows 盘符根——两者都
-/// 没有 parent)拒绝。空前缀经折叠键匹配会命中一切记录——`from=""` 是全量
-/// 重写,`from="/"` 配合 confirm-existing 是全量重安置,都不是重绑定语义
-/// (评审 #463 minor)。
+/// `from` input validation: the empty string and filesystem roots (Unix `/`,
+/// Windows drive roots — neither has a parent) are rejected. An empty prefix
+/// matches every record under folded-key matching — `from=""` is a wholesale
+/// rewrite and `from="/"` with confirm-existing is a wholesale relocation;
+/// neither is rebind semantics (review #463 minor).
 fn validate_rebind_from(from: &Path) -> Result<(), String> {
     if from.as_os_str().is_empty() || from.parent().is_none() {
         return Err(format!(
@@ -476,9 +614,11 @@ fn validate_rebind_from(from: &Path) -> Result<(), String> {
     Ok(())
 }
 
-/// `to` 不得位于 `from` 之内(相等由调用方先行处理):重绑定按前缀平移,
-/// 目标在旧目录内部时重跑会不断加深 (/a/x → /a/x/new/x → …),幂等性被
-/// 破坏(评审 #451 finding 6)。折叠键比较,大小写/分隔符差异不能逃避。
+/// `to` must not sit inside `from` (equality is handled by the caller
+/// first): rebinding shifts by prefix, and a target inside the old directory
+/// deepens on every rerun (/a/x → /a/x/new/x → …), breaking idempotence
+/// (review #451 finding 6). Compared on folded keys, so case/separator
+/// differences cannot escape.
 fn reject_nested_rebind_target(from: &Path, to_key: &Path) -> Result<(), String> {
     let from_canon = std::fs::canonicalize(from).unwrap_or_else(|_| from.to_path_buf());
     let from_key = crate::platform::os::filesystem_path_identity_key(
@@ -498,8 +638,10 @@ fn reject_nested_rebind_target(from: &Path, to_key: &Path) -> Result<(), String>
     Ok(())
 }
 
-/// 旧目录仍在磁盘上 = 非断链场景,要求显式强确认。错误以稳定标记前缀
-/// 表达类型,前端据此升级强警告,不匹配人类文案(finding 11)。
+/// The old directory still on disk = not a broken-link scenario, so explicit
+/// strong confirmation is required. Errors express their type with a stable
+/// marker prefix; the frontend escalates to a strong warning based on it and
+/// never matches human copy (finding 11).
 fn require_confirm_existing(from: &Path, confirm_existing: Option<bool>) -> Result<(), String> {
     if from.is_dir() && !confirm_existing.unwrap_or(false) {
         return Err(
@@ -510,16 +652,22 @@ fn require_confirm_existing(from: &Path, confirm_existing: Option<bool>) -> Resu
     Ok(())
 }
 
-/// 目录重绑定(修断链):项目文件夹被物理移走/删除后,把一切以 `from` 为
-/// 前缀的绑定——项目 root、会话工作区(索引/sidecar/元数据三处)、归属
-/// 派生——整体平移到 `to`。与"移动归属"不同,这是物理层写操作,故有栅栏:
-/// - `to` 必须存在且是目录(经 validate_codex_project_workspace 校验);
-/// - 旧目录 `from` 仍存在时须 `confirm_existing = true`(前端已强确认);
-/// - 受影响会话任一有活跃回合(ACP prompt、原生 Engine turn 或 scheduled
-///   轮)即整体拒绝;
-/// - 平移后项目 root 不得与其它项目重叠,违者整体报错回滚。
-/// transcript 里的历史路径不改写;workspace baseline 逐会话重采集(失败仅
-/// 记日志,baseline 可再派生)。
+/// Directory rebind (broken-link repair): after a project folder is
+/// physically moved/deleted, shift every binding under the `from` prefix —
+/// project roots, session workspaces (three places: index/sidecar/metadata),
+/// and assignment derivation — wholesale to `to`. Unlike "move assignment"
+/// this is a physical-layer write, hence the fences:
+/// - `to` must exist and be a directory (validated by
+///   validate_codex_project_workspace);
+/// - while the old directory `from` still exists, `confirm_existing = true`
+///   is required (the frontend has strongly confirmed);
+/// - if any affected session has an active turn (ACP prompt, native Engine
+///   turn, or scheduled round), the whole operation is rejected;
+/// - after the shift a project root must not nest within its own project,
+///   otherwise everything errors and rolls back.
+/// Historical paths inside transcripts are not rewritten; workspace baselines
+/// are recaptured per session (failures only log; baselines can be
+/// re-derived).
 #[tauri::command]
 pub async fn rebind_workspace_root(
     from: PathBuf,
@@ -545,12 +693,16 @@ pub async fn rebind_workspace_root(
     reject_nested_rebind_target(&from, &to_key)?;
     require_confirm_existing(&from, confirm_existing)?;
 
-    // 受影响集合快照(活跃回合栅栏与元数据重放共用),必须在重写之前取
-    // (评审 #463 M1):重写返回的只是本跑改写的集合,上一跑已平移而
-    // set_workspace 失败的会话不再匹配 `from`,不快照就永远无法重试。
-    // 候选集跨两类绑定存储:agent 记录(代码/ACP,含索引外孤儿 sidecar,
-    // M6)与普通会话绑定 sidecar(unify:分组跟随绑定,普通绑定会话同样在
-    // 重绑定范围内);另纳入"已在 to 下但元数据未同步"的重试候选。
+    // Snapshot of the affected set (shared by the active-turn fence and the
+    // metadata replay), must be taken before the rewrite (review #463 M1):
+    // the rewrite only returns what this run rewrote — sessions shifted by a
+    // previous run whose set_workspace failed no longer match `from`, and
+    // without a snapshot they could never be retried. The candidate set spans
+    // both binding stores: agent records (code/ACP, including orphan sidecars
+    // outside the index, M6) and plain-session binding sidecars (unify:
+    // grouping follows binding, so plain bound sessions are equally in rebind
+    // scope); retry candidates "already under `to` but metadata not synced"
+    // are also included.
     let mut affected = acp_pool.agents().sessions_under_workspace(&from);
     affected.extend(sessions.workspace_bindings_under(&from));
     for (session_id, path) in acp_pool
@@ -562,8 +714,9 @@ pub async fn rebind_workspace_root(
         if affected.iter().any(|(sid, _)| *sid == session_id) {
             continue;
         }
-        // 元数据与绑定一致的是正常会话;读不出元数据(孤儿/损坏)也按候选
-        // 处理,元数据循环里自会分类。
+        // A session whose metadata matches its binding is normal; one whose
+        // metadata cannot be read (orphan/corrupt) is also treated as a
+        // candidate — the metadata loop classifies it.
         let needs_metadata_sync = match sessions.load(&session_id) {
             Ok(session) => session.metadata.workspace != path,
             Err(_) => true,
@@ -573,9 +726,11 @@ pub async fn rebind_workspace_root(
         }
     }
 
-    // 活跃回合栅栏:受影响会话任一在跑 prompt/turn/scheduled 轮就拒绝,
-    // 等空闲后重试。scheduled 轮只记在 scheduled_running_sessions,不算
-    // 进去会漏掉 spawn→submit 窗口里的在途轮(同 rewind 门口径,M5)。
+    // Active-turn fence: if any affected session is running a
+    // prompt/turn/scheduled round, reject and retry when idle. Scheduled
+    // rounds are only recorded in scheduled_running_sessions; not counting
+    // them would miss in-flight rounds in the spawn→submit window (same rule
+    // as the rewind gate, M5).
     let mut busy_ids = Vec::new();
     for (session_id, _) in &affected {
         if acp_pool.is_turn_active(session_id).await
@@ -592,9 +747,12 @@ pub async fn rebind_workspace_root(
         ));
     }
 
-    // 顺序:项目 root → 会话绑定(索引+sidecar,两类绑定存储) → 元数据 →
-    // baseline。每步幂等,失败重试只补未完成部分。元数据循环驱动自上面的
-    // 快照,逐候选算目标路径(from 前缀下平移;已在 to 下的重试候选原样)。
+    // Order: project roots → session bindings (index + sidecar, both binding
+    // stores) → metadata → baseline. Every step is idempotent, and a failed
+    // retry only completes the unfinished parts. The metadata loop is driven
+    // by the snapshot above, computing the target path per candidate (shifted
+    // under the from prefix; retry candidates already under `to` stay
+    // as-is).
     let affected_project_ids = store
         .rebind_roots(&from, &to_key)
         .map_err(|e| format!("rebind_workspace_root: {e:#}"))?;
@@ -609,8 +767,9 @@ pub async fn rebind_workspace_root(
     let plain_rebind = sessions
         .rebind_workspace_bindings(&from, &to_key)
         .map_err(|e| format!("rebind_workspace_root: {e:#}"))?;
-    // 侧写失败的条目绑定仍指向 from:元数据循环跳过它们(否则绑定/元数据
-    // 分叉),失败名单并入报告(评审 #464 MAJOR 4)。
+    // Entries whose sidecar write failed still point at `from`: the metadata
+    // loop skips them (otherwise binding/metadata diverge), and the failure
+    // list folds into the report (review #464 MAJOR 4).
     let plain_failed: std::collections::HashSet<&str> = plain_rebind
         .failed_session_ids
         .iter()
@@ -626,9 +785,11 @@ pub async fn rebind_workspace_root(
         else {
             continue;
         };
-        // 孤儿(会话 JSON 已不存在)没有元数据可写,按成功计;损坏 JSON
-        // 不是孤儿——set_workspace 的 load 解析失败会进 failed,可重试
-        // (评审 #463 minor:孤儿分类只认 NotFound,不认一切 load 错误)。
+        // Orphans (session JSON no longer exists) have no metadata to write
+        // and count as succeeded; a corrupt JSON is not an orphan —
+        // set_workspace's load parse failure goes into failed and is
+        // retryable (review #463 minor: the orphan classification only
+        // accepts NotFound, not every load error).
         if sessions.durable_session_record_is_absent(session_id) {
             rebound_session_ids.push(session_id.clone());
             continue;
@@ -640,10 +801,12 @@ pub async fn rebind_workspace_root(
                 failed_session_ids.push(session_id.clone());
             }
         }
-        // baseline 重采集只对代码会话:普通会话不消费 workspace baseline,
-        // 不为它们创建代码车道专属 sidecar。走 spawn_blocking:非 git 目录
-        // 会同步遍历上万条目,不能在 async 命令线程上串行跑(codex.rs 同款
-        // idiom)。best-effort,失败仅记日志。
+        // Baseline recapture is only for code sessions: plain sessions do
+        // not consume workspace baselines, and no code-lane sidecar is
+        // created for them. Runs under spawn_blocking: a non-git directory
+        // synchronously walks tens of thousands of entries and must not run
+        // serially on the async command thread (same idiom as codex.rs).
+        // Best-effort; failures only log.
         if code_rebound_ids.contains(session_id.as_str()) {
             let baseline_session_id = session_id.clone();
             let baseline_root = new_path.clone();
@@ -677,9 +840,12 @@ pub async fn rebind_workspace_root(
             "workspace_rebound",
         );
     }
-    // 迁移后忙碌复查(finding 5):入口栅栏与多文件迁移不是互斥区,回合可能
-    // 在迁移期间启动、对着旧目录执行。绑定已平移,这里只如实上报,前端提示
-    // 必要时空闲后重试一次。scheduled 轮同入口栅栏口径(M5)。
+    // Post-migration busy recheck (finding 5): the entry fence and the
+    // multi-file migration are not a critical section — a turn may start
+    // during the migration and execute against the old directory. The
+    // bindings have shifted; this only reports honestly, and the frontend
+    // prompts for one retry when idle if necessary. Scheduled rounds follow
+    // the same rule as the entry fence (M5).
     let mut post_busy_session_ids = Vec::new();
     for (session_id, _) in &affected {
         if acp_pool.is_turn_active(session_id).await
@@ -701,9 +867,10 @@ pub async fn rebind_workspace_root(
 mod tests {
     use super::*;
 
-    /// 线缆形状锁:bridge 的 applySnapshot 按 projects/assignments 键消费
-    /// 快照,serde 改名会让每次快照被静默丢弃(评审 finding 41);
-    /// never_materialize_roots(§3 排除列表)同在快照内。
+    /// Wire-shape lock: the bridge's applySnapshot consumes the snapshot by
+    /// the projects/assignments keys, and a serde rename would silently drop
+    /// every snapshot (review finding 41); never_materialize_roots (§3
+    /// exclusion list) is in the snapshot too.
     #[test]
     fn project_list_response_wire_keys_are_stable() {
         let value = serde_json::to_value(ProjectListResponse {
@@ -722,9 +889,10 @@ mod tests {
     fn rebind_from_rejects_empty_and_root() {
         assert!(
             validate_rebind_from(Path::new("")).is_err(),
-            "空串是全量重写"
+            "empty string is a wholesale rewrite"
         );
-        // 平台根(Unix `/`、Windows 盘符根)没有 parent,必须拒绝。
+        // Platform roots (Unix `/`, Windows drive roots) have no parent and
+        // must be rejected.
         let root = std::env::temp_dir()
             .canonicalize()
             .ok()
@@ -732,7 +900,7 @@ mod tests {
             .expect("temp dir must have a root ancestor");
         assert!(
             validate_rebind_from(&root).is_err(),
-            "文件系统根 {root:?} 配合 confirm-existing 是全量重安置"
+            "filesystem root {root:?} with confirm-existing is a wholesale relocation"
         );
         let normal = std::env::temp_dir().join("pinvou3-rebind-from-check");
         assert!(validate_rebind_from(&normal).is_ok());
@@ -745,7 +913,7 @@ mod tests {
         assert!(reject_nested_rebind_target(from, Path::new("/a/b")).is_err());
         assert!(
             reject_nested_rebind_target(from, Path::new("/a/bc")).is_ok(),
-            "目录边界:sibling 前缀不得误命中"
+            "directory boundary: a sibling prefix must not false-hit"
         );
         assert!(reject_nested_rebind_target(from, Path::new("/a")).is_ok());
     }
@@ -761,15 +929,414 @@ mod tests {
         let error = require_confirm_existing(&dir, None).unwrap_err();
         assert!(
             error.starts_with("REBIND_OLD_ROOT_EXISTS"),
-            "稳定标记前缀:前端据此升级强警告,不匹配人类文案"
+            "stable marker prefix: the frontend escalates to a strong warning based on it, never matching human copy"
         );
         assert!(require_confirm_existing(&dir, Some(false)).is_err());
         assert!(require_confirm_existing(&dir, Some(true)).is_ok());
         let missing = dir.join("gone");
         assert!(
             require_confirm_existing(&missing, None).is_ok(),
-            "断链场景(目录已不在盘上)无需确认"
+            "broken-link scenario (directory gone from disk) needs no confirmation"
         );
         std::fs::remove_dir_all(&dir).unwrap();
+    }
+
+    // ── Command-level tests for update_project / align_session_to_project
+    //    (review #484 B3) ──
+
+    use crate::platform::paths::tests::ENV_LOCK;
+
+    fn unique_dir(label: &str) -> PathBuf {
+        std::env::temp_dir().join(format!(
+            "pinvou3-projects-cmd-{label}-{}",
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .map(|d| d.as_nanos())
+                .unwrap_or(0)
+        ))
+    }
+
+    /// Same shape as sessions/tests.rs's isolated_store: point PINVOU3_HOME
+    /// at a dedicated directory inside the process-wide env lock, then boot.
+    /// The home directory is deliberately not deleted (the directory must
+    /// stay on disk after the guard drops, matching the lifetime of the
+    /// session records under test).
+    fn isolated_session_store() -> (SessionStore, std::sync::MutexGuard<'static, ()>) {
+        let guard = ENV_LOCK.lock().unwrap_or_else(|p| p.into_inner());
+        let home = unique_dir("home");
+        // SAFETY: platform::paths::tests::ENV_LOCK held; env writes are serialized.
+        unsafe { std::env::set_var("PINVOU3_HOME", &home) };
+        let store = SessionStore::boot_with_scheduled_root(home.join("scheduled")).expect("boot");
+        (store, guard)
+    }
+
+    fn project_store_in(dir: &Path) -> ProjectStore {
+        ProjectStore::from_paths(dir.join("projects.json"))
+    }
+
+    fn create_plain_bound_session(
+        sessions: &SessionStore,
+        bound: &Path,
+        roots: Vec<PathBuf>,
+    ) -> String {
+        let session = sessions
+            .create_new("/model".into(), None, std::env::temp_dir())
+            .expect("create session");
+        let id = session.metadata.id;
+        sessions
+            .bind_session_workspace_with_roots(&id, bound.to_path_buf(), roots)
+            .expect("bind workspace");
+        id
+    }
+
+    /// align's active-turn fence: rejects when busy and writes nothing.
+    #[test]
+    fn align_busy_fence_rejects_without_writing() {
+        let (sessions, _g) = isolated_session_store();
+        let project_root = unique_dir("busy-proj");
+        let extra = unique_dir("busy-extra");
+        std::fs::create_dir_all(&project_root).unwrap();
+        std::fs::create_dir_all(&extra).unwrap();
+        let store = project_store_in(&unique_dir("busy-store"));
+        store
+            .create_project("p".to_string(), vec![project_root.clone(), extra.clone()])
+            .expect("create project");
+        // The current snapshot has only the primary root, which differs from
+        // the project keychain [primary, extra] → not no_change.
+        let session_id =
+            create_plain_bound_session(&sessions, &project_root, vec![project_root.clone()]);
+        let agents = SessionAgentStore::for_test(unique_dir("busy-agents").join("agents.json"));
+
+        let error = align_session_keychain(
+            &session_id,
+            AlignStores {
+                projects: &store,
+                sessions: &sessions,
+                agents: &agents,
+            },
+            true,
+        )
+        .expect_err("busy fence must reject");
+        assert!(error.starts_with("ALIGN_BUSY"), "typed error: {error}");
+        assert_eq!(
+            sessions.session_workspace_roots(&session_id),
+            vec![project_root.clone()],
+            "the on-disk snapshot is unchanged after the fence rejects"
+        );
+        let _ = std::fs::remove_dir_all(&project_root);
+        let _ = std::fs::remove_dir_all(&extra);
+    }
+
+    /// Plain binding channel: align writes the sidecar, preserving the
+    /// binding path and bound_at.
+    #[test]
+    fn align_writes_plain_binding_sidecar() {
+        let (sessions, _g) = isolated_session_store();
+        let project_root = unique_dir("plain-proj");
+        let extra = unique_dir("plain-extra");
+        std::fs::create_dir_all(&project_root).unwrap();
+        std::fs::create_dir_all(&extra).unwrap();
+        let store = project_store_in(&unique_dir("plain-store"));
+        store
+            .create_project("p".to_string(), vec![project_root.clone(), extra.clone()])
+            .expect("create project");
+        let session_id =
+            create_plain_bound_session(&sessions, &project_root, vec![project_root.clone()]);
+        let agents = SessionAgentStore::for_test(unique_dir("plain-agents").join("agents.json"));
+
+        let outcome = align_session_keychain(
+            &session_id,
+            AlignStores {
+                projects: &store,
+                sessions: &sessions,
+                agents: &agents,
+            },
+            false,
+        )
+        .expect("align");
+        assert!(outcome.applied);
+        assert_eq!(outcome.reason, None);
+        assert_eq!(
+            outcome.roots,
+            vec![project_root.clone(), extra.clone()],
+            "primary slot = session cwd, additional roots follow the project"
+        );
+        assert_eq!(
+            sessions.session_workspace_roots(&session_id),
+            outcome.roots,
+            "sidecar snapshot replaced"
+        );
+        assert_eq!(
+            sessions.session_workspace_binding(&session_id).as_deref(),
+            Some(project_root.as_path()),
+            "the binding path is not rewritten by alignment (no door change)"
+        );
+        // Read the sidecar directly to double-check: bound_at is not lost.
+        let sidecar_path = crate::platform::paths::sessions_root()
+            .join(&session_id)
+            .join("workspace-binding.json");
+        let raw: serde_json::Value =
+            serde_json::from_slice(&std::fs::read(&sidecar_path).expect("sidecar"))
+                .expect("parse sidecar");
+        assert!(raw.get("bound_at").is_some(), "bound_at preserved");
+        let _ = std::fs::remove_dir_all(&project_root);
+        let _ = std::fs::remove_dir_all(&extra);
+    }
+
+    /// Agent (native code session) channel: align writes both the index
+    /// record and the authoritative sidecar.
+    #[test]
+    fn align_writes_agent_record_and_code_session_sidecar() {
+        let (sessions, _g) = isolated_session_store();
+        let cwd = unique_dir("agent-cwd");
+        let extra = unique_dir("agent-extra");
+        std::fs::create_dir_all(&cwd).unwrap();
+        std::fs::create_dir_all(&extra).unwrap();
+        let agents_dir = unique_dir("agent-store");
+        std::fs::create_dir_all(&agents_dir).unwrap();
+        let agents = SessionAgentStore::for_test(agents_dir.join("session-agents.json"));
+        agents
+            .bind_code_native_session(
+                "code-1",
+                CodexWorkspaceKind::Project,
+                Some(cwd.clone()),
+                vec![cwd.clone()],
+            )
+            .expect("bind code session");
+        // session_roots goes through the production-style resolver: native
+        // code sessions' project binding.
+        let agents_for_resolver = agents.clone();
+        *sessions.execution_root_resolver.write() =
+            Some(std::sync::Arc::new(move |session_id: &str| {
+                agents_for_resolver.code_project_workspace(session_id)
+            }));
+        let store = project_store_in(&unique_dir("agent-projects"));
+        store
+            .create_project("p".to_string(), vec![cwd.clone(), extra.clone()])
+            .expect("create project");
+
+        let outcome = align_session_keychain(
+            "code-1",
+            AlignStores {
+                projects: &store,
+                sessions: &sessions,
+                agents: &agents,
+            },
+            false,
+        )
+        .expect("align");
+        assert!(outcome.applied);
+        assert_eq!(outcome.roots, vec![cwd.clone(), extra.clone()]);
+        assert_eq!(
+            agents.session_workspace_roots("code-1"),
+            vec![cwd.clone(), extra.clone()],
+            "index record replaced"
+        );
+        // The authoritative sidecar is rewritten in sync (native code
+        // sessions recover from it after the auxiliary index is lost; a
+        // missed write would revive the old value).
+        let sidecar_path = agents_dir
+            .join("sessions")
+            .join("code-1")
+            .join("code-session.json");
+        let raw: serde_json::Value =
+            serde_json::from_slice(&std::fs::read(&sidecar_path).expect("code-session sidecar"))
+                .expect("parse sidecar");
+        let roots = raw["workspace_roots"].as_array().expect("roots array");
+        assert_eq!(roots.len(), 2, "sidecar snapshot dual-written: {raw}");
+        let _ = std::fs::remove_dir_all(&cwd);
+        let _ = std::fs::remove_dir_all(&extra);
+        let _ = std::fs::remove_dir_all(&agents_dir);
+    }
+
+    /// Ok(false) is no longer swallowed: when the binding store writes
+    /// nothing (sidecar unreadable), report applied=false /
+    /// reason=write_skipped, and the command layer skips the live-engine push
+    /// and the session:list_changed event accordingly (review #484 B3-2).
+    #[test]
+    fn align_reports_write_skipped_when_store_declines() {
+        let (sessions, _g) = isolated_session_store();
+        let project_root = unique_dir("skip-proj");
+        let extra = unique_dir("skip-extra");
+        std::fs::create_dir_all(&project_root).unwrap();
+        std::fs::create_dir_all(&extra).unwrap();
+        let store = project_store_in(&unique_dir("skip-store"));
+        store
+            .create_project("p".to_string(), vec![project_root.clone(), extra.clone()])
+            .expect("create project");
+        let session_id =
+            create_plain_bound_session(&sessions, &project_root, vec![project_root.clone()]);
+        // The binding path is already in the in-memory cache; corrupting the
+        // on-disk sidecar makes the write side's read fail with Ok(false),
+        // while the entry's binding-existence check still hits the cache.
+        let sidecar_path = crate::platform::paths::sessions_root()
+            .join(&session_id)
+            .join("workspace-binding.json");
+        std::fs::write(&sidecar_path, "not json").expect("corrupt sidecar");
+        let agents = SessionAgentStore::for_test(unique_dir("skip-agents").join("agents.json"));
+
+        let outcome = align_session_keychain(
+            &session_id,
+            AlignStores {
+                projects: &store,
+                sessions: &sessions,
+                agents: &agents,
+            },
+            false,
+        )
+        .expect("align");
+        assert!(
+            !outcome.applied,
+            "must not claim applied when nothing was written"
+        );
+        assert_eq!(outcome.reason.as_deref(), Some("write_skipped"));
+        let _ = std::fs::remove_dir_all(&project_root);
+        let _ = std::fs::remove_dir_all(&extra);
+    }
+
+    /// AlignOutcome wire shape: reason only appears when applied=false
+    /// (skip_serializing_if); no reason key when applied.
+    #[test]
+    fn align_outcome_wire_shape_is_stable() {
+        let applied = serde_json::to_value(AlignOutcome {
+            session_id: "s1".to_string(),
+            roots: vec![PathBuf::from("/a")],
+            applied: true,
+            reason: None,
+        })
+        .expect("serialize");
+        let object = applied.as_object().expect("object");
+        for key in ["session_id", "roots", "applied"] {
+            assert!(object.contains_key(key), "missing wire key {key}");
+        }
+        assert!(
+            !object.contains_key("reason"),
+            "reason only appears on failure"
+        );
+        let skipped = serde_json::to_value(AlignOutcome {
+            session_id: "s1".to_string(),
+            roots: Vec::new(),
+            applied: false,
+            reason: Some("no_change".to_string()),
+        })
+        .expect("serialize");
+        assert_eq!(skipped["reason"], "no_change");
+    }
+
+    /// B3-1: a no-op root edit whose payload spelling differs from the
+    /// stored form (symlink spelling, same shape as macOS
+    /// /var→/private/var) must not be misjudged as a removal — removed is
+    /// computed from the normalized roots, and members are not hard-expelled.
+    /// Directory symlinks on Windows need privileges; unix/macOS cover this
+    /// (no cfg: the architecture guard bans platform conditional compilation
+    /// outside the adapter layer).
+    #[test]
+    fn update_noop_roots_edit_via_symlink_does_not_expel() {
+        if std::env::consts::OS == "windows" {
+            return;
+        }
+        let (sessions, _g) = isolated_session_store();
+        let base = unique_dir("symlink-base");
+        let real = base.join("real");
+        std::fs::create_dir_all(&real).unwrap();
+        let link = base.join("link");
+        let status = std::process::Command::new("ln")
+            .arg("-s")
+            .arg(&real)
+            .arg(&link)
+            .status()
+            .expect("spawn ln");
+        assert!(status.success(), "ln -s must succeed on unix-likes");
+        let canonical = real.canonicalize().unwrap();
+
+        let store = project_store_in(&base.join("store"));
+        let project = store
+            .create_project("p".to_string(), vec![real.clone()])
+            .expect("create project");
+        assert_eq!(project.roots, vec![canonical.clone()]);
+        let session_id = create_plain_bound_session(&sessions, &canonical, vec![canonical.clone()]);
+        let agents = SessionAgentStore::for_test(base.join("agents").join("agents.json"));
+
+        // The payload uses the symlink spelling: after normalization it lands
+        // back on the stored form and removed is empty.
+        let updated = replace_project_roots_and_expel(
+            &store,
+            &sessions,
+            &agents,
+            &project.id,
+            None,
+            vec![link.clone()],
+        )
+        .expect("no-op roots edit");
+        assert_eq!(updated.roots, vec![canonical.clone()]);
+        assert_eq!(
+            store.assignment_of(&session_id),
+            None,
+            "a no-op edit must not write move-out entries (a misjudged removal would hard-expel auto members)"
+        );
+        let _ = std::fs::remove_dir_all(&base);
+    }
+
+    /// B3-2/B3-3: on root removal, auto members from both binding stores are
+    /// written as explicit move-outs in the same transaction; a retry
+    /// (removed already empty) is idempotent and overturns nothing.
+    #[test]
+    fn update_expels_members_from_both_binding_stores_atomically() {
+        let (sessions, _g) = isolated_session_store();
+        let root_a = unique_dir("expel-a");
+        let root_b = unique_dir("expel-b");
+        std::fs::create_dir_all(&root_a).unwrap();
+        std::fs::create_dir_all(&root_b).unwrap();
+        let agents_dir = unique_dir("expel-agents");
+        std::fs::create_dir_all(&agents_dir).unwrap();
+        let agents = SessionAgentStore::for_test(agents_dir.join("session-agents.json"));
+        agents
+            .bind_code_native_session(
+                "code-under-a",
+                CodexWorkspaceKind::Project,
+                Some(root_a.clone()),
+                vec![root_a.clone()],
+            )
+            .expect("bind code session");
+        let plain_id = create_plain_bound_session(&sessions, &root_a, vec![root_a.clone()]);
+
+        let store = project_store_in(&unique_dir("expel-store"));
+        let project = store
+            .create_project("p".to_string(), vec![root_a.clone(), root_b.clone()])
+            .expect("create project");
+
+        let updated = replace_project_roots_and_expel(
+            &store,
+            &sessions,
+            &agents,
+            &project.id,
+            None,
+            vec![root_b.clone()],
+        )
+        .expect("replace roots");
+        assert_eq!(updated.roots, vec![root_b.canonicalize().unwrap()]);
+        for id in [&plain_id, "code-under-a"] {
+            assert_eq!(
+                store.assignment_of(id),
+                Some(None),
+                "{id} should be written as an explicit move-out"
+            );
+        }
+        // Retry: removed recomputes as empty, no expel in the transaction,
+        // existing move-out entries untouched.
+        let again = replace_project_roots_and_expel(
+            &store,
+            &sessions,
+            &agents,
+            &project.id,
+            None,
+            vec![root_b.clone()],
+        )
+        .expect("retry");
+        assert_eq!(again.roots, vec![root_b.canonicalize().unwrap()]);
+        assert_eq!(store.assignment_of(&plain_id), Some(None));
+        let _ = std::fs::remove_dir_all(&root_a);
+        let _ = std::fs::remove_dir_all(&root_b);
+        let _ = std::fs::remove_dir_all(&agents_dir);
     }
 }

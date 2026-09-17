@@ -348,9 +348,11 @@ impl SessionStore {
         (committed, result)
     }
 
-    /// 会话 JSON 是否已不在盘上(无效 id 一律按"在场"处理,fail-closed)。
-    /// 除删除路径外,目录重绑定的孤儿分类也用它:只认 NotFound,损坏 JSON
-    /// 不算孤儿(评审 #463:解析失败必须进失败名单可重试,不静默跳过)。
+    /// Whether the session JSON is gone from disk (invalid ids are always
+    /// treated as "present", fail-closed). Besides the delete path, the
+    /// directory rebind's orphan classification also uses it: only NotFound
+    /// counts; a corrupt JSON is not an orphan (review #463: parse failures
+    /// must go into the retryable failure list, not be silently skipped).
     pub(crate) fn durable_session_record_is_absent(&self, id: &str) -> bool {
         if validate_session_id(id).is_err() {
             return false;
@@ -472,10 +474,13 @@ impl SessionStore {
         if self.is_scheduled_session(id)? {
             bail!("Scheduled-run session '{id}' has no persisted execution profile");
         }
-        // 生产注入的 resolver（lib.rs）已同时覆盖两类绑定：codex_acp 原生
-        // 代码会话的项目绑定 + 普通 chat 会话的用户工作目录绑定（sidecar）。
-        // 这里的 .or_else 回退是防御性的，只在未注入 resolver 时（测试/启动
-        // 早期）生效——bridge 直接走 resolver（bridge.rs），不会经过本回退。
+        // The production-injected resolver (lib.rs) already covers both
+        // binding kinds: codex_acp native code sessions' project bindings +
+        // plain chat sessions' user working-directory bindings (sidecar).
+        // The .or_else fallback here is defensive and only takes effect when
+        // no resolver was injected (tests / early startup) — the bridge goes
+        // through the resolver directly (bridge.rs) and never passes through
+        // this fallback.
         let bound_project_root = self
             .execution_root_resolver
             .read()
@@ -503,10 +508,12 @@ impl SessionStore {
         Ok(())
     }
 
-    /// 目录重绑定的元数据写入(与 set_title 同款 load→patch→persist 模式)。
-    /// 只改 SavedSession 元数据的 workspace 字段,不触碰消息/transcript——
-    /// 历史回合里引用的旧路径是事实记录,保持原样。调用方(命令层)负责
-    /// 活跃回合栅栏;此处上锁防与 Engine 写盘竞争。
+    /// Metadata write for directory rebinding (the same load→patch→persist
+    /// pattern as set_title). Only the workspace field of the SavedSession
+    /// metadata changes; messages/transcript are untouched — old paths
+    /// referenced by historical turns are factual records and stay as-is.
+    /// The caller (command layer) owns the active-turn fence; the lock here
+    /// guards against racing the Engine's writes.
     pub fn set_workspace(&self, id: &str, workspace: PathBuf) -> Result<()> {
         let _mutation = self.scheduled_mutation.lock();
         let mut session = self
