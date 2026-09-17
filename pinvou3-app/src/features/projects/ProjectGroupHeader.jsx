@@ -25,8 +25,9 @@ const ProjectGroupHeader = ({
   onDelete,
   onDropSession,
   onRebind,
-  // 每个失效 root 一个徽标入口(逐根重绑定):部分失效的项目也有修复路径,
-  // 且一根重绑后其余失效根的入口不会消失。
+  // One badge entry per unavailable root (per-root rebind): projects with
+  // only some roots unavailable also get a repair path, and rebinding one
+  // root does not remove the entries for the remaining unavailable roots.
   unavailableRoots,
   // Highlight ownership lives in the sidebar container (one drop target lit at
   // a time) so the source row's dragend can clear it unconditionally even when
@@ -38,8 +39,9 @@ const ProjectGroupHeader = ({
 }) => {
   const [editing, setEditing] = useState(null);
   const [confirming, setConfirming] = useState(false);
-  // 多个失效 root 时折叠为"首徽标 + N":28px 头部行放不下多个 shrink-0
-  // 徽标(评审 #463 m3),展开后平铺并允许换行。
+  // With several unavailable roots, collapse to "first badge + N": the 28px
+  // header row cannot fit multiple shrink-0 badges (review #463 m3); the
+  // expanded state lays them out flat and allows wrapping.
   const [showAllUnavailableRoots, setShowAllUnavailableRoots] = useState(false);
   // 菜单按实际可用的动作渲染:web 没有 projects 后端,onConvert 等为
   // undefined,此时整个组不渲染「更多」按钮,避免点开一个空菜单。
@@ -211,17 +213,20 @@ const ProjectGroupHeader = ({
         {headerExtra}
         <ChevronDown size={14} className={`shrink-0 transition-transform ${isOpen ? '' : '-rotate-90'}`} />
       </button>
-      {/* 失效 root 逐根徽标 + 一键重绑定。不自动删项目——归属与历史仍在,
-          目录接骨是唯一修复路径。徽标是切换按钮的真实兄弟 <button>(不再
-          嵌在 <button> 内部),每根一个,重绑一根其余入口保留;多根时折叠
-          进 +N 展开(m3),展开态容器换行不再溢出。 */}
+      {/* Per-root badges for unavailable roots with one-click rebind. The
+          project is never auto-deleted — ownership and history remain, and
+          rebinding the folder is the only repair path. Each badge is a real
+          sibling <button> of the toggle button (no longer nested inside a
+          <button>), one per root; rebinding one keeps the other entries.
+          Multiple roots collapse into a +N expander (m3); the expanded
+          container wraps instead of overflowing. */}
       {visibleRoots.map((rootPath) => (
         <button
           key={rootPath}
           type="button"
           data-testid="project-folder-unavailable"
           title={rootPath}
-          aria-label={`${t.uiProjects.folderUnavailable} · ${rootPath}`}
+          aria-label={`${t.uiProjects.folderUnavailable} · ${t.uiProjects.rebindFolder} · ${rootPath}`}
           disabled={busy}
           onClick={(e) => { e.stopPropagation(); onRebind && onRebind(rootPath); }}
           className="mr-2 shrink-0 max-w-[9rem] truncate rounded-full bg-[#FCE8E6] dark:bg-[#3C2A29] px-2 py-0.5 text-[11px] text-[#C5221F] dark:text-[#F28B82] hover:opacity-80 disabled:opacity-50"
@@ -229,8 +234,10 @@ const ProjectGroupHeader = ({
           {t.uiProjects.folderUnavailable} · {t.uiProjects.rebindFolder}
         </button>
       ))}
-      {/* 多根折叠切换(m3/Nit 13):收起态显示 +N 并可展开;展开态容器换行,
-          同一按钮收起。展开/收起都有 aria-label,各徽标以路径区分可访问名。 */}
+      {/* Multi-root collapse toggle (m3/Nit 13): collapsed shows +N and can
+          expand; expanded wraps the container, and the same button collapses
+          again. Both states carry an aria-label, and each badge's accessible
+          name is distinguished by its path. */}
       {unavailableRootList.length > 1 && (
         <button
           type="button"

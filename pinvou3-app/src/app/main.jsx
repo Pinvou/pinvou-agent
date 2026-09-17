@@ -2626,29 +2626,40 @@ const NAV_PREFETCH = {
         }
         handleMoveSessionToProject(sessionId, projectId, false);
       };
-      // 目录重绑定(修断链):失效 root 的项目头上点"重新绑定" → 系统选目录
-      // → 确认弹窗。两阶段确认:首调不带 confirmExisting,后端发现旧目录
-      // 仍在时拒绝,弹窗升级为强警告后由用户再次确认。
+      // Folder rebind (repairs the broken link): click "Rebind" on a project
+      // header with an unavailable root → system folder picker → confirmation
+      // dialog. Two-phase confirmation: the first call omits confirmExisting,
+      // the backend rejects when the old folder still exists, and the dialog
+      // escalates to the strong warning for the user to confirm again.
       const startRebindWorkspace = async (fromPath) => {
-        // rebindDraft 已开时不再重复开:焦点留在徽标上时按 Enter 会重复触发
-        // onRebind(评审 #463 minor),projectOpsBusy 守卫管不到这个窗口。
+        // Do not reopen while rebindDraft is already open: with focus left on
+        // the badge, pressing Enter re-triggers onRebind (review #463 minor),
+        // and the projectOpsBusy guard does not cover that window.
         if (!bridge.files || !bridge.files.pickRebindFolder || projectOpsBusy || rebindDraft) return;
         try {
-          // 单目录、标题贴合重绑定语义(评审 #463 Minor 6):不再借用 KB 的
-          // 多选导入选择器。
+          // Single folder, with a title matching the rebind semantics
+          // (review #463 Minor 6): no longer borrowing KB's multi-select
+          // import picker.
           const to = await bridge.files.pickRebindFolder();
           if (!to) return;
-          // 不带会话数:命令实际重绑定 from 之下的一切会话,侧栏组渲染数
-          // 只是子集,数字承诺会与 RebindWorkspaceReport 对不上(finding 10)。
+          // No session count: the command actually rebinds every session
+          // under `from`; the sidebar group's rendered count is only a
+          // subset, so a numeric promise would not match the
+          // RebindWorkspaceReport (finding 10).
           setRebindDraft({ from: fromPath, to, warnExisting: false });
         } catch (error) {
+          // Picker rejection must be user-visible (review #463 minor), not
+          // console-only; the generic opFailed copy covers this failure
+          // class, and the warn keeps the detail available for diagnostics.
           console.warn('pick rebind folder failed', error);
+          setSettingsToast(t.uiProjects.opFailed);
         }
       };
       const confirmRebindWorkspace = async (confirmExisting) => {
         if (!bridge.projects || !rebindDraft || projectOpsBusy) return;
         setProjectOpsBusy(true);
-        // 清掉上一次失败的内联错误/忙碌提示,避免与本次结果叠显。
+        // Clear the previous attempt's inline error/busy hint so it does
+        // not stack with this run's result.
         setRebindDraft(prev => prev && { ...prev, error: null, busySessionIds: null });
         try {
           const report = await bridge.projects.rebindWorkspaceRoot(
@@ -2656,11 +2667,15 @@ const NAV_PREFETCH = {
           const rebound = (report && report.rebound_session_ids) ? report.rebound_session_ids.length : 0;
           const failed = (report && report.failed_session_ids) ? report.failed_session_ids.length : 0;
           const postBusy = (report && report.post_busy_session_ids) ? report.post_busy_session_ids.length : 0;
-          // 部分失败不再吞掉(finding 3),也不再关窗:root 已平移,loadProjects
-          // 刷新后失效徽标(唯一重绑入口)随之消失,toast 承诺的"重试剩余"
-          // 就不可达(评审 #463 M1)。窗内转入部分报告态,展示失败会话并给出
-          // 重试;后端按同 from/to 重跑即收敛(快照含未同步会话,已成功项为
-          // 空操作),成功路径照旧关窗 + toast。
+          // Partial failure is no longer swallowed (finding 3), and the
+          // dialog no longer closes: the root has already moved, so after
+          // the loadProjects refresh the unavailable badge (the only rebind
+          // entry) disappears and the toast's "retry the rest" promise
+          // would be unreachable (review #463 M1). The dialog switches to
+          // the partial-report state in place, listing failed sessions with
+          // a retry; rerunning the backend with the same from/to converges
+          // (the snapshot includes unsynced sessions; already-rebound ones
+          // are no-ops). The success path still closes + toasts.
           if (failed > 0) {
             setRebindDraft(prev => prev && {
               ...prev,
@@ -2674,24 +2689,37 @@ const NAV_PREFETCH = {
           } else {
             setRebindDraft(null);
             if (postBusy > 0) {
-              setSettingsToast(t.uiProjects.rebindBusyAfter(postBusy));
-            } else {
+              // Report both halves: the busy-only toast would silently drop
+              // the rebound count (review #463 minor).
+              setSettingsToast(rebound > 0
+                ? t.uiProjects.rebindSuccessPostBusy(rebound, postBusy)
+                : t.uiProjects.rebindBusyAfter(postBusy));
+            } else if (rebound > 0) {
               setSettingsToast(t.uiProjects.rebindSuccess(rebound));
+            } else {
+              // A retry after everything already converged (or a root with
+              // no sessions at all) returns an empty report; "Rebound 0"
+              // would read as a failure (review #463 minor).
+              setSettingsToast(t.uiProjects.rebindUpToDate);
             }
           }
           await refreshCodexSessions().catch((error) => {
-            // 失败不吞:会话列表靠 session:list_changed 事件自愈,但显式
-            // 失败的静默间隙要对排查可见(评审 #463 minor)。
+            // Failure is not swallowed: the session list self-heals via the
+            // session:list_changed event, but a silent gap after an explicit
+            // failure must stay visible for troubleshooting
+            // (review #463 minor).
             console.warn('refresh sessions after rebind failed', error);
           });
         } catch (error) {
           const message = String(error);
-          // 类型化标记匹配(finding 11 / Minor 7):只认稳定前缀,不匹配人类文案。
+          // Typed-marker matching (finding 11 / Minor 7): match only the
+          // stable prefix, never human-readable copy.
           if (message.startsWith('REBIND_OLD_ROOT_EXISTS')) {
             setRebindDraft(prev => prev && { ...prev, warnExisting: true, error: null });
           } else if (message.startsWith('REBIND_SESSIONS_BUSY')) {
-            // busy 拒绝是栅栏正常工作的高频路径(Minor 7):映射 i18n 文案,
-            // 标记后只跟会话 id,原样展示供排查。
+            // Busy rejection is the fence's high-frequency happy path
+            // (Minor 7): map it to i18n copy; only session ids follow the
+            // marker, and they are shown verbatim for troubleshooting.
             const busyIds = message.slice('REBIND_SESSIONS_BUSY:'.length).trim();
             setRebindDraft(prev => prev && {
               ...prev,
@@ -2700,8 +2728,10 @@ const NAV_PREFETCH = {
             });
           } else {
             console.warn('rebind workspace failed', error);
-            // 失败保持对话框打开并内联呈现错误(评审 #463 M7):就地展示
-            // 持久、紧邻重试;后端错误原文(非 UI copy)不经 i18n 键。
+            // On failure keep the dialog open with the error inline
+            // (review #463 M7): in-place display persists and sits next to
+            // the retry; the backend's raw error text (not UI copy) does
+            // not go through i18n keys.
             setRebindDraft(prev => prev && { ...prev, error: message });
           }
         } finally {
