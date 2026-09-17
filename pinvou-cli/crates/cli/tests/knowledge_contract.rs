@@ -1265,8 +1265,12 @@ fn model_status_reports_disk_state_and_model_cancel_succeeds() {
     assert_eq!(status["installed"], serde_json::json!(false));
     assert_eq!(status["ready"], serde_json::json!(false));
     let model_dir = status["model_dir"].as_str().expect("model dir");
+    // Compare on separators-normalized text: the assertion must hold on
+    // Windows too (this suite only runs on ubuntu in CI, but the CLI itself
+    // is cross-platform and developers run it locally there).
+    let normalized = model_dir.replace(std::path::MAIN_SEPARATOR, "/");
     assert!(
-        model_dir.ends_with("knowledge/models/bge-m3"),
+        normalized.ends_with("knowledge/models/bge-m3"),
         "{model_dir}"
     );
 
