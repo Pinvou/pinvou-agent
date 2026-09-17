@@ -112,13 +112,15 @@ pub(crate) fn spawn_event_forwarder(
                     let admitted =
                         turn_lifecycle.emit_started_admission(&app, &session_id, turn_id.clone());
                     // 消费 pending_cancel（无论 admitted 与否，防止跨轮泄漏）。
-                    // reset_cancel_token() 在 TurnStarted 之前已执行，若 cancel
-                    // 在此之前 arm 了标记，现在重新 cancel 命中的是本轮活跃 token。
+                    // The engine has already installed this turn's bound
+                    // token before `TurnStarted` runs; if a cancel armed its
+                    // marker earlier, the replayed cancel now hits this
+                    // turn's active token.
                     // pending_cancel carries the arming-time epoch, steer
                     // disposition mode, and submission correlation token:
                     // only an arriving `TurnStarted` that echoes the armed
                     // submission token consumes the replay here — a stale arm
-                    // from another submission can never match (#207), and
+                    // from another submission can never match (#254), and
                     // the arming-time epoch is deliberately not consulted,
                     // because an unrelated autonomous turn can run its full
                     // start→terminal lifecycle inside the target's
@@ -127,8 +129,9 @@ pub(crate) fn spawn_event_forwarder(
                     // round). The replay must call cancel_with_mode with the
                     // arming-time mode — the mode-less cancel() hard-codes
                     // StopDropInbox and would lose ⚡'s keepInbox semantics on
-                    // the replay path. The foundation stamps every
-                    // host-submitted op with a correlation id and leaves
+                    // the replay path. The host app stamps every
+                    // submitted op with a correlation id — echoed back
+                    // verbatim by the foundation — and leaves
                     // runtime self-started turns (idle sub-agent completion /
                     // shell wake / goal continuation) untagged, so a
                     // self-started follow-up whose `TurnStarted` overtakes

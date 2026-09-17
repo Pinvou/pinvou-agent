@@ -601,17 +601,21 @@ where
                     .and_then(|lc| lc.current_turn_generation()),
             ) {
                 if let Some(lifecycle) = lifecycle.as_ref() {
-                    // arm 用发起时快照 target（已校验仍是 target 轮）。
+                    // Arm with the target snapshotted at initiation
+                    // (already re-checked to still be the target turn).
                     // Forwarder-side consumption is gated solely by the
                     // submission token echo (no epoch gate: an autonomous
                     // lifecycle inside the submit→TurnStarted window may
                     // legitimately advance the epoch before the target's own
                     // echo arrives — see `take_pending_cancel`), so a stale
-                    // pending never leaks across turns. arm + cancel_current 在 state
-                    // 锁内原子完成（与阶段一同理，reviewer 点 8）：reserve_turn
-                    // 需要同一把 state 锁，无法在「校验/arm」与「取消」之间插入
-                    // 轮次切换。返回 false = 复查通过后轮次已切换：跳过 cancel
-                    // 及级联副作用，避免命中新轮活跃 token（reviewer 点 6）。
+                    // pending never leaks across turns. arm + cancel_current
+                    // complete atomically under the state lock (same as
+                    // phase one, reviewer point 8): reserve_turn needs the
+                    // same state lock and cannot interleave a turn switch
+                    // between "verify/arm" and "cancel". Returning false =
+                    // the turn already switched after the re-check passed:
+                    // skip cancel and the cascade side effects to avoid
+                    // hitting the new turn's live token (reviewer point 6).
                     let armed = lifecycle.arm_pending_cancel_and_cancel(
                         target.unwrap_or(0),
                         steer_mode,

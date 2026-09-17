@@ -103,16 +103,18 @@ struct TurnLifecycleState {
     transcript_rules: Vec<TranscriptSanitizationRule>,
     /// 用户在 turn 已 submit 但尚未收到 TurnStarted 时点了停止。
     ///
-    /// CodeWhale Engine 在每个新轮次入口**无条件**调
-    /// `reset_cancel_token()`（`core/engine.rs:2664`，在 `TurnStarted`
-    /// 之前），用全新 token 覆盖当前共享 token。若 cancel 恰好在这个窗口
-    /// 调了 `cancel_current()`，取消信号会被重置丢弃。
+    /// At every new-turn entry the CodeWhale engine unconditionally calls
+    /// `install_turn_cancel_token()` (before `TurnStarted`), swapping the
+    /// shared slot for a fresh token bound to the new turn's identity. A
+    /// `cancel_current()` landing inside that window has its cancel signal
+    /// dropped by the swap.
     ///
     /// 此标记由 [`arm_pending_cancel`] 在 cancel 路径设置（仅当 turn 尚未
     /// started），由事件转发器在收到 `TurnStarted` 后通过
     /// [`take_pending_cancel`] atomically takes it and replays the cancel
     /// turn-bound (`EngineHandle::cancel_turn(turn_id, …)`) with the stored
-    /// mode — by then `reset_cancel_token()` has already run, so the replay
+    /// mode — by then the engine has already installed this turn's bound
+    /// token, so the replay
     /// fires exactly the named turn's own token, and the foundation drops it
     /// wholesale if the slot has already moved on to a newer turn (issue
     /// #254). The mode must be saved together with the flag: a replay that
@@ -1313,9 +1315,10 @@ impl TurnLifecycle {
 
     /// 标记「cancel 在 turn 已 submit 但尚未 TurnStarted 时发起」。
     ///
-    /// 仅当 turn 处于 active、已 `submitted`、且 `turn_id` 仍为 None（TurnStarted
-    /// 未抵达）、且 `turn_epoch == epoch`（仍是发起 cancel 的那一轮）时设置
-    /// `pending_cancel = Some((epoch, mode))`：
+    /// The marker is set only when the turn is active, already `submitted`,
+    /// and its `turn_id` is still `None` (`TurnStarted` not yet arrived),
+    /// and `turn_epoch == epoch` (still the turn the cancel was issued for),
+    /// recording `pending_cancel = Some((epoch, mode, submission_id))`:
     /// - 必须 `submitted`：未提交的 reservation（消息尚未入队 engine）应由 cancel
     ///   走未提交认领终态路径（`emit_unsubmitted_interrupted_terminal`）立即发
     ///   `chat:done` 使 reservation 失效，而不是挂成 pending——否则空闲 engine 仍
@@ -1324,11 +1327,16 @@ impl TurnLifecycle {
     /// - A set `turn_id` means the forwarder already consumed `TurnStarted`:
     ///   the cancel closure dispatches turn-bound under that identity and
     ///   hits exactly this turn's own token, with no replay needed.
-    /// - 必须 `turn_epoch == epoch`：并发取消请求（C1/C2）中，排队较晚的 C2 在
-    ///   持锁恢复后读到的是「当前 lifecycle」。cancel 已在取 `turn_lock` 前后比对
-    ///   过 epoch（见 [`current_turn_generation`]/cancel 路径），此处传入**当前**
-    ///   epoch 作二次锚定，确保 pending 只 arm 到目标轮，不跨轮泄漏到新轮的
-    ///   TurnStarted（forwarder 经 [`take_pending_cancel`] 校验 epoch 后才重放）。
+    /// - The arming-time `turn_epoch` must still equal the lifecycle's: of
+    ///   concurrent cancel requests (C1/C2), the later-queued C2 resumes
+    ///   under the state lock onto the *current* lifecycle. The cancel path
+    ///   already compares epochs around `turn_lock` (see
+    ///   [`current_turn_generation`]); passing the **current** epoch here
+    ///   re-anchors the arm so the pending can only ever be armed for the
+    ///   targeted turn and never leaks onto a newer turn's `TurnStarted`
+    ///   (the forwarder replays only after an exact submission-token echo
+    ///   match via `take_pending_cancel`; the arming epoch does not gate
+    ///   consumption).
     ///
     /// **调用顺序**：必须在 `cancel_current()` **之前**调用。两者取不同的锁
     /// （lifecycle state mutex vs cancel_token mutex），无法原子合并。先 arm
@@ -1463,15 +1471,17 @@ impl TurnLifecycle {
 
     /// 原子取出并清除 `pending_cancel` 标记。
     ///
-    /// 由事件转发器在收到 `TurnStarted` 后调用：此时 CodeWhale 的
-    /// `reset_cancel_token()` has already run (it executes before `TurnStarted`).
+    /// Called by the event forwarder after `TurnStarted` arrives: the
+    /// engine has by then already installed this turn's bound token (the
+    /// install runs before `TurnStarted`).
     /// The turn-bound replay (`EngineHandle::cancel_turn(turn_id, …)`) fires
     /// exactly the named turn's own token, and is dropped wholesale if the
     /// slot has already moved on to a newer turn (issue #254).
     ///
     /// The record is consumed only when the arriving event echoes the
-    /// submission correlation token recorded at arming time. The foundation
-    /// stamps every host submission with a unique token and echoes it back
+    /// submission correlation token recorded at arming time. The host app
+    /// stamps every host submission with a unique token at op construction,
+    /// and the foundation echoes it back verbatim
     /// on that turn's `TurnStarted`, while runtime self-started turns
     /// (sub-agent completion / shell wake / goal continuation) stay
     /// untagged, so a matching echo identifies exactly the submitted turn
@@ -3120,10 +3130,14 @@ mod turn_lifecycle_tests {
 
     #[test]
     fn pending_cancel_tied_to_epoch_is_dropped_after_turn_change() {
-        // reviewer 点 4 的核心回归：并发取消请求 C2 在旧轮 arm 了 pending_cancel，
-        // 恢复时已变成新轮。pending_cancel 携带 epoch，take 时校验不匹配 → 丢弃，
-        // 不误取消新轮（不触发 approve_handle.cancel 重放）。reserve() 也必须清除
-        // 旧轮遗留的 stale pending_cancel，防跨轮污染。
+        // Core regression for reviewer point 4: concurrent cancel request
+        // C2 armed pending_cancel on the old turn and resumes onto what has
+        // become a new turn. take matches only an exact submission-token
+        // echo, so the stale pending's token cannot match the new turn's
+        // echo — it is neither consumed nor replayed (no
+        // approve_handle.cancel replay). reserve() additionally
+        // wholesale-clears the old turn's stale pending_cancel to prevent
+        // cross-turn pollution.
         let lifecycle = Arc::new(TurnLifecycle::default());
 
         // 旧轮：submit（epoch=1），arm pending_cancel 绑定到 epoch=1。
@@ -3141,8 +3155,9 @@ mod turn_lifecycle_tests {
         let epoch_new = lifecycle.current_turn_generation().expect("new epoch");
         assert_ne!(epoch_old, epoch_new);
 
-        // forwarder 在新轮 TurnStarted 后用新轮 epoch 取 pending_cancel：
-        // C2 留下的 stale pending（epoch_old）必须被丢弃，不重放 cancel。
+        // After the new turn's TurnStarted, the forwarder takes
+        // pending_cancel by echo token: reserve() has already wholesale-
+        // cleared C2's stale pending, so no cancel is replayed.
         assert!(
             lifecycle
                 .take_pending_cancel(Some(TEST_SUBMISSION))
