@@ -205,7 +205,7 @@ pub async fn move_session_to_project(
 /// projects. Rebind is idempotent and failures can be retried directly (the
 /// candidate snapshot includes retry items "already under to but metadata
 /// not synced"; the succeeded parts rerun as no-ops).
-#[derive(Debug, Clone, Serialize)]
+#[derive(Debug, Clone, Default, Serialize)]
 pub struct RebindWorkspaceReport {
     pub rebound_session_ids: Vec<String>,
     pub failed_session_ids: Vec<String>,
@@ -224,11 +224,13 @@ pub struct RebindWorkspaceReport {
 /// (a full rewrite), a root `from` with confirm-existing relocates
 /// everything, and a relative `from` diverges the storage lanes (the
 /// projects lane absolutizes it through ancestor resolution while the codex
-/// lane folds it raw) — none of these is a rebind (review #463 minor).
+/// lane folds it raw) — none of these is a rebind (review #463 minor). Not
+/// reachable from the UI (the frontend always passes a stored project root),
+/// so the copy stays backend prose.
 fn validate_rebind_from(from: &Path) -> Result<(), String> {
     if from.as_os_str().is_empty() || !from.is_absolute() || from.parent().is_none() {
         return Err(format!(
-            "rebind_workspace_root: from 必须是绝对的非根目录路径，收到 {}",
+            "rebind_workspace_root: from must be an absolute, non-root directory, got {}",
             from.display()
         ));
     }
@@ -239,13 +241,12 @@ fn validate_rebind_from(from: &Path) -> Result<(), String> {
 /// parent) is rejected: translating every binding onto the filesystem root
 /// is a mass relocation, not a rebind (review #463 minor). Existence and
 /// directory-ness are checked separately by
-/// `validate_codex_project_workspace`.
+/// `validate_codex_project_workspace`. Carries a stable marker because the
+/// folder picker can land here, and the message must not be Chinese-only for
+/// en/ja users (review #463 round-8 M4).
 fn validate_rebind_to(to: &Path) -> Result<(), String> {
     if to.parent().is_none() {
-        return Err(format!(
-            "rebind_workspace_root: to 不能是文件系统根，收到 {}",
-            to.display()
-        ));
+        return Err("REBIND_TO_ROOT: the destination cannot be a filesystem root".to_string());
     }
     Ok(())
 }
@@ -254,20 +255,21 @@ fn validate_rebind_to(to: &Path) -> Result<(), String> {
 /// first): rebind translates by prefix, and a target inside the old
 /// directory deepens on every rerun (/a/x → /a/x/new/x → …), breaking
 /// idempotency (review #451 finding 6). Compared on folded keys so case /
-/// separator differences cannot evade it.
-fn reject_nested_rebind_target(from: &Path, to_key: &Path) -> Result<(), String> {
-    let from_canon = std::fs::canonicalize(from).unwrap_or_else(|_| from.to_path_buf());
+/// separator differences cannot evade it, through the shared component
+/// predicate (review #463 round-8 elegance). Reachable from the picker
+/// (choosing a subfolder of the old folder), hence the typed marker (M4).
+fn reject_nested_rebind_target(from: &Path, to_display: &Path) -> Result<(), String> {
     let from_key = crate::platform::os::filesystem_path_identity_key(
-        &crate::platform::os::platform_compat_path(&from_canon.to_string_lossy()).to_string_lossy(),
+        &crate::platform::os::platform_compat_path(&from.to_string_lossy()).to_string_lossy(),
     );
-    let to_key_str = crate::platform::os::filesystem_path_identity_key(&to_key.to_string_lossy());
-    let from_trim = from_key.trim_end_matches('/');
-    let to_trim = to_key_str.trim_end_matches('/');
-    if !from_trim.is_empty()
-        && (to_trim == from_trim || to_trim.starts_with(&format!("{from_trim}/")))
-    {
+    let to_display_str =
+        crate::platform::os::filesystem_path_identity_key(&to_display.to_string_lossy());
+    if crate::platform::os::path_identity_is_same_or_nested(
+        to_display_str.trim_end_matches('/'),
+        from_key.trim_end_matches('/'),
+    ) {
         return Err(
-            "rebind_workspace_root: 新目录不能位于旧目录内部（会造成递归加深）".to_string(),
+            "REBIND_TO_NESTED: the destination cannot sit inside the original folder".to_string(),
         );
     }
     Ok(())
@@ -289,7 +291,8 @@ fn require_confirm_existing(from: &Path, confirm_existing: Option<bool>) -> Resu
 
 /// Directory rebind (broken-link repair): after a project folder is
 /// physically moved/deleted, every binding under the `from` prefix — project
-/// roots, session workspaces (index/sidecar/metadata), derived assignments —
+/// roots, session workspaces (codex index / code-session sidecar / plain-chat
+/// workspace-binding sidecar / SavedSession metadata), derived assignments —
 /// is translated onto `to`. Unlike "move assignment" this is a physical-layer
 /// write, so it carries fences:
 /// - `to` must exist and be a directory (validated by
@@ -299,21 +302,38 @@ fn require_confirm_existing(from: &Path, confirm_existing: Option<bool>) -> Resu
 ///   is required (the frontend has strong-confirmed);
 /// - if any affected session has an active turn (ACP prompt, native Engine
 ///   turn, or scheduled round) the whole rebind is rejected;
-/// - after translation, project roots must not overlap other projects, or
-///   the whole rebind fails and rolls back.
+/// - project roots must not end up overlapping other projects, or the whole
+///   rebind fails and rolls back.
 /// Historical paths in transcripts are not rewritten; the workspace baseline
 /// is recaptured per session (failures are only logged — the baseline is
 /// derivable again).
 ///
+/// Write order: session bindings (codex lane, then the plain-chat binding
+/// sidecars) → SavedSession metadata (+ baseline) → project roots LAST
+/// (review #463 round-8 M3). The old order committed the roots first, so a
+/// crash before the session lanes left roots already moved (the unavailable
+/// badge — the only rebind entry — gone) with bindings still under `from`, a
+/// state no retry could reach. With the roots last, an interrupted run still
+/// shows the old root as unavailable and the badge reruns the remaining
+/// lanes; the root rewrite itself is pre-flighted by
+/// `ProjectStore::plan_rebind_roots` so an overlap conflict aborts before any
+/// session binding is touched.
+///
 /// Storage-form invariant (review #463 m1/B1): `from` is normalized once at
 /// this entry via `rebind_source_display` — project roots are stored in
 /// `root_display` (canonical) form and session bindings were canonicalized
-/// at bind time, while the three storage lanes match in different domains
-/// (the projects store resolves symlinked ancestors, the codex/session lanes
-/// fold lexically). Normalizing at the entry pins every lane to one resolved
-/// form, so an alias caller (macOS `/var/x` vs the stored `/private/var/x`)
-/// cannot half-migrate. `rebind_workspace_root` is a public command; this
+/// at bind time, while the storage lanes match in different domains (the
+/// projects store resolves symlinked ancestors, the codex/session lanes fold
+/// lexically). Normalizing at the entry pins every lane to one resolved form,
+/// so an alias caller (macOS `/var/x` vs the stored `/private/var/x`) cannot
+/// half-migrate. `rebind_workspace_root` is a public command; this
 /// normalization is part of its input contract.
+///
+/// Known residual (review #463 round-8 minor): the codex restore/backfill
+/// lane copies `workspace_path` verbatim, so a record written before the
+/// canonicalization convention keeps its raw spelling and a later alias-form
+/// rebind will not match it. Only records bound by the current binary are
+/// covered by the invariant above.
 #[tauri::command]
 pub async fn rebind_workspace_root(
     from: PathBuf,
@@ -331,23 +351,25 @@ pub async fn rebind_workspace_root(
     let _rebind_gate = store.begin_rebind()?;
     validate_rebind_from(&from)?;
     validate_rebind_to(&to)?;
-    let to_key = crate::features::codex_acp::validate_codex_project_workspace(&to)
-        .map_err(|e| format!("rebind_workspace_root: 目标目录不可用: {e:#}"))?;
+    let to_display = crate::features::codex_acp::validate_codex_project_workspace(&to)
+        .map_err(|e| format!("REBIND_TO_UNUSABLE: {e:#}"))?;
     // Normalize `from` once for all three storage lanes (review #463 B1, see
     // the docblock). Resolved through the deepest existing ancestor, so a
     // vanished directory behind a symlinked ancestor (macOS /var) still
     // resolves into the stored key domain.
     let from = crate::features::projects::rebind_source_display(&from);
-    if from == to_key {
-        return Ok(RebindWorkspaceReport {
-            rebound_session_ids: Vec::new(),
-            failed_session_ids: Vec::new(),
-            affected_project_ids: Vec::new(),
-            post_busy_session_ids: Vec::new(),
-        });
+    if from == to_display {
+        return Ok(RebindWorkspaceReport::default());
     }
-    reject_nested_rebind_target(&from, &to_key)?;
+    reject_nested_rebind_target(&from, &to_display)?;
     require_confirm_existing(&from, confirm_existing)?;
+    // Root pre-flight (review #463 round-8 M3): the roots are committed last,
+    // so a rewrite that cannot succeed — an overlap conflict with another
+    // project's territory — must be rejected here, before any session binding
+    // has been translated.
+    store
+        .plan_rebind_roots(&from, &to_display)
+        .map_err(|e| format!("rebind_workspace_root: {e:#}"))?;
 
     // Affected-set snapshot (shared by the active-turn fence and the
     // metadata replay), taken BEFORE any rewrite (review #463 M1): the
@@ -358,31 +380,50 @@ pub async fn rebind_workspace_root(
     // retry candidates "already under to but metadata not synced" are folded
     // in too, so a failed rerun converges.
     let mut affected = acp_pool.agents().sessions_under_workspace(&from);
+    // Plain-chat working-directory bindings (review #463 round-8 B1): a chat
+    // created with a `workspace_path` carries only
+    // `sessions/<id>/workspace-binding.json` (plus the in-memory cache) — no
+    // codex index record and no code-session sidecar — and the execution-root
+    // resolver reads its cwd from exactly that binding. Without this lane the
+    // next turn would keep using the vanished folder and recreate it.
+    let plain_bindings_under_from = sessions.workspace_bindings_under(&from);
+    for (session_id, path) in &plain_bindings_under_from {
+        if !affected.iter().any(|(sid, _)| sid == session_id) {
+            affected.push((session_id.clone(), path.clone()));
+        }
+    }
     // Post-busy sessions of a previous run land here on retry (review #463
     // M2): their metadata was already synced in run 1, so they are absent
     // from `affected` — without feeding them back as explicit eviction
     // candidates, the documented "retry once when idle" remedy would be a
     // no-op (they would never re-enter rebound_session_ids and never be
     // evicted). A known, accepted coarseness: healthy sessions created
-    // directly under `to` also land here; evicting their idle runtime is a
-    // harmless lazy-respawn (the same thing the idle reaper does routinely).
+    // directly under `to` also land here, and reclaiming their idle runtime is
+    // a harmless lazy respawn (rebuilt on the next send). It is NOT the same
+    // work the idle reaper does: the reaper never touches the session the user
+    // has open, so this tail is the only thing that reclaims a stranded
+    // runtime within a session's own lifetime. They are deliberately NOT
+    // reported as post-busy (review #463 round-8 minor): nothing was
+    // translated for them, so "retry when idle" would be a guaranteed no-op —
+    // the hint is reserved for sessions this run moved.
     let mut retry_evict_candidates: Vec<String> = Vec::new();
-    for (session_id, path) in acp_pool.agents().sessions_under_workspace(&to_key) {
-        if affected.iter().any(|(sid, _)| *sid == session_id) {
-            continue;
-        }
-        // A session whose metadata matches its binding is healthy; one whose
-        // metadata cannot be read (orphan/corrupt) is treated as a candidate
-        // too — the metadata loop classifies it.
-        let needs_metadata_sync = match sessions.load(&session_id) {
-            Ok(session) => session.metadata.workspace != path,
-            Err(_) => true,
-        };
-        if needs_metadata_sync {
-            affected.push((session_id, path));
-        } else {
-            retry_evict_candidates.push(session_id);
-        }
+    for (session_id, path) in acp_pool.agents().sessions_under_workspace(&to_display) {
+        admit_rebind_retry_candidate(
+            session_id,
+            path,
+            &sessions,
+            &mut affected,
+            &mut retry_evict_candidates,
+        );
+    }
+    for (session_id, path) in sessions.workspace_bindings_under(&to_display) {
+        admit_rebind_retry_candidate(
+            session_id,
+            path,
+            &sessions,
+            &mut affected,
+            &mut retry_evict_candidates,
+        );
     }
 
     // Active-turn fence: if any affected session is running a prompt/turn/
@@ -413,14 +454,30 @@ pub async fn rebind_workspace_root(
         return Err(format!("REBIND_SESSIONS_BUSY: {}", busy_ids.join(", ")));
     }
 
-    // Order: project roots → session bindings (index + sidecars) → metadata
-    // → baseline. Every step is idempotent; a failed retry only completes
-    // the unfinished parts. The metadata loop is driven by the snapshot
-    // above, computing the target per candidate (translated for those under
-    // the from prefix; as-is for retry candidates already under to).
-    let affected_project_ids = store
-        .rebind_roots(&from, &to_key)
+    // Order: session bindings (index + code-session sidecars) → plain-chat
+    // binding sidecars → metadata → baseline → project roots LAST. Every step
+    // is idempotent; a failed retry only completes the unfinished parts. The
+    // metadata loop is driven by the snapshot above, computing the target per
+    // candidate (translated for those under the from prefix; as-is for retry
+    // candidates already under to).
+    let prefix_outcome = acp_pool
+        .agents()
+        .rebind_workspace_prefix(&from, &to_display)
         .map_err(|e| format!("rebind_workspace_root: {e:#}"))?;
+    // Plain-chat binding sidecars (review #463 round-8 B1). A failed write
+    // leaves the old path on disk (and the cache untouched), so a restart
+    // would resurrect it — reported as failed below and retried by the next
+    // run, whose `from` scan still matches the stale sidecar.
+    let mut binding_final_stale: Vec<String> = Vec::new();
+    for (session_id, bound_path) in &plain_bindings_under_from {
+        let Some(new_path) = SessionAgentStore::rebind_target_path(bound_path, &from, &to_display)
+        else {
+            continue;
+        };
+        if !sessions.rebind_workspace_binding(session_id, new_path) {
+            binding_final_stale.push(session_id.clone());
+        }
+    }
     // Finally-stale sidecar list (Major 2): an orphan rewrite failure, or an
     // indexed session whose rewrite + retry passes both failed — no
     // self-healing path remains in this run (backfill only fills missing
@@ -428,15 +485,18 @@ pub async fn rebind_workspace_root(
     // Not reporting them would let a restore with a damaged index resurrect
     // old directories and silently undo the rebind. Stale sidecars still sit
     // under the from prefix; once counted as failed, a user rerun converges
-    // them via the on-disk prefix scan.
-    let prefix_outcome = acp_pool
-        .agents()
-        .rebind_workspace_prefix(&from, &to_key)
-        .map_err(|e| format!("rebind_workspace_root: {e:#}"))?;
+    // them via the on-disk prefix scan. Both storage lanes contribute: the
+    // codex lane's outcome plus the plain-chat bindings that failed above.
+    let mut final_stale = prefix_outcome.sidecar_final_stale.clone();
+    for session_id in binding_final_stale {
+        if !final_stale.contains(&session_id) {
+            final_stale.push(session_id);
+        }
+    }
     let mut rebound_session_ids = Vec::new();
     let mut failed_session_ids = Vec::new();
     for (session_id, bound_path) in &affected {
-        let Some(new_path) = SessionAgentStore::rebind_target_path(bound_path, &from, &to_key)
+        let Some(new_path) = SessionAgentStore::rebind_target_path(bound_path, &from, &to_display)
         else {
             continue;
         };
@@ -445,11 +505,7 @@ pub async fn rebind_workspace_root(
         // lands in failed and is retryable (review #463 minor: the orphan
         // classification accepts only NotFound, not any load error).
         if sessions.durable_session_record_is_absent(session_id) {
-            if prefix_outcome
-                .sidecar_final_stale
-                .iter()
-                .any(|sid| sid == session_id)
-            {
+            if final_stale.iter().any(|sid| sid == session_id) {
                 // Orphan sidecar persist failed: a restart would resurrect
                 // the old directory, so report it as failed — a rerun retries
                 // the same sidecar (m2).
@@ -465,11 +521,7 @@ pub async fn rebind_workspace_root(
                 // binding moved but the authoritative sidecar still holds the
                 // old path, so honestly count it as failed to trigger a user
                 // rerun (Major 2).
-                if prefix_outcome
-                    .sidecar_final_stale
-                    .iter()
-                    .any(|sid| sid == session_id)
-                {
+                if final_stale.iter().any(|sid| sid == session_id) {
                     failed_session_ids.push(session_id.clone());
                 } else {
                     rebound_session_ids.push(session_id.clone());
@@ -519,6 +571,18 @@ pub async fn rebind_workspace_root(
         }
     }
 
+    // Project roots LAST (review #463 round-8 M3): committing them earlier
+    // made an interrupted run unreachable — the root would already sit at
+    // `to` (available, so no badge) while the session lanes still pointed at
+    // `from`, and re-adding the old root to retry collides with the moved one
+    // and rolls back. With the roots last, a crash anywhere above still shows
+    // the old root as unavailable and the badge reruns the remaining lanes
+    // (every step is idempotent). The overlap invariant was pre-flighted
+    // before any write and is revalidated under the write lock here.
+    let affected_project_ids = store
+        .rebind_roots(&from, &to_display)
+        .map_err(|e| format!("rebind_workspace_root: {e:#}"))?;
+
     emit_project_event(&app, "projects:list_changed", "rebound");
     for session_id in &rebound_session_ids {
         super::sessions::emit_session_event(
@@ -566,8 +630,16 @@ pub async fn rebind_workspace_root(
         if !acp_idle || !engine_idle {
             // A turn started between the recheck and the eviction and the
             // pools refused to kill it. Surface the session so the user can
-            // retry once it is idle again.
-            if !post_busy_session_ids.contains(&session_id) {
+            // retry once it is idle again — but only when this run actually
+            // translated something for it (review #463 round-8 minor): a pure
+            // retry candidate that needed no metadata sync is either a
+            // healthy session that always lived under `to` or a session
+            // already converged by an earlier run, and for both "retry when
+            // idle" would be a guaranteed no-op. Their reclaim stays
+            // best-effort here and falls back to the idle reaper.
+            let touched_this_run = rebound_session_ids.iter().any(|sid| sid == &session_id)
+                || failed_session_ids.iter().any(|sid| sid == &session_id);
+            if touched_this_run && !post_busy_session_ids.contains(&session_id) {
                 post_busy_session_ids.push(session_id);
             }
         }
@@ -578,6 +650,36 @@ pub async fn rebind_workspace_root(
         affected_project_ids,
         post_busy_session_ids,
     })
+}
+
+/// Admits a session found under the `to` prefix into the rebind (review #463
+/// M2 + round-8 B1): metadata that does not match the binding is a candidate
+/// left unfinished by an earlier run, so it joins `affected` and gets its
+/// metadata replayed; metadata that already matches means the session is
+/// healthy from the rebind's point of view, and it becomes a pure eviction
+/// candidate instead — that is how a post-busy session of a previous run
+/// reaches the idle-gated reclaim tail. A session whose metadata cannot be
+/// read (orphan/corrupt) is treated as a candidate too; the metadata loop
+/// classifies it.
+fn admit_rebind_retry_candidate(
+    session_id: String,
+    path: PathBuf,
+    sessions: &SessionStore,
+    affected: &mut Vec<(String, PathBuf)>,
+    retry_evict_candidates: &mut Vec<String>,
+) {
+    if affected.iter().any(|(sid, _)| *sid == session_id) {
+        return;
+    }
+    let needs_metadata_sync = match sessions.load(&session_id) {
+        Ok(session) => session.metadata.workspace != path,
+        Err(_) => true,
+    };
+    if needs_metadata_sync {
+        affected.push((session_id, path));
+    } else {
+        retry_evict_candidates.push(session_id);
+    }
 }
 
 /// Eviction candidates for the rebind tail: sessions rebound in this run
@@ -640,7 +742,11 @@ mod tests {
             .ok()
             .and_then(|p| p.ancestors().last().map(|a| a.to_path_buf()))
             .expect("temp dir must have a root ancestor");
-        assert!(validate_rebind_to(&root).is_err());
+        let error = validate_rebind_to(&root).unwrap_err();
+        assert!(
+            error.starts_with("REBIND_TO_ROOT"),
+            "typed marker: the picker can land here and the copy is localized (round-8 M4)"
+        );
         let normal = std::env::temp_dir().join("pinvou3-rebind-to-check");
         assert!(validate_rebind_to(&normal).is_ok());
     }
@@ -667,7 +773,11 @@ mod tests {
     #[test]
     fn rebind_rejects_target_nested_inside_from() {
         let from = Path::new("/a/b");
-        assert!(reject_nested_rebind_target(from, Path::new("/a/b/c")).is_err());
+        let nested = reject_nested_rebind_target(from, Path::new("/a/b/c")).unwrap_err();
+        assert!(
+            nested.starts_with("REBIND_TO_NESTED"),
+            "typed marker: the picker can land here and the copy is localized (round-8 M4)"
+        );
         assert!(reject_nested_rebind_target(from, Path::new("/a/b")).is_err());
         assert!(
             reject_nested_rebind_target(from, Path::new("/a/bc")).is_ok(),

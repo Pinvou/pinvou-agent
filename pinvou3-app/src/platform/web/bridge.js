@@ -9939,8 +9939,9 @@
     const p = Array.isArray(selected) ? selected[0] : selected;
     return p ? [p] : [];
   }
-  // 目录重绑定(修断链)专用:单选,标题贴合重绑定语义,与桌面桥同面
-  // (评审 #463 Minor 6)。
+  // Dedicated picker for directory rebind (broken-link repair): single
+  // selection with a title that matches the rebind semantics; same surface as
+  // the desktop bridge (review #463 Minor 6).
   async function pickRebindFolder() {
     if (!dialogOpen) { addSystemItem(bt("filePickUnavailable")); return null; }
     const selected = await dialogOpen({ directory: true, multiple: false, title: bt("rebindPickFolderTitle") });

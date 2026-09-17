@@ -186,6 +186,45 @@ pub struct RebindWorkspacePrefixOutcome {
     pub sidecar_final_stale: Vec<String>,
 }
 
+/// Session ids that own a directory under the code-session sidecar root.
+///
+/// Single source of truth for the two rebind scans that walk this directory
+/// (the candidate scan in [`SessionAgentStore::sessions_under_workspace`] and
+/// the rewrite pass in [`SessionAgentStore::rebind_workspace_prefix`]; review
+/// #463 round-8 elegance): the hand-rolled copies had already drifted on entry
+/// typing and error handling. A missing root — no sidecar ever written — is
+/// normal and yields nothing; any other `read_dir` failure is logged, never
+/// silently swallowed (review #463 minor: failing open would let boot restore
+/// resurrect old paths with zero signal).
+fn code_session_dir_ids(store_path: &Path, context: &str) -> Vec<String> {
+    let root = code_session_sidecar_root(store_path);
+    let entries = match fs::read_dir(&root) {
+        Ok(entries) => entries,
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Vec::new(),
+        Err(error) => {
+            eprintln!(
+                "[pinvou3-app] sidecar root unreadable during {context}: {} ({error})",
+                root.display()
+            );
+            return Vec::new();
+        }
+    };
+    let mut ids = Vec::new();
+    for entry in entries.flatten() {
+        let Ok(file_type) = entry.file_type() else {
+            continue;
+        };
+        if !file_type.is_dir() {
+            continue;
+        }
+        let Some(session_id) = entry.file_name().to_str().map(str::to_string) else {
+            continue;
+        };
+        ids.push(session_id);
+    }
+    ids
+}
+
 fn code_session_sidecar_version() -> u32 {
     CODE_SESSION_SIDECAR_VERSION
 }
@@ -546,21 +585,40 @@ impl SessionAgentStore {
         }
     }
 
+    /// Index records still bound under `from`, i.e. a rewrite that did not
+    /// stick. Used by the post-pass fence of
+    /// [`Self::rebind_workspace_prefix`] (review #463 round-8 minor 8) and
+    /// extracted so the rule is unit-testable without racing a real concurrent
+    /// writer.
+    fn records_still_under_workspace(
+        records: &HashMap<String, SessionAgentRecord>,
+        from: &Path,
+    ) -> Vec<String> {
+        records
+            .iter()
+            .filter(|(_, record)| record.workspace_kind == CodexWorkspaceKind::Project)
+            .filter_map(|(session_id, record)| {
+                let path = record.workspace_path.as_ref()?;
+                Self::rebind_relative_suffix(path, from)?;
+                Some(session_id.clone())
+            })
+            .collect()
+    }
+
     /// Folded-key prefix match + literal suffix: matching goes through the
     /// shared `filesystem_path_identity_key` fold (Windows folds separators
-    /// and case, so a case-only rename no longer misses), and the suffix is
-    /// cut from the original path by component count, preserving the
-    /// subdirectory's original casing. Returns `None` = not under `from`;
-    /// an empty suffix = the path IS `from`.
+    /// and case, so a case-only rename no longer misses) and the component
+    /// predicate is the shared
+    /// `platform::os::path_identity_is_same_or_nested` (review #463 round-8
+    /// elegance), while the suffix is cut from the original path by component
+    /// count, preserving the subdirectory's original casing. Returns `None` =
+    /// not under `from`; an empty suffix = the path IS `from`.
     fn rebind_relative_suffix(path: &Path, from: &Path) -> Option<PathBuf> {
         let path_key = crate::platform::os::filesystem_path_identity_key(&path.to_string_lossy());
         let from_key = crate::platform::os::filesystem_path_identity_key(&from.to_string_lossy());
         let path_trim = path_key.trim_end_matches('/');
         let from_trim = from_key.trim_end_matches('/');
-        let covered = from_trim.is_empty()
-            || path_trim == from_trim
-            || path_trim.starts_with(&format!("{from_trim}/"));
-        if !covered {
+        if !crate::platform::os::path_identity_is_same_or_nested(path_trim, from_trim) {
             return None;
         }
         Some(path.components().skip(from.components().count()).collect())
@@ -590,49 +648,21 @@ impl SessionAgentStore {
         // Off-index orphan sidecars: startup restore treats the sidecar as
         // authoritative, so the candidate set must use the same scope (same
         // scan shape as the sidecar rewrite pass of rebind_workspace_prefix).
-        let sidecar_root = code_session_sidecar_root(&self.path);
-        let entries = match fs::read_dir(&sidecar_root) {
-            Ok(entries) => Some(entries),
-            // No sessions directory yet is normal (no sidecar ever written).
-            Err(error) if error.kind() == std::io::ErrorKind::NotFound => None,
-            // review #463 minor: an unreadable sidecar root must not fail
-            // open silently — the candidate set would miss orphans, and the
-            // rewrite/stale-report pass would skip them too, letting boot
-            // restore resurrect old paths with zero signal.
-            Err(error) => {
-                eprintln!(
-                    "[pinvou3-app] sidecar root {} unreadable during rebind candidate scan: {error}",
-                    sidecar_root.display()
-                );
-                None
+        for session_id in code_session_dir_ids(&self.path, "rebind candidate scan") {
+            if matched.iter().any(|(sid, _)| *sid == session_id) {
+                continue;
             }
-        };
-        if let Some(entries) = entries {
-            for entry in entries.flatten() {
-                let Ok(file_type) = entry.file_type() else {
-                    continue;
-                };
-                if !file_type.is_dir() {
-                    continue;
-                }
-                let Some(session_id) = entry.file_name().to_str().map(str::to_string) else {
-                    continue;
-                };
-                if matched.iter().any(|(sid, _)| *sid == session_id) {
-                    continue;
-                }
-                let Some(sidecar) = read_code_session_sidecar(&self.path, &session_id) else {
-                    continue;
-                };
-                if sidecar.workspace_kind != CodexWorkspaceKind::Project {
-                    continue;
-                }
-                let Some(path) = sidecar.workspace_path else {
-                    continue;
-                };
-                if Self::rebind_relative_suffix(&path, from).is_some() {
-                    matched.push((session_id, path));
-                }
+            let Some(sidecar) = read_code_session_sidecar(&self.path, &session_id) else {
+                continue;
+            };
+            if sidecar.workspace_kind != CodexWorkspaceKind::Project {
+                continue;
+            }
+            let Some(path) = sidecar.workspace_path else {
+                continue;
+            };
+            if Self::rebind_relative_suffix(&path, from).is_some() {
+                matched.push((session_id, path));
             }
         }
         matched
@@ -739,88 +769,60 @@ impl SessionAgentStore {
         // and NOT marked rewritten (the retry pass below retries it); it is
         // never silently counted as success.
         let mut sidecar_rewritten: Vec<String> = Vec::new();
-        let sidecar_root = code_session_sidecar_root(&self.path);
-        let sidecar_entries = match fs::read_dir(&sidecar_root) {
-            Ok(entries) => Some(entries),
-            // No sessions directory yet is normal (no sidecar ever written).
-            Err(error) if error.kind() == std::io::ErrorKind::NotFound => None,
-            // review #463 minor: an unreadable sidecar root must not fail
-            // open silently — the rewrite pass AND the stale report would
-            // both be skipped, letting boot restore resurrect old paths
-            // with zero signal.
-            Err(error) => {
-                eprintln!(
-                    "[pinvou3-app] sidecar root {} unreadable during rebind rewrite: {error}",
-                    sidecar_root.display()
-                );
-                None
+        for session_id in code_session_dir_ids(&self.path, "rebind sidecar rewrite") {
+            let Some(sidecar) = read_code_session_sidecar(&self.path, &session_id) else {
+                continue;
+            };
+            if sidecar.workspace_kind != CodexWorkspaceKind::Project {
+                continue;
             }
-        };
-        if let Some(entries) = sidecar_entries {
-            for entry in entries.flatten() {
-                let Ok(file_type) = entry.file_type() else {
-                    continue;
-                };
-                if !file_type.is_dir() {
-                    continue;
+            let Some(path) = sidecar.workspace_path.as_ref() else {
+                continue;
+            };
+            let Some(suffix) = Self::rebind_relative_suffix(path, from) else {
+                continue;
+            };
+            let next = if suffix.as_os_str().is_empty() {
+                to.to_path_buf()
+            } else {
+                to.join(suffix)
+            };
+            match persist_code_session_sidecar(
+                &code_session_sidecar_path(&self.path, &session_id),
+                &CodeSessionSidecar {
+                    version: CODE_SESSION_SIDECAR_VERSION,
+                    workspace_kind: CodexWorkspaceKind::Project,
+                    workspace_path: Some(next.clone()),
+                    bound_at: sidecar.bound_at,
+                },
+            ) {
+                Err(error) => {
+                    // The old sidecar is still on disk; a restart restore
+                    // would resurrect the old directory. Indexed sessions
+                    // get retried by the rewrite pass below; orphans have
+                    // no retry path — both go into the finally-stale list
+                    // (an indexed session leaves the list if the retry
+                    // succeeds) for the command layer to count as failed
+                    // (review #463 m2/Major 2). Failed sessions reach the
+                    // frontend via sidecar_final_stale; the log carries
+                    // only the root cause, never a plaintext session id —
+                    // the error chain embeds sessions/<id>/ paths (CodeQL
+                    // cleartext-logging, review #463 round 7).
+                    eprintln!(
+                        "[pinvou3-app] rebind rewrite of the native code session sidecar failed: {}",
+                        error.root_cause()
+                    );
+                    sidecar_final_stale.push(session_id.clone());
                 }
-                let Some(session_id) = entry.file_name().to_str().map(str::to_string) else {
-                    continue;
-                };
-                let Some(sidecar) = read_code_session_sidecar(&self.path, &session_id) else {
-                    continue;
-                };
-                if sidecar.workspace_kind != CodexWorkspaceKind::Project {
-                    continue;
-                }
-                let Some(path) = sidecar.workspace_path.as_ref() else {
-                    continue;
-                };
-                let Some(suffix) = Self::rebind_relative_suffix(path, from) else {
-                    continue;
-                };
-                let next = if suffix.as_os_str().is_empty() {
-                    to.to_path_buf()
-                } else {
-                    to.join(suffix)
-                };
-                match persist_code_session_sidecar(
-                    &code_session_sidecar_path(&self.path, &session_id),
-                    &CodeSessionSidecar {
-                        version: CODE_SESSION_SIDECAR_VERSION,
-                        workspace_kind: CodexWorkspaceKind::Project,
-                        workspace_path: Some(next.clone()),
-                        bound_at: sidecar.bound_at,
-                    },
-                ) {
-                    Err(error) => {
-                        // The old sidecar is still on disk; a restart restore
-                        // would resurrect the old directory. Indexed sessions
-                        // get retried by the rewrite pass below; orphans have
-                        // no retry path — both go into the finally-stale list
-                        // (an indexed session leaves the list if the retry
-                        // succeeds) for the command layer to count as failed
-                        // (review #463 m2/Major 2). Failed sessions reach the
-                        // frontend via sidecar_final_stale; the log carries
-                        // only the root cause, never a plaintext session id —
-                        // the error chain embeds sessions/<id>/ paths (CodeQL
-                        // cleartext-logging, review #463 round 7).
-                        eprintln!(
-                            "[pinvou3-app] 重绑定改写原生代码会话 sidecar 失败: {}",
-                            error.root_cause()
-                        );
-                        sidecar_final_stale.push(session_id.clone());
-                    }
-                    Ok(()) => {
-                        sidecar_rewritten.push(session_id.clone());
-                        // Orphan with a missing index record: only a
-                        // successful write counts as affected — the sidecar
-                        // IS its binding, and claiming a failed one moved to
-                        // `next` would be a false report (review #463 nit).
-                        // Indexed sessions are already in `affected`.
-                        if !affected.iter().any(|(sid, _)| *sid == session_id) {
-                            affected.push((session_id, next));
-                        }
+                Ok(()) => {
+                    sidecar_rewritten.push(session_id.clone());
+                    // Orphan with a missing index record: only a
+                    // successful write counts as affected — the sidecar
+                    // IS its binding, and claiming a failed one moved to
+                    // `next` would be a false report (review #463 nit).
+                    // Indexed sessions are already in `affected`.
+                    if !affected.iter().any(|(sid, _)| *sid == session_id) {
+                        affected.push((session_id, next));
                     }
                 }
             }
@@ -854,6 +856,84 @@ impl SessionAgentStore {
                     } else if !sidecar_final_stale.iter().any(|sid| sid == session_id) {
                         sidecar_final_stale.push(session_id.clone());
                     }
+                }
+            }
+        }
+        // Divergence repair (review #463 round-8 minor 9). The index and the
+        // sidecar are both written on bind and are meant to agree, so a
+        // disagreement means an earlier run was interrupted between its write
+        // phases. Without this, a re-keyed rerun (from→to delivered the index
+        // but both sidecar passes failed, then from→to2 moves only the
+        // sidecar and the metadata) strands the index record at `to`, matching
+        // neither lane of the second run — no path ever converges it. The
+        // sidecar is the authoritative binding, so the disagreeing record is
+        // re-keyed onto the same target the sidecar just moved to.
+        let mut index_rekeys: Vec<(String, PathBuf)> = Vec::new();
+        {
+            let records = self.records.read();
+            for (session_id, path) in &affected {
+                let Some(record) = records.get(session_id) else {
+                    continue;
+                };
+                if !record.mode.is_code() || record.workspace_kind != CodexWorkspaceKind::Project {
+                    continue;
+                }
+                // `affected` already holds the translated target for this run;
+                // an index record that agrees with it needs no repair.
+                if record.workspace_path.as_ref() == Some(path) {
+                    continue;
+                }
+                index_rekeys.push((session_id.clone(), path.clone()));
+            }
+        }
+        if !index_rekeys.is_empty() {
+            // Count only: the log must not carry plaintext session ids (CodeQL
+            // cleartext-logging, review #463 round 7).
+            eprintln!(
+                "[pinvou3-app] rebind repaired {} index/sidecar disagreement(s)",
+                index_rekeys.len()
+            );
+            let mut originals: Vec<(String, Option<PathBuf>)> =
+                Vec::with_capacity(index_rekeys.len());
+            {
+                let mut records = self.records.write();
+                for (session_id, path) in &index_rekeys {
+                    if let Some(record) = records.get_mut(session_id) {
+                        originals.push((
+                            session_id.clone(),
+                            record.workspace_path.replace(path.clone()),
+                        ));
+                    }
+                }
+            }
+            if let Err(error) = self.persist() {
+                // Same rollback contract as the index move above: memory must
+                // not claim a repair disk does not have. The command layer
+                // reports this run as failed; a rerun converges, because the
+                // sidecar already sits on the target and the next pass repairs
+                // the index again.
+                let mut records = self.records.write();
+                for (session_id, original) in originals {
+                    if let Some(record) = records.get_mut(&session_id) {
+                        record.workspace_path = original;
+                    }
+                }
+                return Err(error);
+            }
+        }
+        // Post-pass fence (review #463 round-8 minor 8). The rebind gate
+        // serializes rebinds only, so a concurrent bind/remove can land in the
+        // unlocked sidecar-IO window and clobber a rewritten sidecar back to
+        // `from` — which this run would otherwise report as success. Re-reading
+        // the index catches exactly that (and any other late writer): a record
+        // still bound under `from` after the whole rewrite is finally stale, so
+        // the command layer counts the session as failed and a rerun converges
+        // it via the on-disk prefix scan.
+        {
+            let records = self.records.read();
+            for session_id in Self::records_still_under_workspace(&records, from) {
+                if !sidecar_final_stale.iter().any(|sid| sid == &session_id) {
+                    sidecar_final_stale.push(session_id);
                 }
             }
         }
@@ -1698,6 +1778,122 @@ mod tests {
         );
 
         fs::remove_dir_all(&root).unwrap();
+    }
+
+    #[test]
+    fn rebind_repairs_index_sidecar_disagreement_on_a_rekeyed_rerun() {
+        // review #463 round-8 minor 9: run 1 (from→to) delivers the index but
+        // both sidecar passes fail; run 2 (from→to2) then moves only the
+        // sidecar and the metadata, because the index record at `to` matches
+        // neither lane of run 2. Without the divergence repair the index would
+        // stay at `to` forever — no rerun key reaches it.
+        let root = std::env::temp_dir().join(format!(
+            "pinvou3-codex-rebind-divergence-{}",
+            std::process::id()
+        ));
+        let _ = fs::remove_dir_all(&root);
+        fs::create_dir_all(&root).unwrap();
+        let store = SessionAgentStore {
+            path: root.join("session-agents.json"),
+            records: Arc::new(RwLock::new(HashMap::new())),
+        };
+        let from = root.join("from");
+        let to = root.join("to");
+        let to2 = root.join("to2");
+        fs::create_dir_all(&from).unwrap();
+        fs::create_dir_all(&to).unwrap();
+        fs::create_dir_all(&to2).unwrap();
+        store
+            .bind_code_native_session("s1", CodexWorkspaceKind::Project, Some(from.clone()))
+            .unwrap();
+
+        // Reproduce the interrupted run-1 end state directly: the index move
+        // persisted but both sidecar passes failed, so the index sits at `to`
+        // while the authoritative sidecar still holds `from`. (Running
+        // `rebind_workspace_prefix(from, to)` here would NOT reproduce it — its
+        // sidecar pass heals exactly this disagreement.)
+        {
+            let mut records = store.records.write();
+            records.get_mut("s1").unwrap().workspace_path = Some(to.clone());
+        }
+        assert_eq!(
+            read_code_session_sidecar(&store.path, "s1")
+                .unwrap()
+                .workspace_path
+                .as_deref(),
+            Some(from.as_path()),
+            "precondition: index at `to`, sidecar still under `from`"
+        );
+
+        // Run 2 with a different target: the sidecar lane matches `from` and
+        // the repair re-keys the stranded index record onto the same target.
+        let run2 = store.rebind_workspace_prefix(&from, &to2).unwrap();
+        assert!(run2.sidecar_final_stale.is_empty());
+        assert_eq!(
+            store
+                .records
+                .read()
+                .get("s1")
+                .unwrap()
+                .workspace_path
+                .as_deref(),
+            Some(to2.as_path()),
+            "index converges onto the sidecar's target instead of stranding at `to`"
+        );
+        let sidecar = read_code_session_sidecar(&store.path, "s1").unwrap();
+        assert_eq!(sidecar.workspace_path.as_deref(), Some(to2.as_path()));
+
+        fs::remove_dir_all(&root).unwrap();
+    }
+
+    #[test]
+    fn rebind_post_pass_fence_rule_flags_only_records_left_under_from() {
+        // review #463 round-8 minor 8: the rebind gate serializes rebinds only,
+        // so a concurrent bind/remove can land in the unlocked sidecar-IO
+        // window and leave a record under `from` after the rewrite passes ran.
+        // The post-pass re-scan must surface exactly those as finally stale.
+        let from = Path::new("/work/alpha");
+        let mut records: HashMap<String, SessionAgentRecord> = HashMap::new();
+        records.insert(
+            "moved".to_string(),
+            SessionAgentRecord {
+                workspace_kind: CodexWorkspaceKind::Project,
+                workspace_path: Some(PathBuf::from("/vault/beta")),
+                ..Default::default()
+            },
+        );
+        records.insert(
+            "left-behind".to_string(),
+            SessionAgentRecord {
+                workspace_kind: CodexWorkspaceKind::Project,
+                workspace_path: Some(PathBuf::from("/work/alpha/sub")),
+                ..Default::default()
+            },
+        );
+        records.insert(
+            "sibling-prefix".to_string(),
+            SessionAgentRecord {
+                workspace_kind: CodexWorkspaceKind::Project,
+                workspace_path: Some(PathBuf::from("/work/alphax")),
+                ..Default::default()
+            },
+        );
+        records.insert(
+            "temporary".to_string(),
+            SessionAgentRecord {
+                workspace_kind: CodexWorkspaceKind::Temporary,
+                workspace_path: Some(PathBuf::from("/work/alpha/tmp")),
+                ..Default::default()
+            },
+        );
+
+        let mut flagged = SessionAgentStore::records_still_under_workspace(&records, from);
+        flagged.sort_unstable();
+        assert_eq!(
+            flagged,
+            vec!["left-behind".to_string()],
+            "only project records genuinely under the prefix are stale"
+        );
     }
 
     #[test]

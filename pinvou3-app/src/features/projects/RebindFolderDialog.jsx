@@ -124,7 +124,15 @@ const RebindFolderDialog = ({ from, to, warnExisting, errorMessage, partial, bus
             (the only rebind entry) disappears with the refresh, so the
             retry promise must be honored inside the dialog. Failed session
             ids are data, not UI copy, and are listed verbatim for manual
-            follow-up. */}
+            follow-up.
+            Known limitation (review #463 round-8 minor 2, dispositioned):
+            dismissing this dialog explicitly (Escape / X / Cancel) or
+            reloading the page still strands the failed remainder, because the
+            retry lives only in this component's state. Closing it requires a
+            persisted pending-rebind record plus a project-level repair entry,
+            which is a feature of its own rather than a fix to this PR — the
+            backend is idempotent, so anyone who reaches the command again
+            (badge, a new rebind of the same root) converges. */}
         {partial && (
           <div className="px-4 pb-2 space-y-2" data-testid="rebind-partial-report">
             <div className="flex items-start gap-2 rounded-2xl bg-[#FCE8E6] dark:bg-[#3C2A29] px-3 py-2 text-[12px] text-[#C5221F] dark:text-[#F28B82]">
@@ -164,11 +172,18 @@ const RebindFolderDialog = ({ from, to, warnExisting, errorMessage, partial, bus
           </div>
         )}
         <div className="px-4 pb-4 pt-1 flex gap-2">
+          {/* Confirm carries only the strong-confirmation state (review #463
+              round-8 minor 3). The partial retry used to force
+              confirmExisting=true as well, which silently skipped the fence:
+              if the original folder reappeared (backup restore, cloud sync)
+              the user would never see rebindOldExistsWarn. Every other case is
+              behavior-identical without it — a vanished `from` makes the
+              backend's confirm check a no-op. */}
           <button
             type="button"
             ref={confirmButtonRef}
             disabled={busy}
-            onClick={() => onConfirm(!!warnExisting || !!partial)}
+            onClick={() => onConfirm(!!warnExisting)}
             className="flex-1 h-10 rounded-full bg-[#0B57D0] text-white text-[14px] font-medium hover:bg-[#0A4CB8] disabled:opacity-50"
           >
             {partial ? t.uiProjects.rebindRetryRemaining : t.uiProjects.rebindConfirm}

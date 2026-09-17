@@ -381,9 +381,11 @@ test("capUnavailableRootsForDisplay keeps one badge and folds the rest into +N",
   assert.deepEqual(collapsed, { visibleRoots: ["/a/gone"], hiddenCount: 2 });
   const expanded = capUnavailableRootsForDisplay(roots, true);
   assert.deepEqual(expanded, { visibleRoots: roots, hiddenCount: 0 });
-  // 单根与空列表:不出现 +N,行为与裁剪前一致。
+  // Single root and empty list: no +N appears, same behavior as before the
+  // trimming was introduced.
   assert.deepEqual(capUnavailableRootsForDisplay(["/a/gone"], false), { visibleRoots: ["/a/gone"], hiddenCount: 0 });
   assert.deepEqual(capUnavailableRootsForDisplay([], false), { visibleRoots: [], hiddenCount: 0 });
-  // 非数组入参(后端缺席时的 undefined)按空列表处理。
+  // A non-array argument (undefined when the backend field is absent) is
+  // treated as an empty list.
   assert.deepEqual(capUnavailableRootsForDisplay(undefined, false), { visibleRoots: [], hiddenCount: 0 });
 });

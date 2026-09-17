@@ -88,8 +88,10 @@
       return outcome;
     }
 
-    // 目录重绑定(修断链):confirmExisting 由前端两阶段控制——先不带确认
-    // 调用,后端在旧目录仍存在时报特定错误,前端升级为强确认后重试。
+    // Directory rebind (broken-link repair): confirmExisting is driven by the
+    // frontend's two-phase handshake — the first call omits the confirmation,
+    // the backend rejects it with a typed marker while the old directory still
+    // exists, and the frontend escalates to the strong warning and retries.
     async function rebindWorkspaceRoot(from, to, confirmExisting) {
       const report = await invoke("rebind_workspace_root", {
         from,

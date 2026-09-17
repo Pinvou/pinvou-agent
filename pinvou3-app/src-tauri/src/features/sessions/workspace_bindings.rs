@@ -68,6 +68,21 @@ fn now_unix_secs() -> i64 {
         .unwrap_or_default()
 }
 
+/// Folded-key prefix match for rebind candidate selection (same domain rule as
+/// the codex lane): bindings are stored canonicalized at bind time and the
+/// command entry normalizes `from` the same way, so a case-only rename on
+/// Windows still matches while `/a/bc` never matches `/a/b`. The component
+/// predicate is the shared `platform::os::path_identity_is_same_or_nested`
+/// (review #463 round-8 elegance); the component cut stays at the call site.
+fn folded_path_is_same_or_nested(path: &Path, base: &Path) -> bool {
+    let path_key = crate::platform::os::filesystem_path_identity_key(&path.to_string_lossy());
+    let base_key = crate::platform::os::filesystem_path_identity_key(&base.to_string_lossy());
+    crate::platform::os::path_identity_is_same_or_nested(
+        path_key.trim_end_matches('/'),
+        base_key.trim_end_matches('/'),
+    )
+}
+
 /// A future-version format must never be silently parsed as the current version:
 /// refuse to read it and treat it as missing (bind rewrites it in the current
 /// version, which self-heals); all parse errors are logged.
@@ -177,6 +192,149 @@ impl SessionStore {
                 file.display()
             ),
         }
+    }
+
+    /// Whether the session still owns a durable record. A binding without one
+    /// is inert: [`SessionStore::session_workspace_binding`] refuses to read a
+    /// sidecar whose `<id>.json` is gone, so rebind must not claim to have
+    /// moved such a ghost.
+    fn workspace_binding_owner_exists(&self, id: &str) -> bool {
+        validate_session_id(id).is_ok()
+            && self
+                .manager
+                .sessions_dir()
+                .join(format!("{id}.json"))
+                .is_file()
+    }
+
+    /// Every plain-chat working-directory binding currently under the `from`
+    /// prefix — the rebind candidate set for this lane (review #463 round-8
+    /// B1). A chat created the ordinary way (`create_session` with a
+    /// `workspace_path`, which then calls [`Self::bind_session_workspace`])
+    /// carries only `sessions/<id>/workspace-binding.json` plus the in-memory
+    /// cache: it has no codex index record and no `code-session.json`, so the
+    /// code-session scan is structurally blind to it while
+    /// [`SessionStore::session_roots`] resolves its execution directory from
+    /// exactly this binding. Leaving it behind would keep the next turn in the
+    /// vanished folder and recreate it via `create_dir_all`.
+    ///
+    /// The in-memory cache is scanned as well: entries whose sidecar write has
+    /// not succeeded yet (legacy migration leftovers) live only there and are
+    /// still what resolution reads. Session ids without a durable record are
+    /// skipped — their binding is inert (see
+    /// [`Self::workspace_binding_owner_exists`]).
+    pub(crate) fn workspace_bindings_under(&self, from: &Path) -> Vec<(String, PathBuf)> {
+        let sessions_dir = self.manager.sessions_dir();
+        let mut matched: Vec<(String, PathBuf)> = Vec::new();
+        {
+            // Snapshot the cache, then drop the lock: the directory scan below
+            // must not run under it.
+            let cache: Vec<(String, PathBuf)> = self
+                .session_workspaces
+                .read()
+                .iter()
+                .map(|(id, path)| (id.clone(), path.clone()))
+                .filter(|(_, path)| folded_path_is_same_or_nested(path, from))
+                .collect();
+            for (id, path) in cache {
+                if self.workspace_binding_owner_exists(&id) {
+                    matched.push((id, path));
+                }
+            }
+        }
+        let entries = match std::fs::read_dir(&sessions_dir) {
+            Ok(entries) => entries,
+            // No sessions directory yet is normal (no session ever created).
+            Err(error) if error.kind() == ErrorKind::NotFound => return matched,
+            Err(error) => {
+                eprintln!(
+                    "[sessions] sessions root unreadable during rebind workspace-binding scan: {} ({error})",
+                    sessions_dir.display()
+                );
+                return matched;
+            }
+        };
+        for entry in entries.flatten() {
+            let Ok(file_type) = entry.file_type() else {
+                continue;
+            };
+            if !file_type.is_dir() {
+                continue;
+            }
+            let Some(id) = entry.file_name().to_str().map(str::to_string) else {
+                continue;
+            };
+            if matched.iter().any(|(sid, _)| *sid == id) {
+                continue;
+            }
+            if !self.workspace_binding_owner_exists(&id) {
+                continue;
+            }
+            let Some(sidecar) = read_workspace_sidecar(&self.session_workspace_sidecar_path(&id))
+            else {
+                continue;
+            };
+            if folded_path_is_same_or_nested(&sidecar.path, from) {
+                matched.push((id, sidecar.path));
+            }
+        }
+        matched
+    }
+
+    /// Rebinds a plain-chat working-directory binding onto `next` (review #463
+    /// round-8 B1): the sidecar is the durable binding and survives restart,
+    /// while the in-memory cache is what resolution reads for the rest of this
+    /// run — a stale cache entry would keep the old directory in use even
+    /// after the sidecar moved. `bound_at` is metadata only and is preserved.
+    ///
+    /// Returns whether the durable sidecar is fresh. `false` means the old
+    /// path is still on disk, so a restart would resurrect it; the cache is
+    /// then deliberately left untouched — the same all-or-nothing convention
+    /// as [`Self::bind_session_workspace`] — and the caller must report the
+    /// session as failed. The retry converges: the sidecar still matches the
+    /// `from` prefix, so the next scan finds it again.
+    pub(crate) fn rebind_workspace_binding(&self, id: &str, next: PathBuf) -> bool {
+        if validate_session_id(id).is_err() {
+            return false;
+        }
+        let previous = read_workspace_sidecar(&self.session_workspace_sidecar_path(id));
+        let sidecar = SessionWorkspaceSidecar {
+            version: SESSION_WORKSPACE_SIDECAR_VERSION,
+            path: next.clone(),
+            bound_at: previous.and_then(|sidecar| sidecar.bound_at),
+        };
+        let payload = match serde_json::to_vec_pretty(&sidecar) {
+            Ok(payload) => payload,
+            Err(error) => {
+                eprintln!("[sessions] serialize rebound workspace binding failed: {error:#}");
+                return false;
+            }
+        };
+        let file = self.session_workspace_sidecar_path(id);
+        if let Some(parent) = file.parent() {
+            if let Err(error) = std::fs::create_dir_all(parent) {
+                // Only the error kind is logged: the io message embeds the
+                // sessions/<id>/ path (CodeQL cleartext-logging, review #463
+                // round 7).
+                eprintln!(
+                    "[sessions] create session dir during rebind failed: {:?}",
+                    error.kind()
+                );
+                return false;
+            }
+        }
+        if let Err(error) = crate::platform::filesystem::atomic_write(&file, &payload) {
+            // Same CodeQL constraint: log the kind, never the path-bearing
+            // io message. The session reaches the user through the report's
+            // failed list instead.
+            eprintln!(
+                "[sessions] rebind workspace binding sidecar failed: {:?}",
+                error.kind()
+            );
+            return false;
+        }
+        self.session_workspaces.write().insert(id.to_string(), next);
+        true
     }
 
     /// Boot-time legacy migration: global table `_session_workspaces.json` →

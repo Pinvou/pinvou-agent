@@ -198,18 +198,14 @@ fn identity_key_of_display(path: &Path) -> String {
     crate::platform::os::filesystem_path_identity_key(&path.to_string_lossy())
 }
 
-/// 组件感知的「等于或嵌套于」:键是正斜杠化的字符串,裸 `starts_with` 会把
-/// `/a/bc` 误判进 `/a/b`,必须要求边界是分隔符。
+/// Component-aware "same as, or nested under" on folded keys. The rule itself
+/// now lives in `platform::os::path_identity_is_same_or_nested` (review #463
+/// round-8 elegance: project-root validation, the codex rebind suffix matcher
+/// and the command-layer nesting rejection each carried a hand-written copy,
+/// and they had already drifted); only the projects-layer call site stays
+/// here.
 fn key_is_same_or_nested(key: &str, base: &str) -> bool {
-    if key == base {
-        return true;
-    }
-    let base = base.strip_suffix('/').unwrap_or(base);
-    if base.is_empty() {
-        // POSIX 根 "/":一切绝对路径都嵌套其下。
-        return key.starts_with('/');
-    }
-    key.starts_with(base) && key[base.len()..].starts_with('/')
+    crate::platform::os::path_identity_is_same_or_nested(key, base)
 }
 
 /// 不触盘的绝对化:`.` 丢弃、`..` 回退一层、保留前缀(Unix 根 / Windows 盘符)。
@@ -376,15 +372,24 @@ impl ProjectStore {
     /// Enters the directory-rebind critical section (Minor 10): check-and-set
     /// is atomic; an already-set flag is rejected with the typed
     /// `REBIND_IN_PROGRESS` marker. The marker follows the stable-prefix
-    /// convention of `REBIND_OLD_ROOT_EXISTS`/`REBIND_SESSIONS_BUSY`;
-    /// localized frontend copy for this marker is not mapped yet (tracked in
-    /// review #463), so the raw message is shown until it lands. The
-    /// rejection path creates no guard; the token's Drop is the only clearing
-    /// point, so error paths never leave a permanently closed gate.
+    /// convention of `REBIND_OLD_ROOT_EXISTS`/`REBIND_SESSIONS_BUSY` and is
+    /// mapped to trilingual `uiProjects` copy in the frontend
+    /// (`classifyRebindError`); the prose after the marker is backend
+    /// diagnostics only and never reaches the user. The rejection path creates
+    /// no guard; the token's Drop is the only clearing point, so error paths
+    /// never leave a permanently closed gate.
+    ///
+    /// Known trade-off (review #463 round-8 minor): the gate is process-local
+    /// and in-memory, so a second app instance is not serialized against this
+    /// one — the two could interleave the same three write phases. Each
+    /// individual write is atomic and a rerun converges, so the severity stays
+    /// low; a cross-process lock would need a lock file and is out of scope.
     pub fn begin_rebind(&self) -> std::result::Result<RebindGate, String> {
         let mut flag = self.rebind_gate.lock();
         if *flag {
-            return Err("REBIND_IN_PROGRESS: 另一个目录重绑定正在进行中，请稍后再试".to_string());
+            return Err(
+                "REBIND_IN_PROGRESS: another directory rebind is already running".to_string(),
+            );
         }
         *flag = true;
         drop(flag);
@@ -620,6 +625,77 @@ impl ProjectStore {
         })
     }
 
+    /// Pure candidate computation shared by [`plan_rebind_roots`] (the
+    /// non-committing pre-flight) and [`rebind_roots`] (the commit): translates
+    /// every root under `from` onto `to` and reports the affected project ids.
+    /// Matching and the suffix cut both run in the resolved display domain.
+    fn rebind_root_candidates(
+        projects: &[Project],
+        from: &Path,
+        to: &Path,
+    ) -> (Vec<Project>, Vec<String>) {
+        // `to` is guaranteed to exist by the command layer; normalize it to
+        // the canonical display form used for storage. `from` matching runs on
+        // the folded identity key of its resolved display form (Windows folds
+        // case/separators, so a case-only rename still matches), and the
+        // suffix is cut by the resolved component count so a subdirectory
+        // keeps its original casing.
+        let to_display = root_display(to);
+        let from_display = root_display(from);
+        let from_key = identity_key_of_display(&from_display);
+        let from_depth = from_display.components().count();
+        let mut candidate = projects.to_vec();
+        let mut affected_projects = Vec::new();
+        for project in candidate.iter_mut() {
+            let mut changed = false;
+            for root in project.roots.iter_mut() {
+                let root_key_str = identity_key_of_display(root);
+                if !key_is_same_or_nested(&root_key_str, &from_key) {
+                    continue;
+                }
+                let suffix: PathBuf = root.components().skip(from_depth).collect();
+                *root = if suffix.as_os_str().is_empty() {
+                    to_display.clone()
+                } else {
+                    to_display.join(suffix)
+                };
+                changed = true;
+            }
+            if changed {
+                project.updated_at = Utc::now();
+                affected_projects.push(project.id.clone());
+            }
+        }
+        (candidate, affected_projects)
+    }
+
+    /// Non-committing pre-flight for the rebind command (review #463 round-8
+    /// M3): the session lanes now run before the project roots so an
+    /// interrupted run still leaves the old root registered (hence
+    /// badge-retryable), which means a root rewrite that cannot succeed —
+    /// an overlap conflict — must be detected BEFORE any session binding is
+    /// touched. Validates the same candidate `rebind_roots` will commit and
+    /// returns the project ids it would affect; nothing is written or
+    /// persisted. `rebind_roots` revalidates under its write lock, so a
+    /// concurrent project mutation cannot slip past the invariant.
+    pub fn plan_rebind_roots(&self, from: &Path, to: &Path) -> Result<Vec<String>> {
+        if from == to {
+            return Ok(Vec::new());
+        }
+        let (candidate, affected_projects) = {
+            let state = self.state.read();
+            Self::rebind_root_candidates(&state.projects, from, to)
+        };
+        if affected_projects.is_empty() {
+            return Ok(Vec::new());
+        }
+        for project in &candidate {
+            validate_roots(&candidate, Some(&project.id), &project.roots)
+                .context("rebind produced overlapping project roots")?;
+        }
+        Ok(affected_projects)
+    }
+
     /// Directory rebind (broken-link repair): translate project roots under
     /// the `from` prefix onto `to`. Matching runs in the resolved display
     /// domain, and the suffix is cut from each stored root by the RESOLVED
@@ -645,40 +721,11 @@ impl ProjectStore {
         if from == to {
             return Ok(Vec::new());
         }
-        // `to` is guaranteed to exist by the command layer; normalize it to
-        // the canonical display form used for storage. `from` matching runs on
-        // the folded identity key of its resolved display form (Windows folds
-        // case/separators, so a case-only rename still matches), and the
-        // suffix is cut by the resolved component count so a subdirectory
-        // keeps its original casing. Rewrites happen on a candidate copy and
-        // commit only after revalidation — on an overlap conflict the caller
-        // observes state identical to disk.
-        let to_key = root_display(to);
-        let from_display = root_display(from);
-        let from_key = identity_key_of_display(&from_display);
-        let from_depth = from_display.components().count();
-        let mut candidate = state.projects.clone();
-        let mut affected_projects = Vec::new();
-        for project in candidate.iter_mut() {
-            let mut changed = false;
-            for root in project.roots.iter_mut() {
-                let root_key_str = identity_key_of_display(root);
-                if !key_is_same_or_nested(&root_key_str, &from_key) {
-                    continue;
-                }
-                let suffix: PathBuf = root.components().skip(from_depth).collect();
-                *root = if suffix.as_os_str().is_empty() {
-                    to_key.clone()
-                } else {
-                    to_key.join(suffix)
-                };
-                changed = true;
-            }
-            if changed {
-                project.updated_at = Utc::now();
-                affected_projects.push(project.id.clone());
-            }
-        }
+        // Rewrites happen on a candidate copy and commit only after
+        // revalidation — on an overlap conflict the caller observes state
+        // identical to disk.
+        let (candidate, affected_projects) =
+            Self::rebind_root_candidates(&state.projects, from, to);
         if !affected_projects.is_empty() {
             for project in &candidate {
                 validate_roots(&candidate, Some(&project.id), &project.roots)

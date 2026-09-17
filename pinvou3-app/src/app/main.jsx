@@ -25,6 +25,7 @@ import { groupSessionsWithProjects, resolveSessionProjectId, needsAddFolderConfi
 import { ProjectGroupHeader } from '../features/projects/ProjectGroupHeader.jsx';
 import { MoveToProjectDialog } from '../features/projects/MoveToProjectDialog.jsx';
 import { RebindFolderDialog } from '../features/projects/RebindFolderDialog.jsx';
+import { classifyRebindError } from '../features/projects/rebindErrors.js';
 import { runSessionBatch } from '../shared/session-management.js';
 import { can, isWeb } from '../shared/platform.js';
 import { installGlobalMarkdownRenderer } from '../shared/markdown-renderer.js';
@@ -2711,32 +2712,32 @@ const NAV_PREFETCH = {
             console.warn('refresh sessions after rebind failed', error);
           });
         } catch (error) {
-          const message = String(error);
-          // Typed-marker matching (finding 11 / Minor 7): match only the
-          // stable prefix, never human-readable copy.
-          if (message.startsWith('REBIND_OLD_ROOT_EXISTS')) {
+          // Typed-marker matching (finding 11 / Minor 7 / round-8 M4): the
+          // backend prefixes every user-reachable outcome with a stable ASCII
+          // marker and we match only that prefix, never human copy. The mapping
+          // lives in a pure helper so both halves of the contract are unit
+          // tested (review #463 round-8 minor 10).
+          const classified = classifyRebindError(error, t);
+          if (classified.kind === 'old-root-exists') {
             setRebindDraft(prev => prev && { ...prev, warnExisting: true, error: null });
-          } else if (message.startsWith('REBIND_IN_PROGRESS')) {
-            // Concurrent-gate rejection (round-7 m1): map the typed prefix to
-            // copy instead of surfacing raw prose.
-            setRebindDraft(prev => prev && { ...prev, error: t.uiProjects.rebindInProgress });
-          } else if (message.startsWith('REBIND_SESSIONS_BUSY')) {
+          } else if (classified.kind === 'sessions-busy') {
             // Busy rejection is the fence's high-frequency happy path
             // (Minor 7): map it to i18n copy; only session ids follow the
             // marker, and they are shown verbatim for troubleshooting.
-            const busyIds = message.slice('REBIND_SESSIONS_BUSY:'.length).trim();
             setRebindDraft(prev => prev && {
               ...prev,
-              busySessionIds: busyIds ? busyIds.split(/,\s*/) : [],
+              busySessionIds: classified.busySessionIds,
               error: null,
             });
+          } else if (classified.kind === 'copy') {
+            setRebindDraft(prev => prev && { ...prev, error: classified.message });
           } else {
             console.warn('rebind workspace failed', error);
             // On failure keep the dialog open with the error inline
             // (review #463 M7): in-place display persists and sits next to
-            // the retry; the backend's raw error text (not UI copy) does
-            // not go through i18n keys.
-            setRebindDraft(prev => prev && { ...prev, error: message });
+            // the retry; an unmapped backend error is shown verbatim as a
+            // diagnostic detail rather than guessed at.
+            setRebindDraft(prev => prev && { ...prev, error: classified.message });
           }
         } finally {
           setProjectOpsBusy(false);

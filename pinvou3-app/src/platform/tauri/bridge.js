@@ -2543,8 +2543,10 @@
     if (!selected) return [];
     return Array.isArray(selected) ? selected : [selected];
   }
-  // 目录重绑定(修断链)专用:单选,标题贴合重绑定语义——此前借用 KB 的
-  // 多选导入选择器,标题与"只取 picked[0]"的行为不符(评审 #463 Minor 6)。
+  // Dedicated picker for directory rebind (broken-link repair): single
+  // selection with a title that matches the rebind semantics — it used to
+  // borrow the knowledge-base multi-select import picker, whose title did not
+  // match the "only picked[0] is used" behavior (review #463 Minor 6).
   async function pickRebindFolder() {
     if (!dialogOpen) return null;
     const selected = await dialogOpen({ directory: true, multiple: false, title: bt("rebindPickFolderTitle") });

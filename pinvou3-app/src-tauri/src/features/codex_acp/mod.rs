@@ -146,13 +146,30 @@ async fn take_session_if_still_idle<T>(
     sessions.remove(session_id)
 }
 
+/// Minimum idle time before a rebind may reclaim a resident ACP runtime.
+///
+/// Closes the pre-admission window (review #463 round-8 M1): `send_message`
+/// resolves or spawns the runtime under the sessions lock (`get_or_spawn`
+/// refreshes `last_activity` right there), but only flips `busy` later in
+/// `admit_prompt_turn`, after `prepare_codex_prompt` and the activity touch
+/// have run unlocked. A take landing in that window sees `busy == false` and
+/// would remove + `shutdown()` the runtime the sender is about to prompt —
+/// the message dies as "Failed". The idle reaper is immune to exactly this
+/// window because its predicate already requires `IDLE_EVICT_AFTER_SECS`;
+/// rebind cannot wait 30 minutes, so it uses a small epsilon instead. The
+/// cost is bounded and honest: a session active within the last second is
+/// reported as post-busy rather than reclaimed, and the user's retry (or the
+/// idle reaper) picks it up.
+const REBIND_EVICT_IDLE_EPSILON: Duration = Duration::from_secs(1);
+
 /// Rebind eviction recheck predicate (pure function, unit-testable; review
-/// #463 eviction-tail TOCTOU): only prompt/config activity blocks eviction.
-/// Unlike the idle reaper there is no idle-duration or active-session gate —
-/// a rebound runtime must be reclaimed even when recently active so the next
-/// prompt respawns in the new directory.
-fn rebind_evictable(busy: bool, configuring: bool) -> bool {
-    !busy && !configuring
+/// #463 eviction-tail TOCTOU + round-8 M1): only prompt/config activity, or
+/// activity recent enough to be inside the `get_or_spawn` → admission window,
+/// blocks eviction. Unlike the idle reaper there is no 30-minute idle gate
+/// and no active-session gate — a rebound runtime must be reclaimed even when
+/// recently used so the next prompt respawns in the new directory.
+fn rebind_evictable(busy: bool, configuring: bool, idle_for: Duration) -> bool {
+    !busy && !configuring && idle_for >= REBIND_EVICT_IDLE_EPSILON
 }
 
 /// Result of the rebind eviction take: distinguishes "no resident runtime"
@@ -3211,13 +3228,26 @@ impl AcpPool {
             rebind_evictable(
                 runtime.busy.load(Ordering::Acquire),
                 runtime.configuring.load(Ordering::Acquire),
+                runtime.idle_for(),
             )
         })
         .await;
         let RebindEvictTake::Reclaimed(runtime) = taken else {
+            // A session without a resident runtime (NoRuntime) has no pending
+            // permission/elicitation to answer either, so only the Busy arm
+            // skips cleanup.
+            if matches!(taken, RebindEvictTake::NoRuntime) {
+                self.cancel_pending_permissions(session_id).await;
+                self.cancel_pending_elicitations(session_id).await;
+            }
             return matches!(taken, RebindEvictTake::NoRuntime);
         };
         self.acp_metadata_backends.write().remove(session_id);
+        // Cancel before shutdown, mirroring `evict` (review #463 round-8
+        // minor): resolving a pending request against an already shut-down
+        // runtime leaves the bridge unavailable. Masked today — a pending
+        // request implies busy implies Busy — but the order is the invariant,
+        // not the masking.
         self.cancel_pending_permissions(session_id).await;
         self.cancel_pending_elicitations(session_id).await;
         runtime.shutdown().await;
@@ -4548,12 +4578,14 @@ mod tests {
         );
     }
 
-    /// Bare entry for take_session_for_rebind tests: replicates the two
-    /// AcpSession states that gate rebind eviction (busy / configuring),
-    /// avoiding the real ConnectionTo / Child (not constructible in tests).
+    /// Bare entry for take_session_for_rebind tests: replicates the three
+    /// AcpSession states that gate rebind eviction (busy / configuring /
+    /// last_activity), avoiding the real ConnectionTo / Child (not
+    /// constructible in tests).
     struct FakeRebindEntry {
         busy: AtomicBool,
         configuring: AtomicBool,
+        last_activity: parking_lot::Mutex<Instant>,
     }
 
     impl FakeRebindEntry {
@@ -4561,6 +4593,17 @@ mod tests {
             Self {
                 busy: AtomicBool::new(false),
                 configuring: AtomicBool::new(false),
+                last_activity: parking_lot::Mutex::new(Instant::now() - Duration::from_secs(60)),
+            }
+        }
+
+        /// A session whose runtime was just resolved by `get_or_spawn` but
+        /// whose `busy` flag has not been set yet (round-8 M1).
+        fn just_touched() -> Self {
+            Self {
+                busy: AtomicBool::new(false),
+                configuring: AtomicBool::new(false),
+                last_activity: parking_lot::Mutex::new(Instant::now()),
             }
         }
 
@@ -4569,18 +4612,53 @@ mod tests {
             rebind_evictable(
                 self.busy.load(Ordering::Acquire),
                 self.configuring.load(Ordering::Acquire),
+                self.last_activity.lock().elapsed(),
             )
         }
     }
 
     #[test]
-    fn rebind_evictable_blocks_only_prompt_or_config_activity() {
-        // review #463: no idle-duration or active-session gate — only an
-        // in-flight prompt or a config sync blocks rebind eviction.
-        assert!(rebind_evictable(false, false));
-        assert!(!rebind_evictable(true, false));
-        assert!(!rebind_evictable(false, true));
-        assert!(!rebind_evictable(true, true));
+    fn rebind_evictable_blocks_prompt_config_and_pre_admission_activity() {
+        let idle = Duration::from_secs(60);
+        // review #463: no 30-minute idle gate and no active-session gate —
+        // only an in-flight prompt or a config sync blocks rebind eviction.
+        assert!(rebind_evictable(false, false, idle));
+        assert!(!rebind_evictable(true, false, idle));
+        assert!(!rebind_evictable(false, true, idle));
+        assert!(!rebind_evictable(true, true, idle));
+        // review #463 round-8 M1: the window between `get_or_spawn`'s
+        // activity refresh and `admit_prompt_turn`'s busy flip must not be
+        // evictable either, or the runtime the sender is about to prompt is
+        // shut down under it.
+        assert!(!rebind_evictable(
+            false,
+            false,
+            REBIND_EVICT_IDLE_EPSILON - Duration::from_millis(1)
+        ));
+        assert!(rebind_evictable(false, false, REBIND_EVICT_IDLE_EPSILON));
+    }
+
+    #[tokio::test]
+    async fn rebind_evict_skips_runtime_touched_before_admission() {
+        // round-8 M1 regression: a `send_message` that already passed
+        // `get_or_spawn` (activity refreshed, `busy` still false) must keep
+        // its runtime — the take would otherwise remove and shut down the
+        // session the sender is moments away from prompting.
+        let sessions: Mutex<HashMap<String, FakeRebindEntry>> = Mutex::new(HashMap::from([(
+            "pre-admission".to_string(),
+            FakeRebindEntry::just_touched(),
+        )]));
+
+        let taken =
+            take_session_for_rebind(&sessions, "pre-admission", FakeRebindEntry::evictable).await;
+        assert!(
+            matches!(taken, RebindEvictTake::Busy),
+            "a runtime used within the epsilon window must be treated as busy"
+        );
+        assert!(
+            sessions.lock().await.contains_key("pre-admission"),
+            "the sender's runtime stays in the pool"
+        );
     }
 
     #[tokio::test]
