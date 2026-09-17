@@ -133,9 +133,11 @@ impl SessionStore {
         // shares this 50-cap store by default; without the exemption a single
         // batch run would silently delete the user's pinned GUI sessions (the
         // cost is that an all-pinned store disables the cap and may exceed it —
-        // the natural consequence of pin semantics).
-        let pinned: std::collections::HashSet<String> =
-            self.pinned_sessions.read().keys().cloned().collect();
+        // the natural consequence of pin semantics). The sweep consults the
+        // durable pin file, not the boot-time map: the motivating batch-run
+        // scenario has the GUI pinning sessions while this process is alive,
+        // and only the file reflects that.
+        let pinned = self.durable_pinned_sessions();
         for metadata in sessions {
             // Scheduled sessions own additional records outside sessions/.
             // Generic chat cleanup must not delete only the transcript and

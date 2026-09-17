@@ -64,6 +64,17 @@ mod tests {
         }
     }
 
+    fn image_only_user_message() -> Message {
+        Message {
+            role: deepseek_tui::models::Role::User,
+            content: vec![ContentBlock::ImageUrl {
+                image_url: deepseek_tui::models::ImageUrlContent {
+                    url: "file:///staged/attachments/shot.png".to_string(),
+                },
+            }],
+        }
+    }
+
     /// turn 计数口径（feat 分支 bug）：一轮带工具往返的对话只算 1 个 turn。
     #[test]
     fn count_user_turns_ignores_tool_results() {
@@ -90,6 +101,10 @@ mod tests {
             text_message("assistant", "调工具"),
             tool_result_message(),
             text_message("user", "第二轮"),
+            // The motivating drift case: an image-only user turn is not a
+            // prompt turn — the CLI's role-based approximation over-counted
+            // exactly this shape and wedged the `checkpoints rewind` precheck.
+            image_only_user_message(),
         ];
         let json: Vec<serde_json::Value> = messages
             .iter()
@@ -99,7 +114,11 @@ mod tests {
             count_user_turns_in_json(&json).unwrap(),
             count_user_turns(&messages)
         );
-        assert_eq!(count_user_turns_in_json(&json).unwrap(), 2);
+        assert_eq!(
+            count_user_turns_in_json(&json).unwrap(),
+            2,
+            "image-only turns must not count as user turns"
+        );
 
         // Non-message payloads must error instead of silently counting 0,
         // aligning with the engine's "session load failed" error model (the

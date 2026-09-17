@@ -1600,7 +1600,7 @@ impl Pinvou3Bridge {
             goal_token_budget,
             goal_status,
             disallowed_tools: _, // pinvou3 从持久列表算初值(见构造处),默认值忽略
-            max_tool_calls,
+            max_tool_calls: _,
             // —— v0.8.65 上游新增字段,透传 default ——
             //   subagents_enabled: default true（通用多智能体委派需要 SpawnSubAgent）。
             //   launch_concurrency/max_admitted_subagents/subagent_token_budget: subagent
@@ -1818,8 +1818,18 @@ impl Pinvou3Bridge {
             // `None` (the admission gate is fully lazy). Runaway protection
             // stays with the foundation's own max_steps, per-turn wall clock,
             // bounded retries, and cancel boundaries — the host adds no
-            // per-call-count gate of its own.
-            max_tool_calls,
+            // per-call-count gate of its own. Harnesses that still export the
+            // old override get told it is dead instead of silently ignored.
+            max_tool_calls: {
+                if std::env::var_os("PINVOU3_MAX_TOOL_CALLS").is_some() {
+                    eprintln!(
+                        "[pinvou3] PINVOU3_MAX_TOOL_CALLS is no longer read: the tool-call \
+                         round cap was removed; runaway protection is the foundation's \
+                         max_steps and per-turn wall clock."
+                    );
+                }
+                None
+            },
             // [pinvou3-fork] 透传 default(空);kb_search 在 spawn_for_session 按 session 注入
             // —— v0.8.65 上游新增字段,透传 default ——
             //   subagents_enabled: default true（通用多智能体委派需要 SpawnSubAgent）。
@@ -5663,7 +5673,9 @@ mod tests {
     /// `build_engine_config` must not configure `max_tool_calls` (upstream
     /// `None` = unbounded, admission gate lazy). Runaway protection stays
     /// with the foundation's max_steps, per-turn wall clock, bounded retries,
-    /// and cancel boundaries.
+    /// and cancel boundaries. The removed `PINVOU3_MAX_TOOL_CALLS` env knob
+    /// must stay dead: setting it must not resurrect a cap in either config
+    /// path.
     #[test]
     fn engine_config_has_no_tool_call_cap() {
         assert_eq!(
@@ -5675,6 +5687,21 @@ mod tests {
         assert_eq!(
             cfg.max_tool_calls, None,
             "per-session configs must not grow a tool-call cap either"
+        );
+        let (_lock, _env) = locked_env(&["PINVOU3_MAX_TOOL_CALLS"]);
+        // SAFETY: ENV_LOCK held; env writes are serialized across tests.
+        unsafe { std::env::set_var("PINVOU3_MAX_TOOL_CALLS", "512") };
+        assert_eq!(
+            fixture_bridge().build_engine_config().max_tool_calls,
+            None,
+            "the removed PINVOU3_MAX_TOOL_CALLS knob must not resurrect a cap"
+        );
+        assert_eq!(
+            fixture_bridge()
+                .build_engine_config_for_session("any_session")
+                .max_tool_calls,
+            None,
+            "the removed knob must not reach per-session configs either"
         );
     }
 
