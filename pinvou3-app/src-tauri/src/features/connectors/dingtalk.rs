@@ -418,9 +418,6 @@ impl ConnectorSkillGate for DingtalkGate {
     fn id(&self) -> &'static str {
         ID
     }
-    fn display_name(&self) -> &'static str {
-        "钉钉"
-    }
     fn disabled_filename(&self) -> &'static str {
         "dingtalk_disabled"
     }
@@ -434,10 +431,6 @@ const GATE: DingtalkGate = DingtalkGate;
 
 pub fn is_dingtalk_disabled() -> bool {
     GATE.is_disabled()
-}
-
-fn set_dingtalk_disabled_flag(disabled: bool) -> Result<(), String> {
-    GATE.set_disabled_flag(disabled)
 }
 
 pub fn dingtalk_skills_should_show() -> bool {
@@ -474,7 +467,6 @@ pub async fn dingtalk_skills_state() -> Result<Value, String> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::platform::paths::tests::ENV_LOCK;
 
     #[test]
     fn auth_status_detects_authenticated() {
@@ -513,37 +505,5 @@ mod tests {
         .unwrap();
         assert!(hint.contains("钉钉组织未开启 CLI 数据访问"));
         assert!(hint.contains("xuyajing"));
-    }
-
-    #[test]
-    fn dingtalk_disabled_flag_roundtrip() {
-        let _g = ENV_LOCK.lock().unwrap_or_else(|p| p.into_inner());
-        let tmp = format!(
-            "{}/pinvou3-dingtalk-test-{}",
-            std::env::temp_dir().display(),
-            std::time::SystemTime::now()
-                .duration_since(std::time::UNIX_EPOCH)
-                .map(|d| d.as_nanos())
-                .unwrap_or(0)
-        );
-        let previous = std::env::var("PINVOU3_HOME").ok();
-        // SAFETY: holding platform::paths::tests::ENV_LOCK; env writes serialized in-process.
-        unsafe { std::env::set_var("PINVOU3_HOME", &tmp) };
-        let _ = std::fs::create_dir_all(crate::platform::paths::pinvou3_home());
-
-        set_dingtalk_disabled_flag(false).unwrap();
-        assert!(!is_dingtalk_disabled());
-        set_dingtalk_disabled_flag(true).unwrap();
-        assert!(is_dingtalk_disabled());
-        set_dingtalk_disabled_flag(false).unwrap();
-        assert!(!is_dingtalk_disabled());
-
-        match previous {
-            // SAFETY: holding platform::paths::tests::ENV_LOCK; env writes serialized in-process.
-            Some(value) => unsafe { std::env::set_var("PINVOU3_HOME", value) },
-            // SAFETY: holding platform::paths::tests::ENV_LOCK; env writes serialized in-process.
-            None => unsafe { std::env::remove_var("PINVOU3_HOME") },
-        }
-        let _ = std::fs::remove_dir_all(&tmp);
     }
 }

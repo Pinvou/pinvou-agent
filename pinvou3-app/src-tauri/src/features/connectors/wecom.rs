@@ -362,10 +362,6 @@ pub fn is_wecom_disabled() -> bool {
     GATE.is_disabled()
 }
 
-fn set_wecom_disabled_flag(disabled: bool) -> Result<(), String> {
-    GATE.set_disabled_flag(disabled)
-}
-
 /// 企微技能此刻该不该出现在 skills_dir:**未手动停用 且 已连接**。
 /// 注:会 spawn wecom-cli 查 auth show(未装则 false)。
 pub fn wecom_skills_should_show() -> bool {
@@ -406,7 +402,6 @@ pub async fn wecom_skills_state() -> Result<Value, String> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::platform::paths::tests::ENV_LOCK;
 
     /// `--version` 输出 → 三段版本号。1.1.0 起输出带构建信息尾巴。
     /// 两段式按共享口径补 0(不因假想的「2.0」误判未装触发降级重装)。
@@ -462,36 +457,5 @@ mod tests {
             Some(&png[..])
         );
         let _ = std::fs::remove_dir_all(&dir);
-    }
-
-    /// 手动停用标志:文件存在=停用,与连接状态正交。写/删一轮。
-    #[test]
-    fn wecom_disabled_flag_roundtrip() {
-        let _g = ENV_LOCK.lock().unwrap_or_else(|p| p.into_inner());
-        let tmp = format!(
-            "{}/pinvou3-wecom-test-{}",
-            std::env::temp_dir().display(),
-            std::time::SystemTime::now()
-                .duration_since(std::time::UNIX_EPOCH)
-                .map(|d| d.as_nanos())
-                .unwrap_or(0)
-        );
-        // SAFETY: holding platform::paths::tests::ENV_LOCK; env writes serialized in-process.
-        unsafe { std::env::set_var("PINVOU3_HOME", &tmp) };
-        let _ = std::fs::create_dir_all(crate::platform::paths::pinvou3_home());
-
-        // 默认(无文件)= 未停用
-        set_wecom_disabled_flag(false).unwrap();
-        assert!(!is_wecom_disabled());
-        // 置停用 → 文件在 → 停用
-        set_wecom_disabled_flag(true).unwrap();
-        assert!(is_wecom_disabled());
-        // 复位 → 文件删 → 未停用
-        set_wecom_disabled_flag(false).unwrap();
-        assert!(!is_wecom_disabled());
-
-        // SAFETY: holding platform::paths::tests::ENV_LOCK; env writes serialized in-process.
-        unsafe { std::env::remove_var("PINVOU3_HOME") };
-        let _ = std::fs::remove_dir_all(&tmp);
     }
 }

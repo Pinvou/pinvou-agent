@@ -340,10 +340,6 @@ pub fn is_feishu_disabled() -> bool {
     GATE.is_disabled()
 }
 
-fn set_feishu_disabled_flag(disabled: bool) -> Result<(), String> {
-    GATE.set_disabled_flag(disabled)
-}
-
 /// 飞书技能此刻该不该出现在 skills_dir:**未手动停用 且 已连接**。
 /// 启动时(bundle)与命令里都用它判定。注:会 spawn lark-cli 查 auth status(未装则 false)。
 pub fn feishu_skills_should_show() -> bool {

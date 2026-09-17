@@ -412,41 +412,6 @@ pub fn sync_deny_all_scopes_after_install(raw_id: &str) {
     }
 }
 
-/// 包卸载/断开后同步所有 scope：从各 scope 禁用集与可见性集移除该包 id，避免残留
-/// 指向不存在的包。连接器与技能卸载共用本入口：入参可为连接器 id / 技能 id / 包 id，
-/// 统一归一为包 id。
-/// composer 连接器开关 ↔ 统一禁用集桥接（二轮评审：CLI 三数据源无桥接）。
-/// 连接器停用标志（`<connector>_disabled` 文件）只删技能目录，而 execpolicy CLI
-/// 硬拦截与技能物化排除读 `disabled_bundles.json`——开关关掉连接器时必须同步把
-/// 包 id 写入所有 scope 的禁用集（开回时移除），两条门控才一致。
-pub fn sync_disabled_bundles_for_connector_switch(connector_id: &str, enabled: bool) {
-    if enabled {
-        remove_bundle_from_disabled_scopes(connector_id);
-        return;
-    }
-    // 单临界区 RMW（四轮评审 M-6b）：逐 scope 独立 load→save 两次加锁会在跨临界区
-    // 窗口丢并发写（lost-update），与文件内其它写方同范式——持锁读 → 改 → 一次落盘。
-    let _guard = DISABLED_BUNDLES_FILE_LOCK
-        .lock()
-        .unwrap_or_else(|poisoned| poisoned.into_inner());
-    let mut file = load_disabled_bundles_file_locked();
-    let mut changed = false;
-    for mode in SessionMode::ALL {
-        let mut ids = resolve_scope_disabled_ids(&file, *mode);
-        if ids.iter().any(|id| id == connector_id) {
-            continue;
-        }
-        ids.push(connector_id.to_string());
-        let key = mode.as_str().to_string();
-        file.scopes.insert(key.clone(), ids);
-        file.initialized.insert(key);
-        changed = true;
-    }
-    if changed {
-        save_disabled_bundles_file(&file);
-    }
-}
-
 pub fn remove_bundle_from_disabled_scopes(raw_id: &str) {
     let package_id = to_package_id(raw_id);
     let _guard = DISABLED_BUNDLES_FILE_LOCK
