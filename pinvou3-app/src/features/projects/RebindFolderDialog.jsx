@@ -6,51 +6,57 @@
 import { useEffect, useRef } from 'react';
 import { createPortal } from 'react-dom';
 import { AlertTriangle, RefreshCw, X } from '../../components/icons.jsx';
+import { isImeComposing } from '../../shared/ime-guard.mjs';
 import { useDialogFocusRestore } from '../../hooks/useDialogFocusRestore.js';
+import { useDialogFocusTrap } from '../../hooks/useDialogFocusTrap.js';
 
 const RebindFolderDialog = ({ from, to, warnExisting, errorMessage, partial, busySessionIds, t, busy, onCancel, onConfirm }) => {
   const dialogRef = useRef(null);
   const confirmButtonRef = useRef(null);
   const backdropPressRef = useRef(false);
-  // 关窗时焦点归还触发徽标(评审 #463 Minor 8,同 MoveToProjectDialog);
-  // 归还后按 Enter 会重新触发 onRebind——此刻 rebindDraft 已清空,走的是
-  // 一条全新的重绑流程而非重复提交,与守卫语义一致。
+  // onCancel is an inline arrow at the call site; mirroring it and busy into
+  // refs keeps the key listener subscribed once instead of re-subscribing on
+  // every render (review #463 minor: keydown resubscribe — same idiom as
+  // MoveToProjectDialog's onCloseRef/busyRef).
+  const onCancelRef = useRef(onCancel);
+  const busyRef = useRef(busy);
+  useEffect(() => {
+    onCancelRef.current = onCancel;
+    busyRef.current = busy;
+  });
+  // On close, focus returns to the triggering badge (review #463 Minor 8,
+  // same as MoveToProjectDialog); pressing Enter after the restore re-triggers
+  // onRebind — by then rebindDraft is already cleared, so that starts a
+  // brand-new rebind flow rather than a duplicate submit, consistent with
+  // the guard's semantics.
   useDialogFocusRestore(dialogRef, confirmButtonRef);
+  // Tab cycling goes through the shared trap — it holds focus when busy has
+  // disabled every control (the hand-rolled trap returned on the empty set
+  // and leaked Tab to the background page, review #463 Major 4), handles
+  // focus outside the dialog, and guards IME. Only the Escape tiering stays
+  // here.
+  useDialogFocusTrap(dialogRef);
   useEffect(() => {
     const onKey = (e) => {
-      if (e.key === 'Escape' && !busy) {
-        onCancel();
-        return;
-      }
-      if (e.key === 'Tab' && dialogRef.current) {
-        // Minimal focus trap (same idiom as MoveToProjectDialog, #449 review):
-        // cycle Tab within the dialog instead of letting focus fall through to
-        // the page behind the overlay — where Enter would re-trigger the badge.
-        const focusables = dialogRef.current.querySelectorAll(
-          'button:not([disabled]), input:not([disabled]), [tabindex]:not([tabindex="-1"])',
-        );
-        if (!focusables.length) return;
-        const first = focusables[0];
-        const last = focusables[focusables.length - 1];
-        if (e.shiftKey && document.activeElement === first) {
-          e.preventDefault();
-          last.focus();
-        } else if (!e.shiftKey && document.activeElement === last) {
-          e.preventDefault();
-          first.focus();
-        }
+      if (e.key === 'Escape' && !isImeComposing(e)) {
+        e.preventDefault();
+        if (!busyRef.current) onCancelRef.current();
       }
     };
     window.addEventListener('keydown', onKey);
     return () => window.removeEventListener('keydown', onKey);
-  }, [busy, onCancel]);
+  }, []);
 
   if (typeof document === 'undefined') return null;
 
-  // 背板关闭以按下起点为准:从 break-all 路径上起手的文本拖选,松开落在
-  // 背板上也会合成一次 click(click 目标是共同祖先),按 click 关会把用户
-  // 没打算关的对话框关掉——部分失败态下这里是唯一重试入口,误关即丢失
-  // (评审 #463 Major 3;同 MoveToProjectDialog #449 的守卫)。
+  // Backdrop close requires BOTH the press and the release to land on the
+  // backdrop (both halves mirror MoveToProjectDialog's #449 guard): a text
+  // drag-select starting on the break-all path text and releasing on the
+  // backdrop — or pressing on the backdrop, dragging into the text, and
+  // releasing inside — synthesizes a click whose target is the common
+  // ancestor (= the backdrop), so a click-only guard would close a dialog
+  // the user never meant to close. In the partial state this dialog is the
+  // only retry entry, so a stray close loses it (review #463 Major 3).
   const handleBackdropClick = (e) => {
     if (!backdropPressRef.current || e.target !== e.currentTarget) return;
     backdropPressRef.current = false;
@@ -64,6 +70,7 @@ const RebindFolderDialog = ({ from, to, warnExisting, errorMessage, partial, bus
       className="fixed inset-0 z-[200] flex items-center justify-center p-4"
       style={{ background: 'rgba(0,0,0,.34)', backdropFilter: 'blur(14px) saturate(140%)', WebkitBackdropFilter: 'blur(14px) saturate(140%)' }}
       onMouseDown={(e) => { backdropPressRef.current = e.target === e.currentTarget; }}
+      onMouseUp={(e) => { if (backdropPressRef.current && e.target !== e.currentTarget) backdropPressRef.current = false; }}
       onClick={handleBackdropClick}
     >
       {/* biome-ignore lint/a11y/useKeyWithClickEvents: dialog body stops bubbling so backdrop close is not triggered accidentally; not interactive itself */}
@@ -112,9 +119,12 @@ const RebindFolderDialog = ({ from, to, warnExisting, errorMessage, partial, bus
             </div>
           )}
         </div>
-        {/* 部分失败报告(评审 #463 M1):窗不关——root 已平移,失效徽标
-            (唯一重绑入口)会随刷新消失,重试承诺必须在窗内兑现。失败会话
-            id 是数据而非 UI 文案,原样列出供手动兜底。 */}
+        {/* Partial-failure report (review #463 M1): the dialog does not
+            close — the root has already moved, and the unavailable badge
+            (the only rebind entry) disappears with the refresh, so the
+            retry promise must be honored inside the dialog. Failed session
+            ids are data, not UI copy, and are listed verbatim for manual
+            follow-up. */}
         {partial && (
           <div className="px-4 pb-2 space-y-2" data-testid="rebind-partial-report">
             <div className="flex items-start gap-2 rounded-2xl bg-[#FCE8E6] dark:bg-[#3C2A29] px-3 py-2 text-[12px] text-[#C5221F] dark:text-[#F28B82]">
@@ -138,8 +148,10 @@ const RebindFolderDialog = ({ from, to, warnExisting, errorMessage, partial, bus
             )}
           </div>
         )}
-        {/* busy 拒绝(Minor 7):后端以 REBIND_SESSIONS_BUSY 类型化标记
-            拒绝,前端映射 i18n 文案;会话 id 是数据,原样列出供排查。 */}
+        {/* Busy rejection (Minor 7): the backend rejects with the typed
+            REBIND_SESSIONS_BUSY marker and the frontend maps it to i18n
+            copy; session ids are data and are listed verbatim for
+            troubleshooting. */}
         {busySessionIds && busySessionIds.length > 0 && (
           <div className="px-4 pb-2 space-y-1" data-testid="rebind-busy-hint">
             <div className="flex items-start gap-2 rounded-2xl bg-[#FEF7E0] dark:bg-[#3C3226] px-3 py-2 text-[12px] text-[#B06000] dark:text-[#FDD663]">
@@ -170,10 +182,13 @@ const RebindFolderDialog = ({ from, to, warnExisting, errorMessage, partial, bus
             {t.cpCancel}
           </button>
         </div>
-        {/* 失败内联呈现(评审 #463 M7,Minor 修正原注释):就地展示持久、
-            紧邻重试动作,toast 则会超时消失、与操作脱节。层级不是动机——
-            settingsToast 实际渲染在 z-[210],高于本遮罩 z-[200],此前注释
-            的层级说法与事实相反,勿据其做后续分层决策。 */}
+        {/* Inline failure rendering (review #463 M7; a Minor round corrected
+            the original comment): shown in place, persistent, right next to
+            the retry action — a toast would time out and detach from the
+            operation. Stacking order is not the motive: settingsToast
+            actually renders at z-[210], above this overlay's z-[200]; the
+            earlier comment's stacking claim was the reverse of the facts —
+            do not base any future layering decisions on it. */}
         {errorMessage && (
           <div className="px-4 pb-4 -mt-1">
             <div className="flex items-start gap-2 rounded-2xl bg-[#FCE8E6] dark:bg-[#3C2A29] px-3 py-2 text-[12px] text-[#C5221F] dark:text-[#F28B82]" data-testid="rebind-error">
