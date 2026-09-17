@@ -2527,6 +2527,9 @@ impl Pinvou3Bridge {
             dynamic_tools: Vec::new(),
             provenance: deepseek_tui::core::ops::UserInputProvenance::ImportedTranscript,
             turn_tool_security: Some(Arc::new(turn_tool_security)),
+            // CodeWhale#58 echoes this token on TurnStarted; replay import
+            // does not correlate submit-window turns, so None.
+            submission_id: None,
         })
     }
 
@@ -2683,6 +2686,10 @@ impl Pinvou3Bridge {
             // provenance: 消息来源。build_send_message_op 是用户内容 → ExternalUser。
             provenance: deepseek_tui::core::ops::UserInputProvenance::ExternalUser,
             turn_tool_security: None,
+            // CodeWhale#58 echoes this token on TurnStarted; the GUI does not
+            // correlate submit-window turns yet, so None (wiring lands with
+            // the turn-bound stop PR).
+            submission_id: None,
         })
     }
 }

@@ -1747,7 +1747,7 @@ impl AppEngine {
         reservation.ensure_active()?;
         let actual_user_content = match &op {
             Op::SendMessage { content, .. } => content.clone(),
-            Op::EditLastTurn { new_message } => new_message.clone(),
+            Op::EditLastTurn { new_message, .. } => new_message.clone(),
             _ => anyhow::bail!("reserved turn requires a user-message operation"),
         };
         reservation.prepare_actual_user_content(actual_user_content)?;
@@ -1822,7 +1822,11 @@ impl AppEngine {
     /// 上游 [`Op::EditLastTurn`] 行为：砍掉 session 末尾最近的 user 消息及之后
     /// 所有消息，然后用 `new_message` 当成新 user 消息重新发送。
     pub async fn edit_last_turn(&self, new_message: String) -> Result<()> {
-        self.send_turn_op(Op::EditLastTurn { new_message }).await
+        self.send_turn_op(Op::EditLastTurn {
+            new_message,
+            submission_id: None,
+        })
+        .await
     }
 
     pub(crate) async fn edit_last_turn_reserved(
@@ -1830,8 +1834,14 @@ impl AppEngine {
         new_message: String,
         reservation: TurnReservation,
     ) -> Result<()> {
-        self.send_reserved_turn_op(Op::EditLastTurn { new_message }, reservation)
-            .await
+        self.send_reserved_turn_op(
+            Op::EditLastTurn {
+                new_message,
+                submission_id: None,
+            },
+            reservation,
+        )
+        .await
     }
 
     /// 手动触发上下文压缩（用户点 token 进度条 → 立即压缩）。
@@ -3138,6 +3148,10 @@ mod scheduled_turn_tests {
             verbosity: None,
             provenance: UserInputProvenance::Runtime,
             turn_tool_security: None,
+            // CodeWhale#58 echoes this token on TurnStarted; the GUI does not
+            // correlate submit-window turns yet, so None (wiring lands with
+            // the turn-bound stop PR).
+            submission_id: None,
         }
     }
 

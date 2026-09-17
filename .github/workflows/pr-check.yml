@@ -81,7 +81,7 @@ jobs:
   commit-message:
     name: commit-message
     if: ${{ (github.event_name == 'pull_request' && github.event.action != 'closed') || github.event_name == 'push' }}
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-22.04
     timeout-minutes: 5
     steps:
       - name: Checkout
@@ -90,7 +90,8 @@ jobs:
           fetch-depth: 0
 
       - name: Set up zram and swap
-        run: sudo bash "${{ github.workspace }}/scripts/ci-memory-setup.sh"
+        # Best effort: timeouts or failures only warn and never block (falls back to stock runner memory).
+        run: timeout --kill-after=15 240 sudo bash "${{ github.workspace }}/scripts/ci-memory-setup.sh" || echo "::warning::ci-memory-setup did not finish; continuing with stock runner memory"
 
       - name: Validate commit messages
         run: |
@@ -104,14 +105,15 @@ jobs:
   version-consistency:
     name: version-consistency
     if: ${{ (github.event_name == 'pull_request' && github.event.action != 'closed') || github.event_name == 'merge_group' || github.event_name == 'push' }}
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-22.04
     timeout-minutes: 5
     steps:
       - name: Checkout
         uses: actions/checkout@v7
 
       - name: Set up zram and swap
-        run: sudo bash "${{ github.workspace }}/scripts/ci-memory-setup.sh"
+        # Best effort: timeouts or failures only warn and never block (falls back to stock runner memory).
+        run: timeout --kill-after=15 240 sudo bash "${{ github.workspace }}/scripts/ci-memory-setup.sh" || echo "::warning::ci-memory-setup did not finish; continuing with stock runner memory"
 
       - name: Node.js
         uses: actions/setup-node@v7
@@ -136,7 +138,7 @@ jobs:
   changes:
     name: changes
     if: ${{ (github.event_name == 'pull_request' && github.event.action != 'closed') || github.event_name == 'merge_group' || github.event_name == 'push' }}
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-22.04
     timeout-minutes: 5
     outputs:
       rust_code: ${{ steps.filter.outputs.rust_code }}
@@ -156,7 +158,8 @@ jobs:
         with:
           fetch-depth: 0
       - name: Set up zram and swap
-        run: sudo bash "${{ github.workspace }}/scripts/ci-memory-setup.sh"
+        # Best effort: timeouts or failures only warn and never block (falls back to stock runner memory).
+        run: timeout --kill-after=15 240 sudo bash "${{ github.workspace }}/scripts/ci-memory-setup.sh" || echo "::warning::ci-memory-setup did not finish; continuing with stock runner memory"
       - uses: dorny/paths-filter@v4
         id: filter
         with:
@@ -339,7 +342,7 @@ jobs:
   fast-gate:
     name: fast-gate
     if: ${{ (github.event_name == 'pull_request' && github.event.action != 'closed') || github.event_name == 'merge_group' }}
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-22.04
     timeout-minutes: 10
     steps:
       - name: Checkout (含 submodule,fork 为 public 直接拉)
@@ -349,7 +352,8 @@ jobs:
           fetch-depth: 0
 
       - name: Set up zram and swap
-        run: sudo bash "${{ github.workspace }}/scripts/ci-memory-setup.sh"
+        # Best effort: timeouts or failures only warn and never block (falls back to stock runner memory).
+        run: timeout --kill-after=15 240 sudo bash "${{ github.workspace }}/scripts/ci-memory-setup.sh" || echo "::warning::ci-memory-setup did not finish; continuing with stock runner memory"
 
       # The workflow's own gate: YAML structure, expression typos, matrix/
       # runner labels, and cron syntax fail here before reaching a runner,
@@ -422,7 +426,7 @@ jobs:
     # smokes from their actual base/head diff. Shared, unknown, test-infrastructure,
     # and empty diffs fail closed to the complete smoke set.
     if: ${{ !cancelled() && github.event.action != 'closed' && (github.event_name == 'pull_request' || github.event_name == 'merge_group') && (needs.changes.outputs.frontend == 'true' || needs.changes.outputs.pet == 'true') }}
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-22.04
     timeout-minutes: 20
     defaults:
       run:
@@ -433,7 +437,8 @@ jobs:
           fetch-depth: 0
 
       - name: Set up zram and swap
-        run: sudo bash "${{ github.workspace }}/scripts/ci-memory-setup.sh"
+        # Best effort: timeouts or failures only warn and never block (falls back to stock runner memory).
+        run: timeout --kill-after=15 240 sudo bash "${{ github.workspace }}/scripts/ci-memory-setup.sh" || echo "::warning::ci-memory-setup did not finish; continuing with stock runner memory"
 
       - uses: actions/setup-node@v7
         with:
@@ -529,13 +534,14 @@ jobs:
     name: relay-test
     needs: changes
     if: ${{ !cancelled() && needs.changes.outputs.relay == 'true' && (github.event_name == 'merge_group' || (github.event_name == 'pull_request' && github.event.pull_request.draft == false)) }}
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-22.04
     timeout-minutes: 10
     steps:
       - uses: actions/checkout@v7
 
       - name: Set up zram and swap
-        run: sudo bash "${{ github.workspace }}/scripts/ci-memory-setup.sh"
+        # Best effort: timeouts or failures only warn and never block (falls back to stock runner memory).
+        run: timeout --kill-after=15 240 sudo bash "${{ github.workspace }}/scripts/ci-memory-setup.sh" || echo "::warning::ci-memory-setup did not finish; continuing with stock runner memory"
 
       - uses: actions/setup-node@v7
         with:
@@ -555,13 +561,14 @@ jobs:
     # Ready PR/Queue/main 仅在发布链路相关路径变化时验证版本同步、
     # Tauri overlay 与各平台打包契约，不生成 deb/dmg/nsis。
     if: ${{ !cancelled() && github.event.action != 'closed' && needs.changes.outputs.release_contract == 'true' && (github.event_name != 'pull_request' || github.event.pull_request.draft == false) }}
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-22.04
     timeout-minutes: 15
     steps:
       - uses: actions/checkout@v7
 
       - name: Set up zram and swap
-        run: sudo bash "${{ github.workspace }}/scripts/ci-memory-setup.sh"
+        # Best effort: timeouts or failures only warn and never block (falls back to stock runner memory).
+        run: timeout --kill-after=15 240 sudo bash "${{ github.workspace }}/scripts/ci-memory-setup.sh" || echo "::warning::ci-memory-setup did not finish; continuing with stock runner memory"
 
       - uses: actions/setup-node@v7
         with:
@@ -589,14 +596,15 @@ jobs:
     name: knowledge-rust
     needs: changes
     if: ${{ !cancelled() && github.event.action != 'closed' && (needs.changes.outputs.knowledge_rust == 'true' || needs.changes.outputs.knowledge_dependencies == 'true') }}
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-22.04
     timeout-minutes: 30
     steps:
       - name: Checkout
         uses: actions/checkout@v7
 
       - name: Set up zram and swap
-        run: sudo bash "${{ github.workspace }}/scripts/ci-memory-setup.sh"
+        # Best effort: timeouts or failures only warn and never block (falls back to stock runner memory).
+        run: timeout --kill-after=15 240 sudo bash "${{ github.workspace }}/scripts/ci-memory-setup.sh" || echo "::warning::ci-memory-setup did not finish; continuing with stock runner memory"
 
       - name: Rust toolchain
         uses: dtolnay/rust-toolchain@stable
@@ -608,7 +616,7 @@ jobs:
         uses: Swatinem/rust-cache@v2
         with:
           workspaces: pinvou-knowledge
-          shared-key: knowledge-rust
+          shared-key: knowledge-rust-v2
           save-if: ${{ github.ref == 'refs/heads/main' }}
 
       - name: cargo fmt --check
@@ -664,7 +672,7 @@ jobs:
     # cargo-deny 子步骤(已按 rust_dependencies 门控)需本 job 启动才能运行;
     # 否则 deny.toml 策略改动会静默漏检 cargo-deny。
     if: ${{ !cancelled() && github.event.action != 'closed' && (needs.changes.outputs.rust_code == 'true' || needs.changes.outputs.rust_dependencies == 'true') }}
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-22.04
     timeout-minutes: 30
     env:
       # Draft 只跑无系统依赖的 fmt 快检；Ready PR、Queue 与 main 跑 clippy。
@@ -681,7 +689,8 @@ jobs:
           submodules: false
 
       - name: Set up zram and swap
-        run: sudo bash "${{ github.workspace }}/scripts/ci-memory-setup.sh"
+        # Best effort: timeouts or failures only warn and never block (falls back to stock runner memory).
+        run: timeout --kill-after=15 240 sudo bash "${{ github.workspace }}/scripts/ci-memory-setup.sh" || echo "::warning::ci-memory-setup did not finish; continuing with stock runner memory"
 
       - name: 初始化公共底座 submodule
         run: git submodule update --init --recursive -- CodeWhale
@@ -701,7 +710,7 @@ jobs:
           workspaces: |
             pinvou3-app/src-tauri
             pinvou-knowledge
-          shared-key: rust-lint
+          shared-key: rust-lint-v2
           save-if: ${{ github.ref == 'refs/heads/main' }}
 
       # fmt 硬门禁:风格规则见 rustfmt.toml(只用 stable 可用选项)。
@@ -714,12 +723,18 @@ jobs:
         if: ${{ env.RUN_HEAVY_RUST_CHECKS == 'true' }}
         run: |
           sudo apt-get update
+          # Package list audited per-package on 2026-09-15: gtk/soup/x11 are installed
+          # transitively via webkit-dev; librsvg2-dev is not needed for the build; libssl-dev (openssl-sys is not vendored)
+          # and appindicator (tray) must be kept.
           sudo apt-get install -y --no-install-recommends \
-            libgtk-3-dev libwebkit2gtk-4.1-dev libsoup-3.0-dev \
-            librsvg2-dev libssl-dev \
-            libx11-dev libxi-dev libxtst-dev \
+            libwebkit2gtk-4.1-dev \
+            libssl-dev \
             libayatana-appindicator3-dev \
             build-essential pkg-config cmake
+          # Reduce footprint at the source: orphan dependencies, apt cache packages, and index lists do not stay on the build disk.
+          sudo apt-get autoremove -y --purge
+          sudo apt-get clean
+          sudo rm -rf /var/lib/apt/lists/*
 
       # Clippy hard gate (no continue-on-error): lint config lives in the
       # Cargo.toml [lints] table, never CLI -W/-D (avoids divergence from
@@ -841,7 +856,7 @@ jobs:
           )
         )
       }}
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-22.04
     # Tauri + fastembed + aws-lc-sys 全冷编译耗时长;设上限避免卡死 runner 占用。
     # High-risk PR, combined-tree, and main runs retain a 120-minute safety limit.
     timeout-minutes: 120
@@ -878,7 +893,8 @@ jobs:
           submodules: false
 
       - name: Set up zram and swap
-        run: sudo bash "${{ github.workspace }}/scripts/ci-memory-setup.sh"
+        # Best effort: timeouts or failures only warn and never block (falls back to stock runner memory).
+        run: timeout --kill-after=15 240 sudo bash "${{ github.workspace }}/scripts/ci-memory-setup.sh" || echo "::warning::ci-memory-setup did not finish; continuing with stock runner memory"
 
       - name: 初始化公共底座 submodule
         run: git submodule update --init --recursive -- CodeWhale
@@ -890,13 +906,19 @@ jobs:
       - name: 装 Tauri + pinvou3 Linux 系统依赖
         run: |
           sudo apt-get update
+          # Package list audited per-package on 2026-09-15: gtk/soup/x11 are installed
+          # transitively via webkit-dev; librsvg2-dev is not needed for the build; libssl-dev (openssl-sys is not vendored)
+          # and appindicator (tray) must be kept.
           sudo apt-get install -y --no-install-recommends \
-            libgtk-3-dev libwebkit2gtk-4.1-dev libsoup-3.0-dev \
-            librsvg2-dev libssl-dev \
-            libx11-dev libxi-dev libxtst-dev \
+            libwebkit2gtk-4.1-dev \
+            libssl-dev \
             libayatana-appindicator3-dev \
             build-essential pkg-config cmake lld \
             time
+          # Reduce footprint at the source: orphan dependencies, apt cache packages, and index lists do not stay on the build disk.
+          sudo apt-get autoremove -y --purge
+          sudo apt-get clean
+          sudo rm -rf /var/lib/apt/lists/*
 
       # bge-m3 是 gitignored 大资源(559M),CI 干净 checkout 没有它,而 tauri_build::build()
       # 会校验 tauri.conf resources 路径存在。单测用 mem()=embedder None、不加载真模型,真
@@ -959,6 +981,14 @@ jobs:
           # 只在 main 保存(暖 cache 唯一来源);PR 侧只读,不占 10GB 限额。
           save-if: ${{ github.ref == 'refs/heads/main' }}
 
+      # Single-disk hosted runners are tight on disk (PR #988: cold build had only 7.3 GiB
+      # left); remove unused preinstalled SDKs before dependency and test compilation. "base" tier:
+      # this job needs Chrome for e2e, so the "aggressive" tier (which removes /opt/google/chrome) cannot be used.
+      - name: Prepare disk space for the two Rust test rounds
+        run: |
+          sudo env GITHUB_WORKSPACE="$GITHUB_WORKSPACE" \
+            RUNNER_ENVIRONMENT="$RUNNER_ENVIRONMENT" \
+            python3 scripts/ci-rust-disk.py
       # High-risk/explicit PRs and matching merge groups run all lib tests
       # (含真实 relay/Chrome e2e)。
       # 编译链接与测试执行拆成两个 step:该 job 曾在 16GB hosted runner 上多次在
@@ -1027,7 +1057,7 @@ jobs:
           )
         )
       }}
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-22.04
     timeout-minutes: 90
     steps:
       - name: Checkout
@@ -1035,10 +1065,12 @@ jobs:
         with:
           submodules: false
 
-      # Same policy as rust-test: the Linux Rust job must set up extra memory
-      # first (enforced by the gate policy).
+      # Same policy as rust-test: the Linux Rust job attempts extra memory
+      # first (best effort and non-fatal; only the wrapper structure is
+      # enforced by the gate policy).
       - name: Set up zram and swap
-        run: sudo bash "${{ github.workspace }}/scripts/ci-memory-setup.sh"
+        # Best effort: timeouts or failures only warn and never block (falls back to stock runner memory).
+        run: timeout --kill-after=15 240 sudo bash "${{ github.workspace }}/scripts/ci-memory-setup.sh" || echo "::warning::ci-memory-setup did not finish; continuing with stock runner memory"
 
       - name: Init CodeWhale submodule
         run: git submodule update --init --recursive -- CodeWhale
@@ -1049,7 +1081,19 @@ jobs:
       - name: Install Tauri Linux system dependencies
         run: |
           sudo apt-get update
-          sudo apt-get install -y --no-install-recommends             libgtk-3-dev libwebkit2gtk-4.1-dev libsoup-3.0-dev             librsvg2-dev libssl-dev             libx11-dev libxi-dev libxtst-dev             libayatana-appindicator3-dev             build-essential pkg-config cmake             time
+          # Package list audited per-package on 2026-09-15: gtk/soup/x11 are installed
+          # transitively via webkit-dev; librsvg2-dev is not needed for the build; libssl-dev (openssl-sys is not vendored)
+          # and appindicator (tray) must be kept.
+          sudo apt-get install -y --no-install-recommends \
+            libwebkit2gtk-4.1-dev \
+            libssl-dev \
+            libayatana-appindicator3-dev \
+            build-essential pkg-config cmake \
+            time
+          # Reduce footprint at the source: orphan dependencies, apt cache packages, and index lists do not stay on the build disk.
+          sudo apt-get autoremove -y --purge
+          sudo apt-get clean
+          sudo rm -rf /var/lib/apt/lists/*
 
       - name: bge-m3 placeholder (tauri-build resource check)
         run: |
@@ -1336,7 +1380,9 @@ jobs:
             'features::voice::platform::windows::tests::closed_temp_wav_can_be_reopened_when_asr_denies_write_sharing' \
             'features::memory::tests::topic_migration_' \
             'connector_introspection_guard_matches_complete_names_only' \
-            'features::projects::tests::'; do
+            'features::projects::tests::' \
+            'run_with_timeout_reaps_and_stays_bounded' \
+            'reap_killed_child_'; do
             "$test_exe" "$filter" --test-threads=1 2>&1 | tee /tmp/windows_regression.log
             grep -qE 'running [1-9][0-9]* tests?' /tmp/windows_regression.log || {
               echo "FAIL: 回归过滤器 '$filter' 匹配 0 个测试(疑似测试改名导致静默空跑)" >&2
@@ -1419,14 +1465,15 @@ jobs:
       - macos-codex-runtime-test
       - windows-codex-runtime-test
     if: ${{ always() && ((github.event_name == 'pull_request' && github.event.action != 'closed') || github.event_name == 'merge_group') }}
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-22.04
     timeout-minutes: 5
     steps:
       - name: Checkout
         uses: actions/checkout@v7
 
       - name: Set up zram and swap
-        run: sudo bash "${{ github.workspace }}/scripts/ci-memory-setup.sh"
+        # Best effort: timeouts or failures only warn and never block (falls back to stock runner memory).
+        run: timeout --kill-after=15 240 sudo bash "${{ github.workspace }}/scripts/ci-memory-setup.sh" || echo "::warning::ci-memory-setup did not finish; continuing with stock runner memory"
 
       - name: 汇总所有适用检查
         env:

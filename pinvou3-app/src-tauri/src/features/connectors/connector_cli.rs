@@ -16,7 +16,7 @@
 
 use std::collections::HashMap;
 use std::io::{BufRead, BufReader};
-use std::process::{Command, Stdio};
+use std::process::{Child, Command, Stdio};
 use std::sync::Mutex;
 use std::sync::mpsc;
 use std::time::{Duration, Instant};
@@ -24,6 +24,8 @@ use std::time::{Duration, Instant};
 use serde::Serialize;
 use serde_json::Value;
 use tauri::{AppHandle, Emitter};
+
+use crate::platform::process::{REAP_GRACE, Reap, reap_killed_child};
 
 /// 一个 CLI 连接器的运行上下文(薄声明的"可执行"部分)。
 /// 全是 `'static` 引用,故可 `Copy`——能直接搬进抓 URL 的后台线程。
@@ -125,9 +127,29 @@ pub fn run_with_timeout(mut cmd: Command, secs: u64) -> Result<bool, String> {
             Some(status) => return Ok(status.success()),
             None => {
                 if start.elapsed() > Duration::from_secs(secs) {
-                    let _ = child.kill();
+                    // Termination must be confirmed before the bounded
+                    // reap: if kill() fails the installer may still be
+                    // alive, and waiting on it could outlive the timeout
+                    // budget, so report the failure immediately instead.
+                    if let Err(e) = child.kill() {
+                        return Err(format!(
+                            "CLI 安装超时({secs}s):可能是网络 / 代理(Clash)拦截;终止安装进程失败({e})(日志见 {})",
+                            log_path.display()
+                        ));
+                    }
+                    // Reap the killed child on a bounded budget: without
+                    // wait() it lingers as a zombie and repeated timeouts
+                    // exhaust kernel process-table entries
+                    // (Pinvou/pinvou3#1097).
+                    let reap_note = match reap_killed_child(&mut child, REAP_GRACE) {
+                        Reap::Reaped => String::new(),
+                        Reap::Abandoned => {
+                            format!(";终止请求已发出但 {:?} 内仍未退出,进程可能驻留", REAP_GRACE)
+                        }
+                        Reap::Failed(e) => format!(";回收安装进程失败({e})"),
+                    };
                     return Err(format!(
-                        "CLI 安装超时({secs}s):可能是网络 / 代理(Clash)拦截(日志见 {})",
+                        "CLI 安装超时({secs}s):可能是网络 / 代理(Clash)拦截{reap_note}(日志见 {})",
                         log_path.display()
                     ));
                 }
@@ -135,6 +157,14 @@ pub fn run_with_timeout(mut cmd: Command, secs: u64) -> Result<bool, String> {
             }
         }
     }
+}
+
+/// Bounded reap of a killed connector child with the shared grace budget,
+/// so auth-timeout and cancel paths do not leave zombies behind. The
+/// outcome is deliberately discarded by callers: their user-facing
+/// messages describe the auth result, not process hygiene.
+pub(crate) fn reap_after_kill(child: &mut Child) {
+    let _ = reap_killed_child(child, REAP_GRACE);
 }
 
 /// 标准 base64 编码(避免引新依赖)。
@@ -526,6 +556,67 @@ mod tests {
         assert!(
             png_data_url(b"\x89JPEG\r\n\x1a\nrest").is_none(),
             "wrong signature should be rejected"
+        );
+    }
+
+    /// The timeout path must stay bounded and reap the killed child: a
+    /// failed kill() returns immediately instead of waiting on a
+    /// still-alive installer, and after a confirmed kill the reap is
+    /// bounded by REAP_GRACE. Kill and reap are both pinned via the error
+    /// text: a failed kill() and an abandoned or failed reap each append
+    /// a clause, so their absence proves the installer was killed and
+    /// collected. Soft-skips when no `sleep` binary is on PATH (bare
+    /// Windows hosts; windows-latest CI bash steps have Git Bash's
+    /// `sleep.exe` on PATH, so the test runs for real there). The
+    /// Abandoned reap branch is induced deterministically in the
+    /// platform::process tests with a zero grace budget; the Failed
+    /// branch is not inducible in-process (std caches the exit status, so
+    /// a collected child can never report a wait error).
+    #[test]
+    fn run_with_timeout_reaps_and_stays_bounded() {
+        if Command::new("sleep").arg("0").status().is_err() {
+            eprintln!("skipping: no `sleep` binary on this platform");
+            return;
+        }
+        let _lock = crate::platform::paths::tests::ENV_LOCK
+            .lock()
+            .unwrap_or_else(|p| p.into_inner());
+        let _env = crate::platform::paths::tests::EnvVarGuard::capture(&["PINVOU3_HOME"]);
+        let root = std::env::temp_dir().join(format!(
+            "pinvou3-rwt-reap-test-{}-{}",
+            std::process::id(),
+            crate::platform::paths::tests::unique_suffix()
+        ));
+        std::fs::create_dir_all(&root).expect("create temp PINVOU3_HOME");
+        // SAFETY: holding platform::paths::tests::ENV_LOCK; env writes
+        // serialized in-process.
+        unsafe { std::env::set_var("PINVOU3_HOME", &root) };
+
+        let started = Instant::now();
+        let mut cmd = Command::new("sleep");
+        cmd.arg("120");
+        let error = run_with_timeout(cmd, 1).expect_err("sleep 120s must hit the 1s timeout");
+        let _ = std::fs::remove_dir_all(&root);
+
+        assert!(
+            error.contains("CLI 安装超时(1s)"),
+            "unexpected timeout error: {error}"
+        );
+        assert!(
+            !error.contains("进程可能驻留")
+                && !error.contains("回收安装进程失败")
+                && !error.contains("终止安装进程失败"),
+            "timeout error must not contain kill or reap failure clauses: {error}"
+        );
+        let elapsed = started.elapsed();
+        // >= 1s proves the timeout poll loop actually ran (a spawn failure
+        // would also Err but return instantly); < 10s proves the timeout
+        // path returned promptly after kill + grace-bounded reap (normal
+        // exit is milliseconds; the 2s REAP_GRACE is the worst-case tail)
+        // instead of blocking on the child indefinitely.
+        assert!(
+            elapsed >= Duration::from_secs(1) && elapsed < Duration::from_secs(10),
+            "timeout path should return promptly after the kill, took {elapsed:?}"
         );
     }
 

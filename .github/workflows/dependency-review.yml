@@ -20,7 +20,7 @@ concurrency:
 jobs:
   dependency-review:
     name: dependency-review
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-22.04
     timeout-minutes: 10
     steps:
       # Checkout exists only so the shared memory setup script can run; the
@@ -28,7 +28,8 @@ jobs:
       - uses: actions/checkout@v7
 
       - name: Set up zram and swap
-        run: sudo bash "${{ github.workspace }}/scripts/ci-memory-setup.sh"
+        # Best effort: timeouts or failures only warn and never block (falls back to stock runner memory).
+        run: timeout --kill-after=15 240 sudo bash "${{ github.workspace }}/scripts/ci-memory-setup.sh" || echo "::warning::ci-memory-setup did not finish; continuing with stock runner memory"
 
       - name: 确认队列中的 PR 已通过依赖审查
         if: github.event_name == 'merge_group'
