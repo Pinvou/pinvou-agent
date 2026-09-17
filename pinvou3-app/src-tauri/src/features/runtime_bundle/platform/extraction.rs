@@ -172,6 +172,13 @@ impl Pinvou3Bundle {
         // `if !bundle_changed` 提前返回之前——bundle 版本不变的老用户首次跑到新版本时
         // 也要完成导入；`legacy_imported` 闸使后续启动成为读一次的廉价 no-op。
         Self::import_legacy_bundle_store();
+        // 默认安装的预置 MCP 工具种子（session-reader 等）：无记录才装，排在
+        // write_mcp_servers 的已装记录内嵌校验之前，同一次启动内完成释放与注册。
+        // 明文密钥迁移失败时本轮不种子（与 write_mcp_servers 的搬迁门控同理：
+        // install 内部会重跑迁移，失败路径不得动旧布局），下个启动周期自愈。
+        if mcp_secret_migration_ok {
+            marketplace.ensure_default_installed_mcp_tools();
+        }
         // 强制迁移自定义 MCP（不在内嵌目录）到新布局：bundle/mcp-servers/<id>/ →
         // bundles/<id>/mcp/。排在技能迁移之前（四轮评审 M-7）：迁完后 available_tools
         // 才能从新布局读到自定义 MCP manifest 的 companion_skills 声明，技能迁移的
