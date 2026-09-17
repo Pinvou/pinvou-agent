@@ -79,6 +79,7 @@ pub use self::scheduled::{
 // retention eviction, so the re-export follows the same feature gate.
 /// Re-exported for the agentic-run cleanup guard (kept stable alongside the
 /// other historical `crate::features::sessions::X` paths).
+#[cfg(any(feature = "benchmark-hooks", test))]
 pub(crate) use self::store::EVAL_SESSION_FACTORY_TITLE;
 #[cfg(feature = "benchmark-hooks")]
 pub(crate) use self::store::MAX_SESSIONS_PER_KIND;
