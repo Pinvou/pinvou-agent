@@ -1149,21 +1149,6 @@ impl JudgeReport {
     }
 }
 
-#[derive(Clone, PartialEq)]
-pub struct JudgeWireResponse {
-    dimensions: Vec<JudgeDimensionScore>,
-    findings: Vec<SmokeFinding>,
-}
-
-impl JudgeWireResponse {
-    pub fn new(dimensions: Vec<JudgeDimensionScore>, findings: Vec<SmokeFinding>) -> Self {
-        Self {
-            dimensions,
-            findings,
-        }
-    }
-}
-
 fn judge_text_is_safe(value: &str, max_chars: usize) -> bool {
     if value.chars().count() > max_chars || value.chars().any(char::is_control) {
         return false;
