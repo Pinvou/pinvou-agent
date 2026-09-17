@@ -116,6 +116,15 @@ scope 键即 `SessionMode` 的 kebab-case 名（当前 `plain` / `code`）；
   disabled 集（关闭写入、开启移除），两个方向都不动 hidden，也不经过卸载
   清理入口——被 `set_bundle_visibility` 显式隐藏的包，开关开回后仍不可见。
 
+**跨进程一致性（#515）**：GUI 与无头宿主可能共享同一 `~/.pinvou3`，该文件的
+读改写由「进程内互斥 + OS 文件锁」（`~/.pinvou3/disabled_bundles.lock`，fd-lock）
+串行化，杜绝两进程并发读改写互相丢更新（丢失的一侧是用户的显式关闭，属
+fail-open 方向）。失败语义全部偏保守：锁不可用或写盘失败时**拒绝写入**并报错
+（`Ok` 即已落盘）；策略读只尝试加锁、争用即降级为不落盘的无锁快照（引擎侧
+每轮读取不会因对端而阻塞）；文件损坏时持锁路径把损坏字节隔离备份
+（`*.corrupt.<时间戳>`）并拒绝本次写，未初始化的 DenyAll scope 重新推导
+「默认全禁已装包」的兜底，方向保持 fail-closed。
+
 每个模式的默认策略显式声明为**模式身份**（`core/session_mode.rs` 的
 `SessionMode::pack_default_policy()`），不再是存储层的硬编码分支：
 

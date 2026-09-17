@@ -462,6 +462,9 @@ window.addEventListener('pinvou:chat-round-committed', (event) => {
       const [dingtalkEnabled, setDingtalkEnabled] = useState(true); // 钉钉技能是否启用(未手动停用)
       const [tmeetOn, setTmeetOn] = useState(false); // 腾讯会议是否已连接(CLI 路线)
       const [tmeetEnabled, setTmeetEnabled] = useState(true); // 腾讯会议技能是否启用(未手动停用)
+      // 开关落盘失败提示(跨进程锁不可用/写盘失败时后端拒绝)。失败必须可见:
+      // 本地开关回滚为后端真值,不静默吞错(与 ToolStoreView 可见性开关同款处理)。
+      const [writeError, setWriteError] = useState('');
       // 启动时加载已装工具 + 全局持久的禁用列表(持久语义:新窗口/新对话都继承)
       async function refreshToolsMenu(isAlive) {
         try {
@@ -545,7 +548,14 @@ window.addEventListener('pinvou:chat-round-committed', (event) => {
         // 按 scope 持久:落盘 + 广播给所有在跑引擎,关一次该 scope 所有新对话/新窗口都继承。
         if (bridge.available) {
           invokeTauri('set_disabled_connectors',
-            { connectorIds: [...next], scope: toolScope }).catch(() => {});
+            { connectorIds: [...next], scope: toolScope })
+            .then(() => setWriteError(''))
+            .catch((e) => {
+              // 落盘被拒(跨进程锁不可用/写盘失败):以后端真值回滚本地开关并提示,
+              // 不静默吞错——否则本地开着、磁盘关着,重启后静默回跳。
+              refreshToolsMenu(() => true);
+              setWriteError(String(e));
+            });
         }
       }
       function toggleProjectSkills() {
@@ -556,7 +566,12 @@ window.addEventListener('pinvou:chat-round-committed', (event) => {
         setProjectSkillsEnabled(next);
         pending.projectSkills = next;
         if (bridge.available) {
-          invokeTauri('set_project_skills_enabled', { enabled: next }).catch(() => {});
+          invokeTauri('set_project_skills_enabled', { enabled: next })
+            .then(() => setWriteError(''))
+            .catch((e) => {
+              refreshToolsMenu(() => true);
+              setWriteError(String(e));
+            });
         }
       }
       const menuState = buildComposerToolMenuState({
@@ -680,6 +695,13 @@ window.addEventListener('pinvou:chat-round-committed', (event) => {
                       <div className="px-3 pt-1 pb-1 text-[11px] text-gray-400 dark:text-gray-500">{t.composerSkillAllDisabled}</div>
                     )}
                   </>
+                )}
+                {/* 开关落盘失败：以后端真值已回滚，展示原因（跨进程锁不可用/写盘失败）。
+                    放在弹层顶层：无技能行时工具开关的失败也要可见。 */}
+                {writeError && (
+                  <div className="px-3 pt-1 pb-1 text-[11px] leading-snug text-amber-600 dark:text-amber-400" data-testid="composer-tool-write-error">
+                    {t.uiToolStore.operationFailedWith(writeError)}
+                  </div>
                 )}
                 {toolScope === 'code' && (
                   <>
