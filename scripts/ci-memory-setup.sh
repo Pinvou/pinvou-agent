@@ -2,27 +2,34 @@
 # CI Linux runner memory setup (best effort, never fatal).
 #
 # Facts measured on 2026-09-15 with probes on all three hosted images
-# (ubuntu-22.04, ubuntu-24.04, ubuntu-22.04-arm):
+# (ubuntu-22.04, ubuntu-24.04, ubuntu-22.04-arm; probes run in the sibling
+# repo Pinvou/pinvou3):
 #   - Hosted runners are single-disk: / and /mnt are the same ext4
-#     (/dev/sda1). x64 images total 72G with only ~13-14 GiB free at boot,
-#     arm ~34 GiB free. A swapfile on /mnt therefore eats the build disk
+#     (/dev/sda1). x64 images total 72G; with the 16G /mnt/swapfile the
+#     previous version of this script created, the build had only ~13-14
+#     GiB of disk left — the direct cause of the release ENOSPC failures —
+#     and arm ~34 GiB. A swapfile on /mnt therefore eats the build disk
 #     directly, so disk swap is no longer created by default.
-#   - The private-repo hosted runner is 2-core / 7.8 GiB RAM (free -h);
-#     the "16 GiB RAM" claimed by older comments was the public-repo spec.
+#   - The Pinvou/pinvou3 hosted runner is 2-core / 7.8 GiB RAM (free -h);
+#     the "16 GiB RAM" claimed by older comments was the public-repo
+#     runner spec.
 #
 # Swap layers, preferred first:
-#   1. zram (default ON): 24 GiB lz4, priority 100; compressed pages never
+#   1. zram: 24 GiB lz4, priority 100; compressed pages never
 #      touch disk, and the compressed pool is capped at 50% of RAM
 #      (mem_limit) so an incompressible workload cannot eat the runner's
-#      whole memory through zram itself. Re-qualified on all three images
+#      whole memory through zram itself. zram was already the unconditional
+#      first layer in the previous version of this script; the pool cap and
+#      the per-call timeout caps are the new part, not a zram rollout.
+#      Qualified on all three hosted images by the Pinvou/pinvou3 probes
 #      via modprobe zram ->
 #      (on failure: activate the image swapfile first if nothing is active,
 #      then apt-get install linux-modules-extra-$(uname -r), then modprobe
 #      again) -> lz4 -> 24G disksize -> mem_limit -> mkswap -> swapon -p 100.
-#      The 2026-09-12 hosted job hangs once blamed on zram (run
-#      34708283784) are re-classified as a transient environment incident:
-#      the same script ran green with zram loaded on the community repo the
-#      same day. The countermeasure is structural, not a rollback: every
+#      The 2026-09-12 hosted job hangs once blamed on zram (Pinvou/pinvou3
+#      run 34708283784) were re-classified as a transient environment
+#      incident: the same script ran green with zram loaded in this repo
+#      the same day. The countermeasure is structural, not a rollback: every
 #      userspace external call (modprobe, apt-get, fallocate, mkswap,
 #      swapon, swapoff) runs under `timeout` with a SIGKILL backstop, and
 #      any failure degrades loudly to the next layer. Residual risk that no
@@ -44,10 +51,18 @@
 #
 # Environment switches:
 #   PINVOU3_CI_DISABLE_ZRAM=1      skip zram entirely (explicit opt-out for
-#                                  future incidents). Replaces the old
-#                                  PINVOU3_CI_ENABLE_ZRAM opt-in; zram is
-#                                  now default-on.
+#                                  future incidents; zram has been the
+#                                  default first layer since this script
+#                                  was introduced).
 #   PINVOU3_CI_ENABLE_DISK_SWAP=1  additionally create /mnt/swapfile.
+#
+# Capacity trade in the default configuration: worst-case anonymous-memory
+# headroom is lower than in the previous version (the zram pool is
+# hard-capped at 50% of RAM instead of unbounded, and the 16G disk swap is
+# gone). This is deliberate: an uncapped pool is the plausible mechanism of
+# the 2026-09-12 "runner lost communication" incident, and an OOM-kill that
+# leaves logs beats a lost runner. True dual-disk self-hosted runners can
+# regain disk swap with PINVOU3_CI_ENABLE_DISK_SWAP=1.
 #
 # Kernel tunables (each knob independent, failure only warns):
 #   vm.swappiness=130 (>=100 shifts reclaim towards anonymous pages, i.e.
@@ -60,14 +75,24 @@
 # The pinvou3 workspace (700+ crates, ThinLTO, dep-level O2) repeatedly
 # exhausts the stock memory budget in rust-test; before memory provisioning
 # existed the failure mode was "hosted runner lost communication" with all
-# logs lost. Every Linux job that needs extra memory runs this script right
-# after checkout (enforced by the gate policy; rust-lint is exempt — its
-# lint-only workload fits in stock memory).
+# logs lost. Every Linux job runs this script right after checkout
+# (enforced by the gate policy test, which requires the wrapped, non-fatal
+# call on every ubuntu job — rust-lint included; its lint-only workload
+# would fit in stock memory, but the uniform wrapper keeps the policy
+# checkable).
 
 set -uo pipefail
 
 log() { echo "[memory-setup] $*"; }
-warn() { echo "[memory-setup] WARNING: $*" >&2; }
+# Surface degradation warnings as GitHub step annotations when running in
+# Actions: the workflow-side wrapper only annotates the outer 240s timeout,
+# so an in-script degradation would otherwise be step-log-only. Outside
+# Actions (self-hosted debugging) keep plain stderr text.
+if [[ ${GITHUB_ACTIONS:-} == true ]]; then
+  warn() { echo "::warning::[memory-setup] $*" >&2; }
+else
+  warn() { echo "[memory-setup] WARNING: $*" >&2; }
+fi
 
 if [[ ${EUID} -ne 0 ]]; then
   warn "must run as root (invoke as: sudo bash scripts/ci-memory-setup.sh)"
@@ -254,26 +279,34 @@ setup_disk_swap() {
     warn "/mnt free space too small for a swapfile; skipping disk swap"
     return 0
   fi
+  # Rebuilding replaces an active swapfile: once swapoff+rm succeed, a
+  # later failure must not claim the previous configuration was kept.
+  local removed_note=""
   if swapon --show=NAME --noheadings 2>/dev/null | grep -qx '/mnt/swapfile'; then
     # swapoff of a large active swapfile can take minutes; the cap keeps it
     # bounded and on timeout the swap simply stays active (kept below).
     if run_to 120 swapoff /mnt/swapfile 2>/dev/null; then
       rm -f /mnt/swapfile
+      removed_note=" (the previous /mnt/swapfile was removed)"
     else
       warn "could not swapoff the active /mnt/swapfile; keeping it as is instead of rebuilding"
       return 0
     fi
   fi
-  if ! run_to 60 fallocate -l "${want_kib}K" /mnt/swapfile 2>/dev/null; then
-    warn "fallocate ${want_kib}K /mnt/swapfile failed; keeping the existing swap configuration"
+  local call_err
+  if ! call_err="$(run_to 60 fallocate -l "${want_kib}K" /mnt/swapfile 2>&1)"; then
+    warn "fallocate ${want_kib}K /mnt/swapfile failed${call_err:+: ${call_err}}; continuing without a rebuilt disk swap${removed_note}"
     return 0
   fi
   chmod 600 /mnt/swapfile
-  run_to 60 mkswap /mnt/swapfile >/dev/null 2>&1 || { warn "mkswap failed"; return 0; }
-  if run_to 60 swapon -p "${DISK_SWAP_PRIORITY}" /mnt/swapfile 2>/dev/null; then
+  if ! call_err="$(run_to 60 mkswap /mnt/swapfile 2>&1)"; then
+    warn "mkswap /mnt/swapfile failed${call_err:+: ${call_err}}; continuing without a rebuilt disk swap${removed_note}"
+    return 0
+  fi
+  if call_err="$(run_to 60 swapon -p "${DISK_SWAP_PRIORITY}" /mnt/swapfile 2>&1)"; then
     log "disk swap ready: /mnt/swapfile $((want_kib / 1024)) MiB, priority ${DISK_SWAP_PRIORITY}"
   else
-    warn "swapon /mnt/swapfile failed; keeping the existing swap configuration"
+    warn "swapon /mnt/swapfile failed${call_err:+: ${call_err}}; continuing without disk swap${removed_note}"
   fi
 }
 
@@ -305,7 +338,10 @@ activate_image_swap_fallback() {
 }
 
 # zram and zswap overlap: zswap is only enabled when no /dev/zram swap is
-# active, so the "compress in RAM first" layer exists exactly once.
+# active, and disabled again when zram is active (stock Ubuntu kernels ship
+# zswap enabled by default, which would double-compress every swapped page
+# in front of zram), so the "compress in RAM first" layer exists exactly
+# once.
 setup_zswap_fallback() {
   local params=/sys/module/zswap/params
   if [[ ! -d ${params} ]]; then
@@ -338,7 +374,18 @@ else
   log "disk swap on /mnt skipped by default (hosted / and /mnt share one disk; set PINVOU3_CI_ENABLE_DISK_SWAP=1 on real dual-disk runners)"
 fi
 
-if ! swapon --show=NAME --noheadings 2>/dev/null | grep -q '/dev/zram'; then
+if swapon --show=NAME --noheadings 2>/dev/null | grep -q '/dev/zram'; then
+  # Keep the "compress in RAM first" layer to exactly one: stock Ubuntu
+  # kernels ship zswap enabled by default, and left on it would sit in
+  # front of zram and compress every swapped page twice (zstd, then lz4).
+  if [[ -d /sys/module/zswap/params ]]; then
+    if echo 0 >/sys/module/zswap/params/enabled 2>/dev/null; then
+      log "zswap disabled (zram is the single compress-in-RAM layer)"
+    else
+      warn "could not disable zswap; swapped pages may be compressed twice (zswap in front of zram)"
+    fi
+  fi
+else
   setup_zswap_fallback
 fi
 
