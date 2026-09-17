@@ -946,8 +946,14 @@ fn native_engine_transcribe(wav: &Path) -> Result<String, CliError> {
     let mut child = spawn_asr_engine(&mut engine_command, &normalized)?;
     let stdout_pipe = child.stdout.take();
     let stderr_pipe = child.stderr.take();
-    let stdout_drain = std::thread::spawn(move || drain_capped(stdout_pipe));
-    let stderr_drain = std::thread::spawn(move || drain_capped(stderr_pipe));
+    let (stdout_tx, stdout_rx) = std::sync::mpsc::channel();
+    let (stderr_tx, stderr_rx) = std::sync::mpsc::channel();
+    std::thread::spawn(move || {
+        let _ = stdout_tx.send(drain_capped(stdout_pipe));
+    });
+    std::thread::spawn(move || {
+        let _ = stderr_tx.send(drain_capped(stderr_pipe));
+    });
 
     let timeout = asr_timeout_secs();
     let started = Instant::now();
@@ -970,13 +976,18 @@ fn native_engine_transcribe(wav: &Path) -> Result<String, CliError> {
         }
     };
     // Off the success path the group kill reaps timed-out engines and any
-    // descendants that inherited their pipes. On a clean success the group
-    // died with its leader, and killing a reaped pid would race a reused id.
+    // descendants that inherited their pipes. On a clean success the leader
+    // is gone, but a descendant that inherited the pipes can keep them open
+    // past EOF, so an unbounded join here would hang this one-shot process
+    // forever; collect through the bounded grace instead (the same hazard
+    // the probe and login lanes bound; killing a reaped leader's group is
+    // avoided for the pid-reuse race, so the drains may come back empty and
+    // surface as the usual parse failure instead of a hang).
     if !matches!(&status, Ok(status) if status.success()) {
         crate::support::kill_process_tree(&mut child);
     }
-    let stdout = stdout_drain.join().unwrap_or_default();
-    let stderr = stderr_drain.join().unwrap_or_default();
+    let stdout = drain_with_grace(stdout_rx);
+    let stderr = drain_with_grace(stderr_rx);
     let _ = std::fs::remove_file(&normalized);
     let status = status?;
     if !status.success() {
@@ -1029,6 +1040,17 @@ const MAX_ENGINE_OUTPUT_BYTES: u64 = 8 * 1024 * 1024;
 /// Drains one child output pipe, capped at [`MAX_ENGINE_OUTPUT_BYTES`] and
 /// decoded lossily, so a chatty engine neither buffers without bound nor
 /// fails the whole transcription over an invalid byte.
+/// Collects one capped pipe drain through a bounded grace instead of an
+/// unbounded join: a descendant that inherited the pipe's write end can keep
+/// it open past the engine's exit, and `read_to_end` never sees EOF. On
+/// grace expiry the straggler is left alone — this process exits right
+/// after, closing the read end, and the shortfall surfaces as the usual
+/// parse/length failure instead of a hang.
+fn drain_with_grace(rx: std::sync::mpsc::Receiver<String>) -> String {
+    rx.recv_timeout(std::time::Duration::from_secs(5))
+        .unwrap_or_default()
+}
+
 fn drain_capped<R: std::io::Read>(pipe: Option<R>) -> String {
     let mut bytes = Vec::new();
     if let Some(pipe) = pipe {
@@ -1100,8 +1122,14 @@ fn external_cli_transcribe(command: &Path, wav: &Path) -> Result<String, CliErro
 
     let stdout_pipe = child.stdout.take();
     let stderr_pipe = child.stderr.take();
-    let stdout_drain = std::thread::spawn(move || drain_capped(stdout_pipe));
-    let stderr_drain = std::thread::spawn(move || drain_capped(stderr_pipe));
+    let (stdout_tx, stdout_rx) = std::sync::mpsc::channel();
+    let (stderr_tx, stderr_rx) = std::sync::mpsc::channel();
+    std::thread::spawn(move || {
+        let _ = stdout_tx.send(drain_capped(stdout_pipe));
+    });
+    std::thread::spawn(move || {
+        let _ = stderr_tx.send(drain_capped(stderr_pipe));
+    });
 
     let started = Instant::now();
     let status = loop {
@@ -1123,13 +1151,15 @@ fn external_cli_transcribe(command: &Path, wav: &Path) -> Result<String, CliErro
         }
     };
     // Off the success path the group kill reaps a timed-out CLI together
-    // with any descendants that inherited its pipes; a clean success left no
-    // group behind, and killing the reaped pid would race a reused id.
+    // with any descendants that inherited its pipes. On a clean success the
+    // leader is gone, but a pipe-inheriting descendant can hold EOF open, so
+    // collect through the bounded grace instead of an unbounded join (see
+    // the local-engine lane).
     if !matches!(&status, Ok(status) if status.success()) {
         crate::support::kill_process_tree(&mut child);
     }
-    let stdout = stdout_drain.join().unwrap_or_default();
-    let stderr = stderr_drain.join().unwrap_or_default();
+    let stdout = drain_with_grace(stdout_rx);
+    let stderr = drain_with_grace(stderr_rx);
     let status = status?;
     if !status.success() {
         if status.code() == Some(6) {

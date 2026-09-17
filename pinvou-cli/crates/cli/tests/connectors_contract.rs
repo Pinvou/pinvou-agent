@@ -953,7 +953,7 @@ fn logout_runs_the_real_auth_logout_for_a_below_minimum_tmeet() {
     ));
     std::fs::create_dir_all(&bin).unwrap();
     let args_file = bin.join("seen-args.txt");
-    // tmeet 1.0.10 parses but sits below the 1.0.15 install gate: status /
+    // tmeet 1.0.10 parses but sits below the install gate: status /
     // ensure-cli treat it as upgrade_required, yet the vendor credentials it
     // holds are real — logout must still run `tmeet auth logout` (GUI
     // parity: tmeet_logout gates on "the version parses", not on the
@@ -1015,7 +1015,7 @@ fn logout_success_leg_spawns_auth_logout_once_and_flags_the_store_disconnected()
     write_fake_cli_logged(
         &bin,
         "tmeet",
-        "tmeet version 1.0.15",
+        "tmeet version 1.0.18",
         "if [ \"$1\" = \"auth\" ] && [ \"$2\" = \"logout\" ]; then exit 0; fi\n",
         Some(&args_file),
     );
