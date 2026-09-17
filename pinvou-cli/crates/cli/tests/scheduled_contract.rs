@@ -1758,3 +1758,54 @@ fn read_state_with_a_stray_tasks_key_stays_readable() {
     );
     let _ = home;
 }
+
+#[test]
+fn read_commands_refuse_wrong_typed_required_fields_as_malformed() {
+    // The required-field gate type-checks, not just presence-checks: a
+    // hand-edited def with a numeric `name` or a numeric timestamp must be
+    // refused as malformed (the GUI's typed serde rejects the whole record),
+    // not rendered as a phantom task with empty strings.
+    let _env_guard = ENV_LOCK.lock().unwrap_or_else(|error| error.into_inner());
+    let home = TempHome::new("wrong-typed-def");
+    let created = create_task(&home, "Type check task");
+    let task_id = created["id"].as_str().unwrap().to_owned();
+
+    let mut def: serde_json::Value =
+        serde_json::from_str(&std::fs::read_to_string(home.def_path(&task_id)).unwrap()).unwrap();
+    def["name"] = serde_json::json!(42);
+    std::fs::write(home.def_path(&task_id), def.to_string()).unwrap();
+    let shown = expect_failed(&["scheduled", "show", &task_id]);
+    assert!(shown.contains("is malformed"), "{shown}");
+
+    let mut def: serde_json::Value =
+        serde_json::from_str(&std::fs::read_to_string(home.def_path(&task_id)).unwrap()).unwrap();
+    def["name"] = serde_json::json!("Back to a string");
+    def["created_at"] = serde_json::json!(1726000000);
+    std::fs::write(home.def_path(&task_id), def.to_string()).unwrap();
+    let listed = expect_failed(&["scheduled", "list"]);
+    assert!(listed.contains("is malformed"), "{listed}");
+    let _ = home;
+}
+
+#[test]
+fn read_commands_refuse_a_path_shaped_file_supplied_id_as_malformed() {
+    // The id doubles as the on-disk workspace directory name, so a def file
+    // whose id is not a single path component is malformed (the store is
+    // broken), not a usage error and never a directory join.
+    let _env_guard = ENV_LOCK.lock().unwrap_or_else(|error| error.into_inner());
+    let home = TempHome::new("path-shaped-id");
+    let created = create_task(&home, "Escaped id task");
+    let task_id = created["id"].as_str().unwrap().to_owned();
+    let mut def: serde_json::Value =
+        serde_json::from_str(&std::fs::read_to_string(home.def_path(&task_id)).unwrap()).unwrap();
+    def["id"] = serde_json::json!("../escape");
+    std::fs::write(home.def_path(&task_id), def.to_string()).unwrap();
+
+    let shown = expect_failed(&["scheduled", "show", &task_id]);
+    assert!(shown.contains("is malformed"), "{shown}");
+    assert!(
+        !home.root.join("escape").exists(),
+        "the workspace join must never escape the scheduled root"
+    );
+    let _ = home;
+}

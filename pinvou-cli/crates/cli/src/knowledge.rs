@@ -74,8 +74,9 @@
 //!   state machine (`kb_model_cancel` could neither cancel nor observe a CLI
 //!   download, `model status.downloading` could not see it) and would drop
 //!   the contract-mandated candidate verification through a real ONNX
-//!   inference session before the atomic deploy ("调用方在返回成功后负责真实
-//!   加载候选模型"). `model status` therefore reports what a one-shot CLI
+//!   inference session before the atomic deploy (the caller owns actually
+//!   loading the candidate model after the deploy reports success).
+//!   `model status` therefore reports what a one-shot CLI
 //!   process can know (on-disk completeness mirror + `semantic_ready`), and
 //!   `model cancel` calls the real `kb_model_cancel` (process-local by
 //!   nature).
