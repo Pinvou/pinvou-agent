@@ -16,7 +16,20 @@ fi
 # profile 偶尔会输出欢迎语；先写一个唯一 marker，让过滤器丢弃 marker 前噪声。
 # env -0 避免普通空格、引号和等号破坏解析。最终只输出单行 KEY=VALUE，因为
 # CodeWhale 的 shell_env 契约就是逐行解析。
-"$login_shell" -lc 'printf "\0PINVOU3_SHELL_ENV_START\0"; env -0' | python3 -c '
+#
+# 登录 shell 自身带 15s 上限（macOS 无 GNU timeout 时退化为不限时）：nvm /
+# conda / pyenv 初始化拖慢 profile 时，宁可放弃注入也不无限等待；被超时杀掉
+# 时通过 stderr 与退出码 124 暴露降级，而不是静默丢环境。
+collect_login_env() {
+    if command -v timeout >/dev/null 2>&1; then
+        timeout 15 "$login_shell" -lc 'printf "\0PINVOU3_SHELL_ENV_START\0"; env -0'
+    else
+        "$login_shell" -lc 'printf "\0PINVOU3_SHELL_ENV_START\0"; env -0'
+    fi
+}
+
+login_env_rc=0
+collect_login_env | python3 -c '
 import os
 import re
 import sys
@@ -77,4 +90,9 @@ for entry in payload.split(b"\0"):
     if re.search(r"://[^/\s]*@", value):
         continue
     print(f"{key}={value}")
-'
+' || login_env_rc=$?
+
+if (( login_env_rc == 124 )); then
+    printf 'pinvou3-shell-env: login shell env collection hit the 15s timeout; PATH/SDK env was NOT injected (slow profile init?)\n' >&2
+fi
+exit "$login_env_rc"

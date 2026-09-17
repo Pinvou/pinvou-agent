@@ -397,11 +397,19 @@ async fn adopt_upload(
         let _ = remove_dir_if_present(&target_dir).await;
         return Err(format!("迁移附件草稿失败：{error}"));
     }
-    let result = match ingest_managed_file(&target_file) {
-        Ok(result) => result,
-        Err(error) => {
+    // 摄入跑 LibreOffice/pandoc 子进程（分钟级），离开 async worker 线程。
+    let ingest_path = target_file.clone();
+    let ingest_result =
+        tokio::task::spawn_blocking(move || ingest_managed_file(&ingest_path)).await;
+    let result = match ingest_result {
+        Ok(Ok(result)) => result,
+        Ok(Err(error)) => {
             let _ = remove_dir_if_present(&target_dir).await;
             return Err(error);
+        }
+        Err(error) => {
+            let _ = remove_dir_if_present(&target_dir).await;
+            return Err(format!("摄入任务失败：{error}"));
         }
     };
     if let Err(error) = remove_dir_if_present(&source_dir).await {

@@ -367,18 +367,20 @@ fn isolated_git_command() -> std::process::Command {
     command
 }
 
+// 快照 git 子进程的兜底预算：`git add -A` 在大工作区上可能确实很慢，但卡死的
+// git（NFS/FUSE 停摆、挂死的 hook）不能无限阻塞回合开始前的检查点路径——
+// create_checkpoint 的任何错误都会按既有语义降级为「跳过快照并告警」，
+// 不会阻塞发送。
+const GIT_COMMAND_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(120);
+
 fn git(repo: &Path, work_tree: &Path, arguments: &[&str]) -> Result<std::process::Output> {
-    isolated_git_command()
+    let mut command = isolated_git_command();
+    command
         .arg(format!("--git-dir={}", repo.display()))
         .arg(format!("--work-tree={}", work_tree.display()))
-        .args(arguments)
-        .output()
-        .with_context(|| {
-            format!(
-                "failed to run git {} (is Git unavailable?)",
-                arguments.join(" ")
-            )
-        })
+        .args(arguments);
+    crate::platform::process::output_with_timeout_and_kill_tree(command, GIT_COMMAND_TIMEOUT)
+        .map_err(|error| anyhow::anyhow!("failed to run git {} : {error}", arguments.join(" ")))
 }
 
 fn git_ok(repo: &Path, work_tree: &Path, arguments: &[&str]) -> Result<String> {
@@ -926,12 +928,12 @@ pub fn restore_checkpoint(
 
 /// 只操作 refs 的 git 调用（update-ref/gc 不需要 work-tree）。
 fn git_ref(repo: &Path, arguments: &[&str]) -> Result<std::process::Output> {
-    let output = isolated_git_command()
+    let mut command = isolated_git_command();
+    command
         .arg(format!("--git-dir={}", repo.display()))
-        .args(arguments)
-        .output()
-        .with_context(|| format!("执行 git {} 失败（Git 不可用？）", arguments.join(" ")))?;
-    Ok(output)
+        .args(arguments);
+    crate::platform::process::output_with_timeout_and_kill_tree(command, GIT_COMMAND_TIMEOUT)
+        .map_err(|error| anyhow::anyhow!("执行 git {} 失败: {error}", arguments.join(" ")))
 }
 
 /// 回退后作废被截对话分支的 Turn checkpoint（设计审阅 P0 修复）。

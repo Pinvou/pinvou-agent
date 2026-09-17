@@ -30,7 +30,11 @@ pub async fn ingest_file(
     path: String,
 ) -> Result<crate::features::files::file_ingest::IngestResult, String> {
     let p = crate::features::files::file_ingest::validate_path(&path)?;
-    crate::features::files::file_ingest::ingest_attachment(&p)
+    // 摄入会跑 LibreOffice/pandoc/pdftotext 子进程（分钟级），必须离开
+    // async worker 线程，避免卡死运行时；子进程本身另有带 kill 的超时兜底。
+    tokio::task::spawn_blocking(move || crate::features::files::file_ingest::ingest_attachment(&p))
+        .await
+        .map_err(|e| format!("摄入任务失败: {e}"))?
 }
 
 /// Receive an HTML5 `File` into a sessionless draft area. Dropping or pasting

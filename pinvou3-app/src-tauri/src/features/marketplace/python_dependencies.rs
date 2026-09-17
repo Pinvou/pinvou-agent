@@ -605,7 +605,9 @@ fn ensure_cached(wheel: &PythonWheel, destination: &Path) -> Result<(), String> 
         .map_err(|e| format!("invalid Python wheel download URL: {e}"))?;
     let client = reqwest::blocking::Client::builder()
         .connect_timeout(Duration::from_secs(15))
-        .timeout(Duration::from_secs(180))
+        // 15 分钟总量:wheels 上限 64 MiB,180s 在常见慢链路上恰好不够;
+        // 超时会让整条串行 wheel 链反复从头重来。与 native_installer 对齐。
+        .timeout(Duration::from_secs(900))
         .redirect(reqwest::redirect::Policy::custom(|attempt| {
             let refused = attempt.previous().len() >= 10
                 || attempt.url().scheme() != "https"

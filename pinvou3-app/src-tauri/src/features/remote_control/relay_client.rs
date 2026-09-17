@@ -624,6 +624,13 @@ async fn run_loop(
         // Consume interval's immediate first tick; the registration message is
         // already proof of life.
         heartbeat.tick().await;
+        // Inbound-activity tracking: sending Pings into a half-open socket
+        // keeps succeeding (kernel buffers absorb them), so without this the
+        // client would report "connected" for tens of minutes on a dead path
+        // (sleep/resume, NAT rebind) while every phone request queues.
+        // Any inbound frame counts as proof of life; 2 missed heartbeat
+        // windows with nothing inbound forces the reconnect path.
+        let mut last_inbound = std::time::Instant::now();
         loop {
             tokio::select! {
                 biased;
@@ -652,6 +659,8 @@ async fn run_loop(
                 }
                 message = read.next() => {
                     let Some(message) = message else { break; };
+                    // Any inbound frame (text, ping, pong) is proof of life.
+                    last_inbound = std::time::Instant::now();
                     match message {
                         Ok(Message::Text(text)) => {
                             if inbound_text_too_large(text.len()) {
@@ -701,6 +710,13 @@ async fn run_loop(
                     }
                 }
                 _ = heartbeat.tick() => {
+                    if last_inbound.elapsed() >= HEARTBEAT_INTERVAL * 2 {
+                        // Nothing inbound for two heartbeat windows: treat
+                        // the connection as dead and take the normal
+                        // reconnect path (pending frames are preserved).
+                        eprintln!("[web-access] relay connection silent, forcing reconnect");
+                        break;
+                    }
                     let ping_result = tokio::select! {
                         biased;
                         _ = shutdown.cancelled() => return,

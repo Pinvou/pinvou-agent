@@ -112,9 +112,14 @@ pub(crate) fn safe_auth_log_line(line: &str, redact_bare_token: bool) -> Option<
 }
 
 /// 跑一个命令、收集 `(success, stdout, stderr)`。在 `spawn_blocking` 里调。
-pub fn run(mut cmd: Command) -> Result<(bool, String, String), String> {
-    let out = cmd
-        .output()
+///
+/// 带 30s 兜底超时:这些调用全是 `--version` / `auth status` / `auth logout`
+/// 一类的短命令,但 npm-shim CLI 曾实测会卡在网络/代理/无 TTY 提示上无限
+/// 挂起(同 `run_with_timeout` 的注释)。不设上限会让 connector 状态查询与
+/// 首帧 auth-gate 刷新永久转圈;超时按失败处理,调用方已有各自的降级分支。
+pub fn run(cmd: Command) -> Result<(bool, String, String), String> {
+    const CLI_PROBE_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(30);
+    let out = crate::platform::process::output_with_timeout(cmd, CLI_PROBE_TIMEOUT)
         .map_err(|e| format!("启动失败: {e}(需要先完成对应连接器 CLI 的在线安装)"))?;
     Ok((
         out.status.success(),
