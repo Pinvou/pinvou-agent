@@ -59,12 +59,13 @@ const CANCEL_SETTLE_SECS: u64 = 30;
 /// harnesses with an output-inactivity watchdog do not kill long tasks.
 const HEARTBEAT_SECS: u64 = 10;
 
-/// Upper bound on `AgenticTaskRequest::attachments`, mirroring the staged
-/// attachment limit of `ProductHeadlessBackend` in `headless_bridge.rs`.
-pub const MAX_ATTACHMENTS: usize = 16;
-/// Per-attachment size cap in bytes (20 MiB), mirroring
-/// `ProductHeadlessBackend`'s staged attachment limit.
-pub const MAX_ATTACHMENT_BYTES: u64 = 20 * 1024 * 1024;
+// Attachment caps are the same constants `ProductHeadlessBackend` enforces on
+// its staged attachments — re-exported under the request-path names so the
+// two headless pipelines cannot drift apart silently.
+pub(crate) use super::headless_bridge::{
+    MAX_STAGED_ATTACHMENT_BYTES as MAX_ATTACHMENT_BYTES, MAX_STAGED_ATTACHMENTS as MAX_ATTACHMENTS,
+    MAX_STAGED_ATTACHMENTS_TOTAL_BYTES as MAX_ATTACHMENTS_TOTAL_BYTES,
+};
 
 /// Turn mode for one agentic task. Serialized as a snake_case string
 /// (`"agent"` / `"plan"`). The default (`None` on the request) is
@@ -139,8 +140,11 @@ pub struct AgenticTaskRequest {
     pub session_id: Option<String>,
     /// Turn mode. `None` = [`AgenticTaskMode::Agent`] = today's behavior.
     /// `Plan` submits the same read-only plan turn the GUI produces in Plan
-    /// mode (the mode is carried on the send op itself, so no session-mode
-    /// sidecar write is required).
+    /// mode and persists the session mode through the GUI's per-session
+    /// lane, so reopening the session restores Plan for fresh and
+    /// caller-provided sessions alike (a persistence failure fails the run
+    /// before submit — reopening in the stale mode is the unsafe
+    /// divergence).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub mode: Option<AgenticTaskMode>,
     /// Pin the session's model, like the GUI per-session model switch:
@@ -157,9 +161,10 @@ pub struct AgenticTaskRequest {
     /// Files attached to the prompt, processed by the GUI attachment
     /// pipeline: staged into the session ledger `attachments/` directory,
     /// ingested via `features/files::file_ingest`, and rendered with the same
-    /// product attachment text the GUI chat send uses. Limits mirror
-    /// `ProductHeadlessBackend`: at most [`MAX_ATTACHMENTS`] files, at most
-    /// [`MAX_ATTACHMENT_BYTES`] each. Missing path →
+    /// product attachment text the GUI chat send uses. Limits are the staged
+    /// attachment caps shared with `ProductHeadlessBackend`: at most
+    /// [`MAX_ATTACHMENTS`] files, at most [`MAX_ATTACHMENT_BYTES`] each.
+    /// Missing path →
     /// `agent_attachment_not_found`; over limits →
     /// `agent_attachment_too_many` / `agent_attachment_too_large`.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
@@ -275,7 +280,17 @@ pub async fn run_agentic_task(
     };
     let session_id = match request.session_id.as_deref() {
         Some(session_id) => session_id.to_owned(),
-        None => fresh_session_id(),
+        // Fresh ids persist for good now, so a recycled pid replaying the
+        // same counter must not silently overwrite a kept session's record
+        // (transcript loss, and the old pin would transfer to the new stub):
+        // regenerate until the id is free.
+        None => {
+            let mut session_id = fresh_session_id();
+            while store.chat_session_record_exists(&session_id) {
+                session_id = fresh_session_id();
+            }
+            session_id
+        }
     };
 
     // Execution root binding: the closure only matches this run's session id
@@ -343,7 +358,10 @@ pub async fn run_agentic_task(
     // or the setup timeout) carries no transcript to inspect: keeping it
     // would litter the shared store — and the GUI history — with zero-message
     // stubs, one eviction apiece in a failing batch. Those runs clean up
-    // after themselves regardless of `KEEP_SESSION`.
+    // after themselves regardless of `KEEP_SESSION` — where "never started"
+    // is decided on the durable record: a stub that already carries admitted
+    // messages is a started transcript and stays inspectable instead (see
+    // the cleanup branch below).
     //
     // A caller-provided `session_id` is never auto-deleted by THIS run, but
     // it is an ordinary chat session in the store: the 50-session retention
@@ -373,8 +391,29 @@ pub async fn run_agentic_task(
         crate::features::assistant::timing::unregister_eval_observation(&session_id);
     } else if !submitted {
         crate::features::assistant::timing::unregister_eval_observation(&session_id);
-        runtime.schedule_eval_cleanup(&session_id);
-        let _ = runtime.close_eval_session_result(&session_id).await;
+        // The submit boundary is not atomic with transcript admission: the
+        // engine lazily spawns on submit and can durably admit the user
+        // message before the fault surfaces (a submit error, or the setup
+        // timeout landing right after admission). The classification reads
+        // the durable record, not the submit flag: a zero-message stub is
+        // cleanup-eligible regardless of `KEEP_SESSION` (it would otherwise
+        // litter the shared store — and the GUI history — one eviction per
+        // failing batch), while a stub that already carries admitted
+        // messages is a started transcript and the only copy — it stays
+        // inspectable unless the caller explicitly restored the legacy
+        // one-shot contract. An unloadable record also keeps: deleting on
+        // unknown state is the unsafe direction.
+        match store.chat_session_has_messages(&session_id) {
+            Ok(false) => {
+                runtime.schedule_eval_cleanup(&session_id);
+                let _ = runtime.close_eval_session_result(&session_id).await;
+            }
+            Ok(true) if !keep_session => {
+                runtime.schedule_eval_cleanup(&session_id);
+                let _ = runtime.close_eval_session_result(&session_id).await;
+            }
+            _ => runtime.pool.evict(&session_id).await,
+        }
     } else if outcome.is_err() {
         let factory_titled = store
             .load(&session_id)
@@ -476,9 +515,9 @@ fn retention_eviction_warning(evicted: &[String]) -> Option<String> {
 
 /// Validate the static attachment limits of an agentic request: at most
 /// [`MAX_ATTACHMENTS`] entries, each resolving to a regular file of at most
-/// [`MAX_ATTACHMENT_BYTES`] bytes (mirroring `ProductHeadlessBackend`'s staged
-/// attachment limits). Symlinks to regular files are accepted, matching the
-/// GUI staging path (`stage_file_in_workspace` copies content).
+/// [`MAX_ATTACHMENT_BYTES`] bytes (the staged attachment caps shared with
+/// `ProductHeadlessBackend`). Symlinks to regular files are accepted,
+/// matching the GUI staging path (`stage_file_in_workspace` copies content).
 fn validate_attachments(attachments: &[AgenticTaskAttachment]) -> Result<()> {
     if attachments.len() > MAX_ATTACHMENTS {
         anyhow::bail!(
@@ -510,9 +549,8 @@ fn validate_attachments(attachments: &[AgenticTaskAttachment]) -> Result<()> {
         total_bytes += metadata.len();
     }
     // Same aggregate budget as `ProductHeadlessBackend`
-    // (MAX_STAGED_ATTACHMENTS_TOTAL_BYTES = 100 MiB) — the per-file cap alone
+    // (MAX_ATTACHMENTS_TOTAL_BYTES = 100 MiB) — the per-file cap alone
     // allowed 320 MiB of staged attachments.
-    const MAX_ATTACHMENTS_TOTAL_BYTES: u64 = 100 * 1024 * 1024;
     if total_bytes > MAX_ATTACHMENTS_TOTAL_BYTES {
         anyhow::bail!(
             "agent_attachment_too_large: attachments total {total_bytes} bytes (limit \
@@ -688,7 +726,7 @@ async fn run_turn(
                     .context("persist session mode")?;
             }
         }
-        let content = prompt_with_attachments(store, session_id, request).await?;
+        let content = prompt_with_attachments(store, session_id, request, existing_session).await?;
         runtime
             .submit(&TurnInput {
                 session_id: session_id.to_owned(),
@@ -889,6 +927,7 @@ async fn prompt_with_attachments(
     store: &SessionStore,
     session_id: &str,
     request: &AgenticTaskRequest,
+    existing_session: bool,
 ) -> Result<String> {
     if request.attachments.is_empty() {
         return Ok(request.prompt.clone());
@@ -899,8 +938,13 @@ async fn prompt_with_attachments(
     let ledger_root = roots.ledger.clone();
     // `SessionRoots::bound` is the documented MUST for detecting the bound
     // state (`ledger != execution` stops implying binding once other dual-root
-    // shapes appear) — same predicate as the GUI chat command.
-    let reference_absolute = roots.bound;
+    // shapes appear) — same predicate as the GUI chat command. A caller-
+    // provided session that is NOT bound but runs with an explicit `workspace`
+    // this time is the one dual-root shape the bound check misses: the
+    // run-scoped resolver moves the engine cwd to the workspace while staged
+    // files still live under the session ledger, so relative references would
+    // resolve against the wrong root — force the absolute form there too.
+    let reference_absolute = roots.bound || (existing_session && request.workspace.is_some());
     let attachments = request.attachments.clone();
     let prompt = request.prompt.clone();
     let staging_root = ledger_root.clone();
@@ -1127,6 +1171,13 @@ mod tests {
             // SAFETY: see above.
             unsafe { std::env::set_var("PINVOU3_AGENT_TASK_KEEP_SESSION", value) };
             assert!(keep_session_from_env(), "{value} must keep the session");
+        }
+        // Pinned exactness: comparison is ASCII case-insensitive WITHOUT
+        // trimming, and empty means keep — only the bare falsy tokens delete.
+        for value in [" 0", "0 ", "\tfalse", ""] {
+            // SAFETY: see above.
+            unsafe { std::env::set_var("PINVOU3_AGENT_TASK_KEEP_SESSION", value) };
+            assert!(keep_session_from_env(), "{value:?} must keep the session");
         }
         for value in ["0", "false", "no", "off", "FALSE", "Off"] {
             // SAFETY: see above.
