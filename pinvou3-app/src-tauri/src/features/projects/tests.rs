@@ -414,6 +414,7 @@ fn rebind_roots_rewrites_prefix_and_stays_idempotent() {
     assert_eq!(store.get(&project.id).unwrap().roots, roots);
 }
 
+#[cfg(unix)]
 #[test]
 fn rebind_roots_cuts_suffix_by_resolved_form_for_alias_callers() {
     // round-6/7 B1 pinned: an alias caller passes a `from` whose resolved
@@ -421,20 +422,14 @@ fn rebind_roots_cuts_suffix_by_resolved_form_for_alias_callers() {
     // /private/var/x). The match domain is resolved; cutting by the raw
     // component count would misplace subdirectories as <to>/x. A symlink
     // reproduces the same skew and pins the "cut in the same domain as the
-    // match" semantics. std::env::consts::OS branches instead of cfg syntax:
-    // platform conditional compilation stays out of the features layer
-    // (architecture guard); symlink setup is POSIX-only.
-    if std::env::consts::OS == "windows" {
-        return;
-    }
+    // match" semantics. cfg(unix)-gated under the file-top allow-target-cfg
+    // exception: std::os::unix::fs::symlink does not exist on Windows.
     let temp = tempfile::tempdir().expect("tempdir");
     let store = store_in(&temp);
     let real = temp.path().join("real");
     let alias = temp.path().join("alias");
     std::fs::create_dir_all(&real).expect("create real dir");
-    // std::fs::symlink keeps this file compilable on Windows (the branch above
-    // returns before any symlink is created there).
-    std::fs::symlink(&real, &alias).expect("symlink");
+    std::os::unix::fs::symlink(&real, &alias).expect("symlink");
 
     // The project root is stored in display form (create resolves the symlink
     // via root_display) while `from` is passed in raw alias form — exactly the
