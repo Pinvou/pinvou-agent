@@ -3,7 +3,8 @@
  *   - 纯逻辑：chatYoloGateApplies（确认门适用对象）/
  *     shouldShowWorkspaceBindingChip（绑定指示显示条件）；
  *   - sessions bridge：getSessionWorkspaceBinding 的归一化与失败兜底；
- *     ensureSession 物化时绑定草稿不再套用 work lane 默认、按暂存 mode 应用；
+ *     ensureSession 物化时绑定草稿不再套用 work lane 默认、按暂存 mode 应用，
+ *     物化失败保留草稿暂存、开关落盘失败按捕获值回滚恢复草稿；
  *     setDraftWorkspace 绑定/解绑刷新草稿 mode 显示并作废暂存；
  *   - interaction bridge：绑定草稿显式切换写 code lane 全局默认并暂存选择，
  *     未绑定草稿维持 work/design lane 语义。
@@ -269,6 +270,56 @@ test('ensureSession：项目通道草稿下发钥匙串与 projectId，物化后
   // vm 上下文数组跨 realm,deepStrict 按引用失败——按内容断言。
   assert.equal((rt.state.draftWorkspaceRoots || []).length, 0);
   assert.equal(rt.state.draftProjectId, null, '物化后暂存清空');
+});
+
+test('ensureSession：create_session 失败保留草稿暂存（path/roots/projectId 原样可重试）', async () => {
+  const rt = loadFeature('sessions', {
+    invoke(name) {
+      if (name === 'create_session') return Promise.reject(new Error('workspace gone'));
+      return Promise.resolve(null);
+    },
+  });
+  rt.api.setDraftWorkspace('/work/project', {
+    projectId: 'prj-1',
+    workspaceRoots: ['/work/project', '/work/shared'],
+  });
+  const id = await rt.api.ensureSession();
+  assert.equal(id, null, '物化失败返回 null，调用方放弃本条消息');
+  assert.equal(rt.state.activeSessionId, null, '失败不得切走 active');
+  assert.equal(rt.state.draftWorkspacePath, '/work/project', '草稿目录保留，用户修好目录后可原样重试');
+  assert.deepEqual(rt.state.draftWorkspaceRoots, ['/work/project', '/work/shared'], '钥匙串快照保留');
+  assert.equal(rt.state.draftProjectId, 'prj-1', '项目归属保留');
+  assert.ok(rt.state.chatItems.some(item => String(item.text).includes('workspace gone')),
+    '失败必须有系统报错卡');
+});
+
+test('ensureSession：多智能体开关落盘失败回滚——草稿暂存按物化前捕获值恢复', async () => {
+  const rt = loadFeature('sessions', {
+    invoke(name) {
+      if (name === 'create_session') return Promise.resolve({ id: 'chat-new' });
+      if (name === 'set_multi_agent_mode') return Promise.reject(new Error('toggle denied'));
+      if (name === 'list_sessions' || name === 'list_archived_sessions') return Promise.resolve([]);
+      return Promise.resolve(null);
+    },
+  });
+  rt.api.setDraftWorkspace('/work/project', {
+    projectId: 'prj-1',
+    workspaceRoots: ['/work/project', '/work/shared'],
+  });
+  rt.state.pendingDraftMultiAgent = true;
+  rt.state.pendingDraftMode = 'plan';
+  const id = await rt.api.ensureSession();
+  assert.equal(id, null, '开关落盘失败中止物化');
+  assert.deepEqual(rt.invokeArgs('delete_session'), [{ id: 'chat-new' }],
+    '中止必须删掉刚建的空会话');
+  assert.equal(rt.state.activeSessionId, null, '回滚后回到草稿态');
+  assert.equal(rt.state.pendingDraftMultiAgent, true, '开关意图保留待重试');
+  assert.equal(rt.state.draftWorkspacePath, '/work/project');
+  assert.deepEqual(rt.state.draftWorkspaceRoots, ['/work/project', '/work/shared'],
+    'enterDraft 清空后必须按捕获值恢复钥匙串');
+  assert.equal(rt.state.draftProjectId, 'prj-1', '项目归属按捕获值恢复');
+  assert.equal(rt.state.pendingDraftMode, 'plan', '显式 mode 暂存一并恢复');
+  assert.equal(rt.state.modeState.multiAgent, true, '回滚草稿显示保持多智能体开');
 });
 
 test('ensureSession：临时草稿不带钥匙串字段(单根现状)', async () => {

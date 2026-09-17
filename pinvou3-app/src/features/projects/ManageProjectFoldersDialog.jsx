@@ -1,7 +1,9 @@
-// 「管理文件夹」面板(§4):项目 roots 的查看/添加/移除、主文件夹记忆
-// (设为主根)、重命名、反物化排除列表的查看/撤销。纯展示组件:全部动作
-// 经 props 回调交给容器(main.jsx),组件不碰 Tauri 全局。对话框惯例
-// (portal/Escape/focus trap/busy)照抄 MoveToProjectDialog。
+// Manage-folders panel (§4): view/add/remove project roots, primary-folder
+// memory (set as primary), rename, and view/revoke of the anti-
+// materialization exclusion list. Purely presentational: every action goes to
+// the container (main.jsx) via props callbacks; the component never touches
+// Tauri globals. The dialog conventions (portal/Escape/focus trap/busy)
+// follow MoveToProjectDialog.
 import { useEffect, useRef, useState } from 'react';
 import { createPortal } from 'react-dom';
 import { AlertTriangle, FolderOpen, FolderPlus, PinIcon, Trash2, X } from '../../components/icons.jsx';
@@ -24,13 +26,15 @@ const ManageProjectFoldersDialog = ({
   onRevokeExclusion,
 }) => {
   const copy = t.uiManageFolders;
-  // 确认态:pendingRemove = 待移除的 root 行;removingPrimary = 主根拦截提示。
+  // Confirm states: pendingRemove = the root row awaiting removal;
+  // removingPrimary = the primary-removal interception hint.
   const [pendingRemove, setPendingRemove] = useState(null);
   const [renaming, setRenaming] = useState(null);
   const onCloseRef = useRef(onClose);
   const dialogRef = useRef(null);
   const pendingRemoveRef = useRef(null);
-  // 项目切换/数据刷新后确认态可能失效(行已不在):渲染期派生,不写状态。
+  // After a project switch / data refresh the confirm state may be stale (the
+  // row is gone): derive it at render time instead of writing state.
   const rows = manageFolderRows(project);
   const activePendingRemove = pendingRemove && rows.some(row => row.path === pendingRemove.path)
     ? pendingRemove

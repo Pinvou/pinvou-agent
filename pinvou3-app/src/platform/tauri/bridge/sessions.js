@@ -16,9 +16,10 @@
     const invoke = context.invoke;
     const listen = context.listen;
     const notify = context.notify;
-    // 系统目录选择对话框（bridge.js 注入 TAURI.dialog.open；React 不得直接
-    // 触碰 Tauri 全局，草稿工作区选择由此封装）。不可用时为 undefined，
-    // pickDraftWorkspace 以 null 早退。
+    // System directory dialog (bridge.js injects TAURI.dialog.open; React must
+    // not touch Tauri globals directly, so draft workspace picking is
+    // encapsulated here). Undefined when unavailable; pickDraftWorkspace then
+    // exits early with null.
     const dialogOpen = context.dialogOpen || null;
     const sessionStates = context.sessionStates;
     const scheduledRunSessionOwners = context.scheduledRunSessionOwners;
@@ -559,9 +560,12 @@
     state.scheduledTaskPendingGuide = null; // 换了对话,未发送的定时任务引导词作废
     // 新草稿从关闭状态开始：寄存意图作废，开关行显示同步复位。
     state.pendingDraftMultiAgent = false;
-    // 绑定草稿的显式 mode 暂存同属寄存意图，随草稿一并作废。
+    // A bound draft's staged explicit mode is part of the registered intent
+    // and is voided together with the draft.
     state.pendingDraftMode = null;
-    // 新草稿回到默认工作区：上一份草稿的目录选择不带入（两个提前返回分支共用此复位）。
+    // A new draft returns to the default workspace: the previous draft's
+    // directory choice is not carried over (both early-return branches share
+    // this reset).
     state.draftWorkspacePath = null;
     state.draftWorkspaceRoots = [];
     state.draftProjectId = null;
@@ -588,11 +592,14 @@
   // 公开「新建对话」入口(侧边栏按钮)= 进草稿态。名字保留以兼容前端调用。
   async function createNewSession() { enterDraft(); }
 
-  // ── 草稿态工作目录选择（普通聊天，对齐 code 模式草稿选择器）────────────
-  // 最近列表与 src/shared/workspace-recents.js 同 key 同语义：本文件是
-  // <script src> 经典脚本，无法 import 该 ES 模块，下面是它的逐字镜像，
-  // 改动任一侧必须同步另一侧（tests/chat_draft_workspace_logic.test.mjs
-  // 锁定桥侧行为，tests/workspace_recents_logic.test.mjs 锁定共享模块）。
+  // ── Draft-state working directory selection (normal chat, mirroring the
+  // code-mode draft selector) ────────────────────────────────────────────
+  // The recents list shares key and semantics with
+  // src/shared/workspace-recents.js: this file is a <script src> classic
+  // script and cannot import that ES module, so below is its verbatim mirror —
+  // changing either side must sync the other
+  // (tests/chat_draft_workspace_logic.test.mjs locks the bridge-side behavior,
+  // tests/workspace_recents_logic.test.mjs locks the shared module).
   const DRAFT_WORKSPACE_RECENTS_KEY = "pinvou_codex_recent_workspaces";
   function rememberDraftWorkspaceRecent(path) {
     let list;
@@ -606,14 +613,17 @@
     try {
       localStorage.setItem(DRAFT_WORKSPACE_RECENTS_KEY, JSON.stringify(next));
     } catch {
-      // localStorage 不可用时仅本次不记忆，不影响选目录本身。
+      // When localStorage is unavailable, only this one memorization is
+      // skipped; the directory picking itself is unaffected.
     }
   }
 
-  // 从最近列表移除单个目录（workspace-recents.js forgetWorkspace 的镜像）：
-  // 物化失败（目录已被删/改名）时由 ensureSession 失败路径调用，坏条目不再
-  // 永久残留（评审 #445 P2）。shared 模块与经典脚本无法互 import，改任一侧
-  // 须同步另一侧。
+  // Remove a single directory from the recents list (mirror of
+  // forgetWorkspace in workspace-recents.js): called from ensureSession's
+  // failure path when materialization fails because the directory is gone
+  // (deleted/renamed), so a bad entry no longer sticks around forever (review
+  // #445 P2). The shared module and the classic script cannot import each
+  // other; changing either side must sync the other.
   function forgetDraftWorkspaceRecent(path) {
     let list;
     try {
@@ -626,13 +636,16 @@
     try {
       localStorage.setItem(DRAFT_WORKSPACE_RECENTS_KEY, JSON.stringify(next));
     } catch {
-      // localStorage 不可用时仅本次不记忆，不影响选目录本身。
+      // When localStorage is unavailable, only this one memorization is
+      // skipped; the directory picking itself is unaffected.
     }
   }
 
-  // 仅草稿态生效；path = null 表示回到默认（会话私有目录）。
-  // extras（可选）= 项目通道带来的 { projectId, workspaceRoots }：钥匙串快照
-  // 与项目记忆写入随物化时的 create_session 一并下发（§6/§9.3）。
+  // Effective in the draft state only; path = null means back to the default
+  // (session-private directory).
+  // extras (optional) = { projectId, workspaceRoots } from the project
+  // channel: the keychain snapshot and the project-memory write are passed
+  // down with create_session at materialization (§6/§9.3).
   function setDraftWorkspace(path, extras) {
     if (state.activeSessionId) return;
     state.draftWorkspacePath = path || null;
@@ -640,14 +653,18 @@
     state.draftWorkspaceRoots = (extras && Array.isArray(extras.workspaceRoots))
       ? extras.workspaceRoots
       : (path ? [String(path)] : []);
-    // 绑定/解绑即切换草稿 mode 显示 lane（绑定 → code lane，解绑 → 回本 lane
-    // 默认）；解绑时上一份绑定草稿的显式 mode 暂存一并作废，不带入未绑定草稿。
+    // Binding/unbinding switches the draft's mode display lane (bind → code
+    // lane, unbind → back to this lane's default); unbinding also voids the
+    // previous bound draft's staged explicit mode — it is not carried into the
+    // unbound draft.
     if (!state.draftWorkspacePath) state.pendingDraftMode = null;
     state.modeState = currentDraftModeState();
     notify();
   }
-  // 系统目录选择对话框：选中后记入最近列表并写回草稿选择，返回选中的 path；
-  // 用户取消（或对话框不可用/非草稿态）返回 null，不改变现有选择。
+  // System directory dialog: on success the pick is recorded into the recents
+  // list and written back as the draft choice, returning the picked path; on
+  // user cancel (or dialog unavailable / not in draft state) it returns null
+  // without changing the existing choice.
   async function pickDraftWorkspace() {
     if (state.activeSessionId || !dialogOpen) return null;
     const selected = await dialogOpen({ directory: true, multiple: false, title: bt("pickFolderTitle") });
@@ -658,17 +675,21 @@
     return path;
   }
 
-  // Tauri 对未注册命令的拒绝文案（旧后端无此命令的兼容识别）；invoke 本身
-  // 不可用（Web 端桩）同样按"无此命令"处理。
+  // Tauri's rejection wording for an unregistered command (compatibility
+  // detection for old backends without this command); invoke itself being
+  // unavailable (the Web stub) is treated as "no such command" too.
   function isCommandMissingError(error) {
     const message = String((error && error.message) || error || "");
     return /unknown command|command not found|not implemented|invoke is unavailable/i.test(message);
   }
 
-  // 已生成会话的工作目录绑定（普通聊天绑定目录会话，安全姿态对齐 code 模式）：
-  // 返回绑定的完整路径；未绑定返回 null；旧后端无此命令按 null 处理（UI 不显示
-  // 绑定指示）。其余查询失败（瞬时错误）抛给调用方——YOLO 确认门据此
-  // fail-closed 过量施加确认，而非对已绑定会话静默跳过（评审 #445 R3）。
+  // Working-directory binding of a materialized session (normal chat bound to
+  // a directory, security posture aligned with code mode): returns the full
+  // bound path; null when unbound; an old backend without this command is
+  // treated as null (the UI shows no binding indicator). Other query failures
+  // (transient errors) are thrown to the caller — the YOLO confirm gate is
+  // fail-closed on that basis, over-confirming rather than silently skipping
+  // an actually bound session (review #445 R3).
   async function getSessionWorkspaceBinding(sessionId) {
     if (!sessionId) return null;
     try {
@@ -685,15 +706,18 @@
   // 并发防护（审计）：草稿态双击发送会并发 create_session，导致两条消息分家到两个新
   // 会话——in-flight 复用同一 promise；create_session await 期间用户切走会物化在错误
   // 会话（导航被劫持）——物化前校验 activeSessionId 仍为空，已切走则只登记后台 buffer。
-  // 物化下发负载(工作区绑定 + 钥匙串快照 + 项目归属)的同步捕获点;独立
-  // 小函数避免 ensureSession 的判定复杂度继续膨胀。
+  // Synchronous capture point for the materialization payload (workspace
+  // binding + keychain snapshot + project ownership); a standalone small
+  // function so ensureSession's decision complexity does not keep growing.
   function captureDraftWorkspaceBinding() {
     const boundWorkspace = state.draftWorkspacePath || null;
     const roots = state.draftWorkspaceRoots || [];
     return {
       boundWorkspace,
-      // 钥匙串/项目归属只随绑定草稿下发(临时草稿恒 null);物化失败回退
-      // 路径按原值恢复草稿,所以这里返回原始值而不是只读副本。
+      // The keychain/project ownership is only passed with a bound draft (a
+      // temporary draft is always null); the materialization-failure rollback
+      // path restores the draft by value, so this returns the raw values, not
+      // read-only copies.
       boundRoots: roots,
       boundProjectId: state.draftProjectId || null,
       payloadRoots: boundWorkspace && roots.length ? roots : null,
@@ -711,10 +735,14 @@
     const p = (async function () {
       // 多 session 并发:不预热 engine。新建空 session 的 buffer 由 switchActiveTo({fresh}) 起。
       try {
-        // 草稿选定的工作目录随物化一并下发；null = 后端现状（会话私有目录）。
-        // 参数在 invoke 同步求值时捕获（captureDraftWorkspaceBinding），await
-        // 期间的后续选择不影响本次创建；物化后的 lane 默认应用以本次创建是否
-        // 绑定为准。钥匙串快照与项目归属同一捕获点。
+        // The draft's chosen working directory is passed down with
+        // materialization; null = backend status quo (session-private
+        // directory). The arguments are captured at invoke's synchronous
+        // evaluation (captureDraftWorkspaceBinding), so later choices made
+        // during the await do not affect this creation; the post-
+        // materialization lane default applies based on whether THIS creation
+        // is bound. The keychain snapshot and project ownership share the same
+        // capture point.
         const { boundWorkspace, boundRoots, boundProjectId, payloadRoots, payloadProjectId } =
           captureDraftWorkspaceBinding();
         const meta = await invoke("create_session", {
@@ -741,12 +769,12 @@
         // 清：switchActiveTo 会把寄存意图当作已消费。
         const pendingMultiAgent = state.pendingDraftMultiAgent === true;
         state.pendingDraftMultiAgent = false;
-        // 绑定草稿的显式 mode 暂存同样先取后清（读取最新值：await 期间的
-        // 显式切换也算用户意图，与 pendingMultiAgent 同一约定）。
+        // A bound draft's staged explicit mode likewise goes read-then-clear
+        // (await-spanning switches count, as with pendingMultiAgent).
         const stagedDraftMode = state.pendingDraftMode;
         state.pendingDraftMode = null;
-        // 物化已提交：目录选择随会话落地，清除草稿选择；create_session 失败
-        // （外层 catch 路径）则保留选择以便用户重试。
+        // Materialization committed → clear the draft choice; the outer
+        // catch (create_session failure) keeps it for retry.
         state.draftWorkspacePath = null;
         state.draftWorkspaceRoots = [];
         state.draftProjectId = null;
@@ -769,8 +797,8 @@
               // 空会话残留可手动删除，不掩盖主错误。
             }
             enterDraft();
-            // 回退草稿保留寄存意图：绑定与显式 mode 暂存被 enterDraft 复位，
-            // 须按失败前取到的值原样恢复——重试物化不偏离用户显式选择。
+            // The rolled-back draft keeps the registered intent: restore the
+            // values captured before the failure (enterDraft reset them).
             state.pendingDraftMultiAgent = true;
             state.draftWorkspacePath = boundWorkspace;
             state.draftWorkspaceRoots = boundRoots;
@@ -788,14 +816,19 @@
         }
         await refreshHistoryList();
         await syncModeState();
-       if (boundWorkspace) {
-          // 绑定工作目录的会话安全姿态对齐 code 模式：后端已为绑定会话按
-          // code lane 全局默认解析 mode，此处不再把 work lane 默认经
-          // set_plan_mode_next 套用；仅当用户在草稿态显式暂存过 mode 选择时
-          // 按暂存值应用（切 yolo 的一次性确认门在草稿切换时已由 ChatView 过过）。
+        if (boundWorkspace) {
+          // Sessions bound to a working directory align their security posture
+          // with code mode: the backend already resolves the mode for bound
+          // sessions from the code lane's global default, so the work lane
+          // default is no longer applied here via set_plan_mode_next; only when
+          // the user explicitly staged a mode choice in the draft state is the
+          // staged value applied (the one-time yolo confirm gate was already
+          // passed in ChatView at the draft switch).
           if (stagedDraftMode === "plan" || stagedDraftMode === "yolo") {
-            // 用物化时捕获的 meta.id 而非 activeSessionId：上面的 await 期间
-            // 用户可能已切走，对当前 active 会话执行 mode 命令会改错对象。
+            // Use the meta.id captured at materialization, not
+            // activeSessionId: the user may have switched away during the
+            // await above, and running the mode command against the currently
+            // active session would change the wrong target.
             try {
               const stagedModeState = stagedDraftMode === "plan"
                 ? await invoke("set_plan_mode_next", { sessionId: meta.id })
@@ -841,9 +874,11 @@
           && state.activeSessionId === meta.id ? meta.id : null;
       } catch (e) {
         addSystemItem(bt("newChatFailed") + e);
-        // 物化失败且草稿绑定了目录 ⇒ 多半是该目录已失效(重命名/删除):
-        // 就地从最近列表清除坏条目(评审 #445 P2;code 模式 forgetWorkspace
-        // 同口径)。草稿选择本身按既有契约保留,便于用户修复目录后重试。
+        // Materialization failed while the draft had a bound directory ⇒ the
+        // directory has likely gone stale (renamed/deleted): drop the bad
+        // entry from the recents list in place (review #445 P2; same criterion
+        // as code mode's forgetWorkspace). The draft choice itself is kept per
+        // the standing contract so the user can fix the directory and retry.
         if (state.draftWorkspacePath) {
           forgetDraftWorkspaceRecent(state.draftWorkspacePath);
         }

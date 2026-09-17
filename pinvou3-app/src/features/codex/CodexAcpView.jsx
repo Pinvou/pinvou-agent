@@ -232,10 +232,14 @@ function BranchSelector({ copy, branches, disabled, busy, menuOpen, onToggle, on
   );
 }
 
-// 分支切换弹窗外壳：与 RewindConfirmDialog / 共享 YoloConfirmCard 同款——portal
-// 到 <body>（composer 容器的 backdrop-blur 会成为 fixed 后代的包含块）、焦点夺取/
-// 归还、Escape 关闭（busy 时禁用）。backdrop 是 disabled 随 busy 的按钮，切换
-// 进行中不允许点空白处把弹窗藏到后台。仅当对应弹窗打开时才挂载（调用处条件渲染）。
+// Branch-switch dialog shell: same pattern as RewindConfirmDialog / the
+// shared YoloConfirmCard — portal to <body> (the composer container's
+// backdrop-blur would become the containing block of fixed descendants),
+// focus capture/return, Escape to close (disabled while busy). The backdrop
+// is a button whose disabled follows busy: while a switch is in flight,
+// clicking blank space must not hide the dialog into the background. Mounted
+// only while the corresponding dialog is open (conditional render at the call
+// site).
 function BranchDialogShell({ copy, busy, testid, labelledBy, initialFocusRef, onCancel, children }) {
   const dialogRef = useRef(null);
   useDialogFocusRestore(dialogRef, initialFocusRef);
@@ -656,11 +660,16 @@ export function CodexAcpView({
   onGotoModelSettings,
   onGotoSettings,
   fixedSession = false,
-  // 「选择工作区」选择器(§2)的结果经此下发:{ epoch, path, projectId, roots };
-  // path=null = 临时会话。onOpenWorkspacePicker 打开选择器(宿主 main.jsx 持有)。
+  // The "choose workspace" picker (§2) delivers its result through here:
+  // { epoch, path, projectId, roots }; path=null = temporary session.
+  // onOpenWorkspacePicker opens the picker (held by the host, main.jsx).
   onOpenWorkspacePicker,
   workspacePickerRequest = null,
   onNotify,
+  // The host (main.jsx) mirrors the lane's effective mode so sidebar surfaces
+  // opened while the codex lane is active (manage-folders panel) show the
+  // same mode-aware copy as the lane itself.
+  onLaneModeChange,
 }) {
   const codexCopy = t.uiCodex;
   const [agents, setAgents] = useState(null); // null=加载中，[] 才允许回退当前 Agent。
@@ -818,8 +827,9 @@ export function CodexAcpView({
   }
   const [dismissedFailureKey, setDismissedFailureKey] = useState('');
   const [draftWorkspacePath, setDraftWorkspacePath] = useState(null);
-  // 项目通道(选择器)带入的归属与钥匙串快照(§9.3):随物化时的
-  // createAcpSession 下发;beginDraft 的其它入口(临时/最近目录)清空它。
+  // Ownership and keychain snapshot brought in by the project channel
+  // (picker) (§9.3): passed down with createAcpSession at materialization;
+  // beginDraft's other entries (temporary/recent directory) clear it.
   const [draftProjectBinding, setDraftProjectBinding] = useState(null);
   // 会话内用 sessionId 解析工作区；草稿态（会话未创建）直接扫描已选目录。
   const branchWorkspacePath = activeId ? null : draftWorkspacePath;
@@ -953,6 +963,10 @@ export function CodexAcpView({
   const composerModeValue = sessionControlsInfo
     ? controls.effectiveMode || ''
     : (draftConfigSelection && draftConfigSelection.mode) || controls.effectiveMode || '';
+  // Report the lane's effective mode upward (see the prop contract above).
+  useEffect(() => {
+    if (onLaneModeChange) onLaneModeChange(composerModeValue || null);
+  }, [composerModeValue, onLaneModeChange]);
   function composerConfigOptionValue(option) {
     if (sessionControlsInfo) return option.currentValue || '';
     const staged = draftConfigSelection && draftConfigSelection.configs
@@ -976,6 +990,12 @@ export function CodexAcpView({
     [sessions, activeId],
   );
   const activeAgentId = activeSession?.agent_id || draftAgentId;
+  // Keychain chip derivation, memoized: computing describeKeychain four times
+  // per render (once per chip prop) was pure waste.
+  const activeKeychain = useMemo(
+    () => (activeSession ? describeKeychain(activeSession.workspace_roots) : null),
+    [activeSession],
+  );
   // 原生（品悟 Engine）代码会话：发消息走 chat 命令 + chat:* 事件，会话状态按
   // session 缓存在 lane Map 里（后台会话的 turn 也能继续推进，切回不丢流式内容）。
   const isNativeAgent = activeAgentId === 'pinvou';
@@ -1993,7 +2013,8 @@ export function CodexAcpView({
     const requestedAgentId = draftAgentId;
     setError('');
     setWorkspaceMenuOpen(false);
-    // 钥匙串/项目归属同步捕获(await 期间改选不影响本次创建)。
+    // Capture the keychain/project ownership synchronously (re-picking during
+    // the await does not affect this creation).
     const requestedProjectBinding = draftProjectBinding;
     const metadata = await createAcpSession({
       workspacePath: requestedWorkspacePath,
@@ -2087,17 +2108,20 @@ export function CodexAcpView({
     if (onActiveSessionChange) onActiveSessionChange(null);
   }
 
-  // 选择器结果落地:项目/文件夹通道 → beginDraft(path) 并暂存归属与钥匙串;
-  // 临时会话 → beginDraft(null)。effect 依赖 epoch,同一选择重复下发也生效。
+  // Picker result landing: project/folder channels → beginDraft(path) with
+  // the ownership and keychain staged; temporary session → beginDraft(null).
+  // The effect depends on epoch, so re-delivering the same choice still
+  // applies.
   const pickerRequestEpochRef = useRef(0);
   useEffect(() => {
     if (!workspacePickerRequest || workspacePickerRequest.epoch === pickerRequestEpochRef.current) return;
     pickerRequestEpochRef.current = workspacePickerRequest.epoch;
     const { path, projectId, roots } = workspacePickerRequest;
-    // 先 beginDraft(内部清空旧绑定暂存),再设目标值——同批后写胜出。
+    // beginDraft first (it clears the old staged binding internally), then set
+    // the target values — the later write wins within the same batch.
     beginDraft(path || null, { clearComposer: false });
     setDraftProjectBinding(projectId ? { projectId, roots: roots || [] } : null);
-    // eslint-disable-next-line react-hooks/exhaustive-deps -- beginDraft 是稳定的本地函数,只按请求 epoch 驱动
+    // eslint-disable-next-line react-hooks/exhaustive-deps -- beginDraft is a stable local function; the effect is driven by the request epoch only
   }, [workspacePickerRequest]);
 
   function recreateUnavailableWorkspaceSession() {
@@ -3356,8 +3380,10 @@ export function CodexAcpView({
     }
   }
 
-  // 对齐到项目(§9.7):会话钥匙串替换为归属项目当时的全部根;busy 拒绝按
-  // 标记映射文案,成功后刷新会话列表(chip 的 roots 随列表透出更新)。
+  // Align to project (§9.7): the session keychain is replaced by the owning
+  // project's full root set at that moment; a busy rejection maps to copy by
+  // marker; on success the session list refreshes (the chip's roots update
+  // with the list).
   async function alignKeychainToProject() {
     if (!activeId) return;
     try {
@@ -3389,17 +3415,19 @@ export function CodexAcpView({
             <div className={`text-[10px] truncate ${activeSession && !activeSession.workspace_available ? 'text-red-500' : 'text-gray-400'}`}
               title={activeSession && activeSession.workspace_path}>
               {activeAgentName + ' · '}
-              {/* 钥匙串 chip(§6):项目会话显示主目录+N 并可"对齐到项目"
-                  (§9.7);临时会话/失效目录保持原文本行。 */}
+              {/* Keychain chip (§6): project sessions show the primary
+                  directory + N and offer "align to project" (§9.7); temporary
+                  sessions / unavailable directories keep the original text
+                  line. */}
               {activeSession.workspace_kind === 'project' && activeSession.workspace_available !== false ? (
                 <WorkspaceKeychainChip
                   copy={t.uiKeychain}
-                  primary={describeKeychain(activeSession.workspace_roots).primary || activeSession.workspace_path}
-                  additionalCount={describeKeychain(activeSession.workspace_roots).primary
-                    ? describeKeychain(activeSession.workspace_roots).additional
+                  primary={(activeKeychain && activeKeychain.primary) || activeSession.workspace_path}
+                  additionalCount={activeKeychain && activeKeychain.primary
+                    ? activeKeychain.additional
                     : 0}
-                  roots={describeKeychain(activeSession.workspace_roots).primary
-                    ? describeKeychain(activeSession.workspace_roots).roots
+                  roots={activeKeychain && activeKeychain.primary
+                    ? activeKeychain.roots
                     : [activeSession.workspace_path]}
                   canAlign={!isWeb && !!resolveSessionProjectId(
                     { id: activeId, workspaceKind: 'project', workspacePath: activeSession.workspace_path },

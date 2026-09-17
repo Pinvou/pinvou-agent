@@ -284,10 +284,12 @@
     updateReady: false,       // 安装完成,等用户点重启
     updateError: null,        // 下载/安装阶段错误(sha256/apt stderr 透传)
     updateCancelling: false,  // 用户点了取消,据此把后端「已取消下载」当正常而非错误
-    // projects 域桌面专属;Web 端不挂载该切片数据,但 domain-adapter 的
-    // fields 注册表中留了键位。桩必须与桌面快照同形
-    // (state.projectsList = { projects, assignments, loadedAt },见
-    // tauri/bridge/projects.js),否则分组读到 undefined 只能靠防御性兜底。
+    // The projects domain is desktop-only; the Web side does not mount this
+    // slice's data, but the domain-adapter's fields registry reserves the key.
+    // The stub must match the desktop snapshot's shape
+    // (state.projectsList = { projects, assignments, loadedAt }, see
+    // tauri/bridge/projects.js), otherwise grouping reads undefined and can
+    // only survive on defensive fallbacks.
     projectsList: { projects: [], assignments: {}, loadedAt: null },
     // 依赖体检(设置页): deps = [{key, installed, apt}], null = 尚未检测
     deps: null,
@@ -7457,10 +7459,12 @@
       notify();
     }
   }
-  // 桌面端绑定工作目录会话的配套查询在 Web 端无对应后端（Web/远程会话不
-  // 返回目录绑定）：同名桩方法保持两端 bridge API 对称——绑定查询恒 null
-  // （UI 不显示绑定指示、YOLO 确认门不触发），code 权限偏好读取恒 null、
-  // 确认写入为 no-op。
+  // The desktop companion queries for working-directory-bound sessions have
+  // no corresponding backend on Web (Web/remote sessions return no directory
+  // binding): same-named stub methods keep the two bridge APIs symmetric — the
+  // binding query always returns null (the UI shows no binding indicator and
+  // the YOLO confirm gate never triggers), the code permission prefs read
+  // always returns null, and the confirm write is a no-op.
   async function getSessionWorkspaceBinding() { return null; }
   async function getCodePermissionPrefs() { return null; }
   async function confirmCodeYolo() { return null; }
@@ -10086,7 +10090,8 @@
     setDraftMode,
     setModeLane,
     refreshModeDefaults,
-    // 桌面专属能力的 Web 桩（绑定目录会话 / YOLO 确认门，两端 API 对称）
+    // Web stubs for desktop-only capabilities (bound-directory sessions /
+    // YOLO confirm gate; the two sides' APIs stay symmetric)
     getSessionWorkspaceBinding,
     getCodePermissionPrefs,
     confirmCodeYolo,

@@ -1,8 +1,11 @@
-// 「选择工作区」统一选择器(设计 §2/§3/§9.3/§9.4):项目为唯一组织单位,
-// 物理文件夹被吸收为"单根项目";浏览 = 新建项目的一种方式;临时会话是
-// 显式选项。热视图(最近使用排序 + 冷项目隐藏)由 ./workspacePickerState.js
-// 计算,本组件纯展示;所有后果动作经 props 回调交给容器(main.jsx)。
-// Web 宿主(§9.8)只渲染"临时会话"一个选项,由容器经 webOnly 传入。
+// Unified "choose workspace" picker (design §2/§3/§9.3/§9.4): the project is
+// the only organizing unit; physical folders are absorbed as "single-root
+// projects"; browsing = one way to create a project; a temporary session is an
+// explicit option. The hot view (recency sort + cold-project hiding) is
+// computed by ./workspacePickerState.js; this component is pure display and
+// hands every consequential action to the container (main.jsx) via props
+// callbacks. A Web host (§9.8) renders only the "temporary session" option,
+// passed in by the container via webOnly.
 import { useEffect, useRef, useState } from 'react';
 import { createPortal } from 'react-dom';
 import { AlertTriangle, ChevronDown, FolderOpen, Layers, Search, Sparkles, X } from '../../components/icons.jsx';
@@ -28,12 +31,19 @@ const WorkspacePickerDialog = ({
   onDismissExcluded,
 }) => {
   const [query, setQuery] = useState('');
-  // 多根项目行内展开(改选根 + 权限告知);一次只展开一行。
+  // Multi-root projects expand inline (re-pick the root + permission notice);
+  // only one row is expanded at a time.
   const [expandedId, setExpandedId] = useState(null);
   const onCloseRef = useRef(onClose);
   const dialogRef = useRef(null);
+  // Escape reads the latest excluded-panel state through refs so the key
+  // listener stays subscribed once per open instead of per render.
+  const excludedFolderRef = useRef(excludedFolder);
+  const onDismissExcludedRef = useRef(onDismissExcluded);
   useEffect(() => {
     onCloseRef.current = onClose;
+    excludedFolderRef.current = excludedFolder || null;
+    onDismissExcludedRef.current = onDismissExcluded;
   });
 
   useEffect(() => {
@@ -41,10 +51,17 @@ const WorkspacePickerDialog = ({
     const onKey = (e) => {
       if (e.key === 'Escape' && !isImeComposing(e)) {
         e.preventDefault();
+        // The excluded-folder panel backs out to the list first; only the
+        // list state closes the dialog (same precedent as the move picker's
+        // add-folder panel and the manage-folders remove confirm).
+        if (excludedFolderRef.current) {
+          if (onDismissExcludedRef.current) onDismissExcludedRef.current();
+          return;
+        }
         onCloseRef.current();
       } else if (e.key === 'Tab' && dialogRef.current) {
-        // Minimal focus trap(与 MoveToProjectDialog 同 idiom):Tab 在对话框
-        // 内循环,不落到遮罩后的页面。
+        // Minimal focus trap (same idiom as MoveToProjectDialog): Tab cycles
+        // inside the dialog and never lands on the page behind the backdrop.
         const focusables = dialogRef.current.querySelectorAll(
           'button:not([disabled]), input:not([disabled]), [tabindex]:not([tabindex="-1"])',
         );
@@ -83,9 +100,13 @@ const WorkspacePickerDialog = ({
   const chooseProject = (project) => {
     if (busy) return;
     const roots = pickerProjectRoots(project);
-    if (roots.length === 0) return; // 纯标签项目:无根可绑定,行禁用态由渲染侧保证
+    // Rootless (tag-only) projects never reach the picker: computePickerRows
+    // drops them so counting and rendering stay consistent. Kept as a
+    // defensive guard only.
+    if (roots.length === 0) return;
     if (roots.length > 1) {
-      // 多根:展开改选根 + 分模式权限告知(§9.4 告知在选中一刻)。
+      // Multi-root: expand to re-pick the root + the mode-aware permission
+      // notice (§9.4: the notice lands at the moment of selection).
       setExpandedId(prev => (prev === project.id ? null : project.id));
       return;
     }
@@ -117,6 +138,16 @@ const WorkspacePickerDialog = ({
                 ? copy.multiRootSummary(roots.length, primary)
                 : primary}
             </span>
+            {/* Grant notice parity (§9.4): single-root rows select directly
+                without the expansion panel, so the mode-aware notice rides
+                the row itself; multi-root rows show it in the panel. */}
+            {!multi && (
+              <span className="block truncate text-[11px] text-[#8A8F94] dark:text-[#9AA0A6]">
+                {workspaceNoticeTone(mode) === 'restricted'
+                  ? copy.noticeRestricted(1)
+                  : copy.noticeVisibility(1)}
+              </span>
+            )}
           </span>
           <span className="shrink-0 text-[11px] text-[#8A8F94] dark:text-[#9AA0A6]">
             {formatSessionDate(lastActivity, language)}
@@ -130,7 +161,7 @@ const WorkspacePickerDialog = ({
         </button>
         {multi && expanded && (
           <div className="mx-2 mb-1 rounded-2xl bg-[#EAECEF] dark:bg-[#303134] px-3.5 py-2.5">
-            {/* 分模式权限告知(§9.4):受限=授权语义;YOLO=可见性语义。 */}
+            {/* Mode-aware permission notice (§9.4): restricted = grant semantics; YOLO = visibility semantics. */}
             <div className="mb-2 flex items-start gap-1.5 text-[12px] text-[#5F6368] dark:text-[#C4C7C5]">
               <AlertTriangle size={13} className="shrink-0 mt-0.5" />
               <span>
@@ -207,7 +238,7 @@ const WorkspacePickerDialog = ({
           </div>
         )}
         {excludedFolder ? (
-          /* 浏览通道撞上排除列表(§3):如实告知 + 仍可以纯文件夹会话开始。 */
+          /* The browse channel hit the exclusion list (§3): say so honestly + still allow starting a plain folder session. */
           <div className="px-4 pb-4 pt-1">
             <div className="rounded-2xl bg-[#EAECEF] dark:bg-[#303134] px-3.5 py-3">
               <div className="text-[13px] font-semibold mb-1">{copy.excludedTitle}</div>
@@ -238,7 +269,7 @@ const WorkspacePickerDialog = ({
           <div className="px-2 pb-3 max-h-[340px] overflow-y-auto">
             {!webOnly && filtered.length === 0 && (
               <div className="px-3.5 py-4 text-[13px] text-[#8A8F94] dark:text-[#9AA0A6]">
-                {copy.empty}
+                {(Array.isArray(rows) ? rows : []).length > 0 ? copy.noMatch : copy.empty}
               </div>
             )}
             {!webOnly && filtered.map(projectRow)}
@@ -265,6 +296,14 @@ const WorkspacePickerDialog = ({
                 <span className="min-w-0 flex-1">
                   <span className="block truncate">{copy.browse}</span>
                   <span className="block truncate text-[12px] text-[#8A8F94] dark:text-[#9AA0A6]">{copy.browseDesc}</span>
+                  {/* Grant notice parity (§9.4): the browse channel grants the
+                      picked folder (exactly one root), same notice weight as
+                      the project rows. */}
+                  <span className="block truncate text-[11px] text-[#8A8F94] dark:text-[#9AA0A6]">
+                    {workspaceNoticeTone(mode) === 'restricted'
+                      ? copy.noticeRestricted(1)
+                      : copy.noticeVisibility(1)}
+                  </span>
                 </span>
               </button>
             )}

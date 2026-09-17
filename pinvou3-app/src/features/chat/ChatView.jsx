@@ -150,7 +150,7 @@ import { YoloConfirmCard } from '../../shared/yolo-confirm-card.jsx';
 import { needsYoloConfirmation } from '../codex/code-permission-state.js';
 import { CHAT_YOLO_GATE_UNKNOWN_BINDING, chatYoloGateApplies, shouldShowWorkspaceBindingChip } from './chat-workspace-binding.js';
 import { WorkspaceKeychainChip } from '../projects/WorkspaceKeychainChip.jsx';
-import { describeKeychain } from '../projects/workspacePickerState.js';
+import { describeKeychain, workspaceNoticeTone } from '../projects/workspacePickerState.js';
 import { resolveSessionProjectId } from '../projects/projectGrouping.js';
 import {
   VoiceComposerButton,
@@ -1727,9 +1727,11 @@ const ToolWelcomeCard = ({ toolId, _theme, t, onSend }) => {
         if (bridge.available) bridge.models.loadSessionModel(activeSessionId);
       }, [activeSessionId]);
 
-      // 活动会话的工作目录绑定指示：绑定会话安全姿态对齐 code 模式，composer
-      // 旁显示只读 chip。经 bridge.sessions 查询（方法存在性守卫，Web 端桩返回
-      // null），按会话缓存结果；查询失败/无绑定 → 不显示。
+      // Working-directory binding indicator for the active session: bound
+      // sessions align their security posture with code mode and show a
+      // read-only chip beside the composer. Queried via bridge.sessions
+      // (method-existence guard; the Web stub returns null), cached per
+      // session; query failure or no binding → not shown.
       const [sessionWorkspaceBinding, setSessionWorkspaceBinding] = useState(null);
       const workspaceBindingCacheRef = useRef({});
       useEffect(() => {
@@ -1744,8 +1746,10 @@ const ToolWelcomeCard = ({ toolId, _theme, t, onSend }) => {
           setSessionWorkspaceBinding(workspaceBindingCacheRef.current[sid]);
           return;
         }
-        // 缓存未命中先同步清空：切换会话后若保留旧值，chip 会短暂显示上一
-        // 会话的目录、YOLO 门也会误用旧绑定裁决（评审 #445 R3）。
+        // Clear synchronously on a cache miss: keeping the old value after a
+        // session switch would briefly show the previous session's directory,
+        // and the YOLO gate would misjudge with the stale binding (review #445
+        // R3).
         setSessionWorkspaceBinding(null);
         let cancelled = false;
         bridge.sessions.getSessionWorkspaceBinding(sid)
@@ -1754,20 +1758,25 @@ const ToolWelcomeCard = ({ toolId, _theme, t, onSend }) => {
             workspaceBindingCacheRef.current[sid] = normalized;
             if (!cancelled) setSessionWorkspaceBinding(normalized);
           })
-          // 查询失败（旧后端无此命令等）按无绑定处理，绝不误报。
+          // Query failure (e.g. an old backend without this command) is
+          // treated as unbound — never a false positive.
           .catch(() => { if (!cancelled) setSessionWorkspaceBinding(null); });
         return () => { cancelled = true; };
       }, [activeSessionId]);
 
-      // 绑定工作目录的会话/草稿首切 YOLO 的一次性确认门（对齐 code 模式）：
-      // 确认写全局标志后继续原切换（exitPlanToYolo 对草稿即暂存 mode 选择），
-      // 取消留在 Plan。未绑定对象走原路径不弹卡。
+      // One-time confirm gate for the first YOLO switch on a
+      // working-directory-bound session/draft (aligned with code mode):
+      // confirming writes the global flag and continues the original switch
+      // (exitPlanToYolo on a draft stages the mode choice); canceling stays in
+      // Plan. Unbound targets take the original path without the card.
       const [pendingChatYoloSwitch, setPendingChatYoloSwitch] = useState(false);
       const [chatYoloConfirmBusy, setChatYoloConfirmBusy] = useState(false);
       const [chatYoloConfirmError, setChatYoloConfirmError] = useState('');
-      // 切换瞬间的绑定解析不能依赖异步 state:查询在飞时点击会看到 null 而
-      // 跳过确认门。这里在裁决前同步式解析(缓存 → 桥查询),等待期间点击也
-      // 拿到权威绑定(评审 #445 P2:YOLO gate race)。
+      // The binding resolution at the moment of switching cannot rely on async
+      // state: a click while the query is in flight would see null and skip the
+      // confirm gate. Resolve synchronously before judging (cache → bridge
+      // query), so even clicks during the wait get the authoritative binding
+      // (review #445 P2: YOLO gate race).
       async function resolveBindingForGate() {
         if (!activeSessionId) return null;
         if (sessionWorkspaceBinding !== null) return sessionWorkspaceBinding;
@@ -1782,10 +1791,13 @@ const ToolWelcomeCard = ({ toolId, _theme, t, onSend }) => {
             setSessionWorkspaceBinding(normalized);
             return normalized;
           } catch {
-            // 瞬时查询失败（旧后端"无此命令"已在桥层按未绑定返回 null，不
-            // 走到这里）：绑定会话默认 Plan，门控 fail-closed 过量施加一次
-            // 确认，优于对已绑定会话静默跳过（评审 #445 R3）。返回非空哨兵
-            // 表示"未知按绑定处理"；不写缓存，下次点击重试查询。
+            // Transient query failure (an old backend's "no such command"
+            // already returns null as unbound at the bridge layer and never
+            // reaches here): bound sessions default to Plan, and the gate fails
+            // closed by over-confirming once — better than silently skipping an
+            // actually bound session (review #445 R3). A non-empty sentinel
+            // means "treat unknown as bound"; it is not cached, so the next
+            // click retries the query.
             return CHAT_YOLO_GATE_UNKNOWN_BINDING;
           }
         }
@@ -1822,8 +1834,10 @@ const ToolWelcomeCard = ({ toolId, _theme, t, onSend }) => {
           setPendingChatYoloSwitch(false);
           await bridge.interaction.exitPlanToYolo();
         } catch (e) {
-          // 失败不再静默:卡片保持打开并就地显示原因(与 code 车道一致,
-          // 评审 #445 P2:旧后端缺 confirmCodeYolo 时用户不能毫无反馈)。
+          // Failure is no longer silent: the card stays open and shows the
+          // reason in place (consistent with the code lane; review #445 P2: an
+          // old backend missing confirmCodeYolo must not leave the user without
+          // feedback).
           console.warn('confirm chat yolo switch failed', e);
           setChatYoloConfirmError(String(e && e.message || e || 'error'));
         } finally {
@@ -2701,28 +2715,39 @@ const ToolWelcomeCard = ({ toolId, _theme, t, onSend }) => {
               <div className="flex items-center justify-between mt-1.5 gap-2">
                 <div className="flex items-center gap-1.5 min-w-0 flex-1">
                   <ComposerAttachButton t={t} compact={composerCompact} />
-                  {/* 草稿态工作目录选择（对齐 code 模式草稿选择器）：仅桌面端 + 草稿态；
-                      Web bridge 无 sessions.setDraftWorkspace/pickDraftWorkspace，方法存在性守卫兜底。
-                      bs.draftWorkspacePath 在 Web 快照里不存在，|| null 兜底。 */}
+                  {/* Draft-state working directory picker (mirroring the code-mode draft selector): desktop + draft state only;
+                      the Web bridge has no sessions.setDraftWorkspace/pickDraftWorkspace, so a method-existence guard covers it.
+                      bs.draftWorkspacePath does not exist in the Web snapshot; the || null fallback covers that. */}
                   {!activeSessionId && can('desktopChrome') && bridge.sessions && typeof bridge.sessions.pickDraftWorkspace === 'function' && (
                     <ComposerWorkspaceSelector
                       copy={t.uiChatWorkspace}
                       draftWorkspacePath={(bs && bs.draftWorkspacePath) || null}
                       onPickWorkspace={() => (
-                        // 单入口(§2):应用内「选择工作区」选择器;系统目录对话框
-                        // 收敛为选择器内的"浏览其他文件夹"通道。宿主未接选择器时
-                        // 回退旧行为(测试桩/旧宿主)。
+                        // Single entry (§2): the in-app "choose workspace"
+                        // picker; the system directory dialog is folded into the
+                        // picker's "browse for another folder" channel. Hosts
+                        // without the picker wired fall back to the old behavior
+                        // (test stubs / old hosts).
                         onOpenWorkspacePicker
                           ? onOpenWorkspacePicker({ lane: 'chat', mode: (bs && bs.modeState && bs.modeState.mode) || null })
                           : bridge.sessions.pickDraftWorkspace()
                       )}
                       onSelectWorkspace={path => bridge.sessions.setDraftWorkspace(path)}
+                      // Grant notice parity (§9.4): the recents channel grants
+                      // the picked folder directly (single root), same notice
+                      // weight as the in-app picker rows.
+                      grantNotice={workspaceNoticeTone((bs && bs.modeState && bs.modeState.mode) || null) === 'restricted'
+                        ? t.uiWorkspacePicker.noticeRestricted(1)
+                        : t.uiWorkspacePicker.noticeVisibility(1)}
                     />
                   )}
-                  {/* 活动会话的工作区钥匙串 chip(§6):主目录名 + 附加根计数,
-                      菜单列出全量根并提供"对齐到项目"(§9.7 会话级显式动作);
-                      纯文件夹会话(单根)无对齐动作(无归属项目)。绑定会话安全
-                      姿态对齐 code 模式,样式对齐草稿态选择器。 */}
+                  {/* Workspace keychain chip for the active session (§6): primary
+                      directory name + additional-root count; the menu lists all
+                      roots and offers "align to project" (§9.7 session-level
+                      explicit action); plain-folder sessions (single root) have
+                      no align action (no owning project). Bound sessions align
+                      their security posture with code mode; the styling mirrors
+                      the draft-state selector. */}
                   {shouldShowWorkspaceBindingChip({ activeSessionId, sessionBinding: sessionWorkspaceBinding }) && (() => {
                     const activeItem = ((bs && bs.sessions) || []).find(s => s.id === activeSessionId);
                     const keychain = describeKeychain(activeItem && activeItem.workspace_roots);
@@ -2737,6 +2762,9 @@ const ToolWelcomeCard = ({ toolId, _theme, t, onSend }) => {
                         const outcome = await bridge.projects.alignSessionToProject(activeSessionId);
                         if (outcome && outcome.applied) onNotify && onNotify(t.uiKeychain.alignDone);
                         else if (outcome && outcome.reason === 'no_change') onNotify && onNotify(t.uiKeychain.alignNoChange);
+                        // Any other non-applied outcome is unexpected; surface it
+                        // instead of failing silently (codex lane parity).
+                        else if (onNotify) onNotify(t.uiKeychain.alignFailed);
                       } catch (error) {
                         const message = String((error && error.message) || error || '');
                         if (onNotify) {
@@ -2751,7 +2779,7 @@ const ToolWelcomeCard = ({ toolId, _theme, t, onSend }) => {
                         additionalCount={keychain.primary ? keychain.additional : 0}
                         roots={keychain.primary ? keychain.roots : [sessionWorkspaceBinding]}
                         canAlign={!!owningProjectId && !!bridge.projects}
-                        busy={false}
+                        busy={busy}
                         onAlign={align}
                       />
                     );
@@ -2832,9 +2860,12 @@ const ToolWelcomeCard = ({ toolId, _theme, t, onSend }) => {
           </div>{/* /对话列 */}
 
           {pendingChatYoloSwitch && (
-            // 绑定工作目录会话/草稿首切 YOLO 的一次性确认卡（全局记忆）；确认后
-            // 继续切换，取消留在 Plan。挂在对话列外（卡片自身 portal 到 body，
-            // 不受 composer 容器 backdrop-blur 的 fixed 包含块影响——同 code 页约定）。
+            // One-time confirm card for the first YOLO switch on a
+            // working-directory-bound session/draft (remembered globally);
+            // confirming continues the switch, canceling stays in Plan.
+            // Mounted outside the conversation column (the card portals itself
+            // to body, unaffected by the composer container's backdrop-blur
+            // fixed containing block — same convention as the code page).
             <YoloConfirmCard
               theme={theme}
               copy={{

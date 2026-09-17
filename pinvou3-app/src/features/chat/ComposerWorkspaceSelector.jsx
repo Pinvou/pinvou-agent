@@ -1,14 +1,16 @@
-// 普通聊天草稿态的工作目录选择器：对齐 code 模式（CodexAcpView 草稿态
-// 选择器）的交互——底栏按钮 + 上弹菜单（选择目录… / 默认工作区 / 最近使用）。
-// 仅在草稿态渲染（ChatView 以 !activeSessionId + 能力/方法存在性守卫）；
-// 所有后端动作经 props 注入（bridge.sessions 的 setDraftWorkspace /
-// pickDraftWorkspace），组件不触碰 Tauri 全局。
+// Working-directory selector for the normal-chat draft state: mirrors the
+// code-mode (CodexAcpView draft-state selector) interaction — a bottom-bar
+// button + pop-up menu (choose directory… / default workspace / recents).
+// Rendered only in the draft state (ChatView guards with !activeSessionId +
+// capability/method existence); all backend actions are injected via props
+// (bridge.sessions setDraftWorkspace / pickDraftWorkspace) and the component
+// never touches Tauri globals.
 import { useRef, useState } from 'react';
 import { ChevronDown, FolderOpen, Sparkles } from '../../components/icons.jsx';
 import { useOutsidePointerClose } from '../../components/ComposerPopover.jsx';
 import { loadRecentWorkspaces, workspaceName } from '../../shared/workspace-recents.js';
 
-export function ComposerWorkspaceSelector({ copy, draftWorkspacePath, onPickWorkspace, onSelectWorkspace }) {
+export function ComposerWorkspaceSelector({ copy, draftWorkspacePath, onPickWorkspace, onSelectWorkspace, grantNotice }) {
   const [open, setOpen] = useState(false);
   const [recentWorkspaces, setRecentWorkspaces] = useState(loadRecentWorkspaces);
   const triggerRef = useRef(null);
@@ -18,7 +20,7 @@ export function ComposerWorkspaceSelector({ copy, draftWorkspacePath, onPickWork
   function toggle() {
     const next = !open;
     setOpen(next);
-    if (next) setRecentWorkspaces(loadRecentWorkspaces()); // 打开时重读：code 模式可能刚记过新目录
+    if (next) setRecentWorkspaces(loadRecentWorkspaces()); // re-read on open: code mode may have just recorded a new directory
   }
   function chooseDirectory() {
     setOpen(false);
@@ -64,6 +66,12 @@ export function ComposerWorkspaceSelector({ copy, draftWorkspacePath, onPickWork
           {recentWorkspaces.length > 0 && (
             <div className="mt-1 pt-2 border-t border-black/[0.05] dark:border-white/[0.06]">
               <div className="px-3 pb-1 text-[10px] uppercase tracking-wider text-gray-400">{copy.recentDirectories}</div>
+              {/* Grant notice parity (§9.4): picking a recent grants that
+                  folder directly (single root), so the mode-aware notice sits
+                  on the recents section, same weight as the picker rows. */}
+              {grantNotice && (
+                <div className="px-3 pb-1 text-[10px] text-gray-400">{grantNotice}</div>
+              )}
               {recentWorkspaces.map(path => (
                 <button key={path} type="button" title={path}
                   onClick={() => select(path)}

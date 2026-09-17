@@ -45,10 +45,11 @@ function isUnderRoot(path, root) {
   return a.startsWith(`${b}/`) || a.startsWith(`${b}\\`);
 }
 
-// 携带真实项目工作目录的会话形态:'project'(代码/ACP)与 'bound'(#445
-// 绑定的普通工作会话)。'bound' 独立成 kind,不伪装成 'project'——将来
-// project-kind 获得自有行为(如 baseline 面板)时不会误伤普通绑定会话
-// (评审 #452 finding 5)。
+// Session kinds carrying a real project working directory: 'project'
+// (code/ACP) and 'bound' (#445's bound normal work sessions). 'bound' is its
+// own kind, not a disguised 'project' — when project-kind later gains its own
+// behavior (e.g. a baseline panel), ordinary bound sessions will not be
+// caught in the crossfire (review #452 finding 5).
 const WORKSPACE_KINDS_WITH_PROJECT_DIR = ['project', 'bound'];
 
 function hasProjectWorkspace(item) {
@@ -109,7 +110,7 @@ function projectCoversPath(project, path) {
 // (target roots don't cover the session's workspace), or can it move instantly?
 // Temporary sessions have no workspace and always move instantly. One
 // predicate instead of hand-mirrored copies (drag drop handler, dialog
-// initializer, dialog choose) — 评审 #452 finding 6 同源化。
+// initializer, dialog choose) — same-source convergence per review #452 finding 6.
 function needsAddFolderConfirm(session, target) {
   if (!session || !target) return false;
   const workspacePath = hasProjectWorkspace(session) ? String(session.workspacePath || '') : '';
@@ -135,7 +136,8 @@ function projectAnchorsFolder(project, folderPath) {
   if (!project || project.origin !== 'folder') return false;
   return (project.roots ? project.roots : []).some((root) => {
     const rootPath = root && typeof root === 'object' ? root.path : root;
-    // 精确锚定:双向 isUnderRoot 即同路径(折叠大小写/分隔符差异)。
+    // Exact anchoring: isUnderRoot in both directions means the same path
+    // (case/separator differences folded).
     return isUnderRoot(folderPath, rootPath) && isUnderRoot(rootPath, folderPath);
   });
 }
@@ -217,8 +219,9 @@ function groupSessionsByProject(items, projects, assignments) {
         return;
       }
       if (assigned === null) {
-        // 显式移出:直接进未分组,不得经 tier 2 复活;陈旧 id(项目已删/
-        // 手改状态)继续走自动归组。
+        // Explicit move-out: lands directly in ungrouped and must not revive
+        // via tier 2; stale ids (project deleted / hand-edited state) continue
+        // through auto-grouping.
         ungrouped.push(item);
         return;
       }

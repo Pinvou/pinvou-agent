@@ -22,8 +22,9 @@ const MoveToProjectDialog = ({
   onMove,
 }) => {
   const [query, setQuery] = useState('');
-  // 拖拽落点直达:拖到 root 未覆盖会话目录的项目上时,直接以该目标预置
-  // "添加文件夹"确认;初始化器即可(对话框每次打开都重新挂载)。
+  // Direct landing for drag drops: dropping onto a project whose roots do not
+  // cover the session's directory presets the "add folder" confirm with that
+  // target; an initializer suffices (the dialog remounts on every open).
   const [pendingAddFolder, setPendingAddFolder] = useState(() => {
     if (!presetProjectId || !session) return null;
     const target = (Array.isArray(projects) ? projects.filter(Boolean) : [])
@@ -35,8 +36,9 @@ const MoveToProjectDialog = ({
   // key listeners subscribed once instead of per render.
   const onCloseRef = useRef(onClose);
   const dialogRef = useRef(null);
-  // Escape 键的确认面板回退读最新 pendingAddFolder;ref 镜像保持 key 监听
-  // 不随每次状态变更重订阅(与 onCloseRef 同范式)。
+  // Escape's confirm-panel rollback reads the latest pendingAddFolder; the
+  // ref mirror keeps the key listener from resubscribing on every state change
+  // (same pattern as onCloseRef).
   const pendingAddFolderRef = useRef(pendingAddFolder);
   useEffect(() => {
     onCloseRef.current = onClose;
@@ -48,8 +50,9 @@ const MoveToProjectDialog = ({
     const onKey = (e) => {
       if (e.key === 'Escape' && !isImeComposing(e)) {
         e.preventDefault();
-        // 确认面板态先退回列表,列表态才关窗(评审 #449 finding:确认框
-        // Escape 不该直接关整个弹窗)。
+        // In the confirm-panel state, Escape first backs out to the list; only
+        // the list state closes the window (review #449 finding: the confirm
+        // box's Escape must not close the whole dialog directly).
         if (pendingAddFolderRef.current) { setPendingAddFolder(null); return; }
         onCloseRef.current();
       } else if (e.key === 'Tab' && dialogRef.current) {
@@ -78,7 +81,9 @@ const MoveToProjectDialog = ({
     () => (Array.isArray(projects) ? projects.filter(Boolean) : []),
     [projects],
   );
-  // 搜索框只在项目多到值得过滤时出现;少数项目直接列出来,弹窗更轻。
+  // The search box appears only when there are enough projects to be worth
+  // filtering; with few projects they are listed directly, keeping the dialog
+  // lighter.
   const showSearch = projectList.length > 6;
   const filtered = useMemo(() => {
     const q = query.trim().toLowerCase();
@@ -94,7 +99,8 @@ const MoveToProjectDialog = ({
 
   if (!open || !session || typeof document === 'undefined') return null;
 
-  // 显示用:确认框里向用户展示的目录(侧栏投影),实际添加以命令返回为准。
+  // Display only: the directory shown to the user in the confirm (the sidebar
+  // projection); what is actually added is whatever the command returns.
   const workspacePath = hasProjectWorkspace(session) ? String(session.workspacePath || '') : '';
   const choose = (project) => {
     if (busy || project.id === currentProjectId) return;
@@ -105,14 +111,19 @@ const MoveToProjectDialog = ({
     onMove(project.id, false);
   };
   const commitPending = () => {
-    // "仅移动"语义:确认框只确认这一笔移动,绝不加 root("添加文件夹"会
-    // 占住项目领地、改变项目内后续会话的自动归组,与仅移动不等价,当前
-    // 版本收敛;争议点见 .luzeyang/projects-layer-plan.md)。
-    // 不预清确认面板:提交后弹窗保持确认态(busy 禁用按钮),成功时由容器
-    // 关闭整个对话框(卸载即复位);失败时确认面板留在原处供重试/取消——
-    // 若先清 pendingAddFolder,异步进行/失败期间会回落成"选择项目"列表,
-    // 看起来像点击后又弹出了另一个弹窗(评审 #449 finding:失败清目标后
-    // 用户被迫重新选择,本轮正面修复)。
+    // "Move only" semantics: the confirm box confirms this single move and
+    // never adds a root ("add folder" would claim project territory and change
+    // auto-grouping for later sessions in the project — not equivalent to
+    // move-only; converged in the current version. See the dispute in
+    // .luzeyang/projects-layer-plan.md).
+    // The confirm panel is not pre-cleared: after committing, the dialog stays
+    // in the confirm state (busy disables the buttons); on success the
+    // container closes the whole dialog (unmounting resets it); on failure the
+    // panel stays in place for retry/cancel — clearing pendingAddFolder first
+    // would fall back to the "choose project" list during the async
+    // window/failure, looking like another dialog popped up after the click
+    // (review #449 finding: after a failure cleared the target the user was
+    // forced to re-select; fixed head-on this round).
     if (pendingAddFolder && !busy) onMove(pendingAddFolder.id, false);
   };
 
@@ -148,7 +159,7 @@ const MoveToProjectDialog = ({
       >
         <div className="px-4 pt-4 pb-2 flex items-center justify-between gap-2">
           <div className="min-w-0">
-            {/* 确认模式(拖拽落点已定)标题点名目标;选择模式保留省略号。 */}
+            {/* Confirm mode (the drag landing already fixed the target) names the target in the title; choose mode keeps the ellipsis. */}
             <div className="text-[15px] font-semibold truncate">
               {pendingAddFolder
                 ? t.uiProjects.moveToProjectNamed(pendingAddFolder.name)
@@ -166,9 +177,11 @@ const MoveToProjectDialog = ({
           </button>
         </div>
         {/*
-          搜索框只属于"列表选择模式"(从会话菜单进入,未带预置目标)。拖拽
-          落点已确定目标项目,弹窗只做"添加文件夹"确认——搜索框在那里没有
-          可解释的意义;项目少(≤6)时同样直接列出。
+          The search box belongs to "list choose mode" only (entered from the
+          session menu, no preset target). A drag landing already fixed the
+          target project and the dialog only does the "add folder" confirm —
+          a search box has no explainable meaning there; with few projects
+          (<=6) they are likewise listed directly.
         */}
         {!pendingAddFolder && showSearch && (
           <div className="px-4 pb-2">

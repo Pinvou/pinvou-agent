@@ -235,7 +235,11 @@ test("resolveSessionProjectId mirrors the project-view tiers", () => {
   assert.equal(resolveSessionProjectId(item, projects, { a1: null }), null, "显式移出优先");
   assert.equal(resolveSessionProjectId(temporaryItem("t1", "x"), projects, { t1: "p1" }), "p1");
   assert.equal(resolveSessionProjectId(temporaryItem("t1", "x"), projects, {}), null);
-  assert.equal(resolveSessionProjectId(item, [], { a1: "prj-gone" }), null);
+  // The real fork the picker must survive: a stale id does not stick as
+  // "ungrouped" — with a non-empty project list whose root still covers the
+  // path, resolution falls through to tier 2 and returns that project.
+  // (projects=[] would trivially yield null and pin nothing.)
+  assert.equal(resolveSessionProjectId(item, projects, { a1: "prj-gone" }), "p1", "stale id falls through to root matching");
 });
 
 test("projectCoversPath and needsAddFolderConfirm share the containment rule", () => {
@@ -372,6 +376,28 @@ test("windows roots match case-insensitively, posix roots stay case-sensitive", 
   );
   assert.equal(posixGroups.find((g) => g.projectId === "p2").rows.length, 0, "posix 路径保持大小写敏感");
   assert.equal(posixGroups.find((g) => g.kind === "ungrouped").rows.length, 1);
+});
+
+test("windows roots match across separator shapes and trailing separators", () => {
+  // Finding 40: isUnderRoot folds `\` -> `/` and strips trailing separators
+  // for windows-shaped paths, mirroring the store's filesystem_path_identity_key
+  // (store.rs); a mixed-shape or trailing-separator root must not miss tier 2.
+  const projects = [project("p1", "Alpha", ["D:\\work\\alpha\\"], 0)];
+  const groups = groupSessionsByProject(
+    [
+      projectItem("a1", "D:/work/alpha/sub", "2026-08-01T08:00:00Z"),
+      projectItem("a2", "D:\\work\\alpha", "2026-08-02T08:00:00Z"),
+    ],
+    projects,
+    {},
+  );
+  assert.deepEqual(
+    groups.find((g) => g.projectId === "p1").rows.map((r) => r.id).sort((x, y) => x.localeCompare(y)),
+    ["a1", "a2"],
+  );
+  assert.equal(groups.some((g) => g.kind === "ungrouped"), false, "两种分隔符形态都必须命中 tier 2");
+  // The move-picker fork shares the fold (same isUnderRoot).
+  assert.equal(resolveSessionProjectId(projectItem("a3", "D:\\Work\\Alpha", "x"), projects, {}), "p1");
 });
 
 test("needsAddFolderConfirm is null-safe on both ends", () => {

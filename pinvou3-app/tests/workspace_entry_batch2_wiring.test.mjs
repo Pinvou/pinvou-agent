@@ -20,6 +20,8 @@ test('project-row new-session channel wiring (F4)', () => {
   // 宿主:cwd = 项目记忆主根,钥匙串 = 项目全量根,车道跟随当前页。
   assert.match(main, /const handleProjectNewSession[\s\S]*?pickerPrimaryRoot\(project\)[\s\S]*?pickerProjectRoots\(project\)/, '项目通道 cwd/roots 解析');
   assert.match(main, /onNewSession: bridge\.projects \? \(\) => handleProjectNewSession\(group\.projectId\)/, '侧栏接线(桌面守门)');
+  // 授权告知同重量(§9.4):不经选择器的直达通道也要在授权一刻给出分模式告知。
+  assert.match(main, /handleProjectNewSession[\s\S]*?setSettingsToast\(workspaceGrantNotice\(activeLaneMode\(\), roots\.length\)\)/, '项目行新对话的授权告知');
 });
 
 test('keychain chip + align wiring (F5)', () => {
@@ -42,12 +44,19 @@ test('keychain chip + align wiring (F5)', () => {
   assert.match(codexView, /refreshSessions\(\)/, 'codex 对齐后刷新');
   assert.match(chatView, /describeKeychain\(activeItem && activeItem\.workspace_roots\)/, 'chat chip 数据源');
   assert.match(codexView, /describeKeychain\(activeSession\.workspace_roots\)/, 'codex chip 数据源');
+  // chat 车道 chip 的 busy 是真实回合 flag(对齐 codex 车道),且对齐结果的
+  // 非 applied/no_change 出口不静默。
+  assert.match(chatView, /<WorkspaceKeychainChip[\s\S]*?busy=\{busy\}/, 'chat chip busy 用真实 flag');
+  assert.match(chatView, /else if \(onNotify\) onNotify\(t\.uiKeychain\.alignFailed\)/, 'chat 对齐未知出口兜底');
+  // codex 车道每 render 只算一次 describeKeychain(memo)。
+  assert.match(codexView, /useMemo\(\s*\(\) => \(activeSession \? describeKeychain/, 'codex chip 派生 memo 化');
 });
 
 test('manage-folders panel wiring (F6)', () => {
   const main = read('src', 'app', 'main.jsx');
   const dialog = read('src', 'features', 'projects', 'ManageProjectFoldersDialog.jsx');
   const header = read('src', 'features', 'projects', 'ProjectGroupHeader.jsx');
+  const codexView = read('src', 'features', 'codex', 'CodexAcpView.jsx');
   const bridgeProjects = read('src', 'platform', 'tauri', 'bridge', 'projects.js');
 
   // 面板纯展示,状态解析在纯函数。
@@ -68,6 +77,11 @@ test('manage-folders panel wiring (F6)', () => {
   }
   // 排除列表随 projectsList 快照下发。
   assert.match(bridgeProjects, /neverMaterializeRoots: snapshot\.never_materialize_roots \|\| \[\]/, '快照带排除列表');
+  // 面板的分模式告知跟随所在车道:code 页打开时用 codex 车道的 mode(由
+  // CodexAcpView 上报),而不是恒用 chat 车道的 modeState。
+  assert.match(main, /mode=\{activeLaneMode\(\)\}/, '面板告知按车道取 mode');
+  assert.match(codexView, /onLaneModeChange/, 'codex 车道上报 mode');
+  assert.match(main, /onLaneModeChange=\{setCodexLaneMode\}/, '宿主接 codex mode 上报');
 });
 
 test('keychain/manage i18n keys exist in all three languages', () => {

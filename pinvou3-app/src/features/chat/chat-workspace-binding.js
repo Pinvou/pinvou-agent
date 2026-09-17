@@ -1,23 +1,32 @@
-// 普通聊天「绑定工作目录会话」相关 UI 纯逻辑（ChatView 与测试共用，
-// 对齐 features/codex/code-permission-state.js 的抽取模式）：
-// 绑定会话/草稿的安全姿态对齐 code 模式——切 YOLO 前过一次性确认门、
-// composer 旁显示绑定目录指示。确认门本身的判定复用 codex 侧的
-// needsYoloConfirmation（同一后端事实源 get_code_permission_prefs）。
+// Pure UI logic for normal chat's "working-directory-bound session"
+// (shared by ChatView and tests, mirroring the extraction pattern of
+// features/codex/code-permission-state.js):
+// bound sessions/drafts align their security posture with code mode — a
+// one-time confirm gate before switching to YOLO and a bound-directory
+// indicator beside the composer. The gate's own decision reuses the codex
+// side's needsYoloConfirmation (same backend source of truth,
+// get_code_permission_prefs).
 
-/// 门控绑定解析的"未知"哨兵：绑定查询瞬时失败（非旧后端缺命令）时，
-/// ChatView 返回此非空值让确认门 fail-closed 过量施加一次确认，优于对
-/// 已绑定会话静默跳过（评审 #445 R3）。仅参与真值判定，不展示、不缓存。
+/// "Unknown" sentinel for the gate's binding resolution: when the binding
+/// query fails transiently (not an old backend missing the command), ChatView
+/// returns this non-empty value so the confirm gate fails closed and
+/// over-confirms once — better than silently skipping an actually bound
+/// session (review #445 R3). Only used for truthiness; never displayed or
+/// cached.
 export const CHAT_YOLO_GATE_UNKNOWN_BINDING = '(binding-query-failed)';
 
-/// 切 YOLO 前是否需要走确认门检查：已生成会话看其目录绑定，草稿看
-/// draftWorkspacePath。返回 true 仅表示「需要查 prefs 判定」，是否真弹卡
-/// 由 needsYoloConfirmation(prefs) 决定（已确认过 yolo_confirmed=true 不弹）。
+/// Whether switching to YOLO needs the confirm-gate check: materialized
+/// sessions look at their directory binding, drafts at draftWorkspacePath.
+/// Returning true only means "prefs must be consulted"; whether the card
+/// actually shows is decided by needsYoloConfirmation(prefs) (a previously
+/// confirmed yolo_confirmed=true does not show it).
 export function chatYoloGateApplies({ activeSessionId, sessionBinding, draftWorkspacePath }) {
   return activeSessionId ? !!sessionBinding : !!draftWorkspacePath;
 }
 
-/// composer 旁绑定目录 chip 的显示条件：仅活动会话且查询到绑定路径
-/// （查询失败/无绑定/Web 端桩返回 null 一律不显示）。
+/// Display condition for the bound-directory chip beside the composer: only
+/// for the active session with a resolved binding path (query failure / no
+/// binding / Web stub returning null all hide it).
 export function shouldShowWorkspaceBindingChip({ activeSessionId, sessionBinding }) {
   return !!activeSessionId && !!sessionBinding;
 }

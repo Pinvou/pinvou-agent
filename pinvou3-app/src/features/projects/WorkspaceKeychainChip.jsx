@@ -1,8 +1,11 @@
-// 会话工作区钥匙串 chip(§6):主目录名 + 附加根计数("+N"),点击弹出
-// 根列表 + 「对齐到项目」动作(§9.7 会话级显式动作)。纯展示:对齐调用与
-// 结果反馈(toast)由容器经 onAlign/onNotify 处理;无绑定/临时会话由
-// 容器决定不渲染(canAlign=false 时只读,无动作)。
-// 交互形态照抄 ComposerWorkspaceSelector(底栏小按钮 + 上弹菜单)。
+// Session workspace keychain chip (§6): primary directory name + additional
+// root count ("+N"); clicking pops the root list + the "align to project"
+// action (§9.7 session-level explicit action). Purely presentational: the
+// align call and its result feedback (toast) are handled by the container via
+// onAlign/onNotify; unbound/temporary sessions are simply not rendered by the
+// container (canAlign=false means read-only, no action).
+// The interaction shape follows ComposerWorkspaceSelector (small bottom-bar
+// button + pop-up menu).
 import { useRef, useState } from 'react';
 import { ChevronDown, FolderOpen, RefreshCw } from '../../components/icons.jsx';
 import { useOutsidePointerClose } from '../../components/ComposerPopover.jsx';

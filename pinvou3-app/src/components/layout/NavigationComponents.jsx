@@ -211,13 +211,16 @@ const NavItem = ({ icon, label, active, unread = false, isSidebarOpen = true, on
       const [editing, setEditing] = useState(false);
       const [confirming, setConfirming] = useState(false);
       const [val, setVal] = useState(chat.title);
-      // tear-off(长按拆窗)不可用的平台仍要有即移拖拽(移动到项目):
-      // 两者共用这套手势,激活条件取并集。
+      // Platforms where tear-off (long-press window detach) is unavailable
+      // still get the instant-move drag (move to project): both share this
+      // gesture set, and the activation condition is the union.
       const sessionDragKind = (onPickUp || (dndPayload && !dndDisabled)) ? dragKind : null;
-      // 即移拖拽(项目视图内移动会话):指针路径,不依赖 HTML5 DnD——
-      // WebKitGTK 页内拖放在指针停止移动后不再投递 dragover/drop(悬停后
-      // 松手被静默丢弃),Chromium 之外不可依赖;tear-off(长按 350ms)与
-      // 即移拖拽按移动时机天然互斥。
+      // Instant-move drag (moving sessions inside the project view): a pointer
+      // path that does not rely on HTML5 DnD — WebKitGTK's in-page drag stops
+      // delivering dragover/drop once the pointer stops moving (a drop after
+      // hovering is silently discarded), so outside Chromium it cannot be
+      // trusted; tear-off (350ms long-press) and the instant-move drag are
+      // naturally mutually exclusive by move timing.
       const drag = useLongPressDrag(sessionDragKind, onPickUp, dndPayload && !dndDisabled ? {
         enabled: true,
         payload: dndPayload.sessionId,

@@ -26,7 +26,7 @@ import { ProjectGroupHeader } from '../features/projects/ProjectGroupHeader.jsx'
 import { MoveToProjectDialog } from '../features/projects/MoveToProjectDialog.jsx';
 import { RebindFolderDialog } from '../features/projects/RebindFolderDialog.jsx';
 import { WorkspacePickerDialog } from '../features/projects/WorkspacePickerDialog.jsx';
-import { computePickerRows, pickerPrimaryRoot, pickerProjectRoots } from '../features/projects/workspacePickerState.js';
+import { computePickerRows, pickerPrimaryRoot, pickerProjectRoots, workspaceNoticeTone } from '../features/projects/workspacePickerState.js';
 import { ManageProjectFoldersDialog } from '../features/projects/ManageProjectFoldersDialog.jsx';
 import { removeRootPlan, rootAlreadyPresent } from '../features/projects/manageFoldersState.js';
 import { runSessionBatch } from '../shared/session-management.js';
@@ -162,6 +162,23 @@ function workspaceDisplayName(path) {
   const parts = String(path || '').split(/[\\/]/).filter(Boolean);
   return parts[parts.length - 1] || String(path || '');
 }
+
+// Per-item closures/payloads keyed by item keep RecentItem props shallow-equal
+// across unrelated re-renders (bridge notifies, local UI state) so the row
+// memo (see NavigationComponents) can skip. Item identity is stable while the
+// deriving state slice is unchanged; stale entries are garbage-collected with
+// their item keys.
+function cachedItemCallback(cache, item, build) {
+  let fn = cache.get(item);
+  if (!fn) {
+    fn = build(item);
+    cache.set(item, fn);
+  }
+  return fn;
+}
+// Drag payloads share the per-item cache rationale: an inline object is a new
+// reference on every render and would defeat the RecentItem memo.
+const sidebarDndPayloads = new WeakMap();
 
     // App root component: aggregates bridge state, routing, and all sidebar/overlay UI. Size and complexity are historical
     // evolution; splitting requires a dedicated refactor task (involving a hundred-plus closure handlers and test contracts);
@@ -1444,11 +1461,13 @@ function workspaceDisplayName(path) {
           pinned: !!s.pinned,
           pinnedAt: s.pinned_at || '',
           working: !!sessionBusy[s.id], // 多 session 并发:该 session 是否正在后台生成
-          // #445 绑定:绑定工作会话携带 workspacePath/Kind,项目分组跟随绑定
-          // (与安全姿态同一条信号),未绑定会话两个值为空、维持日期视图。
+          // #445 binding: bound work sessions carry workspacePath/Kind and the
+          // project grouping follows the binding (same signal as the security
+          // posture); unbound sessions keep both empty and stay in the date view.
           workspacePath: s.workspace_binding || '',
-          // 独立 'bound' kind:与代码/ACP 的 'project' 同享三层分组,但不是
-          // 伪装的 project-kind(评审 #452 finding 5)。
+          // A standalone 'bound' kind: it shares the three-tier grouping with
+          // the code/ACP 'project' kind but is not a disguised project-kind
+          // (review #452 finding 5).
           workspaceKind: s.workspace_binding ? 'bound' : '',
           leadingIcon: <PinvouLogo className="h-[18px] w-[18px]" />,
           testId: 'regular-sidebar-item',
@@ -1593,10 +1612,12 @@ function workspaceDisplayName(path) {
       // code sessions; only explicitly switching back to work, or opening a normal
       // chat session, exits it.
       const [codeModeOn, setCodeModeOn] = useState(false);
-      // 任务列表的展示形态由 全部/目录/项目 胶囊决定;未显式选择(null)时普通
-      // 模式默认「全部」、code 模式默认「目录」(沿用既有默认)。'code' = 目录
-      // 视图(纯物理分组,与项目层出现之前的原行为逐字节一致);'projects' =
-      // 项目视图(纯逻辑分组 + 未分组桶)。旧存量 'code' 语义不变,零迁移。
+      // The task list's shape is driven by the All/Code/Projects pills; with no
+      // explicit choice (null), normal mode defaults to All and code mode to
+      // Code (the standing default). 'code' = the folder view (pure physical
+      // grouping, byte-identical to the pre-project behavior); 'projects' =
+      // the project view (pure logical grouping + ungrouped bucket). Stored
+      // 'code' keeps its old meaning — zero migration.
       const sidebarCodeListActive = sidebarCodeStyle === null ? codeModeOn : sidebarCodeStyle !== 'normal';
       const sidebarProjectsViewActive = sidebarCodeStyle === 'projects';
       const codeStyleActive = codeModeOn && sidebarCodeListActive;
@@ -1619,46 +1640,69 @@ function workspaceDisplayName(path) {
       const [projectOpsBusy, setProjectOpsBusy] = useState(false);
       const [moveToProjectSession, setMoveToProjectSession] = useState(null);
       const [moveToPresetProject, setMoveToPresetProject] = useState(null);
+      // Stable entry: the RecentItem memo depends on reference-stable props
+      // (NavigationComponents comment); an inline arrow would re-render every
+      // sidebar row on each App re-render. RecentItem passes the chat itself,
+      // so no per-row capture is needed.
+      const openMovePicker = useCallback((target) => {
+        setMoveToPresetProject(null);
+        setMoveToProjectSession(target);
+      }, []);
       const [rebindDraft, setRebindDraft] = useState(null);
-      // 拖拽高亮的唯一所有者:源行 dragend 无条件清除,webview 丢 dragleave
-      // 事件时高亮也不会卡死(评审 #450 finding 5)。
+      // Single owner of the drag highlight: the source row's dragend clears it
+      // unconditionally, so a webview that drops the dragleave event can never
+      // stick the highlight (review #450 finding 5).
       const [dropTargetGroupKey, setDropTargetGroupKey] = useState(null);
-      // 桥完成首次状态同步(bs 就绪)后拉一次项目快照;后续变更由
-      // projects:list_changed 事件驱动桥内刷新(bridge/projects.js)。
+      // Pull the project snapshot once after the bridge's first state sync (bs
+      // ready); later changes are refreshed inside the bridge, driven by the
+      // projects:list_changed event (bridge/projects.js).
       const projectsBootstrapReady = !!bs;
       useEffect(() => {
         if (projectsBootstrapReady && bridge.projects) bridge.projects.loadProjects();
       }, [projectsBootstrapReady]);
 
-      // ── 文件夹项目自动物化(Codex 客户端式收编)───────────────────────
-      // 会话列表出现未被任何项目 root 覆盖的工作区文件夹时,后端 ensure 同名
-      // 项目(origin=folder)。与展示视图无关(全部/目录/项目都会触发),保证
-      // 用户切到项目视图时文件夹已就位。ensure 幂等(后端按覆盖复用);驱动源
-      // 是"没有任何归属条目的会话"——删除项目时成员写成显式移出,所以被删
-      // 文件夹不会立刻重建,只有该文件夹再出现新会话时才重新 ensure。ref 按
-      // root 记住已 ensure 过的会话 id:同一批会话的重算不重复请求,新会话
-      // id 自然重触发。
+      // ── Folder-project auto-materialization (Codex client-style adoption) ──
+      // When the session list shows a workspace folder no project root covers,
+      // the backend ensures a same-named project (origin=folder). Independent
+      // of the display view (All/Code/Projects all trigger it), so folders are
+      // in place when the user switches to the project view. ensure is
+      // idempotent (the backend reuses by coverage); the driver is "sessions
+      // without any assignment entry" — deleting a project writes its members
+      // as explicit move-outs, so a deleted folder is not rebuilt at once; it
+      // re-ensures only when a NEW session appears in that folder. The ref
+      // remembers ensured session ids per root: recomputes over the same
+      // sessions do not re-request; new session ids retrigger naturally.
       const projectsListData = bs && bs.projectsList;
+      // Slice deps (same convention as chatHistory above): the whole bs
+      // snapshot gets a new identity on every bridge notify (including pure
+      // chat token streams), so depending on it would re-run this memo and
+      // the downstream O(sessions × projects × roots) derivations every time.
+      const bsSessions = bs && bs.sessions;
       const boundWorkspaceItems = useMemo(() => {
-        if (!bs) return [];
-        const regular = (bs.sessions || [])
+        // Preserve the pre-slice guard: before the first bridge sync (bs
+        // missing) the codex lanes are not folded in either.
+        if (!bsSessions) return [];
+        const regular = bsSessions
           .filter(s => s.workspace_binding)
           .map(s => ({ id: s.id, workspaceKind: 'bound', workspacePath: String(s.workspace_binding), updatedAt: s.updated_at || '' }));
         const codex = (codexSessions || [])
           .filter(s => s.workspace_kind === 'project' && s.workspace_path)
           .map(s => ({ id: s.id, workspaceKind: 'project', workspacePath: String(s.workspace_path), updatedAt: s.updated_at || '' }));
         return [...regular, ...codex];
-      }, [bs, codexSessions]);
+      }, [bsSessions, codexSessions]);
+      const projectsListEntries = projectsListData && projectsListData.projects;
+      const projectsListAssignments = projectsListData && projectsListData.assignments;
       const pendingFolderRoots = useMemo(() => uncoveredWorkspaceRoots(
         boundWorkspaceItems,
-        (projectsListData && projectsListData.projects) || [],
-        (projectsListData && projectsListData.assignments) || {},
-      ), [boundWorkspaceItems, projectsListData]);
+        projectsListEntries || [],
+        projectsListAssignments || {},
+      ), [boundWorkspaceItems, projectsListEntries, projectsListAssignments]);
       const ensuredFolderRootsRef = useRef(new Map());
       useEffect(() => {
         const ensureFn = bridge.projects && bridge.projects.ensureFolderProjects;
         if (!ensureFn || !pendingFolderRoots.length) return;
         const fresh = [];
+        const registered = [];
         pendingFolderRoots.forEach(({ root, sessionIds }) => {
           const seen = ensuredFolderRootsRef.current.get(root) || new Set();
           const newcomers = sessionIds.filter(id => !seen.has(id));
@@ -1666,27 +1710,45 @@ function workspaceDisplayName(path) {
           newcomers.forEach((id) => { seen.add(id); });
           ensuredFolderRootsRef.current.set(root, seen);
           fresh.push(root);
+          registered.push({ root, newcomers });
         });
         if (!fresh.length) return;
-        // 失败(如与既有项目 root 嵌套)不撤销登记:冲突是稳定状态,重试只会
-        // 重复同一结果;根集合或项目集合变化时自然重算补试。
-        ensureFn(fresh).catch(() => {});
+        // A rejected ensure is transient (e.g. backend mid-restart): roll back
+        // the seen-registration so the next recompute retries instead of
+        // leaving existing sessions permanently un-ensured. A resolved
+        // 'failed' outcome (e.g. nesting conflict with an existing project
+        // root) stays registered: that conflict is stable, retrying repeats
+        // the same result until the root/project sets change and recompute.
+        ensureFn(fresh).catch(() => {
+          registered.forEach(({ root, newcomers }) => {
+            const seen = ensuredFolderRootsRef.current.get(root);
+            if (!seen) return;
+            newcomers.forEach((id) => { seen.delete(id); });
+          });
+        });
       }, [pendingFolderRoots]);
 
-      // ── 「选择工作区」统一选择器(§2 单入口)────────────────────────────
-      // 宿主持有开关与结果落地:chat 车道写 bridge 草稿(物化时 create_session
-      // 带 workspaceRoots/projectId);codex 车道经 workspacePickerRequest 下发
-      // CodexAcpView(beginDraft + 草稿归属暂存,物化时 createAcpSession 下发)。
-      // 选择器本身只读热视图行 + 回调,不碰后端。
+      // ── Unified "choose workspace" picker (§2 single entry) ──────────────
+      // The host owns the open flag and result landing: the chat lane writes
+      // the bridge draft (create_session carries workspaceRoots/projectId at
+      // materialization); the codex lane is handed the request via
+      // workspacePickerRequest into CodexAcpView (beginDraft + draft ownership
+      // staging; createAcpSession passes them at materialization). The picker
+      // itself only reads hot-view rows + callbacks and never touches the
+      // backend.
       const [workspacePicker, setWorkspacePicker] = useState(null); // { lane, mode }
       const [pickerBusy, setPickerBusy] = useState(false);
       const [pickerExcluded, setPickerExcluded] = useState(null);
       const [pickerCodexRequest, setPickerCodexRequest] = useState(null);
+      // Codex lane's effective mode, reported up by CodexAcpView: sidebar
+      // surfaces opened while the code page is active (manage-folders panel)
+      // must show the codex lane's mode-aware copy, not the chat lane's.
+      const [codexLaneMode, setCodexLaneMode] = useState(null);
       const workspacePickerRows = useMemo(() => computePickerRows({
-        projects: (projectsListData && projectsListData.projects) || [],
+        projects: projectsListEntries || [],
         items: boundWorkspaceItems,
-        assignments: (projectsListData && projectsListData.assignments) || {},
-      }), [projectsListData, boundWorkspaceItems]);
+        assignments: projectsListAssignments || {},
+      }), [projectsListEntries, projectsListAssignments, boundWorkspaceItems]);
       const closeWorkspacePicker = () => { setWorkspacePicker(null); setPickerExcluded(null); };
       const applyWorkspaceTarget = ({ lane, path, projectId, roots }) => {
         if (lane === 'codex') {
@@ -1696,8 +1758,23 @@ function workspaceDisplayName(path) {
         }
         closeWorkspacePicker();
       };
-      // 项目通道(§9.3):cwd = 选中根(默认项目记忆主根),钥匙串 = 项目当时
-      // 全部根快照;projectId 随创建写 last_primary_root(后端 create 内处理)。
+      // Project channel (§9.3): cwd = the picked root (defaults to the
+      // project's remembered primary root); keychain = a snapshot of all the
+      // project's roots at that moment; projectId is written to
+      // last_primary_root on creation (handled inside the backend create).
+      // Mode-aware grant notices follow the lane the action belongs to: the
+      // code page runs under the codex lane's mode, everything else under
+      // chat's modeState.
+      const activeLaneMode = () => (currentView === 'codex'
+        ? codexLaneMode
+        : ((bs && bs.modeState && bs.modeState.mode) || null));
+      // Same-weight grant notice for every entry that grants folder access
+      // without the picker expansion panel (§9.4): picker single-root rows and
+      // the browse entry carry it inline; the no-detour channels (project-row
+      // new session, composer recents) surface it as a toast at grant time.
+      const workspaceGrantNotice = (mode, count) => (workspaceNoticeTone(mode) === 'restricted'
+        ? t.uiWorkspacePicker.noticeRestricted(count)
+        : t.uiWorkspacePicker.noticeVisibility(count));
       const pickerLane = () => (workspacePicker ? workspacePicker.lane : 'chat');
       const handlePickerSelectProject = (project, root) => {
         applyWorkspaceTarget({ lane: pickerLane(), path: root, projectId: project.id, roots: pickerProjectRoots(project) });
@@ -1705,26 +1782,35 @@ function workspaceDisplayName(path) {
       const handlePickerTemporary = () => {
         applyWorkspaceTarget({ lane: pickerLane(), path: null, projectId: null, roots: [] });
       };
-      // 项目行"新建会话"专属通道(§9.9 项目通道):不经选择器,cwd = 项目
-      // 记忆主根(可改选的记忆由选择器/管理面板写),钥匙串 = 项目当时全部根。
-      // 车道跟随当前所在页(code 页 → codex 草稿,其余 → chat 草稿)。
+      // Dedicated channel for the project row's "new session" (§9.9 project
+      // channel): no picker detour — cwd = the project's remembered primary
+      // root (the picker/manage panel writes that memory), keychain = all of
+      // the project's roots at that moment. The lane follows the current page
+      // (code page → codex draft, anything else → chat draft).
       const handleProjectNewSession = (projectId) => {
         const project = ((sidebarProjectsData && sidebarProjectsData.projects) || [])
           .find(entry => entry.id === projectId);
         if (!project) return;
         const primary = pickerPrimaryRoot(project);
-        if (!primary) return; // 纯标签项目无根可绑定,按钮本不该出现(渲染侧守门)
+        if (!primary) return; // tag-only project: no root to bind; the render side already keeps the button away
+        const roots = pickerProjectRoots(project);
         applyWorkspaceTarget({
           lane: currentView === 'codex' ? 'codex' : 'chat',
           path: primary,
           projectId: project.id,
-          roots: pickerProjectRoots(project),
+          roots,
         });
+        // Grant notice parity: this channel grants the project's whole root
+        // set without a picker detour, so the mode-aware notice must still
+        // surface at grant time.
+        setSettingsToast(workspaceGrantNotice(activeLaneMode(), roots.length));
       };
-      // 浏览通道(§9.9 文件夹通道):系统选目录 → ensure(锚定复用/物化;
-      // 排除列表跳过) → 以所选文件夹开始,cwd = F、roots = [F]。不带
-      // projectId:浏览是显式物理选择,不更新任何项目的 last_primary_root
-      // 记忆(A 裁决);会话经 tier-② 锚定归组,无需显式归属。
+      // Browse channel (§9.9 folder channel): system folder picker → ensure
+      // (anchor reuse / materialize; the exclusion list skips) → start at the
+      // picked folder with cwd = F, roots = [F]. No projectId: browsing is an
+      // explicit physical choice and does not update any project's
+      // last_primary_root memory (ruling A); the session groups via tier-2
+      // anchoring and needs no explicit assignment.
       const handlePickerBrowse = async () => {
         if (!bridge.files || !bridge.files.pickFolders || pickerBusy) return;
         const picked = await bridge.files.pickFolders()
@@ -1750,28 +1836,31 @@ function workspaceDisplayName(path) {
           }
         }
         if (!materialized && bridge.projects) {
-          // 排除列表(§3):后端跳过 → 无 outcome;选择器内如实告知,仍可纯
-          // 文件夹开始(不带 projectId)。
+          // Exclusion list (§3): the backend skipped it → no outcome; the
+          // picker says so honestly and still allows starting as a plain folder
+          // (no projectId).
           setPickerExcluded(folder);
           return;
         }
         applyWorkspaceTarget({ lane: pickerLane(), path: folder, projectId: null, roots: [folder] });
       };
 
-      // ── 管理文件夹面板(§4)────────────────────────────────────────────
-      // 项目 roots 的查看/添加/移除/主根记忆/重命名 + 排除列表查看撤销。
-      // 移除的成员移出由后端 update_project 完成(B2);添加/移除后桥层
-      // loadProjects 自刷(事件 + 主动双保险)。
+      // ── Manage-folders panel (§4) ───────────────────────────────────────
+      // View/add/remove project roots, primary-root memory, rename, and the
+      // exclusion list view/revoke. Removing a root moves its members out in
+      // the backend's update_project (B2); after add/remove the bridge reloads
+      // projects on its own (event + active refetch, belt and braces).
       const [manageFoldersId, setManageFoldersId] = useState(null);
-      // 注:本块位置在 sidebarProjectsData 声明之前,数据用 projectsListData
-      // (同一份 projectsList 快照)。
+      // Note: this block sits before the sidebarProjectsData declaration and
+      // reads projectsListData instead (the same projectsList snapshot).
       const manageFoldersProject = manageFoldersId
         ? (((projectsListData && projectsListData.projects) || [])
             .find(entry => entry.id === manageFoldersId) || null)
         : null;
       const closeManageFolders = () => setManageFoldersId(null);
-      // 添加文件夹:系统选目录 → update_project 追加(授权告知在面板"添加"
-      // 入口上,与选择器同重量,§2)。已在项目内的路径跳过并告知。
+      // Add folder: system folder picker → update_project append (the grant
+      // notice sits on the panel's "add" entry, same weight as the picker,
+      // §2). Paths already in the project are skipped with a notice.
       const handleManageAddFolder = async () => {
         if (!bridge.files || !bridge.files.pickFolders || !manageFoldersProject || projectOpsBusy) return;
         const picked = await bridge.files.pickFolders()
@@ -1799,7 +1888,7 @@ function workspaceDisplayName(path) {
       const handleManageRemoveRoot = async (root) => {
         if (!manageFoldersProject || projectOpsBusy) return;
         const plan = removeRootPlan(manageFoldersProject, root);
-        if (!plan.removed || plan.needsNewPrimary) return; // 主根拦截在面板内
+        if (!plan.removed || plan.needsNewPrimary) return; // primary-root removal is blocked inside the panel
         setProjectOpsBusy(true);
         try {
           await bridge.projects.updateProjectRoots(manageFoldersProject.id, plan.roots);
@@ -1822,7 +1911,8 @@ function workspaceDisplayName(path) {
           setProjectOpsBusy(false);
         }
       };
-      // 排除列表(§3):进表 = 不再自动物化(可逆,不动项目/会话);出表 = 撤销。
+      // Exclusion list (§3): listed = no more auto-materialization
+      // (reversible; projects/sessions untouched); unlisted = revoked.
       const handleSetNeverMaterialize = async (root, never) => {
         if (projectOpsBusy) return;
         setProjectOpsBusy(true);
@@ -1944,7 +2034,7 @@ function workspaceDisplayName(path) {
       const sidebarTaskFilterOptions = [
         { id: 'all', label: t.sidebarTaskFilterAll },
         { id: 'pinned', label: t.sidebarTaskFilterPinned },
-        // 项目形态(胶囊选中「项目」)下列表恒为代码/绑定会话:「代码会话」筛选等同
+        // In the projects shape (pill on Projects) the list is always code/bound sessions: the 'Code sessions' filter equals
         // 「全部」、「定时任务」恒为空——两个选项都是死胡同,只在标准形态提供。
         ...(sidebarCodeListActive ? [] : [
           { id: 'code', label: t.sidebarTaskFilterCodeSessions },
@@ -2010,12 +2100,16 @@ function workspaceDisplayName(path) {
         });
       }
 
-      // 分组视图(目录/项目):所有绑定真实目录的会话——代码/ACP 会话与
-      // #445 的绑定工作会话。两个维度拆开(评审后定稿):
-      // - 目录视图 = 纯物理层,按工作区分组,项目存在与否不影响它;
-      // - 项目视图 = 纯逻辑层,只有命名项目作为分组(显式归属 + root 自动
-      //   归组),未认领会话沉入「未分组」桶(拖入来源/移出落点)。
-      // 分组链全程 memo 化:tier-2 是 O(sessions × projects × roots)。
+      // Grouped views (folder/project): every session bound to a real
+      // directory — code/ACP sessions and #445's bound work sessions. The two
+      // dimensions are split (finalized after review):
+      // - folder view = pure physical layer, grouped by workspace; projects
+      //   never affect it;
+      // - project view = pure logical layer, only named projects as groups
+      //   (explicit assignment + root auto-match); unclaimed sessions sink
+      //   into the ungrouped bucket (drag source / move-out landing place).
+      // The grouping chain is memoized end to end: tier-2 is
+      // O(sessions × projects × roots).
       const sidebarCodeTasks = useMemo(() => (sidebarCodeListActive
         ? sidebarTaskHistory.filter(chat => chat.taskKind === 'codex'
             || (chat.taskKind === 'regular' && chat.workspacePath))
@@ -2036,9 +2130,11 @@ function workspaceDisplayName(path) {
         }
         return groupSessionsByFolder(sidebarUnpinnedCodeTasks);
       }, [sidebarCodeListActive, sidebarProjectsViewActive, sidebarUnpinnedCodeTasks, sidebarProjectsData]);
-      // 置顶提升会把成员从组 rows 里摘走,但组头计数(含删除确认)要按提升前
-      // 的全量成员算,否则成员全置顶的组确认删除时显示 (0)(评审 finding 24)。
-      // 置顶项通常很少,单独对它们跑一遍分组拿到每组被摘走的数量即可。
+      // Pin hoisting strips members out of the group rows, but the header
+      // count (including the delete confirm) must use the pre-hoist
+      // membership, or a group whose members are all pinned shows (0) in the
+      // delete confirm (review finding 24). Pinned items are usually few, so a
+      // separate grouping pass over them yields the stripped count per group.
       const sidebarGroupPinnedCounts = useMemo(() => {
         if (!sidebarCodeListActive || sidebarFolderPinned.length === 0) return {};
         const counts = {};
@@ -2587,9 +2683,11 @@ function workspaceDisplayName(path) {
         await refreshCodexSessions().catch(() => {});
       }
 
-      // ── 项目层:分组归档是纯逻辑层操作,永不触碰会话的工作目录绑定。──
-      // 失败走专用的 opFailed toast(借用会话批处理文案会让报错指向错误
-      // 的操作对象);bridge.projects 仅桌面存在。
+      // ── Project layer: group filing is a pure logical-layer operation and
+      // never touches a session's working-directory binding. ──
+      // Failures go to the dedicated opFailed toast (borrowing the session
+      // batch copy would point the error at the wrong object);
+      // bridge.projects exists on desktop only.
       async function runProjectOp(op) {
         if (!bridge.available || !bridge.projects || projectOpsBusy) return;
         setProjectOpsBusy(true);
@@ -2605,15 +2703,19 @@ function workspaceDisplayName(path) {
       const handleConvertFolderToProject = (path, name) => runProjectOp(p => p.createProject(name, [path]));
       const handleRenameProject = (projectId, name) => runProjectOp(p => p.renameProject(projectId, name));
       const handleDeleteProject = (projectId) => runProjectOp(p => p.deleteProject(projectId));
-      // 移动归属:纯归档操作(工作目录绑定不动);目标 root 不覆盖会话目录时由
-      // 选择器先走"添加文件夹"确认,再带着 addFolder 标记落到这里。
-      // 确认框展示的是侧栏投影的目录,命令实际加的是后端活记录——outcomes
-      // 里的 added_root 是权威答案,有值时在 toast 里如实呈现(评审 #449
-      // finding 9:两侧不得静默分叉)。
+      // Move ownership: a pure filing operation (the working-directory binding
+      // is untouched); when the target roots do not cover the session's
+      // directory, the picker first goes through the "add folder" confirm and
+      // lands here with the addFolder flag. The confirm shows the sidebar's
+      // projected directory while the command adds the backend's live record —
+      // the added_root in the outcome is authoritative and, when present, is
+      // shown honestly in the toast (review #449 finding 9: the two sides must
+      // not silently diverge).
       const handleMoveSessionToProject = (sessionId, projectId, addWorkspaceRoot) => runProjectOp(async (p) => {
         const outcome = await p.moveSessionToProject(sessionId, projectId, addWorkspaceRoot);
         setMoveToProjectSession(null);
-        // 提交后一并清预置目标,避免残留状态泄漏到下一次打开(finding 7)。
+        // Clear the preset target on commit too, so no stale state leaks into
+        // the next open (finding 7).
         setMoveToPresetProject(null);
         setSettingsToast(
           outcome && outcome.added_root
@@ -2621,30 +2723,37 @@ function workspaceDisplayName(path) {
             : t.uiProjects.movedNotice,
         );
       });
-      // 拖拽落点:root 已覆盖的直接移动;未覆盖的带着预置目标打开选择器,
-      // 进入"添加文件夹"确认(menu 路径则不带预置)。判定用共享的
-      // needsAddFolderConfirm,与选择器的初始化器/选择路径保持同源。
+      // Drag landing: roots already covering move directly; otherwise open the
+      // picker with a preset target into the "add folder" confirm (the menu
+      // path carries no preset). The decision uses the shared
+      // needsAddFolderConfirm, same source as the picker's initializer and
+      // choose path.
       const handleDropSessionOnProject = (sessionId, projectId) => {
         const chat = sidebarTaskHistory.find(c => c.id === sessionId);
         if (!chat) return;
         const projects = sidebarProjectsData ? sidebarProjectsData.projects : [];
         const target = (projects || []).find(p => p && p.id === projectId);
         if (!target) return;
-        // 拖回当前所属项目 = 选择器里禁用当前项的同一语义,直接忽略。
+        // Dropping back onto the current project = the same semantics as the
+        // picker's disabled current item; ignore directly.
         if (resolveSessionProjectId(chat, projects, sidebarProjectsData ? sidebarProjectsData.assignments : {}) === projectId) return;
         if (needsAddFolderConfirm(chat, target)) {
           setMoveToPresetProject(projectId);
           setMoveToProjectSession(chat);
           return;
         }
-        // projectOpsBusy 时静默忽略与侧栏其他拖拽反馈一致(runProjectOp
-        // 内部同样有 busy 守卫),不额外打断。
+        // Silently ignoring while projectOpsBusy matches the sidebar's other
+        // drag feedback (runProjectOp has the same busy guard inside); no extra
+        // interruption.
         handleMoveSessionToProject(sessionId, projectId, false);
       };
-      // 指针拖拽(移动到项目)的悬停/落点回调:命中标记是分组容器的
-      // data-drop-key(项目组 'project:<id>' / 未分组桶 UNGROUPED),组头与会话
-      // 行区域都算落点。悬停只点亮一个环,落点分发到与菜单路径同源的处理函数。
-      // ghost(跟手标签副本)复用 tear-off avatar 的视觉与跟随方式。
+      // Hover/drop callbacks for the pointer drag (move to project): the hit
+      // marker is the group container's data-drop-key (project group
+      // 'project:<id>' / ungrouped bucket UNGROUPED); both the group header
+      // and session row areas count as landing zones. Hover lights a single
+      // ring; drops dispatch to the same handlers as the menu path. The ghost
+      // (a cursor-following label copy) reuses the tear-off avatar's visuals
+      // and tracking.
       const [sessionDragGhost, setSessionDragGhost] = useState(null); // {label,sessionId,dx,dy,w,h,x,y}
       const sessionDragGhostOffsetRef = useRef({ dx: 0, dy: 0 });
       const sessionDragGhostActive = !!sessionDragGhost;
@@ -2664,7 +2773,12 @@ function workspaceDisplayName(path) {
           document.body.style.cursor = prevCur;
         };
       }, [sessionDragGhostActive]);
-      const handleDndBegin = (geom) => {
+      // RecentItem memo contract (NavigationComponents): every DnD prop must be
+      // reference-stable across bridge notifies, so these handlers are
+      // useCallback'd. handleDndDrop dispatches into handlers that are
+      // recreated per render; it reads them through a latest-ref mirror
+      // instead of capturing them, keeping its own identity stable.
+      const handleDndBegin = useCallback((geom) => {
         sessionDragGhostOffsetRef.current = { dx: geom.dx, dy: geom.dy };
         setSessionDragGhost({
           label: geom.label,
@@ -2673,33 +2787,44 @@ function workspaceDisplayName(path) {
           x: geom.startX - geom.dx,
           y: geom.startY - geom.dy,
         });
-      };
-      const handleDndHover = (key) => {
+      }, []);
+      const handleDndHover = useCallback((key) => {
         setDropTargetGroupKey((prev) => (prev === (key || null) ? prev : (key || null)));
-      };
-      const handleDndDrop = (dropKey, sessionId) => {
-        if (dropTargetGroupKey !== null) setDropTargetGroupKey(null);
+      }, []);
+      const dndDropLatestRef = useRef(null);
+      dndDropLatestRef.current = { handleMoveSessionToProject, handleDropSessionOnProject };
+      const handleDndDrop = useCallback((dropKey, sessionId) => {
+        // Clear the highlight unconditionally: a stable useCallback captures
+        // the first render's dropTargetGroupKey, so the old
+        // `!== null` guard would freeze stale and skip the clear.
+        setDropTargetGroupKey(null);
         if (!dropKey || !sessionId) return;
+        const { handleMoveSessionToProject: moveTo, handleDropSessionOnProject: dropOn } = dndDropLatestRef.current;
         if (dropKey === UNGROUPED_GROUP_KEY) {
-          handleMoveSessionToProject(sessionId, null, false);
+          moveTo(sessionId, null, false);
           return;
         }
         const projectId = dropKey.startsWith('project:') ? dropKey.slice('project:'.length) : null;
-        if (projectId) handleDropSessionOnProject(sessionId, projectId);
-      };
-      // 目录重绑定(修断链):失效 root 的项目头上点"重新绑定" → 系统选目录
-      // → 确认弹窗。两阶段确认:首调不带 confirmExisting,后端发现旧目录
-      // 仍在时拒绝,弹窗升级为强警告后由用户再次确认。
+        if (projectId) dropOn(sessionId, projectId);
+      }, []);
+      const handleDndEnd = useCallback(() => setSessionDragGhost(null), []);
+      // Directory rebind (fix broken links): clicking "rebind" on a project
+      // header with an unavailable root → system folder picker → confirm
+      // dialog. Two-stage confirm: the first call omits confirmExisting; when
+      // the backend finds the old directory still present it refuses, and the
+      // dialog upgrades to a strong warning for a second user confirm.
       const startRebindWorkspace = async (fromPath) => {
-        // rebindDraft 已开时不再重复开:焦点留在徽标上时按 Enter 会重复触发
-        // onRebind(评审 #463 minor),projectOpsBusy 守卫管不到这个窗口。
+        // No re-open while rebindDraft is open: with focus left on the badge,
+        // pressing Enter retriggers onRebind (review #463 minor), a window the
+        // projectOpsBusy guard does not cover.
         if (!bridge.files || !bridge.files.pickFolders || projectOpsBusy || rebindDraft) return;
         try {
           const picked = await bridge.files.pickFolders();
           const to = Array.isArray(picked) ? picked[0] : picked;
           if (!to) return;
-          // 不带会话数:命令实际重绑定 from 之下的一切会话,侧栏组渲染数
-          // 只是子集,数字承诺会与 RebindWorkspaceReport 对不上(finding 10)。
+          // No session count: the command rebinds every session under `from`,
+          // while the sidebar group renders only a subset — a number promise
+          // would disagree with the RebindWorkspaceReport (finding 10).
           setRebindDraft({ from: fromPath, to, warnExisting: false });
         } catch (error) {
           console.warn('pick rebind folder failed', error);
@@ -2708,7 +2833,8 @@ function workspaceDisplayName(path) {
       const confirmRebindWorkspace = async (confirmExisting) => {
         if (!bridge.projects || !rebindDraft || projectOpsBusy) return;
         setProjectOpsBusy(true);
-        // 清掉上一次失败的内联错误,避免与本次结果叠显。
+        // Clear the previous failure's inline error so it cannot stack with
+        // this attempt's result.
         setRebindDraft(prev => prev && { ...prev, error: null });
         try {
           const report = await bridge.projects.rebindWorkspaceRoot(
@@ -2717,7 +2843,8 @@ function workspaceDisplayName(path) {
           const rebound = (report && report.rebound_session_ids) ? report.rebound_session_ids.length : 0;
           const failed = (report && report.failed_session_ids) ? report.failed_session_ids.length : 0;
           const postBusy = (report && report.post_busy_session_ids) ? report.post_busy_session_ids.length : 0;
-          // 部分失败不再吞掉(finding 3):数据迁移的半成功必须如实呈现。
+          // Partial failure is no longer swallowed (finding 3): a half-done
+          // data migration must be presented honestly.
           if (failed > 0) {
             setSettingsToast(t.uiProjects.rebindPartial(rebound, failed));
           } else if (postBusy > 0) {
@@ -2726,23 +2853,27 @@ function workspaceDisplayName(path) {
             setSettingsToast(t.uiProjects.rebindSuccess(rebound));
           }
           await refreshCodexSessions().catch((error) => {
-            // 失败不吞:会话列表靠 session:list_changed 事件自愈,但显式
-            // 失败的静默间隙要对排查可见(评审 #463 minor)。
+            // Failures are not swallowed: the session list self-heals via the
+            // session:list_changed event, but the silent gap of an explicit
+            // failure must stay visible to debugging (review #463 minor).
             console.warn('refresh sessions after rebind failed', error);
           });
         } catch (error) {
           const message = String(error);
-          // 类型化标记匹配(finding 11):只认稳定前缀,不匹配人类文案。
+          // Typed-marker matching (finding 11): match stable prefixes only,
+          // never human prose.
           if (message.startsWith('REBIND_OLD_ROOT_EXISTS')) {
             setRebindDraft(prev => prev && { ...prev, warnExisting: true, error: null });
           } else if (message.startsWith('REBIND_NESTED_TARGET')) {
-            // 嵌套目标拒绝:同样类型化标记,映射三语文案而非透传后端散文
-            // (评审 #464 MINOR 9);内联呈现,不toast(遮罩层级见下)。
+            // Nested-target rejection: same typed marker, mapped to trilingual
+            // copy instead of passing backend prose through (review #464 MINOR
+            // 9); shown inline, not via toast (overlay stacking below).
             setRebindDraft(prev => prev && { ...prev, error: t.uiProjects.rebindNestedRejected });
           } else {
             console.warn('rebind workspace failed', error);
-            // 失败保持对话框打开并内联呈现错误(评审 #463 M7):toast 层级
-            // 在对话框遮罩(z-200 + blur)之下,关窗前 toast 用户看不到。
+            // Failures keep the dialog open with the error inline (review #463
+            // M7): the toast layer sits under the dialog backdrop (z-200 +
+            // blur), so a toast is invisible until the window closes.
             setRebindDraft(prev => prev && { ...prev, error: message });
           }
         } finally {
@@ -3026,16 +3157,16 @@ function workspaceDisplayName(path) {
             onOpenFolder={can('externalSystemOpen') ? ((id) => bridge.artifacts.revealSessionFolder && bridge.artifacts.revealSessionFolder(id)) : undefined}
             onArchive={handleArchiveSession}
             onMoveToProject={bridge.projects && (chat.taskKind === 'codex' || !!chat.workspacePath)
-              ? (target) => { setMoveToPresetProject(null); setMoveToProjectSession(target); }
+              ? openMovePicker
               : undefined}
             dndPayload={bridge.projects && (chat.taskKind === 'codex' || !!chat.workspacePath) && sidebarProjectsViewActive
-              ? { sessionId: chat.id }
+              ? cachedItemCallback(sidebarDndPayloads, chat, (c) => ({ sessionId: c.id }))
               : undefined}
             dndDisabled={!!dragAvatar}
             onDndBegin={handleDndBegin}
             onDndHover={handleDndHover}
             onDndDrop={handleDndDrop}
-            onDndEnd={() => setSessionDragGhost(null)}
+            onDndEnd={handleDndEnd}
             dragKind={detachKind}
             dragging={canDetachWindows && !!dragAvatar && dragAvatar.key === `${detachKind}:${chat.id}`}
             onPickUp={canDetachWindows ? ((geom) => beginTearOff(detachKind, chat.id, chat.title, geom)) : undefined}
@@ -3043,8 +3174,10 @@ function workspaceDisplayName(path) {
         );
       };
 
-      // 分组头标签/操作集按 kind 分流:目录组(转正)、项目组(全操作+落点)、
-      // 未分组桶(拖入=移出)、临时桶(仅折叠)。抽出以控制渲染回调复杂度。
+      // Group-header label/action sets dispatch by kind: folder groups
+      // (convert), project groups (full operations + drop target), ungrouped
+      // bucket (drop-in = move-out), temporary bucket (collapse only).
+      // Extracted to keep the render callback's complexity in check.
       const sidebarGroupLabel = (group) => {
         if (group.kind === 'project') return group.name;
         if (group.kind === 'ungrouped') return t.uiProjects.ungrouped;
@@ -3054,7 +3187,8 @@ function workspaceDisplayName(path) {
       const sidebarGroupHeaderProps = (group) => {
         if (group.kind === 'project') {
           return {
-            // 项目通道(§9.9)与管理面板(§4)入口:仅桌面(bridge.projects 守门)。
+            // Project channel (§9.9) and manage panel (§4) entries: desktop
+            // only (gated by bridge.projects).
             onNewSession: bridge.projects ? () => handleProjectNewSession(group.projectId) : undefined,
             onManage: bridge.projects ? () => setManageFoldersId(group.projectId) : undefined,
             onRename: (name) => handleRenameProject(group.projectId, name),
@@ -3068,7 +3202,7 @@ function workspaceDisplayName(path) {
         if (group.kind === 'folder') {
           return {
             title: group.path,
-            // bridge.projects 仅桌面存在:web 上不渲染死入口。
+            // bridge.projects exists on desktop only: no dead entries on web.
             onConvert: bridge.projects ? (name) => handleConvertFolderToProject(group.path, name) : undefined,
           };
         }
@@ -3209,7 +3343,7 @@ function workspaceDisplayName(path) {
               {dragAvatar.label}
             </div>
           )}
-          {/* 移动到项目的指针拖拽 ghost:同款跟手视觉(锁定抓取相对位置) */}
+          {/* Pointer-drag ghost for move-to-project: same cursor-following visual (locks the grab-relative position) */}
           {sessionDragGhost && (
             <div style={{ position:'fixed', left: sessionDragGhost.x, top: sessionDragGhost.y, width: sessionDragGhost.w, height: sessionDragGhost.h,
               pointerEvents:'none', zIndex:9999, borderRadius:14, overflow:'hidden', whiteSpace:'nowrap',
@@ -3251,8 +3385,12 @@ function workspaceDisplayName(path) {
             document.body
           )}
 
+          {workspacePicker && (
+          // Conditional mount (ManageProjectFoldersDialog idiom): query and
+          // the expanded row must not leak across opens — remounting resets
+          // them, so a leftover filter can never render a false empty state.
           <WorkspacePickerDialog
-            open={!!workspacePicker}
+            open
             rows={workspacePickerRows}
             mode={workspacePicker ? workspacePicker.mode : null}
             language={language}
@@ -3267,13 +3405,14 @@ function workspaceDisplayName(path) {
             onBrowseExcluded={(folder) => applyWorkspaceTarget({ lane: pickerLane(), path: folder, projectId: null, roots: [folder] })}
             onDismissExcluded={() => setPickerExcluded(null)}
           />
+          )}
 
           {manageFoldersProject && (
             <ManageProjectFoldersDialog
-              open={!!manageFoldersProject}
+              open
               project={manageFoldersProject}
               neverRoots={(sidebarProjectsData && sidebarProjectsData.neverMaterializeRoots) || []}
-              mode={(bs && bs.modeState && bs.modeState.mode) || null}
+              mode={activeLaneMode()}
               busy={projectOpsBusy}
               t={t}
               onClose={closeManageFolders}
@@ -3606,7 +3745,7 @@ function workspaceDisplayName(path) {
                               : (activeTheme === 'dark' ? 'text-[#9AA0A6] hover:bg-[#282A2C]' : 'text-[#8A8F94] hover:bg-[#E1E5EA]')
                           }`}
                         >
-                          {t.sidebarTaskFilterFolders}
+                          {t.sidebarTaskFilterCode}
                         </button>
                         <button
                           type="button"
@@ -3619,7 +3758,7 @@ function workspaceDisplayName(path) {
                               : (activeTheme === 'dark' ? 'text-[#9AA0A6] hover:bg-[#282A2C]' : 'text-[#8A8F94] hover:bg-[#E1E5EA]')
                           }`}
                         >
-                          {t.sidebarTaskFilterCode}
+                          {t.sidebarTaskFilterProjects}
                         </button>
                         </div>
                         {/* 一键折叠/展开全部任务分组(日期组或文件夹组);
@@ -3691,9 +3830,11 @@ function workspaceDisplayName(path) {
                           )}
                           {sidebarFolderGroups.map((group) => {
                             const isOpen = folderGroupOpen[group.key] ?? true;
-                            // 落点=整个分组区域(组头+会话行):命中测试从任意
-                            // 子元素经 closest() 爬到这里的 data-drop-key。
-                            // 目录分组(物理视图)不作为项目拖拽落点。
+                            // Landing zone = the whole group area (header +
+                            // session rows): hit-testing climbs from any child
+                            // to this data-drop-key via closest().
+                            // Folder groups (physical view) are not project
+                            // drag targets.
                             const groupDropKey = group.kind === 'project' || group.kind === 'ungrouped'
                               ? group.key
                               : undefined;
@@ -3966,6 +4107,7 @@ function workspaceDisplayName(path) {
                 onOpenSettingsSection={openSettingsSection}
                 onOpenWorkspacePicker={({ mode }) => { setPickerExcluded(null); setWorkspacePicker({ lane: 'codex', mode }); }}
                 workspacePickerRequest={pickerCodexRequest}
+                onLaneModeChange={setCodexLaneMode}
                 onNotify={(message) => setSettingsToast(message)}
                 bs={bs}
                 onGotoModelSettings={() => openSettingsSection('model')}

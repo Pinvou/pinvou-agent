@@ -142,9 +142,12 @@ export function RewindUndoChip({ state, disabled, copy, onOpen }) {
   );
 }
 
-// 确认弹窗三要素（设计 §7）：将撤销的变更摘要、对话将截断到的位置、错误如实展示
-// （跨会话忙碌/恢复失败等后端文案原样上屏）。portal 到 <body> 与 YoloConfirmCard
-// 同款：避免 composer 容器的 backdrop-blur 成为 fixed 包含块。
+// The confirm dialog's three essentials (design §7): the change summary to be
+// undone, the position the conversation truncates to, and errors shown
+// honestly (backend wording such as cross-session busy / restore failure is
+// displayed verbatim). Portaled to <body>, same as YoloConfirmCard, so the
+// composer container's backdrop-blur cannot become the fixed containing
+// block.
 export function RewindConfirmDialog({ entry, previewState, error, busy, theme, copy, onCancel, onConfirm }) {
   const isDark = theme === 'dark';
   const dialogRef = useRef(null);

@@ -113,10 +113,12 @@ const RebindFolderDialog = ({ from, to, warnExisting, errorMessage, t, busy, onC
             {t.cpCancel}
           </button>
         </div>
-        {/* 失败内联呈现(评审 #463 M7):toast portal 层级(z-120)在本遮罩
-            (z-200 + backdrop blur)之下,失败时对话框不关,toast 完全不可见。
-            文案是后端错误原文(后端已按类型化标记/中文详情组织),非 UI copy,
-            不经 i18n 键。 */}
+        {/* Failures render inline (review #463 M7): the toast portal layer
+            (z-120) sits under this backdrop (z-200 + backdrop blur), and since
+            the dialog does not close on failure, a toast would be completely
+            invisible. The text is the backend error verbatim (the backend
+            already organizes it as typed marker / Chinese detail), not UI
+            copy, so it does not go through i18n keys. */}
         {errorMessage && (
           <div className="px-4 pb-4 -mt-1">
             <div className="flex items-start gap-2 rounded-2xl bg-[#FCE8E6] dark:bg-[#3C2A29] px-3 py-2 text-[12px] text-[#C5221F] dark:text-[#F28B82]" data-testid="rebind-error">

@@ -2,19 +2,24 @@ import { useRef, useState } from 'react';
 
 const LONGPRESS_MS = 350;
     const MOVE_CANCEL = 10;
-    // 即移拖拽(移动到项目):按下后立即移动超过阈值进入。不依赖 HTML5 DnD——
-    // WebKitGTK 的页内拖放在指针停止移动后不再投递 dragover/drop(悬停后松手
-    // 被静默丢弃),Chromium 之外不可依赖;指针路径全平台一致。
+    // Instant-move drag (move to project): entered as soon as the press moves
+    // past the threshold. Does not rely on HTML5 DnD — WebKitGTK's in-page
+    // drag stops delivering dragover/drop once the pointer stops moving (a
+    // drop after hovering is silently discarded), so outside Chromium it
+    // cannot be trusted; the pointer path is consistent across platforms.
     // { enabled, payload, onBegin(geom), onHover(key|null), onDrop(key|null, payload), onEnd() }
-    // onBegin 在激活瞬间上报抓取几何(与 tear-off 的 info 同构,驱动跟手
-    // ghost);onEnd 在 drop/cancel 之后必然回调,用于收起 ghost。
+    // onBegin reports the grab geometry at the activation instant (isomorphic
+    // to tear-off's info, driving the cursor-following ghost); onEnd is always
+    // called after drop/cancel and is used to fold the ghost away.
     const useLongPressDrag = (kind, onPickUp, moveDrag) => {
       const startRef = useRef(null);
       const timerRef = useRef(null);
       const pickedRef = useRef(false);
-      // 即移拖拽会话内状态:pointer capture 之后的 move/up 都落在源元素上。
+      // Per-gesture state for the instant-move drag: after pointer capture,
+      // move/up all land on the source element.
       const moveDragRef = useRef({ active: false, payload: null });
-      // 拖拽结束到 click 事件之间存在时序窗口(state 已复位),抑制必须走 ref。
+      // There is a timing window between the drag end and the click event (the
+      // state is already reset), so suppression must go through a ref.
       const suppressClickRef = useRef(false);
       const [moveDragging, setMoveDragging] = useState(false);
       const moveDragEnabled = () => !!(moveDrag && moveDrag.enabled && moveDrag.payload !== undefined && moveDrag.payload !== null);
@@ -49,6 +54,12 @@ const LONGPRESS_MS = 350;
       };
       const onPointerDown = (e) => {
         if (e.button !== 0 || !kind) return;
+        // A fresh press means any pending click suppression is stale: when
+        // pointer capture failed, the post-drag click never reached this
+        // row's guardClick, so without this reset the flag would eat the next
+        // legitimate click. The suppressed click always fires before the next
+        // pointerdown, so clearing here is safe.
+        suppressClickRef.current = false;
         // Session rows put the drag handlers on their label button, which is
         // itself marked data-drag-surface: presses on it start the long-press
         // drag. Every other button/input (pin, more, confirm…) lacks the
@@ -92,8 +103,9 @@ const LONGPRESS_MS = 350;
         }
         if (pickedRef.current) return;
         if (Math.hypot(e.clientX - s.x, e.clientY - s.y) > MOVE_CANCEL) {
-          // 优先即移拖拽(项目视图里拖会话);没有该模式时维持旧语义:
-          // 快速移动交给原生 HTML5 拖拽/普通点击取消。
+          // The instant-move drag takes priority (dragging a session in the
+          // project view); without that mode the old semantics hold: a fast
+          // move falls to native HTML5 drag / plain click cancellation.
           if (moveDragEnabled()) {
             const geom = {
               dx: s.x - s.rect.left,
@@ -106,7 +118,7 @@ const LONGPRESS_MS = 350;
             clearPress();
             moveDragRef.current = { active: true, payload: moveDrag.payload, lastX: e.clientX, lastY: e.clientY };
             setMoveDragging(true);
-            try { s.currentTarget.setPointerCapture(s.pointerId); } catch { /* 已释放等边缘:捕获失败不影响命中测试 */ }
+            try { s.currentTarget.setPointerCapture(s.pointerId); } catch { /* edge cases like an already-released pointer: a capture failure does not affect hit-testing */ }
             if (moveDrag && moveDrag.onBegin) moveDrag.onBegin(geom);
             return;
           }

@@ -1,12 +1,14 @@
-// 「管理文件夹」面板(§4)的纯逻辑:roots 行形态、移除判定、主根解析。
-// 无 UI/i18n 依赖,node 侧可单测。
+// Pure logic for the manage-folders panel (§4): roots row shape, removal
+// decisions, primary-root resolution. No UI/i18n dependencies; node-side unit
+// testable.
 
 function rootPathOf(root) {
   return String((root && typeof root === 'object' ? root.path : root) || '');
 }
 
-// 面板行:路径 + 可用性徽标 + 主根标记。主根 = last_primary_root(仍是
-// roots 成员才采纳)否则 roots 第一位(与 pickerPrimaryRoot 同口径)。
+// Panel row: path + availability badge + primary marker. Primary =
+// last_primary_root (adopted only while still a roots member), otherwise the
+// first roots entry (same criterion as pickerPrimaryRoot).
 export function manageFolderRows(project) {
   const roots = (project && Array.isArray(project.roots) ? project.roots : [])
     .map(root => ({
@@ -22,9 +24,11 @@ export function manageFolderRows(project) {
   return roots.map((row, index) => ({ ...row, isPrimary: index === primaryIndex }));
 }
 
-// 移除判定(§4/§9.5):移除主根且仍有其它根时必须先另选主根(降级提示,
-// 不替用户挑);唯一根移除 → 项目降级为纯标签(roots 空),允许;非主根
-// 直接可移除。重复/不存在的路径返回 removed=false。
+// Removal decision (§4/§9.5): removing the primary root while other roots
+// remain requires picking a new primary first (a downgrade hint; never pick
+// for the user); removing the only root → the project degrades to tag-only
+// (empty roots), allowed; non-primary roots are removable directly. A
+// duplicate/nonexistent path returns removed=false.
 export function removeRootPlan(project, path) {
   const rows = manageFolderRows(project);
   const target = rows.find(row => row.path === path);
@@ -38,8 +42,10 @@ export function removeRootPlan(project, path) {
   };
 }
 
-// 添加判重:已覆盖(精确同路径)时无需再添加;嵌套/重叠合法(§9.9),只挡
-// 纯重复(同路径重复添加会让 update_project 的组内去重校验报错——提前拦住)。
+// Add duplicate check: already covered (exact same path) needs no add;
+// nesting/overlap is legal (§9.9) — only exact duplicates are blocked (adding
+// the same path twice would trip update_project's in-group dedup validation,
+// so block it early).
 export function rootAlreadyPresent(project, path) {
   const target = String(path || '');
   if (!target) return false;

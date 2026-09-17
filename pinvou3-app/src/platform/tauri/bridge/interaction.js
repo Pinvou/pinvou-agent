@@ -138,13 +138,15 @@
   }
   // 草稿态 chip 切换：写本 lane 全局默认（setDraftMode 不物化会话——
   // 物化时由 ensureSession 把 lane 默认应用到新会话）。
-  // 绑定了工作目录的草稿安全姿态对齐 code 模式：切换写 code lane 全局默认
-  // （不写 work lane），并把显式选择暂存到 pendingDraftMode，物化时按暂存值
-  // 逐会话应用（后端对绑定会话只解析 code lane 默认，不读 work）。
+  // A draft bound to a working directory aligns its security posture with
+  // code mode: switching writes the code lane's global default (not the work
+  // lane's) and stages the explicit choice into pendingDraftMode, applied per
+  // session at materialization (the backend resolves only the code lane
+  // default for bound sessions, never reading work).
   async function setDraftMode(target) {
     const boundDraft = !!state.draftWorkspacePath;
-    // 绑定草稿恒写 code lane；未绑定草稿跟随当前 lane（work/code 两 lane，
-    // design 已并入 work，#428）。
+    // A bound draft always writes the code lane; an unbound draft follows the
+    // current lane (two lanes, work/code; design was merged into work, #428).
     const lane = boundDraft || state.modeLane === "code" ? "code" : "work";
     try {
       const defaults = await invoke("set_mode_default", { lane, mode: target });
@@ -160,10 +162,12 @@
     notify();
   }
 
-  // ── code 权限偏好（YOLO 一次性确认门）─────────────────────────────
-  // 绑定工作目录的普通会话切 YOLO 前与 code 模式共用同一确认门事实源。
-  // 读取失败按 null 返回（needsYoloConfirmation 对 null 按未确认处理——
-  // 安全方向：宁可多弹一次）；confirm 的失败上抛给 UI 提示，不静默。
+  // ── code permission prefs (YOLO one-time confirm gate) ────────────────
+  // A normal session bound to a working directory shares the same confirm-gate
+  // source of truth as code mode before switching to YOLO. A read failure
+  // returns null (needsYoloConfirmation treats null as unconfirmed — the safe
+  // direction: rather prompt once more); a confirm failure is thrown up for
+  // the UI to surface, never silent.
   async function getCodePermissionPrefs() {
     try {
       return await invoke("get_code_permission_prefs");

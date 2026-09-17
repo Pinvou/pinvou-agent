@@ -23,16 +23,20 @@ const ProjectGroupHeader = ({
   onConvert,
   onRename,
   onDelete,
-  // 项目通道(§9.9):项目组头的"新建会话"专属入口——cwd = 项目记忆主根,
-  // 钥匙串 = 项目当时全部根;不经选择器。
+  // Project channel (§9.9): the project group header's dedicated "new
+  // session" entry — cwd = the project's remembered primary root, keychain =
+  // all of the project's roots at that moment; no picker detour.
   onNewSession,
-  // 管理文件夹面板(§4)入口。
+  // Manage-folders panel (§4) entry.
   onManage,
-  // 指针拖拽的落点在分组容器(main.jsx 的 wrapper 带 data-drop-key,组头与
-  // 会话行都算命中);这里只渲染高亮环(父级 dropActive 驱动)。
+  // The pointer drag's landing zone is the group container (main.jsx's
+  // wrapper carries data-drop-key; both the group header and session rows
+  // count as hits); this component only renders the highlight ring (driven by
+  // the parent's dropActive).
   onRebind,
-  // 每个失效 root 一个徽标入口(逐根重绑定):部分失效的项目也有修复路径,
-  // 且一根重绑后其余失效根的入口不会消失。
+  // One badge entry per unavailable root (per-root rebinding): a project with
+  // only some roots unavailable still has a repair path, and rebinding one
+  // root does not remove the entries for the other unavailable roots.
   unavailableRoots,
   dropActive,
   testId,
@@ -40,10 +44,13 @@ const ProjectGroupHeader = ({
 }) => {
   const [editing, setEditing] = useState(null);
   const [confirming, setConfirming] = useState(false);
-  // 菜单门控与编辑提交判定在 ./projectGroupHeaderState.js(纯函数,有单测)。
+  // Menu gating and edit-commit decisions live in
+  // ./projectGroupHeaderState.js (pure functions, unit tested).
   const hasMenu = groupHeaderHasMenu(kind, { onConvert, onRename, onDelete });
   const { menuOpen, menuStyle, closeMenu, toggleMenu } = usePortalMenu({
-    height: kind === 'project' ? 96 : 48,
+    // Project menus render 3 items (rename/manage/delete): 3 × h-9 (36px) +
+    // 8px vertical padding ≈ 116; folder menus render 1 (convert) ≈ 44 → 48.
+    height: kind === 'project' ? 116 : 48,
   });
 
   const startConvert = () => setEditing({ mode: 'convert', value: label });
@@ -176,9 +183,11 @@ const ProjectGroupHeader = ({
         {headerExtra}
         <ChevronDown size={14} className={`shrink-0 transition-transform ${isOpen ? '' : '-rotate-90'}`} />
       </button>
-      {/* 失效 root 逐根徽标 + 一键重绑定。不自动删项目——归属与历史仍在,
-          目录接骨是唯一修复路径。徽标是切换按钮的真实兄弟 <button>(不再
-          嵌在 <button> 内部),每根一个,重绑一根其余入口保留。 */}
+      {/* Per-root badges for unavailable roots + one-click rebind. The project
+          is never auto-deleted — ownership and history remain, and directory
+          re-binding is the only repair path. A badge is a real sibling <button>
+          of the toggle button (no longer nested inside a <button>), one per
+          root; rebinding one keeps the other entries. */}
       {(kind === 'project' ? unavailableRoots || [] : []).map((rootPath) => (
         <button
           key={rootPath}

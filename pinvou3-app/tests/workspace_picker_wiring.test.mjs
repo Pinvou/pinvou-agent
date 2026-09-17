@@ -45,13 +45,20 @@ test('workspace picker wiring contract', () => {
   assert.doesNotMatch(dialog, /__TAURI__|invoke\(/, '选择器组件不碰 Tauri 全局');
   // 分模式告知经共享纯函数(§9.4)。
   assert.match(dialog, /workspaceNoticeTone\(mode\)/, '告知走共享判定');
+  // 每个授权入口同等告知:单根行与浏览入口也带 noticeRestricted(1)。
+  assert.ok((dialog.match(/noticeRestricted\(1\)/g) || []).length >= 2, '单根行与浏览入口都要带单数授权告知');
+  // 残留状态不跨打开泄漏:宿主条件挂载(开关状态随卸载复位)。
+  assert.match(main, /\{workspacePicker && \(/, '选择器条件挂载');
+  // 区分"无项目"与"无匹配";排除列表面板 Escape 先退回列表。
+  assert.ok(dialog.includes('copy.noMatch'), '搜索无匹配提示');
+  assert.match(dialog, /excludedFolderRef[\s\S]*?onDismissExcludedRef/, '排除面板 Escape 只关面板');
 });
 
 test('workspace picker i18n keys exist in all three languages', () => {
   for (const lang of ['zh', 'en', 'ja']) {
     const source = read('src', 'shared', 'i18n', `${lang}.js`);
     assert.match(source, /uiWorkspacePicker: \{/, `${lang} 缺 uiWorkspacePicker 段`);
-    for (const key of ['title', 'temporary', 'browse', 'noticeRestricted', 'noticeVisibility', 'excludedTitle', 'excludedProceed']) {
+    for (const key of ['title', 'temporary', 'browse', 'noticeRestricted', 'noticeVisibility', 'excludedTitle', 'excludedProceed', 'noMatch']) {
       assert.ok(source.includes(`${key}:`), `${lang} 缺键 ${key}`);
     }
   }

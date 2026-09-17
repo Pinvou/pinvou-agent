@@ -58,7 +58,8 @@ export async function pickAcpWorkspace({ title, defaultPath } = {}) {
 
 export function createAcpSession({ workspacePath, workspaceHandle, agentId, workspaceRoots, projectId }) {
   if (!isWeb) {
-    // 钥匙串快照与项目归属(§6/§9.3):仅桌面通道;Web 为单根授权目录(§9.8)。
+    // Keychain snapshot and project ownership (§6/§9.3): desktop channel
+    // only; Web is a single authorized root directory (§9.8).
     return invokeTauri('create_codex_acp_session', {
       workspacePath,
       agentId,
@@ -75,8 +76,10 @@ export function createAcpSession({ workspacePath, workspaceHandle, agentId, work
   });
 }
 
-// 对齐到项目(§9.7,桌面专属):会话钥匙串替换为归属项目当时的全部根。
-// 类型化错误(ALIGN_BUSY/ALIGN_NO_WORKSPACE)直抛,由调用方按标记映射文案。
+// Align to project (§9.7, desktop-only): the session keychain is replaced by
+// the owning project's full root set at that moment. Typed errors
+// (ALIGN_BUSY/ALIGN_NO_WORKSPACE) are thrown as-is; the caller maps them to
+// copy by marker.
 export function alignAcpSession(sessionId) {
   if (!isWeb) {
     return invokeTauri('align_session_to_project', { sessionId });

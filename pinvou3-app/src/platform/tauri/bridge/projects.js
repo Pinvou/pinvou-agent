@@ -21,8 +21,10 @@
     const listen = context.listen;
 
     let fetchInFlight = false;
-    // 飞行中的 fetch 之后又来了个变更事件 → 结束后补一轮,防止快照滞留
-    // (评审 #448 finding 14:事件在 fetch 期间到达会被吞,侧栏一直用旧值)。
+    // A change event arriving while a fetch is in flight → run one more round
+    // afterwards, so the snapshot never goes stale (review #448 finding 14: an
+    // event landing mid-fetch would be swallowed and the sidebar would keep
+    // showing old values).
     let refetchNeeded = false;
 
     function applySnapshot(snapshot) {
@@ -30,7 +32,8 @@
       state.projectsList = {
         projects: snapshot.projects,
         assignments: snapshot.assignments || {},
-        // 反物化排除列表(§3,canonical 键数组;POSIX 恒等即路径)。
+        // Anti-materialization exclusion list (§3, an array of canonical keys;
+        // on POSIX the identity key is the path itself).
         neverMaterializeRoots: snapshot.never_materialize_roots || [],
         loadedAt: Date.now(),
       };
@@ -46,9 +49,11 @@
       try {
         applySnapshot(await invoke("list_projects"));
       } catch (e) {
-        // 归属是纯偏好数据,失败不打断 UI:首次拉取失败时侧栏回落隐式分组;
-        // 已有快照则继续显示旧快照(与最新无从区分),直到下一个
-        // projects:list_changed 事件才重试。
+        // Ownership is pure preference data and a failure must not break the
+        // UI: when the first fetch fails the sidebar falls back to implicit
+        // grouping; with an existing snapshot the old one keeps showing
+        // (indistinguishable from the latest) until the next
+        // projects:list_changed event retries.
         console.warn("[projects] list_projects failed:", e);
       } finally {
         fetchInFlight = false;
@@ -92,44 +97,53 @@
       return outcome;
     }
 
-    // 文件夹项目自动物化:幂等 ensure,新建时后端广播 projects:list_changed
-    // (事件刷新与下方主动刷新双保险,同 createProject)。失败根(嵌套冲突等)
-    // 由调用方按逐根 outcome 处理;此处不吞错。
+    // Folder-project auto-materialization: idempotent ensure; the backend
+    // broadcasts projects:list_changed on creation (event refresh plus the
+    // active refresh below, belt and braces, same as createProject). Failed
+    // roots (nesting conflicts etc.) are handled by the caller per per-root
+    // outcome; errors are not swallowed here.
     async function ensureFolderProjects(roots) {
       const outcomes = await invoke("ensure_folder_projects", { roots: roots || [] });
       await loadProjects();
       return outcomes;
     }
 
-    // 管理面板(§4):roots 整组替换(后端对移除根的自动成员写显式移出)。
+    // Manage panel (§4): whole-set roots replacement (the backend writes
+    // explicit move-outs for the removed roots' auto members).
     async function updateProjectRoots(projectId, roots) {
       const updated = await invoke("update_project", { projectId, roots });
       await loadProjects();
       return updated;
     }
 
-    // 项目记忆主文件夹(§9.2):管理面板"设为主文件夹"入口。
+    // Project-remembered primary folder (§9.2): the manage panel's "set as
+    // primary folder" entry.
     async function setPrimaryRoot(projectId, root) {
       const updated = await invoke("update_project", { projectId, lastPrimaryRoot: root });
       await loadProjects();
       return updated;
     }
 
-    // 反物化排除列表(§3):never=true 不再为此文件夹自动建项目;false 撤销。
+    // Anti-materialization exclusion list (§3): never=true stops
+    // auto-creating a project for this folder; false revokes it.
     async function setNeverMaterialize(root, never) {
       const updated = await invoke("projects_set_never_materialize", { root, never: !!never });
       await loadProjects();
       return updated;
     }
 
-    // 对齐到项目(§6/§9.7):会话钥匙串替换为归属项目当时的全部根;类型化
-    // 错误(ALIGN_BUSY/ALIGN_NO_WORKSPACE)直抛给调用方按标记映射文案。
+    // Align to project (§6/§9.7): the session keychain is replaced by the
+    // owning project's full root set at that moment; typed errors
+    // (ALIGN_BUSY/ALIGN_NO_WORKSPACE) are thrown as-is for the caller to map
+    // to copy by marker.
     async function alignSessionToProject(sessionId) {
       return invoke("align_session_to_project", { sessionId });
     }
 
-    // 目录重绑定(修断链):confirmExisting 由前端两阶段控制——先不带确认
-    // 调用,后端在旧目录仍存在时报特定错误,前端升级为强确认后重试。
+    // Directory rebind (fix broken links): confirmExisting is two-staged by
+    // the frontend — first call without the confirmation; when the old
+    // directory still exists the backend reports a specific error, and the
+    // frontend upgrades to a strong confirmation and retries.
     async function rebindWorkspaceRoot(from, to, confirmExisting) {
       const report = await invoke("rebind_workspace_root", {
         from,

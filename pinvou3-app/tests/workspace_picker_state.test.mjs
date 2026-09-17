@@ -90,6 +90,25 @@ test('projectLastActivity falls back to project updated_at without members', () 
   assert.equal(projectLastActivity(p, [movedOut], { s1: null }), '2026-09-05T08:00:00Z');
 });
 
+test('projectLastActivity resolves membership against the full project list', () => {
+  // 显式归入 B 但物理位于 A root 下的会话不算 A 的成员(否则 A 永远 warm)。
+  const a = project('a', 'A', ['/w/a'], 0, { updated_at: '2026-09-05T08:00:00Z' });
+  const b = project('b', 'B', ['/w/b'], 1, { updated_at: '2026-09-05T08:00:00Z' });
+  const s = item('s1', '/w/a/sub', '2026-09-09T08:00:00Z');
+  const assignments = { s1: 'b' };
+  assert.equal(projectLastActivity(a, [s], assignments, [a, b]), '2026-09-05T08:00:00Z', 'A must not stay warm');
+  assert.equal(projectLastActivity(b, [s], assignments, [a, b]), '2026-09-09T08:00:00Z', 'B is the real member owner');
+});
+
+test('computePickerRows drops tag-only projects (count/render consistency)', () => {
+  const projects = [
+    project('p1', 'A', ['/w/a'], 0),
+    project('tag', 'TagOnly', [], 1),
+  ];
+  const rows = computePickerRows({ projects, items: [], assignments: {}, now: Date.now() });
+  assert.deepEqual(rows.map(r => r.project.id), ['p1'], '无根项目不进选择器(渲染侧无法给出禁用行)');
+});
+
 test('workspaceNoticeTone: plan is restricted wording, yolo is visibility wording', () => {
   assert.equal(workspaceNoticeTone('plan'), 'restricted');
   assert.equal(workspaceNoticeTone('yolo'), 'visibility');

@@ -592,12 +592,16 @@ try {
     && i18n.includes("sidebarTaskFilterCodeSessions: 'Code sessions'")
     && i18n.includes("sidebarTaskFilterCodeSessions: 'コードセッション'")
     && main.includes("{t.sidebarTaskFilterCode}")
-    && i18n.includes("sidebarTaskFilterCode: '项目'")
-    && i18n.includes("sidebarTaskFilterCode: 'Projects'")
-    && i18n.includes("sidebarTaskFilterCode: 'プロジェクト'"),
+    && i18n.includes("sidebarTaskFilterCode: '代码'")
+    && i18n.includes("sidebarTaskFilterCode: 'Code'")
+    && i18n.includes("sidebarTaskFilterCode: 'コード'")
+    && main.includes("{t.sidebarTaskFilterProjects}")
+    && i18n.includes("sidebarTaskFilterProjects: '项目'")
+    && i18n.includes("sidebarTaskFilterProjects: 'Projects'")
+    && i18n.includes("sidebarTaskFilterProjects: 'プロジェクト'"),
   'the task-list Code filter must show only Codex sessions in every supported locale, '
-    + 'with a label distinct from the All/Projects list-shape pill '
-    + '(the pill is now the project view: Codex sessions plus workspace-bound work sessions)');
+    + 'with a label distinct from the All/Code list-shape pill and the project view pill '
+    + '(the projects pill carries its own key instead of relabeling the code one)');
   assert.ok(main.includes('leadingIcon: <PinvouLogo')
     && main.includes('<AcpAgentLogo agentId={session.agent_id} className="h-[18px] w-[18px]"')
     && main.includes('<Clock size={18} />'),
@@ -727,7 +731,7 @@ try {
   'new code sessions must expose the platform-specific directory picker');
   assert.ok(codexView.includes('const requestedWorkspaceHandle = draftWorkspaceHandle')
     && codexView.includes('workspaceHandle: requestedWorkspaceHandle')
-    && /invokeTauri\('create_codex_acp_session', \{[\s\S]*?workspacePath,[\s\S]*?agentId,/.test(acpClient)
+    && /invokeTauri\('create_codex_acp_session', \{\s*workspacePath,\s*agentId,\s*workspaceRoots: workspaceRoots && workspaceRoots\.length \? workspaceRoots : null,\s*projectId: projectId \|\| null,\s*\}\)/.test(acpClient)
     && acpClient.includes("invokeRequiredWebCommand('web_access_create_codex_acp_session'"),
   'selected project directories must use native paths on desktop and opaque grants on Web');
   assert.ok(!codexView.includes('data-testid="acp-agent-selector"')
