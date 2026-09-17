@@ -1401,7 +1401,22 @@ impl<S: CredentialStore> MarketplaceManager<S> {
         &self,
         python_override: Option<&str>,
     ) -> Result<Vec<String>, String> {
-        let installed = self.try_installed_ids_for_writer()?;
+        // An unknown registry (installed.json unreadable, or corrupt with an
+        // unverifiable mcp.json rebuild) must not abort startup: this runs from
+        // bundle extraction on every boot, and its Err propagates into
+        // "no engine pool" (round-12 self-review). Gating already fails closed
+        // through the DenyAll fallback, and skipping the pass is the safe
+        // degradation — the recorded error also defers the environment prune
+        // below, which an empty set would otherwise turn into "delete every
+        // managed environment".
+        let installed = match self.try_installed_ids_for_writer() {
+            Ok(installed) => installed,
+            Err(error) => {
+                return Ok(vec![format!(
+                    "python dependency repair skipped: installed registry unavailable: {error}"
+                )]);
+            }
+        };
         let mut repair_errors = Vec::new();
         for tool_id in installed {
             let manifest = match self.trusted_dependency_manifest(&tool_id, None) {
@@ -3338,6 +3353,31 @@ mod tests {
         });
     }
 
+    /// An unknown installed registry must not abort the startup repair: it runs
+    /// from bundle extraction on every boot, so its Err surfaced as "no engine
+    /// pool" for the whole session (round-12 self-review). Corrupt
+    /// installed.json with no verifiable mcp.json rebuild takes exactly that
+    /// path — the repair records the skip, returns Ok, and touches nothing.
+    #[test]
+    fn repair_survives_an_unknown_installed_registry() {
+        with_temp_home(|| {
+            let installed_path = crate::platform::paths::pinvou3_home()
+                .join("marketplace")
+                .join("installed.json");
+            std::fs::create_dir_all(installed_path.parent().unwrap()).unwrap();
+            std::fs::write(&installed_path, "[\"weather\"").unwrap();
+
+            let errors = MarketplaceManager::new()
+                .repair_installed_python_tools()
+                .expect("startup repair must survive an unknown installed registry");
+            assert_eq!(errors.len(), 1, "{errors:?}");
+            assert!(
+                errors[0].contains("registry unavailable"),
+                "the skip must name its cause: {errors:?}"
+            );
+        });
+    }
+
     /// Corrupt disabled_bundles.json: the raw bytes are quarantined into a
     /// `.corrupt.<ts>` copy and recovery fails closed — plain stays fully
     /// DenyAll-off (never flips back to fully on), and the migration marker
@@ -4056,8 +4096,11 @@ mod tests {
     /// switch-related files are exactly the population this signal rescues
     /// (review #445 P1-2). settings.json is not a signal (R8-3 narrowing: a
     /// preset-template/copied-from-another-machine settings.json would
-    /// misjudge a fresh install as fail-open, while an old install always
-    /// leaves a non-empty sessions/, so the narrowing misses nothing);
+    /// misjudge a fresh install as fail-open). The narrowing is not miss-free
+    /// (round-11 M4): an upgraded install whose sessions/ was wiped by tooling
+    /// and that has no installed.json and no legacy switch files is
+    /// indistinguishable from a fresh one and is judged fresh — fail-closed
+    /// direction (all-off, a usability cost), not a silent flip to all-on;
     /// settings.json alone ⇒ still judged fresh.
     #[test]
     fn plain_deny_all_upgraded_install_with_existing_state_preserves_all_on() {
@@ -4157,10 +4200,24 @@ mod tests {
             let file = crate::features::marketplace::scope::load_disabled_bundles_file();
             assert!(file.initialized.contains("plain"), "materialized: {file:?}");
 
-            // Initialized scope + id in the stored list = explicit user opt-out:
-            // the batch is refused wholesale with the blocked ids, nothing moves.
-            // (save writes the whole stored list: only wecom is explicit-off.)
+            // A composer whole-list write re-attributes only the entries it
+            // actually transitioned (round-12 self-review): `wecom` was already
+            // stored off with the marker the materialization wrote, so it stays
+            // liftable instead of turning into an explicit opt-out.
             save_disabled_bundles_for(ConnectorScope::Plain, &["wecom".to_string()]);
+            let blocked = crate::features::marketplace::scope::enable_packages_in_scope(
+                ConnectorScope::Plain,
+                &["wecom".to_string()],
+            );
+            assert!(
+                blocked.is_empty(),
+                "an untouched install-default entry stays liftable: {blocked:?}"
+            );
+
+            // The user's own switch-off is the explicit verdict: it drops the
+            // marker (round-12 self-review) and the batch enable refuses the
+            // batch wholesale with the blocked id, nothing moves.
+            sync_disabled_bundles_for_connector_switch("wecom", false);
             let blocked = crate::features::marketplace::scope::enable_packages_in_scope(
                 ConnectorScope::Plain,
                 &["wecom".to_string(), "dingtalk".to_string()],
@@ -4174,7 +4231,7 @@ mod tests {
                 load_disabled_connectors_for(ConnectorScope::Plain).contains(&"wecom".to_string()),
                 "blocked pack stays disabled"
             );
-            // (dingtalk is not in the stored list, but the refusal is wholesale.)
+            // (dingtalk is not an explicit opt-out, but the refusal is wholesale.)
 
             // Hidden set cleanup rides along with enabling a hidden pack that is
             // not explicitly stored-off (dingtalk above).

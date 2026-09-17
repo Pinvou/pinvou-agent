@@ -39,13 +39,16 @@ pub struct DisabledBundlesFile {
     /// 与 `scopes`（开关）正交：开关控制 on/off，可见性控制是否出现在列表。
     #[serde(default)]
     pub hidden_scopes: std::collections::BTreeMap<String, Vec<String>>,
-    /// scope → 该 scope 禁用条目中**由安装默认写入**（非用户显式关闭）的包 id
-    /// 集合（round-11 B2）。`scopes` 是门控的唯一输入；本表只回答「这条 off
-    /// 是谁写的」：批量 enable 的整批判拒仅针对 `scopes` 中**不在**本表的 id
-    /// （用户显式 opt-out），安装默认写入的 off 可被用户动作（欢迎卡/场景
-    /// opt-in）移除。安装同步写 stored+本表；用户 disable 只写 stored；composer
-    /// 整表写视为用户接管该列表，清空本表对应 scope；升级迁移播种的 legacy
-    /// 列表不在本表（升级前状态 = 用户显式）。
+    /// scope → the disabled entries of that scope that the **install default**
+    /// wrote (round-11 B2), as opposed to an explicit user switch-off. `scopes`
+    /// stays the single gating input; this table only answers "who wrote this
+    /// off": a batch enable is refused wholesale only for `scopes` ids that are
+    /// **absent** here (explicit user opt-outs), while install-default offs may
+    /// be lifted by a user action (welcome card / scene opt-in). Install sync
+    /// writes stored+this table; user disable writes stored only; a composer
+    /// whole-list write keeps the markers it can still attribute and drops the
+    /// rest; migration-seeded lists never appear here (pre-upgrade state =
+    /// user-explicit).
     #[serde(default)]
     pub default_off_scopes: std::collections::BTreeMap<String, Vec<String>>,
     /// 已被用户显式初始化（改过开关）的 scope 集合。
@@ -78,11 +81,14 @@ fn disabled_bundles_path() -> PathBuf {
 
 /// `disabled_bundles.json` 读-改-写的进程内串行化。
 ///
-/// 锁序（round-11 M1，与 `MARKETPLACE_TRANSACTION_LOCK` 的全局约定）：只允许
-/// TRANSACTION → FILE 方向嵌套（如 uninstall 持事务锁做开关清理）；本锁的
-/// 持有者**不得**再获取事务锁——DenyAll 解析/开关写路径下的 installed.json
-/// 损坏恢复只做内存重建、不落盘不取锁（见 `try_installed_ids` 的 read-only
-/// 恢复分支），落盘由下一个持事务锁的写方完成。
+/// Lock order (round-11 M1, shared convention with
+/// `MARKETPLACE_TRANSACTION_LOCK`): only TRANSACTION → FILE nesting is allowed
+/// (e.g. uninstall holds the transaction lock for switch cleanup); this lock's
+/// holder **must not** acquire the transaction lock — corrupt `installed.json`
+/// recovery on the DenyAll resolution / switch-write paths rebuilds in memory
+/// only, taking no lock and persisting nothing (see the read-only recovery
+/// branch of `try_installed_ids`); the next writer holding the transaction lock
+/// persists it.
 static DISABLED_BUNDLES_FILE_LOCK: Mutex<()> = Mutex::new(());
 
 /// In-process verdict memo for freeze persist failures (review #455 R7-M2):
@@ -657,12 +663,35 @@ pub fn save_disabled_bundles_for(scope: ConnectorScope, ids: &[String]) {
     let normalized: Vec<String> = ids.iter().map(|id| to_package_id(id)).collect();
     let mut file = load_disabled_bundles_file_locked();
     let key = scope.as_str().to_string();
-    file.scopes.insert(key.clone(), normalized);
+    let previous = file.scopes.get(&key).cloned().unwrap_or_default();
+    file.scopes.insert(key.clone(), normalized.clone());
     file.initialized.insert(key.clone());
-    // The composer whole-list write is the user curating the entire list:
-    // every surviving off now counts as explicit (round-11 B2). New installs
-    // re-arm their own markers via sync_deny_all_scopes_after_install.
-    file.default_off_scopes.remove(&key);
+    // The composer sends the whole list, not a per-id gesture, so this write
+    // says nothing about who switched a given entry off. Keep the
+    // install-default marker for entries that were already persisted as off
+    // and stay off (`previous ∩ new`): the user did not transition them in
+    // this write, and dropping the marker would turn a pack they never touched
+    // into an explicit opt-out that the welcome/scene opt-in has to refuse —
+    // the round-11 B2 contradiction, re-opened by any unrelated composer
+    // toggle (round-12 self-review). Entries entering the list here are the
+    // user's own verdict and carry no marker; entries leaving it are on again,
+    // so their marker goes with them.
+    let retained: Vec<String> = file
+        .default_off_scopes
+        .get(&key)
+        .map(|markers| {
+            markers
+                .iter()
+                .filter(|id| previous.contains(id) && normalized.contains(id))
+                .cloned()
+                .collect()
+        })
+        .unwrap_or_default();
+    if retained.is_empty() {
+        file.default_off_scopes.remove(&key);
+    } else {
+        file.default_off_scopes.insert(key.clone(), retained);
+    }
     save_disabled_bundles_file(&file);
 }
 
@@ -796,7 +825,15 @@ pub fn sync_disabled_bundles_for_connector_switch(connector_id: &str, enabled: b
         ids.push(connector_id.clone());
         let key = mode.as_str().to_string();
         file.scopes.insert(key.clone(), ids);
-        file.initialized.insert(key);
+        file.initialized.insert(key.clone());
+        // The user's own switch-off is an explicit verdict for this id: drop
+        // any install-default marker so a later welcome/scene opt-in cannot
+        // lift it (round-12 self-review: a stale marker from an earlier
+        // install would otherwise outlive the uninstall that removed the
+        // entry).
+        if let Some(defaults) = file.default_off_scopes.get_mut(&key) {
+            defaults.retain(|id| id != connector_id);
+        }
         changed = true;
     }
     if changed {
@@ -883,6 +920,15 @@ pub fn remove_bundle_from_disabled_scopes(raw_id: &str) {
         let before = ids.len();
         ids.retain(|id| id != &package_id);
         changed |= ids.len() != before;
+    }
+    // The marker must go with the entry (round-12 self-review): a stale
+    // install-default marker would later let a welcome/scene opt-in lift a
+    // *user* off that re-added the same id (uninstall or logout clears the
+    // stored entry, then the user switches the connector off again).
+    for defaults in file.default_off_scopes.values_mut() {
+        let before = defaults.len();
+        defaults.retain(|id| id != &package_id);
+        changed |= defaults.len() != before;
     }
     if changed {
         save_disabled_bundles_file(&file);
@@ -1145,8 +1191,10 @@ mod tests {
     /// Round-11 B2 schema: `default_off_scopes` is backward compatible (an old
     /// file without the field parses with empty defaults, and legacy stored
     /// entries count as user-explicit → refused by the batch enable), the
-    /// install-sync marker roundtrips on disk, and the composer's whole-list
-    /// write clears the scope's markers (the user takes over the list).
+    /// install-sync marker roundtrips on disk, and a composer whole-list write
+    /// only re-attributes the entries it actually transitioned (round-12
+    /// self-review: clearing the whole scope made any unrelated toggle turn an
+    /// untouched install-default pack into an explicit opt-out).
     #[test]
     fn default_off_scopes_schema_backward_compat_and_roundtrip() {
         with_temp_home(|| {
@@ -1187,19 +1235,105 @@ mod tests {
             let blocked = enable_packages_in_scope(ConnectorScope::Plain, &["pptx".to_string()]);
             assert!(blocked.is_empty(), "default-off lifts freely: {blocked:?}");
 
-            // The composer whole-list write clears the scope's markers: the
-            // surviving offs are now user-curated (explicit) and refuse.
-            save_disabled_bundles_for(ConnectorScope::Plain, &["pptx".to_string()]);
+            // A composer whole-list write does not re-attribute the entries it
+            // never transitioned: re-arm the install default for `pptx` (the
+            // enable above cleared it), then write a list that keeps `pptx` and
+            // adds `weather`, which the user turns off in that very write.
+            sync_deny_all_scopes_after_install("pptx");
+            save_disabled_bundles_for(
+                ConnectorScope::Plain,
+                &["pptx".to_string(), "weather".to_string()],
+            );
+            let file = load_disabled_bundles_file();
+            assert!(
+                file.default_off_scopes
+                    .get("plain")
+                    .map(|d| d.iter().any(|id| id == "pptx"))
+                    .unwrap_or(false),
+                "an untouched install-default entry keeps its marker: {file:?}"
+            );
+            let blocked = enable_packages_in_scope(ConnectorScope::Plain, &["pptx".to_string()]);
+            assert!(
+                blocked.is_empty(),
+                "an untouched default-off still lifts after a composer write: {blocked:?}"
+            );
+
+            // The entry this write itself switched off (`weather` enters the
+            // persisted list here) is the user's own verdict: no marker, and the
+            // batch enable refuses it.
+            assert!(
+                file.default_off_scopes
+                    .get("plain")
+                    .map(|d| !d.iter().any(|id| id == "weather"))
+                    .unwrap_or(true),
+                "an entry the user switched off carries no marker: {file:?}"
+            );
+            let blocked = enable_packages_in_scope(ConnectorScope::Plain, &["weather".to_string()]);
+            assert_eq!(blocked, vec!["weather".to_string()]);
+        });
+    }
+
+    /// A stale install-default marker must not survive the removal of its
+    /// stored entry (round-12 self-review): uninstall/logout clears the stored
+    /// entry, the user switches the connector off again, and a marker left
+    /// behind would let the next welcome/scene opt-in lift that user verdict.
+    #[test]
+    fn remove_bundle_clears_the_install_default_marker() {
+        with_temp_home(|| {
+            let path = disabled_bundles_path();
+            std::fs::write(
+                &path,
+                r#"{"scopes":{"plain":["pptx"]},"default_off_scopes":{"plain":["pptx"]},"initialized":["plain"],"plain_defaults_migrated":true}"#,
+            )
+            .unwrap();
+            remove_bundle_from_disabled_scopes("pptx");
             let file = load_disabled_bundles_file();
             assert!(
                 file.default_off_scopes
                     .get("plain")
                     .map(|d| d.is_empty())
                     .unwrap_or(true),
-                "composer write clears the markers: {file:?}"
+                "the marker goes with the stored entry: {file:?}"
             );
-            let blocked = enable_packages_in_scope(ConnectorScope::Plain, &["pptx".to_string()]);
-            assert_eq!(blocked, vec!["pptx".to_string()]);
+        });
+    }
+
+    /// The user's own switch-off is explicit, so it must drop an
+    /// install-default marker left by an earlier install (round-12
+    /// self-review); the marker is only ever written by install-sync, the
+    /// welcome/scene opt-in, and the restore gate.
+    #[test]
+    fn connector_switch_off_clears_the_install_default_marker() {
+        with_temp_home(|| {
+            let path = disabled_bundles_path();
+            std::fs::write(
+                &path,
+                r#"{"scopes":{"plain":["pptx"]},"default_off_scopes":{"plain":["pptx"]},"initialized":["plain"],"plain_defaults_migrated":true}"#,
+            )
+            .unwrap();
+            sync_disabled_bundles_for_connector_switch("pptx", true);
+            let file = load_disabled_bundles_file();
+            assert!(
+                file.default_off_scopes
+                    .get("plain")
+                    .map(|d| d.is_empty())
+                    .unwrap_or(true),
+                "enabling clears the marker: {file:?}"
+            );
+            sync_disabled_bundles_for_connector_switch("pptx", false);
+            let file = load_disabled_bundles_file();
+            assert!(
+                file.default_off_scopes
+                    .get("plain")
+                    .map(|d| d.is_empty())
+                    .unwrap_or(true),
+                "the user's own switch-off must not re-arm a marker: {file:?}"
+            );
+            assert_eq!(
+                enable_packages_in_scope(ConnectorScope::Plain, &["pptx".to_string()]),
+                vec!["pptx".to_string()],
+                "the user's explicit off is refused by the batch enable"
+            );
         });
     }
 
