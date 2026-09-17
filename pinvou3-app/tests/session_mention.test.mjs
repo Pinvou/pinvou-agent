@@ -5,6 +5,7 @@
  */
 import test from 'node:test';
 import assert from 'node:assert/strict';
+import { readFileSync } from 'node:fs';
 import {
   MAX_SESSION_REFS,
   buildSessionMentionBlock,
@@ -93,4 +94,39 @@ test('引用列表去重(保序)并限量', () => {
   assert.equal(deduped.length, MAX_SESSION_REFS);
   assert.equal(deduped[0].sessionId, 's0');
   assert.equal(new Set(deduped.map(r => r.sessionId)).size, deduped.length);
+});
+
+test('拖动复用契约:输入区接受侧栏会话行拖动(#462 payload)并走同一 add 路径', () => {
+  const chatViewSource = readFileSync(
+    new URL('../src/features/chat/ChatView.jsx', import.meta.url), 'utf8');
+  // 复用 #462 的拖动 payload 类型(单一来源 projectGrouping.js),不另造协议。
+  assert.match(chatViewSource, /PROJECT_SESSION_DRAG_TYPE/);
+  assert.match(chatViewSource, /getData\(PROJECT_SESSION_DRAG_TYPE\)/);
+  // drop 落点与 @ 面板选择共用同一 add 路径(chip 条行为只有一份)。
+  assert.match(chatViewSource, /handleSelectMentionCandidate\(\{ sessionId, title \}\)/);
+  // 排除当前会话自引用。
+  assert.match(chatViewSource, /sessionId === activeSessionId/);
+});
+
+test('自动标题契约:两个 bridge 都用 window 全局的同一解析剥离注入块后再命名', () => {
+  // 回归:首条带引用的消息曾把会话自动命名成 "## Referenced chats"。
+  // tauri 侧持久化/自动标题在上游 #464 后收口到 bridge.js 的 persistMessagesFor
+  // (feature artifact chat.js 不再持有该函数);web 侧原地。
+  for (const rel of ['../src/platform/tauri/bridge.js', '../src/platform/web/bridge.js']) {
+    const source = readFileSync(new URL(rel, import.meta.url), 'utf8');
+    assert.match(source, /__PINVOU_SESSION_MENTION__/, rel);
+    assert.match(source, /splitMention\(titleText\)/, rel);
+  }
+  // 全局发布的正是同一对契约函数(bridge 不反向 import features 的约束下,
+  // 块格式真相仍然只有一份)。
+  const mentionSource = readFileSync(
+    new URL('../src/features/chat/session-mention.js', import.meta.url), 'utf8');
+  assert.match(mentionSource, /window\.__PINVOU_SESSION_MENTION__ = \{ buildSessionMentionBlock, splitSessionMentionBlock \}/);
+});
+
+test('标题路径语义:注入块剥离后只剩正文,纯引用消息不参与命名', () => {
+  const titled = buildSessionMentionBlock([{ sessionId: 's1', title: 't' }]) + '帮我总结上次的讨论';
+  assert.equal(splitSessionMentionBlock(titled).text, '帮我总结上次的讨论');
+  const refsOnly = buildSessionMentionBlock([{ sessionId: 's1', title: 't' }]);
+  assert.equal(splitSessionMentionBlock(refsOnly).text.trim(), '');
 });

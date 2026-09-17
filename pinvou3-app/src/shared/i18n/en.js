@@ -802,7 +802,7 @@ dictEn.uiArtifacts = {
   diChangesLog:n=>`Design changes: ${n}`, diEmpty:'empty',
 };
 
-dictEn.uiSessionMention = { menuTitle:'Reference a session', menuEmpty:'No matching sessions', chipRemove:name=>`Remove reference ${name}`, cardJump:label=>`Open session: ${label}`, cardUnavailable:'Session deleted' };
+dictEn.uiSessionMention = { menuTitle:'Reference a session', menuEmpty:'No matching sessions', dropHint:'Drop to reference this session', chipRemove:name=>`Remove reference ${name}`, cardJump:label=>`Open session: ${label}`, cardUnavailable:'Session deleted' };
 Object.assign(dictEn.uiAttachments, { uploading:pct=>`Uploading ${pct}%`,  deviceUploadEmpty:name=>`${name} is empty and cannot be attached`, deviceUploadUnavailable:'Uploading from this device is currently unavailable', deviceUploadInvalid:name=>`${name} is not a valid attachment`, deviceUploadFailed:name=>`${name} could not be uploaded. Try again.`, deviceUploadDigestInvalid:'The attachment integrity digest was invalid. Try again', deviceUploadIntegrityMismatch:'The attachment content was corrupted in transit. Upload it again' });
 
 Object.assign(dictEn.uiToolStore, {
