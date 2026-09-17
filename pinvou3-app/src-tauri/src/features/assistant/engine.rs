@@ -1445,7 +1445,7 @@ impl TurnLifecycle {
                 // an id today; if one ever stops doing so, this warning is
                 // the loud signal instead of a silently dead stop button
                 // (issue #254).
-                eprintln!(
+                log::warn!(
                     "[turn_lifecycle] pending cancel armed without a submission id; the stop replay can never be delivered"
                 );
             }
@@ -1474,7 +1474,6 @@ impl TurnLifecycle {
     /// 该自启轮就既不能消费这次重放、也不能把重放引导到自己的 token 上——
     /// 宿主提交轮的 `TurnStarted` 随后到达并完成重放（issue #254 复审）。
     ///
-    /// 不匹配时不消费也不清除：pending 仍由 epoch 变化（下一轮 TurnStarted）
     /// 不匹配时不消费也不清除：pending 保持 armed 但对后续事件永不匹配，
     /// 由 reserve 的整体清空（epoch 变化处）或下一次 arm 覆盖兜底，不会
     /// 跨轮泄漏。armed 而无记录 id 的 replay 对任何回显（含 `None`）都
