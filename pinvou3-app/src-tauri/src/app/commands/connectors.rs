@@ -98,7 +98,7 @@ pub async fn set_project_skills_enabled(
 ) -> Result<(), String> {
     // The write path takes the cross-process file lock (#515) and can block
     // on flock until the peer process releases it; keep it off the executor
-    // (aligned with set_disabled_skills / set_bundle_visibility).
+    // (aligned with set_disabled_connectors / set_bundle_visibility).
     tokio::task::spawn_blocking(move || {
         crate::features::marketplace::skill_scope::set_project_skills_enabled(enabled)
     })
