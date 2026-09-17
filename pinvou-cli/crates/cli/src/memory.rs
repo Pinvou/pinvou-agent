@@ -1104,6 +1104,12 @@ fn update(
     content: &str,
     output: OutputMode,
 ) -> Result<CliOutcome, CliError> {
+    // Same parse-time gate as `add`: an empty/whitespace body is a usage
+    // error, not a host failure (the store rejection would exit 1 with a
+    // store-flavored message for a knowable-at-parse-time invalid argument).
+    if content.trim().is_empty() {
+        return Err(CliError::usage("memory update requires non-empty content"));
+    }
     support::sandbox_home()?;
     let patch = MemoryTextPatch {
         topic: None,
@@ -1232,6 +1238,25 @@ fn pending(
             let event = feature::confirm_pending_memory(id)
                 .map_err(|error| feature_error("pending", error))?
                 .ok_or_else(|| not_found(MemoryStore::Pending, id))?;
+            // The confirm path marks profile-shaped preference text
+            // confirmed while `write_preference_unlocked` deliberately skips
+            // the write (the same candidate `memory add` refuses up front).
+            // Reporting success would strand the item confirmed-but-never
+            // -materialized, so surface the no-op like the add-path
+            // rejection does.
+            let confirmed = feature::load_pending_memory()
+                .map_err(|error| feature_error("pending", error))?
+                .into_iter()
+                .find(|item| item.id == id);
+            let materialized = confirmed
+                .as_ref()
+                .map(feature::confirmed_pending_memory_is_materialized)
+                .unwrap_or(true);
+            if !materialized {
+                return Err(CliError::failed(format!(
+                    "memory pending confirm({id}): the candidate is confirmed, but its                      content is profile-shaped preference text that is deliberately not                      materialized; nothing was written to the target store"
+                )));
+            }
             (
                 format!("Confirmed pending: {id}"),
                 serde_json::json!({ "id": id, "result": "confirmed", "event": serde_json::to_value(&event).unwrap_or_default() }),

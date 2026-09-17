@@ -57,6 +57,7 @@ pub use self::io::{
 // exact function to avoid false "not materialized" failures on ordinary
 // punctuated input.
 pub use self::io::WORK_CONTEXT_TEXT_MAX_CHARS;
+pub use self::io::confirmed_pending_memory_is_materialized;
 pub use self::util::clean_candidate_sentence;
 // The CLI `memory add` probes this heuristic before enqueueing: the confirm
 // path silently skips profile-shaped preference text
