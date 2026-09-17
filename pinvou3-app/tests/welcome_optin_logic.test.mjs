@@ -33,6 +33,8 @@ const { consumeWelcomeOptIn, resolveSendCapabilityStatus } = ctx;
 }
 
 // 2. Happy path: one consumption + a single batched enable (plain).
+// The backend answers with the explicit outcome shape (round-11 m11);
+// an install-default off lifts freely → enabled with empty blocked (B2).
 {
   const calls = [];
   const result = await consumeWelcomeOptIn({
@@ -40,7 +42,7 @@ const { consumeWelcomeOptIn, resolveSendCapabilityStatus } = ctx;
     consume: () => calls.push('consume'),
     invoke: async (cmd, args) => {
       calls.push([cmd, args]);
-      return null;
+      return { enabled: true, blocked: [] };
     },
   });
   assert.strictEqual(result.attempted, true);
@@ -67,12 +69,12 @@ const { consumeWelcomeOptIn, resolveSendCapabilityStatus } = ctx;
   assert.deepStrictEqual(calls, ['consume']);
 }
 
-// 4. Explicitly-disabled pack: backend returns blocked ids → surfaced, not failed.
+// 4. Explicitly-disabled pack: backend refuses via outcome.blocked → surfaced, not failed.
 {
   const result = await consumeWelcomeOptIn({
     getToolId: () => 'gongwen',
     consume: () => {},
-    invoke: async () => ['gongwen'],
+    invoke: async () => ({ enabled: false, blocked: ['gongwen'] }),
   });
   assert.strictEqual(result.attempted, true);
   assert.deepStrictEqual([...result.blocked], ['gongwen']);

@@ -660,7 +660,7 @@ preparing: 'Preparing PPT generation capability...',
 ready: 'PPT generation enabled, starting generation',
 failure: 'PPT generation capability could not be prepared. Please try again later.',
   },
-  missingCapabilities: (ids) => `Missing capabilities: ${ids}`, switchedOffPacks: (ids) => `These tools were switched off manually — enable them in the composer tools list and retry: ${ids}`,
+  missingCapabilities: (ids) => `Missing capabilities: ${ids}`, switchedOffPacks: (ids) => `These tools are currently switched off — enable them in the composer tools list and retry: ${ids}`,
   // Display names for personal-workbench template chips. The zh `title` in
   // personal-workbench-scene.js stays canonical (draft matching + message meta);
   // rendering resolves the localized name by template id.

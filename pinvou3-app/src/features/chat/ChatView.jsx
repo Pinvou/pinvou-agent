@@ -1628,12 +1628,22 @@ const ToolWelcomeCard = ({ toolId, _theme, t, onSend }) => {
             try {
               const prepared = await prepareSceneCapabilities(meta, invokeTauri);
               if (!prepared.ok) {
+                // Round-11 m8: the banner carries translated copy only — raw
+                // backend/IPC error strings are diagnostics, traced to the
+                // console instead of rendered untranslated to the user.
+                if (prepared.error) {
+                  console.warn('[pinvou3][chat-ui] scene capability prepare failed:', prepared.error);
+                }
                 const detail = prepared.blocked && prepared.blocked.length
                   ? t.uiChatScenes.switchedOffPacks(prepared.blocked.join(', '))
                   : (prepared.missing && prepared.missing.length
                     ? t.uiChatScenes.missingCapabilities(prepared.missing.join(', '))
                     : '');
-                throw new Error(detail || prepared.error || sceneCopy.failure);
+                setSceneCapabilityStatus({
+                  kind: 'error',
+                  text: detail || sceneCopy.failure,
+                });
+                return false;
               }
               // Post-DenyAll, ready means installed or explicitly opted back
               // in: a pack gated off by default completes its opt-in here and
@@ -1644,10 +1654,12 @@ const ToolWelcomeCard = ({ toolId, _theme, t, onSend }) => {
               }
               // else: leave the local null — nothing to show.
             } catch (error) {
-              const message = error && error.message ? error.message : String(error || '');
+              // Unexpected invoke/transport failure: same rule (m8) — the raw
+              // error goes to the console, the banner gets translated copy.
+              console.warn('[pinvou3][chat-ui] scene capability prepare raised:', error);
               setSceneCapabilityStatus({
                 kind: 'error',
-                text: message ? `${sceneCopy.failure} ${message}` : sceneCopy.failure,
+                text: sceneCopy.failure,
               });
               return false;
             }
@@ -2826,7 +2838,9 @@ const ToolWelcomeCard = ({ toolId, _theme, t, onSend }) => {
                         ? 'bg-[#34A853]'
                         : 'bg-[#1A73E8] animate-pulse'
                   }`} />
-                  <span className="min-w-0 truncate">{sceneCapabilityStatus.text}</span>
+                  {/* Round-11 m14: no truncate — blocked id lists must stay
+                      fully readable (the actionable part was ellipsized). */}
+                  <span className="min-w-0 break-words">{sceneCapabilityStatus.text}</span>
                 </div>
               )}
               {!scheduledRunContext && !conversationStarted && activeScene && (

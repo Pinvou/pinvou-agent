@@ -16,11 +16,14 @@ async function consumeWelcomeOptIn({ getToolId, consume, invoke }) {
   // the tools list, not repeatedly re-attempted on the send path).
   if (consume) consume();
   try {
-    // Non-empty return = the pack sits in the user's explicit switch state and
-    // the backend enabled nothing (round-10 Major 2): surface it so the caller
-    // can abort the send with guidance instead of sending a degraded reply.
-    const blocked = await invoke('enable_marketplace_packages', { packageIds: [toolId], scope: 'plain' });
-    if (Array.isArray(blocked) && blocked.length) {
+    // Explicit outcome shape (round-11 m11): blocked non-empty = the pack
+    // sits in the user's explicit switch state and the backend enabled
+    // nothing (round-10 Major 2): surface it so the caller can abort the send
+    // with guidance instead of sending a degraded reply. An install-default
+    // off lifts freely (round-11 B2) and returns enabled with empty blocked.
+    const outcome = await invoke('enable_marketplace_packages', { packageIds: [toolId], scope: 'plain' });
+    const blocked = Array.isArray(outcome && outcome.blocked) ? outcome.blocked : [];
+    if (blocked.length) {
       return { attempted: true, blocked: [...blocked] };
     }
     return { attempted: true, failed: false };

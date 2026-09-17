@@ -74,6 +74,20 @@ pub async fn get_bundle_visibility(scope: Option<String>) -> Result<Vec<String>,
     Ok(crate::features::marketplace::load_hidden_bundles_for(scope))
 }
 
+/// Outcome of `enable_marketplace_packages` (round-11 m11): an explicit
+/// shape replaces the previous `Ok(blocked)` overload where a non-empty Ok
+/// doubled as "refused, nothing enabled, hot-refresh skipped" — an implicit
+/// contract that held only because both JS callers checked the payload.
+#[derive(serde::Serialize)]
+pub struct EnablePackagesOutcome {
+    /// The batch was applied and persisted (hot-refresh followed).
+    pub enabled: bool,
+    /// Non-empty = refused: these ids sit in the scope's **explicit** user
+    /// switch state (install-default offs lift freely, round-11 B2); nothing
+    /// was enabled and no hot-refresh ran. The caller must surface the ids.
+    pub blocked: Vec<String>,
+}
+
 /// Batch package enabling for user actions such as scene opt-in (review #455
 /// R7-M3): the backend performs "read the currently effective disabled set →
 /// remove package_ids → persist" inside the `DISABLED_BUNDLES_FILE_LOCK`
@@ -90,18 +104,20 @@ pub async fn enable_marketplace_packages(
     scope: Option<String>,
     app: AppHandle,
     pool: State<'_, EnginePool>,
-) -> Result<Vec<String>, String> {
+) -> Result<EnablePackagesOutcome, String> {
     let scope = parse_connector_scope(scope.as_deref())?;
     let blocked = tokio::task::spawn_blocking(move || {
         crate::features::marketplace::scope::enable_packages_in_scope(scope, &package_ids)
     })
     .await
     .map_err(|e| format!("enable_marketplace_packages join: {e}"))?;
-    // Non-empty = the scope is initialized and those ids sit in the user's
-    // stored switch state: nothing was enabled, the caller must surface the
-    // blocked ids (round-10 Major 2).
     if !blocked.is_empty() {
-        return Ok(blocked);
+        // Refused (round-10 Major 2): nothing was enabled; the hot-refresh
+        // below is skipped because no state changed.
+        return Ok(EnablePackagesOutcome {
+            enabled: false,
+            blocked,
+        });
     }
     pool.refresh_live_sessions_skills().await;
     pool.refresh_disallowed_tools().await;
@@ -113,7 +129,10 @@ pub async fn enable_marketplace_packages(
         "remote_control:tools_changed",
         payload,
     );
-    Ok(Vec::new())
+    Ok(EnablePackagesOutcome {
+        enabled: true,
+        blocked: Vec::new(),
+    })
 }
 
 // ---------------------------------------------------------------------------

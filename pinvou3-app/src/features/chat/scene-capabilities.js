@@ -23,14 +23,23 @@ async function listDisabledConnectors(invoke) {
   return new Set(Array.isArray(disabled) ? disabled.map((id) => String(id || '').trim()) : []);
 }
 
-// Returns the blocked list: non-empty = the plain scope is initialized and
-// those ids sit in the user's explicit switch state — the backend enabled
-// nothing and the caller must surface them (round-10 Major 2). The
-// user-initiated scene action is an opt-in for *default*-off packs only;
-// a deliberate opt-out is never silently overridden.
+// Availability is disabled ∪ hidden (round-11 m9): a switch-ON-but-hidden
+// pack would otherwise skip the enable call — the only hidden-set cleaner on
+// this path — and the send would proceed with the model never seeing the
+// tool while the UI reports ready.
+async function listHiddenBundles(invoke) {
+  const hidden = await invoke('get_bundle_visibility', { scope: 'plain' });
+  return new Set(Array.isArray(hidden) ? hidden.map((id) => String(id || '').trim()) : []);
+}
+
+// Returns the blocked list from the explicit outcome shape (round-11 m11):
+// non-empty = the plain scope is initialized and those ids sit in the user's
+// explicit switch state — the backend enabled nothing and the caller must
+// surface them (round-10 Major 2). Install-default offs lift freely
+// (round-11 B2); a deliberate opt-out is never silently overridden.
 async function enablePackagesInPlainScope(invoke, packageIds) {
-  const blocked = await invoke('enable_marketplace_packages', { packageIds, scope: 'plain' });
-  return Array.isArray(blocked) ? blocked : [];
+  const outcome = await invoke('enable_marketplace_packages', { packageIds, scope: 'plain' });
+  return Array.isArray(outcome && outcome.blocked) ? outcome.blocked : [];
 }
 
 async function listMarketplaceTools(invoke) {
@@ -118,18 +127,23 @@ async function prepareSceneCapabilities(meta, invoke) {
     };
   }
 
-  // Installed ≠ switched on: when the plain scope's effective disabled set
+  // Installed ≠ switched on: when the plain scope's effective disabled set —
+  // or the hidden set (availability is disabled ∪ hidden, round-11 m9) —
   // contains the scene packs, the user-initiated scene action is the explicit
-  // opt-in — enable_marketplace_packages persists it and hot-refreshes the
-  // running session's tool allowlist and skill-composition directory, taking
-  // effect on the current turn.
+  // opt-in — enable_marketplace_packages persists it (and un-hides) and
+  // hot-refreshes the running session's tool allowlist and skill-composition
+  // directory, taking effect on the current turn.
   const requiredPackages = [...new Set([...requirements.tools, ...requirements.skills])];
-  // Naming per R8 nit: true = a scene pack was default-gated and this send
-  // completed the opt-in; future consumers must not misread it as availability.
+  // Naming per R8 nit: true = a scene pack was default-gated (or hidden) and
+  // this send completed the opt-in; future consumers must not misread it as
+  // availability.
   let optedIn;
   try {
-    const disabledIds = await listDisabledConnectors(invoke);
-    optedIn = requiredPackages.some((packageId) => disabledIds.has(packageId));
+    const [disabledIds, hiddenIds] = await Promise.all([
+      listDisabledConnectors(invoke),
+      listHiddenBundles(invoke),
+    ]);
+    optedIn = requiredPackages.some((packageId) => disabledIds.has(packageId) || hiddenIds.has(packageId));
     if (optedIn) {
       const blocked = await enablePackagesInPlainScope(invoke, requiredPackages);
       if (blocked.length) {

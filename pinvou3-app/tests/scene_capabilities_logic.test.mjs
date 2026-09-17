@@ -63,11 +63,13 @@ console.log('scene_capabilities_logic: ok');
 vm.runInContext('this.prepareSceneCapabilities = prepareSceneCapabilities;', ctx, { filename: logicPath });
 const { prepareSceneCapabilities } = ctx;
 
-function makeInvoke({ tools = [], skills = [], disabled = [] } = {}) {
+function makeInvoke({ tools = [], skills = [], disabled = [], hidden = [], blockedOnEnable = [] } = {}) {
   const state = {
     tools: new Set(tools),
     skills: new Set(skills),
     disabled: new Set(disabled),
+    hidden: new Set(hidden),
+    blockedOnEnable: new Set(blockedOnEnable),
     enableCalls: [],
   };
   const toolList = () => [...state.tools].map((id) => ({ id, installed: true }));
@@ -78,14 +80,21 @@ function makeInvoke({ tools = [], skills = [], disabled = [] } = {}) {
     if (command === 'install_marketplace_tool') { state.tools.add(args.toolId); return null; }
     if (command === 'install_marketplace_skill') { state.skills.add(args.skillId); return null; }
     if (command === 'get_disabled_connectors') return [...state.disabled];
+    if (command === 'get_bundle_visibility') return [...state.hidden];
     // Backend single-critical-section RMW semantics of enable_marketplace_packages:
-    // remove exactly the given ids, leave the rest untouched (R7-M3 — the
-    // frontend no longer does a whole-list read-modify-write).
+    // the explicit outcome shape (round-11 m11) — a blocked id (explicit user
+    // opt-out) refuses the batch; otherwise the ids leave the disabled set AND
+    // the hidden set (availability is disabled ∪ hidden, round-11 m9).
     if (command === 'enable_marketplace_packages') {
       if (args.scope !== 'plain') throw new Error('scene opt-in must target plain scope');
       state.enableCalls.push([...args.packageIds]);
-      for (const id of args.packageIds) state.disabled.delete(id);
-      return null;
+      const blocked = args.packageIds.filter((id) => state.blockedOnEnable.has(id));
+      if (blocked.length) return { enabled: false, blocked };
+      for (const id of args.packageIds) {
+        state.disabled.delete(id);
+        state.hidden.delete(id);
+      }
+      return { enabled: true, blocked: [] };
     }
     throw new Error(`unexpected command ${command}`);
   };
@@ -163,6 +172,47 @@ async function runDenyAllOptInScenarios() {
     assert.strictEqual(prepared.ok, false, 'enable failure must not pass as ready');
     assert.strictEqual(prepared.enableFailed, true);
     assert.match(prepared.error, /backend locked/);
+  }
+
+  // Round-11 m9: switch-ON but hidden — availability is disabled ∪ hidden,
+  // so a hidden scene pack must still trigger the enable call (the only
+  // hidden-set cleaner on this path); otherwise the model never sees the
+  // tool while the UI may report ready.
+  {
+    const { invoke, state } = makeInvoke({
+      tools: ['gongwen'],
+      skills: ['government-writing'],
+      disabled: ['feishu'],
+      hidden: ['gongwen'],
+    });
+    const prepared = await prepareSceneCapabilities({ pinvouScene: 'work:document-writing' }, invoke);
+    assert.strictEqual(prepared.ok, true);
+    assert.strictEqual(prepared.optedIn, true, 'a hidden scene pack must complete the opt-in (un-hide)');
+    assert.deepStrictEqual(state.enableCalls, [['gongwen', 'government-writing']]);
+    assert.strictEqual(state.hidden.has('gongwen'), false, 'enable un-hides the pack');
+    assert.strictEqual(state.disabled.has('feishu'), true, 'unrelated packs stay disabled');
+  }
+
+  // Round-11 m10: the blocked branch — an explicit user opt-out refuses the
+  // batch (ok:false + blocked ids, nothing moved). Previously zero coverage:
+  // the enable mock always succeeded.
+  {
+    const { invoke, state } = makeInvoke({
+      tools: ['gongwen'],
+      skills: ['government-writing'],
+      disabled: ['gongwen', 'government-writing'],
+      blockedOnEnable: ['gongwen'],
+    });
+    const prepared = await prepareSceneCapabilities({ pinvouScene: 'work:document-writing' }, invoke);
+    assert.strictEqual(prepared.ok, false, 'an explicit opt-out must refuse the scene send');
+    assert.deepStrictEqual([...prepared.blocked], ['gongwen']);
+    assert.strictEqual(prepared.enableFailed, undefined, 'a refusal is not a failure');
+    assert.strictEqual(state.disabled.has('gongwen'), true, 'blocked pack stays disabled');
+    assert.strictEqual(
+      state.disabled.has('government-writing'),
+      true,
+      'the refusal is wholesale — unblocked batch mates stay disabled too',
+    );
   }
 
   console.log('scene_capabilities_logic deny-all opt-in: ok');
