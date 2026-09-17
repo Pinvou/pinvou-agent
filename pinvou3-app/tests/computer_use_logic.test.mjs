@@ -123,7 +123,7 @@ assert.equal(
   'a traversal segment inside the attachments dir must reject the whole mention',
 );
 assert.equal(
-  extractComputerUseScreenshotPath('saved C:/ws/attachments/computer_use/../..\payload.png'),
+  extractComputerUseScreenshotPath('saved C:/ws/attachments/computer_use/../..\\payload.png'),
   null,
   'traversal with backslash separators must be rejected too',
 );
