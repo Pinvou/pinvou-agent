@@ -226,6 +226,17 @@ assert.match(restartBlock, /try \{\s*try \{[\s\S]*?const discardPromise = auxCha
 assert.match(restartBlock, /setEnsureFailed\(true\)/);
 assert.doesNotMatch(restartBlock, /setSendFailed\(true\)/);
 assert.match(auxChatPanel, /copy\.discardFailed/);
+// Generation bump at restart entry (round-11 B3): only the rebind effect
+// increments the generation otherwise, so an ensure still in flight from the
+// current rebind (including its ensureSessionBufferLoaded chain) would resolve
+// after the restart's discard+ensure with a matching generation and rebind the
+// panel to the just-discarded aux session. The bump must precede the capture.
+const generationBump = restartBlock.indexOf('generationRef.current += 1;');
+const generationCapture = restartBlock.indexOf('const generation = generationRef.current;');
+assert.ok(
+  generationBump >= 0 && generationBump < generationCapture,
+  'handleRestart must bump generationRef at entry so in-flight rebind ensures go stale',
+);
 // In-flight discard registry (round-7 M-B, rescoped module-level in round-8
 // M-2): while the backend turn gate waits out a running turn, the old mapping
 // is still live — the rebind effect must await the registered discard promise

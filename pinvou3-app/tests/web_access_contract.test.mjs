@@ -300,6 +300,17 @@ for (const command of [
 assert.equal(allowed.has('get_aux_session'), false,
   'the dead get_aux_session command must stay removed from the Web surface');
 
+// get_or_create_aux_session crosses the Web/Relay boundary, so it must return
+// the minimal AuxSessionBinding projection (id only) — never the full
+// SessionMetadata, whose inherited host workspace path would leak to the
+// browser (the redaction invariant behind redact_session_metadata_for_web).
+assert.match(commands, /pub struct AuxSessionBinding \{\s*pub id: String,?\s*\}/,
+  'the aux session command must return an id-only projection');
+assert.match(commands, /fn get_or_create_aux_session\([\s\S]{0,300}?-> Result<AuxSessionBinding, String>/,
+  'get_or_create_aux_session must not return raw SessionMetadata across the Web boundary');
+assert.match(commands, /get_or_create_aux_session\(&session_id\)[\s\S]{0,200}?AuxSessionBinding \{ id: metadata\.id \}/,
+  'the aux session projection must be built from the store metadata without exposing it');
+
 assert.equal(allowedEvents.has('acp:event'), true,
   'the shared ACP timeline must reach WebUI through the normal event transport');
 assert.match(bootstrap, /acpCodeMode:\s*\{[\s\S]*?commands:\s*\[[\s\S]*?web_access_codex_acp_prompt[\s\S]*?events:\s*\["acp:event"\]/,

@@ -235,6 +235,13 @@ export function AuxChatPanel({ sessionId, activationKey, t, theme, onClose, onAc
     // same class (a stale init failure next to the fresh restart outcome).
     setSendFailed(false);
     setEnsureFailed(false);
+    // Bump the generation at restart entry: only the rebind effect increments
+    // it otherwise, so an ensure issued by the current rebind that is still in
+    // flight (including its ensureSessionBufferLoaded chain) would resolve
+    // after this restart's discard+ensure with a matching generation and
+    // rebind the panel to the just-discarded aux session. Advancing the
+    // generation here makes every such stale continuation inert.
+    generationRef.current += 1;
     const generation = generationRef.current;
     try {
       try {

@@ -710,16 +710,26 @@ pub async fn set_session_archived(
 
 // ===================== Auxiliary conversation (aux session) =====================
 
+/// Minimal projection of an aux session binding. This command is on the Web
+/// RPC allowlist, so it must not return the full `SessionMetadata`: the
+/// inherited host `workspace` path would cross the Web/Relay boundary to the
+/// browser (the same redaction invariant behind
+/// `redact_session_metadata_for_web` and the `web_access_*` projections).
+/// Both bridges consume only `metadata.id`.
+#[derive(Debug, Clone, Serialize)]
+pub struct AuxSessionBinding {
+    pub id: String,
+}
+
 /// Get (creating if absent) the auxiliary conversation of a main session. Aux
 /// sessions are persisted with an `aux-` prefix and stay out of the ordinary
 /// session list, so creation does **not** emit `session:list_changed`; the
-/// frontend auxiliary conversation panel opens directly from the returned
-/// metadata.
+/// frontend auxiliary conversation panel opens directly from the returned id.
 #[tauri::command]
 pub async fn get_or_create_aux_session(
     session_id: String,
     store: State<'_, SessionStore>,
-) -> Result<SessionMetadata, String> {
+) -> Result<AuxSessionBinding, String> {
     // Auxiliary conversations may only hang off ordinary chat sessions:
     // scheduled sessions go through their own delete path
     // (delete_scheduled_run only clears the mapping without cascade-deleting
@@ -730,6 +740,7 @@ pub async fn get_or_create_aux_session(
     })?;
     store
         .get_or_create_aux_session(&session_id)
+        .map(|metadata| AuxSessionBinding { id: metadata.id })
         .map_err(|e| format!("get_or_create_aux_session({session_id}): {e:#}"))
 }
 
