@@ -1417,11 +1417,26 @@ mod tests {
 
         let baseline = diff_fingerprint(root.path(), "main.py");
         // 等价 reset --soft <other-commit>：分支 ref 同尺寸改写（index 与工作区不变）。
+        // Bump the mtime deterministically: on filesystems/CPUs fast enough for
+        // both writes to land within one clock tick (or with coarse mtime
+        // granularity), two quick fs::write calls share a timestamp and the
+        // mtime-only fingerprint compares equal — the CI failure mode this
+        // fixes (#537).
         fs::write(&head_ref, format!("{}\n", "b".repeat(40))).unwrap();
+        filetime::set_file_mtime(
+            &head_ref,
+            filetime::FileTime::from_unix_time(1_800_000_000, 0),
+        )
+        .unwrap();
         assert_ne!(baseline, diff_fingerprint(root.path(), "main.py"));
 
         // symref 目标切换（checkout）也算 HEAD 变化：HEAD 文件内容改写即失效。
         fs::write(root.path().join(".git/HEAD"), "ref: refs/heads/dev\n").unwrap();
+        filetime::set_file_mtime(
+            root.path().join(".git/HEAD"),
+            filetime::FileTime::from_unix_time(1_800_000_100, 0),
+        )
+        .unwrap();
         assert_ne!(baseline, diff_fingerprint(root.path(), "main.py"));
     }
 
