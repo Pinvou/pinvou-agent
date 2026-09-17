@@ -601,9 +601,13 @@ where
                     .and_then(|lc| lc.current_turn_generation()),
             ) {
                 if let Some(lifecycle) = lifecycle.as_ref() {
-                    // arm 用发起时快照 target（已校验仍是 target 轮），转发器在
-                    // TurnStarted 后 take_pending_cancel 时再次校验 epoch，
-                    // 跨轮 stale pending 被丢弃。arm + cancel_current 在 state
+                    // arm 用发起时快照 target（已校验仍是 target 轮）。
+                    // Forwarder-side consumption is gated solely by the
+                    // submission token echo (no epoch gate: an autonomous
+                    // lifecycle inside the submit→TurnStarted window may
+                    // legitimately advance the epoch before the target's own
+                    // echo arrives — see `take_pending_cancel`), so a stale
+                    // pending never leaks across turns. arm + cancel_current 在 state
                     // 锁内原子完成（与阶段一同理，reviewer 点 8）：reserve_turn
                     // 需要同一把 state 锁，无法在「校验/arm」与「取消」之间插入
                     // 轮次切换。返回 false = 复查通过后轮次已切换：跳过 cancel
@@ -4900,7 +4904,7 @@ mod scheduled_model_tests {
         // verdict was made in.
         assert!(
             lifecycle
-                .take_pending_cancel(epoch, Some(TEST_SUBMISSION))
+                .take_pending_cancel(Some(TEST_SUBMISSION))
                 .is_some(),
             "the pending replay must be armed so the genuinely pending target is still deliverable"
         );
@@ -4962,7 +4966,7 @@ mod scheduled_model_tests {
         // N, so it fires.
         assert!(
             lifecycle
-                .take_pending_cancel(epoch, Some(TEST_SUBMISSION))
+                .take_pending_cancel(Some(TEST_SUBMISSION))
                 .is_some(),
             "the armed pending cancel must be consumable by the forwarder"
         );
@@ -5018,7 +5022,7 @@ mod scheduled_model_tests {
         // id: the forwarder gate must refuse it — the replay is neither
         // consumed nor redirected onto the overtaking turn.
         assert!(
-            lifecycle.take_pending_cancel(epoch, None).is_none(),
+            lifecycle.take_pending_cancel(None).is_none(),
             "an overtaking self-started TurnStarted must not consume the replay"
         );
         assert!(
@@ -5028,7 +5032,7 @@ mod scheduled_model_tests {
         // A foreign submitted id must not consume it either.
         assert!(
             lifecycle
-                .take_pending_cancel(epoch, Some("sub-other-turn"))
+                .take_pending_cancel(Some("sub-other-turn"))
                 .is_none(),
             "a foreign submission echo must not consume the replay"
         );
@@ -5037,7 +5041,7 @@ mod scheduled_model_tests {
         // the slot names N, so it fires exactly there.
         assert!(
             lifecycle
-                .take_pending_cancel(epoch, Some(TEST_SUBMISSION))
+                .take_pending_cancel(Some(TEST_SUBMISSION))
                 .is_some(),
             "the replay must stay armed for the submitted turn's own echo"
         );
@@ -5052,6 +5056,91 @@ mod scheduled_model_tests {
             engine.fired_turns(),
             vec!["turn-n".to_string()],
             "the user's stop for N must be delivered to N"
+        );
+    }
+
+    #[tokio::test]
+    async fn pending_stop_replay_survives_an_autonomous_lifecycle_before_the_target_starts() {
+        // The full production sequence behind the #254 replay gate (review
+        // round: "keep the pending submission's identity valid across
+        // unrelated autonomous lifecycle events"): the stop is armed inside
+        // the submit→TurnStarted window of the submitted turn N, and an
+        // untagged autonomous turn not only starts before N (its
+        // `TurnStarted` must not consume the replay) but also runs to
+        // completion. Its terminal reopens the gate, so N's own
+        // `TurnStarted` arrives at an idle lifecycle and advances the epoch
+        // as newly-active. The consumption gate is the submission token, not
+        // the epoch: N's echo must still deliver the user's stop even though
+        // the arming-time epoch no longer equals the current one. Driving
+        // the lifecycle methods in forwarder order (started → terminal →
+        // target start) is what moves the epoch; handing `take_pending_cancel`
+        // a hand-held arming epoch can never see it.
+        let locks = SessionTurnLocks::default();
+        let lifecycles = SessionTurnLifecycles::default();
+        let shell_tasks = SessionTurnShellTasks::default();
+        let sid = "session-overtaking-full-lifecycle";
+
+        let lifecycle = lifecycles.for_session(sid);
+        assert!(lifecycle.on_submitted(Some(TEST_SUBMISSION.to_string())));
+        let armed_epoch = lifecycle.current_turn_generation().expect("armed epoch");
+        // The engine admitted N; a self-started N+1's `TurnStarted` overtakes
+        // N's in the event stream.
+        let engine = FakeTurnSlotEngine::installed_on("turn-n");
+
+        let (target, _) =
+            run_production_cancel_wiring(&locks, &lifecycles, &shell_tasks, sid, &engine).await;
+        assert_eq!(target, Some(armed_epoch));
+
+        // Forwarder order 1: the overtaking self-started `TurnStarted`
+        // (untagged) merges into the still-active submitted lifecycle and
+        // must leave the replay armed.
+        lifecycle.on_started("turn-n-plus-1".to_string());
+        assert_eq!(
+            lifecycle.current_turn_generation(),
+            Some(armed_epoch),
+            "merging the overtake into the active lifecycle must not advance the epoch"
+        );
+        assert!(
+            lifecycle.take_pending_cancel(None).is_none(),
+            "the untagged overtake must not consume the replay"
+        );
+
+        // Forwarder order 2: the autonomous turn runs to completion; its
+        // terminal closes the merged lifecycle and reopens the reserve gate.
+        assert!(
+            lifecycle.finish_once(|| {}).is_some(),
+            "the autonomous turn's terminal must close the lifecycle"
+        );
+
+        // Forwarder order 3: N's own `TurnStarted` arrives with the matching
+        // echo. The lifecycle is idle again, so the start is newly-active and
+        // bumps the epoch past the arming value — the token still delivers.
+        lifecycle.on_started("turn-n".to_string());
+        let replay_epoch = lifecycle.current_turn_generation().unwrap_or(0);
+        assert_ne!(
+            replay_epoch, armed_epoch,
+            "the target's own start must be newly-active after the autonomous terminal"
+        );
+        let (replay_armed_epoch, mode) = lifecycle
+            .take_pending_cancel(Some(TEST_SUBMISSION))
+            .expect("the matching echo must deliver the armed stop across the epoch bump");
+        assert_eq!(replay_armed_epoch, armed_epoch);
+        assert_eq!(
+            mode,
+            deepseek_tui::core::engine::CancelMode::StopDropInbox,
+            "the replay must carry the arming-time disposition mode"
+        );
+        assert!(
+            engine.cancel_bound_turn(
+                "turn-n",
+                deepseek_tui::core::engine::CancelMode::StopDropInbox
+            ),
+            "the replay must land on the submitted turn N"
+        );
+        assert_eq!(
+            engine.fired_turns(),
+            vec!["turn-n".to_string()],
+            "the user's stop must reach N, not the completed autonomous turn"
         );
     }
 
@@ -5225,10 +5314,9 @@ mod scheduled_model_tests {
         );
         // arm 先于 cancel：cancel 执行后 pending 仍可被 forwarder 消费
         // （模拟 TurnStarted 到达时 take 并重放）。
-        let epoch = lifecycle.current_turn_generation().unwrap_or(0);
         assert!(
             lifecycle
-                .take_pending_cancel(epoch, Some(TEST_SUBMISSION))
+                .take_pending_cancel(Some(TEST_SUBMISSION))
                 .is_some(),
             "pending_cancel must be armed before cancel_current so a TurnStarted can be replayed"
         );
@@ -5410,7 +5498,7 @@ mod scheduled_model_tests {
             )
             .await;
             assert_eq!(
-                lifecycle.take_pending_cancel(epoch, Some(TEST_SUBMISSION)),
+                lifecycle.take_pending_cancel(Some(TEST_SUBMISSION)),
                 Some((epoch, mode)),
                 "armed pending_cancel must carry the CancelMode passed to cancel_turn_with_gates"
             );
