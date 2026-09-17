@@ -646,6 +646,15 @@ async fn run_loop(
         // (sleep/resume, NAT rebind) while every phone request queues.
         // Any inbound frame counts as proof of life; 2 missed heartbeat
         // windows with nothing inbound forces the reconnect path.
+        //
+        // Scope notes: (1) the check rides the heartbeat tick, so it is only
+        // evaluated while no write/read is parked — a send blocked on a full
+        // kernel buffer (active session when the path died) is still bounded
+        // only by TCP retransmission timeouts, not by this check. (2)
+        // `Instant` excludes suspend time, so after system resume detection
+        // lands within one or two awake windows, not instantly. A healthy
+        // relay answers every ping within one window (RFC 6455 auto-pong),
+        // which is what keeps steady state from tripping this path.
         let mut last_inbound = std::time::Instant::now();
         loop {
             tokio::select! {

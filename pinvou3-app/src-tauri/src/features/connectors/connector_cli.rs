@@ -94,13 +94,27 @@ pub fn apply_user_npm_prefix(cmd: &mut Command) {
 /// 用 kill-tree 变体:超时只杀 wrapper 会把 node 孙进程连同管道一起留下,
 /// 飞书 `auth login --device-code` 轮询里的阻塞调用会反复超时、反复孤儿化进程。
 /// 探测失败的错误文案:「没装」与「装了但挂死」必须分开——超时按安装缺失
-/// 提示会误导用户重装,且 ensure 流程会误判后重新下载替换 CLI。
+/// 提示会误导用户重装。注意各 `*_cli_present` 仍把 Err 折叠成 false,ensure
+/// 流程因此仍可能对挂死 CLI 重跑安装(布尔折叠的已知残余);本函数的文案
+/// 修正保证的是人类可读的诊断不再误导。
 fn probe_error_message(error: String) -> String {
     if error.contains("timed out") {
         format!("{error}(CLI 探测超时;可能被网络/代理卡住,请重试)")
     } else {
         format!("启动失败: {error}(需要先完成对应连接器 CLI 的在线安装)")
     }
+}
+
+/// 探测错误是否为 spawn 失败(≈CLI 二进制不存在,「未安装」)。
+///
+/// [`output_with_timeout_and_kill_tree`] 的其余错误——超时、wait error、
+/// 管道缺失——都发生在进程**已经启动**之后,按「未安装」降级是错的:
+/// 断开登录路径若把探测超时当未安装,会在 `auth logout` 根本没执行、
+/// token 未撤销的情况下向用户谎报「已断开」。spawn 失败的报错以
+/// `spawn <program> failed: ` 开头(platform::process 的稳定约定,
+/// 见 `probe_error_messages_distinguish_timeout_from_missing_install`)。
+pub(crate) fn is_probe_spawn_failure(error: &str) -> bool {
+    error.starts_with("spawn ") && error.contains(" failed: ")
 }
 
 pub fn run(cmd: Command) -> Result<(bool, String, String), String> {
@@ -529,13 +543,16 @@ mod tests {
     }
 
     /// A 30s probe timeout must NOT read as "CLI not installed": the ensure
-    /// flow branches on that message and would re-download a CLI that is
-    /// merely hung, and `auth logout` of a connected user would claim the
-    /// CLI is missing. Spawn failures keep the install hint.
+    /// flow branches on the collapsed boolean and would re-download a CLI
+    /// that is merely hung, and `auth logout` of a connected user would
+    /// claim the CLI is missing. Spawn failures keep the install hint, and
+    /// [`is_probe_spawn_failure`] must separate the two classes for the
+    /// logout paths.
     #[test]
     fn probe_error_messages_distinguish_timeout_from_missing_install() {
+        // fixture 用 kill-tree 变体的真实终止文案(`run()` 只用该变体)。
         let timeout_error = probe_error_message(String::from(
-            "lark-cli timed out after 30s: subprocess termination requested",
+            "lark-cli timed out after 30s: subprocess tree termination requested",
         ));
         assert!(timeout_error.contains("timed out"));
         assert!(timeout_error.contains("探测超时"));
@@ -545,6 +562,16 @@ mod tests {
             probe_error_message(String::from("spawn lark-cli failed: program not found"));
         assert!(spawn_failure.contains("启动失败"));
         assert!(spawn_failure.contains("在线安装"));
+
+        assert!(is_probe_spawn_failure(
+            "spawn lark-cli failed: program not found"
+        ));
+        assert!(!is_probe_spawn_failure(
+            "lark-cli timed out after 30s: subprocess tree termination requested"
+        ));
+        assert!(!is_probe_spawn_failure(
+            "lark-cli wait error: no child process"
+        ));
 
         assert!(run(Command::new("pinvou3-no-such-connector-cli-for-tests")).is_err());
     }

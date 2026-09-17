@@ -69,10 +69,15 @@ pub(super) fn ingest_email(
         if let Err(e) = std::fs::create_dir_all(&tmpdir) {
             return mk(None, Some(format!("创建临时目录失败: {e}")));
         }
-        let conv = Command::new("msgconvert")
-            .current_dir(&tmpdir)
-            .arg(path)
-            .output();
+        // msgconvert 是 perl 脚本，网络/编码异常下会挂死，按超时 kill-tree。
+        let conv = crate::platform::process::output_with_timeout_and_kill_tree(
+            {
+                let mut command = Command::new("msgconvert");
+                command.current_dir(&tmpdir).arg(path);
+                command
+            },
+            std::time::Duration::from_secs(60),
+        );
         let result = if matches!(&conv, Ok(o) if o.status.success()) {
             let stem = path.file_stem().and_then(|s| s.to_str()).unwrap_or("mail");
             let eml = tmpdir.join(format!("{stem}.eml"));
@@ -80,7 +85,7 @@ pub(super) fn ingest_email(
         } else {
             let detail = match conv {
                 Ok(o) => String::from_utf8_lossy(&o.stderr).trim().to_string(),
-                Err(e) => e.to_string(),
+                Err(e) => e,
             };
             Err(format!("msgconvert 转换失败: {detail}"))
         };
@@ -438,12 +443,15 @@ if atts:
     print('\n附件:', ', '.join(atts))
 "#;
     let program = crate::platform::paths::python_command();
-    let out = crate::platform::process::HiddenCommand::new(&program)
-        .arg("-c")
-        .arg(SCRIPT)
-        .arg(path)
-        .output()
-        .map_err(|e| format!("Python 调用失败({program}): {e}"))?;
+    // 本地纯解析脚本，正常毫秒级返回；卡死（损坏的 .eml、杀软占用）按超时
+    // kill-tree，避免上传永久转圈。
+    let mut command = crate::platform::process::HiddenCommand::new(&program);
+    command.arg("-c").arg(SCRIPT).arg(path);
+    let out = crate::platform::process::output_with_timeout_and_kill_tree(
+        command,
+        std::time::Duration::from_secs(60),
+    )
+    .map_err(|e| format!("Python 调用失败({program}): {e}"))?;
     if out.status.success() {
         Ok(String::from_utf8_lossy(&out.stdout).trim_end().to_string())
     } else {

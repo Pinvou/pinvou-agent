@@ -161,6 +161,10 @@ fn output_with_timeout_inner(
 ) -> Result<Output, String> {
     let program = command.get_program().to_string_lossy().into_owned();
     command.stdout(Stdio::piped()).stderr(Stdio::piped());
+    // 与 `.output()` 的语义保持一致（stdin 显式接 null）：本模块的调用方全是
+    // git/探测/转换类非交互命令，而 app 是无窗口 GUI 进程，继承来的 stdin 是
+    // 坏句柄，CLI 读它会死等（同 `run_with_timeout` 注释记录过的安装器卡死）。
+    command.stdin(Stdio::null());
     let mut child = command
         .spawn()
         .map_err(|error| format!("spawn {program} failed: {error}"))?;
@@ -383,9 +387,26 @@ pub(crate) fn std_process_group_leader(command: &mut Command) {
 /// 审计。
 pub(crate) fn kill_process_tree(pid: u32) -> std::io::Result<()> {
     if crate::platform::capabilities::is_windows() {
-        external_command(Path::new("taskkill"))
+        // taskkill 自身也可能卡死（WMI/RPC 停摆）：它无界，本模块所有"有界"
+        // 等待的超时路径都会汇入这里，等于把预算重新变成无界。给它 2s 预算
+        // （与底座 hooks 执行器的同类兜底一致），超时杀掉 taskkill 自身并
+        // 上报——目标树可能只被部分终止，但残余孙进程不再能把调用方拖过
+        // 截止时间（超时路径从不 join 管道读端）。
+        const WINDOWS_TASKKILL_TIMEOUT: Duration = Duration::from_secs(2);
+        let mut taskkill = external_command(Path::new("taskkill"))
             .args(["/PID", &pid.to_string(), "/T", "/F"])
-            .output()?;
+            .spawn()?;
+        if taskkill
+            .wait_timeout(WINDOWS_TASKKILL_TIMEOUT)
+            .is_ok_and(|finished| finished.is_none())
+        {
+            let _ = taskkill.kill();
+            let _ = taskkill.wait();
+            return Err(std::io::Error::new(
+                std::io::ErrorKind::TimedOut,
+                format!("taskkill for pid {pid} exceeded the kill budget"),
+            ));
+        }
         return Ok(());
     }
     #[cfg(unix)]
@@ -659,8 +680,18 @@ mod tests {
     #[cfg(unix)]
     #[test]
     fn plain_timeout_does_not_wait_for_a_descendant_holding_the_pipes() {
+        let work = std::env::temp_dir().join(format!(
+            "pinvou3-plain-timeout-{}-{}",
+            std::process::id(),
+            crate::platform::paths::tests::unique_suffix()
+        ));
+        std::fs::create_dir_all(&work).expect("create test work dir");
+        let sleep_pid_file = work.join("sleep-pid");
         let mut command = Command::new("sh");
-        command.args(["-c", "sleep 30 & wait"]);
+        command.args([
+            "-c",
+            &format!("sleep 30 & echo $! > {}; wait", sleep_pid_file.display()),
+        ]);
         let started = Instant::now();
 
         let error = output_with_timeout(command, Duration::from_millis(100)).unwrap_err();
@@ -669,6 +700,18 @@ mod tests {
         assert!(error.contains("subprocess termination requested"));
         assert!(!error.contains("tree termination"));
         assert!(started.elapsed() < Duration::from_secs(5));
+
+        // The plain variant deliberately leaves the grandchild alive; reap
+        // the stray sleeper instead of letting it occupy the CI runner for
+        // the rest of its 30s (same hygiene as the tree-variant test).
+        if let Ok(text) = std::fs::read_to_string(&sleep_pid_file) {
+            if let Ok(pid) = text.trim().parse::<i32>() {
+                // SAFETY: libc::kill is a direct kill(2) wrapper; no memory
+                // is touched.
+                let _ = unsafe { libc::kill(pid, libc::SIGKILL) };
+            }
+        }
+        let _ = std::fs::remove_dir_all(&work);
     }
 
     /// Unix group kills must go through kill(2) directly. This is the

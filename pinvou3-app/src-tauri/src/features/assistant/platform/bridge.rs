@@ -6067,6 +6067,14 @@ mod tests {
         );
         let hooks = engine_executor.config();
         assert!(hooks.enabled, "hook executor 必须启用");
+        // 预算契约（回归锚点）：底座在 default_timeout_secs 有值时会**替换**每个
+        // per-hook timeout（HooksConfig::effective_timeout_secs）。这里一旦被
+        // "恢复全局默认"式改动改回 Some(5)，shell-env 的 20s 预算会被静默钳回
+        // 5s，所有测试仍然全绿。
+        assert!(
+            hooks.default_timeout_secs.is_none(),
+            "default_timeout_secs 必须保持 None，否则会整体覆盖 per-hook 预算"
+        );
         assert!(
             hooks.hooks.iter().any(|hook| {
                 hook.event == HookEvent::ToolCallBefore
@@ -6102,8 +6110,9 @@ mod tests {
                 hook.event == HookEvent::ShellEnv
                     && hook.name.as_deref() == Some("pinvou3-cli-shell-env")
                     && hook.command.contains("shell_env.sh")
+                    && hook.timeout_secs == 20
             }),
-            "Unix PINVOU 必须通过底座现有 shell_env hook 注入 CLI 环境"
+            "Unix PINVOU 必须通过底座现有 shell_env hook 注入 CLI 环境，预算 20s"
         );
         let Op::SendMessage {
             hook_executor: Some(message_executor),

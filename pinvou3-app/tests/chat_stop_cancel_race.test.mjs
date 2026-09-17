@@ -31,13 +31,16 @@ function extractFunction(source, name) {
 const tauriCancel = extractFunction(tauriChatSource, 'cancelGeneration');
 
 // 1. 走 Promise.race 竞速，且用与中断路径相同的中断预算。
+//    预算断言必须锚定在 cancelGeneration 函数体内：同一文件的中断路径里有
+//    一模一样的构造，全文匹配会先命中它——那样这条断言在 stop 路径改用
+//    别的预算时也永远为绿，钉不住本契约。
 assert.match(
   tauriCancel,
   /await Promise\.race\(\[cancelPromise, cancelTimeout\]\)/,
   'tauri cancelGeneration must race the invoke against a timeout',
 );
 assert.match(
-  tauriChatSource,
+  tauriCancel,
   /const cancelTimeout = new Promise\(function \(_, reject\) \{[\s\S]*?STEER_INVOKE_TIMEOUT_MS\)/,
   'tauri cancelGeneration must reuse STEER_INVOKE_TIMEOUT_MS (same budget as the interrupt path)',
 );
@@ -59,6 +62,13 @@ assert.match(
 // ── Web 桥：同一 wedged-engine 场景需要同样的兜底 ──
 
 const webCancel = extractFunction(webBridgeSource, 'cancelGeneration');
+// Web 桥没有可复用的中断路径常量（无 steer/interrupt），预算常量独立声明；
+// 25s 的平台间一致性必须钉在常量声明上，否则改名/改值都能静默通过。
+assert.match(
+  webBridgeSource,
+  /const CANCEL_INVOKE_TIMEOUT_MS = 25_000;/,
+  'web bridge cancel budget must stay 25s, matching the tauri bridge STEER_INVOKE_TIMEOUT_MS',
+);
 assert.match(
   webCancel,
   /await Promise\.race\(\[cancelPromise, cancelTimeout\]\)/,
