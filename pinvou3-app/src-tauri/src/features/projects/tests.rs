@@ -432,7 +432,9 @@ fn rebind_roots_cuts_suffix_by_resolved_form_for_alias_callers() {
     let real = temp.path().join("real");
     let alias = temp.path().join("alias");
     std::fs::create_dir_all(&real).expect("create real dir");
-    std::os::unix::fs::symlink(&real, &alias).expect("symlink");
+    // std::fs::symlink keeps this file compilable on Windows (the branch above
+    // returns before any symlink is created there).
+    std::fs::symlink(&real, &alias).expect("symlink");
 
     // The project root is stored in display form (create resolves the symlink
     // via root_display) while `from` is passed in raw alias form — exactly the
@@ -440,7 +442,7 @@ fn rebind_roots_cuts_suffix_by_resolved_form_for_alias_callers() {
     let from = alias.clone();
     let to = temp.path().join("moved");
     std::fs::create_dir_all(&to).expect("create to dir");
-    let project = create(&store, "Alias", &[from.clone()]);
+    let project = create(&store, "Alias", std::slice::from_ref(&from));
 
     let affected = store.rebind_roots(&from, &to).expect("rebind roots");
     assert_eq!(affected, vec![project.id.clone()]);
