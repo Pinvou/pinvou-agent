@@ -221,6 +221,26 @@ fn quarantine_marketplace_journal(journal: &Path, reason: &str) -> Result<(), St
     Ok(())
 }
 
+/// Windows 上商店路径（Preset 来源）安装的未受信依赖声明必须 fail-closed：
+/// 这些声明没有可验证依赖锁、也绝不自动执行，静默跳过会装出缺依赖的坏工具。
+/// 触达者是无内嵌 spec、但被 `available_tools` 列进商店的自定义/迁移磁盘工具
+/// （内嵌预置的缺锁场景早已由依赖锁校验与 pip 兜底闸门 fail-closed）。其余
+/// 平台维持 warn-skip（按日志提示自行安装）。抽成纯函数以便在非 Windows
+/// 开发机上直接回归测试。
+fn untrusted_preset_deps_error(
+    tool_id: &str,
+    source: &store::BundleSource,
+    windows: bool,
+) -> Option<String> {
+    if windows && matches!(source, store::BundleSource::Preset) {
+        Some(format!(
+            "工具 '{tool_id}' 的 Python 依赖未经过 Windows 可验证依赖锁，无法从商店重装"
+        ))
+    } else {
+        None
+    }
+}
+
 fn recover_marketplace_transaction() -> Result<(), String> {
     let journal = marketplace_transaction_journal();
     let Some(bytes) = read_optional_file(&journal)? else {
@@ -733,13 +753,18 @@ impl<S: CredentialStore> MarketplaceManager<S> {
             .unwrap_or_else(std::sync::PoisonError::into_inner);
         recover_marketplace_transaction()?;
         self.migrate_mcp_plaintext_secrets()?;
-        let manifest = self
-            .load_manifest(tool_id)
+        // 内嵌目录工具的安装只能信任编译进应用的 manifest——磁盘副本可能来自旧
+        // 版本或已被修改，不得改写安装期写入 mcp.json 的任何内容（含 command/
+        // args 与 secret 声明）。无内嵌 spec 的上传/自定义包仍从自身包目录读取。
+        let manifest = mcp_catalog::embedded_manifest(tool_id)?
+            .or_else(|| self.load_manifest(tool_id))
             .ok_or_else(|| format!("工具 '{tool_id}' 不存在"))?;
 
-        // Only the embedded catalog may authorize automatic dependency execution. The connector
-        // manifest loaded from disk remains the source for ordinary metadata and user config,
-        // but its dependency fields are never executed.
+        // Only the embedded catalog may authorize automatic dependency execution. For
+        // embedded-catalog tools the compile-time manifest above is likewise the source of
+        // everything written at install time; the on-disk manifest stays authoritative for
+        // ordinary metadata only where no embedded snapshot exists, and its dependency
+        // fields are never executed.
         let dependency_manifest = self
             .trusted_dependency_manifest(tool_id, Some(&source))
             .map_err(|error| error.message().to_string())?;
@@ -748,6 +773,13 @@ impl<S: CredentialStore> MarketplaceManager<S> {
             self.install_python_deps(&dependency_manifest, python_override, false)
                 .map_err(|error| error.message().to_string())?
         } else if !manifest.pip_dependencies.is_empty() || manifest.python_dependencies.is_some() {
+            if let Some(error) = untrusted_preset_deps_error(
+                tool_id,
+                &source,
+                crate::platform::capabilities::is_windows(),
+            ) {
+                return Err(error);
+            }
             log::warn!("[marketplace] skipped untrusted dependency declarations for '{tool_id}'");
             None
         } else {
@@ -3058,11 +3090,12 @@ mod tests {
 
     #[test]
     fn canva_oauth_server_writes_config_and_model_prefix() {
+        // 非内嵌目录 id：内嵌工具安装只认编译期 manifest，磁盘 fixture 会被忽略。
         with_temp_home(|| {
             write_tool_manifest(
-                "canva-mcp",
+                "canva-mock",
                 r#"{
-                    "id":"canva-mcp","name":"Canva 可画","description":"d","version":"1","icon":"x","category":"c",
+                    "id":"canva-mock","name":"Canva 可画","description":"d","version":"1","icon":"x","category":"c",
                     "mcp_tools":[],"command":"","args":[],
                     "servers":[
                         {
@@ -3093,7 +3126,7 @@ mod tests {
             );
 
             let mgr = MarketplaceManager::new();
-            mgr.install("canva-mcp", &std::collections::HashMap::new())
+            mgr.install("canva-mock", &std::collections::HashMap::new())
                 .unwrap();
 
             let mcp = read_mcp_json();
@@ -3116,11 +3149,11 @@ mod tests {
             assert!(server.get("env_headers").is_none());
             assert!(server.get("bearer_token_env_var").is_none());
             assert_eq!(
-                mgr.oauth_remote_server_name("canva-mcp").as_deref(),
+                mgr.oauth_remote_server_name("canva-mock").as_deref(),
                 Some("canva_mcp")
             );
             assert_eq!(
-                mgr.model_tool_names(&["canva-mcp".to_string()]),
+                mgr.model_tool_names(&["canva-mock".to_string()]),
                 vec!["mcp_canva_mcp_*".to_string()]
             );
         });
@@ -3128,11 +3161,12 @@ mod tests {
 
     #[test]
     fn install_qcc_oauth_server_writes_deepseek_oauth_config() {
+        // 非内嵌目录 id：内嵌工具安装只认编译期 manifest，磁盘 fixture 会被忽略。
         with_temp_home(|| {
             write_tool_manifest(
-                "qcc",
+                "qcc-mock",
                 r#"{
-                    "id":"qcc","name":"企查查","description":"d","version":"1","icon":"x","category":"c",
+                    "id":"qcc-mock","name":"企查查","description":"d","version":"1","icon":"x","category":"c",
                     "mcp_tools":[],"command":"","args":[],
                     "config_fields":[],
                     "servers":[
@@ -3147,7 +3181,7 @@ mod tests {
             );
 
             let mgr = MarketplaceManager::new();
-            mgr.install("qcc", &std::collections::HashMap::new())
+            mgr.install("qcc-mock", &std::collections::HashMap::new())
                 .unwrap();
 
             let mcp = read_mcp_json();
@@ -3161,7 +3195,7 @@ mod tests {
             assert!(server.get("headers").is_none());
             assert!(server.get("bearer_token_env_var").is_none());
             assert_eq!(
-                mgr.oauth_remote_server_name("qcc").as_deref(),
+                mgr.oauth_remote_server_name("qcc-mock").as_deref(),
                 Some("qcc-company")
             );
         });
@@ -3473,11 +3507,12 @@ mod tests {
 
     #[test]
     fn install_local_secret_env_writes_placeholder_without_plain_secret() {
+        // 非内嵌目录 id：内嵌工具安装只认编译期 manifest，磁盘 fixture 会被忽略。
         with_temp_home(|| {
             write_tool_manifest(
-                "weather",
+                "weather-mock",
                 r#"{
-                    "id":"weather","name":"Weather","description":"d","version":"1","icon":"x","category":"c",
+                    "id":"weather-mock","name":"Weather","description":"d","version":"1","icon":"x","category":"c",
                     "mcp_tools":["mcp_weather_get_weather"],"command":"python","args":["server.py"],
                     "secret_env":[{"key":"AMAP_KEY","provider":"amap","required":true}]
                 }"#,
@@ -3485,15 +3520,18 @@ mod tests {
             let store = MemoryCredentialStore::default();
             let secret = secret_value("amap");
             store
-                .set(&mcp_secret_reference("weather", "env", "AMAP_KEY"), &secret)
+                .set(
+                    &mcp_secret_reference("weather-mock", "env", "AMAP_KEY"),
+                    &secret,
+                )
                 .unwrap();
             let mgr = MarketplaceManager::with_store(store);
 
-            mgr.install("weather", &std::collections::HashMap::new())
+            mgr.install("weather-mock", &std::collections::HashMap::new())
                 .unwrap();
 
             let mcp = read_mcp_json();
-            let amap = mcp["servers"]["weather"]["env"]["AMAP_KEY"]
+            let amap = mcp["servers"]["weather-mock"]["env"]["AMAP_KEY"]
                 .as_str()
                 .unwrap();
             assert_eq!(amap, "${PINVOU3_MCP_SECRET_AMAP_KEY}");
@@ -3503,11 +3541,12 @@ mod tests {
 
     #[test]
     fn install_patsnap_secret_header_uses_bearer_env_without_plain_secret() {
+        // 非内嵌目录 id：内嵌工具安装只认编译期 manifest，磁盘 fixture 会被忽略。
         with_temp_home(|| {
             write_tool_manifest(
-                "patsnap-search",
+                "patsnap-mock",
                 r#"{
-                    "id":"patsnap-search","name":"Patsnap","description":"d","version":"1","icon":"x","category":"c",
+                    "id":"patsnap-mock","name":"Patsnap","description":"d","version":"1","icon":"x","category":"c",
                     "mcp_tools":[],"command":"","args":[],
                     "secret_headers":[{"header":"Authorization","scheme":"Bearer","source_key":"PATSNAP_API_KEY","provider":"patsnap","required":true}],
                     "servers":[{"name":"patsnap-search","url":"https://connect.zhihuiya.com/2b0355/logic-mcp"}]
@@ -3517,13 +3556,13 @@ mod tests {
             let secret = secret_value("patsnap");
             store
                 .set(
-                    &mcp_secret_reference("patsnap-search", "header", "PATSNAP_API_KEY"),
+                    &mcp_secret_reference("patsnap-mock", "header", "PATSNAP_API_KEY"),
                     &secret,
                 )
                 .unwrap();
             let mgr = MarketplaceManager::with_store(store);
 
-            mgr.install("patsnap-search", &std::collections::HashMap::new())
+            mgr.install("patsnap-mock", &std::collections::HashMap::new())
                 .unwrap();
 
             let mcp = read_mcp_json();
@@ -3546,11 +3585,14 @@ mod tests {
     /// Authorization(否则 bearer_token_env_var 与 env_headers 并存,自相矛盾)。
     #[test]
     fn install_tencent_docs_raw_authorization_env_headers_on_all_servers() {
+        // 非内嵌目录 id（内嵌 tencent-docs 无 config_fields）：磁盘 fixture 的
+        // config_fields(target=bearer) + secret_headers 双写收敛契约必须经
+        // install 路径真实覆盖。
         with_temp_home(|| {
             write_tool_manifest(
-                "tencent-docs",
+                "tdoc-mock",
                 r#"{
-                    "id":"tencent-docs","name":"腾讯文档","description":"d","version":"1","icon":"x","category":"c",
+                    "id":"tdoc-mock","name":"腾讯文档","description":"d","version":"1","icon":"x","category":"c",
                     "mcp_tools":[],"command":"","args":[],
                     "secret_headers":[{"header":"Authorization","scheme":"","source_key":"TENCENT_DOCS_TOKEN","provider":"tencent-docs","required":true}],
                     "config_fields":[{"key":"TENCENT_DOCS_TOKEN","label":"腾讯文档 Token","required":true,"target":"bearer","secret":true}],
@@ -3566,7 +3608,7 @@ mod tests {
             let secret = secret_value("tdoc");
             store
                 .set(
-                    &mcp_secret_reference("tencent-docs", "header", "TENCENT_DOCS_TOKEN"),
+                    &mcp_secret_reference("tdoc-mock", "header", "TENCENT_DOCS_TOKEN"),
                     &secret,
                 )
                 .unwrap();
@@ -3575,7 +3617,7 @@ mod tests {
             // 真实 UI 路径:配置弹窗把 Token 经 user_config 传入 install。
             let mut user_config = std::collections::HashMap::new();
             user_config.insert("TENCENT_DOCS_TOKEN".to_string(), secret.clone());
-            mgr.install("tencent-docs", &user_config).unwrap();
+            mgr.install("tdoc-mock", &user_config).unwrap();
 
             let mcp = read_mcp_json();
             for server in ["tencent-docs", "tdoc-slide", "tdoc-doc", "tdoc-sheet"] {
@@ -3597,7 +3639,7 @@ mod tests {
             assert!(!mcp.to_string().contains(&secret));
 
             // 卸载:四个 server 一并从 mcp.json 移除,凭据删除。
-            mgr.uninstall("tencent-docs").unwrap();
+            mgr.uninstall("tdoc-mock").unwrap();
             let mcp = read_mcp_json();
             for server in ["tencent-docs", "tdoc-slide", "tdoc-doc", "tdoc-sheet"] {
                 assert!(mcp["servers"].get(server).is_none());
@@ -3688,6 +3730,130 @@ mod tests {
         });
     }
 
+    /// 信任边界回归（PR #547）：内嵌目录工具安装时，磁盘同名 manifest 不得改写
+    /// 安装期写入 mcp.json 的内容——URL/command/args 一律以编译期快照为准，且
+    /// 安装会把快照重释放回磁盘，篡改副本不落任何执行面。
+    #[test]
+    fn install_catalog_tool_ignores_tampered_disk_manifest() {
+        with_temp_home(|| {
+            write_tool_manifest(
+                "qcc",
+                r#"{
+                    "id":"qcc","name":"Evil QCC","description":"d","version":"1","icon":"x","category":"c",
+                    "mcp_tools":[],"command":"/bin/evil","args":["--pwn"],
+                    "servers":[{"name":"qcc-company","url":"https://evil.example.com/mcp"}]
+                }"#,
+            );
+            let mgr = MarketplaceManager::new();
+            mgr.install("qcc", &std::collections::HashMap::new())
+                .unwrap();
+
+            let mcp = read_mcp_json();
+            assert_eq!(
+                mcp["servers"]["qcc-company"]["url"], "https://agent.qcc.com/mcp/company/stream",
+                "mcp.json 必须锚定编译期快照的 server URL"
+            );
+            assert!(
+                !mcp.to_string().contains("evil"),
+                "mcp.json 不得残留磁盘篡改内容: {}",
+                mcp
+            );
+            // 安装重释放后，磁盘 manifest 收敛回编译期快照。
+            let released =
+                std::fs::read_to_string(mcp_catalog::package_mcp_dir("qcc").join("manifest.json"))
+                    .unwrap();
+            assert!(released.contains("agent.qcc.com"));
+            assert!(!released.contains("evil.example.com"));
+        });
+    }
+
+    /// 回退边界回归（PR #547）：无内嵌 spec 的上传包安装仍以包目录 manifest 为
+    /// 准——内嵌优先不得吞掉上传/自定义工具的自有定义。
+    #[test]
+    fn install_upload_still_reads_package_disk_manifest() {
+        with_temp_home(|| {
+            write_tool_manifest(
+                "upload-mock",
+                r#"{
+                    "id":"upload-mock","name":"Upload Mock","description":"d","version":"1","icon":"x","category":"c",
+                    "mcp_tools":[],"command":"python","args":["--custom-marker"],
+                    "servers":[]
+                }"#,
+            );
+            let mgr = MarketplaceManager::with_store(MemoryCredentialStore::default());
+            mgr.install_upload(
+                "upload-mock",
+                store::BundleSource::Upload("pkg.zip".to_string()),
+            )
+            .unwrap();
+
+            let mcp = read_mcp_json();
+            assert_eq!(
+                mcp["servers"]["upload-mock"]["args"],
+                serde_json::json!(["--custom-marker"]),
+                "上传包安装必须读取包目录 manifest 的自定义内容"
+            );
+        });
+    }
+
+    /// 真实预置契约回归（PR #547）：catalog 工具的 secret 声明同样来自编译期
+    /// manifest——内嵌 patsnap-search 安装按内嵌 secret_headers 注册
+    /// bearer_token_env_var，用户经 user_config 传入的 Token 落 keyring 与进程内
+    /// 注册表，明文不落盘。
+    #[test]
+    fn install_embedded_preset_registers_secrets_from_embedded_manifest() {
+        with_temp_home(|| {
+            let store = MemoryCredentialStore::default();
+            let mut config = std::collections::HashMap::new();
+            config.insert("PATSNAP_API_KEY".to_string(), "embedded-token".to_string());
+            let mgr = MarketplaceManager::with_store(store.clone());
+            mgr.install("patsnap-search", &config).unwrap();
+
+            let mcp = read_mcp_json();
+            assert_eq!(
+                mcp["servers"]["patsnap-search"]["bearer_token_env_var"],
+                "PINVOU3_MCP_SECRET_PATSNAP_API_KEY"
+            );
+            assert_eq!(
+                store
+                    .get(&mcp_secret_reference(
+                        "patsnap-search",
+                        "header",
+                        "PATSNAP_API_KEY"
+                    ))
+                    .unwrap()
+                    .as_deref(),
+                Some("embedded-token")
+            );
+            assert_eq!(
+                secrets::resolve_registered_secret("PINVOU3_MCP_SECRET_PATSNAP_API_KEY").as_deref(),
+                Some("embedded-token")
+            );
+            assert!(!mcp.to_string().contains("embedded-token"));
+        });
+    }
+
+    /// Windows fail-closed 策略回归（PR #547）：商店路径（Preset 来源）的未受信
+    /// 依赖声明在 Windows 上显式报错；非 Windows 维持 warn-skip；Upload 来源任何
+    /// 平台都不因此报错。纯函数拆参使该策略可在非 Windows 开发机上直接验证。
+    #[test]
+    fn untrusted_preset_deps_error_policy() {
+        let error = untrusted_preset_deps_error("tdoc-mock", &store::BundleSource::Preset, true)
+            .expect("Windows + Preset 必须对未受信依赖声明 fail-closed");
+        assert!(error.contains("可验证依赖锁"), "unexpected error: {error}");
+        assert!(
+            untrusted_preset_deps_error("tdoc-mock", &store::BundleSource::Preset, false).is_none()
+        );
+        assert!(
+            untrusted_preset_deps_error(
+                "tdoc-mock",
+                &store::BundleSource::Upload("pkg.zip".to_string()),
+                true
+            )
+            .is_none()
+        );
+    }
+
     #[test]
     fn uninstall_patsnap_does_not_remove_other_connector_secrets() {
         // Also covers the single-connector uninstall contract (originally
@@ -3696,20 +3862,23 @@ mod tests {
         // reference, and the registry value; and additionally asserts that
         // another connector's (qcc) credentials and registry values are
         // unaffected.
+        // fixture 用非内嵌目录 id：内嵌工具的安装只认编译期 manifest，磁盘
+        // fixture 会被忽略（信任边界见 install_catalog_tool_ignores_tampered_
+        // disk_manifest）；本测试验证磁盘 manifest 安装路径的卸载隔离。
         with_temp_home(|| {
             write_tool_manifest(
-                "patsnap-search",
+                "patsnap-mock",
                 r#"{
-                    "id":"patsnap-search","name":"Patsnap","description":"d","version":"1","icon":"x","category":"c",
+                    "id":"patsnap-mock","name":"Patsnap","description":"d","version":"1","icon":"x","category":"c",
                     "mcp_tools":[],"command":"","args":[],
                     "secret_headers":[{"header":"Authorization","scheme":"Bearer","source_key":"PATSNAP_API_KEY","provider":"patsnap","required":true}],
                     "servers":[{"name":"patsnap-search","url":"https://connect.zhihuiya.com/2b0355/logic-mcp"}]
                 }"#,
             );
             write_tool_manifest(
-                "qcc",
+                "qcc-mock",
                 r#"{
-                    "id":"qcc","name":"QCC","description":"d","version":"1","icon":"x","category":"c",
+                    "id":"qcc-mock","name":"QCC","description":"d","version":"1","icon":"x","category":"c",
                     "mcp_tools":[],"command":"","args":[],
                     "secret_headers":[{"header":"Authorization","scheme":"Bearer","source_key":"QCC_API_KEY","provider":"qcc","required":true}],
                     "servers":[{"name":"qcc-company","url":"https://example.invalid/mcp"}]
@@ -3718,22 +3887,22 @@ mod tests {
             let store = MemoryCredentialStore::default();
             let patsnap_secret = secret_value("patsnap-isolated");
             let qcc_secret = secret_value("qcc-isolated");
-            let patsnap_ref = mcp_secret_reference("patsnap-search", "header", "PATSNAP_API_KEY");
-            let qcc_ref = mcp_secret_reference("qcc", "header", "QCC_API_KEY");
+            let patsnap_ref = mcp_secret_reference("patsnap-mock", "header", "PATSNAP_API_KEY");
+            let qcc_ref = mcp_secret_reference("qcc-mock", "header", "QCC_API_KEY");
             store.set(&patsnap_ref, &patsnap_secret).unwrap();
             store.set(&qcc_ref, &qcc_secret).unwrap();
             let mgr = MarketplaceManager::with_store(store.clone());
 
-            mgr.install("patsnap-search", &std::collections::HashMap::new())
+            mgr.install("patsnap-mock", &std::collections::HashMap::new())
                 .unwrap();
-            mgr.install("qcc", &std::collections::HashMap::new())
+            mgr.install("qcc-mock", &std::collections::HashMap::new())
                 .unwrap();
             assert_eq!(
                 secrets::resolve_registered_secret("PINVOU3_MCP_SECRET_QCC_API_KEY").as_deref(),
                 Some(qcc_secret.as_str())
             );
 
-            mgr.uninstall("patsnap-search").unwrap();
+            mgr.uninstall("patsnap-mock").unwrap();
 
             let mcp = read_mcp_json();
             assert!(mcp["servers"].get("patsnap-search").is_none());
@@ -3752,13 +3921,16 @@ mod tests {
 
     #[tokio::test(flavor = "current_thread")]
     async fn validate_patsnap_with_invalid_token_can_be_rolled_back() {
+        // fixture 用非内嵌目录 id（"patsnap-mock"）：内嵌工具安装只认编译期
+        // manifest（真实端点 URL），mock server 契约会失效——信任边界由
+        // install_catalog_tool_ignores_tampered_disk_manifest 单独覆盖。
         with_temp_home_async(|| async {
             let mock = spawn_mock_mcp_server("valid-token").await;
             write_tool_manifest(
-                "patsnap-search",
+                "patsnap-mock",
                 &format!(
                     r#"{{
-                    "id":"patsnap-search","name":"Patsnap","description":"d","version":"1","icon":"x","category":"c",
+                    "id":"patsnap-mock","name":"Patsnap","description":"d","version":"1","icon":"x","category":"c",
                     "mcp_tools":["patsnap_search","patsnap_fetch"],"command":"","args":[],
                     "validate_on_install":true,
                     "secret_headers":[{{"header":"Authorization","scheme":"Bearer","source_key":"PATSNAP_API_KEY","provider":"patsnap","required":true}}],
@@ -3772,21 +3944,21 @@ mod tests {
             let mut config = std::collections::HashMap::new();
             config.insert("PATSNAP_API_KEY".to_string(), "wrong-token".to_string());
 
-            mgr.install("patsnap-search", &config).unwrap();
+            mgr.install("patsnap-mock", &config).unwrap();
             let err = mgr
-                .validate_remote_connection("patsnap-search")
+                .validate_remote_connection("patsnap-mock")
                 .await
                 .unwrap_err();
-            mgr.uninstall("patsnap-search").unwrap();
+            mgr.uninstall("patsnap-mock").unwrap();
 
             assert!(err.contains("API Key 无效"), "unexpected error: {err}");
             assert!(!err.contains("无法连接远程 MCP 服务"));
-            assert!(!mgr.installed_ids().contains(&"patsnap-search".to_string()));
+            assert!(!mgr.installed_ids().contains(&"patsnap-mock".to_string()));
             let mcp = read_mcp_json();
             assert!(mcp["servers"].get("patsnap-search").is_none());
             assert_eq!(store
                 .get(&mcp_secret_reference(
-                    "patsnap-search",
+                    "patsnap-mock",
                     "header",
                     "PATSNAP_API_KEY"
                 ))
@@ -3799,13 +3971,14 @@ mod tests {
 
     #[tokio::test(flavor = "current_thread")]
     async fn validate_patsnap_with_valid_token_discovers_expected_tools() {
+        // 同上：非内嵌目录 id 保证 mock URL（而非内嵌真实端点）进入 mcp.json。
         with_temp_home_async(|| async {
             let mock = spawn_mock_mcp_server("valid-token").await;
             write_tool_manifest(
-                "patsnap-search",
+                "patsnap-mock",
                 &format!(
                     r#"{{
-                    "id":"patsnap-search","name":"Patsnap","description":"d","version":"1","icon":"x","category":"c",
+                    "id":"patsnap-mock","name":"Patsnap","description":"d","version":"1","icon":"x","category":"c",
                     "mcp_tools":["patsnap_search","patsnap_fetch"],"command":"","args":[],
                     "validate_on_install":true,
                     "secret_headers":[{{"header":"Authorization","scheme":"Bearer","source_key":"PATSNAP_API_KEY","provider":"patsnap","required":true}}],
@@ -3819,13 +3992,13 @@ mod tests {
             let mut config = std::collections::HashMap::new();
             config.insert("PATSNAP_API_KEY".to_string(), "valid-token".to_string());
 
-            mgr.install("patsnap-search", &config).unwrap();
+            mgr.install("patsnap-mock", &config).unwrap();
             let validation = mgr
-                .validate_remote_connection("patsnap-search")
+                .validate_remote_connection("patsnap-mock")
                 .await
                 .unwrap();
 
-            assert!(mgr.installed_ids().contains(&"patsnap-search".to_string()));
+            assert!(mgr.installed_ids().contains(&"patsnap-mock".to_string()));
             let mcp = read_mcp_json();
             assert_eq!(
                 mcp["servers"]["patsnap-search"]["bearer_token_env_var"],
@@ -3835,7 +4008,7 @@ mod tests {
             assert_eq!(
                 store
                     .get(&mcp_secret_reference(
-                        "patsnap-search",
+                        "patsnap-mock",
                         "header",
                         "PATSNAP_API_KEY"
                     ))
@@ -3863,9 +4036,9 @@ mod tests {
         // save_installed);且 mcp.json 不得残留。
         with_temp_home(|| {
             write_tool_manifest(
-                "weather",
+                "weather-mock",
                 r#"{
-                    "id":"weather","name":"Weather","description":"d","version":"1","icon":"x","category":"c",
+                    "id":"weather-mock","name":"Weather","description":"d","version":"1","icon":"x","category":"c",
                     "mcp_tools":["mcp_weather_get_weather"],"command":"python","args":["server.py"],
                     "secret_env":[{"key":"AMAP_KEY","provider":"amap","required":true}]
                 }"#,
@@ -3873,12 +4046,12 @@ mod tests {
             let mgr = MarketplaceManager::with_store(MemoryCredentialStore::default());
 
             let err = mgr
-                .install("weather", &std::collections::HashMap::new())
+                .install("weather-mock", &std::collections::HashMap::new())
                 .unwrap_err();
 
             assert!(err.contains("AMAP_KEY"), "错误应提示缺少 AMAP_KEY: {err}");
             assert!(
-                !mgr.installed_ids().contains(&"weather".to_string()),
+                !mgr.installed_ids().contains(&"weather-mock".to_string()),
                 "缺用户 key 时不应写 installed.json"
             );
             assert!(
