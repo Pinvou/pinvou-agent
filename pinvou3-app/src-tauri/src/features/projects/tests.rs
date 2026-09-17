@@ -508,6 +508,42 @@ fn begin_rebind_serializes_and_releases_on_drop() {
 }
 
 #[test]
+fn rebind_fence_excludes_writers_and_rebinds_in_both_directions() {
+    // review #464 round-6 finding 6: the root-accepting writers must not commit
+    // into an in-flight rebind, and a rebind must not start while a writer
+    // holds the fence — one flag, both directions.
+    let store =
+        ProjectStore::from_paths(std::env::temp_dir().join("pinvou3-rebind-fence-test.json"));
+    let fence = store.rebind_fence().expect("first writer wins the fence");
+    assert!(
+        store.begin_rebind().is_err(),
+        "a rebind must not start while a fenced writer is committing"
+    );
+    assert!(
+        store
+            .rebind_fence()
+            .expect_err("second writer must be rejected")
+            .starts_with("REBIND_IN_PROGRESS:"),
+        "writers are mutually exclusive under the same marker the frontend maps"
+    );
+    drop(fence);
+    store
+        .rebind_fence()
+        .expect("fence released by Drop, so error paths cannot close it forever");
+    let gate = store
+        .begin_rebind()
+        .expect("rebind after the fence is released");
+    assert!(
+        store.rebind_fence().is_err(),
+        "a writer must not commit while the rebind holds the gate"
+    );
+    drop(gate);
+    store
+        .rebind_fence()
+        .expect("fence available again after the rebind");
+}
+
+#[test]
 fn rebind_roots_rejects_overlap_and_keeps_state() {
     let temp = tempfile::tempdir().expect("tempdir");
     let store = store_in(&temp);

@@ -1939,7 +1939,12 @@ const NAV_PREFETCH = {
       // (#448 finding 8).
       const sidebarCodeTasks = useMemo(() => (sidebarCodeListActive
         ? sidebarTaskHistory.filter(chat => chat.taskKind === 'codex'
-            || (chat.taskKind === 'regular' && chat.workspacePath))
+            // The bound-work-session branch is desktop-only, like the projects
+            // slice it feeds: on web the backend degrades workspace_binding to
+            // its last path component, so the value is a leaf name with no
+            // project behind it and two same-named directories would collapse
+            // into one tier-3 bucket (review #464 round-6 finding 8b).
+            || (can('desktopChrome') && chat.taskKind === 'regular' && chat.workspacePath))
         : []), [sidebarCodeListActive, sidebarTaskHistory]);
       const sidebarFolderPinned = useMemo(() => (taskListSort === 'pinned_first'
         ? sidebarCodeTasks.filter(chat => !!chat.pinned)

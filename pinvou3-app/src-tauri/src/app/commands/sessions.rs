@@ -23,7 +23,14 @@ pub struct SessionListItem {
 /// Web boundary projection for SessionListItem: degrade the host absolute
 /// workspace-binding path to its last component, mirroring the metadata
 /// redaction, so the WebUI never receives host directory structure. The
-/// projects slice is desktop-only; the field carries no function on web.
+/// projects slice is desktop-only and the frontend gates the matching
+/// grouping branch on the same desktop capability, so on web the field is an
+/// inert leaf name rather than a grouping key (review #464 round-6 finding 8b:
+/// an earlier comment claimed the field "carries no function on web", which
+/// stopped being true once the bound-session grouping filter became
+/// path-based — the capability gate is what keeps leaf-name collisions from
+/// collapsing distinct directories; the projection stays because the field is
+/// still serialized and must not leak host paths).
 pub(crate) fn redact_session_list_item_for_web(item: &mut SessionListItem) {
     if let Some(binding) = &item.workspace_binding {
         item.workspace_binding = Some(super::codex::redact_workspace_path_for_web(binding));

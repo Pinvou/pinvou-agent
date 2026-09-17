@@ -18,7 +18,6 @@ mod store;
 #[cfg(test)]
 mod tests;
 
-pub(crate) use store::root_display;
 pub use store::{
     DeleteProjectReport, MoveSessionOutcome, Project, ProjectStore, SessionAssignments,
     rebind_source_display,

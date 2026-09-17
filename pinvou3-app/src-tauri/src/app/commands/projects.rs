@@ -105,9 +105,15 @@ pub async fn create_project(
     app: AppHandle,
     store: State<'_, ProjectStore>,
 ) -> Result<ProjectListItem, String> {
+    // Root-accepting writer: refuses to commit into an in-flight rebind, which
+    // would otherwise re-add a `from`-prefixed root after the rebind's snapshot
+    // (review #464 round-6 finding 6). The fence is released when the write is
+    // done, not when the command returns.
+    let _fence = store.rebind_fence()?;
     let project = store
         .create_project(name, roots.unwrap_or_default())
         .map_err(|e| format!("create_project: {e:#}"))?;
+    drop(_fence);
     emit_project_event(&app, "projects:list_changed", "created");
     Ok(ProjectListItem::from_project(&project, 0))
 }
@@ -121,9 +127,17 @@ pub async fn update_project(
     app: AppHandle,
     store: State<'_, ProjectStore>,
 ) -> Result<ProjectListItem, String> {
+    // Gated only when roots can change: a rename cannot re-add a from-prefixed
+    // root, and fencing it would reject a harmless rename for the whole rebind.
+    let _fence = if roots.is_some() {
+        Some(store.rebind_fence()?)
+    } else {
+        None
+    };
     let project = store
         .update_project(&project_id, name, roots)
         .map_err(|e| format!("update_project({project_id}): {e:#}"))?;
+    drop(_fence);
     let count = store.assigned_session_ids(&project_id).len();
     emit_project_event(&app, "projects:list_changed", "updated");
     Ok(ProjectListItem::from_project(&project, count))
@@ -207,6 +221,12 @@ pub async fn move_session_to_project(
     } else {
         None
     };
+    // Root-accepting writer under the same fence: `add_workspace_root` adds a
+    // directory to a project and the store re-validates overlap, so committing
+    // mid-rebind can both re-add a `from`-prefixed root and bind a session
+    // under `from` after the rebind's candidate snapshot (review #464 round-6
+    // finding 6).
+    let _fence = store.rebind_fence()?;
     let outcome = store
         .move_session_to_project(
             &session_id,
@@ -214,6 +234,7 @@ pub async fn move_session_to_project(
             workspace_root.as_deref(),
         )
         .map_err(|e| format!("move_session_to_project({session_id}): {e:#}"))?;
+    drop(_fence);
     emit_project_event(&app, "projects:list_changed", "moved");
     Ok(outcome)
 }
@@ -273,11 +294,15 @@ fn validate_rebind_to(to: &Path) -> Result<(), String> {
 /// idempotency (review #451 finding 6). Compared on folded keys so case /
 /// separator differences cannot evade it.
 fn reject_nested_rebind_target(from: &Path, to_key: &Path) -> Result<(), String> {
-    // Resolve through the same chain as the store's root_display (deepest
-    // existing ancestor when the path is gone), otherwise the nested check
-    // goes blind on symlinked-ancestor platforms (review #464 round-3 nit).
-    let from_canon = crate::features::projects::root_display(from);
-    let from_key = crate::platform::os::filesystem_path_identity_key(&from_canon.to_string_lossy());
+    // No second resolution here (review #464 round-6 nit follow-up): `from`
+    // reaches this point already in display form — `rebind_workspace_root`
+    // normalizes it through `rebind_source_display` before validating, and
+    // that is the same `root_display` chain. Re-resolving it was redundant,
+    // and on a path that does not exist it resolved through the drive root
+    // (`\\?\E:\a\b`), which broke both the lexical callers and the pattern
+    // the check is written against. The symlinked-ancestor case is covered
+    // where it belongs: the store's `covered_workspace_skip_survives_symlinked_ancestor`.
+    let from_key = crate::platform::os::filesystem_path_identity_key(&from.to_string_lossy());
     let to_key_str = crate::platform::os::filesystem_path_identity_key(&to_key.to_string_lossy());
     let from_trim = from_key.trim_end_matches('/');
     let to_trim = to_key_str.trim_end_matches('/');
@@ -379,11 +404,21 @@ pub async fn rebind_workspace_root(
     // also in rebind scope); retry candidates "already under to but with
     // metadata not yet synced" are included as well.
     let mut affected = acp_pool.agents().sessions_under_workspace(&from);
-    affected.extend(
-        sessions
-            .workspace_bindings_under(&from)
-            .map_err(|e| format!("rebind_workspace_root: scan workspace bindings: {e:#}"))?,
-    );
+    let plain_affected = sessions
+        .workspace_bindings_under(&from)
+        .map_err(|e| format!("rebind_workspace_root: scan workspace bindings: {e:#}"))?;
+    affected.extend(plain_affected);
+    // Cross-lane dedup (review #464 round-6 finding 7): the two stores are
+    // independent, so nothing structurally prevents one session id from
+    // appearing in both lanes — and it would then be processed twice with
+    // independently translated paths, surfacing duplicate ids in
+    // rebound_session_ids/failed_session_ids. The `to`-lane loop below already
+    // models this dedup; the `from` lane needs it too. First occurrence wins,
+    // and the codex lane is scanned first: for a code session its agent record
+    // is the authoritative binding, and the metadata loop's baseline recapture
+    // is derived from that same set.
+    let mut seen_affected: std::collections::HashSet<String> = std::collections::HashSet::new();
+    affected.retain(|(session_id, _)| seen_affected.insert(session_id.clone()));
     // Post-busy sessions of a previous run land here on retry (review #463
     // M2): their metadata was already synced in run 1, so they are absent
     // from `affected` — without feeding them back as explicit eviction
@@ -637,11 +672,17 @@ pub async fn rebind_workspace_root(
     // The plain sidecars and metadata moved, but if the legacy global table
     // could not be synced, the next boot migration would re-bind the old
     // paths over the fresh sidecars — the report must not claim success
-    // (review #464 round-5 blocker 1). List the affected sessions as failed;
-    // a rerun rewrites the legacy table from the in-memory table (even with
-    // zero candidates) and converges.
+    // (review #464 round-5 blocker 1).
+    //
+    // The failure list is driven by the sessions the surviving table would
+    // actually resurrect, NOT by this run's rewrite log: on a retry the
+    // bindings already sit under `to`, nothing is rewritten, `rebound` is
+    // empty — and a `rebound`-driven merge reported full success while the
+    // stale table was still on disk (review #464 round-6 blocking 1). A
+    // retry therefore keeps naming the same sessions until the legacy write
+    // succeeds or the file disappears, which is the retry loop's only exit.
     if plain_rebind.legacy_sync_failed {
-        for (session_id, _) in &plain_rebind.rebound {
+        for session_id in &plain_rebind.legacy_resurrection_ids {
             if !failed_session_ids.contains(session_id) {
                 failed_session_ids.push(session_id.clone());
             }
