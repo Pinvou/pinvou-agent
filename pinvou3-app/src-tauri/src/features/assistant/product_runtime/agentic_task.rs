@@ -403,10 +403,24 @@ pub async fn run_agentic_task(
         // inspectable unless the caller explicitly restored the legacy
         // one-shot contract. An unloadable record also keeps: deleting on
         // unknown state is the unsafe direction.
+        //
+        // The zero-message arm carries the same adoption exception as the
+        // `Err`-outcome branch below: a GUI rename before the first message
+        // is ownership too, so a stub is only litter while it still wears
+        // the eval factory title. An unloadable record is not proven
+        // factory-titled and keeps for the same unknown-state reason.
         match store.chat_session_has_messages(&session_id) {
             Ok(false) => {
-                runtime.schedule_eval_cleanup(&session_id);
-                let _ = runtime.close_eval_session_result(&session_id).await;
+                let factory_titled = store
+                    .load(&session_id)
+                    .map(|record| record.metadata.title == EVAL_SESSION_FACTORY_TITLE)
+                    .unwrap_or(false);
+                if factory_titled {
+                    runtime.schedule_eval_cleanup(&session_id);
+                    let _ = runtime.close_eval_session_result(&session_id).await;
+                } else {
+                    runtime.pool.evict(&session_id).await;
+                }
             }
             Ok(true) if !keep_session => {
                 runtime.schedule_eval_cleanup(&session_id);
