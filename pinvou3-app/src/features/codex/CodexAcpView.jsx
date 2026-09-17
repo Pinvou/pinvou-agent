@@ -161,7 +161,7 @@ import {
   uploadAcpDeviceAttachment,
 } from './acpClient.js';
 import { WorkspaceKeychainChip } from '../projects/WorkspaceKeychainChip.jsx';
-import { describeKeychain } from '../projects/workspacePickerState.js';
+import { describeKeychain, workspaceNoticeTone } from '../projects/workspacePickerState.js';
 import { resolveSessionProjectId } from '../projects/projectGrouping.js';
 import { can, canInvoke, isWeb, onPlatformConnectionChange } from '../../shared/platform.js';
 const invoke = invokeTauri;
@@ -3843,6 +3843,19 @@ export function CodexAcpView({
                             {recentWorkspaces.length > 0 && (
                               <div className="mt-1 pt-2 border-t border-black/[0.05] dark:border-white/[0.06]">
                                 <div className="px-3 pb-1 text-[10px] uppercase tracking-wider text-gray-400">{codexCopy.recentProjects}</div>
+                                {/* Grant notice parity (§9.4, same shape as the
+                                    chat lane's ComposerWorkspaceSelector): a
+                                    recents pick grants the folder directly
+                                    (single root), so the mode-aware notice sits
+                                    on the recents section. Mode mirrors the
+                                    picker entry above (native draft staging
+                                    first, then the lane's reported effective
+                                    mode). */}
+                                <div className="px-3 pb-1 text-[10px] text-gray-400">
+                                  {workspaceNoticeTone(nativeDraftControls.mode || composerModeValue || null) === 'restricted'
+                                    ? t.uiWorkspacePicker.noticeRestricted(1)
+                                    : t.uiWorkspacePicker.noticeVisibility(1)}
+                                </div>
                                 {recentWorkspaces.map(path => (
                                   <button key={path} type="button" title={path}
                                     onClick={() => {

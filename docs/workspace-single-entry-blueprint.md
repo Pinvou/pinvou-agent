@@ -144,8 +144,10 @@ Backend invariants for root replacement:
   `ensure` cannot immediately overturn the removal; sessions with existing
   entries (explicitly assigned here or elsewhere, already moved out) are
   untouched — tier-① semantics win (§5).
-- Root replacement and member expulsion happen in **one store transaction**
-  (`update_project_and_expel`): one lock, one persist, so a failed expel
+- The removed-root diff and the expel enumeration are computed by the
+  command layer **outside the write lock**; the root replacement and the
+  expel writes then land atomically in **one write lock, one
+  `persist_locked`** (`update_project_and_expel`), so a failed expel
   cannot leave replaced roots with members that would be silently
   re-adopted on retry.
 - Removal is purely logical: it never touches any session's
@@ -361,7 +363,11 @@ its owning project's **full root set at that moment**.
   `ALIGN_BUSY`; a session with no bound workspace (temporary/scheduled)
   rejects with `ALIGN_NO_WORKSPACE`. Idempotent: an already-matching
   keychain returns `applied=false, reason=no_change`; no owning project
-  returns `reason=no_project`.
+  returns `reason=no_project`; when the binding store writes nothing
+  (agent record gone / sidecar unreadable; disk unchanged) the outcome is
+  `applied=false, reason=write_skipped`. On every non-applied outcome the
+  command layer skips both the live-engine push and the
+  `session:list_changed` event, so runtime state cannot diverge from disk.
 - Desktop-only (§9.8).
 
 ### §9.8 Web host stance

@@ -21,8 +21,8 @@ const projectItem = (id, path, updatedAt) => ({
 
 const boundItem = (id, path, updatedAt) => ({
   id,
-  // #445 绑定的普通工作会话:独立 'bound' 形态,与 'project' 同为携带
-  // 真实目录的会话(评审 #452 finding 5)。
+  // #445 bound plain work sessions: a standalone 'bound' kind that, like
+  // 'project', carries a real directory (review #452 finding 5).
   workspaceKind: "bound",
   workspacePath: path,
   updatedAt,
@@ -42,10 +42,11 @@ const project = (id, name, roots, position) => ({
   position,
 });
 
-// origin=folder 的物化项目(锚定判定的唯一覆盖来源,§9.9)。
+// Materialized project with origin=folder (the only coverage source for
+// anchoring decisions, §9.9).
 const folderProject = (id, name, roots, position) => ({ ...project(id, name, roots, position), origin: 'folder' });
 
-// ── 目录视图(纯物理层) ─────────────────────────────────────────────────────
+// ── Folder view (pure physical layer) ──────────────────────────────────────
 
 test("folder view buckets by workspace path, activity-sorted, temporary last", () => {
   const groups = groupSessionsByFolder([
@@ -62,7 +63,7 @@ test("folder view buckets by workspace path, activity-sorted, temporary last", (
   ]);
   const alpha = groups[0];
   assert.deepEqual(alpha.rows.map((r) => r.id), ["w1", "a2", "a1"]);
-  assert.equal(alpha.projectId, null, "目录组与项目无关");
+  assert.equal(alpha.projectId, null, "folder groups are project-agnostic");
 });
 
 test("folder view ignores projects and assignments entirely", () => {
@@ -86,7 +87,7 @@ test("folder view degrades safely on empty or invalid input", () => {
   assert.deepEqual(groups.map((g) => g.key), [TEMPORARY_GROUP_KEY]);
 });
 
-// ── 项目视图(纯逻辑层 + 未分组桶) ──────────────────────────────────────────
+// ── Project view (pure logic layer + ungrouped bucket) ─────────────────────
 
 test("project view auto-groups by root and renders empty projects in position order", () => {
   const projects = [
@@ -128,7 +129,7 @@ test("project view: explicit assignment beats root auto-grouping; move-out lands
   assert.deepEqual(groups.find((g) => g.key === "project:p2").rows.map((r) => r.id), ["moved"]);
   assert.equal(groups.find((g) => g.key === "project:p1").rows.length, 0);
   const ungrouped = groups.find((g) => g.kind === "ungrouped");
-  assert.deepEqual(ungrouped.rows.map((r) => r.id), ["out"], "显式移出不得经 tier 2 复活");
+  assert.deepEqual(ungrouped.rows.map((r) => r.id), ["out"], "explicit move-out must not be revived via tier 2");
 });
 
 test("project view: temporary sessions join only via explicit assignment", () => {
@@ -138,14 +139,14 @@ test("project view: temporary sessions join only via explicit assignment", () =>
     projects,
     {},
   );
-  assert.equal(groups[0].rows.length, 0, "临时会话绝不自动归组");
+  assert.equal(groups[0].rows.length, 0, "temporary sessions never auto-group");
   const adopted = groupSessionsByProject(
     [temporaryItem("t1", "2026-08-01T08:00:00Z")],
     projects,
     { t1: "p1" },
   );
-  assert.deepEqual(adopted[0].rows.map((r) => r.id), ["t1"], "显式归属(转正)有效");
-  assert.equal(adopted.length, 1, "全被认领时无未分组桶");
+  assert.deepEqual(adopted[0].rows.map((r) => r.id), ["t1"], "explicit assignment (promotion) works");
+  assert.equal(adopted.length, 1, "no ungrouped bucket when everything is claimed");
 });
 
 test("project view: stale assignment ids fall through to auto grouping", () => {
@@ -159,9 +160,10 @@ test("project view: stale assignment ids fall through to auto grouping", () => {
 });
 
 test("project view: smallest position claims sessions covered by several projects", () => {
-  // §9.9(2026-09-11 裁定):跨项目重叠/嵌套合法,多命中不再按最长 root,
-  // 由 position 最靠前者收编(侧栏排序是用户可控的决胜旋钮),与后端
-  // resolve_session_project 同口径。
+  // §9.9 (2026-09-11 ruling): cross-project overlap/nesting is legal; on
+  // multiple hits the project with the smallest position claims the session
+  // (sidebar ordering is the user-controllable tiebreaker) instead of the
+  // longest root — same rule as the backend resolve_session_project.
   const items = [
     projectItem("shallow", "D:/work/other", "2026-08-01T08:00:00Z"),
     projectItem("deep", "D:/work/deep/x", "2026-08-02T08:00:00Z"),
@@ -173,7 +175,7 @@ test("project view: smallest position claims sessions covered by several project
   );
   assert.deepEqual(groups.find((g) => g.projectId === "p1").rows.map((r) => r.id), ["deep", "shallow"]);
   assert.equal(groups.find((g) => g.projectId === "p2").rows.length, 0);
-  // position 翻转即翻转归属:用户拖排序即可改判。
+  // Flipping position flips ownership: drag-sorting alone re-decides.
   const flipped = groupSessionsByProject(
     items,
     [project("p1", "Work", ["D:/work"], 1), project("p2", "Deep", ["D:/work/deep"], 0)],
@@ -181,7 +183,8 @@ test("project view: smallest position claims sessions covered by several project
   );
   assert.deepEqual(flipped.find((g) => g.projectId === "p2").rows.map((r) => r.id), ["deep"]);
   assert.deepEqual(flipped.find((g) => g.projectId === "p1").rows.map((r) => r.id), ["shallow"]);
-  // 输入顺序不影响结果(id 兜底决胜,排序在判定前)。
+  // Input order does not affect the outcome (id is the final tiebreaker;
+  // sorting happens before the decision).
   const shuffled = groupSessionsByProject(
     items,
     [project("p2", "Deep", ["D:/work/deep"], 1), project("p1", "Work", ["D:/work"], 0)],
@@ -232,7 +235,7 @@ test("resolveSessionProjectId mirrors the project-view tiers", () => {
   const item = projectItem("a1", "D:/work/alpha", "2026-08-01T08:00:00Z");
   assert.equal(resolveSessionProjectId(item, projects, {}), "p1");
   assert.equal(resolveSessionProjectId(item, projects, { a1: "p1" }), "p1");
-  assert.equal(resolveSessionProjectId(item, projects, { a1: null }), null, "显式移出优先");
+  assert.equal(resolveSessionProjectId(item, projects, { a1: null }), null, "explicit move-out wins");
   assert.equal(resolveSessionProjectId(temporaryItem("t1", "x"), projects, { t1: "p1" }), "p1");
   assert.equal(resolveSessionProjectId(temporaryItem("t1", "x"), projects, {}), null);
   // The real fork the picker must survive: a stale id does not stick as
@@ -250,15 +253,16 @@ test("projectCoversPath and needsAddFolderConfirm share the containment rule", (
   assert.equal(projectCoversPath(null, "D:/work/alpha"), false);
   assert.equal(needsAddFolderConfirm(projectItem("s", "D:/work/beta"), projects[0]), true);
   assert.equal(needsAddFolderConfirm(projectItem("s", "D:/work/alpha/x"), projects[0]), false);
-  assert.equal(needsAddFolderConfirm(temporaryItem("t"), projects[0]), false, "临时会话无目录,直移");
+  assert.equal(needsAddFolderConfirm(temporaryItem("t"), projects[0]), false, "temporary sessions have no folder; move directly");
 });
 
 // ── Folder-project auto-materialization input ──────────────────────────────
 
 test("uncoveredWorkspaceRoots dedupes and drops anchored/temporary workspaces", () => {
-  // 锚定覆盖(§9.9):只有 origin=folder 且 roots 精确含该路径的项目算覆盖;
-  // "D:/work/alpha" 被锚定 → a1 不驱动;"D:/work/alpha/sub" 未被精确锚定
-  // → a2 驱动(为该子目录物化新项目,重叠合法)。
+  // Anchor coverage (§9.9): only an origin=folder project whose roots contain
+  // the exact path counts as coverage; "D:/work/alpha" is anchored → a1 does
+  // not drive; "D:/work/alpha/sub" is not exactly anchored → a2 drives
+  // (materializing a new project for the subdirectory; overlap is legal).
   const projects = [folderProject("p1", "Work", ["D:/work/alpha"], 0)];
   const roots = uncoveredWorkspaceRoots(
     [
@@ -280,8 +284,10 @@ test("uncoveredWorkspaceRoots dedupes and drops anchored/temporary workspaces", 
 });
 
 test("uncoveredWorkspaceRoots skips sessions with any assignment entry", () => {
-  // 删除项目把成员写成显式移出(null):被删文件夹不得因旧会话立刻重建,
-  // 只有无条目的新会话驱动 ensure;显式归属它处(Some)同样不再驱动。
+  // Deleting a project writes its members as explicit move-out (null): a
+  // deleted folder must not be rebuilt immediately because of old sessions —
+  // only entry-less new sessions drive ensure; explicit assignment elsewhere
+  // (Some) no longer drives either.
   const projects = [project("p1", "Elsewhere", ["D:/other"], 0)];
   const roots = uncoveredWorkspaceRoots(
     [
@@ -296,25 +302,28 @@ test("uncoveredWorkspaceRoots skips sessions with any assignment entry", () => {
 });
 
 test("uncoveredWorkspaceRoots: only an exact folder-project anchor covers", () => {
-  // 祖先生效的旧语义已随锚定复用退役(§9.9):物化项目锚定 D:/work 不再
-  // 覆盖其子目录——子目录照常物化(与后端 ensure 的精确锚定一致)。
+  // The old ancestor-based semantics retired with anchor reuse (§9.9): a
+  // materialized project anchored at D:/work no longer covers its
+  // subdirectories — those still materialize as usual (matching the backend
+  // ensure's exact anchoring).
   const projects = [folderProject("p1", "Work", ["D:/work"], 0)];
   assert.deepEqual(
     uncoveredWorkspaceRoots([projectItem("a1", "D:/work/alpha", "x")], projects, {}),
     [{ root: "D:/work/alpha", sessionIds: ["a1"] }],
-    "祖先锚定不再覆盖子目录",
+    "an ancestor anchor no longer covers subdirectories",
   );
   assert.deepEqual(
     uncoveredWorkspaceRoots([projectItem("a2", "D:/work", "x")], projects, {}),
     [],
-    "精确锚定才覆盖",
+    "only an exact anchor covers",
   );
-  // 手工项目(无 origin=folder)引用同一路径不算覆盖,浏览/物化通道仍新建。
+  // A manual project (no origin=folder) referencing the same path does not
+  // count as coverage; the browse/materialize channel still creates anew.
   const manual = [project("p2", "Manual", ["D:/work"], 0)];
   assert.deepEqual(
     uncoveredWorkspaceRoots([projectItem("a3", "D:/work", "x")], manual, {}),
     [{ root: "D:/work", sessionIds: ["a3"] }],
-    "被手工项目引用不锚定",
+    "being referenced by a manual project is not anchoring",
   );
 });
 
@@ -374,7 +383,7 @@ test("windows roots match case-insensitively, posix roots stay case-sensitive", 
     posix,
     {},
   );
-  assert.equal(posixGroups.find((g) => g.projectId === "p2").rows.length, 0, "posix 路径保持大小写敏感");
+  assert.equal(posixGroups.find((g) => g.projectId === "p2").rows.length, 0, "posix paths stay case-sensitive");
   assert.equal(posixGroups.find((g) => g.kind === "ungrouped").rows.length, 1);
 });
 
@@ -395,7 +404,7 @@ test("windows roots match across separator shapes and trailing separators", () =
     groups.find((g) => g.projectId === "p1").rows.map((r) => r.id).sort((x, y) => x.localeCompare(y)),
     ["a1", "a2"],
   );
-  assert.equal(groups.some((g) => g.kind === "ungrouped"), false, "两种分隔符形态都必须命中 tier 2");
+  assert.equal(groups.some((g) => g.kind === "ungrouped"), false, "both separator shapes must hit tier 2");
   // The move-picker fork shares the fold (same isUnderRoot).
   assert.equal(resolveSessionProjectId(projectItem("a3", "D:\\Work\\Alpha", "x"), projects, {}), "p1");
 });

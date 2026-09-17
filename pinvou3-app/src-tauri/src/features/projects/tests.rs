@@ -544,7 +544,11 @@ fn root_keys_fold_case_only_on_windows() {
 
         create(&store, "upper", &[PathBuf::from(&backslash_upper)]);
         create(&store, "lower", &[PathBuf::from(&forward_lower)]);
-        assert_eq!(store.list().len(), 2, "跨项目重叠自 §9.9 起合法");
+        assert_eq!(
+            store.list().len(),
+            2,
+            "cross-project overlap is legal since §9.9"
+        );
         let error = store
             .create_project(
                 "dup".to_string(),

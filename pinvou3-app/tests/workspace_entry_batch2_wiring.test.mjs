@@ -84,6 +84,22 @@ test('manage-folders panel wiring (F6)', () => {
   assert.match(main, /onLaneModeChange=\{setCodexLaneMode\}/, '宿主接 codex mode 上报');
 });
 
+test('composer recents grant notice parity (§9.4)', () => {
+  const chatView = read('src', 'features', 'chat', 'ChatView.jsx');
+  const codexView = read('src', 'features', 'codex', 'CodexAcpView.jsx');
+  const selector = read('src', 'features', 'chat', 'ComposerWorkspaceSelector.jsx');
+
+  // Chat lane: the host computes the mode-aware single-root notice and the
+  // selector renders it above the recents list.
+  assert.match(chatView, /grantNotice=\{workspaceNoticeTone\(/, 'chat recents notice is mode-aware');
+  assert.match(selector, /\{grantNotice && \(/, 'selector renders the notice');
+  // Codex lane: the recents section of the draft workspace menu carries the
+  // same notice, keyed off the lane mode (native draft staging first, then
+  // the reported effective mode).
+  assert.match(codexView, /workspaceNoticeTone\(nativeDraftControls\.mode \|\| composerModeValue \|\| null\)/, 'codex recents notice follows the lane mode');
+  assert.match(codexView, /noticeRestricted\(1\)[\s\S]{0,120}?noticeVisibility\(1\)/, 'codex recents single-root notice');
+});
+
 test('keychain/manage i18n keys exist in all three languages', () => {
   for (const lang of ['zh', 'en', 'ja']) {
     const source = read('src', 'shared', 'i18n', `${lang}.js`);
