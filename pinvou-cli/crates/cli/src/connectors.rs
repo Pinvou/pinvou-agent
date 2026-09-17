@@ -950,7 +950,19 @@ fn status(connector: Option<ConnectorKind>, output: OutputMode) -> Result<CliOut
     };
     let mut entries = Vec::new();
     for kind in kinds {
-        entries.push(vendor_status_entry(kind)?);
+        // One broken vendor CLI (a corrupt shim, a probe timeout) must not
+        // fail the whole overview and discard the other entries: degrade it
+        // to a note like the ima entry below.
+        match vendor_status_entry(kind) {
+            Ok(entry) => entries.push(entry),
+            Err(error) => entries.push(json!({
+                "id": kind.spec().id,
+                "ok": false,
+                "connected": false,
+                "installed": false,
+                "note": error.to_string(),
+            })),
+        }
     }
     // ima is part of the default overview only; a filtered `status <id>`
     // must not report unrelated connectors. A credential-store failure must
@@ -1884,7 +1896,17 @@ fn connect(kind: ConnectorKind, timeout: u64, output: OutputMode) -> Result<CliO
             // wait — the vendor CLI itself blocks until authorization (or
             // its own timeout), and the spawn deadline above already bounds
             // the process.
-            if !cli_connected(spec)? {
+            // The GUI polls `wait_logged_in` for up to 5 s after the child
+            // exits because `tmeet auth status` can lag credential
+            // persistence at process exit; mirror that so a successful login
+            // is not misreported as a failure.
+            let mut connected = cli_connected(spec).unwrap_or(false);
+            let grace_started = std::time::Instant::now();
+            while !connected && grace_started.elapsed() < Duration::from_secs(5) {
+                std::thread::sleep(Duration::from_millis(200));
+                connected = cli_connected(spec).unwrap_or(false);
+            }
+            if !connected {
                 return Err(CliError::failed(format!(
                     "{} login exited before authorization completed{}",
                     spec.display_name,
