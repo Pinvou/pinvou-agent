@@ -109,17 +109,25 @@ pub fn libreoffice_to_inline_html(path: &Path) -> Result<String, String> {
     let tmpdir = std::env::temp_dir().join(format!("pinvou3-lo-html-{ts}"));
     std::fs::create_dir_all(&tmpdir).map_err(|e| format!("创建临时目录失败: {e}"))?;
 
-    let out = libreoffice_tool_command()
-        .arg(libreoffice_user_installation_arg(&tmpdir.join("profile"))?)
-        .arg("--headless")
-        .arg("--convert-to")
-        // 不写死 `html:HTML`(那是 Writer 专用 filter,套到 Calc/Impress 会无产出)。
-        // 只给 `html` → LibreOffice 按文档类型自动选对应 HTML 导出 filter。
-        .arg("html")
-        .arg("--outdir")
-        .arg(&tmpdir)
-        .arg(path)
-        .output();
+    // soffice 卡死（损坏文档/杀软占用）按超时 kill-tree，预算同
+    // ingest_office 的转换路径（180s）。
+    let out = crate::platform::process::output_with_timeout_and_kill_tree(
+        {
+            let mut command = libreoffice_tool_command();
+            command
+                .arg(libreoffice_user_installation_arg(&tmpdir.join("profile"))?)
+                .arg("--headless")
+                .arg("--convert-to")
+                // 不写死 `html:HTML`(那是 Writer 专用 filter,套到 Calc/Impress 会无产出)。
+                // 只给 `html` → LibreOffice 按文档类型自动选对应 HTML 导出 filter。
+                .arg("html")
+                .arg("--outdir")
+                .arg(&tmpdir)
+                .arg(path);
+            command
+        },
+        std::time::Duration::from_secs(180),
+    );
 
     let result = (|| -> Result<String, String> {
         match out {
@@ -177,16 +185,22 @@ pub fn office_to_png_data_uris(path: &Path, max_pages: u32) -> Result<(Vec<Strin
     std::fs::create_dir_all(&tmpdir).map_err(|e| format!("创建临时目录失败: {e}"))?;
 
     let result = (|| -> Result<(Vec<String>, bool), String> {
-        // 1) office → PDF
-        let out = libreoffice_tool_command()
-            .arg(libreoffice_user_installation_arg(&tmpdir.join("profile"))?)
-            .arg("--headless")
-            .arg("--convert-to")
-            .arg("pdf")
-            .arg("--outdir")
-            .arg(&tmpdir)
-            .arg(path)
-            .output();
+        // 1) office → PDF（soffice 卡死按超时 kill-tree，预算同 ingest_office）。
+        let out = crate::platform::process::output_with_timeout_and_kill_tree(
+            {
+                let mut command = libreoffice_tool_command();
+                command
+                    .arg(libreoffice_user_installation_arg(&tmpdir.join("profile"))?)
+                    .arg("--headless")
+                    .arg("--convert-to")
+                    .arg("pdf")
+                    .arg("--outdir")
+                    .arg(&tmpdir)
+                    .arg(path);
+                command
+            },
+            std::time::Duration::from_secs(180),
+        );
         match out {
             Ok(o) if o.status.success() => {}
             Ok(o) => {
@@ -206,17 +220,24 @@ pub fn office_to_png_data_uris(path: &Path, max_pages: u32) -> Result<(Vec<Strin
             })
             .ok_or_else(|| "LibreOffice 未产出 PDF".to_string())?;
 
-        // 2) PDF → PNG 页(直接在同一 tmpdir,避免再开目录)。
+        // 2) PDF → PNG 页(直接在同一 tmpdir,避免再开目录)。pdftoppm 卡死按
+        // 超时 kill-tree（同 ocr_pdf 的兜底）。
         let prefix = tmpdir.join("page");
-        let conv = pdf_tool_command("pdftoppm")
-            .arg("-png")
-            .arg("-r")
-            .arg("110")
-            .arg("-l")
-            .arg(max_pages.to_string())
-            .arg(&pdf)
-            .arg(&prefix)
-            .output();
+        let conv = crate::platform::process::output_with_timeout_and_kill_tree(
+            {
+                let mut command = pdf_tool_command("pdftoppm");
+                command
+                    .arg("-png")
+                    .arg("-r")
+                    .arg("110")
+                    .arg("-l")
+                    .arg(max_pages.to_string())
+                    .arg(&pdf)
+                    .arg(&prefix);
+                command
+            },
+            std::time::Duration::from_secs(120),
+        );
         match conv {
             Ok(o) if o.status.success() => {}
             Ok(o) => {
@@ -269,15 +290,22 @@ pub fn pdf_to_png_data_uris(path: &Path, max_pages: u32) -> Result<(Vec<String>,
     std::fs::create_dir_all(&tmpdir).map_err(|e| format!("创建临时目录失败: {e}"))?;
     let prefix = tmpdir.join("page");
 
-    let convert = pdf_tool_command("pdftoppm")
-        .arg("-png")
-        .arg("-r")
-        .arg("110")
-        .arg("-l")
-        .arg(max_pages.to_string())
-        .arg(path)
-        .arg(&prefix)
-        .output();
+    // pdftoppm 卡死（损坏 PDF、杀软占用）按超时 kill-tree，同 ocr_pdf 的兜底。
+    let convert = crate::platform::process::output_with_timeout_and_kill_tree(
+        {
+            let mut command = pdf_tool_command("pdftoppm");
+            command
+                .arg("-png")
+                .arg("-r")
+                .arg("110")
+                .arg("-l")
+                .arg(max_pages.to_string())
+                .arg(path)
+                .arg(&prefix);
+            command
+        },
+        std::time::Duration::from_secs(120),
+    );
 
     let result = (|| -> Result<(Vec<String>, bool), String> {
         match convert {
@@ -329,14 +357,18 @@ pub(super) fn ingest_image(
 }
 
 /// 对单张图片跑 tesseract，识别文字到 stdout。`tesseract <img> - -l <langs>`。
+/// 单页识别是秒级操作，60s 兜底 + kill-tree：挂死的 tesseract 不得拖死整条
+/// OCR 链（页数封顶见 [`ocr_pdf`]）。
 fn ocr_image(path: &Path) -> Result<String, String> {
     let lang = ocr_lang_arg();
     let mut command = ocr_tool_command();
     command.arg(path).arg("-").arg("-l").arg(&lang);
     add_ocr_tessdata_arg(&mut command);
-    let out = command
-        .output()
-        .map_err(|e| format!("tesseract 调用失败: {e}"))?;
+    let out = crate::platform::process::output_with_timeout_and_kill_tree(
+        command,
+        std::time::Duration::from_secs(60),
+    )
+    .map_err(|e| format!("tesseract 调用失败: {e}"))?;
     if out.status.success() {
         Ok(String::from_utf8_lossy(&out.stdout).trim_end().to_string())
     } else {
@@ -404,15 +436,23 @@ pub(super) fn ocr_pdf(
 
     let prefix = tmpdir.join("page");
     // pdftoppm -png -r 150 -l <max> <pdf> <prefix> → prefix-1.png, prefix-2.png ...
-    let convert = pdf_tool_command("pdftoppm")
-        .arg("-png")
-        .arg("-r")
-        .arg("150")
-        .arg("-l")
-        .arg(PDF_OCR_MAX_PAGES.to_string())
-        .arg(path)
-        .arg(&prefix)
-        .output();
+    // 与上方 pdftotext 的兜底同类：损坏/诡异封装的 PDF 也能挂死 pdftoppm，
+    // 120s 预算 + kill-tree（页数已封顶 PDF_OCR_MAX_PAGES）。
+    let convert = crate::platform::process::output_with_timeout_and_kill_tree(
+        {
+            let mut command = pdf_tool_command("pdftoppm");
+            command
+                .arg("-png")
+                .arg("-r")
+                .arg("150")
+                .arg("-l")
+                .arg(PDF_OCR_MAX_PAGES.to_string())
+                .arg(path)
+                .arg(&prefix);
+            command
+        },
+        std::time::Duration::from_secs(120),
+    );
 
     let result = match convert {
         Ok(o) if o.status.success() => {

@@ -372,29 +372,76 @@ fn isolated_git_command() -> std::process::Command {
 // create_checkpoint 的任何错误都会按既有语义降级为「跳过快照并告警」，
 // 不会阻塞发送。注意这是**单次 git 调用**的预算，create_checkpoint 一次会
 // 顺序执行多条 git 命令（add/write-tree/commit-tree/update-ref/gc），最坏
-// 情况是预算的数倍；整段检查点仍是有界的。
+// 情况是预算的数倍；git 子进程整体有界，但同一等待路径里的普通文件系统 IO
+// （目录大小走查、写 exclude 文件）在存储完全停摆时仍可能阻塞——该残余与
+// git 预算正交。
 const GIT_COMMAND_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(120);
 
-/// 超时 kill 的 git 来不及清理 `index.lock`，之后每次调用都会「File exists」
+/// 超时 kill 的 git 来不及清理锁文件，之后每次调用都会「File exists」
 /// 快速失败——一次超时会把这个会话的检查点能力永久打没。锁龄超过
 /// GIT_COMMAND_TIMEOUT 即可断定持锁者已死（活着的 git 至多持锁一个预算周期，
 /// 影子仓库为本应用私目录），清除并让调用方重试一次；更年轻的锁可能是并发
 /// 活锁，不动。
-fn clear_stale_index_lock(repo: &Path) -> bool {
-    let lock = repo.join("index.lock");
-    let is_stale = std::fs::metadata(&lock)
-        .and_then(|metadata| metadata.modified())
-        .ok()
-        .and_then(|modified| std::time::SystemTime::now().duration_since(modified).ok())
-        .is_some_and(|age| age >= GIT_COMMAND_TIMEOUT);
-    if is_stale && std::fs::remove_file(&lock).is_ok() {
-        eprintln!(
-            "[checkpoints] cleared stale index.lock left by a killed git: {}",
-            lock.display()
-        );
-        return true;
+///
+/// 覆盖三类锁（`git()` 的重试谓词按 stderr 含 `.lock` 触发）：
+/// `index.lock`（add/write-tree）、`config.lock`（ensure_repo 每次快照都
+/// 幂等校正 `core.ignorecase`）、`refs/**/*.lock`（update-ref，每次内容
+/// 变更的回合都会写 `refs/checkpoints/head`）。
+fn clear_stale_git_locks(repo: &Path) -> bool {
+    clear_stale_git_locks_older_than(repo, GIT_COMMAND_TIMEOUT)
+}
+
+/// [`clear_stale_git_locks`] 的可注入阈值变体：`min_age` 生产路径传
+/// [`GIT_COMMAND_TIMEOUT`]，测试传更小/零值即可钉住阈值与覆盖面，
+/// 无需回拨 mtime。
+fn clear_stale_git_locks_older_than(repo: &Path, min_age: std::time::Duration) -> bool {
+    let is_stale = |path: &Path| -> bool {
+        std::fs::metadata(path)
+            .and_then(|metadata| metadata.modified())
+            .ok()
+            .and_then(|modified| std::time::SystemTime::now().duration_since(modified).ok())
+            .is_some_and(|age| age >= min_age)
+    };
+    let mut cleared = false;
+    for name in ["index.lock", "config.lock", "HEAD.lock", "packed-refs.lock"] {
+        let lock = repo.join(name);
+        if is_stale(&lock) && std::fs::remove_file(&lock).is_ok() {
+            eprintln!(
+                "[checkpoints] cleared stale lock left by a killed git: {}",
+                lock.display()
+            );
+            cleared = true;
+        }
     }
-    false
+    // update-ref 的锁在 refs 子树里（refs/checkpoints/head.lock、按 id 的
+    // 逐检查点锁）。refs 层级固定很浅，定深遍历避免意外放大。
+    fn sweep_refs(dir: &Path, depth: u8, is_stale: &dyn Fn(&Path) -> bool) -> bool {
+        if depth == 0 {
+            return false;
+        }
+        let mut cleared = false;
+        let Ok(entries) = std::fs::read_dir(dir) else {
+            return false;
+        };
+        for entry in entries.flatten() {
+            let path = entry.path();
+            if path.is_dir() {
+                cleared |= sweep_refs(&path, depth - 1, is_stale);
+            } else if path.extension().is_some_and(|ext| ext == "lock")
+                && is_stale(&path)
+                && std::fs::remove_file(&path).is_ok()
+            {
+                eprintln!(
+                    "[checkpoints] cleared stale lock left by a killed git: {}",
+                    path.display()
+                );
+                cleared = true;
+            }
+        }
+        cleared
+    }
+    cleared |= sweep_refs(&repo.join("refs"), 4, &is_stale);
+    cleared
 }
 
 fn git(repo: &Path, work_tree: &Path, arguments: &[&str]) -> Result<std::process::Output> {
@@ -408,11 +455,11 @@ fn git(repo: &Path, work_tree: &Path, arguments: &[&str]) -> Result<std::process
             .map_err(|error| anyhow::anyhow!("failed to run git {}: {error}", arguments.join(" ")))
     };
     let output = run_bounded()?;
-    // git 因发现残留锁而拒绝执行（退出码非零、stderr 指名 index.lock）时，
+    // git 因发现残留锁而拒绝执行（退出码非零、stderr 指名某个 .lock 路径）时，
     // 清掉确证为陈旧的锁重试一次。
     if !output.status.success()
-        && String::from_utf8_lossy(&output.stderr).contains("index.lock")
-        && clear_stale_index_lock(repo)
+        && String::from_utf8_lossy(&output.stderr).contains(".lock")
+        && clear_stale_git_locks(repo)
     {
         return run_bounded();
     }
@@ -1178,6 +1225,84 @@ mod tests {
                 || line.eq_ignore_ascii_case("id_rsa")),
             "大小写变体的秘密文件不得进快照: {tracked}"
         );
+    }
+
+    /// 残留锁清扫必须覆盖三类锁（index/config/refs 子树），且只删 `.lock`：
+    /// config 与 refs 本体是仓库数据，绝不能被清扫误伤。零阈值变体用于钉住
+    /// 覆盖面，无需回拨 mtime。
+    #[test]
+    fn stale_lock_sweep_covers_index_config_and_refs_locks() {
+        let ledger = TestDir::new("lock-sweep-ledger");
+        let repo = ledger.path().join("checkpoints");
+        for rel in [
+            "index.lock",
+            "config.lock",
+            "refs/checkpoints/head.lock",
+            "refs/checkpoints/deadbeef.lock",
+        ] {
+            let path = repo.join(rel);
+            fs::create_dir_all(path.parent().unwrap()).unwrap();
+            fs::write(&path, b"stale").unwrap();
+        }
+        // 仓库本体数据，清扫不得触碰。
+        for rel in ["config", "index", "refs/checkpoints/head"] {
+            let path = repo.join(rel);
+            fs::create_dir_all(path.parent().unwrap()).unwrap();
+            fs::write(&path, b"data").unwrap();
+        }
+
+        assert!(clear_stale_git_locks_older_than(
+            &repo,
+            std::time::Duration::ZERO
+        ));
+        for rel in [
+            "index.lock",
+            "config.lock",
+            "refs/checkpoints/head.lock",
+            "refs/checkpoints/deadbeef.lock",
+        ] {
+            assert!(!repo.join(rel).exists(), "{rel} 应被清扫");
+        }
+        for rel in ["config", "index", "refs/checkpoints/head"] {
+            assert!(repo.join(rel).exists(), "{rel} 是仓库数据，不得被清扫");
+        }
+        // 再跑一遍：无可清锁，返回 false 且不误删数据。
+        assert!(!clear_stale_git_locks_older_than(
+            &repo,
+            std::time::Duration::ZERO
+        ));
+        assert!(repo.join("refs/checkpoints/head").exists());
+    }
+
+    /// 安全方向：年轻的锁（可能是并发活锁或刚启动的 git）即使让 git 调用
+    /// 失败，也绝不能被清除——`git()` 的重试只在锁被确证陈旧时发生。
+    #[test]
+    fn young_lock_is_never_cleared_and_retry_is_declined() {
+        if !git_available() {
+            return;
+        }
+        let ledger = TestDir::new("young-lock-ledger");
+        let exec = TestDir::new("young-lock-exec");
+        exec.write("a.rs", "v1\n");
+        create_checkpoint(
+            ledger.path(),
+            exec.path(),
+            Some(1),
+            CheckpointKind::Turn,
+            "t1",
+        )
+        .unwrap();
+
+        let repo = repo_dir(ledger.path());
+        let lock = repo.join("index.lock");
+        fs::write(&lock, b"held by a live git").unwrap();
+
+        let error = git_ok(&repo, exec.path(), &["add", "-A"]).unwrap_err();
+        assert!(
+            format!("{error:#}").contains("失败"),
+            "持锁时 git 调用必须失败: {error:#}"
+        );
+        assert!(lock.exists(), "年轻锁不得被清除");
     }
 
     /// M3 回归：中文（非 ASCII）文件名在 diff 预览中原样上屏，不被
