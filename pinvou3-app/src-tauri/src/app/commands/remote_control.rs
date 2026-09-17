@@ -331,10 +331,7 @@ pub async fn web_access_list_sessions(
         WebSessionOperation::ListSessions,
         super::sessions::list_sessions(store, acp_pool).await,
     )?;
-    for session in &mut sessions {
-        session.metadata = super::codex::redact_session_metadata_for_web(session.metadata.clone());
-        super::sessions::redact_session_list_item_for_web(session);
-    }
+    super::sessions::project_session_list_for_web(&mut sessions);
     Ok(sessions)
 }
 

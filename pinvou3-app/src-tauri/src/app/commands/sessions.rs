@@ -30,6 +30,17 @@ pub(crate) fn redact_session_list_item_for_web(item: &mut SessionListItem) {
     }
 }
 
+/// Whole-list web projection applied by `web_access_list_sessions`: metadata
+/// redaction plus `workspace_binding` degradation in one place, so the web
+/// entry point cannot ship half the projection (review #464 round-4 — the
+/// call site delegates here, which is what the test pins).
+pub(crate) fn project_session_list_for_web(items: &mut [SessionListItem]) {
+    for item in items.iter_mut() {
+        item.metadata = super::codex::redact_session_metadata_for_web(item.metadata.clone());
+        redact_session_list_item_for_web(item);
+    }
+}
+
 #[derive(Debug, Clone, Serialize)]
 pub struct HiddenSessionListItem {
     #[serde(flatten)]
@@ -1194,5 +1205,41 @@ mod web_projection_tests {
         item.workspace_binding = Some(r#"C:\Users\host\proj"#.to_string());
         redact_session_list_item_for_web(&mut item);
         assert_eq!(item.workspace_binding.as_deref(), Some("proj"));
+    }
+
+    /// `web_access_list_sessions` delegates to `project_session_list_for_web`;
+    /// this pins the whole-list contract (metadata + workspace_binding both
+    /// projected) so deleting the one-line application at the call site cannot
+    /// stay green (review #464 round-4 minor 3).
+    #[test]
+    fn project_session_list_for_web_projects_metadata_and_binding() {
+        let metadata: SessionMetadata = serde_json::from_value(serde_json::json!({
+            "id": "session-web-list",
+            "title": "Web list projection",
+            "created_at": "2026-01-01T00:00:00Z",
+            "updated_at": "2026-01-01T00:00:00Z",
+            "message_count": 0,
+            "total_tokens": 0,
+            "model": "test-model",
+            "workspace": "/Users/host/Documents/secret-project"
+        }))
+        .expect("metadata");
+        let mut items = vec![SessionListItem {
+            pinned: false,
+            pinned_at: None,
+            title_attachment_names: Vec::new(),
+            workspace_binding: Some("/Users/host/Documents/secret-project".to_string()),
+            metadata,
+        }];
+
+        project_session_list_for_web(&mut items);
+
+        let json = serde_json::to_value(&items[0]).expect("serialize projected item");
+        assert_eq!(json["workspace"], "secret-project");
+        assert_eq!(json["workspace_binding"], "secret-project");
+        assert!(
+            !json.to_string().contains("/Users/host"),
+            "no host path component may cross the web boundary"
+        );
     }
 }

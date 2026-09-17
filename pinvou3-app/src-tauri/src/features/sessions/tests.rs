@@ -4394,3 +4394,40 @@ fn rebind_workspace_bindings_covers_memory_only_legacy_entries() {
     let _ = std::fs::remove_dir_all(&from);
     let _ = std::fs::remove_dir_all(&to);
 }
+
+/// Corrupt-legacy preservation (review #464 round-4 minor 4 / round-3 minor 6):
+/// a `_session_workspaces.json` whose boot parse failed must survive a rebind —
+/// the degraded-path rewrite may only touch a file this process parsed.
+#[test]
+fn rebind_preserves_corrupt_legacy_workspaces_file() {
+    let (store, _g) = isolated_store();
+    let legacy = store
+        .manager
+        .sessions_dir()
+        .join("_session_workspaces.json");
+    std::fs::write(&legacy, b"{ not valid json").expect("write corrupt legacy file");
+
+    // Boot migration fails to parse: file kept, preservation flag set.
+    store.migrate_legacy_session_workspaces();
+    assert!(
+        legacy.is_file(),
+        "boot migration must keep the corrupt file"
+    );
+
+    // A rebind with an empty in-memory table must not delete the file.
+    let from = unique_temp_dir("rebind-corrupt-from");
+    std::fs::create_dir_all(&from).expect("create from");
+    let to = unique_temp_dir("rebind-corrupt-to");
+    std::fs::create_dir_all(&to).expect("create to");
+    store
+        .rebind_workspace_bindings(&from, &to)
+        .expect("rebind with empty table");
+    assert_eq!(
+        std::fs::read(&legacy).expect("legacy file must survive rebind"),
+        b"{ not valid json",
+        "corrupt-but-repairable legacy file must be preserved verbatim",
+    );
+
+    let _ = std::fs::remove_dir_all(&from);
+    let _ = std::fs::remove_dir_all(&to);
+}
