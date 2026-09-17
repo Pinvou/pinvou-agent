@@ -176,6 +176,13 @@ impl Pinvou3Bundle {
         // `if !bundle_changed` 提前返回之前——bundle 版本不变的老用户首次跑到新版本时
         // 也要完成导入；`legacy_imported` 闸使后续启动成为读一次的廉价 no-op。
         Self::import_legacy_bundle_store();
+        // 默认安装的预置 MCP 工具种子（session-reader 等）：无记录才装，排在
+        // write_mcp_servers 的已装记录内嵌校验之前，同一次启动内完成释放与注册。
+        // 明文密钥迁移失败时本轮不种子（与 write_mcp_servers 的搬迁门控同理：
+        // install 内部会重跑迁移，失败路径不得动旧布局），下个启动周期自愈。
+        if mcp_secret_migration_ok {
+            marketplace.ensure_default_installed_mcp_tools();
+        }
         // 强制迁移自定义 MCP（不在内嵌目录）到新布局：bundle/mcp-servers/<id>/ →
         // bundles/<id>/mcp/。排在技能迁移之前（四轮评审 M-7）：迁完后 available_tools
         // 才能从新布局读到自定义 MCP manifest 的 companion_skills 声明，技能迁移的
@@ -746,19 +753,6 @@ impl Pinvou3Bundle {
                 "args": [present_server.to_string_lossy()]
             }),
         );
-        // 只读会话查询 server(「引用对话」能力):args 直接带 --sessions-dir 绝对路径——
-        // 底座 child_env sanitize 不透传 PINVOU3_HOME,server 不能靠环境变量定位会话目录。
-        servers.insert(
-            "pinvou3_sessions".to_string(),
-            serde_json::json!({
-                "command": python_cmd.clone(),
-                "args": [
-                    paths::bundle_session_reader_server().to_string_lossy(),
-                    "--sessions-dir",
-                    paths::sessions_root().to_string_lossy()
-                ]
-            }),
-        );
         // Browser MCP lets Work-mode Agents operate the in-app native WebView and is
         // deliberately absent from global mcp.json. Only Work-mode sessions expose it.
         // Remove only historical entries owned by this app (commands targeting
@@ -1162,12 +1156,6 @@ impl Pinvou3Bundle {
         self.write_if_changed(
             &paths::bundle_mcp_python_runner(),
             MCP_PYTHON_DEPENDENCY_RUNNER_PY,
-        )?;
-        // session_reader（pinvou 内置只读会话查询，「引用对话」能力）：同 present
-        // 布局直放 mcp-servers/ 根，由 python command 拉起，无需可执行位。
-        self.write_if_changed(
-            &paths::bundle_session_reader_server(),
-            SESSION_READER_SERVER_PY,
         )?;
         if server_written {
             // 可执行位只在本次实际写出时补;内容未变时也不丢——上次写出后已设过。

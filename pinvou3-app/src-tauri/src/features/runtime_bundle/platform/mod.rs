@@ -147,12 +147,7 @@ pub(crate) use crate::platform::connector_skills::{
 ///       the semantic bump is required for connected users to refresh
 ///       at startup (otherwise the refresh waits for the post-first-frame
 ///       refresh_connector_auth_gates backfill).
-/// 0.33: 新增 session_reader 内置 MCP server(「引用对话」能力的只读查询工具,
-///       read_session 分页读 + list_sessions 标题搜索):mcp.json 注册
-///       (server key pinvou3_sessions,args 带 --sessions-dir 绝对路径)
-///       + server 脚本解包。ensure_builtin_mcp_servers 每次启动自愈 upsert,
-///       bump 语义版本让既有装机首启即完成注册与解包。
-pub const BUNDLE_VERSION: &str = concat!("0.33-", env!("BUNDLE_INSTRUCTIONS_HASH"));
+pub const BUNDLE_VERSION: &str = concat!("0.32-", env!("BUNDLE_INSTRUCTIONS_HASH"));
 
 /// pinvou3 内置的 instructions 共享骨架（Qwen3.6 适配 prompt），编译时内嵌。
 /// skeleton = identity / baseline / user memory (placeholder) / tool-and-fact discipline /
@@ -428,12 +423,6 @@ pub const PRESENT_ARTIFACT_SERVER_PY: &str =
     include_str!("../../../../resources/common/bundle/mcp-servers/present_artifact_server.py");
 pub const MCP_PYTHON_DEPENDENCY_RUNNER_PY: &str =
     include_str!("../../../../resources/common/bundle/mcp-servers/python_dependency_runner.py");
-
-/// session_reader MCP server 脚本(零依赖 python stdio),编译期内嵌,解包到
-/// `~/.pinvou3/bundle/mcp-servers/`。只读会话查询工具(read_session / list_sessions),
-/// 配合「引用对话」能力:引用只注入 sessionId+标题元信息,模型按需分页读取内容。
-pub const SESSION_READER_SERVER_PY: &str =
-    include_str!("../../../../resources/common/bundle/mcp-servers/session_reader_server.py");
 
 /// Zero-dependency Node.js stdio wrapper for Browser MCP. It coordinates the app-owned
 /// native WebView with Rust BrowserManager, then hosts vendored chrome-devtools-mcp through
@@ -1087,15 +1076,6 @@ mod tests {
         assert!(
             !mcp.contains("{{PINVOU3_PRESENT_SERVER}}"),
             "mcp.json 的 server 路径占位符应被替换"
-        );
-        // session_reader MCP server 同样应解包 + 注册(只读会话查询,「引用对话」能力)。
-        assert!(
-            paths::bundle_session_reader_server().is_file(),
-            "session_reader server 脚本应被解包"
-        );
-        assert!(
-            mcp.contains("session_reader_server.py"),
-            "mcp.json 应注册 session_reader server 的绝对路径"
         );
         // present server key 必须是 pinvou3(对齐产品名,消除模型把 pinvou 漂成 pinvou3 的撞脸);
         // 旧 pinvou 名不残留。
@@ -1881,21 +1861,6 @@ mod tests {
             servers.keys().collect::<Vec<_>>()
         );
         assert!(!servers.contains_key("pinvou"), "旧 pinvou 不残留");
-        let session_reader = servers
-            .get("pinvou3_sessions")
-            .expect("坏 mcp.json 自愈后应恢复 pinvou3_sessions 条目");
-        let args = session_reader["args"].as_array().unwrap();
-        assert!(
-            args.iter().any(|a| a
-                .as_str()
-                .is_some_and(|s| s.contains("session_reader_server.py"))),
-            "pinvou3_sessions args 应指向 session_reader 脚本,实际={args:?}"
-        );
-        assert!(
-            args.windows(2).any(|w| w[0] == "--sessions-dir"
-                && w[1].as_str() == Some(paths::sessions_root().to_string_lossy().as_ref())),
-            "pinvou3_sessions args 应带 --sessions-dir <sessions_root>,实际={args:?}"
-        );
         cleanup(&tmp);
     }
 

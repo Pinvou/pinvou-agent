@@ -422,6 +422,11 @@ pub fn install_mcp_secret_resolver() {
     }));
 }
 
+/// 默认安装的预置 MCP 工具（外围能力的模型工具以插件中心插件形态存在：
+/// 默认安装保证「引用对话」等能力开箱可用；用户可在工具商店卸载/重装，
+/// 卸载留有记录即尊重，不会重复装）。
+pub const DEFAULT_INSTALLED_MCP_TOOLS: &[&str] = &["session-reader"];
+
 /// 当前(plain)被禁用连接器 → 模型可见工具全名(喂给引擎 disallowed_tools 的)。
 pub fn disabled_tool_names() -> Vec<String> {
     disabled_tool_names_for(ConnectorScope::Plain)
@@ -718,6 +723,28 @@ impl<S: CredentialStore> MarketplaceManager<S> {
 
     /// 安装工具：写 installed.json + 更新 mcp.json
     /// `user_config` 是前端传入的用户配置（如 API Key），对应 config_fields
+    /// 启动种子：默认安装的预置 MCP 工具在 BundleStore 无记录时走标准 install
+    /// 管线装上（新装/升级到首个包含该工具的版本都会在此拿到）；已有记录
+    /// （已装/已卸/任何来源）一律尊重。失败只落日志，不阻塞启动。
+    /// MarketplaceManager 的方法（不是自由函数）：与 ensure_extracted 共用同一
+    /// 管理器实例，避免种子里的 install 用另一套凭据存储重复跑明文迁移。
+    pub fn ensure_default_installed_mcp_tools(&self) {
+        let store = store::BundleStore::new();
+        for id in DEFAULT_INSTALLED_MCP_TOOLS {
+            match store.get(id) {
+                Ok(Some(_)) => {}
+                Ok(None) => {
+                    if let Err(e) = self.install(id, &std::collections::HashMap::new()) {
+                        log::warn!("[marketplace] 默认安装 '{id}' 失败(不阻塞启动): {e}");
+                    }
+                }
+                Err(e) => {
+                    log::warn!("[marketplace] 读取 BundleStore 失败,跳过默认安装 '{id}': {e}")
+                }
+            }
+        }
+    }
+
     pub fn install(
         &self,
         tool_id: &str,
@@ -3354,6 +3381,51 @@ mod tests {
         });
     }
 
+    /// 默认安装种子:无记录 → 装上并登记 preset+installed;已有记录(含已卸载)
+    /// → 尊重现状不重复装。种子失败路径(记录读取失败)只落日志不 panic。
+    #[test]
+    fn ensure_default_installed_mcp_tools_seeds_only_missing_records() {
+        with_temp_home(|| {
+            crate::platform::paths::ensure_dirs().unwrap();
+            for id in DEFAULT_INSTALLED_MCP_TOOLS {
+                assert!(
+                    store::BundleStore::new().get(id).unwrap().is_none(),
+                    "种子前不应有 {id} 记录"
+                );
+            }
+            MarketplaceManager::new().ensure_default_installed_mcp_tools();
+            let store = store::BundleStore::new();
+            for id in DEFAULT_INSTALLED_MCP_TOOLS {
+                let record = store.get(id).unwrap().expect("种子后应有记录");
+                assert!(record.installed, "{id} 应为已安装");
+                assert_eq!(record.source, store::BundleSource::Preset);
+                // 标准 install 管线的落盘面:mcp.json 条目 + 包目录释放。
+                let mcp =
+                    std::fs::read_to_string(crate::platform::paths::mcp_config_path()).unwrap();
+                assert!(mcp.contains(id), "mcp.json 应注册 {id}");
+                assert!(
+                    crate::features::marketplace::mcp_catalog::package_mcp_dir(id)
+                        .join("server.py")
+                        .is_file(),
+                    "{id} 的 server.py 应释放到包目录"
+                );
+            }
+            // 用户卸载(记录保留 installed=false)后再跑种子:尊重卸载,不重装。
+            let store = store::BundleStore::new();
+            for id in DEFAULT_INSTALLED_MCP_TOOLS {
+                let mut record = store.get(id).unwrap().unwrap();
+                record.installed = false;
+                store.upsert_preserving(record).unwrap();
+            }
+            MarketplaceManager::new().ensure_default_installed_mcp_tools();
+            for id in DEFAULT_INSTALLED_MCP_TOOLS {
+                assert!(
+                    !store.get(id).unwrap().unwrap().installed,
+                    "已卸载的 {id} 不应被种子重装"
+                );
+            }
+        });
+    }
     #[test]
     fn sync_deny_all_scopes_after_install_keeps_new_connector_disabled_by_default() {
         with_temp_home(|| {
