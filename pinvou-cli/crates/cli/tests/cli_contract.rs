@@ -489,7 +489,10 @@ fn invalid_output_value_fails_fast_with_usage_error() {
     // command" error.
     let error = parse_args(["pinvou", "--output", "yaml", "benchmark", "list"]).unwrap_err();
     assert_eq!(error.exit_code(), ExitCode::Usage);
-    assert_eq!(error.to_string(), "--output requires human or json");
+    assert_eq!(
+        error.to_string(),
+        "--output requires human or json (submission files use --destination)"
+    );
 }
 
 #[test]

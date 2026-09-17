@@ -102,15 +102,6 @@ pub struct ProfilePatch {
     pub style_notes: Option<Vec<String>>,
 }
 
-#[derive(Debug, Clone, Default, Serialize, Deserialize)]
-pub struct RecentWorkPatch {
-    pub id: Option<String>,
-    pub title: String,
-    pub summary: Option<String>,
-    pub source: Option<String>,
-    pub ttl_days: Option<i64>,
-}
-
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub struct RecentWorkItem {
     pub id: String,

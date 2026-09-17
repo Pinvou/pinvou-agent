@@ -390,6 +390,11 @@ pub fn sync_deny_all_scopes_after_install(raw_id: &str) {
     }
 }
 
+/// Sync every scope after a bundle uninstall/disconnect: drop the id from each
+/// scope's disabled and visibility sets so no stale entry keeps pointing at a
+/// missing package. Shared entry point for connector, skill, and package
+/// teardown: the argument may be a connector id / skill id / package id and is
+/// normalized to the package id.
 pub fn remove_bundle_from_disabled_scopes(raw_id: &str) {
     let package_id = to_package_id(raw_id);
     let _guard = DISABLED_BUNDLES_FILE_LOCK

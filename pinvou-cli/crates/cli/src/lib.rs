@@ -245,9 +245,11 @@ where
     let mut index = 0;
     while index < values.len() {
         if values[index] == "--output" {
-            let value = values
-                .get(index + 1)
-                .ok_or_else(|| CliError::usage("--output requires human or json"))?;
+            let value = values.get(index + 1).ok_or_else(|| {
+                CliError::usage(
+                    "--output requires human or json (submission files use --destination)",
+                )
+            })?;
             match value.as_str() {
                 "human" => {
                     output = OutputMode::Human;
@@ -259,8 +261,14 @@ where
                 }
                 // Fail fast instead of leaving the unrecognized token in argv,
                 // where it would later surface as a misleading
-                // "unknown benchmark command" usage error.
-                _ => return Err(CliError::usage("--output requires human or json")),
+                // "unknown benchmark command" usage error. The legacy
+                // `--output <file>` submission alias was removed with it;
+                // file destinations are spelled `--destination`.
+                _ => {
+                    return Err(CliError::usage(
+                        "--output requires human or json (submission files use --destination)",
+                    ));
+                }
             }
         } else {
             index += 1;
@@ -365,19 +373,11 @@ fn parse_gaia_score(values: &[String]) -> Result<BenchmarkCommand, CliError> {
 
 fn parse_gaia_submission(values: &[String]) -> Result<BenchmarkCommand, CliError> {
     require_gaia(values, "submission")?;
-    let options = named_options(&values[3..], &["--run-id", "--destination", "--output"])?;
+    let options = named_options(&values[3..], &["--run-id", "--destination"])?;
     let run_id = option(&options, "--run-id")
         .map(str::to_owned)
         .ok_or_else(|| CliError::usage("benchmark submission gaia requires --run-id"))?;
-    let destination = option(&options, "--destination");
-    let legacy_output = option(&options, "--output");
-    if destination.is_some() && legacy_output.is_some() {
-        return Err(CliError::usage(
-            "benchmark submission gaia accepts one destination",
-        ));
-    }
-    let output = destination
-        .or(legacy_output)
+    let output = option(&options, "--destination")
         .map(PathBuf::from)
         .ok_or_else(|| CliError::usage("benchmark submission gaia requires --destination"))?;
     Ok(BenchmarkCommand::SubmissionGaia { run_id, output })

@@ -276,6 +276,9 @@ function RemoteKnowledgeView({ t, embedded = false }) {
     } finally {
       releaseBusy(key);
     }
+  // releaseBusy 是 useCallback([]) 恒稳定引用；oxlint memo-dependencies 视为多余依赖，
+  // 而 eslint exhaustive-deps 要求列入——保留依赖并豁免 oxlint 这一条。
+  // oxlint-disable-next-line react/memo-dependencies -- stable useCallback([]) reference
   }, [releaseBusy]);
 
   async function copyWithFeedback(value, successMessage, local = false) {

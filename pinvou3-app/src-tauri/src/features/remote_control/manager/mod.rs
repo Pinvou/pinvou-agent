@@ -240,8 +240,6 @@ struct Inner {
     web_attachment_uploads: HashMap<String, WebAttachmentUpload>,
     web_attachment_upload_order: VecDeque<String>,
     web_workspace_grants: WebWorkspaceGrantStore,
-    web_session_uploads: HashMap<String, WebSessionUpload>,
-    web_session_upload_order: VecDeque<String>,
     web_session_downloads: HashMap<String, WebSessionDownload>,
     web_session_download_order: VecDeque<String>,
     pending_revocations_in_flight: HashSet<String>,
@@ -268,23 +266,12 @@ impl Default for Inner {
             web_attachment_uploads: HashMap::new(),
             web_attachment_upload_order: VecDeque::new(),
             web_workspace_grants: WebWorkspaceGrantStore::default(),
-            web_session_uploads: HashMap::new(),
-            web_session_upload_order: VecDeque::new(),
             web_session_downloads: HashMap::new(),
             web_session_download_order: VecDeque::new(),
             pending_revocations_in_flight: HashSet::new(),
             code_session_predicate: None,
         }
     }
-}
-
-#[derive(Debug)]
-struct WebSessionUpload {
-    session_id: String,
-    expected_revision: String,
-    total: usize,
-    data: Vec<u8>,
-    last_touched: Instant,
 }
 
 /// 浏览器本机文件分块上传的内存累积缓冲。落盘与 ingest 只发生在最后一块提交时。

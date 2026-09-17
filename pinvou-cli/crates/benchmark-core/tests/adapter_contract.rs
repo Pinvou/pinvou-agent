@@ -1,4 +1,4 @@
-use std::path::{Path, PathBuf};
+use std::path::Path;
 use std::time::Duration;
 
 use agent_backend_api::{AttachmentHandle, PrivateInputHandle};
@@ -95,10 +95,7 @@ fn adapter_contract_plans_prepares_scores_and_writes_submission() {
     );
     let plan = adapter.plan(&dataset, &TaskSelection::all()).unwrap();
     let prepared = adapter
-        .prepare_task(
-            &plan.tasks()[0],
-            &RunContext::new("run-1", PathBuf::from("run")),
-        )
+        .prepare_task(&plan.tasks()[0], &RunContext::new("run-1"))
         .unwrap();
     let run = CompletedRun::new(
         "run-1",

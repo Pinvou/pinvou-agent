@@ -75,7 +75,7 @@ function injectSource() {
         case 'get_active_persona': return Promise.resolve(null);
         case 'list_deliverable_index': return Promise.resolve(OUTPUTS);
         // ---- kb_* ----
-        case 'kb_scan_status': return Promise.resolve({running:false,phase:'done',scanned:1248,dedupDone:0,dedupTotal:0});
+        case 'kb_scan_status': return Promise.resolve({running:false,phase:'done',scanned:1248});
         case 'kb_stats': return Promise.resolve({totalFiles:1248,totalBytes:9e9,hashed:1248,duplicateGroups:3,duplicateFiles:7,duplicateWastedBytes:1048576});
         case 'kb_type_counts': return Promise.resolve([{ext:'pdf',count:230},{ext:'docx',count:120},{ext:'xlsx',count:80},{ext:'md',count:60},{ext:'png',count:274},{ext:'zip',count:18}]);
         case 'kb_search': return Promise.resolve(FILES);

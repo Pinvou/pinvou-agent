@@ -40,6 +40,9 @@ for (const language of ['zh', 'en', 'ja']) {
     'login', 'logout', 'loginWaiting', 'openLoginUrl', 'loginCodePlaceholder', 'submitCode', 'logoutRelayDisabled',
     'cancelInstall', 'installCancelled',
     'modelSlotsTitle', 'modelSlotsHint', 'modelSlotsRequired',
+    // 注意：ProviderFormModal 用 `copy[`slot_${slot}`]` 动态取键（CLAUDE_MODEL_SLOT_IDS），
+    // 静态扫描查不到消费方，此处断言是防误删的唯一钉子。
+    'slot_opus', 'slot_sonnet', 'slot_haiku', 'slot_fable', 'slot_subagent',
     'contextWindow', 'contextWindowHint', 'contextWindowInvalid',
   ]) {
     assert.ok(dict[language].uiAcpProviders[key], `${language}.uiAcpProviders.${key} must exist`);

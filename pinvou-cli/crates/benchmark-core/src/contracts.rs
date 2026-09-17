@@ -456,9 +456,7 @@ pub struct RunContext {
     run_id: String,
 }
 impl RunContext {
-    /// The `run_root` parameter is kept for signature compatibility with
-    /// existing callers; the context no longer stores it.
-    pub fn new(run_id: impl Into<String>, _run_root: PathBuf) -> Self {
+    pub fn new(run_id: impl Into<String>) -> Self {
         Self {
             run_id: run_id.into(),
         }

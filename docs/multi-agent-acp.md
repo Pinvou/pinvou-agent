@@ -105,8 +105,8 @@ Kimi 不经过独立 Bridge，因此 `bridge_ready` 恒为 `true`；CLI 缺失�
 状态。Codex 被服务端标记 `update_required` 后，只有重新探测到的实际版本发生变化才
 解除升级门禁；包管理器返回“已是最新版”但版本未变时仍保持不可用。安装、升级及运行时
 错误也按 Agent 独立保存，不会跨 Agent 展示或互相清除。官方脚本和包管理器升级没有统一
-进度协议，前端显示进行中 spinner。旧命令
-`prepare_codex_acp`、`install_codex_homebrew` 保留不删除（向后兼容），前端改用新命令。
+进度协议，前端显示进行中 spinner。旧命令 `prepare_codex_acp`、`install_codex_homebrew`
+已随死代码清扫（PR #539）删除：它们在删除前已无任何前端调用方，前端只使用上述新命令。
 
 ## 架构边界
 

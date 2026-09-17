@@ -2087,36 +2087,6 @@ fn webdriver_error(value: &Value, status: u16) -> String {
     format!("WebKitWebDriver HTTP {status}: {detail}")
 }
 
-fn finite_coordinate(value: f64) -> Result<i64, String> {
-    if !value.is_finite() {
-        return Err("browser/invalid-input-coordinate".to_string());
-    }
-    Ok(value.round() as i64)
-}
-
-fn pointer_move(x: f64, y: f64, duration: u64) -> Result<Value, String> {
-    Ok(json!({
-        "type": "pointerMove",
-        "duration": duration,
-        "origin": "viewport",
-        "x": finite_coordinate(x)?,
-        "y": finite_coordinate(y)?,
-    }))
-}
-
-fn pointer_source(actions: Vec<Value>) -> Value {
-    json!({
-        "type": "pointer",
-        "id": "pinvou-pointer",
-        "parameters": { "pointerType": "mouse" },
-        "actions": actions,
-    })
-}
-
-fn key_source(actions: Vec<Value>) -> Value {
-    json!({ "type": "key", "id": "pinvou-keyboard", "actions": actions })
-}
-
 fn key_value(value: &str) -> &str {
     match value {
         "Enter" => "\u{E007}",

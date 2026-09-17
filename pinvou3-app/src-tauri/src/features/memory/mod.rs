@@ -28,9 +28,8 @@ mod util;
 pub use self::types::{
     InjectedMemoryItem, MemoryProfile, MemoryReviewModel, MemoryReviewOutcome, MemorySuggestion,
     MemoryTextPatch, MemoryWriteEvent, NeverMemoryItem, PendingMemoryItem, PreferenceFile,
-    ProfileConventions, ProfileIdentity, ProfilePatch, RecentWorkItem, RecentWorkPatch,
-    RuntimeMemorySnapshot, TimedMemoryItem, TopicMutation, TopicRead, TurnMemoryCapture,
-    WorkContextFile,
+    ProfileConventions, ProfileIdentity, ProfilePatch, RecentWorkItem, RuntimeMemorySnapshot,
+    TimedMemoryItem, TopicMutation, TopicRead, TurnMemoryCapture, WorkContextFile,
 };
 
 // ---- 路径访问器（io）----

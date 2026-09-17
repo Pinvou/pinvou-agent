@@ -31,7 +31,7 @@ function loadSessionsFeature(overrides) {
     setItem(key, value) { storage.set(key, String(value)); },
     removeItem(key) { storage.delete(key); },
   };
-  const root = { __PINVOU_SHARED_I18N__: {} };
+  const root = {};
   const src = fs.readFileSync(path.join(bridgeDir, 'sessions.js'), 'utf8');
   vm.runInNewContext(src, { window: root, globalThis: root, localStorage, setTimeout, clearTimeout });
   const factory = root.__PINVOU_TAURI_BRIDGE_FEATURES__.sessions;
