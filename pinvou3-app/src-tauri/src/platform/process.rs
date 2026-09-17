@@ -651,6 +651,25 @@ mod tests {
         assert!(started.elapsed() < Duration::from_secs(5));
     }
 
+    /// The plain variant (no tree kill) leaves the `sleep` grandchild alive
+    /// and holding the inherited pipes: joining the readers would block this
+    /// call forever past its own deadline. The timeout error must come back
+    /// promptly with the plain (non-tree) termination note.
+    #[cfg(unix)]
+    #[test]
+    fn plain_timeout_does_not_wait_for_a_descendant_holding_the_pipes() {
+        let mut command = Command::new("sh");
+        command.args(["-c", "sleep 30 & wait"]);
+        let started = Instant::now();
+
+        let error = output_with_timeout(command, Duration::from_millis(100)).unwrap_err();
+
+        assert!(error.contains("timed out after"));
+        assert!(error.contains("subprocess termination requested"));
+        assert!(!error.contains("tree termination"));
+        assert!(started.elapsed() < Duration::from_secs(5));
+    }
+
     /// Unix group kills must go through kill(2) directly. This is the
     /// regression test for the 2026-09-04 desktop-session massacres: the
     /// timeout path spawned external `/usr/bin/kill -9 -<pgid>` and

@@ -368,17 +368,24 @@ async fn adopt_upload(
 
     if tokio::fs::try_exists(&target_dir).await.unwrap_or(false) {
         let (_, target_file) = managed_completed_file(target_workspace, upload_id).await?;
-        return match ingest_managed_file(&target_file) {
-            Ok(result) => {
-                let _ =
-                    remove_dir_if_present(&upload_completed_dir(source_workspace, upload_id)).await;
-                Ok(result)
+        // 与下方首次采纳分支一致：摄入跑 LibreOffice/pandoc 子进程（分钟级），
+        // 必须离开 async worker 线程。
+        let ingest_path = target_file.clone();
+        let ingest_result =
+            tokio::task::spawn_blocking(move || ingest_managed_file(&ingest_path)).await;
+        let result = match ingest_result {
+            Ok(Ok(result)) => result,
+            Ok(Err(error)) => {
+                let _ = remove_dir_if_present(&target_dir).await;
+                return Err(error);
             }
             Err(error) => {
                 let _ = remove_dir_if_present(&target_dir).await;
-                Err(error)
+                return Err(format!("摄入任务失败：{error}"));
             }
         };
+        let _ = remove_dir_if_present(&upload_completed_dir(source_workspace, upload_id)).await;
+        return Ok(result);
     }
 
     let (source_dir, source_file) = managed_completed_file(source_workspace, upload_id).await?;
@@ -518,11 +525,19 @@ pub async fn append_chunk(
         .await
         .map_err(|error| format!("提交会话附件失败：{error}"))?;
     let completed_path = completed_dir.join(filename);
-    let result = match ingest_managed_file(&completed_path) {
-        Ok(result) => result,
-        Err(error) => {
+    // 与 adopt_upload 一致：摄入跑 LibreOffice/pandoc 子进程（分钟级），
+    // 必须离开 async worker 线程。
+    let ingest_result =
+        tokio::task::spawn_blocking(move || ingest_managed_file(&completed_path)).await;
+    let result = match ingest_result {
+        Ok(Ok(result)) => result,
+        Ok(Err(error)) => {
             let _ = remove_dir_if_present(&completed_dir).await;
             return Err(error);
+        }
+        Err(error) => {
+            let _ = remove_dir_if_present(&completed_dir).await;
+            return Err(format!("摄入任务失败：{error}"));
         }
     };
     Ok(Some(result))

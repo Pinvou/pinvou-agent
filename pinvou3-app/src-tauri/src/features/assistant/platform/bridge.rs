@@ -2234,8 +2234,9 @@ impl Pinvou3Bridge {
                 // routinely take longer than the previous 5s, and a hook
                 // timeout here silently drops the injected PATH/SDK env for
                 // every exec_shell call (the foundation contract contributes
-                // no vars and only warns). The script itself bounds the login
-                // shell at 15s, so this budget covers it with margin.
+                // no vars and only warns). The script bounds the login shell
+                // at 15s where GNU timeout exists; on stock macOS this
+                // per-hook budget is the only bound.
                 timeout_secs: 20,
                 background: false,
                 continue_on_error: false,
@@ -2245,10 +2246,16 @@ impl Pinvou3Bridge {
             hooks
         };
 
+        // No global default: the foundation replaces every per-hook
+        // timeout_secs with `default_timeout_secs` when it is set
+        // (`HooksConfig::effective_timeout_secs`), which would silently cap
+        // the shell-env hook back to 5s and defeat the budget above. Every
+        // hook here declares its own timeout explicitly; leaving this unset
+        // is behavior-identical to the old Some(5) for all of them (5s == 5s).
         HooksConfig {
             enabled: true,
             hooks,
-            default_timeout_secs: Some(5),
+            default_timeout_secs: None,
             working_dir: None,
             problems: Vec::new(),
         }

@@ -112,6 +112,19 @@ impl<'a> Drop for PartGuard<'a> {
 /// helper 以闭包承载各调用方的取消源,这里在 select 分支内轮询该闭包恢复响应性。
 const CANCEL_POLL_INTERVAL: std::time::Duration = std::time::Duration::from_millis(50);
 
+/// 大文件下载（语音模型、知识包）的单次读取空闲上限：传输中途停止发送的
+/// 服务端应尽快报错，而不是把进度条永远停在 N%。这是空闲上限而非总时长
+/// 上限——大文件合法地需要传输很多分钟。
+pub(crate) const DOWNLOAD_READ_IDLE_TIMEOUT: std::time::Duration =
+    std::time::Duration::from_secs(30);
+
+/// 归档类工件下载（连接器 native_installer / marketplace python_dependencies）
+/// 的总时长上限：归档有 128/64 MiB 的硬上限，总量上限可计算；慢链路要求
+/// ~150 KB/s 也能完成。reqwest 0.13 的 blocking 客户端没有 read_timeout，
+/// 只能以总时长兜底，与 async 下载器的空闲上限是两种互补策略。
+pub(crate) const ARTIFACT_DOWNLOAD_TOTAL_TIMEOUT: std::time::Duration =
+    std::time::Duration::from_secs(900);
+
 pub(crate) async fn download_to_part_with_verify(
     mut req: DownloadRequest<'_>,
 ) -> Result<(), String> {
@@ -124,12 +137,7 @@ pub(crate) async fn download_to_part_with_verify(
     let client = {
         let mut builder = reqwest::Client::builder()
             .connect_timeout(std::time::Duration::from_secs(15))
-            // Per-read idle bound, NOT a total deadline: large files (voice
-            // models, knowledge packages) legitimately take many minutes, but
-            // a server that stops sending mid-transfer would otherwise stall
-            // the progress bar at N% forever with no error until the user
-            // cancels manually.
-            .read_timeout(std::time::Duration::from_secs(30))
+            .read_timeout(DOWNLOAD_READ_IDLE_TIMEOUT)
             .redirect(reqwest::redirect::Policy::default());
         if let Some(ua) = req.user_agent {
             builder = builder.user_agent(ua);

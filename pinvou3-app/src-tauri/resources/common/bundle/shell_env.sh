@@ -17,12 +17,13 @@ fi
 # env -0 避免普通空格、引号和等号破坏解析。最终只输出单行 KEY=VALUE，因为
 # CodeWhale 的 shell_env 契约就是逐行解析。
 #
-# 登录 shell 自身带 15s 上限（macOS 无 GNU timeout 时退化为不限时）：nvm /
-# conda / pyenv 初始化拖慢 profile 时，宁可放弃注入也不无限等待；被超时杀掉
-# 时通过 stderr 与退出码 124 暴露降级，而不是静默丢环境。
+# 登录 shell 自身带 15s 上限（macOS 无 GNU timeout 时退化为不限时，此时唯一
+# 的兜底是 hook 预算 20s）：nvm / conda / pyenv 初始化拖慢 profile 时，宁可
+# 放弃注入也不无限等待；被超时杀掉时通过 stderr 与退出码 124 暴露降级，而不是
+# 静默丢环境。-k 2 兜住忽略 SIGTERM 的 profile：TERM 后再宽限 2s 强杀。
 collect_login_env() {
     if command -v timeout >/dev/null 2>&1; then
-        timeout 15 "$login_shell" -lc 'printf "\0PINVOU3_SHELL_ENV_START\0"; env -0'
+        timeout -k 2 15 "$login_shell" -lc 'printf "\0PINVOU3_SHELL_ENV_START\0"; env -0'
     else
         "$login_shell" -lc 'printf "\0PINVOU3_SHELL_ENV_START\0"; env -0'
     fi

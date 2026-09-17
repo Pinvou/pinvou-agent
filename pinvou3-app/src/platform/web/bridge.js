@@ -4103,10 +4103,29 @@ function dismissPinvouReview() { return pinvouSharedweb().dismissPinvouReview();
   // 把当前 session 的审查时间线(含勾选写回的 resolution)重新落盘。返回 promise 供 await。
 function persistPinvouReviews() { return pinvouSharedweb().persistPinvouReviews(); }
 
+  // Same transport timeout as the Tauri bridge's stop/interrupt cancels
+  // (STEER_INVOKE_TIMEOUT_MS there): a wedged engine never settles the
+  // invoke, and without the race this function never returns — ChatView's
+  // single-flight flag never clears and the stop button stays disabled
+  // forever. Cancel is idempotent, so a late settle/rejection is harmless.
+  const CANCEL_INVOKE_TIMEOUT_MS = 25_000;
+
   async function cancelGeneration() {
     if (!state.busy) return;
     try {
-      await invoke("cancel_generation", { sessionId: state.activeSessionId });
+      const cancelPromise = invoke("cancel_generation", { sessionId: state.activeSessionId });
+      let cancelTimeoutId = null;
+      const cancelTimeout = new Promise(function (_, reject) {
+        cancelTimeoutId = setTimeout(function () {
+          reject(new Error("cancel_generation timed out"));
+        }, CANCEL_INVOKE_TIMEOUT_MS);
+      });
+      cancelPromise.catch(function () { /* swallow the late rejection after a timeout */ });
+      try {
+        await Promise.race([cancelPromise, cancelTimeout]);
+      } finally {
+        clearTimeout(cancelTimeoutId);
+      }
     } catch (e) {
       console.warn("cancel failed", e);
     }
