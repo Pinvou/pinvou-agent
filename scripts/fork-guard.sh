@@ -11,16 +11,6 @@ EXPECTED_COMMITS=36
 # 过渡期锚点：不可变 r1 tag 的收口 commit。层 0 断言它是当前 head 的祖先，
 # 即 gitlink 沿维护分支领先 tag 而非另起分叉；r2 收口后随 TAG 常量一起退役。
 R1_CLOSURE="1fafee7e26b60a59457a43bce50c63aa2ad9dbaf"
-# Candidate registration: the skills phantom-tool text candidate (review
-# branch fix/skills-phantom-tool-text, paired CodeWhale PR #56) is seven
-# commits above the registered maintenance head while its CodeWhale PR is
-# open. Layer 0 accepts the registered head or this candidate; re-pin the
-# entry when the candidate rebases and retire it once the commit lands on
-# pinvou3-clean (see docs/fork-modifications.md, the T3 section).
-# verify-public-submodule.sh stays red for the pinned candidate: that is
-# the registered candidate-period state, not a regression.
-CANDIDATE_HEAD="dc1f391d6e8876f9627284a868ea7d3cf279326a"
-CANDIDATE_COMMITS=36
 FAST_ONLY=0
 
 case "${1:-}" in
@@ -37,14 +27,10 @@ fail=0
 
 bold "── 第 0 层：v0.9.12 clean re-fork 拓扑（r1 tag 之后 21 个登记提交，r2 收口未切 tag）──"
 actual_head="$(git -C "$CODEWHALE" rev-parse HEAD 2>/dev/null || true)"
-registered_commits="$EXPECTED_COMMITS"
 if [[ "$actual_head" == "$EXPECTED_HEAD" ]]; then
   green "  ✓ CodeWhale gitlink 指向登记 head ${EXPECTED_HEAD}（过渡期：gitlink 领先 r1 tag，见 fork-policy 第 0 节豁免）"
-elif [[ -n "$CANDIDATE_HEAD" && "$actual_head" == "$CANDIDATE_HEAD" ]]; then
-  registered_commits="$CANDIDATE_COMMITS"
-  green "  ✓ CodeWhale gitlink pinned to the registered candidate ${CANDIDATE_HEAD} (registered head + $((CANDIDATE_COMMITS - EXPECTED_COMMITS)) candidate commit(s))"
 else
-  red "  ✗ CodeWhale HEAD is ${actual_head:-<unreadable>}; expected the registered head $EXPECTED_HEAD or the registered candidate ${CANDIDATE_HEAD:-<none>}"
+  red "  ✗ CodeWhale HEAD 为 ${actual_head:-<unreadable>}，登记 head 为 $EXPECTED_HEAD"
   fail=1
 fi
 
@@ -63,10 +49,10 @@ else
 fi
 
 commit_count="$(git -C "$CODEWHALE" rev-list --count "$EXPECTED_UPSTREAM..HEAD" 2>/dev/null || true)"
-if [[ "$commit_count" == "$registered_commits" ]]; then
-  green "  ✓ v0.9.12 之上 $commit_count 个登记提交"
+if [[ "$commit_count" == "$EXPECTED_COMMITS" ]]; then
+  green "  ✓ v0.9.12 之上 $EXPECTED_COMMITS 个登记提交"
 else
-  red "  ✗ v0.9.12 之上有 ${commit_count:-<unreadable>} 个 commit，登记值为 $registered_commits"
+  red "  ✗ v0.9.12 之上有 ${commit_count:-<unreadable>} 个 commit，登记值为 $EXPECTED_COMMITS"
   fail=1
 fi
 
