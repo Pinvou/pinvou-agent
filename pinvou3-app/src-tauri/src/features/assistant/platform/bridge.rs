@@ -568,7 +568,7 @@ impl Pinvou3Bridge {
     /// bound user working directory) return the bound directory (engine cwd and the
     /// shell execution directory both derive from it); other sessions return the
     /// session-private directory.
-    /// 等价于 [`Self::session_roots`] 的 `execution` 字段。
+    /// 等价于 `Self::session_roots` 的 `execution` 字段。
     pub fn session_workspace(&self, session_id: &str) -> std::path::PathBuf {
         self.session_roots(session_id).execution
     }
@@ -706,7 +706,7 @@ impl Pinvou3Bridge {
     /// directory, so behavior is byte-for-byte unchanged.
     ///
     /// `execution_workspace` 必须来自 [`Self::session_workspace`]（或
-    /// [`Self::session_roots`] 的 `execution` 字段）。对 ledger 与 execution 相同的
+    /// `Self::session_roots` 的 `execution` 字段）。对 ledger 与 execution 相同的
     /// sessions (unbound plain / scratch code / scheduled), return the incoming
     /// execution root as-is,
     /// scheduled 会话写其项目目录的既有行为。

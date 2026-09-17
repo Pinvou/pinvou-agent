@@ -401,7 +401,7 @@ impl BundleStore {
         save_locked(&self.file, &file)
     }
 
-    /// 读取记录的 SKILL.md 原说明备份（[`EXTRA_SKILL_DESC_BACKUP`]；缺 key /
+    /// 读取记录的 SKILL.md 原说明备份（`EXTRA_SKILL_DESC_BACKUP`；缺 key /
     /// 非字符串 → None；`Some("")` = 原缺失哨兵）。清空展示说明的恢复路径用。
     pub fn skill_desc_backup(&self, id: &str) -> Result<Option<String>, String> {
         let _guard = file_lock();
@@ -415,7 +415,7 @@ impl BundleStore {
             .map(str::to_string))
     }
 
-    /// 设置/删除 [`EXTRA_SKILL_DESC_BACKUP`]（与 `set_display_meta` 同锁同门禁：
+    /// 设置/删除 `EXTRA_SKILL_DESC_BACKUP`（与 `set_display_meta` 同锁同门禁：
     /// 仅 Upload 记录可写）。值由内部读取/校验管线产生（引擎口径原值或空串哨兵），
     /// 不做展示字段校验；`None` = 删除 key。
     pub fn set_skill_desc_backup(&self, id: &str, backup: Option<&str>) -> Result<(), String> {
