@@ -11,13 +11,20 @@
 //! 解析失败(无 GPU 字典、输出格式变化)→ None,前端显示「状态不可用」,
 //! 与现有 graceful degrade 原则一致。
 
-use super::super::GpuSnapshot;
+use super::super::{GPU_PROBE_TIMEOUT, GpuSnapshot};
 
 pub fn gpu_snapshot() -> Option<GpuSnapshot> {
-    let out = std::process::Command::new("/usr/sbin/ioreg")
-        .args(["-r", "-c", "IOAccelerator", "-d", "1"])
-        .output()
-        .ok()?;
+    // ioreg 与 nvidia-smi 同样可能挂死（驱动/系统服务争用），共享同一探测预算，
+    // 超时按「本机无数据」降级，不能让 1Hz 的监控轮询永久卡住。
+    let out = crate::platform::process::output_with_timeout(
+        {
+            let mut command = crate::platform::process::HiddenCommand::new("/usr/sbin/ioreg");
+            command.args(["-r", "-c", "IOAccelerator", "-d", "1"]);
+            command
+        },
+        GPU_PROBE_TIMEOUT,
+    )
+    .ok()?;
     if !out.status.success() {
         return None;
     }

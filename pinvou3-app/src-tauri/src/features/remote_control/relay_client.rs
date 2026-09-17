@@ -20,6 +20,16 @@ const RECONNECT_BASE_DELAY_MS: u64 = 500;
 const RECONNECT_MAX_DELAY_MS: u64 = 10_000;
 const HEARTBEAT_INTERVAL: Duration = Duration::from_secs(25);
 const REVOKE_ACK_TIMEOUT: Duration = Duration::from_secs(12);
+
+/// True when nothing inbound has arrived for two full heartbeat windows: a
+/// half-open socket (sleep/resume, NAT rebind) keeps absorbing outbound
+/// pings into kernel buffers, so only inbound activity is proof of life.
+/// Pure function so the boundary (exactly two windows must reconnect, one
+/// window must not) stays pinned by a test.
+fn inbound_silence_exceeded(silence: Duration) -> bool {
+    silence >= HEARTBEAT_INTERVAL * 2
+}
+
 const MAX_PENDING_MESSAGES: usize = 2_048;
 const OUTBOUND_CHANNEL_CAPACITY: usize = 2_048;
 // RelayInbound queues raw JSON text, so 32 slots at the 2 MiB frame ceiling
@@ -716,7 +726,7 @@ async fn run_loop(
                     }
                 }
                 _ = heartbeat.tick() => {
-                    if last_inbound.elapsed() >= HEARTBEAT_INTERVAL * 2 {
+                    if inbound_silence_exceeded(last_inbound.elapsed()) {
                         // Nothing inbound for two heartbeat windows: treat
                         // the connection as dead and take the normal
                         // reconnect path (pending frames are preserved).
@@ -837,6 +847,18 @@ mod tests {
             desktop_secret: "desktop".into(),
             allow_host_workspace: false,
         }
+    }
+
+    /// Two silent heartbeat windows mean dead path (forced reconnect); one
+    /// window of silence must NOT disconnect a healthy-but-quiet socket.
+    #[test]
+    fn inbound_silence_boundary_matches_two_heartbeat_windows() {
+        assert!(!inbound_silence_exceeded(HEARTBEAT_INTERVAL));
+        assert!(!inbound_silence_exceeded(
+            HEARTBEAT_INTERVAL * 2 - Duration::from_millis(1)
+        ));
+        assert!(inbound_silence_exceeded(HEARTBEAT_INTERVAL * 2));
+        assert!(inbound_silence_exceeded(HEARTBEAT_INTERVAL * 3));
     }
 
     #[test]

@@ -87,14 +87,26 @@ pub fn apply_user_npm_prefix(cmd: &mut Command) {
 
 /// 跑一个命令、收集 `(success, stdout, stderr)`。在 `spawn_blocking` 里调。
 ///
-/// 带 30s 兜底超时:这些调用全是 `--version` / `auth status` / `auth logout`
-/// 一类的短命令,但 npm-shim CLI 曾实测会卡在网络/代理/无 TTY 提示上无限
-/// 挂起(同 `run_with_timeout` 的注释)。不设上限会让 connector 状态查询与
-/// 首帧 auth-gate 刷新永久转圈;超时按失败处理,调用方已有各自的降级分支。
+/// 带 30s 兜底超时（kill-tree）:这些调用绝大多数是 `--version` / `auth status`
+/// / `auth logout` 一类的短命令,但 npm-shim CLI 曾实测会卡在网络/代理/无 TTY
+/// 提示上无限挂起(同 `run_with_timeout` 的注释)。不设上限会让 connector 状态
+/// 查询与首帧 auth-gate 刷新永久转圈;超时按失败处理,调用方已有各自的降级分支。
+/// 用 kill-tree 变体:超时只杀 wrapper 会把 node 孙进程连同管道一起留下,
+/// 飞书 `auth login --device-code` 轮询里的阻塞调用会反复超时、反复孤儿化进程。
+/// 探测失败的错误文案:「没装」与「装了但挂死」必须分开——超时按安装缺失
+/// 提示会误导用户重装,且 ensure 流程会误判后重新下载替换 CLI。
+fn probe_error_message(error: String) -> String {
+    if error.contains("timed out") {
+        format!("{error}(CLI 探测超时;可能被网络/代理卡住,请重试)")
+    } else {
+        format!("启动失败: {error}(需要先完成对应连接器 CLI 的在线安装)")
+    }
+}
+
 pub fn run(cmd: Command) -> Result<(bool, String, String), String> {
     const CLI_PROBE_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(30);
-    let out = crate::platform::process::output_with_timeout(cmd, CLI_PROBE_TIMEOUT)
-        .map_err(|e| format!("启动失败: {e}(需要先完成对应连接器 CLI 的在线安装)"))?;
+    let out = crate::platform::process::output_with_timeout_and_kill_tree(cmd, CLI_PROBE_TIMEOUT)
+        .map_err(probe_error_message)?;
     Ok((
         out.status.success(),
         String::from_utf8_lossy(&out.stdout).into_owned(),
@@ -514,6 +526,27 @@ mod tests {
         let (tx, _rx) = mpsc::channel();
         let handle = drain_for_url(TEST_CTX, ReadErrorThenPanic { failed: false }, tx);
         assert!(handle.join().is_ok(), "读取错误后应退出排空线程");
+    }
+
+    /// A 30s probe timeout must NOT read as "CLI not installed": the ensure
+    /// flow branches on that message and would re-download a CLI that is
+    /// merely hung, and `auth logout` of a connected user would claim the
+    /// CLI is missing. Spawn failures keep the install hint.
+    #[test]
+    fn probe_error_messages_distinguish_timeout_from_missing_install() {
+        let timeout_error = probe_error_message(String::from(
+            "lark-cli timed out after 30s: subprocess termination requested",
+        ));
+        assert!(timeout_error.contains("timed out"));
+        assert!(timeout_error.contains("探测超时"));
+        assert!(!timeout_error.contains("在线安装"));
+
+        let spawn_failure =
+            probe_error_message(String::from("spawn lark-cli failed: program not found"));
+        assert!(spawn_failure.contains("启动失败"));
+        assert!(spawn_failure.contains("在线安装"));
+
+        assert!(run(Command::new("pinvou3-no-such-connector-cli-for-tests")).is_err());
     }
 
     /// 本地生成二维码:任意 URL 都能出码(不依赖各 CLI 的 qrcode 子命令),

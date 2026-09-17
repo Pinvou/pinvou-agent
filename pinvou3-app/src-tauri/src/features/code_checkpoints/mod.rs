@@ -374,17 +374,53 @@ fn isolated_git_command() -> std::process::Command {
 // 快照 git 子进程的兜底预算：`git add -A` 在大工作区上可能确实很慢，但卡死的
 // git（NFS/FUSE 停摆、挂死的 hook）不能无限阻塞回合开始前的检查点路径——
 // create_checkpoint 的任何错误都会按既有语义降级为「跳过快照并告警」，
-// 不会阻塞发送。
+// 不会阻塞发送。注意这是**单次 git 调用**的预算，create_checkpoint 一次会
+// 顺序执行多条 git 命令（add/write-tree/commit-tree/update-ref/gc），最坏
+// 情况是预算的数倍；整段检查点仍是有界的。
 const GIT_COMMAND_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(120);
 
+/// 超时 kill 的 git 来不及清理 `index.lock`，之后每次调用都会「File exists」
+/// 快速失败——一次超时会把这个会话的检查点能力永久打没。锁龄超过
+/// GIT_COMMAND_TIMEOUT 即可断定持锁者已死（活着的 git 至多持锁一个预算周期，
+/// 影子仓库为本应用私目录），清除并让调用方重试一次；更年轻的锁可能是并发
+/// 活锁，不动。
+fn clear_stale_index_lock(repo: &Path) -> bool {
+    let lock = repo.join("index.lock");
+    let is_stale = std::fs::metadata(&lock)
+        .and_then(|metadata| metadata.modified())
+        .ok()
+        .and_then(|modified| std::time::SystemTime::now().duration_since(modified).ok())
+        .is_some_and(|age| age >= GIT_COMMAND_TIMEOUT);
+    if is_stale && std::fs::remove_file(&lock).is_ok() {
+        eprintln!(
+            "[checkpoints] cleared stale index.lock left by a killed git: {}",
+            lock.display()
+        );
+        return true;
+    }
+    false
+}
+
 fn git(repo: &Path, work_tree: &Path, arguments: &[&str]) -> Result<std::process::Output> {
-    let mut command = isolated_git_command();
-    command
-        .arg(format!("--git-dir={}", repo.display()))
-        .arg(format!("--work-tree={}", work_tree.display()))
-        .args(arguments);
-    crate::platform::process::output_with_timeout_and_kill_tree(command, GIT_COMMAND_TIMEOUT)
-        .map_err(|error| anyhow::anyhow!("failed to run git {} : {error}", arguments.join(" ")))
+    let run_bounded = || {
+        let mut command = isolated_git_command();
+        command
+            .arg(format!("--git-dir={}", repo.display()))
+            .arg(format!("--work-tree={}", work_tree.display()))
+            .args(arguments);
+        crate::platform::process::output_with_timeout_and_kill_tree(command, GIT_COMMAND_TIMEOUT)
+            .map_err(|error| anyhow::anyhow!("failed to run git {}: {error}", arguments.join(" ")))
+    };
+    let output = run_bounded()?;
+    // git 因发现残留锁而拒绝执行（退出码非零、stderr 指名 index.lock）时，
+    // 清掉确证为陈旧的锁重试一次。
+    if !output.status.success()
+        && String::from_utf8_lossy(&output.stderr).contains("index.lock")
+        && clear_stale_index_lock(repo)
+    {
+        return run_bounded();
+    }
+    Ok(output)
 }
 
 fn git_ok(repo: &Path, work_tree: &Path, arguments: &[&str]) -> Result<String> {

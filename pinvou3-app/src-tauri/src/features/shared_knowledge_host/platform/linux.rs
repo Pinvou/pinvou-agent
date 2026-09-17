@@ -433,7 +433,7 @@ mod tests {
         assert!(
             privileged_helper_execution_error(
                 "恢复共享知识库",
-                "pkexec timed out after 3600s: no subprocess output"
+                "pkexec timed out after 3600s: subprocess tree termination requested"
             )
             .contains("等待超时")
         );

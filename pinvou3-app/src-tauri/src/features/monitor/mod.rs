@@ -140,19 +140,21 @@ async fn sample_all_with_cpu(
         .duration_since(UNIX_EPOCH)
         .map(|d| d.as_millis() as u64)
         .unwrap_or(0);
+    // GPU 采样可能拉起 nvidia-smi 子进程（已带 GPU_PROBE_TIMEOUT 兜底），放到
+    // blocking 池，避免 1s 一次的监控轮询占住 async worker；与 ram/vllm 并发
+    // 采样，探测挂起时其余指标不再排队等它（快照最长延迟一个探测预算）。
+    let gpu_task = tokio::task::spawn_blocking(gpu_snapshot);
+    let ram = platform::ram_snapshot();
+    let vllm = match active_model_snapshot().await {
+        Some(snapshot) => Some(snapshot),
+        None => vllm_snapshot(vllm_upstream, configured_model).await,
+    };
     MonitorSnapshot {
         generated_at_ms: now_ms,
-        // GPU 采样可能拉起 nvidia-smi 子进程（已带 10s 超时兜底），放到
-        // blocking 池，避免 1s 一次的监控轮询占住 async worker。
-        gpu: tokio::task::spawn_blocking(gpu_snapshot)
-            .await
-            .unwrap_or(None),
+        gpu: gpu_task.await.unwrap_or(None),
         cpu,
-        ram: platform::ram_snapshot(),
-        vllm: match active_model_snapshot().await {
-            Some(snapshot) => Some(snapshot),
-            None => vllm_snapshot(vllm_upstream, configured_model).await,
-        },
+        ram,
+        vllm,
         self_perf: state.self_metrics.snapshot(),
         self_perf_debug: state.self_metrics.debug_snapshot(),
         app: AppSnapshot {
@@ -194,12 +196,13 @@ struct GpuSnapshotCache {
     value: Option<GpuSnapshot>,
 }
 
+/// 子进程 GPU 探测的统一兜底预算（nvidia-smi / macOS ioreg）。驱动/CUDA 争用
+/// 下这些探测可能挂死数秒到永远；上层 `gpu_snapshot` 已配 3s 结果缓存，超时
+/// 在缓存窗口内返回上次成功值，之后按「本机无数据」降级。
+pub(crate) const GPU_PROBE_TIMEOUT: Duration = Duration::from_secs(10);
+
 /// 调 `nvidia-smi` 查 GPU。本机没 NVIDIA/没装 nvidia-smi → None。
 /// 桌面环境启动时 PATH 可能不含 nvidia-smi，加常见绝对路径 fallback。
-/// nvidia-smi 在驱动/CUDA 争用下可能挂死数秒到永远，因此带 10s 超时兜底；
-/// 上层（sample_gpu_snapshot）已配 3s 结果缓存，超时按「本机无数据」降级。
-const NVIDIA_SMI_TIMEOUT: Duration = Duration::from_secs(10);
-
 fn nvidia_gpu_snapshot() -> Option<GpuSnapshot> {
     let args = [
         "--query-gpu=name,memory.used,memory.total,utilization.gpu,temperature.gpu,power.draw",
@@ -211,7 +214,7 @@ fn nvidia_gpu_snapshot() -> Option<GpuSnapshot> {
         .find_map(|candidate| {
             let mut command = crate::platform::process::HiddenCommand::new(candidate);
             command.args(args);
-            crate::platform::process::output_with_timeout(command, NVIDIA_SMI_TIMEOUT)
+            crate::platform::process::output_with_timeout(command, GPU_PROBE_TIMEOUT)
                 .ok()
                 .filter(|o| o.status.success())
         })?;
