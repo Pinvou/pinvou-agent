@@ -32,14 +32,20 @@ async function listHiddenBundles(invoke) {
   return new Set(Array.isArray(hidden) ? hidden.map((id) => String(id || '').trim()) : []);
 }
 
-// Returns the blocked list from the explicit outcome shape (round-11 m11):
-// non-empty = the plain scope is initialized and those ids sit in the user's
-// explicit switch state — the backend enabled nothing and the caller must
-// surface them (round-10 Major 2). Install-default offs lift freely
+// Returns the explicit outcome shape (round-11 m11, extended round-13 m3):
+// blocked non-empty = the plain scope is initialized and those ids sit in the
+// user's explicit switch state — the backend enabled nothing and the caller
+// must surface them (round-10 Major 2). not_applied non-empty = those ids
+// matched no entry in the DenyAll expansion (concurrent install not yet
+// committed, or unknown id) — nothing was applied for them; the caller must
+// not present their opt-in as done. Install-default offs lift freely
 // (round-11 B2); a deliberate opt-out is never silently overridden.
 async function enablePackagesInPlainScope(invoke, packageIds) {
   const outcome = await invoke('enable_marketplace_packages', { packageIds, scope: 'plain' });
-  return Array.isArray(outcome && outcome.blocked) ? outcome.blocked : [];
+  return {
+    blocked: Array.isArray(outcome && outcome.blocked) ? outcome.blocked : [],
+    notApplied: Array.isArray(outcome && outcome.not_applied) ? outcome.not_applied : [],
+  };
 }
 
 async function listMarketplaceTools(invoke) {
@@ -145,7 +151,7 @@ async function prepareSceneCapabilities(meta, invoke) {
     ]);
     optedIn = requiredPackages.some((packageId) => disabledIds.has(packageId) || hiddenIds.has(packageId));
     if (optedIn) {
-      const blocked = await enablePackagesInPlainScope(invoke, requiredPackages);
+      const { blocked, notApplied } = await enablePackagesInPlainScope(invoke, requiredPackages);
       if (blocked.length) {
         // Explicit user opt-out(s): refuse like the missing-install path —
         // the user re-enables from the composer tools list and resends.
@@ -156,6 +162,20 @@ async function prepareSceneCapabilities(meta, invoke) {
           missing: [],
           blocked,
           error: String(blocked.join(', ')),
+        };
+      }
+      if (notApplied.length) {
+        // Round-13 m3: those ids matched nothing in the expansion (likely a
+        // concurrent install that had not committed) — treat like the
+        // missing-install path so the send aborts with the existing missing
+        // copy instead of proceeding without the tools.
+        return {
+          ok: false,
+          requirements,
+          installed,
+          missing: [...notApplied],
+          blocked: [],
+          error: String(notApplied.join(', ')),
         };
       }
     }

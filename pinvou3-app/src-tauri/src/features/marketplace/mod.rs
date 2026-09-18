@@ -57,6 +57,14 @@ use crate::platform::paths;
 /// runs inline only inside callers that already hold TRANSACTION
 /// (`try_installed_ids_for_writer`), never by re-acquiring it (std Mutex is
 /// not reentrant — round-11 B1).
+///
+/// Scope of the claim (round-13 m5): this settles **only** the
+/// TRANSACTION↔FILE edge. The pre-existing TRANSACTION↔import_lock pairing
+/// is not ordered: uninstall nests TRANSACTION → import_lock (companion
+/// cleanup), while `restore_plugin` holds import_lock across `install_upload`
+/// → TRANSACTION. Both directions pre-date this PR and key on different
+/// per-id lock instances, so no same-instance cycle is known — but this doc
+/// must not be cited as proof of a settled global lock order.
 static MARKETPLACE_TRANSACTION_LOCK: Mutex<()> = Mutex::new(());
 
 /// A freshly written journal on Windows can be briefly held by antivirus or indexer
@@ -3272,7 +3280,8 @@ mod tests {
 
             // Install writes the pack into plain's stored list *and* marks it
             // as install-default (sync_deny_all_scopes_after_install).
-            crate::features::marketplace::scope::sync_deny_all_scopes_after_install("weather");
+            crate::features::marketplace::scope::sync_deny_all_scopes_after_install("weather")
+                .unwrap();
             let disabled = load_disabled_connectors_for(ConnectorScope::Plain);
             assert!(
                 disabled.contains(&"weather".to_string()),
@@ -3284,7 +3293,8 @@ mod tests {
                 ConnectorScope::Plain,
                 &["weather".to_string()],
             )
-            .unwrap();
+            .unwrap()
+            .blocked;
             assert!(
                 blocked.is_empty(),
                 "install-default off must not trip the explicit refusal: {blocked:?}"
@@ -3303,7 +3313,8 @@ mod tests {
                 ConnectorScope::Plain,
                 &["weather".to_string()],
             )
-            .unwrap();
+            .unwrap()
+            .blocked;
             assert_eq!(
                 blocked,
                 vec!["weather".to_string()],
@@ -3965,7 +3976,7 @@ mod tests {
         with_temp_home(|| {
             write_installed_ids(&["pptx".to_string()]);
             // 未初始化 → 不落盘,文件保持无/空。
-            sync_deny_all_scopes_after_install("weather");
+            sync_deny_all_scopes_after_install("weather").unwrap();
             assert!(
                 crate::features::marketplace::scope::load_disabled_bundles_file()
                     .scopes
@@ -3975,7 +3986,7 @@ mod tests {
             );
             // 初始化 code 后(显式开掉 pptx),新装 weather → 自动进 code 禁用集。
             save_disabled_connectors_for(ConnectorScope::Code, &[]);
-            sync_deny_all_scopes_after_install("weather");
+            sync_deny_all_scopes_after_install("weather").unwrap();
             assert_eq!(
                 load_disabled_connectors_for(ConnectorScope::Code),
                 vec!["weather".to_string()]
@@ -4000,7 +4011,7 @@ mod tests {
                     .is_empty()
             );
             // 已存在不重复。
-            sync_deny_all_scopes_after_install("weather");
+            sync_deny_all_scopes_after_install("weather").unwrap();
             assert_eq!(
                 load_disabled_connectors_for(ConnectorScope::Code),
                 vec!["weather".to_string()]
@@ -4229,7 +4240,8 @@ mod tests {
                 ConnectorScope::Plain,
                 &["feishu".to_string()],
             )
-            .unwrap();
+            .unwrap()
+            .blocked;
             assert!(
                 blocked.is_empty(),
                 "default-gated packs enable freely: {blocked:?}"
@@ -4255,7 +4267,8 @@ mod tests {
                 ConnectorScope::Plain,
                 &["wecom".to_string()],
             )
-            .unwrap();
+            .unwrap()
+            .blocked;
             assert!(
                 blocked.is_empty(),
                 "an untouched install-default entry stays liftable: {blocked:?}"
@@ -4273,7 +4286,8 @@ mod tests {
                 ConnectorScope::Plain,
                 &["wecom".to_string(), "dingtalk".to_string()],
             )
-            .unwrap();
+            .unwrap()
+            .blocked;
             assert_eq!(
                 blocked,
                 vec!["wecom".to_string()],
@@ -4292,7 +4306,8 @@ mod tests {
                 ConnectorScope::Plain,
                 &["dingtalk".to_string()],
             )
-            .unwrap();
+            .unwrap()
+            .blocked;
             assert!(blocked.is_empty());
             assert!(
                 !load_hidden_bundles_for(ConnectorScope::Plain).contains(&"dingtalk".to_string()),
@@ -4316,7 +4331,8 @@ mod tests {
                 ConnectorScope::Plain,
                 &["government-writing".to_string()],
             )
-            .unwrap();
+            .unwrap()
+            .blocked;
             assert!(blocked.is_empty());
             assert!(
                 !load_disabled_connectors_for(ConnectorScope::Plain)
@@ -4378,6 +4394,7 @@ mod tests {
                     &["feishu".to_string()],
                 )
                 .unwrap()
+                .blocked
                 .is_empty()
             );
             let file = crate::features::marketplace::scope::load_disabled_bundles_file();

@@ -502,9 +502,34 @@ pub fn restore_plugin(pkg_id: &str) -> Result<RestoreRecycledResult, String> {
 
     // 重建登记：快照即原记录（installed_at/source/extra 原样保留）。upsert_preserving
     // 在记录已被卸载移除的常态下等价 upsert；并发重装写了新记录时保留其首装元数据。
+    // 登记重建失败必须回滚到回收站（评审 #455 R13-B2，与下方供给失败分支同形）：
+    // 此刻目录已搬回 bundles_root 而记录不存在——记录驱动的枚举（installed_ids、
+    // list_skills 上传技能）看不到该包，但会话物化直接扫描 bundles_root 目录，
+    // 包内技能会以零同意进入新的 plain 会话；且回收站条目已被消费，「重试」
+    // 必失败。不回滚会残留这种半恢复态，回滚自身失败必须响亮留痕并如实上报。
+    // 登记未写入成功（upsert 返回 Err）故无需 remove；并发重装的记录若存在，
+    // 恰恰不应被本路径删除。
     let mut restored = record.clone();
     restored.installed = true;
-    BundleStore::new().upsert_preserving(restored)?;
+    if let Err(e) = BundleStore::new().upsert_preserving(restored) {
+        let rollback_display = match &record.source {
+            super::store::BundleSource::Upload(zip) => zip.clone(),
+            _ => pkg_id.to_string(),
+        };
+        let rollback_kind = package_kind(&pkg_dir);
+        if let Err(re) =
+            bin.recycle_package(pkg_id, rollback_kind, &rollback_display, record.clone())
+        {
+            log::error!(
+                "[recycle-bin] 恢复 {pkg_id} 登记重建失败（{e}），回滚到回收站也失败：包目录仍在 {}、无登记、无回收站条目: {re}",
+                pkg_dir.display()
+            );
+            return Err(format!(
+                "恢复 {pkg_id} 失败: {e}；回滚到回收站也失败（包目录仍在原位，未登记，可手动删除）: {re}"
+            ));
+        }
+        return Err(format!("恢复 {pkg_id} 失败（已回滚至回收站，可重试）: {e}"));
+    }
 
     let mut credentials_required = false;
     if has_mcp {
@@ -1461,6 +1486,85 @@ mod tests {
             }
         }
 
+        let _ = std::fs::remove_dir_all(&tmp);
+    }
+
+    /// 登记重建失败必须回滚到回收站（评审 #455 R13-B2，与供给失败分支同形）：
+    /// take_back 之后 upsert_preserving 失败（此处以不可读的 bundles.json 注入）
+    /// 会留下「目录在 bundles_root、无登记、回收站条目已消费」的半恢复态——
+    /// 记录驱动的枚举看不到该包，但会话物化按目录扫描，包内技能会以零同意进入
+    /// 新 plain 会话，且「重试」必失败。回滚 = 目录搬回 + 清单条目复原。
+    #[cfg(unix)]
+    #[test]
+    fn restore_registration_rebuild_failure_rolls_back_to_bin() {
+        use std::os::unix::fs::PermissionsExt;
+        let _g = crate::platform::paths::tests::ENV_LOCK
+            .lock()
+            .unwrap_or_else(|p| p.into_inner());
+        let prev = std::env::var("PINVOU3_HOME").ok();
+        let tmp = fresh_dir("restore-upsert-fail");
+        unsafe { std::env::set_var("PINVOU3_HOME", &tmp) };
+
+        let pkg = paths::bundles_root().join("my-skill");
+        std::fs::create_dir_all(pkg.join("skills/my-skill")).unwrap();
+        std::fs::write(
+            pkg.join("skills/my-skill/SKILL.md"),
+            "---\nname: my-skill\n---\n",
+        )
+        .unwrap();
+        let store = BundleStore::new();
+        store.upsert(upload_record("my-skill")).unwrap();
+        let record = store.get("my-skill").unwrap().unwrap();
+        store.remove("my-skill").unwrap();
+        RecycleBin::new()
+            .recycle_package("my-skill", KIND_SKILL, "my-skill.zip", record)
+            .unwrap();
+
+        // 失败注入：bundles.json 存在但不可读 → upsert_preserving 读取即 Err。
+        let store_path = tmp.join("marketplace").join("bundles.json");
+        std::fs::write(&store_path, "{}").unwrap();
+        std::fs::set_permissions(&store_path, std::fs::Permissions::from_mode(0o000)).unwrap();
+        if std::fs::File::open(&store_path).is_ok() {
+            std::fs::set_permissions(&store_path, std::fs::Permissions::from_mode(0o644)).unwrap();
+            eprintln!(
+                "ROOT-SKIP[restore_registration_rebuild_failure_rolls_back_to_bin]: running as root - chmod-000 fixture stays readable; NOT exercised"
+            );
+            match prev {
+                Some(v) => unsafe { std::env::set_var("PINVOU3_HOME", v) },
+                None => unsafe { std::env::remove_var("PINVOU3_HOME") },
+            }
+            let _ = std::fs::remove_dir_all(&tmp);
+            return;
+        }
+
+        let err = restore_plugin("my-skill").unwrap_err();
+        assert!(
+            err.contains("回滚"),
+            "失败必须如实上报已回滚到回收站（重试是真实补救）: {err}"
+        );
+        assert!(
+            !pkg.exists(),
+            "包目录必须搬回回收站，不得残留无登记的半恢复态"
+        );
+        assert!(
+            RecycleBin::new()
+                .list()
+                .unwrap()
+                .iter()
+                .any(|e| e.id == "my-skill"),
+            "回收站条目必须复原"
+        );
+        assert!(
+            store.get("my-skill").unwrap().is_none(),
+            "登记重建失败不得留下半写入的记录"
+        );
+
+        // 收尾：恢复权限以便清理临时目录。
+        std::fs::set_permissions(&store_path, std::fs::Permissions::from_mode(0o644)).unwrap();
+        match prev {
+            Some(v) => unsafe { std::env::set_var("PINVOU3_HOME", v) },
+            None => unsafe { std::env::remove_var("PINVOU3_HOME") },
+        }
         let _ = std::fs::remove_dir_all(&tmp);
     }
 }

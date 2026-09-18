@@ -1648,9 +1648,16 @@ const ToolWelcomeCard = ({ toolId, _theme, t, onSend }) => {
                   : (prepared.missing && prepared.missing.length
                     ? t.uiChatScenes.missingCapabilities(prepared.missing.join(', '))
                     : '');
+                // Round-13 m2: the welcome card is one-shot — if its opt-in
+                // failed, a later resend never re-attempts it, so the welcome
+                // failure must win over the scene failure copy here (the
+                // scene preflight re-runs and resurfaces on the next send;
+                // the welcome failure otherwise never surfaces at all).
                 setSceneCapabilityStatus({
                   kind: 'error',
-                  text: detail || sceneCopy.failure,
+                  text: welcomeOptIn.failed
+                    ? t.uiChat.welcomeOptInFailed
+                    : (detail || sceneCopy.failure),
                 });
                 return false;
               }
@@ -1665,10 +1672,14 @@ const ToolWelcomeCard = ({ toolId, _theme, t, onSend }) => {
             } catch (error) {
               // Unexpected invoke/transport failure: same rule (m8) — the raw
               // error goes to the console, the banner gets translated copy.
+              // Round-13 m2: welcome failure wins here too (same rationale as
+              // the prepared-not-ok branch above).
               console.warn('[pinvou3][chat-ui] scene capability prepare raised:', error);
               setSceneCapabilityStatus({
                 kind: 'error',
-                text: sceneCopy.failure,
+                text: welcomeOptIn.failed
+                  ? t.uiChat.welcomeOptInFailed
+                  : sceneCopy.failure,
               });
               return false;
             }

@@ -86,6 +86,12 @@ pub struct EnablePackagesOutcome {
     /// switch state (install-default offs lift freely, round-11 B2); nothing
     /// was enabled and no hot-refresh ran. The caller must surface the ids.
     pub blocked: Vec<String>,
+    /// Non-empty (round-13 m3) = requested ids that matched no entry in the
+    /// DenyAll expansion — likely a concurrent install that had not committed
+    /// when the expansion snapshotted, or an unknown id. Everything else in
+    /// the batch may still have applied; the caller must not present the
+    /// opt-in of these ids as done.
+    pub not_applied: Vec<String>,
 }
 
 /// Batch package enabling for user actions such as scene opt-in (review #455
@@ -109,17 +115,18 @@ pub async fn enable_marketplace_packages(
     // The inner `?` is the persist failure (round-12 review): the command must
     // fail rather than report `enabled: true` for state that never reached
     // disk — the frontend renders its failure notice from the rejected invoke.
-    let blocked = tokio::task::spawn_blocking(move || {
+    let outcome = tokio::task::spawn_blocking(move || {
         crate::features::marketplace::scope::enable_packages_in_scope(scope, &package_ids)
     })
     .await
     .map_err(|e| format!("enable_marketplace_packages join: {e}"))??;
-    if !blocked.is_empty() {
+    if !outcome.blocked.is_empty() {
         // Refused (round-10 Major 2): nothing was enabled; the hot-refresh
         // below is skipped because no state changed.
         return Ok(EnablePackagesOutcome {
             enabled: false,
-            blocked,
+            blocked: outcome.blocked,
+            not_applied: outcome.not_applied,
         });
     }
     pool.refresh_live_sessions_skills().await;
@@ -133,8 +140,13 @@ pub async fn enable_marketplace_packages(
         payload,
     );
     Ok(EnablePackagesOutcome {
-        enabled: true,
-        blocked: Vec::new(),
+        // Round-13 m3: `enabled` is honest about coverage — any id that
+        // matched nothing (not_applied) means the batch did not fully apply,
+        // so it is not reported as a plain success; the caller surfaces
+        // not_applied.
+        enabled: outcome.not_applied.is_empty(),
+        blocked: outcome.blocked,
+        not_applied: outcome.not_applied,
     })
 }
 

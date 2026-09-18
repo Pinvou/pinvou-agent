@@ -81,6 +81,19 @@ const { consumeWelcomeOptIn, resolveSendCapabilityStatus } = ctx;
   assert.strictEqual(result.failed, undefined);
 }
 
+// 4b. Round-13 m3: not_applied non-empty = the id matched nothing in the
+// DenyAll expansion — nothing was enabled; fail-visible, not a silent success.
+{
+  const result = await consumeWelcomeOptIn({
+    getToolId: () => 'pptx',
+    consume: () => {},
+    invoke: async () => ({ enabled: false, blocked: [], not_applied: ['pptx'] }),
+  });
+  assert.strictEqual(result.attempted, true);
+  assert.strictEqual(result.failed, true);
+  assert.match(result.error, /not applied/);
+}
+
 // 5. resolveSendCapabilityStatus: welcome failure beats scene status; otherwise passthrough.
 {
   const got = resolveSendCapabilityStatus({

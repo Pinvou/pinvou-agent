@@ -63,13 +63,14 @@ console.log('scene_capabilities_logic: ok');
 vm.runInContext('this.prepareSceneCapabilities = prepareSceneCapabilities;', ctx, { filename: logicPath });
 const { prepareSceneCapabilities } = ctx;
 
-function makeInvoke({ tools = [], skills = [], disabled = [], hidden = [], blockedOnEnable = [] } = {}) {
+function makeInvoke({ tools = [], skills = [], disabled = [], hidden = [], blockedOnEnable = [], notAppliedOnEnable = [] } = {}) {
   const state = {
     tools: new Set(tools),
     skills: new Set(skills),
     disabled: new Set(disabled),
     hidden: new Set(hidden),
     blockedOnEnable: new Set(blockedOnEnable),
+    notAppliedOnEnable: new Set(notAppliedOnEnable),
     enableCalls: [],
   };
   const toolList = () => [...state.tools].map((id) => ({ id, installed: true }));
@@ -90,11 +91,15 @@ function makeInvoke({ tools = [], skills = [], disabled = [], hidden = [], block
       state.enableCalls.push([...args.packageIds]);
       const blocked = args.packageIds.filter((id) => state.blockedOnEnable.has(id));
       if (blocked.length) return { enabled: false, blocked };
+      // Round-13 m3: ids absent from the DenyAll expansion match nothing —
+      // nothing is applied for them and the outcome reports not_applied.
+      const notApplied = args.packageIds.filter((id) => state.notAppliedOnEnable.has(id));
       for (const id of args.packageIds) {
+        if (state.notAppliedOnEnable.has(id)) continue;
         state.disabled.delete(id);
         state.hidden.delete(id);
       }
-      return { enabled: true, blocked: [] };
+      return { enabled: notApplied.length === 0, blocked: [], not_applied: notApplied };
     }
     throw new Error(`unexpected command ${command}`);
   };
@@ -213,6 +218,22 @@ async function runDenyAllOptInScenarios() {
       true,
       'the refusal is wholesale — unblocked batch mates stay disabled too',
     );
+  }
+
+  // Round-13 m3: not_applied — an id that matched nothing in the DenyAll
+  // expansion (concurrent install not yet committed) must abort the send via
+  // the missing-copy path instead of proceeding without the tool.
+  {
+    const { invoke, state } = makeInvoke({
+      tools: ['gongwen'],
+      skills: ['government-writing'],
+      disabled: ['gongwen'],
+      notAppliedOnEnable: ['gongwen'],
+    });
+    const prepared = await prepareSceneCapabilities({ pinvouScene: 'work:document-writing' }, invoke);
+    assert.strictEqual(prepared.ok, false, 'a not-applied opt-in must not pass as ready');
+    assert.deepStrictEqual([...prepared.missing], ['gongwen']);
+    assert.strictEqual(state.disabled.has('gongwen'), true, 'not-applied pack stays disabled');
   }
 
   console.log('scene_capabilities_logic deny-all opt-in: ok');

@@ -26,6 +26,18 @@ async function consumeWelcomeOptIn({ getToolId, consume, invoke }) {
     if (blocked.length) {
       return { attempted: true, blocked: [...blocked] };
     }
+    // Round-13 m3: not_applied non-empty = the id matched nothing in the
+    // DenyAll expansion (e.g. the install had not committed yet) — nothing
+    // was enabled. Fail-visible like a rejected invoke instead of reporting
+    // success for an opt-in that never happened.
+    const notApplied = Array.isArray(outcome && outcome.not_applied) ? outcome.not_applied : [];
+    if (notApplied.length) {
+      return {
+        attempted: true,
+        failed: true,
+        error: `not applied by backend: ${notApplied.join(', ')}`,
+      };
+    }
     return { attempted: true, failed: false };
   } catch (error) {
     return {

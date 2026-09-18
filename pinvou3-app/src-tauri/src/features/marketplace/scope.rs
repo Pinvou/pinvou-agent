@@ -17,6 +17,8 @@
 //! 映射到所属包（companion → MCP/CLI 包，独立技能 → 自身）；`skill:` 前缀跨文件借道
 //! 残留统一剥除并清出连接器文件。迁移幂等，失败回退默认值（安全兜底）。
 //!
+// architecture-guard: allow-target-cfg -- the round-13 B3 install-sync persist-failure regression needs a chmod 000 fixture; test-only inline cfg(unix)+PermissionsExt (same exemption precedent as mod.rs / package_export.rs, review #455); a real open() probe guards against running as root, Windows is covered by link checks.
+//!
 //! 依赖方向：本模块与 `bundle` / `skill_marketplace` 同属 marketplace 领域，只依赖
 //! `platform::paths` 与 marketplace 内既有类型，不反向依赖 assistant 运行时。
 
@@ -663,7 +665,30 @@ pub fn save_disabled_bundles_for(scope: ConnectorScope, ids: &[String]) {
     let normalized: Vec<String> = ids.iter().map(|id| to_package_id(id)).collect();
     let mut file = load_disabled_bundles_file_locked();
     let key = scope.as_str().to_string();
+    let was_uninitialized = !file.initialized.contains(&key);
     let previous = file.scopes.get(&key).cloned().unwrap_or_default();
+    // First composer write on an uninitialized DenyAll scope (round-13 B1):
+    // the composer holds the *effective* set — the full on-the-fly DenyAll
+    // expansion on a fresh install, every pack rendered off — and sends the
+    // whole list. Without seeding, that write would materialize the expansion
+    // as stored entries with no `default_off_scopes` markers: every untouched
+    // pack would become an "explicit user opt-out" the user never made, and
+    // the welcome/scene opt-in would refuse it forever. Seed the markers from
+    // the pre-write effective expansion ∩ the new list, the same attribution
+    // the enable path's materialization arm uses: entries off-by-default that
+    // stay off are defaults (liftable), entries newly written off here are
+    // the user's own verdict (no marker). Computed before the mutations below
+    // — the expansion depends on the still-uninitialized state. Under an
+    // AllowAll policy there is no expansion and nothing to seed.
+    let seeded_defaults: Vec<String> =
+        if was_uninitialized && scope.pack_default_policy() == PackDefaultPolicy::DenyAll {
+            resolve_scope_disabled_ids(&file, scope)
+                .into_iter()
+                .filter(|id| normalized.contains(id))
+                .collect()
+        } else {
+            Vec::new()
+        };
     file.scopes.insert(key.clone(), normalized.clone());
     file.initialized.insert(key.clone());
     // The composer sends the whole list, not a per-id gesture, so this write
@@ -676,17 +701,25 @@ pub fn save_disabled_bundles_for(scope: ConnectorScope, ids: &[String]) {
     // toggle (round-12 self-review). Entries entering the list here are the
     // user's own verdict and carry no marker; entries leaving it are on again,
     // so their marker goes with them.
-    let retained: Vec<String> = file
-        .default_off_scopes
-        .get(&key)
-        .map(|markers| {
-            markers
-                .iter()
-                .filter(|id| previous.contains(id) && normalized.contains(id))
-                .cloned()
-                .collect()
-        })
-        .unwrap_or_default();
+    let retained: Vec<String> = if was_uninitialized {
+        // Round-13 B1: markers come from the pre-write expansion (above), not
+        // from `previous ∩ new` — on a fresh install `previous` is empty, so
+        // the persisted-list filter would retain nothing and strand every
+        // default as an unattributed opt-out. Over-attribution is safe: a
+        // marker only makes a later enable *easier*.
+        seeded_defaults
+    } else {
+        file.default_off_scopes
+            .get(&key)
+            .map(|markers| {
+                markers
+                    .iter()
+                    .filter(|id| previous.contains(id) && normalized.contains(id))
+                    .cloned()
+                    .collect()
+            })
+            .unwrap_or_default()
+    };
     if retained.is_empty() {
         file.default_off_scopes.remove(&key);
     } else {
@@ -751,7 +784,16 @@ pub fn save_disabled_bundles(ids: &[String]) {
 /// read-time migration). Connector and skill installs share this entry: the
 /// input may be a connector id / skill id / package id, uniformly normalized
 /// to a package id.
-pub fn sync_deny_all_scopes_after_install(raw_id: &str) {
+///
+/// The persist is **fail-visible** (round-13 B3): `installed.json` has
+/// already committed the pack when this runs, and for the migrated cohort
+/// every scope here is initialized — the stored list is the authoritative
+/// consent store, so a swallowed save would leave the pack ON in every new
+/// session with zero consent while the install reported success (fail-open,
+/// the worse direction of the enable path's round-12 invariant "applied and
+/// persisted"). Callers surface the error after their own success commit; a
+/// retry of the sync is safe (idempotent membership push).
+pub fn sync_deny_all_scopes_after_install(raw_id: &str) -> Result<(), String> {
     let package_id = to_package_id(raw_id);
     let _guard = DISABLED_BUNDLES_FILE_LOCK
         .lock()
@@ -780,8 +822,9 @@ pub fn sync_deny_all_scopes_after_install(raw_id: &str) {
         }
     }
     if changed {
-        save_disabled_bundles_file(&file);
+        try_save_disabled_bundles_file(&file)?;
     }
+    Ok(())
 }
 
 /// 包卸载/断开后同步所有 scope：从各 scope 禁用集与可见性集移除该包 id，避免残留
@@ -833,14 +876,31 @@ pub fn remove_bundle_from_disabled_scopes(raw_id: &str) {
 /// so a swallowed save would report success while the model never sees the
 /// tool — not even in the current session. Same invariant as
 /// `apply_restore_consent_gate`; on `Err` nothing was applied.
-/// Returns the ids refused as the user's explicit opt-out.
+///
+/// Round-13 m3: ids absent from the DenyAll expansion (an install committing
+/// right after the snapshot, or an unknown id) get nothing applied — they are
+/// reported in `not_applied` instead of only logged, so the caller does not
+/// present `enabled: true` while the requested opt-in never materialized.
+/// Fail-closed direction: the pack stays off.
+#[derive(Debug, Default, Clone, PartialEq, Eq)]
+pub struct EnablePackagesOutcome {
+    /// Ids refused as the user's explicit opt-out (initialized scope, stored
+    /// entry without an install-default marker). Nothing was enabled for the
+    /// whole batch when this is non-empty.
+    pub blocked: Vec<String>,
+    /// Requested ids that matched no entry (absent from the DenyAll
+    /// expansion): nothing was applied for them — likely a concurrent install
+    /// that had not committed yet, or an unknown id.
+    pub not_applied: Vec<String>,
+}
+
 pub fn enable_packages_in_scope(
     scope: ConnectorScope,
     raw_ids: &[String],
-) -> Result<Vec<String>, String> {
+) -> Result<EnablePackagesOutcome, String> {
     let ids: Vec<String> = raw_ids.iter().map(|id| to_package_id(id)).collect();
     if ids.is_empty() {
-        return Ok(Vec::new());
+        return Ok(EnablePackagesOutcome::default());
     }
     let _guard = DISABLED_BUNDLES_FILE_LOCK
         .lock()
@@ -865,9 +925,13 @@ pub fn enable_packages_in_scope(
             .cloned()
             .collect();
         if !blocked.is_empty() {
-            return Ok(blocked);
+            return Ok(EnablePackagesOutcome {
+                blocked,
+                not_applied: Vec::new(),
+            });
         }
     }
+    let mut not_applied: Vec<String> = Vec::new();
     let mut changed = false;
     if file.initialized.contains(key) {
         if let Some(list) = file.scopes.get_mut(key) {
@@ -884,6 +948,11 @@ pub fn enable_packages_in_scope(
         }
     } else if scope.pack_default_policy() == PackDefaultPolicy::DenyAll {
         let mut effective = resolve_scope_disabled_ids(&file, scope);
+        let not_applied_ids: Vec<String> = ids
+            .iter()
+            .filter(|id| !effective.contains(id))
+            .cloned()
+            .collect();
         let before = effective.len();
         effective.retain(|id| !ids.contains(id));
         if effective.len() != before {
@@ -903,6 +972,7 @@ pub fn enable_packages_in_scope(
                 "[scope] enable_packages_in_scope({key}): none of {ids:?} matched the DenyAll expansion; no opt-in materialized"
             );
         }
+        not_applied = not_applied_ids;
     }
     if let Some(hidden) = file.hidden_scopes.get_mut(key) {
         let before = hidden.len();
@@ -916,7 +986,10 @@ pub fn enable_packages_in_scope(
         // the model while the UI claims the opt-in happened.
         try_save_disabled_bundles_file(&file)?;
     }
-    Ok(Vec::new())
+    Ok(EnablePackagesOutcome {
+        blocked: Vec::new(),
+        not_applied,
+    })
 }
 
 /// Consent gate for trash restores (review #455 R5-m5 / R9-M2): a **single
@@ -1132,13 +1205,14 @@ mod tests {
             );
             // Legacy stored entries are pre-upgrade switch state = explicit:
             // the batch enable refuses them (round-10 Major 2 preserved).
-            let blocked =
-                enable_packages_in_scope(ConnectorScope::Plain, &["weather".to_string()]).unwrap();
+            let blocked = enable_packages_in_scope(ConnectorScope::Plain, &["weather".to_string()])
+                .unwrap()
+                .blocked;
             assert_eq!(blocked, vec!["weather".to_string()]);
 
             // Install-sync writes stored + default marker; the field
             // roundtrips through the on-disk file.
-            sync_deny_all_scopes_after_install("pptx");
+            sync_deny_all_scopes_after_install("pptx").unwrap();
             let content = std::fs::read_to_string(&path).unwrap();
             assert!(
                 content.contains("default_off_scopes"),
@@ -1153,15 +1227,16 @@ mod tests {
                 "install-default marker survives a reload: {file:?}"
             );
             // An install-default off lifts freely.
-            let blocked =
-                enable_packages_in_scope(ConnectorScope::Plain, &["pptx".to_string()]).unwrap();
+            let blocked = enable_packages_in_scope(ConnectorScope::Plain, &["pptx".to_string()])
+                .unwrap()
+                .blocked;
             assert!(blocked.is_empty(), "default-off lifts freely: {blocked:?}");
 
             // A composer whole-list write does not re-attribute the entries it
             // never transitioned: re-arm the install default for `pptx` (the
             // enable above cleared it), then write a list that keeps `pptx` and
             // adds `weather`, which the user turns off in that very write.
-            sync_deny_all_scopes_after_install("pptx");
+            sync_deny_all_scopes_after_install("pptx").unwrap();
             save_disabled_bundles_for(
                 ConnectorScope::Plain,
                 &["pptx".to_string(), "weather".to_string()],
@@ -1174,8 +1249,9 @@ mod tests {
                     .unwrap_or(false),
                 "an untouched install-default entry keeps its marker: {file:?}"
             );
-            let blocked =
-                enable_packages_in_scope(ConnectorScope::Plain, &["pptx".to_string()]).unwrap();
+            let blocked = enable_packages_in_scope(ConnectorScope::Plain, &["pptx".to_string()])
+                .unwrap()
+                .blocked;
             assert!(
                 blocked.is_empty(),
                 "an untouched default-off still lifts after a composer write: {blocked:?}"
@@ -1191,8 +1267,9 @@ mod tests {
                     .unwrap_or(true),
                 "an entry the user switched off carries no marker: {file:?}"
             );
-            let blocked =
-                enable_packages_in_scope(ConnectorScope::Plain, &["weather".to_string()]).unwrap();
+            let blocked = enable_packages_in_scope(ConnectorScope::Plain, &["weather".to_string()])
+                .unwrap()
+                .blocked;
             assert_eq!(blocked, vec!["weather".to_string()]);
         });
     }
@@ -1260,7 +1337,9 @@ mod tests {
                 "the user's own switch-off must not re-arm a marker: {file:?}"
             );
             assert_eq!(
-                enable_packages_in_scope(ConnectorScope::Plain, &["pptx".to_string()]).unwrap(),
+                enable_packages_in_scope(ConnectorScope::Plain, &["pptx".to_string()])
+                    .unwrap()
+                    .blocked,
                 vec!["pptx".to_string()],
                 "the user's explicit off is refused by the batch enable"
             );
@@ -1409,6 +1488,179 @@ mod tests {
 
     fn load_disabled_bundles_for_plain_for_lock_test() -> Vec<String> {
         load_disabled_bundles_for(ConnectorScope::Plain)
+    }
+
+    /// Round-13 B1: the first composer whole-list write on a fresh install
+    /// (plain uninitialized) materializes the DenyAll expansion minus the
+    /// toggled-on pack. Every untouched entry must land as an
+    /// install-default (marker seeded from the pre-write effective
+    /// expansion) — without seeding, each becomes an unattributed "explicit
+    /// opt-out" and the welcome/scene opt-in refuses it forever, a verdict
+    /// the user never made.
+    #[test]
+    fn composer_first_write_on_fresh_install_seeds_default_markers() {
+        with_temp_home(|| {
+            // Fresh install: plain uninitialized, the effective disabled set
+            // is the on-the-fly DenyAll expansion (covers the builtin CLI
+            // packs).
+            let expansion = load_disabled_bundles_for(ConnectorScope::Plain);
+            assert!(
+                expansion.contains(&"feishu".to_string())
+                    && expansion.contains(&"wecom".to_string()),
+                "the DenyAll expansion covers the builtin CLI packs: {expansion:?}"
+            );
+
+            // The composer holds the effective set; the user toggles feishu
+            // on and the whole list is written back (feishu removed).
+            let mut composer_list = expansion.clone();
+            composer_list.retain(|id| id != "feishu");
+            save_disabled_bundles_for(ConnectorScope::Plain, &composer_list);
+
+            let file = load_disabled_bundles_file();
+            assert!(
+                file.initialized.contains("plain"),
+                "the first write initializes plain: {file:?}"
+            );
+            assert_eq!(
+                file.scopes.get("plain").cloned().unwrap_or_default(),
+                composer_list,
+                "the stored list is what the composer sent: {file:?}"
+            );
+            let markers = file
+                .default_off_scopes
+                .get("plain")
+                .cloned()
+                .unwrap_or_default();
+            for id in &composer_list {
+                assert!(
+                    markers.contains(id),
+                    "untouched default {id} must keep a liftable marker: {markers:?}"
+                );
+            }
+            assert!(
+                !markers.contains(&"feishu".to_string()),
+                "the pack this write turned on is the user's verdict, no marker: {markers:?}"
+            );
+
+            // The welcome/scene opt-in for another pack lifts freely — no
+            // "explicit opt-out" refusal for a verdict the user never made.
+            let outcome =
+                enable_packages_in_scope(ConnectorScope::Plain, &["wecom".to_string()]).unwrap();
+            assert!(
+                outcome.blocked.is_empty(),
+                "seeded install-default must not trip the explicit refusal: {:?}",
+                outcome.blocked
+            );
+            assert!(
+                !load_disabled_bundles_for(ConnectorScope::Plain).contains(&"wecom".to_string()),
+                "the opt-in lifted the seeded default"
+            );
+        });
+    }
+
+    /// Round-13 m3: requested ids absent from the DenyAll expansion get
+    /// nothing applied and are reported in `not_applied` instead of the
+    /// command reporting a plain success (an install committing right after
+    /// the snapshot, or an unknown id).
+    #[test]
+    fn enable_reports_ids_absent_from_the_expansion() {
+        with_temp_home(|| {
+            // Pure miss: no opt-in materialized, nothing persisted.
+            let outcome =
+                enable_packages_in_scope(ConnectorScope::Plain, &["not-a-pack".to_string()])
+                    .unwrap();
+            assert_eq!(outcome.not_applied, vec!["not-a-pack".to_string()]);
+            assert!(outcome.blocked.is_empty());
+            let file = load_disabled_bundles_file();
+            assert!(
+                !file.initialized.contains("plain"),
+                "a full miss must not materialize the scope: {file:?}"
+            );
+
+            // Mixed batch: the matched id materializes, the miss is reported.
+            let outcome = enable_packages_in_scope(
+                ConnectorScope::Plain,
+                &["feishu".to_string(), "not-a-pack".to_string()],
+            )
+            .unwrap();
+            assert_eq!(outcome.not_applied, vec!["not-a-pack".to_string()]);
+            assert!(
+                !load_disabled_bundles_for(ConnectorScope::Plain).contains(&"feishu".to_string()),
+                "the matched id is enabled"
+            );
+            let file = load_disabled_bundles_file();
+            assert!(
+                file.initialized.contains("plain"),
+                "the matched part materialized the opt-in: {file:?}"
+            );
+
+            // An id that IS in the expansion is applied, not reported.
+            let outcome =
+                enable_packages_in_scope(ConnectorScope::Plain, &["wecom".to_string()]).unwrap();
+            assert!(outcome.not_applied.is_empty(), "{outcome:?}");
+            assert!(outcome.blocked.is_empty());
+        });
+    }
+
+    /// Round-13 B3: the install-sync persist is fail-visible — for the
+    /// migrated cohort every scope here is initialized and the stored list is
+    /// the authoritative consent store, so a swallowed save would leave the
+    /// pack ON in every new session with zero consent while the install
+    /// reported success. Fixture: a read-only home forces the write to fail;
+    /// the open() probe keeps the root skip loud (round-11 m12 pattern).
+    #[cfg(unix)]
+    #[test]
+    fn install_sync_persist_failure_is_reported_and_retryable() {
+        use std::os::unix::fs::PermissionsExt;
+
+        with_temp_home(|| {
+            // Upgraded cohort: plain initialized with an empty stored list.
+            let path = disabled_bundles_path();
+            std::fs::write(
+                &path,
+                r#"{"scopes":{"plain":[]},"initialized":["plain"],"plain_defaults_migrated":true}"#,
+            )
+            .unwrap();
+
+            let home = crate::platform::paths::pinvou3_home();
+            std::fs::set_permissions(&home, std::fs::Permissions::from_mode(0o555)).unwrap();
+            let probe = home.join(".root-probe");
+            if std::fs::write(&probe, b"").is_ok() {
+                let _ = std::fs::remove_file(&probe);
+                std::fs::set_permissions(&home, std::fs::Permissions::from_mode(0o755)).unwrap();
+                eprintln!(
+                    "ROOT-SKIP[install_sync_persist_failure_is_reported_and_retryable]: running as root - read-only home fixture stays writable; NOT exercised"
+                );
+                return;
+            }
+
+            let error = sync_deny_all_scopes_after_install("pptx")
+                .expect_err("a failed persist must surface as Err, not as a silent success");
+            assert!(
+                error.contains("disabled_bundles.json"),
+                "the failure must name the file it could not write: {error}"
+            );
+
+            // Nothing was half-applied; the same gesture succeeds once the
+            // environment can persist again, with the install-default marker.
+            std::fs::set_permissions(&home, std::fs::Permissions::from_mode(0o755)).unwrap();
+            sync_deny_all_scopes_after_install("pptx").unwrap();
+            let file = load_disabled_bundles_file();
+            assert!(
+                file.scopes
+                    .get("plain")
+                    .map(|ids| ids.iter().any(|id| id == "pptx"))
+                    .unwrap_or(false),
+                "the retried sync persisted the pack default-off: {file:?}"
+            );
+            assert!(
+                file.default_off_scopes
+                    .get("plain")
+                    .map(|ids| ids.iter().any(|id| id == "pptx"))
+                    .unwrap_or(false),
+                "the retried sync marked the entry install-default: {file:?}"
+            );
+        });
     }
 }
 
