@@ -27,7 +27,6 @@ this.SUBTABS = SUBTABS;
 this.UNROUTED_SUBTAB = UNROUTED_SUBTAB;
 this.createPinvouModeScopeKey = createPinvouModeScopeKey;
 this.createPinvouModeState = createPinvouModeState;
-this.hasPinvouModeState = hasPinvouModeState;
 this.loadPinvouModeState = loadPinvouModeState;
 this.normalizePinvouMode = normalizePinvouMode;
 this.normalizeSubtab = normalizeSubtab;
@@ -49,7 +48,6 @@ const {
   UNROUTED_SUBTAB,
   createPinvouModeScopeKey,
   createPinvouModeState,
-  hasPinvouModeState,
   loadPinvouModeState,
   normalizePinvouMode,
   normalizeSubtab,
@@ -140,9 +138,6 @@ const posterScope = createPinvouModeScopeKey('session-poster');
 const dataScope = createPinvouModeScopeKey('session-data');
 savePinvouModeState({ mode: 'work', subtab: 'poster' }, memoryStorage, posterScope);
 savePinvouModeState({ mode: 'work', subtab: 'data-visualization' }, memoryStorage, dataScope);
-assert.strictEqual(hasPinvouModeState(memoryStorage, posterScope), true);
-assert.strictEqual(hasPinvouModeState(memoryStorage, dataScope), true);
-assert.strictEqual(hasPinvouModeState(memoryStorage), false);
 assert.strictEqual(loadPinvouModeState(memoryStorage, posterScope).subtab, 'poster');
 assert.strictEqual(loadPinvouModeState(memoryStorage, dataScope).subtab, 'data-visualization');
 const unknownSessionState = loadPinvouModeState(memoryStorage, createPinvouModeScopeKey('unknown'));

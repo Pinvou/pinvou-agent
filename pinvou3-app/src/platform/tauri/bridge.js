@@ -2517,7 +2517,6 @@
   const setVoiceShortcutEnabled = voiceFeature.setVoiceShortcutEnabled;
   const syncVoiceShortcutRecording = voiceFeature.syncVoiceShortcutRecording;
   const appendVoiceText = voiceFeature.appendVoiceText;
-  const runVoiceInputDebugAssertions = voiceFeature.runVoiceInputDebugAssertions;
   const knowledgeModelFeature = installBridgeFeature("knowledge-model", { state, notify, invoke, listen });
   const downloadKbModel = knowledgeModelFeature.downloadKbModel;
   const cancelKbModel = knowledgeModelFeature.cancelKbModel;
@@ -2673,7 +2672,6 @@
       setVoiceShortcutEnabled,
       syncVoiceShortcutRecording,
       appendVoiceText,
-      runVoiceInputDebugAssertions,
     },
     knowledge: {
       loadKnowledgeEmbedderAfterFirstFrame,

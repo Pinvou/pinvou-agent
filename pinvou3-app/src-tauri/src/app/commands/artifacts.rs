@@ -103,11 +103,6 @@ fn ensure_editable_artifact_path(path: &std::path::Path) -> Result<(), String> {
     }
     Ok(())
 }
-pub(super) fn atomic_write_utf8(path: &std::path::Path, content: &str) -> std::io::Result<()> {
-    let _lifecycle = artifact_lifecycle_lock().lock();
-    atomic_write_utf8_unlocked(path, content)
-}
-
 fn atomic_write_utf8_unlocked(path: &std::path::Path, content: &str) -> std::io::Result<()> {
     atomic_write_utf8_unlocked_with(
         path,

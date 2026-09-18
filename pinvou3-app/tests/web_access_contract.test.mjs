@@ -204,28 +204,31 @@ for (const command of ['organize_memory', 'get_memory_organize_history']) {
   assert.equal(allowed.has(command), true, `${command} must be allowed on Web (memory organize)`);
 }
 
-// 已授权连接器的只读状态查询属于 WebUI 业务面（ToolStoreView 挂载即调用 *_status，
-// SettingsView 的 composer 工具菜单调用 *_skills_state）。任一遗漏会让对应连接器在
-// Web 端永远显示未连接：卡片因 externalAuth 不可用而依赖 installed 徽标展示。
-// 连接器开关/装卸（set_*_enabled、*_ensure_cli、*_apply_skills 等）仍保持桌面专用。
+// Authorized-connector toggle/skill state queries are part of the WebUI surface
+// (SettingsView's composer tool menu calls *_skills_state; authorization-state
+// injection happens inside the command layer via get_marketplace_tool_auth_status,
+// so the frontend no longer calls *_status directly). Missing any one leaves the
+// connector permanently showing "disconnected" on Web: the card depends on the
+// installed badge because externalAuth is unavailable.
+// Connector toggling and skill install/remove (*_ensure_cli, *_apply_skills, ...)
+// remain desktop-only.
 for (const command of [
-  'feishu_status',
   'feishu_skills_state',
-  'wecom_status',
   'wecom_skills_state',
-  'dingtalk_status',
   'dingtalk_skills_state',
-  'tmeet_status',
   'tmeet_skills_state',
-  'ima_status',
 ]) {
   assert.equal(allowed.has(command), true, `${command} must be allowed on Web (authorized connector status queries)`);
 }
-// 连接器变更面保持桌面专用：连接/断开（*_connect_begin/*_logout、ima_connect/ima_logout）、
-// 逐连接器开关（set_*_enabled）与全局清单写入（set_disabled_connectors）、原生 CLI 安装
-// （*_ensure_cli 触发下载物化）、技能装卸（*_apply_skills 向 ~/.pinvou3 物化技能包）、
-// OAuth 中断（*_cancel）、授权门重算（refresh_connector_auth_gates）。
-// 清单须与 lib.rs 连接器注册面保持同步。
+// Connector mutation surfaces stay desktop-only: connect/disconnect
+// (*_connect_begin/*_logout, ima_connect/ima_logout), native CLI install
+// (*_ensure_cli triggers download + materialization), skill install/remove
+// (*_apply_skills materializes skill packs into ~/.pinvou3), OAuth abort
+// (*_cancel), authorization-gate recomputation (refresh_connector_auth_gates).
+// The per-connector toggles (set_*_enabled) and the skill-level disable lists
+// (set_disabled_skills/get_disabled_skills) were removed with the dead-command
+// cleanup: connector toggles go through set_disabled_connectors.
+// This list must stay in sync with the connector registration surface in lib.rs.
 const deniedConnectorMutations = [];
 for (const connector of ["feishu", "wecom", "dingtalk", "tmeet"]) {
   deniedConnectorMutations.push(
@@ -234,14 +237,14 @@ for (const connector of ["feishu", "wecom", "dingtalk", "tmeet"]) {
     `${connector}_ensure_cli`,
     `${connector}_cancel`,
     `${connector}_apply_skills`,
-    `set_${connector}_enabled`,
   );
 }
 deniedConnectorMutations.push(
   "ima_connect", "ima_logout", "set_disabled_connectors", "refresh_connector_auth_gates",
-  // 技能级停用清单与项目技能开关（settings 管理面，读写均桌面专用；
-  // 此前两头都不沾，加白名单不会触发测试——与「清单须与注册面同步」承诺矛盾）。
-  "set_disabled_skills", "get_disabled_skills",
+  // Project-level skills toggle (settings admin surface; both read and write are
+  // desktop-only. It used to be covered by neither list, so adding it to the
+  // policy would not have triggered any test — contradicting the "list must stay
+  // in sync with the registration surface" promise).
   "set_project_skills_enabled", "get_project_skills_enabled",
 );
 for (const command of deniedConnectorMutations) {
@@ -793,7 +796,7 @@ assert.match(composerShared, /bridge\.models\.switchModel\(activeSessionId, id\)
 assert.match(settingsView, /\{canManageModels && editingModel && \(/);
 assert.match(toolStoreView, /if \(!can\('toolStoreMutations'\)\) \{/);
 assert.match(toolStoreView, /const canMutateToolStore = can\('toolStoreMutations'\);/);
-assert.ok((toolStoreView.match(/if \(!canMutateToolStore\) return;/g) || []).length >= 4,
+assert.ok((toolStoreView.match(/if \(!canMutateToolStore(\s*\|\|\s*busyRef\.current)?\) return;/g) || []).length >= 4,
   'all tool install, uninstall, and import handlers must fail closed in WebUI');
 // 回收站 Web 只读降级：list_recycled_plugins 为只读命令（access-policy 放行），
 // 恢复/导出/彻底删除的动作按钮整块挂 canMutateToolStore 门控，处理函数自身

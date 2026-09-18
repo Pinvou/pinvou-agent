@@ -696,6 +696,7 @@ ready: '已启用 PPT 生成，开始生成',
 failure: 'PPT 生成能力准备失败，请稍后重试。',
   },
   missingCapabilities: (ids) => `缺少能力：${ids}`,
+  attachmentPrompt: '请根据附件内容继续处理。',
   // 个人工作台模板 chip 展示名。数据源 personal-workbench-scene.js 的 title 保留
   // 中文原文（草稿匹配「标题」与消息 meta 消费），渲染层按 id 取这里的本地化名。
   workbenchTemplates: {
