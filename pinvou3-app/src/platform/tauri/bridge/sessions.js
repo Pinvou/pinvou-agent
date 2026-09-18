@@ -1324,7 +1324,18 @@
     }).catch(function (error) {
       console.error("[sessions] session:deleted listener failed", error);
     });
-    listen("session:list_changed", function () {
+    listen("session:list_changed", function (event) {
+      const payload = event && event.payload || {};
+      // The rebind command stamps the sessions it actually moved (review
+      // #463 round-10 Major 2): the artifact reconcile's stale-absolute
+      // rebase arm is gated on this mark, so it heals exactly the sessions
+      // whose workspace root just moved and never touches unrelated stale
+      // entries. Consumed (with a freshness window) by
+      // bridge/artifact-tracker.js reconcileArtifacts.
+      if (payload.action === "workspace_rebound" && payload.id) {
+        state.reboundSessionIds = state.reboundSessionIds || {};
+        state.reboundSessionIds[payload.id] = Date.now();
+      }
       refreshHistoryList().catch(function (error) {
         console.error("[sessions] session:list_changed refresh failed", error);
       });

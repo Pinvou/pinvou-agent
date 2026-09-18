@@ -155,6 +155,22 @@
     if (stableAbsolutePath) existing.path = stableAbsolutePath;
     return existing;
   }
+  // Freshness window for the workspace_rebound mark (bridge/sessions.js
+  // listener): generous enough to cover the rebind dialog's retry flow, short
+  // enough that a stale mark cannot misfire the rebase arm on an unrelated
+  // later basename collision. Expired marks are pruned on check.
+  const REBIND_RECONCILE_WINDOW_MS = 10 * 60 * 1000;
+  function sessionRecentlyRebound(sid) {
+    const marks = state.reboundSessionIds;
+    if (!marks || !sid) return false;
+    const stampedAt = marks[sid];
+    if (!stampedAt) return false;
+    if (Date.now() - stampedAt > REBIND_RECONCILE_WINDOW_MS) {
+      delete marks[sid];
+      return false;
+    }
+    return true;
+  }
   // 切换 session 时对账:扫 workspace 磁盘,把实际存在、但跟踪列表里没有的文件补进来。
   // 修「文件已生成在盘上、却因 app 中途重启/跟踪遗漏而不在产物面板」(以磁盘为准)。
   async function reconcileArtifacts(sid) {
@@ -176,14 +192,20 @@
           const na = { path: p, basename: bn }; state.artifacts.push(na); byName[bn] = na; added = true;
         }
         else if (isAbsPath(p) && !isAbsPath(ex.path)) { ex.path = p; added = true; } // 相对→绝对,open 可靠
-        else if (isAbsPath(p) && isAbsPath(ex.path) && normalizedPath(ex.path) !== normalizedPath(p)) {
-          // Stale absolute → live workspace file, matched by basename: after a
-          // folder rebind the persisted entry keeps the vanished root, and the
-          // relative→absolute escape hatch above never fires for it (review
-          // #463 round-10 Major 2). The scan is the disk truth — an entry that
-          // does not appear verbatim in the workspace listing is dead or
-          // outside it — so rebase onto the scanned file. Same accepted
-          // basename coarseness as the relative→absolute arm above.
+        else if (isAbsPath(p) && isAbsPath(ex.path) && normalizedPath(ex.path) !== normalizedPath(p) && sessionRecentlyRebound(sid)) {
+          // Stale absolute → live workspace file, matched by basename — ONLY
+          // for a session the rebind command just moved (the
+          // workspace_rebound mark, review #463 round-10 Major 2). After a
+          // folder rebind the persisted entry keeps the vanished root, and
+          // the relative→absolute escape hatch above never fires for it.
+          // Without the gate this arm would also repoint a LIVE absolute
+          // entry outside the workspace (present_artifact's resolved abs
+          // path, an absolute write target) onto an unrelated same-basename
+          // workspace file and persist the damage — an outside entry is not
+          // a dead one (review #463 round-A minor). Inside the rebind window
+          // "follow the new root" is the user's expressed intent, which is
+          // exactly what the backend lane already did to the persisted
+          // paths; same accepted basename coarseness as the arm above.
           ex.path = p; added = true;
         }
       });

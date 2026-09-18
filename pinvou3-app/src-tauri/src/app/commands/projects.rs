@@ -993,9 +993,14 @@ fn classify_absent_record_session(
 /// neither lane), so a disagreement means the index is stranded and must be
 /// re-keyed onto the scan path. `index_path_of` is
 /// `SessionAgentStore::code_project_workspace`; only code sessions are
-/// considered: the to-lane sidecar hit exists only for them (ACP records
-/// carry no sidecar, and an ACP index move that failed to persist rolls the
-/// whole lane back — no ACP strand shape exists).
+/// considered because the disagreement shape requires a sidecar to compare
+/// against, and ACP records carry none — the round-10 divergence shape
+/// (index ≠ sidecar) cannot exist for them. This does NOT claim ACP records
+/// can never strand: an ACP index move whose RUN died before the metadata
+/// loop, followed by a re-pick of a DIFFERENT destination, still leaves the
+/// record unreachable by any prefix scan — the destination-change residual
+/// documented on the dialog (RebindFolderDialog.jsx); repairing it would
+/// need a persisted pending-rebind marker, the remedy already on record.
 fn detect_stranded_index_records(
     to_lane_hits: &[(String, PathBuf)],
     affected: &[(String, PathBuf)],
