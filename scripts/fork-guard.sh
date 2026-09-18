@@ -7,9 +7,9 @@ CODEWHALE="$REPO/CodeWhale"
 APP="$REPO/pinvou3-app/src-tauri"
 EXPECTED_UPSTREAM="dcd4c200f72f0c1ffd60d8e7f6850313db879fc5"
 # workspace-roots-v12 已 rebase 到 pinvou3-clean @92427bd8d（含 ae7e3fb36 与 #59/#60/#61），
-# 现 head 33b23a4a2 即 CodeWhale PR #54 head；v0.9.12 之上 50 个提交（r1 线 33 + 本主题 17）。
-EXPECTED_HEAD="33b23a4a211aad18e90d14325d1cf85a4a5846d5"
-EXPECTED_COMMITS=50
+# 现 head 9abaa87e6 即 CodeWhale PR #54 head；v0.9.12 之上 51 个提交（r1 线 33 + 本主题 18）。
+EXPECTED_HEAD="9abaa87e6c7b702df3dc03e163feed9295cb0d83"
+EXPECTED_COMMITS=51
 FAST_ONLY=0
 
 case "${1:-}" in
@@ -126,7 +126,7 @@ fingerprints=(
   "APP|不支持的新用户内容不回退旧轮       |pinvou3-app/src-tauri/src/features/sessions/tests.rs|fn forkguard_admitted_display_fallback_does_not_skip_unsupported_user_turn"
 )
 
-# 多根工作区 workspace_roots + 指令 source 相对化(CodeWhale PR #54 head 33b23a4a2):线程携带
+# 多根工作区 workspace_roots + 指令 source 相对化(CodeWhale PR #54 head 9abaa87e6):线程携带
 # cwd(主根)+全量根集合,三层持久化,空集合逐字节等价单根现状;权限在每回合
 # 策略构造点物化;附加根只给访问权不注入指令;指令 source 标签仅文件名。
 fingerprints+=(
