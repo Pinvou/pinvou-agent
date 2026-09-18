@@ -336,6 +336,7 @@ test('旧独立入口退役：多智能体经会话级开关 + spawn 级蜂群�
   assert.match(contractText, /\[BLOCKED\]/, '子智能体受阻协议（[BLOCKED] 首行）教学保留在契约中，执行记录据此标注受阻');
   assert.match(contractText, /`name=`/, '子智能体显示名的真实机制 name= 必须写明');
   assert.match(contractText, /ASCII/, 'name= 在底座只收 ASCII，契约必须写明该约束');
+  assert.match(contractText, /`profile_query=关键词`/, 'roster 无分页且至多 48 条，契约必须教 profile_query= 才能发现截断尾部的专家');
   assert.doesNotMatch(contractText, /必须调用 agent|不得亲自承担|至少派一个/, '契约不得回潮强制委派话术');
   assert.doesNotMatch(contractText, /max_depth|max_steps|wall_time_secs|agents\/list|workflow/, '不在模型 schema 的字段与 workflow 路径不得再教');
   assert.match(

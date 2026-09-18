@@ -122,7 +122,8 @@ impl ExpertRosterSnapshot {
     /// 为当前任务生成与本快照严格同源的轻量候选行。
     ///
     /// 行序按匹配分数降序（用户卡仅在分数并列时优先），只含短摘要、仅作提醒
-    /// 提示；候选之外的专家可经底座 roster 通道发现（列表至多 48 条）。
+    /// 提示；候选之外的专家可经底座 roster 通道发现（roster 无分页，单次列表
+    /// 至多 48 条，截断尾部靠 `profile_query` 关键词过滤继续发现）。
     #[must_use]
     pub fn available_role_lines(&self, task: &str) -> Vec<String> {
         matched_experts(&self.candidates, task)
