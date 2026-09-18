@@ -74,6 +74,19 @@ pub struct ComputerUseStatus {
     pub stopped: bool,
     /// Whether the current OS has a computer_use backend implementation.
     pub platform_supported: bool,
+    /// Server truth for the consent UI: whether this session's grant
+    /// request is still unanswered. Lets every window collapse a grant
+    /// dialog resolved elsewhere and reconstruct it after a reload.
+    #[serde(default)]
+    pub pending_grant: bool,
+    /// The newest unexpired `confirm_required` payload for this session,
+    /// exactly as broadcast (null when nothing is pending — the key is
+    /// always present so the frontend can tell "server says none" apart
+    /// from an older backend that predates the field). Every window
+    /// reconciles from it: a dialog decided in one window collapses in the
+    /// others instead of waiting for a click that would fail with
+    /// "unknown or expired".
+    pub pending_confirm: Option<serde_json::Value>,
 }
 
 #[tauri::command]
@@ -89,6 +102,12 @@ pub fn computer_use_get_status(
         granted: !session_id.is_empty() && shared.has_active_grant(&session_id),
         stopped: shared.is_stopped(),
         platform_supported: crate::features::computer_use::backend_supported(),
+        pending_grant: !session_id.is_empty() && shared.grant_request_pending(&session_id),
+        pending_confirm: if session_id.is_empty() {
+            None
+        } else {
+            shared.pending_payload_for_session(&session_id)
+        },
     }
 }
 
@@ -274,6 +293,12 @@ mod tests {
             granted: false,
             stopped: false,
             platform_supported: true,
+            pending_grant: true,
+            pending_confirm: Some(serde_json::json!({
+                "session_id": "s1",
+                "action": "left_click",
+                "confirm_id": "cu-abc"
+            })),
         };
         let Ok(value) = serde_json::to_value(&status) else {
             panic!("ComputerUseStatus must serialize");
@@ -285,7 +310,31 @@ mod tests {
                 "granted": false,
                 "stopped": false,
                 "platform_supported": true,
+                "pending_grant": true,
+                "pending_confirm": {
+                    "session_id": "s1",
+                    "action": "left_click",
+                    "confirm_id": "cu-abc"
+                },
             })
+        );
+        // A served pending_confirm is exactly the confirm_required event
+        // payload; a None one is omitted so old consumers see no new key.
+        let no_confirm = ComputerUseStatus {
+            pending_grant: false,
+            pending_confirm: None,
+            ..status
+        };
+        let Ok(value) = serde_json::to_value(&no_confirm) else {
+            panic!("ComputerUseStatus must serialize");
+        };
+        // The key must stay PRESENT as null: the frontend distinguishes
+        // "server says none" (null) from an older backend (key absent) and
+        // only reconciles against the former.
+        assert_eq!(
+            value.get("pending_confirm"),
+            Some(&serde_json::Value::Null),
+            "{value}"
         );
     }
 

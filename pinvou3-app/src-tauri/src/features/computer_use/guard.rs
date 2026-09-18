@@ -246,6 +246,14 @@ pub struct PendingConfirmation {
     pub action_binding: u64,
     pub element_label: String,
     pub created_at: Instant,
+    /// The full `confirm_required` event payload exactly as minted
+    /// (identity + structured fields + optional preview), served through
+    /// `computer_use_get_status` so every window reconciles from server
+    /// truth: dialogs resolved in one window collapse in the others, and a
+    /// window that (re)loads mid-request reconstructs the dialog. The
+    /// payload was already broadcast to every window at mint time, so
+    /// re-serving it adds no exposure.
+    pub payload: serde_json::Value,
 }
 
 /// A minted approval token: bound to the session, the action summary and the
@@ -298,6 +306,11 @@ pub struct ComputerUseShared {
     physical_input_lock: Mutex<()>,
     /// The two consent maps under a single mutex (see [`ConsentMaps`]).
     consent: Mutex<ConsentMaps>,
+    /// Sessions with an unanswered grant request (advisory UI truth, set
+    /// when the tool emits `grant_required`; every lifecycle transition
+    /// that ends the request clears it). Served through
+    /// `computer_use_get_status` alongside the pending confirmation.
+    grant_requests: Mutex<HashSet<String>>,
     /// Session → backend handle registry (registered at construction,
     /// unregistered on drop). When a grant is revoked, on global stop, or
     /// when the master switch goes off, the command layer goes through it to
@@ -327,6 +340,7 @@ impl ComputerUseShared {
                 pending: HashMap::new(),
                 approved_tokens: HashMap::new(),
             }),
+            grant_requests: Mutex::new(HashSet::new()),
             backends: BackendRegistry::default(),
         }
     }
@@ -365,6 +379,7 @@ impl ComputerUseShared {
             return GrantOutcome::Stopped;
         }
         sessions.insert(session_id.to_string());
+        self.grant_requests.lock().remove(session_id);
         GrantOutcome::Granted
     }
 
@@ -375,6 +390,7 @@ impl ComputerUseShared {
     /// survive; other sessions' artifacts are untouched.
     pub fn revoke_session(&self, session_id: &str) {
         self.sessions.lock().remove(session_id);
+        self.grant_requests.lock().remove(session_id);
         let mut consent = self.consent.lock();
         consent
             .pending
@@ -399,6 +415,7 @@ impl ComputerUseShared {
     pub fn stop_all(&self) {
         self.stop.store(true, Ordering::SeqCst);
         self.sessions.lock().clear();
+        self.grant_requests.lock().clear();
         let mut consent = self.consent.lock();
         consent.pending.clear();
         consent.approved_tokens.clear();
@@ -412,6 +429,7 @@ impl ComputerUseShared {
     /// same rule as `revoke_all_sessions` for the off period.
     pub fn reset_stop(&self) {
         self.stop.store(false, Ordering::SeqCst);
+        self.grant_requests.lock().clear();
         let mut consent = self.consent.lock();
         consent.pending.clear();
         consent.approved_tokens.clear();
@@ -426,6 +444,7 @@ impl ComputerUseShared {
     /// the old grant and old approval tokens would otherwise remain valid.
     pub fn revoke_all_sessions(&self) {
         self.sessions.lock().clear();
+        self.grant_requests.lock().clear();
         let mut consent = self.consent.lock();
         consent.pending.clear();
         consent.approved_tokens.clear();
@@ -524,9 +543,55 @@ impl ComputerUseShared {
                 action_binding,
                 element_label: element_label.into(),
                 created_at: now,
+                // Attached right after the mint via `set_pending_payload`
+                // (the payload embeds the mint-returned confirm_id).
+                payload: serde_json::Value::Null,
             },
         );
         confirm_id
+    }
+
+    /// Server truth for the consent UI: the newest unexpired pending for
+    /// this session with its full event payload, or `None` when nothing is
+    /// pending (including after a decision, expiry, stop, revoke or
+    /// disable — the sweeps all remove the entry). Expired entries are
+    /// swept here so a dialog cannot be reconstructed after its TTL.
+    pub fn pending_payload_for_session(&self, session_id: &str) -> Option<serde_json::Value> {
+        let mut consent = self.consent.lock();
+        let now = Instant::now();
+        consent
+            .pending
+            .retain(|_, entry| now.duration_since(entry.created_at) <= CONFIRM_TTL);
+        consent
+            .pending
+            .values()
+            .find(|entry| entry.session_id == session_id)
+            .map(|entry| entry.payload.clone())
+    }
+
+    /// Attaches the event payload to a just-minted pending (the payload
+    /// embeds the mint-returned confirm_id, so it can only be built after
+    /// the mint). No-op when the pending no longer exists (replaced by a
+    /// newer request or swept): a payload without a live pending is never
+    /// served.
+    pub fn set_pending_payload(&self, confirm_id: &str, payload: serde_json::Value) {
+        let mut consent = self.consent.lock();
+        if let Some(entry) = consent.pending.get_mut(confirm_id) {
+            entry.payload = payload;
+        }
+    }
+
+    /// Marks a session as having an unanswered grant request (called right
+    /// before the tool emits `grant_required`).
+    pub fn mark_grant_requested(&self, session_id: &str) {
+        self.grant_requests.lock().insert(session_id.to_string());
+    }
+
+    /// Server truth for the consent UI: whether this session's grant
+    /// request is still unanswered (granted/revoke/stop/disable all clear
+    /// the marker).
+    pub fn grant_request_pending(&self, session_id: &str) -> bool {
+        self.grant_requests.lock().contains(session_id)
     }
 
     pub fn pending_confirmation(&self, confirm_id: &str) -> Option<PendingConfirmation> {
@@ -627,6 +692,13 @@ impl ComputerUseShared {
         action_summary: &str,
         action_binding: u64,
     ) -> ConfirmationCheck {
+        // Defense in depth (mirrors the mint side): a token minted while
+        // enabled must not be spendable after a stop/disable landed — the
+        // spend path still dies at verify_input_action, but consuming the
+        // user's approval there would be the wrong direction.
+        if !self.is_enabled() || self.is_stopped() {
+            return ConfirmationCheck::Unknown;
+        }
         let now = Instant::now();
         let mut consent = self.consent.lock();
         let Some(token) = consent.approved_tokens.get(confirm_id) else {
@@ -1078,6 +1150,16 @@ mod tests {
     /// for the full 20-second default.
     #[test]
     fn physical_input_lock_times_out_with_the_test_override() {
+        // Panic-safe restore (same drop-guard pattern as tool/tests.rs): an
+        // assert failure here must not leak the 5 ms override into unrelated
+        // tests in this binary.
+        struct RestoreTimeout;
+        impl Drop for RestoreTimeout {
+            fn drop(&mut self) {
+                set_physical_input_lock_timeout_for_tests(Duration::ZERO);
+            }
+        }
+        let _restore = RestoreTimeout;
         set_physical_input_lock_timeout_for_tests(Duration::from_millis(5));
         let shared = enabled_shared();
         let _holder = shared
@@ -1088,8 +1170,6 @@ mod tests {
             matches!(shared.lock_physical_input(), Err(GuardRejection::InputBusy)),
             "a held lock must fail closed once the bounded wait elapses"
         );
-        // Restore the default so later tests in this process are unaffected.
-        set_physical_input_lock_timeout_for_tests(Duration::ZERO);
     }
 
     /// ToolPolicy contract: `computer_use` is in the disallow list while the
@@ -1358,6 +1438,84 @@ mod tests {
         assert!(
             !shared2.mint_confirmation(&id2),
             "mint must refuse while the master switch is off"
+        );
+    }
+
+    /// Server truth for the consent UI: `pending_payload_for_session` serves
+    /// the newest unexpired payload, a replaced pending replaces the served
+    /// payload, and a decided (denied) pending stops being served — this is
+    /// what collapses phantom dialogs in the other windows.
+    #[test]
+    fn pending_payload_serves_newest_and_collapses_on_decision() {
+        let shared = enabled_shared();
+        assert!(shared.pending_payload_for_session("s1").is_none());
+        let id1 = shared.new_pending_confirmation("s1", "left click", "Buy now", 0);
+        shared.set_pending_payload(&id1, serde_json::json!({ "confirm_id": id1 }));
+        let served = shared
+            .pending_payload_for_session("s1")
+            .expect("payload served");
+        assert_eq!(served["confirm_id"], id1);
+        // Newest wins: the replacement's payload is the one served.
+        let id2 = shared.new_pending_confirmation("s1", "type 3 characters", "Buy now", 0);
+        shared.set_pending_payload(&id2, serde_json::json!({ "confirm_id": id2 }));
+        let served = shared
+            .pending_payload_for_session("s1")
+            .expect("payload served");
+        assert_eq!(served["confirm_id"], id2);
+        // A payload without a live pending is never served (set is a no-op).
+        shared.set_pending_payload(&id1, serde_json::json!({ "confirm_id": "stale" }));
+        let served = shared
+            .pending_payload_for_session("s1")
+            .expect("payload served");
+        assert_eq!(served["confirm_id"], id2);
+        // Deciding the pending collapses it.
+        assert!(shared.deny_confirmation(&id2));
+        assert!(shared.pending_payload_for_session("s1").is_none());
+    }
+
+    /// The grant-request marker follows the request lifecycle: set at emit,
+    /// cleared by grant, and re-set requests clear on revoke/stop too.
+    #[test]
+    fn grant_request_marker_follows_lifecycle() {
+        let shared = enabled_shared();
+        shared.mark_grant_requested("s1");
+        assert!(shared.grant_request_pending("s1"));
+        shared.grant_session("s1");
+        assert!(
+            !shared.grant_request_pending("s1"),
+            "granting answers the request"
+        );
+        // A revoke also clears any lingering marker.
+        shared.mark_grant_requested("s1");
+        shared.revoke_session("s1");
+        assert!(!shared.grant_request_pending("s1"));
+        // Stop wipes every session's marker.
+        shared.mark_grant_requested("s1");
+        shared.mark_grant_requested("s2");
+        shared.stop_all();
+        assert!(!shared.grant_request_pending("s1"));
+        assert!(!shared.grant_request_pending("s2"));
+    }
+
+    /// Defense in depth: a token minted while enabled must not be spendable
+    /// after the master switch goes off (the spend would die at
+    /// verify_input_action anyway, but consuming the user's approval there
+    /// would be the wrong direction).
+    #[test]
+    fn take_confirmation_refuses_while_disabled_or_stopped() {
+        let shared = enabled_shared();
+        let id = new_pending(&shared, "s1", "left click");
+        assert!(shared.mint_confirmation(&id));
+        shared.set_enabled(false);
+        assert_eq!(
+            take(&shared, &id, "s1", "left click"),
+            ConfirmationCheck::Unknown
+        );
+        shared.set_enabled(true);
+        shared.stop_all();
+        assert_eq!(
+            take(&shared, &id, "s1", "left click"),
+            ConfirmationCheck::Unknown
         );
     }
 }
