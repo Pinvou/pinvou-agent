@@ -410,18 +410,38 @@ fn should_retry_cascade(lifecycle: Option<&TurnLifecycle>) -> bool {
 }
 
 /// Bounds an await that runs while the caller holds the session turn gate
-/// (see [`TURN_GATE_AWAIT_TIMEOUT`], issue #255). Returns whether the future
-/// settled; on timeout the future is dropped (nothing further is enqueued)
-/// and the degradation is logged.
-async fn bounded_while_holding_turn_gate<F>(what: &str, fut: F) -> bool
+/// (see [`TURN_GATE_AWAIT_TIMEOUT`], issue #255). On timeout the future is
+/// dropped (nothing further is enqueued) and the degradation is logged.
+async fn bounded_while_holding_turn_gate<F>(what: &str, fut: F)
 where
     F: Future<Output = ()>,
 {
     match tokio::time::timeout(TURN_GATE_AWAIT_TIMEOUT, fut).await {
-        Ok(()) => true,
+        Ok(()) => {}
         Err(_) => {
             eprintln!(
                 "[engine_pool] {what} did not settle within {TURN_GATE_AWAIT_TIMEOUT:?} while holding the turn gate; abandoning it to keep the session gate responsive"
+            );
+        }
+    }
+}
+
+/// Bounds the join of a detached side-effect task while the caller holds the
+/// session turn gate (see [`TURN_GATE_AWAIT_TIMEOUT`], issue #255): a slow
+/// task must not extend the gate hold. On timeout the join handle is
+/// dropped, which detaches the task without aborting it, and the
+/// degradation is logged. Returns whether the task settled in time so the
+/// caller can take extra degradation steps (e.g. preset a conservative
+/// cleanup flag).
+async fn bounded_join_while_holding_turn_gate<T>(
+    what: &str,
+    task: tokio::task::JoinHandle<T>,
+) -> bool {
+    match tokio::time::timeout(TURN_GATE_AWAIT_TIMEOUT, task).await {
+        Ok(_) => true,
+        Err(_) => {
+            eprintln!(
+                "[engine_pool] {what} did not settle within {TURN_GATE_AWAIT_TIMEOUT:?} while holding the turn gate; letting it finish in the background"
             );
             false
         }
@@ -807,14 +827,7 @@ where
         // bounded (issue #255): a slow cleanup must not extend the time the
         // turn gate is held. Dropping the join handle detaches the task.
         let cleanup = tokio::spawn(async move { cancellation.cleanup().await });
-        if tokio::time::timeout(TURN_GATE_AWAIT_TIMEOUT, cleanup)
-            .await
-            .is_err()
-        {
-            eprintln!(
-                "[engine_pool] shell cleanup did not settle within {TURN_GATE_AWAIT_TIMEOUT:?} while holding the turn gate; letting it finish in the background"
-            );
-        }
+        bounded_join_while_holding_turn_gate("shell cleanup", cleanup).await;
     }
     (target, claimed_unsubmitted)
 }
@@ -1754,13 +1767,7 @@ impl EnginePool {
                 let shell_reclaim_for_finalize = shell_reclaim_for_drain.clone();
                 let finalize =
                     tokio::spawn(async move { shell_reclaim_for_finalize.finalize().await });
-                if tokio::time::timeout(TURN_GATE_AWAIT_TIMEOUT, finalize)
-                    .await
-                    .is_err()
-                {
-                    eprintln!(
-                        "[engine_pool] shell reclaim finalize did not settle within {TURN_GATE_AWAIT_TIMEOUT:?} while holding the turn gate; letting it finish in the background"
-                    );
+                if !bounded_join_while_holding_turn_gate("shell reclaim finalize", finalize).await {
                     shell_reclaim_for_drain.mark_cleanup_failed();
                 }
                 forwarder.abort();
