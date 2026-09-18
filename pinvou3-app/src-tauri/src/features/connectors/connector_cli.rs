@@ -85,16 +85,83 @@ pub fn apply_user_npm_prefix(cmd: &mut Command) {
 
 // ─────────────────────────────── 公共执行件 ───────────────────────────────
 
-/// 跑一个命令、收集 `(success, stdout, stderr)`。在 `spawn_blocking` 里调。
-pub fn run(mut cmd: Command) -> Result<(bool, String, String), String> {
-    let out = cmd
-        .output()
-        .map_err(|e| format!("启动失败: {e}(需要先完成对应连接器 CLI 的在线安装)"))?;
-    Ok((
-        out.status.success(),
-        String::from_utf8_lossy(&out.stdout).into_owned(),
-        String::from_utf8_lossy(&out.stderr).into_owned(),
-    ))
+/// 探测失败必须按原因分型(见各变体)——「没装」与「装了但挂死」混为一谈,
+/// 会误导用户重装或谎报已断开。注意各 `*_cli_present` 仍把 Err 折叠成
+/// false,ensure 流程因此仍可能对挂死 CLI 重跑安装(布尔折叠的已知残余);
+/// 这里的分型保证的是人类可读诊断与调用方降级分支都不再误导。
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) enum ProbeError {
+    /// 进程没起来(≈CLI 二进制不存在,「未安装」),可安全按未安装降级。
+    Spawn(String),
+    /// 进程已启动但超时被杀(可能挂在网络/代理),重试有意义。
+    Timeout(String),
+    /// 进程已启动但 wait/管道失败——**不是**「未安装」,按安装缺失提示是错的。
+    Other(String),
+}
+
+impl ProbeError {
+    /// 在**包装人类可读文案之前**对 platform::process 的原始错误分型。
+    /// 分型依据是本仓库自家模块的报错格式(`spawn {program} failed: ` 出自
+    /// platform/process.rs 的 spawn 失败路径,` timed out after ` 出自超时
+    /// 路径),由下方测试钉住。分型必须吃原始错误——先包装后分型会让前缀
+    /// 匹配永远落空,降级分支随之失效(本轮修掉的回归)。
+    fn classify(raw: String) -> Self {
+        if raw.starts_with("spawn ") {
+            Self::Spawn(raw)
+        } else if raw.contains(" timed out after ") {
+            Self::Timeout(raw)
+        } else {
+            Self::Other(raw)
+        }
+    }
+
+    /// 人类可读的探测失败文案;分类与 [`ProbeError`] 严格对应。
+    pub(crate) fn message(&self) -> String {
+        match self {
+            Self::Spawn(error) => {
+                format!("启动失败: {error}(需要先完成对应连接器 CLI 的在线安装)")
+            }
+            Self::Timeout(error) => {
+                format!("{error}(CLI 探测超时;可能被网络/代理卡住,请重试)")
+            }
+            Self::Other(error) => {
+                format!("{error}(CLI 探测执行异常;进程已启动但通信失败,请重试)")
+            }
+        }
+    }
+}
+
+/// 跑探测命令并保留**分型后的错误**,供断开登录路径按类降级。
+///
+/// 在 `spawn_blocking` 里调。带 30s 兜底超时(kill-tree):这些调用绝大多数
+/// 是 `--version` / `auth status` / `auth logout` 一类的短命令,但 npm-shim
+/// CLI 曾实测会卡在网络/代理/无 TTY 提示上无限挂起(同 `run_with_timeout`
+/// 的注释)。不设上限会让 connector 状态查询与首帧 auth-gate 刷新永久转圈;
+/// 超时按失败处理,调用方已有各自的降级分支。用 kill-tree 变体:超时只杀
+/// wrapper 会把 node 孙进程连同管道一起留下,飞书 `auth login --device-code`
+/// 轮询里的阻塞调用会反复超时、反复孤儿化进程。
+///
+/// `Spawn` ≈ 真未安装(保留「未安装」降级),`Timeout`/`Other` 都发生在
+/// 进程**已经启动**之后,按「未安装」降级是错的——断开登录路径若把探测
+/// 超时当未安装,会在 `auth logout` 根本没执行、token 未撤销的情况下向
+/// 用户谎报「已断开」。
+pub(crate) fn run_probe(cmd: Command) -> Result<(bool, String, String), ProbeError> {
+    const CLI_PROBE_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(30);
+    crate::platform::process::output_with_timeout_and_kill_tree(cmd, CLI_PROBE_TIMEOUT)
+        .map_err(ProbeError::classify)
+        .map(|out| {
+            (
+                out.status.success(),
+                String::from_utf8_lossy(&out.stdout).into_owned(),
+                String::from_utf8_lossy(&out.stderr).into_owned(),
+            )
+        })
+}
+
+/// 同 [`run_probe`],但把分型错误折叠成人类可读文案,供不区分失败原因的
+/// 调用方(状态轮询、ensure 流程、`auth logout` 执行本身)继续用 `?` 上抛。
+pub fn run(cmd: Command) -> Result<(bool, String, String), String> {
+    run_probe(cmd).map_err(|error| error.message())
 }
 
 /// 跑命令并带**超时**(防 npm/npx 卡在网络 / 代理 / 无 TTY 提示上无限转)。
@@ -509,6 +576,42 @@ mod tests {
         let (tx, _rx) = mpsc::channel();
         let handle = drain_for_url(TEST_CTX, ReadErrorThenPanic { failed: false }, tx);
         assert!(handle.join().is_ok(), "读取错误后应退出排空线程");
+    }
+
+    /// A 30s probe timeout must NOT read as "CLI not installed": the ensure
+    /// flow branches on the collapsed boolean and would re-download a CLI
+    /// that is merely hung, and `auth logout` of a connected user would
+    /// claim the CLI is missing. [`ProbeError`] separates the three classes
+    /// for the logout paths, and classification must happen on the RAW
+    /// platform error — a previous round classified the human-wrapped
+    /// message instead, so the Spawn branch was unreachable and the
+    /// missing-CLI logout degrade regressed into a hard error.
+    #[test]
+    fn probe_error_messages_distinguish_timeout_from_missing_install() {
+        // fixtures use the real platform::process message formats.
+        let timeout = ProbeError::classify(String::from(
+            "lark-cli timed out after 30s: subprocess tree termination requested",
+        ));
+        assert!(matches!(timeout, ProbeError::Timeout(_)));
+        assert!(timeout.message().contains("探测超时"));
+        assert!(!timeout.message().contains("在线安装"));
+
+        let spawn = ProbeError::classify(String::from("spawn lark-cli failed: program not found"));
+        assert!(matches!(spawn, ProbeError::Spawn(_)));
+        assert!(spawn.message().contains("启动失败"));
+        assert!(spawn.message().contains("在线安装"));
+
+        // 进程已启动后的 wait/管道失败既非「未安装」也非超时,文案不得再
+        // 宣称需要安装(上一轮实现会把这一类误标成「启动失败需安装」)。
+        let other = ProbeError::classify(String::from("lark-cli wait error: no child process"));
+        assert!(matches!(other, ProbeError::Other(_)));
+        assert!(!other.message().contains("在线安装"));
+
+        // 组合回归:run_probe 是 logout 路径的入口,必须端到端产出 Spawn 分型。
+        assert!(matches!(
+            run_probe(Command::new("pinvou3-no-such-connector-cli-for-tests")),
+            Err(ProbeError::Spawn(_))
+        ));
     }
 
     /// 本地生成二维码:任意 URL 都能出码(不依赖各 CLI 的 qrcode 子命令),

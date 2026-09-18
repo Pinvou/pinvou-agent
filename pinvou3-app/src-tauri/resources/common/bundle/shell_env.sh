@@ -16,7 +16,21 @@ fi
 # profile 偶尔会输出欢迎语；先写一个唯一 marker，让过滤器丢弃 marker 前噪声。
 # env -0 避免普通空格、引号和等号破坏解析。最终只输出单行 KEY=VALUE，因为
 # CodeWhale 的 shell_env 契约就是逐行解析。
-"$login_shell" -lc 'printf "\0PINVOU3_SHELL_ENV_START\0"; env -0' | python3 -c '
+#
+# 登录 shell 自身带 15s 上限（macOS 无 GNU timeout 时退化为不限时，此时唯一
+# 的兜底是 hook 预算 20s）：nvm / conda / pyenv 初始化拖慢 profile 时，宁可
+# 放弃注入也不无限等待；被超时杀掉时通过 stderr 与退出码 124 暴露降级，而不是
+# 静默丢环境。-k 2 兜住忽略 SIGTERM 的 profile：TERM 后再宽限 2s 强杀。
+collect_login_env() {
+    if command -v timeout >/dev/null 2>&1; then
+        timeout -k 2 15 "$login_shell" -lc 'printf "\0PINVOU3_SHELL_ENV_START\0"; env -0'
+    else
+        "$login_shell" -lc 'printf "\0PINVOU3_SHELL_ENV_START\0"; env -0'
+    fi
+}
+
+login_env_rc=0
+collect_login_env | python3 -c '
 import os
 import re
 import sys
@@ -77,4 +91,11 @@ for entry in payload.split(b"\0"):
     if re.search(r"://[^/\s]*@", value):
         continue
     print(f"{key}={value}")
-'
+' || login_env_rc=$?
+
+if (( login_env_rc == 124 )); then
+    # 若 timeout 恰好杀在 `env -0` 输出途中，marker 之后的**部分**变量仍会
+    # 到达过滤器，所以措辞是"may be incomplete"而非绝对"NOT injected"。
+    printf 'pinvou3-shell-env: login shell env collection hit the 15s timeout; PATH/SDK env was NOT injected or may be incomplete (slow profile init?)\n' >&2
+fi
+exit "$login_env_rc"

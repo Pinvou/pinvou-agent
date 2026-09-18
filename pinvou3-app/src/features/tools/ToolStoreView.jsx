@@ -13,7 +13,11 @@ import { can } from '../../shared/platform.js';
 import { isImeComposing } from '../../shared/ime-guard.mjs';
 import { pathBasename } from '../../shared/path-utils.js';
 
-const OAUTH_UI_TIMEOUT_MS = 90_000;
+// 10 分钟:等待的是人完成浏览器 OAuth(2FA、慢邮箱登录、跨设备取码都可能
+// 超过旧值 90s)。后端本地回调等待自身有 300s 上限,到时后端先显式失败;
+// 这里的 10 分钟是 UI 兜底安全网,到时仍会显式取消后端登录,给用户一个
+// 可重试的干净状态,而不是在用户快完成时取消。
+const OAUTH_UI_TIMEOUT_MS = 600_000;
 
 // 释放共享忙碌槽位：只释放属于自己的那次操作。
 // 连接器的完成/失败事件是**异步**送达的，期间用户完全可能已经收起了本连接器的

@@ -61,16 +61,24 @@ pub(super) fn ingest_archive(
         return Ok(mk_err(format!("创建临时目录失败: {e}")));
     }
 
-    let extract = archive_tool_command()
-        .arg("x")
-        .arg("-y")
-        .arg(format!("-o{}", tmpdir.display()))
-        .arg(path)
-        .output();
+    // 解压上限 100 MiB，300s 预算覆盖慢盘上的解压；卡死的 7z（畸形包、
+    // 杀软占用）按超时 kill-tree，上传不再永久转圈（同 pdftotext 的兜底）。
+    let extract = crate::platform::process::output_with_timeout_and_kill_tree(
+        {
+            let mut command = archive_tool_command();
+            command
+                .arg("x")
+                .arg("-y")
+                .arg(format!("-o{}", tmpdir.display()))
+                .arg(path);
+            command
+        },
+        std::time::Duration::from_secs(300),
+    );
     if !matches!(&extract, Ok(o) if o.status.success()) {
         let detail = match extract {
             Ok(o) => String::from_utf8_lossy(&o.stderr).trim().to_string(),
-            Err(e) => e.to_string(),
+            Err(e) => e,
         };
         let _ = std::fs::remove_dir_all(&tmpdir);
         return Ok(mk_err(format!("7z 解压失败: {detail}")));
@@ -162,13 +170,15 @@ fn check_archive_limits(
 }
 
 /// `7z l -slt` 列出条目，返回 (文件数, 解压后总字节)。用于解压前的炸弹预检。
+/// 带 kill-tree 超时兜底：列目录是短命令，卡死即按超时失败。
 fn archive_list_stats(path: &Path) -> Result<(usize, u64), String> {
-    let out = archive_tool_command()
-        .arg("l")
-        .arg("-slt")
-        .arg(path)
-        .output()
-        .map_err(|e| format!("7z 调用失败: {e}"))?;
+    let mut command = archive_tool_command();
+    command.arg("l").arg("-slt").arg(path);
+    let out = crate::platform::process::output_with_timeout_and_kill_tree(
+        command,
+        std::time::Duration::from_secs(60),
+    )
+    .map_err(|e| format!("7z 调用失败: {e}"))?;
     if !out.status.success() {
         return Err(String::from_utf8_lossy(&out.stderr).trim().to_string());
     }
