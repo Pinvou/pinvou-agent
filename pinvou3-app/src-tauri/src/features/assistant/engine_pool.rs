@@ -1815,7 +1815,11 @@ impl EnginePool {
     async fn evict_locked(&self, session_id: &str) {
         let runtime_lock = self.runtime_model_locks.for_session(session_id).await;
         let _runtime = runtime_lock.lock().await;
-        match self.entries.lock().await.remove(session_id) {
+        // 先取出 entry 再 match：match scrutinee 的临时 guard 会存活到整个
+        // match 结束，若在分支内 reclaim，池级 entries 锁将横跨回收全程
+        // （上界后最坏 ~15s），跨会话阻塞 handle_for / get_or_spawn 的取锁。
+        let entry = self.entries.lock().await.remove(session_id);
+        match entry {
             Some(entry) => {
                 self.reclaim_engine_entry(session_id, entry).await;
             }
