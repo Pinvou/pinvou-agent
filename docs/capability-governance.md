@@ -112,9 +112,9 @@ scope 键即 `SessionMode` 的 kebab-case 名（当前 `plain` / `code`）；
   （防残留 hidden 误隐藏未来同名重装；ima 断开随技能卸载走同一入口）；
   CLI 连接器「断开」（logout，删授权不删记录）不走该入口，两个集合均不动；
 - 能力开关写路径（`save_disabled_bundles_for`）只写 `scopes`，不动 hidden；
-- 连接器开关（`sync_disabled_bundles_for_connector_switch`）：关闭只写
-  disabled、不动 hidden；**开回复用卸载清理入口，会连带清 hidden**——即
-  开关开回后该包在所有 scope 恢复可见。
+- 连接器开关（`set_disabled_connectors`）复用同一写路径：按 scope 整表重写
+  disabled 集（关闭写入、开启移除），两个方向都不动 hidden，也不经过卸载
+  清理入口——被 `set_bundle_visibility` 显式隐藏的包，开关开回后仍不可见。
 
 每个模式的默认策略显式声明为**模式身份**（`core/session_mode.rs` 的
 `SessionMode::pack_default_policy()`），不再是存储层的硬编码分支：
