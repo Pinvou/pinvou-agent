@@ -478,10 +478,11 @@ async function visibilityBox(page, cardText, modeLabel, click) {
       rec('飞书详情版本号以后端 lock 表为准',await page.evaluate(()=>document.body.innerText.includes('v9.9.9-lock')));
     }
     if(id==='wecom'){
-      // WeCom QR renders inside the detail modal's FeishuFlowCard via the consolidated
-      // connector-flow factory (the standalone wecomQr modal was removed so the factory
-      // is the single wecom:qr/connected/error pipeline — wecom_apply_skills now runs
-      // exactly once per connect). Pinned behaviors are unchanged: the backend-emitted
+      // WeCom QR renders through the standalone wecomQr modal (kept — the
+      // busy-release contract on main pins this path) while the consolidated
+      // connector-flow factory keeps its own wecom:connected pipeline, so the
+      // legacy listener and the factory both still invoke wecom_apply_skills
+      // per connect, unchanged from main. Pinned behaviors are unchanged: the backend-emitted
       // qr_data_url goes straight into <img>; an allowlist-rejected "Open in browser"
       // must surface a visible error (previously silent); cancel must clear the flow
       // card — backend cancel is now silent, no wecom:error implicit cleanup.

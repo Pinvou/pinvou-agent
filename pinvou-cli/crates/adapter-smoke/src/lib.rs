@@ -351,6 +351,9 @@ pub enum FindingSeverity {
     P2,
 }
 
+/// Provenance of a smoke finding. Only `Rule` is produced by the current
+/// pipeline; `Judge` is retained as the serde wire contract so finding JSON
+/// with `"source": "judge"` still deserializes.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum FindingSource {

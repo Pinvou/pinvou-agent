@@ -9121,8 +9121,10 @@
       if (downloadResult && typeof downloadResult === "object" && downloadResult.installer_path) {
         await invoke("install_update", { installerPath: downloadResult.installer_path, info: state.updateInfo });
       } else {
-        // Linux/macOS:download_update 返回纯路径字符串(JSON untagged),走 debPath 分支。
-        // 传 info 让 macOS 后端做安装前 sha256 复验(TOCTOU 纵深防御);Linux 后端目前忽略此参数。
+        // Linux/macOS: download_update now only fetches and reports progress
+        // (resolves null); install_update's debPath argument is reserved for
+        // future platform implementations. `info` is still passed so the
+        // backend can re-verify sha256 before installing (TOCTOU defense).
         await invoke("install_update", { debPath: downloadResult, info: state.updateInfo });
       }
       state.updateReady = true;

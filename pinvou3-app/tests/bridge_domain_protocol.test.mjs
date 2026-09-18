@@ -125,7 +125,11 @@ const expectedProtocolHashes = {
   // cleanup: persistMessages factory removed, the steer watchdog timeout-map
   // scaffold extracted behind the same arm/clear/purge/isArmed entry points,
   // and the never-emitted remote_control:mobile_user_message / vllm-setup:phase
-  // listeners dropped (no invoke or listen surface changed).
+  // listeners dropped. The captured surface shrank by persistMessages'
+  // save_session_messages/save_session_artifacts/rename_session invokes, the
+  // terminal.js cancel_shell_task invoke, and the two dead listeners; every
+  // dropped invoke stays reachable via bridge.js orchestration paths, so the
+  // exposed bridge.chat API is unchanged).
   chat: 'a5315f07ce07d52767c967d3df57c8d86a5dd7a605e07daaa8d85427089c52ad',
   dependencies: '2cb185d38dabeb35f48773457c182e1c35951b210f5d0fc853b074eb2eb68626',
   // Recomputed for #445 round-8: exitPlanToYolo accepts an explicit target

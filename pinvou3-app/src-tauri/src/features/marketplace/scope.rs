@@ -126,10 +126,13 @@ fn normalize_stored_pkg_ids(ids: &[String]) -> Vec<String> {
     out
 }
 
-/// 首启迁移：读旧 `disabled_connectors.json` + `disabled_skills.json`（各兼容三种
-/// 旧形态），把条目映射为包 id 后按 scope 取并集，`project_skills_enabled` 取自技能
-/// 文件。迁移不删旧文件（本版本内保留为惰性历史，只读新文件；下个版本周期随
-/// 旧布局退役一并清理）。
+/// First-boot migration: reads the legacy `disabled_connectors.json` and
+/// `disabled_skills.json` (each tolerant of three legacy shapes), maps the
+/// entries to bundle ids, and merges them into the new file — connector
+/// scopes overwrite while skill scopes union, with `project_skills_enabled`
+/// taken from the skill file. The legacy files are not deleted (kept as
+/// read-only history for this release cycle; retired alongside the legacy
+/// layout in a later cycle).
 fn migrate_from_legacy_files() -> DisabledBundlesFile {
     let mut file = DisabledBundlesFile::default();
     merge_connector_scopes_into(&mut file);

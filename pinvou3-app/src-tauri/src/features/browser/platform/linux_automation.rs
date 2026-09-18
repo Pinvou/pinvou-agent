@@ -3,8 +3,9 @@
 //! Tauri normally enables automation on its first WebContext, which belongs
 //! to the application shell. Pinvou pre-registers a dedicated browser profile
 //! instead, then connects the open-source `WebKitWebDriver` to WebKitGTK's
-//! loopback inspector. W3C Actions produce page-local trusted input without
-//! moving the user's desktop-wide pointer or injecting JavaScript events.
+//! loopback inspector. Trusted input is submitted through element-scoped
+//! WebDriver endpoints and send-keys instead of synthetic desktop-wide
+//! input injection.
 
 use std::collections::{HashMap, HashSet, hash_map::Entry};
 use std::future::Future;

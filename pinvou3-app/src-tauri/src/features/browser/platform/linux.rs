@@ -1,9 +1,8 @@
 //! Linux WebKitGTK BrowserCore driver.
 //!
-//! DOM discovery stays inside the task-owned `WebView`. Trusted pointer and
-//! keyboard input is submitted through WebKitGTK's standards-based WebDriver
-//! endpoint, so events are scoped to that page and do not take over the
-//! desktop-wide mouse or keyboard.
+//! Page interaction stays inside the task-owned `WebView` and is driven
+//! through WebKitGTK's loopback WebDriver endpoint; trusted element-scoped
+//! input dispatch lives in `linux_automation`.
 
 use serde_json::Value;
 use std::sync::Arc;

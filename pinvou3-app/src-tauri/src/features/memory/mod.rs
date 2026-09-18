@@ -11,7 +11,7 @@
 //! - `types` —— 9 实体 struct/enum、`MemoryReviewModel` trait、常量、字段归一化
 //! - `util` —— 文本清洗 / stable id / 原子写盘等跨模块底层原语
 //! - `io` —— profile 单文件 + 4 JSONL store + 2 目录 store 的读写
-//! - `llm_review` —— LLM 后台记忆复盘（提示词、调用、清洗、自动落库）+ 启发式兜底
+//! - `llm_review` —— LLM 后台记忆复盘（提示词、调用、清洗、自动落库）
 //! - `organize` —— full-pass memory organize (batch-apply LLM delete/update/merge) + report history
 //! - `render` —— 注入块 / 设备快照文档 / runtime prompt 文件管理
 //!
