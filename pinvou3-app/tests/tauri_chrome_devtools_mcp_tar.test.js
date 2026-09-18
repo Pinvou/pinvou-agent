@@ -8,7 +8,10 @@ const fs = require("node:fs");
 const os = require("node:os");
 const path = require("node:path");
 
-const { systemTarCommand } = require("../scripts/tauri/chrome-devtools-mcp.js");
+const {
+  systemTarCommand,
+  tarExtractionArguments,
+} = require("../scripts/tauri/chrome-devtools-mcp.js");
 
 assert.equal(systemTarCommand({ platform: "darwin" }), "tar");
 assert.equal(systemTarCommand({ platform: "linux" }), "tar");
@@ -51,6 +54,27 @@ try {
   fs.rmSync(windowsRoot, { recursive: true, force: true });
 }
 
+assert.deepEqual(
+  tarExtractionArguments(
+    String.raw`D:\jenkins\workspace\target\chrome-devtools-mcp-1.7.0.tgz`,
+    String.raw`D:\jenkins\workspace\target`,
+    { pathApi: path.win32 },
+  ),
+  ["-xzf", "chrome-devtools-mcp-1.7.0.tgz", "-C", "."],
+  "the archive argument must not expose a Windows drive letter to GNU tar",
+);
+assert.throws(
+  () => {
+    return tarExtractionArguments(
+      String.raw`D:\jenkins\workspace\outside.tgz`,
+      String.raw`D:\jenkins\workspace\target`,
+      { pathApi: path.win32 },
+    );
+  },
+  /must stay inside its staging directory/,
+  "the relative-path workaround must not allow archives outside staging",
+);
+
 // The extraction call site must go through systemTarCommand(); a bare "tar" would
 // reintroduce the drive-letter failure whenever PATH resolves to GNU tar first.
 const source = fs.readFileSync(
@@ -59,8 +83,8 @@ const source = fs.readFileSync(
 );
 assert.match(
   source,
-  /run\(systemTarCommand\(\), \["-xzf", tarball, "-C", stagingRoot\]/,
-  "the tarball extraction must resolve tar through systemTarCommand()",
+  /run\(systemTarCommand\(\), tarExtractionArguments\(tarball, stagingRoot\)/,
+  "the tarball extraction must resolve tar through System32 and use staging-relative arguments",
 );
 assert.doesNotMatch(
   source,
