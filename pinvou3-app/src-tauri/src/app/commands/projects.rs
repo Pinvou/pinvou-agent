@@ -804,20 +804,21 @@ pub async fn rebind_workspace_root(
     // run's only chance to stamp them is here — without it a resident buffer
     // could save stale artifact paths over the rebased JSON for as long as
     // the conflict stands.
-    let roots_result = store.rebind_roots(&from, &to_display);
-    if let Err(error) = &roots_result {
-        emit_workspace_rebound_events(
-            &app,
-            rebound_session_ids.iter().chain(&failed_session_ids),
-            &from,
-            &to_display,
-        );
-        return Err(match error {
-            RebindRootsError::Conflict(inner) => format!("REBIND_ROOTS_CONFLICT: {inner:#}"),
-            RebindRootsError::Persist(inner) => format!("REBIND_ROOTS_PERSIST: {inner:#}"),
-        });
-    }
-    let affected_project_ids = roots_result.unwrap();
+    let affected_project_ids = match store.rebind_roots(&from, &to_display) {
+        Ok(ids) => ids,
+        Err(error) => {
+            emit_workspace_rebound_events(
+                &app,
+                rebound_session_ids.iter().chain(&failed_session_ids),
+                &from,
+                &to_display,
+            );
+            return Err(match error {
+                RebindRootsError::Conflict(inner) => format!("REBIND_ROOTS_CONFLICT: {inner:#}"),
+                RebindRootsError::Persist(inner) => format!("REBIND_ROOTS_PERSIST: {inner:#}"),
+            });
+        }
+    };
 
     // Post-pass fence hits that the pre-rewrite snapshot never saw (review
     // #463 round-8 MINOR-1): a session created under `from` by a concurrent
