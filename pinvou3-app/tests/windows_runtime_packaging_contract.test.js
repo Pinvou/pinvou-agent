@@ -80,6 +80,13 @@ const installerHook = readApp(
   "nsis",
   "installer-hooks.nsh",
 );
+const vcRedistTempPreflight = readApp(
+  "src-tauri",
+  "packaging",
+  "windows",
+  "nsis",
+  "vcredist-temp-preflight.ps1",
+);
 const runtimeWrapper = readApp("scripts", "tauri", "windows-runtime.js");
 const installerAdapter = readApp("scripts", "tauri", "windows-installer.js");
 const buildScript = readApp("scripts", "tauri", "build.js");
@@ -257,6 +264,61 @@ assert.match(installerHook, /VC_redist\.x64\.exe/);
 assert.match(installerHook, /\.\.\\\.\.\\\.\.\\windows-runtime\\nsis\\vc_redist/);
 assert.doesNotMatch(installerHook, /\.\.\\\.\.\\\.\.\\target\\windows-runtime/);
 assert.match(installerHook, /\/install \/quiet \/norestart/);
+assert.match(installerHook, /pinvou-vcredist-temp-preflight\.ps1/);
+assert.match(
+  installerHook,
+  /\$\{__FILEDIR__\}\\.\.\\.\.\\.\.\\.\.\\packaging\\windows\\nsis\\vcredist-temp-preflight\.ps1/,
+  "preflight script File source must resolve from the installer.nsi output directory",
+);
+assert.doesNotMatch(
+  installerHook,
+  /\$\{__FILEDIR__\}\\.\.\\.\.\\.\.\\packaging\\windows\\nsis\\vcredist-temp-preflight\.ps1/,
+  "preflight script File source must not resolve past src-tauri",
+);
+assert.ok(
+  installerHook.indexOf("pinvou-vcredist-temp-preflight.ps1") <
+    installerHook.indexOf('ExecWait \'"$PLUGINSDIR\\VC_redist.x64.exe"'),
+  "Windows Installer temp preflight must run before VC++ starts",
+);
+assert.match(installerHook, /SetEnvironmentVariableW\(w "TEMP", w "\$WINDIR\\Temp"\)/);
+assert.ok(
+  installerHook.indexOf('SetEnvironmentVariableW(w "TEMP", w "$WINDIR\\Temp")') <
+    installerHook.indexOf('ExecWait \'"$PLUGINSDIR\\VC_redist.x64.exe"'),
+  "the TEMP/TMP override must be applied before the VC++ bundle starts",
+);
+assert.match(
+  installerHook,
+  /nsExec::ExecToStack 'powershell -NoProfile -ExecutionPolicy Bypass -File/,
+  "the preflight must run without a profile and with an explicit execution-policy bypass",
+);
+assert.match(installerHook, /IntCmp \$5 1632 pinvou_vc_redist_temp_failed/);
+assert.match(installerHook, /IntCmp \$5 -2147023264 pinvou_vc_redist_temp_failed/);
+assert.match(installerHook, /Pinvou3-vcredist\.log/);
+for (const recoveryHint of [
+  "释放系统盘空间",
+  "检查系统临时目录权限",
+  "重启 Windows 后重试",
+]) {
+  assert.ok(
+    installerHook.includes(recoveryHint),
+    `temp-dir failure guidance must include: ${recoveryHint}`,
+  );
+}
+assert.match(
+  vcRedistTempPreflight,
+  /if \(-not \$SkipMachineEnvironment -and -not \(Test-Administrator\)\)[\s\S]*?Ensure-SystemDirectory -Path \$windowsTempPath/,
+  "preflight must verify it runs elevated before touching machine ACLs",
+);
+assert.match(
+  vcRedistTempPreflight,
+  /Join-Path \$windowsRootPath "Temp"/,
+  "preflight must target the Windows temporary directory",
+);
+assert.match(
+  vcRedistTempPreflight,
+  /Join-Path \$windowsRootPath "Installer"/,
+  "preflight must target the Windows Installer directory",
+);
 for (const [name, version] of [
   ["MAJOR", vcMajor],
   ["MINOR", vcMinor],
@@ -299,7 +361,8 @@ assert.match(
 assert.match(installerHook, /IntCmp \$5 3010/);
 assert.match(installerHook, /IntCmp \$5 1641/);
 for (const [label, nextLabel] of [
-  ["pinvou_vc_redist_exec_failed", "pinvou_vc_redist_exit_failed"],
+  ["pinvou_vc_redist_exec_failed", "pinvou_vc_redist_temp_failed"],
+  ["pinvou_vc_redist_temp_failed", "pinvou_vc_redist_exit_failed"],
   ["pinvou_vc_redist_exit_failed", "pinvou_vc_redist_reboot"],
 ]) {
   const start = installerHook.indexOf(`${label}:`);

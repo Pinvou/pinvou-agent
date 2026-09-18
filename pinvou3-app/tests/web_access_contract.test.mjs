@@ -783,8 +783,15 @@ assert.match(knowledgeView, /const cacheKey = `\$\{outputSessionId \|\| ''\}\|\$
 assert.ok((knowledgeView.match(/o\.path, outputSessionId/g) || []).length >= 5,
   'output previews must authorize every Web artifact read with the owning session');
 assert.match(knowledgeView, /<FilePreviewModal path=\{outputPreview\.path\} sessionId=\{outputPreview\.sessionId\}/);
-// Note: on main, the isWeb fallback guard inside LocalFilePreview sat in dead code (no call sites) and was removed along with it;
-// the live-path Web guard for OutputLivePreview is the session-authorized read asserted above (o.path, outputSessionId).
+assert.match(
+  knowledgeView,
+  /if \(isWeb\) \{ setPv\(\{ kind: 'fallback' \}\); return \(\) => \{ alive = false; \}; \}/,
+  'Web builds must render the fallback card instead of reading local-knowledge host paths',
+);
+// Note: the Web gate above keeps the grid's OutputLivePreview from scheduling artifact
+// reads at all; the session-authorized reads asserted above stay desktop-only for the
+// grid and remain server-scoped (web_access_* commands) for the user-initiated
+// FilePreviewModal, whose reads the backend still authorizes against the session.
 assert.match(settingsView, /const canPickHostFiles = can\('hostFilePicker'\);/);
 assert.match(toolCommon, /const canOpenArtifact = !isWeb \|\| can\('artifactDownload'\);/);
 assert.match(connectionStatus, /incompatible_desktop/);
