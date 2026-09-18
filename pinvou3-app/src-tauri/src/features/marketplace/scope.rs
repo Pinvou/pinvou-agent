@@ -828,10 +828,19 @@ pub fn remove_bundle_from_disabled_scopes(raw_id: &str) {
 /// uninitialized, materialize the opt-in as (on-the-fly expansion − ids);
 /// when initialized, remove from the persisted list; the hidden set is
 /// cleaned in sync (a hidden pack sees no tools even with the switch on).
-pub fn enable_packages_in_scope(scope: ConnectorScope, raw_ids: &[String]) -> Vec<String> {
+/// The persist is **fail-visible** (round-12 review): the caller's contract is
+/// "applied and persisted", and the hot refresh re-reads the file from disk,
+/// so a swallowed save would report success while the model never sees the
+/// tool — not even in the current session. Same invariant as
+/// `apply_restore_consent_gate`; on `Err` nothing was applied.
+/// Returns the ids refused as the user's explicit opt-out.
+pub fn enable_packages_in_scope(
+    scope: ConnectorScope,
+    raw_ids: &[String],
+) -> Result<Vec<String>, String> {
     let ids: Vec<String> = raw_ids.iter().map(|id| to_package_id(id)).collect();
     if ids.is_empty() {
-        return Vec::new();
+        return Ok(Vec::new());
     }
     let _guard = DISABLED_BUNDLES_FILE_LOCK
         .lock()
@@ -856,7 +865,7 @@ pub fn enable_packages_in_scope(scope: ConnectorScope, raw_ids: &[String]) -> Ve
             .cloned()
             .collect();
         if !blocked.is_empty() {
-            return blocked;
+            return Ok(blocked);
         }
     }
     let mut changed = false;
@@ -901,9 +910,13 @@ pub fn enable_packages_in_scope(scope: ConnectorScope, raw_ids: &[String]) -> Ve
         changed |= hidden.len() != before;
     }
     if changed {
-        save_disabled_bundles_file(&file);
+        // Fail-visible (round-12 review): the caller must not report
+        // "enabled" when the state did not reach disk — the hot refresh reads
+        // the file back, so a swallowed failure leaves the tool invisible to
+        // the model while the UI claims the opt-in happened.
+        try_save_disabled_bundles_file(&file)?;
     }
-    Vec::new()
+    Ok(Vec::new())
 }
 
 /// Consent gate for trash restores (review #455 R5-m5 / R9-M2): a **single
@@ -1119,7 +1132,8 @@ mod tests {
             );
             // Legacy stored entries are pre-upgrade switch state = explicit:
             // the batch enable refuses them (round-10 Major 2 preserved).
-            let blocked = enable_packages_in_scope(ConnectorScope::Plain, &["weather".to_string()]);
+            let blocked =
+                enable_packages_in_scope(ConnectorScope::Plain, &["weather".to_string()]).unwrap();
             assert_eq!(blocked, vec!["weather".to_string()]);
 
             // Install-sync writes stored + default marker; the field
@@ -1139,7 +1153,8 @@ mod tests {
                 "install-default marker survives a reload: {file:?}"
             );
             // An install-default off lifts freely.
-            let blocked = enable_packages_in_scope(ConnectorScope::Plain, &["pptx".to_string()]);
+            let blocked =
+                enable_packages_in_scope(ConnectorScope::Plain, &["pptx".to_string()]).unwrap();
             assert!(blocked.is_empty(), "default-off lifts freely: {blocked:?}");
 
             // A composer whole-list write does not re-attribute the entries it
@@ -1159,7 +1174,8 @@ mod tests {
                     .unwrap_or(false),
                 "an untouched install-default entry keeps its marker: {file:?}"
             );
-            let blocked = enable_packages_in_scope(ConnectorScope::Plain, &["pptx".to_string()]);
+            let blocked =
+                enable_packages_in_scope(ConnectorScope::Plain, &["pptx".to_string()]).unwrap();
             assert!(
                 blocked.is_empty(),
                 "an untouched default-off still lifts after a composer write: {blocked:?}"
@@ -1175,7 +1191,8 @@ mod tests {
                     .unwrap_or(true),
                 "an entry the user switched off carries no marker: {file:?}"
             );
-            let blocked = enable_packages_in_scope(ConnectorScope::Plain, &["weather".to_string()]);
+            let blocked =
+                enable_packages_in_scope(ConnectorScope::Plain, &["weather".to_string()]).unwrap();
             assert_eq!(blocked, vec!["weather".to_string()]);
         });
     }
@@ -1243,7 +1260,7 @@ mod tests {
                 "the user's own switch-off must not re-arm a marker: {file:?}"
             );
             assert_eq!(
-                enable_packages_in_scope(ConnectorScope::Plain, &["pptx".to_string()]),
+                enable_packages_in_scope(ConnectorScope::Plain, &["pptx".to_string()]).unwrap(),
                 vec!["pptx".to_string()],
                 "the user's explicit off is refused by the batch enable"
             );

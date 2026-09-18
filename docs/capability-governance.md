@@ -4,7 +4,7 @@
 中可用、运行时如何生效。取代已删除的 `tool-governance.md`（v0.9.0 blocklist
 时代）与 `skill-scope-governance-改动说明.md`（PR 验收记录，内容已沉淀于此）。
 
-> **落地状态**（2026-08-14）：§1、§2 为现状（能力档案已退役，模式能力差量
+> **落地状态**（2026-09-18）：§1、§2 为现状（能力档案已退役，模式能力差量
 > 已收敛为静态表 `MODE_TABLE`）；§3 的存储已收敛为**单一 `disabled_bundles.json`**
 > （`{scopes, hidden_scopes, default_off_scopes, initialized, project_skills_enabled, plain_defaults_migrated}`，键 = 包 id，见 §3.2），取代原
 > `disabled_connectors.json` + `disabled_skills.json` 双文件与 `skill:` 前缀跨文件借道；
@@ -94,8 +94,10 @@ Bundle = { id, name, mcp_servers: [], skills: [], cli: [] }
 scope 键即 `SessionMode` 的 kebab-case 名（当前 `plain` / `code`）；
 `initialized` 集合取代原 `code_initialized` 布尔。`default_off_scopes`（评审
 R11-B2）记录 `scopes` 中由**安装默认**写入（非用户显式关闭）的条目：安装
-同步写 stored+本表，用户 disable 只写 stored，composer 整表写清空该 scope
-的本表（用户接管列表）；批量 enable 的整批判拒只针对 stored 中**不在**本表
+同步写 stored+本表，用户 disable 只写 stored，composer 整表写只保留本次
+**未触碰**（写前写后都在 off）条目的标记（`previous ∩ new`），随真正被切换的
+条目一起丢弃——它无法区分"谁关的"，只对能归因的条目不越权（round-12 自审）；
+批量 enable 的整批判拒只针对 stored 中**不在**本表
 的 id——安装默认的关可被用户动作（欢迎卡/场景 opt-in）移除，显式 opt-out
 不可。首个版本读取时把旧的
 `disabled_connectors.json`（连接器 id）与 `disabled_skills.json`（技能 id）迁移合并：

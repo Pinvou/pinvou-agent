@@ -3283,7 +3283,8 @@ mod tests {
             let blocked = crate::features::marketplace::scope::enable_packages_in_scope(
                 ConnectorScope::Plain,
                 &["weather".to_string()],
-            );
+            )
+            .unwrap();
             assert!(
                 blocked.is_empty(),
                 "install-default off must not trip the explicit refusal: {blocked:?}"
@@ -3301,7 +3302,8 @@ mod tests {
             let blocked = crate::features::marketplace::scope::enable_packages_in_scope(
                 ConnectorScope::Plain,
                 &["weather".to_string()],
-            );
+            )
+            .unwrap();
             assert_eq!(
                 blocked,
                 vec!["weather".to_string()],
@@ -4226,7 +4228,8 @@ mod tests {
             let blocked = crate::features::marketplace::scope::enable_packages_in_scope(
                 ConnectorScope::Plain,
                 &["feishu".to_string()],
-            );
+            )
+            .unwrap();
             assert!(
                 blocked.is_empty(),
                 "default-gated packs enable freely: {blocked:?}"
@@ -4251,7 +4254,8 @@ mod tests {
             let blocked = crate::features::marketplace::scope::enable_packages_in_scope(
                 ConnectorScope::Plain,
                 &["wecom".to_string()],
-            );
+            )
+            .unwrap();
             assert!(
                 blocked.is_empty(),
                 "an untouched install-default entry stays liftable: {blocked:?}"
@@ -4268,7 +4272,8 @@ mod tests {
             let blocked = crate::features::marketplace::scope::enable_packages_in_scope(
                 ConnectorScope::Plain,
                 &["wecom".to_string(), "dingtalk".to_string()],
-            );
+            )
+            .unwrap();
             assert_eq!(
                 blocked,
                 vec!["wecom".to_string()],
@@ -4286,7 +4291,8 @@ mod tests {
             let blocked = crate::features::marketplace::scope::enable_packages_in_scope(
                 ConnectorScope::Plain,
                 &["dingtalk".to_string()],
-            );
+            )
+            .unwrap();
             assert!(blocked.is_empty());
             assert!(
                 !load_hidden_bundles_for(ConnectorScope::Plain).contains(&"dingtalk".to_string()),
@@ -4309,12 +4315,80 @@ mod tests {
             let blocked = crate::features::marketplace::scope::enable_packages_in_scope(
                 ConnectorScope::Plain,
                 &["government-writing".to_string()],
-            );
+            )
+            .unwrap();
             assert!(blocked.is_empty());
             assert!(
                 !load_disabled_connectors_for(ConnectorScope::Plain)
                     .contains(&"gongwen".to_string()),
                 "companion skill id resolves to the owner pack for the enable"
+            );
+        });
+    }
+
+    /// Round-12 review: the batch enable must not report success when the
+    /// persist fails. Its caller's contract is "applied **and persisted**",
+    /// and the hot refresh re-reads the file from disk — a swallowed save
+    /// would leave the model without the tool while the UI says the opt-in
+    /// happened (the frontend renders its failure notice from the rejected
+    /// invoke). Fixture: a read-only home forces the write to fail; the open()
+    /// probe keeps the root skip loud (round-11 m12), same shape as the
+    /// restore-gate regression.
+    #[cfg(unix)]
+    #[test]
+    fn enable_packages_persist_failure_is_reported_and_retryable() {
+        use std::os::unix::fs::PermissionsExt;
+
+        with_temp_home(|| {
+            let home = crate::platform::paths::pinvou3_home();
+            std::fs::set_permissions(&home, std::fs::Permissions::from_mode(0o555)).unwrap();
+            let probe = home.join(".root-probe");
+            if std::fs::write(&probe, b"").is_ok() {
+                let _ = std::fs::remove_file(&probe);
+                std::fs::set_permissions(&home, std::fs::Permissions::from_mode(0o755)).unwrap();
+                eprintln!(
+                    "ROOT-SKIP[enable_packages_persist_failure_is_reported_and_retryable]: running as root - read-only home fixture stays writable; NOT exercised"
+                );
+                return;
+            }
+
+            let error = crate::features::marketplace::scope::enable_packages_in_scope(
+                ConnectorScope::Plain,
+                &["feishu".to_string()],
+            )
+            .expect_err("a failed persist must surface as Err, not as a silent success");
+            assert!(
+                error.contains("disabled_bundles.json"),
+                "the failure must name the file it could not write: {error}"
+            );
+
+            // Nothing was half-applied: the in-memory edit died with the call.
+            std::fs::set_permissions(&home, std::fs::Permissions::from_mode(0o755)).unwrap();
+            let file = crate::features::marketplace::scope::load_disabled_bundles_file();
+            assert!(
+                !file.initialized.contains("plain"),
+                "a failed persist must not materialize the scope: {file:?}"
+            );
+
+            // The failure is retryable: the same gesture succeeds once the
+            // environment can persist again.
+            assert!(
+                crate::features::marketplace::scope::enable_packages_in_scope(
+                    ConnectorScope::Plain,
+                    &["feishu".to_string()],
+                )
+                .unwrap()
+                .is_empty()
+            );
+            let file = crate::features::marketplace::scope::load_disabled_bundles_file();
+            assert!(
+                file.initialized.contains("plain"),
+                "retry persisted: {file:?}"
+            );
+            assert!(
+                !load_disabled_connectors_for(ConnectorScope::Plain)
+                    .contains(&"feishu".to_string()),
+                "the retried opt-in left feishu enabled"
             );
         });
     }

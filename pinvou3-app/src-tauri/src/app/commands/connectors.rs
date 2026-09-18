@@ -106,11 +106,14 @@ pub async fn enable_marketplace_packages(
     pool: State<'_, EnginePool>,
 ) -> Result<EnablePackagesOutcome, String> {
     let scope = parse_connector_scope(scope.as_deref())?;
+    // The inner `?` is the persist failure (round-12 review): the command must
+    // fail rather than report `enabled: true` for state that never reached
+    // disk — the frontend renders its failure notice from the rejected invoke.
     let blocked = tokio::task::spawn_blocking(move || {
         crate::features::marketplace::scope::enable_packages_in_scope(scope, &package_ids)
     })
     .await
-    .map_err(|e| format!("enable_marketplace_packages join: {e}"))?;
+    .map_err(|e| format!("enable_marketplace_packages join: {e}"))??;
     if !blocked.is_empty() {
         // Refused (round-10 Major 2): nothing was enabled; the hot-refresh
         // below is skipped because no state changed.
