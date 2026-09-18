@@ -19,9 +19,22 @@ class ReleaseArm64PolicyTests(unittest.TestCase):
             "\n      - name: 构建 deb", maxsplit=1
         )[1].split("\n      # tauri deb 产物默认名", maxsplit=1)[0]
 
-        # release profile 已在 Cargo.toml 设 thin LTO(thin 替代 fat),ARM 不再需要
-        # env 覆盖;保留 lld(thin LTO 的 link 阶段需要支持 LLVM bitcode 的链接器)。
-        self.assertIn('RUSTFLAGS: "-C link-arg=-fuse-ld=lld"', job_env)
+        # The release profile already sets thin LTO in Cargo.toml (thin
+        # replaces fat), so ARM no longer needs an env override; lld stays
+        # (proven BFD OOM on large-binary links + BFD has no --icf; thin LTO
+        # itself is executed by rustc and is linker-independent, see the
+        # Cargo.toml [profile.release] comments). This assertion also pins
+        # the size-policy flags: --icf=safe (lld identical-code folding; the
+        # safe tier only folds functions whose address is never taken,
+        # conservatively handling the known fn-address identity boundary)
+        # and remap-path-prefix (normalizes build-machine paths embedded in
+        # the artifact to /; top-level rustc flag, not a -C codegen option).
+        self.assertIn(
+            'RUSTFLAGS: "-C link-arg=-fuse-ld=lld '
+            '-C link-arg=-Wl,--icf=safe '
+            '--remap-path-prefix=${{ github.workspace }}=/"',
+            job_env,
+        )
         self.assertNotIn("CARGO_PROFILE_RELEASE_LTO", job_env)
         self.assertNotIn("CARGO_PROFILE_RELEASE_CODEGEN_UNITS", job_env)
 
