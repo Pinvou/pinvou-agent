@@ -1733,12 +1733,12 @@ mod tests {
         assert_eq!(
             store.get("s3").workspace_path.as_deref(),
             Some(root.join("elsewhere").as_path()),
-            "prefix 外会话不动"
+            "sessions outside the prefix must not move"
         );
         assert_eq!(
             store.get("s4").workspace_path.as_deref(),
             Some(root.join("from-x").as_path()),
-            "目录边界:sibling 前缀不得误命中"
+            "component boundary: a sibling prefix must not match"
         );
 
         // The authoritative sidecar is rewritten too (s1); the ACP session s2
