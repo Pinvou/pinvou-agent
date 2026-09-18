@@ -85,7 +85,6 @@ function injectSource() {
         case 'get_platform_capabilities': return Promise.resolve({
           os: 'windows',
           codexAcpSupported: true,
-          showMegacubeSite: false,
           showSuperPermissionSettings: false,
           usesBundledDependencyInstaller: true,
           taskCompletionNotificationsDefault: true,

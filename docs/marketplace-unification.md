@@ -1,6 +1,6 @@
 # 工具市场统一治理方案（marketplace unification）
 
-> 状态：实施中（Phase 2 app 侧已完成；`docs/marketplace-unification-todo.md` 为已过期的历史交接快照，不再是进度真相源——现行状态以 `docs/plugin-package-spec.md`、`docs/plugin-protocol.md` 与本文为准）。
+> 状态：实施中（Phase 2 app 侧已完成；现行状态以 `docs/plugin-package-spec.md`、`docs/plugin-protocol.md` 与本文为准）。
 > 关联文档：`docs/工具市场.md`（现状设计）、`docs/fork-policy.md`（底座改动边界）；
 > #287 已合入：`docs/capability-governance.md` 为能力治理单一真相源（scope 已按模式泛化、
 > PackDefaultPolicy / declare_all_modes! 编译期哨兵已就位），本文聚焦市场侧的统一改造。
@@ -248,8 +248,8 @@ install_bundle(id):
 | 期 | 内容 | 验收 |
 |---|---|---|
 | **Phase 0** 地基 ✅ | #287 已合入（scope 按模式泛化、capability-governance.md、编译期穷尽哨兵） | 已上游合并 |
-| **Phase 1** 底座缝 | tooling_changed → ToolingSource 双轨 → CredentialResolver；上游 PR 同步推（探查已完成，落点见 todo 文档 B 节） | FileSource 行为不变；RegistrySource 可注册；dump_session_tooling 交付 |
-| **Phase 2** app 反转 ✅ | BundleStore 可写化 + 首启迁移（刀1-3）；存储布局迁移（刀4/10/11）；execpolicy 路径 deny（刀6）；scope 收敛包 id（刀12 / a02d58b7，见 todo A 节，已完成） | 安装/卸载/更新镜像全走 BundleStore；bundles.json 为安装态唯一真相源 |
+| **Phase 1** 底座缝 | tooling_changed → ToolingSource 双轨 → CredentialResolver；上游 PR 同步推（探查已完成：tooling_changed 落点为底座 `Op` 总线新增 `ToolingChanged`，分发处换 Mcp 配置并失效技能发现缓存） | FileSource 行为不变；RegistrySource 可注册；dump_session_tooling 交付 |
+| **Phase 2** app 反转 ✅ | BundleStore 可写化 + 首启迁移（刀1-3）；存储布局迁移（刀4/10/11）；execpolicy 路径 deny（刀6）；scope 收敛包 id（刀12 / a02d58b7，已完成） | 安装/卸载/更新镜像全走 BundleStore；bundles.json 为安装态唯一真相源 |
 | **Phase 3** 切换删除（前端部分已提前） | 前端切 bundle_readiness + 动作下发 ✅（刀5/7/8/9，CLI 元数据下沉已同批完成）；待做：app 切 RegistrySource、删除物化模块、mcp.json 写入、占位符、CONNECTOR_CLAIMED_SKILLS、逐连接器 status 命令（前端调用已删，后端命令待删）、tsSkillsData、CLI 常量表 | 删除清单逐项核销；FileSource 回退期（一个版本周期）后删除 |
 | **Phase 4** 收尾 | V5 条件认领退出条件执行；占位卡改注册表 upcoming 条目；capability-governance.md 登记全部已知限制 | 文档与代码一致 |
 
@@ -297,7 +297,7 @@ install_bundle(id):
 
 ## 12. 设计溯源
 
-本方案的抽象纪律参照 deepseek-harness（`.luzeyang/deepseek-harness`）的插件体系：
+本方案的抽象纪律参照 deepseek-harness 的插件体系（贡献者本地设计参考，已归档不入库）：
 一切皆插件无特权核心（→ 底座缝）、声明式组合显式优于隐式（→ 注册表无扫描）、
 安装与激活分离（→ installed/ready 分离）、效果可逆 fail loud（→ 原子管线 + 空包拒收）、
 决策点强制（→ execpolicy 硬拦截）、单一真相源派生一切（→ BundleStore + 删除投影层）、

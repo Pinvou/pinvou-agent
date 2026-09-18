@@ -703,8 +703,6 @@ const EXTERNAL_URL_ALLOWLIST: &[&str] = &[
     "https://ima.qq.com/",
     // 智慧芽开放平台:智慧芽 MCP API Key 获取说明
     "https://open.zhihuiya.com/",
-    // MegaCube 官网(侧边栏 footer 入口跳转)
-    "https://www.h3c.com/",
     // 飞书/Lark OAuth(device flow 授权页 + 账号页);连接飞书走这里开浏览器
     "https://open.feishu.cn/",
     "https://accounts.feishu.cn/",

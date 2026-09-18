@@ -662,7 +662,7 @@ html.pet-window #root {
   pointer-events: none;
 }
 
-/* 右键菜单:窗口内 DOM 浮层(不再另起透明 webview,规避 GB10 的 malloc 闪退
+/* 右键菜单:窗口内 DOM 浮层(不再另起透明 webview,规避统一内存设备的 malloc 闪退
    与 GTK 200x200 钳制)。绝对定位于 pet-root，位置在 JS 里已钳进窗口内。 */
 .pet-context-menu {
   position: absolute;

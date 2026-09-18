@@ -1,6 +1,6 @@
 //! 包 id × SessionMode 的单一禁用集（`~/.pinvou3/disabled_bundles.json`）。
 //!
-//! 这是「工具市场统一治理」scope 收敛（todo A 节）的单一真相源：取代原先
+//! 这是「工具市场统一治理」scope 收敛的单一真相源：取代原先
 //! `disabled_connectors.json`（连接器 id）与 `disabled_skills.json`（技能 id）两份
 //! 文件。开关粒度收敛为**包 id**（= `bundle.rs` 里 `BundleInfo.id`，即 MCP 工具 id /
 //! 技能 id / CLI 连接器 id），一个包 = 一个开关，包内技能（companion skills）可见性
@@ -129,7 +129,7 @@ fn normalize_stored_pkg_ids(ids: &[String]) -> Vec<String> {
 /// 首启迁移：读旧 `disabled_connectors.json` + `disabled_skills.json`（各兼容三种
 /// 旧形态），把条目映射为包 id 后按 scope 取并集，`project_skills_enabled` 取自技能
 /// 文件。迁移不删旧文件（本版本内保留为惰性历史，只读新文件；下个版本周期随
-/// 旧布局退役一并清理，见 todo C 节）。
+/// 旧布局退役一并清理）。
 fn migrate_from_legacy_files() -> DisabledBundlesFile {
     let mut file = DisabledBundlesFile::default();
     merge_connector_scopes_into(&mut file);

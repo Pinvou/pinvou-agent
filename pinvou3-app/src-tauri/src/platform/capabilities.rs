@@ -1,7 +1,6 @@
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) struct DesktopCapabilities {
     pub(crate) os: &'static str,
-    pub(crate) show_megacube_site: bool,
     pub(crate) show_super_permission_settings: bool,
     pub(crate) uses_bundled_dependency_installer: bool,
     pub(crate) uses_homebrew_dependency_installer: bool,
@@ -44,7 +43,6 @@ pub(crate) fn browser_product_enabled() -> bool {
 pub(crate) fn current() -> DesktopCapabilities {
     DesktopCapabilities {
         os: std::env::consts::OS,
-        show_megacube_site: cfg!(target_os = "linux"),
         show_super_permission_settings: cfg!(target_os = "linux"),
         uses_bundled_dependency_installer: cfg!(target_os = "windows"),
         // macOS 用 Homebrew 安装依赖(对称 Windows 的 uses_bundled_dependency_installer),

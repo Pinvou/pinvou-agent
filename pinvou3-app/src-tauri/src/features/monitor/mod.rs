@@ -1,4 +1,4 @@
-//! GB10 设备 + vLLM 后端 + pinvou3-app 自身的健康/性能采样。
+//! 统一内存设备 + vLLM 后端 + pinvou3-app 自身的健康/性能采样。
 //!
 //! 数据流：**按需采样**——前端在监控页面 mount 时启 1s interval 调
 //! `get_monitor_snapshot`，离开页面就停。后端每次 command 直接跑一次
@@ -63,7 +63,7 @@ pub struct GpuSnapshot {
     pub processor_utilization_pct: Option<u32>,
     /// Windows / Intel fallback: shared GPU memory usage, in MiB.
     pub shared_memory_used_mib: Option<u64>,
-    /// GB10 等 unified-memory 设备 VRAM 字段是 [N/A]，UI 切到温度+功耗显示。
+    /// unified-memory 设备 VRAM 字段是 [N/A]，UI 切到温度+功耗显示。
     pub temperature_c: Option<u32>,
     pub power_w: Option<f32>,
 }
@@ -212,7 +212,7 @@ fn nvidia_gpu_snapshot() -> Option<GpuSnapshot> {
     if parts.len() < 6 {
         return None;
     }
-    // unified-memory 设备（如 NVIDIA GB10）`nvidia-smi` 返 `[N/A]`，
+    // unified-memory 设备（显存由驱动统一分配）`nvidia-smi` 返 `[N/A]`，
     // parse 失败时不要让整个 snapshot 丢失：单字段降级为 0/None。
     // UI 层检测 vram_total_mib == 0 切到温度+功耗显示。
     Some(GpuSnapshot {

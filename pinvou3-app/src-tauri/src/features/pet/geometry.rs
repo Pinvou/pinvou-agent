@@ -81,7 +81,7 @@ pub(crate) fn pet_window_logical_size(
     }
 }
 
-/// 运行时生效尺寸。GB10 实测:WebKitGTK 给 webview 的最小内容尺寸约 200x200,
+/// 运行时生效尺寸。统一内存设备实测:WebKitGTK 给 webview 的最小内容尺寸约 200x200,
 /// GTK 不允许窗口小于内容最小值——紧凑桌伴请求 144x165 实得 200x200,
 /// min_inner_size hint 也放不开。定位数学若按请求尺寸算,窗口底/右边会凸出
 /// 预期边界,拖拽物理一开边界钳制人物就被顶走("点击上移")。Linux 上把假定

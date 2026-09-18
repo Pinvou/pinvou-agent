@@ -294,7 +294,7 @@
     depsChecking: false,
     depsInstalling: false,    // 一键安装进行中(pkexec apt)
     depsInstallError: null,   // 安装失败原因(apt stderr 透传/取消/pkexec 不可用)
-    // MegaCube(GB10) 本地大模型一键引导:首屏检测结果 + 引导执行态
+    // 厂商预装本地大模型一键引导:首屏检测结果 + 引导执行态
     vllmSetup: null,          // {eligible, may_offer_setup, has_packages, engine_state:ready|starting|stopped|failed, ...}
     vllmBootstrapping: false, // 引导进行中(pkexec + 拉起 + 轮询就绪)
     vllmSetupPhase: null,     // 阶段:'authorizing'|'waiting'|'ready'(后端 vllm-setup:phase 事件驱动步骤指示)
@@ -6827,7 +6827,7 @@
     notify();
   });
 
-  // vllm-setup:phase —— MegaCube 本地大模型引导阶段(authorizing→waiting{attempt}→ready),驱动引导框步骤指示。
+  // vllm-setup:phase —— 厂商预装本地大模型引导阶段(authorizing→waiting{attempt}→ready),驱动引导框步骤指示。
   listen("vllm-setup:phase", function (e) {
     const p = e.payload || {};
     if (!p.phase) return;
@@ -7297,7 +7297,7 @@
     return invoke("discover_local_vllm", { request: request || null });
   }
 
-  // ── MegaCube(GB10) 本地大模型一键引导 ────────────────────────────
+  // ── 厂商预装本地大模型一键引导 ────────────────────────────
   let vllmSetupPollTimer = null;
   let vllmSetupPollStartedAt = 0;
   const VLLM_SETUP_POLL_INTERVAL_MS = 3000;

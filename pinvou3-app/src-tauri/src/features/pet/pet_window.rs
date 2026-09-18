@@ -220,7 +220,7 @@ pub fn create_or_show(app: &AppHandle) -> Result<(), String> {
     let win = WebviewWindowBuilder::new(app, PET_LABEL, WebviewUrl::App(pet_url.into()))
         .title("PINVOU 桌伴公仔")
         .inner_size(initial_size.0, initial_size.1)
-        // GTK 下无显式 min hint 的窗口会被钳到 ~200x200 最小尺寸(GB10 实测,
+        // GTK 下无显式 min hint 的窗口会被钳到 ~200x200 最小尺寸(统一内存设备实测,
         // 菜单窗口同病):紧凑桌伴请求 144x165 实得 200x200,定位数学随之失准。
         // 96x120 覆盖 MIN_SCALE 下的最小合法尺寸,放开 GTK 的钳制。
         .min_inner_size(96.0, 120.0)
@@ -644,7 +644,7 @@ pub async fn open_main_from_pet(
             eprintln!("[pet nav] {error}");
             error
         })?;
-    // GB10 实测:主窗口最小化时 unminimize 返回 Ok 但 mutter 拒绝 deiconify
+    // 统一内存设备实测:主窗口最小化时 unminimize 返回 Ok 但 mutter 拒绝 deiconify
     // (焦点抢占保护),窗口召不回来。withdraw+remap 等价于新窗口映射,WM 必须
     // 显示——仅在确实最小化时走这条路,避免可见窗口无谓闪一下。
     let was_minimized = main.is_minimized().unwrap_or(false);
@@ -673,7 +673,7 @@ pub async fn open_main_from_pet(
         session_id: target,
         scheduled_run,
     })?;
-    // X11 焦点抢占保护:实测(GB10) show/unminimize/set_focus 全部返回 Ok,
+    // X11 焦点抢占保护:实测(统一内存设备) show/unminimize/set_focus 全部返回 Ok,
     // 但 WM 拒绝把主窗口提到前台,只打 demand-attention——用户看到"点了没反应"。
     // raise 不受焦点保护限制:瞬时置顶把窗口强制提前。取消置顶不能紧跟
     // set_focus 同步执行;X11/Mutter 上主窗口可能尚未完成激活,立刻撤销会让
