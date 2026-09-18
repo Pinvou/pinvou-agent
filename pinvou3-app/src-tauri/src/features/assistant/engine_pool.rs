@@ -76,6 +76,16 @@ use crate::core::reaper::{IDLE_EVICT_AFTER_SECS, IdleReaperGuard};
 /// on the already-stalled engine survive until it unsticks or is reclaimed.
 const TURN_GATE_AWAIT_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(5);
 
+/// Total wait per op for the detached retry that re-delivers the reclaim
+/// shutdown ops after the gate-held send gave up (issue #255). The retry
+/// runs outside the turn gate, so this bound only decides how long the
+/// process keeps trying to let the reclaimed engine exit through its normal
+/// `Shutdown` path; if the engine is still stalled when it expires, the
+/// engine task lingers until process exit (it would leak either way while
+/// stalled — the retry only shrinks the window in the temporary-stall case,
+/// which is the common one).
+const RECLAIM_SHUTDOWN_RETRY_PATIENCE: std::time::Duration = std::time::Duration::from_secs(60);
+
 /// 空闲回收判定（纯函数，便于单测）：turn 活跃（reserve 占用或终态收口）、
 /// scheduled 轮进行中（run_scheduled_turn 的 spawn→submit 窗口 lifecycle 尚未
 /// active）以及当前 active 会话一律不回收。判定本体与 ACP 侧共用
@@ -501,6 +511,94 @@ where
                 "[engine_pool] {what} did not settle within {TURN_GATE_AWAIT_TIMEOUT:?} while holding the turn gate; abandoning it to keep the session gate responsive"
             );
             false
+        }
+    }
+}
+
+/// Static name for the shutdown-op diagnostics. The surrounding reclaim logs
+/// must not carry the session id (CodeQL flags cleartext session ids in
+/// newly added lines); pre-existing logs around the reclaim already provide
+/// that context. Message payloads are avoided on purpose: `Op`'s `Debug`
+/// prints message contents, so a future payload variant sent through this
+/// loop would leak them into the log.
+fn shutdown_op_name(op: &Op) -> &'static str {
+    match op {
+        Op::CancelSubAgents => "CancelSubAgents",
+        Op::Shutdown => "Shutdown",
+        _ => "op",
+    }
+}
+
+/// Delivers the reclaim shutdown ops in order, each send bounded by
+/// [`TURN_GATE_AWAIT_TIMEOUT`] (issue #255): reclaim runs inside the session
+/// turn gate, so a stalled engine with a full ops channel must not extend
+/// the gate hold. Returns the number of ops delivered in order from the
+/// front; the caller re-sends any remainder from a detached task (see
+/// [`retry_shutdown_sends`]). A timed-out send is never enqueued (tokio
+/// mpsc send is cancel-safe), so skipping ahead cannot duplicate an op.
+async fn bounded_shutdown_sends<S, Fut>(mut send: S, ops: impl IntoIterator<Item = Op>) -> usize
+where
+    S: FnMut(Op) -> Fut,
+    Fut: Future<Output = Result<()>>,
+{
+    let mut delivered = 0;
+    for op in ops {
+        let op_name = shutdown_op_name(&op);
+        match tokio::time::timeout(TURN_GATE_AWAIT_TIMEOUT, send(op)).await {
+            Ok(Ok(())) => delivered += 1,
+            Ok(Err(e)) => {
+                eprintln!(
+                    "[engine_pool] shutdown {op_name} send failed: {e:#}; abandoning remaining shutdown ops"
+                );
+                break;
+            }
+            Err(_) => {
+                eprintln!(
+                    "[engine_pool] shutdown {op_name} send timed out after {TURN_GATE_AWAIT_TIMEOUT:?} while holding the turn gate; abandoning remaining shutdown ops"
+                );
+                break;
+            }
+        }
+    }
+    delivered
+}
+
+/// Retries the shutdown ops that [`bounded_shutdown_sends`] could not
+/// deliver while the turn gate was held. Spawns detached (the caller drops
+/// the returned join handle) and holds nothing but its own sender clone: it
+/// never touches the turn gate, the pool, or the session maps, so it cannot
+/// re-block evict/delete. Without this retry a timed-out reclaim would
+/// never deliver `Shutdown` at all — the engine owns a `tx_op` clone that
+/// keeps its ops channel open, so its run loop only exits through the
+/// normal `Shutdown` path and would otherwise linger until process exit
+/// (MCP shutdown, subagent flush included). Each send is bounded by
+/// `patience`, so a permanently stalled engine stops the retry after at
+/// most `pending.len() × patience` instead of waiting forever.
+async fn retry_shutdown_sends<S, Fut>(mut send: S, pending: Vec<Op>, patience: std::time::Duration)
+where
+    S: FnMut(Op) -> Fut,
+    Fut: Future<Output = Result<()>>,
+{
+    for op in pending {
+        let op_name = shutdown_op_name(&op);
+        match tokio::time::timeout(patience, send(op)).await {
+            Ok(Ok(())) => {
+                eprintln!(
+                    "[engine_pool] shutdown {op_name} retry delivered after the engine drained"
+                );
+            }
+            Ok(Err(e)) => {
+                eprintln!(
+                    "[engine_pool] shutdown {op_name} retry stopped: engine channel closed ({e:#})"
+                );
+                break;
+            }
+            Err(_) => {
+                eprintln!(
+                    "[engine_pool] shutdown {op_name} retry timed out after {patience:?}; the engine task may linger until process exit"
+                );
+                break;
+            }
         }
     }
 }
@@ -1780,35 +1878,30 @@ impl EnginePool {
         // 通道，FIFO 保证取消先于关闭被处理；否则删除/换模型回收后，会话派生的
         // 裸子智能体会以孤儿任务继续跑到自己的步数/时限上限。已知限制：取消是
         // abort 不 join，子智能体已启动的独立 shell 子进程仍可能残留。
-        // 两次 send 都以 [`TURN_GATE_AWAIT_TIMEOUT`] 为上界（issue #255）：
-        // reclaim 在 turn gate 内执行，卡死的 engine 不得把 gate 永久占住——
-        // entry 无论如何都会被移除，超时只是放弃向卡死引擎投递收尾 op。
-        for op in Self::shutdown_cancel_cascade_ops() {
-            // The diagnostics must not carry the session id (CodeQL flags
-            // cleartext session ids in newly added lines); surrounding
-            // pre-existing logs already provide the session context. The
-            // static op name is safe to log and tells the two shutdown ops
-            // apart (the op's own Debug would print message contents).
-            let op_name = match op {
-                Op::CancelSubAgents => "CancelSubAgents",
-                Op::Shutdown => "Shutdown",
-                _ => "op",
-            };
-            match tokio::time::timeout(TURN_GATE_AWAIT_TIMEOUT, engine.handle.send(op)).await {
-                Ok(Ok(())) => {}
-                Ok(Err(e)) => {
-                    eprintln!(
-                        "[engine_pool] shutdown {op_name} send failed: {e:#}; abandoning remaining shutdown ops"
-                    );
-                    break;
-                }
-                Err(_) => {
-                    eprintln!(
-                        "[engine_pool] shutdown {op_name} send timed out after {TURN_GATE_AWAIT_TIMEOUT:?}; abandoning remaining shutdown ops"
-                    );
-                    break;
-                }
-            }
+        // send 以 [`TURN_GATE_AWAIT_TIMEOUT`] 为上界（issue #255）：reclaim 在
+        // turn gate 内执行，卡死的 engine 不得把 gate 永久占住——entry 无论如何
+        // 都会被移除，超时只是不在 gate 内继续等待投递。未送达的 op 转入
+        // [`retry_shutdown_sends`] 的 detached 重试：engine 自持有 tx_op 克隆、
+        // entry 摘除不会关闭其 ops 通道，不补投 `Shutdown` 的话 run loop 只能
+        // 存活到进程退出；重试不持 gate，引擎解卡后按原 FIFO 顺序补投，让
+        // engine 走正常 Shutdown 路径退出。
+        let shutdown_ops = Self::shutdown_cancel_cascade_ops();
+        let shutdown_total = shutdown_ops.len();
+        let delivered = bounded_shutdown_sends(|op| engine.handle.send(op), shutdown_ops).await;
+        if delivered < shutdown_total {
+            let handle = engine.handle.clone();
+            let pending: Vec<Op> = Self::shutdown_cancel_cascade_ops()
+                .into_iter()
+                .skip(delivered)
+                .collect();
+            let _ = tokio::spawn(retry_shutdown_sends(
+                move |op| {
+                    let handle = handle.clone();
+                    async move { handle.send(op).await }
+                },
+                pending,
+                RECLAIM_SHUTDOWN_RETRY_PATIENCE,
+            ));
         }
     }
 
