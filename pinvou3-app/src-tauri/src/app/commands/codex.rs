@@ -31,10 +31,6 @@ pub struct CodexAcpSessionListItem {
     pub pinned_at: Option<String>,
     #[serde(flatten)]
     pub workspace: CodexAcpWorkspaceInfo,
-    /// Keychain snapshot locked at creation (§6, the full set of accessible
-    /// roots); empty = single-root semantics.
-    #[serde(skip_serializing_if = "Vec::is_empty")]
-    pub workspace_roots: Vec<String>,
     pub agent_id: String,
     pub agent_name: String,
 }
@@ -593,12 +589,13 @@ pub async fn cancel_codex_acp(
 }
 
 #[tauri::command]
-pub fn get_codex_acp_timeline(
+pub async fn get_codex_acp_timeline(
     session_id: String,
     acp_pool: State<'_, AcpPool>,
 ) -> Result<Vec<AcpEventEnvelope>, String> {
     acp_pool
         .timeline(&session_id)
+        .await
         .map_err(|error| format!("读取 Codex ACP timeline 失败: {error:#}"))
 }
 
@@ -678,18 +675,11 @@ pub async fn list_codex_acp_sessions(
             let workspace = acp_pool
                 .workspace_info(&metadata.id)
                 .map_err(|error| format!("读取代码会话 {} 工作目录失败: {error:#}", metadata.id))?;
-            let workspace_roots = acp_pool
-                .agents()
-                .session_workspace_roots(&metadata.id)
-                .iter()
-                .map(|path| path.display().to_string())
-                .collect();
             Ok(CodexAcpSessionListItem {
                 pinned: store.is_pinned(&metadata.id),
                 pinned_at: store.pinned_at(&metadata.id),
                 metadata,
                 workspace,
-                workspace_roots,
                 agent_id: code_session_agent_id(backend),
                 agent_name: backend.display_name().to_string(),
             })
@@ -727,13 +717,6 @@ fn redact_session_metadata_for_web_in_place(metadata: &mut SessionMetadata) {
 fn redact_codex_session_list_item_for_web(item: &mut CodexAcpSessionListItem) {
     redact_session_metadata_for_web_in_place(&mut item.metadata);
     item.workspace.workspace_path = redact_workspace_path_for_web(&item.workspace.workspace_path);
-    // The keychain snapshot contains host absolute paths and is projected to
-    // directory names the same way as workspace_path.
-    item.workspace_roots = item
-        .workspace_roots
-        .iter()
-        .map(|root| redact_workspace_path_for_web(root))
-        .collect();
 }
 
 /// Web 版代码会话列表：复用桌面端列表逻辑，但把工作区路径投影为目录名，
@@ -757,18 +740,11 @@ pub async fn list_codex_acp_sessions_for_web(
             let workspace = acp_pool
                 .workspace_info(&metadata.id)
                 .map_err(|error| format!("读取代码会话 {} 工作目录失败: {error:#}", metadata.id))?;
-            let workspace_roots = acp_pool
-                .agents()
-                .session_workspace_roots(&metadata.id)
-                .iter()
-                .map(|path| path.display().to_string())
-                .collect();
             Ok(CodexAcpSessionListItem {
                 pinned: store.is_pinned(&metadata.id),
                 pinned_at: store.pinned_at(&metadata.id),
                 metadata,
                 workspace,
-                workspace_roots,
                 agent_id: code_session_agent_id(backend),
                 agent_name: backend.display_name().to_string(),
             })
@@ -829,40 +805,33 @@ pub(crate) async fn create_codex_acp_session_with_workspace_binding(
         .map(validate_codex_project_workspace)
         .transpose()
         .map_err(|error| format!("{error:#}"))?;
-    // Keychain snapshot (§6): absolute paths are hard-rejected; nonexistent
-    // additional roots are kept with a soft warning (the same validation as
-    // sessions::create_session).
+    // 钥匙串快照(§6):绝对路径硬拒,不存在的附加根软警告保留(与
+    // sessions::create_session 同一条校验)。
     let keychain =
         crate::features::sessions::validate_workspace_roots(workspace_roots.unwrap_or_default())
             .map_err(|error| {
                 format!("create_codex_acp_session: invalid workspace_roots: {error:#}")
             })?;
-    // Project channel (§9.3): a bogus project_id is a client error and
-    // fail-fasts before any persistence (review #484: the memory write used
-    // to run before session validation passed, and unknown-project_id
-    // failures were swallowed by eprintln!). The memory write-back itself
-    // happens after creation succeeds (see the record_project_primary_root
-    // calls before the two Ok paths below).
-    if let Some(project_id) = project_id.as_deref() {
-        if projects.get(project_id).is_none() {
-            return Err(format!(
-                "create_codex_acp_session: project not found: {project_id}"
-            ));
+    // 项目通道(§9.3):创建即更新项目记忆主文件夹(后端同命令内写,免二次
+    // RPC;失败只记日志,不影响创建)。
+    if let (Some(project_id), Some(cwd)) = (project_id, project_workspace.clone()) {
+        if let Err(error) = projects.set_last_primary_root(&project_id, &cwd) {
+            eprintln!(
+                "[codex] create_codex_acp_session: record last_primary_root failed: {error:#}"
+            );
         }
     }
     verify_workspace_binding(project_workspace.as_deref(), workspace_verifier)?;
     if !backend.is_acp() {
-        let metadata = create_code_native_session(
-            project_workspace.clone(),
+        return create_code_native_session(
+            project_workspace,
             keychain,
             &pool,
             &store,
             &acp_pool,
             workspace_verifier,
         )
-        .await?;
-        record_project_primary_root(&projects, &project_id, &project_workspace);
-        return Ok(metadata);
+        .await;
     }
     let metadata_workspace = project_workspace
         .clone()
@@ -925,27 +894,7 @@ pub(crate) async fn create_codex_acp_session_with_workspace_binding(
         rollback_created_code_session(&session.metadata.id, &store, &acp_pool);
         return Err(error);
     }
-    record_project_primary_root(&projects, &project_id, &project_workspace);
     Ok(session.metadata)
-}
-
-/// Project channel (§9.3): write back the project's remembered primary
-/// folder after the session is created (written inside the same backend
-/// command, avoiding a second RPC/missed write). A bogus project_id already
-/// fail-fasted at the entry; membership/persist failures here are only
-/// logged and do not affect creation (retried on the next creation).
-fn record_project_primary_root(
-    projects: &ProjectStore,
-    project_id: &Option<String>,
-    cwd: &Option<PathBuf>,
-) {
-    if let (Some(project_id), Some(cwd)) = (project_id, cwd) {
-        if let Err(error) = projects.set_last_primary_root(project_id, cwd) {
-            eprintln!(
-                "[codex] create session: record last_primary_root failed (creation unaffected): {error:#}"
-            );
-        }
-    }
 }
 
 /// 创建“代码”模块原生（品悟 Engine）会话。
@@ -1136,7 +1085,6 @@ mod tests {
                 workspace_path: PRIVATE_WORKSPACE.to_string(),
                 workspace_available: true,
             },
-            workspace_roots: Vec::new(),
             agent_id: "codex".to_string(),
             agent_name: "Codex".to_string(),
         };

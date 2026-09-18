@@ -6,6 +6,7 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parents[2]
 RELEASE_WORKFLOW = ROOT / ".github/workflows/release-packages.yml"
 GUARD_SCRIPT = ROOT / "scripts" / "check-linux-glibc-floor.sh"
+ELF_POLICY_SCRIPT = ROOT / "scripts" / "check-linux-elf-policy.sh"
 LINUX_OVERLAY = ROOT / "pinvou3-app/src-tauri/config/platforms/linux/tauri.conf.json"
 
 # Linux 发布基线是 Ubuntu 22.04 (glibc 2.35) x86_64/arm64。发布二进制链接
@@ -82,14 +83,21 @@ class ReleaseLinuxFloorPolicyTests(unittest.TestCase):
             )
 
     def test_guard_script_defaults_to_2204_glibc_floor(self):
-        # 脚本默认 glibc 下限必须与基线一致;workflow 不传参即用默认值。
+        # The wrapper takes the floor as the optional third argument and
+        # delegates to check-linux-elf-policy.sh, which owns the jammy
+        # (gcc 12) GLIBCXX_/CXXABI_ floors; the workflow passes no floor,
+        # so the defaults must match the Ubuntu 22.04 baseline.
         source = GUARD_SCRIPT.read_text(encoding="utf-8")
-        self.assertIn('glibc_floor="${2:-2.35}"', source)
-        self.assertIn('"3.4.30"', source)  # GLIBCXX_ (jammy gcc 12)
-        self.assertIn('"1.3.13"', source)  # CXXABI_ (jammy gcc 12)
+        self.assertIn('glibc_floor="${3:-2.35}"', source)
+        self.assertIn("check-linux-elf-policy.sh", source)
+        policy = ELF_POLICY_SCRIPT.read_text(encoding="utf-8")
+        self.assertIn('glibc_floor="${3:-2.35}"', policy)
+        self.assertIn('"3.4.30"', policy)  # GLIBCXX_ (jammy gcc 12)
+        self.assertIn('"1.3.13"', policy)  # CXXABI_ (jammy gcc 12)
 
     def test_guard_script_is_valid_bash(self):
         subprocess.run(["bash", "-n", str(GUARD_SCRIPT)], check=True)
+        subprocess.run(["bash", "-n", str(ELF_POLICY_SCRIPT)], check=True)
 
     def test_deb_declares_webkit_floor(self):
         # tauri-runtime-wry 启用 webkit2gtk v2_40,运行时需要 WebKitGTK ≥ 2.40;

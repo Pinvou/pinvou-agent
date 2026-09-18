@@ -1435,9 +1435,17 @@ impl AppEngine {
         // the bool and the Option.
         let mut engine_config = match expert_snapshot.as_deref() {
             Some(snapshot) => {
-                // 多智能体面：装配专家名册和专用资源上限；工具面仍与普通会话
-                // 完全一致，普通会话不继承这些限制。
-                bridge.build_engine_config_for_multi_agent(session_id, roots, snapshot)
+                // Multi-agent surface: assemble the expert roster and the
+                // dedicated resource caps; the tool surface stays identical to
+                // a plain session, which inherits none of these limits. The
+                // swarm switch and the session's multi_agent switch share one
+                // source (the mode_state just read above).
+                bridge.build_engine_config_for_multi_agent(
+                    session_id,
+                    roots,
+                    snapshot,
+                    multi_agent_enabled,
+                )
             }
             None => bridge.build_engine_config_for_session_roots(session_id, roots),
         };
@@ -1816,8 +1824,6 @@ impl AppEngine {
     pub async fn edit_last_turn(&self, new_message: String) -> Result<()> {
         self.send_turn_op(Op::EditLastTurn {
             new_message,
-            // No host correlation token: the replayed turn is tracked by the
-            // in-process turn lifecycle, not by a submission echo.
             submission_id: None,
         })
         .await
@@ -1895,10 +1901,8 @@ impl AppEngine {
                 system_prompt_override: false,
                 model: self.bridge.model(),
                 workspace: self.workspace.clone(),
-                // Keychain backfill on the resume path (§6): the full root
-                // set locked at creation survives session restarts; sessions
-                // without a snapshot (old/temporary) are empty = single root,
-                // normalized by the foundation per cwd.
+                // 恢复路径钥匙串回填(§6):创建时锁定的全量根,会话重启不丢;
+                // 无快照(旧会话/临时会话)为空 = 单根,底座按 cwd 归一。
                 workspace_roots: self.bridge.session_workspace_roots(&session_id),
                 mode: AppMode::Agent,
             })
@@ -3120,7 +3124,6 @@ mod scheduled_turn_tests {
         let config = Config::default();
         Op::SendMessage {
             content: "scheduled prompt".to_string(),
-            submission_id: None,
             mode: AppMode::Agent,
             route: Box::new(
                 deepseek_tui::route_runtime::resolve_runtime_route(
@@ -3148,6 +3151,10 @@ mod scheduled_turn_tests {
             verbosity: None,
             provenance: UserInputProvenance::Runtime,
             turn_tool_security: None,
+            // CodeWhale#58 echoes this token on TurnStarted; the GUI does not
+            // correlate submit-window turns yet, so None (wiring lands with
+            // the turn-bound stop PR).
+            submission_id: None,
         }
     }
 

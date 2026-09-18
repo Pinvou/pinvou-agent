@@ -59,13 +59,13 @@ fn skill_source_dirs() -> Vec<PathBuf> {
 
 /// 项目技能来源目录（workspace 内工具约定，按底座上游 #432 优先级降序，
 /// `.pinvou/skills` 为 pinvou3 自有约定，插在 `.agents/skills` 之后）。
-/// Only used when the project-level skills global switch is on AND the
-/// session is bound to a real directory (the caller passes Some(workspace):
-/// a native code session's project directory or a plain chat session's user
-/// working-directory binding) (§2.4: in-project text is a prompt-injection
-/// surface, so scanning requires explicit opt-in; fork #41 cut workspace
-/// union discovery, and this backfills it on the app side in the same source
-/// order, materialized through the composed-directory channel).
+/// Used only when the project-level skills global switch is on and the session
+/// is bound to a real directory (the caller passes Some(workspace): a native
+/// code session's project directory or a plain chat session's user
+/// working-directory binding) (§2.4: text inside a project is a
+/// prompt-injection surface, scanned only when explicitly enabled; fork #41
+/// removed workspace union discovery, so the app side restores it here in the
+/// same source order, materialized through the composed directory channel).
 fn project_skill_source_dirs(project_workspace: &Path) -> Vec<PathBuf> {
     [
         ".agents/skills",
@@ -85,10 +85,9 @@ fn project_skill_source_dirs(project_workspace: &Path) -> Vec<PathBuf> {
 ///
 /// 排除两类：本 scope 禁用集中的技能（含未初始化 DenyAll 模式的默认全禁）+
 /// 被禁用连接器声明的 companion skills（保持「关 MCP → 关联技能一并隐藏」的
-/// existing linkage). `project_workspace` is only passed by the caller
-/// (Some) when the session is bound to a real directory, and is only scanned
-/// when the project-level skills global switch is on (ordered before the
-/// user/marketplace sources,
+/// existing linkage). `project_workspace` is passed by the caller (Some) only
+/// when the session is bound to a real directory, and is scanned only when the
+/// project-level skills global switch is on (ordered before user/marketplace
 /// 项目本地覆盖语义与底座 workspace 目录优先一致）。
 pub fn enabled_skills_for(
     scope: ConnectorScope,
@@ -99,10 +98,9 @@ pub fn enabled_skills_for(
     let mut out: Vec<(String, PathBuf)> = Vec::new();
     // 项目技能优先（workspace 目录 > 全局来源，与底座 first-wins 一致）；
     // Project gate = global switch + binding: only sessions bound to a real
-    // directory (the caller passes Some(workspace)) whose user has
-    // explicitly enabled the project-level skills switch are scanned —
-    // in-project text is a prompt-injection surface, mode-independent and
-    // binding-following.
+    // directory (the caller passes Some(workspace)) with the project-level skills
+    // switch explicitly enabled get scanned — text inside a project is a
+    // prompt-injection surface, independent of mode and tied to the binding.
     if project_skills_enabled() {
         if let Some(workspace) = project_workspace {
             for src in project_skill_source_dirs(workspace) {
@@ -749,14 +747,13 @@ mod tests {
                 ".agents/skills 优先级应高于 .pinvou/skills（同名仍取 .agents）"
             );
 
-            // The project gate is decoupled from mode (follows the binding,
-            // not the mode): the plain scope with a bound directory passed in
-            // is scanned the same way; with the global switch off, nothing is
-            // scanned.
+            // The project gate is decoupled from mode (tied to the binding, not
+            // the mode): plain scope with a bound directory passed in is scanned
+            // too; with the global switch off, no scan.
             let enabled = enabled_skills_for(ConnectorScope::Plain, Some(&project));
             assert!(
                 enabled.iter().any(|(n, _)| n == "project-skill"),
-                "plain sessions with a bound directory also participate in project-skill scanning (when the switch is on)"
+                "绑定目录的普通会话同样参与项目技能扫描（开关开启时）"
             );
             set_project_skills_enabled(false);
             let enabled = enabled_skills_for(ConnectorScope::Plain, Some(&project));

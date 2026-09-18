@@ -155,7 +155,7 @@ assert.ok(
   'ordinary session navigation must hide the native browser before publishing the chat route and loading the remote session'
 );
 assert.ok(
-  /async function navigateFromScheduledRun\(nextView[\s\S]{0,520}runBrowserUiTransition[\s\S]{0,260}await bridge\.scheduled\.exitScheduledRunChat\(\)[\s\S]{0,160}!exited \|\| !isCurrent\(\)[\s\S]{0,200}setCurrentView\(nextView\)[\s\S]{0,360}hideMode: bs && bs\.scheduledRunContext[\s\S]{0,80}'workspace'/.test(indexHtml),
+  /const navigateFromScheduledRun = useCallback\(async \(nextView[\s\S]{0,520}runBrowserUiTransition[\s\S]{0,260}await bridge\.scheduled\.exitScheduledRunChat\(\)[\s\S]{0,160}!exited \|\| !isCurrent\(\)[\s\S]{0,260}setCurrentView\(nextView\)[\s\S]{0,360}hideMode: bs && bs\.scheduledRunContext[\s\S]{0,80}'workspace'/.test(indexHtml),
   'leaving a scheduled run must hide the native browser before restoring its return session and publishing the next route'
 );
 assert.ok(
@@ -386,6 +386,10 @@ assert.ok(
   'Scheduled model and frequency controls should use the themed keyboard-dismissible popover'
 );
 assert.ok(
+  !/<ScheduledSelect\b(?:(?!\/>)[\s\S])*?(?:testId="scheduled-live-model"|testId=\{`\$\{prefix\}-(?:repeat|day)`\})(?:(?!\/>)[\s\S])*?\/>\s*<ChevronRight\b/.test(scheduledViewSource),
+  'scheduled selectors should not render a second inert chevron outside their trigger'
+);
+assert.ok(
   /const iosInsetSurface =/.test(indexHtml) &&
     /data-testid="scheduled-create-settings" className=\{`overflow-visible rounded-\[16px\] \$\{iosInsetSurface\}`\}/.test(indexHtml) &&
     /data-testid="scheduled-detail-settings" className=\{`overflow-visible rounded-\[16px\] \$\{iosInsetSurface\}`\}/.test(indexHtml) &&
@@ -422,7 +426,7 @@ assert.ok(
     !/data-testid="scheduled-task-action-menu"/.test(indexHtml) &&
     !/data-testid="scheduled-detail-actions"/.test(indexHtml) &&
     /scheduledRunHistory\.map/.test(indexHtml) &&
-    /<RecentItem[\s\S]{0,900}chat=\{chat\}[\s\S]{0,900}handleOpenScheduledRunShortcut\(chat\.scheduledRun\)/.test(indexHtml) &&
+    /<RecentItem[\s\S]{0,900}chat=\{chat\}[\s\S]{0,900}handleOpenScheduledRunShortcut\(c\.scheduledRun\)/.test(indexHtml) &&
     /onContextMenu=\{openContextMenu\}/.test(indexHtml) &&
     /onTogglePinned && onTogglePinned\(chat\.id, !chat\.pinned\)/.test(indexHtml) &&
     /setConfirming\(true\)/.test(indexHtml) &&
@@ -521,6 +525,25 @@ assert.ok(
     scheduledTaskPromptRust.includes("FREQ=WEEKLY;BYDAY=MO,TU,WE,TH,FR,SA,SU;BYHOUR=8;BYMINUTE=30") &&
     scheduledTaskPromptRust.includes("FREQ=WEEKLY;BYDAY=MO,WE;BYHOUR=9;BYMINUTE=30"),
   'backend prompt should include supported rrule examples'
+);
+assert.ok(
+  scheduledTaskPromptRust.includes("FREQ=ONCE;AT=2027-06-01T09:30") &&
+    scheduledTaskPromptRust.includes("如果用户指定的一次性时刻已经过去，必须先和用户确认改成未来的时刻，不要输出草稿。") &&
+    scheduledTaskPromptRust.includes("不要带 Z 或时区偏移后缀"),
+  'backend prompt must teach once-only schedules, reject past one-shot times, and pin AT to local wall-clock format'
+);
+assert.ok(
+  scheduledViewSource.includes("fields.FREQ === 'ONCE'") &&
+    scheduledViewSource.includes("scheduledCopy.repeatOptions.once"),
+  'the schedule editor must recognize one-shot rules instead of rewriting them into recurrences'
+);
+assert.ok(
+  scheduledViewSource.includes("function onceScheduleParts"),
+  'the schedule editor must resolve once AT to the local wall clock instead of dropping stored UTC offsets'
+);
+assert.ok(
+  indexHtml.includes("once:'一次性'"),
+  'the zh dictionary must carry the once repeat option'
 );
 assert.ok(
   scheduledTaskPromptRust.includes("create_scheduled_task") &&
@@ -1307,11 +1330,18 @@ async function longSessionStreamingAvoidsPerDeltaDeepClone() {
   }
   await tick();
 
-  assert.strictEqual(updates, 1001, "stream boundaries and deltas should remain immediately observable");
-  assert.strictEqual(secondSubscriberUpdates, 1001,
+  // Throttle contract (perf/memory-footprint-optimization): every delta
+  // still notifies immediately (the floor of 1001 preserves the original
+  // regression direction "streaming boundaries and deltas are immediately
+  // observable"); on top of that, the chat:delta streaming markdown
+  // trailing-edge throttle timer (~180ms) may insert a few extra render
+  // snapshots during a long stream (≤ duration/180ms) — expected, not
+  // dropped coalescing.
+  assert.ok(updates >= 1001, "stream boundaries and deltas should remain immediately observable");
+  assert.ok(secondSubscriberUpdates >= 1001,
     "all subscribers should receive one immediate update per stream boundary and delta");
-  assert.strictEqual(snapshots.length, 1001, "the regression must retain every persistent snapshot");
-  assert.strictEqual(secondSubscriberSnapshots.length, 1001,
+  assert.ok(snapshots.length >= 1001, "the regression must retain every persistent snapshot");
+  assert.ok(secondSubscriberSnapshots.length >= 1001,
     "the second subscriber must retain every same-round snapshot for identity checks");
   assert.strictEqual(
     harness.getStructuredCloneCalls(),

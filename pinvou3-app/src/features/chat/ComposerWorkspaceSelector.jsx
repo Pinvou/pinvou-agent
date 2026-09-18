@@ -1,18 +1,19 @@
-// Working-directory selector for the normal-chat draft state: mirrors the
-// code-mode (CodexAcpView draft-state selector) interaction — a bottom-bar
-// button + pop-up menu (choose directory… / default workspace / recents).
-// Rendered only in the draft state (ChatView guards with !activeSessionId +
+// Draft-state working directory picker for plain chat, mirroring the code
+// mode's interaction (CodexAcpView's draft-state picker): a composer-footer
+// button plus a popover menu (Choose directory… / Default workspace / Recent).
+// Rendered only in draft state (ChatView guards on !activeSessionId plus
 // capability/method existence); all backend actions are injected via props
-// (bridge.sessions setDraftWorkspace / pickDraftWorkspace) and the component
+// (bridge.sessions's setDraftWorkspace / pickDraftWorkspace) and the component
 // never touches Tauri globals.
 import { useRef, useState } from 'react';
 import { ChevronDown, FolderOpen, Sparkles } from '../../components/icons.jsx';
 import { useOutsidePointerClose } from '../../components/ComposerPopover.jsx';
 import { loadRecentWorkspaces, workspaceName } from '../../shared/workspace-recents.js';
 
-export function ComposerWorkspaceSelector({ copy, draftWorkspacePath, onPickWorkspace, onSelectWorkspace, grantNotice }) {
+export function ComposerWorkspaceSelector({ copy, draftWorkspacePath, onPickWorkspace, onSelectWorkspace }) {
   const [open, setOpen] = useState(false);
   const [recentWorkspaces, setRecentWorkspaces] = useState(loadRecentWorkspaces);
+  const [pickError, setPickError] = useState('');
   const triggerRef = useRef(null);
   const panelRef = useRef(null);
   useOutsidePointerClose(open, () => setOpen(false), [panelRef, triggerRef]);
@@ -20,16 +21,22 @@ export function ComposerWorkspaceSelector({ copy, draftWorkspacePath, onPickWork
   function toggle() {
     const next = !open;
     setOpen(next);
-    if (next) setRecentWorkspaces(loadRecentWorkspaces()); // re-read on open: code mode may have just recorded a new directory
+    if (next) setRecentWorkspaces(loadRecentWorkspaces()); // re-read on open: the code mode may have recorded a new directory
   }
   function chooseDirectory() {
     setOpen(false);
+    setPickError('');
     onPickWorkspace()
       .then(path => { if (path) setRecentWorkspaces(loadRecentWorkspaces()); })
-      .catch(error => console.warn('pick draft workspace failed', error));
+      // Directory dialog failures (including an old backend without the
+      // command) must be visible — silently closing the menu would make the
+      // user think the selection took effect (the code lane surfaces this
+      // through the page error surface).
+      .catch(error => setPickError(String((error && error.message) || error || 'error')));
   }
   function select(path) {
     setOpen(false);
+    setPickError('');
     onSelectWorkspace(path);
   }
 
@@ -51,6 +58,11 @@ export function ComposerWorkspaceSelector({ copy, draftWorkspacePath, onPickWork
         </span>
         <ChevronDown size={12} className="shrink-0" />
       </button>
+      {pickError && (
+        <div className="absolute z-40 bottom-9 left-0 w-[280px] max-w-[calc(100vw-32px)] rounded-xl border border-red-200 dark:border-red-900/50 bg-white/95 dark:bg-[#202124]/95 shadow-xl px-3 py-2 text-[11px] text-[#C5221F] dark:text-red-400">
+          {pickError}
+        </div>
+      )}
       {open && (
         <div ref={panelRef} className="absolute z-40 bottom-9 left-0 w-[280px] max-w-[calc(100vw-32px)] rounded-2xl border border-black/[0.08] dark:border-white/10 bg-white/95 dark:bg-[#202124]/95 backdrop-blur-xl shadow-xl p-2">
           <button type="button" onClick={chooseDirectory}
@@ -66,12 +78,6 @@ export function ComposerWorkspaceSelector({ copy, draftWorkspacePath, onPickWork
           {recentWorkspaces.length > 0 && (
             <div className="mt-1 pt-2 border-t border-black/[0.05] dark:border-white/[0.06]">
               <div className="px-3 pb-1 text-[10px] uppercase tracking-wider text-gray-400">{copy.recentDirectories}</div>
-              {/* Grant notice parity (§9.4): picking a recent grants that
-                  folder directly (single root), so the mode-aware notice sits
-                  on the recents section, same weight as the picker rows. */}
-              {grantNotice && (
-                <div className="px-3 pb-1 text-[10px] text-gray-400">{grantNotice}</div>
-              )}
               {recentWorkspaces.map(path => (
                 <button key={path} type="button" title={path}
                   onClick={() => select(path)}

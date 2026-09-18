@@ -269,17 +269,16 @@
     modeLane: "work",
     // 草稿态寄存的多智能体开关意图：不物化会话，首条消息创建会话时落后端。
     pendingDraftMultiAgent: false,
-    // Staged explicit mode for a working-directory-bound draft (null = never
-    // explicitly chosen): a bound draft's mode goes to the code lane
-    // (aligning with code mode's security posture) and is applied per session
-    // at materialization from the staged value; when nothing was staged, the
-    // backend resolves it from the code lane's global default and the frontend
-    // no longer applies the work lane default.
+    // Staged explicit mode of a bound-workspace draft (null = never explicitly
+    // chosen): bound drafts run in the code lane (code mode's safety posture),
+    // applied per session from the staged value at materialization; when
+    // unstaged, the backend resolves the code lane global default and the
+    // frontend no longer applies the work lane default.
     pendingDraftMode: null,
-    // The working directory chosen in the draft state (normal chat, mirroring
-    // the code-mode draft selector): null = default (session-private
-    // directory); passed down with create_session's workspacePath parameter,
-    // cleared after successful materialization, reset by enterDraft.
+    // Working directory selected in draft state (plain chat, mirroring the code
+    // mode draft selector): null = default (session-private directory). Sent to
+    // create_session via the workspacePath parameter, cleared after successful
+    // materialization, reset by enterDraft.
     draftWorkspacePath: null,
     // Draft staging for the project channel (§9.3): the keychain snapshot and
     // project ownership, passed down with the materializing create_session;
@@ -540,6 +539,7 @@
       pickFolderTitle: "Choose a working directory",
       fileMediaFilterName: "Images and videos",
       kbPickFolderTitle: "Choose folders to import into the knowledge base",
+      rebindPickFolderTitle: "Choose the folder to rebind this project to",
       memoryWriteFailed: "Memory write failed: ", memoryIgnoreFailed: "Failed to ignore memory: ", memoryNeverFailed: "Failed to set \"never ask\": ",
       attachNeedSession: "⚠️ Start a new chat before adding attachments", attachEmptyFile: "Empty files cannot be added", attachAddCancelled: "Attachment add canceled", attachInvalidResult: "Attachment add returned no valid result", deviceUploadFailed: "⚠️ Upload failed: ",
       planTicketInvalid: "⚠️ The plan credential is no longer valid. Regenerate the plan before executing.",
@@ -641,6 +641,7 @@
       pickFolderTitle: "作業ディレクトリを選択",
       fileMediaFilterName: "画像と動画",
       kbPickFolderTitle: "知識ベースにインポートするフォルダーを選択",
+      rebindPickFolderTitle: "このプロジェクトの再バインド先フォルダーを選択",
       memoryWriteFailed: "メモリの書き込みに失敗: ", memoryIgnoreFailed: "メモリの無視に失敗: ", memoryNeverFailed: "「今後表示しない」の設定に失敗: ",
       attachNeedSession: "⚠️ 添付ファイルを追加する前に新しいチャットを開始してください", attachEmptyFile: "空のファイルは追加できません", attachAddCancelled: "添付ファイルの追加はキャンセルされました", attachInvalidResult: "添付ファイルの追加で有効な結果が返されませんでした", deviceUploadFailed: "⚠️ アップロードに失敗: ",
       planTicketInvalid: "⚠️ プランの資格情報が無効になりました。プランを再生成してから実行してください。",
@@ -742,6 +743,7 @@
       pickFolderTitle: "选择工作目录",
       fileMediaFilterName: "图片和视频",
       kbPickFolderTitle: "选择要导入知识库的文件夹",
+      rebindPickFolderTitle: "选择重绑定项目的新文件夹",
       memoryWriteFailed: "记忆写入失败：", memoryIgnoreFailed: "忽略记忆失败：", memoryNeverFailed: "设置不再提示失败：",
       attachNeedSession: "⚠️ 请先新建会话再添加附件", attachEmptyFile: "空文件无法添加", attachAddCancelled: "附件添加已取消", attachInvalidResult: "附件添加未返回有效结果", deviceUploadFailed: "⚠️ 上传失败: ",
       planTicketInvalid: "⚠️ 方案凭证已失效，请重新生成方案后再执行",
@@ -1068,9 +1070,9 @@
 
   const sessionsFeature = installBridgeFeature("sessions", {
     state, invoke, listen, notify,
-    // The draft workspace selector (pickDraftWorkspace) goes through the
-    // system directory dialog, the same injection channel as the artifacts
-    // domain; the React side only calls sessions-domain methods.
+    // The draft workspace picker (pickDraftWorkspace) uses the system directory
+    // dialog, injected through the same channel as the artifacts feature; the
+    // React side only calls sessions-feature methods.
     dialogOpen,
     sessionStates, scheduledRunSessionOwners,
     personaPlaceholderTitles, turnUsageDirty,
@@ -1100,6 +1102,16 @@
       // set with the buffer and no consumer remains for its events.
       if (id && typeof chatFeature.purgeSteerState === "function") {
         chatFeature.purgeSteerState(id);
+      }
+      // The streaming markdown render trailing-edge timers are recorded per
+      // sid in a chat-events internal table; cancel them when the buffer is
+      // evicted/deleted so a timer cannot fire after the buffer is rebuilt
+      // (the callback has a currentStreamId guard, but clearing the entry is
+      // what avoids leaving a dangling timer across lifecycles).
+      // chatEventsFeature is initialized further down this file; purge only
+      // happens at runtime, so there is no TDZ concern.
+      if (id && chatEventsFeature && typeof chatEventsFeature.cancelStreamRenderTimers === "function") {
+        chatEventsFeature.cancelStreamRenderTimers(id);
       }
     },
     runSyncOnSession, persistMessagesFor,
@@ -1171,6 +1183,7 @@
   const toggleSessionPinned = sessionsFeature.toggleSessionPinned;
   const archiveSession = sessionsFeature.archiveSession;
   const restoreArchivedSession = sessionsFeature.restoreArchivedSession;
+  const exportSessionArchive = sessionsFeature.exportSessionArchive;
   function runSyncOnSession(sid, fn) {
     if (!sid || sid === state.activeSessionId) { fn(); return; }
     const bg = sessionStates[sid]; if (!bg) return;
@@ -1222,8 +1235,8 @@
   // the safe side, same as the code page's draft fallback).
   function currentDraftModeState() {
     const boundDraft = !!state.draftWorkspacePath;
-    // A bound draft always shows the code lane default; an unbound draft
-    // follows the current lane (design was merged into work, #428).
+    // Bound drafts always show the code lane default; unbound drafts follow the
+    // current lane (design was merged into work, #428).
     const lane = boundDraft || state.modeLane === "code" ? "code" : "work";
     const d = state.modeDefaults && state.modeDefaults[lane];
     return { mode: d || (boundDraft ? "plan" : "yolo"), multiAgent: false };
@@ -1549,7 +1562,7 @@
   let subscribers = [];
   const STATE_SLICE_FIELDS = {
     platform: ["appVersion", "backendOnline", "platformCapabilities"],
-    sessions: ["sessions", "archivedSessions", "activeSessionId", "sessionBusy", "draftEpoch", "draftWorkspacePath", "draftWorkspaceRoots", "draftProjectId"],
+    sessions: ["sessions", "archivedSessions", "activeSessionId", "sessionBusy", "draftEpoch", "draftWorkspacePath"],
     chat: ["activeSkill", "artifacts", "artifactChange", "attachments", "busy", "chatItems", "composerDraft", "composerPrefill", "messages", "modeState", "planSnapshot", "queued", "thinking", "tokens", "turnDirtyArtifacts", "turnPresentedArtifacts", "turnTimeline"],
     voice: ["voiceInput", "voiceAsrSetup"],
     knowledge: ["kbModelSetup", "mountedCollection", "mountedCollections", "mountedRemoteCollections", "mountedCollectionsRevision"],
@@ -1911,15 +1924,13 @@
   function rerenderFromMessages(opts) {
     state.chatItems = [];
     itemIdSeq = 0;
-    // Replay re-adds every historical tool_use's metadata (including
-    // write/patch's large args) to toolMeta for tool_result backfill and
-    // never deletes after backfill — the residue resides in the buffer
-    // with the working set, and memory is bounded by the 32-entry
-    // all-session LRU cap. Durable replay clears first (when not live
-    // hydrating), reclaiming only orphan entries left by interrupted
-    // turns (the live event path itself stays insert/delete balanced);
-    // the replay then rebuilds the needed entries for the historical
-    // tool_uses inside messages.
+    // Replay rebuilds toolMeta only for historical tool_uses that still have a
+    // matching tool_result to backfill (write/patch's large args otherwise
+    // duplicate the whole transcript inside the 32-entry all-session LRU).
+    // Durable replay clears first (when not live hydrating), reclaiming only
+    // orphan entries left by interrupted turns (the live event path itself
+    // stays insert/delete balanced); entries are deleted again right after
+    // their tool_result backfill lookup — nothing reads them afterwards.
     if (!(opts && opts.keepLiveToolMeta)) toolMeta = {};
     // 卡牌事件按 pos 插回原位(pos=事件发生时的 messages 数)。让重载历史不割裂。
     const pe = Array.isArray(state.personaEvents) ? state.personaEvents : [];
@@ -2030,6 +2041,11 @@
               updateToolItem(c.tool_use_id, contentForCard, !c.is_error);
             }
           }
+          // Delete after backfill: the meta serves exactly this one
+          // tool_result restoration (a late duplicate tool_end exits early
+          // via toolCallAlreadyFinished); leftovers would keep historical
+          // args resident in the session buffer.
+          delete toolMeta[c.tool_use_id];
         }
         continue;
       }
@@ -2057,7 +2073,15 @@
             addChatItem({ type: "assistant", text: textBuf, html: renderMarkdown(textBuf), time: "", streaming: false });
             textBuf = "";
           }
-          toolMeta[b.id] = { name: b.name, args: b.input };
+          // Rebuild meta only for historical tool_use entries that still
+          // have a tool_result pending backfill (the backfill loop above
+          // deletes them right after consuming); leftovers from interrupted
+          // turns with no result have no consumer and are no longer inserted.
+          // live hydration exception (keepLiveToolMeta): the tool_end event
+          // of an in-flight tool still needs the meta.
+          if (resultById[b.id] || (opts && opts.keepLiveToolMeta)) {
+            toolMeta[b.id] = { name: b.name, args: b.input };
+          }
           // request_user_input → 还原只读选择卡（问题来自 input，选项高亮来自 result）
           if (b.name === "request_user_input") {
             const qs = (b.input && b.input.questions) || [];
@@ -2155,6 +2179,27 @@
         });
       }
     }
+    // Replay-time terminal ratchet (parity with the codex native lane): a
+    // tool_use that never got a matching tool_result in the persisted
+    // transcript is an interrupted in-flight call — it can never complete
+    // after reload, so settle it as failed instead of leaving an eternal
+    // "running" card (a live spawn row would then pulse forever through the
+    // swarm aggregation). Skipped while the session is mid-turn: pending
+    // cards then belong to the live turn and are settled by its own events;
+    // background shells keep running across turns and are excluded; so are
+    // synthetic shell-snapshot cards ("shell-task:" ids never pair with a
+    // tool_use id, and their job may still be running — the terminal poll
+    // settles them itself from the snapshot).
+    if (!state.busy) {
+      for (const item of state.chatItems) {
+        const unsettled = item && item.type === "tool" && item.toolId && item.background !== true
+          && item.shellSnapshot !== true
+          && (item.state === "pending" || item.state === "running") && !resultById[item.toolId];
+        if (!unsettled) continue;
+        item.success = false;
+        item.state = "failed";
+      }
+    }
     emitPersonaAt(state.messages.length, true); // 最后一条消息之后发生的卡牌事件(末尾加持/卸下)
   }
 
@@ -2206,7 +2251,7 @@
     return invoke("cancel_shell_task", { sessionId, taskId });
   }
 
-  installBridgeFeature("chat-events", {
+  const chatEventsFeature = installBridgeFeature("chat-events", {
     state, listen, invoke, turnUsageDirty,
     sessionStates, renderMarkdown, bt,
     notify, onSessionEvent, runSyncOnSession,
@@ -2413,7 +2458,7 @@
   const resolveConversationAttachment = artifactsFeature.resolveConversationAttachment;
   const openConversationAttachment = artifactsFeature.openConversationAttachment;
   const revealConversationAttachment = artifactsFeature.revealConversationAttachment;
-  const personasFeature = installBridgeFeature("personas", { state, notify, invoke, listen, bt, isDefaultChatTitle, addSystemItem, addChatItem, timeStr, ensureSession, runOnSession, personaPlaceholderTitles });
+  const personasFeature = installBridgeFeature("personas", { state, sessionStates, notify, invoke, listen, bt, isDefaultChatTitle, addSystemItem, addChatItem, timeStr, ensureSession, runOnSession, personaPlaceholderTitles });
   const loadPersonas = personasFeature.loadPersonas;
   const getPersonas = personasFeature.getPersonas;
   const createPersona = personasFeature.createPersona;
@@ -2480,12 +2525,12 @@
   const renameProject = projectsFeature.renameProject;
   const deleteProject = projectsFeature.deleteProject;
   const moveSessionToProject = projectsFeature.moveSessionToProject;
+  const rebindWorkspaceRoot = projectsFeature.rebindWorkspaceRoot;
   const ensureFolderProjects = projectsFeature.ensureFolderProjects;
   const updateProjectRoots = projectsFeature.updateProjectRoots;
   const setPrimaryRoot = projectsFeature.setPrimaryRoot;
   const setNeverMaterialize = projectsFeature.setNeverMaterialize;
   const alignSessionToProject = projectsFeature.alignSessionToProject;
-  const rebindWorkspaceRoot = projectsFeature.rebindWorkspaceRoot;
 
   const multiAgentFeature = installBridgeFeature("multiagent", { state, notify, invoke, listen });
   const listMultiAgentSubagents = multiAgentFeature.listSubagentTranscripts;
@@ -2507,6 +2552,14 @@
     const selected = await dialogOpen({ directory: true, multiple: true, title: bt("kbPickFolderTitle") });
     if (!selected) return [];
     return Array.isArray(selected) ? selected : [selected];
+  }
+  // 目录重绑定(修断链)专用:单选,标题贴合重绑定语义——此前借用 KB 的
+  // 多选导入选择器,标题与"只取 picked[0]"的行为不符(评审 #463 Minor 6)。
+  async function pickRebindFolder() {
+    if (!dialogOpen) return null;
+    const selected = await dialogOpen({ directory: true, multiple: false, title: bt("rebindPickFolderTitle") });
+    if (!selected) return null;
+    return Array.isArray(selected) ? (selected[0] || null) : selected;
   }
   async function pickFeedbackFiles() {
     if (!dialogOpen) return [];
@@ -2671,14 +2724,15 @@
       toggleSessionPinned,
       archiveSession,
       restoreArchivedSession,
-      // Draft-state working directory selection (desktop-only: system
-      // directory dialog + create_session workspacePath parameter; the Web
-      // side has no such channel, and the UI guards on method existence).
+      exportSessionArchive,
+      // Draft-state working directory selection (desktop only: system directory
+      // dialog + the create_session workspacePath parameter; the web side has no
+      // such channel, the UI guards on method existence).
       setDraftWorkspace,
       pickDraftWorkspace,
-      // Working-directory binding query for materialized sessions (bound
-      // sessions align their security posture with code mode; the Web/remote
-      // side has no binding concept, so the stub method returns null).
+      // Working directory binding query for materialized sessions (bound
+      // sessions share the code mode's safety posture; web/remote sessions have
+      // no binding concept, stub returns null).
       getSessionWorkspaceBinding,
     },
     projects: {
@@ -2687,12 +2741,12 @@
       renameProject,
       deleteProject,
       moveSessionToProject,
+      rebindWorkspaceRoot,
       ensureFolderProjects,
       updateProjectRoots,
       setPrimaryRoot,
       setNeverMaterialize,
       alignSessionToProject,
-      rebindWorkspaceRoot,
     },
     monitor: {
       startMonitorPolling,
@@ -2742,8 +2796,8 @@
     setDraftMode,
     setModeLane,
     refreshModeDefaults,
-      // One-time YOLO confirm gate for working-directory-bound sessions (same
-      // source of truth as code mode)
+      // One-shot YOLO confirmation gate for bound-workspace sessions (same
+      // source of truth as the code mode)
     getCodePermissionPrefs,
     confirmCodeYolo,
     setMultiAgentMode,
@@ -2806,6 +2860,7 @@
     files: {
       pickFiles,
       pickFolders,
+      pickRebindFolder,
       pickFeedbackFiles,
     },
     personas: {

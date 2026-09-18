@@ -329,8 +329,9 @@ export function presentConversationItems(items) {
   const result = [];
   for (const item of items || []) {
     if (OPERATION_ITEM_TYPES.has(item.type)) {
-      // 专家卡是一等公民：spawn 型 `agent` 调用不折进工具组——历史加载时
-      // 工具组默认折叠，会把整场委派藏没。status/wait 等协调操作照常归组。
+      // Spawn-type `agent` delegation calls stay out of the tool group: the
+      // group defaults to collapsed on history load, which would hide the
+      // whole delegation. status/wait coordination operations group as usual.
       // legacyItem 仅存在于聊天投影，Codex ACP 的同名外部工具不受影响。
       if (
         item.legacyItem && item.tool

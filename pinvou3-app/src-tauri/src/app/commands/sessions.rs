@@ -1,6 +1,10 @@
 use super::prelude::*;
 use crate::features::projects::ProjectStore;
+// Native save dialog support for `export_session`; the other session
+// commands do not interact with the dialog plugin.
+use std::path::Path;
 use std::path::PathBuf;
+use tauri_plugin_dialog::DialogExt;
 
 #[derive(Debug, Clone, Serialize)]
 pub struct SessionListItem {
@@ -10,18 +14,48 @@ pub struct SessionListItem {
     pub pinned_at: Option<String>,
     #[serde(skip_serializing_if = "Vec::is_empty")]
     pub title_attachment_names: Vec<String>,
-    /// A plain session's user working-directory binding (#445; None =
-    /// unbound). The project layer uses it to include bound work sessions in
-    /// project grouping (grouping follows binding, the same signal as the
-    /// safety posture).
+    /// User workspace binding for plain sessions (#445; None = unbound). The
+    /// project layer uses it to pull bound work sessions into project grouping
+    /// (grouping follows binding, the same signal as the safety posture).
     #[serde(skip_serializing_if = "Option::is_none")]
     pub workspace_binding: Option<String>,
-    /// Keychain snapshot locked at creation (§6, the full set of accessible
-    /// roots including the primary root); empty = single-root semantics. The
-    /// picker/management panel uses it to show "the folder set this
-    /// conversation can access".
+    /// 创建时锁定的钥匙串快照(§6,含主根的全量可访问根);空 = 单根语义。
+    /// picker/管理面板据此展示「本对话可访问的文件夹集合」。
     #[serde(skip_serializing_if = "Vec::is_empty")]
     pub workspace_roots: Vec<String>,
+}
+
+/// Web boundary projection for SessionListItem: degrade the host absolute
+/// workspace-binding path to its last component, mirroring the metadata
+/// redaction, so the WebUI never receives host directory structure. The
+/// projects slice is desktop-only and the frontend gates the matching
+/// grouping branch on the same desktop capability, so on web the field is an
+/// inert leaf name rather than a grouping key (review #464 round-6 finding 8b:
+/// an earlier comment claimed the field "carries no function on web", which
+/// stopped being true once the bound-session grouping filter became
+/// path-based — the capability gate is what keeps leaf-name collisions from
+/// collapsing distinct directories; the projection stays because the field is
+/// still serialized and must not leak host paths).
+pub(crate) fn redact_session_list_item_for_web(item: &mut SessionListItem) {
+    if let Some(binding) = &item.workspace_binding {
+        item.workspace_binding = Some(super::codex::redact_workspace_path_for_web(binding));
+    }
+    // 钥匙串快照同样是主机绝对路径:过 Web 边界前逐项降级为末级目录名,与
+    // workspace_binding 同一套投影(Web 端不用它做分组,仅作惰性叶子)。
+    for root in item.workspace_roots.iter_mut() {
+        *root = super::codex::redact_workspace_path_for_web(root);
+    }
+}
+
+/// Whole-list web projection applied by `web_access_list_sessions`: metadata
+/// redaction plus `workspace_binding` degradation in one place, so the web
+/// entry point cannot ship half the projection (review #464 round-4 — the
+/// call site delegates here, which is what the test pins).
+pub(crate) fn project_session_list_for_web(items: &mut [SessionListItem]) {
+    for item in items.iter_mut() {
+        item.metadata = super::codex::redact_session_metadata_for_web(item.metadata.clone());
+        redact_session_list_item_for_web(item);
+    }
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -152,16 +186,16 @@ pub async fn list_sessions(
         .into_iter()
         .map(|metadata| {
             let title_attachment_names = session_title_attachment_names(&store, &metadata);
-            // The sidecar is re-read on a read-cache miss; the list is ≤50
-            // entries. Bound sessions stay resident after backfill; unbound
-            // sessions get no negative caching — each refresh still costs
-            // ≤2 syscalls × 50 (acceptable; review #464 nit: the comment
-            // must not overstate this as "resident after one N reads").
+            // On a read-cache miss the sidecar is re-read; the list is ≤50
+            // entries. Bound sessions stay resident once backfilled, while
+            // unbound sessions get no negative caching — each refresh still
+            // costs on the order of ≤2 syscalls × 50 (acceptable; review #464
+            // nit: the comment must not exaggerate this as "resident after a
+            // single N-read pass").
             let workspace_binding = store
                 .session_workspace_binding(&metadata.id)
                 .map(|path| path.display().to_string());
-            // The keychain snapshot only exists when bound; the sidecar is
-            // read cold (same list magnitude as binding).
+            // 钥匙串快照只在已绑定时存在;sidecar 冷读(与 binding 同一量级)。
             let workspace_roots = if workspace_binding.is_some() {
                 store
                     .session_workspace_roots(&metadata.id)
@@ -374,12 +408,6 @@ pub(super) fn create_session_record(
     Ok(session.metadata)
 }
 
-/// Create a new plain chat session. The parameters are named parameters of
-/// the Tauri command ABI (invoke maps them by name); this repository's
-/// commands always use flat signatures rather than params-structs, so the
-/// positional form is kept; the 4 Options are all optional-patch semantics
-/// (None = default/unchanged), same convention as
-/// `create_codex_acp_session`.
 #[tauri::command]
 pub async fn create_session(
     set_active: Option<bool>,
@@ -396,29 +424,18 @@ pub async fn create_session(
         .map(crate::features::sessions::validate_user_workspace_path)
         .transpose()
         .map_err(|e| format!("create_session: invalid workspace_path: {e:#}"))?;
-    // Keychain snapshot (§6): absolute paths are hard-rejected; nonexistent
-    // directories are kept with a soft warning (following rebind's lenient
-    // semantics, an additional root may be recreated later). Empty/omitted =
-    // single root (cwd only).
+    // 钥匙串快照(§6):绝对路径硬拒;不存在的目录软警告保留(参照 rebind 的
+    // 宽松语义,附加根可能稍后重建)。空/未传 = 单根(仅 cwd)。
     let roots =
         crate::features::sessions::validate_workspace_roots(workspace_roots.unwrap_or_default())
             .map_err(|e| format!("create_session: invalid workspace_roots: {e:#}"))?;
-    // Project channel (§9.3): a bogus project_id is a client error and
-    // fail-fasts before any persistence (review #484); the memory write-back
-    // itself still only logs membership/persist failures without blocking
-    // creation (see the write-back below).
-    if let Some(project_id) = project_id.as_deref() {
-        if projects.get(project_id).is_none() {
-            return Err(format!("create_session: project not found: {project_id}"));
-        }
-    }
     let metadata =
         create_session_record(set_active.unwrap_or(true), &store, &pool, workspace.clone())?;
     if let Some(workspace) = workspace.clone() {
-        // A binding persist failure must not leave a session that "looks
-        // created but falls back to the private directory as its execution
-        // root on restart": roll back by deleting the just-created empty
-        // session (in the style of create_new's rollback).
+        // A failed binding persist must not leave behind a session that "looked
+        // created but falls back to the private execution root after restart":
+        // roll back by deleting the just-created empty session (in the rollback
+        // style of create_new).
         if let Err(error) =
             store.bind_session_workspace_with_roots(&metadata.id, workspace.clone(), roots)
         {
@@ -431,33 +448,25 @@ pub async fn create_session(
                 ),
             });
         }
-        // Project channel (§9.3): update the project's remembered primary
-        // folder at creation time. Writing it in the same backend command is
-        // more atomic than the frontend sending a follow-up update_project
-        // (no second RPC/missed write); a bogus project_id already fail-fasted
-        // at the entry, so membership/persist failures here do not affect
-        // session creation itself (retried on the next creation) and are only
-        // logged.
-        if let Some(project_id) = project_id.as_deref() {
-            if let Err(error) = projects.set_last_primary_root(project_id, &workspace) {
-                eprintln!(
-                    "[sessions] create_session: record last_primary_root failed (creation unaffected): {error:#}"
-                );
+        // 项目通道(§9.3):创建即更新项目记忆主文件夹。后端在同一命令内写比
+        // 前端补一发 update_project 更原子(免二次 RPC、免漏写);记忆写失败
+        // 不影响会话创建本身(下次创建会重试),只记日志。
+        if let Some(project_id) = project_id {
+            if let Err(error) = projects.set_last_primary_root(&project_id, &workspace) {
+                eprintln!("[sessions] create_session: record last_primary_root failed: {error:#}");
             }
         }
     }
     emit_session_event(&app, "session:list_changed", &metadata.id, "created");
-    // Multi-session concurrency: no engine pre-warming (lazy). A newly
-    // created empty session has no history; on the first chat,
-    // EnginePool.get_or_spawn spawns an engine with its dedicated workspace
-    // for it.
+    // 多 session 并发:不预热 engine(lazy)。新建的空 session 没有历史,首条 chat
+    // 时 EnginePool.get_or_spawn 会为它 spawn 一个带专属 workspace 的 engine。
     Ok(metadata)
 }
 
-/// Query a plain chat session's user working-directory binding (None when
-/// unbound). The frontend uses this to apply the code lane safety posture to
-/// bound sessions (Plan first-run / one-time YOLO confirmation) and to show
-/// the bound-directory indicator.
+/// Queries a plain chat session's user working-directory binding (None when
+/// unbound). The frontend uses this to apply the code lane's safety posture to
+/// bound sessions (Plan on first use / one-shot YOLO confirm) and to show a
+/// bound-directory indicator.
 #[tauri::command]
 pub async fn get_session_workspace_binding(
     session_id: String,
@@ -589,6 +598,108 @@ pub async fn delete_session(
         crate::features::remote_control::forward_app_event(&app, "session:deleted", payload);
     }
     result
+}
+
+/// Payload returned by `export_session`: the save path (the location the
+/// user confirmed in the native dialog) plus an archive size summary that
+/// the frontend uses to render the success message.
+#[derive(Debug, Clone, Serialize)]
+pub struct ExportedSessionArchive {
+    pub path: String,
+    pub session_id: String,
+    pub member_count: usize,
+    pub includes_artifacts: bool,
+    pub total_member_bytes: u64,
+    pub compressed_bytes: u64,
+}
+
+/// Sanitize the archive default file name: keep only the base file name,
+/// strip any existing extension, and reject control and path-sensitive
+/// characters; abnormal input falls back to
+/// `pinvou-session-<first 8 chars of id>.tar.xz` (the fallback stem keeps
+/// only `[A-Za-z0-9_-]`, matching the upstream valid character set of
+/// session ids). Mirrors the `assistant_response` export naming guard, but
+/// keeps the multi-segment `.tar.xz` extension.
+fn normalized_archive_name(default_name: &str, session_id: &str) -> String {
+    const EXTENSION: &str = "tar.xz";
+    let fallback_stem = format!(
+        "pinvou-session-{}",
+        session_id
+            .chars()
+            .filter(|ch| ch.is_ascii_alphanumeric() || *ch == '-' || *ch == '_')
+            .take(8)
+            .collect::<String>()
+    );
+    let Some(name) = Path::new(default_name)
+        .file_name()
+        .and_then(|name| name.to_str())
+    else {
+        return format!("{fallback_stem}.{EXTENSION}");
+    };
+    let stem = name
+        .trim()
+        .trim_end_matches(&format!(".{EXTENSION}"))
+        .trim_end_matches(['.', ' ']);
+    if stem.is_empty()
+        || stem.len() > 120
+        || stem
+            .chars()
+            .any(|ch| ch.is_control() || "<>:\"/\\|?*".contains(ch))
+    {
+        format!("{fallback_stem}.{EXTENSION}")
+    } else {
+        format!("{stem}.{EXTENSION}")
+    }
+}
+
+/// One-click full session log export: open the native save dialog and pack
+/// the session's full-fidelity record (system prompt, all turns, tool calls
+/// and results) together with artifacts into a `.tar.xz` archive. Packing
+/// reuses the base `deepseek_tui::session_export` and runs inside
+/// spawn_blocking so the main thread is not blocked. Returns `Ok(None)` when
+/// the user cancels.
+///
+/// Accepts any persisted session id under read-only semantics (same as
+/// `load_session`, without calling `ensure_chat_session`): scheduled run
+/// sessions can be exported too; external ACP sessions have no local
+/// persisted record, and `store.export_archive` naturally reports "not
+/// found". The menu entry only appears on chat sessions.
+#[tauri::command]
+pub async fn export_session(
+    app: AppHandle,
+    id: String,
+    default_name: String,
+    include_artifacts: Option<bool>,
+    store: State<'_, SessionStore>,
+) -> Result<Option<ExportedSessionArchive>, String> {
+    let filename = normalized_archive_name(&default_name, &id);
+    let Some(picked) = app
+        .dialog()
+        .file()
+        .set_file_name(&filename)
+        .add_filter("Session archive", &["tar.xz"])
+        .blocking_save_file()
+    else {
+        return Ok(None);
+    };
+    let path = picked
+        .into_path()
+        .map_err(|error| format!("resolve_export_path_failed: {error}"))?;
+    let store = store.inner().clone();
+    let include_artifacts = include_artifacts.unwrap_or(true);
+    let summary =
+        tokio::task::spawn_blocking(move || store.export_archive(&id, &path, include_artifacts))
+            .await
+            .map_err(|error| format!("session_export_task_failed: {error}"))?
+            .map_err(|error| format!("session_export_failed: {error:#}"))?;
+    Ok(Some(ExportedSessionArchive {
+        path: summary.output.display().to_string(),
+        member_count: summary.members.len(),
+        includes_artifacts: summary.includes_artifacts,
+        total_member_bytes: summary.total_member_bytes(),
+        compressed_bytes: summary.compressed_bytes(),
+        session_id: summary.session_id,
+    }))
 }
 
 /// 重命名 session 标题。普通会话与定时运行会话共用 Session 元数据。
@@ -1049,5 +1160,145 @@ mod desktop_saved_session_contract_tests {
             None => unsafe { std::env::remove_var("PINVOU3_HOME") },
         }
         let _ = std::fs::remove_dir_all(&root);
+    }
+}
+
+#[cfg(test)]
+mod session_archive_name_tests {
+    use super::*;
+
+    #[test]
+    fn archive_name_strips_extension_and_keeps_multi_segment_tar_xz() {
+        assert_eq!(
+            normalized_archive_name("会话 demo.tar.xz", "abcd1234-0000"),
+            "会话 demo.tar.xz"
+        );
+        // Same semantics as the assistant export: keep the original stem and
+        // always append .tar.xz.
+        assert_eq!(
+            normalized_archive_name("chat.txt", "abcd1234-0000"),
+            "chat.txt.tar.xz"
+        );
+    }
+
+    #[test]
+    fn archive_name_cannot_escape_or_inject() {
+        assert_eq!(
+            normalized_archive_name("../evil/attack.tar.xz", "abcd1234-0000"),
+            "attack.tar.xz"
+        );
+        assert_eq!(
+            normalized_archive_name("bad:name?.tar.xz", "abcd1234-0000"),
+            "pinvou-session-abcd1234.tar.xz"
+        );
+    }
+
+    #[test]
+    fn archive_name_falls_back_when_empty_or_overlong() {
+        assert_eq!(
+            normalized_archive_name("   ", "abcd1234-0000"),
+            "pinvou-session-abcd1234.tar.xz"
+        );
+        let long = "x".repeat(200);
+        assert_eq!(
+            normalized_archive_name(&long, "abcd1234-0000"),
+            "pinvou-session-abcd1234.tar.xz"
+        );
+    }
+}
+
+#[cfg(test)]
+mod web_projection_tests {
+    use super::*;
+
+    /// The web session list must never carry the host absolute binding path:
+    /// `workspace_binding` degrades to its last component, mirroring the
+    /// metadata redaction and the codex list-item projection.
+    #[test]
+    fn redact_session_list_item_for_web_degrades_workspace_binding() {
+        let metadata: SessionMetadata = serde_json::from_value(serde_json::json!({
+            "id": "session-web-binding",
+            "title": "Web binding projection",
+            "created_at": "2026-01-01T00:00:00Z",
+            "updated_at": "2026-01-01T00:00:00Z",
+            "message_count": 0,
+            "total_tokens": 0,
+            "model": "test-model",
+            "workspace": "/tmp/workspace"
+        }))
+        .expect("metadata");
+        let mut item = SessionListItem {
+            pinned: false,
+            pinned_at: None,
+            title_attachment_names: Vec::new(),
+            workspace_binding: Some("/Users/host/Documents/secret-project".to_string()),
+            workspace_roots: vec![
+                "/Users/host/Documents/secret-project".to_string(),
+                "/Users/host/very-secret-extra".to_string(),
+            ],
+            metadata,
+        };
+
+        redact_session_list_item_for_web(&mut item);
+
+        assert_eq!(
+            item.workspace_roots,
+            vec![
+                "secret-project".to_string(),
+                "very-secret-extra".to_string()
+            ],
+            "钥匙串快照过 Web 边界同样必须逐项降级为末级目录名"
+        );
+        assert_eq!(
+            item.workspace_binding.as_deref(),
+            Some("secret-project"),
+            "workspace_binding 过 Web 边界必须降级为末级目录名"
+        );
+
+        // Unbound sessions (None) are unaffected; the Windows form likewise
+        // keeps only the final segment.
+        item.workspace_binding = None;
+        redact_session_list_item_for_web(&mut item);
+        assert_eq!(item.workspace_binding, None);
+        item.workspace_binding = Some(r#"C:\Users\host\proj"#.to_string());
+        redact_session_list_item_for_web(&mut item);
+        assert_eq!(item.workspace_binding.as_deref(), Some("proj"));
+    }
+
+    /// `web_access_list_sessions` delegates to `project_session_list_for_web`;
+    /// this pins the whole-list contract (metadata + workspace_binding both
+    /// projected) so deleting the one-line application at the call site cannot
+    /// stay green (review #464 round-4 minor 3).
+    #[test]
+    fn project_session_list_for_web_projects_metadata_and_binding() {
+        let metadata: SessionMetadata = serde_json::from_value(serde_json::json!({
+            "id": "session-web-list",
+            "title": "Web list projection",
+            "created_at": "2026-01-01T00:00:00Z",
+            "updated_at": "2026-01-01T00:00:00Z",
+            "message_count": 0,
+            "total_tokens": 0,
+            "model": "test-model",
+            "workspace": "/Users/host/Documents/secret-project"
+        }))
+        .expect("metadata");
+        let mut items = vec![SessionListItem {
+            pinned: false,
+            pinned_at: None,
+            title_attachment_names: Vec::new(),
+            workspace_binding: Some("/Users/host/Documents/secret-project".to_string()),
+            workspace_roots: vec!["/Users/host/Documents/secret-project".to_string()],
+            metadata,
+        }];
+
+        project_session_list_for_web(&mut items);
+
+        let json = serde_json::to_value(&items[0]).expect("serialize projected item");
+        assert_eq!(json["workspace"], "secret-project");
+        assert_eq!(json["workspace_binding"], "secret-project");
+        assert!(
+            !json.to_string().contains("/Users/host"),
+            "no host path component may cross the web boundary"
+        );
     }
 }

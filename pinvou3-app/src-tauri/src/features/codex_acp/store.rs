@@ -135,9 +135,8 @@ pub struct SessionAgentRecord {
     /// 项目会话保存创建时选定的绝对目录；临时会话目录由 session id 推导。
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub workspace_path: Option<PathBuf>,
-    /// Keychain snapshot locked at creation (§6): the full set of accessible
-    /// roots (including the primary root). Empty in old records = single-root
-    /// semantics (the workspace_path directory only).
+    /// 创建时锁定的钥匙串快照(§6):全量可访问根(含主根)。旧记录缺该键或为
+    /// 空 = 单根语义(调用方按 cwd 归一)。
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub workspace_roots: Vec<PathBuf>,
     /// 产品模式（plain/code）。旧记录没有该字段时按 plain 兼容；
@@ -167,13 +166,32 @@ pub struct CodeSessionSidecar {
     /// 项目会话保存的绝对目录；临时会话为 None。
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub workspace_path: Option<PathBuf>,
-    /// Keychain snapshot locked at creation (§6); empty in old sidecars =
-    /// single-root semantics.
+    /// 创建时锁定的钥匙串快照(§6):全量可访问根(含主根);旧 sidecar 缺该键
+    /// 或为空 = 单根语义。
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub workspace_roots: Vec<PathBuf>,
     /// 首次绑定时间（Unix 秒）。仅作元信息，不参与恢复语义。
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub bound_at: Option<i64>,
+}
+
+/// Output of `rebind_workspace_prefix`.
+#[derive(Debug, Default)]
+pub struct RebindWorkspacePrefixOutcome {
+    /// Affected (session_id, translated path): index-matched sessions plus
+    /// orphan sidecars whose rewrite succeeded. An orphan whose sidecar write
+    /// failed is NOT listed — the sidecar is its binding, so claiming it
+    /// moved to the new path would be a false report (review #463 nit).
+    pub affected: Vec<(String, PathBuf)>,
+    /// Sessions whose sidecar is finally stale: no self-healing path remains
+    /// in this run. Two sources — orphans (rewrite pass failed, no backfill
+    /// path) and indexed sessions (both the rewrite and the rewrite-retry
+    /// pass failed). A stale sidecar still sits under the `from` prefix; the
+    /// command layer should count it into failed_session_ids so a user rerun
+    /// converges it via the on-disk prefix scan. Not reporting it would let a
+    /// restore with a damaged index resurrect the old path and silently undo
+    /// the rebind (review #463 Major 2).
+    pub sidecar_final_stale: Vec<String>,
 }
 
 fn code_session_sidecar_version() -> u32 {
@@ -459,13 +477,9 @@ impl SessionAgentStore {
             record.backend = backend;
             record.workspace_kind = kind;
             record.workspace_path = workspace_path;
-            // Keychain snapshot (§6): project sessions store the full root
-            // set; temporary sessions stay empty.
-            record.workspace_roots = if kind == CodexWorkspaceKind::Project {
-                workspace_roots
-            } else {
-                Vec::new()
-            };
+            // 钥匙串快照(§6):创建时锁定的全量根;重复设置(同一会话再次
+            // 调用)保持最后一次的值,与 workspace_path 同一写入点。
+            record.workspace_roots = workspace_roots;
             // ACP 会话不是代码模式会话：绑定 ACP 时重置为 plain 模式，
             // 避免 is_code_session() 误判、且 restore 时不会拒绝 ACP 覆盖。
             record.mode = SessionMode::Plain;
@@ -511,8 +525,7 @@ impl SessionAgentStore {
             record.backend = AgentBackend::Deepseek;
             record.workspace_kind = kind;
             record.workspace_path = workspace_path.clone();
-            // Keychain snapshot (§6): project sessions store the full root
-            // set; temporary sessions stay empty.
+            // 钥匙串快照(§6):项目会话存全量根;临时会话恒为空(单根)。
             record.workspace_roots = if kind == CodexWorkspaceKind::Project {
                 workspace_roots
             } else {
@@ -533,19 +546,13 @@ impl SessionAgentStore {
         Ok(())
     }
 
-    /// Keychain replacement for "align to project" (§9.7): rewrites the
-    /// creation-time snapshot wholesale. Note this method deliberately does
-    /// **not** follow the "permissions only grow" convention — alignment is
-    /// an explicit user action, the snapshot is replaced wholesale by the
-    /// assigned project's roots as they are at that moment, and additional
-    /// roots may grow OR shrink (a dropped root disappears from the snapshot
-    /// and the engine-side write exemption lapses with it); consistency is
-    /// guaranteed by the caller (command layer) via the active-turn fence and
-    /// the SyncSession push. Native code sessions also rewrite the
-    /// authoritative sidecar (bound_at preserved); ACP sessions have no
-    /// sidecar, only the index is written. Returns Ok(false) when the record
-    /// does not exist or has no bound workspace (temporary session); the
-    /// caller handles it via the plain binding channel.
+    /// 「对齐到项目」(§9.7)的钥匙串替换:整体重写创建时的快照。注意本方法
+    /// **有意**不遵循「权限只增」约定——对齐是用户的显式动作,快照被所属项目
+    /// 此刻的 roots 整体替换,附加根可能增也可能减(被移除的根从快照消失,底座
+    /// 侧的写豁免随之失效);一致性由调用方(命令层)用活动回合围栏与
+    /// SyncSession 推送保证。原生代码会话同时重写权威 sidecar(保留 bound_at);
+    /// ACP 会话没有 sidecar,只写索引。记录不存在或没有绑定工作区(临时会话)
+    /// 时返回 Ok(false),调用方走纯绑定通道处理。
     pub fn set_session_workspace_roots(
         &self,
         session_id: &str,
@@ -577,10 +584,8 @@ impl SessionAgentStore {
         Ok(true)
     }
 
-    /// Keychain snapshot locked at session creation (§6): the full set of
-    /// accessible roots (including the primary root); old records / temporary
-    /// sessions / missing records = empty (single-root semantics, callers
-    /// normalize with cwd first).
+    /// 创建会话时锁定的钥匙串快照(§6):全量可访问根(含主根);旧记录 / 临时
+    /// 会话 / 无记录 = 空(单根语义,调用方按 cwd 归一)。
     pub fn session_workspace_roots(&self, session_id: &str) -> Vec<PathBuf> {
         self.records
             .read()
@@ -616,12 +621,12 @@ impl SessionAgentStore {
         }
     }
 
-    /// Folded-key prefix match + verbatim suffix: the match folds through the
-    /// shared `filesystem_path_identity_key` (Windows folds separators and
-    /// case, so a case-only rename no longer misses), and the suffix is cut
-    /// back from the original path by component count, preserving the
+    /// Folded-key prefix match + literal suffix: matching goes through the
+    /// shared `filesystem_path_identity_key` fold (Windows folds separators
+    /// and case, so a case-only rename no longer misses), and the suffix is
+    /// cut from the original path by component count, preserving the
     /// subdirectory's original casing. Returns `None` = not under `from`;
-    /// an empty suffix = the path is `from` itself.
+    /// an empty suffix = the path IS `from`.
     fn rebind_relative_suffix(path: &Path, from: &Path) -> Option<PathBuf> {
         let path_key = crate::platform::os::filesystem_path_identity_key(&path.to_string_lossy());
         let from_key = crate::platform::os::filesystem_path_identity_key(&from.to_string_lossy());
@@ -636,15 +641,14 @@ impl SessionAgentStore {
         Some(path.components().skip(from.components().count()).collect())
     }
 
-    /// List project sessions bound under the `from` prefix (the candidate set
-    /// for directory rebinding; `from` has usually vanished from disk, so
-    /// matching runs on folded-key prefixes rather than canonicalize
-    /// comparison). Besides the auxiliary index, the code-session sidecar
-    /// directory is also scanned: when the index is corrupt/lost, every
-    /// native code session is an orphan outside the index, and scanning only
-    /// the index would leave the rebind fence and metadata replay blind to
-    /// all of them (review #463 M6). Index records win for the same
-    /// session_id; orphans only fill the difference set.
+    /// Lists project sessions bound under the `from` prefix (candidate set for
+    /// directory rebind; `from` has usually vanished from disk, so matching is
+    /// a folded-key prefix match, not a canonicalize comparison). Besides the
+    /// helper index this also scans the code-session sidecar directory: with a
+    /// damaged/lost index every native code session is an off-index orphan,
+    /// and an index-only scan would leave the rebind fence and the metadata
+    /// replay collectively blind (review #463 M6). The index record wins for a
+    /// shared session_id; orphans only fill the difference set.
     pub fn sessions_under_workspace(&self, from: &Path) -> Vec<(String, PathBuf)> {
         let mut matched: Vec<(String, PathBuf)> = self
             .records
@@ -658,11 +662,27 @@ impl SessionAgentStore {
                 Self::rebind_relative_suffix(path, from).map(|_| (session_id.clone(), path.clone()))
             })
             .collect();
-        // Orphan sidecars outside the index: startup recovery treats the
-        // sidecar as authoritative, so the candidate set must match that
-        // (same scan as rebind_workspace_prefix's sidecar rewrite section).
+        // Off-index orphan sidecars: startup restore treats the sidecar as
+        // authoritative, so the candidate set must use the same scope (same
+        // scan shape as the sidecar rewrite pass of rebind_workspace_prefix).
         let sidecar_root = code_session_sidecar_root(&self.path);
-        if let Ok(entries) = fs::read_dir(&sidecar_root) {
+        let entries = match fs::read_dir(&sidecar_root) {
+            Ok(entries) => Some(entries),
+            // No sessions directory yet is normal (no sidecar ever written).
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => None,
+            // review #463 minor: an unreadable sidecar root must not fail
+            // open silently — the candidate set would miss orphans, and the
+            // rewrite/stale-report pass would skip them too, letting boot
+            // restore resurrect old paths with zero signal.
+            Err(error) => {
+                eprintln!(
+                    "[pinvou3-app] sidecar root {} unreadable during rebind candidate scan: {error}",
+                    sidecar_root.display()
+                );
+                None
+            }
+        };
+        if let Some(entries) = entries {
             for entry in entries.flatten() {
                 let Ok(file_type) = entry.file_type() else {
                     continue;
@@ -693,11 +713,11 @@ impl SessionAgentStore {
         matched
     }
 
-    /// Compute the rebind target from a candidate binding path: paths under
-    /// the `from` prefix shift their suffix to `to`; paths already under the
-    /// `to` prefix (retry candidates shifted by a previous round whose
-    /// metadata is not synced) are returned as-is. Returns None when neither
-    /// hits (cannot be a candidate).
+    /// Computes the rebind target for a candidate binding path: a path under
+    /// the `from` prefix moves its suffix onto `to`; a path already under
+    /// `to` (a retry candidate translated by a previous run whose metadata
+    /// was not synced) is returned unchanged. Neither matching returns None
+    /// (cannot be a candidate).
     pub fn rebind_target_path(path: &Path, from: &Path, to: &Path) -> Option<PathBuf> {
         if let Some(suffix) = Self::rebind_relative_suffix(path, from) {
             return Some(if suffix.as_os_str().is_empty() {
@@ -709,31 +729,50 @@ impl SessionAgentStore {
         Self::rebind_relative_suffix(path, to).map(|_| path.to_path_buf())
     }
 
-    /// Directory rebind (broken-link repair channel): shift project sessions
-    /// bound under the `from` prefix wholesale to `to`. Unlike
-    /// `set_acp_workspace`/`bind_code_native_session`'s "no directory change
-    /// after a session starts", this method bypasses that constraint — it is
-    /// only invoked by the command layer when the directory is already dead
-    /// (or the user explicitly confirmed while the old directory still
-    /// exists); the command layer owns the active-turn fence and target
-    /// validation.
+    /// Directory rebind (broken-link repair): translates every project
+    /// session bound under the `from` prefix onto `to`. Unlike
+    /// `set_acp_workspace`/`bind_code_native_session` ("no directory change
+    /// after a session starts"), this method bypasses that constraint — the
+    /// command layer calls it only when the directory is gone (or the user
+    /// explicitly confirmed while it still exists), and the command layer
+    /// owns the active-turn fence and target validation.
     ///
-    /// The first two of the three consistent places are persisted here: the
-    /// auxiliary index (session-agents.json) and the authoritative sidecar
-    /// (code-session.json, including orphans outside the index — startup
-    /// scans recover by sidecar, so a missed write revives the old value);
-    /// the third, SavedSession metadata, is written by the command layer via
-    /// SessionStore. Idempotent: a from→to rerun with no match is a no-op.
-    /// Returns the affected (session_id, new path) pairs.
+    /// Two of the three consistency points are persisted here: the helper
+    /// index (session-agents.json) and the authoritative sidecars
+    /// (code-session.json, including off-index orphans — startup scan
+    /// restores from sidecars, so a missed rewrite resurrects the old
+    /// value); the third, SavedSession metadata, is written by the command
+    /// layer via SessionStore. Idempotent: a from→to rerun with no match is
+    /// a no-op.
+    ///
+    /// Storage-form invariant (review #463 m1): `from`/`to` must be in the
+    /// same form as the bindings stored at bind time (for existing
+    /// directories the bind entry already canonicalized them). The command
+    /// layer normalizes `from` once at the entry (review #463 B1), so an
+    /// alias spelling (macOS `/tmp` vs `/private/tmp`) cannot half-rewrite.
+    ///
+    /// Returns the affected (session_id, new path) pairs and the finally
+    /// stale sidecar list (orphan rewrite failure, or indexed session whose
+    /// rewrite AND retry pass both failed — no self-healing path remains in
+    /// this run; the command layer should count them into
+    /// failed_session_ids, and a rerun converges via the on-disk prefix
+    /// scan; review #463 m2 / Major 2).
     pub fn rebind_workspace_prefix(
         &self,
         from: &Path,
         to: &Path,
-    ) -> Result<Vec<(String, PathBuf)>> {
+    ) -> Result<RebindWorkspacePrefixOutcome> {
         if from == to {
-            return Ok(Vec::new());
+            return Ok(RebindWorkspacePrefixOutcome::default());
         }
         let mut affected: Vec<(String, PathBuf)> = Vec::new();
+        let mut sidecar_final_stale: Vec<String> = Vec::new();
+        // Original bindings of the mutated records, kept so a persist
+        // failure can roll memory back to the on-disk state (review #463
+        // minor: unconditional persist() + advanced memory on failure left
+        // the process believing the rebind happened while disk said
+        // otherwise).
+        let mut originals: Vec<(String, Option<PathBuf>)> = Vec::new();
         {
             let mut records = self.records.write();
             for (session_id, record) in records.iter_mut() {
@@ -751,33 +790,48 @@ impl SessionAgentStore {
                 } else {
                     to.join(suffix)
                 };
+                originals.push((session_id.clone(), record.workspace_path.clone()));
                 record.workspace_path = Some(next.clone());
-                // The keychain snapshot shifts in sync: roots under the from
-                // prefix move to `to`, the rest stay as-is (§6 the snapshot
-                // migrates with the binding; roots outside from are
-                // unaffected).
-                for root in record.workspace_roots.iter_mut() {
-                    if let Some(root_suffix) = Self::rebind_relative_suffix(root, from) {
-                        *root = if root_suffix.as_os_str().is_empty() {
-                            to.to_path_buf()
-                        } else {
-                            to.join(root_suffix)
-                        };
-                    }
-                }
                 affected.push((session_id.clone(), next));
             }
         }
-        self.persist()?;
-        // Sidecar rewrite: the authoritative binding of native code sessions.
-        // ACP sessions never have a sidecar (cleared at bind time); orphan
-        // sidecars outside the index must also be rewritten — otherwise a
-        // restart recovery would revive the old directory. Write failures are
-        // logged and not marked as rewritten (the backfill section below
-        // retries), never silently counted as succeeded.
+        if let Err(error) = self.persist() {
+            // Roll the in-memory bindings back to the persisted state: the
+            // caller reports the rebind as failed, and a retry must see the
+            // original `from` bindings (not ones memory pretends moved).
+            let mut records = self.records.write();
+            for (session_id, original) in originals {
+                if let Some(record) = records.get_mut(&session_id) {
+                    record.workspace_path = original;
+                }
+            }
+            return Err(error);
+        }
+        // Sidecar rewrite: the authoritative binding of native code
+        // sessions. ACP sessions have no sidecar (cleared at bind time);
+        // off-index orphan sidecars are rewritten too — otherwise a restart
+        // restore resurrects the old directory. A write failure is logged
+        // and NOT marked rewritten (the retry pass below retries it); it is
+        // never silently counted as success.
         let mut sidecar_rewritten: Vec<String> = Vec::new();
         let sidecar_root = code_session_sidecar_root(&self.path);
-        if let Ok(entries) = fs::read_dir(&sidecar_root) {
+        let sidecar_entries = match fs::read_dir(&sidecar_root) {
+            Ok(entries) => Some(entries),
+            // No sessions directory yet is normal (no sidecar ever written).
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => None,
+            // review #463 minor: an unreadable sidecar root must not fail
+            // open silently — the rewrite pass AND the stale report would
+            // both be skipped, letting boot restore resurrect old paths
+            // with zero signal.
+            Err(error) => {
+                eprintln!(
+                    "[pinvou3-app] sidecar root {} unreadable during rebind rewrite: {error}",
+                    sidecar_root.display()
+                );
+                None
+            }
+        };
+        if let Some(entries) = sidecar_entries {
             for entry in entries.flatten() {
                 let Ok(file_type) = entry.file_type() else {
                     continue;
@@ -805,47 +859,59 @@ impl SessionAgentStore {
                 } else {
                     to.join(suffix)
                 };
-                let rebound_roots: Vec<PathBuf> = sidecar
-                    .workspace_roots
-                    .iter()
-                    .map(|root| match Self::rebind_relative_suffix(root, from) {
-                        Some(root_suffix) if root_suffix.as_os_str().is_empty() => to.to_path_buf(),
-                        Some(root_suffix) => to.join(root_suffix),
-                        None => root.clone(),
-                    })
-                    .collect();
-                if let Err(error) = persist_code_session_sidecar(
+                match persist_code_session_sidecar(
                     &code_session_sidecar_path(&self.path, &session_id),
                     &CodeSessionSidecar {
                         version: CODE_SESSION_SIDECAR_VERSION,
                         workspace_kind: CodexWorkspaceKind::Project,
                         workspace_path: Some(next.clone()),
-                        workspace_roots: rebound_roots,
+                        // 孤儿 sidecar 的钥匙串随绑定一起平移:磁盘上已有的快照
+                        // 保持不动(索引内会话的平移由下方 rewrite pass 覆盖)。
+                        workspace_roots: sidecar.workspace_roots.clone(),
                         bound_at: sidecar.bound_at,
                     },
                 ) {
-                    // The old sidecar is still on disk and a restart
-                    // recovery would revive the old directory; log and let
-                    // in-index sessions retry in the backfill section below
-                    // (review #463 minor).
-                    eprintln!(
-                        "[pinvou3-app] 重绑定改写原生代码会话 sidecar 失败（{session_id}）: {error:#}"
-                    );
-                } else {
-                    sidecar_rewritten.push(session_id.clone());
-                }
-                // Orphan sessions missing from the index also count into the
-                // affected list (the index cannot rewrite them).
-                if !affected.iter().any(|(sid, _)| *sid == session_id) {
-                    affected.push((session_id, next));
+                    Err(error) => {
+                        // The old sidecar is still on disk; a restart restore
+                        // would resurrect the old directory. Indexed sessions
+                        // get retried by the rewrite pass below; orphans have
+                        // no retry path — both go into the finally-stale list
+                        // (an indexed session leaves the list if the retry
+                        // succeeds) for the command layer to count as failed
+                        // (review #463 m2/Major 2). Failed sessions reach the
+                        // frontend via sidecar_final_stale; the log carries
+                        // only the root cause, never a plaintext session id —
+                        // the error chain embeds sessions/<id>/ paths (CodeQL
+                        // cleartext-logging, review #463 round 7).
+                        eprintln!(
+                            "[pinvou3-app] 重绑定改写原生代码会话 sidecar 失败: {}",
+                            error.root_cause()
+                        );
+                        sidecar_final_stale.push(session_id.clone());
+                    }
+                    Ok(()) => {
+                        sidecar_rewritten.push(session_id.clone());
+                        // Orphan with a missing index record: only a
+                        // successful write counts as affected — the sidecar
+                        // IS its binding, and claiming a failed one moved to
+                        // `next` would be a false report (review #463 nit).
+                        // Indexed sessions are already in `affected`.
+                        if !affected.iter().any(|(sid, _)| *sid == session_id) {
+                            affected.push((session_id, next));
+                        }
+                    }
                 }
             }
         }
-        // Backfill sidecars for in-index native code sessions that were
-        // rebound (failures only log; startup backfill self-heals). Sessions
-        // already rewritten above are skipped: the rewrite section preserved
-        // the original bound_at, and backfilling with now here would be a
-        // double write plus losing the first-bind time (review #463 minor).
+        // Rewrite-retry pass for indexed native code sessions already
+        // rebound. Sessions rewritten above are skipped: that pass preserved
+        // the original bound_at, and rewriting here with now would double
+        // write + lose the first-bind timestamp (review #463 minor). A failed
+        // retry = finally stale: backfill self-healing only rewrites
+        // *missing* sidecars, and boot restore skips sidecars while the index
+        // is intact, so nothing would ever rewrite this stale record — it
+        // stays in the list for the command layer to count as failed; a
+        // successful retry removes it (review #463 Major 2).
         {
             let records = self.records.read();
             for (session_id, path) in &affected {
@@ -860,17 +926,24 @@ impl SessionAgentStore {
                         .get(session_id)
                         .map(|record| record.workspace_roots.clone())
                         .unwrap_or_default();
-                    write_code_session_sidecar(
+                    if write_code_session_sidecar(
                         &self.path,
                         session_id,
                         CodexWorkspaceKind::Project,
                         Some(path.clone()),
                         record_roots,
-                    );
+                    ) {
+                        sidecar_final_stale.retain(|sid| sid != session_id);
+                    } else if !sidecar_final_stale.iter().any(|sid| sid == session_id) {
+                        sidecar_final_stale.push(session_id.clone());
+                    }
                 }
             }
         }
-        Ok(affected)
+        Ok(RebindWorkspacePrefixOutcome {
+            affected,
+            sidecar_final_stale,
+        })
     }
 
     pub fn set_acp_session(
@@ -1050,7 +1123,6 @@ impl SessionAgentStore {
             backend: AgentBackend::Deepseek,
             workspace_kind: recovered.workspace_kind,
             workspace_path: recovered.workspace_path,
-            workspace_roots: recovered.workspace_roots,
             mode: SessionMode::Code,
             ..Default::default()
         };
@@ -1282,7 +1354,6 @@ mod tests {
             mode,
             workspace_kind: kind,
             workspace_path: path,
-            workspace_roots: Vec::new(),
             ..SessionAgentRecord::default()
         };
         let store = SessionAgentStore {
@@ -1633,10 +1704,10 @@ mod tests {
         fs::create_dir_all(from.join("sub")).unwrap();
         fs::create_dir_all(&to).unwrap();
 
-        // s1: native code session, binding = from itself (sidecar written);
+        // s1: native code session, binding = from itself (writes a sidecar);
         // s2: ACP project session, binding = from/sub (no sidecar);
         // s3: bound elsewhere, unaffected; prefix boundary: from-x must not
-        // hit from.
+        // match from.
         store
             .bind_code_native_session(
                 "s1",
@@ -1672,18 +1743,23 @@ mod tests {
             .unwrap();
 
         let matched = store.sessions_under_workspace(&from);
-        // s1 hits in both the index and the sidecar, deduplicated by
-        // session_id to count once (index wins).
+        // s1 matches in both the index and the sidecar; dedupe by session_id
+        // counts it once (index wins).
         assert_eq!(matched.len(), 2);
 
         let bound_at_before =
             read_code_session_sidecar(&store.path, "s1").and_then(|sidecar| sidecar.bound_at);
         assert!(bound_at_before.is_some());
 
-        let affected = store.rebind_workspace_prefix(&from, &to).unwrap();
-        let mut ids: Vec<&str> = affected.iter().map(|(sid, _)| sid.as_str()).collect();
+        let outcome = store.rebind_workspace_prefix(&from, &to).unwrap();
+        let mut ids: Vec<&str> = outcome
+            .affected
+            .iter()
+            .map(|(sid, _)| sid.as_str())
+            .collect();
         ids.sort_unstable();
         assert_eq!(ids, vec!["s1", "s2"]);
+        assert!(outcome.sidecar_final_stale.is_empty());
         assert_eq!(
             store.get("s1").workspace_path.as_deref(),
             Some(to.as_path())
@@ -1695,45 +1771,42 @@ mod tests {
         assert_eq!(
             store.get("s3").workspace_path.as_deref(),
             Some(root.join("elsewhere").as_path()),
-            "sessions outside the prefix untouched"
+            "prefix 外会话不动"
         );
         assert_eq!(
             store.get("s4").workspace_path.as_deref(),
             Some(root.join("from-x").as_path()),
-            "directory boundary: a sibling prefix must not false-hit"
+            "目录边界:sibling 前缀不得误命中"
         );
 
-        // The authoritative sidecar is rewritten in sync (s1); ACP session
-        // s2 has no sidecar. bound_at keeps the first-bind time and is not
-        // overwritten by the later index backfill section with now
-        // (review #463 minor).
+        // The authoritative sidecar is rewritten too (s1); the ACP session s2
+        // has no sidecar. bound_at keeps the first-bind timestamp and is not
+        // overwritten by the index rewrite-retry pass below with now (review
+        // #463 minor).
         let sidecar = read_code_session_sidecar(&store.path, "s1").unwrap();
         assert_eq!(sidecar.workspace_path.as_deref(), Some(to.as_path()));
         assert_eq!(sidecar.bound_at, bound_at_before);
 
-        // Idempotent: another from→to run hits nothing.
-        assert!(
-            store
-                .rebind_workspace_prefix(&from, &to)
-                .unwrap()
-                .is_empty()
-        );
+        // Idempotent: a second from→to run matches nothing.
+        let rerun = store.rebind_workspace_prefix(&from, &to).unwrap();
+        assert!(rerun.affected.is_empty());
+        assert!(rerun.sidecar_final_stale.is_empty());
 
-        // Orphan sidecars (no index record) are rewritten too, so restart
-        // recovery does not revive the old directory.
+        // Orphan sidecars (no index record) are rewritten too, so a restart
+        // restore does not resurrect the old directory.
         persist_code_session_sidecar(
             &code_session_sidecar_path(&store.path, "orphan"),
             &CodeSessionSidecar {
                 version: CODE_SESSION_SIDECAR_VERSION,
                 workspace_kind: CodexWorkspaceKind::Project,
                 workspace_path: Some(from.join("deep")),
-                bound_at: None,
                 workspace_roots: Vec::new(),
+                bound_at: None,
             },
         )
         .unwrap();
-        // The candidate set includes orphans outside the index on the same
-        // footing (review #463 M6): the fence no longer misses orphans.
+        // The candidate set covers off-index orphans too (review #463 M6):
+        // the fence no longer misses orphans.
         let matched = store.sessions_under_workspace(&root.join("from"));
         assert_eq!(matched.len(), 1);
         assert_eq!(matched[0].0, "orphan");
@@ -1742,13 +1815,184 @@ mod tests {
             .rebind_workspace_prefix(&root.join("from"), &root.join("to2"))
             .unwrap();
         fs::create_dir_all(root.join("to2")).unwrap();
-        // The previous step already moved `to`; this round has no index hit
-        // for from, but the orphan sidecar hits.
-        assert!(affected.iter().any(|(sid, _)| sid == "orphan"));
+        // The previous run moved `to` away; this round has no index hit for
+        // from, but the orphan sidecar matches.
+        assert!(affected.affected.iter().any(|(sid, _)| sid == "orphan"));
+        assert!(affected.sidecar_final_stale.is_empty());
         let orphan = read_code_session_sidecar(&store.path, "orphan").unwrap();
         assert_eq!(
             orphan.workspace_path.as_deref(),
             Some(root.join("to2").join("deep").as_path())
+        );
+
+        fs::remove_dir_all(&root).unwrap();
+    }
+
+    #[test]
+    fn rebind_target_path_covers_from_prefix_to_side_and_no_match() {
+        // round-7 m7: the cut helper was previously covered only indirectly.
+        // Three arms: from-prefix shift, to-prefix (retry candidate) returned
+        // as-is, and no match returns None.
+        let from = Path::new("/work/alpha");
+        let to = Path::new("/vault/beta");
+        assert_eq!(
+            SessionAgentStore::rebind_target_path(Path::new("/work/alpha"), from, to),
+            Some(PathBuf::from("/vault/beta"))
+        );
+        assert_eq!(
+            SessionAgentStore::rebind_target_path(Path::new("/work/alpha/sub"), from, to),
+            Some(PathBuf::from("/vault/beta/sub"))
+        );
+        // Already under `to`: retry candidate returned as-is (the metadata
+        // loop converges on this).
+        assert_eq!(
+            SessionAgentStore::rebind_target_path(Path::new("/vault/beta/keep"), from, to),
+            Some(PathBuf::from("/vault/beta/keep"))
+        );
+        // A from-x sibling and unrelated paths are not candidates.
+        assert_eq!(
+            SessionAgentStore::rebind_target_path(Path::new("/work/alphax"), from, to),
+            None
+        );
+        assert_eq!(
+            SessionAgentStore::rebind_target_path(Path::new("/elsewhere"), from, to),
+            None
+        );
+    }
+
+    #[test]
+    fn rebind_prefix_reports_orphan_sidecar_write_failures() {
+        let root = std::env::temp_dir().join(format!(
+            "pinvou3-codex-rebind-sidecar-fail-test-{}",
+            std::process::id()
+        ));
+        let _ = fs::remove_dir_all(&root);
+        fs::create_dir_all(&root).unwrap();
+        let store = SessionAgentStore {
+            path: root.join("session-agents.json"),
+            records: Arc::new(RwLock::new(HashMap::new())),
+        };
+        let from = root.join("from");
+        let to = root.join("to");
+        fs::create_dir_all(&from).unwrap();
+        fs::create_dir_all(&to).unwrap();
+        // Off-index orphan: the sidecar is the only authoritative carrier
+        // (no index record, no rewrite-retry path).
+        persist_code_session_sidecar(
+            &code_session_sidecar_path(&store.path, "orphan-deny"),
+            &CodeSessionSidecar {
+                version: CODE_SESSION_SIDECAR_VERSION,
+                workspace_kind: CodexWorkspaceKind::Project,
+                workspace_path: Some(from.clone()),
+                workspace_roots: Vec::new(),
+                bound_at: None,
+            },
+        )
+        .unwrap();
+        // Indexed native code session: both the rewrite pass and the retry
+        // pass try to rewrite its sidecar.
+        store
+            .bind_code_native_session(
+                "indexed-deny",
+                CodexWorkspaceKind::Project,
+                Some(from.clone()),
+                Vec::new(),
+            )
+            .unwrap();
+        // Occupy the temp-file path both sessions persist through: writing
+        // code-session.json.tmp fails immediately and rename is never
+        // reached — a cross-platform-stable simulation of a persist failure.
+        // The orphan has only the rewrite pass; the indexed session hits the
+        // same wall in both passes, which is "finally stale".
+        for sid in ["orphan-deny", "indexed-deny"] {
+            fs::create_dir_all(
+                code_session_sidecar_path(&store.path, sid).with_extension("json.tmp"),
+            )
+            .unwrap();
+        }
+
+        let outcome = store.rebind_workspace_prefix(&from, &to).unwrap();
+        let mut stale = outcome.sidecar_final_stale.clone();
+        stale.sort();
+        assert_eq!(
+            stale,
+            vec!["indexed-deny".to_string(), "orphan-deny".to_string()]
+        );
+        // An orphan whose write failed must NOT enter affected — the sidecar
+        // is its binding, so claiming it moved would be a false report
+        // (review #463 nit); the indexed session's index was rewritten, so
+        // affected honestly includes it.
+        assert!(!outcome.affected.iter().any(|(sid, _)| sid == "orphan-deny"));
+        assert!(
+            outcome
+                .affected
+                .iter()
+                .any(|(sid, _)| sid == "indexed-deny")
+        );
+        // The on-disk sidecars still hold the old paths: the command layer
+        // counts both as failed rather than succeeded (Major 2), and on a
+        // rerun after failure the old paths still match the from prefix, so
+        // the retry converges.
+        for sid in ["orphan-deny", "indexed-deny"] {
+            let stale = read_code_session_sidecar(&store.path, sid).unwrap();
+            assert_eq!(stale.workspace_path.as_deref(), Some(from.as_path()));
+        }
+
+        fs::remove_dir_all(&root).unwrap();
+    }
+
+    #[test]
+    fn rebind_prefix_rolls_back_memory_when_index_persist_fails() {
+        // review #463 minor: persist() runs after the in-memory index
+        // mutation; on failure the memory must be rolled back to the
+        // on-disk state, otherwise the process believes the rebind happened
+        // while disk says otherwise, and a retry would see no `from`
+        // bindings left to move.
+        let root = std::env::temp_dir().join(format!(
+            "pinvou3-codex-rebind-rollback-test-{}",
+            std::process::id()
+        ));
+        let _ = fs::remove_dir_all(&root);
+        fs::create_dir_all(&root).unwrap();
+        let store = SessionAgentStore {
+            path: root.join("session-agents.json"),
+            records: Arc::new(RwLock::new(HashMap::new())),
+        };
+        let from = root.join("from");
+        let to = root.join("to");
+        fs::create_dir_all(&from).unwrap();
+        fs::create_dir_all(&to).unwrap();
+        store
+            .bind_code_native_session(
+                "s1",
+                CodexWorkspaceKind::Project,
+                Some(from.clone()),
+                Vec::new(),
+            )
+            .unwrap();
+
+        // Occupy the index's temp-file path with a directory: fs::write to a
+        // directory fails on every platform, so persist() fails
+        // deterministically after the in-memory mutation.
+        fs::create_dir_all(store.path.with_extension("json.tmp")).unwrap();
+        let error = store
+            .rebind_workspace_prefix(&from, &to)
+            .expect_err("persist failure surfaces as an error");
+        assert!(!error.to_string().is_empty());
+        assert_eq!(
+            store.get("s1").workspace_path.as_deref(),
+            Some(from.as_path()),
+            "memory rolled back to the on-disk binding"
+        );
+
+        // After clearing the obstacle a retry converges: the original `from`
+        // binding is still there to be moved.
+        fs::remove_dir_all(store.path.with_extension("json.tmp")).unwrap();
+        let outcome = store.rebind_workspace_prefix(&from, &to).unwrap();
+        assert!(outcome.affected.iter().any(|(sid, _)| sid == "s1"));
+        assert_eq!(
+            store.get("s1").workspace_path.as_deref(),
+            Some(to.as_path())
         );
 
         fs::remove_dir_all(&root).unwrap();
@@ -1781,8 +2025,8 @@ mod tests {
                     )]),
                     workspace_kind: CodexWorkspaceKind::Project,
                     workspace_path: Some(root.clone()),
-                    mode: SessionMode::Plain,
                     workspace_roots: Vec::new(),
+                    mode: SessionMode::Plain,
                 },
             )
             .unwrap();
@@ -2037,8 +2281,8 @@ mod tests {
             version: CODE_SESSION_SIDECAR_VERSION,
             workspace_kind: CodexWorkspaceKind::Project,
             workspace_path: None,
-            bound_at: None,
             workspace_roots: Vec::new(),
+            bound_at: None,
         };
         assert!(
             store
@@ -2050,8 +2294,8 @@ mod tests {
             version: CODE_SESSION_SIDECAR_VERSION,
             workspace_kind: CodexWorkspaceKind::Temporary,
             workspace_path: Some(root.clone()),
-            bound_at: None,
             workspace_roots: Vec::new(),
+            bound_at: None,
         };
         assert!(
             store
@@ -2171,8 +2415,8 @@ mod tests {
             version: CODE_SESSION_SIDECAR_VERSION + 1,
             workspace_kind: CodexWorkspaceKind::Project,
             workspace_path: Some(root.join("future-workspace")),
-            bound_at: None,
             workspace_roots: Vec::new(),
+            bound_at: None,
         };
         fs::write(
             code_session_sidecar_path(store.path(), "session-1"),
@@ -2229,142 +2473,6 @@ mod tests {
             .expect("sidecar must survive failed index persist");
         assert_eq!(sidecar.workspace_kind, CodexWorkspaceKind::Project);
         assert_eq!(sidecar.workspace_path.as_deref(), Some(root.as_path()));
-        fs::remove_dir_all(&root).unwrap();
-    }
-
-    #[test]
-    fn code_session_roots_snapshot_persist_restore_and_rebind() {
-        let root =
-            std::env::temp_dir().join(format!("pinvou3-codex-roots-test-{}", std::process::id()));
-        let _ = fs::remove_dir_all(&root);
-        let project_dir = root.join("proj");
-        let shared = project_dir.join("shared");
-        let outside = root.join("outside");
-        fs::create_dir_all(&shared).unwrap();
-        fs::create_dir_all(&outside).unwrap();
-        let store = SessionAgentStore {
-            path: root.join("session-agents.json"),
-            records: Arc::new(RwLock::new(HashMap::new())),
-        };
-        let roots = vec![project_dir.clone(), shared.clone(), outside.clone()];
-        store
-            .bind_code_native_session(
-                "code-1",
-                CodexWorkspaceKind::Project,
-                Some(project_dir.clone()),
-                roots.clone(),
-            )
-            .unwrap();
-        // Both the index record and the authoritative sidecar carry the
-        // snapshot; the read surface exposes it.
-        assert_eq!(store.session_workspace_roots("code-1"), roots);
-        let sidecar = read_code_session_sidecar(&store.path, "code-1").expect("sidecar");
-        assert_eq!(sidecar.workspace_roots, roots);
-
-        // Index lost → recover from the sidecar, snapshot intact.
-        store.records.write().clear();
-        store
-            .restore_missing_code_session_record("code-1", sidecar)
-            .expect("restore");
-        assert_eq!(store.session_workspace_roots("code-1"), roots);
-
-        // Rebind: roots under the proj prefix shift; outside roots stay.
-        let moved = root.join("moved");
-        fs::create_dir_all(&moved).unwrap();
-        store
-            .rebind_workspace_prefix(&project_dir, &moved)
-            .expect("rebind");
-        assert_eq!(
-            store.session_workspace_roots("code-1"),
-            vec![moved.clone(), moved.join("shared"), outside.clone()]
-        );
-        let sidecar = read_code_session_sidecar(&store.path, "code-1").expect("sidecar after");
-        assert_eq!(sidecar.workspace_roots[0], moved);
-        fs::remove_dir_all(&root).unwrap();
-    }
-
-    #[test]
-    fn acp_workspace_carries_roots_and_temporary_stays_empty() {
-        let root =
-            std::env::temp_dir().join(format!("pinvou3-acp-roots-test-{}", std::process::id()));
-        let _ = fs::remove_dir_all(&root);
-        fs::create_dir_all(&root).unwrap();
-        let store = SessionAgentStore {
-            path: root.join("session-agents.json"),
-            records: Arc::new(RwLock::new(HashMap::new())),
-        };
-        store
-            .set_acp_workspace(
-                "acp-1",
-                AgentBackend::CodexAcp,
-                CodexWorkspaceKind::Project,
-                Some(root.clone()),
-                vec![root.clone()],
-            )
-            .unwrap();
-        assert_eq!(store.session_workspace_roots("acp-1"), vec![root.clone()]);
-        // Temporary sessions stay empty (single-root semantics), even if
-        // roots are passed by mistake.
-        store
-            .set_acp_workspace(
-                "acp-2",
-                AgentBackend::CodexAcp,
-                CodexWorkspaceKind::Temporary,
-                None,
-                vec![root.clone()],
-            )
-            .unwrap();
-        assert_eq!(
-            store.session_workspace_roots("acp-2"),
-            Vec::<PathBuf>::new()
-        );
-        fs::remove_dir_all(&root).unwrap();
-    }
-
-    #[test]
-    fn set_session_workspace_roots_rewrites_record_and_sidecar() {
-        let root = std::env::temp_dir().join(format!("pinvou3-align-test-{}", std::process::id()));
-        let _ = fs::remove_dir_all(&root);
-        let project_dir = root.join("proj");
-        fs::create_dir_all(&project_dir).unwrap();
-        let store = SessionAgentStore {
-            path: root.join("session-agents.json"),
-            records: Arc::new(RwLock::new(HashMap::new())),
-        };
-        store
-            .bind_code_native_session(
-                "code-1",
-                CodexWorkspaceKind::Project,
-                Some(project_dir.clone()),
-                vec![project_dir.clone()],
-            )
-            .unwrap();
-        // Native code session: dual write to the index + the authoritative
-        // sidecar, bound_at preserved.
-        let bound_at = read_code_session_sidecar(&store.path, "code-1")
-            .unwrap()
-            .bound_at;
-        let extra = root.join("extra");
-        let next = vec![project_dir.clone(), extra.clone()];
-        assert!(
-            store
-                .set_session_workspace_roots("code-1", next.clone())
-                .unwrap()
-        );
-        assert_eq!(store.session_workspace_roots("code-1"), next);
-        let sidecar = read_code_session_sidecar(&store.path, "code-1").unwrap();
-        assert_eq!(sidecar.workspace_roots, next);
-        assert_eq!(
-            sidecar.bound_at, bound_at,
-            "alignment does not rewrite the first-bind time"
-        );
-
-        // Temporary/unknown sessions = Ok(false), nothing written.
-        assert!(
-            !store
-                .set_session_workspace_roots("temp-unknown", next)
-                .unwrap()
-        );
         fs::remove_dir_all(&root).unwrap();
     }
 }

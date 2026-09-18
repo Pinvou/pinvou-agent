@@ -239,7 +239,7 @@ const SCHEDULED_TASK_CHAT_PROMPT: &str = r#"我想创建一个 Pinvou 定时任�
 
 请一次只问我一个问题，并依次确认这些信息：
 1. 任务要做什么。
-2. 什么时候运行。支持每 N 小时（可指定起始时间）、每天指定时间、每周指定星期和时间。不支持分钟级规则；如果用户要求“每 5 分钟”等分钟级频率，必须询问用户改成每 N 小时、每天指定时间或每周指定时间，不要输出草稿。
+2. 什么时候运行。支持每 N 小时（可指定起始时间）、每天指定时间、每周指定星期和时间，以及一次性定时（在指定时刻运行一次后自动结束，适合“明天 9 点提醒我一次”这类需求）。一次性定时的 AT 只用本地时刻 YYYY-MM-DDTHH:MM，不要带 Z 或时区偏移后缀。如果用户指定的一次性时刻已经过去，必须先和用户确认改成未来的时刻，不要输出草稿。不支持分钟级规则；如果用户要求“每 5 分钟”等分钟级频率，必须询问用户改成每 N 小时、每天指定时间或每周指定时间，不要输出草稿。
 
 每次运行创建独立对话；同一个定时任务的所有运行对话共享该任务的专属工作间，不同任务互不共享。产物仍归属各次运行对话。不需要询问工作目录或权限设置。
 
@@ -247,6 +247,7 @@ const SCHEDULED_TASK_CHAT_PROMPT: &str = r#"我想创建一个 Pinvou 定时任�
 - 每 6 小时一次，从 08:30 起算：FREQ=HOURLY;INTERVAL=6;BYHOUR=8;BYMINUTE=30
 - 每天 08:30：FREQ=WEEKLY;BYDAY=MO,TU,WE,TH,FR,SA,SU;BYHOUR=8;BYMINUTE=30
 - 每周一、三 09:30：FREQ=WEEKLY;BYDAY=MO,WE;BYHOUR=9;BYMINUTE=30
+- 2027-06-01 09:30 运行一次：FREQ=ONCE;AT=2027-06-01T09:30
 
 当信息足够时，请直接给出最终任务参数，并使用下面这种完整代码块格式：
 ```scheduled-task-draft
@@ -1644,7 +1645,11 @@ pub fn humanize_rrule(rrule: &str) -> String {
                 .join("、");
             format!("{days} {byhour:02}:{byminute:02}")
         }
-        Ok(AutomationSchedule::Once { .. } | AutomationSchedule::Cron { .. }) => rrule.to_string(),
+        Ok(AutomationSchedule::Once { at }) => format!(
+            "一次性 {}",
+            at.with_timezone(&chrono::Local).format("%Y-%m-%d %H:%M")
+        ),
+        Ok(AutomationSchedule::Cron { .. }) => rrule.to_string(),
         Err(_) => rrule.to_string(),
     }
 }
@@ -2304,6 +2309,12 @@ mod tests {
         for (rrule, expected) in cases {
             assert_eq!(humanize_rrule(rrule), expected, "rrule: {rrule}");
         }
+        // One-shot tasks must not surface the raw rrule string; show the
+        // target moment in the local timezone instead.
+        assert_eq!(
+            humanize_rrule("FREQ=ONCE;AT=2100-01-01T09:30"),
+            "一次性 2100-01-01 09:30"
+        );
     }
 
     // ── 删除一次定时运行的级联 ────────────────────────────────────────
@@ -2978,7 +2989,12 @@ mod tests {
         assert!(prompt.contains("请一次只问我一个问题，并依次确认这些信息："));
         assert!(prompt.contains("1. 任务要做什么。"));
         assert!(prompt.contains(
-            "2. 什么时候运行。支持每 N 小时（可指定起始时间）、每天指定时间、每周指定星期和时间。"
+            "2. 什么时候运行。支持每 N 小时（可指定起始时间）、每天指定时间、每周指定星期和时间，以及一次性定时（在指定时刻运行一次后自动结束"
+        ));
+        // One-shot moments in the past are rejected outright by the creation
+        // chain, so the prompt must teach the model to confirm a new time.
+        assert!(prompt.contains(
+            "如果用户指定的一次性时刻已经过去，必须先和用户确认改成未来的时刻，不要输出草稿。"
         ));
         assert!(!prompt.contains("3."));
         assert!(prompt.contains("不需要询问工作目录或权限设置"));
@@ -2988,6 +3004,14 @@ mod tests {
         assert!(prompt.contains("整理草稿时，请把时间转换成 rrule："));
         assert!(prompt.contains("FREQ=HOURLY;INTERVAL=6;BYHOUR=8;BYMINUTE=30"));
         assert!(prompt.contains("FREQ=WEEKLY;BYDAY=MO,WE;BYHOUR=9;BYMINUTE=30"));
+        // One-shot (ONCE) scheduling: the base parser (automation_manager)
+        // supports it and the creation chain (AutomationSchedule::Once) and
+        // display pass it through, so the prompt must teach it; otherwise
+        // "remind me once at 9 tomorrow" gets forced into a recurrence rule.
+        assert!(prompt.contains("FREQ=ONCE;AT=2027-06-01T09:30"));
+        // Offset-suffixed AT (RFC3339) persists a foreign wall clock that the
+        // editor cannot safely rewrite; pin the local-time-only format.
+        assert!(prompt.contains("不要带 Z 或时区偏移后缀"));
         assert!(prompt.contains("create_scheduled_task"));
         assert!(prompt.contains("schtasks"));
         assert!(prompt.contains("Windows Task Scheduler"));

@@ -8,6 +8,7 @@ import {
 import { AcpAgentLogo } from './AcpAgentLogo.jsx';
 import { CodexWorkspacePanel } from './CodexWorkspacePanel.jsx';
 import { SubagentTranscriptPanel } from '../multiagent/SubagentTranscriptPanel.jsx';
+import { RunningAgentsOverlay } from '../multiagent/RunningAgentsOverlay.jsx';
 import {
   refreshAcpAgentCatalog,
   startSerialStatusPolling,
@@ -80,8 +81,8 @@ import {
   RewindUndoChip,
   RewindUndoConfirmDialog,
   useDialogEscapeKey,
-  useDialogFocusRestore,
 } from './RewindChip.jsx';
+import { useDialogFocusRestore } from '../../hooks/useDialogFocusRestore.js';
 import {
   ConversationActivityIndicator,
   ConversationMarkdown,
@@ -140,7 +141,6 @@ import {
 import {
   cancelAcpSession,
   checkoutAcpWorkspaceBranch,
-  alignAcpSession,
   createAcpSession,
   discardAcpAttachment,
   getAcpSessionInfo,
@@ -160,12 +160,14 @@ import {
   submitAcpPrompt,
   uploadAcpDeviceAttachment,
 } from './acpClient.js';
-import { WorkspaceKeychainChip } from '../projects/WorkspaceKeychainChip.jsx';
-import { describeKeychain, workspaceNoticeTone } from '../projects/workspacePickerState.js';
-import { resolveSessionProjectId } from '../projects/projectGrouping.js';
 import { can, canInvoke, isWeb, onPlatformConnectionChange } from '../../shared/platform.js';
+import {
+  forgetWorkspace,
+  loadRecentWorkspaces,
+  rememberWorkspace,
+  workspaceName,
+} from '../../shared/workspace-recents.js';
 const invoke = invokeTauri;
-const RECENT_WORKSPACES_KEY = 'pinvou_codex_recent_workspaces';
 const DRAFT_ATTACHMENT_KEY = '__codex_draft__';
 
 // 草稿配置快照缓存已抽到 ./acp-draft-controls.js（供设置页共用，避免与
@@ -183,11 +185,6 @@ const CODE_AGENT_IDS = new Set(['pinvou', 'codex', 'claude', 'kimi']);
 const EMPTY_CONVERSATION_TURNS = [];
 // Same idea: the sessions default must be a stable reference; an inline [] is a fresh array on every render.
 const EMPTY_SESSIONS = [];
-
-function workspaceName(path, unknownDirectory) {
-  // Trailing-separator stripping + Windows drive-letter path semantics live in shared/path-utils (same as the former inline code).
-  return pathBasename(path, { collapseTrailing: true, fallback: unknownDirectory });
-}
 
 // 分支显示/切换 pill：会话 header 与草稿 header（已选项目目录、未开会话）共用。
 // 非 git 工作区或 detached HEAD（current 为空）时隐藏；web 端由调用方不渲染。
@@ -232,14 +229,13 @@ function BranchSelector({ copy, branches, disabled, busy, menuOpen, onToggle, on
   );
 }
 
-// Branch-switch dialog shell: same pattern as RewindConfirmDialog / the
-// shared YoloConfirmCard — portal to <body> (the composer container's
-// backdrop-blur would become the containing block of fixed descendants),
-// focus capture/return, Escape to close (disabled while busy). The backdrop
-// is a button whose disabled follows busy: while a switch is in flight,
-// clicking blank space must not hide the dialog into the background. Mounted
-// only while the corresponding dialog is open (conditional render at the call
-// site).
+// Branch-switch dialog shell: same pattern as RewindConfirmDialog / the shared
+// YoloConfirmCard — portal to <body> (the composer container's backdrop-blur
+// becomes the containing block for fixed descendants), focus capture/restore,
+// Escape to close (disabled while busy). The backdrop is a button disabled
+// along with busy: while a switch is in flight, clicking the blank area must
+// not hide the dialog into the background. Mounted only while the dialog is
+// open (conditional rendering at the call site).
 function BranchDialogShell({ copy, busy, testid, labelledBy, initialFocusRef, onCancel, children }) {
   const dialogRef = useRef(null);
   useDialogFocusRestore(dialogRef, initialFocusRef);
@@ -266,31 +262,6 @@ function BranchDialogShell({ copy, busy, testid, labelledBy, initialFocusRef, on
     </div>,
     document.body,
   );
-}
-
-function loadRecentWorkspaces() {
-  try {
-    const value = JSON.parse(localStorage.getItem(RECENT_WORKSPACES_KEY) || '[]');
-    return Array.isArray(value) ? value.filter(path => typeof path === 'string').slice(0, 6) : [];
-  } catch {
-    return [];
-  }
-}
-
-function rememberWorkspace(path) {
-  const next = [path, ...loadRecentWorkspaces().filter(item => item !== path)].slice(0, 6);
-  localStorage.setItem(RECENT_WORKSPACES_KEY, JSON.stringify(next));
-  return next;
-}
-
-function forgetWorkspace(path) {
-  const next = loadRecentWorkspaces().filter(item => item !== path);
-  try {
-    localStorage.setItem(RECENT_WORKSPACES_KEY, JSON.stringify(next));
-  } catch {
-    // localStorage 不可用时仍允许当前窗口继续创建新会话。
-  }
-  return next;
 }
 
 // 记住用户上次在 code 界面选择的 agent：重开界面/重启应用后沿用，直到用户再次切换。
@@ -432,6 +403,25 @@ function CodexComposerConfigSelect({
         )}
       </ComposerPopover>
     </div>
+  );
+}
+
+// The 1Hz clock used to live in CodexAcpView top-level state (re-rendering
+// the whole 4000+ line view every second while busy); it now sinks down with
+// the same pattern as ChatView's LiveConversationActivityIndicator: only the
+// running indicator that actually shows "elapsed" owns a clock, so each tick
+// re-renders just that small subtree.
+function LiveConversationActivityIndicator({ turn, onRequestAttention, className, copy }) {
+  const running = !!turn && turn.status === 'running';
+  const now = useConversationSecondClock(running);
+  return (
+    <ConversationActivityIndicator
+      turn={turn}
+      now={now}
+      onRequestAttention={onRequestAttention}
+      className={className}
+      copy={copy}
+    />
   );
 }
 
@@ -660,16 +650,6 @@ export function CodexAcpView({
   onGotoModelSettings,
   onGotoSettings,
   fixedSession = false,
-  // The "choose workspace" picker (§2) delivers its result through here:
-  // { epoch, path, projectId, roots }; path=null = temporary session.
-  // onOpenWorkspacePicker opens the picker (held by the host, main.jsx).
-  onOpenWorkspacePicker,
-  workspacePickerRequest = null,
-  onNotify,
-  // The host (main.jsx) mirrors the lane's effective mode so sidebar surfaces
-  // opened while the codex lane is active (manage-folders panel) show the
-  // same mode-aware copy as the lane itself.
-  onLaneModeChange,
 }) {
   const codexCopy = t.uiCodex;
   const [agents, setAgents] = useState(null); // null=加载中，[] 才允许回退当前 Agent。
@@ -827,10 +807,6 @@ export function CodexAcpView({
   }
   const [dismissedFailureKey, setDismissedFailureKey] = useState('');
   const [draftWorkspacePath, setDraftWorkspacePath] = useState(null);
-  // Ownership and keychain snapshot brought in by the project channel
-  // (picker) (§9.3): passed down with createAcpSession at materialization;
-  // beginDraft's other entries (temporary/recent directory) clear it.
-  const [draftProjectBinding, setDraftProjectBinding] = useState(null);
   // 会话内用 sessionId 解析工作区；草稿态（会话未创建）直接扫描已选目录。
   const branchWorkspacePath = activeId ? null : draftWorkspacePath;
   // Branch context marker mirrored from activeId/branchWorkspacePath; checkout
@@ -963,10 +939,6 @@ export function CodexAcpView({
   const composerModeValue = sessionControlsInfo
     ? controls.effectiveMode || ''
     : (draftConfigSelection && draftConfigSelection.mode) || controls.effectiveMode || '';
-  // Report the lane's effective mode upward (see the prop contract above).
-  useEffect(() => {
-    if (onLaneModeChange) onLaneModeChange(composerModeValue || null);
-  }, [composerModeValue, onLaneModeChange]);
   function composerConfigOptionValue(option) {
     if (sessionControlsInfo) return option.currentValue || '';
     const staged = draftConfigSelection && draftConfigSelection.configs
@@ -990,12 +962,6 @@ export function CodexAcpView({
     [sessions, activeId],
   );
   const activeAgentId = activeSession?.agent_id || draftAgentId;
-  // Keychain chip derivation, memoized: computing describeKeychain four times
-  // per render (once per chip prop) was pure waste.
-  const activeKeychain = useMemo(
-    () => (activeSession ? describeKeychain(activeSession.workspace_roots) : null),
-    [activeSession],
-  );
   // 原生（品悟 Engine）代码会话：发消息走 chat 命令 + chat:* 事件，会话状态按
   // session 缓存在 lane Map 里（后台会话的 turn 也能继续推进，切回不丢流式内容）。
   const isNativeAgent = activeAgentId === 'pinvou';
@@ -1114,9 +1080,9 @@ export function CodexAcpView({
   const busy = isNativeAgent
     ? Boolean(activeNativeLane && activeNativeLane.busy)
     : projection.turns.some(turn => turn.status === 'running');
-  // Per-second clock shared with ChatView: on busy activation the baseline is synced before the
-  // interval starts; no timer while inactive; cleared on unmount (consolidates the old top ticker).
-  const now = useConversationSecondClock(busy);
+  // The per-second clock lives in the display subtrees (ConversationTurnView's internal
+  // useConversationSecondClock, LiveConversationActivityIndicator below), so busy no longer
+  // re-renders the whole view at 1Hz; no top-level `now` is passed down.
   // 「回退到第 N 轮」入口（仅原生代码车道）：checkpoint 列表 + turn 边界对齐。
   // 回退编排（rewind_to_turn）由 confirmRewind 发起；成功后走既有 loadSession
   // 重载（磁盘对话已截断、engine 已被后端回收重注水）。refreshKey 含 busy 边沿：
@@ -2013,15 +1979,10 @@ export function CodexAcpView({
     const requestedAgentId = draftAgentId;
     setError('');
     setWorkspaceMenuOpen(false);
-    // Capture the keychain/project ownership synchronously (re-picking during
-    // the await does not affect this creation).
-    const requestedProjectBinding = draftProjectBinding;
     const metadata = await createAcpSession({
       workspacePath: requestedWorkspacePath,
       workspaceHandle: requestedWorkspaceHandle,
       agentId: requestedAgentId,
-      workspaceRoots: requestedProjectBinding ? requestedProjectBinding.roots : null,
-      projectId: requestedProjectBinding ? requestedProjectBinding.projectId : null,
     });
     // loadSession 用 nativeSessionIdsRef 判定分流；新会话先登记，避免它读到旧 prop。
     if (requestedAgentId === 'pinvou') nativeSessionIdsRef.current.add(metadata.id);
@@ -2056,7 +2017,6 @@ export function CodexAcpView({
     setWorkspaceMenuOpen(false);
     setDraftWorkspacePath(workspacePath);
     setDraftWorkspaceHandle(workspaceHandle);
-    setDraftProjectBinding(null);
     // 选定项目工作区即默认展开工作区面板（无会话也可浏览文件）；临时会话无路径可浏览。
     setWorkspaceOpen(Boolean(workspacePath) && !isWeb);
     if (clearComposer) {
@@ -2107,22 +2067,6 @@ export function CodexAcpView({
     setError('');
     if (onActiveSessionChange) onActiveSessionChange(null);
   }
-
-  // Picker result landing: project/folder channels → beginDraft(path) with
-  // the ownership and keychain staged; temporary session → beginDraft(null).
-  // The effect depends on epoch, so re-delivering the same choice still
-  // applies.
-  const pickerRequestEpochRef = useRef(0);
-  useEffect(() => {
-    if (!workspacePickerRequest || workspacePickerRequest.epoch === pickerRequestEpochRef.current) return;
-    pickerRequestEpochRef.current = workspacePickerRequest.epoch;
-    const { path, projectId, roots } = workspacePickerRequest;
-    // beginDraft first (it clears the old staged binding internally), then set
-    // the target values — the later write wins within the same batch.
-    beginDraft(path || null, { clearComposer: false });
-    setDraftProjectBinding(projectId ? { projectId, roots: roots || [] } : null);
-    // eslint-disable-next-line react-hooks/exhaustive-deps -- beginDraft is a stable local function; the effect is driven by the request epoch only
-  }, [workspacePickerRequest]);
 
   function recreateUnavailableWorkspaceSession() {
     if (activeSession && activeSession.workspace_path) {
@@ -2500,6 +2444,16 @@ export function CodexAcpView({
 
   // 原生（品悟）会话的 engine 事件：按 session 推进对应 lane，仅当前会话 bump 渲染；
   // turn 边界顺手刷新会话列表（标题/时间戳），与 acp:event 的 turn_completed 处理对齐。
+  // Note: nativeLaneTick is a view-wide version counter — lane is a mutable
+  // ref object, and beyond the timeline projection, the memory popover /
+  // bottom-bar controls (reading lane fields directly) and the auto-scroll
+  // effect below all rely on this bump. Confining "re-render the
+  // whole view per token" to a per-lane subscription component would require
+  // sinking visibleTurns and all of its callbacks (respond/renderNativeItem/
+  // pendingByTool/the rewind family etc.) into a child — a contract surface
+  // too wide for the risk this item justifies; the timeline already has the
+  // ConversationTurn deep compare as a backstop, so unchanged turns do not
+  // re-render.
   useEffect(() => {
     let disposed = false;
     let unlisteners = [];
@@ -3380,30 +3334,6 @@ export function CodexAcpView({
     }
   }
 
-  // Align to project (§9.7): the session keychain is replaced by the owning
-  // project's full root set at that moment; a busy rejection maps to copy by
-  // marker; on success the session list refreshes (the chip's roots update
-  // with the list).
-  async function alignKeychainToProject() {
-    if (!activeId) return;
-    try {
-      const outcome = await alignAcpSession(activeId);
-      if (outcome && outcome.applied) {
-        await refreshSessions().catch(() => {});
-        if (onNotify) onNotify(t.uiKeychain.alignDone);
-      } else if (outcome && outcome.reason === 'no_change' && onNotify) {
-        onNotify(t.uiKeychain.alignNoChange);
-      }
-    } catch (error) {
-      const message = String((error && error.message) || error || '');
-      if (message.startsWith('ALIGN_BUSY') && onNotify) {
-        onNotify(t.uiKeychain.alignBusy);
-      } else {
-        showError(error);
-      }
-    }
-  }
-
   return (
     <div className={`relative h-full min-h-0 flex flex-col ${theme === 'dark' ? 'text-[#E3E3E3]' : 'text-[#1F1F1F]'}`}>
         <ComposerAttachmentDropOverlay enabled={deviceFileUploadAvailable || (!isWeb && canInvoke('ingest_draft_file_chunk'))} onFiles={files => uploadDeviceFiles(files, attachmentKey)} dark={theme === 'dark'} variant={isWeb ? 'web' : 'desktop'} copy={t.uiAttachments} />
@@ -3414,33 +3344,7 @@ export function CodexAcpView({
             <div className="text-[14px] font-semibold">{activeSession.title || 'Codex'}</div>
             <div className={`text-[10px] truncate ${activeSession && !activeSession.workspace_available ? 'text-red-500' : 'text-gray-400'}`}
               title={activeSession && activeSession.workspace_path}>
-              {activeAgentName + ' · '}
-              {/* Keychain chip (§6): project sessions show the primary
-                  directory + N and offer "align to project" (§9.7); temporary
-                  sessions / unavailable directories keep the original text
-                  line. */}
-              {activeSession.workspace_kind === 'project' && activeSession.workspace_available !== false ? (
-                <WorkspaceKeychainChip
-                  copy={t.uiKeychain}
-                  primary={(activeKeychain && activeKeychain.primary) || activeSession.workspace_path}
-                  additionalCount={activeKeychain && activeKeychain.primary
-                    ? activeKeychain.additional
-                    : 0}
-                  roots={activeKeychain && activeKeychain.primary
-                    ? activeKeychain.roots
-                    : [activeSession.workspace_path]}
-                  canAlign={!isWeb && !!resolveSessionProjectId(
-                    { id: activeId, workspaceKind: 'project', workspacePath: activeSession.workspace_path },
-                    (bs && bs.projectsList && bs.projectsList.projects) || [],
-                    (bs && bs.projectsList && bs.projectsList.assignments) || {},
-                  )}
-                  busy={busy}
-                  onAlign={alignKeychainToProject}
-                />
-              ) : (
-                activeSession.workspace_kind === 'project' ? activeSession.workspace_path : codexCopy.temporaryWorkspace
-              )}
-              {activeSession.workspace_available ? '' : ' · ' + codexCopy.projectMissing}
+              {activeAgentName + ' · ' + (activeSession.workspace_kind === 'project' ? activeSession.workspace_path : codexCopy.temporaryWorkspace) + (activeSession.workspace_available ? '' : ' · ' + codexCopy.projectMissing)}
             </div>
           </div>
           {configApplying && <span className="text-[10px] text-blue-500 animate-pulse">{codexCopy.applyingConfig}</span>}
@@ -3458,6 +3362,14 @@ export function CodexAcpView({
             />
           )}
           {busy && <ConversationStatusBadge status="running" copy={t.uiConversation} />}
+          {isNativeAgent && nativeMultiAgentAvailable && activeId && (
+            <RunningAgentsOverlay
+              sessionId={activeId}
+              theme={theme}
+              t={t}
+              swarmOn={nativeMultiAgentEnabled}
+            />
+          )}
           <button
             type="button"
             onClick={toggleWorkspacePanel}
@@ -3599,7 +3511,6 @@ export function CodexAcpView({
                     )}
                     <ConversationTurn
                       turn={turn}
-                      now={now}
                       copy={t.uiConversation}
                       pendingByTool={pendingByTool}
                       onRespond={respond}
@@ -3631,6 +3542,14 @@ export function CodexAcpView({
                               <ToolCard
                                 item={{ ...item.legacyItem, sessionId: activeId }}
                                 sessionId={activeId}
+                                // The codex native host has no subagent list
+                                // view: its `pinvou:open-subagent` handler only
+                                // accepts a concrete agentId, so the null-
+                                // agentId count-row click would be a no-op. The
+                                // transcript entry point is the header-mounted
+                                // RunningAgentsOverlay instead, whose entries
+                                // carry a concrete agentId the handler accepts.
+                                spawnRowInteractive={false}
                                 theme={theme}
                                 t={t}
                                 variant="timeline"
@@ -3729,9 +3648,8 @@ export function CodexAcpView({
                 onApplyAndSend={() => nativeVoice.applyVoiceEditPreview({ send: true })}
                 onCancel={nativeVoice.cancelVoiceEditPreview}
               />
-              <ConversationActivityIndicator
+              <LiveConversationActivityIndicator
                 turn={activeConversationTurn}
-                now={now}
                 onRequestAttention={scrollConversationToBottom}
                 className="mb-0.5"
                 copy={t.uiConversation}
@@ -3830,7 +3748,7 @@ export function CodexAcpView({
                       </button>
                       {workspaceMenuOpen && (
                         <div ref={workspaceMenuPanelRef} className="absolute z-40 bottom-9 left-0 w-[280px] max-w-[calc(100vw-32px)] rounded-2xl border border-black/[0.08] dark:border-white/10 bg-white/95 dark:bg-[#202124]/95 backdrop-blur-xl shadow-xl p-2">
-                            <button type="button" onClick={() => (isWeb || !onOpenWorkspacePicker) ? chooseProjectDraft().catch(showError) : onOpenWorkspacePicker({ lane: 'codex', mode: nativeDraftControls.mode })}
+                            <button type="button" onClick={() => chooseProjectDraft().catch(showError)}
                               className="w-full rounded-xl px-3 py-2.5 flex items-center gap-3 text-left hover:bg-black/[0.04] dark:hover:bg-white/[0.06]">
                               <FolderOpen size={16} className="text-blue-500 shrink-0" />
                               <span><span className="block text-[12px] font-semibold">{codexCopy.chooseProject}</span><span className="block text-[10px] text-gray-400 mt-0.5">{codexCopy.chooseProjectDesc}</span></span>
@@ -3843,19 +3761,6 @@ export function CodexAcpView({
                             {recentWorkspaces.length > 0 && (
                               <div className="mt-1 pt-2 border-t border-black/[0.05] dark:border-white/[0.06]">
                                 <div className="px-3 pb-1 text-[10px] uppercase tracking-wider text-gray-400">{codexCopy.recentProjects}</div>
-                                {/* Grant notice parity (§9.4, same shape as the
-                                    chat lane's ComposerWorkspaceSelector): a
-                                    recents pick grants the folder directly
-                                    (single root), so the mode-aware notice sits
-                                    on the recents section. Mode mirrors the
-                                    picker entry above (native draft staging
-                                    first, then the lane's reported effective
-                                    mode). */}
-                                <div className="px-3 pb-1 text-[10px] text-gray-400">
-                                  {workspaceNoticeTone(nativeDraftControls.mode || composerModeValue || null) === 'restricted'
-                                    ? t.uiWorkspacePicker.noticeRestricted(1)
-                                    : t.uiWorkspacePicker.noticeVisibility(1)}
-                                </div>
                                 {recentWorkspaces.map(path => (
                                   <button key={path} type="button" title={path}
                                     onClick={() => {

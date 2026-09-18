@@ -1,7 +1,9 @@
 use std::ffi::OsStr;
 use std::path::Path;
-use std::process::{Command, Output, Stdio};
+use std::process::{Child, Command, Output, Stdio};
 use std::time::{Duration, Instant};
+
+use wait_timeout::ChildExt;
 
 pub(crate) struct HiddenCommand;
 
@@ -13,6 +15,85 @@ impl HiddenCommand {
         command
     }
 }
+
+/// Strips `GIT_*` override variables (redirection/config-injection classes)
+/// injected by the host environment. `GIT_DIR`/`GIT_WORK_TREE`/
+/// `GIT_INDEX_FILE`/`GIT_OBJECT_DIRECTORY` exported by the launching shell
+/// redirect the module's internal git operations to unrelated repositories,
+/// indexes, or object stores; `GIT_CONFIG*` injection overrides the target
+/// repository's own configuration; `GIT_CEILING_DIRECTORIES` and friends alter
+/// repository discovery — these variables really exist when the GUI is
+/// launched from a development shell. Features that spawn git internally
+/// (code_checkpoints shadow repositories, codex_acp workspace branch/diff
+/// operations) must call this before spawning.
+///
+/// **Must remove keys one by one from a fixed key list; do not iterate
+/// `env::vars_os()` first and delete matches**: iterating `environ` while other
+/// threads run `setenv`/`remove_var` concurrently can miss keys (glibc environ
+/// mutation is not thread-safe); parallel tests have occasionally lost
+/// isolation entirely this way (the 2026-09-12 flaky family). Once
+/// `GIT_CONFIG_COUNT` is removed, git ignores the `GIT_CONFIG_KEY_n`/
+/// `GIT_CONFIG_VALUE_n` numbered pairs, so they need no enumeration.
+///
+/// Non-redirection variables such as `GIT_AUTHOR_*`/`GIT_COMMITTER_*`/
+/// `GIT_SSH*` are kept: operations on the user's real worktree should follow
+/// the behavior of the user's own git; code_checkpoints shadow repositories
+/// need stronger isolation (identity and global config pinned too) and should
+/// use [`strip_all_git_env`] instead.
+pub(crate) fn strip_git_override_env(command: &mut Command) {
+    for key in GIT_OVERRIDE_KEYS {
+        command.env_remove(key);
+    }
+}
+
+/// Shadow-repository hardened variant of [`strip_git_override_env`]: also
+/// removes identity/date variables. The shadow repository's commit identity is
+/// provided explicitly via `-c` by the caller; `GIT_AUTHOR_*` exported by the
+/// host shell must not leak into snapshot commits.
+pub(crate) fn strip_all_git_env(command: &mut Command) {
+    for key in GIT_OVERRIDE_KEYS.iter().copied().chain(GIT_IDENTITY_KEYS) {
+        command.env_remove(key);
+    }
+}
+
+/// Once `GIT_CONFIG_COUNT` is removed, the `GIT_CONFIG_KEY_n`/
+/// `GIT_CONFIG_VALUE_n` numbered pairs become ineffective, so the numbered
+/// keys need no enumeration.
+const GIT_OVERRIDE_KEYS: [&str; 20] = [
+    "GIT_DIR",
+    "GIT_WORK_TREE",
+    "GIT_INDEX_FILE",
+    "GIT_OBJECT_DIRECTORY",
+    "GIT_ALTERNATE_OBJECT_DIRECTORIES",
+    "GIT_COMMON_DIR",
+    "GIT_GRAFT_FILE",
+    "GIT_SHALLOW_FILE",
+    "GIT_REPLACE_REF_BASE",
+    "GIT_NAMESPACE",
+    "GIT_CEILING_DIRECTORIES",
+    "GIT_DISCOVERY_ACROSS_FILESYSTEM",
+    "GIT_CONFIG",
+    "GIT_CONFIG_GLOBAL",
+    "GIT_CONFIG_SYSTEM",
+    "GIT_CONFIG_NOSYSTEM",
+    "GIT_CONFIG_PARAMETERS",
+    "GIT_CONFIG_COUNT",
+    // GIT_CONFIG_KEY_n / GIT_CONFIG_VALUE_n pairs are gated by
+    // GIT_CONFIG_COUNT: removing COUNT disables the whole group. Key/value 0
+    // is still removed to guard against extreme host injections that bypass
+    // COUNT.
+    "GIT_CONFIG_KEY_0",
+    "GIT_CONFIG_VALUE_0",
+];
+
+const GIT_IDENTITY_KEYS: [&str; 6] = [
+    "GIT_AUTHOR_NAME",
+    "GIT_AUTHOR_EMAIL",
+    "GIT_AUTHOR_DATE",
+    "GIT_COMMITTER_NAME",
+    "GIT_COMMITTER_EMAIL",
+    "GIT_COMMITTER_DATE",
+];
 
 fn is_windows_command_script(executable: &Path) -> bool {
     executable
@@ -116,15 +197,35 @@ fn output_with_timeout_inner(
                     let _ = kill_process_tree(child.id());
                 }
                 let _ = child.kill();
-                let _ = child.wait();
+                let reap_note = match reap_killed_child(&mut child, REAP_GRACE) {
+                    Reap::Reaped => None,
+                    Reap::Abandoned => Some(String::from(
+                        "termination requested but the child has not exited; it may linger",
+                    )),
+                    Reap::Failed(error) => Some(format!("reaping the child failed: {error}")),
+                };
                 if kill_tree_on_timeout {
                     // A privileged descendant may be outside the caller's signal
                     // permission even after its wrapper is gone. Never block the
                     // timeout path by joining pipe readers that such a process kept.
                     drop(stdout_reader);
                     drop(stderr_reader);
+                    let tree_note = reap_note
+                        .map(|note| format!("; {note}"))
+                        .unwrap_or_default();
                     return Err(format!(
-                        "{program} timed out after {}s: subprocess tree termination requested",
+                        "{program} timed out after {}s: subprocess tree termination requested{tree_note}",
+                        timeout.as_secs()
+                    ));
+                }
+                if let Some(reap_note) = reap_note {
+                    // A child that refuses to die may still hold the pipes
+                    // open, so joining the readers could block forever;
+                    // abandon them like the kill-tree path does.
+                    drop(stdout_reader);
+                    drop(stderr_reader);
+                    return Err(format!(
+                        "{program} timed out after {}s: {reap_note}",
                         timeout.as_secs()
                     ));
                 }
@@ -141,8 +242,10 @@ fn output_with_timeout_inner(
                     let _ = kill_process_tree(child.id());
                 }
                 let _ = child.kill();
-                let _ = child.wait();
-                if kill_tree_on_timeout {
+                let reaped = matches!(reap_killed_child(&mut child, REAP_GRACE), Reap::Reaped);
+                if kill_tree_on_timeout || !reaped {
+                    // The tree may have surviving members, or the child may
+                    // still hold the pipes open: never block on the readers.
                     drop(stdout_reader);
                     drop(stderr_reader);
                     return Err(format!("{program} wait error: {error}"));
@@ -159,6 +262,40 @@ fn output_with_timeout_inner(
         stdout: stdout_reader.join().unwrap_or_default(),
         stderr: stderr_reader.join().unwrap_or_default(),
     })
+}
+
+/// How long to keep reaping a child after a termination request. A
+/// successful `kill()` does not force a prompt exit: a process stuck in
+/// uninterruptible kernel sleep (Unix D state) never observes SIGKILL, so
+/// a blocking `wait()` could hang the caller past its own timeout budget.
+/// Bounded reaping trades that unbounded hang for a bounded, reported
+/// leak.
+pub(crate) const REAP_GRACE: Duration = Duration::from_secs(2);
+
+/// Outcome of [`reap_killed_child`].
+pub(crate) enum Reap {
+    /// Child exited and was reaped.
+    Reaped,
+    /// Grace elapsed without an observed exit; the child may linger.
+    Abandoned,
+    /// Waiting for the child errored; the reap is not established.
+    Failed(std::io::Error),
+}
+
+/// Reap a killed child, bounded by `grace`. Waits via `wait_timeout`
+/// instead of a blocking `wait()` so the caller keeps its timeout
+/// guarantee even when the child cannot exit promptly, and returns the
+/// outcome instead of swallowing wait errors. The child does not have to
+/// have accepted the kill for this to stay bounded: at most `grace` is
+/// spent even on a still-live child. Note that `wait_timeout` silently
+/// takes and drops a piped stdin, closing it; callers that feed the
+/// child a pipe must not rely on the handle surviving the reap.
+pub(crate) fn reap_killed_child(child: &mut Child, grace: Duration) -> Reap {
+    match child.wait_timeout(grace) {
+        Ok(Some(_)) => Reap::Reaped,
+        Ok(None) => Reap::Abandoned,
+        Err(error) => Reap::Failed(error),
+    }
 }
 
 fn subprocess_output_detail(stdout: &[u8], stderr: &[u8]) -> String {
@@ -339,6 +476,164 @@ pub(crate) fn hide_tokio_console(_command: &mut tokio::process::Command) {}
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// reap_killed_child collects an exited child promptly instead of
+    /// waiting out the grace deadline. Soft-skips when no `sleep` binary
+    /// is on PATH (bare Windows hosts; windows-latest CI bash steps have
+    /// Git Bash's `sleep.exe` on PATH, so the test runs for real there).
+    #[test]
+    fn reap_killed_child_reaps_exited_child() {
+        if Command::new("sleep").arg("0").status().is_err() {
+            eprintln!("skipping: no `sleep` binary on this platform");
+            return;
+        }
+        let mut child = Command::new("sleep")
+            .arg("0")
+            .spawn()
+            .expect("spawn sleep 0");
+        let started = Instant::now();
+        assert!(
+            matches!(reap_killed_child(&mut child, REAP_GRACE), Reap::Reaped),
+            "an exited child must be reaped successfully"
+        );
+        assert!(
+            started.elapsed() < REAP_GRACE,
+            "reaping an exited child must not wait out the grace deadline"
+        );
+    }
+
+    /// The Abandoned branch is induced deterministically by a zero grace
+    /// budget on a live child: no SIGKILL-surviving process is needed. Only
+    /// the Failed branch is not inducible in-process (std caches the exit
+    /// status, so a collected child can never report a wait error).
+    #[test]
+    fn reap_killed_child_abandons_a_live_child_on_zero_grace() {
+        if Command::new("sleep").arg("0").status().is_err() {
+            eprintln!("skipping: no `sleep` binary on this platform");
+            return;
+        }
+        let mut child = Command::new("sleep")
+            .arg("30")
+            .spawn()
+            .expect("spawn sleep 30");
+        assert!(
+            matches!(
+                reap_killed_child(&mut child, Duration::ZERO),
+                Reap::Abandoned
+            ),
+            "a live child with a zero grace budget must be abandoned"
+        );
+        // Clean up so the test leaves no zombie or stray sleeper behind.
+        let _ = child.kill();
+        assert!(
+            matches!(reap_killed_child(&mut child, REAP_GRACE), Reap::Reaped),
+            "cleanup kill must reap the child"
+        );
+    }
+
+    #[test]
+    fn git_override_keys_cover_redirection_and_config_injection_without_identity() {
+        // Redirection and config-injection keys must be on the strip list.
+        for key in [
+            "GIT_DIR",
+            "GIT_WORK_TREE",
+            "GIT_INDEX_FILE",
+            "GIT_OBJECT_DIRECTORY",
+            "GIT_ALTERNATE_OBJECT_DIRECTORIES",
+            "GIT_COMMON_DIR",
+            "GIT_GRAFT_FILE",
+            "GIT_SHALLOW_FILE",
+            "GIT_REPLACE_REF_BASE",
+            "GIT_NAMESPACE",
+            "GIT_CEILING_DIRECTORIES",
+            "GIT_DISCOVERY_ACROSS_FILESYSTEM",
+            "GIT_CONFIG",
+            "GIT_CONFIG_GLOBAL",
+            "GIT_CONFIG_NOSYSTEM",
+            "GIT_CONFIG_COUNT",
+            "GIT_CONFIG_PARAMETERS",
+        ] {
+            assert!(
+                GIT_OVERRIDE_KEYS.contains(&key),
+                "override keys must cover {key}"
+            );
+        }
+        // Identity, transport, and terminal-behavior variables are not on the
+        // subset list: operations on the user's real worktree follow the
+        // behavior of the user's own git (the shadow-repository hardened list
+        // covers identity separately).
+        for key in [
+            "GIT_AUTHOR_NAME",
+            "GIT_AUTHOR_EMAIL",
+            "GIT_COMMITTER_DATE",
+            "GIT_SSH_COMMAND",
+            "GIT_ASKPASS",
+            "GIT_TERMINAL_PROMPT",
+            "GIT_EDITOR",
+            "GIT_PAGER",
+            "GIT_TRACE",
+            "HOME",
+            "GITHUB_TOKEN",
+        ] {
+            assert!(
+                !GIT_OVERRIDE_KEYS.contains(&key),
+                "override keys must not contain {key}"
+            );
+        }
+        // Shadow-repository hardened list = subset list + identity keys, and
+        // the identity keys must actually take effect in the hardened list.
+        let strengthened: std::collections::BTreeSet<&str> = GIT_OVERRIDE_KEYS
+            .iter()
+            .copied()
+            .chain(GIT_IDENTITY_KEYS)
+            .collect();
+        for key in GIT_IDENTITY_KEYS {
+            assert!(strengthened.contains(key), "full strip must cover {key}");
+        }
+        assert!(!GIT_OVERRIDE_KEYS.contains(&"GIT_AUTHOR_NAME"));
+    }
+
+    /// The strip helpers must translate the key lists into explicit
+    /// `env_remove` entries on the Command (observable via `get_envs`); the
+    /// code_checkpoints test only spot-checks representatives, so the full
+    /// list coverage lives here, next to the lists themselves.
+    #[test]
+    fn strip_git_env_helpers_remove_every_listed_key() {
+        let removed_entries = |command: &std::process::Command| -> Vec<std::ffi::OsString> {
+            command
+                .get_envs()
+                .filter_map(|(name, value)| value.is_none().then(|| name.to_os_string()))
+                .collect()
+        };
+
+        let mut hardened = std::process::Command::new("git");
+        strip_all_git_env(&mut hardened);
+        let removed = removed_entries(&hardened);
+        for key in GIT_OVERRIDE_KEYS.iter().copied().chain(GIT_IDENTITY_KEYS) {
+            assert!(
+                removed.iter().any(|entry| entry == key),
+                "strip_all_git_env must env_remove {key}"
+            );
+        }
+
+        let mut soft = std::process::Command::new("git");
+        strip_git_override_env(&mut soft);
+        let removed = removed_entries(&soft);
+        for key in GIT_OVERRIDE_KEYS {
+            assert!(
+                removed.iter().any(|entry| entry == key),
+                "strip_git_override_env must env_remove {key}"
+            );
+        }
+        for key in GIT_IDENTITY_KEYS {
+            assert!(
+                !soft
+                    .get_envs()
+                    .any(|(name, _)| name == std::ffi::OsStr::new(key)),
+                "strip_git_override_env must not touch identity key {key}"
+            );
+        }
+    }
 
     #[test]
     fn windows_command_shims_use_command_interpreter() {

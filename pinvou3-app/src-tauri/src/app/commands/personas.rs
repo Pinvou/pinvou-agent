@@ -21,16 +21,41 @@ pub async fn equip_persona(
     app: AppHandle,
     store: State<'_, SessionStore>,
 ) -> Result<crate::features::personas::PersonaSummary, String> {
-    let card = crate::features::personas::get(&persona_id)
-        .ok_or_else(|| format!("未知专家面具: {persona_id}"))?;
-    let summary = card.summary();
-    store.set_pending_persona_body(
+    equip_persona_state_with(
+        &store,
         &session_id,
-        Some(crate::features::personas::equip_body_injection(&card)),
-    );
-    store.set_active_persona(&session_id, Some(persona_id));
-    super::sessions::emit_session_event(&app, "session:persona_changed", &session_id, "equipped");
-    Ok(summary)
+        &persona_id,
+        || {},
+        || {
+            super::sessions::emit_session_event(
+                &app,
+                "session:persona_changed",
+                &session_id,
+                "equipped",
+            );
+        },
+    )
+}
+
+fn equip_persona_state_with(
+    store: &SessionStore,
+    session_id: &str,
+    persona_id: &str,
+    after_read: impl FnOnce(),
+    after_publish: impl FnOnce(),
+) -> Result<crate::features::personas::PersonaSummary, String> {
+    crate::features::personas::with_card(persona_id, |card| {
+        after_read();
+        let summary = card.summary();
+        store.set_persona(
+            session_id,
+            Some(persona_id.to_string()),
+            Some(crate::features::personas::equip_body_injection(card)),
+        );
+        after_publish();
+        summary
+    })
+    .ok_or_else(|| format!("未知专家面具: {persona_id}"))
 }
 
 // ── 用户自创卡 CRUD ────────────────────────────────────────────────
@@ -95,8 +120,39 @@ pub async fn update_persona(
 
 /// 删除自制卡。
 #[tauri::command]
-pub async fn delete_persona(persona_id: String) -> Result<(), String> {
-    crate::features::personas::delete_user_persona(&persona_id)
+pub async fn delete_persona(
+    persona_id: String,
+    app: AppHandle,
+    store: State<'_, SessionStore>,
+) -> Result<(), String> {
+    delete_persona_state_with(&store, &persona_id, |session_ids| {
+        for session_id in session_ids {
+            super::sessions::emit_session_event(
+                &app,
+                "session:persona_changed",
+                session_id,
+                "unequipped",
+            );
+        }
+    })?;
+    Ok(())
+}
+
+#[cfg(test)]
+fn delete_persona_state(store: &SessionStore, persona_id: &str) -> Result<Vec<String>, String> {
+    delete_persona_state_with(store, persona_id, |_| {})
+}
+
+fn delete_persona_state_with(
+    store: &SessionStore,
+    persona_id: &str,
+    after_clear: impl FnOnce(&[String]),
+) -> Result<Vec<String>, String> {
+    crate::features::personas::delete_user_persona_with(persona_id, || {
+        let session_ids = store.remove_persona_from_all(persona_id);
+        after_clear(&session_ids);
+        session_ids
+    })
 }
 
 /// 保存某 session 的卡牌加持/卸下事件时间线(sidecar,不进 messages)。
@@ -235,5 +291,105 @@ pub async fn get_active_persona(
     Ok(store
         .active_persona_id(&session_id)
         .and_then(|pid| crate::features::personas::get(&pid).map(|c| c.summary())))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::features::personas::PersonaCard;
+    use crate::platform::paths::tests::ENV_LOCK;
+    use std::sync::mpsc;
+    use std::time::{Duration, SystemTime, UNIX_EPOCH};
+
+    #[test]
+    fn delete_waits_for_in_flight_equip_then_clears_its_state() {
+        let _environment = ENV_LOCK
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        let previous_home = std::env::var("PINVOU3_HOME").ok();
+        let root = std::env::temp_dir().join(format!(
+            "pinvou3-persona-equip-delete-race-{}",
+            SystemTime::now()
+                .duration_since(UNIX_EPOCH)
+                .expect("system time")
+                .as_nanos()
+        ));
+        // SAFETY: ENV_LOCK serializes process-wide test environment changes.
+        unsafe { std::env::set_var("PINVOU3_HOME", &root) };
+        crate::features::personas::reload_user();
+
+        let summary = crate::features::personas::create_user_persona(PersonaCard {
+            id: String::new(),
+            dept: "specialized".into(),
+            name: "Race card".into(),
+            description: String::new(),
+            emoji: "R".into(),
+            color: "#000000".into(),
+            body: "SECRET PERSONA BODY".into(),
+            source: "user".into(),
+            conversational_only: false,
+        })
+        .expect("create test persona");
+        let store = SessionStore::boot_at_test_dir(&root).expect("boot session store");
+        let session_id = "chat-persona-race";
+
+        let (card_read_tx, card_read_rx) = mpsc::channel();
+        let (resume_equip_tx, resume_equip_rx) = mpsc::channel();
+        let equip_store = store.clone();
+        let equip_persona_id = summary.id.clone();
+        let equip = std::thread::spawn(move || {
+            equip_persona_state_with(
+                &equip_store,
+                session_id,
+                &equip_persona_id,
+                || {
+                    card_read_tx.send(()).expect("signal card read");
+                    resume_equip_rx.recv().expect("resume equip");
+                },
+                || {},
+            )
+        });
+        card_read_rx.recv().expect("equip read card");
+
+        let (delete_started_tx, delete_started_rx) = mpsc::channel();
+        let (delete_done_tx, delete_done_rx) = mpsc::channel();
+        let delete_store = store.clone();
+        let delete_persona_id = summary.id.clone();
+        let deletion = std::thread::spawn(move || {
+            delete_started_tx.send(()).expect("signal delete start");
+            let result = delete_persona_state(&delete_store, &delete_persona_id);
+            delete_done_tx.send(()).expect("signal delete done");
+            result
+        });
+        delete_started_rx.recv().expect("delete started");
+        let deleted_before_equip_committed = delete_done_rx
+            .recv_timeout(Duration::from_millis(100))
+            .is_ok();
+        resume_equip_tx.send(()).expect("release equip");
+
+        equip.join().expect("equip thread").expect("equip succeeds");
+        let affected = deletion
+            .join()
+            .expect("delete thread")
+            .expect("delete succeeds");
+        assert!(
+            !deleted_before_equip_committed,
+            "delete must not finish between card read and persona-state publication"
+        );
+        assert_eq!(affected, vec![session_id.to_string()]);
+        let state = store.mode_state(session_id);
+        assert!(state.active_persona.is_none());
+        assert!(state.pending_persona_body.is_none());
+        assert!(crate::features::personas::get(&summary.id).is_none());
+
+        match previous_home {
+            // SAFETY: ENV_LOCK remains held through restoration and cache reload.
+            Some(value) => unsafe { std::env::set_var("PINVOU3_HOME", value) },
+            // SAFETY: ENV_LOCK remains held through restoration and cache reload.
+            None => unsafe { std::env::remove_var("PINVOU3_HOME") },
+        }
+        crate::features::personas::reload_user();
+        let _ = std::fs::remove_dir_all(root);
+    }
 }
 use super::prelude::*;

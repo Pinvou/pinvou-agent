@@ -331,9 +331,7 @@ pub async fn web_access_list_sessions(
         WebSessionOperation::ListSessions,
         super::sessions::list_sessions(store, acp_pool).await,
     )?;
-    for session in &mut sessions {
-        session.metadata = super::codex::redact_session_metadata_for_web(session.metadata.clone());
-    }
+    super::sessions::project_session_list_for_web(&mut sessions);
     Ok(sessions)
 }
 
@@ -363,8 +361,7 @@ pub async fn web_access_create_session(
 ) -> Result<WebSessionMetadata, String> {
     let metadata = web_session_result(
         WebSessionOperation::CreateSession,
-        // Web-side P1 only has temporary/single-root sessions (§9.8): no
-        // keychain, no project-memory write.
+        // Web 侧 P1 只有临时/单根会话(§9.8):无钥匙串、不写项目记忆。
         super::sessions::create_session(Some(false), None, None, None, app, store, pool, projects)
             .await,
     )?;
@@ -916,8 +913,7 @@ pub async fn web_access_create_codex_acp_session(
             super::codex::create_codex_acp_session_with_workspace_binding(
                 workspace_path,
                 Some(agent_id),
-                // Web workspace-grant channel: single root (the granted
-                // directory itself), no project memory.
+                // Web 工作区授权通道:单根(授权目录本身),不写项目记忆。
                 None,
                 None,
                 store,
@@ -1108,14 +1104,14 @@ pub struct WebAcpTimelinePage {
 /// Return one bounded page of the authoritative ACP timeline after projecting
 /// out desktop-only adapter metadata and credential-bearing diagnostic fields.
 #[tauri::command]
-pub fn web_access_get_codex_acp_timeline(
+pub async fn web_access_get_codex_acp_timeline(
     session_id: String,
     after_seq: Option<u64>,
     after_cursor: Option<u64>,
     limit: Option<usize>,
     acp_pool: State<'_, AcpPool>,
 ) -> Result<WebAcpTimelinePage, String> {
-    let outcome = (|| {
+    let outcome = (|| async {
         let limit = limit.unwrap_or(DEFAULT_WEB_ACP_TIMELINE_PAGE_EVENTS);
         if limit == 0 || limit > MAX_WEB_ACP_TIMELINE_PAGE_EVENTS {
             return Err(format!(
@@ -1131,6 +1127,7 @@ pub fn web_access_get_codex_acp_timeline(
                 MAX_WEB_ACP_TIMELINE_PAGE_BYTES,
                 MAX_WEB_ACP_TIMELINE_EVENT_BYTES,
             )
+            .await
             .map_err(|error| format!("{error:#}"))?;
         Ok(WebAcpTimelinePage {
             next_after_seq: page.events.last().map(|event| event.seq),
@@ -1139,7 +1136,7 @@ pub fn web_access_get_codex_acp_timeline(
             events: page.events,
         })
     })();
-    web_acp_result(WebAcpOperation::Timeline, outcome)
+    web_acp_result(WebAcpOperation::Timeline, outcome.await)
 }
 
 fn project_acp_pending_permission_for_web(

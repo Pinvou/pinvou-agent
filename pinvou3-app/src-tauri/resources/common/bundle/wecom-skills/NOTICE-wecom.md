@@ -77,7 +77,7 @@ SOFTWARE.
    ≤280 字符(上游 disk/doc/smartsheet 三个超限 description 压缩改写)。
 2. **安装教学改品悟代管口径**:wecomcli-shared Step 1 的
    `npm install -g @wecom/cli` 自更新指引(会绕过品悟 lock 钉扎触发哈希不匹配
-   重装循环)改写为「wecom-cli 由品悟代管、随应用更新;版本不足时在工具商店
+   重装循环)改写为「wecom-cli 由品悟代管、随应用更新;版本不足时在插件中心
    企业微信卡片重新点连接触发安装/升级」。
 3. **引擎工具名口径**:上游「先 `read` 对应 references 文件」「用 `write` 工具
    写入」「用 Write 工具」「`grep 工具` 提取」等裸引擎工具名统一登记为
@@ -266,18 +266,58 @@ wecom sheet/smartsheet/smartpage 三技能文档审计修复,属本地适配层(
     与 reply-mail.md 既有工作流对齐(原条目未覆盖发件人邮箱为空的
     例外路径,初版漏登记,复审补齐)。
 
+### 上游同步(2026-09-15,wecom-cli 1.2.1)
+
+全量同步至上游 v1.2.1 发布提交 `e88bf90a`(2026-09-08,npm `@wecom/cli@1.2.1`
+同源;上游 GitHub 仓库无 tag/release,版本以 npm registry 为准,v1.2.1 为当前
+最新)。上游 v1.2.x 相对 v1.1.0 的 `skills/` 改动仅 3 个文件、无技能目录增删:
+
+1. **wecomcli-doc/SKILL.md**(MR !62):description 重写为路由导向,并把原
+   description 中的 sheet/smartsheet/结构化数据分流语义下沉为「不适用」节
+   3 条 bullet。本地合并:采纳「不适用」3 条 bullet;description 保留品悟
+   「何时用:」前缀口径(现 216 字符,未超 280 软上限;早前登记误把 UTF-8
+   字节数 416 当作字符数,特此勘误),并补齐本地 1.1.0 适配时漏掉的
+   触发词「office文档」(上游自 1.1.0 起即有,非本次上游新增)与
+   「导入(.doc/.docx/.txt)」细节。
+2. **wecomcli-smartpage/SKILL.md**(MR !62):description 重写,补充能力清单
+   (上传附件、数据系统页面、信息收集表单)与 smartpage/page.weixin.qq.com
+   链接触发。本地合并:保留「何时用:」前缀口径,能力清单按上游补齐
+   (现 212 字符,未超 280 软上限;早前登记误把 UTF-8 字节数 452 当作
+   字符数并据以登记 follow-up 压缩,该 follow-up 一并撤销);正文无变化,
+   本地委托契约分叉原样保留。
+3. **wecomcli-shared/SKILL.md**(MR !52):Step 3 初始化命令
+   `wecom-cli auth init` → `wecom-cli auth init --noninteractive`。本地直接
+   采纳(与本地 Step 1 品悟代管口径不冲突);周围 prose 上游未改,照旧。
+4. **wecomcli-shared/SKILL.md 版本门槛文本(本地修改,随本次同步更新)**:
+   description 与 Step 1/重试分支的最低版本文案由 `1.1.0` 更新为
+   `1.2.1`,与全平台 lock 钉扎 1.2.1 及 `wecom.rs` 的
+   `WECOM_MIN_VERSION = (1, 2, 1)` 对齐。
+
+上游本次**未**修复 NOTICE 此前预判的缺陷:smartpage 逾期判断模板方向
+(第 1 条)、send-mail >5 候选口径(第 10 条)、`a1_`/`s3_` docid 前缀
+示例笔误(第 17 条)等 references 层修正全部维持本地版本,继续有效。
+另:1.1.0 适配清单第 5 条的 smartsheet `records.values` 双层嵌套修正为
+条件式登记,经核对上游自 1.1.0 重写起即为单层结构,本地与上游本无
+分歧,该条视同已了结(不再是「上游未修复」项)。
+
+上游 main 在 v1.2.1 之后尚有未发布提交(安全拼接规范 `605b506`,
+触及 12/14 技能;DESC_SPEC 格式修复 `1cd90a5`,仅触及
+`docs/e2e/DESC_SPEC.md` 不触及技能文件),不属于本次 release 基线,
+未纳入;待上游发版后再同步。
+
 ### 各技能重放基线
 
-14 个技能全部 = 上游 `cd0480e0`(v1.1.0 发布提交,npm 1.1.0 同源),技能目录与
+14 个技能全部 = 上游 `e88bf90a`(v1.2.1 发布提交,npm 1.2.1 同源),技能目录与
 上游同名同构;本地分叉为上文「本轮品悟适配清单」六类,审计登记「路由口径
 统一与文档缺陷修复(2026-08-27)」(sheet/smartsheet/smartpage 三技能)、
-「文档缺陷修复(2026-08-27,calendar/meeting/email/message/media 五技能)」
-及「文档缺陷修复(2026-09-05,全量第二轮:十个技能)」。
+「文档缺陷修复(2026-08-27,calendar/meeting/email/message/media 五技能)」、
+「文档缺陷修复(2026-09-05,全量第二轮:十个技能)」及本次
+「上游同步(2026-09-15,wecom-cli 1.2.1)」的三文件合并口径。
 
 > 对账命令(仓库根执行):
 > ```
 > git clone https://github.com/WecomTeam/wecom-cli.git /tmp/wecom-upstream
-> git -C /tmp/wecom-upstream worktree add /tmp/wecom-verify cd0480e0
+> git -C /tmp/wecom-upstream worktree add /tmp/wecom-verify e88bf90a
 > diff -rq /tmp/wecom-verify/skills/<skill> \
 >   pinvou3-app/src-tauri/resources/common/bundle/wecom-skills/<skill>
 > ```

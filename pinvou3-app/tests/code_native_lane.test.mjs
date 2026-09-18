@@ -13,11 +13,13 @@ const temp = mkdtempSync(path.join(tmpdir(), 'pinvou3-code-native-lane-'));
 writeFileSync(path.join(temp, 'package.json'), '{"type":"module"}\n');
 mkdirSync(path.join(temp, 'features', 'conversation'), { recursive: true });
 mkdirSync(path.join(temp, 'features', 'codex'), { recursive: true });
+mkdirSync(path.join(temp, 'features', 'multiagent'), { recursive: true });
 mkdirSync(path.join(temp, 'shared'), { recursive: true });
 for (const file of ['conversation-model.js', 'deepseek-conversation.js']) {
   copyFileSync(path.join(root, 'src', 'features', 'conversation', file), path.join(temp, 'features', 'conversation', file));
 }
 copyFileSync(path.join(root, 'src', 'features', 'codex', 'code-native-lane.js'), path.join(temp, 'features', 'codex', 'code-native-lane.js'));
+copyFileSync(path.join(root, 'src', 'features', 'multiagent', 'spawn-aggregation.mjs'), path.join(temp, 'features', 'multiagent', 'spawn-aggregation.mjs'));
 copyFileSync(path.join(root, 'src', 'shared', 'internal-message.mjs'), path.join(temp, 'shared', 'internal-message.mjs'));
 
 try {
@@ -948,6 +950,54 @@ try {
     error: 'SSE stream request failed: HTTP 402 insufficient balance',
   }, { language: 'en', modelServiceState: null });
   assert.match(lane16.items.find(item => item.type === 'system').text, /SSE stream request failed/);
+
+  // ── Swarm rework: projectNativeLane annotates its projection input, so the
+  // native code lane renders one aggregated count row instead of one
+  // degenerate "spawned 1 agent" row per spawn call.
+  const swarmLane = createNativeLane();
+  applyNativeChatEvent(swarmLane, 'chat:turn_started', { session_id: 'swarm-1', turn_id: 'tw1' });
+  applyNativeChatEvent(swarmLane, 'chat:tool_start', { session_id: 'swarm-1', id: 'ag1', name: 'agent', args: { action: 'start', prompt: 'task one' } });
+  applyNativeChatEvent(swarmLane, 'chat:tool_end', { session_id: 'swarm-1', id: 'ag1', success: true, output: JSON.stringify({ agent_id: 'agent_1' }) });
+  applyNativeChatEvent(swarmLane, 'chat:tool_start', { session_id: 'swarm-1', id: 'ag2', name: 'agent', args: { action: 'start', prompt: 'task two' } });
+  applyNativeChatEvent(swarmLane, 'chat:tool_end', { session_id: 'swarm-1', id: 'ag2', success: false, output: 'spawn failed' });
+  const swarmProjection = projectNativeLane(swarmLane, 'swarm-1');
+  const swarmDelegation = swarmProjection.turns
+    .flatMap(turn => turn.items)
+    .filter(item => item.legacyItem && item.legacyItem.spawnGroup !== undefined || item.legacyItem && item.legacyItem.spawnGroupHidden);
+  assert.equal(swarmDelegation.length, 2, 'both spawn calls are projected with their annotation');
+  const swarmFirst = swarmDelegation.find(item => item.legacyItem.spawnGroup);
+  assert.equal(swarmFirst.legacyItem.spawnGroup.count, 2, 'consecutive spawns aggregate into one group of 2');
+  assert.equal(swarmFirst.legacyItem.spawnGroup.failed, 1, 'the failed spawn counts toward failed');
+  assert.equal(swarmDelegation.filter(item => item.legacyItem.spawnGroupHidden).length, 1, 'the second spawn is hidden');
+  assert.ok(!('spawnGroup' in swarmLane.items.find(item => item.toolId === 'ag1')), 'annotation never mutates the lane items');
+
+  // ── Swarm rework: a stop or an error mid-spawn never delivers
+  // chat:tool_end, so chat:done must settle the unpaired tool card like the
+  // replay sweep does — otherwise the count row's running count stays > 0
+  // and the pulse never stops until the lane is rehydrated.
+  const swarmStopLane = createNativeLane();
+  applyNativeChatEvent(swarmStopLane, 'chat:turn_started', { session_id: 'swarm-stop-1', turn_id: 'tws1' });
+  applyNativeChatEvent(swarmStopLane, 'chat:tool_start', { session_id: 'swarm-stop-1', id: 'ag-s1', name: 'agent', args: { action: 'start', prompt: 'long task' } });
+  applyNativeChatEvent(swarmStopLane, 'chat:done', { session_id: 'swarm-stop-1', status: 'Interrupted' });
+  const stoppedCard = swarmStopLane.items.find(item => item.toolId === 'ag-s1');
+  assert.equal(stoppedCard.state, 'done', 'a stop mid-spawn must settle the unpaired tool card');
+  assert.equal(stoppedCard.success, false, 'the settled card counts as a failed dispatch');
+  const stopProjection = projectNativeLane(swarmStopLane, 'swarm-stop-1');
+  const stopGroup = stopProjection.turns
+    .flatMap(turn => turn.items)
+    .find(item => item.legacyItem && item.legacyItem.spawnGroup);
+  assert.ok(stopGroup, 'the settled spawn still projects as a count row');
+  assert.equal(stopGroup.legacyItem.spawnGroup.running, 0, 'running count drops to 0 so the pulse stops');
+  assert.equal(stopGroup.legacyItem.spawnGroup.failed, 1, 'the interrupted dispatch shows as failed × 1');
+  // Happy-path turns are untouched by the sweep: every tool already settled
+  // via tool_end keeps its real success value.
+  const swarmHappyLane = createNativeLane();
+  applyNativeChatEvent(swarmHappyLane, 'chat:tool_start', { session_id: 'swarm-ok-1', id: 'ag-ok1', name: 'exec_shell', args: { command: 'ls' } });
+  applyNativeChatEvent(swarmHappyLane, 'chat:tool_end', { session_id: 'swarm-ok-1', id: 'ag-ok1', success: true, output: 'a.txt' });
+  applyNativeChatEvent(swarmHappyLane, 'chat:done', { session_id: 'swarm-ok-1', status: 'Completed' });
+  const happyCard = swarmHappyLane.items.find(item => item.toolId === 'ag-ok1');
+  assert.equal(happyCard.state, 'done');
+  assert.equal(happyCard.success, true, 'the sweep must not downgrade an already-settled tool');
 
   console.log('code_native_lane.test.mjs: all assertions passed');
 } finally {

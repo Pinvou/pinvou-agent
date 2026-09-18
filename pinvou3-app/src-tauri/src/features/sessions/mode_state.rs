@@ -201,15 +201,15 @@ impl SessionStore {
             .is_some_and(|predicate| predicate(id))
     }
 
-    /// Default mode resolution without an entry: code sessions, or plain
-    /// chat sessions bound to a user working directory (a real directory =
-    /// a misuse and injection surface; the safety posture follows the
-    /// binding, not the mode), fall back to the global
-    /// `code_permission.last_mode` (None = never used → Plan read-only first
-    /// run); unbound plain sessions default to Yolo (the work lane's global
-    /// default is applied by the frontend when the session is materialized;
-    /// the backend no longer distinguishes plain-side lanes — design was
-    /// merged into work, see `set_mode_default`).
+    /// Default mode resolution when no entry exists: code sessions, or plain chat
+    /// sessions bound to a user working directory (a real directory means
+    /// mis-operation and injection surface; the safety posture follows the
+    /// binding, not the mode), fall back to the global `code_permission.last_mode`
+    /// (None = the user has never used it → read-only Plan on first use);
+    /// unbound plain sessions default to Yolo (the work lane's global default is
+    /// applied by the frontend at session materialization; the backend no longer
+    /// distinguishes a plain-side lane — design merged into work, see
+    /// `set_mode_default`).
     pub(crate) fn resolved_default_mode(&self, id: &str) -> SerializableMode {
         if self.is_code_session(id) || self.session_workspace_binding(id).is_some() {
             self.code_permission
@@ -468,6 +468,15 @@ impl SessionStore {
             persona_id;
     }
 
+    /// Publish the selected persona and its one-shot body as one state change.
+    pub fn set_persona(&self, id: &str, persona_id: Option<String>, pending_body: Option<String>) {
+        let default_mode = self.resolved_default_mode(id);
+        let mut states = self.mode_states.write();
+        let state = Self::mode_state_entry(&mut states, id, default_mode);
+        state.active_persona = persona_id;
+        state.pending_persona_body = pending_body;
+    }
+
     pub fn active_persona_id(&self, id: &str) -> Option<String> {
         self.mode_states.read().get(id)?.active_persona.clone()
     }
@@ -476,6 +485,24 @@ impl SessionStore {
         let default_mode = self.resolved_default_mode(id);
         Self::mode_state_entry(&mut self.mode_states.write(), id, default_mode)
             .pending_persona_body = body;
+    }
+
+    /// Clear a deleted persona and its one-shot body from every session that
+    /// still references it. Returning the affected IDs lets callers publish a
+    /// presentation update for each session after the atomic state change.
+    pub fn remove_persona_from_all(&self, persona_id: &str) -> Vec<String> {
+        let mut states = self.mode_states.write();
+        let mut changed = Vec::new();
+        for (session_id, state) in states.iter_mut() {
+            if state.active_persona.as_deref() != Some(persona_id) {
+                continue;
+            }
+            state.active_persona = None;
+            state.pending_persona_body = None;
+            changed.push(session_id.clone());
+        }
+        changed.sort();
+        changed
     }
 
     pub fn set_mounted_collection(&self, id: &str, collection_id: Option<i64>) {

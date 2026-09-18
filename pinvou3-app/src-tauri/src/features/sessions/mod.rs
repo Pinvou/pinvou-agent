@@ -27,9 +27,9 @@
 //! - `sidecars` —— skill 绑定 / 模型 / 置顶 / 收起 的独立 sidecar 落盘
 //! - `rewind` —— 代码模式回退的对话截断与 `_rewound_turns.json` 备份
 //! - `validators` —— id / workspace / 路径校验与小型 helper
-//! - `workspace_bindings` —— per-session sidecar for plain chat sessions'
-//!   user working-directory bindings (`workspace-binding.json` inside the
-//!   session directory) and the stock global-table migration
+//! - `workspace_bindings` —— per-session sidecar of plain chat sessions' user
+//!   working-directory bindings (`workspace-binding.json` in the session
+//!   directory) and legacy global-table migration
 //!
 //! 子模块通过 `impl SessionStore` 续写方法（Rust 允许同一 struct 的 impl 块
 //! 散布在子模块里），并直接读 `&self` 的私有字段——struct 字段对后代模块
@@ -53,7 +53,7 @@ mod tests;
 use std::collections::HashMap;
 use std::path::PathBuf;
 use std::sync::Arc;
-use std::sync::atomic::AtomicU64;
+use std::sync::atomic::{AtomicBool, AtomicU64};
 
 pub use crate::core::mode_state::{ModeLane, SerializableMode};
 use crate::platform::paths;
@@ -144,20 +144,30 @@ pub struct SessionStore {
     /// 从左侧任务列表收起的会话:session_id -> hidden_at。独立落盘到
     /// `_hidden_sessions.json`,不改 SavedSession 结构。
     pub(crate) hidden_sessions: Arc<RwLock<HashMap<String, String>>>,
-    /// 原生代码会话绑定的项目目录解析器,由 app 组合根(lib.rs)在 AcpPool 就绪
-    /// 后注入;None = 无代码会话项目绑定,所有会话的执行根都是会话私有目录。
-    /// 账本根(附件/审计/产物/远程授权)不受其影响,恒为会话私有目录。
+    /// Session execution-root resolver, injected by the app composition root
+    /// (lib.rs) once the AcpPool is ready — the production implementation covers
+    /// both sources: codex_acp native code sessions' project bindings plus plain
+    /// chat sessions' user working-directory bindings (sidecar, see the read-cache
+    /// field below). None (not yet injected in tests / early startup) = no external
+    /// binding, every session's execution root is the session-private directory;
+    /// the or_else fallback in `store.rs` is only a defense for that case. The
+    /// ledger root (attachments/audits/artifacts/remote grants) is unaffected and
+    /// is always the session-private directory.
     pub(crate) execution_root_resolver: Arc<RwLock<Option<ExecutionRootResolver>>>,
     /// Read cache of plain chat sessions' user working-directory bindings:
-    /// session_id → the user-chosen directory. The authoritative store is the
-    /// per-session sidecar `workspace-binding.json` inside the session-
-    /// private directory (see workspace_bindings.rs; the SavedSession
-    /// structure is unchanged); the cache is written on bind and refilled
-    /// from the sidecar on a read miss. `session_roots` falls back to this
-    /// when the resolver misses: a hit means execution=bound directory,
-    /// ledger=session-private directory (the same dual-root semantics as
-    /// native code session bindings).
+    /// session_id → user-selected directory. The authoritative store is the
+    /// per-session sidecar `workspace-binding.json` inside the session-private
+    /// directory (see workspace_bindings.rs; SavedSession is unchanged); the cache
+    /// is written on bind and backfilled from the sidecar on a read miss.
+    /// `session_roots` falls back to this map when the resolver misses: on a hit,
+    /// execution = bound directory and ledger = session-private directory (the
+    /// same dual-root semantics as native code session bindings).
     pub(crate) session_workspaces: Arc<RwLock<HashMap<String, PathBuf>>>,
+    /// Boot parse of the legacy `_session_workspaces.json` failed (corrupt but
+    /// potentially repairable file kept on disk). While set, the rebind
+    /// degraded-path rewrite must not delete or overwrite the file — only a
+    /// file this process successfully parsed may be rewritten/removed.
+    pub(crate) legacy_session_workspaces_parse_failed: Arc<AtomicBool>,
     /// 品悟原生 code 会话判定（ACP 会话恒为 plain，见 codex_acp store）。
     /// 与 Engine bridge / 远程端共用同一份 `SessionAgentStore` 闭包，由 app 组合根
     /// (lib.rs) 注入；None = 无 code 会话判定（测试/启动早期），全部按 plain 语义。
@@ -240,27 +250,23 @@ pub type SessionPurgedHook = Arc<dyn Fn(&str) + Send + Sync>;
 /// is owned by the composition root.
 pub type SessionDeletedHook = Arc<dyn Fn(&str) + Send + Sync>;
 
-/// A session's two roots:
-/// - `execution`: Engine cwd / shell execution directory. A native code
-///   session bound to a project directory, or a plain chat session bound to a
-///   user working directory = the bound directory; all other sessions = the
-///   session-private directory (scheduled sessions = their automation
-///   workspace).
-/// - `ledger`: the application ledger root (attachments/audit/artifacts/
-///   remote authorization). Sessions with a bound directory always use the
-///   session-private directory (never polluting user directories); all other
-///   sessions share it with execution.
+/// 一个会话的两个根:
+/// - `execution`: engine cwd / shell execution directory. Native code sessions
+///   with a bound project directory, or plain chat sessions with a bound user
+///   working directory = the bound directory; other sessions = session-private
+///   directory (scheduled sessions = their automation workspace).
+/// - `ledger`: application ledger root (attachments/audits/artifacts/remote
+///   grants). Sessions with a bound directory always use the session-private
+///   directory (the user's directory stays clean); other sessions match `execution`.
 ///
-/// Resolved uniformly by [`SessionStore::session_roots`]; callers explicitly
-/// pick the root for their purpose, avoiding writing the execution root where
-/// the ledger root belongs (or vice versa).
+/// 由 [`SessionStore::session_roots`] 统一解析,调用方按用途显式选择用哪个根,
+/// 避免把执行根误当账本根写盘(或反之)。
 ///
 /// `bound` is the explicit "bound to a real directory" signal (a native code
-/// session's project directory, or a plain chat session's user working-
-/// directory binding): callers judge the binding state by it and must not
+/// session's project directory, or a plain chat session's user working-directory
+/// binding): callers must use it to detect the bound state and must not
 /// substitute a `ledger != execution` path comparison — once other dual-root
-/// shapes appear, path equality no longer equates to binding
-/// (review #445 P2).
+/// shapes appear, path equality no longer implies binding.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct SessionRoots {
     pub execution: PathBuf,
@@ -268,12 +274,12 @@ pub struct SessionRoots {
     pub bound: bool,
 }
 
-/// Pure resolution of the two roots: given the session's bound execution
-/// directory (a native code session's project directory, or a plain chat
-/// session's user working directory; `None` when unbound), return the
-/// execution and ledger roots. Not aware of scheduled sessions — both roots
-/// of a scheduled session are its automation workspace, handled one layer up
-/// by [`SessionStore::session_roots`].
+/// Pure resolution of the two roots: given the execution directory bound to the
+/// session (a native code session's project directory, or a plain chat session's
+/// user working directory; pass `None` when unbound), returns the execution root
+/// and ledger root. Unaware of scheduled sessions — both of a scheduled session's
+/// roots are its automation workspace, handled upstream by
+/// [`SessionStore::session_roots`].
 pub fn session_roots_for(session_id: &str, bound_project_root: Option<PathBuf>) -> SessionRoots {
     let private = paths::session_workspace_dir(session_id);
     match bound_project_root {

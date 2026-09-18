@@ -284,12 +284,10 @@
     updateReady: false,       // 安装完成,等用户点重启
     updateError: null,        // 下载/安装阶段错误(sha256/apt stderr 透传)
     updateCancelling: false,  // 用户点了取消,据此把后端「已取消下载」当正常而非错误
-    // The projects domain is desktop-only; the Web side does not mount this
-    // slice's data, but the domain-adapter's fields registry reserves the key.
-    // The stub must match the desktop snapshot's shape
-    // (state.projectsList = { projects, assignments, loadedAt }, see
-    // tauri/bridge/projects.js), otherwise grouping reads undefined and can
-    // only survive on defensive fallbacks.
+    // projects 域桌面专属;Web 端不挂载该切片数据,但 domain-adapter 的
+    // fields 注册表中留了键位。桩必须与桌面快照同形
+    // (state.projectsList = { projects, assignments, loadedAt },见
+    // tauri/bridge/projects.js),否则分组读到 undefined 只能靠防御性兜底。
     projectsList: { projects: [], assignments: {}, loadedAt: null },
     // 依赖体检(设置页): deps = [{key, installed, apt}], null = 尚未检测
     deps: null,
@@ -476,6 +474,7 @@
       folderPickerUnavailable: "The folder picker cannot be opened in this environment",
       pickFolderTitle: "Choose a working directory",
       kbPickFolderTitle: "Choose a folder to import into the knowledge base",
+      rebindPickFolderTitle: "Choose the folder to rebind this project to",
       gateApproveFailed: "⚠️ Approval failed: ",
       gateRejectFailed: "⚠️ Rejection failed: ",
       roleRetried: (roleId, result) => "🔄 Rerunning " + roleId + ": " + result,
@@ -608,6 +607,7 @@
       folderPickerUnavailable: "現在の環境ではフォルダー選択を開けません",
       pickFolderTitle: "作業ディレクトリを選択",
       kbPickFolderTitle: "知識ベースにインポートするフォルダーを選択",
+      rebindPickFolderTitle: "このプロジェクトの再バインド先フォルダーを選択",
       gateApproveFailed: "⚠️ 承認に失敗: ",
       gateRejectFailed: "⚠️ 差し戻しに失敗: ",
       roleRetried: (roleId, result) => "🔄 再実行 " + roleId + ": " + result,
@@ -740,6 +740,7 @@
       folderPickerUnavailable: "当前环境无法打开文件夹选择器",
       pickFolderTitle: "选择工作目录",
       kbPickFolderTitle: "选择要导入知识库的文件夹",
+      rebindPickFolderTitle: "选择重绑定项目的新文件夹",
       gateApproveFailed: "⚠️ 通过失败: ",
       gateRejectFailed: "⚠️ 打回失败: ",
       roleRetried: (roleId, result) => "🔄 重跑 " + roleId + ": " + result,
@@ -3263,7 +3264,7 @@
     state.modeState = mode.ok && mode.value
       ? { mode: mode.value.mode || "yolo", multiAgent: !!mode.value.multi_agent }
       : { mode: "yolo", multiAgent: false };
-    state.activePersona = persona.ok ? (persona.value || null) : null;
+    state.activePersona = persona.ok && persona.value && !deletedPersonaIds.has(persona.value.id) ? persona.value : null;
     if (snapshot.ok && snapshot.value && Array.isArray(snapshot.value.collections)) {
       applyMountedCollections(snapshot.value);
     } else if (collections.ok && Array.isArray(collections.value)) {
@@ -4492,11 +4493,12 @@
       // once per poll from the pre-poll timeline: the synthetic card of a
       // running job from this same batch (the manager lists running jobs
       // first) would otherwise disarm the guard for the jobs after it.
-      // Accepted limits until stable origin identity lands: a start tool can
-      // still race with a very short detached job whose first snapshot is
-      // terminal (the guard is off when the latest card is a start tool), and
-      // a brand-new subagent job started after the wait card is conservatively
-      // hidden like retained older work.
+      // Accepted limits when no card binds: a start tool can still race with
+      // a very short detached job whose first snapshot is terminal (the guard
+      // is off when the latest card is a start tool; origin identity shields
+      // root jobs there, but subagent-owned and legacy origin-less jobs can
+      // still append), and a brand-new subagent job started after the wait
+      // card is conservatively hidden like retained older work.
       const suppressUnmatchedTerminal = latestShellToolIsWaitObserver();
       (jobs || []).forEach(function (job) {
         const status = String(job.status || "").toLowerCase();
@@ -4505,7 +4507,19 @@
         let item = state.chatItems.find(function (it) {
           return it.type === "tool" && it.taskId === job.id;
         });
-        if (!item && running) {
+        if (!item && job.origin_tool_call_id) {
+          // Never steal a card already bound to another job: origins are
+          // unique per root job on the current engine, and if an engine ever
+          // shares one, the later job must fall through to a synthetic card
+          // or the terminal suppression guard instead of redirecting output.
+          item = state.chatItems.find(function (it) {
+            return it.type === "tool" && it.toolId === job.origin_tool_call_id &&
+              (!it.taskId || it.taskId === job.id);
+          });
+        }
+        // Only legacy snapshots without an origin may match by command or
+        // output. A missing origin card must not redirect another tool call.
+        if (!item && running && !job.origin_tool_call_id) {
           const command = String(job.command || "");
           const candidates = state.chatItems.filter(function (it) {
             return it.type === "tool" && isShellExecutionTool(it.name) && !it.taskId &&
@@ -4515,13 +4529,18 @@
           // task id. Never guess when identical commands are concurrent.
           if (runningCommandCounts[command] === 1 && candidates.length === 1) item = candidates[0];
         }
-        if (!item && !running) {
+        if (!item && !running && !job.origin_tool_call_id) {
           item = state.chatItems.find(function (it) {
             return terminalShellHistoryMatch(it, job);
           });
           if (item) item.shellHistoryReconciled = true;
         }
         if (!item && !running && suppressUnmatchedTerminal) return;
+        // An identified completed root job must only update its origin card.
+        // If compaction or reload removed that card, do not append historical
+        // output at the current tail. Keep running jobs visible through a
+        // synthetic card; their live status must not disappear after reload.
+        if (!item && !running && job.origin_tool_call_id && !job.owner_agent_id) return;
         if (!item) {
           item = {
             type: "tool", toolId: "shell-task:" + job.id, name: "bash",
@@ -4536,6 +4555,8 @@
         item.taskId = job.id;
         item.sessionId = sid;
         item.shellStatus = job.status;
+        item.originToolCallId = job.origin_tool_call_id || null;
+        item.originTurnId = job.origin_turn_id || null;
         item.exitCode = job.exit_code;
         item.elapsedMs = job.elapsed_ms;
         if (!item.shellHistoryReconciled || item.output == null || running) {
@@ -7459,12 +7480,12 @@
       notify();
     }
   }
-  // The desktop companion queries for working-directory-bound sessions have
-  // no corresponding backend on Web (Web/remote sessions return no directory
-  // binding): same-named stub methods keep the two bridge APIs symmetric — the
-  // binding query always returns null (the UI shows no binding indicator and
-  // the YOLO confirm gate never triggers), the code permission prefs read
-  // always returns null, and the confirm write is a no-op.
+  // The desktop-side companion queries for bound-workspace sessions have no
+  // web backend counterpart (web/remote sessions carry no directory binding):
+  // same-named stub methods keep the bridge API symmetric on both sides — the
+  // binding query always returns null (UI shows no binding indicator and the
+  // YOLO confirmation gate never fires), code permission prefs always read
+  // null, and the confirm write is a no-op.
   async function getSessionWorkspaceBinding() { return null; }
   async function getCodePermissionPrefs() { return null; }
   async function confirmCodeYolo() { return null; }
@@ -8087,15 +8108,23 @@
     }
     notify();
   }
-  async function exitPlanToYolo() {
-    const sid = state.activeSessionId;
+  async function exitPlanToYolo(targetSessionId) {
+    // The caller may pin the target session explicitly: the YOLO confirmation
+    // gate issues the switch only after several await round-trips, by which
+    // time the user may have switched away and the live active session is no
+    // longer the ruling one (same signature as the tauri bridge). No-argument
+    // calls keep the original semantics: act on the live active session at
+    // invocation time (bulb / plan-stuck card).
+    const sid = typeof targetSessionId === 'string' && targetSessionId
+      ? targetSessionId
+      : state.activeSessionId;
     // Draft state: do not materialize a session; rewrite this lane's global
     // default (two-lane semantics).
     if (!sid) { await setDraftMode("yolo"); return; }
     try {
-      // invoke 形状保持 { sessionId: state.activeSessionId }（协议指纹按文本
-      // 计算）；await 返回后按发起时 sid 定向写回并 bump modeSyncSeq。
-      const st = await invoke("exit_plan_to_yolo", { sessionId: state.activeSessionId });
+      // The invoke targets sid directly at issue time; after the await, the
+      // result is written back to the same sid and modeSyncSeq is bumped.
+      const st = await invoke("exit_plan_to_yolo", { sessionId: sid });
       applyAuthoritativeModeState(sid, st);
     } catch (e) { addSystemItemFor(sid, bt("exitPlanFailed") + e); }
     notify();
@@ -8118,11 +8147,16 @@
     patchItemById(itemId, { resolved: true, statusLabel: bt("replanRequested") }); notify();
     await sendMessage(bt("planStuckReplanPrompt"));
   }
-  async function planStuckGo(itemId) {
-    const sid = state.activeSessionId;
+  async function planStuckGo(itemId, targetSessionId) {
+    // Explicit target session (same contract as the tauri bridge): the
+    // plan-stuck card's session is adjudicated in ChatView; no-arg legacy
+    // calls keep targeting live-active at invoke time.
+    const sid = typeof targetSessionId === 'string' && targetSessionId
+      ? targetSessionId
+      : state.activeSessionId;
     if (!sid) return;
     patchItemById(itemId, { resolved: true }); notify();
-    await exitPlanToYolo();
+    await exitPlanToYolo(sid);
     // 补充指令必须发往触发会话：await exitPlanToYolo 期间用户可能已切走，
     // 直接 sendMessage 会把"继续执行"发到切换后的会话（审计遗漏补修）。
     // sendMessageToSession 校验失败（会话已删/对账中）会 throw，必须接住并
@@ -8778,18 +8812,28 @@
   // ── 用户自创卡 CRUD(写盘后刷新缓存) ──
   async function createPersona(input) {
     const sum = await invoke("create_persona", { input });
+    deletedPersonaIds.delete(sum.id);
     await refreshPersonas();
     return sum;
   }
   async function updatePersona(personaId, input) {
     const sum = await invoke("update_persona", { personaId, input });
     await refreshPersonas();
+    if (deletedPersonaIds.has(personaId)) return null;
     // 若改的正是当前 session 加持的卡, 同步挂件显示
     if (state.activePersona && state.activePersona.id === personaId) { state.activePersona = sum; notify(); }
     return sum;
   }
   async function deletePersona(personaId) {
     await invoke("delete_persona", { personaId });
+    // Invalidate live and cached selections only after deletion succeeds.
+    // Late reads/equip responses must not restore a card that no longer exists.
+    deletedPersonaIds.add(personaId);
+    if (state.activePersona && state.activePersona.id === personaId) state.activePersona = null;
+    Object.values(sessionStates).forEach(function (buffer) {
+      if (buffer.activePersona && buffer.activePersona.id === personaId) buffer.activePersona = null;
+    });
+    notify();
     await refreshPersonas();
   }
   // 给当前 session 加持一张专家面具。后端存 persona_id + 每 turn 注入人设;
@@ -8827,6 +8871,7 @@
     const sid = state.activeSessionId;
     try {
       const card = await invoke("equip_persona", { sessionId: state.activeSessionId, personaId });
+      if (deletedPersonaIds.has(personaId)) return null;
       lastEquippedSid = sid; // 成功加持的目标会话(即使已切走)：供紧随其后的引导卡定向(与 tauri 对齐，审计补充)
       if (sid !== state.activeSessionId) return card; // 已切走：不写当前显示
       // 标题仍是默认占位(三语哨兵,见 isDefaultChatTitle)→ 用卡牌名命名(无论草稿态物化还是遗留空会话;
@@ -8846,6 +8891,7 @@
       // 同 session 换了一张不同的卡 → 先弹一条"已卸下旧专家",再弹新加持。
       // 旧专家在写点复核而非入口捕获：同会话快速连续换卡时,入口值可能已被
       // 上一次 equip 的权威写覆盖,陈旧值会播报错误的"已卸下"(与 tauri 对齐,二审补充)。
+      if (deletedPersonaIds.has(personaId)) return null;
       const prev = state.activePersona;
       if (prev && prev.id !== card.id) {
         addChatItem({ type: "system", text: bt("personaUnequipped") + personaName(prev), time: timeStr() });
@@ -8887,6 +8933,7 @@
   // 与 equip/unequip 权威写时递增,旧快照一律作废(审计补充)。
   // - lastEquippedSid 供 equip 后紧随的播报(如卡牌制造者引导卡)定向回
   //   发起会话——equip 的 await 窗口用户可能已切走。
+  const deletedPersonaIds = new Set();
   let personaSyncSeq = 0;
   let lastEquippedSid = null;
   // 切换/重载 session 后,从后端拉该 session 的加持状态还原挂件(backend 是真相)。
@@ -8897,7 +8944,7 @@
     try {
       const persona = await invoke("get_active_persona", { sessionId: state.activeSessionId }) || null;
       if (sid !== state.activeSessionId || seq !== personaSyncSeq) return; // 已切走或被权威写/新 sync 作废
-      state.activePersona = persona;
+      state.activePersona = persona && !deletedPersonaIds.has(persona.id) ? persona : null;
     } catch { /* 旧 session 无加持,忽略 */ }
   }
   // 在【指定 session】追加卡牌制造者引导卡并落 sidecar(持久化,重载按 pos 插回)。
@@ -9892,6 +9939,14 @@
     const p = Array.isArray(selected) ? selected[0] : selected;
     return p ? [p] : [];
   }
+  // 目录重绑定(修断链)专用:单选,标题贴合重绑定语义,与桌面桥同面
+  // (评审 #463 Minor 6)。
+  async function pickRebindFolder() {
+    if (!dialogOpen) { addSystemItem(bt("filePickUnavailable")); return null; }
+    const selected = await dialogOpen({ directory: true, multiple: false, title: bt("rebindPickFolderTitle") });
+    if (!selected) return null;
+    return Array.isArray(selected) ? (selected[0] || null) : selected;
+  }
   async function pickFeedbackFiles() {
     if (!dialogOpen) return [];
     const selected = await dialogOpen({
@@ -10090,8 +10145,8 @@
     setDraftMode,
     setModeLane,
     refreshModeDefaults,
-    // Web stubs for desktop-only capabilities (bound-directory sessions /
-    // YOLO confirm gate; the two sides' APIs stay symmetric)
+    // Web stubs for desktop-only capabilities (bound-workspace sessions / YOLO
+    // confirmation gate; API symmetric on both sides)
     getSessionWorkspaceBinding,
     getCodePermissionPrefs,
     confirmCodeYolo,
@@ -10137,6 +10192,7 @@
     // 通用宿主文件选择器（知识库、反馈等功能继续复用）。
     pickFiles,
     pickFolders,
+    pickRebindFolder,
     pickFeedbackFiles,
     // 卡片池: 专家面具
     loadPersonas,

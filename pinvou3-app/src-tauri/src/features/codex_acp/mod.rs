@@ -146,6 +146,51 @@ async fn take_session_if_still_idle<T>(
     sessions.remove(session_id)
 }
 
+/// Rebind eviction recheck predicate (pure function, unit-testable; review
+/// #463 eviction-tail TOCTOU): only prompt/config activity blocks eviction.
+/// Unlike the idle reaper there is no idle-duration or active-session gate —
+/// a rebound runtime must be reclaimed even when recently active so the next
+/// prompt respawns in the new directory.
+fn rebind_evictable(busy: bool, configuring: bool) -> bool {
+    !busy && !configuring
+}
+
+/// Result of the rebind eviction take: distinguishes "no resident runtime"
+/// (trivially idle — nothing to reclaim, eviction counts as done) from
+/// "busy" (in-flight prompt/config sync — the caller must not evict and
+/// reports the session as post-busy). `take_session_if_still_idle`'s bare
+/// `Option` cannot express that difference.
+enum RebindEvictTake<T> {
+    Reclaimed(T),
+    Busy,
+    NoRuntime,
+}
+
+/// In-lock recheck + atomic removal for `AcpPool::evict_if_idle_for_rebind`
+/// (extracted as a generic so bare components give deterministic tests): the
+/// recheck reads current values under the same sessions lock as
+/// `take_session_if_still_idle`, and the entry is removed only when idle
+/// (neither busy nor configuring). A session whose send_message arrived after
+/// the snapshot (busy set) or that is mid config-sync is kept untouched and
+/// reported by the command layer as post-busy — an in-flight prompt is never
+/// killed as a rebind side effect.
+async fn take_session_for_rebind<T>(
+    sessions: &Mutex<HashMap<String, T>>,
+    session_id: &str,
+    is_rebind_evictable: impl Fn(&T) -> bool,
+) -> RebindEvictTake<T> {
+    let mut sessions = sessions.lock().await;
+    let Some(entry) = sessions.get(session_id) else {
+        return RebindEvictTake::NoRuntime;
+    };
+    if !is_rebind_evictable(entry) {
+        return RebindEvictTake::Busy;
+    }
+    sessions
+        .remove(session_id)
+        .map_or(RebindEvictTake::NoRuntime, RebindEvictTake::Reclaimed)
+}
+
 fn backend_for_session_model(model: &str) -> Option<AgentBackend> {
     match model {
         CODEX_ACP_SESSION_MODEL => Some(AgentBackend::CodexAcp),
@@ -330,8 +375,7 @@ fn acp_recovery_record(
         acp_config_values: acp_config_values_from_state(state),
         workspace_kind,
         workspace_path: (workspace_kind == CodexWorkspaceKind::Project).then_some(workspace_path),
-        // The ACP recovery path has no keychain-snapshot source: empty =
-        // single-root semantics, the engine normalizes by cwd.
+        // ACP 恢复路径没有钥匙串快照来源:空 = 单根语义,底座按 cwd 归一。
         workspace_roots: Vec::new(),
         mode: SessionMode::Plain,
     })
@@ -1142,11 +1186,11 @@ impl AcpPool {
         &self.agents
     }
 
-    /// Whether this ACP session currently has a prompt turn in flight.
-    /// Operations that rewrite workspace bindings (e.g. directory rebinding)
-    /// use this to reject running sessions (same semantics as
-    /// EnginePool::is_turn_active, for the command layer's unified fence).
-    /// Sessions without a runtime (not started) return false.
+    /// Whether this ACP session has a prompt turn in flight. Operations that
+    /// rewrite workspace bindings (directory rebind) use this to reject busy
+    /// sessions (same semantics as EnginePool::is_turn_active, giving the
+    /// command layer one uniform fence). Sessions without a runtime (never
+    /// spawned) return false.
     pub async fn is_turn_active(&self, session_id: &str) -> bool {
         self.sessions
             .lock()
@@ -3109,6 +3153,15 @@ impl AcpPool {
     pub async fn evict(&self, session_id: &str) {
         self.cancel_pending_permissions(session_id).await;
         self.cancel_pending_elicitations(session_id).await;
+        // The helper index map previously only grew: entries of truly
+        // deleted sessions were retained forever. Removing them together
+        // with the eviction is safe — `is_acp_metadata` rebuilds the entry
+        // on demand from persisted metadata during list() (the agents index
+        // or the `* (ACP)` model string), and startup rebuilds the whole map
+        // from session metadata. Surviving sessions (upgrade restarts, model
+        // probes) self-heal on the next list(); idle eviction goes through
+        // `evict_if_idle`, never through this path, so its map entries stay.
+        self.acp_metadata_backends.write().remove(session_id);
         if let Some(runtime) = self.sessions.lock().await.remove(session_id) {
             runtime.shutdown().await;
         }
@@ -3136,6 +3189,37 @@ impl AcpPool {
         else {
             return false;
         };
+        self.cancel_pending_permissions(session_id).await;
+        self.cancel_pending_elicitations(session_id).await;
+        runtime.shutdown().await;
+        true
+    }
+
+    /// Rebind eviction (review #463 eviction-tail TOCTOU): like
+    /// [`evict_if_idle`](Self::evict_if_idle) the recheck and the removal are
+    /// atomic under the sessions lock, but with the rebind predicate — a turn
+    /// that starts after the command layer's post-migration recheck is
+    /// observed as busy/configuring and keeps its runtime instead of being
+    /// killed; there is no idle-duration or active-session gate, because a
+    /// rebound runtime must be rebuilt in the new directory even when
+    /// recently active. Only a genuinely reclaimed runtime goes through the
+    /// `evict` cleanup (pending prompts answered, metadata-backend hint
+    /// dropped); a busy session keeps everything untouched. Returns false
+    /// only for a busy/configuring resident runtime — a session without a
+    /// resident runtime is trivially idle and counts as done, so the command
+    /// layer does not misreport it as post-busy.
+    pub async fn evict_if_idle_for_rebind(&self, session_id: &str) -> bool {
+        let taken = take_session_for_rebind(&self.sessions, session_id, |runtime| {
+            rebind_evictable(
+                runtime.busy.load(Ordering::Acquire),
+                runtime.configuring.load(Ordering::Acquire),
+            )
+        })
+        .await;
+        let RebindEvictTake::Reclaimed(runtime) = taken else {
+            return matches!(taken, RebindEvictTake::NoRuntime);
+        };
+        self.acp_metadata_backends.write().remove(session_id);
         self.cancel_pending_permissions(session_id).await;
         self.cancel_pending_elicitations(session_id).await;
         runtime.shutdown().await;
@@ -3298,14 +3382,15 @@ impl AcpPool {
         result
     }
 
-    pub fn timeline(&self, session_id: &str) -> Result<Vec<AcpEventEnvelope>> {
+    pub async fn timeline(&self, session_id: &str) -> Result<Vec<AcpEventEnvelope>> {
         if !self.is_acp(session_id) {
             bail!("当前会话不是 ACP 会话");
         }
+        self.flush_session_journal(session_id).await;
         load_timeline(session_id)
     }
 
-    pub(crate) fn web_timeline_page(
+    pub(crate) async fn web_timeline_page(
         &self,
         session_id: &str,
         after_seq: u64,
@@ -3317,6 +3402,7 @@ impl AcpPool {
         if !self.is_acp(session_id) {
             bail!("当前会话不是 ACP 会话");
         }
+        self.flush_session_journal(session_id).await;
         load_web_timeline_page(
             session_id,
             after_seq,
@@ -3325,6 +3411,26 @@ impl AcpPool {
             max_page_bytes,
             max_event_bytes,
         )
+    }
+
+    // Best-effort drain of the session journal's buffer window before
+    // reading from disk: outside turn boundaries, up to 64KB of an active
+    // turn's chunk events can sit in the BufWriter; without a flush first,
+    // reconnect replays / timeline reads would briefly observe a view
+    // lagging behind the in-memory projection. Only the bridge (Arc) is
+    // cloned under the lock; the flush happens outside it. A session not in
+    // the runtime (historical journal only) needs no flush — everything
+    // already lives on disk.
+    async fn flush_session_journal(&self, session_id: &str) {
+        let bridge = self
+            .sessions
+            .lock()
+            .await
+            .get(session_id)
+            .map(|session| session.bridge.clone());
+        if let Some(bridge) = bridge {
+            bridge.flush_journal();
+        }
     }
 
     pub async fn pending_permissions_for(
@@ -4449,6 +4555,120 @@ mod tests {
         );
     }
 
+    /// Bare entry for take_session_for_rebind tests: replicates the two
+    /// AcpSession states that gate rebind eviction (busy / configuring),
+    /// avoiding the real ConnectionTo / Child (not constructible in tests).
+    struct FakeRebindEntry {
+        busy: AtomicBool,
+        configuring: AtomicBool,
+    }
+
+    impl FakeRebindEntry {
+        fn idle() -> Self {
+            Self {
+                busy: AtomicBool::new(false),
+                configuring: AtomicBool::new(false),
+            }
+        }
+
+        /// Same recheck closure as AcpPool::evict_if_idle_for_rebind.
+        fn evictable(&self) -> bool {
+            rebind_evictable(
+                self.busy.load(Ordering::Acquire),
+                self.configuring.load(Ordering::Acquire),
+            )
+        }
+    }
+
+    #[test]
+    fn rebind_evictable_blocks_only_prompt_or_config_activity() {
+        // review #463: no idle-duration or active-session gate — only an
+        // in-flight prompt or a config sync blocks rebind eviction.
+        assert!(rebind_evictable(false, false));
+        assert!(!rebind_evictable(true, false));
+        assert!(!rebind_evictable(false, true));
+        assert!(!rebind_evictable(true, true));
+    }
+
+    #[tokio::test]
+    async fn rebind_evict_takes_idle_and_skips_busy_and_absent() {
+        // review #463 eviction-tail TOCTOU: an idle runtime is atomically
+        // taken under the sessions lock; a busy one is retained untouched;
+        // a session with no resident runtime reports NoRuntime (trivially
+        // idle) instead of being mistaken for busy.
+        let sessions: Mutex<HashMap<String, FakeRebindEntry>> = Mutex::new(HashMap::from([
+            ("idle-session".to_string(), FakeRebindEntry::idle()),
+            ("busy-session".to_string(), {
+                let entry = FakeRebindEntry::idle();
+                entry.busy.store(true, Ordering::Release);
+                entry
+            }),
+        ]));
+
+        let taken =
+            take_session_for_rebind(&sessions, "idle-session", FakeRebindEntry::evictable).await;
+        assert!(
+            matches!(taken, RebindEvictTake::Reclaimed(_)),
+            "idle runtime must be atomically taken"
+        );
+        assert!(
+            !sessions.lock().await.contains_key("idle-session"),
+            "taken runtime is removed from the pool"
+        );
+
+        let taken =
+            take_session_for_rebind(&sessions, "busy-session", FakeRebindEntry::evictable).await;
+        assert!(
+            matches!(taken, RebindEvictTake::Busy),
+            "busy runtime must be skipped"
+        );
+        assert!(
+            sessions.lock().await.contains_key("busy-session"),
+            "skipped runtime stays in the pool untouched"
+        );
+
+        let taken =
+            take_session_for_rebind(&sessions, "never-spawned", FakeRebindEntry::evictable).await;
+        assert!(
+            matches!(taken, RebindEvictTake::NoRuntime),
+            "absent runtime is trivially idle, not busy"
+        );
+    }
+
+    #[tokio::test]
+    async fn rebind_evict_skips_session_that_went_busy_after_snapshot() {
+        // Same race as the reaper TOCTOU regression above, through the rebind
+        // path: a send_message that arrives after the command layer's recheck
+        // sets busy before the eviction acquires the sessions lock; the
+        // recheck under the lock must observe it and keep the runtime alive.
+        let sessions: Arc<Mutex<HashMap<String, FakeRebindEntry>>> = Arc::new(Mutex::new(
+            HashMap::from([("acp-session".to_string(), FakeRebindEntry::idle())]),
+        ));
+
+        let guard = sessions.lock().await;
+        let rebind_sessions = sessions.clone();
+        let eviction = tokio::spawn(async move {
+            take_session_for_rebind(&rebind_sessions, "acp-session", FakeRebindEntry::evictable)
+                .await
+        });
+        tokio::task::yield_now().await;
+
+        // A turn starts while the eviction waits for the lock.
+        guard
+            .get("acp-session")
+            .expect("session entry")
+            .busy
+            .store(true, Ordering::Release);
+        drop(guard);
+
+        let taken = eviction.await.expect("eviction task joins");
+        assert!(
+            matches!(taken, RebindEvictTake::Busy),
+            "a turn that starts before the eviction must survive it"
+        );
+        assert!(sessions.lock().await.contains_key("acp-session"));
+    }
+
     #[test]
     fn code_native_workspace_info_returns_temporary_execution_workspace() {
         // 隔离目录，不触碰真实 ~/.pinvou3（评审测试建议）
@@ -4461,7 +4681,6 @@ mod tests {
             .expect("session store");
         let record = SessionAgentRecord {
             mode: SessionMode::Code,
-            workspace_roots: Vec::new(),
             ..SessionAgentRecord::default()
         };
         let info =
@@ -4499,7 +4718,6 @@ mod tests {
             mode: SessionMode::Code,
             workspace_kind: CodexWorkspaceKind::Project,
             workspace_path: Some(root.clone()),
-            workspace_roots: Vec::new(),
             ..SessionAgentRecord::default()
         };
         let info =
@@ -4519,7 +4737,6 @@ mod tests {
             mode: SessionMode::Code,
             workspace_kind: CodexWorkspaceKind::Project,
             workspace_path: None,
-            workspace_roots: Vec::new(),
             ..SessionAgentRecord::default()
         };
         assert!(
@@ -4779,8 +4996,8 @@ mod tests {
                 version: 1,
                 workspace_kind: CodexWorkspaceKind::Temporary,
                 workspace_path: None,
-                bound_at: None,
                 workspace_roots: Vec::new(),
+                bound_at: None,
             })
             .unwrap(),
         )
@@ -4791,7 +5008,7 @@ mod tests {
             SidecarRecoverySummary {
                 restored: 0,
                 backfilled: 0,
-                cleaned: 1
+                cleaned: 1,
             }
         );
         assert!(!leftover_dir.join("code-session.json").exists());

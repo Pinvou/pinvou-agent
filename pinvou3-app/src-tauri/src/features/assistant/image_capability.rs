@@ -5,9 +5,11 @@
 //!
 //! 解析优先级:
 //! 1. 用户对 SavedModel 的显式 override(`Enabled`→Supported,`Disabled`→Unsupported);
-//! 2. 内置已验证能力表(`VERIFIED_IMAGE_CAPABLE_MODELS`);v0.9.5 前还有底座
-//!    模型目录(`deepseek_tui::model_catalog`)一级,现已不再公开(见
-//!    `effective_image_capability` 第②级注释);
+//! 2. Builtin verified-capability table (substring table `VERIFIED_IMAGE_CAPABLE_MODELS` OR-merged
+//!    with exact-equality table `EXACT_VERIFIED_IMAGE_CAPABLE_MODELS`, see each
+//!    table's comment); before v0.9.5 there was also a base
+//!    model-catalog tier (`deepseek_tui::model_catalog`), no longer exposed (see
+//!    the level-② note on `effective_image_capability`);
 //! 3. 都判不出 → `Unknown`(默认不冒充支持,允许用户在设置里 override Enabled)。
 //!
 //! ⚠️ 内置表宁可 Unknown 不可误判 Supported:只对明确多模态的模型名子串判中。
@@ -81,38 +83,127 @@ pub fn moonshot_model_requires_explicit_thinking(model: &str) -> bool {
 }
 
 /// 内置已验证能力表:模型名小写后按子串匹配,命中即 Supported。
-/// 收录原则:仅明确多模态的模型族,且能从仓内 preset 默认模型或公开事实佐证;
-/// 拿不准的一律不收(走 Unknown + 用户 override)。
+/// Inclusion rule: only model families the official docs explicitly describe
+/// as multimodal (checked vendor by vendor against official docs on
+/// 2026-09-11, synced in the same batch as the frontend model-catalog.js);
+/// anything uncertain is left out (resolves to Unknown + user override).
+/// Note that substring matching cannot cross tier words: when admitting a
+/// whole family, confirm the family has no text-only members
+/// (e.g. qwen3.7-max, glm-5.3), otherwise admit entries one by one.
 const VERIFIED_IMAGE_CAPABLE_MODELS: &[&str] = &[
     // OpenAI 多模态世代。OpenaiCompatible preset 默认模型 `gpt-5.6-terra`
-    // (prefs.rs `default_model`)即 gpt-5 族。
+    // (prefs `default_model`) is a gpt-5-family model.
     "gpt-4o",
     "gpt-4.1",
     "gpt-5",
-    // Anthropic Claude 3/4/5 全系视觉输入。命名两式:claude-4-opus / claude-4-sonnet
-    // 命中 claude-N;新一代 claude-sonnet-5(默认预设)/claude-opus-5 需单独条目
-    // ——子串匹配跨不过 "sonnet"/"opus","claude-5" 命中不了 claude-sonnet-5。
+    // gpt-6-astra is officially multimodal (models page "All latest OpenAI
+    // models support text and image input", 2026-09-11); the "gpt-5" substring
+    // cannot match it, and the catalog already annotates it, so the backend
+    // must stay in sync, otherwise the official route degrades to Unknown.
+    "gpt-6",
+    // Anthropic: the platform.claude.com models overview states "All current
+    // models support text and image input" (2026-09-11). claude-3/4/5 covers
+    // both claude-N-tier naming styles; sonnet-5 / opus-5 / haiku / fable need
+    // separate entries — substring matching cannot cross tier words, and
+    // claude-haiku-4-5, missed by the old table, contains neither claude-4 nor
+    // claude-haiku-5, so claude-haiku replaces the old claude-haiku-5 entry
+    // (also covering the haiku-5 family);
+    // claude-fable-5(-5-1) had no entry at all, hence the new claude-fable.
     "claude-3",
     "claude-4",
     "claude-5",
     "claude-sonnet-5",
     "claude-opus-5",
-    "claude-haiku-5",
+    "claude-haiku",
+    "claude-fable",
     // Google Gemini 全系多模态。
     "gemini",
-    // xAI Grok 全系视觉输入(默认预设 grok-4.3 命中)。
+    // xAI Grok family-wide vision input (default preset grok-4.6 hits).
     "grok",
-    // 阿里 Qwen VL 系列(qwen-vl / qwen2-vl / qwen2.5-vl / qwen3-vl)。
-    // 裸 qwen 名(qwen3.7-plus 等文本模型)不收——见设计 §7.2。
+    // DeepSeek V4.1-Flash has native vision (api-docs.deepseek.com/guides/vision,
+    // 2026-09-11); the official pricing page states Vision Not supported for
+    // deepseek-v4-pro, so it is not admitted.
+    "deepseek-flash",
+    // Existing configs still save the retired aliases deepseek-v4-flash /
+    // -vision-exp: the official docs state the old names are still accepted
+    // and routed to V4.1-Flash (multimodal) billing, so they are admitted by
+    // exact equality in EXACT_VERIFIED_IMAGE_CAPABLE_MODELS, synced in the
+    // same batch as the frontend catalog's legacyAliases imageCapable:true.
+    // Not in the substring table: a substring would also match third-party
+    // gateway snapshot spellings (deepseek-v4-flash-0731 / -202605 /
+    // deepseek/deepseek-v4-*); those deployments are not officially verified
+    // for multimodality and the frontend catalog deliberately leaves them
+    // unannotated, so they should resolve to Unknown.
+    // Alibaba Qwen (help.aliyun.com Model Studio vision docs, 2026-09-11):
+    // admit the whole qwen3.8-max / qwen3.8-flash generation; qwen3.7 only
+    // plus/flash (3.7-max is text-only, so the qwen3.7 prefix cannot be used
+    // as one substring); qwen3.6-flash admitted. The VL series stays. The
+    // "qwen3.8" entry covers the whole generation: if the vendor later ships
+    // a text-only 3.8 variant (e.g. a coder line), it must be split into
+    // per-entry admissions.
     "qwen-vl",
     "qwen2-vl",
     "qwen2.5-vl",
     "qwen3-vl",
-    // 智谱 GLM-4V 视觉系列;glm-5.x 未经验证不收。
+    "qwen3.8",
+    "qwen3.7-plus",
+    "qwen3.7-flash",
+    "qwen3.6-flash",
+    // Doubao: the official capability column of the five active doubao-seed-*
+    // rows and the coding-specialized preview row all include multimodal
+    // understanding (volcengine docs 82379/1330310, 2026-09-11), so admitting
+    // the whole family is justified.
+    "doubao-seed",
+    // MiniMax: only M3 supports image input, M2.x does not, so the bare
+    // minimax substring must not be used (official docs, 2026-09-11).
+    "minimax-m3",
+    // Zhipu: GLM-5.3-Flash is natively multimodal; glm-5.3 / glm-5.2 are
+    // text-only, so the glm-5.3 prefix cannot be used as one substring
+    // (2026-09-11). The glm-4v entry stays for compatibility with existing
+    // configs: only glm-4v-flash (free tier) is still sold; glm-4v /
+    // glm-4v-plus are gone from the on-sale table and the API enum.
+    "glm-5.3-flash",
     "glm-4v",
-    // Kimi for Coding(Moonshot 编程计划模型):用户实测可原生识图(2026-07)。
-    // 其余 kimi 文本模型(kimi-k3 等)不收。
+    // Kimi (2026-09-11): Kimi direct kimi-k3 and Kimi Code k3 / k3-256k are
+    // officially image-input models; kimi-k3 goes through the substring entry
+    // while k3 / k3-256k are short generic ids, so they are admitted exactly
+    // via EXACT_VERIFIED_IMAGE_CAPABLE_MODELS (see its comment);
+    // kimi-k2.7-code and kimi-k2.6 list text/image/video input on the official
+    // pricing page (platform.kimi.com); kimi-k2.5 and other text models are
+    // not admitted.
     "kimi-for-coding",
+    "kimi-k3",
+    "kimi-k2.7-code",
+    "kimi-k2.6",
+];
+
+/// Exact (lowercased equality) entries: short generic ids whose substring
+/// match surface is too wide, "same-name text-only variants", or official
+/// parallel spellings can only be admitted by equality — the bare "k3"
+/// substring would classify any custom name containing "k3" (unrelated
+/// third-party/aggregator models etc.) as natively vision-capable and inline
+/// images on send; mimo-v2.5 via substring would also catch the text-only
+/// mimo-v2.5-pro; deepseek-v4-flash(-vision-exp) are official retired aliases
+/// whose substring would also catch unverified third-party gateway snapshot
+/// spellings. All of these would violate this table's inclusion principle of
+/// "prefer Unknown over a false Supported", so they are admitted by equality
+/// only. Future -tier spellings should be appended here instead of falling
+/// back to substrings.
+const EXACT_VERIFIED_IMAGE_CAPABLE_MODELS: &[&str] = &[
+    "k3",
+    "k3-256k",
+    "mimo-v2.5",
+    // Tencent Token Plan official hyphenated parallel spelling (same as the
+    // frontend minimax-m3 row's legacyAliases): it does not contain the
+    // "minimax-m3" substring, and a missing entry would resolve existing
+    // configs to Unknown on send, diverging from the form's prefilled
+    // "supported" state.
+    "minimax-m-3-0",
+    // DeepSeek official retired aliases; the official docs state they are
+    // still accepted and routed to multimodal V4.1-Flash billing
+    // (api-docs.deepseek.com/news260910, checked 2026-09-11).
+    "deepseek-v4-flash",
+    "deepseek-v4-flash-vision-exp",
 ];
 
 /// 内置表查询:模型名(小写化)是否命中已验证多模态条目。
@@ -121,9 +212,12 @@ fn builtin_verified_supports_image(model: &str) -> bool {
     if normalized.is_empty() {
         return false;
     }
-    VERIFIED_IMAGE_CAPABLE_MODELS
+    EXACT_VERIFIED_IMAGE_CAPABLE_MODELS
         .iter()
-        .any(|entry| normalized.contains(entry))
+        .any(|entry| normalized == *entry)
+        || VERIFIED_IMAGE_CAPABLE_MODELS
+            .iter()
+            .any(|entry| normalized.contains(entry))
 }
 
 /// 解析一条 SavedModel 的生效图片输入能力(优先级见模块头注释)。
@@ -264,19 +358,67 @@ mod tests {
         for (preset, name) in [
             (ModelPreset::OpenaiCompatible, "gpt-4o-mini"),
             (ModelPreset::OpenaiCompatible, "gpt-4.1"),
-            // preset 默认模型(prefs.rs)必须命中,否则官方 OpenAI 路由退化成 Unknown。
+            // The preset default models (prefs `default_model`) must hit,
+            // otherwise the official route degrades to Unknown.
             (ModelPreset::OpenaiCompatible, "gpt-5.6-terra"),
+            // gpt-6-astra is officially multimodal, covered by the "gpt-6"
+            // entry ("gpt-5" cannot match it).
+            (ModelPreset::OpenaiCompatible, "gpt-6-astra"),
             (ModelPreset::OpenaiCompatible, "claude-3-5-sonnet-20241022"),
             (ModelPreset::OpenaiCompatible, "claude-4-opus"),
-            // 默认预设(claude-sonnet-5 / grok-4.3)必须命中,否则官方路由退化成 Unknown。
+            // Default presets (claude-sonnet-5 / grok-4.6 / deepseek-flash /
+            // qwen3.8-max / MiniMax-M3 / kimi-k3) must hit, otherwise the
+            // official route degrades to Unknown.
             (ModelPreset::OpenaiCompatible, "claude-sonnet-5"),
             (ModelPreset::OpenaiCompatible, "gemini-2.5-pro"),
-            (ModelPreset::OpenaiCompatible, "grok-4.3"),
+            (ModelPreset::OpenaiCompatible, "grok-4.6"),
+            // Old-table gap fix: claude-haiku-4-5 / claude-fable-5-1 are both
+            // current multimodal models
+            // (platform.claude.com models overview, 2026-09-11).
+            (ModelPreset::OpenaiCompatible, "claude-haiku-4-5"),
+            (ModelPreset::OpenaiCompatible, "claude-fable-5"),
+            (ModelPreset::OpenaiCompatible, "claude-fable-5-1"),
+            // V4.1-Flash native vision (api-docs.deepseek.com/guides/vision).
+            (ModelPreset::Deepseek, "deepseek-flash"),
+            // The retired aliases still route to V4.1-Flash; existing configs
+            // must likewise resolve to Supported.
+            (ModelPreset::Deepseek, "deepseek-v4-flash"),
+            (ModelPreset::Deepseek, "deepseek-v4-flash-vision-exp"),
             (ModelPreset::Qwen, "qwen-vl-max"),
             (ModelPreset::Qwen, "Qwen2.5-VL-72B-Instruct"),
+            // Per-entry anchors for the VL series: the qwen2-vl / qwen3-vl
+            // substring entries previously had no test coverage, so silently
+            // deleting an entry kept every test green (qwen3-vl-* would degrade
+            // to Unknown).
+            (ModelPreset::Qwen, "qwen2-vl-72b-instruct"),
+            (ModelPreset::Qwen, "qwen3-vl-max"),
+            (ModelPreset::Qwen, "qwen3.8-max"),
+            (ModelPreset::Qwen, "qwen3.8-flash"),
+            (ModelPreset::Qwen, "qwen3.7-plus"),
+            (ModelPreset::Qwen, "qwen3.7-flash"),
+            (ModelPreset::Qwen, "qwen3.6-flash"),
             (ModelPreset::Glm, "glm-4v-plus"),
-            // 用户实测可原生识图(2026-07),与 kimi-k3 等文本模型区分。
+            (ModelPreset::Glm, "glm-5.3-flash"),
+            (ModelPreset::Doubao, "doubao-seed-evolving"),
+            (ModelPreset::Minimax, "MiniMax-M3"),
+            // Tencent Token Plan official hyphenated parallel spelling (same
+            // as the frontend legacyAliases); must also resolve to Supported
+            // via the exact table, otherwise existing configs degrade to
+            // Unknown on send.
+            (ModelPreset::OpenaiCompatible, "minimax-m-3-0"),
+            // MiMo (2026-09-11): multimodal is mimo-v2.5; the text-only
+            // mimo-v2.5-pro must not be caught by accident, hence the exact
+            // equality table (see EXACT_VERIFIED_IMAGE_CAPABLE_MODELS).
+            (ModelPreset::Mimo, "mimo-v2.5"),
+            // Kimi direct kimi-k3 and Kimi Code k3 / k3-256k are officially
+            // image-input (2026-09-11); kimi-for-coding was user-verified as
+            // vision-capable (2026-07).
             (ModelPreset::Kimi, "kimi-for-coding"),
+            (ModelPreset::Kimi, "kimi-k3"),
+            (ModelPreset::OpenaiCompatible, "k3"),
+            (ModelPreset::OpenaiCompatible, "k3-256k"),
+            (ModelPreset::Kimi, "kimi-k2.7-code"),
+            (ModelPreset::Kimi, "kimi-k2.6"),
         ] {
             let model = saved_model(preset, name);
             assert_eq!(
@@ -292,18 +434,28 @@ mod tests {
         // Unified matrix for "miss the builtin vetted table → Unknown". Since
         // v0.9.5 the foundation model_catalog is no longer exposed, catalog-level
         // modalities detection is gone, and there is no catalog-based upgrade path.
-        // - No preset's default text model may be misreported as Supported;
+        // - Text-only official models must stay Unknown (qwen3.7-max / glm-5.3 /
+        //   glm-5.2 / MiniMax-M2.x per the 2026-09-11 vendor docs);
+        // - deepseek-v4-pro is not on the official vision page;
         // - mimo-v2.5-pro / muse-spark-1.1 are outside the builtin table and
-        //   must also resolve to Unknown.
+        //   must also resolve to Unknown;
+        // - unrelated custom names containing "k3" must not be mismatched by
+        //   the substring (bare k3 is now admitted exactly);
+        // - third-party gateway snapshot spellings (deepseek-v4-flash-202605
+        //   etc.) are not officially multimodal-verified, and the exact entries
+        //   for the retired aliases must not catch them (the frontend catalog
+        //   leaves them unannotated too).
         for (preset, name) in [
             (ModelPreset::Deepseek, "deepseek-v4-pro"),
-            (ModelPreset::Kimi, "kimi-k3"),
-            (ModelPreset::Qwen, "qwen3.7-plus"),
-            (ModelPreset::Doubao, "doubao-seed-evolving"),
-            (ModelPreset::Minimax, "MiniMax-M3"),
+            (ModelPreset::OpenaiCompatible, "deepseek-v4-flash-202605"),
+            (ModelPreset::Qwen, "qwen3.7-max"),
+            (ModelPreset::Glm, "glm-5.3"),
             (ModelPreset::Glm, "glm-5.2"),
+            (ModelPreset::Minimax, "MiniMax-M2.7"),
+            (ModelPreset::Minimax, "MiniMax-M2.7-highspeed"),
             (ModelPreset::Mimo, "mimo-v2.5-pro"),
             (ModelPreset::OpenaiCompatible, "muse-spark-1.1"),
+            (ModelPreset::OpenaiCompatible, "k3s-local-text"),
         ] {
             let model = saved_model(preset, name);
             assert_eq!(

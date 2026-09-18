@@ -527,6 +527,9 @@ mod platform {
             ));
         }
         let mut information = BY_HANDLE_FILE_INFORMATION::default();
+        // SAFETY: file is a live, open handle to a regular file validated above;
+        // &mut information points to a writable BY_HANDLE_FILE_INFORMATION whose
+        // lifetime covers the call and whose size matches what the API expects.
         if unsafe { GetFileInformationByHandle(file.as_raw_handle(), &mut information) } == 0 {
             return Err(io::Error::last_os_error());
         }
@@ -541,6 +544,9 @@ mod platform {
 
     fn mark_for_deletion(file: &File) -> io::Result<()> {
         let disposition = FILE_DISPOSITION_INFO { DeleteFile: true };
+        // SAFETY: file is a live, open handle; (&raw const disposition).cast() points
+        // to a FILE_DISPOSITION_INFO that stays alive until the call returns, and the
+        // length argument is exactly size_of::<FILE_DISPOSITION_INFO>().
         if unsafe {
             SetFileInformationByHandle(
                 file.as_raw_handle(),

@@ -75,10 +75,10 @@ pub(crate) fn validate_scheduled_workspace_path(root: &Path, workspace: &Path) -
     Ok(())
 }
 
-/// Validation of a plain chat session's user-chosen working directory:
+/// Validates the working directory a user selected for a plain chat session:
 /// non-empty, absolute, must exist on disk and be a directory. Returns the
-/// canonicalized form (resolving `.`/symlinks/trailing separators); callers
-/// use the return value directly for binding and display.
+/// canonicalized path (removing `.`, symlinks, and trailing separators); callers
+/// use the return value for both binding and display.
 pub(crate) fn validate_user_workspace_path(raw: &str) -> Result<PathBuf> {
     if raw.trim().is_empty() {
         bail!("Workspace path must not be empty");
@@ -93,10 +93,10 @@ pub(crate) fn validate_user_workspace_path(raw: &str) -> Result<PathBuf> {
     if !canonical.is_dir() {
         bail!("Workspace path must be a directory: {raw}");
     }
-    // Windows canonicalize returns a \?\ verbatim prefix; the agent and the
-    // frontend compare cwd by string/prefix and would misjudge it, so it is
-    // normalized to a regular drive path (identity off Windows) — the same
-    // invariant as validate_codex_project_workspace (review #445 P1-1).
+    // Windows canonicalize returns a \?\ verbatim prefix; agents and the
+    // frontend misjudge cwd in string/prefix comparisons, so normalize to a
+    // regular drive path (identity on non-Windows) — the same invariant as
+    // validate_codex_project_workspace.
     Ok(crate::platform::os::platform_compat_path(
         &canonical.to_string_lossy(),
     ))

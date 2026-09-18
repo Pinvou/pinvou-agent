@@ -146,6 +146,11 @@ pub async fn reset_microphone_permission(window: tauri::WebviewWindow) -> Result
     window
         .with_webview(move |webview| {
             let callback_sender = Arc::clone(&sender);
+            // SAFETY: runs inside with_webview on the thread owning the WebView2,
+            // so webview.controller() is a live controller; CoreWebView2() returns
+            // an owned interface pointer, and cast() AddRef-fetches a supported
+            // interface valid for the enclosing scope; the origin HSTRING and
+            // &callback remain alive until SetPermissionState returns.
             let schedule_result: windows_core::Result<()> = (|| unsafe {
                 let webview13 = webview
                     .controller()
@@ -190,4 +195,29 @@ pub async fn reset_microphone_permission(window: tauri::WebviewWindow) -> Result
         .map_err(|_| "重置麦克风权限超时".to_string())?
         .map_err(|_| "麦克风权限重置任务被取消".to_string())??;
     Ok(true)
+}
+
+#[cfg(test)]
+mod tests {
+    use std::os::windows::fs::OpenOptionsExt;
+
+    use crate::features::voice::VoiceTempWav;
+    use windows_sys::Win32::Storage::FileSystem::FILE_SHARE_READ;
+
+    #[test]
+    fn closed_temp_wav_can_be_reopened_when_asr_denies_write_sharing() {
+        let wav_path = VoiceTempWav::create()
+            .expect("create temporary WAV")
+            .write_and_close(b"RIFF-test-WAVE")
+            .expect("write and close temporary WAV");
+        let reopened = std::fs::OpenOptions::new()
+            .read(true)
+            // Match the bundled ASR backend: concurrent readers are allowed,
+            // but an existing write handle makes this open fail on Windows.
+            .share_mode(FILE_SHARE_READ)
+            .open(&wav_path)
+            .expect("ASR backend must be able to reopen the WAV without write sharing");
+
+        drop(reopened);
+    }
 }

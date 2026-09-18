@@ -439,6 +439,7 @@ command_protocol!(
         "get_session_workspace_binding",
         "load_session",
         "delete_session",
+        "export_session",
         "rename_session",
         "set_session_pinned",
         "set_session_archived",

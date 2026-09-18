@@ -830,4 +830,18 @@ assert.match(chatView, /composerH \? composerH \+ 64 : 176/,
 assert.match(chatView, /composerH \? composerH \+ 48 : 172/,
   'the fade mask must remain shorter than the bottom spacer');
 
+
+// review #464 round-5 item 3: the web session list must delegate the
+// whole-list projection (metadata + workspace_binding) to the extracted
+// project_session_list_for_web — reverting that one line must not stay green.
+{
+  const start = remoteControlCommands.indexOf('pub async fn web_access_list_sessions');
+  assert.notStrictEqual(start, -1);
+  const body = remoteControlCommands.slice(start, start + 900);
+  assert.ok(
+    body.includes('project_session_list_for_web(&mut sessions)'),
+    'web_access_list_sessions must delegate the web projection to project_session_list_for_web',
+  );
+}
+
 console.log('web access contract tests passed');

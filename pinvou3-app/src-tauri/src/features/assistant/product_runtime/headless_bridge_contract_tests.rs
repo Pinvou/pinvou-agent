@@ -118,7 +118,7 @@ async fn product_smoke_policy_is_accepted_by_the_headless_backend() {
     let session = backend
         .prepare(prepare_request_with_policy(
             "product-policy",
-            "pinvou-product/v1",
+            "pinvou-read-only-web/v1",
         ))
         .await
         .unwrap();
@@ -172,8 +172,9 @@ async fn backend_runs_one_private_task_and_closes_its_session() {
 async fn backend_accepts_the_registered_smoke_product_policy() {
     let runtime = Arc::new(RecordingRuntime::default());
     let backend = ProductHeadlessBackend::from_runtime(runtime);
-    let request = PrepareRequest::new("smoke-policy", vec![])
-        .with_tool_policy(AgentToolPolicyId::new("pinvou-product/v1").expect("valid smoke policy"));
+    let request = PrepareRequest::new("smoke-policy", vec![]).with_tool_policy(
+        AgentToolPolicyId::new("pinvou-read-only-web/v1").expect("valid smoke policy"),
+    );
 
     let session = backend.prepare(request).await.unwrap();
     backend.close(session).await.unwrap();

@@ -319,7 +319,6 @@ pub fn notes_path() -> PathBuf {
 pub fn memory_path() -> PathBuf {
     pinvou3_home().join("memory.md")
 }
-
 pub fn user_memory_dir() -> PathBuf {
     user_root().join("memory")
 }
@@ -389,15 +388,13 @@ pub fn scheduled_run_profiles_path() -> PathBuf {
     scheduled_runs_root().join("session-profiles.json")
 }
 
-/// `~/.pinvou3/projects/` —— persistence root of the project layer
-/// (logical archival grouping of sessions).
+/// `~/.pinvou3/projects/` —— 项目层(会话逻辑归档分组)落盘根目录。
 pub fn projects_root() -> PathBuf {
     pinvou3_home().join("projects")
 }
 
-/// The project layer's only persisted file: project definitions + the
-/// session-assignment map land in the same file, one atomic write covering
-/// both views, avoiding half-committed states.
+/// 项目层唯一持久化文件:项目定义 + 会话归属映射同文件落盘,
+/// 一次原子写覆盖两个视图,避免半提交状态。
 pub fn projects_store_path() -> PathBuf {
     projects_root().join("projects.json")
 }
@@ -565,6 +562,96 @@ pub(crate) mod tests {
     /// dependence on process-level env vars, or route all reads and writes
     /// through a single isolation layer.
     pub(crate) static ENV_LOCK: Mutex<()> = Mutex::new(());
+
+    /// Panic-safe restore for process env vars a test overwrites: capture
+    /// each key's current value as `Option<OsString>`, and `Drop` puts back
+    /// exactly that state (re-set, or removed if it was absent) on every exit
+    /// path, including panics. `var_os`, not `var`: POSIX allows non-UTF-8
+    /// values and `var` panics on them (the lib.rs EnvSnapshot lesson).
+    /// Like the bridge tests' private EnvGuard, the guard does not acquire
+    /// ENV_LOCK itself — the caller must hold it from before `capture` until
+    /// after the guard drops.
+    pub(crate) struct EnvVarGuard {
+        saved: Vec<(&'static str, Option<std::ffi::OsString>)>,
+    }
+
+    impl EnvVarGuard {
+        pub(crate) fn capture(vars: &[&'static str]) -> Self {
+            Self {
+                saved: vars
+                    .iter()
+                    .map(|&name| (name, std::env::var_os(name)))
+                    .collect(),
+            }
+        }
+    }
+
+    impl Drop for EnvVarGuard {
+        fn drop(&mut self) {
+            for (name, value) in &self.saved {
+                match value {
+                    // SAFETY: the caller holds ENV_LOCK from before capture
+                    // until after this drop; env writes are serialized.
+                    Some(value) => unsafe { std::env::set_var(name, value) },
+                    // SAFETY: same as above; removal serialized under ENV_LOCK.
+                    None => unsafe { std::env::remove_var(name) },
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn env_var_guard_restores_preexisting_absent_and_panic_paths() {
+        let _lock = ENV_LOCK.lock().unwrap_or_else(|p| p.into_inner());
+        let host_index = std::env::var_os("GIT_INDEX_FILE");
+        let host_objects = std::env::var_os("GIT_OBJECT_DIRECTORY");
+        // Outer guard protects the host's true values from this test's own
+        // sentinel writes (and restores them even if an assert below panics).
+        let host = EnvVarGuard::capture(&["GIT_INDEX_FILE", "GIT_OBJECT_DIRECTORY"]);
+
+        // Pre-set non-empty originals, as a host shell could have them.
+        // SAFETY: ENV_LOCK held (first line of this test).
+        unsafe { std::env::set_var("GIT_INDEX_FILE", "pinvou-guard-sentinel-index") };
+        // SAFETY: same as above.
+        unsafe { std::env::set_var("GIT_OBJECT_DIRECTORY", "pinvou-guard-sentinel-objects") };
+
+        // Non-empty restore path: overwrite, then drop the guard.
+        {
+            let guard = EnvVarGuard::capture(&["GIT_INDEX_FILE"]);
+            // SAFETY: ENV_LOCK held.
+            unsafe { std::env::set_var("GIT_INDEX_FILE", "polluted") };
+            assert_eq!(
+                std::env::var_os("GIT_INDEX_FILE").as_deref(),
+                Some(std::ffi::OsStr::new("polluted"))
+            );
+            drop(guard);
+        }
+        assert_eq!(
+            std::env::var_os("GIT_INDEX_FILE").as_deref(),
+            Some(std::ffi::OsStr::new("pinvou-guard-sentinel-index")),
+            "guard must restore the pre-existing non-empty value"
+        );
+
+        // Panic path: Drop runs during unwinding inside catch_unwind.
+        let panicked = std::panic::catch_unwind(|| {
+            let _guard = EnvVarGuard::capture(&["GIT_OBJECT_DIRECTORY"]);
+            // SAFETY: ENV_LOCK held.
+            unsafe { std::env::set_var("GIT_OBJECT_DIRECTORY", "panic-pollution") };
+            panic!("guard must restore during unwind");
+        });
+        assert!(panicked.is_err());
+        assert_eq!(
+            std::env::var_os("GIT_OBJECT_DIRECTORY").as_deref(),
+            Some(std::ffi::OsStr::new("pinvou-guard-sentinel-objects")),
+            "guard must restore during unwind"
+        );
+
+        // Absent restore path: the outer guard removes the sentinels again,
+        // back to exactly the host's true state.
+        drop(host);
+        assert_eq!(std::env::var_os("GIT_INDEX_FILE"), host_index);
+        assert_eq!(std::env::var_os("GIT_OBJECT_DIRECTORY"), host_objects);
+    }
 
     /// 生成**进程内**唯一的单调递增后缀,供测试临时目录/会话 ID 命名用。
     ///

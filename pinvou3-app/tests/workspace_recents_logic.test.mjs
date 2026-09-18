@@ -1,10 +1,11 @@
-// shared/workspace-recents.js 逻辑测试：从 CodexAcpView 原样提取的「最近
-// 工作区」存取。code 模式与普通聊天草稿态共用同一份 localStorage 列表
-// （key 固定为 pinvou_codex_recent_workspaces），行为必须保持提取前一致。
+// Logic tests for shared/workspace-recents.js: the recent-workspaces storage
+// extracted verbatim from CodexAcpView. Code mode and the regular-chat draft
+// share one localStorage list (key pinvou_codex_recent_workspaces); behavior
+// must stay identical to before extraction.
 import assert from 'node:assert/strict';
 import test from 'node:test';
 
-// 内存 localStorage stub（模块在调用时才读取全局 localStorage，先装好再 import）。
+// In-memory localStorage stub (the module reads global localStorage at call time, so install it before import).
 const storage = new Map();
 globalThis.localStorage = {
   getItem(key) { return storage.has(key) ? storage.get(key) : null; },
@@ -70,7 +71,7 @@ test('forgetWorkspace：移除指定目录，其余保留顺序', () => {
   const next = forgetWorkspace('/b');
   assert.deepEqual(next, ['/c', '/a']);
   assert.deepEqual(JSON.parse(storage.get(RECENT_WORKSPACES_KEY)), ['/c', '/a']);
-  // 移除不存在的条目为空操作。
+  // Removing a non-existent entry is a no-op.
   assert.deepEqual(forgetWorkspace('/nope'), ['/c', '/a']);
 });
 
@@ -82,6 +83,6 @@ test('workspaceName：取末段目录名，剥离尾部分隔符，兼容两种�
   assert.equal(workspaceName('/', '?'), '?');
   assert.equal(workspaceName('', '?'), '?');
   assert.equal(workspaceName(null, '?'), '?');
-  // 单段路径原样返回。
+  // A single-segment path is returned as-is.
   assert.equal(workspaceName('project', '?'), 'project');
 });

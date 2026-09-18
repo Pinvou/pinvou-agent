@@ -1,91 +1,105 @@
-// Sidebar grouping for workspace-bound sessions, split by dimension:
-// - folder view (physical layer): group by workspace directory — the original
-//   behavior, byte-identical to the pre-project sidebar; projects never
-//   affect it;
-// - project view (logical layer): only named projects as groups (explicit
-//   assignment + root auto-match), plus a trailing ungrouped bucket that
-//   collects everything not claimed by a project (drag source for moving in,
-//   and the explicit move-out landing place).
-// Pure-function module with no UI/i18n dependencies (node-side testable).
+// Project layer grouping: pure logic that resolves each code session into a
+// sidebar group. Like sidebar-grouping.js, this is a pure-function module with
+// no UI/i18n dependencies, so it can be unit-tested on the node side.
+//
+// Deterministic three-tier resolution (see features/projects/mod.rs for the
+// invariant list):
+//   1. explicit assignment wins — assignments[sessionId] is a project id
+//      (or null = explicit move-out, which skips tier 2 on purpose);
+//   2. workspace path under a project root -> auto-group into that project
+//      (longest matching root wins);
+//   3. implicit folder group by workspace path; temporary sessions merge into
+//      one bottom group (unchanged legacy behavior).
+// Projects sort by manual position, implicit folders follow by latest
+// activity, the temporary group always sinks last. Projects with zero members
+// still render: they are explicit entities, not derived views.
 
 const TEMPORARY_GROUP_KEY = '__temporary__';
-const UNGROUPED_GROUP_KEY = '__ungrouped__';
+
+// HTML5 drag-and-drop MIME for the sidebar session drag (move onto a project
+// group). The producer (RecentItem) and the consumer (ProjectGroupHeader) must
+// agree on exactly this type or the gesture silently no-ops — no highlight, no
+// preventDefault, no drop, and no console output — so the literal lives here
+// once and both sides import it.
+const PROJECT_SESSION_DRAG_TYPE = 'application/x-pinvou-session';
 
 function itemTime(item) {
   return String((item && (item.updatedAt || item.pinnedAt)) || '');
 }
 
-// True when `path` equals `root` or lives directly under it.
-// Windows-shaped paths (drive letter or UNC) fold case, unify separators and
-// strip a trailing one, mirroring the store's filesystem_path_identity_key /
-// key_is_same_or_nested (windows_path.rs, store.rs) — mixed-shape pairs like
-// root `D:\work` vs path `D:/work/x` must still hit tier 2. The pure module
-// has no host-OS signal, so it keys off path shape — drive-letter/UNC paths
-// only ever come from Windows sessions. POSIX paths stay case-sensitive and
-// keep the loose both-separator match for windows-stored paths.
+// True when `path` equals `root` or lives directly under it. Both separators
+// are accepted so canonicalized unix roots still match windows-stored paths.
+// Windows paths fold case for comparison, mirroring the store's
+// filesystem_path_identity_key (Windows identity keys fold case, POSIX does
+// not): the pure module has no host-OS signal, so it keys off path shape —
+// drive-letter/UNC paths only ever come from Windows sessions.
+// Leading-// is deliberately NOT claimed as Windows UNC shape: POSIX leaves
+// that prefix implementation-defined, so //tmp/x can be a genuine POSIX path
+// on a case-sensitive volume. Store-produced roots are always backslash-form,
+// so a forward-slash UNC session path (externally written only) compares
+// POSIX-exact here while the store would fold it on Windows hosts — a known,
+// pinned divergence (see the grouping test), not an oversight.
 function looksWindowsPath(value) {
   return /^[A-Za-z]:[\\/]/.test(value) || value.startsWith('\\\\');
 }
 
+// Component-aware "same or nested", mirroring the store's key_is_same_or_nested
+// (features/projects/store.rs) line for line — including comparing full
+// equality before stripping the root's trailing separator — so the display
+// side and the store can never disagree about which sessions belong where. A
+// bare startsWith would file /a/bc under /a/b: the character right past the
+// base must be a separator, and a bare-separator root ("/") covers every
+// absolute path, matching the store's empty-base rule. Windows-shaped paths
+// fold separators and case on both sides, mirroring filesystem_path_identity_key
+// (Windows identity keys fold case and separators, POSIX does not): the pure
+// module has no host-OS signal, so it keys off path shape — drive-letter/UNC
+// paths only ever come from Windows sessions.
 function isUnderRoot(path, root) {
   if (!path || !root) return false;
   let a = String(path);
   let b = String(root);
-  if (looksWindowsPath(a) && looksWindowsPath(b)) {
-    const fold = (value) => {
-      let v = value.toLowerCase().replaceAll('\\', '/');
-      while (v.endsWith('/')) v = v.slice(0, -1);
-      return v;
-    };
-    a = fold(a);
-    b = fold(b);
-    return a === b || a.startsWith(`${b}/`);
+  const windowsShape = looksWindowsPath(a) && looksWindowsPath(b);
+  if (windowsShape) {
+    a = a.toLowerCase().replaceAll('\\', '/');
+    b = b.toLowerCase().replaceAll('\\', '/');
   }
   if (a === b) return true;
-  return a.startsWith(`${b}/`) || a.startsWith(`${b}\\`);
+  b = windowsShape ? b.replace(/[\\/]$/, '') : b.replace(/\/$/, '');
+  if (!b) return a.startsWith('/');
+  return a.startsWith(b) && a[b.length] === '/';
 }
 
-// Session kinds carrying a real project working directory: 'project'
-// (code/ACP) and 'bound' (#445's bound normal work sessions). 'bound' is its
-// own kind, not a disguised 'project' — when project-kind later gains its own
-// behavior (e.g. a baseline panel), ordinary bound sessions will not be
-// caught in the crossfire (review #452 finding 5).
-const WORKSPACE_KINDS_WITH_PROJECT_DIR = ['project', 'bound'];
-
-function hasProjectWorkspace(item) {
-  return (
-    !!item
-    && WORKSPACE_KINDS_WITH_PROJECT_DIR.includes(item.workspaceKind)
-    && !!item.workspacePath
-  );
+// Roots arrive either as raw strings (hand-edited state, tests) or as the
+// bridge's { path, available } objects — one accessor for both shapes.
+function rootPath(root) {
+  return root && typeof root === 'object' ? root.path : root;
 }
 
-// Auto-grouping ownership (design §9.9, 2026-09-11 ruling): root overlap
-// across projects is legal, and a session whose workspace is covered by
-// several projects is claimed by the one with the smallest position —
-// sidebar order is the user-controllable knob, id breaks residual ties so
-// the result never depends on input order. Matches the backend's
-// resolve_session_project exactly.
+// Longest root wins so nested project roots cannot steal sessions from a
+// deeper project (backend also rejects cross-project nesting, this is the
+// display-side guard for hand-edited state).
 function matchProjectByPath(projects, workspacePath) {
-  const ordered = (Array.isArray(projects) ? [...projects] : [])
-    .filter(Boolean)
-    .sort((a, b) => (a.position || 0) - (b.position || 0) || String(a.id).localeCompare(String(b.id)));
-  return ordered.find(project =>
-    (project.roots ? project.roots : []).some((root) => {
-      const rootPath = root && typeof root === 'object' ? root.path : root;
-      return isUnderRoot(workspacePath, rootPath);
-    })
-  ) || null;
+  let best = null;
+  let bestRoot = '';
+  projects.forEach((project) => {
+    (project && project.roots ? project.roots : []).forEach((root) => {
+      if (isUnderRoot(workspacePath, rootPath(root)) && String(rootPath(root)).length > bestRoot.length) {
+        best = project;
+        bestRoot = String(rootPath(root));
+      }
+    });
+  });
+  return best;
 }
 
 // Resolve the project a session currently belongs to for UI affordances
-// (current-project marker in the move picker). Explicit assignment first,
-// then auto-grouping; null for ungrouped sessions.
+// (current-project marker in the move picker, "remove from project" entry).
+// Mirrors the grouping tiers: explicit assignment first, then auto-grouping;
+// returns null for ungrouped sessions.
 function resolveSessionProjectId(item, projects, assignments) {
   const projectList = Array.isArray(projects) ? projects.filter(Boolean) : [];
   const assignmentMap = assignments && typeof assignments === 'object' ? assignments : {};
   if (!item) return null;
-  // biome-ignore lint/suspicious/noPrototypeBuiltins: Safari 14 is the floor and Object.hasOwn is unavailable; this call is already in safe form
   if (Object.prototype.hasOwnProperty.call(assignmentMap, item.id)) {
     const assigned = assignmentMap[item.id];
     if (assigned && projectList.some(project => project.id === assigned)) return assigned;
@@ -96,179 +110,137 @@ function resolveSessionProjectId(item, projects, assignments) {
   return matched ? matched.id : null;
 }
 
-// True when any of the project roots covers `path` (the move picker uses it
-// to decide whether to offer adding the session's folder to the target).
+// True when any of the project roots covers `path` (same containment rule as
+// tier 2; the move picker uses it to gate the move-only confirm panel for a
+// target whose roots do not already cover the session's workspace).
 function projectCoversPath(project, path) {
   if (!project || !path) return false;
-  return (project.roots || []).some((root) => {
-    const rootPath = root && typeof root === 'object' ? root.path : root;
-    return isUnderRoot(String(path), rootPath ? String(rootPath) : rootPath);
-  });
+  return (project.roots || []).some((root) => isUnderRoot(String(path), rootPath(root)));
 }
 
-// Does moving `session` into `target` need the add-folder confirmation first
-// (target roots don't cover the session's workspace), or can it move instantly?
-// Temporary sessions have no workspace and always move instantly. One
-// predicate instead of hand-mirrored copies (drag drop handler, dialog
-// initializer, dialog choose) — same-source convergence per review #452 finding 6.
+// Session shapes carrying a real project working directory: 'project'
+// (code/ACP) and 'bound' (#445 bound plain work sessions). 'bound' is its
+// own kind, not disguised as 'project' — so when project-kind later gains
+// its own behavior (e.g. a baseline panel), plain bound sessions are not
+// affected by mistake (review #452 finding 5). Exported so the emitter
+// (main.jsx) and this consumer share one spelling — a producer-side rename
+// would otherwise silently drop bound sessions from the project view with
+// every test green (review #464 round-5 item 5; source-pinned by
+// project_session_drag_contract.test.mjs).
+export const WORKSPACE_KIND_BOUND = 'bound';
+
+const WORKSPACE_KINDS_WITH_PROJECT_DIR = ['project', WORKSPACE_KIND_BOUND];
+
+function hasProjectWorkspace(item) {
+  return (
+    !!item
+    && WORKSPACE_KINDS_WITH_PROJECT_DIR.includes(item.workspaceKind)
+    && !!item.workspacePath
+  );
+}
+
+// Input: items = code sessions [{ id, workspacePath, workspaceKind, updatedAt, ... }],
+// projects = [{ id, name, roots: [path | { path }], position }],
+// assignments = { [sessionId]: projectId | null }.
+// Returns [{ key, kind: 'project' | 'folder' | 'temporary', projectId, name,
+//            path, rows, latestAt }].
+function groupSessionsWithProjects(items, projects, assignments) {
+  const projectList = Array.isArray(projects) ? projects.filter(Boolean) : [];
+  const assignmentMap = assignments && typeof assignments === 'object' ? assignments : {};
+  const byId = new Map(projectList.map(project => [project.id, project]));
+
+  const projectRows = new Map(projectList.map(project => [project.id, []]));
+  const byFolder = new Map();
+
+  (Array.isArray(items) ? items : []).forEach((item) => {
+    if (!item) return;
+    let target = null;
+    let autoGroupBlocked = false;
+    if (Object.prototype.hasOwnProperty.call(assignmentMap, item.id)) {
+      const assigned = assignmentMap[item.id];
+      if (assigned && byId.has(assigned)) {
+        // Tier 1: explicit id resolves.
+        target = byId.get(assigned);
+      } else if (assigned === null) {
+        // Explicit move-out: "not in any project" must NOT auto-revive via
+        // tier 2. Stale ids (deleted project, hand-edited state) still fall
+        // through to auto grouping.
+        autoGroupBlocked = true;
+      }
+    }
+    // Tier 2: auto-group by workspace root containment. Only project-kind
+    // sessions participate — temporary sessions enter a project exclusively
+    // through explicit assignment (the "adopt" flow), never implicitly.
+    if (!target && !autoGroupBlocked && hasProjectWorkspace(item)) {
+      target = matchProjectByPath(projectList, item.workspacePath);
+    }
+    if (target) {
+      projectRows.get(target.id).push(item);
+      return;
+    }
+    // Tier 3: legacy folder bucketing.
+    const key = hasProjectWorkspace(item) && item.workspacePath
+      ? String(item.workspacePath)
+      : TEMPORARY_GROUP_KEY;
+    if (!byFolder.has(key)) byFolder.set(key, []);
+    byFolder.get(key).push(item);
+  });
+
+  const finalize = (key, meta, rows) => {
+    rows.sort((a, b) => itemTime(b).localeCompare(itemTime(a)));
+    return { key, ...meta, rows, latestAt: itemTime(rows[0]) };
+  };
+
+  const groups = [];
+  // Projects keep manual position order and render even when empty.
+  [...projectList]
+    .sort((a, b) => (a.position || 0) - (b.position || 0) || String(a.id).localeCompare(String(b.id)))
+    .forEach((project) => {
+      groups.push(finalize(`project:${project.id}`, {
+        kind: 'project',
+        projectId: project.id,
+        name: project.name,
+        roots: project.roots || [],
+        path: '',
+      }, projectRows.get(project.id) || []));
+    });
+  const folderGroups = [];
+  byFolder.forEach((rows, key) => {
+    if (key === TEMPORARY_GROUP_KEY) return;
+    folderGroups.push(finalize(key, { kind: 'folder', projectId: null, name: '', path: key }, rows));
+  });
+  folderGroups.sort((a, b) => b.latestAt.localeCompare(a.latestAt));
+  groups.push(...folderGroups);
+  if (byFolder.has(TEMPORARY_GROUP_KEY)) {
+    groups.push(finalize(TEMPORARY_GROUP_KEY, {
+      kind: 'temporary',
+      projectId: null,
+      name: '',
+      path: '',
+    }, byFolder.get(TEMPORARY_GROUP_KEY)));
+  }
+  return groups;
+}
+
+// Shared drop/pick decision: does moving `session` onto project `target` need
+// the add-folder confirmation first (target's roots do not cover the session's
+// workspace), or can it move instantly? Temporary sessions have no workspace
+// and always move instantly. One predicate instead of three hand-mirrored
+// copies (drag drop handler, dialog initializer, dialog choose).
 function needsAddFolderConfirm(session, target) {
   if (!session || !target) return false;
   const workspacePath = hasProjectWorkspace(session) ? String(session.workspacePath || '') : '';
   return !!workspacePath && !projectCoversPath(target, workspacePath);
 }
 
-// Distinct workspace folders driving auto-materialization: folders backing
-// sessions that no materialized project ANCHORS yet AND that carry no
-// assignment entry. Sessions with an entry are excluded both ways — null =
-// explicit move-out (deleting a project writes null for its members, so a
-// folder whose project was deleted only re-materializes when a NEW
-// entry-less session appears), and an explicit Some(projectId) already
-// filed the session elsewhere.
-// Coverage is anchored (design §9.9, mirrors the backend ensure): only an
-// origin=folder project whose roots contain this exact path counts as
-// covering — a folder merely referenced by another project (even as its
-// primary root) still materializes, overlap being legal. The backend
-// re-checks under its own canonical keys, so a disagreement can only cause
-// a harmless extra Created, never a duplicate anchor. Each entry reports
-// the driving session ids so the caller can re-trigger per new session
-// instead of per refresh.
-function projectAnchorsFolder(project, folderPath) {
-  if (!project || project.origin !== 'folder') return false;
-  return (project.roots ? project.roots : []).some((root) => {
-    const rootPath = root && typeof root === 'object' ? root.path : root;
-    // Exact anchoring: isUnderRoot in both directions means the same path
-    // (case/separator differences folded).
-    return isUnderRoot(folderPath, rootPath) && isUnderRoot(rootPath, folderPath);
-  });
+// 失效 root 徽标的展示裁剪(评审 #463 m3):头部行固定 28px,一个完整徽标
+// (Folder unavailable · Rebind)已接近上限,多个 shrink-0 徽标会把折叠按钮
+// 挤到零宽并横向溢出。折叠时只保留第一个徽标(首入口),其余计数进 +N;
+// expanded 为 true 时全部平铺(容器换行)。返回 { visibleRoots, hiddenCount }。
+function capUnavailableRootsForDisplay(roots, expanded) {
+  const list = Array.isArray(roots) ? roots : [];
+  if (expanded) return { visibleRoots: list, hiddenCount: 0 };
+  return { visibleRoots: list.slice(0, 1), hiddenCount: Math.max(0, list.length - 1) };
 }
 
-function uncoveredWorkspaceRoots(items, projects, assignments) {
-  const projectList = Array.isArray(projects) ? projects.filter(Boolean) : [];
-  const assignmentMap = assignments && typeof assignments === 'object' ? assignments : {};
-  const byRoot = new Map();
-  (Array.isArray(items) ? items : []).forEach((item) => {
-    if (!item || !hasProjectWorkspace(item)) return;
-    const root = String(item.workspacePath || '');
-    // biome-ignore lint/suspicious/noPrototypeBuiltins: Safari 14 is the floor and Object.hasOwn is unavailable; this call is already in safe form
-    if (!root || Object.prototype.hasOwnProperty.call(assignmentMap, item.id)) return;
-    if (!byRoot.has(root)) byRoot.set(root, []);
-    byRoot.get(root).push(String(item.id));
-  });
-  return [...byRoot.entries()]
-    .filter(([root]) => projectList.every(project => !projectAnchorsFolder(project, root)))
-    .map(([root, sessionIds]) => ({ root, sessionIds }));
-}
-
-// ── Folder view (physical layer) ───────────────────────────────────────────
-// Original folder grouping restored: workspace-bound sessions bucket by
-// directory, temporary sessions merge into one bottom group; rows sort by
-// latest activity descending, groups sort by their latest activity descending.
-function groupSessionsByFolder(items) {
-  const byFolder = new Map();
-  (Array.isArray(items) ? items : []).forEach((item) => {
-    if (!item) return;
-    const key = hasProjectWorkspace(item)
-      ? String(item.workspacePath)
-      : TEMPORARY_GROUP_KEY;
-    if (!byFolder.has(key)) byFolder.set(key, []);
-    byFolder.get(key).push(item);
-  });
-  const groups = [];
-  byFolder.forEach((rows, key) => {
-    rows.sort((a, b) => itemTime(b).localeCompare(itemTime(a)));
-    groups.push({
-      key,
-      kind: key === TEMPORARY_GROUP_KEY ? 'temporary' : 'folder',
-      projectId: null,
-      name: '',
-      roots: [],
-      path: key === TEMPORARY_GROUP_KEY ? '' : key,
-      rows,
-      latestAt: itemTime(rows[0]),
-    });
-  });
-  groups.sort((a, b) => {
-    if (a.key === TEMPORARY_GROUP_KEY) return 1;
-    if (b.key === TEMPORARY_GROUP_KEY) return -1;
-    return b.latestAt.localeCompare(a.latestAt);
-  });
-  return groups;
-}
-
-// ── Project view (logical layer) ───────────────────────────────────────────
-// Membership: explicit assignment (tier 1; null = explicit move-out lands in
-// ungrouped and must not auto-revive) then root auto-match (tier 2, longest
-// root wins). Temporary sessions never auto-join — they enter a project only
-// via explicit assignment (the adopt flow). Projects render in manual
-// position order even when empty; the ungrouped bucket always sinks last and
-// is the drag source / move-out landing place.
-function groupSessionsByProject(items, projects, assignments) {
-  const projectList = Array.isArray(projects) ? projects.filter(Boolean) : [];
-  const assignmentMap = assignments && typeof assignments === 'object' ? assignments : {};
-  const byId = new Map(projectList.map(project => [project.id, project]));
-  const projectRows = new Map(projectList.map(project => [project.id, []]));
-  const ungrouped = [];
-
-  (Array.isArray(items) ? items : []).forEach((item) => {
-    if (!item) return;
-    // biome-ignore lint/suspicious/noPrototypeBuiltins: Safari 14 is the floor and Object.hasOwn is unavailable; this call is already in safe form
-    if (Object.prototype.hasOwnProperty.call(assignmentMap, item.id)) {
-      const assigned = assignmentMap[item.id];
-      if (assigned && byId.has(assigned)) {
-        projectRows.get(assigned).push(item);
-        return;
-      }
-      if (assigned === null) {
-        // Explicit move-out: lands directly in ungrouped and must not revive
-        // via tier 2; stale ids (project deleted / hand-edited state) continue
-        // through auto-grouping.
-        ungrouped.push(item);
-        return;
-      }
-    }
-    if (hasProjectWorkspace(item)) {
-      const target = matchProjectByPath(projectList, item.workspacePath);
-      if (target) {
-        projectRows.get(target.id).push(item);
-        return;
-      }
-    }
-    ungrouped.push(item);
-  });
-
-  const finalize = (key, kind, meta, rows) => {
-    rows.sort((a, b) => itemTime(b).localeCompare(itemTime(a)));
-    return { key, kind, ...meta, rows, latestAt: itemTime(rows[0]) };
-  };
-
-  const groups = [...projectList]
-    .sort((a, b) => (a.position || 0) - (b.position || 0) || String(a.id).localeCompare(String(b.id)))
-    .map(project => finalize(`project:${project.id}`, 'project', {
-      projectId: project.id,
-      name: project.name,
-      roots: project.roots || [],
-      path: '',
-    }, projectRows.get(project.id) || []));
-  if (ungrouped.length > 0) {
-    groups.push(finalize(UNGROUPED_GROUP_KEY, 'ungrouped', {
-      projectId: null,
-      name: '',
-      roots: [],
-      path: '',
-    }, ungrouped));
-  }
-  return groups;
-}
-
-export {
-  TEMPORARY_GROUP_KEY,
-  UNGROUPED_GROUP_KEY,
-  projectAnchorsFolder,
-  groupSessionsByFolder,
-  groupSessionsByProject,
-  projectCoversPath,
-  resolveSessionProjectId,
-  needsAddFolderConfirm,
-  hasProjectWorkspace,
-  uncoveredWorkspaceRoots,
-};
+export { TEMPORARY_GROUP_KEY, PROJECT_SESSION_DRAG_TYPE, groupSessionsWithProjects, projectCoversPath, resolveSessionProjectId, rootPath, needsAddFolderConfirm, hasProjectWorkspace, capUnavailableRootsForDisplay };

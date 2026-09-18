@@ -6,39 +6,62 @@
 import { useEffect, useRef } from 'react';
 import { createPortal } from 'react-dom';
 import { AlertTriangle, RefreshCw, X } from '../../components/icons.jsx';
+import { isImeComposing } from '../../shared/ime-guard.mjs';
+import { useDialogFocusRestore } from '../../hooks/useDialogFocusRestore.js';
+import { useDialogFocusTrap } from '../../hooks/useDialogFocusTrap.js';
 
-const RebindFolderDialog = ({ from, to, warnExisting, errorMessage, t, busy, onCancel, onConfirm }) => {
+const RebindFolderDialog = ({ from, to, warnExisting, errorMessage, partial, busySessionIds, t, busy, onCancel, onConfirm }) => {
   const dialogRef = useRef(null);
+  const confirmButtonRef = useRef(null);
+  const backdropPressRef = useRef(false);
+  // onCancel is an inline arrow at the call site; mirroring it and busy into
+  // refs keeps the key listener subscribed once instead of re-subscribing on
+  // every render (review #463 minor: keydown resubscribe — same idiom as
+  // MoveToProjectDialog's onCloseRef/busyRef).
+  const onCancelRef = useRef(onCancel);
+  const busyRef = useRef(busy);
+  useEffect(() => {
+    onCancelRef.current = onCancel;
+    busyRef.current = busy;
+  });
+  // On close, focus returns to the triggering badge (review #463 Minor 8,
+  // same as MoveToProjectDialog); pressing Enter after the restore re-triggers
+  // onRebind — by then rebindDraft is already cleared, so that starts a
+  // brand-new rebind flow rather than a duplicate submit, consistent with
+  // the guard's semantics.
+  useDialogFocusRestore(dialogRef, confirmButtonRef);
+  // Tab cycling goes through the shared trap — it holds focus when busy has
+  // disabled every control (the hand-rolled trap returned on the empty set
+  // and leaked Tab to the background page, review #463 Major 4), handles
+  // focus outside the dialog, and guards IME. Only the Escape tiering stays
+  // here.
+  useDialogFocusTrap(dialogRef);
   useEffect(() => {
     const onKey = (e) => {
-      if (e.key === 'Escape' && !busy) {
-        onCancel();
-        return;
-      }
-      if (e.key === 'Tab' && dialogRef.current) {
-        // Minimal focus trap (same idiom as MoveToProjectDialog, #449 review):
-        // cycle Tab within the dialog instead of letting focus fall through to
-        // the page behind the overlay — where Enter would re-trigger the badge.
-        const focusables = dialogRef.current.querySelectorAll(
-          'button:not([disabled]), input:not([disabled]), [tabindex]:not([tabindex="-1"])',
-        );
-        if (!focusables.length) return;
-        const first = focusables[0];
-        const last = focusables[focusables.length - 1];
-        if (e.shiftKey && document.activeElement === first) {
-          e.preventDefault();
-          last.focus();
-        } else if (!e.shiftKey && document.activeElement === last) {
-          e.preventDefault();
-          first.focus();
-        }
+      if (e.key === 'Escape' && !isImeComposing(e)) {
+        e.preventDefault();
+        if (!busyRef.current) onCancelRef.current();
       }
     };
     window.addEventListener('keydown', onKey);
     return () => window.removeEventListener('keydown', onKey);
-  }, [busy, onCancel]);
+  }, []);
 
   if (typeof document === 'undefined') return null;
+
+  // Backdrop close requires BOTH the press and the release to land on the
+  // backdrop (both halves mirror MoveToProjectDialog's #449 guard): a text
+  // drag-select starting on the break-all path text and releasing on the
+  // backdrop — or pressing on the backdrop, dragging into the text, and
+  // releasing inside — synthesizes a click whose target is the common
+  // ancestor (= the backdrop), so a click-only guard would close a dialog
+  // the user never meant to close. In the partial state this dialog is the
+  // only retry entry, so a stray close loses it (review #463 Major 3).
+  const handleBackdropClick = (e) => {
+    if (!backdropPressRef.current || e.target !== e.currentTarget) return;
+    backdropPressRef.current = false;
+    if (!busy) onCancel();
+  };
 
   return createPortal(
     // biome-ignore lint/a11y/noStaticElementInteractions: backdrop click-to-close; keyboard path is the Escape listener and the cancel button
@@ -46,7 +69,9 @@ const RebindFolderDialog = ({ from, to, warnExisting, errorMessage, t, busy, onC
       role="presentation"
       className="fixed inset-0 z-[200] flex items-center justify-center p-4"
       style={{ background: 'rgba(0,0,0,.34)', backdropFilter: 'blur(14px) saturate(140%)', WebkitBackdropFilter: 'blur(14px) saturate(140%)' }}
-      onClick={() => !busy && onCancel()}
+      onMouseDown={(e) => { backdropPressRef.current = e.target === e.currentTarget; }}
+      onMouseUp={(e) => { if (backdropPressRef.current && e.target !== e.currentTarget) backdropPressRef.current = false; }}
+      onClick={handleBackdropClick}
     >
       {/* biome-ignore lint/a11y/useKeyWithClickEvents: dialog body stops bubbling so backdrop close is not triggered accidentally; not interactive itself */}
       <div
@@ -54,6 +79,7 @@ const RebindFolderDialog = ({ from, to, warnExisting, errorMessage, t, busy, onC
         role="dialog"
         aria-modal="true"
         aria-label={t.uiProjects.rebindTitle}
+        tabIndex={-1}
         onClick={e => e.stopPropagation()}
         className="w-[380px] max-w-[calc(100vw-48px)] overflow-hidden rounded-[16px] shadow-2xl bg-[rgba(250,250,250,.96)] dark:bg-[rgba(44,44,46,.96)] text-[#000] dark:text-[#F2F2F7]"
         style={{ fontFamily: '-apple-system, BlinkMacSystemFont, "SF Pro Text", "PingFang SC", "Microsoft YaHei", sans-serif' }}
@@ -93,16 +119,59 @@ const RebindFolderDialog = ({ from, to, warnExisting, errorMessage, t, busy, onC
             </div>
           )}
         </div>
+        {/* Partial-failure report (review #463 M1): the dialog does not
+            close — the root has already moved, and the unavailable badge
+            (the only rebind entry) disappears with the refresh, so the
+            retry promise must be honored inside the dialog. Failed session
+            ids are data, not UI copy, and are listed verbatim for manual
+            follow-up. */}
+        {partial && (
+          <div className="px-4 pb-2 space-y-2" data-testid="rebind-partial-report">
+            <div className="flex items-start gap-2 rounded-2xl bg-[#FCE8E6] dark:bg-[#3C2A29] px-3 py-2 text-[12px] text-[#C5221F] dark:text-[#F28B82]">
+              <AlertTriangle size={14} className="shrink-0 mt-0.5" />
+              <div className="space-y-1">
+                <div>{t.uiProjects.rebindPartial(partial.rebound, partial.failed)}</div>
+                {partial.postBusy > 0 && (
+                  <div>{t.uiProjects.rebindBusyAfter(partial.postBusy)}</div>
+                )}
+              </div>
+            </div>
+            {partial.failedIds.length > 0 && (
+              <div className="space-y-1">
+                <div className="text-[12px] text-[#5F6368] dark:text-[#C4C7C5]">
+                  {t.uiProjects.rebindFailedSessions}
+                </div>
+                <div className="max-h-24 overflow-y-auto rounded-xl bg-black/5 dark:bg-white/10 px-2 py-1 font-mono text-[11px] break-all">
+                  {partial.failedIds.join('\n')}
+                </div>
+              </div>
+            )}
+          </div>
+        )}
+        {/* Busy rejection (Minor 7): the backend rejects with the typed
+            REBIND_SESSIONS_BUSY marker and the frontend maps it to i18n
+            copy; session ids are data and are listed verbatim for
+            troubleshooting. */}
+        {busySessionIds && busySessionIds.length > 0 && (
+          <div className="px-4 pb-2 space-y-1" data-testid="rebind-busy-hint">
+            <div className="flex items-start gap-2 rounded-2xl bg-[#FEF7E0] dark:bg-[#3C3226] px-3 py-2 text-[12px] text-[#B06000] dark:text-[#FDD663]">
+              <AlertTriangle size={14} className="shrink-0 mt-0.5" />
+              <span>{t.uiProjects.rebindBusyHint}</span>
+            </div>
+            <div className="max-h-24 overflow-y-auto rounded-xl bg-black/5 dark:bg-white/10 px-2 py-1 font-mono text-[11px] break-all">
+              {busySessionIds.join('\n')}
+            </div>
+          </div>
+        )}
         <div className="px-4 pb-4 pt-1 flex gap-2">
           <button
             type="button"
-            // biome-ignore lint/a11y/noAutofocus: modal opens for a single purpose; focus belongs on the primary action immediately (same idiom as MoveToProjectDialog)
-            autoFocus
+            ref={confirmButtonRef}
             disabled={busy}
-            onClick={() => onConfirm(!!warnExisting)}
+            onClick={() => onConfirm(!!warnExisting || !!partial)}
             className="flex-1 h-10 rounded-full bg-[#0B57D0] text-white text-[14px] font-medium hover:bg-[#0A4CB8] disabled:opacity-50"
           >
-            {t.uiProjects.rebindConfirm}
+            {partial ? t.uiProjects.rebindRetryRemaining : t.uiProjects.rebindConfirm}
           </button>
           <button
             type="button"
@@ -113,12 +182,13 @@ const RebindFolderDialog = ({ from, to, warnExisting, errorMessage, t, busy, onC
             {t.cpCancel}
           </button>
         </div>
-        {/* Failures render inline (review #463 M7): the toast portal layer
-            (z-120) sits under this backdrop (z-200 + backdrop blur), and since
-            the dialog does not close on failure, a toast would be completely
-            invisible. The text is the backend error verbatim (the backend
-            already organizes it as typed marker / Chinese detail), not UI
-            copy, so it does not go through i18n keys. */}
+        {/* Inline failure rendering (review #463 M7; a Minor round corrected
+            the original comment): shown in place, persistent, right next to
+            the retry action — a toast would time out and detach from the
+            operation. Stacking order is not the motive: settingsToast
+            actually renders at z-[210], above this overlay's z-[200]; the
+            earlier comment's stacking claim was the reverse of the facts —
+            do not base any future layering decisions on it. */}
         {errorMessage && (
           <div className="px-4 pb-4 -mt-1">
             <div className="flex items-start gap-2 rounded-2xl bg-[#FCE8E6] dark:bg-[#3C2A29] px-3 py-2 text-[12px] text-[#C5221F] dark:text-[#F28B82]" data-testid="rebind-error">

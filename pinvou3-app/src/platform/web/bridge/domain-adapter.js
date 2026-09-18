@@ -27,12 +27,10 @@
     personas: ["activePersona", "personaEvents", "personaPool"],
     memory: ["memory"],
     remoteControl: ["webAccess"],
-    // The projects domain is desktop-only (the whole domain does not appear
-    // in bridgeDomainContract's Web domain surface), but the
-    // APP_BRIDGE_STATE_DOMAINS subscription list is shared by both ends; the
-    // Web side adds an empty stub (no bridge.projects method surface, the list
-    // is always empty) so startup getMany does not throw "Unknown Tauri bridge
-    // state slice: projects" (the root cause of #448 in the stack).
+    // projects 域为桌面专属(整域不出现在 bridgeDomainContract 的 Web 域面),
+    // 但 APP_BRIDGE_STATE_DOMAINS 的订阅列表双端共享;Web 端补一个空桩
+    // (没有 bridge.projects 方法面,列表恒空),防止启动期 getMany 抛
+    // "Unknown Tauri bridge state slice: projects"(栈内 #448 的根因)。
     projects: ["projectsList"],
     updater: ["updateCancelling", "updateCheckError", "updateChecking", "updateDownloading", "updateError", "updateInfo", "updateProgress", "updateReady"],
     dependencies: ["deps", "depsChecking", "depsInstallError", "depsInstalling"]
@@ -160,7 +158,7 @@
     artifacts: domain(["artifactInfo", "readArtifactText", "writeArtifactText", "readArtifactImageB64", "readArtifactThumbnail", "renderArtifactVisual", "openContainingFolder", "revealSessionFolder", "openScheduledTaskFolder", "openInSystem", "openArtifactExternal", "downloadArtifact", "listDeliverableIndex", "openExternalUrl", "openUserExternalUrl"]),
     attachments: domain(["addAttachmentByPath", "addPasteImage", "removeAttachment", "clearAttachments", "pickAndAttach", "uploadDeviceFiles", "resolveConversationAttachment", "openConversationAttachment", "revealConversationAttachment"]),
     resolutions: domain(["markResolved"]),
-    files: domain(["pickFiles", "pickFolders", "pickFeedbackFiles"]),
+    files: domain(["pickFiles", "pickFolders", "pickRebindFolder", "pickFeedbackFiles"]),
     personas: domain(["loadPersonas", "getPersonas", "readPersonaBody", "equipPersona", "unequipPersona", "postCardCreatorIntro", "createPersona", "updatePersona", "deletePersona"]),
     memory: domain(["loadMemoryOverview", "saveMemoryProfilePatch", "deleteMemoryPreference", "updateMemoryItem", "deleteMemoryItem", "archiveRecentWorkMemory", "confirmMemoryCandidate", "ignoreMemoryCandidate", "neverMemoryCandidate", "organizeMemory", "loadOrganizeHistory"]),
     updater: domain(["checkForUpdate", "downloadAndInstallUpdate", "cancelUpdate", "restartApp"]),

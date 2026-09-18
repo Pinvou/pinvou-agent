@@ -592,16 +592,12 @@ try {
     && i18n.includes("sidebarTaskFilterCodeSessions: 'Code sessions'")
     && i18n.includes("sidebarTaskFilterCodeSessions: 'コードセッション'")
     && main.includes("{t.sidebarTaskFilterCode}")
-    && i18n.includes("sidebarTaskFilterCode: '代码'")
-    && i18n.includes("sidebarTaskFilterCode: 'Code'")
-    && i18n.includes("sidebarTaskFilterCode: 'コード'")
-    && main.includes("{t.sidebarTaskFilterProjects}")
-    && i18n.includes("sidebarTaskFilterProjects: '项目'")
-    && i18n.includes("sidebarTaskFilterProjects: 'Projects'")
-    && i18n.includes("sidebarTaskFilterProjects: 'プロジェクト'"),
-  'the task-list Code filter must show only Codex sessions in every supported locale, '
-    + 'with a label distinct from the All/Code list-shape pill and the project view pill '
-    + '(the projects pill carries its own key instead of relabeling the code one)');
+    && i18n.includes("sidebarTaskFilterCode: '项目'")
+    && i18n.includes("sidebarTaskFilterCode: 'Projects'")
+    && i18n.includes("sidebarTaskFilterCode: 'プロジェクト'"),
+  'the code-only filter keeps the Code sessions label and the taskKind filter in every '
+    + 'supported locale, while the second pill carries the project-view label '
+    + '(项目/Projects/プロジェクト): Codex sessions plus workspace-bound work sessions');
   assert.ok(main.includes('leadingIcon: <PinvouLogo')
     && main.includes('<AcpAgentLogo agentId={session.agent_id} className="h-[18px] w-[18px]"')
     && main.includes('<Clock size={18} />'),
@@ -731,7 +727,7 @@ try {
   'new code sessions must expose the platform-specific directory picker');
   assert.ok(codexView.includes('const requestedWorkspaceHandle = draftWorkspaceHandle')
     && codexView.includes('workspaceHandle: requestedWorkspaceHandle')
-    && /invokeTauri\('create_codex_acp_session', \{\s*workspacePath,\s*agentId,\s*workspaceRoots: workspaceRoots && workspaceRoots\.length \? workspaceRoots : null,\s*projectId: projectId \|\| null,\s*\}\)/.test(acpClient)
+    && acpClient.includes("invokeTauri('create_codex_acp_session', { workspacePath, agentId })")
     && acpClient.includes("invokeRequiredWebCommand('web_access_create_codex_acp_session'"),
   'selected project directories must use native paths on desktop and opaque grants on Web');
   assert.ok(!codexView.includes('data-testid="acp-agent-selector"')
@@ -1029,7 +1025,7 @@ try {
     path.join(root, 'src-tauri', 'src', 'app', 'commands', 'interaction.rs'),
     'utf8',
   );
-  assert.ok(interactionCommands.includes('multi_agent_available: pool.multi_agent_mode_available(&session_id)')
+  assert.ok(interactionCommands.includes('multi_agent_available: pool.swarm_mode_available(&session_id)')
     && codexView.includes('multiAgentAvailable: Boolean(modeState && modeState.multi_agent_available)'),
   'the native multi-agent control must consume the backend SessionPolicy availability instead of a literal UI capability');
   // 语音输入生命周期契约：bridge.voice 的写回守卫只绑定聊天侧 activeSessionId，

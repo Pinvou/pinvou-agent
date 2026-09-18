@@ -85,6 +85,10 @@ struct PersonaPoolFile {
 static EMBEDDED: OnceLock<Vec<PersonaCard>> = OnceLock::new();
 // ── 用户自创卡: RwLock 缓存,create/update/delete 后 reload_user 刷新 ──
 static USER: OnceLock<RwLock<Vec<PersonaCard>>> = OnceLock::new();
+// Serialize user-card mutations against operations that must publish a card
+// into another feature atomically. The closure-based API keeps this feature
+// independent of session state while commands retain composition ownership.
+static USER_OPERATIONS: OnceLock<RwLock<()>> = OnceLock::new();
 /// 用户专家池内存版本；多智能体全局名册以它做增量缓存失效。
 static USER_REVISION: AtomicU64 = AtomicU64::new(0);
 
@@ -104,6 +108,10 @@ fn embedded() -> &'static [PersonaCard] {
 
 fn user_lock() -> &'static RwLock<Vec<PersonaCard>> {
     USER.get_or_init(|| RwLock::new(load_user_cards()))
+}
+
+fn user_operations() -> &'static RwLock<()> {
+    USER_OPERATIONS.get_or_init(|| RwLock::new(()))
 }
 
 /// 扫 `~/.pinvou3/user/personas/<id>.json`,解析成卡(source 强制 "user")。
@@ -202,6 +210,26 @@ pub fn get(id: &str) -> Option<PersonaCard> {
         .cloned()
 }
 
+/// Read a card and publish derived state while deletion is excluded.
+///
+/// The callback must not call a user-persona mutation API, because those APIs
+/// acquire the write side of the same operation gate.
+pub(crate) fn with_card<T>(id: &str, publish: impl FnOnce(&PersonaCard) -> T) -> Option<T> {
+    if let Some(card) = embedded().iter().find(|card| card.id == id) {
+        return Some(publish(card));
+    }
+    let _operation = user_operations()
+        .read()
+        .unwrap_or_else(|poisoned| poisoned.into_inner());
+    let card = user_lock()
+        .read()
+        .unwrap_or_else(|poisoned| poisoned.into_inner())
+        .iter()
+        .find(|card| card.id == id)
+        .cloned()?;
+    Some(publish(&card))
+}
+
 // ── 用户卡 CRUD ────────────────────────────────────────────────────
 
 /// id 只允许 ascii 字母数字和 `-`（防路径穿越）。
@@ -246,6 +274,9 @@ fn write_card(card: &PersonaCard) -> Result<(), String> {
 
 /// 新建用户卡。生成 `user-<slug>-<nanos>` id,写盘,刷新缓存,返回摘要。
 pub fn create_user_persona(mut card: PersonaCard) -> Result<PersonaSummary, String> {
+    let _operation = user_operations()
+        .write()
+        .unwrap_or_else(|poisoned| poisoned.into_inner());
     if card.name.trim().is_empty() {
         return Err("卡牌名称不能为空".to_string());
     }
@@ -261,6 +292,9 @@ pub fn create_user_persona(mut card: PersonaCard) -> Result<PersonaSummary, Stri
 
 /// 更新用户卡(只能改 user- 前缀的自制卡)。
 pub fn update_user_persona(mut card: PersonaCard) -> Result<PersonaSummary, String> {
+    let _operation = user_operations()
+        .write()
+        .unwrap_or_else(|poisoned| poisoned.into_inner());
     if !card.id.starts_with("user-") || !id_is_safe(&card.id) {
         return Err("只能编辑自制卡".to_string());
     }
@@ -282,13 +316,29 @@ pub fn update_user_persona(mut card: PersonaCard) -> Result<PersonaSummary, Stri
 
 /// 删除用户卡(只能删 user- 前缀的自制卡)。
 pub fn delete_user_persona(id: &str) -> Result<(), String> {
+    delete_user_persona_with(id, || ())
+}
+
+/// Delete a card and run cross-feature cleanup before another operation can
+/// publish a snapshot of that card.
+pub(crate) fn delete_user_persona_with<T>(
+    id: &str,
+    after_delete: impl FnOnce() -> T,
+) -> Result<T, String> {
+    let _operation = user_operations()
+        .write()
+        .unwrap_or_else(|poisoned| poisoned.into_inner());
     if !id.starts_with("user-") || !id_is_safe(id) {
         return Err("只能删除自制卡".to_string());
     }
     let path = crate::platform::paths::user_personas_dir().join(format!("{id}.json"));
-    let _ = std::fs::remove_file(&path);
+    match std::fs::remove_file(&path) {
+        Ok(()) => {}
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
+        Err(error) => return Err(format!("Failed to delete persona: {error}")),
+    }
     reload_user();
-    Ok(())
+    Ok(after_delete())
 }
 
 // ── 加持注入 ───────────────────────────────────────────────────────
@@ -383,7 +433,7 @@ const CARD_CREATOR_BODY: &str = r##"# 卡牌制造专家
 - 一条消息最多一个 `card-question` 块;开放式问题不用这个块,直接文字问。
 
 ## 硬规则
-- **绝不调用任何文件或命令工具**(`File` / `Bash` 等)。卡牌不是文件,**直接在回复正文里输出代码块**就行,不要写盘、不要产出 .txt/.md 文件。
+- **绝不调用任何文件或命令工具**(`write` / `bash` 等)。卡牌不是文件,**直接在回复正文里输出代码块**就行,不要写盘、不要产出 .txt/.md 文件。
 - 代码块**必须以 ```persona-card 这个字面标签起头**(不是 ```json,不是无标签)。前端靠这个识别成可保存的卡。
 - **body 要详实**(至少几百字),是真能指导 AI 干活的方法论,不能是空话套话。
 - **一次只产一张卡**的 `persona-card` 块。块以外可以正常跟 Boss 对话/确认。
@@ -515,6 +565,18 @@ mod tests {
         // delete
         delete_user_persona(&sum.id).expect("delete");
         assert!(get(&sum.id).is_none(), "删后查不到");
+
+        // Missing files are idempotent; other filesystem failures must reach the UI.
+        delete_user_persona(&sum.id).expect("delete already missing card");
+        let blocked_path =
+            crate::platform::paths::user_personas_dir().join(format!("{}.json", sum.id));
+        std::fs::create_dir(&blocked_path).expect("create non-file deletion target");
+        let error = delete_user_persona(&sum.id).expect_err("directory is not a card file");
+        assert!(error.starts_with("Failed to delete persona:"));
+        assert!(
+            blocked_path.is_dir(),
+            "failed deletion must not remove the target"
+        );
 
         // cleanup
         match prev {

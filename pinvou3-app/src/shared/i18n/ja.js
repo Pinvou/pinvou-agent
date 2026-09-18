@@ -8,7 +8,7 @@ import { dictEn } from './en.js';
 import { browserJa } from './browser.js';
 
 const conversationJa = {
-  completed:'完了', failed:'失敗', interrupted:'中断', limitReached:'上限に到達', processing:'処理中', processingActive:'処理中',
+  completed:'完了', failed:'失敗', interrupted:'中断', cancelled:'キャンセル済み', limitReached:'上限に到達', processing:'処理中', processingActive:'処理中',
   waitingPermission:'権限の承認待ち', waitingInput:'入力待ち', waitingInputShort:'入力待ち',
   goLatest:label=>`${label}。最新メッセージへ移動`,
   elapsed:milliseconds=>{ const seconds=Math.max(0,Math.floor(milliseconds/1000)); if(seconds<60)return `${seconds}秒`; const minutes=Math.floor(seconds/60); const remaining=seconds%60; return remaining?`${minutes}分${remaining}秒`:`${minutes}分`; },
@@ -174,10 +174,11 @@ const jaBase = {
   ...browserJa,
         langTag: 'ja',
         acpAgent: 'ACP Agent',
-        newChat: '新しいチャット', currentChat: '現在のチャット', searchChats: 'チャットを検索', scheduledPlans: '定期タスク', monitor: '稼働状態', workflow: 'ワークフロー', multiAgent: 'マルチエージェント', multiAgentDesktopOnly: 'このマルチエージェント会話は現在デスクトップアプリでのみ利用できます。', toolStore: 'プラグインセンター', cardPool: 'カードプール', recent: '履歴', pinnedTasks: '固定タスク', regularTasks: 'タスク', sidebarTaskList: 'タスク一覧', sidebarTaskFilter: 'フィルター', sidebarTaskFilterAll: 'すべて', sidebarTaskFilterPinned: '固定', sidebarTaskFilterCode: 'コード', sidebarTaskFilterProjects: 'プロジェクト', sidebarTaskFilterCodeSessions: 'コードセッション', sidebarTaskFilterScheduled: '定期タスク', sidebarTaskSort: '並び替え', sidebarTaskSortPinnedFirst: '固定を優先', sidebarTaskSortRecent: '最近の更新', sidebarTaskEmpty: 'タスクはありません', sidebarViewAll: 'すべて表示', sidebarSection: 'タスクリスト', sidebarDateGrouping: '日付でグループ化', sidebarDateGroupingDesc: 'タスクを日付ごとにまとめ、今日分を既定で展開', sidebarNavExpand: 'ナビゲーションを展開', sidebarNavCollapse: 'ナビゲーションを折りたたむ', sidebarCollapseAll: '折りたたむ', sidebarExpandAll: '展開', sidebarTaskStyle: 'スタイル', sidebarResize: 'ドラッグでサイドバーの幅を調整、ダブルクリックでリセット', settings: '設定', localEnv: 'ローカル環境', megacubeSite: 'MegaCube サイトを開く', tearoffTitle: '切り離し', tearoffHint: '別ウィンドウに切り離す', mobileMore: 'その他',
+        newChat: '新しいチャット', currentChat: '現在のチャット', searchChats: 'チャットを検索', scheduledPlans: '定期タスク', monitor: '稼働状態', workflow: 'ワークフロー', multiAgent: 'スワームモード', multiAgentDesktopOnly: 'このスワーム会話は現在デスクトップアプリでのみ利用できます。', toolStore: 'プラグインセンター', cardPool: 'カードプール', recent: '履歴', pinnedTasks: '固定タスク', regularTasks: 'タスク', sidebarTaskList: 'タスク一覧', sidebarTaskFilter: 'フィルター', sidebarTaskFilterAll: 'すべて', sidebarTaskFilterPinned: '固定', sidebarTaskFilterCode: 'プロジェクト', sidebarTaskFilterCodeSessions: 'コードセッション', sidebarTaskFilterScheduled: '定期タスク', sidebarTaskSort: '並び替え', sidebarTaskSortPinnedFirst: '固定を優先', sidebarTaskSortRecent: '最近の更新', sidebarTaskEmpty: 'タスクはありません', sidebarViewAll: 'すべて表示', sidebarSection: 'タスクリスト', sidebarDateGrouping: '日付でグループ化', sidebarDateGroupingDesc: 'タスクを日付ごとにまとめ、今日分を既定で展開', sidebarNavExpand: 'ナビゲーションを展開', sidebarNavCollapse: 'ナビゲーションを折りたたむ', sidebarCollapseAll: '折りたたむ', sidebarExpandAll: '展開', sidebarTaskStyle: 'スタイル', sidebarResize: 'ドラッグでサイドバーの幅を調整、ダブルクリックでリセット', settings: '設定', localEnv: 'ローカル環境', megacubeSite: 'MegaCube サイトを開く', tearoffTitle: '切り離し', tearoffHint: '別ウィンドウに切り離す', mobileMore: 'その他',
         previewTaskDailyBrief: 'デイリーブリーフ', previewTaskFollowUp: 'フォローアップ確認', previewTaskSalesWeekly: 'リード週報',
         archiveSession: '隠す', archiveConfirmTitle: 'このタスクを隠しますか？', archiveConfirmMessage: 'このタスクはサイドバーから外れます。', archiveConfirmDetail: '会話と成果物は削除されず、チャット管理ページから戻せます。', archiveConfirmAction: '隠す',
         archiveSuccess: '隠しました', archiveSuccessView: '表示',
+        exportSessionArchive: 'セッションログを書き出す', exportSessionDone: path => `セッションログを ${path} に書き出しました`, exportSessionFailed: 'セッションログの書き出しに失敗しました',
         sessionBatchFailed: n => `${n} 件のタスク操作に失敗しました。再試行してください。`,
         archivedTasks: '設定に隠したタスク', archivedTasksDesc: '', archivedEmpty: '隠したタスクはありません', restoreArchived: '一覧に戻す',
         archivedDeleteTitle: '隠したタスクを削除しますか？', archivedDeleteMessage: 'このタスクと内容は完全に削除され、元に戻せません。', archivedDeleteAction: '削除',
@@ -321,9 +322,9 @@ const jaBase = {
         uiMonitor: { bridgeNotReady:'ブリッジ未準備', readFailed:'読み込み失敗', reading:'読み込み中', configError:'設定エラー', unverified:'未確認', authFailed:'認証失敗', bridgeError:'モニターブリッジが未準備です。Tauri アプリのウィンドウで開いてください。', readError:e=>`モニターの読み込みに失敗: ${e}`, activity:'実行状況' },
 
         uiSettings: { common:'一般', system:'システム', general:'一般', model:'モデル', search:'検索', memory:'メモリ', community:'ユーザーコミュニティ', permissions:'権限と環境', data:'データ管理', update:'更新', help:'ヘルプとフィードバック', appearance:'外観', language:'表示言語', languageDesc:'アプリの表示言語を切り替えます', theme:'テーマ', themeDesc:'システムに従う、またはライト/ダークを選択', notifications:'通知', taskNotice:'タスク完了通知', taskNoticeDesc:'タスク完了時にシステム通知を表示', voiceShortcuts:'音声ショートカット', voiceShortcutEnable:'Alt 音声ショートカットを有効化', voiceShortcutEnableDesc:'Alt で音声入力を開始します。入力欄にテキストがある場合は、Alt で現在のテキストを音声編集します。既定ではオフです。', voiceShortcutHelp:'Alt 音声ショートカットの説明を表示', voiceShortcutUnsupportedDesc:'Alt グローバルショートカットは Windows のみ対応しています。このプラットフォームでは、アプリのウィンドウ内で Alt 音声入力を利用できます。', voicePostprocess:'スマート整形', voicePostprocessDesc:'認識テキスト（入力欄の既存下書きも含む）を設定済みのモデルサービスへ送り、誤りを修正して構造化入力に整理します。オフの場合は端末内のルール修正のみ行います。', voiceShortcutWebDesc:'ブラウザーではアプリウィンドウ内で Alt 音声入力を利用できます。グローバルショートカットは利用できず、転写のみでスマート整形と音声編集は行われません。', desktopAssistant:'デスクトップアシスタント', pet:'デスクトップコンパニオン', petDesc:'デスクトップに常駐コンパニオンを表示', version:'バージョン', currentVersion:'現在のバージョン', beta:'ベータ版', releaseNotes:'更新内容', noReleaseNotes:'更新内容はありません', downloading:p=>`更新をダウンロード中 ${p}%`, installingUpdate:'更新をインストール中…', installerStarted:'インストーラー起動済み', cancelDownload:'ダウンロードをキャンセル', providers:'ACP' },
-        uiSettingsDetail: { modelSection:'モデル', settingsLoadFailed:'設定ページの読み込みに失敗しました', addModel:'モデルを追加', envManaged:'環境変数で管理されるモデル設定はここに表示されますが、変更は環境変数側で行う必要があります。', localModel:'ローカルモデル', defaultTag:'デフォルト', edit:'編集', delete:'削除', noModels:'モデルがありません', localDefaultName:'ローカル Qwen3.6', searchList:'検索ソース一覧', setDefault:'デフォルトに設定', addSearch:'検索ソースを追加', searchDescriptions:{ bing:'内蔵検索', metaso:'中国語検索サービス', bocha:'検索サービス', baidu:'Qianfan AI 検索', tavily:'海外検索サービス' }, searchSourceHint:'内蔵検索はキー不要で利用できます。選択したサービスが失敗した場合は自動的に内蔵検索へフォールバックします。中国語の長い検索には中国語検索サービスの追加がおすすめです。', memoryTypes:{ preference:'長期の好み', work_context:'業務コンテキスト', current_focus:'現在の注目事項', recent_activity:'最近のアクティビティ' }, memoryDetail:'メモリ詳細', content:'内容', editTitle:label=>`${label}を編集`, userCallName:'ユーザーの呼び名', assistantNickname:'アシスタントの呼び名', callNameDesc:'アシスタントがあなたを呼ぶ名前', assistantNameDesc:'あなたがアシスタントを呼ぶ名前', unnamedMemory:'無題のメモリ', view:'表示', enableMemory:'メモリを有効化', enableMemoryDesc:'PINVOU が呼び名、好み、業務コンテキスト、最近の事項を記憶します', profile:'プロフィール', notSet:'未設定', longMemory:'長期メモリ', shortMemory:'短期メモリ', noLongMemory:'長期メモリはありません', noShortMemory:'短期メモリはありません', hiddenTasks:'非表示タスク', archivedAt:date=>`${date} に隠した`, restore:'復元', noHiddenTasks:'非表示タスクはありません', noHiddenTasksDesc:'隠したタスクがここに表示されます', system:'システム', advancedPermission:'高度な実行権限', advancedPermissionDesc:'環境設定などの高度なコマンド実行を許可します', missing:'不足', installMissing:'不足している依存関係をインストール', feedbackTitle:'問題または提案を送信', feedbackDesc:'画像と動画を添付できます。送信前にプライバシー通知を表示します', submitFeedback:'フィードバックを送信', editSearch:'検索ソースを編集', apiKeyPlaceholder:'API Key を入力', hide:'非表示', show:'表示', cancel:'キャンセル', save:'保存', restartSearchTitle:'検索設定を適用するため再起動しますか？', restartLanguageTitle:'言語設定を適用するため再起動しますか？', restartSearchDesc:'更新した検索ソースや認証情報を利用するにはアプリの再起動が必要です。', restartLanguageDesc:'表示言語を変更しました。再起動するとアシスタントの応答言語にも反映されます。', later:'後で', restartNow:'今すぐ再起動', deleteModelTitle:'モデルを削除しますか？', deleteModelDesc:'モデル設定と保存済み認証情報を削除します。', deleteModel:'モデルを削除', deleteSearchTitle:'検索ソースを削除しますか？', deleteSearchDesc:name=>`${name} と保存済み認証情報を削除します。`, deleteSearch:'検索ソースを削除', addSearchDesc:'検索ソースを選択して必要な認証情報を入力します', closeSettings:'設定を閉じる', chooseModelDesc:'モデルを選択して必要な認証情報を入力します', collapse:'閉じる', change:'変更', customModel:'カスタムモデル', localModelName:name=>name ? `ローカル ${name}` : 'ローカルモデル', apiKeyReadFailed:'API Key の読み込みに失敗しました', localModelId:'ローカルモデル ID', modelId:'モデル ID', modelIdPlaceholder:'モデル ID を入力', customModelTitle:provider=>`カスタム ${provider} モデル`, customModelDesc:'モデル ID を手動入力', customLocalDesc:'ローカルサービスが公開するモデル ID を入力', customCompatibleDesc:'モデル ID とサービス URL を手動入力', modelDescriptions:{ '本地服务默认模型':'ローカルサービスのデフォルトモデル', '高能力模型':'高性能モデル', '快速响应':'高速応答', '最新通用模型':'最新の汎用モデル', '代码场景':'コーディング向け', '高速代码场景':'高速コーディング向け', '稳定可用':'安定版', '最新推荐':'最新の推奨モデル', '高性价比':'コストパフォーマンス重視', '通用能力':'汎用', '兼容保留':'互換性オプション', '高速响应':'高速応答', '兼容高速':'高速互換オプション', '稳定通用':'安定した汎用モデル', '轻量模型':'軽量モデル', '兼容端点示例':'互換エンドポイント例' } },
+        uiSettingsDetail: { modelSection:'モデル', settingsLoadFailed:'設定ページの読み込みに失敗しました', addModel:'モデルを追加', envManaged:'環境変数で管理されるモデル設定はここに表示されますが、変更は環境変数側で行う必要があります。', localModel:'ローカルモデル', defaultTag:'デフォルト', edit:'編集', delete:'削除', noModels:'モデルがありません', localDefaultName:'ローカル Qwen3.6', searchList:'検索ソース一覧', setDefault:'デフォルトに設定', addSearch:'検索ソースを追加', searchDescriptions:{ bing:'内蔵検索', metaso:'中国語検索サービス', bocha:'検索サービス', baidu:'Qianfan AI 検索', tavily:'海外検索サービス' }, searchSourceHint:'内蔵検索はキー不要で利用できます。選択したサービスが失敗した場合は自動的に内蔵検索へフォールバックします。中国語の長い検索には中国語検索サービスの追加がおすすめです。', memoryTypes:{ preference:'長期の好み', work_context:'業務コンテキスト', current_focus:'現在の注目事項', recent_activity:'最近のアクティビティ' }, memoryDetail:'メモリ詳細', content:'内容', editTitle:label=>`${label}を編集`, userCallName:'ユーザーの呼び名', assistantNickname:'アシスタントの呼び名', callNameDesc:'アシスタントがあなたを呼ぶ名前', assistantNameDesc:'あなたがアシスタントを呼ぶ名前', unnamedMemory:'無題のメモリ', view:'表示', enableMemory:'メモリを有効化', enableMemoryDesc:'PINVOU が呼び名、好み、業務コンテキスト、最近の事項を記憶します', profile:'プロフィール', notSet:'未設定', longMemory:'長期メモリ', shortMemory:'短期メモリ', noLongMemory:'長期メモリはありません', noShortMemory:'短期メモリはありません', hiddenTasks:'非表示タスク', archivedAt:date=>`${date} に隠した`, restore:'復元', noHiddenTasks:'非表示タスクはありません', noHiddenTasksDesc:'隠したタスクがここに表示されます', system:'システム', advancedPermission:'高度な実行権限', advancedPermissionDesc:'環境設定などの高度なコマンド実行を許可します', missing:'不足', installMissing:'不足している依存関係をインストール', feedbackTitle:'問題または提案を送信', feedbackDesc:'画像と動画を添付できます。送信前にプライバシー通知を表示します', submitFeedback:'フィードバックを送信', editSearch:'検索ソースを編集', apiKeyPlaceholder:'API Key を入力', hide:'非表示', show:'表示', cancel:'キャンセル', save:'保存', restartSearchTitle:'検索設定を適用するため再起動しますか？', restartLanguageTitle:'言語設定を適用するため再起動しますか？', restartSearchDesc:'更新した検索ソースや認証情報を利用するにはアプリの再起動が必要です。', restartLanguageDesc:'表示言語を変更しました。再起動するとアシスタントの応答言語にも反映されます。', later:'後で', restartNow:'今すぐ再起動', deleteModelTitle:'モデルを削除しますか？', deleteModelDesc:'モデル設定と保存済み認証情報を削除します。', deleteModel:'モデルを削除', deleteSearchTitle:'検索ソースを削除しますか？', deleteSearchDesc:name=>`${name} と保存済み認証情報を削除します。`, deleteSearch:'検索ソースを削除', addSearchDesc:'検索ソースを選択して必要な認証情報を入力します', closeSettings:'設定を閉じる', chooseModelDesc:'モデルを選択して必要な認証情報を入力します', collapse:'閉じる', change:'変更', customModel:'カスタムモデル', localModelName:name=>name ? `ローカル ${name}` : 'ローカルモデル', apiKeyReadFailed:'API Key の読み込みに失敗しました', localModelId:'ローカルモデル ID', modelId:'モデル ID', modelIdPlaceholder:'モデル ID を入力', customModelTitle:provider=>`カスタム ${provider} モデル`, customModelDesc:'モデル ID を手動入力', customLocalDesc:'ローカルサービスが公開するモデル ID を入力', customCompatibleDesc:'モデル ID とサービス URL を手動入力', modelDescriptions:{ '本地服务默认模型':'ローカルサービスのデフォルトモデル', '高能力模型':'高性能モデル', '快速响应':'高速応答', '最新通用模型':'最新の汎用モデル', '代码场景':'コーディング向け', '高速代码场景':'高速コーディング向け', '稳定可用':'安定版', '高性价比':'コストパフォーマンス重視', '通用能力':'汎用', '兼容保留':'互換性オプション', '高速响应':'高速応答', '稳定通用':'安定した汎用モデル', '轻量模型':'軽量モデル' } },
         uiPetSettings: { choose:'コンパニオンを選択', placeholder:'開発中', preparing:'アニメーションを準備中', animationFailed:'アニメーションの読み込みに失敗', coverFailed:'カバーの読み込みに失敗', retry:'再試行', pets:{ lingling:{name:'リンリン',description:'星模様の巻き尾で、軽やかに寄り添います'}, langlang:{name:'ランラン',description:'黒い服と眼鏡で、落ち着いて寄り添います'}, 'ace-taffy':{name:'Ace Taffy',description:'ピンクの髪と王冠で元気に応援します'} } },
-        uiScheduled: { title:'定期タスク', subtitle:'繰り返し作業を PINVOU に自動実行させます', newTask:'新規タスク', templates:'おすすめテンプレート', myTasks:'マイタスク', loading:'定期タスクを読み込み中…', empty:'一致する定期タスクはありません', view:n=>`定期タスクを表示: ${n}`, useTemplate:n=>`${n} テンプレートを使用`, running:'タスク実行中', unread:'未確認の実行会話', navUnreadAria:'定期タスクに未確認の実行会話があります', closeError:'エラーを閉じる', deleteTitle:'定期タスクを削除しますか？', deleteDescription:n=>`「${n}」の今後の実行を停止してタスクリストから削除します。これまでの実行履歴は保持されます。`, cancel:'キャンセル', delete:'削除', save:'保存', filterAll:'すべて', filterActive:'有効', filterPaused:'一時停止', active:'有効', paused:'一時停止', enabled:'有効', unknown:'不明', notScheduled:'未予定', noSchedule:'予定なし', waitingDispatch:'実行待ち', soon:'まもなく実行', nextRun:(time,remaining)=>`次回 ${time}（${remaining}）`, date:(month,day)=>`${month}月${day}日 `, daysAfter:(days,hours)=>`${days}日${hours ? `${hours}時間` : ''}後`, hoursAfter:(hours,minutes)=>`${hours}時間${minutes ? `${minutes}分` : ''}後`, minutesAfter:(minutes,seconds)=>`${minutes}分${seconds}秒後`, secondsAfter:seconds=>`${seconds}秒後`, runStatus:{ queued:'待機中', running:'実行中', completed:'完了', failed:'失敗', canceled:'キャンセル済み' }, weekdays:[['月曜日','月'],['火曜日','火'],['水曜日','水'],['木曜日','木'],['金曜日','金'],['土曜日','土'],['日曜日','日']], hourCount:n=>`${n} 時間`, choose:'選択してください', autoModel:'自動選択', currentModel:'現在のモデル', reselectModel:n=>`モデルを再選択 · ${n}`, repeatOptions:{ workdays:'平日', daily:'毎日', weekly:'毎週', hourly:'毎時', custom:'カスタム' }, everyHours:n=>`${n} 時間ごと`, startsAt:time=>`${time} から`, repeat:'繰り返し', interval:'間隔', dateLabel:'曜日', startTime:'開始時刻', time:'時刻', chooseRepeat:'繰り返し頻度を選択', chooseInterval:'時間間隔を選択', chooseDate:'実行曜日を選択', chooseStartTime:'開始時刻を選択', chooseRunTime:'実行時刻を選択', setStart:'開始時刻を設定', createFromTemplate:'テンプレートから作成', closeCreate:'新規タスクを閉じる', taskName:'タスク名', taskNamePlaceholder:'例：毎日のデータバックアップ', taskPrompt:'実行内容', taskPromptPlaceholder:'実行ごとに行う作業を入力…', saveTask:'タスクを保存', editTask:'タスクを編集', closeDetail:'タスク詳細を閉じる', taskNameAria:'定期タスク名', taskPromptAria:'定期タスクの説明', aiModel:'AI モデル', chooseModel:'定期タスクのモデルを選択', runningStatus:'実行状態', nextExecution:'次回実行', enableTask:'タスクを有効化', runNow:'今すぐ実行', openFolder:'フォルダーを開く', runHistory:'実行履歴', records:n=>`${n} 件`, noRecords:'記録なし', openRun:'実行会話を開く', noOpenRun:'この実行には開ける会話がありません', openRunLabel:s=>`実行記録を開く：${s}`, runInProgress:'実行中', viewRunResult:'会話を開いて結果を確認', noRunSession:'開ける会話がありません', noRunHistory:'実行履歴はありません', saveState:{ saving:'保存中…', saved:'保存しました', invalid:'名前と実行内容を入力してください', error:'保存に失敗しました' }, pause:n=>`${n} を一時停止`, resume:n=>`${n} を再開`, templateMap:{ 'daily-brief':{name:'デイリーブリーフ',schedule:'毎日 8:00',description:'重要ニュース、業界動向、接続済み業務システムの社内通知をまとめます',prompt:'過去24時間の重要ニュースと業界動向を出典・リンク付きでまとめます。Lark または WeCom 接続時は社内通知も追加します。ユーザーのディレクトリはスキャンせず、結果はタスクのワークスペースに保存します。'}, 'follow-up-monitor':{name:'フォローアップ確認',schedule:'平日 9:00',description:'期限超過・期限間近の項目を整理し、リスクと次の対応を示します',prompt:'接続済みの Lark または WeCom から、期限超過・本日期限・今後3営業日以内の項目をまとめ、優先度別にリスクと次の対応を示します。確認と整理のみで、送信・承認・変更は行いません。ユーザーのディレクトリはスキャンしません。'}, 'weekly-review':{name:'週間レポート',schedule:'金曜日 16:00',description:'今週の業務記録から構造化された週間レポートを作成します',prompt:'接続済みの Lark または WeCom の今週の予定・ToDo・業務メッセージから週間レポートを作成し、進捗・残課題・リスク・来週の計画を含めます。ユーザーのディレクトリのスキャンや自動送信は行いません。'}, 'memory-organize':{name:'メモリ整理',schedule:'平日 9:30',description:'長期メモリを定期整理：重複の統合、不要項目の削除、表現の修正',prompt:'長期メモリを定期的に整理します：重複エントリを統合し、古いまたは無効な項目を削除し、曖昧な表現を修正して、メモリを簡潔で正確に保ちます。このタスクは会話を開かずに自動実行されます。メモリの整理のみを行い、メッセージの送信やその他の変更は行いません。'} } },
+        uiScheduled: { title:'定期タスク', subtitle:'繰り返し作業を PINVOU に自動実行させます', newTask:'新規タスク', templates:'おすすめテンプレート', myTasks:'マイタスク', loading:'定期タスクを読み込み中…', empty:'一致する定期タスクはありません', view:n=>`定期タスクを表示: ${n}`, useTemplate:n=>`${n} テンプレートを使用`, running:'タスク実行中', unread:'未確認の実行会話', navUnreadAria:'定期タスクに未確認の実行会話があります', closeError:'エラーを閉じる', deleteTitle:'定期タスクを削除しますか？', deleteDescription:n=>`「${n}」の今後の実行を停止してタスクリストから削除します。これまでの実行履歴は保持されます。`, cancel:'キャンセル', delete:'削除', save:'保存', filterAll:'すべて', filterActive:'有効', filterPaused:'一時停止', active:'有効', paused:'一時停止', enabled:'有効', unknown:'不明', notScheduled:'未予定', noSchedule:'予定なし', waitingDispatch:'実行待ち', soon:'まもなく実行', nextRun:(time,remaining)=>`次回 ${time}（${remaining}）`, date:(month,day)=>`${month}月${day}日 `, daysAfter:(days,hours)=>`${days}日${hours ? `${hours}時間` : ''}後`, hoursAfter:(hours,minutes)=>`${hours}時間${minutes ? `${minutes}分` : ''}後`, minutesAfter:(minutes,seconds)=>`${minutes}分${seconds}秒後`, secondsAfter:seconds=>`${seconds}秒後`, runStatus:{ queued:'待機中', running:'実行中', completed:'完了', failed:'失敗', canceled:'キャンセル済み' }, weekdays:[['月曜日','月'],['火曜日','火'],['水曜日','水'],['木曜日','木'],['金曜日','金'],['土曜日','土'],['日曜日','日']], hourCount:n=>`${n} 時間`, choose:'選択してください', autoModel:'自動選択', currentModel:'現在のモデル', reselectModel:n=>`モデルを再選択 · ${n}`, repeatOptions:{ workdays:'平日', daily:'毎日', weekly:'毎週', hourly:'毎時', once:'一回のみ', custom:'カスタム' }, everyHours:n=>`${n} 時間ごと`, startsAt:time=>`${time} から`, repeat:'繰り返し', interval:'間隔', dateLabel:'曜日', startTime:'開始時刻', time:'時刻', chooseRepeat:'繰り返し頻度を選択', chooseInterval:'時間間隔を選択', chooseDate:'実行曜日を選択', chooseStartTime:'開始時刻を選択', chooseRunTime:'実行時刻を選択', setStart:'開始時刻を設定', createFromTemplate:'テンプレートから作成', closeCreate:'新規タスクを閉じる', taskName:'タスク名', taskNamePlaceholder:'例：毎日のデータバックアップ', taskPrompt:'実行内容', taskPromptPlaceholder:'実行ごとに行う作業を入力…', saveTask:'タスクを保存', editTask:'タスクを編集', closeDetail:'タスク詳細を閉じる', taskNameAria:'定期タスク名', taskPromptAria:'定期タスクの説明', aiModel:'AI モデル', chooseModel:'定期タスクのモデルを選択', runningStatus:'実行状態', nextExecution:'次回実行', enableTask:'タスクを有効化', runNow:'今すぐ実行', openFolder:'フォルダーを開く', runHistory:'実行履歴', records:n=>`${n} 件`, noRecords:'記録なし', openRun:'実行会話を開く', noOpenRun:'この実行には開ける会話がありません', openRunLabel:s=>`実行記録を開く：${s}`, runInProgress:'実行中', viewRunResult:'会話を開いて結果を確認', noRunSession:'開ける会話がありません', noRunHistory:'実行履歴はありません', saveState:{ saving:'保存中…', saved:'保存しました', invalid:'名前と実行内容を入力してください', error:'保存に失敗しました' }, pause:n=>`${n} を一時停止`, resume:n=>`${n} を再開`, templateMap:{ 'daily-brief':{name:'デイリーブリーフ',schedule:'毎日 8:00',description:'重要ニュース、業界動向、接続済み業務システムの社内通知をまとめます',prompt:'過去24時間の重要ニュースと業界動向を出典・リンク付きでまとめます。Lark または WeCom 接続時は社内通知も追加します。ユーザーのディレクトリはスキャンせず、結果はタスクのワークスペースに保存します。'}, 'follow-up-monitor':{name:'フォローアップ確認',schedule:'平日 9:00',description:'期限超過・期限間近の項目を整理し、リスクと次の対応を示します',prompt:'接続済みの Lark または WeCom から、期限超過・本日期限・今後3営業日以内の項目をまとめ、優先度別にリスクと次の対応を示します。確認と整理のみで、送信・承認・変更は行いません。ユーザーのディレクトリはスキャンしません。'}, 'weekly-review':{name:'週間レポート',schedule:'金曜日 16:00',description:'今週の業務記録から構造化された週間レポートを作成します',prompt:'接続済みの Lark または WeCom の今週の予定・ToDo・業務メッセージから週間レポートを作成し、進捗・残課題・リスク・来週の計画を含めます。ユーザーのディレクトリのスキャンや自動送信は行いません。'}, 'memory-organize':{name:'メモリ整理',schedule:'平日 9:30',description:'長期メモリを定期整理：重複の統合、不要項目の削除、表現の修正',prompt:'長期メモリを定期的に整理します：重複エントリを統合し、古いまたは無効な項目を削除し、曖昧な表現を修正して、メモリを簡潔で正確に保ちます。このタスクは会話を開かずに自動実行されます。メモリの整理のみを行い、メッセージの送信やその他の変更は行いません。'} } },
         uiChat: { ready:'準備完了', sceneModes:{ personalWorkbench:'パーソナルワークベンチ', documentWriting:'公文書作成', poster:'ポスター', dataVisualization:'データ可視化', pptDesign:'PPT デザイン', clear:label=>`${label}を解除` }, askMe:'質問してみて', naturalQuestion:'自然な言葉で質問できます。', backRuns:'定期タスクの実行履歴に戻る', scheduledRun:'定期タスクの実行', runRecords:'実行履歴', asrUnavailable:'音声認識がインストールされていません。デスクトップアプリでインストールしてから再試行してください。', gotIt:'了解', asrDownloadTitle:'音声認識モデルをダウンロード', asrEnableTitle:'ローカル音声認識を有効化', asrRuntimeMissing:'ローカル音声認識ランタイムがありません。アプリを修復または再インストールしてください。モデルのみ不足している場合はここからダウンロードできます。', asrReadyNotice:'音声モデルの準備ができました。マイクをクリックして録音を開始できます。', asrFirstUse:(size,ffmpeg)=>`初回利用時に音声認識モデル（${size}${ffmpeg ? ' + ffmpeg' : ''}）をダウンロードします。モデルと音声認識は端末内で動作し、音声が外部に送信されることはありません。スマート整形を有効にすると、認識テキスト（入力欄の既存下書きも含む）が設定済みのモデルサービスへ送られ、修正・整形されます。`, sizeModelOnly:'約 254 MB', sizeFull:'約 174～254 MB', asrStages:{ ffmpeg:'ffmpeg をインストール中（システムの認証画面が表示される場合があります）…', verify:'モデルの整合性を確認中…', cancelling:'ダウンロードをキャンセル中…', done:'完了', cancelled:'キャンセル済み', failed:'ダウンロードに失敗しました。再試行してください。', preparing:'準備中…' }, downloadingModel:p=>`モデルをダウンロード中 ${p}`, cancelling:'キャンセル中…', cancelDownload:'ダウンロードをキャンセル', cancel:'キャンセル', repairInstall:'インストールを修復', downloadModel:'モデルをダウンロード', install:'インストール', designingCard:'🃏 カードを設計中…', recordedRecent:'最近のアクティビティを記録しました', viewMemory:'メモリセンターで確認できます', memoryUpdated:'メモリを更新しました', processed:'処理済み', candidate:'メモリ候補', remember:'記憶する', ignoreOnce:'今回は無視', neverAsk:'今後表示しない', memoryMeta:{ current_focus:{label:'現在の注目事項',prompt:'この注目事項を記憶できます',hint:'現在進めている作業の理解に利用します。',notice:'今後の会話でこの最近の事項を参照します。'}, recent_activity:{label:'最近のアクティビティ',prompt:'このアクティビティを記憶できます',hint:'直前に完了した作業の理解に利用します。',notice:'今後の会話でこの完了内容を参照します。'}, work_context:{label:'業務コンテキスト',prompt:'この業務コンテキストを記憶できます',hint:'長期的な業務コンテキストの理解に利用します。',notice:'今後の会話でこの長期コンテキストを参照します。'}, profile:{label:'呼び名',prompt:'この呼び名を記憶できます',hint:'今後この呼び名で会話します。',notice:'今後の会話でこの呼び名を使用します。'}, preference:{label:'好み',prompt:'この好みを記憶できます',hint:'今後の応答をこの好みに合わせます。',notice:'今後の会話でこの好みを参照します。'} } },
         uiChatExtra: { transferRevision:type=>`Pinvou · ${type} · 修正を引き継ぎ`, draftingScheduled:'⏰ 定期タスクの下書きを準備中…' },
         expertPoolIndividualTab:'個人エキスパート', expertPoolTeamTab:'エキスパートチーム',
@@ -338,12 +339,17 @@ const jaBase = {
         uiWebConnection: { idle:['遠隔操作を準備中','ブラウザー接続を初期化中…'], connecting:['デスクトップに接続中','中断時は自動再接続し、未確認の操作は重複実行しません。'], desktop_offline:['デスクトップはオフラインです','このページを開いたままにすると、復帰後に自動再接続します。'], credentials_missing:['リンクが不完全です','デスクトップで遠隔操作を有効にし、完全なリンクを貼り付けてください。'], denied:['アクセスできません','リンクが無効または更新済みです。デスクトップから新しいリンクをコピーしてください。'], revoked:['アクセス停止','デスクトップがこの遠隔操作リンクを停止しました。'], replaced:['別のブラウザーが引き継ぎました','同時に利用できるブラウザーは 1 つです。再取得するにはページを更新してください。'], incompatible_desktop:['デスクトップのバージョンが非互換','デスクトップアプリを更新してからリンクを開き直してください。'], error:['接続エラー','遠隔操作は再接続を続けます。'] },
         uiConversation: conversationJa,
         uiMultiAgent: {
-          toggleLabel:'マルチエージェントモード',
-          toggleHint:'この会話からサブエージェントへ委任できるようにする（専門家連携）。オフにするとエンジンを解放し、実行中のサブエージェントをキャンセルします',
+          toggleLabel:'スワームモード',
+          toggleHint:'この会話からサブエージェントへ委任できるようにする（スワーム協働）。オンの間、高度な設定のサブエージェント上限は無視されます。オフにするとエンジンを解放し、実行中のサブエージェントをキャンセルします',
+          spawnedAgentsRow:count=>`品悟が ${count} 体のエージェントを生成しました`,
+          spawnedAgentsRowHint:'クリックでサブエージェント一覧を表示',
+          runningAgentsTitle:'実行中のエージェント',
+          runningAgentsCount:count=>`${count} 件を実行中`,
+          runningAgentsCollapse:'実行中のエージェントを折りたたむ', runningAgentsExpand:'実行中のエージェントを展開',
           drawerTitle:role=>`サブエージェント · ${role}`, close:'閉じる', loadingTranscript:'会話を読み込み中…',
           emptyTranscript:'保存済みの会話はまだありません。サブエージェントが起動直後の可能性があります。',
           panelResize:'パネル幅を調整', panelResizeHint:'ドラッグで幅を調整、ダブルクリックで初期値に戻す',
-          agentCard:{ spawning:'派遣中', working:'作業中', completed:'完了', failed:'失敗', spawnFailed:'派遣失敗', interrupted:'中断' },
+          agentCard:{ working:'作業中', completed:'完了', failed:'失敗', spawnFailed:'派遣失敗', interrupted:'中断', cancelled:'キャンセル済み' },
           agentsListTitle:'サブエージェント', agentsEmpty:'この会話ではまだサブエージェントを派遣していません。', backToAgents:'サブエージェント一覧へ戻る',
           agentsListSummary:(roots,total)=>roots === total ? `合計 ${total}` : `直属 ${roots} · 合計 ${total}`,
           childAgentCount:count=>`下位 ${count} 件`, expandChildren:name=>`${name} の下位を展開`, collapseChildren:name=>`${name} の下位を折りたたむ`,
@@ -354,17 +360,17 @@ const jaBase = {
           agentNoTranscript:error=>error ? `会話記録を作成する前にサブエージェントが終了しました: ${error}` : 'サブエージェントは終了しましたが、会話記録は作成されませんでした。',
           showEarlierTranscript:count=>`以前の実行記録を ${count} 件表示`,
           listReadFailed:'⚠️ サブエージェント一覧の読み込みに失敗しました。自動的に再試行しています…',
-          webActionHint:'マルチエージェント会話は Web では読み取り専用です。この操作はデスクトップで行ってください。',
+          webActionHint:'スワーム会話は Web では読み取り専用です。この操作はデスクトップで行ってください。',
           transcriptReadFailed:'⚠️ 会話記録の読み込みに失敗しました。自動的に再試行しています…',
         },
         uiHomeMode: { work:'作業', code:'コード', providerSettings:'プロバイダー設定' },
         uiAttachments: { parsing:'解析中', failed:'失敗', remove:name=>`添付ファイル ${name} を削除`, dropRelease:'ドロップして添付', dropWebTitle:'あらゆる内容を追加', dropWebHint:'ファイルをここにドロップして会話に追加できます', fileTooLarge:'ファイルが添付上限の 20 MB を超えているため追加できません', archiveTooManyEntries:'圧縮ファイルに 50 件を超える項目が含まれているため追加できません', archiveExpandedTooLarge:'展開後のサイズが 100 MB を超えるため追加できません', archiveUnsafeEntry:'圧縮ファイルに安全でないリンクまたはパスが含まれているため追加できません' },
         uiCodex: codexJa,
         uiAcpProviders: acpProvidersJa,
+        uiProjects: { convertToProject:'プロジェクトに変換', projectNamePlaceholder:'プロジェクト名', renameProject:'プロジェクトの名前を変更', deleteProject:'プロジェクトを削除', deleteConfirmLabel:'このプロジェクトを削除しますか？', deleteProjectHint:'会話は削除されず、未分類に戻ります', moveToProject:'プロジェクトへ移動…', moveToUngrouped:'未分類へ移動', alreadyUngrouped:'未分類です', temporaryBadge:'一時ワークスペース', folderUnavailable:'フォルダー利用不可', rebindFolder:'再バインド', moveConfirmTitle:'このプロジェクトへ会話を移動しますか？', moveConfirmBody:(project, folder)=>`会話は「${project}」に移動します。フォルダー ${folder} はプロジェクトに追加されず、会話のみが整理されます。`, moveConfirm:'移動', searchPlaceholder:'プロジェクトを検索', noProjects:'プロジェクトはまだありません', ungrouped:'未分類', currentProject:'現在のプロジェクト', movedNotice:'会話を移動しました', movedNoticeWithFolder:folder=>`会話を移動し、フォルダー ${folder} を追加しました`, noMatchProject:'一致するプロジェクトがありません', opFailed:'プロジェクト操作に失敗しました' , rebindTitle:'プロジェクトフォルダーを再バインド', rebindConfirm:'移動して再バインド', rebindSessionsHint:()=>'このフォルダー配下のすべての会話が新しいディレクトリに切り替わります', rebindSuccess:n=>`${n} 件の会話を再バインドしました`, rebindSuccessPostBusy:(ok,busy)=>`${ok} 件の会話を再バインドしました。${busy} 件が再バインド中に新しいターンを開始しました。異常があればアイドル後に再試行してください`, rebindUpToDate:'再バインドが必要な会話はありませんでした', rebindOldExistsWarn:'元のフォルダーがまだ存在します。切り替えると 2 か所が別々のディレクトリを指します。続行しますか？', rebindNestedRejected:'新しいフォルダーは旧フォルダーの内部には置けません。別の場所を選んでください', rebindInProgress:'別のフォルダー再バインドが実行中です' , rebindPartial:(ok, failed)=>`${ok} 件を再バインドし、${failed} 件が失敗しました。残りは再試行できます`, rebindBusyAfter:n=>`${n} 件の会話が再バインド中に新しいターンを開始しました。異常があればアイドル後に再試行してください` , rebindRetryRemaining:'残りを再試行', rebindFailedSessions:'失敗した会話' , rebindBusyHint:'これらのセッションはターン実行中です。アイドルになってから再試行してください', rebindRootsExpand:'すべての失効フォルダーを表示', rebindRootsCollapse:'最初の失効フォルダーのみ表示' },
         uiKeychain: { accessibleFolders:n=>`アクセス可能な ${n} 個のフォルダー`, primaryBadge:'主', unknownDirectory:'不明なディレクトリ', alignAction:'プロジェクトに合わせる', alignActionDesc:'この会話のアクセス可能フォルダーをプロジェクトの現在のセットに更新します（次のターンから有効）', alignDone:'プロジェクトに合わせました', alignNoChange:'すでに最新です', alignBusy:'現在のターン終了後に再試行してください', alignFailed:'同期に失敗しました' },
         uiManageFolders: { title:'フォルダーを管理', renameHint:'クリックでプロジェクト名を変更', emptyRoots:'このプロジェクトにはフォルダーがありません（ラベルのみ）', primaryBadge:'主', setPrimaryHint:'主フォルダーに設定', removeAction:'削除', removeConfirm:'削除', removeConfirmBody:'進行中の会話は終了までこのフォルダーへのアクセスを保持します。今後の新しい会話には付与されません。配下の会話は未分類に移動します。', removePrimaryBlocked:'これは主フォルダーです：先に別のフォルダーを主に設定してから削除してください。', addAction:'フォルダーを追加…', addDuplicate:'このフォルダーはすでにプロジェクトにあります', addNoticeRestricted:'追加後、このプロジェクトの新しい会話はこのフォルダーにアクセスできます', addNoticeVisibility:'追加後、新しい会話ではこのフォルダーがプロジェクトに属することがモデルに伝わります', exclusionSection:'自動プロジェクト化を除外するフォルダー', neverMaterializeAction:'自動プロジェクト化を停止', neverMaterializeHint:'このフォルダーを除外リストに追加します：今後自動でプロジェクト化されません（このプロジェクトと既存の会話には影響しません）', revokeExclusion:'取り消す', exclusionDone:'除外リストを更新しました' },
         uiWorkspacePicker: { title:'ワークスペースを選択', searchPlaceholder:'プロジェクトやパスを検索', empty:'プロジェクトはまだありません。フォルダーを参照するか、一時チャットを開始できます', noMatch:'一致するプロジェクトがありません', multiRootSummary:(n, primary)=>`${n} 個のフォルダー · 主: ${primary}`, primaryRootBadge:'既定', noticeRestricted:n=>`この会話はこのプロジェクトの ${n} 個のフォルダーにアクセスできます`, noticeVisibility:n=>`この ${n} 個のフォルダーがこの会話に関連していることがモデルに伝わります`, temporary:'一時チャット', temporaryDesc:'ディレクトリに紐付けません', browse:'他のフォルダーを参照…', browseDesc:'選択したフォルダーを起点に新しい会話を開始', excludedTitle:'このフォルダーの自動プロジェクト化はオフです', excludedBody:name=>`「${name}」は除外リストに入っているため、プロジェクトに自動整理されません。このフォルダーで通常の会話を始めることはできます。`, excludedProceed:'それでもこのフォルダーで開始', unknownDirectory:'不明なディレクトリ' },
-        uiProjects: { convertToProject:'プロジェクトに変換', projectNamePlaceholder:'プロジェクト名', renameProject:'プロジェクトの名前を変更', deleteProject:'プロジェクトを削除', deleteConfirmLabel:'このプロジェクトを削除しますか？', deleteProjectHint:'会話は削除されず、未分類に戻ります', moveToProject:'プロジェクトへ移動…', moveToProjectNamed:name=>`「${name}」へ移動`, moveOut:'プロジェクトから外す', moveToUngrouped:'未分類へ移動', temporaryBadge:'一時ワークスペース', folderUnavailable:'フォルダー利用不可', rebindFolder:'再バインド', moveConfirmTitle:'このプロジェクトへ会話を移動しますか？', moveConfirmBody:(project, folder)=>`会話は「${project}」に移動します。フォルダー ${folder} はプロジェクトに追加されず、会話のみが整理されます。`, moveConfirm:'移動', searchPlaceholder:'プロジェクトを検索', noProjects:'プロジェクトはまだありません', ungrouped:'未分類', currentProject:'現在のプロジェクト', movedNotice:'会話を移動しました', movedNoticeWithFolder:folder=>`会話を移動し、フォルダー ${folder} を追加しました`, noMatchProject:'一致するプロジェクトがありません', opFailed:'プロジェクト操作に失敗しました', rebindTitle:'プロジェクトフォルダーを再バインド', rebindConfirm:'移動して再バインド', rebindSessionsHint:()=>'このフォルダー配下のすべての会話が新しいディレクトリに切り替わります', rebindSuccess:n=>`${n} 件の会話を再バインドしました`, rebindOldExistsWarn:'元のフォルダーがまだ存在します。切り替えると 2 か所が別々のディレクトリを指します。続行しますか？', rebindNestedRejected:'新しいフォルダーは旧フォルダーの内部には置けません。別の場所を選んでください', rebindPartial:(ok, failed)=>`${ok} 件を再バインドし、${failed} 件が失敗しました。残りは再試行できます`, rebindBusyAfter:n=>`${n} 件の会話が再バインド中に新しいターンを開始しました。異常があればアイドル後に再試行してください`, manageFolders:'フォルダーを管理', newSessionHere:'新しい会話',},
         uiCodexWorkspace: { changes:{added:'追加',modified:'変更',deleted:'削除',renamed:'名前変更',copied:'コピー',conflict:'競合',untracked:'未追跡',unknown:'ファイル'}, origins:{session:'このセッション',preexisting:'セッション前から存在',preexisting_modified:'セッション前から存在 · このセッションで変更',unknown:'出所未記録'}, addedPath:path=>`${path} を追加済み`, addPath:path=>`${path} を会話に追加`, added:'会話に追加済み', add:'会話に追加', back:'ワークスペース一覧に戻る', copyPath:'相対パスをコピー', reveal:'ファイルマネージャーで表示', open:'システムアプリで開く', reading:'読み込み中…', noDiff:'表示できるテキスト差分はありません', tooLarge:'ファイルが大きいため内蔵プレビューを生成できません。', unsupported:'このファイルは内蔵プレビューに対応していません。', openHint:'システムアプリで開くことができます。', truncated:'内容が大きいため、先頭部分のみ表示しています。', resize:'ワークスペースの幅を調整', resizeHint:'ドラッグで幅を調整、ダブルクリックで初期値に戻す', title:'ワークスペース', temporary:'一時ワークスペース', refresh:'ワークスペースを更新', close:'ワークスペースを閉じる', files:'ファイル', changed:'変更', search:'ファイルを検索', noFiles:'一致するファイルはありません', noBaseline:'この古いセッションには作成時の基準がないため、このセッションによる変更かどうか判定できません。', branch:'ブランチ', staged:'ステージ済み', noChanges:'ワークスペースに変更はありません', copyContent:'内容をコピー', copied:'コピーしました', closeViewer:'プレビューを閉じる', loadFailed:'ファイルの読み込みに失敗しました', resizeWidth:'ビューアの幅を調整', resizeHeight:'ビューアの高さを調整', resizeCorner:'ビューアのサイズを調整、ダブルクリックで初期値に戻す', fontDecrease:'文字サイズを小さく', fontIncrease:'文字サイズを大きく', openInNewWindow:'コードリーダーで開く', diffSuffix:'(差分)', readerTitle:'コードリーダー', readerEmpty:'ワークスペースのファイルプレビューから「コードリーダーで開く」を選ぶと、ファイルがここにタブとして追加されます。', closeTab:'タブを閉じる', noSessionChanges:'セッションを作成すると、そのセッションによるプロジェクトの変更がここに表示されます。' },
 
         checkUpdate: '更新を確認', checking: '確認中…', upToDate: '最新バージョンです',
@@ -407,7 +413,7 @@ const jaBase = {
         feedbackAttachmentHint: 'png、jpg、jpeg、gif、webp、mp4、mov、webm に対応。最大 5 件。',
         feedbackPrivacy: '入力内容、選択した添付、非機密の環境概要を送信します。チャット履歴やキーは自動添付しません。',
         feedbackSubmit: '送信', feedbackSubmitting: '送信中…', feedbackSubmitted: '送信しました。ありがとうございます。',
-        feedbackRetry: '再試行', feedbackCloseConfirm: '未送信の内容があります。閉じますか？',
+        feedbackRetry: '再試行', feedbackCloseConfirm: '未送信の内容があります。閉じますか？', feedbackCloseAnyway: '閉じる',
         feedbackBodyRequired: '内容を入力してください。', feedbackUnsupportedFile: '対応していない添付形式です。',
         feedbackTooManyFiles: '添付は最大 5 件です。', feedbackPickUnavailable: 'ファイル選択を利用できません。',
         chatGreeting: 'こんにちは、今日は何をしましょうか？', artifacts: '成果物とコード', placeholder: 'PINVOU に質問またはコマンドを入力', disclaimer: 'PINVOU は不正確な情報を生成する可能性があります。必ずご確認ください。', ctxUsage: 'コンテキスト',
@@ -478,7 +484,7 @@ const jaBase = {
         attachmentOpen: '既定のアプリで開く', attachmentDownload: '添付ファイルをダウンロード', attachmentCopyAddress: 'パスをコピー',
         attachmentCopyName: 'ファイル名をコピー', attachmentReveal: 'ファイルマネージャーで表示',
         voiceStart: '音声入力', voiceStop: '録音を終了', voiceCancel: '音声入力をキャンセル', voiceCancelShort: 'キャンセル', voiceRetry: '再試行', voiceRetryAgain: 'もう一度試す',
-        voiceRequesting: 'マイク権限を確認中…', voiceRecording: '録音中。もう一度押すと終了', voiceTranscribing: '音声を認識中…',
+        voiceRequesting: 'マイク権限を確認中…', voiceRecording: '録音中。もう一度押すと終了', voiceTranscribing: '音声を認識中…', voiceStopHint: 'もう一度 Alt（Option）で停止',
         voicePostprocessing: '音声テキストを整えています…', voiceTaskPostprocessing: '音声タスクを整理しています…',
         voiceCompleted: '音声テキストを追加しました', voiceTaskSent: '音声タスクを送信しました', voiceClose: '音声通知を閉じる', voiceGotoDeps: '依存関係チェックへ',
         voiceDictationMode: '入力欄に挿入', voiceTaskMode: 'タスク送信', voiceInputFailed: '音声入力に失敗しました',
@@ -953,17 +959,16 @@ Object.assign(dictJa, {
   remoteKbFolderSummary:'{count} 件の文書を検出', remoteKbFolderSkipped:'{count} 件をスキップ', remoteKbFolderEmpty:'インポート可能な文書がありません', remoteKbFolderLimitExceeded:'1 回のフォルダインポートは 10,000 件までです',
 });
 
-// Working directory selection UI for the normal chat draft state
-// (features/chat/ComposerWorkspaceSelector.jsx); wording mirrors the
-// code-mode uiCodex draft selector.
+// 通常チャットの下書き状態で使う作業ディレクトリ選択 UI
+// （features/chat/ComposerWorkspaceSelector.jsx）。code モードの
+// uiCodex 下書きセレクターと文言を揃える。
 dictJa.uiChatWorkspace = {
   defaultWorkspace:'既定のワークスペース', defaultWorkspaceDesc:'Pinvou が管理するセッション用ディレクトリを使用します',
   chooseDirectory:'ディレクトリを選択…', chooseDirectoryDesc:'そのディレクトリで Agent を直接作業させます',
   recentDirectories:'最近使用した項目', unknownDirectory:'不明なディレクトリ',
-  // One-time confirm card for the first YOLO switch on a session bound to a
-  // working directory (same meaning as uiCodex's modeYoloConfirm*, but worded
-  // as "working directory" instead of "project directory", hence separate
-  // keys).
+  // 作業ディレクトリに紐付けたセッションで初めて YOLO に切り替える際の
+  // 一度きりの確認カード（uiCodex の modeYoloConfirm* と同じ意味だが、
+  // 「プロジェクトディレクトリ」ではなく「作業ディレクトリ」の表現のため別キー）。
   yoloConfirmTitle:'YOLO モードに切り替えますか？', yoloConfirmBody:'このモードでは、モデルが作業ディレクトリを全自動で読み書きし、shell コマンドを実行できます。段階的な承認はありません。',
   yoloConfirmHint:'確認後はグローバルに記憶され、今後は表示されません。', yoloConfirmOk:'確認', yoloConfirmCancel:'キャンセル',
 };
@@ -971,6 +976,8 @@ dictJa.uiChatWorkspace = {
 dictJa.uiSettingsDetail.memoryLoadFailed = 'メモリプロフィールの読み込みに失敗しました。再試行してください。';
 
 dictJa.uiSettingsDetail.memorySaveFailed = 'メモリプロフィールの保存に失敗しました。再試行してください。';
+
+dictJa.uiSettingsDetail.memoryDeleteFailed = 'メモリの削除に失敗しました。再試行してください。';
 
 dictJa.uiSettingsDetail.memorySourceUnavailable = '一部のメモリ情報を一時的に利用できません。前回正常に読み込んだ内容を保持しています。';
 
@@ -1039,31 +1046,47 @@ Object.assign(dictJa.uiAttachments, {
 
 Object.assign(dictJa.uiSettingsDetail.modelDescriptions, {
   '本地服务默认模型':'ローカルサービスのデフォルトモデル',
-  '旗舰编码模型':'フラッグシップコーディングモデル', '高性能编码模型':'高性能コーディングモデル',
-  '日常编码模型':'日常向けコーディングモデル', 'Coding Plan 自动模型':'Coding Plan 自動モデル',
+  'Coding Plan 自动模型':'Coding Plan 自動モデル',
   '自动模型，智能路由':'自動モデル（スマートルーティング）',
-  '官方将于 2026-08-31 下线':'2026-08-31 に提供終了予定',
   'Hy 套餐专属模型':'Hy プラン専用モデル',
-  '手动填写 Token Plan 模型 ID':'Token Plan モデル ID を手動入力',
-  '标准编码模型':'標準コーディングモデル', 'K3 256K 上下文模型':'K3 256K コンテキストモデル',
+  '标准编码模型':'標準コーディングモデル',
   'K3 长上下文模型':'K3 長コンテキストモデル', '高速编码模型':'高速コーディングモデル',
-  '旗舰推理':'フラッグシップ推論モデル',
   'K3 256K 上下文，价格更低':'K3 256K コンテキスト、より低価格',
   '官方已转 Legacy，兼容保留':'公式レガシー化済み。互換性のため保持',
   '官方已转 Legacy，兼容高速':'公式レガシー化済み。高速互換',
   '最新旗舰':'最新フラッグシップ', '上代旗舰推理':'前世代フラッグシップ推論',
   '均衡性价比':'バランス型で高コストパフォーマンス', '快速高性价比':'高速で高コストパフォーマンス',
-  '正式旗舰，夜间五折':'正式版フラッグシップ、夜間半額',
-  '2.4T 旗舰预览，Token Plan 专属，预览结束将下线或替换':'2.4T フラッグシッププレビュー、Token Plan 専用。プレビュー終了後は廃止または差し替え',
   '旗舰推理与编码':'フラッグシップ推論とコーディング', '均衡智能与成本':'知能とコストのバランス',
   '低成本高并发':'低コスト・高スループット', '上代旗舰':'前世代フラッグシップ',
-  '快速经济':'高速で経済的', '最强旗舰，长程 Agent':'最強フラッグシップ、長時間エージェント向け',
-  '复杂 Agent 编码':'複雑なエージェントコーディング', '速度与智能均衡':'速度と知能のバランス',
-  '最快，接近旗舰':'最速、フラッグシップに近い', '最新 Flash，均衡高性价比':'最新 Flash、バランス型で高コストパフォーマンス',
-  '均衡':'バランス型', '旗舰推理（预览）':'フラッグシップ推論（プレビュー）',
-  '4.20 推理':'4.20 推論', '4.20 非推理':'4.20 非推論',
-  '旗舰编码与 Agent':'フラッグシップコーディング・Agent モデル',
-  '通用推理，默认推荐':'汎用推論、デフォルト推奨', '代码 Agent':'コーディングエージェント',
+  '快速经济':'高速で経済的',
+  '速度与智能均衡':'速度と知能のバランス',
+  '最新 Flash，均衡高性价比':'最新 Flash、バランス型で高コストパフォーマンス',
+  '旗舰推理（预览）':'フラッグシップ推論（プレビュー）',
+  // Model catalog entries (src/features/settings/model-catalog.js items[].desc)
+  '旗舰编码模型，全套餐支持':'フラッグシップコーディングモデル、全プラン対応', '原生多模态编码模型，额度三倍':'ネイティブマルチモーダルコーディングモデル、利用枠3倍',
+  '历史模型，请求自动切换至 GLM-5.3':'レガシーモデル、リクエストは GLM-5.3 に自動切替', '历史模型，自动切换至 GLM-5.3-Flash':'レガシーモデル、GLM-5.3-Flash に自動切替',
+  '历史模型，请求自动路由至 GLM-5.3':'レガシーモデル、リクエストは GLM-5.3 に自動ルーティング', '历史模型，自动路由至 GLM-5.3-Flash':'レガシーモデル、GLM-5.3-Flash に自動ルーティング',
+  '旗舰编码模型，官方将于 2026-10-09 下线':'フラッグシップコーディングモデル、2026-10-09 に提供終了予定', '官方将于 2026-10-09 下线':'2026-10-09 に提供終了予定',
+  '通用推理，官方将于 2026-10-09 下线':'汎用推論、2026-10-09 に提供終了予定',
+  '多模态高性价比':'マルチモーダルで高コストパフォーマンス', '最新多模态高性价比':'最新マルチモーダル、高コストパフォーマンス',
+  'Kimi 最新旗舰':'Kimi 最新フラッグシップ', 'Kimi 编码模型':'Kimi コーディングモデル', 'MiniMax 最新旗舰':'MiniMax 最新フラッグシップ',
+  'Hy4 预览，高峰期可能限频':'Hy4 プレビュー、混雑時はレート制限の可能性あり',
+  'V4.1-Flash 主力，1M 上下文，支持图片输入':'V4.1-Flash の主力モデル。1M コンテキスト、画像入力対応', '在售；官方确认 2026-09-14 后继续提供且计费不变':'販売中。公式に 2026-09-14 以降も提供継続・課金は変更なし',
+  '最新旗舰，强制思考':'最新フラッグシップ、思考は常時オン', '最新旗舰，1M 上下文多模态':'最新フラッグシップ、1M コンテキスト・マルチモーダル',
+  '最新旗舰，1M 上下文':'最新フラッグシップ、1M コンテキスト', '全模态理解（图片/视频）':'全モーダル理解（画像・動画）',
+  '上代旗舰推理（纯文本）':'前世代フラッグシップ推論（テキストのみ）', '上代快速款':'前世代の高速モデル',
+  '正式旗舰，夜间 22:00-08:00 五折（个人版）':'正式フラッグシップ、22:00-08:00 は半額（個人版）',
+  '轻量兼容款，支持图像输入':'軽量互換モデル、画像入力対応', '快速响应，暂不支持 Responses API':'高速応答、Responses API は未対応',
+  '最新推荐，周级滚动升级':'最新の推奨モデル、週次ローリング更新', '低成本低时延，效果比肩 2-1-pro':'低コスト・低レイテンシ、2-1-pro に匹敵',
+  '编程特化（预览）':'コーディング特化（プレビュー）', '最强旗舰；仅 Responses 协议支持函数调用':'最強フラッグシップ。関数呼び出しは Responses API のみ',
+  'GPT-5.6 家族旗舰，推理与编码':'GPT-5.6 ファミリーのフラッグシップ、推論とコーディング',
+  '最强旗舰，高难推理与长程 Agent':'最強フラッグシップ、高難度推論と長時間エージェント',
+  '上代旗舰，兼容保留':'前世代フラッグシップ、互換性のため保持', '复杂 Agent 编码，默认推荐':'複雑なエージェントコーディング、デフォルト推奨',
+  '最快，200K 上下文':'最速、200K コンテキスト', '上一代 Flash':'前世代 Flash',
+  '基线速度，兼容保留':'ベースライン速度、互換性のため保持',
+  '旗舰，编码与 Agent 默认推荐':'フラッグシップ、コーディングと Agent のデフォルト推奨', '上代旗舰，编码与 Agent':'前世代フラッグシップ、コーディングと Agent',
+  '4.20 推理，1M 上下文':'4.20 推論、1M コンテキスト', '4.20 非推理，1M 上下文':'4.20 非推論、1M コンテキスト',
+  '快速可靠，强工具调用':'高速で安定、ツール呼び出しに強い', '代码 Agent，256K 上下文':'コーディングエージェント、256K コンテキスト',
 });
 
 dictJa.uiSettingsDetail.customCodingPlanDesc = 'Coding Plan モデル ID を手動入力';

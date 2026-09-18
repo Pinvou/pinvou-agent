@@ -81,6 +81,16 @@ fn should_reap_idle_engine(
         && idle_for_secs >= IDLE_EVICT_AFTER_SECS
 }
 
+/// Rebind eviction recheck (pure function, unit-testable; review #463
+/// eviction-tail TOCTOU): only genuine turn activity blocks the reclaim — an
+/// in-flight/reserved turn (reserve occupies the lifecycle before the gate is
+/// taken) or a running scheduled round. Unlike the idle reaper there is no
+/// idle-duration or active-session gate: a rebound session must be reclaimed
+/// even when recently active, so the next turn respawns in the new directory.
+fn rebind_evictable(turn_active: bool, scheduled_running: bool) -> bool {
+    !turn_active && !scheduled_running
+}
+
 /// `evict_if_idle` 的锁内复核（纯函数，便于单测）：快照后活动时钟必须未前进
 /// （turn 提交与终态收口都会推它前进），且按现值仍满足空闲回收条件；任一不
 /// 满足即跳过本轮回收，留待下一次巡检。
@@ -359,6 +369,42 @@ where
     };
     reclaim(entry).await;
     true
+}
+
+/// Rebind eviction tail skeleton (review #463 M1 + eviction-tail TOCTOU),
+/// extracted like [`evict_if_idle_with_gates`] so bare Default components and
+/// probe closures give deterministic tests: the idle-gated take runs under
+/// the turn gate + runtime lock, and a successful take ALSO drops the
+/// per-session shell manager under the same gates. The manager's cwd is
+/// pinned at construction and `SessionShellManagers::for_session` is
+/// `entry().or_insert_with`, so a surviving manager would keep executing bare
+/// shell commands in the old directory while the rebuilt engine runs in the
+/// new one — split-brain inside one turn (M1). The reset happens inside the
+/// gated section so a new turn cannot slip in between and rebuild the
+/// manager against the new workspace only to have it dropped afterwards.
+async fn rebind_evict_with_gates<T, Take, TakeFut, Reclaim, ReclaimFut>(
+    turn_locks: &SessionTurnLocks,
+    runtime_locks: &SessionTurnLocks,
+    shell_managers: &SessionShellManagers,
+    session_id: &str,
+    take_entry: Take,
+    reclaim: Reclaim,
+) -> bool
+where
+    Take: FnOnce() -> TakeFut,
+    TakeFut: Future<Output = Option<T>>,
+    Reclaim: FnOnce(T) -> ReclaimFut,
+    ReclaimFut: Future<Output = ()>,
+{
+    evict_if_idle_with_gates(turn_locks, runtime_locks, session_id, take_entry, |entry| {
+        let shell_managers = shell_managers.clone();
+        let session_id = session_id.to_string();
+        async move {
+            reclaim(entry).await;
+            shell_managers.remove(&session_id);
+        }
+    })
+    .await
 }
 
 /// 两个 epoch 快照是否仍指向同一轮次，供 cancel 跨 turn_lock 边界守护使用。
@@ -1014,12 +1060,11 @@ impl EnginePool {
         tools
     }
 
-    /// The session's project-skill source root: only returned when the
-    /// session is bound to a real directory (a native code session's project
-    /// directory, or a plain chat session's user working-directory binding —
-    /// the explicit `SessionRoots::bound` signal); unbound/resolution failure
-    /// → None (project-level skills do not participate in the composed
-    /// directory).
+    /// Project-skills source root for the session: returns the bound real
+    /// directory only when the session is actually bound (a native code
+    /// session's project directory, or a plain chat session's user workspace
+    /// binding — the explicit `SessionRoots::bound` signal); unbound or
+    /// resolution failure -> None (project-level skills stay out of play).
     fn project_workspace_for(&self, session_id: &str) -> Option<std::path::PathBuf> {
         self.store
             .session_roots(session_id)
@@ -1121,8 +1166,12 @@ impl EnginePool {
         Ok((bridge, prepared, pins_scheduled_model))
     }
 
+    /// No `&self`: this function does not read pool state, it only
+    /// orchestrates the spawn finish. Making it an associated function lets
+    /// unit tests drive the real injection block directly (a real EnginePool
+    /// cannot be constructed in unit tests; wiring coverage lives in
+    /// `probed_facts_wiring_tests`).
     async fn finalize_runtime_bridge(
-        &self,
         mut bridge: Pinvou3Bridge,
         prepared: &PreparedRuntimeModel,
         pins_scheduled_model: bool,
@@ -1148,37 +1197,77 @@ impl EnginePool {
                 .await,
             );
         }
-        // Local vLLM: correct the request model name against the server's
-        // actual served list (resolve_served_model). A configured name the
-        // server lists must be kept verbatim — LM Studio/Ollama list every
-        // downloaded model in /v1/models, so the first entry is unrelated to
-        // the user's pick, and substituting it is exactly the reported
-        // "conversation names A, engine loads B" chain break. Only follow the
-        // served name on a single-model server that does not expose the
-        // configured name. On probe failure (vLLM down) keep the configured
-        // value; cloud providers are not probed. OpenAI-compatible endpoints
-        // detected as vLLM take the same path (provider() maps them to
-        // "vllm").
-        if bridge.provider() == "vllm" {
-            // The served-name probe carries the same inference-same-origin
-            // credential (authenticated vLLM 401s on /v1/models; on probe
-            // failure the configured model name is kept).
-            let api_key = bridge.api_key();
-            if let Some(mut model) = bridge.effective_model_owned() {
-                let (served, max_len) = crate::features::monitor::resolve_served_model(
-                    &bridge.base_url(),
-                    Some(api_key.as_str()),
-                    &model.model,
-                )
-                .await;
-                if served != model.model && !pins_scheduled_model {
-                    model.model = served;
-                    bridge.session_model = Some(model);
-                }
-                bridge.probed_context_tokens = max_len;
-            }
+        // Operator-owned routes (local vLLM + custom OpenAI-compatible /
+        // custom, see `SavedModel::is_operator_owned_endpoint`) probe
+        // `/v1/models` once at spawn, bringing back the matched entry's own
+        // context window and self-reported output limit for
+        // `route_limits_for_model` to min-tighten (on probe failure both are
+        // None, falling back to configured values / window tiers). vLLM
+        // routes additionally correct the served name
+        // (resolve_served_model): a configured name that the server lists
+        // must be kept verbatim — LM Studio/Ollama list every downloaded
+        // model, the first entry is unrelated to the user's pick, and
+        // substituting it is exactly the reported "conversation names A,
+        // engine loads B" chain break; only follow the served name on a
+        // single-model server that does not expose the configured name.
+        // Non-vLLM operator-owned routes do no name correction and adopt
+        // facts only when the configured name exactly hits the list
+        // (`adopts_probed_facts`) — a single-entry "borrowed name" returns
+        // facts belonging to another model and must not be misattributed.
+        // Cloud presets and coding_plan are not operator-owned and are not
+        // probed.
+        let is_vllm_route = bridge.provider() == "vllm";
+        if let Some(model) = bridge.effective_model_owned() {
+            Self::adopt_probed_endpoint_facts(
+                &mut bridge,
+                model,
+                is_vllm_route,
+                pins_scheduled_model,
+            )
+            .await;
         }
         bridge
+    }
+
+    /// Spawn-time probe and fact adoption (the testable core of
+    /// `finalize_runtime_bridge`; wiring unit tests live in
+    /// `probed_facts_wiring_tests` at the end of this file): operator-owned
+    /// routes (or vLLM routes) probe `/v1/models`, and vLLM additionally
+    /// corrects the served name (keeping the configured name when
+    /// `pins_scheduled_model`); whether facts are adopted is decided by
+    /// `adopts_probed_facts`, and on adoption both `probed_context_tokens`
+    /// and `probed_output_tokens` are written. On probe failure (endpoint
+    /// unreachable / name not matched) both facts are None and the route
+    /// falls back to configured values / window tiers.
+    async fn adopt_probed_endpoint_facts(
+        bridge: &mut Pinvou3Bridge,
+        mut model: SavedModel,
+        is_vllm_route: bool,
+        pins_scheduled_model: bool,
+    ) {
+        if !(is_vllm_route || model.is_operator_owned_endpoint()) {
+            return;
+        }
+        // The probe carries the same credential as real inference
+        // (authenticated endpoints 401 on `/v1/models` without credentials;
+        // on probe failure the configured values are kept).
+        let api_key = bridge.api_key();
+        let (served, max_len, max_output) = crate::features::monitor::resolve_served_model(
+            &bridge.base_url(),
+            Some(api_key.as_str()),
+            &model.model,
+        )
+        .await;
+        let adopts =
+            crate::features::monitor::adopts_probed_facts(is_vllm_route, &model.model, &served);
+        if is_vllm_route && served != model.model && !pins_scheduled_model {
+            model.model = served;
+            bridge.session_model = Some(model);
+        }
+        if adopts {
+            bridge.probed_context_tokens = max_len;
+            bridge.probed_output_tokens = max_output;
+        }
     }
 
     async fn fresh_bridge_for_policy(
@@ -1193,9 +1282,7 @@ impl EnginePool {
         let (bridge, prepared, pins_scheduled_model) = self
             .prepare_runtime_model(session_id, scheduled_unattended, eval_model)
             .await?;
-        Ok(self
-            .finalize_runtime_bridge(bridge, &prepared, pins_scheduled_model)
-            .await)
+        Ok(Self::finalize_runtime_bridge(bridge, &prepared, pins_scheduled_model).await)
     }
 
     /// 取该 session 的 engine,没有就 spawn 一个。spawn 后若该 session 有磁盘历史
@@ -1241,9 +1328,8 @@ impl EnginePool {
         }
 
         let is_scheduled = self.store.scheduled_profile(session_id).is_some();
-        let bridge = self
-            .finalize_runtime_bridge(bridge, &prepared.prepared, pins_scheduled_model)
-            .await;
+        let bridge =
+            Self::finalize_runtime_bridge(bridge, &prepared.prepared, pins_scheduled_model).await;
         // shell 执行目录与 engine cwd 同源：统一走 SessionStore::session_roots
         // （scheduled = automation workspace，原生代码绑项目会话 = 项目目录）。
         // 解析失败（如 scheduled 会话缺 profile）时维持原回退：bridge 侧解析。
@@ -1429,6 +1515,46 @@ impl EnginePool {
                 }
             },
             |entry| self.reclaim_engine_entry(session_id, entry),
+        )
+        .await
+    }
+
+    /// Rebind eviction (review #463 M1 + eviction-tail TOCTOU): same turn
+    /// gate + runtime lock as [`evict`](Self::evict), but the entry is taken
+    /// only when the session is still idle at recheck time — a turn that
+    /// started after the command layer's post-migration recheck keeps its
+    /// engine instead of being cancelled into an Interrupted terminal.
+    /// A successful take also resets the per-session shell manager (via
+    /// [`rebind_evict_with_gates`]): its cwd is pinned at construction, so a
+    /// surviving manager would keep running bare shell commands in the old
+    /// directory while the rebuilt engine runs in the new one. The lifecycle
+    /// is deliberately NOT forgotten — an unsubmitted reservation must
+    /// survive and submit to the rebuilt engine (same semantics as reclaim).
+    ///
+    /// The take yields `Some(None)` for an idle session with no resident
+    /// engine: there is nothing to reclaim, but the shell manager may still
+    /// exist from an earlier turn and must be reset. Returns false only when
+    /// the session was busy and nothing was touched.
+    pub async fn evict_if_idle_for_rebind(&self, session_id: &str) -> bool {
+        rebind_evict_with_gates(
+            &self.turn_locks,
+            &self.runtime_model_locks,
+            &self.shell_managers,
+            session_id,
+            || async {
+                if !rebind_evictable(
+                    self.is_turn_active(session_id),
+                    self.scheduled_running_sessions.lock().contains(session_id),
+                ) {
+                    return None;
+                }
+                Some(self.entries.lock().await.remove(session_id))
+            },
+            |entry| async move {
+                if let Some(entry) = entry {
+                    self.reclaim_engine_entry(session_id, entry).await;
+                }
+            },
         )
         .await
     }
@@ -1780,8 +1906,8 @@ impl EnginePool {
         session_id: &str,
         enabled: bool,
     ) -> Result<()> {
-        if enabled && !self.multi_agent_mode_available(session_id) {
-            anyhow::bail!("当前会话不支持 Pinvou 多智能体模式");
+        if enabled && !self.swarm_mode_available(session_id) {
+            anyhow::bail!("当前会话不支持 Pinvou 蜂群模式");
         }
         let _reservation = self.turn_lifecycles.for_session(session_id).reserve()?;
         let turn_lock = self.turn_locks.for_session(session_id).await;
@@ -1881,6 +2007,27 @@ impl EnginePool {
         self.bridge.multi_agent_mode_available(session_id)
     }
 
+    /// Whether the swarm regime (lifted delegation caps, expert roster, swarm
+    /// prompt) may apply to this session. Scheduled sessions always assemble
+    /// plain engine config (engine.rs's `scheduled_profile` gate), so the
+    /// swarm regime must follow the same exclusion: turn assembly must not
+    /// inject swarm copy the engine would not honor, and the toggle must not
+    /// be offered. Kept separate from [`Self::multi_agent_mode_available`],
+    /// which intentionally stays the sole gate for transcript listing —
+    /// scheduled runs can still delegate through the bare `agent` tool and
+    /// their records stay readable.
+    pub(crate) fn swarm_mode_available(&self, session_id: &str) -> bool {
+        Self::swarm_mode_available_for(
+            self.multi_agent_mode_available(session_id),
+            self.store.scheduled_profile(session_id).is_some(),
+        )
+    }
+
+    /// Testable body of [`Self::swarm_mode_available`].
+    fn swarm_mode_available_for(multi_agent_available: bool, scheduled: bool) -> bool {
+        multi_agent_available && !scheduled
+    }
+
     /// Resolve the session-owned delegated-agent runtime-state root.
     /// For project-bound Code sessions this is distinct from the execution root.
     pub(crate) fn session_state_root(
@@ -1905,7 +2052,7 @@ impl EnginePool {
         let reservation = self.reserve_turn(session_id)?;
         let display_message = user_display_message(content.clone());
         let expert_snapshot = (self.store.mode_state(session_id).multi_agent
-            && self.multi_agent_mode_available(session_id))
+            && self.swarm_mode_available(session_id))
         .then(ExpertRosterSnapshot::capture);
         self.send_reserved_user_message(
             session_id,
@@ -2794,10 +2941,10 @@ mod scheduled_model_tests {
         TranscriptOperation, cancel_turn_with_gates, default_model_for_new_session_from,
         delete_chat_session_with_gate, delete_scheduled_run_with_gate, delete_then_forget,
         evict_if_idle_with_gates, generation_matches, identity_for_active_model,
-        identity_for_saved_model, quiesce_engine_before_reclaim, resolve_eval_model_selection_from,
-        resolve_runtime_model_override, resolve_scheduled_model, resolve_spawn_model,
-        scheduled_profile_after_turn_gate, should_still_reap_after_snapshot, should_sync_session,
-        user_display_message,
+        identity_for_saved_model, quiesce_engine_before_reclaim, rebind_evict_with_gates,
+        rebind_evictable, resolve_eval_model_selection_from, resolve_runtime_model_override,
+        resolve_scheduled_model, resolve_spawn_model, scheduled_profile_after_turn_gate,
+        should_still_reap_after_snapshot, should_sync_session, user_display_message,
     };
     use crate::features::assistant::runtime_model::PreparedRuntimeModel;
     use crate::features::sessions::{ScheduledRunMode, ScheduledRunProfile, SessionStore};
@@ -3077,6 +3224,155 @@ mod scheduled_model_tests {
         assert!(evicted, "快照后无活动的空闲会话必须照常回收");
         assert!(!entry_present.load(Ordering::Acquire));
         assert!(reclaimed.load(Ordering::Acquire));
+    }
+
+    #[test]
+    fn rebind_evictable_blocks_only_real_activity() {
+        // review #463: rebind eviction has no idle-duration or active-session
+        // gate — only an in-flight/reserved turn or a running scheduled round
+        // blocks the reclaim.
+        assert!(rebind_evictable(false, false));
+        assert!(!rebind_evictable(true, false));
+        assert!(!rebind_evictable(false, true));
+        assert!(!rebind_evictable(true, true));
+    }
+
+    #[tokio::test]
+    async fn rebind_eviction_resets_shell_manager_for_idle_session() {
+        // review #463 M1 regression: the per-session ShellManager pins its cwd
+        // at construction and `for_session` is entry().or_insert_with, so a
+        // manager surviving the rebind eviction would keep executing bare
+        // shell commands in the OLD directory while the rebuilt engine runs
+        // in the new one. The eviction tail must drop it under the gates.
+        let turn_locks = SessionTurnLocks::default();
+        let runtime_locks = SessionTurnLocks::default();
+        let shell_managers = SessionShellManagers::default();
+        let lifecycles = SessionTurnLifecycles::default();
+        let sid = "session-rebind-evict-idle";
+        let _lifecycle = lifecycles.for_session(sid);
+        shell_managers.for_session(sid, PathBuf::from("D:/old-root"));
+
+        // Same take sequence as EnginePool::evict_if_idle_for_rebind: idle
+        // recheck via rebind_evictable, then the entry removal. A resident
+        // engine entry is reclaimed…
+        let reclaimed = Arc::new(AtomicBool::new(false));
+        let probe_reclaim = reclaimed.clone();
+        let probe_lifecycles = lifecycles.clone();
+        let evicted = rebind_evict_with_gates(
+            &turn_locks,
+            &runtime_locks,
+            &shell_managers,
+            sid,
+            move || {
+                let probe_lifecycles = probe_lifecycles.clone();
+                async move {
+                    let turn_active = probe_lifecycles.get(sid).is_some_and(|lc| lc.is_active());
+                    rebind_evictable(turn_active, false).then_some(Some(()))
+                }
+            },
+            move |_| {
+                probe_reclaim.store(true, Ordering::Release);
+                async {}
+            },
+        )
+        .await;
+
+        assert!(evicted, "idle session must be evicted");
+        assert!(reclaimed.load(Ordering::Acquire));
+        assert!(
+            shell_managers.get(sid).is_none(),
+            "shell manager must be reset so the next turn rebuilds it against the rebound workspace"
+        );
+
+        // …and an idle session WITHOUT a resident engine still gets its shell
+        // manager reset (take yields Some(None)): the manager may exist from
+        // an earlier turn even though the engine was already reclaimed.
+        shell_managers.for_session(sid, PathBuf::from("D:/old-root"));
+        let evicted = rebind_evict_with_gates(
+            &turn_locks,
+            &runtime_locks,
+            &shell_managers,
+            sid,
+            || async { Some(None::<()>) },
+            |_| async {},
+        )
+        .await;
+        assert!(evicted);
+        assert!(
+            shell_managers.get(sid).is_none(),
+            "shell manager reset must not depend on a resident engine entry"
+        );
+    }
+
+    #[tokio::test]
+    async fn rebind_eviction_skips_turn_started_after_recheck() {
+        // review #463 eviction-tail TOCTOU regression: a turn that starts
+        // between the command layer's post-migration recheck and the eviction
+        // must NOT be killed — the idle recheck under the turn gate observes
+        // the reservation and skips the session entirely (no reclaim, no
+        // shell manager reset), leaving it for the post-busy report.
+        let turn_locks = SessionTurnLocks::default();
+        let runtime_locks = SessionTurnLocks::default();
+        let shell_managers = SessionShellManagers::default();
+        let lifecycles = SessionTurnLifecycles::default();
+        let sid = "session-rebind-evict-busy";
+        let lifecycle = lifecycles.for_session(sid);
+        shell_managers.for_session(sid, PathBuf::from("D:/old-root"));
+
+        // A new turn wins the turn gate before the eviction (send path holds
+        // the gate while submitting); the eviction queues outside.
+        let gate = turn_locks.for_session(sid).await;
+        let blocker = gate.lock().await;
+
+        let reclaimed = Arc::new(AtomicBool::new(false));
+        let evict_locks = turn_locks.clone();
+        let evict_runtime_locks = runtime_locks.clone();
+        let evict_shell_managers = shell_managers.clone();
+        let evict_lifecycles = lifecycles.clone();
+        let probe_reclaim = reclaimed.clone();
+        let eviction = tokio::spawn(async move {
+            rebind_evict_with_gates(
+                &evict_locks,
+                &evict_runtime_locks,
+                &evict_shell_managers,
+                sid,
+                move || {
+                    let evict_lifecycles = evict_lifecycles.clone();
+                    async move {
+                        let turn_active =
+                            evict_lifecycles.get(sid).is_some_and(|lc| lc.is_active());
+                        rebind_evictable(turn_active, false).then_some(())
+                    }
+                },
+                move |_| {
+                    probe_reclaim.store(true, Ordering::Release);
+                    async {}
+                },
+            )
+            .await
+        });
+        tokio::task::yield_now().await;
+
+        // The turn starts after the command layer's recheck: reserve (does
+        // not take the gate) flips the lifecycle to active.
+        let reservation = lifecycle.reserve().expect("new turn reserve");
+        drop(blocker);
+        drop(gate);
+
+        let evicted = eviction.await.expect("eviction task joins");
+        assert!(!evicted, "a session with a fresh turn must be skipped");
+        assert!(
+            !reclaimed.load(Ordering::Acquire),
+            "no reclaim for a session that became busy"
+        );
+        assert!(
+            shell_managers.get(sid).is_some(),
+            "shell manager survives a skipped eviction"
+        );
+        assert!(
+            reservation.ensure_active().is_ok(),
+            "the in-flight reservation must stay valid"
+        );
     }
 
     fn model(id: &str, wire_name: &str) -> SavedModel {
@@ -3543,6 +3839,21 @@ mod scheduled_model_tests {
             .err()
             .expect("steer without a live engine must fail");
         assert!(format!("{err:#}").contains("no live engine"));
+    }
+
+    #[test]
+    fn swarm_mode_availability_excludes_scheduled_sessions() {
+        // The swarm regime must track the engine-side scheduled_profile gate:
+        // a scheduled session assembles plain engine config, so its switch —
+        // even if still on — must not inject swarm copy, must refuse to
+        // enable, and must report unavailable to the frontend. Availability
+        // alone stays true for a plain session and false for an unsupported
+        // lane; transcript listing keeps using multi_agent_mode_available
+        // (scheduled runs delegate via bare `agent` and stay readable).
+        assert!(super::EnginePool::swarm_mode_available_for(true, false));
+        assert!(!super::EnginePool::swarm_mode_available_for(true, true));
+        assert!(!super::EnginePool::swarm_mode_available_for(false, true));
+        assert!(!super::EnginePool::swarm_mode_available_for(false, false));
     }
 
     #[test]
@@ -4831,5 +5142,263 @@ mod scheduled_model_tests {
             );
             assert!(lifecycle.finish_once(|| {}).is_some());
         }
+    }
+}
+
+/// Wiring tests for spawn-time probe adoption, in two layers:
+/// `finalize_runtime_bridge` (the real production injection block, drivable
+/// directly as an associated function) pins the provider() derivation, the
+/// effective_model_owned gating, and the adopt call itself;
+/// `adopt_probed_endpoint_facts` (the testable core) pins four paths through
+/// a real HTTP mock (127.0.0.1:0) — non-vLLM single-entry "borrowed name" is
+/// not adopted, exact match is adopted, vLLM renames + adopts, vLLM pinned
+/// name still adopts (an intentional trade-off, see the
+/// `adopts_probed_facts` docs), plus cloud presets are not probed. Review
+/// round-2 found the production injection point had zero tests (pure-function
+/// guarantees cannot cover the spawn wiring); round-3 added the finalize
+/// layer — previously only the core had tests, so deleting the injection
+/// block in finalize would not fail any test.
+#[cfg(test)]
+#[allow(clippy::await_holding_lock)]
+mod probed_facts_wiring_tests {
+    use super::{EnginePool, Pinvou3Bridge, PreparedRuntimeModel};
+    use crate::core::model_endpoint::{LocalServerKind, models_mock};
+    use crate::features::runtime_bundle::platform::Pinvou3Bundle;
+    use crate::platform::credential_store::CredentialState;
+    use crate::platform::paths::tests::ENV_LOCK;
+    use crate::platform::prefs::{ImageCapabilityOverride, ModelPreset, SavedModel, UserPrefs};
+
+    struct EnvRestore(Vec<(&'static str, Option<std::ffi::OsString>)>);
+
+    impl EnvRestore {
+        fn capture(names: &[&'static str]) -> Self {
+            Self(
+                names
+                    .iter()
+                    .map(|name| (*name, std::env::var_os(name)))
+                    .collect(),
+            )
+        }
+    }
+
+    impl Drop for EnvRestore {
+        fn drop(&mut self) {
+            for (name, value) in self.0.drain(..) {
+                match value {
+                    // SAFETY: the caller's test holds platform::paths::tests::ENV_LOCK throughout; env writes are serialized in-process.
+                    Some(value) => unsafe { std::env::set_var(name, value) },
+                    // SAFETY: the caller's test holds platform::paths::tests::ENV_LOCK throughout; env writes are serialized in-process.
+                    None => unsafe { std::env::remove_var(name) },
+                }
+            }
+        }
+    }
+
+    /// Isolates env vars related to base_url/api_key (`Pinvou3Bridge::
+    /// base_url`/`api_key` prioritize env over session model); the returned
+    /// guard restores them when the test ends.
+    fn isolate_model_env() -> EnvRestore {
+        let restore = EnvRestore::capture(&["DEEPSEEK_BASE_URL", "DEEPSEEK_API_KEY"]);
+        // SAFETY: the caller's test holds platform::paths::tests::ENV_LOCK throughout; env writes are serialized in-process.
+        unsafe { std::env::remove_var("DEEPSEEK_BASE_URL") };
+        // SAFETY: the caller's test holds platform::paths::tests::ENV_LOCK throughout; env writes are serialized in-process.
+        unsafe { std::env::remove_var("DEEPSEEK_API_KEY") };
+        restore
+    }
+
+    fn saved_model(preset: ModelPreset, model: &str, provider_kind: Option<&str>) -> SavedModel {
+        SavedModel {
+            id: "wiring-model".into(),
+            name: "Wiring".into(),
+            alias: None,
+            preset,
+            context_window_tokens: None,
+            max_output_tokens: None,
+            reasoning_effort: None,
+            model: model.into(),
+            base_url: String::new(),
+            provider_kind: provider_kind.map(Into::into),
+            vendor: None,
+            endpoint_mode: None,
+            image_capability_override: ImageCapabilityOverride::default(),
+            vision_model_id: None,
+            api_key: String::new(),
+            credential_ref: None,
+            credential_state: CredentialState::Missing,
+            has_secret: false,
+            credential_action: None,
+        }
+    }
+
+    fn wiring_bridge(model: SavedModel) -> Pinvou3Bridge {
+        Pinvou3Bridge {
+            prefs: UserPrefs::default(),
+            bundle: Pinvou3Bundle::paths(),
+            workspace: std::env::temp_dir(),
+            session_model: Some(model),
+            runtime_model_credential: None,
+            probed_context_tokens: None,
+            probed_output_tokens: None,
+            probed_local_kind: None,
+            execution_root_resolver: None,
+            code_session_predicate: None,
+            external_acp_session_predicate: None,
+            image_analyze_always: false,
+            workspace_roots_resolver: None,
+        }
+    }
+
+    fn single_entry_json(id: &str) -> String {
+        format!(
+            r#"{{"data":[{{"id":"{id}","max_model_len":262144,"max_completion_tokens":4096}}]}}"#
+        )
+    }
+
+    #[tokio::test]
+    async fn non_vllm_operator_route_does_not_adopt_borrowed_single_entry() {
+        let _lock = ENV_LOCK.lock().unwrap_or_else(|p| p.into_inner());
+        let _env = isolate_model_env();
+        let mock = models_mock::spawn(&[("/v1/models", 200, single_entry_json("served-only"))]);
+        let mut model = saved_model(ModelPreset::OpenaiCompatible, "my-model", Some("custom"));
+        model.base_url = mock.base_url.clone();
+        let mut bridge = wiring_bridge(model.clone());
+        EnginePool::adopt_probed_endpoint_facts(&mut bridge, model, false, false).await;
+        assert_eq!(
+            bridge.probed_context_tokens, None,
+            "window facts from a single-entry borrowed name belong to another model and must not be adopted"
+        );
+        assert_eq!(
+            bridge.probed_output_tokens, None,
+            "the self-reported output limit is likewise not adopted"
+        );
+        assert_eq!(
+            bridge.session_model.as_ref().unwrap().model,
+            "my-model",
+            "non-vLLM routes do no served-name correction"
+        );
+    }
+
+    #[tokio::test]
+    async fn non_vllm_operator_route_adopts_on_exact_name_match() {
+        let _lock = ENV_LOCK.lock().unwrap_or_else(|p| p.into_inner());
+        let _env = isolate_model_env();
+        let mock = models_mock::spawn(&[("/v1/models", 200, single_entry_json("my-model"))]);
+        let mut model = saved_model(ModelPreset::OpenaiCompatible, "my-model", Some("custom"));
+        model.base_url = mock.base_url.clone();
+        let mut bridge = wiring_bridge(model.clone());
+        EnginePool::adopt_probed_endpoint_facts(&mut bridge, model, false, false).await;
+        assert_eq!(bridge.probed_context_tokens, Some(262_144));
+        assert_eq!(bridge.probed_output_tokens, Some(4_096));
+        assert_eq!(bridge.session_model.as_ref().unwrap().model, "my-model");
+    }
+
+    #[tokio::test]
+    async fn vllm_route_renames_to_served_name_and_adopts_facts() {
+        let _lock = ENV_LOCK.lock().unwrap_or_else(|p| p.into_inner());
+        let _env = isolate_model_env();
+        let mock = models_mock::spawn(&[("/v1/models", 200, single_entry_json("served-actual"))]);
+        let mut model = saved_model(ModelPreset::LocalVllm, "my-model", None);
+        model.base_url = mock.base_url.clone();
+        let mut bridge = wiring_bridge(model.clone());
+        EnginePool::adopt_probed_endpoint_facts(&mut bridge, model, true, false).await;
+        assert_eq!(
+            bridge.session_model.as_ref().unwrap().model,
+            "served-actual",
+            "a vLLM single entry follows the served name"
+        );
+        assert_eq!(bridge.probed_context_tokens, Some(262_144));
+        assert_eq!(bridge.probed_output_tokens, Some(4_096));
+    }
+
+    #[tokio::test]
+    async fn vllm_route_pins_scheduled_model_keeps_name_but_adopts_facts() {
+        let _lock = ENV_LOCK.lock().unwrap_or_else(|p| p.into_inner());
+        let _env = isolate_model_env();
+        let mock = models_mock::spawn(&[("/v1/models", 200, single_entry_json("served-actual"))]);
+        let mut model = saved_model(ModelPreset::LocalVllm, "my-model", None);
+        model.base_url = mock.base_url.clone();
+        let mut bridge = wiring_bridge(model.clone());
+        EnginePool::adopt_probed_endpoint_facts(&mut bridge, model, true, true).await;
+        assert_eq!(
+            bridge.session_model.as_ref().unwrap().model,
+            "my-model",
+            "name correction is suppressed while a scheduled model is pinned; the configured name goes live verbatim"
+        );
+        assert_eq!(
+            bridge.probed_context_tokens,
+            Some(262_144),
+            "pinned name + single-entry borrow still adopts facts under vLLM semantics (intentional trade-off, see the adopts_probed_facts docs)"
+        );
+        assert_eq!(bridge.probed_output_tokens, Some(4_096));
+    }
+
+    #[tokio::test]
+    async fn cloud_route_is_not_probed_at_all() {
+        let _lock = ENV_LOCK.lock().unwrap_or_else(|p| p.into_inner());
+        let _env = isolate_model_env();
+        let mock = models_mock::spawn(&[("/v1/models", 200, single_entry_json("my-model"))]);
+        let mut model = saved_model(ModelPreset::Deepseek, "my-model", None);
+        model.base_url = mock.base_url.clone();
+        let mut bridge = wiring_bridge(model.clone());
+        EnginePool::adopt_probed_endpoint_facts(&mut bridge, model, false, false).await;
+        assert_eq!(
+            mock.hits_for("/v1/models"),
+            0,
+            "cloud presets are not operator-owned; no probe request may be issued"
+        );
+        assert_eq!(bridge.probed_context_tokens, None);
+        assert_eq!(bridge.probed_output_tokens, None);
+    }
+
+    /// The real finalize_runtime_bridge injection block (non-vLLM side):
+    /// an OpenaiCompatible + custom route goes through the provider()
+    /// derivation (local mock URL → kind probe completes as Generic →
+    /// "openai") and the effective_model_owned gate to reach adopt; exact
+    /// match adopts facts without renaming; the kind probe coexists (TTL
+    /// cache is isolated per base_url).
+    #[tokio::test]
+    async fn finalize_runtime_bridge_injects_probed_facts_into_custom_route() {
+        let _lock = ENV_LOCK.lock().unwrap_or_else(|p| p.into_inner());
+        let _env = isolate_model_env();
+        let mock = models_mock::spawn(&[("/v1/models", 200, single_entry_json("my-model"))]);
+        let mut model = saved_model(ModelPreset::OpenaiCompatible, "my-model", Some("custom"));
+        model.base_url = mock.base_url.clone();
+        let bridge = wiring_bridge(model.clone());
+        let prepared = PreparedRuntimeModel::unchanged(model);
+        let bridge = EnginePool::finalize_runtime_bridge(bridge, &prepared, false).await;
+        assert_eq!(
+            bridge.probed_local_kind,
+            Some(LocalServerKind::Generic),
+            "the openai route's coexisting kind probe lands on Generic (mock has no kind signature)"
+        );
+        assert_eq!(bridge.probed_context_tokens, Some(262_144));
+        assert_eq!(bridge.probed_output_tokens, Some(4_096));
+        assert_eq!(
+            bridge.session_model.as_ref().unwrap().model,
+            "my-model",
+            "non-vLLM routes do no served-name correction"
+        );
+    }
+
+    /// The real finalize_runtime_bridge injection block (vLLM side):
+    /// provider() derives "vllm" (skipping the kind probe) and a single
+    /// entry renames to the served name and adopts facts.
+    #[tokio::test]
+    async fn finalize_runtime_bridge_renames_and_injects_vllm_route() {
+        let _lock = ENV_LOCK.lock().unwrap_or_else(|p| p.into_inner());
+        let _env = isolate_model_env();
+        let mock = models_mock::spawn(&[("/v1/models", 200, single_entry_json("served-actual"))]);
+        let mut model = saved_model(ModelPreset::LocalVllm, "my-model", None);
+        model.base_url = mock.base_url.clone();
+        let bridge = wiring_bridge(model.clone());
+        let prepared = PreparedRuntimeModel::unchanged(model);
+        let bridge = EnginePool::finalize_runtime_bridge(bridge, &prepared, false).await;
+        assert_eq!(
+            bridge.session_model.as_ref().unwrap().model,
+            "served-actual",
+            "a vLLM single entry follows the served name"
+        );
+        assert_eq!(bridge.probed_context_tokens, Some(262_144));
+        assert_eq!(bridge.probed_output_tokens, Some(4_096));
     }
 }

@@ -21,14 +21,10 @@ import { useSystemDarkMode } from '../hooks/useSystemDarkMode.js';
 import { COLOR_SCHEME_STORAGE_KEY, normalizeColorScheme, resolveTheme } from '../shared/color-scheme.js';
 import { DEFAULT_CHAT_TITLES, dict, createLatestLanguageGate, ensureLanguage, LANG_TO_TAG, initialSystemLanguage, SEARCH_KEY_PROVIDERS, TAG_TO_LANG } from '../shared/i18n.js';
 import { formatSessionDate, localDateKey, formatDateGroupLabel } from '../shared/date-utils.js';
-import { groupSessionsByFolder, groupSessionsByProject, resolveSessionProjectId, needsAddFolderConfirm, uncoveredWorkspaceRoots, UNGROUPED_GROUP_KEY } from '../features/projects/projectGrouping.js';
+import { groupSessionsWithProjects, resolveSessionProjectId, needsAddFolderConfirm, WORKSPACE_KIND_BOUND } from '../features/projects/projectGrouping.js';
 import { ProjectGroupHeader } from '../features/projects/ProjectGroupHeader.jsx';
 import { MoveToProjectDialog } from '../features/projects/MoveToProjectDialog.jsx';
 import { RebindFolderDialog } from '../features/projects/RebindFolderDialog.jsx';
-import { WorkspacePickerDialog } from '../features/projects/WorkspacePickerDialog.jsx';
-import { computePickerRows, pickerPrimaryRoot, pickerProjectRoots, workspaceNoticeTone } from '../features/projects/workspacePickerState.js';
-import { ManageProjectFoldersDialog } from '../features/projects/ManageProjectFoldersDialog.jsx';
-import { removeRootPlan, rootAlreadyPresent } from '../features/projects/manageFoldersState.js';
 import { runSessionBatch } from '../shared/session-management.js';
 import { can, isWeb } from '../shared/platform.js';
 import { installGlobalMarkdownRenderer } from '../shared/markdown-renderer.js';
@@ -61,6 +57,7 @@ import { ChatView } from '../features/chat/ChatView.jsx';
 import { createPinvouModeScopeKey, savePinvouModeState } from '../features/chat/pinvou-mode-state.js';
 import { WebConnectionStatus } from '../features/web/WebConnectionStatus.jsx';
 import { VoiceShortcutRouter } from '../features/voice-composer/VoiceShortcutRouter.jsx';
+import { MODEL_PRESET_DEFS } from '../features/settings/model-catalog.js';
 import { createPetActivationGuard } from '../features/pet/activation-guard.js';
 import { SessionAttachmentTitle } from '../features/attachments/SessionAttachmentTitle.jsx';
 import {
@@ -163,11 +160,16 @@ function workspaceDisplayName(path) {
   return parts[parts.length - 1] || String(path || '');
 }
 
-// Per-item closures/payloads keyed by item keep RecentItem props shallow-equal
-// across unrelated re-renders (bridge notifies, local UI state) so the row
-// memo (see NavigationComponents) can skip. Item identity is stable while the
-// deriving state slice is unchanged; stale entries are garbage-collected with
-// their item keys.
+// Per-item callback cache behind the RecentItem memo: sidebar task items
+// (item) are derived by useMemo and keep stable references while the
+// underlying data is unchanged, so caching the onPickUp / scheduled-run
+// onSelect closures keyed by item keeps RecentItem props shallow-equal
+// across unrelated re-renders (local UI state, pure chat streaming tokens)
+// and skips the row re-render. Every captured handler is a stable useCallback
+// reference, and whenever a dependency (t etc.) changes the item is rebuilt
+// too (the derived memo depends on the same state), so the cache can never
+// hand out a stale closure; old item keys are garbage-collected along with
+// their closures.
 function cachedItemCallback(cache, item, build) {
   let fn = cache.get(item);
   if (!fn) {
@@ -176,9 +178,33 @@ function cachedItemCallback(cache, item, build) {
   }
   return fn;
 }
-// Drag payloads share the per-item cache rationale: an inline object is a new
-// reference on every render and would defeat the RecentItem memo.
+const sidebarPickUpCallbacks = new WeakMap();
+const sidebarScheduledSelectCallbacks = new WeakMap();
+// 拖拽 payload 与 onPickUp/onSelect 同因缓存:内联对象每次渲染都是新引用,
+// 会击穿 RecentItem 的 memo(见 NavigationComponents 内注释)。
 const sidebarDndPayloads = new WeakMap();
+
+// Static icon elements for the sidebar main nav: module-level constants keep
+// the element references stable so the NavItem memo can hit.
+const NAV_ICON_NEW_CHAT = <Edit2 size={18} />;
+const NAV_ICON_SEARCH = <Search size={18} />;
+const NAV_ICON_SCHEDULED = <Clock size={18} />;
+const NAV_ICON_OUTPUTS = <Package size={18} />;
+const NAV_ICON_MONITOR = <BarChart2 size={18} />;
+const NAV_ICON_TOOL_STORE = <Puzzle size={18} />;
+const NAV_ICON_CARD_POOL = <Layers size={18} />;
+const NAV_ICON_KNOWLEDGE = <BookOpen size={18} />;
+const NAV_ICON_CURRENT_CHAT = <MessageSquare size={18} />;
+
+// Hover/focus prefetch callbacks (prefetchView is a module function):
+// constant references for the NavItem memo comparison.
+const NAV_PREFETCH = {
+  scheduled: () => prefetchView('scheduled'),
+  knowledge: () => prefetchView('knowledge'),
+  monitor: () => prefetchView('monitor'),
+  toolStore: () => prefetchView('toolStore'),
+  cardpool: () => prefetchView('cardpool'),
+};
 
     // App root component: aggregates bridge state, routing, and all sidebar/overlay UI. Size and complexity are historical
     // evolution; splitting requires a dedicated refactor task (involving a hundred-plus closure handlers and test contracts);
@@ -191,6 +217,12 @@ const sidebarDndPayloads = new WeakMap();
         window.__PINVOU_STARTUP__.mark('react:app_render_start');
       }
       const bs = useBridgeState(APP_BRIDGE_STATE_DOMAINS);
+      // latest-ref mirror: stable useCallbacks (e.g. navigateFromScheduledRun)
+      // read the latest bridge snapshot when the event fires instead of
+      // depending on bs, which would change the callback identity on every
+      // notify and defeat the memo.
+      const bsRef = useRef(bs);
+      bsRef.current = bs;
       useLayoutEffect(() => {
         window.__PINVOU_STARTUP__.mark('react:first_commit');
         window.__PINVOU_STARTUP__.flush();
@@ -1021,17 +1053,18 @@ const sidebarDndPayloads = new WeakMap();
       const savedModelConfigRef = useRef(null);
       const savedSearchConfigRef = useRef(null);
 
-      // 各厂商默认配置（前端自动填充用，与 bridge/mod.rs 对齐）
+      // Per-vendor default configs (used to backfill the legacy single-model
+      // draft): reuse settings/model-catalog.js MODEL_PRESET_DEFS directly
+      // (which is aligned with the Rust prefs
+      // `ModelPreset::default_base_url/default_model`) instead of hand-copying
+      // a second copy, avoiding the mirror drift qwen once suffered. The only
+      // override is openai_compatible: the add-model catalog deliberately has
+      // no default address/model, while this table backfills the values the
+      // Rust legacy migration fallback actually resolves
+      // (prefs default_base_url/default_model).
       const PRESET_DEFAULTS = {
-        local_vllm:  { baseUrl: 'http://127.0.0.1:8000/v1',                model: 'qwen36_35b_256k' },
-        deepseek:    { baseUrl: 'https://api.deepseek.com',                model: 'deepseek-v4-pro' },
-        kimi:        { baseUrl: 'https://api.moonshot.cn/v1',              model: 'kimi-k3' },
-        openai_compatible: { baseUrl: 'https://api.openai.com/v1',        model: 'gpt-5.6-terra' },
-        qwen:        { baseUrl: 'https://dashscope.aliyuncs.com/compatible-mode/v1', model: 'qwen3.7-plus' },
-        doubao:      { baseUrl: 'https://ark.cn-beijing.volces.com/api/v3', model: 'doubao-seed-evolving' },
-        minimax:     { baseUrl: 'https://api.minimaxi.com/v1',            model: 'MiniMax-M3' },
-        glm:         { baseUrl: 'https://open.bigmodel.cn/api/paas/v4',   model: 'glm-5.2' },
-        mimo:        { baseUrl: 'https://api.xiaomimimo.com/v1',          model: 'mimo-v2.5-pro' },
+        ...MODEL_PRESET_DEFS,
+        openai_compatible: { baseUrl: 'https://api.openai.com/v1', model: 'gpt-5.6-terra' },
       };
       function normalizedModelProfile(name, baseUrl, apiKey) {
         const modelName = (name || '').trim();
@@ -1152,7 +1185,11 @@ const sidebarDndPayloads = new WeakMap();
       // dragAvatar = 被拎起的标签副本(跟随光标的 DOM 元素);null=没在拖。原生只判落点,视觉全在这。
       const [dragAvatar, setDragAvatar] = useState(null); // {key,label,dx,dy,w,h,x,y}
       const dragOffsetRef = useRef({ dx: 0, dy: 0 });
-      const beginTearOff = (kind, id, label, info) => {
+      // Stable useCallback: the per-item onPickUp closure caches of
+      // RecentItem/NavItem (see renderSidebarTaskItem) rely on this reference
+      // staying constant across renders so fresh callbacks per render cannot
+      // defeat the memo.
+      const beginTearOff = useCallback((kind, id, label, info) => {
         const inv = isTauriAvailable() ? invokeTauri : null;
         if (!inv || !info) return;
         inv('begin_detach_drag', { kind, id: id == null ? null : id });
@@ -1162,7 +1199,7 @@ const sidebarDndPayloads = new WeakMap();
           w: info.w, h: info.h, x: info.startX - info.dx, y: info.startY - info.dy,
         });
         if (window.getSelection) { const s = window.getSelection(); if (s && s.removeAllRanges) s.removeAllRanges(); }
-      };
+      }, []);
       // 拖拽中:光标移动 → 更新 avatar 位置(光标 - 抓取偏移,相对位置锁定);禁选 + 抓手光标。
       const dragAvatarActive = !!dragAvatar;
       useEffect(() => {
@@ -1184,9 +1221,15 @@ const sidebarDndPayloads = new WeakMap();
       // 原生拖拽结束(松手/取消)→ 收起 avatar。
       useEffect(() => {
         if (!isTauriAvailable()) return;
+        // If unmount happens after listen() resolves, unlisten immediately
+        // to avoid a leak (same policy as browser:activated).
+        let disposed = false;
         let un;
-        tauriEvents.listen('detach:drag-ended', () => setDragAvatar(null)).then(f => { un = f; });
-        return () => { if (un) un(); };
+        tauriEvents.listen('detach:drag-ended', () => setDragAvatar(null)).then(f => {
+          if (disposed) f();
+          else un = f;
+        });
+        return () => { disposed = true; if (un) un(); };
       }, []);
 
       // 兜底 zh:词典 chunk 装载失败时按 zh 渲染而非白屏(与 PetWindow/ReaderApp 同口径)。
@@ -1442,39 +1485,62 @@ const sidebarDndPayloads = new WeakMap();
       // 语言已即时写盘+切 UI,但 LLM 的 locale_tag 要重启 engine 才生效 → 偏离启动语言就提示。
       const languageNeedsRestart = !!bootedLanguageRef.current && language !== bootedLanguageRef.current;
 
+      // Scheduled-run status copy (depends on the current language
+      // dictionary); defined before the derived useMemos below so they can
+      // depend on it.
+      const scheduledRunLabel = useCallback((value) => {
+        return (t.uiScheduled.runStatus[value] || value || t.uiScheduled.unknown);
+      }, [t]);
+
+      // App re-renders in full on every bridge notify (including local UI
+      // state changes unrelated to the sidebar). Every O(sessions) derivation
+      // below is a useMemo over the real data slices: bridge subscription
+      // snapshots are persistent projections whose unchanged slices keep
+      // their references (pure chat streaming tokens only touch the chat
+      // domain and keep the sessions domain identical), so these memos are
+      // what let the sidebar derivations and the RecentItem memo actually
+      // skip recomputation.
+
       // Build chat history from sessions
-      const sessionBusy = (bs && bs.sessionBusy) || {};
-      const chatHistory = bs && bs.sessions ? bs.sessions.map(s => {
-        const isPlaceholder = !s.title || isDefaultChatTitle(s.title);
-        const titlePresentation = isPlaceholder
-          ? { text: t.newChat, attachments: [] }
-          : sessionTitlePresentation(s.title, s.title_attachment_names);
-        return {
-          id: s.id,
-          // 后端默认标题是三语哨兵之一(见 isDefaultChatTitle;bridge 以此判断是否自动改名)——显示层映射成当前语言
-          title: sessionTitlePlainText(titlePresentation),
-          titleContent: titlePresentation.attachments.length
-            ? <SessionAttachmentTitle presentation={titlePresentation} />
-            : null,
-          date: formatSessionDate(s.updated_at || s.created_at, language),
-          updatedAt: s.updated_at || s.created_at || '',
-          pinned: !!s.pinned,
-          pinnedAt: s.pinned_at || '',
-          working: !!sessionBusy[s.id], // 多 session 并发:该 session 是否正在后台生成
-          // #445 binding: bound work sessions carry workspacePath/Kind and the
-          // project grouping follows the binding (same signal as the security
-          // posture); unbound sessions keep both empty and stay in the date view.
-          workspacePath: s.workspace_binding || '',
-          // A standalone 'bound' kind: it shares the three-tier grouping with
-          // the code/ACP 'project' kind but is not a disguised project-kind
-          // (review #452 finding 5).
-          workspaceKind: s.workspace_binding ? 'bound' : '',
-          leadingIcon: <PinvouLogo className="h-[18px] w-[18px]" />,
-          testId: 'regular-sidebar-item',
-          menuTestId: 'regular-sidebar-menu',
-        };
-      }) : [];
-      const codexHistory = codexSessions.map(session => ({
+      const bridgeSessions = bs && bs.sessions;
+      const bridgeSessionBusy = bs && bs.sessionBusy;
+      const chatHistory = useMemo(() => {
+        const sessionBusy = bridgeSessionBusy || {};
+        return bridgeSessions ? bridgeSessions.map(s => {
+          const isPlaceholder = !s.title || isDefaultChatTitle(s.title);
+          const titlePresentation = isPlaceholder
+            ? { text: t.newChat, attachments: [] }
+            : sessionTitlePresentation(s.title, s.title_attachment_names);
+          return {
+            id: s.id,
+            // The backend default title is one of the trilingual sentinels
+            // (see isDefaultChatTitle; the bridge uses it to decide whether to
+            // auto-rename) — map it to the current language at the display layer
+            title: sessionTitlePlainText(titlePresentation),
+            titleContent: titlePresentation.attachments.length
+              ? <SessionAttachmentTitle presentation={titlePresentation} />
+              : null,
+            date: formatSessionDate(s.updated_at || s.created_at, language),
+            updatedAt: s.updated_at || s.created_at || '',
+            pinned: !!s.pinned,
+            pinnedAt: s.pinned_at || '',
+            working: !!sessionBusy[s.id], // concurrent sessions: is this session generating in the background
+            // #445 binding: a bound work session carries workspacePath/Kind;
+            // project grouping follows binding (the same signal as the safety
+            // posture). Unbound sessions leave both values empty and stay in
+            // the date view.
+            workspacePath: s.workspace_binding || '',
+            // A standalone 'bound' kind: shares the three-tier grouping with
+            // the code/ACP 'project' kind, but is not a disguised
+            // project-kind (review #452 finding 5).
+            workspaceKind: s.workspace_binding ? WORKSPACE_KIND_BOUND : '',
+            leadingIcon: <PinvouLogo className="h-[18px] w-[18px]" />,
+            testId: 'regular-sidebar-item',
+            menuTestId: 'regular-sidebar-menu',
+          };
+        }) : [];
+      }, [bridgeSessions, bridgeSessionBusy, t, language]);
+      const codexHistory = useMemo(() => codexSessions.map(session => ({
         id: session.id,
         title: (!session.title || isDefaultChatTitle(session.title))
           ? t.newChat
@@ -1495,26 +1561,33 @@ const sidebarDndPayloads = new WeakMap();
         testId: 'codex-sidebar-item',
         menuTestId: 'codex-sidebar-menu',
         codexSession: session,
-      }));
-      const pinnedChatHistory = chatHistory
+      })), [codexSessions, codexBusyBySession, codexWaitingInputBySession, t, language]);
+      const pinnedChatHistory = useMemo(() => chatHistory
         .filter(chat => chat.pinned)
-        .sort((a, b) => String(b.pinnedAt || b.updatedAt).localeCompare(String(a.pinnedAt || a.updatedAt)));
-      const scheduledRunShortcuts = (bs && bs.scheduledTaskRecentRuns && bs.scheduledTaskRecentRuns.length)
-        ? bs.scheduledTaskRecentRuns
-        : (bridge.available ? [] : PREVIEW_SCHEDULED_RUN_SHORTCUTS.map(run => ({ ...run, taskName: t[run.taskNameKey] || run.taskNameKey })));
-      const scheduledRunSessionIds = new Set(
+        .sort((a, b) => String(b.pinnedAt || b.updatedAt).localeCompare(String(a.pinnedAt || a.updatedAt))), [chatHistory]);
+      const bridgeScheduledTaskRecentRuns = bs && bs.scheduledTaskRecentRuns;
+      // bridge.available is deliberately not a dependency: the flag is assigned
+      // once when the bridge script installs window.TauriBridge and never
+      // reassigned, so the preview branch below cannot go stale afterwards.
+      const scheduledRunShortcuts = useMemo(() => (bridgeScheduledTaskRecentRuns && bridgeScheduledTaskRecentRuns.length)
+        ? bridgeScheduledTaskRecentRuns
+        : (bridge.available ? [] : PREVIEW_SCHEDULED_RUN_SHORTCUTS.map(run => ({ ...run, taskName: t[run.taskNameKey] || run.taskNameKey }))), [bridgeScheduledTaskRecentRuns, t]);
+      const scheduledRunSessionIds = useMemo(() => new Set(
         scheduledRunShortcuts
           .map(run => run && run.sessionId)
           .filter(Boolean)
-      );
-      const scheduledRunBySessionId = Object.create(null);
-      scheduledRunShortcuts.forEach(run => {
-        if (run && run.sessionId) scheduledRunBySessionId[run.sessionId] = run;
-      });
-      const regularHistory = chatHistory
+      ), [scheduledRunShortcuts]);
+      const scheduledRunBySessionId = useMemo(() => {
+        const byId = Object.create(null);
+        scheduledRunShortcuts.forEach(run => {
+          if (run && run.sessionId) byId[run.sessionId] = run;
+        });
+        return byId;
+      }, [scheduledRunShortcuts]);
+      const regularHistory = useMemo(() => chatHistory
         .filter(chat => !chat.pinned && !scheduledRunSessionIds.has(chat.id))
-        .sort((a, b) => String(b.updatedAt).localeCompare(String(a.updatedAt)));
-      const scheduledRunItems = scheduledRunShortcuts
+        .sort((a, b) => String(b.updatedAt).localeCompare(String(a.updatedAt))), [chatHistory, scheduledRunSessionIds]);
+      const scheduledRunItems = useMemo(() => scheduledRunShortcuts
         .filter(run => run && run.sessionId)
         .map(run => {
           // 定时运行会话不进 bs.sessions(list_sessions 隔离 sched-*),标题/置顶
@@ -1545,12 +1618,12 @@ const sidebarDndPayloads = new WeakMap();
             menuTestId: 'scheduled-run-sidebar-menu',
             scheduledRun: run,
           };
-        });
-      const scheduledRunHistory = scheduledRunItems.filter(chat => !chat.pinned);
-      const pinnedHistory = [...pinnedChatHistory, ...scheduledRunItems.filter(chat => chat.pinned)]
-        .sort((a, b) => String(b.pinnedAt || b.updatedAt).localeCompare(String(a.pinnedAt || a.updatedAt)));
+        }), [scheduledRunShortcuts, scheduledRunLabel, t, language, activeTheme]);
+      const scheduledRunHistory = useMemo(() => scheduledRunItems.filter(chat => !chat.pinned), [scheduledRunItems]);
+      const pinnedHistory = useMemo(() => [...pinnedChatHistory, ...scheduledRunItems.filter(chat => chat.pinned)]
+        .sort((a, b) => String(b.pinnedAt || b.updatedAt).localeCompare(String(a.pinnedAt || a.updatedAt))), [pinnedChatHistory, scheduledRunItems]);
 
-      function decorateScheduledRunChat(chat, run) {
+      const decorateScheduledRunChat = useCallback((chat, run) => {
         if (!run) return chat;
         const title = (!chat.title || isDefaultChatTitle(chat.title))
           ? (run.taskName || t.scheduledPlans)
@@ -1571,7 +1644,7 @@ const sidebarDndPayloads = new WeakMap();
           menuTestId: 'scheduled-run-sidebar-menu',
           scheduledRun: run,
         });
-      }
+      }, [t, language, activeTheme, scheduledRunLabel]);
 
       const [justInstalledTool, setJustInstalledTool] = useState(null);
       const [taskListFilter, setTaskListFilter] = useState('all');
@@ -1588,7 +1661,7 @@ const sidebarDndPayloads = new WeakMap();
       const [sidebarCodeStyle, setSidebarCodeStyle] = useState(() => {
         try {
           const stored = localStorage.getItem('pinvou_sidebar_code_style');
-          return ['normal', 'code', 'projects'].includes(stored) ? stored : null;
+          return stored === 'normal' || stored === 'code' ? stored : null;
         } catch {
           return null;
         }
@@ -1612,14 +1685,10 @@ const sidebarDndPayloads = new WeakMap();
       // code sessions; only explicitly switching back to work, or opening a normal
       // chat session, exits it.
       const [codeModeOn, setCodeModeOn] = useState(false);
-      // The task list's shape is driven by the All/Code/Projects pills; with no
-      // explicit choice (null), normal mode defaults to All and code mode to
-      // Code (the standing default). 'code' = the folder view (pure physical
-      // grouping, byte-identical to the pre-project behavior); 'projects' =
-      // the project view (pure logical grouping + ungrouped bucket). Stored
-      // 'code' keeps its old meaning — zero migration.
-      const sidebarCodeListActive = sidebarCodeStyle === null ? codeModeOn : sidebarCodeStyle !== 'normal';
-      const sidebarProjectsViewActive = sidebarCodeStyle === 'projects';
+      // 任务列表的展示形态由 全部/代码 胶囊决定;未显式选择(null)时普通模式
+      // 默认「全部」标准列表、code 模式默认 code 样式(沿用既有默认)。
+      // codeStyleActive 仍用于主导航折叠等 code 模式专属行为。
+      const sidebarCodeListActive = sidebarCodeStyle === null ? codeModeOn : sidebarCodeStyle === 'code';
       const codeStyleActive = codeModeOn && sidebarCodeListActive;
       // Exiting code mode resets the primary-nav collapse bar, so the next entry starts
       // from the default collapsed form.
@@ -1640,292 +1709,43 @@ const sidebarDndPayloads = new WeakMap();
       const [projectOpsBusy, setProjectOpsBusy] = useState(false);
       const [moveToProjectSession, setMoveToProjectSession] = useState(null);
       const [moveToPresetProject, setMoveToPresetProject] = useState(null);
-      // Stable entry: the RecentItem memo depends on reference-stable props
-      // (NavigationComponents comment); an inline arrow would re-render every
-      // sidebar row on each App re-render. RecentItem passes the chat itself,
-      // so no per-row capture is needed.
+      // 拖拽高亮的唯一所有者:源行 dragend 无条件清除,webview 丢 dragleave
+      // 事件时高亮也不会卡死(评审 #450 finding 5)。
+      const [dropTargetGroupKey, setDropTargetGroupKey] = useState(null);
+      // 稳定入口:RecentItem 的 memo 依赖 prop 引用稳定(NavigationComponents
+      // 内注释),内联箭头会让每个 App 重渲染(每个流式 token 批次)重渲染
+      // 全部 codex 侧栏行;identity 只在门控布尔翻转(项目从无到有/反之)时
+      // 变化。RecentItem 自己传 chat,无需逐行捕获。
+      // movePickerRestoreRef:移动成功的 regroup 会把出发行重新挂到新的分组
+      // 容器下,原标签节点随之销毁,被动还原会因 isConnected 失败跳过——
+      // 成功时按会话键解析新节点,交给 useDialogFocusRestore 的关闭时还原。
+      // menu 打开时一并清陈旧拖拽预置,避免上一次落点残留到本次选择
+      // (finding 7;setState 引用稳定,不影响本回调的 identity)。
+      const movePickerRestoreRef = useRef(null);
       const openMovePicker = useCallback((target) => {
+        movePickerRestoreRef.current = null;
         setMoveToPresetProject(null);
         setMoveToProjectSession(target);
       }, []);
+      // 拖拽高亮清除必须引用稳定:行内箭头让每个 App 重渲染(每个流式
+      // token 批次、tear-off 期间每次 pointermove 的 setDragAvatar)都新建
+      // 引用,击穿 RecentItem 的 memo,重渲染全部侧栏行。
+      const clearDropTarget = useCallback(() => setDropTargetGroupKey(null), []);
       const [rebindDraft, setRebindDraft] = useState(null);
-      // Single owner of the drag highlight: the source row's dragend clears it
-      // unconditionally, so a webview that drops the dragleave event can never
-      // stick the highlight (review #450 finding 5).
-      const [dropTargetGroupKey, setDropTargetGroupKey] = useState(null);
-      // Pull the project snapshot once after the bridge's first state sync (bs
-      // ready); later changes are refreshed inside the bridge, driven by the
-      // projects:list_changed event (bridge/projects.js).
+      // 桥完成首次状态同步(bs 就绪)后拉一次项目快照;后续变更由
+      // projects:list_changed 事件驱动桥内刷新(bridge/projects.js)。
       const projectsBootstrapReady = !!bs;
       useEffect(() => {
         if (projectsBootstrapReady && bridge.projects) bridge.projects.loadProjects();
       }, [projectsBootstrapReady]);
-
-      // ── Folder-project auto-materialization (Codex client-style adoption) ──
-      // When the session list shows a workspace folder no project root covers,
-      // the backend ensures a same-named project (origin=folder). Independent
-      // of the display view (All/Code/Projects all trigger it), so folders are
-      // in place when the user switches to the project view. ensure is
-      // idempotent (the backend reuses by coverage); the driver is "sessions
-      // without any assignment entry" — deleting a project writes its members
-      // as explicit move-outs, so a deleted folder is not rebuilt at once; it
-      // re-ensures only when a NEW session appears in that folder. The ref
-      // remembers ensured session ids per root: recomputes over the same
-      // sessions do not re-request; new session ids retrigger naturally.
-      const projectsListData = bs && bs.projectsList;
-      // Slice deps (same convention as chatHistory above): the whole bs
-      // snapshot gets a new identity on every bridge notify (including pure
-      // chat token streams), so depending on it would re-run this memo and
-      // the downstream O(sessions × projects × roots) derivations every time.
-      const bsSessions = bs && bs.sessions;
-      const boundWorkspaceItems = useMemo(() => {
-        // Preserve the pre-slice guard: before the first bridge sync (bs
-        // missing) the codex lanes are not folded in either.
-        if (!bsSessions) return [];
-        const regular = bsSessions
-          .filter(s => s.workspace_binding)
-          .map(s => ({ id: s.id, workspaceKind: 'bound', workspacePath: String(s.workspace_binding), updatedAt: s.updated_at || '' }));
-        const codex = (codexSessions || [])
-          .filter(s => s.workspace_kind === 'project' && s.workspace_path)
-          .map(s => ({ id: s.id, workspaceKind: 'project', workspacePath: String(s.workspace_path), updatedAt: s.updated_at || '' }));
-        return [...regular, ...codex];
-      }, [bsSessions, codexSessions]);
-      const projectsListEntries = projectsListData && projectsListData.projects;
-      const projectsListAssignments = projectsListData && projectsListData.assignments;
-      const pendingFolderRoots = useMemo(() => uncoveredWorkspaceRoots(
-        boundWorkspaceItems,
-        projectsListEntries || [],
-        projectsListAssignments || {},
-      ), [boundWorkspaceItems, projectsListEntries, projectsListAssignments]);
-      const ensuredFolderRootsRef = useRef(new Map());
-      useEffect(() => {
-        const ensureFn = bridge.projects && bridge.projects.ensureFolderProjects;
-        if (!ensureFn || !pendingFolderRoots.length) return;
-        const fresh = [];
-        const registered = [];
-        pendingFolderRoots.forEach(({ root, sessionIds }) => {
-          const seen = ensuredFolderRootsRef.current.get(root) || new Set();
-          const newcomers = sessionIds.filter(id => !seen.has(id));
-          if (!newcomers.length) return;
-          newcomers.forEach((id) => { seen.add(id); });
-          ensuredFolderRootsRef.current.set(root, seen);
-          fresh.push(root);
-          registered.push({ root, newcomers });
-        });
-        if (!fresh.length) return;
-        // A rejected ensure is transient (e.g. backend mid-restart): roll back
-        // the seen-registration so the next recompute retries instead of
-        // leaving existing sessions permanently un-ensured. A resolved
-        // 'failed' outcome (e.g. nesting conflict with an existing project
-        // root) stays registered: that conflict is stable, retrying repeats
-        // the same result until the root/project sets change and recompute.
-        ensureFn(fresh).catch(() => {
-          registered.forEach(({ root, newcomers }) => {
-            const seen = ensuredFolderRootsRef.current.get(root);
-            if (!seen) return;
-            newcomers.forEach((id) => { seen.delete(id); });
-          });
-        });
-      }, [pendingFolderRoots]);
-
-      // ── Unified "choose workspace" picker (§2 single entry) ──────────────
-      // The host owns the open flag and result landing: the chat lane writes
-      // the bridge draft (create_session carries workspaceRoots/projectId at
-      // materialization); the codex lane is handed the request via
-      // workspacePickerRequest into CodexAcpView (beginDraft + draft ownership
-      // staging; createAcpSession passes them at materialization). The picker
-      // itself only reads hot-view rows + callbacks and never touches the
-      // backend.
-      const [workspacePicker, setWorkspacePicker] = useState(null); // { lane, mode }
-      const [pickerBusy, setPickerBusy] = useState(false);
-      const [pickerExcluded, setPickerExcluded] = useState(null);
-      const [pickerCodexRequest, setPickerCodexRequest] = useState(null);
-      // Codex lane's effective mode, reported up by CodexAcpView: sidebar
-      // surfaces opened while the code page is active (manage-folders panel)
-      // must show the codex lane's mode-aware copy, not the chat lane's.
-      const [codexLaneMode, setCodexLaneMode] = useState(null);
-      const workspacePickerRows = useMemo(() => computePickerRows({
-        projects: projectsListEntries || [],
-        items: boundWorkspaceItems,
-        assignments: projectsListAssignments || {},
-      }), [projectsListEntries, projectsListAssignments, boundWorkspaceItems]);
-      const closeWorkspacePicker = () => { setWorkspacePicker(null); setPickerExcluded(null); };
-      const applyWorkspaceTarget = ({ lane, path, projectId, roots }) => {
-        if (lane === 'codex') {
-          setPickerCodexRequest({ epoch: Date.now(), path: path || null, projectId: projectId || null, roots: roots || [] });
-        } else if (bridge.sessions && bridge.sessions.setDraftWorkspace) {
-          bridge.sessions.setDraftWorkspace(path || null, { projectId: projectId || null, workspaceRoots: roots || [] });
-        }
-        closeWorkspacePicker();
-      };
-      // Project channel (§9.3): cwd = the picked root (defaults to the
-      // project's remembered primary root); keychain = a snapshot of all the
-      // project's roots at that moment; projectId is written to
-      // last_primary_root on creation (handled inside the backend create).
-      // Mode-aware grant notices follow the lane the action belongs to: the
-      // code page runs under the codex lane's mode, everything else under
-      // chat's modeState.
-      const activeLaneMode = () => (currentView === 'codex'
-        ? codexLaneMode
-        : ((bs && bs.modeState && bs.modeState.mode) || null));
-      // Same-weight grant notice for every entry that grants folder access
-      // without the picker expansion panel (§9.4): picker single-root rows and
-      // the browse entry carry it inline; the no-detour channels (project-row
-      // new session, composer recents) surface it as a toast at grant time.
-      const workspaceGrantNotice = (mode, count) => (workspaceNoticeTone(mode) === 'restricted'
-        ? t.uiWorkspacePicker.noticeRestricted(count)
-        : t.uiWorkspacePicker.noticeVisibility(count));
-      const pickerLane = () => (workspacePicker ? workspacePicker.lane : 'chat');
-      const handlePickerSelectProject = (project, root) => {
-        applyWorkspaceTarget({ lane: pickerLane(), path: root, projectId: project.id, roots: pickerProjectRoots(project) });
-      };
-      const handlePickerTemporary = () => {
-        applyWorkspaceTarget({ lane: pickerLane(), path: null, projectId: null, roots: [] });
-      };
-      // Dedicated channel for the project row's "new session" (§9.9 project
-      // channel): no picker detour — cwd = the project's remembered primary
-      // root (the picker/manage panel writes that memory), keychain = all of
-      // the project's roots at that moment. The lane follows the current page
-      // (code page → codex draft, anything else → chat draft).
-      const handleProjectNewSession = (projectId) => {
-        const project = ((sidebarProjectsData && sidebarProjectsData.projects) || [])
-          .find(entry => entry.id === projectId);
-        if (!project) return;
-        const primary = pickerPrimaryRoot(project);
-        if (!primary) return; // tag-only project: no root to bind; the render side already keeps the button away
-        const roots = pickerProjectRoots(project);
-        applyWorkspaceTarget({
-          lane: currentView === 'codex' ? 'codex' : 'chat',
-          path: primary,
-          projectId: project.id,
-          roots,
-        });
-        // Grant notice parity: this channel grants the project's whole root
-        // set without a picker detour, so the mode-aware notice must still
-        // surface at grant time.
-        setSettingsToast(workspaceGrantNotice(activeLaneMode(), roots.length));
-      };
-      // Browse channel (§9.9 folder channel): system folder picker → ensure
-      // (anchor reuse / materialize; the exclusion list skips) → start at the
-      // picked folder with cwd = F, roots = [F]. No projectId: browsing is an
-      // explicit physical choice and does not update any project's
-      // last_primary_root memory (ruling A); the session groups via tier-2
-      // anchoring and needs no explicit assignment.
-      const handlePickerBrowse = async () => {
-        if (!bridge.files || !bridge.files.pickFolders || pickerBusy) return;
-        const picked = await bridge.files.pickFolders()
-          .catch((error) => { console.warn('pick workspace folder failed', error); return null; });
-        if (!picked) return;
-        const folder = Array.isArray(picked) ? picked[0] : picked;
-        if (!folder) return;
-        let materialized = false;
-        if (bridge.projects && bridge.projects.ensureFolderProjects) {
-          setPickerBusy(true);
-          try {
-            const outcomes = await bridge.projects.ensureFolderProjects([folder]);
-            const list = Array.isArray(outcomes) ? outcomes : [];
-            materialized = list.some(o => o && (o.status === 'created' || o.status === 'covered'));
-            if (!materialized && list.some(o => o && o.status === 'failed')) {
-              setSettingsToast(t.uiProjects.opFailed);
-            }
-          } catch (error) {
-            console.warn('ensure folder project failed', error);
-            setSettingsToast(t.uiProjects.opFailed);
-          } finally {
-            setPickerBusy(false);
-          }
-        }
-        if (!materialized && bridge.projects) {
-          // Exclusion list (§3): the backend skipped it → no outcome; the
-          // picker says so honestly and still allows starting as a plain folder
-          // (no projectId).
-          setPickerExcluded(folder);
-          return;
-        }
-        applyWorkspaceTarget({ lane: pickerLane(), path: folder, projectId: null, roots: [folder] });
-      };
-
-      // ── Manage-folders panel (§4) ───────────────────────────────────────
-      // View/add/remove project roots, primary-root memory, rename, and the
-      // exclusion list view/revoke. Removing a root moves its members out in
-      // the backend's update_project (B2); after add/remove the bridge reloads
-      // projects on its own (event + active refetch, belt and braces).
-      const [manageFoldersId, setManageFoldersId] = useState(null);
-      // Note: this block sits before the sidebarProjectsData declaration and
-      // reads projectsListData instead (the same projectsList snapshot).
-      const manageFoldersProject = manageFoldersId
-        ? (((projectsListData && projectsListData.projects) || [])
-            .find(entry => entry.id === manageFoldersId) || null)
-        : null;
-      const closeManageFolders = () => setManageFoldersId(null);
-      // Add folder: system folder picker → update_project append (the grant
-      // notice sits on the panel's "add" entry, same weight as the picker,
-      // §2). Paths already in the project are skipped with a notice.
-      const handleManageAddFolder = async () => {
-        if (!bridge.files || !bridge.files.pickFolders || !manageFoldersProject || projectOpsBusy) return;
-        const picked = await bridge.files.pickFolders()
-          .catch((error) => { console.warn('pick project folder failed', error); return null; });
-        if (!picked) return;
-        const folder = Array.isArray(picked) ? picked[0] : picked;
-        if (!folder) return;
-        if (rootAlreadyPresent(manageFoldersProject, folder)) {
-          setSettingsToast(t.uiManageFolders.addDuplicate);
-          return;
-        }
-        setProjectOpsBusy(true);
-        try {
-          await bridge.projects.updateProjectRoots(
-            manageFoldersProject.id,
-            [...manageFoldersProject.roots.map(root => String(root.path)), folder],
-          );
-        } catch (error) {
-          console.warn('add project folder failed', error);
-          setSettingsToast(t.uiProjects.opFailed);
-        } finally {
-          setProjectOpsBusy(false);
-        }
-      };
-      const handleManageRemoveRoot = async (root) => {
-        if (!manageFoldersProject || projectOpsBusy) return;
-        const plan = removeRootPlan(manageFoldersProject, root);
-        if (!plan.removed || plan.needsNewPrimary) return; // primary-root removal is blocked inside the panel
-        setProjectOpsBusy(true);
-        try {
-          await bridge.projects.updateProjectRoots(manageFoldersProject.id, plan.roots);
-        } catch (error) {
-          console.warn('remove project folder failed', error);
-          setSettingsToast(t.uiProjects.opFailed);
-        } finally {
-          setProjectOpsBusy(false);
-        }
-      };
-      const handleManageSetPrimary = async (root) => {
-        if (!manageFoldersProject || projectOpsBusy) return;
-        setProjectOpsBusy(true);
-        try {
-          await bridge.projects.setPrimaryRoot(manageFoldersProject.id, root);
-        } catch (error) {
-          console.warn('set primary root failed', error);
-          setSettingsToast(t.uiProjects.opFailed);
-        } finally {
-          setProjectOpsBusy(false);
-        }
-      };
-      // Exclusion list (§3): listed = no more auto-materialization
-      // (reversible; projects/sessions untouched); unlisted = revoked.
-      const handleSetNeverMaterialize = async (root, never) => {
-        if (projectOpsBusy) return;
-        setProjectOpsBusy(true);
-        try {
-          await bridge.projects.setNeverMaterialize(root, never);
-          setSettingsToast(t.uiManageFolders.exclusionDone);
-        } catch (error) {
-          console.warn('set never-materialize failed', error);
-          setSettingsToast(t.uiProjects.opFailed);
-        } finally {
-          setProjectOpsBusy(false);
-        }
-      };
+      // Set of session ids whose archive export is in flight: the handler
+      // exits early to prevent concurrent duplicate exports, and the sidebar
+      // hides the matching menu item as in-progress feedback.
+      const [exportingSessionIds, setExportingSessionIds] = useState(() => new Set());
+      // latest-ref mirror: the stable export callback reads the in-flight set
+      // here instead of changing identity whenever the set changes.
+      const exportingSessionIdsRef = useRef(exportingSessionIds);
+      exportingSessionIdsRef.current = exportingSessionIds;
 
       // Expanded sidebar width: drag the right edge to adjust (220~480px), double-click
       // the handle to reset to default; the choice is persisted.
@@ -2034,7 +1854,8 @@ const sidebarDndPayloads = new WeakMap();
       const sidebarTaskFilterOptions = [
         { id: 'all', label: t.sidebarTaskFilterAll },
         { id: 'pinned', label: t.sidebarTaskFilterPinned },
-        // In the projects shape (pill on Projects) the list is always code/bound sessions: the 'Code sessions' filter equals
+        // In the project form (capsule set to "Projects") the list is always
+        // code/bound sessions: the "Code sessions" filter is equivalent to
         // 「全部」、「定时任务」恒为空——两个选项都是死胡同,只在标准形态提供。
         ...(sidebarCodeListActive ? [] : [
           { id: 'code', label: t.sidebarTaskFilterCodeSessions },
@@ -2045,7 +1866,7 @@ const sidebarDndPayloads = new WeakMap();
         { id: 'pinned_first', label: t.sidebarTaskSortPinnedFirst },
         { id: 'recent', label: t.sidebarTaskSortRecent },
       ];
-      const allSidebarTasks = [
+      const allSidebarTasks = useMemo(() => [
         ...pinnedHistory.map((chat) => {
           const run = chat.scheduledRun || scheduledRunBySessionId[chat.id];
           const item = decorateScheduledRunChat(chat, run);
@@ -2054,8 +1875,13 @@ const sidebarDndPayloads = new WeakMap();
         ...regularHistory.map(chat => ({ ...chat, taskKind: 'regular' })),
         ...scheduledRunHistory.map(chat => ({ ...chat, taskKind: 'scheduled' })),
         ...codexHistory,
-      ];
-      const sidebarTaskHistory = allSidebarTasks
+      ], [pinnedHistory, regularHistory, scheduledRunHistory, scheduledRunBySessionId, codexHistory, decorateScheduledRunChat]);
+      // latest-ref mirror: handleArchiveSession (a stable useCallback) reads
+      // the latest task list for the session title at call time, instead of
+      // changing the callback identity per render just to read a value.
+      const allSidebarTasksRef = useRef(allSidebarTasks);
+      allSidebarTasksRef.current = allSidebarTasks;
+      const sidebarTaskHistory = useMemo(() => allSidebarTasks
         .filter((chat) => {
           if (taskListFilter === 'pinned') return !!chat.pinned;
           if (taskListFilter === 'code') return chat.taskKind === 'codex';
@@ -2073,18 +1899,18 @@ const sidebarDndPayloads = new WeakMap();
             ? (b.pinnedAt || b.updatedAt)
             : (b.updatedAt || b.pinnedAt);
           return String(bTime || '').localeCompare(String(aTime || ''));
-        });
+        }), [allSidebarTasks, taskListFilter, taskListSort]);
 
       // 任务列表按日期堆叠:今天默认展开、以往默认折叠;组内顺序沿用上面的筛选+排序结果,
       // 组间按日期倒序,无时间戳的落 'unknown' 组沉底。
       // 「置顶优先」排序下置顶项提升到所有日期组之上,否则旧会话会埋进默认折叠的以往分组,
       // 只剩置顶标志、没有置顶效果。
       const todayDateKey = localDateKey(Date.now());
-      const sidebarPinnedHoisted = taskListSort === 'pinned_first'
+      const sidebarPinnedHoisted = useMemo(() => (taskListSort === 'pinned_first'
         ? sidebarTaskHistory.filter(chat => !!chat.pinned)
-        : [];
-      const sidebarTaskGroups = [];
-      {
+        : []), [taskListSort, sidebarTaskHistory]);
+      const sidebarTaskGroups = useMemo(() => {
+        const groups = [];
         const byDate = new Map();
         sidebarTaskHistory.forEach(chat => {
           if (sidebarPinnedHoisted.length && chat.pinned) return;
@@ -2092,70 +1918,67 @@ const sidebarDndPayloads = new WeakMap();
           if (!byDate.has(key)) byDate.set(key, []);
           byDate.get(key).push(chat);
         });
-        byDate.forEach((rows, key) => { sidebarTaskGroups.push({ key, rows }); });
-        sidebarTaskGroups.sort((a, b) => {
+        byDate.forEach((rows, key) => { groups.push({ key, rows }); });
+        groups.sort((a, b) => {
           if (a.key === 'unknown') return 1;
           if (b.key === 'unknown') return -1;
           return b.key.localeCompare(a.key);
         });
-      }
+        return groups;
+      }, [sidebarTaskHistory, sidebarPinnedHoisted]);
 
-      // Grouped views (folder/project): every session bound to a real
-      // directory — code/ACP sessions and #445's bound work sessions. The two
-      // dimensions are split (finalized after review):
-      // - folder view = pure physical layer, grouped by workspace; projects
-      //   never affect it;
-      // - project view = pure logical layer, only named projects as groups
-      //   (explicit assignment + root auto-match); unclaimed sessions sink
-      //   into the ungrouped bucket (drag source / move-out landing place).
-      // The grouping chain is memoized end to end: tier-2 is
-      // O(sessions × projects × roots).
+      // Project view (formerly the "Code" form): every session bound to a
+      // real directory — code/ACP sessions and #445 bound work sessions — is
+      // grouped uniformly by the project layer's three tiers; unbound plain
+      // sessions stay in the date view of "All". Grouping follows binding,
+      // the same signal as the safety posture.
+      // Note: the upstream history chain (chatHistory/codexHistory/…) is
+      // rebuilt on every render, so these memos are recomputed each round for
+      // now — end-to-end memoization is left as follow-up (review finding
+      // 22); tier-2 grouping is O(sessions × projects × roots)
+      // (#448 finding 8).
       const sidebarCodeTasks = useMemo(() => (sidebarCodeListActive
         ? sidebarTaskHistory.filter(chat => chat.taskKind === 'codex'
-            || (chat.taskKind === 'regular' && chat.workspacePath))
+            // The bound-work-session branch is desktop-only, like the projects
+            // slice it feeds: on web the backend degrades workspace_binding to
+            // its last path component, so the value is a leaf name with no
+            // project behind it and two same-named directories would collapse
+            // into one tier-3 bucket (review #464 round-6 finding 8b).
+            || (can('desktopChrome') && chat.taskKind === 'regular' && chat.workspacePath))
         : []), [sidebarCodeListActive, sidebarTaskHistory]);
       const sidebarFolderPinned = useMemo(() => (taskListSort === 'pinned_first'
         ? sidebarCodeTasks.filter(chat => !!chat.pinned)
         : []), [taskListSort, sidebarCodeTasks]);
       const sidebarUnpinnedCodeTasks = useMemo(() => sidebarCodeTasks.filter(chat => !(sidebarFolderPinned.length && chat.pinned)), [sidebarCodeTasks, sidebarFolderPinned]);
       const sidebarProjectsData = bs && bs.projectsList;
-      const sidebarFolderGroups = useMemo(() => {
-        if (!sidebarCodeListActive) return [];
-        if (sidebarProjectsViewActive) {
-          return groupSessionsByProject(
+      const sidebarFolderGroups = useMemo(() => (sidebarCodeListActive
+        ? groupSessionsWithProjects(
             sidebarUnpinnedCodeTasks,
             sidebarProjectsData ? sidebarProjectsData.projects : [],
             sidebarProjectsData ? sidebarProjectsData.assignments : {},
-          );
-        }
-        return groupSessionsByFolder(sidebarUnpinnedCodeTasks);
-      }, [sidebarCodeListActive, sidebarProjectsViewActive, sidebarUnpinnedCodeTasks, sidebarProjectsData]);
-      // Pin hoisting strips members out of the group rows, but the header
-      // count (including the delete confirm) must use the pre-hoist
-      // membership, or a group whose members are all pinned shows (0) in the
-      // delete confirm (review finding 24). Pinned items are usually few, so a
-      // separate grouping pass over them yields the stripped count per group.
+          )
+        : []), [sidebarCodeListActive, sidebarUnpinnedCodeTasks, sidebarProjectsData]);
+      // 置顶提升会把成员从组 rows 里摘走,但组头计数(含删除确认)要按提升前
+      // 的全量成员算,否则成员全置顶的组确认删除时显示 (0)(评审 finding 24)。
+      // 置顶项通常很少,单独对它们跑一遍分组拿到每组被摘走的数量即可。
       const sidebarGroupPinnedCounts = useMemo(() => {
         if (!sidebarCodeListActive || sidebarFolderPinned.length === 0) return {};
         const counts = {};
-        const pinnedGroups = sidebarProjectsViewActive
-          ? groupSessionsByProject(
-              sidebarFolderPinned,
-              sidebarProjectsData ? sidebarProjectsData.projects : [],
-              sidebarProjectsData ? sidebarProjectsData.assignments : {},
-            )
-          : groupSessionsByFolder(sidebarFolderPinned);
-        pinnedGroups.forEach((group) => { counts[group.key] = group.rows.length; });
+        groupSessionsWithProjects(
+          sidebarFolderPinned,
+          sidebarProjectsData ? sidebarProjectsData.projects : [],
+          sidebarProjectsData ? sidebarProjectsData.assignments : {},
+        ).forEach((group) => { counts[group.key] = group.rows.length; });
         return counts;
-      }, [sidebarCodeListActive, sidebarProjectsViewActive, sidebarFolderPinned, sidebarProjectsData]);
+      }, [sidebarCodeListActive, sidebarFolderPinned, sidebarProjectsData]);
 
       // latest-ref mirror: the pet-snapshot broadcast effect only subscribes to bs.sessions/sessionBusy/language,
       // while snapshot contents (id/title/working) are read via refs to reduce effect resubscription.
-      petSnapshotRef.current = chatHistory.map(chat => ({
+      petSnapshotRef.current = useMemo(() => chatHistory.map(chat => ({
         id: chat.id,
         title: chat.title,
         working: chat.working,
-      }));
+      })), [chatHistory]);
       const petSessions = bs && bs.sessions;
       const petSessionBusy = bs && bs.sessionBusy;
       useEffect(() => {
@@ -2193,7 +2016,18 @@ const sidebarDndPayloads = new WeakMap();
         };
       }, [petSessions, petSessionBusy, language]);
 
-      async function navigateFromScheduledRun(nextView, beforeNavigate) {
+      const closeMobileSidebar = useCallback(() => {
+        if (!isWeb || typeof window === 'undefined') return;
+        if (window.matchMedia && window.matchMedia('(max-width: 639px)').matches) {
+          setIsSidebarOpen(false);
+        }
+      }, []);
+
+      // Stable useCallback: the sidebar NavItem memo depends on this callback
+      // identity. bs is read through a latest-ref — a click sees the most
+      // recently rendered snapshot, matching closure-capture semantics.
+      const navigateFromScheduledRun = useCallback(async (nextView, beforeNavigate) => {
+        const bs = bsRef.current;
         const context = browserSurfaceTransitionContextRef.current;
         const keepsDesktopBrowserVisible = !context.compact && (
           nextView === 'chat'
@@ -2216,7 +2050,7 @@ const sidebarDndPayloads = new WeakMap();
             ? 'workspace'
             : keepsDesktopBrowserVisible ? 'none' : 'visible',
         });
-      }
+      }, [closeMobileSidebar, runBrowserUiTransition, setCurrentView]);
 
       function openSettingsSection(section = 'general') {
         // 记录进入设置前的页面（代码页齿轮等深链入口），关闭设置时原路返回，
@@ -2226,18 +2060,10 @@ const sidebarDndPayloads = new WeakMap();
         return navigateFromScheduledRun('settings');
       }
 
-      const closeMobileSidebar = useCallback(() => {
-        if (!isWeb || typeof window === 'undefined') return;
-        if (window.matchMedia && window.matchMedia('(max-width: 639px)').matches) {
-          setIsSidebarOpen(false);
-        }
-      }, []);
-
-      function scheduledRunLabel(value) {
-        return (t.uiScheduled.runStatus[value] || value || t.uiScheduled.unknown);
-      }
-
-      async function handleOpenScheduledRunShortcut(run) {
+      // Stable useCallbacks: the LazySearchView/RecentItem memos depend on
+      // these callback identities; rebuilding them per render would defeat
+      // the memo (the dependencies are the real semantic dependencies).
+      const handleOpenScheduledRunShortcut = useCallback(async (run) => {
         if (!run || !run.sessionId) return;
         // A scheduled-run session is a normal chat: both the fallback and the
         // successful-open branches land on the scheduled view, so each branch
@@ -2268,9 +2094,11 @@ const sidebarDndPayloads = new WeakMap();
           serialize: true,
           sessionTarget: run.sessionId,
         });
-      }
+      }, [t, closeMobileSidebar, runBrowserUiTransition, setCurrentView]);
 
-      function handleNewChat(installedToolId, forceMode) {
+      // Stable useCallback: the sidebar "new chat" NavItems memo depends on
+      // its identity (wrapped in handleNavNewChat).
+      const handleNewChat = useCallback((installedToolId, forceMode) => {
         // 类型守卫:installedToolId 必须是字符串 toolId。侧边栏按钮 onClick={() => handleNewChat()}
         // 本不传参,但若哪天有调用点写成 onClick={handleNewChat},React 会把事件对象当首参塞进来——
         // 那是 truthy 的 SyntheticEvent,会被当成 toolId 置进 welcomeToolId → ToolWelcomeCard 查不到
@@ -2316,7 +2144,7 @@ const sidebarDndPayloads = new WeakMap();
           serialize: true,
           sessionTarget: null,
         });
-      }
+      }, [codeModeOn, codexAcpSupported, closeMobileSidebar, runBrowserUiTransition, updateActiveCodexSession, setCurrentView]);
 
       function handleSwitchHomeMode(mode) {
         if (mode === 'code' && codexAcpSupported) {
@@ -2383,12 +2211,14 @@ const sidebarDndPayloads = new WeakMap();
         setSearchOverlayOpen(false);
       }
 
-      function handleSwitchCodexSession(id) {
+      // Stable useCallback: passed directly as the RecentItem memo's onSelect
+      // (codex branch).
+      const handleSwitchCodexSession = useCallback((id) => {
         setCodeModeOn(true);
         updateActiveCodexSession(id);
         setCurrentView('codex');
         closeMobileSidebar();
-      }
+      }, [updateActiveCodexSession, closeMobileSidebar, setCurrentView]);
 
       // 用户在主窗口里亲眼看着完成的会话，公仔的活动卡属于冗余提醒——
       // 完成瞬间若该会话正处于前台聊天视图且窗口有焦点，直接标记已读，
@@ -2629,31 +2459,80 @@ const sidebarDndPayloads = new WeakMap();
         };
       }, []);
 
-      async function handleDeleteSession(id) {
+      // The four session-action callbacks below are all stable useCallbacks:
+      // the RecentItem/search management memos depend on their identities and
+      // their dependency arrays list exactly the state they read.
+      const handleDeleteSession = useCallback(async (id) => {
         const isCodexSession = codexSessions.some(session => session.id === id);
         if (bridge.available) await bridge.sessions.deleteSession(id);
         if (isCodexSession) {
           if (activeCodexId === id) updateActiveCodexSession(null);
           await refreshCodexSessions().catch(() => {});
         }
-      }
+      }, [codexSessions, activeCodexId, updateActiveCodexSession, refreshCodexSessions]);
 
-      async function handleRenameSession(id, title) {
+      const handleRenameSession = useCallback(async (id, title) => {
         const isCodexSession = codexSessions.some(session => session.id === id);
         if (bridge.available) await bridge.sessions.renameSession(id, title);
         if (isCodexSession) await refreshCodexSessions().catch(() => {});
-      }
+      }, [codexSessions, refreshCodexSessions]);
 
-      async function handleToggleSessionPinned(id, pinned) {
+      // One-click full session log export (.tar.xz, full-fidelity context).
+      // The backend opens the native save dialog: cancellation resolves to
+      // null; the success toast carries the save path and failures surface
+      // through the settings-page toast. Sessions already exporting exit
+      // early (preventing concurrent duplicate exports) and their sidebar
+      // menu items are hidden at the same time as in-progress feedback. The
+      // default file name carries the session title (truncated by code
+      // points so surrogate pairs are not split) and a short id; the final
+      // name is sanitized by the backend (against path traversal and invalid
+      // characters). The task list is read via allSidebarTasksRef and the
+      // in-flight set via exportingSessionIdsRef so the callback identity
+      // stays stable (RecentItem is memoized).
+      const handleExportSessionArchive = useCallback(async (id) => {
+        if (!bridge.available || !bridge.sessions.exportSessionArchive) return;
+        if (exportingSessionIdsRef.current.has(id)) return;
+        const chat = (allSidebarTasksRef.current || []).find(c => c.id === id);
+        const title = ((chat && chat.title) || 'session').trim() || 'session';
+        const stem = [...title].slice(0, 30).join('');
+        const defaultName = `pinvou-session-${stem}-${id.slice(0, 8)}.tar.xz`;
+        setExportingSessionIds(prev => new Set(prev).add(id));
+        try {
+          const result = await bridge.sessions.exportSessionArchive(id, defaultName);
+          if (!result) return;
+          setSettingsToast(t.exportSessionDone(result.path));
+        } catch (error) {
+          console.warn('export session archive failed', error);
+          setSettingsToast(t.exportSessionFailed);
+        } finally {
+          setExportingSessionIds(prev => {
+            const next = new Set(prev);
+            next.delete(id);
+            return next;
+          });
+        }
+      }, [t]);
+
+      const handleToggleSessionPinned = useCallback(async (id, pinned) => {
         const isCodexSession = codexSessions.some(session => session.id === id);
         if (bridge.available) await bridge.sessions.toggleSessionPinned(id, pinned);
         if (isCodexSession) await refreshCodexSessions().catch(() => {});
-      }
+      }, [codexSessions, refreshCodexSessions]);
 
-      function handleArchiveSession(id) {
-        const chat = allSidebarTasks.find(c => c.id === id);
+      // The archive confirmation needs the session title: read through a
+      // latest-ref so the callback itself stays stable and the RecentItem
+      // memo is not defeated by this prop on every render.
+      const handleArchiveSession = useCallback((id) => {
+        const chat = (allSidebarTasksRef.current || []).find(c => c.id === id);
         setArchiveConfirm(chat || { id, title: t.newChat });
-      }
+      }, [t]);
+
+      // "Open session folder": shared by RecentItem and the conversation
+      // management page; the bridge is a module singleton, so its dependency
+      // is constant.
+      const handleRevealSessionFolder = useCallback((id) => {
+        if (bridge.artifacts.revealSessionFolder) bridge.artifacts.revealSessionFolder(id);
+      }, []);
 
       async function confirmArchiveSession() {
         const id = archiveConfirm && archiveConfirm.id;
@@ -2683,11 +2562,9 @@ const sidebarDndPayloads = new WeakMap();
         await refreshCodexSessions().catch(() => {});
       }
 
-      // ── Project layer: group filing is a pure logical-layer operation and
-      // never touches a session's working-directory binding. ──
-      // Failures go to the dedicated opFailed toast (borrowing the session
-      // batch copy would point the error at the wrong object);
-      // bridge.projects exists on desktop only.
+      // ── 项目层:分组归档是纯逻辑层操作,永不触碰会话的工作目录绑定。──
+      // 失败走专用的 opFailed toast(借用会话批处理文案会让报错指向错误
+      // 的操作对象);bridge.projects 仅桌面存在。
       async function runProjectOp(op) {
         if (!bridge.available || !bridge.projects || projectOpsBusy) return;
         setProjectOpsBusy(true);
@@ -2703,19 +2580,39 @@ const sidebarDndPayloads = new WeakMap();
       const handleConvertFolderToProject = (path, name) => runProjectOp(p => p.createProject(name, [path]));
       const handleRenameProject = (projectId, name) => runProjectOp(p => p.renameProject(projectId, name));
       const handleDeleteProject = (projectId) => runProjectOp(p => p.deleteProject(projectId));
-      // Move ownership: a pure filing operation (the working-directory binding
-      // is untouched); when the target roots do not cover the session's
-      // directory, the picker first goes through the "add folder" confirm and
-      // lands here with the addFolder flag. The confirm shows the sidebar's
-      // projected directory while the command adds the backend's live record —
-      // the added_root in the outcome is authoritative and, when present, is
-      // shown honestly in the toast (review #449 finding 9: the two sides must
-      // not silently diverge).
+      // 移动归属:纯归档操作(工作目录绑定不动)。目标 root 不覆盖会话目录时
+      // 由选择器先弹"仅移动"确认,确认后也只移动、不带 add_workspace_root。
+      // 成功 toast 只在 store 真返回 added_root 时带路径(当前移动语义下是
+      // 防御分支,见 commands 侧契约);失败走 runProjectOp 的 opFailed。
+      // 成功只关"这一笔"的弹窗:异步落地期间用户可能已把选择器换到另一个
+      // 会话上,无条件清 slot 会把别人的弹窗关掉。
       const handleMoveSessionToProject = (sessionId, projectId, addWorkspaceRoot) => runProjectOp(async (p) => {
+        // The picker holds the snapshot it was opened with; if the session
+        // vanished meanwhile (e.g. deleted from another window), the store
+        // rejects every attempt and the confirm panel retries a doomed op
+        // forever — the dead-target loop the pendingProject derivation
+        // already prevents for projects. Retire the picker instead.
+        if ((allSidebarTasksRef.current || []).every(task => task.id !== sessionId)) {
+          setMoveToProjectSession(current => (current && current.id === sessionId) ? null : current);
+          return;
+        }
         const outcome = await p.moveSessionToProject(sessionId, projectId, addWorkspaceRoot);
-        setMoveToProjectSession(null);
-        // Clear the preset target on commit too, so no stale state leaks into
-        // the next open (finding 7).
+        // The bridge notifies before this op resolves, but the sidebar
+        // regroup that notification triggers is an asynchronous React commit
+        // — querying the DOM right here would still see the pre-regroup row.
+        // Passive cleanup of the dialog unmount runs after that commit's DOM
+        // mutations, so store a resolver and look the moved row's new node up
+        // at close time (see useDialogFocusRestore). The row container is
+        // role="presentation" and cannot take focus, so resolve its label
+        // button — the same focusable element the context menu hands off to.
+        movePickerRestoreRef.current = () => {
+          const row = document.querySelector(
+            `[data-session-key="${CSS.escape(String(sessionId))}"]`,
+          );
+          return row ? row.querySelector('button[data-drag-surface]') : null;
+        };
+        setMoveToProjectSession(current => (current && current.id === sessionId) ? null : current);
+        // 提交后一并清预置目标,避免残留状态泄漏到下一次打开(finding 7)。
         setMoveToPresetProject(null);
         setSettingsToast(
           outcome && outcome.added_root
@@ -2723,157 +2620,145 @@ const sidebarDndPayloads = new WeakMap();
             : t.uiProjects.movedNotice,
         );
       });
-      // Drag landing: roots already covering move directly; otherwise open the
-      // picker with a preset target into the "add folder" confirm (the menu
-      // path carries no preset). The decision uses the shared
-      // needsAddFolderConfirm, same source as the picker's initializer and
-      // choose path.
+      // 拖拽落点:root 已覆盖的直接移动;未覆盖的带着预置目标打开选择器,
+      // 进入"仅移动"确认(刻意 move-only:绝不带 add_workspace_root,面板
+      // 文案已说明文件夹留在项目外;menu 路径则不带预置)。判定用共享的
+      // needsAddFolderConfirm,与选择器的初始化器/选择路径保持同源。
       const handleDropSessionOnProject = (sessionId, projectId) => {
+        // busy 在最外层统一静默忽略,两条路径一致:与侧栏其他拖拽反馈
+        // 相同不额外打断(runProjectOp 内部同样有守卫),也避免落点挂出
+        // 一个 busy 全禁用、无法关闭的预置确认面板。
+        if (projectOpsBusy) return;
         const chat = sidebarTaskHistory.find(c => c.id === sessionId);
         if (!chat) return;
         const projects = sidebarProjectsData ? sidebarProjectsData.projects : [];
         const target = (projects || []).find(p => p && p.id === projectId);
         if (!target) return;
-        // Dropping back onto the current project = the same semantics as the
-        // picker's disabled current item; ignore directly.
+        // 拖回当前所属项目 = 选择器里禁用当前项的同一语义,直接忽略。
         if (resolveSessionProjectId(chat, projects, sidebarProjectsData ? sidebarProjectsData.assignments : {}) === projectId) return;
         if (needsAddFolderConfirm(chat, target)) {
           setMoveToPresetProject(projectId);
           setMoveToProjectSession(chat);
           return;
         }
-        // Silently ignoring while projectOpsBusy matches the sidebar's other
-        // drag feedback (runProjectOp has the same busy guard inside); no extra
-        // interruption.
         handleMoveSessionToProject(sessionId, projectId, false);
       };
-      // Hover/drop callbacks for the pointer drag (move to project): the hit
-      // marker is the group container's data-drop-key (project group
-      // 'project:<id>' / ungrouped bucket UNGROUPED); both the group header
-      // and session row areas count as landing zones. Hover lights a single
-      // ring; drops dispatch to the same handlers as the menu path. The ghost
-      // (a cursor-following label copy) reuses the tear-off avatar's visuals
-      // and tracking.
-      const [sessionDragGhost, setSessionDragGhost] = useState(null); // {label,sessionId,dx,dy,w,h,x,y}
-      const sessionDragGhostOffsetRef = useRef({ dx: 0, dy: 0 });
-      const sessionDragGhostActive = !!sessionDragGhost;
-      useEffect(() => {
-        if (!sessionDragGhostActive) return;
-        const prevUS = document.body.style.userSelect, prevCur = document.body.style.cursor;
-        document.body.style.userSelect = 'none';
-        document.body.style.cursor = 'grabbing';
-        const onMove = (e) => {
-          const o = sessionDragGhostOffsetRef.current;
-          setSessionDragGhost(g => (g ? { ...g, x: e.clientX - o.dx, y: e.clientY - o.dy } : g));
-        };
-        window.addEventListener('pointermove', onMove);
-        return () => {
-          window.removeEventListener('pointermove', onMove);
-          document.body.style.userSelect = prevUS;
-          document.body.style.cursor = prevCur;
-        };
-      }, [sessionDragGhostActive]);
-      // RecentItem memo contract (NavigationComponents): every DnD prop must be
-      // reference-stable across bridge notifies, so these handlers are
-      // useCallback'd. handleDndDrop dispatches into handlers that are
-      // recreated per render; it reads them through a latest-ref mirror
-      // instead of capturing them, keeping its own identity stable.
-      const handleDndBegin = useCallback((geom) => {
-        sessionDragGhostOffsetRef.current = { dx: geom.dx, dy: geom.dy };
-        setSessionDragGhost({
-          label: geom.label,
-          sessionId: geom.sessionId,
-          w: geom.w, h: geom.h,
-          x: geom.startX - geom.dx,
-          y: geom.startY - geom.dy,
-        });
-      }, []);
-      const handleDndHover = useCallback((key) => {
-        setDropTargetGroupKey((prev) => (prev === (key || null) ? prev : (key || null)));
-      }, []);
-      const dndDropLatestRef = useRef(null);
-      dndDropLatestRef.current = { handleMoveSessionToProject, handleDropSessionOnProject };
-      const handleDndDrop = useCallback((dropKey, sessionId) => {
-        // Clear the highlight unconditionally: a stable useCallback captures
-        // the first render's dropTargetGroupKey, so the old
-        // `!== null` guard would freeze stale and skip the clear.
-        setDropTargetGroupKey(null);
-        if (!dropKey || !sessionId) return;
-        const { handleMoveSessionToProject: moveTo, handleDropSessionOnProject: dropOn } = dndDropLatestRef.current;
-        if (dropKey === UNGROUPED_GROUP_KEY) {
-          moveTo(sessionId, null, false);
-          return;
-        }
-        const projectId = dropKey.startsWith('project:') ? dropKey.slice('project:'.length) : null;
-        if (projectId) dropOn(sessionId, projectId);
-      }, []);
-      const handleDndEnd = useCallback(() => setSessionDragGhost(null), []);
-      // Directory rebind (fix broken links): clicking "rebind" on a project
-      // header with an unavailable root → system folder picker → confirm
-      // dialog. Two-stage confirm: the first call omits confirmExisting; when
-      // the backend finds the old directory still present it refuses, and the
-      // dialog upgrades to a strong warning for a second user confirm.
+      // Folder rebind (repairs the broken link): click "Rebind" on a project
+      // header with an unavailable root → system folder picker → confirmation
+      // dialog. Two-phase confirmation: the first call omits confirmExisting,
+      // the backend rejects when the old folder still exists, and the dialog
+      // escalates to the strong warning for the user to confirm again.
       const startRebindWorkspace = async (fromPath) => {
-        // No re-open while rebindDraft is open: with focus left on the badge,
-        // pressing Enter retriggers onRebind (review #463 minor), a window the
-        // projectOpsBusy guard does not cover.
-        if (!bridge.files || !bridge.files.pickFolders || projectOpsBusy || rebindDraft) return;
+        // Do not reopen while rebindDraft is already open: with focus left on
+        // the badge, pressing Enter re-triggers onRebind (review #463 minor),
+        // and the projectOpsBusy guard does not cover that window.
+        if (!bridge.files || !bridge.files.pickRebindFolder || projectOpsBusy || rebindDraft) return;
         try {
-          const picked = await bridge.files.pickFolders();
-          const to = Array.isArray(picked) ? picked[0] : picked;
+          // Single folder, with a title matching the rebind semantics
+          // (review #463 Minor 6): no longer borrowing KB's multi-select
+          // import picker.
+          const to = await bridge.files.pickRebindFolder();
           if (!to) return;
-          // No session count: the command rebinds every session under `from`,
-          // while the sidebar group renders only a subset — a number promise
-          // would disagree with the RebindWorkspaceReport (finding 10).
+          // No session count: the command actually rebinds every session
+          // under `from`; the sidebar group's rendered count is only a
+          // subset, so a numeric promise would not match the
+          // RebindWorkspaceReport (finding 10).
           setRebindDraft({ from: fromPath, to, warnExisting: false });
         } catch (error) {
+          // Picker rejection must be user-visible (review #463 minor), not
+          // console-only; the generic opFailed copy covers this failure
+          // class, and the warn keeps the detail available for diagnostics.
           console.warn('pick rebind folder failed', error);
+          setSettingsToast(t.uiProjects.opFailed);
         }
       };
       const confirmRebindWorkspace = async (confirmExisting) => {
         if (!bridge.projects || !rebindDraft || projectOpsBusy) return;
         setProjectOpsBusy(true);
-        // Clear the previous failure's inline error so it cannot stack with
-        // this attempt's result.
-        setRebindDraft(prev => prev && { ...prev, error: null });
+        // Clear the previous attempt's inline error/busy hint so it does
+        // not stack with this run's result.
+        setRebindDraft(prev => prev && { ...prev, error: null, busySessionIds: null });
         try {
           const report = await bridge.projects.rebindWorkspaceRoot(
             rebindDraft.from, rebindDraft.to, confirmExisting);
-          setRebindDraft(null);
           const rebound = (report && report.rebound_session_ids) ? report.rebound_session_ids.length : 0;
           const failed = (report && report.failed_session_ids) ? report.failed_session_ids.length : 0;
           const postBusy = (report && report.post_busy_session_ids) ? report.post_busy_session_ids.length : 0;
-          // Partial failure is no longer swallowed (finding 3): a half-done
-          // data migration must be presented honestly.
+          // Partial failure is no longer swallowed (finding 3), and the
+          // dialog no longer closes: the root has already moved, so after
+          // the loadProjects refresh the unavailable badge (the only rebind
+          // entry) disappears and the toast's "retry the rest" promise
+          // would be unreachable (review #463 M1). The dialog switches to
+          // the partial-report state in place, listing failed sessions with
+          // a retry; rerunning the backend with the same from/to converges
+          // (the snapshot includes unsynced sessions; already-rebound ones
+          // are no-ops). The success path still closes + toasts.
           if (failed > 0) {
-            setSettingsToast(t.uiProjects.rebindPartial(rebound, failed));
-          } else if (postBusy > 0) {
-            setSettingsToast(t.uiProjects.rebindBusyAfter(postBusy));
+            setRebindDraft(prev => prev && {
+              ...prev,
+              partial: {
+                rebound,
+                failed,
+                failedIds: (report && report.failed_session_ids) || [],
+                postBusy,
+              },
+            });
           } else {
-            setSettingsToast(t.uiProjects.rebindSuccess(rebound));
+            setRebindDraft(null);
+            if (postBusy > 0) {
+              // Report both halves: the busy-only toast would silently drop
+              // the rebound count (review #463 minor).
+              setSettingsToast(rebound > 0
+                ? t.uiProjects.rebindSuccessPostBusy(rebound, postBusy)
+                : t.uiProjects.rebindBusyAfter(postBusy));
+            } else if (rebound > 0) {
+              setSettingsToast(t.uiProjects.rebindSuccess(rebound));
+            } else {
+              // A retry after everything already converged (or a root with
+              // no sessions at all) returns an empty report; "Rebound 0"
+              // would read as a failure (review #463 minor).
+              setSettingsToast(t.uiProjects.rebindUpToDate);
+            }
           }
           await refreshCodexSessions().catch((error) => {
-            // Failures are not swallowed: the session list self-heals via the
-            // session:list_changed event, but the silent gap of an explicit
-            // failure must stay visible to debugging (review #463 minor).
+            // Failure is not swallowed: the session list self-heals via the
+            // session:list_changed event, but a silent gap after an explicit
+            // failure must stay visible for troubleshooting
+            // (review #463 minor).
             console.warn('refresh sessions after rebind failed', error);
           });
         } catch (error) {
           const message = String(error);
-          // Typed-marker matching (finding 11): match stable prefixes only,
-          // never human prose.
+          // Typed-marker matching (finding 11 / Minor 7): match only the
+          // stable prefix, never human-readable copy.
           if (message.startsWith('REBIND_OLD_ROOT_EXISTS')) {
             setRebindDraft(prev => prev && { ...prev, warnExisting: true, error: null });
+          } else if (message.startsWith('REBIND_IN_PROGRESS')) {
+            // Concurrent-gate rejection (round-7 m1): map the typed prefix to
+            // copy instead of surfacing raw prose.
+            setRebindDraft(prev => prev && { ...prev, error: t.uiProjects.rebindInProgress });
           } else if (message.startsWith('REBIND_NESTED_TARGET')) {
-            // Nested-target rejection: same typed marker, mapped to trilingual
-            // copy instead of passing backend prose through (review #464 MINOR
-            // 9); shown inline, not via toast (overlay stacking below).
+            // Nested-target rejection: same typed marker, mapped to the
+            // trilingual copy instead of passing through backend prose
+            // (review #464 MINOR 9); rendered inline, no toast (see the
+            // overlay layering below).
             setRebindDraft(prev => prev && { ...prev, error: t.uiProjects.rebindNestedRejected });
+          } else if (message.startsWith('REBIND_SESSIONS_BUSY')) {
+            // Busy rejection is the fence's high-frequency happy path
+            // (Minor 7): map it to i18n copy; only session ids follow the
+            // marker, and they are shown verbatim for troubleshooting.
+            const busyIds = message.slice('REBIND_SESSIONS_BUSY:'.length).trim();
+            setRebindDraft(prev => prev && {
+              ...prev,
+              busySessionIds: busyIds ? busyIds.split(/,\s*/) : [],
+              error: null,
+            });
           } else {
             console.warn('rebind workspace failed', error);
-            // Failures keep the dialog open with the error inline (review #463
-            // M7): the toast layer sits under the dialog backdrop (z-200 +
-            // blur), so a toast is invisible until the window closes.
+            // On failure keep the dialog open with the error inline
+            // (review #463 M7): in-place display persists and sits next to
+            // the retry; the backend's raw error text (not UI copy) does
+            // not go through i18n keys.
             setRebindDraft(prev => prev && { ...prev, error: message });
           }
         } finally {
@@ -3131,9 +3016,18 @@ const sidebarDndPayloads = new WeakMap();
           });
         }
       };
-      // 日期分组/平铺两种布局共用的任务项渲染
+      // Task-item renderer shared by the date-grouped and flat layouts.
       const renderSidebarTaskItem = (chat) => {
         const detachKind = chat.taskKind === 'codex' ? 'codex-session' : 'session';
+        // One availability gate for both dragging and the "move to project"
+        // menu item: with an empty project list (bootstrap windows, users
+        // with zero projects) the row is not draggable,
+        // avoiding a dead gesture with zero reachable drop targets. #445
+        // bound work sessions (taskKind regular + workspacePath) have the
+        // same rights as code sessions — grouping follows binding, and the
+        // move entry point follows too (same signal as review #452
+        // finding 5).
+        const projectMovesAvailable = (chat.taskKind === 'codex' || !!chat.workspacePath) && bridge.projects && !!sidebarProjectsData?.projects?.length;
         return (
           <RecentItem
             key={chat.taskKind === 'scheduled' ? `${chat.scheduledRun?.automationId || ''}:${chat.scheduledRun?.id || chat.id}` : `${chat.taskKind}:${chat.id}`}
@@ -3149,69 +3043,55 @@ const sidebarDndPayloads = new WeakMap();
             onSelect={chat.taskKind === 'codex'
               ? handleSwitchCodexSession
               : chat.scheduledRun
-                ? () => handleOpenScheduledRunShortcut(chat.scheduledRun)
+                ? cachedItemCallback(sidebarScheduledSelectCallbacks, chat, (c) => () => handleOpenScheduledRunShortcut(c.scheduledRun))
                 : handleSwitchSession}
             onRename={handleRenameSession}
             onDelete={handleDeleteSession}
             onTogglePinned={handleToggleSessionPinned}
-            onOpenFolder={can('externalSystemOpen') ? ((id) => bridge.artifacts.revealSessionFolder && bridge.artifacts.revealSessionFolder(id)) : undefined}
+            onOpenFolder={can('externalSystemOpen') ? handleRevealSessionFolder : undefined}
+            onExportArchive={chat.taskKind !== 'codex' && !exportingSessionIds.has(chat.id) && bridge.sessions.exportSessionArchive ? handleExportSessionArchive : undefined}
             onArchive={handleArchiveSession}
-            onMoveToProject={bridge.projects && (chat.taskKind === 'codex' || !!chat.workspacePath)
-              ? openMovePicker
-              : undefined}
-            dndPayload={bridge.projects && (chat.taskKind === 'codex' || !!chat.workspacePath) && sidebarProjectsViewActive
+            onMoveToProject={projectMovesAvailable ? openMovePicker : undefined}
+            dndPayload={projectMovesAvailable && sidebarCodeListActive
               ? cachedItemCallback(sidebarDndPayloads, chat, (c) => ({ sessionId: c.id }))
               : undefined}
             dndDisabled={!!dragAvatar}
-            onDndBegin={handleDndBegin}
-            onDndHover={handleDndHover}
-            onDndDrop={handleDndDrop}
-            onDndEnd={handleDndEnd}
+            onDragEnd={clearDropTarget}
             dragKind={detachKind}
             dragging={canDetachWindows && !!dragAvatar && dragAvatar.key === `${detachKind}:${chat.id}`}
-            onPickUp={canDetachWindows ? ((geom) => beginTearOff(detachKind, chat.id, chat.title, geom)) : undefined}
+            onPickUp={canDetachWindows
+              ? cachedItemCallback(sidebarPickUpCallbacks, chat, (c) => (geom) => beginTearOff(detachKind, c.id, c.title, geom))
+              : undefined}
           />
         );
       };
 
-      // Group-header label/action sets dispatch by kind: folder groups
-      // (convert), project groups (full operations + drop target), ungrouped
-      // bucket (drop-in = move-out), temporary bucket (collapse only).
-      // Extracted to keep the render callback's complexity in check.
-      const sidebarGroupLabel = (group) => {
-        if (group.kind === 'project') return group.name;
-        if (group.kind === 'ungrouped') return t.uiProjects.ungrouped;
-        if (group.kind === 'temporary') return t.uiCodex.temporarySession;
-        return workspaceDisplayName(group.path);
-      };
-      const sidebarGroupHeaderProps = (group) => {
-        if (group.kind === 'project') {
-          return {
-            // Project channel (§9.9) and manage panel (§4) entries: desktop
-            // only (gated by bridge.projects).
-            onNewSession: bridge.projects ? () => handleProjectNewSession(group.projectId) : undefined,
-            onManage: bridge.projects ? () => setManageFoldersId(group.projectId) : undefined,
-            onRename: (name) => handleRenameProject(group.projectId, name),
-            onDelete: () => handleDeleteProject(group.projectId),
-            unavailableRoots: (group.roots || [])
-              .filter(root => !(root && typeof root === 'object' ? root.available : root))
-              .map(root => String(typeof root === 'object' ? root.path : root)),
-            onRebind: (rootPath) => startRebindWorkspace(rootPath),
-          };
-        }
-        if (group.kind === 'folder') {
-          return {
-            title: group.path,
-            // bridge.projects exists on desktop only: no dead entries on web.
-            onConvert: bridge.projects ? (name) => handleConvertFolderToProject(group.path, name) : undefined,
-          };
-        }
-        if (group.kind === 'ungrouped') {
-          return {};
-        }
-        return {};
-      };
-
+      // Sidebar main nav callback set (stable references): with NavItem
+      // memoized, onClick/onPickUp must be reference-stable or the memo never
+      // hits. Navigation goes through navigateFromScheduledRun (reads bsRef
+      // internally); the tear-off closure depends only on beginTearOff
+      // (stable) and the current language dictionary t.
+      const navNavigateHandlers = useMemo(() => ({
+        scheduled: () => navigateFromScheduledRun('scheduled'),
+        outputs: () => navigateFromScheduledRun('outputs'),
+        monitor: () => navigateFromScheduledRun('monitor', () => {
+          const liveBridge = window.TauriBridge || bridge;
+          if (liveBridge?.monitor && typeof liveBridge.monitor.startMonitorPolling === 'function') liveBridge.monitor.startMonitorPolling();
+        }),
+        toolStore: () => navigateFromScheduledRun('toolStore'),
+        cardpool: () => navigateFromScheduledRun('cardpool', () => setPoolMyOnly(false)),
+        knowledge: () => navigateFromScheduledRun('knowledge'),
+        chat: () => navigateFromScheduledRun('chat'),
+      }), [navigateFromScheduledRun]);
+      const navPickUpHandlers = useMemo(() => ({
+        outputs: (geom) => beginTearOff('outputs', undefined, t.outputs, geom),
+        monitor: (geom) => beginTearOff('monitor', undefined, t.monitor, geom),
+        toolstore: (geom) => beginTearOff('toolstore', undefined, t.toolStore, geom),
+        cardpool: (geom) => beginTearOff('cardpool', undefined, t.cardPool, geom),
+        knowledge: (geom) => beginTearOff('knowledge', undefined, t.knowledge, geom),
+      }), [t, beginTearOff]);
+      const openSearchOverlay = useCallback(() => setSearchOverlayOpen(true), []);
+      const handleNavNewChat = useCallback(() => { handleNewChat(); }, [handleNewChat]);
       const apiKeyGateOpen = shouldShowApiKeyGate(bs, currentView, bridge.available);
       const vllmSetupModalOpen = !!(
         can('localModelSetup')
@@ -3231,6 +3111,7 @@ const sidebarDndPayloads = new WeakMap();
         bs && bs.pinvouModal ? 'pinvou-review' : '',
         isCompactShell && isSidebarOpen ? 'mobile-sidebar' : '',
         isCompactShell && mobileMoreOpen ? 'mobile-more' : '',
+        moveToProjectSession ? 'move-picker' : '',
       ].filter(Boolean).join('|');
       const browserOverlayPublicationReady = !!browserOverlayIntent
         && publishedBrowserOverlayIntent === browserOverlayIntent;
@@ -3307,8 +3188,6 @@ const sidebarDndPayloads = new WeakMap();
         onGotoTools: () => navigateFromScheduledRun('toolStore'),
         browserDockOpen: browserPaneOpen,
         onOpenBrowserDock: openBrowserDock,
-        onOpenWorkspacePicker: ({ lane, mode }) => { setPickerExcluded(null); setWorkspacePicker({ lane, mode }); },
-        onNotify: (message) => setSettingsToast(message),
       };
       // The three byte-identical empty states in the sidebar task list (task groups / date groups / flat list) share one node.
       const sidebarTaskEmptyNode = (
@@ -3343,16 +3222,6 @@ const sidebarDndPayloads = new WeakMap();
               {dragAvatar.label}
             </div>
           )}
-          {/* Pointer-drag ghost for move-to-project: same cursor-following visual (locks the grab-relative position) */}
-          {sessionDragGhost && (
-            <div style={{ position:'fixed', left: sessionDragGhost.x, top: sessionDragGhost.y, width: sessionDragGhost.w, height: sessionDragGhost.h,
-              pointerEvents:'none', zIndex:9999, borderRadius:14, overflow:'hidden', whiteSpace:'nowrap',
-              display:'flex', alignItems:'center', padding:'0 16px', fontWeight:600, fontSize:15,
-              background: activeTheme === 'dark' ? '#A8C7FA' : '#0B57D0', color: activeTheme === 'dark' ? '#041E49' : '#ffffff',
-              boxShadow:'0 14px 34px rgba(0,0,0,.5)', transform:'scale(1.03)', opacity:0.96 }}>
-              {sessionDragGhost.label}
-            </div>
-          )}
 
           {archiveConfirm && browserOverlayPublicationReady && createPortal(
             <ArchiveConfirmDialog
@@ -3379,50 +3248,13 @@ const sidebarDndPayloads = new WeakMap();
           )}
 
           {settingsToast && createPortal(
-            <div className="fixed left-1/2 bottom-8 z-[120] -translate-x-1/2 rounded-full bg-black/80 px-4 py-2 text-[13px] font-medium text-white shadow-2xl">
+            // Layer sits above modal overlays (picker backdrop is z-[200]) so a
+            // failure raised under an open dialog stays visible; a filesystem
+            // path in the message must not push the pill past the viewport.
+            <div className="fixed left-1/2 bottom-8 z-[210] -translate-x-1/2 max-w-[80vw] truncate rounded-full bg-black/80 px-4 py-2 text-[13px] font-medium text-white shadow-2xl">
               {settingsToast}
             </div>,
             document.body
-          )}
-
-          {workspacePicker && (
-          // Conditional mount (ManageProjectFoldersDialog idiom): query and
-          // the expanded row must not leak across opens — remounting resets
-          // them, so a leftover filter can never render a false empty state.
-          <WorkspacePickerDialog
-            open
-            rows={workspacePickerRows}
-            mode={workspacePicker ? workspacePicker.mode : null}
-            language={language}
-            busy={pickerBusy}
-            webOnly={!can('desktopChrome') || !bridge.projects}
-            excludedFolder={pickerExcluded}
-            t={t}
-            onClose={closeWorkspacePicker}
-            onSelectProject={handlePickerSelectProject}
-            onTemporary={handlePickerTemporary}
-            onBrowse={handlePickerBrowse}
-            onBrowseExcluded={(folder) => applyWorkspaceTarget({ lane: pickerLane(), path: folder, projectId: null, roots: [folder] })}
-            onDismissExcluded={() => setPickerExcluded(null)}
-          />
-          )}
-
-          {manageFoldersProject && (
-            <ManageProjectFoldersDialog
-              open
-              project={manageFoldersProject}
-              neverRoots={(sidebarProjectsData && sidebarProjectsData.neverMaterializeRoots) || []}
-              mode={activeLaneMode()}
-              busy={projectOpsBusy}
-              t={t}
-              onClose={closeManageFolders}
-              onAddFolder={handleManageAddFolder}
-              onRemoveRoot={handleManageRemoveRoot}
-              onSetPrimary={handleManageSetPrimary}
-              onRename={(name) => handleRenameProject(manageFoldersProject.id, name)}
-              onExcludeRoot={(root) => handleSetNeverMaterialize(root, true)}
-              onRevokeExclusion={(root) => handleSetNeverMaterialize(root, false)}
-            />
           )}
 
           {rebindDraft && (
@@ -3431,6 +3263,8 @@ const sidebarDndPayloads = new WeakMap();
               to={rebindDraft.to}
               warnExisting={rebindDraft.warnExisting}
               errorMessage={rebindDraft.error}
+              partial={rebindDraft.partial || null}
+              busySessionIds={rebindDraft.busySessionIds || null}
               t={t}
               busy={projectOpsBusy}
               onCancel={() => setRebindDraft(null)}
@@ -3438,9 +3272,8 @@ const sidebarDndPayloads = new WeakMap();
             />
           )}
 
-          {moveToProjectSession && (
+          {moveToProjectSession && browserOverlayPublicationReady && (
             <MoveToProjectDialog
-              open={!!moveToProjectSession}
               session={moveToProjectSession}
               projects={sidebarProjectsData ? sidebarProjectsData.projects : []}
               currentProjectId={resolveSessionProjectId(
@@ -3451,6 +3284,7 @@ const sidebarDndPayloads = new WeakMap();
               presetProjectId={moveToPresetProject}
               t={t}
               busy={projectOpsBusy}
+              restoreTargetRef={movePickerRestoreRef}
               onClose={() => { setMoveToPresetProject(null); setMoveToProjectSession(null); }}
               onMove={(projectId, addWorkspaceRoot) => handleMoveSessionToProject(
                 moveToProjectSession.id, projectId, addWorkspaceRoot)}
@@ -3554,20 +3388,20 @@ const sidebarDndPayloads = new WeakMap();
                 the bottom after expanding. */}
             <div data-testid="sidebar-primary-nav" className={`shrink-0 flex flex-col gap-0.5 mt-1.5 max-sm:gap-0 max-sm:mt-1 ${isSidebarOpen ? 'px-3' : 'px-2 items-center'}`}>
               <NavItem
-                icon={<Edit2 size={18} />} label={t.newChat}
+                icon={NAV_ICON_NEW_CHAT} label={t.newChat}
                 theme={activeTheme}
                 isSidebarOpen={isSidebarOpen}
-                onClick={() => handleNewChat()}
+                onClick={handleNavNewChat}
               />
               {/* On the compact shell search is only reachable from the nav, so it must
                   stay pinned even when collapsed */}
               {(!isSidebarOpen || isCompactShell) && (
                 <NavItem
-                  icon={<Search size={18} />} label={t.searchChats}
+                  icon={NAV_ICON_SEARCH} label={t.searchChats}
                   active={searchOverlayOpen}
                   theme={activeTheme}
                   isSidebarOpen={isSidebarOpen}
-                  onClick={() => setSearchOverlayOpen(true)}
+                  onClick={openSearchOverlay}
                 />
               )}
               {codeStyleActive && isSidebarOpen && !codeNavExpanded ? (
@@ -3585,74 +3419,69 @@ const sidebarDndPayloads = new WeakMap();
               <>
               {SCHEDULED_TASKS_ENTRY_ENABLED && (
                 <NavItem
-                  icon={<Clock size={18} />} label={t.scheduledPlans}
+                  icon={NAV_ICON_SCHEDULED} label={t.scheduledPlans}
                   active={currentView === 'scheduled'}
                   unread={!!(bs && ((bs.scheduledTasks || []).some(task => task.hasUnreadRuns) || (bs.scheduledTaskRecentRuns || []).some(run => run && run.unread)))}
                   theme={activeTheme}
                   t={t}
                   isSidebarOpen={isSidebarOpen}
-                  onClick={() => navigateFromScheduledRun('scheduled')}
-                  onPointerEnter={() => prefetchView('scheduled')} onFocus={() => prefetchView('scheduled')}
+                  onClick={navNavigateHandlers.scheduled}
+                  onPointerEnter={NAV_PREFETCH.scheduled} onFocus={NAV_PREFETCH.scheduled}
                 />
               )}
               <NavItem
-                icon={<Package size={18} />} label={t.outputs}
+                icon={NAV_ICON_OUTPUTS} label={t.outputs}
                 active={currentView === 'outputs'}
                 theme={activeTheme}
                 isSidebarOpen={isSidebarOpen}
-                onClick={() => navigateFromScheduledRun('outputs')}
-                onPointerEnter={() => prefetchView('knowledge')} onFocus={() => prefetchView('knowledge')}
-                dragKind={canDetachWindows ? 'outputs' : undefined} dragging={canDetachWindows && !!dragAvatar && dragAvatar.key === 'outputs:'} onPickUp={canDetachWindows ? (geom) => beginTearOff('outputs', undefined, t.outputs, geom) : undefined}
+                onClick={navNavigateHandlers.outputs}
+                onPointerEnter={NAV_PREFETCH.knowledge} onFocus={NAV_PREFETCH.knowledge}
+                dragKind={canDetachWindows ? 'outputs' : undefined} dragging={canDetachWindows && !!dragAvatar && dragAvatar.key === 'outputs:'} onPickUp={canDetachWindows ? navPickUpHandlers.outputs : undefined}
               />
               <NavItem
-                icon={<BarChart2 size={18} />} label={t.monitor}
+                icon={NAV_ICON_MONITOR} label={t.monitor}
                 active={currentView === 'monitor'}
                 theme={activeTheme}
                 isSidebarOpen={isSidebarOpen}
-                onPointerEnter={() => prefetchView('monitor')} onFocus={() => prefetchView('monitor')}
-                onClick={() => {
-                  navigateFromScheduledRun('monitor', () => {
-                    const liveBridge = window.TauriBridge || bridge;
-                    if (liveBridge?.monitor && typeof liveBridge.monitor.startMonitorPolling === 'function') liveBridge.monitor.startMonitorPolling();
-                  });
-                }}
-                dragKind={canDetachWindows ? 'monitor' : undefined} dragging={canDetachWindows && !!dragAvatar && dragAvatar.key === 'monitor:'} onPickUp={canDetachWindows ? (geom) => beginTearOff('monitor', undefined, t.monitor, geom) : undefined}
+                onPointerEnter={NAV_PREFETCH.monitor} onFocus={NAV_PREFETCH.monitor}
+                onClick={navNavigateHandlers.monitor}
+                dragKind={canDetachWindows ? 'monitor' : undefined} dragging={canDetachWindows && !!dragAvatar && dragAvatar.key === 'monitor:'} onPickUp={canDetachWindows ? navPickUpHandlers.monitor : undefined}
               />
               <NavItem
-                icon={<Puzzle size={18} />} label={t.toolStore}
+                icon={NAV_ICON_TOOL_STORE} label={t.toolStore}
                 active={currentView === 'toolStore'}
                 theme={activeTheme}
                 isSidebarOpen={isSidebarOpen}
-                onClick={() => navigateFromScheduledRun('toolStore')}
-                onPointerEnter={() => prefetchView('toolStore')} onFocus={() => prefetchView('toolStore')}
-                dragKind={canDetachWindows ? 'toolstore' : undefined} dragging={canDetachWindows && !!dragAvatar && dragAvatar.key === 'toolstore:'} onPickUp={canDetachWindows ? (geom) => beginTearOff('toolstore', undefined, t.toolStore, geom) : undefined}
+                onClick={navNavigateHandlers.toolStore}
+                onPointerEnter={NAV_PREFETCH.toolStore} onFocus={NAV_PREFETCH.toolStore}
+                dragKind={canDetachWindows ? 'toolstore' : undefined} dragging={canDetachWindows && !!dragAvatar && dragAvatar.key === 'toolstore:'} onPickUp={canDetachWindows ? navPickUpHandlers.toolstore : undefined}
               />
               <NavItem
-                icon={<Layers size={18} />} label={t.cardPool}
+                icon={NAV_ICON_CARD_POOL} label={t.cardPool}
                 active={currentView === 'cardpool'}
                 theme={activeTheme}
                 isSidebarOpen={isSidebarOpen}
-                onClick={() => navigateFromScheduledRun('cardpool', () => setPoolMyOnly(false))}
-                onPointerEnter={() => prefetchView('cardpool')} onFocus={() => prefetchView('cardpool')}
-                dragKind={canDetachWindows ? 'cardpool' : undefined} dragging={canDetachWindows && !!dragAvatar && dragAvatar.key === 'cardpool:'} onPickUp={canDetachWindows ? (geom) => beginTearOff('cardpool', undefined, t.cardPool, geom) : undefined}
+                onClick={navNavigateHandlers.cardpool}
+                onPointerEnter={NAV_PREFETCH.cardpool} onFocus={NAV_PREFETCH.cardpool}
+                dragKind={canDetachWindows ? 'cardpool' : undefined} dragging={canDetachWindows && !!dragAvatar && dragAvatar.key === 'cardpool:'} onPickUp={canDetachWindows ? navPickUpHandlers.cardpool : undefined}
               />
               <NavItem
-                icon={<BookOpen size={18} />} label={t.knowledge}
+                icon={NAV_ICON_KNOWLEDGE} label={t.knowledge}
                 active={currentView === 'knowledge'}
                 theme={activeTheme}
                 isSidebarOpen={isSidebarOpen}
-                onClick={() => navigateFromScheduledRun('knowledge')}
-                onPointerEnter={() => prefetchView('knowledge')} onFocus={() => prefetchView('knowledge')}
-                dragKind={canDetachWindows ? 'knowledge' : undefined} dragging={canDetachWindows && !!dragAvatar && dragAvatar.key === 'knowledge:'} onPickUp={canDetachWindows ? (geom) => beginTearOff('knowledge', undefined, t.knowledge, geom) : undefined}
+                onClick={navNavigateHandlers.knowledge}
+                onPointerEnter={NAV_PREFETCH.knowledge} onFocus={NAV_PREFETCH.knowledge}
+                dragKind={canDetachWindows ? 'knowledge' : undefined} dragging={canDetachWindows && !!dragAvatar && dragAvatar.key === 'knowledge:'} onPickUp={canDetachWindows ? navPickUpHandlers.knowledge : undefined}
               />
               {/* 收起态专属:展开态近期列表的高亮项就是回会话入口,不重复渲染 */}
               {!isSidebarOpen && (
                 <NavItem
-                  icon={<MessageSquare size={18} />} label={t.currentChat}
+                  icon={NAV_ICON_CURRENT_CHAT} label={t.currentChat}
                   active={currentView === 'chat'}
                   theme={activeTheme}
                   isSidebarOpen={isSidebarOpen}
-                  onClick={() => navigateFromScheduledRun('chat')}
+                  onClick={navNavigateHandlers.chat}
                 />
               )}
               {codeStyleActive && isSidebarOpen && codeNavExpanded && (
@@ -3737,28 +3566,15 @@ const sidebarDndPayloads = new WeakMap();
                         <button
                           type="button"
                           data-testid="sidebar-task-pill-code"
-                          aria-pressed={sidebarCodeListActive && !sidebarProjectsViewActive}
+                          aria-pressed={sidebarCodeListActive}
                           onClick={() => { setSidebarCodeStylePersisted('code'); setTaskFilterOpen(false); }}
                           className={`h-6 px-2.5 rounded-full text-[12px] font-normal transition-colors ${
-                            sidebarCodeListActive && !sidebarProjectsViewActive
+                            sidebarCodeListActive
                               ? (activeTheme === 'dark' ? 'bg-[#333537] text-[#E3E3E3]' : 'bg-[#E1E5EA] text-[#0B57D0]')
                               : (activeTheme === 'dark' ? 'text-[#9AA0A6] hover:bg-[#282A2C]' : 'text-[#8A8F94] hover:bg-[#E1E5EA]')
                           }`}
                         >
                           {t.sidebarTaskFilterCode}
-                        </button>
-                        <button
-                          type="button"
-                          data-testid="sidebar-task-pill-projects"
-                          aria-pressed={sidebarProjectsViewActive}
-                          onClick={() => { setSidebarCodeStylePersisted('projects'); setTaskFilterOpen(false); }}
-                          className={`h-6 px-2.5 rounded-full text-[12px] font-normal transition-colors ${
-                            sidebarProjectsViewActive
-                              ? (activeTheme === 'dark' ? 'bg-[#333537] text-[#E3E3E3]' : 'bg-[#E1E5EA] text-[#0B57D0]')
-                              : (activeTheme === 'dark' ? 'text-[#9AA0A6] hover:bg-[#282A2C]' : 'text-[#8A8F94] hover:bg-[#E1E5EA]')
-                          }`}
-                        >
-                          {t.sidebarTaskFilterProjects}
                         </button>
                         </div>
                         {/* 一键折叠/展开全部任务分组(日期组或文件夹组);
@@ -3830,32 +3646,38 @@ const sidebarDndPayloads = new WeakMap();
                           )}
                           {sidebarFolderGroups.map((group) => {
                             const isOpen = folderGroupOpen[group.key] ?? true;
-                            // Landing zone = the whole group area (header +
-                            // session rows): hit-testing climbs from any child
-                            // to this data-drop-key via closest().
-                            // Folder groups (physical view) are not project
-                            // drag targets.
-                            const groupDropKey = group.kind === 'project' || group.kind === 'ungrouped'
-                              ? group.key
-                              : undefined;
+                            const label = group.kind === 'project'
+                              ? group.name
+                              : group.kind === 'temporary'
+                                ? t.uiCodex.temporarySession
+                                : workspaceDisplayName(group.path);
                             return (
-                              <div
-                                key={group.key}
-                                data-project-drop-target={groupDropKey || undefined}
-                                data-drop-key={groupDropKey || undefined}
-                              >
+                              <div key={group.key}>
                                 <ProjectGroupHeader
-                                  label={sidebarGroupLabel(group)}
+                                  label={label}
                                   kind={group.kind}
                                   count={group.rows.length + (sidebarGroupPinnedCounts[group.key] || 0)}
                                   isOpen={isOpen}
                                   onToggle={() => setFolderGroupOpen(prev => ({ ...prev, [group.key]: !isOpen }))}
                                   theme={activeTheme}
                                   t={t}
+                                  title={group.kind === 'folder' ? group.path : undefined}
                                   busy={projectOpsBusy}
                                   testId="sidebar-folder-group"
+                                  // bridge.projects 仅桌面存在:web 上目录组不渲染
+                                  // 死入口(点击无反馈违反显式不支持约定)。
+                                  onConvert={bridge.projects && group.kind === 'folder' ? (name) => handleConvertFolderToProject(group.path, name) : undefined}
+                                  onRename={group.kind === 'project' ? (name) => handleRenameProject(group.projectId, name) : undefined}
+                                  onDelete={group.kind === 'project' ? () => handleDeleteProject(group.projectId) : undefined}
+                                  onDropSession={bridge.projects && group.kind === 'project' ? (sessionId) => handleDropSessionOnProject(sessionId, group.projectId) : undefined}
+                                  unavailableRoots={group.kind === 'project'
+                                    ? (group.roots || [])
+                                        .filter(root => !(root && typeof root === 'object' ? root.available : root))
+                                        .map(root => String(typeof root === 'object' ? root.path : root))
+                                    : []}
+                                  onRebind={bridge.projects && group.kind === 'project' ? (rootPath) => startRebindWorkspace(rootPath) : undefined}
                                   dropActive={dropTargetGroupKey === group.key}
-                                  {...sidebarGroupHeaderProps(group)}
+                                  onDropActive={(active) => setDropTargetGroupKey(active ? group.key : null)}
                                 />
                                 {isOpen && (
                                   <div className="mt-1 space-y-0.5">
@@ -4105,10 +3927,6 @@ const sidebarDndPayloads = new WeakMap();
                 onSessionsChange={setCodexSessions}
                 onSwitchHomeMode={handleSwitchHomeMode}
                 onOpenSettingsSection={openSettingsSection}
-                onOpenWorkspacePicker={({ mode }) => { setPickerExcluded(null); setWorkspacePicker({ lane: 'codex', mode }); }}
-                workspacePickerRequest={pickerCodexRequest}
-                onLaneModeChange={setCodexLaneMode}
-                onNotify={(message) => setSettingsToast(message)}
                 bs={bs}
                 onGotoModelSettings={() => openSettingsSection('model')}
                 onGotoSettings={() => openSettingsSection('general')}
@@ -4141,7 +3959,8 @@ const sidebarDndPayloads = new WeakMap();
                 onRename={handleRenameSession}
                 onDelete={handleDeleteSession}
                 onTogglePinned={handleToggleSessionPinned}
-                onOpenFolder={can('externalSystemOpen') ? ((id) => bridge.artifacts.revealSessionFolder && bridge.artifacts.revealSessionFolder(id)) : undefined}
+                onOpenFolder={can('externalSystemOpen') ? handleRevealSessionFolder : undefined}
+                onExportArchive={bridge.sessions.exportSessionArchive ? handleExportSessionArchive : undefined}
                 onArchive={handleArchiveSession}
                 onArchiveMany={handleBatchArchiveSessions}
                 onDeleteMany={handleBatchDeleteSessions}

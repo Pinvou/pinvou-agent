@@ -133,15 +133,22 @@ export function ConversationStatusBadge({ status, copy }) {
   const done = ['Completed', 'completed', 'done', 'end_turn'].includes(status);
   const failed = ['Failed', 'failed', 'Refused'].includes(status);
   const interrupted = ['Interrupted', 'interrupted', 'incomplete'].includes(status);
-  const stopped = interrupted || status === 'LimitReached';
+  // A swarm-off cancellation is an operator-level ending, not the agent's
+  // failure: keep it out of the red bucket so the panel agrees with the
+  // running-agents overlay (agentCard.cancelled). The ledger token is
+  // lowercase; compare case-insensitively like the other consumers.
+  const cancelled = typeof status === 'string' && status.toLowerCase() === 'cancelled';
+  const stopped = interrupted || cancelled || status === 'LimitReached';
   const label = done
     ? c.completed
     : failed
       ? c.failed
-      : interrupted
-        ? c.interrupted
-        : status === 'LimitReached'
-          ? c.limitReached
+      : cancelled
+        ? (c.cancelled || c.interrupted)
+        : interrupted
+          ? c.interrupted
+          : status === 'LimitReached'
+            ? c.limitReached
           : c.processing;
   return (
     <span className={`inline-flex items-center gap-1 text-[11px] px-2 py-0.5 rounded-full ${
@@ -824,7 +831,7 @@ function ConversationTurnView({
   const c = conversationCopy(copy);
   const running = turn.status === 'running';
   // The per-second tick is scoped to the running turn itself: the parent may still pass a ticking `now`
-  // (CodexAcpView keeps its original behavior via `now || tickNow` prop precedence); when omitted, an
+  // (`now || tickNow` precedence keeps an external ticker working); when omitted or 0, an
   // internal clock drives elapsed time, re-rendering only this one turn subtree per second.
   const tickNow = useConversationSecondClock(running);
   const effectiveNow = now || tickNow;

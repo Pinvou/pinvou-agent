@@ -18,6 +18,10 @@ pub fn current_system_locale() -> Option<String> {
     // and stores the required size (trailing double NUL included). Still check
     // the return value so a failed call leaving buffer_len undefined cannot
     // trigger a bogus large allocation below.
+    // SAFETY: this is the documented MSDN sizing call — a null buffer with
+    // *pcchLanguagesBuffer = 0 performs no writes through pwszLanguagesBuffer;
+    // pulNumLanguages, pwszLanguagesBuffer (null), and pcchLanguagesBuffer are
+    // all valid writable out-parameters pointing at live locals.
     let sized = unsafe {
         GetUserPreferredUILanguages(
             MUI_LANGUAGE_NAME,
@@ -30,6 +34,11 @@ pub fn current_system_locale() -> Option<String> {
         return None;
     }
     let mut locale_names = vec![0u16; buffer_len as usize];
+    // SAFETY: locale_names holds buffer_len wide chars allocated from the
+    // sizing call above, so as_mut_ptr() is valid for the full size the API
+    // may write (including the trailing double NUL); language_count and
+    // buffer_len are live writable locals; all three are the documented
+    // out-parameter contract of GetUserPreferredUILanguages.
     let ok = unsafe {
         GetUserPreferredUILanguages(
             MUI_LANGUAGE_NAME,
@@ -54,11 +63,18 @@ pub fn process_alive(pid: u32) -> bool {
     // SAFETY: This only queries existence, and every non-null handle is closed immediately.
     let handle = unsafe { OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION, 0, pid) };
     if !handle.is_null() {
+        // SAFETY: handle is the non-null process handle just returned by
+        // OpenProcess (so a valid owned handle); CloseHandle is safe to call
+        // exactly once on it, and the handle is not used afterwards.
         unsafe {
             CloseHandle(handle);
         }
         return true;
     }
+    // SAFETY: GetLastError takes no parameters; it only reads the calling
+    // thread's last-error value, and it is invoked immediately after the
+    // failed OpenProcess with no intervening API call that could overwrite
+    // that value.
     let err = unsafe { GetLastError() };
     err == ERROR_ACCESS_DENIED
 }
@@ -312,6 +328,10 @@ fn read_registry_string(root: HKEY, key_path: &str, value_name: Option<&str>) ->
         .unwrap_or(std::ptr::null());
 
     let mut key: HKEY = std::ptr::null_mut();
+    // SAFETY: key_path comes from wide_null() so it is a NUL-terminated wide
+    // string valid for the call's duration; samDesired is KEY_READ, a valid
+    // access mask; phkResult points at the live local `key`, which on
+    // ERROR_SUCCESS holds an opened key handle the caller must close.
     let opened = unsafe { RegOpenKeyExW(root, key_path.as_ptr(), 0, KEY_READ, &mut key) };
     if opened != ERROR_SUCCESS {
         return None;
@@ -319,6 +339,12 @@ fn read_registry_string(root: HKEY, key_path: &str, value_name: Option<&str>) ->
 
     let mut value_type = 0;
     let mut byte_len = 0;
+    // SAFETY: key is the handle successfully opened by RegOpenKeyExW above;
+    // lpValueName is either null (default value, allowed by the API) or a
+    // NUL-terminated wide string from wide_null(); lpData is null with
+    // lpcbData non-null, the documented size-query form of
+    // RegQueryValueExW, which writes only value_type and byte_len — both
+    // live writable locals.
     let queried = unsafe {
         RegQueryValueExW(
             key,
@@ -330,6 +356,9 @@ fn read_registry_string(root: HKEY, key_path: &str, value_name: Option<&str>) ->
         )
     };
     if queried != ERROR_SUCCESS || byte_len < 2 || !matches!(value_type, REG_SZ | REG_EXPAND_SZ) {
+        // SAFETY: key is still the valid opened handle from RegOpenKeyExW
+        // (only the value query failed, not the open); it is closed exactly
+        // once here, before the early return that leaves no other use of key.
         unsafe {
             RegCloseKey(key);
         }
@@ -337,6 +366,12 @@ fn read_registry_string(root: HKEY, key_path: &str, value_name: Option<&str>) ->
     }
 
     let mut data = vec![0u16; (byte_len as usize + 1) / 2];
+    // SAFETY: key is the still-open handle; value_name_ptr is null or a
+    // NUL-terminated wide string as before; data owns (byte_len + 1) / 2
+    // u16, i.e. at least byte_len bytes, so the cast pointer is valid for
+    // the byte count the API may write into; byte_len on entry is the size
+    // reported by the preceding query, and byte_len and value_type are live
+    // writable locals.
     let queried = unsafe {
         RegQueryValueExW(
             key,
@@ -347,6 +382,9 @@ fn read_registry_string(root: HKEY, key_path: &str, value_name: Option<&str>) ->
             &mut byte_len,
         )
     };
+    // SAFETY: key is the valid handle opened by RegOpenKeyExW and is closed
+    // exactly once here on every path that reaches this point; it is not
+    // referenced again after the close.
     unsafe {
         RegCloseKey(key);
     }

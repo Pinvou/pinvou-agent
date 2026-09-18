@@ -217,11 +217,11 @@ impl SessionStore {
             self.save_session_mode_states();
         }
 
-        // Working-directory bindings: clear the in-memory cache and best-
-        // effort remove the per-session sidecar files. On the normal path the
-        // session directory deletion already took them away; this covers
-        // residue left by partially failed deletions. For unbound ids this is
-        // a pure NotFound probe at negligible cost.
+        // Working-directory binding: clear the in-memory cache and best-effort
+        // delete the per-session sidecar file. The normal session-deletion path
+        // already removes it; this covers leftovers of a partially failed
+        // deletion. For unbound ids it is a pure NotFound probe with negligible
+        // cost.
         for id in ids {
             self.session_workspaces.write().remove(id.as_str());
             if validate_session_id(id).is_ok() {

@@ -51,8 +51,9 @@ const RELEASE_ENV_DEFAULTS: &[(&str, &str)] = &[
     ("DEEPSEEK_FORCE_HTTP1", "1"),
     // 不再注入 DEEPSEEK_MAX_OUTPUT_TOKENS：它会把所有模型（含云端）的输出上限
     // 钉死在 24576。底座对 ≥500K 窗口模型默认 64K（API_MAX_OUTPUT_TOKENS），
-    // 云端模型应落到底座兜底；本地 vLLM 的 24K 预算由 route_limits_for_model
-    // 的 is_local_vllm 分支显式携带，不依赖该 env。
+    // Cloud models should land on the base fallback; local models and custom
+    // endpoints share the operator window tiers (route_limits_for_model),
+    // equally independent of this env.
     // 与 CodeWhale 的 stream_chunk_timeout 默认值保持一致。
     ("DEEPSEEK_STREAM_IDLE_TIMEOUT_SECS", "300"),
     // SSE 首响应头超时(open timeout):底座只认 env,默认 45s 是为云端调的。
@@ -782,14 +783,11 @@ pub fn run() {
             if let Some(store) = session_store.clone() {
                 app.handle().manage(store);
             }
-            // Project layer (logical archival grouping of sessions): pure
-            // preference data; boot never fails, and corruption degrades to
-            // the empty state. Two wiring points with the session store:
-            // 1) boot reconciliation — the retention policy may have retired
-            //    sessions before the delete hook was registered, so prune
-            //    orphan assignment entries to keep the map from bloating;
-            // 2) delete hook — when a session is deleted at runtime, drop its
-            //    assignment entry in sync.
+            // 项目层(会话逻辑归档分组):纯偏好数据,boot 永不失败,损坏按空
+            // 状态降级。与 session store 的两处接线:
+            // 1) 启动对账——保留策略可能在删除钩子注册前已淘汰会话,剔除孤儿
+            //    归属条目,防映射表膨胀;
+            // 2) 删除钩子——运行期删除会话时同步摘除归属条目。
             let projects_store = features::projects::ProjectStore::boot();
             if let Some(store) = session_store.as_ref() {
                 if let Ok(all_sessions) = store.list_sessions_cached() {
@@ -803,13 +801,10 @@ pub fn run() {
                     }
                 }
                 let hook_store = projects_store.clone();
-                // Hook-driven assignment changes also emit list_changed:
-                // otherwise a project group's member count is stale after a
-                // session deletion until the next project operation/full
-                // refresh (review #447 finding 12). The boot reconciliation
-                // (retain_sessions above) does not emit — the frontend has
-                // not started yet, and its first fetch after startup is
-                // already current.
+                // 钩子驱动的归属变更也发 list_changed:否则会话删除后项目组的
+                // 成员计数在下次项目操作/整表刷新前是陈旧的(评审 #447 finding 12)。
+                // boot 对账(上文 retain_sessions)不发——前端尚未启动,启动后
+                // 首次拉取即最新。
                 let hook_app = app.handle().clone();
                 store.register_session_deleted_hook(std::sync::Arc::new(move |session_id: &str| {
                     if hook_store.forget_session(session_id) {
@@ -936,13 +931,13 @@ pub fn run() {
                     // 解析到项目目录；账本根（附件/审计/产物）恒为会话私有目录。
                     // 解析实现统一下沉在 SessionStore::session_roots，bridge 与
                     // SessionStore 注入同一份 resolver 闭包，两侧结果一致。
-                    // When the resolver misses a native code session's
-                    // project binding, fall back to plain chat sessions' user
-                    // working-directory binding (the per-session sidecar
+                    // When the resolver misses a native code session's project
+                    // binding, fall back to plain chat sessions' user
+                    // working-directory bindings (the per-session sidecar
                     // `workspace-binding.json` inside the session-private
-                    // directory) — dual-root semantics, AGENTS.md injection,
-                    // and the prompt environment section behave identically
-                    // for both binding kinds.
+                    // directory) — the dual-root semantics, AGENTS.md injection,
+                    // and prompt environment section treat both kinds of bound
+                    // sessions alike.
                     let execution_root_resolver: crate::features::sessions::ExecutionRootResolver =
                         std::sync::Arc::new({
                             let agents = code_session_agents.clone();
@@ -956,10 +951,9 @@ pub fn run() {
                     pool.bridge
                         .set_execution_root_resolver(execution_root_resolver.clone());
                     store_for_engine.set_execution_root_resolver(execution_root_resolver);
-                    // Keychain snapshot (§6) resolution: code/ACP sessions
-                    // read the session-agents record, plain bound sessions
-                    // read the workspace-binding sidecar; no snapshot on
-                    // either = single root.
+                    // 钥匙串快照(§6)解析:code/ACP 会话读 session-agents 记录,
+                    // 纯绑定会话读 workspace-binding sidecar;两边都没有快照 =
+                    // 单根(底座按 cwd 归一)。
                     pool.bridge.set_workspace_roots_resolver(std::sync::Arc::new({
                         let agents = code_session_agents.clone();
                         let store = store_for_engine.clone();
@@ -1323,6 +1317,7 @@ pub fn run() {
             commands::sessions::load_session,
             commands::sessions::delete_session,
             commands::sessions::rename_session,
+            commands::sessions::export_session,
             commands::sessions::set_session_pinned,
             commands::sessions::list_archived_sessions,
             commands::sessions::set_session_archived,

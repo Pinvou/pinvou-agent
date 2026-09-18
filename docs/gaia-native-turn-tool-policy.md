@@ -82,6 +82,18 @@ File
 同样启用 read-only dispatch。不得暴露 `Web` 或远程 `image_analyze`。只有经验证完全本地执行的
 vision backend 才能加入 offline profile，否则图片分析固定返回能力错误。
 
+### `pinvou-read-only-web/v1`
+
+产品冒烟与基准评测使用的 headless 只读公网面，工具面与 `pinvou-gaia-public-web/v1`
+完全一致（同样的 6 个工具与只读 dispatch）。它**不是产品工具面**：真实产品面是
+`tool_policy::PINVOU3_ALLOWED_TOOLS`；想要产品等价的基准路径，就让 headless 任务
+不带 eval 策略运行。
+
+`pinvou-product/v1` 是它的 deprecated alias，解析到同一策略，仅为兼容存量
+pinvou-cli smoke/resume 状态与旧基准配置而保留：pinvou-cli 的 smoke resume 会
+显式接受两个 id，但新运行写入的 task/manifest 一律使用 canonical id，
+不得再新用旧名。
+
 ### 公共拒绝面
 
 Allowlist 默认拒绝未来新增工具，hook 对不在 profile 的工具再次拒绝。至少禁止：

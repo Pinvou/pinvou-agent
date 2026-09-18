@@ -360,27 +360,29 @@ fn canonical_execution_root(execution_root: &Path) -> Result<PathBuf> {
 /// 与签名/钩子以外的正常行为需要）。
 fn isolated_git_command() -> std::process::Command {
     let mut command = crate::platform::process::HiddenCommand::new("git");
-    // vars_os 而非 vars：POSIX 允许环境变量取任意字节，vars 遇非 UTF-8 键/值会
-    // 直接 panic（lib.rs EnvSnapshot 同坑在先），一个这样的变量就会废掉该用户
-    // 全部快照能力；前缀按原始字节匹配，key 无需转 String。
-    for (key, _) in std::env::vars_os() {
-        if key.as_encoded_bytes().starts_with(b"GIT_") {
-            command.env_remove(&key);
-        }
-    }
+    // Strip via a fixed key list (platform::process::strip_all_git_env); do
+    // not scan the process env for GIT_*: in parallel tests, setenv from other
+    // threads concurrent with the iteration can miss keys, making the
+    // isolation fail intermittently as a whole (root cause of the 2026-09-12
+    // flaky family).
+    crate::platform::process::strip_all_git_env(&mut command);
     command.env("GIT_CONFIG_NOSYSTEM", "1");
     command.env("GIT_CONFIG_GLOBAL", crate::platform::os::null_device());
     command
 }
 
 fn git(repo: &Path, work_tree: &Path, arguments: &[&str]) -> Result<std::process::Output> {
-    let output = isolated_git_command()
+    isolated_git_command()
         .arg(format!("--git-dir={}", repo.display()))
         .arg(format!("--work-tree={}", work_tree.display()))
         .args(arguments)
         .output()
-        .with_context(|| format!("执行 git {} 失败（Git 不可用？）", arguments.join(" ")))?;
-    Ok(output)
+        .with_context(|| {
+            format!(
+                "failed to run git {} (is Git unavailable?)",
+                arguments.join(" ")
+            )
+        })
 }
 
 fn git_ok(repo: &Path, work_tree: &Path, arguments: &[&str]) -> Result<String> {
@@ -2185,49 +2187,103 @@ mod tests {
         );
     }
 
-    /// GIT_* 环境隔离（评审 nit）：宿主环境的 GIT_INDEX_FILE /
-    /// GIT_OBJECT_DIRECTORY 不得把影子仓库的内部操作重定向到无关位置。
+    /// GIT_* environment isolation (review nit + issue #492): host GIT_DIR /
+    /// GIT_WORK_TREE / GIT_INDEX_FILE / GIT_OBJECT_DIRECTORY must not redirect
+    /// the shadow repo's internal operations to unrelated locations. Asserts
+    /// the strip contract of `isolated_git_command` directly via
+    /// `Command::get_envs` instead of mutating the process-global environment:
+    /// process-level `set_var` used to race with concurrent git-subprocess
+    /// tests, causing intermittent full-suite failures (issue #492).
     #[test]
     fn git_subprocess_ignores_host_git_environment() {
         if !git_available() {
             return;
         }
-        let _lock = crate::platform::paths::tests::ENV_LOCK
-            .lock()
-            .unwrap_or_else(|poison| poison.into_inner());
-        let bogus = TestDir::new("bogus-gitdir");
-        // SAFETY: ENV_LOCK 序列化进程环境写（crate 级唯一约定）；影子 git 调用
-        // 自身剥离 GIT_*，并发测试的 git 子进程同样走隔离命令，不受本变量影响。
-        unsafe {
-            std::env::set_var("GIT_INDEX_FILE", bogus.path().join("index"));
-            std::env::set_var("GIT_OBJECT_DIRECTORY", bogus.path().join("objects"));
-        }
-        let result = std::panic::catch_unwind(|| {
-            let ledger = TestDir::new("env-ledger");
-            let exec = TestDir::new("env-exec");
-            exec.write("a.txt", "0\n");
-            create_checkpoint(
-                ledger.path(),
-                exec.path(),
-                Some(1),
-                CheckpointKind::Turn,
-                "t1",
-            )
-            .unwrap();
-            // 对象与索引都落在影子仓库，bogus 目录保持空。
-            let repo = repo_dir(ledger.path());
-            let tracked = git_ok(&repo, exec.path(), &["ls-files"]).unwrap();
-            assert!(tracked.lines().any(|line| line == "a.txt"));
+        let ledger = TestDir::new("env-ledger");
+        let exec = TestDir::new("env-exec");
+        exec.write("a.txt", "0\n");
+        create_checkpoint(
+            ledger.path(),
+            exec.path(),
+            Some(1),
+            CheckpointKind::Turn,
+            "t1",
+        )
+        .unwrap();
+        let repo = repo_dir(ledger.path());
+
+        // Assert the strip contract directly via `Command::get_envs` without
+        // mutating the process-global environment: process-level `set_var`
+        // races with concurrent git-subprocess tests (the intermittent
+        // full-suite failures of issue #492). Full coverage of the strip key
+        // lists is anchored by the platform::process tests.
+        let command = isolated_git_command();
+        let env: Vec<(&std::ffi::OsStr, Option<&std::ffi::OsStr>)> = command.get_envs().collect();
+        for key in [
+            "GIT_DIR",
+            "GIT_WORK_TREE",
+            "GIT_INDEX_FILE",
+            "GIT_OBJECT_DIRECTORY",
+            "GIT_ALTERNATE_OBJECT_DIRECTORIES",
+            "GIT_COMMON_DIR",
+            "GIT_CONFIG_COUNT",
+            "GIT_CONFIG_PARAMETERS",
+            // The shadow repo's commit identity is provided explicitly via -c
+            // by the caller; host identity variables must not leak either.
+            "GIT_AUTHOR_NAME",
+            "GIT_AUTHOR_EMAIL",
+            "GIT_COMMITTER_NAME",
+            "GIT_COMMITTER_EMAIL",
+        ] {
             assert!(
-                !bogus.path().join("index").exists() && !bogus.path().join("objects").exists(),
-                "GIT_INDEX_FILE/GIT_OBJECT_DIRECTORY 必须被隔离"
+                matches!(
+                    env.iter()
+                        .find(|(name, _)| name == &std::ffi::OsStr::new(key)),
+                    Some((_, None))
+                ),
+                "{key} must be stripped via env_remove"
             );
-        });
-        // SAFETY: 同 ENV_LOCK 序列化。
-        unsafe {
-            std::env::remove_var("GIT_INDEX_FILE");
-            std::env::remove_var("GIT_OBJECT_DIRECTORY");
         }
-        result.unwrap();
+        assert_eq!(
+            env.iter()
+                .find(|(name, _)| name == &std::ffi::OsStr::new("GIT_CONFIG_GLOBAL"))
+                .and_then(|(_, value)| *value),
+            Some(std::ffi::OsStr::new(crate::platform::os::null_device())),
+            "GIT_CONFIG_GLOBAL must be redirected to the null device"
+        );
+        assert_eq!(
+            env.iter()
+                .find(|(name, _)| name == &std::ffi::OsStr::new("GIT_CONFIG_NOSYSTEM"))
+                .and_then(|(_, value)| *value),
+            Some(std::ffi::OsStr::new("1")),
+            "GIT_CONFIG_NOSYSTEM must be pinned"
+        );
+        // `get_envs()` only contains explicitly set/removed entries (inherited
+        // variables never appear), so this actually constrains that no non-
+        // GIT_* entry is explicitly added or removed.
+        assert!(
+            env.iter()
+                .all(|(name, _)| name.as_encoded_bytes().starts_with(b"GIT_")),
+            "no non-GIT_* entry may be explicitly added or removed"
+        );
+
+        // Smoke check: with the host environment in place, shadow-repo git
+        // operations still succeed and a.txt stays tracked. Regression
+        // protection is carried by the get_envs contract assertions above;
+        // this test no longer mutates the process environment, so the old
+        // set_var-era assertion pointing at a bogus directory is dropped.
+        let output = isolated_git_command()
+            .arg(format!("--git-dir={}", repo.display()))
+            .arg(format!("--work-tree={}", exec.path().display()))
+            .arg("ls-files")
+            .output()
+            .expect("spawn git");
+        assert!(
+            output.status.success(),
+            "git stderr: {}",
+            String::from_utf8_lossy(&output.stderr)
+        );
+        let tracked = String::from_utf8_lossy(&output.stdout);
+        assert!(tracked.lines().any(|line| line == "a.txt"));
     }
 }

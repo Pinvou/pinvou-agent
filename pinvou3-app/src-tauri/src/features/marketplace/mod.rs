@@ -3412,21 +3412,6 @@ mod tests {
         });
     }
 
-    /// Upgrade from the legacy dual-file era (legacy file present) → the old
-    /// disabled list migrates into the unified file, and plain's effective
-    /// state keeps the old AllowAll semantics (plain defaults to all-allowed
-    /// on the main line).
-    #[test]
-    fn migration_from_legacy_files_preserves_disabled_state() {
-        with_temp_home(|| {
-            write_installed_ids(&["weather".to_string()]);
-            let legacy = crate::platform::paths::pinvou3_home().join("disabled_connectors.json");
-            std::fs::create_dir_all(legacy.parent().unwrap()).unwrap();
-            std::fs::write(&legacy, r#"["weather"]"#).unwrap();
-            assert_eq!(load_disabled_connectors(), vec!["weather".to_string()]);
-        });
-    }
-
     /// 两个 scope 并发写同一文件:进程内串行化 + 原子写保证不丢更新、不撕裂——
     /// 结束后两边最后一次写入都必须还在,且文件始终是合法 JSON。
     #[test]

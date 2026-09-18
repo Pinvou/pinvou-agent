@@ -189,6 +189,7 @@ fn phase_register(app: &AppHandle) -> Result<bool, String> {
         Ok(u) => u,
         Err(_) => {
             let _ = child.kill();
+            cc::reap_after_kill(&mut child);
             conn.set_pid(ID, None);
             return Err("注册:40s 内未拿到二维码链接(检查网络 / 代理)".into());
         }
@@ -204,6 +205,7 @@ fn phase_register(app: &AppHandle) -> Result<bool, String> {
     loop {
         if conn.is_cancelled(ID) {
             let _ = child.kill();
+            cc::reap_after_kill(&mut child);
             conn.set_pid(ID, None);
             return Ok(false);
         }

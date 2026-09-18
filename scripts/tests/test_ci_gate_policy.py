@@ -186,6 +186,7 @@ class CiGatePolicyTests(unittest.TestCase):
             "rust_code",
             "rust_dependencies",
             "rust_full",
+            "cli_rust",
             "knowledge_rust",
             "knowledge_dependencies",
             "release_contract",
@@ -239,6 +240,13 @@ class CiGatePolicyTests(unittest.TestCase):
             "cargo clippy --manifest-path pinvou-knowledge/Cargo.toml --all-targets --all-features --no-deps",
             knowledge,
         )
+        # The -D-warnings hard gate must stay in this job (single shared
+        # cache); rust-lint must not compile the workspace a second time.
+        self.assertIn(
+            "cargo clippy --manifest-path pinvou-knowledge/Cargo.toml --lib --bins --no-deps --features server -- -D warnings",
+            knowledge,
+        )
+        self.assertNotIn("cargo clippy pinvou-knowledge", self.pr_workflow)
         self.assertIn(
             "cargo test --manifest-path pinvou-knowledge/Cargo.toml --all-features",
             knowledge,
@@ -255,6 +263,88 @@ class CiGatePolicyTests(unittest.TestCase):
         )[1]
         self.assertIn("- knowledge-rust", required_gate)
         self.assertIn('"knowledge-rust:$KNOWLEDGE_RUST_RESULT"', required_gate)
+
+    def test_fast_gate_actionlint_is_pinned_and_checksum_verified(self):
+        fast_gate = self.pr_workflow.split("\n  fast-gate:", maxsplit=1)[1].split(
+            "\n  frontend-test:", maxsplit=1
+        )[0]
+        step = fast_gate.split(
+            "- name: workflow lint (actionlint)", maxsplit=1
+        )[1].split("\n      - name:", maxsplit=1)[0]
+        # The release artifact is fetched from the pinned tag and verified
+        # against the release checksums.txt digest. Executing an installer
+        # fetched from a mutable ref (e.g. raw.githubusercontent .../main/)
+        # would let third-party code drift under a green gate.
+        self.assertIn(
+            "https://github.com/rhysd/actionlint/releases/download/v1.7.12/actionlint_1.7.12_linux_amd64.tar.gz",
+            step,
+        )
+        self.assertIn(
+            "8aca8db96f1b94770f1b0d72b6dddcb1ebb8123cb3712530b08cc387b349a3d8  actionlint.tar.gz",
+            step,
+        )
+        self.assertIn("| sha256sum --check -", step)
+        self.assertNotIn("download-actionlint.bash", step)
+    def test_cli_crate_has_its_own_required_gate(self):
+        changes = _without_yaml_comments(
+            self.pr_workflow.split("\n  changes:", maxsplit=1)[1].split(
+                "\n  fast-gate:", maxsplit=1
+            )[0]
+        )
+        self.assertIn("cli_rust:", changes)
+        cli_paths = changes.split("            cli_rust:", maxsplit=1)[1].split(
+            "            knowledge_rust:", maxsplit=1
+        )[0]
+        self.assertIn(
+            "- 'pinvou-cli/**/*.rs'",
+            cli_paths,
+            "cli_rust must match the real crate directory (pinvou-cli)",
+        )
+        self.assertIn("- 'pinvou-cli/**/Cargo.toml'", cli_paths)
+        self.assertIn("- 'CodeWhale'", cli_paths)
+        # The CLI path-depends on the app crate, so the leaf features that
+        # rust_full exempts still gate through the CLI suite (a change confined
+        # to features/feedback or features/personas would otherwise run NO rust
+        # gate at all).
+        self.assertIn("- 'pinvou3-app/src-tauri/src/features/feedback/**'", cli_paths)
+        self.assertIn("- 'pinvou3-app/src-tauri/src/features/personas/**'", cli_paths)
+
+        cli_test = _without_yaml_comments(
+            self.pr_workflow.split("\n  cli-test:", maxsplit=1)[1].split(
+                "\n  windows-rust-test:", maxsplit=1
+            )[0]
+        )
+        self.assertIn("needs.changes.outputs.cli_rust == 'true'", cli_test)
+        self.assertIn(
+            "github.event.pull_request.draft == false",
+            cli_test,
+            "draft PRs must skip the heavy CLI leg like the other rust jobs",
+        )
+        self.assertIn("- name: Set up zram and swap", cli_test)
+        self.assertIn("scripts/ci-memory-setup.sh", cli_test)
+        self.assertIn(
+            "cargo fmt --all --check --manifest-path pinvou-cli/Cargo.toml",
+            cli_test,
+            "pinvou-cli is a virtual workspace: plain --manifest-path fmt fails "
+            "with 'Failed to find targets', --all is required",
+        )
+        self.assertIn(
+            "cargo test --manifest-path pinvou-cli/Cargo.toml --locked --no-fail-fast",
+            cli_test,
+        )
+        self.assertIn(
+            "cargo test -p adapter-gaia --features test-support --locked --no-fail-fast",
+            cli_test,
+            "dataset_contract is required-features-gated and silently skipped by "
+            "the workspace run; the gaia timeout pins live there",
+        )
+        self.assertIn("cache-targets: false", cli_test)
+
+        required_gate = self.pr_workflow.split(
+            "\n  required-gate:", maxsplit=1
+        )[1]
+        self.assertIn("- cli-test", required_gate)
+        self.assertIn('"cli-test:$CLI_TEST_RESULT"', required_gate)
 
     def test_benchmark_jobs_stay_out_of_product_pr_workflow(self):
         self.assertNotIn("\n  benchmark-contract:", self.pr_workflow)
@@ -405,15 +495,19 @@ class CiGatePolicyTests(unittest.TestCase):
             rust_test,
         )
         # 16GB runner 失联防护:编译与执行拆成独立 step(失联后日志全丢,按 step
-        # 状态定位阶段),内存看门狗把 runner 失联转化为带日志的 step 失败,CI 关
-        # DWARF 缩小测试二进制降低链接内存峰值。三条腿(push/MQ 编译/MQ 执行)
-        # 都必须挂看门狗。
+        # 状态定位阶段),CI 关 DWARF 缩小测试二进制降低链接内存峰值。有效内存
+        # 由 job 开头的 zram/swap 扩容 step(scripts/ci-memory-setup.sh)提供;
+        # 看门狗已删除,不再抢先杀编译进程。
         self.assertIn(
             "- name: cargo test --lib --no-run（编译链接测试二进制）\n"
             "        if: ${{ github.event_name != 'push' }}",
             rust_test,
         )
-        self.assertEqual(rust_test.count("bash scripts/ci-memguard.sh &"), 3)
+        self.assertIn(
+            'sudo bash "${{ github.workspace }}/scripts/ci-memory-setup.sh"',
+            rust_test,
+        )
+        self.assertNotIn("ci-memguard", self.pr_workflow)
         self.assertIn('CARGO_PROFILE_DEV_DEBUG: "0"', rust_test)
         self.assertIn("timeout-minutes: 120", rust_test)
         self.assertIn(
@@ -421,6 +515,90 @@ class CiGatePolicyTests(unittest.TestCase):
             '-C link-arg=-Wl,--thinlto-jobs=1 '
             '-C link-arg=-Wl,--threads=1"',
             rust_test,
+        )
+
+    def test_all_linux_jobs_enlarge_runner_memory(self):
+        # Every ubuntu-* job must run the zram/swap memory setup right after
+        # checkout; Windows/macOS jobs are out of scope (hosted images there
+        # have different memory characteristics).
+        # Only split at 2-space-indented `key:` lines (job/trigger boundaries),
+        # not at deeper indentation.
+        setup_step = "- name: Set up zram and swap"
+        blocks = re.split(
+            r"\n  (?=[A-Za-z0-9_-]+:\s*$)", self.pr_workflow, flags=re.MULTILINE
+        )
+        linux_jobs = [
+            block
+            for block in blocks
+            if re.search(r"^    runs-on: ubuntu", block, flags=re.MULTILINE)
+        ]
+        self.assertGreaterEqual(len(linux_jobs), 10)
+        for job in linux_jobs:
+            job_name = job.strip().split(":", maxsplit=1)[0]
+            self.assertIn(
+                setup_step,
+                job,
+                f"ubuntu job '{job_name}' must run scripts/ci-memory-setup.sh",
+            )
+            self.assertIn(
+                '"${{ github.workspace }}/scripts/ci-memory-setup.sh"',
+                job,
+                f"ubuntu job '{job_name}' must invoke scripts/ci-memory-setup.sh"
+                " via an absolute path (some jobs set a run working-directory)",
+            )
+            # An in-kernel hang cannot be interrupted by the userspace timeout
+            # inside the script; the workflow-side `timeout 240` plus the
+            # non-fatal wrapper is the only backstop (the last line of defense
+            # the script header claims). A job missing the wrapper would burn
+            # the whole job limit when it hangs, so the guard enforces an
+            # identical structure at every call site.
+            self.assertIn(
+                'run: timeout --kill-after=15 240 sudo bash "${{ github.workspace }}/scripts/ci-memory-setup.sh"',
+                job,
+                f"ubuntu job '{job_name}' must hard-cap ci-memory-setup with"
+                " 'timeout --kill-after=15 240' (userspace hang backstop)",
+            )
+            self.assertIn(
+                '|| echo "::warning::ci-memory-setup',
+                job,
+                f"ubuntu job '{job_name}' must keep ci-memory-setup non-fatal"
+                " (degrade to stock runner memory with a ::warning)",
+            )
+
+    def test_memory_setup_wrapped_at_every_call_site(self):
+        # The wrapper contract is repo-wide, not just pr-check.yml: every
+        # invocation of ci-memory-setup.sh in any workflow file must carry
+        # the `timeout --kill-after=15 240` cap and the non-fatal ::warning
+        # degradation on the same run line.
+        workflows = sorted(
+            list((ROOT / ".github/workflows").glob("*.yml"))
+            + list((ROOT / ".github/workflows").glob("*.yaml"))
+        )
+        self.assertTrue(workflows, "no workflow files found under .github/workflows")
+        call_sites = 0
+        for workflow in workflows:
+            text = _without_yaml_comments(workflow.read_text(encoding="utf-8"))
+            for line in text.splitlines():
+                if "scripts/ci-memory-setup.sh" not in line:
+                    continue
+                call_sites += 1
+                self.assertIn(
+                    "timeout --kill-after=15 240",
+                    line,
+                    f"{workflow.name}: the ci-memory-setup.sh call must be"
+                    " capped by 'timeout --kill-after=15 240' (an in-kernel"
+                    " hang is uninterruptible; the outer cap is the last"
+                    " backstop)",
+                )
+                self.assertIn(
+                    '|| echo "::warning::ci-memory-setup',
+                    line,
+                    f"{workflow.name}: the ci-memory-setup.sh call must stay"
+                    " non-fatal (degrade to stock runner memory with a"
+                    " ::warning)",
+                )
+        self.assertGreaterEqual(
+            call_sites, 20, "expected the memory-setup wrapper at 20+ call sites"
         )
 
     def test_windows_rust_test_cumulative_main_push_is_path_independent(self):
@@ -443,6 +621,9 @@ class CiGatePolicyTests(unittest.TestCase):
         self.assertIn(
             "github.event.pull_request.draft == false", windows_rust_test
         )
+        # Cold Windows compile plus the lib link check recently died at the
+        # 90-minute cap while passing runs already took 85-87 minutes.
+        self.assertIn("timeout-minutes: 180", windows_rust_test)
 
         windows_rust_test = _without_yaml_comments(
             self.pr_workflow.split("\n  windows-rust-test:", maxsplit=1)[1].split(
@@ -482,6 +663,11 @@ class CiGatePolicyTests(unittest.TestCase):
         )[1]
         self.assertIn('"$test_exe" "$filter" --test-threads=1', regression)
         self.assertNotIn("cargo test", regression)
+        self.assertIn(
+            "'connector_introspection_guard_matches_complete_names_only'",
+            regression,
+            "Windows must execute the PowerShell connector-introspection hook regression",
+        )
 
         required_gate = self.pr_workflow.split(
             "\n  required-gate:", maxsplit=1
@@ -564,13 +750,21 @@ class CiGatePolicyTests(unittest.TestCase):
         )
         release_contract_paths = changes.split(
             "            release_contract:", maxsplit=1
-        )[1].split("            l1:", maxsplit=1)[0]
+        )[1].split("            pet:", maxsplit=1)[0]
         self.assertIn(
             "- 'pinvou3-app/src-tauri/resources/**'",
             release_contract_paths,
         )
         self.assertIn(
             "- 'pinvou3-app/tests/knowledge_host_packaging.test.mjs'",
+            release_contract_paths,
+        )
+        # The section boundary above must stay load-bearing: if the split
+        # anchor stops matching (e.g. a filter rename), the slice silently
+        # grows to the end of the changes block and these assertions
+        # degrade into no-ops. This bit us once with a stale "l1:" anchor.
+        self.assertNotIn(
+            "- 'pinvou3-app/src/app/pet-main.jsx'",
             release_contract_paths,
         )
 
@@ -624,6 +818,50 @@ class CiGatePolicyTests(unittest.TestCase):
         self.assertNotIn("完整门禁已在 PR 入队前验证", self.pr_workflow)
         self.assertNotIn("github.event.merge_group.base_sha", dependency_review)
         self.assertNotIn("github.event.merge_group.head_sha", dependency_review)
+
+    def test_secret_scan_guard_and_cutoff_are_load_bearing(self):
+        # The empty-scan guard must demand positive evidence of a non-zero
+        # commit count: it is an inverted grep, so an empty log (gitleaks logs
+        # to stderr, so a dropped 2>&1 empties the tee'd file), a "0 commits
+        # scanned" no-op, or any other missing or renamed summary fails the
+        # step instead of going green. The scan range must share the same
+        # LEGACY_HISTORY_CUTOFF as the commit-message gate; drifting either
+        # side alone would shift the trust boundary between secret scanning
+        # and the commit convention.
+        secret_scan = (
+            ROOT / ".github/workflows/secret-scan.yml"
+        ).read_text(encoding="utf-8")
+        self.assertIn('HEAD" 2>&1', secret_scan)
+        guard = re.search(
+            r'if ! grep -Eq "([^"]+)" /tmp/gitleaks\.log', secret_scan
+        )
+        self.assertIsNotNone(
+            guard, "secret-scan.yml must fail closed on missing scan evidence"
+        )
+        count_pattern = guard.group(1)
+        # The gitleaks summary line is "N commits scanned." (ANSI-wrapped);
+        # the guard pattern must accept that shape for N > 0 and reject both
+        # the zero-commit summary and an empty log (no match at all).
+        self.assertTrue(
+            re.search(count_pattern, "395 commits scanned."),
+            "guard pattern must accept a real non-zero gitleaks summary line",
+        )
+        self.assertFalse(
+            re.search(count_pattern, "0 commits scanned."),
+            "guard pattern must reject a zero-commit scan summary",
+        )
+        self.assertFalse(
+            re.search(count_pattern, ""),
+            "guard pattern must reject an empty scan log",
+        )
+        validator = (ROOT / "scripts/validate-commit-msg.py").read_text(
+            encoding="utf-8"
+        )
+        match = re.search(r'LEGACY_HISTORY_CUTOFF = "([0-9a-f]{40})"', validator)
+        self.assertIsNotNone(
+            match, "validate-commit-msg.py is missing the LEGACY_HISTORY_CUTOFF constant"
+        )
+        self.assertIn(match.group(1), secret_scan)
 
     def test_mac_bundle_chain_paths_are_reachable_by_workflow_trigger(self):
         # mac-build 的 bundle_chain filter 决定何时追加 universal bundle smoke。
@@ -697,7 +935,132 @@ class CiGatePolicyTests(unittest.TestCase):
         self.assertIn("wrapper: ${{ steps.filter.outputs.wrapper }}", changes)
         self.assertIn("needs: changes", smoke)
         self.assertIn("if: ${{ needs.changes.outputs.wrapper == 'true' }}", smoke)
-        self.assertIn("os: [macos-15, ubuntu-latest, windows-latest]", smoke)
+        self.assertIn("os: [macos-15, ubuntu-22.04, windows-latest]", smoke)
+
+
+
+
+class ReleaseDiskAndImagePolicyTests(unittest.TestCase):
+    """Guard for release-build disk preparation and the single-image convention (backported from private-repo #1112 on 2026-09-16)."""
+
+    def setUp(self):
+        self.release_workflow = (ROOT / ".github/workflows/release-packages.yml").read_text(
+            encoding="utf-8"
+        )
+
+    def test_release_linux_build_jobs_prepare_disk_and_prune_apt(self):
+        # Release build jobs (single-disk hosted runner; with the old 16G
+        # /mnt swapfile in place x64 builds had only ~13-14G free) must clean
+        # up unused preinstalled SDKs before toolchains/caches/dependencies
+        # hit the disk, and run autoremove + clean after installing system
+        # deps; otherwise a cold compile has filled the disk (ENOSPC, since
+        # 2026-09-13).
+        blocks = re.split(
+            r"\n  (?=[A-Za-z0-9_-]+:\s*$)", self.release_workflow, flags=re.MULTILINE
+        )
+        for job_id in ("build-linux-x64", "build-linux-arm64"):
+            job = next(
+                (b for b in blocks if b.strip().startswith(f"{job_id}:")), None
+            )
+            self.assertIsNotNone(job, f"release job '{job_id}' not found")
+            self.assertIn("python3 scripts/ci-rust-disk.py", job)
+            self.assertIn("--min-free-gib 24", job)
+            # Disk preparation must run before setup-node (the aggressive tier
+            # deletes /opt/hostedtoolcache, and setup-node would re-download
+            # Node afterwards) and before the toolchain and the Rust cache
+            # land, so the free-space gate measures the disk the cold build
+            # actually gets.
+            self.assertLess(
+                job.index("python3 scripts/ci-rust-disk.py"),
+                job.index("uses: actions/setup-node"),
+            )
+            self.assertLess(
+                job.index("python3 scripts/ci-rust-disk.py"),
+                job.index("uses: dtolnay/rust-toolchain"),
+            )
+            self.assertLess(
+                job.index("python3 scripts/ci-rust-disk.py"),
+                job.index("uses: Swatinem/rust-cache"),
+            )
+            self.assertIn("sudo apt-get autoremove -y --purge", job)
+            self.assertIn("sudo apt-get clean", job)
+        x64 = next(b for b in blocks if b.strip().startswith("build-linux-x64:"))
+        arm64 = next(b for b in blocks if b.strip().startswith("build-linux-arm64:"))
+        self.assertIn("--aggressive", x64)
+        self.assertNotIn("--aggressive", arm64)
+
+    def test_all_linux_jobs_pin_the_release_runner_image(self):
+        # Image versions never drift (single-image convention): every
+        # workflow's Linux runner must match the release build baseline
+        # (ubuntu-22.04 / ubuntu-22.04-arm). Release binaries link against the
+        # build host's glibc, so tests and checks must run on the same system
+        # as the release build; image upgrades must be coordinated across the
+        # whole repo at once — rolling images like ubuntu-latest and per-job
+        # version bumps are forbidden.
+        # Strip full-line YAML comments before scanning: version mentions
+        # inside full-line comments (e.g. migration notes) must not trip the
+        # image rules. Note that the ubuntu-latest ban still scans the
+        # remaining text, including inline trailing comments — keep such
+        # notes on their own comment lines.
+        allowed = {"ubuntu-22.04", "ubuntu-22.04-arm"}
+        workflows = sorted(
+            list((ROOT / ".github/workflows").glob("*.yml"))
+            + list((ROOT / ".github/workflows").glob("*.yaml"))
+        )
+        self.assertTrue(workflows, "no workflow files found under .github/workflows")
+        for workflow in workflows:
+            text = _without_yaml_comments(workflow.read_text(encoding="utf-8"))
+            self.assertNotIn(
+                "ubuntu-latest",
+                text,
+                f"{workflow.name}: ubuntu-latest is a rolling image and violates"
+                " the single-image convention; pin it to ubuntu-22.04 like the"
+                " release build",
+            )
+            for image in sorted(set(re.findall(r"ubuntu-\d+\.\d+(?:-arm)?", text))):
+                self.assertIn(
+                    image,
+                    allowed,
+                    f"{workflow.name}: Linux image '{image}' diverges from the"
+                    " release baseline; image upgrades must happen repo-wide"
+                    " at once",
+                )
+
+    def test_audited_redundant_apt_packages_stay_pruned(self):
+        # 2026-09-15 per-package probe audit verdict (simulate installing each
+        # package alone; if the installed set is unchanged the package is
+        # redundant): libgtk-3-dev/libsoup-3.0-dev/libx11-dev/libxi-dev/
+        # libxtst-dev are all pulled in transitively by the hard dependency
+        # chain of libwebkit2gtk-4.1-dev, and the build does not need
+        # librsvg2-dev (Cargo has no rsvg crate). Any workflow adding them
+        # back to an install list would slow dependency installation and eat
+        # the single-disk runner's build disk. The guard scans the full text
+        # with comments stripped: audit comments may mention these names, but
+        # their appearance in non-comment text is rejected (including
+        # multi-line continuations).
+        redundant = (
+            "libgtk-3-dev",
+            "libsoup-3.0-dev",
+            "librsvg2-dev",
+            "libx11-dev",
+            "libxi-dev",
+            "libxtst-dev",
+        )
+        workflows = sorted(
+            list((ROOT / ".github/workflows").glob("*.yml"))
+            + list((ROOT / ".github/workflows").glob("*.yaml"))
+        )
+        self.assertTrue(workflows, "no workflow files found under .github/workflows")
+        for workflow in workflows:
+            text = _without_yaml_comments(workflow.read_text(encoding="utf-8"))
+            for package in redundant:
+                self.assertNotIn(
+                    package,
+                    text,
+                    f"{workflow.name}: audited redundant apt package '{package}'"
+                    " must not be added back (pulled in transitively by"
+                    " libwebkit2gtk-4.1-dev or not needed by the build)",
+                )
 
 
 if __name__ == "__main__":

@@ -138,14 +138,14 @@
   }
   // 草稿态 chip 切换：写本 lane 全局默认（setDraftMode 不物化会话——
   // 物化时由 ensureSession 把 lane 默认应用到新会话）。
-  // A draft bound to a working directory aligns its security posture with
-  // code mode: switching writes the code lane's global default (not the work
-  // lane's) and stages the explicit choice into pendingDraftMode, applied per
-  // session at materialization (the backend resolves only the code lane
-  // default for bound sessions, never reading work).
+  // Bound-workspace drafts share the code mode's safety posture: a switch
+  // writes the code lane global default (not the work lane), and stages the
+  // explicit choice in pendingDraftMode to be applied per session at
+  // materialization (the backend resolves only the code lane default for bound
+  // sessions, never the work one).
   async function setDraftMode(target) {
     const boundDraft = !!state.draftWorkspacePath;
-    // A bound draft always writes the code lane; an unbound draft follows the
+    // Bound drafts always write the code lane; unbound drafts follow the
     // current lane (two lanes, work/code; design was merged into work, #428).
     const lane = boundDraft || state.modeLane === "code" ? "code" : "work";
     try {
@@ -162,12 +162,12 @@
     notify();
   }
 
-  // ── code permission prefs (YOLO one-time confirm gate) ────────────────
-  // A normal session bound to a working directory shares the same confirm-gate
-  // source of truth as code mode before switching to YOLO. A read failure
-  // returns null (needsYoloConfirmation treats null as unconfirmed — the safe
-  // direction: rather prompt once more); a confirm failure is thrown up for
-  // the UI to surface, never silent.
+  // ── Code permission prefs (one-shot YOLO confirmation gate) ──────
+  // Plain sessions with a bound working directory share the code mode's
+  // confirmation gate source of truth before switching to YOLO. Read failures
+  // return null (needsYoloConfirmation treats null as unconfirmed — the safe
+  // direction: prefer one extra prompt); confirm failures propagate to the UI
+  // instead of being swallowed.
   async function getCodePermissionPrefs() {
     try {
       return await invoke("get_code_permission_prefs");
@@ -339,15 +339,26 @@
     }
     notify();
   }
-  async function exitPlanToYolo() {
-    const sid = state.activeSessionId;
+  async function exitPlanToYolo(targetSessionId) {
+    // The caller may pin the target session explicitly: the YOLO confirmation
+    // gate issues the switch only after several await round-trips, by which
+    // time the user may have switched away and the live active session is no
+    // longer the ruling one (same precedent as sessions.js passing meta.id on
+    // its materialization path). No-argument calls keep the original semantics:
+    // act on the live active session at invocation time (bulb / plan-stuck
+    // card).
+    const sid = typeof targetSessionId === 'string' && targetSessionId
+      ? targetSessionId
+      : state.activeSessionId;
     // Draft state: do not materialize a session; rewrite this lane's global
     // default (two-lane semantics).
     if (!sid) { await setDraftMode("yolo"); return; }
     try {
-      // invoke 形状保持 { sessionId: state.activeSessionId }（协议指纹按文本
-      // 计算）；发起瞬间 activeSessionId === sid，await 返回后按 sid 定向写回。
-      const st = await invoke("exit_plan_to_yolo", { sessionId: state.activeSessionId });
+      // The invoke targets sid directly at issue time; after the await, the
+      // result is written back to the same sid (the protocol fingerprint is
+      // computed from the call text; parameterizing it requires recomputing the
+      // interaction-feature digest in step).
+      const st = await invoke("exit_plan_to_yolo", { sessionId: sid });
       applyAuthoritativeModeState(sid, st);
     } catch (e) { addSystemItemFor(sid, bt("exitPlanFailed") + e); }
     notify();
@@ -431,11 +442,20 @@
     patchItemById(itemId, { resolved: true, statusLabel: bt("replanRequested") }); notify();
     await sendMessage(bt("planStuckReplanPrompt"));
   }
-  async function planStuckGo(itemId) {
-    const sid = state.activeSessionId;
+  async function planStuckGo(itemId, targetSessionId) {
+    // The plan-stuck card's session is captured when the card is rendered;
+    // gate callers pass it explicitly. A no-arg call (legacy) targets
+    // live-active at invoke time. The explicit form keeps exitPlanToYolo and
+    // the follow-up prompt on the same adjudicated session even if the user
+    // switches away mid-flight (#445 R9: a no-arg read here bypassed both
+    // the gate's sid threading and, for a bound session launched from
+    // ChatView, the one-time YOLO confirmation decided in the UI layer).
+    const sid = typeof targetSessionId === 'string' && targetSessionId
+      ? targetSessionId
+      : state.activeSessionId;
     if (!sid) return;
     patchItemById(itemId, { resolved: true }); notify();
-    await exitPlanToYolo();
+    await exitPlanToYolo(sid);
     // 补充指令必须发往触发会话：await exitPlanToYolo 期间用户可能已切走，
     // 直接 sendMessage 会把"继续执行"发到切换后的会话（审计遗漏补修）。
     // sendMessageToSession 校验失败（会话已删/对账中）会 throw，必须接住并

@@ -6,7 +6,7 @@ export const desktopBridgeApi = {
   voice: ['appendVoiceText', 'cancelVoiceAsrSetup', 'cancelVoiceInput', 'clearVoiceInput', 'closeVoiceAsrSetup', 'installVoiceAsr', 'runVoiceInputDebugAssertions', 'setVoiceShortcutEnabled', 'startVoiceInput', 'syncVoiceShortcutRecording'],
   knowledge: ['cancelKbModel', 'downloadKbModel', 'kbModelStatus', 'listCollections', 'loadKnowledgeEmbedderAfterFirstFrame', 'mountCollection', 'mountRemoteCollection', 'removeCollection', 'removeRemoteCollection', 'setCollectionEnabled', 'setRemoteCollectionEnabled', 'unmountCollection'],
   scheduled: ['clearScheduledTaskDraft', 'clearScheduledTaskSelection', 'confirmScheduledTaskDraft', 'createScheduledTask', 'deleteScheduledTask', 'dismissScheduledTaskError', 'exitScheduledRunChat', 'loadScheduledTaskRecentRuns', 'loadScheduledTaskRuns', 'loadScheduledTasks', 'openScheduledRunChat', 'pauseScheduledTask', 'pickFolder', 'readScheduledTask', 'refreshScheduledTaskData', 'resumeScheduledTask', 'runScheduledTaskNow', 'selectScheduledTask', 'startScheduledTaskChat', 'toggleScheduledTaskPinned', 'updateScheduledTask'],
-  sessions: ['archiveSession', 'createNewSession', 'deleteSession', 'getSessionWorkspaceBinding', 'pickDraftWorkspace', 'renameSession', 'restoreArchivedSession', 'setDraftWorkspace', 'switchToSession', 'toggleSessionPinned'],
+  sessions: ['archiveSession', 'createNewSession', 'deleteSession', 'exportSessionArchive', 'getSessionWorkspaceBinding', 'pickDraftWorkspace', 'renameSession', 'restoreArchivedSession', 'setDraftWorkspace', 'switchToSession', 'toggleSessionPinned'],
   monitor: ['clearMonitorStats', 'startMonitorPolling', 'stopMonitorPolling'],
   settings: ['saveSearchSettings', 'saveSearchSettingsAndRestart', 'saveSettings', 'saveSettingsAndRestart', 'setSelectedPet', 'testSearchProvider'],
   feedback: ['submitFeedback'],
@@ -19,12 +19,12 @@ export const desktopBridgeApi = {
   artifacts: ['artifactInfo', 'downloadArtifact', 'listDeliverableIndex', 'openArtifactExternal', 'openContainingFolder', 'openExternalUrl', 'openInSystem', 'openScheduledTaskFolder', 'openUserExternalUrl', 'readArtifactImageB64', 'readArtifactText', 'readArtifactThumbnail', 'renderArtifactVisual', 'revealSessionFolder', 'writeArtifactText'],
   attachments: ['addAttachmentByPath', 'addPasteImage', 'clearAttachments', 'openConversationAttachment', 'pickAndAttach', 'removeAttachment', 'resolveConversationAttachment', 'revealConversationAttachment', 'uploadDeviceFiles'],
   resolutions: ['markResolved'],
-  files: ['pickFeedbackFiles', 'pickFiles', 'pickFolders'],
+  files: ['pickFeedbackFiles', 'pickFiles', 'pickFolders', 'pickRebindFolder'],
   personas: ['createPersona', 'deletePersona', 'equipPersona', 'getPersonas', 'loadPersonas', 'postCardCreatorIntro', 'readPersonaBody', 'unequipPersona', 'updatePersona'],
   memory: ['archiveRecentWorkMemory', 'confirmMemoryCandidate', 'deleteMemoryItem', 'deleteMemoryPreference', 'ignoreMemoryCandidate', 'loadMemoryOverview', 'loadOrganizeHistory', 'neverMemoryCandidate', 'organizeMemory', 'saveMemoryProfilePatch', 'updateMemoryItem'],
   updater: ['cancelUpdate', 'checkForUpdate', 'downloadAndInstallUpdate', 'restartApp'],
   dependencies: ['checkDependencies', 'installDependencies'],
-  projects: ['alignSessionToProject', 'createProject', 'deleteProject', 'ensureFolderProjects', 'loadProjects', 'moveSessionToProject', 'rebindWorkspaceRoot', 'renameProject', 'setNeverMaterialize', 'setPrimaryRoot', 'updateProjectRoots'],
+  projects: ['createProject', 'deleteProject', 'loadProjects', 'moveSessionToProject', 'rebindWorkspaceRoot', 'renameProject'],
 };
 
 // These methods intentionally depend on desktop lifecycle or local machine
@@ -35,10 +35,13 @@ export const desktopOnlyBridgeApi = {
   knowledge: ['loadKnowledgeEmbedderAfterFirstFrame', 'mountRemoteCollection', 'removeRemoteCollection', 'setRemoteCollectionEnabled'],
   // 多智能体开关是桌面专属操作（ADR-0006）：Web 端只读呈现。
   interaction: ['setMultiAgentMode'],
-  // 草稿态工作目录选择需要系统目录对话框（TAURI.dialog）和 create_session
-  // 的 workspacePath 参数通道；Web 端没有对应后端，ChatView 以方法存在性
-  // 守卫不渲染该选择器。
-  sessions: ['pickDraftWorkspace', 'setDraftWorkspace'],
+  // Draft workspace selection needs the system directory dialog (TAURI.dialog)
+  // and the create_session workspacePath parameter channel; the Web side has no
+  // such backend, so ChatView's method-existence guard skips rendering the
+  // selector.
+  // Session archive export writes the local-disk tar.xz via a native save
+  // dialog over ~/.pinvou3/sessions; web keeps no local session store.
+  sessions: ['exportSessionArchive', 'pickDraftWorkspace', 'setDraftWorkspace'],
   // The steer channel (remote control / other hosts) and the queued chip's
   // zap-send go through the foundation EnginePool and need the Tauri command
   // channel; web has no such backend.

@@ -45,12 +45,12 @@ jobs:
           # can_run=false 的条目只做钉版抓取 + sha256 校验 + file 检查
           # (交叉架构二进制无法在该 runner 上执行)。
           - platform: linux-arm64
-            runs-on: ubuntu-24.04-arm
+            runs-on: ubuntu-22.04-arm
             resources: linux/aarch64
             suffix: ""
             can_run: true
           - platform: linux-x64
-            runs-on: ubuntu-24.04
+            runs-on: ubuntu-22.04
             resources: linux/x86_64
             suffix: ""
             can_run: true
@@ -73,6 +73,11 @@ jobs:
     timeout-minutes: 10
     steps:
       - uses: actions/checkout@v7
+
+      - name: Set up zram and swap
+        if: runner.os == 'Linux'
+        # Best effort: timeouts or failures only warn and never block (falls back to stock runner memory).
+        run: timeout --kill-after=15 240 sudo bash "${{ github.workspace }}/scripts/ci-memory-setup.sh" || echo "::warning::ci-memory-setup did not finish; continuing with stock runner memory"
 
       - name: Download pinned connector binaries
         # windows runner 默认 pwsh 无法直接执行 .sh,必须显式走 bash。

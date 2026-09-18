@@ -898,10 +898,17 @@ mod tests {
     use super::*;
 
     fn service() -> KnowledgeService {
+        // The path must be unique per call: line!() expands to the same value
+        // for every caller inside this helper, so parallel tests would share
+        // one SQLite file — Store::open's staleness detection concurrently
+        // reading a mid-state user_version deletes and recreates the whole
+        // store, and another test then hits "no such table". This caused a
+        // real flake (reproduced in the 2026-09-12 full parallel run).
+        static SERVICE_SEQ: std::sync::atomic::AtomicU32 = std::sync::atomic::AtomicU32::new(0);
         let dir = std::env::temp_dir().join(format!(
             "pinvou3_kb_import_reload_{}_{}",
             std::process::id(),
-            line!()
+            SERVICE_SEQ.fetch_add(1, std::sync::atomic::Ordering::Relaxed)
         ));
         KnowledgeService::new(&dir.join("index.db")).expect("KnowledgeService::new")
     }

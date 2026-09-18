@@ -1,14 +1,19 @@
 /**
- * 普通聊天「绑定工作目录会话」逻辑测试（安全姿态对齐 code 模式）：
- *   - 纯逻辑：chatYoloGateApplies（确认门适用对象）/
- *     shouldShowWorkspaceBindingChip（绑定指示显示条件）；
- *   - sessions bridge：getSessionWorkspaceBinding 的归一化与失败兜底；
- *     ensureSession 物化时绑定草稿不再套用 work lane 默认、按暂存 mode 应用，
- *     物化失败保留草稿暂存、开关落盘失败按捕获值回滚恢复草稿；
- *     setDraftWorkspace 绑定/解绑刷新草稿 mode 显示并作废暂存；
- *   - interaction bridge：绑定草稿显式切换写 code lane 全局默认并暂存选择，
- *     未绑定草稿维持 work/design lane 语义。
- * harness 复刻 chat_draft_workspace_logic.test.mjs 的 vm 注入面。
+ * Logic tests for regular-chat "bound workspace" sessions (safety posture
+ * matching the code mode):
+ *   - Pure logic: chatYoloGateApplies (which targets the confirmation gate
+ *     applies to) and shouldShowWorkspaceBindingChip (when the indicator
+ *     shows);
+ *   - sessions bridge: getSessionWorkspaceBinding normalization and failure
+ *     fallback; on ensureSession materialization a bound draft no longer
+ *     applies the work lane default and applies the staged mode instead;
+ *     setDraftWorkspace bind/unbind refreshes the draft mode display and
+ *     invalidates staging;
+ *   - interaction bridge: an explicit switch on a bound draft writes the code
+ *     lane global default and stages the choice; unbound drafts keep
+ *     work/design lane semantics.
+ * The harness mirrors the vm injection surface of
+ * chat_draft_workspace_logic.test.mjs.
  */
 import assert from 'node:assert/strict';
 import fs from 'node:fs';
@@ -26,7 +31,7 @@ const {
 } = await import('../src/features/chat/chat-workspace-binding.js');
 const { needsYoloConfirmation } = await import('../src/features/codex/code-permission-state.js');
 
-// ── 纯逻辑：确认门适用对象 ─────────────────────────────────────
+// ── Pure logic: gate applicability ─────────────────────────────────────
 test('chatYoloGateApplies：已生成会话看目录绑定，草稿看 draftWorkspacePath', () => {
   assert.equal(chatYoloGateApplies({ activeSessionId: 's1', sessionBinding: '/work/p', draftWorkspacePath: null }), true);
   assert.equal(chatYoloGateApplies({ activeSessionId: 's1', sessionBinding: null, draftWorkspacePath: '/work/p' }), false,
@@ -41,7 +46,7 @@ test('确认门判定复用 needsYoloConfirmation：未确认弹卡、已确认�
   assert.equal(needsYoloConfirmation({ yolo_confirmed: true }), false);
 });
 
-// ── 纯逻辑：绑定指示显示条件 ──────────────────────────────────
+// ── Pure logic: binding indicator visibility ──────────────────────────────────
 test('shouldShowWorkspaceBindingChip：仅活动会话且有绑定路径时显示', () => {
   assert.equal(shouldShowWorkspaceBindingChip({ activeSessionId: 's1', sessionBinding: '/work/p' }), true);
   assert.equal(shouldShowWorkspaceBindingChip({ activeSessionId: null, sessionBinding: '/work/p' }), false,
@@ -90,8 +95,9 @@ function loadFeature(name, contextOverrides, stateOverrides) {
     scheduledTaskDraft: null,
   }, stateOverrides || {});
   const calls = { invoke: [], notify: 0 };
-  // 自定义 invoke 应答器从覆盖面中取出单独接线：默认 invoke 负责记录调用，
-  // 覆盖的应答器只做返回编排，否则调用证据会被整体替换掉。
+  // The custom invoke responder is wired separately from the overrides: the
+  // default invoke records calls and the overridden responder only stages
+  // returns, otherwise the call evidence would be replaced wholesale.
   const overrides = Object.assign({}, contextOverrides || {});
   const invokeResponder = overrides.invoke || null;
   delete overrides.invoke;
@@ -119,8 +125,9 @@ function loadFeature(name, contextOverrides, stateOverrides) {
     stopThinking() {},
     rerenderFromMessages() {},
     syncModeState() { return Promise.resolve(); },
-    // 与 bridge.js 同构的草稿态显示解析：绑定草稿 → code lane（缺省 plan），
-    // 否则当前 lane 全局默认（缺省 yolo；design 已并入 work，#428）。
+    // Draft-mode display resolution isomorphic to bridge.js: bound draft →
+    // code lane (default plan), otherwise the current lane's global default
+    // (default yolo; design was merged into work, #428).
     currentDraftModeState() {
       const boundDraft = !!state.draftWorkspacePath;
       const lane = boundDraft || state.modeLane === 'code' ? 'code' : 'work';
@@ -164,14 +171,14 @@ function loadFeature(name, contextOverrides, stateOverrides) {
     api, state, calls,
     invokeNames() { return calls.invoke.map(call => call[0]); },
     invokeArgs(name) {
-      // invoke 入参对象产自 vm realm，JSON 归一化后再比较（跨域原型不等）。
+      // invoke argument objects come from the vm realm; compare after JSON normalization (prototypes differ across realms).
       return calls.invoke.filter(call => call[0] === name)
         .map(call => JSON.parse(JSON.stringify(call[1])));
     },
   };
 }
 
-// ── getSessionWorkspaceBinding：归一化与失败兜底 ──────────────────
+// ── getSessionWorkspaceBinding: normalization and failure fallback ──────────────────
 test('getSessionWorkspaceBinding：绑定路径透传，空串/非字符串按 null', async () => {
   const rt = loadFeature('sessions', {
     invoke(name) {
@@ -211,7 +218,7 @@ test('getSessionWorkspaceBinding：无 sessionId / 旧后端无此命令按 null
   );
 });
 
-// ── setDraftWorkspace：绑定/解绑即刷新草稿 mode 显示 ──────────────────
+// ── setDraftWorkspace: bind/unbind refreshes the draft mode display ──────────────────
 test('setDraftWorkspace：绑定后草稿 mode 显示切 code lane（无记录缺省 plan）', () => {
   const rt = loadFeature('sessions');
   rt.api.setDraftWorkspace('/work/project');
@@ -224,7 +231,7 @@ test('setDraftWorkspace：绑定后草稿 mode 显示切 code lane（无记录�
 test('setDraftWorkspace：解绑回本 lane 默认并作废显式 mode 暂存', () => {
   const rt = loadFeature('sessions');
   rt.api.setDraftWorkspace('/work/project');
-  rt.state.pendingDraftMode = 'yolo'; // 模拟绑定草稿上显式暂存过
+  rt.state.pendingDraftMode = 'yolo'; // simulate a staged explicit choice on a bound draft
   rt.api.setDraftWorkspace(null);
   assert.equal(rt.state.pendingDraftMode, null, '解绑不得把暂存带入未绑定草稿');
   assert.equal(rt.state.modeState.mode, 'yolo', '未绑定草稿回 work lane 默认（缺省 yolo）');
@@ -237,100 +244,16 @@ test('enterDraft：作废绑定草稿的显式 mode 暂存', () => {
   assert.equal(rt.state.pendingDraftMode, null);
 });
 
-// ── ensureSession：绑定草稿的 lane 默认应用 ──────────────────
+// ── ensureSession: lane default application for bound drafts ──────────────────
 test('ensureSession：绑定草稿不套用 work lane 默认（后端按 code lane 解析）', async () => {
   const rt = loadFeature('sessions');
-  rt.state.modeDefaults = { work: 'plan', design: null, code: null }; // work lane 默认 plan
+  rt.state.modeDefaults = { work: 'plan', design: null, code: null }; // work lane default is plan
   rt.api.setDraftWorkspace('/work/project');
   const id = await rt.api.ensureSession();
   assert.equal(id, 'chat-new');
-  assert.deepEqual(rt.invokeArgs('create_session'), [{
-    workspacePath: '/work/project',
-    workspaceRoots: ['/work/project'],
-    projectId: null,
-  }]);
+  assert.deepEqual(rt.invokeArgs('create_session'), [{ workspacePath: '/work/project' }]);
   assert.ok(!rt.invokeNames().includes('set_plan_mode_next'),
     '绑定会话不得把 work lane 默认经 set_plan_mode_next 套用');
-});
-
-test('ensureSession：项目通道草稿下发钥匙串与 projectId，物化后清空暂存', async () => {
-  const rt = loadFeature('sessions');
-  rt.api.setDraftWorkspace('/work/project', {
-    projectId: 'prj-1',
-    workspaceRoots: ['/work/project', '/work/shared'],
-  });
-  const id = await rt.api.ensureSession();
-  assert.equal(id, 'chat-new');
-  assert.deepEqual(rt.invokeArgs('create_session'), [{
-    workspacePath: '/work/project',
-    workspaceRoots: ['/work/project', '/work/shared'],
-    projectId: 'prj-1',
-  }], '项目通道:cwd 居首的钥匙串 + projectId 一并下发(后端写主根记忆)');
-  assert.equal(rt.state.draftWorkspacePath, null);
-  // vm 上下文数组跨 realm,deepStrict 按引用失败——按内容断言。
-  assert.equal((rt.state.draftWorkspaceRoots || []).length, 0);
-  assert.equal(rt.state.draftProjectId, null, '物化后暂存清空');
-});
-
-test('ensureSession：create_session 失败保留草稿暂存（path/roots/projectId 原样可重试）', async () => {
-  const rt = loadFeature('sessions', {
-    invoke(name) {
-      if (name === 'create_session') return Promise.reject(new Error('workspace gone'));
-      return Promise.resolve(null);
-    },
-  });
-  rt.api.setDraftWorkspace('/work/project', {
-    projectId: 'prj-1',
-    workspaceRoots: ['/work/project', '/work/shared'],
-  });
-  const id = await rt.api.ensureSession();
-  assert.equal(id, null, '物化失败返回 null，调用方放弃本条消息');
-  assert.equal(rt.state.activeSessionId, null, '失败不得切走 active');
-  assert.equal(rt.state.draftWorkspacePath, '/work/project', '草稿目录保留，用户修好目录后可原样重试');
-  assert.deepEqual(rt.state.draftWorkspaceRoots, ['/work/project', '/work/shared'], '钥匙串快照保留');
-  assert.equal(rt.state.draftProjectId, 'prj-1', '项目归属保留');
-  assert.ok(rt.state.chatItems.some(item => String(item.text).includes('workspace gone')),
-    '失败必须有系统报错卡');
-});
-
-test('ensureSession：多智能体开关落盘失败回滚——草稿暂存按物化前捕获值恢复', async () => {
-  const rt = loadFeature('sessions', {
-    invoke(name) {
-      if (name === 'create_session') return Promise.resolve({ id: 'chat-new' });
-      if (name === 'set_multi_agent_mode') return Promise.reject(new Error('toggle denied'));
-      if (name === 'list_sessions' || name === 'list_archived_sessions') return Promise.resolve([]);
-      return Promise.resolve(null);
-    },
-  });
-  rt.api.setDraftWorkspace('/work/project', {
-    projectId: 'prj-1',
-    workspaceRoots: ['/work/project', '/work/shared'],
-  });
-  rt.state.pendingDraftMultiAgent = true;
-  rt.state.pendingDraftMode = 'plan';
-  const id = await rt.api.ensureSession();
-  assert.equal(id, null, '开关落盘失败中止物化');
-  assert.deepEqual(rt.invokeArgs('delete_session'), [{ id: 'chat-new' }],
-    '中止必须删掉刚建的空会话');
-  assert.equal(rt.state.activeSessionId, null, '回滚后回到草稿态');
-  assert.equal(rt.state.pendingDraftMultiAgent, true, '开关意图保留待重试');
-  assert.equal(rt.state.draftWorkspacePath, '/work/project');
-  assert.deepEqual(rt.state.draftWorkspaceRoots, ['/work/project', '/work/shared'],
-    'enterDraft 清空后必须按捕获值恢复钥匙串');
-  assert.equal(rt.state.draftProjectId, 'prj-1', '项目归属按捕获值恢复');
-  assert.equal(rt.state.pendingDraftMode, 'plan', '显式 mode 暂存一并恢复');
-  assert.equal(rt.state.modeState.multiAgent, true, '回滚草稿显示保持多智能体开');
-});
-
-test('ensureSession：临时草稿不带钥匙串字段(单根现状)', async () => {
-  const rt = loadFeature('sessions');
-  const id = await rt.api.ensureSession();
-  assert.equal(id, 'chat-new');
-  assert.deepEqual(rt.invokeArgs('create_session'), [{
-    workspacePath: null,
-    workspaceRoots: null,
-    projectId: null,
-  }]);
 });
 
 test('ensureSession：未绑定草稿维持 work lane 默认应用（回归保护）', async () => {
@@ -358,7 +281,7 @@ test('ensureSession：绑定草稿暂存 plan → 物化时 set_plan_mode_next�
   assert.ok(!rtYolo.invokeNames().includes('set_plan_mode_next'));
 });
 
-// ── setDraftMode：绑定草稿写 code lane 并暂存 ──────────────────
+// ── setDraftMode: bound drafts write the code lane and stage the choice ──────────────────
 test('setDraftMode：绑定草稿显式切换写 code lane 全局默认并暂存选择', async () => {
   const rt = loadFeature('interaction');
   rt.state.draftWorkspacePath = '/work/project';
@@ -375,7 +298,7 @@ test('setDraftMode：未绑定草稿维持本 lane 语义且不暂存（回归�
   assert.deepEqual(rt.invokeArgs('set_mode_default'), [{ lane: 'work', mode: 'plan' }]);
   assert.equal(rt.state.pendingDraftMode, null, '未绑定草稿不引入暂存语义');
 
-  // 历史值 design 折叠进 work（#428 并入），code lane 保持独立。
+  // The legacy design value folds into work (#428 merge); the code lane stays separate.
   const rtDesign = loadFeature('interaction', null, { modeLane: 'design' });
   await rtDesign.api.setDraftMode('plan');
   assert.deepEqual(rtDesign.invokeArgs('set_mode_default'), [{ lane: 'work', mode: 'plan' }]);
@@ -385,7 +308,7 @@ test('setDraftMode：未绑定草稿维持本 lane 语义且不暂存（回归�
   assert.deepEqual(rtCode.invokeArgs('set_mode_default'), [{ lane: 'code', mode: 'plan' }]);
 });
 
-// ── code 权限偏好包装（YOLO 确认门事实源）──────────────────────
+// ── code permission prefs wrapper (source of truth for the YOLO gate)──────────────────────
 test('getCodePermissionPrefs：读取失败按 null（确认门按未确认处理，安全方向）', async () => {
   const rt = loadFeature('interaction', {
     invoke(name) {

@@ -7,5 +7,5 @@ license.workspace = true
 
 [dependencies]
 agent-backend-api = { path = "../agent-backend-api" }
-anyhow = "1.0"
+anyhow.workspace = true
 pinvou3-lib = { package = "pinvou3-tauri", path = "../../../pinvou3-app/src-tauri", default-features = false, features = ["benchmark-hooks", "local-embed"] }

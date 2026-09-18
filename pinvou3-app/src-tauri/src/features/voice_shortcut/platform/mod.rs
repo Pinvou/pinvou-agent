@@ -1,6 +1,6 @@
 #[cfg(target_os = "windows")]
 use super::{
-    VoiceShortcutDecision, VoiceShortcutEvent, VoiceShortcutKey, VoiceShortcutState,
+    AltSide, VoiceShortcutDecision, VoiceShortcutEvent, VoiceShortcutKey, VoiceShortcutState,
     emit_shortcut_event, handle_voice_shortcut_key, is_voice_shortcut_router_window,
     recording_label, resolve_trigger_target,
 };
@@ -83,6 +83,14 @@ pub(super) fn install(app: AppHandle) {
         });
     }
 
+    // SAFETY: a single dedicated pump thread installs the global
+    // WH_KEYBOARD_LL hook and pumps its messages. `keyboard_hook_proc` is a
+    // valid `extern "system"` fn, the null module handle with thread id 0 is
+    // the documented way to install a global low-level hook, and the
+    // returned HHOOK is null-checked before use and unhooked exactly once on
+    // this same thread. `zeroed::<MSG>()` is valid because MSG is a plain C
+    // struct for which the all-zero bit pattern is acceptable, and `&mut
+    // msg` is a live writable out-parameter for GetMessageW.
     std::thread::spawn(|| unsafe {
         let hook = SetWindowsHookExW(WH_KEYBOARD_LL, Some(keyboard_hook_proc), 0 as HINSTANCE, 0);
         if hook.is_null() {
@@ -223,6 +231,11 @@ unsafe extern "system" fn keyboard_hook_proc(
         return call_next_hook(code, w_param, l_param);
     }
 
+    // SAFETY: for WH_KEYBOARD_LL, Windows guarantees that l_param points to a
+    // KBDLLHOOKSTRUCT valid for the duration of this hook callback; only
+    // WM_KEYDOWN/WM_KEYUP/WM_SYSKEYDOWN/WM_SYSKEYUP reach this point, and all
+    // of those carry that l_param layout. The reference borrows the
+    // callback-owned struct without outliving the call.
     let info = unsafe { &*(l_param as *const KBDLLHOOKSTRUCT) };
     // Injected keys (SendInput synthetics, including the Alt down this module
     // replays for combos) never take part in gesture detection.
@@ -231,6 +244,10 @@ unsafe extern "system" fn keyboard_hook_proc(
     }
 
     let key = voice_shortcut_key(info.vkCode as VIRTUAL_KEY);
+    // SAFETY: GetForegroundWindow takes no pointer arguments and is
+    // thread-safe per MSDN, so it may be called from this low-level hook
+    // callback; the returned HWND is only compared and stored as an isize,
+    // never dereferenced.
     let foreground = unsafe { GetForegroundWindow() };
     let target = hook_target_label(foreground);
     let decision = {
@@ -250,19 +267,26 @@ unsafe extern "system" fn keyboard_hook_proc(
         if decision.inject_alt_down {
             // The combo down was swallowed: replay [Alt↓, combo↓] in order
             // with a single SendInput, so the system/WebView sees the modifier
-            // order of a real press and Alt+Tab/Alt+F4 keep working. SendInput
-            // reports how many entries were actually injected (not a
-            // transactional boolean), so the outcome is three-valued: a
-            // complete replay confirms alt_forwarded, and a partial replay
-            // (only the leading Alt↓ was injected) must confirm it too — the
-            // synthetic Alt down is already in the system and is paired by the
-            // real Alt up passing through; no synthetic cleanup key is sent
-            // because a cleanup SendInput could itself partially fail, while
-            // the physical Alt release is guaranteed to arrive. Only a
+            // order of a real press and Alt+Tab/Alt+F4 keep working. The Alt↓
+            // uses the VK of the side that started the gesture (left Alt →
+            // VK_LMENU, right Alt → VK_RMENU), so a right-Alt combo keeps the
+            // identity of the held modifier — on AltGr layouts the layout
+            // driver's synthesized left-Ctrl already passed the hook
+            // unswallowed, and the injected RMenu↓ then completes the same
+            // modifier set a real AltGr press produces. SendInput reports how
+            // many entries were actually injected (not a transactional
+            // boolean), so the outcome is three-valued: a complete replay
+            // confirms alt_forwarded, and a partial replay (only the leading
+            // Alt↓ was injected) must confirm it too — the synthetic Alt down
+            // is already in the system and is paired by the real Alt up
+            // passing through; no synthetic cleanup key is sent because a
+            // cleanup SendInput could itself partially fail, while the
+            // physical Alt release is guaranteed to arrive. Only a
             // zero-injection failure leaves alt_forwarded false: the combo is
             // lost, the real Alt up is wrapped up along the unforwarded path,
             // and no state is left behind.
-            if replay_combo_with_alt(info.vkCode as VIRTUAL_KEY).leaves_alt_forwarded() {
+            let alt_vk = alt_side_vk(state.alt_side);
+            if replay_combo_with_alt(alt_vk, info.vkCode as VIRTUAL_KEY).leaves_alt_forwarded() {
                 state.alt_forwarded = true;
             }
         }
@@ -309,6 +333,18 @@ fn focused_router_label(foreground: HWND) -> Option<String> {
         .map(|(_, label)| label.clone())
 }
 
+/// The VK injected for the gesture's Alt side: the replay repeats the physical
+/// key the user held (left Alt replays VK_LMENU, right Alt replays VK_RMENU)
+/// instead of rewriting every gesture to left Alt, so right-Alt combos keep
+/// their modifier identity (AltGr on European layouts; plain Alt elsewhere).
+#[cfg(target_os = "windows")]
+fn alt_side_vk(side: AltSide) -> VIRTUAL_KEY {
+    match side {
+        AltSide::Left => VK_LMENU,
+        AltSide::Right => VK_RMENU,
+    }
+}
+
 /// tap-hold compensation: the combo down was swallowed, so inject the two-entry
 /// [Alt↓, combo↓] sequence with a single SendInput, replayed in order, so the
 /// system and WebView see the same modifier order as a real press (Alt first,
@@ -321,8 +357,14 @@ fn focused_router_label(foreground: HWND) -> Option<String> {
 /// Returns which entries were injected (SendInput reports a count, not a
 /// transactional boolean — see [`ComboReplayOutcome`]).
 #[cfg(target_os = "windows")]
-fn replay_combo_with_alt(combo_vk: VIRTUAL_KEY) -> ComboReplayOutcome {
-    let inputs = combo_replay_inputs(combo_vk);
+fn replay_combo_with_alt(alt_vk: VIRTUAL_KEY, combo_vk: VIRTUAL_KEY) -> ComboReplayOutcome {
+    let inputs = combo_replay_inputs(alt_vk, combo_vk);
+    // SAFETY: `inputs` is a stack array of two fully initialized INPUT
+    // entries — INPUT_KEYBOARD with the ki union member populated by
+    // combo_replay_inputs — so `inputs.as_ptr()` points to inputs.len()
+    // contiguous valid entries, and the cbSize argument is exactly
+    // size_of::<INPUT>(), as SendInput requires. The array outlives the
+    // synchronous call.
     let sent = unsafe {
         SendInput(
             inputs.len() as u32,
@@ -377,13 +419,13 @@ impl ComboReplayOutcome {
 }
 
 #[cfg(target_os = "windows")]
-fn combo_replay_inputs(combo_vk: VIRTUAL_KEY) -> [INPUT; 2] {
+fn combo_replay_inputs(alt_vk: VIRTUAL_KEY, combo_vk: VIRTUAL_KEY) -> [INPUT; 2] {
     [
         INPUT {
             r#type: INPUT_KEYBOARD,
             Anonymous: INPUT_0 {
                 ki: KEYBDINPUT {
-                    wVk: VK_LMENU,
+                    wVk: alt_vk,
                     wScan: 0,
                     dwFlags: 0,
                     time: 0,
@@ -419,16 +461,24 @@ fn combo_replay_outcome(sent: u32, total: u32) -> ComboReplayOutcome {
 
 #[cfg(target_os = "windows")]
 fn call_next_hook(code: i32, w_param: WPARAM, l_param: LPARAM) -> LRESULT {
+    // SAFETY: CallNextHookEx's first parameter is documented as ignored (a
+    // null HHOOK is accepted); code/w_param/l_param are forwarded unmodified
+    // from the current hook notification, which is exactly the required
+    // contract for passing the event down the hook chain.
     unsafe { CallNextHookEx(std::ptr::null_mut(), code, w_param, l_param) }
 }
 
 #[cfg(target_os = "windows")]
 fn voice_shortcut_key(vk: VIRTUAL_KEY) -> VoiceShortcutKey {
     match vk {
-        VK_MENU | VK_LMENU => VoiceShortcutKey::Alt,
-        // Right Alt / AltGr does not trigger the voice shortcut; it stays with
-        // the input method and combos.
-        VK_RMENU => VoiceShortcutKey::Other,
+        VK_MENU | VK_LMENU => VoiceShortcutKey::Alt(AltSide::Left),
+        // Right Alt (VK_RMENU) triggers too: bare taps are the same gesture as
+        // left Alt. On European layouts right Alt is AltGr, and its character
+        // combos keep working — the layout driver's synthesized left-Ctrl
+        // passes the hook unswallowed, and the swallowed RMenu is replayed as
+        // part of the combo (see alt_side_vk), so the app still sees the
+        // Ctrl+Alt modifier set of a real AltGr press.
+        VK_RMENU => VoiceShortcutKey::Alt(AltSide::Right),
         VK_SPACE => VoiceShortcutKey::Space,
         VK_ESCAPE => VoiceShortcutKey::Escape,
         _ => VoiceShortcutKey::Other,
@@ -439,7 +489,14 @@ fn voice_shortcut_key(vk: VIRTUAL_KEY) -> VoiceShortcutKey {
 fn foreground_is_current_app(hwnd: HWND) -> bool {
     let current_pid = std::process::id();
     window_belongs_to_process(hwnd, current_pid)
+        // SAFETY: `hwnd` was null-checked by the caller (hook_target_label)
+        // and is a live window handle here; GetAncestor is thread-safe per
+        // MSDN, and the returned HWND is passed straight into
+        // window_belongs_to_process, which re-checks it for null before use.
         || window_belongs_to_process(unsafe { GetAncestor(hwnd, GA_ROOT) }, current_pid)
+        // SAFETY: same contract as the GA_ROOT call above: `hwnd` is a
+        // null-checked live window handle, GetAncestor is thread-safe, and
+        // the result is re-validated inside window_belongs_to_process.
         || window_belongs_to_process(unsafe { GetAncestor(hwnd, GA_ROOTOWNER) }, current_pid)
 }
 
@@ -449,6 +506,10 @@ fn window_belongs_to_process(hwnd: HWND, current_pid: u32) -> bool {
         return false;
     }
     let mut pid = 0u32;
+    // SAFETY: `hwnd` was null-checked above and is a live window handle;
+    // `&mut pid` points to a live writable DWORD local owned by this stack
+    // frame, which GetWindowThreadProcessId fills with the window's owning
+    // process id.
     unsafe {
         GetWindowThreadProcessId(hwnd, &mut pid);
     }
@@ -464,7 +525,7 @@ fn log_shortcut_decision(
 ) {
     if matches!(
         key,
-        VoiceShortcutKey::Alt | VoiceShortcutKey::Space | VoiceShortcutKey::Escape
+        VoiceShortcutKey::Alt(_) | VoiceShortcutKey::Space | VoiceShortcutKey::Escape
     ) {
         log::debug!(
             "voice shortcut key={:?} down={} target={:?} event={:?} suppress={} inject_alt_down={}",
@@ -523,10 +584,11 @@ mod tests {
     }
 
     /// The replay array is exactly [Alt↓, combo↓] in that order (modifier
-    /// first, so Alt+Tab/Alt+F4 keep working), both as key-down events.
+    /// first, so Alt+Tab/Alt+F4 keep working), both as key-down events, with
+    /// the Alt VK taken from the gesture side.
     #[test]
     fn combo_replay_inputs_are_ordered_alt_down_then_combo_down() {
-        let inputs = combo_replay_inputs(VK_SPACE);
+        let inputs = combo_replay_inputs(VK_LMENU, VK_SPACE);
         assert_eq!(inputs.len(), 2);
         for input in &inputs {
             assert_eq!(input.r#type, INPUT_KEYBOARD);
@@ -539,8 +601,41 @@ mod tests {
         assert_eq!(alt_vk, VK_LMENU);
         assert_eq!(combo_vk, VK_SPACE);
 
-        let inputs = combo_replay_inputs(VK_ESCAPE);
+        let inputs = combo_replay_inputs(VK_LMENU, VK_ESCAPE);
         let combo_vk = unsafe { inputs[1].Anonymous.ki.wVk };
         assert_eq!(combo_vk, VK_ESCAPE);
+    }
+
+    /// Right-Alt gestures replay the right Alt (VK_RMENU), not a rewritten
+    /// left Alt: together with the layout driver's synthesized left-Ctrl that
+    /// passed the hook, the app keeps seeing a real AltGr modifier set.
+    #[test]
+    fn combo_replay_uses_the_gesture_side_alt_vk() {
+        assert_eq!(alt_side_vk(AltSide::Left), VK_LMENU);
+        assert_eq!(alt_side_vk(AltSide::Right), VK_RMENU);
+
+        let inputs = combo_replay_inputs(VK_RMENU, VK_SPACE);
+        let alt_vk = unsafe { inputs[0].Anonymous.ki.wVk };
+        assert_eq!(alt_vk, VK_RMENU);
+    }
+
+    /// Both physical Alt keys start the gesture; only the side differs.
+    #[test]
+    fn voice_shortcut_key_maps_both_alt_sides() {
+        assert_eq!(
+            voice_shortcut_key(VK_LMENU),
+            VoiceShortcutKey::Alt(AltSide::Left)
+        );
+        assert_eq!(
+            voice_shortcut_key(VK_MENU),
+            VoiceShortcutKey::Alt(AltSide::Left)
+        );
+        assert_eq!(
+            voice_shortcut_key(VK_RMENU),
+            VoiceShortcutKey::Alt(AltSide::Right)
+        );
+        assert_eq!(voice_shortcut_key(VK_SPACE), VoiceShortcutKey::Space);
+        assert_eq!(voice_shortcut_key(VK_ESCAPE), VoiceShortcutKey::Escape);
+        assert_eq!(voice_shortcut_key(0x41), VoiceShortcutKey::Other);
     }
 }

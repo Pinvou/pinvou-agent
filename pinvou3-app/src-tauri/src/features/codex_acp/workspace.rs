@@ -1173,7 +1173,9 @@ fn filesystem_changes(
 }
 
 fn git_root(root: &Path) -> Option<PathBuf> {
-    let output = crate::platform::process::HiddenCommand::new("git")
+    let mut command = crate::platform::process::HiddenCommand::new("git");
+    crate::platform::process::strip_git_override_env(&mut command);
+    let output = command
         .current_dir(root)
         .args(["rev-parse", "--show-toplevel"])
         .output()
@@ -1191,7 +1193,9 @@ fn git_branch(root: &Path) -> Option<String> {
 }
 
 fn git_status_entries(root: &Path) -> Result<Vec<WorkspaceChange>> {
-    let output = crate::platform::process::HiddenCommand::new("git")
+    let mut command = crate::platform::process::HiddenCommand::new("git");
+    crate::platform::process::strip_git_override_env(&mut command);
+    let output = command
         .current_dir(root)
         .args([
             "status",
@@ -1253,7 +1257,9 @@ fn git_status_label(x: char, y: char) -> &'static str {
 }
 
 fn git_output(root: &Path, arguments: &[&str]) -> Result<String> {
-    let output = crate::platform::process::HiddenCommand::new("git")
+    let mut command = crate::platform::process::HiddenCommand::new("git");
+    crate::platform::process::strip_git_override_env(&mut command);
+    let output = command
         .current_dir(root)
         .args(arguments)
         .output()
@@ -1547,7 +1553,9 @@ mod tests {
     fn init_git_repo(label: &str) -> Option<TestDir> {
         let root = TestDir::new(label);
         let run = |args: &[&str]| {
-            crate::platform::process::HiddenCommand::new("git")
+            let mut command = crate::platform::process::HiddenCommand::new("git");
+            crate::platform::process::strip_git_override_env(&mut command);
+            command
                 .current_dir(root.path())
                 .args(args)
                 .output()
@@ -1812,7 +1820,9 @@ mod tests {
         // 本地子模块仓库（file 协议克隆在新版 git 默认拒绝，需显式允许）。
         let sub = TestDir::new("stash-noop-push-sub");
         let sub_run = |args: &[&str]| {
-            crate::platform::process::HiddenCommand::new("git")
+            let mut command = crate::platform::process::HiddenCommand::new("git");
+            crate::platform::process::strip_git_override_env(&mut command);
+            command
                 .current_dir(sub.path())
                 .args(args)
                 .output()
@@ -1950,5 +1960,85 @@ mod tests {
             classify_origin(root.path(), Some(&baseline), "new.txt").unwrap(),
             "session"
         );
+    }
+
+    /// GIT_* environment isolation: GIT_INDEX_FILE/GIT_OBJECT_DIRECTORY
+    /// injected by the host shell (or by tests concurrently holding ENV_LOCK
+    /// to write the environment) must not redirect the workspace's branch and
+    /// stash operations to unrelated locations. Regression background: under
+    /// full parallel runs this pollution really occurred, making the git
+    /// subprocess cases fail randomly across runs (serial runs were all
+    /// green).
+    #[test]
+    fn workspace_git_operations_ignore_host_git_environment() {
+        let _guard = crate::platform::paths::tests::ENV_LOCK
+            .lock()
+            .unwrap_or_else(|p| p.into_inner());
+        let bogus = TestDir::new("bogus-git-env");
+        // Capture the host's values first: restoration must put back exactly
+        // this state, not an unconditionally-absent one (the launching shell
+        // may legitimately carry these variables).
+        let prior_index = std::env::var_os("GIT_INDEX_FILE");
+        let prior_objects = std::env::var_os("GIT_OBJECT_DIRECTORY");
+        // Panic-safe restore: Drop puts back the captured values on every
+        // exit path — normal end, the early return inside catch_unwind, and
+        // caught assertion panics alike.
+        let env_guard = crate::platform::paths::tests::EnvVarGuard::capture(&[
+            "GIT_INDEX_FILE",
+            "GIT_OBJECT_DIRECTORY",
+        ]);
+        // SAFETY: ENV_LOCK serializes process environment writes (the
+        // crate-wide convention); the workspace git subprocess itself strips
+        // GIT_* override variables and is unaffected by this write.
+        unsafe {
+            std::env::set_var("GIT_INDEX_FILE", bogus.path().join("index"));
+            std::env::set_var("GIT_OBJECT_DIRECTORY", bogus.path().join("objects"));
+        }
+        let result = std::panic::catch_unwind(|| {
+            let Some(root) = init_git_repo("env-isolation") else {
+                return;
+            };
+            fs::write(root.path().join("file.txt"), "v1-dirty").unwrap();
+            // Commit objects must land in this repository's own object store
+            // so branch switching and stash restoration work end to end.
+            checkout_workspace_branch(root.path(), "feature", BranchSwitchMode::Stash, None)
+                .unwrap();
+            assert_eq!(git_branch(root.path()).as_deref(), Some("feature"));
+            assert_eq!(
+                fs::read_to_string(root.path().join("file.txt")).unwrap(),
+                "v1-dirty"
+            );
+            let stash_list = git_output(root.path(), &["stash", "list"]).unwrap();
+            assert!(stash_list.trim().is_empty());
+            // The pollution targets stay clean: neither the index nor the
+            // objects were redirected.
+            assert!(
+                !bogus.path().join("index").exists(),
+                "GIT_INDEX_FILE must be stripped"
+            );
+            assert!(
+                bogus
+                    .path()
+                    .read_dir()
+                    .map(|entries| entries.count() == 0)
+                    .unwrap_or(true),
+                "GIT_OBJECT_DIRECTORY must be stripped"
+            );
+        });
+        // Restore before unwrapping the result, so the original environment
+        // is back even when the unwrapped panic propagates; then assert the
+        // restoration is complete.
+        drop(env_guard);
+        assert_eq!(
+            std::env::var_os("GIT_INDEX_FILE"),
+            prior_index,
+            "GIT_INDEX_FILE must be restored to its pre-test state"
+        );
+        assert_eq!(
+            std::env::var_os("GIT_OBJECT_DIRECTORY"),
+            prior_objects,
+            "GIT_OBJECT_DIRECTORY must be restored to its pre-test state"
+        );
+        result.unwrap();
     }
 }

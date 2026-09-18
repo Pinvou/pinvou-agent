@@ -5,8 +5,9 @@
 // hook) to keep sidebar interaction idioms uniform.
 import { useState } from 'react';
 import { createPortal } from 'react-dom';
-import { Check, ChevronDown, Edit2, FolderPlus, FolderOpen, MoreHorizontal, Plus, Trash2, X } from '../../components/icons.jsx';
+import { Check, ChevronDown, Edit2, FolderPlus, MoreHorizontal, Trash2, X } from '../../components/icons.jsx';
 import { usePortalMenu } from '../../hooks/usePortalMenu.js';
+import { capUnavailableRootsForDisplay, PROJECT_SESSION_DRAG_TYPE } from './projectGrouping.js';
 import { isImeComposing } from '../../shared/ime-guard.mjs';
 import { groupHeaderHasMenu, resolveGroupHeaderEdit } from './projectGroupHeaderState.js';
 
@@ -23,35 +24,53 @@ const ProjectGroupHeader = ({
   onConvert,
   onRename,
   onDelete,
-  // Project channel (§9.9): the project group header's dedicated "new
-  // session" entry — cwd = the project's remembered primary root, keychain =
-  // all of the project's roots at that moment; no picker detour.
-  onNewSession,
-  // Manage-folders panel (§4) entry.
-  onManage,
-  // The pointer drag's landing zone is the group container (main.jsx's
-  // wrapper carries data-drop-key; both the group header and session rows
-  // count as hits); this component only renders the highlight ring (driven by
-  // the parent's dropActive).
+  onDropSession,
   onRebind,
-  // One badge entry per unavailable root (per-root rebinding): a project with
-  // only some roots unavailable still has a repair path, and rebinding one
-  // root does not remove the entries for the other unavailable roots.
+  // One badge entry per unavailable root (per-root rebind): projects with
+  // only some roots unavailable also get a repair path, and rebinding one
+  // root does not remove the entries for the remaining unavailable roots.
   unavailableRoots,
+  // Highlight ownership lives in the sidebar container (one drop target lit at
+  // a time) so the source row's dragend can clear it unconditionally even when
+  // a webview skips dragleave/drop.
   dropActive,
+  onDropActive,
   testId,
   headerExtra,
 }) => {
   const [editing, setEditing] = useState(null);
   const [confirming, setConfirming] = useState(false);
-  // Menu gating and edit-commit decisions live in
-  // ./projectGroupHeaderState.js (pure functions, unit tested).
+  // With several unavailable roots, collapse to "first badge + N": the 28px
+  // header row cannot fit multiple shrink-0 badges (review #463 m3); the
+  // expanded state lays them out flat and allows wrapping.
+  const [showAllUnavailableRoots, setShowAllUnavailableRoots] = useState(false);
+  // Menu gating and edit-submit decisions live in
+  // ./projectGroupHeaderState.js (pure functions, covered by unit tests).
   const hasMenu = groupHeaderHasMenu(kind, { onConvert, onRename, onDelete });
   const { menuOpen, menuStyle, closeMenu, toggleMenu } = usePortalMenu({
-    // Project menus render 3 items (rename/manage/delete): 3 × h-9 (36px) +
-    // 8px vertical padding ≈ 116; folder menus render 1 (convert) ≈ 44 → 48.
-    height: kind === 'project' ? 116 : 48,
+    height: kind === 'project' ? 96 : 48,
   });
+
+  // HTML5 drop-target handlers for the sidebar session drag; kept out of the
+  // JSX so the row render stays flat. dragover highlights, drop delegates the
+  // session id up, dragend/dragleave clear the highlight (dragend fires on the
+  // source row and can be skipped by the webview — the ring here also clears
+  // unconditionally on drop).
+  const dropHandlers = onDropSession ? {
+    onDragOver: (e) => {
+      if (!e.dataTransfer.types.includes(PROJECT_SESSION_DRAG_TYPE)) return;
+      e.preventDefault();
+      e.dataTransfer.dropEffect = 'move';
+      onDropActive(true);
+    },
+    onDragLeave: () => onDropActive(false),
+    onDrop: (e) => {
+      e.preventDefault();
+      onDropActive(false);
+      const sessionId = e.dataTransfer.getData(PROJECT_SESSION_DRAG_TYPE);
+      if (sessionId) onDropSession(sessionId);
+    },
+  } : {};
 
   const startConvert = () => setEditing({ mode: 'convert', value: label });
   const startRename = () => setEditing({ mode: 'rename', value: label });
@@ -83,12 +102,6 @@ const ProjectGroupHeader = ({
         <button type="button" className={menuItemCls} onClick={() => { closeMenu(); startRename(); }}>
           <Edit2 size={15} />
           <span>{t.uiProjects.renameProject}</span>
-        </button>
-      )}
-      {kind === 'project' && onManage && (
-        <button type="button" className={menuItemCls} onClick={() => { closeMenu(); onManage(); }}>
-          <FolderOpen size={15} />
-          <span>{t.uiProjects.manageFolders}</span>
         </button>
       )}
       {kind === 'project' && onDelete && (
@@ -123,7 +136,16 @@ const ProjectGroupHeader = ({
               setEditing(null);
             }
           }}
-          onBlur={commitEdit}
+          onBlur={() => {
+            // convert 的预填值即「默认项目名」,blur 提交会把「点击别处取消」
+            // 变成无确认静默建项目(评审 #471 finding 46);rename 保持
+            // RecentItem 的 blur 提交惯例。
+            if (editing.mode === 'convert') {
+              setEditing(null);
+            } else {
+              commitEdit();
+            }
+          }}
           placeholder={t.uiProjects.projectNamePlaceholder}
           className="w-full h-6 px-3 rounded-full text-[12px] outline-none bg-white text-[#1F1F1F] ring-1 ring-[#0B57D0] dark:bg-[#131314] dark:text-[#E3E3E3] dark:ring-[#A8C7FA]"
         />
@@ -162,15 +184,20 @@ const ProjectGroupHeader = ({
 
   // Row container is NOT interactive (same idiom as RecentItem): the toggle
   // button and the "more" button are siblings, so no control nests inside
-  // another ARIA button. The drop ring is driven by the parent's hover state
-  // during a pointer drag; role="presentation" declares the div non-interactive
-  // to the a11y tree.
+  // another ARIA button. Project headers double as HTML5 drop targets for the
+  // sidebar session drag; role="presentation" declares the div
+  // non-interactive to the a11y tree while it carries the drag handlers.
+  const unavailableRootList = kind === 'project' ? unavailableRoots || [] : [];
+  const { visibleRoots, hiddenCount } = capUnavailableRootsForDisplay(unavailableRootList, showAllUnavailableRoots);
+  const wrapUnavailable = visibleRoots.length > 1;
   return (
     <div
       role="presentation"
-      className={`group/header w-full h-7 flex items-center rounded-full text-[12px] transition-colors ${dropActive
+      {...dropHandlers}
+      className={`group/header ${wrapUnavailable ? 'w-full min-h-7 h-auto flex-wrap' : 'w-full h-7'} flex items-center rounded-full text-[12px] transition-colors ${dropActive
         ? 'ring-1 ring-[#0B57D0] bg-[#E8F0FE] dark:ring-[#A8C7FA] dark:bg-[#1F2A3D]'
         : theme === 'dark' ? 'text-[#9AA0A6] hover:bg-[#282A2C]' : 'text-[#8A8F94] hover:bg-[#E1E5EA]'}`}
+      data-drop-target={onDropSession ? 'project' : undefined}
     >
       <button
         type="button"
@@ -183,17 +210,20 @@ const ProjectGroupHeader = ({
         {headerExtra}
         <ChevronDown size={14} className={`shrink-0 transition-transform ${isOpen ? '' : '-rotate-90'}`} />
       </button>
-      {/* Per-root badges for unavailable roots + one-click rebind. The project
-          is never auto-deleted — ownership and history remain, and directory
-          re-binding is the only repair path. A badge is a real sibling <button>
-          of the toggle button (no longer nested inside a <button>), one per
-          root; rebinding one keeps the other entries. */}
-      {(kind === 'project' ? unavailableRoots || [] : []).map((rootPath) => (
+      {/* Per-root badges for unavailable roots with one-click rebind. The
+          project is never auto-deleted — ownership and history remain, and
+          rebinding the folder is the only repair path. Each badge is a real
+          sibling <button> of the toggle button (no longer nested inside a
+          <button>), one per root; rebinding one keeps the other entries.
+          Multiple roots collapse into a +N expander (m3); the expanded
+          container wraps instead of overflowing. */}
+      {visibleRoots.map((rootPath) => (
         <button
           key={rootPath}
           type="button"
           data-testid="project-folder-unavailable"
           title={rootPath}
+          aria-label={`${t.uiProjects.folderUnavailable} · ${t.uiProjects.rebindFolder} · ${rootPath}`}
           disabled={busy}
           onClick={(e) => { e.stopPropagation(); onRebind && onRebind(rootPath); }}
           className="mr-2 shrink-0 max-w-[9rem] truncate rounded-full bg-[#FCE8E6] dark:bg-[#3C2A29] px-2 py-0.5 text-[11px] text-[#C5221F] dark:text-[#F28B82] hover:opacity-80 disabled:opacity-50"
@@ -201,24 +231,29 @@ const ProjectGroupHeader = ({
           {t.uiProjects.folderUnavailable} · {t.uiProjects.rebindFolder}
         </button>
       ))}
-      {kind === 'project' && onNewSession && (
-        <div className="hidden group-hover/header:flex max-sm:flex items-center shrink-0">
-          <button
-            type="button"
-            data-testid="project-new-session"
-            title={t.uiProjects.newSessionHere}
-            disabled={busy}
-            onClick={(e) => { e.stopPropagation(); onNewSession(); }}
-            className="w-5 h-5 rounded-full flex items-center justify-center text-[#5F6368] hover:bg-[#D3E7DB] dark:text-[#A8C7FA] dark:hover:bg-[#1F2A3D] disabled:opacity-50"
-          >
-            <Plus size={12} />
-          </button>
-        </div>
+      {/* Multi-root collapse toggle (m3/Nit 13): collapsed shows +N and can
+          expand; expanded wraps the container, and the same button collapses
+          again. Both states carry an aria-label, and each badge's accessible
+          name is distinguished by its path. */}
+      {unavailableRootList.length > 1 && (
+        <button
+          type="button"
+          data-testid="project-folder-unavailable-more"
+          aria-label={showAllUnavailableRoots ? t.uiProjects.rebindRootsCollapse : t.uiProjects.rebindRootsExpand}
+          title={showAllUnavailableRoots ? t.uiProjects.rebindRootsCollapse : unavailableRootList.slice(1).join('\n')}
+          disabled={busy}
+          onClick={(e) => { e.stopPropagation(); setShowAllUnavailableRoots(v => !v); }}
+          className="mr-2 shrink-0 flex items-center gap-0.5 rounded-full bg-[#FCE8E6] dark:bg-[#3C2A29] px-2 py-0.5 text-[11px] font-medium text-[#C5221F] dark:text-[#F28B82] hover:opacity-80 disabled:opacity-50"
+        >
+          {!showAllUnavailableRoots && <span>+{hiddenCount}</span>}
+          <ChevronDown size={11} className={`shrink-0 transition-transform ${showAllUnavailableRoots ? '' : '-rotate-90'}`} />
+        </button>
       )}
       {hasMenu && (
         // max-sm keeps the actions reachable without hover (touch, narrow
-        // windows) — same contract as RecentItem's action cluster.
-        <div className="mr-3 hidden group-hover/header:flex max-sm:flex items-center shrink-0">
+        // windows), group-focus-within reveals them for keyboard users —
+        // same contract as RecentItem's action cluster.
+        <div className="mr-3 hidden group-hover/header:flex group-focus-within/header:flex max-sm:flex items-center shrink-0">
           <button
             type="button"
             title={t.riMore}

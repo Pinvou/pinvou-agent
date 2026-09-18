@@ -1,0 +1,101 @@
+name: PR Title Check
+
+# Dedicated lightweight gate for the PR title. The squash-merge subject
+# GitHub generates is "<PR title> (#N)", so the PR title becomes the
+# main-branch commit subject verbatim, and merge-queue merges never run the
+# commit-message job of pr-check.yml. This workflow validates the title at
+# PR time — the last point where a violation is still fixable (e.g. #482
+# landed a 53-character subject that its landing push then flagged on main).
+# The push leg of pr-check.yml stays the backstop for commits that bypass a
+# PR; the merge_group payload does not expose the PR title, so queue-time
+# validation from the payload is not implementable (resolving the queued PR
+# from the merge-group head commit via extra API calls would add no real
+# signal: every title edit already fires an `edited` run that re-reads the
+# live title).
+#
+# Why a dedicated workflow instead of a job inside pr-check.yml: routing
+# `edited` through pr-check.yml makes a body-only edit create skipped check
+# runs named after the required contexts (commit-message, required-gate,
+# ...), and the checks API/UI surfaces the latest check run per name, so
+# those skipped runs replaced the green gate results (review finding on
+# #501, run 34818389619). This workflow's job name `pr-title` is unique, so
+# its runs can never shadow a required context.
+#
+# Routing: every subscribed event revalidates the title, including a
+# body-only edit. Skipping the job on body-only edits would still create a
+# check run named `pr-title` with conclusion SKIPPED, and the checks API
+# surfaces the latest run per name, so it would replace the previous red or
+# green result (review finding on #501) — and a skipped required check
+# counts as success, which would let a body edit clear a red gate if this
+# context were added to branch protection. Revalidating is a single cheap
+# job, and the validate step fetches the live title from the API rather
+# than trusting the event payload, so the latest `pr-title` result always
+# reflects the current title.
+#
+# Note: this check is advisory — it is not part of required-gate or branch
+# protection, so a violating title shows red here without blocking the
+# merge. Add the `pr-title` context to branch protection to make it
+# blocking; that stays sound because every run is a real validation and a
+# skipped run can never occur.
+#
+# Stale-event safety: GitHub does not guarantee the start order of runs in
+# one concurrency group, so an older `edited` event can start after (and
+# cancel-and-replace) a newer one, carrying a superseded event-payload
+# title (review finding on #501). No run therefore validates its event
+# payload; each fetches the live title immediately before validating. Every
+# title edit fires an `edited` event whose run re-reads the title, so the
+# latest result converges to the live title even when runs execute out of
+# order.
+
+on:
+  pull_request:
+    types: [opened, synchronize, reopened, edited]
+
+permissions:
+  contents: read
+  pull-requests: read
+
+# Every run publishes a verdict on the title it fetched at execution time,
+# so whichever run finishes last holds the freshest result; the single
+# PR-keyed group with cancel-and-replace just keeps repeated edits from
+# piling up runs.
+concurrency:
+  group: pr-title-${{ github.event.pull_request.number }}
+  cancel-in-progress: true
+
+jobs:
+  pr-title:
+    name: pr-title
+    runs-on: ubuntu-22.04
+    timeout-minutes: 5
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v7
+
+      # The current title is fetched from the API instead of reading the
+      # event-payload title: runs in a concurrency group are not guaranteed
+      # to start in event order, so the event payload can be superseded by
+      # the time the run executes. The title goes through a temp file
+      # instead of a command-line argument so it cannot be interpreted as
+      # an option or inject code.
+      - name: Validate PR title
+        env:
+          GH_TOKEN: ${{ github.token }}
+          PR_REPO: ${{ github.repository }}
+          PR_NUMBER: ${{ github.event.pull_request.number }}
+        run: |
+          # Retry transient API failures so a network hiccup cannot turn
+          # into a false red gate.
+          fetched=""
+          for _ in 1 2 3; do
+            if gh api "repos/$PR_REPO/pulls/$PR_NUMBER" --jq .title > "$RUNNER_TEMP/pr-title" 2>"$RUNNER_TEMP/pr-title.err"; then
+              fetched=1
+              break
+            fi
+            sleep 2
+          done
+          if [ -z "$fetched" ]; then
+            cat "$RUNNER_TEMP/pr-title.err" >&2
+            exit 1
+          fi
+          python3 scripts/validate-commit-msg.py "$RUNNER_TEMP/pr-title"

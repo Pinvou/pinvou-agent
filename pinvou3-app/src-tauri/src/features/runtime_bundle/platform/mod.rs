@@ -153,7 +153,15 @@ const TMEET_SKILL_DIRS: [&str; 1] = ["tmeet-skill"];
 ///       connected users to refresh at startup (otherwise the refresh
 ///       waits for the post-first-frame refresh_connector_auth_gates
 ///       backfill).
-pub const BUNDLE_VERSION: &str = concat!("0.31-", env!("BUNDLE_INSTRUCTIONS_HASH"));
+/// 0.32: connector skill trees synced to latest upstream (wecom-cli
+///       1.2.1 skills, lark-cli 1.0.95, dws 1.0.61, tmeet 1.0.18; all
+///       registered in the trees' NOTICE files). wecom-cli min
+///       acceptable version raised to 1.2.1; tmeet npm pin raised to
+///       1.0.18. Skill trees are excluded from the content hash, so
+///       the semantic bump is required for connected users to refresh
+///       at startup (otherwise the refresh waits for the post-first-frame
+///       refresh_connector_auth_gates backfill).
+pub const BUNDLE_VERSION: &str = concat!("0.32-", env!("BUNDLE_INSTRUCTIONS_HASH"));
 
 /// pinvou3 内置的 instructions 共享骨架（Qwen3.6 适配 prompt），编译时内嵌。
 /// skeleton = identity / baseline / user memory (placeholder) / tool-and-fact discipline /
@@ -215,12 +223,11 @@ fn work_layer_sections() -> (&'static str, &'static str, &'static str) {
     (env_section, browser_section, artifact_rule)
 }
 
-/// Environment section for plain sessions bound to a real working
-/// directory: just the `## 工作环境` section (with the
-/// `{{PINVOU3_WORKSPACE_HINT}}` workspace placeholder). Difference from the
-/// work layer's default environment section: the work target is a real
-/// user-chosen directory (changes are visible in real time), with no
-/// artifact-panel or `tmp/` semantics.
+/// Environment section for plain sessions bound to a real working directory: a
+/// single `## 工作环境` section (with the `{{PINVOU3_WORKSPACE_HINT}}` workspace
+/// placeholder). Difference from the work layer's default environment section:
+/// the working target is the user-selected real directory (changes are visible
+/// live), with no artifact panel and no `tmp/` semantics.
 pub const INSTRUCTIONS_WORK_BOUND_MD: &str =
     include_str!("../../../../resources/common/bundle/instructions-work-bound.md");
 
@@ -248,10 +255,9 @@ pub fn instructions_md() -> &'static str {
 
 /// Full instructions for plain sessions bound to a real working directory
 /// (shared skeleton + bound environment section + the work layer's Browser
-/// capabilities section and deliverable clause): only the environment
-/// section is swapped for the bound variant; browser and deliverable-card
-/// capabilities match plain sessions. `instructions_md()`'s byte-exact
-/// semantics are unaffected.
+/// capabilities section and deliverables section): only the environment section
+/// swaps in the bound variant; browser and deliverable-card capabilities match
+/// plain sessions. `instructions_md()` keeps its byte-for-byte semantics.
 #[allow(clippy::expect_used)]
 pub fn instructions_work_bound_md(workspace_hint: &str) -> String {
     let (_env_section, browser_section, artifact_rule) = work_layer_sections();
@@ -323,9 +329,14 @@ static BUILTIN_SKILLS_DIR: Dir<'_> =
 pub const BASE_PROMPT_MD: &str = include_str!("../../../../resources/common/bundle/base.md");
 
 /// pinvou3 版简体中文 locale 前导段（替换底座 `LOCALE_PREAMBLE_ZH_HANS`）。
-/// 瘦身依据:底座原文的动机是防 thinking 漂英文(上游 #1118)——pinvou3 生产
-/// `reasoning_effort=off` 无 thinking,该 failure mode 不存在;回复语言由
-/// 用户消息驱动,这里只补"判断不了时的默认语言"。closer 同理。
+/// Slimming rationale: the upstream text guards against thinking drifting to
+/// English (#1118) by mandating "think (reasoning_content) in Chinese" —
+/// dropped per product decision: mandating a thinking language hurts
+/// reasoning quality, and the thinking stream's language brings no
+/// user-perceivable benefit (production cloud routes default to
+/// `reasoning_effort=high`, thinking on — not "off" as an earlier comment
+/// claimed). Reply language follows the user's messages; this constant only
+/// adds the fallback for when the language is ambiguous. Same for the closer.
 pub const LOCALE_PREAMBLE_ZH_HANS: &str = "## 语言要求\n\n\
 pinvou3 界面语言为简体中文。跟随用户消息的语言回复;无法判断时用简体中文。\
 代码、路径、工具名、URL 保持原样。";
@@ -360,6 +371,8 @@ pub const MODE_EXECUTE_MD: &str = "\
 
 Tools run without per-call approval — the user has already authorized
 execution. Produce files and run commands now, then verify and report.
+If a gated write call is rejected, do not retry it: present the change
+in your reply and wait for the user to decide.
 Follow each message's `<system-reminder>`.";
 
 /// pinvou3 版静态层 composer：接管底座全部编译期静态文案
@@ -392,10 +405,31 @@ pub const AUTHORITY_RECAP: &str = "";
 /// 上游 v0.8.49 起 `set_*_override` 返回 `Result<(), String>`(首次 Ok,重复 Err)。
 pub fn install_prompt_overrides() {
     let _ = deepseek_tui::prompts::set_base_prompt_override(BASE_PROMPT_MD.to_string());
-    // 静态层全量接管(fork patch: set_static_prompt_composer_override)。
-    // 设置后底座的 Personality/Mode/Approval/ContextMgmt/COMPACT_TEMPLATE/
-    // taxonomy 常量全部不进 prompt,由 compose_static_layers 输出替代;
-    // base override 仍保留——composer 的 ctx.default_layers 引用它。
+    // Swap in the slim locale preamble/closer (see the `LOCALE_PREAMBLE_*`
+    // constant docs): the upstream long-form teaches "think in Chinese too",
+    // which is dropped per product decision (mandating a thinking language
+    // hurts reasoning quality, and the thinking stream's language brings no
+    // user-perceivable benefit; production cloud routes default to
+    // `reasoning_effort=high`, thinking on — not "off" as an earlier comment
+    // claimed), and the long-form still carries base branding while costing
+    // context every turn. Wire one pair each for zh-Hans / ja; the base
+    // leaves en empty, and prefs fills it via `extra_language_directive`.
+    let _ = deepseek_tui::prompts::set_locale_preamble_zh_hans_override(
+        LOCALE_PREAMBLE_ZH_HANS.to_string(),
+    );
+    let _ = deepseek_tui::prompts::set_locale_closer_zh_hans_override(
+        LOCALE_CLOSER_ZH_HANS.to_string(),
+    );
+    let _ = deepseek_tui::prompts::set_locale_preamble_ja_override(LOCALE_PREAMBLE_JA.to_string());
+    let _ = deepseek_tui::prompts::set_locale_closer_ja_override(LOCALE_CLOSER_JA.to_string());
+    // Full takeover of the static layer (fork patch:
+    // set_static_prompt_composer_override). Once set, the base's
+    // Personality/Mode/Approval/ContextMgmt/COMPACT_TEMPLATE/taxonomy
+    // constants never reach the prompt; compose_static_layers emits the
+    // replacement instead. The base override's remaining effect is only to
+    // occupy the base slot and suppress the base's bundled-headless compact
+    // constitution branch; compose_static_layers ignores ctx, and the base.md
+    // body (a pure comment shell) never enters the prompt.
     let _ = deepseek_tui::prompts::set_static_prompt_composer_override(Box::new(|ctx| {
         compose_static_layers(ctx)
     }));
@@ -898,19 +932,19 @@ mod tests {
         // The workspace placeholder renders correctly.
         assert!(rendered.contains("你正在用户选择的工作目录 `/repo/demo` 中工作"));
         assert!(!rendered.contains("{{PINVOU3_WORKSPACE_HINT}}"));
-        // No artifact-panel/tmp discipline (the environment section's
-        // negative mention of "no artifact panel and tmp/ semantics" is a
-        // deliberately kept behavioral steer).
+        // Artifact-panel/tmp discipline must not appear (the environment section's
+        // negative mention of "没有产出物面板与 tmp/ 语义" is a deliberately kept
+        // behavioral hint).
         assert!(!rendered.contains("自动落到本会话专属工作目录"));
         assert!(!rendered.contains("只有**最终成品**"));
         assert!(!rendered.contains("产出用**相对路径**写"));
-        // The browser section and deliverable clause are kept (plain session
-        // capabilities unchanged).
+        // Browser section and deliverables section kept (plain-session capabilities
+        // unchanged).
         assert!(rendered.contains("## Browser capabilities"));
         assert!(rendered.contains("mcp_pinvou3_present_artifact"));
-        // No placeholder-line residue; the skeleton structure holds: the
-        // bound environment section sits between §底线 and §工具与事实, and
-        // the Browser capabilities section follows the environment section.
+        // No leftover placeholder lines; skeleton structure preserved: the bound
+        // environment section sits between the §底线 and §工具与事实 sections,
+        // and the Browser capabilities section follows the environment section.
         assert!(!rendered.contains("{{PINVOU3_MODE_ENV_SECTION}}"));
         assert!(!rendered.contains("{{PINVOU3_MODE_ARTIFACT_RULE}}"));
         let bottom = rendered.find("## 底线").unwrap();
@@ -922,8 +956,8 @@ mod tests {
 
     #[test]
     fn work_instructions_unbound_unaffected_by_bound_variant() {
-        // The bound variant's existence does not affect unbound rendering:
-        // the default work instructions keep their original semantics.
+        // The bound variant's existence does not affect unbound rendering: the
+        // default work instructions keep their original semantics.
         let rendered = instructions_md();
         assert!(rendered.contains("自动落到本会话专属工作目录"));
         assert!(!rendered.contains("用户选择的工作目录"));
@@ -992,6 +1026,34 @@ mod tests {
             .env("DEEPSEEK_TOOL_ARGS", args)
             .output()
             .expect("run multi-agent depth guard")
+    }
+
+    fn run_connector_introspection_guard(
+        bundle: &Pinvou3Bundle,
+        args: &str,
+    ) -> std::process::Output {
+        #[cfg(windows)]
+        let mut command = {
+            let mut command = std::process::Command::new("powershell.exe");
+            command
+                .arg("-NoProfile")
+                .arg("-ExecutionPolicy")
+                .arg("Bypass")
+                .arg("-File")
+                .arg(&bundle.deny_sensitive_ps1);
+            command
+        };
+        #[cfg(not(windows))]
+        let mut command = {
+            let mut command = std::process::Command::new("bash");
+            command.arg(&bundle.deny_sensitive_sh);
+            command
+        };
+        command
+            .env("DEEPSEEK_TOOL_NAME", "list_mcp_resources")
+            .env("DEEPSEEK_TOOL_ARGS", args)
+            .output()
+            .expect("run connector introspection guard")
     }
 
     /// 测试 bundle 解包的两个场景：首次解包成功 + VERSION 匹配时不覆写。
@@ -1265,6 +1327,38 @@ mod tests {
                 .join("government-writing")
                 .exists()
         );
+
+        cleanup(&tmp);
+    }
+
+    #[test]
+    fn connector_introspection_guard_matches_complete_names_only() {
+        let _g = ENV_LOCK.lock().unwrap_or_else(|p| p.into_inner());
+        let tmp = tempdir();
+        // SAFETY: holding platform::paths::tests::ENV_LOCK; env writes serialized in-process.
+        unsafe { std::env::set_var("PINVOU3_HOME", &tmp) };
+        let bundle = Pinvou3Bundle::paths();
+        bundle.ensure_extracted().unwrap();
+
+        for args in [r#"{"server":"wecom"}"#, r#"{"server":"企微"}"#] {
+            let output = run_connector_introspection_guard(&bundle, args);
+            assert_eq!(
+                output.status.code(),
+                Some(2),
+                "exact skill-connector names must be redirected: {output:?}"
+            );
+        }
+        for args in [
+            r#"{"server":"wecom-bot"}"#,
+            r#"{"server":"mcp_wecom-bot_send_text"}"#,
+            r#"{"server":"企微群机器人"}"#,
+        ] {
+            let output = run_connector_introspection_guard(&bundle, args);
+            assert!(
+                output.status.success(),
+                "marketplace MCP names containing connector aliases must remain introspectable: {output:?}"
+            );
+        }
 
         cleanup(&tmp);
     }
@@ -1920,6 +2014,66 @@ mod tests {
             assert!(
                 !yolo.contains(folded),
                 "宪法层应已折叠出静态层(并入 instructions): {folded}"
+            );
+        }
+    }
+
+    /// forkguard(locale): the slim locale preamble/closer must be wired into
+    /// the base alongside the composer (the four set_locale_*_override calls
+    /// in install_prompt_overrides). After an upstream sync this test failing
+    /// means the four override calls were merge-dropped and zh/ja sessions
+    /// would eat the upstream long-form again (base branding plus the "think
+    /// in Chinese" teaching, which is dropped per product decision).
+    /// Mechanism: the base stores overrides in OnceLocks — first set wins,
+    /// later sets are rejected — so after install the slots must already be
+    /// occupied by the slim text (setting a different value returns Err).
+    #[test]
+    fn forkguard_locale_bookend_overrides_are_wired() {
+        install_prompt_overrides(); // idempotent: OnceLock slots, first setter wins
+
+        assert!(deepseek_tui::prompts::static_prompt_composer_installed());
+        let reject = |r: Result<(), String>| r.is_err();
+        assert!(reject(
+            deepseek_tui::prompts::set_locale_preamble_zh_hans_override("probe".into())
+        ));
+        assert!(reject(
+            deepseek_tui::prompts::set_locale_closer_zh_hans_override("probe".into())
+        ));
+        assert!(reject(
+            deepseek_tui::prompts::set_locale_preamble_ja_override("probe".into())
+        ));
+        assert!(reject(
+            deepseek_tui::prompts::set_locale_closer_ja_override("probe".into())
+        ));
+    }
+
+    /// forkguard(locale): product decision — locale bookends constrain the
+    /// reply language only and must never mandate a thinking language
+    /// (forcing a model to think in a given language hurts reasoning
+    /// quality, and the thinking stream's language brings no user-perceivable
+    /// benefit). Assert that the four wired constants carry no thinking-
+    /// language teaching; an upstream sync pointing the overrides back at the
+    /// base long-form (its `reasoning_content` teaching, see the base
+    /// `LOCALE_PREAMBLE_ZH_HANS`/`LOCALE_CLOSER_ZH_HANS`) turns this red.
+    #[test]
+    fn forkguard_locale_bookends_never_mandate_thinking_language() {
+        for text in [
+            LOCALE_PREAMBLE_ZH_HANS,
+            LOCALE_CLOSER_ZH_HANS,
+            LOCALE_PREAMBLE_JA,
+            LOCALE_CLOSER_JA,
+        ] {
+            assert!(
+                !text.contains("reasoning_content"),
+                "locale bookend must not mandate a thinking language: {text}"
+            );
+            assert!(
+                !text.contains("思考"),
+                "locale bookend must not mandate a thinking language: {text}"
+            );
+            assert!(
+                !text.to_lowercase().contains("think"),
+                "locale bookend must not mandate a thinking language: {text}"
             );
         }
     }

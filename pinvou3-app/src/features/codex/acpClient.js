@@ -56,16 +56,9 @@ export async function pickAcpWorkspace({ title, defaultPath } = {}) {
   return { path, workspaceHandle };
 }
 
-export function createAcpSession({ workspacePath, workspaceHandle, agentId, workspaceRoots, projectId }) {
+export function createAcpSession({ workspacePath, workspaceHandle, agentId }) {
   if (!isWeb) {
-    // Keychain snapshot and project ownership (§6/§9.3): desktop channel
-    // only; Web is a single authorized root directory (§9.8).
-    return invokeTauri('create_codex_acp_session', {
-      workspacePath,
-      agentId,
-      workspaceRoots: workspaceRoots && workspaceRoots.length ? workspaceRoots : null,
-      projectId: projectId || null,
-    });
+    return invokeTauri('create_codex_acp_session', { workspacePath, agentId });
   }
   if (workspacePath && !workspaceHandle) {
     return Promise.reject(acpClientError('web_workspace_authorization_required'));
@@ -74,17 +67,6 @@ export function createAcpSession({ workspacePath, workspaceHandle, agentId, work
     workspaceHandle: workspaceHandle || null,
     agentId,
   });
-}
-
-// Align to project (§9.7, desktop-only): the session keychain is replaced by
-// the owning project's full root set at that moment. Typed errors
-// (ALIGN_BUSY/ALIGN_NO_WORKSPACE) are thrown as-is; the caller maps them to
-// copy by marker.
-export function alignAcpSession(sessionId) {
-  if (!isWeb) {
-    return invokeTauri('align_session_to_project', { sessionId });
-  }
-  return Promise.reject(acpClientError('workspace_align_desktop_only'));
 }
 
 export function listAcpWorkspace({ sessionId, relativePath, workspacePath }) {

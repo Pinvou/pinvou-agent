@@ -1,11 +1,16 @@
-import { useEffect, useState } from 'react';
+import { memo, useEffect, useRef, useState } from 'react';
 import { createPortal } from 'react-dom';
-import { Archive, Check, Edit2, FolderOpen, Layers, MoreHorizontal, PinIcon, PinOffIcon, Sparkles, Trash2, X } from '../icons.jsx';
+import { Archive, Check, Download, Edit2, FolderOpen, Layers, MoreHorizontal, PinIcon, PinOffIcon, Sparkles, Trash2, X } from '../icons.jsx';
 import { useLongPressDrag } from '../../hooks/useLongPressDrag.js';
 import { usePortalMenu } from '../../hooks/usePortalMenu.js';
 import { isImeComposing } from '../../shared/ime-guard.mjs';
+import { PROJECT_SESSION_DRAG_TYPE } from '../../features/projects/projectGrouping.js';
 
-const NavItem = ({ icon, label, active, unread = false, isSidebarOpen = true, onClick, dragKind, dragging, onPickUp, nativeButton = false, t, onPointerEnter, onFocus }) => {
+    // NavItem memoization: the main nav re-renders on every App bridge
+    // notify (including background streaming tokens); when the props are
+    // reference stable (see NAV_ICON_*/NAV_PREFETCH/navNavigateHandlers in
+    // main.jsx) the whole nav item can skip the re-render.
+    const NavItem = memo(function NavItem({ icon, label, active, unread = false, isSidebarOpen = true, onClick, dragKind, dragging, onPickUp, nativeButton = false, t, onPointerEnter, onFocus }) {
       const drag = useLongPressDrag(dragKind, onPickUp);
       const dragProps = dragKind ? drag.handlers : {};
       const clickH = dragKind ? drag.guardClick(onClick) : onClick;
@@ -36,7 +41,7 @@ const NavItem = ({ icon, label, active, unread = false, isSidebarOpen = true, on
           {isSidebarOpen && <span className="whitespace-nowrap">{label}</span>}
         </Root>
       );
-    };
+    });
 
     const ArchiveConfirmDialog = ({ theme, t, onCancel, onConfirm }) => {
       const isDark = theme === 'dark';
@@ -206,35 +211,35 @@ const NavItem = ({ icon, label, active, unread = false, isSidebarOpen = true, on
         color: isDark ? '#fff' : '#1F1F1F',
       };
     };
-    const RecentItem = ({ chat, active, personaTarget, theme, t, onSelect, onRename, onDelete, onTogglePinned, onOpenFolder, onArchive, onMoveToProject, dragKind = 'session', dragging, onPickUp, dndPayload, dndDisabled, onDndBegin, onDndHover, onDndDrop, onDndEnd }) => {
+    // RecentItem memoization: the O(sessions) sidebar list is the dominant
+    // token-rate re-render cost. Props must be reference stable — chat is
+    // derived by the parent's useMemo and callbacks come from the parent's
+    // useCallback / per-item closure cache (see renderSidebarTaskItem in
+    // main.jsx); the default shallow compare then skips correctly.
+    const RecentItem = memo(function RecentItem({ chat, active, personaTarget, theme, t, onSelect, onRename, onDelete, onTogglePinned, onOpenFolder, onExportArchive, onArchive, onMoveToProject, dragKind = 'session', dragging, onPickUp, dndPayload, dndDisabled, onDragEnd }) {
       const isDark = theme === 'dark';
       const [editing, setEditing] = useState(false);
       const [confirming, setConfirming] = useState(false);
       const [val, setVal] = useState(chat.title);
-      // Platforms where tear-off (long-press window detach) is unavailable
-      // still get the instant-move drag (move to project): both share this
-      // gesture set, and the activation condition is the union.
-      const sessionDragKind = (onPickUp || (dndPayload && !dndDisabled)) ? dragKind : null;
-      // Instant-move drag (moving sessions inside the project view): a pointer
-      // path that does not rely on HTML5 DnD — WebKitGTK's in-page drag stops
-      // delivering dragover/drop once the pointer stops moving (a drop after
-      // hovering is silently discarded), so outside Chromium it cannot be
-      // trusted; tear-off (350ms long-press) and the instant-move drag are
-      // naturally mutually exclusive by move timing.
-      const drag = useLongPressDrag(sessionDragKind, onPickUp, dndPayload && !dndDisabled ? {
-        enabled: true,
-        payload: dndPayload.sessionId,
-        onBegin: (geom) => onDndBegin && onDndBegin({ ...geom, label: chat.title, sessionId: dndPayload.sessionId }),
-        onHover: onDndHover,
-        onDrop: onDndDrop,
-        onEnd: () => onDndEnd && onDndEnd(),
-      } : undefined);
+      const sessionDragKind = onPickUp ? dragKind : null;
+      const drag = useLongPressDrag(sessionDragKind, onPickUp);
       const dragProps = sessionDragKind ? drag.handlers : {};
       const selectChat = () => onSelect(chat.id);
       function save() { const tx = val.trim(); setEditing(false); if (tx && tx !== chat.title) onRename(chat.id, tx); }
       // Portal "more" menu placement/close lives in the shared hook (same
-      // plumbing as the project-group header menu).
-      const { menuOpen, menuStyle, closeMenu, toggleMenu, openMenuAt } = usePortalMenu({ height: 184 });
+      // plumbing as the project-group header menu). Height covers the tallest
+      // variant actually rendered — 6 menu items at h-9 (36px) + 9px divider +
+      // 8px vertical padding ≈ 233: codex rows render move-to-project, other
+      // rows render export-archive, and the two are taskKind-exclusive. It
+      // only drives the bottom-edge flip decision and the portal clips
+      // (per-menu height convention, see ProjectGroupHeader).
+      const { menuOpen, menuStyle, closeMenu, toggleMenu, openMenuAt } = usePortalMenu({ height: 233 });
+      // 移动菜单项把流程移交给 App 级弹窗:菜单门户与弹窗在同一次提交里
+      // 卸载/挂载,被聚焦的菜单项随门户消失,弹窗的焦点还原来不及捕获它;
+      // 且此刻行的 :hover/focus-within 都已失效,hover 显隐的按钮容器是
+      // display:none,往里面聚焦是空操作。只能交接给常驻的行标签按钮,
+      // 弹窗关闭后焦点回到出发点所在的行。
+      const rowLabelRef = useRef(null);
       const openContextMenu = openMenuAt;
       const menuItemCls = `w-full h-9 px-3 flex items-center gap-2 text-left text-[14px] whitespace-nowrap transition-colors text-[#1F1F1F] hover:bg-[#F1F3F4] dark:text-[#E3E3E3] dark:hover:bg-[#303134]`;
       const menu = menuOpen && menuStyle && typeof document !== 'undefined' ? createPortal(
@@ -251,7 +256,7 @@ const NavItem = ({ icon, label, active, unread = false, isSidebarOpen = true, on
             <span>{t.riRename}</span>
           </button>
           {onMoveToProject && (
-            <button type="button" className={menuItemCls} onClick={() => { closeMenu(); onMoveToProject(chat); }}>
+            <button type="button" className={menuItemCls} onClick={() => { rowLabelRef.current?.focus(); closeMenu(); onMoveToProject(chat); }}>
               <Layers size={15} />
               <span>{t.uiProjects.moveToProject}</span>
             </button>
@@ -267,6 +272,12 @@ const NavItem = ({ icon, label, active, unread = false, isSidebarOpen = true, on
             <button type="button" className={menuItemCls} onClick={() => { closeMenu(); onOpenFolder(chat.id); }}>
               <FolderOpen size={15} />
               <span>{t.riOpenFolder}</span>
+            </button>
+          )}
+          {onExportArchive && (
+            <button type="button" className={menuItemCls} data-testid="session-export-archive" onClick={() => { closeMenu(); onExportArchive(chat.id); }}>
+              <Download size={15} />
+              <span>{t.exportSessionArchive}</span>
             </button>
           )}
           {onArchive && (
@@ -300,21 +311,36 @@ const NavItem = ({ icon, label, active, unread = false, isSidebarOpen = true, on
         // styling (persona target highlight / dragging opacity) and hover
         // grouping; session selection is the label button, so the action
         // buttons are siblings instead of descendants of an ARIA button.
-        // biome-ignore lint/a11y/noStaticElementInteractions: right-click is a pointer-only shortcut for the same menu the "more" button opens; keyboard users use that button (menu items are real buttons, Escape closes)
+        // biome-ignore lint/a11y/noStaticElementInteractions: right-click is a pointer-only shortcut for the same menu the "more" button opens; keyboard users reach the "more" button too (Tab reveals the hover-hidden action row via group-focus-within, menu items are real buttons, Escape closes)
         <div
           role="presentation"
           onContextMenu={openContextMenu}
+          data-session-key={chat.id}
           data-drag-kind={sessionDragKind || undefined}
           title={personaTarget ? t.cpTargetMarkTitle : undefined}
-          style={recentItemRowStyle(drag.moveDragging || dragging, personaTarget, isDark)}
+          style={recentItemRowStyle(dragging, personaTarget, isDark)}
           className={`group flex h-11 items-center rounded-full text-[15px] transition-all
             ${personaTarget ? ''
               : active ? 'bg-[#E1E5EA] text-[#1F1F1F] dark:bg-[#333537] dark:text-white'
                      : 'text-[#1F1F1F] hover:bg-[#E1E5EA] dark:text-[#E3E3E3] dark:hover:bg-[#282A2C]'}`}>{/* isDark dynamic-value: 保留 (personaTarget boxShadow 运行时拼色,与 background/color 同对象) */}
           <button
+            ref={rowLabelRef}
             type="button"
             data-testid={chat.testId}
             data-drag-surface
+            // HTML5 拖拽(移动到项目)与 tear-off(长按 350ms)共享同一手势
+            // 面:都只从标签按钮(data-drag-surface)启动,置顶/更多/删除等
+            // 动作按钮起手不会拖走整行(useLongPressDrag 的按钮排除同源)。
+            // 两者互斥由 hook 的工程手段提供:pointerdown 时装 capture 阶段
+            // dragstart 监听({once}) + pointercancel 兜底,clearPress 幂等,
+            // 自然竞态被消除;不要因"看起来多余"而删联锁。tear-off 进行中
+            // (dndDisabled)不再启动 HTML5 拖拽。
+            draggable={dndPayload && !dndDisabled ? true : undefined}
+            onDragEnd={onDragEnd}
+            onDragStart={dndPayload && !dndDisabled ? (e) => {
+              e.dataTransfer.setData(PROJECT_SESSION_DRAG_TYPE, dndPayload.sessionId);
+              e.dataTransfer.effectAllowed = 'move';
+            } : undefined}
             onClick={sessionDragKind ? drag.guardClick(selectChat) : selectChat}
             {...dragProps}
             className="flex min-w-0 flex-1 cursor-pointer items-center self-stretch border-0 bg-transparent px-4 text-left">
@@ -355,11 +381,11 @@ const NavItem = ({ icon, label, active, unread = false, isSidebarOpen = true, on
               {/* 默认: 显示日期(辨识每条会话什么时候发生);hover/active 时换成置顶/更多按钮,重命名/收纳/删除在更多菜单里。
                   窄屏无 hover：按钮组常显、日期让位，保证触屏可达。 */}
               {chat.date && (
-                <span className="text-[11px] mr-4 shrink-0 opacity-60 whitespace-nowrap group-hover:hidden max-sm:hidden text-[#5F6368] dark:text-[#9AA0A6]">
+                <span className="text-[11px] mr-4 shrink-0 opacity-60 whitespace-nowrap group-hover:hidden group-focus-within:hidden max-sm:hidden text-[#5F6368] dark:text-[#9AA0A6]">
                   {chat.date}
                 </span>
               )}
-              <div className="mr-4 hidden group-hover:flex max-sm:flex items-center gap-0.5 shrink-0">
+              <div className="mr-4 hidden group-hover:flex group-focus-within:flex max-sm:flex items-center gap-0.5 shrink-0">
                 <button type="button" title={chat.pinned ? t.riUnpin : t.riPin} onClick={(e) => { e.stopPropagation(); onTogglePinned && onTogglePinned(chat.id, !chat.pinned); }}
                   className="w-6 h-6 rounded-full flex items-center justify-center transition-colors text-[#5F6368] hover:bg-[#D3D7DB] dark:text-[#C4C7C5] dark:hover:bg-[#444746]">
                   {chat.pinned ? <PinOffIcon size={13} /> : <PinIcon size={13} />}
@@ -375,6 +401,6 @@ const NavItem = ({ icon, label, active, unread = false, isSidebarOpen = true, on
           {menu}
         </div>
       );
-    };
+    });
 
 export { NavItem, ArchiveConfirmDialog, ArchivedDeleteConfirmDialog, ArchiveToast, RecentItem };

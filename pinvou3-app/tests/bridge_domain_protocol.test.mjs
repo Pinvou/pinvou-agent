@@ -110,10 +110,26 @@ const expectedProtocolHashes = {
   // v0.9.12 rereview fix that persists toolName/reason/risk with each
   // ToolGateDecision so history replay retains the structured audit detail.
   // Recomputed again when the shell background-task projection learned the
-  // canonical v0.9.12 `bash` name while retaining legacy replay aliases.
-  chat: '908516b590b380becfc66db8bf9d147547193b95f5d809e3fddb7d4170c7391d',
+  // canonical v0.9.12 `bash` name while retaining legacy replay aliases. And
+  // again for the streaming markdown render throttle: the chat:delta /
+  // chat:tool_start / chat:done listener bodies gained the trailing-edge
+  // render flush/schedule plus the unpaired-toolMeta terminal sweep — no new
+  // invoke or listen entries, only body-internal edits, so this is a
+  // capture-text refresh. Recomputed again for the chat:tool_end listener
+  // bodies emitting the final stream html via flushPendingStreamRender
+  // before resetting the stream state (same throttle invariant, still no new
+  // invoke or listen entries). Recomputed again for the review-follow-up
+  // comment translations inside the captured listener bodies (same
+  // capture-text refresh; the comment-stripped signature list is
+  // byte-identical to the previous state).
+  chat: 'd9b18bcde6f40b5ff1644c1bccc388b70632a9f49444de44524c24b39830959c',
   dependencies: '2cb185d38dabeb35f48773457c182e1c35951b210f5d0fc853b074eb2eb68626',
-  interaction: '1623223fb298ff2d959ad24887bd423edc1d39bab63520aafd3e150afc4be12d',
+  // Recomputed for #445 round-8: exitPlanToYolo accepts an explicit target
+  // session id (the YOLO gate passes the adjudicated sid), so the
+  // exit_plan_to_yolo invoke payload text changes from
+  // { sessionId: state.activeSessionId } to { sessionId: sid } — same
+  // command surface, no new invoke or listen entries.
+  interaction: '7a58372cdc0b3eabe1b0744dda4a18a31926ba929b67307309803e88a30e5fab',
   knowledge: '9105a42c6b69f04d0bc28b6a72e0746648110a44823891ded3261cdcbc99766b',
   // memory recomputed for the memory-maintenance feature: organize_memory +
   // get_memory_organize_history invokes added to bridge/memory.js.
@@ -125,28 +141,22 @@ const expectedProtocolHashes = {
   // the browser lane's trilingual mapping instead of only the message text.
   remoteControl: '0f3bbabae65f0551e335354019de7f97578fde257829505ad74c13196b173fc5',
   scheduled: '7d6ca9783925a5071a364097ebdf0112511f9503b5e4534346b9fda6873ec036',
-  // Recomputed for the normal-chat draft workspace selector: create_session
-  // now carries the optional workspacePath payload (bridge/sessions.js).
-  // Recomputed again for workspace-bound sessions: get_session_workspace_binding
-  // query + bound-draft staged mode application (set_plan_mode_next /
-  // exit_plan_to_yolo) at materialization. Recomputed for the workspace
-  // picker: create_session's invoke span now also forwards the draft
-  // workspaceRoots/projectId captured at materialization (bridge/sessions.js).
-  sessions: 'b15d026c1edf2b337a34ad9cc9945005745dd4b6b046424e3c42b91993b65df2',
+  // Recomputed for one-click full-fidelity session log export: the tauri
+  // sessions bridge gains the export_session_archive invoke wrapping the
+  // export_session command (web lane intentionally has no such backend).
+  // Recomputed again for the normal-chat draft workspace selector:
+  // create_session now carries the optional workspacePath payload
+  // (bridge/sessions.js). Recomputed again for workspace-bound sessions:
+  // get_session_workspace_binding query + bound-draft staged mode application
+  // (set_plan_mode_next / exit_plan_to_yolo) at materialization.
+  sessions: 'c85e365dcf0874b577396a02f764cb6f108ad34a4b54c0853cd8f918ffa39b5c',
   settings: 'a44929caff59641eb059f28885f1674d4e277412526d31c1d3ddfd75e44d0496',
   updater: '86412d40999a268d3d92dc4fe97e3fe465de08745423be820f38a462d79aaced',
   // Recomputed for the comment-only English translation of the voice bridge
   // (PR-added Chinese comments inside the postprocess_voice_text invoke
   // span are part of the hashed source; no invoke/listen surface changed).
   voice: '2a2e8d12150ca86bb970ad099e7b72ab6491768bbc42354cd5ecc800c891c733',
-  // Recomputed for folder-project auto-materialization: ensure_folder_projects
-  // invoke (roots payload) joins the projects domain surface. The in-flight
-  // refetch race fix (#448 finding 14) merged in without touching the
-  // invoke/listen spans, so the digest is unchanged.
-  // Recomputed again for the manage-folders panel: update_project roots /
-  // lastPrimaryRoot variants, projects_set_never_materialize and
-  // align_session_to_project invokes join the projects domain surface.
-  projects: 'e229ecfb9dc5406a1af647d699089e00fceda44a7c60fe25da5f94777b4e3a4e',
+  projects: '3108533baca6692918b8ac0e095ee036e49460c49b997194f7cb2174401e5be1',
 };
 
 for (const [domain, files] of Object.entries(protocolSources)) {

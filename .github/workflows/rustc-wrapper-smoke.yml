@@ -47,13 +47,17 @@ jobs:
   # diff；无关 PR 入队时跳过后续三个平台 runner。PR/push 的事件级 paths 仍
   # 保留，避免这些事件连轻量路由 job 都启动。
   changes:
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-22.04
     outputs:
       wrapper: ${{ steps.filter.outputs.wrapper }}
     steps:
       - uses: actions/checkout@v7
         with:
           fetch-depth: 0
+
+      - name: Set up zram and swap
+        # Best effort: timeouts or failures only warn and never block (falls back to stock runner memory).
+        run: timeout --kill-after=15 240 sudo bash "${{ github.workspace }}/scripts/ci-memory-setup.sh" || echo "::warning::ci-memory-setup did not finish; continuing with stock runner memory"
 
       - uses: dorny/paths-filter@v4
         id: filter
@@ -73,10 +77,15 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        os: [macos-15, ubuntu-latest, windows-latest]
+        os: [macos-15, ubuntu-22.04, windows-latest]
     runs-on: ${{ matrix.os }}
     steps:
       - uses: actions/checkout@v7
+
+      - name: Set up zram and swap
+        if: runner.os == 'Linux'
+        # Best effort: timeouts or failures only warn and never block (falls back to stock runner memory).
+        run: timeout --kill-after=15 240 sudo bash "${{ github.workspace }}/scripts/ci-memory-setup.sh" || echo "::warning::ci-memory-setup did not finish; continuing with stock runner memory"
 
       - name: Rust toolchain
         uses: dtolnay/rust-toolchain@stable

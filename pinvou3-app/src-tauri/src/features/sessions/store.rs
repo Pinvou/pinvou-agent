@@ -9,11 +9,11 @@
 
 use std::collections::{HashMap, HashSet};
 use std::io::ErrorKind;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::sync::Arc;
 #[cfg(test)]
 use std::sync::LazyLock;
-use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 
 use anyhow::{Context, Result, bail};
 use chrono::Utc;
@@ -194,6 +194,7 @@ impl SessionStore {
             hidden_sessions: Arc::new(RwLock::new(HashMap::new())),
             execution_root_resolver: Arc::new(RwLock::new(None)),
             session_workspaces: Arc::new(RwLock::new(HashMap::new())),
+            legacy_session_workspaces_parse_failed: Arc::new(AtomicBool::new(false)),
             code_session_predicate: Arc::new(RwLock::new(None)),
             session_mode_states: Arc::new(RwLock::new(HashMap::new())),
             code_permission: Arc::new(RwLock::new(prefs_snapshot.code_permission)),
@@ -272,6 +273,44 @@ impl SessionStore {
             .with_context(|| format!("load_session({id})"))
     }
 
+    /// Pack one session into a full-fidelity `.tar.xz` archive, reusing the
+    /// base `deepseek_tui::session_export`. The archive contains the full
+    /// context (system prompt, all turn messages, tool calls and results)
+    /// plus the portable container JSON; the artifacts directory is packed
+    /// by default, and `include_artifacts=false` exports the record only.
+    ///
+    /// Boundary: what gets packed is the bytes of the
+    /// `sessions/<id>/artifacts` directory; ledger/workspace files that the
+    /// artifacts panel also lists are not part of the archive — their
+    /// "record" travels with `session.json`, and the file bytes themselves
+    /// are not distributed with the archive.
+    pub(crate) fn export_archive(
+        &self,
+        id: &str,
+        output: &Path,
+        include_artifacts: bool,
+    ) -> Result<deepseek_tui::session_export::SessionArchiveSummary> {
+        validate_session_id(id)?;
+        let session = self.load(id)?;
+        let artifacts_dir = if include_artifacts {
+            deepseek_tui::session_export::session_artifacts_dir(
+                self.manager.sessions_dir(),
+                &session.metadata.id,
+            )
+        } else {
+            None
+        };
+        Ok(deepseek_tui::session_export::write_session_archive(
+            &session,
+            artifacts_dir.as_deref(),
+            output,
+            deepseek_tui::session_export::SessionArchiveOptions {
+                include_artifacts,
+                ..deepseek_tui::session_export::SessionArchiveOptions::default()
+            },
+        )?)
+    }
+
     pub(crate) fn persisted_size(&self, id: &str) -> Result<u64> {
         validate_session_id(id)?;
         let path = self.manager.sessions_dir().join(format!("{id}.json"));
@@ -348,11 +387,11 @@ impl SessionStore {
         (committed, result)
     }
 
-    /// Whether the session JSON is gone from disk (invalid ids are always
+    /// Whether the session JSON is no longer on disk (an invalid id is always
     /// treated as "present", fail-closed). Besides the delete path, the
-    /// directory rebind's orphan classification also uses it: only NotFound
-    /// counts; a corrupt JSON is not an orphan (review #463: parse failures
-    /// must go into the retryable failure list, not be silently skipped).
+    /// rebind orphan classification also uses it: only NotFound counts — a
+    /// corrupt JSON is not an orphan (review #463: a parse failure must enter
+    /// the failed list as retryable, never silently skipped).
     pub(crate) fn durable_session_record_is_absent(&self, id: &str) -> bool {
         if validate_session_id(id).is_err() {
             return false;
@@ -474,13 +513,12 @@ impl SessionStore {
         if self.is_scheduled_session(id)? {
             bail!("Scheduled-run session '{id}' has no persisted execution profile");
         }
-        // The production-injected resolver (lib.rs) already covers both
-        // binding kinds: codex_acp native code sessions' project bindings +
-        // plain chat sessions' user working-directory bindings (sidecar).
-        // The .or_else fallback here is defensive and only takes effect when
-        // no resolver was injected (tests / early startup) — the bridge goes
-        // through the resolver directly (bridge.rs) and never passes through
-        // this fallback.
+        // The production-injected resolver (lib.rs) already covers both binding
+        // kinds: codex_acp native code sessions' project bindings plus plain chat
+        // sessions' user working-directory bindings (sidecar). The .or_else
+        // fallback here is defensive and only applies when no resolver is
+        // injected (tests / early startup) — bridge goes through the resolver
+        // directly (bridge.rs) and never hits this fallback.
         let bound_project_root = self
             .execution_root_resolver
             .read()
@@ -508,18 +546,21 @@ impl SessionStore {
         Ok(())
     }
 
-    /// Metadata write for directory rebinding (the same load→patch→persist
-    /// pattern as set_title). Only the workspace field of the SavedSession
-    /// metadata changes; messages/transcript are untouched — old paths
-    /// referenced by historical turns are factual records and stay as-is.
-    /// The caller (command layer) owns the active-turn fence; the lock here
-    /// guards against racing the Engine's writes.
+    /// Metadata write for directory rebind (same load→patch→persist pattern
+    /// as set_title). Only the SavedSession metadata workspace field changes;
+    /// messages/transcript are untouched — old paths referenced by historical
+    /// turns are factual records and stay as-is. The caller (command layer)
+    /// owns the active-turn fence; the lock here guards against Engine writes.
+    /// The load context deliberately does not embed the session id: the
+    /// command layer logs this error chain and rebind logs must not persist
+    /// session ids (CodeQL cleartext-logging, review #463 round 7); the id is
+    /// available to the caller at the failure site.
     pub fn set_workspace(&self, id: &str, workspace: PathBuf) -> Result<()> {
         let _mutation = self.scheduled_mutation.lock();
         let mut session = self
             .manager
             .load_session_snapshot(id)
-            .with_context(|| format!("load_session({id}) for workspace rebind"))?;
+            .with_context(|| "load_session for workspace rebind".to_string())?;
         session.metadata.workspace = workspace;
         self.persist_then_reconcile(&session, "workspace rebind")?;
         Ok(())
@@ -668,10 +709,16 @@ impl SessionStore {
         *self.active.write() = id;
     }
 
+    /// Persist one authoritative engine snapshot for an ordinary chat session.
+    ///
+    /// Takes `state` by reference so event-forwarder callers can keep the
+    /// snapshot alive in an `Arc` for the terminal path without a second deep
+    /// copy; the transcript clone into the durable record happens here, once
+    /// per persist.
     pub fn persist_chat_engine_state(
         &self,
         id: &str,
-        state: ChatEngineState,
+        state: &ChatEngineState,
     ) -> Result<SavedSession> {
         let _mutation = self.scheduled_mutation.lock();
         if self.scheduled_profiles.read().contains_key(id) {
@@ -685,9 +732,9 @@ impl SessionStore {
             .with_context(|| format!("load chat session {id} for engine persistence"))?;
         session.metadata.updated_at = Utc::now();
         session.metadata.message_count = state.messages.len();
-        session.metadata.model = state.model;
-        session.metadata.workspace = state.workspace;
-        session.messages = state.messages;
+        session.metadata.model = state.model.clone();
+        session.metadata.workspace = state.workspace.clone();
+        session.messages = state.messages.clone();
         session.system_prompt = persisted_system_prompt(state.system_prompt.as_ref());
 
         self.persist_then_reconcile_with(

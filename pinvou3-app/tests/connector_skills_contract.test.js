@@ -52,6 +52,13 @@ for (const f of docs) {
     "comments-guide",
     "core-operations",
   ]) {
+    // Real dws 1.0.61 quick command (reads the doc whiteboard OpenNodes
+    // snapshot; see the whiteboard.md command table), unrelated to the
+    // lark-side whiteboard +query removed in lark-cli 1.0.87 — exempted
+    // per domain. Rationale registered in NOTICE-dingtalk.md (rule 9's
+    // EXEMPT_FILES only collects file-level exemptions; rule-scoped
+    // exemptions register inline here plus in the domain NOTICE).
+    if (gone === "whiteboard +query" && rel(f).includes("dingtalk-skills")) continue;
     const hit = proseLines.find((l) => l.includes(gone) && !removedCtx.test(l));
     assert.ok(!hit, `${rel(f)}: 引用已删除对象 ${gone}: ${hit?.trim()}`);
   }
@@ -60,8 +67,10 @@ for (const f of docs) {
 // 目录时，被删文件可能以不自指内容回归，直接断言路径不存在。
 const removedFiles = [
   ["dingtalk-skills", "dws", "references", "channel-login.md"],
-  ["skills", "lark-calendar", "references", "lark-calendar-agenda.md"],
-  ["skills", "lark-calendar", "references", "lark-calendar-freebusy.md"],
+  // PR#302 relocated the lark pack root to lark-skills/: the guard must
+  // watch the live parent, or a restored file slips through vacuously.
+  ["lark-skills", "lark-calendar", "references", "lark-calendar-agenda.md"],
+  ["lark-skills", "lark-calendar", "references", "lark-calendar-freebusy.md"],
 ];
 for (const parts of removedFiles) {
   assert.ok(!fs.existsSync(bundle(...parts)), `${parts.join("/")}: 已删除文件复发（见 NOTICE 登记）`);
@@ -120,7 +129,9 @@ for (const f of docs) {
 }
 
 // 5) lark 域不得引导裸 auth login（按需授权走 --scope/--domain；行首 `|` 的表格行为描述性语境，豁免）
-for (const f of docs.filter((f) => path.relative(bundle("skills"), f).startsWith("lark-"))) {
+// Since PR #302 the lark skills live in lark-skills/ (the old skills/ path no
+// longer exists, so this rule had been silently dead until then).
+for (const f of docs.filter((f) => path.relative(bundle("lark-skills"), f).startsWith("lark-"))) {
   for (const line of read(f).split("\n")) {
     if (/^\s*\|/.test(line)) continue;
     if (/auth login/.test(line) && !/logout|\bscope\b|--domain|--device-code|--no-wait|--recommend|\bstatus\b|不要|无需|不必|禁止|按需|规则/.test(line)) {
@@ -130,8 +141,11 @@ for (const f of docs.filter((f) => path.relative(bundle("skills"), f).startsWith
 }
 
 // 6) frontmatter 契约：连接器技能 description ≤280、「何时用」开头、bins 正确
+// Since PR #302 the lark skills live in lark-skills/ (the old skills/lark-
+// key no longer matched, which had silently disabled this contract for the
+// whole lark domain).
 const binsByPack = {
-  "skills/lark-": "lark-cli",
+  "lark-skills/lark-": "lark-cli",
   "wecom-skills/wecomcli-": "wecom-cli",
   "dingtalk-skills/dws": "dws",
   "tmeet-skills/tmeet-skill": "tmeet",
@@ -230,6 +244,9 @@ assert.ok(
 // 9) Semantic-scan exemption registry: if any rule above gains a justified new exemption after an upstream sync, register file + reason in this list.
 // EXEMPT_FILES 当前为空：OPENCLAW_WORKSPACE 为 dws scripts 的路径护栏 env（未设时回退
 // cwd），非宿主断言（负向断言见上）；历史审查记录（NOTICE*.md）整体豁免由 docs 过滤实现。
+// EXEMPT_FILES collects file-level exemptions only. Rule-scoped / domain-scoped
+// exemptions (e.g. the dingtalk whiteboard +query continue above) live inline at
+// the exemption point and are registered in the domain's NOTICE file instead.
 const EXEMPT_FILES = [];
 assert.deepEqual(EXEMPT_FILES, [], "新增豁免须在此登记文件与理由，不得静默扩权");
 
