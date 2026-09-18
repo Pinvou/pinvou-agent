@@ -16,8 +16,6 @@ export const browserZh = {
   browserStartBrowsingHint: '输入 URL 以打开页面',
   browserPaneClose: '收起浏览器侧栏',
 
-
-
   browserNativeUnavailable: '原生浏览器表面暂不可用。页面不会切换为截图播放。',
   browserRetry: '重试',
   browserUserControl: '你正在控制',
@@ -50,8 +48,6 @@ export const browserEn = {
   browserStartBrowsingHint: 'Enter a URL to open a page',
   browserPaneClose: 'Collapse browser pane',
 
-
-
   browserNativeUnavailable: 'The native browser surface is unavailable. Screenshot playback is not used as a fallback.',
   browserRetry: 'Retry',
   browserUserControl: 'You are in control',
@@ -83,8 +79,6 @@ export const browserJa = {
   browserStartBrowsing: 'ブラウジングを開始',
   browserStartBrowsingHint: 'URL を入力してページを開く',
   browserPaneClose: 'ブラウザーサイドバーを閉じる',
-
-
 
   browserNativeUnavailable: 'ネイティブブラウザーを表示できません。スクリーンショット再生には切り替えません。',
   browserRetry: '再試行',
