@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# CodeWhale v0.9.12 clean re-fork guard: 36 commits, six maintained themes (r2 tag pending).
+# CodeWhale v0.9.12 clean re-fork guard: 36 commits, seven maintained themes (r2 tag pending).
 set -uo pipefail
 
 REPO="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
@@ -56,7 +56,7 @@ else
   fail=1
 fi
 
-bold "── 第 1 层：四主题与父仓适配指纹 ──"
+bold "── 第 1 层：七主题与父仓适配指纹 ──"
 # 格式：主题|说明|文件（相对父仓根）|grep -F 固定串
 fingerprints=(
   "T2|Unix shell guidance preservation test|CodeWhale/crates/tui/src/tools/shell/guidance.rs|fn shell_guidance_preserves_unix_shell_contracts"
@@ -131,8 +131,6 @@ fingerprints=(
   "T3|显式 Skills 根排除 ambient 来源    |CodeWhale/crates/tui/src/skills/tests.rs|forkguard_explicit_skills_dir_excludes_ambient_workspace_sources"
   "T3|Permissions 窄 100 KiB 预算       |CodeWhale/crates/tui/src/prompts.rs|forkguard_instruction_fragment_preserves_explicit_host_budget"
   "T3|内部 reminder 不污染 working set  |CodeWhale/crates/tui/src/working_set.rs|forkguard_working_set_ignores_leading_system_reminder_paths"
-  "T3|压缩后 chat wire 角色合法性回归    |CodeWhale/crates/tui/src/client/chat.rs|fn forkguard_compaction_tool_round_has_valid_chat_wire_roles"
-  "T3|压缩拓扑保工具轮边界回归          |CodeWhale/crates/tui/src/runtime_handoff.rs|forkguard_compaction_topology_preserves_tool_round_boundary"
 
   "T4|Automation 稳定 conversation key |CodeWhale/crates/tui/src/automation_manager.rs|add_task_with_conversation_key(new_task, Some(automation.id.clone()))"
   "T4|离线不补跑且同一任务不重叠          |CodeWhale/crates/tui/src/automation_manager.rs|forkguard_scheduler_skips_offline_backfill_and_overlapping_runs"
@@ -156,6 +154,17 @@ fingerprints=(
   "T6|fleet 治理器接线全部 spawn 路径    |CodeWhale/crates/tui/src/tools/subagent/mod.rs|runtime.governor = Some(Arc::clone(&self.governor));"
   "T6|限流时间自愈行为回归               |CodeWhale/crates/tui/src/tools/subagent/governor.rs|fn forkguard_rate_limit_governor_pauses_and_time_recovers_after_window_drains"
   "T6|取消授权重派与陈旧等待者回归       |CodeWhale/crates/tui/src/tools/subagent/governor.rs|fn forkguard_dynamic_gate_redispatches_grant_of_cancelled_waiter"
+
+  "T7|Compaction tool boundary regression|CodeWhale/crates/tui/src/runtime_handoff.rs|fn forkguard_compaction_topology_preserves_tool_round_boundary"
+  "T7|Compaction paired chat wire regression|CodeWhale/crates/tui/src/client/chat.rs|fn forkguard_compaction_tool_round_has_valid_chat_wire_roles"
+  "T7|Compaction topology round regression|CodeWhale/crates/tui/src/compaction/last_round.rs|fn forkguard_mid_round_topology_is_not_a_user_turn_on_recompaction"
+  "T7|Compaction later-turn survival regression|CodeWhale/crates/tui/src/compaction/last_round.rs|fn forkguard_recompaction_keeps_turns_after_the_previous_summary"
+  "T7|Compaction pasted-header provenance regression|CodeWhale/crates/tui/src/client/chat.rs|fn forkguard_full_summary_header_pasted_after_tool_result_is_not_relocated"
+  "T7|Restored completion boundary regression|CodeWhale/crates/tui/src/client/chat.rs|fn restored_completion_does_not_join_an_ordinary_user_turn"
+  "T7|Restored pre-fix session wire regression|CodeWhale/crates/tui/src/client/chat.rs|fn forkguard_restored_pre_fix_session_has_valid_chat_wire_roles"
+  "T7|Restore-tier quoted-header deletion regression|CodeWhale/crates/tui/src/compaction.rs|fn restore_keeps_a_user_turn_that_quotes_the_summary_header"
+  "T7|Pre-provenance carrier restore regression|CodeWhale/crates/tui/src/compaction.rs|fn restore_replaces_a_pre_provenance_carrier"
+  "T7|Checkpoint edit-target exclusion regression|CodeWhale/crates/tui/src/runtime_handoff.rs|fn compaction_checkpoint_is_never_the_edit_target"
 
   "APP|spawn 前安装 Engine session id   |pinvou3-app/src-tauri/src/features/assistant/platform/bridge.rs|cfg.session_id = Some(session_id.to_string());"
   "APP|产品白名单复用原生 allowed_tools |pinvou3-app/src-tauri/src/features/assistant/platform/bridge.rs|allowed_tools: Some(crate::features::assistant::tool_policy::allowed_tool_names())"
