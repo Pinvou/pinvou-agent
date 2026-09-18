@@ -173,55 +173,55 @@ export const dictEn = {
   ...browserEn,
         langTag: 'en',
         acpAgent: 'ACP Agent',
-        newChat: 'New chat', currentChat: 'Current chat', searchChats: 'Search chats', scheduledPlans: 'Scheduled tasks', monitor: 'Status', workflow: 'Workflow', multiAgent: 'Swarm Mode', multiAgentDesktopOnly: 'This swarm conversation is currently available only in the desktop app.', toolStore: 'Plugin Center', cardPool: 'Card Deck', recent: 'History', pinnedTasks: 'Pinned tasks', regularTasks: 'Tasks', sidebarTaskList: 'Tasks', sidebarTaskFilter: 'Filter', sidebarTaskFilterAll: 'All', sidebarTaskFilterPinned: 'Pinned', sidebarTaskFilterCode: 'Code', sidebarTaskFilterCodeSessions: 'Code sessions', sidebarTaskFilterScheduled: 'Scheduled tasks', sidebarTaskSort: 'Sort', sidebarTaskSortPinnedFirst: 'Pinned first', sidebarTaskSortRecent: 'Recent', sidebarTaskEmpty: 'No tasks', sidebarViewAll: 'View all', sidebarSection: 'Task list', sidebarDateGrouping: 'Group by date', sidebarDateGroupingDesc: 'Group tasks by date; today stays expanded', sidebarNavExpand: 'Expand navigation', sidebarNavCollapse: 'Collapse navigation', sidebarCollapseAll: 'Collapse', sidebarExpandAll: 'Expand', sidebarTaskStyle: 'Style', sidebarResize: 'Drag to resize the sidebar; double-click to reset', settings: 'Settings', localEnv: 'Local Env', tearoffTitle: 'Detached', tearoffHint: 'Pop out to its own window', mobileMore: 'More',
+        newChat: 'New chat', currentChat: 'Current chat', searchChats: 'Search chats', scheduledPlans: 'Scheduled tasks', monitor: 'Status', workflow: 'Workflow', multiAgent: 'Swarm Mode', multiAgentDesktopOnly: 'This swarm conversation is currently available only in the desktop app.', toolStore: 'Plugin Center', cardPool: 'Card Deck', recent: 'History',   sidebarTaskList: 'Tasks', sidebarTaskFilter: 'Filter', sidebarTaskFilterAll: 'All', sidebarTaskFilterPinned: 'Pinned', sidebarTaskFilterCode: 'Code', sidebarTaskFilterCodeSessions: 'Code sessions', sidebarTaskFilterScheduled: 'Scheduled tasks', sidebarTaskSort: 'Sort', sidebarTaskSortPinnedFirst: 'Pinned first', sidebarTaskSortRecent: 'Recent', sidebarTaskEmpty: 'No tasks', sidebarViewAll: 'View all', sidebarSection: 'Task list', sidebarDateGrouping: 'Group by date', sidebarDateGroupingDesc: 'Group tasks by date; today stays expanded', sidebarNavExpand: 'Expand navigation', sidebarNavCollapse: 'Collapse navigation', sidebarCollapseAll: 'Collapse', sidebarExpandAll: 'Expand', sidebarTaskStyle: 'Style', sidebarResize: 'Drag to resize the sidebar; double-click to reset', settings: 'Settings', tearoffTitle: 'Detached',  mobileMore: 'More',
         previewTaskDailyBrief: 'Daily Briefing', previewTaskFollowUp: 'Follow-up Monitor', previewTaskSalesWeekly: 'Sales Leads Weekly',
         archiveSession: 'Archive', archiveConfirmTitle: 'Archive this task?', archiveConfirmMessage: 'This task will leave the sidebar.', archiveConfirmDetail: 'The conversation and artifacts stay saved, and can be restored on the chat manager page.', archiveConfirmAction: 'Archive',
         archiveSuccess: 'Archived', archiveSuccessView: 'View',
         exportSessionArchive: 'Export session log', exportSessionDone: path => `Session log exported to ${path}`, exportSessionFailed: 'Failed to export the session log',
         sessionBatchFailed: n => `${n} task operation${n === 1 ? '' : 's'} failed. Please retry.`,
-        archivedTasks: 'Tasks archived in Settings', archivedTasksDesc: '', archivedEmpty: 'No archived tasks yet', restoreArchived: 'Restore to list',
+   
         archivedDeleteTitle: 'Delete archived task?', archivedDeleteMessage: 'This permanently deletes the task and its contents. This cannot be undone.', archivedDeleteAction: 'Delete',
         knowledge: 'Knowledge', remoteKnowledge: 'Shared Knowledge',
-        remoteKbHeroTitle: 'Shared knowledge', remoteKbHeroStep1: 'Connect a knowledge server', remoteKbHeroStep2: 'Manage documents in one place', remoteKbHeroStep3: 'Use them across devices', remoteKbHeroClient: 'PINVOU client', remoteKbHeroNetwork: 'Secure network', remoteKbHeroServer: 'Knowledge server', remoteKbHeroDevices: 'Authorized devices',
-        remoteKbDesc: 'Create shared knowledge on this device, or join your team’s existing library.', remoteKbRefresh: 'Refresh', remoteKbConnectTitle: 'Join shared knowledge', remoteKbInvitePlaceholder: 'Paste a pinvou-knowledge:// invitation', remoteKbDeviceName: 'Enter your name', remoteKbConnect: 'Connect', remoteKbConnected: 'Joined shared knowledge', remoteKbServers: 'Shared knowledge', remoteKbNoServers: 'No shared knowledge yet', remoteKbReady: 'Available', remoteKbNotReady: 'Search unavailable', remoteKbOffline: 'Offline', remoteKbManage: 'Manage', remoteKbReadOnly: 'Read only', remoteKbSelectServer: 'Join or select shared knowledge first', remoteKbShowTrash: 'Show trash', remoteKbDisconnect: 'Disconnect', remoteKbRemoveConfirm: 'Disconnecting removes this connection and all chat attachments on this device. Continue?', remoteKbCollections: 'Shared collections', remoteKbCollectionName: 'New collection name', remoteKbCreate: 'Create', remoteKbCollectionCreated: 'Collection created', remoteKbNoCollections: 'No collections yet', remoteKbDocuments: 'documents', remoteKbChunks: 'chunks', remoteKbRestore: 'Restore', remoteKbTrash: 'Move to trash', remoteKbTrashConfirm: 'Move this collection to trash? Its documents remain recoverable.', remoteKbFiles: 'Documents', remoteKbUpload: 'Upload files', remoteKbUploaded: 'Documents uploaded', remoteKbNoDocuments: 'No documents in this collection', remoteKbStatusPending: 'Processing', remoteKbStatusReady: 'Available', remoteKbStatusFailed: 'Processing failed', remoteKbStatusUnknown: 'Unknown status', remoteKbDownload: 'Download original', remoteKbDownloaded: 'File downloaded', remoteKbTestSearch: 'Test search', remoteKbSearchPlaceholder: 'Enter a question or keywords', remoteKbSearch: 'Search', remoteKbDesktopOnly: 'Shared knowledge requires the PINVOU desktop app.',
-        remoteKbAddServer: 'Join shared knowledge', remoteKbHideConnect: 'Hide connection', remoteKbNewCollection: 'New collection', remoteKbCancel: 'Cancel', remoteKbClose: 'Close', remoteKbCollapse: 'Hide', remoteKbDone: 'Done', remoteKbUploading: 'Processing…', remoteKbUploadTitle: 'Upload documents', remoteKbStartUpload: 'Upload', remoteKbRetryFailed: 'Retry failed', remoteKbUploadingFile: 'Uploading', remoteKbUploadDone: 'Done', remoteKbUploadPendingIndex: 'Processing', remoteKbUploadStillIndexing: 'Still processing', remoteKbUploadIndexFailed: 'Processing failed', remoteKbUploadFailed: 'Upload failed', remoteKbUploadSuccess: '{count} documents uploaded', remoteKbUploadSummary: '{done} done · {processing} processing · {failed} failed', remoteKbUploadRefreshFailed: 'Could not refresh the list: {error}', remoteKbFileName: 'Name', remoteKbStatus: 'Status', remoteKbSize: 'Size',
+        remoteKbHeroTitle: 'Shared knowledge',       
+        remoteKbDesc: 'Create shared knowledge on this device, or join your team’s existing library.', remoteKbRefresh: 'Refresh', remoteKbConnectTitle: 'Join shared knowledge',  remoteKbDeviceName: 'Enter your name', remoteKbConnect: 'Connect', remoteKbConnected: 'Joined shared knowledge', remoteKbServers: 'Shared knowledge', remoteKbNoServers: 'No shared knowledge yet', remoteKbReady: 'Available', remoteKbNotReady: 'Search unavailable', remoteKbOffline: 'Offline', remoteKbManage: 'Manage', remoteKbReadOnly: 'Read only',  remoteKbShowTrash: 'Show trash', remoteKbDisconnect: 'Disconnect', remoteKbRemoveConfirm: 'Disconnecting removes this connection and all chat attachments on this device. Continue?', remoteKbCollections: 'Shared collections', remoteKbCollectionName: 'New collection name', remoteKbCreate: 'Create', remoteKbCollectionCreated: 'Collection created', remoteKbNoCollections: 'No collections yet', remoteKbDocuments: 'documents', remoteKbChunks: 'chunks', remoteKbRestore: 'Restore', remoteKbTrash: 'Move to trash', remoteKbTrashConfirm: 'Move this collection to trash? Its documents remain recoverable.', remoteKbFiles: 'Documents', remoteKbUpload: 'Upload files',  remoteKbNoDocuments: 'No documents in this collection', remoteKbStatusPending: 'Processing', remoteKbStatusReady: 'Available', remoteKbStatusFailed: 'Processing failed', remoteKbStatusUnknown: 'Unknown status', remoteKbDownload: 'Download original', remoteKbDownloaded: 'File downloaded', remoteKbTestSearch: 'Test search', remoteKbSearchPlaceholder: 'Enter a question or keywords', remoteKbSearch: 'Search', remoteKbDesktopOnly: 'Shared knowledge requires the PINVOU desktop app.',
+        remoteKbAddServer: 'Join shared knowledge',  remoteKbNewCollection: 'New collection', remoteKbCancel: 'Cancel', remoteKbClose: 'Close', remoteKbCollapse: 'Hide', remoteKbDone: 'Done', remoteKbUploading: 'Processing…', remoteKbUploadTitle: 'Upload documents', remoteKbStartUpload: 'Upload', remoteKbRetryFailed: 'Retry failed', remoteKbUploadingFile: 'Uploading', remoteKbUploadDone: 'Done', remoteKbUploadPendingIndex: 'Processing', remoteKbUploadStillIndexing: 'Still processing', remoteKbUploadIndexFailed: 'Processing failed', remoteKbUploadFailed: 'Upload failed', remoteKbUploadSuccess: '{count} documents uploaded',  remoteKbUploadRefreshFailed: 'Could not refresh the list: {error}', remoteKbFileName: 'Name', remoteKbStatus: 'Status', remoteKbSize: 'Size',
         remoteKbReplace: 'Update document', remoteKbReplaced: 'Document updated', remoteKbLoadMoreDocuments: 'Load more', remoteKbLoadingMoreDocuments: 'Loading…',
         remoteKbNearby: 'Nearby shared knowledge', remoteKbDiscovering: 'Securely checking nearby shared knowledge…', remoteKbNearbyEmpty: 'No available LAN knowledge servers found', remoteKbManualConnect: 'Connect manually', remoteKbVerify: 'Check identity', remoteKbVerifyIdentityDesc: 'Compare this code with “Service and maintenance” on the host. Request access only when the codes match exactly.', remoteKbIdentityCode: 'Service identity code', remoteKbConfirmIdentity: 'Codes match — request access', remoteKbBack: 'Back', remoteKbLan: 'LAN', remoteKbTailnet: 'Tailscale', remoteKbHostIdentity: 'Service identity', remoteKbHostIdentityDesc: 'When a new device connects for the first time, compare this code on both devices.', remoteKbPublishLocal: 'Publish local collection', remoteKbPublishDesc: 'Copy the selected collection and its source documents. Local and shared copies remain independent.', remoteKbPublishChoose: 'Choose a local collection', remoteKbPublishContinue: 'Prepare', remoteKbPublishEmpty: 'This local collection has no documents yet', remoteKbNoLocalCollections: 'No local collections are available to publish',
-        remoteKbJoinSource: 'Share link or private address', remoteKbJoinSourcePlaceholder: 'Paste a share link or enter 192.168.1.20:3210', remoteKbJoinHint: 'Supports LAN addresses, Tailscale 100.x addresses, and *.ts.net:port. Private direct connections require identity verification first.', remoteKbShareLinkOnly: 'Paste a pinvou-knowledge://share… link generated by the owner.', remoteKbJoinRequested: 'Join request sent', remoteKbPendingTitle: 'Waiting for approval', remoteKbPendingDesc: 'PINVOU joins automatically after owner approval.', remoteKbCancelRequest: 'Cancel', remoteKbOwner: 'Owner', remoteKbGovern: 'Manage', remoteKbGovernTitle: 'Sharing and members', remoteKbPeopleTab: 'People and invites', remoteKbServiceTab: 'Service and maintenance',
-        remoteKbShareTitle: 'Invite your team', remoteKbShareDesc: 'Share links are valid for 24 hours by default and can accept multiple requests.', remoteKbCreateShare: 'Create link', remoteKbAutoApproveRead: 'Auto-approve read-only requests while this link is active', remoteKbCopy: 'Copy link', remoteKbLinkCopied: 'Share link copied', remoteKbRecoveryCopied: 'Recovery code copied', remoteKbCopyFailed: 'Copy failed. Select the text and copy it manually.', remoteKbActiveShares: '{count} active share links', remoteKbRequestsTitle: 'Join requests', remoteKbNoRequests: 'No pending requests', remoteKbApproveRead: 'Read only', remoteKbApproveManage: 'Manage', remoteKbReject: 'Reject', remoteKbStopShare: 'Stop', remoteKbAutoReadShort: 'Auto read-only', remoteKbMembersTitle: 'Members', remoteKbThisDevice: 'This device', remoteKbRevoked: 'Revoked', remoteKbRestoreAccess: 'Restore', remoteKbRevokeAccess: 'Revoke', remoteKbMemberAccess: 'Member access', remoteKbRemoveMember: 'Remove member “{name}”', remoteKbRemoveMemberAction: 'Remove member', remoteKbRemoveMemberConfirm: 'Permanently remove “{name}”?',
+        remoteKbJoinSource: 'Share link or private address', remoteKbJoinSourcePlaceholder: 'Paste a share link or enter 192.168.1.20:3210', remoteKbJoinHint: 'Supports LAN addresses, Tailscale 100.x addresses, and *.ts.net:port. Private direct connections require identity verification first.',  remoteKbJoinRequested: 'Join request sent', remoteKbPendingTitle: 'Waiting for approval', remoteKbPendingDesc: 'PINVOU joins automatically after owner approval.', remoteKbCancelRequest: 'Cancel', remoteKbOwner: 'Owner', remoteKbGovern: 'Manage', remoteKbGovernTitle: 'Sharing and members', remoteKbPeopleTab: 'People and invites', remoteKbServiceTab: 'Service and maintenance',
+        remoteKbShareTitle: 'Invite your team', remoteKbShareDesc: 'Share links are valid for 24 hours by default and can accept multiple requests.', remoteKbCreateShare: 'Create link', remoteKbAutoApproveRead: 'Auto-approve read-only requests while this link is active', remoteKbCopy: 'Copy link', remoteKbLinkCopied: 'Share link copied', remoteKbRecoveryCopied: 'Recovery code copied', remoteKbCopyFailed: 'Copy failed. Select the text and copy it manually.',  remoteKbRequestsTitle: 'Join requests', remoteKbNoRequests: 'No pending requests', remoteKbApproveRead: 'Read only', remoteKbApproveManage: 'Manage', remoteKbReject: 'Reject', remoteKbStopShare: 'Stop', remoteKbAutoReadShort: 'Auto read-only', remoteKbMembersTitle: 'Members', remoteKbThisDevice: 'This device', remoteKbRevoked: 'Revoked', remoteKbRestoreAccess: 'Restore', remoteKbRevokeAccess: 'Revoke', remoteKbMemberAccess: 'Member access', remoteKbRemoveMember: 'Remove member “{name}”', remoteKbRemoveMemberAction: 'Remove member', remoteKbRemoveMemberConfirm: 'Permanently remove “{name}”?',
         remoteKbPromoteOwner: 'Make owner', remoteKbDemoteOwner: 'Remove owner', remoteKbPromoteOwnerConfirm: 'Make “{name}” an owner? They can manage sharing and members.', remoteKbDemoteOwnerConfirm: 'Remove owner access from “{name}”?', remoteKbModelTitle: 'Semantic search model', remoteKbModelReady: 'Available', remoteKbModelMissing: 'Not downloaded', remoteKbModelDownloading: 'Downloading; this continues after PINVOU closes', remoteKbDownloadModel: 'Download', remoteKbModelDownloadingAction: 'Downloading', remoteKbPermanentDelete: 'Delete permanently', remoteKbPermanentDeleteConfirm: 'Permanently delete “{name}”? This cannot be undone.',
         remoteKbOtherNetwork: 'Other network address (optional)', remoteKbOtherNetworkPlaceholder: 'For example, 100.64.12.34:3210 or cube.ts.net:3210',
         remoteKbCreateHost: 'Create shared knowledge', remoteKbHostCreated: 'Shared knowledge created', remoteKbReconnectHost: 'Reconnect this host', remoteKbHostReconnected: 'Local owner access restored', remoteKbUpgradeHost: 'Upgrade service', remoteKbHostUpgraded: 'Shared knowledge service upgraded', remoteKbClientOutdatedTitle: 'Update PINVOU first', remoteKbClientOutdatedDesc: 'PINVOU {appVersion} is older than the host service {serviceVersion}. Service downgrade is blocked to protect your data.', remoteKbHostProgressCreateTitle: 'Creating shared knowledge', remoteKbHostProgressReconnectTitle: 'Restoring the local connection', remoteKbHostProgressUpgradeTitle: 'Upgrading shared knowledge', remoteKbHostProgressPrepare: 'Preparing installation files', remoteKbHostProgressInstall: 'Waiting for system approval and installing the service', remoteKbHostProgressConnect: 'Connecting to the local service', remoteKbHostProgressComplete: 'Complete', remoteKbHostProgressFailed: 'Operation did not finish', remoteKbHostProgressHint: 'Approve the system prompt if it appears. This usually takes less than a minute.', remoteKbHostProgressRetry: 'Retry', remoteKbNoLanEndpoint: 'No team-accessible LAN address was found. Connect this computer to the LAN and retry.', remoteKbHostSettings: 'Host settings', remoteKbHostSettingsDesc: 'Back up, restore, or manage this computer\'s host service.', remoteKbDangerZone: 'Stop or delete', remoteKbDangerZoneDesc: 'Stopping hosting keeps existing data. Deleting the service and data cannot be undone.', remoteKbBackup: 'Create backup', remoteKbRestoreBackup: 'Restore backup', remoteKbRecoveryTitle: 'Save recovery code', remoteKbRecoveryDesc: 'The backup is encrypted. Restoring on this computer needs no code; moving to another host requires this code. Store it separately from the backup.', remoteKbCopyRecovery: 'Copy recovery code', remoteKbRestoreTitle: 'Restore shared knowledge', remoteKbRestoreDesc: 'Leave the recovery code blank to restore on this host, or enter it to migrate to this host.', remoteKbRecoveryPlaceholder: 'Paste the recovery code for migration (leave blank on this host)', remoteKbSameHostMode: 'A same-host restore keeps the current service identity and members, and restores knowledge content only.', remoteKbMigrationMode: 'Migration imports knowledge content under a new service identity. Existing members must join again.', remoteKbRestoreAction: 'Restore', remoteKbRestoreConfirm: 'Restore knowledge content on this host? Current content will be replaced while the service identity and members stay unchanged.', remoteKbMigrateConfirm: 'Migrate this backup to the current host? Current content will be replaced and a new service identity and owner will be created.', remoteKbRestored: 'Shared knowledge restored', remoteKbMigrated: 'Shared knowledge migrated to this host', remoteKbRemoveHost: 'Stop hosting', remoteKbDeleteHost: 'Delete service and data', remoteKbRemoveHostConfirm: 'Stop the shared knowledge service on this computer? Existing data will be kept for a later reinstall.', remoteKbDeleteHostConfirm: 'Permanently delete the shared knowledge service and all data on this computer? This cannot be undone.', remoteKbHostRemoved: 'Shared knowledge hosting stopped; data was kept', remoteKbHostDeleted: 'Shared knowledge service and data deleted',
         outputs: 'Outputs',
-        kbMount: 'Knowledge', kbMountTitle: 'Manage collections attached to this chat', kbMountPick: 'Pick a collection', kbMountNone: 'No collections yet — create or connect one in Knowledge', kbMountRemove: 'Remove all', kbMountRemoveOne: 'Remove this collection', kbMountEnable: 'Enable', kbMountDisable: 'Disable', kbMountEnabled: 'Enabled', kbMountDisabled: 'Disabled', kbMountCount: n => `${n} knowledge bases`, kbMountedTag: 'Mounted', kbMountNoModel: 'Install the embedding model first (Knowledge → Local Knowledge) to attach a local collection', kbMountNotReady: 'The embedding model is still loading or failed to load, so collections cannot be attached yet',
+        kbMount: 'Knowledge', kbMountTitle: 'Manage collections attached to this chat', kbMountPick: 'Pick a collection', kbMountNone: 'No collections yet — create or connect one in Knowledge', kbMountRemove: 'Remove all', kbMountRemoveOne: 'Remove this collection', kbMountEnable: 'Enable', kbMountDisable: 'Disable', kbMountEnabled: 'Enabled', kbMountDisabled: 'Disabled', kbMountCount: n => `${n} knowledge bases`,  kbMountNoModel: 'Install the embedding model first (Knowledge → Local Knowledge) to attach a local collection', kbMountNotReady: 'The embedding model is still loading or failed to load, so collections cannot be attached yet',
         modeYolo: 'YOLO', modePlan: 'Plan', modeSwitchTitle: 'Switch mode', modeYoloDesc: 'Act directly', modePlanDesc: 'Plan first, then execute',
         modeYoloConfirmTitle: 'Switch to YOLO mode?', modeYoloConfirmBody: 'In this mode the model reads and writes your project directory fully automatically and can run shell commands, without step-by-step approvals.', modeYoloConfirmHint: 'Remembered globally once confirmed — you will not be asked again.', modeYoloConfirmOk: 'Confirm', modeYoloConfirmCancel: 'Cancel',
-        kbTitle: 'Knowledge', kbDesc: 'Manage local and shared knowledge in one place',
-        kbRescan: 'Rescan', kbScanning: 'Scanning', kbDeduping: 'Deduping', kbScanNow: 'Scan this PC',
-        kbTotalFiles: 'Indexed files', kbDupFiles: 'Duplicates', kbWasted: 'Reclaimable',
-        kbTabSearch: 'Search', kbTabDups: 'Duplicates',
-        kbSearchPlaceholder: 'Try: pdf from last week, videos over 10mb', kbSearchBtn: 'Search',
-        kbResults: 'Results', kbNoResults: 'No matching files', kbScanningHint: 'Indexing… scanned',
+ 
+        kbRescan: 'Rescan', kbScanning: 'Scanning',  kbScanNow: 'Scan this PC',
+  
+ 
+        kbSearchPlaceholder: 'Try: pdf from last week, videos over 10mb', 
+ kbNoResults: 'No matching files', kbScanningHint: 'Indexing… scanned',
         kbEmptyHint: 'No index yet. Scan this PC to instantly search all files and find duplicates.',
-        kbBuildDups: 'Find duplicates', kbDupHint: 'No dedup data yet. Click "Find duplicates" to scan — reads files on demand to fingerprint.',
-        kbDupNote: 'Files with identical content (delete action coming in a later version)', kbNoDups: 'No duplicates found', kbDupCopies: 'copies',
+ 
+  
         kbOpen: 'Open', kbOpenFolder: 'Open folder',
-        kbPageTitle: 'Knowledge', kbFilesSub: 'Search and browse local files, and turn them into an AI-citable knowledge base.', kbKbSub: 'Turn local files into AI-citable knowledge; answers cite their sources.',
+  
         kbSubFiles: 'Local Files', kbSubKb: 'Local Knowledge', kbSubRemote: 'Shared Knowledge', kbSubOutput: 'Outputs',
         kbOutSub: 'Everything you and PINVOU have made, all in one place.',
-        kbOutSearch: 'Search outputs', kbOutSearchList: 'Search by name / source chat',
+ kbOutSearchList: 'Search by name / source chat',
         kbOutCatAll: 'All', kbOutCatWeb: 'Web', kbOutCatDoc: 'Docs', kbOutCatImg: 'Poster', kbOutCatPpt: 'PPT',
-        kbOutCount: (n) => `${n} items`, kbOutSort: 'Recently modified',
-        kbOutGroupToday: 'Today', kbOutGroupWeek: 'This week', kbOutGroupEarlier: 'Earlier', kbOutGroupCount: (n) => `${n} outputs`,
+ 
+        kbOutGroupToday: 'Today', kbOutGroupWeek: 'This week',  kbOutGroupCount: (n) => `${n} outputs`,
         kbOutMonthLabel: (y, m) => `${y}-${String(m).padStart(2, '0')}`, kbOutGroupUnknown: 'Unknown time',
-        kbOutColName: 'Name', kbOutColType: 'Type', kbOutColSource: 'Source chat', kbOutColTime: 'Modified', kbOutColActions: 'Actions',
+    kbOutColActions: 'Actions',
         kbOutTodayPrefix: 'Today', kbOutWeekdays: ['Sun','Mon','Tue','Wed','Thu','Fri','Sat'],
-        kbOutPreview: 'Preview', kbOutOpenChat: 'Open in chat', kbOutContinue: 'Continue', kbOutNewProject: 'New project', kbOutGallery: 'Gallery', kbOutList: 'List', kbOutOpenExt: 'Open in system', kbOutOpenFolder: 'Open folder',
+  kbOutContinue: 'Continue', kbOutNewProject: 'New project', kbOutGallery: 'Gallery', kbOutList: 'List',  kbOutOpenFolder: 'Open folder',
         kbOutEmpty: 'No outputs yet', kbOutEmptyHint: 'Chat with PINVOU — things you make together will appear here.',
-        kbOutContinuePrefill: (name) => `Continue refining "${name}"`, kbOutRequirementLabel: 'My request:', kbOutFileCount: (n) => `${n} files`,
+        kbOutContinuePrefill: (name) => `Continue refining "${name}"`, kbOutRequirementLabel: 'My request:', 
         kbCatAll: 'All', kbCatDoc: 'Docs', kbCatSheet: 'Sheets', kbCatPpt: 'Slides', kbCatPdf: 'PDF', kbCatImg: 'Images', kbCatZip: 'Archives',
-        kbRecent: 'Recently modified', kbAddToKb: 'Add to knowledge', kbAdd: 'Add', kbAddFiles: 'Add files', kbAddFolder: 'Add folder', kbIndexing: 'Parsing',
-        kbBrowseByType: 'Browse by type', kbMonitored: 'Click a type to filter below', kbItemUnit: '', kbMonitoredDirs: 'Watching {n} folders', kbManageFavLink: 'Manage →', kbRecentFiles: 'Recent files', kbAllFiles: 'All files', kbSortByModified: 'Sorted by last modified', kbColName: 'Name', kbColLoc: 'Location', kbColSize: 'Size', kbColTime: 'Modified', kbManageFav: 'Manage →', kbEnter: 'Enter', kbCollUnit: 'knowledge bases', kbColColl: 'Knowledge base', kbStatus: 'Status',
+ kbAddToKb: 'Add to knowledge', kbAdd: 'Add', kbAddFiles: 'Add files', kbAddFolder: 'Add folder', kbIndexing: 'Parsing',
+        kbBrowseByType: 'Browse by type',      kbAllFiles: 'All files',  kbColName: 'Name',  kbColSize: 'Size', kbColTime: 'Modified',   kbCollUnit: 'knowledge bases', kbColColl: 'Knowledge base', kbStatus: 'Status',
         kbBannerTitle: 'AI Knowledge · Build your own knowledge base', kbNewColl: 'New collection', kbEditColl: 'Edit collection', kbSave: 'Save',
         kbStep1: 'Pick local files', kbStep2: 'AI parse & index', kbStep3: 'Cited in chat',
         kbMyColls: 'My collections', kbNoColls: 'No collections yet. Click "New collection" to start.', kbNoCollsShort: 'No collections yet — create one first.',
@@ -231,8 +231,8 @@ export const dictEn = {
         kbImportProgress: 'File progress', kbCurrentFile: 'Current file:', kbChunkProgress: 'Chunk progress', kbFailedFiles: 'Failed files', kbRetryFile: 'Retry', kbImportErrors: 'failed', kbImportDoneWithErrors: 'Import finished with errors',
         kbResumeImportFailed: 'Failed to continue import', kbCancelImportFailed: 'Failed to cancel import', kbRetryImportFailed: 'Failed to retry file',
         kbLoadMoreFailedFiles: 'Load more failed files', kbLoadingFailedFiles: 'Loading…', kbLoadFailedFilesFailed: 'Failed to load failed files',
-        kbDeleteColl: 'Delete collection', kbRemove: 'Remove', kbCollEmpty: 'No documents yet. Click "Add files".', kbNoCollFiles: 'No files in any knowledge base yet', kbAllColls: 'All', kbDelCollConfirm: 'Delete collection "{n}"?', kbDelCollWarn: 'Only removes the index for its {c} documents. Your original files on disk are NOT deleted.', kbDelete: 'Delete', kbRemoveDocConfirm: 'Remove "{n}" from the knowledge base?', kbRemoveDocWarn: 'Only deletes its index here. Your original file on disk is not affected.', kbRemoveFailed: 'Could not remove document', kbRemoveQ: 'Remove?',
-        kbRetrPlaceholder: 'Search inside this collection…', kbModeSearch: 'Search', kbModeAsk: 'Ask AI', kbAskPlaceholder: 'Ask this collection… (AI answers from its content, with citations)', kbAskBtn: 'Ask', kbAsking: 'Thinking…', kbAnswer: 'Answer', kbSources: 'Sources', kbNoContext: 'Nothing indexed in this collection yet — add files and wait for indexing.', kbAskError: 'Failed to answer — check the local model service.', kbCollNamePh: 'Collection name', kbCollCatPh: 'Category (optional)', kbCancel: 'Cancel', kbCreate: 'Create',
+        kbDeleteColl: 'Delete collection', kbRemove: 'Remove', kbCollEmpty: 'No documents yet. Click "Add files".', kbNoCollFiles: 'No files in any knowledge base yet', kbAllColls: 'All', kbDelCollConfirm: 'Delete collection "{n}"?', kbDelCollWarn: 'Only removes the index for its {c} documents. Your original files on disk are NOT deleted.', kbDelete: 'Delete', kbRemoveDocConfirm: 'Remove "{n}" from the knowledge base?', kbRemoveDocWarn: 'Only deletes its index here. Your original file on disk is not affected.', kbRemoveFailed: 'Could not remove document', 
+          kbCollNamePh: 'Collection name', kbCollCatPh: 'Category (optional)', kbCancel: 'Cancel', kbCreate: 'Create',
         kbEmbedOn: 'Semantic search on', kbEmbedOff: 'Semantic search off · full-text only',
         kbModelTitle: 'Embedding model not installed', kbModelDesc: 'Vectorizing and semantic search rely on a local embedding model. Download and deploy it to start building knowledge bases the AI can answer from.',
         kbModelLoadingTitle: 'Loading embedding model', kbModelLoadingDesc: 'Local semantic search is initializing. Knowledge bases will become available automatically when it finishes.', kbModelFailedTitle: 'Embedding model failed to load', kbModelFailedDesc: 'Retry loading first. If the local files are incomplete or damaged, download and repair the model.',
@@ -242,34 +242,34 @@ export const dictEn = {
         kbModelDownloadBtn: 'Download & deploy', kbModelFoot: 'Install once, then offline · keep using other features while it downloads',
         kbModelRetryBtn: 'Retry loading', kbModelRepairBtn: 'Download & repair', kbModelLoading: 'Loading model…',
         kbModelStageDownload: 'Downloading model files…', kbModelStageVerify: 'Verifying…', kbModelStagePrepare: 'Preparing model…', kbModelStageDone: 'Done',
-        sysStatus: 'System Status', sysDesc: 'Real-time performance metrics', gpu: 'GPU', gpuUnavail: 'Unavailable', noSmi: 'nvidia-smi not found',
-        cpu: 'CPU', cpuUnavail: 'CPU info unavailable', cpuTotal: 'Total Usage', cpuProcess: 'App Usage', cpuLogical: 'logical processors',
+        sysStatus: 'System Status',  gpu: 'GPU', gpuUnavail: 'Unavailable', 
+        cpu: 'CPU',    
         vram: 'VRAM Usage', core: 'Core Usage', temp: 'Temp', power: 'Power', unifiedMem: 'Unified Memory',
-        ram: 'System RAM', used: 'Used', physical: 'Physical RAM', total: 'Total', swap: 'Swap Space',
-        vllm: 'Inference Engine', ctx: 'Context Length', ctxWarn: '⚠️ Small context window (%s, below 128k). Long chats compact often and keep less history; use a model with ≥128k window or raise --max-model-len', queue: 'Task Queue', kv: 'KV Hit Rate', ttft: 'TTFT', tps: 'TPS (Generation Speed)', tokTotal: 'Total Tokens · gen/prompt', clearHold: 'Hold to reset', clearHolding: 'Keep holding…', clearDone: 'Cleared', clearHint: 'Hold "Reset" until full to clear · release to cancel', statsSince: 'Since %t', statsAge: ' · %m min running', statsJustReset: ' · just reset', statsLifetime: 'Lifetime total', app: 'App Service', appRunning: 'Core daemon running',
-        curVer: 'App Version', uiVer: 'UI Version', uptime: 'Uptime', runningMemory: 'Active Memory', temporaryMemory: 'Temporary Memory', memoryPressure: 'Memory Pressure', normal: 'Normal', localProcessor: 'Local Compute', processorLoad: 'Processor Load', graphicsLoad: 'Graphics Load', sharedMemory: 'Shared Memory', deviceTemp: 'Device Temp', currentModel: 'Current Model', localRunning: 'Local', remoteService: 'Remote', available: 'Available', unavailable: 'Unavailable', historyReuse: 'Reuse Rate', modelTextVolume: 'Model Text Volume', modelReadAmount: 'Model Reads', modelOutputAmount: 'Model Outputs', modelReadHint: 'More input means slower responses and higher usage', modelOutputHint: 'More output means longer replies and higher usage', resetCount: 'Reset Count', contextHint: 'Conversation range kept in memory', queueHint: 'Running / waiting', ttftHint: 'Wait before the first word', tpsHint: 'Reply output speed', reuseHint: 'Higher is faster and saves tokens', totalMemory: 'Total Memory',
-        appearance: 'Appearance & Language', lang: 'Language', langDesc: 'Switch application display language', theme: 'Theme', themeDesc: 'Choose your color style',
+        ram: 'System RAM', used: 'Used',  total: 'Total', swap: 'Swap Space',
+        vllm: 'Inference Engine', ctx: 'Context Length',  queue: 'Task Queue', kv: 'KV Hit Rate', ttft: 'TTFT', tps: 'TPS (Generation Speed)', tokTotal: 'Total Tokens · gen/prompt',         app: 'App Service', 
+        curVer: 'App Version',  uptime: 'Uptime', runningMemory: 'Active Memory', temporaryMemory: 'Temporary Memory', memoryPressure: 'Memory Pressure', normal: 'Normal', localProcessor: 'Local Compute', processorLoad: 'Processor Load', graphicsLoad: 'Graphics Load', sharedMemory: 'Shared Memory', deviceTemp: 'Device Temp', currentModel: 'Current Model', localRunning: 'Local', remoteService: 'Remote', available: 'Available', unavailable: 'Unavailable', historyReuse: 'Reuse Rate',  modelReadAmount: 'Model Reads', modelOutputAmount: 'Model Outputs', modelReadHint: 'More input means slower responses and higher usage', modelOutputHint: 'More output means longer replies and higher usage', resetCount: 'Reset Count', contextHint: 'Conversation range kept in memory', queueHint: 'Running / waiting', ttftHint: 'Wait before the first word', tpsHint: 'Reply output speed', reuseHint: 'Higher is faster and saves tokens', totalMemory: 'Total Memory',
+        appearance: 'Appearance & Language', lang: 'Language',  theme: 'Theme', themeDesc: 'Choose your color style',
         light: 'Light', dark: 'Dark', followSystem: 'Follow System',
         notifications: 'Notifications',
-        taskCompletedNotif: 'Task completion alert',
-        taskCompletedNotifDesc: 'Send a system notification when a task finishes',
-        searchBackend: 'Web Search', searchSource: 'Search Source', searchBackendDesc: 'Source used by the LLM when invoking the Web search action',
-        searchKey: 'API Key',
-        searchKeyHintBing: 'Bing needs no API key, but Chinese search results are poor',
-        searchKeyHintMetaso: 'Leave empty for community shared key (~100/day, multi-user)',
-        searchKeyHintBocha: 'Required, search will fail without it',
-        searchKeyHintBaidu: 'Required (Baidu Qianfan API Key), search will fail without it',
-        searchKeyHintTavily: 'Required (tvly- prefix), overseas service, needs stable external network',
-        searchKeyPlaceholder: 'Paste API key',
-        searchRestartHint: 'Configuration changed — saving will restart the app',
-        searchGetKey: 'Get your own key',
-        searchGetKeyMetasoSteps: 'Free · 1-min QR-code sign-up (WeChat/phone) · Personal quota',
-        searchGetKeyBochaSteps: 'Free · Get sk- prefixed key from console after sign-up',
-        searchGetKeyBaiduSteps: 'Create API Key in Qianfan console · Pay-as-you-go with free tier',
-        searchGetKeyTavilySteps: 'Overseas · Get tvly- key after sign-up · Free monthly tier, needs external network',
-        modelBackend: 'Model & Backend',
-        modelBackendDesc: 'Choose a local model service or a third-party API for inference',
-        modelPreset: 'Model Source',
+
+
+  
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
         modelPresetLocalVllm: 'Local model (default)',
         modelPresetDeepseek: 'DeepSeek',
         modelPresetKimi: 'Kimi',
@@ -283,28 +283,28 @@ export const dictEn = {
         modelPresetMinimax: 'MiniMax',
         modelPresetGlm: 'Zhipu GLM',
         modelPresetMimo: 'Xiaomi MiMo',
-        customModelName: 'Model Name',
+
         customBaseUrl: 'API Base URL',
         modelContextWindow: 'Context Window (tokens)',
-        modelMaxOutput: 'Max Output (tokens)',
-        customApiKey: 'API Key',
-        credEnvOverride: 'Env override', credUnavailable: 'Credential unavailable', credConfigured: 'Configured', credNotConfigured: 'Not configured', credEnterNewKey: 'Enter new key to replace', credKeep: 'Keep', credReplace: 'Replace', credDeleteKey: 'Delete Key', clearSearch: 'Clear search', clearInput: 'Clear input', sendMsg: 'Send', apiKeyGateTitle: 'API Key required', apiKeyGateDesc: 'The current model is a cloud model. Configure an API Key to start chatting.', apiKeyGateBtn: 'Configure',
-        detectLocalVllm: 'Detect local model services',
+
+
+        clearSearch: 'Clear search',  sendMsg: 'Send', apiKeyGateTitle: 'API Key required', apiKeyGateDesc: 'The current model is a cloud model. Configure an API Key to start chatting.', apiKeyGateBtn: 'Configure',
+
         detectingLocalVllm: 'Detecting…',
-        useVllmConfig: 'Use config',
-        confirmAndRestart: 'Save & Restart',
-        addModel: '＋ Add Model', editModel: 'Edit', deleteModelBtn: 'Delete', setActiveModel: 'Set Default', modelActiveTag: 'Default',
+
+
+        addModel: '＋ Add Model', editModel: 'Edit',  setActiveModel: 'Set Default', 
         modelFormAddTitle: 'Add Model', modelFormEditTitle: 'Edit Model', modelDisplayName: 'Display Name',
         testConnection: 'Test Connection', testingConn: 'Testing…', modelSaveBtn: 'Save', manageModels: 'Manage models…',
-        switchModelTitle: 'Switch model', modelSwitchBusy: 'Busy generating, cannot switch', modelNonePick: 'Select model', modelDeleteMin: 'Keep at least one model',
+ modelSwitchBusy: 'Busy generating, cannot switch', modelNonePick: 'Select model', 
         modelGroupPreset: 'Presets', modelGroupCustom: 'Custom',
         thinkingDepth: 'Thinking depth', thinkingDepthTiers: { off: 'Off', low: 'Low', medium: 'Medium', high: 'High', max: 'Max' },
         saveModelFailed: 'Failed to save thinking depth. Please try again',
-        modelEnvLocked: f => `Locked by env vars: ${f}; settings won't apply`, deleteModelConfirm: n => `Delete model "${n}"?`,
-        modelDirtyHint: 'Configuration changed — saving will restart the app',
-        langRestartHint: 'Interface language switched; restart the app to apply it to the assistant',
-        sysPerm: 'System Permissions', sudo: 'Advanced execution (Sudo)', sudoDesc: 'Allow the assistant to run advanced commands such as environment configuration',
-        versionUpdate: 'Version & Update',
+        modelEnvLocked: f => `Locked by env vars: ${f}; settings won't apply`, 
+
+
+ sudo: 'Advanced execution (Sudo)', 
+
         uiRemote: {
           title:'Mobile Remote Control', desc:'Once enabled, the remote link can browse local files and run a code Agent in selected folders. Share it only with people you trust.', browser:'Browser connection', stop:'Stop', qrAlt:'Remote control QR code', qrHint:'Scan with your phone or copy the link below', link:'Remote control link', linkHint:'The QR code and link are identical and remain valid after restart. Refreshing or stopping access revokes the old link immediately.', generating:'Generating remote control link…', notStarted:'Remote control is not enabled.', copy:'Copy Link', refresh:'Refresh QR Code', enable:'Enable Access', allowWorkspace:'Allow Local Folders', refreshTitle:'Refresh QR code?', refreshDesc:'The old QR code and link will become invalid immediately, and the current browser will disconnect. Scan the new QR code or copy the new link to reconnect.', refreshing:'Refreshing…', updated:'Remote control status updated.', unavailable:'Remote control is temporarily unavailable. Try again.',
           status:{ idle:['Not enabled','Enable access to create a persistent remote control link.'], starting:['Starting','Creating the remote control connection.'], connecting_relay:['Connecting','Connecting to the relay…'], waiting_web_client:['Waiting for browser','Paste the link into a browser on your phone or computer.'], web_client_connected:['Browser connected','A browser is connected to this desktop.'], web_client_disconnected:['Browser disconnected','The link remains valid and can reconnect at any time.'], revoked:['Link revoked','Enable remote control again.'], stopped:['Stopped','Open this panel to enable access again.'], error:['Connection error','Remote control is temporarily unavailable. Try again.'] },
@@ -312,7 +312,7 @@ export const dictEn = {
         uiMonitor: { bridgeNotReady:'Bridge not ready', readFailed:'Read failed', reading:'Loading', unverified:'Unverified', authFailed:'Authentication failed', bridgeError:'Monitor bridge is not ready. Open this page in the Tauri app window.', readError:e=>`Monitor read failed: ${e}`, activity:'Activity' },
 
         uiSettings: { common:'Common', system:'System', general:'General', model:'Models', search:'Search', memory:'Memory', community:'User Community', permissions:'Permissions & Environment', data:'Data Management', update:'Updates', help:'Help & Feedback', appearance:'Appearance', language:'Interface Language', languageDesc:'Change the app display language', theme:'Theme', themeDesc:'Follow the system, or choose light / dark', notifications:'Notifications', taskNotice:'Task Completion Alerts', taskNoticeDesc:'Show a system notification when a task finishes', voiceShortcuts:'Voice Shortcuts', voiceShortcutEnable:'Enable Alt voice shortcut', voiceShortcutEnableDesc:'Alt starts voice input. When the input box already has text, Alt edits the current text. Off by default.', voiceShortcutHelp:'View Alt voice shortcut guide', voiceShortcutUnsupportedDesc:'The global Alt shortcut is only supported on Windows. On this platform, Alt voice input works while the app window is focused.', voicePostprocess:'Smart organize', voicePostprocessDesc:'Sends the recognized text — together with any existing input-box draft — to your configured model service to fix errors and organize it into structured input. When off, only on-device rule-based fixes are applied.', voiceShortcutWebDesc:'In the browser, Alt voice input works inside the app window. The global shortcut is unavailable, and only plain transcription is provided — no smart organize or voice editing.', desktopAssistant:'Desktop Assistant', pet:'Desktop Companion', petDesc:'Show a persistent companion on the desktop', version:'Version', currentVersion:'Current Version', beta:'Beta', releaseNotes:'Release Notes', noReleaseNotes:'No release notes', downloading:p=>`Downloading update ${p}%`, installingUpdate:'Installing update…', installerStarted:'Installer Started', cancelDownload:'Cancel Download', providers:'ACP' },
-        uiSettingsDetail: { modelSection:'Models', settingsLoadFailed:'Failed to load settings', addModel:'Add model', envManaged:'Model settings managed by environment variables remain visible here, but must be changed in the environment.', localModel:'Local model', defaultTag:'Default', edit:'Edit', delete:'Delete', noModels:'No models', localDefaultName:'Local Qwen3.6', searchList:'Search sources', setDefault:'Set as default', addSearch:'Add search source', searchDescriptions:{ bing:'Built-in search', metaso:'Chinese search service', bocha:'Search service', baidu:'Qianfan AI Search', tavily:'International search service' }, searchSourceHint:'Built-in search works without a key; if the selected service fails, searches fall back to it automatically. Adding a Chinese search service improves long Chinese-language queries.', memoryTypes:{ preference:'Long-term preference', work_context:'Work context', current_focus:'Current focus', recent_activity:'Recent activity' }, memoryDetail:'Memory details', content:'Content', editTitle:label=>`Edit ${label}`, userCallName:'Your name', assistantNickname:'Assistant nickname', callNameDesc:'How the assistant addresses you', assistantNameDesc:'How you address the assistant', unnamedMemory:'Untitled memory', view:'View', enableMemory:'Enable memory', enableMemoryDesc:'PINVOU remembers names, preferences, work context, and recent activity', profile:'Profile', notSet:'Not set', longMemory:'Long-term memory', shortMemory:'Short-term memory', noLongMemory:'No long-term memories', noShortMemory:'No short-term memories', restore:'Restore', system:'System', advancedPermission:'Advanced execution permission', advancedPermissionDesc:'Allow the assistant to run advanced commands such as environment configuration', missing:'Missing', installMissing:'Install missing dependencies', feedbackTitle:'Submit an issue or suggestion', feedbackDesc:'Attach images or videos; a privacy notice is shown before submission', submitFeedback:'Submit feedback', editSearch:'Edit search source', apiKeyPlaceholder:'Enter API Key', hide:'Hide', show:'Show', cancel:'Cancel', save:'Save', restartSearchTitle:'Restart to apply search settings?', restartLanguageTitle:'Restart to apply language settings?', restartSearchDesc:'Restart the app before the assistant can use the updated search source or credentials.', restartLanguageDesc:'The interface language changed. Restart to also update the assistant response language.', later:'Later', restartNow:'Restart now', deleteModelTitle:'Delete model?', deleteModelDesc:'This removes the model configuration and its saved credentials.', deleteModel:'Delete model', deleteSearchTitle:'Delete search source?', deleteSearchDesc:name=>`This removes ${name} and its saved credentials.`, deleteSearch:'Delete search source', addSearchDesc:'Choose a search source, then enter the required credentials', closeSettings:'Close settings', chooseModelDesc:'Choose a model, then enter the required credentials', collapse:'Collapse', change:'Change', customModel:'Custom model', localModelName:name=>name ? `Local ${name}` : 'Local model', apiKeyReadFailed:'Failed to read API Key', localModelId:'Local model ID', modelId:'Model ID', modelIdPlaceholder:'Enter model ID', customModelTitle:provider=>`Custom ${provider} model`, customModelDesc:'Enter a model ID manually', customLocalDesc:'Enter the model ID exposed by the local service', customCompatibleDesc:'Enter the model ID and service URL manually', modelDescriptions:{ '本地服务默认模型':'Default local service model', '高能力模型':'High-capability model', '快速响应':'Fast responses', '最新通用模型':'Latest general-purpose model', '代码场景':'Coding tasks', '高速代码场景':'High-speed coding tasks', '稳定可用':'Stable release', '高性价比':'Cost-effective', '通用能力':'General-purpose', '兼容保留':'Compatibility option', '高速响应':'High-speed responses', '稳定通用':'Stable general-purpose model', '轻量模型':'Lightweight model' } },
+        uiSettingsDetail: { modelSection:'Models', settingsLoadFailed:'Failed to load settings', addModel:'Add model', envManaged:'Model settings managed by environment variables remain visible here, but must be changed in the environment.', localModel:'Local model', defaultTag:'Default', edit:'Edit', delete:'Delete', noModels:'No models', localDefaultName:'Local Qwen3.6', searchList:'Search sources', setDefault:'Set as default', addSearch:'Add search source', searchDescriptions:{ bing:'Built-in search', metaso:'Chinese search service', bocha:'Search service', baidu:'Qianfan AI Search', tavily:'International search service' }, searchSourceHint:'Built-in search works without a key; if the selected service fails, searches fall back to it automatically. Adding a Chinese search service improves long Chinese-language queries.', memoryTypes:{ preference:'Long-term preference', work_context:'Work context', current_focus:'Current focus', recent_activity:'Recent activity' }, memoryDetail:'Memory details', content:'Content', editTitle:label=>`Edit ${label}`, userCallName:'Your name', assistantNickname:'Assistant nickname', callNameDesc:'How the assistant addresses you', assistantNameDesc:'How you address the assistant', unnamedMemory:'Untitled memory', view:'View', enableMemory:'Enable memory', enableMemoryDesc:'PINVOU remembers names, preferences, work context, and recent activity', profile:'Profile', notSet:'Not set', longMemory:'Long-term memory', shortMemory:'Short-term memory', noLongMemory:'No long-term memories', noShortMemory:'No short-term memories', restore:'Restore', system:'System', advancedPermission:'Advanced execution permission', advancedPermissionDesc:'Allow the assistant to run advanced commands such as environment configuration', missing:'Missing', installMissing:'Install missing dependencies', feedbackTitle:'Submit an issue or suggestion', feedbackDesc:'Attach images or videos; a privacy notice is shown before submission', submitFeedback:'Submit feedback', editSearch:'Edit search source', apiKeyPlaceholder:'Enter API Key', hide:'Hide', show:'Show', cancel:'Cancel', save:'Save', restartSearchTitle:'Restart to apply search settings?', restartLanguageTitle:'Restart to apply language settings?', restartSearchDesc:'Restart the app before the assistant can use the updated search source or credentials.', restartLanguageDesc:'The interface language changed. Restart to also update the assistant response language.', later:'Later', restartNow:'Restart now', deleteModelTitle:'Delete model?', deleteModelDesc:'This removes the model configuration and its saved credentials.', deleteModel:'Delete model', deleteSearchTitle:'Delete search source?', deleteSearchDesc:name=>`This removes ${name} and its saved credentials.`, deleteSearch:'Delete search source', addSearchDesc:'Choose a search source, then enter the required credentials', closeSettings:'Close settings', chooseModelDesc:'Choose a model, then enter the required credentials', collapse:'Collapse', change:'Change', customModel:'Custom model', localModelName:name=>name ? `Local ${name}` : 'Local model', apiKeyReadFailed:'Failed to read API Key', localModelId:'Local model ID', modelId:'Model ID', modelIdPlaceholder:'Enter model ID', customModelTitle:provider=>`Custom ${provider} model`, customModelDesc:'Enter a model ID manually', customLocalDesc:'Enter the model ID exposed by the local service', customCompatibleDesc:'Enter the model ID and service URL manually', modelDescriptions:{            } },
 
         uiPetSettings: { choose:'Choose a companion', placeholder:'Coming soon', preparing:'Preparing animation', animationFailed:'Animation failed to load', coverFailed:'Cover failed to load', retry:'Retry', pets:{ lingling:{name:'Lingling',description:'Star-patterned tail, always lively'}, langlang:{name:'Langlang',description:'Black outfit and glasses, calmly by your side'}, 'ace-taffy':{name:'Ace Taffy',description:'Pink hair and crown, cheering you on'} } },
         uiScheduled: { title:'Scheduled Tasks', subtitle:'Let PINVOU automatically handle recurring work', newTask:'New Task', templates:'Recommended Templates', myTasks:'My Tasks', loading:'Loading scheduled tasks…', empty:'No matching scheduled tasks', view:n=>`View scheduled task: ${n}`, useTemplate:n=>`Use ${n} template`, running:'Task is running', unread:'Unviewed run conversation', navUnreadAria:'Scheduled tasks have unviewed run conversations', closeError:'Dismiss error', deleteTitle:'Delete scheduled task?', deleteDescription:n=>`“${n}” will stop running and be removed from the task list. Previous run history will be kept.`, cancel:'Cancel', delete:'Delete', save:'Save', filterAll:'All', filterActive:'Enabled', filterPaused:'Paused', active:'Active', paused:'Paused', enabled:'Enabled', unknown:'Unknown', notScheduled:'Not scheduled', noSchedule:'No schedule', waitingDispatch:'Waiting to run', soon:'Starting soon', nextRun:(time,remaining)=>`Next: ${time} (${remaining})`, date:(month,day)=>`${month}/${day} `, daysAfter:(days,hours)=>`in ${days}d${hours ? ` ${hours}h` : ''}`, hoursAfter:(hours,minutes)=>`in ${hours}h${minutes ? ` ${minutes}m` : ''}`, minutesAfter:(minutes,seconds)=>`in ${minutes}m ${seconds}s`, secondsAfter:seconds=>`in ${seconds}s`, runStatus:{ queued:'Queued', running:'Running', completed:'Completed', failed:'Failed', canceled:'Canceled' }, weekdays:[['Monday','Mon'],['Tuesday','Tue'],['Wednesday','Wed'],['Thursday','Thu'],['Friday','Fri'],['Saturday','Sat'],['Sunday','Sun']], hourCount:n=>`${n} hour${n === 1 ? '' : 's'}`, choose:'Choose', autoModel:'Auto select', currentModel:'Current model', reselectModel:n=>`Choose another model · ${n}`, repeatOptions:{ workdays:'Weekdays', daily:'Daily', weekly:'Weekly', hourly:'Hourly', once:'Once', custom:'Custom' }, everyHours:n=>`Every ${n} hours`, startsAt:time=>`from ${time}`, repeat:'Repeat', interval:'Interval', dateLabel:'Days', startTime:'Start time', time:'Time', chooseRepeat:'Choose repeat frequency', chooseInterval:'Choose hourly interval', chooseDate:'Choose run days', chooseStartTime:'Choose start time', chooseRunTime:'Choose run time', setStart:'Set start', createFromTemplate:'Create from template', closeCreate:'Close new task', taskName:'Task name', taskNamePlaceholder:'For example: Daily data backup', taskPrompt:'Instructions', taskPromptPlaceholder:'Describe what should be done on each run…', saveTask:'Save task', editTask:'Edit task', closeDetail:'Close task details', taskNameAria:'Scheduled task name', taskPromptAria:'Scheduled task instructions', aiModel:'AI model', chooseModel:'Choose scheduled task model', runningStatus:'Status', nextExecution:'Next run', enableTask:'Enable task', runNow:'Run now', openFolder:'Open folder', runHistory:'Run history', records:n=>`${n} record${n === 1 ? '' : 's'}`, noRecords:'No records', openRun:'Open run conversation', noOpenRun:'This run has no conversation to open', openRunLabel:s=>`Open run: ${s}`, viewRunResult:'Open the conversation to view results', noRunSession:'No conversation available', noRunHistory:'No run history yet', saveState:{ saving:'Saving…', saved:'Saved', invalid:'Name and instructions are required', error:'Save failed' }, pause:n=>`Pause ${n}`, resume:n=>`Resume ${n}`, templateMap:{ 'daily-brief':{name:'Daily Briefing',schedule:'Daily at 8:00',description:'Summarize important news, industry updates, and connected workplace announcements',prompt:'Summarize important news and industry updates from the past 24 hours with sources and links; when Lark or WeCom is connected, include company announcements. Do not scan user directories; save results to the task workspace.'}, 'follow-up-monitor':{name:'Follow-up Monitor',schedule:'Weekdays at 9:00',description:'Review overdue and upcoming items, highlighting risks and next steps',prompt:'Summarize overdue, due-today, and upcoming (next 3 workdays) items from connected Lark or WeCom, with risks and next steps by priority. Query and organize only — do not send, approve, or modify; do not scan user directories.'}, 'weekly-review':{name:'Weekly Review',schedule:'Friday at 16:00',description:'Create a structured weekly report from this week’s workplace activity',prompt:'Create a weekly report from this week’s calendar, to-dos, and workplace messages in connected Lark or WeCom, covering progress, carry-over items, risks, and next week’s plan. Do not scan user directories or send automatically.'}, 'memory-organize':{name:'Memory Organizer',schedule:'Weekdays at 9:30',description:'Keep long-term memory tidy on a schedule: merge duplicates, prune stale items, fix wording',prompt:'Periodically organize my long-term memory: merge duplicate entries, remove outdated or invalid items, and fix vague wording so memory stays concise and accurate. This task runs automatically without opening a conversation; it only organizes memory and does not send messages or make other changes.'} } },
@@ -357,8 +357,8 @@ export const dictEn = {
         uiAttachments: { parsing:'Parsing', failed:'Failed', remove:name=>`Remove attachment ${name}`, dropRelease:'Drop to attach', dropWebTitle:'Add anything', dropWebHint:'Drop any file here to add it to the conversation', fileTooLarge:'The file exceeds the 20 MB attachment limit and cannot be added', archiveTooManyEntries:'The archive contains more than 50 entries and cannot be added', archiveExpandedTooLarge:'The archive expands beyond 100 MB and cannot be added', archiveUnsafeEntry:'The archive contains unsafe links or paths and cannot be added' },
         uiCodex: codexEn,
         uiAcpProviders: acpProvidersEn,
-        uiProjects: { convertToProject:'Convert to project', projectNamePlaceholder:'Project name', renameProject:'Rename project', deleteProject:'Delete project', deleteConfirmLabel:'Delete this project?', deleteProjectHint:'Conversations are kept and return to ungrouped', moveToProject:'Move to project…', moveToUngrouped:'Move to ungrouped', alreadyUngrouped:'Already ungrouped', temporaryBadge:'Temporary workspace', folderUnavailable:'Folder unavailable', rebindFolder:'Rebind', moveConfirmTitle:'Move conversation into this project?', moveConfirmBody:(project, folder)=>`The conversation moves into "${project}". Its folder ${folder} stays outside the project; only this conversation is filed.`, moveConfirm:'Move', searchPlaceholder:'Search projects', noProjects:'No projects yet', ungrouped:'Ungrouped', currentProject:'Current project', movedNotice:'Conversation moved', movedNoticeWithFolder:folder=>`Conversation moved; folder ${folder} added`, noMatchProject:'No matching projects', opFailed:'Project operation failed' },
-        uiCodexWorkspace: { changes:{added:'Added',modified:'Modified',deleted:'Deleted',renamed:'Renamed',copied:'Copied',conflict:'Conflict',untracked:'Untracked',unknown:'File'}, origins:{session:'This session',preexisting:'Existed before session',preexisting_modified:'Existed before session · modified in this session',unknown:'Source not recorded'}, addedPath:path=>`Added ${path}`, addPath:path=>`Add ${path} to conversation`, added:'Added to conversation', add:'Add to conversation', back:'Back to workspace list', copyPath:'Copy relative path', reveal:'Show in file manager', open:'Open with system application', reading:'Reading…', noDiff:'No text diff to display', tooLarge:'The file is too large for an embedded preview.', unsupported:'This file does not support embedded preview.', openHint:'You can open it with a system application.', truncated:'Content is too large; only the beginning is shown.', resize:'Resize workspace', resizeHint:'Drag to resize; double-click to restore default', title:'Workspace', temporary:'Temporary workspace', refresh:'Refresh workspace', close:'Close workspace', files:'Files', changed:'Changes', search:'Search files', noFiles:'No matching files', noBaseline:'This older session has no creation baseline, so changes made by this session cannot be determined.', branch:'Branch', staged:'Staged', noChanges:'No workspace changes', copyContent:'Copy content', copied:'Copied', closeViewer:'Close preview', loadFailed:'Failed to load file', resizeWidth:'Resize viewer width', resizeHeight:'Resize viewer height', resizeCorner:'Resize viewer; double-click to restore default', fontDecrease:'Decrease font size', fontIncrease:'Increase font size', openInNewWindow:'Open in code reader', diffSuffix:'(diff)', readerTitle:'Code Reader', readerEmpty:'Choose "Open in code reader" from a workspace file preview; files accumulate here as tabs.', closeTab:'Close tab', noSessionChanges:'Once a session is created, changes made by the session will be listed here.' },
+        uiProjects: { convertToProject:'Convert to project', projectNamePlaceholder:'Project name', renameProject:'Rename project', deleteProject:'Delete project', deleteConfirmLabel:'Delete this project?', deleteProjectHint:'Conversations are kept and return to ungrouped', moveToProject:'Move to project…', moveToUngrouped:'Move to ungrouped', alreadyUngrouped:'Already ungrouped',    moveConfirmTitle:'Move conversation into this project?', moveConfirmBody:(project, folder)=>`The conversation moves into "${project}". Its folder ${folder} stays outside the project; only this conversation is filed.`, moveConfirm:'Move', searchPlaceholder:'Search projects', noProjects:'No projects yet',  currentProject:'Current project', movedNotice:'Conversation moved', movedNoticeWithFolder:folder=>`Conversation moved; folder ${folder} added`, noMatchProject:'No matching projects', opFailed:'Project operation failed' },
+        uiCodexWorkspace: { changes:{added:'Added',modified:'Modified',deleted:'Deleted',renamed:'Renamed',copied:'Copied',conflict:'Conflict',untracked:'Untracked',unknown:'File'}, origins:{session:'This session',preexisting:'Existed before session',preexisting_modified:'Existed before session · modified in this session',unknown:'Source not recorded'}, addedPath:path=>`Added ${path}`, addPath:path=>`Add ${path} to conversation`, added:'Added to conversation', add:'Add to conversation', back:'Back to workspace list', copyPath:'Copy relative path', reveal:'Show in file manager', open:'Open with system application', reading:'Reading…', noDiff:'No text diff to display',  unsupported:'This file does not support embedded preview.', openHint:'You can open it with a system application.', truncated:'Content is too large; only the beginning is shown.',   title:'Workspace', temporary:'Temporary workspace', refresh:'Refresh workspace', close:'Close workspace', files:'Files', changed:'Changes', search:'Search files', noFiles:'No matching files', noBaseline:'This older session has no creation baseline, so changes made by this session cannot be determined.', branch:'Branch', staged:'Staged', noChanges:'No workspace changes', copyContent:'Copy content', copied:'Copied', closeViewer:'Close preview', loadFailed:'Failed to load file', resizeWidth:'Resize viewer width', resizeHeight:'Resize viewer height', resizeCorner:'Resize viewer; double-click to restore default', fontDecrease:'Decrease font size', fontIncrease:'Increase font size', openInNewWindow:'Open in code reader', diffSuffix:'(diff)', readerTitle:'Code Reader', readerEmpty:'Choose "Open in code reader" from a workspace file preview; files accumulate here as tabs.', closeTab:'Close tab', noSessionChanges:'Once a session is created, changes made by the session will be listed here.' },
 
         checkUpdate: 'Check for Updates', checking: 'Checking…', upToDate: 'Up to date',
         newVersionFound: 'New version available', updateNotes: 'Release Notes',
@@ -367,7 +367,7 @@ export const dictEn = {
         cancel: 'Cancel', cancelling: 'Cancelling…',
         updateComplete: 'Update complete, restart to apply', restartNow: 'Restart Now',
         updateInstallerStarted: 'Installer started, the app will close automatically',
-        updateCheckFailed: 'Check failed',
+
         depCheckTitle: 'Dependency Check', depChecking: 'Checking…', depRecheck: 'Check again',
         depAllOk: 'All dependencies ready', depMissingSuffix: ' dependency(ies) missing (those features will be unavailable)',
         depInstalling: 'Installing…', depInstallBtn: 'Install', depGoInstall: 'Install', depInstallNote: 'Installs missing deps via elevated apt (needs network or an apt source)', depInstallNoteWindows: 'Downloads missing models; installs LibreOffice through elevated winget (requires network)', depInstallNoteMac: 'Installs missing deps via Homebrew (needs network; install Homebrew first from brew.sh if missing)',
@@ -391,7 +391,7 @@ export const dictEn = {
         communityDiscussions: 'GitHub Discussions',
         communitySupportNotice: 'The QQ group is a community space, not an official support or ticket channel. Continue to submit reproducible issues through feedback, and never post suspected vulnerabilities in the group.',
         feedbackTitle: 'Help & Feedback', feedbackDesc: 'Send issues or suggestions with screenshots or short videos.',
-        feedbackOpen: 'Send feedback', feedbackDialogTitle: 'Send feedback', feedbackType: 'Type',
+ feedbackDialogTitle: 'Send feedback', feedbackType: 'Type',
         feedbackIssue: 'Issue', feedbackSuggestion: 'Suggestion',
         feedbackSubject: 'Title', feedbackSubjectPh: 'Short summary (optional)',
         feedbackBody: 'Details', feedbackBodyPh: 'Describe what happened, what you expected, or your suggestion',
@@ -408,19 +408,19 @@ export const dictEn = {
         searchBatchManage: 'Select', searchBatchDone: 'Done', searchSelectAll: 'Select all', searchSelectedCount: n => `${n} selected`,
         searchArchivedEntry: 'Archived', searchArchivedEmpty: 'No archived chats', searchRestore: 'Restore', searchArchivedAt: d => `Archived ${d}`, searchPanelChats: 'Chats',
         // —— Card Pool (cp*) ——
-        cpSubtitle: 'Expert Capability Deck',
-        cpTagline: "Equip an expert card so the AI handles this chat to that field's professional standard.",
-        cpTaglineTitle: "Equipping an expert card injects the field's methodology, workflow and delivery standards into the current chat.",
-        cpTarget: 'Equip Target', cpBannerEquipped: 'Equipped', cpBannerNone: 'Not equipped',
-        cpNoSession: 'No active chat — create or open one first',
+
+
+
+  
+
         cpNewCard: 'New Card', cpNewCardTitle: 'Create a custom card manually',
         cpLoading: 'Loading card deck…', cpLoadError: 'Failed to load card deck',
-        cpMyCards: 'My Cards', cpDept: 'Department', cpResetFilter: 'Reset Filters',
+        cpMyCards: 'My Cards', cpDept: 'Department', 
         cpSearchPh: 'Search experts: name / description / department',
         cpNoMatch: 'No matching experts — try widening the filters',
-        cpBadgeEquipped: 'Equipped', cpBadgeUser: 'Custom', cpNoDesc: '(no description)',
-        cpEdit: '✎ Edit', cpDelQ: 'Del?', cpDelCardTitle: 'Delete this custom card',
-        cpUnequip: 'Remove', cpEquip: 'Equip',
+ cpBadgeUser: 'Custom', cpNoDesc: '(no description)',
+        cpEdit: '✎ Edit',  
+        cpUnequip: 'Remove', 
         cpShowMore: n => `Show more (${n})`,
         cpCurrentChat: 'current chat',
         cpToastDeleted: n => `Deleted: ${n}`, cpToastDelFailed: 'Delete failed',
@@ -430,24 +430,24 @@ export const dictEn = {
         cpSavedTitle: 'Saved to card deck', cpSavedDesc: n => `"${n}" added to your cards`, cpSavedLater: 'Not now', cpSavedView: 'View',
         cpFullBody: 'Full persona (injected once when equipped)',
         cpBodyLoading: 'Loading persona body…', cpBodyLoadFailed: '(failed to load body)',
-        cpEquippedTap: 'Equipped · tap to remove',
+
         cpAll: 'All', cpEquipShort: 'Equip', cpDetailUnequip: 'Unequip', cpReqPh: 'Required', cpMarkdownHint: 'Markdown supported', cpDelThisConfirm: 'Confirm delete',
         cpEmptyHint: 'Try another search term, or tap + to create a new card.', cpMenuEdit: 'Edit',
         cpAICreate: 'AI Card', bnrTitleHi: 'Generate an expert card in one tap', bnrStart: 'Start →', bnrStep1: 'Describe', bnrStep2: 'AI generates', bnrStep3: 'Add to pool',
         chooserRecommend: 'Recommended', chooserAIDesc: 'Describe what you need; AI generates the card', chooserManualTitle: 'Manual', chooserManualDesc: 'Fill in name and persona yourself',
         bnrFaces: [['Product','Product design'],['ML Engineer','AI models'],['Growth','Growth ops'],['UI Designer','Interface'],['Data Analyst','Insights']],
         cpEditCard: 'Edit Card',
-        cpFieldName: 'Name', cpFieldDesc: 'One-line description', cpFieldDescPh: 'Shown on the card — 15 characters or fewer',
-        cpFieldBody: 'Persona Body', cpFieldBodyHint: '(full capability profile injected to the AI: duties / workflow / rules / deliverables)',
-        cpNamePh: 'e.g. Short-video Script Expert',
+        cpFieldName: 'Name',  cpFieldDescPh: 'Shown on the card — 15 characters or fewer',
+        cpFieldBody: 'Persona Body', 
+
         cpBodyPh: '# Role\n\nYou are a ...\n\n## Core Duties\n- ...\n\n## Workflow\n1. ...\n\n## Key Rules\n- ...',
         cpErrName: 'Card name is required', cpErrBody: 'Persona body is required',
         cpErrSave: e => `Save failed: ${e}`,
-        cpConfirmDelete: 'Delete?', cpDelete: 'Delete', cpCancel: 'Cancel', cpDeleteThis: 'Delete card',
+ cpDelete: 'Delete', cpCancel: 'Cancel', cpDeleteThis: 'Delete card',
         cpSaving: 'Saving…', cpSaveEdit: 'Save Changes', cpCreate: 'Create Card',
-        cpLanyardEquip: 'Equip Card', cpLanyardEquipTitle: 'Equip a card',
+ 
         cpLanyardSwap: 'Click to switch expert', cpLanyardRemove: 'Remove',
-        cpDraftLabel: 'Card Draft', cpDraftSaved: 'Saved', cpDraftSavedTitle: 'A custom card with this name already exists',
+ cpDraftSaved: 'Saved', cpDraftSavedTitle: 'A custom card with this name already exists',
         cpDraftView: 'View / Save', cpDraftViewTitle: 'View full content and save to card deck',
         cpDesigning: '🃏 Designing card…',
         cpIntroTitle: 'What kind of expert card do you want? Just tell me what you need.',
@@ -460,7 +460,7 @@ export const dictEn = {
         // —— Chat & global chrome ——
         appTitle: 'PINVOU AI Assistant (Beta)', winMin: 'Minimize', winMax: 'Maximize', winClose: 'Close',
         sidebarCollapse: 'Collapse sidebar', sidebarExpand: 'Expand sidebar',
-        skillPrefill: name => `I want to use ${name} to: `,
+
         queuedTag: 'Queued', queuedCancel: 'Remove', queuedPrioritize: 'Make next', queuedEdit: 'Edit queued message',
         queuedSave: 'Save', queuedEditCancel: 'Cancel editing', queuedActionFailed: 'The action did not complete; the queued message was left unchanged. Try again later.', queuedEmpty: 'Message cannot be empty', queuedEditInterrupted: 'The queued message left the queue before this edit was saved; the modified text was discarded',
         queueMsg: 'Send to chat', queueMsgTip: 'While generating: text goes into this turn when possible (otherwise queued); attachments always queue',
@@ -472,11 +472,11 @@ export const dictEn = {
         voiceStart: 'Voice input', voiceStop: 'Stop recording', voiceCancel: 'Cancel voice input', voiceCancelShort: 'Cancel', voiceRetry: 'Retry', voiceRetryAgain: 'Try again',
         voiceRequesting: 'Requesting microphone permission…', voiceRecording: 'Recording, press again to stop', voiceTranscribing: 'Transcribing voice…', voiceStopHint: 'Press Alt (Option) again to stop',
         voicePostprocessing: 'Polishing voice text…', voiceTaskPostprocessing: 'Rewriting voice task…',
-        voiceCompleted: 'Voice text added', voiceTaskSent: 'Voice task sent', voiceClose: 'Close voice notice', voiceGotoDeps: 'Open dependency check',
-        voiceDictationMode: 'Insert into input', voiceTaskMode: 'Send task', voiceInputFailed: 'Voice input failed',
+        voiceCompleted: 'Voice text added',  voiceClose: 'Close voice notice', voiceGotoDeps: 'Open dependency check',
+  voiceInputFailed: 'Voice input failed',
         voiceEmptyResultTitle: 'No speech detected', voiceEmptyResultHint: 'Move closer to the microphone, or try again in a quieter place.',
-        voiceEditMode: 'Edit current input', voiceStructuredPostprocessing: 'Structuring voice text…',
-        voiceEditPostprocessing: 'Editing current input…', voiceEditPreviewReady: 'Voice edit ready to review', voiceEditNoChange: 'Voice edit made no changes',
+ 
+        voiceEditPostprocessing: 'Editing current input…',  
         voiceEditPreviewTitle: 'Voice edit preview',
         voiceEditOriginal: 'Original', voiceEditResult: 'Edited', voiceEditApply: 'Apply edit',
         voiceEditApplyAndSend: 'Apply and send', voiceEditCancel: 'Cancel edit',
@@ -496,12 +496,12 @@ export const dictEn = {
         voiceIntroStart: 'Got it, start voice input',
         voiceIntroEnable: 'Enable and continue',
         voiceShortcutEnableTitle: 'Enable voice shortcuts',
-        composerTools: 'Tools', composerModelLabel: name => `Model: ${name}`, composerConnectedServices: 'Connected services', composerConnected: 'Connected', composerInstalledTools: 'Connected tools', composerInstalledSkills: 'Skills', composerNoTools: 'No tools installed', composerToolOn: 'On', composerManageTools: 'Manage tools',
-        composerMode: 'Skill', composerModeNone: 'No skills available',
-        composerBuiltinAuto: 'Built-in · Auto', composerSkillInUse: 'In use', composerSkillAllDisabled: 'All skills for this session type are off — enable them above', composerModeControlled: 'Controlled by mode', composerReadonlySwitch: 'Controlled by mode, cannot be toggled manually',
+        composerTools: 'Tools', composerModelLabel: name => `Model: ${name}`,  composerConnected: 'Connected',     composerManageTools: 'Manage tools',
+ composerModeNone: 'No skills available',
+        composerBuiltinAuto: 'Built-in · Auto', composerSkillInUse: 'In use', composerSkillAllDisabled: 'All skills for this session type are off — enable them above',  composerReadonlySwitch: 'Controlled by mode, cannot be toggled manually',
         composerProjectSkills: 'Project skills', composerProjectSkillsDesc: 'Scan built-in project skills', composerProjectSkillsWarning: 'Project skill files may contain malicious instructions (prompt injection) — enable only for trusted projects', composerProjectSkillsHelpTitle: 'About project skills', composerProjectSkillsHelpBody: 'When enabled, code sessions bound to a project scan the project\'s convention skill directories, and the model can load and use those skills.', composerProjectSkillsHelpDirsLabel: 'Scanned directories (highest priority first)', composerProjectSkillsHelpDirs: '.agents/skills\n.pinvou/skills\nskills\n.opencode/skills\n.claude/skills\n.cursor/skills\n.codewhale/skills',
         resend: 'Resend', editResend: 'Edit & resend', messageSending: 'Sending…', messageAccepted: 'Sent', messageFailed: 'Send failed', messageOutcomeUnknown: 'Send status is unknown. Check the conversation list.', selectAllMsg: 'Select all', copyMsg: 'Copy', pasteMsg: 'Paste', copied: 'Copied', backToBottom: 'Back to bottom',
-        artifactLabel: 'Artifact', clickToOpen: 'Open →',
+        artifactLabel: 'Artifact', 
         toolRunning: 'Running...', toolDone: 'Done', toolFailed: 'Failed', shellCancelFailed: 'Cancel failed',
         tsDone: 'completed', tsInProgress: 'in progress', tsPending: 'pending', tsLine: 'L',
         receiptNote: '⋯ Long output — showing the beginning only', receiptEmpty: '(long output, not expanded)',
@@ -511,10 +511,10 @@ export const dictEn = {
         todoProgress: pct => `Progress ${pct}%`,
         planReady: '✨ Plan ready', planEmpty: '(empty plan)', planLabel: '📋 Plan', planTodos: '✅ Todos',
         planNext: 'Next:', planGo: '✅ Do it', planEdit: '✏️ Revise', planDrop: '🚪 Never mind', planRevisePrefill: 'Revise the plan: ',
-        stuckExec: tries => `🛑 The AI is stuck (auto-retried ${tries} times without producing real files). You can:`,
+
         stuckPlanPre: '⚠️ In Plan mode the AI called', stuckPlanPost: 'but the whitelist blocked it. Plan mode is discussion-only. Two ways out:',
         handled: 'Handled',
-        stuckReplan: '📋 Ask AI to re-plan', stuckSelf: "I'll do it myself", stuckGo: 'Just do it (skip planning)',
+        stuckReplan: '📋 Ask AI to re-plan',  stuckGo: 'Just do it (skip planning)',
         // Pinvou review card. 品/悟 glyphs are brand marks, kept; surrounding text follows language.
         pvLoadingPin: 'Pinvou 品 · Review', pvLoadingWu: 'Pinvou 悟 · Explore',
         pvLoadingPinSub: 'Checking point by point, hunting for issues', pvLoadingWuSub: 'Comparing completeness dimensions, finding gaps',
@@ -539,14 +539,14 @@ export const dictEn = {
         rsFormat: 'Would format the disk — all data gone',
         rsDefault: 'This command could damage your files or system',
         uiqTitle: 'Pinvou needs your input',
-        uiOtherTitle: '💬 Other (write your own)', uiOtherDesc: 'If none of the options fit, say it in your own words', uiOtherPh: 'Type what you want to say...', uiSubmit: 'Submit',
+   uiSubmit: 'Submit',
         uiSubmitted: '✓ Submitted', uiCancelled: '✕ Cancelled', uiSubmitting: 'Submitting…', uiSubmitFailed: e => `⚠️ Submit failed: ${e}`,
-        apEmpty: 'No artifacts yet', apOpenDir: 'Open containing folder', apOpenExt: 'Open externally', apSelect: 'Select an artifact to preview',
-        apLoading: 'Loading...', apMissing: 'File missing or deleted', apReadFail: e => `Read failed: ${e}`,
-        apNoImg: 'Inline image preview not supported yet', apNoPreview: 'Preview not supported for this type', apOpenExtBtn: '↗ Open externally',
+        apEmpty: 'No artifacts yet',   
+ apMissing: 'File missing or deleted', apReadFail: e => `Read failed: ${e}`,
+  
         apTabList: 'Artifacts', apTabPreview: 'Preview', apPreviewHint: 'Pick a file in the Artifacts tab to preview',
         apBtnOpen: 'Open', apBtnLocate: 'Show in folder', apLocLabel: 'Location', apMtimeLabel: 'Modified', apLastMod: 'Modified',
-        apConverting: 'Generating preview…', apConvertFail: 'Preview failed', apUnsupported: 'Inline preview not available for this type; use Open below',
+        apConverting: 'Generating preview…',  apUnsupported: 'Inline preview not available for this type; use Open below',
         apKinds: { md:'Markdown', html:'HTML document', image:'Image', pdf:'PDF document', docx:'Office document', xlsx:'Spreadsheet', legacy_office:'Office document', text:'Text file', binary:'File' },
         apMdSaved: 'Saved', apMdSaving: 'Saving...', apMdDirty: 'Unsaved', apMdSaveFailed: 'Save failed',
         apMdExternalUpdateBlocked: 'The file changed externally. Your unsaved edits were kept and not overwritten.',
@@ -801,10 +801,12 @@ dictEn.uiArtifacts = {
   diChangesLog:n=>`Design changes: ${n}`, diEmpty:'empty',
 };
 
-Object.assign(dictEn.uiAttachments, { uploading:pct=>`Uploading ${pct}%`, deviceUploadTooLarge:name=>`${name} exceeds the 20 MB attachment limit`, deviceUploadEmpty:name=>`${name} is empty and cannot be attached`, deviceUploadUnavailable:'Uploading from this device is currently unavailable', deviceUploadInvalid:name=>`${name} is not a valid attachment`, deviceUploadFailed:name=>`${name} could not be uploaded. Try again.`, deviceUploadDigestInvalid:'The attachment integrity digest was invalid. Try again', deviceUploadIntegrityMismatch:'The attachment content was corrupted in transit. Upload it again' });
+Object.assign(dictEn.uiAttachments, { uploading:pct=>`Uploading ${pct}%`,  deviceUploadEmpty:name=>`${name} is empty and cannot be attached`, deviceUploadUnavailable:'Uploading from this device is currently unavailable', deviceUploadInvalid:name=>`${name} is not a valid attachment`, deviceUploadFailed:name=>`${name} could not be uploaded. Try again.`, deviceUploadDigestInvalid:'The attachment integrity digest was invalid. Try again', deviceUploadIntegrityMismatch:'The attachment content was corrupted in transit. Upload it again' });
 
 Object.assign(dictEn.uiToolStore, {
   toolNames:{ feishu:'Feishu', wecom:'WeCom', dingtalk:'DingTalk', tmeet:'Tencent Meeting' },
+  connectFailed:name=>`${name} connection failed`, connectTitle:name=>`Connect ${name}`,
+  wecomScanHint:'Scan with the WeCom app', wecomQrAlt:'WeCom sign-in QR code', waitingAuth:'Waiting for authorization…', openInBrowser:'Open in browser',
   connected:'Connected', installed:'Installed', builtin:'Built-in', keyRequired:'Key required', localLatency:'Local',
   cancel:'Cancel', ok:'Got it', newChat:'New Chat',
   installHint:'New tools take effect in a new conversation', removeHint:'Removed; new conversations will no longer load this tool', firstUseOnlineInstall:'The first connection downloads and verifies the official CLI',
@@ -988,7 +990,7 @@ Object.assign(dictEn.uiAttachments, {
 });
 
 Object.assign(dictEn.uiSettingsDetail.modelDescriptions, {
-  '本地服务默认模型':'Default model for the local service',
+
   'Coding Plan 自动模型':'Coding Plan automatic model',
   '自动模型，智能路由':'Automatic model with smart routing',
   'Hy 套餐专属模型':'Exclusive to the Hy plan',
@@ -1047,4 +1049,7 @@ dictEn.uiSettingsDetail.customModelTitles = {
 Object.assign(dictEn.uiChat, {
   bgTasks: 'Background Tasks',
   bgTasksRunning: n => `${n} background task${n === 1 ? '' : 's'} running`,
+});
+// restored: baseline catalog descriptions (referenced by the model catalog data)
+Object.assign(dictEn.uiSettingsDetail.modelDescriptions, { '本地服务默认模型': 'Default model for the local service', '高能力模型': 'High-capability model', '快速响应': 'Fast responses', '最新通用模型': 'Latest general-purpose model', '代码场景': 'Coding tasks', '高速代码场景': 'High-speed coding tasks', '稳定可用': 'Stable release', '高性价比': 'Cost-effective', '通用能力': 'General-purpose', '兼容保留': 'Compatibility option', '高速响应': 'High-speed responses', '稳定通用': 'Stable general-purpose model', '轻量模型': 'Lightweight model'
 });

@@ -419,7 +419,7 @@ const withUiTimeout = (promise, timeoutMs, fallbackResult) => {
           setBusyId((current) => releaseBusy(current, cfg.key));
         }
       };
-      return { conn, ensureListeners, connect, disconnect, resetFlow };
+      return { conn, ensureListeners, connect, disconnect, resetFlow, retry };
     };
 
     const feishuFlowApi = createConnectorFlow({
@@ -1132,6 +1132,7 @@ const withUiTimeout = (promise, timeoutMs, fallbackResult) => {
 
       // 企业微信(CLI 路线)连接流程卡(跨视图水合);连接态由 bundleStates 派生(见上)
       const [wecomFlow, setWecomFlow] = useState(wecomConn.flow); // 企微连接流程卡(跨视图水合)
+      const [wecomQr, setWecomQr] = useState(null); // { qr: dataUrl, url } 扫码弹窗(单段)
 
       // 钉钉(CLI 路线)连接流程卡;连接态由 bundleStates 派生
       const [dingtalkFlow, setDingtalkFlow] = useState(dingtalkConn.flow);
@@ -1235,6 +1236,45 @@ const withUiTimeout = (promise, timeoutMs, fallbackResult) => {
 
       // Subscribe to the tmeet store (mirrors the dingtalk one): mirror into rendering + done/failure finalization (done toast uses a dedicated phrase)
       useConnectorFlowSubscription({ enabled: externalAuthAvailable, conn: tmeetConn, ensureListeners: ensureTmeetListeners, setFlow: setTmeetFlow, storeCopy, detailCopy, setBusyId, loadBackendState, setAlert, doneTitle: detailCopy.actions.connectedTmeet, toolId: 'tmeet' });
+
+      // 企微连接编排事件:后端推进度,前端驱动 UI。
+      useEffect(() => {
+        const ev = isTauriAvailable() ? tauriEvents : null;
+        if (!ev) return;
+        let disposed = false;
+        const unlisten = [];
+        // Registration is async: a listener resolving after unmount must be
+        // unregistered immediately — nobody consumes the array entries and
+        // the listener leaks.
+        const track = (p) => p.then((u) => {
+          if (disposed) { try { u(); } catch { /* silent: listeners may already be stale at unmount */ } return; }
+          unlisten.push(u);
+        });
+        track(ev.listen('wecom:qr', (e) => {
+          const p = e.payload || {};
+          // 二维码到了 → 清掉一直显示的"正在生成…"loading,再弹出二维码弹窗。
+          setAlert(a => ({ ...a, visible: false, loading: false }));
+          setWecomQr({ qr: p.qr_data_url, url: p.url, phase: p.phase });
+        }));
+        track(ev.listen('wecom:connected', () => {
+          setWecomQr(null); setBusyId((current) => releaseBusy(current, 'wecom'));
+          // 连上 → 按规则写技能(默认启用),企微技能即刻对模型可见;连接态经 readiness 重取。
+          invokeTauri('wecom_apply_skills').catch(() => {});
+          loadBackendState();
+          setAlert({ visible: true, loading: false, title: storeCopy.connectedTool(storeCopy.toolNames.wecom), subtitle: '', isInstall: true, isError: false, toolId: 'wecom' });
+          notifyComposerToolsChanged();
+        }));
+        track(ev.listen('wecom:error', (e) => {
+          const p = e.payload || {};
+          setWecomQr(null); setBusyId((current) => releaseBusy(current, 'wecom'));
+          setAlert({ visible: true, loading: false, title: storeCopy.connectFailed(storeCopy.toolNames.wecom), subtitle: String(p.message || '').slice(0, 240), isError: true });
+        }));
+        return () => {
+          disposed = true;
+          unlisten.forEach(u => { try { u(); } catch { /* silent: listeners may already be stale at unmount */ } });
+        };
+      // eslint-disable-next-line react-hooks/exhaustive-deps -- subscription mounts/unmounts only with externalAuthAvailable; the copy snapshot is read on demand by the callback, so resubscribing is unnecessary
+      }, [externalAuthAvailable]);
 
       // 合并后端安装状态到 mock 数据(飞书/企微/钉钉的 installed = 已连接)
       // 业务分类直接取条目数据 category(tool-common.jsx 已落业务类 id),不再按 id 硬编码映射。
@@ -2081,6 +2121,36 @@ const withUiTimeout = (promise, timeoutMs, fallbackResult) => {
               onCancel={() => setUpdateConfirm(null)}
             />
           ), document.body)}
+          {/* 飞书扫码二维码已内联进 FeishuFlowCard（详情弹窗内），不再单独浮层 */}
+          {wecomQr && (() => {
+            // Mirrors the wecom flow reset (factory resetFlow): backend cancel is now
+            // silent (no wecom:error cleanup), so we must clear the flow here, otherwise
+            // the detail/mini flow cards stay stale on "waiting for scan".
+            const cancel = () => { wecomConn.stopTick(); invokeTauri('wecom_cancel').catch(() => {}); wecomConn.setFlow(null); setWecomQr(null); setBusyId((current) => releaseBusy(current, 'wecom')); };
+            return createPortal((
+            // biome-ignore lint/a11y/useKeyWithClickEvents: backdrop click-to-close layer; the keyboard path is covered by the dialog's cancel control
+            // biome-ignore lint/a11y/noStaticElementInteractions: backdrop click-to-close layer, non-interactive container
+            <div className="fixed inset-0 z-[200] flex items-center justify-center p-4" style={{ backgroundColor: 'rgba(0,0,0,0.5)', WebkitBackdropFilter: 'blur(8px)', backdropFilter: 'blur(8px)' }} onClick={cancel}>
+              {/* biome-ignore lint/a11y/useKeyWithClickEvents: click-propagation stop layer; keyboard events need no bubbling here */}
+              {/* biome-ignore lint/a11y/noStaticElementInteractions: click-propagation stop layer, non-interactive container */}
+              <div className="bg-white dark:bg-[#1C1C1E] rounded-3xl p-7 w-full max-w-[440px] flex flex-col items-center text-center shadow-2xl" onClick={e => e.stopPropagation()}>
+                <h3 className="text-[19px] font-bold text-slate-900 dark:text-white mb-4">{storeCopy.connectTitle(storeCopy.toolNames.wecom)}</h3>
+                {/* Real auth QR emitted by the backend (wecom-cli --output-qrcode PNG), one scan straight to authorization.
+                    Previously an iframe embedded the /ai/qc/gen landing page: WKWebView often failed to render the code,
+                    and encoding the landing-page URL as a QR made users scan a second time. */}
+                {wecomQr.qr && (
+                  <img src={wecomQr.qr} alt={storeCopy.wecomQrAlt} decoding="async" className="w-52 h-52 rounded-2xl border border-slate-200 bg-white p-1 dark:border-white/10" />
+                )}
+                <div className="mt-4 text-[13px] text-slate-500 dark:text-slate-400">{storeCopy.wecomScanHint}</div>
+                <div className="flex items-center gap-1.5 mt-2 text-[13px] text-slate-500 dark:text-slate-400">
+                  <span className="w-2 h-2 rounded-full bg-amber-400 animate-pulse"></span> {storeCopy.waitingAuth}
+                </div>
+                <button type="button" onClick={() => { if (wecomQr.url) invokeTauri('open_external_url', { url: wecomQr.url }).catch(browserOpenFailed); }} className="mt-4 text-[13px] text-blue-600 dark:text-blue-400 hover:underline">{storeCopy.openInBrowser}</button>
+                <button type="button" onClick={cancel} className="mt-3 px-6 py-2 rounded-full text-[14px] font-semibold bg-slate-100 dark:bg-[#2C2C2E] text-slate-600 dark:text-slate-300">{storeCopy.cancel}</button>
+              </div>
+            </div>
+            ), document.body);
+          })()}
           {/* 上传包展示名/说明编辑弹窗（edit_display 动作触发；条件挂载，state 初值即当前覆盖值）。
               key 按 backendId 强制重挂载：编辑目标切换（重开/自动预填）时不得复用旧包的
               useState 输入初值、保存却写进新包 id（串台）。弹窗开着时的拖放导入已在
