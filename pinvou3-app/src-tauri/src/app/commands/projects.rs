@@ -655,7 +655,10 @@ pub async fn rebind_workspace_root(
                 final_stale.iter().any(|sid| sid == session_id),
                 acp_pool.agents().binding_artifacts_exist(session_id)
                     || sessions.workspace_binding_artifacts_exist(session_id),
-                prefix_outcome.affected.iter().any(|(sid, _)| sid == session_id)
+                prefix_outcome
+                    .affected
+                    .iter()
+                    .any(|(sid, _)| sid == session_id)
                     || plain_bindings_under_from
                         .iter()
                         .any(|(sid, _)| sid == session_id),
@@ -678,10 +681,9 @@ pub async fn rebind_workspace_root(
         // convergent — the to-lane scan re-admits it (metadata ≠ binding)
         // and retries both. Running it after would strand a rebase failure
         // forever: a metadata-healthy session is never admitted again.
-        if let Err(error) = sessions.rebase_workspace_artifact_paths(
-            session_id,
-            &|path: &Path| SessionAgentStore::rebind_target_path(path, &from, &to_display),
-        ) {
+        if let Err(error) = sessions.rebase_workspace_artifact_paths(session_id, &|path: &Path| {
+            SessionAgentStore::rebind_target_path(path, &from, &to_display)
+        }) {
             // Same CodeQL root-cause-only rule as set_workspace below.
             eprintln!(
                 "[projects] rebind artifact-path rebase failed: {}",
@@ -1060,7 +1062,9 @@ fn detect_stranded_index_records(
     to_lane_hits
         .iter()
         .filter(|(session_id, _)| affected.iter().any(|(sid, _)| sid == session_id))
-        .filter(|(session_id, path)| index_path_of(session_id).is_some_and(|indexed| &indexed != path))
+        .filter(|(session_id, path)| {
+            index_path_of(session_id).is_some_and(|indexed| &indexed != path)
+        })
         .cloned()
         .collect()
 }

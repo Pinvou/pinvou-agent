@@ -509,11 +509,14 @@ fn rebind_roots_ignores_pre_existing_overlap_between_untouched_projects() {
         .expect("projects array")
         .iter_mut()
         .find(|project| project["id"].as_str() == Some(legacy_inner.id.as_str()))
-        .expect("find legacy-inner")
-        ["roots"][0] = serde_json::json!(display(&inner).to_string_lossy().into_owned());
+        .expect("find legacy-inner")["roots"][0] =
+        serde_json::json!(display(&inner).to_string_lossy().into_owned());
     // `outer` folds to the parent of `inner`: the two now overlap on disk.
-    std::fs::write(&store_path, serde_json::to_vec_pretty(&file).expect("serialize"))
-        .expect("write store");
+    std::fs::write(
+        &store_path,
+        serde_json::to_vec_pretty(&file).expect("serialize"),
+    )
+    .expect("write store");
     let store = store_in(&temp);
     assert!(
         store.rebind_roots(&from, &to).is_ok(),

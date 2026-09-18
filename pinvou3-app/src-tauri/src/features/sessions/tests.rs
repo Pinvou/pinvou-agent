@@ -704,8 +704,14 @@ fn migrate_legacy_session_workspaces_keeps_a_rebound_binding_over_the_stale_entr
     // The sidecar (authoritative) wins: the binding still resolves to the
     // rebound target, not the vanished one, and the entry converged away.
     store.session_workspaces.write().clear();
-    assert_eq!(store.session_workspace_binding(&s.metadata.id), Some(to.clone()));
-    assert!(!legacy.exists(), "the converged entry lets the table converge away");
+    assert_eq!(
+        store.session_workspace_binding(&s.metadata.id),
+        Some(to.clone())
+    );
+    assert!(
+        !legacy.exists(),
+        "the converged entry lets the table converge away"
+    );
 
     let _ = std::fs::remove_dir_all(&from);
     let _ = std::fs::remove_dir_all(&to);
@@ -734,7 +740,10 @@ fn rebase_workspace_artifact_paths_translates_only_under_the_prefix() {
     store
         .update_artifacts(
             &s.metadata.id,
-            vec![under_from.to_string_lossy().into_owned(), outside.to_string_lossy().into_owned()],
+            vec![
+                under_from.to_string_lossy().into_owned(),
+                outside.to_string_lossy().into_owned(),
+            ],
         )
         .expect("seed artifacts");
 
@@ -743,7 +752,10 @@ fn rebase_workspace_artifact_paths_translates_only_under_the_prefix() {
             path.strip_prefix(&from).ok().map(|suffix| to.join(suffix))
         })
         .expect("rebase");
-    assert_eq!(rebased, 1, "only the entry under the moved prefix is rewritten");
+    assert_eq!(
+        rebased, 1,
+        "only the entry under the moved prefix is rewritten"
+    );
     let session = store.load(&s.metadata.id).expect("reload");
     let paths: Vec<PathBuf> = session
         .artifacts

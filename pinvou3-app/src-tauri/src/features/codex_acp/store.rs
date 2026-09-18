@@ -2042,7 +2042,10 @@ mod tests {
             .repair_stranded_index_records(&[("s1".to_string(), to2.clone())])
             .unwrap();
         assert_eq!(repaired, vec!["s1".to_string()]);
-        assert_eq!(store.get("s1").workspace_path.as_deref(), Some(to2.as_path()));
+        assert_eq!(
+            store.get("s1").workspace_path.as_deref(),
+            Some(to2.as_path())
+        );
 
         fs::remove_dir_all(&root).unwrap();
     }
