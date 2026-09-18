@@ -41,19 +41,40 @@ pinvou_vc_redist_install:
   InitPluginsDir
   SetOutPath "$PLUGINSDIR"
   File "/oname=$PLUGINSDIR\VC_redist.x64.exe" "${__FILEDIR__}\..\..\..\windows-runtime\nsis\vc_redist\VC_redist.x64.exe"
+  File "/oname=$PLUGINSDIR\pinvou-vcredist-temp-preflight.ps1" "${__FILEDIR__}\..\..\..\..\packaging\windows\nsis\vcredist-temp-preflight.ps1"
+  nsExec::ExecToStack 'powershell -NoProfile -ExecutionPolicy Bypass -File "$PLUGINSDIR\pinvou-vcredist-temp-preflight.ps1"'
+  Pop $6
+  Pop $7
+  ${If} $6 != 0
+    SetRegView lastused
+    DetailPrint "VC++ prerequisite temp preflight failed: $7"
+    MessageBox MB_ICONSTOP|MB_OK "无法修复 Microsoft Visual C++ 运行库所需的系统临时目录。请确认以管理员身份安装，并检查安全策略或杀毒软件是否阻止了安装程序脚本。$\r$\nFailed to repair the Windows Installer temporary directories: $7. Verify the install is elevated and that security policy or antivirus is not blocking installer scripts." /SD IDOK
+    Abort
+  ${EndIf}
+  DetailPrint "$7"
+  System::Call 'Kernel32::SetEnvironmentVariableW(w "TEMP", w "$WINDIR\Temp") i.r8'
+  System::Call 'Kernel32::SetEnvironmentVariableW(w "TMP", w "$WINDIR\Temp") i.r8'
   SetOutPath "$INSTDIR"
   ClearErrors
-  ExecWait '"$PLUGINSDIR\VC_redist.x64.exe" /install /quiet /norestart' $5
+  ExecWait '"$PLUGINSDIR\VC_redist.x64.exe" /install /quiet /norestart /log "$WINDIR\Temp\Pinvou3-vcredist.log"' $5
   IfErrors pinvou_vc_redist_exec_failed
 
   IntCmp $5 0 pinvou_vc_redist_ready 0 0
   IntCmp $5 3010 pinvou_vc_redist_reboot 0 0
+  IntCmp $5 1632 pinvou_vc_redist_temp_failed 0 0
+  IntCmp $5 -2147023264 pinvou_vc_redist_temp_failed 0 0
   IntCmp $5 1641 pinvou_vc_redist_reboot pinvou_vc_redist_exit_failed pinvou_vc_redist_exit_failed
 
 pinvou_vc_redist_exec_failed:
   SetRegView lastused
   DetailPrint "Microsoft Visual C++ Redistributable installer could not be started."
   MessageBox MB_ICONSTOP|MB_OK "Microsoft Visual C++ Redistributable installer could not be started." /SD IDOK
+  Abort
+
+pinvou_vc_redist_temp_failed:
+  SetRegView lastused
+  DetailPrint "Microsoft Visual C++ Redistributable still cannot access Windows Installer temporary directories (exit code: $5; 1632 / 0x80070660)."
+  MessageBox MB_ICONSTOP|MB_OK "Windows Installer 仍无法访问系统临时目录（错误 1632 / 0x80070660）。请释放系统盘空间，检查系统临时目录权限，重启 Windows 后重试。日志：$WINDIR\Temp\Pinvou3-vcredist.log$\r$\nWindows Installer cannot access its temporary directories. Free space on the system drive, check temporary-directory permissions, restart Windows, and retry. Log: $WINDIR\Temp\Pinvou3-vcredist.log" /SD IDOK
   Abort
 
 pinvou_vc_redist_exit_failed:

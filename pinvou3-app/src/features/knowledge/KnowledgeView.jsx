@@ -287,11 +287,14 @@ const OutputLivePreview = ({ o, onOpen, outPreviewCache, runQueuedPreview, remem
         useEffect(() => {
           let alive = true;
           const hit = outPreviewCache.current[cacheKey];
-          // eslint-disable-next-line react-hooks/set-state-in-effect -- sync the snapshot from the external preview cache/visibility gate at mount to avoid preview flicker
-          setPv(hit || (visible ? { loading: true } : { idle: true }));
-          if (hit == null && visible) {
-            setFrameReady(false);
-            const timer = setTimeout(() => {
+          // eslint-disable-next-line react-hooks/set-state-in-effect -- sync the snapshot from the external preview cache at mount to avoid preview flicker
+          if (hit) { setPv(hit); return () => { alive = false; }; }
+          if (!visible) { setPv({ idle: true }); return () => { alive = false; }; }
+          // 本机知识文件不是 Session 产物；Web 端不读取任意主机路径。
+          if (isWeb) { setPv({ kind: 'fallback' }); return () => { alive = false; }; }
+          setPv({ loading: true });
+          setFrameReady(false);
+          const timer = setTimeout(() => {
           runQueuedPreview(async () => {
             const freshHit = outPreviewCache.current[cacheKey];
             if (freshHit) return freshHit;
@@ -327,9 +330,7 @@ const OutputLivePreview = ({ o, onOpen, outPreviewCache, runQueuedPreview, remem
             }
           }).then((/** @type {OutputPreview} */ next) => { if (alive) setPv(next); });
           }, 80);
-            return () => { alive = false; clearTimeout(timer); };
-          }
-          return () => { alive = false; };
+          return () => { alive = false; clearTimeout(timer); };
       // eslint-disable-next-line react-hooks/exhaustive-deps -- dependency list manually reviewed: this effect only needs the listed deps; completing it would cause duplicate requests or polling loops
         }, [cacheKey, visible, o.path, o.category, ext, outputSessionId, runQueuedPreview, rememberOutPreview]);
 
