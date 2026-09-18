@@ -1724,6 +1724,10 @@ const NAV_PREFETCH = {
       // 引用,击穿 RecentItem 的 memo,重渲染全部侧栏行。
       const clearDropTarget = useCallback(() => setDropTargetGroupKey(null), []);
       const [rebindDraft, setRebindDraft] = useState(null);
+      // Close-time focus resolver for the rebind dialog (review #463 round-10
+      // T7): filled with a `() => Element | null` targeting the project header
+      // row that opened it, which survives the refresh that removes the badge.
+      const rebindRestoreRef = useRef(null);
       // 桥完成首次状态同步(bs 就绪)后拉一次项目快照;后续变更由
       // projects:list_changed 事件驱动桥内刷新(bridge/projects.js)。
       const projectsBootstrapReady = !!bs;
@@ -2632,11 +2636,21 @@ const NAV_PREFETCH = {
       // dialog. Two-phase confirmation: the first call omits confirmExisting,
       // the backend rejects when the old folder still exists, and the dialog
       // escalates to the strong warning for the user to confirm again.
-      const startRebindWorkspace = async (fromPath) => {
+      const startRebindWorkspace = async (fromPath, headerEl) => {
         // Do not reopen while rebindDraft is already open: with focus left on
         // the badge, pressing Enter re-triggers onRebind (review #463 minor),
         // and the projectOpsBusy guard does not cover that window.
         if (!bridge.files || !bridge.files.pickRebindFolder || projectOpsBusy || rebindDraft) return;
+        // Focus destination for the dialog's close (review #463 round-10 T7):
+        // the badge that opened it is removed by the very operation it starts
+        // (the root becomes available), so the hook's default restore target is
+        // detached and focus fell to <body>. The project header row survives the
+        // refresh, and its toggle button is the natural place to land. Resolved
+        // at close time (the hook's resolver contract), because only then is the
+        // post-refresh subtree committed.
+        rebindRestoreRef.current = headerEl
+          ? () => headerEl.querySelector('button')
+          : null;
         try {
           // Single folder, with a title matching the rebind semantics
           // (review #463 Minor 6): no longer borrowing KB's multi-select
@@ -3088,6 +3102,13 @@ const NAV_PREFETCH = {
         isCompactShell && isSidebarOpen ? 'mobile-sidebar' : '',
         isCompactShell && mobileMoreOpen ? 'mobile-more' : '',
         moveToProjectSession ? 'move-picker' : '',
+        // Folder rebind confirm (review #463 round-10 T1): the move picker's
+        // sibling in the projects domain, and subject to the same rule — a
+        // modal that is not published as an intent leaves the native webview
+        // dock un-suspended, so the backdrop has no authority over the dock
+        // region (occlusion + click-through). In the partial state this dialog
+        // is the only retry entry, which makes the omission user-visible.
+        rebindDraft ? 'rebind' : '',
       ].filter(Boolean).join('|');
       const browserOverlayPublicationReady = !!browserOverlayIntent
         && publishedBrowserOverlayIntent === browserOverlayIntent;
@@ -3233,7 +3254,7 @@ const NAV_PREFETCH = {
             document.body
           )}
 
-          {rebindDraft && (
+          {rebindDraft && browserOverlayPublicationReady && (
             <RebindFolderDialog
               from={rebindDraft.from}
               to={rebindDraft.to}
@@ -3243,6 +3264,7 @@ const NAV_PREFETCH = {
               busySessionIds={rebindDraft.busySessionIds || null}
               t={t}
               busy={projectOpsBusy}
+              restoreTargetRef={rebindRestoreRef}
               onCancel={() => setRebindDraft(null)}
               onConfirm={confirmRebindWorkspace}
             />
@@ -3651,7 +3673,7 @@ const NAV_PREFETCH = {
                                         .filter(root => !(root && typeof root === 'object' ? root.available : root))
                                         .map(root => String(typeof root === 'object' ? root.path : root))
                                     : []}
-                                  onRebind={bridge.projects && group.kind === 'project' ? (rootPath) => startRebindWorkspace(rootPath) : undefined}
+                                  onRebind={bridge.projects && group.kind === 'project' ? (rootPath, headerEl) => startRebindWorkspace(rootPath, headerEl) : undefined}
                                   dropActive={dropTargetGroupKey === group.key}
                                   onDropActive={(active) => setDropTargetGroupKey(active ? group.key : null)}
                                 />

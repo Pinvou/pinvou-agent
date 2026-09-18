@@ -34,6 +34,31 @@ pub struct Project {
 /// 归组,直接回落隐式文件夹分组);无条目 = 未裁决,走自动归组。
 pub type SessionAssignments = HashMap<String, Option<String>>;
 
+/// Failure mode of [`ProjectStore::rebind_roots`] (review #463 round-10 R2):
+/// typed so the command layer can report a user-actionable root conflict
+/// separately from an I/O failure. Collapsing both into one marker told a user
+/// whose disk was full that the destination "overlaps another project", and
+/// pointed them at a retry that cannot converge.
+#[derive(Debug)]
+pub enum RebindRootsError {
+    /// The translated candidate violates the root-overlap invariant; nothing
+    /// was persisted and memory was not advanced.
+    Conflict(anyhow::Error),
+    /// The candidate was valid but could not be persisted; memory was restored
+    /// to the on-disk state (see [`ProjectStore::rebind_roots`]).
+    Persist(anyhow::Error),
+}
+
+impl std::fmt::Display for RebindRootsError {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::Conflict(error) | Self::Persist(error) => write!(formatter, "{error:#}"),
+        }
+    }
+}
+
+impl std::error::Error for RebindRootsError {}
+
 /// 单文件持久化结构。schema_version 供未来结构演进识别:读到更新版本时
 /// 按空状态降级启动,但置位拒绝后续写入(见 `StoreState::refuse_writes`),
 /// 否则空状态 + 下次变更会把新结构文件降级覆盖写坏。
@@ -709,6 +734,20 @@ impl ProjectStore {
     /// case the whole rebind fails and rolls back (memory untouched, nothing
     /// persisted). Returns the affected project ids.
     ///
+    /// Both failure arms leave memory identical to disk, which is what the
+    /// command layer's retry contract assumes. The overlap arm never advances
+    /// memory; the persist arm advances it inside the write lock and restores
+    /// it when the write fails (review #463 round-10 R2). The previous order
+    /// committed `state.projects` first and only then persisted, so a persist
+    /// failure (disk full, permissions, `refuse_writes` on a newer on-disk
+    /// schema) left memory claiming the roots had moved while disk still held
+    /// the old ones. Because the command layer snapshots this memory, a rerun
+    /// in the same process then found no root under `from`, returned an empty
+    /// `Ok` and reported success — the bad state was only observable, and only
+    /// converged, after a restart reloaded the file. Mirrors the codex lane's
+    /// commit-on-success contract (see
+    /// `codex_acp::store::SessionAgentStore::rebind_workspace_prefix`).
+    ///
     /// Idempotent: no matching root is an empty Ok, not an error. The retry
     /// contract depends on this — a rerun after a partially failed run finds
     /// the roots already moved and must converge to a no-op while the command
@@ -716,7 +755,11 @@ impl ProjectStore {
     /// any root is indistinguishable from a completed retry at this layer;
     /// the entry normalization in the command layer (resolving `from` once
     /// for all three storage lanes) is what prevents a silent half-migration.
-    pub fn rebind_roots(&self, from: &Path, to: &Path) -> Result<Vec<String>> {
+    pub fn rebind_roots(
+        &self,
+        from: &Path,
+        to: &Path,
+    ) -> std::result::Result<Vec<String>, RebindRootsError> {
         let mut state = self.state.write();
         if from == to {
             return Ok(Vec::new());
@@ -729,10 +772,18 @@ impl ProjectStore {
         if !affected_projects.is_empty() {
             for project in &candidate {
                 validate_roots(&candidate, Some(&project.id), &project.roots)
-                    .context("rebind produced overlapping project roots")?;
+                    .context("rebind produced overlapping project roots")
+                    .map_err(RebindRootsError::Conflict)?;
             }
-            state.projects = candidate;
-            persist_locked(&state, &self.path)?;
+            // Commit-on-success: persist the candidate while the write lock is
+            // held, and restore the previous projects on failure so memory
+            // never claims a rebind disk does not have. `persist_locked` reads
+            // `state.projects`, hence the temporary swap.
+            let previous = std::mem::replace(&mut state.projects, candidate);
+            if let Err(error) = persist_locked(&state, &self.path) {
+                state.projects = previous;
+                return Err(RebindRootsError::Persist(error));
+            }
         }
         Ok(affected_projects)
     }

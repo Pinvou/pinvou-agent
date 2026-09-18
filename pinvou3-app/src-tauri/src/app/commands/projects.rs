@@ -7,17 +7,27 @@
 //! recheck, idle-gated runtime eviction, baseline recapture).
 
 use std::path::{Path, PathBuf};
+use std::time::Duration;
 
 use serde::Serialize;
 use tauri::{AppHandle, Emitter, State};
 
 use crate::features::codex_acp::{AcpPool, CodexWorkspaceKind, SessionAgentStore};
 use crate::features::projects::{
-    DeleteProjectReport, MoveSessionOutcome, Project, ProjectStore, SessionAssignments,
+    DeleteProjectReport, MoveSessionOutcome, Project, ProjectStore, RebindRootsError,
+    SessionAssignments,
 };
 use crate::features::sessions::SessionStore;
 
 use super::sessions::ensure_chat_session;
+
+/// Wall-clock budget for the whole idle-gated runtime reclaim tail of a rebind
+/// (review #463 round-10 T13). The tail walks every rebound, failed and to-lane
+/// retry candidate; each pool call is individually bounded, but a contended ACP
+/// pool would still charge its bound once per candidate. Ten seconds is far
+/// above the normal cost (idle sessions are reclaimed without waiting) and far
+/// below a user-visible hang.
+const REBIND_EVICT_TAIL_BUDGET: Duration = Duration::from_secs(10);
 
 /// Project events are only emitted locally: the projects domain is
 /// desktop-only per the bridge contract and is not forwarded until
@@ -289,7 +299,7 @@ fn reject_nested_rebind_target(from: &Path, to_display: &Path) -> Result<(), Str
 fn require_confirm_existing(from: &Path, confirm_existing: Option<bool>) -> Result<(), String> {
     if from.is_dir() && !confirm_existing.unwrap_or(false) {
         return Err(
-            "REBIND_OLD_ROOT_EXISTS: 原目录仍存在，需在界面确认后重试 (original folder still exists)"
+            "REBIND_OLD_ROOT_EXISTS: the original folder still exists; confirm in the UI and retry"
                 .to_string(),
         );
     }
@@ -431,6 +441,20 @@ pub async fn rebind_workspace_root(
     // land in this run's to-lane retry population are honored as carryover
     // (see carryover_post_busy_candidates), so the fed-back list cannot
     // widen the eviction or report sets.
+    //
+    // Cost, on record (review #463 round-10 T9, not changed here): the scans
+    // below visit EVERY session bound under the destination root, and
+    // `admit_rebind_retry_candidate` needs each one's metadata workspace, so
+    // each visit deserializes a whole SavedSession (transcript included). The
+    // destination is normally the same project at its new location, so a user
+    // who worked there before rebinding pays that once per session. Narrowing
+    // the population would need either a metadata-only session accessor in the
+    // session layer or a persisted "unfinished rebind" marker; both are design
+    // changes rather than fixes, and the semantic side (reclaiming idle
+    // runtimes of healthy to-lane sessions) is already the accepted trade-off
+    // documented above. What IS bounded now is the wall clock: the reclaim tail
+    // shares `REBIND_EVICT_TAIL_BUDGET` and the ACP waits are bounded, so this
+    // scan is the only remaining super-linear term.
     let mut retry_evict_candidates: Vec<String> = Vec::new();
     for (session_id, path) in acp_pool.agents().sessions_under_workspace(&to_display) {
         admit_rebind_retry_candidate(
@@ -462,18 +486,43 @@ pub async fn rebind_workspace_root(
     // semantics as the rewind gate, M5).
     // Known trade-off (review #463 Minor 9, on record): the busy check reads
     // the runtime's busy/configuring flags; a flag stuck set (process died
-    // without resetting) keeps rejecting until restart. On the ACP side
-    // is_turn_active folds in configuring, so the config-sync window is also
-    // covered by the rejection. There is deliberately no stale escape hatch,
-    // to avoid reclaiming a session with an in-flight turn by mistake.
+    // without resetting) keeps rejecting until restart. On the ACP side the
+    // check folds in configuring AND a prompt admitted but not yet started
+    // (`prompt_pending`), so both the config-sync and the pre-admission windows
+    // are covered by the rejection. There is deliberately no stale escape
+    // hatch, to avoid reclaiming a session with an in-flight turn by mistake.
+    //
+    // The ACP side is decided in ONE bounded acquisition of the pool's sessions
+    // lock (review #463 round-10 T13/T16): `get_or_spawn` holds that lock
+    // across a whole cold spawn, so a per-session unbounded wait would stall
+    // this command — and the process-wide rebind gate it holds — for as long as
+    // some unrelated session takes to start, multiplied by the affected count.
+    // `None` = the state could not be read inside the bound: reject with a
+    // dedicated marker (the ids would be guesses, and the same retry succeeds
+    // as soon as the spawn settles).
+    let fenced_ids: Vec<String> = affected.iter().map(|(id, _)| id.clone()).collect();
+    let acp_busy_state = acp_pool.rebind_blocking_sessions(&fenced_ids).await;
+    let acp_busy_unknown = acp_busy_state.is_none();
+    let acp_busy = acp_busy_state.unwrap_or_default();
     let mut busy_ids = Vec::new();
     for (session_id, _) in &affected {
-        if acp_pool.is_turn_active(session_id).await
+        if acp_busy.iter().any(|id| id == session_id)
             || engines.is_turn_active(session_id)
             || engines.is_scheduled_turn_running(session_id)
         {
             busy_ids.push(session_id.clone());
         }
+    }
+    if acp_busy_unknown {
+        // Dedicated marker rather than an id-less REBIND_SESSIONS_BUSY: the
+        // frontend renders the busy copy only when it has ids to list, so an
+        // empty list would make this rejection completely silent. Typed like
+        // every other user-reachable outcome (round-8 M4), and honest about
+        // what is unknown: an ACP runtime is starting up, so whether these
+        // sessions are busy could not be read inside the bound.
+        return Err(
+            "REBIND_RUNTIME_STARTING: an ACP runtime is starting up; retry in a moment".to_string(),
+        );
     }
     if !busy_ids.is_empty() {
         // Typed marker (Minor 7): a busy rejection is the fence's normal
@@ -493,6 +542,22 @@ pub async fn rebind_workspace_root(
         .agents()
         .rebind_workspace_prefix(&from, &to_display)
         .map_err(|e| format!("rebind_workspace_root: {e:#}"))?;
+    // Newcomers of the codex lane (review #463 round-10 R1 — the symmetric half
+    // of the plain-lane fence below). The snapshot above was taken BEFORE the
+    // per-session busy fence, while `rebind_workspace_prefix` re-scans under its
+    // own write lock: a session created+bound under `from` in that window IS
+    // rewritten by the lane (it appears in the outcome's `affected`) while being
+    // absent from `affected` here. Consuming only `sidecar_final_stale` left it
+    // with no metadata replay, no baseline recapture, no `session:list_changed`
+    // event and no mention in any report field — the run claimed full success
+    // while `SavedSession.metadata.workspace` still pointed at the vanished
+    // folder. The window is not microseconds wide: it spans the two `to`-lane
+    // scans (a `SessionStore::load` per destination session) plus the fence's
+    // per-session awaits, and the strong-confirm path (`from` still on disk)
+    // makes creating a session there entirely ordinary. The lane returns each
+    // newcomer already translated onto `to`, so the metadata loop below replays
+    // it like any other candidate (`rebind_target_path` returns it unchanged).
+    fold_codex_lane_newcomers(&prefix_outcome.affected, &mut affected);
     // Plain-chat binding sidecars (review #463 round-8 B1). A failed write
     // leaves the old path on disk (and the cache untouched), so a restart
     // would resurrect it — reported as failed below and retried by the next
@@ -637,9 +702,22 @@ pub async fn rebind_workspace_root(
     // localized conflict marker and a dialog that stays open with a retry, and
     // a rerun converges once the overlap is resolved, but the per-session
     // detail of this run is not reported alongside the error.
-    let affected_project_ids = store
-        .rebind_roots(&from, &to_display)
-        .map_err(|e| format!("REBIND_ROOTS_CONFLICT: {e:#}"))?;
+    //
+    // Failure modes are typed apart (review #463 round-10 R2): the store can
+    // reject the candidate as an overlap conflict (user-actionable, retry with
+    // another destination) or fail to PERSIST a valid candidate (disk full,
+    // permissions, newer on-disk schema — retrying with another destination
+    // cannot help). Labelling both `REBIND_ROOTS_CONFLICT` told the second user
+    // their destination overlapped another project, and the store now restores
+    // memory on the persist arm, so a same-process rerun still sees the old
+    // root and re-attempts the write instead of reporting an empty success.
+    let affected_project_ids =
+        store
+            .rebind_roots(&from, &to_display)
+            .map_err(|error| match error {
+                RebindRootsError::Conflict(inner) => format!("REBIND_ROOTS_CONFLICT: {inner:#}"),
+                RebindRootsError::Persist(inner) => format!("REBIND_ROOTS_PERSIST: {inner:#}"),
+            })?;
 
     // Post-pass fence hits that the pre-rewrite snapshot never saw (review
     // #463 round-8 MINOR-1): a session created under `from` by a concurrent
@@ -665,10 +743,22 @@ pub async fn rebind_workspace_root(
     // started — against the old directory — during the migration. Bindings
     // are already moved; report honestly and let the frontend suggest one
     // retry when idle. Scheduled rounds share the entry-fence semantics
-    // (M5).
+    // (M5). Same single bounded ACP acquisition as the entry fence
+    // (round-10 T13); an unreadable state (`None`) is reported "not busy"
+    // here, because the reclaim tail re-checks under its own bound and is
+    // what actually reports a refusal — inventing post-busy ids for sessions
+    // nothing was refused for would keep the dialog open on a false report.
+    // The id list is rebuilt here rather than reused from the entry fence: the
+    // codex lane's newcomers (folded into `affected` above) were not in the
+    // snapshot the fence saw.
+    let post_fence_ids: Vec<String> = affected.iter().map(|(id, _)| id.clone()).collect();
+    let acp_busy_after = acp_pool
+        .rebind_blocking_sessions(&post_fence_ids)
+        .await
+        .unwrap_or_default();
     let mut post_busy_session_ids = Vec::new();
     for (session_id, _) in &affected {
-        if acp_pool.is_turn_active(session_id).await
+        if acp_busy_after.iter().any(|id| id == session_id)
             || engines.is_turn_active(session_id)
             || engines.is_scheduled_turn_running(session_id)
         {
@@ -690,6 +780,14 @@ pub async fn rebind_workspace_root(
     // candidates (M2).
     let post_busy: std::collections::HashSet<String> =
         post_busy_session_ids.iter().cloned().collect();
+    // One shared budget for the whole reclaim tail (review #463 round-10 T13):
+    // a concurrent cold spawn holds the ACP pool's sessions lock across its
+    // handshake, so a per-session bound alone would let the tail spend that
+    // same wait once per candidate. Candidates the budget does not reach are
+    // reported exactly like a refused reclaim (the same touched/carryover gate
+    // below), so the dialog keeps its retry instead of closing on an
+    // unverified success.
+    let tail_deadline = tokio::time::Instant::now() + REBIND_EVICT_TAIL_BUDGET;
     for session_id in collect_eviction_candidates(
         &rebound_session_ids,
         &failed_session_ids,
@@ -698,8 +796,16 @@ pub async fn rebind_workspace_root(
         if post_busy.contains(&session_id) {
             continue;
         }
-        let acp_idle = acp_pool.evict_if_idle_for_rebind(&session_id).await;
-        let engine_idle = engines.evict_if_idle_for_rebind(&session_id).await;
+        // Out of budget = "not idle": nothing was touched, so the session must
+        // not be counted as reclaimed.
+        let (acp_idle, engine_idle) = if tokio::time::Instant::now() < tail_deadline {
+            (
+                acp_pool.evict_if_idle_for_rebind(&session_id).await,
+                engines.evict_if_idle_for_rebind(&session_id).await,
+            )
+        } else {
+            (false, false)
+        };
         if !acp_idle || !engine_idle {
             // A turn started between the recheck and the eviction and the
             // pools refused to kill it. Surface the session so the user can
@@ -807,6 +913,27 @@ fn carryover_post_busy_candidates(
         .collect()
 }
 
+/// Folds the codex lane's own affected set into the command's snapshot (review
+/// #463 round-10 R1): `rebind_workspace_prefix` re-scans under its write lock,
+/// so a session created+bound under `from` between the command's snapshot and
+/// that rewrite is translated by the lane yet absent from the snapshot. Adding
+/// it here gives it the metadata replay, baseline recapture, `session:list_changed`
+/// event and report entry every other rebound session gets — without it the run
+/// claimed full success while its `SavedSession.metadata.workspace` still
+/// pointed at the vanished folder. The lane hands back already-translated paths,
+/// so `rebind_target_path` leaves them untouched; existing entries win, and the
+/// order of the snapshot is preserved.
+fn fold_codex_lane_newcomers(
+    lane_affected: &[(String, PathBuf)],
+    affected: &mut Vec<(String, PathBuf)>,
+) {
+    for (session_id, new_path) in lane_affected {
+        if !affected.iter().any(|(sid, _)| sid == session_id) {
+            affected.push((session_id.clone(), new_path.clone()));
+        }
+    }
+}
+
 /// Folds post-pass fence hits into the failed list (review #463 round-8
 /// MINOR-1 + F1): sessions still under `from` after the rewrite that the
 /// pre-rewrite snapshot never saw (created by a concurrent writer during the
@@ -856,7 +983,7 @@ mod tests {
     fn rebind_from_rejects_empty_and_root() {
         assert!(
             validate_rebind_from(Path::new("")).is_err(),
-            "空串是全量重写"
+            "an empty prefix would rewrite every record"
         );
         // Platform roots (Unix `/`, Windows drive roots) have no parent and
         // must be rejected.
@@ -867,7 +994,7 @@ mod tests {
             .expect("temp dir must have a root ancestor");
         assert!(
             validate_rebind_from(&root).is_err(),
-            "文件系统根 {root:?} 配合 confirm-existing 是全量重安置"
+            "filesystem root {root:?} plus confirm-existing is a mass relocation"
         );
         let normal = std::env::temp_dir().join("pinvou3-rebind-from-check");
         assert!(validate_rebind_from(&normal).is_ok());
@@ -983,6 +1110,37 @@ mod tests {
         assert_eq!(failed.len(), 2);
     }
 
+    #[test]
+    fn fold_codex_lane_newcomers_adds_only_sessions_the_snapshot_missed() {
+        // review #463 round-10 R1: the codex lane rewrites under its own lock,
+        // so a session created+bound under `from` between the command's
+        // snapshot and that rewrite appears in the lane's affected set only.
+        // It must join `affected` (metadata replay + baseline + event + report
+        // entry); a session already in the snapshot must keep its original
+        // entry, not be re-added with the lane's translated path.
+        let mut affected = vec![("snapshot".to_string(), PathBuf::from("/from/snapshot"))];
+        let lane_affected = vec![
+            ("snapshot".to_string(), PathBuf::from("/to/snapshot")),
+            ("newcomer".to_string(), PathBuf::from("/to/newcomer")),
+        ];
+        fold_codex_lane_newcomers(&lane_affected, &mut affected);
+        assert_eq!(
+            affected,
+            vec![
+                ("snapshot".to_string(), PathBuf::from("/from/snapshot")),
+                ("newcomer".to_string(), PathBuf::from("/to/newcomer")),
+            ],
+            "the newcomer is appended once, already translated; the snapshot entry is untouched"
+        );
+        // Idempotent: the same lane outcome folded twice adds nothing.
+        fold_codex_lane_newcomers(&lane_affected, &mut affected);
+        assert_eq!(affected.len(), 2);
+        // A run with no lane newcomers is a no-op.
+        let mut untouched = vec![("only".to_string(), PathBuf::from("/from/only"))];
+        fold_codex_lane_newcomers(&[], &mut untouched);
+        assert_eq!(untouched.len(), 1);
+    }
+
     /// Isolated SessionStore for the plain-lane fence test, borrowing the
     /// process-wide env lock (same idiom as features::sessions::tests).
     fn isolated_session_store() -> (SessionStore, std::sync::MutexGuard<'static, ()>) {
@@ -1069,7 +1227,7 @@ mod tests {
         assert!(reject_nested_rebind_target(from, Path::new("/a/b")).is_err());
         assert!(
             reject_nested_rebind_target(from, Path::new("/a/bc")).is_ok(),
-            "目录边界:sibling 前缀不得误命中"
+            "component boundary: a sibling prefix must not match"
         );
         assert!(reject_nested_rebind_target(from, Path::new("/a")).is_ok());
     }
@@ -1085,14 +1243,14 @@ mod tests {
         let error = require_confirm_existing(&dir, None).unwrap_err();
         assert!(
             error.starts_with("REBIND_OLD_ROOT_EXISTS"),
-            "稳定标记前缀:前端据此升级强警告,不匹配人类文案"
+            "stable marker prefix: the frontend escalates the strong warning by it and never matches human copy"
         );
         assert!(require_confirm_existing(&dir, Some(false)).is_err());
         assert!(require_confirm_existing(&dir, Some(true)).is_ok());
         let missing = dir.join("gone");
         assert!(
             require_confirm_existing(&missing, None).is_ok(),
-            "断链场景(目录已不在盘上)无需确认"
+            "broken-link case (the folder is gone from disk) needs no confirmation"
         );
         std::fs::remove_dir_all(&dir).unwrap();
     }

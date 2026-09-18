@@ -228,7 +228,7 @@ const ProjectGroupHeader = ({
           title={rootPath}
           aria-label={`${t.uiProjects.folderUnavailable} · ${t.uiProjects.rebindFolder} · ${rootPath}`}
           disabled={busy}
-          onClick={(e) => { e.stopPropagation(); onRebind && onRebind(rootPath); }}
+          onClick={(e) => { e.stopPropagation(); onRebind && onRebind(rootPath, e.currentTarget.parentElement); }}
           className="mr-2 shrink-0 max-w-[9rem] truncate rounded-full bg-[#FCE8E6] dark:bg-[#3C2A29] px-2 py-0.5 text-[11px] text-[#C5221F] dark:text-[#F28B82] hover:opacity-80 disabled:opacity-50"
         >
           {t.uiProjects.folderUnavailable} · {t.uiProjects.rebindFolder}

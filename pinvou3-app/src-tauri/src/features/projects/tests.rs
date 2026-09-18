@@ -389,8 +389,8 @@ fn rebind_roots_rewrites_prefix_and_stays_idempotent() {
     let to = temp.path().join("moved");
     std::fs::create_dir_all(&to).expect("create to dir");
 
-    let project = create(&store, "搬家", &[from.clone(), abs("untouched")]);
-    let other = create(&store, "无关", &[abs("elsewhere")]);
+    let project = create(&store, "mover", &[from.clone(), abs("untouched")]);
+    let other = create(&store, "unrelated", &[abs("elsewhere")]);
 
     let affected = store.rebind_roots(&from, &to).expect("rebind roots");
     assert_eq!(affected, vec![project.id.clone()]);
@@ -402,7 +402,7 @@ fn rebind_roots_rewrites_prefix_and_stays_idempotent() {
     // twice on this).
     assert!(
         roots.contains(&display(&abs("untouched"))),
-        "prefix 外的 root 不动"
+        "a root outside the prefix must not move"
     );
     assert_eq!(
         store.get(&other.id).unwrap().roots,
@@ -459,8 +459,12 @@ fn rebind_roots_rejects_overlap_and_keeps_state() {
     let occupied = temp.path().join("occupied");
     std::fs::create_dir_all(&occupied).expect("create occupied dir");
 
-    let project = create(&store, "待搬", std::slice::from_ref(&from));
-    create(&store, "已有领地", std::slice::from_ref(&occupied));
+    let project = create(&store, "to-move", std::slice::from_ref(&from));
+    create(
+        &store,
+        "existing-territory",
+        std::slice::from_ref(&occupied),
+    );
 
     let before = store.get(&project.id).unwrap();
     let error = store
@@ -469,6 +473,53 @@ fn rebind_roots_rejects_overlap_and_keeps_state() {
     assert!(error.to_string().contains("overlap"));
     // Error rolls back: memory state unchanged (nothing persisted).
     assert_eq!(store.get(&project.id).unwrap(), before);
+}
+
+/// Persist failure of the root commit must not advance memory (review #463
+/// round-10 R2). The pre-fix order assigned `state.projects = candidate` and
+/// only then persisted, so a failed write left memory claiming the roots had
+/// moved while disk still held the old ones — and because the rebind command
+/// snapshots memory, a same-process rerun found no root under `from`, returned
+/// an empty `Ok` and reported success. Only a restart converged. The store path
+/// is occupied by a directory so the atomic rename stage fails deterministically
+/// (the temp file is written under a random name, so it cannot be pre-occupied).
+#[test]
+fn rebind_roots_keeps_memory_when_persist_fails() {
+    let temp = tempfile::tempdir().expect("tempdir");
+    let store = store_in(&temp);
+    let from = abs("persist-from");
+    let to = temp.path().join("persist-to");
+    std::fs::create_dir_all(&to).expect("create target dir");
+
+    let project = create(&store, "persist", std::slice::from_ref(&from));
+    let before = store.get(&project.id).unwrap();
+    assert_eq!(before.roots, vec![display(&from)]);
+
+    let store_path = temp.path().join("projects.json");
+    std::fs::remove_file(&store_path).expect("remove store file");
+    std::fs::create_dir(&store_path).expect("occupy store path with a directory");
+
+    let error = store
+        .rebind_roots(&from, &to)
+        .expect_err("a persist failure must be reported");
+    assert!(
+        matches!(&error, super::store::RebindRootsError::Persist(_)),
+        "a write failure must not be classified as an overlap conflict (the command layer \
+         localizes the two markers differently): {error:?}"
+    );
+    assert_eq!(
+        store.get(&project.id).unwrap(),
+        before,
+        "memory must not claim a rebind that disk does not have"
+    );
+
+    // Clearing the obstruction converges on a same-process rerun: the root is
+    // still under `from` in memory, so it is re-attempted instead of being
+    // reported as already up to date.
+    std::fs::remove_dir(&store_path).expect("free store path");
+    let affected = store.rebind_roots(&from, &to).expect("retry converges");
+    assert_eq!(affected, vec![project.id.clone()]);
+    assert_eq!(store.get(&project.id).unwrap().roots, vec![display(&to)]);
 }
 
 /// Pre-flight for the reordered rebind (review #463 round-8 M3): the session
@@ -621,7 +672,7 @@ fn rebind_roots_display_form_preserves_nested_suffix() {
     let to = temp.path().join("nested-to");
     std::fs::create_dir_all(&to).expect("create to dir");
 
-    let project = create(&store, "嵌套搬家", &[from.join("Sub")]);
+    let project = create(&store, "nested-mover", &[from.join("Sub")]);
     let affected = store.rebind_roots(&from, &to).expect("rebind nested root");
     assert_eq!(affected, vec![project.id.clone()]);
     assert_eq!(
@@ -664,7 +715,7 @@ fn rebind_roots_via_symlink_alias_cuts_suffix_by_resolved_depth() {
 
     let store = store_in(&temp);
     // Stored root in canonical (real) form, nested one level below `from`.
-    let project = create(&store, "别名", &[deep.join("proj").join("sub")]);
+    let project = create(&store, "alias", &[deep.join("proj").join("sub")]);
 
     let affected = store.rebind_roots(&from, &to).expect("rebind via alias");
     assert_eq!(affected, vec![project.id.clone()]);
