@@ -26,6 +26,7 @@ import {
   ConversationTimeline,
   useConversationSecondClock,
 } from '../conversation/ConversationTimeline.jsx';
+import { AuxQuoteSelection } from '../aux-chat/AuxQuoteSelection.jsx';
 import { HomeModeSwitcher } from '../conversation/HomeModeSwitcher.jsx';
 import {
   conversationItemsForMode,
@@ -2594,6 +2595,18 @@ const ToolWelcomeCard = ({ toolId, _theme, t, onSend }) => {
                     renderToolItem={handleTimelineRenderToolItem}
                     onOpenExternal={openChatExternalUrl}
                   />
+                {/* 划词引用:主对话时间线内选中文字 → 暂存为该任务的辅助对话
+                    引用并打开辅助面板。可用条件与顶栏入口一致(sched- 会话无辅助对话)。 */}
+                <AuxQuoteSelection
+                  containerRef={conversationContentRef}
+                  sessionId={
+                    activeSessionId && !activeSessionId.startsWith('sched-') && bridge.available && bridge.auxChat
+                      ? activeSessionId
+                      : null
+                  }
+                  copy={t.uiAuxChat}
+                  onQuote={openAuxChatPanel}
+                />
                 {/* 实体占位必须覆盖输入框和其上方渐变区，保证滚到底时最后一张卡
                     完整停在渐变之外，而不是虽然能滚到却被遮罩淡化。 */}
                 <div data-testid="chat-bottom-spacer" aria-hidden="true" className="w-full shrink-0"

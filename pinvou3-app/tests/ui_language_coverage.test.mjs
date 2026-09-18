@@ -308,8 +308,29 @@ assert.match(auxChatPanel, /\{sending && !busy && \(/);
 assert.match(auxChatPanel, /const draftByTask = new Map\(\);/);
 assert.match(auxChatPanel, /setDraft\(sessionId \? \(draftByTask\.get\(sessionId\) \|\| ''\) : ''\);/);
 assert.match(auxChatPanel, /if \(sessionId\) draftByTask\.set\(sessionId, next\);/);
-assert.match(auxChatPanel, /if \(sentTaskId\) draftByTask\.delete\(sentTaskId\);/);
+// A successful send clears the draft and drops only the quotes captured when
+// the send started (they already traveled inline with the message — keeping
+// them would invite a duplicate quote block on the next send), while quotes
+// staged from the main view during the in-flight window survive for the next
+// message.
+assert.match(
+  auxChatPanel,
+  /if \(sentTaskId\) \{\s*draftByTask\.delete\(sentTaskId\);\s*dropAuxQuotes\(sentTaskId, quotes\);\s*\}/,
+);
 assert.doesNotMatch(restartBlock, /setDraft\(''\)/);
+// Conversation quotes ("划词引用"): staged per task through the aux-quote store
+// (module scope, same ownership as the draft) and appended to the outgoing
+// message as an inline userselect block; a quote-only send is allowed.
+assert.match(auxChatPanel, /const quoteBlock = buildAuxQuoteBlock\(quotes\);/);
+assert.match(auxChatPanel, /await auxChat\.send\(sentAuxId, quoteBlock \? text \+ quoteBlock : text\);/);
+assert.match(auxChatPanel, /\(!text && !quoteBlock\)/);
+assert.match(auxChatPanel, /subscribeAuxQuotes\(sessionId/);
+assert.match(auxChatPanel, /data-testid="aux-quote-chips"/);
+assert.match(auxChatPanel, /data-testid="aux-quote-remove"/);
+// Quote-only send affordance: with staged quotes the composer stays usable
+// even while the draft is empty (E2E scenario 7 covers it, but that does not
+// run in CI).
+assert.match(auxChatPanel, /disabled=\{composerDisabled \|\| \(!draft\.trim\(\) && quotes\.length === 0\)\}/);
 // Stale send outcomes (round-12 UX): a restart on the same task re-binds to a
 // new aux, so a send issued before it must neither re-latch sendFailed next to
 // ensureFailed ("double banner") nor clear text typed since.
@@ -339,8 +360,8 @@ assert.match(restartBlock.slice(finallyClause), /} finally \{[\s\S]*?if \(genera
 // duplicate turn whose rejection surfaces as a bogus "send failed" banner;
 // key-repeat Enter must be ignored outright. The latch must be released on
 // every outcome via finally, or the composer would lock after one failure.
-assert.match(auxChatPanel, /if \(!auxChat \|\| !sentAuxId \|\| !text \|\| busy \|\| restarting \|\| sendingRef\.current\) return;/);
-assert.match(auxChatPanel, /sendingRef\.current = true;[\s\S]*?await auxChat\.send\(sentAuxId, text\);[\s\S]*?\} finally \{[\s\S]*?if \(auxIdRef\.current === sentAuxId\) \{\s*sendingRef\.current = false;/);
+assert.match(auxChatPanel, /if \(!auxChat \|\| !sentAuxId \|\| \(!text && !quoteBlock\) \|\| busy \|\| restarting \|\| sendingRef\.current\) return;/);
+assert.match(auxChatPanel, /sendingRef\.current = true;[\s\S]*?await auxChat\.send\(sentAuxId, quoteBlock \? text \+ quoteBlock : text\);[\s\S]*?\} finally \{[\s\S]*?if \(auxIdRef\.current === sentAuxId\) \{\s*sendingRef\.current = false;/);
 assert.match(auxChatPanel, /if \(event\.repeat\) return;/);
 // Rebind resets restarting (round-7 m11): the restart invokes have no
 // transport timeout, so a promise that never settles must not latch the next
@@ -368,6 +389,15 @@ assert.match(source('features/pet/PetSettingsSection.jsx'), /t\.uiPetSettings/);
 const conversation = source('features/conversation/ConversationTimeline.jsx');
 assert.match(conversation, /conversationCopy\(copy\)/);
 assert.doesNotMatch(conversation, />等待授权</);
+// Aux quote chips ("划词引用") in the user bubble: the aux projection strips
+// the inline userselect block from userText and hands the excerpts over as
+// userQuotes, so this render branch is the only place the quoted content is
+// still visible. If it regresses, quotes disappear from the transcript
+// silently — the raw block is already stripped and no raw text remains.
+assert.match(conversation, /const userQuotes = Array\.isArray\(turn\.userQuotes\) \? turn\.userQuotes : \[\];/);
+assert.match(conversation, /turn\.userText \|\| userAttachments\.length \|\| userQuotes\.length/);
+assert.match(conversation, /userQuotes\.map\(\(quote, index\)/);
+assert.match(conversation, /data-testid="conversation-user-quote"/);
 const codex = source('features/codex/CodexAcpView.jsx');
 assert.match(codex, /const codexCopy = t\.uiCodex/);
 assert.match(codex, /copy=\{t\.uiConversation\}/);

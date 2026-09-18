@@ -1,4 +1,5 @@
 import { projectDeepSeekConversation } from '../conversation/deepseek-conversation.js';
+import { parseAuxQuotedMessage } from './aux-quote.mjs';
 
 /**
  * Pure logic layer for the aux chat panel: normalizes the synchronous
@@ -71,9 +72,19 @@ export function auxChatHasContent(snapshot) {
 
 export function projectAuxChatTurns(snapshot, auxId) {
   const snap = normalizeAuxSnapshot(snapshot);
-  return projectDeepSeekConversation({
+  const turns = projectDeepSeekConversation({
     chatItems: snap.chatItems,
     busy: snap.busy,
     sessionId: auxId,
   }).turns;
+  // Sent aux messages carry staged quotes inline as a fenced userselect
+  // block (see aux-quote.mjs). Strip the block from the visible user text and
+  // attach the excerpts so the timeline bubble renders quote chips instead of
+  // raw JSON. Messages without a block pass through untouched.
+  return turns.map((turn) => {
+    if (!turn || typeof turn.userText !== 'string' || !turn.userText) return turn;
+    const { visibleText, quotes } = parseAuxQuotedMessage(turn.userText);
+    if (!quotes.length) return turn;
+    return { ...turn, userText: visibleText, userQuotes: quotes };
+  });
 }

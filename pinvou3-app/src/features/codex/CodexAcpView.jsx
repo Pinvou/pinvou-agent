@@ -9,6 +9,7 @@ import { AcpAgentLogo } from './AcpAgentLogo.jsx';
 import { CodexWorkspacePanel } from './CodexWorkspacePanel.jsx';
 import { SubagentTranscriptPanel } from '../multiagent/SubagentTranscriptPanel.jsx';
 import { AuxChatPanel } from '../aux-chat/AuxChatPanel.jsx';
+import { AuxQuoteSelection } from '../aux-chat/AuxQuoteSelection.jsx';
 import { RunningAgentsOverlay } from '../multiagent/RunningAgentsOverlay.jsx';
 import {
   refreshAcpAgentCatalog,
@@ -3622,6 +3623,14 @@ export function CodexAcpView({
                 onOpen={(state) => { setRewindUndoError(''); setRewindUndoEntry({ ...state, reloadFailed: false }); }}
               />
             )}
+            {/* 划词引用：代码车道时间线内选中文字 → 暂存为该会话的辅助对话
+                引用并打开辅助面板。可用条件与顶栏辅助对话入口一致。 */}
+            <AuxQuoteSelection
+              containerRef={conversationContentRef}
+              sessionId={activeSession && bridge.available && bridge.auxChat ? activeSession.id : null}
+              copy={t.uiAuxChat}
+              onQuote={openAuxChatPanel}
+            />
           </div>
         </div>
 

@@ -852,6 +852,11 @@ function ConversationTurnView({
       ? c.contextUsage(Number(turnUsage.used || 0).toLocaleString(), Number(turnUsage.size || 0).toLocaleString())
       : '';
   const userAttachments = Array.isArray(turn.userAttachments) ? turn.userAttachments : [];
+  // Aux-chat quote chips ("划词引用"): turns projected by the aux panel carry
+  // the staged conversation excerpts in userQuotes with the inline
+  // userselect block already stripped. Main-chat projections never set the
+  // field, so this stays dead code for them.
+  const userQuotes = Array.isArray(turn.userQuotes) ? turn.userQuotes : [];
   const assistantAvailable = assistantResponseAvailable(turn);
   // Footer/visibility: a turn with no assistant content must not render an
   // avatar-only row. Live repro: a steered message sandwiched between two
@@ -864,10 +869,23 @@ function ConversationTurnView({
   const assistantRowVisible = running || presentation.length > 0 || assistantFooterVisible;
   const userContent = renderUser && turn.userItem
     ? renderUser(turn.userItem, turn)
-    : (turn.userText || userAttachments.length)
+    : (turn.userText || userAttachments.length || userQuotes.length)
       ? (
           <div className="flex justify-end">
             <div className="max-w-[78%] rounded-[20px] rounded-br-md bg-[#E9EEF6] dark:bg-[#2A2B2E] px-4 py-3 text-[14px] leading-6 whitespace-pre-wrap break-words">
+              {userQuotes.length > 0 && (
+                <div className={`flex flex-col gap-1.5 ${turn.userText ? 'mb-2' : ''}`}>
+                  {userQuotes.map((quote, index) => (
+                    <div
+                      key={`${index}-${String(quote.text || '').slice(0, 24)}`}
+                      data-testid="conversation-user-quote"
+                      className="rounded-lg border border-black/[0.06] bg-white/70 px-2.5 py-1.5 text-[12px] leading-5 text-gray-500 line-clamp-3 dark:border-white/[0.08] dark:bg-white/[0.05] dark:text-gray-400"
+                    >
+                      {String(quote.text || '')}
+                    </div>
+                  ))}
+                </div>
+              )}
               {turn.userText && <div>{turn.userText}</div>}
               {userAttachments.length > 0 && (
                 <div className={`flex flex-wrap gap-1.5 ${turn.userText ? 'mt-2' : ''}`}>

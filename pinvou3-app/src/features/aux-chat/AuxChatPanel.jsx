@@ -1,9 +1,16 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
-import { MessageSquare, RotateCcw, Send, X } from '../../components/icons.jsx';
+import { MessageSquare, Quote, RotateCcw, Send, X } from '../../components/icons.jsx';
 import { RightDockPanel } from '../../components/layout/RightDock.jsx';
 import { bridge } from '../../hooks/useBridge.js';
 import { isImeComposing } from '../../shared/ime-guard.mjs';
 import { ConversationTimeline } from '../conversation/ConversationTimeline.jsx';
+import {
+  buildAuxQuoteBlock,
+  dropAuxQuotes,
+  getAuxQuotes,
+  removeAuxQuote,
+  subscribeAuxQuotes,
+} from './aux-quote.mjs';
 import {
   auxChatBusy,
   auxChatHasContent,
@@ -53,6 +60,12 @@ export function AuxChatPanel({ sessionId, activationKey, t, theme, onClose, onAc
   const [auxId, setAuxId] = useState(null);
   const [snapshot, setSnapshot] = useState(() => normalizeAuxSnapshot(null));
   const [draft, setDraft] = useState('');
+  // Pending conversation quotes staged from the main timeline ("划词引用").
+  // Same task-scoped ownership as the draft: a quote selected in the main
+  // conversation must survive panel close/reopen and rebinds, and updates
+  // arriving while the panel is mounted are delivered through the store's
+  // subscription (the selection popover lives outside this panel).
+  const [quotes, setQuotes] = useState(() => (sessionId ? getAuxQuotes(sessionId) : []));
   const [sendFailed, setSendFailed] = useState(false);
   const [ensureFailed, setEnsureFailed] = useState(false);
   const [discardFailed, setDiscardFailed] = useState(false);
@@ -114,6 +127,7 @@ export function AuxChatPanel({ sessionId, activationKey, t, theme, onClose, onAc
     setSending(false);
     // Restore this task's unsent draft instead of wiping the composer.
     setDraft(sessionId ? (draftByTask.get(sessionId) || '') : '');
+    setQuotes(sessionId ? getAuxQuotes(sessionId) : []);
     setBindingPending(!!(auxChat && sessionId));
     if (!auxChat || !sessionId) return;
     let disposed = false;
@@ -152,6 +166,19 @@ export function AuxChatPanel({ sessionId, activationKey, t, theme, onClose, onAc
     }
     return () => { disposed = true; };
   }, [auxChat, sessionId, pullSnapshot]);
+
+  // Quotes staged while this panel is mounted (the selection popover runs in
+  // the main view, not here) arrive through the store subscription; the
+  // re-read on subscribe also closes the gap between mount and the first
+  // stageAuxQuote call.
+  useEffect(() => {
+    if (!sessionId) return;
+    // eslint-disable-next-line react-hooks/set-state-in-effect -- one-shot mirror of the module store on (re)bind, same pattern as the draft restore; later updates arrive via the subscription callback
+    setQuotes(getAuxQuotes(sessionId));
+    return subscribeAuxQuotes(sessionId, (next) => {
+      setQuotes(next.map((quote) => ({ text: quote.text })));
+    });
+  }, [sessionId]);
 
   // Background aux-session turn events already land in the per-session buffer
   // and trigger notifies; subscribing to the chat domain and re-pulling the
@@ -202,6 +229,12 @@ export function AuxChatPanel({ sessionId, activationKey, t, theme, onClose, onAc
   // actually streaming.
   const handleSend = useCallback(async () => {
     const text = draft.trim();
+    // Pending conversation quotes ride inline with the message as a fenced
+    // userselect block: the engine sees plain message text (it has no concept
+    // of quotes) while the timeline projection parses the block back into
+    // chips. A quote-only send (empty draft) is valid — the excerpts alone
+    // are a question about "what does this mean".
+    const quoteBlock = buildAuxQuoteBlock(quotes);
     const sentAuxId = auxIdRef.current;
     // Two independent staleness boundaries: the generation is the restart
     // boundary and the auxId is the rebind boundary. A restart on the same
@@ -210,16 +243,22 @@ export function AuxChatPanel({ sessionId, activationKey, t, theme, onClose, onAc
     // ensureFailed, nor a draft clear that would eat text typed since.
     const sentGeneration = generationRef.current;
     const sentTaskId = sessionId;
-    if (!auxChat || !sentAuxId || !text || busy || restarting || sendingRef.current) return;
+    if (!auxChat || !sentAuxId || (!text && !quoteBlock) || busy || restarting || sendingRef.current) return;
     sendingRef.current = true;
     setSending(true);
     setSendFailed(false);
     try {
-      await auxChat.send(sentAuxId, text);
+      await auxChat.send(sentAuxId, quoteBlock ? text + quoteBlock : text);
       if (generationRef.current !== sentGeneration) return;
       if (auxIdRef.current !== sentAuxId) return;
       setDraft('');
-      if (sentTaskId) draftByTask.delete(sentTaskId);
+      // The send only consumes the quotes it captured when it started: quotes
+      // staged from the main view while the send was in flight belong to the
+      // next message and must survive the success callback.
+      if (sentTaskId) {
+        draftByTask.delete(sentTaskId);
+        dropAuxQuotes(sentTaskId, quotes);
+      }
       pullSnapshot(auxIdRef.current);
     } catch (error) {
       console.warn('[pinvou3][aux-chat] send failed', error);
@@ -236,7 +275,7 @@ export function AuxChatPanel({ sessionId, activationKey, t, theme, onClose, onAc
         setSending(false);
       }
     }
-  }, [auxChat, draft, busy, restarting, pullSnapshot, sessionId]);
+  }, [auxChat, draft, quotes, busy, restarting, pullSnapshot, sessionId]);
 
   const handleComposerKeyDown = useCallback((event) => {
     if (event.repeat) return;
@@ -401,6 +440,7 @@ export function AuxChatPanel({ sessionId, activationKey, t, theme, onClose, onAc
         </button>
         <button
           type="button"
+          data-testid="aux-chat-close"
           onClick={onClose}
           className="w-7 h-7 shrink-0 rounded-lg flex items-center justify-center text-gray-400 hover:bg-black/[0.05] dark:hover:bg-white/[0.07]"
           aria-label={copy.close}
@@ -431,10 +471,10 @@ export function AuxChatPanel({ sessionId, activationKey, t, theme, onClose, onAc
 
       <div className="shrink-0 border-t border-black/[0.05] px-3 py-3 dark:border-white/[0.06]">
         {busy && (
-          <div className="mb-2 text-[11px] text-gray-400" role="status">{copy.busyHint}</div>
+          <div data-testid="aux-chat-busy-hint" className="mb-2 text-[11px] text-gray-400" role="status">{copy.busyHint}</div>
         )}
         {sending && !busy && (
-          <div className="mb-2 text-[11px] text-gray-400" role="status">{copy.sendingHint}</div>
+          <div data-testid="aux-chat-busy-hint" className="mb-2 text-[11px] text-gray-400" role="status">{copy.sendingHint}</div>
         )}
         {sendFailed && (
           <div className="mb-2 text-[11px] text-red-600 dark:text-red-400" role="alert">{copy.sendFailed}</div>
@@ -445,9 +485,38 @@ export function AuxChatPanel({ sessionId, activationKey, t, theme, onClose, onAc
         {discardFailed && (
           <div className="mb-2 text-[11px] text-red-600 dark:text-red-400" role="alert">{copy.discardFailed}</div>
         )}
-        <div className={`flex items-end gap-2 rounded-xl border px-3 py-2 ${
+        <div className={`rounded-xl border px-3 py-2 ${
           theme === 'dark' ? 'border-white/[0.08] bg-white/[0.03]' : 'border-black/[0.08] bg-white/60'
         }`}>
+          {quotes.length > 0 && (
+            <div data-testid="aux-quote-chips" className="mb-2 space-y-1.5">
+              <div className="flex items-center gap-1.5 text-[11px] text-gray-400">
+                <Quote size={12} className="shrink-0" />
+                <span>{copy.quoteChipCount(quotes.length)}</span>
+              </div>
+              {quotes.map((quote, index) => (
+                <div
+                  key={`${index}-${quote.text.slice(0, 24)}`}
+                  className="group/quote flex items-start gap-1.5 rounded-lg border border-black/[0.05] bg-black/[0.02] px-2 py-1.5 dark:border-white/[0.07] dark:bg-white/[0.04]"
+                >
+                  <div className="min-w-0 flex-1 line-clamp-3 whitespace-pre-wrap break-words text-[12px] leading-5 text-gray-500 dark:text-gray-400">
+                    {quote.text}
+                  </div>
+                  <button
+                    type="button"
+                    data-testid="aux-quote-remove"
+                    onClick={() => removeAuxQuote(sessionId, index)}
+                    className="h-5 w-5 shrink-0 rounded-md flex items-center justify-center text-gray-400 hover:bg-black/[0.06] dark:hover:bg-white/[0.08]"
+                    aria-label={copy.quoteRemove}
+                    title={copy.quoteRemove}
+                  >
+                    <X size={11} />
+                  </button>
+                </div>
+              ))}
+            </div>
+          )}
+          <div className="flex items-end gap-2">
           <textarea
             rows={1}
             value={draft}
@@ -469,13 +538,14 @@ export function AuxChatPanel({ sessionId, activationKey, t, theme, onClose, onAc
             type="button"
             data-testid="aux-chat-send"
             onClick={() => { void handleSend(); }}
-            disabled={composerDisabled || !draft.trim()}
+            disabled={composerDisabled || (!draft.trim() && quotes.length === 0)}
             className="flex h-7 w-7 shrink-0 items-center justify-center rounded-lg bg-[#0A84FF] text-white transition-opacity hover:bg-[#1677D2] disabled:opacity-40"
             aria-label={copy.send}
             title={busy ? copy.busyHint : copy.send}
           >
             <Send size={13} />
           </button>
+          </div>
         </div>
       </div>
     </RightDockPanel>
