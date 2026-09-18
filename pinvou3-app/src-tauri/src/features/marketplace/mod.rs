@@ -62,9 +62,13 @@ use crate::platform::paths;
 /// TRANSACTION↔FILE edge. The pre-existing TRANSACTION↔import_lock pairing
 /// is not ordered: uninstall nests TRANSACTION → import_lock (companion
 /// cleanup), while `restore_plugin` holds import_lock across `install_upload`
-/// → TRANSACTION. Both directions pre-date this PR and key on different
-/// per-id lock instances, so no same-instance cycle is known — but this doc
-/// must not be cited as proof of a settled global lock order.
+/// → TRANSACTION. Both directions pre-date this PR. A theoretical
+/// same-instance inversion exists at their cross (review R14 minor): pack X
+/// sits in the recycle bin while also being a declared companion of a tool
+/// being uninstalled — cleanup's `uninstall(X)` waits on import_lock(X) under
+/// TRANSACTION while `restore_plugin(X)` holds import_lock(X) waiting on
+/// TRANSACTION. Known, pre-existing, unresolved; this doc must not be cited
+/// as proof of a settled global lock order.
 static MARKETPLACE_TRANSACTION_LOCK: Mutex<()> = Mutex::new(());
 
 /// A freshly written journal on Windows can be briefly held by antivirus or indexer

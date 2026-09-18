@@ -189,6 +189,14 @@ pub async fn install_marketplace_tool(
     let companion_tool_id = tool_id.clone();
     tokio::task::spawn_blocking(move || {
         let mgr = crate::features::marketplace::MarketplaceManager::new();
+        // DenyAll 模式的 scope(如 code)已初始化时,新装的连接器默认仍关闭(显式开启)。
+        // 工具本体的同步**先行**（评审 R14-minor）：companion 技能是增强，其同步
+        // 失败不得让工具本体停留在零同意的默认开状态；持久化失败 fail-visible
+        // （评审 #455 R13-B3）。
+        crate::features::marketplace::sync_deny_all_scopes_after_install(&companion_tool_id)
+            .map_err(|e| {
+                format!("新装连接器 '{companion_tool_id}' 默认关闭状态落盘失败（新会话将默认开启，请在工具列表手动关闭）: {e}")
+            })?;
         // 联动:装该 MCP 声明的配套技能(引擎+引导整体到位)。
         // skill 是增强,装失败只记日志、不让已成功的 MCP 安装回滚。
         for sid in mgr.companion_skills(&companion_tool_id) {
@@ -199,22 +207,18 @@ pub async fn install_marketplace_tool(
                 eprintln!("[marketplace] 配套技能 '{sid}' 安装失败: {e}");
                 continue;
             }
-            // 新装的 companion 技能默认加入 DenyAll scope（当前 code）禁用集
-            // （外部能力显式开启，与独立技能安装 install_marketplace_skill_sync 同语义）。
-            // 持久化失败 fail-visible（评审 #455 R13-B3）：吞掉错误会让技能以
-            // 零同意进入新会话（fail-open）。
-            crate::features::marketplace::skill_scope::sync_deny_all_scopes_after_skill_install(
-                &sid,
-            )
-            .map_err(|e| {
-                format!("新装技能 '{sid}' 默认关闭状态落盘失败（新会话将默认开启，请在工具列表手动关闭）: {e}")
-            })?;
+            // 新装的 companion 技能默认加入 DenyAll scope 禁用集（外部能力显式
+            // 开启，与独立技能安装 install_marketplace_skill_sync 同语义）。
+            // companion 的 owner 包即本工具，上方的工具同步已覆盖其同意状态，
+            // 故本调用失败只留痕继续（不阻断其余 companion，也无需整体报错）。
+            if let Err(e) = crate::features::marketplace::skill_scope::
+                sync_deny_all_scopes_after_skill_install(&sid)
+            {
+                eprintln!(
+                    "[marketplace] 配套技能 '{sid}' 默认关闭状态落盘失败（owner 包已由工具同步覆盖）: {e}"
+                );
+            }
         }
-        // DenyAll 模式的 scope(如 code)已初始化时,新装的连接器默认仍关闭(显式开启)。
-        crate::features::marketplace::sync_deny_all_scopes_after_install(&companion_tool_id)
-            .map_err(|e| {
-                format!("新装连接器 '{companion_tool_id}' 默认关闭状态落盘失败（新会话将默认开启，请在工具列表手动关闭）: {e}")
-            })?;
         Ok::<(), String>(())
     })
     .await

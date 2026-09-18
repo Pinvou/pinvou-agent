@@ -725,6 +725,13 @@ pub fn save_disabled_bundles_for(scope: ConnectorScope, ids: &[String]) {
     } else {
         file.default_off_scopes.insert(key.clone(), retained);
     }
+    // The persist here remains fail-silent, deliberately (review R14 should-fix
+    // registration): the composer whole-list replace is the #515 rework target
+    // (cross-process RMW), and layering a second error surface onto it before
+    // that rework was declined in rounds 12/13. The honest direction note: a
+    // lost switch-OFF write leaves the pack live while the UI renders it off —
+    // fail-open, the same direction the enable/install-sync paths refuse to
+    // swallow. Do not cite this call as a precedent for new writers.
     save_disabled_bundles_file(&file);
 }
 

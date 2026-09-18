@@ -1554,13 +1554,18 @@ mod tests {
                 .any(|e| e.id == "my-skill"),
             "回收站条目必须复原"
         );
+        // bundles.json 此刻仍不可读：登记查询本身必须报错（fail loud，不得伪造）。
+        assert!(
+            store.get("my-skill").is_err(),
+            "不可读的登记文件必须让 get 报错"
+        );
+
+        // 收尾：恢复权限后再断言登记确实未被半写入，并清理临时目录。
+        std::fs::set_permissions(&store_path, std::fs::Permissions::from_mode(0o644)).unwrap();
         assert!(
             store.get("my-skill").unwrap().is_none(),
             "登记重建失败不得留下半写入的记录"
         );
-
-        // 收尾：恢复权限以便清理临时目录。
-        std::fs::set_permissions(&store_path, std::fs::Permissions::from_mode(0o644)).unwrap();
         match prev {
             Some(v) => unsafe { std::env::set_var("PINVOU3_HOME", v) },
             None => unsafe { std::env::remove_var("PINVOU3_HOME") },
