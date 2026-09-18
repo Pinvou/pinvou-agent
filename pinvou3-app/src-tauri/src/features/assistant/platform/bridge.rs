@@ -7988,6 +7988,28 @@ mod tests {
     /// 一致（workflow 也同样可用——不教不荐，但不禁用）。
     #[test]
     fn multi_agent_engine_config_adds_roles_and_resource_guards() {
+        // The engine config reads the marketplace disabled-tool registry
+        // (disabled_tool_names) under PINVOU3_HOME. This test never writes
+        // env and used to read it bare;
+        // mcp_inventory_tracks_live_scope_toggles_without_enabling_tools
+        // flips PINVOU3_HOME and writes non-empty disabled entries, so under
+        // parallel scheduling two adjacent build_engine_config* calls could
+        // read different snapshots and the "multi-agent == ordinary
+        // conversation" assertions went red randomly (reproduced three times
+        // in a row locally on 2026-09-16). Follow this module's convention:
+        // lock ENV_LOCK and pin an empty home — the read is serialized with
+        // the other env-writing tests and the marketplace state is
+        // deterministically empty, no longer drifting with scheduling or a
+        // real ~/.pinvou3.
+        let (_lock, _env) = locked_env(&["PINVOU3_HOME"]);
+        let home =
+            std::env::temp_dir().join(format!("pinvou3-bridge-ma-roles-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&home);
+        std::fs::create_dir_all(&home).unwrap();
+        // SAFETY: holding ENV_LOCK via locked_env() (first statement of this
+        // test); env writes in the test process are serialized.
+        unsafe { std::env::set_var("PINVOU3_HOME", &home) };
+
         let bridge = fixture_bridge();
         let workspace = std::env::temp_dir().join(format!(
             "pinvou3-wf-roles-{}-{:p}",
