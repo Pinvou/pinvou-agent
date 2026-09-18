@@ -29,7 +29,7 @@ import { WorkspacePickerDialog } from '../features/projects/WorkspacePickerDialo
 import { computePickerRows, pickerPrimaryRoot, pickerProjectRoots, workspaceNoticeTone } from '../features/projects/workspacePickerState.js';
 import { removeRootPlan, rootAlreadyPresent } from '../features/projects/manageFoldersState.js';
 import { ManageProjectFoldersDialog } from '../features/projects/ManageProjectFoldersDialog.jsx';
-import { runSessionBatch } from '../shared/session-management.js';
+import { classifyRebindError } from '../features/projects/rebindErrors.js';import { runSessionBatch } from '../shared/session-management.js';
 import { can, isWeb } from '../shared/platform.js';
 import { installGlobalMarkdownRenderer } from '../shared/markdown-renderer.js';
 import {
@@ -2906,22 +2906,31 @@ const NAV_PREFETCH = {
         // Clear the previous attempt's inline error/busy hint so it does
         // not stack with this run's result.
         setRebindDraft(prev => prev && { ...prev, error: null, busySessionIds: null });
+        // Feed the previous report's post-busy ids back (review #463
+        // F-Major): a session an earlier run moved and reported post-busy is
+        // routed by the backend into the same to-lane retry population as a
+        // healthy session, so without the feed-back a busy-refused carryover
+        // session would appear in NO report field and the dialog would close
+        // claiming full success while its old-cwd runtime stays resident.
+        // The backend honors only the intersection with its own retry
+        // population, so this list can never widen the eviction set.
+        const previousPostBusySessionIds = (rebindDraft.partial && rebindDraft.partial.postBusyIds) || [];
         try {
           const report = await bridge.projects.rebindWorkspaceRoot(
-            rebindDraft.from, rebindDraft.to, confirmExisting);
+            rebindDraft.from, rebindDraft.to, confirmExisting, previousPostBusySessionIds);
           const rebound = (report && report.rebound_session_ids) ? report.rebound_session_ids.length : 0;
           const failed = (report && report.failed_session_ids) ? report.failed_session_ids.length : 0;
           const postBusy = (report && report.post_busy_session_ids) ? report.post_busy_session_ids.length : 0;
-          // Partial failure is no longer swallowed (finding 3), and the
-          // dialog no longer closes: the root has already moved, so after
-          // the loadProjects refresh the unavailable badge (the only rebind
-          // entry) disappears and the toast's "retry the rest" promise
-          // would be unreachable (review #463 M1). The dialog switches to
-          // the partial-report state in place, listing failed sessions with
-          // a retry; rerunning the backend with the same from/to converges
-          // (the snapshot includes unsynced sessions; already-rebound ones
-          // are no-ops). The success path still closes + toasts.
-          if (failed > 0) {
+          // The dialog stays open whenever the report still has something the
+          // user must act on — failed sessions to retry, or sessions whose
+          // runtime the idle gate refused (round-8 MAJOR-2: closing on the
+          // post-busy-only case left "retry once when idle" with no entry
+          // point, because the unavailable-root badge disappears once the root
+          // has moved). Rerunning the backend with the same from/to converges
+          // (the snapshot includes unsynced sessions; already-rebound ones are
+          // no-ops). The post-busy ids are kept for the next retry's
+          // feed-back (F-Major).
+          if (failed > 0 || postBusy > 0) {
             setRebindDraft(prev => prev && {
               ...prev,
               partial: {
@@ -2929,17 +2938,12 @@ const NAV_PREFETCH = {
                 failed,
                 failedIds: (report && report.failed_session_ids) || [],
                 postBusy,
+                postBusyIds: (report && report.post_busy_session_ids) || [],
               },
             });
           } else {
             setRebindDraft(null);
-            if (postBusy > 0) {
-              // Report both halves: the busy-only toast would silently drop
-              // the rebound count (review #463 minor).
-              setSettingsToast(rebound > 0
-                ? t.uiProjects.rebindSuccessPostBusy(rebound, postBusy)
-                : t.uiProjects.rebindBusyAfter(postBusy));
-            } else if (rebound > 0) {
+            if (rebound > 0) {
               setSettingsToast(t.uiProjects.rebindSuccess(rebound));
             } else {
               // A retry after everything already converged (or a root with
@@ -2956,38 +2960,32 @@ const NAV_PREFETCH = {
             console.warn('refresh sessions after rebind failed', error);
           });
         } catch (error) {
-          const message = String(error);
-          // Typed-marker matching (finding 11 / Minor 7): match only the
-          // stable prefix, never human-readable copy.
-          if (message.startsWith('REBIND_OLD_ROOT_EXISTS')) {
+          // Typed-marker matching (finding 11 / Minor 7 / round-8 M4): the
+          // backend prefixes every user-reachable outcome with a stable ASCII
+          // marker and we match only that prefix, never human copy. The mapping
+          // lives in a pure helper so both halves of the contract are unit
+          // tested (review #463 round-8 minor 10).
+          const classified = classifyRebindError(error, t);
+          if (classified.kind === 'old-root-exists') {
             setRebindDraft(prev => prev && { ...prev, warnExisting: true, error: null });
-          } else if (message.startsWith('REBIND_IN_PROGRESS')) {
-            // Concurrent-gate rejection (round-7 m1): map the typed prefix to
-            // copy instead of surfacing raw prose.
-            setRebindDraft(prev => prev && { ...prev, error: t.uiProjects.rebindInProgress });
-          } else if (message.startsWith('REBIND_NESTED_TARGET')) {
-            // Nested-target rejection: same typed marker, mapped to the
-            // trilingual copy instead of passing through backend prose
-            // (review #464 MINOR 9); rendered inline, no toast (see the
-            // overlay layering below).
-            setRebindDraft(prev => prev && { ...prev, error: t.uiProjects.rebindNestedRejected });
-          } else if (message.startsWith('REBIND_SESSIONS_BUSY')) {
+          } else if (classified.kind === 'sessions-busy') {
             // Busy rejection is the fence's high-frequency happy path
             // (Minor 7): map it to i18n copy; only session ids follow the
             // marker, and they are shown verbatim for troubleshooting.
-            const busyIds = message.slice('REBIND_SESSIONS_BUSY:'.length).trim();
             setRebindDraft(prev => prev && {
               ...prev,
-              busySessionIds: busyIds ? busyIds.split(/,\s*/) : [],
+              busySessionIds: classified.busySessionIds,
               error: null,
             });
+          } else if (classified.kind === 'copy') {
+            setRebindDraft(prev => prev && { ...prev, error: classified.message });
           } else {
             console.warn('rebind workspace failed', error);
             // On failure keep the dialog open with the error inline
             // (review #463 M7): in-place display persists and sits next to
-            // the retry; the backend's raw error text (not UI copy) does
-            // not go through i18n keys.
-            setRebindDraft(prev => prev && { ...prev, error: message });
+            // the retry; an unmapped backend error is shown verbatim as a
+            // diagnostic detail rather than guessed at.
+            setRebindDraft(prev => prev && { ...prev, error: classified.message });
           }
         } finally {
           setProjectOpsBusy(false);

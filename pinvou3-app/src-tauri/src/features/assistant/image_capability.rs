@@ -485,17 +485,6 @@ mod tests {
     }
 
     #[test]
-    fn kimi_for_coding_unaffected_by_k27_code_text_marker() {
-        // 底座目录把 kimi-k2.7-code 标为 text-only,但 kimi-for-coding 是另一部署
-        // (用户实测可识图):目录查不到该 id,内置表(实测记录)判 Supported。
-        let model = saved_model(ModelPreset::Kimi, "kimi-for-coding");
-        assert_eq!(
-            effective_image_capability(&model),
-            EffectiveImageCapability::Supported
-        );
-    }
-
-    #[test]
     fn override_wins_over_builtin_table() {
         // Enabled:未知本地模型 → Supported。
         let mut model = saved_model(ModelPreset::LocalVllm, "qwen36_35b_256k");

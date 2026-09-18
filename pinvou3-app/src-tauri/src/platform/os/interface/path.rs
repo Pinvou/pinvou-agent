@@ -24,6 +24,30 @@ pub fn filesystem_path_identity_key(path: &str) -> String {
     super::super::platform::filesystem_path_identity_key(path)
 }
 
+/// Component-aware "same as, or nested under" for two folded identity keys:
+/// a bare `starts_with` would count `/a/bc` as nested in `/a/b`, so the
+/// boundary has to be a separator. The POSIX root nests every absolute path.
+///
+/// Single source of truth for the folded-prefix predicate (review #463
+/// round-8 elegance): project-root validation, the codex/session rebind
+/// suffix matcher and the command-layer nesting rejection all need exactly
+/// this rule, and three hand-rolled copies had already drifted apart. Keys —
+/// not paths — go in, so callers keep their own component-cut arithmetic.
+pub fn path_identity_is_same_or_nested(key: &str, base: &str) -> bool {
+    // A trailing separator is noise on both sides (`/a/b` and `/a/b/` are the
+    // same directory); normalising it here also keeps the POSIX-root case
+    // below from being shadowed by an empty-trim mismatch.
+    let key = key.strip_suffix('/').unwrap_or(key);
+    let base = base.strip_suffix('/').unwrap_or(base);
+    if key == base {
+        return true;
+    }
+    if base.is_empty() {
+        return key.starts_with('/');
+    }
+    key.starts_with(base) && key[base.len()..].starts_with('/')
+}
+
 pub fn python_command() -> String {
     super::super::platform::python_command()
 }
@@ -101,7 +125,22 @@ mod tests {
     }
 
     #[test]
-    fn user_home_dir_returns_some_path() {
-        assert!(!user_home_dir().as_os_str().is_empty());
+    fn path_identity_nesting_requires_a_component_boundary() {
+        assert!(path_identity_is_same_or_nested("/a/b", "/a/b"));
+        assert!(path_identity_is_same_or_nested("/a/b/c", "/a/b"));
+        assert!(
+            !path_identity_is_same_or_nested("/a/bc", "/a/b"),
+            "sibling prefix must not count as nested"
+        );
+        assert!(!path_identity_is_same_or_nested("/a", "/a/b"));
+        assert!(
+            path_identity_is_same_or_nested("/a/b", "/a/b/"),
+            "a trailing separator on the base does not change the answer"
+        );
+        assert!(path_identity_is_same_or_nested("/", "/"));
+        assert!(
+            path_identity_is_same_or_nested("/a", "/"),
+            "the POSIX root nests every absolute path"
+        );
     }
 }

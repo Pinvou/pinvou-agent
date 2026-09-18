@@ -1802,10 +1802,11 @@ pub fn safety_deny_rules() -> Vec<ToolAskRule> {
     )
 }
 
-/// Two-state injectable form of [`safety_deny_rules`]: `enabled=true`
+/// Two-state injectable form of [`safety_deny_rules`] for tests: `enabled=true`
 /// (NOPASSWD passwordless sudo) generates no sudo rules. Production snapshots
-/// the disk state; tests inject a fixed state so the host's real
-/// `/etc/sudoers.d/pinvou3` cannot affect reproducibility.
+/// the disk state via [`safety_deny_rules`]; tests inject a fixed state so the
+/// host's real `/etc/sudoers.d/pinvou3` cannot affect reproducibility.
+#[cfg(test)]
 pub(crate) fn safety_deny_rules_for(super_permission_enabled: bool) -> Vec<ToolAskRule> {
     safety_deny_rules_with_home(super_permission_enabled, win_real_home_prefix())
 }

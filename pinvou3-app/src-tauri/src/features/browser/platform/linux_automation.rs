@@ -3780,10 +3780,4 @@ mod tests {
         assert_eq!(actions[0]["actions"][0]["origin"], "viewport");
         assert_eq!(key_actions("Control+A").expect("key actions").len(), 4);
     }
-
-    #[test]
-    fn driver_override_must_name_a_real_file() {
-        let missing = std::path::Path::new("/pinvou/definitely-missing/WebKitWebDriver");
-        assert!(!missing.is_file());
-    }
 }

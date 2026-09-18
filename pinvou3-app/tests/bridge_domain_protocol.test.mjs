@@ -160,12 +160,17 @@ const expectedProtocolHashes = {
   // (PR-added Chinese comments inside the postprocess_voice_text invoke
   // span are part of the hashed source; no invoke/listen surface changed).
   voice: '2a2e8d12150ca86bb970ad099e7b72ab6491768bbc42354cd5ecc800c891c733',
-  // Recomputed for the single-entry workspace picker: the projects domain gains
-  // the ensure_folder_projects / update_project(roots, lastPrimaryRoot) /
-  // projects_set_never_materialize / align_session_to_project invoke spans
+  // Recomputed for the rebind carryover feed-back (review #463 F-Major):
+  // rebind_workspace_root gains the optional previousPostBusySessionIds
+  // payload — the dialog's previous report fed back on retry, honored by the
+  // backend only as a reporting reclassification inside its own to-lane
+  // retry population. Same command surface, no new invoke or listen entries.
+  // Recomputed again after the single-entry workspace picker merge: on top of
+  // the rebind carryover feed-back the domain also gains
+  // ensure_folder_projects / update_project(roots, lastPrimaryRoot) /
+  // projects_set_never_materialize / align_session_to_project
   // (bridge/projects.js).
-  projects: 'e229ecfb9dc5406a1af647d699089e00fceda44a7c60fe25da5f94777b4e3a4e',
-};
+  projects: '04a4d40cc4d870c691ae9c524241f0b340ab62afdef413af9e4a249ae8771413',};
 
 for (const [domain, files] of Object.entries(protocolSources)) {
   const signatures = files.flatMap(file => {

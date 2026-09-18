@@ -233,10 +233,12 @@ function needsAddFolderConfirm(session, target) {
   return !!workspacePath && !projectCoversPath(target, workspacePath);
 }
 
-// 失效 root 徽标的展示裁剪(评审 #463 m3):头部行固定 28px,一个完整徽标
-// (Folder unavailable · Rebind)已接近上限,多个 shrink-0 徽标会把折叠按钮
-// 挤到零宽并横向溢出。折叠时只保留第一个徽标(首入口),其余计数进 +N;
-// expanded 为 true 时全部平铺(容器换行)。返回 { visibleRoots, hiddenCount }。
+// Display trimming for unavailable-root badges (review #463 m3): the header
+// row is a fixed 28px, and one full badge ("Folder unavailable · Rebind") is
+// already close to the limit — several shrink-0 badges squeeze the collapse
+// toggle to zero width and overflow horizontally. Collapsed keeps the first
+// badge (the primary entry) and counts the rest into +N; expanded lays them
+// all out (the container wraps). Returns { visibleRoots, hiddenCount }.
 function capUnavailableRootsForDisplay(roots, expanded) {
   const list = Array.isArray(roots) ? roots : [];
   if (expanded) return { visibleRoots: list, hiddenCount: 0 };

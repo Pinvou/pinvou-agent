@@ -990,61 +990,6 @@ fn ensure_scheduled_run_can_be_marked_viewed(
     ensure_scheduled_run_is_viewable(record, sessions)
 }
 
-fn owned_scheduled_sessions(
-    automation_id: &str,
-    runs: &[AutomationRunRecord],
-    sessions: &SessionStore,
-) -> Result<Vec<(String, String)>> {
-    let mut seen = HashSet::new();
-    let mut owned = Vec::new();
-    for run in runs {
-        if run.automation_id != automation_id {
-            bail!(
-                "scheduled run {} belongs to automation {}, not {automation_id}",
-                run.id,
-                run.automation_id
-            );
-        }
-        let Some(thread_id) = run.thread_id.as_deref() else {
-            continue;
-        };
-        let Some(profile) = sessions.scheduled_profile(thread_id) else {
-            continue;
-        };
-        if profile.task_id != automation_id {
-            bail!(
-                "scheduled session {thread_id} belongs to automation {}, not {automation_id}",
-                profile.task_id
-            );
-        }
-        if seen.insert(thread_id.to_string()) {
-            owned.push((thread_id.to_string(), profile.task_id));
-        }
-    }
-    // A crash can create the scheduled session and persist its profile before
-    // the base run record receives ThreadLinked. Recover those sessions via
-    // stable automation ownership rather than relying only on run links.
-    for session_id in sessions.scheduled_session_ids_for_task(automation_id) {
-        if seen.insert(session_id.clone()) {
-            owned.push((session_id, automation_id.to_string()));
-        }
-    }
-    owned.sort();
-    Ok(owned)
-}
-
-#[cfg(test)]
-fn delete_owned_scheduled_session(
-    sessions: &SessionStore,
-    session_id: &str,
-    task_id: &str,
-) -> Result<String> {
-    sessions
-        .delete_scheduled_run(session_id, task_id)
-        .with_context(|| format!("delete scheduled session {session_id}"))?;
-    Ok(session_id.to_string())
-}
-
 async fn wait_for_task_terminal(
     task_manager: &SharedTaskManager,
     task_id: &str,
@@ -3615,56 +3560,6 @@ mod tests {
         let _ = std::fs::remove_dir_all(dir);
     }
 
-    #[test]
-    fn owned_session_delete_reports_id_only_after_successful_removal() {
-        let _guard = crate::platform::paths::tests::ENV_LOCK
-            .lock()
-            .unwrap_or_else(|poisoned| poisoned.into_inner());
-        let dir = temp_home();
-        let previous = std::env::var("PINVOU3_HOME").ok();
-        // SAFETY: platform::paths::tests::ENV_LOCK held; env writes are serialized.
-        unsafe { std::env::set_var("PINVOU3_HOME", &dir) };
-        let sessions = SessionStore::boot().expect("sessions");
-        let create_session = |task_id: &str| {
-            sessions
-                .create_scheduled_run(crate::features::sessions::ScheduledRunProfile {
-                    task_id: task_id.to_string(),
-                    model: "model-1".to_string(),
-                    model_id: None,
-                    workspace: dir.join("workspace"),
-                    mode: crate::features::sessions::ScheduledRunMode::Agent,
-                    allow_shell: false,
-                    trust_mode: false,
-                    auto_approve: false,
-                })
-                .expect("scheduled session")
-                .metadata
-                .id
-        };
-        let deleted_id = create_session("task-delete-success");
-
-        let reported =
-            delete_owned_scheduled_session(&sessions, &deleted_id, "task-delete-success")
-                .expect("successful deletion");
-
-        assert_eq!(reported, deleted_id);
-        assert!(!sessions.scheduled_session_exists(&reported));
-
-        let retained_id = create_session("task-delete-retained");
-        assert!(
-            delete_owned_scheduled_session(&sessions, &retained_id, "wrong-task-owner").is_err()
-        );
-        assert!(sessions.scheduled_session_exists(&retained_id));
-
-        match previous {
-            // SAFETY: platform::paths::tests::ENV_LOCK held; env writes are serialized.
-            Some(value) => unsafe { std::env::set_var("PINVOU3_HOME", value) },
-            // SAFETY: platform::paths::tests::ENV_LOCK held; env writes are serialized.
-            None => unsafe { std::env::remove_var("PINVOU3_HOME") },
-        }
-        let _ = std::fs::remove_dir_all(dir);
-    }
-
     #[tokio::test]
     async fn update_and_resume_round_trip() {
         let _guard = crate::platform::paths::tests::ENV_LOCK
@@ -4137,17 +4032,6 @@ mod tests {
             mismatched
                 .get("sessionId")
                 .is_some_and(serde_json::Value::is_null)
-        );
-
-        let unlinked_run = AutomationRunRecord {
-            thread_id: None,
-            ..owned_run.clone()
-        };
-        let recovered = owned_scheduled_sessions("automation-1", &[unlinked_run], &store)
-            .expect("recover session from durable task ownership");
-        assert_eq!(
-            recovered,
-            vec![(saved.metadata.id.clone(), "automation-1".to_string())]
         );
 
         std::fs::remove_file(

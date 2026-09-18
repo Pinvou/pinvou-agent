@@ -365,13 +365,6 @@ fn cleanup_recovery_candidates(path: &Path) {
     }
 }
 
-pub(super) fn recover_directory_json_files<T: for<'de> Deserialize<'de>>(
-    dir: &Path,
-) -> io::Result<()> {
-    let _lifecycle = file_lifecycle_lock().lock();
-    recover_directory_json_files_unlocked::<T>(dir)
-}
-
 pub(super) fn recover_directory_json_files_unlocked<T: for<'de> Deserialize<'de>>(
     dir: &Path,
 ) -> io::Result<()> {

@@ -124,13 +124,37 @@ const RebindFolderDialog = ({ from, to, warnExisting, errorMessage, partial, bus
             (the only rebind entry) disappears with the refresh, so the
             retry promise must be honored inside the dialog. Failed session
             ids are data, not UI copy, and are listed verbatim for manual
-            follow-up. */}
+            follow-up. It also stays open on a post-busy-only report, because
+            that is the entry point for the "retry once when idle" remedy
+            (round-8 MAJOR-2).
+            Known limitation (review #463 round-8 minor 2, dispositioned):
+            dismissing this dialog explicitly (Escape / X / Cancel) or
+            reloading the page strands the unfinished remainder, because the
+            retry lives only in this component's state. Closing that needs a
+            persisted pending-rebind record plus a project-level repair entry,
+            a feature of its own rather than a fix to this PR. What converges
+            afterwards is precisely: rerunning the same from/to (every step is
+            idempotent, and already-moved sessions are no-ops). Re-picking a
+            DIFFERENT destination does not — a session whose binding lane
+            already moved matches neither the old nor the new target — so a
+            plain chat whose metadata write failed is retried only by
+            returning to the same dialog. */}
         {partial && (
           <div className="px-4 pb-2 space-y-2" data-testid="rebind-partial-report">
             <div className="flex items-start gap-2 rounded-2xl bg-[#FCE8E6] dark:bg-[#3C2A29] px-3 py-2 text-[12px] text-[#C5221F] dark:text-[#F28B82]">
               <AlertTriangle size={14} className="shrink-0 mt-0.5" />
               <div className="space-y-1">
-                <div>{t.uiProjects.rebindPartial(partial.rebound, partial.failed)}</div>
+                {/* Post-busy-only runs (nothing failed) reach this state too:
+                    the dialog is the entry point for the "retry once when
+                    idle" remedy, so the summary must read as a report and not
+                    as a failure (round-8 MAJOR-2). */}
+                <div>
+                  {partial.failed > 0
+                    ? t.uiProjects.rebindPartial(partial.rebound, partial.failed)
+                    : (partial.rebound > 0
+                      ? t.uiProjects.rebindSuccess(partial.rebound)
+                      : t.uiProjects.rebindUpToDate)}
+                </div>
                 {partial.postBusy > 0 && (
                   <div>{t.uiProjects.rebindBusyAfter(partial.postBusy)}</div>
                 )}
@@ -164,11 +188,18 @@ const RebindFolderDialog = ({ from, to, warnExisting, errorMessage, partial, bus
           </div>
         )}
         <div className="px-4 pb-4 pt-1 flex gap-2">
+          {/* Confirm carries only the strong-confirmation state (review #463
+              round-8 minor 3). The partial retry used to force
+              confirmExisting=true as well, which silently skipped the fence:
+              if the original folder reappeared (backup restore, cloud sync)
+              the user would never see rebindOldExistsWarn. Every other case is
+              behavior-identical without it — a vanished `from` makes the
+              backend's confirm check a no-op. */}
           <button
             type="button"
             ref={confirmButtonRef}
             disabled={busy}
-            onClick={() => onConfirm(!!warnExisting || !!partial)}
+            onClick={() => onConfirm(!!warnExisting)}
             className="flex-1 h-10 rounded-full bg-[#0B57D0] text-white text-[14px] font-medium hover:bg-[#0A4CB8] disabled:opacity-50"
           >
             {partial ? t.uiProjects.rebindRetryRemaining : t.uiProjects.rebindConfirm}

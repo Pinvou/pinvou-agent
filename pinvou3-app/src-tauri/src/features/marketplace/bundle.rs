@@ -717,14 +717,12 @@ fn tool_config_fields(tool: &super::ToolManifest) -> Vec<ConfigFieldSpec> {
 /// - 本地免凭据：恒 Ready
 pub fn readiness_for(bundle: &BundleInfo, credential_has: impl Fn(&str) -> bool) -> Readiness {
     match bundle.kind {
-        // CLI 包授权态由调用方（命令层）注入；此处按 installed 保守返回——
-        // 命令层 `bundle_readiness` 覆盖 CLI 分派后，此分支不达。
+        // CLI authorization state is injected by the command layer: its
+        // `bundle_readiness` `BundleKind::Cli` arm fully dispatches to the
+        // `*_status` queries, so Cli bundles never reach this function
+        // (the invariant is pinned explicitly below).
         BundleKind::Cli => {
-            if bundle.installed {
-                Readiness::Ready
-            } else {
-                Readiness::NotReady("cli_not_installed")
-            }
+            unreachable!("CLI bundle readiness is dispatched by the command layer")
         }
         BundleKind::Mcp | BundleKind::Bundle => {
             // 本地免凭据（无必填凭据）恒 Ready；有必填凭据则查系统凭据
@@ -929,13 +927,6 @@ mod tests {
         assert_eq!(
             readiness_for(&b(BundleKind::Skill, opt), |_| false),
             Readiness::Ready
-        );
-        // CLI 未安装 → NotReady（命令层注入真实授权态后此分支不达）
-        let mut cli_b = b(BundleKind::Cli, vec![]);
-        cli_b.installed = false;
-        assert_eq!(
-            readiness_for(&cli_b, |_| false),
-            Readiness::NotReady("cli_not_installed")
         );
     }
 

@@ -1190,18 +1190,6 @@ pub(super) fn write_timed_memory_file(
     write_text_atomic(path, &lines)
 }
 
-/// Reload and rewrite a single timed store under the write lock: normalize /
-/// dedupe / capacity compaction, then an atomic write. The whole read-modify-write
-/// holds [`write_lock`], mutually exclusive with write entry points like
-/// `update_timed_memory`; organize's apply phase runs
-/// [`compact_timed_memory_store_unlocked`] in the same critical section as its
-/// mutations instead of a bare load+write, so entries the per-turn review just
-/// wrote between the two steps are not overwritten wholesale by the old list.
-pub fn compact_timed_memory_store(kind: &str) -> io::Result<()> {
-    let _guard = write_lock().lock();
-    compact_timed_memory_store_unlocked(kind)
-}
-
 /// Caller must hold [`write_lock`]: organize's apply phase runs this in the
 /// same critical section as its mutations so no writer can slip between the
 /// re-check and the rewrite.
@@ -1582,19 +1570,6 @@ pub fn never_pending_memory(
 
 pub fn load_never_memory() -> io::Result<Vec<NeverMemoryItem>> {
     load_never_memory_unlocked()
-}
-
-pub fn review_turn_candidates(user: &str, _assistant: &str) -> io::Result<Vec<PendingMemoryItem>> {
-    let suggestions = super::llm_review::discover_turn_suggestions(user);
-    let mut items = Vec::new();
-    for suggestion in suggestions {
-        match enqueue_memory_candidate(suggestion) {
-            Ok(item) => items.push(item),
-            Err(err) if err.kind() == io::ErrorKind::InvalidInput => {}
-            Err(err) => return Err(err),
-        }
-    }
-    Ok(items)
 }
 
 pub fn refresh_recent_work_expiry() -> io::Result<usize> {

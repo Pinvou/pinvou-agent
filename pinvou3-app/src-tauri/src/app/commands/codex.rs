@@ -71,11 +71,6 @@ fn rollback_created_code_session(session_id: &str, store: &SessionStore, acp_poo
 }
 
 #[tauri::command]
-pub async fn get_codex_acp_status(acp_pool: State<'_, AcpPool>) -> Result<CodexAcpStatus, String> {
-    Ok(acp_pool.refresh_status().await)
-}
-
-#[tauri::command]
 pub async fn list_acp_agents(
     acp_pool: State<'_, AcpPool>,
 ) -> Result<Vec<AcpAgentDescriptor>, String> {

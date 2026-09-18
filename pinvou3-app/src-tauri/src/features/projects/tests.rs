@@ -485,13 +485,17 @@ fn rebind_roots_rewrites_prefix_and_stays_idempotent() {
 #[cfg(unix)]
 #[test]
 fn rebind_roots_cuts_suffix_by_resolved_form_for_alias_callers() {
-    // round-6/7 B1 pinned: an alias caller passes a `from` whose resolved
-    // form has more components than the raw spelling (/var/x vs
-    // /private/var/x). The match domain is resolved; cutting by the raw
-    // component count would misplace subdirectories as <to>/x. A symlink
-    // reproduces the same skew and pins the "cut in the same domain as the
-    // match" semantics. cfg(unix)-gated under the file-top allow-target-cfg
-    // exception: std::os::unix::fs::symlink does not exist on Windows.
+    // round-6/7 B1: an alias caller passes a `from` whose spelling differs
+    // from the stored root (/alias vs the resolved /real). What this test pins
+    // is the MATCH domain — the stored root is written in resolved display
+    // form, so a raw-fold match would find nothing and return an empty report.
+    // It does NOT exercise the suffix arithmetic: raw and resolved spellings
+    // here have the same component count, so a cut by either count lands on
+    // the same suffix. The depth half is pinned separately by
+    // `rebind_roots_via_symlink_alias_cuts_suffix_by_resolved_depth` below,
+    // where the resolved form is genuinely one component deeper.
+    // cfg(unix)-gated under the file-top allow-target-cfg exception:
+    // std::os::unix::fs::symlink does not exist on Windows.
     let temp = tempfile::tempdir().expect("tempdir");
     let store = store_in(&temp);
     let real = temp.path().join("real");
@@ -608,6 +612,62 @@ fn rebind_roots_allows_cross_project_overlap() {
         .update_project(&mover.id, None, Some(vec![outer.clone(), inner.clone()]))
         .expect_err("intra-set nesting rejected");
     assert!(nesting.to_string().contains("must not nest"), "{nesting}");
+}
+
+/// Pre-flight for the reordered rebind (review #463 round-8 M3): the session
+/// lanes now run before the project roots, so a root rewrite that cannot
+/// succeed has to be rejected before anything is written. `plan_rebind_roots`
+/// reports exactly what `rebind_roots` would commit and touches nothing.
+#[test]
+fn plan_rebind_roots_previews_without_mutating() {
+    let temp = tempfile::tempdir().expect("tempdir");
+    let store = store_in(&temp);
+    let from = abs("plan-from");
+    let occupied = temp.path().join("plan-occupied");
+    std::fs::create_dir_all(&occupied).expect("create occupied dir");
+
+    let project = create(&store, "To be moved", std::slice::from_ref(&from));
+    create(
+        &store,
+        "Holds the territory",
+        std::slice::from_ref(&occupied),
+    );
+    let before = store.get(&project.id).unwrap();
+
+    // Conflict: the plan must fail without touching state…
+    let error = store
+        .plan_rebind_roots(&from, &occupied)
+        .expect_err("overlap rejected in the pre-flight");
+    assert!(error.to_string().contains("overlap"));
+    assert_eq!(store.get(&project.id).unwrap(), before);
+
+    // …and on a clean target it must report the same set `rebind_roots`
+    // commits, still without writing.
+    let to = temp.path().join("plan-target");
+    std::fs::create_dir_all(&to).expect("create target dir");
+    assert_eq!(
+        store.plan_rebind_roots(&from, &to).expect("plan"),
+        vec![project.id.clone()]
+    );
+    assert_eq!(
+        store.get(&project.id).unwrap(),
+        before,
+        "planning must not persist the rewrite"
+    );
+    // The plan is idempotent with no matching roots, matching the retry contract.
+    assert!(
+        store
+            .plan_rebind_roots(&from, &to)
+            .expect("plan again")
+            .contains(&project.id)
+    );
+    assert!(store.rebind_roots(&from, &to).expect("commit").len() == 1);
+    assert!(
+        store
+            .plan_rebind_roots(&from, &temp.path().join("unrelated"))
+            .expect("nothing left under from")
+            .is_empty()
+    );
 }
 
 #[test]

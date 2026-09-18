@@ -9900,20 +9900,6 @@
     return left + (/[。！？.!?，,;；:]$/.test(left) ? " " : "\n") + right;
   }
 
-  function runVoiceInputDebugAssertions() {
-    const denied = normalizeVoiceError({ name: "NotAllowedError" });
-    const noDevice = normalizeVoiceError({ name: "NotFoundError" });
-    const unsupportedConstraint = normalizeVoiceError({ name: "OverconstrainedError", message: "Invalid constraint", constraint: "channelCount" });
-    const mismatch = normalizeVoiceError({ category: "context_mismatch" });
-    console.assert(denied.category === "permission_denied", "permission error classified");
-    console.assert(noDevice.category === "device_unavailable", "device error classified");
-    console.assert(unsupportedConstraint.category === "constraint_unsupported", "unsupported constraint classified");
-    console.assert(unsupportedConstraint.diagnostic === "unsupported media constraint: channelCount", "unsupported constraint diagnostic");
-    console.assert(mismatch.stage === "writeback", "context mismatch classified");
-    console.assert(appendVoiceText("草稿", "识别文本") === "草稿\n识别文本", "voice text appended");
-    return true;
-  }
-
   async function pickFiles() {
     if (!dialogOpen) { addSystemItem(bt("filePickUnavailable")); return []; }
     const selected = await dialogOpen({ multiple: true });
@@ -9939,8 +9925,9 @@
     const p = Array.isArray(selected) ? selected[0] : selected;
     return p ? [p] : [];
   }
-  // 目录重绑定(修断链)专用:单选,标题贴合重绑定语义,与桌面桥同面
-  // (评审 #463 Minor 6)。
+  // Dedicated picker for directory rebind (broken-link repair): single
+  // selection with a title that matches the rebind semantics; same surface as
+  // the desktop bridge (review #463 Minor 6).
   async function pickRebindFolder() {
     if (!dialogOpen) { addSystemItem(bt("filePickUnavailable")); return null; }
     const selected = await dialogOpen({ directory: true, multiple: false, title: bt("rebindPickFolderTitle") });
@@ -10068,7 +10055,6 @@
     cancelVoiceInput,
     clearVoiceInput,
     appendVoiceText,
-    runVoiceInputDebugAssertions,
     loadScheduledTasks,
     readScheduledTask,
     loadScheduledTaskRuns,

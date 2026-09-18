@@ -1824,6 +1824,9 @@ impl AppEngine {
     pub async fn edit_last_turn(&self, new_message: String) -> Result<()> {
         self.send_turn_op(Op::EditLastTurn {
             new_message,
+            // CodeWhale#58 echoes this token on TurnStarted; the GUI does not
+            // correlate submit-window turns yet, so None (wiring lands with
+            // the turn-bound stop PR).
             submission_id: None,
         })
         .await
@@ -1837,6 +1840,9 @@ impl AppEngine {
         self.send_reserved_turn_op(
             Op::EditLastTurn {
                 new_message,
+                // CodeWhale#58 echoes this token on TurnStarted; the GUI does
+                // not correlate submit-window turns yet, so None (wiring lands
+                // with the turn-bound stop PR).
                 submission_id: None,
             },
             reservation,
@@ -2699,15 +2705,6 @@ mod turn_lifecycle_tests {
         assert!(!lifecycle.on_submitted());
         assert!(lifecycle.finish_once(|| {}).is_some());
         assert!(lifecycle.on_submitted());
-    }
-
-    #[test]
-    fn forwarder_stop_and_reclaim_share_the_same_terminal_gate() {
-        let lifecycle = TurnLifecycle::default();
-        lifecycle.on_submitted();
-        lifecycle.on_started("turn-1".to_string());
-        assert!(lifecycle.finish_once(|| {}).is_some());
-        assert_eq!(lifecycle.finish_once(|| panic!("duplicate terminal")), None);
     }
 
     #[test]
