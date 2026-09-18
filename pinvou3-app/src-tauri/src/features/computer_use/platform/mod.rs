@@ -4,6 +4,11 @@
 /// Pure helpers shared by every per-OS backend (no OS handles, unit-tested on
 /// all targets).
 mod helpers;
+pub(crate) use helpers::normalize_typed_newlines;
+// The screening-name helpers are consumed inside platform/; the re-export
+// exists for the tool-layer regression test that pins the wider-copy match.
+#[cfg(test)]
+pub(crate) use helpers::{sanitize_name, screening_name};
 #[cfg(target_os = "linux")]
 mod linux;
 #[cfg(target_os = "macos")]

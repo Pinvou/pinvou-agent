@@ -41,7 +41,8 @@
 //! - `\n`/`\t` are split out of typed text and injected as real Return/Tab key clicks: enigo's
 //!   `text()` queues both the keystroke and the Unicode control character, double-injecting
 //!   newlines on targets that handle both message kinds. `\r` is normalized to `\n` first —
-//!   enigo's `text()` silently drops it, so CR/CRLF text would lose its line breaks. Newline
+//!   enigo's `text()` injects a bare CR as an ambiguous U+000D key event (extra break/submit
+//!   depending on the target), so normalizing keeps one break per line break. Newline
 //!   keys go through the regular key path, so a foreground IME treats them like a physical
 //!   Enter.
 //! - `SetWindowDisplayAffinity(WDA_EXCLUDEFROMCAPTURE)` and DRM-protected content appear as
@@ -73,7 +74,7 @@ use super::super::types::{
 };
 use super::helpers::{
     TYPE_CHUNK_CHARS, TypeRun, drag_waypoints, map_scroll, normalize_typed_newlines, sanitize_name,
-    split_type_runs,
+    screening_name, split_type_runs,
 };
 
 /// Wait before a click so the previous move has settled (the target process consumes mouse
@@ -93,6 +94,9 @@ const DRAG_STEP_DELAY_MS: u64 = 12;
 /// Pause between pressing all keys and releasing them in reverse, improving the hit rate of
 /// modifier chords (alt+Tab etc.).
 const CHORD_HOLD_MS: u64 = 20;
+/// Granularity of the hold_key sleep: a stop/timeout cancel flag is polled at least this
+/// often, so an abandoned hold stops within this window instead of the full hold duration.
+const HOLD_CANCEL_POLL_MS: u64 = 100;
 
 /// `ui_tree` defaults/caps: depth and node count (prevents giant trees from overwhelming the
 /// worker thread and the text budget).
@@ -476,9 +480,11 @@ fn element_info_from_cache(
     let secure = element
         .is_cached_password()
         .map_err(|e| map_uia_err(&format!("{context} password"), e))?;
+    let display_name = sanitize_name(&name, MAX_NODE_NAME_CHARS);
     Ok(ElementInfo {
         role: format!("{control_type:?}"),
-        name: sanitize_name(&name, MAX_NODE_NAME_CHARS),
+        screening_name: screening_name(&name, &display_name),
+        name: display_name,
         x: rect.get_left(),
         y: rect.get_top(),
         width: (rect.get_right() - rect.get_left()).max(0),
@@ -512,7 +518,19 @@ fn write_tree_node(
     writer.remaining -= 1;
     let index = writer.next_index;
     writer.next_index += 1;
-    let line = format_tree_line(index, depth, &cached)?;
+    // Line formatting reads the cached name/control type; a cached property
+    // read can still fail for an element dying between the cache fill and
+    // serialization — the same churn the fetch leg tolerates. Treat it as
+    // "this branch ended" too: fall back to a nameless line for this node
+    // and keep the tree usable instead of failing the whole call.
+    let line = match format_tree_line(index, depth, &cached) {
+        Ok(line) => line,
+        Err(_) => format!(
+            "{}[{}] <unreadable element>",
+            "  ".repeat(depth as usize),
+            index
+        ),
+    };
     let _ = writeln!(out, "{line}");
     // Children were already fetched in the same cache request; enumeration failure is likewise
     // treated as "this branch ended".
@@ -755,7 +773,26 @@ impl WindowsComputerUseBackend {
             }
             pressed.push(mapped);
         }
-        sleep(hold);
+        // Chunk the hold so a stop/timeout latches within HOLD_CANCEL_POLL_MS
+        // instead of waiting out the whole hold (up to 30 s). The keys are
+        // always released by the common release below, whether the hold ran
+        // out or was cancelled.
+        let mut remaining = hold;
+        while remaining > Duration::ZERO {
+            if self
+                .cancel
+                .as_ref()
+                .is_some_and(|flag| flag.load(Ordering::SeqCst))
+            {
+                let _ = Self::release_reverse(&pressed, &mut self.enigo);
+                return Err(ComputerUseError::unavailable(
+                    "hold was cancelled (caller timeout or stop); the keys have been released",
+                ));
+            }
+            let step = remaining.min(Duration::from_millis(HOLD_CANCEL_POLL_MS));
+            sleep(step);
+            remaining -= step;
+        }
         Self::release_reverse(&pressed, &mut self.enigo)
             .map_err(|err| map_input_err("key release", err))
     }
@@ -905,6 +942,21 @@ impl ComputerUseBackend for WindowsComputerUseBackend {
         sleep(Duration::from_millis(DRAG_PRESS_SETTLE_MS));
         let result = (|| {
             for (x, y) in drag_waypoints(from, to, DRAG_STEPS) {
+                // Same abandonment contract as type_text and the Linux drag:
+                // a request the caller already abandoned must stop at the
+                // next waypoint — otherwise it keeps holding the physical
+                // button for the whole interpolated path. The common release
+                // below always runs.
+                if self
+                    .cancel
+                    .as_ref()
+                    .is_some_and(|flag| flag.load(Ordering::SeqCst))
+                {
+                    return Err(ComputerUseError::unavailable(
+                        "drag was cancelled (caller timeout or stop); the button is \
+                         released and the pointer stays at the last waypoint",
+                    ));
+                }
                 self.move_mouse_abs(x, y)?;
                 sleep(Duration::from_millis(DRAG_STEP_DELAY_MS));
             }

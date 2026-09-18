@@ -66,7 +66,9 @@ use super::super::types::{
     Capabilities, Capture, ComputerUseError, ElementInfo, Key, MouseButton, ScrollDirection,
     UiTreeOptions,
 };
-use super::helpers::{MAX_SCROLL_CLICKS, drag_waypoints, normalize_typed_newlines, sanitize_name};
+use super::helpers::{
+    MAX_SCROLL_CLICKS, drag_waypoints, normalize_typed_newlines, sanitize_name, screening_name,
+};
 use super::wayland_portal::{self, PortalInput};
 
 /// Settle time between a move and the click that follows it (applied in
@@ -79,6 +81,10 @@ const CLICK_GAP_MS: u64 = 40;
 /// too fast are recognized as non-drags by some apps).
 const DRAG_STEPS: usize = 12;
 const DRAG_STEP_MS: u64 = 10;
+/// Granularity of the hold_key sleep: a stop/timeout cancel flag is polled
+/// at least this often, so an abandoned hold stops within this window
+/// instead of the full hold duration.
+const HOLD_CANCEL_POLL_MS: u64 = 100;
 /// Delay between scroll clicks.
 const SCROLL_GAP_MS: u64 = 15;
 /// ui_tree default capture caps.
@@ -299,6 +305,29 @@ fn press_keysyms_unwind(
         }
     }
     Ok(())
+}
+
+/// Best-effort release of every keysym (reverse order), with the pointer
+/// path's compensating retry per keysym: a failed release notify may or may
+/// not have been delivered — one extra release on the still-open (poisoned)
+/// session is a compositor-side no-op when the first landed, and unstrands
+/// the key when it did not (mutter never synthesizes the missing release
+/// when the session closes). Attempts EVERY release (modifiers must not
+/// strand) and returns the first release error.
+fn release_keysyms_with_retry(
+    mut event: impl FnMut(i32, bool) -> Result<(), ComputerUseError>,
+    keysyms: &[i32],
+) -> Result<(), ComputerUseError> {
+    let mut first_err = None;
+    for keysym in keysyms.iter().rev() {
+        if let Err(error) = event(*keysym, false) {
+            let _ = event(*keysym, false);
+            if first_err.is_none() {
+                first_err = Some(error);
+            }
+        }
+    }
+    first_err.map_or(Ok(()), Err)
 }
 
 /// X11 type_text segmentation (pure, unit-tested): split at every '\n'
@@ -541,14 +570,22 @@ async fn element_info_of(
         Err(_) => (Role::Unknown, true),
     };
     let secure = is_secure_role(role, role_unknown);
-    let name = if secure {
-        String::new()
+    // A secure element's name is erased outright (privacy): the wider
+    // screening copy must respect that erasure and never re-introduce the
+    // raw text through a side channel — secure fields always confirm via the
+    // password screen anyway.
+    let (name, screening) = if secure {
+        (String::new(), None)
     } else {
-        sanitize_name(&proxy.name().await.unwrap_or_default(), MAX_NAME_CHARS)
+        let raw = proxy.name().await.unwrap_or_default();
+        let display_name = sanitize_name(&raw, MAX_NAME_CHARS);
+        let screening = screening_name(&raw, &display_name);
+        (display_name, screening)
     };
     let (x, y, width, height) = screen_extents(conn, proxy).await.unwrap_or(fallback_bounds);
     ElementInfo {
         role: role.name().to_string(),
+        screening_name: screening,
         name,
         x,
         y,
@@ -1292,8 +1329,10 @@ impl ComputerUseBackend for LinuxComputerUseBackend {
                 || self.wayland_portal_capture_degraded
             {
                 "; capture is on the xcap fallback: multi-monitor coordinate alignment with \
-                 input is best-effort, only the PRIMARY monitor is captured/input-able, and \
-                 the compositor may prompt per capture"
+                 input is best-effort (the fallback assumes xcap's logical geometry matches \
+                 the portal input space, which is unverified against real compositors and \
+                 likely mispoints at fractional scale), only the PRIMARY monitor is \
+                 captured/input-able, and the compositor may prompt per capture"
             } else {
                 ""
             };
@@ -1452,10 +1491,19 @@ impl ComputerUseBackend for LinuxComputerUseBackend {
         let height = image.height();
         // X11: xcap reports a logical origin; multiplying back by the scale
         // gives root-window physical pixels (= the input space, input scale
-        // 1.0). Wayland: portal input lives in the stream's logical
-        // coordinate space, the same space as xcap's logical geometry; the
-        // origin is not multiplied by the scale and the input scale is
-        // 1/scale (see the wayland_portal module docs).
+        // 1.0). Wayland: this fallback path is ONLY reached when the portal
+        // capture stream is dead (the live PipeWire path pipes buffer-pixel
+        // space directly from the stream). It assumes xcap's logical
+        // geometry and the portal input space coincide (origin not
+        // multiplied, input scale 1/scale — see the wayland_portal module
+        // docs, which describe NotifyPointerMotionAbsolute as stream-LOCAL
+        // BUFFER pixels under mutter). Under that reading this path is
+        // inverted at scale != 1 (mispoint ~scale²) and double-counts the
+        // monitor origin on multi-monitor, the same class of unverified gap
+        // as the AvailableCursorModes probe: it needs a live-portal check
+        // before the math is trusted or changed. Disclosed in capabilities()
+        // and the PR body; coordinate alignment here is best-effort until
+        // verified.
         let (origin_x, origin_y, input_scale_x, input_scale_y) = if self.is_wayland() {
             let scale = f64::from(scale);
             let origin_x = monitor.x().unwrap_or(0);
@@ -1830,7 +1878,10 @@ impl ComputerUseBackend for LinuxComputerUseBackend {
                     let _ = portal.keysym_event(keysym, false);
                     return Err(error);
                 }
-                if let Err(error) = portal.keysym_event(keysym, false) {
+                if let Err(error) = release_keysyms_with_retry(
+                    |k, pressed| portal.keysym_event(k, pressed),
+                    std::slice::from_ref(&keysym),
+                ) {
                     if first_err.is_none() {
                         first_err = Some(error);
                     }
@@ -1914,21 +1965,14 @@ impl ComputerUseBackend for LinuxComputerUseBackend {
             press_keysyms_unwind(&mapped, |keysym, pressed| {
                 portal.keysym_event(keysym, pressed)
             })?;
-            // Even if the release phase fails midway, best-effort release
-            // every key (so modifiers cannot strand), returning the first
-            // error.
-            let mut first_err = None;
-            for keysym in mapped.iter().rev() {
-                if let Err(error) = portal.keysym_event(*keysym, false) {
-                    if first_err.is_none() {
-                        first_err = Some(error);
-                    }
-                }
-            }
-            match first_err {
-                Some(error) => return Err(error),
-                None => return Ok(()),
-            }
+            // Best-effort release every key (modifiers cannot strand) with
+            // the pointer path's compensating retry; returns the first
+            // release error.
+            release_keysyms_with_retry(
+                |keysym, pressed| portal.keysym_event(keysym, pressed),
+                &mapped,
+            )?;
+            return Ok(());
         }
         let mapped = keys
             .iter()
@@ -1940,6 +1984,10 @@ impl ComputerUseBackend for LinuxComputerUseBackend {
     }
 
     fn hold_key(&mut self, keys: &[Key], ms: u64) -> Result<(), ComputerUseError> {
+        // Clone the flag before require_portal/require_enigo: those hold a
+        // mutable borrow of self that outlives the hold loop (the same
+        // ordering as type_text).
+        let cancel = self.cancel.clone();
         if self.is_wayland() {
             self.note_input();
             let portal = self.require_portal()?;
@@ -1951,22 +1999,32 @@ impl ComputerUseBackend for LinuxComputerUseBackend {
             press_keysyms_unwind(&mapped, |keysym, pressed| {
                 portal.keysym_event(keysym, pressed)
             })?;
-            sleep(Duration::from_millis(ms));
-            // Even if the release phase fails midway, best-effort release
-            // every key (so modifiers cannot strand), returning the first
-            // error.
-            let mut first_err = None;
-            for keysym in mapped.iter().rev() {
-                if let Err(error) = portal.keysym_event(*keysym, false) {
-                    if first_err.is_none() {
-                        first_err = Some(error);
+            // Chunk the hold so a stop/timeout cancel flag is polled within
+            // HOLD_CANCEL_POLL_MS instead of waiting out the whole hold (up
+            // to 30 s); keys are always released below either way.
+            let mut remaining = ms;
+            while remaining > 0 {
+                if cancel
+                    .as_ref()
+                    .is_some_and(|flag| flag.load(Ordering::SeqCst))
+                {
+                    for keysym in mapped.iter().rev() {
+                        let _ = portal.keysym_event(*keysym, false);
                     }
+                    return Err(ComputerUseError::unavailable(
+                        "hold was cancelled (caller timeout or stop); the keys have been released",
+                    ));
                 }
+                let step = remaining.min(HOLD_CANCEL_POLL_MS);
+                sleep(Duration::from_millis(step));
+                remaining -= step;
             }
-            match first_err {
-                Some(error) => return Err(error),
-                None => return Ok(()),
-            }
+            // Same release contract as key_chord above.
+            release_keysyms_with_retry(
+                |keysym, pressed| portal.keysym_event(keysym, pressed),
+                &mapped,
+            )?;
+            return Ok(());
         }
         let mapped = keys
             .iter()
@@ -1974,7 +2032,21 @@ impl ComputerUseBackend for LinuxComputerUseBackend {
             .collect::<Result<Vec<_>, _>>()?;
         let enigo = self.require_enigo()?;
         Self::press_chord(enigo, &mapped)?;
-        sleep(Duration::from_millis(ms));
+        let mut remaining = ms;
+        while remaining > 0 {
+            if cancel
+                .as_ref()
+                .is_some_and(|flag| flag.load(Ordering::SeqCst))
+            {
+                let _ = Self::release_chord(enigo, &mapped);
+                return Err(ComputerUseError::unavailable(
+                    "hold was cancelled (caller timeout or stop); the keys have been released",
+                ));
+            }
+            let step = remaining.min(HOLD_CANCEL_POLL_MS);
+            sleep(Duration::from_millis(step));
+            remaining -= step;
+        }
         Self::release_chord(enigo, &mapped)
     }
 
@@ -3390,5 +3462,55 @@ mod x11_live_tests {
             width - 1,
             height - 1
         );
+    }
+
+    #[test]
+    fn release_keysyms_with_retry_retries_and_reports_first_error() {
+        use std::sync::atomic::{AtomicUsize, Ordering};
+        let calls = Arc::new(AtomicUsize::new(0));
+        let calls_for_closure = Arc::clone(&calls);
+        let error = ComputerUseError::unavailable("notify timed out");
+        let mut attempts = 0;
+        let result = release_keysyms_with_retry(
+            |keysym, pressed| {
+                assert!(!pressed, "release loop must only send releases");
+                let n = calls_for_closure.fetch_add(1, Ordering::SeqCst);
+                // Events, in order: 0xff48 (H, release fails once), retry
+                // succeeds, then 0xff1b (Esc, succeeds).
+                match n {
+                    0 => {
+                        assert_eq!(keysym, 0xff48);
+                        attempts += 1;
+                        Err(error.clone())
+                    }
+                    1 => {
+                        assert_eq!(keysym, 0xff48);
+                        Ok(())
+                    }
+                    2 => {
+                        assert_eq!(keysym, 0xff1b);
+                        Ok(())
+                    }
+                    _ => panic!("unexpected extra event {n}"),
+                }
+            },
+            &[0xff1b, 0xff48],
+        );
+        assert!(result.is_err(), "the first release error must be reported");
+        assert_eq!(calls.load(Ordering::SeqCst), 3);
+        assert_eq!(attempts, 1);
+    }
+
+    #[test]
+    fn release_keysyms_with_retry_all_clear_returns_ok() {
+        let result = release_keysyms_with_retry(
+            |keysym, pressed| {
+                assert!(!pressed);
+                assert_eq!(keysym, 0xff0d);
+                Ok(())
+            },
+            &[0xff0d],
+        );
+        assert!(result.is_ok());
     }
 }

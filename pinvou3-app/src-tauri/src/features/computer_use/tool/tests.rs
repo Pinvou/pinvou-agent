@@ -467,6 +467,7 @@ fn read_audit_records(_fixture: &TestFixture) -> Vec<AuditRecord> {
 /// positive denylist/secure match still confirms.
 fn benign_element(x: i32, y: i32, width: i32, height: i32) -> ElementInfo {
     ElementInfo {
+        screening_name: None,
         role: "AXGroup".to_string(),
         name: "Workspace".to_string(),
         x,
@@ -633,6 +634,18 @@ async fn parse_failure_audit_record_does_not_echo_the_chord_text() {
     for record in &records {
         assert_eq!(record.action, "unparseable", "{records:?}");
         assert_eq!(record.result.as_deref(), Some("rejected"), "{records:?}");
+        // Field placement contract: the shape summary rides in `target`,
+        // `consent` stays a fixed placeholder (a consumer keying on consent
+        // tiers must not see an action shape string there).
+        assert_eq!(record.consent, "n/a", "{records:?}");
+        assert!(
+            record
+                .target
+                .as_deref()
+                .unwrap_or_default()
+                .starts_with("action:"),
+            "shape summary belongs in target: {records:?}"
+        );
         assert!(
             record
                 .error
@@ -863,6 +876,7 @@ async fn t3_denylist_blocks_click_until_user_confirms() {
     let (fixture, _restore) = fixture();
     fixture.shared.grant_session("s-test");
     fixture.mock.lock().element = Some(ElementInfo {
+        screening_name: None,
         role: "button".to_string(),
         name: "Buy now".to_string(),
         x: 0,
@@ -937,6 +951,7 @@ async fn secure_field_blocks_typing() {
     // Keyboard screening checks the **focused element**: focus on a password
     // field blocks regardless of the cursor position.
     fixture.mock.lock().focused = Some(ElementInfo {
+        screening_name: None,
         role: "AXSecureTextField".to_string(),
         name: "Password".to_string(),
         x: 0,
@@ -1022,6 +1037,7 @@ async fn mouse_down_up_composition_is_t3_screened() {
     fixture.shared.grant_session("s-test");
     // The denylist control sits at the cursor (7,9).
     fixture.mock.lock().element = Some(ElementInfo {
+        screening_name: None,
         role: "button".to_string(),
         name: "Delete forever".to_string(),
         x: 0,
@@ -1112,6 +1128,7 @@ async fn focus_on_password_with_cursor_elsewhere_requires_confirmation() {
     // Focus is on a password field; no element at all at the cursor (7,9)
     // (element only proves the cursor point is blank).
     fixture.mock.lock().focused = Some(ElementInfo {
+        screening_name: None,
         role: "AXSecureTextField".to_string(),
         name: "Password".to_string(),
         x: 100,
@@ -1135,6 +1152,7 @@ async fn focus_on_password_with_cursor_elsewhere_requires_confirmation() {
     // key chords are screened by focus too: a consequential control with
     // focus requires confirmation.
     fixture.mock.lock().focused = Some(ElementInfo {
+        screening_name: None,
         role: "button".to_string(),
         name: "Send payment".to_string(),
         x: 100,
@@ -1195,6 +1213,7 @@ async fn unreadable_type_focus_executes_and_password_focus_confirms() {
     // confirmation.
     fixture.mock.lock().focused_error = false;
     fixture.mock.lock().focused = Some(ElementInfo {
+        screening_name: None,
         role: "AXSecureTextField".to_string(),
         name: "Password".to_string(),
         x: 0,
@@ -1257,6 +1276,7 @@ async fn drag_drop_target_is_screened() {
     // screened and read Clear); the (12,12) drop point hits the denylist.
     fixture.mock.lock().background = vec![benign_element(0, 0, 3, 3)];
     fixture.mock.lock().element = Some(ElementInfo {
+        screening_name: None,
         role: "button".to_string(),
         name: "Delete".to_string(),
         x: 10,
@@ -1284,6 +1304,7 @@ async fn drag_drop_target_is_screened() {
 
     // Reverse: the start hits the denylist (benign drop) — blocked as well.
     fixture.mock.lock().background = vec![ElementInfo {
+        screening_name: None,
         role: "button".to_string(),
         name: "Delete".to_string(),
         x: 0,
@@ -1320,6 +1341,7 @@ async fn denied_action_retry_mints_a_fresh_confirmation() {
     let (fixture, _restore) = fixture();
     fixture.shared.grant_session("s-test");
     fixture.mock.lock().element = Some(ElementInfo {
+        screening_name: None,
         role: "button".to_string(),
         name: "Buy now".to_string(),
         x: 0,
@@ -1417,6 +1439,7 @@ async fn confirm_token_is_bound_to_the_action() {
     let (fixture, _restore) = fixture();
     fixture.shared.grant_session("s-test");
     fixture.mock.lock().element = Some(ElementInfo {
+        screening_name: None,
         role: "button".to_string(),
         name: "Buy now".to_string(),
         x: 0,
@@ -1572,6 +1595,7 @@ async fn type_summary_is_a_plain_character_count() {
     let (fixture, _restore) = fixture();
     fixture.shared.grant_session("s-test");
     fixture.mock.lock().focused = Some(ElementInfo {
+        screening_name: None,
         // Non-secure denylisted focused element: the action is blocked (T3)
         // but the typing target is NOT a password/secure field.
         role: "AXButton".to_string(),
@@ -1640,6 +1664,7 @@ async fn type_summary_masks_preview_for_secure_targets() {
     let (fixture, _restore) = fixture();
     fixture.shared.grant_session("s-test");
     fixture.mock.lock().focused = Some(ElementInfo {
+        screening_name: None,
         role: "AXSecureTextField".to_string(),
         name: "Password".to_string(),
         x: 0,
@@ -2054,6 +2079,7 @@ async fn retina_input_space_cursor_screens_inside_and_reports_exact_coords() {
     // down must screen at the input point (60,40).
     fixture.mock.lock().cursor = (60, 40);
     fixture.mock.lock().element = Some(ElementInfo {
+        screening_name: None,
         role: "AXButton".to_string(),
         name: "Buy now".to_string(),
         x: 50,
@@ -2159,6 +2185,7 @@ async fn key_chords_never_require_confirmation() {
     // Focus is an ordinary text area (denylist verdict Clear) — the old
     // position would have blocked it by chord semantics.
     fixture.mock.lock().focused = Some(ElementInfo {
+        screening_name: None,
         role: "AXTextArea".to_string(),
         name: String::new(),
         x: 0,
@@ -2228,6 +2255,7 @@ async fn mouse_move_and_scroll_never_require_confirmation() {
     // The denylist control "Pay" covers the cursor (7,9) and the whole
     // screenshot: scroll / mouse_move execute as usual.
     fixture.mock.lock().element = Some(ElementInfo {
+        screening_name: None,
         role: "AXButton".to_string(),
         name: "Pay".to_string(),
         x: 0,
@@ -2293,6 +2321,7 @@ async fn mouse_move_and_scroll_never_require_confirmation() {
     let down_text = down.ok().map(|r| r.content).unwrap_or_default();
     assert!(down_text.contains("mouse button is down"), "{down_text}");
     fixture.mock.lock().element = Some(ElementInfo {
+        screening_name: None,
         role: "AXButton".to_string(),
         name: "Trash".to_string(),
         x: 10,
@@ -2350,6 +2379,7 @@ async fn trimmed_denylist_affirmatives_execute_and_consequences_confirm() {
     // Generic affirmatives: execute directly.
     for name in ["OK", "Continue", "Run"] {
         fixture.mock.lock().element = Some(ElementInfo {
+            screening_name: None,
             role: "AXButton".to_string(),
             name: name.to_string(),
             x: 0,
@@ -2385,6 +2415,7 @@ async fn trimmed_denylist_affirmatives_execute_and_consequences_confirm() {
     // Consequence-category words: block + confirm event.
     for name in ["Pay", "Delete", "Submit", "Accept"] {
         fixture.mock.lock().element = Some(ElementInfo {
+            screening_name: None,
             role: "AXButton".to_string(),
             name: name.to_string(),
             x: 0,
@@ -2617,6 +2648,7 @@ async fn approved_token_executes_without_rescreening_when_the_world_changed() {
     let (fixture, _restore) = fixture();
     fixture.shared.grant_session("s-test");
     fixture.mock.lock().element = Some(ElementInfo {
+        screening_name: None,
         role: "AXButton".to_string(),
         name: "Buy now".to_string(),
         x: 0,
@@ -2693,6 +2725,7 @@ async fn t3_confirmation_error_is_audited_as_stable_code() {
     let (fixture, _restore) = fixture();
     fixture.shared.grant_session("s-test");
     fixture.mock.lock().element = Some(ElementInfo {
+        screening_name: None,
         role: "AXButton".to_string(),
         name: "Buy now".to_string(),
         x: 0,
@@ -2739,6 +2772,7 @@ async fn approved_click_audit_record_meets_the_redaction_contract() {
     let (fixture, _restore) = fixture();
     fixture.shared.grant_session("s-test");
     fixture.mock.lock().element = Some(ElementInfo {
+        screening_name: None,
         role: "AXButton".to_string(),
         name: "Buy now".to_string(),
         x: 0,
@@ -2889,6 +2923,7 @@ async fn confirm_event_carries_full_type_preview_for_long_non_secure_text() {
     // Non-secure denylisted focused element: the action is blocked (T3) but
     // the typing target is NOT a password/secure field.
     fixture.mock.lock().focused = Some(ElementInfo {
+        screening_name: None,
         role: "AXButton".to_string(),
         name: "Send message".to_string(),
         x: 0,
@@ -2953,6 +2988,7 @@ async fn confirm_event_carries_full_type_preview_even_for_short_text() {
     let (fixture, _restore) = fixture();
     fixture.shared.grant_session("s-test");
     fixture.mock.lock().focused = Some(ElementInfo {
+        screening_name: None,
         role: "AXButton".to_string(),
         name: "Send message".to_string(),
         x: 0,
@@ -3006,6 +3042,7 @@ async fn approved_cursor_action_spends_even_after_the_pointer_moved() {
     // The cursor defaults to (7,9), covered by a consequential target → the
     // down is blocked and a pending minted.
     fixture.mock.lock().element = Some(ElementInfo {
+        screening_name: None,
         role: "AXButton".to_string(),
         name: "Buy now".to_string(),
         x: 0,
@@ -3078,6 +3115,7 @@ async fn same_summary_type_text_swap_is_rejected() {
     let (fixture, _restore) = fixture();
     fixture.shared.grant_session("s-test");
     fixture.mock.lock().focused = Some(ElementInfo {
+        screening_name: None,
         role: "AXSecureTextField".to_string(),
         name: "Password".to_string(),
         x: 0,
@@ -3175,6 +3213,7 @@ async fn unreadable_cursor_at_spend_does_not_block_a_granted_token() {
     let (fixture, _restore) = fixture();
     fixture.shared.grant_session("s-test");
     fixture.mock.lock().element = Some(ElementInfo {
+        screening_name: None,
         role: "AXButton".to_string(),
         name: "Buy now".to_string(),
         x: 0,
@@ -3404,6 +3443,7 @@ async fn element_at_point_reports_bounds_in_screenshot_space() {
         mock.capture_size = (200, 200);
         mock.input_scale = (0.5, 0.5);
         mock.element = Some(ElementInfo {
+            screening_name: None,
             role: "AXButton".to_string(),
             name: "Buy now".to_string(),
             x: 50,
@@ -3538,6 +3578,7 @@ async fn confirm_event_drops_full_preview_above_4096_chars() {
     let (fixture, _restore) = fixture();
     fixture.shared.grant_session("s-test");
     fixture.mock.lock().focused = Some(ElementInfo {
+        screening_name: None,
         role: "AXButton".to_string(),
         name: "Send message".to_string(),
         x: 0,
@@ -3585,6 +3626,7 @@ async fn char_carrying_chord_confirm_carries_preview_on_non_secure_target() {
     let (fixture_plain, _restore_plain) = fixture();
     fixture_plain.shared.grant_session("s-test");
     fixture_plain.mock.lock().focused = Some(ElementInfo {
+        screening_name: None,
         role: "AXButton".to_string(),
         name: "Send message".to_string(),
         x: 0,
@@ -3635,6 +3677,7 @@ async fn char_carrying_chord_confirm_stays_masked_on_secure_target() {
     let (fixture_secure, _restore_secure) = fixture();
     fixture_secure.shared.grant_session("s-test");
     fixture_secure.mock.lock().focused = Some(ElementInfo {
+        screening_name: None,
         role: "AXTextField".to_string(),
         name: "Password".to_string(),
         x: 0,
@@ -3918,6 +3961,11 @@ async fn cursor_position_without_screenshot_reports_input_coordinates() {
 #[test]
 fn coordinate_actions_without_a_map_fail_with_take_one_first() {
     let shared = Arc::new(ComputerUseShared::new());
+    // The round-14 last-instant consent gate sits ahead of the injecting
+    // calls inside execute_action; enable + grant so the test exercises the
+    // missing-map errors rather than the consent rejection.
+    shared.set_enabled(true);
+    shared.grant_session("s-test");
     let mock = Arc::new(Mutex::new(MockState::default()));
     let backend = BackendHandle::lazy({
         let mock = Arc::clone(&mock);
@@ -4087,4 +4135,79 @@ async fn revoke_during_screening_aborts_before_injection() {
         fixture.mock.lock().clicked.is_empty(),
         "the revoked action must never reach the injection surface"
     );
+}
+
+// ---------------------------------------------------------------------------
+// Round-14 fix-wave regressions
+// ---------------------------------------------------------------------------
+
+/// The denylist must match the wider screening copy, not just the
+/// display-truncated name: an attacker-controlled label can pad past the
+/// 80-char display window so a consequential term never reaches the matcher
+/// ("AAA…A Pay now"). With `screening_name` present the padded term blocks.
+#[test]
+fn denylist_matches_beyond_the_display_truncation_window() {
+    let padded = format!("{} Pay now", "A".repeat(120));
+    let display_name = crate::features::computer_use::platform::sanitize_name(&padded, 80);
+    assert!(!display_name.contains("Pay now"));
+    let element = ElementInfo {
+        role: "Button".into(),
+        screening_name: Some(
+            crate::features::computer_use::platform::screening_name(&padded, &display_name)
+                .expect("wider copy expected"),
+        ),
+        name: display_name,
+        x: 0,
+        y: 0,
+        width: 10,
+        height: 10,
+        secure: false,
+    };
+    assert!(matches!(screen_element(&element), T3Screening::Blocked(_)));
+    // Without a wider copy the truncated display name stays Clear — the
+    // residual gap is the bounded-copy cap, matching the disclosed
+    // best-effort screening contract.
+    let mut no_copy = element.clone();
+    no_copy.screening_name = None;
+    assert!(matches!(screen_element(&no_copy), T3Screening::Clear));
+}
+
+/// The structured confirm fields must ride the real serialization path
+/// (round-13's chord/hold_ms fields shipped without any pin; a serde rename
+/// would have silently degraded the localized dialog lines to the English
+/// fallback).
+#[test]
+fn confirm_payload_pins_structured_fields() {
+    let payload_for = |action: ComputerUseAction| {
+        build_confirm_payload("s1", "cu-test", &action, "summary", "element", None, false)
+    };
+    let key = payload_for(ComputerUseAction::KeyChord {
+        keys: vec![Key::Char('s')],
+        chord: "ctrl+s".into(),
+    });
+    assert_eq!(key["chord"], "ctrl+s", "{key}");
+    let hold = payload_for(ComputerUseAction::HoldKey {
+        keys: vec![Key::Char('a')],
+        chord: "a".into(),
+        ms: 1500,
+    });
+    assert_eq!(hold["chord"], "a", "{hold}");
+    assert_eq!(hold["hold_ms"], 1500, "{hold}");
+    let drag = payload_for(ComputerUseAction::Drag {
+        start: (10, 20),
+        end: (30, 40),
+    });
+    assert_eq!(drag["point"]["x"], 10, "{drag}");
+    assert_eq!(drag["point"]["y"], 20, "{drag}");
+    assert_eq!(drag["end_point"]["x"], 30, "{drag}");
+    assert_eq!(drag["end_point"]["y"], 40, "{drag}");
+    // Scroll never blocks (requires_t3_check excludes it), so the payload
+    // must not pretend otherwise: no direction/amount fields exist.
+    let scroll = payload_for(ComputerUseAction::Scroll {
+        direction: crate::features::computer_use::types::ScrollDirection::Down,
+        amount: 3,
+        at: Some((1, 2)),
+    });
+    assert!(scroll.get("direction").is_none(), "{scroll}");
+    assert!(scroll.get("amount").is_none(), "{scroll}");
 }

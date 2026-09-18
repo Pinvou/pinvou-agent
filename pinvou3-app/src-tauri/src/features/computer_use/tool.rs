@@ -69,7 +69,11 @@ pub const MAX_KEY_CHORD_TEXT_CHARS: usize = 128;
 /// `ui_tree` argument caps. Bounds mirror the schema's `max_depth`/`max_nodes`
 /// properties (`minimum: 1`, maximums = these constants); the parser rejects
 /// out-of-range values explicitly ([`opt_u32_range`]) instead of silently
-/// clamping or truncating.
+/// clamping or truncating. Note the macOS/Windows backends additionally cap
+/// their own tree walks below these values (slower cross-process a11y APIs):
+/// a parser-accepted `max_nodes` above their cap is clamped there — this is
+/// disclosed in the tool description so the model is not surprised by a
+/// smaller tree than requested.
 pub const MAX_UI_TREE_DEPTH: u32 = 64;
 pub const MAX_UI_TREE_NODES: u32 = 10_000;
 
@@ -506,6 +510,13 @@ fn parse_action(input: &Value) -> Result<ParsedCall, ToolError> {
             if text.contains('\0') {
                 return Err(invalid("text must not contain NUL characters for type"));
             }
+            // Normalize CR/CRLF once here so every downstream consumer sees
+            // the text that will actually be injected: the length cap, the
+            // confirm-dialog length/preview, the audit "typed N characters"
+            // and the chunk splitting all measure the normalized text (each
+            // CRLF is one Return, not two characters). The per-platform
+            // normalize calls stay as a no-op second line of defense.
+            let text = platform::normalize_typed_newlines(&text).into_owned();
             let count = text.chars().count();
             if count > MAX_TYPE_TEXT_CHARS {
                 return Err(invalid(format!(
@@ -720,7 +731,12 @@ fn screen_element(element: &ElementInfo) -> T3Screening {
             reason: "a password/secure field",
         });
     }
-    if matches_t3_denylist(&element.name) || matches_t3_denylist(&element.role) {
+    // The denylist matches the wider screening copy when the platform
+    // provided one: `name` is display-truncated, so a padded
+    // attacker-controlled label could otherwise push a consequential term
+    // past the match window.
+    let screening_text = element.screening_name.as_deref().unwrap_or(&element.name);
+    if matches_t3_denylist(screening_text) || matches_t3_denylist(&element.role) {
         return T3Screening::Blocked(T3Hit {
             element_label: format!("{} ({})", element.name, element.role),
             reason: "a consequential control (financial/send/delete/submit/consent)",
@@ -958,6 +974,10 @@ struct ConfirmActionDetails {
     click_count: Option<u8>,
     #[serde(skip_serializing_if = "Option::is_none")]
     point: Option<ConfirmPoint>,
+    /// Drag drop point (drag): the localized line renders
+    /// "drag from `point` to `end_point`". Absent for every other action.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    end_point: Option<ConfirmPoint>,
     #[serde(skip_serializing_if = "Option::is_none")]
     text_length: Option<usize>,
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -973,12 +993,6 @@ struct ConfirmActionDetails {
     /// Hold duration in ms (hold_key).
     #[serde(skip_serializing_if = "Option::is_none")]
     hold_ms: Option<u64>,
-    /// Scroll direction (scroll).
-    #[serde(skip_serializing_if = "Option::is_none")]
-    direction: Option<&'static str>,
-    /// Scroll wheel clicks (scroll).
-    #[serde(skip_serializing_if = "Option::is_none")]
-    amount: Option<u32>,
 }
 
 #[derive(serde::Serialize)]
@@ -999,13 +1013,12 @@ impl ConfirmActionDetails {
             button: None,
             click_count: None,
             point: None,
+            end_point: None,
             text_length: None,
             text_preview: preview.map(str::to_string),
             text_preview_truncated: false,
             chord: None,
             hold_ms: None,
-            direction: None,
-            amount: None,
         };
         match action {
             ComputerUseAction::Click {
@@ -1019,26 +1032,18 @@ impl ConfirmActionDetails {
                 details.button = Some(button.as_str());
                 details.click_count = Some(1);
             }
-            ComputerUseAction::Drag { end, .. } => {
-                // A drag has two meaningful points; the drop point is the
-                // consequential one (dragging into delete/drop zones).
-                details.point = Some(ConfirmPoint { x: end.0, y: end.1 });
+            ComputerUseAction::Drag { start, end, .. } => {
+                // The localized drag line renders start → drop point (the
+                // drop is the consequential half: dragging into delete/drop
+                // zones).
+                details.point = Some(ConfirmPoint {
+                    x: start.0,
+                    y: start.1,
+                });
+                details.end_point = Some(ConfirmPoint { x: end.0, y: end.1 });
             }
             ComputerUseAction::MouseMove { x, y } | ComputerUseAction::ElementAtPoint { x, y } => {
                 details.point = Some(ConfirmPoint { x: *x, y: *y });
-            }
-            ComputerUseAction::Scroll {
-                direction,
-                amount,
-                at,
-            } => {
-                // The localized scroll line needs direction + amount + the
-                // (optional) target point.
-                details.direction = Some(direction.as_str());
-                details.amount = Some(*amount);
-                if let Some((x, y)) = at {
-                    details.point = Some(ConfirmPoint { x: *x, y: *y });
-                }
             }
             ComputerUseAction::Type { text } => {
                 let count = text.chars().count();
@@ -1127,6 +1132,11 @@ fn request_confirmation(
     masked_target: bool,
     binding: u64,
 ) -> String {
+    // The payload is built once and serves two consumers: the event
+    // broadcast and the guard's server-truth store (re-served through
+    // `computer_use_get_status` so every window can reconstruct or collapse
+    // the dialog). The confirm_id comes from the mint, so the payload is
+    // attached to the stored pending right after building it.
     let confirm_id = parts.shared.new_pending_confirmation(
         &parts.session_id,
         summary.to_string(),
@@ -1142,6 +1152,9 @@ fn request_confirmation(
         type_preview_full.as_deref(),
         masked_target,
     );
+    parts
+        .shared
+        .set_pending_payload(&confirm_id, payload.clone());
     parts.events.emit(EVENT_CONFIRM_REQUIRED, payload);
     // The prefix is [`T3_CONFIRM_REQUIRED_ERROR`]: the error message carries
     // the element label, so the audit record's error field holds only the
@@ -1258,15 +1271,33 @@ fn run(parts: Parts, parsed: ParsedCall, workspace: PathBuf) -> ToolResult {
                     // decision and keyboard screening below: two separate
                     // queries could race a focus change onto a password field
                     // and leak its full text into the confirm event.
-                    let focused = if matches!(
+                    let mut focused = None;
+                    let focus_uncertain = if matches!(
                         &action,
                         ComputerUseAction::Type { .. }
                             | ComputerUseAction::KeyChord { .. }
                             | ComputerUseAction::HoldKey { .. }
                     ) {
-                        parts.backend.focused_element().ok().flatten()
+                        match parts.backend.focused_element() {
+                            Ok(value) => {
+                                focused = value;
+                                false
+                            }
+                            Err(_) => {
+                                // The Linux layer deliberately returns Err when the
+                                // focused search exhausts its budget without a
+                                // verdict ("never masquerade as none"): an uncertain
+                                // focus must not be flattened into "nothing focused",
+                                // or the full typed text could ride the confirm event
+                                // while a password field actually holds focus.
+                                // Screening itself stays fail-open (focused stays
+                                // None), but the preview is masked like a secure
+                                // target.
+                                true
+                            }
+                        }
                     } else {
-                        None
+                        false
                     };
                     // The masked-target decision only shapes the dialog
                     // payload (whether the full typed text may ride the
@@ -1278,9 +1309,10 @@ fn run(parts: Parts, parsed: ParsedCall, workspace: PathBuf) -> ToolResult {
                         ComputerUseAction::Type { .. }
                             | ComputerUseAction::KeyChord { .. }
                             | ComputerUseAction::HoldKey { .. }
-                    ) && focused
-                        .as_ref()
-                        .is_some_and(|element| element.secure || is_secure_role(&element.role));
+                    ) && (focus_uncertain
+                        || focused.as_ref().is_some_and(|element| {
+                            element.secure || is_secure_role(&element.role)
+                        }));
                     // Optional full text for the confirm event, fixed at mint
                     // time (never recomputed at spend time).
                     let type_preview_full = full_type_preview(&action, secure_type_target);
@@ -1592,6 +1624,18 @@ fn execute_action(
     warnings: &mut Vec<String>,
 ) -> Result<String, ComputerUseError> {
     let backend = &parts.backend;
+    // Last-instant gate: the guard was verified at run() start and again at
+    // mint/spend, but a stop/disable/revoke landing after that point — or a
+    // request registering with the backend worker after the stop latched the
+    // cancel registry — would otherwise still inject, landing AFTER the
+    // emergency releases that the same stop issued. Re-verify immediately
+    // before the injecting calls; Observe actions never touch hardware and
+    // skip this.
+    if action.class() == ActionClass::Input {
+        if let Err(rejection) = parts.shared.verify_input_action(&parts.session_id) {
+            return Err(ComputerUseError::failed(rejection.message()));
+        }
+    }
     match action {
         ComputerUseAction::Screenshot => Ok(String::new()),
         ComputerUseAction::CursorPosition => {
@@ -1833,7 +1877,9 @@ impl ToolSpec for ComputerUseTool {
          confirmation is bound to the exact action content but is NOT re-screened: it \
          executes on whatever occupies the target position when it runs, which can be \
          minutes after the user approved. The CONTENT you type is never screened, and \
-         key chords are not screened for destructiveness. Observation (screenshots, ui_tree) reads on-screen \
+         key chords are not screened for destructiveness. On macOS and Windows the \
+         accessibility tree walk is additionally capped below the max_depth/max_nodes \
+         arguments (24 levels / 2000 nodes). Observation (screenshots, ui_tree) reads on-screen \
          and focused-window content while the feature is enabled, which may include \
          private information. After actions that change the screen a fresh screenshot is \
          attached; if it is not visible, call image_analyze with the returned attachments \
@@ -1841,9 +1887,13 @@ impl ToolSpec for ComputerUseTool {
     }
 
     fn input_schema(&self) -> Value {
-        // Bounds parity: the `ms` property's `minimum: 1` follows hold_key's
-        // 1..=30000 domain; the wait branch rejects 0 as well, so the shared
-        // schema field matches the parse behavior for both actions.
+        // Bounds parity: every parser-enforced cap is declared here so a
+        // schema-validating client sees the same domain the parser enforces
+        // (ms 1-30000 shared by wait/hold_key, amount 1-100, text ≤ 10000
+        // chars for type, max_depth ≤ 64, max_nodes ≤ 10000). The `text`
+        // maxLength covers type; chord text for key/hold_key is capped
+        // tighter (128) at parse time but shares this field, so the schema
+        // declares only the common bound.
         json!({
             "type": "object",
             "properties": {
@@ -1856,12 +1906,12 @@ impl ToolSpec for ComputerUseTool {
                 "y": { "type": "integer", "minimum": 0, "description": "Y coordinate in the last screenshot's pixel space" },
                 "start_x": { "type": "integer", "minimum": 0, "description": "Drag start X (left_click_drag only)" },
                 "start_y": { "type": "integer", "minimum": 0, "description": "Drag start Y (left_click_drag only)" },
-                "text": { "type": "string", "description": "Text to type (type) or xdotool-style key chord like \"ctrl+s\", \"Return\", \"alt+Tab\" (key, hold_key)" },
-                "ms": { "type": "integer", "minimum": 1, "description": "Duration in milliseconds (wait, hold_key; hold_key requires 1-30000)" },
+                "text": { "type": "string", "maxLength": 10000, "description": "Text to type (type) or xdotool-style key chord like \"ctrl+s\", \"Return\", \"alt+Tab\" (key, hold_key)" },
+                "ms": { "type": "integer", "minimum": 1, "maximum": 30000, "description": "Duration in milliseconds (wait, hold_key; hold_key requires 1-30000)" },
                 "direction": { "type": "string", "enum": ["up", "down", "left", "right"], "description": "Scroll direction (scroll)" },
-                "amount": { "type": "integer", "minimum": 1, "description": "Scroll wheel clicks, 1-100 (scroll)" },
-                "max_depth": { "type": "integer", "minimum": 1, "description": "Max accessibility tree depth (ui_tree)" },
-                "max_nodes": { "type": "integer", "minimum": 1, "description": "Max accessibility tree nodes (ui_tree)" },
+                "amount": { "type": "integer", "minimum": 1, "maximum": 100, "description": "Scroll wheel clicks, 1-100 (scroll)" },
+                "max_depth": { "type": "integer", "minimum": 1, "maximum": 64, "description": "Max accessibility tree depth (ui_tree)" },
+                "max_nodes": { "type": "integer", "minimum": 1, "maximum": 10000, "description": "Max accessibility tree nodes (ui_tree)" },
                 "confirm_id": { "type": "string", "description": "Single-use user-confirmation token for a blocked consequential action" }
             },
             "required": ["action"]
@@ -1909,15 +1959,16 @@ impl ToolSpec for ComputerUseTool {
                     None => "action:missing".to_string(),
                 };
                 let error_text = error.to_string();
-                let record = AuditRecord::new(&self.parts.session_id, "unparseable", audit_target)
-                    .finish(
-                        "rejected",
-                        Some(format!(
-                            "parse failed: {}",
-                            error_text.chars().take(160).collect::<String>()
-                        )),
-                        0,
-                    );
+                let mut record = AuditRecord::new(&self.parts.session_id, "unparseable", "n/a");
+                record.with_target(&audit_target);
+                let record = record.finish(
+                    "rejected",
+                    Some(format!(
+                        "parse failed: {}",
+                        error_text.chars().take(160).collect::<String>()
+                    )),
+                    0,
+                );
                 match AuditLog::for_session(&self.parts.session_id) {
                     Ok(log) => {
                         if let Err(audit_error) = log.append(&record) {
@@ -1976,6 +2027,12 @@ impl ToolSpec for ComputerUseTool {
         };
         if let Err(rejection) = gate {
             if rejection == GuardRejection::GrantRequired {
+                // Server truth for the consent UI: mark the request before
+                // broadcasting so a get_status in any window already sees
+                // the pending grant (cleared by grant/revoke/stop/disable).
+                self.parts
+                    .shared
+                    .mark_grant_requested(&self.parts.session_id);
                 self.parts.events.emit(
                     EVENT_GRANT_REQUIRED,
                     json!({ "session_id": self.parts.session_id }),

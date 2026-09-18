@@ -122,19 +122,16 @@ pub trait ComputerUseBackend: Send {
     }
     /// Request-scoped cancel flag (see [`BackendRequest::cancelled`]): the worker sets it
     /// before dispatching each request and clears it afterwards. Implementations of
-    /// multi-event requests (type's per-character/per-chunk injection) check it between
-    /// events, so a request the caller has already abandoned on timeout stops injecting
-    /// immediately — the one-shot check at dequeue cannot stop long requests that
-    /// legitimately exceed the call budget: Wayland per-character injection costs
-    /// two bounded portal notifications per character; 10k characters on a degraded
-    /// bus far exceeds the call budget, and after the caller times out, the zombie
-    /// request would double-inject alongside the retry. type checks in chunks on all
-    /// three platforms (X11 per-character remapping; Wayland per-character portal
-    /// notifications; Windows/macOS 64-character chunks — low-level event hooks
-    /// process each event synchronously, so a whole-text batch injection can
-    /// legitimately exceed the call budget). The multi-event loops of scroll/drag do
-    /// not check (seconds-bounded, see the residual notes in the
-    /// BACKEND_CALL_TIMEOUT comment).
+    /// multi-event requests check it between events, so a request the caller has already
+    /// abandoned on timeout stops injecting immediately — the one-shot check at dequeue
+    /// cannot stop long requests that legitimately exceed the call budget: Wayland
+    /// per-character injection costs two bounded portal notifications per character;
+    /// 10k characters on a degraded bus far exceeds the call budget, and after the caller
+    /// times out, the zombie request would double-inject alongside the retry. type checks
+    /// between chunks/characters on all three platforms; drag checks between waypoints
+    /// and hold_key polls the flag in 100 ms slices on all three platforms. scroll and
+    /// single one-shot events do not check (seconds-bounded at most, see the residual
+    /// notes in the BACKEND_CALL_TIMEOUT comment).
     fn set_cancel_flag(&mut self, flag: Option<Arc<AtomicBool>>) {
         let _ = flag;
     }
@@ -295,11 +292,41 @@ fn dispatch(
     Some(Ok(result))
 }
 
+/// The backend worker thread's well-known name (set at spawn); the process
+/// panic hook redacts payload content only for panics on this thread.
+const WORKER_THREAD_NAME: &str = "computer-use-backend";
+
+/// Installs the payload-redacting panic hook exactly once per process. The
+/// hook redacts ONLY panics on the worker thread, where dispatch runs: a
+/// String panic payload can embed typed input content, and the default hook
+/// would print it to stderr before `catch_unwind` sees it. Panics on every
+/// other thread chain to the previous hook unchanged — diagnostics elsewhere
+/// stay intact, and there is no per-request hook swapping (which would race
+/// with parallel threads and hide unrelated panic messages).
+fn install_worker_panic_redaction() {
+    static INSTALL: std::sync::Once = std::sync::Once::new();
+    INSTALL.call_once(|| {
+        let previous = std::panic::take_hook();
+        std::panic::set_hook(Box::new(move |info| {
+            if std::thread::current().name() == Some(WORKER_THREAD_NAME) {
+                let location = info
+                    .location()
+                    .map(|location| format!("{}:{}", location.file(), location.line()))
+                    .unwrap_or_else(|| "unknown location".to_string());
+                eprintln!("[computer_use] panic at {location}: payload withheld");
+            } else {
+                previous(info);
+            }
+        }));
+    });
+}
+
 fn worker_loop(
     factory: BackendFactory,
     rx: Receiver<BackendRequest>,
     startup: Sender<Result<(), ComputerUseError>>,
 ) {
+    install_worker_panic_redaction();
     let mut backend = match factory() {
         Ok(backend) => {
             let _ = startup.send(Ok(()));
@@ -343,8 +370,10 @@ fn worker_loop(
         // (the safe direction is no injection, but disabling the entire session forever
         // overshot). A panic becomes one Failed reply and the worker keeps serving later
         // requests. The panic payload may embed input content — the same reason it is
-        // excluded from the reply/audit — so stderr only gets a bounded, truncated
-        // summary, never the raw payload in full.
+        // excluded from the reply/audit — and the DEFAULT panic hook prints that payload
+        // to stderr before catch_unwind ever sees it. Worker-thread panics are redacted
+        // by the process hook installed in `install_worker_panic_redaction` (this thread's
+        // first action); no per-request hook swapping happens here.
         let dispatched = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
             dispatch(backend.as_mut(), request.kind)
         }));
@@ -1442,6 +1471,7 @@ mod tests {
     struct ProbeState {
         stall: Option<Duration>,
         captures: u64,
+        clicks: u64,
         mouse_ups: Vec<MouseButton>,
         releases: u64,
     }
@@ -1486,6 +1516,7 @@ mod tests {
         }
 
         fn click(&mut self, _button: MouseButton, _count: u8) -> Result<(), ComputerUseError> {
+            self.state.lock().clicks += 1;
             Ok(())
         }
 
@@ -1600,8 +1631,12 @@ mod tests {
         // (the round-13 stop-cancels-in-flight semantics). Both are fine;
         // what must never happen is the control request being REJECTED.
         assert!(
-            state.captures == 1 || capture.is_err(),
-            "capture must complete or be cancelled, not vanish: {capture:?} / {}",
+            state.captures == 1
+                || capture
+                    .as_ref()
+                    .is_err_and(|e| e.to_string().contains("cancelled")),
+            "capture must complete or fail as CANCELLED, not with an unrelated error: \
+             {capture:?} / {}",
             state.captures
         );
     }
@@ -1630,8 +1665,12 @@ mod tests {
         // Same completed-or-cancelled tolerance as the release_os_grant test
         // above: the emergency release cancels a queued capture by design.
         assert!(
-            state.captures == 1 || capture.is_err(),
-            "capture must complete or be cancelled, not vanish: {capture:?} / {}",
+            state.captures == 1
+                || capture
+                    .as_ref()
+                    .is_err_and(|e| e.to_string().contains("cancelled")),
+            "capture must complete or fail as CANCELLED, not with an unrelated error: \
+             {capture:?} / {}",
             state.captures
         );
         // Three buttons released one by one (the established contract of emergency_mouse_up,

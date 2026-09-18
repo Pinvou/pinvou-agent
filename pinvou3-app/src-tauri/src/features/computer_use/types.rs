@@ -302,6 +302,12 @@ pub struct ElementInfo {
     pub height: i32,
     /// Password/secure text field (one of the T3 forced-confirmation signals).
     pub secure: bool,
+    /// Wider control-folded copy of the raw accessible name for denylist
+    /// screening (`helpers::screening_name`): `name` is display-truncated, so
+    /// a padded attacker-controlled label could push a consequential term
+    /// past its window. Internal only — never serialized to the model.
+    #[serde(skip)]
+    pub screening_name: Option<String>,
 }
 
 /// `ui_tree` fetch options. `None` lets the backend apply its defaults.
