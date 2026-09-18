@@ -1830,10 +1830,12 @@ impl AppEngine {
             persona_reminder,
             restrict_tools,
             expert_snapshot,
+            Vec::new(),
         )?;
         self.send_turn_op(op).await
     }
 
+    #[allow(clippy::too_many_arguments)]
     pub(crate) async fn send_reserved_user_message(
         &self,
         content: String,
@@ -1841,6 +1843,7 @@ impl AppEngine {
         persona_reminder: Option<String>,
         restrict_tools: bool,
         expert_snapshot: Option<std::sync::Arc<ExpertRosterSnapshot>>,
+        expert_candidates: Vec<String>,
         reservation: TurnReservation,
     ) -> Result<()> {
         let op = self.build_interactive_send_message_op(
@@ -1849,6 +1852,7 @@ impl AppEngine {
             persona_reminder,
             restrict_tools,
             expert_snapshot,
+            expert_candidates,
         )?;
         self.send_reserved_turn_op(op, reservation).await
     }
@@ -1873,6 +1877,7 @@ impl AppEngine {
         persona_reminder: Option<String>,
         restrict_tools: bool,
         expert_snapshot: Option<std::sync::Arc<ExpertRosterSnapshot>>,
+        expert_candidates: Vec<String>,
     ) -> Result<Op> {
         if self.multi_agent_enabled {
             let snapshot = expert_snapshot
@@ -1886,11 +1891,15 @@ impl AppEngine {
                 restrict_tools,
                 &self.workspace,
                 snapshot,
+                &expert_candidates,
             )
         } else {
-            if expert_snapshot.is_some() {
-                anyhow::bail!("ordinary turn must not carry a multi-agent expert snapshot");
-            }
+            // 普通会话不吃候选行：候选只随多智能体快照同源产生。误传与快照
+            // 误传同等对待（hard-error），保持消息与普通对话逐字一致的不变式。
+            validate_ordinary_turn_has_no_expert_material(
+                expert_snapshot.is_some(),
+                expert_candidates.len(),
+            )?;
             self.bridge.build_send_message_op(
                 &self.session_id,
                 content,
@@ -4002,5 +4011,54 @@ mod live_tests {
             );
             assert!(s.tps_time_s > 0.0, "TPS 时长未记 seq={seq:?}");
         }
+    }
+}
+
+/// 普通引擎不得携带多智能体装配材料（快照或候选行）：候选只随多智能体快照
+/// 同源产生。误传与快照误传同等对待（hard-error），与多智能体 turn 缺快照的
+/// hard-error 双向对称（生产调用点：[`Self::build_interactive_send_message_op`]）。
+fn validate_ordinary_turn_has_no_expert_material(
+    carries_snapshot: bool,
+    candidate_lines: usize,
+) -> Result<()> {
+    if carries_snapshot {
+        anyhow::bail!("ordinary turn must not carry a multi-agent expert snapshot");
+    }
+    if candidate_lines > 0 {
+        anyhow::bail!("ordinary turn must not carry expert candidate lines");
+    }
+    Ok(())
+}
+
+#[cfg(test)]
+mod expert_turn_invariant_tests {
+    use super::validate_ordinary_turn_has_no_expert_material;
+
+    /// 普通轮 hard-error 不变式（双向对称性的普通侧）：不带任何专家材料时
+    /// 放行；带快照、带候选行分别硬错，且快照守卫先触发。
+    #[test]
+    fn ordinary_turn_rejects_snapshot_and_candidate_lines_symmetrically() {
+        assert!(
+            validate_ordinary_turn_has_no_expert_material(false, 0).is_ok(),
+            "普通轮不带专家材料必须放行"
+        );
+        let snapshot_error =
+            validate_ordinary_turn_has_no_expert_material(true, 0).expect_err("快照误传必须硬错");
+        assert!(
+            snapshot_error.to_string().contains("expert snapshot"),
+            "错误信息必须点明快照误传: {snapshot_error}"
+        );
+        let candidates_error = validate_ordinary_turn_has_no_expert_material(false, 2)
+            .expect_err("候选行误传必须硬错");
+        assert!(
+            candidates_error.to_string().contains("candidate lines"),
+            "错误信息必须点明候选行误传: {candidates_error}"
+        );
+        let both = validate_ordinary_turn_has_no_expert_material(true, 2)
+            .expect_err("双材料同传也必须硬错");
+        assert!(
+            both.to_string().contains("expert snapshot"),
+            "快照守卫必须先于候选行守卫（与生产装配顺序一致）: {both}"
+        );
     }
 }

@@ -61,19 +61,23 @@ const SEPARATE_REASONING_FIELD: &str = "separate_field";
 // coordinator and complex tasks nest at most one extra level — not an unbounded
 // recursive tree. Plain conversations keep the original CodeWhale caps; only
 // sessions with multi-agent enabled get a resource budget. The constants are
-// pub(crate) so the per-turn delegation reminder (app/commands/multiagent.rs)
-// reads the same numbers and cannot drift from the engine's actual caps.
+// pub(crate) so bridge tests (and the defensive swarm-off tier below) bind the
+// same numbers the engine config installs.
 //
 // Two regimes: swarm mode (multi_agent on) lifts the count caps entirely —
 // expressed by pinning the engine config to the base's own hard ceilings
 // (`config::MAX_SUBAGENTS` / `config::MAX_SUBAGENT_ADMISSION`), which the base
 // re-clamps to anyway, so App and base stay consistent without touching
-// CodeWhale. With swarm off there is one shared tier (Work and Code sessions
-// alike): 4 concurrent direct children, 8 tree-wide admitted — the extra
-// admitted slots form a small queue buffer so a bursty fanout queues instead
-// of being rejected outright. (The swarm-off tier is not reachable from
-// production wiring today — multi-agent engine configs are only built for
-// sessions with the switch on; it is the defensive regime pinned by tests.)
+// CodeWhale. Swarm copy itself is no longer a per-turn reminder: the mode-level
+// contract is installed once via `EngineConfig.instructions`
+// (`features::assistant::swarm`), and only the per-turn expert candidate lines
+// ride inside the `<system-reminder>` envelope. With swarm off there is one
+// shared tier (Work and Code sessions alike): 4 concurrent direct children, 8
+// tree-wide admitted — the extra admitted slots form a small queue buffer so a
+// bursty fanout queues instead of being rejected outright. (The swarm-off tier
+// is not reachable from production wiring today — multi-agent engine configs
+// are only built for sessions with the switch on; it is the defensive regime
+// pinned by tests.)
 const MULTI_AGENT_MAX_SPAWN_DEPTH: u32 = 2;
 pub(crate) const MULTI_AGENT_MAX_CONCURRENT: usize = 4;
 pub(crate) const MULTI_AGENT_MAX_ADMITTED: usize = 8;
@@ -2069,11 +2073,14 @@ impl Pinvou3Bridge {
     /// the model writes its own task description and dispatches bare. **The
     /// tool catalog is identical to a plain session** — the disabled list
     /// comes only from connector switches, and `workflow` stays available as
-    /// on the main line (the delegation reminder neither teaches nor
-    /// recommends it). Direct instances are leaves by default; complex tasks
-    /// may let a direct instance spawn one more level, and that second level
-    /// must not spawn further. Swarm on lifts the caps: the app pins
-    /// concurrent / admitted to the foundation hard ceilings
+    /// on the main line (the swarm contract neither teaches nor recommends
+    /// it). The swarm contract itself is installed once here, as an
+    /// `EngineConfig.instructions` inline source (`pinvou3:swarm`): it renders
+    /// as a system block at spawn, survives compaction, and never reaches
+    /// subagent system prompts. Direct instances are leaves by default;
+    /// complex tasks may let a direct instance spawn one more level, and that
+    /// second level must not spawn further. Swarm on lifts the caps: the app
+    /// pins concurrent / admitted to the foundation hard ceilings
     /// (`config::MAX_SUBAGENTS` / `MAX_SUBAGENT_ADMISSION`). Swarm off: one
     /// shared tier, 4 direct / 8 tree-admitted. Deeper descendants skip the
     /// direct launch gate but count against tree admission. `swarm` is
@@ -2086,6 +2093,12 @@ impl Pinvou3Bridge {
         swarm: bool,
     ) -> EngineConfig {
         let mut cfg = self.build_engine_config_for_session_roots(session_id, roots);
+        // 契约走系统级 instructions（spawn 一次、compaction 存活、不进子智能体提示）；
+        // 每轮动态内容只有候选行，随发送链进 <system-reminder> 信封。
+        if swarm {
+            cfg.instructions
+                .push(crate::features::assistant::swarm::swarm_instruction_source());
+        }
         // 主会话是总协调者：直属子智能体处于 depth=1，复杂任务可再派生
         // depth=2；第二层不能继续。主会话侧的正数深度覆盖由专用 hook 拦截；
         // 嵌套层的工具调用不经过 ToolCallBefore，靠继承上限（省略参数即
@@ -2099,11 +2112,11 @@ impl Pinvou3Bridge {
             cfg.max_admitted_subagents = deepseek_tui::config::MAX_SUBAGENT_ADMISSION;
             cfg.launch_concurrency = deepseek_tui::config::MAX_SUBAGENTS;
         } else {
-            // Swarm-off tier: unreachable in production wiring (see
-            // `delegation_limits_for` and the expert_snapshot condition);
-            // tests/defensive calls only. A user config only caps; note "0 =
-            // disable" is not a runtime fact — Some(0) acts as one usable
-            // slot after the manager constructor clamp.
+            // Swarm-off tier: unreachable in production wiring (see the
+            // expert_snapshot condition); tests/defensive calls only. A user
+            // config only caps; note "0 = disable" is not a runtime fact —
+            // Some(0) acts as one usable slot after the manager constructor
+            // clamp.
             cfg.max_subagents = self
                 .prefs
                 .advanced
@@ -2171,11 +2184,18 @@ impl Pinvou3Bridge {
     }
 
     /// 为开启多智能体的 Engine/turn 注入 Pinvou 专家池对应的原生
-    /// `[fleet.profiles]`。调用方必须复用与提醒相同的 [`ExpertRosterSnapshot`]；
+    /// `[fleet.profiles]`，并把子智能体默认墙钟预算钉到底座允许的最高值。
+    /// 调用方必须复用与每轮候选行相同的 [`ExpertRosterSnapshot`]；
     /// 普通会话继续调用 [`build_dt_config`](Self::build_dt_config)，不会获得专家。
     pub(crate) fn build_multi_agent_dt_config(&self, snapshot: &ExpertRosterSnapshot) -> DtConfig {
         let mut config = self.build_dt_config();
         config.fleet = Some(snapshot.fleet_config().clone());
+        // 旧提醒逐字教的 per-call 预算字段不在模型 schema 里（#5324 裁剪）；预算归
+        // 引擎配置，角色默认步数本就无限制。这里把默认墙钟钉到底座上限 86400s
+        // （底座按 1..=86400 钳制），子智能体未显式传 wall_time_secs 时不再被
+        // 1800s 底座默认提前截断；已有的 subagents 配置项逐字保留。
+        let subagents = config.subagents.get_or_insert_with(Default::default);
+        subagents.default_wall_time_secs = Some(86_400);
         config
     }
 
@@ -2403,6 +2423,7 @@ impl Pinvou3Bridge {
             restrict_tools,
             self.build_hook_executor(),
             None,
+            &[],
         )
     }
 
@@ -2461,6 +2482,9 @@ impl Pinvou3Bridge {
 
     /// 多智能体会话每轮都必须重新携带专用 hook；底座的 `SendMessage` 会覆盖
     /// EngineConfig 上的 hook executor，只在启动配置里设置一次并不生效。
+    /// `expert_candidates` 是与 `snapshot` 同源（同一次 `ExpertRosterSnapshot::capture`）
+    /// 的本轮候选行：非空时放进 `<system-reminder>` 信封，供主 agent 用
+    /// `profile=` 派专家；空串表示本轮不带候选段。
     pub(crate) fn build_multi_agent_send_message_op(
         &self,
         session_id: &str,
@@ -2470,6 +2494,7 @@ impl Pinvou3Bridge {
         restrict_tools: bool,
         workspace: &std::path::Path,
         snapshot: &ExpertRosterSnapshot,
+        expert_candidates: &[String],
     ) -> Result<Op> {
         self.ensure_session_skills_for_send(session_id);
         self.build_send_message_op_with_hooks(
@@ -2480,6 +2505,7 @@ impl Pinvou3Bridge {
             restrict_tools,
             self.build_multi_agent_hook_executor(workspace),
             Some(snapshot),
+            expert_candidates,
         )
     }
 
@@ -2519,6 +2545,7 @@ impl Pinvou3Bridge {
         restrict_tools: bool,
         hook_executor: Arc<HookExecutor>,
         expert_snapshot: Option<&ExpertRosterSnapshot>,
+        expert_candidates: &[String],
     ) -> Result<Op> {
         let policy = self.session_policy(session_id);
         // CodeWhale 0.9.12 no longer represents bypass authority as an
@@ -2568,6 +2595,22 @@ impl Pinvou3Bridge {
         // 卡片池: 该 session 加持了专家面具时,每 turn 注入 persona 人设(粘性身份)。
         if let Some(persona) = persona_reminder {
             reminder_body = format!("{reminder_body}\n\n{persona}");
+        }
+        // 蜂群每轮动态内容只剩候选专家行（≤ 上限条）；契约本体在 spawn 级
+        // instructions（swarm::SWARM_CONTRACT），不再逐轮改写用户消息。多智能体
+        // 轮没有匹配候选时兜底一句名册提示——零候选轮对模型可见，发现通道不落空；
+        // 普通会话（无快照）不注入任何专家内容。
+        let expert_section = match crate::features::assistant::swarm::expert_candidates_reminder(
+            expert_candidates,
+        ) {
+            Some(section) => Some(section),
+            None if expert_snapshot.is_some() => {
+                Some(crate::features::assistant::swarm::expert_roster_hint_reminder())
+            }
+            None => None,
+        };
+        if let Some(section) = expert_section {
+            reminder_body = format!("{reminder_body}\n\n{section}");
         }
         let full_content =
             format!("<system-reminder>\n{reminder_body}\n</system-reminder>\n\n{content}");
@@ -8067,7 +8110,51 @@ mod tests {
             "底座内置成员应保持可用"
         );
 
+        // 蜂群契约只装在 swarm 配置的系统级 instructions（spawn 一次、compaction
+        // 存活、不进子智能体提示）；swarm-off 与普通会话配置都不得携带。
+        let swarm_sources = cfg
+            .instructions
+            .iter()
+            .filter(|source| {
+                matches!(
+                    source,
+                    InstructionSource::Inline { name, .. } if name == "pinvou3:swarm"
+                )
+            })
+            .collect::<Vec<_>>();
+        assert_eq!(
+            swarm_sources.len(),
+            1,
+            "swarm 会话必须且只能携带一份 pinvou3:swarm 契约"
+        );
+        assert!(
+            matches!(
+                swarm_sources[0],
+                InstructionSource::Inline { content, .. } if content == crate::features::assistant::swarm::SWARM_CONTRACT
+            ),
+            "契约内容必须与产品签发文本逐字一致"
+        );
+        assert!(
+            !ordinary.instructions.iter().any(|source| {
+                matches!(
+                    source,
+                    InstructionSource::Inline { name, .. } if name == "pinvou3:swarm"
+                )
+            }),
+            "普通会话配置不得携带蜂群契约"
+        );
+
         // Swarm off: Work and Code share one tier (4 direct-concurrent / 8 tree-admitted).
+        // 字面值钉死：这两个数字是 ADR-0006 记录的保守档位，与引擎配置的一致性
+        // 断言发现不了"常量被顺手改大"的漂移。
+        assert_eq!(
+            MULTI_AGENT_MAX_CONCURRENT, 4,
+            "swarm-off 直属并发档位漂移（ADR-0006 记录为 4）"
+        );
+        assert_eq!(
+            MULTI_AGENT_MAX_ADMITTED, 8,
+            "swarm-off 树准入档位漂移（ADR-0006 记录为 8）"
+        );
         let capped_bridge = fixture_bridge();
         let capped = capped_bridge.build_engine_config_for_multi_agent(
             "ma-capped",
@@ -8078,6 +8165,15 @@ mod tests {
         assert_eq!(capped.max_subagents, MULTI_AGENT_MAX_ADMITTED);
         assert_eq!(capped.max_admitted_subagents, MULTI_AGENT_MAX_ADMITTED);
         assert_eq!(capped.launch_concurrency, MULTI_AGENT_MAX_CONCURRENT);
+        assert!(
+            !capped.instructions.iter().any(|source| {
+                matches!(
+                    source,
+                    InstructionSource::Inline { name, .. } if name == "pinvou3:swarm"
+                )
+            }),
+            "swarm-off 配置不得携带蜂群契约"
+        );
 
         let mut disabled_bridge = fixture_bridge();
         disabled_bridge.prefs.advanced.max_subagents = Some(0);
@@ -8122,9 +8218,18 @@ mod tests {
     }
 
     /// 多智能体与普通对话保持相同模式、工具面和审批语义；每轮唯一差异是
-    /// 多智能体附加直属深度护栏，且普通对话不得受影响。
+    /// 多智能体附加直属深度护栏与候选专家段（蜂群契约本体在 spawn 级
+    /// instructions，不在每轮信封里重复），且普通对话不得受影响。
     #[test]
     fn multi_agent_send_path_only_adds_resource_guard() {
+        // capture() 读 PINVOU3_HOME 下的卡池：按本模块惯例持 ENV_LOCK 并钉空
+        // home，断言与卡池内容无关，但读取必须与其他 env 写测试串行。
+        let _env_lock = crate::bridge::paths::tests::ENV_LOCK
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        let _home = crate::features::assistant::expert_roster::tests::PersonaHomeGuard::setup(
+            "bridge-send-hook",
+        );
         let mut bridge = fixture_bridge();
         set_active_model(
             &mut bridge,
@@ -8138,6 +8243,7 @@ mod tests {
             .expect("build op");
         let workspace = std::env::temp_dir().join("pinvou3-multiagent-send-hook");
         let snapshot = ExpertRosterSnapshot::capture();
+        let candidates = vec!["- `exp-engineering-frontend-developer`：前端｜审查".to_string()];
         let multi_agent_op = bridge
             .build_multi_agent_send_message_op(
                 "multi-agent-session",
@@ -8147,10 +8253,12 @@ mod tests {
                 false,
                 &workspace,
                 &snapshot,
+                &candidates,
             )
             .expect("build multi-agent op");
         let deepseek_tui::core::ops::Op::SendMessage {
             mode,
+            content: ordinary_content,
             allowed_tools,
             hook_executor: ordinary_hooks,
             ..
@@ -8160,6 +8268,7 @@ mod tests {
         };
         let deepseek_tui::core::ops::Op::SendMessage {
             mode: multi_mode,
+            content: multi_content,
             allowed_tools: multi_allowed_tools,
             hook_executor: multi_hooks,
             ..
@@ -8195,6 +8304,122 @@ mod tests {
         assert!(
             !has_hook(&multi_hooks, "pinvou3-workflow-approval"),
             "强制 ask Hook 已随每图必停协议退役"
+        );
+        // 每轮信封：多智能体在 <system-reminder> 内携带候选专家段；用户内容
+        // 逐字保持在信封之后；普通对话不得出现候选段，两者都不得重复契约正文。
+        assert!(
+            !ordinary_content.contains("本轮候选专家"),
+            "普通会话不得携带候选专家段:\n{ordinary_content}"
+        );
+        assert!(
+            multi_content.contains("本轮候选专家")
+                && multi_content.contains(candidates[0].as_str()),
+            "多智能体每轮必须在信封内携带候选专家段:\n{multi_content}"
+        );
+        let reminder_end = multi_content
+            .find("</system-reminder>")
+            .expect("multi-agent turn must wrap the reminder envelope");
+        assert!(
+            multi_content[reminder_end..].ends_with("hi"),
+            "用户内容必须逐字保持在信封之后:\n{multi_content}"
+        );
+        assert!(
+            !multi_content.contains(crate::features::assistant::swarm::SWARM_CONTRACT),
+            "契约正文只在 spawn 级 instructions，不得逐轮重复:\n{multi_content}"
+        );
+    }
+
+    /// 多智能体轮没有匹配候选时，信封兜底一句名册提示（零候选轮对模型可见，
+    /// 契约的"每轮附候选"承诺不落空）；普通会话无论何种情况都不得携带任何
+    /// 专家候选/名册内容。
+    #[test]
+    fn multi_agent_empty_candidates_fall_back_to_roster_hint() {
+        // 同上：capture() 的卡池读取必须持锁并钉空 home（内容无关，仅求串行）。
+        let _env_lock = crate::bridge::paths::tests::ENV_LOCK
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        let _home = crate::features::assistant::expert_roster::tests::PersonaHomeGuard::setup(
+            "bridge-empty-candidates",
+        );
+        let mut bridge = fixture_bridge();
+        set_active_model(
+            &mut bridge,
+            ModelPreset::Deepseek,
+            "deepseek-v4-flash",
+            "https://api.deepseek.com",
+            "k",
+        );
+        let workspace = std::env::temp_dir().join("pinvou3-multiagent-empty-candidates");
+        let snapshot = ExpertRosterSnapshot::capture();
+        let multi_agent_op = bridge
+            .build_multi_agent_send_message_op(
+                "multi-agent-empty",
+                "hi".into(),
+                AppMode::Agent,
+                None,
+                false,
+                &workspace,
+                &snapshot,
+                &[],
+            )
+            .expect("build multi-agent op");
+        let ordinary_op = bridge
+            .build_send_message_op("plain-empty", "hi".into(), AppMode::Agent, None, false)
+            .expect("build op");
+        let deepseek_tui::core::ops::Op::SendMessage {
+            content: multi_content,
+            ..
+        } = multi_agent_op
+        else {
+            panic!("multi-agent SendMessage op expected");
+        };
+        let deepseek_tui::core::ops::Op::SendMessage {
+            content: ordinary_content,
+            ..
+        } = ordinary_op
+        else {
+            panic!("SendMessage op expected");
+        };
+        let hint = crate::features::assistant::swarm::expert_roster_hint_reminder();
+        assert!(
+            multi_content.contains(hint.as_str()),
+            "多智能体零候选轮必须在信封内兜底名册提示:\n{multi_content}"
+        );
+        let reminder_end = multi_content
+            .find("</system-reminder>")
+            .expect("multi-agent turn must wrap the reminder envelope");
+        assert!(
+            multi_content[reminder_end..].ends_with("hi"),
+            "用户内容必须逐字保持在信封之后:\n{multi_content}"
+        );
+        assert!(
+            !ordinary_content.contains("本轮候选专家") && !ordinary_content.contains(hint.as_str()),
+            "普通会话不得携带任何专家候选/名册内容:\n{ordinary_content}"
+        );
+    }
+
+    /// 多智能体 dt 配置把子智能体默认墙钟钉到底座上限（86400s，底座按
+    /// 1..=86400 钳制）：旧文案逐字教的 per-call wall_time_secs 不在模型
+    /// schema 里，预算只能由这条配置承载。
+    #[test]
+    fn multi_agent_dt_config_pins_default_wall_time_to_foundation_ceiling() {
+        // 同上：capture() 的卡池读取必须持锁并钉空 home（内容无关，仅求串行）。
+        let _env_lock = crate::bridge::paths::tests::ENV_LOCK
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        let _home = crate::features::assistant::expert_roster::tests::PersonaHomeGuard::setup(
+            "bridge-wall-time",
+        );
+        let bridge = fixture_bridge();
+        let snapshot = ExpertRosterSnapshot::capture();
+        let config = bridge.build_multi_agent_dt_config(&snapshot);
+        assert_eq!(
+            config
+                .subagents
+                .as_ref()
+                .and_then(|sub| sub.default_wall_time_secs),
+            Some(86_400),
+            "多智能体 dt 配置必须把默认墙钟钉到底座上限 86400s"
         );
     }
 }

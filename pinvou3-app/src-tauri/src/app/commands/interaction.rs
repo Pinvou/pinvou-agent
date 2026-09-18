@@ -218,12 +218,15 @@ pub async fn accept_plan(
         .await;
         return Err(format!("prepare accept_plan admission: {error:#}"));
     }
+    // 候选专家只从计划正文（plan_markdown）匹配，不加 accept 前缀——与快照同源；
+    // 实际发送内容仍是包装后的 accept 指令。蜂群契约在 spawn 级 instructions，
+    // 这里不再改写消息内容。
     let prepared_delegation = super::multiagent::prepare_delegation_turn(
         pool.inner(),
         &session_id,
         accepted_mode_state.multi_agent,
-        &plan_markdown,
         accept_plan_instruction(&plan_markdown),
+        &plan_markdown,
     );
     let display_content = display_message
         .map(|message| message.trim().to_string())
@@ -237,6 +240,7 @@ pub async fn accept_plan(
             SerializableMode::Yolo.to_app_mode(),
             false,
             prepared_delegation.expert_snapshot,
+            prepared_delegation.expert_candidates,
             reservation,
         )
         .await

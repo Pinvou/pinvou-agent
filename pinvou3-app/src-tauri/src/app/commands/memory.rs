@@ -780,18 +780,14 @@ pub async fn edit_last_turn(
     let reservation = pool
         .reserve_turn(&sid)
         .map_err(|e| format!("reserve edit_last_turn: {e:#}"))?;
-    let mode_state = store.mode_state(&sid);
-    let full = super::multiagent::prepend_delegation_replay_reminder(
-        pool.inner(),
-        &sid,
-        mode_state.multi_agent,
-        new_message.clone(),
-    );
-    let display_message = user_display_message(new_message);
+    // 编辑重发只发编辑后的原文：`EditLastTurn` 沿用引擎上一轮已安装的 route
+    // （含专家 fleet 配置），蜂群契约在 spawn 级 instructions，无需（也不应）
+    // 在此重新拼接任何提醒内容。
+    let display_message = user_display_message(new_message.clone());
 
     // 定时会话不走 ensure_chat_session:编辑重发与继续追问同路,EnginePool 内部
     // 按 scheduled_profile 做 turn gate;会话管理类命令(删除/改名/归档)仍然拒绝。
-    pool.edit_last_turn_reserved(&sid, full, display_message, reservation)
+    pool.edit_last_turn_reserved(&sid, new_message, display_message, reservation)
         .await
         .map_err(|e| format!("edit_last_turn: {e:#}"))
 }

@@ -2321,6 +2321,7 @@ impl EnginePool {
             mode,
             restrict_tools_for_turn,
             expert_snapshot,
+            Vec::new(),
             reservation,
         )
         .await
@@ -2377,6 +2378,10 @@ impl EnginePool {
 
     /// Submit a previously admitted append operation. This is the entry point
     /// used by chat commands that must reserve before resolving attachments.
+    /// `expert_candidates` must come from the same
+    /// [`ExpertRosterSnapshot::capture`] as `expert_snapshot`
+    /// (prepare_delegation_turn)，bridge 把它放进 `<system-reminder>` 信封。
+    #[allow(clippy::too_many_arguments)]
     pub(crate) async fn send_reserved_user_message(
         &self,
         session_id: &str,
@@ -2385,6 +2390,7 @@ impl EnginePool {
         mode: AppMode,
         restrict_tools_for_turn: bool,
         expert_snapshot: Option<std::sync::Arc<ExpertRosterSnapshot>>,
+        expert_candidates: Vec<String>,
         mut reservation: TurnReservation,
     ) -> Result<()> {
         let baseline_revision = reservation
@@ -2436,6 +2442,7 @@ impl EnginePool {
                 persona_reminder,
                 restrict_tools,
                 expert_snapshot,
+                expert_candidates,
                 reservation,
             )
             .await

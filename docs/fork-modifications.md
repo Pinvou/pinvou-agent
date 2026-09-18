@@ -3,7 +3,6 @@
 ## 已合入维护分支：压缩检查点角色兼容性
 
 - T7：将带类型的 Agent 拓扑检查点放到最近一次真实用户输入之后、该轮 assistant/tool 链之前，包括压缩摘要位于链尾的情况。Chat Completions 发送前把结构化识别的当前格式摘要移到其保留轮次之前，并把该摘要与拓扑检查点合并进这条 user 出站消息；普通用户引用摘要标记不会触发重排。修复范围是压缩流程自身产生的尾部 `tool -> user`，客户报错原文为 `SSE stream request failed: HTTP 400 Bad Request: response_role: "user"`（SSE 载体）；存储历史及工具调用/结果 ID 不变，会话固定的系统前缀也不变。
-- T7 后续批次（2026-09-22/23，#63–#76）：#73 把检查点识别族迁至 `history_recognition` 叶模块（行为不变，识别族与 `compaction/last_round.rs` keep/recompact 过滤的关联已注明）；#65 roster 列举宿主 profiles；restore 载体 provenance 锚定（原 #74 已批准，因服务端分支丢失事故脱绑）由 #76 按同一内容重建并经确认随本批合入（`61cb769be`）。
 - 未覆盖的相邻真实 user：多次压缩后保留的**真实**用户消息之间因中间轮次被裁掉而在出站线上相邻（`retained_user_messages` 默认保留 20k token 的用户消息，测试 `compaction_does_not_merge_unrelated_adjacent_user_messages` 固定 `[user, user(summary+prompt), assistant, tool]`）。本修复刻意不合并真实用户轮次——那会改变模型看到的轮次边界——因此若某路由的模板同样拒绝相邻 `user -> user`，该路由在多次压缩后仍会 400。现有证据只有上面那条尾部形态的报错原文，未做客户服务重放，无法判定模板对相邻**真实** user 的容忍度；该场景需要路由相关的出站测试与修复，属本 PR 范围外。
 - 父仓配套：`pinvou3-app` 的模型服务错误分类把两种载体的 role/模板 400 都归为请求格式卡片且不提示重试——SSE 包装的 `HTTP 400 ... response_role: "user"` 与流式之外的 `Invalid request (400): ...`（`LlmError::InvalidRequest` 的 Display 文本）。卡片文案只说明请求格式被拒，不声称具体线形已修复，因此上述未覆盖场景不会误导用户。分类器按文本形态匹配、刻意保持宽松：含 `server error` 字样的 400 体仍归可重试的 `server` 类，带引号的 JSON-KV 形态 `{"response_role":"user"}` 不命中 `response_role\s*:` 分支而落回未分类。这两处宽度已登记，如需收紧另开改动。
 - 这是可复用的 CodeWhale 修复，已在 `Pinvou/CodeWhale#62` 通过审核并 squash 合入 `pinvou3-clean`（`2ab5e64b5`）；审核证据取自候选分支 head `abadae45d`（其已把维护分支 `92427bd8d` 并入），候选树与 squash 提交树同为 `32880a95`，内容等价。修复前持久化的会话由该修复在会话载入/恢复时自动修正，不再要求新建会话，也没有独立的迁移工具。父仓 gitlink（`7fc36e587`）已包含该提交，公开可达性门禁按过渡期口径验证通过。
@@ -38,17 +37,17 @@
 - 覆盖：`forkguard_skill_index_usage_names_tool_search_activation`、`forkguard_subagent_skill_catalog_uses_tool_search_discovery`、`forkguard_mcp_discovery_skill_conditions_registry_commands`、`forkguard_registry_first_instruction_names_registered_tool_specs`、`forkguard_bundled_skills_cite_no_hidden_or_retired_tool_names`、`forkguard_best_of_n_goal_tool_is_availability_gated`、`forkguard_subagent_context_hint_names_active_tools`（由既有 `subagent_results_are_summarized_before_parent_context_insertion` 反转钉入 forkguard 集）、`forkguard_goal_continuation_names_tool_search_activation`（第五轮）。省略尾行兜底随去重并入 Usage 单点教学，`forkguard_omitted_skills_line_carries_tool_search_fallback` 随之退役，第五轮以 `forkguard_omitted_skills_line_stays_short` 重建守护（防去重静默回潮）；第六轮新增 `forkguard_registry_first_prompt_teaches_start_tool_activation`、`forkguard_worker_record_hints_teach_handle_read_activation`、`forkguard_slash_agent_dispatch_teaches_handle_read_activation`（另为 registry-first、目标续轮、父上下文提示、bare `/goal` 与 web 溢出测试补断言）；第七轮新增 `forkguard_phantom_denylist_covers_canonical_lists`（slash-agent 与 bare `/goal` 两钉补直呼断言）；fork-guard T3 指纹相应为 33 条（新增 34、随去重退役 1）。
 - 搭车披露（已剥离）：PR 首个提交（`c34c3a430`）曾同时携带基线门禁修复（engine/tests.rs clippy `map(Ok)`、CHANGELOG 切片重同步、v0.9.11→v0.9.12 事实文件刷新）。按 CONTRIBUTING 的 changelog 政策（PR 携带 changelog hunk 会被要求剥离）与车道核查（facts/web 检查只在 master/main 触发），候选第四提交已将其整体剥离，移入专门的 [CodeWhale#60](https://github.com/Pinvou/CodeWhale/pull/60)；#56 净 diff 现为纯主题。已知遗留（第四轮订正描述）：`workflows/stopship.workflow.js` 侦察简报仍引用隐藏别名 `File` 的 `search_content` 动作。实证现状比此前登记的更严重：真实子代理会话的执行入口 `execute_from_surface` 对不在该子代理 policy-filtered 目录中的名字直接失败，而 `File` 因 `model_visible=false` 进不了任何模型可见目录，故该调用在活会话中会被目录闸拒绝（explore gate 首步必失效）；「按别名可分派」仅在绕过目录闸的直接 `registry.resolve` 层（如回放测试）成立。它属仓内发布验收 fixture 而非随附模型文本，修复需协议级重做（教 `tool_search`→`grep_files` 两步激活并重测角色响应预算），已按该口径落地并合入为 `92427bd8d`（[CodeWhale#61](https://github.com/Pinvou/CodeWhale/pull/61)）：侦察轮改为三响应（`tool_search` 激活 → `grep_files` 同 alternation 搜索 → verdict），步数与 token 上限不变，并以两条 forkguard 测试分别钉住 scout 表面的两步激活路径（活动 `tool_search` + deferred 可搜索 `grep_files` + 无 `File`）与 fixture 文本只引用目录可见工具名。
 
-## 0. 当前状态（2026-09-23 · r3 已收口：tag `pinvou-v0.9.12-r3` 切在 `61cb769be`，三方相等；r1 基线之上 34 个登记提交）
+## 0. 当前状态（2026-09-17 · r1 基线 + 18 个登记提交 + T8 待合并提交，r2 收口未切 tag）
 
 | 项 | 当前值 |
 |---|---|
 | 上游基线 | tag `v0.9.12`，commit `dcd4c200f72f0c1ffd60d8e7f6850313db879fc5` |
-| 维护分支 | `pinvou3-clean` = `61cb769be5b33abc64f64da4272f5b39a8b6c1fd`（r1 基线 `1fafee7e2` 之上 34 个 squash 合入：#41/#47/#49、2026-09-10/11 遗留 PR 清理批次 #31/#37/#38/#39/#43/#48/#50/#51/#52/#53、2026-09-17 批次 #56/#58/#59/#60/#61、2026-09-18 批次 #55/#57/#62、2026-09-20 批次 #66、2026-09-21 批次 #64/#67、2026-09-22/23 批次 #63/#65/#68/#69/#70/#71/#72/#73 与收口追加 #77/#76（替换原 #74）） |
-| 发布状态 | r3 已收口（2026-09-23）：不可变 tag `pinvou-v0.9.12-r3` 切在合并头 `61cb769be`，父仓 gitlink、维护分支与 tag 三方相等；r2 tag `pinvou-v0.9.12-r2` 仍钉在其收口 `6f780290f`（24 个提交）作为回退点。r3 tag 曾短暂钉在 `ba2a07768f`，在父仓引用前因 #77 Windows 编译修复重切至 `61cb769be`（同日完成，未被任何父仓提交引用） |
+| 维护分支 | `pinvou3-clean` = `92427bd8d706095012b4c0c427e9e14480a1ceea`（r1 基线 `1fafee7e2` 之上 18 个 squash 合入：#41/#47/#49、2026-09-10/11 遗留 PR 清理批次 #31/#37/#38/#39/#43/#48/#50/#51/#52/#53 与 2026-09-17 批次 #56/#58/#59/#60/#61）；其上另有 T8 提交 `d4bbec4b7`（roster 宿主 profiles 呈现），随父仓蜂群二期 PR 一并走 PR 合入维护分支 |
+| 发布状态 | 过渡期（fork-policy 第 0 节豁免）：不可变 tag `pinvou-v0.9.12-r1` 保持 r1 收口状态（15 个提交），父仓 gitlink 指向 `92427bd8d` 之上的 T8 提交、领先 tag 19 个提交，直至下一次 r2 发布收口对齐 |
 | 升级前回退点 | 公开不可变 tag `pinvou-v0.9.5-r13` → `f853f8f1566c57e6be40d5439a222a932aa79ef5`；同 SHA 的本地 `backup/pre-v0.9.12-sync` 仅作便利引用 |
-| 历史组织 | 上游之上 49 个带 DCO sign-off 的提交，归属 4 个长期主题（T1–T4）+ 2 个追加减量主题（T5 会话归档导出、T6 蜂群限流治理）+ 1 个已合入维护分支的主题（T7 压缩检查点角色兼容）；r1 之后 34 个提交全部经 PR squash 合入并过五项必需门禁 |
-| drift | `229 files, +29272/-5352`，净增 23920 行（实测于 `61cb769be` vs 上游 `dcd4c200f`）；r2 为 `190 files, +19135/-2628`（净增 16507），旧 r13 为 `110 files, +10895/-1195` |
-| 守护 | 141 条独立 CodeWhale `forkguard_*` 行为名（guard 下限 64）+ 父仓指纹与行为测试 |
+| 历史组织 | 上游之上 34 个带 DCO sign-off 的提交，归属 4 个长期主题（T1–T4）+ 3 个追加减量主题（T5 会话归档导出、T6 蜂群限流治理、T8 roster 宿主 profiles 呈现）；r1 之后的提交全部经 PR squash 合入并过五项必需门禁 |
+| drift | `167 files, +11650/-1472`，净增 10178 行；r1 为 `94 files, +5022/-944`，旧 r13 为 `110 files, +10895/-1195` |
+| 守护 | 72 条独立 CodeWhale `forkguard_*` 行为名（登记下限 54，其中 6 条钉在 `benchmark-eval-controls` 门控面）+ 父仓指纹与行为测试 |
 | 父仓适配 | v0.9.12 EngineConfig、Agent/Plan 模式、逐轮 reasoning/安全、ExtraTools、owner 事件隔离、Automation v3/v4 数据兼容、rusqlite 0.40.2、Shell 任务来源对账；消费方 PR #396（execpolicy）、#408（轮次取消）、#444（蜂群）、#468（computer-use）、#472（一键导出）依赖本批底座能力 |
 
 ### 轮次绑定取消：宿主 stop 按轮身份分派（父仓适配，本 PR）
@@ -125,19 +124,7 @@
 | `2ab5e64b5` | T7 修复 | 压缩交接保持工具轮边界：chat wire 角色合法性校验（压缩轮保持合法 assistant/tool 序列）、重压缩保真实用户边界、压缩轮跨恢复保留、生成式压缩摘要识别、restored 拓扑合并限域，7 条 forkguard 互钉（#62） |
 | `ce783728c` | T2 修复 | computer-use 插件：zoom 后按裁剪区在父尺度重绑 raster 帧偏移（子栅格坐标不再错配全图）、ssh 下元素状态宿主侧记忆与 `state_wrong_computer` 校验、recording 与 switch_display/left_mouse_down 在 ssh 显式 fail-closed 并给出可操作原因、zoom 在 ssh 可用（远端裁剪源注入+宿主侧几何重绑）（#57） |
 | `7fc36e587` | T6 重构 | DynamicGate 重建于 tokio `Semaphore`（取消授权重派、陈旧等待者跳过不漏槽、缩容低于在途后续再准入），抽取 `is_governor_reported_rate_limit` 谓词并以 forkguard 钉 QuotaExhausted 不进治理窗，删除按成功/限流比例缩门的 ratio 启发式（治理窗缩容只认绝对阈值）、清理失实注释与死分支（#55，#43 评审收尾） |
-| `c4e6caf94` | T2 修复 | Windows PowerShell 执行策略兼容：所有 dispatcher 构造的 PowerShell 调用统一携带进程级 `-ExecutionPolicy Bypass`，10 条行为回归迁入 `forkguard_` 前缀；`-EncodedCommand` 内联重跑当前仅引擎同步内部分支可达、尚无生产调用方，组策略/AppLocker 场景待重试门接入前台执行车道后覆盖（与插件 `.ps1` 车道同类的后续改动）。父仓 Windows Rust 门禁执行两个 PowerShell 回归过滤器并拒绝零匹配，`fork-guard` 以 15 条源码/行为指纹固定该主题（#66） |
-| `8e5988119` | CI 同步 | CNB 镜像在 `CNB_GIT_TOKEN` 未配置的仓库探针跳过而非红检（#64） |
-| `6f780290f` | T1/T2/T3 修复 | agent/search/vision 工具面与运行时对齐，MCP boot 失败/恢复简报区分处理，直呼兜底话术并入 `HANDLE_READ_ACTIVATION_HINT` 共享常量（#67），fork-guard 两条指纹随之更新 |
-| `d349f2537` | T4 修复 | 有限超时治理（21 面审计高影响集）：外部工具审批与 `request_user_input` 人工等待不再 300s 自动拒绝并移出轮墙钟预算，后台空闲判定把运行中工具视为进展，MCP `tools/call` 预算 60s→1800s 且 `read_timeout` 继续约束快速请求，OAuth 回调 300s→900s，审批取消发 `approval.decided{interrupted:true}`（#63） |
-| `c5fadb86d6` | T7 新增 | subagent roster 动作列出宿主呈报的 profile：roster `profile_query` 支持过滤宿主 profiles，修复 `get()` 混同 host id 的去重（#65） |
-| `594860ce9` | T1/T3 修复 | 评估 #67 与上游重叠面并采纳上游四处做法：恢复历史隐藏内部运行时 handoff（保留 MCP system cell 显式例外）、read 结果按预算自限后免二次压缩（metadata 记实际字节为对上游的有意偏离）、行摘要器输出有界 child 路由回执（#68） |
-| `37c658da7` | T1 修复 | MCP boot 流式就绪：pending 连接逐个 settle 即时上架、boot 窗口内 turn catalog `tool_search` 重查、空结果与未配置区分并给 boot-aware 提示，收窄 boot 追加与 pool 诊断（#69） |
-| `7a7f65e8fd` | T3 修复 | fresh-review 残差收口：rlm `handle_read` 配对描述教激活路径（stdout 预览与截断标记同范），registry 上限 pin 列出第四个 eight 侧并加编译期+运行时双钉，submission 回显 forkguard 补齐全部四条自启路径（#71） |
-| `7f04c907d1` | T3 修复 | 祖先链与项目规则来源标签仓库相对化（git root 相对、正斜杠），checkout 移动/大小写改变不再扰动 pinned 系统提示前缀，双 checkout 字节一致回归（#70） |
-| `ba2243edd5` | T2 修复 | computer-use `screenshot(region)` 按裁剪区在返回 raster 上绑定原点：darwin/linux/win32 三后端坐标映射修正，zoom 契约延伸到截图路径（#72） |
-| `ba2a07768f` | T7 重构 | 压缩检查点识别族（摘要标记、provenance 常量、header 谓词、checkpoint 识别）原样迁至 `history_recognition` 叶模块，解除 `compaction`⇄`runtime_handoff` 依赖环，`compaction` re-export 保持路径兼容（#73） |
-| `684a93101c` | T2 修复 | Windows cfg(test) 门控：`tools/process.rs` 的 unix 专属测试 helper（`use super::*` 与 `shell_command`）随唯一 `#[cfg(unix)]` 测试一起门控，修复父仓 windows-rust-test 的 `-D warnings` 编译失败（#77） |
-| `61cb769be` | T7 修复 | restore 载体 provenance 锚定：带戳载体存在时仅锚定/删除真实载体，无戳遗留历史保留松散替换，粘贴摘要不再被误删或窃锚；镜像 wire 侧双序回归测试（#76，替换因服务端分支丢失事故无法合并的 #74） |
+| `d4bbec4b7` | T8 新增 | `agent action=roster` 额外列出宿主呈现的 prompt-only profiles：增量键 `host_profiles`（按 member id 排序、上限 48）、`host_profile_count` 与 `host_profiles_truncated`，`profile=<member_id>` 与 spawn 解析逐字互钉；嵌入方注入的 profiles 首次获得模型可见发现通道（随蜂群二期 PR 合入维护分支） |
 
 所有提交都含 DCO `Signed-off-by`。`b4c02616b` 包含大部分跨主题收口，历史粒度确实不利于 bisect；分支公开进入评审后没有为历史美化 force-push，而是追加带 sign-off 的提交修复评审和发布门禁问题，并用本表、指纹和行为测试弥补审计粒度。不可变 tag 已创建，后续不得重写。
 
@@ -284,7 +271,21 @@
 - `forkguard_rate_limit_governor_pauses_and_time_recovers_after_window_drains`
 - gate cancel-before-dispatch 与多任务 abort/pause 压力测试（限时排空回满容量，丢唤醒/许可泄漏/陈旧条目吞槽均红）
 
-## 10. 父仓适配边界
+## 10. T8 — roster 列出宿主呈现的 prompt-only profiles（追加减量主题）
+
+### 保留内容
+
+- 底座 `agent` 工具的 `action=roster` 在既有内置 `members` 之外，额外列出引擎 fleet 名册中宿主呈现的 prompt-only profiles：新增增量载荷键 `host_profiles`（按 member id 排序，上限 48）、`host_profile_count` 与 `host_profiles_truncated`；内置 `members` 的既有键保持不变。
+- 动机：底座契约本就允许宿主呈现 profile id（嵌入方经 `fleet.profiles` 配置注入），但没有面向模型的发现通道，注入的 profiles 因此不可被模型发现；roster 扩展补上这一通道，模型经 `profile=<member_id>` 直接选定。
+- 配套消费方为父仓蜂群模式二期（一期为父仓 PR #444）；roster 增量载荷为嵌入方通用能力，适合上游化。
+
+### 关键测试
+
+- `agent_roster_lists_host_presented_profiles_spawn_resolves`（roster 列出的 member_id 与 `resolve_spawn_role_with_host_profiles` 接受的 `profile=` 逐字配对）
+- `agent_roster_truncates_host_profiles_at_the_listing_cap`（50 个 profiles 截断到 48，`host_profile_count`/`host_profiles_truncated` 如实上报）
+- `agent_roster_action_and_spawn_resolve_the_same_roles`（无宿主 profiles 时空列表形状稳定，内置 `members` 键不变）
+
+## 11. 父仓适配边界
 
 - `pinvou3-app` 负责产品工具白名单、AppMode 到 approval/trust 的映射、reasoning effort、会话 owner 过滤和定时会话创建。
 - bridge 保留 v0.9.12 的有限轮次/工具预算、read denylist、bubblewrap、MCP OAuth、goal loop 与 telemetry 安全默认值。
@@ -294,9 +295,9 @@
 - 来源范围语义：shell 任务的 `origin_tool_call_id` 是产生它的唯一 root 轮内工具调用；子智能体任务只携带 `owner_agent_id`、来源为空，走无来源对账路径。只读 `multi_tool_use.parallel` 子调用虽共享包装调用的来源，但 shell 工具带 `ExecutesCode`、不能进入只读并行，该共享对 shell 任务不会发生。消费方必须保留 owner 区分，且不得让一个任务抢占已绑定另一任务的卡片。
 - 持锁副作用 await 上界：会话 turn gate 持有期间的四类副作用 await 以 `TURN_GATE_AWAIT_TIMEOUT`（5s）为上界（issue #255）——取消阶段二级联 send、shell 清理 join、回收 shutdown send 与 shell reclaim finalize。超时放弃该次副作用并记日志：被放弃的级联 send 因 tokio mpsc send 的取消安全语义未入队，且所有持锁发送方与下一轮 `SendMessage` 串行于同一把 turn gate，不会迟到误杀经 gate 提交的新轮（引擎自治轮不经 gate 启动、由 forwarder 在 `TurnStarted` 时认领，属既有窗口）；超时的 reclaim finalize 转入后台继续收尾并保守预置 cleanup_failed，不会永久卡死会话的 active scope（rebind 与 delete 重置 registry 可解）；panic 的 finalize 如实判为「未结算」并以一次全新的 detached 收尾重试替代（finalize 幂等），终态绝不因收尾中途死亡而谎报已验证的干净 shell 状态——detached 收尾落定前，会话的下一发可能以 scope 未关瞬态失败、落定后重发即成功（rebind 与 delete 会重置 registry，天然免疫）。清理调用不再经 turn gate 串行，重叠的击杀梯次与后台 worker 清扫一律由 registry 级 cleanup gate 串行——否则并发的 `cleanup_scope_once` 会对 `PendingKill.attempts` 双计数、在任务尚在退出时耗尽 `MAX_KILL_ATTEMPTS` 永久停止重试。回收 shutdown send 超时后，未送达的收尾 op 由不持 gate 的 detached 任务按原 FIFO 顺序重试补投（每个 op 以 60s 为上界）：engine 自持有 tx_op 克隆、entry 摘除不会关闭其 ops 通道，run loop 只能经正常 `Shutdown` 路径退出，不补投则引擎任务存活到进程退出；重试亦超时则放弃并记日志，此时引擎任务滞留是持续卡死本身的结果，delete/evict 已先行返回时，滞留引擎迟到的终态落盘会在已删除的会话目录下留下孤儿文件（无害：会话列表只读顶层 `<id>.json`，不会出现幽灵会话）。仍无界的持锁等待登记在 #525：用户/评测/重发消息的提交 send 与 spawn 失败拆除的 Shutdown send（向已卡死引擎发新消息会重新阻塞 evict/delete）、scheduled 轮的整轮 gate 持有与其无界 send（既有设计），以及 reclaim 终态落盘与 forwarder join（不等待卡死引擎、依赖磁盘健康假设）。行为测试 `forkguard_cancel_holds_turn_lock_boundedly`、`forkguard_bounded_join_reports_panicked_task_as_not_settled`、`forkguard_bounded_join_detaches_task_that_outlives_budget`、`forkguard_reclaim_shutdown_sends_bounded_and_retried`、`forkguard_reclaim_shutdown_retry_gives_up_within_patience`、`forkguard_reclaim_cleanup_failed_preset_clears_on_success`、`forkguard_background_cleanup_sweep_takes_cleanup_gate` 由 fork-guard 第 3 层执行。
 
-## 11. 软上限评估与后续减量
+## 12. 软上限评估与后续减量
 
-当前净增 12759 行，超过 1500 行软上限；`engine.rs`、`turn_loop.rs` 和 `engine/tests.rs` 也超过单文件 200 行提示线。原因是状态机、最终分发安全、“完整专家人设仅进入被选子智能体”的 spawn 边界、bundle Skills 排除 ambient 文件源的权限边界、Windows PowerShell 执行策略兼容及其行为回归，以及评审要求的结果式生命周期/评测回归必须和 v0.9.12 原生 Engine 同步，拆成 app 侧镜像会形成更危险的双状态源。当前 Rust/Clippy/rustdoc 兼容只包含等价重写、`Default` 补全、窄 lint 说明、文档可达性修复和无调用测试 helper 清理，不改变公开函数签名或新增运行语义。
+当前净增 10178 行，超过 1500 行软上限；`engine.rs`、`turn_loop.rs` 和 `engine/tests.rs` 也超过单文件 200 行提示线。原因是状态机、最终分发安全、“完整专家人设仅进入被选子智能体”的 spawn 边界、bundle Skills 排除 ambient 文件源的权限边界，以及评审要求的结果式生命周期/评测回归必须和 v0.9.12 原生 Engine 同步，拆成 app 侧镜像会形成更危险的双状态源。当前 Rust/Clippy/rustdoc 兼容只包含等价重写、`Default` 补全、窄 lint 说明、文档可达性修复和无调用测试 helper 清理，不改变公开函数签名或新增运行语义。
 
 后续减量顺序：
 
@@ -311,10 +312,9 @@
 9. 上游提供完整 static-composer/explicit-skills-root 契约后删除 T3 patch。
 10. 每次上游 release 重新核对已吸收项，不保留兼容壳。
 
-## 12. 发布与回退
+## 13. 发布与回退
 
 - 公开回退点是不可变 tag `pinvou-v0.9.5-r13`；本地 `backup/pre-v0.9.12-sync` 不是发布前提。
-- r3 已收口（2026-09-23）：不可变 `pinvou-v0.9.12-r3` 切在合并头 `61cb769be5b33abc64f64da4272f5b39a8b6c1fd`，`pinvou3-clean` 与父仓 gitlink 与 tag 三方相等；回退点 `pinvou-v0.9.12-r2` 仍钉在其收口 `6f780290f1c35e8a3c5dff86b4f76da142744b0c`；r3 tag 在父仓引用前因 #77 修复自 `ba2a07768f` 重切。
-- r2 已收口：不可变 `pinvou-v0.9.12-r2` 切在合并头 `6f780290f1c35e8a3c5dff86b4f76da142744b0c`，`pinvou3-clean` 与父仓 gitlink 与 tag 三方相等；回退点 `pinvou-v0.9.12-r1` 仍钉在 r1 收口 `1fafee7e26b60a59457a43bce50c63aa2ad9dbaf`。
+- 不可变 `pinvou-v0.9.12-r1` 停在 r1 收口 `1fafee7e26b60a59457a43bce50c63aa2ad9dbaf`；当前处于过渡期：父仓 gitlink 指向 `92427bd8d` 之上的 T8 提交 `d4bbec4b`（领先 tag 19 个 squash 提交），该提交随父仓蜂群二期 PR 经上游 CodeWhale #65 合入后即成为公开维护分支头，下一次 r2 发布收口时在合并头切不可变 tag 并对齐三方（分支/tag/gitlink），以 `scripts/verify-public-submodule.sh` 验证公开可达性（过渡期断言 gitlink=分支头、tag 钉在 r1 收口，r2 收口后恢复三方相等；依据 `docs/fork-policy.md` 第 0 节过渡期豁免）。
 - 发布过程中只为精确 head 的受保护分支更新临时移除无法在该维护分支触发的 required status contexts，完成快进后立即恢复原保护配置；未关闭 force-push 防护，也未重写已发布 tag。
 - 后续发布仍不得降低公开校验或把本地 object 当成发布成功。
