@@ -1329,13 +1329,15 @@
       // The rebind command stamps the sessions whose persisted artifact paths
       // its lanes rebased (rebound, failed AND post-busy ids — review #463
       // round-10 Major 2 + round-B Major 1). The mark carries the rebind
-      // geometry: the artifact reconcile's stale-absolute rebase arm is
-      // gated on it (view healing, freshness window), and the wholesale
-      // artifact saves rebase from→to while the mark exists — a chat turn's
-      // buffer save must not durably revert the backend rebase. A chained
-      // rebind (A→B then B→C) COMPOSES onto the existing mark so buffered
-      // A-era paths map straight onto the final target instead of being
-      // stranded at the intermediate root (review #463 round-C Major 2).
+      // geometry as an ordered SEGMENT CHAIN: the artifact reconcile's
+      // stale-absolute rebase arm is gated on it (view healing, freshness
+      // window), and the wholesale artifact saves rebase along the chain
+      // while the mark exists — a chat turn's buffer save must not durably
+      // revert the backend rebase. Chained rebinds APPEND a segment (A→B
+      // then B→C): the transform resolves in order, so an A-era path maps
+      // A→B→C while a buffer re-vintaged from the durable JSON between the
+      // two rebinds (B-era) still maps B→C — a composed single segment
+      // {A→C} would strand the B-era vintage (review #463 round-D Major 1).
       // Marks are memory-only and never pruned: the save transform is
       // prefix-exact and must outlive the reconcile window for the whole
       // process lifetime (a restart starts from the already-rebased JSON
@@ -1344,14 +1346,18 @@
       if (payload.action === "workspace_rebound" && payload.id && payload.from && payload.to) {
         state.reboundSessionIds = state.reboundSessionIds || {};
         const existing = state.reboundSessionIds[payload.id];
-        if (existing && existing.to === payload.from && existing.from !== payload.from) {
-          existing.to = payload.to;
+        const last = existing && existing.chain && existing.chain[existing.chain.length - 1];
+        if (existing && last && last.to === payload.from) {
+          existing.chain.push({ from: payload.from, to: payload.to });
+          existing.at = Date.now();
+        } else if (existing && last && last.from === payload.from && last.to === payload.to) {
+          // Identical retry of the last segment: refresh the view-heal
+          // window, keep the chain (an older vintage may still be buffered).
           existing.at = Date.now();
         } else {
           state.reboundSessionIds[payload.id] = {
             at: Date.now(),
-            from: payload.from,
-            to: payload.to,
+            chain: [{ from: payload.from, to: payload.to }],
           };
         }
       }

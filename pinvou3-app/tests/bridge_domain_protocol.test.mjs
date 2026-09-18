@@ -166,8 +166,12 @@ const expectedProtocolHashes = {
   // the reconcile rebase gate (same listen surface, no new entries).
   // Recomputed again for round-C: chained rebinds compose onto the existing
   // mark and expired marks are no longer pruned — the save transform's
-  // whole-process-lifetime contract owns the mark's lifetime.
-  sessions: 'c9ea53d6816b0e88d92b5992c9c75a3da0eba0dc8f8434d7d679b011fb6800a4',
+  // whole-process-lifetime contract owns the mark's lifetime. Recomputed
+  // again for round-D: the mark is an ordered SEGMENT CHAIN (append on
+  // chained rebinds, refresh on an identical retry) so every buffer vintage
+  // — including one re-vintaged from the durable JSON mid-chain — resolves
+  // onto the final target.
+  sessions: 'd37f2c22778f6a89aa88360a5aa62368bd0c772df39fcc09ff6b3988a2199f65',
   settings: 'a44929caff59641eb059f28885f1674d4e277412526d31c1d3ddfd75e44d0496',
   updater: '86412d40999a268d3d92dc4fe97e3fe465de08745423be820f38a462d79aaced',
   // Recomputed for the comment-only English translation of the voice bridge

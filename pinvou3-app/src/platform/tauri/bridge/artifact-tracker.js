@@ -172,30 +172,47 @@
     if (!mark || !mark.at) return false;
     return Date.now() - mark.at <= REBIND_RECONCILE_WINDOW_MS;
   }
-  // Rebases absolute artifact paths onto the session's rebind target while a
-  // workspace_rebound mark exists (review #463 round-B Major 1): a chat turn
-  // completed after the rebind wholesale-saves the buffer's artifact list,
-  // which would otherwise durably revert the backend lane's rebase of
-  // SavedSession.artifacts[].storage_path. Prefix-exact on the folded
+  // Rebases absolute artifact paths along the session's rebind SEGMENT CHAIN
+  // while a workspace_rebound mark exists (review #463 round-B Major 1 + the
+  // round-D vintage fix): a chat turn completed after the rebind wholesale-
+  // saves the buffer's artifact list, which would otherwise durably revert
+  // the backend lane's rebase of SavedSession.artifacts[].storage_path.
+  // Segments apply in order — an A-era path resolves A→B→C, a buffer
+  // re-vintaged from the durable JSON between chained rebinds (B-era)
+  // resolves B→C, a C-era path matches nothing. Prefix-exact on the folded
   // normalized form (separators + case folded — Windows bindings are stored
   // case-insensitively, and a case-collision false match requires another
-  // directory differing from `from` by case alone); the suffix keeps the
-  // original casing. Relative paths already resolve against the CURRENT
-  // workspace and are untouched; marks are memory-only, so a restart starts
-  // from the already-rebased JSON with no marks and this becomes a no-op.
+  // directory differing from a segment's from by case alone); the suffix
+  // keeps the original casing. Relative paths already resolve against the
+  // CURRENT workspace and are untouched; marks are memory-only, so a restart
+  // starts from the already-rebased JSON with no marks and this is a no-op.
   function rebaseArtifactPathsForRebind(sid, paths) {
     const marks = state.reboundSessionIds;
     const mark = marks && sid ? marks[sid] : null;
-    if (!mark || !mark.from || !mark.to || !Array.isArray(paths)) return paths;
-    const fromKey = normalizedPath(mark.from).replace(/\/+$/, "").toLowerCase();
-    if (!fromKey) return paths;
-    const toKey = normalizedPath(mark.to).replace(/\/+$/, "");
+    if (!mark || !Array.isArray(mark.chain) || !mark.chain.length || !Array.isArray(paths)) {
+      return paths;
+    }
+    const segments = mark.chain
+      .map(function (segment) {
+        return {
+          fromKey: normalizedPath(segment.from).replace(/\/+$/, "").toLowerCase(),
+          toKey: normalizedPath(segment.to).replace(/\/+$/, ""),
+        };
+      })
+      .filter(function (segment) { return segment.fromKey; });
+    if (!segments.length) return paths;
     return paths.map(function (p) {
       if (typeof p !== "string" || !isAbsPath(p)) return p;
-      const norm = normalizedPath(p);
-      const lower = norm.toLowerCase();
-      if (lower !== fromKey && lower.indexOf(fromKey + "/") !== 0) return p;
-      return toKey + norm.slice(fromKey.length);
+      let norm = normalizedPath(p);
+      let mapped = false;
+      for (let i = 0; i < segments.length; i++) {
+        const lower = norm.toLowerCase();
+        if (lower === segments[i].fromKey || lower.indexOf(segments[i].fromKey + "/") === 0) {
+          norm = segments[i].toKey + norm.slice(segments[i].fromKey.length);
+          mapped = true;
+        }
+      }
+      return mapped ? norm : p;
     });
   }
   // 切换 session 时对账:扫 workspace 磁盘,把实际存在、但跟踪列表里没有的文件补进来。

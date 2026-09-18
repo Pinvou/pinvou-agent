@@ -4643,28 +4643,44 @@
   function normalizedPath(p) {
     return String(p || "").replaceAll('\\', "/");
   }
-  // Rebases absolute artifact paths onto the session's rebind target while a
-  // workspace_rebound mark exists (review #463 round-B Major 1 + round-C
-  // Major 1): the rebind command's events are forwarded to WebUI clients and
-  // these wholesale saves write the same sessions/<id>.json the backend lane
-  // rebased — without the transform a post-rebind turn's buffer save would
-  // durably revert it, with no heal path on this host. Same folded-prefix
+  // Rebases absolute artifact paths along the session's rebind SEGMENT CHAIN
+  // while a workspace_rebound mark exists (review #463 round-B Major 1 +
+  // round-C Major 1 + the round-D vintage fix): the rebind command's events
+  // are forwarded to WebUI clients and these wholesale saves write the same
+  // sessions/<id>.json the backend lane rebased — without the transform a
+  // post-rebind turn's buffer save would durably revert it, with no heal
+  // path on this host. Segments apply in order (A-era → A→B→C, a buffer
+  // re-vintaged between chained rebinds → B→C); same folded-prefix
   // semantics as the tauri bridge's artifact-tracker helper; marks are
   // stamped by the session:list_changed listener below and are memory-only
   // (a restart starts from the already-rebased JSON with no marks).
   function rebaseArtifactPathsForRebind(sid, paths) {
     const marks = state.reboundSessionIds;
     const mark = marks && sid ? marks[sid] : null;
-    if (!mark || !mark.from || !mark.to || !Array.isArray(paths)) return paths;
-    const fromKey = normalizedPath(mark.from).replace(/\/+$/, "").toLowerCase();
-    if (!fromKey) return paths;
-    const toKey = normalizedPath(mark.to).replace(/\/+$/, "");
+    if (!mark || !Array.isArray(mark.chain) || !mark.chain.length || !Array.isArray(paths)) {
+      return paths;
+    }
+    const segments = mark.chain
+      .map(function (segment) {
+        return {
+          fromKey: normalizedPath(segment.from).replace(/\/+$/, "").toLowerCase(),
+          toKey: normalizedPath(segment.to).replace(/\/+$/, ""),
+        };
+      })
+      .filter(function (segment) { return segment.fromKey; });
+    if (!segments.length) return paths;
     return paths.map(function (p) {
       if (typeof p !== "string" || !isAbsPath(p)) return p;
-      const norm = normalizedPath(p);
-      const lower = norm.toLowerCase();
-      if (lower !== fromKey && lower.indexOf(fromKey + "/") !== 0) return p;
-      return toKey + norm.slice(fromKey.length);
+      let norm = normalizedPath(p);
+      let mapped = false;
+      for (let i = 0; i < segments.length; i++) {
+        const lower = norm.toLowerCase();
+        if (lower === segments[i].fromKey || lower.indexOf(segments[i].fromKey + "/") === 0) {
+          norm = segments[i].toKey + norm.slice(segments[i].fromKey.length);
+          mapped = true;
+        }
+      }
+      return mapped ? norm : p;
     });
   }
   function noteArtifactChange(path, event, sessionId) {
@@ -5828,19 +5844,22 @@
     // The rebind command's mark (review #463 round-B Major 1 + round-C
     // Major 1): consumed by rebaseArtifactPathsForRebind so the wholesale
     // artifact saves of THIS host cannot durably revert the backend lane's
-    // rebase while a resident web-client buffer holds stale paths. Same
-    // chain-composition and memory-only semantics as the tauri listener.
+    // rebase while a resident web-client buffer holds stale paths. Segment
+    // chain with append-on-chain / refresh-on-identical-retry semantics,
+    // memory-only and never pruned — same contract as the tauri listener.
     if (payload.action === "workspace_rebound" && payload.id && payload.from && payload.to) {
       state.reboundSessionIds = state.reboundSessionIds || {};
       const existing = state.reboundSessionIds[payload.id];
-      if (existing && existing.to === payload.from && existing.from !== payload.from) {
-        existing.to = payload.to;
+      const last = existing && existing.chain && existing.chain[existing.chain.length - 1];
+      if (existing && last && last.to === payload.from) {
+        existing.chain.push({ from: payload.from, to: payload.to });
+        existing.at = Date.now();
+      } else if (existing && last && last.from === payload.from && last.to === payload.to) {
         existing.at = Date.now();
       } else {
         state.reboundSessionIds[payload.id] = {
           at: Date.now(),
-          from: payload.from,
-          to: payload.to,
+          chain: [{ from: payload.from, to: payload.to }],
         };
       }
     }

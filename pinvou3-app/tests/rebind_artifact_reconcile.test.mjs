@@ -42,13 +42,13 @@ assert.match(
 );
 assert.match(
   sessionsSource,
-  /existing\.to === payload\.from && existing\.from !== payload\.from/,
-  'chained rebinds must compose onto the existing mark, not strand at the intermediate root',
+  /last\.to === payload\.from/,
+  'chained rebinds must APPEND a segment so every buffer vintage resolves',
 );
 assert.match(
   sessionsSource,
-  /state\.reboundSessionIds\[payload\.id\] = \{\r?\n\s*at: Date\.now\(\),\r?\n\s*from: payload\.from,\r?\n\s*to: payload\.to,/,
-  'the mark must carry the timestamp and the from/to geometry',
+  /chain: \[\{ from: payload\.from, to: payload\.to \}\]/,
+  'the mark must carry the timestamp and the segment chain',
 );
 const webSource = read('platform/web/bridge.js');
 assert.match(
@@ -110,7 +110,7 @@ function makeTracker(state, workspaceFiles) {
   return { tracker, invokes };
 }
 
-const MARK = { at: Date.now(), from: '/old/root', to: '/new/root' };
+const MARK = { at: Date.now(), chain: [{ from: '/old/root', to: '/new/root' }] };
 
 // 1. Reconcile: a stale absolute entry from the vanished root rebases onto
 //    the scanned workspace file when the session carries a fresh mark, and
@@ -249,6 +249,39 @@ const MARK = { at: Date.now(), from: '/old/root', to: '/new/root' };
     tracker.rebaseArtifactPathsForRebind('s7', ['/old/root/sub/report.html']),
     ['/new/root/sub/report.html'],
     'an expired mark must still drive the save transform',
+  );
+}
+
+// 8. The segment chain resolves EVERY buffer vintage in order (round-D
+//    Major 1): after chained rebinds A→B→C, an A-era path maps A→B→C, a
+//    buffer re-vintaged from the durable JSON between the two rebinds
+//    (B-era) maps B→C, and a C-era path stays put. A composed single
+//    segment {A→C} would strand the B-era vintage.
+{
+  const state = {
+    reboundSessionIds: {
+      s8: {
+        at: Date.now(),
+        chain: [
+          { from: '/a/root', to: '/b/root' },
+          { from: '/b/root', to: '/c/root' },
+        ],
+      },
+    },
+  };
+  const { tracker } = makeTracker(state, []);
+  assert.deepEqual(
+    tracker.rebaseArtifactPathsForRebind('s8', [
+      '/a/root/report.html',
+      '/b/root/report.html',
+      '/c/root/report.html',
+    ]),
+    [
+      '/c/root/report.html',
+      '/c/root/report.html',
+      '/c/root/report.html',
+    ],
+    'each vintage resolves onto the final target through the ordered chain',
   );
 }
 
