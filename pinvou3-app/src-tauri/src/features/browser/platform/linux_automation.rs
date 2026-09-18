@@ -3604,6 +3604,4 @@ mod tests {
         let endpoint = std::env::var("WEBKIT_INSPECTOR_SERVER").expect("inspector endpoint");
         assert!(endpoint.starts_with("127.0.0.1:"));
     }
-
-    }
 }
