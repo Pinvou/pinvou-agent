@@ -1,13 +1,15 @@
 # CodeWhale Fork 修改清单
 
-## 待上游修复：压缩检查点角色兼容性
+## 已合入维护分支：压缩检查点角色兼容性
 
-- T3：将带类型的 Agent 拓扑检查点放到最近一次真实用户输入之后、该轮 assistant/tool 链之前，包括压缩摘要位于链尾的情况。Chat Completions 发送前仅把结构化识别的当前格式摘要移到保留轮次之前，并把相邻的 user 内容合为一条消息；普通用户引用摘要标记不会触发重排。从而避免严格成对模板拒绝尾部 `tool -> user` 和相邻 `user -> user`；存储历史及工具调用/结果 ID 不变，会话固定的系统前缀也不变。
-- 这是可复用的 Codewhale 修复，正在 `Pinvou/CodeWhale#62` 审核；不包含已持久化会话迁移。当前父仓 gitlink 的公开可达性门禁仍需合入 `pinvou3-clean` 后验证。
-- 回归测试 `forkguard_compaction_topology_preserves_tool_round_boundary` 覆盖空/活跃 Agent 拓扑及重复压缩；`forkguard_compaction_tool_round_has_valid_chat_wire_roles` 校验完整出站角色序列和工具 ID；`compaction_marker_quoted_by_user_keeps_wire_order` 覆盖普通用户引用标记。既有拓扑测试继续覆盖终态和用户仿冒消息。
-- 审核跟进：第二次压缩必须把内部拓扑检查点排除在真实用户轮次、保留预算和覆盖统计之外；Chat Completions 仅合并压缩检查点及恢复后的拓扑检查点，普通恢复完成或等待事件保留独立消息边界；测试覆盖无摘要裁剪、用户粘贴完整摘要头、普通恢复完成事件及损坏历史的边界。
-- 跨轮次回归：已持久化的摘要在后续用户或 assistant 消息追加后会位于历史中间，Chat Completions 每次发送仍需将其放到原保留轮次之前；会话恢复须保持摘要位置，并把恢复后的拓扑检查点合并进同一条 user 出站消息；再次压缩时旧摘要不能截断后续真实问答，需移除旧摘要并完整保留通过覆盖校验的后续轮次。程序生成的摘要增加结构性来源块，真实用户即使在工具结果后粘贴完整摘要头，也不会被错移到旧提问之前。
-- 范围边界：本 PR 不迁移修复前已持久化的会话；受影响的旧会话需新建会话。手动 `/compact` 不能可靠修复：恢复后的旧拓扑检查点仍会留在工具结果之后，摘要请求本身也可能被严格模板拒绝。尚未做客户服务重放验证。压缩流程之外，后台子 Agent 的完成、失败或等待事件，以及 LSP 诊断、步骤预算、子 Agent 协调、输出截断和基准预算提示，都可能在工具结果后产生 `tool -> user`。真实用户的中途补充和中断恢复也可能形成相同序列，但不能在不改变用户意图的前提下重排。这些独立场景需另行设计路由相关的出站测试与修复；CodeWhale 仓库未启用 Issues，暂记录在本清单与 PR 审核讨论中。
+- T7：将带类型的 Agent 拓扑检查点放到最近一次真实用户输入之后、该轮 assistant/tool 链之前，包括压缩摘要位于链尾的情况。Chat Completions 发送前把结构化识别的当前格式摘要移到其保留轮次之前，并把该摘要与拓扑检查点合并进这条 user 出站消息；普通用户引用摘要标记不会触发重排。修复范围是压缩流程自身产生的尾部 `tool -> user`，客户报错原文为 `SSE stream request failed: HTTP 400 Bad Request: response_role: "user"`（SSE 载体）；存储历史及工具调用/结果 ID 不变，会话固定的系统前缀也不变。
+- 未覆盖的相邻真实 user：多次压缩后保留的**真实**用户消息之间因中间轮次被裁掉而在出站线上相邻（`retained_user_messages` 默认保留 20k token 的用户消息，测试 `compaction_does_not_merge_unrelated_adjacent_user_messages` 固定 `[user, user(summary+prompt), assistant, tool]`）。本修复刻意不合并真实用户轮次——那会改变模型看到的轮次边界——因此若某路由的模板同样拒绝相邻 `user -> user`，该路由在多次压缩后仍会 400。现有证据只有上面那条尾部形态的报错原文，未做客户服务重放，无法判定模板对相邻**真实** user 的容忍度；该场景需要路由相关的出站测试与修复，属本 PR 范围外。
+- 父仓配套：`pinvou3-app` 的模型服务错误分类把两种载体的 role/模板 400 都归为请求格式卡片且不提示重试——SSE 包装的 `HTTP 400 ... response_role: "user"` 与流式之外的 `Invalid request (400): ...`（`LlmError::InvalidRequest` 的 Display 文本）。卡片文案只说明请求格式被拒，不声称具体线形已修复，因此上述未覆盖场景不会误导用户。
+- 这是可复用的 CodeWhale 修复，已在 `Pinvou/CodeWhale#62` 通过审核并 squash 合入 `pinvou3-clean`（`2ab5e64b5`；候选 head `abadae45d` 已把维护分支 `92427bd8d` 并入，与 squash 提交内容等价）。修复前持久化的会话由该修复在会话载入/恢复时自动修正，不再要求新建会话，也没有独立的迁移工具。父仓 gitlink（`7fc36e587`）已包含该提交，公开可达性门禁按过渡期口径验证通过。
+- 回归测试 `forkguard_compaction_topology_preserves_tool_round_boundary` 覆盖空/活跃 Agent 拓扑及重复压缩；`forkguard_compaction_tool_round_has_valid_chat_wire_roles` 校验完整出站角色序列和工具 ID；`compaction_marker_quoted_by_user_keeps_wire_order` 覆盖普通用户引用标记；`forkguard_restored_pre_fix_session_has_valid_chat_wire_roles`、`restore_replaces_a_pre_provenance_carrier`、`replay_replaces_a_restored_topology_carrier_instead_of_stacking` 覆盖修复前会话的恢复修复，`restore_keeps_a_user_turn_that_quotes_the_summary_header` 与 `compaction_checkpoint_is_never_the_edit_target` 覆盖恢复层删除边界与 `/edit` 归属。既有拓扑测试继续覆盖终态和用户仿冒消息。
+- 审核跟进 `0d679a5e8`：检查点 carrier 改按结构识别（首块以摘要头开头、其余块为引擎写入的来源块），恢复层把遗留 carrier 移到放置锚点、再次压缩丢弃被取代的已恢复 carrier 而不是叠加第二份；保存期放置、恢复修复与请求期重排现在共用同一套锚点定义（此前三份实现已在「哪些消息算 prompt」上漂移）；0.9.6 之前的旧 header carrier 同样被识别与重排；普通用户粘贴完整摘要头不再在恢复时被静默删除，且在被覆盖统计豁免的路径上也不丢；程序生成的检查点不再被 `/edit` 当成可编辑轮次。
+- 范围边界：本 PR 不额外提供历史迁移入口；修复前持久化的会话在会话载入/恢复时按上述结构识别与放置锚点自动修复。手动 `/compact` 的旧风险（恢复后的拓扑检查点仍留在工具结果之后）随之消失；本 PR 不覆盖已载入内存副本的在线迁移，也不做客户服务重放验证。压缩流程之外，后台子 Agent 的完成、失败或等待事件，以及 LSP 诊断、步骤预算、子 Agent 协调、输出截断和基准预算提示，都可能在工具结果后产生 `tool -> user`。真实用户的中途补充和中断恢复也可能形成相同序列，但不能在不改变用户意图的前提下重排。这些独立场景需另行设计路由相关的出站测试与修复；CodeWhale 仓库未启用 Issues，暂记录在本清单与 PR 审核讨论中。
+- 已知后续项（CodeWhale 侧，非本 PR 阻塞，同样记录于此）：`is_compaction_summary_text` 在 `0d679a5e8` 之后失去最后调用者成为死代码（`pub`，无编译告警）且其文档注释仍描述为在用；`chat.rs` 中退化孤儿 tool-result 分支的注释仍称该请求保留严格模板拒绝的线形，实际会丢弃孤儿并只发一条 user；以精确 header 开头的真实轮次在「无系统提示检查点」的恢复路径、以及 `retained_user_messages` 生成的单块保留副本在下一次压缩时被丢弃这条链路，仍缺回归测试。
 
 > 本文是 Pinvou 对 CodeWhale fork 的单一现状清单。
 > 维护策略见 [`fork-policy.md`](fork-policy.md)，升级证据见 [`codewhale-upgrade-0.9.5-to-0.9.12.md`](codewhale-upgrade-0.9.5-to-0.9.12.md)。
