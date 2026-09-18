@@ -13,7 +13,6 @@
 > §3.3 的运行时工具名发现（现为 manifest 预测）、内置 CLI 连接器归并、统一失效入口
 > （现为各开关命令分别触发刷新）与 §6 的泛化命令面（现为 `set_disabled_connectors` /
 > `set_bundle_visibility` 等；`set_disabled_skills` 已随死代码清扫 PR #539 删除）为**已定方向、未实施**，实施时以本文档为准并更新本注记。
-f8c4a0e0a (fix: address dead-code sweep review findings)
 
 ---
 
