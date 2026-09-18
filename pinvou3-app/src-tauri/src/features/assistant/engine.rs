@@ -1824,6 +1824,9 @@ impl AppEngine {
     pub async fn edit_last_turn(&self, new_message: String) -> Result<()> {
         self.send_turn_op(Op::EditLastTurn {
             new_message,
+            // CodeWhale#58 echoes this token on TurnStarted; the GUI does not
+            // correlate submit-window turns yet, so None (wiring lands with
+            // the turn-bound stop PR).
             submission_id: None,
         })
         .await
@@ -1837,6 +1840,9 @@ impl AppEngine {
         self.send_reserved_turn_op(
             Op::EditLastTurn {
                 new_message,
+                // CodeWhale#58 echoes this token on TurnStarted; the GUI does
+                // not correlate submit-window turns yet, so None (wiring lands
+                // with the turn-bound stop PR).
                 submission_id: None,
             },
             reservation,

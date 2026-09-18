@@ -2528,7 +2528,8 @@ impl Pinvou3Bridge {
             provenance: deepseek_tui::core::ops::UserInputProvenance::ImportedTranscript,
             turn_tool_security: Some(Arc::new(turn_tool_security)),
             // CodeWhale#58 echoes this token on TurnStarted; replay import
-            // does not correlate submit-window turns, so None.
+            // does not correlate submit-window turns, so None (wiring lands
+            // with the turn-bound stop PR).
             submission_id: None,
         })
     }
