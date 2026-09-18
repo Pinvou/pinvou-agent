@@ -181,6 +181,7 @@ fingerprints=(
   "APP|pending 取消按引擎轮身份重放      |pinvou3-app/src-tauri/src/features/assistant/forwarder.rs|approve_handle.cancel_turn("
   "APP|超越自启轮不能消费 pending 重放    |pinvou3-app/src-tauri/src/features/assistant/engine_pool.rs|overtaking_self_started_turn_started_cannot_consume_the_replay"
   "APP|turn gate 持锁副作用 await 上界   |pinvou3-app/src-tauri/src/features/assistant/engine_pool.rs|async fn bounded_while_holding_turn_gate<F>"
+  "APP|turn gate 持锁副作用 await 上界   |pinvou3-app/src-tauri/src/features/assistant/engine_pool.rs|fn forkguard_cancel_holds_turn_lock_boundedly"
   "APP|resolved route 由宿主统一解析     |pinvou3-app/src-tauri/src/features/assistant/platform/bridge.rs|pub fn resolve_runtime_route_for_model("
   "APP|GLM 小写存量配置解析到规范模型    |pinvou3-app/src-tauri/src/features/assistant/platform/bridge.rs|fn forkguard_zai_direct_route_survives_model_casing_mismatch"
   "APP|128K/256K compaction 合约        |pinvou3-app/src-tauri/src/features/assistant/platform/bridge.rs|fn forkguard_compaction_128k_scenarios"
