@@ -38,6 +38,7 @@ use std::io::ErrorKind;
 use std::path::{Path, PathBuf};
 
 use anyhow::{Context, Result};
+use parking_lot::RwLock;
 use serde::{Deserialize, Serialize};
 
 use super::{SessionStore, validate_session_id};
@@ -109,6 +110,31 @@ fn read_workspace_sidecar(path: &Path) -> Option<SessionWorkspaceSidecar> {
     }
 }
 
+/// Cache backfill for [`SessionStore::session_workspace_binding`]
+/// (insert-conditional, review #463 F4): the sidecar was read OUTSIDE the
+/// cache lock, so a concurrent `rebind_workspace_binding` may have moved the
+/// binding (sidecar first, then cache) while the read was in flight. Blindly
+/// inserting the read result afterwards would resurrect the OLD path in the
+/// cache — and the cache wins resolution until restart, silently undoing the
+/// rebind for this process. Under the write lock, an entry that appeared
+/// meanwhile was written sidecar-then-cache and is therefore at least as
+/// fresh as the value read off disk, so it wins; only a still-vacant slot is
+/// backfilled. Residual: none for the rebind race — the rebind's own cache
+/// write either landed before this lock (occupied, kept) or lands after
+/// (overwrites); a failed rebind leaves the cache untouched, matching the
+/// all-or-nothing convention of `bind_session_workspace`.
+pub(super) fn backfill_workspace_binding_cache(
+    cache: &RwLock<HashMap<String, PathBuf>>,
+    id: &str,
+    read: PathBuf,
+) -> PathBuf {
+    let mut cache = cache.write();
+    match cache.entry(id.to_string()) {
+        std::collections::hash_map::Entry::Occupied(entry) => entry.get().clone(),
+        std::collections::hash_map::Entry::Vacant(entry) => entry.insert(read).clone(),
+    }
+}
+
 impl SessionStore {
     fn session_workspace_sidecar_path(&self, id: &str) -> PathBuf {
         self.manager
@@ -171,11 +197,11 @@ impl SessionStore {
             return None;
         }
         let sidecar = read_workspace_sidecar(&self.session_workspace_sidecar_path(id))?;
-        let path = sidecar.path;
-        self.session_workspaces
-            .write()
-            .insert(id.to_string(), path.clone());
-        Some(path)
+        Some(backfill_workspace_binding_cache(
+            &self.session_workspaces,
+            id,
+            sidecar.path,
+        ))
     }
 
     /// Best-effort deletion of the binding sidecar file; NotFound counts as

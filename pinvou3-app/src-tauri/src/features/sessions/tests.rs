@@ -515,6 +515,44 @@ fn rebound_plain_chat_binding_failure_keeps_old_path_and_reports() {
     let _ = std::fs::remove_dir_all(&to);
 }
 
+/// Stale cache backfill must not undo a rebind (review #463 F4):
+/// `session_workspace_binding` reads the sidecar OUTSIDE the cache lock, so a
+/// cache-cold read racing `rebind_workspace_binding` (which writes sidecar
+/// then cache) could otherwise insert the OLD path into the cache after the
+/// rewrite — and the cache wins resolution until restart, silently undoing
+/// the rebind for this process. The backfill is insert-conditional: under the
+/// write lock, an entry that appeared meanwhile is at least as fresh as the
+/// disk-read value and wins.
+#[test]
+fn workspace_binding_backfill_is_insert_conditional() {
+    use super::workspace_bindings::backfill_workspace_binding_cache;
+    let cache = parking_lot::RwLock::new(std::collections::HashMap::new());
+    let old = PathBuf::from("/old/root");
+    let new = PathBuf::from("/new/root");
+
+    // Vacant slot: the cold read backfills exactly what it read off disk.
+    assert_eq!(
+        backfill_workspace_binding_cache(&cache, "s1", old.clone()),
+        old
+    );
+    assert_eq!(cache.read().get("s1"), Some(&old));
+
+    // The rebind landed between the reader's disk read and its backfill
+    // (cache write included): the fresher cache entry wins and the stale read
+    // is dropped instead of resurrecting the old path.
+    cache.write().insert("s1".to_string(), new.clone());
+    assert_eq!(
+        backfill_workspace_binding_cache(&cache, "s1", old.clone()),
+        new,
+        "an entry that appeared under the write lock is fresher than the racing disk read"
+    );
+    assert_eq!(
+        cache.read().get("s1"),
+        Some(&new),
+        "the stale read must never overwrite the rebound value"
+    );
+}
+
 #[test]
 fn delete_session_removes_workspace_binding() {
     let (store, _g) = isolated_store();

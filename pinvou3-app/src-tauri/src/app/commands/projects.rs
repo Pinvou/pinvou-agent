@@ -214,11 +214,14 @@ pub struct RebindWorkspaceReport {
     /// skipped by the idle-gated eviction: their bindings moved, but a turn
     /// may still execute against the old directory. The frontend keeps the
     /// dialog open on a non-empty list (also when nothing failed) and its
-    /// retry feeds these sessions back as explicit eviction candidates, so
-    /// the documented "retry once when idle" remedy is reachable — closing
+    /// retry feeds these ids back as `previous_post_busy_session_ids`, so the
+    /// next run can tell a carryover post-busy session (moved by an earlier
+    /// run, runtime still resident with the old cwd — must be reclaimed and,
+    /// when busy again, honestly reported again) apart from a healthy
+    /// to-lane session (nothing ever moved — must stay unreported). Closing
     /// the dialog instead would leave the instruction with no entry point,
     /// because the unavailable-root badge disappears once the root moved
-    /// (review #463 M2 + round-8 MAJOR-2).
+    /// (review #463 M2 + round-8 MAJOR-2 + F-Major).
     #[serde(default)]
     pub post_busy_session_ids: Vec<String>,
 }
@@ -343,6 +346,12 @@ pub async fn rebind_workspace_root(
     from: PathBuf,
     to: PathBuf,
     confirm_existing: Option<bool>,
+    // Post-busy ids from the dialog's previous run, fed back on its retry
+    // (review #463 F-Major). They never widen the candidate set: only ids
+    // that independently land in this run's to-lane retry population are
+    // honored, so a stale or forged list cannot make an unrelated session an
+    // eviction candidate or a report entry.
+    previous_post_busy_session_ids: Option<Vec<String>>,
     app: AppHandle,
     store: State<'_, ProjectStore>,
     sessions: State<'_, SessionStore>,
@@ -408,10 +417,20 @@ pub async fn rebind_workspace_root(
     // a harmless lazy respawn (rebuilt on the next send). It is NOT the same
     // work the idle reaper does: the reaper never touches the session the user
     // has open, so this tail is the only thing that reclaims a stranded
-    // runtime within a session's own lifetime. They are deliberately NOT
-    // reported as post-busy (review #463 round-8 minor): nothing was
-    // translated for them, so "retry when idle" would be a guaranteed no-op —
-    // the hint is reserved for sessions this run moved.
+    // runtime within a session's own lifetime.
+    //
+    // The two populations must stay apart in the REPORT (round-8 minor 5 +
+    // F-Major): a healthy to-lane session is never reported post-busy —
+    // nothing was translated for it, so "retry when idle" would be a
+    // guaranteed no-op — while a carryover post-busy session of a previous
+    // run (its bindings moved then, its old-cwd runtime is still resident)
+    // MUST be reported again when the eviction refuses, or the dialog would
+    // close claiming full success while the next turn resurrects the
+    // vanished folder. The dialog feeds its previous report's post-busy ids
+    // back as `previous_post_busy_session_ids`; only ids that independently
+    // land in this run's to-lane retry population are honored as carryover
+    // (see carryover_post_busy_candidates), so the fed-back list cannot
+    // widen the eviction or report sets.
     let mut retry_evict_candidates: Vec<String> = Vec::new();
     for (session_id, path) in acp_pool.agents().sessions_under_workspace(&to_display) {
         admit_rebind_retry_candidate(
@@ -431,6 +450,10 @@ pub async fn rebind_workspace_root(
             &mut retry_evict_candidates,
         );
     }
+    let carryover_post_busy = carryover_post_busy_candidates(
+        &retry_evict_candidates,
+        &previous_post_busy_session_ids.unwrap_or_default(),
+    );
 
     // Active-turn fence: if any affected session is running a prompt/turn/
     // scheduled round, reject and let the user retry when idle. Scheduled
@@ -499,6 +522,18 @@ pub async fn rebind_workspace_root(
             final_stale.push(session_id);
         }
     }
+    // Plain-chat lane post-pass fence (review #463 F1 — the asymmetric half
+    // of round-8 minor 8): the codex lane re-scans index records still under
+    // `from` after its rewrite, but nothing re-scanned the plain-chat binding
+    // sidecars. A chat created+bound under `from` DURING this run
+    // (create_session is not serialized by the rebind gate) was absent from
+    // the pre-rewrite snapshot, so the loop above never rewrote it and the
+    // run would report full success while its binding still points at the
+    // vanished folder — its next turn would recreate it. Folding the re-scan
+    // hits into final_stale routes them through the shared fence below:
+    // reported as failed (hence also eviction candidates), and a rerun
+    // converges them via the same on-disk scan.
+    plain_lane_fence_rescan(&sessions, &from, &mut final_stale);
     let mut rebound_session_ids = Vec::new();
     let mut failed_session_ids = Vec::new();
     for (session_id, bound_path) in &affected {
@@ -614,13 +649,7 @@ pub async fn rebind_workspace_root(
     // reported — otherwise the run claims success while an index record still
     // sits under `from` and a boot restore can resurrect the old path. Done
     // before the reclaim tail so these sessions are eviction candidates too.
-    for session_id in &final_stale {
-        if !affected.iter().any(|(sid, _)| sid == session_id)
-            && !failed_session_ids.contains(session_id)
-        {
-            failed_session_ids.push(session_id.clone());
-        }
-    }
+    fold_unreported_fence_hits(&final_stale, &affected, &mut failed_session_ids);
 
     emit_project_event(&app, "projects:list_changed", "rebound");
     for session_id in &rebound_session_ids {
@@ -674,32 +703,24 @@ pub async fn rebind_workspace_root(
         if !acp_idle || !engine_idle {
             // A turn started between the recheck and the eviction and the
             // pools refused to kill it. Surface the session so the user can
-            // retry once it is idle again — but only when this run actually
-            // translated something for it (review #463 round-8 minor): a pure
-            // retry candidate that needed no metadata sync is either a
-            // healthy session that always lived under `to` or a session
-            // already converged by an earlier run, and for both "retry when
-            // idle" would be a guaranteed no-op. Their reclaim stays
-            // best-effort here and falls back to the idle reaper.
+            // retry once it is idle again — but only when something was
+            // actually translated for it (review #463 round-8 minor +
+            // F-Major): THIS run's rebound/failed sessions, or a carryover
+            // post-busy session a previous run moved (fed back by the
+            // dialog's retry — its old-cwd runtime is still resident, so an
+            // unreported refusal would close the dialog on a false full
+            // success and the next turn would resurrect the vanished
+            // folder). A healthy to-lane session needs nothing, so "retry
+            // when idle" would be a guaranteed no-op and it stays
+            // unreported; its reclaim stays best-effort here and falls back
+            // to the idle reaper.
             let touched_this_run = rebound_session_ids.iter().any(|sid| sid == &session_id)
                 || failed_session_ids.iter().any(|sid| sid == &session_id);
-            if touched_this_run && !post_busy_session_ids.contains(&session_id) {
+            if (touched_this_run || carryover_post_busy.contains(&session_id))
+                && !post_busy_session_ids.contains(&session_id)
+            {
                 post_busy_session_ids.push(session_id);
             }
-        }
-    }
-    // Post-pass fence hits that the pre-rewrite snapshot never saw (review
-    // #463 round-8 MINOR-1): a session created under `from` by a concurrent
-    // writer during this run is not in `affected`, so the metadata loop never
-    // visited it and its `sidecar_final_stale` entry would be dropped. It has
-    // no metadata to replay here, but it must still be reported — otherwise
-    // the run claims success while an index record still sits under `from`
-    // and a boot restore can resurrect the old path.
-    for session_id in &final_stale {
-        if !affected.iter().any(|(sid, _)| sid == session_id)
-            && !failed_session_ids.contains(session_id)
-        {
-            failed_session_ids.push(session_id.clone());
         }
     }
     Ok(RebindWorkspaceReport {
@@ -759,6 +780,72 @@ fn collect_eviction_candidates(
         }
     }
     candidates
+}
+
+/// Carryover post-busy sessions of a previous run (review #463 F-Major): the
+/// dialog's retry feeds its previous report's post-busy ids back, and only
+/// the intersection with THIS run's to-lane retry population is honored.
+/// Honoring the raw list would let a stale or forged id mark an unrelated
+/// session as reportable; intersecting keeps the fed-back list purely
+/// reclassifying — every honored id is a session this run would have
+/// reclaimed anyway, so the eviction set never widens. A fed-back id whose
+/// metadata drifted out of sync lands in `affected` instead of the retry
+/// population and is handled by the metadata loop, so it drops out of the
+/// carryover set deliberately (it is no longer "already converged").
+fn carryover_post_busy_candidates(
+    retry_evict_candidates: &[String],
+    previous_post_busy_session_ids: &[String],
+) -> std::collections::HashSet<String> {
+    let fed_back: std::collections::HashSet<&str> = previous_post_busy_session_ids
+        .iter()
+        .map(String::as_str)
+        .collect();
+    retry_evict_candidates
+        .iter()
+        .filter(|session_id| fed_back.contains(session_id.as_str()))
+        .cloned()
+        .collect()
+}
+
+/// Folds post-pass fence hits into the failed list (review #463 round-8
+/// MINOR-1 + F1): sessions still under `from` after the rewrite that the
+/// pre-rewrite snapshot never saw (created by a concurrent writer during the
+/// run) have no metadata replayed by this run, but they must be reported —
+/// otherwise the run claims success while a binding still sits under `from`
+/// and the next turn (or a boot restore) resurrects the old path. Already
+/// listed sessions (in `affected`, classified by the metadata loop, or
+/// already failed) are not duplicated.
+fn fold_unreported_fence_hits(
+    final_stale: &[String],
+    affected: &[(String, PathBuf)],
+    failed_session_ids: &mut Vec<String>,
+) {
+    for session_id in final_stale {
+        if !affected.iter().any(|(sid, _)| sid == session_id)
+            && !failed_session_ids.contains(session_id)
+        {
+            failed_session_ids.push(session_id.clone());
+        }
+    }
+}
+
+/// Plain-chat lane post-pass fence (review #463 F1 — the asymmetric half of
+/// round-8 minor 8): the codex lane re-scans its index records still under
+/// `from` after the rewrite; this re-scan does the same for the plain-chat
+/// binding sidecars. A chat created+bound under `from` during the run
+/// (create_session is not serialized by the rebind gate) was not in the
+/// pre-rewrite snapshot, so the rewrite loop never visited it — folding the
+/// hit into `final_stale` lets the shared fence report it as failed (and the
+/// eviction tail reclaim it), and a rerun converges it via the same scan.
+/// A binding whose rewrite succeeded no longer matches `from` (sidecar and
+/// cache both moved), and a failed rewrite is already listed, so the
+/// contains-guard keeps this a pure addition of NEW hits.
+fn plain_lane_fence_rescan(sessions: &SessionStore, from: &Path, final_stale: &mut Vec<String>) {
+    for (session_id, _) in sessions.workspace_bindings_under(from) {
+        if !final_stale.contains(&session_id) {
+            final_stale.push(session_id);
+        }
+    }
 }
 
 #[cfg(test)]
@@ -841,6 +928,134 @@ mod tests {
             vec!["s8".to_string()],
             "a session whose metadata write failed is still reclaimed: its binding lanes may have moved"
         );
+    }
+
+    #[test]
+    fn carryover_candidates_honor_only_the_to_lane_retry_population() {
+        // review #463 F-Major: the dialog's retry feeds its previous report's
+        // post-busy ids back, and only ids that independently land in THIS
+        // run's to-lane retry population are honored as carryover. The
+        // fed-back list reclassifies reporting; it must never widen the
+        // eviction or report sets.
+        let retry = vec!["carryover".to_string(), "healthy".to_string()];
+        let fed_back = vec!["carryover".to_string(), "forged".to_string()];
+        let carryover = carryover_post_busy_candidates(&retry, &fed_back);
+        assert!(
+            carryover.contains("carryover"),
+            "a fed-back id in the retry population is a carryover post-busy session"
+        );
+        assert!(
+            !carryover.contains("healthy"),
+            "a healthy to-lane session stays unreported even though it is an eviction candidate"
+        );
+        assert!(
+            !carryover.contains("forged"),
+            "a fed-back id outside the retry population is ignored — the list cannot widen the sets"
+        );
+        assert!(
+            carryover_post_busy_candidates(&retry, &[]).is_empty(),
+            "a first run (nothing fed back) has no carryover population"
+        );
+    }
+
+    #[test]
+    fn fold_unreported_fence_hits_reports_only_new_unaffected_hits() {
+        // review #463 round-8 MINOR-1 + F1: a fence hit the pre-rewrite
+        // snapshot never saw must be reported as failed; sessions already
+        // classified by the metadata loop (in `affected`) or already failed
+        // must not be duplicated.
+        let affected = vec![("seen".to_string(), PathBuf::from("/from/seen"))];
+        let mut failed = vec!["already-failed".to_string()];
+        let final_stale = vec![
+            "seen".to_string(),
+            "already-failed".to_string(),
+            "concurrent".to_string(),
+        ];
+        fold_unreported_fence_hits(&final_stale, &affected, &mut failed);
+        assert_eq!(
+            failed,
+            vec!["already-failed".to_string(), "concurrent".to_string()],
+            "only the fence hit the snapshot never saw is appended"
+        );
+        // Idempotent: a second fold (the dead duplicate loop this helper
+        // replaced, review #463 N1) can never push anything.
+        fold_unreported_fence_hits(&final_stale, &affected, &mut failed);
+        assert_eq!(failed.len(), 2);
+    }
+
+    /// Isolated SessionStore for the plain-lane fence test, borrowing the
+    /// process-wide env lock (same idiom as features::sessions::tests).
+    fn isolated_session_store() -> (SessionStore, std::sync::MutexGuard<'static, ()>) {
+        let guard = crate::platform::paths::tests::ENV_LOCK
+            .lock()
+            .unwrap_or_else(|p| p.into_inner());
+        let tmp = std::env::temp_dir().join(format!(
+            "pinvou3-rebind-fence-test-{}",
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .map(|d| d.as_nanos())
+                .unwrap_or(0)
+        ));
+        // SAFETY: platform::paths::tests::ENV_LOCK held; env writes serialized.
+        unsafe { std::env::set_var("PINVOU3_HOME", &tmp) };
+        let store = SessionStore::boot_with_scheduled_root(tmp.join("scheduled")).expect("boot");
+        (store, guard)
+    }
+
+    #[test]
+    fn plain_lane_fence_rescan_reports_chat_created_during_the_run() {
+        // review #463 F1 regression: a chat created+bound under `from` DURING
+        // the rebind run (create_session is not serialized by the rebind
+        // gate) was absent from the pre-rewrite snapshot, so the rewrite loop
+        // never visited it; without the re-scan the run reported full success
+        // while its binding still pointed at the vanished folder.
+        let (store, _g) = isolated_session_store();
+        let from =
+            std::env::temp_dir().join(format!("pinvou3-rebind-fence-from-{}", std::process::id()));
+        let to =
+            std::env::temp_dir().join(format!("pinvou3-rebind-fence-to-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&from);
+        let _ = std::fs::remove_dir_all(&to);
+        std::fs::create_dir_all(from.join("nested")).expect("create from dir");
+        std::fs::create_dir_all(&to).expect("create to dir");
+
+        // Pre-rewrite snapshot population: chat A is bound under `from` and
+        // the rewrite loop moves it (sidecar + cache) onto `to`.
+        let chat_a = store
+            .create_new("/model".into(), None, std::env::temp_dir())
+            .expect("create chat A");
+        store
+            .bind_session_workspace(&chat_a.metadata.id, from.join("nested"))
+            .expect("bind A under from");
+        let affected = vec![(chat_a.metadata.id.clone(), from.join("nested"))];
+        assert!(store.rebind_workspace_binding(&chat_a.metadata.id, to.join("nested")));
+
+        // The concurrent writer: chat B is created+bound under `from` while
+        // the run is in flight — the snapshot never saw it.
+        let chat_b = store
+            .create_new("/model".into(), None, std::env::temp_dir())
+            .expect("create chat B");
+        store
+            .bind_session_workspace(&chat_b.metadata.id, from.join("nested"))
+            .expect("bind B under from");
+
+        let mut final_stale = Vec::new();
+        plain_lane_fence_rescan(&store, &from, &mut final_stale);
+        assert_eq!(
+            final_stale,
+            vec![chat_b.metadata.id.clone()],
+            "the re-scan finds exactly the binding created during the run; the rewritten one no longer matches"
+        );
+        let mut failed_session_ids = Vec::new();
+        fold_unreported_fence_hits(&final_stale, &affected, &mut failed_session_ids);
+        assert_eq!(
+            failed_session_ids,
+            vec![chat_b.metadata.id.clone()],
+            "the fence hit is reported as failed, so the run cannot claim full success"
+        );
+
+        let _ = std::fs::remove_dir_all(&from);
+        let _ = std::fs::remove_dir_all(&to);
     }
 
     #[test]

@@ -55,6 +55,13 @@ browser-macos-preview = []
 tauri-build = { version = "2.6.1", features = [] }
 cc = "1"
 
+[dev-dependencies]
+# test-util is unified onto the normal tokio build for test targets only:
+# engine_pool's rebind gate-timeout regression drives tokio::time with a
+# paused clock (#[tokio::test(start_paused = true)]) instead of sleeping the
+# real 2s REBIND_EVICT_GATE_TIMEOUT.
+tokio = { version = "1.49", features = ["test-util"] }
+
 [dependencies]
 pinvou-knowledge = { path = "../../pinvou-knowledge", default-features = false, features = ["client", "discovery"] }
 # workflow 整目录内嵌(含二进制),include_str 撑不住

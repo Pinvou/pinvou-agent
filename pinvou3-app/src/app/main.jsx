@@ -2662,9 +2662,18 @@ const NAV_PREFETCH = {
         // Clear the previous attempt's inline error/busy hint so it does
         // not stack with this run's result.
         setRebindDraft(prev => prev && { ...prev, error: null, busySessionIds: null });
+        // Feed the previous report's post-busy ids back (review #463
+        // F-Major): a session an earlier run moved and reported post-busy is
+        // routed by the backend into the same to-lane retry population as a
+        // healthy session, so without the feed-back a busy-refused carryover
+        // session would appear in NO report field and the dialog would close
+        // claiming full success while its old-cwd runtime stays resident.
+        // The backend honors only the intersection with its own retry
+        // population, so this list can never widen the eviction set.
+        const previousPostBusySessionIds = (rebindDraft.partial && rebindDraft.partial.postBusyIds) || [];
         try {
           const report = await bridge.projects.rebindWorkspaceRoot(
-            rebindDraft.from, rebindDraft.to, confirmExisting);
+            rebindDraft.from, rebindDraft.to, confirmExisting, previousPostBusySessionIds);
           const rebound = (report && report.rebound_session_ids) ? report.rebound_session_ids.length : 0;
           const failed = (report && report.failed_session_ids) ? report.failed_session_ids.length : 0;
           const postBusy = (report && report.post_busy_session_ids) ? report.post_busy_session_ids.length : 0;
@@ -2675,7 +2684,8 @@ const NAV_PREFETCH = {
           // point, because the unavailable-root badge disappears once the root
           // has moved). Rerunning the backend with the same from/to converges
           // (the snapshot includes unsynced sessions; already-rebound ones are
-          // no-ops).
+          // no-ops). The post-busy ids are kept for the next retry's
+          // feed-back (F-Major).
           if (failed > 0 || postBusy > 0) {
             setRebindDraft(prev => prev && {
               ...prev,
@@ -2684,6 +2694,7 @@ const NAV_PREFETCH = {
                 failed,
                 failedIds: (report && report.failed_session_ids) || [],
                 postBusy,
+                postBusyIds: (report && report.post_busy_session_ids) || [],
               },
             });
           } else {

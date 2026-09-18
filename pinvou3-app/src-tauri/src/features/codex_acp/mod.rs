@@ -35,7 +35,7 @@ use std::io::{BufRead, Read};
 use std::path::{Path, PathBuf};
 use std::process::Stdio;
 use std::sync::Arc;
-use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU64, AtomicUsize, Ordering};
 use std::time::{Duration, Instant};
 
 use agent_client_protocol::schema::ProtocolVersion;
@@ -175,20 +175,38 @@ const REBIND_EVICT_IDLE_EPSILON: Duration = Duration::from_secs(1);
 /// busy to [`rebind_evictable`]; Drop releases it on every path, including the
 /// early returns and panics inside the guarded section, so a failed send can
 /// never leave the runtime permanently un-evictable.
+///
+/// The marker is a COUNT, not a flag (review #463 F2): two senders can hold
+/// the window on the same runtime concurrently (both resolved it via
+/// `get_or_spawn`, both still preparing). With a plain bool, the first
+/// sender's admit+drop cleared pending while the second was still in the
+/// unbounded prepare — after the first turn completed and the idle epsilon
+/// passed, a rebind eviction could kill the runtime under the remaining
+/// sender. fetch_add on install / saturating fetch_sub on Drop keeps the
+/// runtime observably pending until the LAST guard releases.
 struct PromptAdmissionGuard<'a> {
-    pending: &'a AtomicBool,
+    pending: &'a AtomicUsize,
 }
 
 impl<'a> PromptAdmissionGuard<'a> {
-    fn new(pending: &'a AtomicBool) -> Self {
-        pending.store(true, Ordering::Release);
+    fn new(pending: &'a AtomicUsize) -> Self {
+        pending.fetch_add(1, Ordering::AcqRel);
         Self { pending }
     }
 }
 
 impl Drop for PromptAdmissionGuard<'_> {
     fn drop(&mut self) {
-        self.pending.store(false, Ordering::Release);
+        // Paired with the fetch_add in `new`; saturating_sub guards against
+        // underflow if a future change ever released a guard twice — a count
+        // stuck above zero merely keeps the runtime un-evictable (the
+        // conservative direction), while a wrap to usize::MAX would corrupt
+        // the count for every later guard pair.
+        let _ = self
+            .pending
+            .fetch_update(Ordering::AcqRel, Ordering::Acquire, |count| {
+                Some(count.saturating_sub(1))
+            });
     }
 }
 
@@ -719,10 +737,11 @@ struct AcpSession {
     bridge: EventBridge,
     busy: AtomicBool,
     configuring: AtomicBool,
-    /// Set for the whole window between resolving this runtime for a prompt
-    /// and admitting the turn, so a rebind eviction cannot shut it down under
-    /// the sender (see [`PromptAdmissionGuard`]).
-    prompt_pending: AtomicBool,
+    /// Count of senders between resolving this runtime for a prompt and
+    /// admitting the turn, so a rebind eviction cannot shut it down under any
+    /// of them (see [`PromptAdmissionGuard`] — counter, not flag, because
+    /// concurrent senders share the runtime).
+    prompt_pending: AtomicUsize,
     models: Vec<CodexAcpModel>,
     current_model: parking_lot::RwLock<Option<String>>,
     modes: parking_lot::RwLock<Option<SessionModeState>>,
@@ -3224,8 +3243,14 @@ impl AcpPool {
         else {
             return false;
         };
-        self.cancel_pending_permissions(session_id).await;
-        self.cancel_pending_elicitations(session_id).await;
+        // Same F3 contract as `evict_if_idle_for_rebind`: the take already
+        // removed the runtime from the map, so the pending-request cancels
+        // must go through the reclaimed runtime's own bridge — a map lookup
+        // would resolve None and silently skip the resolved events.
+        self.cancel_pending_permissions_with_bridge(session_id, Some(&runtime.bridge))
+            .await;
+        self.cancel_pending_elicitations_with_bridge(session_id, Some(&runtime.bridge))
+            .await;
         runtime.shutdown().await;
         true
     }
@@ -3239,8 +3264,11 @@ impl AcpPool {
     /// admitted the turn (`prompt_pending`). There is no idle-duration gate
     /// beyond the small epsilon, and no active-session gate, because a rebound
     /// runtime must be rebuilt in the new directory even when recently used.
-    /// A genuinely reclaimed runtime goes through the `evict` cleanup (pending
-    /// prompts answered first, metadata-backend hint dropped).
+    /// A genuinely reclaimed runtime goes through the same cleanup as `evict`
+    /// (pending prompts answered first, metadata-backend hint dropped), but
+    /// with the reclaimed runtime's own bridge: the take already removed it
+    /// from the map, so the map-based cancel lookup would resolve no bridge
+    /// and silently skip the resolved events (review #463 F3).
     ///
     /// Returns false for a busy / configuring / admission-pending resident
     /// runtime — the command layer reports it as post-busy, so the user keeps
@@ -3251,7 +3279,7 @@ impl AcpPool {
             rebind_evictable(
                 runtime.busy.load(Ordering::Acquire),
                 runtime.configuring.load(Ordering::Acquire),
-                runtime.prompt_pending.load(Ordering::Acquire),
+                runtime.prompt_pending.load(Ordering::Acquire) > 0,
                 runtime.idle_for(),
             )
         })
@@ -3267,13 +3295,18 @@ impl AcpPool {
             return matches!(taken, RebindEvictTake::NoRuntime);
         };
         self.acp_metadata_backends.write().remove(session_id);
-        // Cancel before shutdown, mirroring `evict` (review #463 round-8
-        // minor): resolving a pending request against an already shut-down
-        // runtime leaves the bridge unavailable. Masked today — a pending
+        // Cancel before shutdown, through the RECLAIMED runtime's own bridge
+        // (review #463 F3): the take already removed the session from the map,
+        // so the plain `cancel_pending_permissions` lookup would resolve
+        // bridge=None and the frontend `permission_resolved` /
+        // `elicitation_resolved` events would be silently skipped — unlike
+        // `evict`, which cancels before removal. Masked today — a pending
         // request implies busy implies Busy — but the order is the invariant,
         // not the masking.
-        self.cancel_pending_permissions(session_id).await;
-        self.cancel_pending_elicitations(session_id).await;
+        self.cancel_pending_permissions_with_bridge(session_id, Some(&runtime.bridge))
+            .await;
+        self.cancel_pending_elicitations_with_bridge(session_id, Some(&runtime.bridge))
+            .await;
         runtime.shutdown().await;
         true
     }
@@ -4099,7 +4132,7 @@ impl AcpPool {
             bridge: event_bridge,
             busy: AtomicBool::new(false),
             configuring: AtomicBool::new(false),
-            prompt_pending: AtomicBool::new(false),
+            prompt_pending: AtomicUsize::new(0),
             models,
             current_model: parking_lot::RwLock::new(current_model_id),
             modes: parking_lot::RwLock::new(mode_state),
@@ -4610,7 +4643,7 @@ mod tests {
     struct FakeRebindEntry {
         busy: AtomicBool,
         configuring: AtomicBool,
-        prompt_pending: AtomicBool,
+        prompt_pending: AtomicUsize,
         last_activity: parking_lot::Mutex<Instant>,
     }
 
@@ -4619,7 +4652,7 @@ mod tests {
             Self {
                 busy: AtomicBool::new(false),
                 configuring: AtomicBool::new(false),
-                prompt_pending: AtomicBool::new(false),
+                prompt_pending: AtomicUsize::new(0),
                 last_activity: parking_lot::Mutex::new(Instant::now() - Duration::from_secs(60)),
             }
         }
@@ -4630,7 +4663,7 @@ mod tests {
             Self {
                 busy: AtomicBool::new(false),
                 configuring: AtomicBool::new(false),
-                prompt_pending: AtomicBool::new(true),
+                prompt_pending: AtomicUsize::new(1),
                 last_activity: parking_lot::Mutex::new(Instant::now()),
             }
         }
@@ -4640,7 +4673,7 @@ mod tests {
             rebind_evictable(
                 self.busy.load(Ordering::Acquire),
                 self.configuring.load(Ordering::Acquire),
-                self.prompt_pending.load(Ordering::Acquire),
+                self.prompt_pending.load(Ordering::Acquire) > 0,
                 self.last_activity.lock().elapsed(),
             )
         }
@@ -4677,24 +4710,63 @@ mod tests {
 
     #[test]
     fn prompt_admission_guard_marks_and_releases() {
-        let pending = AtomicBool::new(false);
+        let pending = AtomicUsize::new(0);
         {
             let _guard = PromptAdmissionGuard::new(&pending);
             assert!(
-                pending.load(Ordering::Acquire),
+                pending.load(Ordering::Acquire) > 0,
                 "the guarded window must be observable to rebind eviction"
             );
             assert!(!rebind_evictable(
                 false,
                 false,
-                pending.load(Ordering::Acquire),
+                pending.load(Ordering::Acquire) > 0,
                 Duration::from_secs(60)
             ));
         }
-        assert!(
-            !pending.load(Ordering::Acquire),
-            "Drop must release the flag on every path, so a failed send cannot wedge eviction"
+        assert_eq!(
+            pending.load(Ordering::Acquire),
+            0,
+            "Drop must release the count on every path, so a failed send cannot wedge eviction"
         );
+    }
+
+    #[test]
+    fn prompt_admission_guard_counts_concurrent_senders() {
+        // review #463 F2 regression: two senders can hold the admission
+        // window on the SAME runtime (both resolved it via get_or_spawn, both
+        // still in the unbounded prepare). A plain bool let the first
+        // sender's admit+drop clear pending while the second was still
+        // preparing — after that turn completed and the idle epsilon passed,
+        // a rebind eviction could kill the runtime under the remaining
+        // sender (M1's failure signature via a new interleaving). Counter
+        // semantics keep the runtime observably pending until the LAST guard
+        // releases.
+        let pending = AtomicUsize::new(0);
+        let idle = Duration::from_secs(60);
+        {
+            let _first = PromptAdmissionGuard::new(&pending);
+            {
+                let _second = PromptAdmissionGuard::new(&pending);
+                assert_eq!(pending.load(Ordering::Acquire), 2);
+            }
+            assert_eq!(
+                pending.load(Ordering::Acquire),
+                1,
+                "the first surviving guard must keep the count above zero"
+            );
+            assert!(
+                !rebind_evictable(false, false, pending.load(Ordering::Acquire) > 0, idle),
+                "a runtime with a surviving admission guard must stay un-evictable"
+            );
+        }
+        assert_eq!(pending.load(Ordering::Acquire), 0);
+        assert!(rebind_evictable(
+            false,
+            false,
+            pending.load(Ordering::Acquire) > 0,
+            idle
+        ));
     }
 
     #[tokio::test]
