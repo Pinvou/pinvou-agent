@@ -18,17 +18,17 @@
 - All shell-specific guidance now lives in named constants, including cmd, fish, and the shared fallback. A before/after comparison across 14 shell cases confirmed identical output after constant extraction.
 - Following the 40-call curl ablation, remove the tool-level curl alias reminder only. Preserve the other PowerShell guidance and application instructions used in that experiment; both arms achieved 19/20 correct executions with no shell mismatch errors.
 
-## 0. 当前状态（2026-09-18 · r1 基线 + 20 个登记提交，其中 2 个随本 PR 候选，r2 收口未切 tag）
+## 0. 当前状态（2026-09-18 · r1 基线 + 21 个登记提交，其中 3 个随本 PR 候选，r2 收口未切 tag）
 
 | 项 | 当前值 |
 |---|---|
 | 上游基线 | tag `v0.9.12`，commit `dcd4c200f72f0c1ffd60d8e7f6850313db879fc5` |
 | 维护分支 | `pinvou3-clean` = `92427bd8d706095012b4c0c427e9e14480a1ceea`（r1 基线 `1fafee7e2` 之上 18 个 squash 合入：#41/#47/#49、2026-09-10/11 遗留 PR 清理批次 #31/#37/#38/#39/#43/#48/#50/#51/#52/#53 与 2026-09-17 批次 #56/#58/#59/#60/#61） |
-| 候选 gitlink | 本 PR 候选 head `fc91e31df6244312fd6adb568c5cc0fba72cf80c`（维护分支 `92427bd8d` 之上 2 个提交：T2 Windows PowerShell 执行策略兼容与其审核跟进；上游之上 35 个、r1 收口之上 20 个），合入维护分支后回归维护分支口径 |
-| 发布状态 | 过渡期（fork-policy 第 0 节豁免）：不可变 tag `pinvou-v0.9.12-r1` 保持 r1 收口状态（15 个提交），维护分支在 `92427bd8d`（领先 tag 18 个提交），本 PR 的父仓 gitlink 指向候选 `fc91e31df`、领先 tag 20 个提交，直至下一次 r2 发布收口对齐 |
+| 候选 gitlink | 本 PR 候选 head `b81de2844ce2febd00eb9d0f4154af4e5cb4d7d0`（维护分支 `92427bd8d` 之上 3 个提交：T2 Windows PowerShell 执行策略兼容及两轮审核跟进；上游之上 36 个、r1 收口之上 21 个），合入维护分支后回归维护分支口径 |
+| 发布状态 | 过渡期（fork-policy 第 0 节豁免）：不可变 tag `pinvou-v0.9.12-r1` 保持 r1 收口状态（15 个提交），维护分支在 `92427bd8d`（领先 tag 18 个提交），本 PR 的父仓 gitlink 指向候选 `b81de2844`、领先 tag 21 个提交，直至下一次 r2 发布收口对齐 |
 | 升级前回退点 | 公开不可变 tag `pinvou-v0.9.5-r13` → `f853f8f1566c57e6be40d5439a222a932aa79ef5`；同 SHA 的本地 `backup/pre-v0.9.12-sync` 仅作便利引用 |
-| 历史组织 | 上游之上 35 个带 DCO sign-off 的提交，归属 4 个长期主题（T1–T4）+ 2 个追加减量主题（T5 会话归档导出、T6 蜂群限流治理）；r1 收口之后 20 个提交中，18 个已经 PR squash 合入维护分支并过五项必需门禁，2 个（T2 Windows PowerShell 执行策略兼容及其审核跟进）随本 PR 候选待合入 |
-| drift | `169 files, +12015/-1492`，净增 10523 行；r1 为 `94 files, +5022/-944`，旧 r13 为 `110 files, +10895/-1195` |
+| 历史组织 | 上游之上 36 个带 DCO sign-off 的提交，归属 4 个长期主题（T1–T4）+ 2 个追加减量主题（T5 会话归档导出、T6 蜂群限流治理）；r1 收口之后 21 个提交中，18 个已经 PR squash 合入维护分支并过五项必需门禁，3 个（T2 Windows PowerShell 执行策略兼容及两轮审核跟进）随本 PR 候选待合入 |
+| drift | `169 files, +12056/-1492`，净增 10564 行；r1 为 `94 files, +5022/-944`，旧 r13 为 `110 files, +10895/-1195` |
 | 守护 | 72 条独立 CodeWhale `forkguard_*` 行为名（登记下限沿用维护分支的 54，其中 6 条钉在 `benchmark-eval-controls` 门控面）+ 父仓指纹与行为测试；本主题新增的 6 条行为测试刻意不加 `forkguard_` 前缀（该修复按上游优先提交），改用 `scripts/fork-guard.sh` 指纹逐条钉住 |
 | 父仓适配 | v0.9.12 EngineConfig、Agent/Plan 模式、逐轮 reasoning/安全、ExtraTools、owner 事件隔离、Automation v3/v4 数据兼容、rusqlite 0.40.2、Shell 任务来源对账；消费方 PR #396（execpolicy）、#408（轮次取消）、#444（蜂群）、#468（computer-use）、#472（一键导出）依赖本批底座能力 |
 
@@ -98,6 +98,7 @@
 | `92427bd8d` | T3 修复 | stopship 发布验收侦察轮改走两段激活：一次 `tool_search` 激活 deferred `grep_files` 后按原证据契约检索、第三响应出 verdict，简报停引隐藏别名 `File` 与退役 `search_content`，表面/fixture 文本/行为三条 forkguard 互钉（#61） |
 | `24f63bba4` | T2 修复 | Windows PowerShell 启动加进程级 `-ExecutionPolicy Bypass`，并在 `-File` 被本机策略拒绝时以 `-EncodedCommand` 内联重跑一次同一命令（候选，待上游/维护分支合入） |
 | `fc91e31df` | T2 修复 | 审核跟进：重试门槛收紧为仅 `Failed`（取消/超时绝不重跑），补门槛与重试粘合测试，去重两个 shell 构造函数（候选，待上游/维护分支合入） |
+| `b81de2844` | T2 修复 | 二轮审核跟进：UTF-8 输出前缀改按 PowerShell 家族判定，修正去重后 custom PowerShell 在编码回退路径丢失前缀的回归（候选，待上游/维护分支合入） |
 
 所有提交都含 DCO `Signed-off-by`。`b4c02616b` 包含大部分跨主题收口，历史粒度确实不利于 bisect；分支公开进入评审后没有为历史美化 force-push，而是追加带 sign-off 的提交修复评审和发布门禁问题，并用本表、指纹和行为测试弥补审计粒度。不可变 tag 已创建，后续不得重写。
 
@@ -136,6 +137,7 @@
 
 - Windows PowerShell 启动策略兼容（本 PR）：`shell_dispatcher` 给每次 PowerShell 调用加进程级 `-ExecutionPolicy Bypass`。临时 `.ps1`（多行、引号密集、非 ASCII 命令都会走这条）此前会被本机执行策略（Windows 客户端默认 `Restricted`、`AllSigned`，或 `RemoteSigned` 加 Mark-of-the-Web）在任何语句执行前拒绝——中文会话里几乎所有命令都受影响。该参数只作用于本进程：不需要管理员权限、不改用户自己的 shell，且执行策略本身不是安全边界。若策略由组策略下发（此时命令行参数被忽略）或 AppLocker 脚本规则拦截，同步执行路径改按**非本地化的错误记录元数据**判定该拒绝：`UnauthorizedAccess`（`FullyQualifiedErrorId`）加上拒绝路径的异常类型（宿主 `-File` 路径为 `ParentContainsErrorRecordException`，会话内 `&` 调用为 `PSSecurityException`），并以始终为英文的 `about_Execution_Policies` 主题名兜底；`LinkID=135170` 链接刻意不参与判定，因为控制台格式化会在词中折行、真实捕获里根本不存在完整串。判定通过后用 `-EncodedCommand`（UTF-16LE base64，不落盘、无引号与 BOM 面）把同一条命令内联重跑一次，并在结果 stderr 标注该回退；是否重试在调用点判定，重试方法本身只负责执行。`-File` 被拒时脚本一条语句都没执行，因此重跑不会产生重复副作用；脚本自身失败（例如脚本内部访问被拒）会带上自己的异常类型，不会误触发重试。另外，输出里只要出现 `<路径>.ps1:<行号>` 语句位置行就整体判定为「脚本内失败」（典型场景：外层脚本已执行、只有内层脚本被策略拒绝），一律不重试——顶层加载拒绝从不打印位置行，因此该判据既不漏判、也不会重复执行已完成的部分。范围边界：回退只在同步执行路径生效，后台 shell/PTY 路径依赖上面的 Bypass 参数；WDAC/Constrained Language Mode 这类连内联命令都受限的机器不在本修复覆盖内。重建的沙箱 `ExecEnv`、策略与 `extra_env` 与首次尝试一致。
 - T2 审核跟进（CodeWhale#66 round 1）：重试门槛改为只接受 `Failed`——`Completed`、`Killed`（用户取消）与 `TimedOut` 一律不重试，避免重复执行被停止的命令或把超时翻倍；门槛抽成可单测的 `powershell_refusal_needs_inline_retry`，仍在调用点求值。新增门槛测试（覆盖全部 `ShellStatus` 变体）与重试粘合测试（直接驱动 `retry_powershell_without_script_file`，断言内联重跑真的执行了载荷、stderr 标注了回退、耗时计入两次尝试）。`CommandSpec::shell` 与 `CommandSpec::powershell_encoded_shell` 的 Windows 命令行文本、默认环境与结构体构造合并进一个私有构造函数，避免两者漂移。
+- T2 审核跟进（CodeWhale#66 round 2）：上面的构造函数合并暴露出前缀判定的不一致——原编码回退在 Windows 上无条件加 UTF-8 前缀，而 `shell()` 只给两个探测变体加；合并后编码路径对 `ShellKind::Custom` 的 PowerShell（`is_powershell()` 认可）丢失前缀，非 ASCII stdout 会按控制台代码页解码。现统一按 PowerShell 家族判定（`is_powershell()` 加前缀、cmd 走 `chcp`、其余保持原样），`shell()` 的 custom PowerShell 分支因此也补上了本该有的前缀；新增 `windows_shell_text_matches_the_shell_family` 钉住映射。
 - `ExtraTools` 允许 app 在 Agent/Plan 原生注册宿主工具，不复制底座工具循环。
 - MCP secret 只经宿主 resolver 注入；不写进程环境或普通配置文件。
 - `SetDisallowedTools` 是逐会话/逐轮的权限塑形：更新后继续在该会话的 catalog 和最终调用边界拒绝匹配工具，但不热断开共享 `McpPool` 中已经建立的 server 连接。全局断连会干扰仍获授权的其他会话；底层连接由正常 pool/session 生命周期回收，安全边界由 catalog + 最终 dispatch 的 fail-closed 双检提供。
@@ -184,6 +186,7 @@
 - `powershell_execution_policy_rejection_is_locale_independent`（真实捕获的 en-US/zh-CN/ja-JP 拒绝输出命中；脚本内部失败、以及「外层已执行而内层脚本被拒」这两种带位置行的情形即使具备 `UnauthorizedAccess`/`PSSecurityException` 也不命中）
 - `powershell_inline_retry_only_for_a_failed_file_refusal`（只有 `Failed`＋`-File`＋拒绝签名才允许重试，`Completed`/`Killed`/`TimedOut`/`Running` 与直接调用型 spec 一律不重试）
 - `powershell_inline_retry_runs_the_command_and_notes_the_fallback`（重试粘合：内联重跑真的执行载荷、stderr 带 `-EncodedCommand` 回退标注、耗时累计两次尝试）
+- `windows_shell_text_matches_the_shell_family`（UTF-8 前缀按 PowerShell 家族判定：Pwsh/WindowsPowerShell/custom PowerShell 都带前缀，cmd 走 `chcp`，非 PowerShell 的自定义 shell 保持原样）
 - `powershell_encoded_spec_runs_a_non_ascii_payload`、`powershell_temp_script_form_runs_a_non_ascii_payload`（Windows 上两种形态真跑非 ASCII 载荷）
 
 ## 6. T3 — 嵌入上下文与 Skills 来源
