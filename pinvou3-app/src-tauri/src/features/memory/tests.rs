@@ -1077,8 +1077,8 @@ fn llm_review_prompt_matches_supported_actions() {
 }
 
 /// The memory review prompt body carries no language constraint of its own; the
-/// output-language directive is appended per locale (`content` / `reason` follow
-/// the UI language, enum values stay ASCII); zh-Hans/unknown → no-op. The en/ja
+/// output-language directive is appended per locale (`content` follows the UI
+/// language, enum values stay ASCII); zh-Hans/unknown → no-op. The en/ja
 /// branches are defense-in-depth (memory is disabled for non-Chinese UIs by
 /// enforce_memory_locale_policy), mirroring the review-side precedent.
 #[test]
@@ -1089,9 +1089,8 @@ fn memory_review_output_language_directive_follows_locale() {
     assert!(
         en.contains("Write EVERY natural-language value")
             && en.contains("`content`")
-            && en.contains("`reason`")
             && en.contains("English"),
-        "en directive must cover content/reason and name English: {en}"
+        "en directive must cover content and name English: {en}"
     );
     assert!(
         en.contains("Keep") && en.contains("JSON keys") && en.contains("exactly as"),
