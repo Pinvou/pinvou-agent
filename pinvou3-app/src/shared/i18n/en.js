@@ -354,8 +354,6 @@ export const dictEn = {
           confirmKeyChord:chord=>`Press ${chord}`,
           confirmHoldKey:(chord, ms)=>`Hold ${chord} for ${ms} ms`,
           confirmDrag:(from, to)=>`Drag from ${from} to ${to}`,
-          scrollDirection:{ up:'up', down:'down', left:'left', right:'right' },
-          confirmScroll:(direction, amount, point)=>point ? `Scroll ${direction} by ${amount} at ${point}` : `Scroll ${direction} by ${amount}`,
           confirmMouseMove:point=>`Move mouse to ${point}`,
           confirmMouseDown:button=>`Press and hold the ${button} mouse button`,
           confirmMouseUp:button=>`Release the ${button} mouse button`,

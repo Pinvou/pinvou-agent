@@ -354,8 +354,6 @@ export const dictZh = {
           confirmKeyChord:chord=>`按下组合键 ${chord}`,
           confirmHoldKey:(chord, ms)=>`按住 ${chord} ${ms} 毫秒`,
           confirmDrag:(from, to)=>`从 ${from} 拖拽到 ${to}`,
-          scrollDirection:{ up:'向上', down:'向下', left:'向左', right:'向右' },
-          confirmScroll:(direction, amount, point)=>point ? `在 ${point} ${direction}滚动 ${amount}` : `${direction}滚动 ${amount}`,
           confirmMouseMove:point=>`移动鼠标到 ${point}`,
           confirmMouseDown:button=>`按下${button}`,
           confirmMouseUp:button=>`松开${button}`,

@@ -59,3 +59,22 @@ test('computer_use stays desktop-exclusive: web policy and web bridge must not l
     );
   }
 });
+
+test('computer_use exclusion list is self-maintaining: every desktop bridge invoke is pinned', () => {
+  // Reverse assertion: a NEW computer_use_* command added to the desktop
+  // bridge must fail here until it is added to DESKTOP_COMMANDS (and the
+  // policy/adapter expectations above), so the pin cannot silently rot.
+  const desktopBridgeFeature = read('src', 'platform', 'tauri', 'bridge', 'computer_use.js');
+  const invokes = new Set(
+    [...desktopBridgeFeature.matchAll(/invoke\(\s*"([a-z0-9_]+)"/g)].map((m) => m[1]),
+  );
+  const computerUseInvokes = [...invokes].filter((name) => name.startsWith('computer_use_'));
+  assert.ok(computerUseInvokes.length > 0, 'bridge invokes must be discoverable');
+  for (const name of computerUseInvokes) {
+    assert.ok(
+      DESKTOP_COMMANDS.includes(name),
+      `${name} is invoked by the desktop bridge but not pinned in DESKTOP_COMMANDS — ` +
+        'extend the exclusion test (and keep it off the web policy)',
+    );
+  }
+});

@@ -4,6 +4,7 @@ import { tmpdir } from 'node:os';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import {
+  bannerErrorReset,
   computerUseConsentView,
   extractComputerUseScreenshotPath,
   formatComputerUseConfirmAction,
@@ -187,13 +188,11 @@ const zhConfirmCopy = {
   confirmKeyChord: (chord) => `按下组合键 ${chord}`,
   confirmHoldKey: (chord, ms) => `按住 ${chord} ${ms} 毫秒`,
   confirmDrag: (from, to) => `从 ${from} 拖拽到 ${to}`,
-  scrollDirection: { up: '向上', down: '向下', left: '向左', right: '向右' },
-  confirmScroll: (direction, amount, point) => point ? `在 ${point} ${direction}滚动 ${amount}` : `${direction}滚动 ${amount}`,
   confirmMouseMove: (point) => `移动鼠标到 ${point}`,
   confirmMouseDown: (button) => `按下${button}`,
   confirmMouseUp: (button) => `松开${button}`,
 };
-const structured = (fields) => ({ sessionId: 's1', confirmId: 'c1', summary: 'english fallback', actionName: null, button: null, clickCount: null, point: null, endPoint: null, textLength: null, textPreview: null, textPreviewTruncated: false, chord: null, holdMs: null, scrollDirection: null, scrollAmount: null, ...fields });
+const structured = (fields) => ({ sessionId: 's1', confirmId: 'c1', summary: 'english fallback', actionName: null, button: null, clickCount: null, point: null, endPoint: null, textLength: null, textPreview: null, textPreviewTruncated: false, chord: null, holdMs: null, ...fields });
 
 assert.deepEqual(
   formatComputerUseConfirmAction(zhConfirmCopy, structured({ actionName: 'click', button: 'left', clickCount: 1, point: { x: 5, y: 6 } })),
@@ -241,9 +240,9 @@ assert.deepEqual(
   'a drag renders both endpoints',
 );
 assert.deepEqual(
-  formatComputerUseConfirmAction(zhConfirmCopy, structured({ actionName: 'scroll', scrollDirection: 'down', scrollAmount: 3, point: { x: 7, y: 8 } })),
-  { description: '在 (7, 8) 向下滚动 3', preview: null, previewTooLong: false },
-  'a scroll renders direction, amount and point',
+  formatComputerUseConfirmAction(zhConfirmCopy, structured({ actionName: 'scroll', point: { x: 7, y: 8 } })),
+  { description: 'english fallback', preview: null, previewTooLong: false },
+  'a scroll confirm falls back to the summary (scroll is never screened/blocked)',
 );
 assert.deepEqual(
   formatComputerUseConfirmAction(zhConfirmCopy, structured({ actionName: 'mouse_move', point: { x: 9, y: 10 } })),
@@ -499,8 +498,6 @@ const dialogCopy = {
   confirmKeyChord: (chord) => `Press ${chord}`,
   confirmHoldKey: (chord, ms) => `Hold ${chord} for ${ms} ms`,
   confirmDrag: (from, to) => `Drag from ${from} to ${to}`,
-  scrollDirection: { up: 'up', down: 'down', left: 'left', right: 'right' },
-  confirmScroll: (direction, amount, point) => point ? `Scroll ${direction} by ${amount} at ${point}` : `Scroll ${direction} by ${amount}`,
   confirmMouseMove: (point) => `Move mouse to ${point}`,
   confirmMouseDown: (button) => `Press and hold the ${button} mouse button`,
   confirmMouseUp: (button) => `Release the ${button} mouse button`,
@@ -621,7 +618,7 @@ try {
       summary: 'left click x2 at Some((5, 6))',
       actionName: null, button: null, clickCount: null, point: null, endPoint: null,
       textLength: null, textPreview: null, textPreviewTruncated: false,
-      chord: null, holdMs: null, scrollDirection: null, scrollAmount: null,
+      chord: null, holdMs: null,
       ...fields,
     },
   });
@@ -651,6 +648,17 @@ try {
   if (!hadWindow) delete globalThis.window;
   if (!hadDocument) delete globalThis.document;
   delete globalThis.__pinvouConsentReact;
+}
+
+// ── Banner epoch gate (round-14: stale-error reset, was untested) ──
+{
+  // Rising edge of a NEW grant: the previous epoch's error is dropped.
+  assert.deepEqual(bannerErrorReset(false, true), { resetError: true, wasShown: true });
+  // An error raised DURING the shown phase survives (same epoch).
+  assert.deepEqual(bannerErrorReset(true, true), { resetError: false, wasShown: true });
+  // Hiding re-arms the gate without touching errors.
+  assert.deepEqual(bannerErrorReset(true, false), { resetError: false, wasShown: false });
+  assert.deepEqual(bannerErrorReset(false, false), { resetError: false, wasShown: false });
 }
 
 console.log('computer use consent dialog UI tests passed');

@@ -1617,12 +1617,17 @@ const formatMemoryTime = (item, copy) => {
                 setActionError('');
                 setPending(true);
                 bridge.computerUse.setEnabled(value)
+                  .then(() => {
+                    // Only a success arms the cooldown guard: a failure
+                    // leaves the switch immediately clickable to retry (the
+                    // consent dialog states this rule explicitly; match it).
+                    flight.settledAt = Date.now();
+                  })
                   .catch((error) => {
                     setActionError(t.uiComputerUse.actionFailed(String(error && error.message ? error.message : error)));
                   })
                   .finally(() => {
                     flight.busy = false;
-                    flight.settledAt = Date.now();
                     setPending(false);
                   });
               }}
