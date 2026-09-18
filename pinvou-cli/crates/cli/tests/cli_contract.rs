@@ -512,6 +512,19 @@ fn unrecognized_output_value_falls_through_to_usage_error() {
 }
 
 #[test]
+fn output_without_value_points_at_destination() {
+    // A valueless `--output` fails fast with a usage error that names the
+    // flag for file submissions (the gaia `--output <file>` legacy alias
+    // only fires when a value is present).
+    let error = parse_args(["pinvou", "--output"]).unwrap_err();
+    assert_eq!(error.exit_code(), ExitCode::Usage);
+    assert_eq!(
+        error.to_string(),
+        "--output requires human or json (submission files use --destination)"
+    );
+}
+
+#[test]
 fn list_output_is_stable_and_labels_smoke_as_internal_health() {
     let human = render_list(OutputMode::Human);
     assert!(human.contains("smoke"));
