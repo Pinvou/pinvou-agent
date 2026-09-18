@@ -37,7 +37,7 @@ const PROFILE = fs.mkdtempSync(path.join(os.tmpdir(), 'pinvou-composer-tools-'))
 
 function injectSource() {
   return `(function(){
-    const state=window.__COMPOSER_TOOLS_TEST__={calls:[],disabled:[],disabledSkills:[]};
+    const state=window.__COMPOSER_TOOLS_TEST__={calls:[],disabled:[]};
     function record(cmd,args){state.calls.push({cmd,args:args||{}});}
     function invoke(cmd,args){
       record(cmd,args);
@@ -63,8 +63,6 @@ function injectSource() {
         ]);
         case 'get_disabled_connectors': return Promise.resolve(state.disabled);
         case 'set_disabled_connectors': state.disabled=(args&&args.connectorIds)||[]; return Promise.resolve(null);
-        case 'get_disabled_skills': return Promise.resolve(state.disabledSkills);
-        case 'set_disabled_skills': state.disabledSkills=(args&&args.skillIds)||[]; return Promise.resolve(null);
         case 'feishu_skills_state': case 'wecom_skills_state': case 'dingtalk_skills_state': case 'tmeet_skills_state': return Promise.resolve({connected:false,enabled:true});
         default: return Promise.resolve(null);
       }

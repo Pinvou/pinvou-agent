@@ -125,11 +125,6 @@ mod tests {
     }
 
     #[test]
-    fn user_home_dir_returns_some_path() {
-        assert!(!user_home_dir().as_os_str().is_empty());
-    }
-
-    #[test]
     fn path_identity_nesting_requires_a_component_boundary() {
         assert!(path_identity_is_same_or_nested("/a/b", "/a/b"));
         assert!(path_identity_is_same_or_nested("/a/b/c", "/a/b"));

@@ -10,6 +10,8 @@ use std::path::{Path, PathBuf};
 
 use crate::platform::paths;
 
+use super::types::ToolManifest;
+
 /// 一个内嵌 MCP 包：manifest + 包内文件（server 脚本等，相对 `mcp/` 目录）。
 pub struct McpPackageSpec {
     pub id: &'static str,
@@ -111,6 +113,17 @@ pub const MCP_PACKAGES: &[McpPackageSpec] = &[
 /// 按 id 取内嵌包（不在目录 = 自定义/手放工具，走旧布局回退）。
 pub fn spec_for(id: &str) -> Option<&'static McpPackageSpec> {
     MCP_PACKAGES.iter().find(|spec| spec.id == id)
+}
+
+/// 解析编译进应用的 manifest。安装与依赖下载必须以这份只读快照为准，不能信任
+/// 用户目录中可能来自旧版本或已被修改的同名 manifest。
+pub fn embedded_manifest(id: &str) -> Result<Option<ToolManifest>, String> {
+    spec_for(id)
+        .map(|spec| {
+            serde_json::from_str(spec.manifest_json)
+                .map_err(|e| format!("内嵌 MCP manifest 解析失败（{id}）: {e}"))
+        })
+        .transpose()
 }
 
 /// 包的 mcp/ 目录（`bundles/<id>/mcp/`）。

@@ -666,6 +666,7 @@ ready: 'PPT generation enabled, starting generation',
 failure: 'PPT generation capability could not be prepared. Please try again later.',
   },
   missingCapabilities: (ids) => `Missing capabilities: ${ids}`,
+  attachmentPrompt: 'Continue based on the attached content.',
   // Display names for personal-workbench template chips. The zh `title` in
   // personal-workbench-scene.js stays canonical (draft matching + message meta);
   // rendering resolves the localized name by template id.
