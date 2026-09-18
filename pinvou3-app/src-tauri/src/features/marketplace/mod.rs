@@ -339,8 +339,7 @@ pub use types::{
 pub use crate::features::marketplace::scope::{
     load_disabled_bundles, load_disabled_bundles_for, load_hidden_bundles_for,
     remove_bundle_from_disabled_scopes, save_disabled_bundles, save_disabled_bundles_for,
-    save_hidden_bundles_for, sync_deny_all_scopes_after_install,
-    sync_disabled_bundles_for_connector_switch, unavailable_bundles_for,
+    save_hidden_bundles_for, sync_deny_all_scopes_after_install, unavailable_bundles_for,
 };
 // 兼容旧名（原「连接器开关」调用方）：语义已收敛为包 id，旧名仅作别名过渡。
 pub use crate::features::marketplace::scope::{
@@ -3385,6 +3384,14 @@ mod tests {
             assert_eq!(
                 load_disabled_connectors_for(ConnectorScope::Code),
                 vec!["weather".to_string()]
+            );
+            // With DenyAll, a default-off install lands only in the disabled set
+            // and must not leak into the visibility set: a newly installed package
+            // stays visible so the user can spot it in the store/session card and
+            // enable it explicitly.
+            assert!(
+                crate::features::marketplace::scope::load_hidden_bundles_for(ConnectorScope::Code)
+                    .is_empty()
             );
             // 已存在不重复。
             sync_deny_all_scopes_after_install("weather");

@@ -16,7 +16,7 @@ import path from 'node:path';
 import test from 'node:test';
 import { fileURLToPath } from 'node:url';
 
-import { dict } from '../src/shared/i18n-all.js'; // full three-language assertions: the browser entry lazy-loads via i18n.js, tests use the aggregate shim
+import { dict } from './helpers/i18n-all.js'; // full three-language assertions: the browser entry lazy-loads via i18n.js, tests use the aggregate shim
 
 const here = path.dirname(fileURLToPath(import.meta.url));
 const appRoot = path.resolve(here, '..');

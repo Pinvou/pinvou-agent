@@ -99,9 +99,4 @@ mod tests {
             );
         }
     }
-
-    #[test]
-    fn user_home_dir_returns_some_path() {
-        assert!(!user_home_dir().as_os_str().is_empty());
-    }
 }

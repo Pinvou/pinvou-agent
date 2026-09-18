@@ -445,18 +445,6 @@ impl SessionStore {
         self.scheduled_profiles.read().get(id).cloned()
     }
 
-    pub fn scheduled_session_ids_for_task(&self, task_id: &str) -> Vec<String> {
-        let mut ids: Vec<String> = self
-            .scheduled_profiles
-            .read()
-            .iter()
-            .filter(|(_, profile)| profile.task_id == task_id)
-            .map(|(session_id, _)| session_id.clone())
-            .collect();
-        ids.sort();
-        ids
-    }
-
     pub fn scheduled_session_exists(&self, id: &str) -> bool {
         self.scheduled_profile(id).is_some() && self.manager.load_session_snapshot(id).is_ok()
     }
