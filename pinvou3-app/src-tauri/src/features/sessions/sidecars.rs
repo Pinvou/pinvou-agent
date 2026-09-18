@@ -334,13 +334,17 @@ impl SessionStore {
             return match std::fs::remove_file(&file) {
                 Ok(()) => Ok(()),
                 Err(error) if error.kind() == ErrorKind::NotFound => Ok(()),
-                Err(error) => Err(error).with_context(|| format!("remove {}", file.display())),
+                // Name the sidecar, never its absolute path: `save_aux_sessions`
+                // prints the chain, and the sessions root embeds the host home
+                // directory (same no-host-paths stance as the read-failure log
+                // below).
+                Err(error) => Err(error).with_context(|| format!("remove {AUX_SESSIONS_FILE}")),
             };
         }
         let payload =
             serde_json::to_vec_pretty(aux_sessions).context("serialize aux session bindings")?;
         deepseek_tui::utils::write_atomic(&file, &payload)
-            .with_context(|| format!("persist aux session bindings to {}", file.display()))
+            .with_context(|| format!("persist aux session bindings to {AUX_SESSIONS_FILE}"))
     }
 
     pub fn save_aux_sessions(&self) {

@@ -4620,8 +4620,14 @@ fn load_rejects_case_variant_id_alias() {
         .sessions_dir()
         .join(format!("{}.json", aux.id));
     let alias_record = store.manager.sessions_dir().join(format!("{alias}.json"));
+    // Track whether THIS test created the alias file. Comparing the two paths
+    // as strings is not enough: on a case-insensitive filesystem they name the
+    // same file, so an unconditional cleanup would delete the canonical
+    // record — a failure Linux CI can never show (round-12 P3).
+    let mut seeded_alias = false;
     if alias_record != record && !alias_record.exists() {
         std::fs::copy(&record, &alias_record).expect("seed the alias record");
+        seeded_alias = true;
     }
     let error = store
         .load(&alias)
@@ -4630,7 +4636,7 @@ fn load_rejects_case_variant_id_alias() {
         error.to_string().contains("session id mismatch"),
         "the alias must fail closed at the identity check on every fs: {error:#}"
     );
-    if alias_record != record {
+    if seeded_alias {
         std::fs::remove_file(&alias_record).expect("clean up the seeded alias");
     }
 
@@ -4906,6 +4912,90 @@ fn aux_sessions_do_not_consume_chat_retention_budget() {
     }
 }
 
+/// Eviction racing aux creation (round-10 minor-1, actually pinned in round
+/// 12): the retention sweep runs inside the aux record's own `save`, and that
+/// sweep deliberately bypasses the aux-creation lock (the store layer cannot
+/// take it). A parent sitting on the eviction line is therefore already gone by
+/// the time `set_aux_session` publishes the mapping — the in-lock re-check must
+/// notice, unpublish the mapping and delete the newborn aux record instead of
+/// leaving a dead-parent/live-aux orphan that only the next boot could reclaim.
+#[test]
+fn create_aux_session_rolls_back_when_parent_is_evicted_mid_create() {
+    let (store, _g) = isolated_store();
+    let now = Utc::now();
+    let main_id = "eviction-line-parent";
+    // Seed MAX+1 chats through `save_session_atomic` (no eager retention), so
+    // the parent is still loadable when `create_aux_session` starts while the
+    // population that its own save sweeps over is already over the cap.
+    let mut oldest = create_saved_session_with_id_and_mode(
+        main_id.to_string(),
+        &[],
+        "/retention-model",
+        &std::env::temp_dir(),
+        0,
+        None,
+        None,
+    );
+    oldest.metadata.updated_at = now - chrono::Duration::seconds(MAX_SESSIONS_PER_KIND as i64 + 1);
+    store
+        .save_session_atomic(&oldest)
+        .expect("seed eviction-line parent");
+    for index in 0..MAX_SESSIONS_PER_KIND {
+        let mut session = create_saved_session_with_id_and_mode(
+            format!("eviction-create-peer-{index}"),
+            &[],
+            "/retention-model",
+            &std::env::temp_dir(),
+            0,
+            None,
+            None,
+        );
+        session.metadata.updated_at = now - chrono::Duration::seconds(index as i64);
+        store
+            .save_session_atomic(&session)
+            .expect("seed peer session");
+    }
+    assert!(
+        store.load(main_id).is_ok(),
+        "the parent must be alive before the create starts"
+    );
+
+    let error = store
+        .create_aux_session(main_id)
+        .expect_err("a parent evicted during the aux save must fail the create");
+
+    let message = format!("{error:#}");
+    assert!(
+        message.contains("was evicted while creating its aux session"),
+        "the rollback must name the evicted parent, got: {message}"
+    );
+    // The sweep really did evict the parent — otherwise this test would be
+    // asserting the happy path and pin nothing.
+    assert!(
+        store.load(main_id).is_err(),
+        "the oldest chat must be the one the aux save's sweep evicted"
+    );
+    assert!(
+        store.aux_session_id(main_id).is_none(),
+        "the mapping of a rolled-back create must be unpublished"
+    );
+    let leftover_aux: Vec<String> = std::fs::read_dir(store.manager.sessions_dir())
+        .expect("read sessions dir")
+        .filter_map(|entry| entry.ok())
+        .map(|entry| entry.file_name().to_string_lossy().into_owned())
+        .filter(|name| name.starts_with("aux-"))
+        .collect();
+    assert!(
+        leftover_aux.is_empty(),
+        "the newborn aux record must be rolled back, not left as an orphan: {leftover_aux:?}"
+    );
+    assert_eq!(
+        store.list().expect("chat list").len(),
+        MAX_SESSIONS_PER_KIND,
+        "only the evicted parent may leave the chat list"
+    );
+}
+
 /// Orphan-aux reconciliation (repair first, delete only if that fails):
 /// the mapping is missing but the record is on disk and the main session is
 /// still alive (a crash in the "record persisted, mapping not yet" window)
@@ -5021,6 +5111,157 @@ fn startup_reconcile_rebuilds_mapping_after_aux_sidecar_corruption() {
     assert!(
         rebooted.load(&main.metadata.id).is_ok(),
         "主会话不得受对账影响"
+    );
+}
+
+/// Backlink mismatch (round-12 S3, previously zero coverage): a hand-edited
+/// sidecar maps mainA → auxX while auxX's record backlinks to mainB. The
+/// mapping must not be trusted — mainA's panel would read mainB's transcript —
+/// and the repair must be complete within this one pass: the false mapping is
+/// detached *and* the record is re-adopted by its true parent. Deferring the
+/// rebuild to the next boot left a window where a panel opened under mainA
+/// minted a fresh aux and stranded this transcript as an ambiguous duplicate.
+#[test]
+fn reconcile_aux_sessions_detaches_mismatched_backlink_and_readopts_true_parent() {
+    let (store, _g) = isolated_store();
+    let main_a = store
+        .create_new("/model".into(), None, std::env::temp_dir())
+        .expect("create main A");
+    let main_b = store
+        .create_new("/model".into(), None, std::env::temp_dir())
+        .expect("create main B");
+    let aux = store
+        .create_aux_session(&main_b.metadata.id)
+        .expect("create aux under its true parent B");
+    // Hand-edit the binding table into the lying shape: mainA claims auxX.
+    let mut lying = std::collections::HashMap::new();
+    lying.insert(main_a.metadata.id.clone(), aux.id.clone());
+    std::fs::write(
+        paths::sessions_root().join("_aux_sessions.json"),
+        serde_json::to_string(&lying).expect("serialize lying sidecar"),
+    )
+    .expect("write mismatched sidecar");
+
+    let rebooted = SessionStore::boot_with_scheduled_root(store.scheduled_root.as_ref().clone())
+        .expect("reboot");
+
+    assert_eq!(
+        rebooted.aux_session_id(&main_a.metadata.id),
+        None,
+        "the false mapping must be detached"
+    );
+    assert_eq!(
+        rebooted.aux_session_id(&main_b.metadata.id).as_deref(),
+        Some(aux.id.as_str()),
+        "the record must be re-adopted by its backlink parent in the same pass"
+    );
+    assert!(
+        rebooted.load(&aux.id).is_ok(),
+        "the transcript must survive the repair"
+    );
+}
+
+/// Round-12 P3: a binding whose aux record is gone from disk is invisible to
+/// the record-driven reconcile loop (no record ⇒ no iteration), so it used to
+/// survive every boot and make `get_or_create` repair the same dead binding on
+/// each call. The binding table is now validated against the on-disk records
+/// before the loop.
+#[test]
+fn reconcile_aux_sessions_strips_a_binding_whose_record_is_gone() {
+    let (store, _g) = isolated_store();
+    let main = store
+        .create_new("/model".into(), None, std::env::temp_dir())
+        .expect("create main");
+    let aux = store
+        .create_aux_session(&main.metadata.id)
+        .expect("create aux session");
+    // Out-of-band cleanup of the transcript, bypassing every cascade: the
+    // binding now points at nothing.
+    std::fs::remove_file(
+        store
+            .manager
+            .sessions_dir()
+            .join(format!("{}.json", aux.id)),
+    )
+    .expect("delete the aux record directly");
+
+    let rebooted = SessionStore::boot_with_scheduled_root(store.scheduled_root.as_ref().clone())
+        .expect("reboot");
+
+    assert_eq!(
+        rebooted.aux_session_id(&main.metadata.id),
+        None,
+        "a binding to a deleted transcript must not survive the reconcile"
+    );
+    // The task stays usable: the next ensure mints a fresh aux instead of
+    // handing the frontend a dead id.
+    let recreated = rebooted
+        .get_or_create_aux_session(&main.metadata.id)
+        .expect("the parent must still be able to get an aux session");
+    assert_ne!(recreated.id, aux.id);
+}
+
+/// Round-12 P3: on a case-insensitive filesystem an `AUX-…` binding value
+/// resolves to the real record while the case-sensitive identity check in
+/// `load` rejects it. That rejection is an *invalid binding*, not a transient
+/// read fault, so the fail-closed "keep the mapping" branch must not apply —
+/// otherwise one hand-edited value poisons `get_or_create` for that task
+/// forever. The alias record is materialized explicitly so the identity
+/// backstop is exercised on case-sensitive filesystems too (Linux CI would
+/// otherwise degrade the scenario into a plain NotFound).
+#[test]
+fn get_or_create_clears_a_case_variant_binding_instead_of_poisoning_the_task() {
+    let (store, _g) = isolated_store();
+    let main = store
+        .create_new("/model".into(), None, std::env::temp_dir())
+        .expect("create main");
+    let aux = store
+        .create_aux_session(&main.metadata.id)
+        .expect("create aux session");
+    let canonical = aux.id.clone();
+    let alias = format!("AUX-{}", canonical.trim_start_matches("aux-"));
+    let sessions_dir = store.manager.sessions_dir().to_path_buf();
+    let alias_record = sessions_dir.join(format!("{alias}.json"));
+    // On a case-insensitive filesystem the alias path IS the canonical file, so
+    // copying would truncate the record onto itself; there the alias already
+    // resolves, which is precisely the scenario under test. Only a
+    // case-sensitive filesystem needs the explicit second file.
+    if !alias_record.exists() {
+        std::fs::copy(
+            sessions_dir.join(format!("{canonical}.json")),
+            &alias_record,
+        )
+        .expect("materialize the alias record");
+    }
+    let mut lying = std::collections::HashMap::new();
+    lying.insert(main.metadata.id.clone(), alias.clone());
+    std::fs::write(
+        paths::sessions_root().join("_aux_sessions.json"),
+        serde_json::to_string(&lying).expect("serialize alias sidecar"),
+    )
+    .expect("write alias sidecar");
+
+    let rebooted = SessionStore::boot_with_scheduled_root(store.scheduled_root.as_ref().clone())
+        .expect("reboot");
+
+    // The reconcile treats the alias as an unusable binding and lets the
+    // backlink rebuild the real one, so the canonical transcript is repaired
+    // rather than reclaimed for the sake of a mapping nobody can use.
+    assert_eq!(
+        rebooted.aux_session_id(&main.metadata.id).as_deref(),
+        Some(canonical.as_str()),
+        "the canonical record must be re-bound instead of reclaimed"
+    );
+    assert!(
+        rebooted.load(&canonical).is_ok(),
+        "the canonical transcript must survive the reconcile"
+    );
+    let resolved = rebooted
+        .get_or_create_aux_session(&main.metadata.id)
+        .expect("a case-variant binding must not poison get_or_create");
+    assert_eq!(
+        resolved.id, canonical,
+        "the task must resolve to the repaired canonical session"
     );
 }
 

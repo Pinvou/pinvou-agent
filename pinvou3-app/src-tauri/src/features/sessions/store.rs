@@ -310,10 +310,10 @@ impl SessionStore {
         // makes every downstream prefix/identity decision trustworthy
         // regardless of filesystem case semantics.
         if session.metadata.id != id {
-            bail!(
-                "session id mismatch: requested '{id}' but record holds '{}'",
-                session.metadata.id
-            );
+            return Err(anyhow::Error::new(SessionIdMismatch {
+                requested: id.to_string(),
+                actual: session.metadata.id,
+            }));
         }
         Ok(session)
     }
@@ -693,7 +693,7 @@ impl SessionStore {
         }
         let parent = self
             .load(parent_id)
-            .with_context(|| format!("load parent session {parent_id} for aux creation"))?;
+            .with_context(|| "load the parent session for aux creation")?;
         let id = format!("aux-{}", generate_session_id());
         let mut session = create_saved_session_with_id_and_mode(
             id.clone(),
@@ -719,7 +719,9 @@ impl SessionStore {
             return Err(match rollback {
                 Ok(()) => error,
                 Err(rollback_error) => {
-                    anyhow::anyhow!("{error:#}; rollback aux Session {id}: {rollback_error:#}")
+                    anyhow::anyhow!(
+                        "{error:#}; rollback of the aux record failed: {rollback_error:#}"
+                    )
                 }
             });
         }
@@ -728,7 +730,9 @@ impl SessionStore {
             return Err(match rollback {
                 Ok(()) => error,
                 Err(rollback_error) => {
-                    anyhow::anyhow!("{error:#}; rollback aux Session {id}: {rollback_error:#}")
+                    anyhow::anyhow!(
+                        "{error:#}; rollback of the aux record failed: {rollback_error:#}"
+                    )
                 }
             });
         }
@@ -738,14 +742,21 @@ impl SessionStore {
         // dead-parent/live-aux orphan. Re-check inside the caller's lock and
         // roll back instead of publishing the mapping. (Round-10 minor-1.)
         if self.load(parent_id).is_err() {
-            let _ = self.set_aux_session(parent_id, None);
+            // A failed unpublish must not be silent: the mapping of a rejected
+            // create would survive on disk and re-point the next boot at a
+            // record that was rolled back (round-12 P3).
+            if let Err(error) = self.set_aux_session(parent_id, None) {
+                eprintln!("[sessions] rollback of the aux mapping failed: {error:#}");
+            }
             let rollback = self.delete(&id);
+            // Ids stay out of these messages too: the command layer surfaces
+            // them to the caller and the boot reconciliation logs the chain.
             return Err(match rollback {
-                Ok(()) => anyhow::anyhow!(
-                    "parent session {parent_id} was evicted while creating its aux session"
-                ),
+                Ok(()) => {
+                    anyhow::anyhow!("the parent session was evicted while creating its aux session")
+                }
                 Err(rollback_error) => anyhow::anyhow!(
-                    "parent session {parent_id} was evicted while creating its aux session; rollback aux Session {id}: {rollback_error:#}"
+                    "the parent session was evicted while creating its aux session; rollback of the aux record failed: {rollback_error:#}"
                 ),
             });
         }
@@ -785,19 +796,22 @@ impl SessionStore {
         if let Some(aux_id) = self.aux_session_id(parent_id) {
             match self.load(&aux_id) {
                 Ok(aux) => return Ok(aux.metadata),
-                // Ghost mapping (the aux record is gone from disk): remove it
-                // and rebuild, so the frontend never receives a dead id.
-                Err(error) if is_not_found_error(&error) => {
+                // Ghost mapping (the aux record is gone from disk) or an
+                // invalid binding (a hand-edited `AUX-…` value that `load`
+                // rejects on identity): both are provably dead, so clear and
+                // rebuild. Treating the identity rejection as a transient fault
+                // kept the bad mapping forever and made every later
+                // get-or-create for that task fail (round-12 P3).
+                Err(error) if is_not_found_error(&error) || is_identity_mismatch_error(&error) => {
                     self.set_aux_session(parent_id, None)
-                        .with_context(|| format!("clear stale aux mapping for {parent_id}"))?;
+                        .context("clear the stale aux mapping")?;
                 }
                 // Any other load failure (permissions, a held file, transient
                 // IO) must not clear the mapping and replace the session: the
                 // orphaned record would be reclaimed on the next boot and the
                 // transcript lost. Fail closed and surface the error.
                 Err(error) => {
-                    return Err(error)
-                        .with_context(|| format!("load aux session {aux_id} for {parent_id}"));
+                    return Err(error).with_context(|| "load the session bound to this task");
                 }
             }
         }
@@ -1031,4 +1045,40 @@ pub(super) fn is_not_found_error(error: &anyhow::Error) -> bool {
             .downcast_ref::<std::io::Error>()
             .is_some_and(|e| e.kind() == ErrorKind::NotFound)
     })
+}
+
+/// The case-variant alias rejection of [`SessionStore::load`], as a typed error
+/// so callers can tell it apart from a transient read fault.
+///
+/// The distinction matters at the one place that deliberately fails closed on
+/// "unknown" load errors (`get_or_create_aux_session`): a hand-edited `AUX-…`
+/// mapping value is a *provably invalid binding* on a case-insensitive
+/// filesystem, and keeping it would poison that task's aux chat permanently,
+/// while a held file or an EIO must still keep the mapping (clearing it there
+/// would orphan a live transcript). The message is kept byte-compatible with
+/// the previous `bail!` text.
+#[derive(Debug)]
+pub(crate) struct SessionIdMismatch {
+    requested: String,
+    actual: String,
+}
+
+impl std::fmt::Display for SessionIdMismatch {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(
+            formatter,
+            "session id mismatch: requested '{}' but record holds '{}'",
+            self.requested, self.actual
+        )
+    }
+}
+
+impl std::error::Error for SessionIdMismatch {}
+
+/// True when `error` is the case-variant alias rejection rather than an IO
+/// fault: the binding is invalid by construction, so it may be cleared.
+pub(super) fn is_identity_mismatch_error(error: &anyhow::Error) -> bool {
+    error
+        .chain()
+        .any(|cause| cause.downcast_ref::<SessionIdMismatch>().is_some())
 }
