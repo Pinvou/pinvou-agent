@@ -371,7 +371,8 @@ fn classify(ext: &str) -> &'static str {
 }
 
 /// 音视频：本地语音转录（whisper 等）尚未部署到统一内存设备，先优雅降级，明确告知用户
-/// 「未处理」而非臆测内容。真正转录留作未来独立能力（见 process.md）。
+/// 「未处理」而非臆测内容。真正转录留作未来独立能力（原规划记录于贡献者本地
+/// 设计笔记，已归档，不入库）。
 fn media_placeholder(basename: String, path_str: String, byte_size: u64) -> IngestResult {
     IngestResult::warning(
         "media",

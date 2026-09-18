@@ -111,6 +111,13 @@ for (const language of ['zh', 'en', 'ja']) {
   for (const deadKey of ['sidebarCodeStyleOn', 'sidebarCodeStyleOff']) {
     assert.equal(dict[language][deadKey], undefined, `${language}.${deadKey} is retired and must stay deleted`);
   }
+  // The vendor-residue sweep retired the intranet tool-store copy and the
+  // MegaCube sidebar entry (no renderer consumes them and no tool data sets
+  // tool.internal); the keys must not come back.
+  for (const deadKey of ['internal', 'internalTitle', 'internalDesc', 'internalTools', 'internalCount', 'internalDirect']) {
+    assert.equal(dict[language].uiToolStore[deadKey], undefined, `${language}.uiToolStore.${deadKey} is retired and must stay deleted`);
+  }
+  assert.equal(dict[language].megacubeSite, undefined, `${language}.megacubeSite is retired and must stay deleted`);
 }
 
 // 三语 key parity:zh 是全集基准,en 必须覆盖 zh 的每个叶子 key(ja 经 en
