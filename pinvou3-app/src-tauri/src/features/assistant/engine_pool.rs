@@ -258,6 +258,31 @@ pub(crate) fn turn_restrict_tools(
         || crate::features::sessions::is_aux_session_id(session_id)
 }
 
+/// Zero-tool leakage guard for aux turns. The empty tool table removes the
+/// tool *declarations* from the request, but tool-trained models (DeepSeek
+/// emits its native DSML invoke markup) still "call" the removed tools by
+/// writing the call syntax into the answer as plain text — the user then sees
+/// raw tool-call markup in the aux panel. The per-turn reminder channel (the
+/// same one persona anchors ride, stripped from the stored transcript by the
+/// foundation) tells the model the turn is tool-less up front. The zero-tool
+/// guarantee itself is unchanged: this only makes the model aware of it.
+pub(crate) const AUX_ZERO_TOOL_REMINDER: &str = "You are answering in an auxiliary Q&A session. This turn has NO tools: the tool list is empty. Do not attempt to call tools or run commands, and never emit tool-call markup or invoke blocks as text. Answer directly in plain text from the conversation and your own knowledge; if an action is truly needed, explain how the user can do it instead.";
+
+/// Merge the aux zero-tool boundary into the per-turn reminder (aux sessions
+/// only; persona anchors, when present, keep their text ahead of it).
+pub(crate) fn merge_aux_zero_tool_reminder(
+    session_id: &str,
+    persona_reminder: Option<String>,
+) -> Option<String> {
+    if !crate::features::sessions::is_aux_session_id(session_id) {
+        return persona_reminder;
+    }
+    Some(match persona_reminder {
+        Some(existing) => format!("{existing}\n\n{AUX_ZERO_TOOL_REMINDER}"),
+        None => AUX_ZERO_TOOL_REMINDER.to_string(),
+    })
+}
+
 /// Per-turn tool restriction, mintable only through the policy above.
 ///
 /// PR #433 review round-10 (S2(b)): `AppEngine::send_reserved_user_message`'s
@@ -2173,6 +2198,7 @@ impl EnginePool {
             .as_ref()
             .map(crate::features::personas::equip_anchor);
         let persona_conversational = active_card.as_ref().is_some_and(|c| c.conversational_only);
+        let persona_reminder = merge_aux_zero_tool_reminder(session_id, persona_reminder);
         let engine = self.get_or_spawn(session_id).await?;
         forward_forced_turn_restrict(
             session_id,
@@ -2947,13 +2973,14 @@ where
 #[allow(clippy::await_holding_lock)]
 mod scheduled_model_tests {
     use super::{
-        EvalModelSnapshots, ModelIdentity, ModelUpdateRevisions, Pinvou3Bridge,
-        PreparedRuntimeState, SESSION_MODEL_BINDING_STALE_ERROR, ScheduledUnattendedGuard,
-        SessionShellManagers, SessionTurnLifecycles, SessionTurnLocks, SessionTurnShellTasks,
-        TranscriptOperation, cancel_turn_with_gates, default_model_for_new_session_from,
-        delete_chat_session_with_gate, delete_scheduled_run_with_gate, delete_then_forget,
-        evict_if_idle_with_gates, forward_forced_turn_restrict, generation_matches,
-        identity_for_active_model, identity_for_saved_model, quiesce_engine_before_reclaim,
+        AUX_ZERO_TOOL_REMINDER, EvalModelSnapshots, ModelIdentity, ModelUpdateRevisions,
+        Pinvou3Bridge, PreparedRuntimeState, SESSION_MODEL_BINDING_STALE_ERROR,
+        ScheduledUnattendedGuard, SessionShellManagers, SessionTurnLifecycles, SessionTurnLocks,
+        SessionTurnShellTasks, TranscriptOperation, cancel_turn_with_gates,
+        default_model_for_new_session_from, delete_chat_session_with_gate,
+        delete_scheduled_run_with_gate, delete_then_forget, evict_if_idle_with_gates,
+        forward_forced_turn_restrict, generation_matches, identity_for_active_model,
+        identity_for_saved_model, merge_aux_zero_tool_reminder, quiesce_engine_before_reclaim,
         resolve_eval_model_selection_from, resolve_runtime_model_override, resolve_scheduled_model,
         resolve_spawn_model, scheduled_profile_after_turn_gate, should_still_reap_after_snapshot,
         should_sync_session, turn_restrict_tools, user_display_message,
@@ -3037,6 +3064,37 @@ mod scheduled_model_tests {
         assert!(turn_restrict_tools("sess-plain", true, false));
         // sched- and other prefixed sessions do not take the aux rule.
         assert!(!turn_restrict_tools("sched-1", false, false));
+    }
+
+    /// The zero-tool table alone does not stop tool-trained models from
+    /// emitting their native tool-call markup as answer text (live repro: a
+    /// DeepSeek aux turn answered with a literal DSML invoke block). Aux
+    /// turns must therefore carry the zero-tool boundary in the per-turn
+    /// reminder, merged after any persona anchor; non-aux sessions must not
+    /// gain a reminder they never had.
+    #[test]
+    fn aux_turn_carries_zero_tool_boundary_reminder() {
+        // Plain session: reminder untouched (None stays None, persona text
+        // passes through verbatim — no aux boundary appended).
+        assert_eq!(merge_aux_zero_tool_reminder("sess-plain", None), None);
+        let persona = "persona anchor".to_string();
+        assert_eq!(
+            merge_aux_zero_tool_reminder("sess-plain", Some(persona.clone())),
+            Some(persona)
+        );
+        // Aux session without a persona: boundary alone.
+        assert_eq!(
+            merge_aux_zero_tool_reminder("aux-1", None),
+            Some(AUX_ZERO_TOOL_REMINDER.to_string())
+        );
+        // Aux session with a persona: anchor first, boundary second.
+        let merged =
+            merge_aux_zero_tool_reminder("aux-1", Some("persona anchor".to_string())).unwrap();
+        assert!(merged.starts_with("persona anchor\n\n"));
+        assert!(merged.ends_with(AUX_ZERO_TOOL_REMINDER));
+        // Case-insensitive aux prefix, same as the tool gate.
+        assert!(merge_aux_zero_tool_reminder("AUX-1", None).is_some());
+        assert!(merge_aux_zero_tool_reminder("sched-1", None).is_none());
     }
 
     /// PR #433 review round-8 (M-1): the is-aux decision is a prefix test on
