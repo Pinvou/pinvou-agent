@@ -527,7 +527,7 @@ mod tests {
     /// 统一包模型下，同名 connector 与用户上传 skill 共享同一包 id（`skill:` 前缀
     /// 借道已清除，id 命名空间统一）：「一个包 = 一个开关」，禁用该包（无论从连接器
     /// 开关还是技能开关进入）都会一并排除同名技能目录——与旧双文件「同名不误伤」
-    /// 语义相反，是 scope 收敛（todo A 节）的既定行为变更。
+    /// 语义相反，是 scope 收敛的既定行为变更。
     #[test]
     fn disabling_package_hides_same_named_skill_unified() {
         with_temp_home(|| {
