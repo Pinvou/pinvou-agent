@@ -32,3 +32,16 @@ pub(super) fn workspace_identity(_path: &Path) -> std::io::Result<WorkspaceIdent
         "workspace identity is unsupported on this platform",
     ))
 }
+
+// The platform/mod.rs #[cfg(test)] forwarders call these through `imp` on
+// every target, so the fallback must provide them too or `cargo test`
+// stops compiling on targets outside unix/windows.
+#[cfg(test)]
+pub(super) fn test_workspace_identity(seed: u64) -> WorkspaceIdentity {
+    WorkspaceIdentity(seed)
+}
+
+#[cfg(test)]
+pub(super) fn private_file_is_restricted(path: &Path) -> std::io::Result<bool> {
+    Ok(path.is_file())
+}
