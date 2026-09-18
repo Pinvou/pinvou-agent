@@ -42,6 +42,48 @@ assert.equal(modelErrors.classify('HTTP 400: invalid temperature').kind, 'unknow
 assert.equal(modelErrors.classify('HTTP 401: response_role: user').kind, 'auth');
 assert.equal(modelErrors.classify('HTTP 400: maximum context length; response_role: user').kind, 'context');
 assert.equal(modelErrors.isModelServiceError('local validation response_role: user'), false);
+// The non-streaming lane never carries the SSE wrapper: those failures
+// surface as the base's InvalidRequest Display text, so the parenthesized
+// status must be parsed or the manual-/compact rejection keeps falling
+// through to the unknown/retry card this classifier exists to replace.
+const nonStreamRoleError = 'Invalid request (400): response_role: "user"';
+assert.equal(modelErrors.classify(nonStreamRoleError).kind, 'format');
+assert.equal(modelErrors.classify(nonStreamRoleError).httpStatus, 400);
+// A parenthesized non-role 400 stays unknown, while the Server error
+// Display form keeps its status for the retryable server kind.
+assert.equal(modelErrors.classify('Invalid request (400): invalid temperature').kind, 'unknown');
+assert.equal(modelErrors.classify('Server error (503): upstream overloaded').httpStatus, 503);
+// One assertion per remaining role-wording arm of the format regex; the
+// "conversation roles must alternate" alternative was dropped as subsumed
+// by `roles? must alternate`.
+assert.equal(modelErrors.classify('HTTP 400: query_role: assistant').kind, 'format');
+assert.equal(modelErrors.classify('HTTP 400: unsupported message role').kind, 'format');
+assert.equal(modelErrors.classify('HTTP 400: unexpected role').kind, 'format');
+assert.equal(modelErrors.classify('HTTP 400: invalid role').kind, 'format');
+// Rendered format-card copy: a swapped kind-table key would otherwise pass,
+// and the deterministic role/template failure must read the same on both
+// lanes, in every UI language, without a retry suggestion.
+for (const lane of [roleError, nonStreamRoleError]) {
+  const formatZh = modelErrors.build(lane, { language: 'zh-Hans', terminal: true });
+  assert.equal(formatZh.kind, 'format');
+  assert.equal(formatZh.title, '对话请求格式不兼容');
+  assert.match(formatZh.message, /新建会话/);
+  assert.doesNotMatch(formatZh.message, /重试/);
+  assert.doesNotMatch(formatZh.message, /\{stop\}/);
+  const formatEn = modelErrors.build(lane, { language: 'en', terminal: true });
+  assert.equal(formatEn.title, 'Conversation format is incompatible');
+  assert.match(formatEn.message, /Start a new conversation/);
+  assert.doesNotMatch(formatEn.message, /Try again later/);
+  assert.equal(formatEn.retryable, false);
+  const formatJa = modelErrors.build(lane, { language: 'ja', terminal: true });
+  assert.equal(formatJa.title, '会話リクエストの形式に互換性がありません');
+  assert.match(formatJa.message, /新しい会話/);
+  assert.equal(
+    modelErrors.build(lane, { language: 'ja', terminal: false }).message,
+    modelErrors.build(lane, { language: 'ja', terminal: true }).message,
+    'role-format failures are deterministic: transient and terminal wording match',
+  );
+}
 assert.equal(modelErrors.classify('SSE stream request failed: HTTP 402 insufficient balance').kind, 'billing');
 assert.equal(modelErrors.classify('HTTP 429 quota exceeded').kind, 'quota');
 assert.equal(modelErrors.classify('HTTP 429 insufficient_quota').kind, 'quota');
