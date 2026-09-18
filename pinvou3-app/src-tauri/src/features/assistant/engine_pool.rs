@@ -3065,16 +3065,17 @@ where
 mod scheduled_model_tests {
     const TEST_SUBMISSION: &str = "sub-test";
     use super::{
-        EvalModelSnapshots, ModelIdentity, ModelUpdateRevisions, Pinvou3Bridge,
+        EvalModelSnapshots, ModelIdentity, ModelUpdateRevisions, Op, Pinvou3Bridge,
         PreparedRuntimeState, SESSION_MODEL_BINDING_STALE_ERROR, ScheduledUnattendedGuard,
         SessionShellManagers, SessionTurnLifecycles, SessionTurnLocks, SessionTurnShellTasks,
-        TURN_GATE_AWAIT_TIMEOUT, TranscriptOperation, TurnIdentity, cancel_turn_with_gates,
-        default_model_for_new_session_from, delete_chat_session_with_gate,
+        TURN_GATE_AWAIT_TIMEOUT, TranscriptOperation, TurnIdentity, bounded_shutdown_sends,
+        cancel_turn_with_gates, default_model_for_new_session_from, delete_chat_session_with_gate,
         delete_scheduled_run_with_gate, delete_then_forget, dispatch_turn_bound_cancel,
         evict_if_idle_with_gates, generation_matches, identity_for_active_model,
         identity_for_saved_model, quiesce_engine_before_reclaim, resolve_eval_model_selection_from,
         resolve_runtime_model_override, resolve_scheduled_model, resolve_spawn_model,
-        scheduled_profile_after_turn_gate, should_still_reap_after_snapshot, user_display_message,
+        retry_shutdown_sends, scheduled_profile_after_turn_gate, should_still_reap_after_snapshot,
+        user_display_message,
     };
     use crate::features::assistant::engine::TurnBoundCancelOps;
     use crate::features::assistant::runtime_model::PreparedRuntimeModel;
@@ -4413,6 +4414,78 @@ mod scheduled_model_tests {
         })
         .await
         .expect("turn gate must be re-acquirable after the bound");
+    }
+
+    // issue #255: the reclaim shutdown sends must give up the turn gate
+    // within TURN_GATE_AWAIT_TIMEOUT when the engine ops channel is full
+    // and never drained, and the undelivered ops must still be re-delivered
+    // in order by the detached retry once capacity frees up — otherwise a
+    // timed-out reclaim would leak the engine run loop until process exit
+    // (the engine only exits through its normal Shutdown path and its own
+    // tx_op clone keeps the channel open). The forkguard_ prefix registers
+    // it as a fork-guard layer-3 behavior test (fork-policy §3).
+    #[tokio::test]
+    async fn forkguard_reclaim_shutdown_sends_bounded_and_retried() {
+        // Capacity 1, filled and never drained: the first gate-held send
+        // parks exactly like on a wedged engine.
+        let (tx, mut rx) = tokio::sync::mpsc::channel::<Op>(1);
+        tx.send(Op::Shutdown).await.expect("wedged slot filled");
+        let started = std::time::Instant::now();
+        let delivered = bounded_shutdown_sends(
+            |op| {
+                let tx = tx.clone();
+                async move { tx.send(op).await.map_err(anyhow::Error::from) }
+            },
+            super::EnginePool::shutdown_cancel_cascade_ops(),
+        )
+        .await;
+        assert_eq!(delivered, 0);
+        assert!(started.elapsed() >= TURN_GATE_AWAIT_TIMEOUT);
+        // Drain the filler so capacity frees: the detached retry must now
+        // deliver CancelSubAgents then Shutdown, in that order.
+        assert!(matches!(rx.recv().await, Some(Op::Shutdown)));
+        let retry_tx = tx.clone();
+        let retry = tokio::spawn(retry_shutdown_sends(
+            move |op| {
+                let tx = retry_tx.clone();
+                async move { tx.send(op).await.map_err(anyhow::Error::from) }
+            },
+            super::EnginePool::shutdown_cancel_cascade_ops()
+                .into_iter()
+                .collect(),
+            TURN_GATE_AWAIT_TIMEOUT,
+        ));
+        assert!(matches!(rx.recv().await, Some(Op::CancelSubAgents)));
+        assert!(matches!(rx.recv().await, Some(Op::Shutdown)));
+        retry.await.expect("retry task joins");
+    }
+
+    // The detached retry must itself be bounded: on a permanently wedged
+    // engine it stops after its patience (the engine task would linger
+    // either way while stalled) instead of parking a task forever.
+    #[tokio::test]
+    async fn forkguard_reclaim_shutdown_retry_gives_up_within_patience() {
+        // The receiver stays alive but is never drained, so the channel
+        // stays full: the retry must give up on its patience, not on a
+        // channel error.
+        let (tx, _rx) = tokio::sync::mpsc::channel::<Op>(1);
+        tx.send(Op::Shutdown).await.expect("wedged slot filled");
+        let patience = std::time::Duration::from_millis(100);
+        let started = std::time::Instant::now();
+        let retry_tx = tx.clone();
+        let retry = tokio::spawn(retry_shutdown_sends(
+            move |op| {
+                let tx = retry_tx.clone();
+                async move { tx.send(op).await.map_err(anyhow::Error::from) }
+            },
+            super::EnginePool::shutdown_cancel_cascade_ops()
+                .into_iter()
+                .collect(),
+            patience,
+        ));
+        retry.await.expect("retry task joins");
+        assert!(started.elapsed() >= patience);
+        assert!(started.elapsed() < TURN_GATE_AWAIT_TIMEOUT);
     }
 
     #[tokio::test]
