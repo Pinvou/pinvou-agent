@@ -258,21 +258,66 @@ pub(crate) fn turn_restrict_tools(
         || crate::features::sessions::is_aux_session_id(session_id)
 }
 
-/// The "last mile" from decision to dispatch is folded into one testable
-/// function: the forced result computed by `send_reserved_user_message` must
-/// be passed **verbatim** to the engine's per-turn send entry. This wiring
-/// previously had no test pin — passing the caller's parameter straight
-/// through also went all-green, and the zero-tool invariant ran naked exactly
-/// at the composition point; now a capture-style test pins the value reaching
-/// the engine, and the composition point has only this one path left
-/// (bypassing this function to pass values directly is exposed at review).
+/// Per-turn tool restriction, mintable only through the policy above.
+///
+/// PR #433 review round-10 (S2(b)): `AppEngine::send_reserved_user_message`'s
+/// per-turn restriction used to be a bare `bool`, so replacing this composition
+/// with the caller's `restrict_tools_for_turn` kept the whole suite green while
+/// aux sessions regained full tools — the headline zero-tool wiring rested on
+/// review alone. The engine's per-turn send entry now takes this token: the
+/// field is private to this module, so outside it a token can only be obtained
+/// from [`TurnToolRestrict::forced`], which folds in `turn_restrict_tools`.
+/// Handing the caller's `bool` straight to the engine is therefore a compile
+/// error, not a silent regression.
+pub(crate) mod turn_tool_restrict {
+    /// See the module documentation.
+    #[derive(Debug, Clone, Copy)]
+    pub(crate) struct TurnToolRestrict(bool);
+
+    impl TurnToolRestrict {
+        /// Sole constructor: no path from raw flags skips the policy.
+        pub(super) fn forced(
+            session_id: &str,
+            persona_conversational: bool,
+            caller_restrict: bool,
+        ) -> Self {
+            Self(super::turn_restrict_tools(
+                session_id,
+                persona_conversational,
+                caller_restrict,
+            ))
+        }
+
+        /// The composed per-turn decision (`turn_restrict_tools`: caller
+        /// request | pure-conversation meta card | `aux-` prefix).
+        pub(crate) fn restricts_tools(self) -> bool {
+            self.0
+        }
+
+        /// The restriction to apply on the engine that owns `engine_session_id`.
+        ///
+        /// The `aux-` test runs again against the engine's own id, so a token
+        /// minted with an unrelated (or empty — the headless harness uses `""`)
+        /// session id can never hand an aux session a full-tool turn.
+        pub(crate) fn restricts_tools_for(self, engine_session_id: &str) -> bool {
+            self.restricts_tools()
+                || crate::features::sessions::is_aux_session_id(engine_session_id)
+        }
+    }
+}
+
+/// The "last mile" from decision to dispatch is folded into one function: the
+/// forced result computed by `send_reserved_user_message` is handed to the
+/// engine's per-turn send entry as a [`turn_tool_restrict::TurnToolRestrict`],
+/// whose only constructor is this path. The doc comment above records why the
+/// parameter is a token instead of the caller's `bool`.
 pub(crate) fn forward_forced_turn_restrict<F>(
     session_id: &str,
     persona_conversational: bool,
     caller_restrict: bool,
-    send: impl FnOnce(bool) -> F,
+    send: impl FnOnce(turn_tool_restrict::TurnToolRestrict) -> F,
 ) -> F {
-    send(turn_restrict_tools(
+    send(turn_tool_restrict::TurnToolRestrict::forced(
         session_id,
         persona_conversational,
         caller_restrict,
@@ -3033,54 +3078,98 @@ mod scheduled_model_tests {
         assert!(!is_sched_session_id("sched计划"));
     }
 
-    /// PR #433 review round-6 (MAJOR): the "last mile" from decision to
-    /// dispatch — `send_reserved_user_message` must hand the forced result of
-    /// `turn_restrict_tools` **verbatim** to the engine's per-turn send
-    /// entry. This wiring previously had no test pin: changing the chokepoint
-    /// back to passing the caller's parameter straight through kept every
-    /// existing test green while aux regained full tools. This test uses a
-    /// capture closure to pin the value reaching the engine entry, and the
-    /// composition point is folded into the single path of
-    /// `forward_forced_turn_restrict` — bypassing it is exposed at review.
+    /// PR #433 review round-6 (MAJOR) + round-10 (S2(b)): the "last mile" from
+    /// decision to dispatch — `send_reserved_user_message` hands the forced
+    /// result of `turn_restrict_tools` to the engine's per-turn send entry.
+    /// Round-6 pinned the value with this capture closure but left the caller's
+    /// `bool` an equally valid argument type, so passing it straight through
+    /// kept every test green. The entry now takes
+    /// [`TurnToolRestrict`](super::turn_tool_restrict::TurnToolRestrict), which
+    /// only `forward_forced_turn_restrict` can mint: this test pins the value
+    /// the engine reads, and the type makes "hand the caller's `bool` to the
+    /// engine" a compile error instead of a silent regression.
     #[test]
     fn send_dispatch_forwards_forced_restrict_to_engine_entry() {
         let captured = std::cell::Cell::new(None);
         {
             let captured = &captured;
-            forward_forced_turn_restrict("aux-1", false, false, |restrict| {
-                captured.set(Some(restrict));
+            forward_forced_turn_restrict("aux-1", false, false, |turn_tool_restrict| {
+                captured.set(Some(turn_tool_restrict));
             });
         }
-        assert_eq!(
-            captured.get(),
-            Some(true),
-            "aux 会话即使调用方传 false,到达引擎的逐轮 restrict 也必须为 true(零工具)"
+        let aux = captured.get().expect("aux 会话必须产出限制令牌");
+        assert!(
+            aux.restricts_tools(),
+            "aux 会话即使调用方传 false,组合结果也必须为限制(零工具)"
+        );
+        assert!(
+            aux.restricts_tools_for("aux-1"),
+            "aux 会话到达引擎的逐轮 restrict 必须为 true(零工具)"
         );
 
         captured.set(None);
         {
             let captured = &captured;
-            forward_forced_turn_restrict("sess-plain", false, false, |restrict| {
-                captured.set(Some(restrict));
+            forward_forced_turn_restrict("sess-plain", false, false, |turn_tool_restrict| {
+                captured.set(Some(turn_tool_restrict));
             });
         }
-        assert_eq!(
-            captured.get(),
-            Some(false),
-            "对照:普通会话不调用方不限制、无元卡时,引擎收到的 restrict 保持 false"
+        let plain = captured.get().expect("普通会话必须产出令牌");
+        assert!(
+            !plain.restricts_tools(),
+            "对照:普通会话调用方不限制、无元卡时,组合结果保持不限制"
+        );
+        assert!(
+            !plain.restricts_tools_for("sess-plain"),
+            "对照:普通会话调用方不限制、无元卡时,引擎收到的 restrict 保持 false"
         );
 
         captured.set(None);
         {
             let captured = &captured;
-            forward_forced_turn_restrict("sess-plain", false, true, |restrict| {
-                captured.set(Some(restrict));
+            forward_forced_turn_restrict("sess-plain", false, true, |turn_tool_restrict| {
+                captured.set(Some(turn_tool_restrict));
             });
         }
-        assert_eq!(
-            captured.get(),
-            Some(true),
+        let caller_forced = captured.get().expect("调用方限制必须产出令牌");
+        assert!(
+            caller_forced.restricts_tools(),
             "对照:调用方逐轮要求限制时原样透传"
+        );
+        assert!(caller_forced.restricts_tools_for("sess-plain"));
+
+        // A pure-conversation meta card forces the restriction on its own.
+        captured.set(None);
+        {
+            let captured = &captured;
+            forward_forced_turn_restrict("sess-plain", true, false, |turn_tool_restrict| {
+                captured.set(Some(turn_tool_restrict));
+            });
+        }
+        assert!(
+            captured
+                .get()
+                .expect("纯对话元卡必须产出令牌")
+                .restricts_tools(),
+            "纯对话元卡(conversational_only)加持期间组合结果必须为限制"
+        );
+
+        // Even a token minted for another session (wrong/empty id — the
+        // headless harness uses "") cannot un-restrict the aux session: the
+        // engine entry re-checks the aux prefix against its OWN session id.
+        let mismatched =
+            super::turn_tool_restrict::TurnToolRestrict::forced("sess-plain", false, false);
+        assert!(
+            !mismatched.restricts_tools(),
+            "令牌自身的组合值来自铸造时的会话,不因引擎 id 改变"
+        );
+        assert!(
+            mismatched.restricts_tools_for("aux-1"),
+            "引擎侧 aux 前缀复查必须兜住会话 id 不匹配的令牌"
+        );
+        assert!(
+            !mismatched.restricts_tools_for(""),
+            "空 id(headless 引擎)不构成 aux 会话,按令牌自身取值"
         );
     }
 

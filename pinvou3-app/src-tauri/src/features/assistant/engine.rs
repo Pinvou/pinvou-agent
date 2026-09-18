@@ -30,6 +30,7 @@ use serde_json::json;
 use tauri::{AppHandle, Emitter, Manager};
 use tokio::sync::broadcast;
 
+use crate::features::assistant::engine_pool::turn_tool_restrict::TurnToolRestrict;
 pub(crate) use crate::features::assistant::engine_support::EngineTurnSignal;
 use crate::features::assistant::engine_support::{
     TurnCompletionTracker, apply_scheduled_turn_policy, maybe_notify_task_completed,
@@ -1595,7 +1596,11 @@ impl AppEngine {
         content: String,
         mode: AppMode,
         persona_reminder: Option<String>,
-        restrict_tools: bool,
+        // Proof token, not the caller's `bool`: only the pool's policy
+        // (`turn_restrict_tools`) can mint it (PR #433 review S2(b)). The value
+        // is re-checked against THIS engine's session id, so a bogus token can
+        // never un-restrict an aux session.
+        restrict_tools: TurnToolRestrict,
         expert_snapshot: Option<std::sync::Arc<ExpertRosterSnapshot>>,
         reservation: TurnReservation,
     ) -> Result<()> {
@@ -1603,7 +1608,7 @@ impl AppEngine {
             content,
             mode,
             persona_reminder,
-            restrict_tools,
+            restrict_tools.restricts_tools_for(&self.session_id),
             expert_snapshot,
         )?;
         self.send_reserved_turn_op(op, reservation).await
