@@ -3194,7 +3194,7 @@ mod tests {
                 load_disabled_connectors(),
                 vec!["weather".to_string(), "pptx".to_string()]
             );
-            save_disabled_connectors(&[]).unwrap(); // 全开回去
+            save_disabled_connectors(&[]).unwrap(); // re-enable everything
             assert!(load_disabled_connectors().is_empty());
         });
     }
