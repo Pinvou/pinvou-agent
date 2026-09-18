@@ -297,7 +297,7 @@
     // 厂商预装本地大模型一键引导:首屏检测结果 + 引导执行态
     vllmSetup: null,          // {eligible, may_offer_setup, has_packages, engine_state:ready|starting|stopped|failed, ...}
     vllmBootstrapping: false, // 引导进行中(pkexec + 拉起 + 轮询就绪)
-    vllmSetupPhase: null,     // 阶段:'authorizing'|'waiting'|'ready'(后端 vllm-setup:phase 事件驱动步骤指示)
+    vllmSetupPhase: null,     // 阶段:'authorizing'|'waiting'|'ready'(引导开始时本地置 'authorizing')
     vllmSetupAttempt: 0,      // waiting 阶段第几次探测(后端报)
     vllmBootstrapDone: null,  // 成功结果 {base_url, model}, 据此显示「立即重启」
     vllmBootstrapError: null, // 失败原因(pkexec stderr / 超时透传)
@@ -1628,7 +1628,7 @@
     // 手机可能在桌面仍停留草稿页/其他 session 时先唤醒这个后台 session。
     // 仅 hydrate messages 而把 chatItems 留空，会让后续 switchToSession 命中缓存快路径，
     // 不再 rerenderFromMessages，桌面便只看得到手机唤醒后的新内容，历史像是“丢了”。
-    // 在首次磁盘 hydration 后先完整重建展示层，再由 mobile_user_message 追加当前轮；
+    // 在首次磁盘 hydration 后先完整重建展示层，流式增量随后照常追加；
     // buf.busy 时上方已提前返回，不会覆盖正在流式生成的实时 chatItems。
     runSyncOnSession(sid, function () {
       resetPendingAssistant();

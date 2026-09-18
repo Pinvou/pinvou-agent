@@ -168,6 +168,22 @@ fn gaia_parser_exposes_only_the_pinned_official_level_one_workflow() {
                 output: PathBuf::from("submission.jsonl"),
             },
         ),
+        (
+            vec![
+                "pinvou",
+                "benchmark",
+                "submission",
+                "gaia",
+                "--run-id",
+                "run-1",
+                "--output",
+                "submission.jsonl",
+            ],
+            BenchmarkCommand::SubmissionGaia {
+                run_id: "run-1".into(),
+                output: PathBuf::from("submission.jsonl"),
+            },
+        ),
     ];
 
     for (arguments, expected) in cases {
@@ -483,15 +499,15 @@ fn invalid_usage_maps_to_exit_code_two() {
 }
 
 #[test]
-fn invalid_output_value_fails_fast_with_usage_error() {
-    // An unrecognized --output value must be rejected immediately instead of
-    // staying in argv and later surfacing as a misleading "unknown benchmark
-    // command" error.
+fn unrecognized_output_value_falls_through_to_usage_error() {
+    // Outside `benchmark submission gaia` (which consumes `--output <file>` as
+    // a legacy alias of `--destination`), an unrecognized `--output` value
+    // stays in argv and surfaces as the standard usage error.
     let error = parse_args(["pinvou", "--output", "yaml", "benchmark", "list"]).unwrap_err();
     assert_eq!(error.exit_code(), ExitCode::Usage);
     assert_eq!(
         error.to_string(),
-        "--output requires human or json (submission files use --destination)"
+        "usage: pinvou benchmark <command> | pinvou agent run"
     );
 }
 

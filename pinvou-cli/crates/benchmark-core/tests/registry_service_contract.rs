@@ -23,38 +23,6 @@ fn temp_base(name: &str) -> PathBuf {
     path
 }
 
-/// Local registry fixture standing in for the removed `BenchmarkRegistry`
-/// helper: the duplicate/unknown-id contract under test is adapter-keyed
-/// lookup with explicit error codes.
-#[derive(Default)]
-struct LocalRegistry {
-    adapters: std::collections::HashMap<String, Arc<dyn BenchmarkAdapter>>,
-}
-
-impl LocalRegistry {
-    fn new() -> Self {
-        Self::default()
-    }
-
-    fn register(&mut self, adapter: Arc<dyn BenchmarkAdapter>) -> benchmark_core::Result<()> {
-        let id = adapter.descriptor().id().as_str().to_owned();
-        if self.adapters.contains_key(&id) {
-            return Err(benchmark_core::BenchmarkError::Contract(
-                "duplicate_benchmark".into(),
-            ));
-        }
-        self.adapters.insert(id, adapter);
-        Ok(())
-    }
-
-    fn get(&self, id: &BenchmarkId) -> benchmark_core::Result<Arc<dyn BenchmarkAdapter>> {
-        self.adapters
-            .get(id.as_str())
-            .cloned()
-            .ok_or_else(|| benchmark_core::BenchmarkError::Contract("unknown_benchmark".into()))
-    }
-}
-
 #[derive(Default)]
 struct Calls {
     planned: usize,
@@ -424,41 +392,6 @@ fn durable_runs_publish_only_core_handles_and_reopen_for_scoring() {
     assert_eq!(corrupt.code(), "private_prediction_unavailable");
     assert!(!format!("{reopened:?}").contains("PRIVATE_ANSWER_SENTINEL"));
     std::fs::remove_dir_all(base).unwrap();
-}
-
-#[test]
-fn registry_rejects_duplicate_and_unknown_benchmark_ids() {
-    let mut registry = LocalRegistry::new();
-    registry
-        .register(Arc::new(FixtureAdapter::new(
-            "fixture",
-            Arc::new(Mutex::new(Calls::default())),
-        )))
-        .unwrap();
-    assert_eq!(
-        registry
-            .get(&BenchmarkId::new("fixture"))
-            .unwrap()
-            .descriptor()
-            .id()
-            .as_str(),
-        "fixture"
-    );
-    let duplicate = registry
-        .register(Arc::new(FixtureAdapter::new(
-            "fixture",
-            Arc::new(Mutex::new(Calls::default())),
-        )))
-        .unwrap_err();
-    assert_eq!(duplicate.code(), "duplicate_benchmark");
-    assert_eq!(
-        registry
-            .get(&BenchmarkId::new("unknown"))
-            .err()
-            .unwrap()
-            .code(),
-        "unknown_benchmark"
-    );
 }
 
 #[test]

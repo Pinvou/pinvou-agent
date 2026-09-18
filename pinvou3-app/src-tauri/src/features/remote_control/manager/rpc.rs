@@ -7,6 +7,7 @@
 //! builders are pure and stateless.
 
 use std::collections::HashSet;
+use std::time::Instant;
 
 use serde_json::{Value, json};
 use sha2::{Digest, Sha256};
@@ -656,12 +657,28 @@ pub(super) fn stream_reset_message(
     })
 }
 
+pub(super) fn rpc_in_flight_expired(dispatched_at: Instant, now: Instant) -> bool {
+    now.duration_since(dispatched_at) > super::RPC_IN_FLIGHT_TTL
+}
+
 pub(super) fn enqueue_stream_reset(sender: RelaySender, message: Value) {
     // RelaySender owns a single bounded waiter and coalesces repeated recovery
     // barriers to the latest lease/epoch while the data channel is saturated.
     if sender.enqueue_stream_reset(message).is_err() {
         eprintln!("[web-access] stream reset could not reach the relay task");
     }
+}
+
+pub(super) fn try_enqueue_message_batch(
+    messages: Vec<Value>,
+    mut enqueue: impl FnMut(Value) -> bool,
+) -> bool {
+    for message in messages {
+        if !enqueue(message) {
+            return false;
+        }
+    }
+    true
 }
 
 pub(super) fn snapshot_message(

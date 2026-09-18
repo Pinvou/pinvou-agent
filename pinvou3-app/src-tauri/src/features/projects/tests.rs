@@ -4,7 +4,7 @@
 use std::collections::HashSet;
 use std::path::PathBuf;
 
-use super::{DeleteProjectReport, ProjectStore};
+use super::ProjectStore;
 
 fn store_in(temp: &tempfile::TempDir) -> ProjectStore {
     ProjectStore::from_paths(temp.path().join("projects.json"))
@@ -200,8 +200,7 @@ fn delete_unassigns_sessions_but_keeps_explicit_move_out() {
         .move_session_to_project("s4", Some(&other.id), None)
         .expect("assign s4");
 
-    let report = store.delete_project(&project.id).expect("delete project");
-    assert_eq!(report, DeleteProjectReport {});
+    store.delete_project(&project.id).expect("delete project");
 
     assert_eq!(store.assignment_of("s1"), None);
     assert_eq!(store.assignment_of("s2"), None);

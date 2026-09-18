@@ -824,7 +824,9 @@ impl SkillMarketplaceManager {
 
     /// 导入用户上传的 zip 技能包:解压找 SKILL.md → 安全校验 → 落盘到
     /// `bundle/skills/<name>/`。穿越/symlink/大小防护对齐底座 install.rs。
-    /// 返回落盘技能名(frontmatter name),供命令层同步 scope 禁用集。
+    /// 返回落盘技能名(frontmatter name)。生产通道走 `import_package_named`;
+    /// 本封装仅剩契约测试在用。
+    #[cfg(test)]
     pub fn import_package(&self, zip_path: &str) -> Result<String, String> {
         let fname = Path::new(zip_path)
             .file_name()

@@ -394,28 +394,6 @@ impl SessionAgentStore {
             .collect()
     }
 
-    /// 在 ACP 会话创建时永久绑定 Agent 与执行目录。
-    ///
-    /// `set_acp_workspace` 是当前前端创建会话时的主入口；这个更窄的 API 保留给
-    /// 后续仅切换后端、不变更工作区的场景。
-    #[allow(dead_code)]
-    pub fn set_backend(&self, session_id: &str, backend: AgentBackend) -> Result<()> {
-        {
-            let mut records = self.records.write();
-            let record = records.entry(session_id.to_string()).or_default();
-            if record.backend != backend {
-                record.backend = backend;
-                record.acp_session_id = None;
-                record.acp_model_id = None;
-                record.acp_mode_id = None;
-                record.acp_config_values.clear();
-                record.workspace_kind = CodexWorkspaceKind::Temporary;
-                record.workspace_path = None;
-            }
-        }
-        self.persist()
-    }
-
     /// ACP session 一旦建立就不允许换 Agent 或目录，避免同一个 Agent 上下文跨
     /// 后端或跨项目漂移。
     pub fn set_acp_workspace(

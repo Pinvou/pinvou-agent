@@ -272,8 +272,8 @@ where
     store.delete_scheduled_run(session_id, expected_task_id)
 }
 
-/// EnginePool 预备 API(含测试覆盖,待 Tauri command 层接入);在 lib 生产视角下为 dead code。
-#[allow(dead_code)]
+/// 共享删除路径:普通聊天删除与契约测试都经由它,持有与懒加载/发送完全
+/// 相同的 turn gate,防止排队发送在引擎回收与磁盘删除之间复活会话。
 async fn delete_chat_session_with_gate<F, Fut, G>(
     turn_locks: &SessionTurnLocks,
     store: &SessionStore,

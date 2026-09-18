@@ -308,10 +308,6 @@ pub struct SnapshotFileMetadata {
 enum ExpectedDigest {
     Sha256([u8; 32]),
     GitSha1([u8; 20]),
-    // "快照条目无摘要"的模型态:当前只有 review 契约测试构造它,
-    // 生产匹配分支是防御性的,故在非测试编译下抑制 dead_code。
-    #[cfg_attr(not(test), allow(dead_code))]
-    None,
 }
 
 impl SnapshotFileMetadata {
@@ -342,7 +338,7 @@ impl SnapshotFileMetadata {
     pub fn expected_sha256(&self) -> Option<&[u8; 32]> {
         match &self.expected_digest {
             ExpectedDigest::Sha256(digest) => Some(digest),
-            ExpectedDigest::GitSha1(_) | ExpectedDigest::None => None,
+            ExpectedDigest::GitSha1(_) => None,
         }
     }
 }
@@ -909,12 +905,6 @@ impl<D: SnapshotDownloader> GaiaSnapshotManager<D> {
             .map_err(|_| GaiaFetchError::DownloadFailed)?;
         validate_preflight_identity(remote_paths, &metadata)
             .map_err(|_| GaiaFetchError::DownloadFailed)?;
-        if metadata
-            .iter()
-            .any(|entry| matches!(entry.expected_digest, ExpectedDigest::None))
-        {
-            return Err(GaiaFetchError::DownloadFailed);
-        }
         Ok(metadata)
     }
 
@@ -927,9 +917,6 @@ impl<D: SnapshotDownloader> GaiaSnapshotManager<D> {
         actual_total: &mut u64,
     ) -> Result<(), GaiaFetchError> {
         validate_relative(relative).map_err(|_| GaiaFetchError::DownloadFailed)?;
-        if matches!(expected.expected_digest, ExpectedDigest::None) {
-            return Err(GaiaFetchError::DownloadFailed);
-        }
         let remote = relative.to_str().ok_or(GaiaFetchError::DownloadFailed)?;
         let destination = staging.join(relative);
         let request = SnapshotDownloadRequest {
@@ -1320,7 +1307,6 @@ fn digest_matches(expected: &SnapshotFileMetadata, sha256: Sha256, git_sha1: Sha
     match expected.expected_digest {
         ExpectedDigest::Sha256(digest) => <[u8; 32]>::from(sha256.finalize()) == digest,
         ExpectedDigest::GitSha1(digest) => <[u8; 20]>::from(git_sha1.finalize()) == digest,
-        ExpectedDigest::None => false,
     }
 }
 
@@ -2445,24 +2431,6 @@ mod review_contract_tests {
             stream_verified_file(b"TRUSTED".as_slice(), Some(7), &tampered, expected, 7).is_err()
         );
         assert!(!tampered.exists());
-        let _ = fs::remove_dir_all(root);
-    }
-
-    #[test]
-    fn fetch_size_only_metadata_remains_source_compatible_but_cannot_publish_content() {
-        let metadata = SnapshotFileMetadata {
-            remote_path: PathBuf::from("payload"),
-            size: 7,
-            expected_digest: ExpectedDigest::None,
-        };
-        assert_eq!(metadata.expected_sha256(), None);
-        let root = test_directory("size-only-rejected");
-        let destination = root.join("payload");
-        assert!(
-            stream_verified_file(b"trusted".as_slice(), Some(7), &destination, &metadata, 7,)
-                .is_err()
-        );
-        assert!(!destination.exists());
         let _ = fs::remove_dir_all(root);
     }
 

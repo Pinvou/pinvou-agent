@@ -15,7 +15,7 @@ use benchmark_core::{
 #[cfg(any(test, feature = "product-backend"))]
 use adapter_smoke::{
     SmokeAnalysisMaterial, SmokeRecord, SmokeToolEvent, analyze_rules, calculate_product_score,
-    not_configured_judge, render_smoke_markdown, smoke_cases,
+    render_smoke_markdown, smoke_cases,
 };
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -259,16 +259,12 @@ where
                     output = OutputMode::Json;
                     values.drain(index..=index + 1);
                 }
-                // Fail fast instead of leaving the unrecognized token in argv,
-                // where it would later surface as a misleading
-                // "unknown benchmark command" usage error. The legacy
-                // `--output <file>` submission alias was removed with it;
-                // file destinations are spelled `--destination`.
-                _ => {
-                    return Err(CliError::usage(
-                        "--output requires human or json (submission files use --destination)",
-                    ));
-                }
+                // Leave unrecognized values in argv: `benchmark submission
+                // gaia` still accepts `--output <file>` as a legacy alias of
+                // `--destination` (consumed in parse_gaia_submission);
+                // everywhere else the leftover token surfaces as the standard
+                // usage error.
+                _ => index += 1,
             }
         } else {
             index += 1;
@@ -373,11 +369,19 @@ fn parse_gaia_score(values: &[String]) -> Result<BenchmarkCommand, CliError> {
 
 fn parse_gaia_submission(values: &[String]) -> Result<BenchmarkCommand, CliError> {
     require_gaia(values, "submission")?;
-    let options = named_options(&values[3..], &["--run-id", "--destination"])?;
+    let options = named_options(&values[3..], &["--run-id", "--destination", "--output"])?;
     let run_id = option(&options, "--run-id")
         .map(str::to_owned)
         .ok_or_else(|| CliError::usage("benchmark submission gaia requires --run-id"))?;
-    let output = option(&options, "--destination")
+    let destination = option(&options, "--destination");
+    let legacy_output = option(&options, "--output");
+    if destination.is_some() && legacy_output.is_some() {
+        return Err(CliError::usage(
+            "benchmark submission gaia accepts one destination",
+        ));
+    }
+    let output = destination
+        .or(legacy_output)
         .map(PathBuf::from)
         .ok_or_else(|| CliError::usage("benchmark submission gaia requires --destination"))?;
     Ok(BenchmarkCommand::SubmissionGaia { run_id, output })
@@ -594,7 +598,7 @@ fn finalize_smoke_outcomes(
     let analysis = analyze_rules(&smoke_cases(), &records);
     let score = calculate_product_score(&records, analysis.findings())
         .map_err(|_| CliError::failed("smoke_report_failed"))?;
-    let markdown = render_smoke_markdown(&records, &analysis, &score, &not_configured_judge())
+    let markdown = render_smoke_markdown(&records, &analysis, &score)
         .map_err(|_| CliError::failed("smoke_report_failed"))?;
     let store = RunStore::open(base, run_id).map_err(core_error)?;
     let report_path = if store.run_dir().join("report.md").exists() {

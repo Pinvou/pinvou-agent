@@ -47,10 +47,6 @@ struct ProjectsFile {
 
 const SCHEMA_VERSION: u32 = 1;
 
-/// 删除项目的结果汇报:受影响会话只被解绑(回落隐式分组),永不删除。
-#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
-pub struct DeleteProjectReport {}
-
 /// 移动归属的结果:前端据此提示"已加入项目(并添加了文件夹 xx)"。
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 pub struct MoveSessionOutcome {
@@ -444,7 +440,7 @@ impl ProjectStore {
         Ok(updated)
     }
 
-    pub fn delete_project(&self, project_id: &str) -> Result<DeleteProjectReport> {
+    pub fn delete_project(&self, project_id: &str) -> Result<()> {
         let mut state = self.state.write();
         let Some(index) = state
             .projects
@@ -467,7 +463,7 @@ impl ProjectStore {
             state.assignments.remove(session_id);
         }
         persist_locked(&state, &self.path)?;
-        Ok(DeleteProjectReport {})
+        Ok(())
     }
 
     /// 移动会话归属(纯逻辑层写;不触碰会话的工作目录绑定)。

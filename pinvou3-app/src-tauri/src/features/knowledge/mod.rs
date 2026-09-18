@@ -1,6 +1,6 @@
 //! 本地知识底座 L0：全系统元数据索引 + 秒搜 + 去重。
 //!
-//! 见 docs/本地知识底座-产品形态与架构.md。v0 以 in-process 模块落地（复用
+//! v0 以 in-process 模块落地（复用
 //! `bridge::paths`/Tauri 命令通路），用 [`KnowledgeService`]（UI 无关）收口，
 //! 便于日后抽成独立 `pinvou3-knowledged` daemon + MCP（`kb_*`）。
 //!

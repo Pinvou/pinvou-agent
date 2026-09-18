@@ -49,9 +49,10 @@ use rpc::{
     EventSource, NewRpcAdmission, ReplayMessageContext, RpcReadyAction, RpcRequestAction,
     bounded_rpc_completion, enqueue_stream_reset, event_message, prepare_bridge_generation,
     prepare_new_rpc_admission, prune_rpc_cache, request_conflict_completion,
-    rpc_admission_rejection, rpc_error_completion, rpc_fingerprint, rpc_response, snapshot_message,
-    stream_reset_message, subscription_filtered_replay_messages, tombstone_completion,
-    validate_bridge_generation, validate_rpc_command, validate_web_rpc_scope,
+    rpc_admission_rejection, rpc_error_completion, rpc_fingerprint, rpc_in_flight_expired,
+    rpc_response, snapshot_message, stream_reset_message, subscription_filtered_replay_messages,
+    tombstone_completion, try_enqueue_message_batch, validate_bridge_generation,
+    validate_rpc_command, validate_web_rpc_scope,
 };
 
 // The transfer buffer helpers mutate `Inner` through borrowed guards. They are
@@ -2117,7 +2118,7 @@ impl RemoteControlManager {
                 .iter()
                 .filter_map(|(id, entry)| match entry {
                     RpcCacheEntry::Pending(pending)
-                        if now.duration_since(pending.dispatched_at) > RPC_IN_FLIGHT_TTL =>
+                        if rpc_in_flight_expired(pending.dispatched_at, now) =>
                     {
                         Some(id.clone())
                     }
@@ -2571,13 +2572,9 @@ impl RemoteControlManager {
             // Enqueue the complete replay while holding the stream lock. Live
             // events also enqueue under this lock, so seq N+1 cannot overtake
             // the replay suffix ending at N.
-            let mut replay_enqueued = true;
-            for message in messages {
-                if sender.try_send(RelayOutbound::Message(message)).is_err() {
-                    replay_enqueued = false;
-                    break;
-                }
-            }
+            let replay_enqueued = try_enqueue_message_batch(messages, |message| {
+                sender.try_send(RelayOutbound::Message(message)).is_ok()
+            });
             if !replay_enqueued {
                 // A partially enqueued suffix is always followed by a reset;
                 // never advertise readiness after silently losing its tail.
@@ -2821,12 +2818,13 @@ mod tests {
 
     #[test]
     fn stalled_in_flight_rpc_expires_after_ttl_only() {
-        // handle_rpc_request 的内联判定：180s 未超时，TTL+1s 超时。
         let dispatched_at = Instant::now();
-        let in_flight_expired =
-            |now: Instant| now.duration_since(dispatched_at) > RPC_IN_FLIGHT_TTL;
-        assert!(!in_flight_expired(dispatched_at + Duration::from_secs(180)));
-        assert!(in_flight_expired(
+        assert!(!rpc_in_flight_expired(
+            dispatched_at,
+            dispatched_at + Duration::from_secs(180)
+        ));
+        assert!(rpc_in_flight_expired(
+            dispatched_at,
             dispatched_at + RPC_IN_FLIGHT_TTL + Duration::from_secs(1)
         ));
     }
@@ -3988,19 +3986,13 @@ mod tests {
             json!({ "seq": 3 }),
         ];
         let mut attempted = Vec::new();
-        // synchronize_client_from_value 的内联入队循环：任一帧失败即停止，
-        // 不继续消费后续帧。
-        let mut replay_enqueued = true;
-        for message in messages {
+        let complete = try_enqueue_message_batch(messages, |message| {
             let seq = message["seq"].as_u64().unwrap();
             attempted.push(seq);
-            if seq == 2 {
-                replay_enqueued = false;
-                break;
-            }
-        }
+            seq != 2
+        });
 
-        assert!(!replay_enqueued);
+        assert!(!complete);
         assert_eq!(attempted, vec![1, 2]);
         let reset = stream_reset_message(
             TEST_ENDPOINT_ID,

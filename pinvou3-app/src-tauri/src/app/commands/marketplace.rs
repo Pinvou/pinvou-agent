@@ -624,15 +624,10 @@ pub async fn update_bundle_display_meta(
     result
 }
 
-/// FNV-1a 64 位（确定性、跨平台稳定）：中文文件名 md 导入的无 frontmatter 兜底
-/// id 派生。与 DefaultHasher 不同，不依赖进程内随机种子，重导/跨进程 id 一致。
+/// 中文文件名 md 导入的无 frontmatter 兜底 id 派生。与 DefaultHasher 不同，
+/// 不依赖进程内随机种子，重导/跨进程 id 一致。
 fn stable_stem_hash(stem: &str) -> String {
-    let mut h: u64 = 0xcbf2_9ce4_8422_2325;
-    for b in stem.as_bytes() {
-        h ^= u64::from(*b);
-        h = h.wrapping_mul(0x100_0000_01b3);
-    }
-    format!("{h:016x}")
+    format!("{:016x}", crate::platform::paths::fnv1a64(stem.as_bytes()))
 }
 
 /// 把单个 `.md`/`.markdown` 技能文件的内容包装成「根放 SKILL.md 的裸 skill 包」走

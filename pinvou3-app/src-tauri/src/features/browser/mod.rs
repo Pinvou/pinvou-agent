@@ -3680,6 +3680,23 @@ impl BrowserManager {
         Ok(())
     }
 
+    /// Test-only entry point preserving the global stop admission order
+    /// (hosted-request gate write, start_mtx, admission check). Contract tests
+    /// exercise this ordering through the real method instead of mirroring it
+    /// inline; production callers reach `stop_with_start_lock` directly at the
+    /// scoped-stop call sites, which already hold the required locks.
+    #[cfg(test)]
+    pub async fn stop(&self) -> Result<(), String> {
+        let _admission_guard = self.hosted_request_gate.write().await;
+        // Join the same lock order as ensure_started so stop is serialized with startup
+        // and native workspace creation.
+        let _start_guard = self.start_mtx.lock().await;
+        // A UI stop queued before restart must not run after restart has
+        // preserved restore state and released the lifecycle lock.
+        self.ensure_accepting_browser_work()?;
+        self.stop_with_start_lock().await
+    }
+
     /// Full stop path for callers already holding start_mtx. Reused when closing the
     /// last task workspace so a newly inserted workspace cannot be hit by old cleanup.
     async fn stop_with_start_lock(&self) -> Result<(), String> {
@@ -5737,9 +5754,15 @@ fn hosted_prepare_unassigned_quarantine_dir() -> PathBuf {
     hosted_prepare_quarantine_dir().join("unassigned")
 }
 
+/// Slot names are fixed-width hex so lexical order matches sequence order;
+/// production allocation and test fixtures must share this exact naming.
+fn hosted_prepare_quarantine_slot_name(sequence: u64) -> OsString {
+    OsString::from(format!("{sequence:016x}"))
+}
+
 #[cfg(test)]
 fn hosted_prepare_quarantine_slot_dir(parent: &Path, sequence: u64) -> PathBuf {
-    parent.join(format!("{sequence:016x}"))
+    parent.join(hosted_prepare_quarantine_slot_name(sequence))
 }
 
 #[cfg(test)]
@@ -6113,7 +6136,7 @@ fn next_hosted_prepare_quarantine_slot(
             .ok_or_else(|| "Browser Prepare quarantine slot sequence is exhausted".to_string())?,
         None => 0,
     };
-    let name = OsString::from(format!("{sequence:016x}"));
+    let name = hosted_prepare_quarantine_slot_name(sequence);
     let slot = parent
         .create_private_child_directory(&name)
         .map_err(|error| format!("Failed to create browser Prepare quarantine slot: {error}"))?;
@@ -7549,14 +7572,7 @@ mod tests {
         let stop_manager = Arc::new(BrowserManager::new());
         let stop_result = queue_behind_start_lock(Arc::clone(&stop_manager), {
             let manager = Arc::clone(&stop_manager);
-            // Mirror the global stop admission order (hosted-request gate write,
-            // start_mtx, admission check) around stop_with_start_lock.
-            async move {
-                let _admission_guard = manager.hosted_request_gate.write().await;
-                let _start_guard = manager.start_mtx.lock().await;
-                manager.ensure_accepting_browser_work()?;
-                manager.stop_with_start_lock().await
-            }
+            async move { manager.stop().await }
         })
         .await;
         assert_eq!(
