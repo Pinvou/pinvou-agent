@@ -64,6 +64,37 @@ pub(crate) fn sanitize_name(name: &str, max_chars: usize) -> String {
     cleaned.trim().to_string()
 }
 
+/// Wider screening copy of an accessible name for denylist matching.
+/// [`sanitize_name`] truncates to a short display line; a label an attacker
+/// controls (an `aria-label`, a window title) can pad past that window so a
+/// consequential term never reaches the matcher ("AAAA…A Pay now" truncates
+/// to "AAAA…A"). This copy control-folds the raw text like the display name
+/// but keeps far more of it, shaped head…tail inside a bounded cap so the
+/// memory cost stays bounded for large trees; the residual gap only opens
+/// for names longer than the cap with the term buried past the tail window.
+/// `None` when the display name already covers the whole folded text (the
+/// common case), so screening can fall back to the display name.
+pub(crate) fn screening_name(raw: &str, display: &str) -> Option<String> {
+    const SCREENING_MAX_CHARS: usize = 1024;
+    let folded: String = raw
+        .chars()
+        .map(|c| if c.is_control() { ' ' } else { c })
+        .collect();
+    let folded = folded.trim();
+    if folded.chars().count() <= display.chars().count() {
+        return None;
+    }
+    if folded.chars().count() <= SCREENING_MAX_CHARS {
+        return Some(folded.to_string());
+    }
+    let head = SCREENING_MAX_CHARS / 2;
+    let tail = SCREENING_MAX_CHARS - head - 1;
+    let mut shaped: String = folded.chars().take(head).collect();
+    shaped.push('…');
+    shaped.extend(folded.chars().skip(folded.chars().count() - tail));
+    Some(shaped)
+}
+
 /// Normalize CR/CRLF line breaks to `'\n'` for typed text, shared by the
 /// per-OS backends (the per-platform copies had drifted: Windows normalized,
 /// Linux folded, macOS injected the raw CR verbatim — where
@@ -265,5 +296,50 @@ mod tests {
         // Multi-byte characters must not be split: a 3-character chunk is equally safe for
         // 4-byte CJK.
         assert_eq!(char_chunks("中文测试", 3), vec!["中文测", "试"]);
+    }
+
+    #[test]
+    fn screening_name_none_when_display_covers_all() {
+        // The common case: the folded raw fits inside the display window —
+        // no wider copy is needed.
+        assert_eq!(screening_name("Pay now", "Pay now"), None);
+        assert_eq!(screening_name("  Buy\nnow ", "Buy now"), None);
+    }
+
+    #[test]
+    fn screening_name_survives_display_truncation_padding() {
+        // The attack shape: an attacker-controlled label pads past the
+        // 80-char display window so a consequential term never reaches the
+        // matcher ("AAAA…A Pay now"). The wider copy must keep the tail (and
+        // therefore the term) matchable, while staying bounded.
+        let raw = format!("{} Pay now", "A".repeat(200));
+        let display = sanitize_name(&raw, 80);
+        assert_eq!(display.chars().count(), 80);
+        assert!(
+            !display.contains("Pay now"),
+            "display must truncate: {display}"
+        );
+        let screening = screening_name(&raw, &display).expect("wider copy expected");
+        assert!(
+            screening.contains("Pay now"),
+            "term must survive: {screening}"
+        );
+        // Under the cap the copy is the whole folded raw: nothing is lost.
+        assert_eq!(screening, raw);
+    }
+
+    #[test]
+    fn screening_name_shapes_oversized_names_head_tail() {
+        // Beyond the cap the copy is shaped head…tail: bounded memory for
+        // pathological labels, with both ends still matchable.
+        let raw = format!("{}Pay now{}", "x".repeat(2000), "y".repeat(2000));
+        let display = sanitize_name(&raw, 80);
+        let screening = screening_name(&raw, &display).expect("wider copy expected");
+        let count = screening.chars().count();
+        assert!(count <= 1024, "bounded: {count}");
+        assert!(screening.starts_with('x') && screening.ends_with('y'));
+        assert!(screening.contains('…'), "elided middle marked: {screening}");
+        // Control characters fold exactly like the display name.
+        assert_eq!(screening_name("a\0b\tc", "a b c"), None);
     }
 }

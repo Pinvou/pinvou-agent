@@ -475,8 +475,9 @@ impl PortalInput {
         self.runtime.block_on(self.inner.close());
     }
 
-    /// Cursor position produced by our own injections (logical global coordinates); Wayland
-    /// has no query API, so this is tracking only.
+    /// Cursor position produced by our own injections, in raw input space (buffer pixels
+    /// under mutter; stream-logical under KDE fractional scaling — see track_pointer);
+    /// Wayland has no query API, so this is tracking only.
     pub(super) fn last_pointer(&self) -> Option<(i32, i32)> {
         self.inner.last_pointer
     }
@@ -529,8 +530,9 @@ struct PortalInner {
     /// Why capture initialization failed for the current session (input unaffected; capture
     /// falls back to the xcap chain).
     capture_error: Option<String>,
-    /// Cursor position produced by our own injections (logical global coordinates). Wayland
-    /// has no query API, so this can only be tracked.
+    /// Cursor position produced by our own injections, in raw input space (buffer pixels
+    /// under mutter; stream-logical under KDE fractional scaling). Wayland has no query
+    /// API, so this can only be tracked.
     last_pointer: Option<(i32, i32)>,
     request_counter: u32,
     /// Counter for CreateSession's session_handle_token (the router uses it to name the session).

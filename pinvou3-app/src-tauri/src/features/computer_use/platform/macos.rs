@@ -96,7 +96,7 @@ use super::super::types::{
 };
 use super::helpers::{
     TYPE_CHUNK_CHARS, TypeRun, drag_waypoints, map_scroll, normalize_typed_newlines, sanitize_name,
-    split_type_runs,
+    screening_name, split_type_runs,
 };
 use crate::platform::cursor::{CFRelease, CursorPositionError, cursor_position};
 
@@ -119,6 +119,10 @@ const DRAG_STEP_DELAY_MS: u64 = 12;
 /// Pause between pressing all keys and releasing them in reverse; improves
 /// the hit rate of modifier chords (cmd+Tab etc.).
 const CHORD_HOLD_MS: u64 = 20;
+/// Granularity of the hold_key sleep: a stop/timeout cancel flag is polled
+/// at least this often, so an abandoned hold stops within this window
+/// instead of the full hold duration.
+const HOLD_CANCEL_POLL_MS: u64 = 100;
 
 /// `ui_tree` defaults/caps: depth and node count (keeps giant trees from
 /// overwhelming the worker thread and the text budget).
@@ -987,9 +991,11 @@ fn element_info_from(info: AxNodeInfo) -> ElementInfo {
     } else {
         info.title
     };
+    let display_name = sanitize_name(&name, MAX_NODE_NAME_CHARS);
     ElementInfo {
         role: info.role,
-        name: sanitize_name(&name, MAX_NODE_NAME_CHARS),
+        screening_name: screening_name(&name, &display_name),
+        name: display_name,
         x: info.x,
         y: info.y,
         width: info.width,
@@ -1333,6 +1339,11 @@ impl MacosComputerUseBackend {
             .iter()
             .map(|key| map_key(*key))
             .collect::<Result<Vec<_>, _>>()?;
+        // Clone the flag before enigo(): that accessor returns an &mut Enigo
+        // borrowed from self for the rest of the function, so the hold loop
+        // below must not read self.cancel through the same borrow (the same
+        // ordering as the Linux hold_key).
+        let cancel = self.cancel.clone();
         let enigo = self.enigo()?;
         let mut pressed: Vec<enigo::Key> = Vec::with_capacity(mapped.len());
         for key in mapped {
@@ -1342,7 +1353,25 @@ impl MacosComputerUseBackend {
             }
             pressed.push(key);
         }
-        sleep(hold);
+        // Chunk the hold so a stop/timeout cancel flag is polled within
+        // HOLD_CANCEL_POLL_MS instead of waiting out the whole hold (up to
+        // 30 s). The keys are always released, whether the hold ran out or
+        // was cancelled.
+        let mut remaining = hold;
+        while remaining > Duration::ZERO {
+            if cancel
+                .as_ref()
+                .is_some_and(|flag| flag.load(Ordering::SeqCst))
+            {
+                let _ = release_reverse(&pressed, enigo);
+                return Err(ComputerUseError::unavailable(
+                    "hold was cancelled (caller timeout or stop); the keys have been released",
+                ));
+            }
+            let step = remaining.min(Duration::from_millis(HOLD_CANCEL_POLL_MS));
+            sleep(step);
+            remaining -= step;
+        }
         release_reverse(&pressed, enigo).map_err(|err| map_input_err("key release", err))
     }
 
@@ -1520,12 +1549,19 @@ impl ComputerUseBackend for MacosComputerUseBackend {
         let (down, up, _) = cg_mouse_event_types(button);
         let cg_button = cg_mouse_button(button);
         let rounds = u32::from(count.max(1));
+        // Track whether THIS click owns the held_buttons entry: a click issued
+        // while mouse_down already holds the same button posts a second down
+        // and a single up, so the OS-level press count stays ≥ 1 and the entry
+        // must survive. Removing it unconditionally desynced held_buttons
+        // (later moves posted MouseMoved instead of LeftMouseDragged and the
+        // stranded press hijacked the user's next physical click).
+        let we_pressed = !self.held_buttons.contains(&button);
         for i in 0..rounds {
             // clickState increments from 1: the system/app recognizes double
             // and triple clicks from it.
             let click_state = i64::from(i) + 1;
             self.post_mouse_event(down, cg_button, dest, click_state)?;
-            if !self.held_buttons.contains(&button) {
+            if we_pressed {
                 self.held_buttons.push(button);
             }
             // A successful down with a failed up (TCC revoked mid-way, event
@@ -1545,7 +1581,9 @@ impl ComputerUseBackend for MacosComputerUseBackend {
                         ))
                     })?;
             }
-            self.held_buttons.retain(|held| *held != button);
+            if we_pressed {
+                self.held_buttons.retain(|held| *held != button);
+            }
             if i + 1 < rounds {
                 sleep(Duration::from_millis(MULTI_CLICK_INTERVAL_MS));
             }
@@ -1591,6 +1629,21 @@ impl ComputerUseBackend for MacosComputerUseBackend {
         sleep(Duration::from_millis(DRAG_PRESS_SETTLE_MS));
         let result = (|| {
             for (x, y) in drag_waypoints(from, to, DRAG_STEPS) {
+                // Same abandonment contract as type_text and the Linux drag:
+                // a request the caller already abandoned must stop at the
+                // next waypoint — otherwise it keeps holding the physical
+                // button for the whole interpolated path. The common release
+                // below always runs.
+                if self
+                    .cancel
+                    .as_ref()
+                    .is_some_and(|flag| flag.load(Ordering::SeqCst))
+                {
+                    return Err(ComputerUseError::unavailable(
+                        "drag was cancelled (caller timeout or stop); the button is \
+                         released and the pointer stays at the last waypoint",
+                    ));
+                }
                 // Send LeftMouseDragged while held (some apps only recognize
                 // the dragged type).
                 self.post_mouse_event(dragged, left, (x, y), 1)?;
