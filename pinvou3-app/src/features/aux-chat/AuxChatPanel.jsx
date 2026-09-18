@@ -37,6 +37,14 @@ const RESTART_CONFIRM_MS = 4000;
 // only for the discard's lifetime.
 const discardInFlightByTask = new Map();
 
+// taskId -> unsent composer draft, module-scoped for the same reason as the
+// discard registry above: a draft belongs to the task, not to this instance,
+// while the panel unmounts on close and on sched- switches. Wiping it on a
+// task switch, a panel close or a new-topic confirm discarded text the user
+// had typed and never sent — it is now only cleared once a send actually
+// succeeded (or the user deletes it).
+const draftByTask = new Map();
+
 export function AuxChatPanel({ sessionId, activationKey, t, theme, onClose, onActiveChange }) {
   const copy = t.uiAuxChat;
   const conversationCopy = t.uiConversation;
@@ -50,6 +58,15 @@ export function AuxChatPanel({ sessionId, activationKey, t, theme, onClose, onAc
   const [discardFailed, setDiscardFailed] = useState(false);
   const [restartArmed, setRestartArmed] = useState(false);
   const [restarting, setRestarting] = useState(false);
+  // True while the current binding has no aux session yet (first open, rebind,
+  // or a rebind parked behind an in-flight discard). Without it the panel
+  // renders the "nothing here yet" landing during ensure — a false empty state
+  // for a conversation that is merely being prepared.
+  const [bindingPending, setBindingPending] = useState(false);
+  // Mirrors sendingRef for rendering: the in-flight send window has no visible
+  // feedback of its own (snapshot-busy only lands with the backend
+  // turn_started), so the composer looked idle while the message was gone.
+  const [sending, setSending] = useState(false);
   const generationRef = useRef(0);
   const auxIdRef = useRef(null);
   const scrollRef = useRef(null);
@@ -94,7 +111,10 @@ export function AuxChatPanel({ sessionId, activationKey, t, theme, onClose, onAc
     // Same latch class for sends: a never-settling auxChat.send invoke must
     // not permanently block sends across later task rebinds either.
     sendingRef.current = false;
-    setDraft('');
+    setSending(false);
+    // Restore this task's unsent draft instead of wiping the composer.
+    setDraft(sessionId ? (draftByTask.get(sessionId) || '') : '');
+    setBindingPending(!!(auxChat && sessionId));
     if (!auxChat || !sessionId) return;
     let disposed = false;
     // An in-flight discard for this same task must settle first: its backend
@@ -110,6 +130,7 @@ export function AuxChatPanel({ sessionId, activationKey, t, theme, onClose, onAc
       auxChat.ensure(sessionId)
         .then((nextAuxId) => {
           if (disposed || generationRef.current !== generation) return;
+          setBindingPending(false);
           auxIdRef.current = nextAuxId;
           setAuxId(nextAuxId);
           pullSnapshot(nextAuxId);
@@ -120,6 +141,7 @@ export function AuxChatPanel({ sessionId, activationKey, t, theme, onClose, onAc
           // but the reason is invisible; an inline hint tells the user the
           // initialization did not succeed instead of facing a dead panel.
           if (disposed || generationRef.current !== generation) return;
+          setBindingPending(false);
           setEnsureFailed(true);
         });
     };
@@ -181,16 +203,27 @@ export function AuxChatPanel({ sessionId, activationKey, t, theme, onClose, onAc
   const handleSend = useCallback(async () => {
     const text = draft.trim();
     const sentAuxId = auxIdRef.current;
+    // Two independent staleness boundaries: the generation is the restart
+    // boundary and the auxId is the rebind boundary. A restart on the same
+    // task re-binds to a *new* aux, so a send issued before it must surface
+    // nothing at all — neither the contradictory "retry send" banner next to
+    // ensureFailed, nor a draft clear that would eat text typed since.
+    const sentGeneration = generationRef.current;
+    const sentTaskId = sessionId;
     if (!auxChat || !sentAuxId || !text || busy || restarting || sendingRef.current) return;
     sendingRef.current = true;
+    setSending(true);
     setSendFailed(false);
     try {
       await auxChat.send(sentAuxId, text);
+      if (generationRef.current !== sentGeneration) return;
       if (auxIdRef.current !== sentAuxId) return;
       setDraft('');
+      if (sentTaskId) draftByTask.delete(sentTaskId);
       pullSnapshot(auxIdRef.current);
     } catch (error) {
       console.warn('[pinvou3][aux-chat] send failed', error);
+      if (generationRef.current !== sentGeneration) return;
       if (auxIdRef.current !== sentAuxId) return;
       setSendFailed(true);
     } finally {
@@ -200,9 +233,10 @@ export function AuxChatPanel({ sessionId, activationKey, t, theme, onClose, onAc
       // rebound task is relying on (same stale-finally class as handleRestart).
       if (auxIdRef.current === sentAuxId) {
         sendingRef.current = false;
+        setSending(false);
       }
     }
-  }, [auxChat, draft, busy, restarting, pullSnapshot]);
+  }, [auxChat, draft, busy, restarting, pullSnapshot, sessionId]);
 
   const handleComposerKeyDown = useCallback((event) => {
     if (event.repeat) return;
@@ -221,6 +255,17 @@ export function AuxChatPanel({ sessionId, activationKey, t, theme, onClose, onAc
   // every button sits disabled under a "please retry" hint.
   const handleRestart = useCallback(async () => {
     if (!auxChat || !sessionId || restarting) return;
+    // A discard for this task can still be in flight while `restarting` is
+    // false: a task switch resets that latch (rebind effect) but leaves the
+    // backend turn gate holding the previous new-topic discard for seconds.
+    // Issuing a second discard here would overwrite the registry entry, so
+    // nobody would await the first one anymore — and on the web relay (invoke
+    // responses are not FIFO) the orphaned first discard can land server-side
+    // after this restart's recreate, deleting the aux session the panel just
+    // bound to, with no JS continuation left to notice. The rebind effect
+    // already re-ensures this task once the pending discard settles, which is
+    // precisely the fresh session this action asks for, so stop here.
+    if (discardInFlightByTask.has(sessionId)) return;
     if (!restartArmed) {
       setRestartArmed(true);
       return;
@@ -235,6 +280,20 @@ export function AuxChatPanel({ sessionId, activationKey, t, theme, onClose, onAc
     // same class (a stale init failure next to the fresh restart outcome).
     setSendFailed(false);
     setEnsureFailed(false);
+    // Release the send latch at restart entry (round-12 N2): a send issued for
+    // the old binding can settle after this restart re-bound auxIdRef, and its
+    // finally deliberately refuses to clear the latch once the binding moved
+    // (see handleSend). Only the rebind effect resets it otherwise, and a
+    // same-task restart does not re-run that effect — so without this reset a
+    // late-settling send would leave sendingRef stuck true and every later
+    // Enter would silently no-op behind a visually enabled composer.
+    sendingRef.current = false;
+    setSending(false);
+    // Feedback for the discard+ensure window (the backend turn gate can hold
+    // the discard for seconds, and `restarting` only disables controls): the
+    // composer and timeline would otherwise just sit there with no hint that a
+    // new topic is being prepared.
+    setBindingPending(true);
     // Bump the generation at restart entry: only the rebind effect increments
     // it otherwise, so an ensure issued by the current rebind that is still in
     // flight (including its ensureSessionBufferLoaded chain) would resolve
@@ -280,7 +339,8 @@ export function AuxChatPanel({ sessionId, activationKey, t, theme, onClose, onAc
         auxIdRef.current = nextAuxId;
         setAuxId(nextAuxId);
         setSnapshot(normalizeAuxSnapshot(nextAuxId ? auxChat.snapshot(nextAuxId) : null));
-        setDraft('');
+        // The draft deliberately survives a new topic: the text was typed but
+        // never sent, so discarding it would silently eat user input.
         setSendFailed(false);
         setEnsureFailed(false);
       } catch (error) {
@@ -304,6 +364,7 @@ export function AuxChatPanel({ sessionId, activationKey, t, theme, onClose, onAc
       // the flag itself, so skipping the reset here cannot leak the state.
       if (generationRef.current === generation) {
         setRestarting(false);
+        setBindingPending(false);
       }
     }
   }, [auxChat, sessionId, restartArmed, restarting]);
@@ -332,6 +393,7 @@ export function AuxChatPanel({ sessionId, activationKey, t, theme, onClose, onAc
               : 'text-gray-400 hover:bg-black/[0.05] dark:hover:bg-white/[0.07]'
           }`}
           aria-label={restartArmed ? copy.newTopicConfirm : copy.newTopic}
+          aria-pressed={restartArmed}
           title={restartArmed ? copy.newTopicConfirm : copy.newTopic}
         >
           <RotateCcw size={13} />
@@ -353,7 +415,9 @@ export function AuxChatPanel({ sessionId, activationKey, t, theme, onClose, onAc
             <div className="rounded-xl border border-black/[0.05] bg-black/[0.02] px-3 py-2.5 text-[12px] leading-5 text-gray-500 dark:border-white/[0.07] dark:bg-white/[0.03] dark:text-gray-400">
               {copy.landingHint}
             </div>
-            <div className="px-1 text-[12px] text-gray-400">{copy.emptyState}</div>
+            <div className="px-1 text-[12px] text-gray-400" role="status">
+              {bindingPending ? copy.bindingHint : copy.emptyState}
+            </div>
           </div>
         )}
         {hasContent && (
@@ -368,6 +432,9 @@ export function AuxChatPanel({ sessionId, activationKey, t, theme, onClose, onAc
       <div className="shrink-0 border-t border-black/[0.05] px-3 py-3 dark:border-white/[0.06]">
         {busy && (
           <div className="mb-2 text-[11px] text-gray-400" role="status">{copy.busyHint}</div>
+        )}
+        {sending && !busy && (
+          <div className="mb-2 text-[11px] text-gray-400" role="status">{copy.sendingHint}</div>
         )}
         {sendFailed && (
           <div className="mb-2 text-[11px] text-red-600 dark:text-red-400" role="alert">{copy.sendFailed}</div>
@@ -386,7 +453,11 @@ export function AuxChatPanel({ sessionId, activationKey, t, theme, onClose, onAc
             value={draft}
             data-testid="aux-chat-input"
             onChange={(event) => {
-              setDraft(event.target.value);
+              const next = event.target.value;
+              setDraft(next);
+              // Remember per task: a task switch, a close/reopen or a new
+              // topic must not silently drop text the user has not sent.
+              if (sessionId) draftByTask.set(sessionId, next);
               if (sendFailed) setSendFailed(false);
             }}
             onKeyDown={handleComposerKeyDown}

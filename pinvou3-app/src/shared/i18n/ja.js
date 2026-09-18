@@ -371,6 +371,8 @@ const jaBase = {
           inputPlaceholder:'質問を入力。Enter で送信、Shift+Enter で改行',
           send:'送信',
           busyHint:'補助セッションが応答中です。しばらくお待ちください…',
+          bindingHint:'補助セッションを準備しています…',
+          sendingHint:'送信中…',
           newTopic:'新しい話題',
           newTopicConfirm:'もう一度クリックで確定：現在の補助会話を破棄して新しい話題を始めます',
           sendFailed:'送信に失敗しました。もう一度お試しください。',

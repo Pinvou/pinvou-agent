@@ -373,6 +373,8 @@ export const dictEn = {
           inputPlaceholder:'Type a question. Enter to send, Shift+Enter for a new line',
           send:'Send',
           busyHint:'The auxiliary session is replying; please wait…',
+          bindingHint:'Preparing the auxiliary session…',
+          sendingHint:'Sending…',
           newTopic:'New topic',
           newTopicConfirm:'Click again to confirm: discard this auxiliary conversation and start over',
           sendFailed:'Failed to send. Please try again.',

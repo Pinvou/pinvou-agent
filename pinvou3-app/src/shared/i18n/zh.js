@@ -373,6 +373,8 @@ export const dictZh = {
           inputPlaceholder:'输入问题，Enter 发送，Shift+Enter 换行',
           send:'发送',
           busyHint:'辅助会话正在回复，请稍候…',
+          bindingHint:'正在准备辅助会话…',
+          sendingHint:'正在发送…',
           newTopic:'重开话题',
           newTopicConfirm:'再点一次确认：丢弃当前辅助对话并重开',
           sendFailed:'发送失败，请重试。',
