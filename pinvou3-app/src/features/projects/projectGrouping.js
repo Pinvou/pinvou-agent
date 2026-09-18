@@ -105,7 +105,7 @@ function resolveSessionProjectId(item, projects, assignments) {
     if (assigned && projectList.some(project => project.id === assigned)) return assigned;
     if (assigned === null) return null;
   }
-  if (item.workspaceKind !== 'project') return null;
+  if (!hasProjectWorkspace(item)) return null;
   const matched = matchProjectByPath(projectList, item.workspacePath);
   return matched ? matched.id : null;
 }
@@ -116,6 +116,27 @@ function resolveSessionProjectId(item, projects, assignments) {
 function projectCoversPath(project, path) {
   if (!project || !path) return false;
   return (project.roots || []).some((root) => isUnderRoot(String(path), rootPath(root)));
+}
+
+// Session shapes carrying a real project working directory: 'project'
+// (code/ACP) and 'bound' (#445 bound plain work sessions). 'bound' is its
+// own kind, not disguised as 'project' — so when project-kind later gains
+// its own behavior (e.g. a baseline panel), plain bound sessions are not
+// affected by mistake (review #452 finding 5). Exported so the emitter
+// (main.jsx) and this consumer share one spelling — a producer-side rename
+// would otherwise silently drop bound sessions from the project view with
+// every test green (review #464 round-5 item 5; source-pinned by
+// project_session_drag_contract.test.mjs).
+export const WORKSPACE_KIND_BOUND = 'bound';
+
+const WORKSPACE_KINDS_WITH_PROJECT_DIR = ['project', WORKSPACE_KIND_BOUND];
+
+function hasProjectWorkspace(item) {
+  return (
+    !!item
+    && WORKSPACE_KINDS_WITH_PROJECT_DIR.includes(item.workspaceKind)
+    && !!item.workspacePath
+  );
 }
 
 // Input: items = code sessions [{ id, workspacePath, workspaceKind, updatedAt, ... }],
@@ -150,7 +171,7 @@ function groupSessionsWithProjects(items, projects, assignments) {
     // Tier 2: auto-group by workspace root containment. Only project-kind
     // sessions participate — temporary sessions enter a project exclusively
     // through explicit assignment (the "adopt" flow), never implicitly.
-    if (!target && !autoGroupBlocked && item.workspaceKind === 'project') {
+    if (!target && !autoGroupBlocked && hasProjectWorkspace(item)) {
       target = matchProjectByPath(projectList, item.workspacePath);
     }
     if (target) {
@@ -158,7 +179,7 @@ function groupSessionsWithProjects(items, projects, assignments) {
       return;
     }
     // Tier 3: legacy folder bucketing.
-    const key = item.workspaceKind === 'project' && item.workspacePath
+    const key = hasProjectWorkspace(item) && item.workspacePath
       ? String(item.workspacePath)
       : TEMPORARY_GROUP_KEY;
     if (!byFolder.has(key)) byFolder.set(key, []);
@@ -208,7 +229,7 @@ function groupSessionsWithProjects(items, projects, assignments) {
 // copies (drag drop handler, dialog initializer, dialog choose).
 function needsAddFolderConfirm(session, target) {
   if (!session || !target) return false;
-  const workspacePath = session.workspaceKind === 'project' ? String(session.workspacePath || '') : '';
+  const workspacePath = hasProjectWorkspace(session) ? String(session.workspacePath || '') : '';
   return !!workspacePath && !projectCoversPath(target, workspacePath);
 }
 
@@ -224,4 +245,4 @@ function capUnavailableRootsForDisplay(roots, expanded) {
   return { visibleRoots: list.slice(0, 1), hiddenCount: Math.max(0, list.length - 1) };
 }
 
-export { TEMPORARY_GROUP_KEY, PROJECT_SESSION_DRAG_TYPE, groupSessionsWithProjects, projectCoversPath, resolveSessionProjectId, rootPath, needsAddFolderConfirm, capUnavailableRootsForDisplay };
+export { TEMPORARY_GROUP_KEY, PROJECT_SESSION_DRAG_TYPE, groupSessionsWithProjects, projectCoversPath, resolveSessionProjectId, rootPath, needsAddFolderConfirm, hasProjectWorkspace, capUnavailableRootsForDisplay };

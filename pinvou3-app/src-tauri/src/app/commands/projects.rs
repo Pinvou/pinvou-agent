@@ -105,9 +105,15 @@ pub async fn create_project(
     app: AppHandle,
     store: State<'_, ProjectStore>,
 ) -> Result<ProjectListItem, String> {
+    // Root-accepting writer: refuses to commit into an in-flight rebind, which
+    // would otherwise re-add a `from`-prefixed root after the rebind's snapshot
+    // (review #464 round-6 finding 6). The fence is released when the write is
+    // done, not when the command returns.
+    let _fence = store.rebind_fence()?;
     let project = store
         .create_project(name, roots.unwrap_or_default())
         .map_err(|e| format!("create_project: {e:#}"))?;
+    drop(_fence);
     emit_project_event(&app, "projects:list_changed", "created");
     Ok(ProjectListItem::from_project(&project, 0))
 }
@@ -121,9 +127,17 @@ pub async fn update_project(
     app: AppHandle,
     store: State<'_, ProjectStore>,
 ) -> Result<ProjectListItem, String> {
+    // Gated only when roots can change: a rename cannot re-add a from-prefixed
+    // root, and fencing it would reject a harmless rename for the whole rebind.
+    let _fence = if roots.is_some() {
+        Some(store.rebind_fence()?)
+    } else {
+        None
+    };
     let project = store
         .update_project(&project_id, name, roots)
         .map_err(|e| format!("update_project({project_id}): {e:#}"))?;
+    drop(_fence);
     let count = store.assigned_session_ids(&project_id).len();
     emit_project_event(&app, "projects:list_changed", "updated");
     Ok(ProjectListItem::from_project(&project, count))
@@ -174,22 +188,45 @@ pub async fn move_session_to_project(
                 "move_session_to_project: add_workspace_root requires project_id".to_string(),
             );
         }
-        // 普通 chat 会话在池里没有工作区记录,底层会报"not an ACP session"——
-        // 语义上该组合只是"没有可加的目录",错误信息按此表述,避免误导排查方向。
-        let info = acp_pool.workspace_info(&session_id).map_err(|e| {
-            format!(
-                "move_session_to_project({session_id}): session has no resolvable workspace record to add as a root (normal chat sessions have none): {e:#}"
-            )
-        })?;
-        if info.workspace_kind != CodexWorkspaceKind::Project {
-            return Err(format!(
-                "move_session_to_project({session_id}): temporary session has no project folder to add"
-            ));
+        // Unified workspace probing (cross-mode fusion): code/ACP sessions
+        // resolve via the agent record; plain bound sessions fall back to the
+        // dual-root signal — execution root != ledger root ⇒ bound, with the
+        // execution root as the bound directory (#445 binding semantics).
+        // Both absence modes — an agent record that exists but is not
+        // project-shaped (e.g. temporary) and a missing record (Err) — fall
+        // through to the same fallback, never letting Ok(Temporary)
+        // short-circuit into an error (review #452 finding 4).
+        let detected = match acp_pool.workspace_info(&session_id) {
+            Ok(info) if info.workspace_kind == CodexWorkspaceKind::Project => {
+                Some(PathBuf::from(info.workspace_path))
+            }
+            _ => sessions
+                .session_roots(&session_id)
+                .ok()
+                // The bound flag is the authoritative verdict: never
+                // substitute a ledger != execution path comparison for it
+                // (documented contract of SessionRoots::bound; review #464
+                // MINOR 7).
+                .filter(|roots| roots.bound)
+                .map(|roots| roots.execution),
+        };
+        match detected {
+            Some(path) => Some(path),
+            None => {
+                return Err(format!(
+                    "move_session_to_project({session_id}): session has no project folder to add"
+                ));
+            }
         }
-        Some(PathBuf::from(info.workspace_path))
     } else {
         None
     };
+    // Root-accepting writer under the same fence: `add_workspace_root` adds a
+    // directory to a project and the store re-validates overlap, so committing
+    // mid-rebind can both re-add a `from`-prefixed root and bind a session
+    // under `from` after the rebind's candidate snapshot (review #464 round-6
+    // finding 6).
+    let _fence = store.rebind_fence()?;
     let outcome = store
         .move_session_to_project(
             &session_id,
@@ -197,6 +234,7 @@ pub async fn move_session_to_project(
             workspace_root.as_deref(),
         )
         .map_err(|e| format!("move_session_to_project({session_id}): {e:#}"))?;
+    drop(_fence);
     emit_project_event(&app, "projects:list_changed", "moved");
     Ok(outcome)
 }
@@ -493,20 +531,17 @@ pub async fn rebind_workspace_root(
         .agents()
         .rebind_workspace_prefix(&from, &to_display)
         .map_err(|e| format!("rebind_workspace_root: {e:#}"))?;
-    // Plain-chat binding sidecars (review #463 round-8 B1). A failed write
-    // leaves the old path on disk (and the cache untouched), so a restart
-    // would resurrect it — reported as failed below and retried by the next
-    // run, whose `from` scan still matches the stale sidecar.
-    let mut binding_final_stale: Vec<String> = Vec::new();
-    for (session_id, bound_path) in &plain_bindings_under_from {
-        let Some(new_path) = SessionAgentStore::rebind_target_path(bound_path, &from, &to_display)
-        else {
-            continue;
-        };
-        if !sessions.rebind_workspace_binding(session_id, new_path) {
-            binding_final_stale.push(session_id.clone());
-        }
-    }
+    // Plain-chat binding sidecars (review #463 round-8 B1) via the unified
+    // batch (#464): it moves the sidecars AND the in-memory cache in one pass,
+    // translates the legacy global table BEFORE the sidecars move so every
+    // crash window heals forward, and names the sessions a surviving table
+    // would resurrect at the next boot. A sidecar whose write failed stays on
+    // disk with the old path, is reported below, and the next run's `from`
+    // scan still matches it.
+    let plain_rebind = sessions
+        .rebind_workspace_bindings(&from, &to_display)
+        .map_err(|e| format!("rebind_workspace_root: {e:#}"))?;
+    let binding_final_stale: Vec<String> = plain_rebind.failed_session_ids.clone();
     // Finally-stale sidecar list (Major 2): an orphan rewrite failure, or an
     // indexed session whose rewrite + retry passes both failed — no
     // self-healing path remains in this run (backfill only fills missing
@@ -534,6 +569,13 @@ pub async fn rebind_workspace_root(
     // reported as failed (hence also eviction candidates), and a rerun
     // converges them via the same on-disk scan.
     plain_lane_fence_rescan(&sessions, &from, &mut final_stale);
+    // Code-lane rebound set: only these consume workspace baselines, so the
+    // recapture below is gated to them (#464 unify).
+    let code_rebound_ids: std::collections::HashSet<String> = prefix_outcome
+        .affected
+        .iter()
+        .map(|(session_id, _)| session_id.clone())
+        .collect();
     let mut rebound_session_ids = Vec::new();
     let mut failed_session_ids = Vec::new();
     for (session_id, bound_path) in &affected {
@@ -581,33 +623,38 @@ pub async fn rebind_workspace_root(
                 failed_session_ids.push(session_id.clone());
             }
         }
-        // Baseline recapture: best-effort, the git fingerprint is derivable
-        // again, and a failure does not block the rebind. Runs on
-        // spawn_blocking: a non-git directory synchronously walks tens of
-        // thousands of entries and must not run serially on the async
-        // command thread (same idiom as session creation in codex.rs).
-        let baseline_session_id = session_id.clone();
-        let baseline_root = new_path.clone();
-        match tauri::async_runtime::spawn_blocking(move || {
-            crate::features::codex_acp::workspace::capture_baseline(
-                &baseline_session_id,
-                &baseline_root,
-            )
-        })
-        .await
-        {
-            Ok(Ok(())) => {}
-            Ok(Err(error)) => {
-                // Same CodeQL constraint as set_workspace above: the chain
-                // embeds sessions/<id>/…json.tmp paths; log the root cause
-                // only.
-                eprintln!(
-                    "[projects] rebind capture_baseline failed: {}",
-                    error.root_cause()
+        // Baseline recapture is gated to code sessions (#464 unify): plain
+        // bound sessions do not consume workspace baselines, so no code-lane
+        // sidecar is created for them.
+        if code_rebound_ids.contains(session_id.as_str()) {
+            // Baseline recapture: best-effort, the git fingerprint is derivable
+            // again, and a failure does not block the rebind. Runs on
+            // spawn_blocking: a non-git directory synchronously walks tens of
+            // thousands of entries and must not run serially on the async
+            // command thread (same idiom as session creation in codex.rs).
+            let baseline_session_id = session_id.clone();
+            let baseline_root = new_path.clone();
+            match tauri::async_runtime::spawn_blocking(move || {
+                crate::features::codex_acp::workspace::capture_baseline(
+                    &baseline_session_id,
+                    &baseline_root,
                 )
-            }
-            Err(error) => {
-                eprintln!("[projects] rebind capture_baseline task failed: {error}")
+            })
+            .await
+            {
+                Ok(Ok(())) => {}
+                Ok(Err(error)) => {
+                    // Same CodeQL constraint as set_workspace above: the chain
+                    // embeds sessions/<id>/…json.tmp paths; log the root cause
+                    // only.
+                    eprintln!(
+                        "[projects] rebind capture_baseline failed: {}",
+                        error.root_cause()
+                    )
+                }
+                Err(error) => {
+                    eprintln!("[projects] rebind capture_baseline task failed: {error}")
+                }
             }
         }
     }
@@ -720,6 +767,20 @@ pub async fn rebind_workspace_root(
                 && !post_busy_session_ids.contains(&session_id)
             {
                 post_busy_session_ids.push(session_id);
+            }
+        }
+    }
+    // The plain sidecars and metadata moved, but if the legacy global table
+    // could not be synced, the next boot migration would re-bind the old paths
+    // over the fresh sidecars — the report must not claim success (#464
+    // round-5 blocker 1). The list is driven by the entries the surviving
+    // table would actually resurrect, not by this run's rewrite log: on a
+    // retry nothing is left to rewrite and the rebound set is empty while the
+    // stale table is still there (#464 round-6 blocking 1).
+    if plain_rebind.legacy_sync_failed {
+        for session_id in &plain_rebind.legacy_resurrection_ids {
+            if !failed_session_ids.contains(session_id) {
+                failed_session_ids.push(session_id.clone());
             }
         }
     }

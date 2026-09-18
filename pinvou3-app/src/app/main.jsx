@@ -21,7 +21,7 @@ import { useSystemDarkMode } from '../hooks/useSystemDarkMode.js';
 import { COLOR_SCHEME_STORAGE_KEY, normalizeColorScheme, resolveTheme } from '../shared/color-scheme.js';
 import { DEFAULT_CHAT_TITLES, dict, createLatestLanguageGate, ensureLanguage, LANG_TO_TAG, initialSystemLanguage, SEARCH_KEY_PROVIDERS, TAG_TO_LANG } from '../shared/i18n.js';
 import { formatSessionDate, localDateKey, formatDateGroupLabel } from '../shared/date-utils.js';
-import { groupSessionsWithProjects, resolveSessionProjectId, needsAddFolderConfirm } from '../features/projects/projectGrouping.js';
+import { groupSessionsWithProjects, resolveSessionProjectId, needsAddFolderConfirm, WORKSPACE_KIND_BOUND } from '../features/projects/projectGrouping.js';
 import { ProjectGroupHeader } from '../features/projects/ProjectGroupHeader.jsx';
 import { MoveToProjectDialog } from '../features/projects/MoveToProjectDialog.jsx';
 import { RebindFolderDialog } from '../features/projects/RebindFolderDialog.jsx';
@@ -1526,6 +1526,15 @@ const NAV_PREFETCH = {
             pinned: !!s.pinned,
             pinnedAt: s.pinned_at || '',
             working: !!sessionBusy[s.id], // concurrent sessions: is this session generating in the background
+            // #445 binding: a bound work session carries workspacePath/Kind;
+            // project grouping follows binding (the same signal as the safety
+            // posture). Unbound sessions leave both values empty and stay in
+            // the date view.
+            workspacePath: s.workspace_binding || '',
+            // A standalone 'bound' kind: shares the three-tier grouping with
+            // the code/ACP 'project' kind, but is not a disguised
+            // project-kind (review #452 finding 5).
+            workspaceKind: s.workspace_binding ? WORKSPACE_KIND_BOUND : '',
             leadingIcon: <PinvouLogo className="h-[18px] w-[18px]" />,
             testId: 'regular-sidebar-item',
             menuTestId: 'regular-sidebar-menu',
@@ -1846,7 +1855,8 @@ const NAV_PREFETCH = {
       const sidebarTaskFilterOptions = [
         { id: 'all', label: t.sidebarTaskFilterAll },
         { id: 'pinned', label: t.sidebarTaskFilterPinned },
-        // code 形态(胶囊选中「代码」)下列表恒为代码会话:「代码会话」筛选等同
+        // In the project form (capsule set to "Projects") the list is always
+        // code/bound sessions: the "Code sessions" filter is equivalent to
         // 「全部」、「定时任务」恒为空——两个选项都是死胡同,只在标准形态提供。
         ...(sidebarCodeListActive ? [] : [
           { id: 'code', label: t.sidebarTaskFilterCodeSessions },
@@ -1918,17 +1928,24 @@ const NAV_PREFETCH = {
         return groups;
       }, [sidebarTaskHistory, sidebarPinnedHoisted]);
 
-      // Code-style sidebar: lists only code sessions. Project layer resolves
-      // each session through three deterministic tiers (explicit assignment /
-      // project-root auto-grouping / implicit folder bucketing); without any
-      // created project the result is byte-identical to the legacy folder
-      // grouping. With "pinned first", pinned code sessions hoist above groups.
-      // Note: the upstream history chain (chatHistory/codexHistory/…) rebuilds
-      // on every App render, so these memos currently re-run each render too —
-      // end-to-end memoization of that legacy chain is deferred (finding 22);
-      // tier-2 grouping is O(sessions × projects × roots) (#448 finding 8).
+      // Project view (formerly the "Code" form): every session bound to a
+      // real directory — code/ACP sessions and #445 bound work sessions — is
+      // grouped uniformly by the project layer's three tiers; unbound plain
+      // sessions stay in the date view of "All". Grouping follows binding,
+      // the same signal as the safety posture.
+      // Note: the upstream history chain (chatHistory/codexHistory/…) is
+      // rebuilt on every render, so these memos are recomputed each round for
+      // now — end-to-end memoization is left as follow-up (review finding
+      // 22); tier-2 grouping is O(sessions × projects × roots)
+      // (#448 finding 8).
       const sidebarCodeTasks = useMemo(() => (sidebarCodeListActive
-        ? sidebarTaskHistory.filter(chat => chat.taskKind === 'codex')
+        ? sidebarTaskHistory.filter(chat => chat.taskKind === 'codex'
+            // The bound-work-session branch is desktop-only, like the projects
+            // slice it feeds: on web the backend degrades workspace_binding to
+            // its last path component, so the value is a leaf name with no
+            // project behind it and two same-named directories would collapse
+            // into one tier-3 bucket (review #464 round-6 finding 8b).
+            || (can('desktopChrome') && chat.taskKind === 'regular' && chat.workspacePath))
         : []), [sidebarCodeListActive, sidebarTaskHistory]);
       const sidebarFolderPinned = useMemo(() => (taskListSort === 'pinned_first'
         ? sidebarCodeTasks.filter(chat => !!chat.pinned)
@@ -2963,7 +2980,7 @@ const NAV_PREFETCH = {
       const mobileTitle = currentView === 'chat'
         ? ((((chatHistory || []).find(c => c.id === activeChat)) || {}).title || 'PINVOU')
         : currentView === 'codex'
-          ? ((((codexHistory || []).find(c => c.id === activeCodexId)) || {}).title || t.sidebarTaskFilterCode)
+          ? ((((codexHistory || []).find(c => c.id === activeCodexId)) || {}).title || t.uiCodex.untitledSession)
         : ({ search: t.searchChats, scheduled: t.scheduledPlans, monitor: t.monitor, cardpool: t.cardPool, toolStore: t.toolStore, outputs: t.outputs, knowledge: t.knowledge, settings: t.settings, browser: t.browser }[currentView] || 'PINVOU');
       const mobileNavigate = (view, beforeNavigate) => {
         setMobileMoreOpen(false);
@@ -2998,12 +3015,18 @@ const NAV_PREFETCH = {
           });
         }
       };
-      // 日期分组/平铺两种布局共用的任务项渲染
+      // Task-item renderer shared by the date-grouped and flat layouts.
       const renderSidebarTaskItem = (chat) => {
         const detachKind = chat.taskKind === 'codex' ? 'codex-session' : 'session';
-        // 拖拽与"移动到项目"菜单项同一可用性门控:项目列表为空(bootstrap
-        // 窗口、零项目用户)时行不可拖,避免出现零可达落点的死手势。
-        const projectMovesAvailable = chat.taskKind === 'codex' && bridge.projects && !!sidebarProjectsData?.projects?.length;
+        // One availability gate for both dragging and the "move to project"
+        // menu item: with an empty project list (bootstrap windows, users
+        // with zero projects) the row is not draggable,
+        // avoiding a dead gesture with zero reachable drop targets. #445
+        // bound work sessions (taskKind regular + workspacePath) have the
+        // same rights as code sessions — grouping follows binding, and the
+        // move entry point follows too (same signal as review #452
+        // finding 5).
+        const projectMovesAvailable = (chat.taskKind === 'codex' || !!chat.workspacePath) && bridge.projects && !!sidebarProjectsData?.projects?.length;
         return (
           <RecentItem
             key={chat.taskKind === 'scheduled' ? `${chat.scheduledRun?.automationId || ''}:${chat.scheduledRun?.id || chat.id}` : `${chat.taskKind}:${chat.id}`}

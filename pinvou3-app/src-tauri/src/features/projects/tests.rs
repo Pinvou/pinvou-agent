@@ -297,6 +297,52 @@ fn move_add_workspace_root_atomically_and_idempotently() {
 }
 
 #[test]
+fn covered_workspace_skip_survives_symlinked_ancestor() {
+    // Review #464 MAJOR 3 (same shape as macOS /var→/private/var): roots are
+    // canonicalized on insertion, but when the workspace path under the
+    // covered check does not exist, the old purely lexical fallback kept the
+    // symlink form, so the identity key was no longer nested and the path was
+    // re-added as uncovered. Reproduce on any platform with a symlinked
+    // ancestor. Branch on the std::env::consts::OS constant instead of cfg
+    // syntax: platform conditional compilation must not appear outside the
+    // adapter layer (architecture-guard); Windows directory symlinks require
+    // admin/developer mode, so the mechanism is covered by unix/macOS.
+    if std::env::consts::OS == "windows" {
+        return;
+    }
+    let temp = tempfile::tempdir().expect("tempdir");
+    let workspace = temp.path().join("real").join("workspace");
+    std::fs::create_dir_all(&workspace).expect("create workspace");
+    let link = temp.path().join("link");
+    let status = std::process::Command::new("ln")
+        .arg("-s")
+        .arg(temp.path().join("real"))
+        .arg(&link)
+        .status()
+        .expect("spawn ln");
+    assert!(status.success(), "ln -s must succeed on unix-likes");
+
+    let store = store_in(&temp);
+    let project = create(
+        &store,
+        "目标",
+        std::slice::from_ref(&link.join("workspace")),
+    );
+
+    // A nonexistent nested path written through the symlinked ancestor: the
+    // covered check must hit the existing root.
+    let covered = link.join("workspace").join("deep");
+    let outcome = store
+        .move_session_to_project("s1", Some(&project.id), Some(&covered))
+        .expect("move with covered workspace");
+    assert_eq!(
+        outcome.added_root, None,
+        "symlink 形态不得绕过 covered 跳过"
+    );
+    assert_eq!(store.get(&project.id).unwrap().roots.len(), 1);
+}
+
+#[test]
 fn nonexistent_leaf_resolves_into_existing_ancestors_territory() {
     // 评审 #471 Major 回归锁:macOS 默认 TMPDIR 位于 /var 下(→ /private/var),
     // 不存在的叶子必须经最深已存在祖先 canonicalize,与已存在路径键入同一
@@ -449,6 +495,56 @@ fn rebind_roots_cuts_suffix_by_resolved_form_for_alias_callers() {
     // alias component.
     let roots = store.get(&project.id).unwrap().roots;
     assert_eq!(roots, vec![display(&to)]);
+}
+
+#[test]
+fn begin_rebind_serializes_and_releases_on_drop() {
+    // round-7 m7: the gate's check-and-set and Drop release had zero coverage.
+    let store =
+        ProjectStore::from_paths(std::env::temp_dir().join("pinvou3-rebind-gate-test.json"));
+    let _gate = store.begin_rebind().expect("first acquire wins");
+    let error = store
+        .begin_rebind()
+        .expect_err("second acquire must be rejected");
+    assert!(error.starts_with("REBIND_IN_PROGRESS:"));
+    drop(_gate);
+    store.begin_rebind().expect("gate released by Drop");
+}
+
+#[test]
+fn rebind_fence_excludes_writers_and_rebinds_in_both_directions() {
+    // review #464 round-6 finding 6: the root-accepting writers must not commit
+    // into an in-flight rebind, and a rebind must not start while a writer
+    // holds the fence — one flag, both directions.
+    let store =
+        ProjectStore::from_paths(std::env::temp_dir().join("pinvou3-rebind-fence-test.json"));
+    let fence = store.rebind_fence().expect("first writer wins the fence");
+    assert!(
+        store.begin_rebind().is_err(),
+        "a rebind must not start while a fenced writer is committing"
+    );
+    assert!(
+        store
+            .rebind_fence()
+            .expect_err("second writer must be rejected")
+            .starts_with("REBIND_IN_PROGRESS:"),
+        "writers are mutually exclusive under the same marker the frontend maps"
+    );
+    drop(fence);
+    store
+        .rebind_fence()
+        .expect("fence released by Drop, so error paths cannot close it forever");
+    let gate = store
+        .begin_rebind()
+        .expect("rebind after the fence is released");
+    assert!(
+        store.rebind_fence().is_err(),
+        "a writer must not commit while the rebind holds the gate"
+    );
+    drop(gate);
+    store
+        .rebind_fence()
+        .expect("fence available again after the rebind");
 }
 
 #[test]

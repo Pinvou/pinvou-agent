@@ -85,10 +85,11 @@ pub struct ProjectStore {
     rebind_gate: Arc<parking_lot::Mutex<bool>>,
 }
 
-/// RAII token of `begin_rebind`: while held, other rebind calls are rejected;
-/// Drop clears the flag. It holds only the `Arc<Mutex<bool>>`, not a lock
-/// guard, so it is Send-safe across await points; clearing happens in Drop,
-/// so error paths cannot leave a permanently closed gate.
+/// RAII token of `begin_rebind`: while held, other rebind calls and every
+/// fenced project writer are rejected; Drop clears the flag. It holds only the
+/// `Arc<Mutex<bool>>`, not a lock guard, so it is Send-safe across await
+/// points; clearing happens in Drop, so error paths cannot leave a permanently
+/// closed gate.
 #[derive(Debug)]
 pub struct RebindGate {
     flag: Arc<parking_lot::Mutex<bool>>,
@@ -99,6 +100,12 @@ impl Drop for RebindGate {
         *self.flag.lock() = false;
     }
 }
+
+/// Same flag, entered from the writer side (`rebind_fence`). A distinct name
+/// keeps intent legible at the call sites — a root-accepting writer is not
+/// "beginning a rebind", it is refusing to commit into one — while sharing the
+/// token's RAII semantics with [`RebindGate`].
+pub type RebindFence = RebindGate;
 
 /// 进程内单调计数叠加纳秒时间戳生成项目 id:时间戳保证跨进程唯一,
 /// 计数兜底同一时钟粒度(Windows 较粗)内连续创建的碰撞。
@@ -135,7 +142,7 @@ fn validate_name(raw: String) -> Result<String> {
 /// canonical p) == p)。再经共享的 `platform_compat_path` 归一,剥掉
 /// Windows canonicalize 产生的 `\\?\` verbatim 前缀(非 Windows 为恒等
 /// 映射),与 `validate_codex_project_workspace` 的既有约定同源。
-pub(super) fn root_display(path: &Path) -> PathBuf {
+pub(crate) fn root_display(path: &Path) -> PathBuf {
     let canonical =
         std::fs::canonicalize(path).unwrap_or_else(|_| resolve_through_existing_ancestor(path));
     crate::platform::os::platform_compat_path(&canonical.to_string_lossy())
@@ -394,6 +401,33 @@ impl ProjectStore {
         *flag = true;
         drop(flag);
         Ok(RebindGate {
+            flag: Arc::clone(&self.rebind_gate),
+        })
+    }
+
+    /// Enters the read/observational side of the same critical section: while a
+    /// directory rebind is running, the root-accepting project writers must not
+    /// commit. They validate the caller's roots against the *current* project
+    /// table and add suffixes, so a write interleaved with an in-flight rebind
+    /// can re-add a `from`-prefixed root or bind a session under `from` after
+    /// the rebind's candidate snapshot — either way reintroducing the broken
+    /// link the rebind is repairing (review #464 round-6 finding 6). Rejection
+    /// reuses the `REBIND_IN_PROGRESS` marker, so the frontend's existing
+    /// mapping covers it; the token is dropped as soon as the writer committed,
+    /// which keeps the window to the write itself rather than the whole
+    /// command.
+    pub fn rebind_fence(&self) -> std::result::Result<RebindFence, String> {
+        let mut flag = self.rebind_gate.lock();
+        if *flag {
+            return Err(
+                "REBIND_IN_PROGRESS: another directory rebind is already running".to_string(),
+            );
+        }
+        // Hold the gate for the writer's duration: mutually exclusive with
+        // both `begin_rebind` and other fenced writers (check-and-set).
+        *flag = true;
+        drop(flag);
+        Ok(RebindFence {
             flag: Arc::clone(&self.rebind_gate),
         })
     }
