@@ -1174,6 +1174,13 @@ mod tests {
         fn write(&self, relative: &str, content: &str) {
             let path = self.0.join(relative);
             fs::create_dir_all(path.parent().unwrap()).unwrap();
+            // Remove-then-write: rewriting a file with same-length content
+            // inside one filesystem timestamp tick leaves stat identical
+            // (mtime/ctime/size/ino), so git trusts the index entry and skips
+            // re-reading content — `add -A` keeps the stale blob and
+            // diff/restore assertions fail intermittently (root cause of the
+            // 2026-09-18 rust-test flake). A fresh inode always mismatches.
+            let _ = fs::remove_file(&path);
             fs::write(path, content).unwrap();
         }
 
