@@ -813,14 +813,6 @@ pub async fn rebind_workspace_root(
     fold_unreported_fence_hits(&final_stale, &affected, &mut failed_session_ids);
 
     emit_project_event(&app, "projects:list_changed", "rebound");
-    for session_id in &rebound_session_ids {
-        super::sessions::emit_session_event(
-            &app,
-            "session:list_changed",
-            session_id,
-            "workspace_rebound",
-        );
-    }
     // Post-migration busy recheck (finding 5): the entry fence and the
     // multi-file migration are not mutually exclusive, so a turn may have
     // started — against the old directory — during the migration. Bindings
@@ -912,12 +904,56 @@ pub async fn rebind_workspace_root(
             }
         }
     }
+    // workspace_rebound events carry the rebind geometry and cover every
+    // session whose persisted artifact paths this PR's lanes rebased —
+    // rebound, failed (lanes moved; something else did not finish), and
+    // post-busy (moved by this or an earlier run). The frontend marks those
+    // sessions so their in-memory buffers stop re-persisting stale artifact
+    // paths over the rebased JSON: a chat turn completed after the rebind
+    // wholesale-saves the buffer's artifact list, and without the mark that
+    // save would durably revert the backend rebase (review #463 round-B
+    // Major 1). Emitted after the reclaim tail so the post-busy list is
+    // final; ids already in the rebound list may repeat (the mark write is
+    // idempotent).
+    emit_workspace_rebound_events(
+        &app,
+        rebound_session_ids
+            .iter()
+            .chain(&failed_session_ids)
+            .chain(&post_busy_session_ids),
+        &from,
+        &to_display,
+    );
     Ok(RebindWorkspaceReport {
         rebound_session_ids,
         failed_session_ids,
         affected_project_ids,
         post_busy_session_ids,
     })
+}
+
+/// workspace_rebound event with the rebind geometry (see the call site for
+/// why failed and post-busy ids are included). Same local-only forwarding
+/// convention as `emit_project_event` applies to the projects domain; the
+/// session event itself keeps the standard remote-control forwarding of
+/// `emit_session_event` (round-10 minor 4 already bounds which ids reach
+/// this point — dead ids are never reported, hence never evented).
+fn emit_workspace_rebound_events<'a>(
+    app: &AppHandle,
+    session_ids: impl Iterator<Item = &'a String>,
+    from: &Path,
+    to: &Path,
+) {
+    for session_id in session_ids {
+        let payload = serde_json::json!({
+            "id": session_id,
+            "action": "workspace_rebound",
+            "from": from.display().to_string(),
+            "to": to.display().to_string(),
+        });
+        let _ = app.emit("session:list_changed", payload.clone());
+        crate::features::remote_control::forward_app_event(app, "session:list_changed", payload);
+    }
 }
 
 /// Admits a session found under the `to` prefix into the rebind (review #463

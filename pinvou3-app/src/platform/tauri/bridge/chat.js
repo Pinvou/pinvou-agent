@@ -30,6 +30,10 @@
     const adoptManagedAttachments = context.adoptManagedAttachments || function () { return Promise.resolve(); };
     const discardManagedAttachment = context.discardManagedAttachment || function () { return Promise.resolve(); };
     const isScheduledRunSession = context.isScheduledRunSession;
+    // Wholesale artifact saves rebase from→to while a workspace_rebound mark
+    // exists (review #463 round-B Major 1): a turn's buffer save must not
+    // durably revert the backend lane's rebase of the persisted paths.
+    const rebaseArtifactPathsForRebind = context.rebaseArtifactPathsForRebind || function (sid, paths) { return paths; };
     const userMessageDisplayText = context.userMessageDisplayText;
     const parseScheduledTaskDraftFromText = context.parseScheduledTaskDraftFromText;
     const autoCreateScheduledTaskDraft = context.autoCreateScheduledTaskDraft;
@@ -2302,7 +2306,7 @@
     try {
       await invoke("save_session_messages", { id: state.activeSessionId, messages: state.messages });
       // artifacts 一起落盘，重启/切换 session 后能恢复
-      try { await invoke("save_session_artifacts", { id: state.activeSessionId, paths: state.artifacts.map(function (a) { return a.path; }) }); } catch { /* artifacts persist is best-effort */ }
+      try { await invoke("save_session_artifacts", { id: state.activeSessionId, paths: rebaseArtifactPathsForRebind(state.activeSessionId, state.artifacts.map(function (a) { return a.path; })) }); } catch { /* artifacts persist is best-effort */ }
       // Auto-title
       const meta = state.sessions.find(function (s) { return s.id === state.activeSessionId; });
       if (meta && (isDefaultChatTitle(meta.title) || personaPlaceholderTitles[state.activeSessionId])) {

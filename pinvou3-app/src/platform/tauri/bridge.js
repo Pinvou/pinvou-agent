@@ -974,6 +974,10 @@
   const normalizedPath = artifactTrackerFeature.normalizedPath;
   const noteArtifactChange = artifactTrackerFeature.noteArtifactChange;
   const filterSessionArtifacts = artifactTrackerFeature.filterSessionArtifacts;
+  // Wholesale artifact saves rebase from→to while a workspace_rebound mark
+  // exists (round-B Major 1): a chat turn's buffer save must not durably
+  // revert the backend lane's rebase of the persisted artifact paths.
+  const rebaseArtifactPathsForRebind = artifactTrackerFeature.rebaseArtifactPathsForRebind;
   const isDeliverable = artifactTrackerFeature.isDeliverable;
   const trackArtifact = artifactTrackerFeature.trackArtifact;
   const markTurnDirtyArtifact = artifactTrackerFeature.markTurnDirtyArtifact;
@@ -1012,6 +1016,7 @@
     discardManagedAttachment,
     isScheduledRunSession: function (...args) { return isScheduledRunSession(...args); },
     basename,
+    rebaseArtifactPathsForRebind,
     userMessageDisplayText,
     extractArtifactPaths,
     fileMutationAction,
@@ -1306,7 +1311,7 @@
     if (buf) buf.artifacts = arts;
     else state.artifacts = arts;
     try {
-      try { await invoke("save_session_artifacts", { id: sid, paths: arts.map(function (a) { return a.path; }) }); } catch { /* disk-write failure must not block session switching */ }
+      try { await invoke("save_session_artifacts", { id: sid, paths: rebaseArtifactPathsForRebind(sid, arts.map(function (a) { return a.path; })) }); } catch { /* disk-write failure must not block session switching */ }
       if (isDefaultChatTitle(meta.title) || personaPlaceholderTitles[sid]) {
         const firstUser = msgs.find(function (m) { return m.role === "user"; });
         // 自动标题复用展示层过滤（与 web 侧一致）：内部信封/子智能体交接不参与

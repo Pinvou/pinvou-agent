@@ -1326,15 +1326,23 @@
     });
     listen("session:list_changed", function (event) {
       const payload = event && event.payload || {};
-      // The rebind command stamps the sessions it actually moved (review
-      // #463 round-10 Major 2): the artifact reconcile's stale-absolute
-      // rebase arm is gated on this mark, so it heals exactly the sessions
-      // whose workspace root just moved and never touches unrelated stale
-      // entries. Consumed (with a freshness window) by
-      // bridge/artifact-tracker.js reconcileArtifacts.
-      if (payload.action === "workspace_rebound" && payload.id) {
+      // The rebind command stamps the sessions whose persisted artifact paths
+      // its lanes rebased (rebound, failed AND post-busy ids — review #463
+      // round-10 Major 2 + round-B Major 1). The mark carries the rebind
+      // geometry: the artifact reconcile's stale-absolute rebase arm is
+      // gated on it (view healing, freshness window), and the wholesale
+      // artifact saves rebase from→to while the mark exists — a chat turn's
+      // buffer save must not durably revert the backend rebase. Consumed by
+      // bridge/artifact-tracker.js (rebaseArtifactPathsForRebind /
+      // sessionRecentlyRebound); marks are memory-only, so a restart starts
+      // from the already-rebased JSON with no marks.
+      if (payload.action === "workspace_rebound" && payload.id && payload.from && payload.to) {
         state.reboundSessionIds = state.reboundSessionIds || {};
-        state.reboundSessionIds[payload.id] = Date.now();
+        state.reboundSessionIds[payload.id] = {
+          at: Date.now(),
+          from: payload.from,
+          to: payload.to,
+        };
       }
       refreshHistoryList().catch(function (error) {
         console.error("[sessions] session:list_changed refresh failed", error);

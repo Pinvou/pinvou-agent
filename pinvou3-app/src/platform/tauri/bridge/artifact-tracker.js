@@ -158,18 +158,47 @@
   // Freshness window for the workspace_rebound mark (bridge/sessions.js
   // listener): generous enough to cover the rebind dialog's retry flow, short
   // enough that a stale mark cannot misfire the rebase arm on an unrelated
-  // later basename collision. Expired marks are pruned on check.
+  // later basename collision. Expired marks are pruned on check. Only the
+  // basename-based VIEW heal is windowed — the save-path transform
+  // (rebaseArtifactPathsForRebind) is prefix-exact and runs for the whole
+  // process lifetime of the mark.
   const REBIND_RECONCILE_WINDOW_MS = 10 * 60 * 1000;
   function sessionRecentlyRebound(sid) {
     const marks = state.reboundSessionIds;
     if (!marks || !sid) return false;
-    const stampedAt = marks[sid];
-    if (!stampedAt) return false;
-    if (Date.now() - stampedAt > REBIND_RECONCILE_WINDOW_MS) {
+    const mark = marks[sid];
+    if (!mark || !mark.at) return false;
+    if (Date.now() - mark.at > REBIND_RECONCILE_WINDOW_MS) {
       delete marks[sid];
       return false;
     }
     return true;
+  }
+  // Rebases absolute artifact paths onto the session's rebind target while a
+  // workspace_rebound mark exists (review #463 round-B Major 1): a chat turn
+  // completed after the rebind wholesale-saves the buffer's artifact list,
+  // which would otherwise durably revert the backend lane's rebase of
+  // SavedSession.artifacts[].storage_path. Prefix-exact on the folded
+  // normalized form (separators + case folded — Windows bindings are stored
+  // case-insensitively, and a case-collision false match requires another
+  // directory differing from `from` by case alone); the suffix keeps the
+  // original casing. Relative paths already resolve against the CURRENT
+  // workspace and are untouched; marks are memory-only, so a restart starts
+  // from the already-rebased JSON with no marks and this becomes a no-op.
+  function rebaseArtifactPathsForRebind(sid, paths) {
+    const marks = state.reboundSessionIds;
+    const mark = marks && sid ? marks[sid] : null;
+    if (!mark || !mark.from || !mark.to || !Array.isArray(paths)) return paths;
+    const fromKey = normalizedPath(mark.from).replace(/\/+$/, "").toLowerCase();
+    if (!fromKey) return paths;
+    const toKey = normalizedPath(mark.to).replace(/\/+$/, "");
+    return paths.map(function (p) {
+      if (typeof p !== "string" || !isAbsPath(p)) return p;
+      const norm = normalizedPath(p);
+      const lower = norm.toLowerCase();
+      if (lower !== fromKey && lower.indexOf(fromKey + "/") !== 0) return p;
+      return toKey + norm.slice(fromKey.length);
+    });
   }
   // 切换 session 时对账:扫 workspace 磁盘,把实际存在、但跟踪列表里没有的文件补进来。
   // 修「文件已生成在盘上、却因 app 中途重启/跟踪遗漏而不在产物面板」(以磁盘为准)。
@@ -211,7 +240,7 @@
       });
       if (added) {
         notify();
-        try { await invoke("save_session_artifacts", { id: sid, paths: state.artifacts.map(function (a) { return a.path; }) }); } catch { /* disk-write failure must not block the frontend update */ }
+        try { await invoke("save_session_artifacts", { id: sid, paths: rebaseArtifactPathsForRebind(sid, state.artifacts.map(function (a) { return a.path; })) }); } catch { /* disk-write failure must not block the frontend update */ }
       }
     } catch { /* workspace 不存在(新 session)等,忽略 */ }
   }
@@ -319,6 +348,7 @@
       isSharedMcpArtifactPath,
       artifactBelongsToSession,
       filterSessionArtifacts,
+      rebaseArtifactPathsForRebind,
       isDeliverable,
       trackArtifact,
       markTurnDirtyArtifact,

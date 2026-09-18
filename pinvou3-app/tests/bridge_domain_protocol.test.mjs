@@ -81,8 +81,16 @@ const protocolSources = {
 
 const expectedProtocolHashes = {
   multiAgent: 'a6d045e87f7f5f3537fdeadb262d54622edd6dcafa2c0253f0b44e7de439315d',
-  orchestration: '0f6d0ff37a357fe9dab1873879d98ebf5e0e1c176c02c431452f5b5dc48b7e22',
-  artifacts: '37ca694534c7e6cf44b6d262c40e388999c3ba136faca0d6f57821d5b9b3df53',
+  // Recomputed for the rebind artifact-path save transform (review #463
+  // round-B Major 1): the persistMessagesFor save_session_artifacts invoke
+  // wraps its paths with rebaseArtifactPathsForRebind so a post-rebind chat
+  // turn's buffer save cannot durably revert the backend lane's rebase. Same
+  // command surface; no new invoke or listen entries.
+  orchestration: '0268652fa093cfa288d872d98ee1aa3446bdd16837b54a1a3c26c06c890b9933',
+  // Recomputed for the same round-B fix: the reconcile's save_session_artifacts
+  // invoke wraps its paths with the rebase transform, and the
+  // rebaseArtifactPathsForRebind helper joined the feature's exported API.
+  artifacts: 'c761cdd21803072fc0ef8a138178678cbb4995d26a5803f23b980c6c6ad1360d',
   // Recomputed for #308 follow-ups: prefillComposer(text, append) recovery
   // entry + comment translations touching `invoke(` mentions (the extractor
   // scans raw source, so comment wording is part of the digest). Recomputed
@@ -122,7 +130,10 @@ const expectedProtocolHashes = {
   // comment translations inside the captured listener bodies (same
   // capture-text refresh; the comment-stripped signature list is
   // byte-identical to the previous state).
-  chat: 'd9b18bcde6f40b5ff1644c1bccc388b70632a9f49444de44524c24b39830959c',
+  // Recomputed for the rebind artifact-path save transform (round-B Major 1):
+  // chat.js persistMessages wraps its save_session_artifacts paths with
+  // rebaseArtifactPathsForRebind (same command surface, no new entries).
+  chat: '30f7e00d6724004dd474c7bc3bfef3355bd5c15d92fdb41a517235859bc741f8',
   dependencies: '2cb185d38dabeb35f48773457c182e1c35951b210f5d0fc853b074eb2eb68626',
   // Recomputed for #445 round-8: exitPlanToYolo accepts an explicit target
   // session id (the YOLO gate passes the adjudicated sid), so the
@@ -149,7 +160,11 @@ const expectedProtocolHashes = {
   // (bridge/sessions.js). Recomputed again for workspace-bound sessions:
   // get_session_workspace_binding query + bound-draft staged mode application
   // (set_plan_mode_next / exit_plan_to_yolo) at materialization.
-  sessions: 'c85e365dcf0874b577396a02f764cb6f108ad34a4b54c0853cd8f918ffa39b5c',
+  // Recomputed for the rebind mark geometry (round-B Major 1): the
+  // session:list_changed listener body now reads the payload's from/to and
+  // stamps {at, from, to} marks consumed by the artifact save transform and
+  // the reconcile rebase gate (same listen surface, no new entries).
+  sessions: 'c58e5b25efbd682ae00b58a3963f43456340e8fbb55d75081c282ad6832bfc5b',
   settings: 'a44929caff59641eb059f28885f1674d4e277412526d31c1d3ddfd75e44d0496',
   updater: '86412d40999a268d3d92dc4fe97e3fe465de08745423be820f38a462d79aaced',
   // Recomputed for the comment-only English translation of the voice bridge

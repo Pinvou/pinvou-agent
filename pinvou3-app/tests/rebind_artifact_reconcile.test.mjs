@@ -1,14 +1,20 @@
 // Frontend half of the artifact-path rebase contract (review #463 round-10
-// Major 2): after a folder rebind the persisted artifacts[].storage_path
-// entries keep the vanished absolute root, and the switch-session reconcile
-// pass must rebase a stale absolute entry onto the same-basename file the
-// workspace scan surfaces — but ONLY for a session the rebind command just
-// moved (the workspace_rebound mark): an unconditional arm would also repoint
-// a live absolute entry outside the workspace onto an unrelated same-basename
-// workspace file and persist the damage (round-A review minor). The backend
-// half (the rebase during the rebind metadata pass) is pinned in
-// features/sessions/tests.rs; the mark producer is pinned by the sessions.js
-// listener reading session:list_changed's {id, action:"workspace_rebound"}.
+// Major 2 + round-B Major 1): after a folder rebind the persisted
+// artifacts[].storage_path entries keep the vanished absolute root, and two
+// gated mechanisms keep the frontend from fighting the backend lane:
+// 1. the switch-session reconcile rebases a stale absolute entry onto the
+//    same-basename workspace file — ONLY for a session carrying a fresh
+//    workspace_rebound mark (an unconditional arm would repoint a live
+//    absolute entry outside the workspace onto an unrelated same-basename
+//    workspace file and persist the damage);
+// 2. every wholesale artifact save (turn end / session switch / reconcile)
+//    rebases from→to while the mark exists — a chat turn's buffer save must
+//    not durably revert the backend lane's rebase of SavedSession.artifacts.
+// The mark {at, from, to} is stamped by the sessions.js listener from the
+// session:list_changed payload; the backend emits it for rebound, failed AND
+// post-busy ids with the rebind geometry (app/commands/projects.rs
+// emit_workspace_rebound_events). The backend rebase itself is pinned in
+// features/sessions/tests.rs.
 import assert from 'node:assert/strict';
 import fs from 'node:fs';
 import vm from 'node:vm';
@@ -28,13 +34,25 @@ assert.equal(typeof factory, 'function', 'artifact-tracker feature must register
 const sessionsSource = read('platform/tauri/bridge/sessions.js');
 assert.match(
   sessionsSource,
-  /payload\.action === "workspace_rebound" && payload\.id/,
-  'the session:list_changed listener must stamp workspace_rebound ids',
+  /payload\.action === "workspace_rebound" && payload\.id && payload\.from && payload\.to/,
+  'the session:list_changed listener must require the rebind geometry',
 );
 assert.match(
   sessionsSource,
-  /state\.reboundSessionIds\[payload\.id\] = Date\.now\(\)/,
-  'the mark must carry a timestamp for the freshness window',
+  /state\.reboundSessionIds\[payload\.id\] = \{\r?\n\s*at: Date\.now\(\),\r?\n\s*from: payload\.from,\r?\n\s*to: payload\.to,/,
+  'the mark must carry the timestamp and the from/to geometry',
+);
+// The backend emit site must carry the geometry and cover all three lists.
+const projectsRs = read('../src-tauri/src/app/commands/projects.rs').replace(/\r\n/g, '\n');
+assert.match(
+  projectsRs,
+  /emit_workspace_rebound_events\(\n\s*&app,\n\s*rebound_session_ids\n\s*\.iter\(\)\n\s*\.chain\(&failed_session_ids\)\n\s*\.chain\(&post_busy_session_ids\),/,
+  'the events must cover rebound, failed and post-busy sessions',
+);
+assert.match(
+  projectsRs,
+  /"from": from\.display\(\)\.to_string\(\),\n\s*"to": to\.display\(\)\.to_string\(\),/,
+  'the event payload must carry the rebind geometry',
 );
 
 function makeTracker(state, workspaceFiles) {
@@ -52,13 +70,15 @@ function makeTracker(state, workspaceFiles) {
   return { tracker, invokes };
 }
 
-// 1. A stale absolute entry from the vanished root rebases onto the scanned
-//    workspace file when the session carries a fresh workspace_rebound mark,
-//    and the rebased list is persisted.
+const MARK = { at: Date.now(), from: '/old/root', to: '/new/root' };
+
+// 1. Reconcile: a stale absolute entry from the vanished root rebases onto
+//    the scanned workspace file when the session carries a fresh mark, and
+//    the rebased (already re-transformed) list is persisted.
 {
   const state = {
     activeSessionId: 's1',
-    reboundSessionIds: { s1: Date.now() },
+    reboundSessionIds: { s1: { ...MARK } },
     artifacts: [{ path: '/old/root/sub/report.html', basename: 'report.html' }],
   };
   const { tracker, invokes } = makeTracker(state, ['/new/root/sub/report.html']);
@@ -73,10 +93,10 @@ function makeTracker(state, workspaceFiles) {
   assert.deepEqual(saved[1].paths, ['/new/root/sub/report.html']);
 }
 
-// 2. WITHOUT the rebind mark the same shape must stay untouched: a live
-//    absolute entry outside the workspace is not a dead one, and repointing
-//    it onto an unrelated same-basename workspace file would durably open a
-//    different file than the one produced (round-A review minor).
+// 2. Reconcile WITHOUT the mark must stay untouched: a live absolute entry
+//    outside the workspace is not a dead one, and repointing it onto an
+//    unrelated same-basename workspace file would durably open a different
+//    file than the one produced (round-A review minor).
 {
   const state = {
     activeSessionId: 's3',
@@ -95,12 +115,12 @@ function makeTracker(state, workspaceFiles) {
   );
 }
 
-// 3. An expired mark no longer authorizes the rebase (stale marks must not
-//    misfire on a later, unrelated basename collision).
+// 3. Reconcile with an expired mark no longer authorizes the rebase (stale
+//    marks must not misfire on a later, unrelated basename collision).
 {
   const state = {
     activeSessionId: 's4',
-    reboundSessionIds: { s4: Date.now() - 11 * 60 * 1000 },
+    reboundSessionIds: { s4: { ...MARK, at: Date.now() - 11 * 60 * 1000 } },
     artifacts: [{ path: '/old/root/report.html', basename: 'report.html' }],
   };
   const { tracker } = makeTracker(state, ['/new/root/report.html']);
@@ -112,13 +132,12 @@ function makeTracker(state, workspaceFiles) {
   );
 }
 
-// 4. An entry whose absolute path the scan reproduces verbatim stays put (no
-//    false rebase of a live workspace file onto itself or a sibling), and a
-//    scanned file with no tracked entry is added as before.
+// 4. Reconcile: an entry whose absolute path the scan reproduces verbatim
+//    stays put, and a scanned file with no tracked entry is added as before.
 {
   const state = {
     activeSessionId: 's2',
-    reboundSessionIds: { s2: Date.now() },
+    reboundSessionIds: { s2: { ...MARK } },
     artifacts: [{ path: '/live/root/a.html', basename: 'a.html' }],
   };
   const { tracker } = makeTracker(state, ['/live/root/a.html', '/live/root/b.png']);
@@ -127,6 +146,48 @@ function makeTracker(state, workspaceFiles) {
     state.artifacts.map(a => a.path),
     ['/live/root/a.html', '/live/root/b.png'],
     'verbatim matches stay put; unknown deliverables are added',
+  );
+}
+
+// 5. The save transform (round-B Major 1): with a mark, absolute paths under
+//    the old root map onto the new root with suffix and casing preserved —
+//    this is what keeps a post-rebind chat turn's wholesale buffer save from
+//    reverting the backend lane's persisted rebase. Unrelated absolute paths
+//    and relative paths pass through untouched.
+{
+  const state = { reboundSessionIds: { s5: { ...MARK } } };
+  const { tracker } = makeTracker(state, []);
+  assert.deepEqual(
+    tracker.rebaseArtifactPathsForRebind('s5', [
+      '/old/root/report.html',
+      '/old/root/sub/deep/a.png',
+      '/OLD/ROOT/CASED.Docx',
+      '/elsewhere/live/file.md',
+      'relative/output.md',
+      '/old/rootx/sibling-prefix.md',
+    ]),
+    [
+      '/new/root/report.html',
+      '/new/root/sub/deep/a.png',
+      '/new/root/CASED.Docx',
+      '/elsewhere/live/file.md',
+      'relative/output.md',
+      '/old/rootx/sibling-prefix.md',
+    ],
+    'from-prefix absolute paths follow the new root; everything else is untouched',
+  );
+}
+
+// 6. Without a mark the transform is an identity (the ordinary save path of
+//    every never-rebound session).
+{
+  const state = { reboundSessionIds: {} };
+  const { tracker } = makeTracker(state, []);
+  const paths = ['/old/root/report.html', 'relative/x.md'];
+  assert.deepEqual(
+    tracker.rebaseArtifactPathsForRebind('s6', paths),
+    paths,
+    'no mark: the save path must be untouched',
   );
 }
 
