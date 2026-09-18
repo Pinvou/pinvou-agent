@@ -784,8 +784,17 @@ mod tests {
 
     #[test]
     fn session_skills_dir_uses_session_private_root() {
-        // 会话技能物化(materialize_session_skills)落点即本目录(两个原测试断言同一等式)。
-        let dir = paths::session_skills_dir("abc-123");
-        assert_eq!(dir, paths::sessions_root().join("abc-123").join("skills"));
+        // Session skill materialization (materialize_session_skills) lands in
+        // exactly this directory (both original tests assert the same
+        // equation). Both sides of the equation are derived from
+        // PINVOU3_HOME: when parallel tests flip the home, the two reads can
+        // land in different snapshots and the equality goes red randomly
+        // (observed under high load on 2026-09-16) — with_temp_home locks
+        // ENV_LOCK and pins a clean home, so both reads are serialized and
+        // deterministic.
+        with_temp_home(|| {
+            let dir = paths::session_skills_dir("abc-123");
+            assert_eq!(dir, paths::sessions_root().join("abc-123").join("skills"));
+        });
     }
 }

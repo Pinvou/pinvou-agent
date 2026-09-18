@@ -546,6 +546,60 @@ class CiGatePolicyTests(unittest.TestCase):
                 f"ubuntu job '{job_name}' must invoke scripts/ci-memory-setup.sh"
                 " via an absolute path (some jobs set a run working-directory)",
             )
+            # An in-kernel hang cannot be interrupted by the userspace timeout
+            # inside the script; the workflow-side `timeout 240` plus the
+            # non-fatal wrapper is the only backstop (the last line of defense
+            # the script header claims). A job missing the wrapper would burn
+            # the whole job limit when it hangs, so the guard enforces an
+            # identical structure at every call site.
+            self.assertIn(
+                'run: timeout --kill-after=15 240 sudo bash "${{ github.workspace }}/scripts/ci-memory-setup.sh"',
+                job,
+                f"ubuntu job '{job_name}' must hard-cap ci-memory-setup with"
+                " 'timeout --kill-after=15 240' (userspace hang backstop)",
+            )
+            self.assertIn(
+                '|| echo "::warning::ci-memory-setup',
+                job,
+                f"ubuntu job '{job_name}' must keep ci-memory-setup non-fatal"
+                " (degrade to stock runner memory with a ::warning)",
+            )
+
+    def test_memory_setup_wrapped_at_every_call_site(self):
+        # The wrapper contract is repo-wide, not just pr-check.yml: every
+        # invocation of ci-memory-setup.sh in any workflow file must carry
+        # the `timeout --kill-after=15 240` cap and the non-fatal ::warning
+        # degradation on the same run line.
+        workflows = sorted(
+            list((ROOT / ".github/workflows").glob("*.yml"))
+            + list((ROOT / ".github/workflows").glob("*.yaml"))
+        )
+        self.assertTrue(workflows, "no workflow files found under .github/workflows")
+        call_sites = 0
+        for workflow in workflows:
+            text = _without_yaml_comments(workflow.read_text(encoding="utf-8"))
+            for line in text.splitlines():
+                if "scripts/ci-memory-setup.sh" not in line:
+                    continue
+                call_sites += 1
+                self.assertIn(
+                    "timeout --kill-after=15 240",
+                    line,
+                    f"{workflow.name}: the ci-memory-setup.sh call must be"
+                    " capped by 'timeout --kill-after=15 240' (an in-kernel"
+                    " hang is uninterruptible; the outer cap is the last"
+                    " backstop)",
+                )
+                self.assertIn(
+                    '|| echo "::warning::ci-memory-setup',
+                    line,
+                    f"{workflow.name}: the ci-memory-setup.sh call must stay"
+                    " non-fatal (degrade to stock runner memory with a"
+                    " ::warning)",
+                )
+        self.assertGreaterEqual(
+            call_sites, 20, "expected the memory-setup wrapper at 20+ call sites"
+        )
 
     def test_windows_rust_test_cumulative_main_push_is_path_independent(self):
         # Main's Windows regression must remain independent of adjacent diff paths.
@@ -609,6 +663,11 @@ class CiGatePolicyTests(unittest.TestCase):
         )[1]
         self.assertIn('"$test_exe" "$filter" --test-threads=1', regression)
         self.assertNotIn("cargo test", regression)
+        self.assertIn(
+            "'connector_introspection_guard_matches_complete_names_only'",
+            regression,
+            "Windows must execute the PowerShell connector-introspection hook regression",
+        )
 
         required_gate = self.pr_workflow.split(
             "\n  required-gate:", maxsplit=1
@@ -876,7 +935,132 @@ class CiGatePolicyTests(unittest.TestCase):
         self.assertIn("wrapper: ${{ steps.filter.outputs.wrapper }}", changes)
         self.assertIn("needs: changes", smoke)
         self.assertIn("if: ${{ needs.changes.outputs.wrapper == 'true' }}", smoke)
-        self.assertIn("os: [macos-15, ubuntu-latest, windows-latest]", smoke)
+        self.assertIn("os: [macos-15, ubuntu-22.04, windows-latest]", smoke)
+
+
+
+
+class ReleaseDiskAndImagePolicyTests(unittest.TestCase):
+    """Guard for release-build disk preparation and the single-image convention (backported from private-repo #1112 on 2026-09-16)."""
+
+    def setUp(self):
+        self.release_workflow = (ROOT / ".github/workflows/release-packages.yml").read_text(
+            encoding="utf-8"
+        )
+
+    def test_release_linux_build_jobs_prepare_disk_and_prune_apt(self):
+        # Release build jobs (single-disk hosted runner; with the old 16G
+        # /mnt swapfile in place x64 builds had only ~13-14G free) must clean
+        # up unused preinstalled SDKs before toolchains/caches/dependencies
+        # hit the disk, and run autoremove + clean after installing system
+        # deps; otherwise a cold compile has filled the disk (ENOSPC, since
+        # 2026-09-13).
+        blocks = re.split(
+            r"\n  (?=[A-Za-z0-9_-]+:\s*$)", self.release_workflow, flags=re.MULTILINE
+        )
+        for job_id in ("build-linux-x64", "build-linux-arm64"):
+            job = next(
+                (b for b in blocks if b.strip().startswith(f"{job_id}:")), None
+            )
+            self.assertIsNotNone(job, f"release job '{job_id}' not found")
+            self.assertIn("python3 scripts/ci-rust-disk.py", job)
+            self.assertIn("--min-free-gib 24", job)
+            # Disk preparation must run before setup-node (the aggressive tier
+            # deletes /opt/hostedtoolcache, and setup-node would re-download
+            # Node afterwards) and before the toolchain and the Rust cache
+            # land, so the free-space gate measures the disk the cold build
+            # actually gets.
+            self.assertLess(
+                job.index("python3 scripts/ci-rust-disk.py"),
+                job.index("uses: actions/setup-node"),
+            )
+            self.assertLess(
+                job.index("python3 scripts/ci-rust-disk.py"),
+                job.index("uses: dtolnay/rust-toolchain"),
+            )
+            self.assertLess(
+                job.index("python3 scripts/ci-rust-disk.py"),
+                job.index("uses: Swatinem/rust-cache"),
+            )
+            self.assertIn("sudo apt-get autoremove -y --purge", job)
+            self.assertIn("sudo apt-get clean", job)
+        x64 = next(b for b in blocks if b.strip().startswith("build-linux-x64:"))
+        arm64 = next(b for b in blocks if b.strip().startswith("build-linux-arm64:"))
+        self.assertIn("--aggressive", x64)
+        self.assertNotIn("--aggressive", arm64)
+
+    def test_all_linux_jobs_pin_the_release_runner_image(self):
+        # Image versions never drift (single-image convention): every
+        # workflow's Linux runner must match the release build baseline
+        # (ubuntu-22.04 / ubuntu-22.04-arm). Release binaries link against the
+        # build host's glibc, so tests and checks must run on the same system
+        # as the release build; image upgrades must be coordinated across the
+        # whole repo at once — rolling images like ubuntu-latest and per-job
+        # version bumps are forbidden.
+        # Strip full-line YAML comments before scanning: version mentions
+        # inside full-line comments (e.g. migration notes) must not trip the
+        # image rules. Note that the ubuntu-latest ban still scans the
+        # remaining text, including inline trailing comments — keep such
+        # notes on their own comment lines.
+        allowed = {"ubuntu-22.04", "ubuntu-22.04-arm"}
+        workflows = sorted(
+            list((ROOT / ".github/workflows").glob("*.yml"))
+            + list((ROOT / ".github/workflows").glob("*.yaml"))
+        )
+        self.assertTrue(workflows, "no workflow files found under .github/workflows")
+        for workflow in workflows:
+            text = _without_yaml_comments(workflow.read_text(encoding="utf-8"))
+            self.assertNotIn(
+                "ubuntu-latest",
+                text,
+                f"{workflow.name}: ubuntu-latest is a rolling image and violates"
+                " the single-image convention; pin it to ubuntu-22.04 like the"
+                " release build",
+            )
+            for image in sorted(set(re.findall(r"ubuntu-\d+\.\d+(?:-arm)?", text))):
+                self.assertIn(
+                    image,
+                    allowed,
+                    f"{workflow.name}: Linux image '{image}' diverges from the"
+                    " release baseline; image upgrades must happen repo-wide"
+                    " at once",
+                )
+
+    def test_audited_redundant_apt_packages_stay_pruned(self):
+        # 2026-09-15 per-package probe audit verdict (simulate installing each
+        # package alone; if the installed set is unchanged the package is
+        # redundant): libgtk-3-dev/libsoup-3.0-dev/libx11-dev/libxi-dev/
+        # libxtst-dev are all pulled in transitively by the hard dependency
+        # chain of libwebkit2gtk-4.1-dev, and the build does not need
+        # librsvg2-dev (Cargo has no rsvg crate). Any workflow adding them
+        # back to an install list would slow dependency installation and eat
+        # the single-disk runner's build disk. The guard scans the full text
+        # with comments stripped: audit comments may mention these names, but
+        # their appearance in non-comment text is rejected (including
+        # multi-line continuations).
+        redundant = (
+            "libgtk-3-dev",
+            "libsoup-3.0-dev",
+            "librsvg2-dev",
+            "libx11-dev",
+            "libxi-dev",
+            "libxtst-dev",
+        )
+        workflows = sorted(
+            list((ROOT / ".github/workflows").glob("*.yml"))
+            + list((ROOT / ".github/workflows").glob("*.yaml"))
+        )
+        self.assertTrue(workflows, "no workflow files found under .github/workflows")
+        for workflow in workflows:
+            text = _without_yaml_comments(workflow.read_text(encoding="utf-8"))
+            for package in redundant:
+                self.assertNotIn(
+                    package,
+                    text,
+                    f"{workflow.name}: audited redundant apt package '{package}'"
+                    " must not be added back (pulled in transitively by"
+                    " libwebkit2gtk-4.1-dev or not needed by the build)",
+                )
 
 
 if __name__ == "__main__":

@@ -16,6 +16,13 @@
 
 const TEMPORARY_GROUP_KEY = '__temporary__';
 
+// HTML5 drag-and-drop MIME for the sidebar session drag (move onto a project
+// group). The producer (RecentItem) and the consumer (ProjectGroupHeader) must
+// agree on exactly this type or the gesture silently no-ops — no highlight, no
+// preventDefault, no drop, and no console output — so the literal lives here
+// once and both sides import it.
+const PROJECT_SESSION_DRAG_TYPE = 'application/x-pinvou-session';
+
 function itemTime(item) {
   return String((item && (item.updatedAt || item.pinnedAt)) || '');
 }
@@ -194,4 +201,15 @@ function groupSessionsWithProjects(items, projects, assignments) {
   return groups;
 }
 
-export { TEMPORARY_GROUP_KEY, groupSessionsWithProjects, projectCoversPath, resolveSessionProjectId, rootPath };
+// Shared drop/pick decision: does moving `session` onto project `target` need
+// the add-folder confirmation first (target's roots do not cover the session's
+// workspace), or can it move instantly? Temporary sessions have no workspace
+// and always move instantly. One predicate instead of three hand-mirrored
+// copies (drag drop handler, dialog initializer, dialog choose).
+function needsAddFolderConfirm(session, target) {
+  if (!session || !target) return false;
+  const workspacePath = session.workspaceKind === 'project' ? String(session.workspacePath || '') : '';
+  return !!workspacePath && !projectCoversPath(target, workspacePath);
+}
+
+export { TEMPORARY_GROUP_KEY, PROJECT_SESSION_DRAG_TYPE, groupSessionsWithProjects, projectCoversPath, resolveSessionProjectId, rootPath, needsAddFolderConfirm };

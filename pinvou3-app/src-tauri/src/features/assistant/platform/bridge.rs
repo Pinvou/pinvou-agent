@@ -62,15 +62,23 @@ const SEPARATE_REASONING_FIELD: &str = "separate_field";
 // Multi-agent is an agent cluster where the main session stays the overall
 // coordinator and complex tasks nest at most one extra level — not an unbounded
 // recursive tree. Plain conversations keep the original CodeWhale caps; only
-// sessions with multi-agent enabled get a tighter resource budget. The tier
-// constants are pub(crate) so the per-turn delegation reminder
-// (app/commands/multiagent.rs) reads the same numbers and cannot drift from the
-// engine's actual caps.
+// sessions with multi-agent enabled get a resource budget. The constants are
+// pub(crate) so the per-turn delegation reminder (app/commands/multiagent.rs)
+// reads the same numbers and cannot drift from the engine's actual caps.
+//
+// Two regimes: swarm mode (multi_agent on) lifts the count caps entirely —
+// expressed by pinning the engine config to the base's own hard ceilings
+// (`config::MAX_SUBAGENTS` / `config::MAX_SUBAGENT_ADMISSION`), which the base
+// re-clamps to anyway, so App and base stay consistent without touching
+// CodeWhale. With swarm off there is one shared tier (Work and Code sessions
+// alike): 4 concurrent direct children, 8 tree-wide admitted — the extra
+// admitted slots form a small queue buffer so a bursty fanout queues instead
+// of being rejected outright. (The swarm-off tier is not reachable from
+// production wiring today — multi-agent engine configs are only built for
+// sessions with the switch on; it is the defensive regime pinned by tests.)
 const MULTI_AGENT_MAX_SPAWN_DEPTH: u32 = 2;
-pub(crate) const MULTI_AGENT_WORK_MAX_CONCURRENT: usize = 4;
-pub(crate) const MULTI_AGENT_WORK_MAX_ADMITTED: usize = 8;
-pub(crate) const MULTI_AGENT_CODE_MAX_CONCURRENT: usize = 6;
-pub(crate) const MULTI_AGENT_CODE_MAX_ADMITTED: usize = 12;
+pub(crate) const MULTI_AGENT_MAX_CONCURRENT: usize = 4;
+pub(crate) const MULTI_AGENT_MAX_ADMITTED: usize = 8;
 
 fn configure_provider(
     config: &mut ProviderConfig,
@@ -502,6 +510,13 @@ impl Pinvou3Bridge {
                 "{{PINVOU3_TITLE_LANG}}",
                 self.prefs.language.title_language_name(),
             );
+        // Only native Engine sessions receive the per-turn inventory snapshot. External ACP
+        // submissions bypass build_send_message_op, so advertising snapshot semantics in
+        // their static prompt would describe context they never receive.
+        if !self.is_external_acp_session(session_id) {
+            rendered.push_str("\n\n");
+            rendered.push_str(crate::features::assistant::mcp_inventory::instruction_block());
+        }
         // [pinvou3] 非中文 locale 的语言指令补丁:底座 locale_reinforcement_preamble
         // 对 en 返回 None,而 pinvou3 整份 system prompt 是中文,会把回复语言拽回中文。
         // 这里给底座留空的 locale 补一段 mirror 指令(zh-Hans/ja 已有底座 bookend,返回
@@ -590,13 +605,16 @@ impl Pinvou3Bridge {
             .is_some_and(|predicate| predicate(session_id))
     }
 
+    fn is_external_acp_session(&self, session_id: &str) -> bool {
+        self.external_acp_session_predicate
+            .as_ref()
+            .is_some_and(|predicate| predicate(session_id))
+    }
+
     /// 产品多智能体可用性同时受产品模式与运行时后端约束。SessionPolicy 只描述
     /// plain/code 轴；外部 ACP 虽然也是 plain，却不由 Pinvou Engine 执行。
     pub fn multi_agent_mode_available(&self, session_id: &str) -> bool {
-        let external_acp = self
-            .external_acp_session_predicate
-            .as_ref()
-            .is_some_and(|predicate| predicate(session_id));
+        let external_acp = self.is_external_acp_session(session_id);
         !external_acp && self.session_policy(session_id).supports_multi_agent_mode()
     }
 
@@ -604,11 +622,8 @@ impl Pinvou3Bridge {
     /// but not sufficient: external ACP sessions are also Plain, yet do not execute through
     /// the Pinvou Engine and must be excluded on the runtime axis.
     pub fn exposes_browser_mcp(&self, session_id: &str) -> bool {
-        let external_acp = self
-            .external_acp_session_predicate
-            .as_ref()
-            .is_some_and(|predicate| predicate(session_id));
-        !external_acp && self.session_policy(session_id).exposes_browser_mcp()
+        !self.is_external_acp_session(session_id)
+            && self.session_policy(session_id).exposes_browser_mcp()
     }
 
     /// 该 session 的会话模式策略：共享链路（发送 op 构造、工具整形、session
@@ -2065,22 +2080,33 @@ impl Pinvou3Bridge {
         rules
     }
 
-    /// 多智能体会话专用配置（ADR-0006）。
+    /// Engine config dedicated to multi-agent sessions (ADR-0006).
     ///
-    /// 与普通会话的业务区别是装配专家名册与资源护栏：专家池内可执行的内置卡和用户卡
-    /// 作为底座原生 `[fleet.profiles]` 内存配置，整册装进 `fleet_roster` 供裸
-    /// `agent` 的 `profile` 字段选人；主模型每轮只看到按任务匹配的短候选，完整人设仅注入
-    /// 被派中的子智能体。没有相关候选时模型自拟任务说明裸派。**工具目录与普通会话完全一致**
-    /// ——禁用列表只来自连接器开关，`workflow` 与主线一样保持可用（委派
-    /// 提醒不教学不推荐）。默认直属实例为叶子；复杂任务允许直属实例再拆一层，
-    /// 第二层不得继续派生。Work 直属并行 4 / 全树准入 8，原生 Code 直属并行
-    /// 6 / 全树准入 12。更深后代为避免父子互等死锁不占直属 launch gate，
-    /// 但仍受整棵树的准入上限约束。
+    /// The business differences from a plain session are the expert roster and
+    /// resource guardrails: the built-in and user expert cards eligible inside
+    /// the expert pool become the base's native `[fleet.profiles]` in-memory
+    /// config, and the whole roster is loaded into `fleet_roster` for the bare
+    /// `agent` tool's `profile` field to pick from; each turn the main model
+    /// only sees the short task-matched candidates, and full personas are
+    /// injected only into the dispatched subagent. Without a matching candidate
+    /// the model writes its own task description and dispatches bare. **The
+    /// tool catalog is identical to a plain session** — the disabled list
+    /// comes only from connector switches, and `workflow` stays available as
+    /// on the main line (the delegation reminder neither teaches nor
+    /// recommends it). Direct instances are leaves by default; complex tasks
+    /// may let a direct instance spawn one more level, and that second level
+    /// must not spawn further. Swarm on lifts the caps: the app pins
+    /// concurrent / admitted to the foundation hard ceilings
+    /// (`config::MAX_SUBAGENTS` / `MAX_SUBAGENT_ADMISSION`). Swarm off: one
+    /// shared tier, 4 direct / 8 tree-admitted. Deeper descendants skip the
+    /// direct launch gate but count against tree admission. `swarm` is
+    /// `mode_state.multi_agent`.
     pub(crate) fn build_engine_config_for_multi_agent(
         &self,
         session_id: &str,
         roots: SessionRoots,
         snapshot: &ExpertRosterSnapshot,
+        swarm: bool,
     ) -> EngineConfig {
         let mut cfg = self.build_engine_config_for_session_roots(session_id, roots);
         // 主会话是总协调者：直属子智能体处于 depth=1，复杂任务可再派生
@@ -2088,32 +2114,35 @@ impl Pinvou3Bridge {
         // 嵌套层的工具调用不经过 ToolCallBefore，靠继承上限（省略参数即
         // 收窄）与全局准入/并发额度兜底。
         cfg.max_spawn_depth = cfg.max_spawn_depth.min(MULTI_AGENT_MAX_SPAWN_DEPTH);
-        let (max_concurrent, max_admitted) = if self.is_code_session(session_id) {
-            (
-                MULTI_AGENT_CODE_MAX_CONCURRENT,
-                MULTI_AGENT_CODE_MAX_ADMITTED,
-            )
+        if swarm {
+            // Swarm mode: caps lifted — the foundation's 128/1024 are the
+            // system-wide hard caps. Enabling swarm means "no limit", so this
+            // overrides (not mins) the user config, even an explicit 0.
+            cfg.max_subagents = deepseek_tui::config::MAX_SUBAGENTS;
+            cfg.max_admitted_subagents = deepseek_tui::config::MAX_SUBAGENT_ADMISSION;
+            cfg.launch_concurrency = deepseek_tui::config::MAX_SUBAGENTS;
         } else {
-            (
-                MULTI_AGENT_WORK_MAX_CONCURRENT,
-                MULTI_AGENT_WORK_MAX_ADMITTED,
-            )
-        };
-        // 显式用户配置只做上限，不抬高更保守的值（包括 0 = 禁用）；未配置时
-        // 使用当前会话模式的产品默认。
-        cfg.max_subagents = self
-            .prefs
-            .advanced
-            .max_subagents
-            .map_or(max_admitted, |configured| configured.min(max_admitted));
-        cfg.max_admitted_subagents = cfg
-            .max_admitted_subagents
-            .min(max_admitted)
-            .max(cfg.max_subagents);
-        cfg.launch_concurrency = cfg
-            .launch_concurrency
-            .min(max_concurrent)
-            .min(cfg.max_subagents);
+            // Swarm-off tier: unreachable in production wiring (see
+            // `delegation_limits_for` and the expert_snapshot condition);
+            // tests/defensive calls only. A user config only caps; note "0 =
+            // disable" is not a runtime fact — Some(0) acts as one usable
+            // slot after the manager constructor clamp.
+            cfg.max_subagents = self
+                .prefs
+                .advanced
+                .max_subagents
+                .map_or(MULTI_AGENT_MAX_ADMITTED, |configured| {
+                    configured.min(MULTI_AGENT_MAX_ADMITTED)
+                });
+            cfg.max_admitted_subagents = cfg
+                .max_admitted_subagents
+                .min(MULTI_AGENT_MAX_ADMITTED)
+                .max(cfg.max_subagents);
+            cfg.launch_concurrency = cfg
+                .launch_concurrency
+                .min(MULTI_AGENT_MAX_CONCURRENT)
+                .min(cfg.max_subagents);
+        }
         cfg.hook_executor = Some(self.build_multi_agent_hook_executor(&cfg.workspace));
         cfg.fleet_roster = std::sync::Arc::new(deepseek_tui::FleetRoster::load(
             snapshot.fleet_config(),
@@ -2499,6 +2528,10 @@ impl Pinvou3Bridge {
             dynamic_tools: Vec::new(),
             provenance: deepseek_tui::core::ops::UserInputProvenance::ImportedTranscript,
             turn_tool_security: Some(Arc::new(turn_tool_security)),
+            // CodeWhale#58 echoes this token on TurnStarted; replay import
+            // does not correlate submit-window turns, so None (wiring lands
+            // with the turn-bound stop PR).
+            submission_id: None,
         })
     }
 
@@ -2590,6 +2623,14 @@ impl Pinvou3Bridge {
             // 其余 mode: 无 per-turn reminder,只注入动态 sudo 状态。
             AppMode::Agent | AppMode::Operate => sudo.to_string(),
         };
+        // Re-read installation and scope toggles for every turn, including live sessions.
+        // Plan receives the snapshot too because users can inspect installed applications
+        // while planning, and its enabled flag is scoped independently from execution mode.
+        // Only the compact JSON snapshot is repeated; its interpretation lives in the
+        // static session prompt.
+        let mcp_inventory = crate::features::assistant::mcp_inventory::turn_reminder(policy.mode());
+        reminder_body.push_str("\n\n");
+        reminder_body.push_str(&mcp_inventory);
         // 卡片池: 该 session 加持了专家面具时,每 turn 注入 persona 人设(粘性身份)。
         if let Some(persona) = persona_reminder {
             reminder_body = format!("{reminder_body}\n\n{persona}");
@@ -2647,6 +2688,10 @@ impl Pinvou3Bridge {
             // provenance: 消息来源。build_send_message_op 是用户内容 → ExternalUser。
             provenance: deepseek_tui::core::ops::UserInputProvenance::ExternalUser,
             turn_tool_security: None,
+            // CodeWhale#58 echoes this token on TurnStarted; the GUI does not
+            // correlate submit-window turns yet, so None (wiring lands with
+            // the turn-bound stop PR).
+            submission_id: None,
         })
     }
 }
@@ -3347,6 +3392,108 @@ mod tests {
         );
 
         let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// The model sees the live installed/enabled snapshot without changing the
+    /// tool gate, and an empty snapshot explicitly supersedes prior inventory.
+    #[test]
+    fn mcp_inventory_tracks_live_scope_toggles_without_enabling_tools() {
+        let (_lock, _env) = locked_env(&["PINVOU3_HOME"]);
+        let dir = tempfile::tempdir().unwrap();
+        // SAFETY: platform::paths::tests::ENV_LOCK held by locked_env.
+        unsafe { std::env::set_var("PINVOU3_HOME", dir.path()) };
+        let installed = dir.path().join("marketplace/installed.json");
+        std::fs::create_dir_all(installed.parent().unwrap()).unwrap();
+        std::fs::write(&installed, r#"["weather","qcc"]"#).unwrap();
+        let mut bridge = fixture_bridge();
+        bridge.set_code_session_predicate(Arc::new(|sid| sid == "code"));
+        assert!(
+            bridge
+                .build_session_system_prompt("plain")
+                .contains("## 市场 MCP 应用发现"),
+            "inventory interpretation belongs in the static session prompt"
+        );
+        use crate::features::marketplace::{ConnectorScope, save_disabled_connectors_for};
+        save_disabled_connectors_for(ConnectorScope::Plain, &["weather".into(), "qcc".into()]);
+        save_disabled_connectors_for(ConnectorScope::Code, &[]);
+
+        let inventory = |sid: &str| -> serde_json::Value {
+            let Op::SendMessage { content, .. } = bridge
+                .build_send_message_op(
+                    sid,
+                    "List my MCP applications".into(),
+                    AppMode::Agent,
+                    None,
+                    false,
+                )
+                .unwrap()
+            else {
+                panic!("expected SendMessage")
+            };
+            let line = content
+                .lines()
+                .find_map(|line| line.strip_prefix("市场 MCP 应用（当前会话模式）: "))
+                .expect("inventory must reach the model input");
+            serde_json::from_str(line).unwrap()
+        };
+        let plain = inventory("plain");
+        assert_eq!(plain.as_array().unwrap().len(), 2);
+        assert!(
+            plain
+                .as_array()
+                .unwrap()
+                .iter()
+                .all(|entry| entry["enabled"] == false)
+        );
+        assert!(
+            plain
+                .as_array()
+                .unwrap()
+                .iter()
+                .any(|entry| entry["id"] == "weather")
+        );
+        assert!(
+            plain
+                .as_array()
+                .unwrap()
+                .iter()
+                .any(|entry| entry["id"] == "qcc")
+        );
+        assert!(
+            inventory("code")
+                .as_array()
+                .unwrap()
+                .iter()
+                .all(|entry| entry["enabled"] == true)
+        );
+        let denied = crate::features::marketplace::disabled_tool_names_for(ConnectorScope::Plain);
+        assert!(denied.contains(&"mcp_weather_get_weather".to_string()));
+        assert!(denied.contains(&"mcp_qcc-company_*".to_string()));
+        save_disabled_connectors_for(ConnectorScope::Plain, &[]);
+        assert!(
+            inventory("plain")
+                .as_array()
+                .unwrap()
+                .iter()
+                .all(|entry| entry["enabled"] == true)
+        );
+        std::fs::write(&installed, r#"["qcc"]"#).unwrap();
+        assert_eq!(inventory("plain").as_array().unwrap().len(), 1);
+        std::fs::write(&installed, "[]").unwrap();
+        assert!(inventory("plain").as_array().unwrap().is_empty());
+        let Op::SendMessage { content, .. } = bridge
+            .build_send_message_op(
+                "plain",
+                "Plan how to configure applications".into(),
+                AppMode::Plan,
+                None,
+                false,
+            )
+            .unwrap()
+        else {
+            panic!("expected SendMessage")
+        };
+        assert!(content.contains("市场 MCP 应用（当前会话模式）: []"));
     }
 
     /// 代码会话的连接器禁用集来自 code scope(独立于 plain scope):
@@ -6218,6 +6365,10 @@ mod tests {
     /// code 会话 op 注入的 reminder 与 plain 逐字节相等(R-1 才按模式分化)。
     #[test]
     fn build_send_message_op_plan_reminder_same_text_for_plain_and_code() {
+        let (_lock, _env) = locked_env(&["PINVOU3_HOME"]);
+        let dir = tempfile::tempdir().unwrap();
+        // SAFETY: platform::paths::tests::ENV_LOCK held by locked_env.
+        unsafe { std::env::set_var("PINVOU3_HOME", dir.path()) };
         let content_of = |bridge: &Pinvou3Bridge, session_id: &str| match bridge
             .build_send_message_op(
                 session_id,
@@ -6508,6 +6659,18 @@ mod tests {
                 .build_session_system_prompt("sess-acp-1")
                 .contains("## Browser capabilities unavailable"),
             "external ACP sessions must not receive the browser-unavailable message"
+        );
+        assert!(
+            !bridge
+                .build_session_system_prompt("sess-acp-1")
+                .contains("## 市场 MCP 应用发现"),
+            "external ACP sessions must not receive inventory rules without per-turn snapshots"
+        );
+        assert!(
+            bridge
+                .build_session_system_prompt("native-work")
+                .contains("## 市场 MCP 应用发现"),
+            "native Engine sessions must continue to receive inventory rules"
         );
 
         let _ = std::fs::remove_dir_all(&root);
@@ -7745,7 +7908,8 @@ mod tests {
         );
 
         let snapshot = ExpertRosterSnapshot::capture();
-        let code = bridge.build_engine_config_for_multi_agent("code-session", roots, &snapshot);
+        let code =
+            bridge.build_engine_config_for_multi_agent("code-session", roots, &snapshot, false);
 
         assert!(
             code.subagents_enabled,
@@ -7767,9 +7931,9 @@ mod tests {
             code_has_multi_agent_guard,
             "Code 多智能体会话必须装配资源护栏"
         );
-        assert_eq!(code.max_subagents, MULTI_AGENT_CODE_MAX_ADMITTED);
-        assert_eq!(code.max_admitted_subagents, MULTI_AGENT_CODE_MAX_ADMITTED);
-        assert_eq!(code.launch_concurrency, MULTI_AGENT_CODE_MAX_CONCURRENT);
+        assert_eq!(code.max_subagents, MULTI_AGENT_MAX_ADMITTED);
+        assert_eq!(code.max_admitted_subagents, MULTI_AGENT_MAX_ADMITTED);
+        assert_eq!(code.launch_concurrency, MULTI_AGENT_MAX_CONCURRENT);
         assert!(
             !code_workspace.join(".codewhale").exists(),
             "Code 会话不得向用户项目写状态或专家名册"
@@ -7816,7 +7980,8 @@ mod tests {
         );
 
         let snapshot = ExpertRosterSnapshot::capture();
-        let multi_agent = bridge.build_engine_config_for_multi_agent("sched-run", roots, &snapshot);
+        let multi_agent =
+            bridge.build_engine_config_for_multi_agent("sched-run", roots, &snapshot, true);
         assert_eq!(multi_agent.workspace, automation);
         assert_eq!(
             multi_agent.subagent_state_root.as_deref(),
@@ -7830,11 +7995,28 @@ mod tests {
     /// 一致（workflow 也同样可用——不教不荐，但不禁用）。
     #[test]
     fn multi_agent_engine_config_adds_roles_and_resource_guards() {
-        // The disabled lists for both builds read marketplace state under
-        // PINVOU3_HOME: hold the env lock so parallel env-flipping tests
-        // cannot straddle the two reads (otherwise each read may pick a
-        // different home directory and the assertion fails intermittently).
+        // The engine config reads the marketplace disabled-tool registry
+        // (disabled_tool_names) under PINVOU3_HOME. This test never writes
+        // env and used to read it bare;
+        // mcp_inventory_tracks_live_scope_toggles_without_enabling_tools
+        // flips PINVOU3_HOME and writes non-empty disabled entries, so under
+        // parallel scheduling two adjacent build_engine_config* calls could
+        // read different snapshots and the "multi-agent == ordinary
+        // conversation" assertions went red randomly (reproduced three times
+        // in a row locally on 2026-09-16). Follow this module's convention:
+        // lock ENV_LOCK and pin an empty home — the read is serialized with
+        // the other env-writing tests and the marketplace state is
+        // deterministically empty, no longer drifting with scheduling or a
+        // real ~/.pinvou3.
         let (_lock, _env) = locked_env(&["PINVOU3_HOME"]);
+        let home =
+            std::env::temp_dir().join(format!("pinvou3-bridge-ma-roles-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&home);
+        std::fs::create_dir_all(&home).unwrap();
+        // SAFETY: holding ENV_LOCK via locked_env() (first statement of this
+        // test); env writes in the test process are serialized.
+        unsafe { std::env::set_var("PINVOU3_HOME", &home) };
+
         let bridge = fixture_bridge();
         let workspace = std::env::temp_dir().join(format!(
             "pinvou3-wf-roles-{}-{:p}",
@@ -7850,16 +8032,23 @@ mod tests {
             bound: false,
         };
         let snapshot = ExpertRosterSnapshot::capture();
-        let cfg = bridge.build_engine_config_for_multi_agent("ma-test", roots.clone(), &snapshot);
+        let cfg =
+            bridge.build_engine_config_for_multi_agent("ma-test", roots.clone(), &snapshot, true);
 
         assert_eq!(
             cfg.disallowed_tools, ordinary.disallowed_tools,
             "多智能体会话的禁用列表必须与普通对话一字不差"
         );
         assert_eq!(cfg.max_spawn_depth, MULTI_AGENT_MAX_SPAWN_DEPTH);
-        assert_eq!(cfg.max_subagents, MULTI_AGENT_WORK_MAX_ADMITTED);
-        assert_eq!(cfg.max_admitted_subagents, MULTI_AGENT_WORK_MAX_ADMITTED);
-        assert_eq!(cfg.launch_concurrency, MULTI_AGENT_WORK_MAX_CONCURRENT);
+        // Swarm on: the numeric caps are lifted — pinned to the foundation's
+        // own hard ceilings (the foundation clamps again to the same constant
+        // set; both ends agree).
+        assert_eq!(cfg.max_subagents, deepseek_tui::config::MAX_SUBAGENTS);
+        assert_eq!(
+            cfg.max_admitted_subagents,
+            deepseek_tui::config::MAX_SUBAGENT_ADMISSION
+        );
+        assert_eq!(cfg.launch_concurrency, deepseek_tui::config::MAX_SUBAGENTS);
         assert_ne!(
             ordinary.max_spawn_depth, cfg.max_spawn_depth,
             "普通对话应保持底座原有深度，只收紧多智能体会话"
@@ -7896,12 +8085,56 @@ mod tests {
             "底座内置成员应保持可用"
         );
 
+        // Swarm off: Work and Code share one tier (4 direct-concurrent / 8 tree-admitted).
+        let capped_bridge = fixture_bridge();
+        let capped = capped_bridge.build_engine_config_for_multi_agent(
+            "ma-capped",
+            roots.clone(),
+            &snapshot,
+            false,
+        );
+        assert_eq!(capped.max_subagents, MULTI_AGENT_MAX_ADMITTED);
+        assert_eq!(capped.max_admitted_subagents, MULTI_AGENT_MAX_ADMITTED);
+        assert_eq!(capped.launch_concurrency, MULTI_AGENT_MAX_CONCURRENT);
+
         let mut disabled_bridge = fixture_bridge();
         disabled_bridge.prefs.advanced.max_subagents = Some(0);
-        let disabled =
-            disabled_bridge.build_engine_config_for_multi_agent("ma-disabled", roots, &snapshot);
-        assert_eq!(disabled.max_subagents, 0, "不得抬高用户原本的禁用配置");
+        let disabled = disabled_bridge.build_engine_config_for_multi_agent(
+            "ma-disabled",
+            roots.clone(),
+            &snapshot,
+            false,
+        );
+        assert_eq!(
+            disabled.max_subagents, 0,
+            "kept verbatim at the EngineConfig level; the foundation clamps 0 to one usable slot"
+        );
         assert_eq!(disabled.launch_concurrency, 0);
+
+        // With swarm on, the user's conservative configuration (including
+        // explicit 0) is pinned to the foundation hard caps as well: enabling
+        // swarm expresses "no limit", so the override semantics must also
+        // cover a 0 value.
+        let mut zero_bridge = fixture_bridge();
+        zero_bridge.prefs.advanced.max_subagents = Some(0);
+        let zero_swarm = zero_bridge.build_engine_config_for_multi_agent(
+            "ma-swarm-zero",
+            roots,
+            &snapshot,
+            true,
+        );
+        assert_eq!(
+            zero_swarm.max_subagents,
+            deepseek_tui::config::MAX_SUBAGENTS
+        );
+        assert_eq!(
+            zero_swarm.max_admitted_subagents,
+            deepseek_tui::config::MAX_SUBAGENT_ADMISSION
+        );
+        assert_eq!(
+            zero_swarm.launch_concurrency,
+            deepseek_tui::config::MAX_SUBAGENTS
+        );
 
         let _ = std::fs::remove_dir_all(&workspace);
     }

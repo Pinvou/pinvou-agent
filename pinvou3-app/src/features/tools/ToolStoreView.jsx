@@ -15,6 +15,18 @@ import { pathBasename } from '../../shared/path-utils.js';
 
 const OAUTH_UI_TIMEOUT_MS = 90_000;
 
+// 释放共享忙碌槽位：只释放属于自己的那次操作。
+// 连接器的完成/失败事件是**异步**送达的，期间用户完全可能已经收起了本连接器的
+// 登录弹窗（收起不取消后台流程）并发起了另一个工具操作，此时 busyId 已经易主。
+// 无条件 `setBusyId(null)` 会把别人未完成的忙碌态一并抹掉：按钮只按
+// `busyId === tool.backendId` 判断禁用，于是正在跑的安装/卸载/导入会提前放闸，
+// 可以被重复触发。
+// 用法：`setBusyId(current => releaseBusy(current, cfg.key))`。
+// 全文件的清空都必须走 releaseBusy（禁止裸 `setBusyId(null)`，由
+// connector_busy_release_contract 全文件钉住）；各操作入口以 busyRef 闸门
+// 拒绝重叠启动，防止 setBusyId(id) 覆盖他人槽位。
+const releaseBusy = (busyId, toolId) => (busyId === toolId ? null : busyId);
+
 const canStartExternalAuth = () => can('oauth') && can('externalAuth');
 
 const isRestrictedExternalAuthTool = (tool) => !!tool && !!(
@@ -361,9 +373,16 @@ const withUiTimeout = (promise, timeoutMs, fallbackResult) => {
           conn.setFlow(f => { const step = (f && f.active) || 'cli'; return { ...(f || { steps: {} }), phase: 'error', err: String(p.message || connFailed), errStep: step, steps: { ...(f && f.steps), [step]: 'error' } }; });
         });
       };
-      // Component-side quartet handlers: deps = { setBusyId, storeCopy, detailCopy } (injected from the component closure
+      // Component-side quartet handlers: deps = { setBusyId, busyRef, storeCopy, detailCopy } (injected from the component closure
       // at call time, same semantics as the original in-component quartet). busyId is cleared in event callbacks/error branches.
-      const connect = async ({ setBusyId, storeCopy, detailCopy }) => {
+      const connect = async ({ setBusyId, busyRef, storeCopy, detailCopy }) => {
+        // Single shared busy slot: starting while another operation is in flight
+        // would steal its slot via setBusyId(cfg.key) and re-enable the other
+        // operation's button mid-run, so refuse instead — same discipline as the
+        // component-side handlers. The flow card is non-blocking, so a connect
+        // click while another op (or another connector flow) runs is reachable;
+        // retry reuses this path and inherits the guard.
+        if (busyRef.current) return;
         setBusyId(cfg.key);
         ensureListeners(storeCopy);
         // Open the flow card (non-blocking dialog): start the "Prepare runtime" step. Written to the cross-view store, it survives switching away.
@@ -382,7 +401,7 @@ const withUiTimeout = (promise, timeoutMs, fallbackResult) => {
         } catch (e) {
           console.error(`${cfg.key} connect failed:`, e);
           conn.stopTick();
-          setBusyId(null);
+          setBusyId((current) => releaseBusy(current, cfg.key));
           conn.setFlow(f => {
             const step = (f && f.active) || 'cli';
             return { ...(f || { steps: {} }), phase: 'error', err: String(e).slice(0, 300), errStep: step, steps: { ...(f && f.steps), [step]: 'error' } };
@@ -393,11 +412,12 @@ const withUiTimeout = (promise, timeoutMs, fallbackResult) => {
       const resetFlow = ({ setBusyId }) => {
         conn.stopTick();
         invokeTauri(cfg.commands.cancel).catch(() => {});
-        conn.setFlow(null); setBusyId(null);
+        conn.setFlow(null); setBusyId((current) => releaseBusy(current, cfg.key));
       };
       // Retry: ensure_cli is idempotent, so simply rerun the whole connection flow.
       const retry = (deps) => { connect(deps); };
-      const disconnect = async ({ setBusyId, storeCopy, detailCopy, loadBackendState, setAlert }) => {
+      const disconnect = async ({ setBusyId, busyRef, storeCopy, detailCopy, loadBackendState, setAlert }) => {
+        if (busyRef.current) return;
         setBusyId(cfg.key);
         try {
           await invokeTauri(cfg.commands.logout);
@@ -410,7 +430,7 @@ const withUiTimeout = (promise, timeoutMs, fallbackResult) => {
           console.error(`${cfg.key} logout failed:`, e);
           setAlert({ visible: true, loading: false, title: detailCopy.actions.operationFailed, isError: true });
         } finally {
-          setBusyId(null);
+          setBusyId((current) => releaseBusy(current, cfg.key));
         }
       };
       return { conn, ensureListeners, connect, disconnect, resetFlow, retry };
@@ -479,12 +499,12 @@ const withUiTimeout = (promise, timeoutMs, fallbackResult) => {
           const ph = flow && flow.phase;
           if (ph !== prevPhase) {
             if (ph === 'done') {
-              setBusyId(null);
+              setBusyId((current) => releaseBusy(current, toolId));
               loadBackendState();
               setAlert({ visible: true, loading: false, title: doneTitle, subtitle: detailCopy.actions.enabled, isInstall: true, isError: false, toolId });
               notifyComposerToolsChanged();
             } else if (ph === 'error') {
-              setBusyId(null);
+              setBusyId((current) => releaseBusy(current, toolId));
             }
             prevPhase = ph;
           }
@@ -1004,7 +1024,7 @@ const withUiTimeout = (promise, timeoutMs, fallbackResult) => {
           console.error('restore recycled plugin failed:', e);
           setAlert({ visible: true, loading: false, title: storeCopy.operationFailedWith(String(e)), isInstall: false, isError: true });
         } finally {
-          setBusyId(null);
+          setBusyId((current) => releaseBusy(current, item.id));
         }
       };
       // 彻底删除：二次确认（沿用更新确认的弹窗模式）后物理删除包文件与回收站条目。
@@ -1023,7 +1043,7 @@ const withUiTimeout = (promise, timeoutMs, fallbackResult) => {
           console.error('purge recycled plugin failed:', e);
           setAlert({ visible: true, loading: false, title: storeCopy.operationFailedWith(String(e)), isInstall: false, isError: true });
         } finally {
-          setBusyId(null);
+          setBusyId((current) => releaseBusy(current, id));
         }
       };
       // 导出为 zip 插件包：桌面端弹原生保存对话框，返回保存路径=成功；
@@ -1043,7 +1063,7 @@ const withUiTimeout = (promise, timeoutMs, fallbackResult) => {
           console.error('export recycled plugin failed:', e);
           setAlert({ visible: true, loading: false, title: storeCopy.operationFailedWith(String(e)), isInstall: false, isError: true });
         } finally {
-          setBusyId(null);
+          setBusyId((current) => releaseBusy(current, item.id));
         }
       };
       // 已安装卡片「导出」：companion 技能卡先经 skillToMcp 映射为所属包 id（与可见性
@@ -1063,7 +1083,7 @@ const withUiTimeout = (promise, timeoutMs, fallbackResult) => {
           console.error('export installed plugin failed:', e);
           setAlert({ visible: true, loading: false, title: storeCopy.operationFailedWith(String(e)), isInstall: false, isError: true });
         } finally {
-          setBusyId(null);
+          setBusyId((current) => releaseBusy(current, tool.backendId));
         }
       };
       const [visibilityLoaded, setVisibilityLoaded] = useState(false);
@@ -1258,7 +1278,7 @@ const withUiTimeout = (promise, timeoutMs, fallbackResult) => {
           setWecomQr({ qr: p.qr_data_url, url: p.url, phase: p.phase });
         }));
         track(ev.listen('wecom:connected', () => {
-          setWecomQr(null); setBusyId(null);
+          setWecomQr(null); setBusyId((current) => releaseBusy(current, 'wecom'));
           // 连上 → 按规则写技能(默认启用),企微技能即刻对模型可见;连接态经 readiness 重取。
           invokeTauri('wecom_apply_skills').catch(() => {});
           loadBackendState();
@@ -1267,7 +1287,7 @@ const withUiTimeout = (promise, timeoutMs, fallbackResult) => {
         }));
         track(ev.listen('wecom:error', (e) => {
           const p = e.payload || {};
-          setWecomQr(null); setBusyId(null);
+          setWecomQr(null); setBusyId((current) => releaseBusy(current, 'wecom'));
           setAlert({ visible: true, loading: false, title: storeCopy.connectFailed(storeCopy.toolNames.wecom), subtitle: String(p.message || '').slice(0, 240), isError: true });
         }));
         return () => {
@@ -1578,7 +1598,7 @@ const withUiTimeout = (promise, timeoutMs, fallbackResult) => {
             const tool = findLocalizedTool(backendId);
             const name = tool ? tool.title : backendId;
             clearOAuthRequest(backendId, requestId);
-            setBusyId(null);
+            setBusyId((current) => releaseBusy(current, backendId));
             const outcome = resolveOAuthInstallOutcome(
               name,
               { status: 'cancelled', message: storeCopy.authWaitCancelled },
@@ -1611,7 +1631,7 @@ const withUiTimeout = (promise, timeoutMs, fallbackResult) => {
 
       // 执行安装（已拿到 config 或无需 config）
       const doInstall = async (backendId, userConfig) => {
-        if (!canMutateToolStore) return;
+        if (!canMutateToolStore || busyRef.current) return;
         const t = findLocalizedTool(backendId);
         if (!externalAuthAvailable && isRestrictedExternalAuthTool(t)) return;
         const name = t ? t.title : backendId;
@@ -1726,17 +1746,17 @@ const withUiTimeout = (promise, timeoutMs, fallbackResult) => {
           if (t?.oauthMcp) {
             if (isCurrentOAuthRequest(backendId, oauthRequestId)) {
               clearOAuthRequest(backendId, oauthRequestId);
-              setBusyId(null);
+              setBusyId((current) => releaseBusy(current, backendId));
             }
           } else {
-            setBusyId(null);
+            setBusyId((current) => releaseBusy(current, backendId));
           }
         }
       };
 
       // 技能安装/卸载(无 configFields,直接装/卸)
       const handleSkillAction = async (backendId, isInstalled) => {
-        if (!canMutateToolStore) return;
+        if (!canMutateToolStore || busyRef.current) return;
         const t = skillCards.find(x => x.backendId === backendId);
         const name = t ? t.title : backendId;
         setBusyId(backendId);
@@ -1753,7 +1773,7 @@ const withUiTimeout = (promise, timeoutMs, fallbackResult) => {
           console.error('skill action failed:', e);
           setAlert({ visible: true, loading: false, title: storeCopy.operationFailedWith(String(e)), isInstall: false, isError: true });
         } finally {
-          setBusyId(null);
+          setBusyId((current) => releaseBusy(current, backendId));
         }
       };
 
@@ -1768,7 +1788,7 @@ const withUiTimeout = (promise, timeoutMs, fallbackResult) => {
         setUpdateConfirm({ backendId, skillId, name: card ? card.title : skillId });
       };
       const doSkillUpdate = async () => {
-        if (!updateConfirm) return;
+        if (!updateConfirm || busyRef.current) return;
         const { backendId, skillId, name } = updateConfirm;
         setUpdateConfirm(null);
         setBusyId(backendId);
@@ -1781,7 +1801,7 @@ const withUiTimeout = (promise, timeoutMs, fallbackResult) => {
           console.error('skill update failed:', e);
           setAlert({ visible: true, loading: false, title: storeCopy.operationFailedWith(String(e)), isInstall: false, isError: true });
         } finally {
-          setBusyId(null);
+          setBusyId((current) => releaseBusy(current, backendId));
         }
       };
 
@@ -1845,7 +1865,7 @@ const withUiTimeout = (promise, timeoutMs, fallbackResult) => {
           console.error('update bundle display meta failed:', e);
           return String(e);
         } finally {
-          setBusyId(null);
+          setBusyId((current) => releaseBusy(current, dlg.backendId));
         }
       };
 
@@ -1855,7 +1875,7 @@ const withUiTimeout = (promise, timeoutMs, fallbackResult) => {
       // （extra 覆盖 > 上传文件名/manifest 回退），用户可直接保存或改名，
       // 取消则不设覆盖、保留默认展示。
       const doImportSkillZip = async (invokeFn) => {
-        if (!canMutateToolStore) return;
+        if (!canMutateToolStore || busyRef.current) return;
         setBusyId('__upload__');
         setAlert({ loading: true, visible: false, title: storeCopy.importingSkill, subtitle: storeCopy.validatingSkillPackage, isInstall: true, isError: false });
         try {
@@ -1885,7 +1905,7 @@ const withUiTimeout = (promise, timeoutMs, fallbackResult) => {
           console.error('import skill failed:', e);
           setAlert({ visible: true, loading: false, title: storeCopy.importFailedWith(String(e)), isInstall: false, isError: true });
         } finally {
-          setBusyId(null);
+          setBusyId((current) => releaseBusy(current, '__upload__'));
         }
       };
       const handleUploadSkill = () => doImportSkillZip(() => invokeTauri('import_plugin_package_cmd'));
@@ -1904,7 +1924,7 @@ const withUiTimeout = (promise, timeoutMs, fallbackResult) => {
       };
 
       const connectIma = async (values = {}) => {
-        if (!canMutateToolStore) return;
+        if (!canMutateToolStore || busyRef.current) return;
         const clientId = (values.IMA_CLIENT_ID || '').trim();
         const apiKey = (values.IMA_API_KEY || '').trim();
         setBusyId('ima');
@@ -1921,12 +1941,12 @@ const withUiTimeout = (promise, timeoutMs, fallbackResult) => {
           console.error('ima connect failed:', e);
           setAlert({ visible: true, loading: false, title: detailCopy.actions.imaFailed, subtitle: detailCopy.actions.operationFailed, isInstall: false, isError: true });
         } finally {
-          setBusyId(null);
+          setBusyId((current) => releaseBusy(current, 'ima'));
         }
       };
 
       const disconnectIma = async () => {
-        if (!canMutateToolStore) return;
+        if (!canMutateToolStore || busyRef.current) return;
         setBusyId('ima');
         try {
           await invokeTauri('ima_logout');
@@ -1940,13 +1960,13 @@ const withUiTimeout = (promise, timeoutMs, fallbackResult) => {
           console.error('ima logout failed:', e);
           setAlert({ visible: true, loading: false, title: detailCopy.actions.operationFailed, subtitle: detailCopy.actions.operationFailed, isError: true });
         } finally {
-          setBusyId(null);
+          setBusyId((current) => releaseBusy(current, 'ima'));
         }
       };
 
       // Connector flow handlers: factory products + component closure injection (mirroring the original
       // connect*/disconnect*/*ResetFlow*/*Retry quartets; event-driven, busyId cleared in event/error branches).
-      const flowDeps = { setBusyId, storeCopy, detailCopy, loadBackendState, setAlert };
+      const flowDeps = { setBusyId, busyRef, storeCopy, detailCopy, loadBackendState, setAlert };
       const connectConnector = (key) => CONNECTOR_FLOW_APIS[key].connect(flowDeps);
       const disconnectConnector = (key) => CONNECTOR_FLOW_APIS[key].disconnect(flowDeps);
       const resetConnectorFlow = (key) => CONNECTOR_FLOW_APIS[key].resetFlow(flowDeps);
@@ -1980,6 +2000,7 @@ const withUiTimeout = (promise, timeoutMs, fallbackResult) => {
         // OAuth orchestration differ per connector listener). Routing-table order mirrors the original if-chain order.
         const cliFlowTool = CLI_FLOW_TOOLS[backendId];
         if (cliFlowTool) {
+          if (busyRef.current) return;
           if (isInstalled) return disconnectConnector(backendId);
           const ct = tools.find(x => x[cliFlowTool.cliKey]) || localizeTool(tsToolsData.find(x => x.backendId === backendId), t);
           if (ct) setSelectedTool(ct);
@@ -2030,6 +2051,7 @@ const withUiTimeout = (promise, timeoutMs, fallbackResult) => {
         }
 
         // 卸载
+        if (busyRef.current) return;
         setBusyId(backendId);
         try {
           await invokeTauri('uninstall_marketplace_tool', { toolId: backendId });
@@ -2057,7 +2079,7 @@ const withUiTimeout = (promise, timeoutMs, fallbackResult) => {
           console.error('uninstall failed:', e);
           setAlert({ visible: true, loading: false, title: detailCopy.actions.operationFailed, isInstall: false, isError: true });
         } finally {
-          setBusyId(null);
+          setBusyId((current) => releaseBusy(current, backendId));
         }
       };
 
@@ -2153,7 +2175,7 @@ const withUiTimeout = (promise, timeoutMs, fallbackResult) => {
             // Mirrors the wecom flow reset (factory resetFlow): backend cancel is now
             // silent (no wecom:error cleanup), so we must clear the flow here, otherwise
             // the detail/mini flow cards stay stale on "waiting for scan".
-            const cancel = () => { wecomConn.stopTick(); invokeTauri('wecom_cancel').catch(() => {}); wecomConn.setFlow(null); setWecomQr(null); setBusyId(null); };
+            const cancel = () => { wecomConn.stopTick(); invokeTauri('wecom_cancel').catch(() => {}); wecomConn.setFlow(null); setWecomQr(null); setBusyId((current) => releaseBusy(current, 'wecom')); };
             return createPortal((
             // biome-ignore lint/a11y/useKeyWithClickEvents: backdrop click-to-close layer; the keyboard path is covered by the dialog's cancel control
             // biome-ignore lint/a11y/noStaticElementInteractions: backdrop click-to-close layer, non-interactive container

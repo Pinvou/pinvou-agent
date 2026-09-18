@@ -136,7 +136,7 @@ Flags:
 ```bash
 # 依次执行以下三路，任一路返回有效邮箱即采用，不再继续后续路
 # 路径 1：aisearch + contact user get
-dws aisearch person --keyword "姓名" --dimension name --format json
+dws aisearch person --query "姓名" --dimension name --format json
 # → 取 userId，再执行：
 dws contact user get --ids <userId> --format json
 # → 提取 orgAuthEmail 字段
@@ -1632,7 +1632,7 @@ Flags:
 用户说"发邮件/写邮件" → 先 `mailbox list` 获取发件地址，再 `message send`
 用户说“给(某人名字)发邮件” / “查询某人发给我的邮件” / “查询发给某人的邮件” / 任何涉及按人名查找邮箱的场景 →
   **第一步**：依次发起以下三路查询，任一路返回有效邮箱即采用并停止；若三路均无有效邮箱，ask_human 请用户提供，禁止臆测：
-    1. `aisearch person --keyword <姓名>` → `contact user get --ids <userId>`，提取 `orgAuthEmail`
+    1. `aisearch person --query <姓名>` → `contact user get --ids <userId>`，提取 `orgAuthEmail`
     2. `mail user search --email <当前邮箱> --keyword <姓名>`，提取 `users[].email`（仅企业邮箱可用）
     3. `contact user search --query <姓名>`，提取用户邮箱字段
   **第二步**：用获得的目标邮箱拼入 KQL（如 `from:<email>` 或 `to:<email>`）执行 `message search`，或用于 `message send`
@@ -1802,7 +1802,7 @@ dws mail thread get --email user@company.com --id <conversationId> --select mess
 - KQL 查询支持 AND/OR/NOT 组合，字段值含空格时需用双引号
 - `--cc` 抄送人支持多人，逗号分隔
 - 收件人邮箱获取：用户只知道同事名字时，依次执行以下三路查询，任一路返回有效邮箱即采用并停止：
-  1. `dws aisearch person --keyword "名字" --dimension name` → `dws contact user get --ids <userId>`，提取 `orgAuthEmail`
+  1. `dws aisearch person --query "名字" --dimension name` → `dws contact user get --ids <userId>`，提取 `orgAuthEmail`
   2. `dws mail user search --email <发件人邮箱> --keyword "名字"`，提取 `users[].email`（仅企业邮箱账号可调用，个人 @dingtalk.com 邮箱会报权限错误可忽略）
   3. `dws contact user search --query "名字"`，提取用户邮箱字段
   若三路均无有效邮箱，必须 ask_human 请用户手动提供收件人邮箱，严禁臆测和假设

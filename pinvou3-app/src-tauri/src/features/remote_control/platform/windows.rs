@@ -75,6 +75,11 @@ pub(super) fn workspace_identity(path: &Path) -> std::io::Result<WorkspaceIdenti
         .custom_flags(FILE_FLAG_BACKUP_SEMANTICS)
         .open(path)?;
     let mut information = BY_HANDLE_FILE_INFORMATION::default();
+    // SAFETY: directory is a live handle to a directory opened with
+    // FILE_FLAG_BACKUP_SEMANTICS, which is required for handle queries on
+    // directories; &mut information points to a writable
+    // BY_HANDLE_FILE_INFORMATION whose lifetime covers the call and whose size
+    // matches what the API expects.
     if unsafe { GetFileInformationByHandle(directory.as_raw_handle(), &mut information) } == 0 {
         return Err(std::io::Error::last_os_error());
     }

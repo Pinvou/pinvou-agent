@@ -1,6 +1,6 @@
 ---
 name: wecomcli-doc
-description: 何时用:仅当用户明确指定 doc/docx/word/在线文档或提供 doc.weixin.qq.com/doc/ 链接时使用;泛指「做个文档/写文档/整理成文档」默认走 wecomcli-smartpage 或本地工具,本技能不得抢占。doc 内容操作:新建、导入、读取、追加、覆盖写入;结构化数据需求改用智能文档/智能表格;公共管理走 wecomcli-doc-manage。
+description: 何时用:仅当用户明确指定 doc/docx/word/在线文档/office文档或提供 doc.weixin.qq.com/doc/ 链接时使用;泛指「做个文档/写文档/整理成文档」默认走 wecomcli-smartpage 或本地工具,本技能不得抢占。doc 内容操作:新建、导入(.doc/.docx/.txt)、读取、追加、覆盖写入;结构化数据需求改用智能文档/智能表格;公共管理走 wecomcli-doc-manage。
 metadata:
   requires:
     bins: ["wecom-cli"]
@@ -23,6 +23,9 @@ metadata:
 ### 不适用
 
 - 搜索文档 / 修改文档权限 / 重命名 / 加成员 → 改用 `wecomcli-doc-manage`
+- 在线表格操作 → 改用 `wecomcli-sheet`
+- 智能表格操作 → 改用 `wecomcli-smartsheet`
+- 含字段 / 记录 / 筛选 / 排序 / 统计 / 分组等结构化数据语义 → 改用 `wecomcli-smartsheet` 或 `wecomcli-smartpage`（禁止用 doc + markdown 静态表格变通）
 
 ### 易混淆场景路由
 

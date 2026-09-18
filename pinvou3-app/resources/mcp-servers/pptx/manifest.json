@@ -28,10 +28,10 @@
           },
           {
             "name": "lxml",
-            "version": "6.1.2",
-            "filename": "lxml-6.1.2-cp313-cp313-win_amd64.whl",
-            "url": "https://files.pythonhosted.org/packages/1b/7a/96bac167538748cae2544335855f812fa33e49a9a67bc8b8520dcbd592bd/lxml-6.1.2-cp313-cp313-win_amd64.whl",
-            "sha256": "6cb0c87421946030b92b558be416852780a912454e3dcba0998e4497c9c588d5"
+            "version": "6.1.3",
+            "filename": "lxml-6.1.3-cp313-cp313-win_amd64.whl",
+            "url": "https://files.pythonhosted.org/packages/c0/28/e46a7702bd95e9043291f7c3539b6184cba66f96cea9936f20939b284eeb/lxml-6.1.3-cp313-cp313-win_amd64.whl",
+            "sha256": "e477aca0bc0d19f3b4ae9e4f2a1cfd687c31bf772d78734910658186b40b2477"
           },
           {
             "name": "typing-extensions",

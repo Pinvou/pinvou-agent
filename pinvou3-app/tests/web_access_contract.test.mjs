@@ -756,7 +756,7 @@ assert.match(composerShared, /bridge\.models\.switchModel\(activeSessionId, id\)
 assert.match(settingsView, /\{canManageModels && editingModel && \(/);
 assert.match(toolStoreView, /if \(!can\('toolStoreMutations'\)\) \{/);
 assert.match(toolStoreView, /const canMutateToolStore = can\('toolStoreMutations'\);/);
-assert.ok((toolStoreView.match(/if \(!canMutateToolStore\) return;/g) || []).length >= 4,
+assert.ok((toolStoreView.match(/if \(!canMutateToolStore(\s*\|\|\s*busyRef\.current)?\) return;/g) || []).length >= 4,
   'all tool install, uninstall, and import handlers must fail closed in WebUI');
 // 回收站 Web 只读降级：list_recycled_plugins 为只读命令（access-policy 放行），
 // 恢复/导出/彻底删除的动作按钮整块挂 canMutateToolStore 门控，处理函数自身

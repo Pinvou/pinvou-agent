@@ -105,6 +105,10 @@ fn poll_global_mouse(_dev: &()) -> GlobalMouse {
     use windows_sys::Win32::UI::WindowsAndMessaging::GetCursorPos;
 
     let mut pt = MaybeUninit::<POINT>::uninit();
+    // SAFETY: pt.as_mut_ptr() is a writable pointer to a MaybeUninit<POINT> local
+    // whose lifetime covers the GetCursorPos call; the return value is checked, so
+    // assume_init only runs after GetCursorPos has fully initialized the struct.
+    // GetCursorPos takes no window/handle argument and is callable on any thread.
     let (x, y) = unsafe {
         if GetCursorPos(pt.as_mut_ptr()) == 0 {
             return GlobalMouse {
@@ -116,6 +120,10 @@ fn poll_global_mouse(_dev: &()) -> GlobalMouse {
         let pt = pt.assume_init();
         (pt.x, pt.y)
     };
+    // SAFETY: GetAsyncKeyState takes only a virtual-key code (VK_LBUTTON, always
+    // valid) and reads key state maintained by the OS; it writes nothing through
+    // pointers, so there is no pointer/lifetime contract to satisfy, and it is
+    // callable on any thread.
     let left_down = unsafe { (GetAsyncKeyState(VK_LBUTTON as i32) as u16) & 0x8000 != 0 };
     GlobalMouse { x, y, left_down }
 }

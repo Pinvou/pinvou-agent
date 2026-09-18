@@ -61,8 +61,11 @@ jobs:
   # tauri.conf.json/package.json 变更,经这两条进入 bundle_chain,smoke 不会漏。
   changes:
     name: changes
-    runs-on: ubuntu-latest
-    timeout-minutes: 5
+    runs-on: ubuntu-22.04
+    # 10min: checkout (fetch-depth: 0) plus the memory-setup wrapper's worst
+    # case (240s + 15s kill grace) must not turn the intended non-fatal
+    # degradation into a hard job timeout that fails `build` via `needs`.
+    timeout-minutes: 10
     outputs:
       bundle_chain: ${{ steps.filter.outputs.bundle_chain }}
     steps:
@@ -71,7 +74,8 @@ jobs:
         with:
           fetch-depth: 0
       - name: Set up zram and swap
-        run: sudo bash "${{ github.workspace }}/scripts/ci-memory-setup.sh"
+        # Best effort: timeouts or failures only warn and never block (falls back to stock runner memory).
+        run: timeout --kill-after=15 240 sudo bash "${{ github.workspace }}/scripts/ci-memory-setup.sh" || echo "::warning::ci-memory-setup did not finish; continuing with stock runner memory"
       - uses: dorny/paths-filter@v4
         id: filter
         with:

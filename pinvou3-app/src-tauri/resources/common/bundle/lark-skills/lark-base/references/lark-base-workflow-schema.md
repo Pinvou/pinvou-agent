@@ -3,7 +3,7 @@
 本文档是 Workflow `steps` JSON 的单一事实来源（SSOT），定义完整数据结构，适用于：
 - **查询场景**：理解 `+workflow-get` 返回的 `steps` 结构
 - **创建/修改场景**：构造 `+workflow-create` / `+workflow-update` 的 `--json` body
-> 💡 **本文档是纯字段参考**。如需**创建/修改**工作流的完整示例，请阅读 [workflow-guide.md](lark-base-workflow-guide.md)。
+> 💡 **本文档是纯字段参考**。如需**创建/修改**工作流的完整示例，请阅读 [Workflow](lark-base-workflow.md)。
 ---
 ## 📖 快速导航
 
@@ -125,6 +125,7 @@
 | `Delay` | 延迟 |
 | `LarkMessageAction` | 发送飞书消息 |
 | `GenerateAiTextAction` | AI 生成文本 |
+| `AIAnalysisAction` | AI 分析 |
 
 > 所有 Action 节点**请勿设置** `children` ，通过 `next` 串联后继。
 
@@ -134,6 +135,7 @@
 |------|------|
 | `IfElseBranch` | 条件分支，`children.links` 含 `if_true` 和 `if_false` |
 | `SwitchBranch` | 多路分支，`children.links` 含多个 `case` |
+| `AIClassificationBranch` | AI 分类分支，`children.links` 含多个 `case` |
 
 ### System 类型
 
@@ -153,7 +155,7 @@
   "table_name": "订单表",
   "watched_field_name": "状态",
   "trigger_control_list": ["pasteUpdate", "automationBatchUpdate"],
-  "condition_list": null /* 无条件时传 null，勿传 []（空数组报错） */
+  "condition_list": null /* 无条件时传 null，勿传 []（空数组报错） */ 
 }
 ```
 
@@ -239,7 +241,7 @@
 {
   "table_name": "项目表",
   "field_name": "截止日期",
-  "offset": 1,
+  "offset": -1,
   "unit": "DAY",
   "hour": 9,
   "minute": 0,
@@ -252,7 +254,7 @@
 | `table_name` | 是 | 数据表名 |
 | `field_name` | 是 | 日期字段名（必须为 `datetime` / `created_at` / `formula` / `lookup` 类型） |
 | `unit` | 是 | 偏移单位：`MINUTE` / `HOUR` / `DAY` / `WEEK` / `MONTH` |
-| `offset` | 是 | 提前/延后的偏移量（正数=提前，负数=延后；范围由 `unit` 决定）：`MINUTE` ∈ {0, 5, 15, 30, -5, -15, -30}；`HOUR` ∈ [-6, -1] ∪ [1, 6]；`DAY` ∈ [-7, 7]；`WEEK` ∈ [-7, -1] ∪ [1, 7]；`MONTH` ∈ [-7, -1] ∪ [1, 7] |
+| `offset` | 是 | 提前/延后的偏移量（触发时间 = 日期字段时间 + `offset` × `unit`，因此负数=提前、正数=延后；范围由 `unit` 决定）：`MINUTE` ∈ {0, 5, 15, 30, -5, -15, -30}；`HOUR` ∈ [-6, -1] ∪ [1, 6]；`DAY` ∈ [-7, 7]；`WEEK` ∈ [-7, -1] ∪ [1, 7]；`MONTH` ∈ [-7, -1] ∪ [1, 7] |
 | `hour` | 是 | 触发小时 (0-23)，默认 9 |
 | `minute` | 是 | 触发分钟 (0-59)，默认 0 |
 | `condition_list` | 否 | 过滤条件数组，数组中每个元素为 AndCondition 结构，多个 AndCondition 之间为 OR 关系  | 
@@ -473,6 +475,26 @@
 |------|------|------|
 | `prompt` | 是 | TextRefItem[] 提示词，支持 `text` / `ref` |
 
+### AIAnalysisAction
+
+```json
+{
+  "analysis_task": [
+    { "value_type": "text", "value": "分析昨日订单趋势、异常原因，并给出行动建议" }
+  ],
+  "analysis_table_names": ["订单表", "退款表"],
+  "identity_type": "maker",
+  "output_instruction": "先给结论，再列证据与行动建议"
+}
+```
+
+| 字段 | 必填 | 说明 |
+|------|------|------|
+| `analysis_task` | 是 | TextRefItem[] 分析任务，支持 `text` / `ref` 混排；至少包含一项有效内容 |
+| `analysis_table_names` | 否 | string[] 分析数据范围；为空数组 `[]` 或省略时表示当前 Base 的全部数据表 |
+| `identity_type` | 是 | 数据访问身份：`maker`（固定流程身份） / `triggerPersonal`（流程触发者） |
+| `output_instruction` | 否 | 仅支持纯文本 |
+
 
 ## Branch data 详细结构
 
@@ -551,6 +573,45 @@
 |------|------|------|
 | `name` | string | 分支名称 |
 | `condition` | OrGroup | 分支条件 |
+
+### AIClassificationBranch
+
+`AIClassificationBranch` 用 AI 对 `content` 内容做分类，再通过 `children.links` 中的 `case` 边进入命中的后续步骤。`steps[].data` 使用公开 Agent Data 协议。
+
+```json
+{
+  "classes": [
+    {
+      "name": "Bug",
+      "desc": "功能报错、异常、不可用或结果错误"
+    },
+    {
+      "name": "功能建议",
+      "desc": "希望新增能力或优化现有功能"
+    }
+  ],
+  "content": [
+    { "value_type": "text", "value": "请根据反馈内容判断类型：" },
+    { "value_type": "ref", "value": "$.step_trigger.fldFeedback" }
+  ],
+  "classification_rule": "信息不足时判定为无法匹配。"
+}
+```
+
+| 字段 | 必填 | 说明                                                                   |
+|------|------|----------------------------------------------------------------------|
+| `classes` | 是 | 分类列表，至少 2 项。每项包含 `name` 和 `desc`                                     |
+| `classes[].name` | 是 | 分类名称，需与对应普通 `children.links[].desc` 保持一致                             |
+| `classes[].desc` | 是 | 分类描述，可为空字符串，但字段必须存在                                                  |
+| `content` | 是 | TextRefItem[]，用于分类的内容，支持 `text` / `ref`                              |
+| `classification_rule` | 否 | 全局分类规则纯文本                                                            |
+| `no_match_action` | 否 | 无匹配策略。`classifyToOther`：进入默认分支；`fail`：当前节点失败。省略时使用 `classifyToOther` |
+
+`children.links` 规则：
+- 每个分类命中后要跳到哪个后续步骤，必须写在 children.links 中。
+- 普通分类边使用 `kind: "case"` 和 `label: "branch_1"`、`branch_2` 等稳定标签；`desc` 与 `classes[i].name` 保持一致；`to` 指向该分类的入口 step。
+- `no_match_action: "classifyToOther"` 时必须额外提供一条默认分支边：`{ "kind": "case", "label": "default", "desc": "默认分支", "to": "step_other_action" }`。
+- `no_match_action: "fail"` 时不要提供默认分支边。
 
 
 ## System data 详细结构
@@ -788,6 +849,12 @@ HTTPClientAction 的输出取决于 `response_type`：
 |--------|------|----------|
 | （整体出参） | AI 生成的文本内容（不支持下钻，只能引用 `$.{stepId}`） | `$.{stepId}` |
 
+##### AIAnalysisAction（AI 分析）
+
+| pathId | 说明 | 引用示例 |
+|--------|------|----------|
+| `analysisResult` | AI 分析结果字符串 | `$.{stepId}.analysisResult` |
+
 ##### 无输出的操作节点
 
 以下节点不产生任何可引用的输出数据：
@@ -887,6 +954,7 @@ $.{stepId}.{fieldId}.fileToken    → 文件 Token 列表（array<string>，仅�
 | SetRecordAction | 动作 | ✅ | 动态（用户配置的字段） |
 | HTTPClientAction | 动作 | ✅ | 动态（取决于用户配置的 HTTP 响应输出） |
 | GenerateAiTextAction | 动作 | ✅ | 静态（单 string） |
+| AIAnalysisAction | 动作 | ✅ | 静态（`analysisResult`） |
 | Delay | 动作 | ❌ | 无输出 |
 | LarkMessageAction | 动作 | ❌ | 无输出 |
 | IfElseBranch | 分支 | ❌ | 无输出 |
@@ -1066,19 +1134,17 @@ $.{stepId}.{fieldId}.fileToken    → 文件 Token 列表（array<string>，仅�
 
 ---
 
+## 参考
+
 ## workflow 外层字段
 
 `+workflow-create` / `+workflow-update` 请求中，`steps` 之外的外层字段：
 
-| 字段 | 类型 | 必填 | 说明 |
-|------|------|------|------|
-| `title` | string | 否（建议携带） | workflow 标题；官方示例均携带，创建时建议始终提供 |
-| `client_token` | string | `+workflow-create` 必填 | 幂等令牌，每次请求唯一（时间戳或随机字符串），防止重复创建；缺失报 `client token is empty`。`+workflow-update` 的 help 提示与排查表均未要求 |
-| `status` | string | 否 | 启停状态；取值以 `+workflow-get` 返回为准，本文档不定义枚举。注意：`+workflow-update` 传 `status` 不会启停 workflow，启停须单独调用 `+workflow-enable` / `+workflow-disable` |
+| 字段 | 必填 | 说明 |
+|---|---|---|
+| `title` | 建议携带 | 工作流标题；上游文档未标必填，但携带便于辨识 |
+| `client_token` | `+workflow-create` 必填 | 每次请求唯一的幂等令牌；缺失报 `client token is empty`（`+workflow-update` 的 help / 排查表未要求） |
+| `status` | 以 `+workflow-get` 返回为准 | 创建后可读；`+workflow-update` 传 `status` 不改变启停——启停走 `+workflow-enable` / `+workflow-disable` |
 
----
-
-## 参考
-
-- [lark-base-workflow-guide.md](lark-base-workflow-guide.md) — 完整示例和构造技巧
+- [Workflow](lark-base-workflow.md) — 完整示例和构造技巧
 - 创建/更新时外层只承载 workflow 元信息，核心校验对象是 `steps`；列表只用于拿 workflow ID 和启停状态

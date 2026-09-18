@@ -61,7 +61,7 @@ bridge 的 chat 状态机绑定单一 activeSession，代码页与主聊天并�
 
 ### 3.5 配置控件复用策略
 
-聊天页输入框底栏四类常驻控件（Plan/Yolo、模型、工具菜单、知识库挂载）搬入代码模块原生车道，模型选择列表中的多智能体会话开关一并复用，视觉对齐 ACP 配置组（`CodexComposerConfigSelect` pill 形态）。关键约束：bridge 的 models/knowledge/interaction 方法绑聊天 active 且草稿态会物化聊天会话，代码车道一律直调 per-session Tauri 命令显式传 sessionId；草稿态选择暂存，建会话后按序应用（model → kb → mode → multi-agent），任一步失败都中止首发并显式报错。
+聊天页输入框底栏四类常驻控件（Plan/Yolo、模型、工具菜单、知识库挂载）搬入代码模块原生车道，模型选择列表中的蜂群模式（swarm mode）开关一并复用，视觉对齐 ACP 配置组（`CodexComposerConfigSelect` pill 形态）。关键约束：bridge 的 models/knowledge/interaction 方法绑聊天 active 且草稿态会物化聊天会话，代码车道一律直调 per-session Tauri 命令显式传 sessionId；草稿态选择暂存，建会话后按序应用（model → kb → mode → multi-agent），任一步失败都中止首发并显式报错。
 
 ### 3.6 模式策略对象（2026-08-05 解耦，D-2/D-3）
 

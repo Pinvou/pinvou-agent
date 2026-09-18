@@ -4,6 +4,7 @@ import { Archive, Check, Download, Edit2, FolderOpen, Layers, MoreHorizontal, Pi
 import { useLongPressDrag } from '../../hooks/useLongPressDrag.js';
 import { usePortalMenu } from '../../hooks/usePortalMenu.js';
 import { isImeComposing } from '../../shared/ime-guard.mjs';
+import { PROJECT_SESSION_DRAG_TYPE } from '../../features/projects/projectGrouping.js';
 
     // NavItem memoization: the main nav re-renders on every App bridge
     // notify (including background streaming tokens); when the props are
@@ -215,7 +216,7 @@ import { isImeComposing } from '../../shared/ime-guard.mjs';
     // derived by the parent's useMemo and callbacks come from the parent's
     // useCallback / per-item closure cache (see renderSidebarTaskItem in
     // main.jsx); the default shallow compare then skips correctly.
-    const RecentItem = memo(function RecentItem({ chat, active, personaTarget, theme, t, onSelect, onRename, onDelete, onTogglePinned, onOpenFolder, onExportArchive, onArchive, onMoveToProject, dragKind = 'session', dragging, onPickUp }) {
+    const RecentItem = memo(function RecentItem({ chat, active, personaTarget, theme, t, onSelect, onRename, onDelete, onTogglePinned, onOpenFolder, onExportArchive, onArchive, onMoveToProject, dragKind = 'session', dragging, onPickUp, dndPayload, dndDisabled, onDragEnd }) {
       const isDark = theme === 'dark';
       const [editing, setEditing] = useState(false);
       const [confirming, setConfirming] = useState(false);
@@ -327,6 +328,19 @@ import { isImeComposing } from '../../shared/ime-guard.mjs';
             type="button"
             data-testid={chat.testId}
             data-drag-surface
+            // HTML5 拖拽(移动到项目)与 tear-off(长按 350ms)共享同一手势
+            // 面:都只从标签按钮(data-drag-surface)启动,置顶/更多/删除等
+            // 动作按钮起手不会拖走整行(useLongPressDrag 的按钮排除同源)。
+            // 两者互斥由 hook 的工程手段提供:pointerdown 时装 capture 阶段
+            // dragstart 监听({once}) + pointercancel 兜底,clearPress 幂等,
+            // 自然竞态被消除;不要因"看起来多余"而删联锁。tear-off 进行中
+            // (dndDisabled)不再启动 HTML5 拖拽。
+            draggable={dndPayload && !dndDisabled ? true : undefined}
+            onDragEnd={onDragEnd}
+            onDragStart={dndPayload && !dndDisabled ? (e) => {
+              e.dataTransfer.setData(PROJECT_SESSION_DRAG_TYPE, dndPayload.sessionId);
+              e.dataTransfer.effectAllowed = 'move';
+            } : undefined}
             onClick={sessionDragKind ? drag.guardClick(selectChat) : selectChat}
             {...dragProps}
             className="flex min-w-0 flex-1 cursor-pointer items-center self-stretch border-0 bg-transparent px-4 text-left">

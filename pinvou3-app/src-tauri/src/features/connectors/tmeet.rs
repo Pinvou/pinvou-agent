@@ -15,8 +15,8 @@ use crate::features::connectors::connector_cli::{self as cc, CliCtx, ConnectorCo
 use crate::features::connectors::skill_gate::ConnectorSkillGate;
 
 const ID: &str = "tmeet";
-const TMEET_NPM_SPEC: &str = "@tencentcloud/tmeet@1.0.15";
-const TMEET_MIN_VERSION: (u64, u64, u64) = (1, 0, 15);
+const TMEET_NPM_SPEC: &str = "@tencentcloud/tmeet@1.0.18";
+const TMEET_MIN_VERSION: (u64, u64, u64) = (1, 0, 18);
 
 const TMEET_CTX: CliCtx = CliCtx {
     cli_bin: "tmeet",
@@ -129,7 +129,7 @@ fn install_tmeet_cli() -> Result<bool, String> {
     cc::run_with_timeout(c, 180)
 }
 
-/// 引导:确保 tmeet 装好且版本不低于 1.0.15。
+/// Bootstrap: ensure the tmeet CLI is installed and at least 1.0.18.
 pub async fn tmeet_ensure_cli() -> Result<Value, String> {
     tokio::task::spawn_blocking(|| {
         if tmeet_cli_present() {
@@ -258,6 +258,7 @@ fn phase_scan(app: &AppHandle) -> Result<(), String> {
         let now = std::time::Instant::now();
         if now >= deadline {
             let _ = child.kill();
+            cc::reap_after_kill(&mut child);
             conn.set_pid(ID, None);
             return Err(auth_failure_message(
                 &auth_lines,
@@ -306,6 +307,7 @@ fn phase_scan(app: &AppHandle) -> Result<(), String> {
     loop {
         if conn.is_cancelled(ID) {
             let _ = child.kill();
+            cc::reap_after_kill(&mut child);
             conn.set_pid(ID, None);
             return Ok(());
         }
@@ -517,9 +519,9 @@ mod tests {
 
     #[test]
     fn version_comparison_uses_semver_order() {
-        assert!(version_at_least((1, 0, 15), TMEET_MIN_VERSION));
+        assert!(version_at_least((1, 0, 18), TMEET_MIN_VERSION));
         assert!(version_at_least((1, 1, 0), TMEET_MIN_VERSION));
-        assert!(!version_at_least((1, 0, 14), TMEET_MIN_VERSION));
+        assert!(!version_at_least((1, 0, 17), TMEET_MIN_VERSION));
         assert!(!version_at_least((0, 9, 99), TMEET_MIN_VERSION));
     }
 

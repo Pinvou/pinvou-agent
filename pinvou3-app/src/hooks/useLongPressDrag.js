@@ -6,6 +6,14 @@ const LONGPRESS_MS = 350;
       const startRef = useRef(null);
       const timerRef = useRef(null);
       const pickedRef = useRef(false);
+      // A native HTML5 drag starting while a press is pending means the
+      // gesture became a session drag: browsers fire pointercancel and stop
+      // delivering pointermove (so the >MOVE_CANCEL defense can never fire),
+      // and without this coupling the 350ms timer survives the whole native
+      // drag and spawns a tear-off mid-drag. The listener is { once } so it
+      // self-removes on the first dragstart; when a press ends without one it
+      // lingers until the next dragstart and then runs as a harmless no-op
+      // (every branch is idempotent on cleared state).
       const clearPress = () => {
         if (timerRef.current) { clearTimeout(timerRef.current); timerRef.current = null; }
         startRef.current = null;
@@ -21,6 +29,7 @@ const LONGPRESS_MS = 350;
         const rect = e.currentTarget.getBoundingClientRect();
         startRef.current = { x: e.clientX, y: e.clientY, rect };
         pickedRef.current = false;
+        document.addEventListener('dragstart', clearPress, { capture: true, once: true });
         document.body.style.userSelect = 'none'; // 长按期间禁选,防止选中下方会话文字
         timerRef.current = setTimeout(() => {
           pickedRef.current = true;
@@ -53,7 +62,7 @@ const LONGPRESS_MS = 350;
         }
         if (fn) fn(e);
       };
-      return { handlers: { onPointerDown, onPointerMove, onPointerUp }, guardClick };
+      return { handlers: { onPointerDown, onPointerMove, onPointerUp, onPointerCancel: clearPress }, guardClick };
     };
 
     // ==========================================

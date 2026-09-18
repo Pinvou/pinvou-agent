@@ -1435,9 +1435,17 @@ impl AppEngine {
         // the bool and the Option.
         let mut engine_config = match expert_snapshot.as_deref() {
             Some(snapshot) => {
-                // 多智能体面：装配专家名册和专用资源上限；工具面仍与普通会话
-                // 完全一致，普通会话不继承这些限制。
-                bridge.build_engine_config_for_multi_agent(session_id, roots, snapshot)
+                // Multi-agent surface: assemble the expert roster and the
+                // dedicated resource caps; the tool surface stays identical to
+                // a plain session, which inherits none of these limits. The
+                // swarm switch and the session's multi_agent switch share one
+                // source (the mode_state just read above).
+                bridge.build_engine_config_for_multi_agent(
+                    session_id,
+                    roots,
+                    snapshot,
+                    multi_agent_enabled,
+                )
             }
             None => bridge.build_engine_config_for_session_roots(session_id, roots),
         };
@@ -1739,7 +1747,7 @@ impl AppEngine {
         reservation.ensure_active()?;
         let actual_user_content = match &op {
             Op::SendMessage { content, .. } => content.clone(),
-            Op::EditLastTurn { new_message } => new_message.clone(),
+            Op::EditLastTurn { new_message, .. } => new_message.clone(),
             _ => anyhow::bail!("reserved turn requires a user-message operation"),
         };
         reservation.prepare_actual_user_content(actual_user_content)?;
@@ -1814,7 +1822,14 @@ impl AppEngine {
     /// 上游 [`Op::EditLastTurn`] 行为：砍掉 session 末尾最近的 user 消息及之后
     /// 所有消息，然后用 `new_message` 当成新 user 消息重新发送。
     pub async fn edit_last_turn(&self, new_message: String) -> Result<()> {
-        self.send_turn_op(Op::EditLastTurn { new_message }).await
+        self.send_turn_op(Op::EditLastTurn {
+            new_message,
+            // CodeWhale#58 echoes this token on TurnStarted; the GUI does not
+            // correlate submit-window turns yet, so None (wiring lands with
+            // the turn-bound stop PR).
+            submission_id: None,
+        })
+        .await
     }
 
     pub(crate) async fn edit_last_turn_reserved(
@@ -1822,8 +1837,17 @@ impl AppEngine {
         new_message: String,
         reservation: TurnReservation,
     ) -> Result<()> {
-        self.send_reserved_turn_op(Op::EditLastTurn { new_message }, reservation)
-            .await
+        self.send_reserved_turn_op(
+            Op::EditLastTurn {
+                new_message,
+                // CodeWhale#58 echoes this token on TurnStarted; the GUI does
+                // not correlate submit-window turns yet, so None (wiring lands
+                // with the turn-bound stop PR).
+                submission_id: None,
+            },
+            reservation,
+        )
+        .await
     }
 
     /// 手动触发上下文压缩（用户点 token 进度条 → 立即压缩）。
@@ -3130,6 +3154,10 @@ mod scheduled_turn_tests {
             verbosity: None,
             provenance: UserInputProvenance::Runtime,
             turn_tool_security: None,
+            // CodeWhale#58 echoes this token on TurnStarted; the GUI does not
+            // correlate submit-window turns yet, so None (wiring lands with
+            // the turn-bound stop PR).
+            submission_id: None,
         }
     }
 
