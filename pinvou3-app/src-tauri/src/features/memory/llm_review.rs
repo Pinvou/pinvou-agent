@@ -173,7 +173,7 @@ pub(super) fn explicit_signal_prompt() -> String {
 /// Equivalent of the review-side `output_language_directive`
 /// (features/review/mod.rs): the prompt body stays Chinese (tuned for
 /// convergence; translating it line by line would introduce behavioral drift)
-/// and only the **natural-language field values** (`content` / `reason`) switch
+/// and only the **natural-language field value** (`content`) switches
 /// to the target language — JSON keys and `kind` / `topic` / `action` enum
 /// values stay ASCII. zh-Hans and unknown locales → None (no-op, prompt
 /// unchanged).
@@ -196,7 +196,7 @@ pub(super) fn memory_output_language_directive(locale_tag: &str) -> Option<Strin
     if locale_tag == "zh-Hans" {
         return Some(
             "\n\n## 输出语言(强制)\n\
-             JSON 里所有自然语言字段值(content / reason)必须用简体中文,即使本轮\
+             JSON 里所有自然语言字段值(content)必须用简体中文,即使本轮\
              对话是英文/日文也别跟着写。JSON 的 key、action / kind / topic 枚举值\
              保持原样 ASCII。"
                 .to_string(),
@@ -209,8 +209,8 @@ pub(super) fn memory_output_language_directive(locale_tag: &str) -> Option<Strin
     };
     Some(format!(
         "\n\n## Output Language (HARD override)\n\
-         Write EVERY natural-language value in your JSON output in {lang}: `content` \
-         and `reason`. This OVERRIDES any wording above that asks for Chinese. Keep \
+         Write EVERY natural-language value in your JSON output in {lang}: `content`. \
+         This OVERRIDES any wording above that asks for Chinese. Keep \
          all JSON keys and enum values (`action`, `kind`, `topic`) exactly as \
          specified — those stay ASCII/English."
     ))

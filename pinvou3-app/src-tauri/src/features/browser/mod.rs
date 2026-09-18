@@ -112,9 +112,10 @@ pub struct BrowserManager {
     inner: tokio::sync::Mutex<Inner>,
     /// Startup critical-section mutex. Serializes browser coordination, automation
     /// connection, attachment, and event-loop setup so watcher polling and Tauri
-    /// commands cannot create duplicate loops or lose handles. stop() also joins
-    /// this single-flight lock so it cannot return on transient empty state and be
-    /// overwritten by the rest of an in-progress startup.
+    /// commands cannot create duplicate loops or lose handles. Full stop paths
+    /// join this single-flight lock via `stop_with_start_lock` so they cannot
+    /// return on transient empty state and be overwritten by the rest of an
+    /// in-progress startup.
     start_mtx: tokio::sync::Mutex<()>,
     /// Serializes lifecycle mutations for one task without making slow
     /// automation readiness/binding waits block unrelated task workspaces.
