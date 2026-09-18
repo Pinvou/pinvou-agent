@@ -3076,7 +3076,8 @@ mod scheduled_model_tests {
         EvalModelSnapshots, ModelIdentity, ModelUpdateRevisions, Pinvou3Bridge,
         PreparedRuntimeState, REBIND_EVICT_GATE_TIMEOUT, SESSION_MODEL_BINDING_STALE_ERROR,
         ScheduledUnattendedGuard, SessionShellManagers, SessionTurnLifecycles, SessionTurnLocks,
-        SessionTurnShellTasks, TranscriptOperation, TurnIdentity, cancel_turn_with_gates,
+        SessionTurnShellTasks, TURN_GATE_AWAIT_TIMEOUT, TranscriptOperation, TurnIdentity,
+        cancel_turn_with_gates,
         default_model_for_new_session_from, delete_chat_session_with_gate,
         delete_scheduled_run_with_gate, delete_then_forget, dispatch_turn_bound_cancel,
         entry_is_fresh, evict_if_idle_with_gates, generation_matches, identity_for_active_model,
@@ -4574,9 +4575,10 @@ mod scheduled_model_tests {
     // code this test hangs (reverse-verified red on main). The wait is the
     // real 5s TURN_GATE_AWAIT_TIMEOUT — deliberate: enabling tokio's
     // test-util for a paused clock would change the tokio feature set and
-    // invalidate the whole CI test cache for one test.
+    // invalidate the whole CI test cache for one test. The forkguard_ prefix
+    // registers it as a fork-guard layer-3 behavior test (fork-policy §3).
     #[tokio::test]
-    async fn cancel_holds_turn_lock_boundedly() {
+    async fn forkguard_cancel_holds_turn_lock_boundedly() {
         let locks = SessionTurnLocks::default();
         let lifecycles = SessionTurnLifecycles::default();
         let shell_tasks = SessionTurnShellTasks::default();
@@ -4594,6 +4596,12 @@ mod scheduled_model_tests {
         let cascade_started = Arc::new(AtomicBool::new(false));
         let cascade_probe = cascade_started.clone();
         let gate_locks = locks.clone();
+        // Measured from before the spawn: the production bound timer starts
+        // when phase two first polls the cascade, so elapsed >= the bound is
+        // guaranteed and pins "the cancel really waited the full budget"
+        // (an unbounded regression hangs; a silently shrunken bound fails
+        // this assert).
+        let cancel_started = std::time::Instant::now();
         let cancel_task = tokio::spawn(async move {
             cancel_turn_with_gates(
                 &locks,
@@ -4615,19 +4623,30 @@ mod scheduled_model_tests {
             .await
         });
         // Phase two reached the primary cascade send, then parks on the
-        // never-settling wedged engine.
-        while !cascade_started.load(Ordering::Acquire) {
-            tokio::task::yield_now().await;
-        }
+        // never-settling wedged engine. Bounded so a regression that never
+        // reaches the cascade fails with a diagnostic instead of hanging.
+        tokio::time::timeout(TURN_GATE_AWAIT_TIMEOUT, async {
+            while !cascade_started.load(Ordering::Acquire) {
+                tokio::task::yield_now().await;
+            }
+        })
+        .await
+        .expect("phase two must reach the primary cascade send");
         // The cascade is parked on the wedged engine: cancel must come back
         // via TURN_GATE_AWAIT_TIMEOUT (≈5s real time), not via the closure.
         let (target, claimed) = cancel_task.await.expect("cancel task joins");
+        assert!(cancel_started.elapsed() >= TURN_GATE_AWAIT_TIMEOUT);
         assert_eq!(target, Some(1));
         assert!(!claimed);
         // The gate is free again: evict / delete / send queue on it and must
-        // not be stuck behind the cancelled turn (issue #255).
-        let gate = gate_locks.for_session(sid).await;
-        drop(gate.lock().await);
+        // not be stuck behind the cancelled turn (issue #255). Bounded so a
+        // gate-leak regression fails fast instead of hanging.
+        tokio::time::timeout(TURN_GATE_AWAIT_TIMEOUT, async {
+            let gate = gate_locks.for_session(sid).await;
+            drop(gate.lock().await);
+        })
+        .await
+        .expect("turn gate must be re-acquirable after the bound");
     }
 
     #[tokio::test]
