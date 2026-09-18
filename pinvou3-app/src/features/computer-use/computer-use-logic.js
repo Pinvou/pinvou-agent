@@ -113,6 +113,21 @@ export function extractComputerUseScreenshotPath(output) {
  * independent of the dialogs: a per-action confirmation can sit on top of an
  * already-granted session, and the banner must remain visible underneath.
  */
+/**
+ * Epoch gate for stale banner errors (pure). The banner component stays
+ * mounted while hidden, so an "action failed" left over from a PREVIOUS
+ * grant epoch must be dropped when a new grant raises the banner again — a
+ * stale failure must never paint under a fresh control session. Only the
+ * rising (hidden -> shown) edge clears; an error raised DURING the current
+ * shown phase survives.
+ */
+export function bannerErrorReset(wasShown, showBanner) {
+  if (showBanner) {
+    return { resetError: !wasShown, wasShown: true };
+  }
+  return { resetError: false, wasShown: false };
+}
+
 export function computerUseConsentView(slice) {
   const enabled = !!(slice && slice.enabled);
   if (!enabled) {
@@ -221,11 +236,6 @@ function describeConfirmAction(copy, request) {
       const from = formatConfirmPoint(request.point);
       const to = formatConfirmPoint(request.endPoint);
       return from && to ? applyTemplate(fn('confirmDrag'), from, to) : null;
-    }
-    case 'scroll': {
-      const direction = copy.scrollDirection && copy.scrollDirection[request.scrollDirection || ''];
-      if (!direction || typeof request.scrollAmount !== 'number') return null;
-      return applyTemplate(fn('confirmScroll'), direction, request.scrollAmount, formatConfirmPoint(request.point));
     }
     case 'mouse_move':
       return describeConfirmPointAction(fn('confirmMouseMove'), request.point);

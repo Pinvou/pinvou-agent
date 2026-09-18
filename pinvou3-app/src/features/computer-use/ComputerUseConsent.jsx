@@ -4,7 +4,7 @@ import { useEffect, useRef, useState } from 'react';
 // screen readers, which the role/aria-modal attributes on the dialog elements
 // also serve.)
 import { bridge } from '../../hooks/useBridge.js';
-import { computerUseConsentView, formatComputerUseConfirmAction } from './computer-use-logic.js';
+import { bannerErrorReset, computerUseConsentView, formatComputerUseConfirmAction } from './computer-use-logic.js';
 
 /**
  * Computer-use consent surfaces for the chat view. All visibility derives from
@@ -73,12 +73,9 @@ export function ComputerUseBanner({ slice, copy }) {
   // session (the dialogs solve the same problem with stamp gates).
   const wasShownRef = useRef(false);
   useEffect(() => {
-    if (view.showBanner) {
-      if (!wasShownRef.current) clearActionError();
-      wasShownRef.current = true;
-    } else {
-      wasShownRef.current = false;
-    }
+    const { resetError, wasShown } = bannerErrorReset(wasShownRef.current, view.showBanner);
+    wasShownRef.current = wasShown;
+    if (resetError) clearActionError();
   }, [view.showBanner, clearActionError]);
   if (!view.showBanner) return null;
   // role="alert": the banner mounts while the agent already controls the

@@ -485,9 +485,10 @@ function emit(harness, event, payload) {
 }
 
 // ── 20. grant_required must not wipe a live per-action confirmation ──
-// A grant that idle-expired mid-run re-arms the grant gate
-// while the backend confirm is still pending; wiping pending.confirm left
-// no dialog after Allow.
+// A grant gate re-armed mid-run (engine re-requested authorization) while
+// the backend confirm was still pending; wiping pending.confirm left
+// no dialog after Allow. (The idle-expiry model is gone — grants live until
+// revoke — but the grant re-request path itself still collides.)
 {
   const harness = createHarness({ initialState: { enabled: true } });
   emit(harness, 'computer_use:confirm_required', {
@@ -877,4 +878,50 @@ console.log('computer use bridge behavior tests passed');
   await new Promise((resolve) => { setImmediate(resolve); });
   const reads = harness.invoked.filter(([command]) => command === 'computer_use_get_status');
   assert.ok(reads.length >= 2, 'a session-less state_changed must refresh the active session');
+}
+
+// ── 22. Server truth: resolved requests collapse, served payloads reconstruct ──
+{
+  // A confirm resolved in ANOTHER window: the server status says none is
+  // pending, so this window's stale dialog must collapse on refresh.
+  const harness = createHarness({
+    initialState: { enabled: true },
+    status: { enabled: true, granted: false, stopped: false, platform_supported: true, pending_grant: false, pending_confirm: null },
+  });
+  emit(harness, 'computer_use:confirm_required', {
+    session_id: 's1', confirm_id: 'cu-old', action: 'left_click', summary: 'stale',
+  });
+  assert.equal(harness.published().at(-1).confirmRequest.confirmId, 'cu-old');
+  await harness.feature.refreshStatus('s1');
+  assert.equal(harness.published().at(-1).confirmRequest, null,
+    'a resolved confirm must collapse from server truth');
+}
+
+{
+  // A pending minted elsewhere (this window missed the event): the served
+  // payload reconstructs the dialog.
+  const payload = {
+    session_id: 's1', confirm_id: 'cu-served', action: 'key', summary: 'key ctrl+s',
+    element: 'editor', chord: 'ctrl+s',
+  };
+  const harness = createHarness({
+    initialState: { enabled: true },
+    status: { enabled: true, granted: true, stopped: false, platform_supported: true, pending_grant: false, pending_confirm: payload },
+  });
+  await harness.feature.refreshStatus('s1');
+  const dialog = harness.published().at(-1).confirmRequest;
+  assert.ok(dialog && dialog.confirmId === 'cu-served', 'served payload must reconstruct the dialog');
+  assert.equal(dialog.chord, 'ctrl+s', 'structured fields survive reconstruction');
+}
+
+{
+  // An unanswered grant request pending server-side resurfaces from status
+  // alone (e.g. this window reloaded mid-request).
+  const harness = createHarness({
+    initialState: { enabled: true },
+    status: { enabled: true, granted: false, stopped: false, platform_supported: true, pending_grant: true, pending_confirm: null },
+  });
+  await harness.feature.refreshStatus('s1');
+  assert.ok(harness.published().at(-1).grantRequest,
+    'a server-pending grant must resurface on refresh');
 }

@@ -34,7 +34,9 @@
     function pendingEntry(sessionId) {
       const sid = String(sessionId || "");
       if (!sid) return null;
-      if (!pendingBySession[sid]) pendingBySession[sid] = { grant: false, confirm: null };
+      if (!pendingBySession[sid]) {
+        pendingBySession[sid] = { grant: false, confirm: null, grantAt: 0, confirmAt: 0 };
+      }
       return pendingBySession[sid];
     }
 
@@ -103,6 +105,56 @@
       return invoke("computer_use_get_status", { sessionId });
     }
 
+    // Server-truth reconciliation: `pending_grant`/`pending_confirm` carry
+    // the backend's consent state, so a request the user resolved in ANOTHER
+    // window collapses here immediately (its pending is gone server-side),
+    // and a request minted anywhere (or a window reloaded mid-request) is
+    // reconstructed from the served payload instead of waiting for an event
+    // this window may never have received. A status WITHOUT these keys
+    // predates the fields: keep the local cache as the source of truth there
+    // (background-session resurfacing). Entries stamped AFTER `snapshotAt`
+    // arrived while the status round-trip was in flight; their events are
+    // newer than this snapshot, so the snapshot never collapses them.
+    function reconcileServerTruth(sid, raw, snapshotAt) {
+      const serverTruthKnown =
+        raw && typeof raw === "object" &&
+        ("pending_confirm" in raw || typeof raw.pending_grant === "boolean");
+      if (!serverTruthKnown) return;
+      const pending = pendingEntry(sid);
+      if ("pending_confirm" in raw) {
+        const serverConfirm =
+          raw.pending_confirm && typeof raw.pending_confirm === "object"
+            ? buildConfirmRequest(
+                sid,
+                String(raw.pending_confirm.confirm_id || ""),
+                raw.pending_confirm,
+              )
+            : null;
+        if (serverConfirm && !serverConfirm.confirmId) {
+          // Payload without a usable id: leave reconciliation to the events.
+        } else if (serverConfirm) {
+          if (!pending.confirm || pending.confirm.confirmId !== serverConfirm.confirmId) {
+            pending.confirm = serverConfirm;
+            pending.confirmAt = Date.now();
+          }
+        } else if (pending.confirm && (pending.confirmAt || 0) <= snapshotAt) {
+          pending.confirm = null;
+        }
+      }
+      if (typeof raw.pending_grant === "boolean") {
+        if (raw.pending_grant && !pending.grant) {
+          pending.grant = true;
+          pending.grantAt = Date.now();
+        } else if (
+          !raw.pending_grant &&
+          pending.grant &&
+          (pending.grantAt || 0) <= snapshotAt
+        ) {
+          pending.grant = false;
+        }
+      }
+    }
+
     async function refreshStatus(sessionId) {
       // No early return on an empty sid: the settings page polls status at
       // cold start before any session exists, and the backend answers a
@@ -128,6 +180,10 @@
         publish(sid, { granted: false });
       }
       const seq = ++statusRequestSeq;
+      // Snapshot wall-clock taken BEFORE the IPC round-trip: a dialog that
+      // arrives while the request is in flight (its event still processing)
+      // is newer than this snapshot and must not be collapsed by it.
+      const snapshotAt = Date.now();
       let raw;
       try {
         raw = await invoke("computer_use_get_status", { sessionId: sid });
@@ -149,6 +205,7 @@
         }
         return raw;
       }
+      reconcileServerTruth(sid, raw, snapshotAt);
       const pending = pendingBySession[sid] || null;
       publish(sid, {
         sessionId: sid,
@@ -378,8 +435,6 @@
         textPreviewTruncated: structured && !!payload.text_preview_truncated,
         chord: structured && typeof payload.chord === "string" ? payload.chord : null,
         holdMs: structured ? num(pickField("hold_ms", "holdMs")) : null,
-        scrollDirection: structured && typeof payload.direction === "string" ? payload.direction : null,
-        scrollAmount: structured ? num(payload.amount) : null,
       };
       // Full typed-text preview (backend contract): rides along with every
       // non-password Type action up to 4096 chars, short texts included;
@@ -394,7 +449,7 @@
         request.summary, request.actionName, request.button, request.clickCount,
         request.point, request.endPoint, request.textLength, request.textPreview,
         request.textPreviewTruncated, request.chord, request.holdMs,
-        request.scrollDirection, request.scrollAmount, request.typePreviewFull || null,
+        request.typePreviewFull || null,
         request.element,
       ]);
       return request;
@@ -407,6 +462,7 @@
         if (!sid) return;
         const pending = pendingEntry(sid);
         pending.grant = true;
+        pending.grantAt = Date.now();
         // A live per-action confirmation must survive a grant request: the
         // renderer shows the grant dialog first when both are pending, and
         // wiping the confirm here left no dialog after Allow.
@@ -436,6 +492,7 @@
         if (!sid || !confirmId) return;
         const pending = pendingEntry(sid);
         pending.confirm = buildConfirmRequest(sid, confirmId, payload);
+        pending.confirmAt = Date.now();
         if (!state.computerUse.enabled) {
           // Same other-window-enable gap as the grant branch above: re-read
           // once so a detached window's confirm dialog can resurface.

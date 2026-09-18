@@ -365,8 +365,6 @@ const jaBase = {
           confirmKeyChord:chord=>`${chord} を押す`,
           confirmHoldKey:(chord, ms)=>`${chord} を ${ms} ミリ秒押す`,
           confirmDrag:(from, to)=>`${from} から ${to} までドラッグ`,
-          scrollDirection:{ up:'上', down:'下', left:'左', right:'右' },
-          confirmScroll:(direction, amount, point)=>point ? `${point} で${direction}に ${amount} スクロール` : `${direction}に ${amount} スクロール`,
           confirmMouseMove:point=>`マウスを ${point} に移動`,
           confirmMouseDown:button=>`${button}ボタンを押す`,
           confirmMouseUp:button=>`${button}ボタンを離す`,
