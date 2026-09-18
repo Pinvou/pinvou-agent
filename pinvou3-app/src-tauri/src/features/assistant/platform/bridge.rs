@@ -4455,6 +4455,26 @@ mod tests {
         );
     }
 
+    /// Every host-submitted op path must mint a correlation token: the
+    /// turn-bound stop replay is delivered only via the `TurnStarted`
+    /// echo, so an untagged op would leave the user's stop undeliverable
+    /// (issue #254).
+    #[test]
+    fn build_send_message_op_mints_a_submission_id() {
+        let bridge = fixture_bridge();
+        let op = bridge
+            .build_send_message_op("sess-plain", "hi".to_string(), AppMode::Agent, None, false)
+            .expect("resolve test route");
+        let Op::SendMessage { submission_id, .. } = op else {
+            panic!("expected SendMessage");
+        };
+        let submission_id = submission_id.expect("interactive send must mint a submission id");
+        assert!(
+            submission_id.starts_with("sub-"),
+            "unexpected token shape: {submission_id}"
+        );
+    }
+
     #[test]
     fn known_cloud_window_fills_route_limits_and_compaction_window() {
         let mut bridge = fixture_bridge();
