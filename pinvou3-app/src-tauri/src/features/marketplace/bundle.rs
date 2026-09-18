@@ -687,18 +687,23 @@ fn tool_config_fields(tool: &super::ToolManifest) -> Vec<ConfigFieldSpec> {
 }
 
 /// 就绪态判定（派生态，现算不进存储）。
-/// - CLI 包：授权存在与否——由命令层经 `bundle_readiness` 分派到各 status 查询注入
-///   （注册表不直连 CLI 运行时，注入闭包保持依赖方向 app → features）
+/// - CLI 包：桌面端由命令层经 `bundle_readiness` 分派到各 status 查询注入授权态
+///   （注册表不直连 CLI 运行时，注入闭包保持依赖方向 app → features）；headless
+///   调用方（pinvou-cli `plugins readiness`）没有命令层，落到下方按 installed
+///   的保守回退
 /// - 凭据型：credentials 必填项在系统凭据存储中齐不齐（现算）
 /// - 本地免凭据：恒 Ready
 pub fn readiness_for(bundle: &BundleInfo, credential_has: impl Fn(&str) -> bool) -> Readiness {
     match bundle.kind {
-        // CLI authorization state is injected by the command layer: its
-        // `bundle_readiness` `BundleKind::Cli` arm fully dispatches to the
-        // `*_status` queries, so Cli bundles never reach this function
-        // (the invariant is pinned explicitly below).
+        // The desktop command layer overrides this arm with its `*_status`
+        // dispatch; headless callers (pinvou-cli has no command layer) get
+        // the conservative installed-based verdict instead of a panic.
         BundleKind::Cli => {
-            unreachable!("CLI bundle readiness is dispatched by the command layer")
+            if bundle.installed {
+                Readiness::Ready
+            } else {
+                Readiness::NotReady("cli_not_installed")
+            }
         }
         BundleKind::Mcp | BundleKind::Bundle => {
             // 本地免凭据（无必填凭据）恒 Ready；有必填凭据则查系统凭据
@@ -903,6 +908,19 @@ mod tests {
         assert_eq!(
             readiness_for(&b(BundleKind::Skill, opt), |_| false),
             Readiness::Ready
+        );
+        // Headless fallback (pinvou-cli has no command layer to inject the
+        // `*_status` verdict): an installed CLI bundle is Ready, an
+        // uninstalled one reports cli_not_installed instead of panicking.
+        assert_eq!(
+            readiness_for(&b(BundleKind::Cli, vec![]), |_| false),
+            Readiness::Ready
+        );
+        let mut uninstalled_cli = b(BundleKind::Cli, vec![]);
+        uninstalled_cli.installed = false;
+        assert_eq!(
+            readiness_for(&uninstalled_cli, |_| false),
+            Readiness::NotReady("cli_not_installed")
         );
     }
 

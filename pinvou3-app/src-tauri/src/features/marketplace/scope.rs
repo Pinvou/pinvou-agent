@@ -607,6 +607,47 @@ pub fn remove_bundle_from_disabled_scopes(raw_id: &str) -> Result<(), String> {
     })
 }
 
+/// Connector enable/disable ↔ unified disabled-set bridge. The
+/// `<connector>_disabled` marker file alone only gates skill directories
+/// inside the desktop app; the execpolicy CLI hard-block and the skill
+/// materialization exclusion read `disabled_bundles.json`, so a switch must
+/// sync the connector id there too. Disabling adds the id to **every**
+/// session mode's disabled set and marks each scope initialized — the switch
+/// is an explicit user decision, so from then on the read path trusts the
+/// persisted list instead of a policy fallback. Enabling removes the id from
+/// every disabled and hidden list again. Sole caller is the pinvou-cli
+/// `connectors enable/disable` command, mirroring the GUI command layer.
+///
+/// Fails closed like the other writers: an unavailable cross-process lock
+/// refuses the write with `Err`.
+pub fn sync_disabled_bundles_for_connector_switch(
+    connector_id: &str,
+    enabled: bool,
+) -> Result<(), String> {
+    if enabled {
+        return remove_bundle_from_disabled_scopes(connector_id);
+    }
+    let package_id = to_package_id(connector_id);
+    with_disabled_bundles_lock(|| {
+        let mut file = load_disabled_bundles_file_locked();
+        let mut changed = false;
+        for mode in SessionMode::ALL {
+            let mut ids = resolve_scope_disabled_ids(&file, *mode);
+            if ids.iter().any(|id| id == &package_id) {
+                continue;
+            }
+            ids.push(package_id.clone());
+            let key = mode.as_str().to_string();
+            file.scopes.insert(key.clone(), ids);
+            file.initialized.insert(key);
+            changed = true;
+        }
+        if changed {
+            save_disabled_bundles_file(&file);
+        }
+    })
+}
+
 /// 项目级 skills 开关（默认关）。
 pub fn project_skills_enabled() -> bool {
     load_disabled_bundles_file().project_skills_enabled
@@ -879,6 +920,62 @@ mod tests {
                 load_disabled_bundles_for(ConnectorScope::Code),
                 vec!["kept-pkg".to_string()]
             );
+        });
+    }
+
+    /// The connector-switch bridge reaches the persisted file in both
+    /// directions: disabling records the connector id in every scope that is
+    /// (or gets) initialized, leaving no persisted entry that could mask the
+    /// switch, and enabling purges the id from every persisted disabled and
+    /// hidden list again. The execpolicy CLI hard-block reads this file, so
+    /// a skipped sync would leave the connector's rule set inconsistent with
+    /// the switch. Assertions check the persisted file because the public
+    /// read view folds in the DenyAll default policy: an uninitialized
+    /// DenyAll scope denies every built-in connector anyway, so the switch
+    /// correctly persists nothing there.
+    #[test]
+    fn connector_switch_syncs_every_scope_both_ways() {
+        with_temp_home(|| {
+            sync_disabled_bundles_for_connector_switch("feishu", false).unwrap();
+            let file = load_disabled_bundles_file();
+            for mode in SessionMode::ALL {
+                let key = mode.as_str();
+                if file.initialized.contains(key) {
+                    let ids = &file.scopes[key];
+                    assert!(
+                        ids.iter().any(|id| id == "feishu"),
+                        "disabling must reach initialized scope {key} (got {ids:?})"
+                    );
+                } else {
+                    assert!(
+                        mode.pack_default_policy() == PackDefaultPolicy::DenyAll,
+                        "scope {key} persists no entry, so its default policy must already deny the connector"
+                    );
+                }
+            }
+            assert_eq!(
+                load_disabled_bundles_for(ConnectorScope::Plain),
+                vec!["feishu".to_string()],
+                "the AllowAll view must show the switched-off connector"
+            );
+            // Idempotent: a second disable must stay a clean no-op.
+            sync_disabled_bundles_for_connector_switch("feishu", false).unwrap();
+
+            sync_disabled_bundles_for_connector_switch("feishu", true).unwrap();
+            let file = load_disabled_bundles_file();
+            for (key, ids) in &file.scopes {
+                assert!(
+                    !ids.iter().any(|id| id == "feishu"),
+                    "enabling must purge the id from scope {key} (got {ids:?})"
+                );
+            }
+            for (key, ids) in &file.hidden_scopes {
+                assert!(
+                    !ids.iter().any(|id| id == "feishu"),
+                    "enabling must purge the id from scope {key}'s hidden list (got {ids:?})"
+                );
+            }
+            assert!(load_disabled_bundles_for(ConnectorScope::Plain).is_empty());
         });
     }
 

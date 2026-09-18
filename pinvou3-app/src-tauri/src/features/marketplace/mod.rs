@@ -359,7 +359,8 @@ pub use types::{
 pub use crate::features::marketplace::scope::{
     load_disabled_bundles, load_disabled_bundles_for, load_hidden_bundles_for, package_id_for,
     remove_bundle_from_disabled_scopes, save_disabled_bundles, save_disabled_bundles_for,
-    save_hidden_bundles_for, sync_deny_all_scopes_after_install, unavailable_bundles_for,
+    save_hidden_bundles_for, sync_deny_all_scopes_after_install,
+    sync_disabled_bundles_for_connector_switch, unavailable_bundles_for,
     update_disabled_bundles_for,
 };
 // 兼容旧名（原「连接器开关」调用方）：语义已收敛为包 id，旧名仅作别名过渡。
