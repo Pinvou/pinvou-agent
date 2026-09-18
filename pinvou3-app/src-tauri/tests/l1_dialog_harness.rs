@@ -1481,7 +1481,7 @@ async fn large_xlsx_attachment_path_mode() {
     if !require_vllm(scenario).await {
         return;
     }
-    let src = PathBuf::from("/home/hexin/下载/2025年SSD存储数据.xlsx");
+    let src = PathBuf::from("/home/dev/Downloads/large-storage-report.xlsx");
     if !src.is_file() {
         eprintln!("SKIP {scenario}: 测试文件不存在 {}", src.display());
         return;

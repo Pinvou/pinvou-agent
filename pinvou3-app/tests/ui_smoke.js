@@ -275,8 +275,8 @@ function injectSource() {
         case 'detect_local_vllm_setup': {
           const engineState = window.__VLLM_STATE__ || 'stopped';
           return Promise.resolve(window.__VLLM_ELIGIBLE__ && engineState !== 'starting'
-            ? {eligible:true,may_offer_setup:true,is_megacube:true,has_packages:true,vllm_online:false,engine_state:engineState,already_bootstrapped:false}
-            : {eligible:false,may_offer_setup:!!window.__VLLM_ELIGIBLE__,is_megacube:engineState==='starting',has_packages:engineState==='starting',vllm_online:false,engine_state:engineState,already_bootstrapped:false});
+            ? {eligible:true,may_offer_setup:true,has_packages:true,vllm_online:false,engine_state:engineState,already_bootstrapped:false}
+            : {eligible:false,may_offer_setup:!!window.__VLLM_ELIGIBLE__,has_packages:engineState==='starting',vllm_online:false,engine_state:engineState,already_bootstrapped:false});
         }
         case 'bootstrap_local_vllm': return new Promise(function(){}); // 永不 resolve,停在 bootstrapping 态供测步骤指示
         default: return Promise.resolve(null);
@@ -2439,7 +2439,7 @@ async function expand(page) {
   await page.evaluate(() => window.TauriBridge.vllm.detectLocalVllmSetup());
   await sleep(300);
   const startingSetup = await page.evaluate(() => document.body.innerText.includes('启用本地大模型'));
-  rec('⑥ MegaCube 引擎 starting 时不弹启用框', !startingSetup, JSON.stringify({ popup: startingSetup }));
+  rec('⑥ 本地大模型引擎 starting 时不弹启用框', !startingSetup, JSON.stringify({ popup: startingSetup }));
 
   // 将时钟推进到 12 分钟截止之后，等待内部自动轮询一次；卡死的 starting 必须恢复重试入口。
   await page.evaluate(() => {
@@ -2456,7 +2456,7 @@ async function expand(page) {
       timedOut: setup.detection_timed_out,
     };
   });
-  rec('⑦ MegaCube 引擎 starting 超时后恢复重试入口', timedOutSetup.popup && timedOutSetup.state === 'failed' && timedOutSetup.timedOut === true, JSON.stringify(timedOutSetup));
+  rec('⑦ 本地大模型引擎 starting 超时后恢复重试入口', timedOutSetup.popup && timedOutSetup.state === 'failed' && timedOutSetup.timedOut === true, JSON.stringify(timedOutSetup));
 
   await page.evaluate(() => {
     Date.now = window.__VLLM_REAL_DATE_NOW__;
@@ -2469,7 +2469,7 @@ async function expand(page) {
     const btns = [...document.querySelectorAll('button')].map(b => (b.textContent || '').trim());
     return { title: document.body.innerText.includes('启用本地大模型'), enable: btns.includes('启用'), skip: btns.includes('暂不'), never: btns.includes('不再提醒') };
   });
-  rec('⑧ MegaCube 引导框 eligible 渲染(标题+启用/暂不/不再提醒)', setup.title && setup.enable && setup.skip && setup.never, JSON.stringify(setup));
+  rec('⑧ 本地大模型引导框 eligible 渲染(标题+启用/暂不/不再提醒)', setup.title && setup.enable && setup.skip && setup.never, JSON.stringify(setup));
 
   // ⑨ 点「不再提醒」→ 二次确认子态(警示文案 + 确认不启用/再想想);点「再想想」回到初始态
   await clickText(page, '不再提醒');

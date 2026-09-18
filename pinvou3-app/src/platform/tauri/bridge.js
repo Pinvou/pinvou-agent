@@ -225,7 +225,6 @@
     platformCapabilities: {
       loaded: false,
       os: "unknown",
-      showMegacubeSite: false,
       showSuperPermissionSettings: false,
       usesBundledDependencyInstaller: false,
       taskCompletionNotificationsDefault: true,
@@ -339,7 +338,7 @@
     depsInstalling: false,    // 一键安装进行中(brew/apt/winget)
     depsInstallError: null,   // 安装失败原因(stderr 透传/取消/包管理器不可用)
     depsInstallProgress: null, // 安装进度 {package,current,total,detail}(后端 deps:install_progress 事件)
-    // MegaCube(GB10) 本地大模型一键引导:首屏检测结果 + 引导执行态
+    // 厂商预装本地大模型一键引导:首屏检测结果 + 引导执行态
     vllmSetup: null,          // {eligible, may_offer_setup, has_packages, engine_state:ready|starting|stopped|failed, ...}
     vllmBootstrapping: false, // 引导进行中(pkexec + 拉起 + 轮询就绪)
     vllmSetupPhase: null,     // 阶段:'authorizing'|'waiting'|'ready'(后端 vllm-setup:phase 事件驱动步骤指示)

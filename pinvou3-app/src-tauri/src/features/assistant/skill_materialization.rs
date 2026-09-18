@@ -6,7 +6,7 @@
 //! `render_skills_block` 空 registry 返回 None）。
 //!
 //! 设计对照贡献者本地设计笔记「skill-scope-governance-实施方案」（已归档，不入库）
-//! （已归档，按 §2.1/§2.2/§2.3/§2.4 实现）：
+//! （按 §2.1/§2.2/§2.3/§2.4 实现）：
 //!   - 开关落 `~/.pinvou3/disabled_skills.json`（`{scopes: {<mode>: [...]},
 //!     "initialized": [...]}`，scope 键即模式名，与 `disabled_connectors.json`
 //!     同构；旧裸数组/旧借道 `skill:` 条目/旧双 scope 对象迁移为 plain/新 map）；

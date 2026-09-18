@@ -199,7 +199,7 @@ export default function PetWindow({
   const [baseAnimation, setBaseAnimation] = useState('idle');
   const [dragAnimation, setDragAnimation] = useState(null);
   const [hovered, setHovered] = useState(false);
-  // 右键菜单改为窗口内 DOM 浮层(不再另起透明 webview:GB10/WebKitGTK 下
+  // 右键菜单改为窗口内 DOM 浮层(不再另起透明 webview:统一内存设备/WebKitGTK 下
   // 新起第二个透明窗口会触发 malloc 堆损坏闪退,且被 GTK 钳到 200x200)。
   const [ctxMenu, setCtxMenu] = useState(null);
   const ctxMenuRef = useRef(null);

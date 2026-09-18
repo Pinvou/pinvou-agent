@@ -237,7 +237,6 @@ function injectSource() {
       switch (cmd) {
         case 'get_platform_capabilities': return Promise.resolve({
           os: 'windows',
-          showMegacubeSite: false,
           showSuperPermissionSettings: false,
           usesBundledDependencyInstaller: true,
           taskCompletionNotificationsDefault: true,

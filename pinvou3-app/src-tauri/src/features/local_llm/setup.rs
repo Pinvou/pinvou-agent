@@ -12,7 +12,6 @@ pub enum LocalVllmEngineState {
 #[derive(Debug, Clone, Serialize)]
 pub struct LocalVllmSetupStatus {
     pub eligible: bool,
-    pub is_megacube: bool,
     pub has_packages: bool,
     pub vllm_online: bool,
     pub engine_state: LocalVllmEngineState,
@@ -32,7 +31,6 @@ pub struct BootstrapResult {
 pub async fn detect_local_vllm_setup() -> Result<LocalVllmSetupStatus, String> {
     Ok(LocalVllmSetupStatus {
         eligible: false,
-        is_megacube: false,
         has_packages: false,
         vllm_online: false,
         engine_state: LocalVllmEngineState::Stopped,
