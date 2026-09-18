@@ -16,11 +16,12 @@ pub mod platform;
 )]
 unsafe extern "C" {}
 
-pub use features::assistant::attachments::{
-    build_message_with_attachments, stage_file_in_workspace,
-};
-
 use tauri::Manager;
+
+/// `attachments` 模块是 `pub(crate)`，集成测试（tests/l1_dialog_harness）无法走
+/// 完整路径，只能经此 crate 根再导出使用；生产代码不经此入口。注意不能加
+/// `cfg(test)` 门控：集成测试构建本 crate 时不带 test cfg。
+pub use features::assistant::attachments::build_message_with_attachments;
 
 #[cfg(feature = "benchmark-hooks")]
 pub use features::assistant::product_runtime::{agentic_task, headless_bridge};
@@ -1237,13 +1238,9 @@ pub fn run() {
             commands::settings::get_image_input_capability,
             commands::codex::list_acp_agents,
             commands::codex::get_acp_agent_status,
-            commands::codex::prepare_codex_acp,
-            commands::codex::install_codex_homebrew,
             commands::codex::install_acp_agent,
-            commands::codex::login_codex_acp,
             commands::codex::login_acp_agent,
             commands::codex::switch_acp_agent_account,
-            commands::codex::open_codex_login_url,
             commands::codex::open_acp_agent_login_url,
             commands::codex::submit_acp_agent_login_code,
             commands::codex::get_codex_acp_session_info,
@@ -1380,7 +1377,6 @@ pub fn run() {
             commands::remote_control::web_access_list_codex_acp_sessions,
             commands::remote_control::web_access_list_acp_agents,
             commands::remote_control::web_access_get_acp_agent_status,
-            commands::remote_control::web_access_save_session_messages_chunk,
             commands::remote_control::web_access_transcribe_voice_audio,
             commands::remote_control::web_access_read_artifact_chunk,
             commands::remote_control::web_access_update_settings,
@@ -1423,7 +1419,6 @@ pub fn run() {
             commands::artifacts::reveal_session_folder,
             commands::artifacts::open_scheduled_task_folder,
             commands::artifacts::open_artifact_window,
-            commands::pet::open_detached_window,
             commands::pet::begin_detach_drag,
             commands::pet::set_pet_enabled,
             commands::pet::get_pet_scale,
@@ -1443,8 +1438,6 @@ pub fn run() {
             commands::files::ingest_draft_file_chunk,
             commands::files::cancel_draft_file_upload,
             commands::files::adopt_draft_attachment,
-            commands::files::ingest_dropped_file_chunk,
-            commands::files::cancel_dropped_file_upload,
             commands::files::discard_dropped_attachment,
             commands::files::resolve_conversation_attachment,
             commands::files::open_conversation_attachment,
@@ -1461,14 +1454,12 @@ pub fn run() {
             commands::interaction::set_multi_agent_mode,
             commands::interaction::accept_plan,
             commands::interaction::discard_plan,
-            commands::interaction::read_skill_body,
             // 多智能体执行记录投影。
             commands::multiagent::list_subagent_transcripts,
             commands::multiagent::read_subagent_transcript,
             commands::interaction::submit_user_input,
             commands::interaction::cancel_user_input,
             commands::interaction::get_pending_user_inputs,
-            commands::interaction::restart_engine,
             commands::interaction::summon_pinvou,
             commands::personas::save_session_pinvou_reviews,
             commands::personas::get_session_pinvou_reviews,
@@ -1502,7 +1493,6 @@ pub fn run() {
             commands::artifacts::detect_obsidian,
             commands::knowledge::kb_start_scan,
             commands::knowledge::kb_scan_status,
-            commands::knowledge::kb_cancel_scan,
             commands::knowledge::kb_search,
             commands::knowledge::kb_stats,
             commands::knowledge::kb_type_counts,
@@ -1524,7 +1514,6 @@ pub fn run() {
             commands::knowledge::kb_model_download,
             commands::knowledge::kb_model_cancel,
             commands::knowledge::session_mount_collection,
-            commands::knowledge::session_set_mounted_collections,
             commands::knowledge::session_add_mounted_collection,
             commands::knowledge::session_set_mounted_collection_enabled,
             commands::knowledge::session_remove_mounted_collection,
@@ -1551,8 +1540,6 @@ pub fn run() {
             commands::remote_knowledge::remote_kb_devices,
             commands::remote_knowledge::remote_kb_update_device,
             commands::remote_knowledge::remote_kb_remove_device,
-            commands::remote_knowledge::remote_kb_trashed_collections,
-            commands::remote_knowledge::remote_kb_trashed_documents,
             commands::remote_knowledge::remote_kb_permanently_delete_collection,
             commands::remote_knowledge::remote_kb_permanently_delete_document,
             commands::shared_knowledge_host::shared_kb_host_status,
@@ -1568,7 +1555,6 @@ pub fn run() {
             commands::remote_knowledge::remote_kb_remove_connection,
             commands::remote_knowledge::remote_kb_collections,
             commands::remote_knowledge::remote_kb_create_collection,
-            commands::remote_knowledge::remote_kb_update_collection,
             commands::remote_knowledge::remote_kb_delete_collection,
             commands::remote_knowledge::remote_kb_restore_collection,
             commands::remote_knowledge::remote_kb_documents,
@@ -1588,8 +1574,6 @@ pub fn run() {
             commands::marketplace::install_marketplace_skill,
             commands::marketplace::update_marketplace_skill,
             commands::marketplace::update_bundle_display_meta,
-            commands::marketplace::import_skill_package,
-            commands::marketplace::import_skill_package_bytes,
             commands::marketplace::import_plugin_package_cmd,
             commands::marketplace::import_plugin_package_bytes_cmd,
             commands::marketplace::import_skill_md_bytes,

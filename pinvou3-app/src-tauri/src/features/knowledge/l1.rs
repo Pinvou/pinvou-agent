@@ -4,7 +4,7 @@
 //! `chunks.vec` 列留 NULL；向量(embedding)是 Phase 3，检索届时升级为 fts+向量混合。
 //! 复用 L0 的同一个 SQLite 连接(同库 index.db，见 [`super::store::Store::conn_arc`])。
 
-use std::collections::{BTreeSet, HashMap};
+use std::collections::HashMap;
 use std::path::Path;
 use std::sync::Arc;
 #[cfg(test)]
@@ -17,7 +17,8 @@ use rusqlite::{Connection, OptionalExtension, params};
 use serde::Serialize;
 use sha2::{Digest, Sha256};
 
-use super::embed::{self, Embedder};
+use pinvou_knowledge::chunk_text;
+use pinvou_knowledge::embedding::{Embedder, blob_to_vec, cosine, vec_to_blob};
 
 /// chunk 切块参数：~512 token ≈ 中文 600 字符；15% 重叠保留上下文。
 const CHUNK_CHARS: usize = 600;
@@ -434,8 +435,7 @@ impl L1Store {
                 "INSERT INTO chunks(document_id,collection_id,ord,text,n_tokens,vec) VALUES(?1,?2,?3,?4,?5,?6)",
             )?;
             for (i, ch) in chunks.iter().enumerate() {
-                let blob: Option<Vec<u8>> =
-                    vecs.and_then(|vs| vs.get(i)).map(|v| embed::vec_to_blob(v));
+                let blob: Option<Vec<u8>> = vecs.and_then(|vs| vs.get(i)).map(|v| vec_to_blob(v));
                 stmt.execute(params![
                     doc_id,
                     collection_id,
@@ -720,7 +720,7 @@ impl L1Store {
                         let vec = vectors
                             .as_ref()
                             .and_then(|all| all.get(batch_pos))
-                            .map(|v| embed::vec_to_blob(v));
+                            .map(|v| vec_to_blob(v));
                         stmt.execute(params![job_id, item_id, *ord as i64, text, text.chars().count() as i64, vec])?;
                     }
                 }
@@ -893,7 +893,7 @@ impl L1Store {
         let mut scored: Vec<(f32, ChunkHit)> = Vec::new();
         for row in rows {
             let (document_id, text, blob, doc_name, doc_path, ord) = row?;
-            let s = embed::cosine(qv, &embed::blob_to_vec(&blob));
+            let s = cosine(qv, &blob_to_vec(&blob));
             scored.push((
                 s,
                 ChunkHit {
@@ -916,46 +916,18 @@ impl L1Store {
         Ok(scored.into_iter().take(lim).map(|(_, h)| h).collect())
     }
 
-    /// 对话注入专用检索（区别于通用 `search`：知识库页主动检索不该门控/聚合，仍用 `search`）。
-    /// 在混合检索基础上加两层处理：
-    /// 1. **相关性门控**：配了 embedding 时，向量 top 余弦低于 [`RELEVANCE_MIN_COSINE`] 且
-    ///    FTS 也无命中 → 判定与知识集无关，返回空（调用方据此不注入）。纯 FTS 降级模式无
-    ///    统一阈值，维持"有命中即返回"。
-    /// 2. **邻域扩展**：命中 chunk 按文档聚合，各取 ord±`neighbor_radius` 的相邻块拼成连续
-    ///    上下文（答案常跨多个相邻 chunk，只给命中块易缺信息）。数据全在库内，纯 SQL，
-    ///    不重读原文件（原文件多是二进制，read_file 也读不出）。
-    pub fn retrieve_for_chat(
-        &self,
-        collection_id: i64,
-        query: &str,
-        k: usize,
-        neighbor_radius: usize,
-    ) -> rusqlite::Result<Vec<ChunkHit>> {
-        let q = query.trim();
-        if q.is_empty() {
-            return Ok(vec![]);
-        }
-        let query_vector = self
-            .embedder()
-            .and_then(|embedder| embedder.embed_one(q).ok());
-        self.retrieve_for_chat_with_vector(
-            collection_id,
-            q,
-            k,
-            neighbor_radius,
-            query_vector.as_deref(),
-        )
-    }
-
-    /// 跨多个知识集检索。查询向量只计算一次；每个知识集独立召回后按库内混合检索分稳定归并，
+    /// 跨多个知识集检索（对话注入专用，区别于通用 `search`：知识库页主动检索不该门控/聚合，
+    /// 仍用 `search`）。查询向量只计算一次；每个知识集独立召回后按库内混合检索分稳定归并，
     /// 同一路径、同一 chunk 且正文相同的结果只保留一份，并记录其全部知识集来源；
     /// 同路径的冲突正文分别保留，避免去重掩盖版本差异。
+    /// 配了 embedding 时的**相关性门控**：向量 top 余弦低于 [`RELEVANCE_MIN_COSINE`] 且
+    /// FTS 也无命中 → 判定与知识集无关，返回空（调用方据此不注入）。纯 FTS 降级模式无
+    /// 统一阈值，维持"有命中即返回"。
     pub fn retrieve_for_chat_multi(
         &self,
         collection_ids: &[i64],
         query: &str,
         k: usize,
-        neighbor_radius: usize,
     ) -> rusqlite::Result<Vec<ScopedChunkHit>> {
         let q = query.trim();
         if q.is_empty() || collection_ids.is_empty() {
@@ -974,13 +946,8 @@ impl L1Store {
 
         let mut candidates = Vec::new();
         for (collection_order, collection_id) in unique_ids.into_iter().enumerate() {
-            let hits = self.retrieve_for_chat_with_vector(
-                collection_id,
-                q,
-                lim,
-                neighbor_radius,
-                query_vector.as_deref(),
-            )?;
+            let hits =
+                self.retrieve_for_chat_with_vector(collection_id, q, lim, query_vector.as_deref())?;
             for (rank, hit) in hits.into_iter().enumerate() {
                 let score = if query_vector.is_some() {
                     hit.score
@@ -1029,7 +996,6 @@ impl L1Store {
         collection_id: i64,
         q: &str,
         k: usize,
-        neighbor_radius: usize,
         query_vector: Option<&[f32]>,
     ) -> rusqlite::Result<Vec<ChunkHit>> {
         let lim = if k == 0 { 5 } else { k };
@@ -1045,104 +1011,7 @@ impl L1Store {
         } else {
             fts.into_iter().take(lim).collect()
         };
-        if ranked.is_empty() || neighbor_radius == 0 {
-            return Ok(ranked);
-        }
-        self.expand_neighbors(collection_id, ranked, neighbor_radius)
-    }
-
-    /// 命中按文档聚合，各文档取其命中 ord 的 ±radius 邻域并集，从库里拉这些 chunk 按 ord
-    /// 升序拼成连续上下文。文档间保持相关性排序（按各文档最高命中分），不连续的 ord 区间
-    /// 之间插 `…` 断档标记。切块本身有 ~15% 重叠，拼接处少量重复无伤注入，不额外去重。
-    fn expand_neighbors(
-        &self,
-        collection_id: i64,
-        hits: Vec<ChunkHit>,
-        radius: usize,
-    ) -> rusqlite::Result<Vec<ChunkHit>> {
-        // path -> (最高分, doc_name, 命中 ord 列表)；order 记录首次出现顺序以保相关性序。
-        let mut order: Vec<String> = Vec::new();
-        let mut by_doc: HashMap<String, (i64, f64, String, Vec<i64>)> = HashMap::new();
-        for h in hits {
-            let e = by_doc.entry(h.doc_path.clone()).or_insert_with(|| {
-                order.push(h.doc_path.clone());
-                (
-                    h.document_id,
-                    f64::NEG_INFINITY,
-                    h.doc_name.clone(),
-                    Vec::new(),
-                )
-            });
-            if h.score > e.1 {
-                e.1 = h.score;
-            }
-            e.3.push(h.ord);
-        }
-        let c = self.conn.lock();
-        let mut stmt = c.prepare(
-            "SELECT k.ord, k.text FROM chunks k JOIN documents d ON d.id=k.document_id \
-             WHERE k.collection_id=?1 AND d.path=?2 AND k.ord BETWEEN ?3 AND ?4 ORDER BY k.ord",
-        )?;
-        let mut out: Vec<ChunkHit> = Vec::new();
-        for path in order {
-            // `order` and `by_doc` are built in the same loop above, so every
-            // path must have an aggregation entry. If that invariant ever
-            // breaks, skip the path loudly instead of silently losing recall.
-            let Some((document_id, best, doc_name, ords)) = by_doc.remove(&path) else {
-                continue;
-            };
-            // 命中 ord 各自 ±radius 的并集（去重、有序）。
-            let mut want: BTreeSet<i64> = BTreeSet::new();
-            for o in ords {
-                let lo = (o - radius as i64).max(0);
-                for x in lo..=(o + radius as i64) {
-                    want.insert(x);
-                }
-            }
-            // Each aggregation entry is created by at least one hit ord, so
-            // `want` cannot be empty. Guard the invariant the same way.
-            let (Some(&lo), Some(&hi)) = (want.first(), want.last()) else {
-                continue;
-            };
-            let rows = stmt.query_map(params![collection_id, path, lo, hi], |r| {
-                Ok((r.get::<_, i64>(0)?, r.get::<_, String>(1)?))
-            })?;
-            let mut text = String::new();
-            let mut start_ord = lo;
-            let mut prev: Option<i64> = None;
-            for row in rows {
-                let (ord, t) = row?;
-                if !want.contains(&ord) {
-                    continue; // 落在 [lo,hi] 但不在并集内（多命中区间之间的空档）
-                }
-                match prev {
-                    None => start_ord = ord,
-                    Some(p) if ord > p + 1 => text.push_str("\n…\n"), // 区间断档
-                    Some(_) => text.push('\n'),
-                }
-                text.push_str(t.trim());
-                prev = Some(ord);
-            }
-            if !text.trim().is_empty() {
-                out.push(ChunkHit {
-                    document_id,
-                    text,
-                    score: best,
-                    doc_name,
-                    doc_path: path,
-                    ord: start_ord,
-                });
-            }
-        }
-        out.sort_by(|a, b| {
-            b.score
-                .partial_cmp(&a.score)
-                .unwrap_or(std::cmp::Ordering::Equal)
-                .then_with(|| a.doc_path.cmp(&b.doc_path))
-                .then_with(|| a.ord.cmp(&b.ord))
-                .then_with(|| a.document_id.cmp(&b.document_id))
-        });
-        Ok(out)
+        Ok(ranked)
     }
 }
 
@@ -1235,12 +1104,6 @@ fn rrf_merge(fts: Vec<ChunkHit>, vec: Vec<ChunkHit>, k: usize) -> Vec<ChunkHit> 
             .then_with(|| a.document_id.cmp(&b.document_id))
     });
     merged.into_iter().take(k).collect()
-}
-
-/// 把正文切成 ~max_chars 的块，相邻块重叠 overlap 字符。按字符窗口滑动（中文友好）。
-/// 短于一块的整体返回一块；空白块丢弃。
-pub fn chunk_text(text: &str, max_chars: usize, overlap: usize) -> Vec<String> {
-    pinvou_knowledge::chunk_text(text, max_chars, overlap)
 }
 
 #[cfg(test)]
@@ -1413,7 +1276,7 @@ mod tests {
         .unwrap();
 
         let hits = l1
-            .retrieve_for_chat_multi(&[second, first, conflicting, second], "shared", 5, 0)
+            .retrieve_for_chat_multi(&[second, first, conflicting, second], "shared", 5)
             .unwrap();
         assert_eq!(hits.len(), 2, "相同正文去重，但同路径冲突正文必须保留");
         assert_eq!(hits[0].collection_ids, vec![second, first]);
@@ -1517,7 +1380,7 @@ mod tests {
             .unwrap();
         assert!(
             !clone
-                .retrieve_for_chat(cid, "语义检索", 5, 0)
+                .retrieve_for_chat_multi(&[cid], "语义检索", 5)
                 .unwrap()
                 .is_empty()
         );
@@ -1540,11 +1403,11 @@ mod tests {
         assert_eq!(docs[0].parse_status, "parsed");
         assert!(docs[0].n_chunks >= 1);
 
-        // FTS（≥3 字符）—— 走对话检索通路(retrieve_for_chat,半径0)
-        let hits = l1.retrieve_for_chat(cid, "交强险", 10, 0).unwrap();
+        // FTS（≥3 字符）—— 走对话检索通路(retrieve_for_chat_multi)
+        let hits = l1.retrieve_for_chat_multi(&[cid], "交强险", 10).unwrap();
         assert!(!hits.is_empty(), "应检索到含'交强险'的块");
-        assert!(hits[0].text.contains("交强险"));
-        assert_eq!(hits[0].doc_name, "访谈纪要.md");
+        assert!(hits[0].hit.text.contains("交强险"));
+        assert_eq!(hits[0].hit.doc_name, "访谈纪要.md");
 
         // 知识集计数更新
         let coll = &l1.list_collections().unwrap()[0];
@@ -1705,7 +1568,7 @@ mod tests {
             ImportIngestOutcome::Completed
         ));
         assert!(
-            !l1.retrieve_for_chat(collection_id, "旧内容", 5, 0)
+            !l1.retrieve_for_chat_multi(&[collection_id], "旧内容", 5)
                 .unwrap()
                 .is_empty()
         );
@@ -1723,7 +1586,7 @@ mod tests {
             ImportIngestOutcome::Skipped
         ));
         assert!(
-            l1.retrieve_for_chat(collection_id, "旧内容", 5, 0)
+            l1.retrieve_for_chat_multi(&[collection_id], "旧内容", 5)
                 .unwrap()
                 .is_empty()
         );
@@ -1778,12 +1641,12 @@ mod tests {
         assert_eq!(after.parse_status, before.parse_status);
         assert_eq!(after.n_chunks, before.n_chunks);
         assert!(
-            !l1.retrieve_for_chat(collection_id, "旧正式内容", 5, 0)
+            !l1.retrieve_for_chat_multi(&[collection_id], "旧正式内容", 5)
                 .unwrap()
                 .is_empty()
         );
         assert!(
-            l1.retrieve_for_chat(collection_id, "全新内容", 5, 0)
+            l1.retrieve_for_chat_multi(&[collection_id], "全新内容", 5)
                 .unwrap()
                 .is_empty()
         );
@@ -1791,7 +1654,7 @@ mod tests {
     }
 
     #[test]
-    fn retrieve_for_chat_neighbor_and_gate() {
+    fn retrieve_for_chat_gate() {
         let l1 = mem(); // 无 embedder → 纯 FTS,门控走"无命中即空"分支
         let cid = l1.create_collection("调研", None, None).unwrap();
         let doc = l1
@@ -1806,29 +1669,22 @@ mod tests {
         ];
         l1.replace_doc_chunks(doc, cid, &chunks, None).unwrap();
 
-        // 命中 ord=2,radius=1 → 聚合成一个文档块,拼接 ord 1/2/3。
-        let hits = l1.retrieve_for_chat(cid, "独有锚点词", 5, 1).unwrap();
-        assert_eq!(hits.len(), 1, "同文档命中聚合成 1 块");
-        let t = &hits[0].text;
-        assert!(t.contains("第一段乙乙乙"), "带前邻 ord=1");
-        assert!(t.contains("第二段丙丙丙"), "含命中 ord=2");
-        assert!(t.contains("第三段丁丁丁"), "带后邻 ord=3");
-        assert!(!t.contains("第零段"), "ord=0 在邻域外");
-        assert!(!t.contains("第四段"), "ord=4 在邻域外");
-        assert_eq!(hits[0].ord, 1, "起始 ord");
-
-        // radius=0 → 不扩展,只给命中块。
-        let only = l1.retrieve_for_chat(cid, "独有锚点词", 5, 0).unwrap();
+        // 命中 → 只返回命中块(邻域扩展已下线,不再聚合相邻块)。
+        let only = l1.retrieve_for_chat_multi(&[cid], "独有锚点词", 5).unwrap();
         assert_eq!(only.len(), 1);
-        assert!(only[0].text.contains("第二段丙丙丙"));
-        assert!(!only[0].text.contains("第一段"), "radius=0 不带邻居");
+        assert!(only[0].hit.text.contains("第二段丙丙丙"));
+        assert!(!only[0].hit.text.contains("第一段"), "只给命中块,不带邻居");
 
         // 门控:无关键词命中 → 空(不注入)。空 query → 空。
         assert!(
-            l1.retrieve_for_chat(cid, "彻底无关的查询词组", 5, 1)
+            l1.retrieve_for_chat_multi(&[cid], "彻底无关的查询词组", 5)
                 .unwrap()
                 .is_empty()
         );
-        assert!(l1.retrieve_for_chat(cid, "   ", 5, 1).unwrap().is_empty());
+        assert!(
+            l1.retrieve_for_chat_multi(&[cid], "   ", 5)
+                .unwrap()
+                .is_empty()
+        );
     }
 }

@@ -227,7 +227,6 @@ function injectSource() {
         case 'session_mounted_collections_snapshot': return Promise.resolve({revision:MOUNTED_COLLECTIONS_REVISION,collections:MOUNTED_COLLECTIONS});
         case 'session_mounted_collections': return Promise.resolve(MOUNTED_COLLECTIONS);
         case 'session_mounted_collection': return Promise.resolve(MOUNTED_COLLECTIONS.find(function(entry){ return entry.enabled; })?.collectionId || null);
-        case 'session_set_mounted_collections': MOUNTED_COLLECTIONS=(args.collections||[]).map(function(entry){ return {collectionId:entry.collectionId,enabled:entry.enabled!==false}; }); MOUNTED_COLLECTIONS_REVISION+=1; return Promise.resolve(MOUNTED_COLLECTIONS);
         case 'session_add_mounted_collection': {
           const entry=MOUNTED_COLLECTIONS.find(function(item){return item.collectionId===args.collectionId;});
           if(entry) entry.enabled=true; else MOUNTED_COLLECTIONS.push({collectionId:args.collectionId,enabled:true});

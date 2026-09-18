@@ -55,7 +55,6 @@ pub struct ServiceBoot {
 }
 
 pub struct KnowledgeService {
-    data_dir: PathBuf,
     documents_dir: PathBuf,
     model_dir: PathBuf,
     server_id: String,
@@ -178,7 +177,6 @@ impl KnowledgeService {
             store.delete_meta(key).map_err(|error| error.to_string())?;
         }
         let service = Arc::new(Self {
-            data_dir,
             documents_dir,
             model_dir,
             server_id,
@@ -227,10 +225,6 @@ impl KnowledgeService {
             service,
             _data_dir_lock: data_dir_lock,
         })
-    }
-
-    pub fn data_dir(&self) -> &Path {
-        &self.data_dir
     }
 
     pub fn tls_identity(&self) -> &TlsIdentity {
@@ -713,10 +707,6 @@ impl KnowledgeService {
 
     pub fn list_devices(&self) -> Result<Vec<DeviceGrant>, String> {
         self.store.list_devices().map_err(|error| error.to_string())
-    }
-
-    pub fn device_count(&self) -> Result<i64, String> {
-        self.store.device_count().map_err(|error| error.to_string())
     }
 
     pub fn list_devices_page(
@@ -1327,11 +1317,6 @@ impl KnowledgeService {
                 Err(error)
             }
         }
-    }
-
-    pub async fn load_model_and_index_pending(self: &Arc<Self>) -> Result<(), String> {
-        self.load_model()?;
-        self.index_pending_documents().await
     }
 
     pub async fn index_pending_documents(self: &Arc<Self>) -> Result<(), String> {

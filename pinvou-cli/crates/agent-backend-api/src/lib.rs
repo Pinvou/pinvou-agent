@@ -747,13 +747,6 @@ pub trait AgentRunObserver: Send + Sync {
     fn on_event(&self, event: &SafeAgentEvent);
 }
 
-#[derive(Debug, Default)]
-pub struct NoopAgentRunObserver;
-
-impl AgentRunObserver for NoopAgentRunObserver {
-    fn on_event(&self, _event: &SafeAgentEvent) {}
-}
-
 #[derive(Debug, Error, PartialEq, Eq)]
 #[error("agent observer panicked")]
 pub struct ObserverPanic;

@@ -17,8 +17,8 @@ use benchmark_core::{
     BenchmarkAdapter, BenchmarkDescriptor, BenchmarkError, BenchmarkId, BenchmarkPlan,
     BenchmarkTask, CompletedRun, ExecutionKind, ExecutionRequest, OfficialScoreReport,
     OutputContract, PredictionRetention, PreparedTask, PrivatePredictionContentType,
-    ReferenceHandle, Result as BenchmarkResult, RunContext, Split, SubmissionArtifact,
-    TaskSelection, ToolPolicyId, VerifiedDataset,
+    Result as BenchmarkResult, RunContext, Split, SubmissionArtifact, TaskSelection, ToolPolicyId,
+    VerifiedDataset,
 };
 
 pub use dataset::{GAIA_REVISION_MARKER, GaiaAttachment, GaiaDataset, GaiaDatasetError, GaiaRow};
@@ -111,7 +111,6 @@ impl GaiaAdapter {
                         ToolPolicyId::new(GAIA_TOOL_POLICY),
                         OutputContract::new(GAIA_OUTPUT_CONTRACT),
                     ),
-                    Some(ReferenceHandle::new(format!("gaia:{task_id}:reference"))),
                 )
             })
             .collect();

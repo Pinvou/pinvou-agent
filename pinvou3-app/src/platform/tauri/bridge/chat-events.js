@@ -33,7 +33,6 @@
     const resetPendingAssistant = context.resetPendingAssistant;
     const flushQueued = context.flushQueued;
     const isBusyFor = context.isBusyFor;
-    const doSendFor = context.doSendFor;
     const ensureSessionBufferLoaded = context.ensureSessionBufferLoaded;
     const getBuffer = context.getBuffer;
     const markRemoteTurn = context.markRemoteTurn;
@@ -1364,42 +1363,6 @@
     });
   });
 
-  listen("remote_control:mobile_user_message", async function (e) {
-    const p = e.payload || {};
-    const sid = p.session_id;
-    const content = (p.content || "").trim();
-    const attachments = p.attachments || [];
-    // 允许纯附件消息(content 为空但 attachments 非空),对齐 Group E user_message 改造。
-    if (!sid || (!content && !attachments.length)) return;
-    try { await ensureSessionBufferLoaded(sid); }
-    catch (err) {
-      console.warn("remote session hydrate failed", err);
-      return;
-    }
-    const attachmentNames = attachments.map(function (attachment) {
-      return attachment && attachment.basename;
-    }).filter(Boolean);
-    const displayText = attachmentNames.length
-      ? content + (content ? "\n\n" : "") + "📎 " + JSON.stringify(attachmentNames)
-      : content;
-    const remoteBuffer = getBuffer(sid);
-    if (isBusyFor(sid) || (remoteBuffer && remoteBuffer.queued && remoteBuffer.queued.length > 0)) {
-      runSyncOnSession(sid, function () {
-        state.queued.push({
-          id: ++context.itemIdSeq,
-          text: content,
-          displayText,
-          attachments,
-          meta: { remoteClientMessageId: p.client_message_id || null },
-        });
-      });
-      notify();
-      if (!isBusyFor(sid)) flushQueued(sid);
-      return;
-    }
-    doSendFor(sid, content, displayText, attachments, { remoteClientMessageId: p.client_message_id || null });
-  });
-
   // 远程 mobile 改工具开关 → Rust emit remote_control:tools_changed → 这里桥接到
   // 桌面前端监听的 DOM CustomEvent 'pinvou:tools-changed'(tool-events.js / 类似入口),
   // 让 chip 上的工具开关计数立即同步。
@@ -1499,15 +1462,6 @@
     const p = e && e.payload;
     if (!p) return;
     state.voiceAsrSetup = Object.assign({}, state.voiceAsrSetup, { progress: p });
-    notify();
-  });
-
-  // vllm-setup:phase —— 厂商预装本地大模型引导阶段(authorizing→waiting{attempt}→ready),驱动引导框步骤指示。
-  listen("vllm-setup:phase", function (e) {
-    const p = e.payload || {};
-    if (!p.phase) return;
-    state.vllmSetupPhase = p.phase;
-    if (typeof p.attempt === "number") state.vllmSetupAttempt = p.attempt;
     notify();
   });
 

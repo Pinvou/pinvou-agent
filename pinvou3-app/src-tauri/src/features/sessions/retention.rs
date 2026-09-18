@@ -145,11 +145,7 @@ impl SessionStore {
         session: &SavedSession,
         event: &'static str,
     ) -> Result<PathBuf> {
-        let path = self.save_session_atomic(session)?;
-        if let Err(error) = self.enforce_session_retention_locked() {
-            eprintln!("[sessions] retention reconciliation failed after {event}: {error:#}");
-        }
-        Ok(path)
+        self.persist_then_reconcile_with(session, || event.to_string(), event)
     }
 
     pub(crate) fn persist_then_reconcile_with(

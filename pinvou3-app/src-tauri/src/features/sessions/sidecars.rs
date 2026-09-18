@@ -24,6 +24,89 @@ const PINNED_SESSIONS_FILE: &str = "_pinned_sessions.json";
 const HIDDEN_SESSIONS_FILE: &str = "_hidden_sessions.json";
 const AUX_SESSIONS_FILE: &str = "_aux_sessions.json";
 
+/// Shared save core for the pinned / hidden sidecars: both files carry the
+/// same shape (an array of `{ id, <ts_key> }` objects sorted by id) and the
+/// same "empty map deletes the file" semantics. Failures are silently ignored
+/// (best-effort persistence, matching the historical per-file implementations).
+fn save_timestamped_id_map(map: &HashMap<String, String>, file_name: &str, ts_key: &str) {
+    let file = crate::platform::paths::sessions_root().join(file_name);
+    if map.is_empty() {
+        let _ = std::fs::remove_file(&file);
+        return;
+    }
+    let mut out: Vec<_> = map
+        .iter()
+        .map(|(id, timestamp)| {
+            serde_json::json!({
+                "id": id,
+                (ts_key): timestamp,
+            })
+        })
+        .collect();
+    out.sort_by(|a, b| {
+        a.get("id")
+            .and_then(|v| v.as_str())
+            .cmp(&b.get("id").and_then(|v| v.as_str()))
+    });
+    if let Ok(json) = serde_json::to_string_pretty(&out) {
+        let _ = std::fs::write(file, json);
+    }
+}
+
+/// Shared load core for the pinned / hidden sidecars. `None` = nothing to load
+/// (missing / unreadable file or invalid shape, the latter logged with
+/// `label` so the historical per-file diagnostics stay unchanged). Bare string
+/// entries are re-stamped with the current time, matching the legacy format
+/// that stored a plain id list.
+fn load_timestamped_id_map(
+    file_name: &str,
+    ts_key: &str,
+    label: &str,
+) -> Option<HashMap<String, String>> {
+    let file = crate::platform::paths::sessions_root().join(file_name);
+    if !file.exists() {
+        return None;
+    }
+    let content = match std::fs::read_to_string(&file) {
+        Ok(c) => c,
+        Err(_) => return None,
+    };
+    match serde_json::from_str::<serde_json::Value>(&content) {
+        Ok(serde_json::Value::Array(items)) => {
+            let mut parsed = HashMap::new();
+            for item in items {
+                match item {
+                    serde_json::Value::String(id) => {
+                        parsed.insert(id, Utc::now().to_rfc3339());
+                    }
+                    serde_json::Value::Object(mut obj) => {
+                        let id = obj
+                            .remove("id")
+                            .and_then(|v| v.as_str().map(str::to_string));
+                        let timestamp = obj
+                            .remove(ts_key)
+                            .and_then(|v| v.as_str().map(str::to_string))
+                            .unwrap_or_else(|| Utc::now().to_rfc3339());
+                        if let Some(id) = id {
+                            parsed.insert(id, timestamp);
+                        }
+                    }
+                    _ => {}
+                }
+            }
+            Some(parsed)
+        }
+        Ok(_) => {
+            eprintln!("[sessions] {label} failed: invalid shape");
+            None
+        }
+        Err(e) => {
+            eprintln!("[sessions] {label} failed: {e}");
+            None
+        }
+    }
+}
+
 impl SessionStore {
     pub fn session_model_id(&self, id: &str) -> Option<String> {
         self.session_model_override(id).or_else(|| {
@@ -62,7 +145,7 @@ impl SessionStore {
     }
 
     pub(crate) fn persist_session_models(models: &HashMap<String, String>) -> Result<()> {
-        let file = crate::platform::paths::sessions_root().join("_session_models.json");
+        let file = crate::platform::paths::sessions_root().join(SESSION_MODELS_FILE);
         if models.is_empty() {
             return match std::fs::remove_file(&file) {
                 Ok(()) => Ok(()),
@@ -83,7 +166,7 @@ impl SessionStore {
     }
 
     pub fn load_session_models(&self) {
-        let file = crate::platform::paths::sessions_root().join("_session_models.json");
+        let file = crate::platform::paths::sessions_root().join(SESSION_MODELS_FILE);
         if !file.exists() {
             return;
         }
@@ -120,67 +203,15 @@ impl SessionStore {
     }
 
     pub fn save_pinned_sessions(&self) {
-        let file = crate::platform::paths::sessions_root().join("_pinned_sessions.json");
         let pins = self.pinned_sessions.read();
-        if pins.is_empty() {
-            let _ = std::fs::remove_file(&file);
-            return;
-        }
-        let mut out: Vec<_> = pins
-            .iter()
-            .map(|(id, pinned_at)| {
-                serde_json::json!({
-                    "id": id,
-                    "pinned_at": pinned_at,
-                })
-            })
-            .collect();
-        out.sort_by(|a, b| {
-            a.get("id")
-                .and_then(|v| v.as_str())
-                .cmp(&b.get("id").and_then(|v| v.as_str()))
-        });
-        if let Ok(json) = serde_json::to_string_pretty(&out) {
-            let _ = std::fs::write(file, json);
-        }
+        save_timestamped_id_map(&pins, PINNED_SESSIONS_FILE, "pinned_at");
     }
 
     pub fn load_pinned_sessions(&self) {
-        let file = crate::platform::paths::sessions_root().join("_pinned_sessions.json");
-        if !file.exists() {
-            return;
-        }
-        let content = match std::fs::read_to_string(&file) {
-            Ok(c) => c,
-            Err(_) => return,
-        };
-        match serde_json::from_str::<serde_json::Value>(&content) {
-            Ok(serde_json::Value::Array(items)) => {
-                let mut pins = HashMap::new();
-                for item in items {
-                    match item {
-                        serde_json::Value::String(id) => {
-                            pins.insert(id, Utc::now().to_rfc3339());
-                        }
-                        serde_json::Value::Object(mut obj) => {
-                            let id = obj
-                                .remove("id")
-                                .and_then(|v| v.as_str().map(str::to_string));
-                            let pinned_at = obj
-                                .remove("pinned_at")
-                                .and_then(|v| v.as_str().map(str::to_string))
-                                .unwrap_or_else(|| Utc::now().to_rfc3339());
-                            if let Some(id) = id {
-                                pins.insert(id, pinned_at);
-                            }
-                        }
-                        _ => {}
-                    }
-                }
-                *self.pinned_sessions.write() = pins;
-            }
-            Ok(_) => eprintln!("[sessions] load_pinned_sessions failed: invalid shape"),
-            Err(e) => eprintln!("[sessions] load_pinned_sessions failed: {e}"),
+        if let Some(pins) =
+            load_timestamped_id_map(PINNED_SESSIONS_FILE, "pinned_at", "load_pinned_sessions")
+        {
+            *self.pinned_sessions.write() = pins;
         }
     }
 
@@ -208,67 +239,15 @@ impl SessionStore {
     }
 
     pub fn save_hidden_sessions(&self) {
-        let file = crate::platform::paths::sessions_root().join("_hidden_sessions.json");
         let hidden_sessions = self.hidden_sessions.read();
-        if hidden_sessions.is_empty() {
-            let _ = std::fs::remove_file(&file);
-            return;
-        }
-        let mut out: Vec<_> = hidden_sessions
-            .iter()
-            .map(|(id, hidden_at)| {
-                serde_json::json!({
-                    "id": id,
-                    "hidden_at": hidden_at,
-                })
-            })
-            .collect();
-        out.sort_by(|a, b| {
-            a.get("id")
-                .and_then(|v| v.as_str())
-                .cmp(&b.get("id").and_then(|v| v.as_str()))
-        });
-        if let Ok(json) = serde_json::to_string_pretty(&out) {
-            let _ = std::fs::write(file, json);
-        }
+        save_timestamped_id_map(&hidden_sessions, HIDDEN_SESSIONS_FILE, "hidden_at");
     }
 
     pub fn load_hidden_sessions(&self) {
-        let file = crate::platform::paths::sessions_root().join("_hidden_sessions.json");
-        if !file.exists() {
-            return;
-        }
-        let content = match std::fs::read_to_string(&file) {
-            Ok(c) => c,
-            Err(_) => return,
-        };
-        match serde_json::from_str::<serde_json::Value>(&content) {
-            Ok(serde_json::Value::Array(items)) => {
-                let mut hidden_sessions = HashMap::new();
-                for item in items {
-                    match item {
-                        serde_json::Value::String(id) => {
-                            hidden_sessions.insert(id, Utc::now().to_rfc3339());
-                        }
-                        serde_json::Value::Object(mut obj) => {
-                            let id = obj
-                                .remove("id")
-                                .and_then(|v| v.as_str().map(str::to_string));
-                            let hidden_at = obj
-                                .remove("hidden_at")
-                                .and_then(|v| v.as_str().map(str::to_string))
-                                .unwrap_or_else(|| Utc::now().to_rfc3339());
-                            if let Some(id) = id {
-                                hidden_sessions.insert(id, hidden_at);
-                            }
-                        }
-                        _ => {}
-                    }
-                }
-                *self.hidden_sessions.write() = hidden_sessions;
-            }
-            Ok(_) => eprintln!("[sessions] load_hidden_sessions failed: invalid shape"),
-            Err(e) => eprintln!("[sessions] load_hidden_sessions failed: {e}"),
+        if let Some(hidden_sessions) =
+            load_timestamped_id_map(HIDDEN_SESSIONS_FILE, "hidden_at", "load_hidden_sessions")
+        {
+            *self.hidden_sessions.write() = hidden_sessions;
         }
     }
 

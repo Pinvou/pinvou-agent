@@ -268,19 +268,19 @@ fn command_version_probe(executable: &Path) -> CliVersionProbe {
     }
 }
 
-pub(super) fn command_version_output(executable: &Path) -> Option<String> {
-    match command_version_probe(executable) {
+fn version_from_probe(probe: CliVersionProbe) -> Option<String> {
+    match probe {
         CliVersionProbe::Found(version) => Some(version),
         CliVersionProbe::TimedOut | CliVersionProbe::Failed => None,
     }
 }
 
+pub(super) fn command_version_output(executable: &Path) -> Option<String> {
+    version_from_probe(command_version_probe(executable))
+}
+
 pub(super) fn probe_cli_version(executable: &Path) -> CliVersionProbe {
     command_version_probe(executable)
-}
-pub(super) fn command_version(command: &Path) -> Option<String> {
-    let version = command_version_output(command)?;
-    (!version.is_empty()).then_some(version)
 }
 pub(super) fn probe_cli(backend: AgentBackend, path: Option<PathBuf>) -> Option<ResolvedCli> {
     let path = path?;
@@ -292,10 +292,7 @@ pub(super) fn probe_cli(backend: AgentBackend, path: Option<PathBuf>) -> Option<
     } else {
         probe
     };
-    let version = match probe {
-        CliVersionProbe::Found(version) => Some(version),
-        CliVersionProbe::TimedOut | CliVersionProbe::Failed => None,
-    };
+    let version = version_from_probe(probe);
     let version_supported = version.as_deref().is_some_and(|version| match backend {
         AgentBackend::ClaudeAcp => claude_version_supported(version),
         AgentBackend::KimiAcp => kimi_version_supported(version),
@@ -825,14 +822,6 @@ pub(super) async fn run_npm_global_upgrade(
     }
     Ok(())
 }
-pub(super) async fn read_pipe_to_string<R>(mut reader: R) -> String
-where
-    R: AsyncRead + Unpin,
-{
-    let mut output = String::new();
-    let _ = reader.read_to_string(&mut output).await;
-    output
-}
 pub(super) fn output_tail(output: &str, max_lines: usize) -> String {
     let lines: Vec<&str> = output.lines().collect();
     lines[lines.len().saturating_sub(max_lines)..].join(" / ")
@@ -919,7 +908,6 @@ mod tests {
             update_required: true,
             bridge_ready: false,
             adapter_path: None,
-            node_available: false,
             node_version: None,
             node_supported: false,
             npm_available: false,
@@ -927,12 +915,9 @@ mod tests {
             codex_path: None,
             codex_version: None,
             runtime_source: None,
-            min_codex_version: MIN_CODEX_VERSION,
             min_version: MIN_CODEX_VERSION,
             install_action: "official_script",
             install_source: Some("npm".to_string()),
-            brew_available: false,
-            system_codex_incompatible: true,
             authenticated: false,
             login_in_progress: false,
             login_url: None,
@@ -947,14 +932,11 @@ mod tests {
         let value = serde_json::to_value(&status).expect("serialize CodexAcpStatus");
         assert_eq!(value["version"], json!("0.146.0"));
         assert_eq!(value["latest_version"], json!("0.147.0"));
-        assert_eq!(value["min_codex_version"], json!(MIN_CODEX_VERSION));
         assert_eq!(value["min_version"], json!(MIN_CODEX_VERSION));
         assert_eq!(value["install_action"], json!("official_script"));
         assert_eq!(value["install_source"], json!("npm"));
         assert_eq!(value["update_available"], json!(true));
         assert_eq!(value["update_required"], json!(true));
-        assert_eq!(value["brew_available"], json!(false));
-        assert_eq!(value["system_codex_incompatible"], json!(true));
 
         let mut cli_ready_without_bridge = status.clone();
         cli_ready_without_bridge.codex_available = true;

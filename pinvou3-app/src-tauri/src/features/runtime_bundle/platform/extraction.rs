@@ -535,104 +535,136 @@ impl Pinvou3Bundle {
         paths::bundles_root().join(id).join("skills")
     }
 
-    pub fn apply_feishu_skills(&self, show: bool) -> std::io::Result<()> {
-        let target = Self::connector_package_skills_dir("feishu");
+    /// CLI 连接器域技能门控的公共实现:`show` → 解包内嵌技能目录到
+    /// `bundles/<id>/skills/`;否则**删掉**技能目录 + NOTICE。幂等(删不存在
+    /// 的目录不报错)。可见性 = 目录在不在,引擎重刷系统提示时重扫即生效。
+    /// {feishu,wecom,dingtalk,tmeet} 四个 `apply_*_skills` 原本逐字重复
+    /// (仅内嵌目录 / 目录表 / NOTICE 文件名不同),收编为表驱动助手。
+    fn apply_connector_skills(
+        connector_id: &str,
+        embedded_dir: &Dir<'_>,
+        skill_dirs: &[&str],
+        notice_file: &str,
+        show: bool,
+    ) -> std::io::Result<()> {
+        let target = Self::connector_package_skills_dir(connector_id);
         if show {
-            Self::extract_dir(&LARK_SKILLS_DIR, &target)?;
+            Self::extract_dir(embedded_dir, &target)?;
         } else {
-            for d in LARK_SKILL_DIRS {
+            for d in skill_dirs {
                 let _ = std::fs::remove_dir_all(target.join(d));
             }
-            let _ = std::fs::remove_file(target.join("NOTICE.md"));
+            let _ = std::fs::remove_file(target.join(notice_file));
         }
         Ok(())
     }
-    /// 启动缓存只在 9 个飞书域技能全部完整落盘时判 visible，避免上次异常中断留下
-    /// 半套目录却被 SkillRegistry 当成已连接。实时真相在首屏后的 CLI 探测中刷新。
-    pub(super) fn cached_feishu_skills_visible(&self) -> bool {
-        let target = Self::connector_package_skills_dir("feishu");
-        crate::platform::connector_state::feishu_skills_visible()
-            && LARK_SKILL_DIRS
+
+    /// 启动缓存的公共判定:启动缓存状态 + 连接器技能目录**全部完整落盘**才判
+    /// visible,避免上次异常中断留下半套目录却被 SkillRegistry 当成已连接。
+    /// 实时真相在首屏后的 CLI 探测中刷新。
+    fn cached_connector_skills_visible(
+        &self,
+        connector_id: &str,
+        skill_dirs: &[&str],
+        state_fn: impl Fn() -> bool,
+    ) -> bool {
+        let target = Self::connector_package_skills_dir(connector_id);
+        state_fn()
+            && skill_dirs
                 .iter()
                 .all(|dir| target.join(dir).join("SKILL.md").is_file())
     }
 
+    /// 飞书域技能门控:`show` → 解包 9 个 lark 技能到包目录;否则**删掉**它们(+ NOTICE.md)。
+    /// `LARK_SKILLS_DIR` 的根对应包内 `skills/`,内含 `lark-<域>/SKILL.md` + `references/`,
+    /// 直接铺到目标——引擎 `SkillRegistry` 扫该目录的每个含 `SKILL.md` 的子目录。
+    /// (顶层散落的 NOTICE.md 不含 SKILL.md,会被注册表忽略。)
+    pub fn apply_feishu_skills(&self, show: bool) -> std::io::Result<()> {
+        Self::apply_connector_skills(
+            "feishu",
+            &LARK_SKILLS_DIR,
+            &LARK_SKILL_DIRS,
+            "NOTICE.md",
+            show,
+        )
+    }
+    /// 启动缓存只在 9 个飞书域技能全部完整落盘时判 visible，避免上次异常中断留下
+    /// 半套目录却被 SkillRegistry 当成已连接。实时真相在首屏后的 CLI 探测中刷新。
+    pub(super) fn cached_feishu_skills_visible(&self) -> bool {
+        self.cached_connector_skills_visible(
+            "feishu",
+            &LARK_SKILL_DIRS,
+            crate::platform::connector_state::feishu_skills_visible,
+        )
+    }
+
     /// 企微域技能门控:`show` → 解包 14 个 wecomcli 技能到包目录;否则**删掉**它们。
     /// 幂等。与飞书门控正交(各自的连接 / 停用状态独立)。
-    /// 注:`WECOM_SKILLS_DIR` 根 = `wecom-skills/`,内含 `wecomcli-<域>/SKILL.md`(+ NOTICE.md);
+    /// 注:`WECOM_SKILLS_DIR` 根 = `wecom-skills/`,内含 `wecomcli-<域>/SKILL.md`;
     /// 直接铺到 `bundles/wecom/skills/`,引擎 `SkillRegistry` 扫每个含 `SKILL.md` 的子目录。
     /// 出处声明用 `NOTICE-wecom.md`(避开飞书的 `NOTICE.md`,两者解包到同一 skills_dir
-    /// 不会互相覆盖)。隐藏时一并删掉。0.1.9 时代的旧目录(服务改名前)无论显示与否
-    /// 都清掉,防残留技能教已死的命令(`msg`/`schedule`)。
+    /// 不会互相覆盖)。
     pub fn apply_wecom_skills(&self, show: bool) -> std::io::Result<()> {
-        let target = Self::connector_package_skills_dir("wecom");
-        // 0.1.9 时代的旧目录（服务改名前）在旧扁平布局下清理，无论显示与否。
+        // 0.1.9 时代的旧目录（服务改名前）在旧扁平布局下清理，无论显示与否，
+        // 防残留技能教已死的命令(`msg`/`schedule`)。
         for d in WECOM_LEGACY_SKILL_DIRS {
             let _ = std::fs::remove_dir_all(self.skills_dir.join(d));
         }
-        if show {
-            Self::extract_dir(&WECOM_SKILLS_DIR, &target)?;
-        } else {
-            for d in WECOM_SKILL_DIRS {
-                let _ = std::fs::remove_dir_all(target.join(d));
-            }
-            let _ = std::fs::remove_file(target.join("NOTICE-wecom.md"));
-        }
-        Ok(())
+        Self::apply_connector_skills(
+            "wecom",
+            &WECOM_SKILLS_DIR,
+            &WECOM_SKILL_DIRS,
+            "NOTICE-wecom.md",
+            show,
+        )
     }
     /// 同 [`cached_feishu_skills_visible`]，以完整的企微技能目录作为启动缓存。
     pub(super) fn cached_wecom_skills_visible(&self) -> bool {
-        let target = Self::connector_package_skills_dir("wecom");
-        crate::platform::connector_state::wecom_skills_visible()
-            && WECOM_SKILL_DIRS
-                .iter()
-                .all(|dir| target.join(dir).join("SKILL.md").is_file())
+        self.cached_connector_skills_visible(
+            "wecom",
+            &WECOM_SKILL_DIRS,
+            crate::platform::connector_state::wecom_skills_visible,
+        )
     }
 
     /// 钉钉 mono skill 门控:`show` → 解包 `dws` 到包目录;否则删除。
     /// 出处声明用 `NOTICE-dingtalk.md`,避免覆盖飞书 / 企微的 NOTICE。
     pub fn apply_dingtalk_skills(&self, show: bool) -> std::io::Result<()> {
-        let target = Self::connector_package_skills_dir("dingtalk");
-        if show {
-            Self::extract_dir(&DINGTALK_SKILLS_DIR, &target)?;
-        } else {
-            for d in DINGTALK_SKILL_DIRS {
-                let _ = std::fs::remove_dir_all(target.join(d));
-            }
-            let _ = std::fs::remove_file(target.join("NOTICE-dingtalk.md"));
-        }
-        Ok(())
+        Self::apply_connector_skills(
+            "dingtalk",
+            &DINGTALK_SKILLS_DIR,
+            &DINGTALK_SKILL_DIRS,
+            "NOTICE-dingtalk.md",
+            show,
+        )
     }
     /// 同 [`cached_feishu_skills_visible`]，以完整的钉钉技能目录作为启动缓存。
     pub(super) fn cached_dingtalk_skills_visible(&self) -> bool {
-        let target = Self::connector_package_skills_dir("dingtalk");
-        crate::platform::connector_state::dingtalk_skills_visible()
-            && DINGTALK_SKILL_DIRS
-                .iter()
-                .all(|dir| target.join(dir).join("SKILL.md").is_file())
+        self.cached_connector_skills_visible(
+            "dingtalk",
+            &DINGTALK_SKILL_DIRS,
+            crate::platform::connector_state::dingtalk_skills_visible,
+        )
     }
 
     /// 腾讯会议 mono skill 门控:`show` → 解包 `tmeet-skill` 到包目录;否则删除。
     /// 出处声明用 `NOTICE-tmeet.md`,避免覆盖其他 CLI 连接器 NOTICE。
     pub fn apply_tmeet_skills(&self, show: bool) -> std::io::Result<()> {
-        let target = Self::connector_package_skills_dir("tmeet");
-        if show {
-            Self::extract_dir(&TMEET_SKILLS_DIR, &target)?;
-        } else {
-            for d in TMEET_SKILL_DIRS {
-                let _ = std::fs::remove_dir_all(target.join(d));
-            }
-            let _ = std::fs::remove_file(target.join("NOTICE-tmeet.md"));
-        }
-        Ok(())
+        Self::apply_connector_skills(
+            "tmeet",
+            &TMEET_SKILLS_DIR,
+            &TMEET_SKILL_DIRS,
+            "NOTICE-tmeet.md",
+            show,
+        )
     }
     /// 同 [`cached_feishu_skills_visible`]，以完整的腾讯会议技能目录作为启动缓存。
     pub(super) fn cached_tmeet_skills_visible(&self) -> bool {
-        let target = Self::connector_package_skills_dir("tmeet");
-        crate::platform::connector_state::tmeet_skills_visible()
-            && TMEET_SKILL_DIRS
-                .iter()
-                .all(|dir| target.join(dir).join("SKILL.md").is_file())
+        self.cached_connector_skills_visible(
+            "tmeet",
+            &TMEET_SKILL_DIRS,
+            crate::platform::connector_state::tmeet_skills_visible,
+        )
     }
     /// 递归解包 `include_dir::Dir` 到磁盘目标路径。
     /// `root` 是磁盘目标根(对应 include_dir 的顶层),`dir` 可以是任意层级子目录。

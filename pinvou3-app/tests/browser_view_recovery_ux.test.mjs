@@ -2,7 +2,6 @@ import assert from 'node:assert/strict';
 import fs from 'node:fs';
 import path from 'node:path';
 import test from 'node:test';
-import { dispatchBrowserNavigation } from '../src/features/browser/browser-navigation.mjs';
 import {
   awaitBrowserListenerReadiness,
   browserStatusRetryDelay,
@@ -87,23 +86,27 @@ test('a failed status request cannot clear an existing persistence warning', () 
   assert.match(catchBlock, /failed status RPC is not evidence/);
 });
 
-test('a fast navigation commit cannot be overwritten by the dispatch acknowledgement', async () => {
-  let resolveDispatch;
-  let address = '';
-  const dispatched = new Promise((resolve) => { resolveDispatch = resolve; });
-  const navigation = dispatchBrowserNavigation({
-    target: 'http://example.test/',
-    publishInput: (value) => { address = value; },
-    dispatch: () => dispatched,
-  });
-
-  assert.equal(address, 'http://example.test/');
-  // Model a Finished event delivered before invoke() resolves.
-  address = 'https://example.test/';
-  resolveDispatch();
-  await navigation;
-
-  assert.equal(address, 'https://example.test/');
+test('a fast navigation commit cannot be overwritten by the dispatch acknowledgement', () => {
+  // The optimistic address is published synchronously before the navigation
+  // dispatch; a fast Finished event may then replace it, and the resolved
+  // navigation command must never write the requested URL again.
+  const navigate = browserView.slice(
+    browserView.indexOf('const navigate = useCallback'),
+    browserView.indexOf('const runNav = useCallback'),
+  );
+  const dispatchIndex = navigate.indexOf("invokeTauri('browser_navigate'");
+  const publishIndex = navigate.indexOf('setUrlInput(address)');
+  assert.ok(publishIndex > -1, 'navigate must publish the optimistic address');
+  assert.ok(
+    publishIndex < dispatchIndex,
+    'the optimistic address must be published before the navigation dispatch',
+  );
+  assert.match(navigate, /if \(fragmentOnly\) publishCommittedUrl\(target, sessionId\)/);
+  assert.doesNotMatch(
+    navigate.slice(dispatchIndex),
+    /setUrlInput/,
+    'the resolved navigation command must not rewrite the address input',
+  );
 });
 
 test('status and tab snapshots cannot overwrite newer scoped browser events', () => {

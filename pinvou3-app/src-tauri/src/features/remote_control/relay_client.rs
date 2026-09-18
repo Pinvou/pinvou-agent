@@ -96,11 +96,6 @@ struct SerializedFrame {
 struct CoalescedControlState {
     worker_running: bool,
     latest: Option<SerializedFrame>,
-    worker_starts: u64,
-}
-
-enum QueuedOutbound {
-    Message(OutboundFrame),
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -132,7 +127,7 @@ impl std::error::Error for RelayTrySendError {}
 
 #[derive(Clone)]
 pub struct RelaySender {
-    tx: mpsc::Sender<QueuedOutbound>,
+    tx: mpsc::Sender<OutboundFrame>,
     byte_budget: Arc<Semaphore>,
     max_frame_bytes: usize,
     shutdown: CancellationToken,
@@ -168,10 +163,10 @@ impl RelaySender {
             .clone()
             .try_acquire_many_owned(frame.permits)
             .map_err(|_| RelayTrySendError::ByteBudgetExhausted)?;
-        let queued = QueuedOutbound::Message(OutboundFrame {
+        let queued = OutboundFrame {
             text: frame.text,
             _byte_permit: byte_permit,
-        });
+        };
         self.tx.try_send(queued).map_err(|error| match error {
             mpsc::error::TrySendError::Full(_) => RelayTrySendError::ChannelFull,
             mpsc::error::TrySendError::Closed(_) => RelayTrySendError::ChannelClosed,
@@ -186,10 +181,10 @@ impl RelaySender {
                 result.map_err(|_| RelayTrySendError::ByteBudgetExhausted)?
             }
         };
-        let queued = QueuedOutbound::Message(OutboundFrame {
+        let queued = OutboundFrame {
             text: frame.text,
             _byte_permit: byte_permit,
-        });
+        };
         tokio::select! {
             biased;
             _ = self.shutdown.cancelled() => Err(RelayTrySendError::ChannelClosed),
@@ -202,17 +197,17 @@ impl RelaySender {
     /// Serialize exactly once before enqueueing, then account the retained
     /// bytes across both the mpsc channel and the reconnect FIFO.
     pub fn try_send(&self, outbound: RelayOutbound) -> Result<(), RelayTrySendError> {
-        if matches!(&outbound, RelayOutbound::Shutdown) {
-            // Control-plane shutdown must remain deliverable even when every
-            // data slot and byte permit is occupied.
-            self.cancel();
-            return Ok(());
+        match outbound {
+            RelayOutbound::Shutdown => {
+                // Control-plane shutdown must remain deliverable even when
+                // every data slot and byte permit is occupied.
+                self.cancel();
+                Ok(())
+            }
+            RelayOutbound::Message(value) => {
+                self.try_send_serialized(self.serialize_message(value)?)
+            }
         }
-        let frame = match outbound {
-            RelayOutbound::Message(value) => self.serialize_message(value)?,
-            RelayOutbound::Shutdown => unreachable!("shutdown returned above"),
-        };
-        self.try_send_serialized(frame)
     }
 
     /// Queue a stream-reset barrier without spawning one waiter per failure.
@@ -240,7 +235,6 @@ impl RelaySender {
                 false
             } else {
                 state.worker_running = true;
-                state.worker_starts = state.worker_starts.saturating_add(1);
                 true
             }
         };
@@ -285,7 +279,7 @@ fn outbound_channel(
     channel_capacity: usize,
     byte_budget: usize,
     max_frame_bytes: usize,
-) -> (RelaySender, mpsc::Receiver<QueuedOutbound>) {
+) -> (RelaySender, mpsc::Receiver<OutboundFrame>) {
     let (tx, rx) = mpsc::channel(channel_capacity);
     (
         RelaySender {
@@ -502,7 +496,7 @@ async fn wait_reconnect_delay(
 async fn run_loop(
     config: WebAccessConfig,
     tx_in: mpsc::Sender<RelayInbound>,
-    mut rx_out: mpsc::Receiver<QueuedOutbound>,
+    mut rx_out: mpsc::Receiver<OutboundFrame>,
     shutdown: CancellationToken,
 ) {
     let mut pending = VecDeque::<OutboundFrame>::new();
@@ -523,7 +517,7 @@ async fn run_loop(
                 result = &mut connection => break result,
                 outbound = rx_out.recv(), if pending_has_capacity(&pending) => {
                     match outbound {
-                        Some(QueuedOutbound::Message(frame)) => {
+                        Some(frame) => {
                             push_pending(&mut pending, frame);
                         }
                         None => return,
@@ -638,7 +632,7 @@ async fn run_loop(
                 }
                 outbound = rx_out.recv() => {
                     match outbound {
-                        Some(QueuedOutbound::Message(frame)) => {
+                        Some(frame) => {
                             let send_result = tokio::select! {
                                 biased;
                                 _ = shutdown.cancelled() => return,
@@ -890,7 +884,7 @@ mod tests {
             sender
                 .try_send(RelayOutbound::Message(json!(index)))
                 .unwrap();
-            let QueuedOutbound::Message(frame) = receiver.try_recv().unwrap();
+            let frame = receiver.try_recv().unwrap();
             pending_bytes += frame.text.len();
             push_pending(&mut pending, frame);
         }
@@ -919,7 +913,7 @@ mod tests {
         );
 
         for expected in MAX_PENDING_MESSAGES..(MAX_PENDING_MESSAGES + OUTBOUND_CHANNEL_CAPACITY) {
-            let QueuedOutbound::Message(frame) = receiver.try_recv().unwrap();
+            let frame = receiver.try_recv().unwrap();
             assert_eq!(frame.text, expected.to_string());
         }
         assert!(matches!(
@@ -967,7 +961,7 @@ mod tests {
         sender
             .try_send(RelayOutbound::Message(value.clone()))
             .unwrap();
-        let QueuedOutbound::Message(frame) = receiver.try_recv().unwrap();
+        let frame = receiver.try_recv().unwrap();
         let mut pending = VecDeque::new();
         push_pending(&mut pending, frame);
         assert_eq!(sender.byte_budget.available_permits(), budget - bytes);
@@ -1049,7 +1043,6 @@ mod tests {
         {
             let state = sender.coalesced_control.lock();
             assert!(state.worker_running);
-            assert_eq!(state.worker_starts, 1);
             let latest = state
                 .latest
                 .as_ref()
@@ -1058,20 +1051,20 @@ mod tests {
             assert_eq!(latest["lease_id"], "C");
         }
 
-        let QueuedOutbound::Message(blocker) = receiver.recv().await.unwrap();
+        let blocker = receiver.recv().await.unwrap();
         assert_eq!(
             serde_json::from_str::<Value>(&blocker.text).unwrap()["kind"],
             "blocker"
         );
         drop(blocker);
 
-        let QueuedOutbound::Message(first) = receiver.recv().await.unwrap();
+        let first = receiver.recv().await.unwrap();
         assert_eq!(
             serde_json::from_str::<Value>(&first.text).unwrap()["lease_id"],
             "A"
         );
         drop(first);
-        let QueuedOutbound::Message(latest) = receiver.recv().await.unwrap();
+        let latest = receiver.recv().await.unwrap();
         assert_eq!(
             serde_json::from_str::<Value>(&latest.text).unwrap()["lease_id"],
             "C"
@@ -1092,7 +1085,6 @@ mod tests {
         })
         .await
         .expect("control worker should stop after draining the latest reset");
-        assert_eq!(sender.coalesced_control.lock().worker_starts, 1);
         assert_eq!(sender.byte_budget.available_permits(), budget);
         assert!(matches!(
             receiver.try_recv(),

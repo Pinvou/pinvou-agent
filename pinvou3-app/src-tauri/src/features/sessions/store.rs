@@ -123,7 +123,6 @@ impl SessionStore {
         store.load_hidden_sessions();
         store.load_aux_sessions();
         store.load_session_mode_states();
-        store.migrate_legacy_session_workspaces();
         {
             let _mutation = store.scheduled_mutation.lock();
             if recover_interrupted_tools {
@@ -142,6 +141,8 @@ impl SessionStore {
         Ok(store)
     }
 
+    /// Test-only boot over an isolated root; production boot paths are
+    /// [`Self::boot`] / [`Self::boot_for_process_startup`].
     #[cfg(test)]
     pub(crate) fn boot_at_test_dir(root: &std::path::Path) -> Result<Self> {
         Self::from_paths(

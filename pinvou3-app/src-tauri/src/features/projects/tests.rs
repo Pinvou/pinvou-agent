@@ -200,10 +200,7 @@ fn delete_unassigns_sessions_but_keeps_explicit_move_out() {
         .move_session_to_project("s4", Some(&other.id), None)
         .expect("assign s4");
 
-    let report = store.delete_project(&project.id).expect("delete project");
-    let mut affected = report.affected_session_ids;
-    affected.sort();
-    assert_eq!(affected, vec!["s1", "s2"]);
+    store.delete_project(&project.id).expect("delete project");
 
     assert_eq!(store.assignment_of("s1"), None);
     assert_eq!(store.assignment_of("s2"), None);
@@ -273,7 +270,6 @@ fn move_add_workspace_root_atomically_and_idempotently() {
     let outcome = store
         .move_session_to_project("s1", Some(&project.id), Some(&workspace))
         .expect("move with workspace root");
-    assert_eq!(outcome.project_id, Some(project.id.clone()));
     assert_eq!(outcome.added_root, Some(canonical.clone()));
     assert!(store.get(&project.id).unwrap().roots.contains(&canonical));
 

@@ -8,11 +8,7 @@
     externalAuth: false, superPermission: false, appUpdate: false,
     dependencyInstall: false, localModelSetup: false, externalSystemOpen: false,
     webAccessAdmin: false, desktopNotifications: false, hostFilePicker: true, artifactDownload: true,
-    browserMicrophone: true,
     sessionModelSwitch: true,
-    // The global Alt voice shortcut is a Windows native keyboard hook; the browser remote
-    // end has no native layer, so always false.
-    voiceShortcutNative: false,
     modelManagement: false,
     toolStoreMutations: false,
     // Zap-send needs the desktop EnginePool command channel; hide the button on web.
@@ -23,7 +19,6 @@
   const SEMANTIC_COMMAND_REQUIREMENTS = {
     hostFilePicker: ["web_access_list_host_files", "web_access_ingest_file"],
     artifactDownload: ["web_access_artifact_info", "web_access_read_artifact_chunk"],
-    browserMicrophone: ["web_access_transcribe_voice_audio"],
     sessionModelSwitch: ["set_session_model"],
     deviceFileUpload: [
       "web_access_upload_attachment_chunk",
@@ -661,6 +656,12 @@
       emit() { return Promise.resolve(); },
       emitTo() { return Promise.resolve(); },
     },
-    dialog: { open(options) { return client.invoke("__dialog_open", { options: options || {} }); } },
+    // Kept as an empty shell: host-file-picker.js installs the remote host
+    // picker onto __TAURI__.dialog.open right after this script, and the
+    // bridge captures it from there. The previous "__dialog_open" RPC stub
+    // was unreachable: host-file-picker overwrites it before any reader, and
+    // the desktop relay handler explicitly denies the "__dialog_open"
+    // command anyway (tauri/bridge/remote-control.js).
+    dialog: {},
   };
 })();

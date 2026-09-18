@@ -913,20 +913,6 @@ impl VersionedJsonStore<ScheduledRunReadRegistry> {
         Ok(())
     }
 
-    pub(crate) fn remove_automation(&self, automation_id: &str) -> Result<()> {
-        let mut registry = self.registry.write();
-        let Some(removed) = registry.viewed_runs.remove(automation_id) else {
-            return Ok(());
-        };
-        if let Err(error) = self.persist(&registry) {
-            registry
-                .viewed_runs
-                .insert(automation_id.to_string(), removed);
-            return Err(error);
-        }
-        Ok(())
-    }
-
     pub(crate) fn compact(
         &self,
         automation_id: &str,

@@ -47,9 +47,13 @@ test('SettingsView no longer calls native window.confirm', () => {
 });
 
 test('memory delete routes through the in-app confirm dialog', () => {
-  // The in-app confirm dialog must exist, with a stable testid on the OK button
-  assert.match(SETTINGS_VIEW, /data-testid="memory-delete-confirm"/, 'memory delete confirm dialog must exist');
-  assert.match(SETTINGS_VIEW, /data-testid="memory-delete-confirm-ok"/, 'memory delete confirm button must carry a testid');
+  // The in-app confirm dialog must exist, with a stable testid on the OK button.
+  // MemoryDeleteDialog renders through SheetConfirmDialog, which turns the
+  // testid/confirmTestId props into data-testid attributes.
+  assert.match(SETTINGS_VIEW, /testid="memory-delete-confirm"/, 'memory delete confirm dialog must exist');
+  assert.match(SETTINGS_VIEW, /confirmTestId="memory-delete-confirm-ok"/, 'memory delete confirm button must carry a testid');
+  assert.match(SETTINGS_VIEW, /data-testid=\{testid\}/, 'SheetConfirmDialog must render data-testid from its props');
+  assert.match(SETTINGS_VIEW, /data-testid=\{confirmTestId\}/, 'SheetConfirmDialog must render the confirm testid from its props');
 
   // The delete entry point must be a row-level action of the memory section (the row delete button routes into deleteItem)
   assert.match(

@@ -11,9 +11,7 @@ use serde::Serialize;
 use tauri::{AppHandle, Emitter, State};
 
 use crate::features::codex_acp::{AcpPool, CodexWorkspaceKind};
-use crate::features::projects::{
-    DeleteProjectReport, MoveSessionOutcome, Project, ProjectStore, SessionAssignments,
-};
+use crate::features::projects::{MoveSessionOutcome, Project, ProjectStore, SessionAssignments};
 use crate::features::sessions::SessionStore;
 
 use super::sessions::ensure_chat_session;
@@ -123,19 +121,18 @@ pub async fn update_project(
     Ok(ProjectListItem::from_project(&project, count))
 }
 
-/// 删除项目:会话只被解绑(回落自动/隐式分组),永不删除;返回受影响会话
-/// id 供前端提示。
+/// 删除项目:会话只被解绑(回落自动/隐式分组),永不删除。
 #[tauri::command]
 pub async fn delete_project(
     project_id: String,
     app: AppHandle,
     store: State<'_, ProjectStore>,
-) -> Result<DeleteProjectReport, String> {
-    let report = store
+) -> Result<(), String> {
+    store
         .delete_project(&project_id)
         .map_err(|e| format!("delete_project({project_id}): {e:#}"))?;
     emit_project_event(&app, "projects:list_changed", "deleted");
-    Ok(report)
+    Ok(())
 }
 
 /// 移动会话归属(纯归档操作,运行中的会话同样允许)。

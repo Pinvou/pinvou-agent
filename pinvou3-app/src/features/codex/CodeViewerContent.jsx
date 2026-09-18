@@ -15,11 +15,11 @@ const VIEWER_MIN_FONT_SIZE = 10;
 const VIEWER_MAX_FONT_SIZE = 24;
 const VIEWER_DEFAULT_FONT_SIZE = 12;
 
-export function clampViewerFontSize(value) {
+function clampViewerFontSize(value) {
   return Math.max(VIEWER_MIN_FONT_SIZE, Math.min(VIEWER_MAX_FONT_SIZE, Math.round(value)));
 }
 
-export function savedViewerFontSize() {
+function savedViewerFontSize() {
   try {
     const parsed = Number(localStorage.getItem(VIEWER_FONT_SIZE_KEY));
     if (Number.isFinite(parsed) && parsed > 0) return clampViewerFontSize(parsed);
@@ -29,7 +29,7 @@ export function savedViewerFontSize() {
   return VIEWER_DEFAULT_FONT_SIZE;
 }
 
-export function rememberViewerFontSize(fontSize) {
+function rememberViewerFontSize(fontSize) {
   try {
     localStorage.setItem(VIEWER_FONT_SIZE_KEY, String(fontSize));
   } catch {

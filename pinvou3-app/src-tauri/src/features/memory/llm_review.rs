@@ -1,5 +1,5 @@
 //! LLM 后台记忆复盘：触发判别、提示词、chat/completions 调用、响应清洗与
-//! 自动落库，以及纯启发式的 turn 候选发现（不走 LLM 的兜底）。
+//! 自动落库。
 //!
 //! 抽离自 `mod.rs`。`review_turn_candidates_with_llm` 是 pub 入口；诊断日志、
 //! reasoning dialect 控制、JSON 解析与候选清洗等 helper 集中在本模块内。
@@ -64,8 +64,7 @@ pub(super) const LLM_REVIEW_PROMPT_TEMPLATE: &str = r#"你是 pinvou 的后台�
       "topic": "call_name | assistant_alias | answer_style | workflow_preference | document_preference | role_domain | project_context | task_pattern | tooling_context | output_expectation | current_work | completed_work",
       "content": "整理后的完整记忆内容",
       "confidence": 0.0,
-      "ttl_days": null,
-      "reason": "一句话说明"
+      "ttl_days": null
     }
   ]
 }
@@ -174,7 +173,7 @@ pub(super) fn explicit_signal_prompt() -> String {
 /// Equivalent of the review-side `output_language_directive`
 /// (features/review/mod.rs): the prompt body stays Chinese (tuned for
 /// convergence; translating it line by line would introduce behavioral drift)
-/// and only the **natural-language field values** (`content` / `reason`) switch
+/// and only the **natural-language field value** (`content`) switches
 /// to the target language — JSON keys and `kind` / `topic` / `action` enum
 /// values stay ASCII. zh-Hans and unknown locales → None (no-op, prompt
 /// unchanged).
@@ -197,7 +196,7 @@ pub(super) fn memory_output_language_directive(locale_tag: &str) -> Option<Strin
     if locale_tag == "zh-Hans" {
         return Some(
             "\n\n## 输出语言(强制)\n\
-             JSON 里所有自然语言字段值(content / reason)必须用简体中文,即使本轮\
+             JSON 里所有自然语言字段值(content)必须用简体中文,即使本轮\
              对话是英文/日文也别跟着写。JSON 的 key、action / kind / topic 枚举值\
              保持原样 ASCII。"
                 .to_string(),
@@ -210,8 +209,8 @@ pub(super) fn memory_output_language_directive(locale_tag: &str) -> Option<Strin
     };
     Some(format!(
         "\n\n## Output Language (HARD override)\n\
-         Write EVERY natural-language value in your JSON output in {lang}: `content` \
-         and `reason`. This OVERRIDES any wording above that asks for Chinese. Keep \
+         Write EVERY natural-language value in your JSON output in {lang}: `content`. \
+         This OVERRIDES any wording above that asks for Chinese. Keep \
          all JSON keys and enum values (`action`, `kind`, `topic`) exactly as \
          specified — those stay ASCII/English."
     ))
@@ -850,7 +849,6 @@ pub(super) fn sanitize_llm_memory_item(
     };
     let mut topic = clean_text(&raw.topic, 40);
     let mut content = super::util::clean_candidate_sentence(&raw.content, 180);
-    let _reason = clean_text(&raw.reason, 120);
     if content.is_empty() || looks_sensitive(&content) {
         return None;
     }

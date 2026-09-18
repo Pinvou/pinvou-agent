@@ -106,20 +106,7 @@ fn auth_lines_say_already_logged_in(auth_lines: &std::collections::VecDeque<Stri
 }
 
 fn safe_auth_log_line(line: &str) -> Option<String> {
-    let trimmed = line.trim();
-    if trimmed.is_empty() {
-        return None;
-    }
-    let lower = trimmed.to_ascii_lowercase();
-    if lower.contains("access_token")
-        || lower.contains("refresh_token")
-        || lower.contains("authorization:")
-        || lower.contains("bearer ")
-        || lower.contains("token")
-    {
-        return Some("[redacted credential line]".to_string());
-    }
-    Some(trimmed.chars().take(320).collect())
+    cc::safe_auth_log_line(line, true)
 }
 
 fn install_tmeet_cli() -> Result<bool, String> {
@@ -435,7 +422,7 @@ impl ConnectorSkillGate for TmeetGate {
 }
 const GATE: TmeetGate = TmeetGate;
 
-pub fn is_tmeet_disabled() -> bool {
+fn is_tmeet_disabled() -> bool {
     GATE.is_disabled()
 }
 

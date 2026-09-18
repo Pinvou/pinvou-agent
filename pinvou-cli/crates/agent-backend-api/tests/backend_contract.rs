@@ -7,12 +7,19 @@ use std::time::Duration;
 
 use agent_backend_api::{
     AgentBackendError, AgentOutputContractId, AgentRunObserver, AgentSessionHandle, AgentTaskInput,
-    AgentTaskOutcome, AgentToolPolicyId, AttachmentHandle, HeadlessAgentBackend,
-    NoopAgentRunObserver, PrepareRequest, PrivateInputHandle, PrivateInputResolver,
-    PrivateOutputHandle, ResolvedAttachmentSource, ResolvedPrivateInput, SafeAgentEvent,
-    SafeRunStatus, SafeUsageMetrics, SecretOutput, SecretText, SuiteModelIdentity, notify_observer,
+    AgentTaskOutcome, AgentToolPolicyId, AttachmentHandle, HeadlessAgentBackend, PrepareRequest,
+    PrivateInputHandle, PrivateInputResolver, PrivateOutputHandle, ResolvedAttachmentSource,
+    ResolvedPrivateInput, SafeAgentEvent, SafeRunStatus, SafeUsageMetrics, SecretOutput,
+    SecretText, SuiteModelIdentity, notify_observer,
 };
 use async_trait::async_trait;
+
+#[derive(Debug, Default)]
+struct NoopAgentRunObserver;
+
+impl AgentRunObserver for NoopAgentRunObserver {
+    fn on_event(&self, _event: &SafeAgentEvent) {}
+}
 
 struct StubBackend;
 

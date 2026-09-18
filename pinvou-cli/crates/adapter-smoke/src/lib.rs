@@ -71,7 +71,6 @@ impl SmokeCase {
                 ToolPolicyId::new(SMOKE_TOOL_POLICY_ID),
                 OutputContract::new("smoke-private-output/v1"),
             ),
-            None,
         )
     }
 }
@@ -352,6 +351,9 @@ pub enum FindingSeverity {
     P2,
 }
 
+/// Provenance of a smoke finding. Only `Rule` is produced by the current
+/// pipeline; `Judge` is retained as the serde wire contract so finding JSON
+/// with `"source": "judge"` still deserializes.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum FindingSource {
@@ -1098,141 +1100,6 @@ fn score_dimensions(deductions: [u32; 5]) -> ProductScoreDimensions {
     }
 }
 
-const REQUIRED_JUDGE_DIMENSIONS: [&str; 6] = [
-    "task_completion",
-    "correctness",
-    "tool_choice",
-    "efficiency",
-    "safety_boundaries",
-    "overall_quality",
-];
-
-#[derive(Clone, PartialEq)]
-pub struct JudgeDimensionScore {
-    dimension: String,
-    score: u8,
-    confidence: f32,
-    evidence: String,
-}
-
-impl JudgeDimensionScore {
-    pub fn new(
-        dimension: impl Into<String>,
-        score: u8,
-        confidence: f32,
-        evidence: impl Into<String>,
-    ) -> Self {
-        Self {
-            dimension: dimension.into(),
-            score,
-            confidence,
-            evidence: evidence.into(),
-        }
-    }
-    pub fn dimension(&self) -> &str {
-        &self.dimension
-    }
-}
-
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub enum JudgeStatus {
-    Completed,
-    NotConfigured,
-}
-
-#[derive(Clone, PartialEq)]
-pub struct JudgeReport {
-    status: JudgeStatus,
-    dimensions: Vec<JudgeDimensionScore>,
-    findings: Vec<SmokeFinding>,
-}
-
-impl JudgeReport {
-    pub fn status(&self) -> &JudgeStatus {
-        &self.status
-    }
-    pub fn dimensions(&self) -> &[JudgeDimensionScore] {
-        &self.dimensions
-    }
-    pub fn findings(&self) -> &[SmokeFinding] {
-        &self.findings
-    }
-}
-
-#[derive(Clone, PartialEq)]
-pub struct JudgeWireResponse {
-    dimensions: Vec<JudgeDimensionScore>,
-    findings: Vec<SmokeFinding>,
-}
-
-impl JudgeWireResponse {
-    pub fn new(dimensions: Vec<JudgeDimensionScore>, findings: Vec<SmokeFinding>) -> Self {
-        Self {
-            dimensions,
-            findings,
-        }
-    }
-}
-
-#[derive(Clone, Debug, PartialEq, Eq)]
-pub struct JudgeParseError(&'static str);
-
-impl fmt::Display for JudgeParseError {
-    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
-        formatter.write_str(self.0)
-    }
-}
-
-impl std::error::Error for JudgeParseError {}
-
-pub fn parse_judge_response(response: JudgeWireResponse) -> Result<JudgeReport, JudgeParseError> {
-    let mut response = response;
-    if response.dimensions.len() != REQUIRED_JUDGE_DIMENSIONS.len() {
-        return Err(JudgeParseError("judge must provide exactly six dimensions"));
-    }
-    let mut seen = HashSet::new();
-    for dimension in &response.dimensions {
-        if !REQUIRED_JUDGE_DIMENSIONS.contains(&dimension.dimension.as_str())
-            || !seen.insert(dimension.dimension.as_str())
-        {
-            return Err(JudgeParseError("judge dimensions must be known and unique"));
-        }
-        if dimension.score > 100
-            || !dimension.confidence.is_finite()
-            || !(0.0..=1.0).contains(&dimension.confidence)
-            || dimension.evidence.trim().is_empty()
-            || !judge_text_is_safe(&dimension.evidence, 500)
-        {
-            return Err(JudgeParseError("judge dimension values are invalid"));
-        }
-    }
-    if response.findings.len() > 20
-        || response.findings.iter().any(|finding| {
-            finding.id.len() > 64
-                || !finding
-                    .id
-                    .bytes()
-                    .all(|byte| byte.is_ascii_alphanumeric() || matches!(byte, b'-' | b'_'))
-                || finding
-                    .case_id
-                    .as_deref()
-                    .is_some_and(|case_id| !judge_text_is_safe(case_id, 128))
-                || !judge_text_is_safe(&finding.title, 300)
-                || !judge_text_is_safe(&finding.recommendation, 300)
-        })
-    {
-        return Err(JudgeParseError("judge findings are invalid"));
-    }
-    for finding in &mut response.findings {
-        finding.source = FindingSource::Judge;
-    }
-    Ok(JudgeReport {
-        status: JudgeStatus::Completed,
-        dimensions: response.dimensions,
-        findings: response.findings,
-    })
-}
-
 fn judge_text_is_safe(value: &str, max_chars: usize) -> bool {
     if value.chars().count() > max_chars || value.chars().any(char::is_control) {
         return false;
@@ -1259,22 +1126,12 @@ fn judge_text_is_safe(value: &str, max_chars: usize) -> bool {
     !forbidden.iter().any(|marker| lower.contains(marker)) && !value.contains("AKIA")
 }
 
-pub fn not_configured_judge() -> JudgeReport {
-    JudgeReport {
-        status: JudgeStatus::NotConfigured,
-        dimensions: vec![],
-        findings: vec![],
-    }
-}
-
 pub fn render_smoke_markdown(
     records: &[SmokeRecord],
     analysis: &RuleAnalysis,
     score: &ProductScore,
-    judge: &JudgeReport,
 ) -> Result<String, SmokeSafetyError> {
     validate_findings(analysis.findings())?;
-    validate_findings(judge.findings())?;
     let completed = records
         .iter()
         .filter(|record| record.outcome().status() == TaskStatus::Completed)
@@ -1294,10 +1151,6 @@ pub fn render_smoke_markdown(
         ProductScoreConfidence::Unavailable => "Unavailable（不可用）",
         ProductScoreConfidence::LowSample => "LowSample（小样本）",
         ProductScoreConfidence::Standard => "Standard（标准）",
-    };
-    let judge_text = match judge.status() {
-        JudgeStatus::Completed => "completed",
-        JudgeStatus::NotConfigured => "not_configured",
     };
     let recommendations = if score.diagnoses().is_empty() {
         "未发现需要优先处理的确定性问题。".to_owned()
@@ -1362,13 +1215,8 @@ pub fn render_smoke_markdown(
     } else {
         ""
     };
-    let judge_note = if judge.status() == &JudgeStatus::NotConfigured {
-        "\nJudge 未配置；Product Score 不受影响。"
-    } else {
-        ""
-    };
     Ok(format!(
-        "# Pinvou Smoke 报告\n\n- Cases: {}\n- Completed: {completed}\n\n## Smoke Health Score\n\n- 总分：{score_text}\n- 等级：{grade_text}\n- 公式版本：{}\n- Confidence: {confidence_text}{low_sample_warning}\n\n{dimensions}\n\n### Deductions / 扣分明细\n\n{deductions}\n\n> 该健康分只用于内部 Smoke 产品诊断，不是官方 benchmark 分数。公开榜单分数：不可用。\n\n## 产品问题与改进方向\n\n发现 {} 项，建议优化如下：\n\n{recommendations}\n\n## 独立 Judge 质量评分\n\n状态：{judge_text}{judge_note}\n",
+        "# Pinvou Smoke 报告\n\n- Cases: {}\n- Completed: {completed}\n\n## Smoke Health Score\n\n- 总分：{score_text}\n- 等级：{grade_text}\n- 公式版本：{}\n- Confidence: {confidence_text}{low_sample_warning}\n\n{dimensions}\n\n### Deductions / 扣分明细\n\n{deductions}\n\n> 该健康分只用于内部 Smoke 产品诊断，不是官方 benchmark 分数。公开榜单分数：不可用。\n\n## 产品问题与改进方向\n\n发现 {} 项，建议优化如下：\n\n{recommendations}\n",
         records.len(),
         score.version(),
         analysis.findings().len()

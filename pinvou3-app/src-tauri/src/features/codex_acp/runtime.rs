@@ -221,8 +221,9 @@ pub fn version_at_least(version: &str, minimum: &str) -> bool {
     compare_versions(version, minimum).is_ge()
 }
 
-/// 探测系统 PATH 或官方安装目录中的 codex 存在但版本低于 MIN_CODEX_VERSION 的情况，
-/// 供 status 上报 system_codex_incompatible（区分「未安装」与「版本过低」）。
+/// Detects a codex on the system PATH or in the official install directory
+/// whose version is below MIN_CODEX_VERSION; consumed by install-source
+/// resolution to tell "not installed" apart from "installed but too old".
 pub fn system_codex_incompatible(system_codex: Option<PathBuf>) -> bool {
     system_codex
         .and_then(|path| probe_codex(path, CodexRuntimeSource::System))

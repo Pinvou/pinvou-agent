@@ -148,11 +148,13 @@ fn full_l0_l1_e2e() {
 
     let db = root.join("index.db");
     let svc = KnowledgeService::new(&db).expect("KnowledgeService::new");
-    assert!(
-        svc.reload_embedder()
-            .expect("测试 embedding 模型应能后台热加载"),
-        "测试 embedding 模型应进入就绪态"
-    );
+    // 旧 KnowledgeService::reload_embedder 已删；等价地直接走其原有实现：
+    // load_embedder(受 PINVOU3_KB_EMBED_MODEL_DIR 覆盖) → install_embedder 落位。
+    // 两者是本模块私有项，子模块 e2e_test 可直接调用。
+    let embedder = KnowledgeService::load_embedder(Some(&super::model_dir()))
+        .expect("测试 embedding 模型应能加载");
+    svc.install_embedder(embedder);
+    assert!(svc.semantic_ready(), "测试 embedding 模型应进入就绪态");
 
     // ───── L0：扫描 ─────
     svc.start_scan(vec![root.clone()]);
@@ -249,27 +251,27 @@ fn full_l0_l1_e2e() {
     // ───── L1：关键词检索(命中原词) ─────
     let kw = svc
         .l1()
-        .retrieve_for_chat(cid, "交强险", 5, 0)
+        .retrieve_for_chat_multi(&[cid], "交强险", 5)
         .expect("kw search");
     assert!(!kw.is_empty(), "应检索到含'交强险'的块");
     assert!(
-        kw.iter().any(|h| h.text.contains("交强险")),
+        kw.iter().any(|h| h.hit.text.contains("交强险")),
         "命中块应含'交强险'"
     );
-    assert!(kw[0].doc_name.contains("访谈"), "溯源应指向访谈纪要");
+    assert!(kw[0].hit.doc_name.contains("访谈"), "溯源应指向访谈纪要");
 
     // ───── L1：语义检索(同义不同词，考验向量) ─────
     let sem = svc
         .l1()
-        .retrieve_for_chat(cid, "车险价格怎么比较", 5, 0)
+        .retrieve_for_chat_multi(&[cid], "车险价格怎么比较", 5)
         .expect("semantic search");
     assert!(!sem.is_empty(), "语义查询应有召回(向量路径)");
     assert!(
-        sem.iter().any(|h| h.text.contains("报价")
-            || h.text.contains("比价")
-            || h.text.contains("交强险")),
+        sem.iter().any(|h| h.hit.text.contains("报价")
+            || h.hit.text.contains("比价")
+            || h.hit.text.contains("交强险")),
         "语义召回应命中保险报价相关块，实际 top: {}",
-        sem.first().map(|h| h.text.as_str()).unwrap_or("")
+        sem.first().map(|h| h.hit.text.as_str()).unwrap_or("")
     );
 
     // ───── L1：文档列表 + 计数 ─────

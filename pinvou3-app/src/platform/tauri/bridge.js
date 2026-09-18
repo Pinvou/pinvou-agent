@@ -231,8 +231,6 @@
       localVllmSupported: false,
       codexAcpSupported: false,
       browserNativeDisplay: false,
-      browserAgentAutomation: false,
-      browserCdp: false,
     },
     settings: null,
     selectedPet: "lingling",
@@ -341,7 +339,7 @@
     // 厂商预装本地大模型一键引导:首屏检测结果 + 引导执行态
     vllmSetup: null,          // {eligible, may_offer_setup, has_packages, engine_state:ready|starting|stopped|failed, ...}
     vllmBootstrapping: false, // 引导进行中(pkexec + 拉起 + 轮询就绪)
-    vllmSetupPhase: null,     // 阶段:'authorizing'|'waiting'|'ready'(后端 vllm-setup:phase 事件驱动步骤指示)
+    vllmSetupPhase: null,     // 阶段:'authorizing'|'waiting'|'ready'(引导开始时本地置 'authorizing')
     vllmSetupAttempt: 0,      // waiting 阶段第几次探测(后端报)
     vllmBootstrapDone: null,  // 成功结果 {base_url, model}, 据此显示「立即重启」
     vllmBootstrapError: null, // 失败原因(pkexec stderr / 超时透传)
@@ -1063,8 +1061,10 @@
     state, invoke, listen, notify,
     // The draft workspace picker (pickDraftWorkspace) uses the system directory
     // dialog, injected through the same channel as the artifacts feature; the
-    // React side only calls sessions-feature methods.
+    // React side only calls sessions-feature methods. pickDirectory is the
+    // shared normalized directory-picker scaffold (hoisted function declaration).
     dialogOpen,
+    pickDirectory,
     sessionStates, scheduledRunSessionOwners,
     personaPlaceholderTitles, turnUsageDirty,
     // Clean host-side per-session side tables when a session buffer is
@@ -2536,17 +2536,21 @@
     if (!selected) return [];
     return Array.isArray(selected) ? selected : [selected];
   }
-  async function pickFolder() {
+  // Shared system directory-picker scaffold for pickFolder / pickFolders /
+  // sessions.pickDraftWorkspace: returns null when the dialog is unavailable
+  // or the user cancels, otherwise the normalized array of selected paths.
+  async function pickDirectory(options) {
     if (!dialogOpen) return null;
-    const selected = await dialogOpen({ directory: true, multiple: false, title: bt("pickFolderTitle") });
+    const selected = await dialogOpen(options);
     if (!selected) return null;
-    return Array.isArray(selected) ? (selected[0] || null) : selected;
+    return Array.isArray(selected) ? selected : [selected];
+  }
+  async function pickFolder() {
+    const selected = await pickDirectory({ directory: true, multiple: false, title: bt("pickFolderTitle") });
+    return (selected && selected[0]) || null;
   }
   async function pickFolders() {
-    if (!dialogOpen) return [];
-    const selected = await dialogOpen({ directory: true, multiple: true, title: bt("kbPickFolderTitle") });
-    if (!selected) return [];
-    return Array.isArray(selected) ? selected : [selected];
+    return (await pickDirectory({ directory: true, multiple: true, title: bt("kbPickFolderTitle") })) || [];
   }
   async function pickFeedbackFiles() {
     if (!dialogOpen) return [];

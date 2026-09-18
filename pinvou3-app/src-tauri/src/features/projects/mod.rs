@@ -18,6 +18,4 @@ mod store;
 #[cfg(test)]
 mod tests;
 
-pub use store::{
-    DeleteProjectReport, MoveSessionOutcome, Project, ProjectStore, SessionAssignments,
-};
+pub use store::{MoveSessionOutcome, Project, ProjectStore, SessionAssignments};

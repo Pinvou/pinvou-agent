@@ -32,13 +32,6 @@ pub struct SelfPerfSnapshot {
     pub cache_miss_tokens: u64,
 }
 
-#[derive(Debug, Clone, Default, Serialize)]
-pub struct SelfMetricsDebugSnapshot {
-    pub inflight_count: usize,
-    pub warmed_sessions_count: usize,
-    pub last_event: Option<String>,
-}
-
 #[derive(Debug, Default)]
 struct SelfPerfInner {
     ttft_sum_s: f64,
@@ -72,7 +65,6 @@ pub struct SelfMetrics {
     /// (warmup 同步跑完整段冷 prefill,TurnStarted→首token 窗口吃满冷启),TTFT/TPS 不代表
     /// 稳态,故跳过(tokens 照记)。warmup 恰好只在 session 首轮跑,此集合精确识别那一轮。
     warmed_sessions: Mutex<HashSet<String>>,
-    last_event: Mutex<Option<String>>,
 }
 
 impl SelfMetrics {
@@ -87,7 +79,6 @@ impl SelfMetrics {
                 output_chars: 0,
             },
         );
-        self.set_last_event(format!("turn_started session={session_id}"));
     }
 
     /// 首个 MessageDelta：记首 token 时点（仅首次）。TTFT 的停表点 + 生成时长起点。
@@ -100,7 +91,6 @@ impl SelfMetrics {
         if let Some(t) = self.inflight.lock().get_mut(session_id) {
             if t.first.is_none() {
                 t.first = Some(Instant::now());
-                self.set_last_event(format!("first_delta session={session_id}"));
             }
             t.output_chars = t.output_chars.saturating_add(char_count as u64);
         }
@@ -110,7 +100,6 @@ impl SelfMetrics {
     pub fn on_tool(&self, session_id: &str) {
         if let Some(t) = self.inflight.lock().get_mut(session_id) {
             t.had_tool = true;
-            self.set_last_event(format!("tool session={session_id}"));
         }
     }
 
@@ -125,7 +114,9 @@ impl SelfMetrics {
         cache_miss: Option<u32>,
     ) {
         let timing = self.inflight.lock().remove(session_id);
-        let is_first_turn = self.warmed_sessions.lock().insert(session_id.to_string());
+        // 返回值（是否该 session 首个完成轮）仅调试日志曾使用；insert 本身就是
+        // 「标记 warmed」的语义，不能省。
+        let _is_first_turn = self.warmed_sessions.lock().insert(session_id.to_string());
         let mut p = self.perf.lock();
         p.gen_tokens_total += output_tokens as u64;
         p.prompt_tokens_total += input_tokens as u64;
@@ -135,8 +126,6 @@ impl SelfMetrics {
         if let Some(m) = cache_miss {
             p.cache_miss_tokens += m as u64;
         }
-        let mut recorded_perf = false;
-        let had_timing = timing.is_some();
         if let Some(t) = timing {
             if !t.had_tool {
                 if let Some(first) = t.first {
@@ -154,21 +143,16 @@ impl SelfMetrics {
                     if gen_s > 0.0 && tps_units > 0 {
                         p.tps_time_s += gen_s;
                         p.tps_tokens += tps_units;
-                        recorded_perf = true;
                     }
                 }
             }
         }
-        self.set_last_event(format!(
-            "turn_complete session={session_id} input={input_tokens} output={output_tokens} first_turn={is_first_turn} had_timing={had_timing} recorded_perf={recorded_perf}"
-        ));
     }
 
     /// Turn aborted（停止/会话回收，未走到 TurnComplete）：移除 inflight 打点条目，
     /// 避免该 session 的 TurnTiming 永久驻留。不写 perf 累计、不标 warmed（中断轮非完成轮）。
     pub fn on_turn_aborted(&self, session_id: &str) {
         self.inflight.lock().remove(session_id);
-        self.set_last_event(format!("turn_aborted session={session_id}"));
     }
 
     /// 会话删除：清掉该 session 的全部打点残留（inflight + warmed_sessions）。
@@ -194,16 +178,14 @@ impl SelfMetrics {
         }
     }
 
-    pub fn debug_snapshot(&self) -> SelfMetricsDebugSnapshot {
-        SelfMetricsDebugSnapshot {
-            inflight_count: self.inflight.lock().len(),
-            warmed_sessions_count: self.warmed_sessions.lock().len(),
-            last_event: self.last_event.lock().clone(),
-        }
-    }
-
-    fn set_last_event(&self, value: String) {
-        *self.last_event.lock() = Some(value);
+    /// 仅测试用：inflight / warmed 条目数（生产快照不再携带 debug 面，原
+    /// `debug_snapshot`/`SelfMetricsDebugSnapshot`/`last_event` 链路已删）。
+    #[cfg(test)]
+    fn debug_counts(&self) -> (usize, usize) {
+        (
+            self.inflight.lock().len(),
+            self.warmed_sessions.lock().len(),
+        )
     }
 }
 
@@ -217,9 +199,9 @@ mod tests {
         m.on_turn_started("s1");
         m.on_first_delta("s1");
         m.on_turn_aborted("s1");
-        let dbg = m.debug_snapshot();
-        assert_eq!(dbg.inflight_count, 0);
-        assert_eq!(dbg.warmed_sessions_count, 0);
+        let (inflight, warmed) = m.debug_counts();
+        assert_eq!(inflight, 0);
+        assert_eq!(warmed, 0);
         // 中断轮不污染 perf 累计：不写 tokens、不计 TTFT/TPS。
         let s = m.snapshot();
         assert_eq!(s.gen_tokens_total, 0);
@@ -235,15 +217,15 @@ mod tests {
         m.on_first_delta("s1");
         m.on_turn_complete("s1", 10, 5, None, None);
         m.on_turn_started("s2");
-        let dbg = m.debug_snapshot();
-        assert_eq!(dbg.inflight_count, 1);
-        assert_eq!(dbg.warmed_sessions_count, 1);
+        let (inflight, warmed) = m.debug_counts();
+        assert_eq!(inflight, 1);
+        assert_eq!(warmed, 1);
         // 删除 s1：warmed 应清空。删除 s2：inflight 应清空。
         m.drop_session("s1");
         m.drop_session("s2");
-        let dbg = m.debug_snapshot();
-        assert_eq!(dbg.inflight_count, 0);
-        assert_eq!(dbg.warmed_sessions_count, 0);
+        let (inflight, warmed) = m.debug_counts();
+        assert_eq!(inflight, 0);
+        assert_eq!(warmed, 0);
         // drop_session 幂等：再删一次无副作用。
         m.drop_session("s1");
     }

@@ -648,7 +648,7 @@ fn adapter_descriptor_and_native_turn_contract_are_exact() {
     assert!(!format!("{task:?}").contains("SYNTHETIC_PRIVATE_REFERENCE"));
 
     let prepared = adapter
-        .prepare_task(task, &RunContext::new("run-1", snapshot.path().join("run")))
+        .prepare_task(task, &RunContext::new("run-1"))
         .unwrap();
     assert_eq!(prepared.task().task_id(), task.task_id());
 }

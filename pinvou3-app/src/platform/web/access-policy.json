@@ -97,7 +97,6 @@
     "session_mounted_collections_snapshot",
     "session_remove_mounted_collection",
     "session_set_mounted_collection_enabled",
-    "session_set_mounted_collections",
     "session_unmount_collection",
     "set_mode_default",
     "set_plan_mode_next",

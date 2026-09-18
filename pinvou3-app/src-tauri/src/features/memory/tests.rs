@@ -424,7 +424,7 @@ fn preference_and_work_context_topic_updates_commit_before_old_cleanup() {
     assert_eq!(context.value.topic, "project_context");
     assert!(!old_preference_path.exists());
     assert!(!old_context_path.exists());
-    assert_eq!(list_preferences().unwrap().len(), 1);
+    assert_eq!(load_preferences().unwrap().len(), 1);
     assert_eq!(load_work_context().unwrap().len(), 1);
     drop(home);
 }
@@ -464,7 +464,7 @@ fn topic_migration_lifecycle_hides_intermediate_duplicate_from_overview() {
     });
     ready.wait();
     let (sent, received) = std::sync::mpsc::channel();
-    let reader = std::thread::spawn(move || sent.send(list_preferences()).unwrap());
+    let reader = std::thread::spawn(move || sent.send(load_preferences()).unwrap());
     assert!(
         received
             .recv_timeout(std::time::Duration::from_millis(30))
@@ -869,7 +869,7 @@ fn authoritative_writes_commit_when_derived_runtime_source_is_unavailable() {
     })
     .unwrap();
     confirm_pending_memory(&preference.id).unwrap().unwrap();
-    let preference_id = list_preferences().unwrap()[0].id.clone();
+    let preference_id = load_preferences().unwrap()[0].id.clone();
 
     fs::create_dir_all(recent_work_path().parent().unwrap()).unwrap();
     fs::write(recent_work_path(), "not-json\n").unwrap();
@@ -886,11 +886,11 @@ fn authoritative_writes_commit_when_derived_runtime_source_is_unavailable() {
     .unwrap();
     assert_eq!(updated.value.text, "Use detailed answers");
     assert!(updated.cleanup_warning.is_none());
-    assert_eq!(list_preferences().unwrap()[0].text, "Use detailed answers");
+    assert_eq!(load_preferences().unwrap()[0].text, "Use detailed answers");
     assert!(render_memory_block().is_err());
 
     assert!(delete_preference(&preference_id).unwrap());
-    assert!(list_preferences().unwrap().is_empty());
+    assert!(load_preferences().unwrap().is_empty());
     assert!(render_memory_block().is_err());
 
     let profile_candidate = enqueue_memory_candidate(MemorySuggestion {
@@ -1014,7 +1014,6 @@ fn llm_review_sanitizer_rejects_question_labels() {
         content: "谁".to_string(),
         confidence: 0.99,
         ttl_days: None,
-        reason: String::new(),
     };
     assert!(sanitize_llm_memory_item(item, false).is_none());
 }
@@ -1028,7 +1027,6 @@ fn llm_review_sanitizer_cleans_explicit_profile_labels() {
         content: "称呼：欣哥".to_string(),
         confidence: 0.99,
         ttl_days: None,
-        reason: String::new(),
     };
     let decision = sanitize_llm_memory_item(item, false).unwrap();
     let suggestion = decision.suggestion;
@@ -1062,7 +1060,6 @@ fn llm_review_sanitizer_does_not_override_recent_kind_by_status_words() {
         content: "已生成初稿，正在继续完善人力资源手册".to_string(),
         confidence: 0.9,
         ttl_days: None,
-        reason: String::new(),
     };
     let decision = sanitize_llm_memory_item(item, false).unwrap();
     assert_eq!(decision.suggestion.kind, "current_focus");
@@ -1080,8 +1077,8 @@ fn llm_review_prompt_matches_supported_actions() {
 }
 
 /// The memory review prompt body carries no language constraint of its own; the
-/// output-language directive is appended per locale (`content` / `reason` follow
-/// the UI language, enum values stay ASCII); zh-Hans/unknown → no-op. The en/ja
+/// output-language directive is appended per locale (`content` follows the UI
+/// language, enum values stay ASCII); zh-Hans/unknown → no-op. The en/ja
 /// branches are defense-in-depth (memory is disabled for non-Chinese UIs by
 /// enforce_memory_locale_policy), mirroring the review-side precedent.
 #[test]
@@ -1092,9 +1089,8 @@ fn memory_review_output_language_directive_follows_locale() {
     assert!(
         en.contains("Write EVERY natural-language value")
             && en.contains("`content`")
-            && en.contains("`reason`")
             && en.contains("English"),
-        "en directive must cover content/reason and name English: {en}"
+        "en directive must cover content and name English: {en}"
     );
     assert!(
         en.contains("Keep") && en.contains("JSON keys") && en.contains("exactly as"),
@@ -1132,7 +1128,6 @@ fn scenario_review_writes_long_and_recent_memories() {
                 content: "用户希望被称呼为欣哥".to_string(),
                 confidence: 0.98,
                 ttl_days: None,
-                reason: "明确称呼".to_string(),
             },
             LlmMemoryItem {
                 action: "pending_confirm".to_string(),
@@ -1141,7 +1136,6 @@ fn scenario_review_writes_long_and_recent_memories() {
                 content: "回答默认先给结论，再给关键步骤".to_string(),
                 confidence: 0.88,
                 ttl_days: None,
-                reason: "长期回答偏好需确认".to_string(),
             },
             LlmMemoryItem {
                 action: "auto_write".to_string(),
@@ -1150,7 +1144,6 @@ fn scenario_review_writes_long_and_recent_memories() {
                 content: "用户长期负责公司内部制度、流程和办公文档建设".to_string(),
                 confidence: 0.96,
                 ttl_days: None,
-                reason: "稳定工作背景".to_string(),
             },
             LlmMemoryItem {
                 action: "auto_write".to_string(),
@@ -1159,7 +1152,6 @@ fn scenario_review_writes_long_and_recent_memories() {
                 content: "正在推进公司人力资源手册更新，后续可能继续细化结构和页面".to_string(),
                 confidence: 0.91,
                 ttl_days: Some(21),
-                reason: "短期持续事项".to_string(),
             },
             LlmMemoryItem {
                 action: "auto_write".to_string(),
@@ -1168,7 +1160,6 @@ fn scenario_review_writes_long_and_recent_memories() {
                 content: "已完成公司人力资源手册 PPT 初稿，包含制度说明和章节结构".to_string(),
                 confidence: 0.9,
                 ttl_days: Some(14),
-                reason: "近期交付结果".to_string(),
             },
         ],
     };
@@ -1256,7 +1247,6 @@ fn scenario_review_filters_low_quality_memory() {
                 content: "帮我写一个周报".to_string(),
                 confidence: 0.95,
                 ttl_days: None,
-                reason: "一次性任务不应记忆".to_string(),
             },
             LlmMemoryItem {
                 action: "auto_write".to_string(),
@@ -1265,7 +1255,6 @@ fn scenario_review_filters_low_quality_memory() {
                 content: "api_key=abcdef".to_string(),
                 confidence: 0.95,
                 ttl_days: None,
-                reason: "敏感信息不应记忆".to_string(),
             },
             LlmMemoryItem {
                 action: "auto_write".to_string(),
@@ -1274,7 +1263,6 @@ fn scenario_review_filters_low_quality_memory() {
                 content: "已完成欧洲旅游规划初稿".to_string(),
                 confidence: 0.5,
                 ttl_days: Some(14),
-                reason: "低置信度不应写入".to_string(),
             },
         ],
     };
@@ -1481,7 +1469,6 @@ fn memory_jsonl_writes_are_bounded() {
                     PENDING_STATUS_IGNORED
                 }
                 .to_string(),
-                seen_count: 1,
                 created_at: ts.clone(),
                 updated_at: ts,
             }
@@ -1535,7 +1522,6 @@ fn llm_recent_work_accepts_delivery_completion_status() {
         content: "已生成营商环境推进会报告".to_string(),
         confidence: 0.86,
         ttl_days: None,
-        reason: String::new(),
     };
     let decision = sanitize_llm_memory_item(item, false).unwrap();
     let suggestion = decision.suggestion;
@@ -1892,7 +1878,6 @@ fn explicit_signal_relaxes_auto_write_confidence_gates() {
         content: "用户长期负责公司内部制度、流程和办公文档建设".to_string(),
         confidence: 0.91,
         ttl_days: None,
-        reason: String::new(),
     };
     let timed_item = LlmMemoryItem {
         action: "auto_write".to_string(),
@@ -1901,7 +1886,6 @@ fn explicit_signal_relaxes_auto_write_confidence_gates() {
         content: "正在推进公司人力资源手册更新，后续继续细化章节结构".to_string(),
         confidence: 0.82,
         ttl_days: Some(21),
-        reason: String::new(),
     };
 
     // Default gates: work_context 0.91 < 0.94 and timed 0.82 < 0.86 → all fall
@@ -2246,7 +2230,7 @@ async fn organize_memory_merges_duplicates_and_deletes_stale_focus() {
 
     // After the merge only one preference remains, holding the merged content;
     // the stale focus entry is deleted.
-    let preferences = list_preferences().unwrap();
+    let preferences = load_preferences().unwrap();
     assert_eq!(preferences.len(), 1);
     assert!(preferences[0].text.contains("再给步骤"));
     assert!(load_current_focus().unwrap().is_empty());
@@ -2382,7 +2366,7 @@ async fn organize_update_ignores_model_topic_and_never_migrates_buckets() {
     let report = organize_memory_with_llm(&bridge, None).await.unwrap();
 
     assert_eq!(report.updated["preference"], 1);
-    let preferences = list_preferences().unwrap();
+    let preferences = load_preferences().unwrap();
     assert_eq!(
         preferences.len(),
         2,
@@ -2449,7 +2433,7 @@ async fn organize_merge_skips_source_deletion_when_keep_update_fails() {
     // The source entry survives, nothing is counted, but a "merge skipped"
     // warning is left behind.
     assert!(
-        list_preferences()
+        load_preferences()
             .unwrap()
             .iter()
             .any(|item| item.id == id_b),
@@ -2580,7 +2564,7 @@ async fn organize_memory_canceled_before_apply_applies_nothing() {
 
     assert!(error.to_string().contains("canceled"), "{error:#}");
     assert!(
-        list_preferences()
+        load_preferences()
             .unwrap()
             .iter()
             .any(|item| item.id == id_a),
@@ -3087,7 +3071,7 @@ async fn organize_skips_targets_edited_during_the_llm_call() {
     let report = organize_memory_with_llm(&bridge, None).await.unwrap();
 
     // Every edited value survives the stale action aimed at its id.
-    let preferences = list_preferences().unwrap();
+    let preferences = load_preferences().unwrap();
     let find_preference = |id: &str| {
         preferences
             .iter()

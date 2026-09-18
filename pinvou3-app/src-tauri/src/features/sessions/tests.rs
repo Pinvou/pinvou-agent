@@ -99,7 +99,6 @@ fn reopen_store(store: &SessionStore) -> Result<SessionStore> {
     reopened.load_hidden_sessions();
     reopened.load_aux_sessions();
     reopened.load_session_mode_states();
-    reopened.migrate_legacy_session_workspaces();
     {
         let _mutation = reopened.scheduled_mutation.lock();
         reopened.enforce_session_retention_locked()?;
@@ -449,126 +448,6 @@ fn workspace_binding_sidecar_ignores_residue_of_deleted_session() {
         store.session_workspace_binding(&s.metadata.id).is_none(),
         "会话记录已删时残留 sidecar 不得复活绑定"
     );
-
-    let _ = std::fs::remove_dir_all(&bound_dir);
-}
-
-#[test]
-fn migrate_legacy_session_workspaces_converges_to_per_session_sidecars() {
-    let (store, _g) = isolated_store();
-    let s = store
-        .create_new("/model".into(), None, std::env::temp_dir())
-        .expect("create");
-    let bound_dir = unique_temp_dir("user-workspace-migrate");
-    std::fs::create_dir_all(&bound_dir).expect("create bound dir");
-    // Legacy pre-consolidation format: a global table {session_id: path}, with
-    // both live-session and ghost entries.
-    let legacy = paths::sessions_root().join("_session_workspaces.json");
-    std::fs::write(
-        &legacy,
-        serde_json::to_string_pretty(&std::collections::HashMap::from([
-            (s.metadata.id.clone(), bound_dir.clone()),
-            ("ghost-session-id".to_string(), bound_dir.clone()),
-        ]))
-        .expect("serialize legacy"),
-    )
-    .expect("write legacy");
-
-    store.migrate_legacy_session_workspaces();
-    // Live-session entries converge into per-session sidecars; even after the
-    // in-memory cache is cleared they can be read back from the sidecar
-    // (read-through), leaving execution-root resolution unaffected.
-    store.session_workspaces.write().clear();
-    assert_eq!(
-        store.session_workspace_binding(&s.metadata.id),
-        Some(bound_dir.clone())
-    );
-    let sidecar = paths::sessions_root()
-        .join(&s.metadata.id)
-        .join("workspace-binding.json");
-    assert!(sidecar.is_file());
-    let roots = store.session_roots(&s.metadata.id).expect("roots");
-    assert_eq!(roots.execution, bound_dir);
-    // Ghost entries are not migrated (no directory is created for deleted
-    // sessions); the old table is removed once migration completes.
-    assert!(!paths::sessions_root().join("ghost-session-id").exists());
-    assert!(!legacy.exists());
-
-    let _ = std::fs::remove_dir_all(&bound_dir);
-}
-
-/// Partial migration failure: failed entries keep the old file and are taken
-/// over by the in-memory cache so they still resolve, retried on the next boot;
-/// the cache is extended rather than replaced wholesale — entries bound earlier
-/// in this boot must not be dropped.
-#[test]
-fn migrate_legacy_session_workspaces_partial_failure_retains_and_extends() {
-    let (store, _g) = isolated_store();
-    let ok = store
-        .create_new("/model".into(), None, std::env::temp_dir())
-        .expect("create ok");
-    let blocked = store
-        .create_new("/model".into(), None, std::env::temp_dir())
-        .expect("create blocked");
-    let prebound = store
-        .create_new("/model".into(), None, std::env::temp_dir())
-        .expect("create prebound");
-    let bound_dir = unique_temp_dir("user-workspace-partial");
-    std::fs::create_dir_all(&bound_dir).expect("create bound dir");
-    // An entry bound before this boot's migration: a partial failure must not drop it.
-    store
-        .bind_session_workspace(&prebound.metadata.id, bound_dir.clone())
-        .expect("prebind");
-    // Make the sidecar write fail for the blocked session: its session directory
-    // path is occupied by a file of the same name (the <id>.json record still
-    // exists, so bind passes the record check and fails writing under <id>/).
-    let blocked_dir = paths::sessions_root().join(&blocked.metadata.id);
-    std::fs::write(&blocked_dir, b"not-a-dir").expect("block session dir");
-    let legacy = paths::sessions_root().join("_session_workspaces.json");
-    std::fs::write(
-        &legacy,
-        serde_json::to_string(&std::collections::HashMap::from([
-            (ok.metadata.id.clone(), bound_dir.clone()),
-            (blocked.metadata.id.clone(), bound_dir.clone()),
-        ]))
-        .expect("serialize legacy"),
-    )
-    .expect("write legacy");
-
-    store.migrate_legacy_session_workspaces();
-
-    assert!(
-        paths::sessions_root()
-            .join(&ok.metadata.id)
-            .join("workspace-binding.json")
-            .is_file(),
-        "成功条目已迁移为 sidecar"
-    );
-    assert!(
-        legacy.exists(),
-        "存在未迁移条目时旧文件必须保留（下次 boot 重试）"
-    );
-    assert_eq!(
-        store.session_workspace_binding(&blocked.metadata.id),
-        Some(bound_dir.clone()),
-        "失败条目接管进内存表，读路径仍返回绑定"
-    );
-    assert_eq!(
-        store.session_workspace_binding(&prebound.metadata.id),
-        Some(bound_dir.clone()),
-        "extend 不得丢弃本 boot 已绑定的条目"
-    );
-    // Once the failure source is removed, a retry completes and deletes the old file.
-    std::fs::remove_file(&blocked_dir).expect("unblock");
-    store.migrate_legacy_session_workspaces();
-    assert!(
-        paths::sessions_root()
-            .join(&blocked.metadata.id)
-            .join("workspace-binding.json")
-            .is_file(),
-        "重试后失败条目完成迁移"
-    );
-    assert!(!legacy.exists(), "全部迁移成功后旧文件删除");
 
     let _ = std::fs::remove_dir_all(&bound_dir);
 }

@@ -45,11 +45,6 @@ pub fn current_system_locale() -> Option<String> {
     super::super::platform::current_system_locale()
 }
 
-#[cfg(target_os = "windows")]
-pub fn bios_serial_number() -> Result<String, String> {
-    super::super::platform::bios_serial_number()
-}
-
 pub fn pandoc_tool_path() -> PathBuf {
     super::super::platform::pandoc_tool_path()
 }

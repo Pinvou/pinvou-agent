@@ -8,6 +8,7 @@ import {
 } from './pet-animation.js';
 import { loadImage } from './load-image.js';
 import { PET_REGISTRY, normalizePetId } from './pet-registry.js';
+import { useSpriteFramePlayer } from './use-sprite-frame-player.js';
 import { useReducedMotion } from '../../hooks/useReducedMotion.js';
 import './pet-settings.css';
 
@@ -22,21 +23,7 @@ const PREVIEW_FRAME_H = PET_FRAME_H * PREVIEW_SCALE;
 /** 悬停预览：挥手、跳跃、观察后回慢速 idle（序列由 pet-animation 提供，宠物无关）。 */
 function PreviewSprite({ atlasUrl }) {
   const sequence = useMemo(() => buildPreviewSequence(), []);
-  const [frameIndex, setFrameIndex] = useState(0);
-
-  // eslint-disable-next-line react-hooks/set-state-in-effect -- reset the preview frame when the atlas changes; one-shot mirror
-  useEffect(() => setFrameIndex(0), [atlasUrl]);
-  useEffect(() => {
-    const frame = sequence.frames[frameIndex] || sequence.frames[0];
-    const timer = window.setTimeout(() => {
-      setFrameIndex((current) => (
-        current + 1 < sequence.frames.length ? current + 1 : sequence.loopStartIndex
-      ));
-    }, frame.durationMs);
-    return () => window.clearTimeout(timer);
-  }, [frameIndex, sequence]);
-
-  const frame = sequence.frames[frameIndex] || sequence.frames[0];
+  const frame = useSpriteFramePlayer(sequence, { resetKey: atlasUrl });
   return (
     <div
       className="pet-card-sprite"
@@ -72,11 +59,7 @@ export default function PetSettingsSection({ enabled, selectedPetId, t, onSelect
 
   // 封面与图集分两级进状态机：封面是轻量资源，先到先显示——图集 decode
   // 期间卡片必须一直露出封面（需求硬性要求），而不是空白占位。
-  const loadPetCover = (id) => {
-    setAssets((state) => ({
-      ...state,
-      [id]: { ...state[id], coverFailed: false },
-    }));
+  const loadCoverInto = (id) => {
     PET_REGISTRY[id].cover()
       .then(loadImage)
       .then((cover) => {
@@ -89,6 +72,14 @@ export default function PetSettingsSection({ enabled, selectedPetId, t, onSelect
       });
   };
 
+  const loadPetCover = (id) => {
+    setAssets((state) => ({
+      ...state,
+      [id]: { ...state[id], coverFailed: false },
+    }));
+    loadCoverInto(id);
+  };
+
   const loadPetAssets = (id) => {
     // 与在途加载去重:重试可重复点击,封面或图集任一在途时不再重复发请求。
     const current = assets[id];
@@ -97,17 +88,8 @@ export default function PetSettingsSection({ enabled, selectedPetId, t, onSelect
       ...state,
       [id]: { ...state[id], status: 'loading', coverFailed: false, atlasStatus: 'loading' },
     }));
+    loadCoverInto(id);
     const entry = PET_REGISTRY[id];
-    entry.cover()
-      .then(loadImage)
-      .then((cover) => {
-        if (!aliveRef.current) return;
-        setAssets((state) => ({ ...state, [id]: { ...state[id], cover } }));
-      })
-      .catch(() => {
-        if (!aliveRef.current) return;
-        setAssets((state) => ({ ...state, [id]: { ...state[id], coverFailed: true } }));
-      });
     entry.atlas()
       .then(loadImage)
       .then((atlas) => {
