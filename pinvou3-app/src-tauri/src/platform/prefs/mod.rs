@@ -429,7 +429,7 @@ pub struct AdvancedPrefs {
     /// 全局默认/当前激活模型 id(新建会话继承它)。None = 回退列表首条。
     #[serde(default)]
     pub active_model_id: Option<String>,
-    /// MegaCube(GB10) 本地大模型一键引导是否成功跑过一次。
+    /// 厂商预装本地大模型一键引导是否成功跑过一次。
     /// 置真后首屏引导框永不再弹(见 `local_vllm_setup::detect`)。引导失败/被跳过不置真。
     #[serde(default)]
     pub local_vllm_bootstrapped: bool,

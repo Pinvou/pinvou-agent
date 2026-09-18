@@ -7,7 +7,7 @@
 #
 # 用法:
 #   scripts/asr/setup-sensevoice.sh [q4_k|q8_0]      # 量化档,默认 q4_k(174MB)
-#   GGML_CUDA=ON scripts/asr/setup-sensevoice.sh     # GB10 等带 GPU 的机器开 CUDA 加速
+#   GGML_CUDA=ON scripts/asr/setup-sensevoice.sh     # 带 GPU 的机器开 CUDA 加速
 #
 # 依赖: git / gcc / g++ / make（apt install build-essential git）; ffmpeg(转码,建议)。
 #       cmake 缺失会自动下预编译(免 root)。

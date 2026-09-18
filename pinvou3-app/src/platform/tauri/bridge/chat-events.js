@@ -1502,7 +1502,7 @@
     notify();
   });
 
-  // vllm-setup:phase —— MegaCube 本地大模型引导阶段(authorizing→waiting{attempt}→ready),驱动引导框步骤指示。
+  // vllm-setup:phase —— 厂商预装本地大模型引导阶段(authorizing→waiting{attempt}→ready),驱动引导框步骤指示。
   listen("vllm-setup:phase", function (e) {
     const p = e.payload || {};
     if (!p.phase) return;

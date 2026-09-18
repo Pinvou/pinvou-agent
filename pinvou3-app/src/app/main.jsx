@@ -840,7 +840,6 @@ const NAV_PREFETCH = {
           setCurrentView('chat');
         }
       }, [browserActive, currentView, setCurrentView]);
-      const showMegacubeSite = !!platformCapabilities.showMegacubeSite;
       const codexAcpSupported = usePlatformCapability('acpCodeMode') && (isWeb || !!platformCapabilities.codexAcpSupported);
       const [codexSessions, setCodexSessions] = useState([]);
       const [codexDraftEpoch, setCodexDraftEpoch] = useState(0);
@@ -996,7 +995,7 @@ const NAV_PREFETCH = {
       }, [currentView]);
       // 工具商店/卡片用 Tailwind dark: 变体(darkMode:'class'),全局挂 <html>.dark 让其随 app 主题切换
       useEffect(() => { document.documentElement.classList.toggle('dark', activeTheme === 'dark'); }, [activeTheme]);
-      // MegaCube(GB10) 首屏检测:仅启动一次,检测「预装但未启用」本地大模型环境(后端短路保证普通机零开销)。
+      // 厂商预装本地大模型首屏检测:仅启动一次,检测「预装但未启用」本地大模型环境(后端短路保证普通机零开销)。
       useEffect(() => {
         if (bridge.available && platformCapabilities.localVllmSupported) {
           bridge.vllm.detectLocalVllmSetup();
@@ -3596,18 +3595,6 @@ const NAV_PREFETCH = {
                     </button>
                   </>
                 )}
-                {showMegacubeSite && (
-                  <button type="button"
-                    onClick={() => invokeTauri('open_external_url', { url: 'https://www.h3c.com/cn/pub/minisite/202606/MegaCube/megacube/index.html' })}
-                    title={t.megacubeSite}
-                    className={`flex items-center rounded-xl transition-colors ${isSidebarOpen ? 'flex-1 min-w-0 px-2 py-1.5 gap-3' : 'justify-center w-10 h-10'} ${activeTheme === 'dark' ? 'hover:bg-[#333537] active:bg-[#3A3C3E]' : 'hover:bg-[#E1E5EA] active:bg-[#D8DCE1]'}`}
-                  >
-                    <img src="assets/megacube-icon.png" alt="MegaCube" className="w-8 h-8 shrink-0 rounded-lg object-contain" />
-                    {isSidebarOpen && (
-                      <span className="text-[14px] font-medium leading-none whitespace-nowrap text-left">MegaCube</span>
-                    )}
-                  </button>
-                )}
                 {isSidebarOpen && (
                   <div className="flex items-center gap-1">
                     {can('webAccessAdmin') && <button type="button"
@@ -3872,7 +3859,7 @@ const NAV_PREFETCH = {
               </div>
             )}
 
-            {/* MegaCube(GB10) 本地大模型一键引导 —— 全局首屏弹窗;引导中禁止背景关窗 */}
+            {/* 厂商预装本地大模型一键引导 —— 全局首屏弹窗;引导中禁止背景关窗 */}
             {vllmSetupModalOpen && browserOverlayPublicationReady && (
               // biome-ignore lint/a11y/useKeyWithClickEvents: keyboard users close the dialog through its real buttons
               // biome-ignore lint/a11y/noStaticElementInteractions: this is a pointer-only backdrop around an accessible dialog card

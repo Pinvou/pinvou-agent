@@ -57,7 +57,7 @@ const RELEASE_ENV_DEFAULTS: &[(&str, &str)] = &[
     // 与 CodeWhale 的 stream_chunk_timeout 默认值保持一致。
     ("DEEPSEEK_STREAM_IDLE_TIMEOUT_SECS", "300"),
     // SSE 首响应头超时(open timeout):底座只认 env,默认 45s 是为云端调的。
-    // 本地 GB10 大上下文 SubAgent 请求首 token TTFT 偶发 >45s → 误杀子 agent。
+    // 本地统一内存设备大上下文 SubAgent 请求首 token TTFT 偶发 >45s → 误杀子 agent。
     // 280s 与
     // ~/.deepseek config 的 subagent api_timeout=300 对齐(步级超时须更大)。
     ("DEEPSEEK_STREAM_OPEN_TIMEOUT_SECS", "280"),

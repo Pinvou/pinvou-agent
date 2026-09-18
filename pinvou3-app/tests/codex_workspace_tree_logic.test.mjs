@@ -8,7 +8,7 @@ import {
 // 与 features/codex_acp/workspace.rs 的「工作区路径不存在: <path>」对齐
 // （Tauri invoke 把 with_context 错误链字符串化后 reject，前端见完整链）。
 {
-  const backendError = '读取 Codex 工作区失败: 工作区路径不存在: .luzeyang: 系统找不到指定的文件。 (os error 2)';
+  const backendError = '读取 Codex 工作区失败: 工作区路径不存在: .local-notes: 系统找不到指定的文件。 (os error 2)';
   assert.equal(isMissingWorkspaceDirectoryError(backendError), true);
   assert.equal(isMissingWorkspaceDirectoryError(new Error(backendError)), true);
   // 其他错误（权限/IO/工作区整体不可用）不误判。
@@ -22,15 +22,15 @@ import {
 // ── pruneMissingDirectory：逐出消失目录及其子路径 ────────────────────
 // 目标目录（含子路径）从展开集合与条目缓存移除，祖先/兄弟/无关路径保留。
 {
-  const expanded = new Set(['.luzeyang', '.luzeyang/docs', 'src', 'src/features']);
+  const expanded = new Set(['.local-notes', '.local-notes/docs', 'src', 'src/features']);
   const entriesByDirectory = {
     '': [{ name: 'root' }],
-    '.luzeyang': [{ name: 'a.md' }],
-    '.luzeyang/docs': [{ name: 'b.md' }],
+    '.local-notes': [{ name: 'a.md' }],
+    '.local-notes/docs': [{ name: 'b.md' }],
     src: [{ name: 'main.ts' }],
   };
   const { expanded: nextExpanded, entriesByDirectory: nextEntries } =
-    pruneMissingDirectory(expanded, entriesByDirectory, '.luzeyang');
+    pruneMissingDirectory(expanded, entriesByDirectory, '.local-notes');
   assert.deepEqual([...nextExpanded].sort((a, b) => a.localeCompare(b)), ['src', 'src/features']);
   assert.deepEqual(Object.keys(nextEntries).sort((a, b) => a.localeCompare(b)), ['', 'src']);
   // 保留的条目引用不变（不重建数组），根目录（''）不受逐出影响。

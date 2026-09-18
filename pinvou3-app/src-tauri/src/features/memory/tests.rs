@@ -979,7 +979,7 @@ fn safety_filters_allow_format_symbols_but_block_real_secrets() {
     assert!(!looks_sensitive("示例里可以使用 name=value 格式"));
     assert!(!looks_sensitive("文档偏好使用 Markdown/表格"));
     assert!(looks_sensitive("我的邮箱是 user@example.com"));
-    assert!(looks_sensitive("文件在 /home/hexin/report.md"));
+    assert!(looks_sensitive("文件在 /home/dev/report.md"));
     assert!(looks_sensitive("api_key=abcdef"));
     assert!(looks_sensitive("我的手机号是 13800138000"));
 }
@@ -1564,7 +1564,7 @@ fn delivery_tool_summary_keeps_artifact_path_after_long_content() {
     let presented = summarize_tool_start(
         "mcp_pinvou3_present_artifact",
         &json!({
-            "path": "/home/hexin/.pinvou3/sessions/tvqydl2b6sjd0/workspace/italy_travel_guide.md",
+            "path": "/home/dev/.pinvou3/sessions/tvqydl2b6sjd0/workspace/italy_travel_guide.md",
             "title": "意大利12天深度慢游攻略",
             "description": "罗马、佛罗伦萨、威尼斯行程规划"
         }),
