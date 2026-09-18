@@ -3408,8 +3408,9 @@ mod tests {
             "inventory interpretation belongs in the static session prompt"
         );
         use crate::features::marketplace::{ConnectorScope, save_disabled_connectors_for};
-        save_disabled_connectors_for(ConnectorScope::Plain, &["weather".into(), "qcc".into()]);
-        save_disabled_connectors_for(ConnectorScope::Code, &[]);
+        save_disabled_connectors_for(ConnectorScope::Plain, &["weather".into(), "qcc".into()])
+            .unwrap();
+        save_disabled_connectors_for(ConnectorScope::Code, &[]).unwrap();
 
         let inventory = |sid: &str| -> serde_json::Value {
             let Op::SendMessage { content, .. } = bridge
@@ -3463,7 +3464,7 @@ mod tests {
         let denied = crate::features::marketplace::disabled_tool_names_for(ConnectorScope::Plain);
         assert!(denied.contains(&"mcp_weather_get_weather".to_string()));
         assert!(denied.contains(&"mcp_qcc-company_*".to_string()));
-        save_disabled_connectors_for(ConnectorScope::Plain, &[]);
+        save_disabled_connectors_for(ConnectorScope::Plain, &[]).unwrap();
         assert!(
             inventory("plain")
                 .as_array()
@@ -3541,7 +3542,8 @@ mod tests {
         crate::features::marketplace::save_disabled_connectors_for(
             ConnectorScope::Plain,
             &["weather".to_string()],
-        );
+        )
+        .unwrap();
         // code scope 未初始化 → 默认全禁已装连接器。
         let tools = vec!["kb_search".to_string()];
         let shaped = bridge.shape_disallowed_tools("sess-code", tools.clone());
@@ -3555,7 +3557,8 @@ mod tests {
         crate::features::marketplace::save_disabled_connectors_for(
             ConnectorScope::Code,
             &["pptx".to_string()],
-        );
+        )
+        .unwrap();
         let shaped = bridge.shape_disallowed_tools("sess-code", tools.clone());
         assert!(!shaped.contains(&weather[0]));
         assert!(shaped.contains(&pptx[0]));
@@ -3599,7 +3602,8 @@ mod tests {
         crate::features::marketplace::save_disabled_connectors_for(
             ConnectorScope::Plain,
             &["feishu".to_string()],
-        );
+        )
+        .unwrap();
         let rs = bridge.scope_deny_ruleset_with("sess-plain", Vec::new());
         let mut cmds: Vec<&str> = rs
             .ask_rules
@@ -3650,7 +3654,8 @@ mod tests {
         crate::features::marketplace::save_disabled_connectors_for(
             ConnectorScope::Code,
             &["dingtalk".to_string()],
-        );
+        )
+        .unwrap();
         let rs = bridge.scope_deny_ruleset_with("sess-code", Vec::new());
         let mut cmds: Vec<&str> = rs
             .ask_rules
@@ -3709,7 +3714,8 @@ mod tests {
         crate::features::marketplace::save_disabled_connectors_for(
             ConnectorScope::Plain,
             &["feishu".to_string()],
-        );
+        )
+        .unwrap();
         let rs = bridge.scope_deny_ruleset_with("sess-plain", Vec::new());
 
         let engine = codewhale_execpolicy::ExecPolicyEngine::with_rulesets(vec![rs]);
@@ -3888,7 +3894,8 @@ mod tests {
         crate::features::marketplace::skill_scope::save_disabled_skills_for(
             ConnectorScope::Plain,
             &["my-skill".to_string()],
-        );
+        )
+        .unwrap();
         let rs = bridge.scope_deny_ruleset("sess-plain");
         assert!(
             rs.ask_rules.iter().any(|r| r
@@ -3905,7 +3912,8 @@ mod tests {
         crate::features::marketplace::skill_scope::save_disabled_skills_for(
             ConnectorScope::Plain,
             &[],
-        );
+        )
+        .unwrap();
         assert!(
             bridge
                 .scope_deny_ruleset("sess-plain")

@@ -439,15 +439,17 @@ pub fn dingtalk_skills_should_show() -> bool {
 pub async fn dingtalk_apply_skills() -> Result<Value, String> {
     let show = tokio::task::spawn_blocking(|| -> Result<bool, String> {
         let show = dingtalk_skills_should_show();
+        // Deny-first transaction boundary (#517 review): see
+        // feishu_apply_skills — the gate sync runs before any skill file is
+        // written, so a refusal cannot leave the connector exposed.
+        if show {
+            crate::features::marketplace::sync_deny_all_scopes_after_install("dingtalk")?;
+        }
         GATE.apply_skills(show)?;
         Ok(show)
     })
     .await
     .map_err(|e| format!("spawn_blocking: {e}"))??;
-    // scope 门禁同步：见 feishu_apply_skills 同名注释（code 默认关语义对齐）。
-    if show {
-        crate::features::marketplace::sync_deny_all_scopes_after_install("dingtalk");
-    }
     Ok(json!({ "visible": show }))
 }
 pub async fn dingtalk_skills_state() -> Result<Value, String> {
