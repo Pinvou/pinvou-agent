@@ -282,12 +282,14 @@ impl Store {
         })
     }
 
-    /// 内存库（单测用）。
-    #[allow(dead_code)] // 仅 #[cfg(test)] 引用；保留给日后 daemon/集成测试
+    /// In-memory store (unit tests only). Test fixtures build stores solely
+    /// through this constructor; production always goes through [`Store::open`].
+    #[cfg(test)]
     pub fn open_in_memory() -> rusqlite::Result<Self> {
         Self::from_conn(Connection::open_in_memory()?)
     }
 
+    #[cfg(test)]
     fn from_conn(conn: Connection) -> rusqlite::Result<Self> {
         conn.execute_batch(SCHEMA)?;
         conn.execute_batch(&format!("PRAGMA user_version = {SCHEMA_VERSION};"))?;

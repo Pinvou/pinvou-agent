@@ -787,122 +787,6 @@ pub fn sync_deny_all_scopes_after_install(raw_id: &str) {
 /// 包卸载/断开后同步所有 scope：从各 scope 禁用集与可见性集移除该包 id，避免残留
 /// 指向不存在的包。连接器与技能卸载共用本入口：入参可为连接器 id / 技能 id / 包 id，
 /// 统一归一为包 id。
-/// composer 连接器开关 ↔ 统一禁用集桥接（二轮评审：CLI 三数据源无桥接）。
-/// 连接器停用标志（`<connector>_disabled` 文件）只删技能目录，而 execpolicy CLI
-/// 硬拦截与技能物化排除读 `disabled_bundles.json`——开关关掉连接器时必须同步把
-/// pack id written into every scope's disabled set, and re-enabling must
-/// remove it from the effective disabled set, so both gates stay consistent.
-pub fn sync_disabled_bundles_for_connector_switch(connector_id: &str, enabled: bool) {
-    if enabled {
-        enable_bundle_in_deny_all_scopes(connector_id);
-        return;
-    }
-    // Same treatment as the enable arm: normalize the input to a package id
-    // (strip the `skill:` prefix + companion mapping), defending against
-    // callers passing non-builtin ids (review #455 R4-m1).
-    let connector_id = &to_package_id(connector_id);
-    // 单临界区 RMW（四轮评审 M-6b）：逐 scope 独立 load→save 两次加锁会在跨临界区
-    // 窗口丢并发写（lost-update），与文件内其它写方同范式——持锁读 → 改 → 一次落盘。
-    let _guard = DISABLED_BUNDLES_FILE_LOCK
-        .lock()
-        .unwrap_or_else(|poisoned| poisoned.into_inner());
-    let mut file = load_disabled_bundles_file_locked();
-    let mut changed = false;
-    for mode in SessionMode::ALL {
-        let mut ids = resolve_scope_disabled_ids(&file, *mode);
-        if ids.iter().any(|id| id == connector_id) {
-            continue;
-        }
-        // id not in the effective disabled set (uninitialized scopes fall
-        // back to the on-the-fly expansion, and uninstalled preset packs are
-        // not in it): persisting an initialization would freeze the current
-        // expansion as user state, and future built-in packs would default
-        // on — contrary to "packs the user never touched default off";
-        // leave it alone (review #455).
-        if !file.initialized.contains(mode.as_str()) {
-            continue;
-        }
-        ids.push(connector_id.clone());
-        let key = mode.as_str().to_string();
-        file.scopes.insert(key.clone(), ids);
-        file.initialized.insert(key.clone());
-        // The user's own switch-off is an explicit verdict for this id: drop
-        // any install-default marker so a later welcome/scene opt-in cannot
-        // lift it (round-12 self-review: a stale marker from an earlier
-        // install would otherwise outlive the uninstall that removed the
-        // entry).
-        if let Some(defaults) = file.default_off_scopes.get_mut(&key) {
-            defaults.retain(|id| id != connector_id);
-        }
-        changed = true;
-    }
-    if changed {
-        save_disabled_bundles_file(&file);
-    }
-}
-
-/// Bridge for the connector re-enable (enabled=true) direction: the package
-/// id must leave the **effective** disabled set. Editing only the persisted
-/// list is a silent no-op for uninitialized scopes — their gating comes from
-/// the DenyAll on-the-fly expansion (which ignores the persisted list), so
-/// the UI shows "enabled" while the CLI hard-block/skill exclusion persist
-/// (review #455 blocker). Therefore, for every scope where the package id is
-/// in the expansion and that is uninitialized, initialize with the expansion
-/// minus that id (the user just explicitly enabled = explicit opt-in);
-/// initialized scopes keep the existing remove-from-persisted-list behavior;
-/// visibility-set leftovers are cleaned up at the same time.
-fn enable_bundle_in_deny_all_scopes(raw_id: &str) {
-    // Same treatment as the old enable path (save/remove and other writers):
-    // normalize the input to a package id (strip the `skill:` prefix +
-    // companion mapping), defending against callers passing non-builtin ids.
-    let connector_id = to_package_id(raw_id);
-    let _guard = DISABLED_BUNDLES_FILE_LOCK
-        .lock()
-        .unwrap_or_else(|poisoned| poisoned.into_inner());
-    let mut file = load_disabled_bundles_file_locked();
-    let mut changed = false;
-    for mode in SessionMode::ALL {
-        if mode.pack_default_policy() != PackDefaultPolicy::DenyAll {
-            continue;
-        }
-        let key = mode.as_str();
-        if file.initialized.contains(key) {
-            continue;
-        }
-        let mut ids = resolve_scope_disabled_ids(&file, *mode);
-        let before = ids.len();
-        ids.retain(|id| id != &connector_id);
-        if ids.len() == before {
-            continue;
-        }
-        file.scopes.insert(key.to_string(), ids);
-        file.initialized.insert(key.to_string());
-        changed = true;
-    }
-    // Initialized scopes and visibility sets: remove from the persisted list
-    // (same path as uninstall cleanup). An enable also clears the
-    // install-default marker (round-11 B2): the pack is on by user gesture,
-    // so a later disable counts as that user's verdict.
-    for ids in file.scopes.values_mut() {
-        let before = ids.len();
-        ids.retain(|id| id != &connector_id);
-        changed |= ids.len() != before;
-    }
-    for defaults in file.default_off_scopes.values_mut() {
-        let before = defaults.len();
-        defaults.retain(|id| id != &connector_id);
-        changed |= defaults.len() != before;
-    }
-    for ids in file.hidden_scopes.values_mut() {
-        let before = ids.len();
-        ids.retain(|id| id != &connector_id);
-        changed |= ids.len() != before;
-    }
-    if changed {
-        save_disabled_bundles_file(&file);
-    }
-}
-
 pub fn remove_bundle_from_disabled_scopes(raw_id: &str) {
     let package_id = to_package_id(raw_id);
     let _guard = DISABLED_BUNDLES_FILE_LOCK
@@ -1173,15 +1057,38 @@ mod tests {
         });
     }
 
-    /// 并集 = 开关关 + 不可见，去重。
+    /// Unavailable = disabled + hidden, deduped; visibility writes must not
+    /// pollute the disabled set.
     #[test]
     fn unavailable_is_union_deduped() {
         with_temp_home(|| {
+            // Hidden starts empty; disabled does not — after the DenyAll
+            // convergence an uninitialized plain scope falls back to the
+            // on-the-fly expansion, so pin an explicitly initialized empty
+            // baseline first (same shape as
+            // `hidden_bundles_are_orthogonal_to_disabled`).
+            save_disabled_bundles_for(ConnectorScope::Plain, &[]);
+            assert!(load_disabled_bundles_for(ConnectorScope::Plain).is_empty());
+            assert!(load_hidden_bundles_for(ConnectorScope::Plain).is_empty());
+
+            // Disable weather, hide weather + pptx (weather appears in both sets).
             save_disabled_bundles_for(ConnectorScope::Plain, &["weather".to_string()]);
             save_hidden_bundles_for(
                 ConnectorScope::Plain,
                 &["weather".to_string(), "pptx".to_string()],
             );
+
+            // Visibility writes do not pollute the disabled set.
+            assert_eq!(
+                load_disabled_bundles_for(ConnectorScope::Plain),
+                vec!["weather".to_string()]
+            );
+            assert_eq!(
+                load_hidden_bundles_for(ConnectorScope::Plain),
+                vec!["weather".to_string(), "pptx".to_string()]
+            );
+
+            // Union dedup: weather appears exactly once.
             let mut u = unavailable_bundles_for(ConnectorScope::Plain);
             u.sort();
             assert_eq!(u, vec!["pptx".to_string(), "weather".to_string()]);
@@ -1301,7 +1208,9 @@ mod tests {
     /// The user's own switch-off is explicit, so it must drop an
     /// install-default marker left by an earlier install (round-12
     /// self-review); the marker is only ever written by install-sync, the
-    /// welcome/scene opt-in, and the restore gate.
+    /// welcome/scene opt-in, and the restore gate. Driven through the live
+    /// connector switch (the composer's whole-list write,
+    /// `save_disabled_bundles_for`).
     #[test]
     fn connector_switch_off_clears_the_install_default_marker() {
         with_temp_home(|| {
@@ -1311,7 +1220,9 @@ mod tests {
                 r#"{"scopes":{"plain":["pptx"]},"default_off_scopes":{"plain":["pptx"]},"initialized":["plain"],"plain_defaults_migrated":true}"#,
             )
             .unwrap();
-            sync_disabled_bundles_for_connector_switch("pptx", true);
+            // Taking pptx back on removes the stored entry, and the
+            // install-default marker goes with it.
+            save_disabled_bundles_for(ConnectorScope::Plain, &[]);
             let file = load_disabled_bundles_file();
             assert!(
                 file.default_off_scopes
@@ -1320,7 +1231,9 @@ mod tests {
                     .unwrap_or(true),
                 "enabling clears the marker: {file:?}"
             );
-            sync_disabled_bundles_for_connector_switch("pptx", false);
+            // Switching it off again enters it as the user's own verdict; no
+            // marker may be re-armed for an entry this write transitioned.
+            save_disabled_bundles_for(ConnectorScope::Plain, &["pptx".to_string()]);
             let file = load_disabled_bundles_file();
             assert!(
                 file.default_off_scopes

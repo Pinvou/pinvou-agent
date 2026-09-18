@@ -1,13 +1,12 @@
 #!/usr/bin/env node
 import assert from 'node:assert';
-import { copyFileSync, existsSync, mkdtempSync, readFileSync, writeFileSync } from 'node:fs';
+import { copyFileSync, mkdtempSync, readFileSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
 import { fileURLToPath, pathToFileURL } from 'node:url';
 
 const here = path.dirname(fileURLToPath(import.meta.url));
 const dragSrc = path.join(here, '..', 'src', 'features', 'pet', 'pet-interaction.js');
-assert.ok(existsSync(dragSrc), 'pet-interaction.js must exist');
 
 const tempRoot = mkdtempSync(path.join(tmpdir(), 'pet-interaction-'));
 const dragTmp = path.join(tempRoot, 'pet-interaction.mjs');

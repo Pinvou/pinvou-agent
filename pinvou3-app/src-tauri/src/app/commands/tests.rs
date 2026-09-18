@@ -926,7 +926,12 @@ fn write_artifact_text_cleans_temp_file_on_error() {
     let md = tmp.join("note.md");
     std::fs::create_dir_all(&md).unwrap();
 
-    let err = atomic_write_utf8(&md, "new").unwrap_err();
+    let err = super::artifacts::atomic_write_utf8_unlocked_with(
+        &md,
+        "new",
+        crate::platform::filesystem::replace_file_atomically,
+    )
+    .unwrap_err();
 
     assert!(!err.to_string().is_empty());
     let leftovers: Vec<_> = std::fs::read_dir(&tmp)

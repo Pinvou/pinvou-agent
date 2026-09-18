@@ -12,7 +12,7 @@
 > 统一包模型与「一个包 = 一个开关」已部分落地（`BundleStore` + `bundle_readiness`），
 > §3.3 的运行时工具名发现（现为 manifest 预测）、内置 CLI 连接器归并、统一失效入口
 > （现为各开关命令分别触发刷新）与 §6 的泛化命令面（现为 `set_disabled_connectors` /
-> `set_disabled_skills` 等）为**已定方向、未实施**，实施时以本文档为准并更新本注记。
+> `set_bundle_visibility` 等）为**已定方向、未实施**，实施时以本文档为准并更新本注记。
 
 ---
 
@@ -117,10 +117,13 @@ R11-B2）记录 `scopes` 中由**安装默认**写入（非用户显式关闭）
   （防残留 hidden 误隐藏未来同名重装；ima 断开随技能卸载走同一入口）；
   CLI 连接器「断开」（logout，删授权不删记录）不走该入口，两个集合均不动；
 - 能力开关写路径（`save_disabled_bundles_for`）只写 `scopes`，不动 hidden；
-- 连接器开关（`sync_disabled_bundles_for_connector_switch`）：关闭只写
-  disabled、不动 hidden；**开回（`enable_bundle_in_deny_all_scopes`）会连带
-  清 hidden**——即开关开回后该包在所有 scope 恢复可见（行为同卸载清理，
-  实现上为未初始化 scope 物化 opt-in + 各集合内联剔除）。
+- 连接器开关（`set_disabled_connectors`）复用同一写路径：按 scope 整表重写
+  disabled 集（关闭写入、开启移除），两个方向都不动 hidden，也不经过卸载
+  清理入口——被 `set_bundle_visibility` 显式隐藏的包，开关开回后仍不可见；
+  批量开启入口（`enable_packages_in_scope`，欢迎卡/场景的
+  `enable_marketplace_packages`）例外：未初始化 scope 物化「现算扩集 − 请求
+  id」，已初始化 scope 从落盘列表移除，并连带清 hidden（隐藏包即使开关打开也
+  看不到工具）；用户显式关掉的 id（非安装默认）整批拒绝、不改状态。
 
 每个模式的默认策略显式声明为**模式身份**（`core/session_mode.rs` 的
 `SessionMode::pack_default_policy()`），不再是存储层的硬编码分支：
@@ -177,11 +180,11 @@ boot 自写 `sessions/` 目录项、缺省补写默认 `settings.json`），因�
 - 用户首次 toggle 时物化整个 scope 列表落盘 → 此后冻结，默认调整不穿透
   已做过选择的用户（`initialized` 集合标记初始化）。**已知的权衡**：物化
   的触发面比「显式开启」更宽——composer 开关**任一方向**的首次 toggle 都
-  走整表回写（纯关闭在语义上是 no-op，但同样固化当前扩集）；场景 opt-in
-  与连接器 enable 臂也会物化（后者对**全部**未初始化 DenyAll scope 一次性
-  固化，非仅用户操作的那个 scope）。落盘的是当时的现算扩集（减去被开启的
-  id）——此后应用更新新增的内置包不在落盘列表里，会在该 scope 默认**开**
-  （disable 臂对未初始化 scope 拒绝固化同一扩集，见 `scope.rs`）。产品接受
+  走整表回写（纯关闭在语义上是 no-op，但同样固化当前扩集）；场景 opt-in /
+  欢迎卡批量开启（`enable_packages_in_scope`）也会物化其请求的那个 scope
+  （未初始化时落盘「现算扩集 − 请求 id」）。落盘的是当时的现算扩集（减去被
+  开启的 id）——此后应用更新新增的内置包不在落盘列表里，会在该 scope 默认
+  **开**。产品接受
   此权衡：做过开关选择的用户视为已关注过该 scope 的外部能力面，新增包默认
   开的暴露与旧 AllowAll 语义相当且范围更窄；若需反向收敛，走后续版本的全量
   默认重置。边缘情形：
@@ -266,7 +269,7 @@ UI 或状态层出 bug 也放不出白名单外能力。已知开放侧翼：CLI
 面是经 `bash` 调用 CLI，开关只能隐藏引导；要封死需 bash hook 拦截，
 当前作为已接受风险记录于此。
 
-## 6. 前端接线（目标形态，未实施——现状为 `set_disabled_connectors` / `set_disabled_skills` / `set_bundle_visibility` 等各开关命令 + `remote_control:tools_changed` 事件）
+## 6. 前端接线（目标形态，未实施——现状为 `set_disabled_connectors` / `set_bundle_visibility` 等各开关命令 + `remote_control:tools_changed` 事件）
 
 - 命令面：`list_capability_items(scope)` 读全量状态（默认已合并），
   `set_capability_enabled(scope, id, enabled)` 唯一写入口；前端不在 JS 侧

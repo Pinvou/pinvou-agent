@@ -423,13 +423,6 @@ impl SessionStore {
         Ok(entry.clone())
     }
 
-    pub fn reset_mode_state(&self, id: &str) {
-        self.mode_states.write().remove(id);
-        if self.session_mode_states.write().remove(id).is_some() {
-            self.save_session_mode_states();
-        }
-    }
-
     pub(crate) fn take_pending_turn_injections(&self, id: &str) -> PendingTurnInjections {
         let persona = self.mode_states.write().get_mut(id).and_then(|state| {
             state

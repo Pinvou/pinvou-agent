@@ -51,3 +51,7 @@ if __name__ == "__main__":
         tag = "→news_search" if got else "→问财行情"
         print(f"{flag} {q!r:28s} {tag:14s} (expect {'重定向' if exp else '放行'})")
     print("\n全部通过 ✅" if ok else "\n有失败 ❌")
+    # The fast-gate `python3 test_*.py` loop only checks exit codes: failures
+    # must propagate as non-zero, otherwise the whole set stays green in CI
+    # forever (only pytest running test_commodity_guard() directly asserts here).
+    raise SystemExit(0 if ok else 1)

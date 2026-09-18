@@ -217,6 +217,7 @@ pub async fn dingtalk_ensure_cli() -> Result<Value, String> {
 }
 
 /// 查询当前钉钉连接状态。只返回布尔,不把身份信息带进 webview。
+/// (Only called internally by the command layer's `bundle_readiness` CLI dispatch; there is no standalone Tauri command anymore.)
 pub async fn dingtalk_status() -> Result<Value, String> {
     tokio::task::spawn_blocking(|| {
         if !dws_cli_present() {
@@ -417,9 +418,6 @@ impl ConnectorSkillGate for DingtalkGate {
     fn id(&self) -> &'static str {
         ID
     }
-    fn display_name(&self) -> &'static str {
-        "钉钉"
-    }
     fn disabled_filename(&self) -> &'static str {
         "dingtalk_disabled"
     }
@@ -433,10 +431,6 @@ const GATE: DingtalkGate = DingtalkGate;
 
 pub fn is_dingtalk_disabled() -> bool {
     GATE.is_disabled()
-}
-
-fn set_dingtalk_disabled_flag(disabled: bool) -> Result<(), String> {
-    GATE.set_disabled_flag(disabled)
 }
 
 pub fn dingtalk_skills_should_show() -> bool {
@@ -456,21 +450,6 @@ pub async fn dingtalk_apply_skills() -> Result<Value, String> {
     }
     Ok(json!({ "visible": show }))
 }
-pub async fn set_dingtalk_enabled(enabled: bool) -> Result<Value, String> {
-    let show = tokio::task::spawn_blocking(move || -> Result<bool, String> {
-        set_dingtalk_disabled_flag(!enabled)?;
-        // 停用标志 ↔ 统一禁用集桥接（见 set_feishu_enabled 同名注释）。
-        crate::features::marketplace::sync_disabled_bundles_for_connector_switch(
-            "dingtalk", enabled,
-        );
-        let show = dingtalk_skills_should_show();
-        GATE.apply_skills(show)?;
-        Ok(show)
-    })
-    .await
-    .map_err(|e| format!("spawn_blocking: {e}"))??;
-    Ok(json!({ "ok": true, "visible": show }))
-}
 pub async fn dingtalk_skills_state() -> Result<Value, String> {
     tokio::task::spawn_blocking(|| {
         let disabled = is_dingtalk_disabled();
@@ -488,7 +467,6 @@ pub async fn dingtalk_skills_state() -> Result<Value, String> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::platform::paths::tests::ENV_LOCK;
 
     #[test]
     fn auth_status_detects_authenticated() {
@@ -527,37 +505,5 @@ mod tests {
         .unwrap();
         assert!(hint.contains("钉钉组织未开启 CLI 数据访问"));
         assert!(hint.contains("xuyajing"));
-    }
-
-    #[test]
-    fn dingtalk_disabled_flag_roundtrip() {
-        let _g = ENV_LOCK.lock().unwrap_or_else(|p| p.into_inner());
-        let tmp = format!(
-            "{}/pinvou3-dingtalk-test-{}",
-            std::env::temp_dir().display(),
-            std::time::SystemTime::now()
-                .duration_since(std::time::UNIX_EPOCH)
-                .map(|d| d.as_nanos())
-                .unwrap_or(0)
-        );
-        let previous = std::env::var("PINVOU3_HOME").ok();
-        // SAFETY: holding platform::paths::tests::ENV_LOCK; env writes serialized in-process.
-        unsafe { std::env::set_var("PINVOU3_HOME", &tmp) };
-        let _ = std::fs::create_dir_all(crate::platform::paths::pinvou3_home());
-
-        set_dingtalk_disabled_flag(false).unwrap();
-        assert!(!is_dingtalk_disabled());
-        set_dingtalk_disabled_flag(true).unwrap();
-        assert!(is_dingtalk_disabled());
-        set_dingtalk_disabled_flag(false).unwrap();
-        assert!(!is_dingtalk_disabled());
-
-        match previous {
-            // SAFETY: holding platform::paths::tests::ENV_LOCK; env writes serialized in-process.
-            Some(value) => unsafe { std::env::set_var("PINVOU3_HOME", value) },
-            // SAFETY: holding platform::paths::tests::ENV_LOCK; env writes serialized in-process.
-            None => unsafe { std::env::remove_var("PINVOU3_HOME") },
-        }
-        let _ = std::fs::remove_dir_all(&tmp);
     }
 }
