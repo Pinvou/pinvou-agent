@@ -292,7 +292,14 @@
     // HTTP/1.1 429 and HTTP/2 503 (with version segment) plus axios's
     // "status code 429" are the common shapes.
     const match = String(text || "").match(/\bHTTPS?\/?[\d.]*\s*(\d{3})\b/i)
-      || String(text || "").match(/\bstatus(?:\s+code)?[=:\s]+(\d{3})\b/i);
+      || String(text || "").match(/\bstatus(?:\s+code)?[=:\s]+(\d{3})\b/i)
+      // The non-streaming lane has no SSE/axios wrapper: the base surfaces
+      // those failures through LlmError's Display text, which puts the
+      // status in parentheses ("Invalid request (400): ...", "Server error
+      // (503): ..."). Without this arm a request-format rejection on that
+      // lane carries no status to gate on and drops to the unknown/retry
+      // card, which is the exact mislabel this classifier removes.
+      || String(text || "").match(/\b(?:invalid request|server error)\s*\((\d{3})\)/i);
     return match ? Number(match[1]) : null;
   }
 
@@ -464,7 +471,14 @@
     if (hasAny(lower, normalized, ["timeout", "timed out", "dns", "connection", "network", "tls", "econnrefused", "connection refused", "connection reset", "stream read error", "chunk decode", "连接失败"])) {
       return { kind: "network", httpStatus: status };
     }
-    if (status === 400 && /\b(?:response_role|query_role)\s*:|roles? must alternate|conversation roles must alternate|(?:invalid|unsupported|unexpected) (?:message )?role\b/.test(lower)) {
+    // Request-format rejections reach this classifier through two wrappers:
+    // the SSE lane embeds the raw provider body after "HTTP <nnn>", while the
+    // non-streaming lane carries the base's InvalidRequest Display text
+    // ("Invalid request (400): <message>"). Both are parsed by
+    // extractHttpStatus, so the role/template wording decides the kind;
+    // "roles? must alternate" also covers the "conversation roles must
+    // alternate" wording.
+    if (status === 400 && /\b(?:response_role|query_role)\s*:|roles? must alternate|(?:invalid|unsupported|unexpected) (?:message )?role\b/.test(lower)) {
       return { kind: "format", httpStatus: status };
     }
     return { kind: "unknown", httpStatus: status };
