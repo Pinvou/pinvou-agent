@@ -112,8 +112,8 @@ pub async fn wecom_ensure_cli() -> Result<Value, String> {
 }
 
 /// 查询当前企微连接状态:`wecom-cli auth show --status`。
-/// 装了但低于 [`WECOM_MIN_VERSION`] 时回 `upgrade_required:true`(tmeet 同款三态;
-/// 前端 ToolStoreView 暂只读 connected,该字段待 tmeet/wecom 统一做「待升级」UI 后消费)。
+/// Installed but below [`WECOM_MIN_VERSION`] reports `upgrade_required:true` (same three-state shape as tmeet).
+/// (Only called internally by the command layer's `bundle_readiness` CLI dispatch; there is no standalone Tauri command anymore.)
 pub async fn wecom_status() -> Result<Value, String> {
     tokio::task::spawn_blocking(|| {
         // 没装就别 spawn auth show —— 省掉没装连接器的用户每次白等一次子进程;
@@ -362,10 +362,6 @@ pub fn is_wecom_disabled() -> bool {
     GATE.is_disabled()
 }
 
-fn set_wecom_disabled_flag(disabled: bool) -> Result<(), String> {
-    GATE.set_disabled_flag(disabled)
-}
-
 /// 企微技能此刻该不该出现在 skills_dir:**未手动停用 且 已连接**。
 /// 注:会 spawn wecom-cli 查 auth show(未装则 false)。
 pub fn wecom_skills_should_show() -> bool {
@@ -388,24 +384,6 @@ pub async fn wecom_apply_skills() -> Result<Value, String> {
     Ok(json!({ "visible": show }))
 }
 
-/// composer 企微开关:写停用标志 → 按规则增删技能。
-///
-/// 注:停用标志写盘此前用 `let _ =` 静默忽略失败,现统一为 `Result` 传播
-/// (Wave 1 批准的契约面变更)。
-pub async fn set_wecom_enabled(enabled: bool) -> Result<Value, String> {
-    let show = tokio::task::spawn_blocking(move || -> Result<bool, String> {
-        set_wecom_disabled_flag(!enabled)?;
-        // 停用标志 ↔ 统一禁用集桥接（见 set_feishu_enabled 同名注释）。
-        crate::features::marketplace::sync_disabled_bundles_for_connector_switch("wecom", enabled);
-        let show = wecom_skills_should_show();
-        GATE.apply_skills(show)?;
-        Ok(show)
-    })
-    .await
-    .map_err(|e| format!("spawn_blocking: {e}"))??;
-    Ok(json!({ "ok": true, "visible": show }))
-}
-
 /// 给前端渲染开关态:`{connected, enabled(=未停用), visible}`。
 pub async fn wecom_skills_state() -> Result<Value, String> {
     tokio::task::spawn_blocking(|| {
@@ -424,7 +402,6 @@ pub async fn wecom_skills_state() -> Result<Value, String> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::platform::paths::tests::ENV_LOCK;
 
     /// `--version` 输出 → 三段版本号。1.1.0 起输出带构建信息尾巴。
     /// 两段式按共享口径补 0(不因假想的「2.0」误判未装触发降级重装)。
@@ -480,36 +457,5 @@ mod tests {
             Some(&png[..])
         );
         let _ = std::fs::remove_dir_all(&dir);
-    }
-
-    /// 手动停用标志:文件存在=停用,与连接状态正交。写/删一轮。
-    #[test]
-    fn wecom_disabled_flag_roundtrip() {
-        let _g = ENV_LOCK.lock().unwrap_or_else(|p| p.into_inner());
-        let tmp = format!(
-            "{}/pinvou3-wecom-test-{}",
-            std::env::temp_dir().display(),
-            std::time::SystemTime::now()
-                .duration_since(std::time::UNIX_EPOCH)
-                .map(|d| d.as_nanos())
-                .unwrap_or(0)
-        );
-        // SAFETY: holding platform::paths::tests::ENV_LOCK; env writes serialized in-process.
-        unsafe { std::env::set_var("PINVOU3_HOME", &tmp) };
-        let _ = std::fs::create_dir_all(crate::platform::paths::pinvou3_home());
-
-        // 默认(无文件)= 未停用
-        set_wecom_disabled_flag(false).unwrap();
-        assert!(!is_wecom_disabled());
-        // 置停用 → 文件在 → 停用
-        set_wecom_disabled_flag(true).unwrap();
-        assert!(is_wecom_disabled());
-        // 复位 → 文件删 → 未停用
-        set_wecom_disabled_flag(false).unwrap();
-        assert!(!is_wecom_disabled());
-
-        // SAFETY: holding platform::paths::tests::ENV_LOCK; env writes serialized in-process.
-        unsafe { std::env::remove_var("PINVOU3_HOME") };
-        let _ = std::fs::remove_dir_all(&tmp);
     }
 }

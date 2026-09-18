@@ -12,7 +12,7 @@
 > 统一包模型与「一个包 = 一个开关」已部分落地（`BundleStore` + `bundle_readiness`），
 > §3.3 的运行时工具名发现（现为 manifest 预测）、内置 CLI 连接器归并、统一失效入口
 > （现为各开关命令分别触发刷新）与 §6 的泛化命令面（现为 `set_disabled_connectors` /
-> `set_disabled_skills` 等）为**已定方向、未实施**，实施时以本文档为准并更新本注记。
+> `set_bundle_visibility` 等）为**已定方向、未实施**，实施时以本文档为准并更新本注记。
 
 ---
 
@@ -112,9 +112,9 @@ scope 键即 `SessionMode` 的 kebab-case 名（当前 `plain` / `code`）；
   （防残留 hidden 误隐藏未来同名重装；ima 断开随技能卸载走同一入口）；
   CLI 连接器「断开」（logout，删授权不删记录）不走该入口，两个集合均不动；
 - 能力开关写路径（`save_disabled_bundles_for`）只写 `scopes`，不动 hidden；
-- 连接器开关（`sync_disabled_bundles_for_connector_switch`）：关闭只写
-  disabled、不动 hidden；**开回复用卸载清理入口，会连带清 hidden**——即
-  开关开回后该包在所有 scope 恢复可见。
+- 连接器开关（`set_disabled_connectors`）复用同一写路径：按 scope 整表重写
+  disabled 集（关闭写入、开启移除），两个方向都不动 hidden，也不经过卸载
+  清理入口——被 `set_bundle_visibility` 显式隐藏的包，开关开回后仍不可见。
 
 每个模式的默认策略显式声明为**模式身份**（`core/session_mode.rs` 的
 `SessionMode::pack_default_policy()`），不再是存储层的硬编码分支：
@@ -206,7 +206,7 @@ UI 或状态层出 bug 也放不出白名单外能力。已知开放侧翼：CLI
 面是经 `bash` 调用 CLI，开关只能隐藏引导；要封死需 bash hook 拦截，
 当前作为已接受风险记录于此。
 
-## 6. 前端接线（目标形态，未实施——现状为 `set_disabled_connectors` / `set_disabled_skills` / `set_bundle_visibility` 等各开关命令 + `remote_control:tools_changed` 事件）
+## 6. 前端接线（目标形态，未实施——现状为 `set_disabled_connectors` / `set_bundle_visibility` 等各开关命令 + `remote_control:tools_changed` 事件）
 
 - 命令面：`list_capability_items(scope)` 读全量状态（默认已合并），
   `set_capability_enabled(scope, id, enabled)` 唯一写入口；前端不在 JS 侧

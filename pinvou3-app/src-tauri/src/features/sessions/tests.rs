@@ -2290,10 +2290,10 @@ fn corrupt_previous_run_does_not_block_a_new_conversation() {
         .create_scheduled_run(scheduled_profile("task-corrupt"))
         .expect("a new run must not load or reuse a corrupt older conversation");
     assert_ne!(first.metadata.id, second.metadata.id);
-    let ids = store.scheduled_session_ids_for_task("task-corrupt");
-    assert_eq!(ids.len(), 2);
-    assert!(ids.contains(&first.metadata.id));
-    assert!(ids.contains(&second.metadata.id));
+    // Both profiles must survive the corrupt-run recovery: neither the corrupt
+    // transcript nor its replacement may purge the other run's listing.
+    assert!(store.scheduled_profile(&first.metadata.id).is_some());
+    assert!(store.scheduled_profile(&second.metadata.id).is_some());
 }
 
 #[test]

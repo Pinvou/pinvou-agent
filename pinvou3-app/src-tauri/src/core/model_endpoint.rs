@@ -1847,20 +1847,61 @@ mod tests {
         );
     }
 
-    /// TTL 缓存：同一 base_url 的探测结果缓存 60s，第二次调用不再发请求。
-    /// mock server 每次响应后关闭连接，若缓存失效第二次调用会因服务已关而
-    /// 落到 Generic——缓存命中则保持第一次的 Ollama 判定。
+    /// TTL cache: probe results are cached per base_url for 60s. The mock counts
+    /// /api/tags hits: with the cache active, two calls issue exactly one probe
+    /// (the old "server closed" premise was false — the mock keeps accepting, so
+    /// the test passed even without the cache; hence the hit-count assertion).
     #[tokio::test]
     async fn probe_local_kind_caches_result_per_base_url() {
         let _state = PROBE_STATE_TEST_MUTEX.lock().await;
         clear_probe_kind_cache();
-        let server =
-            spawn_probe_server(vec![("/api/tags", r#"{"models":[{"name":"qwen3:8b"}]}"#)]).await;
-        let first = probe_local_server_kind(&server.url, None).await;
+        use std::sync::atomic::{AtomicUsize, Ordering};
+        let hits = Arc::new(AtomicUsize::new(0));
+        let counter = hits.clone();
+        use tokio::io::{AsyncReadExt, AsyncWriteExt};
+        use tokio::net::TcpListener;
+        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = listener.local_addr().unwrap();
+        let body = r#"{"models":[{"name":"qwen3:8b"}]}"#;
+        let task = tokio::spawn(async move {
+            loop {
+                let Ok((mut stream, _)) = listener.accept().await else {
+                    break;
+                };
+                let mut buf = vec![0u8; 4096];
+                let Ok(n) = stream.read(&mut buf).await else {
+                    continue;
+                };
+                let req = String::from_utf8_lossy(&buf[..n]);
+                let path = req
+                    .lines()
+                    .next()
+                    .and_then(|l| l.split_whitespace().nth(1))
+                    .unwrap_or("/");
+                if path.starts_with("/api/tags") {
+                    counter.fetch_add(1, Ordering::SeqCst);
+                    let resp = format!(
+                        "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\n\
+                         Content-Length: {}\r\nConnection: close\r\n\r\n{body}",
+                        body.len()
+                    );
+                    let _ = stream.write_all(resp.as_bytes()).await;
+                }
+                let _ = stream.shutdown().await;
+            }
+        });
+        let url = format!("http://{addr}/v1");
+        let first = probe_local_server_kind(&url, None).await;
         assert_eq!(first, LocalServerKind::Ollama);
-        // 第二次调用命中缓存，不再访问已关闭的 server。
-        let second = probe_local_server_kind(&server.url, None).await;
+        // Second call hits the cache: same result, and no second probe request.
+        let second = probe_local_server_kind(&url, None).await;
         assert_eq!(second, LocalServerKind::Ollama);
+        assert_eq!(
+            hits.load(Ordering::SeqCst),
+            1,
+            "with the cache active, /api/tags must be probed exactly once"
+        );
+        task.abort();
         clear_probe_kind_cache();
     }
 

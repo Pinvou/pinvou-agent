@@ -3,7 +3,7 @@ import assert from 'node:assert/strict';
 import fs from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { shouldShowVoiceNotice, shouldShowVoicePill } from '../src/features/voice-composer/voice-ui-policy.mjs';
+import { shouldShowVoicePill } from '../src/features/voice-composer/voice-ui-policy.mjs';
 
 const testDir = path.dirname(fileURLToPath(import.meta.url));
 const appRoot = path.join(testDir, '..');
@@ -34,11 +34,6 @@ assert.match(codexSource, /<VoiceComposerButton[\s\S]*testId="codex-voice-input"
 assert.doesNotMatch(chatSource, /data-testid="floating-voice-button"/, 'page-level floating voice entry must not render');
 assert.doesNotMatch(chatSource, /\btabletVoiceMode\b/, 'tablet or touch mode must not enable a separate voice entry');
 assert.doesNotMatch(chatSource, /\bfloatingVoice[A-Z]/, 'floating voice state and refs should stay removed');
-assert.equal(shouldShowVoiceNotice({ status: 'failed', message: 'mic error' }), true, 'failed voice state must render a composer-wide notice');
-assert.equal(shouldShowVoiceNotice({ status: 'recording', message: 'recording…' }), true, 'active voice state with a message must render a composer-wide notice');
-assert.equal(shouldShowVoiceNotice({ status: 'cancelled', message: 'cancelled' }), false, 'cancelled voice state must not render a composer-wide notice');
-assert.equal(shouldShowVoiceNotice({ status: 'completed', message: 'done' }), false, 'completed voice state must not render a composer-wide notice');
-assert.equal(shouldShowVoiceNotice({ status: 'recording', message: '' }), false, 'voice notice requires a non-empty message');
 assert.equal(packageJson.scripts['test:floating-voice-drag'], undefined, 'obsolete floating voice drag test script must stay removed');
 
 console.log('voice_entry_policy: ok');

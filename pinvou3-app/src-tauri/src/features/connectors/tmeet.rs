@@ -148,6 +148,7 @@ pub async fn tmeet_ensure_cli() -> Result<Value, String> {
 }
 
 /// 查询当前腾讯会议连接状态。只返回布尔,不把身份 / token 信息带进 webview。
+/// (Only called internally by the command layer's `bundle_readiness` CLI dispatch; there is no standalone Tauri command anymore.)
 pub async fn tmeet_status() -> Result<Value, String> {
     tokio::task::spawn_blocking(|| {
         if tmeet_cli_version().is_none() {
@@ -423,9 +424,6 @@ impl ConnectorSkillGate for TmeetGate {
     fn id(&self) -> &'static str {
         ID
     }
-    fn display_name(&self) -> &'static str {
-        "腾讯会议"
-    }
     fn disabled_filename(&self) -> &'static str {
         "tmeet_disabled"
     }
@@ -439,10 +437,6 @@ const GATE: TmeetGate = TmeetGate;
 
 pub fn is_tmeet_disabled() -> bool {
     GATE.is_disabled()
-}
-
-fn set_tmeet_disabled_flag(disabled: bool) -> Result<(), String> {
-    GATE.set_disabled_flag(disabled)
 }
 
 pub fn tmeet_skills_should_show() -> bool {
@@ -464,20 +458,6 @@ pub async fn tmeet_apply_skills() -> Result<Value, String> {
     Ok(json!({ "visible": show }))
 }
 
-pub async fn set_tmeet_enabled(enabled: bool) -> Result<Value, String> {
-    let show = tokio::task::spawn_blocking(move || -> Result<bool, String> {
-        set_tmeet_disabled_flag(!enabled)?;
-        // 停用标志 ↔ 统一禁用集桥接（见 set_feishu_enabled 同名注释）。
-        crate::features::marketplace::sync_disabled_bundles_for_connector_switch("tmeet", enabled);
-        let show = tmeet_skills_should_show();
-        GATE.apply_skills(show)?;
-        Ok(show)
-    })
-    .await
-    .map_err(|e| format!("spawn_blocking: {e}"))??;
-    Ok(json!({ "ok": true, "visible": show }))
-}
-
 pub async fn tmeet_skills_state() -> Result<Value, String> {
     tokio::task::spawn_blocking(|| {
         let disabled = is_tmeet_disabled();
@@ -495,7 +475,6 @@ pub async fn tmeet_skills_state() -> Result<Value, String> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::platform::paths::tests::ENV_LOCK;
 
     #[test]
     fn status_detects_logged_in() {
@@ -515,14 +494,6 @@ mod tests {
         assert_eq!(parse_tmeet_version("v2.3.4"), Some((2, 3, 4)));
         assert_eq!(parse_tmeet_version("tmeet version 1.2"), Some((1, 2, 0)));
         assert_eq!(parse_tmeet_version("hello"), None);
-    }
-
-    #[test]
-    fn version_comparison_uses_semver_order() {
-        assert!(version_at_least((1, 0, 18), TMEET_MIN_VERSION));
-        assert!(version_at_least((1, 1, 0), TMEET_MIN_VERSION));
-        assert!(!version_at_least((1, 0, 17), TMEET_MIN_VERSION));
-        assert!(!version_at_least((0, 9, 99), TMEET_MIN_VERSION));
     }
 
     #[test]
@@ -560,37 +531,5 @@ mod tests {
         );
         assert_eq!(safe_auth_log_line("  hello  ").as_deref(), Some("hello"));
         assert_eq!(safe_auth_log_line("   "), None);
-    }
-
-    #[test]
-    fn tmeet_disabled_flag_roundtrip() {
-        let _g = ENV_LOCK.lock().unwrap_or_else(|p| p.into_inner());
-        let tmp = format!(
-            "{}/pinvou3-tmeet-test-{}",
-            std::env::temp_dir().display(),
-            std::time::SystemTime::now()
-                .duration_since(std::time::UNIX_EPOCH)
-                .map(|d| d.as_nanos())
-                .unwrap_or(0)
-        );
-        let previous = std::env::var("PINVOU3_HOME").ok();
-        // SAFETY: holding platform::paths::tests::ENV_LOCK; env writes serialized in-process.
-        unsafe { std::env::set_var("PINVOU3_HOME", &tmp) };
-        let _ = std::fs::create_dir_all(crate::platform::paths::pinvou3_home());
-
-        set_tmeet_disabled_flag(false).unwrap();
-        assert!(!is_tmeet_disabled());
-        set_tmeet_disabled_flag(true).unwrap();
-        assert!(is_tmeet_disabled());
-        set_tmeet_disabled_flag(false).unwrap();
-        assert!(!is_tmeet_disabled());
-
-        match previous {
-            // SAFETY: holding platform::paths::tests::ENV_LOCK; env writes serialized in-process.
-            Some(value) => unsafe { std::env::set_var("PINVOU3_HOME", value) },
-            // SAFETY: holding platform::paths::tests::ENV_LOCK; env writes serialized in-process.
-            None => unsafe { std::env::remove_var("PINVOU3_HOME") },
-        }
-        let _ = std::fs::remove_dir_all(&tmp);
     }
 }

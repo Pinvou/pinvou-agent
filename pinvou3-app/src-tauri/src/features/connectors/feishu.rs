@@ -87,6 +87,7 @@ pub async fn feishu_ensure_cli() -> Result<Value, String> {
 /// 返回 lark-cli 的原始 JSON(含 appId / identities.user.status 等);未配置 app
 /// 或未登录则 connected=false。未装 CLI 时返回结构化 `installed:false`
 /// (与 wecom/dingtalk/tmeet 一致),不向消费方抛 Err。
+/// (Only called internally by the command layer's `bundle_readiness` CLI dispatch; there is no standalone Tauri command anymore.)
 pub async fn feishu_status() -> Result<Value, String> {
     tokio::task::spawn_blocking(|| {
         // 没装就别 spawn auth status —— 未装用户每次白等子进程且拿到的是 Err,
@@ -339,10 +340,6 @@ pub fn is_feishu_disabled() -> bool {
     GATE.is_disabled()
 }
 
-fn set_feishu_disabled_flag(disabled: bool) -> Result<(), String> {
-    GATE.set_disabled_flag(disabled)
-}
-
 /// 飞书技能此刻该不该出现在 skills_dir:**未手动停用 且 已连接**。
 /// 启动时(bundle)与命令里都用它判定。注:会 spawn lark-cli 查 auth status(未装则 false)。
 pub fn feishu_skills_should_show() -> bool {
@@ -367,25 +364,6 @@ pub async fn feishu_apply_skills() -> Result<Value, String> {
     // 技能写盘即可——连接成功弹窗已引导「新建对话」,新会话 spawn 时自然扫到飞书技能;
     // 不再原地广播刷新当前对话(故不依赖子模块 Op::RefreshSystemPrompt)。
     Ok(json!({ "visible": show }))
-}
-
-/// composer 飞书开关:`enabled` → 写停用标志 → 按规则增删技能 → 广播刷新。
-///
-/// 注:停用标志写盘此前用 `let _ =` 静默忽略失败,现统一为 `Result` 传播
-/// (Wave 1 批准的契约面变更)。
-pub async fn set_feishu_enabled(enabled: bool) -> Result<Value, String> {
-    let show = tokio::task::spawn_blocking(move || -> Result<bool, String> {
-        set_feishu_disabled_flag(!enabled)?;
-        // 停用标志 ↔ 统一禁用集桥接：关掉连接器时同步写入 disabled_bundles.json
-        // （所有 scope），execpolicy CLI 硬拦截与技能物化排除才生效；开回时移除。
-        crate::features::marketplace::sync_disabled_bundles_for_connector_switch("feishu", enabled);
-        let show = feishu_skills_should_show();
-        GATE.apply_skills(show)?;
-        Ok(show)
-    })
-    .await
-    .map_err(|e| format!("spawn_blocking: {e}"))??;
-    Ok(json!({ "ok": true, "visible": show }))
 }
 
 /// 给前端渲染开关态:`{connected, enabled(=未停用), visible(=connected&&enabled)}`。

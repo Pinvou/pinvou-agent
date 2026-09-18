@@ -33,6 +33,9 @@ pub(super) fn workspace_identity(_path: &Path) -> std::io::Result<WorkspaceIdent
     ))
 }
 
+// The platform/mod.rs #[cfg(test)] forwarders call these through `imp` on
+// every target, so the fallback must provide them too or `cargo test`
+// stops compiling on targets outside unix/windows.
 #[cfg(test)]
 pub(super) fn test_workspace_identity(seed: u64) -> WorkspaceIdentity {
     WorkspaceIdentity(seed)

@@ -128,6 +128,7 @@ impl SessionStore {
         Ok(store)
     }
 
+    #[cfg(test)]
     pub(crate) fn boot_at_test_dir(root: &std::path::Path) -> Result<Self> {
         Self::from_paths(
             root.join("sessions"),

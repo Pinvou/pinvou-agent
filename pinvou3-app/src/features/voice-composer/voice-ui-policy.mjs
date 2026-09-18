@@ -36,11 +36,6 @@ function shouldShowVoicePill(voiceInput) {
     || (status === 'requesting_permission' && voiceInput.stage !== 'device');
 }
 
-function shouldShowVoiceNotice(voiceInput) {
-  if (!voiceInput || !voiceInput.message) return false;
-  return isVoiceActive(voiceInput) || voiceInput.status === 'failed';
-}
-
 function voiceStatusLabel(voiceInput, mode, copy) {
   const status = voiceInput && voiceInput.status;
   const voiceMode = normalizeVoiceMode(mode || (voiceInput && voiceInput.mode));
@@ -94,7 +89,6 @@ export {
   isVoiceRecording,
   normalizeVoiceMode,
   primaryVoiceLabel,
-  shouldShowVoiceNotice,
   shouldShowVoicePill,
   voiceAsrBusyState,
   voicePostprocessingLabel,
