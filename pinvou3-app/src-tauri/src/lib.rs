@@ -1193,7 +1193,6 @@ pub fn run() {
             commands::connectors::tmeet_logout,
             commands::connectors::tmeet_apply_skills,
             commands::connectors::tmeet_skills_state,
-            commands::connectors::ima_status,
             commands::connectors::ima_connect,
             commands::connectors::ima_logout,
             commands::settings::get_settings,

@@ -249,8 +249,6 @@ pub async fn tmeet_apply_skills(pool: State<'_, EnginePool>) -> Result<Value, St
 }
 async_command_passthrough!(tmeet_domain, tmeet_skills_state() -> Result<Value, String>);
 
-async_command_passthrough!(ima_domain, ima_status() -> Result<Value, String>);
-
 /// ima 连接成功会安装配套技能 ima-skills（domain 层落盘）→ 重写在线会话组合目录
 /// （skill 双 scope 治理事件驱动时机）+ 热刷 execpolicy 规则集（技能脚本 deny 规则
 /// 随目录变化，四轮评审 M-6a）。失败时技能未装上，不重写。

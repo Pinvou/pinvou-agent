@@ -217,7 +217,6 @@ for (const command of [
   'wecom_skills_state',
   'dingtalk_skills_state',
   'tmeet_skills_state',
-  'ima_status',
 ]) {
   assert.equal(allowed.has(command), true, `${command} must be allowed on Web (authorized connector status queries)`);
 }

@@ -43,7 +43,6 @@
     "get_session_pinvou_reviews",
     "get_session_timeline",
     "get_settings",
-    "ima_status",
     "ignore_pending_memory",
     "kb_collection_add_sources",
     "kb_collection_create",

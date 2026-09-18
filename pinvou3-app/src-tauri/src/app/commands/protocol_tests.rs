@@ -119,7 +119,6 @@ command_protocol!(
         "tmeet_logout",
         "tmeet_apply_skills",
         "tmeet_skills_state",
-        "ima_status",
         "ima_connect",
         "ima_logout"
     ]

@@ -122,7 +122,6 @@ function injectSource() {
         case 'install_marketplace_skill': state.skills[args.skillId]=true; return Promise.resolve(null);
         case 'uninstall_marketplace_skill': state.skills[args.skillId]=false; return Promise.resolve(null);
         case 'detect_obsidian': state.obsidianChecks++; return Promise.resolve(state.obsidianChecks===1?{state:'no_vault'}:{state:'ok',vault_path:'/tmp/test-vault'});
-        case 'ima_status': return Promise.resolve({connected:state.connected.ima,credentials_present:state.connected.ima,skill_installed:state.connected.ima});
         case 'ima_connect': state.connected.ima=true;state.skills['ima-skills']=true;state.lastImaConnect=args; return Promise.resolve({ok:true,connected:true});
         case 'ima_logout': state.connected.ima=false;state.skills['ima-skills']=false; return Promise.resolve({ok:true,connected:false});
         // 统一 readiness（Phase 2 第八刀）：前端不再调逐连接器 status，改走
