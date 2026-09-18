@@ -155,11 +155,19 @@ pub(crate) fn spawn_event_forwarder(
                         // dropped wholesale — the old turn's stop does not
                         // chase the newer turn, and no steer disposition or
                         // cancel reason is published for it either.
-                        let _replayed = approve_handle.cancel_turn(
+                        let replayed = approve_handle.cancel_turn(
                             &turn_id,
                             deepseek_tui::core::engine::CancelReason::User,
                             mode,
                         );
+                        if !replayed {
+                            // Arbitration, not failure: the slot moved on to
+                            // a newer turn, which is the designed wholesale
+                            // drop — debug-level so field logs stay quiet.
+                            log::debug!(
+                                "[pinvou3][chat] stop replay dropped: slot no longer holds turn {turn_id} (sid={session_id})"
+                            );
+                        }
                     }
                     active_transcript_seen = false;
                     active_operation_rejected = false;
