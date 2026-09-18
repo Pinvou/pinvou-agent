@@ -234,13 +234,14 @@ mod tests {
         let temp_home =
             std::env::temp_dir().join(format!("pinvou3-monitor-test-{}", std::process::id()));
         std::fs::create_dir_all(&temp_home).expect("create isolated PINVOU3_HOME");
-        let env_lock = crate::platform::paths::tests::ENV_LOCK
+        // Hold ENV_LOCK across the whole test: paths.rs requires the lock to
+        // outlive the EnvVarGuard so the final restore stays serialized.
+        let _env_lock = crate::platform::paths::tests::ENV_LOCK
             .lock()
             .unwrap_or_else(|poisoned| poisoned.into_inner());
-        let env_restore = crate::platform::paths::tests::EnvVarGuard::capture(&["PINVOU3_HOME"]);
+        let _env_restore = crate::platform::paths::tests::EnvVarGuard::capture(&["PINVOU3_HOME"]);
         // SAFETY: holding platform::paths::tests::ENV_LOCK; in-process env writes are serialized.
         unsafe { std::env::set_var("PINVOU3_HOME", &temp_home) };
-        drop(env_lock);
 
         let state = MonitorState::new();
         let snapshot = sample_all_with_cpu(&state, "not-a-url", None, None).await;
@@ -248,6 +249,5 @@ mod tests {
         assert!(snapshot.cpu.is_none());
         assert_eq!(snapshot.self_perf.gen_tokens_total, 0);
         assert_eq!(snapshot.app.pinvou3_version, env!("CARGO_PKG_VERSION"));
-        drop(env_restore);
     }
 }
