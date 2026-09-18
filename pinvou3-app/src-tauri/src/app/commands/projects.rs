@@ -794,13 +794,28 @@ pub async fn rebind_workspace_root(
     // their destination overlapped another project, and the store now restores
     // memory on the persist arm, so a same-process rerun still sees the old
     // root and re-attempts the write instead of reporting an empty success.
-    let affected_project_ids =
-        store
-            .rebind_roots(&from, &to_display)
-            .map_err(|error| match error {
-                RebindRootsError::Conflict(inner) => format!("REBIND_ROOTS_CONFLICT: {inner:#}"),
-                RebindRootsError::Persist(inner) => format!("REBIND_ROOTS_PERSIST: {inner:#}"),
-            })?;
+    //
+    // The session lanes above are already durable when this fails, so the
+    // mark-carrying events are emitted on the error path too (review #463
+    // round-C minor 1): the documented retry cannot re-admit sessions whose
+    // set_workspace already succeeded (metadata == binding at `to`), so this
+    // run's only chance to stamp them is here — without it a resident buffer
+    // could save stale artifact paths over the rebased JSON for as long as
+    // the conflict stands.
+    let roots_result = store.rebind_roots(&from, &to_display);
+    if let Err(error) = &roots_result {
+        emit_workspace_rebound_events(
+            &app,
+            rebound_session_ids.iter().chain(&failed_session_ids),
+            &from,
+            &to_display,
+        );
+        return Err(match error {
+            RebindRootsError::Conflict(inner) => format!("REBIND_ROOTS_CONFLICT: {inner:#}"),
+            RebindRootsError::Persist(inner) => format!("REBIND_ROOTS_PERSIST: {inner:#}"),
+        });
+    }
+    let affected_project_ids = roots_result.unwrap();
 
     // Post-pass fence hits that the pre-rewrite snapshot never saw (review
     // #463 round-8 MINOR-1): a session created under `from` by a concurrent

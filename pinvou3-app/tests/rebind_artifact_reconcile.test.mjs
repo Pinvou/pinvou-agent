@@ -30,7 +30,10 @@ const factory = windowObject.__PINVOU_TAURI_BRIDGE_FEATURES__['artifact-tracker'
 assert.equal(typeof factory, 'function', 'artifact-tracker feature must register');
 
 // The listener half lives in bridge/sessions.js; pin it source-level the same
-// way rebind_dialog_contract.test.mjs pins main.jsx wiring.
+// way rebind_dialog_contract.test.mjs pins main.jsx wiring. The web host is a
+// parallel implementation with its own save sites and listener — the rebind
+// events are forwarded to WebUI clients, so its transform must exist too
+// (round-C Major 1).
 const sessionsSource = read('platform/tauri/bridge/sessions.js');
 assert.match(
   sessionsSource,
@@ -39,10 +42,35 @@ assert.match(
 );
 assert.match(
   sessionsSource,
+  /existing\.to === payload\.from && existing\.from !== payload\.from/,
+  'chained rebinds must compose onto the existing mark, not strand at the intermediate root',
+);
+assert.match(
+  sessionsSource,
   /state\.reboundSessionIds\[payload\.id\] = \{\r?\n\s*at: Date\.now\(\),\r?\n\s*from: payload\.from,\r?\n\s*to: payload\.to,/,
   'the mark must carry the timestamp and the from/to geometry',
 );
-// The backend emit site must carry the geometry and cover all three lists.
+const webSource = read('platform/web/bridge.js');
+assert.match(
+  webSource,
+  /payload\.action === "workspace_rebound" && payload\.id && payload\.from && payload\.to/,
+  'the web listener must stamp the mark from the forwarded payload',
+);
+assert.match(
+  webSource,
+  /function rebaseArtifactPathsForRebind\(sid, paths\)/,
+  'the web host must carry the save transform',
+);
+const webSaveSites = webSource.match(/save_session_artifacts", \{ id: sid, paths: rebaseArtifactPathsForRebind\(/g) || [];
+assert.equal(
+  webSaveSites.length,
+  2,
+  'both web wholesale saves (persistMessagesFor + reconcile) must transform their paths',
+);
+// The backend emit site must carry the geometry, cover all three lists, and
+// also fire on the roots-commit error path (round-C minor 1) — otherwise the
+// documented retry, which cannot re-admit metadata-synced sessions, leaves
+// resident buffers unmarked.
 const projectsRs = read('../src-tauri/src/app/commands/projects.rs').replace(/\r\n/g, '\n');
 assert.match(
   projectsRs,
@@ -53,6 +81,18 @@ assert.match(
   projectsRs,
   /"from": from\.display\(\)\.to_string\(\),\n\s*"to": to\.display\(\)\.to_string\(\),/,
   'the event payload must carry the rebind geometry',
+);
+assert.match(
+  projectsRs,
+  /if let Err\(error\) = &roots_result \{\n\s*emit_workspace_rebound_events\(/,
+  'the roots-commit error path must mark the already-rebased sessions too',
+);
+// The view-heal window must not prune the mark: the save transform shares it
+// and its whole-process-lifetime contract owns the lifetime (round-C Major 2).
+assert.doesNotMatch(
+  read('platform/tauri/bridge/artifact-tracker.js'),
+  /delete marks\[sid\]/,
+  'an expired window must not delete the mark the save transform depends on',
 );
 
 function makeTracker(state, workspaceFiles) {
@@ -115,8 +155,9 @@ const MARK = { at: Date.now(), from: '/old/root', to: '/new/root' };
   );
 }
 
-// 3. Reconcile with an expired mark no longer authorizes the rebase (stale
-//    marks must not misfire on a later, unrelated basename collision).
+// 3. Reconcile with an expired mark no longer authorizes the VIEW rebase
+//    (stale marks must not misfire on a later, unrelated basename collision)
+//    — but the mark must SURVIVE for the save transform (case 7).
 {
   const state = {
     activeSessionId: 's4',
@@ -128,7 +169,11 @@ const MARK = { at: Date.now(), from: '/old/root', to: '/new/root' };
   assert.deepEqual(
     state.artifacts.map(a => a.path),
     ['/old/root/report.html'],
-    'an expired rebind mark must not authorize the rebase',
+    'an expired rebind mark must not authorize the view rebase',
+  );
+  assert.ok(
+    state.reboundSessionIds.s4,
+    'the expired mark must survive — the save transform still needs it',
   );
 }
 
@@ -188,6 +233,22 @@ const MARK = { at: Date.now(), from: '/old/root', to: '/new/root' };
     tracker.rebaseArtifactPathsForRebind('s6', paths),
     paths,
     'no mark: the save path must be untouched',
+  );
+}
+
+// 7. The transform OUTLIVES the window (round-C Major 2): an expired mark no
+//    longer authorizes the view heal but still protects the save — this is
+//    exactly the state a session re-visited >10 minutes after its rebind is
+//    in, with a still-stale cached buffer.
+{
+  const state = {
+    reboundSessionIds: { s7: { ...MARK, at: Date.now() - 11 * 60 * 1000 } },
+  };
+  const { tracker } = makeTracker(state, []);
+  assert.deepEqual(
+    tracker.rebaseArtifactPathsForRebind('s7', ['/old/root/sub/report.html']),
+    ['/new/root/sub/report.html'],
+    'an expired mark must still drive the save transform',
   );
 }
 

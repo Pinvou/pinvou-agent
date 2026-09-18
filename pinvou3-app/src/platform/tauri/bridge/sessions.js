@@ -1332,17 +1332,28 @@
       // geometry: the artifact reconcile's stale-absolute rebase arm is
       // gated on it (view healing, freshness window), and the wholesale
       // artifact saves rebase from→to while the mark exists — a chat turn's
-      // buffer save must not durably revert the backend rebase. Consumed by
-      // bridge/artifact-tracker.js (rebaseArtifactPathsForRebind /
-      // sessionRecentlyRebound); marks are memory-only, so a restart starts
-      // from the already-rebased JSON with no marks.
+      // buffer save must not durably revert the backend rebase. A chained
+      // rebind (A→B then B→C) COMPOSES onto the existing mark so buffered
+      // A-era paths map straight onto the final target instead of being
+      // stranded at the intermediate root (review #463 round-C Major 2).
+      // Marks are memory-only and never pruned: the save transform is
+      // prefix-exact and must outlive the reconcile window for the whole
+      // process lifetime (a restart starts from the already-rebased JSON
+      // with no marks). Consumed by bridge/artifact-tracker.js
+      // (rebaseArtifactPathsForRebind / sessionRecentlyRebound).
       if (payload.action === "workspace_rebound" && payload.id && payload.from && payload.to) {
         state.reboundSessionIds = state.reboundSessionIds || {};
-        state.reboundSessionIds[payload.id] = {
-          at: Date.now(),
-          from: payload.from,
-          to: payload.to,
-        };
+        const existing = state.reboundSessionIds[payload.id];
+        if (existing && existing.to === payload.from && existing.from !== payload.from) {
+          existing.to = payload.to;
+          existing.at = Date.now();
+        } else {
+          state.reboundSessionIds[payload.id] = {
+            at: Date.now(),
+            from: payload.from,
+            to: payload.to,
+          };
+        }
       }
       refreshHistoryList().catch(function (error) {
         console.error("[sessions] session:list_changed refresh failed", error);

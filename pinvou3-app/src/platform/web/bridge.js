@@ -1763,7 +1763,7 @@
     if (buf) buf.artifacts = arts;
     else state.artifacts = arts;
     try {
-      try { await invoke("save_session_artifacts", { id: sid, paths: arts.map(function (a) { return a.path; }) }); } catch { /* persistence failure must not block session switching */ }
+      try { await invoke("save_session_artifacts", { id: sid, paths: rebaseArtifactPathsForRebind(sid, arts.map(function (a) { return a.path; })) }); } catch { /* persistence failure must not block session switching */ }
       if (isDefaultChatTitle(meta.title) || personaPlaceholderTitles[sid]) {
         const firstUser = msgs.find(function (m) { return m.role === "user"; });
         // 自动标题复用展示层过滤：内部信封/子智能体交接不参与命名，避免 XML 痕迹进
@@ -4643,6 +4643,30 @@
   function normalizedPath(p) {
     return String(p || "").replaceAll('\\', "/");
   }
+  // Rebases absolute artifact paths onto the session's rebind target while a
+  // workspace_rebound mark exists (review #463 round-B Major 1 + round-C
+  // Major 1): the rebind command's events are forwarded to WebUI clients and
+  // these wholesale saves write the same sessions/<id>.json the backend lane
+  // rebased — without the transform a post-rebind turn's buffer save would
+  // durably revert it, with no heal path on this host. Same folded-prefix
+  // semantics as the tauri bridge's artifact-tracker helper; marks are
+  // stamped by the session:list_changed listener below and are memory-only
+  // (a restart starts from the already-rebased JSON with no marks).
+  function rebaseArtifactPathsForRebind(sid, paths) {
+    const marks = state.reboundSessionIds;
+    const mark = marks && sid ? marks[sid] : null;
+    if (!mark || !mark.from || !mark.to || !Array.isArray(paths)) return paths;
+    const fromKey = normalizedPath(mark.from).replace(/\/+$/, "").toLowerCase();
+    if (!fromKey) return paths;
+    const toKey = normalizedPath(mark.to).replace(/\/+$/, "");
+    return paths.map(function (p) {
+      if (typeof p !== "string" || !isAbsPath(p)) return p;
+      const norm = normalizedPath(p);
+      const lower = norm.toLowerCase();
+      if (lower !== fromKey && lower.indexOf(fromKey + "/") !== 0) return p;
+      return toKey + norm.slice(fromKey.length);
+    });
+  }
   function noteArtifactChange(path, event, sessionId) {
     if (!path) return;
     state.artifactChange = {
@@ -4801,7 +4825,7 @@
       });
       if (added) {
         notify();
-        try { await invoke("save_session_artifacts", { id: sid, paths: state.artifacts.map(function (a) { return a.path; }) }); } catch { /* persistence failure must not block frontend updates */ }
+        try { await invoke("save_session_artifacts", { id: sid, paths: rebaseArtifactPathsForRebind(sid, state.artifacts.map(function (a) { return a.path; })) }); } catch { /* persistence failure must not block frontend updates */ }
       }
     } catch { /* workspace 不存在(新 session)等,忽略 */ }
   }
@@ -5799,7 +5823,27 @@
   listen("session:deleted", function (e) {
     applyDeletedSession(e && e.payload && e.payload.id);
   });
-  listen("session:list_changed", function () {
+  listen("session:list_changed", function (e) {
+    const payload = e && e.payload || {};
+    // The rebind command's mark (review #463 round-B Major 1 + round-C
+    // Major 1): consumed by rebaseArtifactPathsForRebind so the wholesale
+    // artifact saves of THIS host cannot durably revert the backend lane's
+    // rebase while a resident web-client buffer holds stale paths. Same
+    // chain-composition and memory-only semantics as the tauri listener.
+    if (payload.action === "workspace_rebound" && payload.id && payload.from && payload.to) {
+      state.reboundSessionIds = state.reboundSessionIds || {};
+      const existing = state.reboundSessionIds[payload.id];
+      if (existing && existing.to === payload.from && existing.from !== payload.from) {
+        existing.to = payload.to;
+        existing.at = Date.now();
+      } else {
+        state.reboundSessionIds[payload.id] = {
+          at: Date.now(),
+          from: payload.from,
+          to: payload.to,
+        };
+      }
+    }
     refreshHistoryList().catch(function (error) {
       console.error("[sessions] session:list_changed refresh failed", error);
     });

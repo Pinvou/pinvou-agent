@@ -164,7 +164,10 @@ const expectedProtocolHashes = {
   // session:list_changed listener body now reads the payload's from/to and
   // stamps {at, from, to} marks consumed by the artifact save transform and
   // the reconcile rebase gate (same listen surface, no new entries).
-  sessions: 'c58e5b25efbd682ae00b58a3963f43456340e8fbb55d75081c282ad6832bfc5b',
+  // Recomputed again for round-C: chained rebinds compose onto the existing
+  // mark and expired marks are no longer pruned — the save transform's
+  // whole-process-lifetime contract owns the mark's lifetime.
+  sessions: 'c9ea53d6816b0e88d92b5992c9c75a3da0eba0dc8f8434d7d679b011fb6800a4',
   settings: 'a44929caff59641eb059f28885f1674d4e277412526d31c1d3ddfd75e44d0496',
   updater: '86412d40999a268d3d92dc4fe97e3fe465de08745423be820f38a462d79aaced',
   // Recomputed for the comment-only English translation of the voice bridge

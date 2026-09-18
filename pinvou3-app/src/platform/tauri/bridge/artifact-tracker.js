@@ -155,24 +155,22 @@
     if (stableAbsolutePath) existing.path = stableAbsolutePath;
     return existing;
   }
-  // Freshness window for the workspace_rebound mark (bridge/sessions.js
-  // listener): generous enough to cover the rebind dialog's retry flow, short
-  // enough that a stale mark cannot misfire the rebase arm on an unrelated
-  // later basename collision. Expired marks are pruned on check. Only the
-  // basename-based VIEW heal is windowed — the save-path transform
-  // (rebaseArtifactPathsForRebind) is prefix-exact and runs for the whole
-  // process lifetime of the mark.
+  // Freshness window for the workspace_rebound mark's VIEW heal (the
+  // basename-based reconcile arm): generous enough to cover the rebind
+  // dialog's retry flow, short enough that an old mark cannot misfire the
+  // arm on an unrelated later basename collision. Deliberately does NOT
+  // delete the mark on expiry (review #463 round-C Major 2): the save-path
+  // transform (rebaseArtifactPathsForRebind) is prefix-exact and shares the
+  // mark, and its "whole process lifetime" contract requires the mark to
+  // survive while the session's buffer may still hold stale paths — pruning
+  // here re-armed the durable revert the transform exists to prevent.
   const REBIND_RECONCILE_WINDOW_MS = 10 * 60 * 1000;
   function sessionRecentlyRebound(sid) {
     const marks = state.reboundSessionIds;
     if (!marks || !sid) return false;
     const mark = marks[sid];
     if (!mark || !mark.at) return false;
-    if (Date.now() - mark.at > REBIND_RECONCILE_WINDOW_MS) {
-      delete marks[sid];
-      return false;
-    }
-    return true;
+    return Date.now() - mark.at <= REBIND_RECONCILE_WINDOW_MS;
   }
   // Rebases absolute artifact paths onto the session's rebind target while a
   // workspace_rebound mark exists (review #463 round-B Major 1): a chat turn
