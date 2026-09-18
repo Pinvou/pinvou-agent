@@ -30,7 +30,7 @@ test('runtime guidance does not teach retired or hidden replay tool names', () =
   for (const file of runtimeGuidanceFiles(BUNDLE)) {
     const lines = fs.readFileSync(file, 'utf8').split(/\r?\n/);
     lines.forEach((line, index) => {
-      const relative = path.relative(ROOT, file);
+      const relative = path.relative(ROOT, file).split(path.sep).join('/');
       const windowsPreviewControl = relative === 'src-tauri/resources/common/bundle/instructions-work.md'
         && line.includes('retained compatibility control surface')
         && line.includes('Bash(action="run", command="...", background=true)')
