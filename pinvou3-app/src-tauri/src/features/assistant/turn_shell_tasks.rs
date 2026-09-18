@@ -1169,6 +1169,41 @@ mod tests {
         assert!(!state.scopes.contains_key(&scope_id));
     }
 
+    // issue #255, reclaim-finalize degradation: the engine_pool caller
+    // presets cleanup_failed conservatively when its gate-budget join times
+    // out and leaves the finalize running detached. When the detached run
+    // settles clean it must clear the preset (the flag stays truthful for
+    // later diagnostics), and the active scope must be retired so a slow
+    // finalize can never wedge the session's shell scope. The forkguard_
+    // prefix registers it as a fork-guard layer-3 behavior test
+    // (fork-policy §3).
+    #[tokio::test]
+    async fn forkguard_reclaim_cleanup_failed_preset_clears_on_success() {
+        let tasks = SessionTurnShellTasks::default();
+        let registry = tasks.for_session(
+            "session-reclaim-preset",
+            new_shared_shell_manager(std::env::temp_dir()),
+        );
+        registry.prepare_turn().await.expect("active scope");
+        let reclaim = tasks.begin_reclaim("session-reclaim-preset");
+        // The reclaim must have captured the active scope; otherwise
+        // finalize would early-return and this test would pass vacuously.
+        assert!(reclaim.registry.is_some() && reclaim.scope_id.is_some());
+
+        reclaim.mark_cleanup_failed();
+        assert!(reclaim.cleanup_failed());
+        reclaim.finalize().await;
+        assert!(
+            !reclaim.cleanup_failed(),
+            "a clean detached finalize must clear the conservative preset"
+        );
+        assert_eq!(
+            registry.active_scope_id(),
+            None,
+            "finalize must retire the active scope"
+        );
+    }
+
     #[tokio::test]
     async fn reliable_child_lineage_is_not_overwritten_by_the_current_turn() {
         let registry = TurnShellTaskRegistry::new(new_shared_shell_manager(std::env::temp_dir()));
