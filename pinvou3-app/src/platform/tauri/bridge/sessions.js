@@ -1347,12 +1347,18 @@
         state.reboundSessionIds = state.reboundSessionIds || {};
         const existing = state.reboundSessionIds[payload.id];
         const last = existing && existing.chain && existing.chain[existing.chain.length - 1];
-        if (existing && last && last.to === payload.from) {
-          existing.chain.push({ from: payload.from, to: payload.to });
-          existing.at = Date.now();
-        } else if (existing && last && last.from === payload.from && last.to === payload.to) {
+        if (existing && last && last.from === payload.from && last.to === payload.to) {
           // Identical retry of the last segment: refresh the view-heal
-          // window, keep the chain (an older vintage may still be buffered).
+          // window only (an older vintage may still be buffered; the chain
+          // must survive).
+          existing.at = Date.now();
+        } else if (existing) {
+          // Chained (last.to === payload.from) or non-contiguous: append.
+          // A non-matching segment is inert for the ordered prefix
+          // transform, and appending keeps every older vintage resolvable
+          // (review #463 round-E minor — the previous replace branch
+          // dropped them).
+          existing.chain.push({ from: payload.from, to: payload.to });
           existing.at = Date.now();
         } else {
           state.reboundSessionIds[payload.id] = {

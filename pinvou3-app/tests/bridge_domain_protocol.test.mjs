@@ -170,8 +170,10 @@ const expectedProtocolHashes = {
   // again for round-D: the mark is an ordered SEGMENT CHAIN (append on
   // chained rebinds, refresh on an identical retry) so every buffer vintage
   // — including one re-vintaged from the durable JSON mid-chain — resolves
-  // onto the final target.
-  sessions: 'd37f2c22778f6a89aa88360a5aa62368bd0c772df39fcc09ff6b3988a2199f65',
+  // onto the final target. Recomputed once more for the round-E minor:
+  // non-contiguous geometries append instead of replacing, preserving every
+  // older vintage.
+  sessions: '336309941cfd0ce7c9908231a650c95cda048aea23bf1518f8fd8c241f4d5eb3',
   settings: 'a44929caff59641eb059f28885f1674d4e277412526d31c1d3ddfd75e44d0496',
   updater: '86412d40999a268d3d92dc4fe97e3fe465de08745423be820f38a462d79aaced',
   // Recomputed for the comment-only English translation of the voice bridge

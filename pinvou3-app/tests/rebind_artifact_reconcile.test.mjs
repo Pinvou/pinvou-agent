@@ -42,8 +42,13 @@ assert.match(
 );
 assert.match(
   sessionsSource,
-  /last\.to === payload\.from/,
-  'chained rebinds must APPEND a segment so every buffer vintage resolves',
+  /last\.to === payload\.from|else if \(existing\)/,
+  'chained and non-contiguous rebinds must APPEND so every buffer vintage resolves',
+);
+assert.match(
+  sessionsSource,
+  /last\.from === payload\.from && last\.to === payload\.to/,
+  'an identical retry must refresh the window without resetting the chain',
 );
 assert.match(
   sessionsSource,

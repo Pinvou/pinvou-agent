@@ -5851,10 +5851,14 @@
       state.reboundSessionIds = state.reboundSessionIds || {};
       const existing = state.reboundSessionIds[payload.id];
       const last = existing && existing.chain && existing.chain[existing.chain.length - 1];
-      if (existing && last && last.to === payload.from) {
-        existing.chain.push({ from: payload.from, to: payload.to });
+      if (existing && last && last.from === payload.from && last.to === payload.to) {
+        // Identical retry of the last segment: refresh the view-heal window
+        // only; the chain must survive for older vintages.
         existing.at = Date.now();
-      } else if (existing && last && last.from === payload.from && last.to === payload.to) {
+      } else if (existing) {
+        // Chained or non-contiguous: append (round-E minor — replacing would
+        // drop vintages a still-buffered session may resolve).
+        existing.chain.push({ from: payload.from, to: payload.to });
         existing.at = Date.now();
       } else {
         state.reboundSessionIds[payload.id] = {
