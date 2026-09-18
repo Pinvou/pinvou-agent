@@ -58,13 +58,8 @@ function classifyRebindError(error, t) {
 }
 
 export {
-  REBIND_IN_PROGRESS,
   REBIND_MARKER_MESSAGE_KEYS,
   REBIND_OLD_ROOT_EXISTS,
-  REBIND_ROOTS_CONFLICT,
   REBIND_SESSIONS_BUSY,
-  REBIND_TO_NESTED,
-  REBIND_TO_ROOT,
-  REBIND_TO_UNUSABLE,
   classifyRebindError,
 };
