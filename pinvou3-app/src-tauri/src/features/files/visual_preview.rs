@@ -476,18 +476,29 @@ pub(super) fn ocr_pdf(
                 )
             } else {
                 let mut parts = Vec::new();
+                // OCR 失败（含 tesseract 超时被 kill）必须与「空白页」区分：
+                // 部分页静默丢失会让用户/模型误以为内容完整。
+                let mut failed_pages = 0usize;
                 for (idx, page) in pages.iter().enumerate() {
                     match ocr_image(page) {
                         Ok(text) if !text.trim().is_empty() => {
                             parts.push(format!("## 第 {} 页\n\n{}", idx + 1, text.trim()));
                         }
-                        _ => {}
+                        Ok(_) => {}
+                        Err(_) => failed_pages += 1,
                     }
                 }
                 let mut content = parts.join("\n\n");
                 if pages.len() as u32 >= PDF_OCR_MAX_PAGES {
                     content.push_str(&format!(
                         "\n\n> ⚠️ 扫描件页数较多，OCR 仅处理前 {PDF_OCR_MAX_PAGES} 页"
+                    ));
+                }
+                // 仅「部分成功 + 部分失败」时在正文里注记；全部失败时 parts
+                // 为空，走下方「未识别到文字」警告，失败注记不充当正文。
+                if failed_pages > 0 && !parts.is_empty() {
+                    content.push_str(&format!(
+                        "\n\n> ⚠️ 有 {failed_pages} 页 OCR 处理失败（可能超时），内容可能不完整"
                     ));
                 }
                 if content.trim().is_empty() {

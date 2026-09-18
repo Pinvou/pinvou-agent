@@ -34,7 +34,7 @@ pub async fn ingest_file(
     // async worker 线程，避免卡死运行时；子进程本身另有带 kill 的超时兜底。
     tokio::task::spawn_blocking(move || crate::features::files::file_ingest::ingest_attachment(&p))
         .await
-        .map_err(|e| format!("摄入任务失败：{e}"))?
+        .map_err(|e| format!("摄入任务失败: {e}"))?
 }
 
 /// Receive an HTML5 `File` into a sessionless draft area. Dropping or pasting
