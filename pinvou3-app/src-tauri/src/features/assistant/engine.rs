@@ -145,9 +145,11 @@ struct TurnLifecycleState {
     /// The host-supplied submission correlation token stamped on the op
     /// submitted for the active turn (`Op::SendMessage` /
     /// `Op::EditLastTurn::submission_id`). Set at submit time, cleared on
-    /// reserve. `Some` exactly during the submit→`TurnStarted` window the
-    /// pending replay guards, so arming the replay stores it and the
-    /// forwarder can match the event echo against it.
+    /// reserve; it stays `Some` for the whole active turn (starting does
+    /// not clear it). The submit→`TurnStarted` window the pending replay
+    /// guards is enforced by the `turn_id.is_none()` arm guard, not by
+    /// this field's lifetime: arming stores the token and the forwarder
+    /// matches the event echo against it.
     submission_id: Option<String>,
 }
 
@@ -960,6 +962,9 @@ impl TurnLifecycle {
             state.admission_emitted = false;
             state.active_reservation_id = None;
             state.submission_id = submission_id;
+            // pending_cancel is intentionally left untouched: consumption is
+            // echo-gated, so a stale arm can never fire onto this new turn;
+            // reserve() (or the next arm) clears it.
             true
         } else {
             false
@@ -1338,35 +1343,41 @@ impl TurnLifecycle {
     ///   match via `take_pending_cancel`; the arming epoch does not gate
     ///   consumption).
     ///
-    /// **调用顺序**：必须在 `cancel_current()` **之前**调用。两者取不同的锁
-    /// （lifecycle state mutex vs cancel_token mutex），无法原子合并。先 arm
-    /// 再 cancel 保证：即使 TurnStarted 在两步之间抵达转发器并消费了标记，
-    /// 随后的 `cancel_current()` 也只是幂等 no-op（转发器已重新 cancel）。
+    /// **Dispatch**: the `cancel` closure runs while the state lock is
+    /// still held and receives the same-lock [`TurnIdentity`] snapshot; the
+    /// verdict itself lives in `turn_bound_cancel_action` /
+    /// `dispatch_turn_bound_cancel` — a slot match cancels via
+    /// `cancel_turn_with_mode`, while the unobserved submit→`TurnStarted`
+    /// window and the terminal-closing window converge on
+    /// disposition-only and never fire (issue #254); the genuinely pending
+    /// target is delivered by the forwarder's `pending_cancel` replay once
+    /// its `TurnStarted` is processed.
     ///
-    /// **返回值**：`false` 表示 `state.turn_epoch != epoch`——generation 复查
-    /// 通过之后、arm 之前另一 worker 已结束目标轮并启动新轮（`reserve_turn`
-    /// 不取 `turn_lock`，可在 cancel 的同步段中间完成切换）。调用方**必须**
-    /// 在收到 `false` 时跳过 `cancel_current` 及其级联副作用，否则取消会命中
-    /// 新轮已 `reset_cancel_token` 的活跃 token，造成跨轮误取消。
+    /// **Return value**: `false` means `state.turn_epoch != epoch` —
+    /// between the caller's generation re-check and the arm, another worker
+    /// ended the target turn and started a new one (`reserve_turn` takes no
+    /// `turn_lock`, so the switch can land mid-cancel). The caller must
+    /// treat `false` as a wholesale no-op: the closure does not run, and
+    /// any follow-up cascade must be re-arbitrated against the new
+    /// lifecycle instead of fired blind.
     ///
-    /// 其余条件不满足（未 submitted / 已 started / 非 active）时仍返回 `true`：
-    /// 这些情况 epoch 匹配、仍是目标轮，`cancel_current` 命中目标轮 token
-    /// （已 started 直接命中活跃 token；未 submitted 时 engine 尚无该轮 token，
-    /// 取消是幂等 no-op），调用方可以安全继续。
+    /// Epoch-matching but otherwise unusual states (not submitted / already
+    /// started / terminal closing) still return `true` with the closure
+    /// run; the closure's own identity snapshot decides bound vs
+    /// disposition-only, so the stop can never fire a token the targeted
+    /// turn does not own.
     ///
     /// [`current_turn_generation`]: Self::current_turn_generation
     /// [`take_pending_cancel`]: Self::take_pending_cancel
     ///
     /// 在 lifecycle state 锁内原子完成「epoch 校验 + arm pending + 同步取消」。
     ///
-    /// 与 [`arm_pending_cancel`] 的区别：`cancel` 闭包在**同一临界区内**持锁
-    /// 执行。单独 arm 时锁在校验后即释放，调用方随后才执行 `cancel_current`，
-    /// 两条同步调用之间没有 `.await` 也不构成原子性保证——多线程 runtime/OS
-    /// 可以在任意指令边界切换线程。若另一 worker 在该窗口内完成「旧轮终态
-    /// 收口 + 新轮 reserve/send + `reset_cancel_token`」，恢复后的旧 cancel 会
-    /// 命中新轮活跃 token（reviewer 点 8）。把取消闭包移入同一临界区后，
-    /// `reserve_turn`（取同一把 state 锁）无法插入「校验/arm」与「取消」之间，
-    /// 跨轮窗口闭合。
+    /// The closure runs inside this critical section on purpose (reviewer
+    /// point 8): arm-then-cancel as two separate locked steps left a window
+    /// where another worker could finish the old turn's terminal close plus
+    /// a new reserve/send in between, and the resumed stale cancel would
+    /// hit the new turn's active token. Holding the state lock across both
+    /// makes that insertion impossible: `reserve_turn` needs the same lock.
     ///
     /// **idle 守卫**（G2/epoch-0 哨兵）：`turn_epoch` 从 1 起自增，但 fresh
     /// 会话（从未有过 turn）初始为 0。此时发起 cancel 快照 `target = None`，
@@ -1379,20 +1390,23 @@ impl TurnLifecycle {
     /// 让调用方继续（级联取消仍由调用方按 armed 路径执行，只取消 engine 遗留
     /// 子代理、不取消尚未启动的轮）。
     ///
-    /// 锁序：本方法持 lifecycle state 锁调用 `cancel` 闭包，闭包内
-    /// `engine.cancel_current()` 取 engine 的 cancel_token 锁（与 state 锁无
-    /// 反向依赖，forwarder 消费 pending 也是先 state 后 token），无死锁。
-    /// `cancel` 必须同步、不 panic（panic 会使 Mutex 中毒），且不得再次获取
-    /// 本 lifecycle 的 state 锁。
+    /// Lock order: this method holds the lifecycle state lock while
+    /// running the `cancel` closure; the closure's foundation entries take
+    /// the engine slot lock (no reverse dependency — the forwarder also
+    /// takes the state lock before the slot lock when it consumes the
+    /// pending), so no deadlock. The closure must be synchronous and must
+    /// not panic (a panic would poison the mutex) or re-acquire this
+    /// lifecycle's state lock.
     ///
     /// `cancel` receives the same-lock [`TurnIdentity`] snapshot
     /// (epoch + observed turn id + closing) so the turn-bound dispatch can
     /// never act on a stale cross-turn view — see
     /// `dispatch_turn_bound_cancel` (issue #254 review round).
     ///
-    /// 其余语义与 [`arm_pending_cancel`] 一致：epoch 匹配则设置 pending（条件
-    /// 满足时）并执行 `cancel` 后返回 `true`；epoch 不匹配返回 `false` 且
-    /// **不执行** `cancel`，调用方必须整体 no-op。
+    /// Epoch mismatch returns `false` and does **not** run the closure —
+    /// the caller must treat it as a wholesale no-op; every matching path
+    /// arms (when the submitted-and-unobserved precondition holds) and runs
+    /// the closure before returning `true`.
     ///
     /// pending records `(epoch, mode, submission_id)`: on replay the
     /// forwarder re-runs the cancel turn-bound
@@ -1498,8 +1512,11 @@ impl TurnLifecycle {
     ///
     /// A non-matching event consumes nothing and clears nothing: the replay
     /// stays armed but can only ever be consumed by the armed submission's
-    /// own echo; the reserve-time wholesale clear (or the next arm) bounds
-    /// its lifetime, so it never leaks across turns. A replay armed without
+    /// own echo. A `reserve()` wholesale-clears it and the next arm
+    /// overwrites it; on scheduled paths that skip reservation it can stay
+    /// armed but inert across consecutive turns — un-firable by
+    /// construction, so no cancel ever leaks across turns. A replay armed
+    /// without
     /// a recorded id matches no echo at all (including `None`) and can never
     /// be delivered — every host-submitted path must carry a submission id,
     /// and the arming site warns loudly when one does not (see
@@ -3132,12 +3149,10 @@ mod turn_lifecycle_tests {
     fn pending_cancel_tied_to_epoch_is_dropped_after_turn_change() {
         // Core regression for reviewer point 4: concurrent cancel request
         // C2 armed pending_cancel on the old turn and resumes onto what has
-        // become a new turn. take matches only an exact submission-token
-        // echo, so the stale pending's token cannot match the new turn's
-        // echo — it is neither consumed nor replayed (no
-        // approve_handle.cancel replay). reserve() additionally
-        // wholesale-clears the old turn's stale pending_cancel to prevent
-        // cross-turn pollution.
+        // become a new turn. The take below passes the stale arm's own
+        // token — the exact-echo gate alone would still match it, so the
+        // None outcome comes solely from reserve()'s wholesale clear of the
+        // stale pending_cancel: no consumption, no replay.
         let lifecycle = Arc::new(TurnLifecycle::default());
 
         // 旧轮：submit（epoch=1），arm pending_cancel 绑定到 epoch=1。
@@ -3616,6 +3631,10 @@ mod scheduled_turn_tests {
             verbosity: None,
             provenance: UserInputProvenance::Runtime,
             turn_tool_security: None,
+            // Bare fixture: deliberately untagged. Production paths mint a
+            // submission id; keeping None here preserves the untagged op
+            // shape whose stop replay is undeliverable by contract (pinned
+            // by pending_cancel_armed_without_submission_id_is_never_consumed).
             submission_id: None,
         }
     }
