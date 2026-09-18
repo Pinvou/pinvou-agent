@@ -100,7 +100,11 @@ pub(crate) fn spawn_event_forwarder(
         let mut rx = handle.rx_event.write().await;
         while let Some(event) = rx.recv().await {
             match event {
-                Event::TurnStarted { turn_id, .. } => {
+                Event::TurnStarted {
+                    turn_id,
+                    submission_id,
+                    ..
+                } => {
                     // Publish admission from the authoritative engine event,
                     // before this serial forwarder can observe any delta or
                     // terminal event for the same turn. Reclaim uses the same
@@ -108,23 +112,62 @@ pub(crate) fn spawn_event_forwarder(
                     let admitted =
                         turn_lifecycle.emit_started_admission(&app, &session_id, turn_id.clone());
                     // 消费 pending_cancel（无论 admitted 与否，防止跨轮泄漏）。
-                    // reset_cancel_token() 在 TurnStarted 之前已执行，若 cancel
-                    // 在此之前 arm 了标记，现在重新 cancel 命中的是本轮活跃 token。
-                    // pending_cancel carries the turn_epoch and steer
-                    // disposition mode from arming time: only an arm matching
-                    // the current turn replays the cancel here (stale arms
-                    // from other turns are dropped, #207), and the replay must
-                    // call cancel_with_mode with the arming-time mode — the
-                    // mode-less cancel() hard-codes StopDropInbox and would
-                    // lose ⚡'s keepInbox semantics on the replay path.
-                    let epoch = turn_lifecycle.current_turn_generation().unwrap_or(0);
-                    let pending_cancel = turn_lifecycle.take_pending_cancel(epoch);
+                    // The engine has already installed this turn's bound
+                    // token before `TurnStarted` runs; if a cancel armed its
+                    // marker earlier, the replayed cancel now hits this
+                    // turn's active token.
+                    // pending_cancel carries the arming-time epoch, steer
+                    // disposition mode, and submission correlation token:
+                    // only an arriving `TurnStarted` that echoes the armed
+                    // submission token consumes the replay here — a stale arm
+                    // from another submission can never match (#254), and
+                    // the arming-time epoch is deliberately not consulted,
+                    // because an unrelated autonomous turn can run its full
+                    // start→terminal lifecycle inside the target's
+                    // submit→TurnStarted window and advance the epoch before
+                    // the target's own echo arrives (issue #254 review
+                    // round). The replay must call cancel_with_mode with the
+                    // arming-time mode — the mode-less cancel() hard-codes
+                    // StopDropInbox and would lose ⚡'s keepInbox semantics on
+                    // the replay path. The host app stamps every
+                    // submitted op with a correlation id — echoed back
+                    // verbatim by the foundation — and leaves
+                    // runtime self-started turns (idle sub-agent completion /
+                    // shell wake / goal continuation) untagged, so a
+                    // self-started follow-up whose `TurnStarted` overtakes
+                    // the submitted turn's can neither consume the replay nor
+                    // redirect its cancel onto itself; the replay stays armed
+                    // until the submitted turn's own `TurnStarted` arrives.
+                    let pending_cancel =
+                        turn_lifecycle.take_pending_cancel(submission_id.as_deref());
                     if !admitted {
                         continue;
                     }
                     if let Some((_, mode)) = pending_cancel {
-                        approve_handle
-                            .cancel_with_mode(deepseek_tui::core::engine::CancelReason::User, mode);
+                        // Replay bound to the engine slot's turn identity
+                        // (issue #254): by the time `TurnStarted` arrives the
+                        // engine has installed this turn's fresh token, so
+                        // the replay hits exactly this turn's active token.
+                        // If the engine self-started yet another turn inside
+                        // this narrow window (a self-started continuation
+                        // chain), the slot identity no longer matches,
+                        // `cancel_turn` returns false and the replay is
+                        // dropped wholesale — the old turn's stop does not
+                        // chase the newer turn, and no steer disposition or
+                        // cancel reason is published for it either.
+                        let replayed = approve_handle.cancel_turn(
+                            &turn_id,
+                            deepseek_tui::core::engine::CancelReason::User,
+                            mode,
+                        );
+                        if !replayed {
+                            // Arbitration, not failure: the slot moved on to
+                            // a newer turn, which is the designed wholesale
+                            // drop — debug-level so field logs stay quiet.
+                            log::debug!(
+                                "[pinvou3][chat] stop replay dropped: slot no longer holds turn {turn_id} (sid={session_id})"
+                            );
+                        }
                     }
                     active_transcript_seen = false;
                     active_operation_rejected = false;
