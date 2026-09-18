@@ -131,34 +131,6 @@ export const WORKSPACE_KIND_BOUND = 'bound';
 
 const WORKSPACE_KINDS_WITH_PROJECT_DIR = ['project', WORKSPACE_KIND_BOUND];
 
-function projectAnchorsFolder(project, folderPath) {
-  if (!project || project.origin !== 'folder') return false;
-  return (project.roots ? project.roots : []).some((root) => {
-    const rootPath = root && typeof root === 'object' ? root.path : root;
-    // Exact anchoring: isUnderRoot in both directions means the same path
-    // (case/separator differences folded).
-    return isUnderRoot(folderPath, rootPath) && isUnderRoot(rootPath, folderPath);
-  });
-}
-
-function uncoveredWorkspaceRoots(items, projects, assignments) {
-  const projectList = Array.isArray(projects) ? projects.filter(Boolean) : [];
-  const assignmentMap = assignments && typeof assignments === 'object' ? assignments : {};
-  const byRoot = new Map();
-  (Array.isArray(items) ? items : []).forEach((item) => {
-    if (!item || !hasProjectWorkspace(item)) return;
-    const root = String(item.workspacePath || '');
-    // biome-ignore lint/suspicious/noPrototypeBuiltins: Safari 14 is the floor and Object.hasOwn is unavailable; this call is already in safe form
-    if (!root || Object.prototype.hasOwnProperty.call(assignmentMap, item.id)) return;
-    if (!byRoot.has(root)) byRoot.set(root, []);
-    byRoot.get(root).push(String(item.id));
-  });
-  return [...byRoot.entries()]
-    .filter(([root]) => projectList.every(project => !projectAnchorsFolder(project, root)))
-    .map(([root, sessionIds]) => ({ root, sessionIds }));
-}
-
-
 function hasProjectWorkspace(item) {
   return (
     !!item
@@ -271,4 +243,4 @@ function capUnavailableRootsForDisplay(roots, expanded) {
   return { visibleRoots: list.slice(0, 1), hiddenCount: Math.max(0, list.length - 1) };
 }
 
-export { TEMPORARY_GROUP_KEY, PROJECT_SESSION_DRAG_TYPE, groupSessionsWithProjects, projectCoversPath, resolveSessionProjectId, rootPath, needsAddFolderConfirm, hasProjectWorkspace, capUnavailableRootsForDisplay , uncoveredWorkspaceRoots };
+export { TEMPORARY_GROUP_KEY, PROJECT_SESSION_DRAG_TYPE, groupSessionsWithProjects, projectCoversPath, resolveSessionProjectId, rootPath, needsAddFolderConfirm, hasProjectWorkspace, capUnavailableRootsForDisplay  };
