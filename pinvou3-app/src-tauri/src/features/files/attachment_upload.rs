@@ -251,24 +251,8 @@ pub async fn append_draft_chunk(
     sha256: Option<&str>,
 ) -> Result<Option<IngestResult>, String> {
     let workspace = draft_attachment_workspace();
-    append_draft_chunk_in_workspace(
-        &workspace, upload_id, filename, offset, total, data, commit, sha256,
-    )
-    .await
-}
-
-async fn append_draft_chunk_in_workspace(
-    workspace: &Path,
-    upload_id: &str,
-    filename: &str,
-    offset: usize,
-    total: usize,
-    data: &[u8],
-    commit: bool,
-    sha256: Option<&str>,
-) -> Result<Option<IngestResult>, String> {
     append_chunk(
-        workspace, upload_id, filename, offset, total, data, commit, sha256,
+        &workspace, upload_id, filename, offset, total, data, commit, sha256,
     )
     .await
 }
@@ -589,10 +573,10 @@ mod tests {
     use super::{
         ConversationAttachmentRecord, ConversationAttachmentReference, MAX_ATTACHMENT_CHUNK_BYTES,
         MAX_FILE_BYTES, STALE_ATTACHMENT_AGE, abort_staging_upload, adopt_upload, append_chunk,
-        append_draft_chunk_in_workspace, conversation_attachment_names_for_display_prefix,
-        conversation_attachment_refs_path, discard_attachment, record_conversation_attachments,
-        resolve_conversation_attachment, sweep_stale_draft_attachment_workspace,
-        upload_staging_dir, validate_filename, validate_upload_id,
+        conversation_attachment_names_for_display_prefix, conversation_attachment_refs_path,
+        discard_attachment, record_conversation_attachments, resolve_conversation_attachment,
+        sweep_stale_draft_attachment_workspace, upload_staging_dir, validate_filename,
+        validate_upload_id,
     };
     use std::path::PathBuf;
     use std::time::{Duration, SystemTime};
@@ -734,7 +718,7 @@ mod tests {
                 .unwrap(),
         );
         let new_bytes = b"new upload";
-        append_draft_chunk_in_workspace(
+        append_chunk(
             &workspace,
             "desktop_attach_new_upload",
             "new.txt",

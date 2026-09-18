@@ -55,16 +55,9 @@ impl EvalToolPolicy {
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub(crate) enum EvalNetworkClass {
-    PublicWeb,
-    Offline,
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) struct EvalTurnPolicy {
     pub id: EvalToolPolicy,
     pub allowed_tools: &'static [&'static str],
-    pub network: EvalNetworkClass,
 }
 
 impl EvalTurnPolicy {
@@ -76,25 +69,21 @@ impl EvalTurnPolicy {
 static GAIA_PUBLIC_WEB_V1: EvalTurnPolicy = EvalTurnPolicy {
     id: EvalToolPolicy::GaiaPublicWebV1,
     allowed_tools: GAIA_PUBLIC_WEB_V1_ALLOWED_TOOLS,
-    network: EvalNetworkClass::PublicWeb,
 };
 
 static PRODUCT_V1: EvalTurnPolicy = EvalTurnPolicy {
     id: EvalToolPolicy::ProductV1,
     allowed_tools: PRODUCT_V1_ALLOWED_TOOLS,
-    network: EvalNetworkClass::PublicWeb,
 };
 
 static GAIA_OFFLINE_V1: EvalTurnPolicy = EvalTurnPolicy {
     id: EvalToolPolicy::GaiaOfflineV1,
     allowed_tools: GAIA_OFFLINE_V1_ALLOWED_TOOLS,
-    network: EvalNetworkClass::Offline,
 };
 
 static GAIA_FINAL_ANSWER_ONLY_V1: EvalTurnPolicy = EvalTurnPolicy {
     id: EvalToolPolicy::GaiaFinalAnswerOnlyV1,
     allowed_tools: &[],
-    network: EvalNetworkClass::Offline,
 };
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -136,8 +125,8 @@ pub(crate) fn resolve_eval_policy(
 #[cfg(test)]
 mod tests {
     use super::{
-        EvalNetworkClass, EvalToolPolicy, GAIA_OFFLINE_V1_ALLOWED_TOOLS,
-        GAIA_PUBLIC_WEB_V1_ALLOWED_TOOLS, PRODUCT_V1_ALLOWED_TOOLS, resolve_eval_policy,
+        EvalToolPolicy, GAIA_OFFLINE_V1_ALLOWED_TOOLS, GAIA_PUBLIC_WEB_V1_ALLOWED_TOOLS,
+        PRODUCT_V1_ALLOWED_TOOLS, resolve_eval_policy,
     };
     use crate::features::assistant::tool_policy::is_pinvou3_allowed;
     use deepseek_tui::config::VisionModelConfig;
@@ -204,13 +193,9 @@ mod tests {
         let public = resolve_eval_policy("pinvou-gaia-public-web/v1").unwrap();
         let offline = resolve_eval_policy("pinvou-gaia-offline/v1").unwrap();
 
-        assert_eq!(public.network, EvalNetworkClass::PublicWeb);
-        assert_eq!(offline.network, EvalNetworkClass::Offline);
         let final_only = resolve_eval_policy("pinvou-gaia-final-answer-only/v1").unwrap();
-        assert_eq!(final_only.network, EvalNetworkClass::Offline);
         assert!(final_only.allowed_tools.is_empty());
         assert!(!final_only.allows("read"));
-        assert_eq!(product.network, EvalNetworkClass::PublicWeb);
         assert!(product.allows("read"));
         assert!(!product.allows("File"));
         assert!(product.allows("Web"));

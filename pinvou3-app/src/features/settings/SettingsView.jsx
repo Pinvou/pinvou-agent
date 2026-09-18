@@ -11,7 +11,7 @@ import {
   MODEL_PRESET_DEFS, PROVIDER_KIND_CODING_PLAN, PROVIDER_KIND_OFFICIAL_API, PROVIDER_KIND_CUSTOM,
   MODEL_CATALOG_SECTIONS, MODEL_CATALOG, CLOUD_MODEL_PROVIDERS,
   BRAND_ICON_BY_PRESET, BRAND_ICON_BY_VENDOR,
-  presetOptionsI18n, presetProviderLabel,
+  presetProviderLabel,
   normalizedProviderBaseUrl, findCloudProviderForModel, providerLabelForModel, isCodingPlanModel, catalogItemMatchesModel,
   catalogImageCapableForModel,
   groupModelsForSelector,
@@ -20,7 +20,7 @@ import {
   alwaysThinkingSpecForModel, localReasoningTiers, reasoningEffortDisplayForTiers, baseUrlUsesLocalOrPrivate,
 } from './model-catalog.js';
 import { CommunityPanel } from './CommunityPanel.jsx';
-import { COMMUNITY_DISCUSSIONS_URL, COMMUNITY_QQ_GROUP_NAME, COMMUNITY_QQ_GROUP_NUMBER, COMMUNITY_QQ_QR_IMAGE_SRC } from './community-config.js';
+import { COMMUNITY_DISCUSSIONS_URL } from './community-config.js';
 import { ProvidersSection } from './ProvidersSection.jsx';
 import {
   VOICE_POSTPROCESS_ENABLED_KEY,
@@ -44,11 +44,6 @@ function isReadonlyModel(model) {
 function imageCapabilityForCatalogModel(model) {
   const flag = catalogImageCapableForModel(model);
   return flag === true ? 'enabled' : flag === false ? 'disabled' : 'pinvou';
-}
-
-function visibleSortedModels(models) {
-  return [...(models || [])
-    .filter(model => model && model.id)];
 }
 
 /**
@@ -341,11 +336,6 @@ const formatMemoryTime = (item, copy) => {
       const [keyRevealError, setKeyRevealError] = useState('');
       const [testing, setTesting] = useState(false);
       const [testResult, setTestResult] = useState(null);
-      // Legacy detect flow state flag: handleDetect itself is kept (see the source-text
-      // guard in tests/settings_ui_smoke.js, which locks the "only auto-fill explicitly loaded models" safety invariant); no current UI caller.
-      const [detecting, setDetecting] = useState(false);
-      // Legacy detect result slot: written by the retained handleDetect below; the JSX reader is pending cleanup.
-      const [detectResult, setDetectResult] = useState(null);
       const [localDetecting, setLocalDetecting] = useState(false);
       const [localDetectResult, setLocalDetectResult] = useState(null);
       // Optional custom port for local-model auto-detection (raw user input; empty = default ports only).
@@ -553,78 +543,6 @@ const formatMemoryTime = (item, copy) => {
         }
         finally { setImageTesting(false); }
       }
-      // 探测本机 vLLM：只扫 127.0.0.1/localhost 的 8000-8002，探到唯一可用实例直接自动填充。
-      function applyCandidate(c) {
-        if (!c) return;
-        // 优先填充已加载的模型：Ollama/LM Studio 的列表含全部已下载模型，
-        // 选未加载的模型 = 首次推理时由框架 JIT 静默载入内存（可能几十 GB）。
-        const entries = Array.isArray(c.models) && c.models.length
-          ? c.models.map(m => (typeof m === 'string' ? { id: m, loaded: null } : m))
-          : [];
-        const preferred = entries.find(e => e && e.id && e.loaded === true)
-          || entries.find(e => e && e.id && e.loaded == null);
-        const modelId = preferred ? preferred.id : (c.model || '');
-        if (c.base_url) setBaseUrl(c.base_url);
-        if (modelId) { setModel(modelId); if (!name.trim()) setName(modelId); }
-        // 与手输模型 ID 同口径:检测回填是显式换模型,未手动改过档位时按标注预填。
-        if (!imageCapabilityTouched) setImageCapability(imageCapabilityForCatalogModel(modelId || ''));
-        setApiKey('');
-        setKeyAction(initial.__new ? 'replace' : 'keep_existing');
-      }
-      // Legacy local-model detect flow. The current UI entry point has switched to
-      // handleLocalDetect (the catalog page "Detect" button), but tests/settings_ui_smoke.js
-      // locks this function's safety invariant via a source-text guard: even a single online
-      // instance may only auto-fill "explicitly loaded" models (JIT loading can be tens of GB);
-      // unknown load state must not be treated as loaded. The function body is kept verbatim
-      // per the guard contract and is not removed by lint cleanup.
-      // biome-ignore lint/correctness/noUnusedVariables: source-text guard (tests/settings_ui_smoke.js) locks a safety invariant; keep verbatim
-      async function handleDetect() { // eslint-disable-line no-unused-vars,sonarjs/no-unused-vars -- source-text guard locks a safety invariant; keep verbatim
-        if (!canSetUpLocalModel || !bridge.available || detecting) return;
-        // macOS/Windows 后端无 discover_local_vllm / detect_local_vllm_setup 命令(已 cfg linux),
-        // 此处非 Linux 直接返回,避免 invoke 不存在的命令 reject 报错。
-        if (!bridge.available || detecting) return;
-        if (!localVllmSupported) return;
-        setDetecting(true); setDetectResult(null); setTestResult(null); setOfferSetup(false); setBootstrapHere(false);
-        try {
-          const result = await bridge.vllm.discoverLocalVllm({
-            currentBaseUrl: baseUrl.trim() || null,
-            savedBaseUrl: initial.base_url || null,
-          });
-          const online = ((result && result.candidates) || []).filter(c => c.status !== 'offline');
-          setDetectResult({ candidates: online });
-          // 唯一可用实例直接填充——但只自动填充"已加载"的模型。Ollama/LM Studio
-          // 的列表接口返回全部已下载模型，JIT 机制下选未加载模型 = 首次推理时
-          // 静默载入内存（可能是几十 GB），必须交给用户显式选择。
-          if (online.length === 1) {
-            const c = online[0];
-            const entries = Array.isArray(c.models) && c.models.length
-              ? c.models.map(m => (typeof m === 'string' ? { id: m, loaded: null } : m))
-              : (c.model ? [{ id: c.model, loaded: null }] : []);
-            const loadedEntry = entries.find(e => e && e.id && e.loaded === true);
-            if (loadedEntry) applyCandidate({ base_url: c.base_url, model: loadedEntry.id });
-          }
-          else if (online.length === 0) {
-            // 没探到运行中的实例:看本机是否有预装大模型,有则提示一键启用(走同一 bootstrap)。
-            const setup = await bridge.vllm.detectLocalVllmSetup();
-            const canStart = setup && setup.has_packages &&
-              (setup.engine_state ? ['stopped', 'failed'].includes(setup.engine_state) : !setup.vllm_online);
-            if (canStart) setOfferSetup(true);
-            if (setup && setup.engine_state === 'starting') {
-              setDetectResult({ candidates: [], engineState: 'starting' });
-            }
-          }
-        } catch (e) {
-          setDetectResult({ error: String(e) });
-        } finally {
-          setDetecting(false);
-        }
-      }
-      function vllmStatusLabel(status) {
-        if (status === 'busy') return t.vllmDetectBusy;
-        if (status === 'ready') return t.vllmDetectReady;
-        if (status === 'mismatch') return t.vllmDetectMismatch;
-        return t.vllmDetectOffline;
-      }
       const isLocalPreset = preset === 'local_vllm';
       const showProviderModelField = !isLocalPreset && !!activeProvider && Array.isArray(activeProvider.items) && activeProvider.items.length > 0;
       const showModelIdField = isLocalPreset || customModel || showProviderModelField;
@@ -772,6 +690,10 @@ const formatMemoryTime = (item, copy) => {
           credential_action: 'keep_existing',
         };
       }
+      // 本机模型检测（本地选择页「检测」按钮）：只列出候选行，绝不自动填充表单——
+      // Ollama/LM Studio 的列表接口返回全部已下载模型，JIT 机制下加载未运行模型可能
+      // 静默载入几十 GB；候选是否添加由用户显式点击决定（安全不变量，由
+      // tests/settings_ui_smoke.js 的源码守卫钉住）。
       async function handleLocalDetect() {
         if (!bridge.available || !bridge.vllm.discoverLocalVllm || localDetecting) return;
         // Optional custom port: the draft keeps the raw input as typed; anything
@@ -1393,33 +1315,6 @@ const formatMemoryTime = (item, copy) => {
                   </div>
                 </section>
               )}
-              {preset === 'local_vllm' && detectResult && (
-                <div className={`rounded-xl border p-3 space-y-2 border-[#E0E3E7] bg-[#F8F9FB] dark:border-[#333537] dark:bg-[#131314]`}>
-                  {detectResult.error ? (
-                    <span className={`text-[12px] text-[#C5221F] dark:text-[#F28B82]`}>{t.vllmDetectError(detectResult.error)}</span>
-                  ) : detectResult.engineState === 'starting' ? (
-                    <span className={`text-[12px] text-[#0B57D0] dark:text-[#A8C7FA]`}>{t.vllmDetectStarting}</span>
-                  ) : detectResult.candidates.length === 0 ? (
-                    <span className={`text-[12px] text-[#5F6368] dark:text-[#9AA0A6]`}>{t.vllmDetectNone}</span>
-                  ) : (
-                    <>
-                      <span className={`text-[12px] text-[#137333] dark:text-[#93D5A6]`}>{t.vllmDetectFound(detectResult.candidates.length)}</span>
-                      {detectResult.candidates.map(c => (
-                        <button type="button" key={c.base_url} onClick={() => applyCandidate(c)}
-                          className={`w-full text-left rounded-lg border px-3 py-2 transition-colors border-[#E0E3E7] hover:bg-[#F0F4F9] dark:border-[#333537] dark:hover:bg-[#2A2B2D]`}>
-                          <div className={`text-[13px] truncate text-[#1F1F1F] dark:text-[#E3E3E3]`}>{c.base_url}</div>
-                          <div className={`text-[11px] truncate text-[#5F6368] dark:text-[#9AA0A6]`}>
-                            {vllmStatusLabel(c.status)}
-                            {c.model ? ` · ${t.vllmDetectedModel}: ${c.model}` : ''}
-                            {c.max_model_len ? ` · ${t.vllmDetectedContext}: ${c.max_model_len}` : ''}
-                          </div>
-                        </button>
-                      ))}
-                    </>
-                  )}
-                  <span className={`text-[11px] block text-[#9AA0A6] dark:text-[#5F6368]`}>{t.vllmDetectHint}</span>
-                </div>
-              )}
               {preset === 'local_vllm' && canSetUpLocalModel && (offerSetup || bootstrapHere) && (
                 <div className={`rounded-xl border p-3 border-[#E0E3E7] bg-[#F8F9FB] dark:border-[#333537] dark:bg-[#131314]`}>
                   {bootstrapHere ? (
@@ -1639,16 +1534,17 @@ const formatMemoryTime = (item, copy) => {
       </div>
     );
     // iOS-style confirm dialog (stacked buttons: red confirm on top, blue cancel below; backdrop click does not close).
-    // Two isomorphic sites: model delete / search source delete; RestartDialog (two-column grid, wider) is not one of them.
-    const SheetConfirmDialog = ({ title, desc, confirmLabel, cancelLabel, onConfirm, onCancel }) => (
-      <div className="fixed inset-0 z-[110] flex items-center justify-center bg-black/35 backdrop-blur-md px-4">
+    // Three isomorphic sites: model delete / search source delete / memory delete; RestartDialog (two-column grid, wider) is not one of them.
+    // Optional testid/confirmTestId mount the memory delete dialog's test pins; desc is omitted where the dialog carries no description row.
+    const SheetConfirmDialog = ({ title, desc, confirmLabel, cancelLabel, onConfirm, onCancel, testid, confirmTestId }) => (
+      <div data-testid={testid} className="fixed inset-0 z-[110] flex items-center justify-center bg-black/35 backdrop-blur-md px-4">
         <div className={`w-[270px] overflow-hidden rounded-[14px] shadow-2xl bg-white text-[#1C1C1E] dark:bg-[#2C2C2E] dark:text-[#F2F2F7]`}>
           <div className="px-5 pt-5 pb-4 text-center">
             <h3 className="text-[17px] leading-6 font-semibold">{title}</h3>
-            <p className={`mt-1 text-[13px] leading-[18px] text-[#8A8A8E] dark:text-[#98989D]`}>{desc}</p>
+            {desc && <p className={`mt-1 text-[13px] leading-[18px] text-[#8A8A8E] dark:text-[#98989D]`}>{desc}</p>}
           </div>
           <div className={`border-t border-black/[0.12] dark:border-white/[0.12]`}>
-            <button type="button" onClick={onConfirm} className={`w-full h-12 text-[17px] font-semibold text-[#FF3B30] border-b border-black/[0.12] dark:border-white/[0.12]`}>{confirmLabel}</button>
+            <button type="button" data-testid={confirmTestId} onClick={onConfirm} className={`w-full h-12 text-[17px] font-semibold text-[#FF3B30] border-b border-black/[0.12] dark:border-white/[0.12]`}>{confirmLabel}</button>
             <button type="button" onClick={onCancel} className="w-full h-12 text-[17px] font-semibold text-[#007AFF]">{cancelLabel}</button>
           </div>
         </div>
@@ -1678,17 +1574,15 @@ const formatMemoryTime = (item, copy) => {
     );
     /** @param {{ item: MemoryItem, copy: { memoryDeleteConfirm: string }, detailCopy: { delete: string, cancel: string }, onConfirmDelete: (item: MemoryItem) => void, setMemoryDeleteConfirm: (next: MemoryItem | null) => void }} props - Delete-memory confirm state and actions. The native window.confirm does not render in Tauri WebView2, so this uses the same in-app confirm dialog as the model/search deletes. */
     const MemoryDeleteDialog = ({ item, copy, detailCopy, onConfirmDelete, setMemoryDeleteConfirm }) => (
-      <div data-testid="memory-delete-confirm" className="fixed inset-0 z-[110] flex items-center justify-center bg-black/35 backdrop-blur-md px-4">
-        <div className={`w-[270px] overflow-hidden rounded-[14px] shadow-2xl bg-white text-[#1C1C1E] dark:bg-[#2C2C2E] dark:text-[#F2F2F7]`}>
-          <div className="px-5 pt-5 pb-4 text-center">
-            <h3 className="text-[17px] leading-6 font-semibold">{copy.memoryDeleteConfirm}</h3>
-          </div>
-          <div className={`border-t border-black/[0.12] dark:border-white/[0.12]`}>
-            <button type="button" data-testid="memory-delete-confirm-ok" onClick={() => { onConfirmDelete(item); setMemoryDeleteConfirm(null); }} className={`w-full h-12 text-[17px] font-semibold text-[#FF3B30] border-b border-black/[0.12] dark:border-white/[0.12]`}>{detailCopy.delete}</button>
-            <button type="button" onClick={() => setMemoryDeleteConfirm(null)} className="w-full h-12 text-[17px] font-semibold text-[#007AFF]">{detailCopy.cancel}</button>
-          </div>
-        </div>
-      </div>
+      <SheetConfirmDialog
+        testid="memory-delete-confirm"
+        confirmTestId="memory-delete-confirm-ok"
+        title={copy.memoryDeleteConfirm}
+        confirmLabel={detailCopy.delete}
+        cancelLabel={detailCopy.cancel}
+        onConfirm={() => { onConfirmDelete(item); setMemoryDeleteConfirm(null); }}
+        onCancel={() => setMemoryDeleteConfirm(null)}
+      />
     );
 
     // eslint-disable-next-line no-unused-vars, sonarjs/cognitive-complexity -- contract slot parameters kept; the settings page aggregates many form branches, splitting needs a dedicated design
@@ -1927,7 +1821,8 @@ const formatMemoryTime = (item, copy) => {
         if (tone === 'red') return 'text-[#FF3B30] hover:bg-[#FF3B30]/10';
         return 'text-[#007AFF] hover:bg-[#007AFF]/10';
       };
-      const userModels = visibleSortedModels(savedModels || []);
+      // filter already returns a fresh array; no extra spread needed.
+      const userModels = (savedModels || []).filter(model => model && model.id);
       const searchOptions = [
         { key: 'bing', label: 'Bing', desc: settingsCopy.searchDescriptions.bing },
         { key: 'metaso', label: t.uiSettingsView.searchProviderMetaso, desc: settingsCopy.searchDescriptions.metaso },
@@ -2538,9 +2433,6 @@ const formatMemoryTime = (item, copy) => {
       const renderCommunity = () => (
         <CommunityPanel
           copy={t}
-          groupName={COMMUNITY_QQ_GROUP_NAME}
-          groupNumber={COMMUNITY_QQ_GROUP_NUMBER}
-          qrImageSrc={COMMUNITY_QQ_QR_IMAGE_SRC}
           onOpenDiscussions={() => {
             if (!bridge.available || !bridge.artifacts?.openUserExternalUrl) return;
             bridge.artifacts.openUserExternalUrl(COMMUNITY_DISCUSSIONS_URL).catch(() => {});
@@ -2853,4 +2745,4 @@ const formatMemoryTime = (item, copy) => {
     // ==========================================
     // 安装工具后新建会话弹出的介绍卡片（纯前端，不发 LLM query，点 chip 才发消息）
 
-export { SSegmented, MODEL_PRESET_DEFS, presetOptionsI18n, presetProviderLabel, WebAccessModal, ModelFormModal, SettingsView };
+export { WebAccessModal, SettingsView };

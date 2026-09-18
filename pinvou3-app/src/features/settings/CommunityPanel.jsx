@@ -1,6 +1,7 @@
 import { useState } from 'react';
 import { Check, Copy, ExternalLink, MessageCircle } from '../../components/icons.jsx';
 import { copyClipboardText } from '../../shared/clipboard.js';
+import { COMMUNITY_QQ_GROUP_NAME, COMMUNITY_QQ_GROUP_NUMBER, COMMUNITY_QQ_QR_IMAGE_SRC } from './community-config.js';
 
 /** @param {{ label: string }} props - Localized placeholder label. */
 function QrPlaceholder({ label }) {
@@ -31,9 +32,17 @@ function QrPlaceholder({ label }) {
  *   groupNumber: string,
  *   qrImageSrc: string,
  *   onOpenDiscussions: () => void,
- * }} props - Community content and actions.
+ * }} props - Community content and actions. The QQ group identity constants are
+ * owned by this panel (community-config.js); onOpenDiscussions stays injected so
+ * the external-url bridge seam is wired by the caller.
  */
-export function CommunityPanel({ copy, groupName, groupNumber, qrImageSrc, onOpenDiscussions }) {
+export function CommunityPanel({
+  copy,
+  groupName = COMMUNITY_QQ_GROUP_NAME,
+  groupNumber = COMMUNITY_QQ_GROUP_NUMBER,
+  qrImageSrc = COMMUNITY_QQ_QR_IMAGE_SRC,
+  onOpenDiscussions,
+}) {
   const [copied, setCopied] = useState(false);
 
   const copyGroupNumber = async () => {

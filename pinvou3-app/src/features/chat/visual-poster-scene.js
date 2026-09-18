@@ -43,8 +43,6 @@ function createVisualPosterMessageMeta(text) {
 }
 
 export {
-  VISUAL_POSTER_SCENE_KEY,
-  buildVisualPosterPayloadText,
   createVisualPosterMessageMeta,
   shouldUseVisualPosterScene,
 };

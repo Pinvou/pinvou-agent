@@ -11,7 +11,7 @@
 //! - `types` —— 9 实体 struct/enum、`MemoryReviewModel` trait、常量、字段归一化
 //! - `util` —— 文本清洗 / stable id / 原子写盘等跨模块底层原语
 //! - `io` —— profile 单文件 + 4 JSONL store + 2 目录 store 的读写
-//! - `llm_review` —— LLM 后台记忆复盘（提示词、调用、清洗、自动落库）+ 启发式兜底
+//! - `llm_review` —— LLM 后台记忆复盘（提示词、调用、清洗、自动落库）
 //! - `organize` —— full-pass memory organize (batch-apply LLM delete/update/merge) + report history
 //! - `render` —— 注入块 / 设备快照文档 / runtime prompt 文件管理
 //!
@@ -27,10 +27,9 @@ mod util;
 // ---- 实体类型与 trait（types）----
 pub use self::types::{
     InjectedMemoryItem, MemoryProfile, MemoryReviewModel, MemoryReviewOutcome, MemorySuggestion,
-    MemoryTextPatch, MemoryWriteEvent, NeverMemoryItem, PendingMemoryItem,
-    PendingSensitiveIdentity, PreferenceFile, ProfileConventions, ProfileIdentity, ProfilePatch,
-    RecentWorkItem, RecentWorkPatch, RuntimeMemorySnapshot, TimedMemoryItem, TopicMutation,
-    TopicRead, TurnMemoryCapture, WorkContextFile,
+    MemoryTextPatch, MemoryWriteEvent, NeverMemoryItem, PendingMemoryItem, PreferenceFile,
+    ProfileConventions, ProfileIdentity, ProfilePatch, RecentWorkItem, RuntimeMemorySnapshot,
+    TimedMemoryItem, TopicMutation, TopicRead, TurnMemoryCapture, WorkContextFile,
 };
 
 // ---- 路径访问器（io）----
@@ -42,15 +41,14 @@ pub use self::io::{
 
 // ---- 实体存储读写 pub 入口（io）----
 pub use self::io::{
-    PendingIgnoreOutcome, append_turn_assistant, archive_recent_work, clear_profile,
-    confirm_pending_memory, delete_preference, delete_timed_memory, delete_work_context,
-    discard_turn_capture, enqueue_memory_candidate, ignore_pending_memory, list_preferences,
-    list_preferences_with_cleanup, load_current_focus, load_never_memory, load_pending_memory,
-    load_profile, load_recent_activity, load_recent_work, load_work_context,
-    load_work_context_with_cleanup, memory_enabled, never_pending_memory,
-    record_turn_tool_complete, record_turn_tool_start, record_turn_user, save_profile,
-    take_turn_capture, update_preference, update_profile, update_timed_memory, update_work_context,
-    upsert_recent_work,
+    PendingIgnoreOutcome, append_turn_assistant, archive_recent_work, confirm_pending_memory,
+    delete_preference, delete_timed_memory, delete_work_context, discard_turn_capture,
+    enqueue_memory_candidate, ignore_pending_memory, list_preferences_with_cleanup,
+    load_current_focus, load_never_memory, load_pending_memory, load_profile, load_recent_activity,
+    load_recent_work, load_work_context, load_work_context_with_cleanup, memory_enabled,
+    never_pending_memory, record_turn_tool_complete, record_turn_tool_start, record_turn_user,
+    save_profile, take_turn_capture, update_preference, update_profile, update_timed_memory,
+    update_work_context,
 };
 
 // ---- LLM 后台复盘（llm_review）----
@@ -61,8 +59,7 @@ pub use self::organize::{MemoryOrganizeReport, load_organize_history, organize_m
 
 // ---- 渲染 / runtime prompt 文件管理（render）----
 pub use self::render::{
-    ensure_runtime_prompt, refresh_runtime_prompt, render_memory_block, runtime_snapshot,
-    write_memory_snapshot_document,
+    ensure_runtime_prompt, render_memory_block, runtime_snapshot, write_memory_snapshot_document,
 };
 
 #[cfg(test)]

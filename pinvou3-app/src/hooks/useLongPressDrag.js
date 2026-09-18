@@ -69,4 +69,4 @@ const LONGPRESS_MS = 350;
     // Render
     // ==========================================
 
-export { LONGPRESS_MS, MOVE_CANCEL, useLongPressDrag };
+export { useLongPressDrag };

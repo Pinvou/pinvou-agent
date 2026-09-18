@@ -21,6 +21,7 @@ import {
   normalizedPetReply,
   petCardUiReducer,
 } from './pet-card-state.js';
+import { useSpriteFramePlayer } from './use-sprite-frame-player.js';
 import {
   attachPetDragGeometry,
   clampPetDragToBounds,
@@ -111,22 +112,7 @@ function PetSprite({ pet, animation }) {
     () => buildAnimationSequence(animation, { reducedMotion }),
     [animation, reducedMotion],
   );
-  const [frameIndex, setFrameIndex] = useState(0);
-
-  // eslint-disable-next-line react-hooks/set-state-in-effect -- synchronously reset the frame index on animation-sequence switch; one-shot mirror
-  useEffect(() => setFrameIndex(0), [sequence]);
-  useEffect(() => {
-    if (reducedMotion || sequence.frames.length <= 1) return;
-    const frame = sequence.frames[frameIndex] || sequence.frames[0];
-    const timer = window.setTimeout(() => {
-      setFrameIndex((current) => (
-        current + 1 < sequence.frames.length ? current + 1 : sequence.loopStartIndex
-      ));
-    }, frame.durationMs);
-    return () => window.clearTimeout(timer);
-  }, [frameIndex, reducedMotion, sequence]);
-
-  const frame = sequence.frames[frameIndex] || sequence.frames[0];
+  const frame = useSpriteFramePlayer(sequence, { reducedMotion });
   return (
     <div
       className="pet-sprite"
@@ -199,7 +185,7 @@ export default function PetWindow({
   const [baseAnimation, setBaseAnimation] = useState('idle');
   const [dragAnimation, setDragAnimation] = useState(null);
   const [hovered, setHovered] = useState(false);
-  // 右键菜单改为窗口内 DOM 浮层(不再另起透明 webview:GB10/WebKitGTK 下
+  // 右键菜单改为窗口内 DOM 浮层(不再另起透明 webview:统一内存设备/WebKitGTK 下
   // 新起第二个透明窗口会触发 malloc 堆损坏闪退,且被 GTK 钳到 200x200)。
   const [ctxMenu, setCtxMenu] = useState(null);
   const ctxMenuRef = useRef(null);

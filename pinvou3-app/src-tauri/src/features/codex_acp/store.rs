@@ -461,28 +461,6 @@ impl SessionAgentStore {
             .collect()
     }
 
-    /// 在 ACP 会话创建时永久绑定 Agent 与执行目录。
-    ///
-    /// `set_acp_workspace` 是当前前端创建会话时的主入口；这个更窄的 API 保留给
-    /// 后续仅切换后端、不变更工作区的场景。
-    #[allow(dead_code)]
-    pub fn set_backend(&self, session_id: &str, backend: AgentBackend) -> Result<()> {
-        {
-            let mut records = self.records.write();
-            let record = records.entry(session_id.to_string()).or_default();
-            if record.backend != backend {
-                record.backend = backend;
-                record.acp_session_id = None;
-                record.acp_model_id = None;
-                record.acp_mode_id = None;
-                record.acp_config_values.clear();
-                record.workspace_kind = CodexWorkspaceKind::Temporary;
-                record.workspace_path = None;
-            }
-        }
-        self.persist()
-    }
-
     /// ACP session 一旦建立就不允许换 Agent 或目录，避免同一个 Agent 上下文跨
     /// 后端或跨项目漂移。
     pub fn set_acp_workspace(
@@ -1032,42 +1010,6 @@ impl SessionAgentStore {
                 record
                     .acp_config_values
                     .insert("model".to_string(), model_id);
-            }
-        }
-        self.persist()
-    }
-
-    pub fn set_acp_model(&self, session_id: &str, model_id: Option<String>) -> Result<()> {
-        {
-            let mut records = self.records.write();
-            let record = records.entry(session_id.to_string()).or_default();
-            record.acp_model_id = model_id.clone();
-            match model_id {
-                Some(model_id) => {
-                    record
-                        .acp_config_values
-                        .insert("model".to_string(), model_id);
-                }
-                None => {
-                    record.acp_config_values.remove("model");
-                }
-            }
-        }
-        self.persist()
-    }
-
-    pub fn set_acp_mode(&self, session_id: &str, mode_id: Option<String>) -> Result<()> {
-        {
-            let mut records = self.records.write();
-            let record = records.entry(session_id.to_string()).or_default();
-            record.acp_mode_id = mode_id.clone();
-            match mode_id {
-                Some(mode_id) => {
-                    record.acp_config_values.insert("mode".to_string(), mode_id);
-                }
-                None => {
-                    record.acp_config_values.remove("mode");
-                }
             }
         }
         self.persist()
@@ -2304,29 +2246,6 @@ mod tests {
         assert_eq!(
             recovered.acp_config_values.get("reasoning_effort"),
             Some(&"high".to_string())
-        );
-        fs::remove_dir_all(&root).unwrap();
-    }
-
-    #[test]
-    fn codex_mode_is_persisted_with_the_session_record() {
-        let root =
-            std::env::temp_dir().join(format!("pinvou3-codex-mode-test-{}", std::process::id()));
-        let _ = fs::remove_dir_all(&root);
-        fs::create_dir_all(&root).unwrap();
-        let path = root.join("session-agents.json");
-        let store = SessionAgentStore {
-            path: path.clone(),
-            records: Arc::new(RwLock::new(HashMap::new())),
-        };
-        store
-            .set_acp_mode("session-1", Some("agent-full-access".to_string()))
-            .unwrap();
-
-        let value: serde_json::Value = serde_json::from_slice(&fs::read(path).unwrap()).unwrap();
-        assert_eq!(
-            value["sessions"]["session-1"]["acp_mode_id"],
-            "agent-full-access"
         );
         fs::remove_dir_all(&root).unwrap();
     }

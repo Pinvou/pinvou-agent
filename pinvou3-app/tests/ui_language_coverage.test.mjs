@@ -40,6 +40,8 @@ for (const language of ['zh', 'en', 'ja']) {
     'login', 'logout', 'loginWaiting', 'openLoginUrl', 'loginCodePlaceholder', 'submitCode', 'logoutRelayDisabled',
     'cancelInstall', 'installCancelled',
     'modelSlotsTitle', 'modelSlotsHint', 'modelSlotsRequired',
+    // 注意：ProviderFormModal 用 `copy[`slot_${slot}`]` 动态取键（CLAUDE_MODEL_SLOT_IDS），
+    // 静态扫描查不到消费方，此处断言是防误删的唯一钉子。
     'slot_opus', 'slot_sonnet', 'slot_haiku', 'slot_fable', 'slot_subagent',
     'contextWindow', 'contextWindowHint', 'contextWindowInvalid',
   ]) {
@@ -111,6 +113,13 @@ for (const language of ['zh', 'en', 'ja']) {
   for (const deadKey of ['sidebarCodeStyleOn', 'sidebarCodeStyleOff']) {
     assert.equal(dict[language][deadKey], undefined, `${language}.${deadKey} is retired and must stay deleted`);
   }
+  // The vendor-residue sweep retired the intranet tool-store copy and the
+  // MegaCube sidebar entry (no renderer consumes them and no tool data sets
+  // tool.internal); the keys must not come back.
+  for (const deadKey of ['internal', 'internalTitle', 'internalDesc', 'internalTools', 'internalCount', 'internalDirect']) {
+    assert.equal(dict[language].uiToolStore[deadKey], undefined, `${language}.uiToolStore.${deadKey} is retired and must stay deleted`);
+  }
+  assert.equal(dict[language].megacubeSite, undefined, `${language}.megacubeSite is retired and must stay deleted`);
 }
 
 // 三语 key parity:zh 是全集基准,en 必须覆盖 zh 的每个叶子 key(ja 经 en

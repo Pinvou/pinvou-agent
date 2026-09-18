@@ -1111,7 +1111,7 @@ assert.match(viewCode, /Number\.isFinite\(configuredScale\)/);
 assert.match(viewCode, /useState\(startupScale\)/);
 assert.match(viewCode, /invokeTauri\('set_pet_scale',[\s\S]{0,120}?scale:\s*startupScale/);
 assert.match(viewCode, /\{allowResize && \(\s*<div\s+className="pet-resize-grip"/);
-// 右键菜单为窗口内 DOM 浮层(不再 invoke 原生菜单窗口:GB10/WebKitGTK 下
+// 右键菜单为窗口内 DOM 浮层(不再 invoke 原生菜单窗口:统一内存设备/WebKitGTK 下
 // 新起第二个透明窗口会 malloc 堆损坏闪退)。
 assert.match(viewCode, /onContextMenu=\{onCharacterContextMenu\}/);
 assert.match(viewCode, /const onCharacterContextMenu = \(event\) => \{/);

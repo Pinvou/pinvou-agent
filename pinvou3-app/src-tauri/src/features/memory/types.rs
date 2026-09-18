@@ -4,7 +4,7 @@
 //! clean_* 分类器做归一化）。topic/kind 归一化是纯字符串映射，被 io 与
 //! llm_review 共用，也集中在此。
 
-use std::collections::{BTreeMap, BTreeSet};
+use std::collections::BTreeSet;
 use std::path::PathBuf;
 
 use serde::{Deserialize, Serialize};
@@ -54,10 +54,6 @@ pub(super) fn default_profile_version() -> u32 {
     PROFILE_VERSION
 }
 
-pub(super) fn default_pending_status() -> String {
-    "pending_confirm".to_string()
-}
-
 pub(super) fn default_recent_status() -> String {
     "active".to_string()
 }
@@ -74,8 +70,6 @@ pub struct MemoryProfile {
     pub identity: ProfileIdentity,
     #[serde(default)]
     pub conventions: ProfileConventions,
-    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
-    pub pending_sensitive_identity: BTreeMap<String, PendingSensitiveIdentity>,
 }
 
 #[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq, Eq)]
@@ -98,15 +92,6 @@ pub struct ProfileConventions {
     pub style_notes: Vec<String>,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
-pub struct PendingSensitiveIdentity {
-    pub value: String,
-    #[serde(default, skip_serializing_if = "String::is_empty")]
-    pub source: String,
-    #[serde(default = "default_pending_status")]
-    pub status: String,
-}
-
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
 pub struct ProfilePatch {
     pub call_name: Option<String>,
@@ -115,15 +100,6 @@ pub struct ProfilePatch {
     pub doc_standard: Option<String>,
     pub number_usage: Option<String>,
     pub style_notes: Option<Vec<String>>,
-}
-
-#[derive(Debug, Clone, Default, Serialize, Deserialize)]
-pub struct RecentWorkPatch {
-    pub id: Option<String>,
-    pub title: String,
-    pub summary: Option<String>,
-    pub source: Option<String>,
-    pub ttl_days: Option<i64>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
@@ -221,7 +197,6 @@ pub struct PendingMemoryItem {
     #[serde(default, skip_serializing_if = "String::is_empty")]
     pub source: String,
     pub status: String,
-    pub seen_count: u32,
     pub created_at: String,
     pub updated_at: String,
 }
@@ -254,8 +229,6 @@ pub(super) struct LlmMemoryItem {
     pub(super) confidence: f32,
     #[serde(default)]
     pub(super) ttl_days: Option<i64>,
-    #[serde(default)]
-    pub(super) reason: String,
 }
 
 #[derive(Debug, Clone)]
@@ -328,14 +301,6 @@ pub(super) struct TopicReconciliation {
 }
 
 #[derive(Debug, Clone, Default)]
-pub(super) struct TurnCapture {
-    pub(super) user: String,
-    pub(super) assistant: String,
-    pub(super) tool_summaries: Vec<String>,
-    pub(super) delivery_complete: bool,
-}
-
-#[derive(Debug, Clone, Default)]
 pub struct TurnMemoryCapture {
     pub user: String,
     pub assistant: String,
@@ -365,12 +330,6 @@ impl MemoryProfile {
             .map(|s| clean_scalar(s))
             .filter(|s| !s.is_empty())
             .collect();
-        self.pending_sensitive_identity.retain(|_, item| {
-            item.value = clean_scalar(&item.value);
-            item.source = clean_scalar(&item.source);
-            item.status = clean_scalar(&item.status);
-            !item.value.is_empty()
-        });
     }
 }
 

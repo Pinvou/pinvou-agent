@@ -15,8 +15,7 @@ use pinvou_knowledge::client::{
 use pinvou_knowledge::model::{
     AccessScope, Collection, CreateCollectionRequest, DeviceGrant, Document, JoinRequestRecord,
     JoinRequestStatus, ModelStatus, PairResponse, SearchHit, SearchRequest, ShareCreateRequest,
-    ShareCreated, ShareRecord, SourceWindow, SourceWindowRequest, TrashedDocument,
-    UpdateDeviceRequest,
+    ShareCreated, ShareRecord, SourceWindow, SourceWindowRequest, UpdateDeviceRequest,
 };
 use serde::{Deserialize, Serialize};
 use walkdir::{DirEntry, WalkDir};
@@ -950,16 +949,6 @@ impl RemoteKnowledgeService {
         self.client_for(server_id)?.remove_device(device_id).await
     }
 
-    pub async fn trashed_collections(&self, server_id: &str) -> Result<Vec<Collection>, String> {
-        self.require_owner(server_id)?;
-        self.client_for(server_id)?.trashed_collections().await
-    }
-
-    pub async fn trashed_documents(&self, server_id: &str) -> Result<Vec<TrashedDocument>, String> {
-        self.require_owner(server_id)?;
-        self.client_for(server_id)?.trashed_documents().await
-    }
-
     pub async fn permanently_delete_collection(
         &self,
         server_id: &str,
@@ -1138,19 +1127,6 @@ impl RemoteKnowledgeService {
         self.require_manage(server_id)?;
         self.client_for(server_id)?
             .create_collection(&CreateCollectionRequest { name, description })
-            .await
-    }
-
-    pub async fn update_collection(
-        &self,
-        server_id: &str,
-        id: i64,
-        name: String,
-        description: Option<String>,
-    ) -> Result<Collection, String> {
-        self.require_manage(server_id)?;
-        self.client_for(server_id)?
-            .update_collection(id, &CreateCollectionRequest { name, description })
             .await
     }
 

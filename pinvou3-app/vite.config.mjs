@@ -114,7 +114,6 @@ function conditionalPlatformScripts(webBuild) {
 // resolveAppAssetUrl('...') literals to these lists and rejects stale entries.
 export const staticRuntimeAssetPaths = new Set([
   'assets/brand/brand-blue.png',
-  'assets/megacube-icon.png',
 ]);
 export const staticRuntimeAssetPrefixes = [
   'assets/tool-icons/',

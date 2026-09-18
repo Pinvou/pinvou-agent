@@ -1481,7 +1481,7 @@ async fn large_xlsx_attachment_path_mode() {
     if !require_vllm(scenario).await {
         return;
     }
-    let src = PathBuf::from("/home/hexin/下载/2025年SSD存储数据.xlsx");
+    let src = PathBuf::from("/home/dev/Downloads/large-storage-report.xlsx");
     if !src.is_file() {
         eprintln!("SKIP {scenario}: 测试文件不存在 {}", src.display());
         return;
@@ -1507,7 +1507,7 @@ async fn large_xlsx_attachment_path_mode() {
         "[{scenario}] 分流后 prompt 应为预览级, got ~{approx_tokens:.0} tokens"
     );
     // 硬契约 2:转换产物落盘 workspace,模型才有的读。
-    let csv = ws.join("attachments/2025年SSD存储数据.csv");
+    let csv = ws.join("attachments/large-storage-report.csv");
     assert!(csv.is_file(), "[{scenario}] CSV 应落盘 {}", csv.display());
 
     let mut expect = Expect::default();

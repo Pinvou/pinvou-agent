@@ -57,13 +57,13 @@ test('shouldShowWorkspaceBindingChip：仅活动会话且有绑定路径时显�
 
 // ── vm harness ────────────────────────────────────────────────
 function loadFeature(name, contextOverrides, stateOverrides) {
-  const root = { __PINVOU_SHARED_I18N__: {} };
   const storage = new Map();
   const localStorage = {
     getItem(key) { return storage.has(key) ? storage.get(key) : null; },
     setItem(key, value) { storage.set(key, String(value)); },
     removeItem(key) { storage.delete(key); },
   };
+  const root = {};
   const src = fs.readFileSync(path.join(bridgeDir, name + '.js'), 'utf8');
   vm.runInNewContext(src, { window: root, globalThis: root, localStorage, setTimeout, clearTimeout });
   const factory = root.__PINVOU_TAURI_BRIDGE_FEATURES__[name];

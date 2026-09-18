@@ -85,6 +85,31 @@ pub fn apply_user_npm_prefix(cmd: &mut Command) {
 
 // ─────────────────────────────── 公共执行件 ───────────────────────────────
 
+/// 授权 CLI 输出行的安全化（打日志 / 经事件通道上屏前统一过一道）：空行丢弃；
+/// 命中敏感词整行替换为占位符；其余行截断到 320 字符。敏感词为
+/// `access_token` / `refresh_token` / `authorization:` / `bearer `，`redact_bare_token`
+/// 再追加兜底子串 `token`——tmeet 的输出会出现不带下划线/驼峰的 token 字样需要兜底；
+/// dingtalk 不开兜底（其正常 JSON 行含 camelCase token 字段名，开了会把非敏感行
+/// 也整体吞掉，属行为变化）。原先 tmeet/dingtalk 各有一份本地副本，已收编至此。
+pub(crate) fn safe_auth_log_line(line: &str, redact_bare_token: bool) -> Option<String> {
+    let trimmed = line.trim();
+    if trimmed.is_empty() {
+        return None;
+    }
+    let lower = trimmed.to_ascii_lowercase();
+    let mut sensitive = lower.contains("access_token")
+        || lower.contains("refresh_token")
+        || lower.contains("authorization:")
+        || lower.contains("bearer ");
+    if redact_bare_token {
+        sensitive = sensitive || lower.contains("token");
+    }
+    if sensitive {
+        return Some("[redacted credential line]".to_string());
+    }
+    Some(trimmed.chars().take(320).collect())
+}
+
 /// 跑一个命令、收集 `(success, stdout, stderr)`。在 `spawn_blocking` 里调。
 pub fn run(mut cmd: Command) -> Result<(bool, String, String), String> {
     let out = cmd

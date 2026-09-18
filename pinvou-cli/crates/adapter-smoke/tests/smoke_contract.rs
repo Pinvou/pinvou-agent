@@ -1,11 +1,10 @@
 use std::time::Duration;
 
 use adapter_smoke::{
-    JudgeDimensionScore, JudgeStatus, JudgeWireResponse, ProductScoreConfidence,
-    ProductScoreDimension, SMOKE_TOOL_POLICY_ID, SMOKE_TOOL_POLICY_ID_DEPRECATED,
-    SmokeAnalysisMaterial, SmokeRecord, SmokeToolEvent, SmokeUsage, ToolExpectation, analyze_rules,
-    calculate_product_score, is_low_cache_hit_ratio, latency_exceeds_twice_median,
-    parse_judge_response, render_smoke_markdown, smoke_cases,
+    ProductScoreConfidence, ProductScoreDimension, SMOKE_TOOL_POLICY_ID,
+    SMOKE_TOOL_POLICY_ID_DEPRECATED, SmokeAnalysisMaterial, SmokeRecord, SmokeToolEvent,
+    SmokeUsage, ToolExpectation, analyze_rules, calculate_product_score, is_low_cache_hit_ratio,
+    latency_exceeds_twice_median, render_smoke_markdown, smoke_cases,
 };
 use agent_backend_api::PrivateInputResolver;
 use benchmark_core::{
@@ -56,15 +55,7 @@ fn score_and_markdown_reject_forged_sensitive_finding_text() {
 
     assert!(calculate_product_score(&records, &[forged]).is_err());
     let safe_score = calculate_product_score(&records, &[]).expect("safe score");
-    assert!(
-        render_smoke_markdown(
-            &records,
-            &analysis,
-            &safe_score,
-            &adapter_smoke::not_configured_judge(),
-        )
-        .is_err()
-    );
+    assert!(render_smoke_markdown(&records, &analysis, &safe_score).is_err());
 }
 
 #[test]
@@ -128,13 +119,7 @@ fn product_diagnosis_aggregates_fixed_guidance_and_trusted_case_ids() {
         "limitations": []
     }))
     .expect("wire shape");
-    let markdown = render_smoke_markdown(
-        &records,
-        &analysis,
-        &score,
-        &adapter_smoke::not_configured_judge(),
-    )
-    .expect("validated markdown");
+    let markdown = render_smoke_markdown(&records, &analysis, &score).expect("validated markdown");
     assert!(!markdown.contains("untrusted"));
     assert!(markdown.contains("工具链调用可靠性不足"));
 }
@@ -228,32 +213,6 @@ fn rules_and_health_score_use_only_safe_adapter_material() {
 }
 
 #[test]
-fn judge_requires_exactly_the_six_distinct_dimensions() {
-    let dimensions = [
-        "task_completion",
-        "correctness",
-        "tool_choice",
-        "efficiency",
-        "safety_boundaries",
-        "overall_quality",
-    ]
-    .into_iter()
-    .map(|dimension| JudgeDimensionScore::new(dimension, 80, 0.9, "safe evidence"))
-    .collect();
-
-    let report = parse_judge_response(JudgeWireResponse::new(dimensions, vec![]))
-        .expect("valid strict judge report");
-    assert_eq!(report.status(), &JudgeStatus::Completed);
-
-    let duplicate = vec![JudgeDimensionScore::new("task_completion", 80, 0.9, "safe"); 6];
-    assert!(parse_judge_response(JudgeWireResponse::new(duplicate, vec![])).is_err());
-    assert_eq!(
-        adapter_smoke::not_configured_judge().status(),
-        &JudgeStatus::NotConfigured
-    );
-}
-
-#[test]
 fn markdown_calls_the_number_a_smoke_health_score_not_an_official_score() {
     let records = vec![SmokeRecord::new(
         TaskOutcome::new("plep_smoke_hi", TaskStatus::Completed, None, vec![], 10),
@@ -261,13 +220,7 @@ fn markdown_calls_the_number_a_smoke_health_score_not_an_official_score() {
     )];
     let analysis = analyze_rules(&smoke_cases(), &records);
     let score = calculate_product_score(&records, analysis.findings()).expect("safe findings");
-    let markdown = render_smoke_markdown(
-        &records,
-        &analysis,
-        &score,
-        &adapter_smoke::not_configured_judge(),
-    )
-    .expect("safe markdown");
+    let markdown = render_smoke_markdown(&records, &analysis, &score).expect("safe markdown");
 
     assert!(markdown.contains("Smoke Health Score"));
     assert!(markdown.contains("不是官方 benchmark 分数"));
@@ -444,13 +397,7 @@ fn health_score_and_markdown_include_every_deterministic_rule_policy() {
     let analysis = analyze_rules(&cases, &records);
     let score = calculate_product_score(&records, analysis.findings()).expect("safe findings");
     assert!(score.total().is_some_and(|total| total < 100));
-    let markdown = render_smoke_markdown(
-        &records,
-        &analysis,
-        &score,
-        &adapter_smoke::not_configured_judge(),
-    )
-    .expect("safe markdown");
+    let markdown = render_smoke_markdown(&records, &analysis, &score).expect("safe markdown");
     assert!(markdown.contains("工具"));
     assert!(markdown.contains("优化"));
     assert!(markdown.contains("不是官方 benchmark 分数"));
@@ -484,53 +431,11 @@ fn markdown_restores_versioned_dimensions_deductions_and_confidence_contract() {
     )];
     let analysis = analyze_rules(&smoke_cases(), &records);
     let score = calculate_product_score(&records, analysis.findings()).expect("safe findings");
-    let markdown = render_smoke_markdown(
-        &records,
-        &analysis,
-        &score,
-        &adapter_smoke::not_configured_judge(),
-    )
-    .expect("safe markdown");
+    let markdown = render_smoke_markdown(&records, &analysis, &score).expect("safe markdown");
 
     assert!(markdown.contains("pinvou-product-score/v1"));
     assert!(markdown.contains("LowSample"));
     assert!(markdown.contains("Task Completion"));
     assert!(markdown.contains("case_failed"));
     assert!(markdown.contains("-35"));
-}
-
-#[test]
-fn judge_rejects_sensitive_or_oversized_dynamic_text_fail_closed() {
-    fn dimensions(evidence: &str) -> Vec<JudgeDimensionScore> {
-        [
-            "task_completion",
-            "correctness",
-            "tool_choice",
-            "efficiency",
-            "safety_boundaries",
-            "overall_quality",
-        ]
-        .into_iter()
-        .map(|dimension| JudgeDimensionScore::new(dimension, 80, 0.9, evidence))
-        .collect()
-    }
-
-    assert!(
-        parse_judge_response(JudgeWireResponse::new(
-            dimensions("authorization: Bearer secret-value"),
-            vec![],
-        ))
-        .is_err()
-    );
-    assert!(
-        parse_judge_response(JudgeWireResponse::new(dimensions(&"x".repeat(501)), vec![],))
-            .is_err()
-    );
-
-    let valid = parse_judge_response(JudgeWireResponse::new(
-        dimensions("fixed safe evidence"),
-        vec![],
-    ))
-    .expect("safe bounded judge text");
-    assert_eq!(valid.dimensions().len(), 6);
 }

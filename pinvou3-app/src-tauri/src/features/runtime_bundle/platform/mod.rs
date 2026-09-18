@@ -19,20 +19,6 @@ pub use extraction::Pinvou3Bundle;
 static LARK_SKILLS_DIR: Dir<'_> =
     include_dir!("$CARGO_MANIFEST_DIR/resources/common/bundle/lark-skills");
 
-/// 9 个 lark 域技能目录名(门控写/删共用)。skills_dir 下这些目录在不在
-/// = 飞书技能对模型可见与否(引擎 `SkillRegistry` 扫目录)。
-const LARK_SKILL_DIRS: [&str; 9] = [
-    "lark-shared",
-    "lark-calendar",
-    "lark-doc",
-    "lark-drive",
-    "lark-sheets",
-    "lark-im",
-    "lark-task",
-    "lark-wiki",
-    "lark-base",
-];
-
 /// 企微官方域技能(wecomcli-*,MIT,来自 github.com/WecomTeam/wecom-cli `skills/`):
 /// 编译期内嵌整个 wecom-skills 目录树。**单独放 `wecom-skills/`**(不进 `skills/`)——
 /// `skills/` 整目录被 `LARK_SKILLS_DIR` 内嵌、随飞书门控解包,企微若混进去会被飞书
@@ -51,16 +37,16 @@ static DINGTALK_SKILLS_DIR: Dir<'_> =
 static TMEET_SKILLS_DIR: Dir<'_> =
     include_dir!("$CARGO_MANIFEST_DIR/resources/common/bundle/tmeet-skills");
 
-// 企微技能目录表（14 新名 + 0.1.9 legacy 名）已下沉到
-// `crate::platform::connector_skills` 作为单一真相源：marketplace 注册表
-// （wecom 卡 skills 列表）、扁平布局迁移、`cli_bundle_of_skill` 反查与
-// `legacy_cli_records` 首启登记与本模块的门控写/删共用（五轮评审必修 3：
+// 连接器技能目录表（飞书 lark 9 + 企微 14 新名 + 0.1.9 legacy 名 + 钉钉/腾讯会议
+// mono skill）已下沉到 `crate::platform::connector_skills` 作为单一真相源：
+// marketplace 注册表（wecom 卡 skills 列表）、扁平布局迁移、`cli_bundle_of_skill`
+// 反查与 `legacy_cli_records` 首启登记与本模块的门控写/删共用（五轮评审必修 3：
 // marketplace 侧曾按 0.1.9 旧表写死 7 技能，与本表分叉）。
 // 此处 re-export 保持本模块及 extraction 的既有引用不变。
-pub(crate) use crate::platform::connector_skills::{WECOM_LEGACY_SKILL_DIRS, WECOM_SKILL_DIRS};
-
-const DINGTALK_SKILL_DIRS: [&str; 1] = ["dws"];
-const TMEET_SKILL_DIRS: [&str; 1] = ["tmeet-skill"];
+pub(crate) use crate::platform::connector_skills::{
+    DINGTALK_SKILL_DIRS, LARK_SKILL_DIRS, TMEET_SKILL_DIRS, WECOM_LEGACY_SKILL_DIRS,
+    WECOM_SKILL_DIRS,
+};
 
 /// Bundle 版本号：手动 base + 自动 instructions.md 内容 hash（build.rs 注入）。
 /// 改 INSTRUCTIONS_MD 时不需要 bump base —— hash 自动变，ensure_extracted 自动覆写。
@@ -394,10 +380,6 @@ pub fn compose_static_layers(_ctx: &deepseek_tui::prompts::StaticPromptCtx<'_>) 
     // 的 mode 真相全靠 per-turn reminder,不在静态层;原 Plan/Agent 块是选不中的死代码,已删。
     MODE_EXECUTE_MD.to_string()
 }
-
-/// Authority Recap（Final Reminder）清空——其内容(裁决顺序/防编造)已折叠进
-/// instructions.md §底线,instructions 是唯一来源,不再单列末尾 recap。
-pub const AUTHORITY_RECAP: &str = "";
 
 /// 把 pinvou3 版 prompt 文案注入底座的 prompt 合成层。底座用 `OnceLock`,首次
 /// set 生效、后续返回 Err(rejected) —— 幂等,可在每个 `Bridge::boot` 入口重复调用

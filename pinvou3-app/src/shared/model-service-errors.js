@@ -221,6 +221,8 @@
       contentTitle: "内容被模型服务拒绝",
       contentMessage: "当前内容被模型服务的内容政策拒绝。请调整表述或拆分内容后重试，或在模型设置中切换到其他模型。",
       unknownTitle: "当前模型服务不可用",
+      formatTitle: "对话请求格式不兼容",
+      formatMessage: "模型服务拒绝了当前对话的消息格式，本次请求已停止。请新建会话，或联系管理员检查模型服务的对话模板兼容性。",
       unknownMessage: "当前模型服务返回异常，{stop}请稍后重试，或在模型设置中切换到其他可用模型。",
     },
     en: {
@@ -243,6 +245,8 @@
       contentTitle: "Content rejected by the model service",
       contentMessage: "The model service declined this content under its content policy. Rephrase or split the content, or switch to another model in settings.",
       unknownTitle: "Current model service is unavailable",
+      formatTitle: "Conversation format is incompatible",
+      formatMessage: "The model service rejected this conversation's message format. This request stopped. Start a new conversation or ask your administrator to check chat template compatibility.",
       unknownMessage: "The current model service returned an error, {stop}Try again later or switch to another model in settings.",
     },
     ja: {
@@ -265,6 +269,8 @@
       contentTitle: "コンテンツがモデルサービスに拒否されました",
       contentMessage: "現在のコンテンツはモデルサービスのコンテンツポリシーによって拒否されました。表現を変えるか内容を分割して再試行するか、モデル設定で別のモデルに切り替えてください。",
       unknownTitle: "現在のモデルサービスを利用できません",
+      formatTitle: "会話リクエストの形式に互換性がありません",
+      formatMessage: "モデルサービスが会話のメッセージ形式を拒否したため、リクエストを停止しました。新しい会話を開始するか、管理者に会話テンプレートの互換性を確認してください。",
       unknownMessage: "現在のモデルサービスでエラーが発生しました。{stop}しばらくしてから再試行するか、別のモデルに切り替えてください。",
     },
   };
@@ -286,7 +292,14 @@
     // HTTP/1.1 429 and HTTP/2 503 (with version segment) plus axios's
     // "status code 429" are the common shapes.
     const match = String(text || "").match(/\bHTTPS?\/?[\d.]*\s*(\d{3})\b/i)
-      || String(text || "").match(/\bstatus(?:\s+code)?[=:\s]+(\d{3})\b/i);
+      || String(text || "").match(/\bstatus(?:\s+code)?[=:\s]+(\d{3})\b/i)
+      // The non-streaming lane has no SSE/axios wrapper: the base surfaces
+      // those failures through LlmError's Display text, which puts the
+      // status in parentheses ("Invalid request (400): ...", "Server error
+      // (503): ..."). Without this arm a request-format rejection on that
+      // lane carries no status to gate on and drops to the unknown/retry
+      // card, which is the exact mislabel this classifier removes.
+      || String(text || "").match(/\b(?:invalid request|server error)\s*\((\d{3})\)/i);
     return match ? Number(match[1]) : null;
   }
 
@@ -457,6 +470,16 @@
     }
     if (hasAny(lower, normalized, ["timeout", "timed out", "dns", "connection", "network", "tls", "econnrefused", "connection refused", "connection reset", "stream read error", "chunk decode", "连接失败"])) {
       return { kind: "network", httpStatus: status };
+    }
+    // Request-format rejections reach this classifier through two wrappers:
+    // the SSE lane embeds the raw provider body after "HTTP <nnn>", while the
+    // non-streaming lane carries the base's InvalidRequest Display text
+    // ("Invalid request (400): <message>"). Both are parsed by
+    // extractHttpStatus, so the role/template wording decides the kind;
+    // "roles? must alternate" also covers the "conversation roles must
+    // alternate" wording.
+    if (status === 400 && /\b(?:response_role|query_role)\s*:|roles? must alternate|(?:invalid|unsupported|unexpected) (?:message )?role\b/.test(lower)) {
+      return { kind: "format", httpStatus: status };
     }
     return { kind: "unknown", httpStatus: status };
   }
@@ -662,6 +685,7 @@
         network: true,
         context: true,
         content: true,
+        format: true,
         unknown: true,
       };
       const kind = allowedKind[raw.kind] ? raw.kind : "unknown";
@@ -692,6 +716,7 @@
       network: ["networkTitle", "networkMessage", true],
       context: ["contextTitle", "contextMessage", false],
       content: ["contentTitle", "contentMessage", false],
+      format: ["formatTitle", "formatMessage", false],
       unknown: ["unknownTitle", "unknownMessage", true],
     }[classified.kind] || ["unknownTitle", "unknownMessage", true];
     let message = textFor(language, key[1], provider);

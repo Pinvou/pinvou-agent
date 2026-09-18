@@ -2,7 +2,7 @@ use std::fs::{File, OpenOptions};
 use std::path::{Path, PathBuf};
 
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub(super) struct WorkspaceIdentity(u64);
+pub(in crate::features::remote_control) struct WorkspaceIdentity(u64);
 
 pub(super) fn configure_private_open_options(_options: &mut OpenOptions) {}
 

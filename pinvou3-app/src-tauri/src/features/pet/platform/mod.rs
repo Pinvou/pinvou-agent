@@ -58,7 +58,7 @@ pub(super) fn resize_pet_window_fallback(
         (logical_size.1 * sf).round() as u32,
     );
     let _ = win.set_size(tauri::PhysicalSize::new(nw, nh));
-    // 诊断:X11 的 resize 异步生效,这里的回读多为旧值(GB10 实测会拿到上一个
+    // 诊断:X11 的 resize 异步生效,这里的回读多为旧值(统一内存设备实测会拿到上一个
     // 状态的尺寸),只能当观测信号,绝不能拿来做定位数学——定位一律用请求值,
     // 请求值已经过 pet_window_effective_size 与真实钳制对齐。
     if let Ok(size) = win.inner_size() {

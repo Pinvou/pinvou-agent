@@ -816,10 +816,4 @@ const ToolOutput = ({ item, t }) => {
       );
     };
 
-    // ==========================================
-    // ArtifactsPanel — 产物面板（右侧抽屉 + 预览）
-    // ==========================================
-    // 产物列表/预览的 iOS 风类型图标:配色圆角 tile + 白色字形。
-    // 复用成品卡那套 _ARTIFACT_FMT / _artifactKind / AcFmtIcon(line 3048+),列表与卡片视觉统一。
-
-export { ToolOutput, ToolCard, STEP_SYM, PlanLayer, cardBoxCls, cardBtnCls, pvRole, PinvouRows, PinvouLoading, PinvouSummonCard, PlanCard, PlanStuckCard, REASON_MAP, humanizeReason, CarefulBlockedCard, UserInputCard };
+export { ToolOutput, ToolCard, PlanLayer, cardBoxCls, cardBtnCls, PinvouSummonCard, PlanCard, PlanStuckCard, CarefulBlockedCard, UserInputCard };

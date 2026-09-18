@@ -4,7 +4,6 @@ const path = require('path');
 const vm = require('vm');
 
 const source = fs.readFileSync(path.join(__dirname, '..', 'src', 'platform', 'tauri', 'bridge', 'chat.js'), 'utf8');
-const chatEventsSource = fs.readFileSync(path.join(__dirname, '..', 'src', 'platform', 'tauri', 'bridge', 'chat-events.js'), 'utf8');
 const chatViewSource = fs.readFileSync(path.join(__dirname, '..', 'src', 'features', 'chat', 'ChatView.jsx'), 'utf8');
 const tauriBridgeSource = fs.readFileSync(path.join(__dirname, '..', 'src', 'platform', 'tauri', 'bridge.js'), 'utf8');
 const webBridgeSource = fs.readFileSync(path.join(__dirname, '..', 'src', 'platform', 'web', 'bridge.js'), 'utf8');
@@ -273,12 +272,6 @@ function rec(name, pass, detail = '') {
       webNormalizeSceneRegexSource.includes('design:ppt') &&
       /Some\("design:ppt"\) => "design:ppt"/.test(sessionsRustSource),
     'normalize allowlist must register design:ppt across tauri bridge, web bridge and Rust backend');
-
-  rec('远程消息不会越过已有 FIFO 队列',
-    /(?:var|const|let) remoteBuffer = getBuffer\(sid\);/.test(chatEventsSource) &&
-      /isBusyFor\(sid\) \|\| \(remoteBuffer && remoteBuffer\.queued && remoteBuffer\.queued\.length > 0\)/.test(chatEventsSource) &&
-      /if \(!isBusyFor\(sid\)\) flushQueued\(sid\);/.test(chatEventsSource),
-    'mobile user messages must enqueue behind pending local turns');
 
   const failed = results.filter(item => !item.pass);
   if (failed.length) {

@@ -24,14 +24,6 @@ pub enum ScheduledRunMode {
 }
 
 impl ScheduledRunMode {
-    pub(crate) const fn for_scheduled_auto_approve(auto_approve: bool) -> Self {
-        if auto_approve {
-            Self::Yolo
-        } else {
-            Self::Agent
-        }
-    }
-
     pub const fn as_label(self) -> &'static str {
         match self {
             Self::Agent => "agent",
@@ -67,7 +59,11 @@ impl ScheduledRunProfile {
     /// the authority: runs that may auto-approve use Yolo, while every other run
     /// stays in Agent so the engine cannot bypass the persisted approval gate.
     pub(crate) const fn execution_mode(&self) -> ScheduledRunMode {
-        ScheduledRunMode::for_scheduled_auto_approve(self.auto_approve)
+        if self.auto_approve {
+            ScheduledRunMode::Yolo
+        } else {
+            ScheduledRunMode::Agent
+        }
     }
 }
 

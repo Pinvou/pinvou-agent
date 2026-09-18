@@ -948,9 +948,4 @@ const ArtifactTileIcon = ({ name, tileCls = 'w-9 h-9 rounded-[10px]', glyphCls =
       );
     };
 
-    // ==========================================
-    // 卡片池 (Persona / AgentPool)
-    // ==========================================
-    // Side B: agency-agents-zh 按"部门"组织(无档位/评分), 派生稳定的部门配色。
-
-export { ArtifactTileIcon, apKindLabel, OFFICE_HTML_STYLE, ArtifactsPanel };
+export { OFFICE_HTML_STYLE, ArtifactsPanel };

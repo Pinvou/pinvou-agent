@@ -133,7 +133,7 @@ async fn probe_local_candidate(
     &'static str,
     &'static str,
 )> {
-    let identity = local_model_provider_for_url(base_url);
+    let identity = local_model_provider(LocalServerKind::Generic, local_port_of(base_url));
     match local_port_of(base_url) {
         Some(11434) => crate::core::model_endpoint::probe_ollama_models(base_url, None)
             .await
@@ -164,7 +164,7 @@ async fn probe_custom_port_candidate(
     &'static str,
 )> {
     let kind = crate::core::model_endpoint::probe_local_server_kind(base_url, None).await;
-    let identity = local_model_provider_for_kind(kind);
+    let identity = local_model_provider(kind, local_port_of(base_url));
     let probe = match kind {
         LocalServerKind::Ollama => {
             crate::core::model_endpoint::probe_ollama_models(base_url, None).await
@@ -228,20 +228,14 @@ fn local_port_of(base_url: &str) -> Option<u16> {
         .and_then(|port| port.parse::<u16>().ok())
 }
 
-fn local_model_provider_for_url(base_url: &str) -> (&'static str, &'static str) {
-    match local_port_of(base_url) {
-        Some(11434) => ("ollama", "Ollama"),
-        Some(1234) => ("lm_studio", "LM Studio"),
-        Some(8000..=8002) => ("vllm", "vLLM"),
-        _ => ("openai_compatible", "OpenAI Compatible"),
-    }
-}
-
-/// Service identity for custom-port candidates: derived from the probed kind
-/// (not port conventions). Generic means no known framework was recognized and
-/// the endpoint is treated as a generic OpenAI-compatible service, matching the
-/// legacy behavior for ports absent from the port table.
-fn local_model_provider_for_kind(kind: LocalServerKind) -> (&'static str, &'static str) {
+/// Service identity for probe candidates, single lookup for both call sites:
+/// a recognized probed kind wins; only a `Generic` kind (no known framework)
+/// falls back to the known default port table, and anything absent from that
+/// table ends as a generic OpenAI-compatible service (legacy behavior).
+/// Known-port candidates pass `Generic` + the URL port (port fast path);
+/// custom-port candidates pass the probed kind (the port there is by
+/// construction never in the default table, so outputs are unchanged).
+fn local_model_provider(kind: LocalServerKind, port: Option<u16>) -> (&'static str, &'static str) {
     match kind {
         LocalServerKind::Vllm => ("vllm", "vLLM"),
         LocalServerKind::Ollama => ("ollama", "Ollama"),
@@ -251,7 +245,12 @@ fn local_model_provider_for_kind(kind: LocalServerKind) -> (&'static str, &'stat
         LocalServerKind::KoboldCpp => ("koboldcpp", "KoboldCpp"),
         LocalServerKind::LmDeploy => ("lmdeploy", "LMDeploy"),
         LocalServerKind::DockerModelRunner => ("dockermodelrunner", "Docker Model Runner"),
-        LocalServerKind::Generic => ("openai_compatible", "OpenAI Compatible"),
+        LocalServerKind::Generic => match port {
+            Some(11434) => ("ollama", "Ollama"),
+            Some(1234) => ("lm_studio", "LM Studio"),
+            Some(8000..=8002) => ("vllm", "vLLM"),
+            _ => ("openai_compatible", "OpenAI Compatible"),
+        },
     }
 }
 
@@ -333,15 +332,24 @@ mod tests {
     #[test]
     fn local_model_provider_uses_known_default_ports() {
         assert_eq!(
-            local_model_provider_for_url("http://127.0.0.1:8000/v1"),
+            local_model_provider(
+                LocalServerKind::Generic,
+                local_port_of("http://127.0.0.1:8000/v1")
+            ),
             ("vllm", "vLLM")
         );
         assert_eq!(
-            local_model_provider_for_url("http://127.0.0.1:11434/v1"),
+            local_model_provider(
+                LocalServerKind::Generic,
+                local_port_of("http://127.0.0.1:11434/v1")
+            ),
             ("ollama", "Ollama")
         );
         assert_eq!(
-            local_model_provider_for_url("http://127.0.0.1:1234/v1"),
+            local_model_provider(
+                LocalServerKind::Generic,
+                local_port_of("http://127.0.0.1:1234/v1")
+            ),
             ("lm_studio", "LM Studio")
         );
     }
@@ -410,42 +418,42 @@ mod tests {
     }
 
     #[test]
-    fn local_model_provider_for_kind_maps_discriminated_services() {
+    fn local_model_provider_kind_wins_over_port_conventions() {
         assert_eq!(
-            local_model_provider_for_kind(LocalServerKind::Vllm),
+            local_model_provider(LocalServerKind::Vllm, None),
             ("vllm", "vLLM")
         );
         assert_eq!(
-            local_model_provider_for_kind(LocalServerKind::Ollama),
+            local_model_provider(LocalServerKind::Ollama, None),
             ("ollama", "Ollama")
         );
         assert_eq!(
-            local_model_provider_for_kind(LocalServerKind::LmStudio),
+            local_model_provider(LocalServerKind::LmStudio, None),
             ("lm_studio", "LM Studio")
         );
         assert_eq!(
-            local_model_provider_for_kind(LocalServerKind::Sglang),
+            local_model_provider(LocalServerKind::Sglang, None),
             ("sglang", "SGLang")
         );
         assert_eq!(
-            local_model_provider_for_kind(LocalServerKind::LlamaCpp),
+            local_model_provider(LocalServerKind::LlamaCpp, None),
             ("llamacpp", "llama.cpp")
         );
         assert_eq!(
-            local_model_provider_for_kind(LocalServerKind::KoboldCpp),
+            local_model_provider(LocalServerKind::KoboldCpp, None),
             ("koboldcpp", "KoboldCpp")
         );
         assert_eq!(
-            local_model_provider_for_kind(LocalServerKind::LmDeploy),
+            local_model_provider(LocalServerKind::LmDeploy, None),
             ("lmdeploy", "LMDeploy")
         );
         assert_eq!(
-            local_model_provider_for_kind(LocalServerKind::DockerModelRunner),
+            local_model_provider(LocalServerKind::DockerModelRunner, None),
             ("dockermodelrunner", "Docker Model Runner")
         );
         // Unrecognized framework falls back to the legacy behavior for ports absent from the port table.
         assert_eq!(
-            local_model_provider_for_kind(LocalServerKind::Generic),
+            local_model_provider(LocalServerKind::Generic, None),
             ("openai_compatible", "OpenAI Compatible")
         );
     }

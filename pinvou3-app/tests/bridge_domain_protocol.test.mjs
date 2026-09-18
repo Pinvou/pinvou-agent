@@ -129,11 +129,16 @@ const expectedProtocolHashes = {
   // invoke or listen entries). Recomputed again for the review-follow-up
   // comment translations inside the captured listener bodies (same
   // capture-text refresh; the comment-stripped signature list is
-  // byte-identical to the previous state).
-  // Recomputed for the rebind artifact-path save transform (round-B Major 1):
-  // chat.js persistMessages wraps its save_session_artifacts paths with
-  // rebaseArtifactPathsForRebind (same command surface, no new entries).
-  chat: '30f7e00d6724004dd474c7bc3bfef3355bd5c15d92fdb41a517235859bc741f8',
+  // byte-identical to the previous state). Recomputed for the audit dead-code
+  // cleanup: persistMessages factory removed, the steer watchdog timeout-map
+  // scaffold extracted behind the same arm/clear/purge/isArmed entry points,
+  // and the never-emitted remote_control:mobile_user_message / vllm-setup:phase
+  // listeners dropped. The captured surface shrank by persistMessages'
+  // save_session_messages/save_session_artifacts/rename_session invokes, the
+  // terminal.js cancel_shell_task invoke, and the two dead listeners; every
+  // dropped invoke stays reachable via bridge.js orchestration paths, so the
+  // exposed bridge.chat API is unchanged).
+  chat: 'a5315f07ce07d52767c967d3df57c8d86a5dd7a605e07daaa8d85427089c52ad',
   dependencies: '2cb185d38dabeb35f48773457c182e1c35951b210f5d0fc853b074eb2eb68626',
   // Recomputed for #445 round-8: exitPlanToYolo accepts an explicit target
   // session id (the YOLO gate passes the adjudicated sid), so the
@@ -175,7 +180,10 @@ const expectedProtocolHashes = {
   // older vintage.
   sessions: '336309941cfd0ce7c9908231a650c95cda048aea23bf1518f8fd8c241f4d5eb3',
   settings: 'a44929caff59641eb059f28885f1674d4e277412526d31c1d3ddfd75e44d0496',
-  updater: '86412d40999a268d3d92dc4fe97e3fe465de08745423be820f38a462d79aaced',
+  // Recomputed for the audit dead-code cleanup: the never-emitted
+  // remote_control:status / remote_control:session_created listeners were
+  // removed (update:progress stays — pinned by tests/updater_progress_state).
+  updater: 'd603bbac5c51f3b53bf19272fbafd9c430786fd5e35a9b8da9aa67f4c2334e5f',
   // Recomputed for the comment-only English translation of the voice bridge
   // (PR-added Chinese comments inside the postprocess_voice_text invoke
   // span are part of the hashed source; no invoke/listen surface changed).

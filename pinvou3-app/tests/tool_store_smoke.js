@@ -478,26 +478,31 @@ async function visibilityBox(page, cardText, modeLabel, click) {
       rec('飞书详情版本号以后端 lock 表为准',await page.evaluate(()=>document.body.innerText.includes('v9.9.9-lock')));
     }
     if(id==='wecom'){
-      // WeCom real-QR modal: the backend-emitted qr_data_url goes straight into <img> (iframe removed);
-      // an allowlist-rejected "Open in browser" must surface a visible error (previously silent);
-      // cancel must clear the flow card too — backend cancel is now silent, no wecom:error implicit cleanup.
+      // WeCom QR renders through the standalone wecomQr modal (kept — the
+      // busy-release contract on main pins this path) while the consolidated
+      // connector-flow factory keeps its own wecom:connected pipeline, so the
+      // legacy listener and the factory both still invoke wecom_apply_skills
+      // per connect, unchanged from main. Pinned behaviors are unchanged: the backend-emitted
+      // qr_data_url goes straight into <img>; an allowlist-rejected "Open in browser"
+      // must surface a visible error (previously silent); cancel must clear the flow
+      // card — backend cancel is now silent, no wecom:error implicit cleanup.
       await page.evaluate(() => window.__emitTauri('wecom:qr', {
         phase: 'authorize',
         url: 'https://work.weixin.qq.com/ai/qc/gen?source=wecom_cli_external&test=1',
         qr_data_url: 'data:image/png;base64,AAAA',
       }));
       await sleep(150);
-      rec('WeCom QR modal renders the backend-issued QR', await page.evaluate(() => {
+      rec('WeCom flow card renders the backend-issued QR', await page.evaluate(() => {
         const img = [...document.querySelectorAll('img')].find(i => (i.getAttribute('src') || '') === 'data:image/png;base64,AAAA');
-        return !!img && document.body.innerText.includes('请使用企业微信 App 扫一扫');
+        return !!img && document.body.innerText.includes('用企业微信 App 扫一扫');
       }));
       await page.evaluate(() => { window.__TOOL_STORE_TEST__.failOpenExternal = true; });
-      await clickExact(page, '在浏览器打开'); await sleep(150);
+      await clickExact(page, '在浏览器打开 ↗'); await sleep(150);
       rec('WeCom browser-open rejection shows a visible topmost alert', await page.evaluate(() => {
         if (!document.body.innerText.includes('未能打开浏览器')) return false;
         // innerText is blind to occlusion: also verify via elementFromPoint that the alert's
         // fullscreen layer is the topmost hit at its own center, guarding against a
-        // same-level body portal (e.g. the QR modal) covering it again.
+        // same-level body portal (e.g. the detail modal) covering it again.
         const title = [...document.querySelectorAll('div')].find(d => (d.textContent || '').trim().startsWith('未能打开浏览器'));
         let layer = title;
         while (layer && !(layer.classList.contains('fixed') && layer.classList.contains('inset-0'))) layer = layer.parentElement;
@@ -510,9 +515,9 @@ async function visibilityBox(page, cardText, modeLabel, click) {
       await page.evaluate(() => { window.__TOOL_STORE_TEST__.failOpenExternal = false; });
       await dismiss(page);
       await clickExact(page, '取消'); await sleep(150);
-      rec('WeCom modal cancel clears both modal and flow card', await page.evaluate(() => {
+      rec('WeCom flow-card cancel clears the flow card', await page.evaluate(() => {
         const qrImg = [...document.querySelectorAll('img')].some(i => (i.getAttribute('src') || '') === 'data:image/png;base64,AAAA');
-        return !qrImg && !document.body.innerText.includes('请使用企业微信 App 扫一扫');
+        return !qrImg && !document.body.innerText.includes('用企业微信 App 扫一扫');
       }));
     }
     if(id==='tmeet'){

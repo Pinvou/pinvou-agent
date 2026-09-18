@@ -229,6 +229,18 @@ for (const command of [
 // (set_disabled_skills/get_disabled_skills) were removed with the dead-command
 // cleanup: connector toggles go through set_disabled_connectors.
 // This list must stay in sync with the connector registration surface in lib.rs.
+// The retired *_status commands left the frontend (ToolStoreView now uses
+// *_skills_state / bundle_readiness); they were dropped from the allowlist and
+// are reverse-pinned here so they cannot quietly return.
+for (const command of [
+  'feishu_status',
+  'wecom_status',
+  'dingtalk_status',
+  'tmeet_status',
+  'ima_status',
+]) {
+  assert.equal(allowed.has(command), false, `retired ${command} must not return to the Web allowlist`);
+}
 const deniedConnectorMutations = [];
 for (const connector of ["feishu", "wecom", "dingtalk", "tmeet"]) {
   deniedConnectorMutations.push(

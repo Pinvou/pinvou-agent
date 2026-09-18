@@ -25,19 +25,18 @@ use super::types::{
     PENDING_STATUS_IGNORED, PENDING_STATUS_OBSERVED, PENDING_STATUS_PENDING, PROFILE_VERSION,
     PendingMemoryItem, PreferenceFile, ProfilePatch, RECENT_ACTIVITY_ACTIVE_MAX_STORED,
     RECENT_ACTIVITY_DEFAULT_TTL_DAYS, RECENT_WORK_ACTIVE_MAX_STORED,
-    RECENT_WORK_ARCHIVED_MAX_STORED, RECENT_WORK_DEFAULT_TTL_DAYS, RecentWorkItem, RecentWorkPatch,
+    RECENT_WORK_ARCHIVED_MAX_STORED, RECENT_WORK_DEFAULT_TTL_DAYS, RecentWorkItem,
     RuntimeMemorySnapshot, TIMED_MEMORY_ARCHIVED_MAX_STORED, TimedMemoryItem,
-    TopicMigrationJournal, TopicMutation, TopicRead, TopicReconciliation, TurnCapture,
-    TurnMemoryCapture, WorkContextFile, looks_like_profile_preference_text,
-    normalize_preference_topic, normalize_profile_label, normalize_timed_memory_kind,
-    normalize_timed_memory_topic, normalize_work_context_topic,
+    TopicMigrationJournal, TopicMutation, TopicRead, TopicReconciliation, TurnMemoryCapture,
+    WorkContextFile, looks_like_profile_preference_text, normalize_preference_topic,
+    normalize_profile_label, normalize_timed_memory_kind, normalize_timed_memory_topic,
+    normalize_work_context_topic,
 };
 use super::util::{
     clean_candidate_sentence, clean_id, clean_scalar, clean_text, file_lifecycle_lock,
     invalid_data, json_lines_are_valid, looks_sensitive, looks_sensitive_or_task_like, parse_time,
     read_text_recovering, read_text_recovering_unlocked, recover_directory_json_files_unlocked,
-    stable_id_from_text, stable_id_with_prefix, write_json_atomic, write_json_atomic_unlocked,
-    write_text_atomic,
+    stable_id_with_prefix, write_json_atomic, write_json_atomic_unlocked, write_text_atomic,
 };
 
 pub(super) fn write_lock() -> &'static Mutex<()> {
@@ -52,8 +51,8 @@ pub(super) const PREFERENCE_TEXT_MAX_CHARS: usize = 120;
 pub(super) const WORK_CONTEXT_TEXT_MAX_CHARS: usize = 160;
 pub(super) const TIMED_TEXT_MAX_CHARS: usize = 180;
 
-pub(super) fn turn_capture_store() -> &'static Mutex<BTreeMap<String, TurnCapture>> {
-    static STORE: OnceLock<Mutex<BTreeMap<String, TurnCapture>>> = OnceLock::new();
+pub(super) fn turn_capture_store() -> &'static Mutex<BTreeMap<String, TurnMemoryCapture>> {
+    static STORE: OnceLock<Mutex<BTreeMap<String, TurnMemoryCapture>>> = OnceLock::new();
     STORE.get_or_init(|| Mutex::new(BTreeMap::new()))
 }
 
@@ -105,10 +104,10 @@ pub fn record_turn_user(session_id: &str, user: &str) {
     let mut store = turn_capture_store().lock();
     store.insert(
         session_id,
-        TurnCapture {
+        TurnMemoryCapture {
             user: clean_text(user, 4000),
             assistant: String::new(),
-            ..TurnCapture::default()
+            ..TurnMemoryCapture::default()
         },
     );
 }
@@ -223,12 +222,7 @@ pub fn take_turn_capture(session_id: &str) -> Option<TurnMemoryCapture> {
     if capture.user.trim().is_empty() {
         return None;
     }
-    Some(TurnMemoryCapture {
-        user: capture.user,
-        assistant: capture.assistant,
-        tool_summaries: capture.tool_summaries,
-        delivery_complete: capture.delivery_complete,
-    })
+    Some(capture)
 }
 
 /// 中断/会话回收时丢弃该 session 的进行中 turn capture，避免进程级 store 永久驻留。
@@ -296,19 +290,6 @@ pub fn update_profile(patch: ProfilePatch) -> io::Result<MemoryProfile> {
     Ok(profile)
 }
 
-pub fn clear_profile() -> io::Result<MemoryProfile> {
-    let profile = MemoryProfile {
-        version: PROFILE_VERSION,
-        updated_at: Utc::now().to_rfc3339(),
-        revision: load_profile()
-            .map(|p| p.revision.saturating_add(1))
-            .unwrap_or(1),
-        ..MemoryProfile::default()
-    };
-    save_profile(&profile)?;
-    Ok(profile)
-}
-
 pub fn load_recent_work() -> io::Result<Vec<RecentWorkItem>> {
     let path = recent_work_path();
     let raw = match read_text_recovering(&path, json_lines_are_valid::<RecentWorkItem>) {
@@ -327,77 +308,6 @@ pub fn load_recent_work() -> io::Result<Vec<RecentWorkItem>> {
         }
     }
     Ok(out)
-}
-
-pub fn upsert_recent_work(patch: RecentWorkPatch) -> io::Result<RecentWorkItem> {
-    let _guard = write_lock().lock();
-    upsert_recent_work_unlocked(patch)
-}
-
-pub(super) fn upsert_recent_work_unlocked(patch: RecentWorkPatch) -> io::Result<RecentWorkItem> {
-    let now = Utc::now();
-    let now_s = now.to_rfc3339();
-    let ttl_days = patch
-        .ttl_days
-        .unwrap_or(RECENT_WORK_DEFAULT_TTL_DAYS)
-        .clamp(1, 90);
-    let mut items = load_recent_work()?;
-    let title = clean_text(&patch.title, 50);
-    if title.is_empty() {
-        return Err(io::Error::new(
-            io::ErrorKind::InvalidInput,
-            "recent work title is empty",
-        ));
-    }
-    let id = patch
-        .id
-        .map(|s| clean_id(&s))
-        .filter(|s| !s.is_empty())
-        .unwrap_or_else(|| stable_id_from_text(&title));
-
-    let mut item = if let Some(existing) = items.iter_mut().find(|item| item.id == id) {
-        existing.title = title;
-        existing.summary = patch
-            .summary
-            .as_deref()
-            .map(|s| clean_text(s, 80))
-            .unwrap_or_default();
-        existing.source = patch
-            .source
-            .as_deref()
-            .map(|s| clean_text(s, 40))
-            .unwrap_or_default();
-        existing.status = "active".to_string();
-        existing.updated_at = now_s.clone();
-        existing.last_hit = now_s.clone();
-        existing.expires_at = (now + Duration::days(ttl_days)).to_rfc3339();
-        existing.clone()
-    } else {
-        let item = RecentWorkItem {
-            id,
-            title,
-            summary: patch
-                .summary
-                .as_deref()
-                .map(|s| clean_text(s, 80))
-                .unwrap_or_default(),
-            status: "active".to_string(),
-            source: patch
-                .source
-                .as_deref()
-                .map(|s| clean_text(s, 40))
-                .unwrap_or_default(),
-            created_at: now_s.clone(),
-            updated_at: now_s.clone(),
-            last_hit: now_s.clone(),
-            expires_at: (now + Duration::days(ttl_days)).to_rfc3339(),
-        };
-        items.push(item.clone());
-        item
-    };
-    normalize_recent_work(&mut item);
-    write_recent_work_unlocked(&items)?;
-    Ok(item)
 }
 
 pub fn archive_recent_work(id: &str) -> io::Result<bool> {
@@ -1287,7 +1197,6 @@ pub fn enqueue_memory_candidate(suggestion: MemorySuggestion) -> io::Result<Pend
         if existing.status != PENDING_STATUS_CONFIRMED
             || !confirmed_pending_memory_is_materialized(existing)
         {
-            existing.seen_count = existing.seen_count.saturating_add(1);
             existing.status = PENDING_STATUS_PENDING.to_string();
             if !item.topic.is_empty() {
                 existing.topic = item.topic.clone();
@@ -1307,7 +1216,6 @@ pub fn enqueue_memory_candidate(suggestion: MemorySuggestion) -> io::Result<Pend
         existing.status == PENDING_STATUS_PENDING
             && pending_content_key(existing) == item_content_key
     }) {
-        existing.seen_count = existing.seen_count.saturating_add(1);
         existing.status = PENDING_STATUS_PENDING.to_string();
         if existing.topic.is_empty() && !item.topic.is_empty() {
             existing.topic = item.topic.clone();
@@ -1418,23 +1326,6 @@ pub fn confirm_pending_memory(id: &str) -> io::Result<Option<MemoryWriteEvent>> 
             profile.updated_at = now.clone();
             profile.normalize();
             write_json_atomic(&profile_path(), &profile)?;
-        }
-        "recent_work" => {
-            let _ = upsert_recent_work_unlocked(RecentWorkPatch {
-                id: None,
-                title: item.content.clone(),
-                summary: if item.topic.is_empty() {
-                    None
-                } else {
-                    Some(item.topic.clone())
-                },
-                source: Some(if item.source.is_empty() {
-                    "memory_candidate".to_string()
-                } else {
-                    item.source.clone()
-                }),
-                ttl_days: None,
-            })?;
         }
         "current_focus" | "recent_activity" => {
             let _ = upsert_timed_memory_unlocked(
@@ -1630,10 +1521,6 @@ pub(super) fn disabled_runtime_snapshot(session_id: &str) -> io::Result<RuntimeM
         block: String::new(),
         items: Vec::new(),
     })
-}
-
-pub fn list_preferences() -> io::Result<Vec<PreferenceFile>> {
-    load_preferences()
 }
 
 pub fn list_preferences_with_cleanup() -> io::Result<TopicRead<Vec<PreferenceFile>>> {
@@ -2191,7 +2078,6 @@ pub(super) fn pending_item_from_suggestion(
         content,
         source,
         status: PENDING_STATUS_PENDING.to_string(),
-        seen_count: 1,
         created_at: String::new(),
         updated_at: String::new(),
     })

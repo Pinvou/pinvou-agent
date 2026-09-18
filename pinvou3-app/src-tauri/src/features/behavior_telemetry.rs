@@ -485,23 +485,6 @@ pub fn track(app: &tauri::AppHandle, event: BehaviorEvent) {
     }
 }
 
-pub fn track_tool_call(
-    app: &tauri::AppHandle,
-    session_id: &str,
-    turn_id: Option<&str>,
-    tool_name: &str,
-    success: bool,
-) {
-    let mut event = BehaviorEvent::new("tool_call_completed")
-        .session(session_id)
-        .tool(tool_name, tool_name, classify_tool(tool_name))
-        .success(success);
-    if let Some(turn_id) = turn_id {
-        event = event.turn(turn_id);
-    }
-    track(app, event);
-}
-
 pub fn track_model_used(
     app: &tauri::AppHandle,
     session_id: &str,
@@ -532,18 +515,6 @@ pub fn track_model_used(
     );
 }
 
-pub fn classify_tool(tool_name: &str) -> &'static str {
-    if tool_name.starts_with("mcp_") || tool_name.contains("-mcp") {
-        "mcp"
-    } else if matches!(tool_name, "Bash" | "exec_shell" | "task_shell_start") {
-        "cli"
-    } else if matches!(tool_name, "load_skill" | "tool_search") {
-        "skill"
-    } else {
-        "unknown"
-    }
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -553,11 +524,7 @@ mod tests {
         let event = BehaviorEvent::new("tool_call_completed")
             .session("s1")
             .turn("t1")
-            .tool(
-                "mcp_weather_get_weather",
-                "mcp_weather_get_weather",
-                classify_tool("mcp_weather_get_weather"),
-            )
+            .tool("mcp_weather_get_weather", "mcp_weather_get_weather", "mcp")
             .success(false);
         let value = serde_json::to_value(event).unwrap();
         assert_eq!(value["event_name"], "tool_call_completed");

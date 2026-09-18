@@ -89,7 +89,7 @@ assert.match(
 );
 assert.match(
   projectsRs,
-  /if let Err\(error\) = &roots_result \{\n\s*emit_workspace_rebound_events\(/,
+  /Err\(error\) => \{\n\s*emit_workspace_rebound_events\(/,
   'the roots-commit error path must mark the already-rebased sessions too',
 );
 // The view-heal window must not prune the mark: the save transform shares it

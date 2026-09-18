@@ -58,7 +58,6 @@ import { ChatView } from '../features/chat/ChatView.jsx';
 import { createPinvouModeScopeKey, savePinvouModeState } from '../features/chat/pinvou-mode-state.js';
 import { WebConnectionStatus } from '../features/web/WebConnectionStatus.jsx';
 import { VoiceShortcutRouter } from '../features/voice-composer/VoiceShortcutRouter.jsx';
-import { MODEL_PRESET_DEFS } from '../features/settings/model-catalog.js';
 import { createPetActivationGuard } from '../features/pet/activation-guard.js';
 import { SessionAttachmentTitle } from '../features/attachments/SessionAttachmentTitle.jsx';
 import {
@@ -74,9 +73,6 @@ import {
 import { listAcpSessions } from '../features/codex/acpClient.js';
 import { revealStartupWindow } from '../platform/tauri/startup-window.js';
 
-// 定时任务创建与运行链路已恢复，展示入口并允许自动跳转。
-const SCHEDULED_TASKS_ENTRY_ENABLED = true;
-
 // 后端默认会话标题哨兵集合(bridge 按当前语言生成三语兜底标题,并据此判断是否自动改名)——
 // 显示层把任意一种哨兵标题映射成当前语言的「新对话」文案。哨兵是跨语言的后端
 // 契约而非当前 UI 文案,直接使用 shared/i18n.js 的静态集合,与词典装载进度无关
@@ -84,7 +80,20 @@ const SCHEDULED_TASKS_ENTRY_ENABLED = true;
 function isDefaultChatTitle(title) {
   return DEFAULT_CHAT_TITLES.has(title);
 }
-// Static regression anchor: SCHEDULED_TASKS_ENTRY_ENABLED && (<NavItem icon={<Clock size={18} />} label={t.scheduledPlans} unread={!!(bs && ((bs.scheduledTasks || []).some(task => task.hasUnreadRuns) || (bs.scheduledTaskRecentRuns || []).some(run => run && run.unread)))} />)
+// 定时运行侧栏条目的 leadingIcon(Clock 图标 + 未读角标):scheduledRunItems 与
+// decorateScheduledRunChat 共用同一节点形态,提取成纯函数避免两处拷贝漂移。
+function scheduledRunIcon(run, activeTheme) {
+  return (
+    <span className="relative inline-flex h-5 w-5 items-center justify-center">
+      <Clock size={18} />
+      {run.unread && (
+        <span className="absolute -right-1 -top-1 h-2.5 w-2.5 rounded-full border-2"
+          style={{ background: '#0B57D0', borderColor: activeTheme === 'dark' ? '#1E1F20' : '#F0F4F9' }} />
+      )}
+    </span>
+  );
+}
+// Static regression anchor: (<NavItem icon={<Clock size={18} />} label={t.scheduledPlans} unread={!!(bs && ((bs.scheduledTasks || []).some(task => task.hasUnreadRuns) || (bs.scheduledTaskRecentRuns || []).some(run => run && run.unread)))} />)
 const PREVIEW_SCHEDULED_RUN_SHORTCUTS = [
   { id: 'preview-run-1', automationId: 'preview-daily-brief', taskNameKey: 'previewTaskDailyBrief', sessionId: 'preview-session-1', status: 'completed', scheduledFor: '2026-07-14T08:00:00+08:00', unread: true },
   { id: 'preview-run-4', automationId: 'preview-follow-up', taskNameKey: 'previewTaskFollowUp', sessionId: 'preview-session-4', status: 'running', scheduledFor: '2026-07-14T09:00:00+08:00', unread: false },
@@ -147,13 +156,6 @@ function emitPetEvent(ev, name, payload) {
     return Promise.reject(error);
   }
   return Promise.resolve(false);
-}
-
-// 当前平台是否支持本地 vLLM。macOS/Windows 后端已 cfg 掉本地 vLLM 命令(discover_local_vllm /
-// detect_local_vllm_setup 等),前端默认预设与探测入口都据此守卫,避免新用户首启落在
-// 127.0.0.1:8000 永远连不上、或调用不存在的后端命令报错。与 bridge prefs::ModelPreset::default() 对齐。
-function defaultModelPresetForCapabilities(capabilities) {
-  return capabilities && capabilities.localVllmSupported ? 'local_vllm' : 'deepseek';
 }
 
 function workspaceDisplayName(path) {
@@ -842,7 +844,6 @@ const NAV_PREFETCH = {
           setCurrentView('chat');
         }
       }, [browserActive, currentView, setCurrentView]);
-      const showMegacubeSite = !!platformCapabilities.showMegacubeSite;
       const codexAcpSupported = usePlatformCapability('acpCodeMode') && (isWeb || !!platformCapabilities.codexAcpSupported);
       const [codexSessions, setCodexSessions] = useState([]);
       const [codexDraftEpoch, setCodexDraftEpoch] = useState(0);
@@ -998,7 +999,7 @@ const NAV_PREFETCH = {
       }, [currentView]);
       // 工具商店/卡片用 Tailwind dark: 变体(darkMode:'class'),全局挂 <html>.dark 让其随 app 主题切换
       useEffect(() => { document.documentElement.classList.toggle('dark', activeTheme === 'dark'); }, [activeTheme]);
-      // MegaCube(GB10) 首屏检测:仅启动一次,检测「预装但未启用」本地大模型环境(后端短路保证普通机零开销)。
+      // 厂商预装本地大模型首屏检测:仅启动一次,检测「预装但未启用」本地大模型环境(后端短路保证普通机零开销)。
       useEffect(() => {
         if (bridge.available && platformCapabilities.localVllmSupported) {
           bridge.vllm.detectLocalVllmSetup();
@@ -1034,59 +1035,14 @@ const NAV_PREFETCH = {
       const [searchApiKey, setSearchApiKey] = useState('');
       const [searchKeyDrafts, setSearchKeyDrafts] = useState({});
       const [searchKeyActions, setSearchKeyActions] = useState({});
-      // 模型配置（动态适配）——草稿模式，确认后才保存
-      // 默认预设平台感知:macOS/Windows 无本地 vLLM(后端命令已 cfg 掉),默认 DeepSeek;
-      // Linux 保持 local_vllm(麒麟环境默认有本地大模型)。与 bridge prefs::ModelPreset::default() 对齐。
-      // Keep only the setter: draft values are currently managed inside the settings page; here we backfill once during startup bootstrap.
-      const [, setModelPreset] = useState(() => defaultModelPresetForCapabilities(platformCapabilities));
-      const [, setCustomModelName] = useState('');
-      const [, setCustomBaseUrl] = useState('');
-      const [, setCustomApiKey] = useState('');
-      const [, setModelProfiles] = useState({});
-      const modelConfigInitRef = useRef(false);
       const searchConfigInitRef = useRef(false);
       const uiPrefsInitRef = useRef(false);
       // engine 启动时生效的语言(= 进程启动时的 settings.language)。语言只写盘不重启
       // engine,LLM 的 locale_tag 要重启 app 才更新 —— 草稿偏离此基线就提示「需重启」。
       const bootedLanguageRef = useRef(null);
-      // dirty 基线:已保存的模型配置(默认值填充后) / 已保存的搜索源配置。
-      // 草稿偏离基线才显示「保存并重启」操作条。
-      const savedModelConfigRef = useRef(null);
+      // dirty 基线:已保存的搜索源配置。草稿偏离基线才显示「保存并重启」操作条。
       const savedSearchConfigRef = useRef(null);
 
-      // Per-vendor default configs (used to backfill the legacy single-model
-      // draft): reuse settings/model-catalog.js MODEL_PRESET_DEFS directly
-      // (which is aligned with the Rust prefs
-      // `ModelPreset::default_base_url/default_model`) instead of hand-copying
-      // a second copy, avoiding the mirror drift qwen once suffered. The only
-      // override is openai_compatible: the add-model catalog deliberately has
-      // no default address/model, while this table backfills the values the
-      // Rust legacy migration fallback actually resolves
-      // (prefs default_base_url/default_model).
-      const PRESET_DEFAULTS = {
-        ...MODEL_PRESET_DEFS,
-        openai_compatible: { baseUrl: 'https://api.openai.com/v1', model: 'gpt-5.6-terra' },
-      };
-      function normalizedModelProfile(name, baseUrl, apiKey) {
-        const modelName = (name || '').trim();
-        const endpoint = (baseUrl || '').trim();
-        const key = (apiKey || '').trim();
-        return {
-          model_name: modelName || null,
-          base_url: endpoint || null,
-          api_key: key || null,
-        };
-      }
-      function modelDraftForPreset(preset, profiles, fallback) {
-        const defs = PRESET_DEFAULTS[preset] || PRESET_DEFAULTS[defaultModelPresetForCapabilities(platformCapabilities)];
-        const profile = (profiles && profiles[preset]) || {};
-        return {
-          preset,
-          name: profile.model_name || (fallback && fallback.name) || defs.model,
-          baseUrl: profile.base_url || (fallback && fallback.baseUrl) || defs.baseUrl,
-          apiKey: profile.api_key || (fallback && fallback.apiKey) || '',
-        };
-      }
       const [isSidebarOpen, setIsSidebarOpen] = useState(false);
       const [openSidePanelCount, setOpenSidePanelCount] = useState(0);
       const restoreSidebarAfterConstraintRef = useRef(false);
@@ -1301,28 +1257,6 @@ const NAV_PREFETCH = {
         savedSearchConfigRef.current = saved;
         searchConfigInitRef.current = true;
       };
-      // One-shot bootstrap: backfill the model-config draft baseline. When custom_* is null, fill real values from
-      // PRESET_DEFAULTS — inputs show the effective config instead of a gray placeholder masquerading as one.
-      const initModelConfigFromSettings = (settings, effectiveModelConfig) => {
-        const adv = settings.advanced || {};
-        const effective = effectiveModelConfig || {};
-        const preset = effective.preset || adv.model_preset || defaultModelPresetForCapabilities(platformCapabilities);
-        const profiles = { ...adv.model_profiles };
-        const fallback = {
-          name: effective.model || adv.custom_model_name || '',
-          baseUrl: effective.base_url || adv.custom_base_url || '',
-          apiKey: '',
-        };
-        const saved = modelDraftForPreset(preset, profiles, fallback);
-        profiles[preset] = normalizedModelProfile(saved.name, saved.baseUrl, saved.apiKey);
-        setModelProfiles(profiles);
-        setModelPreset(saved.preset);
-        setCustomModelName(saved.name);
-        setCustomBaseUrl(saved.baseUrl);
-        setCustomApiKey(saved.apiKey);
-        savedModelConfigRef.current = saved;
-        modelConfigInitRef.current = true;
-      };
       // One-shot bootstrap: restore persisted UI language/theme and notification prefs (desktop); on Web the language uses local storage.
       const initUiPrefsFromSettings = (settings) => {
         if (isWeb) {
@@ -1410,7 +1344,7 @@ const NAV_PREFETCH = {
           setCodeModeOn(false);
           setCurrentView('chat');
         }
-        if (SCHEDULED_TASKS_ENTRY_ENABLED && bs.scheduledTaskAutoOpenId && bs.scheduledTaskAutoOpenId !== scheduledTaskAutoOpenSeenRef.current) {
+        if (bs.scheduledTaskAutoOpenId && bs.scheduledTaskAutoOpenId !== scheduledTaskAutoOpenSeenRef.current) {
           scheduledTaskAutoOpenSeenRef.current = bs.scheduledTaskAutoOpenId;
           setCurrentView('scheduled');
         }
@@ -1418,22 +1352,12 @@ const NAV_PREFETCH = {
         if (!uiPrefsInitRef.current && bs.settings) initUiPrefsFromSettings(bs.settings);
         // 搜索配置：只在第一次从后端加载初始值，后续走草稿模式（确认后才保存并重启）。
         if (!searchConfigInitRef.current && bs.settings) initSearchConfigFromSettings(bs.settings);
-        // 模型配置：只在第一次从后端加载初始值，后续走草稿模式（确认后才保存），
-        if (!modelConfigInitRef.current && bs.settings) initModelConfigFromSettings(bs.settings, bs.effectiveModelConfig);
         // The effect subscribes to the bridge snapshot bs; one-shot bootstrap/init flags are guarded by internal refs,
         // and the remaining deps (activeChat/currentView/language, etc.) are render-state reads — including them would
         // rerun the whole sync logic on every UI change. sessionSyncEpoch intentionally
         // retriggers reconciliation after the serialized browser session gate settles.
         // eslint-disable-next-line react-hooks/exhaustive-deps
       }, [bs, sessionSyncEpoch]);
-
-      // HMR or legacy frontend state may retain a retired route; return to a valid view.
-      useEffect(() => {
-        if (!SCHEDULED_TASKS_ENTRY_ENABLED && currentView === 'scheduled') {
-          setCodeModeOn(false);
-          setCurrentView('chat');
-        }
-      }, [currentView, setCurrentView]);
 
       function searchCredentialForProvider(provider) {
         const saved = savedSearchConfigRef.current;
@@ -1597,15 +1521,7 @@ const NAV_PREFETCH = {
             working: run.status === 'running' || run.status === 'queued',
             subtitle: `${scheduledRunLabel(run.status)} · ${formatSessionDate(run.scheduledFor || run.createdAt, language)}`,
             date: '',
-            leadingIcon: (
-              <span className="relative inline-flex h-5 w-5 items-center justify-center">
-                <Clock size={18} />
-                {run.unread && (
-                  <span className="absolute -right-1 -top-1 h-2.5 w-2.5 rounded-full border-2"
-                    style={{ background: '#0B57D0', borderColor: activeTheme === 'dark' ? '#1E1F20' : '#F0F4F9' }} />
-                )}
-              </span>
-            ),
+            leadingIcon: scheduledRunIcon(run, activeTheme),
             testId: 'scheduled-run-sidebar-item',
             menuTestId: 'scheduled-run-sidebar-menu',
             scheduledRun: run,
@@ -1623,15 +1539,7 @@ const NAV_PREFETCH = {
         return Object.assign({}, chat, {
           title,
           subtitle: `${scheduledRunLabel(run.status)} · ${formatSessionDate(run.scheduledFor || run.createdAt, language)}`,
-          leadingIcon: (
-            <span className="relative inline-flex h-5 w-5 items-center justify-center">
-              <Clock size={18} />
-              {run.unread && (
-                <span className="absolute -right-1 -top-1 h-2.5 w-2.5 rounded-full border-2"
-                  style={{ background: '#0B57D0', borderColor: activeTheme === 'dark' ? '#1E1F20' : '#F0F4F9' }} />
-              )}
-            </span>
-          ),
+          leadingIcon: scheduledRunIcon(run, activeTheme),
           testId: 'scheduled-run-sidebar-item',
           menuTestId: 'scheduled-run-sidebar-menu',
           scheduledRun: run,
@@ -3312,7 +3220,7 @@ const NAV_PREFETCH = {
             document.body
           )}
 
-          {can('desktopChrome') && <TitleBar theme={activeTheme} t={t} sidebarOpen={isSidebarOpen} />}
+          {can('desktopChrome') && <TitleBar t={t} sidebarOpen={isSidebarOpen} />}
 
           {isCompactShell && (
             <MobileTopBar theme={activeTheme} t={t} title={mobileTitle}
@@ -3427,18 +3335,16 @@ const NAV_PREFETCH = {
                 </button>
               ) : (
               <>
-              {SCHEDULED_TASKS_ENTRY_ENABLED && (
-                <NavItem
-                  icon={NAV_ICON_SCHEDULED} label={t.scheduledPlans}
-                  active={currentView === 'scheduled'}
-                  unread={!!(bs && ((bs.scheduledTasks || []).some(task => task.hasUnreadRuns) || (bs.scheduledTaskRecentRuns || []).some(run => run && run.unread)))}
-                  theme={activeTheme}
-                  t={t}
-                  isSidebarOpen={isSidebarOpen}
-                  onClick={navNavigateHandlers.scheduled}
-                  onPointerEnter={NAV_PREFETCH.scheduled} onFocus={NAV_PREFETCH.scheduled}
-                />
-              )}
+              <NavItem
+                icon={NAV_ICON_SCHEDULED} label={t.scheduledPlans}
+                active={currentView === 'scheduled'}
+                unread={!!(bs && ((bs.scheduledTasks || []).some(task => task.hasUnreadRuns) || (bs.scheduledTaskRecentRuns || []).some(run => run && run.unread)))}
+                theme={activeTheme}
+                t={t}
+                isSidebarOpen={isSidebarOpen}
+                onClick={navNavigateHandlers.scheduled}
+                onPointerEnter={NAV_PREFETCH.scheduled} onFocus={NAV_PREFETCH.scheduled}
+              />
               <NavItem
                 icon={NAV_ICON_OUTPUTS} label={t.outputs}
                 active={currentView === 'outputs'}
@@ -3774,18 +3680,6 @@ const NAV_PREFETCH = {
                     </button>
                   </>
                 )}
-                {showMegacubeSite && (
-                  <button type="button"
-                    onClick={() => invokeTauri('open_external_url', { url: 'https://www.h3c.com/cn/pub/minisite/202606/MegaCube/megacube/index.html' })}
-                    title={t.megacubeSite}
-                    className={`flex items-center rounded-xl transition-colors ${isSidebarOpen ? 'flex-1 min-w-0 px-2 py-1.5 gap-3' : 'justify-center w-10 h-10'} ${activeTheme === 'dark' ? 'hover:bg-[#333537] active:bg-[#3A3C3E]' : 'hover:bg-[#E1E5EA] active:bg-[#D8DCE1]'}`}
-                  >
-                    <img src="assets/megacube-icon.png" alt="MegaCube" className="w-8 h-8 shrink-0 rounded-lg object-contain" />
-                    {isSidebarOpen && (
-                      <span className="text-[14px] font-medium leading-none whitespace-nowrap text-left">MegaCube</span>
-                    )}
-                  </button>
-                )}
                 {isSidebarOpen && (
                   <div className="flex items-center gap-1">
                     {can('webAccessAdmin') && <button type="button"
@@ -3909,7 +3803,7 @@ const NAV_PREFETCH = {
                 nativeSurfaceSuspended={compactBrowserSurfaceSuspended}
               />
             )}
-            {currentView === 'toolStore' && <LazyToolStoreView theme={activeTheme} t={t} onNewChat={handleNewChat} />}
+            {currentView === 'toolStore' && <LazyToolStoreView t={t} onNewChat={handleNewChat} />}
             {currentView === 'cardpool' && <LazyCardPoolView theme={activeTheme} t={t} bs={bs} onEquipped={() => { setCodeModeOn(false); setCurrentView('chat'); }} onAICreate={startAICard} initialMyOnly={poolMyOnly} />}
             {currentView === 'chat' && (
               <ChatView
@@ -3943,7 +3837,7 @@ const NAV_PREFETCH = {
                 onGotoTools={() => navigateFromScheduledRun('toolStore')}
               />
             )}
-            {SCHEDULED_TASKS_ENTRY_ENABLED && currentView === 'scheduled' && (
+            {currentView === 'scheduled' && (
               bs && bs.scheduledRunContext ? (
                 <ChatView {...chatViewBaseProps} prefill="" onPrefillConsumed={() => {}} onBackScheduledRun={() => navigateFromScheduledRun('scheduled')} browserDockAvailable={browserDockAvailable} rightDockActivePanelId={browserDockSelectedPanelId} onRightDockPanelSelectionChange={selectRightDockPanel} />
               ) : (
@@ -4050,7 +3944,7 @@ const NAV_PREFETCH = {
               </div>
             )}
 
-            {/* MegaCube(GB10) 本地大模型一键引导 —— 全局首屏弹窗;引导中禁止背景关窗 */}
+            {/* 厂商预装本地大模型一键引导 —— 全局首屏弹窗;引导中禁止背景关窗 */}
             {vllmSetupModalOpen && browserOverlayPublicationReady && (
               // biome-ignore lint/a11y/useKeyWithClickEvents: keyboard users close the dialog through its real buttons
               // biome-ignore lint/a11y/noStaticElementInteractions: this is a pointer-only backdrop around an accessible dialog card
@@ -4239,7 +4133,7 @@ const NAV_PREFETCH = {
                 active: currentView === 'monitor',
                 onClick: () => mobileNavigate('monitor', () => {
                   const liveBridge = window.TauriBridge || bridge;
-                  if (liveBridge && typeof liveBridge.startMonitorPolling === 'function') liveBridge.startMonitorPolling();
+                  if (liveBridge?.monitor && typeof liveBridge.monitor.startMonitorPolling === 'function') liveBridge.monitor.startMonitorPolling();
                 }) },
               { key: 'more', label: t.mobileMore, icon: <MoreHorizontal size={18} />,
                 active: mobileMoreActive, dot: hasUpdate || scheduledUnread,
@@ -4253,9 +4147,9 @@ const NAV_PREFETCH = {
                 active: currentView === 'search', onClick: () => mobileNavigate('search') },
               ...(browserActive ? [{ key: 'browser', label: t.browser, icon: <Globe size={18} />,
                 active: currentView === 'browser', onClick: () => mobileNavigate('browser') }] : []),
-              ...(SCHEDULED_TASKS_ENTRY_ENABLED ? [{ key: 'scheduled', label: t.scheduledPlans, icon: <Clock size={18} />,
+              { key: 'scheduled', label: t.scheduledPlans, icon: <Clock size={18} />,
                 active: currentView === 'scheduled', dot: scheduledUnread,
-                onClick: () => mobileNavigate('scheduled') }] : []),
+                onClick: () => mobileNavigate('scheduled') },
               { key: 'outputs', label: t.outputs, icon: <Package size={18} />,
                 active: currentView === 'outputs', onClick: () => mobileNavigate('outputs') },
               { key: 'knowledge', label: t.knowledge, icon: <BookOpen size={18} />,

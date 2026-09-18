@@ -6,8 +6,8 @@ use agent_backend_api::PrivateInputHandle;
 use agent_backend_api::{SecretOutput, SecretText};
 use async_trait::async_trait;
 use benchmark_core::{
-    BenchmarkAdapter, BenchmarkDescriptor, BenchmarkId, BenchmarkPlan, BenchmarkRegistry,
-    BenchmarkService, BenchmarkTask, CompletedRun, ExecutionKind, ExecutionRequest, ModelIdentity,
+    BenchmarkAdapter, BenchmarkDescriptor, BenchmarkId, BenchmarkPlan, BenchmarkService,
+    BenchmarkTask, CompletedRun, ExecutionKind, ExecutionRequest, ModelIdentity,
     OfficialScoreReport, OutputContract, PredictionRetention, PreparedTask, RunContext,
     RunManifest, RunStore, Split, SubmissionArtifact, TaskOutcome, TaskRunner, TaskSelection,
     TaskStatus, ToolPolicyId, VerifiedDataset,
@@ -79,7 +79,6 @@ impl BenchmarkAdapter for FixtureAdapter {
                 ToolPolicyId::new("fixture/v1"),
                 OutputContract::new("fixture/v1"),
             ),
-            None,
         )]))
     }
 
@@ -396,41 +395,6 @@ fn durable_runs_publish_only_core_handles_and_reopen_for_scoring() {
 }
 
 #[test]
-fn registry_rejects_duplicate_and_unknown_benchmark_ids() {
-    let mut registry = BenchmarkRegistry::new();
-    registry
-        .register(Arc::new(FixtureAdapter::new(
-            "fixture",
-            Arc::new(Mutex::new(Calls::default())),
-        )))
-        .unwrap();
-    assert_eq!(
-        registry
-            .get(&BenchmarkId::new("fixture"))
-            .unwrap()
-            .descriptor()
-            .id()
-            .as_str(),
-        "fixture"
-    );
-    let duplicate = registry
-        .register(Arc::new(FixtureAdapter::new(
-            "fixture",
-            Arc::new(Mutex::new(Calls::default())),
-        )))
-        .unwrap_err();
-    assert_eq!(duplicate.code(), "duplicate_benchmark");
-    assert_eq!(
-        registry
-            .get(&BenchmarkId::new("unknown"))
-            .err()
-            .unwrap()
-            .code(),
-        "unknown_benchmark"
-    );
-}
-
-#[test]
 fn adapter_driven_service_plans_prepares_then_runs_without_implicit_scoring() {
     let base = temp_base("service");
     let calls = Arc::new(Mutex::new(Calls::default()));
@@ -465,16 +429,10 @@ fn adapter_driven_service_plans_prepares_then_runs_without_implicit_scoring() {
     drop(snapshot);
 
     let completed = CompletedRun::new(summary.run_id(), summary.outcomes().to_vec());
+    assert_eq!(adapter.score(&completed).unwrap().accuracy(), 1.0);
     assert_eq!(
-        service
-            .score_adapter(&adapter, &completed)
-            .unwrap()
-            .accuracy(),
-        1.0
-    );
-    assert_eq!(
-        service
-            .write_adapter_submission(&adapter, &completed, Path::new("submission.jsonl"))
+        adapter
+            .write_submission(&completed, Path::new("submission.jsonl"))
             .unwrap()
             .path(),
         Path::new("submission.jsonl")

@@ -15,7 +15,7 @@ const bridgeDir = path.join(here, '..', 'src', 'platform', 'tauri', 'bridge');
 
 /** 通用 feature 装载器：vm 加载 IIFE(window) 形态的桥 feature 文件。 */
 function loadFeature(fileName, state, contextOverrides) {
-  const root = { __PINVOU_SHARED_I18N__: {} };
+  const root = {};
   const src = fs.readFileSync(path.join(bridgeDir, fileName), 'utf8');
   vm.runInNewContext(src, {
     window: root,

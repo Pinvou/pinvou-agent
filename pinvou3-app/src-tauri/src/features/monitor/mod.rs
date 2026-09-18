@@ -1,4 +1,4 @@
-//! GB10 设备 + vLLM 后端 + pinvou3-app 自身的健康/性能采样。
+//! 统一内存设备 + vLLM 后端 + pinvou3-app 自身的健康/性能采样。
 //!
 //! 数据流：**按需采样**——前端在监控页面 mount 时启 1s interval 调
 //! `get_monitor_snapshot`，离开页面就停。后端每次 command 直接跑一次
@@ -20,15 +20,11 @@ mod platform;
 mod self_metrics;
 
 // re-export 子模块 pub 面，保持 `crate::features::monitor::Foo` 调用路径不变。
-// `MonitorDiagnostic` 仅在 model_probe 内部使用，但作为原 pub 面的一部分保留 re-export
-// 以维持外部可见性承诺（无外部调用方，allow 抑制 unused_imports 门禁）。
-#[allow(unused_imports)]
 pub use model_probe::{
-    MonitorDiagnostic, VllmSnapshot, VllmStatus, active_model_snapshot, adopts_probed_facts,
-    probe_vllm_model_info, resolve_served_model, vllm_base_url, vllm_configured_model,
-    vllm_snapshot,
+    VllmSnapshot, VllmStatus, active_model_snapshot, adopts_probed_facts, probe_vllm_model_info,
+    resolve_served_model, vllm_base_url, vllm_configured_model, vllm_snapshot,
 };
-pub use self_metrics::{SelfMetrics, SelfMetricsDebugSnapshot, SelfPerfSnapshot};
+pub use self_metrics::{SelfMetrics, SelfPerfSnapshot};
 
 use std::sync::{Arc, OnceLock};
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
@@ -49,7 +45,6 @@ pub struct MonitorSnapshot {
     /// 无关,任何后端(本地 vLLM / LM Studio / Ollama / 云端 API)都有值——因为是在
     /// 流式转发通路上就地测的。前端一律用这块显示这四项(vllm 块只剩队列/窗口/健康)。
     pub self_perf: SelfPerfSnapshot,
-    pub self_perf_debug: SelfMetricsDebugSnapshot,
     pub app: AppSnapshot,
 }
 
@@ -63,7 +58,7 @@ pub struct GpuSnapshot {
     pub processor_utilization_pct: Option<u32>,
     /// Windows / Intel fallback: shared GPU memory usage, in MiB.
     pub shared_memory_used_mib: Option<u64>,
-    /// GB10 等 unified-memory 设备 VRAM 字段是 [N/A]，UI 切到温度+功耗显示。
+    /// unified-memory 设备 VRAM 字段是 [N/A]，UI 切到温度+功耗显示。
     pub temperature_c: Option<u32>,
     pub power_w: Option<f32>,
 }
@@ -150,7 +145,6 @@ async fn sample_all_with_cpu(
             None => vllm_snapshot(vllm_upstream, configured_model).await,
         },
         self_perf: state.self_metrics.snapshot(),
-        self_perf_debug: state.self_metrics.debug_snapshot(),
         app: AppSnapshot {
             pinvou3_version: env!("CARGO_PKG_VERSION"),
             deepseek_tui_version: env!("CARGO_PKG_VERSION"), // TODO: 从 deepseek-tui crate 取
@@ -212,7 +206,7 @@ fn nvidia_gpu_snapshot() -> Option<GpuSnapshot> {
     if parts.len() < 6 {
         return None;
     }
-    // unified-memory 设备（如 NVIDIA GB10）`nvidia-smi` 返 `[N/A]`，
+    // unified-memory 设备（显存由驱动统一分配）`nvidia-smi` 返 `[N/A]`，
     // parse 失败时不要让整个 snapshot 丢失：单字段降级为 0/None。
     // UI 层检测 vram_total_mib == 0 切到温度+功耗显示。
     Some(GpuSnapshot {
@@ -233,6 +227,22 @@ mod tests {
 
     #[tokio::test]
     async fn sample_all_keeps_other_fields_when_cpu_snapshot_is_none() {
+        // 该测试会经由 active_model_snapshot 读取宿主真实 prefs;一旦宿主
+        // settings.json 存在带 credential_ref 的 active_model,无头测试进程会
+        // 在 macOS 钥匙串授权弹窗上永久阻塞。用临时 PINVOU3_HOME 隔离,
+        // 保证 prefs 为空、探测走纯本地快路径。
+        let temp_home =
+            std::env::temp_dir().join(format!("pinvou3-monitor-test-{}", std::process::id()));
+        std::fs::create_dir_all(&temp_home).expect("create isolated PINVOU3_HOME");
+        // Hold ENV_LOCK across the whole test: paths.rs requires the lock to
+        // outlive the EnvVarGuard so the final restore stays serialized.
+        let _env_lock = crate::platform::paths::tests::ENV_LOCK
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        let _env_restore = crate::platform::paths::tests::EnvVarGuard::capture(&["PINVOU3_HOME"]);
+        // SAFETY: holding platform::paths::tests::ENV_LOCK; in-process env writes are serialized.
+        unsafe { std::env::set_var("PINVOU3_HOME", &temp_home) };
+
         let state = MonitorState::new();
         let snapshot = sample_all_with_cpu(&state, "not-a-url", None, None).await;
         assert!(snapshot.generated_at_ms > 0);

@@ -15,7 +15,7 @@ use benchmark_core::{
 #[cfg(any(test, feature = "product-backend"))]
 use adapter_smoke::{
     SmokeAnalysisMaterial, SmokeRecord, SmokeToolEvent, analyze_rules, calculate_product_score,
-    not_configured_judge, render_smoke_markdown, smoke_cases,
+    render_smoke_markdown, smoke_cases,
 };
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -162,7 +162,6 @@ pub enum BenchmarkCommand {
     Resume(String),
     Report(String),
     RunNotAvailable(String),
-    NotAvailable(String),
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -246,9 +245,11 @@ where
     let mut index = 0;
     while index < values.len() {
         if values[index] == "--output" {
-            let value = values
-                .get(index + 1)
-                .ok_or_else(|| CliError::usage("--output requires human or json"))?;
+            let value = values.get(index + 1).ok_or_else(|| {
+                CliError::usage(
+                    "--output requires human or json (submission files use --destination)",
+                )
+            })?;
             match value.as_str() {
                 "human" => {
                     output = OutputMode::Human;
@@ -258,6 +259,11 @@ where
                     output = OutputMode::Json;
                     values.drain(index..=index + 1);
                 }
+                // Leave unrecognized values in argv: `benchmark submission
+                // gaia` still accepts `--output <file>` as a legacy alias of
+                // `--destination` (consumed in parse_gaia_submission);
+                // everywhere else the leftover token surfaces as the standard
+                // usage error.
                 _ => index += 1,
             }
         } else {
@@ -535,9 +541,6 @@ pub fn execute(parsed: ParsedCli) -> Result<CliOutcome, CliError> {
         CliCommand::Benchmark(BenchmarkCommand::RunNotAvailable(error)) => {
             Err(CliError::usage(error))
         }
-        CliCommand::Benchmark(BenchmarkCommand::NotAvailable(command)) => Err(CliError::usage(
-            format!("benchmark command '{command}' is not_available"),
-        )),
         CliCommand::Agent(AgentCommand::Run {
             prompt_file,
             workspace,
@@ -595,7 +598,7 @@ fn finalize_smoke_outcomes(
     let analysis = analyze_rules(&smoke_cases(), &records);
     let score = calculate_product_score(&records, analysis.findings())
         .map_err(|_| CliError::failed("smoke_report_failed"))?;
-    let markdown = render_smoke_markdown(&records, &analysis, &score, &not_configured_judge())
+    let markdown = render_smoke_markdown(&records, &analysis, &score)
         .map_err(|_| CliError::failed("smoke_report_failed"))?;
     let store = RunStore::open(base, run_id).map_err(core_error)?;
     let report_path = if store.run_dir().join("report.md").exists() {
@@ -1482,19 +1485,23 @@ mod product {
     use adapter_smoke::{
         SMOKE_TOOL_POLICY_ID, SMOKE_TOOL_POLICY_ID_DEPRECATED, SmokeAdapter, SmokePrivateInputs,
     };
+    use benchmark_core::{
+        BenchmarkAdapter, BenchmarkService, ModelIdentity, RunManifest, RunSummary, Split,
+        TaskSelection, ToolPolicyId,
+    };
+
+    use super::*;
+
     use agent_backend_api::{
         AgentBackendError, AgentRunObserver, AgentSessionHandle, AgentTaskInput, AgentTaskOutcome,
         HeadlessAgentBackend, PrepareRequest, PrivateInputResolver, PrivateOutputHandle,
         SecretOutput, SuiteModelIdentity,
     };
     use async_trait::async_trait;
-    use benchmark_core::{
-        BenchmarkAdapter, BenchmarkService, ModelIdentity, NativeAgentRunner, RunManifest,
-        RunSummary, Split, TaskSelection, ToolPolicyId,
-    };
 
-    use super::*;
-
+    /// Sized newtype over the product backend trait object: the benchmark
+    /// service stores its backend by value (`B: HeadlessAgentBackend`), which a
+    /// bare `dyn` receiver cannot satisfy.
     struct DynamicBackend(Arc<dyn HeadlessAgentBackend>);
 
     #[async_trait]
@@ -1685,12 +1692,11 @@ mod product {
             if !smoke_resume_manifest_matches(&stored, &adapter, &model) {
                 return Err(anyhow::anyhow!("resume_manifest_mismatch"));
             }
-            let service: BenchmarkService<NativeAgentRunner<DynamicBackend>> =
-                BenchmarkService::native_with_private_inputs(
-                    &base,
-                    Arc::new(DynamicBackend(backend)),
-                    Arc::new(SmokePrivateInputs::new()),
-                )?;
+            let service = BenchmarkService::native_with_private_inputs(
+                &base,
+                Arc::new(DynamicBackend(backend)),
+                Arc::new(SmokePrivateInputs::new()),
+            )?;
             let summary = service.resume(&run_id, &plan).await?;
             finalize_summary(&base, summary, output)
         })

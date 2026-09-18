@@ -69,7 +69,7 @@ fn required_string<'a>(arguments: &'a Value, field: &str) -> Result<&'a str, Str
         .ok_or_else(|| format!("browser/missing-argument: {field}"))
 }
 
-fn tool_text(text: String, structured: Option<Value>) -> Value {
+pub(super) fn tool_text(text: String, structured: Option<Value>) -> Value {
     let mut result = json!({
         "content": [{ "type": "text", "text": text }],
         "isError": false,

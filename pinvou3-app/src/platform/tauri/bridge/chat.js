@@ -11,12 +11,10 @@
     const TAURI = context.TAURI;
     const sessionStates = context.sessionStates;
     const turnUsageDirty = context.turnUsageDirty;
-    const personaPlaceholderTitles = context.personaPlaceholderTitles;
     const safeConsoleInfo = context.safeConsoleInfo;
     const recordAuthoritySyncDiagnostic = context.recordAuthoritySyncDiagnostic || function () {};
     const authoritySyncBufferSnapshot = context.authoritySyncBufferSnapshot || function () { return {}; };
     const bt = context.bt;
-    const isDefaultChatTitle = context.isDefaultChatTitle;
     const runSyncOnSession = context.runSyncOnSession;
     const startThinking = context.startThinking;
     const stopThinking = context.stopThinking;
@@ -30,10 +28,6 @@
     const adoptManagedAttachments = context.adoptManagedAttachments || function () { return Promise.resolve(); };
     const discardManagedAttachment = context.discardManagedAttachment || function () { return Promise.resolve(); };
     const isScheduledRunSession = context.isScheduledRunSession;
-    // Wholesale artifact saves rebase from→to while a workspace_rebound mark
-    // exists (review #463 round-B Major 1): a turn's buffer save must not
-    // durably revert the backend lane's rebase of the persisted paths.
-    const rebaseArtifactPathsForRebind = context.rebaseArtifactPathsForRebind || function (sid, paths) { return paths; };
     const userMessageDisplayText = context.userMessageDisplayText;
     const parseScheduledTaskDraftFromText = context.parseScheduledTaskDraftFromText;
     const autoCreateScheduledTaskDraft = context.autoCreateScheduledTaskDraft;
@@ -1368,86 +1362,120 @@
   // shorter watchdog would falsely degrade a healthy engine's steer into an
   // independent next-round send.
   const STEER_SETTLE_WATCHDOG_MS = 60000;
-  const steerSettleWatchdogs = {}; // sid -> { steerId: timerId }
+
+  // Shared scaffold for the two steer watchdogs below: each owns a
+  // per-sid → { steerId: timerId } timeout map. arm() lazily creates the sid
+  // bucket and registers a self-clearing timer (STEER_SETTLE_WATCHDOG_MS)
+  // whose callback runs onFire(sid, steerId, item); clear() cancels a pending
+  // timer. The original arm/clear entry points are kept so call sites and
+  // semantics stay unchanged.
+  function createSteerWatchdog(onFire) {
+    const timers = {}; // sid -> { steerId: timerId }
+    function clear(sid, steerId) {
+      const byId = timers[sid];
+      if (!byId || !byId[steerId]) return;
+      clearTimeout(byId[steerId]);
+      delete byId[steerId];
+    }
+    function arm(sid, item) {
+      const steerId = item.steerId;
+      if (!steerId) return;
+      let byId = timers[sid];
+      if (!byId) {
+        byId = Object.create(null);
+        timers[sid] = byId;
+      }
+      byId[steerId] = setTimeout(function () {
+        delete byId[steerId];
+        onFire(sid, steerId, item);
+      }, STEER_SETTLE_WATCHDOG_MS);
+    }
+    // Session teardown: cancel every pending timer of one sid and drop the
+    // bucket (purgeSteerState).
+    function purge(sid) {
+      const byId = timers[sid];
+      if (!byId) return;
+      for (const steerId of Object.keys(byId)) clearTimeout(byId[steerId]);
+      delete timers[sid];
+    }
+    // Whether a watchdog timer is currently armed — the zap path probes this
+    // BEFORE clear(): an armed reconcile watchdog is the authoritative
+    // "never delivered" terminal for a ⚡ zap.
+    function isArmed(sid, steerId) {
+      return !!(timers[sid] && timers[sid][steerId]);
+    }
+    return { arm, clear, purge, isArmed };
+  }
+
+  const steerSettleWatchdog = createSteerWatchdog(function (sid, steerId, item) {
+    const q = steeredQueueFor(sid);
+    if (!q || !q.includes(item) || !item.steered || item.steerId !== steerId) return;
+    // Withdraw with a bounded await (self-review P1-2): without the 25s race
+    // a live-but-wedged engine leaves the chip `steered` forever, blocking
+    // the session queue head. Outcome semantics (aligned with the ⚡ path):
+    //   "retired" (resolved) = engine copy will never inject, degrade the
+    //     chip so flushQueued delivers it as a plain message;
+    //   "not_pending" = committed with the event lost; a resend would
+    //     duplicate, so remove the chip and restore the text;
+    //   timeout = the withdrawal state is UNPROVEN — the steer may already
+    //     be committed while only the response path is wedged, so
+    //     auto-resending could double-deliver (JensenChen28 review #2);
+    //   Err (rejected) = the engine that accepted the steer is gone (pool
+    //     lookup), not a wedged response path. A rejection is NOT proof of
+    //     non-delivery — the engine may have committed the steer into the
+    //     persisted transcript before dying — so neither path resends on
+    //     Err any more: the ⚡ path maps it to "withdraw_unreachable" (no
+    //     resend, reconcile watchdog), and this autonomous watchdog
+    //     restores the text instead — an unattended degrade would make
+    //     flushQueued auto-send a message whose commit fate is unknown,
+    //     so the user keeps the call. Both outcomes remove the chip and
+    //     restore the text; resending is the user's decision.
+    // The late commit is still rendered through the withdrawn registration
+    // (same-text dedup against a user resend is already handled).
+    rememberWithdrawn(sid, steerId, item.text);
+    const withdrawPromise = invoke("withdraw_steer", { sessionId: sid, steerId });
+    withdrawPromise.catch(function () { /* late rejection after the race settled is expected */ });
+    // Sentinels keep a rejected invoke and a transport timeout distinct from
+    // junk resolves (harness/legacy backends may resolve null/undefined) —
+    // only a real rejection means "engine not present", and only the timeout
+    // means "withdrawal state unknown".
+    const WITHDRAW_ERR = "engine_err";
+    const WITHDRAW_TIMEOUT = "withdraw_timeout";
+    const withdrawOutcome = new Promise(function (resolve) {
+      const timerId = setTimeout(function () {
+        resolve(WITHDRAW_TIMEOUT);
+      }, STEER_INVOKE_TIMEOUT_MS);
+      withdrawPromise.then(
+        function (outcome) { clearTimeout(timerId); resolve(outcome); },
+        function () { clearTimeout(timerId); resolve(WITHDRAW_ERR); }
+      );
+    });
+    withdrawOutcome.then(function (outcome) {
+      // The chip may have been taken by ×/zap while awaiting: that path owns
+      // the text now; restoring/degrading here would resurrect abandoned
+      // text (same takeover guard as onSteerFailure).
+      if (!q.includes(item)) return;
+      if ([WITHDRAW_TIMEOUT, WITHDRAW_ERR, "not_pending"].includes(outcome)) {
+        q.splice(q.indexOf(item), 1);
+        notify();
+        runSyncOnSession(sid, function () {
+          addSystemItem("⚠️ " + bt("steerFailed"));
+        });
+        restoreSteerText(sid, item.text);
+        notify();
+        return;
+      }
+      item.steered = false;
+      item.steerId = null;
+      notify();
+      if (!isBusyFor(sid)) flushQueued(sid);
+    });
+  });
   function clearSteerSettleWatchdog(sid, steerId) {
-    const byId = steerSettleWatchdogs[sid];
-    if (!byId || !byId[steerId]) return;
-    clearTimeout(byId[steerId]);
-    delete byId[steerId];
+    steerSettleWatchdog.clear(sid, steerId);
   }
   function armSteerSettleWatchdog(sid, item) {
-    const steerId = item.steerId;
-    if (!steerId) return;
-    let byId = steerSettleWatchdogs[sid];
-    if (!byId) {
-      byId = Object.create(null);
-      steerSettleWatchdogs[sid] = byId;
-    }
-    byId[steerId] = setTimeout(function () {
-      delete byId[steerId];
-      const q = steeredQueueFor(sid);
-      if (!q || !q.includes(item) || !item.steered || item.steerId !== steerId) return;
-      // Withdraw with a bounded await (self-review P1-2): without the 25s race
-      // a live-but-wedged engine leaves the chip `steered` forever, blocking
-      // the session queue head. Outcome semantics (aligned with the ⚡ path):
-      //   "retired" (resolved) = engine copy will never inject, degrade the
-      //     chip so flushQueued delivers it as a plain message;
-      //   "not_pending" = committed with the event lost; a resend would
-      //     duplicate, so remove the chip and restore the text;
-      //   timeout = the withdrawal state is UNPROVEN — the steer may already
-      //     be committed while only the response path is wedged, so
-      //     auto-resending could double-deliver (JensenChen28 review #2);
-      //   Err (rejected) = the engine that accepted the steer is gone (pool
-      //     lookup), not a wedged response path. A rejection is NOT proof of
-      //     non-delivery — the engine may have committed the steer into the
-      //     persisted transcript before dying — so neither path resends on
-      //     Err any more: the ⚡ path maps it to "withdraw_unreachable" (no
-      //     resend, reconcile watchdog), and this autonomous watchdog
-      //     restores the text instead — an unattended degrade would make
-      //     flushQueued auto-send a message whose commit fate is unknown,
-      //     so the user keeps the call. Both outcomes remove the chip and
-      //     restore the text; resending is the user's decision.
-      // The late commit is still rendered through the withdrawn registration
-      // (same-text dedup against a user resend is already handled).
-      rememberWithdrawn(sid, steerId, item.text);
-      const withdrawPromise = invoke("withdraw_steer", { sessionId: sid, steerId });
-      withdrawPromise.catch(function () { /* late rejection after the race settled is expected */ });
-      // Sentinels keep a rejected invoke and a transport timeout distinct from
-      // junk resolves (harness/legacy backends may resolve null/undefined) —
-      // only a real rejection means "engine not present", and only the timeout
-      // means "withdrawal state unknown".
-      const WITHDRAW_ERR = "engine_err";
-      const WITHDRAW_TIMEOUT = "withdraw_timeout";
-      const withdrawOutcome = new Promise(function (resolve) {
-        const timerId = setTimeout(function () {
-          resolve(WITHDRAW_TIMEOUT);
-        }, STEER_INVOKE_TIMEOUT_MS);
-        withdrawPromise.then(
-          function (outcome) { clearTimeout(timerId); resolve(outcome); },
-          function () { clearTimeout(timerId); resolve(WITHDRAW_ERR); }
-        );
-      });
-      withdrawOutcome.then(function (outcome) {
-        // The chip may have been taken by ×/zap while awaiting: that path owns
-        // the text now; restoring/degrading here would resurrect abandoned
-        // text (same takeover guard as onSteerFailure).
-        if (!q.includes(item)) return;
-        if ([WITHDRAW_TIMEOUT, WITHDRAW_ERR, "not_pending"].includes(outcome)) {
-          q.splice(q.indexOf(item), 1);
-          notify();
-          runSyncOnSession(sid, function () {
-            addSystemItem("⚠️ " + bt("steerFailed"));
-          });
-          restoreSteerText(sid, item.text);
-          notify();
-          return;
-        }
-        item.steered = false;
-        item.steerId = null;
-        notify();
-        if (!isBusyFor(sid)) flushQueued(sid);
-      });
-    }, STEER_SETTLE_WATCHDOG_MS);
+    steerSettleWatchdog.arm(sid, item);
   }
 
   // Zap-path not_pending reconciliation watchdog (foundation contract:
@@ -1457,33 +1485,22 @@
   // of treating an uncertain message as delivered. When the event arrives
   // normally, the settle function clears the watchdog (committed renders the
   // bubble / dropped is silent) and the watchdog later no-ops.
-  const outcomeReconcileWatchdogs = {}; // sid -> { steerId: timerId }
+  const outcomeReconcileWatchdog = createSteerWatchdog(function (sid, steerId) {
+    const text = takeWithdrawn(sid, steerId);
+    if (text === undefined) return; // already reconciled (a settle consumed the registration)
+    runSyncOnSession(sid, function () {
+      addSystemItem("⚠️ " + bt("steerFailed"));
+    });
+    // Session-scoped restore (draftEpoch bump for the owning session when
+    // active) instead of a global prefill that overwrites other restores.
+    restoreSteerText(sid, text);
+    notify();
+  });
   function clearOutcomeReconcileWatchdog(sid, steerId) {
-    const byId = outcomeReconcileWatchdogs[sid];
-    if (!byId || !byId[steerId]) return;
-    clearTimeout(byId[steerId]);
-    delete byId[steerId];
+    outcomeReconcileWatchdog.clear(sid, steerId);
   }
   function armOutcomeReconcileWatchdog(sid, item) {
-    const steerId = item.steerId;
-    if (!steerId) return;
-    let byId = outcomeReconcileWatchdogs[sid];
-    if (!byId) {
-      byId = Object.create(null);
-      outcomeReconcileWatchdogs[sid] = byId;
-    }
-    byId[steerId] = setTimeout(function () {
-      delete byId[steerId];
-      const text = takeWithdrawn(sid, steerId);
-      if (text === undefined) return; // already reconciled (a settle consumed the registration)
-      runSyncOnSession(sid, function () {
-        addSystemItem("⚠️ " + bt("steerFailed"));
-      });
-      // Session-scoped restore (draftEpoch bump for the owning session when
-      // active) instead of a global prefill that overwrites other restores.
-      restoreSteerText(sid, text);
-      notify();
-    }, STEER_SETTLE_WATCHDOG_MS);
+    outcomeReconcileWatchdog.arm(sid, item);
   }
 
   // Pending steer-event stash: chat:steer_committed / chat:steer_dropped can
@@ -1564,16 +1581,8 @@
     delete queueMutationInFlight[sid];
     delete queueMutationTerminals[sid];
     delete steerSettlements[sid];
-    const watchdogs = steerSettleWatchdogs[sid];
-    if (watchdogs) {
-      for (const steerId of Object.keys(watchdogs)) clearTimeout(watchdogs[steerId]);
-      delete steerSettleWatchdogs[sid];
-    }
-    const reconcileWatchdogs = outcomeReconcileWatchdogs[sid];
-    if (reconcileWatchdogs) {
-      for (const steerId of Object.keys(reconcileWatchdogs)) clearTimeout(reconcileWatchdogs[steerId]);
-      delete outcomeReconcileWatchdogs[sid];
-    }
+    steerSettleWatchdog.purge(sid);
+    outcomeReconcileWatchdog.purge(sid);
   }
 
   function rememberWithdrawn(sid, steerId, text) {
@@ -1745,7 +1754,7 @@
     // The silent path below is only correct for a × removal, where silence
     // means "the user deleted the text"; for a zap it would dismantle both
     // safety nets and silently lose the message.
-    const zapReconciling = !!(outcomeReconcileWatchdogs[sid] && outcomeReconcileWatchdogs[sid][steerId]);
+    const zapReconciling = outcomeReconcileWatchdog.isArmed(sid, steerId);
     clearOutcomeReconcileWatchdog(sid, steerId);
     if (findSteerChipIndex(sid, steerId) < 0) {
       if (recordQueueMutationTerminal(sid, steerId, "dropped")) {
@@ -2299,36 +2308,7 @@
   }
 
 
-  // ── Persist messages ─────────────────────────────────────────────
-  async function persistMessages() {
-    if (!state.activeSessionId) return;
-    if (isScheduledRunSession(state.activeSessionId)) return;
-    try {
-      await invoke("save_session_messages", { id: state.activeSessionId, messages: state.messages });
-      // artifacts 一起落盘，重启/切换 session 后能恢复
-      try { await invoke("save_session_artifacts", { id: state.activeSessionId, paths: rebaseArtifactPathsForRebind(state.activeSessionId, state.artifacts.map(function (a) { return a.path; })) }); } catch { /* artifacts persist is best-effort */ }
-      // Auto-title
-      const meta = state.sessions.find(function (s) { return s.id === state.activeSessionId; });
-      if (meta && (isDefaultChatTitle(meta.title) || personaPlaceholderTitles[state.activeSessionId])) {
-        const firstUser = state.messages.find(function (m) { return m.role === "user"; });
-        // 自动标题复用展示层过滤：内部信封/子智能体交接不参与命名，避免 XML 痕迹进
-        // sidebar。hideInternalEnvelope=true 剥离 turn_meta/system-reminder 元数据块，
-        // 否则普通消息的标题会拼入尾随 turn_meta（引擎持久化为独立 text block）。
-        const titleText = firstUser ? userMessageDisplayText(firstUser.content || [], true) : "";
-        if (titleText) {
-          const newTitle = titleText.slice(0, 20);
-          await invoke("rename_session", { id: state.activeSessionId, title: newTitle });
-          meta.title = newTitle;
-          delete personaPlaceholderTitles[state.activeSessionId]; // 已被对话内容命名,卸下占位标记
-        }
-      }
-    } catch (e) {
-      console.warn("persist failed", e);
-    }
-  }
-
-
-    return {
+  return {
       addChatItem,
       toolCallAlreadyStarted,
       toolCallAlreadyFinished,
@@ -2364,7 +2344,6 @@
       cancelGeneration,
       interruptAndSend,
       interruptAndSendQueued,
-      persistMessages,
       steer,
       settleSteerCommitted,
       settleSteerDropped,

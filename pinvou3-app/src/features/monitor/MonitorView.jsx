@@ -563,5 +563,5 @@ const MONITOR_CLOCK_LOCALE = { zh: 'zh-CN', en: 'en-US', ja: 'ja-JP' };
     // ==========================================
     // 统一排版原语：卡片 / 行(label 左 + 控件右) / 纵向输入字段 / 分段选择 / 改动操作条
 
-export { MONITOR_BRAND_ICONS, monitorModelIcon, monitorProcessorIcon, monitorClampPct, monitorTokenPair, monitorShortProcessorName, MonitorBrandIcon, MonitorCard, MonitorSectionHeader, MonitorComputeHeader, MonitorSegmentedBar, MonitorRing, MonitorSparkline, MonitorMetricCard, getMonitorHistoryStore, cloneMonitorHistory, MonitorActivityBars, MonitorView };
+export { MonitorView };
 /* eslint-enable sonarjs/cognitive-complexity -- legacy view; tracked separately */
