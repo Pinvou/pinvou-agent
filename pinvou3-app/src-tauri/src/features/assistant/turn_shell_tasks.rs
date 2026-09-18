@@ -220,9 +220,12 @@ impl ShellReclaim {
                         "[engine_pool] shell cleanup remained incomplete before reclaim scope={scope_id}: {error}"
                     );
                 } else {
-                    // Store the authoritative outcome so a timed-out detached
-                    // finalize (see the reclaim caller in engine_pool) clears
-                    // its conservative preset when it eventually succeeds.
+                    // Record the authoritative outcome after a timed-out
+                    // caller has preset the flag conservatively (see the
+                    // reclaim caller in engine_pool). The reclaimed terminal
+                    // itself was already emitted with the conservative value;
+                    // this keeps the flag truthful for post-reclaim
+                    // diagnostics.
                     self.cleanup_failed.store(false, Ordering::Release);
                 }
             }
@@ -237,8 +240,8 @@ impl ShellReclaim {
 
     /// Conservative preset for a caller that stopped awaiting [`Self::finalize`]
     /// on its gate-budget timeout: the reclaimed terminal must not claim an
-    /// unverified clean shell state. A detached finalize overwrites this with
-    /// the real outcome when it settles.
+    /// unverified clean shell state. A detached finalize overwrites the flag
+    /// with the authoritative outcome when it settles.
     pub(crate) fn mark_cleanup_failed(&self) {
         self.cleanup_failed.store(true, Ordering::Release);
     }

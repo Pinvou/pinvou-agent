@@ -71,9 +71,14 @@ use crate::core::reaper::{IDLE_EVICT_AFTER_SECS, IdleReaperGuard};
 /// delete, and the next send of the whole session (issue #255). On timeout
 /// the await is abandoned: a dropped cascade send is never enqueued (tokio
 /// mpsc send is cancel-safe) and every gate-held sender is serialized with
-/// the next turn's `SendMessage` on the same turn gate, so no late cancel
-/// can ever land after it. The only cost is that the old turn's subagents
-/// on the already-stalled engine survive until it unsticks or is reclaimed.
+/// the next turn's gate-submitted `SendMessage` on the same turn gate, so no
+/// late cancel can be enqueued after it. The ordering argument covers turns
+/// the app submits under the gate; engine-autonomous turns (idle child
+/// completion, goal continuation) start without the gate and are adopted by
+/// the forwarder only at `TurnStarted` — a pre-existing window outside this
+/// guarantee. An abandoned cascade send leaves the old turn's subagents
+/// alive on the stalled engine until it unsticks (their own step/time
+/// budgets apply) or reclaim shuts it down.
 const TURN_GATE_AWAIT_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(5);
 
 /// Total wait per op for the detached retry that re-delivers the reclaim
@@ -687,11 +692,13 @@ where
 /// loop 停滞（ops 通道满且不排空）时不得把 turn gate 永久占住，否则
 /// evict/delete/send 全部排队等同一把锁，会话管道整体僵死。超时放弃本次
 /// 入队——代价只是停滞引擎上的旧轮子代理存活到引擎解除停滞或被回收（子代理
-/// 自身步数/时限预算兜底）。迟到级联取消不会误杀新轮：被丢弃的 send 因 tokio
-/// mpsc send 的取消安全语义保证未入队（已获取的 permit 随 future drop 归还），
-/// 且所有持锁发送方与下一轮 `SendMessage` 串行于同一把 turn gate、phase-1 的
-/// `try_send` 由 lifecycle state 锁内 epoch 校验 + FIFO 覆盖——顺序保证不依赖
-/// 「通道保持满」。
+/// 自身步数/时限预算兜底）。迟到级联取消不会误杀经 gate 提交的新轮：被丢弃的
+/// send 因 tokio mpsc send 的取消安全语义保证未入队（已获取的 permit 随
+/// future drop 归还），且所有持锁发送方与下一轮 `SendMessage` 串行于同一把
+/// turn gate、phase-1 的 `try_send` 由 lifecycle state 锁内 epoch 校验 +
+/// FIFO 覆盖——顺序保证不依赖「通道保持满」。保证范围是 app 在 gate 内提交的
+/// 轮次；引擎自治轮（空闲子代理收尾、目标续跑）不经 gate 启动、由 forwarder
+/// 在 `TurnStarted` 时才认领，属此保证之外的既有窗口。
 ///
 /// **级联取消送达守护**（reviewer 点 9 + G1 补发收敛）：phase 1 的 best-effort
 /// `try_send` 在 ops 通道满（容量 32）时可能失败且被静默忽略，`CancelSubAgents`
@@ -1845,8 +1852,12 @@ impl EnginePool {
                 // pending kills meanwhile and the scope closes when the
                 // detached run settles. cleanup_failed is preset
                 // conservatively on timeout: the reclaimed terminal must not
-                // claim an unverified clean shell state; the detached run
-                // records the real outcome when it finishes.
+                // claim an unverified clean shell state, and the terminal is
+                // emitted right after this closure, before a slow detached
+                // run can settle. The detached run later records the
+                // authoritative outcome in the flag; nothing re-reads it for
+                // the already-persisted terminal — the flag stays truthful
+                // for post-reclaim diagnostics instead.
                 let shell_reclaim_for_finalize = shell_reclaim_for_drain.clone();
                 let finalize =
                     tokio::spawn(async move { shell_reclaim_for_finalize.finalize().await });
