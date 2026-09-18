@@ -334,11 +334,11 @@ export function subagentRoleOrdinals(summaries) {
 }
 
 /**
- * 树行投影共用件：先把 summaries 归一化成 child 索引 + 根列表。
- * `onlyKnownParents` 时父记录不在清单里的条目按根处理（父被 ledger 裁剪的
- * 孤儿仍可见）；否则缺失父级也照常挂进索引（后代查询只按索引取）。
+ * Shared tree-row projection helper: normalizes summaries into a child index
+ * plus a root list. Entries only nest under parents present in the ledger —
+ * entries whose parent record was pruned stay visible as roots.
  */
-function buildSubagentChildIndex(summaries, { onlyKnownParents }) {
+function buildSubagentChildIndex(summaries) {
   const byId = new Map();
   const ordered = [];
   for (const entry of summaries || []) {
@@ -351,7 +351,7 @@ function buildSubagentChildIndex(summaries, { onlyKnownParents }) {
   for (const entry of ordered) {
     const agentId = String(entry.agent_id);
     const parentId = String(entry.parent_run_id || '').trim();
-    if (parentId && parentId !== agentId && (!onlyKnownParents || byId.has(parentId))) {
+    if (parentId && parentId !== agentId && byId.has(parentId)) {
       const children = childrenByParent.get(parentId) || [];
       children.push(entry);
       childrenByParent.set(parentId, children);
@@ -388,7 +388,7 @@ function appendVisibleSubagentRows(childrenByParent, expanded, seen, starts) {
  * 根节点保留，坏数据形成环时也不会递归卡死。
  */
 export function visibleSubagentTreeRows(summaries, expandedAgentIds = []) {
-  const { ordered, childrenByParent, roots } = buildSubagentChildIndex(summaries, { onlyKnownParents: true });
+  const { ordered, childrenByParent, roots } = buildSubagentChildIndex(summaries);
 
   // 正常 ledger 一定能从根遍历完。额外把环或损坏关系中的剩余分量提升为根，
   // 保证数据异常时只是层级降级，不会让代理凭空消失。

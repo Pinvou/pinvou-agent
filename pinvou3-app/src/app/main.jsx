@@ -3625,7 +3625,7 @@ const NAV_PREFETCH = {
                 nativeSurfaceSuspended={compactBrowserSurfaceSuspended}
               />
             )}
-            {currentView === 'toolStore' && <LazyToolStoreView theme={activeTheme} t={t} onNewChat={handleNewChat} />}
+            {currentView === 'toolStore' && <LazyToolStoreView t={t} onNewChat={handleNewChat} />}
             {currentView === 'cardpool' && <LazyCardPoolView theme={activeTheme} t={t} bs={bs} onEquipped={() => { setCodeModeOn(false); setCurrentView('chat'); }} onAICreate={startAICard} initialMyOnly={poolMyOnly} />}
             {currentView === 'chat' && (
               <ChatView

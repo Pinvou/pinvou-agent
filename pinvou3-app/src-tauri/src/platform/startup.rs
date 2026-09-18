@@ -13,7 +13,7 @@ use std::time::{Duration, Instant};
 use chrono::Utc;
 use serde::Deserialize;
 
-pub(crate) const MAX_LOG_BYTES: u64 = 2 * 1024 * 1024;
+const MAX_LOG_BYTES: u64 = 2 * 1024 * 1024;
 static STARTED_AT: OnceLock<Instant> = OnceLock::new();
 static LOG_FILE: OnceLock<Mutex<Option<File>>> = OnceLock::new();
 static RUN_ID: OnceLock<String> = OnceLock::new();
