@@ -146,10 +146,15 @@ const RebindFolderDialog = ({ from, to, warnExisting, errorMessage, partial, bus
             <div className="flex items-start gap-2 rounded-2xl bg-[#FCE8E6] dark:bg-[#3C2A29] px-3 py-2 text-[12px] text-[#C5221F] dark:text-[#F28B82]">
               <AlertTriangle size={14} className="shrink-0 mt-0.5" />
               <div className="space-y-1">
-                {/* Post-busy-only runs (nothing failed) reach this state too:
-                    the dialog is the entry point for the "retry once when
-                    idle" remedy, so the summary must read as a report and not
-                    as a failure (round-8 MAJOR-2). */}
+              {/* Post-busy-only runs (nothing failed) reach this state too:
+                  the dialog is the entry point for the "retry once when
+                  idle" remedy, so the summary must read as a report and not
+                  as a failure (round-8 MAJOR-2). In the carryover-refused /
+                  budget-exhausted shape (failed=0, rebound=0, postBusy>0)
+                  NO summary line renders at all (round-10 minor 6): a
+                  "nothing needed rebinding" line directly above "sessions
+                  are busy" would deny what the busy line asserts. */}
+              {(partial.failed > 0 || partial.rebound > 0 || partial.postBusy === 0) && (
                 <div>
                   {partial.failed > 0
                     ? t.uiProjects.rebindPartial(partial.rebound, partial.failed)
@@ -157,9 +162,10 @@ const RebindFolderDialog = ({ from, to, warnExisting, errorMessage, partial, bus
                       ? t.uiProjects.rebindSuccess(partial.rebound)
                       : t.uiProjects.rebindUpToDate)}
                 </div>
-                {partial.postBusy > 0 && (
-                  <div>{t.uiProjects.rebindBusyAfter(partial.postBusy)}</div>
-                )}
+              )}
+              {partial.postBusy > 0 && (
+                <div>{t.uiProjects.rebindBusyAfter(partial.postBusy)}</div>
+              )}
               </div>
             </div>
             {partial.failedIds.length > 0 && (

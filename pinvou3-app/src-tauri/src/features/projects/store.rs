@@ -694,6 +694,29 @@ impl ProjectStore {
         (candidate, affected_projects)
     }
 
+    /// Overlap revalidation for a rebind candidate, scoped to the CHANGED
+    /// projects (review #463 round-10 minor 5): any overlap this rebind could
+    /// introduce involves at least one translated root, and each changed
+    /// project is still validated against the whole candidate — changed and
+    /// unchanged neighbors alike — so scoping loses no new-conflict coverage.
+    /// What it does lose is the false block: a pre-existing overlap between
+    /// two projects this rebind never touched used to fail an unrelated
+    /// rebind with `REBIND_ROOTS_CONFLICT`, whose user copy advises picking a
+    /// different destination — advice that cannot help.
+    fn validate_rebind_candidates(
+        candidate: &[Project],
+        affected_projects: &[String],
+    ) -> Result<()> {
+        for project in candidate.iter().filter(|project| {
+            affected_projects
+                .iter()
+                .any(|affected| affected == &project.id)
+        }) {
+            validate_roots(candidate, Some(&project.id), &project.roots)?;
+        }
+        Ok(())
+    }
+
     /// Non-committing pre-flight for the rebind command (review #463 round-8
     /// M3): the session lanes now run before the project roots so an
     /// interrupted run still leaves the old root registered (hence
@@ -714,10 +737,7 @@ impl ProjectStore {
         if affected_projects.is_empty() {
             return Ok(Vec::new());
         }
-        for project in &candidate {
-            validate_roots(&candidate, Some(&project.id), &project.roots)
-                .context("rebind produced overlapping project roots")?;
-        }
+        Self::validate_rebind_candidates(&candidate, &affected_projects)?;
         Ok(affected_projects)
     }
 
@@ -770,11 +790,9 @@ impl ProjectStore {
         let (candidate, affected_projects) =
             Self::rebind_root_candidates(&state.projects, from, to);
         if !affected_projects.is_empty() {
-            for project in &candidate {
-                validate_roots(&candidate, Some(&project.id), &project.roots)
-                    .context("rebind produced overlapping project roots")
-                    .map_err(RebindRootsError::Conflict)?;
-            }
+            Self::validate_rebind_candidates(&candidate, &affected_projects)
+                .context("rebind produced overlapping project roots")
+                .map_err(RebindRootsError::Conflict)?;
             // Commit-on-success: persist the candidate while the write lock is
             // held, and restore the previous projects on failure so memory
             // never claims a rebind disk does not have. `persist_locked` reads

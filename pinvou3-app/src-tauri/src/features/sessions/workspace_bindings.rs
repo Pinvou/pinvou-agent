@@ -363,6 +363,17 @@ impl SessionStore {
         true
     }
 
+    /// Whether ANY durable plain-lane binding artifact still references the
+    /// session: a cache entry or the binding sidecar on disk (review #463
+    /// round-10 minor 4). Session deletion clears the cache and removes the
+    /// session directory (sidecar included), so `false` means the session
+    /// died mid-rebind — the report and the event stream must not count a
+    /// dead id as rebound.
+    pub(crate) fn workspace_binding_artifacts_exist(&self, id: &str) -> bool {
+        self.session_workspaces.read().contains_key(id)
+            || self.session_workspace_sidecar_path(id).exists()
+    }
+
     /// Boot-time legacy migration: global table `_session_workspaces.json` →
     /// per-session sidecar (serving only homes of intermediate dev builds, see the
     /// module docs). Live-session entries are rewritten as sidecars one by one
@@ -372,6 +383,16 @@ impl SessionStore {
     /// next boot retries without blocking startup. Ghost entries (whose `<id>.json`
     /// no longer exists — leftovers of sessions deleted out of process) are dropped
     /// without migration.
+    ///
+    /// An entry whose sidecar already DISAGREES with it is converged, not
+    /// unmigrated (review #463 round-10 minor 1): the sidecar is written by
+    /// bind and only the rebind rewrites it onto a new path, so a
+    /// disagreement means a rebind moved a cache-only legacy entry (its own
+    /// migration write had failed, leaving it in this file AND the cache)
+    /// after this table was last written. Re-binding the legacy path here
+    /// would overwrite the moved sidecar with the vanished one, silently
+    /// undoing a rebind that already reported success. Such entries are
+    /// dropped like ghosts, letting the file converge away.
     pub fn migrate_legacy_session_workspaces(&self) {
         let legacy = self
             .manager
@@ -396,6 +417,12 @@ impl SessionStore {
                 .is_file()
             {
                 continue;
+            }
+            if let Some(sidecar) = read_workspace_sidecar(&self.session_workspace_sidecar_path(&id))
+            {
+                if sidecar.path != path {
+                    continue;
+                }
             }
             if let Err(error) = self.bind_session_workspace(&id, path.clone()) {
                 eprintln!("[sessions] migrate workspace binding for {id} failed: {error:#}");

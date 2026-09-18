@@ -36,7 +36,7 @@ test('rebind dialog participates in the browser-surface suspend protocol', () =>
   );
   assert.match(
     MAIN,
-    /\{rebindDraft && browserOverlayPublicationReady && \(\n/,
+    /\{rebindDraft && browserOverlayPublicationReady && \(\r?\n/,
     'rebind render is not gated on browserOverlayPublicationReady',
   );
 });
@@ -123,7 +123,43 @@ test('an out-of-budget reclaim is reported instead of claimed as success', () =>
   // eviction, never into the success path.
   assert.match(
     read('src-tauri', 'src', 'app', 'commands', 'projects.rs'),
-    /let \(acp_idle, engine_idle\) = if tokio::time::Instant::now\(\) < tail_deadline \{\n\s*\(\n\s*acp_pool\.evict_if_idle_for_rebind\(&session_id\)\.await,\n\s*engines\.evict_if_idle_for_rebind\(&session_id\)\.await,\n\s*\)\n\s*\} else \{\n\s*\(false, false\)\n\s*\}/,
+    /let \(acp_idle, engine_idle\) = if tokio::time::Instant::now\(\) < tail_deadline \{\r?\n\s*\(\r?\n\s*acp_pool\.evict_if_idle_for_rebind\(&session_id\)\.await,\r?\n\s*engines\.evict_if_idle_for_rebind\(&session_id\)\.await,\r?\n\s*\)\r?\n\s*\} else \{\r?\n\s*\(false, false\)\r?\n\s*\}/,
     'the tail must not attempt (or claim) eviction past its budget',
+  );
+});
+
+test('the carryover-refused-only report does not deny its own busy line', () => {
+  // round-10 minor 6: the backend state failed=0, rebound=0, postBusy>0 (tail
+  // budget exhaustion / refused carryover) used to render "nothing needed
+  // rebinding" directly above "sessions are busy after the rebind" — the first
+  // line denying what the second asserts. The summary line must render only
+  // when it agrees with postBusy.
+  assert.match(
+    DIALOG,
+    /\{\(partial\.failed > 0 \|\| partial\.rebound > 0 \|\| partial\.postBusy === 0\) && \(/,
+    'the summary line must be suppressed in the carryover-refused-only state',
+  );
+});
+
+test('the folder-picker window is re-entry guarded', () => {
+  // round-10 minor 7: `rebindDraft` stays null until the picker resolves, so
+  // the existing guard cannot see a second badge click in that window — two
+  // pickers would race, the second overwriting the focus-restore target, and
+  // a successful A-rebind could restore focus to B's header or open B's
+  // draft. A pickingRef must gate entry and release on every settle path.
+  assert.match(
+    MAIN,
+    /const rebindPickingRef = useRef\(false\)/,
+    'the picking guard must exist',
+  );
+  assert.match(
+    MAIN,
+    /projectOpsBusy \|\| rebindDraft \|\| rebindPickingRef\.current\) return/,
+    'entry must be refused while a pick is already in flight',
+  );
+  assert.match(
+    MAIN,
+    /finally \{\r?\n\s*rebindPickingRef\.current = false;\r?\n\s*\}/,
+    'the guard must release on pick, empty pick AND failure',
   );
 });

@@ -668,6 +668,107 @@ fn migrate_legacy_session_workspaces_converges_to_per_session_sidecars() {
     let _ = std::fs::remove_dir_all(&bound_dir);
 }
 
+/// round-10 minor 1: a rebind that moved a cache-only legacy entry wrote the
+/// fresh sidecar and advanced the cache but cannot touch the legacy table —
+/// the next boot's migration must converge onto the sidecar instead of
+/// re-binding the vanished path over the moved binding.
+#[test]
+fn migrate_legacy_session_workspaces_keeps_a_rebound_binding_over_the_stale_entry() {
+    let (store, _g) = isolated_store();
+    let s = store
+        .create_new("/model".into(), None, std::env::temp_dir())
+        .expect("create");
+    let from = unique_temp_dir("user-workspace-legacy-from");
+    let to = unique_temp_dir("user-workspace-legacy-to");
+    std::fs::create_dir_all(&from).expect("create from dir");
+    std::fs::create_dir_all(&to).expect("create to dir");
+    // The cache-only legacy entry: its original migration write failed, so it
+    // lives in the table AND the cache; a rebind then moved it (sidecar +
+    // cache onto `to`) without the table knowing.
+    store
+        .bind_session_workspace(&s.metadata.id, from.clone())
+        .expect("initial bind");
+    assert!(store.rebind_workspace_binding(&s.metadata.id, to.clone()));
+    let legacy = paths::sessions_root().join("_session_workspaces.json");
+    std::fs::write(
+        &legacy,
+        serde_json::to_string(&std::collections::HashMap::from([(
+            s.metadata.id.clone(),
+            from.clone(),
+        )]))
+        .expect("serialize legacy"),
+    )
+    .expect("write legacy");
+
+    store.migrate_legacy_session_workspaces();
+    // The sidecar (authoritative) wins: the binding still resolves to the
+    // rebound target, not the vanished one, and the entry converged away.
+    store.session_workspaces.write().clear();
+    assert_eq!(store.session_workspace_binding(&s.metadata.id), Some(to.clone()));
+    assert!(!legacy.exists(), "the converged entry lets the table converge away");
+
+    let _ = std::fs::remove_dir_all(&from);
+    let _ = std::fs::remove_dir_all(&to);
+}
+
+/// round-10 Major 2: artifacts[].storage_path persists absolute workspace
+/// paths, so the rebind must rebase them under the moved prefix during the
+/// metadata pass — otherwise every pre-rebind deliverable keeps pointing at
+/// the vanished root with no healing path.
+#[test]
+fn rebase_workspace_artifact_paths_translates_only_under_the_prefix() {
+    let (store, _g) = isolated_store();
+    let s = store
+        .create_new("/model".into(), None, std::env::temp_dir())
+        .expect("create");
+    let from = unique_temp_dir("artifact-rebase-from");
+    let to = unique_temp_dir("artifact-rebase-to");
+    let elsewhere = unique_temp_dir("artifact-rebase-elsewhere");
+    for dir in [&from, &to, &elsewhere] {
+        std::fs::create_dir_all(dir).expect("create dir");
+    }
+    let under_from = from.join("sub").join("report.html");
+    std::fs::create_dir_all(under_from.parent().expect("parent")).expect("create nested dir");
+    std::fs::write(&under_from, b"<html></html>").expect("seed deliverable");
+    let outside = elsewhere.join("other.html");
+    store
+        .update_artifacts(
+            &s.metadata.id,
+            vec![under_from.to_string_lossy().into_owned(), outside.to_string_lossy().into_owned()],
+        )
+        .expect("seed artifacts");
+
+    let rebased = store
+        .rebase_workspace_artifact_paths(&s.metadata.id, &|path: &std::path::Path| {
+            path.strip_prefix(&from).ok().map(|suffix| to.join(suffix))
+        })
+        .expect("rebase");
+    assert_eq!(rebased, 1, "only the entry under the moved prefix is rewritten");
+    let session = store.load(&s.metadata.id).expect("reload");
+    let paths: Vec<PathBuf> = session
+        .artifacts
+        .iter()
+        .map(|artifact| artifact.storage_path.clone())
+        .collect();
+    assert_eq!(
+        paths,
+        vec![to.join("sub").join("report.html"), outside],
+        "the deliverable follows the moved root; unrelated entries stay put"
+    );
+
+    // Idempotent: an already-converged session persists nothing and reports 0.
+    let again = store
+        .rebase_workspace_artifact_paths(&s.metadata.id, &|path: &std::path::Path| {
+            path.strip_prefix(&from).ok().map(|suffix| to.join(suffix))
+        })
+        .expect("rebase again");
+    assert_eq!(again, 0);
+
+    let _ = std::fs::remove_dir_all(&from);
+    let _ = std::fs::remove_dir_all(&to);
+    let _ = std::fs::remove_dir_all(&elsewhere);
+}
+
 /// Partial migration failure: failed entries keep the old file and are taken
 /// over by the in-memory cache so they still resolve, retried on the next boot;
 /// the cache is extended rather than replaced wholesale — entries bound earlier

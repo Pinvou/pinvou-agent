@@ -693,6 +693,16 @@ impl SessionAgentStore {
         Self::rebind_relative_suffix(path, to).map(|_| path.to_path_buf())
     }
 
+    /// Whether ANY durable codex-lane binding artifact still references the
+    /// session: an index record or a code-session sidecar on disk (review
+    /// #463 round-10 minor 4). Session deletion removes both, so `false`
+    /// means the session died mid-rebind — the report and the event stream
+    /// must not count a dead id as rebound.
+    pub fn binding_artifacts_exist(&self, session_id: &str) -> bool {
+        self.records.read().contains_key(session_id)
+            || code_session_sidecar_path(&self.path, session_id).exists()
+    }
+
     /// Directory rebind (broken-link repair): translates every project
     /// session bound under the `from` prefix onto `to`. Unlike
     /// `set_acp_workspace`/`bind_code_native_session` ("no directory change
@@ -896,39 +906,7 @@ impl SessionAgentStore {
             }
         }
         if !index_rekeys.is_empty() {
-            // Count only: the log must not carry plaintext session ids (CodeQL
-            // cleartext-logging, review #463 round 7).
-            eprintln!(
-                "[pinvou3-app] rebind repaired {} index/sidecar disagreement(s)",
-                index_rekeys.len()
-            );
-            let mut originals: Vec<(String, Option<PathBuf>)> =
-                Vec::with_capacity(index_rekeys.len());
-            {
-                let mut records = self.records.write();
-                for (session_id, path) in &index_rekeys {
-                    if let Some(record) = records.get_mut(session_id) {
-                        originals.push((
-                            session_id.clone(),
-                            record.workspace_path.replace(path.clone()),
-                        ));
-                    }
-                }
-            }
-            if let Err(error) = self.persist() {
-                // Same rollback contract as the index move above: memory must
-                // not claim a repair disk does not have. The command layer
-                // reports this run as failed; a rerun converges, because the
-                // sidecar already sits on the target and the next pass repairs
-                // the index again.
-                let mut records = self.records.write();
-                for (session_id, original) in originals {
-                    if let Some(record) = records.get_mut(&session_id) {
-                        record.workspace_path = original;
-                    }
-                }
-                return Err(error);
-            }
+            self.commit_index_rekeys(&index_rekeys)?;
         }
         // Post-pass fence (review #463 round-8 minor 8). The rebind gate
         // serializes rebinds only, so a concurrent bind/remove can land in the
@@ -950,6 +928,88 @@ impl SessionAgentStore {
             affected,
             sidecar_final_stale,
         })
+    }
+
+    /// Commits a batch of index re-keys with the rollback contract of the
+    /// index move above (review #463 round-10 Major 1, extracted so the
+    /// divergence repair inside `rebind_workspace_prefix` and the
+    /// command-driven stranded-index repair share one implementation): memory
+    /// must never claim a repair disk does not have, so a persist failure
+    /// rolls every mutated record back to its pre-call binding and errors —
+    /// the caller reports this run as failed. Convergence on the rerun is
+    /// command-driven, not lane-driven: neither `from` nor `to` prefix scan
+    /// reaches a record stranded at an intermediate target, so the rerun's
+    /// to-lane admission must surface the sidecar and call
+    /// [`Self::repair_stranded_index_records`] again.
+    fn commit_index_rekeys(&self, rekeys: &[(String, PathBuf)]) -> Result<()> {
+        // Count only: the log must not carry plaintext session ids (CodeQL
+        // cleartext-logging, review #463 round 7).
+        eprintln!(
+            "[pinvou3-app] rebind repaired {} index/sidecar disagreement(s)",
+            rekeys.len()
+        );
+        let mut originals: Vec<(String, Option<PathBuf>)> = Vec::with_capacity(rekeys.len());
+        {
+            let mut records = self.records.write();
+            for (session_id, path) in rekeys {
+                if let Some(record) = records.get_mut(session_id) {
+                    originals.push((
+                        session_id.clone(),
+                        record.workspace_path.replace(path.clone()),
+                    ));
+                }
+            }
+        }
+        if let Err(error) = self.persist() {
+            let mut records = self.records.write();
+            for (session_id, original) in originals {
+                if let Some(record) = records.get_mut(&session_id) {
+                    record.workspace_path = original;
+                }
+            }
+            return Err(error);
+        }
+        Ok(())
+    }
+
+    /// Re-keys index records that survived a divergence-repair persist
+    /// failure onto the sidecar's authoritative target (review #463 round-10
+    /// Major 1). The stranded shape: run 1 (from→to) delivered the index but
+    /// both sidecar passes failed; run 2 (from→to2) moved the sidecar and then
+    /// failed to persist the re-key — index@`to`, sidecar@`to2`. Run 3
+    /// (from→to2) matches neither prefix in either store pass, so the lane
+    /// alone reports an empty success while the index record still points at
+    /// the vanished `to` and boot restore (which skips sidecars while the
+    /// index holds a code record) keeps resurrecting it. The command layer
+    /// detects the strand via its to-lane scan — the sidecar surfaces the
+    /// session, the index disagrees — and drives this repair; it must run
+    /// BEFORE the metadata loop so a persist failure leaves the metadata
+    /// stale and the rerun re-admits (and re-repairs) the session.
+    ///
+    /// Records already sitting on their target are skipped (idempotent); the
+    /// returned list holds only the actually re-keyed session ids.
+    pub fn repair_stranded_index_records(
+        &self,
+        targets: &[(String, PathBuf)],
+    ) -> Result<Vec<String>> {
+        let mut rekeys = Vec::new();
+        {
+            let records = self.records.read();
+            for (session_id, path) in targets {
+                if records
+                    .get(session_id)
+                    .is_some_and(|record| record.workspace_path.as_ref() != Some(path))
+                {
+                    rekeys.push((session_id.clone(), path.clone()));
+                }
+            }
+        }
+        if rekeys.is_empty() {
+            return Ok(Vec::new());
+        }
+        let repaired = rekeys.iter().map(|(sid, _)| sid.clone()).collect();
+        self.commit_index_rekeys(&rekeys)?;
+        Ok(repaired)
     }
 
     pub fn set_acp_session(
@@ -1851,6 +1911,138 @@ mod tests {
         );
         let sidecar = read_code_session_sidecar(&store.path, "s1").unwrap();
         assert_eq!(sidecar.workspace_path.as_deref(), Some(to2.as_path()));
+
+        fs::remove_dir_all(&root).unwrap();
+    }
+
+    #[test]
+    fn rebind_repairs_a_stranded_index_record_the_lanes_cannot_reach() {
+        // review #463 round-10 Major 1: run 1 (from→to) delivered the index
+        // but both sidecar passes failed; run 2 (from→to2) moved the sidecar
+        // and its divergence re-key failed to persist — index@`to`,
+        // sidecar@`to2`. Run 3 (from→to2) matches NEITHER prefix in either
+        // store pass, so the lane alone reports an empty success while the
+        // index keeps pointing at the vanished `to`. The command's to-lane
+        // scan surfaces the sidecar, detects the disagreement, and drives
+        // the repair — the convergence the old rollback comment promised.
+        let root = std::env::temp_dir().join(format!(
+            "pinvou3-codex-rebind-stranded-{}",
+            std::process::id()
+        ));
+        let _ = fs::remove_dir_all(&root);
+        fs::create_dir_all(&root).unwrap();
+        let store = SessionAgentStore {
+            path: root.join("session-agents.json"),
+            records: Arc::new(RwLock::new(HashMap::new())),
+        };
+        let from = root.join("from");
+        let to = root.join("to");
+        let to2 = root.join("to2");
+        for dir in [&from, &to, &to2] {
+            fs::create_dir_all(dir).unwrap();
+        }
+        store
+            .bind_code_native_session("s1", CodexWorkspaceKind::Project, Some(from.clone()))
+            .unwrap();
+
+        // The run-2 persist-failure end state, constructed directly: the index
+        // move rolled back to its pre-run value (`to`), the sidecar write
+        // survived (`to2`).
+        {
+            let mut records = store.records.write();
+            records.get_mut("s1").unwrap().workspace_path = Some(to.clone());
+        }
+        persist_code_session_sidecar(
+            &code_session_sidecar_path(&store.path, "s1"),
+            &CodeSessionSidecar {
+                version: CODE_SESSION_SIDECAR_VERSION,
+                workspace_kind: CodexWorkspaceKind::Project,
+                workspace_path: Some(to2.clone()),
+                bound_at: None,
+            },
+        )
+        .unwrap();
+
+        // The lane alone cannot converge it: no index record and no sidecar
+        // sits under `from`, and `to` is not under `to2`.
+        let run3 = store.rebind_workspace_prefix(&from, &to2).unwrap();
+        assert!(run3.affected.is_empty());
+        assert!(run3.sidecar_final_stale.is_empty());
+        assert_eq!(
+            store.get("s1").workspace_path.as_deref(),
+            Some(to.as_path()),
+            "precondition: the lane leaves the stranded index record at `to`"
+        );
+
+        // The command-driven repair re-keys it onto the sidecar's target.
+        let repaired = store
+            .repair_stranded_index_records(&[("s1".to_string(), to2.clone())])
+            .unwrap();
+        assert_eq!(repaired, vec!["s1".to_string()]);
+        assert_eq!(
+            store.get("s1").workspace_path.as_deref(),
+            Some(to2.as_path()),
+            "the index converges onto the sidecar-authoritative target"
+        );
+        let sidecar = read_code_session_sidecar(&store.path, "s1").unwrap();
+        assert_eq!(sidecar.workspace_path.as_deref(), Some(to2.as_path()));
+
+        // Idempotent: an already-converged record is skipped, not rewritten.
+        let again = store
+            .repair_stranded_index_records(&[("s1".to_string(), to2.clone())])
+            .unwrap();
+        assert!(again.is_empty());
+
+        fs::remove_dir_all(&root).unwrap();
+    }
+
+    #[test]
+    fn stranded_index_repair_rolls_back_when_persist_fails() {
+        let root = std::env::temp_dir().join(format!(
+            "pinvou3-codex-rebind-stranded-persist-{}",
+            std::process::id()
+        ));
+        let _ = fs::remove_dir_all(&root);
+        fs::create_dir_all(&root).unwrap();
+        let store = SessionAgentStore {
+            path: root.join("session-agents.json"),
+            records: Arc::new(RwLock::new(HashMap::new())),
+        };
+        let from = root.join("from");
+        let to = root.join("to");
+        let to2 = root.join("to2");
+        for dir in [&from, &to, &to2] {
+            fs::create_dir_all(dir).unwrap();
+        }
+        store
+            .bind_code_native_session("s1", CodexWorkspaceKind::Project, Some(from.clone()))
+            .unwrap();
+        {
+            let mut records = store.records.write();
+            records.get_mut("s1").unwrap().workspace_path = Some(to.clone());
+        }
+
+        // Occupy the persist tmp path with a directory so the write fails
+        // deterministically (same injection shape as the projects-store
+        // persist-failure test).
+        let tmp = store.path.with_extension("json.tmp");
+        fs::create_dir(&tmp).unwrap();
+        store
+            .repair_stranded_index_records(&[("s1".to_string(), to2.clone())])
+            .expect_err("a persist failure must be reported");
+        assert_eq!(
+            store.get("s1").workspace_path.as_deref(),
+            Some(to.as_path()),
+            "memory must roll back to the pre-repair binding, not claim a repair disk does not have"
+        );
+
+        // Clearing the obstruction converges on a same-process retry.
+        fs::remove_dir(&tmp).unwrap();
+        let repaired = store
+            .repair_stranded_index_records(&[("s1".to_string(), to2.clone())])
+            .unwrap();
+        assert_eq!(repaired, vec!["s1".to_string()]);
+        assert_eq!(store.get("s1").workspace_path.as_deref(), Some(to2.as_path()));
 
         fs::remove_dir_all(&root).unwrap();
     }

@@ -1728,6 +1728,13 @@ const NAV_PREFETCH = {
       // T7): filled with a `() => Element | null` targeting the project header
       // row that opened it, which survives the refresh that removes the badge.
       const rebindRestoreRef = useRef(null);
+      // Re-entry guard for the folder-picker window (review #463 round-10
+      // minor 7): `rebindDraft` stays null until the picker resolves, so the
+      // existing guard cannot see a second badge click in that window — two
+      // pickers would race, the second overwriting `rebindRestoreRef`, and a
+      // successful A-rebind could restore focus to B's header or open B's
+      // draft. Held from pick start to settle (pick, empty pick, failure).
+      const rebindPickingRef = useRef(false);
       // 桥完成首次状态同步(bs 就绪)后拉一次项目快照;后续变更由
       // projects:list_changed 事件驱动桥内刷新(bridge/projects.js)。
       const projectsBootstrapReady = !!bs;
@@ -2639,8 +2646,11 @@ const NAV_PREFETCH = {
       const startRebindWorkspace = async (fromPath, headerEl) => {
         // Do not reopen while rebindDraft is already open: with focus left on
         // the badge, pressing Enter re-triggers onRebind (review #463 minor),
-        // and the projectOpsBusy guard does not cover that window.
-        if (!bridge.files || !bridge.files.pickRebindFolder || projectOpsBusy || rebindDraft) return;
+        // and the projectOpsBusy guard does not cover that window. The
+        // pickingRef arm covers the picker window itself, which rebindDraft
+        // cannot see (round-10 minor 7).
+        if (!bridge.files || !bridge.files.pickRebindFolder || projectOpsBusy || rebindDraft || rebindPickingRef.current) return;
+        rebindPickingRef.current = true;
         // Focus destination for the dialog's close (review #463 round-10 T7):
         // the badge that opened it is removed by the very operation it starts
         // (the root becomes available), so the hook's default restore target is
@@ -2668,6 +2678,8 @@ const NAV_PREFETCH = {
           // class, and the warn keeps the detail available for diagnostics.
           console.warn('pick rebind folder failed', error);
           setSettingsToast(t.uiProjects.opFailed);
+        } finally {
+          rebindPickingRef.current = false;
         }
       };
       const confirmRebindWorkspace = async (confirmExisting) => {

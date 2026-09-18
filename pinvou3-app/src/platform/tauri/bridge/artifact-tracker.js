@@ -176,6 +176,16 @@
           const na = { path: p, basename: bn }; state.artifacts.push(na); byName[bn] = na; added = true;
         }
         else if (isAbsPath(p) && !isAbsPath(ex.path)) { ex.path = p; added = true; } // 相对→绝对,open 可靠
+        else if (isAbsPath(p) && isAbsPath(ex.path) && normalizedPath(ex.path) !== normalizedPath(p)) {
+          // Stale absolute → live workspace file, matched by basename: after a
+          // folder rebind the persisted entry keeps the vanished root, and the
+          // relative→absolute escape hatch above never fires for it (review
+          // #463 round-10 Major 2). The scan is the disk truth — an entry that
+          // does not appear verbatim in the workspace listing is dead or
+          // outside it — so rebase onto the scanned file. Same accepted
+          // basename coarseness as the relative→absolute arm above.
+          ex.path = p; added = true;
+        }
       });
       if (added) {
         notify();
