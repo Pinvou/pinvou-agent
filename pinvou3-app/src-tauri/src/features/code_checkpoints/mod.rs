@@ -448,6 +448,25 @@ fn clear_stale_git_locks_older_than(repo: &Path, min_age: std::time::Duration) -
     cleared
 }
 
+/// git 因发现残留锁而拒绝执行（退出码非零、stderr 指名某个 .lock 路径）时，
+/// 清掉确证为陈旧的锁重试一次。[`git`] 与 [`git_ref`] 共用：被超时 kill 的
+/// git 同样会死在 update-ref / 删 ref 的路上——若只给写路径接清扫，
+/// drop/invalidate 就会留下永远清不掉的 ref 锁，索引条目已删而 ref 仍在，
+/// gc 永远收不回对象，影子仓库随之泄漏。
+fn run_git_with_stale_lock_retry(
+    run_bounded: impl Fn() -> Result<std::process::Output>,
+    repo: &Path,
+) -> Result<std::process::Output> {
+    let output = run_bounded()?;
+    if !output.status.success()
+        && String::from_utf8_lossy(&output.stderr).contains(".lock")
+        && clear_stale_git_locks(repo)
+    {
+        return run_bounded();
+    }
+    Ok(output)
+}
+
 fn git(repo: &Path, work_tree: &Path, arguments: &[&str]) -> Result<std::process::Output> {
     let run_bounded = || {
         let mut command = isolated_git_command();
@@ -458,16 +477,7 @@ fn git(repo: &Path, work_tree: &Path, arguments: &[&str]) -> Result<std::process
         crate::platform::process::output_with_timeout_and_kill_tree(command, GIT_COMMAND_TIMEOUT)
             .map_err(|error| anyhow::anyhow!("failed to run git {}: {error}", arguments.join(" ")))
     };
-    let output = run_bounded()?;
-    // git 因发现残留锁而拒绝执行（退出码非零、stderr 指名某个 .lock 路径）时，
-    // 清掉确证为陈旧的锁重试一次。
-    if !output.status.success()
-        && String::from_utf8_lossy(&output.stderr).contains(".lock")
-        && clear_stale_git_locks(repo)
-    {
-        return run_bounded();
-    }
-    Ok(output)
+    run_git_with_stale_lock_retry(run_bounded, repo)
 }
 
 fn git_ok(repo: &Path, work_tree: &Path, arguments: &[&str]) -> Result<String> {
@@ -1121,13 +1131,18 @@ pub fn restore_checkpoint(
 }
 
 /// 只操作 refs 的 git 调用（update-ref/gc 不需要 work-tree）。
+/// 与写路径共用陈旧锁清扫重试：被超时 kill 的 git 会留下
+/// `refs/checkpoints/*.lock`，无清扫时删 ref 永久失败，ref 与其对象泄漏。
 fn git_ref(repo: &Path, arguments: &[&str]) -> Result<std::process::Output> {
-    let mut command = isolated_git_command();
-    command
-        .arg(format!("--git-dir={}", repo.display()))
-        .args(arguments);
-    crate::platform::process::output_with_timeout_and_kill_tree(command, GIT_COMMAND_TIMEOUT)
-        .map_err(|error| anyhow::anyhow!("执行 git {} 失败: {error}", arguments.join(" ")))
+    let run_bounded = || {
+        let mut command = isolated_git_command();
+        command
+            .arg(format!("--git-dir={}", repo.display()))
+            .args(arguments);
+        crate::platform::process::output_with_timeout_and_kill_tree(command, GIT_COMMAND_TIMEOUT)
+            .map_err(|error| anyhow::anyhow!("执行 git {} 失败: {error}", arguments.join(" ")))
+    };
+    run_git_with_stale_lock_retry(run_bounded, repo)
 }
 
 /// 回退后作废被截对话分支的 Turn checkpoint（设计审阅 P0 修复）。
@@ -1404,6 +1419,48 @@ mod tests {
             "持锁时 git 调用必须失败: {error:#}"
         );
         assert!(lock.exists(), "年轻锁不得被清除");
+    }
+
+    /// `git_ref`（drop/invalidate 路径）与写路径同样享有陈旧锁清扫：
+    /// 被超时 kill 的 update-ref 会留下 `refs/checkpoints/<id>.lock`，
+    /// 无清扫时删 ref 永久失败而索引条目已删，ref 与对象随之泄漏。
+    /// 锁龄用 `File::set_times` 回拨，不依赖 sleep。
+    #[test]
+    fn git_ref_clears_stale_ref_lock_and_retries() {
+        if !git_available() {
+            return;
+        }
+        let ledger = TestDir::new("ref-lock-ledger");
+        let exec = TestDir::new("ref-lock-exec");
+        exec.write("a.rs", "v1\n");
+        let checkpoint = create_checkpoint(
+            ledger.path(),
+            exec.path(),
+            Some(1),
+            CheckpointKind::Turn,
+            "t1",
+        )
+        .unwrap();
+
+        let repo = repo_dir(ledger.path());
+        let ref_name = format!("refs/checkpoints/{}", checkpoint.id);
+        let lock = repo.join(format!("{ref_name}.lock"));
+        fs::create_dir_all(lock.parent().unwrap()).unwrap();
+        fs::write(&lock, b"left by a killed git").unwrap();
+        // 锁龄回拨到两个预算之外，跨过「确证陈旧」阈值。
+        let stale = std::time::SystemTime::now() - 2 * GIT_COMMAND_TIMEOUT;
+        let file = fs::File::options().write(true).open(&lock).unwrap();
+        file.set_times(std::fs::FileTimes::new().set_modified(stale))
+            .unwrap();
+        drop(file);
+
+        git_ref(&repo, &["update-ref", "-d", &ref_name]).expect("陈旧 ref 锁应被清扫并重试成功");
+        assert!(!lock.exists(), "陈旧 ref 锁应被清扫");
+        // ref 确实已删：loose ref 文件随 update-ref -d 消失。
+        assert!(
+            !repo.join(&ref_name).exists(),
+            "ref 文件应已随成功的 update-ref -d 删除"
+        );
     }
 
     /// M3 回归：中文（非 ASCII）文件名在 diff 预览中原样上屏，不被

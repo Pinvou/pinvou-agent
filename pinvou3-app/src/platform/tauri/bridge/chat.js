@@ -119,12 +119,16 @@
     return kind === "pending" ? null : kind;
   }
 
-  // Transport-layer timeout for steer_chat invokes. The Rust steer() awaits
-  // a foundation mpsc send; if the engine task is stuck (alive but not
-  // draining its channel) the invoke never settles — the composer is already
-  // cleared and the chip has no steerId backfilled, so the queue would be
-  // blocked by that hanging chip. 25s matches the waitForChatDone fallback: a
-  // healthy engine enqueues synchronously, so 25s only catches a real wedge.
+  // Transport-layer timeout for chat queue/steer invokes: steer_chat,
+  // withdraw_steer and cancel_generation all share this constant. The Rust
+  // steer() awaits a foundation mpsc send; if the engine task is stuck
+  // (alive but not draining its channel) the invoke never settles — the
+  // composer is already cleared and the chip has no steerId backfilled, so
+  // the queue would be blocked by that hanging chip. For cancel_generation
+  // a wedged engine would otherwise leave the stop button's single-flight
+  // flag set forever, permanently disabling the user's only recovery
+  // action. 25s matches the waitForChatDone fallback: a healthy engine
+  // enqueues synchronously, so 25s only catches a real wedge.
   const STEER_INVOKE_TIMEOUT_MS = 25000;
 
   // ── Chat Items (display format for React) ────────────────────────

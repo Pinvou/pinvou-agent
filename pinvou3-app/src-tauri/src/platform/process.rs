@@ -197,9 +197,17 @@ fn output_with_timeout_inner(
                 std::thread::sleep(Duration::from_millis(50));
             }
             Ok(None) => {
-                if kill_tree_on_timeout {
-                    let _ = kill_process_tree(child.id());
-                }
+                // A failed tree-kill request (Windows taskkill can overrun
+                // its own budget) must reach the caller's error message:
+                // the termination note would otherwise claim a tree
+                // termination that did not happen.
+                let kill_note = if kill_tree_on_timeout {
+                    kill_process_tree(child.id())
+                        .err()
+                        .map(|error| format!("kill tree request failed: {error}"))
+                } else {
+                    None
+                };
                 let _ = child.kill();
                 let reap_note = match reap_killed_child(&mut child, REAP_GRACE) {
                     Reap::Reaped => None,
@@ -222,27 +230,49 @@ fn output_with_timeout_inner(
                 } else {
                     "subprocess termination requested"
                 };
-                let reap_suffix = reap_note
-                    .map(|note| format!("; {note}"))
-                    .unwrap_or_default();
+                let reap_suffix = match (kill_note, reap_note) {
+                    (Some(a), Some(b)) => format!("; {a}; {b}"),
+                    (Some(a), None) => format!("; {a}"),
+                    (None, Some(b)) => format!("; {b}"),
+                    (None, None) => String::new(),
+                };
                 return Err(format!(
                     "{program} timed out after {}s: {termination_note}{reap_suffix}",
                     timeout.as_secs()
                 ));
             }
             Err(error) => {
-                if kill_tree_on_timeout {
-                    let _ = kill_process_tree(child.id());
-                }
+                let kill_note = if kill_tree_on_timeout {
+                    kill_process_tree(child.id())
+                        .err()
+                        .map(|kill_error| format!("kill tree request failed: {kill_error}"))
+                } else {
+                    None
+                };
                 let _ = child.kill();
                 // Reap promptly but never block on it, and never join the
                 // readers: the child may refuse to die, and a surviving
                 // descendant can hold the pipes open past the caller's
-                // deadline. Output is dropped on this path.
-                let _ = reap_killed_child(&mut child, REAP_GRACE);
+                // deadline. Output is dropped on this path; kill/reap
+                // failures are folded into the reported error.
+                let reap_note = match reap_killed_child(&mut child, REAP_GRACE) {
+                    Reap::Reaped => None,
+                    Reap::Abandoned => Some(String::from(
+                        "termination requested but the child has not exited",
+                    )),
+                    Reap::Failed(reap_error) => {
+                        Some(format!("reaping the child failed: {reap_error}"))
+                    }
+                };
                 drop(stdout_reader);
                 drop(stderr_reader);
-                return Err(format!("{program} wait error: {error}"));
+                let reap_suffix = match (kill_note, reap_note) {
+                    (Some(a), Some(b)) => format!("; {a}; {b}"),
+                    (Some(a), None) => format!("; {a}"),
+                    (None, Some(b)) => format!("; {b}"),
+                    (None, None) => String::new(),
+                };
+                return Err(format!("{program} wait error: {error}{reap_suffix}"));
             }
         }
     };

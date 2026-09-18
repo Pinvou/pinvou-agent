@@ -40,10 +40,12 @@ pub fn reveal_target(target: &Path) -> Result<(), String> {
 
 pub fn command_exists(command: &str) -> bool {
     // 先走 `which`(含 PATH 内命令),未命中再补查 extra_lookup_dirs() 中的
-    // Homebrew bin 与 cask 应用目录(见该函数注释)。
-    if Command::new("/usr/bin/which")
-        .arg(command)
-        .output()
+    // Homebrew bin 与 cask 应用目录(见该函数注释)。`which` 探测同样带
+    // 10s 兜底(与 Linux 侧一致):首摄入在 OnceLock 里连跑多个探测,
+    // 卡死一次会缓存到进程退出。
+    let mut probe = Command::new("/usr/bin/which");
+    probe.arg(command);
+    if crate::platform::process::output_with_timeout(probe, std::time::Duration::from_secs(10))
         .map(|o| o.status.success())
         .unwrap_or(false)
     {

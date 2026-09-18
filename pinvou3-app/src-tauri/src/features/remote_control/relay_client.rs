@@ -26,6 +26,12 @@ const REVOKE_ACK_TIMEOUT: Duration = Duration::from_secs(12);
 /// pings into kernel buffers, so only inbound activity is proof of life.
 /// Pure function so the boundary (exactly two windows must reconnect, one
 /// window must not) stays pinned by a test.
+///
+/// The 50s window assumes the relay pings at least every ~25s (the bundled
+/// relay defaults to 15s, floor 5s). A deployment raising the relay's ping
+/// interval above this window makes every idle connection cycle
+/// connect→register→force-reconnect forever — raise `HEARTBEAT_INTERVAL`
+/// together with the relay side, don't just retune the server.
 fn inbound_silence_exceeded(silence: Duration) -> bool {
     silence >= HEARTBEAT_INTERVAL * 2
 }
