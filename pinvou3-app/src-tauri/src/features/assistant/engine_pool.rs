@@ -272,8 +272,8 @@ where
     store.delete_scheduled_run(session_id, expected_task_id)
 }
 
-/// EnginePool 预备 API(含测试覆盖,待 Tauri command 层接入);在 lib 生产视角下为 dead code。
-#[allow(dead_code)]
+/// 共享删除路径:普通聊天删除与契约测试都经由它,持有与懒加载/发送完全
+/// 相同的 turn gate,防止排队发送在引擎回收与磁盘删除之间复活会话。
 async fn delete_chat_session_with_gate<F, Fut, G>(
     turn_locks: &SessionTurnLocks,
     store: &SessionStore,
@@ -708,16 +708,6 @@ pub type EngineToolFactory =
     Arc<dyn Fn(&AppHandle, &str) -> Vec<Arc<dyn ToolSpec>> + Send + Sync + 'static>;
 pub type ToolPolicy = Arc<dyn Fn(&AppHandle) -> Vec<String> + Send + Sync + 'static>;
 
-fn should_sync_session(_is_scheduled: bool, _has_messages: bool) -> bool {
-    // SyncSession carries both transcript history and the authoritative Session
-    // identity. An empty ordinary Session still needs it: otherwise the freshly
-    // spawned Engine keeps its generated internal id, and every SessionUpdated
-    // snapshot is rejected by the outer forwarder as belonging to another
-    // Session. That leaves only the admitted user fallback durable while the
-    // streamed assistant reply exists in memory alone.
-    true
-}
-
 /// 多 session engine 池。Tauri State 持有,`Clone` 廉价(内部全是 Arc)。
 #[derive(Clone)]
 pub struct EnginePool {
@@ -1049,25 +1039,6 @@ impl EnginePool {
         }
     }
 
-    /// 同步版在线会话组合目录重写（**仅供不在 tokio runtime 上的同步调用方**：
-    /// `blocking_lock` 在 runtime 线程上会 panic，async 命令必须改用
-    /// [`Self::refresh_live_sessions_skills`]）。组合目录体量小、diff 重写极快。
-    pub fn refresh_live_sessions_skills_blocking(&self) {
-        let sids: Vec<String> = {
-            let entries = self.entries.blocking_lock();
-            entries.keys().cloned().collect()
-        };
-        for sid in sids {
-            let scope = self.bridge.session_policy(&sid).mode();
-            let project_workspace = self.project_workspace_for(&sid);
-            crate::features::assistant::skill_materialization::rewrite_session_skills(
-                &sid,
-                scope,
-                project_workspace.as_deref(),
-            );
-        }
-    }
-
     /// 为独立调用构造该 session 的 bridge。与 EnginePool lazy spawn 共用同一套
     /// runtime provider，保证检阅等旁路入口也不会绕过运行时凭据准备。
     pub(crate) async fn fresh_bridge_for(&self, session_id: &str) -> Result<Pinvou3Bridge> {
@@ -1350,7 +1321,7 @@ impl EnginePool {
         // 的内部 session id 对齐到预创建的持久化会话。跳过会让首轮 SessionUpdated
         // 因 id mismatch 被拒绝，最终只落盘 user 而丢失 assistant。
         match self.store.load(session_id) {
-            Ok(saved) if should_sync_session(is_scheduled, !saved.messages.is_empty()) => {
+            Ok(saved) => {
                 if let Err(error) = engine
                     .sync_session(session_id.to_string(), saved.messages)
                     .await
@@ -1373,7 +1344,6 @@ impl EnginePool {
                     turn_lifecycle.prune_stale_transcript_rules();
                 }
             }
-            Ok(_) => {}
             Err(error) => {
                 let _ = engine.handle.send(Op::Shutdown).await;
                 forwarder.abort();
@@ -1692,12 +1662,6 @@ impl EnginePool {
     }
 
     #[cfg(any(feature = "benchmark-hooks", test))]
-    pub(crate) fn tested_eval_identity(&self) -> ModelIdentity {
-        let prefs = UserPrefs::load();
-        identity_for_active_model(&self.bridge, &prefs)
-    }
-
-    #[cfg(any(feature = "benchmark-hooks", test))]
     pub(crate) fn pin_active_eval_suite_model(&self) -> Result<EvalSuiteModelSnapshot> {
         let prefs = UserPrefs::load();
         let saved_model = prefs
@@ -1719,25 +1683,6 @@ impl EnginePool {
     #[cfg(any(feature = "benchmark-hooks", test))]
     pub(crate) fn discard_eval_suite_model(&self, suite: &EvalSuiteModelSnapshot) {
         self.eval_model_snapshots.discard_suite(suite);
-    }
-
-    /// Resolve and privately pin the complete SavedModel while returning only a
-    /// non-sensitive opaque selection to the evaluation layer. Callers that do
-    /// not pass the selection to `prepare_eval_session` must explicitly discard it.
-    #[cfg(any(feature = "benchmark-hooks", test))]
-    pub(crate) fn pin_eval_model_selection(&self, model_id: &str) -> Result<EvalModelSelection> {
-        let prefs = UserPrefs::load();
-        let (saved, identity) = resolve_eval_model_selection_from(
-            &self.bridge,
-            &prefs.advanced.saved_models,
-            model_id,
-        )?;
-        Ok(self.eval_model_snapshots.pin(saved, identity))
-    }
-
-    #[cfg(any(feature = "benchmark-hooks", test))]
-    pub(crate) fn discard_eval_model_selection(&self, selection: &EvalModelSelection) {
-        self.eval_model_snapshots.discard(selection);
     }
 
     /// 创建并加载一次性评测会话。评测 runner 预先决定 session ID，以便报告和
@@ -1955,7 +1900,7 @@ impl EnginePool {
     }
 
     /// 发用户消息给指定 session 的 engine(没起则 lazy spawn)。
-    #[allow(dead_code)]
+    #[cfg(any(feature = "benchmark-hooks", test))]
     pub async fn send_user_message(
         &self,
         session_id: &str,
@@ -2857,8 +2802,7 @@ mod scheduled_model_tests {
         evict_if_idle_with_gates, generation_matches, identity_for_active_model,
         identity_for_saved_model, quiesce_engine_before_reclaim, resolve_eval_model_selection_from,
         resolve_runtime_model_override, resolve_scheduled_model, resolve_spawn_model,
-        scheduled_profile_after_turn_gate, should_still_reap_after_snapshot, should_sync_session,
-        user_display_message,
+        scheduled_profile_after_turn_gate, should_still_reap_after_snapshot, user_display_message,
     };
     use crate::features::assistant::runtime_model::PreparedRuntimeModel;
     use crate::features::sessions::{ScheduledRunMode, ScheduledRunProfile, SessionStore};
@@ -3463,14 +3407,6 @@ mod scheduled_model_tests {
     }
 
     #[test]
-    fn every_empty_session_is_synchronized_before_its_first_turn() {
-        assert!(should_sync_session(true, false));
-        assert!(should_sync_session(true, true));
-        assert!(should_sync_session(false, true));
-        assert!(should_sync_session(false, false));
-    }
-
-    #[test]
     fn unattended_policy_is_scoped_to_the_executor_turn() {
         let flag = Arc::new(AtomicBool::new(false));
         {
@@ -3948,7 +3884,7 @@ mod scheduled_model_tests {
         let _ = std::fs::remove_dir_all(home);
     }
 
-    /// Regression: the eval teardown paths (`ProductChatRuntime::close` /
+    /// Regression: the eval teardown paths (`EnginePoolRuntime::close` /
     /// `delete_eval_session`) reuse delete_chat_session, but submit already
     /// ran `timing::start_turn`; deletion must clear the session's unpaired
     /// queue key in ACTIVE_TURNS, or a single GAIA pass's ~165 create/delete

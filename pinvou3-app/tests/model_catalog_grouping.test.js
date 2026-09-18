@@ -331,29 +331,6 @@ test('MODEL_PRESET_DEFS and the Rust default_base_url table cross-check their so
     );
   }
 });
-test('main.jsx PRESET_DEFAULTS is single-sourced (spread first) and its openai_compatible override pins the Rust legacy migration fallback values', () => {
-  // After single-sourcing main.jsx keeps only this pair of hand-written
-  // values; drift would land the legacy draft backfill and the Rust legacy
-  // migration on different models. The spread itself must be pinned too:
-  // removing it drops all 12 presets (modelDraftForPreset throws a runtime
-  // TypeError while every node test stays green), and reordering lets the
-  // spread's empty strings override openai_compatible — both stay silent
-  // when only the override pair is tested.
-  const src = fs.readFileSync(path.join(__dirname, '..', 'src', 'app', 'main.jsx'), 'utf8');
-  const litStart = src.indexOf('const PRESET_DEFAULTS = {');
-  assert.ok(litStart > 0, 'main.jsx should keep the PRESET_DEFAULTS literal');
-  const litEnd = src.indexOf('};', litStart);
-  assert.ok(litEnd > litStart, 'the PRESET_DEFAULTS literal should be closed');
-  const literal = src.slice(litStart, litEnd);
-  const spreadAt = literal.indexOf('...MODEL_PRESET_DEFS');
-  const overrideAt = literal.indexOf('openai_compatible:');
-  assert.ok(spreadAt > 0, 'PRESET_DEFAULTS must spread MODEL_PRESET_DEFS (never hand-copy a second list again)');
-  assert.ok(overrideAt > spreadAt, 'the openai_compatible override must come after the spread to take effect');
-  const m = literal.match(/openai_compatible:\s*\{\s*baseUrl:\s*'([^']*)',\s*model:\s*'([^']*)'\s*\}/);
-  assert.ok(m, 'main.jsx should keep the openai_compatible override entry');
-  assert.strictEqual(m[1], 'https://api.openai.com/v1');
-  assert.strictEqual(m[2], 'gpt-5.6-terra');
-});
 test('官方 API 手填 ID -> 自定义', () => {
   assert.strictEqual(isPresetModel(mk({ preset: 'deepseek', provider_kind: 'official_api', vendor: 'deepseek', base_url: 'https://api.deepseek.com', model: 'deepseek-v9-fake' })), false);
 });

@@ -16,9 +16,9 @@
   const MAX_BATCH_ENTRIES = 32;
   const MAX_STRING_CHARS = 2048;
   const ALLOWED_EVENTS = new Set([
-    "authority_sync_notice_shown", "browser_network_offline", "browser_network_online",
-    "chat_done_classified", "connection_state_changed", "diagnostics_initialized",
-    "document_visibility_changed", "local_send_blocked_by_remote_sync",
+    "authority_sync_notice_shown",
+    "chat_done_classified",
+    "local_send_blocked_by_remote_sync",
     "local_turn_admission_failed", "local_turn_admitted", "local_turn_claimed",
     "reconcile_attempt_failed", "reconcile_attempt_rejected", "reconcile_deferred_busy",
     "reconcile_exhausted", "reconcile_joined_inflight", "reconcile_started",
@@ -37,7 +37,7 @@
     "message_count", "chat_item_count", "queued_count", "expected_assistant_key_length",
     "baseline_message_count", "minimum_terminal_message_count", "attempt", "attempts", "elapsed_ms",
     "saved_message_count", "chunk_count", "bytes_received", "declared_total_bytes",
-    "cleanup_requested_count", "cleanup_failed_count", "cleanup_succeeded_count", "restored_queue_count",
+    "cleanup_requested_count", "cleanup_failed_count", "cleanup_succeeded_count",
   ]);
   const BOOLEAN_FIELDS = new Set([
     "buffer_present", "local_turn_owned", "remote_turn_active", "remote_terminal_seen",
@@ -45,7 +45,6 @@
     "snapshot_present", "completed_local_turn", "requires_authority_reconcile", "terminal_error_present",
     "terminal_seen_before_event",
     "concurrent_turn", "error_present", "cancellable_lease", "cancel_requested", "cancel_succeeded",
-    "desktop_online",
   ]);
   const ENUM_FIELDS = {
     reason: new Set(["assistant_identity_missing", "invalid_snapshot", "load_session_error", "message_count_short", "revision_mismatch"]),
@@ -57,14 +56,11 @@
     notice: new Set(["desktop_done_sync_pending", "remote_done_unsynced"]),
     terminal_status: new Set(["Cancelled", "Canceled", "Completed", "Failed", "Interrupted", "cancelled", "canceled", "completed", "failed", "interrupted"]),
     transport_kind: new Set(["desktop_invoke", "web_chunked_rpc"]),
-    status: new Set(["connected", "connecting", "desktop_offline", "error", "idle", "local", "unknown"]),
-    visibility: new Set(["hidden", "prerender", "unknown", "visible"]),
   };
   let queue = [];
   let sequence = 0;
   let flushing = false;
   let retryTimer = null;
-  let lastConnectionSignature = "";
 
   function randomId(prefix) {
     try {
@@ -268,40 +264,12 @@
     return entry.event_id;
   }
 
-  function recordConnection(state) {
-    const signature = JSON.stringify({
-      status: state && state.status || "unknown",
-      desktop_online: !!(state && state.desktop_online),
-      browser_online: !root.navigator || root.navigator.onLine !== false,
-    });
-    if (signature === lastConnectionSignature) {
-      flush();
-      return;
-    }
-    const previous = lastConnectionSignature;
-    lastConnectionSignature = signature;
-    record("connection_state_changed", {
-      previous_signature: previous,
-      status: state && state.status || "unknown",
-      desktop_online: !!(state && state.desktop_online),
-    });
-  }
-
   loadQueue();
   const platform = root.PinvouPlatform || {};
+  // 连接恢复时补投断连期间积压的队列：这是本模块「离线暂存、恢复续传」承诺的
+  // 触发点。早期的 connection_state_changed 记录事件已随诊断面收窄移除。
   if (typeof platform.onConnectionChange === "function") {
-    platform.onConnectionChange(recordConnection);
-  }
-  if (typeof root.addEventListener === "function") {
-    root.addEventListener("online", function () { record("browser_network_online", {}); });
-    root.addEventListener("offline", function () { record("browser_network_offline", {}); });
-  }
-  if (root.document && typeof root.document.addEventListener === "function") {
-    root.document.addEventListener("visibilitychange", function () {
-      record("document_visibility_changed", {
-        visibility: root.document && root.document.visibilityState || "unknown",
-      });
-    });
+    platform.onConnectionChange(function () { flush(); });
   }
 
   root.PinvouAuthoritySyncDiagnostics = Object.freeze({
@@ -310,6 +278,6 @@
     connectionSnapshot,
     pendingCount: function () { return queue.length; },
   });
-  // 恢复条数在本次 record 入队前度量，此刻 queue.length 即恢复规模。
-  record("diagnostics_initialized", { restored_queue_count: queue.length });
+  // 恢复的队列在页面加载时立即补投一次。
+  flush();
 })(window);

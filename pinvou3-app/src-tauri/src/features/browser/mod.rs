@@ -36,8 +36,6 @@ use platform::state::{
     NativeRequestCancel, NativeRequestClaim, NativeTabLease, RetainedAgentOperation,
 };
 
-pub use cdp::CdpSession;
-
 /// Must run before Tauri creates any WebKit context.
 pub(crate) fn prepare_process_environment() {
     platform::prepare_process_environment();
@@ -96,7 +94,7 @@ pub struct TabInfo {
 struct Inner {
     port: Option<u16>,
     /// Browser-level CDP session (one connection manages all tabs).
-    session: Option<Arc<CdpSession>>,
+    session: Option<Arc<cdp::CdpSession>>,
     /// Flattened sessionId for the active tab.
     active_session: Option<String>,
     /// targetId for the active tab, kept in sync with active_session. Public status
@@ -114,9 +112,10 @@ pub struct BrowserManager {
     inner: tokio::sync::Mutex<Inner>,
     /// Startup critical-section mutex. Serializes browser coordination, automation
     /// connection, attachment, and event-loop setup so watcher polling and Tauri
-    /// commands cannot create duplicate loops or lose handles. stop() also joins
-    /// this single-flight lock so it cannot return on transient empty state and be
-    /// overwritten by the rest of an in-progress startup.
+    /// commands cannot create duplicate loops or lose handles. Full stop paths
+    /// join this single-flight lock via `stop_with_start_lock` so they cannot
+    /// return on transient empty state and be overwritten by the rest of an
+    /// in-progress startup.
     start_mtx: tokio::sync::Mutex<()>,
     /// Serializes lifecycle mutations for one task without making slow
     /// automation readiness/binding waits block unrelated task workspaces.
@@ -1072,8 +1071,7 @@ impl BrowserManager {
             // the `!committed` branch above compensates and acknowledges it.
             NativeRequestCancel::AwaitingCompletion => {}
             NativeRequestCancel::Tombstoned | NativeRequestCancel::AlreadyCanceled => {
-                let _journal_match = self
-                    .rollback_and_remove_matching_hosted_prepare_journal(app, &cancellation)
+                self.rollback_and_remove_matching_hosted_prepare_journal(app, &cancellation)
                     .await?;
                 // An embedded compensation without the matching durable WAL is
                 // not authority to mutate current task state. The WAL may have
@@ -1126,18 +1124,18 @@ impl BrowserManager {
         &self,
         app: &AppHandle,
         cancellation: &HostedBrowserCancellation,
-    ) -> Result<HostedPrepareJournalMatch, String> {
+    ) -> Result<(), String> {
         let session_lock = self.session_lifecycle_lock(&cancellation.session_id);
         let _session_guard = session_lock.lock().await;
         let _start_guard = self.start_mtx.lock().await;
         let journal_match = classify_hosted_prepare_journal_for_cancellation(cancellation)?;
         let HostedPrepareJournalMatch::Matching(journal) = journal_match else {
-            return Ok(journal_match);
+            return Ok(());
         };
         self.rollback_prepare_journal_with_start_lock(app, &journal)
             .await?;
         remove_matching_hosted_prepare_journal(cancellation)?;
-        Ok(HostedPrepareJournalMatch::Matching(journal))
+        Ok(())
     }
 
     async fn rollback_hosted_record(&self, app: &AppHandle, record: &Value) -> Result<(), String> {
@@ -1635,7 +1633,7 @@ impl BrowserManager {
                 })
                 .collect::<Vec<_>>()
                 .join("\n");
-            return Ok(HostedBrowserOutcome::new(browser_core_tool_result(
+            return Ok(HostedBrowserOutcome::new(core::tool_text(
                 if text.is_empty() {
                     "No pages".to_string()
                 } else {
@@ -1732,7 +1730,7 @@ impl BrowserManager {
                     json!({ "sessionId": request.session_id, "tab": authorization_tab }),
                 );
                 self.persist_native_restore_best_effort(&request.session_id);
-                return Ok(HostedBrowserOutcome::new(browser_core_tool_result(
+                return Ok(HostedBrowserOutcome::new(core::tool_text(
                     format!(
                         "Navigation dispatched to {requested_url}; page load is not verified. Call take_snapshot or list_pages to verify."
                     ),
@@ -1826,7 +1824,7 @@ impl BrowserManager {
                 );
                 self.persist_native_restore_best_effort(&request.session_id);
                 Ok(HostedBrowserOutcome::with_rollback(
-                    browser_core_tool_result(
+                    core::tool_text(
                         format!(
                             "Navigation dispatched to {requested_url}; page load is not verified. Call take_snapshot or list_pages to verify."
                         ),
@@ -1871,7 +1869,7 @@ impl BrowserManager {
                 "browser:tabs-changed",
                 json!({ "sessionId": request.session_id, "tab": tab_token }),
             );
-            return Ok(HostedBrowserOutcome::new(browser_core_tool_result(
+            return Ok(HostedBrowserOutcome::new(core::tool_text(
                 "Selected page".to_string(),
                 None,
             )));
@@ -1923,7 +1921,7 @@ impl BrowserManager {
                 json!({ "sessionId": request.session_id }),
             );
             self.persist_native_restore_best_effort(&request.session_id);
-            return Ok(HostedBrowserOutcome::new(browser_core_tool_result(
+            return Ok(HostedBrowserOutcome::new(core::tool_text(
                 "Closed page".to_string(),
                 None,
             )));
@@ -2025,7 +2023,7 @@ impl BrowserManager {
                     }
                     _ => return Err("browser/invalid-navigation-type".to_string()),
                 }
-                Ok(browser_core_tool_result(
+                Ok(core::tool_text(
                     format!(
                         "Navigation command dispatched ({navigation_type}); page load is not verified. Call take_snapshot or list_pages to verify."
                     ),
@@ -3682,12 +3680,12 @@ impl BrowserManager {
         Ok(())
     }
 
-    /// Stops the browser: disconnects automation, closes app-owned native pages,
-    /// cleans coordination files, and emits browser:stopped for the frontend.
-    ///
-    /// Shares start_mtx with ensure_started (start_mtx before inner), preventing stop
-    /// from returning on transient empty state. Incrementing the generation makes an
-    /// in-progress startup discard its result.
+    /// Test-only entry point preserving the global stop admission order
+    /// (hosted-request gate write, start_mtx, admission check). Contract tests
+    /// exercise this ordering through the real method instead of mirroring it
+    /// inline; production callers reach `stop_with_start_lock` directly at the
+    /// scoped-stop call sites, which already hold the required locks.
+    #[cfg(test)]
     pub async fn stop(&self) -> Result<(), String> {
         let _admission_guard = self.hosted_request_gate.write().await;
         // Join the same lock order as ensure_started so stop is serialized with startup
@@ -4091,7 +4089,7 @@ impl BrowserManager {
     async fn invalidate_target_lifecycle_connection(
         &self,
         generation: u64,
-        session: &Arc<CdpSession>,
+        session: &Arc<cdp::CdpSession>,
     ) {
         let (current_session, reader_task) = {
             let mut inner = self.inner.lock().await;
@@ -5326,7 +5324,7 @@ fn is_allowed_url(url: &str) -> bool {
 /// it automatically. Without caching, high-frequency enumeration on every
 /// tabs-changed frontend refresh leaks Chrome-side sessions without bound.
 async fn attach_page_cached(
-    session: &CdpSession,
+    session: &cdp::CdpSession,
     pages: &PageSessions,
     target_id: &str,
 ) -> Result<String, String> {
@@ -5353,7 +5351,7 @@ async fn attach_page_cached(
 }
 
 async fn attach_first_page_cached(
-    session: &CdpSession,
+    session: &cdp::CdpSession,
     pages: &PageSessions,
 ) -> Result<(String, String), String> {
     let targets = session
@@ -5480,7 +5478,7 @@ async fn live_port() -> Option<u16> {
 }
 
 async fn list_page_tabs(
-    session: &CdpSession,
+    session: &cdp::CdpSession,
     pages: &PageSessions,
 ) -> Result<Vec<TabInfo>, String> {
     list_page_tabs_with_policy(session, pages, PageTabAttachPolicy::BestEffort).await
@@ -5492,7 +5490,7 @@ async fn list_page_tabs(
 /// entry or active target, so this variant fails the entire authoritative
 /// snapshot and lets the caller reconnect.
 async fn list_page_tabs_authoritative(
-    session: &CdpSession,
+    session: &cdp::CdpSession,
     pages: &PageSessions,
 ) -> Result<Vec<TabInfo>, String> {
     list_page_tabs_with_policy(session, pages, PageTabAttachPolicy::Authoritative).await
@@ -5519,7 +5517,7 @@ fn accept_page_attachment(
 }
 
 async fn list_page_tabs_with_policy(
-    session: &CdpSession,
+    session: &cdp::CdpSession,
     pages: &PageSessions,
     policy: PageTabAttachPolicy,
 ) -> Result<Vec<TabInfo>, String> {
@@ -5722,6 +5720,7 @@ fn hosted_caller_heartbeat_path_for(session_token: &str, wrapper_instance_nonce:
     ))
 }
 
+#[cfg(test)]
 fn hosted_caller_heartbeat_path(request: &HostedBrowserRequest) -> PathBuf {
     hosted_caller_heartbeat_path_for(&request.session_token, &request.wrapper_instance_nonce)
 }
@@ -5745,18 +5744,28 @@ fn hosted_prepare_quarantine_dir() -> PathBuf {
     paths::browser_home().join("prepare-quarantine")
 }
 
+#[cfg(test)]
 fn hosted_prepare_quarantine_token_dir(session_token: &str) -> PathBuf {
     hosted_prepare_quarantine_dir().join(session_token)
 }
 
+#[cfg(test)]
 fn hosted_prepare_unassigned_quarantine_dir() -> PathBuf {
     hosted_prepare_quarantine_dir().join("unassigned")
 }
 
-fn hosted_prepare_quarantine_slot_dir(parent: &Path, sequence: u64) -> PathBuf {
-    parent.join(format!("{sequence:016x}"))
+/// Slot names are fixed-width hex so lexical order matches sequence order;
+/// production allocation and test fixtures must share this exact naming.
+fn hosted_prepare_quarantine_slot_name(sequence: u64) -> OsString {
+    OsString::from(format!("{sequence:016x}"))
 }
 
+#[cfg(test)]
+fn hosted_prepare_quarantine_slot_dir(parent: &Path, sequence: u64) -> PathBuf {
+    parent.join(hosted_prepare_quarantine_slot_name(sequence))
+}
+
+#[cfg(test)]
 fn hosted_prepare_quarantine_state_path(slot: &Path, state_kind: &str) -> PathBuf {
     slot.join(state_kind)
 }
@@ -6127,7 +6136,7 @@ fn next_hosted_prepare_quarantine_slot(
             .ok_or_else(|| "Browser Prepare quarantine slot sequence is exhausted".to_string())?,
         None => 0,
     };
-    let name = OsString::from(format!("{sequence:016x}"));
+    let name = hosted_prepare_quarantine_slot_name(sequence);
     let slot = parent
         .create_private_child_directory(&name)
         .map_err(|error| format!("Failed to create browser Prepare quarantine slot: {error}"))?;
@@ -6720,17 +6729,6 @@ fn hosted_response(request: &HostedBrowserRequest, result: Result<Value, String>
             "error": error,
         }),
     }
-}
-
-fn browser_core_tool_result(text: String, structured: Option<Value>) -> Value {
-    let mut result = json!({
-        "content": [{ "type": "text", "text": text }],
-        "isError": false,
-    });
-    if let Some(structured) = structured {
-        result["structuredContent"] = structured;
-    }
-    result
 }
 
 fn should_reuse_browser_core_initial_tab(

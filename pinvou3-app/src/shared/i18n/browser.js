@@ -15,9 +15,7 @@ export const browserZh = {
   browserStartBrowsing: '开始浏览',
   browserStartBrowsingHint: '输入 URL 以打开页面',
   browserPaneClose: '收起浏览器侧栏',
-  browserPaneOpen: '展开浏览器侧栏',
-  browserPaneResize: '调整浏览器侧栏宽度',
-  browserPaneResizeHint: '拖拽调整宽度，双击恢复默认',
+
   browserNativeUnavailable: '原生浏览器表面暂不可用。页面不会切换为截图播放。',
   browserRetry: '重试',
   browserUserControl: '你正在控制',
@@ -49,9 +47,7 @@ export const browserEn = {
   browserStartBrowsing: 'Start browsing',
   browserStartBrowsingHint: 'Enter a URL to open a page',
   browserPaneClose: 'Collapse browser pane',
-  browserPaneOpen: 'Open browser pane',
-  browserPaneResize: 'Resize browser pane',
-  browserPaneResizeHint: 'Drag to resize; double-click to restore default',
+
   browserNativeUnavailable: 'The native browser surface is unavailable. Screenshot playback is not used as a fallback.',
   browserRetry: 'Retry',
   browserUserControl: 'You are in control',
@@ -83,9 +79,7 @@ export const browserJa = {
   browserStartBrowsing: 'ブラウジングを開始',
   browserStartBrowsingHint: 'URL を入力してページを開く',
   browserPaneClose: 'ブラウザーサイドバーを閉じる',
-  browserPaneOpen: 'ブラウザーサイドバーを開く',
-  browserPaneResize: 'ブラウザーサイドバーの幅を調整',
-  browserPaneResizeHint: 'ドラッグで幅を調整、ダブルクリックで初期値に戻す',
+
   browserNativeUnavailable: 'ネイティブブラウザーを表示できません。スクリーンショット再生には切り替えません。',
   browserRetry: '再試行',
   browserUserControl: 'あなたが操作中',

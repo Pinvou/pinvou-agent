@@ -17,29 +17,11 @@ use super::ingest_deps::{
 
 // ============== 产物可视化预览助手（commands::render_artifact_visual 复用）==============
 
-/// 极简 base64 标准编码（无换行）。仅为内联图片 data URI 用，不值得引第三方 crate。
+/// base64 标准编码（无换行），内联图片 data URI 用。委托 `base64` crate
+/// （此前是手写的 24 行查表实现；`commands::artifacts` 等外部调用方仍经本包装）。
 pub fn base64_encode(data: &[u8]) -> String {
-    const TABLE: &[u8; 64] = b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
-    let mut out = String::with_capacity(data.len().div_ceil(3) * 4);
-    for chunk in data.chunks(3) {
-        let b0 = chunk[0] as u32;
-        let b1 = *chunk.get(1).unwrap_or(&0) as u32;
-        let b2 = *chunk.get(2).unwrap_or(&0) as u32;
-        let n = (b0 << 16) | (b1 << 8) | b2;
-        out.push(TABLE[((n >> 18) & 63) as usize] as char);
-        out.push(TABLE[((n >> 12) & 63) as usize] as char);
-        out.push(if chunk.len() > 1 {
-            TABLE[((n >> 6) & 63) as usize] as char
-        } else {
-            '='
-        });
-        out.push(if chunk.len() > 2 {
-            TABLE[(n & 63) as usize] as char
-        } else {
-            '='
-        });
-    }
-    out
+    use base64::Engine as _;
+    base64::engine::general_purpose::STANDARD.encode(data)
 }
 
 /// 图片扩展名 → MIME。用于 data URI 前缀。

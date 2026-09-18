@@ -35,8 +35,7 @@ static MARKETPLACE_DIR: Dir<'static> =
     include_dir!("$CARGO_MANIFEST_DIR/resources/common/skill-marketplace");
 
 /// 单个 skill 子树未压缩大小上限(防御性,预置/上传都适用)。
-/// `pub(crate)`:命令层 `import_skill_package_bytes` 复用同一上限。
-pub(crate) const MAX_SKILL_SIZE_BYTES: u64 = 5 * 1024 * 1024;
+const MAX_SKILL_SIZE_BYTES: u64 = 5 * 1024 * 1024;
 
 /// 安装来源标记文件名。卸载时校验它存在,避免误删内置/手放的 skill。
 const INSTALLED_FROM_MARKER: &str = ".installed-from";
@@ -377,18 +376,6 @@ impl SkillMarketplaceManager {
 
     fn preset(&self, id: &str) -> Option<&'static SkillManifest> {
         preset_manifests().iter().find(|m| m.id == id)
-    }
-
-    /// 市场 id → 落盘 skill 名(= SKILL.md frontmatter `name` = 底座 `Skill.name`)。
-    /// 预置查清单(id 可与 skill_name 不同);上传技能的 id 即目录名,直通。底座按此名过滤。
-    pub fn model_skill_names(&self, ids: &[String]) -> Vec<String> {
-        ids.iter()
-            .map(|id| {
-                self.preset(id)
-                    .map(|m| m.skill_name.to_string())
-                    .unwrap_or_else(|| id.clone())
-            })
-            .collect()
     }
 
     /// 安装预置技能:从嵌入资源复制到 `bundles/<owner>/skills/<name>/`
@@ -837,7 +824,9 @@ impl SkillMarketplaceManager {
 
     /// 导入用户上传的 zip 技能包:解压找 SKILL.md → 安全校验 → 落盘到
     /// `bundle/skills/<name>/`。穿越/symlink/大小防护对齐底座 install.rs。
-    /// 返回落盘技能名(frontmatter name),供命令层同步 scope 禁用集。
+    /// 返回落盘技能名(frontmatter name)。生产通道走 `import_package_named`;
+    /// 本封装仅剩契约测试在用。
+    #[cfg(test)]
     pub fn import_package(&self, zip_path: &str) -> Result<String, String> {
         let fname = Path::new(zip_path)
             .file_name()
@@ -1118,13 +1107,13 @@ impl SkillMarketplaceManager {
     /// 恢复原值；模型侧看到的技能描述与展示侧一致，展示层仍由 extra 覆盖优先）。
     ///
     /// 仅当 `bundles/<id>/skills/` 下恰有一个技能目录且内含 SKILL.md 时动文件；
-    /// 多技能包、纯 MCP 包、目录缺失一律跳过（返回 Ok(false)，不报错）。改文件后
+    /// 多技能包、纯 MCP 包、目录缺失一律跳过（返回 Ok(())，不报错）。改文件后
     /// 重算**整包目录**内容指纹并经 upsert_preserving 补写登记（保留
     /// extra/来源/首装时间——display_* 覆盖与说明备份都在 extra，一并保留）。
-    fn sync_display_description(&self, bundle_id: &str, dir: SyncDesc<'_>) -> Result<bool, String> {
+    fn sync_display_description(&self, bundle_id: &str, dir: SyncDesc<'_>) -> Result<(), String> {
         let skills_dir = self.packages_root.join(bundle_id).join("skills");
         let Ok(rd) = std::fs::read_dir(&skills_dir) else {
-            return Ok(false); // 非按包布局（纯 MCP 包/旧扁平残留）→ 跳过
+            return Ok(()); // 非按包布局（纯 MCP 包/旧扁平残留）→ 跳过
         };
         let dirs: Vec<PathBuf> = rd
             .flatten()
@@ -1139,11 +1128,11 @@ impl SkillMarketplaceManager {
                 skills_dir.display(),
                 dirs.len()
             );
-            return Ok(false); // 多技能包/空包/杂目录 → 跳过
+            return Ok(()); // 多技能包/空包/杂目录 → 跳过
         }
         let md_path = dirs[0].join("SKILL.md");
         if !md_path.is_file() {
-            return Ok(false);
+            return Ok(());
         }
         match dir {
             SyncDesc::Set(desc) => {
@@ -1165,12 +1154,12 @@ impl SkillMarketplaceManager {
                     )?;
                 }
                 self.write_skill_md_and_fingerprint(bundle_id, &md_path, content, new_content)?;
-                Ok(true)
+                Ok(())
             }
             SyncDesc::Restore => {
                 // 无备份（从未回写过，或非单技能包形态）→ 不动文件。
                 let Some(backup) = self.bundle_store.skill_desc_backup(bundle_id)? else {
-                    return Ok(false);
+                    return Ok(());
                 };
                 let content = std::fs::read_to_string(&md_path)
                     .map_err(|e| format!("读取 {} 失败: {e}", md_path.display()))?;
@@ -1191,7 +1180,7 @@ impl SkillMarketplaceManager {
                 }
                 // 恢复完成（或本就是原值）→ 清备份 key，回到「从未回写过」状态。
                 self.bundle_store.set_skill_desc_backup(bundle_id, None)?;
-                Ok(true)
+                Ok(())
             }
         }
     }

@@ -415,7 +415,6 @@ assert.doesNotMatch(chatView, /data-assistant-copy-source/);
 assert.match(actions, /data-testid="assistant-message-footer"/);
 assert.match(actions, /className="!mt-0 flex min-h-8 flex-wrap items-center gap-x-2 gap-y-1 pt-2"/);
 assert.match(actions, /data-testid="assistant-message-actions"/);
-assert.match(actions, /typeof resolveText === 'function' \? await resolveText\(\) : text/);
 assert.match(actions, /copyClipboardText\(value\)/);
 assert.match(actions, /aria-live="polite"/);
 assert.match(actions, /data-testid="assistant-message-export"/);

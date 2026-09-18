@@ -27,7 +27,7 @@ use serde::{Deserialize, Serialize};
 use crate::features::assistant::engine_pool::EnginePool;
 use crate::features::assistant::product_runtime::headless_bridge::run_windowless_host;
 use crate::features::assistant::product_runtime::{
-    EnginePoolRuntime, ProductChatRuntime, SessionSpec, TurnHandle, TurnInput, TurnResult,
+    EnginePoolRuntime, SessionSpec, TurnHandle, TurnInput, TurnResult,
 };
 use crate::features::sessions::{ExecutionRootResolver, SessionStore};
 
@@ -374,18 +374,7 @@ fn partial_turn_analysis(
     // events.
     let tool_events = match crate::features::assistant::timing::read_timeline(&handle.session_id) {
         Ok(timeline) => {
-            let turn_tool_ids: std::collections::HashSet<_> = timeline
-                .iter()
-                .filter(|event| {
-                    event.turn_id == handle.turn_id
-                        && !matches!(event.event.as_str(), "user_start" | "assistant_done")
-                })
-                .filter_map(|event| event.tool_id.clone())
-                .collect();
-            events
-                .into_iter()
-                .filter(|tool| turn_tool_ids.contains(&tool.id))
-                .collect()
+            EnginePoolRuntime::scope_turn_analysis_to_turn(&timeline, &handle.turn_id, events).1
         }
         Err(_) => events,
     };

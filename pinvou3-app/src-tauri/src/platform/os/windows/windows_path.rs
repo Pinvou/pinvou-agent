@@ -505,12 +505,6 @@ pub fn bundled_asr_backend_path() -> Option<PathBuf> {
         .and_then(|exe| bundled_asr_backend_path_for_exe(&exe))
 }
 
-pub fn bundled_asr_model_path() -> Option<PathBuf> {
-    std::env::current_exe()
-        .ok()
-        .and_then(|exe| bundled_asr_model_path_for_exe(&exe))
-}
-
 pub fn user_asr_model_path() -> PathBuf {
     crate::platform::paths::pinvou3_home()
         .join("asr")

@@ -37,30 +37,6 @@ impl ProductRuntimePort for RecordingRuntime {
         Ok(())
     }
 
-    async fn run(
-        &self,
-        session_id: &str,
-        prompt: &str,
-    ) -> anyhow::Result<crate::headless_bridge::ProductTurnOutcome> {
-        self.calls
-            .lock()
-            .unwrap()
-            .push(format!("run:{session_id}:{prompt}"));
-        Ok(crate::headless_bridge::ProductTurnOutcome {
-            status: "completed".into(),
-            failure_code: None,
-            assistant_text: "private answer".into(),
-            usage: Some(agent_backend_api::SafeUsageMetrics::new(10, 4, 3, 7)),
-            tools: vec![crate::headless_bridge::SafeToolOutcome {
-                name: "weather".into(),
-                failed: false,
-                failure_code: None,
-                elapsed_ms: None,
-            }],
-            model_requests: vec![],
-        })
-    }
-
     async fn run_with_policy(
         &self,
         session_id: &str,
@@ -84,6 +60,32 @@ impl ProductRuntimePort for RecordingRuntime {
             .unwrap()
             .push(format!("close:{session_id}"));
         Ok(())
+    }
+}
+
+impl RecordingRuntime {
+    async fn run(
+        &self,
+        session_id: &str,
+        prompt: &str,
+    ) -> anyhow::Result<crate::headless_bridge::ProductTurnOutcome> {
+        self.calls
+            .lock()
+            .unwrap()
+            .push(format!("run:{session_id}:{prompt}"));
+        Ok(crate::headless_bridge::ProductTurnOutcome {
+            status: "completed".into(),
+            failure_code: None,
+            assistant_text: "private answer".into(),
+            usage: Some(agent_backend_api::SafeUsageMetrics::new(10, 4, 3, 7)),
+            tools: vec![crate::headless_bridge::SafeToolOutcome {
+                name: "weather".into(),
+                failed: false,
+                failure_code: None,
+                elapsed_ms: None,
+            }],
+            model_requests: vec![],
+        })
     }
 }
 
@@ -214,13 +216,6 @@ impl ProductRuntimePort for FailingRuntime {
     async fn prepare(&self, _session_id: &str) -> anyhow::Result<()> {
         Ok(())
     }
-    async fn run(
-        &self,
-        _session_id: &str,
-        _prompt: &str,
-    ) -> anyhow::Result<crate::headless_bridge::ProductTurnOutcome> {
-        anyhow::bail!("private provider failure")
-    }
     async fn run_with_policy(
         &self,
         session_id: &str,
@@ -234,6 +229,16 @@ impl ProductRuntimePort for FailingRuntime {
     }
     async fn close(&self, _session_id: &str) -> anyhow::Result<()> {
         Ok(())
+    }
+}
+
+impl FailingRuntime {
+    async fn run(
+        &self,
+        _session_id: &str,
+        _prompt: &str,
+    ) -> anyhow::Result<crate::headless_bridge::ProductTurnOutcome> {
+        anyhow::bail!("private provider failure")
     }
 }
 
@@ -577,21 +582,6 @@ impl ProductRuntimePort for BlockingCleanupRuntime {
         Ok(())
     }
 
-    async fn run(
-        &self,
-        _session_id: &str,
-        _prompt: &str,
-    ) -> anyhow::Result<crate::headless_bridge::ProductTurnOutcome> {
-        Ok(crate::headless_bridge::ProductTurnOutcome {
-            status: "completed".into(),
-            failure_code: None,
-            assistant_text: "private answer".into(),
-            usage: None,
-            tools: vec![],
-            model_requests: vec![],
-        })
-    }
-
     async fn run_with_policy(
         &self,
         session_id: &str,
@@ -611,6 +601,23 @@ impl ProductRuntimePort for BlockingCleanupRuntime {
         self.close_entered.notify_one();
         self.close_release.notified().await;
         Ok(())
+    }
+}
+
+impl BlockingCleanupRuntime {
+    async fn run(
+        &self,
+        _session_id: &str,
+        _prompt: &str,
+    ) -> anyhow::Result<crate::headless_bridge::ProductTurnOutcome> {
+        Ok(crate::headless_bridge::ProductTurnOutcome {
+            status: "completed".into(),
+            failure_code: None,
+            assistant_text: "private answer".into(),
+            usage: None,
+            tools: vec![],
+            model_requests: vec![],
+        })
     }
 }
 
@@ -723,14 +730,6 @@ struct AttachmentAwareRuntime {
 impl ProductRuntimePort for AttachmentAwareRuntime {
     async fn prepare(&self, _session_id: &str) -> anyhow::Result<()> {
         Ok(())
-    }
-
-    async fn run(
-        &self,
-        _session_id: &str,
-        _prompt: &str,
-    ) -> anyhow::Result<crate::headless_bridge::ProductTurnOutcome> {
-        anyhow::bail!("ordinary run must not receive attachments")
     }
 
     async fn run_with_staged_attachments_and_policy(

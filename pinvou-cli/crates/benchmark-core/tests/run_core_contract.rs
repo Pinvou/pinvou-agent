@@ -61,7 +61,6 @@ fn task(id: &str) -> BenchmarkTask {
             ToolPolicyId::new("smoke/v1"),
             OutputContract::new("text/v1"),
         ),
-        None,
     )
 }
 
@@ -77,7 +76,6 @@ fn attachment_task(id: &str) -> BenchmarkTask {
             ToolPolicyId::new("smoke/v1"),
             OutputContract::new("text/v1"),
         ),
-        None,
     )
 }
 
@@ -467,10 +465,7 @@ async fn native_turn_forwards_the_validated_tool_policy_to_prepare() {
     let runner = NativeAgentRunner::new(backend.clone());
 
     runner
-        .run_task(
-            &task("policy-probe"),
-            &RunContext::new("policy-probe", base.clone()),
-        )
+        .run_task(&task("policy-probe"), &RunContext::new("policy-probe"))
         .await
         .unwrap();
 
@@ -490,7 +485,7 @@ async fn native_turn_forwards_the_validated_output_contract_to_run() {
     runner
         .run_task(
             &task("output-contract-probe"),
-            &RunContext::new("output-contract-probe", base.clone()),
+            &RunContext::new("output-contract-probe"),
         )
         .await
         .unwrap();
@@ -518,14 +513,10 @@ async fn unsafe_native_tool_policy_is_rejected_before_backend_or_outcome_process
             ToolPolicyId::new("api_key=PRIVATE_SENTINEL"),
             OutputContract::new("text/v1"),
         ),
-        None,
     );
 
     let error = runner
-        .run_task(
-            &unsafe_task,
-            &RunContext::new("unsafe-policy", base.clone()),
-        )
+        .run_task(&unsafe_task, &RunContext::new("unsafe-policy"))
         .await
         .unwrap_err();
 
@@ -548,10 +539,7 @@ async fn attachment_resolution_happens_before_prepare_and_failure_is_safe() {
         Arc::new(AttachmentResolver { fail: true }),
     );
     let error = runner
-        .run_task(
-            &attachment_task("probe"),
-            &RunContext::new("probe", base.clone()),
-        )
+        .run_task(&attachment_task("probe"), &RunContext::new("probe"))
         .await
         .unwrap_err();
     assert_eq!(error.code(), "attachment_resolution_failed");
@@ -590,10 +578,7 @@ async fn attachment_resolution_happens_before_prepare_and_failure_is_safe() {
         Arc::new(AttachmentResolver { fail: false }),
     );
     success_runner
-        .run_task(
-            &attachment_task("success"),
-            &RunContext::new("success", base.clone()),
-        )
+        .run_task(&attachment_task("success"), &RunContext::new("success"))
         .await
         .unwrap();
     assert_eq!(
@@ -629,9 +614,8 @@ async fn attachment_resolution_consumes_the_same_task_deadline() {
                     ToolPolicyId::new("smoke/v1"),
                     OutputContract::new("text/v1"),
                 ),
-                None,
             ),
-            &RunContext::new("attachment-timeout", base.clone()),
+            &RunContext::new("attachment-timeout"),
         ),
     )
     .await
@@ -710,7 +694,6 @@ fn short_task(id: &str) -> BenchmarkTask {
             ToolPolicyId::new("smoke/v1"),
             OutputContract::new("text/v1"),
         ),
-        None,
     )
 }
 
@@ -1094,7 +1077,6 @@ fn external_harness_is_contract_only() {
             vec!["runner".into()],
             Duration::from_secs(5),
         ),
-        None,
     );
     let summary = futures::executor::block_on(
         service.run(manifest("run-1"), &BenchmarkPlan::new(vec![external])),

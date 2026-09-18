@@ -16,7 +16,6 @@ use crate::features::sessions::{ScheduledRunProfile, SessionStore};
 
 pub(super) fn maybe_notify_task_completed(
     app: &AppHandle,
-    _store: &SessionStore,
     session_id: &str,
     turn_id: Option<String>,
     status: TurnOutcomeStatus,

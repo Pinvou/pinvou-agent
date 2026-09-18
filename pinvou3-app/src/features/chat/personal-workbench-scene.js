@@ -116,8 +116,6 @@ function shouldUsePersonalWorkbenchScene(subtab) {
 export {
   PERSONAL_WORKBENCH_SCENE_KEY,
   PERSONAL_WORKBENCH_TEMPLATES,
-  DEFAULT_PERSONAL_WORKBENCH_PROMPT,
-  buildDefaultPersonalWorkbenchPayloadText,
   createPersonalWorkbenchMessageMeta,
   findPersonalWorkbenchTemplateDraft,
   getPersonalWorkbenchTemplate,

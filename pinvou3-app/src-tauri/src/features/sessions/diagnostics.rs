@@ -21,12 +21,7 @@ const MAX_BATCH_ENTRIES: usize = 64;
 const MAX_ENTRY_BYTES: usize = 24 * 1024;
 const FRONTEND_EVENTS: &[&str] = &[
     "authority_sync_notice_shown",
-    "browser_network_offline",
-    "browser_network_online",
     "chat_done_classified",
-    "connection_state_changed",
-    "diagnostics_initialized",
-    "document_visibility_changed",
     "local_send_blocked_by_remote_sync",
     "local_turn_admission_failed",
     "local_turn_admitted",
@@ -220,8 +215,7 @@ fn normalize_frontend_details(value: Option<&Value>) -> Value {
             | "declared_total_bytes"
             | "cleanup_requested_count"
             | "cleanup_failed_count"
-            | "cleanup_succeeded_count"
-            | "restored_queue_count" => normalize_nonnegative_number(value),
+            | "cleanup_succeeded_count" => normalize_nonnegative_number(value),
             "buffer_present"
             | "local_turn_owned"
             | "remote_turn_active"
@@ -240,8 +234,7 @@ fn normalize_frontend_details(value: Option<&Value>) -> Value {
             | "error_present"
             | "cancellable_lease"
             | "cancel_requested"
-            | "cancel_succeeded"
-            | "desktop_online" => value.as_bool().map(Value::Bool),
+            | "cancel_succeeded" => value.as_bool().map(Value::Bool),
             "saved_roles" => normalize_saved_roles(value),
             "cause" => value
                 .as_str()
@@ -299,23 +292,6 @@ fn normalize_frontend_details(value: Option<&Value>) -> Value {
             .map(Value::String),
             "transport_kind" => {
                 allowed_enum(Some(value), &["desktop_invoke", "web_chunked_rpc"]).map(Value::String)
-            }
-            "status" => allowed_enum(
-                Some(value),
-                &[
-                    "connected",
-                    "connecting",
-                    "desktop_offline",
-                    "error",
-                    "idle",
-                    "local",
-                    "unknown",
-                ],
-            )
-            .map(Value::String),
-            "visibility" => {
-                allowed_enum(Some(value), &["hidden", "prerender", "unknown", "visible"])
-                    .map(Value::String)
             }
             _ => None,
         };

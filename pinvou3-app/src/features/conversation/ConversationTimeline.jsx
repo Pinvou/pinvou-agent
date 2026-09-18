@@ -214,7 +214,7 @@ export function ConversationActivityIndicator({
   return <div role="status" aria-live="polite" className={sharedClass}>{content}</div>;
 }
 
-export function TerminalBlock({ label, text }) {
+function TerminalBlock({ label, text }) {
   if (!text) return null;
   return (
     <div className="mt-3 min-w-0 max-w-full">
@@ -224,7 +224,7 @@ export function TerminalBlock({ label, text }) {
   );
 }
 
-export function StructuredValue({ label, value }) {
+function StructuredValue({ label, value }) {
   if (value == null || value === '' || (Array.isArray(value) && !value.length)) return null;
   if (typeof value !== 'object') return <TerminalBlock label={label} text={String(value)} />;
   const entries = Object.entries(value);
@@ -246,7 +246,7 @@ export function StructuredValue({ label, value }) {
   );
 }
 
-export function CompactItemRow({ icon, title, meta, status, open, onToggle, controlsId }) {
+function CompactItemRow({ icon, title, meta, status, open, onToggle, controlsId }) {
   const tone = status === 'failed'
     ? 'text-red-500 bg-red-500/10'
     : status === 'warning'
@@ -461,7 +461,7 @@ function FetchToolItem({ item, now, onOpenExternal, copy }) {
   );
 }
 
-export function WorkspaceResourceButtons({ resources, onOpenResource }) {
+function WorkspaceResourceButtons({ resources, onOpenResource }) {
   if (!resources.length) return null;
   return (
     <div className="flex flex-wrap gap-1.5 px-3 pb-2">
@@ -620,7 +620,7 @@ function ReasoningItem({ item, now, copy }) {
   );
 }
 
-export function PlanBlock({ plan, copy }) {
+function PlanBlock({ plan, copy }) {
   const c = conversationCopy(copy);
   const entries = plan && plan.entries || [];
   if (!entries.length) return null;

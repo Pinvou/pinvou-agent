@@ -236,16 +236,16 @@ pub fn detached_label(kind: &str, id: Option<&str>) -> String {
     format!("detached-{kind}-{:016x}", h.finish())
 }
 
-/// kind → 窗口标题。未知 kind 退化为通用标题。
+/// kind → 窗口标题。与前端 `DetachedShell.jsx` 的 `DETACHED_VIEWS` 保持一致；
+/// 未知 kind 退化为通用标题。
 pub fn view_title(kind: &str) -> &'static str {
     match kind {
         "session" => "对话",
         "codex-session" => "Coding 对话",
-        "persona" => "专家",
         "monitor" => "系统监控",
         "toolstore" => "插件中心",
         "cardpool" => "专家卡牌池",
-        "localenv" => "本地环境",
+        "knowledge" => "知识库",
         "outputs" => "产出物",
         _ => "PINVOU",
     }
@@ -311,15 +311,6 @@ pub fn create_detached_at(
         let _ = win.maximize();
     }
     Ok(())
-}
-
-/// 建/聚焦某菜单项的撕离窗口(按钮触发,默认位置)。
-pub async fn open_detached_window(
-    kind: String,
-    id: Option<String>,
-    app: AppHandle,
-) -> Result<(), String> {
-    create_detached_at(&app, &kind, id.as_deref(), None)
 }
 
 /// 主窗口外接矩形是否包含全局点 (px,py)。拿不到主窗口几何 → 视为不包含(倾向于建窗)。
@@ -451,7 +442,7 @@ mod tests {
 
     #[test]
     fn view_title_known_and_fallback() {
-        assert_eq!(view_title("persona"), "专家");
+        assert_eq!(view_title("knowledge"), "知识库");
         assert_eq!(view_title("codex-session"), "Coding 对话");
         assert_eq!(view_title("outputs"), "产出物");
         assert_eq!(view_title("???"), "PINVOU");

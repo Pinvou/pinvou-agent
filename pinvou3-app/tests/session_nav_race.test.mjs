@@ -22,7 +22,7 @@ const bridgeDir = path.join(here, '..', 'src', 'platform', 'tauri', 'bridge');
 
 /** vm 装载 sessions.js factory，注入最小依赖面。 */
 function loadSessionsFeature(overrides) {
-  const root = { __PINVOU_SHARED_I18N__: {} };
+  const root = {};
   const src = fs.readFileSync(path.join(bridgeDir, 'sessions.js'), 'utf8');
   vm.runInNewContext(src, { window: root, globalThis: root, setTimeout, clearTimeout });
   const factory = root.__PINVOU_TAURI_BRIDGE_FEATURES__.sessions;

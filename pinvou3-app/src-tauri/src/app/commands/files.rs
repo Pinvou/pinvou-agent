@@ -84,57 +84,6 @@ pub async fn adopt_draft_attachment(
     crate::features::files::attachment_upload::adopt_draft_upload(&workspace, &upload_id).await
 }
 
-/// Windows WebView2 的 HTML5 文件拖拽无法暴露源文件路径，因此通过有界分块
-/// 直接写入当前会话工作区，再复用统一的文件摄入流程。
-#[tauri::command]
-#[allow(clippy::too_many_arguments)]
-pub async fn ingest_dropped_file_chunk(
-    session_id: String,
-    upload_id: String,
-    filename: String,
-    offset: usize,
-    total: usize,
-    data_base64: String,
-    commit: bool,
-    sha256: Option<String>,
-    store: State<'_, SessionStore>,
-) -> Result<Option<crate::features::files::file_ingest::IngestResult>, String> {
-    let (workspace, _) = conversation_attachment_context(&store, &session_id)?;
-    let result = async {
-        let data = base64::engine::general_purpose::STANDARD
-            .decode(data_base64)
-            .map_err(|error| format!("解码附件分块失败：{error}"))?;
-        crate::features::files::attachment_upload::append_chunk(
-            &workspace,
-            &upload_id,
-            &filename,
-            offset,
-            total,
-            &data,
-            commit,
-            sha256.as_deref(),
-        )
-        .await
-    }
-    .await;
-    if result.is_err() {
-        let _ =
-            crate::features::files::attachment_upload::abort_staging_upload(&workspace, &upload_id)
-                .await;
-    }
-    result
-}
-
-#[tauri::command]
-pub async fn cancel_dropped_file_upload(
-    session_id: String,
-    upload_id: String,
-    store: State<'_, SessionStore>,
-) -> Result<(), String> {
-    let (workspace, _) = conversation_attachment_context(&store, &session_id)?;
-    crate::features::files::attachment_upload::cancel_upload(&workspace, &upload_id).await
-}
-
 #[tauri::command]
 pub async fn discard_dropped_attachment(
     session_id: String,

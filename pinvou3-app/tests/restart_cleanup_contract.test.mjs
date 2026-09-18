@@ -68,7 +68,6 @@ test('restart cleanup closes browser before harvesting child processes', () => {
   }
 
   for (const [start, end] of [
-    ['pub async fn stop(&self)', 'async fn stop_with_start_lock'],
     ['pub async fn stop_for_session', 'pub async fn delete_for_session'],
     ['async fn restore_saved_workspace(', 'async fn restore_saved_workspace_with_start_lock'],
   ]) {

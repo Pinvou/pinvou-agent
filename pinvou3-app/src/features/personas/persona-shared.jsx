@@ -19,13 +19,13 @@ export function personaText(c, t) {
     }
 export const DEPT_ORDER = ['engineering','marketing','specialized','design','product','finance','sales','testing','project-management','paid-media','support','academic','game-development','spatial-computing','gis','security','supply-chain','hr','legal','tool'];
 export const ALL_DEPT = '__all__'; // 分类「全部」哨兵(语言中立,显示走 t.cpAll)
-export const DEPT_COLOR = { academic:'#8B5CF6', design:'#EC4899', engineering:'#06B6D4', finance:'#10B981', 'game-development':'#F59E0B', gis:'#0EA5E9', hr:'#F472B6', legal:'#6B7280', marketing:'#F97316', 'paid-media':'#EF4444', product:'#7C3AED', 'project-management':'#3B82F6', sales:'#14B8A6', security:'#F43F5E', 'spatial-computing':'#6366F1', specialized:'#64748B', 'supply-chain':'#84CC16', support:'#22D3EE', testing:'#A855F7', tool:'#7C3AED' };
+const DEPT_COLOR = { academic:'#8B5CF6', design:'#EC4899', engineering:'#06B6D4', finance:'#10B981', 'game-development':'#F59E0B', gis:'#0EA5E9', hr:'#F472B6', legal:'#6B7280', marketing:'#F97316', 'paid-media':'#EF4444', product:'#7C3AED', 'project-management':'#3B82F6', sales:'#14B8A6', security:'#F43F5E', 'spatial-computing':'#6366F1', specialized:'#64748B', 'supply-chain':'#84CC16', support:'#22D3EE', testing:'#A855F7', tool:'#7C3AED' };
     // 可在编辑器下拉选的部门(排除 tool —— 那是内置工具卡专用)
 export const DEPT_OPTIONS = DEPT_ORDER.filter(function(d){ return d !== 'tool'; });
 export const deptColor = (d) => DEPT_COLOR[d] || '#9aa0a6';
     // 本地内置头像(50 张 Micah,src/avatars/),按卡 id 哈希固定分配
     const AVATAR_N = 50;
-export function avatarSrc(id) {
+function avatarSrc(id) {
       let h = 0; const s = String(id || '');
       for (let i = 0; i < s.length; i++) h = (h * 31 + s.codePointAt(i)) >>> 0;
       const n = (h % AVATAR_N) + 1;

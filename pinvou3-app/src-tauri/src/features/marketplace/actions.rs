@@ -25,22 +25,25 @@ use serde::Serialize;
 use super::bundle::{BundleInfo, BundleKind, Readiness};
 use crate::core::session_mode::SessionMode;
 
-pub const ACTION_INSTALL: &str = "install";
-pub const ACTION_CONFIGURE: &str = "configure";
-pub const ACTION_CONNECT: &str = "connect";
-pub const ACTION_DISCONNECT: &str = "disconnect";
-pub const ACTION_UPDATE: &str = "update";
-pub const ACTION_UNINSTALL: &str = "uninstall";
-pub const ACTION_EDIT_DISPLAY: &str = "edit_display";
-pub const ACTION_REPAIR: &str = "repair";
-pub const ACTION_ENABLE_IN: &str = "enable_in";
+const ACTION_INSTALL: &str = "install";
+const ACTION_CONFIGURE: &str = "configure";
+const ACTION_CONNECT: &str = "connect";
+const ACTION_DISCONNECT: &str = "disconnect";
+const ACTION_UPDATE: &str = "update";
+const ACTION_UNINSTALL: &str = "uninstall";
+const ACTION_EDIT_DISPLAY: &str = "edit_display";
+const ACTION_REPAIR: &str = "repair";
+const ACTION_ENABLE_IN: &str = "enable_in";
 
 /// 交互流程标记（§3.3：交互流程建模为动作的 flow payload）。本刀只给类型标记，
 /// 具体交互描述（二维码、流程卡、OAuth 五态机）仍由前端现有组件承担，
 /// payload 下沉（request_id 协调器、五态分类）在后续 PR。
+///
+/// 模块私有：`BundleAction` 仅在本文件构造，`flow` 字段同为私有（serde 序列化
+/// 不受字段/类型可见性影响，wire 形态不变）。
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
 #[serde(rename_all = "snake_case", tag = "kind")]
-pub enum ActionFlow {
+enum ActionFlow {
     /// 远程 MCP 的浏览器 OAuth 授权流程
     Oauth,
     /// CLI 连接器的扫码/授权流程（飞书两段、企微/钉钉/腾讯会议单段）
@@ -57,7 +60,7 @@ pub struct BundleAction {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub reason: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub flow: Option<ActionFlow>,
+    flow: Option<ActionFlow>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub scope: Option<String>,
 }

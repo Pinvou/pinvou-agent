@@ -1651,4 +1651,4 @@ const OutputLivePreview = ({ o, onOpen, outPreviewCache, runQueuedPreview, remem
     // 松手 / 移开 / 失焦即取消；执行时图标转一圈、变绿「已清除」，900ms 后复位。
     // 鼠标 / 触摸 / 键盘(空格·回车)均支持。数字归零动画由父级 onClear 负责。
 
-export { kbCache, KnowledgeView };
+export { KnowledgeView };

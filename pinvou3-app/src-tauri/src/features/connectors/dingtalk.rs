@@ -86,19 +86,9 @@ fn extract_user_code(line: &str) -> Option<String> {
 }
 
 fn safe_auth_log_line(line: &str) -> Option<String> {
-    let trimmed = line.trim();
-    if trimmed.is_empty() {
-        return None;
-    }
-    let lower = trimmed.to_ascii_lowercase();
-    if lower.contains("access_token")
-        || lower.contains("refresh_token")
-        || lower.contains("authorization:")
-        || lower.contains("bearer ")
-    {
-        return Some("[redacted credential line]".to_string());
-    }
-    Some(trimmed.chars().take(320).collect())
+    // 不开兜底 "token"：钉钉 CLI 的正常 JSON 行含 camelCase token 字段名，
+    // 开了会把非敏感行也整体吞掉（与旧本地实现行为一致）。
+    cc::safe_auth_log_line(line, false)
 }
 
 fn dingtalk_auth_error_hint(text: &str) -> Option<String> {
@@ -429,7 +419,7 @@ impl ConnectorSkillGate for DingtalkGate {
 }
 const GATE: DingtalkGate = DingtalkGate;
 
-pub fn is_dingtalk_disabled() -> bool {
+fn is_dingtalk_disabled() -> bool {
     GATE.is_disabled()
 }
 

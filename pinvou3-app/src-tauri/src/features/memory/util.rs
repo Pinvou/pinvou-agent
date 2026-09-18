@@ -54,10 +54,6 @@ pub(super) fn clean_id(value: &str) -> String {
         .collect()
 }
 
-pub(super) fn stable_id_from_text(value: &str) -> String {
-    stable_id_with_prefix("rw", value)
-}
-
 pub(super) fn stable_id_with_prefix(prefix: &str, value: &str) -> String {
     let mut hash = 0xcbf29ce484222325u64;
     for byte in value.as_bytes() {

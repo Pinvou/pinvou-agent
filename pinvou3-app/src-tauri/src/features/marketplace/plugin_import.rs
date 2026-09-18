@@ -39,7 +39,7 @@ pub(crate) const MAX_PLUGIN_SIZE_BYTES: u64 = 200 * 1024 * 1024;
 /// 不再有「spanner 独立组件」入口；skill 包的 `tools[]` + `runtime` 可执行协议
 /// 为 RFC 草案（docs/plugin-package-spec.md），执行通路未实施。
 #[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct PluginManifest {
+struct PluginManifest {
     pub manifest_version: u32,
     pub id: String,
     pub name: String,
@@ -61,7 +61,7 @@ pub struct PluginManifest {
 
 /// plugin.json 的 `components` 声明（跨组件粘合到一个包 id）。
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
-pub struct PluginComponents {
+struct PluginComponents {
     #[serde(default)]
     pub mcp_servers: Vec<ComponentRef>,
     #[serde(default)]
@@ -70,14 +70,14 @@ pub struct PluginComponents {
 
 /// 组件目录引用：`dir` 相对 zip 根，导入时校验存在。
 #[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct ComponentRef {
+struct ComponentRef {
     pub id: String,
     pub dir: String,
 }
 
 /// 图标扩展名 → 是否允许（只认 svg/png，且必须是无路径分隔符的纯文件名，
 /// 与 `write_icon_bytes` 的口径一致——`a/icon.png` / `../icon.svg` 一律拒收）。
-pub fn is_supported_icon(path: &str) -> bool {
+fn is_supported_icon(path: &str) -> bool {
     if path.contains('/') || path.contains('\\') || path.contains("..") {
         return false;
     }
@@ -86,10 +86,10 @@ pub fn is_supported_icon(path: &str) -> bool {
 }
 
 /// 默认图标（lucide `package`，无品牌依赖的通用「工具包」图形）。
-pub const DEFAULT_ICON_SVG: &str = r#"<svg xmlns="http://www.w3.org/2000/svg" width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="m7.5 4.27 9 5.15"/><path d="M21 8a2 2 0 0 0-1-1.73l-7-4a2 2 0 0 0-2 0l-7 4A2 2 0 0 0 3 8v8a2 2 0 0 0 1 1.73l7 4a2 2 0 0 0 2 0l7-4A2 2 0 0 0 21 16Z"/><path d="m3.3 7 8.7 5 8.7-5"/><path d="M12 22V12"/></svg>"#;
+const DEFAULT_ICON_SVG: &str = r#"<svg xmlns="http://www.w3.org/2000/svg" width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="m7.5 4.27 9 5.15"/><path d="M21 8a2 2 0 0 0-1-1.73l-7-4a2 2 0 0 0-2 0l-7 4A2 2 0 0 0 3 8v8a2 2 0 0 0 1 1.73l7 4a2 2 0 0 0 2 0l7-4A2 2 0 0 0 21 16Z"/><path d="m3.3 7 8.7 5 8.7-5"/><path d="M12 22V12"/></svg>"#;
 
 /// 落盘默认图标到包目录（`bundles/<id>/icon.svg`）。返回相对路径 "icon.svg"。
-pub fn write_default_icon(pkg_dir: &Path) -> Result<String, String> {
+fn write_default_icon(pkg_dir: &Path) -> Result<String, String> {
     let icon_path = pkg_dir.join("icon.svg");
     std::fs::create_dir_all(pkg_dir).map_err(|e| format!("创建包目录: {e}"))?;
     std::fs::write(&icon_path, DEFAULT_ICON_SVG).map_err(|e| format!("写默认图标: {e}"))?;
@@ -100,7 +100,7 @@ pub fn write_default_icon(pkg_dir: &Path) -> Result<String, String> {
 ///
 /// file_name 必须是无路径分隔符的纯文件名（不接受 `a/icon.png` / `../icon.svg` 等
 /// 路径形式），扩展名限定为 `svg`/`png`。
-pub fn write_icon_bytes(pkg_dir: &Path, file_name: &str, bytes: &[u8]) -> Result<String, String> {
+fn write_icon_bytes(pkg_dir: &Path, file_name: &str, bytes: &[u8]) -> Result<String, String> {
     if file_name.is_empty()
         || file_name.contains('/')
         || file_name.contains('\\')
@@ -637,6 +637,22 @@ pub fn import_plugin_package(
     // 解压字节仍超限。两个计数器都触发上限拒绝。
     let mut declared_total: u64 = 0;
     let mut actual_total: u64 = 0;
+    // pass1 各分支共用的「有界读取 + 真实字节累计 + zip bomb 兜底」：zip 头声明
+    // 可能与真实大小不符（见上方两口径预算注释），read_to_end 后按真实字节复核上限。
+    let mut read_bounded_checked = |entry: &mut zip::read::ZipFile<'_, std::fs::File>,
+                                    what: &str|
+     -> Result<Vec<u8>, String> {
+        let declared_size = entry.size();
+        let buf = read_zip_entry_bounded(entry, declared_size, what)?;
+        actual_total = actual_total.saturating_add(buf.len() as u64);
+        if actual_total > MAX_PLUGIN_SIZE_BYTES {
+            return Err(format!(
+                "插件包实际解压超过 {} MiB 上限（zip 头声明与真实大小不符，可能为 zip bomb）",
+                MAX_PLUGIN_SIZE_BYTES / 1024 / 1024
+            ));
+        }
+        Ok(buf)
+    };
     for i in 0..archive.len() {
         let mut entry = archive
             .by_index(i)
@@ -661,39 +677,14 @@ pub fn import_plugin_package(
         }
         let path_str = enclosed.to_string_lossy().replace('\\', "/");
         all_paths.push(path_str.clone());
-        // 任一`read_to_end` 后同步累计 actual_total（zip 头声明可能与真实大小不符）
         if path_str == "plugin.json" {
-            let declared_size = entry.size();
-            let buf = read_zip_entry_bounded(&mut entry, declared_size, "plugin.json")?;
-            actual_total = actual_total.saturating_add(buf.len() as u64);
-            if actual_total > MAX_PLUGIN_SIZE_BYTES {
-                return Err(format!(
-                    "插件包实际解压超过 {} MiB 上限（zip 头声明与真实大小不符，可能为 zip bomb）",
-                    MAX_PLUGIN_SIZE_BYTES / 1024 / 1024
-                ));
-            }
+            let buf = read_bounded_checked(&mut entry, "plugin.json")?;
             manifest_bytes = Some(buf);
         } else if path_str == "mcp/manifest.json" {
-            let declared_size = entry.size();
-            let buf = read_zip_entry_bounded(&mut entry, declared_size, "mcp/manifest.json")?;
-            actual_total = actual_total.saturating_add(buf.len() as u64);
-            if actual_total > MAX_PLUGIN_SIZE_BYTES {
-                return Err(format!(
-                    "插件包实际解压超过 {} MiB 上限（zip 头声明与真实大小不符，可能为 zip bomb）",
-                    MAX_PLUGIN_SIZE_BYTES / 1024 / 1024
-                ));
-            }
+            let buf = read_bounded_checked(&mut entry, "mcp/manifest.json")?;
             mcp_manifest_bytes = Some(buf);
         } else if (path_str == "icon.svg" || path_str == "icon.png") && icon_entry.is_none() {
-            let declared_size = entry.size();
-            let buf = read_zip_entry_bounded(&mut entry, declared_size, "图标")?;
-            actual_total = actual_total.saturating_add(buf.len() as u64);
-            if actual_total > MAX_PLUGIN_SIZE_BYTES {
-                return Err(format!(
-                    "插件包实际解压超过 {} MiB 上限（zip 头声明与真实大小不符，可能为 zip bomb）",
-                    MAX_PLUGIN_SIZE_BYTES / 1024 / 1024
-                ));
-            }
+            let buf = read_bounded_checked(&mut entry, "图标")?;
             icon_entry = Some((path_str.clone(), buf));
         }
 
@@ -706,15 +697,7 @@ pub fn import_plugin_package(
                     .unwrap_or(false),
             };
             if better {
-                let declared_size = entry.size();
-                let buf = read_zip_entry_bounded(&mut entry, declared_size, "SKILL.md")?;
-                actual_total = actual_total.saturating_add(buf.len() as u64);
-                if actual_total > MAX_PLUGIN_SIZE_BYTES {
-                    return Err(format!(
-                        "插件包实际解压超过 {} MiB 上限（zip 头声明与真实大小不符，可能为 zip bomb）",
-                        MAX_PLUGIN_SIZE_BYTES / 1024 / 1024
-                    ));
-                }
+                let buf = read_bounded_checked(&mut entry, "SKILL.md")?;
                 best_skill_md = Some((path_str.clone(), buf));
             }
         }
@@ -723,15 +706,7 @@ pub fn import_plugin_package(
             && path_str != "mcp/manifest.json"
             && path_str != "plugin.json"
         {
-            let declared_size = entry.size();
-            let buf = read_zip_entry_bounded(&mut entry, declared_size, "manifest.json")?;
-            actual_total = actual_total.saturating_add(buf.len() as u64);
-            if actual_total > MAX_PLUGIN_SIZE_BYTES {
-                return Err(format!(
-                    "插件包实际解压超过 {} MiB 上限（zip 头声明与真实大小不符，可能为 zip bomb）",
-                    MAX_PLUGIN_SIZE_BYTES / 1024 / 1024
-                ));
-            }
+            let buf = read_bounded_checked(&mut entry, "manifest.json")?;
             other_manifests.push((path_str, buf));
         }
     }

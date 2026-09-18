@@ -6,6 +6,7 @@ import {
 } from './subagent-panel-publication.mjs';
 import { AlertTriangle, ArrowLeft, BarChart2, Brain, Briefcase, Check, ChevronDown, ChevronRight, ClipboardList, Copy, Edit2, FileText, FolderOpen, Globe, ImageIcon, Monitor, Package, Paperclip, PinIcon, Presentation, Send, Sparkles, StopCircle, Terminal, Upload, X, Zap } from '../../components/icons.jsx';
 import { bridge } from '../../hooks/useBridge.js';
+import { useCopyFlash } from '../../hooks/useCopyFlash.js';
 import { can, isWeb } from '../../shared/platform.js';
 import { isImeComposing } from '../../shared/ime-guard.mjs';
 import { formatCompactCount } from '../../shared/format-number.js';
@@ -101,17 +102,12 @@ function PanelSuspense({ children }) {
   );
 }
 
+import { copyClipboardText } from '../../shared/clipboard.js';
 import {
   assistantItemCopyText,
-  copyClipboardText,
-  fallbackCopyText,
   readClipboardText,
 } from '../conversation/message-clipboard.js';
-import {
-  extractBalancedJson,
-  parseJsonChain,
-  parseLooseJson,
-} from '../conversation/structured-assistant-content.js';
+import { parseLooseJson } from '../conversation/structured-assistant-content.js';
 import {
   createPinvouModeScopeKey,
   loadPinvouModeState,
@@ -3273,15 +3269,10 @@ const UserBubble = ({ item, sessionId, _theme, editable, t, conversationVariant 
       const SceneIcon = sceneDisplay && sceneDisplay.Icon;
       const [editing, setEditing] = useState(false);
       const [val, setVal] = useState(item.text);
-      const [copied, setCopied] = useState(false);
+      const [copied, copyToClipboard] = useCopyFlash(1200);
       function commit() { const tx = val.trim(); setEditing(false); if (tx && bridge.available) bridge.interaction.editLastTurn(tx); }
       function copyText() {
-        const tx = item.text || '';
-        copyClipboardText(tx).then(function (ok) {
-          if (!ok) return;
-          setCopied(true);
-          setTimeout(function () { setCopied(false); }, 1200);
-        });
+        copyToClipboard('user-bubble', item.text || '');
       }
       function retryDelivery() {
         if (!item.clientMessageId || !bridge.available || !bridge.chat.retryFirstTurn) return;
@@ -3797,4 +3788,4 @@ const UserBubble = ({ item, sessionId, _theme, editable, t, conversationVariant 
     // 产物类型 → { 角标/标签文字, tile 配色, lucide 内联 SVG 路径 }（零下载；仅无封面紧凑态显图标）。
     // 配色/字形照搬 产物卡图标预览.html（唯一权威）。
 
-export { ToolWelcomeCard, ComposerKbSelector, ComposerModeChip, ChatView, fallbackCopyText, copyClipboardText, readClipboardText, SelectionCopyButton, TextareaContextMenu, UserBubble, htmlUnescape, asDraft, asScheduledTaskDraft, extractBalancedJson, parseJsonChain, parseLooseJson, parsePersonaDraft, parseScheduledTaskDraft, parseCardQuestion, optionAnswer, hideStreamingDraft, ChatBubble };
+export { ChatView };
