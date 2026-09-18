@@ -4,13 +4,14 @@ import {
   invokeObservedPanelSelection,
   isSubagentPanelPublicationCurrent,
 } from './subagent-panel-publication.mjs';
-import { AlertTriangle, ArrowLeft, BarChart2, Brain, Briefcase, Check, ChevronDown, ChevronRight, ClipboardList, Copy, Edit2, FileText, FolderOpen, Globe, ImageIcon, Monitor, Package, Paperclip, PinIcon, Presentation, Send, Sparkles, StopCircle, Terminal, Upload, X, Zap } from '../../components/icons.jsx';
+import { AlertTriangle, ArrowLeft, BarChart2, Brain, Briefcase, Check, ChevronDown, ChevronRight, ClipboardList, Copy, Edit2, FileText, Globe, ImageIcon, Monitor, Package, Paperclip, PinIcon, Presentation, Send, Sparkles, StopCircle, Terminal, Upload, X, Zap } from '../../components/icons.jsx';
 import { bridge } from '../../hooks/useBridge.js';
 import { can, isWeb } from '../../shared/platform.js';
 import { isImeComposing } from '../../shared/ime-guard.mjs';
 import { formatCompactCount } from '../../shared/format-number.js';
 import { getSyntaxHighlightVersion, subscribeSyntaxHighlight } from '../../shared/syntax-highlighter.js';
 import { renderMarkdown } from '../../shared/markdown-renderer.js';
+import { describeKeychain, workspaceNoticeTone } from '../projects/workspacePickerState.js';
 import { AppIcon, DEPT_ORDER, deptLabelFor, personaText } from '../personas/persona-shared.jsx';
 import { ComposerModelSelector, ComposerToolMenu } from '../settings/composer-shared.jsx';
 import { ComposerPopover, POPOVER_SURFACE, useOutsidePointerClose } from '../../components/ComposerPopover.jsx';
@@ -151,7 +152,8 @@ import { ComposerWorkspaceSelector } from './ComposerWorkspaceSelector.jsx';
 import { YoloConfirmCard } from '../../shared/yolo-confirm-card.jsx';
 import { needsYoloConfirmation } from '../codex/code-permission-state.js';
 import { CHAT_YOLO_GATE_UNKNOWN_BINDING, chatYoloGateApplies, shouldShowWorkspaceBindingChip } from './chat-workspace-binding.js';
-import { workspaceName } from '../../shared/workspace-recents.js';
+import { WorkspaceKeychainChip } from '../projects/WorkspaceKeychainChip.jsx';
+import { resolveSessionProjectId } from '../projects/projectGrouping.js';
 import {
   VoiceComposerButton,
   VoiceEditPreview,
@@ -663,7 +665,7 @@ const ToolWelcomeCard = ({ toolId, _theme, t, onSend }) => {
     };
 
     // eslint-disable-next-line sonarjs/cognitive-complexity -- legacy main view: session/mode/artifact/browser state is highly cohesive; split refactor tracked separately
-    const ChatView = ({ theme, t, bs, prefill, prefillAppend = false, focusComposerTick = 0, onPrefillConsumed, onOpenEditor, justInstalledTool, setJustInstalledTool, onGotoSettings, onGotoModelSettings, onGotoTools, onBackScheduledRun, codeModeAvailable = false, onSwitchHomeMode, browserDockAvailable = false, browserDockOpen = false, rightDockActivePanelId = null, onRightDockPanelSelectionChange, onOpenBrowserDock }) => {
+    const ChatView = ({ theme, t, bs, prefill, prefillAppend = false, focusComposerTick = 0, onPrefillConsumed, onOpenEditor, justInstalledTool, setJustInstalledTool, onGotoSettings, onGotoModelSettings, onGotoTools, onBackScheduledRun, codeModeAvailable = false, onSwitchHomeMode, browserDockAvailable = false, browserDockOpen = false, rightDockActivePanelId = null, onRightDockPanelSelectionChange, onOpenBrowserDock, onOpenWorkspacePicker, onNotify }) => {
       const chatCopy = t.uiChat;
       const chatViewCopy = t.uiChatView;
       const sceneCopy = chatCopy.sceneModes;
@@ -2917,24 +2919,68 @@ const ToolWelcomeCard = ({ toolId, _theme, t, onSend }) => {
                     <ComposerWorkspaceSelector
                       copy={t.uiChatWorkspace}
                       draftWorkspacePath={(bs && bs.draftWorkspacePath) || null}
-                      onPickWorkspace={() => bridge.sessions.pickDraftWorkspace()}
+                      onPickWorkspace={() => (
+                        // Single entry (§2): the in-app "choose workspace"
+                        // picker; the system directory dialog is folded into the
+                        // picker's "browse for another folder" channel. Hosts
+                        // without the picker wired fall back to the old behavior
+                        // (test stubs / old hosts).
+                        onOpenWorkspacePicker
+                          ? onOpenWorkspacePicker({ lane: 'chat', mode: (bs && bs.modeState && bs.modeState.mode) || null })
+                          : bridge.sessions.pickDraftWorkspace()
+                      )}
                       onSelectWorkspace={path => bridge.sessions.setDraftWorkspace(path)}
+                      // Grant notice parity (§9.4): the recents channel grants
+                      // the picked folder directly (single root), the same
+                      // notice weight as the in-app picker rows.
+                      grantNotice={workspaceNoticeTone((bs && bs.modeState && bs.modeState.mode) || null) === 'restricted'
+                        ? t.uiWorkspacePicker.noticeRestricted(1)
+                        : t.uiWorkspacePicker.noticeVisibility(1)}
                     />
                   )}
                   {/* Workspace binding indicator for the active session (read-only
                       chip: directory name + full path in title); bound sessions
                       match the code mode safety posture, styled like the draft-mode
                       selector. */}
-                  {shouldShowWorkspaceBindingChip({ activeSessionId, sessionBinding: sessionWorkspaceBinding }) && (
-                    <span
-                      data-testid="chat-workspace-binding"
-                      title={sessionWorkspaceBinding}
-                      className="h-7 max-w-[180px] rounded-lg px-2 inline-flex items-center gap-1.5 text-[11px] text-gray-500 dark:text-gray-400"
-                    >
-                      <FolderOpen size={13} className="shrink-0" />
-                      <span className="truncate">{workspaceName(sessionWorkspaceBinding, t.uiChatWorkspace.unknownDirectory)}</span>
-                    </span>
-                  )}
+                  {shouldShowWorkspaceBindingChip({ activeSessionId, sessionBinding: sessionWorkspaceBinding }) && (() => {
+                    const activeItem = ((bs && bs.sessions) || []).find(s => s.id === activeSessionId);
+                    const keychain = describeKeychain(activeItem && activeItem.workspace_roots);
+                    const projectsData = (bs && bs.projectsList) || {};
+                    const owningProjectId = resolveSessionProjectId(
+                      { id: activeSessionId, workspaceKind: 'bound', workspacePath: sessionWorkspaceBinding },
+                      projectsData.projects || [],
+                      projectsData.assignments || {},
+                    );
+                    // Align to project (§9.7): the chat lane goes through the
+                    // projects bridge domain; typed ALIGN_* markers map to copy
+                    // (codex lane parity). busy is the session's real turn flag.
+                    const align = async () => {
+                      try {
+                        const outcome = await bridge.projects.alignSessionToProject(activeSessionId);
+                        if (outcome && outcome.applied) onNotify && onNotify(t.uiKeychain.alignDone);
+                        else if (outcome && outcome.reason === 'no_change') onNotify && onNotify(t.uiKeychain.alignNoChange);
+                        // Any other non-applied outcome is unexpected; surface it
+                        // instead of failing silently (codex lane parity).
+                        else if (onNotify) onNotify(t.uiKeychain.alignFailed);
+                      } catch (error) {
+                        const message = String((error && error.message) || error || '');
+                        if (onNotify) {
+                          onNotify(message.startsWith('ALIGN_BUSY') ? t.uiKeychain.alignBusy : t.uiKeychain.alignFailed);
+                        }
+                      }
+                    };
+                    return (
+                      <WorkspaceKeychainChip
+                        copy={t.uiKeychain}
+                        primary={keychain.primary || sessionWorkspaceBinding}
+                        additionalCount={keychain.primary ? keychain.additional : 0}
+                        roots={keychain.primary ? keychain.roots : [sessionWorkspaceBinding]}
+                        canAlign={!!owningProjectId && !!bridge.projects}
+                        busy={busy}
+                        onAlign={align}
+                      />
+                    );
+                  })()}
                   <ComposerModeChip t={t} bs={bs} compact={composerCompact} onSwitch={handleModeChipSwitch} />
                   {/* Scheduled run conversations expose no swarm toggle:
                       the backend's swarm_mode_available excludes them (the

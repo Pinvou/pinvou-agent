@@ -152,7 +152,12 @@ test('ensureSession：草稿选择随 create_session 载荷下发，物化成功
   rt.api.setDraftWorkspace('/work/project');
   const id = await rt.api.ensureSession();
   assert.equal(id, 'chat-new');
-  assert.deepEqual(rt.createSessionArgs(), [{ workspacePath: '/work/project' }]);
+  assert.deepEqual(rt.createSessionArgs(), [{
+    workspacePath: '/work/project',
+    // 钥匙串快照随绑定草稿下发:仅路径的普通草稿以自身为单根。
+    workspaceRoots: ['/work/project'],
+    projectId: null,
+  }]);
   assert.equal(rt.state.draftWorkspacePath, null, '物化成功后草稿选择必须清除');
 });
 
@@ -160,7 +165,7 @@ test('ensureSession：未选择工作区时载荷显式为 null（后端现状�
   const rt = loadSessionsFeature();
   const id = await rt.api.ensureSession();
   assert.equal(id, 'chat-new');
-  assert.deepEqual(rt.createSessionArgs(), [{ workspacePath: null }]);
+  assert.deepEqual(rt.createSessionArgs(), [{ workspacePath: null, workspaceRoots: null, projectId: null }]);
 });
 
 test('ensureSession：create_session 失败保留草稿选择以便重试', async () => {

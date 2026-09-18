@@ -25,6 +25,10 @@ import { groupSessionsWithProjects, resolveSessionProjectId, needsAddFolderConfi
 import { ProjectGroupHeader } from '../features/projects/ProjectGroupHeader.jsx';
 import { MoveToProjectDialog } from '../features/projects/MoveToProjectDialog.jsx';
 import { RebindFolderDialog } from '../features/projects/RebindFolderDialog.jsx';
+import { WorkspacePickerDialog } from '../features/projects/WorkspacePickerDialog.jsx';
+import { computePickerRows, pickerPrimaryRoot, pickerProjectRoots, workspaceNoticeTone } from '../features/projects/workspacePickerState.js';
+import { removeRootPlan, rootAlreadyPresent } from '../features/projects/manageFoldersState.js';
+import { ManageProjectFoldersDialog } from '../features/projects/ManageProjectFoldersDialog.jsx';
 import { runSessionBatch } from '../shared/session-management.js';
 import { can, isWeb } from '../shared/platform.js';
 import { installGlobalMarkdownRenderer } from '../shared/markdown-renderer.js';
@@ -1951,6 +1955,230 @@ const NAV_PREFETCH = {
         : []), [taskListSort, sidebarCodeTasks]);
       const sidebarUnpinnedCodeTasks = useMemo(() => sidebarCodeTasks.filter(chat => !(sidebarFolderPinned.length && chat.pinned)), [sidebarCodeTasks, sidebarFolderPinned]);
       const sidebarProjectsData = bs && bs.projectsList;
+      // Sidebar group-header props per group kind (extracted so the render map
+      // stays readable): the project channel (§9.9) and manage-panel (§4)
+      // entries are desktop-only, gated by the projects bridge domain.
+      const sidebarGroupHeaderProps = (group) => {
+        if (group.kind === 'project') {
+          return {
+            onNewSession: bridge.projects ? () => handleProjectNewSession(group.projectId) : undefined,
+            onManage: bridge.projects ? () => setManageFoldersId(group.projectId) : undefined,
+            onRename: (name) => handleRenameProject(group.projectId, name),
+            onDelete: () => handleDeleteProject(group.projectId),
+            unavailableRoots: (group.roots || [])
+              .filter(root => !(root && typeof root === 'object' ? root.available : root))
+              .map(root => String(typeof root === 'object' ? root.path : root)),
+            onRebind: (rootPath) => startRebindWorkspace(rootPath),
+          };
+        }
+        if (group.kind === 'folder') {
+          return {
+            title: group.path,
+            // bridge.projects exists on desktop only: no dead entries on web.
+            onConvert: bridge.projects ? (name) => handleConvertFolderToProject(group.path, name) : undefined,
+          };
+        }
+        return {};
+      };
+      // Picker inputs: the projects snapshot plus every directory-bound item
+      // (code/ACP project sessions and #445 bound work sessions).
+      const projectsListEntries = sidebarProjectsData && sidebarProjectsData.projects;
+      const projectsListAssignments = sidebarProjectsData && sidebarProjectsData.assignments;
+      const boundWorkspaceItems = useMemo(() => [
+        ...sidebarCodeTasks.map(s => ({ id: s.id, workspaceKind: s.workspaceKind, workspacePath: s.workspacePath, updatedAt: s.updatedAt || '' })),
+        ...codexSessions
+          .filter(s => s && s.workspace_kind === 'project' && s.workspace_path)
+          .map(s => ({ id: s.id, workspaceKind: 'project', workspacePath: String(s.workspace_path), updatedAt: s.updated_at || '' })),
+      ], [sidebarCodeTasks, codexSessions]);
+      // Dedicated channel for the project row's "new session" (§9.9 project
+      // channel): no picker detour — cwd = the project's remembered primary
+      // root (written by the picker / manage panel), keychain = all of the
+      // project's roots at that moment. The lane follows the current page
+      // (code page → codex draft, anything else → chat draft).
+      const handleProjectNewSession = (projectId) => {
+        const project = ((sidebarProjectsData && sidebarProjectsData.projects) || [])
+          .find(entry => entry.id === projectId);
+        if (!project) return;
+        const primary = pickerPrimaryRoot(project);
+        if (!primary) return; // tag-only project: no root to bind; the render side already keeps the button away
+        const roots = pickerProjectRoots(project);
+        applyWorkspaceTarget({
+          lane: currentView === 'codex' ? 'codex' : 'chat',
+          path: primary,
+          projectId: project.id,
+          roots,
+        });
+        // Grant-notice parity: this channel grants the project's whole root set
+        // without a picker detour, so the mode-aware notice must still surface
+        // at grant time (§9.4).
+        setSettingsToast(workspaceGrantNotice(activeLaneMode(), roots.length));
+      };
+
+      // ── Manage-folders panel (§4) ───────────────────────────────────────
+      // View/add/remove project roots, primary-root memory, rename, and the
+      // exclusion list view/revoke. Removing a root writes explicit move-outs
+      // for its auto members inside the backend's update_project; after
+      // add/remove the bridge reloads projects on its own (event + active
+      // refetch, belt and braces).
+      const [manageFoldersId, setManageFoldersId] = useState(null);
+      const manageFoldersProject = manageFoldersId
+        ? (((sidebarProjectsData && sidebarProjectsData.projects) || [])
+            .find(entry => entry.id === manageFoldersId) || null)
+        : null;
+      const closeManageFolders = () => setManageFoldersId(null);
+      // Add folder: system folder picker → whole-set roots replacement (the
+      // grant notice sits on the panel's "add" entry, the same weight as the
+      // picker, §2). Paths already in the project are skipped with a notice.
+      const handleManageAddFolder = async () => {
+        if (!bridge.files || !bridge.files.pickFolders || !manageFoldersProject || projectOpsBusy) return;
+        const picked = await bridge.files.pickFolders()
+          .catch((error) => { console.warn('pick project folder failed', error); return null; });
+        if (!picked) return;
+        const folder = Array.isArray(picked) ? picked[0] : picked;
+        if (!folder) return;
+        if (rootAlreadyPresent(manageFoldersProject, folder)) {
+          setSettingsToast(t.uiManageFolders.addDuplicate);
+          return;
+        }
+        setProjectOpsBusy(true);
+        try {
+          await bridge.projects.updateProjectRoots(
+            manageFoldersProject.id,
+            [...manageFoldersProject.roots.map(root => String(root.path)), folder],
+          );
+        } catch (error) {
+          console.warn('add project folder failed', error);
+          setSettingsToast(t.uiProjects.opFailed);
+        } finally {
+          setProjectOpsBusy(false);
+        }
+      };
+      const handleManageRemoveRoot = async (root) => {
+        if (!manageFoldersProject || projectOpsBusy) return;
+        const plan = removeRootPlan(manageFoldersProject, root);
+        if (!plan.removed || plan.needsNewPrimary) return; // primary-root removal is blocked inside the panel
+        setProjectOpsBusy(true);
+        try {
+          await bridge.projects.updateProjectRoots(manageFoldersProject.id, plan.roots);
+        } catch (error) {
+          console.warn('remove project folder failed', error);
+          setSettingsToast(t.uiProjects.opFailed);
+        } finally {
+          setProjectOpsBusy(false);
+        }
+      };
+      const handleManageSetPrimary = async (root) => {
+        if (!manageFoldersProject || projectOpsBusy) return;
+        setProjectOpsBusy(true);
+        try {
+          await bridge.projects.setPrimaryRoot(manageFoldersProject.id, root);
+        } catch (error) {
+          console.warn('set primary root failed', error);
+          setSettingsToast(t.uiProjects.opFailed);
+        } finally {
+          setProjectOpsBusy(false);
+        }
+      };
+      // Exclusion list (§3): listed = no more auto-materialization
+      // (reversible; projects/sessions untouched); unlisted = revoked.
+      const handleSetNeverMaterialize = async (root, never) => {
+        if (projectOpsBusy) return;
+        setProjectOpsBusy(true);
+        try {
+          await bridge.projects.setNeverMaterialize(root, never);
+          setSettingsToast(t.uiManageFolders.exclusionDone);
+        } catch (error) {
+          console.warn('set never-materialize failed', error);
+          setSettingsToast(t.uiProjects.opFailed);
+        } finally {
+          setProjectOpsBusy(false);
+        }
+      };
+
+      // ── Unified "choose workspace" picker (single entry, §2/§3/§9.3/§9.4) ──
+      // The picker is mounted by the host below and is pure display: every
+      // consequential action (draft staging, ensure/materialization, codex
+      // workspacePickerRequest) is handled here. The dialog only ever reads
+      // hot-view rows + callbacks and never touches the backend.
+      const [workspacePicker, setWorkspacePicker] = useState(null); // { lane, mode }
+      const [pickerBusy, setPickerBusy] = useState(false);
+      const [pickerExcluded, setPickerExcluded] = useState(null);
+      const [pickerCodexRequest, setPickerCodexRequest] = useState(null);
+      // The codex lane's effective mode is reported up by CodexAcpView so
+      // sidebar surfaces opened while the code page is active show the codex
+      // lane's mode-aware copy rather than the chat lane's.
+      const [codexLaneMode, setCodexLaneMode] = useState(null);
+      const workspacePickerRows = useMemo(() => computePickerRows({
+        projects: projectsListEntries || [],
+        items: boundWorkspaceItems,
+        assignments: projectsListAssignments || {},
+      }), [projectsListEntries, projectsListAssignments, boundWorkspaceItems]);
+      const closeWorkspacePicker = () => { setWorkspacePicker(null); setPickerExcluded(null); };
+      const applyWorkspaceTarget = ({ lane, path, projectId, roots }) => {
+        if (lane === 'codex') {
+          setPickerCodexRequest({ epoch: Date.now(), path: path || null, projectId: projectId || null, roots: roots || [] });
+        } else if (bridge.sessions && bridge.sessions.setDraftWorkspace) {
+          bridge.sessions.setDraftWorkspace(path || null, { projectId: projectId || null, workspaceRoots: roots || [] });
+        }
+        closeWorkspacePicker();
+      };
+      const activeLaneMode = () => (currentView === 'codex'
+        ? codexLaneMode
+        : ((bs && bs.modeState && bs.modeState.mode) || null));
+      // Same-weight grant notice for every entry that grants folder access
+      // without the picker's expansion panel (§9.4).
+      const workspaceGrantNotice = (mode, count) => (workspaceNoticeTone(mode) === 'restricted'
+        ? t.uiWorkspacePicker.noticeRestricted(count)
+        : t.uiWorkspacePicker.noticeVisibility(count));
+      const pickerLane = () => (workspacePicker ? workspacePicker.lane : 'chat');
+      // Project channel (§9.3): cwd = the picked root, keychain = the project's
+      // full root set at that moment; the backend writes last_primary_root
+      // inside create_session.
+      const handlePickerSelectProject = (project, root) => {
+        applyWorkspaceTarget({ lane: pickerLane(), path: root, projectId: project.id, roots: pickerProjectRoots(project) });
+      };
+      const handlePickerTemporary = () => {
+        applyWorkspaceTarget({ lane: pickerLane(), path: null, projectId: null, roots: [] });
+      };
+      // Browse channel (§9.9 folder channel): system folder picker → ensure
+      // (anchor reuse / materialize; the exclusion list skips) → start at the
+      // picked folder with cwd = F, roots = [F]. No projectId: browsing is an
+      // explicit physical choice and does not update any project's
+      // last_primary_root memory; the session groups via tier-2 anchoring.
+      const handlePickerBrowse = async () => {
+        if (!bridge.files || !bridge.files.pickFolders || pickerBusy) return;
+        const picked = await bridge.files.pickFolders()
+          .catch((error) => { console.warn('pick workspace folder failed', error); return null; });
+        if (!picked) return;
+        const folder = Array.isArray(picked) ? picked[0] : picked;
+        if (!folder) return;
+        let materialized = false;
+        if (bridge.projects && bridge.projects.ensureFolderProjects) {
+          setPickerBusy(true);
+          try {
+            const outcomes = await bridge.projects.ensureFolderProjects([folder]);
+            const list = Array.isArray(outcomes) ? outcomes : [];
+            materialized = list.some(o => o && (o.status === 'created' || o.status === 'covered'));
+            if (!materialized && list.some(o => o && o.status === 'failed')) {
+              setSettingsToast(t.uiProjects.opFailed);
+            }
+          } catch (error) {
+            console.warn('ensure folder project failed', error);
+            setSettingsToast(t.uiProjects.opFailed);
+          } finally {
+            setPickerBusy(false);
+          }
+        }
+        if (!materialized && bridge.projects) {
+          // Exclusion list (§3): the backend skipped it → no outcome; the
+          // picker says so honestly and still allows starting as a plain
+          // folder (no projectId).
+          setPickerExcluded(folder);
+          return;
+        }
+        applyWorkspaceTarget({ lane: pickerLane(), path: folder, projectId: null, roots: [folder] });
+      };
+
       const sidebarFolderGroups = useMemo(() => (sidebarCodeListActive
         ? groupSessionsWithProjects(
             sidebarUnpinnedCodeTasks,
@@ -3178,6 +3406,7 @@ const NAV_PREFETCH = {
       //   onRightDockPanelSelectionChange：browser_native_surface.test.mjs
       const chatViewBaseProps = {
         theme: activeTheme,
+        onOpenWorkspacePicker: ({ lane, mode }) => { setPickerExcluded(null); setWorkspacePicker({ lane, mode }); },
         t,
         bs,
         onOpenEditor: handleOpenPersonaEditor,
@@ -3255,6 +3484,46 @@ const NAV_PREFETCH = {
               {settingsToast}
             </div>,
             document.body
+          )}
+
+          {manageFoldersProject && (
+            <ManageProjectFoldersDialog
+              open
+              project={manageFoldersProject}
+              neverRoots={(sidebarProjectsData && sidebarProjectsData.neverMaterializeRoots) || []}
+              mode={activeLaneMode()}
+              busy={projectOpsBusy}
+              t={t}
+              onClose={closeManageFolders}
+              onAddFolder={handleManageAddFolder}
+              onRemoveRoot={handleManageRemoveRoot}
+              onSetPrimary={handleManageSetPrimary}
+              onRename={(name) => handleRenameProject(manageFoldersProject.id, name)}
+              onExcludeRoot={(root) => handleSetNeverMaterialize(root, true)}
+              onRevokeExclusion={(root) => handleSetNeverMaterialize(root, false)}
+            />
+          )}
+
+          {workspacePicker && (
+          // Conditional mount (the ManageProjectFoldersDialog idiom): the query
+          // and the expanded row must not leak across opens — remounting resets
+          // them, so a leftover filter can never render a false empty state.
+          <WorkspacePickerDialog
+            open
+            rows={workspacePickerRows}
+            mode={workspacePicker ? workspacePicker.mode : null}
+            language={language}
+            busy={pickerBusy}
+            webOnly={!can('desktopChrome') || !bridge.projects}
+            excludedFolder={pickerExcluded}
+            t={t}
+            onClose={closeWorkspacePicker}
+            onSelectProject={handlePickerSelectProject}
+            onTemporary={handlePickerTemporary}
+            onBrowse={handlePickerBrowse}
+            onBrowseExcluded={(folder) => applyWorkspaceTarget({ lane: pickerLane(), path: folder, projectId: null, roots: [folder] })}
+            onDismissExcluded={() => setPickerExcluded(null)}
+          />
           )}
 
           {rebindDraft && (
@@ -3669,6 +3938,7 @@ const NAV_PREFETCH = {
                                   onConvert={bridge.projects && group.kind === 'folder' ? (name) => handleConvertFolderToProject(group.path, name) : undefined}
                                   onRename={group.kind === 'project' ? (name) => handleRenameProject(group.projectId, name) : undefined}
                                   onDelete={group.kind === 'project' ? () => handleDeleteProject(group.projectId) : undefined}
+                                  {...sidebarGroupHeaderProps(group)}
                                   onDropSession={bridge.projects && group.kind === 'project' ? (sessionId) => handleDropSessionOnProject(sessionId, group.projectId) : undefined}
                                   unavailableRoots={group.kind === 'project'
                                     ? (group.roots || [])
@@ -3927,6 +4197,9 @@ const NAV_PREFETCH = {
                 onSessionsChange={setCodexSessions}
                 onSwitchHomeMode={handleSwitchHomeMode}
                 onOpenSettingsSection={openSettingsSection}
+                onOpenWorkspacePicker={({ mode }) => { setPickerExcluded(null); setWorkspacePicker({ lane: 'codex', mode }); }}
+                workspacePickerRequest={pickerCodexRequest}
+                onLaneModeChange={setCodexLaneMode}
                 bs={bs}
                 onGotoModelSettings={() => openSettingsSection('model')}
                 onGotoSettings={() => openSettingsSection('general')}

@@ -738,17 +738,15 @@
     // 只推进 token 不改 activeSessionId（仍为 null），在途 create_session 返回
     // 后必须连同 token 一起校验，否则会劫持用户新进的草稿（三审 P1）。
     const navToken = sessionSwitchRequestToken;
+    // Capture the materialization payload synchronously, outside the try: the
+    // catch-side rollback and the recents cleanup both need the values bound by
+    // THIS creation, and a try-scoped const would be out of scope there. Later
+    // selections made during the await cannot affect this creation.
+    const { boundWorkspace, boundRoots, boundProjectId, payloadRoots, payloadProjectId } =
+      captureDraftWorkspaceBinding();
     const p = (async function () {
       // 多 session 并发:不预热 engine。新建空 session 的 buffer 由 switchActiveTo({fresh}) 起。
       try {
-        // The draft's selected working directory is sent along with
-        // materialization; null = backend default (session-private directory).
-        // The argument is captured at the invoke's synchronous evaluation, so a
-        // later selection during the await does not affect this creation. The
-        // post-materialization lane default application likewise keys off
-        // whether this creation was bound.
-        const { boundWorkspace, boundRoots, boundProjectId, payloadRoots, payloadProjectId } =
-          captureDraftWorkspaceBinding();
         const meta = await invoke("create_session", {
           workspacePath: boundWorkspace,
           workspaceRoots: payloadRoots,

@@ -149,14 +149,22 @@ const expectedProtocolHashes = {
   // (bridge/sessions.js). Recomputed again for workspace-bound sessions:
   // get_session_workspace_binding query + bound-draft staged mode application
   // (set_plan_mode_next / exit_plan_to_yolo) at materialization.
-  sessions: 'c85e365dcf0874b577396a02f764cb6f108ad34a4b54c0853cd8f918ffa39b5c',
+  // Recomputed again for the single-entry workspace picker: create_session now
+  // also carries the keychain snapshot (workspaceRoots) and project ownership
+  // (projectId) captured from the draft, and the draft staging gains
+  // draftWorkspaceRoots/draftProjectId (bridge/sessions.js).
+  sessions: '178db14f63cb1f74aa03be81d3d19642b4981f626a0894da7b25a0b39ae3da4c',
   settings: 'a44929caff59641eb059f28885f1674d4e277412526d31c1d3ddfd75e44d0496',
   updater: '86412d40999a268d3d92dc4fe97e3fe465de08745423be820f38a462d79aaced',
   // Recomputed for the comment-only English translation of the voice bridge
   // (PR-added Chinese comments inside the postprocess_voice_text invoke
   // span are part of the hashed source; no invoke/listen surface changed).
   voice: '2a2e8d12150ca86bb970ad099e7b72ab6491768bbc42354cd5ecc800c891c733',
-  projects: '3108533baca6692918b8ac0e095ee036e49460c49b997194f7cb2174401e5be1',
+  // Recomputed for the single-entry workspace picker: the projects domain gains
+  // the ensure_folder_projects / update_project(roots, lastPrimaryRoot) /
+  // projects_set_never_materialize / align_session_to_project invoke spans
+  // (bridge/projects.js).
+  projects: 'e229ecfb9dc5406a1af647d699089e00fceda44a7c60fe25da5f94777b4e3a4e',
 };
 
 for (const [domain, files] of Object.entries(protocolSources)) {
