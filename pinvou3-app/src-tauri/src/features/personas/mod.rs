@@ -314,7 +314,7 @@ pub fn update_user_persona(mut card: PersonaCard) -> Result<PersonaSummary, Stri
     Ok(card.summary())
 }
 
-/// Delete a user card. Thin pub entry over [`delete_user_persona_with`] for
+/// Delete a user card. Thin pub entry over `delete_user_persona_with` for
 /// callers with no post-delete work — the headless CLI's `personas delete`
 /// consumes this surface (the sweep dropped it as GUI-dead).
 pub fn delete_user_persona(id: &str) -> Result<(), String> {
