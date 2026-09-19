@@ -516,9 +516,11 @@ fn unrecognized_output_value_falls_through_to_usage_error() {
     // stays in argv and surfaces as the standard usage error.
     let error = parse_args(["pinvou", "--output", "yaml", "benchmark", "list"]).unwrap_err();
     assert_eq!(error.exit_code(), ExitCode::Usage);
-    assert_eq!(
-        error.to_string(),
-        "usage: pinvou benchmark <command> | pinvou agent run"
+    // The usage line enumerates every family; pin the prefix instead of the
+    // whole enumeration so adding a family does not touch this test.
+    assert!(
+        error.to_string().starts_with("usage: pinvou benchmark <command>"),
+        "{error}"
     );
 }
 

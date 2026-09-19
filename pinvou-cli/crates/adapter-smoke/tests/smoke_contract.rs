@@ -1,11 +1,14 @@
 use std::time::Duration;
 
+// The judge wire types (JudgeDimensionScore/JudgeStatus/JudgeWireResponse/
+// parse_judge_response) this import once carried were swept from
+// adapter-smoke on main (only the FindingSource::Judge serde variant
+// remains); this suite never used them beyond the import.
 use adapter_smoke::{
-    JudgeDimensionScore, JudgeStatus, JudgeWireResponse, ProductScoreConfidence,
-    ProductScoreDimension, SMOKE_TOOL_POLICY_ID, SMOKE_TOOL_POLICY_ID_DEPRECATED, SmokeAdapter,
-    SmokeAnalysisMaterial, SmokeRecord, SmokeToolEvent, SmokeUsage, ToolExpectation, analyze_rules,
-    calculate_product_score, is_low_cache_hit_ratio, latency_exceeds_twice_median,
-    parse_judge_response, render_smoke_markdown, smoke_cases,
+    ProductScoreConfidence, ProductScoreDimension, SMOKE_TOOL_POLICY_ID,
+    SMOKE_TOOL_POLICY_ID_DEPRECATED, SmokeAdapter, SmokeAnalysisMaterial, SmokeRecord,
+    SmokeToolEvent, SmokeUsage, ToolExpectation, analyze_rules, calculate_product_score,
+    is_low_cache_hit_ratio, latency_exceeds_twice_median, render_smoke_markdown, smoke_cases,
 };
 use agent_backend_api::PrivateInputResolver;
 use benchmark_core::{

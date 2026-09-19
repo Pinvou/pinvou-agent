@@ -28,11 +28,10 @@ fn every_family_token_dispatches_to_its_module() {
         ("voice", "asr-status"),
         ("deps", "check"),
         // feedback submit requires its options since the family was
-        // implemented (it used to be a bare-token stub).
-        (
-            "feedback",
-            "submit --type issue --title t --body-file /tmp/b.md",
-        ),
+        // implemented (it used to be a bare-token stub). main's feedback
+        // request carries title/description/entry_point only, so there is
+        // no --type.
+        ("feedback", "submit --title t --body-file /tmp/b.md"),
         ("monitor", "status"),
         ("artifacts", "list"),
         ("projects", "list"),

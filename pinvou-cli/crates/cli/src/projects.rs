@@ -374,6 +374,10 @@ fn move_session(
         .map_err(|error| project_error("move", error))?;
     let mut value = serde_json::to_value(&outcome).unwrap_or_else(|_| serde_json::json!({}));
     value["session_id"] = serde_json::json!(session_id);
+    // Main's MoveSessionOutcome dropped project_id (the GUI knows what it
+    // asked for); a headless caller reads the outcome back from JSON, so the
+    // CLI echoes the requested id explicitly (null for the ungroup move).
+    value["project_id"] = serde_json::json!(project_id);
     let human = match project_id {
         Some(project_id) => format!("moved {session_id} into {project_id}"),
         None => format!("moved {session_id} out of its project"),

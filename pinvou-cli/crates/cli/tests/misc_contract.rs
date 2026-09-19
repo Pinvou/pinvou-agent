@@ -858,14 +858,12 @@ fn deps_install_rejects_packages_outside_the_allowlist() {
 // ── feedback ────────────────────────────────────────────────────────────────
 
 #[test]
-fn feedback_submit_parses_types_and_options() {
+fn feedback_submit_parses_options() {
     assert!(
         parse_args([
             "pinvou",
             "feedback",
             "submit",
-            "--type",
-            "issue",
             "--title",
             "t",
             "--body-file",
@@ -873,24 +871,35 @@ fn feedback_submit_parses_types_and_options() {
         ])
         .is_ok()
     );
-    assert!(
-        parse_args([
-            "pinvou",
-            "feedback",
-            "submit",
-            "--type",
-            "suggestion",
-            "--title",
-            "t",
-            "--body-file",
-            "/tmp/body.md",
-            "--attach",
-            "/tmp/a.log",
-            "--attach",
-            "/tmp/b.png"
-        ])
-        .is_ok()
-    );
+    // main's feedback request carries title/description/entry_point only
+    // (the parse-then-drop fields were swept), so --type and --attach are
+    // unsupported options and must be usage errors, not silently ignored.
+    let error = parse_args([
+        "pinvou",
+        "feedback",
+        "submit",
+        "--type",
+        "issue",
+        "--title",
+        "t",
+        "--body-file",
+        "/tmp/body.md",
+    ])
+    .expect_err("--type was swept from the feedback surface");
+    assert_usage(&error, "--type");
+    let error = parse_args([
+        "pinvou",
+        "feedback",
+        "submit",
+        "--title",
+        "t",
+        "--body-file",
+        "/tmp/body.md",
+        "--attach",
+        "/tmp/a.log",
+    ])
+    .expect_err("--attach was swept from the feedback surface");
+    assert_usage(&error, "--attach");
 }
 
 #[test]
@@ -899,30 +908,17 @@ fn feedback_rejects_invalid_usage_with_exit_two() {
         vec!["pinvou", "feedback"],
         vec!["pinvou", "feedback", "bogus"],
         vec!["pinvou", "feedback", "submit"],
-        // Bad --type must be a usage error naming the valid values.
+        // Missing --title or --body-file must be usage errors naming the
+        // flag; there is no --type on the swept request shape.
         vec![
             "pinvou",
             "feedback",
             "submit",
-            "--type",
-            "bug",
-            "--title",
-            "t",
             "--body-file",
             "/tmp/b.md",
         ],
-        vec![
-            "pinvou",
-            "feedback",
-            "submit",
-            "--type",
-            "issue",
-            "--body-file",
-            "/tmp/b.md",
-        ],
-        vec![
-            "pinvou", "feedback", "submit", "--type", "issue", "--title", "t",
-        ],
+        vec!["pinvou", "feedback", "submit", "--title", "t"],
+        vec!["pinvou", "feedback", "submit", "--title", "--body-file", "x"],
         vec![
             "pinvou",
             "feedback",
@@ -931,16 +927,8 @@ fn feedback_rejects_invalid_usage_with_exit_two() {
             "t",
             "--body-file",
             "/tmp/b.md",
-        ],
-        vec![
-            "pinvou",
-            "feedback",
-            "submit",
-            "--type",
-            "issue",
-            "--title",
-            "--body-file",
-            "x",
+            "--attach",
+            "/tmp/a.log",
         ],
     ];
     for arguments in invalid {
@@ -960,8 +948,6 @@ fn feedback_submit_round_trips_pending_and_receipt_files() {
         "pinvou",
         "feedback",
         "submit",
-        "--type",
-        "suggestion",
         "--title",
         "cli smoke",
         "--body-file",
@@ -987,7 +973,6 @@ fn feedback_submit_round_trips_pending_and_receipt_files() {
         .expect("pending bundle must exist"),
     )
     .unwrap();
-    assert_eq!(pending["type"], "suggestion");
     assert_eq!(pending["title"], "cli smoke");
     assert_eq!(pending["description"], "Reproduction steps go here.\n");
     assert_eq!(pending["entry_point"], "settings");
@@ -1003,15 +988,12 @@ fn feedback_submit_round_trips_pending_and_receipt_files() {
     )
     .unwrap();
     assert_eq!(receipt["status"], "failed_validation");
-    assert_eq!(receipt["retryable"], false);
 
     // The human output prints the issues URL instead of opening a browser.
     let outcome = run(&[
         "pinvou",
         "feedback",
         "submit",
-        "--type",
-        "issue",
         "--title",
         "human",
         "--body-file",
@@ -1025,35 +1007,9 @@ fn feedback_submit_round_trips_pending_and_receipt_files() {
             .contains("https://github.com/Pinvou/pinvou-agent/issues")
     );
 
-    // Attachments are registered in the bundle.
-    let attachment = home.root.join("trace.log");
-    std::fs::write(&attachment, "log line\n").unwrap();
-    let value = run_json(&[
-        "pinvou",
-        "feedback",
-        "submit",
-        "--type",
-        "issue",
-        "--title",
-        "attach",
-        "--body-file",
-        body.to_str().unwrap(),
-        "--attach",
-        attachment.to_str().unwrap(),
-    ]);
-    let feedback_id = value["feedback_id"].as_str().unwrap();
-    let pending: serde_json::Value = serde_json::from_str(
-        &std::fs::read_to_string(
-            home.root
-                .join("feedback")
-                .join("pending")
-                .join(format!("{feedback_id}.json")),
-        )
-        .unwrap(),
-    )
-    .unwrap();
-    assert_eq!(pending["attachments"][0]["name"], "trace.log");
-    assert_eq!(pending["attachments"][0]["media_type"], "text/plain");
+    // The bundle carries no attachments: the swept request struct has no
+    // attachment surface left, and --attach is a usage error (pinned in
+    // feedback_submit_parses_options).
 }
 
 #[test]
@@ -1064,8 +1020,6 @@ fn feedback_submit_fails_cleanly_on_missing_body_file() {
         "pinvou",
         "feedback",
         "submit",
-        "--type",
-        "issue",
         "--title",
         "t",
         "--body-file",
@@ -1088,8 +1042,6 @@ fn feedback_submit_refuses_a_body_file_over_the_read_limit() {
         "pinvou",
         "feedback",
         "submit",
-        "--type",
-        "issue",
         "--title",
         "t",
         "--body-file",

@@ -502,23 +502,47 @@ fn memory_pending_confirm_ignore_and_never_resolve_fixture_entries() {
     assert!(error.to_string().contains("pending_not_found"), "{error}");
 }
 
+/// Seeds one `active` recent-work entry straight into the JSONL store. The
+/// writer API (`upsert_recent_work`) was swept from the feature on main —
+/// the only remaining producer is the GUI turn pipeline — so the fixture
+/// writes the same store format the loader recovers, keeping this contract
+/// black-box against the CLI archive/overview lanes.
+fn seed_recent_work(id: &str, title: &str, summary: &str, source: &str) {
+    use std::io::Write as _;
+    let item = pinvou3_lib::features::memory::RecentWorkItem {
+        id: id.to_owned(),
+        title: title.to_owned(),
+        summary: summary.to_owned(),
+        status: "active".to_owned(),
+        source: source.to_owned(),
+        created_at: "2026-09-19T00:00:00+00:00".to_owned(),
+        updated_at: "2026-09-19T00:00:00+00:00".to_owned(),
+        last_hit: String::new(),
+        expires_at: "2099-01-01T00:00:00+00:00".to_owned(),
+    };
+    let path = pinvou3_lib::features::memory::recent_work_path();
+    std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+    let mut file = std::fs::OpenOptions::new()
+        .create(true)
+        .append(true)
+        .open(&path)
+        .unwrap();
+    writeln!(file, "{}", serde_json::to_string(&item).unwrap()).unwrap();
+}
+
 #[test]
 fn memory_archive_marks_recent_work_fixture_archived() {
     let _guard = ENV_LOCK.lock().unwrap_or_else(|error| error.into_inner());
     let _home = TempHome::new("archive");
 
-    let item = pinvou3_lib::features::memory::upsert_recent_work(
-        pinvou3_lib::features::memory::RecentWorkPatch {
-            id: None,
-            title: "Shipped CLI memory parity".to_owned(),
-            summary: Some("memory family contract".to_owned()),
-            source: Some("contract-test".to_owned()),
-            ttl_days: None,
-        },
-    )
-    .unwrap();
+    seed_recent_work(
+        "recent-work-1",
+        "Shipped CLI memory parity",
+        "memory family contract",
+        "contract-test",
+    );
 
-    run_ok(&["pinvou", "memory", "archive", &item.id]);
+    run_ok(&["pinvou", "memory", "archive", "recent-work-1"]);
 
     let stored = pinvou3_lib::features::memory::load_recent_work().unwrap();
     assert_eq!(stored.len(), 1);
@@ -546,16 +570,12 @@ fn memory_overview_counts_match_fixtures_and_write_snapshot() {
     // one pending entry left unresolved
     enqueue_fixture("preference", "Prefer short summaries");
     // one recent work entry
-    pinvou3_lib::features::memory::upsert_recent_work(
-        pinvou3_lib::features::memory::RecentWorkPatch {
-            id: None,
-            title: "Shipped CLI memory parity".to_owned(),
-            summary: None,
-            source: Some("contract-test".to_owned()),
-            ttl_days: None,
-        },
-    )
-    .unwrap();
+    seed_recent_work(
+        "recent-work-overview",
+        "Shipped CLI memory parity",
+        "",
+        "contract-test",
+    );
 
     let json = run_ok(&["pinvou", "memory", "overview", "--output", "json"]);
     let value: serde_json::Value = serde_json::from_str(&json).unwrap();

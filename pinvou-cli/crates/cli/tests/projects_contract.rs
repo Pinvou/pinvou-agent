@@ -340,10 +340,8 @@ fn projects_create_list_update_delete_round_trip_persists_the_store() {
     let value = run_json(&["pinvou", "projects", "delete", &id, "--yes"]);
     assert_eq!(value["id"], id);
     assert_eq!(value["action"], "deleted");
-    assert!(
-        value["affected_session_ids"].as_array().unwrap().is_empty(),
-        "no session was assigned"
-    );
+    // The payload carries only id/action: main's delete_project returns ()
+    // (the swept report struct), so there is no affected-session list. 
     assert!(
         !home.store_file().exists(),
         "the empty store must not keep a file"
@@ -481,15 +479,11 @@ fn projects_move_assigns_sessions_and_reports_unknowns() {
         "the traversal id must be rejected as a usage error"
     );
 
-    // delete reports the affected assignment and never deletes sessions.
+    // delete unassigns the session (falling back to automatic grouping) and
+    // never deletes sessions; the payload reports only the action itself
+    // since main's delete_project returns no report struct.
     let value = run_json(&["pinvou", "projects", "delete", &project_id, "--yes"]);
-    let affected = value["affected_session_ids"].as_array().unwrap();
-    assert!(
-        affected
-            .iter()
-            .any(|entry| entry.as_str() == Some(session_id.as_str())),
-        "delete must report the unassigned session"
-    );
+    assert_eq!(value["action"], "deleted");
     let value = run_json(&["pinvou", "projects", "list"]);
     assert!(
         value["assignments"].get(session_id.as_str()).is_none(),
