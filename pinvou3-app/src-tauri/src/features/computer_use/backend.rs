@@ -1085,9 +1085,14 @@ impl BackendRegistry {
 /// BACKEND_CALL_TIMEOUT while the construction runs. The check lives at
 /// this shared funnel point (every spawn site — per-session revoke, tool
 /// Drop, global stop — routes through here), so all of them get the fast
-/// path; the failure direction of the inherent race is safe: if a request
-/// starts the backend concurrently, the handle is no longer Pending by the
-/// time this reads it and the cleanup runs.
+/// path. Both directions of the inherent race are safe: if a request starts
+/// the backend concurrently, the handle is no longer Pending by the time
+/// this reads it and the cleanup runs; if the cleanup wins the read, the
+/// request is still queued and must re-check the consent guard before it
+/// engages the backend (tool.rs `run` re-checks the stop flag right before
+/// the first backend call of every action class), so a stop that latched the
+/// flag before the queued request runs rejects it instead of starting the
+/// backend after the stop returned.
 fn emergency_cleanup(handle: BackendHandle) {
     if handle.is_never_started() {
         return;

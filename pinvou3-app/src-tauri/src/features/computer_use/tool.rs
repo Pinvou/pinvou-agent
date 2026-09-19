@@ -1402,13 +1402,32 @@ fn run(parts: Parts, parsed: ParsedCall, workspace: PathBuf) -> ToolResult {
             }
         }
 
-        // Last-moment read-only re-check before injection (stop flag + grant
-        // still valid): after the gate there can be time-consuming steps such
-        // as an automatic screenshot, during which the user may revoke/stop
-        // (review finding).
-        if action.class() == ActionClass::Input {
-            if let Err(rejection) = parts.shared.verify_input_action(&parts.session_id) {
-                return Err(rejection.message());
+        // Last-moment re-check before the backend is engaged (stop flag — and
+        // for input, the grant — still valid): after the gate there can be
+        // time-consuming steps such as an automatic screenshot, during which
+        // the user may revoke/stop (review finding). For input this gates the
+        // injection; for observe it gates the backend start itself — a stop
+        // landing while the run is still queued on the blocking pool must not
+        // let the queued request lazily construct the platform backend and
+        // capture after the stop has returned. The request's cancel flag
+        // registers only at send time (it cannot inherit that stop), and the
+        // emergency cleanup's Pending fast path does nothing for a
+        // never-started handle (nothing to release), so this re-check is the
+        // only gate left for the first screenshot. A mapless coordinate
+        // observe (element_at_point) auto-captures above, ahead of this gate,
+        // on the same accepted line as the input lane: that lane's automatic
+        // screenshot also runs before its re-checks, and the capture is
+        // discarded when the gate rejects.
+        match action.class() {
+            ActionClass::Input => {
+                if let Err(rejection) = parts.shared.verify_input_action(&parts.session_id) {
+                    return Err(rejection.message());
+                }
+            }
+            ActionClass::Observe => {
+                if let Err(rejection) = parts.shared.check_readonly() {
+                    return Err(rejection.message());
+                }
             }
         }
 
@@ -1463,6 +1482,19 @@ fn run(parts: Parts, parsed: ParsedCall, workspace: PathBuf) -> ToolResult {
                     std::thread::sleep(std::time::Duration::from_millis(*ms));
                 }
                 _ => std::thread::sleep(std::time::Duration::from_millis(POST_ACTION_SETTLE_MS)),
+            }
+            // For an observe action the follow-up capture IS the outcome (a
+            // wait's whole product is the fresh screenshot), and its sleep is
+            // the one wide pre-capture window in this lane (up to MAX_WAIT_MS
+            // versus the fixed settle above), so a stop landing during the
+            // sleep must still abort the capture. Input actions keep their
+            // established design: their capture documents the aftermath of an
+            // already-gated injection, with only the narrow settle in
+            // between.
+            if action.class() == ActionClass::Observe {
+                if let Err(rejection) = parts.shared.check_readonly() {
+                    return Err(rejection.message());
+                }
             }
             match capture_and_store(&parts, &workspace) {
                 Ok(fresh) => {
