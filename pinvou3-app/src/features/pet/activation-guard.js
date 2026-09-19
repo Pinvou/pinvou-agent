@@ -1,4 +1,4 @@
-export const PET_ACTIVATION_GUARD_MS = 220;
+const PET_ACTIVATION_GUARD_MS = 220;
 
 export function createPetActivationGuard({
   now = () => performance.now(),

@@ -17,9 +17,7 @@ const ctx = {};
 vm.createContext(ctx);
 vm.runInContext(`${code}
 ${visualPosterCode}
-this.PERSONAL_WORKBENCH_SCENE_ID = PERSONAL_WORKBENCH_SCENE_ID;
 this.PERSONAL_WORKBENCH_SCENE_KEY = PERSONAL_WORKBENCH_SCENE_KEY;
-this.PERSONAL_WORKBENCH_SCENE_NAME = PERSONAL_WORKBENCH_SCENE_NAME;
 this.PERSONAL_WORKBENCH_TEMPLATES = PERSONAL_WORKBENCH_TEMPLATES;
 this.DEFAULT_PERSONAL_WORKBENCH_PROMPT = DEFAULT_PERSONAL_WORKBENCH_PROMPT;
 this.buildDefaultPersonalWorkbenchPayloadText = buildDefaultPersonalWorkbenchPayloadText;
@@ -34,9 +32,7 @@ this.shouldUseVisualPosterScene = shouldUseVisualPosterScene;`, ctx, {
 });
 
 const {
-  PERSONAL_WORKBENCH_SCENE_ID,
   PERSONAL_WORKBENCH_SCENE_KEY,
-  PERSONAL_WORKBENCH_SCENE_NAME,
   PERSONAL_WORKBENCH_TEMPLATES,
   DEFAULT_PERSONAL_WORKBENCH_PROMPT,
   buildDefaultPersonalWorkbenchPayloadText,
@@ -49,9 +45,7 @@ const {
   shouldUseVisualPosterScene,
 } = ctx;
 
-assert.strictEqual(PERSONAL_WORKBENCH_SCENE_ID, 39);
 assert.strictEqual(PERSONAL_WORKBENCH_SCENE_KEY, 'personal-workbench');
-assert.strictEqual(PERSONAL_WORKBENCH_SCENE_NAME, '个人工作台');
 assert.deepStrictEqual(Array.from(PERSONAL_WORKBENCH_TEMPLATES, item => item.title), [
   '生活记录',
   '个人账本',

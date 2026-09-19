@@ -15,30 +15,18 @@ copyFileSync(source, modulePath);
 
 try {
   const {
-    CODEX_ANIMATIONS,
-    CODEX_IDLE_FRAME_DURATIONS_MS,
     buildAnimationSequence,
     buildPreviewSequence,
   } = await import(`${new URL(`file:///${modulePath.replaceAll("\\", "/")}`).href}?t=${Date.now()}`);
 
-  assert.deepEqual(CODEX_ANIMATIONS, {
-    idle: { row: 0, frames: 6, frameDurationMs: 140 },
-    "running-right": { row: 1, frames: 8, frameDurationMs: 120, lastFrameDurationMs: 220 },
-    "running-left": { row: 2, frames: 8, frameDurationMs: 120, lastFrameDurationMs: 220 },
-    waving: { row: 3, frames: 4, frameDurationMs: 140, lastFrameDurationMs: 280 },
-    jumping: { row: 4, frames: 5, frameDurationMs: 140, lastFrameDurationMs: 280 },
-    failed: { row: 5, frames: 8, frameDurationMs: 140, lastFrameDurationMs: 240 },
-    waiting: { row: 6, frames: 6, frameDurationMs: 150, lastFrameDurationMs: 260 },
-    running: { row: 7, frames: 6, frameDurationMs: 120, lastFrameDurationMs: 220 },
-    review: { row: 8, frames: 6, frameDurationMs: 150, lastFrameDurationMs: 280 },
-  });
-  assert.deepEqual(CODEX_IDLE_FRAME_DURATIONS_MS, [280, 110, 110, 140, 140, 320]);
+  // Expectation fixture mirroring the module-private idle frame timings.
+  const IDLE_FRAME_DURATIONS_MS = [280, 110, 110, 140, 140, 320];
 
   const idle = buildAnimationSequence("idle");
   assert.equal(idle.loopStartIndex, 0);
   assert.deepEqual(
     idle.frames.map((frame) => frame.durationMs),
-    CODEX_IDLE_FRAME_DURATIONS_MS.map((duration) => duration * 6),
+    IDLE_FRAME_DURATIONS_MS.map((duration) => duration * 6),
   );
 
   const running = buildAnimationSequence("running");
@@ -71,7 +59,7 @@ try {
     4626,
     "the three-action showcase should remain visible for about 4.6 seconds",
   );
-  assert.equal(preview.frames.length, 15 + CODEX_IDLE_FRAME_DURATIONS_MS.length);
+  assert.equal(preview.frames.length, 15 + IDLE_FRAME_DURATIONS_MS.length);
   assert.equal(preview.frames[15].row, 0, "the preview rest loop should be the idle row");
 
   const previewReduced = buildPreviewSequence({ reducedMotion: true });
