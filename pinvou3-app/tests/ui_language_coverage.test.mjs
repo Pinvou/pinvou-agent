@@ -33,10 +33,16 @@ for (const language of ['zh', 'en', 'ja']) {
   ]) {
     assert.ok(dict[language][section], `${language}.${section} must exist`);
   }
+  // All 21 uiAuxChat keys are pinned (round-14 minor-3: the list previously
+  // covered 13, so sendingHint/bindingHint and the six quote* keys could be
+  // deleted from every dictionary with the suite green — and quoteChipCount's
+  // absence renders `undefined` at runtime).
   for (const key of [
     'openLabel', 'panelTitle', 'landingHint', 'emptyState', 'inputPlaceholder',
-    'send', 'busyHint', 'newTopic', 'newTopicConfirm', 'sendFailed', 'ensureFailed',
-    'discardFailed', 'close',
+    'send', 'busyHint', 'bindingHint', 'sendingHint', 'newTopic', 'newTopicConfirm',
+    'sendFailed', 'ensureFailed', 'discardFailed', 'close',
+    'quoteAction', 'quoteChipCount', 'quoteRemove',
+    'quoteLimitSingle', 'quoteLimitCount', 'quoteLimitTotal',
   ]) {
     assert.ok(dict[language].uiAuxChat[key], `${language}.uiAuxChat.${key} must exist`);
   }
@@ -310,15 +316,26 @@ assert.match(auxChatPanel, /\{sending && !busy && \(/);
 assert.match(auxChatPanel, /const draftByTask = new Map\(\);/);
 assert.match(auxChatPanel, /setDraft\(sessionId \? \(draftByTask\.get\(sessionId\) \|\| ''\) : ''\);/);
 assert.match(auxChatPanel, /if \(sessionId\) draftByTask\.set\(sessionId, next\);/);
-// A successful send clears the draft and drops only the quotes captured when
-// the send started (they already traveled inline with the message — keeping
-// them would invite a duplicate quote block on the next send), while quotes
-// staged from the main view during the in-flight window survive for the next
-// message.
+// A successful send consumes only what it actually sent: the task draft is
+// cleared only when it still equals the sent text (text typed during the
+// in-flight window belongs to the next message), and only the quotes captured
+// when the send started are dropped — quotes staged from the main view while
+// the send was in flight survive for the next message.
 assert.match(
   auxChatPanel,
-  /if \(sentTaskId\) \{\s*draftByTask\.delete\(sentTaskId\);\s*dropAuxQuotes\(sentTaskId, quotes\);\s*\}/,
+  /if \(sentTaskId\) \{[\s\S]{0,600}?draftByTask\.delete\(sentTaskId\);[\s\S]{0,300}?dropAuxQuotes\(sentTaskId, quotes\);\s*\}/,
 );
+// Same-binding consumption regardless of generation (round-14 B3): a mid-send
+// switch A→B→A re-binds the *same* aux id (ensure is idempotent), so the
+// success path must not skip consumption on a generation bump — the binding
+// check alone distinguishes the restart case (a new aux id). The visible
+// draft clear is equality-guarded for the same reason.
+assert.match(
+  auxChatPanel,
+  /await auxChat\.send\(sentAuxId, quoteBlock \? text \+ quoteBlock : text\);\s*\n[\s\S]{0,900}?if \(auxIdRef\.current !== sentAuxId\) return;\s*if \(sentTaskId\) \{/,
+  'consumption must follow the binding check directly, with no generation guard before it',
+);
+assert.match(auxChatPanel, /setDraft\(\(current\) => \(current\.trim\(\) === text \? '' : current\)\)/);
 assert.doesNotMatch(restartBlock, /setDraft\(''\)/);
 // Conversation quotes ("划词引用"): staged per task through the aux-quote store
 // (module scope, same ownership as the draft) and appended to the outgoing
@@ -363,7 +380,7 @@ assert.match(restartBlock.slice(finallyClause), /} finally \{[\s\S]*?if \(genera
 // key-repeat Enter must be ignored outright. The latch must be released on
 // every outcome via finally, or the composer would lock after one failure.
 assert.match(auxChatPanel, /if \(!auxChat \|\| !sentAuxId \|\| \(!text && !quoteBlock\) \|\| busy \|\| restarting \|\| sendingRef\.current\) return;/);
-assert.match(auxChatPanel, /sendingRef\.current = true;[\s\S]*?await auxChat\.send\(sentAuxId, quoteBlock \? text \+ quoteBlock : text\);[\s\S]*?\} finally \{[\s\S]*?if \(auxIdRef\.current === sentAuxId\) \{\s*sendingRef\.current = false;/);
+assert.match(auxChatPanel, /sendingRef\.current = true;[\s\S]*?await auxChat\.send\(sentAuxId, quoteBlock \? text \+ quoteBlock : text\);[\s\S]*?\} finally \{[\s\S]*?if \(auxIdRef\.current === sentAuxId && generationRef\.current === sentGeneration\) \{\s*sendingRef\.current = false;/);
 assert.match(auxChatPanel, /if \(event\.repeat\) return;/);
 // Rebind resets restarting (round-7 m11): the restart invokes have no
 // transport timeout, so a promise that never settles must not latch the next
@@ -378,11 +395,12 @@ assert.match(rebindBlock, /setRestarting\(false\);/, 'the rebind effect must res
 // auxChat.send invoke (same no-transport-timeout class) must not latch sends
 // across later task rebinds either.
 assert.match(rebindBlock, /sendingRef\.current = false;/, 'the rebind effect must reset the send latch itself');
-// Stale-finally latch guard (round-9 minor-3): an old send's late finally
-// must not clear the latch a newer send on the rebound task relies on — the
-// release is gated on the binding still being the one the send was issued
-// for.
-assert.match(auxChatPanel, /finally \{[\s\S]{0,400}if \(auxIdRef\.current === sentAuxId\) \{\s*sendingRef\.current = false;\s*setSending\(false\);\s*\}/);
+// Stale-finally latch guard (round-9 minor-3, tightened in round-14 B2): an
+// old send's late finally must not clear the latch a newer send relies on —
+// a same-id rebind (switch A→B→A; ensure is idempotent) keeps auxIdRef equal
+// to sentAuxId, so the release must be gated on the send's generation as well
+// as the binding.
+assert.match(auxChatPanel, /finally \{[\s\S]{0,700}if \(auxIdRef\.current === sentAuxId && generationRef\.current === sentGeneration\) \{\s*sendingRef\.current = false;\s*setSending\(false\);\s*\}/);
 // Double-banner guard (round-9 minor-1): entering the restart flow must
 // clear a stale sendFailed too, or a failed send's "retry" banner renders
 // next to the ensure-failure banner after the binding was cleared.

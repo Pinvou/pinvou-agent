@@ -249,16 +249,27 @@ export function AuxChatPanel({ sessionId, activationKey, t, theme, onClose, onAc
     setSendFailed(false);
     try {
       await auxChat.send(sentAuxId, quoteBlock ? text + quoteBlock : text);
-      if (generationRef.current !== sentGeneration) return;
+      // The message was delivered to sentAuxId. A switch away and back
+      // re-binds the *same* aux id (ensure is idempotent) and aux ids are
+      // 1:1 with tasks, so when the binding still resolves to sentAuxId the
+      // visible composer shows this task — consumption must proceed even
+      // across a generation bump, or the composer keeps the delivered text
+      // and the next Enter re-sends it with its quote block (round-14 B3).
+      // The restart case (re-bind to a *new* aux) is excluded by this
+      // binding check, so the generation guard is not needed here.
       if (auxIdRef.current !== sentAuxId) return;
-      setDraft('');
-      // The send only consumes the quotes it captured when it started: quotes
-      // staged from the main view while the send was in flight belong to the
-      // next message and must survive the success callback.
       if (sentTaskId) {
-        draftByTask.delete(sentTaskId);
+        // Consume only what was actually sent: text typed after this send
+        // started belongs to the next message, and quotes staged from the
+        // main view during the in-flight window survive the success
+        // callback (they were not part of the captured quote block).
+        const storedDraft = draftByTask.get(sentTaskId);
+        if (storedDraft === undefined || storedDraft.trim() === text) {
+          draftByTask.delete(sentTaskId);
+        }
         dropAuxQuotes(sentTaskId, quotes);
       }
+      setDraft((current) => (current.trim() === text ? '' : current));
       pullSnapshot(auxIdRef.current);
     } catch (error) {
       console.warn('[pinvou3][aux-chat] send failed', error);
@@ -266,11 +277,13 @@ export function AuxChatPanel({ sessionId, activationKey, t, theme, onClose, onAc
       if (auxIdRef.current !== sentAuxId) return;
       setSendFailed(true);
     } finally {
-      // Only the binding this send was issued for may release the latch: the
-      // rebind effect resets sendingRef for the new binding, and an old
-      // send's late finally must not clear the latch a newer send on the
-      // rebound task is relying on (same stale-finally class as handleRestart).
-      if (auxIdRef.current === sentAuxId) {
+      // The latch may be released only by the exact send that set it: a
+      // same-id rebind (switch away and back) keeps auxIdRef equal to
+      // sentAuxId, so a binding-only gate would let a stale send's late
+      // finally clear the latch a newer send on the rebound task relies on
+      // (round-14 B2). The rebind effect resets the latch on every switch,
+      // so refusing here is safe.
+      if (auxIdRef.current === sentAuxId && generationRef.current === sentGeneration) {
         sendingRef.current = false;
         setSending(false);
       }

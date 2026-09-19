@@ -248,7 +248,9 @@ impl SessionTurnLifecycles {
 /// edit_last_turn resends do not go through this function (the foundation's
 /// Op::EditLastTurn carries no tool surface and reuses the engine config);
 /// their zero-tool state is backstopped by the spawn config — see the `aux-`
-/// branch of `bridge::build_engine_config_for_session_roots`.
+/// branch of `bridge::build_engine_config_for_session_roots` — and the
+/// zero-tool *reminder* is merged into the resent message by
+/// `edit_last_turn_reserved` (round-14 minor-1).
 pub(crate) fn turn_restrict_tools(
     session_id: &str,
     persona_conversational: bool,
@@ -2614,7 +2616,7 @@ impl EnginePool {
     pub(crate) async fn edit_last_turn_reserved(
         &self,
         session_id: &str,
-        new_message: String,
+        mut new_message: String,
         display_message: Message,
         mut reservation: TurnReservation,
     ) -> Result<()> {
@@ -2644,6 +2646,18 @@ impl EnginePool {
         reservation.ensure_active()?;
         // 重发也是 turn 提交：刷新空闲时钟（理由同 send_reserved_user_message）。
         self.touch_engine_activity(session_id).await;
+        // Aux zero-tool reminder for edit resends (round-14 minor-1): this
+        // path bypasses send_reserved_user_message, so merge the reminder
+        // into the resent message here — otherwise an aux edit-resend can
+        // regress to literal tool-call markup in the answer. The foundation
+        // strips the <system-reminder> block from the stored context the same
+        // way as on the send path. The tool *surface* stays zero via the
+        // spawn config; persona anchors share the pre-existing gap and are
+        // unchanged.
+        if let Some(reminder) = merge_aux_zero_tool_reminder(session_id, None) {
+            new_message =
+                format!("<system-reminder>\n{reminder}\n</system-reminder>\n\n{new_message}");
+        }
         self.get_or_spawn(session_id)
             .await?
             .edit_last_turn_reserved(new_message, reservation)
