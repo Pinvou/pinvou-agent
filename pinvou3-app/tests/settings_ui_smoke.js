@@ -90,10 +90,30 @@ for (const settingsI18nSource of settingsI18nSources) {
     'local model port validation message must be provided in every UI language',
   );
 }
-// Memory delete / feedback close confirm-dialog wiring (no native
-// window.confirm, testid pins) is asserted by tests/settings_window_confirm.test.mjs,
-// which runs on every `npm test`; the runtime click flows below (①e/①f/①g/⑰.5)
-// still exercise the dialogs end to end in this smoke.
+// Memory delete / feedback close must route through in-app confirm dialogs
+// (the native window.confirm does not render in Tauri WebView2; see
+// tests/settings_window_confirm.test.mjs).
+assert.doesNotMatch(
+  settingsViewSource,
+  /window\.confirm\s*\(/,
+  'settings page must not call window.confirm (does not render in Tauri WebView2; use in-app confirm dialogs)',
+);
+// In-app confirm dialog testid pins: MemoryDeleteDialog routes through
+// SheetConfirmDialog and passes its pins as testid/confirmTestId props (the shared
+// dialog renders them as data-testid), while the feedback close confirm still
+// carries its literal data-testid attributes inline.
+const confirmTestIdPins = [
+  ['memory-delete-confirm', ['data-testid="memory-delete-confirm"', 'testid="memory-delete-confirm"']],
+  ['memory-delete-confirm-ok', ['data-testid="memory-delete-confirm-ok"', 'confirmTestId="memory-delete-confirm-ok"']],
+  ['feedback-close-confirm', ['data-testid="feedback-close-confirm"']],
+  ['feedback-close-confirm-ok', ['data-testid="feedback-close-confirm-ok"']],
+];
+for (const [confirmTestId, variants] of confirmTestIdPins) {
+  assert.ok(
+    variants.some((variant) => settingsViewSource.includes(variant)),
+    `missing in-app confirm dialog testid: ${confirmTestId}`,
+  );
+}
 
 function loadPuppeteer() {
   try { return require('puppeteer-core'); } catch { /* fall through */ }
@@ -527,8 +547,7 @@ async function modalWidth(page, headingText) {
     (document.querySelector('#voice-shortcut-intro-title')?.textContent || '').length > 0));
   await page.keyboard.press('Escape');
   await page.waitForFunction(() => !document.querySelector('#voice-shortcut-intro-title'), { timeout: 4000 });
-  rec('①g Esc closes the intro card', await page.evaluate(() =>
-    !document.querySelector('#voice-shortcut-intro-title')));
+  rec('①g Esc closes the intro card', true);
 
   await page.click('[data-testid="settings-section-memory"]');
   await page.waitForFunction(() => (document.querySelector('[data-testid="memory-profile-call-name"]')?.textContent || '').includes('升级前称呼'));

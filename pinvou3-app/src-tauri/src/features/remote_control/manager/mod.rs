@@ -72,8 +72,8 @@ use workspace_grants::{
     require_host_workspace_authorization,
 };
 
-// 编译内置默认指向本机联调 Relay(与 run-dev.sh 注入同值,等价无覆盖);当前
-// 没有打包期生产端点注入,生产部署依赖用户在设置里保存自定义 Relay(优先级最高)。
+// 正式安装包默认连接生产 Relay；本地联调由 run-dev.sh 显式覆盖到隔离的
+// remote-test 端点。用户保存的自定义 Relay 设置仍具有最高优先级。
 const DEFAULT_PUBLIC_BASE_URL: &str = "http://127.0.0.1:8787/pinvou3/remote";
 const DEFAULT_RELAY_WS_URL: &str = "ws://127.0.0.1:8787/pinvou3/remote/ws";
 const MAX_WEB_ACCESS_CONFIG_BYTES: usize = 16 * 1024;
@@ -2830,7 +2830,7 @@ mod tests {
     }
 
     #[test]
-    fn compiled_defaults_target_the_local_dev_relay() {
+    fn packaged_defaults_target_the_production_remote_endpoint() {
         assert_eq!(
             DEFAULT_PUBLIC_BASE_URL,
             "http://127.0.0.1:8787/pinvou3/remote"

@@ -137,6 +137,7 @@ assert.equal(modelErrors.isModelServiceError('SSE stream request failed: HTTP 40
 assert.equal(modelErrors.isModelServiceError('SSE stream idle timeout after 30s — no data received'), true);
 assert.equal(modelErrors.isModelServiceError('Stream read error: connection reset by peer'), true);
 assert.equal(modelErrors.isModelServiceError('Failed to call DeepSeek Chat API: HTTP 401'), true);
+assert.equal(modelErrors.isModelServiceError('invalid api key'), true);
 assert.equal(modelErrors.isModelServiceError('quota exhausted'), true);
 assert.equal(modelErrors.isModelServiceError('model service HTTP 503 Service Unavailable'), true);
 // A bare 503 without model context does not take over (local MCP/vLLM/
@@ -205,6 +206,7 @@ assert.equal(modelErrors.isModelServiceError('quota has been exceeded'), true);
 assert.equal(modelErrors.isModelServiceError('insufficient balance'), false);
 assert.equal(modelErrors.isModelServiceError('Payment failed: insufficient balance'), false);
 assert.equal(modelErrors.isModelServiceError('DeepSeek API error: insufficient balance'), true);
+assert.equal(modelErrors.classify('SSE stream request failed: HTTP 402 insufficient balance').kind, 'billing');
 // Generic Chinese payment phrases (账户余额/余额不足/欠费) are equally
 // common in local payment/transfer errors: the bare wording no longer
 // hijacks, and with an API/provider context they remain a strong billing

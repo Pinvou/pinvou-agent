@@ -533,7 +533,7 @@ test('app restart rebuilds page identities from URL inventory and restores the d
   assert.doesNotMatch(
     browserManager.slice(
       browserManager.indexOf('async fn restore_saved_workspace'),
-      browserManager.indexOf('async fn restore_saved_workspace_releasing_start_lock'),
+      browserManager.indexOf('fn rollback_new_native_workspace'),
     ),
     /\.activate_tab\(/,
   );
@@ -606,7 +606,7 @@ test('BrowserCore tab commits marker, WebDriver bind, initial navigation, then p
 
   const coreNewPage = browserManager.slice(
     browserManager.indexOf('if tool_name == "new_page"'),
-    browserManager.indexOf('let page_id_value = arguments'),
+    browserManager.indexOf('let page_id = arguments.get("pageId")'),
   );
   const createIndex = coreNewPage.indexOf('create_tab_for_agent(');
   const bindIndex = coreNewPage.indexOf('bind_staged_native_target(', createIndex);
@@ -809,7 +809,7 @@ test('BrowserCore reuses the product blank page and closes the shared driver at 
 test('BrowserCore pageId is stable and page tools fail closed on missing or malformed identity', () => {
   const coreDispatch = browserManager.slice(
     browserManager.indexOf('async fn handle_browser_core_tool'),
-    browserManager.indexOf('fn rollback_staged_agent_tab'),
+    browserManager.indexOf('async fn rollback_staged_agent_tab'),
   );
   assert.match(coreDispatch, /let page_id = tab[\s\S]{0,100}\.page_id/);
   assert.match(coreDispatch, /tab_token_for_page_id\(&request\.session_id, page_id\)/);

@@ -1108,6 +1108,7 @@ assert.match(
   /function PetWindow\(\{[\s\S]{0,160}?allowResize = true,[\s\S]{0,160}?configuredScale = null,[\s\S]{0,160}?configuredVerticalAlignment = 'bottom'/,
 );
 assert.match(viewCode, /Number\.isFinite\(configuredScale\)/);
+assert.match(viewCode, /useState\(startupScale\)/);
 assert.match(viewCode, /invokeTauri\('set_pet_scale',[\s\S]{0,120}?scale:\s*startupScale/);
 assert.match(viewCode, /\{allowResize && \(\s*<div\s+className="pet-resize-grip"/);
 // 右键菜单为窗口内 DOM 浮层(不再 invoke 原生菜单窗口:统一内存设备/WebKitGTK 下
@@ -1143,6 +1144,7 @@ assert.ok(
   stepPhysicsIndex >= 0 && activeMonitorIndex >= 0 && stepPhysicsIndex < activeMonitorIndex,
   'the latest release-tail position must be consumed before selecting the active monitor',
 );
+assert.match(viewCode, /className="pet-resize-grip"/);
 assert.match(viewCode, /className="pet-resize-grip-icon"/);
 assert.match(viewCode, /d="M2 14H14V2"/);
 assert.match(
@@ -1155,6 +1157,7 @@ assert.doesNotMatch(viewCode, /onWheel=/);
 const cssSrc = path.join(here, '..', 'src', 'features', 'pet', 'pet.css');
 const cssCode = readFileSync(cssSrc, 'utf8');
 assert.match(cssCode, /overflow-y:\s*auto/);
+assert.match(cssCode, /\.pet-resize-grip\s*\{/);
 assert.doesNotMatch(cssCode, /\.pet-menu/);
 
 assert.match(

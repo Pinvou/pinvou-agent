@@ -991,8 +991,13 @@ const withUiTimeout = (promise, timeoutMs, fallbackResult) => {
           await loadBackendState();
           loadRecycledPlugins();
           const name = item.display_name || item.id;
-          // isInstall:true → TsAlert 默认副标题为 installHint（「新工具需要在新会话中生效」），
-          // 与「恢复为已安装」语义一致；false 会落到 removeHint（「已移除…」），语义相反。
+          // isInstall:true → the TsAlert subtitle defaults to installHint
+          // ("tool switches are off by default; enable in the composer tools
+          // list"): restored-as-installed ≠ switched on — after the DenyAll
+          // convergence a restored pack comes back disabled in initialized
+          // scopes (recycle_bin::restore_plugin), and the copy tells the user
+          // to enable it from the tools list; false would fall through to
+          // removeHint ("removed…"), the opposite semantics.
           setAlert({
             visible: true, loading: false,
             title: res && res.credentials_required ? storeCopy.recycleRestoredCredentials(name) : storeCopy.recycleRestored(name),

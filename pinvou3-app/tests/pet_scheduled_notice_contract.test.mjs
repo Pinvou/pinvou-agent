@@ -21,6 +21,7 @@ assert.match(petCss, /\.pet-activity-scheduled\s*\{/);
 
 assert.match(rust, /pub struct PetScheduledRunNavigation/);
 assert.match(rust, /pub scheduled_run:\s*Option<PetScheduledRunNavigation>/);
+assert.match(rust, /scheduled_run:\s*Option<PetScheduledRunNavigation>/);
 
 assert.match(main, /request\.scheduled_run\s*\|\|\s*request\.scheduledRun/);
 assert.match(main, /bridge\.scheduled\.openScheduledRunChat/);

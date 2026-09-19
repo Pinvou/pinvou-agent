@@ -7,6 +7,8 @@
 //! 本模块是 facade:把原本 2600+ 行的 god-module 按职责拆成子模块,
 //! 对外 pub 面通过 `pub use` 保持不变。
 //!
+// architecture-guard: allow-target-cfg -- fail-closed regression tests for unreadable state files need a chmod 000 fixture; test-only inline cfg(unix)+PermissionsExt (same exemption precedent as package_export.rs, review #455 R9-M5); a real open() probe guards against running as root, Windows is covered by link checks.
+//!
 //! - `types`      — manifest/info/迁移结果等数据类型
 //! - `secrets`    — 密钥/凭证助手 + MarketplaceManager 的 secret 读写方法
 //! - `validation` — 远程 MCP 连接校验
@@ -44,6 +46,29 @@ use crate::platform::paths;
 /// installed.json, mcp.json, and managed Python environment liveness share one transaction
 /// domain. Install, uninstall, and startup repair must take this lock before reading committed
 /// state so cleanup never acts on a stale snapshot.
+///
+/// Lock order vs `scope::DISABLED_BUNDLES_FILE_LOCK` (round-11 M1): the only
+/// permitted nesting is TRANSACTION → FILE (e.g. uninstall's state cleanup
+/// re-enters the scope file lock). The reverse order is forbidden: scope
+/// read/write paths (DenyAll resolution, save_disabled_bundles_for) must
+/// never acquire this lock while holding FILE — corrupt installed.json
+/// recovery on the read path is therefore read-only (no persist, no
+/// transaction lock; see `try_installed_ids`), and the persisting recovery
+/// runs inline only inside callers that already hold TRANSACTION
+/// (`try_installed_ids_for_writer`), never by re-acquiring it (std Mutex is
+/// not reentrant — round-11 B1).
+///
+/// Scope of the claim (round-13 m5): this settles **only** the
+/// TRANSACTION↔FILE edge. The pre-existing TRANSACTION↔import_lock pairing
+/// is not ordered: uninstall nests TRANSACTION → import_lock (companion
+/// cleanup), while `restore_plugin` holds import_lock across `install_upload`
+/// → TRANSACTION. Both directions pre-date this PR. A theoretical
+/// same-instance inversion exists at their cross (review R14 minor): pack X
+/// sits in the recycle bin while also being a declared companion of a tool
+/// being uninstalled — cleanup's `uninstall(X)` waits on import_lock(X) under
+/// TRANSACTION while `restore_plugin(X)` holds import_lock(X) waiting on
+/// TRANSACTION. Known, pre-existing, unresolved; this doc must not be cited
+/// as proof of a settled global lock order.
 static MARKETPLACE_TRANSACTION_LOCK: Mutex<()> = Mutex::new(());
 
 /// A freshly written journal on Windows can be briefly held by antivirus or indexer
@@ -56,13 +81,44 @@ const JOURNAL_REMOVE_RETRY_DELAY: Duration = Duration::from_millis(120);
 static FAIL_NEXT_INSTALLED_WRITE: std::sync::atomic::AtomicBool =
     std::sync::atomic::AtomicBool::new(false);
 
+/// Generic reset guard for fault-injection flags: auto-clears on scope exit
+/// (including panic unwind, early failure before the target path, or an
+/// unconsumed injection) so the flag cannot leak into later tests (it once
+/// leaked when install failed before save_installed and broke unrelated
+/// cases). All three injection points share this guard
+/// (review #455: three verbatim-duplicated guard structs merged into one).
+#[cfg(test)]
+pub(crate) struct FailpointResetGuard(&'static std::sync::atomic::AtomicBool);
+
+#[cfg(test)]
+impl Drop for FailpointResetGuard {
+    fn drop(&mut self) {
+        self.0.store(false, std::sync::atomic::Ordering::SeqCst);
+    }
+}
+
+#[cfg(test)]
+fn arm_failpoint(flag: &'static std::sync::atomic::AtomicBool) -> FailpointResetGuard {
+    flag.store(true, std::sync::atomic::Ordering::SeqCst);
+    FailpointResetGuard(flag)
+}
+
+#[cfg(test)]
+pub(crate) fn fail_next_installed_write_for_test() -> FailpointResetGuard {
+    arm_failpoint(&FAIL_NEXT_INSTALLED_WRITE)
+}
+
 #[cfg(test)]
 static FAIL_NEXT_JOURNAL_REMOVAL: std::sync::atomic::AtomicBool =
     std::sync::atomic::AtomicBool::new(false);
 
+/// Same pattern as the installed-write failure injection: if a failure (or
+/// panic) hits after the call site sets the flag but before begin(..) is
+/// reached, the flag auto-clears and no longer leaks into unrelated cases
+/// (review #445 P2).
 #[cfg(test)]
-pub(crate) fn fail_next_journal_removal_for_test() {
-    FAIL_NEXT_JOURNAL_REMOVAL.store(true, std::sync::atomic::Ordering::SeqCst);
+pub(crate) fn fail_next_journal_removal_for_test() -> FailpointResetGuard {
+    arm_failpoint(&FAIL_NEXT_JOURNAL_REMOVAL)
 }
 
 #[cfg(test)]
@@ -70,20 +126,8 @@ static FAIL_NEXT_MANAGED_DEPENDENCY_INSTALL: std::sync::atomic::AtomicBool =
     std::sync::atomic::AtomicBool::new(false);
 
 #[cfg(test)]
-pub(crate) struct ManagedDependencyInstallFailureGuard;
-
-#[cfg(test)]
-impl Drop for ManagedDependencyInstallFailureGuard {
-    fn drop(&mut self) {
-        FAIL_NEXT_MANAGED_DEPENDENCY_INSTALL.store(false, std::sync::atomic::Ordering::SeqCst);
-    }
-}
-
-#[cfg(test)]
-pub(crate) fn fail_next_managed_dependency_install_for_test() -> ManagedDependencyInstallFailureGuard
-{
-    FAIL_NEXT_MANAGED_DEPENDENCY_INSTALL.store(true, std::sync::atomic::Ordering::SeqCst);
-    ManagedDependencyInstallFailureGuard
+pub(crate) fn fail_next_managed_dependency_install_for_test() -> FailpointResetGuard {
+    arm_failpoint(&FAIL_NEXT_MANAGED_DEPENDENCY_INSTALL)
 }
 
 #[cfg(test)]
@@ -128,6 +172,67 @@ fn marketplace_transaction_journal() -> PathBuf {
     paths::pinvou3_home()
         .join("marketplace")
         .join("state-transaction.json")
+}
+
+/// Quarantines the **raw bytes** of a corrupt state file into a `<name>.corrupt.<ts>`
+/// sidecar copy (the original file is not deleted) for manual recovery; the
+/// caller then degrades and self-heals per its own strategy. installed.json
+/// and disabled_bundles.json share this entry point (review #455: the two
+/// used to be near-verbatim duplicates).
+/// The input is bytes rather than a string (review #455 R7-M1): quarantining
+/// non-UTF-8 corruption through a lossy string leaves a mojibake copy and makes
+/// one-byte repair impossible — the copy must be byte-for-byte equal to the
+/// original file. Quarantine failure propagates as Err: the caller must not
+/// proceed to overwrite the original file — under ENOSPC-like conditions
+/// "quarantine failed but overwrite anyway" would destroy recoverable corrupt
+/// bytes for good (review #455 R5-m4).
+pub(crate) fn quarantine_corrupt_state_file(path: &Path, content: &[u8]) -> Result<(), String> {
+    let Some(parent) = path.parent() else {
+        return Err(format!(
+            "quarantine target has no parent: {}",
+            path.display()
+        ));
+    };
+    let Some(name) = path.file_name().and_then(|n| n.to_str()) else {
+        return Err(format!(
+            "quarantine target has no valid file name: {}",
+            path.display()
+        ));
+    };
+    // Nanosecond resolution: when GUI and headless hosts share one home, a
+    // second-granularity stamp would let a same-second second quarantine
+    // overwrite the first copy (same precedent as quarantine_marketplace_journal).
+    let ts = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_nanos())
+        // A pre-epoch clock must not collapse every backup onto `.corrupt.0`
+        // — and with the no-sibling rule below, even a collapsed stamp can
+        // never overwrite an existing copy, so a constant fallback is fine.
+        .unwrap_or(1);
+    // No-sibling rule (round-11 M2): if any `{name}.corrupt.*` copy already
+    // exists, skip writing a new one — repeated reads of a file whose
+    // recovery cannot complete (unverifiable mcp.json, failing save) must not
+    // accumulate timestamped copies. One preserved copy is enough for manual
+    // recovery; deleting it re-arms the quarantine.
+    let sibling_prefix = format!("{name}.corrupt.");
+    if let Ok(entries) = std::fs::read_dir(parent) {
+        for entry in entries.flatten() {
+            if entry
+                .file_name()
+                .to_string_lossy()
+                .starts_with(&sibling_prefix)
+            {
+                return Ok(());
+            }
+        }
+    }
+    let backup = parent.join(format!("{name}.corrupt.{ts}"));
+    std::fs::write(&backup, content).map_err(|error| {
+        format!(
+            "failed to quarantine corrupt {name} to {}: {error}",
+            backup.display()
+        )
+    })
 }
 
 fn read_optional_file(path: &Path) -> Result<Option<Vec<u8>>, String> {
@@ -209,7 +314,7 @@ fn quarantine_marketplace_journal(journal: &Path, reason: &str) -> Result<(), St
         SystemTime::now()
             .duration_since(UNIX_EPOCH)
             .map(|duration| duration.as_nanos())
-            .unwrap_or(0)
+            .unwrap_or(1)
     ));
     std::fs::rename(journal, &quarantine).map_err(|error| {
         format!("Failed to quarantine Marketplace transaction journal ({reason}): {error}")
@@ -629,26 +734,132 @@ impl<S: CredentialStore> MarketplaceManager<S> {
         tools
     }
 
-    /// 已安装的工具 ID 列表
+    /// List of installed tool IDs.
+    ///
+    /// # Must not be used for gating
+    /// Read errors collapse to an empty set here — suitable only for
+    /// display/bookkeeping consumers; DenyAll gating must go through
+    /// `Self::try_installed_ids` to distinguish "confirmed empty" from
+    /// "set unknown" (the latter makes scope.rs's DenyAll arm fall back to
+    /// fail-closed over the full catalog, review #455 R8 nit).
     pub fn installed_ids(&self) -> Vec<String> {
-        let content = match std::fs::read_to_string(&self.installed_file) {
-            Ok(c) => c,
-            Err(_) => return Vec::new(),
-        };
-        match serde_json::from_str::<Vec<String>>(&content) {
+        match self.try_installed_ids() {
             Ok(ids) => ids,
-            Err(e) => {
-                eprintln!(
-                    "[marketplace] installed.json is invalid: {e}; backing up and rebuilding from mcp.json"
-                );
-                self.backup_corrupt_installed(&content);
-                let recovered = self.recover_installed_ids_from_mcp();
-                if let Err(write_err) = self.save_installed(&recovered) {
-                    eprintln!("[marketplace] failed to rewrite installed.json: {write_err}");
-                }
-                recovered
+            Err(error) => {
+                eprintln!("[marketplace] {error}");
+                Vec::new()
             }
         }
+    }
+
+    /// `installed_ids` for read/gate callers, with errors distinguished:
+    /// NotFound and corrupt recovery (quarantine + in-memory rebuild from
+    /// mcp.json) return Ok; a file that exists but cannot be read returns Err
+    /// with the file untouched — DenyAll gating fails closed on "installed
+    /// set unknown" (review #455 R5-B2). The corrupt recovery is **read-only
+    /// here**: persistence is owned by writer callers under the marketplace
+    /// transaction lock (round-11 B1), so this path never acquires
+    /// MARKETPLACE_TRANSACTION_LOCK — a read under DISABLED_BUNDLES_FILE_LOCK
+    /// (DenyAll resolution) must not block on the transaction lock, and a
+    /// corrupt installed.json must not hang installs or the startup repair.
+    pub(crate) fn try_installed_ids(&self) -> Result<Vec<String>, String> {
+        self.read_installed(false)
+    }
+
+    /// `try_installed_ids` for callers that already hold
+    /// MARKETPLACE_TRANSACTION_LOCK (install / uninstall / mark-uninstalled /
+    /// startup repair). The corrupt branch performs the **full** recovery —
+    /// quarantine + rebuild + persist — serialized as part of the caller's
+    /// transaction, without re-acquiring the lock (std::sync::Mutex is not
+    /// reentrant; re-acquiring self-deadlocks, round-11 B1). Errors propagate:
+    /// a mutator must never collapse an unknown installed set to empty and
+    /// persist the loss (round-11 m1).
+    ///
+    /// # Panics / deadlocks
+    /// Calling this without holding MARKETPLACE_TRANSACTION_LOCK breaks the
+    /// install/recovery serialization contract; debug builds assert nothing,
+    /// so treat the caller-held requirement as load-bearing.
+    pub(crate) fn try_installed_ids_for_writer(&self) -> Result<Vec<String>, String> {
+        self.read_installed(true)
+    }
+
+    /// Shared read implementation. `writer` selects the corrupt-branch policy:
+    /// read-only rebuild (no persist, no transaction lock) vs full recovery
+    /// (persist; the caller holds the transaction lock). Non-UTF-8 content is
+    /// salvaged via the raw byte read and treated as corrupt (round-11 m2) —
+    /// only a failing raw read stays "unreadable".
+    fn read_installed(&self, writer: bool) -> Result<Vec<String>, String> {
+        let content = match std::fs::read_to_string(&self.installed_file) {
+            Ok(c) => c,
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(Vec::new()),
+            Err(error) => {
+                // Salvage the raw bytes: invalid UTF-8 is a corrupt file (raw
+                // bytes readable), not an unreadable one (round-11 m2).
+                match std::fs::read(&self.installed_file) {
+                    Ok(bytes) => {
+                        return self.recover_corrupt_installed(&bytes, "invalid UTF-8", writer);
+                    }
+                    Err(salvage_error) => {
+                        return Err(format!(
+                            "installed.json exists but is unreadable: {error}; salvage read failed: {salvage_error}; installed set unknown, leaving the file untouched"
+                        ));
+                    }
+                }
+            }
+        };
+        match serde_json::from_str::<Vec<String>>(&content) {
+            Ok(ids) => Ok(ids),
+            Err(e) => self.recover_corrupt_installed(content.as_bytes(), &e.to_string(), writer),
+        }
+    }
+
+    /// Corrupt-installed.json recovery core. Quarantine is guarded by the
+    /// no-sibling rule inside `quarantine_corrupt_state_file` (one copy ever
+    /// per file unless manually cleaned), so repeated reads cannot accumulate
+    /// `.corrupt.<ts>` copies (round-11 M2). The rebuild must be **provable**
+    /// (review #455 R8-1): a missing/corrupt/server-less mcp.json cannot
+    /// prove completeness, so Err is returned and the DenyAll gate falls back
+    /// to the full catalog — unverified results are never persisted.
+    fn recover_corrupt_installed(
+        &self,
+        raw: &[u8],
+        parse_error: &str,
+        writer: bool,
+    ) -> Result<Vec<String>, String> {
+        // On quarantine failure (ENOSPC etc.) nothing else may proceed: the
+        // original bytes would become unrecoverable (review #455 R5-m4).
+        self.backup_corrupt_installed_bytes(raw).map_err(|quarantine_err| {
+            format!(
+                "installed.json is invalid: {parse_error}; {quarantine_err}; installed set unknown, leaving the corrupt file untouched"
+            )
+        })?;
+        eprintln!(
+            "[marketplace] installed.json is invalid: {parse_error}; quarantined, rebuilding from mcp.json"
+        );
+        let recovered = self.recover_installed_ids_from_mcp().map_err(|recover_error| {
+            format!(
+                "installed.json is invalid: {parse_error}; {recover_error}; installed set unknown, DenyAll gate falls back to the full catalog"
+            )
+        })?;
+        if !writer {
+            // Read-only callers (DenyAll gating under the scope-file lock)
+            // never persist: the write half of the recovery belongs to the
+            // next transaction-holding writer (install/uninstall/repair), so
+            // no lock ordering between the two mutexes ever forms here.
+            eprintln!(
+                "[marketplace] installed.json corrupt recovery computed in memory ({:?} ids); persistence deferred to the next transaction-holding writer",
+                recovered.len()
+            );
+            return Ok(recovered);
+        }
+        // A failed recovery overwrite is reported as Err: the corrupt
+        // original is still there and the caller fails loudly; silently
+        // dropping the write would leave the corrupt file in place with the
+        // transaction half-done (review #455 R8 nit).
+        self.save_installed(&recovered).map_err(|write_err| {
+            format!("failed to rewrite installed.json after quarantine: {write_err}")
+        })?;
+        Ok(recovered)
     }
 
     /// 前端列表：所有可用工具 + 安装状态。上传包若有用户自定义展示名/说明覆盖
@@ -803,7 +1014,7 @@ impl<S: CredentialStore> MarketplaceManager<S> {
                 &server_dir,
                 python_environment.as_ref(),
             )?;
-            let mut installed = self.installed_ids();
+            let mut installed = self.try_installed_ids_for_writer()?;
             if !installed.contains(&tool_id.to_string()) {
                 installed.push(tool_id.to_string());
             }
@@ -932,7 +1143,7 @@ impl<S: CredentialStore> MarketplaceManager<S> {
         let transaction = MarketplaceStateTransaction::begin(&self.installed_file)?;
         let result = (|| {
             self.remove_from_mcp_json(tool_id)?;
-            let mut installed = self.installed_ids();
+            let mut installed = self.try_installed_ids_for_writer()?;
             installed.retain(|id| id != tool_id);
             self.save_installed(&installed)?;
 
@@ -1027,8 +1238,16 @@ impl<S: CredentialStore> MarketplaceManager<S> {
     fn active_python_locks_from_committed_state(
         &self,
     ) -> Result<Vec<python_dependencies::PythonDependencyLock>, String> {
+        // Round-14 minor #5: same collapsing-reader hazard the repair path
+        // guards — an unreadable registry collapsing to an empty preserve-set
+        // would turn prune_unused into "delete every managed environment".
+        // Distinguish "confirmed empty" from "set unknown" and let the caller
+        // skip the prune on Err. Uninstall holds the transaction lock while
+        // re-reading the just-committed registry, so the writer variant
+        // applies (no re-acquisition).
+        let installed = self.try_installed_ids_for_writer()?;
         let mut locks = Vec::new();
-        for installed_id in self.installed_ids() {
+        for installed_id in installed {
             let manifest = self
                 .trusted_dependency_manifest(&installed_id, None)
                 .map_err(|error| error.message().to_string())?;
@@ -1141,7 +1360,7 @@ impl<S: CredentialStore> MarketplaceManager<S> {
             .map_err(DowngradeError::Integrity)?;
         let result = (|| {
             self.remove_from_mcp_json(tool_id)?;
-            let mut installed = self.installed_ids();
+            let mut installed = self.try_installed_ids_for_writer()?;
             installed.retain(|id| id != tool_id);
             self.save_installed(&installed)
         })();
@@ -1233,7 +1452,22 @@ impl<S: CredentialStore> MarketplaceManager<S> {
         &self,
         python_override: Option<&str>,
     ) -> Result<Vec<String>, String> {
-        let installed = self.installed_ids();
+        // An unknown registry (installed.json unreadable, or corrupt with an
+        // unverifiable mcp.json rebuild) must not abort startup: this runs from
+        // bundle extraction on every boot, and its Err propagates into
+        // "no engine pool" (round-12 self-review). Gating already fails closed
+        // through the DenyAll fallback, and skipping the pass is the safe
+        // degradation — the recorded error also defers the environment prune
+        // below, which an empty set would otherwise turn into "delete every
+        // managed environment".
+        let installed = match self.try_installed_ids_for_writer() {
+            Ok(installed) => installed,
+            Err(error) => {
+                return Ok(vec![format!(
+                    "python dependency repair skipped: installed registry unavailable: {error}"
+                )]);
+            }
+        };
         let mut repair_errors = Vec::new();
         for tool_id in installed {
             let manifest = match self.trusted_dependency_manifest(&tool_id, None) {
@@ -1464,7 +1698,11 @@ impl<S: CredentialStore> MarketplaceManager<S> {
                 record.source
             ))),
             None if install_source.is_some()
-                && !self.installed_ids().iter().any(|id| id == tool_id) =>
+                && !self
+                    .try_installed_ids_for_writer()
+                    .map_err(ManagedDependencyError::Integrity)?
+                    .iter()
+                    .any(|id| id == tool_id) =>
             {
                 Ok(Some(manifest))
             }
@@ -1526,33 +1764,31 @@ impl<S: CredentialStore> MarketplaceManager<S> {
         write_atomic_file(&self.installed_file, json.as_bytes())
     }
 
-    fn backup_corrupt_installed(&self, content: &str) {
-        let Some(parent) = self.installed_file.parent() else {
-            return;
-        };
-        let ts = std::time::SystemTime::now()
-            .duration_since(std::time::UNIX_EPOCH)
-            .map(|d| d.as_secs())
-            .unwrap_or(0);
-        let backup = parent.join(format!("installed.json.corrupt.{ts}"));
-        if let Err(e) = std::fs::write(&backup, content) {
-            eprintln!(
-                "[marketplace] failed to backup corrupt installed.json to {}: {e}",
-                backup.display()
-            );
-        }
+    fn backup_corrupt_installed(&self, content: &str) -> Result<(), String> {
+        quarantine_corrupt_state_file(&self.installed_file, content.as_bytes())
     }
 
-    fn recover_installed_ids_from_mcp(&self) -> Vec<String> {
+    fn backup_corrupt_installed_bytes(&self, raw: &[u8]) -> Result<(), String> {
+        quarantine_corrupt_state_file(&self.installed_file, raw)
+    }
+
+    /// Rebuilds the installed set from mcp.json. Returning Err = the
+    /// completeness of the recovered set cannot be **proven** (mcp.json
+    /// missing/unreadable/corrupt/no servers key) — the caller must treat it
+    /// as "installed set unknown" and must not persist an empty set as fact
+    /// (review #455 R8-1). Valid JSON + a servers object is sufficient proof
+    /// (the recovered set may legitimately be empty: mcp.json may simply have
+    /// no packages registered).
+    fn recover_installed_ids_from_mcp(&self) -> Result<Vec<String>, String> {
         let content = match std::fs::read_to_string(paths::mcp_config_path()) {
             Ok(c) => c,
-            Err(_) => return Vec::new(),
+            Err(error) => return Err(format!("mcp.json is missing or unreadable: {error}")),
         };
         let Ok(mcp) = serde_json::from_str::<serde_json::Value>(&content) else {
-            return Vec::new();
+            return Err("mcp.json is corrupt".to_string());
         };
         let Some(servers) = mcp.get("servers").and_then(|s| s.as_object()) else {
-            return Vec::new();
+            return Err("mcp.json has no servers object".to_string());
         };
         let mut recovered = Vec::new();
         for manifest in self.available_tools() {
@@ -1568,7 +1804,7 @@ impl<S: CredentialStore> MarketplaceManager<S> {
                 recovered.push(manifest.id);
             }
         }
-        recovered
+        Ok(recovered)
     }
 }
 
@@ -1598,6 +1834,10 @@ mod tests {
     /// point moves from env to the registry).
     fn with_temp_home<F: FnOnce()>(f: F) {
         let _g = ENV_LOCK.lock().unwrap_or_else(|p| p.into_inner());
+        // The verdict memo is keyed by home directory, but temp dirs reuse
+        // the same pid prefix — clear it explicitly so a previous case's
+        // UNPERSISTED_VERDICT does not bleed in (review #455 R8 nit).
+        crate::features::marketplace::scope::clear_unpersisted_verdict_for_test();
         // The test process installs the foundation resolver too (OnceLock is
         // idempotent, same contract as the production boot): otherwise the
         // foundation falls back to the process env when resolving
@@ -2091,7 +2331,7 @@ mod tests {
                 }"#,
             );
 
-            FAIL_NEXT_INSTALLED_WRITE.store(true, std::sync::atomic::Ordering::SeqCst);
+            let _installed_write_guard = fail_next_installed_write_for_test();
             let manager = MarketplaceManager::with_store(MemoryCredentialStore::default());
             let error = manager
                 .install("half-install", &std::collections::HashMap::new())
@@ -2145,7 +2385,7 @@ mod tests {
             )
             .unwrap();
 
-            FAIL_NEXT_INSTALLED_WRITE.store(true, std::sync::atomic::Ordering::SeqCst);
+            let _installed_write_guard = fail_next_installed_write_for_test();
             let manager = MarketplaceManager::with_store(MemoryCredentialStore::default());
             assert!(
                 manager
@@ -2411,7 +2651,7 @@ mod tests {
     #[test]
     fn transaction_commit_retries_transient_journal_removal_failure() {
         with_temp_home(|| {
-            fail_next_journal_removal_for_test();
+            let _journal_removal_guard = fail_next_journal_removal_for_test();
             let installed_file = paths::pinvou3_home()
                 .join("marketplace")
                 .join("installed.json");
@@ -2728,7 +2968,7 @@ mod tests {
             )
             .unwrap();
             let installed_before = manager_installed_bytes();
-            FAIL_NEXT_INSTALLED_WRITE.store(true, std::sync::atomic::Ordering::SeqCst);
+            let _installed_write_guard = fail_next_installed_write_for_test();
 
             let errors = manager
                 .repair_installed_python_tools_with_python(&python)
@@ -2892,9 +3132,26 @@ mod tests {
             std::fs::create_dir_all(installed_path.parent().unwrap()).unwrap();
             std::fs::write(&installed_path, "[\"weather\"").unwrap();
 
-            let ids = MarketplaceManager::new().installed_ids();
-
-            assert_eq!(ids, vec!["weather".to_string()]);
+            // Read path (gate callers): quarantine + in-memory rebuild, NO
+            // persistence — the corrupt original stays until a
+            // transaction-holding writer completes the recovery (round-11 B1).
+            let manager = MarketplaceManager::new();
+            assert_eq!(
+                manager.try_installed_ids().unwrap(),
+                vec!["weather".to_string()]
+            );
+            assert_eq!(
+                std::fs::read_to_string(&installed_path).unwrap(),
+                "[\"weather\"",
+                "read path must not persist the recovery"
+            );
+            // Writer path (caller holds MARKETPLACE_TRANSACTION_LOCK): full
+            // recovery — quarantine is suppressed by the no-sibling rule (the
+            // read already left exactly one copy) and the registry is rebuilt.
+            assert_eq!(
+                manager.try_installed_ids_for_writer().unwrap(),
+                vec!["weather".to_string()]
+            );
             let repaired = std::fs::read_to_string(&installed_path).unwrap();
             assert_eq!(
                 serde_json::from_str::<Vec<String>>(&repaired).unwrap(),
@@ -2909,7 +3166,303 @@ mod tests {
                         .starts_with("installed.json.corrupt.")
                 })
                 .collect();
-            assert_eq!(backups.len(), 1);
+            assert_eq!(backups.len(), 1, "no-sibling rule: exactly one copy");
+            // Clean read after the writer's repair.
+            assert_eq!(
+                MarketplaceManager::new().installed_ids(),
+                vec!["weather".to_string()]
+            );
+        });
+    }
+
+    /// Round-11 m2: a non-UTF-8 installed.json IS corrupt (not "unreadable"):
+    /// the raw-byte salvage routes it into quarantine + rebuild, and the
+    /// quarantine copy preserves the exact original bytes.
+    #[test]
+    fn non_utf8_installed_json_takes_the_corrupt_branch() {
+        with_temp_home(|| {
+            write_tool_manifest(
+                "weather",
+                r#"{
+                    "id":"weather","name":"Weather","description":"d","version":"1","icon":"x","category":"c",
+                    "mcp_tools":["get_weather"],"command":"python","args":["server.py"]
+                }"#,
+            );
+            let mcp_path = crate::platform::paths::mcp_config_path();
+            std::fs::create_dir_all(mcp_path.parent().unwrap()).unwrap();
+            std::fs::write(
+                &mcp_path,
+                r#"{"servers":{"weather":{"command":"python3","args":["server.py"]}}}"#,
+            )
+            .unwrap();
+            let installed_path = crate::platform::paths::pinvou3_home()
+                .join("marketplace")
+                .join("installed.json");
+            std::fs::create_dir_all(installed_path.parent().unwrap()).unwrap();
+            let raw: &[u8] = b"[\"weather\"\xFF\xFE]";
+            std::fs::write(&installed_path, raw).unwrap();
+
+            let manager = MarketplaceManager::new();
+            assert_eq!(
+                manager.try_installed_ids().unwrap(),
+                vec!["weather".to_string()],
+                "non-UTF-8 content must recover via the corrupt branch"
+            );
+            let backups: Vec<_> = std::fs::read_dir(installed_path.parent().unwrap())
+                .unwrap()
+                .flatten()
+                .filter(|e| {
+                    e.file_name()
+                        .to_string_lossy()
+                        .starts_with("installed.json.corrupt.")
+                })
+                .collect();
+            assert_eq!(backups.len(), 1, "the corrupt bytes are quarantined");
+            assert_eq!(
+                std::fs::read(backups[0].path()).unwrap(),
+                raw,
+                "quarantine preserves the original bytes verbatim"
+            );
+        });
+    }
+
+    /// Round-11 B2 composed regression (the contradiction this round flagged):
+    /// an upgraded home (plain initialized by the read-time migration) installs
+    /// a pack — install-sync writes stored+default_off — and the very next
+    /// welcome/scene enable must succeed (the round-10 refusal treated every
+    /// stored entry as explicit and killed the flagship UX for this cohort).
+    /// The user's own disable stays explicit and still refuses.
+    #[test]
+    fn install_default_off_is_enableable_but_user_off_is_not() {
+        with_temp_home(|| {
+            // Upgraded install: sessions exist → migration seeds plain
+            // initialized with the legacy (empty) stored list.
+            let sessions = crate::platform::paths::sessions_root();
+            std::fs::create_dir_all(sessions.join("default/artifacts")).unwrap();
+            assert!(
+                crate::features::marketplace::scope::load_disabled_bundles_file()
+                    .initialized
+                    .contains("plain")
+            );
+
+            // Install writes the pack into plain's stored list *and* marks it
+            // as install-default (sync_deny_all_scopes_after_install).
+            crate::features::marketplace::scope::sync_deny_all_scopes_after_install("weather")
+                .unwrap();
+            let disabled = load_disabled_connectors_for(ConnectorScope::Plain);
+            assert!(
+                disabled.contains(&"weather".to_string()),
+                "install keeps the pack default-off: {disabled:?}"
+            );
+
+            // The welcome/scene enable lifts an install-default off freely.
+            let blocked = crate::features::marketplace::scope::enable_packages_in_scope(
+                ConnectorScope::Plain,
+                &["weather".to_string()],
+            )
+            .unwrap()
+            .blocked;
+            assert!(
+                blocked.is_empty(),
+                "install-default off must not trip the explicit refusal: {blocked:?}"
+            );
+            assert!(
+                !load_disabled_connectors_for(ConnectorScope::Plain)
+                    .contains(&"weather".to_string()),
+                "the pack is enabled by the user gesture"
+            );
+
+            // The user's own disable is explicit (default marker cleared by the
+            // enable above; composer writes carry no default markers) and the
+            // next enable is refused with the id surfaced.
+            save_disabled_bundles_for(ConnectorScope::Plain, &["weather".to_string()]);
+            let blocked = crate::features::marketplace::scope::enable_packages_in_scope(
+                ConnectorScope::Plain,
+                &["weather".to_string()],
+            )
+            .unwrap()
+            .blocked;
+            assert_eq!(
+                blocked,
+                vec!["weather".to_string()],
+                "a user explicit opt-out is still refused"
+            );
+        });
+    }
+
+    /// Round-11 B1 watchdog: a corrupt installed.json must not hang the
+    /// transaction-holding callers (install / uninstall / startup repair).
+    /// The writer recovery runs inline under the already-held lock (no
+    /// re-acquisition — std::sync::Mutex is not reentrant). Each caller runs
+    /// on its own thread with a hard timeout so a regression deadlocks the
+    /// test instead of the suite. Uses a non-catalog id: installs prefer the
+    /// compile-time catalog manifest for builtin ids, while this test pins the
+    /// disk-manifest path (same fixture migration as #547).
+    #[test]
+    fn corrupt_installed_json_does_not_deadlock_locked_callers() {
+        with_temp_home(|| {
+            write_tool_manifest(
+                "weather-mock",
+                r#"{
+                    "id":"weather-mock","name":"Weather","description":"d","version":"1","icon":"x","category":"c",
+                    "mcp_tools":["get_weather"],"command":"python","args":["server.py"]
+                }"#,
+            );
+            let mcp_path = crate::platform::paths::mcp_config_path();
+            std::fs::create_dir_all(mcp_path.parent().unwrap()).unwrap();
+            std::fs::write(
+                &mcp_path,
+                r#"{"servers":{"weather-mock":{"command":"python3","args":["server.js"]}}}"#,
+            )
+            .unwrap();
+            let installed_path = crate::platform::paths::pinvou3_home()
+                .join("marketplace")
+                .join("installed.json");
+            std::fs::create_dir_all(installed_path.parent().unwrap()).unwrap();
+            std::fs::write(&installed_path, "[\"weather-mock\"").unwrap();
+
+            // Watchdog shape: each caller runs on its own thread and reports
+            // through a channel; the main thread fails loudly on timeout
+            // instead of hanging the suite if a lock regression reappears.
+            let run_with_watchdog = |label: &str, f: Box<dyn FnOnce() + Send>| {
+                let (tx, rx) = std::sync::mpsc::channel();
+                std::thread::spawn(move || {
+                    f();
+                    let _ = tx.send(());
+                });
+                rx.recv_timeout(std::time::Duration::from_secs(30))
+                    .unwrap_or_else(|_| panic!("{label} deadlocked on corrupt installed.json"));
+            };
+
+            run_with_watchdog(
+                "startup repair",
+                Box::new(|| {
+                    let result = MarketplaceManager::new().repair_installed_python_tools();
+                    assert!(result.is_ok(), "{result:?}");
+                }),
+            );
+
+            // install path: corrupt content again, run a full install under
+            // the transaction lock (its first registry read recovers inline).
+            std::fs::write(&installed_path, "[\"weather-mock\"").unwrap();
+            run_with_watchdog(
+                "install",
+                Box::new(|| {
+                    let result = MarketplaceManager::new()
+                        .install("weather-mock", &std::collections::HashMap::new());
+                    assert!(result.is_ok(), "{result:?}");
+                }),
+            );
+
+            // uninstall path: same shape.
+            std::fs::write(&installed_path, "[\"weather-mock\"").unwrap();
+            run_with_watchdog(
+                "uninstall",
+                Box::new(|| {
+                    let result = MarketplaceManager::new().uninstall("weather-mock");
+                    assert!(result.is_ok(), "{result:?}");
+                }),
+            );
+        });
+    }
+
+    /// An unknown installed registry must not abort the startup repair: it runs
+    /// from bundle extraction on every boot, so its Err surfaced as "no engine
+    /// pool" for the whole session (round-12 self-review). Corrupt
+    /// installed.json with no verifiable mcp.json rebuild takes exactly that
+    /// path — the repair records the skip, returns Ok, and touches nothing.
+    #[test]
+    fn repair_survives_an_unknown_installed_registry() {
+        with_temp_home(|| {
+            let installed_path = crate::platform::paths::pinvou3_home()
+                .join("marketplace")
+                .join("installed.json");
+            std::fs::create_dir_all(installed_path.parent().unwrap()).unwrap();
+            std::fs::write(&installed_path, "[\"weather\"").unwrap();
+
+            let errors = MarketplaceManager::new()
+                .repair_installed_python_tools()
+                .expect("startup repair must survive an unknown installed registry");
+            assert_eq!(errors.len(), 1, "{errors:?}");
+            assert!(
+                errors[0].contains("registry unavailable"),
+                "the skip must name its cause: {errors:?}"
+            );
+        });
+    }
+
+    /// Corrupt disabled_bundles.json: the raw bytes are quarantined into a
+    /// `.corrupt.<ts>` copy and recovery fails closed — plain stays fully
+    /// DenyAll-off (never flips back to fully on), and the migration marker
+    /// is persisted (review #455: a security-converging feature prefers
+    /// recovering fully-off over silently recovering fully-on).
+    /// Recovery completes in one shot: the corrupt file is overwritten by the
+    /// degraded state and repeated reads do not re-quarantine (otherwise
+    /// copies accumulate unboundedly, review #455 blocking item 2).
+    #[test]
+    fn corrupt_disabled_bundles_quarantined_and_recovers_fail_closed() {
+        with_temp_home(|| {
+            write_installed_ids(&["weather".to_string()]);
+            let path = crate::platform::paths::pinvou3_home().join("disabled_bundles.json");
+            std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+            std::fs::write(&path, "{\"plain_defaults_migrated\":").unwrap();
+
+            let disabled = load_disabled_connectors();
+
+            assert_eq!(
+                disabled,
+                vec![
+                    "weather".to_string(),
+                    "feishu".to_string(),
+                    "wecom".to_string(),
+                    "dingtalk".to_string(),
+                    "tmeet".to_string(),
+                ],
+                "损坏恢复必须 fail-closed：plain 按 DenyAll 兜底全关"
+            );
+            // The recovered state is persisted: marker set and no scope
+            // initialized (memory and disk agree).
+            let on_disk: serde_json::Value =
+                serde_json::from_str(&std::fs::read_to_string(&path).expect("恢复态应覆盖落盘"))
+                    .expect("落盘应为合法 JSON");
+            assert_eq!(
+                on_disk.get("plain_defaults_migrated"),
+                Some(&serde_json::Value::Bool(true)),
+                "迁移标记应置位落盘: {on_disk}"
+            );
+            assert!(
+                on_disk
+                    .get("initialized")
+                    .and_then(|v| v.as_array())
+                    .map(|a| a.is_empty())
+                    .unwrap_or(true),
+                "不得初始化任何 scope（fail-closed 靠 DenyAll 兜底）: {on_disk}"
+            );
+            let file = crate::features::marketplace::scope::load_disabled_bundles_file();
+            assert!(
+                file.plain_defaults_migrated,
+                "恢复后迁移标记应置位（不重复走升级判定）: {file:?}"
+            );
+            // A repeated read does not re-quarantine: recovery completes in
+            // one shot (wait past the second boundary to rule out a
+            // same-second same-name overwrite false positive).
+            std::thread::sleep(std::time::Duration::from_millis(1100));
+            let _ = load_disabled_connectors();
+            let backups: Vec<_> = std::fs::read_dir(path.parent().unwrap())
+                .unwrap()
+                .flatten()
+                .filter(|e| {
+                    e.file_name()
+                        .to_string_lossy()
+                        .starts_with("disabled_bundles.json.corrupt.")
+                })
+                .collect();
+            assert_eq!(backups.len(), 1, "重复读不得产生新的隔离副本");
+            assert_eq!(
+                std::fs::read_to_string(backups[0].path()).unwrap(),
+                "{\"plain_defaults_migrated\":",
+                "隔离副本应保留原始字节"
+            );
         });
     }
 
@@ -3155,11 +3708,14 @@ mod tests {
         });
     }
 
-    /// 全局禁用列表落盘往返:存→读一致;清空→读空;没文件→读空。
+    /// Global disabled-list persistence roundtrip: save → read back equal; clear → read empty.
+    /// (After all-mode DenyAll, a missing file no longer means empty-read — uninitialized
+    /// defaults to fully off, so initialize explicitly first.)
     #[test]
     fn disabled_connectors_persist_roundtrip() {
         with_temp_home(|| {
-            assert!(load_disabled_connectors().is_empty()); // 无文件 → 空
+            save_disabled_connectors(&[]); // initialize plain to the empty set (all-on baseline)
+            assert!(load_disabled_connectors().is_empty());
             save_disabled_connectors(&["weather".to_string(), "pptx".to_string()]);
             assert_eq!(
                 load_disabled_connectors(),
@@ -3181,10 +3737,34 @@ mod tests {
     #[test]
     fn disabled_connectors_scope_isolation() {
         with_temp_home(|| {
-            // 模拟已装 2 个连接器。
+            // Fresh install (no state in the home dir): uninitialized
+            // plain/code both fall back to DenyAll (all-mode DenyAll
+            // convergence); expansion = currently installed connectors ∪ the
+            // four built-in CLI connectors; with nothing installed yet, only
+            // the four built-ins remain (the scope.rs DenyAll expansion is
+            // intentional semantics).
+            let builtin_cli = || {
+                vec![
+                    "feishu".to_string(),
+                    "wecom".to_string(),
+                    "dingtalk".to_string(),
+                    "tmeet".to_string(),
+                ]
+            };
+            assert_eq!(
+                load_disabled_connectors_for(ConnectorScope::Plain),
+                builtin_cli()
+            );
+            assert_eq!(
+                load_disabled_connectors_for(ConnectorScope::Code),
+                builtin_cli()
+            );
+            // Continue after simulating 2 installed connectors: the first
+            // plain read already froze the DenyAll verdict
+            // (plain_deny_all_marker_frozen_at_first_read), so installed.json
+            // appearing no longer flips plain back to fully on; the code
+            // fallback expansion absorbs the installed entries.
             write_installed_ids(&["weather".to_string(), "pptx".to_string()]);
-            // 未初始化:code 默认全禁——已装连接器 ∪ 内置 CLI 四连接器 ∪ 已装技能包
-            // （scope.rs DenyAll 扩集是有意语义）;plain 仍按空处理。
             let deny_all_default = || {
                 vec![
                     "weather".to_string(),
@@ -3195,7 +3775,10 @@ mod tests {
                     "tmeet".to_string(),
                 ]
             };
-            assert!(load_disabled_connectors_for(ConnectorScope::Plain).is_empty());
+            assert_eq!(
+                load_disabled_connectors_for(ConnectorScope::Plain),
+                deny_all_default()
+            );
             assert_eq!(
                 load_disabled_connectors_for(ConnectorScope::Code),
                 deny_all_default()
@@ -3298,8 +3881,9 @@ mod tests {
     }
 
     /// 旧对象 `code_initialized=false` 时,code 数组被忽略、按 DenyAll 默认全禁
-    /// (与迁移前逐字节一致);plain 列表即使无 initialized 标记也必须生效
-    /// (AllowAll 无兜底,落盘即真相)。
+    /// (byte-for-byte identical to pre-migration); the plain list is
+    /// migration-initialized at read time to the on-disk truth (locking in
+    /// the actual switch state under the old AllowAll semantics).
     #[test]
     fn legacy_object_uninitialized_code_keeps_deny_all_default() {
         with_temp_home(|| {
@@ -3359,7 +3943,7 @@ mod tests {
         with_temp_home(|| {
             write_installed_ids(&["pptx".to_string()]);
             // 未初始化 → 不落盘,文件保持无/空。
-            sync_deny_all_scopes_after_install("weather");
+            sync_deny_all_scopes_after_install("weather").unwrap();
             assert!(
                 crate::features::marketplace::scope::load_disabled_bundles_file()
                     .scopes
@@ -3369,10 +3953,21 @@ mod tests {
             );
             // 初始化 code 后(显式开掉 pptx),新装 weather → 自动进 code 禁用集。
             save_disabled_connectors_for(ConnectorScope::Code, &[]);
-            sync_deny_all_scopes_after_install("weather");
+            sync_deny_all_scopes_after_install("weather").unwrap();
             assert_eq!(
                 load_disabled_connectors_for(ConnectorScope::Code),
                 vec!["weather".to_string()]
+            );
+            // Round-11 B2: the install-written off carries a default marker,
+            // distinguishable from a user explicit opt-out (which the batch
+            // enable refuses wholesale).
+            let file = crate::features::marketplace::scope::load_disabled_bundles_file();
+            assert!(
+                file.default_off_scopes
+                    .get("code")
+                    .map(|d| d.iter().any(|id| id == "weather"))
+                    .unwrap_or(false),
+                "install sync must mark the entry install-default: {file:?}"
             );
             // With DenyAll, a default-off install lands only in the disabled set
             // and must not leak into the visibility set: a newly installed package
@@ -3383,7 +3978,7 @@ mod tests {
                     .is_empty()
             );
             // 已存在不重复。
-            sync_deny_all_scopes_after_install("weather");
+            sync_deny_all_scopes_after_install("weather").unwrap();
             assert_eq!(
                 load_disabled_connectors_for(ConnectorScope::Code),
                 vec!["weather".to_string()]
@@ -3405,6 +4000,686 @@ mod tests {
                 vec!["pptx".to_string()]
             );
             assert!(load_disabled_connectors_for(ConnectorScope::Code).is_empty());
+        });
+    }
+
+    /// Read-time migration for plain converging to DenyAll (upgrade): an
+    /// old disabled_bundles.json (no `plain_defaults_migrated` field, plain
+    /// uninitialized) → plain is initialized to the on-disk list (default
+    /// empty = fully on under the old AllowAll semantics); switch state is
+    /// unchanged after the upgrade.
+    #[test]
+    fn plain_deny_all_migration_preserves_upgrade_state() {
+        with_temp_home(|| {
+            write_installed_ids(&["weather".to_string(), "pptx".to_string()]);
+            let path = crate::platform::paths::pinvou3_home().join("disabled_bundles.json");
+            std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+            // Old-format file: code is initialized (the user touched the code
+            // switches), plain was never touched.
+            std::fs::write(&path, r#"{"scopes":{"code":[]},"initialized":["code"]}"#).unwrap();
+            // After migration plain keeps the old semantics (fully on), not
+            // the DenyAll fully-off fallback.
+            assert_eq!(load_disabled_connectors(), Vec::<String>::new());
+            let file = crate::features::marketplace::scope::load_disabled_bundles_file();
+            assert!(file.plain_defaults_migrated, "迁移标记应置位: {file:?}");
+            assert!(
+                file.initialized.contains("plain"),
+                "plain 应被初始化: {file:?}"
+            );
+        });
+    }
+
+    /// Read-time migration for plain converging to DenyAll (fresh install):
+    /// home dir has no prior state → only the marker is set, plain is not
+    /// initialized, and uninitialized scopes fall back to DenyAll (default
+    /// fully off, the built-in CLI list); the verdict is frozen to disk at
+    /// the first read (the broad upgrade signal gets polluted by first-boot
+    /// self-writes of settings.json/sessions, review #455 blocking item).
+    /// "Fresh" is the complement of the broad upgrade signal: an
+    /// installed.json or a non-empty sessions/ directory counts as an
+    /// upgraded install; settings.json does NOT count in the signal anymore
+    /// (round-8 narrowing, review #455 R8-3).
+    #[test]
+    fn plain_deny_all_fresh_install_defaults_off() {
+        with_temp_home(|| {
+            assert_eq!(
+                load_disabled_connectors(),
+                vec![
+                    "feishu".to_string(),
+                    "wecom".to_string(),
+                    "dingtalk".to_string(),
+                    "tmeet".to_string(),
+                ],
+                "全新装机 plain 未初始化 → DenyAll 默认全关（内置 CLI）"
+            );
+            let path = crate::platform::paths::pinvou3_home().join("disabled_bundles.json");
+            let content = std::fs::read_to_string(&path).expect("首读应落盘冻结迁移判定");
+            assert!(
+                content.contains("\"plain_defaults_migrated\":true"),
+                "冻结的判定只置迁移标记、不初始化 plain: {content}"
+            );
+            assert!(
+                !content.contains("\"plain\""),
+                "不得初始化 plain: {content}"
+            );
+        });
+    }
+
+    /// Review #455 blocking-item regression: on a real first boot,
+    /// bridge/paths self-write settings.json and sessions/default/artifacts/.
+    /// The production guarantee comes from startup ordering — the first read
+    /// is hoisted to the top of the Tauri setup hook (lib.rs
+    /// `disabled_bundles_migration` marker), ahead of every first-boot
+    /// self-write from bridge boot; this test covers the freeze semantics
+    /// that ordering relies on: once the verdict is persisted with the first
+    /// read, later first-boot traces must not flip a fresh install back to
+    /// the old AllowAll fully-on.
+    #[test]
+    fn plain_deny_all_marker_frozen_at_first_read() {
+        with_temp_home(|| {
+            let builtin_cli = || {
+                vec![
+                    "feishu".to_string(),
+                    "wecom".to_string(),
+                    "dingtalk".to_string(),
+                    "tmeet".to_string(),
+                ]
+            };
+            // First read: the fresh-install verdict is frozen to disk
+            // (DenyAll fallback, fully off).
+            assert_eq!(load_disabled_connectors(), builtin_cli());
+            // First-boot self-write traces (bridge.rs first-boot default
+            // settings.json; ensure_dirs creates sessions/default/artifacts/).
+            let home = crate::platform::paths::pinvou3_home();
+            std::fs::write(home.join("settings.json"), "{}").unwrap();
+            std::fs::create_dir_all(
+                crate::platform::paths::sessions_root().join("default/artifacts"),
+            )
+            .unwrap();
+            // Second read: the signal is polluted but the verdict is already
+            // frozen — plain must stay DenyAll.
+            assert_eq!(
+                load_disabled_connectors(),
+                builtin_cli(),
+                "首启痕迹不得把已冻结的全新装机判定翻回全开"
+            );
+            let file = crate::features::marketplace::scope::load_disabled_bundles_file();
+            assert!(file.plain_defaults_migrated);
+            assert!(
+                !file.initialized.contains("plain"),
+                "全新装机 plain 不得被初始化: {file:?}"
+            );
+        });
+    }
+
+    /// Broad upgrade signal: installed.json or a non-empty sessions dir
+    /// present ⇒ old install, plain is initialized to the on-disk state
+    /// (default empty = fully on under old AllowAll semantics), untouched by
+    /// the DenyAll fallback. v0.8.6–v0.9.2 old installs that lack all three
+    /// switch-related files are exactly the population this signal rescues
+    /// (review #445 P1-2). settings.json is not a signal (R8-3 narrowing: a
+    /// preset-template/copied-from-another-machine settings.json would
+    /// misjudge a fresh install as fail-open). The narrowing is not miss-free
+    /// (round-11 M4): an upgraded install whose sessions/ was wiped by tooling
+    /// and that has no installed.json and no legacy switch files is
+    /// indistinguishable from a fresh one and is judged fresh — fail-closed
+    /// direction (all-off, a usability cost), not a silent flip to all-on;
+    /// settings.json alone ⇒ still judged fresh.
+    #[test]
+    fn plain_deny_all_upgraded_install_with_existing_state_preserves_all_on() {
+        for seed in [
+            |home: &std::path::Path| {
+                std::fs::create_dir_all(home.join("marketplace")).unwrap();
+                std::fs::write(home.join("marketplace").join("installed.json"), r"[]").unwrap();
+            },
+            |_home: &std::path::Path| {
+                let sessions = crate::platform::paths::sessions_root();
+                std::fs::create_dir_all(&sessions).unwrap();
+                std::fs::write(sessions.join("seed-session.json"), "{}").unwrap();
+            },
+        ] {
+            with_temp_home(|| {
+                seed(crate::platform::paths::pinvou3_home().as_path());
+                let file = crate::features::marketplace::scope::load_disabled_bundles_file();
+                assert!(
+                    file.initialized.contains("plain"),
+                    "既有状态 ⇒ 升级装机,plain 初始化: {file:?}"
+                );
+            });
+        }
+    }
+
+    /// settings.json alone is not an upgrade signal (reverse pin of the
+    /// R8-3 narrowing): a preset/copied settings.json must not classify a
+    /// fresh install as an upgrade (plain fully on).
+    #[test]
+    fn plain_deny_all_settings_json_alone_is_not_an_upgrade_signal() {
+        with_temp_home(|| {
+            std::fs::write(
+                crate::platform::paths::pinvou3_home().join("settings.json"),
+                "{}",
+            )
+            .unwrap();
+            assert_eq!(
+                load_disabled_connectors(),
+                vec![
+                    "feishu".to_string(),
+                    "wecom".to_string(),
+                    "dingtalk".to_string(),
+                    "tmeet".to_string(),
+                ],
+                "预置 settings.json 不得触发升级判定，plain 仍 DenyAll 全关"
+            );
+            let file = crate::features::marketplace::scope::load_disabled_bundles_file();
+            assert!(!file.initialized.contains("plain"), "{file:?}");
+        });
+    }
+
+    /// Upgrade from the old two-file era (legacy file present) → plain is
+    /// initialized and locked to the post-migration on-disk state (empty =
+    /// fully on), skipping the DenyAll fallback.
+    #[test]
+    fn plain_deny_all_migration_from_legacy_files_preserves_all_on() {
+        with_temp_home(|| {
+            write_installed_ids(&["weather".to_string()]);
+            let legacy = crate::platform::paths::pinvou3_home().join("disabled_connectors.json");
+            std::fs::create_dir_all(legacy.parent().unwrap()).unwrap();
+            std::fs::write(&legacy, r#"["weather"]"#).unwrap();
+            assert_eq!(load_disabled_connectors(), vec!["weather".to_string()]);
+            let file = crate::features::marketplace::scope::load_disabled_bundles_file();
+            assert!(file.plain_defaults_migrated);
+            assert!(file.initialized.contains("plain"));
+        });
+    }
+
+    /// enable_packages_in_scope (review #455 R8: the Rust pin for the batch
+    /// opt-in export, previously covered only by a JS mock): an
+    /// uninitialized DenyAll scope materializes the opt-in as
+    /// (expansion − ids); an initialized scope removes ids from the stored
+    /// list; the hidden set is cleaned in sync; unlisted packs keep their
+    /// state.
+    #[test]
+    fn enable_packages_in_scope_materializes_and_cleans_hidden() {
+        with_temp_home(|| {
+            // Uninitialized plain: expansion covers the built-in CLI packs.
+            // Batch-enabling feishu materializes the opt-in (expansion minus ids).
+            let blocked = crate::features::marketplace::scope::enable_packages_in_scope(
+                ConnectorScope::Plain,
+                &["feishu".to_string()],
+            )
+            .unwrap()
+            .blocked;
+            assert!(
+                blocked.is_empty(),
+                "default-gated packs enable freely: {blocked:?}"
+            );
+            let disabled = load_disabled_connectors_for(ConnectorScope::Plain);
+            assert!(
+                !disabled.contains(&"feishu".to_string()),
+                "feishu leaves the effective disabled set: {disabled:?}"
+            );
+            assert!(
+                disabled.contains(&"wecom".to_string()),
+                "unlisted packs stay default-off: {disabled:?}"
+            );
+            let file = crate::features::marketplace::scope::load_disabled_bundles_file();
+            assert!(file.initialized.contains("plain"), "materialized: {file:?}");
+
+            // A composer whole-list write re-attributes only the entries it
+            // actually transitioned (round-12 self-review): `wecom` was already
+            // stored off with the marker the materialization wrote, so it stays
+            // liftable instead of turning into an explicit opt-out.
+            save_disabled_bundles_for(ConnectorScope::Plain, &["wecom".to_string()]);
+            let blocked = crate::features::marketplace::scope::enable_packages_in_scope(
+                ConnectorScope::Plain,
+                &["wecom".to_string()],
+            )
+            .unwrap()
+            .blocked;
+            assert!(
+                blocked.is_empty(),
+                "an untouched install-default entry stays liftable: {blocked:?}"
+            );
+
+            // The user's own switch-off is the explicit verdict: it drops the
+            // marker (round-12 self-review) and the batch enable refuses the
+            // batch wholesale with the blocked id, nothing moves. Drives the
+            // live composer write path (whole-list): taking wecom on removes
+            // its marker with the entry, and writing it back off enters it
+            // without one — a user verdict, unlike the install default above.
+            save_disabled_bundles_for(ConnectorScope::Plain, &[]);
+            save_disabled_bundles_for(ConnectorScope::Plain, &["wecom".to_string()]);
+            let blocked = crate::features::marketplace::scope::enable_packages_in_scope(
+                ConnectorScope::Plain,
+                &["wecom".to_string(), "dingtalk".to_string()],
+            )
+            .unwrap()
+            .blocked;
+            assert_eq!(
+                blocked,
+                vec!["wecom".to_string()],
+                "explicit opt-out is surfaced"
+            );
+            assert!(
+                load_disabled_connectors_for(ConnectorScope::Plain).contains(&"wecom".to_string()),
+                "blocked pack stays disabled"
+            );
+            // (dingtalk is not an explicit opt-out, but the refusal is wholesale.)
+
+            // Hidden set cleanup rides along with enabling a hidden pack that is
+            // not explicitly stored-off (dingtalk above).
+            save_hidden_bundles_for(ConnectorScope::Plain, &["dingtalk".to_string()]);
+            let blocked = crate::features::marketplace::scope::enable_packages_in_scope(
+                ConnectorScope::Plain,
+                &["dingtalk".to_string()],
+            )
+            .unwrap()
+            .blocked;
+            assert!(blocked.is_empty());
+            assert!(
+                !load_hidden_bundles_for(ConnectorScope::Plain).contains(&"dingtalk".to_string()),
+                "hidden entry cleaned on enable"
+            );
+
+            // Skill-id input normalizes to the owner package id (companion → pack).
+            std::fs::remove_file(
+                crate::platform::paths::pinvou3_home().join("disabled_bundles.json"),
+            )
+            .unwrap();
+            crate::features::marketplace::store::BundleStore::new()
+                .upsert(
+                    crate::features::marketplace::store::BundleRecord::installed_now(
+                        "gongwen".to_string(),
+                        crate::features::marketplace::store::BundleSource::Preset,
+                    ),
+                )
+                .unwrap();
+            let blocked = crate::features::marketplace::scope::enable_packages_in_scope(
+                ConnectorScope::Plain,
+                &["government-writing".to_string()],
+            )
+            .unwrap()
+            .blocked;
+            assert!(blocked.is_empty());
+            assert!(
+                !load_disabled_connectors_for(ConnectorScope::Plain)
+                    .contains(&"gongwen".to_string()),
+                "companion skill id resolves to the owner pack for the enable"
+            );
+        });
+    }
+
+    /// Round-12 review: the batch enable must not report success when the
+    /// persist fails. Its caller's contract is "applied **and persisted**",
+    /// and the hot refresh re-reads the file from disk — a swallowed save
+    /// would leave the model without the tool while the UI says the opt-in
+    /// happened (the frontend renders its failure notice from the rejected
+    /// invoke). Fixture: a read-only home forces the write to fail; the open()
+    /// probe keeps the root skip loud (round-11 m12), same shape as the
+    /// restore-gate regression.
+    #[cfg(unix)]
+    #[test]
+    fn enable_packages_persist_failure_is_reported_and_retryable() {
+        use std::os::unix::fs::PermissionsExt;
+
+        with_temp_home(|| {
+            let home = crate::platform::paths::pinvou3_home();
+            std::fs::set_permissions(&home, std::fs::Permissions::from_mode(0o555)).unwrap();
+            let probe = home.join(".root-probe");
+            if std::fs::write(&probe, b"").is_ok() {
+                let _ = std::fs::remove_file(&probe);
+                std::fs::set_permissions(&home, std::fs::Permissions::from_mode(0o755)).unwrap();
+                eprintln!(
+                    "ROOT-SKIP[enable_packages_persist_failure_is_reported_and_retryable]: running as root - read-only home fixture stays writable; NOT exercised"
+                );
+                return;
+            }
+
+            let error = crate::features::marketplace::scope::enable_packages_in_scope(
+                ConnectorScope::Plain,
+                &["feishu".to_string()],
+            )
+            .expect_err("a failed persist must surface as Err, not as a silent success");
+            assert!(
+                error.contains("disabled_bundles.json"),
+                "the failure must name the file it could not write: {error}"
+            );
+
+            // Nothing was half-applied: the in-memory edit died with the call.
+            std::fs::set_permissions(&home, std::fs::Permissions::from_mode(0o755)).unwrap();
+            let file = crate::features::marketplace::scope::load_disabled_bundles_file();
+            assert!(
+                !file.initialized.contains("plain"),
+                "a failed persist must not materialize the scope: {file:?}"
+            );
+
+            // The failure is retryable: the same gesture succeeds once the
+            // environment can persist again.
+            assert!(
+                crate::features::marketplace::scope::enable_packages_in_scope(
+                    ConnectorScope::Plain,
+                    &["feishu".to_string()],
+                )
+                .unwrap()
+                .blocked
+                .is_empty()
+            );
+            let file = crate::features::marketplace::scope::load_disabled_bundles_file();
+            assert!(
+                file.initialized.contains("plain"),
+                "retry persisted: {file:?}"
+            );
+            assert!(
+                !load_disabled_connectors_for(ConnectorScope::Plain)
+                    .contains(&"feishu".to_string()),
+                "the retried opt-in left feishu enabled"
+            );
+        });
+    }
+
+    /// Verdict-matrix completion (review #455 non-blocking 4): in an
+    /// upgraded install where plain was explicitly initialized by the user
+    /// before convergence (old-format file with initialized containing
+    /// plain, no migration marker) → the stored list is preserved and not
+    /// reset by the migration.
+    #[test]
+    fn plain_deny_all_upgrade_with_plain_pre_initialized_preserves_user_list() {
+        with_temp_home(|| {
+            write_installed_ids(&["weather".to_string()]);
+            let path = crate::platform::paths::pinvou3_home().join("disabled_bundles.json");
+            std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+            // Old-format file (no plain_defaults_migrated): the user
+            // explicitly disabled weather long ago.
+            std::fs::write(
+                &path,
+                r#"{"scopes":{"plain":["weather"]},"initialized":["plain"]}"#,
+            )
+            .unwrap();
+            assert_eq!(load_disabled_connectors(), vec!["weather".to_string()]);
+            let file = crate::features::marketplace::scope::load_disabled_bundles_file();
+            assert!(file.plain_defaults_migrated);
+            assert_eq!(
+                file.scopes.get("plain"),
+                Some(&vec!["weather".to_string()]),
+                "用户显式初始化的 plain 列表必须原样保留: {file:?}"
+            );
+        });
+    }
+
+    /// Verdict-matrix completion: a corrupt file in an upgraded install
+    /// (existing state in the home dir) → recovery likewise fails closed
+    /// (quarantine + marker persisted + DenyAll fallback); the upgrade
+    /// signal plays no part in corrupt recovery.
+    #[test]
+    fn corrupt_disabled_bundles_in_upgraded_install_also_recovers_fail_closed() {
+        with_temp_home(|| {
+            write_installed_ids(&["weather".to_string()]);
+            std::fs::write(
+                crate::platform::paths::pinvou3_home().join("settings.json"),
+                "{}",
+            )
+            .unwrap();
+            let path = crate::platform::paths::pinvou3_home().join("disabled_bundles.json");
+            std::fs::write(&path, "{not-json").unwrap();
+            let disabled = load_disabled_connectors();
+            assert_eq!(
+                disabled,
+                vec![
+                    "weather".to_string(),
+                    "feishu".to_string(),
+                    "wecom".to_string(),
+                    "dingtalk".to_string(),
+                    "tmeet".to_string(),
+                ],
+                "升级装机的损坏恢复同样 fail-closed（有效禁用集 = 已装包 ∪ 内置 CLI）"
+            );
+            let file = crate::features::marketplace::scope::load_disabled_bundles_file();
+            assert!(file.plain_defaults_migrated);
+            assert!(!file.initialized.contains("plain"));
+            // Exactly one quarantine copy; recovery completes in one shot —
+            // a read past the second boundary produces no new copy.
+            std::thread::sleep(std::time::Duration::from_millis(1100));
+            let _ = load_disabled_connectors();
+            let backups: Vec<_> = std::fs::read_dir(path.parent().unwrap())
+                .unwrap()
+                .flatten()
+                .filter(|e| {
+                    e.file_name()
+                        .to_string_lossy()
+                        .starts_with("disabled_bundles.json.corrupt.")
+                })
+                .collect();
+            assert_eq!(backups.len(), 1, "重复读不得产生新的隔离副本");
+        });
+    }
+
+    /// A disabled_bundles.json that exists but is unreadable
+    /// (permissions/lock held, etc., not NotFound): the migration branch
+    /// must not run (on an upgraded install that would initialize plain to
+    /// empty = old AllowAll fully-on, with no quarantine overwriting the
+    /// original), and the salvage read itself necessarily fails — a
+    /// placeholder "quarantine" preserves no original bytes, and
+    /// overwriting the original file here would turn "unreadable but
+    /// recoverable" into "permanently lost" (review #455 R6-B1). Expected:
+    /// in-memory fail-closed takes effect, the original file's bytes stay
+    /// as-is, zero quarantine copies, zero writes; after permissions are
+    /// restored it parses normally from the original content. The
+    /// permission-bit fixture uses the `cfg(unix)`+`PermissionsExt` inline
+    /// exemption (file-header architecture-guard marker, same precedent as
+    /// package_export.rs, review #455 R9-M5); a real open() probe guards
+    /// against running as root, and platform-independent semantics are
+    /// unchanged.
+    #[cfg(unix)]
+    #[test]
+    fn unreadable_disabled_bundles_stays_untouched_fail_closed_in_memory() {
+        use std::os::unix::fs::PermissionsExt;
+        with_temp_home(|| {
+            // Upgraded-install trace: settings.json present (self-written
+            // by old first boots).
+            std::fs::write(
+                crate::platform::paths::pinvou3_home().join("settings.json"),
+                "{}",
+            )
+            .unwrap();
+            let path = crate::platform::paths::pinvou3_home().join("disabled_bundles.json");
+            let original = "{\"plain_defaults_migrated\":true}";
+            std::fs::write(&path, original).unwrap();
+            // 0o000: exists but unreadable. The open() probe guards against
+            // running as root (mode bits have no effect); print the skip
+            // reason so the CI pass count does not overstate fail-closed
+            // coverage (R7 nit).
+            std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o000)).unwrap();
+            if std::fs::File::open(&path).is_ok() {
+                // Round-11 m12: root runs must be loudly greppable — a green
+                // CI container running as root exercised NOTHING here.
+                eprintln!(
+                    "ROOT-SKIP[unreadable_disabled_bundles_stays_untouched_fail_closed_in_memory]: running as root - chmod 000 fixture stays readable; fail-closed unreadable path NOT exercised; this green run covers nothing"
+                );
+                return;
+            }
+
+            let disabled = load_disabled_connectors();
+
+            assert_eq!(
+                disabled,
+                vec![
+                    "feishu".to_string(),
+                    "wecom".to_string(),
+                    "dingtalk".to_string(),
+                    "tmeet".to_string(),
+                ],
+                "不可读必须内存 fail-closed（不得按升级迁移初始化 plain 为全开）"
+            );
+            // Assertions after restoring permissions: original file bytes
+            // as-is, no quarantine copy, no degraded-state overwrite on disk.
+            std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o644)).unwrap();
+            assert_eq!(
+                std::fs::read_to_string(&path).unwrap(),
+                original,
+                "salvage 读失败时不得覆盖原文件（R6-B1）"
+            );
+            let backups: Vec<_> = std::fs::read_dir(path.parent().unwrap())
+                .unwrap()
+                .flatten()
+                .filter(|e| {
+                    e.file_name()
+                        .to_string_lossy()
+                        .starts_with("disabled_bundles.json.corrupt.")
+                })
+                .collect();
+            assert!(
+                backups.is_empty(),
+                "占位符隔离不落地：不可读不得产生隔离副本"
+            );
+            // After permissions are restored it parses normally from the
+            // original content (the marker comes from the file itself, not
+            // the degraded state).
+            let file = crate::features::marketplace::scope::load_disabled_bundles_file();
+            assert!(file.plain_defaults_migrated, "原内容含 marker: {file:?}");
+            assert!(
+                !file.initialized.contains("plain"),
+                "不得初始化 plain（那是旧 AllowAll 全开语义）: {file:?}"
+            );
+        });
+    }
+
+    /// An installed.json that exists but is unreadable (permissions/lock
+    /// held, etc., not NotFound): the DenyAll freshly-computed expansion
+    /// must fail closed by degrading to "all installable packs ∪ built-in
+    /// CLI" instead of admitting an empty installed set (review #455
+    /// R5-B2) — otherwise the effective disabled set of an uninitialized
+    /// scope loses every installed pack, and plain sessions pass installed
+    /// connectors through with zero consent (the fully-on flip this PR
+    /// promises never happens). The original file stays as-is (no
+    /// quarantine, no overwrite); after recovery it is computed from the
+    /// real installed set.
+    /// The fixture must pre-seed disabled_bundles.json (marker freezing the
+    /// verdict) before writing installed.json: otherwise the first read
+    /// hits the broad upgrade signal, initializes plain to an empty stored
+    /// list, and `resolve_scope_disabled_ids` takes the stored-list branch
+    /// — the DenyAll expansion, the mechanism under test, is never even
+    /// consulted (review #455 R7-B1).
+    #[cfg(unix)]
+    #[test]
+    fn unreadable_installed_json_deny_all_expansion_fails_closed() {
+        use std::os::unix::fs::PermissionsExt;
+        with_temp_home(|| {
+            // Freeze the "upgrade vs fresh" verdict first: a marker-only
+            // file, plain stays uninitialized.
+            std::fs::write(
+                crate::platform::paths::pinvou3_home().join("disabled_bundles.json"),
+                "{\"plain_defaults_migrated\":true}",
+            )
+            .unwrap();
+            let dir = crate::platform::paths::pinvou3_home().join("marketplace");
+            std::fs::create_dir_all(&dir).unwrap();
+            let path = dir.join("installed.json");
+            std::fs::write(&path, "[\"feishu\"]").unwrap();
+            // 0o000: exists but unreadable. The open() probe guards against
+            // running as root (R7 nit).
+            std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o000)).unwrap();
+            if std::fs::File::open(&path).is_ok() {
+                // Round-11 m12: root runs must be loudly greppable — a green
+                // CI container running as root exercised NOTHING here.
+                eprintln!(
+                    "ROOT-SKIP[unreadable_installed_json_deny_all_expansion_fails_closed]: running as root - chmod 000 fixture stays readable; fail-closed unreadable path NOT exercised; this green run covers nothing"
+                );
+                return;
+            }
+
+            // "Installed set unknown" is distinguished as Err; the original
+            // file is left untouched.
+            let manager = MarketplaceManager::new();
+            assert!(
+                manager.try_installed_ids().is_err(),
+                "不可读必须按错误区分（不得静默按空已装集）"
+            );
+            let disabled = load_disabled_connectors();
+            let builtin = bundle::builtin_cli_bundle_ids()
+                .next()
+                .expect("至少一个内置 CLI 包");
+            assert!(
+                disabled.iter().any(|id| id == builtin),
+                "fail-closed 扩集必须含内置 CLI 包: {disabled:?}"
+            );
+            // Direct evidence the fail-closed branch is in effect: the
+            // logged full-catalog fallback. (Under the empty-installed-set
+            // interpretation the expansion would be just built-in CLI ∪
+            // installed skill packs, far smaller than the full catalog.)
+            assert!(
+                disabled.len() > 4,
+                "fail-closed 扩集必须覆盖全部可装包，而非只剩内置 CLI: {disabled:?}"
+            );
+            // The file is preserved as-is; no quarantine copy is produced.
+            std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o644)).unwrap();
+            assert_eq!(
+                std::fs::read_to_string(&path).unwrap(),
+                "[\"feishu\"]",
+                "不可读不得动原文件"
+            );
+            let quarantined: Vec<_> = std::fs::read_dir(&dir)
+                .unwrap()
+                .flatten()
+                .filter(|e| {
+                    e.file_name()
+                        .to_string_lossy()
+                        .starts_with("installed.json.corrupt.")
+                })
+                .collect();
+            assert!(quarantined.is_empty(), "不可读不属于损坏，不得隔离");
+            // After recovery it computes from the real installed set (the
+            // corrupt-JSON path's quarantine-rebuild is unaffected).
+            assert_eq!(
+                MarketplaceManager::new().installed_ids(),
+                vec!["feishu".to_string()]
+            );
+        });
+    }
+
+    /// Verdict-matrix completion: an empty sessions/ dir (no entries) does
+    /// not count as an upgrade signal — the fresh-install DenyAll verdict
+    /// is unaffected.
+    #[test]
+    fn plain_deny_all_empty_sessions_dir_is_not_an_upgrade_signal() {
+        with_temp_home(|| {
+            std::fs::create_dir_all(crate::platform::paths::sessions_root()).unwrap();
+            assert_eq!(
+                load_disabled_connectors(),
+                vec![
+                    "feishu".to_string(),
+                    "wecom".to_string(),
+                    "dingtalk".to_string(),
+                    "tmeet".to_string(),
+                ],
+                "空 sessions/ 目录不算升级信号，plain 仍 DenyAll 默认全关"
+            );
+            let file = crate::features::marketplace::scope::load_disabled_bundles_file();
+            assert!(!file.initialized.contains("plain"));
+        });
+    }
+
+    /// The upgrade signal is a **whitelist** of three paths (review #455
+    /// R7 nit): unrelated home-dir state written early on first boot, such
+    /// as logs/, is not upgrade evidence — with only that log dir present
+    /// the install is still judged fresh and plain stays DenyAll
+    /// default-off. Guards against scope drift toward "any trace counts as
+    /// an upgrade".
+    #[test]
+    fn plain_deny_all_logs_dir_alone_is_not_an_upgrade_signal() {
+        with_temp_home(|| {
+            std::fs::create_dir_all(crate::platform::paths::pinvou3_home().join("logs")).unwrap();
+            assert_eq!(
+                load_disabled_connectors(),
+                vec![
+                    "feishu".to_string(),
+                    "wecom".to_string(),
+                    "dingtalk".to_string(),
+                    "tmeet".to_string(),
+                ],
+                "logs/ 单独存在不算升级信号，plain 仍 DenyAll 默认全关"
+            );
+            let file = crate::features::marketplace::scope::load_disabled_bundles_file();
+            assert!(!file.initialized.contains("plain"));
         });
     }
 

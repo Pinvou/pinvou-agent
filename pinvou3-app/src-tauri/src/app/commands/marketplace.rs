@@ -191,6 +191,14 @@ pub async fn install_marketplace_tool(
         let mgr = crate::features::marketplace::MarketplaceManager::new();
         // 联动:装该 MCP 声明的配套技能(引擎+引导整体到位)。
         // skill 是增强,装失败只记日志、不让已成功的 MCP 安装回滚。
+        // DenyAll 模式的 scope(如 code)已初始化时,新装的连接器默认仍关闭(显式开启)。
+        // 工具本体的同步**先行**（评审 R14-minor）：companion 技能是增强，其同步
+        // 失败不得让工具本体停留在零同意的默认开状态；持久化失败 fail-visible
+        // （评审 #455 R13-B3）。
+        crate::features::marketplace::sync_deny_all_scopes_after_install(&companion_tool_id)
+            .map_err(|e| {
+                format!("新装连接器 '{companion_tool_id}' 默认关闭状态落盘失败（新会话将默认开启，请在工具列表手动关闭）: {e}")
+            })?;
         for sid in mgr.companion_skills(&companion_tool_id) {
             if let Err(e) =
                 crate::features::marketplace::skill_marketplace::SkillMarketplaceManager::new()
@@ -199,14 +207,18 @@ pub async fn install_marketplace_tool(
                 eprintln!("[marketplace] 配套技能 '{sid}' 安装失败: {e}");
                 continue;
             }
-            // 新装的 companion 技能默认加入 DenyAll scope（当前 code）禁用集
-            // （外部能力显式开启，与独立技能安装 install_marketplace_skill_sync 同语义）。
-            crate::features::marketplace::skill_scope::sync_deny_all_scopes_after_skill_install(
-                &sid,
-            );
+            // 新装的 companion 技能默认加入 DenyAll scope 禁用集（外部能力显式
+            // 开启，与独立技能安装 install_marketplace_skill_sync 同语义）。
+            // companion 的 owner 包即本工具，上方的工具同步已覆盖其同意状态，
+            // 故本调用失败只留痕继续（不阻断其余 companion，也无需整体报错）。
+            if let Err(e) = crate::features::marketplace::skill_scope::
+                sync_deny_all_scopes_after_skill_install(&sid)
+            {
+                eprintln!(
+                    "[marketplace] 配套技能 '{sid}' 默认关闭状态落盘失败（owner 包已由工具同步覆盖）: {e}"
+                );
+            }
         }
-        // DenyAll 模式的 scope(如 code)已初始化时,新装的连接器默认仍关闭(显式开启)。
-        crate::features::marketplace::sync_deny_all_scopes_after_install(&companion_tool_id);
         Ok::<(), String>(())
     })
     .await
@@ -538,8 +550,8 @@ pub async fn install_marketplace_skill(
         .await
         .map_err(|e| format!("任务执行失败: {e}"))??;
     // 安装影响两个 scope 的启用集：重写在线会话的组合目录（下一轮 prompt 生效）。
-    // code scope 已初始化时新装技能默认仍关闭（sync 进 code 禁用集，见下面
-    // install_marketplace_skill_sync），plain 会话立即可见。
+    // DenyAll scope（含 plain）已初始化时新装技能默认仍关闭（sync 进各 scope 禁用集，
+    // 见 install_marketplace_skill_sync）；未初始化 scope 按 DenyAll 现算兜底，同样默认关。
     pool.refresh_live_sessions_skills().await;
     // 导入包的 CLI/技能脚本纳入 deny 规则集（M-6：import 路径热刷）。
     pool.refresh_permission_rulesets().await;
@@ -557,7 +569,11 @@ pub(super) fn install_marketplace_skill_sync(skill_id: &str) -> Result<(), Strin
         .install(skill_id)?;
     // 新装技能默认加入 DenyAll scope（当前 code）禁用集（与连接器同语义：
     // 外部能力显式开启）；组合目录由调用方在命令层重写（install_marketplace_skill）。
-    crate::features::marketplace::skill_scope::sync_deny_all_scopes_after_skill_install(skill_id);
+    // 持久化失败 fail-visible（评审 #455 R13-B3）：吞掉错误会让技能以零同意上线。
+    crate::features::marketplace::skill_scope::sync_deny_all_scopes_after_skill_install(skill_id)
+        .map_err(|e| {
+            format!("新装技能 '{skill_id}' 默认关闭状态落盘失败（新会话将默认开启，请在工具列表手动关闭）: {e}")
+        })?;
     Ok(())
 }
 
@@ -734,8 +750,13 @@ pub async fn import_plugin_package_cmd(
     .await
     .map_err(|e| format!("任务执行失败: {e}"))??;
     // 上传安全默认：插件包导入后加入 DenyAll 禁用集，需用户在前端开关显式开启。
-    // 与 `install_marketplace_tool` 同口径。
-    crate::features::marketplace::sync_deny_all_scopes_after_install(&report.id);
+    // 与 `install_marketplace_tool` 同口径。持久化失败 fail-visible（评审 #455 R13-B3）。
+    crate::features::marketplace::sync_deny_all_scopes_after_install(&report.id).map_err(|e| {
+        format!(
+            "插件 '{}' 默认关闭状态落盘失败（新会话将默认开启，请在工具列表手动关闭）: {e}",
+            report.id
+        )
+    })?;
     // 新装包进入供给：mcp/spanner 热刷工具白名单 + skills 热刷会话组合目录。
     pool.refresh_disallowed_tools().await;
     pool.refresh_live_sessions_skills().await;
@@ -800,7 +821,13 @@ pub async fn import_plugin_package_bytes_cmd(
     let _ = std::fs::remove_file(&tmp); // 清理临时文件(含失败路径)
     let report = report?;
     // 上传安全默认：拖放导入插件包后加入 DenyAll 禁用集，需用户开关显式开启。
-    crate::features::marketplace::sync_deny_all_scopes_after_install(&report.id);
+    // 持久化失败 fail-visible（评审 #455 R13-B3）。
+    crate::features::marketplace::sync_deny_all_scopes_after_install(&report.id).map_err(|e| {
+        format!(
+            "插件 '{}' 默认关闭状态落盘失败（新会话将默认开启，请在工具列表手动关闭）: {e}",
+            report.id
+        )
+    })?;
     // 新装包进入供给：mcp/spanner 热刷工具白名单 + skills 热刷会话组合目录。
     pool.refresh_disallowed_tools().await;
     pool.refresh_live_sessions_skills().await;
@@ -841,8 +868,15 @@ pub async fn import_skill_md_bytes(
         tokio::task::spawn_blocking(move || import_skill_md_content(md, &filename_for_import))
             .await
             .map_err(|e| format!("任务执行失败: {e}"))??;
-    // 上传安全默认：与插件包导入同口径，加入 DenyAll scope。
-    crate::features::marketplace::skill_scope::sync_deny_all_scopes_after_skill_install(&report.id);
+    // 上传安全默认：与插件包导入同口径，加入 DenyAll scope。持久化失败
+    // fail-visible（评审 #455 R13-B3）。
+    crate::features::marketplace::skill_scope::sync_deny_all_scopes_after_skill_install(&report.id)
+        .map_err(|e| {
+            format!(
+                "技能 '{}' 默认关闭状态落盘失败（新会话将默认开启，请在工具列表手动关闭）: {e}",
+                report.id
+            )
+        })?;
     pool.refresh_live_sessions_skills().await;
     // 导入包的 CLI/技能脚本纳入 deny 规则集（M-6：import 路径热刷）。
     pool.refresh_permission_rulesets().await;

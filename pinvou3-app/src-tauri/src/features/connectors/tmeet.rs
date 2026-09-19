@@ -439,8 +439,11 @@ pub async fn tmeet_apply_skills() -> Result<Value, String> {
     .await
     .map_err(|e| format!("spawn_blocking: {e}"))??;
     // scope 门禁同步：见 feishu_apply_skills 同名注释（code 默认关语义对齐）。
+    // 持久化失败 fail-visible（评审 #455 R13-B3）。
     if show {
-        crate::features::marketplace::sync_deny_all_scopes_after_install("tmeet");
+        crate::features::marketplace::sync_deny_all_scopes_after_install("tmeet").map_err(|e| {
+            format!("tmeet 默认关闭状态落盘失败（新会话将默认开启，请在工具列表手动关闭）: {e}")
+        })?;
     }
     Ok(json!({ "visible": show }))
 }

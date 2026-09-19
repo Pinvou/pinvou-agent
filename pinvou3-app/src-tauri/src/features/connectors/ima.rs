@@ -334,9 +334,16 @@ pub async fn ima_connect(client_id: String, api_key: String) -> Result<Value, St
             // 由命令层（connectors::ima_connect）重写。
             // 注意引用 marketplace::skill_scope（持久化层）而非 assistant：避免
             // connectors → assistant 依赖环（架构守卫 rust_feature_cycles）。
+            // 持久化失败 fail-visible（评审 #455 R13-B3）：与上方 install 的 Err
+            // 同样走整体回滚（撤销 secrets），不让技能以零同意上线。
             crate::features::marketplace::skill_scope::sync_deny_all_scopes_after_skill_install(
                 IMA_SKILL_ID,
-            );
+            )
+            .map_err(|e| {
+                format!(
+                    "ima 技能默认关闭状态落盘失败（新会话将默认开启，请在工具列表手动关闭）: {e}"
+                )
+            })?;
             Ok(())
         })();
 

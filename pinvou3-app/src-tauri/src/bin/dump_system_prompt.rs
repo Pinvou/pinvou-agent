@@ -21,6 +21,12 @@ fn main() -> Result<()> {
     // session id 走临时值,避免污染真实 sessions/
     let sid = "__dump_system_prompt__";
 
+    // Same order as the GUI/windowless hosts: freeze the fresh-vs-upgraded
+    // migration verdict before bridge.boot()'s first-boot self-writes
+    // (ensure_dirs/default settings.json), so the dev tool's first touch of a
+    // fresh home cannot persist a polluted verdict (review #455 blocking item 3).
+    let _ = pinvou3_lib::features::marketplace::load_disabled_bundles();
+
     let bridge = Pinvou3Bridge::boot()?;
     let cfg = bridge.build_engine_config_for_session(sid);
 

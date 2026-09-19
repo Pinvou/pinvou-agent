@@ -72,6 +72,82 @@ pub async fn get_bundle_visibility(scope: Option<String>) -> Result<Vec<String>,
     Ok(crate::features::marketplace::load_hidden_bundles_for(scope))
 }
 
+/// Outcome of `enable_marketplace_packages` (round-11 m11): an explicit
+/// shape replaces the previous `Ok(blocked)` overload where a non-empty Ok
+/// doubled as "refused, nothing enabled, hot-refresh skipped" — an implicit
+/// contract that held only because both JS callers checked the payload.
+#[derive(serde::Serialize)]
+pub struct EnablePackagesOutcome {
+    /// The batch was applied and persisted (hot-refresh followed).
+    pub enabled: bool,
+    /// Non-empty = refused: these ids sit in the scope's **explicit** user
+    /// switch state (install-default offs lift freely, round-11 B2); nothing
+    /// was enabled and no hot-refresh ran. The caller must surface the ids.
+    pub blocked: Vec<String>,
+    /// Non-empty (round-13 m3) = requested ids that matched no entry in the
+    /// DenyAll expansion — likely a concurrent install that had not committed
+    /// when the expansion snapshotted, or an unknown id. Everything else in
+    /// the batch may still have applied; the caller must not present the
+    /// opt-in of these ids as done.
+    pub not_applied: Vec<String>,
+}
+
+/// Batch package enabling for user actions such as scene opt-in (review #455
+/// R7-M3): the backend performs "read the currently effective disabled set →
+/// remove package_ids → persist" inside the `DISABLED_BUNDLES_FILE_LOCK`
+/// single critical section; the frontend no longer does a whole-table
+/// read-modify-write (a cross-IPC compound operation would overwrite a
+/// concurrent composer toggle with a stale snapshot, and fail-open would
+/// resurrect a package the user explicitly turned off). After persisting, it
+/// hot-refreshes on the same path as `set_disabled_connectors`: rewrite
+/// online session composite skills directories + the tool allowlist +
+/// execpolicy rulesets, taking effect in the current conversation turn.
+#[tauri::command]
+pub async fn enable_marketplace_packages(
+    package_ids: Vec<String>,
+    scope: Option<String>,
+    app: AppHandle,
+    pool: State<'_, EnginePool>,
+) -> Result<EnablePackagesOutcome, String> {
+    let scope = parse_connector_scope(scope.as_deref())?;
+    // The inner `?` is the persist failure (round-12 review): the command must
+    // fail rather than report `enabled: true` for state that never reached
+    // disk — the frontend renders its failure notice from the rejected invoke.
+    let outcome = tokio::task::spawn_blocking(move || {
+        crate::features::marketplace::scope::enable_packages_in_scope(scope, &package_ids)
+    })
+    .await
+    .map_err(|e| format!("enable_marketplace_packages join: {e}"))??;
+    if !outcome.blocked.is_empty() {
+        // Refused (round-10 Major 2): nothing was enabled; the hot-refresh
+        // below is skipped because no state changed.
+        return Ok(EnablePackagesOutcome {
+            enabled: false,
+            blocked: outcome.blocked,
+            not_applied: outcome.not_applied,
+        });
+    }
+    pool.refresh_live_sessions_skills().await;
+    pool.refresh_disallowed_tools().await;
+    pool.refresh_permission_rulesets().await;
+    let payload = serde_json::json!({});
+    let _ = app.emit("remote_control:tools_changed", payload.clone());
+    crate::features::remote_control::forward_app_event(
+        &app,
+        "remote_control:tools_changed",
+        payload,
+    );
+    Ok(EnablePackagesOutcome {
+        // Round-13 m3: `enabled` is honest about coverage — any id that
+        // matched nothing (not_applied) means the batch did not fully apply,
+        // so it is not reported as a plain success; the caller surfaces
+        // not_applied.
+        enabled: outcome.not_applied.is_empty(),
+        blocked: outcome.blocked,
+        not_applied: outcome.not_applied,
+    })
+}
+
 // ---------------------------------------------------------------------------
 // 技能开关（按会话类型 scope 独立持久，skill 双 scope 治理）
 // ---------------------------------------------------------------------------
