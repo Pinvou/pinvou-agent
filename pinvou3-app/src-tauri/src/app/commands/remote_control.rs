@@ -830,11 +830,14 @@ pub async fn web_access_create_session_and_chat(
     )
     .await
     {
-        pool.evict(&session_id).await;
-        let rollback = store
-            .delete(&session_id)
+        // Roll back through the gated, aux-aware pool delete (the same path
+        // delete_session uses): a bare store.delete would leave an aux engine
+        // bound to this session running as a handle-less orphan, and would
+        // skip the turn gate (round-13 M-B).
+        let rollback = pool
+            .delete_chat_session(&session_id)
+            .await
             .map_err(|rollback_error| format!("rollback Session {session_id}: {rollback_error:#}"));
-        pool.forget_session(&session_id);
         // The chat may have already run (possibly past start_turn):
         // process-level residual keys such as the timing queue / pending
         // user input are cleaned uniformly by the SessionPurgedHook fired

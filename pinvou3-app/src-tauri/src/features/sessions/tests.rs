@@ -4652,6 +4652,87 @@ fn aux_sidecar_read_failure_fails_closed_everywhere() {
     assert_eq!(resolved.id, aux.id);
 }
 
+/// PR #433 review round-13 (M-A): when detaching a mismatched aux mapping
+/// fails to persist, the repair of that record must abort. The failed detach
+/// is rolled back in memory, so the map still holds the false main→aux entry —
+/// continuing into the backlink rebuild would persist the whole map with the
+/// true parent's entry added, doubling the mapping on disk and letting the
+/// false parent's panel read the true parent's transcript until the next boot.
+#[test]
+fn reconcile_aborts_mismatch_repair_when_detach_persist_fails() {
+    let (store, _g) = isolated_store();
+    let main_a = store
+        .create_new("/model".into(), None, std::env::temp_dir())
+        .expect("create main A");
+    let main_b = store
+        .create_new("/model".into(), None, std::env::temp_dir())
+        .expect("create main B");
+    let aux = store
+        .get_or_create_aux_session(&main_b.metadata.id)
+        .expect("create aux for main B");
+
+    // Hand-edited sidecar state: main A maps to main B's aux, while the
+    // record's backlink still names B (the mismatch the repair exists for).
+    store
+        .set_aux_session(&main_b.metadata.id, None)
+        .expect("clear the true mapping");
+    store
+        .set_aux_session(&main_a.metadata.id, Some(aux.id.clone()))
+        .expect("plant the false mapping");
+
+    // Make the next sidecar persist fail: a directory where the file belongs
+    // (same transient-fault stand-in as the read-failure test above).
+    let sidecar = paths::sessions_root().join("_aux_sessions.json");
+    std::fs::remove_file(&sidecar).expect("remove the sidecar file");
+    std::fs::create_dir(&sidecar).expect("block the sidecar path with a directory");
+
+    // The detach cannot persist, so the repair must leave everything as found:
+    // reconcile completes (the fault is logged, not propagated), the false
+    // mapping survives this boot, the true parent stays unbound, and the aux
+    // record is not reclaimed.
+    store
+        .reconcile_aux_sessions()
+        .expect("a failed detach persist must abort the repair, not the pass");
+    assert_eq!(
+        store.aux_session_id(&main_a.metadata.id).as_deref(),
+        Some(aux.id.as_str()),
+        "the rolled-back detach must leave the false mapping in place"
+    );
+    assert!(
+        store.aux_session_id(&main_b.metadata.id).is_none(),
+        "the true parent must not gain a second entry pointing at the same aux"
+    );
+    store
+        .load(&aux.id)
+        .expect("the aux record must survive the aborted repair");
+    assert!(
+        sidecar.is_dir(),
+        "the blocked sidecar path must be left exactly as found"
+    );
+
+    // After the fault clears, the next boot's reconcile does the detach and
+    // the re-adoption in one pass.
+    std::fs::remove_dir(&sidecar).expect("unblock the sidecar path");
+    let recovered = reopen_store(&store).expect("reboot after the fault clears");
+    recovered
+        .reconcile_aux_sessions()
+        .expect("reconcile repairs the mismatch once persisting works");
+    assert!(recovered.aux_session_id(&main_a.metadata.id).is_none());
+    assert_eq!(
+        recovered.aux_session_id(&main_b.metadata.id).as_deref(),
+        Some(aux.id.as_str()),
+        "the record must be re-adopted by its true parent"
+    );
+    let on_disk: std::collections::HashMap<String, String> =
+        serde_json::from_str(&std::fs::read_to_string(&sidecar).expect("sidecar after recovery"))
+            .expect("parse sidecar");
+    assert_eq!(
+        on_disk.len(),
+        1,
+        "recovery must converge to a single mapping, not a doubled one"
+    );
+}
+
 /// Creating an aux session must inherit the main session's per-session
 /// model binding in `_session_models.json` (the override beyond
 /// metadata.model), otherwise aux chat silently lands on a different model.

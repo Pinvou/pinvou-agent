@@ -477,6 +477,15 @@ impl SessionStore {
                         if let Err(error) = self.set_aux_session(main_id, None) {
                             // Identity-free: this surfaces through the boot log.
                             eprintln!("[sessions] detach mismatched aux mapping failed: {error:#}");
+                            // Abort this record's repair: the failed detach was
+                            // rolled back in memory, so the map still holds the
+                            // false main→aux entry — continuing would persist
+                            // the whole map with the true parent's entry added,
+                            // doubling the mapping on disk and letting the false
+                            // parent's panel read the true parent's transcript
+                            // until the next boot. Leave the lying mapping to
+                            // the next boot, matching the transient-fault stance.
+                            continue;
                         }
                         if !self.rebuild_aux_mapping_from_record(aux_id)? {
                             // The true parent is gone, already bound to another

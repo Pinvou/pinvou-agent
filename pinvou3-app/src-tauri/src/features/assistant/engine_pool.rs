@@ -417,6 +417,34 @@ where
     Ok(())
 }
 
+/// Aux-aware chat delete: deleting a main chat first deletes its aux session
+/// through the same supplied gated delete (depth 1 — aux sessions never own
+/// another aux, so no recursion guard is needed beyond the prefix check).
+/// `SessionStore::delete`'s record-level cascade alone cannot reach the
+/// engine/forwarder and would leave a still-running aux engine as a
+/// handle-less orphan, so every deletion of a chat session must go through
+/// this wrapper rather than bare `store.delete` (round-13 M-B: the eval
+/// close path and the web-session rollback both bypassed the command-layer
+/// cascade before this wrapper existed).
+async fn delete_chat_session_with_aux_cascade<De, DeFut>(
+    store: &SessionStore,
+    session_id: &str,
+    mut delete: De,
+) -> Result<()>
+where
+    De: FnMut(&str) -> DeFut,
+    DeFut: Future<Output = Result<()>>,
+{
+    if !crate::features::sessions::is_aux_session_id(session_id) {
+        if let Some(aux_id) = store.aux_session_id(session_id) {
+            delete(&aux_id)
+                .await
+                .context("delete the aux session before its main session")?;
+        }
+    }
+    delete(session_id).await
+}
+
 #[cfg(test)]
 fn delete_then_forget<D, G>(delete: D, forget: G) -> Result<()>
 where
@@ -1582,14 +1610,26 @@ impl EnginePool {
     /// Delete an ordinary chat under the exact turn gate used by lazy spawn
     /// and send. No queued sender can slip between engine reclaim, disk delete,
     /// and lifecycle cleanup to resurrect the session.
+    ///
+    /// Aux-aware: deleting a main chat first deletes its aux session through
+    /// this same gated path (depth 1 — aux sessions never own another aux), so
+    /// callers that bypass the command-layer cascade (`delete_session`) still
+    /// reclaim the aux engine instead of orphaning it. Never substitute a bare
+    /// `store.delete` for this method on a chat session.
     pub(crate) async fn delete_chat_session(&self, session_id: &str) -> Result<()> {
-        delete_chat_session_with_gate(
-            &self.turn_locks,
-            &self.store,
-            session_id,
-            || self.evict_locked(session_id),
-            || self.forget_session(session_id),
-        )
+        delete_chat_session_with_aux_cascade(&self.store, session_id, |id| {
+            let id = id.to_string();
+            async move {
+                delete_chat_session_with_gate(
+                    &self.turn_locks,
+                    &self.store,
+                    &id,
+                    || self.evict_locked(&id),
+                    || self.forget_session(&id),
+                )
+                .await
+            }
+        })
         .await?;
         // 裸 `agent` 对**所有**会话可用（不只多智能体开关开启的），
         // 底座取消子智能体后的后台 ledger 写
@@ -2983,14 +3023,14 @@ mod scheduled_model_tests {
         Pinvou3Bridge, PreparedRuntimeState, SESSION_MODEL_BINDING_STALE_ERROR,
         ScheduledUnattendedGuard, SessionShellManagers, SessionTurnLifecycles, SessionTurnLocks,
         SessionTurnShellTasks, TranscriptOperation, TurnIdentity, cancel_turn_with_gates,
-        default_model_for_new_session_from, delete_chat_session_with_gate,
-        delete_scheduled_run_with_gate, delete_then_forget, dispatch_turn_bound_cancel,
-        evict_if_idle_with_gates, forward_forced_turn_restrict, generation_matches,
-        identity_for_active_model, identity_for_saved_model, merge_aux_zero_tool_reminder,
-        quiesce_engine_before_reclaim, resolve_eval_model_selection_from,
-        resolve_runtime_model_override, resolve_scheduled_model, resolve_spawn_model,
-        scheduled_profile_after_turn_gate, should_still_reap_after_snapshot, turn_restrict_tools,
-        user_display_message,
+        default_model_for_new_session_from, delete_chat_session_with_aux_cascade,
+        delete_chat_session_with_gate, delete_scheduled_run_with_gate, delete_then_forget,
+        dispatch_turn_bound_cancel, evict_if_idle_with_gates, forward_forced_turn_restrict,
+        generation_matches, identity_for_active_model, identity_for_saved_model,
+        merge_aux_zero_tool_reminder, quiesce_engine_before_reclaim,
+        resolve_eval_model_selection_from, resolve_runtime_model_override, resolve_scheduled_model,
+        resolve_spawn_model, scheduled_profile_after_turn_gate, should_still_reap_after_snapshot,
+        turn_restrict_tools, user_display_message,
     };
     use crate::features::assistant::engine::TurnBoundCancelOps;
     use crate::features::assistant::runtime_model::PreparedRuntimeModel;
@@ -4126,6 +4166,91 @@ mod scheduled_model_tests {
         let probe = locks.for_session("turn-lock-prune-probe").await;
         assert!(!locks.locks.lock().await.contains_key(&session_id));
         drop(probe);
+
+        match previous_home {
+            // SAFETY: platform::paths::tests::ENV_LOCK held; env writes are serialized.
+            Some(value) => unsafe { std::env::set_var("PINVOU3_HOME", value) },
+            // SAFETY: platform::paths::tests::ENV_LOCK held; env writes are serialized.
+            None => unsafe { std::env::remove_var("PINVOU3_HOME") },
+        }
+        let _ = std::fs::remove_dir_all(home);
+    }
+
+    /// PR #433 review round-13 (M-B): the pool-level chat delete must cascade
+    /// to the aux session through the gated delete *first* (depth 1), so
+    /// callers that bypass the command-layer cascade (eval close, web-session
+    /// rollback) cannot leave a running aux engine as a handle-less orphan.
+    /// Reordering the wrapper (main before aux) or dropping the aux leg must
+    /// fail this test.
+    #[tokio::test]
+    async fn chat_delete_cascades_to_aux_before_main() {
+        let _env_guard = crate::platform::paths::tests::ENV_LOCK
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        let home = std::env::temp_dir().join(format!(
+            "pinvou3-engine-pool-aux-cascade-{}",
+            std::process::id()
+        ));
+        let previous_home = std::env::var("PINVOU3_HOME").ok();
+        let _ = std::fs::remove_dir_all(&home);
+        // SAFETY: platform::paths::tests::ENV_LOCK held; env writes are serialized.
+        unsafe { std::env::set_var("PINVOU3_HOME", &home) };
+
+        let store = SessionStore::boot().expect("session store");
+        let main = store
+            .create_new("/model".into(), None, std::env::temp_dir())
+            .expect("create main");
+        let aux = store
+            .get_or_create_aux_session(&main.metadata.id)
+            .expect("create aux");
+
+        let deleted = Arc::new(StdMutex::new(Vec::new()));
+        let recording_delete = |id: &str| {
+            let id = id.to_string();
+            let store = store.clone();
+            let deleted = deleted.clone();
+            async move {
+                deleted.lock().unwrap().push(id.clone());
+                store.delete(&id)
+            }
+        };
+        delete_chat_session_with_aux_cascade(&store, &main.metadata.id, recording_delete)
+            .await
+            .expect("cascaded delete");
+
+        assert_eq!(
+            deleted.lock().unwrap().as_slice(),
+            &[aux.id.clone(), main.metadata.id.clone()],
+            "the aux session must be deleted strictly before its main session"
+        );
+        assert!(store.load(&aux.id).is_err());
+        assert!(store.load(&main.metadata.id).is_err());
+
+        // Depth 1: deleting an aux session directly must not look up a mapping
+        // (aux sessions never own another aux) — a single delete, no cascade.
+        let main_b = store
+            .create_new("/model".into(), None, std::env::temp_dir())
+            .expect("create main B");
+        let aux_b = store
+            .get_or_create_aux_session(&main_b.metadata.id)
+            .expect("create aux B");
+        let deleted_b = Arc::new(StdMutex::new(Vec::new()));
+        let recording_delete_b = |id: &str| {
+            let id = id.to_string();
+            let store = store.clone();
+            let deleted = deleted_b.clone();
+            async move {
+                deleted.lock().unwrap().push(id.clone());
+                store.delete(&id)
+            }
+        };
+        delete_chat_session_with_aux_cascade(&store, &aux_b.id, recording_delete_b)
+            .await
+            .expect("direct aux delete");
+        assert_eq!(
+            deleted_b.lock().unwrap().as_slice(),
+            std::slice::from_ref(&aux_b.id)
+        );
 
         match previous_home {
             // SAFETY: platform::paths::tests::ENV_LOCK held; env writes are serialized.
