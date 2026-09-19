@@ -3523,7 +3523,7 @@ const UserBubble = ({ item, sessionId, _theme, editable, t, conversationVariant 
       // markdown(见下),订阅版本号让注册后本组件重渲染,历史消息恢复高亮。
       const syntaxVersion = useSyncExternalStore(subscribeSyntaxHighlight, getSyntaxHighlightVersion);
 
-      if (item.type === 'artifact_card') return <ArtifactCard item={item} theme={theme} t={t} isLatest={isLatestArtifact} />;
+      if (item.type === 'artifact_card') return <ArtifactCard item={item} t={t} isLatest={isLatestArtifact} />;
       if (item.type === 'plan_card') return <PlanCard item={item} t={t} onPrefill={onPrefill} />;
       if (item.type === 'plan_stuck') return <PlanStuckCard item={item} t={t} onGo={onPlanStuckGo} />;
       if (item.type === 'careful_blocked') return <CarefulBlockedCard item={item} t={t} />;

@@ -3303,7 +3303,6 @@ mod tests {
         for command in [
             "chat",
             "ingest_file",
-            "save_session_messages",
             "delete_model",
             "save_model",
             "set_active_model",

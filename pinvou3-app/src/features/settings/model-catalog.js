@@ -1493,7 +1493,6 @@ export {
   CLOUD_MODEL_PROVIDERS,
   BRAND_ICON_BY_PRESET,
   BRAND_ICON_BY_VENDOR,
-  presetOptionsI18n,
   presetProviderLabel,
   normalizedProviderBaseUrl,
   findCloudProviderForModel,
