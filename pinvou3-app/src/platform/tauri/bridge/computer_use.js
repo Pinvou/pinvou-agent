@@ -164,13 +164,21 @@
       // carry the previous session's requests, and during the IPC round-trip
       // its grant dialog would stay clickable. Drop them synchronously,
       // before the await; the per-session pending map keeps them, so
-      // switching back still resurfaces the requests.
+      // switching back still resurfaces the requests. Only when the refresh
+      // is FOR the active session: state_changed events carry their own
+      // session_id, so a background refresh for another session must not
+      // collapse the active session's live dialog (the switch case always
+      // has sid === activeSessionId because ChatView passes the id it just
+      // set).
       const current = state.computerUse;
       const liveRequestSession = current && (
         (current.grantRequest && current.grantRequest.sessionId) ||
         (current.confirmRequest && current.confirmRequest.sessionId)
       );
-      if (sid && liveRequestSession && String(liveRequestSession) !== sid) {
+      if (
+        sid && sid === String(state.activeSessionId || "") &&
+        liveRequestSession && String(liveRequestSession) !== sid
+      ) {
         clearSessionRequests(liveRequestSession);
       }
       // Same synchronous switch guard for the banner: a stale `granted` left
@@ -301,20 +309,17 @@
     // Backend error strings the commands surface verbatim. Map the stable
     // known ones onto the settings copy (trilingual, keyed off the persisted
     // UI language) so the settings page never shows raw backend English.
-    // Exact equality only — anything unrecognized passes through untouched.
-    const KNOWN_ERROR_TEXT = {
-      "computer use has no backend on this operating system": {
-        "zh-Hans": "当前平台没有电脑使用后端，无法开启此功能。",
-        "ja": "このプラットフォームにはコンピュータ操作のバックエンドがないため、この機能は利用できません。",
-        "en": "Computer use is not available on this platform: there is no computer-use backend for this operating system."
-      }
-    };
+    // The copy table lives in shared/bridge-messages.js (the sanctioned
+    // bridge-layer i18n mechanism, loaded before this feature); exact
+    // equality only — unrecognized messages resolve to null and pass
+    // through untouched, and so does every error when the shared module is
+    // absent (partial loads, the behavior-test VM).
     function localizeKnownError(error) {
       const message = String((error && error.message) || error);
-      const known = KNOWN_ERROR_TEXT[message];
-      if (!known) return error;
-      const tag = (state.settings && state.settings.language) || "en";
-      return new Error(known[tag] || known.en);
+      const messages = window.PinvouBridgeMessages;
+      if (!messages || typeof messages.computerUseKnownErrorText !== "function") return error;
+      const localized = messages.computerUseKnownErrorText(message, state.settings && state.settings.language);
+      return localized == null ? error : new Error(localized);
     }
 
     async function confirm(confirmId) {
@@ -400,12 +405,15 @@
     }
 
     // Structured confirm payload (backend contract): the event carries the
-    // action name plus optional button/click_count/point/text_length/
-    // text_preview/text_preview_truncated (and chord/hold_ms/direction/
-    // amount for the key/hold/scroll shapes), while the original English
-    // summary string is kept in `summary` as the renderer's fallback. Legacy
-    // payloads carried the summary itself in `action` and no `summary` key —
-    // the presence of `summary` distinguishes the two generations.
+    // action name plus optional button/click_count/point/end_point/
+    // text_length/text_preview/text_preview_truncated (and chord/
+    // chord_masked_chars/hold_ms for the key/hold shapes — on secure targets
+    // the backend strips the character keys from `chord` and sends their
+    // count in `chord_masked_chars` instead; scroll never blocks and has no
+    // structured fields), while the original English summary string is kept
+    // in `summary` as the renderer's fallback. Legacy payloads carried the
+    // summary itself in `action` and no `summary` key — the presence of
+    // `summary` distinguishes the two generations.
     function buildConfirmRequest(sid, confirmId, payload) {
       const structured = typeof payload.summary === "string";
       const num = (value) => (typeof value === "number" && Number.isFinite(value) ? value : null);
@@ -434,6 +442,7 @@
         textPreview: structured && typeof payload.text_preview === "string" ? payload.text_preview : null,
         textPreviewTruncated: structured && !!payload.text_preview_truncated,
         chord: structured && typeof payload.chord === "string" ? payload.chord : null,
+        chordMaskedChars: structured ? num(pickField("chord_masked_chars", "chordMaskedChars")) : null,
         holdMs: structured ? num(pickField("hold_ms", "holdMs")) : null,
       };
       // Full typed-text preview (backend contract): rides along with every
@@ -474,8 +483,10 @@
         // disabled, so a detached session's grant dialog would never surface.
         // One authoritative re-read bridges the gap: if the feature is on
         // now, refreshStatus republishes the recorded pending; if not, it is
-        // a cheap no-op.
-        if (!state.computerUse.enabled) {
+        // a cheap no-op. Optional chain: the slice can be undefined in a
+        // freshly opened detached window whose mount refresh has not landed
+        // yet — a TypeError here would skip both the re-read and publish.
+        if (!state.computerUse?.enabled) {
           void refreshStatus(sid).catch(() => {});
           return;
         }
@@ -493,9 +504,11 @@
         const pending = pendingEntry(sid);
         pending.confirm = buildConfirmRequest(sid, confirmId, payload);
         pending.confirmAt = Date.now();
-        if (!state.computerUse.enabled) {
+        if (!state.computerUse?.enabled) {
           // Same other-window-enable gap as the grant branch above: re-read
-          // once so a detached window's confirm dialog can resurface.
+          // once so a detached window's confirm dialog can resurface. Same
+          // optional-chain reason as the grant branch: the slice may not
+          // exist yet.
           void refreshStatus(sid).catch(() => {});
           return;
         }

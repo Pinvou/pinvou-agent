@@ -1,7 +1,7 @@
 import { useEffect, useState } from 'react';
 import { ChevronDown, Wrench } from '../../components/icons.jsx';
 import { StatusDot } from '../../components/StatusDot.jsx';
-import { bridge } from '../../hooks/useBridge.js';
+import { bridge, useBridgeState } from '../../hooks/useBridge.js';
 import { can } from '../../shared/platform.js';
 import { isAgentWaitCall, isExpertDelegationCall } from '../conversation/conversation-model.js';
 import { spawnGroupOf } from '../multiagent/spawn-aggregation.mjs';
@@ -125,19 +125,19 @@ const ExpertAgentCard = ({ item, t }) => {
 // the text output carries the absolute path. Whenever the feature switch is off, always
 // fall back to the default tool card (the feature stays invisible); fall back likewise when
 // the output carries no screenshot path.
-function computerUseToolCardEnabled() {
-  if (!bridge.available || !bridge.state || typeof bridge.state.get !== 'function') return false;
-  try {
-    const slice = bridge.state.get('computerUse');
-    return !!(slice && slice.computerUse && slice.computerUse.enabled);
-  } catch {
-    return false;
-  }
-}
+// Subscribed-slice read (useBridgeState, same pattern as SettingsView's
+// computer-use section) instead of an imperative bridge.state.get() during
+// render: the imperative read only re-evaluated on unrelated parent
+// re-renders, so a toggle flip left stale screenshot cards behind. React
+// function components only — do not call outside render.
+const useComputerUseToolCardEnabled = () => {
+  const slice = useBridgeState(['computerUse']);
+  return !!(slice && slice.computerUse && slice.computerUse.enabled);
+};
 
-function computerUseScreenshotForItem(item) {
+function computerUseScreenshotForItem(item, featureEnabled) {
   if (!item || item.name !== 'computer_use' || item.state !== 'done') return null;
-  if (!computerUseToolCardEnabled()) return null;
+  if (!featureEnabled) return null;
   return extractComputerUseScreenshotPath(item.output);
 }
 
@@ -185,13 +185,14 @@ const ComputerUseScreenshotCard = ({ item, path, t }) => {
 
 // eslint-disable-next-line sonarjs/cognitive-complexity -- per-tool output view routing; splitting by tool has low payoff;legacy view; tracked separately
 const ToolOutput = ({ item, t }) => {
+      const computerUseEnabled = useComputerUseToolCardEnabled();
       const out = item.output;
       if (item.success === false) return <OutputError text={out} />;
       // computer_use: render the screenshot card when the output references
       // attachments/computer_use/*.png; with no screenshot or the feature off, fall back to
       // the default <OutputPre>.
       if (item.name === 'computer_use') {
-        const screenshotPath = computerUseScreenshotForItem(item);
+        const screenshotPath = computerUseScreenshotForItem(item, computerUseEnabled);
         if (screenshotPath) return <ComputerUseScreenshotCard item={item} path={screenshotPath} t={t} />;
         return <OutputPre text={out} />;
       }
@@ -305,10 +306,12 @@ const ToolOutput = ({ item, t }) => {
       const isRunning = item.state === 'running';
       // eslint-disable-next-line react-hooks/rules-of-hooks -- the early-return branch is constant for an instance's lifetime (see the comment above); the per-instance Hook count is stable
       const { cancelling, cancelError: shellCancelError, cancel: cancelShellTask } = useShellTaskCancel(t);
+      // eslint-disable-next-line react-hooks/rules-of-hooks -- same as above
+      const computerUseEnabled = useComputerUseToolCardEnabled();
       // Tools with a visual card (weather/stocks/computer_use screenshot) expand directly
       // when done, no collapsing
       const hasCard = ((isWeatherTool(item.name) || isStockQuoteTool(item.name)) && item.state === 'done')
-        || !!computerUseScreenshotForItem(item);
+        || !!computerUseScreenshotForItem(item, computerUseEnabled);
       const hasLiveShellOutput = isShellExecutionTool(item.name)
         && isRunning
         && (item.liveOutput || item.output != null);

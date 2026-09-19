@@ -77,6 +77,10 @@ export function ComputerUseBanner({ slice, copy }) {
     wasShownRef.current = wasShown;
     if (resetError) clearActionError();
   }, [view.showBanner, clearActionError]);
+  // Hook-order constraint: the bannerErrorReset effect above MUST stay
+  // declared before this early return. Moving the return above the effect
+  // compiles, but the effect then never runs while the banner is hidden and
+  // the epoch reset silently breaks on hide → re-grant.
   if (!view.showBanner) return null;
   // role="alert": the banner mounts while the agent already controls the
   // machine, so it must be announced assertively instead of appearing silently.

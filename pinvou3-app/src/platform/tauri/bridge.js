@@ -267,7 +267,9 @@
       // Whether this OS has a computer_use backend at all (from
       // computer_use_get_status.platform_supported); lets settings disable the
       // toggle instead of letting users enable something that cannot work.
-      platformSupported: true,
+      // Defaults false (fail closed): on an unsupported OS the toggle must
+      // not render enabled until the first get_status corrects the slice.
+      platformSupported: false,
       sessionId: null,
       grantRequest: null,
       confirmRequest: null,
