@@ -1680,6 +1680,20 @@ impl EnginePool {
         default_model_for_new_session_from(&prefs, &self.bridge)
     }
 
+    /// Pin a single named model for one headless run. The single-run lane
+    /// (agentic_task's fresh-session path) consumes the selection through
+    /// `prepare_eval_session`; the suite lane uses the suite snapshots above.
+    #[cfg(any(feature = "benchmark-hooks", test))]
+    pub(crate) fn pin_eval_model_selection(&self, model_id: &str) -> Result<EvalModelSelection> {
+        let prefs = UserPrefs::load();
+        let (saved, identity) = resolve_eval_model_selection_from(
+            &self.bridge,
+            &prefs.advanced.saved_models,
+            model_id,
+        )?;
+        Ok(self.eval_model_snapshots.pin(saved, identity))
+    }
+
     #[cfg(any(feature = "benchmark-hooks", test))]
     pub(crate) fn pin_active_eval_suite_model(&self) -> Result<EvalSuiteModelSnapshot> {
         let prefs = UserPrefs::load();

@@ -1,0 +1,829 @@
+//! Contract tests for the `memory` family (`crates/cli/src/memory.rs`).
+//!
+//! Parse-level tests cover every subcommand plus the invalid shapes that must
+//! map to exit-code 2 usage errors. Execute-level tests run against a temp
+//! `PINVOU3_HOME` (serialized through ENV_LOCK, following cli_contract.rs) and
+//! assert through the same `pinvou3_lib::features::memory` io functions the
+//! GUI uses; they never touch the network or a model (AGENTS.md rule). The
+//! only host/model path, `memory organize`, is covered by an `#[ignore]`d
+//! documentation test.
+
+use pinvou_cli::{CliCommand, ExitCode, OutputMode, execute, parse_args};
+use std::path::{Path, PathBuf};
+use std::sync::Mutex;
+
+/// Serialises tests that mutate the process-global `PINVOU3_HOME` environment
+/// variable, preventing data races when the parallel test runner executes them
+/// concurrently.
+static ENV_LOCK: Mutex<()> = Mutex::new(());
+
+struct TempHome {
+    root: PathBuf,
+    previous: Option<std::ffi::OsString>,
+}
+
+impl TempHome {
+    fn new(label: &str) -> Self {
+        let root = std::env::temp_dir().join(format!(
+            "pinvou-cli-memory-{label}-{}-{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        std::fs::create_dir_all(&root).unwrap();
+        let previous = std::env::var_os("PINVOU3_HOME");
+        unsafe { std::env::set_var("PINVOU3_HOME", &root) };
+        Self { root, previous }
+    }
+
+    fn path(&self) -> &Path {
+        &self.root
+    }
+}
+
+impl Drop for TempHome {
+    fn drop(&mut self) {
+        match self.previous.take() {
+            Some(value) => unsafe { std::env::set_var("PINVOU3_HOME", value) },
+            None => unsafe { std::env::remove_var("PINVOU3_HOME") },
+        }
+        // Best-effort cleanup: a leftover temp directory must never turn an
+        // assertion failure into a panic raised from inside Drop.
+        let _ = std::fs::remove_dir_all(&self.root);
+    }
+}
+
+fn run_ok(arguments: &[&str]) -> String {
+    let parsed = parse_args(arguments.to_vec()).expect("valid memory command");
+    let outcome = execute(parsed).expect("successful memory command");
+    assert_eq!(outcome.exit_code, ExitCode::Success);
+    outcome.stdout
+}
+
+/// Usage errors may surface from `parse` or from `execute`; both must carry
+/// the exit-code 2 usage marker.
+fn expect_usage_error(arguments: &[&str]) -> pinvou_cli::CliError {
+    match parse_args(arguments.to_vec()) {
+        Err(error) => error,
+        Ok(parsed) => execute(parsed).expect_err("expected usage error"),
+    }
+}
+
+fn assert_usage(arguments: &[&str]) {
+    let error = expect_usage_error(arguments);
+    assert_eq!(error.exit_code(), ExitCode::Usage, "{error}");
+}
+
+fn enqueue_fixture(kind: &str, content: &str) -> pinvou3_lib::features::memory::PendingMemoryItem {
+    pinvou3_lib::features::memory::enqueue_memory_candidate(
+        pinvou3_lib::features::memory::MemorySuggestion {
+            kind: kind.to_owned(),
+            topic: String::new(),
+            content: content.to_owned(),
+            source: "contract-test".to_owned(),
+        },
+    )
+    .expect("fixture pending entry")
+}
+
+// ---- parse-level coverage ----
+
+/// The family command types are private to the crate (lib.rs only re-exports
+/// `AgentCommand`), so parse-level assertions freeze the derived Debug shape of
+/// the parsed command instead of naming the variants directly.
+fn parsed_debug(arguments: &[&str]) -> String {
+    format!(
+        "{:?}",
+        parse_args(arguments.to_vec())
+            .expect("valid memory command")
+            .command()
+    )
+}
+
+#[test]
+fn memory_parses_every_subcommand() {
+    let cases = [
+        (&["pinvou", "memory", "overview"][..], "Memory(Overview)"),
+        (
+            &["pinvou", "memory", "profile", "get"][..],
+            "Memory(ProfileGet)",
+        ),
+        (
+            &[
+                "pinvou",
+                "memory",
+                "profile",
+                "set",
+                "--call-name",
+                "Alice",
+                "--assistant-alias",
+                "Pin",
+            ][..],
+            r#"Memory(ProfileSet { call_name: Some("Alice"), assistant_alias: Some("Pin") })"#,
+        ),
+        (
+            &["pinvou", "memory", "list"][..],
+            "Memory(List { store: None })",
+        ),
+        (
+            &["pinvou", "memory", "list", "--store", "pending"][..],
+            "Memory(List { store: Some(Pending) })",
+        ),
+        (
+            &["pinvou", "memory", "list", "--store", "work_context"][..],
+            "Memory(List { store: Some(WorkContext) })",
+        ),
+        (
+            &[
+                "pinvou",
+                "memory",
+                "add",
+                "preference",
+                "--content",
+                "Prefer concise answers",
+            ][..],
+            r#"Memory(Add { kind: Preference, source: Inline("Prefer concise answers") })"#,
+        ),
+        (
+            &[
+                "pinvou",
+                "memory",
+                "add",
+                "work-context",
+                "ship",
+                "the",
+                "cli",
+            ][..],
+            r#"Memory(Add { kind: WorkContext, source: Inline("ship the cli") })"#,
+        ),
+        (
+            &[
+                "pinvou",
+                "memory",
+                "update",
+                "work_context",
+                "ctx-1",
+                "--content",
+                "new text",
+            ][..],
+            r#"Memory(Update { store: WorkContext, id: "ctx-1", content: "new text" })"#,
+        ),
+        (
+            &[
+                "pinvou",
+                "memory",
+                "delete",
+                "preferences",
+                "pref-1",
+                "--yes",
+            ][..],
+            r#"Memory(Delete { store: Preferences, id: "pref-1", confirmed: true })"#,
+        ),
+        (
+            &["pinvou", "memory", "archive", "rw-1"][..],
+            r#"Memory(Archive { id: "rw-1" })"#,
+        ),
+        (
+            &["pinvou", "memory", "pending", "confirm", "p-1"][..],
+            r#"Memory(Pending { action: Confirm, id: "p-1", reason: None })"#,
+        ),
+        (
+            &[
+                "pinvou",
+                "memory",
+                "pending",
+                "never",
+                "p-1",
+                "--reason",
+                "sensitive",
+            ][..],
+            r#"Memory(Pending { action: Never, id: "p-1", reason: Some("sensitive") })"#,
+        ),
+        (
+            &["pinvou", "memory", "organize", "--yes"][..],
+            "Memory(Organize { confirmed: true })",
+        ),
+        (
+            &["pinvou", "memory", "organize-history"][..],
+            "Memory(OrganizeHistory)",
+        ),
+    ];
+    for (arguments, expected) in cases {
+        assert_eq!(parsed_debug(arguments), expected, "{arguments:?}");
+        assert!(matches!(
+            parse_args(arguments.to_vec()).unwrap().command(),
+            CliCommand::Memory(_)
+        ));
+    }
+}
+
+#[test]
+fn memory_rejects_invalid_usage_with_exit_code_two() {
+    // unknown subcommand / missing subcommand
+    assert_usage(&["pinvou", "memory", "bogus"]);
+    assert_usage(&["pinvou", "memory"]);
+    // unknown store value names the valid options
+    let error = expect_usage_error(&["pinvou", "memory", "list", "--store", "bogus"]);
+    assert_eq!(error.exit_code(), ExitCode::Usage);
+    assert!(error.to_string().contains("preferences"), "{error}");
+    assert!(error.to_string().contains("recent-work"), "{error}");
+    assert_usage(&[
+        "pinvou",
+        "memory",
+        "update",
+        "bogus",
+        "id-1",
+        "--content",
+        "x",
+    ]);
+    // recent-work is archive-only, pending resolves through `memory pending`
+    assert_usage(&[
+        "pinvou",
+        "memory",
+        "update",
+        "recent-work",
+        "id-1",
+        "--content",
+        "x",
+    ]);
+    assert_usage(&["pinvou", "memory", "delete", "pending", "id-1", "--yes"]);
+    // add without content
+    assert_usage(&["pinvou", "memory", "add", "preference"]);
+    assert_usage(&["pinvou", "memory", "add", "work-context"]);
+    assert_usage(&["pinvou", "memory", "add", "bogus-kind", "--content", "x"]);
+    assert_usage(&[
+        "pinvou",
+        "memory",
+        "add",
+        "preference",
+        "--content",
+        "a",
+        "--file",
+        "f",
+    ]);
+    // update/delete require the id and --content
+    assert_usage(&["pinvou", "memory", "update", "preferences"]);
+    assert_usage(&["pinvou", "memory", "update", "preferences", "id-1"]);
+    // pending without id
+    assert_usage(&["pinvou", "memory", "pending", "confirm"]);
+    assert_usage(&["pinvou", "memory", "pending", "bogus", "id-1"]);
+    // profile set without any field, unknown profile action
+    assert_usage(&["pinvou", "memory", "profile", "set"]);
+    assert_usage(&["pinvou", "memory", "profile", "bogus"]);
+    // unknown options and unexpected trailing arguments
+    assert_usage(&["pinvou", "memory", "overview", "--json"]);
+    assert_usage(&["pinvou", "memory", "organize", "extra"]);
+
+    // organize without --yes is rejected at execute time, like delete: the
+    // LLM-driven store rewrite is destructive
+    let error = expect_usage_error(&["pinvou", "memory", "organize"]);
+    assert_eq!(error.exit_code(), ExitCode::Usage);
+    assert!(error.to_string().contains("--yes"), "{error}");
+    assert_usage(&["pinvou", "memory", "list", "--bogus", "x"]);
+
+    // delete without --yes is rejected at execute time
+    let error = expect_usage_error(&["pinvou", "memory", "delete", "preferences", "id-1"]);
+    assert_eq!(error.exit_code(), ExitCode::Usage);
+    assert!(error.to_string().contains("--yes"), "{error}");
+}
+
+#[test]
+fn memory_global_output_flag_still_applies() {
+    let parsed = parse_args(["pinvou", "--output", "json", "memory", "list"]).unwrap();
+    assert_eq!(parsed.output(), OutputMode::Json);
+    assert_eq!(
+        format!("{:?}", parsed.command()),
+        "Memory(List { store: None })"
+    );
+}
+
+// ---- execute-level coverage (temp PINVOU3_HOME, no host/model) ----
+
+#[test]
+fn memory_profile_set_get_round_trips_through_feature_io() {
+    let _guard = ENV_LOCK.lock().unwrap_or_else(|error| error.into_inner());
+    let _home = TempHome::new("profile");
+
+    let human = run_ok(&[
+        "pinvou",
+        "memory",
+        "profile",
+        "set",
+        "--call-name",
+        "Alice",
+        "--assistant-alias",
+        "Pin",
+    ]);
+    assert!(
+        human.contains("Alice"),
+        "profile set output should confirm the call name"
+    );
+    assert!(
+        human.contains("Pin"),
+        "profile set output should confirm the assistant alias"
+    );
+
+    // assert through the same feature io the GUI reads
+    let profile = pinvou3_lib::features::memory::load_profile().unwrap();
+    assert_eq!(profile.identity.call_name, "Alice");
+    assert_eq!(profile.identity.assistant_alias, "Pin");
+
+    let json = run_ok(&["pinvou", "memory", "profile", "get", "--output", "json"]);
+    let value: serde_json::Value = serde_json::from_str(&json).unwrap();
+    assert_eq!(value["identity"]["call_name"], "Alice");
+    assert_eq!(value["identity"]["assistant_alias"], "Pin");
+}
+
+#[test]
+fn memory_add_preference_shows_up_in_list_and_supports_update_delete() {
+    let _guard = ENV_LOCK.lock().unwrap_or_else(|error| error.into_inner());
+    let _home = TempHome::new("preference-roundtrip");
+
+    run_ok(&[
+        "pinvou",
+        "memory",
+        "add",
+        "preference",
+        "--content",
+        "Prefer concise answers",
+    ]);
+
+    let json = run_ok(&[
+        "pinvou",
+        "memory",
+        "list",
+        "--store",
+        "preferences",
+        "--output",
+        "json",
+    ]);
+    let envelope: serde_json::Value = serde_json::from_str(&json).unwrap();
+    // Every `list --store` JSON shape is the same {items, cleanup_warnings}
+    // envelope; preferences may carry a cleanup warning, the others always
+    // report an empty array.
+    assert_eq!(envelope["cleanup_warnings"], serde_json::json!([]));
+    let items = envelope["items"]
+        .as_array()
+        .expect("json array of preferences");
+    assert_eq!(items.len(), 1);
+    assert_eq!(items[0]["text"], "Prefer concise answers");
+    let id = items[0]["id"].as_str().unwrap().to_owned();
+
+    let stored = pinvou3_lib::features::memory::list_preferences().unwrap();
+    assert_eq!(stored.len(), 1);
+    assert_eq!(stored[0].id, id);
+
+    run_ok(&[
+        "pinvou",
+        "memory",
+        "update",
+        "preferences",
+        &id,
+        "--content",
+        "Prefer bullet answers",
+    ]);
+    let stored = pinvou3_lib::features::memory::list_preferences().unwrap();
+    assert_eq!(stored[0].text, "Prefer bullet answers");
+
+    // delete requires --yes
+    assert_usage(&["pinvou", "memory", "delete", "preferences", &id]);
+    run_ok(&["pinvou", "memory", "delete", "preferences", &id, "--yes"]);
+    assert!(
+        pinvou3_lib::features::memory::list_preferences()
+            .unwrap()
+            .is_empty()
+    );
+
+    // deleting the same id again is a host failure, not a silent success
+    let error = expect_usage_error(&["pinvou", "memory", "delete", "preferences", &id, "--yes"]);
+    assert_eq!(error.exit_code(), ExitCode::Failed);
+    assert!(
+        error.to_string().contains("preferences_not_found"),
+        "{error}"
+    );
+}
+
+#[test]
+fn memory_add_work_context_from_file_and_positional_arguments() {
+    let _guard = ENV_LOCK.lock().unwrap_or_else(|error| error.into_inner());
+    let home = TempHome::new("work-context");
+
+    let file = home.path().join("context.txt");
+    std::fs::write(&file, "Shipping the pinvou CLI memory family\n").unwrap();
+    run_ok(&[
+        "pinvou",
+        "memory",
+        "add",
+        "work-context",
+        "--file",
+        file.to_str().unwrap(),
+    ]);
+
+    run_ok(&[
+        "pinvou",
+        "memory",
+        "add",
+        "work-context",
+        "Reviewing",
+        "the",
+        "cli",
+        "contract",
+    ]);
+
+    let json = run_ok(&[
+        "pinvou",
+        "memory",
+        "list",
+        "--store",
+        "work-context",
+        "--output",
+        "json",
+    ]);
+    let items: serde_json::Value = serde_json::from_str(&json).unwrap();
+    let items = items["items"].as_array().expect("envelope items array");
+    // The feature upserts work context by topic; the CLI adds without a topic
+    // share the default topic, so the second add rewrites the first entry.
+    assert_eq!(items.len(), 1);
+    assert_eq!(items[0]["text"], "Reviewing the cli contract");
+}
+
+#[test]
+fn memory_pending_confirm_ignore_and_never_resolve_fixture_entries() {
+    let _guard = ENV_LOCK.lock().unwrap_or_else(|error| error.into_inner());
+    let _home = TempHome::new("pending");
+
+    // Fixture entries in _pending.jsonl, written by the feature writer itself.
+    let confirmed = enqueue_fixture("preference", "Prefer concise answers");
+    let ignored = enqueue_fixture("preference", "Prefer short summaries");
+    let nevered = enqueue_fixture("preference", "Avoid storing billing notes");
+
+    run_ok(&["pinvou", "memory", "pending", "confirm", &confirmed.id]);
+    run_ok(&["pinvou", "memory", "pending", "ignore", &ignored.id]);
+    run_ok(&[
+        "pinvou",
+        "memory",
+        "pending",
+        "never",
+        &nevered.id,
+        "--reason",
+        "billing details",
+    ]);
+
+    let pending = pinvou3_lib::features::memory::load_pending_memory().unwrap();
+    let status_of = |id: &str| {
+        pending
+            .iter()
+            .find(|item| item.id == id)
+            .unwrap_or_else(|| panic!("pending fixture {id} missing"))
+            .status
+            .clone()
+    };
+    assert_eq!(status_of(&confirmed.id), "confirmed");
+    assert_eq!(status_of(&ignored.id), "ignored");
+
+    // confirm materializes the preference, matching the GUI pipeline
+    let stored = pinvou3_lib::features::memory::list_preferences().unwrap();
+    assert!(
+        stored
+            .iter()
+            .any(|item| item.text == "Prefer concise answers")
+    );
+
+    let never = pinvou3_lib::features::memory::load_never_memory().unwrap();
+    assert_eq!(never.len(), 1);
+    assert_eq!(never[0].pattern, "Avoid storing billing notes");
+    assert_eq!(never[0].reason, "billing details");
+
+    // unknown ids surface as host failures
+    let error = expect_usage_error(&["pinvou", "memory", "pending", "confirm", "missing-id"]);
+    assert_eq!(error.exit_code(), ExitCode::Failed);
+    assert!(error.to_string().contains("pending_not_found"), "{error}");
+}
+
+/// Seeds one `active` recent-work entry straight into the JSONL store. The
+/// writer API (`upsert_recent_work`) was swept from the feature on main —
+/// the only remaining producer is the GUI turn pipeline — so the fixture
+/// writes the same store format the loader recovers, keeping this contract
+/// black-box against the CLI archive/overview lanes.
+fn seed_recent_work(id: &str, title: &str, summary: &str, source: &str) {
+    use std::io::Write as _;
+    let item = pinvou3_lib::features::memory::RecentWorkItem {
+        id: id.to_owned(),
+        title: title.to_owned(),
+        summary: summary.to_owned(),
+        status: "active".to_owned(),
+        source: source.to_owned(),
+        created_at: "2026-09-19T00:00:00+00:00".to_owned(),
+        updated_at: "2026-09-19T00:00:00+00:00".to_owned(),
+        last_hit: String::new(),
+        expires_at: "2099-01-01T00:00:00+00:00".to_owned(),
+    };
+    let path = pinvou3_lib::features::memory::recent_work_path();
+    std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+    let mut file = std::fs::OpenOptions::new()
+        .create(true)
+        .append(true)
+        .open(&path)
+        .unwrap();
+    writeln!(file, "{}", serde_json::to_string(&item).unwrap()).unwrap();
+}
+
+#[test]
+fn memory_archive_marks_recent_work_fixture_archived() {
+    let _guard = ENV_LOCK.lock().unwrap_or_else(|error| error.into_inner());
+    let _home = TempHome::new("archive");
+
+    seed_recent_work(
+        "recent-work-1",
+        "Shipped CLI memory parity",
+        "memory family contract",
+        "contract-test",
+    );
+
+    run_ok(&["pinvou", "memory", "archive", "recent-work-1"]);
+
+    let stored = pinvou3_lib::features::memory::load_recent_work().unwrap();
+    assert_eq!(stored.len(), 1);
+    assert_eq!(stored[0].status, "archived");
+
+    // archiving an unknown id fails instead of silently succeeding
+    let error = expect_usage_error(&["pinvou", "memory", "archive", "missing-id"]);
+    assert_eq!(error.exit_code(), ExitCode::Failed);
+    assert!(
+        error.to_string().contains("recent_work_not_found"),
+        "{error}"
+    );
+}
+
+#[test]
+fn memory_overview_counts_match_fixtures_and_write_snapshot() {
+    let _guard = ENV_LOCK.lock().unwrap_or_else(|error| error.into_inner());
+    let _home = TempHome::new("overview");
+
+    // one materialized preference
+    let preference = enqueue_fixture("preference", "Prefer concise answers");
+    pinvou3_lib::features::memory::confirm_pending_memory(&preference.id)
+        .unwrap()
+        .unwrap();
+    // one pending entry left unresolved
+    enqueue_fixture("preference", "Prefer short summaries");
+    // one recent work entry
+    seed_recent_work(
+        "recent-work-overview",
+        "Shipped CLI memory parity",
+        "",
+        "contract-test",
+    );
+
+    let json = run_ok(&["pinvou", "memory", "overview", "--output", "json"]);
+    let value: serde_json::Value = serde_json::from_str(&json).unwrap();
+    assert_eq!(
+        value["preferences"].as_array().unwrap().len(),
+        1,
+        "overview preference count mismatch"
+    );
+    assert_eq!(
+        value["pending"].as_array().unwrap().len(),
+        2,
+        "overview pending count mismatch"
+    );
+    assert_eq!(
+        value["recent_work"].as_array().unwrap().len(),
+        1,
+        "overview recent-work count mismatch"
+    );
+    assert_eq!(value["current_focus"].as_array().unwrap().len(), 0);
+    assert_eq!(value["recent_activity"].as_array().unwrap().len(), 0);
+    assert_eq!(value["never"].as_array().unwrap().len(), 0);
+    // all authoritative sources available: the snapshot document was refreshed
+    assert!(
+        !value["snapshot_path"].as_str().unwrap().is_empty(),
+        "overview should refresh the snapshot document when every source is available"
+    );
+    assert_eq!(value["sources"]["preferences"]["available"], true);
+    assert_eq!(value["sources"]["runtime"]["available"], true);
+    assert_eq!(value["warnings"].as_array().unwrap().len(), 0);
+
+    let human = run_ok(&["pinvou", "memory", "overview"]);
+    assert!(
+        human.contains("Preferences: 1"),
+        "overview should count preferences sources"
+    );
+    assert!(
+        human.contains("Pending: 2"),
+        "overview should count pending sources"
+    );
+    assert!(
+        human.contains("Recent work: 1"),
+        "overview should count recent work sources"
+    );
+}
+
+#[test]
+fn memory_organize_history_is_empty_on_fresh_state() {
+    let _guard = ENV_LOCK.lock().unwrap_or_else(|error| error.into_inner());
+    let _home = TempHome::new("organize-history");
+
+    let json = run_ok(&["pinvou", "memory", "organize-history", "--output", "json"]);
+    assert_eq!(json, "[]");
+
+    let human = run_ok(&["pinvou", "memory", "organize-history"]);
+    assert_eq!(human, "No organize history.");
+}
+
+/// Opt-in check for `pinvou memory organize`: it boots the windowless product
+/// host (`pinvou3_lib::headless_bridge::run_windowless_host`, the bootstrap
+/// `run_with_product_backend` wraps) and calls
+/// `pinvou3_lib::features::memory::organize_memory_with_llm` exactly like the
+/// scheduled memory-organize executor, so it needs a display (xvfb on headless
+/// Linux) and a configured, active model. Default tests never call the host or
+/// a model (AGENTS.md rule); the wiring itself is intentionally not invoked
+/// here — run the real command manually to exercise it.
+#[test]
+fn memory_organize_refuses_when_memory_is_disabled() {
+    let _guard = ENV_LOCK.lock().unwrap_or_else(|error| error.into_inner());
+    let _home = TempHome::new("organize-disabled");
+    // Memory is disabled in a fresh home, so the refusal fires before any
+    // host boot (display and model remain the opt-in part exercised
+    // manually); this pins the honest error instead of a vacuous pass.
+    // --yes clears the destructive-action gate so the disabled refusal is
+    // what is under test.
+    let error = expect_usage_error(&["pinvou", "memory", "organize", "--yes"]);
+    assert_eq!(error.exit_code(), ExitCode::Failed);
+    assert!(
+        error.to_string().contains("memory_organize_disabled"),
+        "{error}"
+    );
+}
+
+#[test]
+fn memory_add_accepts_ordinary_punctuated_work_context() {
+    let _guard = ENV_LOCK.lock().unwrap_or_else(|error| error.into_inner());
+    let home = TempHome::new("work-context-punctuated");
+
+    // The confirm path stores the punctuation-stripped normalization; the
+    // verification must compare against the same form or this exact input
+    // false-fails with memory_add_not_materialized after storing fine.
+    run_ok(&[
+        "pinvou",
+        "memory",
+        "add",
+        "work-context",
+        "We deploy on Fridays.",
+    ]);
+
+    let json: serde_json::Value = serde_json::from_str(&run_ok(&[
+        "pinvou",
+        "memory",
+        "list",
+        "--store",
+        "work-context",
+        "--output",
+        "json",
+    ]))
+    .expect("single-line JSON output");
+    let items = json["items"].as_array().expect("work-context items array");
+    assert!(
+        items
+            .iter()
+            .any(|item| item["text"] == serde_json::json!("We deploy on Fridays")),
+        "the punctuated work-context item must be materialized with the \
+         punctuation-stripped normalization"
+    );
+    let _ = home;
+}
+
+#[test]
+fn memory_add_preference_reports_the_replaced_item() {
+    let _guard = ENV_LOCK.lock().unwrap_or_else(|error| error.into_inner());
+    let _home = TempHome::new("preference-replacement");
+
+    let first = run_ok(&[
+        "pinvou",
+        "memory",
+        "add",
+        "preference",
+        "--content",
+        "Prefer concise answers",
+        "--output",
+        "json",
+    ]);
+    let first: serde_json::Value = serde_json::from_str(&first).unwrap();
+    let first_id = first["id"].as_str().unwrap().to_owned();
+    assert!(
+        first.get("replaced").is_none(),
+        "a first add must replace nothing"
+    );
+
+    // The preference store is replace-per-topic: the CLI adds without a
+    // topic, so every add targets the same bucket and the write deletes the
+    // previous item. The second add must say so instead of presenting the
+    // store as append-only.
+    let second = run_ok(&[
+        "pinvou",
+        "memory",
+        "add",
+        "preference",
+        "--content",
+        "Prefer bullet answers",
+        "--output",
+        "json",
+    ]);
+    let second: serde_json::Value = serde_json::from_str(&second).unwrap();
+    assert_eq!(second["replaced"], serde_json::json!([first_id]));
+    let stored = pinvou3_lib::features::memory::list_preferences().unwrap();
+    assert_eq!(stored.len(), 1, "the replaced item is gone");
+
+    let human = run_ok(&[
+        "pinvou",
+        "memory",
+        "add",
+        "preference",
+        "--content",
+        "Prefer tables in reports",
+    ]);
+    assert!(
+        human.contains("replaced 1 earlier item"),
+        "human output must surface the replacement"
+    );
+}
+
+#[test]
+fn memory_add_profile_shaped_preference_text_fails_before_the_pending_store() {
+    let _guard = ENV_LOCK.lock().unwrap_or_else(|error| error.into_inner());
+    let _home = TempHome::new("preference-profile-shaped");
+
+    // Chinese profile-preference phrasing (the feature heuristic
+    // `looks_like_profile_preference_text`, features/memory/types.rs) is
+    // routed to the profile, not the preference store: the confirm path
+    // silently skips the write while still marking the candidate confirmed.
+    // The add must fail up front (exit 1) WITHOUT enqueueing the candidate.
+    let error = expect_usage_error(&[
+        "pinvou",
+        "memory",
+        "add",
+        "preference",
+        "--content",
+        "请以后称呼用户为老板",
+    ]);
+    assert_eq!(error.exit_code(), ExitCode::Failed);
+    assert!(
+        error.to_string().contains("memory_add_not_materialized"),
+        "{error}"
+    );
+    // The pending store is untouched: no candidate was enqueued, so nothing
+    // was marked confirmed behind the failure.
+    assert!(
+        pinvou3_lib::features::memory::load_pending_memory()
+            .unwrap()
+            .is_empty()
+    );
+    // And nothing was materialized into the preference store either.
+    assert!(
+        pinvou3_lib::features::memory::list_preferences()
+            .unwrap()
+            .is_empty()
+    );
+}
+
+/// Round-11 regression for the confirm path itself: `enqueue` does NOT run
+/// the profile-shaped rejection (only `memory add` does), so a profile-shaped
+/// candidate reaches the pending store and `pending confirm` marks it
+/// confirmed while `write_preference_unlocked` deliberately skips the write.
+/// The confirm must fail with the not-materialized message (exit 1) and the
+/// entry must still read confirmed afterwards — deleting the verification in
+/// the confirm path must fail this test instead of passing CI.
+#[test]
+fn memory_pending_confirm_of_profile_shaped_candidate_fails_but_marks_confirmed() {
+    let _guard = ENV_LOCK.lock().unwrap_or_else(|error| error.into_inner());
+    let _home = TempHome::new("pending-confirm-profile-shaped");
+
+    // Chinese profile-preference phrasing (the feature heuristic
+    // `looks_like_profile_preference_text`, features/memory/types.rs).
+    let item = enqueue_fixture("preference", "请以后称呼用户为老板");
+
+    let error = expect_usage_error(&["pinvou", "memory", "pending", "confirm", &item.id]);
+    assert_eq!(error.exit_code(), ExitCode::Failed);
+    let message = error.to_string();
+    assert!(
+        message.contains("deliberately not materialized"),
+        "the profile-shaped no-op must be named: {message}"
+    );
+
+    // The pending entry still carries the user's decision: it reads
+    // confirmed even though nothing reached the preference store.
+    let pending = pinvou3_lib::features::memory::load_pending_memory().unwrap();
+    let confirmed = pending
+        .iter()
+        .find(|entry| entry.id == item.id)
+        .expect("the candidate stays listed");
+    assert_eq!(confirmed.status, "confirmed");
+    // And nothing was materialized into the preference store.
+    assert!(
+        pinvou3_lib::features::memory::list_preferences()
+            .unwrap()
+            .is_empty()
+    );
+}

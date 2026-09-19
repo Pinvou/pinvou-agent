@@ -43,12 +43,12 @@ pub use self::io::{
 pub use self::io::{
     PendingIgnoreOutcome, append_turn_assistant, archive_recent_work, confirm_pending_memory,
     delete_preference, delete_timed_memory, delete_work_context, discard_turn_capture,
-    enqueue_memory_candidate, ignore_pending_memory, list_preferences_with_cleanup,
-    load_current_focus, load_never_memory, load_pending_memory, load_profile, load_recent_activity,
-    load_recent_work, load_work_context, load_work_context_with_cleanup, memory_enabled,
-    never_pending_memory, record_turn_tool_complete, record_turn_tool_start, record_turn_user,
-    save_profile, take_turn_capture, update_preference, update_profile, update_timed_memory,
-    update_work_context,
+    enqueue_memory_candidate, ignore_pending_memory, list_preferences,
+    list_preferences_with_cleanup, load_current_focus, load_never_memory, load_pending_memory,
+    load_profile, load_recent_activity, load_recent_work, load_work_context,
+    load_work_context_with_cleanup, memory_enabled, never_pending_memory,
+    record_turn_tool_complete, record_turn_tool_start, record_turn_user, save_profile,
+    take_turn_capture, update_preference, update_profile, update_timed_memory, update_work_context,
 };
 
 // ---- text normalization (util) ----
@@ -57,7 +57,15 @@ pub use self::io::{
 // exact function to avoid false "not materialized" failures on ordinary
 // punctuated input.
 pub use self::io::WORK_CONTEXT_TEXT_MAX_CHARS;
+pub use self::io::confirmed_pending_memory_is_materialized;
 pub use self::util::clean_candidate_sentence;
+// The CLI `memory add` probes this heuristic before enqueueing: the confirm
+// path silently skips profile-shaped preference text
+// (`write_preference_unlocked` no-ops it) while still marking the candidate
+// confirmed, so the CLI must reject that content up front without touching
+// the pending store. Same CLI-parity rationale as `clean_candidate_sentence`
+// above.
+pub use self::types::looks_like_profile_preference_text;
 
 // ---- LLM 后台复盘（llm_review）----
 pub use self::llm_review::review_turn_candidates_with_llm;

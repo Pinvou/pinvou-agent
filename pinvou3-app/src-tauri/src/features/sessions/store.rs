@@ -50,10 +50,20 @@ pub(crate) const MAX_SESSIONS_PER_KIND: usize = 50;
 
 /// Placeholder title for a fresh chat session. One of the trilingual
 /// sentinels in the frontend's `DEFAULT_CHAT_TITLES`: the sidebar localizes
-/// it per UI language and the first send triggers the auto-rename. Sessions
-/// created headlessly share the same sentinel so they behave identically in
-/// the history list.
+/// it per UI language and the first send triggers the auto-rename. GUI-created
+/// sessions carry it; headless agent runs stamp the factory title below and
+/// only adopt this sentinel after the CLI's post-success rename to an honest
+/// label (or a GUI-side rename).
 pub(crate) const NEW_CHAT_TITLE: &str = "新对话";
+/// Title stamped onto freshly created eval sessions by
+/// `SessionStore::create_empty_with_id`. An agentic run deletes a failed
+/// fresh session only while it still wears this title, so a GUI user who
+/// adopted the session mid-run (renamed it in the session list) keeps it.
+/// `pub(crate)`: the only consumer is the in-crate agentic runner, and the
+/// constant plus its re-export share that runner's cfg — a plain non-test
+/// build must not carry an unused re-export under -D warnings.
+#[cfg(any(feature = "benchmark-hooks", test))]
+pub(crate) const EVAL_SESSION_FACTORY_TITLE: &str = "临时评测";
 
 impl SessionStore {
     /// Repair persisted tool histories only at process boot, before any
@@ -789,10 +799,7 @@ impl SessionStore {
             None,
             None,
         );
-        // Headless sessions persist by default and surface in the GUI history,
-        // so they carry the same localized placeholder sentinel as GUI-created
-        // sessions (an eval-internal label would leak into every UI language).
-        session.metadata.title = NEW_CHAT_TITLE.to_string();
+        session.metadata.title = EVAL_SESSION_FACTORY_TITLE.to_string();
         if let Some(model_id) = model_id {
             self.set_session_model_id(&id, Some(model_id))?;
         }

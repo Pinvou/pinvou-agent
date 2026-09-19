@@ -42,8 +42,8 @@ use crate::features::assistant::product_runtime::{
 };
 use crate::features::files::file_ingest::IngestResult;
 use crate::features::sessions::{
-    ExecutionRootResolver, MAX_SESSIONS_PER_KIND, SessionKind, SessionStore,
-    validate_user_workspace_path,
+    EVAL_SESSION_FACTORY_TITLE, ExecutionRootResolver, MAX_SESSIONS_PER_KIND, SessionKind,
+    SessionStore, validate_user_workspace_path,
 };
 use crate::platform::prefs::UserPrefs;
 
@@ -118,11 +118,12 @@ pub struct AgenticTaskAttachment {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct AgenticTaskRequest {
     pub prompt: String,
-    /// Task working directory; None = session-private directory (the same
-    /// isolated scratch as eval sessions). With `session_id`, this binds the
-    /// existing session to the directory only when the caller provides it;
-    /// without a `workspace`, the session keeps its own resolution (its
-    /// private scratch), never overriding a pre-existing binding.
+    /// Task working directory; None = the session's own resolution: the
+    /// working directory the session is bound to when it has one (the GUI's
+    /// working-directory bind), else its private scratch (the same isolated
+    /// scratch as eval sessions). With `session_id`, this binds the existing
+    /// session to the directory only when the caller provides it, never
+    /// overriding a pre-existing binding.
     #[serde(default)]
     pub workspace: Option<PathBuf>,
     #[serde(default = "default_timeout_secs")]
@@ -146,13 +147,15 @@ pub struct AgenticTaskRequest {
     /// divergence).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub mode: Option<AgenticTaskMode>,
-    /// Pin the session's model for this run, like the GUI per-session model
-    /// switch: validated against the configured model list
+    /// Pin the session's model, like the GUI per-session model switch:
+    /// validated against the configured model list
     /// (`UserPrefs::model_by_id`, the same check the `set_session_model`
     /// command performs), then bound through the eval model-selection route
-    /// for a fresh session or the GUI chip-switch path (sidecar write +
-    /// engine evict) for an existing session. Unknown model →
-    /// `agent_model_not_found`.
+    /// for a fresh session or the GUI chip-switch path (per-session sidecar
+    /// write + engine evict) for an existing session. The chip-switch
+    /// binding persists on the session: it is written during setup, so it
+    /// stays in force even if the run later fails or times out. Unknown
+    /// model → `agent_model_not_found`.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub model_id: Option<String>,
     /// Files attached to the prompt, processed by the GUI attachment
@@ -243,7 +246,10 @@ pub fn run_agentic_task_headless(request: AgenticTaskRequest) -> Result<AgenticT
 /// turn is submitted, a report is
 /// always returned (internal failures land in the `error` field); setup faults
 /// (request validation, model pin, session prepare, submit) propagate as `Err`
-/// instead — the CLI surfaces those as exit 1 without a report.
+/// instead — the CLI surfaces those as exit 1 without a report. A session
+/// freshly created by such a failed run is deleted best-effort with the same
+/// eval cleanup as `KEEP_SESSION=0`, so no empty eval-titled chat is left
+/// behind; caller-provided sessions are never auto-deleted.
 ///
 /// Persisting counts against the shared 50-session retention cap: when a
 /// fresh run's prepare-time save evicts chat sessions at the cap (pinned
@@ -291,7 +297,10 @@ pub async fn run_agentic_task(
     // (fresh or caller-provided); resolution for every other session stays
     // unchanged. A caller-provided session is bound to `workspace` only when
     // the request carries one — an unset workspace keeps the session's own
-    // resolution (its private scratch) instead of overriding it.
+    // resolution chain instead of overriding it: the session's stored
+    // working-directory binding when it has one (the GUI bind), else its
+    // private scratch. A CLI resume of a GUI-bound session therefore runs
+    // in the bound directory.
     let bound_workspace = request.workspace.clone();
     let matched_session = session_id.clone();
     let resolver: ExecutionRootResolver = Arc::new(move |id: &str| {
@@ -359,39 +368,62 @@ pub async fn run_agentic_task(
     // sweep can still evict it later exactly like any GUI chat session.
     // Only this run's eval observation mark is dropped, and the session is
     // left in place for the caller.
+    //
+    // A failed run (submit never ran, or the turn errored) cleans up after
+    // itself only when the durable record proves litter — see
+    // `failed_run_cleanup_decision` below: a zero-message stub is deleted
+    // only while it still wears the eval factory title (a GUI rename before
+    // the first message is ownership too), admitted messages make it a
+    // started transcript that stays inspectable under the default keep
+    // contract, and an unloadable record keeps because deleting on unknown
+    // state is the unsafe direction. The delete of a not-yet-existing id
+    // fails with NotFound and the late sweep of its (absent) directory
+    // converges immediately, so failures before prepare created anything
+    // degrade to a no-op.
     let keep_session = keep_session_from_env();
     if existing_session {
         crate::features::assistant::timing::unregister_eval_observation(&session_id);
-    } else if !submitted {
+    } else if !submitted || outcome.is_err() {
+        // A failed run: the submit never ran, or the turn errored after the
+        // engine could durably admit messages (the submit boundary is not
+        // atomic with transcript admission — a submit error or the setup
+        // timeout can land right after admission). Both failure paths share
+        // ONE classification on the durable record, never on the submit
+        // flag or the title alone: admitted messages are a started
+        // transcript that stays inspectable under the default keep
+        // contract, a zero-message stub is litter only while it still wears
+        // the eval factory title, and an unloadable record keeps because
+        // deleting on unknown state is the unsafe direction.
         crate::features::assistant::timing::unregister_eval_observation(&session_id);
-        // The submit boundary is not atomic with transcript admission: the
-        // engine lazily spawns on submit and can durably admit the user
-        // message before the fault surfaces (a submit error, or the setup
-        // timeout landing right after admission). A record that carries
-        // messages has therefore started — its transcript is the only copy,
-        // so it stays inspectable like any submitted run unless the caller
-        // explicitly opted back into the legacy one-shot cleanup. Only a
-        // truly zero-message stub is cleanup-eligible regardless of
-        // `KEEP_SESSION`; an unloadable record also keeps (deleting on
-        // unknown state is the unsafe direction).
-        match store.chat_session_has_messages(&session_id) {
-            Ok(false) => {
+        let has_messages = store.chat_session_has_messages(&session_id);
+        let factory_titled = store
+            .load(&session_id)
+            .map(|record| record.metadata.title == EVAL_SESSION_FACTORY_TITLE)
+            .unwrap_or(false);
+        match failed_run_cleanup_decision(has_messages, factory_titled, keep_session) {
+            FailedRunCleanup::Delete => {
                 runtime.schedule_eval_cleanup(&session_id);
                 log_cleanup_delete(&runtime, &session_id).await;
             }
-            Ok(true) if keep_session => runtime.pool.evict(&session_id).await,
-            Ok(true) => {
-                runtime.schedule_eval_cleanup(&session_id);
-                log_cleanup_delete(&runtime, &session_id).await;
-            }
-            Err(_) => runtime.pool.evict(&session_id).await,
+            FailedRunCleanup::Keep => runtime.pool.evict(&session_id).await,
         }
     } else if keep_session {
+        // Success under the default keep contract: nothing to clean up.
         crate::features::assistant::timing::unregister_eval_observation(&session_id);
         runtime.pool.evict(&session_id).await;
     } else {
-        runtime.schedule_eval_cleanup(&session_id);
-        log_cleanup_delete(&runtime, &session_id).await;
+        // Success under the explicit legacy one-shot contract
+        // (`KEEP_SESSION=0`): everything this run created goes. An
+        // unloadable record still keeps — deleting on unknown state is the
+        // unsafe direction even here.
+        crate::features::assistant::timing::unregister_eval_observation(&session_id);
+        match store.chat_session_has_messages(&session_id) {
+            Err(_) => runtime.pool.evict(&session_id).await,
+            Ok(_) => {
+                runtime.schedule_eval_cleanup(&session_id);
+                log_cleanup_delete(&runtime, &session_id).await;
+            }
+        }
     }
     // Disarm before reporting: the prepare-time save happened before any setup
     // fault could surface, so the evictions are real regardless of the final
@@ -407,6 +439,37 @@ pub async fn run_agentic_task(
 /// Best-effort cleanup delete: a failed delete must not mask the run's own
 /// outcome, but silently stranding the session in the shared store hides the
 /// failure from the operator — log it instead of discarding the result.
+/// What a failed headless run does with the fresh session it created: the
+/// union of the durable-record classification (admitted messages make a
+/// started transcript) and the rename-ownership exception (a zero-message
+/// stub is litter only while it still wears the eval factory title).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum FailedRunCleanup {
+    /// Delete through the eval cleanup (schedule the late sweep, then the
+    /// turn-gated delete).
+    Delete,
+    /// Evict only the pooled engine and keep the record: a renamed stub
+    /// (ownership), an admitted transcript under the default keep contract,
+    /// or an unloadable record (deleting on unknown state is the unsafe
+    /// direction).
+    Keep,
+}
+
+/// Pure classification so the full matrix is unit-testable without an
+/// engine: the same decision serves the submit-never-ran path and the
+/// errored-after-submit path.
+fn failed_run_cleanup_decision<E>(
+    has_messages: Result<bool, E>,
+    factory_titled: bool,
+    keep_session: bool,
+) -> FailedRunCleanup {
+    match has_messages {
+        Ok(false) if factory_titled => FailedRunCleanup::Delete,
+        Ok(true) if !keep_session => FailedRunCleanup::Delete,
+        _ => FailedRunCleanup::Keep,
+    }
+}
+
 async fn log_cleanup_delete(runtime: &EnginePoolRuntime, session_id: &str) {
     if let Err(error) = runtime.close_eval_session_result(session_id).await {
         eprintln!("[agent-task] cleanup delete for session {session_id} failed: {error:#}");
@@ -594,7 +657,9 @@ async fn run_turn(
             // creation would overwrite the transcript). A model pin goes
             // through the GUI chip-switch path (per-session sidecar write +
             // engine evict); the engine itself lazily spawns on submit,
-            // exactly like a GUI send.
+            // exactly like a GUI send. The sidecar write lands during this
+            // setup and persists on the session even if the later submit
+            // fails.
             if let Some(model_id) = request.model_id.as_deref() {
                 runtime
                     .pool
@@ -977,11 +1042,25 @@ fn partial_turn_analysis(
     )
 }
 
+/// Fresh session id for one agentic run: `agentic_{pid}_{unix_millis}_{counter}`.
+/// The pid alone is not unique across time: OS pid reuse can hand a later
+/// process the same pid while the per-process counter restarts at 0, so the
+/// old `agentic_{pid}_{counter}` shape could reproduce an id that is still
+/// persisted weeks later, and `create_empty_with_id` would overwrite it
+/// without an existence check. The unix-millisecond component bounds a
+/// collision to same-millisecond reuse of both the pid and the counter. The
+/// id stays inside the session id alphabet `[A-Za-z0-9_-]` (see
+/// `features/sessions/validators.rs`), so the store accepts it unchanged.
 fn fresh_session_id() -> String {
     static NEXT: AtomicU64 = AtomicU64::new(0);
+    let unix_millis = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_millis())
+        .unwrap_or(0);
     format!(
-        "agentic_{}_{}",
+        "agentic_{}_{}_{}",
         std::process::id(),
+        unix_millis,
         NEXT.fetch_add(1, Ordering::Relaxed)
     )
 }
@@ -990,8 +1069,9 @@ fn fresh_session_id() -> String {
 mod tests {
     use super::{
         AgenticTaskAttachment, AgenticTaskMode, AgenticTaskReport, AgenticTaskRequest,
-        AgenticToolEvent, DEFAULT_TIMEOUT_SECS, MAX_ATTACHMENT_BYTES, MAX_ATTACHMENTS,
-        MAX_TIMEOUT_SECS, ensure_existing_chat_session, ensure_model_exists, keep_session_from_env,
+        AgenticToolEvent, DEFAULT_TIMEOUT_SECS, FailedRunCleanup, MAX_ATTACHMENT_BYTES,
+        MAX_ATTACHMENTS, MAX_TIMEOUT_SECS, ensure_existing_chat_session, ensure_model_exists,
+        failed_run_cleanup_decision, fresh_session_id, keep_session_from_env,
         retention_eviction_warning, validate_attachments,
     };
     use crate::features::sessions::{
@@ -1044,6 +1124,26 @@ mod tests {
     fn locked_env(vars: &[&'static str]) -> (std::sync::MutexGuard<'static, ()>, EnvGuard) {
         let lock = ENV_LOCK.lock().unwrap_or_else(|p| p.into_inner());
         (lock, EnvGuard::new(vars))
+    }
+
+    /// RAII cleanup for a test scratch directory under `std::env::temp_dir()`:
+    /// removed best-effort on drop (normal return or panic unwind). Removal
+    /// failures are ignored on purpose — a leaked temp dir must never fail a
+    /// test, and an OS that still holds the directory open simply skips it.
+    struct TempDirGuard {
+        path: PathBuf,
+    }
+
+    impl TempDirGuard {
+        fn new(path: PathBuf) -> Self {
+            Self { path }
+        }
+    }
+
+    impl Drop for TempDirGuard {
+        fn drop(&mut self) {
+            let _ = std::fs::remove_dir_all(&self.path);
+        }
     }
 
     fn default_request(prompt: &str) -> AgenticTaskRequest {
@@ -1230,11 +1330,13 @@ mod tests {
                 .map(|d| d.as_nanos())
                 .unwrap_or(0)
         ));
+        let _tmp_cleanup = TempDirGuard::new(tmp.clone());
         // SAFETY: ENV_LOCK held; env writes are serialized across tests.
         unsafe { std::env::set_var("PINVOU3_HOME", &tmp) };
         let error = ensure_model_exists("definitely-missing-model").unwrap_err();
         assert!(error.to_string().contains("agent_model_not_found"));
-        // `_env` restores the captured PINVOU3_HOME on return or panic.
+        // `_tmp_cleanup` removes the scratch dir on return or panic;
+        // `_env` restores the captured PINVOU3_HOME.
     }
 
     #[test]
@@ -1247,6 +1349,7 @@ mod tests {
                 .map(|d| d.as_nanos())
                 .unwrap_or(0)
         ));
+        let _tmp_cleanup = TempDirGuard::new(tmp.clone());
         // SAFETY: ENV_LOCK held; env writes are serialized across tests.
         unsafe { std::env::set_var("PINVOU3_HOME", &tmp) };
         let store = SessionStore::boot_with_scheduled_root(tmp.join("scheduled")).expect("boot");
@@ -1311,6 +1414,55 @@ mod tests {
     /// cap records nothing. The runner's own arm/report half is pinned by
     /// `retention_eviction_warning_keys_on_the_record_regardless_of_outcome`
     /// below.
+    /// The failed-run cleanup matrix: both failure paths (submit never
+    /// ran, errored after submit) classify identically on the durable
+    /// record. Regression pin for the union contract — an errored-after-
+    /// submit run whose engine admitted messages must KEEP the transcript
+    /// under the default keep contract (a prior revision deleted it on the
+    /// factory title alone, silently dropping the only copy).
+    #[test]
+    fn failed_run_cleanup_decision_union_matrix() {
+        let ok = |v: bool| Ok::<bool, std::io::Error>(v);
+        // Zero-message stub: litter only while it wears the eval factory
+        // title, regardless of KEEP_SESSION.
+        assert_eq!(
+            failed_run_cleanup_decision(ok(false), true, false),
+            FailedRunCleanup::Delete
+        );
+        assert_eq!(
+            failed_run_cleanup_decision(ok(false), true, true),
+            FailedRunCleanup::Delete
+        );
+        assert_eq!(
+            failed_run_cleanup_decision(ok(false), false, true),
+            FailedRunCleanup::Keep
+        );
+        // Admitted messages: a started transcript — kept under the default
+        // keep contract, deleted only under the explicit legacy one-shot.
+        assert_eq!(
+            failed_run_cleanup_decision(ok(true), true, true),
+            FailedRunCleanup::Keep
+        );
+        assert_eq!(
+            failed_run_cleanup_decision(ok(true), false, true),
+            FailedRunCleanup::Keep
+        );
+        assert_eq!(
+            failed_run_cleanup_decision(ok(true), true, false),
+            FailedRunCleanup::Delete
+        );
+        // Unloadable record: unknown state keeps — deleting is the unsafe
+        // direction.
+        assert_eq!(
+            failed_run_cleanup_decision(
+                Err(std::io::Error::other("unloadable record")),
+                true,
+                false
+            ),
+            FailedRunCleanup::Keep
+        );
+    }
+
     #[test]
     fn retention_sweep_records_real_evictions_and_below_cap_stays_silent() {
         let (_lock, _env) = locked_env(&["PINVOU3_HOME"]);
@@ -1448,5 +1600,38 @@ mod tests {
         // 7 days; the CLI parse cap and the library clamp must stay in lockstep
         // so `Instant + Duration` can never overflow.
         assert_eq!(MAX_TIMEOUT_SECS, 7 * 24 * 60 * 60);
+    }
+
+    #[test]
+    fn fresh_session_id_keeps_store_alphabet_and_time_component() {
+        let first = fresh_session_id();
+        let second = fresh_session_id();
+        for id in [&first, &second] {
+            assert!(
+                id.starts_with("agentic_"),
+                "{id} must keep the agentic_ prefix"
+            );
+            assert!(
+                id.bytes()
+                    .all(|b| b.is_ascii_alphanumeric() || b == b'_' || b == b'-'),
+                "{id} must stay inside the session id alphabet [A-Za-z0-9_-]"
+            );
+            // pid + unix millis + counter: the time component must be present
+            // so a later process reusing the pid (counter restarted at 0)
+            // cannot reproduce an id that is still persisted.
+            let parts: Vec<&str> = id.strip_prefix("agentic_").unwrap().split('_').collect();
+            assert_eq!(
+                parts.len(),
+                3,
+                "{id} must be agentic_<pid>_<unix_millis>_<counter>"
+            );
+            assert!(
+                parts[0].parse::<u32>().is_ok() && parts[1].parse::<u128>().is_ok(),
+                "{id} pid and unix-millis components must be numeric"
+            );
+        }
+        // The per-process counter keeps consecutive ids distinct even when
+        // both are generated within the same millisecond.
+        assert_ne!(first, second);
     }
 }

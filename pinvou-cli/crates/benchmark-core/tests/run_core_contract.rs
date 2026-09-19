@@ -1209,7 +1209,6 @@ fn report_is_published_without_temporary_files() {
 /// where the same slow backend is cut off at the deadline.
 #[tokio::test]
 async fn unbounded_deadline_runs_without_a_harness_task_timeout() {
-    let base = temp_base("unbounded-deadline");
     let backend = Arc::new(MockBackend::with_behavior(BackendBehavior::SlowRun));
     let runner = NativeAgentRunner::new(backend);
     let outcome = runner
@@ -1225,14 +1224,12 @@ async fn unbounded_deadline_runs_without_a_harness_task_timeout() {
                     ToolPolicyId::new("smoke/v1"),
                     OutputContract::new("text/v1"),
                 ),
-                None,
             ),
-            &RunContext::new("unbounded", base.clone()),
+            &RunContext::new("unbounded"),
         )
         .await
         .expect("no harness timeout for a None deadline");
     assert_eq!(outcome.status(), TaskStatus::Completed);
-    fs::remove_dir_all(base).unwrap();
 }
 
 /// The contrast the None-lane pin claims: the SAME slow backend cut off by a
@@ -1240,7 +1237,6 @@ async fn unbounded_deadline_runs_without_a_harness_task_timeout() {
 /// default deadline longer than the sleep would pass both tests.
 #[tokio::test]
 async fn some_deadline_cuts_off_the_same_slow_backend() {
-    let base = temp_base("some-deadline-slow");
     let backend = Arc::new(MockBackend::with_behavior(BackendBehavior::SlowRun));
     let runner = NativeAgentRunner::new(backend);
     let outcome = runner
@@ -1256,14 +1252,12 @@ async fn some_deadline_cuts_off_the_same_slow_backend() {
                     ToolPolicyId::new("smoke/v1"),
                     OutputContract::new("text/v1"),
                 ),
-                None,
             ),
-            &RunContext::new("some-deadline-slow", base.clone()),
+            &RunContext::new("some-deadline-slow"),
         )
         .await
         .expect("the harness machinery itself must not fail");
     assert_eq!(outcome.status(), TaskStatus::Timeout);
-    fs::remove_dir_all(base).unwrap();
 }
 
 /// Minimal adapter so `resume_adapter`'s manifest gates can be exercised end

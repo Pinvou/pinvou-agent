@@ -33,9 +33,11 @@ use super::store;
 // 功能描述是功能事实（§3.1 下沉侧），取自前端 tsToolsData 既有文案；label/icon/
 // color/welcomeQueries 等 i18n 展示资产仍留前端 overlay。
 // 四张配套技能目录表已下沉 `crate::platform::connector_skills` 作为单一真相源
-// （与 runtime_bundle 解包门控共用，见该模块头注释）；此处 pub(crate) re-export
-// 保持 BUILTIN_CLI_BUNDLES 与既有 `bundle::<NAME>_SKILL_DIRS` 引用不变。
-pub(crate) use crate::platform::connector_skills::{
+// （与 runtime_bundle 解包门控共用，见该模块头注释）；此处 pub re-export 保持
+// BUILTIN_CLI_BUNDLES 与既有 `bundle::<NAME>_SKILL_DIRS` 引用不变——headless
+// CLI 的 `connectors ensure-cli` 解包同一批目录，也消费这几个名字（main 的
+// #539 清扫曾把 re-export 收窄到 pub(crate)，那是 GUI-dead 的判断，对本层不成立）。
+pub use crate::platform::connector_skills::{
     DINGTALK_SKILL_DIRS, LARK_SKILL_DIRS, TMEET_SKILL_DIRS, WECOM_SKILL_DIRS,
 };
 
@@ -687,18 +689,32 @@ fn tool_config_fields(tool: &super::ToolManifest) -> Vec<ConfigFieldSpec> {
 }
 
 /// 就绪态判定（派生态，现算不进存储）。
-/// - CLI 包：授权存在与否——由命令层经 `bundle_readiness` 分派到各 status 查询注入
-///   （注册表不直连 CLI 运行时，注入闭包保持依赖方向 app → features）
+/// - CLI 包：桌面端由命令层经 `bundle_readiness` 分派到各 status 查询注入授权态
+///   （注册表不直连 CLI 运行时，注入闭包保持依赖方向 app → features）；headless
+///   调用方（pinvou-cli `plugins readiness`）没有命令层，落到下方回退：读存储里
+///   的 installed + degraded 标志。installed=true 而 degraded 非空（logout /
+///   断链只标 degraded）时必须报 not_connected——按 installed 单独判定会把已
+///   断开的连接器报成 ready，与桌面端语义相反。
 /// - 凭据型：credentials 必填项在系统凭据存储中齐不齐（现算）
 /// - 本地免凭据：恒 Ready
 pub fn readiness_for(bundle: &BundleInfo, credential_has: impl Fn(&str) -> bool) -> Readiness {
     match bundle.kind {
-        // CLI authorization state is injected by the command layer: its
-        // `bundle_readiness` `BundleKind::Cli` arm fully dispatches to the
-        // `*_status` queries, so Cli bundles never reach this function
-        // (the invariant is pinned explicitly below).
+        // The desktop command layer overrides this arm with its `*_status`
+        // dispatch; headless callers (pinvou-cli has no command layer) get
+        // this store-record verdict instead of a panic. installed=true alone
+        // is OPTIMISTIC, not conservative: `connectors logout` keeps
+        // installed and marks degraded, so a degraded record must answer
+        // not_connected (the desktop reason for the same state) — a live
+        // status probe is impossible headless, but a disconnected record
+        // must never read ready.
         BundleKind::Cli => {
-            unreachable!("CLI bundle readiness is dispatched by the command layer")
+            if !bundle.installed {
+                Readiness::NotReady("cli_not_installed")
+            } else if bundle.degraded.is_some() {
+                Readiness::NotReady("not_connected")
+            } else {
+                Readiness::Ready
+            }
         }
         BundleKind::Mcp | BundleKind::Bundle => {
             // 本地免凭据（无必填凭据）恒 Ready；有必填凭据则查系统凭据
@@ -721,10 +737,18 @@ pub fn readiness_for(bundle: &BundleInfo, credential_has: impl Fn(&str) -> bool)
                 .filter(|c| c.required && !credential_has(&c.key))
                 .map(|c| c.key.as_str())
                 .collect();
-            if missing.is_empty() {
-                Readiness::Ready
-            } else {
+            if !missing.is_empty() {
                 Readiness::NotReady("missing_credentials")
+            } else if !bundle.installed {
+                // The desktop verdict for credential Skill bundles also
+                // requires the companion skill to be installed
+                // (`skill_not_installed` after a companion uninstall with
+                // creds still present); mirror it headless from the record.
+                Readiness::NotReady("skill_not_installed")
+            } else if bundle.degraded.is_some() {
+                Readiness::NotReady("not_connected")
+            } else {
+                Readiness::Ready
             }
         }
     }
@@ -901,8 +925,49 @@ mod tests {
             required: false,
         }];
         assert_eq!(
-            readiness_for(&b(BundleKind::Skill, opt), |_| false),
+            readiness_for(&b(BundleKind::Skill, opt.clone()), |_| false),
             Readiness::Ready
+        );
+        // Headless fallback (pinvou-cli has no command layer to inject the
+        // `*_status` verdict): a clean installed CLI bundle is Ready, an
+        // uninstalled one reports cli_not_installed instead of panicking,
+        // and an installed-but-degraded one (logout keeps installed=true
+        // and only marks degraded) reports the desktop's not_connected
+        // reason instead of a false ready.
+        assert_eq!(
+            readiness_for(&b(BundleKind::Cli, vec![]), |_| false),
+            Readiness::Ready
+        );
+        let mut uninstalled_cli = b(BundleKind::Cli, vec![]);
+        uninstalled_cli.installed = false;
+        assert_eq!(
+            readiness_for(&uninstalled_cli, |_| false),
+            Readiness::NotReady("cli_not_installed")
+        );
+        let mut disconnected_cli = b(BundleKind::Cli, vec![]);
+        disconnected_cli.degraded = Some("已断开授权：token 已失效".into());
+        assert_eq!(
+            readiness_for(&disconnected_cli, |_| false),
+            Readiness::NotReady("not_connected")
+        );
+        // Credential Skill bundles mirror the desktop's install-state
+        // requirement: credentials alone are not ready when the companion
+        // skill is uninstalled, and a degraded record is not connected.
+        assert_eq!(
+            readiness_for(&b(BundleKind::Skill, opt.clone()), |_| true),
+            Readiness::Ready
+        );
+        let mut uninstalled_skill = b(BundleKind::Skill, opt.clone());
+        uninstalled_skill.installed = false;
+        assert_eq!(
+            readiness_for(&uninstalled_skill, |_| true),
+            Readiness::NotReady("skill_not_installed")
+        );
+        let mut degraded_skill = b(BundleKind::Skill, opt);
+        degraded_skill.degraded = Some("已断开授权：token 已失效".into());
+        assert_eq!(
+            readiness_for(&degraded_skill, |_| true),
+            Readiness::NotReady("not_connected")
         );
     }
 

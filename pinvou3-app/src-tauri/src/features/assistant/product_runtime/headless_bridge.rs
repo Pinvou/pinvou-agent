@@ -660,8 +660,12 @@ impl ProductHeadlessBackend {
 /// Upper bound on staged attachments; shared with the agent request path so
 /// the two headless pipelines cannot drift apart.
 pub(crate) const MAX_STAGED_ATTACHMENTS: usize = 16;
-/// Per-attachment size cap in bytes (20 MiB).
-pub(crate) const MAX_STAGED_ATTACHMENT_BYTES: u64 = 20 * 1024 * 1024;
+/// Per-attachment size cap in bytes: defined FROM the ingest per-file cap
+/// (the same 20 MiB today) so the two lanes cannot drift — a bump of the
+/// ingest cap raises the staged cap with it, never stranding an attachment
+/// that passed validation but fails the staging copy.
+pub(crate) const MAX_STAGED_ATTACHMENT_BYTES: u64 =
+    crate::features::files::file_ingest::MAX_FILE_BYTES;
 /// Aggregate size cap across one attachment batch (100 MiB).
 pub(crate) const MAX_STAGED_ATTACHMENTS_TOTAL_BYTES: u64 = 100 * 1024 * 1024;
 

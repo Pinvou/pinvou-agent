@@ -1240,7 +1240,13 @@ pub fn enqueue_memory_candidate(suggestion: MemorySuggestion) -> io::Result<Pend
     Ok(item)
 }
 
-pub(super) fn confirmed_pending_memory_is_materialized(item: &PendingMemoryItem) -> bool {
+/// Whether a confirmed pending item actually landed in its target store.
+/// The confirm path marks the item confirmed even when the profile-shaped
+/// preference skip in `write_preference_unlocked` deliberately wrote
+/// nothing; surfacing the helper lets the CLI report that no-op honestly
+/// instead of printing success (the GUI review pipeline has its own
+/// post-confirm view).
+pub fn confirmed_pending_memory_is_materialized(item: &PendingMemoryItem) -> bool {
     if item.status != PENDING_STATUS_CONFIRMED {
         return false;
     }
@@ -1526,6 +1532,14 @@ pub(super) fn disabled_runtime_snapshot(session_id: &str) -> io::Result<RuntimeM
         block: String::new(),
         items: Vec::new(),
     })
+}
+
+/// Snapshot of the confirmed preference store without the work-context
+/// cleanup sweep. The headless CLI's replace-per-topic gate in `memory add` /
+/// `memory update` consumes this surface (the sweep dropped it as GUI-dead);
+/// the `_with_cleanup` variant stays the GUI lane's entry.
+pub fn list_preferences() -> io::Result<Vec<PreferenceFile>> {
+    load_preferences()
 }
 
 pub fn list_preferences_with_cleanup() -> io::Result<TopicRead<Vec<PreferenceFile>>> {
