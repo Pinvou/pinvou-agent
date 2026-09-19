@@ -1835,6 +1835,43 @@ fn read_commands_refuse_wrong_typed_required_fields_as_malformed() {
 }
 
 #[test]
+fn read_commands_refuse_bogus_status_and_non_date_stamps_as_malformed() {
+    // The GUI's typed load deserializes `status` into the two-state
+    // automation enum and the timestamps as RFC3339, so a def with
+    // `"status": "bogus"` or `"created_at": "not-a-date"` dies there while
+    // the CLI used to render it with exit 0 — the same phantom-task shape
+    // the other typed-field pins above cover. Valid defs still pass.
+    let _env_guard = ENV_LOCK.lock().unwrap_or_else(|error| error.into_inner());
+    let home = TempHome::new("status-and-stamp-def");
+    let created = create_task(&home, "Value check task");
+    let task_id = created["id"].as_str().unwrap().to_owned();
+
+    // Pristine def, captured before any corruption so the valid-def case can
+    // restore every field exactly as the create wrote it.
+    let original: serde_json::Value =
+        serde_json::from_str(&std::fs::read_to_string(home.def_path(&task_id)).unwrap()).unwrap();
+
+    let mut def = original.clone();
+    def["status"] = serde_json::json!("bogus");
+    std::fs::write(home.def_path(&task_id), def.to_string()).unwrap();
+    let shown = expect_failed(&["scheduled", "show", &task_id]);
+    assert!(shown.contains("is malformed"), "{shown}");
+
+    def["status"] = serde_json::json!("active");
+    def["created_at"] = serde_json::json!("not-a-date");
+    std::fs::write(home.def_path(&task_id), def.to_string()).unwrap();
+    let shown = expect_failed(&["scheduled", "show", &task_id]);
+    assert!(shown.contains("is malformed"), "{shown}");
+
+    // Restoring the pristine def makes it readable again.
+    std::fs::write(home.def_path(&task_id), original.to_string()).unwrap();
+    let shown = run_json(&["scheduled", "show", &task_id]);
+    assert_eq!(shown["id"], serde_json::json!(task_id));
+    assert_eq!(shown["status"], serde_json::json!("active"));
+    let _ = home;
+}
+
+#[test]
 fn read_commands_refuse_a_path_shaped_file_supplied_id_as_malformed() {
     // The id doubles as the on-disk workspace directory name, so a def file
     // whose id is not a single path component is malformed (the store is

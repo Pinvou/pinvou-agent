@@ -618,25 +618,21 @@ fn validate_once_at(at: &str) -> Result<(), CliError> {
             .parse::<u32>()
             .ok()
     };
-    if parse_rfc3339(at).is_some() {
-        // `parse_rfc3339` range-checks every field but only bounds the day
-        // at 31; the foundation parser (chrono) rejects day-overflows like
-        // `02-30` on both channels, and one unparseable record stalls the
-        // GUI scheduler's whole sweep — so the RFC3339 channel applies the
-        // same day-in-month rule as the naive channel below.
-        let year = digits(0..4).unwrap_or(0) as i64;
-        let month = digits(5..7).unwrap_or(0);
-        let day = digits(8..10).unwrap_or(0);
-        if month == 0 || month > 12 || day == 0 || day > days_in_month(year, month) {
+    if looks_like_rfc3339_with_offset(at) {
+        // chrono is the calendar truth: a shape-valid RFC3339 stamp that
+        // fails to parse — day-overflow like `02-30`, an out-of-range
+        // field, a bad offset — is exactly the record the foundation parser
+        // rejects, and one unparseable record stalls the GUI scheduler's
+        // whole sweep, so the RFC3339 channel refuses it by name.
+        let Some((secs, nanos)) = parse_rfc3339(at) else {
             return Err(CliError::usage(format!(
                 "ONCE AT '{at}' is not a valid calendar time"
             )));
-        }
+        };
         // The GUI resolves ONCE through `next_after_with_anchor(now, now)`
         // and refuses a stamp with no future run; mirror that so a
         // CLI-created task does not linger until the first sweep tick pauses
         // it instead.
-        let (secs, nanos) = parse_rfc3339(at).expect("parse_rfc3339 checked above");
         if (secs, nanos) <= now_epoch() {
             return Err(CliError::usage(format!(
                 "ONCE AT '{at}' is in the past; a one-shot needs a future run"
@@ -894,143 +890,78 @@ fn now_epoch() -> (i64, u32) {
     (now.as_secs() as i64, now.subsec_nanos())
 }
 
-/// Days-to-civil conversion (Howard Hinnant's algorithm), sufficient to
-/// render UTC timestamps without a date-time crate.
-fn civil_from_days(days: i64) -> (i64, u32, u32) {
-    let z = days + 719_468;
-    let era = if z >= 0 { z } else { z - 146_096 } / 146_097;
-    let day_of_era = z - era * 146_097;
-    let year_of_era =
-        (day_of_era - day_of_era / 1460 + day_of_era / 36_524 - day_of_era / 146_096) / 365;
-    let year = year_of_era + era * 400;
-    let day_of_year = day_of_era - (365 * year_of_era + year_of_era / 4 - year_of_era / 100);
-    let mp = (5 * day_of_year + 2) / 153;
-    let day = day_of_year - (153 * mp + 2) / 5 + 1;
-    let month = if mp < 10 { mp + 3 } else { mp - 9 };
-    (
-        if month <= 2 { year + 1 } else { year },
-        month as u32,
-        day as u32,
-    )
-}
-
-fn days_from_civil(year: i64, month: u32, day: u32) -> i64 {
-    let y = if month <= 2 { year - 1 } else { year };
-    let era = if y >= 0 { y } else { y - 399 } / 400;
-    let year_of_era = y - era * 400;
-    let mp = if month > 2 { month - 3 } else { month + 9 } as i64;
-    era * 146_097 + year_of_era * 365 + year_of_era / 4 - year_of_era / 100
-        + (153 * mp + 2) / 5
-        + day as i64
-        - 1
-        - 719_468
-}
-
+/// UTC timestamp rendering over chrono (the calendar library the foundation
+/// itself uses), replacing the hand-rolled days-to-civil arithmetic.
 fn format_rfc3339_millis(secs: i64, nanos: u32) -> String {
-    let millis = nanos / 1_000_000;
-    let days = secs.div_euclid(86_400);
-    let rem = secs.rem_euclid(86_400);
-    let (year, month, day) = civil_from_days(days);
-    let (hour, minute, second) = (rem / 3600, (rem % 3600) / 60, rem % 60);
-    format!("{year:04}-{month:02}-{day:02}T{hour:02}:{minute:02}:{second:02}.{millis:03}Z")
+    chrono::DateTime::from_timestamp(secs, nanos % 1_000_000_000)
+        .unwrap_or_default()
+        .format("%Y-%m-%dT%H:%M:%S%.3fZ")
+        .to_string()
 }
 
 /// `{sortable-created-at}` stamp for run file names, mirroring the
 /// foundation's `%Y%m%dT%H%M%S%3fZ` format so directory listings stay
 /// chronologically sorted next to GUI-created runs.
 fn run_file_stamp(secs: i64, nanos: u32) -> String {
-    let days = secs.div_euclid(86_400);
-    let rem = secs.rem_euclid(86_400);
-    let (year, month, day) = civil_from_days(days);
-    let (hour, minute, second) = (rem / 3600, (rem % 3600) / 60, rem % 60);
-    format!(
-        "{year:04}{month:02}{day:02}T{hour:02}{minute:02}{second:02}{:03}Z",
-        nanos / 1_000_000
-    )
+    chrono::DateTime::from_timestamp(secs, nanos % 1_000_000_000)
+        .unwrap_or_default()
+        .format("%Y%m%dT%H%M%S%3fZ")
+        .to_string()
 }
 
 /// Parses `YYYY-MM-DDTHH:MM:SS[.fff](Z|±HH:MM)` into epoch seconds plus
-/// subsecond nanos; returns None for anything else — including a stamp
-/// without an offset, because the foundation's chrono parser requires one
-/// and only then falls back to the naive-local channel. Used to order
-/// records and to pick the ONCE AT channel, mirroring the foundation's
-/// chrono-based sorts.
+/// subsecond nanos; returns None for anything else. The foundation parses
+/// through chrono, so this lane does too: lowercase `t`/`z` separators are
+/// accepted, an offset is REQUIRED (an offset-less stamp falls through to
+/// the naive-local channel instead, where the DST-gap rule applies — one
+/// unresolvable record stalls the GUI scheduler's whole sweep), and chrono
+/// is the calendar truth (day-overflow stamps like `02-30` are rejected,
+/// never rolled over). Used to order records and to pick the ONCE AT
+/// channel, mirroring the foundation's chrono-based sorts.
 fn parse_rfc3339(value: &str) -> Option<(i64, u32)> {
-    let trimmed = value.trim();
-    let bytes = trimmed.as_bytes();
-    if bytes.len() < 19 {
-        return None;
-    }
-    let num = |range: std::ops::Range<usize>| {
-        std::str::from_utf8(bytes.get(range)?)
-            .ok()?
-            .parse::<i64>()
-            .ok()
-    };
-    if bytes[4] != b'-'
+    let parsed = chrono::DateTime::parse_from_rfc3339(value.trim()).ok()?;
+    Some((parsed.timestamp(), parsed.timestamp_subsec_nanos()))
+}
+
+/// Distinguishes the RFC3339 channel from the naive-local channel by shape:
+/// a trailing zone (`Z`/`z` or `±HH:MM`, with optional fractional seconds
+/// before it) is what makes a stamp RFC3339. Field and calendar validation
+/// is chrono's job ([`parse_rfc3339`]); this check only routes a
+/// shape-valid stamp that chrono rejected to the calendar-time error
+/// instead of the naive channel's parse failure.
+fn looks_like_rfc3339_with_offset(value: &str) -> bool {
+    let bytes = value.as_bytes();
+    if bytes.len() < 20
+        || bytes[4] != b'-'
         || bytes[7] != b'-'
-        // RFC3339 §5.6 NOTE lets the date/time separator be lowercase; the
-        // foundation parses through chrono, which accepts it, so the CLI
-        // must not reject a stamp the GUI can create.
         || (bytes[10] != b'T' && bytes[10] != b't')
         || bytes[13] != b':'
         || bytes[16] != b':'
     {
-        return None;
+        return false;
     }
-    let year = num(0..4)?;
-    let month = num(5..7)? as u32;
-    let day = num(8..10)? as u32;
-    let hour = num(11..13)? as u32;
-    let minute = num(14..16)? as u32;
-    let second = num(17..19)? as u32;
-    if month == 0 || month > 12 || day == 0 || day > 31 || hour > 23 || minute > 59 || second > 60 {
-        return None;
+    let mut rest = &bytes[19..];
+    if rest.first() == Some(&b'.') {
+        let digit_count = rest[1..]
+            .iter()
+            .take_while(|byte| byte.is_ascii_digit())
+            .count();
+        if digit_count == 0 {
+            return false;
+        }
+        rest = &rest[1 + digit_count..];
     }
-    let mut rest = &trimmed[19..];
-    let mut nanos = 0u32;
-    if let Some(fractional) = rest.strip_prefix('.') {
-        let digits_end = fractional
-            .find(|c: char| !c.is_ascii_digit())
-            .unwrap_or(fractional.len());
-        if digits_end == 0 {
-            return None;
+    match rest {
+        [b'Z'] | [b'z'] => true,
+        [sign, h1, h2, b':', m1, m2] => {
+            (*sign == b'+' || *sign == b'-')
+                && h1.is_ascii_digit()
+                && h2.is_ascii_digit()
+                && m1.is_ascii_digit()
+                && m2.is_ascii_digit()
         }
-        let mut scaled = fractional[..digits_end].to_owned();
-        while scaled.len() < 9 {
-            scaled.push('0');
-        }
-        nanos = scaled[..9].parse().ok()?;
-        rest = &fractional[digits_end..];
+        _ => false,
     }
-    let offset_secs = match rest {
-        // RFC3339 requires an offset. An offset-less stamp must fall through
-        // to the naive-local channel (validate_once_at), where the DST-gap
-        // rule applies — the foundation parses such stamps as local time,
-        // never as UTC, and one unresolvable record stalls the GUI
-        // scheduler's whole sweep.
-        "Z" | "z" => 0,
-        "" => return None,
-        offset => {
-            let offset = offset.as_bytes();
-            if offset.len() != 6 || (offset[0] != b'+' && offset[0] != b'-') || offset[3] != b':' {
-                return None;
-            }
-            let sign: i64 = if offset[0] == b'-' { -1 } else { 1 };
-            let hours: i64 = std::str::from_utf8(&offset[1..3]).ok()?.parse().ok()?;
-            let minutes: i64 = std::str::from_utf8(&offset[4..6]).ok()?.parse().ok()?;
-            if hours > 23 || minutes > 59 {
-                return None;
-            }
-            sign * (hours * 3600 + minutes * 60)
-        }
-    };
-    let epoch = days_from_civil(year, month, day) * 86_400
-        + i64::from(hour) * 3600
-        + i64::from(minute) * 60
-        + i64::from(second)
-        - i64::from(offset_secs);
-    Some((epoch, nanos))
 }
 
 fn record_time(value: &serde_json::Value, field: &str) -> (i64, u32) {
@@ -1388,16 +1319,29 @@ fn require_object_definition(id: &str, def: &serde_json::Value) -> Result<(), Cl
     // numeric timestamp) would slip past the gate and render as a phantom
     // task with empty strings, the exact shape the GUI's serde rejects the
     // whole record for.
-    for field in [
-        "id",
-        "name",
-        "prompt",
-        "rrule",
-        "status",
-        "created_at",
-        "updated_at",
-    ] {
+    for field in ["id", "name", "prompt", "rrule"] {
         if def.get(field).map(serde_json::Value::is_string) != Some(true) {
+            return Err(malformed());
+        }
+    }
+    // The remaining typed fields are value-checked the way the GUI's typed
+    // load is: `status` deserializes into the foundation's two-state
+    // automation enum, and the timestamps parse as RFC3339, so a "bogus"
+    // status or a non-date stamp must refuse here instead of rendering a
+    // phantom task whose record the GUI cannot even load.
+    if !matches!(
+        def.get("status").and_then(serde_json::Value::as_str),
+        Some("active") | Some("paused")
+    ) {
+        return Err(malformed());
+    }
+    for field in ["created_at", "updated_at"] {
+        if def
+            .get(field)
+            .and_then(serde_json::Value::as_str)
+            .and_then(parse_rfc3339)
+            .is_none()
+        {
             return Err(malformed());
         }
     }
@@ -2488,6 +2432,9 @@ fn delete(id: &str, yes: bool, output: OutputMode) -> Result<CliOutcome, CliErro
     // Every failure below restores the pre-delete status like the GUI
     // (`restore_task_status_if_present` runs on every failed delete): a
     // caller retrying after fixing the cause must not find the task paused.
+    // The restore is best-effort, but a failed write is warned with the file
+    // named (the same pattern as the run-directory warning below) instead of
+    // silently leaving the task paused.
     let restore_status = |def: &Value, status: &str| {
         let mut restored = def.clone();
         restored["status"] = Value::String(status.to_owned());
@@ -2499,7 +2446,16 @@ fn delete(id: &str, yes: bool, output: OutputMode) -> Result<CliOutcome, CliErro
                 }
             }
         }
-        let _ = store_holder.write_def(&restored);
+        if let Err(error) = store_holder.write_def(&restored) {
+            let path = store_holder
+                .def_path(id)
+                .map(|path| path.display().to_string())
+                .unwrap_or_else(|_| "definition file".to_owned());
+            crate::note!(
+                "pinvou: warning: scheduled task {id} could not be restored to '{status}' in \
+                 {path}: {error}; the task may stay paused"
+            );
+        }
     };
     // list_runs can fail on a corrupt/unsupported run record; that failure
     // is a blocked delete like any other, so it must restore the pre-delete
@@ -2600,7 +2556,16 @@ fn delete(id: &str, yes: bool, output: OutputMode) -> Result<CliOutcome, CliErro
     let def_path = match store_holder.def_path(id) {
         Ok(path) => path,
         Err(error) => {
-            let _ = write_json_atomic(&store_holder.history_archive_path(), &archive_rollback);
+            if let Err(rollback_error) =
+                write_json_atomic(&store_holder.history_archive_path(), &archive_rollback)
+            {
+                crate::note!(
+                    "pinvou: warning: scheduled task {id} was not deleted, but its history \
+                     archive {} could not be rolled back: {rollback_error}; the task may \
+                     stay archived",
+                    store_holder.history_archive_path().display()
+                );
+            }
             restore_status(&def, &previous_status);
             return Err(error);
         }
@@ -2609,7 +2574,16 @@ fn delete(id: &str, yes: bool, output: OutputMode) -> Result<CliOutcome, CliErro
         Ok(()) => {}
         Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
         Err(error) => {
-            let _ = write_json_atomic(&store_holder.history_archive_path(), &archive_rollback);
+            if let Err(rollback_error) =
+                write_json_atomic(&store_holder.history_archive_path(), &archive_rollback)
+            {
+                crate::note!(
+                    "pinvou: warning: scheduled task {id} was not deleted, but its history \
+                     archive {} could not be rolled back: {rollback_error}; the task may \
+                     stay archived",
+                    store_holder.history_archive_path().display()
+                );
+            }
             restore_status(&def, &previous_status);
             return Err(CliError::failed(format!(
                 "scheduled_delete_failed: cannot remove {}: {error}",
