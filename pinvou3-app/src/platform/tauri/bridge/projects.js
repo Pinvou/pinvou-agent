@@ -44,7 +44,11 @@
       try {
         applySnapshot(await invoke("list_projects"));
       } catch (e) {
-        // 归属是纯偏好数据:拉取失败保持旧快照,侧栏回落隐式分组,不打断 UI。
+        // Assignments are pure preference data: a fetch failure must not
+        // break the UI. On the first failed pull the sidebar falls back to
+        // implicit grouping; with an existing snapshot it keeps showing the
+        // stale one (indistinguishable from fresh) until the next
+        // projects:list_changed event retries.
         console.warn("[projects] list_projects failed:", e);
       } finally {
         fetchInFlight = false;
@@ -87,12 +91,33 @@
       return outcome;
     }
 
+    // Directory rebind (broken-link repair): confirmExisting is driven by the
+    // frontend's two-phase handshake — the first call omits the confirmation,
+    // the backend rejects it with a typed marker while the old directory still
+    // exists, and the frontend escalates to the strong warning and retries.
+    // previousPostBusySessionIds is the dialog's feed-back of its previous
+    // report's post-busy ids (review #463 F-Major): the backend honors only
+    // the intersection with its own to-lane retry population, so a
+    // busy-refused carryover session is honestly reported post-busy again
+    // instead of vanishing from every report field.
+    async function rebindWorkspaceRoot(from, to, confirmExisting, previousPostBusySessionIds) {
+      const report = await invoke("rebind_workspace_root", {
+        from,
+        to,
+        confirmExisting: !!confirmExisting,
+        previousPostBusySessionIds: previousPostBusySessionIds || [],
+      });
+      await loadProjects();
+      return report;
+    }
+
     return {
       loadProjects,
       createProject,
       renameProject,
       deleteProject,
-      moveSessionToProject
+      moveSessionToProject,
+      rebindWorkspaceRoot
     };
   };
 })(window);
