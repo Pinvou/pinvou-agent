@@ -33,9 +33,11 @@ use super::store;
 // 功能描述是功能事实（§3.1 下沉侧），取自前端 tsToolsData 既有文案；label/icon/
 // color/welcomeQueries 等 i18n 展示资产仍留前端 overlay。
 // 四张配套技能目录表已下沉 `crate::platform::connector_skills` 作为单一真相源
-// （与 runtime_bundle 解包门控共用，见该模块头注释）；此处 pub(crate) re-export
-// 保持 BUILTIN_CLI_BUNDLES 与既有 `bundle::<NAME>_SKILL_DIRS` 引用不变。
-pub(crate) use crate::platform::connector_skills::{
+// （与 runtime_bundle 解包门控共用，见该模块头注释）；此处 pub re-export 保持
+// BUILTIN_CLI_BUNDLES 与既有 `bundle::<NAME>_SKILL_DIRS` 引用不变——headless
+// CLI 的 `connectors ensure-cli` 解包同一批目录，也消费这几个名字（main 的
+// #539 清扫曾把 re-export 收窄到 pub(crate)，那是 GUI-dead 的判断，对本层不成立）。
+pub use crate::platform::connector_skills::{
     DINGTALK_SKILL_DIRS, LARK_SKILL_DIRS, TMEET_SKILL_DIRS, WECOM_SKILL_DIRS,
 };
 

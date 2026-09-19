@@ -1534,6 +1534,14 @@ pub(super) fn disabled_runtime_snapshot(session_id: &str) -> io::Result<RuntimeM
     })
 }
 
+/// Snapshot of the confirmed preference store without the work-context
+/// cleanup sweep. The headless CLI's replace-per-topic gate in `memory add` /
+/// `memory update` consumes this surface (the sweep dropped it as GUI-dead);
+/// the `_with_cleanup` variant stays the GUI lane's entry.
+pub fn list_preferences() -> io::Result<Vec<PreferenceFile>> {
+    load_preferences()
+}
+
 pub fn list_preferences_with_cleanup() -> io::Result<TopicRead<Vec<PreferenceFile>>> {
     load_preferences_with_cleanup()
 }

@@ -592,9 +592,10 @@ impl KnowledgeService {
         self.scan_state.lock().clone()
     }
 
-    /// 仅测试用：kb_cancel_scan 命令已下线（懒触发扫描无前端取消入口），
-    /// 生产路径不再有调用方；扫描线程内的 cancel 分支保留（语义不变）。
-    #[cfg(test)]
+    /// Signals the running scan to stop. The GUI's kb_cancel_scan command is
+    /// offline (the lazy scan has no frontend cancel entry), but the headless
+    /// CLI's `knowledge scan cancel` is a production caller, so this stays
+    /// un-gated; the scan thread's cancel branch keeps its semantics.
     pub fn cancel_scan(&self) {
         self.cancel.store(true, Ordering::Relaxed);
     }
