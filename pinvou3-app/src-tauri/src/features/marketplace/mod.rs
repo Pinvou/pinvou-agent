@@ -46,6 +46,12 @@ use crate::platform::paths;
 /// state so cleanup never acts on a stale snapshot.
 static MARKETPLACE_TRANSACTION_LOCK: Mutex<()> = Mutex::new(());
 
+/// mcp.json server keys owned by the engine boot path (`runtime_bundle`'s
+/// `ensure_builtin_mcp_servers` upserts `pinvou3`, removes the legacy `pinvou` key and
+/// historical browser-wrapper residue). Marketplace installs must never write them, and
+/// startup reconciliation must never repair them.
+const ENGINE_OWNED_MCP_SERVER_KEYS: &[&str] = &["pinvou3", "pinvou", "browser"];
+
 /// A freshly written journal on Windows can be briefly held by antivirus or indexer
 /// processes, so the commit removal retries before failing — escalating a
 /// self-healing transient hold into Integrity (which blocks every assistant startup) would be disproportionate (review 2026-08-28).
@@ -1336,6 +1342,129 @@ impl<S: CredentialStore> MarketplaceManager<S> {
             .unwrap_or_else(std::sync::PoisonError::into_inner);
         recover_marketplace_transaction()?;
         self.repair_installed_python_tools_locked(Some(python_command))
+    }
+
+    /// Startup reconciliation between the installed registry (`installed.json`) and the
+    /// engine's MCP server configuration (`mcp.json`). The install write path and the
+    /// enable/disable path share no consistency check, so a crashed install or a legacy
+    /// entry pointing at a retired layout leaves `installed=true` tools without a usable
+    /// mcp.json entry — spawn then fails on every session. For each installed tool that
+    /// has a manifest:
+    /// - a missing entry is restored with the exact fresh-install serialization
+    ///   (local via `add_to_mcp_json`, remote per manifest `servers`);
+    /// - a local entry whose command/args reference an absolute path that no longer
+    ///   exists is rebuilt from the current manifest (fresh-install equivalent form);
+    /// - a remote entry whose manifest-derived shape drifted is realigned in place;
+    /// - entries that are healthy or not owned by an installed tool are never touched
+    ///   (custom/unknown entries keep the G4 guard semantics of `migrate_mcp_json_paths`).
+    /// Idempotent: a second run on healthy state performs zero writes. Per-tool failures
+    /// (e.g. a secret no longer resolvable from the credential store) are reported as
+    /// skip messages and never block startup. Runs before the Python dependency repair so
+    /// a restored entry can be upgraded to the managed-runtime form in the same startup.
+    pub fn reconcile_installed_mcp_entries(&self) -> Result<Vec<String>, String> {
+        let _transaction_guard = MARKETPLACE_TRANSACTION_LOCK
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        recover_marketplace_transaction()?;
+        let mut actions = Vec::new();
+        // Single decision-time read; the actual writes re-read mcp.json under the
+        // connector lock, and keys of different tools never overlap within one pass.
+        let snapshot = connectors::read_mcp_servers_snapshot();
+        for tool_id in self.installed_ids() {
+            if ENGINE_OWNED_MCP_SERVER_KEYS.contains(&tool_id.as_str()) {
+                continue;
+            }
+            // Same manifest precedence as install_inner: the embedded snapshot wins for
+            // catalog tools; disk manifests serve custom/uploaded packages only.
+            let manifest = match mcp_catalog::embedded_manifest(&tool_id) {
+                Ok(Some(manifest)) => manifest,
+                Ok(None) => match self.load_manifest(&tool_id) {
+                    Some(manifest) => manifest,
+                    None => {
+                        actions.push(format!(
+                            "tool '{tool_id}' has no manifest; mcp.json entries left untouched"
+                        ));
+                        continue;
+                    }
+                },
+                Err(error) => {
+                    actions.push(format!(
+                        "tool '{tool_id}' embedded manifest is invalid; mcp.json entries left untouched: {error}"
+                    ));
+                    continue;
+                }
+            };
+            if manifest.servers.is_empty() {
+                self.reconcile_local_mcp_entry(&manifest, &snapshot, &mut actions);
+            } else {
+                match self.reconcile_remote_mcp_entries(&manifest) {
+                    Ok(Some(change)) => actions.push(format!("tool '{tool_id}': {change}")),
+                    Ok(None) => {}
+                    Err(error) => actions.push(format!(
+                        "tool '{tool_id}' remote entry reconciliation skipped: {error}"
+                    )),
+                }
+            }
+        }
+        Ok(actions)
+    }
+
+    /// Reconcile the single mcp.json entry a local tool owns (keyed by its id).
+    fn reconcile_local_mcp_entry(
+        &self,
+        manifest: &ToolManifest,
+        snapshot: &serde_json::Map<String, serde_json::Value>,
+        actions: &mut Vec<String>,
+    ) {
+        if let Some(entry) = snapshot.get(&manifest.id) {
+            // Healthy entry → zero writes; only a dead target justifies a rebuild.
+            let Some(dead) = connectors::dead_local_entry_target(entry) else {
+                return;
+            };
+            match self.rebuild_local_mcp_entry(manifest) {
+                Ok(()) => actions.push(format!(
+                    "tool '{}': rebuilt mcp.json entry with dead path {dead}",
+                    manifest.id
+                )),
+                Err(error) => actions.push(format!(
+                    "tool '{}' dead mcp.json entry ({dead}) not rebuilt: {error}",
+                    manifest.id
+                )),
+            }
+            return;
+        }
+        match self.rebuild_local_mcp_entry(manifest) {
+            Ok(()) => actions.push(format!(
+                "tool '{}': restored missing mcp.json entry",
+                manifest.id
+            )),
+            Err(error) => actions.push(format!(
+                "tool '{}' missing mcp.json entry not restored: {error}",
+                manifest.id
+            )),
+        }
+    }
+
+    /// Recreate a local tool's mcp.json entry with the exact fresh-install form by
+    /// delegating to the install write path (empty user config: startup has no user
+    /// input, so secret placeholders resolve from the credential store). The package is
+    /// released/verified first, and the rebuild is refused when the manifest-derived
+    /// script target still would not exist — never write a knowingly dead entry.
+    fn rebuild_local_mcp_entry(&self, manifest: &ToolManifest) -> Result<(), String> {
+        mcp_catalog::ensure_package_released(&manifest.id)?;
+        let server_dir = mcp_catalog::package_mcp_dir(&manifest.id);
+        for arg in Self::local_server_args(manifest, &server_dir) {
+            let path = Path::new(&arg);
+            if path.is_absolute() && !path.exists() {
+                return Err(format!("package script {} is missing", path.display()));
+            }
+        }
+        self.add_to_mcp_json(
+            manifest,
+            &std::collections::HashMap::new(),
+            &server_dir,
+            None,
+        )
     }
 
     #[cfg(test)]
