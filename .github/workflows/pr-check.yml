@@ -172,6 +172,7 @@ jobs:
               - '**/Cargo.toml'
               - '**/Cargo.lock'
               - '**/build.rs'
+              - 'scripts/ci-libpipewire-build.sh'
               - 'CodeWhale'
               - '.gitmodules'
               - '.github/workflows/pr-check.yml'
