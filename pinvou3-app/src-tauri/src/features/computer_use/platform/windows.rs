@@ -497,7 +497,11 @@ fn element_info_from_cache(
 /// cache request; the node budget (`writer.remaining`) bounds the number of cross-process
 /// round-trips — the total fetch scale of the whole tree is thereby bounded. Elements may be
 /// destroyed while queued: a single-node fetch failure is treated as "this branch ended" and
-/// does not sink the whole fetch.
+/// does not sink the whole fetch. `cancel` is the caller-timeout flag (same flag the
+/// type/drag/hold paths receive): it is polled adjacent to every node fetch, so a traversal
+/// the caller already abandoned stops at the next fetch instead of burning the remaining
+/// node budget on cross-process COM calls. One in-flight fetch itself stays uninterruptible
+/// up to the COM timeout (inherent, see the module docs).
 fn write_tree_node(
     element: &uiautomation::UIElement,
     cache: &uiautomation::core::UICacheRequest,
@@ -505,10 +509,20 @@ fn write_tree_node(
     max_depth: u32,
     writer: &mut TreeWriter,
     out: &mut String,
+    cancel: Option<&AtomicBool>,
 ) -> Result<(), ComputerUseError> {
     if writer.remaining == 0 {
         writer.truncated = true;
         return Ok(());
+    }
+    // Cancellation checkpoint adjacent to the fetch: after the caller's timeout latches the
+    // flag, thousands of queued node fetches (up to MAX_TREE_NODES) must not keep issuing
+    // COM round-trips.
+    if cancel.is_some_and(|flag| flag.load(Ordering::SeqCst)) {
+        return Err(ComputerUseError::unavailable(
+            "ui_tree was cancelled (caller timeout or stop); the remaining nodes were \
+             not fetched",
+        ));
     }
     // Fetch failures do not consume budget: destroyed elements must not crowd out slots for
     // visible nodes.
@@ -548,7 +562,7 @@ fn write_tree_node(
     }
     let mut children = children.iter();
     while let Some(child) = children.next() {
-        write_tree_node(child, cache, depth + 1, max_depth, writer, out)?;
+        write_tree_node(child, cache, depth + 1, max_depth, writer, out, cancel)?;
         // Budget spent is real truncation only when a further child actually
         // exists and is skipped: hitting zero on the last child means the
         // tree was serialized completely (the entry check above is the
@@ -592,8 +606,10 @@ pub(super) struct WindowsComputerUseBackend {
     /// The thread DPI awareness conclusion read once at `new()`: when not Per-Monitor-V2,
     /// `capabilities().notes` declares that the coordinate assumption is doubtful (no hard failure).
     dpi_pmv2: bool,
-    /// Cancel flag set after the caller times out: the type chunked
-    /// injection checks it between chunks, so abandoned requests stop injecting.
+    /// Cancel flag set after the caller times out: the type/chord/drag/click/ui_tree paths
+    /// poll it at their between-step cancellation checkpoints, so abandoned requests stop
+    /// issuing further injections/reads at the next checkpoint (one in-flight OS call stays
+    /// uninterruptible, see the module docs).
     cancel: Option<Arc<AtomicBool>>,
     // Note: does not hold uiautomation::UIAutomation — the windows-rs COM interface types are
     // !Send (IUIAutomation contains NonNull), while ComputerUseBackend requires Send.
@@ -911,6 +927,19 @@ impl ComputerUseBackend for WindowsComputerUseBackend {
         // Let the previous move settle before clicking, avoiding a click at the stale cursor position.
         sleep(Duration::from_millis(CLICK_SETTLE_MS));
         for i in 0..count.max(1) {
+            // Same abandonment contract as type/drag: a multi-click request the caller
+            // already abandoned (up to 255 clicks × MULTI_CLICK_INTERVAL_MS) must stop at
+            // the next iteration; clicks already injected are not undone.
+            if self
+                .cancel
+                .as_ref()
+                .is_some_and(|flag| flag.load(Ordering::SeqCst))
+            {
+                return Err(ComputerUseError::unavailable(
+                    "click was cancelled (caller timeout or stop); already injected clicks \
+                     are not undone",
+                ));
+            }
             self.enigo
                 .button(button, Direction::Click)
                 .map_err(|err| map_input_err("mouse click", err))?;
@@ -1056,7 +1085,18 @@ impl ComputerUseBackend for WindowsComputerUseBackend {
             truncated: false,
             truncated_by_depth: false,
         };
-        write_tree_node(&root, &cache, 0, max_depth, &mut writer, &mut out)?;
+        // The cancel flag flows the same way as into type/drag/hold: checked adjacent to
+        // each node fetch, so a request the caller already abandoned stops at the next
+        // cross-process fetch instead of after the whole node budget.
+        write_tree_node(
+            &root,
+            &cache,
+            0,
+            max_depth,
+            &mut writer,
+            &mut out,
+            self.cancel.as_deref(),
+        )?;
         if writer.truncated {
             let _ = writeln!(
                 out,

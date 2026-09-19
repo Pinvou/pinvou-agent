@@ -33,7 +33,7 @@ use std::sync::{OnceLock, mpsc};
 use std::time::Duration;
 
 use block2::RcBlock;
-use objc2_core_foundation::{CFRange, CGPoint, CGRect, CGSize};
+use objc2_core_foundation::{CGPoint, CGRect, CGSize};
 use objc2_core_graphics::{CGDataProvider, CGImage};
 use objc2_foundation::{NSError, NSProcessInfo};
 use objc2_screen_capture_kit::SCScreenshotManager;
@@ -199,20 +199,22 @@ fn bgra_image_to_rgba(image: &CGImage) -> Result<CapturedScreen, String> {
             "CGImage data too small: {len} bytes, need {expected}"
         ));
     }
-    let mut raw = vec![0u8; len as usize];
-    // SAFETY: the raw buffer holds len bytes; the range 0..len is fully covered and bytes
-    // writes only that range.
-    unsafe {
-        data.bytes(
-            CFRange {
-                location: 0,
-                length: len,
-            },
-            raw.as_mut_ptr(),
-        )
-    };
+    // The row copy below reads the provider's CFData in place instead of first cloning it
+    // into a `vec![0u8; len]`: that clone materialized the whole CFData (stride padding
+    // included) alongside the packed RGBA buffer — a transient ~2×57 MB pair on a 5K
+    // display — although only the rows are ever read.
+    let ptr = data.byte_ptr();
+    if ptr.is_null() {
+        // Fail-closed like the checks above: CF only documents a null byte pointer for
+        // empty data (already excluded by len >= expected > 0), but never slice a null.
+        return Err("CGImage data has a null byte pointer".to_string());
+    }
+    // SAFETY: ptr points at the CFData's internal buffer, which holds `len` bytes (checked
+    // above) and stays valid and unmodified while `data` is retained; `raw` borrows it only
+    // for the row copy below, which runs before `data` is dropped.
+    let raw = unsafe { std::slice::from_raw_parts(ptr, len as usize) };
     let mut rgba = vec![0u8; width * height * 4];
-    copy_bgra_to_rgba(&mut rgba, &raw, width, bytes_per_row, height);
+    copy_bgra_to_rgba(&mut rgba, raw, width, bytes_per_row, height);
     Ok(CapturedScreen {
         rgba,
         width,

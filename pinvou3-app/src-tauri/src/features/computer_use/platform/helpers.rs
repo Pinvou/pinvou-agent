@@ -119,9 +119,6 @@ pub(crate) fn normalize_typed_newlines(text: &str) -> std::borrow::Cow<'_, str> 
 /// 700s budget.
 pub(crate) const TYPE_CHUNK_CHARS: usize = 64;
 
-/// Split the text into chunks of at most `chunk_chars` characters (by character, not by
-/// byte). Empty input produces an empty vector (the caller's loop body never runs,
-/// consistent with enigo's no-op on empty text).
 /// One segment of a split type request (review finding, Windows: enigo's
 /// `text()` queues BOTH a Return/Tab key click and the Unicode control
 /// character for `'\n'`/`'\t'`, so multi-line text double-injected
@@ -137,6 +134,16 @@ pub(crate) enum TypeRun {
     Tab,
 }
 
+/// Appends the buffered text run to `runs`, chunked into [`TypeRun::Text`] pieces
+/// (shared by the `'\n'`/`'\t'` arms and the trailing flush of [`split_type_runs`]).
+fn push_text_runs(runs: &mut Vec<TypeRun>, buf: &str, chunk_chars: usize) {
+    runs.extend(
+        char_chunks(buf, chunk_chars)
+            .into_iter()
+            .map(|chunk| TypeRun::Text(chunk.to_string())),
+    );
+}
+
 /// Splits a type request into chunked text runs and explicit Return/Tab key
 /// clicks. Chunking applies per text run, so a text with many newlines keeps
 /// the between-run cancellation granularity.
@@ -148,22 +155,14 @@ pub(crate) fn split_type_runs(text: &str, chunk_chars: usize) -> Vec<TypeRun> {
         match ch {
             '\n' => {
                 if !buf.is_empty() {
-                    runs.extend(
-                        char_chunks(&buf, chunk_chars)
-                            .into_iter()
-                            .map(|chunk| TypeRun::Text(chunk.to_string())),
-                    );
+                    push_text_runs(&mut runs, &buf, chunk_chars);
                     buf.clear();
                 }
                 runs.push(TypeRun::Return);
             }
             '\t' => {
                 if !buf.is_empty() {
-                    runs.extend(
-                        char_chunks(&buf, chunk_chars)
-                            .into_iter()
-                            .map(|chunk| TypeRun::Text(chunk.to_string())),
-                    );
+                    push_text_runs(&mut runs, &buf, chunk_chars);
                     buf.clear()
                 }
                 runs.push(TypeRun::Tab);
@@ -172,11 +171,7 @@ pub(crate) fn split_type_runs(text: &str, chunk_chars: usize) -> Vec<TypeRun> {
         }
     }
     if !buf.is_empty() {
-        runs.extend(
-            char_chunks(&buf, chunk_chars)
-                .into_iter()
-                .map(|chunk| TypeRun::Text(chunk.to_string())),
-        );
+        push_text_runs(&mut runs, &buf, chunk_chars);
     }
     runs
 }
