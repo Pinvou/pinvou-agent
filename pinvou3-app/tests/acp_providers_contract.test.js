@@ -75,10 +75,9 @@ assert.ok(
 // 模式，且只锚定持久化结构（ProviderRecord 定义段 + 会话 store 文件；
 // ProviderTarget 含明文 key 是 CLI 配置语义，不在此范围）。
 {
-  const record_def = PROVIDERS_MOD.slice(
-    PROVIDERS_MOD.indexOf('pub struct ProviderRecord'),
-    PROVIDERS_MOD.indexOf('pub struct ProviderRecord') + 800
-  );
+  const recordDefStart = PROVIDERS_MOD.indexOf('pub struct ProviderRecord');
+  assert.ok(recordDefStart > 0, 'providers/mod.rs 必须声明 ProviderRecord');
+  const record_def = PROVIDERS_MOD.slice(recordDefStart, recordDefStart + 800);
   assert.doesNotMatch(record_def, /api_key/, 'ProviderRecord 不得有明文 api_key 字段');
   assert.doesNotMatch(STORE, /api_key/, '会话 store 不得有明文 api_key 字段');
 }
@@ -612,8 +611,8 @@ for (const [presetKey, required] of Object.entries(ACP_REQUIRED_MODELS)) {
 // datalist fallback, bound by the same "append-only" policy as the per-preset
 // lists): no test previously read this list, and its xAI section once lagged
 // behind the per-preset list silently (missing the -0309- wire ids).
+assert.ok(CATALOG.includes('export const ACP_MODEL_PRESETS'), 'the ACP catalog should contain the flat suggestions table ACP_MODEL_PRESETS');
 const FLAT_MODELS_SECTION = CATALOG.slice(CATALOG.indexOf('export const ACP_MODEL_PRESETS'));
-assert.ok(FLAT_MODELS_SECTION.length > 0, 'the ACP catalog should contain the flat suggestions table ACP_MODEL_PRESETS');
 for (const id of [
   'claude-fable-5-1', 'gpt-6-astra', 'deepseek-flash', 'kimi-k3', 'glm-5.3',
   'qwen3.8-max', 'MiniMax-M3', 'grok-4.6', 'grok-4.20-reasoning',
