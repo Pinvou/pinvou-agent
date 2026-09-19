@@ -17,6 +17,44 @@ fn behavior_task_status(status: TurnOutcomeStatus, error: Option<&str>) -> &'sta
     }
 }
 
+/// Summary detail line for the persistent startup timeline describing a
+/// terminal MCP session-boot receipt. The startup channel redacts, flattens,
+/// and bounds the returned string before writing, so this only formats.
+fn mcp_boot_summary_detail(
+    session_id: &str,
+    generation: u64,
+    server_total: usize,
+    failure_count: usize,
+) -> String {
+    format!(
+        "sid={session_id} generation={generation} servers={server_total} failed={failure_count}"
+    )
+}
+
+/// One startup-timeline detail line per failed server of a terminal MCP
+/// session-boot event. A server counts as failed when it is enabled but did
+/// not reach a ready connection; disabled servers are configuration state,
+/// not boot failures. When the engine snapshot carries no error text the
+/// reason is recorded as `unknown`.
+fn mcp_boot_failure_details(
+    session_id: &str,
+    generation: u64,
+    snapshot: &deepseek_tui::mcp::McpManagerSnapshot,
+) -> Vec<String> {
+    snapshot
+        .servers
+        .iter()
+        .filter(|server| server.enabled && !server.connected)
+        .map(|server| {
+            format!(
+                "sid={session_id} generation={generation} server={} error={}",
+                server.name,
+                server.error.as_deref().unwrap_or("unknown"),
+            )
+        })
+        .collect()
+}
+
 /// 后台 task：持续读 rx_event 转 Tauri emit。
 ///
 /// 关键点：监听 `Event::ApprovalRequired` 并主动 `approve_tool_call`。
@@ -1450,17 +1488,50 @@ pub(crate) fn spawn_event_forwarder(
                 // Connector readiness is owned by Pinvou's marketplace state. The
                 // Engine event is intentionally observed only for diagnostics until
                 // that UI adopts the generation-based v0.9.12 snapshot protocol.
+                // Release builds register no log sink, so the terminal boot
+                // receipt is also persisted through the startup timeline
+                // (`~/.pinvou3/logs/startup.log`) to keep failures visible.
                 Event::McpSessionBoot {
                     generation,
+                    snapshot,
                     finished,
                     ..
                 } => {
-                    log::debug!(
-                        "[pinvou3][chat] mcp session boot sid={} generation={} finished={}",
-                        session_id,
-                        generation,
-                        finished
-                    );
+                    let failure_details =
+                        mcp_boot_failure_details(&session_id, generation, &snapshot);
+                    if finished && !failure_details.is_empty() {
+                        log::warn!(
+                            "[pinvou3][chat] mcp session boot sid={} generation={} failed={}/{}",
+                            session_id,
+                            generation,
+                            failure_details.len(),
+                            snapshot.servers.len()
+                        );
+                        crate::platform::startup::mark_with_detail(
+                            "rust",
+                            "mcp_session_boot:finished",
+                            &mcp_boot_summary_detail(
+                                &session_id,
+                                generation,
+                                snapshot.servers.len(),
+                                failure_details.len(),
+                            ),
+                        );
+                        for detail in &failure_details {
+                            crate::platform::startup::mark_with_detail(
+                                "rust",
+                                "mcp_session_boot:server_failed",
+                                detail,
+                            );
+                        }
+                    } else {
+                        log::debug!(
+                            "[pinvou3][chat] mcp session boot sid={} generation={} finished={}",
+                            session_id,
+                            generation,
+                            finished
+                        );
+                    }
                 }
                 Event::ToolProjectionWarning {
                     provider,
