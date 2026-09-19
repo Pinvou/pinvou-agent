@@ -327,7 +327,6 @@ export default function PetWindow({
     // even when idle (each card re-runs its markdown render). The
     // value-based stable comparison skips unchanged commits.
     setActivities((prev) => (sameActivities(prev, next) ? prev : next));
-    // deriveAnimation only reads the first card's status: it reuses the derivation above, avoiding a second sort per tick.
     const nextAnimation = next.length ? next[0].status : null;
     setBaseAnimation((prev) => (prev === nextAnimation ? prev : (nextAnimation || 'idle')));
   };

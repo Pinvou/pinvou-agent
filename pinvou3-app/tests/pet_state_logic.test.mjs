@@ -25,27 +25,25 @@ for (const f of ['zh.js', 'browser.js']) {
 }
 
 try {
-  const {
-    ACTIVITY_PRIORITY,
-    ACTIVITY_TTL_MS,
-    SNAPSHOT_REMOVAL_GRACE_MS,
-    applyActivitySnapshot,
-    applyEvent,
-    createPetState,
-    deriveActivities,
-    deriveAnimation,
-    markSessionViewed,
-    removeSessionActivity,
-    syncSessionTitles,
-  } = await import(`${pathToFileURL(tmp).href}?t=${Date.now()}`);
-
-  assert.deepEqual(ACTIVITY_PRIORITY, { waiting: 0, failed: 1, review: 2, running: 3 });
-  assert.deepEqual(ACTIVITY_TTL_MS, {
+  // Timing fixtures mirror the module-private ACTIVITY_TTL_MS /
+  // SNAPSHOT_REMOVAL_GRACE_MS constants (production values asserted
+  // behaviorally by the expiry cases below).
+  const ACTIVITY_TTL_MS = {
     running: 3 * 60 * 1000,
     failed: 60 * 60 * 1000,
     waiting: 24 * 60 * 60 * 1000,
     review: 7 * 24 * 60 * 60 * 1000,
-  });
+  };
+  const SNAPSHOT_REMOVAL_GRACE_MS = 2500;
+  const {
+    applyActivitySnapshot,
+    applyEvent,
+    createPetState,
+    deriveActivities,
+    markSessionViewed,
+    removeSessionActivity,
+    syncSessionTitles,
+  } = await import(`${pathToFileURL(tmp).href}?t=${Date.now()}`);
 
   const now = 1_000_000;
   const state = createPetState();
@@ -66,7 +64,6 @@ try {
   assert.deepEqual(activities.map((item) => item.sessionId), ['wait', 'fail', 'done', 'run']);
   assert.deepEqual(activities.map((item) => item.status), ['waiting', 'failed', 'review', 'running']);
   assert.equal(activities[0].title, '确认发布范围');
-  assert.equal(deriveAnimation(state, now + 5), 'waiting');
 
   const authoritative = createPetState();
   applyEvent(authoritative, 'pet:turn_start', { session_id: 'present' }, now);

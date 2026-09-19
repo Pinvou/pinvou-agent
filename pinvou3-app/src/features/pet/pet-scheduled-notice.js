@@ -1,6 +1,6 @@
 import { dict } from '../../shared/i18n.js';
 
-export const SCHEDULED_NOTICE_ACK_KEY = 'pinvou3-pet-scheduled-notice-ack-v1';
+const SCHEDULED_NOTICE_ACK_KEY = 'pinvou3-pet-scheduled-notice-ack-v1';
 
 function sessionId(payload) {
   return String((payload && (payload.session_id || payload.sessionId || payload.id)) || '').trim();
