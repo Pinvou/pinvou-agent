@@ -25,6 +25,13 @@ const bridgeSource = fs.readFileSync(
   path.join(__dirname, '..', 'src', 'platform', 'tauri', 'bridge', 'computer_use.js'),
   'utf8',
 );
+// The real page loads shared/bridge-messages.js before the tauri bridge
+// features (order asserted in web_bridge_domain_contract.test.mjs); the VM
+// mirrors that order so localizeKnownError resolves the shared copy table.
+const bridgeMessagesSource = fs.readFileSync(
+  path.join(__dirname, '..', 'src', 'shared', 'bridge-messages.js'),
+  'utf8',
+);
 
 // ── Protocol anchor (signature-set comparison) ─────────────────────────
 // The computer-use contract is the invoke/listen CALL SET: desktop commands
@@ -124,6 +131,7 @@ function createHarness({ status = {}, failInvoke = null, failMessage = '', initi
     window: {},
     console,
   });
+  vm.runInContext(bridgeMessagesSource, context, { filename: 'shared/bridge-messages.js' });
   vm.runInContext(bridgeSource, context, { filename: 'bridge/computer_use.js' });
   const factory = context.window.__PINVOU_TAURI_BRIDGE_FEATURES__.computer_use;
   assert.equal(typeof factory, 'function', 'computer_use feature must register itself');
@@ -794,6 +802,25 @@ function emit(harness, event, payload) {
   assert.equal(typed.textLength, 12);
   assert.equal(typed.textPreview, 'hi');
   assert.equal(typed.textPreviewTruncated, true);
+  // Secure-target masking (round-15): the backend strips the character keys
+  // from `chord` and sends their count instead — the bridge must pass the
+  // count through so the dialog renders the masked template.
+  emit(harness, 'computer_use:confirm_required', {
+    session_id: 's1', confirm_id: 'cu-2b', summary: 'key 4 characters',
+    action: 'key', element: 'Password', chord_masked_chars: 4,
+    text_preview_truncated: false,
+  });
+  const masked = harness.published().at(-1).confirmRequest;
+  assert.equal(masked.chord, null, 'no raw chord rides a masked payload');
+  assert.equal(masked.chordMaskedChars, 4, 'the masked count must pass through');
+  emit(harness, 'computer_use:confirm_required', {
+    session_id: 's1', confirm_id: 'cu-2c', summary: 'key 1 character',
+    action: 'key', element: 'Password', chord: 'Control', chord_masked_chars: 1,
+    text_preview_truncated: false,
+  });
+  const maskedMixed = harness.published().at(-1).confirmRequest;
+  assert.equal(maskedMixed.chord, 'Control', 'named keys survive masking');
+  assert.equal(maskedMixed.chordMaskedChars, 1);
   // Legacy payload: no summary key — the action field IS the summary.
   emit(harness, 'computer_use:confirm_required', {
     session_id: 's1', confirm_id: 'cu-3', action: 'left click x1', element: 'e',
@@ -924,4 +951,64 @@ console.log('computer use bridge behavior tests passed');
   await harness.feature.refreshStatus('s1');
   assert.ok(harness.published().at(-1).grantRequest,
     'a server-pending grant must resurface on refresh');
+}
+
+// ── 33. a background-session state_changed refresh must not collapse the active session's live dialog ──
+// state_changed carries its own session_id: when session X is resolved in
+// another window while THIS window's active session Y has a dialog up, the
+// triggered refreshStatus("X") used to see liveRequestSession(Y) !== "X" and
+// cleared Y's still-pending dialog until the 30s reconciler resurfaced it.
+// The switch-drop stays reserved for refreshes FOR the active session.
+{
+  const harness = createHarness({ initialState: { enabled: true } });
+  emit(harness, 'computer_use:confirm_required', {
+    session_id: 's1', confirm_id: 'cu-1', action: 'left click', element: 'Buy now',
+  });
+  assert.ok(harness.published().at(-1).confirmRequest, 'the active session dialog must be up');
+  // Session 's2' is resolved in ANOTHER window; this window's active session
+  // keeps its own dialog.
+  emit(harness, 'computer_use:state_changed', { reason: 'confirmed', session_id: 's2' });
+  await Promise.resolve();
+  await new Promise((resolve) => { setImmediate(resolve); });
+  assert.ok(
+    harness.invoked.some(([command, args]) => command === 'computer_use_get_status' && args.sessionId === 's2'),
+    'the cross-window state_changed must still re-read authoritative status for s2',
+  );
+  const dialog = harness.published().at(-1).confirmRequest;
+  assert.ok(
+    dialog && String(dialog.confirmId) === 'cu-1',
+    `a background-session refresh must not collapse the active session's dialog: ${JSON.stringify(harness.published().at(-1))}`,
+  );
+}
+
+// ── 34. a missing slice must not throw in the inert event branches ──
+// A freshly opened detached window has no computerUse slice until its mount
+// refreshStatus resolves; `!state.computerUse.enabled` threw a TypeError
+// there, skipping both the authoritative re-read and any later publish.
+{
+  const harness = createHarness({ initialState: { enabled: false } });
+  harness.state.computerUse = undefined;
+  emit(harness, 'computer_use:grant_required', { session_id: 's1' });
+  await new Promise((r) => { setTimeout(r, 0); });
+  assert.ok(
+    harness.invoked.some(([cmd]) => cmd === 'computer_use_get_status'),
+    'a missing slice must take the inert re-read branch instead of throwing',
+  );
+  assert.ok(
+    harness.published().at(-1) && harness.published().at(-1).grantRequest,
+    'the re-read must republish the grant into the fresh slice',
+  );
+}
+{
+  const harness = createHarness({ initialState: { enabled: false } });
+  harness.state.computerUse = undefined;
+  emit(harness, 'computer_use:confirm_required', {
+    session_id: 's1', confirm_id: 'cu-9', action: 'type 3 characters', element: 'field',
+  });
+  await new Promise((r) => { setTimeout(r, 0); });
+  assert.ok(
+    harness.published().at(-1) && harness.published().at(-1).confirmRequest &&
+      String(harness.published().at(-1).confirmRequest.confirmId) === 'cu-9',
+    'the confirm inert branch must handle a missing slice the same way',
+  );
 }
