@@ -214,6 +214,13 @@ pub async fn install_marketplace_tool(
     // 联动安装的 companion 技能影响两个 scope 的启用集：重写在线会话组合目录
     // （下一轮 prompt 即生效，与 uninstall_marketplace_tool 对称，skill 双 scope
     // 治理事件驱动时机 §2.3.2）。
+    // mcp.json 可能新增了 server：递增修订号让在线引擎下一轮 get_or_spawn
+    // 安全重建并重新发现工具（mark_mcp_config_updated 契约）。不递增则已 spawn
+    // 的引擎永远读不到新 server——引擎侧 mcp_manager 只在启动时读一次配置
+    // （PPT 场景实测：自动装完 pptx 后同会话 mcp_pptx_make_pptx 仍不可见）。
+    // 已经是最新配置时重建是冗余但无害的一次性开销（与 mark_model_updated 同
+    // 粒度的取舍）。
+    pool.mark_mcp_config_updated();
     pool.refresh_live_sessions_skills().await;
     // 新装包的 CLI/技能脚本纳入/移出 deny 规则集（M-6：install 路径热刷）。
     pool.refresh_permission_rulesets().await;
@@ -435,6 +442,10 @@ pub async fn uninstall_marketplace_tool(
     pool: tauri::State<'_, crate::features::assistant::engine_pool::EnginePool>,
 ) -> Result<(), String> {
     uninstall_marketplace_tool_sync(&tool_id)?;
+    // mcp.json 可能移除了 server：递增修订号让在线引擎下一轮 get_or_spawn
+    // 安全重建（同 install 路径，mark_mcp_config_updated 契约），残留的已卸
+    // 连接器工具不再出现在模型目录。
+    pool.mark_mcp_config_updated();
     // 联动卸载的 companion 技能影响两个 scope 的启用集：重写在线会话组合目录
     // （async 命令必须用 async 版：blocking 版的 blocking_lock 在 tokio runtime
     // 线程上必 panic）。
@@ -737,6 +748,9 @@ pub async fn import_plugin_package_cmd(
     // 与 `install_marketplace_tool` 同口径。
     crate::features::marketplace::sync_deny_all_scopes_after_install(&report.id);
     // 新装包进入供给：mcp/spanner 热刷工具白名单 + skills 热刷会话组合目录。
+    // 导入包含本地 MCP 时 mcp.json 已变，同样要递增修订号触发在线引擎下轮
+    // 重建（与 install_marketplace_tool 同口径，mark_mcp_config_updated 契约）。
+    pool.mark_mcp_config_updated();
     pool.refresh_disallowed_tools().await;
     pool.refresh_live_sessions_skills().await;
     // 导入包的 CLI/技能脚本纳入 deny 规则集（M-6：import 路径热刷）。
@@ -802,6 +816,9 @@ pub async fn import_plugin_package_bytes_cmd(
     // 上传安全默认：拖放导入插件包后加入 DenyAll 禁用集，需用户开关显式开启。
     crate::features::marketplace::sync_deny_all_scopes_after_install(&report.id);
     // 新装包进入供给：mcp/spanner 热刷工具白名单 + skills 热刷会话组合目录。
+    // 导入包含本地 MCP 时 mcp.json 已变，同样要递增修订号触发在线引擎下轮
+    // 重建（与 install_marketplace_tool 同口径，mark_mcp_config_updated 契约）。
+    pool.mark_mcp_config_updated();
     pool.refresh_disallowed_tools().await;
     pool.refresh_live_sessions_skills().await;
     // 导入包的 CLI/技能脚本纳入 deny 规则集（M-6：import 路径热刷）。
