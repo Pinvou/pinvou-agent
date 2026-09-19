@@ -1802,7 +1802,9 @@ impl AppEngine {
     ///
     /// 不复用 `spawn_for_session` 是因为它强依赖 Tauri AppHandle (`spawn_event_forwarder`
     /// 里 `app.emit(...)`),测试场景没有 webview/event 系统跑不起来。
-    #[allow(dead_code)] // L1 runner 接入前临时 unused
+    /// Headless entry for the L1 dialog integration harness (tests/l1_dialog_harness);
+    /// production builds have no caller, hence the allow.
+    #[allow(dead_code)]
     pub async fn spawn_headless(bridge: Pinvou3Bridge) -> Result<Self> {
         let mut engine_config = bridge.build_engine_config();
         // The headless engine carries the same hard-deny ruleset as real
