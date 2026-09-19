@@ -10,7 +10,7 @@ import { Check, Layers, Search, X } from '../../components/icons.jsx';
 import { isImeComposing } from '../../shared/ime-guard.mjs';
 import { useDialogFocusRestore } from '../../hooks/useDialogFocusRestore.js';
 import { useDialogFocusTrap } from '../../hooks/useDialogFocusTrap.js';
-import { needsAddFolderConfirm, rootPath } from './projectGrouping.js';
+import { hasProjectWorkspace, needsAddFolderConfirm, rootPath } from './projectGrouping.js';
 
 const MoveToProjectDialog = ({
   session,
@@ -117,7 +117,7 @@ const MoveToProjectDialog = ({
   if (!session || typeof document === 'undefined') return null;
 
   // 显示用:确认框里向用户展示的目录(侧栏投影),实际添加以命令返回为准。
-  const workspacePath = session.workspaceKind === 'project' ? String(session.workspacePath || '') : '';
+  const workspacePath = hasProjectWorkspace(session) ? String(session.workspacePath || '') : '';
   const choose = (project) => {
     if (busy || project.id === currentProjectId) return;
     if (needsAddFolderConfirm(session, project)) {

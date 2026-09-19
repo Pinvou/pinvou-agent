@@ -1788,33 +1788,73 @@ const ToolWelcomeCard = ({ toolId, _theme, t, onSend }) => {
       // stub returns null), cached per session; query failure/unbound → hidden.
       const [sessionWorkspaceBinding, setSessionWorkspaceBinding] = useState(null);
       const workspaceBindingCacheRef = useRef({});
+      // Generation counter for the binding queries. Bumped on every cache wipe
+      // (rebind invalidation) so an in-flight query that was issued before the
+      // wipe cannot write its pre-rebind value back into the cache (review
+      // #464 round-5 item 6, extended to resolveBindingForGate below).
+      const workspaceBindingEpochRef = useRef(0);
+      // Which session the live `sessionWorkspaceBinding` state belongs to. The
+      // chip keeps its value across a same-session revalidation instead of
+      // flipping through null (review #464 round-6 finding 8c).
+      const bindingSidRef = useRef(null);
+      // A folder rebind moves session bindings behind the cache's back; the
+      // sessions-list refresh that follows (session:list_changed) is the
+      // signal. Drop cached bindings then, so the chip and the YOLO gate
+      // re-resolve instead of showing the pre-rebind directory (#464 r3 m9).
+      const bindingCacheSessionsRef = useRef(null);
+      const sessionsForBindingCache = bs && bs.sessions;
       useEffect(() => {
+        if (bindingCacheSessionsRef.current !== sessionsForBindingCache) {
+          bindingCacheSessionsRef.current = sessionsForBindingCache;
+          workspaceBindingCacheRef.current = {};
+          workspaceBindingEpochRef.current += 1;
+        }
         if (!activeSessionId || !bridge.available || !bridge.sessions
           || typeof bridge.sessions.getSessionWorkspaceBinding !== 'function') {
+          bindingSidRef.current = null;
           // eslint-disable-next-line react-hooks/set-state-in-effect -- synchronously clear the binding chip when leaving a bound session
           setSessionWorkspaceBinding(null);
           return;
         }
         const sid = activeSessionId;
         if (Object.prototype.hasOwnProperty.call(workspaceBindingCacheRef.current, sid)) {
+          bindingSidRef.current = sid;
           setSessionWorkspaceBinding(workspaceBindingCacheRef.current[sid]);
           return;
         }
-        // Clear synchronously on cache miss: keeping the old value across a session
-        // switch would briefly show the previous session's directory and make the
-        // YOLO gate misjudge with a stale binding.
-        setSessionWorkspaceBinding(null);
+        // Clear synchronously only when the session actually changed: keeping
+        // the old value across a session switch would briefly show the previous
+        // session's directory and make the YOLO gate misjudge with a stale
+        // binding. A same-session revalidation (every sessions-slice change,
+        // including every chat:done) keeps the previous value until the fresh
+        // query lands instead of flickering through null (review #464 round-6
+        // finding 8c).
+        if (bindingSidRef.current !== sid) {
+          bindingSidRef.current = sid;
+          setSessionWorkspaceBinding(null);
+        }
         let cancelled = false;
+        const epoch = workspaceBindingEpochRef.current;
+        // The generation is captured separately from `cancelled`: the cleanup
+        // runs per effect pass (a session switch), while a cache wipe can land
+        // between a query's start and its resolution within the same pass.
+        const cacheStillValid = () => workspaceBindingEpochRef.current === epoch;
         bridge.sessions.getSessionWorkspaceBinding(sid)
           .then(binding => {
             const normalized = binding || null;
-            workspaceBindingCacheRef.current[sid] = normalized;
-            if (!cancelled) setSessionWorkspaceBinding(normalized);
+            // Guard the cache write too, not just the setState: a query issued
+            // just before a rebind may resolve after the invalidation wipe and
+            // would otherwise re-cache the pre-rebind value (review #464
+            // round-5 item 6).
+            if (!cancelled && cacheStillValid()) {
+              workspaceBindingCacheRef.current[sid] = normalized;
+              setSessionWorkspaceBinding(normalized);
+            }
           })
           // Treat query failure (e.g. old backend without the command) as unbound; never misreport.
           .catch(() => { if (!cancelled) setSessionWorkspaceBinding(null); });
         return () => { cancelled = true; };
-      }, [activeSessionId]);
+      }, [activeSessionId, sessionsForBindingCache]);
 
       // One-time YOLO confirmation gate for the first switch of a session/draft
       // with a bound workspace (matching code mode): confirming writes the global
@@ -1849,12 +1889,28 @@ const ToolWelcomeCard = ({ toolId, _theme, t, onSend }) => {
           return workspaceBindingCacheRef.current[sid];
         }
         if (bridge.available && bridge.sessions && typeof bridge.sessions.getSessionWorkspaceBinding === 'function') {
+          const epoch = workspaceBindingEpochRef.current;
           try {
             const binding = await bridge.sessions.getSessionWorkspaceBinding(sid);
             const normalized = binding || null;
-            // The cache is keyed by sid so writes are always safe; write state only while this is still the current session.
-            workspaceBindingCacheRef.current[sid] = normalized;
-            if (sid === activeSessionIdRef.current) setSessionWorkspaceBinding(normalized);
+            // The resolved value is what the gate adjudicates on, so it is
+            // returned as-is; the gate itself fails closed, so a query issued
+            // before a rebind can only over-protect. Both derived writes —
+            // cache AND chip state — are epoch-guarded: sid-keying alone is
+            // not enough, because a query issued just before a rebind can
+            // resolve after the invalidation wipe and would then re-poison the
+            // cache (every later reader) and overwrite the fresh chip (until
+            // the next sessions-slice change) with the pre-rebind directory
+            // (review #464 round-6 finding 8a; round-7 should-fix extends the
+            // guard to the state write, correcting this comment's earlier
+            // "always safe" claim about it).
+            if (workspaceBindingEpochRef.current === epoch) {
+              workspaceBindingCacheRef.current[sid] = normalized;
+              if (sid === activeSessionIdRef.current) {
+                bindingSidRef.current = sid;
+                setSessionWorkspaceBinding(normalized);
+              }
+            }
             return normalized;
           } catch {
             // Transient query failure (the old backend's unknown-command error is already
