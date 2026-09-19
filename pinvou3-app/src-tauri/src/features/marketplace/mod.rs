@@ -422,14 +422,49 @@ pub fn install_mcp_secret_resolver() {
     }));
 }
 
-/// 当前(plain)被禁用连接器 → 模型可见工具全名(喂给引擎 disallowed_tools 的)。
+/// 当前(plain)被禁用连接器/native 工具 → 模型可见工具全名(喂给引擎
+/// disallowed_tools 的)。
 pub fn disabled_tool_names() -> Vec<String> {
     disabled_tool_names_for(ConnectorScope::Plain)
 }
 
-/// 按会话类型 scope:被禁用连接器 → 模型可见工具全名(喂给引擎 disallowed_tools 的)。
+/// Native (non-MCP) model tools owned by a marketplace package, as
+/// `(model-visible tool name, owning skill-marketplace id)`.
+///
+/// These tools are host-registered in every spawned session (e.g. the ima
+/// connector's `ImaOpenApiTool` in engine_pool), so their names can never be
+/// produced by `model_tool_names`, which only maps MCP manifests. Package
+/// toggles must gate the tool itself, not just hide the skill text: after a
+/// package is disabled or uninstalled, a still-admitted tool stays searchable
+/// via `tool_search` and keeps using the locally retained credentials.
+const NATIVE_PACKAGE_TOOLS: &[(&str, &str)] = &[("ima_openapi", "ima-skills")];
+
+/// Disabled native tool names for a scope: a native tool is denied whenever
+/// its owning package is not installed, or the owning package is disabled for
+/// that scope. This is the same availability rule the package's skills follow
+/// (`resolve_scope_disabled_ids` already counts installed skill owner packages
+/// in the DenyAll fallback, so an uninitialized DenyAll scope denies without
+/// any explicit toggle).
+fn native_disabled_tool_names_for(scope: ConnectorScope) -> Vec<String> {
+    let installed = skill_marketplace::SkillMarketplaceManager::new().installed_skill_ids();
+    let disabled = load_disabled_bundles_for(scope);
+    NATIVE_PACKAGE_TOOLS
+        .iter()
+        .filter(|(_, package)| {
+            let owner = bundle::skill_owner_package(package);
+            !installed.iter().any(|id| id == package) || disabled.iter().any(|id| id == &owner)
+        })
+        .map(|(tool, _)| (*tool).to_string())
+        .collect()
+}
+
+/// 按会话类型 scope:被禁用连接器/native 工具 → 模型可见工具全名(喂给引擎
+/// disallowed_tools 的)。
 pub fn disabled_tool_names_for(scope: ConnectorScope) -> Vec<String> {
-    MarketplaceManager::new().model_tool_names(&load_disabled_connectors_for(scope))
+    let mut names =
+        MarketplaceManager::new().model_tool_names(&load_disabled_connectors_for(scope));
+    names.extend(native_disabled_tool_names_for(scope));
+    names
 }
 
 /// 存量 mcp.json 条目的路径迁移：指向旧布局（`bundle/mcp-servers/<id>/`）的
@@ -3222,6 +3257,57 @@ mod tests {
             assert_eq!(
                 load_disabled_connectors_for(ConnectorScope::Code),
                 vec!["pptx".to_string()]
+            );
+        });
+    }
+
+    // Native-tool ownership gate (audit P1, PR #490 round 5): the ima
+    // package's enable switch must gate the native `ima_openapi` tool itself
+    // (catalog, `tool_search`, and execution all read the disallowed list),
+    // not just the visibility of the package's skills.
+    #[test]
+    fn native_ima_tool_denied_while_package_uninstalled() {
+        with_temp_home(|| {
+            // No install anywhere: the tool must be denied in every scope —
+            // the package (and its credentials-backed surface) does not exist.
+            for scope in [ConnectorScope::Plain, ConnectorScope::Code] {
+                assert!(
+                    disabled_tool_names_for(scope).contains(&"ima_openapi".to_string()),
+                    "uninstalled ima package must deny ima_openapi in scope {scope:?}"
+                );
+            }
+        });
+    }
+
+    #[test]
+    fn native_ima_tool_follows_package_scope_gate() {
+        with_temp_home(|| {
+            skill_marketplace::SkillMarketplaceManager::new()
+                .install("ima-skills")
+                .unwrap();
+            // plain (AllowAll default) with the package installed and enabled:
+            // the tool stays admitted.
+            assert!(
+                !disabled_tool_names_for(ConnectorScope::Plain)
+                    .contains(&"ima_openapi".to_string())
+            );
+            // code (DenyAll default, uninitialized) counts installed skill
+            // packages as disabled: the tool is denied there with no explicit
+            // toggle, mirroring the package's hidden skills in that scope.
+            assert!(
+                disabled_tool_names_for(ConnectorScope::Code).contains(&"ima_openapi".to_string())
+            );
+            // Disabling the package in plain (the Plugin Center skill switch)
+            // gates the tool in that scope only.
+            save_disabled_connectors_for(ConnectorScope::Plain, &["ima-skills".to_string()]);
+            assert!(
+                disabled_tool_names_for(ConnectorScope::Plain).contains(&"ima_openapi".to_string())
+            );
+            // Explicitly initializing code with an empty disable list (the
+            // user turned the package on there) re-admits the tool.
+            save_disabled_connectors_for(ConnectorScope::Code, &[]);
+            assert!(
+                !disabled_tool_names_for(ConnectorScope::Code).contains(&"ima_openapi".to_string())
             );
         });
     }
