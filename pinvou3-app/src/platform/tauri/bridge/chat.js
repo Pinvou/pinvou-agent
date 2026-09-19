@@ -617,7 +617,6 @@
     if (snap && state.activeSessionId === sid) {
       state.scheduledTaskPendingGuide = snap.scheduledTaskPendingGuide;
       state.scheduledTaskCreationSessionId = snap.scheduledTaskCreationSessionId;
-      state.scheduledTaskDraft = snap.scheduledTaskDraft;
       state.activeSkill = snap.activeSkill;
     }
     if (failureIndex >= 0 && state.activeSessionId === sid &&
@@ -733,7 +732,6 @@
       const consumed = {
         scheduledTaskPendingGuide: state.scheduledTaskPendingGuide,
         scheduledTaskCreationSessionId: state.scheduledTaskCreationSessionId,
-        scheduledTaskDraft: state.scheduledTaskDraft,
         activeSkill: state.activeSkill,
       };
       const requestedPayloadText = meta && meta.pinvouPayloadText
@@ -747,7 +745,6 @@
         restrictTools = true;
         state.scheduledTaskPendingGuide = null;
         state.scheduledTaskCreationSessionId = sid;
-        state.scheduledTaskDraft = null;
       }
       state.activeSkill = null;
       return { snapshot: consumed, payloadText, restrictTools };
@@ -756,7 +753,6 @@
       if (!consumed || state.activeSessionId !== sid) return;
       state.scheduledTaskPendingGuide = consumed.scheduledTaskPendingGuide;
       state.scheduledTaskCreationSessionId = consumed.scheduledTaskCreationSessionId;
-      state.scheduledTaskDraft = consumed.scheduledTaskDraft;
       state.activeSkill = consumed.activeSkill;
     }
     function queuePrepared(prepared) {

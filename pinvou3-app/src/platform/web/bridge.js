@@ -338,7 +338,6 @@
     scheduledTaskBusyAction: null,
     scheduledTaskError: null,
     scheduledTaskErrorKind: null,
-    scheduledTaskDraft: null,
     scheduledTaskCreationSessionId: null,
     scheduledTaskAutoOpenId: null,
     scheduledRunContext: null,
@@ -452,7 +451,6 @@
       sessionChunkOverflow: "Session chunk exceeds the declared length",
       sessionChunkEarlyEnd: "Session chunks ended prematurely",
       sessionChunkNoProgress: "Session chunks made no progress",
-      scheduledDraftInvalid: "The scheduled task draft is missing a name, task description, or schedule",
       scheduledCreateFailed: "Failed to create scheduled task: ",
       scheduledTaskFallbackName: "Scheduled task",
       scheduledActionBusy: "Another scheduled task operation is still in progress",
@@ -471,7 +469,6 @@
       remoteDoneUnsynced: "⚠️ The chat finished on the desktop, but the authoritative record is not synced yet. Retry after reconnecting.",
       unknownReason: "unknown reason",
       materialsAdded: (count, names) => "✅ Added " + count + " materials to run materials: " + names.join(", "),
-      folderPickerUnavailable: "The folder picker cannot be opened in this environment",
       pickFolderTitle: "Choose a working directory",
       kbPickFolderTitle: "Choose a folder to import into the knowledge base",
       gateApproveFailed: "⚠️ Approval failed: ",
@@ -584,7 +581,6 @@
       sessionChunkOverflow: "セッションチャンクが宣言された長さを超えています",
       sessionChunkEarlyEnd: "セッションチャンクが途中で終了しました",
       sessionChunkNoProgress: "セッションチャンクが進みませんでした",
-      scheduledDraftInvalid: "スケジュールタスクの下書きに名前・タスク説明・時間ルールのいずれかが不足しています",
       scheduledCreateFailed: "スケジュールタスクの作成に失敗：",
       scheduledTaskFallbackName: "スケジュールタスク",
       scheduledActionBusy: "別のスケジュールタスク操作がまだ進行中です",
@@ -603,7 +599,6 @@
       remoteDoneUnsynced: "⚠️ チャットはデスクトップ側で完了しましたが、正式な記録がまだ同期されていません。接続回復後に再試行できます。",
       unknownReason: "不明な原因",
       materialsAdded: (count, names) => "✅ 素材を " + count + " 件、配套材料に追加しました：" + names.join("、"),
-      folderPickerUnavailable: "現在の環境ではフォルダー選択を開けません",
       pickFolderTitle: "作業ディレクトリを選択",
       kbPickFolderTitle: "知識ベースにインポートするフォルダーを選択",
       gateApproveFailed: "⚠️ 承認に失敗: ",
@@ -716,7 +711,6 @@
       sessionChunkOverflow: "会话分块超出声明长度",
       sessionChunkEarlyEnd: "会话分块提前结束",
       sessionChunkNoProgress: "会话分块没有前进",
-      scheduledDraftInvalid: "定时任务草稿缺少名称、任务说明或时间规则",
       scheduledCreateFailed: "定时任务创建失败：",
       scheduledTaskFallbackName: "定时任务",
       scheduledActionBusy: "另一个定时任务操作仍在进行中",
@@ -735,7 +729,6 @@
       remoteDoneUnsynced: "⚠️ 对话已在桌面端完成，但权威记录暂未同步；恢复连接后可重试。",
       unknownReason: "未知原因",
       materialsAdded: (count, names) => "✅ 已添加 " + count + " 个素材到配套材料：" + names.join("、"),
-      folderPickerUnavailable: "当前环境无法打开文件夹选择器",
       pickFolderTitle: "选择工作目录",
       kbPickFolderTitle: "选择要导入知识库的文件夹",
       gateApproveFailed: "⚠️ 通过失败: ",
@@ -1032,7 +1025,6 @@
       mountedCollection: null, // 知识库: 该 session 挂载的知识集 id 或 null
       mountedCollections: [], // 多知识库挂载项 [{ collectionId, enabled }]
       mountedCollectionsRevision: 0,
-      scheduledTaskDraft: null,
       scheduledRunSession: false,
       scheduledInitialTurnPhase: null,
       lastTouched: 0,
@@ -1295,7 +1287,6 @@
     buf.mountedCollection = state.mountedCollection;
     buf.mountedCollections = state.mountedCollections;
     buf.mountedCollectionsRevision = state.mountedCollectionsRevision;
-    buf.scheduledTaskDraft = state.scheduledTaskDraft;
     buf.stream = {
       currentStreamText, currentStreamId,
       pendingAssistantText, pendingAssistantBlocks,
@@ -1323,7 +1314,6 @@
       ? buf.mountedCollections
       : (state.mountedCollection == null ? [] : [{ collectionId: state.mountedCollection, enabled: true }]);
     state.mountedCollectionsRevision = Number(buf.mountedCollectionsRevision || 0);
-    state.scheduledTaskDraft = buf.scheduledTaskDraft || null;
     const s = buf.stream || {};
     currentStreamText = s.currentStreamText || ""; currentStreamId = s.currentStreamId || 0;
     pendingAssistantText = s.pendingAssistantText || ""; pendingAssistantBlocks = s.pendingAssistantBlocks || [];
@@ -2435,44 +2425,6 @@
     return fallback || preferred;
   }
 
-  function clearScheduledTaskDraft() {
-    state.scheduledTaskDraft = null;
-    if (state.activeSessionId === state.scheduledTaskCreationSessionId) {
-      state.scheduledTaskCreationSessionId = null;
-    }
-    notify();
-  }
-
-  async function confirmScheduledTaskDraft(editedDraft) {
-    if (!state.scheduledTaskDraft || state.activeSessionId !== state.scheduledTaskCreationSessionId) return null;
-    const active = activeScheduledTaskModelConfig();
-    const lockedModel = state.scheduledTaskDraft.model || (active && active.model) || null;
-    const lockedModelId = state.scheduledTaskDraft.modelId || (active && active.id) || null;
-    const draft = normalizeScheduledTaskDraft(Object.assign({}, state.scheduledTaskDraft, editedDraft || {}, {
-      model: lockedModel,
-      modelId: lockedModelId,
-    }));
-    if (!draft) {
-      const invalidDraftError = new Error(bt("scheduledDraftInvalid"));
-      setScheduledTaskError(invalidDraftError, "action");
-      notify();
-      throw invalidDraftError;
-    }
-    const created = await createScheduledTask({
-      name: draft.name,
-      prompt: draft.prompt,
-      rrule: draft.rrule,
-      model: lockedModel,
-      modelId: lockedModelId,
-      mode: "yolo",
-      paused: draft.paused,
-    });
-    state.scheduledTaskDraft = null;
-    state.scheduledTaskCreationSessionId = null;
-    notify();
-    return created;
-  }
-
   function scheduledTaskInputFromDraft(draft) {
     return {
       name: draft.name,
@@ -2492,7 +2444,6 @@
   function autoCreateScheduledTaskDraft(draft, creationSessionId) {
     if (!draft || !creationSessionId || scheduledTaskAutoCreateInFlight[creationSessionId]) return;
     const lockedDraft = lockScheduledTaskDraftModel(draft);
-    state.scheduledTaskDraft = null;
     const creationSeq = ++scheduledTaskAutoCreateSeq;
     const creation = Promise.resolve()
       .then(function () {
@@ -2502,8 +2453,6 @@
         if (state.scheduledTaskCreationSessionId === creationSessionId) {
           state.scheduledTaskCreationSessionId = null;
         }
-        const creationBuffer = sessionStates[creationSessionId];
-        if (creationBuffer) creationBuffer.scheduledTaskDraft = null;
         // 仅最新创建意图可写 autoOpenId（陈旧 completion 不得复活 auto-open，审计 f）
         if (created && created.id && creationSeq === scheduledTaskAutoCreateSeq) state.scheduledTaskAutoOpenId = created.id;
         notify();
@@ -2932,7 +2881,6 @@
   async function startScheduledTaskChat() {
     return runScheduledTaskAction("chat-create", async function () {
       const prompt = await invoke("scheduled_task_chat_prompt");
-      state.scheduledTaskDraft = null;
       state.scheduledTaskCreationSessionId = null;
       scheduledTaskAutoCreateSeq++; // 清空意图：作废在途 auto-create 的陈旧 completion（审计 f）
       state.scheduledTaskAutoOpenId = null;
@@ -5178,7 +5126,6 @@
     const snapshot = submission.uiSnapshot;
     state.scheduledTaskPendingGuide = snapshot.scheduledTaskPendingGuide;
     state.scheduledTaskCreationSessionId = snapshot.scheduledTaskCreationSessionId;
-    state.scheduledTaskDraft = snapshot.scheduledTaskDraft;
     state.activeSkill = snapshot.activeSkill;
   }
 
@@ -5186,7 +5133,6 @@
     const snapshot = {
       scheduledTaskPendingGuide: state.scheduledTaskPendingGuide,
       scheduledTaskCreationSessionId: state.scheduledTaskCreationSessionId,
-      scheduledTaskDraft: state.scheduledTaskDraft,
       activeSkill: state.activeSkill,
     };
     const requestedPayloadText = meta && meta.pinvouPayloadText
@@ -5198,7 +5144,6 @@
       payloadText = state.scheduledTaskPendingGuide + "\n\n" + (requestedPayloadText || text);
       restrictTools = true;
       state.scheduledTaskPendingGuide = null;
-      state.scheduledTaskDraft = null;
     }
     state.activeSkill = null;
     return { snapshot, payloadText, restrictTools };
@@ -5449,7 +5394,6 @@
       const consumed = {
         scheduledTaskPendingGuide: state.scheduledTaskPendingGuide,
         scheduledTaskCreationSessionId: state.scheduledTaskCreationSessionId,
-        scheduledTaskDraft: state.scheduledTaskDraft,
         activeSkill: state.activeSkill,
       };
       const requestedPayloadText = meta && meta.pinvouPayloadText
@@ -5464,7 +5408,6 @@
         restrictTools = true;
         state.scheduledTaskPendingGuide = null;
         state.scheduledTaskCreationSessionId = sid;
-        state.scheduledTaskDraft = null;
       }
       // 新一轮先熄灭技能标；本轮 load_skill 会重新点亮。
       state.activeSkill = null;
@@ -5474,7 +5417,6 @@
       if (!consumed || state.activeSessionId !== sid) return;
       state.scheduledTaskPendingGuide = consumed.scheduledTaskPendingGuide;
       state.scheduledTaskCreationSessionId = consumed.scheduledTaskCreationSessionId;
-      state.scheduledTaskDraft = consumed.scheduledTaskDraft;
       state.activeSkill = consumed.activeSkill;
     }
     function queuePrepared(prepared) {
@@ -9888,16 +9830,6 @@
     if (!selected) return [];
     return Array.isArray(selected) ? selected : [selected];
   }
-  async function pickFolder() {
-    if (!dialogOpen) throw new Error(bt("folderPickerUnavailable"));
-    const selected = await dialogOpen({
-      directory: true,
-      multiple: false,
-      title: bt("pickFolderTitle"),
-    });
-    if (!selected) return null;
-    return Array.isArray(selected) ? (selected[0] || null) : selected;
-  }
   // 知识库「添加文件夹」：host-file-picker 目录模式返回单个目录路径，
   // 包成数组交给后端 kb_collection_add_sources（在桌面进程用 WalkDir 递归展开）。
   async function pickFolders() {
@@ -10040,10 +9972,7 @@
     toggleScheduledTaskPinned,
     deleteScheduledTask,
     runScheduledTaskNow,
-    pickFolder,
     startScheduledTaskChat,
-    confirmScheduledTaskDraft,
-    clearScheduledTaskDraft,
     cancelGeneration,
     cancelShellTask,
     createNewSession,
