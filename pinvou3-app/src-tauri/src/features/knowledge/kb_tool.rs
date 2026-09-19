@@ -1,7 +1,8 @@
 //! Agentic RAG: `kb_search` 工具——AI 自主调用检索本会话挂载的知识集。
 //!
 //! 取代注入式(每条消息自动注入片段):由 LLM 自己决定何时查/查什么。工具 per-session
-//! 构造(持 `session_id`),`execute` 时查该会话挂载的知识集,复用 [`L1Store::retrieve_for_chat`]。
+//! 构造(持 `session_id`),`execute` 时查该会话挂载的知识集,复用
+//! [`L1Store::retrieve_for_chat_multi`]。
 //! 经底座 `EngineConfig.extra_tools` 注入(spawn_for_session)。配套 Self-RAG 自检引导见
 //! `commands::build_kb_agentic_guide`。
 
@@ -15,15 +16,13 @@ use tokio::time::{Duration, timeout};
 
 use deepseek_tui::tools::spec::{ToolCapability, ToolContext, ToolError, ToolResult, ToolSpec};
 
-use super::{Document, l1::ScopedChunkHit};
+use super::Document;
 use crate::features::{
     knowledge::KnowledgeService, remote_knowledge::RemoteKnowledgeService, sessions::SessionStore,
 };
 
 /// 工具单次检索 top-K(精排;太多稀释小模型注意力)。
 pub(crate) const KB_INJECT_TOP_K: usize = 5;
-/// 邻域扩展半径,暂关(=0,只给命中块)。见 `L1Store::expand_neighbors`,改回 1 即恢复。
-pub(crate) const KB_NEIGHBOR_RADIUS: usize = 0;
 /// 返回片段总字符上限,超出截断(保证至少第一条)。~6K 字符 ≈ 5K token。
 pub(crate) const KB_INJECT_MAX_CHARS: usize = 6_000;
 /// `kb_open_source` 默认/最大返回 chunk 数。索引切块约 600 字符，8 块仍远低于单次
@@ -126,67 +125,6 @@ fn build_unified_context_block(hits: &[UnifiedHit], warnings: &[String]) -> Stri
             hit.collection_name,
             hit.source_ref,
             hit.source_path,
-            text
-        ));
-        spent += text.len();
-    }
-    out
-}
-
-/// 把检索命中拼成给模型的文本(带出处)。命中为空时调用方不应调用本函数。
-pub(crate) fn build_kb_context_block(
-    collections: &[(i64, String)],
-    hits: &[ScopedChunkHit],
-) -> String {
-    let title = if collections.is_empty() {
-        "《知识库》".to_string()
-    } else {
-        collections
-            .iter()
-            .map(|(_, name)| format!("《{name}》"))
-            .collect::<Vec<_>>()
-            .join("、")
-    };
-    let mut out = format!(
-        "在已启用知识集{title}中检索到以下相关片段(按相关度稳定排序)。请**严格基于这些片段**作答\
-         并注明来源文件;若片段足够就直接回答,不要继续打开源文件。若上下文不足,可再次\
-         `kb_search`,或用结果中的 `source_ref` 调用 `kb_open_source` 查看相邻片段。对于\
-         XLSX/DOCX/PPTX 等二进制来源,禁止用 `read` 直接读取或用 `bash` 全量展开。\n\n"
-    );
-    let mut spent = 0usize;
-    for (i, scoped) in hits.iter().enumerate() {
-        let h = &scoped.hit;
-        let text = h.text.trim();
-        // 整体超限即停(但保证第一条一定注入),余下条数提示给模型。
-        if spent > 0 && spent + text.len() > KB_INJECT_MAX_CHARS {
-            out.push_str(&format!(
-                "(还有 {} 条相关片段因长度限制未展开)\n",
-                hits.len() - i
-            ));
-            break;
-        }
-        let collection_names = scoped
-            .collection_ids
-            .iter()
-            .filter_map(|collection_id| {
-                collections
-                    .iter()
-                    .find(|(id, _)| id == collection_id)
-                    .map(|(_, name)| format!("《{name}》"))
-            })
-            .collect::<Vec<_>>()
-            .join("、");
-        out.push_str(&format!(
-            "### [{}] {}\n知识库: {}\nsource_ref: `{}`\n来源: `{}`\n{}\n\n",
-            i + 1,
-            h.doc_name,
-            if collection_names.is_empty() {
-                "《知识库》"
-            } else {
-                &collection_names
-            },
-            source_ref(h.document_id, h.ord),
-            h.doc_path,
             text
         ));
         spent += text.len();
@@ -354,12 +292,7 @@ impl ToolSpec for KbSearchTool {
                 let q = query.clone();
                 let local_ids = collection_ids.clone();
                 match tauri::async_runtime::spawn_blocking(move || {
-                    let hits = l1.retrieve_for_chat_multi(
-                        &local_ids,
-                        &q,
-                        KB_INJECT_TOP_K,
-                        KB_NEIGHBOR_RADIUS,
-                    )?;
+                    let hits = l1.retrieve_for_chat_multi(&local_ids, &q, KB_INJECT_TOP_K)?;
                     let collections: Vec<(i64, String)> = local_ids
                         .into_iter()
                         .map(|collection_id| {
@@ -725,46 +658,6 @@ mod tests {
     use super::*;
     use std::path::Path;
 
-    fn hit(name: &str, ord: i64, text: &str) -> ScopedChunkHit {
-        ScopedChunkHit {
-            collection_ids: vec![7],
-            hit: super::super::l1::ChunkHit {
-                document_id: 42,
-                text: text.to_string(),
-                score: 1.0,
-                doc_name: name.to_string(),
-                doc_path: format!("/docs/{name}"),
-                ord,
-            },
-        }
-    }
-
-    /// 片段块:带知识集名、逐条出处、命中文本;空名兜底「知识库」。
-    #[test]
-    fn kb_context_block_renders_hits_with_sources() {
-        let mut hits = vec![
-            hit("散热报告.xlsx", 3, "CPU 峰值温度 78℃"),
-            hit("规格.pdf", 0, "TDP 28W"),
-        ];
-        hits[0].collection_ids.push(8);
-        let block = build_kb_context_block(
-            &[(7, "硬件资料".to_string()), (8, "团队规范".to_string())],
-            &hits,
-        );
-        assert!(block.contains("《硬件资料》"));
-        assert!(block.contains("《团队规范》"));
-        assert!(block.contains("散热报告.xlsx"));
-        assert!(block.contains("source_ref: `kbdoc:42:chunk:3`"));
-        assert!(block.contains("`/docs/散热报告.xlsx`"));
-        assert!(block.contains("CPU 峰值温度 78℃"));
-        assert!(block.contains("TDP 28W"));
-        assert!(block.contains("kb_open_source"));
-        assert!(block.contains("禁止用 `read` 直接读取"));
-
-        let none = build_kb_context_block(&[], &hits);
-        assert!(none.contains("《知识库》"));
-    }
-
     #[test]
     fn remote_source_reference_round_trips_without_exposing_paths() {
         let reference = remote_source_ref("cube/server:1", 7, 42, 3);
@@ -805,21 +698,6 @@ mod tests {
         let with_warnings = build_unified_context_block(&unified, &["远程服务离线".to_string()]);
         assert!(with_warnings.contains("部分来源暂时不可用"));
         assert!(with_warnings.contains("禁止用 `read` 直接读取"));
-    }
-
-    /// 超总字符预算:保证第一条一定注入,余下截断并提示剩余条数。
-    #[test]
-    fn kb_context_block_truncates_over_budget() {
-        let big = "字".repeat(KB_INJECT_MAX_CHARS);
-        let hits = vec![
-            hit("a.txt", 0, &big),
-            hit("b.txt", 1, &big),
-            hit("c.txt", 2, &big),
-        ];
-        let block = build_kb_context_block(&[(7, "X".to_string())], &hits);
-        assert!(block.contains("a.txt")); // 第一条必注入
-        assert!(!block.contains("b.txt")); // 超预算被截断
-        assert!(block.contains("还有 2 条"));
     }
 
     #[test]
@@ -880,11 +758,11 @@ mod tests {
         let fixture = Path::new(env!("CARGO_MANIFEST_DIR")).join("test-fixtures/multi_sheet.xlsx");
 
         assert_eq!(l1.ingest_file(mounted, &fixture), "parsed");
-        let hits = l1.retrieve_for_chat(mounted, "83.6", 5, 0).unwrap();
+        let hits = l1.retrieve_for_chat_multi(&[mounted], "83.6", 5).unwrap();
         let hit = hits
             .first()
             .expect("kb_search should hit non-first XLSX sheet");
-        let reference = source_ref(hit.document_id, hit.ord);
+        let reference = source_ref(hit.hit.document_id, hit.hit.ord);
         let (document_id, anchor_ord) = parse_source_ref(&reference).unwrap();
 
         let opened = load_source_window(

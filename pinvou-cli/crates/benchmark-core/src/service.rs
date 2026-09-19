@@ -6,10 +6,9 @@ use agent_backend_api::{HeadlessAgentBackend, PrivateInputResolver};
 
 use crate::Result;
 use crate::{
-    BenchmarkAdapter, BenchmarkError, BenchmarkPlan, CompletedRun, NativeAgentRunner,
-    OfficialScoreReport, PredictionRetention, PrivatePredictionContentType, RunContext,
-    RunManifest, RunStore, SafeFailureCategory, SubmissionArtifact, TaskOutcome, TaskRunner,
-    TaskSelection, TaskStatus, VerifiedDataset,
+    BenchmarkAdapter, BenchmarkError, BenchmarkPlan, NativeAgentRunner, PredictionRetention,
+    PrivatePredictionContentType, RunContext, RunManifest, RunStore, SafeFailureCategory,
+    TaskOutcome, TaskRunner, TaskSelection, TaskStatus, VerifiedDataset,
 };
 
 pub struct BenchmarkService<R> {
@@ -93,7 +92,7 @@ where
         let plan = adapter.plan(dataset, selection)?;
         let store = RunStore::create(&self.base, &manifest)?;
         let _execution = store.claim_execution()?;
-        let prepared = self.prepare_plan(adapter, &store, &manifest, &plan)?;
+        let prepared = self.prepare_plan(adapter, &manifest, &plan)?;
         store.plan_tasks(prepared.tasks().iter().map(|task| task.task_id()))?;
         self.execute(
             &store,
@@ -103,23 +102,6 @@ where
             adapter.private_prediction_content_type(),
         )
         .await
-    }
-
-    pub fn score_adapter(
-        &self,
-        adapter: &dyn BenchmarkAdapter,
-        run: &CompletedRun,
-    ) -> Result<OfficialScoreReport> {
-        adapter.score(run)
-    }
-
-    pub fn write_adapter_submission(
-        &self,
-        adapter: &dyn BenchmarkAdapter,
-        run: &CompletedRun,
-        destination: &Path,
-    ) -> Result<SubmissionArtifact> {
-        adapter.write_submission(run, destination)
     }
 
     pub async fn resume(&self, run_id: &str, plan: &BenchmarkPlan) -> Result<RunSummary> {
@@ -163,7 +145,7 @@ where
             return Err(BenchmarkError::coded("adapter_dataset_mismatch"));
         }
         let plan = adapter.plan(dataset, selection)?;
-        let prepared = self.prepare_plan(adapter, &store, &manifest, &plan)?;
+        let prepared = self.prepare_plan(adapter, &manifest, &plan)?;
         store.reconcile_planned_tasks(prepared.tasks().iter().map(|task| task.task_id()))?;
         self.execute(
             &store,
@@ -178,11 +160,10 @@ where
     fn prepare_plan(
         &self,
         adapter: &dyn BenchmarkAdapter,
-        store: &RunStore,
         manifest: &RunManifest,
         plan: &BenchmarkPlan,
     ) -> Result<BenchmarkPlan> {
-        let context = RunContext::new(manifest.run_id(), store.run_dir().to_owned());
+        let context = RunContext::new(manifest.run_id());
         let tasks = plan
             .tasks()
             .iter()
@@ -209,7 +190,7 @@ where
             .iter()
             .map(String::as_str)
             .collect();
-        let context = RunContext::new(manifest.run_id(), store.run_dir().to_owned());
+        let context = RunContext::new(manifest.run_id());
         let mut outcomes = Vec::new();
         for task in plan
             .tasks()

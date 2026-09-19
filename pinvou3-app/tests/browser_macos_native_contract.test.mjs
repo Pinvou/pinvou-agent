@@ -173,7 +173,7 @@ test('macOS binding is host-authoritative and leaks no remote-page credential', 
   assert.match(macos, /browser\/wkwebview-binding-not-registered/);
 });
 
-test('macOS trusted input stays app-scoped and unsupported gestures fail closed', () => {
+test('macOS native input stays app-scoped with no desktop-wide injection', () => {
   const nativeDispatch = macos.slice(
     macos.indexOf('async fn with_native_webview'),
     macos.indexOf('#[derive(Clone)]'),
@@ -205,7 +205,6 @@ test('macOS trusted input stays app-scoped and unsupported gestures fail closed'
     macos,
     /CGEventPost|postEvent|mouseLocation\(|addGlobalMonitor|dispatchEvent|\.click\(\)|new MouseEvent/,
   );
-  assert.match(macos, /trusted-input-gesture-unavailable-on-wkwebview/);
   assert.match(macos, /dialog-backend-unavailable-on-wkwebview/);
   const darwinCatalog = createPinvouBrowserCoreCatalog({ includeDialog: false });
   assert.equal(

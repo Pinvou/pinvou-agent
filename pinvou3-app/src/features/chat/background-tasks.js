@@ -61,6 +61,5 @@ export {
   COMMAND_SUMMARY_MAX,
   deriveRunningShellTasks,
   formatElapsedMs,
-  isRunningShellTaskItem,
   tailOutputLines,
 };

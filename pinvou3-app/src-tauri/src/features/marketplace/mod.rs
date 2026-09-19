@@ -1613,51 +1613,6 @@ impl<S: CredentialStore> MarketplaceManager<S> {
             .map(|server| server.name)
     }
 
-    /// 根据已安装工具生成 instructions 路由规则段 + 工具表条目
-    pub fn build_instructions_fragment(&self) -> String {
-        let installed = self.installed_ids();
-        if installed.is_empty() {
-            return String::new();
-        }
-
-        let mut tool_table_lines = Vec::new();
-        let mut routing_lines = Vec::new();
-
-        for tool_id in &installed {
-            if let Some(manifest) = self.load_manifest(tool_id) {
-                for entry in &manifest.tool_table_entries {
-                    tool_table_lines.push(entry.clone());
-                }
-                for rule in &manifest.routing_rules {
-                    routing_lines.push(format!("- {rule}"));
-                }
-            }
-        }
-
-        let mut fragment = String::new();
-
-        // 工具表条目
-        if !tool_table_lines.is_empty() {
-            for line in &tool_table_lines {
-                fragment.push_str(line);
-                fragment.push('\n');
-            }
-        }
-
-        // 路由规则
-        if !routing_lines.is_empty() {
-            fragment.push_str(
-                "\n### 工具路由(优先用专用工具,不要用 `Web(action=\"search\")` 替代)\n\n",
-            );
-            for line in &routing_lines {
-                fragment.push_str(line);
-                fragment.push('\n');
-            }
-        }
-
-        fragment
-    }
-
     // --- internal ---
 
     pub(crate) fn load_manifest(&self, tool_id: &str) -> Option<ToolManifest> {

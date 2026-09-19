@@ -122,7 +122,7 @@ pub fn ensure_native_cli(name: &str) -> Result<bool, String> {
     migrate_legacy_binary(&artifact.name, &artifact.version, &artifact.binary_sha256);
 
     let version_dir = crate::platform::paths::assets_cli_dir(&artifact.name, &artifact.version);
-    let filename = super::platform::executable_name(name);
+    let filename = crate::platform::connector_lock::executable_name(name);
     let destination = version_dir.join(&filename);
     if file_sha256_matches(&destination, &artifact.binary_sha256) {
         // 二进制已就位(hash 比对通过)时 license 必然随上次释放落过盘,不再重写,
@@ -197,7 +197,7 @@ fn migrate_legacy_binary(name: &str, version: &str, expected_sha256: &str) {
     let Some(bin_dir) = crate::platform::paths::managed_connector_bin_dir() else {
         return;
     };
-    let exe = super::platform::executable_name(name);
+    let exe = crate::platform::connector_lock::executable_name(name);
     let legacy = bin_dir.join(&exe);
     if !legacy.is_file() {
         return;
@@ -243,7 +243,7 @@ fn write_license(bin_dir: &Path, name: &str) -> Result<(), String> {
 }
 
 fn load_lock() -> Result<ConnectorLock, String> {
-    let lock_json = super::platform::lock_json();
+    let lock_json = crate::platform::connector_lock::lock_json();
     if lock_json.is_empty() {
         return Err("当前平台暂不支持此连接器 CLI".to_string());
     }
@@ -464,7 +464,7 @@ mod tests {
             let Some(bin_dir) = crate::platform::paths::managed_connector_bin_dir() else {
                 return; // 当前平台无旧布局目录（不支持的架构），无从断言
             };
-            let exe = crate::features::connectors::platform::executable_name("test-cli");
+            let exe = crate::platform::connector_lock::executable_name("test-cli");
             let legacy = bin_dir.join(&exe);
             let dest = crate::platform::paths::assets_cli_dir("test-cli", "9.9.9").join(&exe);
             // 旧版本目录残留（GC 保守保留的断言对象）

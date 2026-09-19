@@ -5,7 +5,7 @@
 //!   - `PerformanceStatistics` 里 `"Device Utilization %"=48` → 核心利用率(无需 root)
 //!   - `"In use system memory"=1221361664`            → GPU 在用的统一内存(字节)
 //! Apple Silicon 是统一内存架构,没有独立 VRAM:vram_* 置 0,前端据此切到
-//! 「统一内存」显示(与 GB10 的 vram=[N/A] 同一通路)。温度/功耗无公开免 root
+//! 「统一内存」显示(与 unified-memory 设备的 vram=[N/A] 同一通路)。温度/功耗无公开免 root
 //! 接口(powermetrics 要 sudo),留 None,前端只渲染有数据的行。
 //!
 //! 解析失败(无 GPU 字典、输出格式变化)→ None,前端显示「状态不可用」,

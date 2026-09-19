@@ -1,6 +1,6 @@
 //! 包 id × SessionMode 的单一禁用集（`~/.pinvou3/disabled_bundles.json`）。
 //!
-//! 这是「工具市场统一治理」scope 收敛（todo A 节）的单一真相源：取代原先
+//! 这是「工具市场统一治理」scope 收敛的单一真相源：取代原先
 //! `disabled_connectors.json`（连接器 id）与 `disabled_skills.json`（技能 id）两份
 //! 文件。开关粒度收敛为**包 id**（= `bundle.rs` 里 `BundleInfo.id`，即 MCP 工具 id /
 //! 技能 id / CLI 连接器 id），一个包 = 一个开关，包内技能（companion skills）可见性
@@ -399,10 +399,13 @@ fn normalize_stored_pkg_ids(ids: &[String]) -> Vec<String> {
     out
 }
 
-/// 首启迁移：读旧 `disabled_connectors.json` + `disabled_skills.json`（各兼容三种
-/// 旧形态），把条目映射为包 id 后按 scope 取并集，`project_skills_enabled` 取自技能
-/// 文件。迁移不删旧文件（本版本内保留为惰性历史，只读新文件；下个版本周期随
-/// 旧布局退役一并清理，见 todo C 节）。
+/// First-boot migration: reads the legacy `disabled_connectors.json` and
+/// `disabled_skills.json` (each tolerant of three legacy shapes), maps the
+/// entries to bundle ids, and merges them into the new file — connector
+/// scopes overwrite while skill scopes union, with `project_skills_enabled`
+/// taken from the skill file. The legacy files are not deleted (kept as
+/// read-only history for this release cycle; retired alongside the legacy
+/// layout in a later cycle).
 fn migrate_from_legacy_files() -> DisabledBundlesFile {
     let mut file = DisabledBundlesFile::default();
     merge_connector_scopes_into(&mut file);
@@ -410,18 +413,51 @@ fn migrate_from_legacy_files() -> DisabledBundlesFile {
     file
 }
 
-/// 把旧 `disabled_connectors.json` 的各 scope 条目映射为包 id 并并进 `file`。
+/// 把旧 `disabled_connectors.json` 的各 scope 条目映射为包 id 并并进 `file`
+/// （scope 条目按旧文件**覆盖写**）。
 fn merge_connector_scopes_into(file: &mut DisabledBundlesFile) {
-    let path = paths::pinvou3_home().join("disabled_connectors.json");
-    let Ok(content) = std::fs::read_to_string(&path) else {
+    merge_legacy_scope_file_into(
+        file,
+        &paths::pinvou3_home().join("disabled_connectors.json"),
+        |file, key, ids| {
+            file.scopes.insert(key.to_string(), ids);
+        },
+        false,
+    );
+}
+
+/// 把旧 `disabled_skills.json` 的各 scope 条目映射为包 id 并并进 `file`（取并集），
+/// 并继承 `project_skills_enabled`。
+fn merge_skill_scopes_into(file: &mut DisabledBundlesFile) {
+    merge_legacy_scope_file_into(
+        file,
+        &paths::pinvou3_home().join("disabled_skills.json"),
+        |file, key, ids| merge_ids_into_scope(file, key, ids),
+        true,
+    );
+}
+
+/// 旧 scope 文件（`disabled_connectors.json` / `disabled_skills.json`）的共用解析
+/// 骨架：裸数组 → plain scope、新版 `{scopes, initialized}` 对象、旧双 scope 对象
+/// `{plain, code, code_initialized}` 三种形态，条目经 `to_package_id` 归一为包 id，
+/// 并迁移 `initialized` / `code_initialized`。
+///
+/// `merge_ids` 决定 scope 条目的落库语义（连接器文件 = 覆盖写，技能文件 = 并集
+/// 合并）；`inherit_project_flag` 为真时继承 `project_skills_enabled`（仅技能文件）。
+fn merge_legacy_scope_file_into(
+    file: &mut DisabledBundlesFile,
+    path: &std::path::Path,
+    merge_ids: impl Fn(&mut DisabledBundlesFile, &str, Vec<String>),
+    inherit_project_flag: bool,
+) {
+    let Ok(content) = std::fs::read_to_string(path) else {
         return;
     };
     // 裸数组 → plain scope
     if let Ok(list) = serde_json::from_str::<Vec<String>>(&content) {
         let ids: Vec<String> = list.iter().map(|id| to_package_id(id)).collect();
         if !ids.is_empty() {
-            file.scopes
-                .insert(SessionMode::Plain.as_str().to_string(), ids);
+            merge_ids(file, SessionMode::Plain.as_str(), ids);
         }
         return;
     }
@@ -439,7 +475,7 @@ fn merge_connector_scopes_into(file: &mut DisabledBundlesFile) {
                     .filter_map(|v| v.as_str().map(to_package_id))
                     .collect();
                 if !ids.is_empty() {
-                    file.scopes.insert(key.clone(), ids);
+                    merge_ids(file, key, ids);
                 }
             }
         }
@@ -457,7 +493,7 @@ fn merge_connector_scopes_into(file: &mut DisabledBundlesFile) {
                     .filter_map(|v| v.as_str().map(to_package_id))
                     .collect();
                 if !ids.is_empty() {
-                    file.scopes.insert(key.to_string(), ids);
+                    merge_ids(file, key, ids);
                 }
             }
         }
@@ -470,65 +506,10 @@ fn merge_connector_scopes_into(file: &mut DisabledBundlesFile) {
                 .insert(SessionMode::Code.as_str().to_string());
         }
     }
-}
-
-/// 把旧 `disabled_skills.json` 的各 scope 条目映射为包 id 并并进 `file`（取并集），
-/// 并继承 `project_skills_enabled`。
-fn merge_skill_scopes_into(file: &mut DisabledBundlesFile) {
-    let path = paths::pinvou3_home().join("disabled_skills.json");
-    let Ok(content) = std::fs::read_to_string(&path) else {
-        return;
-    };
-    // 裸数组 → plain scope
-    if let Ok(list) = serde_json::from_str::<Vec<String>>(&content) {
-        let ids: Vec<String> = list.iter().map(|id| to_package_id(id)).collect();
-        if !ids.is_empty() {
-            merge_ids_into_scope(file, SessionMode::Plain.as_str(), ids);
+    if inherit_project_flag {
+        if let Some(enabled) = obj.get("project_skills_enabled").and_then(|v| v.as_bool()) {
+            file.project_skills_enabled = enabled;
         }
-        return;
-    }
-    let Ok(value) = serde_json::from_str::<serde_json::Value>(&content) else {
-        return;
-    };
-    let Some(obj) = value.as_object() else {
-        return;
-    };
-    if let Some(scopes) = obj.get("scopes").and_then(|v| v.as_object()) {
-        for (key, arr) in scopes {
-            if let Some(arr) = arr.as_array() {
-                let ids: Vec<String> = arr
-                    .iter()
-                    .filter_map(|v| v.as_str().map(to_package_id))
-                    .collect();
-                merge_ids_into_scope(file, key, ids);
-            }
-        }
-        if let Some(initialized) = obj.get("initialized").and_then(|v| v.as_array()) {
-            for key in initialized.iter().filter_map(|v| v.as_str()) {
-                file.initialized.insert(key.to_string());
-            }
-        }
-    } else {
-        for key in ["plain", "code"] {
-            if let Some(arr) = obj.get(key).and_then(|v| v.as_array()) {
-                let ids: Vec<String> = arr
-                    .iter()
-                    .filter_map(|v| v.as_str().map(to_package_id))
-                    .collect();
-                merge_ids_into_scope(file, key, ids);
-            }
-        }
-        if obj
-            .get("code_initialized")
-            .and_then(|v| v.as_bool())
-            .unwrap_or(false)
-        {
-            file.initialized
-                .insert(SessionMode::Code.as_str().to_string());
-        }
-    }
-    if let Some(enabled) = obj.get("project_skills_enabled").and_then(|v| v.as_bool()) {
-        file.project_skills_enabled = enabled;
     }
 }
 
@@ -834,9 +815,11 @@ pub fn sync_deny_all_scopes_after_install(raw_id: &str) -> Result<(), String> {
     Ok(())
 }
 
-/// 包卸载/断开后同步所有 scope：从各 scope 禁用集与可见性集移除该包 id，避免残留
-/// 指向不存在的包。连接器与技能卸载共用本入口：入参可为连接器 id / 技能 id / 包 id，
-/// 统一归一为包 id。
+/// Sync every scope after a bundle uninstall/disconnect: drop the id from each
+/// scope's disabled and visibility sets so no stale entry keeps pointing at a
+/// missing package. Shared entry point for connector, skill, and package
+/// teardown: the argument may be a connector id / skill id / package id and is
+/// normalized to the package id.
 pub fn remove_bundle_from_disabled_scopes(raw_id: &str) {
     let package_id = to_package_id(raw_id);
     let _guard = DISABLED_BUNDLES_FILE_LOCK

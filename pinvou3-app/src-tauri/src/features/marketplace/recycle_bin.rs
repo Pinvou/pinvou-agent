@@ -37,11 +37,11 @@ use crate::platform::paths;
 const SCHEMA_VERSION: u32 = 1;
 
 /// 回收站条目 kind：纯 MCP 包。
-pub const KIND_MCP: &str = "mcp";
+pub(crate) const KIND_MCP: &str = "mcp";
 /// 回收站条目 kind：纯技能包。
-pub const KIND_SKILL: &str = "skill";
+pub(crate) const KIND_SKILL: &str = "skill";
 /// 回收站条目 kind：组合包（mcp/ + skills/）。
-pub const KIND_BUNDLE: &str = "bundle";
+pub(crate) const KIND_BUNDLE: &str = "bundle";
 
 /// recycle-bin.json 读-改-写的进程内串行化（与 BUNDLES_FILE_LOCK 同一范式）。
 static RECYCLE_BIN_FILE_LOCK: Mutex<()> = Mutex::new(());

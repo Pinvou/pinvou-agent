@@ -172,7 +172,7 @@ function normalizeTurnItems(turn) {
  * Item 是事实语义，presentation 只控制视觉聚合。工具组不会改写、合并或丢弃
  * 任何 Item；展开后仍按原始时序逐项展示。
  */
-export function presentTurnItems(items) {
+function presentTurnItems(items) {
   return presentConversationItems(items);
 }
 
@@ -539,19 +539,4 @@ export function buildElicitationContent(groups) {
 
 export {
   commandExecutionDetails,
-  contentText,
-  mergeTool,
-  toolItemType,
 };
-
-/**
- * Not used inside this file; only re-exported for consumers.
- * tests/codex_acp_timeline.test.mjs copies this file to a temp directory and
- * dynamically imports the re-export via a computed URL; knip cannot build an
- * edge for that channel, so the `@public` tag keeps it from being removed as a
- * dead export.
- * @public
- */
-export {
-  stripTerminalControlSequences,
-} from '../conversation/conversation-model.js';

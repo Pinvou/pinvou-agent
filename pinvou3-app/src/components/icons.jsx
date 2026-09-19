@@ -80,7 +80,7 @@ const I = ({size=24,className='',children}) => (
     const Server = (p) => <I {...p}><rect width="20" height="8" x="2" y="2" rx="2" ry="2"/><rect width="20" height="8" x="2" y="14" rx="2" ry="2"/><line x1="6" x2="6.01" y1="6" y2="6"/><line x1="6" x2="6.01" y1="18" y2="18"/></I>;
     const Globe = (p) => <I {...p}><circle cx="12" cy="12" r="10"/><path d="M12 2a14.5 14.5 0 0 0 0 20 14.5 14.5 0 0 0 0-20"/><path d="M2 12h20"/></I>;
     const ChevronLeft = (p) => <I {...p}><path d="m15 18-6-6 6-6"/></I>;
-    const XIcon = (p) => <I {...p}><path d="M18 6 6 18"/><path d="m6 6 12 12"/></I>;
+    const XIcon = X;
     const CloudSun = (p) => <I {...p}><path d="M12 2v2"/><path d="m4.93 4.93 1.41 1.41"/><path d="M20 12h2"/><path d="m19.07 4.93-1.41 1.41"/><path d="M15.947 12.65a4 4 0 0 0-5.925-4.128"/><path d="M13 22H7a5 5 0 1 1 4.9-6H13a3 3 0 0 1 0 6Z"/></I>;
     const TrendingUp = (p) => <I {...p}><polyline points="22 7 13.5 15.5 8.5 10.5 2 17"/><polyline points="16 7 22 7 22 13"/></I>;
     const TrendingDown = (p) => <I {...p}><polyline points="22 17 13.5 8.5 8.5 13.5 2 7"/><polyline points="16 17 22 17 22 11"/></I>;

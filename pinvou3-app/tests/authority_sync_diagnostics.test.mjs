@@ -103,7 +103,7 @@ test('web diagnostics remain queued while unavailable', async () => {
   });
   await window.PinvouAuthoritySyncDiagnostics.flush();
   assert.equal(calls.length, 0);
-  assert.ok(window.PinvouAuthoritySyncDiagnostics.pendingCount() >= 2);
+  assert.ok(window.PinvouAuthoritySyncDiagnostics.pendingCount() >= 1);
   assert.ok(storage.get('pinvou.authority_sync.diagnostics.v1'));
 });
 

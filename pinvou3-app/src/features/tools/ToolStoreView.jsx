@@ -269,7 +269,6 @@ const withUiTimeout = (promise, timeoutMs, fallbackResult) => {
     // identical; every behavioral difference is collapsed into a createConnectorFlow config option (each maps to the original
     // implementation — do not casually "unify" them):
     //   twoStep        Feishu two-stage QR scan: after ensure_cli advance the connect step, then begin; the rest single-stage.
-    //   progressEvent  Only feishu has the fine-grained feishu:progress event (backend-driven progress).
     //   qrStepsExtra   Feishu's QR event additionally marks the connect step done (two-stage stage one already finished).
     //   qrPayloadExtra Extra fields on the QR event: dingtalk user_code; tmeet browserAuth flag.
     //   openAuthUrl    When tmeet's QR event carries a url, open the browser directly (embedded-QR render fallback).
@@ -313,19 +312,6 @@ const withUiTimeout = (promise, timeoutMs, fallbackResult) => {
         const ev = isTauriAvailable() ? tauriEvents : null;
         if (!ev) return;
         conn.listenersReady = true;
-        if (cfg.progressEvent) {
-          ev.listen(cfg.progressEvent, (e) => {
-            const p = e.payload || {};
-            conn.setFlow(f => {
-              const nf = f ? { ...f, steps: { ...f.steps } } : { phase: 'running', steps: {}, active: null, pct: 0, sec: 0, log: '' };
-              if (p.step) { nf.active = p.step; nf.steps[p.step] = p.status === 'done' ? 'done' : 'active'; }
-              if (typeof p.pct === 'number') nf.pct = p.pct;
-              if (p.log) nf.log = p.log;
-              if (nf.phase !== 'error') nf.phase = 'running';
-              return nf;
-            });
-          });
-        }
         ev.listen(cfg.events.qr, (e) => {
           const p = e.payload || {};
           conn.stopTick();
@@ -438,7 +424,6 @@ const withUiTimeout = (promise, timeoutMs, fallbackResult) => {
 
     const feishuFlowApi = createConnectorFlow({
       key: 'feishu', conn: feishuConn, twoStep: true,
-      progressEvent: 'feishu:progress',
       events: { qr: 'feishu:qr', connected: 'feishu:connected', error: 'feishu:error' },
       commands: { ensureCli: 'feishu_ensure_cli', begin: 'feishu_connect_begin', cancel: 'feishu_cancel', logout: 'feishu_logout', applySkills: 'feishu_apply_skills' },
       qrStepsExtra: { connect: 'done' },
@@ -533,7 +518,7 @@ const withUiTimeout = (promise, timeoutMs, fallbackResult) => {
     // z-[210]: sharing z-[200] with the QR modal and other body portals would
     // degrade stacking to mount order (the alert only paints on top because it
     // mounts later); one explicit level up keeps the error alert always visible.
-    const TsAlert = ({ alert, _theme, onDismiss, onNewChat, onCancelLoading, copy }) => { // eslint-disable-line no-unused-vars -- theme is kept for the existing props contract
+    const TsAlert = ({ alert, onDismiss, onNewChat, onCancelLoading, copy }) => {
       if (!alert.visible && !alert.loading) return null;
       return (
         <div className="fixed inset-0 z-[210] flex items-center justify-center bg-black/40 backdrop-blur-sm">
@@ -611,8 +596,7 @@ const withUiTimeout = (promise, timeoutMs, fallbackResult) => {
     };
 
     // API Key 配置弹窗（需要 config_fields 的工具安装前弹出）
-    // eslint-disable-next-line no-unused-vars -- theme is kept for the existing props contract
-    const TsConfigDialog = ({ config, _theme, onConfirm, onCancel, copy }) => {
+    const TsConfigDialog = ({ config, onConfirm, onCancel, copy }) => {
       if (!config) return null;
       const [values, setValues] = useState({}); // eslint-disable-line react-hooks/rules-of-hooks -- when config is null the component returns null before any other hook; for one instance config only goes null→object, so the hook count is stable
       const fields = config.fields || [];
@@ -841,7 +825,7 @@ const withUiTimeout = (promise, timeoutMs, fallbackResult) => {
     };
 
     // Obsidian 连接前探测引导卡：未安装 → 引导下载；没库 / 库丢失 → 引导建库/重开
-    const TsObsidianGuide = ({ guide, _theme, onCancel, onDownload, onRetry, allowDownload = true, copy }) => { // eslint-disable-line no-unused-vars -- theme is kept for the existing props contract
+    const TsObsidianGuide = ({ guide, onCancel, onDownload, onRetry, allowDownload = true, copy }) => {
       if (!guide) return null;
       const COPY = copy.obsidianGuide;
       const c = COPY[guide.state] || COPY.not_installed;
@@ -893,7 +877,7 @@ const withUiTimeout = (promise, timeoutMs, fallbackResult) => {
     );
 
     /* eslint-disable sonarjs/cognitive-complexity -- tool store main view (list/detail/install/OAuth flows);legacy view; tracked separately */
-    const ToolStoreView = ({ theme, t, onNewChat }) => {
+    const ToolStoreView = ({ t, onNewChat }) => {
       const storeCopy = t.uiToolStore;
       const detailCopy = t.uiToolDetails;
       // 数据文件(tool-common.jsx)里技能/分类/精选的中文 label/title/subtitle/desc:
@@ -1152,8 +1136,8 @@ const withUiTimeout = (promise, timeoutMs, fallbackResult) => {
       const [feishuFlow, setFeishuFlow] = useState(feishuConn.flow); // 从跨视图 store 水合：切走再回来不丢进度
 
       // 企业微信(CLI 路线)连接流程卡(跨视图水合);连接态由 bundleStates 派生(见上)
-      const [wecomQr, setWecomQr] = useState(null); // { qr: dataUrl, url } 扫码弹窗(单段)
       const [wecomFlow, setWecomFlow] = useState(wecomConn.flow); // 企微连接流程卡(跨视图水合)
+      const [wecomQr, setWecomQr] = useState(null); // { qr: dataUrl, url } 扫码弹窗(单段)
 
       // 钉钉(CLI 路线)连接流程卡;连接态由 bundleStates 派生
       const [dingtalkFlow, setDingtalkFlow] = useState(dingtalkConn.flow);
@@ -1970,7 +1954,6 @@ const withUiTimeout = (promise, timeoutMs, fallbackResult) => {
       const connectConnector = (key) => CONNECTOR_FLOW_APIS[key].connect(flowDeps);
       const disconnectConnector = (key) => CONNECTOR_FLOW_APIS[key].disconnect(flowDeps);
       const resetConnectorFlow = (key) => CONNECTOR_FLOW_APIS[key].resetFlow(flowDeps);
-      const retryConnector = (key) => { connectConnector(key); };
       // Fallback toast when "Open in browser" fails (e.g. the external-url allowlist rejects it); previously this failed silently.
       const browserOpenFailed = () => setAlert({ visible: true, loading: false, title: storeCopy.openBrowserFailed, isInstall: false, isError: true });
 
@@ -2101,7 +2084,7 @@ const withUiTimeout = (promise, timeoutMs, fallbackResult) => {
 
       return (
         <div className="flex-1 flex flex-col w-full h-full relative z-10 overflow-hidden antialiased selection:bg-blue-200 dark:selection:bg-blue-900">
-          {createPortal(<TsAlert alert={alert} theme={theme} copy={storeCopy} onDismiss={() => setAlert(a => ({ ...a, visible: false }))} onCancelLoading={cancelOAuthLoading} onNewChat={() => { const tid = alert.toolId; setAlert(a => ({ ...a, visible: false })); if (onNewChat) onNewChat(tid); }} />, document.body)}
+          {createPortal(<TsAlert alert={alert} copy={storeCopy} onDismiss={() => setAlert(a => ({ ...a, visible: false }))} onCancelLoading={cancelOAuthLoading} onNewChat={() => { const tid = alert.toolId; setAlert(a => ({ ...a, visible: false })); if (onNewChat) onNewChat(tid); }} />, document.body)}
           {/* 拖放技能包 overlay:可接受拖放期间全屏提示(pointer-events-none 不挡点击) */}
           {dropActive && canMutateToolStore && (
             <div data-testid="tool-store-drop-overlay" className="fixed inset-0 z-[80] flex items-center justify-center pointer-events-none bg-blue-500/10">
@@ -2113,14 +2096,12 @@ const withUiTimeout = (promise, timeoutMs, fallbackResult) => {
           )}
           {createPortal(<TsConfigDialog
             config={externalAuthAvailable ? configDialog : null}
-            theme={theme}
             copy={storeCopy}
             onCancel={() => setConfigDialog(null)}
             onConfirm={(values) => { const bid = configDialog.backendId; setConfigDialog(null); if (bid === 'ima') connectIma(values); else doInstall(bid, values); }}
           />, document.body)}
           {createPortal(<TsObsidianGuide
             guide={obsidianGuide}
-            theme={theme}
             copy={storeCopy}
             allowDownload={can('localModelSetup')}
             onCancel={() => setObsidianGuide(null)}
@@ -2143,31 +2124,6 @@ const withUiTimeout = (promise, timeoutMs, fallbackResult) => {
               confirmTone="blue"
               onConfirm={doSkillUpdate}
               onCancel={() => setUpdateConfirm(null)}
-            />
-          ), document.body)}
-          {/* 上传包展示名/说明编辑弹窗（edit_display 动作触发；条件挂载，state 初值即当前覆盖值）。
-              key 按 backendId 强制重挂载：编辑目标切换（重开/自动预填）时不得复用旧包的
-              useState 输入初值、保存却写进新包 id（串台）。弹窗开着时的拖放导入已在
-              canAccept 处拒绝（editDisplayRef），原位替换路径不再可达。 */}
-          {editDisplay && createPortal(<TsEditDisplayDialog
-            key={editDisplay.backendId}
-            dialog={editDisplay}
-            copy={storeCopy}
-            onCancel={() => setEditDisplay(null)}
-            onConfirm={doEditDisplaySave}
-          />, document.body)}
-          {/* 回收站彻底删除二次确认:物理删除包文件与回收站条目,不可恢复
-              (自绘确认,风格对齐预置技能更新确认) */}
-          {purgeConfirm && createPortal((
-            <SheetRowConfirm
-              title={storeCopy.recyclePurgeTitle(purgeConfirm.name)}
-              desc={storeCopy.recyclePurgeHint}
-              cancelLabel={storeCopy.cancel}
-              confirmLabel={storeCopy.recyclePurge}
-              confirmTone="rose"
-              confirmTestId="recycled-purge-confirm"
-              onConfirm={doPurgeRecycled}
-              onCancel={() => setPurgeConfirm(null)}
             />
           ), document.body)}
           {/* 飞书扫码二维码已内联进 FeishuFlowCard（详情弹窗内），不再单独浮层 */}
@@ -2200,6 +2156,32 @@ const withUiTimeout = (promise, timeoutMs, fallbackResult) => {
             </div>
             ), document.body);
           })()}
+          {/* 上传包展示名/说明编辑弹窗（edit_display 动作触发；条件挂载，state 初值即当前覆盖值）。
+              key 按 backendId 强制重挂载：编辑目标切换（重开/自动预填）时不得复用旧包的
+              useState 输入初值、保存却写进新包 id（串台）。弹窗开着时的拖放导入已在
+              canAccept 处拒绝（editDisplayRef），原位替换路径不再可达。 */}
+          {editDisplay && createPortal(<TsEditDisplayDialog
+            key={editDisplay.backendId}
+            dialog={editDisplay}
+            copy={storeCopy}
+            onCancel={() => setEditDisplay(null)}
+            onConfirm={doEditDisplaySave}
+          />, document.body)}
+          {/* 回收站彻底删除二次确认:物理删除包文件与回收站条目,不可恢复
+              (自绘确认,风格对齐预置技能更新确认) */}
+          {purgeConfirm && createPortal((
+            <SheetRowConfirm
+              title={storeCopy.recyclePurgeTitle(purgeConfirm.name)}
+              desc={storeCopy.recyclePurgeHint}
+              cancelLabel={storeCopy.cancel}
+              confirmLabel={storeCopy.recyclePurge}
+              confirmTone="rose"
+              confirmTestId="recycled-purge-confirm"
+              onConfirm={doPurgeRecycled}
+              onCancel={() => setPurgeConfirm(null)}
+            />
+          ), document.body)}
+          {/* 飞书/企微扫码二维码已内联进 FeishuFlowCard（详情弹窗内），不再单独浮层 */}
           {/* 回收站子页面:点入口后整个插件中心内容区切换为回收站页面(非弹窗),
               返回按钮回到主列表;彻底删除二次确认仍用弹窗(见上方 purgeConfirm) */}
           {showRecycleBin && (
@@ -2446,9 +2428,7 @@ const withUiTimeout = (promise, timeoutMs, fallbackResult) => {
                                   <p className="text-[13px] text-slate-500 dark:text-slate-400 truncate mt-0.5 font-medium">{tool.subtitle}</p>
                                   <div className="flex items-center gap-2 mt-1.5">
                                     <span className="text-[10px] font-semibold text-slate-400 dark:text-slate-500 bg-slate-100 dark:bg-slate-800 px-1.5 py-0.5 rounded uppercase tracking-wide">{tool.type}</span>
-                                    {tool.internal ? (
-                                      <span className="text-[10px] font-semibold text-sky-700 dark:text-sky-300 bg-sky-100 dark:bg-sky-500/15 px-1.5 py-0.5 rounded-full">{storeCopy.internalDirect}</span>
-                                    ) : tool.authRequired && (
+                                    {tool.authRequired && (
                                       <span className="text-[10px] text-amber-500/80 dark:text-amber-400/80 flex items-center gap-0.5">
                                         <Zap size={10} /> {storeCopy.keyRequired}
                                       </span>
@@ -2609,9 +2589,7 @@ const withUiTimeout = (promise, timeoutMs, fallbackResult) => {
                       <h2 className="text-2xl sm:text-3xl font-extrabold text-slate-900 dark:text-white mb-2 tracking-tight">{selectedTool.title}</h2>
                       <p className="text-[17px] text-slate-500 dark:text-slate-400 mb-5 font-medium">{selectedTool.subtitle}</p>
                       <div className="flex flex-col items-end gap-1.5">
-                        {(() => { const sf = selectedTool.feishuCli ? feishuFlow : selectedTool.wecomCli ? wecomFlow : selectedTool.dingtalkCli ? dingtalkFlow : selectedTool.tmeetCli ? tmeetFlow : null; return (externalAuthAvailable && sf && (sf.phase === 'running' || sf.phase === 'qr'))
-                          ? <FeishuMini flow={sf} onClick={() => {}} copy={storeCopy.mini} />
-                          : <PlatformToolAction tool={selectedTool} busy={busyId === selectedTool.backendId} onAction={handleAction} onUpdate={handleSkillUpdate} onEditDisplay={handleEditDisplay} onExport={handleExportInstalled} size="lg" copy={storeCopy} t={t} />; })()}
+                        <PlatformToolAction tool={selectedTool} busy={busyId === selectedTool.backendId} onAction={handleAction} onUpdate={handleSkillUpdate} onEditDisplay={handleEditDisplay} onExport={handleExportInstalled} size="lg" copy={storeCopy} t={t} />
                         {((selectedTool.feishuCli && !feishuConnected) || (selectedTool.wecomCli && !wecomConnected) || (selectedTool.dingtalkCli && !dingtalkConnected) || (selectedTool.tmeetCli && !tmeetConnected)) && <span className="text-[11px] text-slate-400">{storeCopy.firstUseOnlineInstall}</span>}
                       </div>
                     </div>
@@ -2638,16 +2616,16 @@ const withUiTimeout = (promise, timeoutMs, fallbackResult) => {
                   </div>
 
                   {externalAuthAvailable && selectedTool.feishuCli && feishuFlow && (
-                    <FeishuFlowCard flow={feishuFlow} steps={storeCopy.feishuSteps} name={storeCopy.toolNames.feishu} copy={detailCopy.flow} onRetry={() => retryConnector('feishu')} onCancel={() => resetConnectorFlow('feishu')} onBrowserOpenError={browserOpenFailed} />
+                    <FeishuFlowCard flow={feishuFlow} steps={storeCopy.feishuSteps} name={storeCopy.toolNames.feishu} copy={detailCopy.flow} onRetry={() => connectConnector('feishu')} onCancel={() => resetConnectorFlow('feishu')} onBrowserOpenError={browserOpenFailed} />
                   )}
                   {externalAuthAvailable && selectedTool.wecomCli && wecomFlow && (
-                    <FeishuFlowCard flow={wecomFlow} steps={storeCopy.wecomSteps} name={storeCopy.toolNames.wecom} copy={detailCopy.flow} twoStep={false} onRetry={() => retryConnector('wecom')} onCancel={() => resetConnectorFlow('wecom')} onBrowserOpenError={browserOpenFailed} />
+                    <FeishuFlowCard flow={wecomFlow} steps={storeCopy.wecomSteps} name={storeCopy.toolNames.wecom} copy={detailCopy.flow} twoStep={false} onRetry={() => connectConnector('wecom')} onCancel={() => resetConnectorFlow('wecom')} onBrowserOpenError={browserOpenFailed} />
                   )}
                   {externalAuthAvailable && selectedTool.dingtalkCli && dingtalkFlow && (
-                    <FeishuFlowCard flow={dingtalkFlow} steps={storeCopy.dingtalkSteps} name={storeCopy.toolNames.dingtalk} copy={detailCopy.flow} twoStep={false} onRetry={() => retryConnector('dingtalk')} onCancel={() => resetConnectorFlow('dingtalk')} onBrowserOpenError={browserOpenFailed} />
+                    <FeishuFlowCard flow={dingtalkFlow} steps={storeCopy.dingtalkSteps} name={storeCopy.toolNames.dingtalk} copy={detailCopy.flow} twoStep={false} onRetry={() => connectConnector('dingtalk')} onCancel={() => resetConnectorFlow('dingtalk')} onBrowserOpenError={browserOpenFailed} />
                   )}
                   {externalAuthAvailable && selectedTool.tmeetCli && tmeetFlow && (
-                    <FeishuFlowCard flow={tmeetFlow.phase === 'error' && !detailCopy.showRawErrors ? { ...tmeetFlow, err: detailCopy.actions.operationFailed } : tmeetFlow} steps={detailCopy.tmeetSteps} name={detailCopy.tools.tmeet.title} copy={detailCopy.flow} twoStep={false} browserAuth={!!tmeetFlow.browserAuth} onRetry={() => retryConnector('tmeet')} onCancel={() => resetConnectorFlow('tmeet')} onBrowserOpenError={browserOpenFailed} />
+                    <FeishuFlowCard flow={tmeetFlow.phase === 'error' && !detailCopy.showRawErrors ? { ...tmeetFlow, err: detailCopy.actions.operationFailed } : tmeetFlow} steps={detailCopy.tmeetSteps} name={detailCopy.tools.tmeet.title} copy={detailCopy.flow} twoStep={false} browserAuth={!!tmeetFlow.browserAuth} onRetry={() => connectConnector('tmeet')} onCancel={() => resetConnectorFlow('tmeet')} onBrowserOpenError={browserOpenFailed} />
                   )}
                   {connectedBanners.filter(b => b.show).map((banner, i) => (
                     <div key={`connected-banner-${i}`} className="mb-8 flex items-center gap-3 p-4 rounded-2xl bg-emerald-50 dark:bg-emerald-500/10 border border-emerald-200 dark:border-emerald-500/30">
@@ -2674,5 +2652,5 @@ const withUiTimeout = (promise, timeoutMs, fallbackResult) => {
     // Shared Components
     // ==========================================
 
-export { FeishuStepIcon, FeishuBar, FeishuFlowCard, FeishuMini, feishuConn, ensureFeishuListeners, wecomConn, ensureWecomListeners, dingtalkConn, ensureDingtalkListeners, tmeetConn, ensureTmeetListeners, TsAlert, TsConfigDialog, TsEditDisplayDialog, TsObsidianGuide, ToolStoreView };
+export { ToolStoreView };
 /* eslint-enable sonarjs/cognitive-complexity -- tool store main view;legacy view */

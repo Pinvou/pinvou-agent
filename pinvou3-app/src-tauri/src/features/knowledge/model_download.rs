@@ -16,10 +16,8 @@ use serde::Serialize;
 
 /// 桌面端可单独指定镜像；未配置时回退到两端统一的镜像变量。
 const DESKTOP_HF_BASE_URL_ENV: &str = "PINVOU3_KB_HF_BASE_URL";
-/// 展示用：固定清单的下载量与实际模型文件占用（不含文件系统簇开销）。
+/// 展示用：固定清单的下载量 = 实际模型文件占用（同源同值，不含文件系统簇开销）。
 const DISPLAY_DOWNLOAD_BYTES: u64 =
-    pinvou_knowledge::model_download::KNOWLEDGE_MODEL_DOWNLOAD_BYTES;
-const DISPLAY_INSTALLED_BYTES: u64 =
     pinvou_knowledge::model_download::KNOWLEDGE_MODEL_DOWNLOAD_BYTES;
 /// 模型版本标识（前端 `.pkg-ver` 显示）。
 pub const MODEL_VERSION: &str = "bge-m3";
@@ -169,7 +167,7 @@ pub(crate) fn current_status(service: &KnowledgeService) -> KbModelStatus {
         error,
         downloading: DOWNLOADING.load(Ordering::Relaxed),
         size_bytes: DISPLAY_DOWNLOAD_BYTES,
-        installed_bytes: DISPLAY_INSTALLED_BYTES,
+        installed_bytes: DISPLAY_DOWNLOAD_BYTES,
         version: MODEL_VERSION.to_string(),
     }
 }
@@ -417,9 +415,11 @@ fn knowledge_usage_present(service: &KnowledgeService) -> bool {
     usage_present(service.has_indexed_content(), remote_has_connections())
 }
 
-/// usage_present 的纯函数核心（便于单测）：任一使用迹象存在即加载。
+/// usage_present 的纯函数核心（便于单测）：任一使用迹象存在即加载。判定与
+/// 工具门控的 [`KnowledgeService::kb_tools_usable`] 同口径，委托实现避免两份
+/// 谓词各自漂移。
 fn usage_present(indexed_content: bool, remote_connections: bool) -> bool {
-    indexed_content || remote_connections
+    KnowledgeService::kb_tools_usable(indexed_content, remote_connections)
 }
 
 /// deferred_no_usage 的纯函数核心（便于单测）：只有「已安装、未就绪、最近一次

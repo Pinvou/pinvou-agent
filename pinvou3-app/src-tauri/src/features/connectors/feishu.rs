@@ -336,7 +336,7 @@ impl ConnectorSkillGate for FeishuGate {
 const GATE: FeishuGate = FeishuGate;
 
 /// 用户是否手动停用了飞书技能。
-pub fn is_feishu_disabled() -> bool {
+fn is_feishu_disabled() -> bool {
     GATE.is_disabled()
 }
 

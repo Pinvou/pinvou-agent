@@ -358,7 +358,7 @@ impl ConnectorSkillGate for WecomGate {
 }
 const GATE: WecomGate = WecomGate;
 
-pub fn is_wecom_disabled() -> bool {
+fn is_wecom_disabled() -> bool {
     GATE.is_disabled()
 }
 

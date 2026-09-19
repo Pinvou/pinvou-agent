@@ -30,7 +30,7 @@ use crate::features::assistant::product_runtime::eval_tool_policy::{
     EvalToolPolicy, resolve_eval_policy,
 };
 use crate::features::assistant::product_runtime::{
-    EnginePoolRuntime, EvalSuiteModelGuard, ProductChatRuntime, SessionSpec, TurnInput,
+    EnginePoolRuntime, EvalSuiteModelGuard, SessionSpec, TurnInput,
 };
 use crate::features::{knowledge, sessions::SessionStore};
 
@@ -96,7 +96,6 @@ impl ProductTurnOutcome {
 #[async_trait]
 pub trait ProductRuntimePort: Send + Sync {
     async fn prepare(&self, session_id: &str) -> Result<()>;
-    async fn run(&self, session_id: &str, prompt: &str) -> Result<ProductTurnOutcome>;
     async fn run_with_policy(
         &self,
         _session_id: &str,
@@ -323,10 +322,6 @@ impl ProductRuntimePort for EnginePoolPort {
                 model_selection: Some(self.suite_model.derive_case_selection()?),
             })
             .await
-    }
-
-    async fn run(&self, _session_id: &str, _prompt: &str) -> Result<ProductTurnOutcome> {
-        anyhow::bail!("unsupported_tool_policy")
     }
 
     async fn run_with_policy(
@@ -1512,15 +1507,6 @@ mod tests {
             Ok(())
         }
 
-        async fn run(
-            &self,
-            _session_id: &str,
-            _prompt: &str,
-        ) -> anyhow::Result<ProductTurnOutcome> {
-            self.run_calls.fetch_add(1, Ordering::Relaxed);
-            anyhow::bail!("legacy_run_must_not_execute")
-        }
-
         async fn cancel(&self, _session_id: &str) -> anyhow::Result<()> {
             Ok(())
         }
@@ -1568,14 +1554,6 @@ mod tests {
     impl ProductRuntimePort for FinalAnswerRecoveryRuntime {
         async fn prepare(&self, _session_id: &str) -> anyhow::Result<()> {
             Ok(())
-        }
-
-        async fn run(
-            &self,
-            _session_id: &str,
-            _prompt: &str,
-        ) -> anyhow::Result<ProductTurnOutcome> {
-            anyhow::bail!("legacy_run_must_not_execute")
         }
 
         async fn run_with_policy(
@@ -1647,14 +1625,6 @@ mod tests {
     impl ProductRuntimePort for RecoveryFailureRuntime {
         async fn prepare(&self, _session_id: &str) -> anyhow::Result<()> {
             Ok(())
-        }
-
-        async fn run(
-            &self,
-            _session_id: &str,
-            _prompt: &str,
-        ) -> anyhow::Result<ProductTurnOutcome> {
-            anyhow::bail!("legacy_run_must_not_execute")
         }
 
         async fn run_with_policy(
@@ -1738,14 +1708,6 @@ mod tests {
             Ok(())
         }
 
-        async fn run(
-            &self,
-            _session_id: &str,
-            _prompt: &str,
-        ) -> anyhow::Result<ProductTurnOutcome> {
-            anyhow::bail!("legacy_run_must_not_execute")
-        }
-
         async fn run_with_policy(
             &self,
             _session_id: &str,
@@ -1806,14 +1768,6 @@ mod tests {
     impl ProductRuntimePort for RecoveryMissingMarkerRuntime {
         async fn prepare(&self, _session_id: &str) -> anyhow::Result<()> {
             Ok(())
-        }
-
-        async fn run(
-            &self,
-            _session_id: &str,
-            _prompt: &str,
-        ) -> anyhow::Result<ProductTurnOutcome> {
-            anyhow::bail!("legacy_run_must_not_execute")
         }
 
         async fn run_with_policy(
@@ -1906,14 +1860,6 @@ mod tests {
             Ok(())
         }
 
-        async fn run(
-            &self,
-            _session_id: &str,
-            _prompt: &str,
-        ) -> anyhow::Result<ProductTurnOutcome> {
-            anyhow::bail!("legacy_run_must_not_execute")
-        }
-
         async fn run_with_policy(
             &self,
             _session_id: &str,
@@ -1992,14 +1938,6 @@ mod tests {
     impl ProductRuntimePort for RecoverySucceedsRuntime {
         async fn prepare(&self, _session_id: &str) -> anyhow::Result<()> {
             Ok(())
-        }
-
-        async fn run(
-            &self,
-            _session_id: &str,
-            _prompt: &str,
-        ) -> anyhow::Result<ProductTurnOutcome> {
-            anyhow::bail!("legacy_run_must_not_execute")
         }
 
         async fn run_with_policy(
@@ -2107,14 +2045,6 @@ mod tests {
                 .unwrap()
                 .push(format!("prepare:{session_id}"));
             Ok(())
-        }
-
-        async fn run(
-            &self,
-            _session_id: &str,
-            _prompt: &str,
-        ) -> anyhow::Result<ProductTurnOutcome> {
-            anyhow::bail!("legacy_run_must_not_execute")
         }
 
         async fn run_with_policy(
@@ -2266,14 +2196,6 @@ mod tests {
             Ok(())
         }
 
-        async fn run(
-            &self,
-            _session_id: &str,
-            _prompt: &str,
-        ) -> anyhow::Result<ProductTurnOutcome> {
-            anyhow::bail!("unused")
-        }
-
         async fn cancel(&self, _session_id: &str) -> anyhow::Result<()> {
             Ok(())
         }
@@ -2327,14 +2249,6 @@ mod tests {
             Ok(())
         }
 
-        async fn run(
-            &self,
-            _session_id: &str,
-            _prompt: &str,
-        ) -> anyhow::Result<ProductTurnOutcome> {
-            anyhow::bail!("unused")
-        }
-
         async fn cancel(&self, _session_id: &str) -> anyhow::Result<()> {
             self.cancel_called.notify_one();
             self.cancel_release.notified().await;
@@ -2383,14 +2297,6 @@ mod tests {
     impl ProductRuntimePort for BlockingRunRuntime {
         async fn prepare(&self, _session_id: &str) -> anyhow::Result<()> {
             Ok(())
-        }
-
-        async fn run(
-            &self,
-            _session_id: &str,
-            _prompt: &str,
-        ) -> anyhow::Result<ProductTurnOutcome> {
-            anyhow::bail!("legacy_run_must_not_execute")
         }
 
         async fn run_with_policy(
@@ -2513,14 +2419,6 @@ mod tests {
             self.prepare_started.notify_one();
             self.release_prepare.notified().await;
             Ok(())
-        }
-
-        async fn run(
-            &self,
-            _session_id: &str,
-            _prompt: &str,
-        ) -> anyhow::Result<ProductTurnOutcome> {
-            anyhow::bail!("unused")
         }
 
         async fn cancel(&self, _session_id: &str) -> anyhow::Result<()> {

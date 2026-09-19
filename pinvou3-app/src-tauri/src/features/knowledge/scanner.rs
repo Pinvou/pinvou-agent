@@ -16,6 +16,17 @@ const BATCH: usize = 2000;
 /// 每写一批后让步，避免后台扫描抢占前台 I/O/CPU（治「扫描时设备卡顿」）。
 const THROTTLE_MS: u64 = 4;
 
+/// 共享的剪枝遍历：walkdir + [`Excluder::is_skipped`] 逐层剪枝，不跟随软链。
+/// `scan`（全盘扫描）与知识库导入的 `expand_import_roots`（mod.rs）共用，
+/// 保证两条入口的排除语义一致；遍历错误（权限不足等）在此被跳过。
+pub(super) fn walk_pruned(root: &Path, ex: &Excluder) -> impl Iterator<Item = DirEntry> {
+    WalkDir::new(root)
+        .follow_links(false)
+        .into_iter()
+        .filter_entry(|e| !skipped(ex, e))
+        .flatten()
+}
+
 /// 从一个根遍历并写入 store。返回**遍历**到的条目数（进度量）。
 /// 增量：`existing`(path→mtime,size) 里 mtime+size 都没变的文件直接跳过，不重写、不触发 FTS。
 /// 本次遍历到的每个 path 记入 `visited`，调用方据此删除「已消失」的旧条目。
@@ -32,16 +43,10 @@ pub fn scan(
     let mut buf: Vec<FileRecord> = Vec::with_capacity(BATCH);
     let mut walked: u64 = 0;
 
-    let walker = WalkDir::new(root)
-        .follow_links(false)
-        .into_iter()
-        .filter_entry(|e| !skipped(ex, e));
-
-    for entry in walker {
+    for entry in walk_pruned(root, ex) {
         if cancel.load(Ordering::Relaxed) {
             break;
         }
-        let Ok(entry) = entry else { continue }; // 权限不足等：跳过
         let Some(rec) = to_record(&entry) else {
             continue;
         };
@@ -115,31 +120,6 @@ fn ext_of(p: &Path) -> Option<String> {
     p.extension()
         .and_then(|s| s.to_str())
         .map(|s| s.to_lowercase())
-}
-
-/// 从单个路径 stat 出一条记录（watcher 增量用）。用 `symlink_metadata` 不跟随软链，
-/// 与扫描器 `follow_links(false)` 一致；symlink/socket 等返回 None 跳过。
-pub(super) fn record_from_path(path: &Path) -> Option<FileRecord> {
-    let md = std::fs::symlink_metadata(path).ok()?;
-    let ft = md.file_type();
-    if !ft.is_file() && !ft.is_dir() {
-        return None;
-    }
-    let is_dir = ft.is_dir();
-    let mtime = md
-        .modified()
-        .ok()
-        .and_then(|t| t.duration_since(UNIX_EPOCH).ok())
-        .map(|d| d.as_secs() as i64)
-        .unwrap_or(0);
-    Some(FileRecord {
-        path: path.to_str()?.to_string(),
-        name: path.file_name().and_then(|s| s.to_str())?.to_string(),
-        ext: if is_dir { None } else { ext_of(path) },
-        size: if is_dir { 0 } else { md.len() },
-        mtime,
-        is_dir,
-    })
 }
 
 #[cfg(test)]

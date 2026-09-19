@@ -189,6 +189,8 @@ pub async fn install_marketplace_tool(
     let companion_tool_id = tool_id.clone();
     tokio::task::spawn_blocking(move || {
         let mgr = crate::features::marketplace::MarketplaceManager::new();
+        // 联动:装该 MCP 声明的配套技能(引擎+引导整体到位)。
+        // skill 是增强,装失败只记日志、不让已成功的 MCP 安装回滚。
         // DenyAll 模式的 scope(如 code)已初始化时,新装的连接器默认仍关闭(显式开启)。
         // 工具本体的同步**先行**（评审 R14-minor）：companion 技能是增强，其同步
         // 失败不得让工具本体停留在零同意的默认开状态；持久化失败 fail-visible
@@ -197,8 +199,6 @@ pub async fn install_marketplace_tool(
             .map_err(|e| {
                 format!("新装连接器 '{companion_tool_id}' 默认关闭状态落盘失败（新会话将默认开启，请在工具列表手动关闭）: {e}")
             })?;
-        // 联动:装该 MCP 声明的配套技能(引擎+引导整体到位)。
-        // skill 是增强,装失败只记日志、不让已成功的 MCP 安装回滚。
         for sid in mgr.companion_skills(&companion_tool_id) {
             if let Err(e) =
                 crate::features::marketplace::skill_marketplace::SkillMarketplaceManager::new()
@@ -640,55 +640,10 @@ pub async fn update_bundle_display_meta(
     result
 }
 
-/// 弹文件选择框选 zip 技能包并导入。前端无法用 plugin-dialog 的 JS API
-/// (单 HTML 无 bundler 引不进),所以选文件走 Rust 端 dialog。
-/// 返回 true=已导入,false=用户取消。
-#[tauri::command]
-pub async fn import_skill_package(
-    app: tauri::AppHandle,
-    pool: tauri::State<'_, crate::features::assistant::engine_pool::EnginePool>,
-) -> Result<bool, String> {
-    use tauri_plugin_dialog::DialogExt;
-    let Some(picked) = app
-        .dialog()
-        .file()
-        .add_filter("技能包 (zip)", &["zip"])
-        .blocking_pick_file()
-    else {
-        return Ok(false); // 用户取消
-    };
-    let path = picked
-        .into_path()
-        .map_err(|e| format!("解析文件路径: {e}"))?;
-    tokio::task::spawn_blocking(move || {
-        let mgr = crate::features::marketplace::skill_marketplace::SkillMarketplaceManager::new();
-        let name = mgr.import_package(&path.to_string_lossy())?;
-        // 与商店安装同语义：上传技能默认加入 DenyAll scope（当前 code）禁用集
-        // （外部能力显式开启）。持久化失败 fail-visible（评审 #455 R13-B3）。
-        crate::features::marketplace::skill_scope::sync_deny_all_scopes_after_skill_install(&name)
-            .map_err(|e| {
-                format!("技能 '{name}' 默认关闭状态落盘失败（新会话将默认开启，请在工具列表手动关闭）: {e}")
-            })?;
-        Ok::<String, String>(name)
-    })
-    .await
-    .map_err(|e| format!("任务执行失败: {e}"))??;
-    // 重写在线会话组合目录（下一轮 prompt 生效）。
-    pool.refresh_live_sessions_skills().await;
-    // 导入包的 CLI/技能脚本纳入 deny 规则集（M-6：import 路径热刷）。
-    pool.refresh_permission_rulesets().await;
-    Ok(true)
-}
-
-/// FNV-1a 64 位（确定性、跨平台稳定）：中文文件名 md 导入的无 frontmatter 兜底
-/// id 派生。与 DefaultHasher 不同，不依赖进程内随机种子，重导/跨进程 id 一致。
+/// 中文文件名 md 导入的无 frontmatter 兜底 id 派生。与 DefaultHasher 不同，
+/// 不依赖进程内随机种子，重导/跨进程 id 一致。
 fn stable_stem_hash(stem: &str) -> String {
-    let mut h: u64 = 0xcbf2_9ce4_8422_2325;
-    for b in stem.as_bytes() {
-        h ^= u64::from(*b);
-        h = h.wrapping_mul(0x100_0000_01b3);
-    }
-    format!("{h:016x}")
+    format!("{:016x}", crate::platform::paths::fnv1a64(stem.as_bytes()))
 }
 
 /// 把单个 `.md`/`.markdown` 技能文件的内容包装成「根放 SKILL.md 的裸 skill 包」走
@@ -795,8 +750,7 @@ pub async fn import_plugin_package_cmd(
     .await
     .map_err(|e| format!("任务执行失败: {e}"))??;
     // 上传安全默认：插件包导入后加入 DenyAll 禁用集，需用户在前端开关显式开启。
-    // 与 `install_marketplace_tool` / `import_skill_package_bytes` 同口径。
-    // 持久化失败 fail-visible（评审 #455 R13-B3）。
+    // 与 `install_marketplace_tool` 同口径。持久化失败 fail-visible（评审 #455 R13-B3）。
     crate::features::marketplace::sync_deny_all_scopes_after_install(&report.id).map_err(|e| {
         format!(
             "插件 '{}' 默认关闭状态落盘失败（新会话将默认开启，请在工具列表手动关闭）: {e}",
@@ -914,8 +868,8 @@ pub async fn import_skill_md_bytes(
         tokio::task::spawn_blocking(move || import_skill_md_content(md, &filename_for_import))
             .await
             .map_err(|e| format!("任务执行失败: {e}"))??;
-    // 上传安全默认：与 `import_skill_package_bytes` 同口径，加入 DenyAll scope。
-    // 持久化失败 fail-visible（评审 #455 R13-B3）。
+    // 上传安全默认：与插件包导入同口径，加入 DenyAll scope。持久化失败
+    // fail-visible（评审 #455 R13-B3）。
     crate::features::marketplace::skill_scope::sync_deny_all_scopes_after_skill_install(&report.id)
         .map_err(|e| {
             format!(
@@ -927,68 +881,6 @@ pub async fn import_skill_md_bytes(
     // 导入包的 CLI/技能脚本纳入 deny 规则集（M-6：import 路径热刷）。
     pool.refresh_permission_rulesets().await;
     Ok(report.id)
-}
-
-/// 拖放导入:Windows WebView2 的 HTML5 文件拖放拿不到源文件路径
-/// (`dragDropEnabled=false`,契约测试锁定,附件系统同走字节通道),所以前端把
-/// zip 读成 base64 传这里,临时落盘后走 `import_package_named`。
-/// 与 `import_skill_package`(原生文件对话框)返回语义一致:true=已导入。
-#[tauri::command]
-pub async fn import_skill_package_bytes(
-    filename: String,
-    data_base64: String,
-    pool: tauri::State<'_, crate::features::assistant::engine_pool::EnginePool>,
-) -> Result<bool, String> {
-    use base64::Engine as _;
-    if !filename.to_ascii_lowercase().ends_with(".zip") {
-        return Err("仅支持 .zip 技能包".to_string());
-    }
-    let bytes = base64::engine::general_purpose::STANDARD
-        .decode(&data_base64)
-        .map_err(|e| format!("解码 zip 数据失败: {e}"))?;
-    use crate::features::marketplace::skill_marketplace::MAX_SKILL_SIZE_BYTES;
-    if bytes.len() as u64 > MAX_SKILL_SIZE_BYTES {
-        return Err(format!(
-            "技能包超过 {} MiB 上限",
-            MAX_SKILL_SIZE_BYTES / 1024 / 1024
-        ));
-    }
-    // 展示名净化(仅写 .installed-from 标记用):去路径分隔符/控制字符,截 128
-    let safe_name: String = filename
-        .chars()
-        .filter(|c| !c.is_control() && *c != '/' && *c != '\\')
-        .take(128)
-        .collect();
-    let tmp = std::env::temp_dir().join(format!(
-        "pinvou3-skill-{}-{}.zip",
-        std::process::id(),
-        std::time::SystemTime::now()
-            .duration_since(std::time::UNIX_EPOCH)
-            .map(|d| d.as_nanos())
-            .unwrap_or(0)
-    ));
-    std::fs::write(&tmp, &bytes).map_err(|e| format!("写临时文件: {e}"))?;
-    let tmp_for_import = tmp.clone();
-    let name = tokio::task::spawn_blocking(move || {
-        let mgr = crate::features::marketplace::skill_marketplace::SkillMarketplaceManager::new();
-        let name = mgr.import_package_named(&tmp_for_import.to_string_lossy(), &safe_name)?;
-        // 与商店安装同语义：上传技能默认加入 DenyAll scope（当前 code）禁用集
-        // （外部能力显式开启）。持久化失败 fail-visible（评审 #455 R13-B3）。
-        crate::features::marketplace::skill_scope::sync_deny_all_scopes_after_skill_install(&name)
-            .map_err(|e| {
-                format!("技能 '{name}' 默认关闭状态落盘失败（新会话将默认开启，请在工具列表手动关闭）: {e}")
-            })?;
-        Ok::<String, String>(name)
-    })
-    .await
-    .map_err(|e| format!("任务执行失败: {e}"))?;
-    let _ = std::fs::remove_file(&tmp); // 清理临时文件(含失败路径)
-    name?;
-    // 与对话框导入一致:重写在线会话组合目录(下一轮 prompt 生效)。
-    pool.refresh_live_sessions_skills().await;
-    // 导入包的 CLI/技能脚本纳入 deny 规则集（M-6：import 路径热刷）。
-    pool.refresh_permission_rulesets().await;
-    Ok(true)
 }
 
 #[tauri::command]

@@ -837,7 +837,9 @@ impl WorkspaceControl {
     }
 
     // Passing true means the None branch of issue_agent_lease_if_allowed
-    // (User owner without explicit handback) cannot trigger.
+    // (User owner without explicit handback) cannot trigger. Production callers
+    // must use issue_agent_lease_if_allowed or issue_agent_lease_with.
+    #[cfg(test)]
     #[allow(clippy::expect_used)]
     pub(super) fn issue_agent_lease(&self) -> (ControlSnapshot, String) {
         self.issue_agent_lease_if_allowed(true)

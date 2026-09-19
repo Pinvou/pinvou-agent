@@ -1,6 +1,6 @@
 //! 技能开关 scope 持久化的**兼容别名层**。
 //!
-//! 原 `disabled_skills.json`（技能 id × SessionMode）已随 scope 收敛（todo A 节）
+//! 原 `disabled_skills.json`（技能 id × SessionMode）已随 scope 收敛
 //! 合并进 `scope.rs` 的单一 `disabled_bundles.json`（包 id × SessionMode）。本模块
 //! 保留旧技能开关调用方的路径：全部 re-export 到统一实现，入参/出参统一归一为
 //! **包 id**（技能 id 经 `bundle::skill_owner_package` 映射到所属包，companion → MCP/CLI

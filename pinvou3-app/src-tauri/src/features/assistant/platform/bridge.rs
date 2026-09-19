@@ -11,10 +11,9 @@
 //! 用户层面看不到这一层；这层只服务 GUI 与 deepseek-tui engine 之间的
 //! 转译。GUI 永远不直接操纵 EngineConfig；engine.rs 永远从这层取配置。
 
-pub use crate::features::marketplace;
-pub use crate::features::marketplace::skill_marketplace;
+use crate::features::marketplace;
 pub(crate) use crate::features::runtime_bundle::platform as bundle;
-pub use crate::features::sessions;
+use crate::features::sessions;
 pub use crate::platform::paths;
 pub use crate::platform::prefs;
 
@@ -445,7 +444,7 @@ impl Pinvou3Bridge {
     /// a bound workspace path (code-lane project root / bound chat working
     /// directory) is stable per session and is rendered into the static prompt
     /// by the respective instruction layer.
-    pub fn build_session_system_prompt(&self, session_id: &str) -> String {
+    fn build_session_system_prompt(&self, session_id: &str) -> String {
         // [pinvou3] date/workspace 已移出静态 system → per-turn <turn_meta>:每 session
         // 变的 workspace 路径(及每天变的 date)若进 cached system prefix, vLLM prefix-cache
         // MISS 时工具调用会退化成裸文本(实测 single subagent 25%→稳态~100%)。仅保留 model
@@ -556,7 +555,7 @@ impl Pinvou3Bridge {
     /// 本入口不感知 scheduled 会话（bridge 拿不到 SessionStore）；scheduled 的
     /// 两个根由调用方经 [`crate::features::sessions::SessionStore::session_roots`]
     /// 解析。与 SessionStore 入口共用 [`sessions::session_roots_for`] 同一实现。
-    pub fn session_roots(&self, session_id: &str) -> SessionRoots {
+    pub(crate) fn session_roots(&self, session_id: &str) -> SessionRoots {
         let bound_project_root = self
             .execution_root_resolver
             .as_ref()
@@ -569,7 +568,7 @@ impl Pinvou3Bridge {
     /// bound user working directory) return the bound directory (engine cwd and the
     /// shell execution directory both derive from it); other sessions return the
     /// session-private directory.
-    /// 等价于 [`Self::session_roots`] 的 `execution` 字段。
+    /// 等价于 `Self::session_roots` 的 `execution` 字段。
     pub fn session_workspace(&self, session_id: &str) -> std::path::PathBuf {
         self.session_roots(session_id).execution
     }
@@ -621,7 +620,7 @@ impl Pinvou3Bridge {
     /// Returns whether this session exposes Browser MCP tools. Plain Work mode is necessary
     /// but not sufficient: external ACP sessions are also Plain, yet do not execute through
     /// the Pinvou Engine and must be excluded on the runtime axis.
-    pub fn exposes_browser_mcp(&self, session_id: &str) -> bool {
+    fn exposes_browser_mcp(&self, session_id: &str) -> bool {
         !self.is_external_acp_session(session_id)
             && self.session_policy(session_id).exposes_browser_mcp()
     }
@@ -708,7 +707,7 @@ impl Pinvou3Bridge {
     /// directory, so behavior is byte-for-byte unchanged.
     ///
     /// `execution_workspace` 必须来自 [`Self::session_workspace`]（或
-    /// [`Self::session_roots`] 的 `execution` 字段）。对 ledger 与 execution 相同的
+    /// `Self::session_roots` 的 `execution` 字段）。对 ledger 与 execution 相同的
     /// sessions (unbound plain / scratch code / scheduled), return the incoming
     /// execution root as-is,
     /// scheduled 会话写其项目目录的既有行为。
@@ -741,7 +740,7 @@ impl Pinvou3Bridge {
     ///  • 多引擎并发不再依赖 per-session 文件避免 race(内存对象天然隔离)
     ///  • rehydrate 不再从 disk 重读,内容跟 EngineConfig 一起在内存里活
     ///  • Inline name 保持稳定,避免纯展示标签中的 session_id 破坏跨会话前缀缓存
-    pub fn session_instructions(&self, session_id: &str) -> Vec<InstructionSource> {
+    fn session_instructions(&self, session_id: &str) -> Vec<InstructionSource> {
         let mut out: Vec<InstructionSource> = Vec::new();
         let rendered = self.build_session_system_prompt(session_id);
         out.push(InstructionSource::Inline {
@@ -1275,13 +1274,6 @@ impl Pinvou3Bridge {
         )
     }
 
-    /// 是否配置了**可用**的独立视觉模型(或 Supported 主模型可自复用)。
-    /// 与 `image_input_mode` 内部的 `has_vision_model` 同一口径
-    /// (`resolve_vision_model_config`),供能力查询命令回传前端展示。
-    pub fn has_vision_model(&self) -> bool {
-        self.resolve_vision_model_config().is_some()
-    }
-
     /// 当前有效模型 endpoint 是否指向本机(设计 §11.8/§11.9):前端据此决定是否在
     /// 附件区提示"图片将发送给模型服务商"——本机 loopback 场景图片字节不离开本机,
     /// 不得显示云上传字样。判定与 `api_key_for_saved_model` 同一口径:preset 为
@@ -1296,7 +1288,7 @@ impl Pinvou3Bridge {
     }
 
     /// Current search API key from env or encrypted credential store.
-    pub fn search_api_key(&self) -> Option<String> {
+    fn search_api_key(&self) -> Option<String> {
         let provider = self.prefs.search.provider;
         for name in provider.env_key_names() {
             if let Ok(value) = std::env::var(name) {
@@ -1344,7 +1336,7 @@ impl Pinvou3Bridge {
     /// user's explicit `SavedModel.max_output_tokens` (the operator can
     /// raise the cap via this env / prefs) and the compaction threshold
     /// derivation fallback.
-    pub fn max_output_tokens(&self) -> u32 {
+    fn max_output_tokens(&self) -> u32 {
         if let Ok(v) = std::env::var("PINVOU3_MAX_OUTPUT_TOKENS") {
             if let Ok(n) = v.parse() {
                 return n;
@@ -1516,7 +1508,7 @@ impl Pinvou3Bridge {
     /// legacy 单引擎路径(headless harness 用):走 instructions inline + 用户自定义。
     /// 跟 [`Self::session_instructions`] 区别仅在不带 session_id —— 直接用 work 渲染原文
     /// (不替换 `{{PINVOU3_WORKSPACE}}`)。
-    pub fn instructions(&self) -> Vec<InstructionSource> {
+    fn instructions(&self) -> Vec<InstructionSource> {
         let mut out: Vec<InstructionSource> = vec![InstructionSource::Inline {
             name: "pinvou3:bundle/instructions".to_string(),
             content: instructions_md().replace(
@@ -1961,11 +1953,8 @@ impl Pinvou3Bridge {
         cfg
     }
 
-    /// 该会话 scope 被禁 CLI 连接器的 execpolicy deny 规则集（硬拦截）。
-    ///
-    /// 技能组合目录是软门控（模型看不见技能），本规则集是硬兜底：模型即使知道
-    /// 命令，`lark-cli` 等被禁 CLI 二进制也在 spawn 前被底座硬拒（deny 全模式
-    /// 生效，含 YOLO；错误直返模型）。从 scope 禁用集派生，自身无状态。
+    /// 会话 scope 被禁 CLI 连接器的 deny 规则（硬拦截，经
+    /// [`scope_deny_ruleset_with`] 并入 execpolicy 规则集）。
     ///
     /// 覆盖面边界（四轮评审登记，仅注释、不改行为）：规则按 CLI **二进制名**做
     /// word-boundary 前缀匹配（同 `skill_script_deny_rules` 的 DSL 现状），只拦
@@ -2160,94 +2149,28 @@ impl Pinvou3Bridge {
         let reasoning_stream_style = self.reasoning_stream_style(&provider);
         let providers = cfg.providers.get_or_insert_with(ProvidersConfig::default);
         // 按 provider 写对应 provider 配置的 base_url + api_key
-        match provider.as_str() {
-            "vllm" => configure_provider(
-                &mut providers.vllm,
-                &base_url,
-                &api_key,
-                &model,
-                reasoning_stream_style,
-            ),
-            "ollama" => configure_provider(
-                &mut providers.ollama,
-                &base_url,
-                &api_key,
-                &model,
-                reasoning_stream_style,
-            ),
-            "openai" => configure_provider(
-                &mut providers.openai,
-                &base_url,
-                &api_key,
-                &model,
-                reasoning_stream_style,
-            ),
-            "deepseek" => configure_provider(
-                &mut providers.deepseek,
-                &base_url,
-                &api_key,
-                &model,
-                reasoning_stream_style,
-            ),
-            "moonshot" => configure_provider(
-                &mut providers.moonshot,
-                &base_url,
-                &api_key,
-                &model,
-                reasoning_stream_style,
-            ),
-            "volcengine" => configure_provider(
-                &mut providers.volcengine,
-                &base_url,
-                &api_key,
-                &model,
-                reasoning_stream_style,
-            ),
-            "zai" => configure_provider(
-                &mut providers.zai,
-                &base_url,
-                &api_key,
-                &model,
-                reasoning_stream_style,
-            ),
-            "minimax" => configure_provider(
-                &mut providers.minimax,
-                &base_url,
-                &api_key,
-                &model,
-                reasoning_stream_style,
-            ),
-            "xiaomi-mimo" => configure_provider(
-                &mut providers.xiaomi_mimo,
-                &base_url,
-                &api_key,
-                &model,
-                reasoning_stream_style,
-            ),
-            "anthropic" => configure_provider(
-                &mut providers.anthropic,
-                &base_url,
-                &api_key,
-                &model,
-                reasoning_stream_style,
-            ),
-            "xai" => configure_provider(
-                &mut providers.xai,
-                &base_url,
-                &api_key,
-                &model,
-                reasoning_stream_style,
-            ),
-            _ => {
-                configure_provider(
-                    &mut providers.vllm,
-                    &base_url,
-                    &api_key,
-                    &model,
-                    reasoning_stream_style,
-                );
-            }
-        }
+        let provider_config = match provider.as_str() {
+            "vllm" => &mut providers.vllm,
+            "ollama" => &mut providers.ollama,
+            "openai" => &mut providers.openai,
+            "deepseek" => &mut providers.deepseek,
+            "moonshot" => &mut providers.moonshot,
+            "volcengine" => &mut providers.volcengine,
+            "zai" => &mut providers.zai,
+            "minimax" => &mut providers.minimax,
+            "xiaomi-mimo" => &mut providers.xiaomi_mimo,
+            "anthropic" => &mut providers.anthropic,
+            "xai" => &mut providers.xai,
+            // 未知 provider 统一落到 vllm（与既有 catch-all 行为一致）。
+            _ => &mut providers.vllm,
+        };
+        configure_provider(
+            provider_config,
+            &base_url,
+            &api_key,
+            &model,
+            reasoning_stream_style,
+        );
         cfg.default_text_model = Some(model);
         // 本地模型（vLLM / 探测出的 Ollama）默认关 thinking（防 SSE timeout）；其余默认 high。
         cfg.reasoning_effort = self.request_reasoning_effort();
@@ -2523,10 +2446,9 @@ impl Pinvou3Bridge {
             dynamic_tools: Vec::new(),
             provenance: deepseek_tui::core::ops::UserInputProvenance::ImportedTranscript,
             turn_tool_security: Some(Arc::new(turn_tool_security)),
-            // CodeWhale#58 echoes this token on TurnStarted; replay import
-            // does not correlate submit-window turns, so None (wiring lands
-            // with the turn-bound stop PR).
-            submission_id: None,
+            // Eval replays submit through the same lifecycle and stop path,
+            // so their submit→TurnStarted window needs the same correlation.
+            submission_id: Some(self.next_submission_id()),
         })
     }
 
@@ -2552,6 +2474,16 @@ impl Pinvou3Bridge {
             self.build_multi_agent_hook_executor(workspace),
             Some(snapshot),
         )
+    }
+
+    /// Fresh host submission correlation token (`Op::SendMessage` /
+    /// `Op::EditLastTurn` `submission_id`). The foundation echoes it verbatim
+    /// on the started turn's `TurnStarted`, and `None` on every runtime
+    /// self-started turn, so the forwarder can bind the deferred
+    /// submit→`TurnStarted` stop replay to the submitted turn and refuse an
+    /// overtaking self-started follow-up (issue #254).
+    pub(crate) fn next_submission_id(&self) -> String {
+        format!("sub-{}", uuid::Uuid::new_v4())
     }
 
     fn ensure_session_skills_for_send(&self, session_id: &str) {
@@ -2683,10 +2615,12 @@ impl Pinvou3Bridge {
             // provenance: 消息来源。build_send_message_op 是用户内容 → ExternalUser。
             provenance: deepseek_tui::core::ops::UserInputProvenance::ExternalUser,
             turn_tool_security: None,
-            // CodeWhale#58 echoes this token on TurnStarted; the GUI does not
-            // correlate submit-window turns yet, so None (wiring lands with
-            // the turn-bound stop PR).
-            submission_id: None,
+            // Host submission correlation token, echoed by the foundation on
+            // this turn's `TurnStarted`; the forwarder only consumes the
+            // deferred submit-window stop replay on the matching echo, so an
+            // overtaking self-started follow-up can neither consume nor be
+            // killed by the replay (issue #254).
+            submission_id: Some(self.next_submission_id()),
         })
     }
 }
@@ -4451,6 +4385,26 @@ mod tests {
         assert!(
             content.contains("[Attached image: /tmp/shot.png]"),
             "官方标记行必须原样透传,得到:\n{content}"
+        );
+    }
+
+    /// Every host-submitted op path must mint a correlation token: the
+    /// turn-bound stop replay is delivered only via the `TurnStarted`
+    /// echo, so an untagged op would leave the user's stop undeliverable
+    /// (issue #254).
+    #[test]
+    fn build_send_message_op_mints_a_submission_id() {
+        let bridge = fixture_bridge();
+        let op = bridge
+            .build_send_message_op("sess-plain", "hi".to_string(), AppMode::Agent, None, false)
+            .expect("resolve test route");
+        let Op::SendMessage { submission_id, .. } = op else {
+            panic!("expected SendMessage");
+        };
+        let submission_id = submission_id.expect("interactive send must mint a submission id");
+        assert!(
+            submission_id.starts_with("sub-"),
+            "unexpected token shape: {submission_id}"
         );
     }
 

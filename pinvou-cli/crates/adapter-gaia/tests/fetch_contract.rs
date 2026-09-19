@@ -60,7 +60,12 @@ impl SnapshotDownloader for DenyDownloader {
 }
 
 fn manager(acquisition: &TempDir, worktree: &TempDir) -> GaiaSnapshotManager<DenyDownloader> {
-    GaiaSnapshotManager::new(acquisition.path(), worktree.path(), DenyDownloader).unwrap()
+    GaiaSnapshotManager::new_with_optional_worktree(
+        acquisition.path(),
+        Some(worktree.path()),
+        DenyDownloader,
+    )
+    .unwrap()
 }
 
 #[test]
@@ -96,7 +101,12 @@ fn fetch_rejects_snapshot_inside_worktree_or_ancestor_of_worktree() {
     let inside = worktree_path.join("private-gaia");
     fs::create_dir_all(&inside).unwrap();
     let acquisition = TempDir::new("acquisition");
-    let manager = GaiaSnapshotManager::new(&acquisition.0, &worktree_path, DenyDownloader).unwrap();
+    let manager = GaiaSnapshotManager::new_with_optional_worktree(
+        &acquisition.0,
+        Some(worktree_path.as_path()),
+        DenyDownloader,
+    )
+    .unwrap();
 
     assert_eq!(
         manager

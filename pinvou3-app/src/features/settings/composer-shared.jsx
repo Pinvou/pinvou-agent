@@ -426,6 +426,18 @@ window.addEventListener('pinvou:chat-round-committed', (event) => {
       );
     };
 
+    // CLI 连接器（飞书/企微/钉钉/腾讯会议）共用一份配置表：探测命令（固定
+    // `<key>_skills_state`）与菜单行标题 key 都由它派生，避免四份手写拷贝漂移。
+    const COMPOSER_CONNECTORS = [
+      { key: 'feishu', titleKey: 'serviceFeishu' },
+      { key: 'wecom', titleKey: 'serviceWecom' },
+      { key: 'dingtalk', titleKey: 'serviceDingtalk' },
+      { key: 'tmeet', titleKey: 'serviceTmeet' },
+    ];
+    const initialConnectorStates = () => Object.fromEntries(
+      COMPOSER_CONNECTORS.map(({ key }) => [key, { on: false, enabled: true }]),
+    );
+
     // 输入框底栏:工具菜单(只展示已装工具 + 跳工具商店;无会话级开关——后端无此概念)。
     // 可选触发器变体：triggerVariant='pill' 时触发器渲染为代码页配置组同款 pill
     //（triggerLabel 为可选 10px 前缀文案；triggerTestId 覆盖默认 testid），
@@ -454,14 +466,8 @@ window.addEventListener('pinvou:chat-round-committed', (event) => {
       const [hidden, setHidden] = useState(() => new Set()); // 被不可见的包 id(可见性预过滤，按 scope 持久)
       const [projectSkillsEnabled, setProjectSkillsEnabled] = useState(false); // 项目级 skills(仅 code scope 生效)
       const [projectSkillsHelp, setProjectSkillsHelp] = useState(false); // 项目技能帮助弹窗(功能说明+扫描目录)
-      const [feishuOn, setFeishuOn] = useState(false); // 飞书是否已连接(CLI 路线)
-      const [feishuEnabled, setFeishuEnabled] = useState(true); // 飞书技能是否启用(未手动停用)
-      const [wecomOn, setWecomOn] = useState(false); // 企微是否已连接(CLI 路线)
-      const [wecomEnabled, setWecomEnabled] = useState(true); // 企微技能是否启用(未手动停用)
-      const [dingtalkOn, setDingtalkOn] = useState(false); // 钉钉是否已连接(CLI 路线)
-      const [dingtalkEnabled, setDingtalkEnabled] = useState(true); // 钉钉技能是否启用(未手动停用)
-      const [tmeetOn, setTmeetOn] = useState(false); // 腾讯会议是否已连接(CLI 路线)
-      const [tmeetEnabled, setTmeetEnabled] = useState(true); // 腾讯会议技能是否启用(未手动停用)
+      // CLI 连接器连接/技能状态：key → { on: 是否已连接, enabled: 技能是否启用(未手动停用) }。
+      const [connectorStates, setConnectorStates] = useState(initialConnectorStates);
       // 启动时加载已装工具 + 全局持久的禁用列表(持久语义:新窗口/新对话都继承)
       async function refreshToolsMenu(isAlive) {
         try {
@@ -484,22 +490,19 @@ window.addEventListener('pinvou:chat-round-committed', (event) => {
           const proj = await invokeTauri('get_project_skills_enabled');
           if (isAlive()) setProjectSkillsEnabled(!!proj);
         } catch { /* ignore */ }
-        try {
-          const fs = await invokeTauri('feishu_skills_state');
-          if (isAlive()) { setFeishuOn(!!(fs && fs.connected)); setFeishuEnabled(!fs || fs.enabled !== false); }
-        } catch { /* ignore */ }
-        try {
-          const ws = await invokeTauri('wecom_skills_state');
-          if (isAlive()) { setWecomOn(!!(ws && ws.connected)); setWecomEnabled(!ws || ws.enabled !== false); }
-        } catch { /* ignore */ }
-        try {
-          const ds = await invokeTauri('dingtalk_skills_state');
-          if (isAlive()) { setDingtalkOn(!!(ds && ds.connected)); setDingtalkEnabled(!ds || ds.enabled !== false); }
-        } catch { /* ignore */ }
-        try {
-          const ts = await invokeTauri('tmeet_skills_state');
-          if (isAlive()) { setTmeetOn(!!(ts && ts.connected)); setTmeetEnabled(!ts || ts.enabled !== false); }
-        } catch { /* ignore */ }
+        // 逐 CLI 连接器探测连接/技能启用态（`<key>_skills_state`）：顺序 await，
+        // 与原先四段展开实现一致；单个失败不影响其余连接器。
+        for (const { key } of COMPOSER_CONNECTORS) {
+          try {
+            const state = await invokeTauri(`${key}_skills_state`);
+            if (isAlive()) {
+              setConnectorStates(prev => ({
+                ...prev,
+                [key]: { on: !!(state && state.connected), enabled: !state || state.enabled !== false },
+              }));
+            }
+          } catch { /* ignore */ }
+        }
       }
       useEffect(() => {
         let alive = true;
@@ -566,12 +569,12 @@ window.addEventListener('pinvou:chat-round-committed', (event) => {
         hiddenIds: [...hidden],
         activeSkill,
         scope: toolScope,
-        serviceStates: [
-          { id: 'feishu', title: t.uiSettingsView.serviceFeishu, connected: feishuOn, enabled: feishuEnabled },
-          { id: 'wecom', title: t.uiSettingsView.serviceWecom, connected: wecomOn, enabled: wecomEnabled },
-          { id: 'dingtalk', title: t.uiSettingsView.serviceDingtalk, connected: dingtalkOn, enabled: dingtalkEnabled },
-          { id: 'tmeet', title: t.uiSettingsView.serviceTmeet, connected: tmeetOn, enabled: tmeetEnabled },
-        ],
+        serviceStates: COMPOSER_CONNECTORS.map(({ key, titleKey }) => ({
+          id: key,
+          title: t.uiSettingsView[titleKey],
+          connected: connectorStates[key].on,
+          enabled: connectorStates[key].enabled,
+        })),
       });
       const { connectedServices, toolRows, skillRows, enabledCount, allSkillsDisabled } = menuState;
       // 内置技能名称/描述由 composer-tool-menu-logic.js 数据提供，在 UI 边界按当前语言覆盖

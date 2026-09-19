@@ -1,6 +1,6 @@
 //! 本地知识底座 L0：全系统元数据索引 + 秒搜 + 去重。
 //!
-//! 见 docs/本地知识底座-产品形态与架构.md。v0 以 in-process 模块落地（复用 `notify`/
+//! v0 以 in-process 模块落地（复用
 //! `bridge::paths`/Tauri 命令通路），用 [`KnowledgeService`]（UI 无关）收口，
 //! 便于日后抽成独立 `pinvou3-knowledged` daemon + MCP（`kb_*`）。
 //!
@@ -9,7 +9,6 @@
 
 #[cfg(test)]
 mod e2e_test;
-mod embed;
 mod exclude;
 mod import_jobs;
 mod kb_tool;
@@ -20,10 +19,6 @@ pub mod model_download;
 mod query;
 mod scanner;
 mod store;
-/// 实时 watcher 现已不接（懒触发后不常驻，避免监听全 $HOME 长期占 inotify/内存）。
-/// 保留模块供未来 daemon 版的「热点 watch + 周期重扫」混合策略复用。
-#[allow(dead_code)]
-mod watcher;
 
 pub use exclude::Excluder;
 pub use import_jobs::{FailedImportFilePage, ImportJobState as IndexState};
@@ -40,7 +35,6 @@ use std::time::Duration;
 use parking_lot::Mutex;
 use serde::{Deserialize, Serialize};
 use tauri::State;
-use walkdir::WalkDir;
 
 pub use store::{FileHit, Stats, TypeCount};
 use store::{SearchQuery, Store};
@@ -50,12 +44,10 @@ use store::{SearchQuery, Store};
 #[serde(rename_all = "camelCase")]
 pub struct ScanState {
     pub running: bool,
-    /// idle / scanning / deduping / done / cancelled
+    /// idle / scanning / done / cancelled
     pub phase: String,
     pub roots: Vec<String>,
     pub scanned: u64,
-    pub dedup_done: u64,
-    pub dedup_total: u64,
     pub started_at: i64,
     pub finished_at: i64,
 }
@@ -168,20 +160,24 @@ impl KnowledgeService {
 
     /// 构建 embedding 模型。调用方必须把它放进 `spawn_blocking`，该过程会同步读取约
     /// 558 MiB 的 ONNX/Tokenizer 文件并创建推理会话。
-    fn load_embedder(model_dir: Option<&Path>) -> Result<Arc<embed::Embedder>, String> {
+    fn load_embedder(
+        model_dir: Option<&Path>,
+    ) -> Result<Arc<pinvou_knowledge::embedding::Embedder>, String> {
         crate::platform::os::configure_onnxruntime_dylib()?;
-        embed::Embedder::from_env_or_dir(model_dir).map(Arc::new)
+        pinvou_knowledge::embedding::Embedder::from_env_or_dir(model_dir).map(Arc::new)
     }
 
     /// 严格从调用方指定目录构建 embedding，不读取开发环境的模型目录覆盖。
     /// 下载修复必须使用该入口验证候选目录，避免验证了外部目录却替换托管目录。
-    fn load_embedder_from_dir(model_dir: &Path) -> Result<Arc<embed::Embedder>, String> {
+    fn load_embedder_from_dir(
+        model_dir: &Path,
+    ) -> Result<Arc<pinvou_knowledge::embedding::Embedder>, String> {
         crate::platform::os::configure_onnxruntime_dylib()?;
         let name = std::env::var("PINVOU3_KB_EMBED_MODEL")
             .ok()
             .filter(|value| !value.trim().is_empty())
             .unwrap_or_else(|| model_download::MODEL_VERSION.to_string());
-        embed::Embedder::from_dir(model_dir, &name)
+        pinvou_knowledge::embedding::Embedder::from_dir(model_dir, &name)
             .map(Arc::new)
             .map_err(|error| format!("embedding 模型加载失败({}): {error}", model_dir.display()))
     }
@@ -189,7 +185,7 @@ impl KnowledgeService {
     /// 将后台构建完成的模型原子换入共享槽；所有 L1Store clone 立即可见。
     /// 同时重置空闲时钟并确保巡检在跑：热加载（下载完成 / kb_model_status
     /// 状态查询 / 导入前补载）都视为用户意图，从加载时刻重新计空闲。
-    fn install_embedder(&self, embedder: Arc<embed::Embedder>) -> bool {
+    fn install_embedder(&self, embedder: Arc<pinvou_knowledge::embedding::Embedder>) -> bool {
         eprintln!(
             "[knowledge] L1 embedding 已启用: {} ({})",
             embedder.model(),
@@ -273,7 +269,7 @@ impl KnowledgeService {
     fn reload_embedder_if_import_needed_with(
         &self,
         model_installed: bool,
-        load: impl FnOnce() -> Result<Arc<embed::Embedder>, String>,
+        load: impl FnOnce() -> Result<Arc<pinvou_knowledge::embedding::Embedder>, String>,
     ) {
         if self.l1.has_embedder() || !model_installed {
             return;
@@ -291,13 +287,6 @@ impl KnowledgeService {
                 eprintln!("[knowledge] 导入前重载 embedding 模型失败（降级仅全文）: {error}");
             }
         }
-    }
-
-    /// 热加载 embedding 模型（按需下载完成后调）：按 dev-env 优先 / 下载落点兜底重新定位并加载，
-    /// 换进所有在跑会话/后台线程共享的 embedder 槽，**免重启**。返回是否就绪。
-    pub fn reload_embedder(&self) -> Result<bool, String> {
-        let embedder = Self::load_embedder(Some(&model_dir()))?;
-        Ok(self.install_embedder(embedder))
     }
 
     /// 知识库是否有任何已入库内容（任一知识集存在文档）。门控 kb_search/kb_open_source
@@ -586,6 +575,9 @@ impl KnowledgeService {
         self.scan_state.lock().clone()
     }
 
+    /// 仅测试用：kb_cancel_scan 命令已下线（懒触发扫描无前端取消入口），
+    /// 生产路径不再有调用方；扫描线程内的 cancel 分支保留（语义不变）。
+    #[cfg(test)]
     pub fn cancel_scan(&self) {
         self.cancel.store(true, Ordering::Relaxed);
     }
@@ -598,6 +590,7 @@ impl KnowledgeService {
 /// 后台索引入口的补载实现已上收到 `KnowledgeService::
 /// reload_embedder_if_import_needed`（导入线程持有服务句柄，补载必须经
 /// install_embedder 启动空闲巡检，自由函数直写 l1 槽会绕过巡检启动）。
+/// 剪枝遍历复用 `scanner::walk_pruned`（与全盘扫描同一排除语义）。
 fn expand_import_roots(roots: &[PathBuf], cancel: &AtomicBool) -> Vec<PathBuf> {
     let ex = Excluder::default();
     let mut files = Vec::new();
@@ -609,24 +602,7 @@ fn expand_import_roots(roots: &[PathBuf], cancel: &AtomicBool) -> Vec<PathBuf> {
             files.push(root.clone());
             continue;
         }
-        let walker = WalkDir::new(root)
-            .follow_links(false)
-            .into_iter()
-            .filter_entry(|entry| {
-                let name = entry.file_name().to_str().unwrap_or("");
-                let is_dir = entry.file_type().is_dir();
-                let ext = if is_dir {
-                    None
-                } else {
-                    entry
-                        .path()
-                        .extension()
-                        .and_then(|s| s.to_str())
-                        .map(|s| s.to_lowercase())
-                };
-                !ex.is_skipped(name, is_dir, ext.as_deref())
-            });
-        for entry in walker.flatten() {
+        for entry in scanner::walk_pruned(root, &ex) {
             if cancel.load(Ordering::Relaxed) {
                 break;
             }
@@ -647,7 +623,7 @@ pub fn default_db_path() -> PathBuf {
 
 /// embedding 模型按需下载落点：`~/.pinvou3/knowledge/models/bge-m3`。
 /// 模型不再随 deb 打包（deb 瘦 ~559MB）；用户在知识库页主动下载部署到此目录后才启用语义检索。
-/// dev 仍可用 env `PINVOU3_KB_EMBED_MODEL_DIR` 覆盖（见 embed::from_env_or_dir）。
+/// dev 仍可用 env `PINVOU3_KB_EMBED_MODEL_DIR` 覆盖（见 pinvou_knowledge::embedding::Embedder::from_env_or_dir）。
 pub fn model_dir() -> PathBuf {
     crate::platform::paths::pinvou3_home()
         .join("knowledge")
@@ -712,9 +688,6 @@ pub fn kb_start_scan(state: State<'_, KnowledgeService>, roots: Option<Vec<Strin
 }
 pub fn kb_scan_status(state: State<'_, KnowledgeService>) -> ScanState {
     state.status()
-}
-pub fn kb_cancel_scan(state: State<'_, KnowledgeService>) {
-    state.cancel_scan();
 }
 
 /// L0：按扩展名分类计数（文件管理「按类型浏览」用）。

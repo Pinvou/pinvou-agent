@@ -10,7 +10,7 @@ use windows_sys::Win32::Storage::FileSystem::{
 };
 
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub(super) struct WorkspaceIdentity {
+pub(in crate::features::remote_control) struct WorkspaceIdentity {
     volume_serial: u32,
     file_index: u64,
 }

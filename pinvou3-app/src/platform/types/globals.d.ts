@@ -24,7 +24,6 @@ declare global {
     __TAURI__: any;
     __PINVOU_STARTUP__: any;
     __PINVOU_TAURI_BRIDGE_FEATURES__: any;
-    __PINVOU_SHARED_I18N__: any;
     PinvouMarkdownRenderer: any;
     PinvouWebClient: any;
     // i18n string/function dictionary injected by src/app/main.jsx (uiPlatformMisc.webClientErrors),

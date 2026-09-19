@@ -11,18 +11,11 @@ const DESIGN_MESSAGE_TYPES = {
 };
 
 function buildDesignRuntimeScript() {
-  return `(${function designRuntime() {
-    const TYPES = {
-      READY: 'pinvou:design-runtime-ready',
-      ELEMENT_SELECTED: 'pinvou:design-element-selected',
-      APPLY_CHANGE: 'pinvou:design-apply-change',
-      CHANGE_APPLIED: 'pinvou:design-change-applied',
-      ELEMENT_MUTATED: 'pinvou:design-element-mutated',
-      CLEAR_CHANGES: 'pinvou:design-clear-changes',
-      ERROR: 'pinvou:design-runtime-error',
-      DESTROY: 'pinvou:design-runtime-destroy',
-      DESTROYED: 'pinvou:design-runtime-destroyed',
-    };
+  // Message types are injected verbatim from DESIGN_MESSAGE_TYPES as the IIFE
+  // argument (the function body is itself a template interpolation, so a
+  // nested ${...} would not parse) and the 9 'pinvou:design-*' strings exist
+  // only once in the source tree.
+  return `(${function designRuntime(TYPES) {
     const STYLE_FIELDS = ['color','backgroundColor','fontSize','fontWeight','margin','padding','width','height','minWidth','maxWidth','minHeight','maxHeight','display','position','top','right','bottom','left','zIndex','opacity','lineHeight','letterSpacing','textAlign','fontFamily','backgroundImage','backgroundSize','backgroundPosition','backgroundRepeat','marginTop','marginRight','marginBottom','marginLeft','paddingTop','paddingRight','paddingBottom','paddingLeft','gap','rowGap','columnGap','flexDirection','justifyContent','alignItems','alignSelf','overflow','borderTopWidth','borderRightWidth','borderBottomWidth','borderLeftWidth','borderTopStyle','borderRightStyle','borderBottomStyle','borderLeftStyle','borderTopColor','borderRightColor','borderBottomColor','borderLeftColor','borderTopLeftRadius','borderTopRightRadius','borderBottomRightRadius','borderBottomLeftRadius','borderRadius','visibility','cursor'];
     const DATA_ID = 'data-pinvou-design-id';
     let nextId = 1;
@@ -711,7 +704,7 @@ function buildDesignRuntimeScript() {
     } catch (error) {
       post(TYPES.ERROR, { error: String(error && error.message || error) });
     }
-  }.toString()})();`;
+  }.toString()})(${JSON.stringify(DESIGN_MESSAGE_TYPES)});`;
 }
 
 export {

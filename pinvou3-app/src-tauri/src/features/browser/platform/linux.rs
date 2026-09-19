@@ -1,9 +1,8 @@
 //! Linux WebKitGTK BrowserCore driver.
 //!
-//! DOM discovery stays inside the task-owned `WebView`. Trusted pointer and
-//! keyboard input is submitted through WebKitGTK's standards-based WebDriver
-//! endpoint, so events are scoped to that page and do not take over the
-//! desktop-wide mouse or keyboard.
+//! Page interaction stays inside the task-owned `WebView` and is driven
+//! through WebKitGTK's loopback WebDriver endpoint; trusted element-scoped
+//! input dispatch lives in `linux_automation`.
 
 use serde_json::Value;
 use std::sync::Arc;
@@ -14,7 +13,7 @@ use webkit2gtk::WebViewExt;
 use super::state::NativeTabLease;
 use super::{
     ACTION_COMMIT_UNKNOWN_SCRIPT_INTERRUPTION, AsyncDispatchState, BrowserCoreEvaluationMode,
-    NativeInput, linux_automation,
+    linux_automation,
 };
 
 const EVALUATION_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(15);
@@ -106,64 +105,4 @@ pub(super) async fn evaluate_json(
             commit_unknown_prefix,
         )
         .await
-}
-
-pub(super) async fn bind_webview(webview: &Webview) -> Result<(), String> {
-    linux_automation::bind_webview(webview).await
-}
-
-pub(super) async fn wait_until_ready() -> Result<(), String> {
-    linux_automation::wait_until_ready().await
-}
-
-pub(super) async fn dispatch_input(
-    webview: &Webview,
-    authorization: &NativeTabLease,
-    input: NativeInput,
-) -> Result<(), String> {
-    linux_automation::dispatch_input(webview, authorization, input).await
-}
-
-pub(super) async fn click_element(
-    webview: &Webview,
-    authorization: &NativeTabLease,
-    uid: &str,
-    click_count: u8,
-) -> Result<(), String> {
-    linux_automation::click_element(webview, authorization, uid, click_count).await
-}
-
-pub(super) async fn fill_element(
-    webview: &Webview,
-    authorization: &NativeTabLease,
-    uid: &str,
-    value: &str,
-) -> Result<(), String> {
-    linux_automation::fill_element(webview, authorization, uid, value).await
-}
-
-pub(super) async fn type_text(
-    webview: &Webview,
-    authorization: &NativeTabLease,
-    text: &str,
-    submit_key: Option<&str>,
-) -> Result<(), String> {
-    linux_automation::type_text(webview, authorization, text, submit_key).await
-}
-
-pub(super) async fn press_key(
-    webview: &Webview,
-    authorization: &NativeTabLease,
-    key: &str,
-) -> Result<(), String> {
-    linux_automation::press_key(webview, authorization, key).await
-}
-
-pub(super) async fn handle_dialog(
-    webview: &Webview,
-    authorization: &NativeTabLease,
-    action: &str,
-    prompt_text: Option<&str>,
-) -> Result<String, String> {
-    linux_automation::handle_dialog(webview, authorization, action, prompt_text).await
 }

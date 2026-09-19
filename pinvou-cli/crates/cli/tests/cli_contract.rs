@@ -160,6 +160,22 @@ fn gaia_parser_exposes_only_the_pinned_official_level_one_workflow() {
                 "gaia",
                 "--run-id",
                 "run-1",
+                "--destination",
+                "submission.jsonl",
+            ],
+            BenchmarkCommand::SubmissionGaia {
+                run_id: "run-1".into(),
+                output: PathBuf::from("submission.jsonl"),
+            },
+        ),
+        (
+            vec![
+                "pinvou",
+                "benchmark",
+                "submission",
+                "gaia",
+                "--run-id",
+                "run-1",
                 "--output",
                 "submission.jsonl",
             ],
@@ -480,6 +496,32 @@ fn invalid_usage_maps_to_exit_code_two() {
     assert_eq!(ExitCode::Success.as_i32(), 0);
     assert_eq!(ExitCode::Failed.as_i32(), 1);
     assert_eq!(ExitCode::Usage.as_i32(), 2);
+}
+
+#[test]
+fn unrecognized_output_value_falls_through_to_usage_error() {
+    // Outside `benchmark submission gaia` (which consumes `--output <file>` as
+    // a legacy alias of `--destination`), an unrecognized `--output` value
+    // stays in argv and surfaces as the standard usage error.
+    let error = parse_args(["pinvou", "--output", "yaml", "benchmark", "list"]).unwrap_err();
+    assert_eq!(error.exit_code(), ExitCode::Usage);
+    assert_eq!(
+        error.to_string(),
+        "usage: pinvou benchmark <command> | pinvou agent run"
+    );
+}
+
+#[test]
+fn output_without_value_points_at_destination() {
+    // A valueless `--output` fails fast with a usage error that names the
+    // flag for file submissions (the gaia `--output <file>` legacy alias
+    // only fires when a value is present).
+    let error = parse_args(["pinvou", "--output"]).unwrap_err();
+    assert_eq!(error.exit_code(), ExitCode::Usage);
+    assert_eq!(
+        error.to_string(),
+        "--output requires human or json (submission files use --destination)"
+    );
 }
 
 #[test]

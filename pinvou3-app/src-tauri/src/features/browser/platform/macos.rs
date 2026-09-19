@@ -27,7 +27,6 @@ use tauri::Webview;
 use super::state::{NativeTabLease, WorkspaceControl};
 use super::{
     ACTION_COMMIT_UNKNOWN_SCRIPT_INTERRUPTION, AsyncDispatchState, BrowserCoreEvaluationMode,
-    NativeInput,
 };
 
 const EVALUATION_TIMEOUT: Duration = Duration::from_secs(15);
@@ -255,27 +254,6 @@ fn copy_json_callback(value: *mut AnyObject, error: *mut NSError) -> Result<Valu
         .to_string();
     serde_json::from_str(&json_string)
         .map_err(|error| format!("browser/wkwebview-json-invalid: {error}"))
-}
-
-pub(super) async fn dispatch_input(
-    webview: &Webview,
-    authorization: &NativeTabLease,
-    input: NativeInput,
-) -> Result<(), String> {
-    let _guard = input_gate().lock().await;
-    match input {
-        NativeInput::MouseClick {
-            x,
-            y,
-            button,
-            click_count,
-        } => dispatch_mouse_click(webview, authorization, x, y, button, click_count).await,
-        NativeInput::Key { key } => dispatch_key(webview, authorization, &key).await,
-        NativeInput::Text { text } => insert_text(webview, authorization, &text).await,
-        NativeInput::MouseMove { .. } | NativeInput::Drag { .. } | NativeInput::Scroll { .. } => {
-            Err("browser/trusted-input-gesture-unavailable-on-wkwebview".to_string())
-        }
-    }
 }
 
 pub(super) async fn click_element(

@@ -31,7 +31,7 @@ function loadSessionsFeature(overrides) {
     setItem(key, value) { storage.set(key, String(value)); },
     removeItem(key) { storage.delete(key); },
   };
-  const root = { __PINVOU_SHARED_I18N__: {} };
+  const root = {};
   const src = fs.readFileSync(path.join(bridgeDir, 'sessions.js'), 'utf8');
   vm.runInNewContext(src, { window: root, globalThis: root, localStorage, setTimeout, clearTimeout });
   const factory = root.__PINVOU_TAURI_BRIDGE_FEATURES__.sessions;
@@ -64,7 +64,7 @@ function loadSessionsFeature(overrides) {
   const sessionStates = {};
   const deferreds = {};
   const calls = { invoke: [] };
-  const api = factory(Object.assign({
+  const context = Object.assign({
     state,
     sessionStates,
     notify() { calls.notify = (calls.notify || 0) + 1; },
@@ -108,7 +108,16 @@ function loadSessionsFeature(overrides) {
     loadScheduledTaskRecentRuns() { return Promise.resolve(); },
     scheduledRunSessionOwners: {},
     personaPlaceholderTitles: {},
-  }, overrides || {}));
+  }, overrides || {});
+  // Mirrors the bridge's hoisted pickDirectory scaffold: normalized single-select
+  // array over the harness-provided dialogOpen override.
+  context.pickDirectory = async options => {
+    if (!context.dialogOpen) return null;
+    const selected = await context.dialogOpen(options);
+    if (!selected) return null;
+    return Array.isArray(selected) ? selected : [selected];
+  };
+  const api = factory(context);
   return {
     api, state, sessionStates, calls, storage,
     defer(name) {

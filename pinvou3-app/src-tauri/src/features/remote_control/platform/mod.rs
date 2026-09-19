@@ -16,8 +16,9 @@ mod fallback;
 #[cfg(not(any(unix, windows)))]
 use fallback as imp;
 
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub(super) struct WorkspaceIdentity(imp::WorkspaceIdentity);
+// The OS implementation defines the filesystem identity directly; this module
+// re-exports it so callers keep using `platform::WorkspaceIdentity`.
+pub(super) use imp::WorkspaceIdentity;
 
 pub(super) fn configure_private_open_options(options: &mut OpenOptions) {
     imp::configure_private_open_options(options);
@@ -44,12 +45,12 @@ pub(super) fn host_file_roots() -> Vec<(String, PathBuf)> {
 }
 
 pub(super) fn workspace_identity(path: &Path) -> std::io::Result<WorkspaceIdentity> {
-    imp::workspace_identity(path).map(WorkspaceIdentity)
+    imp::workspace_identity(path)
 }
 
 #[cfg(test)]
 pub(super) fn test_workspace_identity(seed: u64) -> WorkspaceIdentity {
-    WorkspaceIdentity(imp::test_workspace_identity(seed))
+    imp::test_workspace_identity(seed)
 }
 
 #[cfg(test)]

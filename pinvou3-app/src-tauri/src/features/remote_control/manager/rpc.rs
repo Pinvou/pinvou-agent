@@ -25,14 +25,6 @@ pub(super) enum EventSource {
     Frontend,
 }
 
-pub(super) fn is_event_subscribed(subscriptions: &HashSet<String>, event: &str) -> bool {
-    subscriptions.contains(event)
-}
-
-pub(super) fn rpc_in_flight_expired(dispatched_at: Instant, now: Instant) -> bool {
-    now.duration_since(dispatched_at) > super::RPC_IN_FLIGHT_TTL
-}
-
 pub(super) enum RpcRequestAction {
     None,
     Respond(RelaySender, Value),
@@ -453,7 +445,6 @@ pub(super) fn web_session_scope(command: &str) -> Option<WebSessionScope> {
         | "session_mounted_collections_snapshot"
         | "session_remove_mounted_collection"
         | "session_set_mounted_collection_enabled"
-        | "session_set_mounted_collections"
         | "session_unmount_collection"
         | "set_plan_mode_next"
         | "set_session_model"
@@ -491,8 +482,7 @@ pub(super) fn web_session_scope(command: &str) -> Option<WebSessionScope> {
         | "set_session_archived"
         | "set_session_pinned"
         | "web_access_cancel_session_download"
-        | "web_access_load_session_chunk"
-        | "web_access_save_session_messages_chunk" => Required("id"),
+        | "web_access_load_session_chunk" => Required("id"),
 
         // Omitting these deliberately uses the global/default behavior without
         // consulting the desktop active pointer.
@@ -538,8 +528,6 @@ pub(super) fn validate_web_rpc_scope(
                 .get("downloadId")
                 .and_then(Value::as_str)
                 .is_some_and(|value| !value.trim().is_empty()))
-        || (command == "web_access_save_session_messages_chunk"
-            && args.get("offset").and_then(Value::as_u64).unwrap_or(0) > 0)
     {
         // The opaque transfer token is already bound to the validated
         // Session id in RemoteControlManager; avoid re-reading a large Session
@@ -618,7 +606,7 @@ pub(super) fn subscription_filtered_replay_messages(
     let mut messages = Vec::with_capacity(events.len());
     let mut skipped_through = None;
     for event in events {
-        if is_event_subscribed(subscriptions, &event.event) {
+        if subscriptions.contains(&event.event) {
             if let Some(seq) = skipped_through.take() {
                 messages.push(snapshot_message(
                     context.endpoint_id,
@@ -669,6 +657,18 @@ pub(super) fn stream_reset_message(
     })
 }
 
+pub(super) fn rpc_in_flight_expired(dispatched_at: Instant, now: Instant) -> bool {
+    now.duration_since(dispatched_at) > super::RPC_IN_FLIGHT_TTL
+}
+
+pub(super) fn enqueue_stream_reset(sender: RelaySender, message: Value) {
+    // RelaySender owns a single bounded waiter and coalesces repeated recovery
+    // barriers to the latest lease/epoch while the data channel is saturated.
+    if sender.enqueue_stream_reset(message).is_err() {
+        eprintln!("[web-access] stream reset could not reach the relay task");
+    }
+}
+
 pub(super) fn try_enqueue_message_batch(
     messages: Vec<Value>,
     mut enqueue: impl FnMut(Value) -> bool,
@@ -679,14 +679,6 @@ pub(super) fn try_enqueue_message_batch(
         }
     }
     true
-}
-
-pub(super) fn enqueue_stream_reset(sender: RelaySender, message: Value) {
-    // RelaySender owns a single bounded waiter and coalesces repeated recovery
-    // barriers to the latest lease/epoch while the data channel is saturated.
-    if sender.enqueue_stream_reset(message).is_err() {
-        eprintln!("[web-access] stream reset could not reach the relay task");
-    }
 }
 
 pub(super) fn snapshot_message(
