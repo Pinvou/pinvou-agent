@@ -16,6 +16,26 @@
       : shellCleanupFailed.zh;
   }
 
+  // Backend error strings the desktop computer-use commands surface verbatim
+  // (platform/tauri/bridge/computer_use.js localizeKnownError). Exact
+  // equality only: an unrecognized message returns null and the bridge
+  // passes the original error through untouched.
+  const computerUseKnownErrors = {
+    "computer use has no backend on this operating system": {
+      zh: "当前平台没有电脑使用后端，无法开启此功能。",
+      en: "Computer use is not available on this platform: there is no computer-use backend for this operating system.",
+      ja: "このプラットフォームにはコンピュータ操作のバックエンドがないため、この機能は利用できません。",
+    },
+  };
+
+  function computerUseKnownErrorText(message, language) {
+    const known = computerUseKnownErrors[String(message || "")];
+    if (!known) return null;
+    return language === "en" ? known.en
+      : language === "ja" ? known.ja
+      : known.zh;
+  }
+
   // Runtime-owned user-role turns may arrive with their trailing turn metadata
   // flattened into the same text block. Keep that transport detail out of UI projections.
   function inputProvenanceFromText(value) {
@@ -85,6 +105,7 @@
     isInternalRuntimeUserMessage,
     isInternalUserMessageProvenance,
     userMessageInputProvenance,
+    computerUseKnownErrorText,
     // Error texts the gate missed (gateway/proxy custom bodies, raw
     // provider messages) do not become model-service notices but still get
     // displayed as bare strings / red text. Redact unconditionally in

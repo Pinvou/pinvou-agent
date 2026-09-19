@@ -227,8 +227,18 @@ function describeConfirmAction(copy, request) {
     case 'type':
       return typeof request.textLength === 'number' ? applyTemplate(fn('confirmTypeCount'), request.textLength) : null;
     case 'key':
+      // Secure-target masking: the backend replaces the character keys with
+      // a count (chordMaskedChars) — the raw characters must never reach the
+      // dialog, so the masked templates render "N masked characters" with
+      // only the non-secret named keys prefixed.
+      if (typeof request.chordMaskedChars === 'number' && request.chordMaskedChars) {
+        return applyTemplate(fn('confirmKeyChordMasked'), request.chord, request.chordMaskedChars);
+      }
       return typeof request.chord === 'string' && request.chord ? applyTemplate(fn('confirmKeyChord'), request.chord) : null;
     case 'hold_key':
+      if (typeof request.chordMaskedChars === 'number' && request.chordMaskedChars) {
+        return applyTemplate(fn('confirmHoldKeyMasked'), request.chord, request.chordMaskedChars, request.holdMs);
+      }
       return typeof request.chord === 'string' && request.chord && typeof request.holdMs === 'number'
         ? applyTemplate(fn('confirmHoldKey'), request.chord, request.holdMs)
         : null;
