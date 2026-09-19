@@ -51,6 +51,14 @@ pub use self::io::{
     update_work_context,
 };
 
+// ---- text normalization (util) ----
+// The CLI `memory add` verification compares against the stored text; the
+// stored form is `clean_candidate_sentence`-normalized, so the CLI needs the
+// exact function to avoid false "not materialized" failures on ordinary
+// punctuated input.
+pub use self::io::WORK_CONTEXT_TEXT_MAX_CHARS;
+pub use self::util::clean_candidate_sentence;
+
 // ---- LLM 后台复盘（llm_review）----
 pub use self::llm_review::review_turn_candidates_with_llm;
 

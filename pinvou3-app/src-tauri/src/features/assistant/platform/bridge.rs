@@ -1607,7 +1607,7 @@ impl Pinvou3Bridge {
             goal_token_budget,
             goal_status,
             disallowed_tools: _, // pinvou3 从持久列表算初值(见构造处),默认值忽略
-            max_tool_calls,
+            max_tool_calls: _,
             // —— v0.8.65 上游新增字段,透传 default ——
             //   subagents_enabled: default true（通用多智能体委派需要 SpawnSubAgent）。
             //   launch_concurrency/max_admitted_subagents/subagent_token_budget: subagent
@@ -1820,48 +1820,21 @@ impl Pinvou3Bridge {
                 let n = crate::features::marketplace::disabled_tool_names();
                 if n.is_empty() { None } else { Some(n) }
             },
+            // No tool-call round limit: upstream `max_tool_calls` defaults to
+            // `None` (the admission gate is fully lazy). Runaway protection
+            // stays with the foundation's own max_steps, per-turn wall clock,
+            // bounded retries, and cancel boundaries — the host adds no
+            // per-call-count gate of its own. Harnesses that still export the
+            // old override get told it is dead instead of silently ignored.
             max_tool_calls: {
-                #[cfg(feature = "benchmark-hooks")]
-                {
-                    // Eval builds pin 8 tool calls per turn by default (the
-                    // GAIA runaway guard). Long-horizon agentic scenarios such
-                    // as Terminal-Bench raise it explicitly via
-                    // PINVOU3_MAX_TOOL_CALLS, same env convention as
-                    // PINVOU3_ALLOW_SHELL/PINVOU3_MAX_OUTPUT_TOKENS; unset
-                    // keeps the behavior bit-identical.
-                    let cap = match std::env::var("PINVOU3_MAX_TOOL_CALLS") {
-                        Ok(value) => match value.parse::<u32>() {
-                            // A zero cap would disable every tool call, which
-                            // is never a useful configuration: reject it like
-                            // any other invalid value.
-                            Ok(0) => {
-                                eprintln!(
-                                    "[pinvou3-app] ignoring PINVOU3_MAX_TOOL_CALLS=0 (a zero per-turn cap would disable every tool); falling back to the default cap of 8"
-                                );
-                                8
-                            }
-                            Ok(cap) => cap,
-                            Err(_) => {
-                                eprintln!(
-                                    "[pinvou3-app] ignoring invalid PINVOU3_MAX_TOOL_CALLS={value:?}; falling back to the default cap of 8"
-                                );
-                                8
-                            }
-                        },
-                        Err(std::env::VarError::NotUnicode(value)) => {
-                            eprintln!(
-                                "[pinvou3-app] ignoring invalid PINVOU3_MAX_TOOL_CALLS={value:?}; falling back to the default cap of 8"
-                            );
-                            8
-                        }
-                        Err(std::env::VarError::NotPresent) => 8,
-                    };
-                    Some(max_tool_calls.unwrap_or(cap).min(cap))
+                if std::env::var_os("PINVOU3_MAX_TOOL_CALLS").is_some() {
+                    eprintln!(
+                        "[pinvou3] PINVOU3_MAX_TOOL_CALLS is no longer read: the tool-call \
+                         round cap was removed; runaway protection is the foundation's \
+                         max_steps and per-turn wall clock."
+                    );
                 }
-                #[cfg(not(feature = "benchmark-hooks"))]
-                {
-                    max_tool_calls
-                }
+                None
             },
             // [pinvou3-fork] 透传 default(空);kb_search 在 spawn_for_session 按 session 注入
             // —— v0.8.65 上游新增字段,透传 default ——
@@ -2420,9 +2393,10 @@ impl Pinvou3Bridge {
             deepseek_tui::core::ops::TurnToolSecurityPolicy::new(Some(Vec::new()), Some(exact))
                 .with_read_only_dispatch();
         #[cfg(feature = "benchmark-hooks")]
-        let turn_tool_security = turn_tool_security
-            .with_final_only_after_tool_budget()
-            .with_missing_read_action_repair();
+        // With no tool-call round limit, the final-only-after-budget mode can
+        // never trigger, so it is no longer armed; missing-read-action repair
+        // is budget-independent and stays.
+        let turn_tool_security = turn_tool_security.with_missing_read_action_repair();
         Ok(Op::SendMessage {
             content,
             mode: AppMode::Agent,
@@ -3342,8 +3316,9 @@ mod tests {
             "inventory interpretation belongs in the static session prompt"
         );
         use crate::features::marketplace::{ConnectorScope, save_disabled_connectors_for};
-        save_disabled_connectors_for(ConnectorScope::Plain, &["weather".into(), "qcc".into()]);
-        save_disabled_connectors_for(ConnectorScope::Code, &[]);
+        save_disabled_connectors_for(ConnectorScope::Plain, &["weather".into(), "qcc".into()])
+            .unwrap();
+        save_disabled_connectors_for(ConnectorScope::Code, &[]).unwrap();
 
         let inventory = |sid: &str| -> serde_json::Value {
             let Op::SendMessage { content, .. } = bridge
@@ -3397,7 +3372,7 @@ mod tests {
         let denied = crate::features::marketplace::disabled_tool_names_for(ConnectorScope::Plain);
         assert!(denied.contains(&"mcp_weather_get_weather".to_string()));
         assert!(denied.contains(&"mcp_qcc-company_*".to_string()));
-        save_disabled_connectors_for(ConnectorScope::Plain, &[]);
+        save_disabled_connectors_for(ConnectorScope::Plain, &[]).unwrap();
         assert!(
             inventory("plain")
                 .as_array()
@@ -3475,7 +3450,8 @@ mod tests {
         crate::features::marketplace::save_disabled_connectors_for(
             ConnectorScope::Plain,
             &["weather".to_string()],
-        );
+        )
+        .unwrap();
         // code scope 未初始化 → 默认全禁已装连接器。
         let tools = vec!["kb_search".to_string()];
         let shaped = bridge.shape_disallowed_tools("sess-code", tools.clone());
@@ -3489,7 +3465,8 @@ mod tests {
         crate::features::marketplace::save_disabled_connectors_for(
             ConnectorScope::Code,
             &["pptx".to_string()],
-        );
+        )
+        .unwrap();
         let shaped = bridge.shape_disallowed_tools("sess-code", tools.clone());
         assert!(!shaped.contains(&weather[0]));
         assert!(shaped.contains(&pptx[0]));
@@ -3533,7 +3510,8 @@ mod tests {
         crate::features::marketplace::save_disabled_connectors_for(
             ConnectorScope::Plain,
             &["feishu".to_string()],
-        );
+        )
+        .unwrap();
         let rs = bridge.scope_deny_ruleset_with("sess-plain", Vec::new());
         let mut cmds: Vec<&str> = rs
             .ask_rules
@@ -3584,7 +3562,8 @@ mod tests {
         crate::features::marketplace::save_disabled_connectors_for(
             ConnectorScope::Code,
             &["dingtalk".to_string()],
-        );
+        )
+        .unwrap();
         let rs = bridge.scope_deny_ruleset_with("sess-code", Vec::new());
         let mut cmds: Vec<&str> = rs
             .ask_rules
@@ -3643,7 +3622,8 @@ mod tests {
         crate::features::marketplace::save_disabled_connectors_for(
             ConnectorScope::Plain,
             &["feishu".to_string()],
-        );
+        )
+        .unwrap();
         let rs = bridge.scope_deny_ruleset_with("sess-plain", Vec::new());
 
         let engine = codewhale_execpolicy::ExecPolicyEngine::with_rulesets(vec![rs]);
@@ -3822,7 +3802,8 @@ mod tests {
         crate::features::marketplace::skill_scope::save_disabled_skills_for(
             ConnectorScope::Plain,
             &["my-skill".to_string()],
-        );
+        )
+        .unwrap();
         let rs = bridge.scope_deny_ruleset("sess-plain");
         assert!(
             rs.ask_rules.iter().any(|r| r
@@ -3839,7 +3820,8 @@ mod tests {
         crate::features::marketplace::skill_scope::save_disabled_skills_for(
             ConnectorScope::Plain,
             &[],
-        );
+        )
+        .unwrap();
         assert!(
             bridge
                 .scope_deny_ruleset("sess-plain")
@@ -5583,58 +5565,40 @@ mod tests {
         );
     }
 
-    /// Tool-call guard of benchmark-hooks builds: the default 8 calls/turn
-    /// stays, PINVOU3_MAX_TOOL_CALLS raises it explicitly (Terminal-Bench and
-    /// similar agentic scenarios).
-    #[cfg(feature = "benchmark-hooks")]
+    /// No host-level tool-call round limit under any feature combination:
+    /// `build_engine_config` must not configure `max_tool_calls` (upstream
+    /// `None` = unbounded, admission gate lazy). Runaway protection stays
+    /// with the foundation's max_steps, per-turn wall clock, bounded retries,
+    /// and cancel boundaries. The removed `PINVOU3_MAX_TOOL_CALLS` env knob
+    /// must stay dead: setting it must not resurrect a cap in either config
+    /// path.
     #[test]
-    fn engine_config_tool_call_cap_respects_env_override() {
-        let (_lock, _env) = locked_env(&["PINVOU3_MAX_TOOL_CALLS"]);
-        // SAFETY: platform::paths::tests::ENV_LOCK held; env writes are serialized.
-        unsafe { std::env::remove_var("PINVOU3_MAX_TOOL_CALLS") };
+    fn engine_config_has_no_tool_call_cap() {
         assert_eq!(
             fixture_bridge().build_engine_config().max_tool_calls,
-            Some(8),
-            "eval builds must keep the default guard of 8 tool calls per turn"
+            None,
+            "the host must not configure a per-turn tool-call cap"
         );
-
-        // SAFETY: see above.
+        let cfg = fixture_bridge().build_engine_config_for_session("any_session");
+        assert_eq!(
+            cfg.max_tool_calls, None,
+            "per-session configs must not grow a tool-call cap either"
+        );
+        let (_lock, _env) = locked_env(&["PINVOU3_MAX_TOOL_CALLS"]);
+        // SAFETY: ENV_LOCK held; env writes are serialized across tests.
         unsafe { std::env::set_var("PINVOU3_MAX_TOOL_CALLS", "512") };
         assert_eq!(
             fixture_bridge().build_engine_config().max_tool_calls,
-            Some(512),
-            "PINVOU3_MAX_TOOL_CALLS must be able to raise the guard"
+            None,
+            "the removed PINVOU3_MAX_TOOL_CALLS knob must not resurrect a cap"
         );
-
-        // A zero cap would disable every tool call; it must be rejected like
-        // any other invalid value instead of silently disabling all tools.
-        // SAFETY: see above.
-        unsafe { std::env::set_var("PINVOU3_MAX_TOOL_CALLS", "0") };
         assert_eq!(
-            fixture_bridge().build_engine_config().max_tool_calls,
-            Some(8),
-            "PINVOU3_MAX_TOOL_CALLS=0 must fall back to the default guard of 8"
+            fixture_bridge()
+                .build_engine_config_for_session("any_session")
+                .max_tool_calls,
+            None,
+            "the removed knob must not reach per-session configs either"
         );
-
-        // Non-UTF-8 values cannot parse; they must fall back to the default
-        // instead of panicking or corrupting the cap. Unix-only: only Unix
-        // can build a non-UTF-8 OsStr from raw bytes.
-        #[cfg(unix)]
-        {
-            use std::os::unix::ffi::OsStrExt;
-            // SAFETY: see above.
-            unsafe {
-                std::env::set_var(
-                    "PINVOU3_MAX_TOOL_CALLS",
-                    std::ffi::OsStr::from_bytes(&[0xff]),
-                );
-            }
-            assert_eq!(
-                fixture_bridge().build_engine_config().max_tool_calls,
-                Some(8),
-                "a non-UTF-8 PINVOU3_MAX_TOOL_CALLS must fall back to the default guard of 8"
-            );
-        }
     }
 
     /// 安全敏感字段必须固定——这些值改了会让 pinvou3 出现奇怪行为或越权。

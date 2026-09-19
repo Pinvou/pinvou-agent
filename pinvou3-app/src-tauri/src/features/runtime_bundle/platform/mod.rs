@@ -1777,7 +1777,8 @@ mod tests {
         crate::features::marketplace::save_disabled_connectors(&[
             "data_analysis".to_string(),
             "weather".to_string(),
-        ]);
+        ])
+        .unwrap();
 
         bundle.cleanup_removed_marketplace_tools().unwrap();
 

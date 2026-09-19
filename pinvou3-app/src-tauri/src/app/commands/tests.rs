@@ -513,7 +513,7 @@ fn direct_skill_install_uninstall_scope_state_roundtrip() {
 
     // 用户关闭 visualizer（独立 disabled_skills.json，不再借道连接器文件）→
     // 组合目录计算排除该技能。
-    sm::save_disabled_skills_for(ConnectorScope::Plain, &["visualizer".to_string()]);
+    sm::save_disabled_skills_for(ConnectorScope::Plain, &["visualizer".to_string()]).unwrap();
     install_marketplace_skill_sync("visualizer").unwrap();
     assert!(
         !sm::enabled_skills_for(ConnectorScope::Plain, None)
@@ -642,11 +642,13 @@ fn mcp_uninstall_removes_companion_skills_from_package_dir() {
         crate::features::marketplace::save_disabled_bundles_for(
             scope,
             &["government-writing".to_string()],
-        );
+        )
+        .unwrap();
         crate::features::marketplace::save_hidden_bundles_for(
             scope,
             &["government-writing".to_string()],
-        );
+        )
+        .unwrap();
         assert_eq!(
             crate::features::marketplace::load_disabled_bundles_for(scope),
             vec!["gongwen".to_string()]
@@ -720,7 +722,8 @@ fn mcp_uninstall_aborts_when_companion_uninstall_fails() {
     .unwrap();
     // The package-level disable entry (normalized to the package id while the
     // claim holds) must survive the abort.
-    crate::features::marketplace::save_disabled_bundles(&["government-writing".to_string()]);
+    crate::features::marketplace::save_disabled_bundles(&["government-writing".to_string()])
+        .unwrap();
 
     let err = uninstall_marketplace_tool_sync("gongwen").unwrap_err();
     assert!(

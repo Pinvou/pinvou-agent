@@ -389,7 +389,8 @@ mod tests {
                 .unwrap();
 
             // 禁用公文 MCP → 组合目录计算排除关联技能
-            crate::features::marketplace::save_disabled_connectors(&["gongwen".to_string()]);
+            crate::features::marketplace::save_disabled_connectors(&["gongwen".to_string()])
+                .unwrap();
             let enabled = enabled_skills_for(ConnectorScope::Plain, None);
             assert!(
                 !enabled.iter().any(|(n, _)| n == "government-writing"),
@@ -397,7 +398,7 @@ mod tests {
             );
 
             // 开回来 → 恢复
-            crate::features::marketplace::save_disabled_connectors(&[]);
+            crate::features::marketplace::save_disabled_connectors(&[]).unwrap();
             let enabled = enabled_skills_for(ConnectorScope::Plain, None);
             assert!(
                 enabled.iter().any(|(n, _)| n == "government-writing"),
@@ -452,14 +453,15 @@ mod tests {
                 write_skill(&paths::bundle_skills_dir(), name, "# Lark\n");
             }
 
-            crate::features::marketplace::save_disabled_connectors(&["feishu".to_string()]);
+            crate::features::marketplace::save_disabled_connectors(&["feishu".to_string()])
+                .unwrap();
             let enabled = enabled_skills_for(ConnectorScope::Plain, None);
             assert!(
                 !enabled.iter().any(|(n, _)| n.starts_with("lark-")),
                 "禁用 feishu 后 lark-* 技能应从组合目录排除"
             );
 
-            crate::features::marketplace::save_disabled_connectors(&[]);
+            crate::features::marketplace::save_disabled_connectors(&[]).unwrap();
             let enabled = enabled_skills_for(ConnectorScope::Plain, None);
             assert_eq!(
                 enabled
@@ -508,14 +510,14 @@ mod tests {
                 .install("visualizer")
                 .unwrap();
 
-            save_disabled_skills_for(ConnectorScope::Plain, &["visualizer".to_string()]);
+            save_disabled_skills_for(ConnectorScope::Plain, &["visualizer".to_string()]).unwrap();
             let enabled = enabled_skills_for(ConnectorScope::Plain, None);
             assert!(
                 !enabled.iter().any(|(n, _)| n == "visualizer"),
                 "禁用 skill id 后应从组合目录排除"
             );
 
-            save_disabled_skills_for(ConnectorScope::Plain, &[]);
+            save_disabled_skills_for(ConnectorScope::Plain, &[]).unwrap();
             let enabled = enabled_skills_for(ConnectorScope::Plain, None);
             assert!(
                 enabled.iter().any(|(n, _)| n == "visualizer"),
@@ -544,14 +546,15 @@ mod tests {
             .unwrap();
             std::fs::write(skill_dir.join(".installed-from"), "upload:weather.zip").unwrap();
 
-            crate::features::marketplace::save_disabled_connectors(&["weather".to_string()]);
+            crate::features::marketplace::save_disabled_connectors(&["weather".to_string()])
+                .unwrap();
             let enabled = enabled_skills_for(ConnectorScope::Plain, None);
             assert!(
                 !enabled.iter().any(|(n, _)| n == "weather"),
                 "统一包模型下禁用 weather 包应一并排除同名技能目录"
             );
 
-            crate::features::marketplace::save_disabled_connectors(&[]);
+            crate::features::marketplace::save_disabled_connectors(&[]).unwrap();
             let enabled = enabled_skills_for(ConnectorScope::Plain, None);
             assert!(
                 enabled.iter().any(|(n, _)| n == "weather"),
@@ -599,7 +602,7 @@ mod tests {
             assert_eq!(src, &paths::user_skills_dir().join("visualizer"));
 
             // plain 关 visualizer → 组合集不含（market 版本也被 user 覆盖，整名排除）
-            save_disabled_skills_for(ConnectorScope::Plain, &["visualizer".to_string()]);
+            save_disabled_skills_for(ConnectorScope::Plain, &["visualizer".to_string()]).unwrap();
             let enabled = enabled_skills_for(ConnectorScope::Plain, None);
             assert!(!enabled.iter().any(|(n, _)| n == "visualizer"));
             assert!(enabled.iter().any(|(n, _)| n == "government-writing"));
@@ -633,10 +636,10 @@ mod tests {
             assert_eq!(names.len(), 4, "增量重写幂等：目录数不变: {names:?}");
 
             // 增量：关一个 → 目录删除；再开 → 目录回来
-            save_disabled_skills_for(ConnectorScope::Plain, &["visualizer".to_string()]);
+            save_disabled_skills_for(ConnectorScope::Plain, &["visualizer".to_string()]).unwrap();
             rewrite_session_skills(sid, ConnectorScope::Plain, None);
             assert!(!dir.join("visualizer").exists());
-            save_disabled_skills_for(ConnectorScope::Plain, &[]);
+            save_disabled_skills_for(ConnectorScope::Plain, &[]).unwrap();
             rewrite_session_skills(sid, ConnectorScope::Plain, None);
             assert!(dir.join("visualizer").exists());
         });
@@ -710,7 +713,7 @@ mod tests {
             // 本测试聚焦项目技能的门控与优先级覆盖。code scope「未初始化默认全禁」
             // 语义会把已装技能也排除掉，与测试意图无关——先显式初始化 code scope
             // （空禁用集 = 全部启用），让项目技能覆盖链路可被断言。
-            save_disabled_skills_for(ConnectorScope::Code, &[]);
+            save_disabled_skills_for(ConnectorScope::Code, &[]).unwrap();
 
             // 默认关：code 组合集不含项目技能
             let enabled = enabled_skills_for(ConnectorScope::Code, Some(&project));
@@ -723,7 +726,7 @@ mod tests {
             assert_eq!(src, &bundle.join("visualizer"));
 
             // 开启后：项目技能入集 + 同名覆盖（.agents 优先级高于 .claude）
-            set_project_skills_enabled(true);
+            set_project_skills_enabled(true).unwrap();
             let enabled = enabled_skills_for(ConnectorScope::Code, Some(&project));
             assert!(enabled.iter().any(|(n, _)| n == "project-skill"));
             let (_, src) = enabled.iter().find(|(n, _)| n == "visualizer").unwrap();
@@ -755,7 +758,7 @@ mod tests {
                 enabled.iter().any(|(n, _)| n == "project-skill"),
                 "绑定目录的普通会话同样参与项目技能扫描（开关开启时）"
             );
-            set_project_skills_enabled(false);
+            set_project_skills_enabled(false).unwrap();
             let enabled = enabled_skills_for(ConnectorScope::Plain, Some(&project));
             assert!(!enabled.iter().any(|(n, _)| n == "project-skill"));
             let _ = std::fs::remove_dir_all(&project);

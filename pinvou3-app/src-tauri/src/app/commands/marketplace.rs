@@ -203,10 +203,10 @@ pub async fn install_marketplace_tool(
             // （外部能力显式开启，与独立技能安装 install_marketplace_skill_sync 同语义）。
             crate::features::marketplace::skill_scope::sync_deny_all_scopes_after_skill_install(
                 &sid,
-            );
+            )?;
         }
         // DenyAll 模式的 scope(如 code)已初始化时,新装的连接器默认仍关闭(显式开启)。
-        crate::features::marketplace::sync_deny_all_scopes_after_install(&companion_tool_id);
+        crate::features::marketplace::sync_deny_all_scopes_after_install(&companion_tool_id)?;
         Ok::<(), String>(())
     })
     .await
@@ -434,7 +434,13 @@ pub async fn uninstall_marketplace_tool(
     tool_id: String,
     pool: tauri::State<'_, crate::features::assistant::engine_pool::EnginePool>,
 ) -> Result<(), String> {
-    uninstall_marketplace_tool_sync(&tool_id)?;
+    // The uninstall's disabled-scope writes take the cross-process bundle
+    // lock, which can block on the desktop/CLI two-process pair; keep it off
+    // the async worker.
+    let tool = tool_id.clone();
+    tokio::task::spawn_blocking(move || uninstall_marketplace_tool_sync(&tool))
+        .await
+        .map_err(|e| format!("uninstall_marketplace_tool join: {e}"))??;
     // 联动卸载的 companion 技能影响两个 scope 的启用集：重写在线会话组合目录
     // （async 命令必须用 async 版：blocking 版的 blocking_lock 在 tokio runtime
     // 线程上必 panic）。
@@ -501,17 +507,17 @@ pub(super) fn uninstall_marketplace_tool_sync(tool_id: &str) -> Result<(), Strin
             .map_err(|e| format!("联动卸载配套技能 '{sid}' 失败（已中止工具卸载，请重试）: {e}"))?;
         // Scope entries are cleared only after the skill is actually gone —
         // otherwise a still-installed skill would be silently re-enabled.
-        crate::features::marketplace::skill_scope::remove_skill_from_disabled_scopes(sid);
+        crate::features::marketplace::skill_scope::remove_skill_from_disabled_scopes(sid)?;
     }
     mgr.uninstall(tool_id)?;
     if recycles_with_package {
         // 整包已回收（companion 目录随包搬离）→ 此时技能确实没了，再清 scope。
         for sid in &companions {
-            crate::features::marketplace::skill_scope::remove_skill_from_disabled_scopes(sid);
+            crate::features::marketplace::skill_scope::remove_skill_from_disabled_scopes(sid)?;
         }
     }
     // 已卸载的连接器从两个 scope 的禁用集移除(避免残留 id)。
-    crate::features::marketplace::remove_connector_from_disabled_scopes(tool_id);
+    crate::features::marketplace::remove_connector_from_disabled_scopes(tool_id)?;
     Ok(())
 }
 // ---------------------------------------------------------------------------
@@ -557,7 +563,7 @@ pub(super) fn install_marketplace_skill_sync(skill_id: &str) -> Result<(), Strin
         .install(skill_id)?;
     // 新装技能默认加入 DenyAll scope（当前 code）禁用集（与连接器同语义：
     // 外部能力显式开启）；组合目录由调用方在命令层重写（install_marketplace_skill）。
-    crate::features::marketplace::skill_scope::sync_deny_all_scopes_after_skill_install(skill_id);
+    crate::features::marketplace::skill_scope::sync_deny_all_scopes_after_skill_install(skill_id)?;
     Ok(())
 }
 
@@ -735,7 +741,15 @@ pub async fn import_plugin_package_cmd(
     .map_err(|e| format!("任务执行失败: {e}"))??;
     // 上传安全默认：插件包导入后加入 DenyAll 禁用集，需用户在前端开关显式开启。
     // 与 `install_marketplace_tool` 同口径。
-    crate::features::marketplace::sync_deny_all_scopes_after_install(&report.id);
+    // The DenyAll write takes the cross-process bundle lock, which can
+    // block on the desktop/CLI two-process pair; keep it on spawn_blocking
+    // (like the import task above), not on the async worker.
+    let installed_id = report.id.clone();
+    tokio::task::spawn_blocking(move || {
+        crate::features::marketplace::sync_deny_all_scopes_after_install(&installed_id)
+    })
+    .await
+    .map_err(|e| format!("sync_deny_all join: {e}"))??;
     // 新装包进入供给：mcp/spanner 热刷工具白名单 + skills 热刷会话组合目录。
     pool.refresh_disallowed_tools().await;
     pool.refresh_live_sessions_skills().await;
@@ -800,7 +814,14 @@ pub async fn import_plugin_package_bytes_cmd(
     let _ = std::fs::remove_file(&tmp); // 清理临时文件(含失败路径)
     let report = report?;
     // 上传安全默认：拖放导入插件包后加入 DenyAll 禁用集，需用户开关显式开启。
-    crate::features::marketplace::sync_deny_all_scopes_after_install(&report.id);
+    // The DenyAll write takes the cross-process bundle lock; keep it on
+    // spawn_blocking, not on the async worker.
+    let installed_id = report.id.clone();
+    tokio::task::spawn_blocking(move || {
+        crate::features::marketplace::sync_deny_all_scopes_after_install(&installed_id)
+    })
+    .await
+    .map_err(|e| format!("sync_deny_all join: {e}"))??;
     // 新装包进入供给：mcp/spanner 热刷工具白名单 + skills 热刷会话组合目录。
     pool.refresh_disallowed_tools().await;
     pool.refresh_live_sessions_skills().await;
@@ -842,7 +863,16 @@ pub async fn import_skill_md_bytes(
             .await
             .map_err(|e| format!("任务执行失败: {e}"))??;
     // 上传安全默认：与插件包导入同口径，加入 DenyAll scope。
-    crate::features::marketplace::skill_scope::sync_deny_all_scopes_after_skill_install(&report.id);
+    // The DenyAll write takes the cross-process bundle lock; keep it on
+    // spawn_blocking, not on the async worker.
+    let installed_id = report.id.clone();
+    tokio::task::spawn_blocking(move || {
+        crate::features::marketplace::skill_scope::sync_deny_all_scopes_after_skill_install(
+            &installed_id,
+        )
+    })
+    .await
+    .map_err(|e| format!("sync_deny_all join: {e}"))??;
     pool.refresh_live_sessions_skills().await;
     // 导入包的 CLI/技能脚本纳入 deny 规则集（M-6：import 路径热刷）。
     pool.refresh_permission_rulesets().await;
@@ -868,7 +898,7 @@ pub(super) fn uninstall_marketplace_skill_sync(skill_id: &str) -> Result<(), Str
     crate::features::marketplace::skill_marketplace::SkillMarketplaceManager::new()
         .uninstall(skill_id)?;
     // 已卸载的技能从两个 scope 的禁用集移除（避免残留 id，与连接器同语义）。
-    crate::features::marketplace::skill_scope::remove_skill_from_disabled_scopes(skill_id);
+    crate::features::marketplace::skill_scope::remove_skill_from_disabled_scopes(skill_id)?;
     Ok(())
 }
 

@@ -46,9 +46,19 @@ fn save_timestamped_id_map(map: &HashMap<String, String>, file_name: &str, ts_ke
             .and_then(|v| v.as_str())
             .cmp(&b.get("id").and_then(|v| v.as_str()))
     });
-    if let Ok(json) = serde_json::to_string_pretty(&out) {
-        let _ = std::fs::write(file, json);
-    }
+        // Persisted through tmp+rename: these files are the cross-process
+        // truth for their consumers (the pinned map gates the retention
+        // sweep), and a plain truncating write would let a concurrent reader
+        // in another process observe an empty or partial file.
+        match serde_json::to_string_pretty(&out) {
+            Ok(json) => {
+                if let Err(error) = crate::platform::filesystem::atomic_write(&file, json.as_bytes())
+                {
+                    eprintln!("[sessions] persist {file_name} failed: {error}");
+                }
+            }
+            Err(error) => eprintln!("[sessions] serialize {file_name} failed: {error}"),
+        }
 }
 
 /// Shared load core for the pinned / hidden sidecars. `None` = nothing to load
@@ -213,6 +223,23 @@ impl SessionStore {
         }
     }
 
+    /// Durable pin protection for a retention sweep: the pin file is the
+    /// cross-process truth, so the sweep re-reads it instead of trusting the
+    /// map loaded at boot — a GUI pin made after this process started must
+    /// still protect the session from this process's sweep. Any missing,
+    /// unreadable, or unparseable file keeps the boot-time map: the save path
+    /// deletes the file exactly when the map empties, and a torn read (an
+    /// externally corrupted or legacy non-atomic file) must never widen the
+    /// eviction set.
+    pub(crate) fn durable_pinned_sessions(&self) -> std::collections::HashSet<String> {
+        let file = crate::platform::paths::sessions_root().join(PINNED_SESSIONS_FILE);
+        std::fs::read_to_string(&file)
+            .ok()
+            .and_then(|content| parse_pinned_sessions(&content))
+            .map(|pins| pins.into_keys().collect())
+            .unwrap_or_else(|| self.pinned_sessions.read().keys().cloned().collect())
+    }
+
     pub fn is_hidden(&self, id: &str) -> bool {
         self.hidden_sessions.read().contains_key(id)
     }
@@ -248,4 +275,36 @@ impl SessionStore {
             *self.hidden_sessions.write() = hidden_sessions;
         }
     }
+}
+
+/// Parse a `_pinned_sessions.json` payload: an array of bare session ids or
+/// `{id, pinned_at}` objects. `None` on invalid JSON or a non-array payload
+/// (callers keep their boot-time map instead of trusting a torn read).
+fn parse_pinned_sessions(content: &str) -> Option<HashMap<String, String>> {
+    let items = serde_json::from_str::<serde_json::Value>(content)
+        .ok()?
+        .as_array()?
+        .to_vec();
+    let mut pins = HashMap::new();
+    for item in items {
+        match item {
+            serde_json::Value::String(id) => {
+                pins.insert(id, Utc::now().to_rfc3339());
+            }
+            serde_json::Value::Object(mut obj) => {
+                let id = obj
+                    .remove("id")
+                    .and_then(|v| v.as_str().map(str::to_string));
+                let pinned_at = obj
+                    .remove("pinned_at")
+                    .and_then(|v| v.as_str().map(str::to_string))
+                    .unwrap_or_else(|| Utc::now().to_rfc3339());
+                if let Some(id) = id {
+                    pins.insert(id, pinned_at);
+                }
+            }
+            _ => {}
+        }
+    }
+    Some(pins)
 }

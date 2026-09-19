@@ -506,14 +506,20 @@ pub fn restore_plugin(pkg_id: &str) -> Result<RestoreRecycledResult, String> {
     }
 
     // scope 禁用集：包 id + 包内技能目录名一并兜底清理。恢复有意跳过新装的
-    // DenyAll 默认禁用同意门（见函数头注释第 5 点）。
-    super::scope::remove_bundle_from_disabled_scopes(pkg_id);
+    // DenyAll 默认禁用同意门（见函数头注释第 5 点）。此时恢复本体已成功、
+    // 回收站条目已消费：残留的禁用项只是下次卸载时的兜底对象，拒绝的锁写
+    // 记录日志即可，不能把已完成的恢复反报成失败。
+    if let Err(error) = super::scope::remove_bundle_from_disabled_scopes(pkg_id) {
+        log::warn!("[marketplace] scope cleanup after plugin restore: {error}");
+    }
     if let Ok(rd) = std::fs::read_dir(pkg_dir.join("skills")) {
         for entry in rd.flatten() {
             if entry.file_type().map(|t| t.is_dir()).unwrap_or(false) {
-                super::scope::remove_bundle_from_disabled_scopes(
+                if let Err(error) = super::scope::remove_bundle_from_disabled_scopes(
                     &entry.file_name().to_string_lossy(),
-                );
+                ) {
+                    log::warn!("[marketplace] scope cleanup after plugin restore: {error}");
+                }
             }
         }
     }

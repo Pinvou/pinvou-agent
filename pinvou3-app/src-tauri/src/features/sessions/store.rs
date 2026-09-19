@@ -29,6 +29,10 @@ use crate::platform::paths;
 use super::scheduled::ChatEngineState;
 use super::transcript::{looks_like_truncating_overwrite, transcript_revision};
 use super::validators::{generate_session_id, persisted_system_prompt, validate_session_id};
+// Only the benchmark-gated helper below consults the record path, so the
+// import must share its cfg to stay unused-warning-clean in plain builds.
+#[cfg(any(feature = "benchmark-hooks", test))]
+use super::validators::chat_session_file;
 use super::{
     CodeSessionPredicate, ExecutionRootResolver, SessionDeletedHook, SessionKind,
     SessionPurgedHook, SessionRoots, SessionStore, session_roots_for,
@@ -43,6 +47,13 @@ static POST_RECORD_DELETE_FAULTS: LazyLock<Mutex<HashMap<String, ErrorKind>>> =
 /// Cap on the number of ordinary chat sessions retained on disk before the
 /// oldest is evicted by [`super::retention::SessionStore::enforce_session_retention_locked`].
 pub(crate) const MAX_SESSIONS_PER_KIND: usize = 50;
+
+/// Placeholder title for a fresh chat session. One of the trilingual
+/// sentinels in the frontend's `DEFAULT_CHAT_TITLES`: the sidebar localizes
+/// it per UI language and the first send triggers the auto-rename. Sessions
+/// created headlessly share the same sentinel so they behave identically in
+/// the history list.
+pub(crate) const NEW_CHAT_TITLE: &str = "新对话";
 
 impl SessionStore {
     /// Repair persisted tool histories only at process boot, before any
@@ -202,6 +213,8 @@ impl SessionStore {
             mode_defaults: Arc::new(RwLock::new(mode_defaults_snapshot)),
             session_purged_hooks: Arc::new(RwLock::new(Vec::new())),
             session_deleted_hooks: Arc::new(RwLock::new(Vec::new())),
+            #[cfg(feature = "benchmark-hooks")]
+            retention_eviction_observer: Arc::new(Mutex::new(None)),
         };
         store.load_scheduled_profiles()?;
         store.reconcile_scheduled_profiles_locked()?;
@@ -570,7 +583,7 @@ impl SessionStore {
             None,
             None,
         );
-        session.metadata.title = "新对话".to_string();
+        session.metadata.title = NEW_CHAT_TITLE.to_string();
         // per-session 模型：先落 sidecar 再公开 Session JSON，避免写盘失败后
         // 留下一条看似创建成功、重启却切回其它模型的会话。
         if let Some(mid) = model_id {
@@ -721,6 +734,33 @@ impl SessionStore {
         Ok(session)
     }
 
+    /// Whether a durable chat record already exists for `id`. The headless
+    /// runner checks this before creating a fresh session, so a recycled pid
+    /// replaying the same fresh-id counter cannot silently overwrite a kept
+    /// session's record.
+    #[cfg(any(feature = "benchmark-hooks", test))]
+    pub(crate) fn chat_session_record_exists(&self, id: &str) -> bool {
+        validate_session_id(id).is_ok()
+            && chat_session_file(&self.manager, id)
+                .map(|path| path.exists())
+                .unwrap_or(false)
+    }
+
+    /// Whether the durable chat record for `id` carries any messages. The
+    /// headless runner uses this to tell a zero-message stub (safe to clean
+    /// up) from a ran-and-errored transcript (the only copy — keep it
+    /// inspectable). An unloadable record reports `Err`: callers must treat
+    /// unknown state as "keep".
+    #[cfg(any(feature = "benchmark-hooks", test))]
+    pub(crate) fn chat_session_has_messages(&self, id: &str) -> Result<bool> {
+        validate_session_id(id)?;
+        let session = self
+            .manager
+            .load_session_snapshot(id)
+            .with_context(|| format!("load chat session {id} for stub classification"))?;
+        Ok(!session.messages.is_empty())
+    }
+
     /// 以调用方提供的 ID 创建空会话，供需要在启动前确定隔离 ID 的内部运行时使用。
     ///
     /// 普通 GUI 会话仍使用 [`Self::create_new`] 的随机 ID；这里不设置 active session。
@@ -732,6 +772,14 @@ impl SessionStore {
         model_id: Option<String>,
         workspace: PathBuf,
     ) -> Result<SavedSession> {
+        // The id is caller-chosen and headless sessions persist by default,
+        // so an existing record must fail loud instead of being silently
+        // replaced: a recycled pid replaying the same fresh-id counter (or an
+        // eval rerun against a kept session) would otherwise destroy the kept
+        // transcript and inherit its pin onto the new stub.
+        if self.chat_session_record_exists(&id) {
+            bail!("session record {id} already exists; refusing to overwrite it");
+        }
         let mut session = create_saved_session_with_id_and_mode(
             id.clone(),
             &[],
@@ -741,7 +789,10 @@ impl SessionStore {
             None,
             None,
         );
-        session.metadata.title = "临时评测".to_string();
+        // Headless sessions persist by default and surface in the GUI history,
+        // so they carry the same localized placeholder sentinel as GUI-created
+        // sessions (an eval-internal label would leak into every UI language).
+        session.metadata.title = NEW_CHAT_TITLE.to_string();
         if let Some(model_id) = model_id {
             self.set_session_model_id(&id, Some(model_id))?;
         }

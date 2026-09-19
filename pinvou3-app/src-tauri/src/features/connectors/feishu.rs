@@ -359,7 +359,14 @@ pub async fn feishu_apply_skills() -> Result<Value, String> {
     // scope 门禁同步：连接器转为可用等同「新装」——已初始化 code 开关时加入 code
     // 禁用集，保持「code 会话外部能力默认关」语义（与 MCP 新装连接器一致）。
     if show {
-        crate::features::marketplace::sync_deny_all_scopes_after_install("feishu");
+        // The DenyAll write takes the cross-process bundle lock, which can
+        // block on the desktop/CLI two-process pair; reuse this function's
+        // spawn_blocking lane instead of the async worker.
+        tokio::task::spawn_blocking(move || {
+            crate::features::marketplace::sync_deny_all_scopes_after_install("feishu")
+        })
+        .await
+        .map_err(|e| format!("sync_deny_all join: {e}"))??;
     }
     // 技能写盘即可——连接成功弹窗已引导「新建对话」,新会话 spawn 时自然扫到飞书技能;
     // 不再原地广播刷新当前对话(故不依赖子模块 Op::RefreshSystemPrompt)。

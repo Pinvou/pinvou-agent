@@ -15,10 +15,14 @@
 //!    retention depends on, plus the runtime-sidecar purges.
 
 use std::io::ErrorKind;
+#[cfg(feature = "benchmark-hooks")]
+use std::sync::Arc;
 #[cfg(test)]
 use std::{collections::HashMap, sync::LazyLock};
 
 use anyhow::{Context, Result};
+#[cfg(feature = "benchmark-hooks")]
+use parking_lot::Mutex;
 
 use super::SessionStore;
 use super::scheduled::{SCHEDULED_PROFILE_SCHEMA_VERSION, ScheduledProfileRegistry};
@@ -56,6 +60,40 @@ impl SessionStore {
         Ok(path)
     }
 
+    /// Install the headless retention-eviction observer (see the field docs
+    /// and `record_retention_evictions`); returns the previously installed
+    /// one. The headless runner is single-flight per store, so a `Some`
+    /// previous value means the caller armed twice without disarming.
+    #[cfg(feature = "benchmark-hooks")]
+    pub(crate) fn set_retention_eviction_observer(
+        &self,
+        observer: Option<Arc<Mutex<Vec<String>>>>,
+    ) -> Option<Arc<Mutex<Vec<String>>>> {
+        std::mem::replace(&mut self.retention_eviction_observer.lock(), observer)
+    }
+
+    /// Disarm and hand back the installed observer, if any.
+    #[cfg(feature = "benchmark-hooks")]
+    pub(crate) fn take_retention_eviction_observer(&self) -> Option<Arc<Mutex<Vec<String>>>> {
+        self.retention_eviction_observer.lock().take()
+    }
+
+    /// Forward the sessions this sweep actually deleted to the installed
+    /// headless observer, so the runner's warning keys on the eviction event
+    /// itself rather than on the turn's final outcome (a run that fails after
+    /// its prepare-time save must still surface the eviction, and a run that
+    /// failed before saving must stay silent). No observer installed (every
+    /// GUI process) is a no-op.
+    #[cfg(feature = "benchmark-hooks")]
+    fn record_retention_evictions(&self, evicted: &[String]) {
+        if evicted.is_empty() {
+            return;
+        }
+        if let Some(observer) = self.retention_eviction_observer.lock().clone() {
+            observer.lock().extend(evicted.iter().cloned());
+        }
+    }
+
     pub(crate) fn enforce_session_retention_locked(&self) -> Result<()> {
         let sessions = self
             .list_sessions_cached()
@@ -65,11 +103,24 @@ impl SessionStore {
         let mut chat_count = 0usize;
         let mut deleted_ids = Vec::new();
         let mut delete_error = None;
+        // Pinned sessions are the user's explicit "keep forever" mark: they
+        // count against neither the cap nor eviction. A headless `agent run`
+        // shares this 50-cap store by default; without the exemption a single
+        // batch run would silently delete the user's pinned GUI sessions (the
+        // cost is that an all-pinned store disables the cap and may exceed it —
+        // the natural consequence of pin semantics). The sweep consults the
+        // durable pin file, not the boot-time map: the motivating batch-run
+        // scenario has the GUI pinning sessions while this process is alive,
+        // and only the file reflects that.
+        let pinned = self.durable_pinned_sessions();
         for metadata in sessions {
             // Scheduled sessions own additional records outside sessions/.
             // Generic chat cleanup must not delete only the transcript and
             // strand the other half of their history.
             if metadata.id.starts_with("sched-") {
+                continue;
+            }
+            if pinned.contains(&metadata.id) {
                 continue;
             }
             chat_count += 1;
@@ -93,6 +144,8 @@ impl SessionStore {
             // 冒泡)同样过期——不能只认 Ok 分支,否则幽灵条目驻留到下一次任意写。
             self.invalidate_list_cache();
         }
+        #[cfg(feature = "benchmark-hooks")]
+        self.record_retention_evictions(&deleted_ids);
         self.purge_session_side_maps(&deleted_ids);
         let reconcile_error = self.reconcile_scheduled_profiles_locked().err();
         match (delete_error, reconcile_error) {
