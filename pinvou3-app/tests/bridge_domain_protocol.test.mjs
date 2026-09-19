@@ -101,7 +101,11 @@ const expectedProtocolHashes = {
   // text_preview_truncated passthrough + summary fallback) and dismissConfirm was
   // removed (no invoke/listen call-set change; listener body wording is part of
   // the digest).
-  computerUse: 'e606504958286a1f671e6f147974d89a21e36698cb386006a85bb3c33294c915',
+  // Recomputed for the round-15 fix wave: secure-target chord masking (the
+  // chord_masked_chars passthrough in buildConfirmRequest), the
+  // background-session refresh guard, and the inert-branch optional chaining
+  // inside the listener callback spans (no invoke/listen call-set change).
+  computerUse: '9d0bad5bab784eb784a92b8df52ff7e83adef94cc0f6cb7bdbb99f913217e5b8',
   multiAgent: 'a6d045e87f7f5f3537fdeadb262d54622edd6dcafa2c0253f0b44e7de439315d',
   orchestration: '0f6d0ff37a357fe9dab1873879d98ebf5e0e1c176c02c431452f5b5dc48b7e22',
   artifacts: '37ca694534c7e6cf44b6d262c40e388999c3ba136faca0d6f57821d5b9b3df53',

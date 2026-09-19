@@ -187,6 +187,8 @@ const zhConfirmCopy = {
   confirmTypeCount: (count) => `输入 ${count} 个字符`,
   confirmKeyChord: (chord) => `按下组合键 ${chord}`,
   confirmHoldKey: (chord, ms) => `按住 ${chord} ${ms} 毫秒`,
+  confirmKeyChordMasked: (chord, count) => chord ? `按下组合键 ${chord} + ${count} 个隐藏字符` : `按下 ${count} 个隐藏字符`,
+  confirmHoldKeyMasked: (chord, count, ms) => chord ? `按住 ${chord} + ${count} 个隐藏字符 ${ms} 毫秒` : `按住 ${count} 个隐藏字符 ${ms} 毫秒`,
   confirmDrag: (from, to) => `从 ${from} 拖拽到 ${to}`,
   confirmMouseMove: (point) => `移动鼠标到 ${point}`,
   confirmMouseDown: (button) => `按下${button}`,
@@ -233,6 +235,21 @@ assert.deepEqual(
   formatComputerUseConfirmAction(zhConfirmCopy, structured({ actionName: 'hold_key', chord: 'Shift', holdMs: 500 })),
   { description: '按住 Shift 500 毫秒', preview: null, previewTooLong: false },
   'a hold-key action renders chord and duration',
+);
+assert.deepEqual(
+  formatComputerUseConfirmAction(zhConfirmCopy, structured({ actionName: 'key', chord: null, chordMaskedChars: 4 })),
+  { description: '按下 4 个隐藏字符', preview: null, previewTooLong: false },
+  'a masked chord on a secure target renders the count, never the characters',
+);
+assert.deepEqual(
+  formatComputerUseConfirmAction(zhConfirmCopy, structured({ actionName: 'key', chord: 'Control', chordMaskedChars: 1 })),
+  { description: '按下组合键 Control + 1 个隐藏字符', preview: null, previewTooLong: false },
+  'a masked mixed chord keeps the named keys and the count',
+);
+assert.deepEqual(
+  formatComputerUseConfirmAction(zhConfirmCopy, structured({ actionName: 'hold_key', chord: null, chordMaskedChars: 2, holdMs: 500 })),
+  { description: '按住 2 个隐藏字符 500 毫秒', preview: null, previewTooLong: false },
+  'a masked hold-key renders count and duration',
 );
 assert.deepEqual(
   formatComputerUseConfirmAction(zhConfirmCopy, structured({ actionName: 'drag', point: { x: 1, y: 2 }, endPoint: { x: 3, y: 4 } })),
