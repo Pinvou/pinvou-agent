@@ -216,23 +216,36 @@ fn deliverable_index() -> Vec<DeliverableRow> {
     // transcript cannot dominate the listing (oversized files are skipped
     // with a note rather than read).
     const MAX_LIST_SCAN_BYTES: u64 = 32 * 1024 * 1024;
+    use std::io::Read as _;
     for entry in entries.flatten() {
         let file = entry.path();
         if !file.is_file() || file.extension().and_then(|value| value.to_str()) != Some("json") {
             continue;
         }
-        if std::fs::metadata(&file)
-            .map(|meta| meta.len())
-            .unwrap_or_default()
-            > MAX_LIST_SCAN_BYTES
+        // The read itself is bounded, not the stat: a file that grows between
+        // a stat and the read — or a filesystem that reports a stale size —
+        // would otherwise be read whole. `take` caps the read at one byte
+        // past the scan cap, so an oversized file is detected by the read
+        // length and skipped with the same note a stat cap produced.
+        let Ok(mut handle) = std::fs::File::open(&file) else {
+            continue;
+        };
+        let mut capped = Vec::new();
+        if handle
+            .take(MAX_LIST_SCAN_BYTES + 1)
+            .read_to_end(&mut capped)
+            .is_err()
         {
+            continue;
+        }
+        if capped.len() as u64 > MAX_LIST_SCAN_BYTES {
             crate::note!(
                 "[artifacts] list skips {} (larger than the {MAX_LIST_SCAN_BYTES}-byte scan cap)",
                 file.display()
             );
             continue;
         }
-        let Ok(raw) = std::fs::read_to_string(&file) else {
+        let Ok(raw) = String::from_utf8(capped) else {
             continue;
         };
         let Ok(view) = serde_json::from_str::<serde_json::Value>(&raw) else {

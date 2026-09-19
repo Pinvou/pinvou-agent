@@ -574,6 +574,61 @@ fn voice_transcribe_timeout_kills_the_external_asr_process_tree() {
     );
 }
 
+/// The external-CLI success path must drain the engine's transcript and clean
+/// up its private staging wav: the CLI stages the audio as
+/// `pinvou-cli-voice-<pid>-*.wav` in the shared temp dir, and a leaked copy
+/// of the user's audio there would outlive the command. The fake ASR CLI
+/// prints one SenseVoice-style timestamped segment and exits 0.
+#[cfg(unix)]
+#[test]
+fn asr_success_path_drains_and_cleans_up() {
+    use std::os::unix::fs::PermissionsExt;
+
+    let _env = ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+    let home = HomeGuard::new("voice-transcribe-success");
+    let _asr_env = AsrEnvGuard::new();
+    let engine = home.root.join("fake-asr.sh");
+    std::fs::write(&engine, "#!/bin/sh\necho '[0.00-0.50] hello'\n").unwrap();
+    std::fs::set_permissions(&engine, std::fs::Permissions::from_mode(0o755)).unwrap();
+    let _overrides = EnvOverrideGuard::set(&[("PINVOU3_ASR_CMD", engine.to_str().unwrap())]);
+    let wav = home.root.join("capture.wav");
+    // 44-byte header-only WAV, the same fixture shape as the other voice
+    // tests: large enough to pass the empty-audio gate.
+    std::fs::write(&wav, vec![0u8; 44]).unwrap();
+
+    let outcome = run(&["pinvou", "voice", "transcribe", wav.to_str().unwrap()])
+        .expect("the fake ASR CLI exits 0 with a transcript");
+    assert_eq!(outcome.exit_code, ExitCode::Success);
+    assert!(
+        outcome.stdout.contains("Text: hello"),
+        "the transcript must appear in the output: {}",
+        outcome.stdout
+    );
+    assert!(
+        outcome.stdout.contains("Source: local_cli"),
+        "the external-CLI source label must appear: {}",
+        outcome.stdout
+    );
+
+    // Scoped to this process's pid: sibling test binaries may legitimately
+    // have their own staged wavs in flight, and those are not ours to judge.
+    let staged_prefix = format!("pinvou-cli-voice-{}-", std::process::id());
+    let leaked: Vec<PathBuf> = std::fs::read_dir(std::env::temp_dir())
+        .expect("the shared temp dir must be readable")
+        .flatten()
+        .map(|entry| entry.path())
+        .filter(|path| {
+            path.file_name()
+                .and_then(|name| name.to_str())
+                .is_some_and(|name| name.starts_with(&staged_prefix))
+        })
+        .collect();
+    assert!(
+        leaked.is_empty(),
+        "the staged audio temp files must be removed: {leaked:?}"
+    );
+}
+
 /// OPT-IN: `voice postprocess` boots the windowless host (display required)
 /// and calls the configured model endpoint. Run with: cargo test -p
 /// pinvou-cli --test misc_contract -- --ignored voice_postprocess

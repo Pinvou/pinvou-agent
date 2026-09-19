@@ -722,19 +722,35 @@ fn transcribe(path: &Path, output: OutputMode) -> Result<CliOutcome, CliError> {
         && !(engine && ffmpeg && model)
         && external_asr_command().is_none()
     {
-        // The native lane itself falls back to the raw wav when ffmpeg is
-        // missing (GUI parity), so ffmpeg-only gaps are a distinct, fixable
-        // condition from a missing engine/model install.
         if engine && model && !ffmpeg {
+            // The engine lane itself falls back to the raw wav when ffmpeg
+            // is missing (GUI parity: `voice_asr` skips normalization and
+            // feeds the raw wav to the engine), so a ffmpeg-only gap must
+            // not kill a transcription the GUI would still run — warn and
+            // let the raw-wav lane attempt it. The engine parses only the
+            // wav container, so the fallback is safe for `.wav` inputs
+            // only; anything else stays a hard `ffmpeg_missing`.
+            let is_wav = path
+                .extension()
+                .and_then(|ext| ext.to_str())
+                .is_some_and(|ext| ext.eq_ignore_ascii_case("wav"));
+            if is_wav {
+                crate::note!(
+                    "[voice] ffmpeg_missing: ffmpeg is unavailable; feeding the raw wav to \
+                     the local engine without normalization"
+                );
+            } else {
+                return Err(CliError::failed(
+                    "ffmpeg_missing: ffmpeg is required for local speech recognition; \
+                     install it manually or run pinvou voice asr-install",
+                ));
+            }
+        } else {
             return Err(CliError::failed(
-                "ffmpeg_missing: ffmpeg is required for local speech recognition; \
-                 install it manually or run pinvou voice asr-install",
+                "asr_engine_missing: local speech recognition is not installed \
+                 (hint: run `pinvou voice asr-status`)",
             ));
         }
-        return Err(CliError::failed(
-            "asr_engine_missing: local speech recognition is not installed \
-             (hint: run `pinvou voice asr-status`)",
-        ));
     }
     let audio = {
         use std::io::Read as _;
@@ -766,7 +782,19 @@ fn transcribe(path: &Path, output: OutputMode) -> Result<CliOutcome, CliError> {
         ));
     }
     let wav = write_temp_wav(&audio)?;
-    let result = run_recognition(&wav);
+    // The model file is sha256-verified once per command and threaded down
+    // through the recognition lanes: `asr_components` already verified it on
+    // this platform, so the native and external lanes reuse that verdict
+    // instead of hashing the same file up to two more times.
+    let model_verified = if cfg!(target_os = "macos") {
+        // The macOS component probe reports the system Speech runtime
+        // without touching the managed model file; the recognition lanes
+        // still want the file-level answer for their env/native gates.
+        model_available()
+    } else {
+        model
+    };
+    let result = run_recognition(&wav, model_verified);
     let _ = std::fs::remove_file(&wav);
     let (text, source) = result?;
     let value = serde_json::json!({ "text": text, "source": source });
@@ -816,10 +844,11 @@ fn write_temp_wav(bytes: &[u8]) -> Result<PathBuf, CliError> {
 /// Recognition dispatch mirrors `transcribe_voice_audio_bytes`: the platform
 /// native lane first (Linux bundled SenseVoice engine; macOS Speech is not
 /// reachable from the CLI), then the external ASR CLI. Without either lane
-/// the error names `pinvou voice asr-status` as the hint.
-fn run_recognition(wav: &Path) -> Result<(String, &'static str), CliError> {
-    let native_attempted =
-        cfg!(target_os = "linux") && engine_path().is_some() && model_available();
+/// the error names `pinvou voice asr-status` as the hint. `model_verified`
+/// carries the caller's single sha256 verification of the model file so the
+/// lanes re-check availability without re-hashing it.
+fn run_recognition(wav: &Path, model_verified: bool) -> Result<(String, &'static str), CliError> {
+    let native_attempted = cfg!(target_os = "linux") && engine_path().is_some() && model_verified;
     if native_attempted {
         // GUI parity: a failing native lane falls back to the env-configured
         // external ASR CLI before giving up.
@@ -828,7 +857,9 @@ fn run_recognition(wav: &Path) -> Result<(String, &'static str), CliError> {
         }
     }
     match external_asr_command() {
-        Some(command) => external_cli_transcribe(&command, wav).map(|text| (text, "local_cli")),
+        Some(command) => {
+            external_cli_transcribe(&command, wav, model_verified).map(|text| (text, "local_cli"))
+        }
         // An attempted-but-failed engine is a different fact from a missing
         // one (the GUI reports `asr_engine_error` here); "not installed"
         // would send the user reinstalling a model that exists.
@@ -1069,8 +1100,13 @@ fn drain_with_grace(rx: std::sync::mpsc::Receiver<String>) -> String {
 
 /// Mirror of `run_local_asr_cli`: same argument protocol, same env-driven
 /// model/language/timeout, concurrent pipe draining, and exit code 6 as the
-/// "no speech" convention.
-fn external_cli_transcribe(command: &Path, wav: &Path) -> Result<String, CliError> {
+/// "no speech" convention. `model_verified` is the caller's single sha256
+/// verdict on the managed model file (never re-hashed here).
+fn external_cli_transcribe(
+    command: &Path,
+    wav: &Path,
+    model_verified: bool,
+) -> Result<String, CliError> {
     use std::process::Stdio;
 
     let model = std::env::var("PINVOU3_ASR_MODEL")
@@ -1097,8 +1133,8 @@ fn external_cli_transcribe(command: &Path, wav: &Path) -> Result<String, CliErro
         .stdout(Stdio::piped())
         .stderr(Stdio::piped());
     // Mirror the GUI: the engine's own model path is passed through the env
-    // when it is installed locally.
-    if model_available() {
+    // when it is installed locally (verdict threaded from the caller).
+    if model_verified {
         command_line.env("PINVOU3_SENSEVOICE_MODEL", model_path());
     }
     #[cfg(target_os = "windows")]
