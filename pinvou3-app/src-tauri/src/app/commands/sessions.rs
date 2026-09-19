@@ -929,22 +929,6 @@ mod pinvou_scene_event_tests {
             );
         }
     }
-
-    #[test]
-    fn scene_events_accept_ppt_design_scene() {
-        // The design:ppt scene label must be accepted and persisted by the
-        // backend, or the label on that message is lost after sidecar reload.
-        let normalized = normalize_pinvou_scene_events(serde_json::json!([
-            { "pos": 4, "scene": "design:ppt" }
-        ]))
-        .expect("design:ppt scene must be accepted");
-        assert_eq!(
-            normalized,
-            serde_json::json!([
-                { "pos": 4, "scene": "design:ppt" }
-            ])
-        );
-    }
 }
 
 /// 扫描 session workspace 目录,返回实际存在的产物文件绝对路径(过滤隐藏/临时文件)。

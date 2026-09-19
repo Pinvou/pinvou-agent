@@ -2009,6 +2009,14 @@ mod tests {
     /// Mechanism: the base stores overrides in OnceLocks — first set wins,
     /// later sets are rejected — so after install the slots must already be
     /// occupied by the slim text (setting a different value returns Err).
+    /// forkguard(composer): per-turn `<runtime_prompt>` tag 也受 composer gate
+    /// (v0.8.57 上游新增,turn_loop 每请求注入 transient user 消息)。pinvou3 单
+    /// Yolo-Auto 下 tag 恒定零信息,且其解释文档(Runtime Policy Reference)已被
+    /// composer 抑制——无解释 internal tag 会诱发模型复述。
+    ///
+    /// (historical note) The standalone `forkguard_static_composer_gates_runtime_prompt_tag`
+    /// test only re-asserted the `static_prompt_composer_installed()` first check
+    /// below; it was merged into this test as the strict superset.
     #[test]
     fn forkguard_locale_bookend_overrides_are_wired() {
         install_prompt_overrides(); // idempotent: OnceLock slots, first setter wins
@@ -2097,21 +2105,6 @@ mod tests {
             "Compaction 模板不应出现(pinvou3 已删,底座版也不许回流)"
         );
         let _ = std::fs::remove_dir_all(&tmp);
-    }
-
-    /// forkguard(composer): per-turn `<runtime_prompt>` tag 也受 composer gate
-    /// (v0.8.57 上游新增,turn_loop 每请求注入 transient user 消息)。pinvou3 单
-    /// Yolo-Auto 下 tag 恒定零信息,且其解释文档(Runtime Policy Reference)已被
-    /// composer 抑制——无解释 internal tag 会诱发模型复述。本测试断言 composer
-    /// 安装后 `static_prompt_composer_installed()` 为真(turn_loop gate 的读数);
-    /// gate 行本身由 fork-guard 指纹守。
-    #[test]
-    fn forkguard_static_composer_gates_runtime_prompt_tag() {
-        install_prompt_overrides();
-        assert!(
-            deepseek_tui::prompts::static_prompt_composer_installed(),
-            "composer 安装后 installed() 应为 true → turn_loop 不再注入 <runtime_prompt> tag"
-        );
     }
 
     #[test]
