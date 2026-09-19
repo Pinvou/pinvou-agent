@@ -3692,6 +3692,21 @@ fn stash_head(root: &Path) -> Result<Option<String>, CliError> {
     )
 }
 
+/// `code workspace checkout`. The dirty-tree mechanics below mirror
+/// [`workspace::checkout_workspace_branch`] line for line on purpose instead
+/// of calling it: a faithful lib adoption would (a) run git with the lib's
+/// env handling (it strips only the git-override variables and inherits the
+/// user's gitconfig, hooks, and aliases) while this lane needs the
+/// checkpoint-grade isolation of `git_command`; (b) commit with whatever
+/// ambient identity git fabricates instead of the explicitly probed one from
+/// `commit_command_args`; and (c) surface the lib's localized `bail!` copy
+/// inside this CLI's English envelope. The cross-process execution-root lock
+/// below has no lib counterpart at all (the lib serializes per process
+/// only). This mirror is therefore a deliberate divergence, drift-guarded by
+/// the differential contract test
+/// `workspace_checkout_stays_pinned_to_the_app_module_on_fixtures`, which
+/// drives both lanes over twin fixtures and compares the resulting branch
+/// state, working tree, and stash-conflict outcome.
 fn workspace_checkout(
     session: &str,
     root: &Path,
@@ -3879,8 +3894,15 @@ fn workspace_changes_value(session_id: &str, root: &Path) -> Result<serde_json::
 }
 
 /// One-file diff with the same composition rules as
-/// `workspace::workspace_diff`: staged + unstaged sections, synthetic diff for
-/// untracked text files, preview fallback outside git.
+/// [`workspace::workspace_diff`]: staged + unstaged sections, synthetic diff
+/// for untracked text files, preview fallback outside git. The lane stays a
+/// CLI mirror on purpose: the lib function cannot express the per-read cap
+/// (`git_output_capped` — a rewritten multi-GB file must never be buffered
+/// whole just to be truncated below), and it emits localized section and
+/// truncation copy that this CLI's English envelope must not adopt. This
+/// mirror is a deliberate divergence, drift-guarded by the differential
+/// contract test `workspace_diff_stays_pinned_to_the_app_module_on_a_fixture`,
+/// which byte-compares both lanes over the same fixture tree.
 fn workspace_diff_one(
     root: &Path,
     relative_path: &str,

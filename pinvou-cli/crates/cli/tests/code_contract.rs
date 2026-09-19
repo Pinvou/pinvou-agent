@@ -269,6 +269,37 @@ fn init_git_repo(label: &str) -> Option<PathBuf> {
     Some(root)
 }
 
+/// Runs one git command with the same ambient-gitconfig isolation as
+/// `init_git_repo` and returns its stdout when the call succeeds; `None`
+/// when git is unavailable or the call fails.
+fn fixture_git(root: &Path, arguments: &[&str]) -> Option<String> {
+    let devnull = if cfg!(windows) { "NUL" } else { "/dev/null" };
+    let output = std::process::Command::new("git")
+        .current_dir(root)
+        .args(arguments)
+        .env("GIT_CONFIG_NOSYSTEM", "1")
+        .env("GIT_CONFIG_GLOBAL", devnull)
+        .output()
+        .ok()?;
+    if !output.status.success() {
+        return None;
+    }
+    Some(String::from_utf8_lossy(&output.stdout).into_owned())
+}
+
+/// Commits a `feature`-only change to `tracked.txt` on the `feature` branch
+/// and returns to a clean `main`, so a stash-mode checkout to `feature` pops
+/// against moved lines and conflicts (the drift-guard fixture for the
+/// checkout pin below).
+fn seed_feature_side_commit(root: &Path) -> bool {
+    if fixture_git(root, &["checkout", "feature"]).is_none() {
+        return false;
+    }
+    std::fs::write(root.join("tracked.txt"), "feature side\n").unwrap();
+    fixture_git(root, &["commit", "-am", "feature side"]).is_some()
+        && fixture_git(root, &["checkout", "main"]).is_some()
+}
+
 // ── parse-level coverage ────────────────────────────────────────────────────
 
 #[test]
@@ -1138,10 +1169,13 @@ fn whole_workspace_diff_truncates_without_accumulating_over_the_cap() {
 }
 
 /// The per-file diff lane stays a CLI mirror on purpose (bounded untracked
-/// reads, English section copy, whole-workspace composition are CLI-specific),
-/// so its output is differentially pinned against the app module on the same
-/// fixture tree: identical `truncated` flags and identical git diff bodies.
-/// Unix-only like the env-var guard it shares with the other git lanes.
+/// reads, English section copy, whole-workspace composition are CLI-specific;
+/// see `workspace_diff_one` in src/code.rs), so its output is differentially
+/// pinned against the app module on the same fixture tree across the full
+/// composition surface — modified tracked, staged + unstaged on one file, and
+/// untracked synthetic new-file diffs: identical `truncated` flags and
+/// identical git diff bodies. Unix-only like the env-var guard it shares with
+/// the other git lanes.
 #[cfg(unix)]
 #[test]
 fn workspace_diff_stays_pinned_to_the_app_module_on_a_fixture() {
@@ -1165,6 +1199,12 @@ fn workspace_diff_stays_pinned_to_the_app_module_on_a_fixture() {
     let id = create_code_session_fixture(Some(&project));
     std::fs::write(project.join("tracked.txt"), "v2\n").unwrap();
     std::fs::write(project.join("untracked.txt"), "brand new\n").unwrap();
+    // Staged + unstaged on one file: a staged new file with an unstaged
+    // modification on top, so both lanes must compose the staged section and
+    // then the unstaged section over the same underlying git diffs.
+    std::fs::write(project.join("staged.txt"), "v1\n").unwrap();
+    assert!(fixture_git(&project, &["add", "staged.txt"]).is_some());
+    std::fs::write(project.join("staged.txt"), "v2\n").unwrap();
 
     // Modified tracked file: both render one section-header line followed by
     // the same git diff.
@@ -1173,11 +1213,41 @@ fn workspace_diff_stays_pinned_to_the_app_module_on_a_fixture() {
         .expect("app diff for the modified tracked file");
     assert_eq!(cli["relativePath"], app.relative_path);
     assert_eq!(cli["truncated"], app.truncated);
-    let body = |text: &str| text.lines().skip(1).collect::<Vec<_>>().join("\n");
+    // Strip the localized section markers (`# staged` / `# 已暂存`, `# unstaged`
+    // / `# 未暂存`) so the comparison covers the git diff bodies the lanes
+    // share; a diff body itself never starts a line with `# `.
+    let body = |text: &str| {
+        text.lines()
+            .filter(|line| !line.starts_with("# "))
+            .collect::<Vec<_>>()
+            .join("\n")
+    };
     assert_eq!(
         body(cli["text"].as_str().unwrap()),
         body(&app.text),
         "the CLI diff body must match the app module's line for line"
+    );
+
+    // Staged + unstaged composition: same sections in the same order, and
+    // each lane's own section copy (English vs localized) present exactly.
+    let cli = run_json(&["pinvou", "code", "workspace", "diff", &id, "staged.txt"]);
+    let app = app_workspace::workspace_diff(&id, &project, "staged.txt")
+        .expect("app diff for the staged+unstaged file");
+    assert_eq!(cli["truncated"], app.truncated);
+    let cli_text = cli["text"].as_str().unwrap();
+    assert!(
+        cli_text.contains("# staged") && cli_text.contains("# unstaged"),
+        "{cli_text}"
+    );
+    assert!(
+        app.text.contains("# 已暂存") && app.text.contains("# 未暂存"),
+        "{}",
+        app.text
+    );
+    assert_eq!(
+        body(cli_text),
+        body(&app.text),
+        "staged+unstaged composition must match the app module's line for line"
     );
 
     // Untracked file: both synthesize the same new-file diff, byte for byte.
@@ -1190,6 +1260,154 @@ fn workspace_diff_stays_pinned_to_the_app_module_on_a_fixture() {
         app.text,
         "untracked synthetic diffs must be identical"
     );
+}
+
+/// The checkout lane stays a CLI mirror on purpose (checkpoint-grade git env
+/// isolation, the explicitly probed commit identity, English error copy, and
+/// the cross-process execution-root lock are deliberate divergences from
+/// `workspace::checkout_workspace_branch`; see `workspace_checkout` in
+/// src/code.rs), so its dirty-tree behavior is differentially pinned against
+/// the lib lane on twin fixtures: the stash round-trip must leave the same
+/// branch state and working tree, and the stash-conflict path must fail on
+/// both lanes while landing the same conflict markers and retaining the same
+/// single stash entry. Unix-only like the env-var guard it shares with the
+/// diff pin.
+#[cfg(unix)]
+#[test]
+fn workspace_checkout_stays_pinned_to_the_app_module_on_fixtures() {
+    let _env_guard = ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+    let _home = HomeGuard::new("checkout-pin");
+    // The CLI's git lane pins the ambient gitconfig away while the app module
+    // honors it; pin it here too so both lanes see the same repository
+    // behavior (the conflict marker style included) on one machine.
+    let _git_global = EnvVarGuard::capture("GIT_CONFIG_GLOBAL");
+    let _git_nosystem = EnvVarGuard::capture("GIT_CONFIG_NOSYSTEM");
+    unsafe {
+        std::env::set_var(
+            "GIT_CONFIG_GLOBAL",
+            if cfg!(windows) { "NUL" } else { "/dev/null" },
+        );
+        std::env::set_var("GIT_CONFIG_NOSYSTEM", "1");
+    }
+
+    // Stash round trip: a dirty untracked file is stashed away, carried to
+    // `feature`, and popped back; both lanes must report the same branch
+    // state and restore the same content.
+    let Some(project_cli) = init_git_repo("checkout-pin-cli") else {
+        return; // git unavailable in the environment
+    };
+    let Some(project_lib) = init_git_repo("checkout-pin-lib") else {
+        return;
+    };
+    std::fs::write(project_cli.join("extra.txt"), "carried\n").unwrap();
+    std::fs::write(project_lib.join("extra.txt"), "carried\n").unwrap();
+    let id_cli = create_code_session_fixture(Some(&project_cli));
+    let _id_lib = create_code_session_fixture(Some(&project_lib));
+
+    let cli = run_json(&[
+        "pinvou",
+        "code",
+        "workspace",
+        "checkout",
+        &id_cli,
+        "feature",
+        "--mode",
+        "stash",
+    ]);
+    let lib_branches = app_workspace::checkout_workspace_branch(
+        &project_lib,
+        "feature",
+        app_workspace::BranchSwitchMode::Stash,
+        None,
+    )
+    .expect("lib stash round trip");
+    assert_eq!(cli["checkedOut"], "feature");
+    assert_eq!(
+        cli["branches"],
+        serde_json::to_value(&lib_branches).unwrap(),
+        "both lanes must report the same branch state after the stash round trip"
+    );
+    assert_eq!(
+        std::fs::read_to_string(project_cli.join("extra.txt")).unwrap(),
+        "carried\n"
+    );
+    assert_eq!(
+        std::fs::read_to_string(project_lib.join("extra.txt")).unwrap(),
+        "carried\n"
+    );
+
+    // Stash conflict: both lanes move the same lines on `feature`, so the pop
+    // after the switch fails; both must keep the stash entry and land the
+    // same conflict markers instead of losing either side.
+    let Some(project_cli) = init_git_repo("checkout-conflict-cli") else {
+        return;
+    };
+    let Some(project_lib) = init_git_repo("checkout-conflict-lib") else {
+        return;
+    };
+    assert!(seed_feature_side_commit(&project_cli));
+    assert!(seed_feature_side_commit(&project_lib));
+    std::fs::write(project_cli.join("tracked.txt"), "dirty side\n").unwrap();
+    std::fs::write(project_lib.join("tracked.txt"), "dirty side\n").unwrap();
+    let id_cli = create_code_session_fixture(Some(&project_cli));
+    let _id_lib = create_code_session_fixture(Some(&project_lib));
+
+    let error = run(&[
+        "pinvou",
+        "code",
+        "workspace",
+        "checkout",
+        &id_cli,
+        "feature",
+        "--mode",
+        "stash",
+    ])
+    .unwrap_err();
+    assert_eq!(error.exit_code(), ExitCode::Failed);
+    let cli_message = error.to_string();
+    assert!(
+        cli_message.contains("switched to feature")
+            && cli_message.contains("restoring the stashed changes failed"),
+        "{cli_message}"
+    );
+    let lib_error = app_workspace::checkout_workspace_branch(
+        &project_lib,
+        "feature",
+        app_workspace::BranchSwitchMode::Stash,
+        None,
+    )
+    .unwrap_err();
+    let lib_message = lib_error.to_string();
+    assert!(
+        lib_message.contains("feature") && lib_message.contains("stash"),
+        "the lib lane must also report the failed restore: {lib_message}"
+    );
+
+    let cli_conflict = std::fs::read_to_string(project_cli.join("tracked.txt")).unwrap();
+    let lib_conflict = std::fs::read_to_string(project_lib.join("tracked.txt")).unwrap();
+    assert_eq!(
+        cli_conflict, lib_conflict,
+        "both lanes must land the same conflict markers"
+    );
+    assert!(cli_conflict.contains("<<<<<<<"), "{cli_conflict}");
+    assert!(cli_conflict.contains("feature side"), "{cli_conflict}");
+    assert!(cli_conflict.contains("dirty side"), "{cli_conflict}");
+    for project in [&project_cli, &project_lib] {
+        let branches = app_workspace::workspace_branches(project).unwrap();
+        assert_eq!(
+            branches.current.as_deref(),
+            Some("feature"),
+            "the switch itself must have succeeded on both lanes"
+        );
+        // The failed pop keeps its stash entry so neither side is lost.
+        let stashes = fixture_git(project, &["stash", "list"]).unwrap_or_default();
+        assert_eq!(
+            stashes.lines().count(),
+            1,
+            "the conflicted stash entry must be retained ({})",
+            project.display()
+        );
+    }
 }
 
 #[test]
