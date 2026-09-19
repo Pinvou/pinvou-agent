@@ -1,10 +1,11 @@
 use std::time::Duration;
 
 use adapter_smoke::{
-    ProductScoreConfidence, ProductScoreDimension, SMOKE_TOOL_POLICY_ID,
-    SMOKE_TOOL_POLICY_ID_DEPRECATED, SmokeAnalysisMaterial, SmokeRecord, SmokeToolEvent,
-    SmokeUsage, ToolExpectation, analyze_rules, calculate_product_score, is_low_cache_hit_ratio,
-    latency_exceeds_twice_median, render_smoke_markdown, smoke_cases,
+    JudgeDimensionScore, JudgeStatus, JudgeWireResponse, ProductScoreConfidence,
+    ProductScoreDimension, SMOKE_TOOL_POLICY_ID, SMOKE_TOOL_POLICY_ID_DEPRECATED, SmokeAdapter,
+    SmokeAnalysisMaterial, SmokeRecord, SmokeToolEvent, SmokeUsage, ToolExpectation, analyze_rules,
+    calculate_product_score, is_low_cache_hit_ratio, latency_exceeds_twice_median,
+    parse_judge_response, render_smoke_markdown, smoke_cases,
 };
 use agent_backend_api::PrivateInputResolver;
 use benchmark_core::{
@@ -173,6 +174,24 @@ fn smoke_cases_preserve_the_legacy_golden_contract() {
                 ToolExpectation::Optional
             ),
         ]
+    );
+}
+
+#[test]
+fn descriptor_records_the_per_case_deadline_upper_bound() {
+    let adapter = SmokeAdapter::new();
+    // The manifest records the suite's harness-deadline mode as the upper
+    // bound, so the declared bound must stay an upper bound for every
+    // per-case deadline: a case above it would understate the recorded mode.
+    assert_eq!(adapter.descriptor().harness_deadline_secs(), Some(60));
+    let max_case = smoke_cases()
+        .iter()
+        .map(|case| case.timeout())
+        .max()
+        .unwrap();
+    assert!(
+        max_case <= Duration::from_secs(60),
+        "smoke case timeout {max_case:?} exceeds the manifest-recorded 60s bound"
     );
 }
 
