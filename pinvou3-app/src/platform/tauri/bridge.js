@@ -381,7 +381,6 @@
     scheduledTaskBusyAction: null,
     scheduledTaskError: null,
     scheduledTaskErrorKind: null,
-    scheduledTaskDraft: null,
     scheduledTaskCreationSessionId: null,
     scheduledTaskAutoOpenId: null,
     scheduledRunContext: null,
@@ -522,7 +521,6 @@
       voiceNoDeviceConnect: "No available microphone detected. Connect or enable a recording device, then try again.",
       voiceRecording: "Recording… tap again to finish",
       voicePermissionDeniedRetry: "Microphone permission was denied. Tap voice input again and choose Allow in the prompt; if it still fails, check the system microphone settings.",
-      scheduledDraftInvalid: "The scheduled task draft is missing a name, task description, or schedule rule",
       scheduledCreateFailed: "Failed to create scheduled task: ",
       scheduledTaskFallbackName: "Scheduled task",
       scheduledActionBusy: "Another scheduled task operation is still in progress",
@@ -624,7 +622,6 @@
       voiceNoDeviceConnect: "利用可能なマイクが見つかりません。録音デバイスを接続または有効にして再試行してください。",
       voiceRecording: "録音中です。もう一度タップすると終了します",
       voicePermissionDeniedRetry: "マイクの権限が拒否されています。もう一度音声入力をタップし、許可を選択してください。それでも失敗する場合はシステムのマイク設定を確認してください。",
-      scheduledDraftInvalid: "スケジュールタスクの下書きに名前・タスク説明・時間ルールのいずれかが不足しています",
       scheduledCreateFailed: "スケジュールタスクの作成に失敗：",
       scheduledTaskFallbackName: "スケジュールタスク",
       scheduledActionBusy: "別のスケジュールタスク操作がまだ実行中です",
@@ -726,7 +723,6 @@
       voiceNoDeviceConnect: "未检测到可用麦克风，请连接或启用录音设备后重试。",
       voiceRecording: "正在录音，再点一次结束",
       voicePermissionDeniedRetry: "麦克风权限已被拒绝，请再次点击语音输入并在授权提示中选择允许；若仍失败，请检查系统麦克风设置。",
-      scheduledDraftInvalid: "定时任务草稿缺少名称、任务说明或时间规则",
       scheduledCreateFailed: "定时任务创建失败：",
       scheduledTaskFallbackName: "定时任务",
       scheduledActionBusy: "另一个定时任务操作仍在进行中",
@@ -1560,7 +1556,7 @@
     chat: ["activeSkill", "artifacts", "artifactChange", "attachments", "busy", "chatItems", "composerDraft", "composerPrefill", "messages", "modeState", "planSnapshot", "queued", "thinking", "tokens", "turnDirtyArtifacts", "turnPresentedArtifacts", "turnTimeline"],
     voice: ["voiceInput", "voiceAsrSetup"],
     knowledge: ["kbModelSetup", "mountedCollection", "mountedCollections", "mountedRemoteCollections", "mountedCollectionsRevision"],
-    scheduled: ["scheduledRunContext", "scheduledTaskAutoOpenId", "scheduledTaskBusyAction", "scheduledTaskCreationSessionId", "scheduledTaskDetail", "scheduledTaskDraft", "scheduledTaskError", "scheduledTaskErrorKind", "scheduledTaskLoading", "scheduledTaskPendingGuide", "scheduledTaskRecentRuns", "scheduledTaskRuns", "scheduledTasks", "scheduledTaskSelectionGeneration", "selectedScheduledTaskId"],
+    scheduled: ["scheduledRunContext", "scheduledTaskAutoOpenId", "scheduledTaskBusyAction", "scheduledTaskCreationSessionId", "scheduledTaskDetail", "scheduledTaskError", "scheduledTaskErrorKind", "scheduledTaskLoading", "scheduledTaskPendingGuide", "scheduledTaskRecentRuns", "scheduledTaskRuns", "scheduledTasks", "scheduledTaskSelectionGeneration", "selectedScheduledTaskId"],
     monitor: ["monitor", "monitorError"],
     settings: ["settings", "selectedPet"],
     models: ["activeModelId", "currentSessionModelId", "effectiveModelConfig", "savedModels"],
@@ -1769,8 +1765,6 @@
   const selectScheduledTask = scheduledFeature.selectScheduledTask;
   const clearScheduledTaskSelection = scheduledFeature.clearScheduledTaskSelection;
   const parseScheduledTaskDraftFromText = scheduledFeature.parseScheduledTaskDraftFromText;
-  const clearScheduledTaskDraft = scheduledFeature.clearScheduledTaskDraft;
-  const confirmScheduledTaskDraft = scheduledFeature.confirmScheduledTaskDraft;
   const autoCreateScheduledTaskDraft = scheduledFeature.autoCreateScheduledTaskDraft;
   const loadScheduledTasks = scheduledFeature.loadScheduledTasks;
   const readScheduledTask = scheduledFeature.readScheduledTask;
@@ -2529,7 +2523,7 @@
     if (!selected) return [];
     return Array.isArray(selected) ? selected : [selected];
   }
-  // Shared system directory-picker scaffold for pickFolder / pickFolders /
+  // Shared system directory-picker scaffold for pickFolders /
   // sessions.pickDraftWorkspace: returns null when the dialog is unavailable
   // or the user cancels, otherwise the normalized array of selected paths.
   async function pickDirectory(options) {
@@ -2537,10 +2531,6 @@
     const selected = await dialogOpen(options);
     if (!selected) return null;
     return Array.isArray(selected) ? selected : [selected];
-  }
-  async function pickFolder() {
-    const selected = await pickDirectory({ directory: true, multiple: false, title: bt("pickFolderTitle") });
-    return (selected && selected[0]) || null;
   }
   async function pickFolders() {
     return (await pickDirectory({ directory: true, multiple: true, title: bt("kbPickFolderTitle") })) || [];
@@ -2702,10 +2692,7 @@
       toggleScheduledTaskPinned,
       deleteScheduledTask,
       runScheduledTaskNow,
-      pickFolder,
       startScheduledTaskChat,
-      confirmScheduledTaskDraft,
-      clearScheduledTaskDraft,
       openScheduledRunChat,
       exitScheduledRunChat,
     },

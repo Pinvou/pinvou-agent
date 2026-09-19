@@ -114,10 +114,7 @@ assert.ok(
 mustContain("loadScheduledTasks");
 mustContain("readScheduledTask");
 mustContain("startScheduledTaskChat");
-mustContain("confirmScheduledTaskDraft");
-mustContain("clearScheduledTaskDraft");
 mustContain("scheduledTasks:");
-mustContain("scheduledTaskDraft: null");
 mustContain("scheduledTaskCreationSessionId: null");
 mustContain("scheduledTaskPendingGuide: null");
 mustContain("scheduledRunContext: null");
@@ -193,8 +190,7 @@ assert.ok(
 );
 assert.ok(
   /function lockScheduledTaskDraftModel\(draft\)[\s\S]{0,260}draft\.model = draft\.model \|\| \(active && active\.model\)/.test(tauriBridge) &&
-    /draft\.modelId = draft\.modelId \|\| \(active && active\.id\)/.test(tauriBridge) &&
-    /(?:var|const|let) lockedModelId = state\.scheduledTaskDraft\.modelId \|\| \(active && active\.id\)/.test(tauriBridge),
+    /draft\.modelId = draft\.modelId \|\| \(active && active\.id\)/.test(tauriBridge),
   'the final draft should lock the active saved model wire name and stable model id before creation'
 );
 assert.ok(
@@ -2216,19 +2212,6 @@ async function scheduledRunUnreadBehavior() {
     markCount,
     "a conversation that failed to load must remain unread"
   );
-}
-
-async function scheduledFolderPickerBehavior() {
-  const harness = createBridgeHarness();
-  harness.setDialogResult("D:/workspace-picked");
-  assert.strictEqual(await harness.bridge.scheduled.pickFolder(), "D:/workspace-picked");
-  assert.strictEqual(JSON.stringify(harness.dialogCalls[0]), JSON.stringify({
-    directory: true,
-    multiple: false,
-    title: "选择工作目录",
-  }));
-  harness.setDialogResult(null);
-  assert.strictEqual(await harness.bridge.scheduled.pickFolder(), null, "canceling folder selection should preserve the typed path");
 }
 
 async function scheduledRunningHydrationRaceBehavior() {
@@ -7477,7 +7460,6 @@ async function scheduledDraftModelBehavior() {
   harness.emit("chat:done", { session_id: sessionId });
   await tick();
   await tick();
-  assert.strictEqual(harness.bridge.state.getMany(['sessions', 'chat', 'scheduled']).scheduledTaskDraft, null, "chat-generated parameters must not create a confirmation-card state");
   assert.ok(String(harness.bridge.state.getMany(['sessions', 'chat', 'scheduled']).scheduledTaskError).includes("cannot create scheduled draft"));
   assert.ok(
     harness.bridge.state.getMany(['sessions', 'chat', 'scheduled']).chatItems.some(function (item) {
@@ -8731,7 +8713,6 @@ Promise.resolve()
   .then(function () { return presentationReconciliationUsesStableEventIdentity("tauri"); })
   .then(function () { return presentationReconciliationUsesStableEventIdentity("web"); })
   .then(scheduledUnreadPollingRaceBehavior)
-  .then(scheduledFolderPickerBehavior)
   .then(scheduledTemplateSourcePersistenceBehavior)
   .then(scheduledSelectionGenerationBehavior)
   .then(scheduledRefreshDoesNotOverlap)

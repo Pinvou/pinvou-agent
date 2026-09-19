@@ -130,7 +130,6 @@
       mountedCollection: null, // 知识库: 该 session 挂载的知识集 id 或 null
       mountedCollections: [], // 多知识库挂载项 [{ collectionId, enabled }]
       mountedCollectionsRevision: 0,
-      scheduledTaskDraft: null,
       scheduledRunSession: false,
       scheduledInitialTurnPhase: null,
       lastTouched: 0,
@@ -388,7 +387,6 @@
     buf.mountedCollection = state.mountedCollection;
     buf.mountedCollections = state.mountedCollections;
     buf.mountedCollectionsRevision = state.mountedCollectionsRevision;
-    buf.scheduledTaskDraft = state.scheduledTaskDraft;
     buf.stream = {
       currentStreamText: context.currentStreamText, currentStreamId: context.currentStreamId,
       pendingAssistantText: context.pendingAssistantText, pendingAssistantBlocks: context.pendingAssistantBlocks,
@@ -417,7 +415,6 @@
       ? buf.mountedCollections
       : (state.mountedCollection == null ? [] : [{ collectionId: state.mountedCollection, enabled: true }]);
     state.mountedCollectionsRevision = Number(buf.mountedCollectionsRevision || 0);
-    state.scheduledTaskDraft = buf.scheduledTaskDraft || null;
     const s = buf.stream || {};
     context.currentStreamText = s.currentStreamText || ""; context.currentStreamId = s.currentStreamId || 0;
     context.pendingAssistantText = s.pendingAssistantText || ""; context.pendingAssistantBlocks = s.pendingAssistantBlocks || [];
