@@ -9,9 +9,17 @@
 //! - the GUI opens the issues URL in a browser; the CLI prints it;
 //! - the GUI keeps the receipt in-app; the CLI additionally persists the
 //!   request bundle under `$PINVOU3_HOME/feedback/pending/` and the returned
-//!   receipt under `$PINVOU3_HOME/feedback/receipts/` — the same directory
-//!   contract `platform::paths` defines for feedback artifacts. Nothing
-//!   leaves the machine.
+//!   receipt under `$PINVOU3_HOME/feedback/receipts/`. Those directories
+//!   were `platform::paths` helpers on the fork base and were swept on main
+//!   once the GUI stopped persisting feedback locally; the CLI reconstructs
+//!   the same layout from `paths::pinvou3_home()` so earlier bundles stay
+//!   readable. Nothing leaves the machine.
+//!
+//! The request struct carries only `title`/`description`/`entry_point` on
+//! main — `type`/`error_summary`/`attachments`/`privacy_notice_version`
+//! were parse-then-drop fields the stub never consumed, and the sweep
+//! removed them; the CLI follows the reduced shape, so `feedback submit`
+//! takes no `--type` and no `--attach`.
 //!
 //! The CLI fixes the request `entry_point` to `"settings"` (the only two
 //! values the feature accepts are the GUI's settings page and error banner)
@@ -19,9 +27,7 @@
 
 use std::path::{Path, PathBuf};
 
-use pinvou3_lib::features::feedback::{
-    FeedbackAttachmentRequest, FeedbackStatus, FeedbackSubmitRequest, FeedbackType,
-};
+use pinvou3_lib::features::feedback::{FeedbackStatus, FeedbackSubmitRequest};
 
 use crate::support::{render, sandbox_home, success};
 use crate::{CliError, CliOutcome, OutputMode};
@@ -33,13 +39,11 @@ pub struct FeedbackCommand {
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 struct SubmitArgs {
-    feedback_type: FeedbackType,
     title: String,
     body_file: PathBuf,
-    attachments: Vec<PathBuf>,
 }
 
-const USAGE: &str = "usage: pinvou feedback submit --type issue|suggestion --title T --body-file F [--attach PATH...]";
+const USAGE: &str = "usage: pinvou feedback submit --title T --body-file F";
 
 /// The community feature function's message points here; the const is
 /// crate-private upstream, so the URL is mirrored verbatim.
@@ -50,10 +54,8 @@ pub fn parse(values: &[String]) -> Result<FeedbackCommand, CliError> {
     if subcommand != "submit" {
         return Err(CliError::usage(USAGE));
     }
-    let mut feedback_type: Option<FeedbackType> = None;
     let mut title: Option<String> = None;
     let mut body_file: Option<PathBuf> = None;
-    let mut attachments = Vec::new();
     let index = &values[2..];
     let mut position = 0;
     while position < index.len() {
@@ -66,21 +68,6 @@ pub fn parse(values: &[String]) -> Result<FeedbackCommand, CliError> {
                 .ok_or_else(|| CliError::usage(format!("feedback option {name} requires a value")))
         };
         match token {
-            "--type" => {
-                if feedback_type.is_some() {
-                    return Err(CliError::usage("duplicate feedback option --type"));
-                }
-                feedback_type = Some(match value(position, "--type")? {
-                    "issue" => FeedbackType::Issue,
-                    "suggestion" => FeedbackType::Suggestion,
-                    other => {
-                        return Err(CliError::usage(format!(
-                            "feedback submit --type must be issue or suggestion (got {other})"
-                        )));
-                    }
-                });
-                position += 2;
-            }
             "--title" => {
                 if title.is_some() {
                     return Err(CliError::usage("duplicate feedback option --title"));
@@ -95,10 +82,6 @@ pub fn parse(values: &[String]) -> Result<FeedbackCommand, CliError> {
                 body_file = Some(PathBuf::from(value(position, "--body-file")?));
                 position += 2;
             }
-            "--attach" => {
-                attachments.push(PathBuf::from(value(position, "--attach")?));
-                position += 2;
-            }
             other => {
                 return Err(CliError::usage(format!(
                     "unsupported feedback option: {other}"
@@ -107,12 +90,9 @@ pub fn parse(values: &[String]) -> Result<FeedbackCommand, CliError> {
         }
     }
     let submit = SubmitArgs {
-        feedback_type: feedback_type
-            .ok_or_else(|| CliError::usage("feedback submit requires --type issue|suggestion"))?,
         title: title.ok_or_else(|| CliError::usage("feedback submit requires --title T"))?,
         body_file: body_file
             .ok_or_else(|| CliError::usage("feedback submit requires --body-file F"))?,
-        attachments,
     };
     Ok(FeedbackCommand { submit })
 }
@@ -126,37 +106,11 @@ pub fn execute(command: FeedbackCommand, output: OutputMode) -> Result<CliOutcom
     // unbounded file from being loaded in the first place.
     let description =
         crate::support::read_text_file_capped(&submit.body_file, 64 * 1024, "feedback submit")?;
-    let mut attachments = Vec::new();
-    for path in &submit.attachments {
-        let size = std::fs::metadata(path)
-            .map_err(|error| {
-                CliError::failed(format!(
-                    "feedback submit: cannot read attachment {}: {error}",
-                    path.display()
-                ))
-            })?
-            .len();
-        attachments.push(FeedbackAttachmentRequest {
-            path: path.display().to_string(),
-            name: path
-                .file_name()
-                .and_then(|name| name.to_str())
-                .unwrap_or("attachment")
-                .to_owned(),
-            media_type: media_type(path).to_owned(),
-            mime: None,
-            size_bytes: Some(size),
-        });
-    }
     let request = FeedbackSubmitRequest {
-        feedback_type: submit.feedback_type,
         title: Some(submit.title),
         description,
         // See module docs: the CLI has no error-banner context.
         entry_point: "settings".to_owned(),
-        error_summary: None,
-        attachments,
-        privacy_notice_version: "community-v1".to_owned(),
     };
     pinvou3_lib::features::feedback::validate_feedback_request(&request).map_err(|error| {
         CliError::failed(format!(
@@ -165,8 +119,14 @@ pub fn execute(command: FeedbackCommand, output: OutputMode) -> Result<CliOutcom
         ))
     })?;
     let feedback_id = new_feedback_id();
-    let pending_dir = pinvou3_lib::platform::paths::feedback_pending_dir();
-    let receipts_dir = pinvou3_lib::platform::paths::feedback_receipts_dir();
+    // See module docs: the swept `platform::paths` helpers were one-line
+    // joins over the same layout; reconstruct it from the pub home path.
+    let pending_dir = pinvou3_lib::platform::paths::pinvou3_home()
+        .join("feedback")
+        .join("pending");
+    let receipts_dir = pinvou3_lib::platform::paths::pinvou3_home()
+        .join("feedback")
+        .join("receipts");
     let pending_path = pending_dir.join(format!("{feedback_id}.json"));
     let receipt_path = receipts_dir.join(format!("{feedback_id}.json"));
     // Persist the request bundle before the (consuming) feature call so the
@@ -269,25 +229,7 @@ fn translate_feedback_text(text: &str) -> String {
 fn status_label(status: FeedbackStatus) -> &'static str {
     match status {
         FeedbackStatus::Submitted => "submitted",
-        FeedbackStatus::FailedRetryable => "failed_retryable",
         FeedbackStatus::FailedValidation => "failed_validation",
-    }
-}
-
-fn media_type(path: &Path) -> &'static str {
-    match path
-        .extension()
-        .and_then(|extension| extension.to_str())
-        .unwrap_or("")
-        .to_ascii_lowercase()
-        .as_str()
-    {
-        "md" | "markdown" => "text/markdown",
-        "txt" | "log" => "text/plain",
-        "png" => "image/png",
-        "jpg" | "jpeg" => "image/jpeg",
-        "json" => "application/json",
-        _ => "application/octet-stream",
     }
 }
 

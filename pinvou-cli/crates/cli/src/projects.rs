@@ -319,13 +319,17 @@ fn update(
 fn delete(id: &str, yes: bool, output: OutputMode) -> Result<CliOutcome, CliError> {
     require_yes(yes)?;
     let store = open_store()?;
-    let report = store
+    // Main's `delete_project` returns `()`: the affected-session list it used
+    // to carry was GUI-dead after the assignments are cleared in the same
+    // critical section, so the sweep dropped the report struct. Sessions
+    // fall back to automatic grouping exactly as before; the CLI discloses
+    // that in `--output json` by keeping the payload to the action itself.
+    store
         .delete_project(id)
         .map_err(|error| project_error("delete", error))?;
     let value = serde_json::json!({
         "id": id,
         "action": "deleted",
-        "affected_session_ids": report.affected_session_ids,
     });
     Ok(success(render(output, format!("deleted {id}"), &value)))
 }

@@ -4031,12 +4031,17 @@ fn checkpoints_diff(
                 "checkpoints diff({session}): checkpoint diff failed to serialize: {error}"
             ))
         })?;
-    let human = format!(
-        "checkpoint: {}\nchanges: {}\npatch:\n{}",
+    // Main's checkpoint diff no longer generates the unified-diff preview
+    // (the GUI's RewindChip ships the change list only); the human renderer
+    // mirrors that: one line per change, no patch section.
+    let mut human = format!(
+        "checkpoint: {}\nchanges: {}",
         diff.checkpoint.id,
         diff.changes.len(),
-        diff.patch,
     );
+    for change in &diff.changes {
+        human.push_str(&format!("\n  {} {}", change.status, change.path));
+    }
     Ok(success(render(output, human, &value)))
 }
 

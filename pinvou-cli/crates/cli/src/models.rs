@@ -1021,12 +1021,15 @@ fn show(id: &str, reveal_key: bool, output: OutputMode) -> Result<CliOutcome, Cl
     Ok(success(render(output, human, &json)))
 }
 
+/// Mirror of `platform::credential_store::CredentialState`'s snake_case
+/// labels. `needs_migration` existed on the fork base and was removed
+/// upstream with the keychain-migration state itself; scripts should treat
+/// unknown labels as `unavailable`.
 fn credential_state_str(state: CredentialState) -> &'static str {
     match state {
         CredentialState::Missing => "missing",
         CredentialState::Configured => "configured",
         CredentialState::EnvOverride => "env_override",
-        CredentialState::NeedsMigration => "needs_migration",
         CredentialState::Unavailable => "unavailable",
     }
 }

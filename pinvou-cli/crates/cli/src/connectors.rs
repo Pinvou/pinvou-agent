@@ -197,10 +197,10 @@ impl ConnectorKind {
         // The same tables the runtime bundle gate iterates, imported from the
         // app's single source of truth so the two surfaces cannot drift.
         match self {
-            Self::Feishu => LARK_SKILL_DIRS,
+            Self::Feishu => &LARK_SKILL_DIRS,
             Self::Wecom => &WECOM_SKILL_DIRS,
-            Self::Dingtalk => DINGTALK_SKILL_DIRS,
-            Self::Tmeet => TMEET_SKILL_DIRS,
+            Self::Dingtalk => &DINGTALK_SKILL_DIRS,
+            Self::Tmeet => &TMEET_SKILL_DIRS,
         }
     }
 }

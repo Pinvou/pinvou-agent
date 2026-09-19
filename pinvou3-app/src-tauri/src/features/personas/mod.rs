@@ -318,7 +318,7 @@ pub fn update_user_persona(mut card: PersonaCard) -> Result<PersonaSummary, Stri
 /// callers with no post-delete work — the headless CLI's `personas delete`
 /// consumes this surface (the sweep dropped it as GUI-dead).
 pub fn delete_user_persona(id: &str) -> Result<(), String> {
-    delete_user_persona_with(id, ())
+    delete_user_persona_with(id, || ())
 }
 
 /// Delete a card and run cross-feature cleanup before another operation can
