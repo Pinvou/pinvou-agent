@@ -316,44 +316,6 @@
     return fallback || preferred;
   }
 
-  function clearScheduledTaskDraft() {
-    state.scheduledTaskDraft = null;
-    if (state.activeSessionId === state.scheduledTaskCreationSessionId) {
-      state.scheduledTaskCreationSessionId = null;
-    }
-    notify();
-  }
-
-  async function confirmScheduledTaskDraft(editedDraft) {
-    if (!state.scheduledTaskDraft || state.activeSessionId !== state.scheduledTaskCreationSessionId) return null;
-    const active = activeScheduledTaskModelConfig();
-    const lockedModel = state.scheduledTaskDraft.model || (active && active.model) || null;
-    const lockedModelId = state.scheduledTaskDraft.modelId || (active && active.id) || null;
-    const draft = normalizeScheduledTaskDraft(Object.assign({}, state.scheduledTaskDraft, editedDraft || {}, {
-      model: lockedModel,
-      modelId: lockedModelId,
-    }));
-    if (!draft) {
-      const invalidDraftError = new Error(bt("scheduledDraftInvalid"));
-      setScheduledTaskError(invalidDraftError, "action");
-      notify();
-      throw invalidDraftError;
-    }
-    const created = await createScheduledTask({
-      name: draft.name,
-      prompt: draft.prompt,
-      rrule: draft.rrule,
-      model: lockedModel,
-      modelId: lockedModelId,
-      mode: "yolo",
-      paused: draft.paused,
-    });
-    state.scheduledTaskDraft = null;
-    state.scheduledTaskCreationSessionId = null;
-    notify();
-    return created;
-  }
-
   function scheduledTaskInputFromDraft(draft) {
     return {
       name: draft.name,
@@ -374,7 +336,6 @@
   function autoCreateScheduledTaskDraft(draft, creationSessionId) {
     if (!draft || !creationSessionId || scheduledTaskAutoCreateInFlight[creationSessionId]) return;
     const lockedDraft = lockScheduledTaskDraftModel(draft);
-    state.scheduledTaskDraft = null;
     const creationSeq = ++scheduledTaskAutoCreateSeq;
     const creation = Promise.resolve()
       .then(function () {
@@ -384,8 +345,6 @@
         if (state.scheduledTaskCreationSessionId === creationSessionId) {
           state.scheduledTaskCreationSessionId = null;
         }
-        const creationBuffer = sessionStates[creationSessionId];
-        if (creationBuffer) creationBuffer.scheduledTaskDraft = null;
         if (created && created.id && creationSeq === scheduledTaskAutoCreateSeq) state.scheduledTaskAutoOpenId = created.id;
         notify();
         return created;
@@ -812,7 +771,6 @@
   async function startScheduledTaskChat() {
     return runScheduledTaskAction("chat-create", async function () {
       const prompt = await invoke("scheduled_task_chat_prompt");
-      state.scheduledTaskDraft = null;
       state.scheduledTaskCreationSessionId = null;
       scheduledTaskAutoCreateSeq++; // 清空意图：作废在途 auto-create 的陈旧 completion（审计 f）
       state.scheduledTaskAutoOpenId = null;
@@ -854,8 +812,6 @@
       activeScheduledTaskModelConfig,
       lockScheduledTaskDraftModel,
       parseScheduledTaskDraftFromText,
-      clearScheduledTaskDraft,
-      confirmScheduledTaskDraft,
       scheduledTaskInputFromDraft,
       autoCreateScheduledTaskDraft,
       loadScheduledTasks,
