@@ -453,9 +453,7 @@ pub async fn uninstall_marketplace_tool(
     // 安全重建（同 install 路径，mark_mcp_config_updated 契约），残留的已卸
     // 连接器工具不再出现在模型目录。
     pool.mark_mcp_config_updated();
-    // 联动卸载的 companion 技能影响两个 scope 的启用集：重写在线会话组合目录
-    // （async 命令必须用 async 版：blocking 版的 blocking_lock 在 tokio runtime
-    // 线程上必 panic）。
+    // 联动卸载的 companion 技能影响两个 scope 的启用集：重写在线会话组合目录。
     pool.refresh_live_sessions_skills().await;
     // Keep the native-tool deny list uniform with the skill uninstall path
     // (no live effect today: no current MCP manifest owns a native tool, but

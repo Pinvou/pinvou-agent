@@ -2178,7 +2178,6 @@ const withUiTimeout = (promise, timeoutMs, fallbackResult) => {
               onCancel={() => setPurgeConfirm(null)}
             />
           ), document.body)}
-          {/* 飞书/企微扫码二维码已内联进 FeishuFlowCard（详情弹窗内），不再单独浮层 */}
           {/* 回收站子页面:点入口后整个插件中心内容区切换为回收站页面(非弹窗),
               返回按钮回到主列表;彻底删除二次确认仍用弹窗(见上方 purgeConfirm) */}
           {showRecycleBin && (

@@ -1553,8 +1553,9 @@ mod tests {
         );
     }
 
-    /// legacy 快照（迁移前打的，tree 含 .env）的 diff 预览：清单与 patch 都
-    /// 不得带敏感条目/秘密原文上屏；普通文件变更照常展示。
+    /// Diff preview against a legacy snapshot (taken before the migration, its
+    /// tree contains .env): the changes list must not surface sensitive
+    /// entries or secret plaintext; ordinary file changes render normally.
     #[test]
     fn diff_preview_filters_secret_paths_from_legacy_snapshot() {
         if !git_available() {
