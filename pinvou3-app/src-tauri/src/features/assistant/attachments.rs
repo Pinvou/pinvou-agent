@@ -126,20 +126,18 @@ fn staged_target_is_safe(
 /// replaced source that exceeds the cap fails the copy, and
 /// `stage_file_in_workspace_with_copier` removes the half-written destination
 /// on the error, instead of the oversized content landing in the workspace.
-/// The limit IS the staged-attachment validation cap
-/// (`MAX_STAGED_ATTACHMENT_BYTES`, enforced by `validate_attachments`), not
-/// an independent literal: a future bump of the validation cap must raise
-/// the copy cap with it, or a valid attachment would be rejected on the
-/// copy path after passing validation. (It happens to equal
-/// `features::files::file_ingest::MAX_FILE_BYTES` today.)
+/// The limit is `features::files::file_ingest::MAX_FILE_BYTES` — the same
+/// per-file cap ingest enforces — and the staged-attachment pipeline's
+/// `MAX_STAGED_ATTACHMENT_BYTES` is defined FROM this constant, so a bump
+/// of the shared cap raises every lane together instead of stranding
+/// attachments that passed validation but fail the copy.
 fn copy_file_with_limit(
     source: &mut std::fs::File,
     destination: &mut std::fs::File,
 ) -> std::io::Result<u64> {
     use std::io::Read as _;
 
-    use crate::features::assistant::product_runtime::headless_bridge::MAX_STAGED_ATTACHMENT_BYTES;
-    let limit = MAX_STAGED_ATTACHMENT_BYTES;
+    let limit = crate::features::files::file_ingest::MAX_FILE_BYTES;
     let mut limited = source.take(limit + 1);
     let copied = std::io::copy(&mut limited, destination)?;
     if copied > limit {
