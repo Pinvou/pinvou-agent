@@ -601,12 +601,17 @@ fn fresh_binding_nonce(registry: &HashMap<String, WebviewBinding>) -> String {
     }
 }
 
+/// Test-only entry points: production rotation goes through
+/// `rotate_binding_nonce_locked` from the host-bootstrap loop, which holds the
+/// registry lock across the wait-and-rotate window.
+#[cfg(test)]
 fn rotate_binding_nonce(label: &str) -> Result<String, String> {
     let expected_nonce = expected_binding_nonce(label)
         .ok_or_else(|| "browser/webkit-binding-not-registered".to_string())?;
     rotate_binding_nonce_if_current(label, &expected_nonce)
 }
 
+#[cfg(test)]
 fn rotate_binding_nonce_if_current(
     label: &str,
     expected_registration_nonce: &str,
