@@ -472,7 +472,7 @@ fn rebind_roots_rolls_back_memory_when_persist_fails() {
     let to = temp.path().join("moved");
     std::fs::create_dir_all(&to).expect("create to dir");
 
-    let project = create(&store, "搬家", &[from.clone()]);
+    let project = create(&store, "搬家", std::slice::from_ref(&from));
     let before = store.get(&project.id).unwrap();
 
     // Replace the store's final path with a non-empty directory: rename
