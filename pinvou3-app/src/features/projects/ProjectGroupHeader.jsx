@@ -7,8 +7,8 @@ import { useState } from 'react';
 import { createPortal } from 'react-dom';
 import { Check, ChevronDown, Edit2, FolderPlus, MoreHorizontal, Trash2, X } from '../../components/icons.jsx';
 import { usePortalMenu } from '../../hooks/usePortalMenu.js';
+import { capUnavailableRootsForDisplay, PROJECT_SESSION_DRAG_TYPE } from './projectGrouping.js';
 import { isImeComposing } from '../../shared/ime-guard.mjs';
-import { PROJECT_SESSION_DRAG_TYPE } from './projectGrouping.js';
 
 const ProjectGroupHeader = ({
   label,
@@ -24,6 +24,11 @@ const ProjectGroupHeader = ({
   onRename,
   onDelete,
   onDropSession,
+  onRebind,
+  // One badge entry per unavailable root (per-root rebind): projects with
+  // only some roots unavailable also get a repair path, and rebinding one
+  // root does not remove the entries for the remaining unavailable roots.
+  unavailableRoots,
   // Highlight ownership lives in the sidebar container (one drop target lit at
   // a time) so the source row's dragend can clear it unconditionally even when
   // a webview skips dragleave/drop.
@@ -34,6 +39,10 @@ const ProjectGroupHeader = ({
 }) => {
   const [editing, setEditing] = useState(null);
   const [confirming, setConfirming] = useState(false);
+  // With several unavailable roots, collapse to "first badge + N": the 28px
+  // header row cannot fit multiple shrink-0 badges (review #463 m3); the
+  // expanded state lays them out flat and allows wrapping.
+  const [showAllUnavailableRoots, setShowAllUnavailableRoots] = useState(false);
   // 菜单按实际可用的动作渲染:web 没有 projects 后端,onConvert 等为
   // undefined,此时整个组不渲染「更多」按钮,避免点开一个空菜单。
   const hasMenu = (kind === 'folder' && !!onConvert)
@@ -181,11 +190,14 @@ const ProjectGroupHeader = ({
   // another ARIA button. Project headers double as HTML5 drop targets for the
   // sidebar session drag; role="presentation" declares the div
   // non-interactive to the a11y tree while it carries the drag handlers.
+  const unavailableRootList = kind === 'project' ? unavailableRoots || [] : [];
+  const { visibleRoots, hiddenCount } = capUnavailableRootsForDisplay(unavailableRootList, showAllUnavailableRoots);
+  const wrapUnavailable = visibleRoots.length > 1;
   return (
     <div
       role="presentation"
       {...dropHandlers}
-      className={`group/header w-full h-7 flex items-center rounded-full text-[12px] transition-colors ${dropActive
+      className={`group/header ${wrapUnavailable ? 'w-full min-h-7 h-auto flex-wrap' : 'w-full h-7'} flex items-center rounded-full text-[12px] transition-colors ${dropActive
         ? 'ring-1 ring-[#0B57D0] bg-[#E8F0FE] dark:ring-[#A8C7FA] dark:bg-[#1F2A3D]'
         : theme === 'dark' ? 'text-[#9AA0A6] hover:bg-[#282A2C]' : 'text-[#8A8F94] hover:bg-[#E1E5EA]'}`}
       data-drop-target={onDropSession ? 'project' : undefined}
@@ -201,6 +213,45 @@ const ProjectGroupHeader = ({
         {headerExtra}
         <ChevronDown size={14} className={`shrink-0 transition-transform ${isOpen ? '' : '-rotate-90'}`} />
       </button>
+      {/* Per-root badges for unavailable roots with one-click rebind. The
+          project is never auto-deleted — ownership and history remain, and
+          rebinding the folder is the only repair path. Each badge is a real
+          sibling <button> of the toggle button (no longer nested inside a
+          <button>), one per root; rebinding one keeps the other entries.
+          Multiple roots collapse into a +N expander (m3); the expanded
+          container wraps instead of overflowing. */}
+      {visibleRoots.map((rootPath) => (
+        <button
+          key={rootPath}
+          type="button"
+          data-testid="project-folder-unavailable"
+          title={rootPath}
+          aria-label={`${t.uiProjects.folderUnavailable} · ${t.uiProjects.rebindFolder} · ${rootPath}`}
+          disabled={busy}
+          onClick={(e) => { e.stopPropagation(); onRebind && onRebind(rootPath, e.currentTarget.parentElement); }}
+          className="mr-2 shrink-0 max-w-[9rem] truncate rounded-full bg-[#FCE8E6] dark:bg-[#3C2A29] px-2 py-0.5 text-[11px] text-[#C5221F] dark:text-[#F28B82] hover:opacity-80 disabled:opacity-50"
+        >
+          {t.uiProjects.folderUnavailable} · {t.uiProjects.rebindFolder}
+        </button>
+      ))}
+      {/* Multi-root collapse toggle (m3/Nit 13): collapsed shows +N and can
+          expand; expanded wraps the container, and the same button collapses
+          again. Both states carry an aria-label, and each badge's accessible
+          name is distinguished by its path. */}
+      {unavailableRootList.length > 1 && (
+        <button
+          type="button"
+          data-testid="project-folder-unavailable-more"
+          aria-label={showAllUnavailableRoots ? t.uiProjects.rebindRootsCollapse : t.uiProjects.rebindRootsExpand}
+          title={showAllUnavailableRoots ? t.uiProjects.rebindRootsCollapse : unavailableRootList.slice(1).join('\n')}
+          disabled={busy}
+          onClick={(e) => { e.stopPropagation(); setShowAllUnavailableRoots(v => !v); }}
+          className="mr-2 shrink-0 flex items-center gap-0.5 rounded-full bg-[#FCE8E6] dark:bg-[#3C2A29] px-2 py-0.5 text-[11px] font-medium text-[#C5221F] dark:text-[#F28B82] hover:opacity-80 disabled:opacity-50"
+        >
+          {!showAllUnavailableRoots && <span>+{hiddenCount}</span>}
+          <ChevronDown size={11} className={`shrink-0 transition-transform ${showAllUnavailableRoots ? '' : '-rotate-90'}`} />
+        </button>
+      )}
       {hasMenu && (
         // max-sm keeps the actions reachable without hover (touch, narrow
         // windows), group-focus-within reveals them for keyboard users —

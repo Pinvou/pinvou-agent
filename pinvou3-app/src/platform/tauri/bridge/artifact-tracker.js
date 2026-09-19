@@ -155,6 +155,73 @@
     if (stableAbsolutePath) existing.path = stableAbsolutePath;
     return existing;
   }
+  // Freshness window for the workspace_rebound mark's VIEW heal (the
+  // basename-based reconcile arm): generous enough to cover the rebind
+  // dialog's retry flow, short enough that an old mark cannot misfire the
+  // arm on an unrelated later basename collision. Deliberately does NOT
+  // delete the mark on expiry (review #463 round-C Major 2): the save-path
+  // transform (rebaseArtifactPathsForRebind) is prefix-exact and shares the
+  // mark, and its "whole process lifetime" contract requires the mark to
+  // survive while the session's buffer may still hold stale paths — pruning
+  // here re-armed the durable revert the transform exists to prevent.
+  const REBIND_RECONCILE_WINDOW_MS = 10 * 60 * 1000;
+  function sessionRecentlyRebound(sid) {
+    const marks = state.reboundSessionIds;
+    if (!marks || !sid) return false;
+    const mark = marks[sid];
+    if (!mark || !mark.at) return false;
+    return Date.now() - mark.at <= REBIND_RECONCILE_WINDOW_MS;
+  }
+  // Rebases absolute artifact paths along the session's rebind SEGMENT CHAIN
+  // while a workspace_rebound mark exists (review #463 round-B Major 1 + the
+  // round-D vintage fix): a chat turn completed after the rebind wholesale-
+  // saves the buffer's artifact list, which would otherwise durably revert
+  // the backend lane's rebase of SavedSession.artifacts[].storage_path.
+  // Segments apply in order — an A-era path resolves A→B→C, a buffer
+  // re-vintaged from the durable JSON between chained rebinds (B-era)
+  // resolves B→C, a C-era path matches nothing. Prefix-exact on the folded
+  // normalized form (separators + case folded — Windows bindings are stored
+  // case-insensitively, and a case-collision false match requires another
+  // directory differing from a segment's from by case alone); the suffix
+  // keeps the original casing. Relative paths already resolve against the
+  // CURRENT workspace and are untouched; marks are memory-only, so a restart
+  // starts from the already-rebased JSON with no marks and this is a no-op.
+  // Strips trailing separators without a regex (the ESLint deny gate flags
+  // the previous /\/+$/ form as super-linear).
+  function trimTrailingSlashes(p) {
+    let s = normalizedPath(p);
+    while (s.endsWith("/")) s = s.slice(0, -1);
+    return s;
+  }
+  function rebaseArtifactPathsForRebind(sid, paths) {
+    const marks = state.reboundSessionIds;
+    const mark = marks && sid ? marks[sid] : null;
+    if (!mark || !Array.isArray(mark.chain) || !mark.chain.length || !Array.isArray(paths)) {
+      return paths;
+    }
+    const segments = mark.chain
+      .map(function (segment) {
+        return {
+          fromKey: trimTrailingSlashes(segment.from).toLowerCase(),
+          toKey: trimTrailingSlashes(segment.to),
+        };
+      })
+      .filter(function (segment) { return segment.fromKey; });
+    if (!segments.length) return paths;
+    return paths.map(function (p) {
+      if (typeof p !== "string" || !isAbsPath(p)) return p;
+      let norm = normalizedPath(p);
+      let mapped = false;
+      for (let i = 0; i < segments.length; i++) {
+        const lower = norm.toLowerCase();
+        if (lower === segments[i].fromKey || lower.indexOf(segments[i].fromKey + "/") === 0) {
+          norm = segments[i].toKey + norm.slice(segments[i].fromKey.length);
+          mapped = true;
+        }
+      }
+      return mapped ? norm : p;
+    });
+  }
   // 切换 session 时对账:扫 workspace 磁盘,把实际存在、但跟踪列表里没有的文件补进来。
   // 修「文件已生成在盘上、却因 app 中途重启/跟踪遗漏而不在产物面板」(以磁盘为准)。
   async function reconcileArtifacts(sid) {
@@ -175,11 +242,26 @@
           if (!isDeliverable(p)) return;
           const na = { path: p, basename: bn }; state.artifacts.push(na); byName[bn] = na; added = true;
         }
-        else if (isAbsPath(p) && !isAbsPath(ex.path)) { ex.path = p; added = true; } // 相对→绝对,open 可靠
+        else if (isAbsPath(p) && (!isAbsPath(ex.path) || (normalizedPath(ex.path) !== normalizedPath(p) && sessionRecentlyRebound(sid)))) {
+          // 相对→绝对,open 可靠;或 stale absolute → live workspace file,
+          // matched by basename — ONLY for a session the rebind command just
+          // moved (the workspace_rebound mark, review #463 round-10 Major 2).
+          // After a folder rebind the persisted entry keeps the vanished root,
+          // and the relative→absolute escape hatch never fires for an
+          // already-absolute entry. Without the mark gate this arm would also
+          // repoint a LIVE absolute entry outside the workspace onto an
+          // unrelated same-basename workspace file and persist the damage —
+          // an outside entry is not a dead one (review #463 round-A minor).
+          // Inside the rebind window "follow the new root" is the user's
+          // expressed intent, which is exactly what the backend lane already
+          // did to the persisted paths; same accepted basename coarseness as
+          // the arm above.
+          ex.path = p; added = true;
+        }
       });
       if (added) {
         notify();
-        try { await invoke("save_session_artifacts", { id: sid, paths: state.artifacts.map(function (a) { return a.path; }) }); } catch { /* disk-write failure must not block the frontend update */ }
+        try { await invoke("save_session_artifacts", { id: sid, paths: rebaseArtifactPathsForRebind(sid, state.artifacts.map(function (a) { return a.path; })) }); } catch { /* disk-write failure must not block the frontend update */ }
       }
     } catch { /* workspace 不存在(新 session)等,忽略 */ }
   }
@@ -287,6 +369,7 @@
       isSharedMcpArtifactPath,
       artifactBelongsToSession,
       filterSessionArtifacts,
+      rebaseArtifactPathsForRebind,
       isDeliverable,
       trackArtifact,
       markTurnDirtyArtifact,

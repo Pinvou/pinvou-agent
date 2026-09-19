@@ -1327,7 +1327,49 @@
     }).catch(function (error) {
       console.error("[sessions] session:deleted listener failed", error);
     });
-    listen("session:list_changed", function () {
+    listen("session:list_changed", function (event) {
+      const payload = event && event.payload || {};
+      // The rebind command stamps the sessions whose persisted artifact paths
+      // its lanes rebased (rebound, failed AND post-busy ids — review #463
+      // round-10 Major 2 + round-B Major 1). The mark carries the rebind
+      // geometry as an ordered SEGMENT CHAIN: the artifact reconcile's
+      // stale-absolute rebase arm is gated on it (view healing, freshness
+      // window), and the wholesale artifact saves rebase along the chain
+      // while the mark exists — a chat turn's buffer save must not durably
+      // revert the backend rebase. Chained rebinds APPEND a segment (A→B
+      // then B→C): the transform resolves in order, so an A-era path maps
+      // A→B→C while a buffer re-vintaged from the durable JSON between the
+      // two rebinds (B-era) still maps B→C — a composed single segment
+      // {A→C} would strand the B-era vintage (review #463 round-D Major 1).
+      // Marks are memory-only and never pruned: the save transform is
+      // prefix-exact and must outlive the reconcile window for the whole
+      // process lifetime (a restart starts from the already-rebased JSON
+      // with no marks). Consumed by bridge/artifact-tracker.js
+      // (rebaseArtifactPathsForRebind / sessionRecentlyRebound).
+      if (payload.action === "workspace_rebound" && payload.id && payload.from && payload.to) {
+        state.reboundSessionIds = state.reboundSessionIds || {};
+        const existing = state.reboundSessionIds[payload.id];
+        const last = existing && existing.chain && existing.chain[existing.chain.length - 1];
+        if (existing && last && last.from === payload.from && last.to === payload.to) {
+          // Identical retry of the last segment: refresh the view-heal
+          // window only (an older vintage may still be buffered; the chain
+          // must survive).
+          existing.at = Date.now();
+        } else if (existing) {
+          // Chained (last.to === payload.from) or non-contiguous: append.
+          // A non-matching segment is inert for the ordered prefix
+          // transform, and appending keeps every older vintage resolvable
+          // (review #463 round-E minor — the previous replace branch
+          // dropped them).
+          existing.chain.push({ from: payload.from, to: payload.to });
+          existing.at = Date.now();
+        } else {
+          state.reboundSessionIds[payload.id] = {
+            at: Date.now(),
+            chain: [{ from: payload.from, to: payload.to }],
+          };
+        }
+      }
       refreshHistoryList().catch(function (error) {
         console.error("[sessions] session:list_changed refresh failed", error);
       });

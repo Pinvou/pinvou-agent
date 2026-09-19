@@ -3,6 +3,7 @@ import test from "node:test";
 
 import {
   TEMPORARY_GROUP_KEY,
+  capUnavailableRootsForDisplay,
   groupSessionsWithProjects,
   needsAddFolderConfirm,
   projectCoversPath,
@@ -372,4 +373,19 @@ test("needsAddFolderConfirm is the shared drop/pick decision", () => {
   );
   assert.equal(needsAddFolderConfirm(null, target), false, "missing session is a no-op");
   assert.equal(needsAddFolderConfirm(projectItem("a1", "x", "x"), null), false, "missing target is a no-op");
+});
+
+test("capUnavailableRootsForDisplay keeps one badge and folds the rest into +N", () => {
+  const roots = ["/a/gone", "/b/gone", "/c/gone"];
+  const collapsed = capUnavailableRootsForDisplay(roots, false);
+  assert.deepEqual(collapsed, { visibleRoots: ["/a/gone"], hiddenCount: 2 });
+  const expanded = capUnavailableRootsForDisplay(roots, true);
+  assert.deepEqual(expanded, { visibleRoots: roots, hiddenCount: 0 });
+  // Single root and empty list: no +N appears, same behavior as before the
+  // trimming was introduced.
+  assert.deepEqual(capUnavailableRootsForDisplay(["/a/gone"], false), { visibleRoots: ["/a/gone"], hiddenCount: 0 });
+  assert.deepEqual(capUnavailableRootsForDisplay([], false), { visibleRoots: [], hiddenCount: 0 });
+  // A non-array argument (undefined when the backend field is absent) is
+  // treated as an empty list.
+  assert.deepEqual(capUnavailableRootsForDisplay(undefined, false), { visibleRoots: [], hiddenCount: 0 });
 });

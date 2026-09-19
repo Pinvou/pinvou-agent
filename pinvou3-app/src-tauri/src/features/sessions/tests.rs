@@ -380,6 +380,178 @@ fn session_workspace_binding_survives_reload() {
     let _ = std::fs::remove_dir_all(&bound_dir);
 }
 
+/// Directory rebind candidate scan for the plain-chat lane (review #463
+/// round-8 B1): a chat bound through `create_session` carries only the
+/// workspace-binding sidecar, so the codex index/sidecar scan is structurally
+/// blind to it while its execution root resolves from exactly that binding.
+#[test]
+fn rebound_plain_chat_bindings_are_scanned_and_rewritten() {
+    let (store, _g) = isolated_store();
+    let from = unique_temp_dir("rebind-bindings-from");
+    let elsewhere = unique_temp_dir("rebind-bindings-elsewhere");
+    let bound_under_from = from.join("nested");
+    std::fs::create_dir_all(&bound_under_from).expect("create bound dir");
+    std::fs::create_dir_all(&elsewhere).expect("create unrelated dir");
+
+    let inside = store
+        .create_new("/model".into(), None, std::env::temp_dir())
+        .expect("create inside");
+    store
+        .bind_session_workspace(&inside.metadata.id, bound_under_from.clone())
+        .expect("bind under from");
+    let outside = store
+        .create_new("/model".into(), None, std::env::temp_dir())
+        .expect("create outside");
+    store
+        .bind_session_workspace(&outside.metadata.id, elsewhere.clone())
+        .expect("bind elsewhere");
+    // A sibling prefix must not match: /a/bc is not under /a/b.
+    let sibling_prefix = unique_temp_dir("rebind-bindings-from-sibling");
+    std::fs::create_dir_all(&sibling_prefix).expect("create sibling dir");
+    let sibling = store
+        .create_new("/model".into(), None, std::env::temp_dir())
+        .expect("create sibling");
+    store
+        .bind_session_workspace(&sibling.metadata.id, sibling_prefix.clone())
+        .expect("bind sibling");
+
+    assert_eq!(
+        store.workspace_bindings_under(&from),
+        vec![(inside.metadata.id.clone(), bound_under_from.clone())],
+        "only bindings under the prefix are candidates"
+    );
+    assert!(
+        store
+            .workspace_bindings_under(&elsewhere)
+            .iter()
+            .any(|(id, _)| id == &outside.metadata.id)
+    );
+
+    // Rewrite: the suffix is preserved and the in-memory cache follows, so the
+    // execution root for the rest of this run resolves to the new directory.
+    let to = unique_temp_dir("rebind-bindings-to");
+    std::fs::create_dir_all(&to).expect("create target dir");
+    let next = to.join("nested");
+    assert!(
+        store.rebind_workspace_binding(&inside.metadata.id, next.clone()),
+        "a writable sidecar must report success"
+    );
+    assert_eq!(
+        store.session_workspace_binding(&inside.metadata.id),
+        Some(next.clone())
+    );
+    assert_eq!(
+        store
+            .session_roots(&inside.metadata.id)
+            .expect("roots")
+            .execution,
+        next
+    );
+    assert!(
+        store.workspace_bindings_under(&from).is_empty(),
+        "the rewritten binding no longer matches the old prefix"
+    );
+
+    // The sidecar is the durable half: a store with an empty cache resolves the
+    // new directory, and the old one is gone from disk.
+    let reopened = reopen_store(&store).expect("reopen");
+    assert_eq!(
+        reopened.session_workspace_binding(&inside.metadata.id),
+        Some(to.join("nested"))
+    );
+
+    let _ = std::fs::remove_dir_all(&from);
+    let _ = std::fs::remove_dir_all(&elsewhere);
+    let _ = std::fs::remove_dir_all(&sibling_prefix);
+    let _ = std::fs::remove_dir_all(&to);
+}
+
+/// A failed binding rewrite must not advance the cache (same all-or-nothing
+/// convention as `bind_session_workspace`) and must leave the sidecar matching
+/// the old prefix, so the next rebind scan finds it again and converges.
+#[test]
+fn rebound_plain_chat_binding_failure_keeps_old_path_and_reports() {
+    let (store, _g) = isolated_store();
+    let from = unique_temp_dir("rebind-bindings-fail-from");
+    let bound = from.join("nested");
+    std::fs::create_dir_all(&bound).expect("create bound dir");
+    let session = store
+        .create_new("/model".into(), None, std::env::temp_dir())
+        .expect("create");
+    store
+        .bind_session_workspace(&session.metadata.id, bound.clone())
+        .expect("bind");
+
+    // Occupy the sidecar path itself with a directory: the atomic replacement
+    // cannot commit and reports RecoveryRequired (the codex sidecar tests use
+    // the sibling `.tmp` occupation, which does not apply here because
+    // `atomic_write` stages under a unique temp name).
+    let sidecar = paths::sessions_root()
+        .join(&session.metadata.id)
+        .join("workspace-binding.json");
+    std::fs::remove_file(&sidecar).expect("remove bound sidecar");
+    std::fs::create_dir_all(&sidecar).expect("occupy sidecar path");
+
+    let to = unique_temp_dir("rebind-bindings-fail-to");
+    std::fs::create_dir_all(&to).expect("create target dir");
+    assert!(
+        !store.rebind_workspace_binding(&session.metadata.id, to.join("nested")),
+        "a failed sidecar write must be reported, never silently counted as rebound"
+    );
+    assert_eq!(
+        store.session_workspace_binding(&session.metadata.id),
+        Some(bound.clone()),
+        "the cache must not claim a move disk does not have"
+    );
+    assert_eq!(
+        store.workspace_bindings_under(&from),
+        vec![(session.metadata.id.clone(), bound.clone())],
+        "the stale sidecar still matches the old prefix, so a rerun retries it"
+    );
+
+    let _ = std::fs::remove_dir_all(&sidecar);
+    let _ = std::fs::remove_dir_all(&from);
+    let _ = std::fs::remove_dir_all(&to);
+}
+
+/// Stale cache backfill must not undo a rebind (review #463 F4):
+/// `session_workspace_binding` reads the sidecar OUTSIDE the cache lock, so a
+/// cache-cold read racing `rebind_workspace_binding` (which writes sidecar
+/// then cache) could otherwise insert the OLD path into the cache after the
+/// rewrite — and the cache wins resolution until restart, silently undoing
+/// the rebind for this process. The backfill is insert-conditional: under the
+/// write lock, an entry that appeared meanwhile is at least as fresh as the
+/// disk-read value and wins.
+#[test]
+fn workspace_binding_backfill_is_insert_conditional() {
+    use super::workspace_bindings::backfill_workspace_binding_cache;
+    let cache = parking_lot::RwLock::new(std::collections::HashMap::new());
+    let old = PathBuf::from("/old/root");
+    let new = PathBuf::from("/new/root");
+
+    // Vacant slot: the cold read backfills exactly what it read off disk.
+    assert_eq!(
+        backfill_workspace_binding_cache(&cache, "s1", old.clone()),
+        old
+    );
+    assert_eq!(cache.read().get("s1"), Some(&old));
+
+    // The rebind landed between the reader's disk read and its backfill
+    // (cache write included): the fresher cache entry wins and the stale read
+    // is dropped instead of resurrecting the old path.
+    cache.write().insert("s1".to_string(), new.clone());
+    assert_eq!(
+        backfill_workspace_binding_cache(&cache, "s1", old.clone()),
+        new,
+        "an entry that appeared under the write lock is fresher than the racing disk read"
+    );
+    assert_eq!(
+        cache.read().get("s1"),
+        Some(&new),
+        "the stale read must never overwrite the rebound value"
+    );
+}
+
 #[test]
 fn delete_session_removes_workspace_binding() {
     let (store, _g) = isolated_store();
@@ -451,6 +623,69 @@ fn workspace_binding_sidecar_ignores_residue_of_deleted_session() {
     let _ = std::fs::remove_dir_all(&bound_dir);
 }
 
+/// round-10 Major 2: artifacts[].storage_path persists absolute workspace
+/// paths, so the rebind must rebase them under the moved prefix during the
+/// metadata pass — otherwise every pre-rebind deliverable keeps pointing at
+/// the vanished root with no healing path.
+#[test]
+fn rebase_workspace_artifact_paths_translates_only_under_the_prefix() {
+    let (store, _g) = isolated_store();
+    let s = store
+        .create_new("/model".into(), None, std::env::temp_dir())
+        .expect("create");
+    let from = unique_temp_dir("artifact-rebase-from");
+    let to = unique_temp_dir("artifact-rebase-to");
+    let elsewhere = unique_temp_dir("artifact-rebase-elsewhere");
+    for dir in [&from, &to, &elsewhere] {
+        std::fs::create_dir_all(dir).expect("create dir");
+    }
+    let under_from = from.join("sub").join("report.html");
+    std::fs::create_dir_all(under_from.parent().expect("parent")).expect("create nested dir");
+    std::fs::write(&under_from, b"<html></html>").expect("seed deliverable");
+    let outside = elsewhere.join("other.html");
+    store
+        .update_artifacts(
+            &s.metadata.id,
+            vec![
+                under_from.to_string_lossy().into_owned(),
+                outside.to_string_lossy().into_owned(),
+            ],
+        )
+        .expect("seed artifacts");
+
+    let rebased = store
+        .rebase_workspace_artifact_paths(&s.metadata.id, &|path: &std::path::Path| {
+            path.strip_prefix(&from).ok().map(|suffix| to.join(suffix))
+        })
+        .expect("rebase");
+    assert_eq!(
+        rebased, 1,
+        "only the entry under the moved prefix is rewritten"
+    );
+    let session = store.load(&s.metadata.id).expect("reload");
+    let paths: Vec<PathBuf> = session
+        .artifacts
+        .iter()
+        .map(|artifact| artifact.storage_path.clone())
+        .collect();
+    assert_eq!(
+        paths,
+        vec![to.join("sub").join("report.html"), outside],
+        "the deliverable follows the moved root; unrelated entries stay put"
+    );
+
+    // Idempotent: an already-converged session persists nothing and reports 0.
+    let again = store
+        .rebase_workspace_artifact_paths(&s.metadata.id, &|path: &std::path::Path| {
+            path.strip_prefix(&from).ok().map(|suffix| to.join(suffix))
+        })
+        .expect("rebase again");
+    assert_eq!(again, 0);
+
+    let _ = std::fs::remove_dir_all(&from);
+    let _ = std::fs::remove_dir_all(&to);
+    let _ = std::fs::remove_dir_all(&elsewhere);
+}
 /// Future-version sidecars and corrupted JSON are both treated as missing
 /// (never silently parsed as the current version); bind rewriting in the
 /// current version self-heals.
@@ -4074,4 +4309,48 @@ fn forkguard_session_archive_export_via_store_keeps_full_context() {
     assert!(!escape.exists());
 
     let _ = std::fs::remove_dir_all(&output_dir);
+}
+
+/// Metadata write path for directory rebind (review #463): set_workspace
+/// changes only the workspace field and is verifiable by reload; the command
+/// layer uses durable_session_record_is_absent to tell orphans (missing /
+/// corrupt JSON) apart.
+#[test]
+fn set_workspace_persists_rebound_path() {
+    let (store, _guard) = isolated_store();
+    let session = store
+        .create_new("/model".into(), None, std::env::temp_dir())
+        .expect("create");
+    let target = std::env::temp_dir().join("pinvou3-rebound-workspace");
+    store
+        .set_workspace(&session.metadata.id, target.clone())
+        .expect("set workspace");
+    let reloaded = store.load(&session.metadata.id).expect("reload");
+    assert_eq!(reloaded.metadata.workspace, target);
+    // Rewriting the same value is idempotent (the rebind retry path depends
+    // on this).
+    store
+        .set_workspace(&session.metadata.id, target.clone())
+        .expect("idempotent rewrite");
+    // Missing session JSON = durably absent (the orphan classification only
+    // accepts this); a present record — even corrupt — must not be silently
+    // skipped as an orphan (review #463 round-8 minor 11: the claim was
+    // asserted but never exercised for a corrupt record).
+    assert!(!store.durable_session_record_is_absent(&session.metadata.id));
+    assert!(store.durable_session_record_is_absent("sess-definitely-missing"));
+
+    let corrupt_id = "sess-corrupt-rebind-record";
+    let corrupt = paths::sessions_root().join(format!("{corrupt_id}.json"));
+    std::fs::write(&corrupt, b"{ not json").expect("write corrupt session record");
+    assert!(
+        !store.durable_session_record_is_absent(corrupt_id),
+        "a corrupt record is present, so it must not be classified as an orphan"
+    );
+    // …and set_workspace fails closed on it instead of fabricating a record:
+    // the rebind loop routes this session into the retryable failed list.
+    assert!(
+        store.set_workspace(corrupt_id, target.clone()).is_err(),
+        "a corrupt record must fail the metadata write, not be silently repaired"
+    );
+    let _ = std::fs::remove_file(&corrupt);
 }

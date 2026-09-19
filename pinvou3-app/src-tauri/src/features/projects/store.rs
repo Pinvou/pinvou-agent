@@ -34,6 +34,31 @@ pub struct Project {
 /// 归组,直接回落隐式文件夹分组);无条目 = 未裁决,走自动归组。
 pub type SessionAssignments = HashMap<String, Option<String>>;
 
+/// Failure mode of [`ProjectStore::rebind_roots`] (review #463 round-10 R2):
+/// typed so the command layer can report a user-actionable root conflict
+/// separately from an I/O failure. Collapsing both into one marker told a user
+/// whose disk was full that the destination "overlaps another project", and
+/// pointed them at a retry that cannot converge.
+#[derive(Debug)]
+pub enum RebindRootsError {
+    /// The translated candidate violates the root-overlap invariant; nothing
+    /// was persisted and memory was not advanced.
+    Conflict(anyhow::Error),
+    /// The candidate was valid but could not be persisted; memory was restored
+    /// to the on-disk state (see [`ProjectStore::rebind_roots`]).
+    Persist(anyhow::Error),
+}
+
+impl std::fmt::Display for RebindRootsError {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::Conflict(error) | Self::Persist(error) => write!(formatter, "{error:#}"),
+        }
+    }
+}
+
+impl std::error::Error for RebindRootsError {}
+
 /// 单文件持久化结构。schema_version 供未来结构演进识别:读到更新版本时
 /// 按空状态降级启动,但置位拒绝后续写入(见 `StoreState::refuse_writes`),
 /// 否则空状态 + 下次变更会把新结构文件降级覆盖写坏。
@@ -69,6 +94,28 @@ struct StoreState {
 pub struct ProjectStore {
     state: Arc<RwLock<StoreState>>,
     path: Arc<PathBuf>,
+    /// Process-local critical-section flag for directory rebinds (Minor 10):
+    /// check-and-set completes under one lock, and the guard's Drop clears it.
+    /// A rebind writes across three stores (projects store / session store /
+    /// sidecars); two concurrent calls would interleave their write phases —
+    /// each write is atomic and reruns converge, but serialization avoids the
+    /// intermediate-state reports of the interleaved window.
+    rebind_gate: Arc<parking_lot::Mutex<bool>>,
+}
+
+/// RAII token of `begin_rebind`: while held, other rebind calls are rejected;
+/// Drop clears the flag. It holds only the `Arc<Mutex<bool>>`, not a lock
+/// guard, so it is Send-safe across await points; clearing happens in Drop,
+/// so error paths cannot leave a permanently closed gate.
+#[derive(Debug)]
+pub struct RebindGate {
+    flag: Arc<parking_lot::Mutex<bool>>,
+}
+
+impl Drop for RebindGate {
+    fn drop(&mut self) {
+        *self.flag.lock() = false;
+    }
 }
 
 /// 进程内单调计数叠加纳秒时间戳生成项目 id:时间戳保证跨进程唯一,
@@ -144,35 +191,39 @@ fn resolve_through_existing_ancestor(path: &Path) -> PathBuf {
     lexical
 }
 
-/// root 的比较键:展示形态经共享的 `filesystem_path_identity_key` 折叠——
-/// Windows 折叠分隔符与大小写(`C:\Work` 与 `c:\work` 是同一 root),POSIX
-/// 大小写敏感、原样保留。
-///
-/// 已知残留(接受的边缘):macOS 默认 APFS 大小写不敏感,但共享 helper 按
-/// 「卷可能配置为大小写敏感」的约定不折叠大小写(见 platform/os/macos),
-/// 同一目录换大小写写法仍算两个 root。按平台自行折叠会破坏大小写敏感卷,
-/// 故在此记录而不折叠。
-fn root_key(path: &Path) -> String {
-    identity_key_of_display(&root_display(path))
+/// Command-entry normalization of a rebind `from` (review #463 B1): the three
+/// storage lanes match in different domains (this store resolves symlinked
+/// ancestors; the codex/session lanes fold lexically), so an alias caller
+/// (macOS `/var/x` vs the stored `/private/var/x`) would half-migrate.
+/// Resolving once at the command entry pins every lane to the same form.
+/// Idempotent for paths already in display form.
+pub fn rebind_source_display(from: &Path) -> PathBuf {
+    root_display(from)
 }
 
-/// 已存 root(写入时已是展示形态)的比较键:无需再触盘,只做键折叠。
+/// Comparison key of a root: the display form folded through the shared
+/// `filesystem_path_identity_key` — Windows folds separators and case
+/// (`C:\Work` and `c:\work` are the same root); POSIX is case-sensitive and
+/// kept as-is. Stored roots are already in display form at write time, so no
+/// disk touch is needed — only the key fold.
+///
+/// Known residual (accepted edge): macOS defaults to a case-insensitive
+/// APFS, but the shared helper deliberately does not fold case (a volume may
+/// be configured case-sensitive; see platform/os/macos), so the same
+/// directory spelled in two cases still counts as two roots. Folding here
+/// would break case-sensitive volumes, so it is documented instead.
 fn identity_key_of_display(path: &Path) -> String {
     crate::platform::os::filesystem_path_identity_key(&path.to_string_lossy())
 }
 
-/// 组件感知的「等于或嵌套于」:键是正斜杠化的字符串,裸 `starts_with` 会把
-/// `/a/bc` 误判进 `/a/b`,必须要求边界是分隔符。
+/// Component-aware "same as, or nested under" on folded keys. The rule itself
+/// now lives in `platform::os::path_identity_is_same_or_nested` (review #463
+/// round-8 elegance: project-root validation, the codex rebind suffix matcher
+/// and the command-layer nesting rejection each carried a hand-written copy,
+/// and they had already drifted); only the projects-layer call site stays
+/// here.
 fn key_is_same_or_nested(key: &str, base: &str) -> bool {
-    if key == base {
-        return true;
-    }
-    let base = base.strip_suffix('/').unwrap_or(base);
-    if base.is_empty() {
-        // POSIX 根 "/":一切绝对路径都嵌套其下。
-        return key.starts_with('/');
-    }
-    key.starts_with(base) && key[base.len()..].starts_with('/')
+    crate::platform::os::path_identity_is_same_or_nested(key, base)
 }
 
 /// 不触盘的绝对化:`.` 丢弃、`..` 回退一层、保留前缀(Unix 根 / Windows 盘符)。
@@ -332,7 +383,37 @@ impl ProjectStore {
         Self {
             state: Arc::new(RwLock::new(state)),
             path: Arc::new(path),
+            rebind_gate: Arc::new(parking_lot::Mutex::new(false)),
         }
+    }
+
+    /// Enters the directory-rebind critical section (Minor 10): check-and-set
+    /// is atomic; an already-set flag is rejected with the typed
+    /// `REBIND_IN_PROGRESS` marker. The marker follows the stable-prefix
+    /// convention of `REBIND_OLD_ROOT_EXISTS`/`REBIND_SESSIONS_BUSY` and is
+    /// mapped to trilingual `uiProjects` copy in the frontend
+    /// (`classifyRebindError`); the prose after the marker is backend
+    /// diagnostics only and never reaches the user. The rejection path creates
+    /// no guard; the token's Drop is the only clearing point, so error paths
+    /// never leave a permanently closed gate.
+    ///
+    /// Known trade-off (review #463 round-8 minor): the gate is process-local
+    /// and in-memory, so a second app instance is not serialized against this
+    /// one — the two could interleave the same three write phases. Each
+    /// individual write is atomic and a rerun converges, so the severity stays
+    /// low; a cross-process lock would need a lock file and is out of scope.
+    pub fn begin_rebind(&self) -> std::result::Result<RebindGate, String> {
+        let mut flag = self.rebind_gate.lock();
+        if *flag {
+            return Err(
+                "REBIND_IN_PROGRESS: another directory rebind is already running".to_string(),
+            );
+        }
+        *flag = true;
+        drop(flag);
+        Ok(RebindGate {
+            flag: Arc::clone(&self.rebind_gate),
+        })
     }
 
     /// 按 (position, id) 有序返回项目快照。
@@ -559,6 +640,162 @@ impl ProjectStore {
         }
         persist_locked(&state, &self.path)?;
         Ok(MoveSessionOutcome { added_root })
+    }
+
+    /// Pure candidate computation shared by [`plan_rebind_roots`] (the
+    /// non-committing pre-flight) and [`rebind_roots`] (the commit): translates
+    /// every root under `from` onto `to` and reports the affected project ids.
+    /// Matching and the suffix cut both run in the resolved display domain.
+    fn rebind_root_candidates(
+        projects: &[Project],
+        from: &Path,
+        to: &Path,
+    ) -> (Vec<Project>, Vec<String>) {
+        // `to` is guaranteed to exist by the command layer; normalize it to
+        // the canonical display form used for storage. `from` matching runs on
+        // the folded identity key of its resolved display form (Windows folds
+        // case/separators, so a case-only rename still matches), and the
+        // suffix is cut by the resolved component count so a subdirectory
+        // keeps its original casing.
+        let to_display = root_display(to);
+        let from_display = root_display(from);
+        let from_key = identity_key_of_display(&from_display);
+        let from_depth = from_display.components().count();
+        let mut candidate = projects.to_vec();
+        let mut affected_projects = Vec::new();
+        for project in candidate.iter_mut() {
+            let mut changed = false;
+            for root in project.roots.iter_mut() {
+                let root_key_str = identity_key_of_display(root);
+                if !key_is_same_or_nested(&root_key_str, &from_key) {
+                    continue;
+                }
+                let suffix: PathBuf = root.components().skip(from_depth).collect();
+                *root = if suffix.as_os_str().is_empty() {
+                    to_display.clone()
+                } else {
+                    to_display.join(suffix)
+                };
+                changed = true;
+            }
+            if changed {
+                project.updated_at = Utc::now();
+                affected_projects.push(project.id.clone());
+            }
+        }
+        (candidate, affected_projects)
+    }
+
+    /// Overlap revalidation for a rebind candidate, scoped to the CHANGED
+    /// projects (review #463 round-10 minor 5): any overlap this rebind could
+    /// introduce involves at least one translated root, and each changed
+    /// project is still validated against the whole candidate — changed and
+    /// unchanged neighbors alike — so scoping loses no new-conflict coverage.
+    /// What it does lose is the false block: a pre-existing overlap between
+    /// two projects this rebind never touched used to fail an unrelated
+    /// rebind with `REBIND_ROOTS_CONFLICT`, whose user copy advises picking a
+    /// different destination — advice that cannot help.
+    fn validate_rebind_candidates(
+        candidate: &[Project],
+        affected_projects: &[String],
+    ) -> Result<()> {
+        for project in candidate.iter().filter(|project| {
+            affected_projects
+                .iter()
+                .any(|affected| affected == &project.id)
+        }) {
+            validate_roots(candidate, Some(&project.id), &project.roots)?;
+        }
+        Ok(())
+    }
+
+    /// Non-committing pre-flight for the rebind command (review #463 round-8
+    /// M3): the session lanes now run before the project roots so an
+    /// interrupted run still leaves the old root registered (hence
+    /// badge-retryable), which means a root rewrite that cannot succeed —
+    /// an overlap conflict — must be detected BEFORE any session binding is
+    /// touched. Validates the same candidate `rebind_roots` will commit and
+    /// returns the project ids it would affect; nothing is written or
+    /// persisted. `rebind_roots` revalidates under its write lock, so a
+    /// concurrent project mutation cannot slip past the invariant.
+    pub fn plan_rebind_roots(&self, from: &Path, to: &Path) -> Result<Vec<String>> {
+        if from == to {
+            return Ok(Vec::new());
+        }
+        let (candidate, affected_projects) = {
+            let state = self.state.read();
+            Self::rebind_root_candidates(&state.projects, from, to)
+        };
+        if affected_projects.is_empty() {
+            return Ok(Vec::new());
+        }
+        Self::validate_rebind_candidates(&candidate, &affected_projects)?;
+        Ok(affected_projects)
+    }
+
+    /// Directory rebind (broken-link repair): translate project roots under
+    /// the `from` prefix onto `to`. Matching runs in the resolved display
+    /// domain, and the suffix is cut from each stored root by the RESOLVED
+    /// `from` component count (review #463 B1): for an alias `from` (macOS
+    /// `/var/x` resolving to `/private/var/x`) the resolved form is one
+    /// component deeper, and cutting by the raw argument's count would keep
+    /// an extra component, rewriting the root to `<to>/x` instead of `<to>`.
+    /// `to` is validated by the command layer as an existing canonical path.
+    /// After rewriting, overlap invariants are revalidated per project — a
+    /// translated root may collide with another project's territory, in which
+    /// case the whole rebind fails and rolls back (memory untouched, nothing
+    /// persisted). Returns the affected project ids.
+    ///
+    /// Both failure arms leave memory identical to disk, which is what the
+    /// command layer's retry contract assumes. The overlap arm never advances
+    /// memory; the persist arm advances it inside the write lock and restores
+    /// it when the write fails (review #463 round-10 R2). The previous order
+    /// committed `state.projects` first and only then persisted, so a persist
+    /// failure (disk full, permissions, `refuse_writes` on a newer on-disk
+    /// schema) left memory claiming the roots had moved while disk still held
+    /// the old ones. Because the command layer snapshots this memory, a rerun
+    /// in the same process then found no root under `from`, returned an empty
+    /// `Ok` and reported success — the bad state was only observable, and only
+    /// converged, after a restart reloaded the file. Mirrors the codex lane's
+    /// commit-on-success contract (see
+    /// `codex_acp::store::SessionAgentStore::rebind_workspace_prefix`).
+    ///
+    /// Idempotent: no matching root is an empty Ok, not an error. The retry
+    /// contract depends on this — a rerun after a partially failed run finds
+    /// the roots already moved and must converge to a no-op while the command
+    /// layer retries the remaining session writes. A `from` that never had
+    /// any root is indistinguishable from a completed retry at this layer;
+    /// the entry normalization in the command layer (resolving `from` once
+    /// for all three storage lanes) is what prevents a silent half-migration.
+    pub fn rebind_roots(
+        &self,
+        from: &Path,
+        to: &Path,
+    ) -> std::result::Result<Vec<String>, RebindRootsError> {
+        let mut state = self.state.write();
+        if from == to {
+            return Ok(Vec::new());
+        }
+        // Rewrites happen on a candidate copy and commit only after
+        // revalidation — on an overlap conflict the caller observes state
+        // identical to disk.
+        let (candidate, affected_projects) =
+            Self::rebind_root_candidates(&state.projects, from, to);
+        if !affected_projects.is_empty() {
+            Self::validate_rebind_candidates(&candidate, &affected_projects)
+                .context("rebind produced overlapping project roots")
+                .map_err(RebindRootsError::Conflict)?;
+            // Commit-on-success: persist the candidate while the write lock is
+            // held, and restore the previous projects on failure so memory
+            // never claims a rebind disk does not have. `persist_locked` reads
+            // `state.projects`, hence the temporary swap.
+            let previous = std::mem::replace(&mut state.projects, candidate);
+            if let Err(error) = persist_locked(&state, &self.path) {
+                state.projects = previous;
+                return Err(RebindRootsError::Persist(error));
+            }
+        }
+        Ok(affected_projects)
     }
 
     /// 会话删除钩子:摘除其归属条目(含显式移出的 None 条目)。返回是否

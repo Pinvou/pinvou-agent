@@ -87,12 +87,33 @@
       return outcome;
     }
 
+    // Directory rebind (broken-link repair): confirmExisting is driven by the
+    // frontend's two-phase handshake — the first call omits the confirmation,
+    // the backend rejects it with a typed marker while the old directory still
+    // exists, and the frontend escalates to the strong warning and retries.
+    // previousPostBusySessionIds is the dialog's feed-back of its previous
+    // report's post-busy ids (review #463 F-Major): the backend honors only
+    // the intersection with its own to-lane retry population, so a
+    // busy-refused carryover session is honestly reported post-busy again
+    // instead of vanishing from every report field.
+    async function rebindWorkspaceRoot(from, to, confirmExisting, previousPostBusySessionIds) {
+      const report = await invoke("rebind_workspace_root", {
+        from,
+        to,
+        confirmExisting: !!confirmExisting,
+        previousPostBusySessionIds: previousPostBusySessionIds || [],
+      });
+      await loadProjects();
+      return report;
+    }
+
     return {
       loadProjects,
       createProject,
       renameProject,
       deleteProject,
-      moveSessionToProject
+      moveSessionToProject,
+      rebindWorkspaceRoot
     };
   };
 })(window);

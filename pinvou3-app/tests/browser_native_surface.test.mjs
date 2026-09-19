@@ -239,6 +239,11 @@ test('native surface suspension is centrally derived for every occlusion path', 
     // The state name alone appears at every picker touchpoint; only the
     // intent entry suspends the dock, so assert that exact fragment.
     "moveToProjectSession ? 'move-picker' : ''",
+    // The rebind confirm dialog is the move picker's sibling and needs its own
+    // intent entry (review #463 round-10 T1): with only the state name present
+    // the dock stays live under the modal, and in the partial state that modal
+    // is the sole retry entry.
+    "rebindDraft ? 'rebind' : ''",
   ]) {
     assert.ok(main.includes(blocker), `missing native-surface blocker: ${blocker}`);
   }

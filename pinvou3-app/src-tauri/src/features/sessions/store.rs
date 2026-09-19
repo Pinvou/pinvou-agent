@@ -388,7 +388,12 @@ impl SessionStore {
         (committed, result)
     }
 
-    pub(super) fn durable_session_record_is_absent(&self, id: &str) -> bool {
+    /// Whether the session JSON is no longer on disk (an invalid id is always
+    /// treated as "present", fail-closed). Besides the delete path, the
+    /// rebind orphan classification also uses it: only NotFound counts — a
+    /// corrupt JSON is not an orphan (review #463: a parse failure must enter
+    /// the failed list as retryable, never silently skipped).
+    pub(crate) fn durable_session_record_is_absent(&self, id: &str) -> bool {
         if validate_session_id(id).is_err() {
             return false;
         }
@@ -540,6 +545,70 @@ impl SessionStore {
         session.metadata.title = title;
         self.persist_then_reconcile(&session, "title update")?;
         Ok(())
+    }
+
+    /// Metadata write for directory rebind (same load→patch→persist pattern
+    /// as set_title). Only the SavedSession metadata workspace field changes;
+    /// messages/transcript are untouched — old paths referenced by historical
+    /// turns are factual records and stay as-is. The caller (command layer)
+    /// owns the active-turn fence; the lock here guards against Engine writes.
+    /// The load context deliberately does not embed the session id: the
+    /// command layer logs this error chain and rebind logs must not persist
+    /// session ids (CodeQL cleartext-logging, review #463 round 7); the id is
+    /// available to the caller at the failure site.
+    pub fn set_workspace(&self, id: &str, workspace: PathBuf) -> Result<()> {
+        let _mutation = self.scheduled_mutation.lock();
+        let mut session = self
+            .manager
+            .load_session_snapshot(id)
+            .with_context(|| "load_session for workspace rebind".to_string())?;
+        session.metadata.workspace = workspace;
+        self.persist_then_reconcile(&session, "workspace rebind")?;
+        Ok(())
+    }
+
+    /// Artifact-path rebase for directory rebind (review #463 round-10
+    /// Major 2): `SavedSession.artifacts[].storage_path` persists absolute
+    /// workspace paths for deliverables, and without this pass every
+    /// pre-rebind deliverable keeps rendering with the vanished root — fails
+    /// to open, never healed by the frontend reconcile (its relative→absolute
+    /// escape hatch is spent on an already-absolute stale entry), and dropped
+    /// from the cross-session deliverables index. Same load→patch→persist
+    /// pattern as [`Self::set_workspace`]; only the `storage_path` fields the
+    /// caller's `translate` closure maps are rewritten, so record ids,
+    /// timestamps and byte sizes survive intact. The path math lives with the
+    /// caller (the command layer's `rebind_target_path`, single-sourced with
+    /// the binding lanes) rather than in a sessions→codex_acp dependency.
+    /// Returns the number of rebased entries; 0 persists nothing.
+    ///
+    /// The load context deliberately does not embed the session id (same
+    /// CodeQL cleartext-logging constraint as `set_workspace`).
+    pub fn rebase_workspace_artifact_paths(
+        &self,
+        id: &str,
+        translate: &dyn Fn(&Path) -> Option<PathBuf>,
+    ) -> Result<usize> {
+        let _mutation = self.scheduled_mutation.lock();
+        let mut session = self
+            .manager
+            .load_session_snapshot(id)
+            .with_context(|| "load_session for artifact-path rebase".to_string())?;
+        let mut rebased = 0;
+        for artifact in &mut session.artifacts {
+            if let Some(next) = translate(&artifact.storage_path) {
+                // The translate closure's `to`-side arm returns candidates
+                // already under the target unchanged (retry semantics); skip
+                // those so an already-converged session persists nothing.
+                if next != artifact.storage_path {
+                    artifact.storage_path = next;
+                    rebased += 1;
+                }
+            }
+        }
+        if rebased > 0 {
+            self.persist_then_reconcile(&session, "artifact-path rebase")?;
+        }
+        Ok(rebased)
     }
 
     pub fn touch_activity(&self, id: &str) -> Result<()> {

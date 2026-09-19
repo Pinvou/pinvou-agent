@@ -474,6 +474,7 @@
       folderPickerUnavailable: "The folder picker cannot be opened in this environment",
       pickFolderTitle: "Choose a working directory",
       kbPickFolderTitle: "Choose a folder to import into the knowledge base",
+      rebindPickFolderTitle: "Choose the folder to rebind this project to",
       gateApproveFailed: "⚠️ Approval failed: ",
       gateRejectFailed: "⚠️ Rejection failed: ",
       roleRetried: (roleId, result) => "🔄 Rerunning " + roleId + ": " + result,
@@ -606,6 +607,7 @@
       folderPickerUnavailable: "現在の環境ではフォルダー選択を開けません",
       pickFolderTitle: "作業ディレクトリを選択",
       kbPickFolderTitle: "知識ベースにインポートするフォルダーを選択",
+      rebindPickFolderTitle: "このプロジェクトの再バインド先フォルダーを選択",
       gateApproveFailed: "⚠️ 承認に失敗: ",
       gateRejectFailed: "⚠️ 差し戻しに失敗: ",
       roleRetried: (roleId, result) => "🔄 再実行 " + roleId + ": " + result,
@@ -738,6 +740,7 @@
       folderPickerUnavailable: "当前环境无法打开文件夹选择器",
       pickFolderTitle: "选择工作目录",
       kbPickFolderTitle: "选择要导入知识库的文件夹",
+      rebindPickFolderTitle: "选择重绑定项目的新文件夹",
       gateApproveFailed: "⚠️ 通过失败: ",
       gateRejectFailed: "⚠️ 打回失败: ",
       roleRetried: (roleId, result) => "🔄 重跑 " + roleId + ": " + result,
@@ -1760,7 +1763,7 @@
     if (buf) buf.artifacts = arts;
     else state.artifacts = arts;
     try {
-      try { await invoke("save_session_artifacts", { id: sid, paths: arts.map(function (a) { return a.path; }) }); } catch { /* persistence failure must not block session switching */ }
+      try { await invoke("save_session_artifacts", { id: sid, paths: rebaseArtifactPathsForRebind(sid, arts.map(function (a) { return a.path; })) }); } catch { /* persistence failure must not block session switching */ }
       if (isDefaultChatTitle(meta.title) || personaPlaceholderTitles[sid]) {
         const firstUser = msgs.find(function (m) { return m.role === "user"; });
         // 自动标题复用展示层过滤：内部信封/子智能体交接不参与命名，避免 XML 痕迹进
@@ -4640,6 +4643,53 @@
   function normalizedPath(p) {
     return String(p || "").replaceAll('\\', "/");
   }
+  // Rebases absolute artifact paths along the session's rebind SEGMENT CHAIN
+  // while a workspace_rebound mark exists (review #463 round-B Major 1 +
+  // round-C Major 1 + the round-D vintage fix): the rebind command's events
+  // are forwarded to WebUI clients and these wholesale saves write the same
+  // sessions/<id>.json the backend lane rebased — without the transform a
+  // post-rebind turn's buffer save would durably revert it, with no heal
+  // path on this host. Segments apply in order (A-era → A→B→C, a buffer
+  // re-vintaged between chained rebinds → B→C); same folded-prefix
+  // semantics as the tauri bridge's artifact-tracker helper; marks are
+  // stamped by the session:list_changed listener below and are memory-only
+  // (a restart starts from the already-rebased JSON with no marks).
+  // Strips trailing separators without a regex (the ESLint deny gate flags
+  // the previous /\/+$/ form as super-linear).
+  function trimTrailingSlashes(p) {
+    let s = normalizedPath(p);
+    while (s.endsWith("/")) s = s.slice(0, -1);
+    return s;
+  }
+  function rebaseArtifactPathsForRebind(sid, paths) {
+    const marks = state.reboundSessionIds;
+    const mark = marks && sid ? marks[sid] : null;
+    if (!mark || !Array.isArray(mark.chain) || !mark.chain.length || !Array.isArray(paths)) {
+      return paths;
+    }
+    const segments = mark.chain
+      .map(function (segment) {
+        return {
+          fromKey: trimTrailingSlashes(segment.from).toLowerCase(),
+          toKey: trimTrailingSlashes(segment.to),
+        };
+      })
+      .filter(function (segment) { return segment.fromKey; });
+    if (!segments.length) return paths;
+    return paths.map(function (p) {
+      if (typeof p !== "string" || !isAbsPath(p)) return p;
+      let norm = normalizedPath(p);
+      let mapped = false;
+      for (let i = 0; i < segments.length; i++) {
+        const lower = norm.toLowerCase();
+        if (lower === segments[i].fromKey || lower.indexOf(segments[i].fromKey + "/") === 0) {
+          norm = segments[i].toKey + norm.slice(segments[i].fromKey.length);
+          mapped = true;
+        }
+      }
+      return mapped ? norm : p;
+    });
+  }
   function noteArtifactChange(path, event, sessionId) {
     if (!path) return;
     state.artifactChange = {
@@ -4798,7 +4848,7 @@
       });
       if (added) {
         notify();
-        try { await invoke("save_session_artifacts", { id: sid, paths: state.artifacts.map(function (a) { return a.path; }) }); } catch { /* persistence failure must not block frontend updates */ }
+        try { await invoke("save_session_artifacts", { id: sid, paths: rebaseArtifactPathsForRebind(sid, state.artifacts.map(function (a) { return a.path; })) }); } catch { /* persistence failure must not block frontend updates */ }
       }
     } catch { /* workspace 不存在(新 session)等,忽略 */ }
   }
@@ -5793,7 +5843,34 @@
   listen("session:deleted", function (e) {
     applyDeletedSession(e && e.payload && e.payload.id);
   });
-  listen("session:list_changed", function () {
+  listen("session:list_changed", function (e) {
+    const payload = e && e.payload || {};
+    // The rebind command's mark (review #463 round-B Major 1 + round-C
+    // Major 1): consumed by rebaseArtifactPathsForRebind so the wholesale
+    // artifact saves of THIS host cannot durably revert the backend lane's
+    // rebase while a resident web-client buffer holds stale paths. Segment
+    // chain with append-on-chain / refresh-on-identical-retry semantics,
+    // memory-only and never pruned — same contract as the tauri listener.
+    if (payload.action === "workspace_rebound" && payload.id && payload.from && payload.to) {
+      state.reboundSessionIds = state.reboundSessionIds || {};
+      const existing = state.reboundSessionIds[payload.id];
+      const last = existing && existing.chain && existing.chain[existing.chain.length - 1];
+      if (existing && last && last.from === payload.from && last.to === payload.to) {
+        // Identical retry of the last segment: refresh the view-heal window
+        // only; the chain must survive for older vintages.
+        existing.at = Date.now();
+      } else if (existing) {
+        // Chained or non-contiguous: append (round-E minor — replacing would
+        // drop vintages a still-buffered session may resolve).
+        existing.chain.push({ from: payload.from, to: payload.to });
+        existing.at = Date.now();
+      } else {
+        state.reboundSessionIds[payload.id] = {
+          at: Date.now(),
+          chain: [{ from: payload.from, to: payload.to }],
+        };
+      }
+    }
     refreshHistoryList().catch(function (error) {
       console.error("[sessions] session:list_changed refresh failed", error);
     });
@@ -9907,6 +9984,15 @@
     const p = Array.isArray(selected) ? selected[0] : selected;
     return p ? [p] : [];
   }
+  // Dedicated picker for directory rebind (broken-link repair): single
+  // selection with a title that matches the rebind semantics; same surface as
+  // the desktop bridge (review #463 Minor 6).
+  async function pickRebindFolder() {
+    if (!dialogOpen) { addSystemItem(bt("filePickUnavailable")); return null; }
+    const selected = await dialogOpen({ directory: true, multiple: false, title: bt("rebindPickFolderTitle") });
+    if (!selected) return null;
+    return Array.isArray(selected) ? (selected[0] || null) : selected;
+  }
   async function pickFeedbackFiles() {
     if (!dialogOpen) return [];
     const selected = await dialogOpen({
@@ -10148,6 +10234,7 @@
     // 通用宿主文件选择器（知识库、反馈等功能继续复用）。
     pickFiles,
     pickFolders,
+    pickRebindFolder,
     pickFeedbackFiles,
     // 卡片池: 专家面具
     loadPersonas,

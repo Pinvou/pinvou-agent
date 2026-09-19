@@ -212,4 +212,16 @@ function needsAddFolderConfirm(session, target) {
   return !!workspacePath && !projectCoversPath(target, workspacePath);
 }
 
-export { TEMPORARY_GROUP_KEY, PROJECT_SESSION_DRAG_TYPE, groupSessionsWithProjects, projectCoversPath, resolveSessionProjectId, rootPath, needsAddFolderConfirm };
+// Display trimming for unavailable-root badges (review #463 m3): the header
+// row is a fixed 28px, and one full badge ("Folder unavailable · Rebind") is
+// already close to the limit — several shrink-0 badges squeeze the collapse
+// toggle to zero width and overflow horizontally. Collapsed keeps the first
+// badge (the primary entry) and counts the rest into +N; expanded lays them
+// all out (the container wraps). Returns { visibleRoots, hiddenCount }.
+function capUnavailableRootsForDisplay(roots, expanded) {
+  const list = Array.isArray(roots) ? roots : [];
+  if (expanded) return { visibleRoots: list, hiddenCount: 0 };
+  return { visibleRoots: list.slice(0, 1), hiddenCount: Math.max(0, list.length - 1) };
+}
+
+export { TEMPORARY_GROUP_KEY, PROJECT_SESSION_DRAG_TYPE, groupSessionsWithProjects, projectCoversPath, resolveSessionProjectId, rootPath, needsAddFolderConfirm, capUnavailableRootsForDisplay };

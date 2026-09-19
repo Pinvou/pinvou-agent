@@ -81,8 +81,16 @@ const protocolSources = {
 
 const expectedProtocolHashes = {
   multiAgent: 'a6d045e87f7f5f3537fdeadb262d54622edd6dcafa2c0253f0b44e7de439315d',
-  orchestration: '0f6d0ff37a357fe9dab1873879d98ebf5e0e1c176c02c431452f5b5dc48b7e22',
-  artifacts: '37ca694534c7e6cf44b6d262c40e388999c3ba136faca0d6f57821d5b9b3df53',
+  // Recomputed for the rebind artifact-path save transform (review #463
+  // round-B Major 1): the persistMessagesFor save_session_artifacts invoke
+  // wraps its paths with rebaseArtifactPathsForRebind so a post-rebind chat
+  // turn's buffer save cannot durably revert the backend lane's rebase. Same
+  // command surface; no new invoke or listen entries.
+  orchestration: '0268652fa093cfa288d872d98ee1aa3446bdd16837b54a1a3c26c06c890b9933',
+  // Recomputed for the same round-B fix: the reconcile's save_session_artifacts
+  // invoke wraps its paths with the rebase transform, and the
+  // rebaseArtifactPathsForRebind helper joined the feature's exported API.
+  artifacts: 'c761cdd21803072fc0ef8a138178678cbb4995d26a5803f23b980c6c6ad1360d',
   // Recomputed for #308 follow-ups: prefillComposer(text, append) recovery
   // entry + comment translations touching `invoke(` mentions (the extractor
   // scans raw source, so comment wording is part of the digest). Recomputed
@@ -157,7 +165,20 @@ const expectedProtocolHashes = {
   // (bridge/sessions.js). Recomputed again for workspace-bound sessions:
   // get_session_workspace_binding query + bound-draft staged mode application
   // (set_plan_mode_next / exit_plan_to_yolo) at materialization.
-  sessions: 'c85e365dcf0874b577396a02f764cb6f108ad34a4b54c0853cd8f918ffa39b5c',
+  // Recomputed for the rebind mark geometry (round-B Major 1): the
+  // session:list_changed listener body now reads the payload's from/to and
+  // stamps {at, from, to} marks consumed by the artifact save transform and
+  // the reconcile rebase gate (same listen surface, no new entries).
+  // Recomputed again for round-C: chained rebinds compose onto the existing
+  // mark and expired marks are no longer pruned — the save transform's
+  // whole-process-lifetime contract owns the mark's lifetime. Recomputed
+  // again for round-D: the mark is an ordered SEGMENT CHAIN (append on
+  // chained rebinds, refresh on an identical retry) so every buffer vintage
+  // — including one re-vintaged from the durable JSON mid-chain — resolves
+  // onto the final target. Recomputed once more for the round-E minor:
+  // non-contiguous geometries append instead of replacing, preserving every
+  // older vintage.
+  sessions: '336309941cfd0ce7c9908231a650c95cda048aea23bf1518f8fd8c241f4d5eb3',
   settings: 'a44929caff59641eb059f28885f1674d4e277412526d31c1d3ddfd75e44d0496',
   // Recomputed for the audit dead-code cleanup: the never-emitted
   // remote_control:status / remote_control:session_created listeners were
@@ -167,7 +188,12 @@ const expectedProtocolHashes = {
   // (PR-added Chinese comments inside the postprocess_voice_text invoke
   // span are part of the hashed source; no invoke/listen surface changed).
   voice: '2a2e8d12150ca86bb970ad099e7b72ab6491768bbc42354cd5ecc800c891c733',
-  projects: '4f0737d9a074629208d6a01e6b027907ad6f0676ef2ae456c95cc37350d8ca76',
+  // Recomputed for the rebind carryover feed-back (review #463 F-Major):
+  // rebind_workspace_root gains the optional previousPostBusySessionIds
+  // payload — the dialog's previous report fed back on retry, honored by the
+  // backend only as a reporting reclassification inside its own to-lane
+  // retry population. Same command surface, no new invoke or listen entries.
+  projects: '90c12ab7494aba3975ac4ece4b23594f4a4fcf309f6252b721ce15575b245979',
 };
 
 for (const [domain, files] of Object.entries(protocolSources)) {

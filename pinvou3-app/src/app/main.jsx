@@ -24,6 +24,8 @@ import { formatSessionDate, localDateKey, formatDateGroupLabel } from '../shared
 import { groupSessionsWithProjects, resolveSessionProjectId, needsAddFolderConfirm } from '../features/projects/projectGrouping.js';
 import { ProjectGroupHeader } from '../features/projects/ProjectGroupHeader.jsx';
 import { MoveToProjectDialog } from '../features/projects/MoveToProjectDialog.jsx';
+import { RebindFolderDialog } from '../features/projects/RebindFolderDialog.jsx';
+import { classifyRebindError } from '../features/projects/rebindErrors.js';
 import { runSessionBatch } from '../shared/session-management.js';
 import { can, isWeb } from '../shared/platform.js';
 import { installGlobalMarkdownRenderer } from '../shared/markdown-renderer.js';
@@ -1629,6 +1631,18 @@ const NAV_PREFETCH = {
       // token 批次、tear-off 期间每次 pointermove 的 setDragAvatar)都新建
       // 引用,击穿 RecentItem 的 memo,重渲染全部侧栏行。
       const clearDropTarget = useCallback(() => setDropTargetGroupKey(null), []);
+      const [rebindDraft, setRebindDraft] = useState(null);
+      // Close-time focus resolver for the rebind dialog (review #463 round-10
+      // T7): filled with a `() => Element | null` targeting the project header
+      // row that opened it, which survives the refresh that removes the badge.
+      const rebindRestoreRef = useRef(null);
+      // Re-entry guard for the folder-picker window (review #463 round-10
+      // minor 7): `rebindDraft` stays null until the picker resolves, so the
+      // existing guard cannot see a second badge click in that window — two
+      // pickers would race, the second overwriting `rebindRestoreRef`, and a
+      // successful A-rebind could restore focus to B's header or open B's
+      // draft. Held from pick start to settle (pick, empty pick, failure).
+      const rebindPickingRef = useRef(false);
       // 桥完成首次状态同步(bs 就绪)后拉一次项目快照;后续变更由
       // projects:list_changed 事件驱动桥内刷新(bridge/projects.js)。
       const projectsBootstrapReady = !!bs;
@@ -2532,6 +2546,141 @@ const NAV_PREFETCH = {
         }
         handleMoveSessionToProject(sessionId, projectId, false);
       };
+      // Folder rebind (repairs the broken link): click "Rebind" on a project
+      // header with an unavailable root → system folder picker → confirmation
+      // dialog. Two-phase confirmation: the first call omits confirmExisting,
+      // the backend rejects when the old folder still exists, and the dialog
+      // escalates to the strong warning for the user to confirm again.
+      const startRebindWorkspace = async (fromPath, headerEl) => {
+        // Do not reopen while rebindDraft is already open: with focus left on
+        // the badge, pressing Enter re-triggers onRebind (review #463 minor),
+        // and the projectOpsBusy guard does not cover that window. The
+        // pickingRef arm covers the picker window itself, which rebindDraft
+        // cannot see (round-10 minor 7).
+        if (!bridge.files || !bridge.files.pickRebindFolder || projectOpsBusy || rebindDraft || rebindPickingRef.current) return;
+        rebindPickingRef.current = true;
+        // Focus destination for the dialog's close (review #463 round-10 T7):
+        // the badge that opened it is removed by the very operation it starts
+        // (the root becomes available), so the hook's default restore target is
+        // detached and focus fell to <body>. The project header row survives the
+        // refresh, and its toggle button is the natural place to land. Resolved
+        // at close time (the hook's resolver contract), because only then is the
+        // post-refresh subtree committed.
+        rebindRestoreRef.current = headerEl
+          ? () => headerEl.querySelector('button')
+          : null;
+        try {
+          // Single folder, with a title matching the rebind semantics
+          // (review #463 Minor 6): no longer borrowing KB's multi-select
+          // import picker.
+          const to = await bridge.files.pickRebindFolder();
+          if (!to) return;
+          // No session count: the command actually rebinds every session
+          // under `from`; the sidebar group's rendered count is only a
+          // subset, so a numeric promise would not match the
+          // RebindWorkspaceReport (finding 10).
+          setRebindDraft({ from: fromPath, to, warnExisting: false });
+        } catch (error) {
+          // Picker rejection must be user-visible (review #463 minor), not
+          // console-only; the generic opFailed copy covers this failure
+          // class, and the warn keeps the detail available for diagnostics.
+          console.warn('pick rebind folder failed', error);
+          setSettingsToast(t.uiProjects.opFailed);
+        } finally {
+          rebindPickingRef.current = false;
+        }
+      };
+      const confirmRebindWorkspace = async (confirmExisting) => {
+        if (!bridge.projects || !rebindDraft || projectOpsBusy) return;
+        setProjectOpsBusy(true);
+        // Clear the previous attempt's inline error/busy hint so it does
+        // not stack with this run's result.
+        setRebindDraft(prev => prev && { ...prev, error: null, busySessionIds: null });
+        // Feed the previous report's post-busy ids back (review #463
+        // F-Major): a session an earlier run moved and reported post-busy is
+        // routed by the backend into the same to-lane retry population as a
+        // healthy session, so without the feed-back a busy-refused carryover
+        // session would appear in NO report field and the dialog would close
+        // claiming full success while its old-cwd runtime stays resident.
+        // The backend honors only the intersection with its own retry
+        // population, so this list can never widen the eviction set.
+        const previousPostBusySessionIds = (rebindDraft.partial && rebindDraft.partial.postBusyIds) || [];
+        try {
+          const report = await bridge.projects.rebindWorkspaceRoot(
+            rebindDraft.from, rebindDraft.to, confirmExisting, previousPostBusySessionIds);
+          const rebound = (report && report.rebound_session_ids) ? report.rebound_session_ids.length : 0;
+          const failed = (report && report.failed_session_ids) ? report.failed_session_ids.length : 0;
+          const postBusy = (report && report.post_busy_session_ids) ? report.post_busy_session_ids.length : 0;
+          // The dialog stays open whenever the report still has something the
+          // user must act on — failed sessions to retry, or sessions whose
+          // runtime the idle gate refused (round-8 MAJOR-2: closing on the
+          // post-busy-only case left "retry once when idle" with no entry
+          // point, because the unavailable-root badge disappears once the root
+          // has moved). Rerunning the backend with the same from/to converges
+          // (the snapshot includes unsynced sessions; already-rebound ones are
+          // no-ops). The post-busy ids are kept for the next retry's
+          // feed-back (F-Major).
+          if (failed > 0 || postBusy > 0) {
+            setRebindDraft(prev => prev && {
+              ...prev,
+              partial: {
+                rebound,
+                failed,
+                failedIds: (report && report.failed_session_ids) || [],
+                postBusy,
+                postBusyIds: (report && report.post_busy_session_ids) || [],
+              },
+            });
+          } else {
+            setRebindDraft(null);
+            if (rebound > 0) {
+              setSettingsToast(t.uiProjects.rebindSuccess(rebound));
+            } else {
+              // A retry after everything already converged (or a root with
+              // no sessions at all) returns an empty report; "Rebound 0"
+              // would read as a failure (review #463 minor).
+              setSettingsToast(t.uiProjects.rebindUpToDate);
+            }
+          }
+          await refreshCodexSessions().catch((error) => {
+            // Failure is not swallowed: the session list self-heals via the
+            // session:list_changed event, but a silent gap after an explicit
+            // failure must stay visible for troubleshooting
+            // (review #463 minor).
+            console.warn('refresh sessions after rebind failed', error);
+          });
+        } catch (error) {
+          // Typed-marker matching (finding 11 / Minor 7 / round-8 M4): the
+          // backend prefixes every user-reachable outcome with a stable ASCII
+          // marker and we match only that prefix, never human copy. The mapping
+          // lives in a pure helper so both halves of the contract are unit
+          // tested (review #463 round-8 minor 10).
+          const classified = classifyRebindError(error, t);
+          if (classified.kind === 'old-root-exists') {
+            setRebindDraft(prev => prev && { ...prev, warnExisting: true, error: null });
+          } else if (classified.kind === 'sessions-busy') {
+            // Busy rejection is the fence's high-frequency happy path
+            // (Minor 7): map it to i18n copy; only session ids follow the
+            // marker, and they are shown verbatim for troubleshooting.
+            setRebindDraft(prev => prev && {
+              ...prev,
+              busySessionIds: classified.busySessionIds,
+              error: null,
+            });
+          } else if (classified.kind === 'copy') {
+            setRebindDraft(prev => prev && { ...prev, error: classified.message });
+          } else {
+            console.warn('rebind workspace failed', error);
+            // On failure keep the dialog open with the error inline
+            // (review #463 M7): in-place display persists and sits next to
+            // the retry; an unmapped backend error is shown verbatim as a
+            // diagnostic detail rather than guessed at.
+            setRebindDraft(prev => prev && { ...prev, error: classified.message });
+          }
+        } finally {
+          setProjectOpsBusy(false);
+        }
+      };
 
       function sessionRowsForIds(ids) {
         const byId = new Map(allSidebarTasks.map(item => [item.id, item]));
@@ -2873,6 +3022,13 @@ const NAV_PREFETCH = {
         isCompactShell && isSidebarOpen ? 'mobile-sidebar' : '',
         isCompactShell && mobileMoreOpen ? 'mobile-more' : '',
         moveToProjectSession ? 'move-picker' : '',
+        // Folder rebind confirm (review #463 round-10 T1): the move picker's
+        // sibling in the projects domain, and subject to the same rule — a
+        // modal that is not published as an intent leaves the native webview
+        // dock un-suspended, so the backdrop has no authority over the dock
+        // region (occlusion + click-through). In the partial state this dialog
+        // is the only retry entry, which makes the omission user-visible.
+        rebindDraft ? 'rebind' : '',
       ].filter(Boolean).join('|');
       const browserOverlayPublicationReady = !!browserOverlayIntent
         && publishedBrowserOverlayIntent === browserOverlayIntent;
@@ -3016,6 +3172,22 @@ const NAV_PREFETCH = {
               {settingsToast}
             </div>,
             document.body
+          )}
+
+          {rebindDraft && browserOverlayPublicationReady && (
+            <RebindFolderDialog
+              from={rebindDraft.from}
+              to={rebindDraft.to}
+              warnExisting={rebindDraft.warnExisting}
+              errorMessage={rebindDraft.error}
+              partial={rebindDraft.partial || null}
+              busySessionIds={rebindDraft.busySessionIds || null}
+              t={t}
+              busy={projectOpsBusy}
+              restoreTargetRef={rebindRestoreRef}
+              onCancel={() => setRebindDraft(null)}
+              onConfirm={confirmRebindWorkspace}
+            />
           )}
 
           {moveToProjectSession && browserOverlayPublicationReady && (
@@ -3414,6 +3586,12 @@ const NAV_PREFETCH = {
                                   onRename={group.kind === 'project' ? (name) => handleRenameProject(group.projectId, name) : undefined}
                                   onDelete={group.kind === 'project' ? () => handleDeleteProject(group.projectId) : undefined}
                                   onDropSession={bridge.projects && group.kind === 'project' ? (sessionId) => handleDropSessionOnProject(sessionId, group.projectId) : undefined}
+                                  unavailableRoots={group.kind === 'project'
+                                    ? (group.roots || [])
+                                        .filter(root => !(root && typeof root === 'object' ? root.available : root))
+                                        .map(root => String(typeof root === 'object' ? root.path : root))
+                                    : []}
+                                  onRebind={bridge.projects && group.kind === 'project' ? (rootPath, headerEl) => startRebindWorkspace(rootPath, headerEl) : undefined}
                                   dropActive={dropTargetGroupKey === group.key}
                                   onDropActive={(active) => setDropTargetGroupKey(active ? group.key : null)}
                                 />
