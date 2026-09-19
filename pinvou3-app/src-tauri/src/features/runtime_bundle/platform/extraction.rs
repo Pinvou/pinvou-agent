@@ -274,6 +274,21 @@ impl Pinvou3Bundle {
         // deleting legacy plaintext before it has been copied into the credential store.
         crate::platform::startup::mark("bundle_extract:write_mcp_servers:start");
         self.write_mcp_servers(mcp_secret_migration_ok)?;
+        // Reconcile the marketplace installed registry with mcp.json BEFORE the Python
+        // repair: the managed-runtime patch fails while an entry is missing entirely, so
+        // restoring missing/dead entries first lets one startup converge to the managed
+        // form. Engine-owned keys (pinvou3) are skipped, and ensure_builtin_mcp_servers
+        // below re-asserts them afterwards, so neither pass can overwrite the other.
+        match marketplace.reconcile_installed_mcp_entries() {
+            Ok(actions) => {
+                for action in actions {
+                    log::info!("[pinvou3-app] mcp.json reconcile: {action}");
+                }
+            }
+            Err(error) => {
+                log::warn!("[pinvou3-app] mcp.json reconcile failed (non-blocking): {error}");
+            }
+        }
         // Existing Python MCP entries may still launch server.py directly without the managed
         // dependency environment. Repair or atomically downgrade them before any engine reads
         // mcp.json, leaving a stable install target for the UI to retry.
