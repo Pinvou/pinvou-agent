@@ -44,16 +44,18 @@ function looksWindowsPath(value) {
 }
 
 // Component-aware "same or nested", mirroring the store's key_is_same_or_nested
-// (features/projects/store.rs) line for line — including comparing full
-// equality before stripping the root's trailing separator — so the display
-// side and the store can never disagree about which sessions belong where. A
-// bare startsWith would file /a/bc under /a/b: the character right past the
-// base must be a separator, and a bare-separator root ("/") covers every
-// absolute path, matching the store's empty-base rule. Windows-shaped paths
-// fold separators and case on both sides, mirroring filesystem_path_identity_key
-// (Windows identity keys fold case and separators, POSIX does not): the pure
-// module has no host-OS signal, so it keys off path shape — drive-letter/UNC
-// paths only ever come from Windows sessions.
+// (features/projects/store.rs) line for line: both sides lose their trailing
+// separators first (the store trims both identity keys the same way, so a
+// trailing-separator root and the bare directory are one and the same root on
+// BOTH sides of the stack — round-7 should-fix aligned the display side to
+// that), then full equality, then the prefix rule. A bare startsWith would
+// file /a/bc under /a/b: the character right past the base must be a
+// separator, and a bare-separator root ("/") covers every absolute path,
+// matching the store's empty-base rule. Windows-shaped paths fold separators
+// and case on both sides, mirroring filesystem_path_identity_key (Windows
+// identity keys fold case and separators, POSIX does not): the pure module has
+// no host-OS signal, so it keys off path shape — drive-letter/UNC paths only
+// ever come from Windows sessions.
 function isUnderRoot(path, root) {
   if (!path || !root) return false;
   let a = String(path);
@@ -63,8 +65,12 @@ function isUnderRoot(path, root) {
     a = a.toLowerCase().replaceAll('\\', '/');
     b = b.toLowerCase().replaceAll('\\', '/');
   }
+  // Trailing separators are not identity: both sides lose them, mirroring the
+  // store's trim_end_matches('/') on both identity keys (a loop, not a
+  // quantified regex — sonarjs/super-linear-regex).
+  while (a.endsWith('/')) a = a.slice(0, -1);
+  while (b.endsWith('/')) b = b.slice(0, -1);
   if (a === b) return true;
-  b = windowsShape ? b.replace(/[\\/]$/, '') : b.replace(/\/$/, '');
   if (!b) return a.startsWith('/');
   return a.startsWith(b) && a[b.length] === '/';
 }
@@ -105,7 +111,7 @@ function resolveSessionProjectId(item, projects, assignments) {
     if (assigned && projectList.some(project => project.id === assigned)) return assigned;
     if (assigned === null) return null;
   }
-  if (item.workspaceKind !== 'project') return null;
+  if (!hasProjectWorkspace(item)) return null;
   const matched = matchProjectByPath(projectList, item.workspacePath);
   return matched ? matched.id : null;
 }
@@ -116,6 +122,27 @@ function resolveSessionProjectId(item, projects, assignments) {
 function projectCoversPath(project, path) {
   if (!project || !path) return false;
   return (project.roots || []).some((root) => isUnderRoot(String(path), rootPath(root)));
+}
+
+// Session shapes carrying a real project working directory: 'project'
+// (code/ACP) and 'bound' (#445 bound plain work sessions). 'bound' is its
+// own kind, not disguised as 'project' — so when project-kind later gains
+// its own behavior (e.g. a baseline panel), plain bound sessions are not
+// affected by mistake (review #452 finding 5). Exported so the emitter
+// (main.jsx) and this consumer share one spelling — a producer-side rename
+// would otherwise silently drop bound sessions from the project view with
+// every test green (review #464 round-5 item 5; source-pinned by
+// project_session_drag_contract.test.mjs).
+export const WORKSPACE_KIND_BOUND = 'bound';
+
+const WORKSPACE_KINDS_WITH_PROJECT_DIR = ['project', WORKSPACE_KIND_BOUND];
+
+function hasProjectWorkspace(item) {
+  return (
+    !!item
+    && WORKSPACE_KINDS_WITH_PROJECT_DIR.includes(item.workspaceKind)
+    && !!item.workspacePath
+  );
 }
 
 // Input: items = code sessions [{ id, workspacePath, workspaceKind, updatedAt, ... }],
@@ -150,7 +177,7 @@ function groupSessionsWithProjects(items, projects, assignments) {
     // Tier 2: auto-group by workspace root containment. Only project-kind
     // sessions participate — temporary sessions enter a project exclusively
     // through explicit assignment (the "adopt" flow), never implicitly.
-    if (!target && !autoGroupBlocked && item.workspaceKind === 'project') {
+    if (!target && !autoGroupBlocked && hasProjectWorkspace(item)) {
       target = matchProjectByPath(projectList, item.workspacePath);
     }
     if (target) {
@@ -158,7 +185,7 @@ function groupSessionsWithProjects(items, projects, assignments) {
       return;
     }
     // Tier 3: legacy folder bucketing.
-    const key = item.workspaceKind === 'project' && item.workspacePath
+    const key = hasProjectWorkspace(item) && item.workspacePath
       ? String(item.workspacePath)
       : TEMPORARY_GROUP_KEY;
     if (!byFolder.has(key)) byFolder.set(key, []);
@@ -208,8 +235,20 @@ function groupSessionsWithProjects(items, projects, assignments) {
 // copies (drag drop handler, dialog initializer, dialog choose).
 function needsAddFolderConfirm(session, target) {
   if (!session || !target) return false;
-  const workspacePath = session.workspaceKind === 'project' ? String(session.workspacePath || '') : '';
+  const workspacePath = hasProjectWorkspace(session) ? String(session.workspacePath || '') : '';
   return !!workspacePath && !projectCoversPath(target, workspacePath);
 }
 
-export { TEMPORARY_GROUP_KEY, PROJECT_SESSION_DRAG_TYPE, groupSessionsWithProjects, projectCoversPath, resolveSessionProjectId, rootPath, needsAddFolderConfirm };
+// Display trimming for unavailable-root badges (review #463 m3): the header
+// row is a fixed 28px, and one full badge ("Folder unavailable · Rebind") is
+// already close to the limit — several shrink-0 badges squeeze the collapse
+// toggle to zero width and overflow horizontally. Collapsed keeps the first
+// badge (the primary entry) and counts the rest into +N; expanded lays them
+// all out (the container wraps). Returns { visibleRoots, hiddenCount }.
+function capUnavailableRootsForDisplay(roots, expanded) {
+  const list = Array.isArray(roots) ? roots : [];
+  if (expanded) return { visibleRoots: list, hiddenCount: 0 };
+  return { visibleRoots: list.slice(0, 1), hiddenCount: Math.max(0, list.length - 1) };
+}
+
+export { TEMPORARY_GROUP_KEY, PROJECT_SESSION_DRAG_TYPE, groupSessionsWithProjects, projectCoversPath, resolveSessionProjectId, rootPath, needsAddFolderConfirm, hasProjectWorkspace, capUnavailableRootsForDisplay };
