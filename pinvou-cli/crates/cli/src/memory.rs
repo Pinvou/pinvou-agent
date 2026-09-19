@@ -1253,9 +1253,28 @@ fn pending(
                 .map(feature::confirmed_pending_memory_is_materialized)
                 .unwrap_or(true);
             if !materialized {
+                // The profile-shaped wording is only honest for actually
+                // profile-shaped preference text (the case
+                // `write_preference_unlocked` deliberately skips). A
+                // non-profile-shaped candidate that is confirmed but absent
+                // from the store was superseded (e.g. re-confirming a
+                // preference a newer one already replaced) — claiming
+                // "profile-shaped" there would be a false statement.
+                let profile_shaped = confirmed.as_ref().is_some_and(|item| {
+                    item.kind == "preference"
+                        && pinvou3_lib::features::memory::looks_like_profile_preference_text(
+                            &item.content,
+                        )
+                });
+                let reason = if profile_shaped {
+                    "its content is profile-shaped preference text that is deliberately not \
+                     materialized"
+                } else {
+                    "its content is no longer present in the target memory store (it may have \
+                     been replaced by a newer preference)"
+                };
                 return Err(CliError::failed(format!(
-                    "memory pending confirm({id}): the candidate is confirmed, but its content \
-                     is profile-shaped preference text that is deliberately not materialized; \
+                    "memory pending confirm({id}): the candidate is confirmed, but {reason}; \
                      nothing was written to the target store"
                 )));
             }

@@ -521,6 +521,45 @@ fn stats_type_counts_and_search_answer_zero_state_offline() {
     assert_eq!(hits["hits"], serde_json::json!([]));
 }
 
+/// `--limit` flows into a signed SQL `LIMIT` downstream: a value above
+/// `i64::MAX` would wrap negative in the upstream `as i64` cast and become
+/// SQLite's "no limit" (-1), silently materializing the whole table. The
+/// boundary must refuse with the family usage error (exit 2) on both call
+/// sites that cast (`search` and `documents`), while a sane limit still
+/// runs.
+#[test]
+fn limit_above_i64_max_is_a_usage_error_and_sane_limits_run() {
+    let _env_guard = ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+    let _home = TempHome::new("limit-bound");
+
+    for arguments in [
+        vec![
+            "pinvou",
+            "knowledge",
+            "search",
+            "hello",
+            "--limit",
+            "18446744073709551615",
+        ],
+        vec![
+            "pinvou",
+            "knowledge",
+            "documents",
+            "5",
+            "--limit",
+            "18446744073709551615",
+        ],
+    ] {
+        assert_usage(&arguments);
+    }
+
+    // A sane limit is accepted on both surfaces (zero state: empty results).
+    let hits = run_json(&["pinvou", "knowledge", "search", "hello", "--limit", "5"]);
+    assert_eq!(hits["hits"], serde_json::json!([]));
+    let documents = run_json(&["pinvou", "knowledge", "documents", "1", "--limit", "5"]);
+    assert_eq!(documents["documents"], serde_json::json!([]));
+}
+
 // ---- execute-level coverage: real hermetic round-trips ----
 
 #[test]
@@ -729,22 +768,29 @@ fn add_sources_indexes_a_text_file_end_to_end() {
     assert_eq!(error.exit_code(), ExitCode::Failed);
     assert!(error.to_string().contains("active/latest"), "{error}");
 
-    // The finished job is the latest but not resumable: resume/retry name
-    // that with the friendly job-not-found code instead of leaking the raw
+    // The finished job is the latest but not resumable: resume names that
+    // with the friendly job-not-found code instead of leaking the raw
     // rusqlite "Query returned no rows" driver message.
-    for arguments in [
-        vec!["pinvou", "knowledge", "index", "resume", &job_id],
-        vec!["pinvou", "knowledge", "index", "retry", &job_id, "1"],
-    ] {
-        let error = execute_error(&arguments);
-        assert_eq!(error.exit_code(), ExitCode::Failed, "{arguments:?}");
-        let message = error.to_string();
-        assert!(
-            message.contains("knowledge_index_job_not_found"),
-            "{arguments:?}: {message}"
-        );
-        assert!(!message.contains("Query returned no rows"), "{message}");
-    }
+    let error = execute_error(&["pinvou", "knowledge", "index", "resume", &job_id]);
+    assert_eq!(error.exit_code(), ExitCode::Failed);
+    let message = error.to_string();
+    assert!(
+        message.contains("knowledge_index_job_not_found"),
+        "{message}"
+    );
+    assert!(!message.contains("Query returned no rows"), "{message}");
+
+    // Retry cannot distinguish an unknown job from a known job whose item is
+    // simply not failed (upstream answers both with no rows), so its message
+    // names both instead of claiming the job is missing.
+    let error = execute_error(&["pinvou", "knowledge", "index", "retry", &job_id, "1"]);
+    assert_eq!(error.exit_code(), ExitCode::Failed);
+    let message = error.to_string();
+    assert!(
+        message.contains("knowledge_index_retry_not_eligible"),
+        "{message}"
+    );
+    assert!(!message.contains("Query returned no rows"), "{message}");
 }
 
 /// A second `add-sources` behind an unfinished job for the SAME collection

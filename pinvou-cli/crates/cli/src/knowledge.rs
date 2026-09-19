@@ -348,7 +348,7 @@ pub fn parse(values: &[String]) -> Result<KnowledgeCommand, CliError> {
                 let (options, _) = parse_flags(&rest[1..], DOCUMENT_OPTIONS, &[])?;
                 Ok(KnowledgeCommand::Documents {
                     collection_id,
-                    limit: parse_positive(&options, "--limit")?,
+                    limit: parse_positive_bounded(&options, "--limit", i64::MAX as usize)?,
                 })
             }
         }
@@ -412,7 +412,7 @@ pub fn parse(values: &[String]) -> Result<KnowledgeCommand, CliError> {
             let (options, _) = parse_flags(tail, SEARCH_OPTIONS, &[])?;
             Ok(KnowledgeCommand::Search {
                 query,
-                limit: parse_positive(&options, "--limit")?,
+                limit: parse_positive_bounded(&options, "--limit", i64::MAX as usize)?,
                 ext: option(&options, "--ext").map(str::to_owned),
                 after: option(&options, "--after").map(str::to_owned),
                 before: option(&options, "--before").map(str::to_owned),
@@ -613,6 +613,17 @@ fn option<'a>(options: &'a [(&'a str, &'a str)], name: &str) -> Option<&'a str> 
 
 fn parse_positive(options: &[(&str, &str)], name: &str) -> Result<Option<usize>, CliError> {
     crate::support::parse_family_positive::<usize>(options, name, "knowledge")
+}
+
+/// `--limit` for stores that pass the value into a signed SQL `LIMIT`: a
+/// `usize` above `i64::MAX` would wrap negative in the upstream `as i64`
+/// cast and turn the limit into "no limit", materializing the whole table.
+fn parse_positive_bounded(
+    options: &[(&str, &str)],
+    name: &str,
+    max: usize,
+) -> Result<Option<usize>, CliError> {
+    crate::support::parse_family_positive_bounded::<usize>(options, name, "knowledge", max)
 }
 
 fn parse_non_negative(value: &str, name: &str) -> Result<usize, CliError> {
@@ -1083,12 +1094,11 @@ fn collections_update(
 /// GUI `kb_collection_delete`: cancel a running import for the collection,
 /// delete it, then clear every session mount.
 fn collections_delete(id: i64, output: OutputMode) -> Result<CliOutcome, CliError> {
-    let service = open_service_recovering()?;
-    // `delete_collection` is plain DELETEs and succeeds for unknown ids
-    // (0 rows affected); like `update`/`add-sources`, an existence check
-    // turns the silent no-op into an honest error instead of a false
-    // "deleted collection 999".
-    match service.l1().collection_name(id) {
+    // The existence check runs on a NON-recovering open (the same rule
+    // `index cancel` applies): boot recovery flips a preparing/running
+    // import — possibly one a live desktop-app process is still executing —
+    // to interrupted, so a typo'd id must fail without ever paying that.
+    match open_service()?.l1().collection_name(id) {
         Ok(Some(_)) => {}
         Ok(None) => {
             return Err(CliError::failed(format!(
@@ -1097,6 +1107,12 @@ fn collections_delete(id: i64, output: OutputMode) -> Result<CliOutcome, CliErro
         }
         Err(error) => return Err(feature_error("collections delete", error)),
     }
+    // The write path (cancel + delete) legitimately owns the boot
+    // reconciliation. `delete_collection` is plain DELETEs and succeeds for
+    // unknown ids (0 rows affected); the existence check above turns the
+    // silent no-op into an honest error instead of a false "deleted
+    // collection 999".
+    let service = open_service_recovering()?;
     service
         .cancel_index_for_collection(id)
         .map_err(|error| feature_error("collections delete", error))?;
@@ -1155,15 +1171,24 @@ fn collections_add_sources(
     paths: Vec<PathBuf>,
     output: OutputMode,
 ) -> Result<CliOutcome, CliError> {
-    let service = open_service_recovering()?;
-    match service.l1().collection_name(id) {
-        Ok(Some(_)) => {}
-        Ok(None) => {
-            return Err(CliError::failed(format!(
-                "knowledge collections add-sources: collection {id} not found"
-            )));
+    // Existence and path pre-flight run on a NON-recovering open (the same
+    // rule `index cancel` applies): a typo'd id or path must fail without
+    // boot recovery flipping a job a live desktop-app process is still
+    // importing to interrupted, wedging it behind `index resume`.
+    {
+        let service = open_service()?;
+        // The GUI frontend only offers existing collections, so the CLI adds
+        // the existence check the API silently assumes (upstream returns an
+        // idle no-job state for unknown ids).
+        match service.l1().collection_name(id) {
+            Ok(Some(_)) => {}
+            Ok(None) => {
+                return Err(CliError::failed(format!(
+                    "knowledge collections add-sources: collection {id} not found"
+                )));
+            }
+            Err(error) => return Err(feature_error("collections add-sources", error)),
         }
-        Err(error) => return Err(feature_error("collections add-sources", error)),
     }
     // Pre-flight the paths like `files ingest` does: `start_index` expands
     // roots on a background thread this one-shot process kills at exit, so
@@ -1185,6 +1210,8 @@ fn collections_add_sources(
             )));
         }
     }
+    // Only the actual write path opens the recovering service.
+    let service = open_service_recovering()?;
     // `start_index` falls back to `index_status()` when the job create or
     // the follow-up state read fails; the reported job must then not be
     // passed off as the fresh import.
@@ -1197,7 +1224,14 @@ fn collections_add_sources(
     // files that were never enqueued, for a different collection and for
     // this one alike (the one-shot CLI process leaves its previous job
     // interrupted, so a plain second add-sources hits exactly this).
-    if state.resumable || state.collection_id != id {
+    // A different collection_id only names a blocking job when the returned
+    // state actually carries one that is still open (start_index answers a
+    // FAILED imports.create() with the idle/latest status — collection_id 0
+    // or a terminal job — and the no-fresh-job check below reports that
+    // honestly instead).
+    let carries_open_job = state.job_id.is_some()
+        && matches!(state.phase.as_str(), "preparing" | "running" | "parsing");
+    if state.resumable || (state.collection_id != id && carries_open_job) {
         return Err(CliError::failed(format!(
             "knowledge collections add-sources: an unfinished index job for collection {} \
              blocks collection {id} and the requested sources were NOT enqueued (check \
@@ -1421,12 +1455,14 @@ fn index_resume(job_id: &str, output: OutputMode) -> Result<CliOutcome, CliError
 }
 
 /// GUI `kb_index_retry` re-queues one failed item; same pre-validation as
-/// [`index_resume`].
+/// [`index_resume`]. Its no-rows mapping differs (see [`index_started_msg`]).
 fn index_retry(job_id: &str, item_id: i64, output: OutputMode) -> Result<CliOutcome, CliError> {
     require_latest_job_id(job_id, "retry")?;
-    index_started(
+    index_started_msg(
         "index retry queued",
         open_service_recovering()?.retry_index_item(job_id.to_owned(), item_id),
+        "knowledge_index_retry_not_eligible: no resumable index job or failed item \
+         for the requested ids",
         output,
     )
 }
@@ -1439,16 +1475,29 @@ fn index_started(
     result: Result<IndexState, String>,
     output: OutputMode,
 ) -> Result<CliOutcome, CliError> {
+    index_started_msg(
+        header,
+        result,
+        "knowledge_index_job_not_found: no resumable index job for the requested id",
+        output,
+    )
+}
+
+/// Same shape with a caller-specific `QueryReturnedNoRows` mapping. Upstream
+/// `ImportJobStore::retry_item` answers an unknown job id AND a known job
+/// whose item is not failed with the same no-rows driver error, so `index
+/// retry`'s message names both instead of claiming the job is missing.
+fn index_started_msg(
+    header: &str,
+    result: Result<IndexState, String>,
+    no_rows_message: &str,
+    output: OutputMode,
+) -> Result<CliOutcome, CliError> {
     let state = result.map_err(|error| {
-        // Upstream `ImportJobStore::{resume, retry_item}` answer an unknown
-        // or non-resumable job id with rusqlite's `QueryReturnedNoRows`;
-        // name the real cause instead of leaking the raw driver message (the
+        // Name the real cause instead of leaking the raw driver message (the
         // same code `index failed` uses).
         if error.contains("Query returned no rows") {
-            CliError::failed(
-                "knowledge_index_job_not_found: no resumable index job for the requested id"
-                    .to_owned(),
-            )
+            CliError::failed(no_rows_message.to_owned())
         } else {
             CliError::failed(format!("knowledge index: {error}"))
         }

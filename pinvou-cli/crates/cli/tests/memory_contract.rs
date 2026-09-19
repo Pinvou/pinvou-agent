@@ -787,3 +787,43 @@ fn memory_add_profile_shaped_preference_text_fails_before_the_pending_store() {
             .is_empty()
     );
 }
+
+/// Round-11 regression for the confirm path itself: `enqueue` does NOT run
+/// the profile-shaped rejection (only `memory add` does), so a profile-shaped
+/// candidate reaches the pending store and `pending confirm` marks it
+/// confirmed while `write_preference_unlocked` deliberately skips the write.
+/// The confirm must fail with the not-materialized message (exit 1) and the
+/// entry must still read confirmed afterwards — deleting the verification in
+/// the confirm path must fail this test instead of passing CI.
+#[test]
+fn memory_pending_confirm_of_profile_shaped_candidate_fails_but_marks_confirmed() {
+    let _guard = ENV_LOCK.lock().unwrap_or_else(|error| error.into_inner());
+    let _home = TempHome::new("pending-confirm-profile-shaped");
+
+    // Chinese profile-preference phrasing (the feature heuristic
+    // `looks_like_profile_preference_text`, features/memory/types.rs).
+    let item = enqueue_fixture("preference", "请以后称呼用户为老板");
+
+    let error = expect_usage_error(&["pinvou", "memory", "pending", "confirm", &item.id]);
+    assert_eq!(error.exit_code(), ExitCode::Failed);
+    let message = error.to_string();
+    assert!(
+        message.contains("deliberately not materialized"),
+        "the profile-shaped no-op must be named: {message}"
+    );
+
+    // The pending entry still carries the user's decision: it reads
+    // confirmed even though nothing reached the preference store.
+    let pending = pinvou3_lib::features::memory::load_pending_memory().unwrap();
+    let confirmed = pending
+        .iter()
+        .find(|entry| entry.id == item.id)
+        .expect("the candidate stays listed");
+    assert_eq!(confirmed.status, "confirmed");
+    // And nothing was materialized into the preference store.
+    assert!(
+        pinvou3_lib::features::memory::list_preferences()
+            .unwrap()
+            .is_empty()
+    );
+}

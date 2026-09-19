@@ -166,6 +166,29 @@ where
     }
 }
 
+/// Same as [`parse_family_positive`] plus an inclusive upper bound, for
+/// values that flow into a signed downstream column: a `usize` above
+/// `i64::MAX` would wrap negative in an `as i64` cast and turn a SQL `LIMIT`
+/// into "no limit", silently materializing a whole table. An over-bound
+/// value is the same family usage error as a malformed one.
+pub fn parse_family_positive_bounded<T>(
+    options: &[(&str, &str)],
+    name: &str,
+    family: &str,
+    max: T,
+) -> Result<Option<T>, CliError>
+where
+    T: std::str::FromStr + std::cmp::PartialOrd + std::fmt::Display + Default,
+{
+    match parse_family_positive::<T>(options, name, family)? {
+        None => Ok(None),
+        Some(value) if value > max => Err(CliError::usage(format!(
+            "{family} {name} must not exceed {max}"
+        ))),
+        Some(value) => Ok(Some(value)),
+    }
+}
+
 /// Destructive subcommands must opt in explicitly, mirroring the GUI's
 /// confirmation dialogs.
 pub fn require_yes(confirmed: bool) -> Result<(), CliError> {
