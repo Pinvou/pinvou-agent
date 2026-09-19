@@ -114,8 +114,9 @@ redirected paths, and an undersized disk (`--min-free-gib`, default 12). The
 release build jobs run the same preparation with a 24 GiB floor. Hosted Linux
 runners use a single disk (`/` and `/mnt` share one ext4 filesystem), so the
 memory expansion step (`scripts/ci-memory-setup.sh`) provides zram (on by
-default, pool capped at 50% of RAM, with zswap and the image swap as
-fallbacks) and no longer creates a swapfile, which would consume build disk.
+default, sized to 2x RAM with a zstd compressor, pool capped at 70% of RAM,
+with zswap and the image swap as fallbacks) and no longer creates a
+swapfile, which would consume build disk.
 All Linux jobs pin the release runner image (`ubuntu-22.04` /
 `ubuntu-22.04-arm`): release binaries link the build machine's glibc, so
 tests must run on the same system. The image is upgraded repo-wide in one
