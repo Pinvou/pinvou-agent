@@ -1,4 +1,3 @@
-pub(super) use deepseek_tui::models::Message;
 pub(super) use deepseek_tui::session_manager::{SavedSession, SessionMetadata};
 pub(super) use deepseek_tui::tools::user_input::{UserInputAnswer, UserInputResponse};
 pub(super) use serde::{Deserialize, Serialize};

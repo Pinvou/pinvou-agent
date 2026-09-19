@@ -822,10 +822,14 @@ impl SkillMarketplaceManager {
         Ok(())
     }
 
-    /// 导入用户上传的 zip 技能包:解压找 SKILL.md → 安全校验 → 落盘到
-    /// `bundle/skills/<name>/`。穿越/symlink/大小防护对齐底座 install.rs。
-    /// 返回落盘技能名(frontmatter name)。生产通道走 `import_package_named`;
-    /// 本封装仅剩契约测试在用。
+    /// Test-only scaffolding: imports a user-uploaded zip skill package
+    /// (unpack, locate SKILL.md, safety-check, install under
+    /// `bundle/skills/<name>`; traversal/symlink/size guards mirror the
+    /// foundation install.rs; returns the installed skill name from the
+    /// frontmatter). The production zip channel is
+    /// `plugin_import::import_plugin_package` behind the plugin-package
+    /// commands; the legacy command surface this served was removed as dead
+    /// code.
     #[cfg(test)]
     pub fn import_package(&self, zip_path: &str) -> Result<String, String> {
         let fname = Path::new(zip_path)
@@ -835,9 +839,12 @@ impl SkillMarketplaceManager {
         self.import_package_named(zip_path, &fname)
     }
 
-    /// `display_name` 仅写入 `.installed-from=upload:<display_name>` 标记
-    /// (保留用户原始 zip 名,便于卸载提示),其余行为与 `import_package` 一致。
-    /// 拖放字节通道落临时文件导入时,zip 名已丢,由命令层传入净化后的展示名。
+    /// Test-only scaffolding (see `import_package`): `display_name` is only
+    /// written into the `.installed-from=upload:<display_name>` marker (it
+    /// keeps the user's original zip name for uninstall hints). The drag-drop
+    /// bytes channel that used to pass a sanitized display name from the
+    /// command layer was removed as dead code.
+    #[cfg(test)]
     pub fn import_package_named(
         &self,
         zip_path: &str,

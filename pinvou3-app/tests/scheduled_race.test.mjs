@@ -73,7 +73,7 @@ test('deleteScheduledTask 作废删除前在途的整表 list 响应（已删任
   const pDelete = rt.api.deleteScheduledTask('task-a');
   // delete invoke 排在 list 之后（deferred 按名占用）。
   const dDelete = rt.defer('delete_scheduled_task');
-  dDelete.resolve({ deletedSessionIds: [] });
+  dDelete.resolve({});
   await pDelete;
   assert.ok(
     !rt.state.scheduledTasks.some((task) => task.id === 'task-a'),

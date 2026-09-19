@@ -1300,8 +1300,9 @@ fn scheduled_attachment_staging_and_artifact_resolution_use_task_workspace() {
         })
         .expect("scheduled session");
     // transcript 覆盖类命令仍拒绝 scheduled 会话(引擎独占持久化)。
-    let manage_error = ensure_chat_session(&store, &scheduled.metadata.id, "save_session_messages")
-        .expect_err("scheduled runs must reject UI transcript overwrites");
+    let manage_error =
+        ensure_chat_session(&store, &scheduled.metadata.id, "save_session_artifacts")
+            .expect_err("scheduled runs must reject UI transcript overwrites");
     assert!(manage_error.contains("scheduled-run sessions are managed from Scheduled"));
     let locked = store
         .ledger_root(&scheduled.metadata.id)

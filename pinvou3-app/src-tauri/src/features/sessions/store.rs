@@ -650,6 +650,11 @@ impl SessionStore {
         Ok(())
     }
 
+    /// Test-only seam: the production CAS consumer (the legacy web
+    /// transcript-save command) was removed with the dead-code sweep. Kept
+    /// gated because these tests pin the revision-conflict, truncation-guard,
+    /// and write-race semantics shared with the live revision-checked writers.
+    #[cfg(test)]
     pub fn compare_and_swap_messages(
         &self,
         id: &str,

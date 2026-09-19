@@ -699,23 +699,10 @@ pub async fn set_session_archived(
     Ok(())
 }
 
-/// 落盘普通 chat session 的 messages 数组。前端是普通 chat 的 source of truth；
-/// scheduled-run transcript 由 Engine `SessionUpdated` 独占持久化，拒绝 UI 覆盖。
-#[tauri::command]
-pub async fn save_session_messages(
-    id: String,
-    messages: Vec<Message>,
-    store: State<'_, SessionStore>,
-) -> Result<(), String> {
-    ensure_chat_session(&store, &id, "save_session_messages")?;
-    store
-        .update_messages(&id, messages)
-        .map_err(|e| format!("save_session_messages({id}): {e:#}"))
-}
-
-/// 落盘 session 的产物 paths 列表。前端跟踪 File.write / File.edit 调用后调用,
-/// 跟 save_session_messages 一起落 (TurnComplete 时)。重启/切换 session 后,
-/// 从 SavedSession.artifacts 重建前端产物列表。
+/// Persists a session's artifact paths list. The frontend calls this after
+/// tracking File.write / File.edit invocations, at TurnComplete time. After a
+/// restart or session switch, the frontend artifact list is rebuilt from
+/// SavedSession.artifacts.
 #[tauri::command]
 pub async fn save_session_artifacts(
     id: String,
