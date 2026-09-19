@@ -109,6 +109,7 @@
     "test:scene-capabilities": "node tests/scene_capabilities_logic.test.js",
     "test": "npm run test:node && npm run validate:pet-assets",
     "test:node": "node --test --test-concurrency=4",
+    "test:e2e-aux-quote": "node tests/e2e/aux-quote.cdp.mjs",
     "test:ui-smoke": "node tests/ui_smoke.js",
     "test:settings-ui": "node tests/settings_ui_smoke.js",
     "test:acp-providers-ui": "node tests/acp_providers_ui_smoke.js",
