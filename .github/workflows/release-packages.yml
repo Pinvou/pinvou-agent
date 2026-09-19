@@ -475,7 +475,10 @@ jobs:
     # 阶段将构建杀掉(run 32093220066，pass1 90m13s + pass2 被杀于 pinvou3-tauri 链接)。
     # release-macos 缓存又因仓库缓存总量顶满 10GB LRU 上限基本不可能跨发布存活，
     # 每次发布都按冷缓存规划。放宽至 240 分钟覆盖依赖增长与 runner 抖动。
-    timeout-minutes: 240
+    # 实测仍持续增长：0.10.0-0.10.2 分别 138/219/226 分钟(run 34747563852/
+    # 34877996483/35308587808)，0.10.3(run 35377723253)在 241 分钟处撞线被取消，
+    # macOS dmg 因此缺席发布而其余三平台完成。放宽至 360 分钟。
+    timeout-minutes: 360
     env:
       MACOSX_DEPLOYMENT_TARGET: "11.0"
       VERSION: ${{ needs.check-version-bump.outputs.version }}
