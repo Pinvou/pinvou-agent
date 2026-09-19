@@ -1631,3 +1631,81 @@ pub(crate) fn spawn_event_forwarder(
         );
     })
 }
+
+#[cfg(test)]
+mod mcp_boot_persistence_tests {
+    use super::{mcp_boot_failure_details, mcp_boot_summary_detail};
+    use deepseek_tui::mcp::{McpManagerSnapshot, McpServerCapabilityMetadata, McpServerSnapshot};
+
+    fn server(
+        name: &str,
+        enabled: bool,
+        connected: bool,
+        error: Option<&str>,
+    ) -> McpServerSnapshot {
+        McpServerSnapshot {
+            name: name.to_string(),
+            enabled,
+            required: false,
+            transport: "stdio".to_string(),
+            command_or_url: format!("/usr/bin/{name}"),
+            connect_timeout: 10,
+            execute_timeout: 60,
+            read_timeout: 30,
+            connected,
+            error: error.map(str::to_string),
+            auth_required: false,
+            capability_metadata: McpServerCapabilityMetadata::NotObserved,
+            tools: Vec::new(),
+            resources: Vec::new(),
+            prompts: Vec::new(),
+        }
+    }
+
+    fn snapshot(servers: Vec<McpServerSnapshot>) -> McpManagerSnapshot {
+        McpManagerSnapshot {
+            config_path: std::path::PathBuf::from("/tmp/mcp.json"),
+            config_exists: true,
+            reload_required: false,
+            servers,
+        }
+    }
+
+    #[test]
+    fn failed_servers_are_listed_with_engine_reported_reasons() {
+        let snap = snapshot(vec![
+            server("fs", true, true, None),
+            server("git", true, false, Some("connection refused")),
+        ]);
+        assert_eq!(
+            mcp_boot_failure_details("sess-1", 7, &snap),
+            vec!["sid=sess-1 generation=7 server=git error=connection refused"]
+        );
+    }
+
+    #[test]
+    fn enabled_server_without_error_text_is_reported_as_unknown() {
+        let snap = snapshot(vec![server("search", true, false, None)]);
+        assert_eq!(
+            mcp_boot_failure_details("sess-1", 3, &snap),
+            vec!["sid=sess-1 generation=3 server=search error=unknown"]
+        );
+    }
+
+    #[test]
+    fn connected_and_disabled_servers_are_not_boot_failures() {
+        let snap = snapshot(vec![
+            server("fs", true, true, None),
+            server("off", false, false, Some("disabled")),
+        ]);
+        assert!(mcp_boot_failure_details("sess-1", 1, &snap).is_empty());
+    }
+
+    #[test]
+    fn summary_detail_counts_total_and_failed_servers() {
+        assert_eq!(
+            mcp_boot_summary_detail("sess-1", 9, 5, 2),
+            "sid=sess-1 generation=9 servers=5 failed=2"
+        );
+    }
+}
