@@ -1480,6 +1480,36 @@ fn probe_local(
     api_key_env: Option<&str>,
     output: OutputMode,
 ) -> Result<CliOutcome, CliError> {
+    // Usage validation precedes secret resolution (usage-before-failed): a
+    // refused non-loopback target must exit 2 even when the key variable is
+    // also broken, so the loopback check runs before the env lookup below.
+    let (target, model) = match url {
+        Some(url) => {
+            if !is_loopback_url(url)? {
+                return Err(CliError::usage(
+                    "probe-local refuses non-loopback urls; pass a 127.0.0.1, ::1 or localhost endpoint",
+                ));
+            }
+            (url.to_owned(), None)
+        }
+        None => {
+            let prefs = safe_prefs();
+            let model = prefs
+                .active_model()
+                .cloned()
+                .ok_or_else(|| CliError::failed("no active model to probe"))?;
+            if !is_loopback_url(&model.base_url)? {
+                return Err(CliError::usage(format!(
+                    "the active model base_url {} is not a loopback endpoint; pass --url",
+                    model.base_url
+                )));
+            }
+            // Keep the model for the deferred keychain resolution below; the
+            // url string is all the probe itself needs.
+            let base_url = model.base_url.clone();
+            (base_url, Some(model))
+        }
+    };
     let explicit_key = match api_key_env {
         Some(var) => {
             let value = std::env::var(var).map_err(|_| {
@@ -1500,44 +1530,20 @@ fn probe_local(
         }
         None => None,
     };
-    let (target, bearer) = match url {
-        Some(url) => {
-            if !is_loopback_url(url)? {
-                return Err(CliError::usage(
-                    "probe-local refuses non-loopback urls; pass a 127.0.0.1, ::1 or localhost endpoint",
-                ));
-            }
-            // An authenticated local endpoint 401s every signature probe and
-            // misclassifies as generic without this (the GUI form key lane).
-            (url.to_owned(), explicit_key)
-        }
-        None => {
-            let prefs = safe_prefs();
-            let model = prefs
-                .active_model()
-                .cloned()
-                .ok_or_else(|| CliError::failed("no active model to probe"))?;
-            if !is_loopback_url(&model.base_url)? {
-                return Err(CliError::usage(format!(
-                    "the active model base_url {} is not a loopback endpoint; pass --url",
-                    model.base_url
-                )));
-            }
-            let bearer = match explicit_key {
-                Some(key) => Some(key),
-                None => {
-                    // Swallowing a keychain failure here would turn every
-                    // signed request into a 401 and classify a working
-                    // server as `generic` — surface it instead.
-                    resolve_saved_model_key(&model)
-                        .map_err(|error| {
-                            CliError::failed(format!("credential_unavailable: {error}"))
-                        })?
-                        .filter(|key| !key.trim().is_empty())
-                }
-            };
-            (model.base_url, bearer)
-        }
+    let bearer = match explicit_key {
+        // An authenticated local endpoint 401s every signature probe and
+        // misclassifies as generic without this (the GUI form key lane).
+        Some(key) => Some(key),
+        None => match model {
+            // Swallowing a keychain failure here would turn every
+            // signed request into a 401 and classify a working
+            // server as `generic` — surface it instead. Skipped
+            // entirely when an explicit key wins, as before.
+            Some(model) => resolve_saved_model_key(&model)
+                .map_err(|error| CliError::failed(format!("credential_unavailable: {error}")))?
+                .filter(|key| !key.trim().is_empty()),
+            None => None,
+        },
     };
     let kind = select_local_server_kind(&target, bearer.as_deref());
     let text = render(
@@ -1820,7 +1826,18 @@ fn search_set(
     let previous_secret = stored_reference
         .as_ref()
         .map(|reference| SystemCredentialStore::new().get(reference));
+    // Snapshot whether the pre-transaction credential entry actually claims
+    // a secret (the same discrimination as `models remove`, which deletes
+    // the keyring entry only when the model carried a credential reference):
+    // a `--clear` on a never-configured provider must not ask the keychain
+    // to delete a nonexistent entry and report the miss as a store failure.
+    let mut had_secret = false;
     let transaction = UserPrefs::update_transaction(|prefs| {
+        had_secret = prefs
+            .search
+            .credentials
+            .get(&provider)
+            .is_some_and(|credential| credential.has_secret || credential.credential_ref.is_some());
         prefs.search.provider = provider;
         if let Some(key) = &stored {
             let reference = provider.credential_reference();
@@ -1876,13 +1893,19 @@ fn search_set(
         // The same benign direction applies on the way out: the prefs entry
         // is already cleared, so a keyring deletion failure warns and
         // succeeds like `models remove`, instead of reporting a failure
-        // whose only remedy (rerun) has nothing left to do.
-        if let Err(error) = SystemCredentialStore::new().delete(&provider.credential_reference()) {
-            crate::note!(
-                "pinvou: warning: credential cleared from settings, but the keyring entry \
-                 could not be deleted: {}",
-                error.user_message()
-            );
+        // whose only remedy (rerun) has nothing left to do. Gated on the
+        // pre-transaction secret snapshot so an entry that never held one
+        // is not reported as a deletion failure.
+        if had_secret {
+            if let Err(error) =
+                SystemCredentialStore::new().delete(&provider.credential_reference())
+            {
+                crate::note!(
+                    "pinvou: warning: credential cleared from settings, but the keyring entry \
+                     could not be deleted: {}",
+                    error.user_message()
+                );
+            }
         }
     }
     let action = if clear {

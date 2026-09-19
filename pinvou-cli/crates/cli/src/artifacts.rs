@@ -227,7 +227,7 @@ fn deliverable_index() -> Vec<DeliverableRow> {
         // would otherwise be read whole. `take` caps the read at one byte
         // past the scan cap, so an oversized file is detected by the read
         // length and skipped with the same note a stat cap produced.
-        let Ok(mut handle) = std::fs::File::open(&file) else {
+        let Ok(handle) = std::fs::File::open(&file) else {
             continue;
         };
         let mut capped = Vec::new();

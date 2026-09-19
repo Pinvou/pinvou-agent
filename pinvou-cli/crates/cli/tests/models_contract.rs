@@ -934,6 +934,110 @@ fn settings_search_list_reports_defaults() {
 }
 
 // ---------------------------------------------------------------------------
+// probe body cap (loopback mock)
+// ---------------------------------------------------------------------------
+
+/// Minimal loopback HTTP mock for the probe body-cap contract: answers
+/// `/v1/models` with the served body and 404s every other path, so the probe
+/// family's earlier signatures stay quiet and the model list is the only
+/// viable fact. The accept loop is bounded, which also ends the leaked
+/// thread (same shape as the lib-unit `spawn_probe_mock`).
+struct ProbeBodyMock {
+    base_url: String,
+}
+
+impl ProbeBodyMock {
+    fn serve(body: String) -> Self {
+        use std::io::Read as _;
+        let listener =
+            std::net::TcpListener::bind("127.0.0.1:0").expect("bind probe body mock listener");
+        let addr = listener.local_addr().expect("probe body mock addr");
+        std::thread::spawn(move || {
+            for stream in listener.incoming().take(16) {
+                let Ok(mut stream) = stream else { continue };
+                let mut buf = Vec::new();
+                let mut chunk = [0u8; 1024];
+                loop {
+                    let Ok(n) = stream.read(&mut chunk) else {
+                        break;
+                    };
+                    if n == 0 {
+                        break;
+                    }
+                    buf.extend_from_slice(&chunk[..n]);
+                    if buf.windows(4).any(|window| window == b"\r\n\r\n") {
+                        break;
+                    }
+                }
+                let request = String::from_utf8_lossy(&buf);
+                let path = request.split_whitespace().nth(1).unwrap_or("");
+                let response = if path == "/v1/models" {
+                    format!(
+                        "HTTP/1.1 200 OK\r\ncontent-type: application/json\r\ncontent-length: {}\r\nconnection: close\r\n\r\n{body}",
+                        body.len()
+                    )
+                } else {
+                    "HTTP/1.1 404 Not Found\r\ncontent-type: application/json\r\ncontent-length: 2\r\nconnection: close\r\n\r\n{}"
+                        .to_owned()
+                };
+                let _ = std::io::Write::write_all(&mut stream, response.as_bytes());
+            }
+        });
+        Self {
+            base_url: format!("http://{addr}"),
+        }
+    }
+}
+
+/// Pins the probe family's 4 MiB response-body cap end to end: a valid
+/// vLLM-shaped `/v1/models` body under the cap classifies the server as
+/// `vllm`, while the same shape padded past the cap must degrade to no fact
+/// and leave `probe-local` at `generic` (the cap exists so a hostile
+/// loopback endpoint cannot stream unbounded bytes into the probe).
+#[test]
+fn probe_local_body_over_the_cap_degrades_to_generic() {
+    let vllm_body = serde_json::json!({ "data": [{ "id": "m", "owned_by": "vllm" }] }).to_string();
+    let under_cap = ProbeBodyMock::serve(vllm_body);
+    let stdout = run_ok(&[
+        "pinvoy",
+        "models",
+        "probe-local",
+        "--url",
+        &under_cap.base_url,
+    ]);
+    assert!(
+        stdout.contains("kind: vllm"),
+        "an under-cap vLLM body must classify the server: {stdout}"
+    );
+
+    let oversized = serde_json::json!({
+        "pad": "x".repeat(4 * 1024 * 1024 + 64),
+        "data": [{ "id": "m", "owned_by": "vllm" }],
+    })
+    .to_string();
+    assert!(
+        oversized.len() > 4 * 1024 * 1024,
+        "fixture body must exceed the 4 MiB probe cap"
+    );
+    let over_cap = ProbeBodyMock::serve(oversized);
+    let stdout = run_ok(&[
+        "pinvoy",
+        "models",
+        "probe-local",
+        "--url",
+        &over_cap.base_url,
+    ]);
+    assert!(
+        stdout.contains("kind: generic"),
+        "an over-cap body must fall back to no fact, not a classification: {stdout}"
+    );
+    assert!(
+        !stdout.contains("vllm"),
+        "the over-cap body must not leak a classification: {stdout}"
+    );
+}
+
+// ---------------------------------------------------------------------------
 // Network paths: opt-in only, never run by default (AGENTS.md rule).
 // ---------------------------------------------------------------------------
 
