@@ -54,6 +54,11 @@ pub const PINVOU3_ALLOWED_TOOLS: &[&str] = &[
     // native tool directly, but it matches no family rule above (the `mcp_*`
     // prefix only covers MCP-discovered names), so without this entry the
     // per-turn catalog strip made the skill teach a permanently absent tool.
+    // This admission is package-scope gated: the marketplace native-tool
+    // ownership table emits `ima_openapi` into `disallowed_tools` whenever
+    // the ima package is uninstalled or disabled for the session scope, and
+    // deny wins over this admission (first-turn catalog, `tool_search`
+    // results, and execution all reject).
     "ima_openapi",
     "mcp_*",
     "list_mcp_resources",

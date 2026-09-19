@@ -239,6 +239,9 @@ async_command_passthrough!(tmeet_domain, tmeet_skills_state() -> Result<Value, S
 /// ima 连接成功会安装配套技能 ima-skills（domain 层落盘）→ 重写在线会话组合目录
 /// （skill 双 scope 治理事件驱动时机）+ 热刷 execpolicy 规则集（技能脚本 deny 规则
 /// 随目录变化，四轮评审 M-6a）。失败时技能未装上，不重写。
+// The disallowed hot-refresh is required since the native-tool ownership gate:
+// the freshly installed package flips `ima_openapi` from denied to admitted
+// for DenyAll scopes' explicit-enable path, and online engines must see it.
 #[tauri::command]
 pub async fn ima_connect(
     client_id: String,
@@ -247,16 +250,21 @@ pub async fn ima_connect(
 ) -> Result<Value, String> {
     let result = ima_domain::ima_connect(client_id, api_key).await?;
     pool.refresh_live_sessions_skills().await;
+    pool.refresh_disallowed_tools().await;
     pool.refresh_permission_rulesets().await;
     Ok(result)
 }
 
 /// ima 退出会卸载配套技能 ima-skills（domain 层落盘）→ 重写在线会话组合目录 +
 /// 热刷 execpolicy 规则集（同上，M-6a）。
+// Uninstall must also revoke the native tool in live engines: after logout the
+// package no longer backs `ima_openapi`, so the ownership gate denies it and
+// the refresh pushes the reshaped deny list before the next turn.
 #[tauri::command]
 pub async fn ima_logout(pool: State<'_, EnginePool>) -> Result<Value, String> {
     let result = ima_domain::ima_logout().await?;
     pool.refresh_live_sessions_skills().await;
+    pool.refresh_disallowed_tools().await;
     pool.refresh_permission_rulesets().await;
     Ok(result)
 }
