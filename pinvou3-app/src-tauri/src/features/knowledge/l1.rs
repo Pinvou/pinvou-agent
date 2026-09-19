@@ -34,7 +34,8 @@ const EMBED_BATCH: usize = 32;
 /// 连'谢谢''继续'都注入无关片段"）。经验值，偏保守（宁可多注入也别漏召回真问题）。
 const RELEVANCE_MIN_COSINE: f64 = 0.35;
 
-/// 知识集（camelCase 回前端）。
+/// 知识集（camelCase 回前端）。DB 的 created_at/updated_at 列保留（排序/迁移用），
+/// 但不再进入 DTO——前端从不读它们。
 #[derive(Debug, Clone, Serialize, PartialEq)]
 #[serde(rename_all = "camelCase")]
 pub struct Collection {
@@ -42,8 +43,6 @@ pub struct Collection {
     pub name: String,
     pub category: Option<String>,
     pub description: Option<String>,
-    pub created_at: i64,
-    pub updated_at: i64,
     pub status: String,
     pub doc_count: i64,
     pub chunk_count: i64,
@@ -206,7 +205,7 @@ impl L1Store {
     pub fn list_collections(&self) -> rusqlite::Result<Vec<Collection>> {
         let c = self.conn.lock();
         let mut stmt = c.prepare(
-            "SELECT c.id,c.name,c.category,c.description,c.created_at,c.updated_at,c.status, \
+            "SELECT c.id,c.name,c.category,c.description,c.status, \
                     (SELECT COUNT(*) FROM documents d WHERE d.collection_id=c.id), \
                     (SELECT COUNT(*) FROM chunks   k WHERE k.collection_id=c.id), \
                     COALESCE((SELECT SUM(size) FROM documents d WHERE d.collection_id=c.id),0) \
@@ -218,12 +217,10 @@ impl L1Store {
                 name: r.get(1)?,
                 category: r.get(2)?,
                 description: r.get(3)?,
-                created_at: r.get(4)?,
-                updated_at: r.get(5)?,
-                status: r.get(6)?,
-                doc_count: r.get(7)?,
-                chunk_count: r.get(8)?,
-                total_bytes: r.get(9)?,
+                status: r.get(4)?,
+                doc_count: r.get(5)?,
+                chunk_count: r.get(6)?,
+                total_bytes: r.get(7)?,
             })
         })?;
         rows.collect()
@@ -424,6 +421,7 @@ impl L1Store {
         Ok(())
     }
 
+    /// 仅测试夹具使用：正式 chunks 的整体替换写法。生产入库走暂存表 + 事务提交路径。
     #[cfg(test)]
     fn replace_doc_chunks(
         &self,
@@ -454,6 +452,7 @@ impl L1Store {
         tx.commit()
     }
 
+    /// 仅测试夹具使用；生产状态迁移在导入事务内完成。
     #[cfg(test)]
     fn set_doc_status(&self, doc_id: i64, status: &str, n_chunks: usize) {
         let _ = self.conn.lock().execute(
@@ -464,76 +463,6 @@ impl L1Store {
 
     // ─────────────── 解析 + 入库（单文件；生产入库走 ingest_import_item 暂存管线，
     // ─────────────── 本路径仅作为测试 fixture 播种保留） ───────────────
-
-    /// 解析单个文件 → 切块 → 写入。返回 parse_status（parsed/skipped/failed）。
-    #[cfg(test)]
-    pub fn ingest_file(&self, collection_id: i64, path: &Path) -> String {
-        let path_str = path.to_string_lossy().to_string();
-        let name = path
-            .file_name()
-            .and_then(|s| s.to_str())
-            .unwrap_or("(unnamed)")
-            .to_string();
-        let ext = path
-            .extension()
-            .and_then(|s| s.to_str())
-            .map(|s| s.to_lowercase());
-        let (size, mtime) = match std::fs::metadata(path) {
-            Ok(m) => (
-                m.len() as i64,
-                m.modified()
-                    .ok()
-                    .and_then(|t| t.duration_since(UNIX_EPOCH).ok())
-                    .map(|d| d.as_secs() as i64)
-                    .unwrap_or(0),
-            ),
-            Err(_) => (0, 0),
-        };
-
-        let doc_id = match self.upsert_document(
-            collection_id,
-            &path_str,
-            &name,
-            ext.as_deref(),
-            size,
-            mtime,
-        ) {
-            Ok(id) => id,
-            Err(_) => return "failed".into(),
-        };
-
-        // 复用 file_ingest 解析正文（pdf/docx/md/xlsx/pptx/...）。
-        let res = crate::features::files::file_ingest::ingest(path);
-        // 图片无正文 → KB 专用 OCR 取图中文字（截图/扫描件/PPT 图等）。仅知识库入库触发，
-        // 对话附件图仍走视觉。OCR 没装/失败/识别为空 → 落 skipped（下面 `_` 分支）。
-        let body = match res.markdown {
-            Some(md) if !md.trim().is_empty() => Some(md),
-            _ if res.kind == "image" => crate::features::files::file_ingest::ocr_image_for_kb(path),
-            _ => None,
-        };
-        match body {
-            Some(md) if !md.trim().is_empty() => {
-                let chunks = chunk_text(&md, CHUNK_CHARS, CHUNK_OVERLAP);
-                let n = chunks.len();
-                // 配了 embedding 则算向量;大文档跳向量、失败降级——都只影响向量,不阻断入库(仍走全文)。
-                let vecs = self.embed_chunks_bounded(&chunks);
-                if self
-                    .replace_doc_chunks(doc_id, collection_id, &chunks, vecs.as_deref())
-                    .is_err()
-                {
-                    self.set_doc_status(doc_id, "failed", 0);
-                    return "failed".into();
-                }
-                self.set_doc_status(doc_id, "parsed", n);
-                "parsed".into()
-            }
-            // 图片/二进制/空 → 跳过（无可索引文本）。
-            _ => {
-                self.set_doc_status(doc_id, "skipped", 0);
-                "skipped".into()
-            }
-        }
-    }
 
     /// 可恢复任务使用的单文件入库：每个 embedding 批次先写暂存表；全部完成后，在同一
     /// 事务中替换正式 chunks 并把任务文件标记为 completed。崩溃只会留下不可检索的暂存
@@ -801,34 +730,6 @@ impl L1Store {
             Err(rusqlite::Error::QueryReturnedNoRows) => ImportIngestOutcome::Cancelled,
             Err(e) => ImportIngestOutcome::Failed(format!("提交文档失败: {e}")),
         }
-    }
-
-    /// 算分块向量（配了 embedding 才算）。**大文档保护**：块数超 `MAX_EMBED_CHUNKS` 直接跳过
-    /// 向量化（仅全文检索），避免上千块在 CPU 上一次性 embedding 把入库卡死（5000 行表格 ≈ 1845
-    /// 块的实测卡死根因）。块数内则**分批** embedding，批间让步，不长时间独占模型锁/CPU。
-    /// 无 embedder / 任一批失败 → None（降级仅全文，不阻断入库）。
-    fn embed_chunks_bounded(&self, chunks: &[String]) -> Option<Vec<Vec<f32>>> {
-        let emb = self.embedder()?;
-        if chunks.len() > MAX_EMBED_CHUNKS {
-            eprintln!(
-                "[knowledge] 文档块数 {} 超向量化上限 {}，跳过向量、仅全文检索（关键词可命中）",
-                chunks.len(),
-                MAX_EMBED_CHUNKS
-            );
-            return None;
-        }
-        let mut out = Vec::with_capacity(chunks.len());
-        for batch in chunks.chunks(EMBED_BATCH) {
-            match emb.embed(batch) {
-                Ok(mut v) => out.append(&mut v),
-                Err(e) => {
-                    eprintln!("[knowledge] embedding 批失败，该文档降级仅全文: {e}");
-                    return None;
-                }
-            }
-            std::thread::sleep(Duration::from_millis(2)); // 让步：别长时间霸占 CPU/模型锁
-        }
-        Some(out)
     }
 
     // ───────────────────────── 检索（全文，Phase 3 升级为混合） ─────────────────────────
@@ -1404,8 +1305,11 @@ mod tests {
         let f = dir.join("访谈纪要.md");
         fs::write(&f, "# 用户访谈\n受访者认为保险报价流程过于繁琐，希望一键比价。\n竞品在交强险环节体验更顺畅。").unwrap();
 
-        let st = l1.ingest_file(cid, &f);
-        assert_eq!(st, "parsed");
+        let (_jobs, job_id, item_id) = prepare_import(&l1, cid, &f);
+        assert!(matches!(
+            l1.ingest_import_item(&job_id, item_id, cid, &f, &AtomicBool::new(false)),
+            ImportIngestOutcome::Completed
+        ));
         let docs = l1.list_documents(cid, 0).unwrap();
         assert_eq!(docs.len(), 1);
         assert_eq!(docs[0].parse_status, "parsed");
@@ -1616,7 +1520,17 @@ mod tests {
         fs::create_dir_all(&dir).unwrap();
         let file = dir.join("existing.md");
         fs::write(&file, "旧正式内容必须保留").unwrap();
-        assert_eq!(l1.ingest_file(collection_id, &file), "parsed");
+        let (_seed_jobs, seed_job, seed_item) = prepare_import(&l1, collection_id, &file);
+        assert!(matches!(
+            l1.ingest_import_item(
+                &seed_job,
+                seed_item,
+                collection_id,
+                &file,
+                &AtomicBool::new(false)
+            ),
+            ImportIngestOutcome::Completed
+        ));
         let before = l1.list_documents(collection_id, 0).unwrap().pop().unwrap();
 
         fs::write(&file, "取消后不能覆盖的全新内容").unwrap();

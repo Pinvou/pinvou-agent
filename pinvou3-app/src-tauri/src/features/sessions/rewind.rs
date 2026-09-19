@@ -5,15 +5,12 @@
 //!   [`deepseek_tui::is_user_turn_prompt`]：tool_result 与运行时内部信封同样以
 //!   `role = "user"` 落盘，按 role 定位会切在工具往返中间。
 //! - 被截段落写入 sidecar `_rewound_turns.json`（纯数据备份，UI 不暴露 redo）。
-//! - This method is the explicit allow path of the
-//!   [`super::transcript::looks_like_truncating_overwrite`] guard: the guard
-//!   only screens the generic `update_messages` entry point, while rewind goes
-//!   through this dedicated method, so existing protection for other callers
-//!   is unchanged.
-//! - Revisions: `transcript_revision` changes naturally after a truncate, so
-//!   any writer holding a pre-rewind revision fails on its own — the desired
-//!   behavior (stale edits must not clobber a rewind); no extra handling is
-//!   needed.
+//! - 本方法是 [`super::transcript::looks_like_truncating_overwrite`] 守卫的显式
+//!   放行路径：守卫只拦 `update_messages` 这一通用入口，回退走这里的专用方法、
+//!   不经过它，既有守卫对其他调用方的保护不变。
+//! - revision：截断后 `transcript_revision` 自然变化，任何持有旧 revision 的
+//!   通用写入路径都无法凭旧快照覆盖回退结果（远程控制编辑不得覆盖回退结果），
+//!   无需额外处理。
 
 use std::collections::HashMap;
 use std::io::ErrorKind;
@@ -216,10 +213,9 @@ impl SessionStore {
         session.metadata.message_count = session.messages.len();
         session.metadata.updated_at = Utc::now();
         let had_compaction = system_prompt_has_compaction_summary(session.system_prompt.as_ref());
-        // Explicit allow path: persist the truncation result directly instead
-        // of going through update_messages, so the
-        // looks_like_truncating_overwrite guard does not fire; the guard's
-        // protection for other callers is unchanged.
+        // 显式放行路径：直接持久化截断结果，不走 update_messages，
+        // 因此不触发 looks_like_truncating_overwrite；
+        // 该守卫对其它调用方的保护保持不变。
         self.persist_then_reconcile(&session, "turn rewind truncation")?;
         Ok(TruncateToTurnOutcome {
             rewound_turns: total_turns - keep_turns,
@@ -251,13 +247,11 @@ impl SessionStore {
     /// 回退反悔：把最新备份记录的被截消息追加回 transcript 尾部并持久化，随后从
     /// sidecar 删除该条记录，返回恢复的消息条数。
     ///
-    /// Like `truncate_to_user_turn`, an explicit dedicated path: it does not
-    /// go through the `looks_like_truncating_overwrite` guard entry point
-    /// (`update_messages`), and the guard's protection for other callers is
-    /// unchanged. Revision semantics match truncation: after the restore,
-    /// `transcript_revision` changes naturally, so any writer holding a
-    /// pre-restore revision fails on its own (desired behavior — stale edits
-    /// must not clobber an undo); no extra handling is needed.
+    /// 与 `truncate_to_user_turn` 同级的显式专用路径：不经过 update_messages 的
+    /// `looks_like_truncating_overwrite` 守卫入口，
+    /// 守卫对其它调用方的保护不变。revision 语义与截断一致：恢复后
+    /// `transcript_revision` 自然变化，任何凭旧 revision 的通用写入都无法覆盖
+    /// 反悔结果（期望行为，远程控制编辑不得覆盖反悔结果），无需额外处理。
     ///
     /// 可反悔条件（当前 turn 数 == 记录的 kept_turns，且记录带 truncated_revision 时
     /// 当前 revision 精确匹配，即回退后未发过新轮次、尾部未被编辑）在 mutation 锁

@@ -50,37 +50,36 @@ use crate::features::assistant::engine::{
 use crate::features::assistant::eval::{EvalModelSelection, EvalSuiteModelSnapshot, ModelIdentity};
 use crate::features::assistant::expert_roster::ExpertRosterSnapshot;
 use crate::features::assistant::platform::bridge::{Pinvou3Bridge, base_url_uses_local_or_private};
-use crate::features::assistant::runtime_model::{
-    ModelCredentialMode, PassthroughRuntimeModelProvider, PreparedRuntimeModel,
-    RuntimeModelProvider, RuntimeModelRequest,
-};
+use crate::features::assistant::runtime_model::PreparedRuntimeModel;
 use crate::features::assistant::turn_shell_tasks::{SessionShellManagers, SessionTurnShellTasks};
 use crate::features::sessions::{ScheduledRunProfile, SessionStore, transcript_revision};
 use crate::platform::prefs::{SavedModel, UserPrefs};
 
-/// Engine 空闲回收阈值：engine 是进程内 task（非子进程），但每个都占一份通道、
-/// 工具集与注水后的对话上下文，池无上限、内存随会话数线性涨。空闲超过该时长
-/// 且无 in-flight turn 且非 active 会话时回收（复用 `reclaim_engine_entry` 的
-/// 回收序列）。回收回到 lazy spawn 语义，下次发消息重建 + SyncSession 注水，
-/// 无损；30 分钟取偏保守值，宁可少回收也不误伤刚要使用的会话。
-const IDLE_EVICT_AFTER_SECS: u64 = 30 * 60;
-/// 空闲回收巡检间隔：5 分钟一轮，及时性与巡检开销的折中（与 AcpPool 空闲
-/// 回收、embedder 空闲卸载的巡检节奏保持一致）。
-const REAP_INTERVAL_SECS: u64 = 5 * 60;
+// 空闲回收阈值与巡检间隔（IDLE_EVICT_AFTER_SECS / REAP_INTERVAL_SECS）收敛
+// 到 `core::reaper`：engine 是进程内 task（非子进程），但每个都占一份通道、
+// 工具集与注水后的对话上下文，池无上限、内存随会话数线性涨。空闲超过阈值
+// 且无 in-flight turn 且非 active 会话时回收（复用 `reclaim_engine_entry` 的
+// 回收序列）。回收回到 lazy spawn 语义，下次发消息重建 + SyncSession 注水，
+// 无损；30 分钟取偏保守值，宁可少回收也不误伤刚要使用的会话。
+use crate::core::reaper::{IDLE_EVICT_AFTER_SECS, IdleReaperGuard};
 
 /// 空闲回收判定（纯函数，便于单测）：turn 活跃（reserve 占用或终态收口）、
 /// scheduled 轮进行中（run_scheduled_turn 的 spawn→submit 窗口 lifecycle 尚未
-/// active）以及当前 active 会话一律不回收。
+/// active）以及当前 active 会话一律不回收。判定本体与 ACP 侧共用
+/// `core::reaper::should_reap_idle`，这里保留 assistant 的参数语义命名
+/// （秒数 + 双忙旗标）。
 fn should_reap_idle_engine(
     turn_active: bool,
     scheduled_running: bool,
     is_active_session: bool,
     idle_for_secs: u64,
 ) -> bool {
-    !turn_active
-        && !scheduled_running
-        && !is_active_session
-        && idle_for_secs >= IDLE_EVICT_AFTER_SECS
+    crate::core::reaper::should_reap_idle(
+        turn_active,
+        scheduled_running,
+        is_active_session,
+        std::time::Duration::from_secs(idle_for_secs),
+    )
 }
 
 /// Rebind eviction recheck (pure function, unit-testable; review #463
@@ -848,7 +847,6 @@ pub struct EnginePool {
     store: SessionStore,
     tool_factory: EngineToolFactory,
     tool_policy: ToolPolicy,
-    runtime_model_provider: Arc<dyn RuntimeModelProvider>,
     /// 所有 session 共享一份已 boot 的 bridge(boot 会写盘 / 设 env,只能一次)。
     /// commands 读 model / workspace 也走这里。
     pub bridge: Pinvou3Bridge,
@@ -889,19 +887,8 @@ impl Drop for ExecutionRootRewindGuard {
     }
 }
 
-/// 后台巡检任务句柄：Drop 时先 cancel 再 abort 双保险停止巡检
-/// （与 scheduled/tasks.rs ScheduledTaskState 的 Drop 清理同模式）。
-struct IdleReaperGuard {
-    cancel: CancellationToken,
-    handle: JoinHandle<()>,
-}
-
-impl Drop for IdleReaperGuard {
-    fn drop(&mut self) {
-        self.cancel.cancel();
-        self.handle.abort();
-    }
-}
+// `IdleReaperGuard`（Drop 时先 cancel 再 abort 双保险停止巡检）与巡检循环
+// 收敛到 `core::reaper`，与 ACP 侧共用同一实现。
 
 /// M-7: a steer must have a live engine to deliver to. When the engine is
 /// absent (the session is not running) return Err — otherwise no
@@ -966,22 +953,6 @@ impl EnginePool {
         tool_factory: EngineToolFactory,
         tool_policy: ToolPolicy,
     ) -> Result<Self> {
-        Self::new_with_runtime_model_provider(
-            app,
-            store,
-            tool_factory,
-            tool_policy,
-            Arc::new(PassthroughRuntimeModelProvider),
-        )
-    }
-
-    pub fn new_with_runtime_model_provider(
-        app: AppHandle,
-        store: SessionStore,
-        tool_factory: EngineToolFactory,
-        tool_policy: ToolPolicy,
-        runtime_model_provider: Arc<dyn RuntimeModelProvider>,
-    ) -> Result<Self> {
         let bridge = Pinvou3Bridge::boot()?;
         Ok(Self {
             entries: Arc::new(Mutex::new(HashMap::new())),
@@ -998,7 +969,6 @@ impl EnginePool {
             store,
             tool_factory,
             tool_policy,
-            runtime_model_provider,
             bridge,
             idle_reaper: Arc::new(SyncMutex::new(None)),
             scheduled_running_sessions: Arc::new(SyncMutex::new(HashSet::new())),
@@ -1021,36 +991,12 @@ impl EnginePool {
     /// 只是一个每 5 分钟醒一次的轻任务）。
     pub fn start_idle_reaper(&self) {
         let mut slot = self.idle_reaper.lock();
-        if slot.is_some() {
-            return;
-        }
-        let cancel = CancellationToken::new();
-        let task_cancel = cancel.clone();
-        let pool = self.clone();
-        let handle = tauri::async_runtime::spawn(async move {
-            let mut interval =
-                tokio::time::interval(std::time::Duration::from_secs(REAP_INTERVAL_SECS));
-            // tokio::interval 首个 tick 立即到期：跳过，统一走周期节奏。
-            interval.tick().await;
-            loop {
-                tokio::select! {
-                    _ = task_cancel.cancelled() => break,
-                    _ = interval.tick() => {}
-                }
-                // 单轮 panic 隔离：回收逻辑 panic 会连坐整个巡检 async task
-                // （静默停摆，engines 从此常驻）。每轮独立 spawn，panic 只终止
-                // 当轮，外层循环下轮照常继续。
-                let round_pool = pool.clone();
-                let round =
-                    tauri::async_runtime::spawn(
-                        async move { round_pool.reap_idle_engines().await },
-                    );
-                if let Err(error) = round.await {
-                    eprintln!("[engine_pool] 空闲巡检单轮失败（已隔离，下轮继续）: {error}");
-                }
-            }
-        });
-        *slot = Some(IdleReaperGuard { cancel, handle });
+        crate::core::reaper::start_idle_reaper(
+            &mut slot,
+            self.clone(),
+            |pool| async move { pool.reap_idle_engines().await },
+            "engine_pool",
+        );
     }
 
     /// 单轮空闲回收。判定先取只读快照（entries / lifecycle / active id）筛出
@@ -1097,20 +1043,6 @@ impl EnginePool {
             .map(|lifecycle| lifecycle.last_terminal_epoch_ms())
             .unwrap_or(0);
         submitted_side.max(terminal_side)
-    }
-
-    pub(crate) fn credential_mode_for(
-        &self,
-        model: Option<&SavedModel>,
-        user_api_key_required: bool,
-    ) -> ModelCredentialMode {
-        match model {
-            Some(model) => self
-                .runtime_model_provider
-                .credential_mode(model, user_api_key_required),
-            None if user_api_key_required => ModelCredentialMode::UserManaged,
-            None => ModelCredentialMode::None,
-        }
     }
 
     /// 模型配置或用户托管凭据保存成功后调用。只递增非敏感内存修订号；
@@ -1171,7 +1103,8 @@ impl EnginePool {
     }
 
     /// 为独立调用构造该 session 的 bridge。与 EnginePool lazy spawn 共用同一套
-    /// runtime provider，保证检阅等旁路入口也不会绕过运行时凭据准备。
+    /// 运行时模型解析（prepare_runtime_model），保证检阅等旁路入口与正式 spawn
+    /// 的模型路由行为一致。
     pub(crate) async fn fresh_bridge_for(&self, session_id: &str) -> Result<Pinvou3Bridge> {
         self.fresh_bridge_for_policy(session_id, false).await
     }
@@ -1200,25 +1133,12 @@ impl EnginePool {
                 scheduled_unattended,
             )
         })?;
+        // Community 默认准备路径固定 passthrough：模型原样保留，不注入运行时
+        // 凭据/revision；凭据照常走环境变量与本地凭据库（bridge.api_key()）。
         let selected = bridge
             .effective_model_owned()
             .context("No effective model is available for runtime preparation")?;
-        let selected_id = selected.id.clone();
-        let prepared = self
-            .runtime_model_provider
-            .prepare(RuntimeModelRequest {
-                session_id: session_id.to_string(),
-                model: selected,
-                scheduled_unattended,
-            })
-            .await?;
-        if prepared.model.id != selected_id {
-            bail!(
-                "Runtime model provider changed model identity from '{}' to '{}'",
-                selected_id,
-                prepared.model.id
-            );
-        }
+        let prepared = PreparedRuntimeModel::unchanged(selected);
         Ok((bridge, prepared, pins_scheduled_model))
     }
 
@@ -1233,7 +1153,6 @@ impl EnginePool {
         pins_scheduled_model: bool,
     ) -> Pinvou3Bridge {
         bridge.session_model = Some(prepared.model.clone());
-        bridge.runtime_model_credential = prepared.credential.clone();
         // 本地端点（OpenAI 兼容 preset 指向本机/内网服务）：探测服务类型
         // （Ollama / vLLM / LM Studio / 通用），让思考控制走对应底座 wire 协议。
         // A probe failure (service not started/timeout/auth failure) is
@@ -3053,35 +2972,14 @@ mod scheduled_model_tests {
     use crate::features::sessions::{ScheduledRunMode, ScheduledRunProfile, SessionStore};
     use crate::platform::credential_store::{CredentialEditAction, CredentialState};
     use crate::platform::prefs::{ImageCapabilityOverride, ModelPreset, SavedModel};
+    use crate::platform::test_support::EnvRestore;
     use std::path::PathBuf;
     use std::sync::atomic::{AtomicBool, AtomicU64, AtomicUsize, Ordering};
     use std::sync::{Arc, Mutex as StdMutex};
 
-    struct EnvRestore(Vec<(&'static str, Option<std::ffi::OsString>)>);
-
-    impl EnvRestore {
-        fn capture(names: &[&'static str]) -> Self {
-            Self(
-                names
-                    .iter()
-                    .map(|name| (*name, std::env::var_os(name)))
-                    .collect(),
-            )
-        }
-    }
-
-    impl Drop for EnvRestore {
-        fn drop(&mut self) {
-            for (name, value) in self.0.drain(..) {
-                match value {
-                    // SAFETY: the caller's test holds platform::paths::tests::ENV_LOCK throughout; env writes are serialized in-process.
-                    Some(value) => unsafe { std::env::set_var(name, value) },
-                    // SAFETY: the caller's test holds platform::paths::tests::ENV_LOCK throughout; env writes are serialized in-process.
-                    None => unsafe { std::env::remove_var(name) },
-                }
-            }
-        }
-    }
+    // `EnvRestore`（快照 + Drop 恢复一组 env，SAFETY 前提是测试全程持有
+    // platform::paths::tests::ENV_LOCK）收敛到 `platform::test_support`，
+    // 与 engine.rs / multiagent 回归测试共用同一实现。
 
     fn isolated_eval_bridge() -> (Pinvou3Bridge, std::path::PathBuf, EnvRestore) {
         let restore = EnvRestore::capture(&[
@@ -5800,36 +5698,12 @@ mod scheduled_model_tests {
 mod probed_facts_wiring_tests {
     use super::{EnginePool, Pinvou3Bridge, PreparedRuntimeModel};
     use crate::core::model_endpoint::{LocalServerKind, models_mock};
-    use crate::features::runtime_bundle::platform::Pinvou3Bundle;
     use crate::platform::credential_store::CredentialState;
     use crate::platform::paths::tests::ENV_LOCK;
-    use crate::platform::prefs::{ImageCapabilityOverride, ModelPreset, SavedModel, UserPrefs};
+    use crate::platform::prefs::{ImageCapabilityOverride, ModelPreset, SavedModel};
+    use crate::platform::test_support::EnvRestore;
 
-    struct EnvRestore(Vec<(&'static str, Option<std::ffi::OsString>)>);
-
-    impl EnvRestore {
-        fn capture(names: &[&'static str]) -> Self {
-            Self(
-                names
-                    .iter()
-                    .map(|name| (*name, std::env::var_os(name)))
-                    .collect(),
-            )
-        }
-    }
-
-    impl Drop for EnvRestore {
-        fn drop(&mut self) {
-            for (name, value) in self.0.drain(..) {
-                match value {
-                    // SAFETY: the caller's test holds platform::paths::tests::ENV_LOCK throughout; env writes are serialized in-process.
-                    Some(value) => unsafe { std::env::set_var(name, value) },
-                    // SAFETY: the caller's test holds platform::paths::tests::ENV_LOCK throughout; env writes are serialized in-process.
-                    None => unsafe { std::env::remove_var(name) },
-                }
-            }
-        }
-    }
+    // `EnvRestore` 复用 `platform::test_support` 的共享实现（同 tests 模块上方注释）。
 
     /// Isolates env vars related to base_url/api_key (`Pinvou3Bridge::
     /// base_url`/`api_key` prioritize env over session model); the returned
@@ -5868,20 +5742,7 @@ mod probed_facts_wiring_tests {
     }
 
     fn wiring_bridge(model: SavedModel) -> Pinvou3Bridge {
-        Pinvou3Bridge {
-            prefs: UserPrefs::default(),
-            bundle: Pinvou3Bundle::paths(),
-            workspace: std::env::temp_dir(),
-            session_model: Some(model),
-            runtime_model_credential: None,
-            probed_context_tokens: None,
-            probed_output_tokens: None,
-            probed_local_kind: None,
-            execution_root_resolver: None,
-            code_session_predicate: None,
-            external_acp_session_predicate: None,
-            image_analyze_always: false,
-        }
+        Pinvou3Bridge::test_fixture(Some(model))
     }
 
     fn single_entry_json(id: &str) -> String {

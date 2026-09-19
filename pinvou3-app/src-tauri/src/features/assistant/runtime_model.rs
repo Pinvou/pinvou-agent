@@ -1,28 +1,9 @@
 use anyhow::Result;
-use async_trait::async_trait;
-use serde::Serialize;
 use std::fmt;
 
 use crate::platform::prefs::SavedModel;
 
-/// 模型凭据由谁负责提供。前端只消费这一语义，不需要认识具体模型或认证后端。
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
-#[serde(rename_all = "snake_case")]
-pub enum ModelCredentialMode {
-    None,
-    UserManaged,
-    BackendManaged,
-}
-
-/// 引擎创建或复用前交给运行时模型提供器的上下文。
-#[derive(Clone)]
-pub struct RuntimeModelRequest {
-    pub session_id: String,
-    pub model: SavedModel,
-    pub scheduled_unattended: bool,
-}
-
-/// 运行时提供器准备的敏感模型凭据。
+/// 运行时准备阶段产出的敏感模型凭据。
 ///
 /// 凭据只保存在内存中，不参与序列化；`Debug` 固定脱敏，避免 bridge 或测试日志
 /// 意外输出明文。存在时它是本次引擎配置的最终凭据，优先于环境变量和本地凭据库。
@@ -38,10 +19,6 @@ impl RuntimeModelCredential {
             anyhow::bail!("runtime model API key must not be empty");
         }
         Ok(Self { api_key })
-    }
-
-    pub(crate) fn expose_api_key(&self) -> &str {
-        &self.api_key
     }
 }
 
@@ -79,40 +56,9 @@ impl PreparedRuntimeModel {
     }
 }
 
-/// Community 默认实现无需外部服务；Official/Enterprise 可在私有层实现后台托管凭据。
-#[async_trait]
-pub trait RuntimeModelProvider: Send + Sync {
-    fn credential_mode(
-        &self,
-        _model: &SavedModel,
-        user_api_key_required: bool,
-    ) -> ModelCredentialMode {
-        if user_api_key_required {
-            ModelCredentialMode::UserManaged
-        } else {
-            ModelCredentialMode::None
-        }
-    }
-
-    async fn prepare(&self, request: RuntimeModelRequest) -> Result<PreparedRuntimeModel>;
-}
-
-#[derive(Debug, Default)]
-pub struct PassthroughRuntimeModelProvider;
-
-#[async_trait]
-impl RuntimeModelProvider for PassthroughRuntimeModelProvider {
-    async fn prepare(&self, request: RuntimeModelRequest) -> Result<PreparedRuntimeModel> {
-        Ok(PreparedRuntimeModel::unchanged(request.model))
-    }
-}
-
 #[cfg(test)]
 mod tests {
-    use super::{
-        ModelCredentialMode, PassthroughRuntimeModelProvider, PreparedRuntimeModel,
-        RuntimeModelCredential, RuntimeModelProvider, RuntimeModelRequest,
-    };
+    use super::{PreparedRuntimeModel, RuntimeModelCredential};
     use crate::platform::credential_store::{CredentialEditAction, CredentialState};
     use crate::platform::prefs::{ModelPreset, SavedModel};
 
@@ -140,37 +86,15 @@ mod tests {
         }
     }
 
-    #[tokio::test]
-    async fn passthrough_provider_preserves_model_without_private_dependencies() {
-        let provider = PassthroughRuntimeModelProvider;
-        let prepared = provider
-            .prepare(RuntimeModelRequest {
-                session_id: "session-1".to_string(),
-                model: model(),
-                scheduled_unattended: false,
-            })
-            .await
-            .expect("prepare model");
+    /// Community 默认准备路径不依赖任何私有服务：unchanged 原样保留模型，
+    /// 不携带运行时凭据或显式 revision。
+    #[test]
+    fn unchanged_preparation_preserves_model_without_private_dependencies() {
+        let prepared = PreparedRuntimeModel::unchanged(model());
 
         assert_eq!(prepared.model.id, "model-1");
         assert_eq!(prepared.revision, None);
-        assert_eq!(
-            provider.credential_mode(&prepared.model, true),
-            ModelCredentialMode::UserManaged
-        );
-        assert_eq!(
-            provider.credential_mode(&prepared.model, false),
-            ModelCredentialMode::None
-        );
-    }
-
-    #[test]
-    fn credential_modes_have_stable_wire_names() {
-        assert_eq!(
-            serde_json::to_string(&ModelCredentialMode::BackendManaged)
-                .expect("serialize credential mode"),
-            "\"backend_managed\""
-        );
+        assert_eq!(prepared.credential, None);
     }
 
     #[test]

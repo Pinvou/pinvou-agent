@@ -5,17 +5,26 @@ const path = require('path');
 const vm = require('vm');
 
 const logicPath = path.join(__dirname, '..', 'src', 'features', 'chat', 'personal-workbench-scene.js');
-const code = fs.readFileSync(logicPath, 'utf8')
+// scene-registry.js owns the canonical scene keys; concatenate it (imports
+// stripped) so the sandbox resolves the same bindings the bundler provides.
+const sceneRegistryPath = path.join(__dirname, '..', 'src', 'features', 'chat', 'scene-registry.js');
+const sceneRegistryCode = fs.readFileSync(sceneRegistryPath, 'utf8')
+  .replace(/\bexport\s+\{[^}]+\};?/g, '')
+  .replace(/\bexport\s+/g, '');
+const stripSceneRegistryImport = (code) => code
+  .replace(/^import[\s\S]*?from '\.\/scene-registry\.js';\r?\n/m, '');
+const code = stripSceneRegistryImport(fs.readFileSync(logicPath, 'utf8'))
   .replace(/\bexport\s+\{[^}]+\};?/g, '')
   .replace(/\bexport\s+/g, '');
 const visualPosterPath = path.join(__dirname, '..', 'src', 'features', 'chat', 'visual-poster-scene.js');
-const visualPosterCode = fs.readFileSync(visualPosterPath, 'utf8')
+const visualPosterCode = stripSceneRegistryImport(fs.readFileSync(visualPosterPath, 'utf8'))
   .replace(/\bexport\s+\{[^}]+\};?/g, '')
   .replace(/\bexport\s+/g, '');
 
 const ctx = {};
 vm.createContext(ctx);
-vm.runInContext(`${code}
+vm.runInContext(`${sceneRegistryCode}
+${code}
 ${visualPosterCode}
 this.PERSONAL_WORKBENCH_SCENE_KEY = PERSONAL_WORKBENCH_SCENE_KEY;
 this.PERSONAL_WORKBENCH_TEMPLATES = PERSONAL_WORKBENCH_TEMPLATES;

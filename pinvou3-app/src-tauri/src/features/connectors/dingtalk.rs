@@ -16,7 +16,7 @@ use serde_json::{Value, json};
 use tauri::{AppHandle, Manager};
 
 use crate::features::connectors::connector_cli::{self as cc, CliCtx, ConnectorConn};
-use crate::features::connectors::skill_gate::ConnectorSkillGate;
+use crate::features::connectors::skill_gate::ConnectorGate;
 
 const ID: &str = "dingtalk";
 const DINGTALK_CTX: CliCtx = CliCtx {
@@ -158,7 +158,8 @@ fn drain_for_auth_event<R: std::io::Read + Send + 'static>(
     })
 }
 
-fn is_authenticated() -> bool {
+/// `dws auth status --format json` 判当前是否已登录。会 spawn dws。
+pub(crate) fn is_authenticated() -> bool {
     if !dws_cli_present() {
         return false;
     }
@@ -192,18 +193,13 @@ fn auth_status_message() -> String {
 
 /// 引导:首次使用时下载并校验锁定版本的 dws，已装则秒返回。
 pub async fn dingtalk_ensure_cli() -> Result<Value, String> {
-    tokio::task::spawn_blocking(|| {
-        if dws_cli_present() {
-            return Ok::<Value, String>(json!({ "ok": true, "already": true }));
-        }
-        crate::features::connectors::native_installer::ensure_native_cli("dws")?;
-        if !dws_cli_present() {
-            return Err("钉钉 CLI 安装完成但无法执行，请重试".to_string());
-        }
-        Ok::<Value, String>(json!({ "ok": true, "already": false }))
-    })
+    cc::ensure_cli_with(
+        "dingtalk",
+        dws_cli_present,
+        "钉钉 CLI 安装完成但无法执行，请重试",
+        || crate::features::connectors::native_installer::ensure_native_cli("dws"),
+    )
     .await
-    .map_err(|e| format!("spawn_blocking: {e}"))?
 }
 
 /// 查询当前钉钉连接状态。只返回布尔,不把身份信息带进 webview。
@@ -401,57 +397,27 @@ pub async fn dingtalk_logout() -> Result<Value, String> {
 
 // ─────────────────────── 钉钉 skill 门控(对齐飞书 / 企微)───────────────────────
 
-/// 钉钉技能门控:停用标志文件机制走 [`ConnectorSkillGate`] 默认实现,
-/// `apply_skills` 指向 `apply_dingtalk_skills`。
-struct DingtalkGate;
-impl ConnectorSkillGate for DingtalkGate {
-    fn id(&self) -> &'static str {
-        ID
-    }
-    fn disabled_filename(&self) -> &'static str {
-        "dingtalk_disabled"
-    }
-    fn apply_skills(&self, visible: bool) -> Result<(), String> {
-        crate::features::runtime_bundle::platform::Pinvou3Bundle::paths()
-            .apply_dingtalk_skills(visible)
-            .map_err(|e| format!("更新钉钉技能失败: {e}"))
-    }
-}
-const GATE: DingtalkGate = DingtalkGate;
-
-fn is_dingtalk_disabled() -> bool {
-    GATE.is_disabled()
+/// 按 visible 写 / 删钉钉技能文件(调 [`Pinvou3Bundle::apply_dingtalk_skills`])。
+pub(crate) fn apply_bundle_skills(visible: bool) -> std::io::Result<()> {
+    crate::features::runtime_bundle::platform::Pinvou3Bundle::paths().apply_dingtalk_skills(visible)
 }
 
-pub fn dingtalk_skills_should_show() -> bool {
-    !is_dingtalk_disabled() && is_authenticated()
-}
+/// 钉钉门控表项:停用标志 + 就绪探测 + 技能落盘;
+/// apply/skills_state 等命令公共体见 [`ConnectorGate`]。
+pub(crate) static DINGTALK_GATE: ConnectorGate = ConnectorGate {
+    id: "dingtalk",
+    disabled_filename: "dingtalk_disabled",
+    display_name: "钉钉",
+    ready_probe: is_authenticated,
+    apply_bundle_skills: apply_bundle_skills,
+};
+
 pub async fn dingtalk_apply_skills() -> Result<Value, String> {
-    let show = tokio::task::spawn_blocking(|| -> Result<bool, String> {
-        let show = dingtalk_skills_should_show();
-        GATE.apply_skills(show)?;
-        Ok(show)
-    })
-    .await
-    .map_err(|e| format!("spawn_blocking: {e}"))??;
-    // scope 门禁同步：见 feishu_apply_skills 同名注释（code 默认关语义对齐）。
-    if show {
-        crate::features::marketplace::sync_deny_all_scopes_after_install("dingtalk");
-    }
-    Ok(json!({ "visible": show }))
+    DINGTALK_GATE.apply_skills_command().await
 }
+
 pub async fn dingtalk_skills_state() -> Result<Value, String> {
-    tokio::task::spawn_blocking(|| {
-        let disabled = is_dingtalk_disabled();
-        let connected = is_authenticated();
-        Ok::<Value, String>(json!({
-            "connected": connected,
-            "enabled": !disabled,
-            "visible": connected && !disabled,
-        }))
-    })
-    .await
-    .map_err(|e| format!("spawn_blocking: {e}"))?
+    DINGTALK_GATE.skills_state_command().await
 }
 
 #[cfg(test)]

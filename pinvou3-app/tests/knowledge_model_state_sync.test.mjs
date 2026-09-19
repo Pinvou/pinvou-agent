@@ -6,7 +6,11 @@ import vm from 'node:vm';
 import { fileURLToPath } from 'node:url';
 
 const appRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
-const bridgeSource = readFileSync(
+const readHelpers = () => readFileSync(
+  path.join(appRoot, 'src/shared/bridge-shared-helpers.js'),
+  'utf8',
+);
+const bridgeSource = readHelpers() + '\n' + readFileSync(
   path.join(appRoot, 'src/platform/tauri/bridge/knowledge-model.js'),
   'utf8',
 );
@@ -18,7 +22,7 @@ const remoteCommands = readFileSync(
   path.join(appRoot, 'src-tauri/src/app/commands/remote_knowledge.rs'),
   'utf8',
 );
-const webBridge = readFileSync(
+const webBridge = readHelpers() + '\n' + readFileSync(
   path.join(appRoot, 'src/platform/web/bridge.js'),
   'utf8',
 );
@@ -77,9 +81,18 @@ test('status queries and completed host downloads synchronize the desktop model'
     remoteCommands,
     /sync_peer_installed_local_model[\s\S]*local_model::model_installed\(\)[\s\S]*local_model::load_installed_embedder[\s\S]*app\.emit\("kb_model:status"/u,
   );
-  assert.match(webBridge, /listen\("kb_model:status"/u);
+  // kb_model:status / kb_model:progress 是 Web lane 的 never-emitted 事件（不在
+  // access-policy allowed_events / RUST_FORWARDED_EVENTS），其监听器已随 dead-code
+  // sweep 移除；桌面模型状态同步由 Tauri lane 的同名监听器承担（上方 tauriBridge pin）。
+  assert.doesNotMatch(webBridge, /listen\("kb_model:status"/u);
+  assert.doesNotMatch(webBridge, /listen\("kb_model:progress"/u);
+  // dedup 后 installBridgeFeature 的 deps 里可能出现 get/set 单元格（嵌套大括号），
+  // 单个正则不再可靠；改为定位安装点后在其邻域内确认 listen 已传入。
+  const kmInstallAt = tauriBridge.indexOf('installBridgeFeature("knowledge-model"');
+  assert.notStrictEqual(kmInstallAt, -1, 'knowledge-model feature must be installed');
   assert.match(
-    tauriBridge,
-    /installBridgeFeature\("knowledge-model", \{[^}]*listen(?:: listen)?[^}]*\}\)/u,
+    tauriBridge.slice(kmInstallAt, kmInstallAt + 2000),
+    /\blisten\b/u,
+    'knowledge-model feature must receive listen',
   );
 });

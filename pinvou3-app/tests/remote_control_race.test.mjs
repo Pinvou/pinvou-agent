@@ -108,7 +108,8 @@ test('a late status refresh cannot overwrite a newer stop intent', async () => {
 test('a stale relay-setting mutation does not start a status readback', async () => {
   for (const [command, startMutation] of [
     ['web_access_set_relay', rt => rt.api.setWebRelayAddress('relay.example')],
-    ['web_access_reset_relay', rt => rt.api.resetWebRelayAddress()],
+    // web_access_reset_relay / resetWebRelayAddress were removed as a dead facade
+    // method (no production caller); only the set-relay path remains to pin.
   ]) {
     const rt = loadRemoteControlFeature({ active: true, status: 'connected' });
     const mutation = rt.defer(command);

@@ -51,7 +51,6 @@ function linuxStartupWindowConfigSpec(options) {
 module.exports = {
   BASE_CONFIG_PATH,
   STARTUP_WINDOW_PARAMETER,
-  addStartupWindowMarker,
   linuxStartupWindowConfig,
   linuxStartupWindowConfigSpec,
 };

@@ -171,11 +171,8 @@ fn project_acp_event_data_for_web(event_type: &str, value: Value) -> Value {
         "elicitation_resolved" => {
             project_allowed_fields(value, &["elicitationId", "action", "reason"])
         }
-        "turn_started" | "turn_completed" | "cancel_requested" => {
+        "turn_started" | "turn_completed" => {
             project_allowed_fields(value, &["status", "error", "message", "recoveryReason"])
-        }
-        "config_change_applied" => {
-            project_allowed_fields(value, &["configId", "valueId", "message"])
         }
         // runtime_ready is a signal; the Web client fetches the authoritative
         // session info separately and does not need adapter capabilities here.
@@ -976,7 +973,6 @@ impl EventBridge {
                 "permission_resolved" => Some("running"),
                 "elicitation_requested" => Some("waiting_input"),
                 "elicitation_resolved" => Some("running"),
-                "cancel_requested" => Some("cancelling"),
                 _ => None,
             };
             if let Some(status) = last_status {

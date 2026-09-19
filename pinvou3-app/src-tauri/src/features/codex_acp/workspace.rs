@@ -216,7 +216,9 @@ pub fn preview_workspace_file(root: &Path, relative_path: &str) -> Result<Worksp
             });
         }
         let bytes = fs::read(&path).with_context(|| format!("读取图片失败: {}", path.display()))?;
-        let mime = image_mime_type(&path);
+        // 扩展名→MIME 统一走 attachments 的共享映射表；表外扩展名沿用
+        // 原行为回退 image/png。
+        let mime = super::attachments::image_mime_type(&path).unwrap_or("image/png");
         return Ok(WorkspacePreview {
             name,
             relative_path: relative,
@@ -1105,23 +1107,6 @@ fn looks_like_text(path: &Path) -> bool {
     }
 }
 
-fn image_mime_type(path: &Path) -> &'static str {
-    match path
-        .extension()
-        .and_then(|value| value.to_str())
-        .unwrap_or_default()
-        .to_ascii_lowercase()
-        .as_str()
-    {
-        "jpg" | "jpeg" => "image/jpeg",
-        "gif" => "image/gif",
-        "webp" => "image/webp",
-        "svg" => "image/svg+xml",
-        "bmp" => "image/bmp",
-        _ => "image/png",
-    }
-}
-
 fn baseline_path(session_id: &str) -> PathBuf {
     crate::platform::paths::sessions_root()
         .join(session_id)
@@ -1385,30 +1370,23 @@ mod tests {
     use super::*;
     use std::time::{SystemTime, UNIX_EPOCH};
 
-    struct TestDir(PathBuf);
+    /// workspace 夹具目录：基目录是系统临时目录（与 attachments 夹具的
+    /// `$HOME` 基目录是两种有意的不同语义）。建目录 + Drop 清理脚手架复用
+    /// codex_acp 的共享 `TestDir` 实现（Drop 经 newtype 转发），本地只保留
+    /// workspace 语义的基目录与命名前缀。
+    struct TestDir(crate::features::codex_acp::TestDir);
 
     impl TestDir {
         fn new(label: &str) -> Self {
-            let nonce = SystemTime::now()
-                .duration_since(UNIX_EPOCH)
-                .unwrap()
-                .as_nanos();
-            let path = std::env::temp_dir().join(format!(
-                "pinvou3-codex-workspace-{label}-{}-{nonce}",
-                std::process::id()
-            ));
-            fs::create_dir_all(&path).unwrap();
-            Self(path)
+            Self(crate::features::codex_acp::TestDir::new(
+                &std::env::temp_dir(),
+                "pinvou3-codex-workspace",
+                label,
+            ))
         }
 
         fn path(&self) -> &Path {
-            &self.0
-        }
-    }
-
-    impl Drop for TestDir {
-        fn drop(&mut self) {
-            let _ = fs::remove_dir_all(&self.0);
+            self.0.path()
         }
     }
 

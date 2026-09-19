@@ -202,7 +202,6 @@ pub(crate) fn existing_workspace_relative_file(
 
 /// Copy a remote-control upload into the session workspace before the
 /// temporary upload directory is removed.
-#[allow(dead_code)]
 pub(crate) fn stage_remote_attachment_source(
     src: &str,
     basename: &str,

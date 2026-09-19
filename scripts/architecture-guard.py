@@ -328,8 +328,9 @@ def scan_rust(root: Path) -> tuple[dict[str, Counter[str]], list[list[str]]]:
     # negative pid in `kill -9 -<pgid>` as -1 (kill(-1) signals every process
     # of the user and took down whole desktop sessions; see
     # platform::process::kill_process_tree). The rule applies to every Rust
-    # file: unsupported.rs also carries the live macOS kill_pid_tree, so no
-    # file-level exception may waive it.
+    # file: platform/os/posix.rs carries the live Unix kill_pid_tree
+    # (consumed by linux and, via the unsupported.rs re-export, by macOS), so
+    # no file-level exception may waive it.
     external_group_kill_patterns = [
         re.compile(r'Command\s*::\s*new\s*\(\s*"(?:[^"]*/)?kill"'),
         re.compile(r'::\s*new\s*\(\s*"(?:[^"]*/)?kill"\s*\)'),

@@ -126,6 +126,67 @@ export function RewindUndoChip({ state, disabled, copy, onOpen }) {
   );
 }
 
+// Shared shell for the two rewind dialogs (confirm / undo-confirm), following
+// the BranchDialogShell precedent in CodexAcpView: portal to <body> (same as
+// the shared YoloConfirmCard — avoids the composer container's backdrop-blur
+// becoming the containing block for fixed descendants), focus capture/restore,
+// Escape to close (disabled while busy), and a backdrop button disabled along
+// with busy so an in-flight rewind cannot be dismissed by clicking away. The
+// identical error line and cancel/confirm footer live here too; testids derive
+// from `testid` (…-title / …-cancel / …-ok) so both dialogs keep their
+// existing hooks.
+function RewindDialogShell({
+  testid, isDark, busy, title, error, okLabel, copy, onCancel, onConfirm, children,
+}) {
+  const dialogRef = useRef(null);
+  useDialogFocusRestore(dialogRef);
+  useDialogEscapeKey(busy, onCancel);
+  return createPortal(
+    <div data-testid={testid} className="fixed inset-0 z-50 flex items-center justify-center p-4">
+      <button
+        type="button"
+        aria-label={copy.rewindCancel}
+        className="absolute inset-0 cursor-default bg-black/30 backdrop-blur-[2px]"
+        disabled={busy}
+        onClick={onCancel}
+      />
+      <div
+        ref={dialogRef}
+        role="dialog"
+        aria-modal="true"
+        aria-labelledby={`${testid}-title`}
+        tabIndex={-1}
+        className={`relative w-full max-w-[440px] rounded-2xl border p-4 shadow-xl backdrop-blur-xl outline-none ${
+          isDark ? 'border-white/10 bg-[#202124]/95' : 'border-black/[0.08] bg-white/95'
+        }`}
+      >
+        <div id={`${testid}-title`} className={`text-[14px] font-semibold ${isDark ? 'text-[#E3E3E3]' : 'text-[#1F1F1F]'}`}>
+          {title}
+        </div>
+        {children}
+        {error && <div className="mt-3 text-[12px] leading-5 text-red-500">{error}</div>}
+        <div className="mt-4 flex items-center justify-end gap-2">
+          <button
+            type="button"
+            data-testid={`${testid}-cancel`}
+            className="rounded-xl px-3 py-1.5 text-[12px] font-medium transition-colors bg-black/[0.06] hover:bg-black/10 disabled:cursor-not-allowed disabled:opacity-45 dark:bg-white/10 dark:hover:bg-white/15"
+            disabled={busy}
+            onClick={onCancel}
+          >{copy.rewindCancel}</button>
+          <button
+            type="button"
+            data-testid={`${testid}-ok`}
+            className="rounded-xl px-3 py-1.5 text-[12px] font-medium text-white transition-colors bg-blue-600 hover:bg-blue-700 disabled:cursor-not-allowed disabled:opacity-45"
+            disabled={busy}
+            onClick={onConfirm}
+          >{okLabel}</button>
+        </div>
+      </div>
+    </div>,
+    document.body,
+  );
+}
+
 // The rewind confirm dialog shows three things (design §7): a summary of the
 // changes to be reverted, where the conversation will be truncated to, and
 // errors rendered truthfully (backend copy such as cross-session busy or
@@ -134,9 +195,6 @@ export function RewindUndoChip({ state, disabled, copy, onOpen }) {
 // containing block for fixed descendants.
 export function RewindConfirmDialog({ entry, previewState, error, busy, theme, copy, onCancel, onConfirm }) {
   const isDark = theme === 'dark';
-  const dialogRef = useRef(null);
-  useDialogFocusRestore(dialogRef);
-  useDialogEscapeKey(busy, onCancel);
 
   const summary = previewState?.diff ? summarizeCheckpointChanges(previewState.diff.changes) : null;
   const changes = (previewState?.diff && Array.isArray(previewState.diff.changes))
@@ -146,97 +204,65 @@ export function RewindConfirmDialog({ entry, previewState, error, busy, theme, c
   // 只保留「重试仅重新加载」的说明，确认键变为「重试加载」。
   const reloadFailed = Boolean(entry.reloadFailed);
 
-  return createPortal(
-    <div data-testid="rewind-confirm" className="fixed inset-0 z-50 flex items-center justify-center p-4">
-      <button
-        type="button"
-        aria-label={copy.rewindCancel}
-        className="absolute inset-0 cursor-default bg-black/30 backdrop-blur-[2px]"
-        disabled={busy}
-        onClick={onCancel}
-      />
-      <div
-        ref={dialogRef}
-        role="dialog"
-        aria-modal="true"
-        aria-labelledby="rewind-confirm-title"
-        tabIndex={-1}
-        className={`relative w-full max-w-[440px] rounded-2xl border p-4 shadow-xl backdrop-blur-xl outline-none ${
-          isDark ? 'border-white/10 bg-[#202124]/95' : 'border-black/[0.08] bg-white/95'
-        }`}
-      >
-        <div id="rewind-confirm-title" className={`text-[14px] font-semibold ${isDark ? 'text-[#E3E3E3]' : 'text-[#1F1F1F]'}`}>
-          {copy.rewindDialogTitle}
+  return (
+    <RewindDialogShell
+      testid="rewind-confirm"
+      isDark={isDark}
+      busy={busy}
+      title={copy.rewindDialogTitle}
+      error={error}
+      okLabel={busy ? copy.rewindBusy : reloadFailed ? copy.rewindRetryReload : copy.rewindConfirm}
+      copy={copy}
+      onCancel={onCancel}
+      onConfirm={onConfirm}
+    >
+      {reloadFailed ? (
+        <div className={`mt-3 text-[12px] leading-5 ${isDark ? 'text-[#C4C7C5]' : 'text-[#444746]'}`}>
+          {copy.rewindReloadRetryNote}
         </div>
-
-        {reloadFailed ? (
-          <div className={`mt-3 text-[12px] leading-5 ${isDark ? 'text-[#C4C7C5]' : 'text-[#444746]'}`}>
-            {copy.rewindReloadRetryNote}
-          </div>
-        ) : (
-          <>
-            <div className="mt-3">
-              <div className="text-[10px] font-medium uppercase tracking-wider text-gray-400">
-                {copy.rewindChangesToUndo}
-              </div>
-              {entry.conversationOnly ? (
-                <div className={`mt-1.5 text-[12px] leading-5 ${isDark ? 'text-[#C4C7C5]' : 'text-[#444746]'}`}>
-                  {copy.rewindConversationOnlyNote}
-                </div>
-              ) : (
-                <div className="mt-1.5 text-[12px] leading-5">
-                  {previewState?.loading && <span className="text-gray-400">{copy.rewindLoading}</span>}
-                  {previewState?.error && (
-                    <span className="text-red-500">{copy.rewindPreviewFailed}: {previewState.error}</span>
-                  )}
-                  {summary && (
-                    <>
-                      <div className={isDark ? 'text-[#C4C7C5]' : 'text-[#444746]'}>
-                        <ChangeSummary summary={summary} copy={copy} />
-                      </div>
-                      <ChangeFileList changes={changes} copy={copy} />
-                    </>
-                  )}
-                </div>
-              )}
+      ) : (
+        <>
+          <div className="mt-3">
+            <div className="text-[10px] font-medium uppercase tracking-wider text-gray-400">
+              {copy.rewindChangesToUndo}
             </div>
-
-            <div className="mt-3">
-              <div className="text-[10px] font-medium uppercase tracking-wider text-gray-400">
-                {copy.rewindConversationLabel}
-              </div>
+            {entry.conversationOnly ? (
               <div className={`mt-1.5 text-[12px] leading-5 ${isDark ? 'text-[#C4C7C5]' : 'text-[#444746]'}`}>
-                {copy.rewindConversationTarget(entry.keepTurns)}
+                {copy.rewindConversationOnlyNote}
               </div>
-            </div>
-
-            {!entry.conversationOnly && (
-              <div className="mt-3 text-[11px] leading-5 text-gray-400">{copy.rewindPreRestoreNote}</div>
+            ) : (
+              <div className="mt-1.5 text-[12px] leading-5">
+                {previewState?.loading && <span className="text-gray-400">{copy.rewindLoading}</span>}
+                {previewState?.error && (
+                  <span className="text-red-500">{copy.rewindPreviewFailed}: {previewState.error}</span>
+                )}
+                {summary && (
+                  <>
+                    <div className={isDark ? 'text-[#C4C7C5]' : 'text-[#444746]'}>
+                      <ChangeSummary summary={summary} copy={copy} />
+                    </div>
+                    <ChangeFileList changes={changes} copy={copy} />
+                  </>
+                )}
+              </div>
             )}
-          </>
-        )}
+          </div>
 
-        {error && <div className="mt-3 text-[12px] leading-5 text-red-500">{error}</div>}
+          <div className="mt-3">
+            <div className="text-[10px] font-medium uppercase tracking-wider text-gray-400">
+              {copy.rewindConversationLabel}
+            </div>
+            <div className={`mt-1.5 text-[12px] leading-5 ${isDark ? 'text-[#C4C7C5]' : 'text-[#444746]'}`}>
+              {copy.rewindConversationTarget(entry.keepTurns)}
+            </div>
+          </div>
 
-        <div className="mt-4 flex items-center justify-end gap-2">
-          <button
-            type="button"
-            data-testid="rewind-confirm-cancel"
-            className="rounded-xl px-3 py-1.5 text-[12px] font-medium transition-colors bg-black/[0.06] hover:bg-black/10 disabled:cursor-not-allowed disabled:opacity-45 dark:bg-white/10 dark:hover:bg-white/15"
-            disabled={busy}
-            onClick={onCancel}
-          >{copy.rewindCancel}</button>
-          <button
-            type="button"
-            data-testid="rewind-confirm-ok"
-            className="rounded-xl px-3 py-1.5 text-[12px] font-medium text-white transition-colors bg-blue-600 hover:bg-blue-700 disabled:cursor-not-allowed disabled:opacity-45"
-            disabled={busy}
-            onClick={onConfirm}
-          >{busy ? copy.rewindBusy : reloadFailed ? copy.rewindRetryReload : copy.rewindConfirm}</button>
-        </div>
-      </div>
-    </div>,
-    document.body,
+          {!entry.conversationOnly && (
+            <div className="mt-3 text-[11px] leading-5 text-gray-400">{copy.rewindPreRestoreNote}</div>
+          )}
+        </>
+      )}
+    </RewindDialogShell>
   );
 }
 
@@ -244,56 +270,21 @@ export function RewindConfirmDialog({ entry, previewState, error, busy, theme, c
 // 反悔等后端文案）原样上屏。结构镜像 RewindConfirmDialog。
 export function RewindUndoConfirmDialog({ state, error, busy, theme, copy, onCancel, onConfirm }) {
   const isDark = theme === 'dark';
-  const dialogRef = useRef(null);
-  useDialogFocusRestore(dialogRef);
-  useDialogEscapeKey(busy, onCancel);
-
-  return createPortal(
-    <div data-testid="rewind-undo-confirm" className="fixed inset-0 z-50 flex items-center justify-center p-4">
-      <button
-        type="button"
-        aria-label={copy.rewindCancel}
-        className="absolute inset-0 cursor-default bg-black/30 backdrop-blur-[2px]"
-        disabled={busy}
-        onClick={onCancel}
-      />
-      <div
-        ref={dialogRef}
-        role="dialog"
-        aria-modal="true"
-        aria-labelledby="rewind-undo-confirm-title"
-        tabIndex={-1}
-        className={`relative w-full max-w-[440px] rounded-2xl border p-4 shadow-xl backdrop-blur-xl outline-none ${
-          isDark ? 'border-white/10 bg-[#202124]/95' : 'border-black/[0.08] bg-white/95'
-        }`}
-      >
-        <div id="rewind-undo-confirm-title" className={`text-[14px] font-semibold ${isDark ? 'text-[#E3E3E3]' : 'text-[#1F1F1F]'}`}>
-          {copy.rewindUndoTitle}
-        </div>
-        <div className={`mt-3 text-[12px] leading-5 ${isDark ? 'text-[#C4C7C5]' : 'text-[#444746]'}`}>
-          {state.reloadFailed ? copy.rewindReloadRetryNote : rewindUndoBodyText(copy, state)}
-        </div>
-
-        {error && <div className="mt-3 text-[12px] leading-5 text-red-500">{error}</div>}
-
-        <div className="mt-4 flex items-center justify-end gap-2">
-          <button
-            type="button"
-            data-testid="rewind-undo-confirm-cancel"
-            className="rounded-xl px-3 py-1.5 text-[12px] font-medium transition-colors bg-black/[0.06] hover:bg-black/10 disabled:cursor-not-allowed disabled:opacity-45 dark:bg-white/10 dark:hover:bg-white/15"
-            disabled={busy}
-            onClick={onCancel}
-          >{copy.rewindCancel}</button>
-          <button
-            type="button"
-            data-testid="rewind-undo-confirm-ok"
-            className="rounded-xl px-3 py-1.5 text-[12px] font-medium text-white transition-colors bg-blue-600 hover:bg-blue-700 disabled:cursor-not-allowed disabled:opacity-45"
-            disabled={busy}
-            onClick={onConfirm}
-          >{busy ? copy.rewindUndoBusy : state.reloadFailed ? copy.rewindRetryReload : copy.rewindUndoConfirm}</button>
-        </div>
+  return (
+    <RewindDialogShell
+      testid="rewind-undo-confirm"
+      isDark={isDark}
+      busy={busy}
+      title={copy.rewindUndoTitle}
+      error={error}
+      okLabel={busy ? copy.rewindUndoBusy : state.reloadFailed ? copy.rewindRetryReload : copy.rewindUndoConfirm}
+      copy={copy}
+      onCancel={onCancel}
+      onConfirm={onConfirm}
+    >
+      <div className={`mt-3 text-[12px] leading-5 ${isDark ? 'text-[#C4C7C5]' : 'text-[#444746]'}`}>
+        {state.reloadFailed ? copy.rewindReloadRetryNote : rewindUndoBodyText(copy, state)}
       </div>
-    </div>,
-    document.body,
+    </RewindDialogShell>
   );
 }

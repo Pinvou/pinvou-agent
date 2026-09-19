@@ -26,12 +26,11 @@ use crate::features::marketplace::ConnectorScope;
 use crate::platform::paths;
 
 // ---------------------------------------------------------------------------
-// 开关双 scope 持久化（disabled_skills.json）
+// 开关持久化（单一真相源在 `features/marketplace/scope.rs` 的
+// `disabled_bundles.json`，包 id × SessionMode；与连接器开关同领域、避免
+// connectors → assistant 依赖环）。本模块直接按 scope.rs 的名字引用。
 // ---------------------------------------------------------------------------
-//
-// 持久化层在 `features/marketplace/skill_scope.rs`（与连接器开关同领域、避免
-// connectors → assistant 依赖环），这里 re-export 保持调用路径不变。
-pub use crate::features::marketplace::skill_scope::*;
+use crate::features::marketplace::scope::project_skills_enabled;
 
 // ---------------------------------------------------------------------------
 // 组合目录物化
@@ -316,28 +315,10 @@ pub fn session_skills_is_empty(session_id: &str) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
-
-    /// 把 PINVOU3_HOME 指到干净临时目录跑闭包，跑完恢复并清理。
-    /// 借 `platform::paths::tests::ENV_LOCK` 与其它 mutate PINVOU3_HOME 的测试串行。
-    fn with_temp_home<F: FnOnce()>(f: F) {
-        let _g = crate::platform::paths::tests::ENV_LOCK
-            .lock()
-            .unwrap_or_else(|p| p.into_inner());
-        let dir = std::env::temp_dir().join(format!("pinvou3-skillscope-{}", std::process::id()));
-        let _ = std::fs::remove_dir_all(&dir);
-        std::fs::create_dir_all(&dir).unwrap();
-        let prev = std::env::var("PINVOU3_HOME").ok();
-        // SAFETY: holding platform::paths::tests::ENV_LOCK; env writes serialized in-process.
-        unsafe { std::env::set_var("PINVOU3_HOME", &dir) };
-        f();
-        match prev {
-            // SAFETY: holding platform::paths::tests::ENV_LOCK; env writes serialized in-process.
-            Some(v) => unsafe { std::env::set_var("PINVOU3_HOME", v) },
-            // SAFETY: holding platform::paths::tests::ENV_LOCK; env writes serialized in-process.
-            None => unsafe { std::env::remove_var("PINVOU3_HOME") },
-        }
-        let _ = std::fs::remove_dir_all(&dir);
-    }
+    use crate::features::marketplace::scope::{
+        save_disabled_bundles_for, set_project_skills_enabled,
+    };
+    use crate::platform::test_support::with_temp_home;
 
     fn write_skill(root: &Path, name: &str, content: &str) {
         let dir = root.join(name);
@@ -365,7 +346,7 @@ mod tests {
     /// `## Skills` 隐藏"这条链路（过滤职责现由组合目录计算承担）。
     #[test]
     fn companion_skill_excluded_when_connector_disabled() {
-        with_temp_home(|| {
+        with_temp_home("pinvou3-skillscope", || {
             write_tool_manifest(
                 "gongwen",
                 r#"{"id":"gongwen","name":"公文写作","description":"d","version":"1.0.0","icon":"file-text","category":"办公","mcp_tools":["mcp_gongwen_make_gongwen"],"command":"python","args":["server.py"],"companion_skills":["government-writing"]}"#,
@@ -389,7 +370,7 @@ mod tests {
                 .unwrap();
 
             // 禁用公文 MCP → 组合目录计算排除关联技能
-            crate::features::marketplace::save_disabled_connectors(&["gongwen".to_string()]);
+            crate::features::marketplace::save_disabled_bundles(&["gongwen".to_string()]);
             let enabled = enabled_skills_for(ConnectorScope::Plain, None);
             assert!(
                 !enabled.iter().any(|(n, _)| n == "government-writing"),
@@ -397,7 +378,7 @@ mod tests {
             );
 
             // 开回来 → 恢复
-            crate::features::marketplace::save_disabled_connectors(&[]);
+            crate::features::marketplace::save_disabled_bundles(&[]);
             let enabled = enabled_skills_for(ConnectorScope::Plain, None);
             assert!(
                 enabled.iter().any(|(n, _)| n == "government-writing"),
@@ -413,7 +394,7 @@ mod tests {
     /// 直接并入排除集的回归都会让本测试变红。
     #[test]
     fn standalone_companion_named_skill_survives_uninstalled_connector() {
-        with_temp_home(|| {
+        with_temp_home("pinvou3-skillscope", || {
             write_tool_manifest(
                 "gongwen",
                 r#"{"id":"gongwen","name":"公文写作","description":"d","version":"1.0.0","icon":"file-text","category":"办公","mcp_tools":["mcp_gongwen_make_gongwen"],"command":"python","args":["server.py"],"companion_skills":["government-writing"]}"#,
@@ -447,19 +428,19 @@ mod tests {
     /// 开回来 → 恢复。
     #[test]
     fn cli_connector_companion_skills_excluded_when_disabled() {
-        with_temp_home(|| {
+        with_temp_home("pinvou3-skillscope", || {
             for name in crate::features::marketplace::bundle::LARK_SKILL_DIRS {
                 write_skill(&paths::bundle_skills_dir(), name, "# Lark\n");
             }
 
-            crate::features::marketplace::save_disabled_connectors(&["feishu".to_string()]);
+            crate::features::marketplace::save_disabled_bundles(&["feishu".to_string()]);
             let enabled = enabled_skills_for(ConnectorScope::Plain, None);
             assert!(
                 !enabled.iter().any(|(n, _)| n.starts_with("lark-")),
                 "禁用 feishu 后 lark-* 技能应从组合目录排除"
             );
 
-            crate::features::marketplace::save_disabled_connectors(&[]);
+            crate::features::marketplace::save_disabled_bundles(&[]);
             let enabled = enabled_skills_for(ConnectorScope::Plain, None);
             assert_eq!(
                 enabled
@@ -476,7 +457,7 @@ mod tests {
     /// 技能市场清单（连接门控直接解包），仍被 code 默认禁用兜住；plain 不受影响。
     #[test]
     fn code_scope_default_disables_cli_connector_skills() {
-        with_temp_home(|| {
+        with_temp_home("pinvou3-skillscope", || {
             for name in crate::features::marketplace::bundle::LARK_SKILL_DIRS {
                 write_skill(&paths::bundle_skills_dir(), name, "# Lark\n");
             }
@@ -503,19 +484,19 @@ mod tests {
     /// （不再借道连接器文件的 skill: 前缀）。
     #[test]
     fn disabling_direct_skill_id_hides_skill() {
-        with_temp_home(|| {
+        with_temp_home("pinvou3-skillscope", || {
             crate::features::marketplace::skill_marketplace::SkillMarketplaceManager::new()
                 .install("visualizer")
                 .unwrap();
 
-            save_disabled_skills_for(ConnectorScope::Plain, &["visualizer".to_string()]).unwrap();
+            save_disabled_bundles_for(ConnectorScope::Plain, &["visualizer".to_string()]);
             let enabled = enabled_skills_for(ConnectorScope::Plain, None);
             assert!(
                 !enabled.iter().any(|(n, _)| n == "visualizer"),
                 "禁用 skill id 后应从组合目录排除"
             );
 
-            save_disabled_skills_for(ConnectorScope::Plain, &[]).unwrap();
+            save_disabled_bundles_for(ConnectorScope::Plain, &[]);
             let enabled = enabled_skills_for(ConnectorScope::Plain, None);
             assert!(
                 enabled.iter().any(|(n, _)| n == "visualizer"),
@@ -530,7 +511,7 @@ mod tests {
     /// 语义相反，是 scope 收敛的既定行为变更。
     #[test]
     fn disabling_package_hides_same_named_skill_unified() {
-        with_temp_home(|| {
+        with_temp_home("pinvou3-skillscope", || {
             write_tool_manifest(
                 "weather",
                 r#"{"id":"weather","name":"天气","description":"d","version":"1.0.0","icon":"cloud","category":"查询","mcp_tools":["mcp_weather_query"],"command":"python","args":["server.py"]}"#,
@@ -544,14 +525,14 @@ mod tests {
             .unwrap();
             std::fs::write(skill_dir.join(".installed-from"), "upload:weather.zip").unwrap();
 
-            crate::features::marketplace::save_disabled_connectors(&["weather".to_string()]);
+            crate::features::marketplace::save_disabled_bundles(&["weather".to_string()]);
             let enabled = enabled_skills_for(ConnectorScope::Plain, None);
             assert!(
                 !enabled.iter().any(|(n, _)| n == "weather"),
                 "统一包模型下禁用 weather 包应一并排除同名技能目录"
             );
 
-            crate::features::marketplace::save_disabled_connectors(&[]);
+            crate::features::marketplace::save_disabled_bundles(&[]);
             let enabled = enabled_skills_for(ConnectorScope::Plain, None);
             assert!(
                 enabled.iter().any(|(n, _)| n == "weather"),
@@ -581,7 +562,7 @@ mod tests {
 
     #[test]
     fn enabled_skills_respect_first_wins_and_scope_disabled() {
-        with_temp_home(|| {
+        with_temp_home("pinvou3-skillscope", || {
             seed_sources();
             // 默认（无禁用）：user 覆盖 bundle 同名 + 手放技能入集
             let enabled = enabled_skills_for(ConnectorScope::Plain, None);
@@ -599,7 +580,7 @@ mod tests {
             assert_eq!(src, &paths::user_skills_dir().join("visualizer"));
 
             // plain 关 visualizer → 组合集不含（market 版本也被 user 覆盖，整名排除）
-            save_disabled_skills_for(ConnectorScope::Plain, &["visualizer".to_string()]).unwrap();
+            save_disabled_bundles_for(ConnectorScope::Plain, &["visualizer".to_string()]);
             let enabled = enabled_skills_for(ConnectorScope::Plain, None);
             assert!(!enabled.iter().any(|(n, _)| n == "visualizer"));
             assert!(enabled.iter().any(|(n, _)| n == "government-writing"));
@@ -608,7 +589,7 @@ mod tests {
 
     #[test]
     fn materialize_then_rewrite_is_idempotent() {
-        with_temp_home(|| {
+        with_temp_home("pinvou3-skillscope", || {
             seed_sources();
             let sid = "session-test-1";
             materialize_session_skills(sid, ConnectorScope::Plain, None).unwrap();
@@ -633,10 +614,10 @@ mod tests {
             assert_eq!(names.len(), 4, "增量重写幂等：目录数不变: {names:?}");
 
             // 增量：关一个 → 目录删除；再开 → 目录回来
-            save_disabled_skills_for(ConnectorScope::Plain, &["visualizer".to_string()]).unwrap();
+            save_disabled_bundles_for(ConnectorScope::Plain, &["visualizer".to_string()]);
             rewrite_session_skills(sid, ConnectorScope::Plain, None);
             assert!(!dir.join("visualizer").exists());
-            save_disabled_skills_for(ConnectorScope::Plain, &[]).unwrap();
+            save_disabled_bundles_for(ConnectorScope::Plain, &[]);
             rewrite_session_skills(sid, ConnectorScope::Plain, None);
             assert!(dir.join("visualizer").exists());
         });
@@ -644,7 +625,7 @@ mod tests {
 
     #[test]
     fn empty_scope_leaves_empty_dir_and_is_empty_detection() {
-        with_temp_home(|| {
+        with_temp_home("pinvou3-skillscope", || {
             // 干净的 home（无任何技能来源）→ 全禁场景等价：组合目录为空目录
             let sid = "session-test-2";
             materialize_session_skills(sid, ConnectorScope::Plain, None).unwrap();
@@ -669,7 +650,7 @@ mod tests {
 
     #[test]
     fn project_skills_follow_gate_and_priority() {
-        with_temp_home(|| {
+        with_temp_home("pinvou3-skillscope", || {
             // bundle 基线：市场装 visualizer
             let bundle = paths::bundle_skills_dir();
             std::fs::create_dir_all(&bundle).unwrap();
@@ -710,7 +691,7 @@ mod tests {
             // 本测试聚焦项目技能的门控与优先级覆盖。code scope「未初始化默认全禁」
             // 语义会把已装技能也排除掉，与测试意图无关——先显式初始化 code scope
             // （空禁用集 = 全部启用），让项目技能覆盖链路可被断言。
-            save_disabled_skills_for(ConnectorScope::Code, &[]).unwrap();
+            save_disabled_bundles_for(ConnectorScope::Code, &[]);
 
             // 默认关：code 组合集不含项目技能
             let enabled = enabled_skills_for(ConnectorScope::Code, Some(&project));
@@ -772,7 +753,7 @@ mod tests {
         // (observed under high load on 2026-09-16) — with_temp_home locks
         // ENV_LOCK and pins a clean home, so both reads are serialized and
         // deterministic.
-        with_temp_home(|| {
+        with_temp_home("pinvou3-skillscope", || {
             let dir = paths::session_skills_dir("abc-123");
             assert_eq!(dir, paths::sessions_root().join("abc-123").join("skills"));
         });

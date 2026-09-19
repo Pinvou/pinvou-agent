@@ -68,7 +68,7 @@ pub fn official_script_paths(backend: AgentBackend) -> Vec<PathBuf> {
 }
 
 /// 按安装来源构造卸载命令参数；None 表示该来源不适用（回退 script 路径清理）。
-pub fn brew_uninstall_args(plan: &UninstallPlan) -> Option<(String, Vec<String>)> {
+fn brew_uninstall_args(plan: &UninstallPlan) -> Option<(String, Vec<String>)> {
     let (package, is_cask) = plan.brew_package?;
     let mut args = vec!["uninstall".to_string()];
     if is_cask {
@@ -82,7 +82,7 @@ pub fn npm_uninstall_args(plan: &UninstallPlan) -> Option<(String, Vec<String>)>
     let package = plan.npm_package?;
     // Windows 上 npm 是 npm.cmd：必须用解析后的完整路径（裸名 "npm" 会被当成
     // 原生可执行文件直接 CreateProcess，报 program not found）。
-    let npm = crate::features::codex_acp::npm_executable()?;
+    let npm = crate::features::codex_acp::install::npm_executable()?;
     Some((
         npm.to_string_lossy().into_owned(),
         vec![

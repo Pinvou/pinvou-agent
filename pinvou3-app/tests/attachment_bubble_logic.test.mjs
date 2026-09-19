@@ -1,7 +1,6 @@
 import assert from 'node:assert/strict';
 import { readFile } from 'node:fs/promises';
 import {
-  formatAttachmentDisplayText,
   sessionTitlePlainText,
   sessionTitlePresentation,
   splitAttachmentLine,
@@ -20,15 +19,6 @@ assert.equal(
 );
 
 // ── splitAttachmentLine: JSON 协议无损保存文件名，旧分隔格式继续可读 ──
-assert.equal(
-  formatAttachmentDisplayText('看一下这个', ['预算 · 最终.xlsx', ' leading.txt']),
-  '看一下这个\n\n📎 ["预算 · 最终.xlsx"," leading.txt"]',
-);
-assert.equal(
-  formatAttachmentDisplayText('第一条\n\n第二条', ['一.pdf', '二.xlsx']),
-  '第一条\n\n第二条\n\n📎 ["一.pdf","二.xlsx"]',
-  'a merged queue must emit one attachment marker containing every attachment',
-);
 assert.deepEqual(
   splitAttachmentLine('看一下这个\n\n📎 ["预算 · 最终.xlsx"," leading.txt"]'),
   { text: '看一下这个', attachments: ['预算 · 最终.xlsx', ' leading.txt'] },

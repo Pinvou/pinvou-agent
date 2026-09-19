@@ -89,8 +89,6 @@ const PET_BOTTOM_PADDING = 8;
 const PET_ACTIVITY_WINDOW_HEIGHT = 260;
 // workArea 已给出无装饰窗口的真实 client 边界，只留 1px 消除整数取整抖动。
 const PET_VERTICAL_FLIP_MARGIN = 1;
-const PET_FRAME_WIDTH = PET_FRAME_W;
-const PET_FRAME_HEIGHT = PET_FRAME_H;
 
 const PET_EVENTS = [
   'pet:turn_start', 'pet:turn_end',
@@ -117,10 +115,10 @@ function PetSprite({ pet, animation }) {
     <div
       className="pet-sprite"
       style={{
-        width: PET_FRAME_WIDTH,
-        height: PET_FRAME_HEIGHT,
+        width: PET_FRAME_W,
+        height: PET_FRAME_H,
         backgroundImage: `url(${pet.sheetUrl})`,
-        backgroundPosition: `-${frame.column * PET_FRAME_WIDTH}px -${frame.row * PET_FRAME_HEIGHT}px`,
+        backgroundPosition: `-${frame.column * PET_FRAME_W}px -${frame.row * PET_FRAME_H}px`,
       }}
     />
   );
@@ -249,7 +247,7 @@ export default function PetWindow({
       ...geometry,
       fallback: edgeAlignRef.current,
       currentAlignment: initial ? undefined : edgeAlignRef.current,
-      characterWidth: PET_FRAME_WIDTH * scaleRef.current * dpr,
+      characterWidth: PET_FRAME_W * scaleRef.current * dpr,
       horizontalPadding: PET_EDGE_PADDING * dpr,
     });
     if (next !== edgeAlignRef.current) {
@@ -570,14 +568,15 @@ export default function PetWindow({
 
   useEffect(() => {
     if (!isTauriAvailable()) return;
-    const scaleRequest = Number.isFinite(configuredScale)
-      ? invokeTauri('set_pet_scale', {
-        scale: startupScale,
-        activityVisible: activityVisibleRef.current,
-        activityHeight: activityHeightRef.current,
-        verticalAlignment: edgeVAlignRef.current,
-      })
-      : invokeTauri('get_pet_scale');
+    // pet-main.jsx 恒定传入 configuredScale(固定 0.5),窗口总是以启动缩放
+    // 初始化原生侧;get_pet_scale 读取分支不可达,已删(Rust 命令保留,由
+    // 协议测试钉住)。
+    const scaleRequest = invokeTauri('set_pet_scale', {
+      scale: startupScale,
+      activityVisible: activityVisibleRef.current,
+      activityHeight: activityHeightRef.current,
+      verticalAlignment: edgeVAlignRef.current,
+    });
     scaleRequest.then((value) => {
       if (value > 0) setScale(value);
     }).catch(() => {});
@@ -760,8 +759,8 @@ export default function PetWindow({
       verticalAlignment: currentVAlign,
       viewportHeight: Number(drag.windowSize && drag.windowSize.height)
         || window.innerHeight * monitorScale,
-      characterWidth: PET_FRAME_WIDTH * scaleRef.current * monitorScale,
-      characterHeight: PET_FRAME_HEIGHT * scaleRef.current * monitorScale,
+      characterWidth: PET_FRAME_W * scaleRef.current * monitorScale,
+      characterHeight: PET_FRAME_H * scaleRef.current * monitorScale,
       horizontalPadding: PET_EDGE_PADDING * monitorScale,
       verticalPadding: PET_BOTTOM_PADDING * monitorScale,
       // 竖向 bounds 用起手实测的人物矩形(物理像素),规避 X11 outerSize 回读不准。
@@ -786,8 +785,8 @@ export default function PetWindow({
         drag.localRect = measurePetLocalRect(drag);
         metrics.viewportHeight = Number(drag.windowSize && drag.windowSize.height)
           || window.innerHeight * nextScale;
-        metrics.characterWidth = PET_FRAME_WIDTH * scaleRef.current * nextScale;
-        metrics.characterHeight = PET_FRAME_HEIGHT * scaleRef.current * nextScale;
+        metrics.characterWidth = PET_FRAME_W * scaleRef.current * nextScale;
+        metrics.characterHeight = PET_FRAME_H * scaleRef.current * nextScale;
         metrics.horizontalPadding = PET_EDGE_PADDING * nextScale;
         metrics.verticalPadding = PET_BOTTOM_PADDING * nextScale;
         metrics.localTop = drag.localRect ? drag.localRect.t : undefined;
@@ -1272,7 +1271,7 @@ export default function PetWindow({
     <div
       ref={petRootRef}
       className={`pet-root pet-align-${edgeAlign} pet-valign-${edgeVAlign}`}
-      style={{ '--pet-character-width': `${PET_FRAME_WIDTH * scale}px` }}
+      style={{ '--pet-character-width': `${PET_FRAME_W * scale}px` }}
       onContextMenu={suppressContextMenu}
     >
       {activityVisible && (
@@ -1467,7 +1466,7 @@ export default function PetWindow({
       <div
         ref={characterSlotRef}
         className="pet-character-slot"
-        style={{ width: PET_FRAME_WIDTH * scale, height: PET_FRAME_HEIGHT * scale }}
+        style={{ width: PET_FRAME_W * scale, height: PET_FRAME_H * scale }}
       >
         {activePet && (
           <div className="pet-stage" style={{ transform: `translateX(-50%) scale(${scale})` }}>

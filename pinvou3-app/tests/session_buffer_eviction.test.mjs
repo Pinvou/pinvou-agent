@@ -55,7 +55,9 @@ const bridgeMessagesSource = fs.readFileSync(
 function loadTauriSessionsFeature(overrides) {
   const root = {};
   const src = fs.readFileSync(path.join(bridgeDir, 'sessions.js'), 'utf8');
-  vm.runInNewContext(src, { window: root, globalThis: root, setTimeout, clearTimeout });
+  // sessions.js delegates shared helpers to window.PinvouBridgeShared; prepend the payload.
+  const sharedHelpers = fs.readFileSync(path.join(bridgeDir, '..', '..', '..', 'shared', 'bridge-shared-helpers.js'), 'utf8');
+  vm.runInNewContext(sharedHelpers + '\n' + src, { window: root, globalThis: root, setTimeout, clearTimeout });
   const factory = root.__PINVOU_TAURI_BRIDGE_FEATURES__.sessions;
   const state = {
     activeSessionId: null,
@@ -418,6 +420,7 @@ function bootWebBridge() {
     TextEncoder,
     TextDecoder,
   });
+  vm.runInContext(fs.readFileSync(path.join(webBridgeRoot, '..', '..', 'shared', 'bridge-shared-helpers.js'), 'utf8'), context, { filename: 'shared/bridge-shared-helpers.js' });
   vm.runInContext(bridgeMessagesSource, context, { filename: 'shared/bridge-messages.js' });
   vm.runInContext(read('bridge.js'), context, { filename: 'platform/web/bridge.js' });
   const flat = windowObject.TauriBridge;

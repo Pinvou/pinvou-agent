@@ -11,6 +11,10 @@ const source = readFileSync(
   'utf8',
 );
 const windowObject = { __PINVOU_TAURI_BRIDGE_FEATURES__: {} };
+// chat-events.js delegates shared helpers to window.PinvouBridgeShared (loaded before
+// the bridges by index.html); harnesses must load the payload into the context first.
+const readSharedHelpers = () => readFileSync(path.join(root, 'src', 'shared', 'bridge-shared-helpers.js'), 'utf8');
+vm.runInContext(readSharedHelpers(), vm.createContext({ window: windowObject, console, Date, String }), { filename: 'shared/bridge-shared-helpers.js' });
 vm.runInContext(source, vm.createContext({
   window: windowObject,
   console,
@@ -134,7 +138,7 @@ assert.match(forwarderSource, /forward_app_event\([^;]*"chat:reasoning_delta"/s)
 const webBridgeSource = readFileSync(
   path.join(root, 'src', 'platform', 'web', 'bridge.js'),
   'utf8',
-);
+) + '\n' + readSharedHelpers();
 assert.match(webBridgeSource, /listen\("chat:reasoning_start"/);
 assert.match(webBridgeSource, /listen\("chat:reasoning_delta"/);
 assert.match(webBridgeSource, /listen\("chat:reasoning_done"/);
@@ -143,7 +147,7 @@ assert.match(webBridgeSource, /item\.type === "reasoning"\) return "reasoning:" 
 const sessionBridgeSource = readFileSync(
   path.join(root, 'src', 'platform', 'tauri', 'bridge', 'sessions.js'),
   'utf8',
-);
+) + '\n' + readSharedHelpers();
 assert.match(sessionBridgeSource, /item\.type === "reasoning"\) return "reasoning:" \+ String\(item\.text \|\| ""\)/);
 
 const chatViewSource = readFileSync(

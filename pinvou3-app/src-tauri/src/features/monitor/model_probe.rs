@@ -13,13 +13,10 @@ use crate::core::model_endpoint::{is_anthropic_endpoint, models_probe_url, strip
 use crate::platform::credential_store::{CredentialStore, SystemCredentialStore};
 use crate::platform::prefs::{ModelPreset, SavedModel, UserPrefs};
 
-/// 当前模型运行态 + 本地 vLLM 队列指标。字段名暂保留 vllm 兼容前端。
+/// 当前模型运行态 + 本地 vLLM 指标。字段名暂保留 vllm 兼容前端。
 #[derive(Debug, Clone, Serialize)]
 pub struct VllmSnapshot {
     pub status: VllmStatus,
-    /// 当前 active model id / preset，用于诊断热切换是否跟随用户选择。
-    pub model_id: Option<String>,
-    pub provider: String,
     /// vLLM `/v1/models` 返回的真实模型名。
     pub model: Option<String>,
     /// 用户 settings 中配置的模型名（与 `model` 可能不同）。
@@ -33,18 +30,10 @@ pub struct VllmSnapshot {
     pub metrics_applicable: bool,
     /// `verified` / `unverified` / `missing_api_key` / `auth_failed` / `offline` / `mismatch`。
     pub health_status: String,
-    pub diagnostic: Option<MonitorDiagnostic>,
-    pub metric_diagnostics: Vec<MonitorDiagnostic>,
     pub max_model_len: Option<u32>,
-    pub num_requests_running: Option<f64>,
-    pub num_requests_waiting: Option<f64>,
-    /// 历史累计 prefix cache 命中率: hits_total / queries_total × 100。
-    /// 反映"重复 prompt prefix 复用 KV 比例",直接关联首字延迟。
-    /// 瞬时 kv_cache_usage_perc 单用户场景一直是 0-2%,意义不大,已替换。
-    pub prefix_cache_hit_pct: Option<f64>,
     /// prefix cache 原始计数器（hits_total / queries_total）。前端「清除统计」
-    /// 用基准点对各累计 counter 做减法重算,命中率必须拿到原始分子/分母,
-    /// 只给百分比无法做区间重算,故一并暴露。
+    /// 用基准点对各累计 counter 做减法重算命中率,必须拿到原始分子/分母,
+    /// 只给百分比无法做区间重算。
     pub prefix_cache_hits: Option<f64>,
     pub prefix_cache_queries: Option<f64>,
     /// TTFT 直方图累计值（vllm:time_to_first_token_seconds_sum/_count）。
@@ -52,12 +41,6 @@ pub struct VllmSnapshot {
     /// 换模型 = 重启进程 = 自动归零，因此天然按模型分段。
     pub ttft_sum_s: Option<f64>,
     pub ttft_count: Option<f64>,
-    /// TPOT 直方图累计值。⚠️ 真实指标名带 request_ 前缀
-    /// （vllm:request_time_per_output_token_seconds_*），2026-06-10 实测锁名。
-    pub tpot_sum_s: Option<f64>,
-    pub tpot_count: Option<f64>,
-    pub generation_tokens_total: Option<f64>,
-    pub prompt_tokens_total: Option<f64>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
@@ -70,56 +53,35 @@ pub enum VllmStatus {
     Mismatch,
 }
 
-#[derive(Debug, Clone, Serialize)]
-pub struct MonitorDiagnostic {
-    pub code: String,
-    pub message: String,
-}
-
 impl VllmSnapshot {
-    /// 构造一份带核心标识字段的快照,所有 vLLM `/metrics` 派生字段(`num_requests_*` /
-    /// `prefix_cache_*` / `ttft_*` / `tpot_*` / `*_tokens_total` / `metric_diagnostics` /
-    /// `max_model_len`)缺省 None/空。调用方(健康探测的各早退分支 + happy-path 起点)
-    /// 共享同一组「指标缺失」默认值,happy-path 再逐项覆盖真实解析值。
+    /// 构造一份带核心标识字段的快照,所有 vLLM `/metrics` 派生字段(`prefix_cache_*` /
+    /// `ttft_*` / `max_model_len`)缺省 None。调用方(健康探测的各早退分支 +
+    /// happy-path 起点)共享同一组「指标缺失」默认值,happy-path 再逐项覆盖真实解析值。
     ///
     /// 这是原来散落在 `snapshot_for_model_config` 中的「离线 / 早退」构造块与
     /// `base_model_snapshot` helper 的收敛入口——行为保持:字段值与原三处构造完全一致。
     fn with_base(
         status: VllmStatus,
-        model_id: Option<String>,
-        provider: String,
         model: Option<String>,
         configured_model: Option<String>,
         upstream: &str,
         target_kind: &str,
         metrics_applicable: bool,
         health_status: &str,
-        diagnostic: Option<MonitorDiagnostic>,
     ) -> Self {
         VllmSnapshot {
             status,
-            model_id,
-            provider,
             model,
             configured_model,
             upstream: upstream.to_string(),
             target_kind: target_kind.to_string(),
             metrics_applicable,
             health_status: health_status.to_string(),
-            diagnostic,
-            metric_diagnostics: Vec::new(),
             max_model_len: None,
-            num_requests_running: None,
-            num_requests_waiting: None,
-            prefix_cache_hit_pct: None,
             prefix_cache_hits: None,
             prefix_cache_queries: None,
             ttft_sum_s: None,
             ttft_count: None,
-            tpot_sum_s: None,
-            tpot_count: None,
-            generation_tokens_total: None,
-            prompt_tokens_total: None,
         }
     }
 }
@@ -142,8 +104,6 @@ pub async fn active_model_snapshot() -> Option<VllmSnapshot> {
             .and_then(|m| (m.preset != ModelPreset::LocalVllm).then(|| m.model.clone()))
     });
     let api_key = model.as_ref().and_then(model_api_key);
-    let model_id = model.as_ref().map(|m| m.id.clone());
-    let provider = preset.as_str().to_string();
     // The context window the user explicitly declares in the model form must
     // join the monitor / live-dot display scale; otherwise after saving 1M the
     // chat page (chat:usage denominator) and the monitor page / progress-bar
@@ -153,8 +113,6 @@ pub async fn active_model_snapshot() -> Option<VllmSnapshot> {
         &upstream,
         configured_model,
         preset,
-        model_id,
-        provider,
         api_key.as_deref(),
         configured_context,
     )
@@ -170,8 +128,6 @@ pub async fn vllm_snapshot(
         upstream,
         configured_model,
         ModelPreset::LocalVllm,
-        None,
-        "local_vllm".to_string(),
         None,
         None,
     )
@@ -205,9 +161,11 @@ fn model_api_key(model: &SavedModel) -> Option<String> {
 ///
 /// Process-wide shared client: both the monitor page's 1 Hz polling and the
 /// chat page's status dot go through here; a fresh Client per call would
-/// rebuild TLS/connection pools every second with zero reuse. The 3s probe
-/// timeout moves to per-request, keeping the original semantics. Two
-/// OnceLock caveats:
+/// rebuild TLS/connection pools every second with zero reuse. Two
+/// OnceLock caveats (shared with `core::model_endpoint`'s probe pool, whose
+/// singleton this delegates to with `None` = no client-level timeout — the
+/// 3s probe timeout stays per-request below, keeping the original
+/// semantics):
 /// 1. reqwest enables system-proxy detection by default; the proxy config
 /// is snapshotted at first build and never re-read for the process
 /// lifetime — changing the system proxy mid-session needs an app
@@ -219,18 +177,13 @@ fn model_api_key(model: &SavedModel) -> Option<String> {
 /// fallback. Request-level errors are unaffected and remain per-call,
 /// handled by the caller.
 fn shared_probe_client() -> Option<&'static reqwest::Client> {
-    static CLIENT: std::sync::OnceLock<Option<reqwest::Client>> = std::sync::OnceLock::new();
-    CLIENT
-        .get_or_init(|| reqwest::Client::builder().build().ok())
-        .as_ref()
+    crate::core::model_endpoint::shared_probe_client_with_timeout(None)
 }
 
 async fn snapshot_for_model_config(
     upstream: &str,
     configured_model: Option<String>,
     preset: ModelPreset,
-    model_id: Option<String>,
-    provider: String,
     api_key: Option<&str>,
     configured_context: Option<u32>,
 ) -> Option<VllmSnapshot> {
@@ -269,56 +222,38 @@ async fn snapshot_for_model_config(
         {
             return Some(VllmSnapshot::with_base(
                 VllmStatus::Offline,
-                model_id,
-                provider,
                 configured_model.clone(),
                 configured_model,
                 upstream,
                 target_kind,
                 metrics_applicable,
                 "auth_failed",
-                Some(MonitorDiagnostic {
-                    code: "auth_failed".to_string(),
-                    message: format!("模型接口鉴权失败 (HTTP {})", r.status().as_u16()),
-                }),
             ));
         }
-        Some(Ok(r)) => {
+        Some(Ok(_)) => {
             if target_kind == "local" {
                 return Some(VllmSnapshot::with_base(
                     VllmStatus::Offline,
-                    model_id,
-                    provider,
                     configured_model.clone(),
                     configured_model,
                     upstream,
                     target_kind,
                     metrics_applicable,
                     "offline",
-                    Some(MonitorDiagnostic {
-                        code: "models_http_error".to_string(),
-                        message: format!("/v1/models 返回 HTTP {}", r.status().as_u16()),
-                    }),
                 ));
             }
             None
         }
-        Some(Err(err)) => {
+        Some(Err(_)) => {
             if target_kind == "local" {
                 return Some(VllmSnapshot::with_base(
                     VllmStatus::Offline,
-                    model_id,
-                    provider,
                     configured_model.clone(),
                     configured_model,
                     upstream,
                     target_kind,
                     metrics_applicable,
                     "offline",
-                    Some(MonitorDiagnostic {
-                        code: "models_unreachable".to_string(),
-                        message: format!("/v1/models 不可达: {err}"),
-                    }),
                 ));
             }
             None
@@ -326,18 +261,12 @@ async fn snapshot_for_model_config(
         None if target_kind == "local" => {
             return Some(VllmSnapshot::with_base(
                 VllmStatus::Offline,
-                model_id,
-                provider,
                 None,
                 configured_model,
                 upstream,
                 target_kind,
                 metrics_applicable,
                 "offline",
-                Some(MonitorDiagnostic {
-                    code: "models_unverified".to_string(),
-                    message: "未探测 /v1/models".to_string(),
-                }),
             ));
         }
         None => None,
@@ -370,14 +299,6 @@ async fn snapshot_for_model_config(
         Some(r) if r.status().is_success() => r.text().await.ok(),
         _ => None,
     };
-    let mut metric_diagnostics = if metrics_applicable && metrics_text.is_none() {
-        vec![MonitorDiagnostic {
-            code: "metrics_unavailable".to_string(),
-            message: "本地 /metrics 不可用或未返回 Prometheus 指标".to_string(),
-        }]
-    } else {
-        Vec::new()
-    };
     // The display window goes through the unified precedence (see
     // display_context_window): an explicit user declaration wins first, a local
     // deployment's probe value min-clamps; a cloud probe value (usually a list
@@ -389,14 +310,8 @@ async fn snapshot_for_model_config(
         preset,
         configured_model.as_deref().or(served_model.as_deref()),
     );
-    let (max_model_len, window_from_inference) =
+    let (max_model_len, _window_from_inference) =
         display_context_window(configured_context, target_kind, max_model_len, inferred);
-    if window_from_inference {
-        metric_diagnostics.push(MonitorDiagnostic {
-            code: "context_window_inferred".to_string(),
-            message: "上下文长度由模型名/供应商预设推断，远端模型接口未直接提供".to_string(),
-        });
-    }
 
     let running = metrics_text
         .as_deref()
@@ -404,19 +319,14 @@ async fn snapshot_for_model_config(
     let waiting = metrics_text
         .as_deref()
         .and_then(|t| parse_prom_metric(t, "vllm:num_requests_waiting"));
-    // 历史累计 prefix cache 命中率: hits/queries × 100。两个都是 vLLM Prometheus
-    // counter (单调递增,vLLM 进程生命周期内累积)。queries=0 时返回 None 显示 "—"
-    // 而非 NaN。
+    // prefix cache 原始计数器: hits/queries 都是 vLLM Prometheus counter (单调递增,
+    // vLLM 进程生命周期内累积)。前端用基准点做减法重算区间命中率。
     let prefix_cache_hits = metrics_text
         .as_deref()
         .and_then(|t| parse_prom_metric(t, "vllm:prefix_cache_hits_total"));
     let prefix_cache_queries = metrics_text
         .as_deref()
         .and_then(|t| parse_prom_metric(t, "vllm:prefix_cache_queries_total"));
-    let prefix_hit_pct = match (prefix_cache_hits, prefix_cache_queries) {
-        (Some(h), Some(q)) if q > 0.0 => Some(h / q * 100.0),
-        _ => None,
-    };
 
     let perf = metrics_text
         .as_deref()
@@ -439,7 +349,6 @@ async fn snapshot_for_model_config(
     }
     let health_status = match status {
         VllmStatus::Mismatch => "mismatch",
-        VllmStatus::Offline => "offline",
         _ if target_kind == "remote"
             && api_key
                 .map(str::trim)
@@ -451,27 +360,10 @@ async fn snapshot_for_model_config(
         _ if target_kind == "remote" && served_model.is_none() => "unverified",
         _ => "verified",
     };
-    let diagnostic = match health_status {
-        "missing_api_key" => Some(MonitorDiagnostic {
-            code: "missing_api_key".to_string(),
-            message: "远端模型未配置 API Key，跳过在线探测".to_string(),
-        }),
-        "unverified" => Some(MonitorDiagnostic {
-            code: "remote_unverified".to_string(),
-            message: "远端模型未返回可用模型列表，保留当前配置展示".to_string(),
-        }),
-        "mismatch" => Some(MonitorDiagnostic {
-            code: "model_mismatch".to_string(),
-            message: "配置模型名与本地服务返回模型名不一致".to_string(),
-        }),
-        _ => None,
-    };
 
     // happy-path:从带默认值的 base 起步,再逐项覆盖真实解析值。
     let mut snapshot = VllmSnapshot::with_base(
         status,
-        model_id,
-        provider,
         if target_kind == "remote" {
             configured_model.clone().or(served_model)
         } else {
@@ -482,21 +374,12 @@ async fn snapshot_for_model_config(
         target_kind,
         metrics_applicable,
         health_status,
-        diagnostic,
     );
-    snapshot.metric_diagnostics = metric_diagnostics;
     snapshot.max_model_len = max_model_len;
-    snapshot.num_requests_running = running;
-    snapshot.num_requests_waiting = waiting;
-    snapshot.prefix_cache_hit_pct = prefix_hit_pct;
     snapshot.prefix_cache_hits = prefix_cache_hits;
     snapshot.prefix_cache_queries = prefix_cache_queries;
     snapshot.ttft_sum_s = perf.ttft_sum_s;
     snapshot.ttft_count = perf.ttft_count;
-    snapshot.tpot_sum_s = perf.tpot_sum_s;
-    snapshot.tpot_count = perf.tpot_count;
-    snapshot.generation_tokens_total = perf.generation_tokens_total;
-    snapshot.prompt_tokens_total = perf.prompt_tokens_total;
     Some(snapshot)
 }
 
@@ -589,25 +472,17 @@ fn infer_context_window(preset: ModelPreset, model: Option<&str>) -> Option<u32>
     preset.context_window_fallback(model)
 }
 
-/// 推理性能相关的 6 个累计指标，统一解析、统一缺省 None。
+/// 推理性能相关的累计指标（TTFT 直方图），统一解析、统一缺省 None。
 #[derive(Debug, Default)]
 struct PerfMetrics {
     ttft_sum_s: Option<f64>,
     ttft_count: Option<f64>,
-    tpot_sum_s: Option<f64>,
-    tpot_count: Option<f64>,
-    generation_tokens_total: Option<f64>,
-    prompt_tokens_total: Option<f64>,
 }
 
 fn parse_perf_metrics(text: &str) -> PerfMetrics {
     PerfMetrics {
         ttft_sum_s: parse_prom_metric(text, "vllm:time_to_first_token_seconds_sum"),
         ttft_count: parse_prom_metric(text, "vllm:time_to_first_token_seconds_count"),
-        tpot_sum_s: parse_prom_metric(text, "vllm:request_time_per_output_token_seconds_sum"),
-        tpot_count: parse_prom_metric(text, "vllm:request_time_per_output_token_seconds_count"),
-        generation_tokens_total: parse_prom_metric(text, "vllm:generation_tokens_total"),
-        prompt_tokens_total: parse_prom_metric(text, "vllm:prompt_tokens_total"),
     }
 }
 
@@ -1197,32 +1072,21 @@ mod tests {
         assert!(parse_prom_metric(text, "vllm:num_requests_running").is_none());
     }
 
-    /// 2026-06-10 本机 vLLM nightly(NVFP4) /metrics 实抓片段。
-    /// 注意 TPOT 直方图真实名带 request_ 前缀。
+    /// 2026-06-10 本机 vLLM nightly(NVFP4) /metrics 实抓片段（TTFT 相关行）。
     const REAL_METRICS_FIXTURE: &str = "\
 # HELP vllm:prompt_tokens_total Number of prefill tokens processed.\n\
 # TYPE vllm:prompt_tokens_total counter\n\
 vllm:prompt_tokens_total{engine=\"0\",model_name=\"qwen36_35b_256k\"} 4.1367205e+07\n\
-# HELP vllm:generation_tokens_total Number of generation tokens processed.\n\
-# TYPE vllm:generation_tokens_total counter\n\
-vllm:generation_tokens_total{engine=\"0\",model_name=\"qwen36_35b_256k\"} 295648.0\n\
 vllm:time_to_first_token_seconds_bucket{engine=\"0\",le=\"0.001\",model_name=\"qwen36_35b_256k\"} 0.0\n\
 vllm:time_to_first_token_seconds_created{engine=\"0\",model_name=\"qwen36_35b_256k\"} 1.7654321e+09\n\
 vllm:time_to_first_token_seconds_count{engine=\"0\",model_name=\"qwen36_35b_256k\"} 498.0\n\
-vllm:time_to_first_token_seconds_sum{engine=\"0\",model_name=\"qwen36_35b_256k\"} 1049.8486831188202\n\
-vllm:request_time_per_output_token_seconds_count{engine=\"0\",model_name=\"qwen36_35b_256k\"} 495.0\n\
-vllm:request_time_per_output_token_seconds_sum{engine=\"0\",model_name=\"qwen36_35b_256k\"} 6.363213540238716\n";
+vllm:time_to_first_token_seconds_sum{engine=\"0\",model_name=\"qwen36_35b_256k\"} 1049.8486831188202\n";
 
     #[test]
     fn perf_metrics_parse_from_real_fixture() {
         let m = parse_perf_metrics(REAL_METRICS_FIXTURE);
         assert_eq!(m.ttft_sum_s, Some(1049.8486831188202));
         assert_eq!(m.ttft_count, Some(498.0));
-        assert_eq!(m.tpot_sum_s, Some(6.363213540238716));
-        assert_eq!(m.tpot_count, Some(495.0));
-        assert_eq!(m.generation_tokens_total, Some(295648.0));
-        // 科学计数法 counter 也要能解析
-        assert_eq!(m.prompt_tokens_total, Some(4.1367205e+07));
     }
 
     #[test]
@@ -1230,10 +1094,6 @@ vllm:request_time_per_output_token_seconds_sum{engine=\"0\",model_name=\"qwen36_
         let m = parse_perf_metrics("some_other_metric 1.0\n");
         assert!(m.ttft_sum_s.is_none());
         assert!(m.ttft_count.is_none());
-        assert!(m.tpot_sum_s.is_none());
-        assert!(m.tpot_count.is_none());
-        assert!(m.generation_tokens_total.is_none());
-        assert!(m.prompt_tokens_total.is_none());
     }
 
     /// 运行状态上下文长度推断：覆盖设置页全部云端模型（2026-07 逐厂商核实，

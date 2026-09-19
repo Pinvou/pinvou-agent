@@ -2,7 +2,6 @@ const DEFAULT_BUILTIN_SKILLS = [
   {
     id: 'visual-design',
     title: '视觉设计',
-    description: '设计系统直出网页/banner/海报/简历...',
     // 设计期差量（后端 MODE_TABLE）：该技能在这些模式不提供，开关只读。
     unavailableIn: ['code'],
   },
@@ -36,9 +35,7 @@ function buildComposerToolMenuState({
       id: service.id,
       kind: 'service',
       title: service.title || service.name || service.id,
-      description: service.description || '',
       enabled: service.enabled !== false && !disabled.has(service.id),
-      connected: true,
       switchable: true,
     }));
 
@@ -48,7 +45,6 @@ function buildComposerToolMenuState({
       id: tool.id,
       kind: 'tool',
       title: tool.name || tool.title || tool.id,
-      description: tool.description || tool.subtitle || '',
       enabled: !disabled.has(tool.id),
       switchable: true,
     }));
@@ -62,7 +58,6 @@ function buildComposerToolMenuState({
       skillId: skill.id,
       kind: 'skill',
       title: skill.title || skill.name || skill.id,
-      description: skill.description || skill.subtitle || '',
       enabled: !disabled.has(skill.id),
       active: activeSkill === skill.id,
       switchable: true,
@@ -76,7 +71,6 @@ function buildComposerToolMenuState({
       skillId: skill.id,
       kind: 'builtin-skill',
       title: skill.title || skill.name || skill.id,
-      description: skill.description || skill.desc || '',
       // 该模式提供（不可用者已在上方过滤）：权限只读开关恒为开，不可手动切换。
       enabled: true,
       active: activeSkill === skill.id,

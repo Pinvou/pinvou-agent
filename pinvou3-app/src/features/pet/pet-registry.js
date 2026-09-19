@@ -6,7 +6,9 @@ function assetUrl(module) {
   return module.default;
 }
 
-const PET_LOADERS = Object.freeze({
+// Exported for scripts/validate-pet-assets.mjs, which loads this module
+// through a data-URL import and reads the exported loader table.
+export const PET_LOADERS = Object.freeze({
   lingling: Object.freeze({
     cover: () => import('../../assets/pet/lingling/cover.webp').then(assetUrl),
     atlas: () => import('../../assets/pet/lingling/spritesheet.webp').then(assetUrl),

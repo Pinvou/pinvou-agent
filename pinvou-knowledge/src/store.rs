@@ -1297,20 +1297,6 @@ impl Store {
         })
     }
 
-    pub fn add_device(
-        &self,
-        device_id: &str,
-        device_name: &str,
-        scope: AccessScope,
-        token_hash: &str,
-    ) -> rusqlite::Result<()> {
-        self.conn.lock().execute(
-            "INSERT INTO devices(id,name,scope,token_hash,created_at) VALUES(?1,?2,?3,?4,?5)",
-            params![device_id, device_name, scope_text(scope), token_hash, now()],
-        )?;
-        Ok(())
-    }
-
     pub fn add_host_owner_device(
         &self,
         device_id: &str,
@@ -1386,18 +1372,6 @@ impl Store {
 
     pub fn list_devices(&self) -> rusqlite::Result<Vec<DeviceGrant>> {
         self.list_devices_page(None, 0)
-    }
-
-    /// Test-only oracle for the device-grant queries below; the production
-    /// consumer (`KnowledgeService::device_count`) was removed with the
-    /// dead-code sweep and no command exposes a device count anymore.
-    #[cfg(test)]
-    pub fn device_count(&self) -> rusqlite::Result<i64> {
-        self.with_read_connection(|connection| {
-            connection.query_row("SELECT COUNT(*) FROM devices WHERE revoked=0", [], |row| {
-                row.get(0)
-            })
-        })
     }
 
     pub fn list_devices_page(
@@ -1936,8 +1910,26 @@ mod tests {
 
     use super::{
         DeviceMutationError, DocumentIndexUpdate, RestoreDocumentOutcome, SQLITE_BUSY_TIMEOUT,
-        Store, VECTOR_SIGNATURE_RADIUS, vector_signature, vector_signature_neighbors,
+        Store, VECTOR_SIGNATURE_RADIUS, now, params, scope_text, vector_signature,
+        vector_signature_neighbors,
     };
+
+    /// 测试专用的任意scope设备插入：生产路径只会写 owner 设备
+    /// （add_host_owner_device），成员/只读设备由配对流程创建，测试需要
+    /// 直接构造非 owner 设备来覆盖列表、分页、授权与删除语义。
+    fn add_device(
+        store: &Store,
+        device_id: &str,
+        device_name: &str,
+        scope: crate::model::AccessScope,
+        token_hash: &str,
+    ) -> rusqlite::Result<()> {
+        store.conn.lock().execute(
+            "INSERT INTO devices(id,name,scope,token_hash,created_at) VALUES(?1,?2,?3,?4,?5)",
+            params![device_id, device_name, scope_text(scope), token_hash, now()],
+        )?;
+        Ok(())
+    }
 
     #[test]
     fn collection_trash_is_hidden_and_restorable() {
@@ -2064,14 +2056,14 @@ mod tests {
                 },
             )
             .unwrap();
-        store
-            .add_device(
-                "reader-1",
-                "Reader",
-                crate::model::AccessScope::Read,
-                "reader-token",
-            )
-            .unwrap();
+        add_device(
+            &store,
+            "reader-1",
+            "Reader",
+            crate::model::AccessScope::Read,
+            "reader-token",
+        )
+        .unwrap();
 
         let primary_connection = store.conn.lock();
         let worker_store = store.clone();
@@ -2111,7 +2103,11 @@ mod tests {
                         .into_iter()
                         .map(|value| (value.ord, value.text))
                         .collect::<Vec<_>>(),
-                    worker_store.device_count()?,
+                    worker_store
+                        .list_devices()?
+                        .into_iter()
+                        .filter(|device| !device.revoked)
+                        .count() as i64,
                     worker_store
                         .list_devices()?
                         .into_iter()
@@ -2488,14 +2484,14 @@ mod tests {
     fn authorization_does_not_wait_for_the_primary_connection_mutex() {
         let root = tempfile::tempdir().unwrap();
         let store = Store::open(&root.path().join("knowledge.db")).unwrap();
-        store
-            .add_device(
-                "reader-1",
-                "Reader",
-                crate::model::AccessScope::Read,
-                "known-token-hash",
-            )
-            .unwrap();
+        add_device(
+            &store,
+            "reader-1",
+            "Reader",
+            crate::model::AccessScope::Read,
+            "known-token-hash",
+        )
+        .unwrap();
 
         let primary_connection = store.conn.lock();
         let worker_store = store.clone();
@@ -2519,14 +2515,14 @@ mod tests {
     fn device_pages_are_bounded_and_stable() {
         let store = Store::in_memory().unwrap();
         for index in 0..205 {
-            store
-                .add_device(
-                    &format!("device-{index:03}"),
-                    &format!("Device {index}"),
-                    crate::model::AccessScope::Read,
-                    &format!("token-{index:03}"),
-                )
-                .unwrap();
+            add_device(
+                &store,
+                &format!("device-{index:03}"),
+                &format!("Device {index}"),
+                crate::model::AccessScope::Read,
+                &format!("token-{index:03}"),
+            )
+            .unwrap();
         }
 
         let first = store.list_devices_page(Some(100), 0).unwrap();
@@ -2535,19 +2531,22 @@ mod tests {
 
         assert_eq!((first.len(), second.len(), third.len()), (100, 100, 5));
         assert_ne!(first.last().unwrap().id, second.first().unwrap().id);
-        assert_eq!(store.device_count().unwrap(), 205);
+        assert_eq!(
+            store
+                .list_devices()
+                .unwrap()
+                .into_iter()
+                .filter(|device| !device.revoked)
+                .count(),
+            205
+        );
     }
 
     #[test]
     fn device_mutations_protect_owners_inside_the_write_transaction() {
         let store = Store::in_memory().unwrap();
         store
-            .add_device(
-                "owner-1",
-                "Owner",
-                crate::model::AccessScope::Owner,
-                "owner-token",
-            )
+            .add_host_owner_device("owner-1", "Owner", "owner-token", "test-host-owner-meta")
             .unwrap();
 
         assert!(matches!(
@@ -2572,14 +2571,14 @@ mod tests {
     #[test]
     fn deleting_a_member_invalidates_pending_join_credentials_atomically() {
         let store = Store::in_memory().unwrap();
-        store
-            .add_device(
-                "member-1",
-                "Member",
-                crate::model::AccessScope::Read,
-                "member-token",
-            )
-            .unwrap();
+        add_device(
+            &store,
+            "member-1",
+            "Member",
+            crate::model::AccessScope::Read,
+            "member-token",
+        )
+        .unwrap();
         let pending = store
             .create_join_request(
                 "request-1",

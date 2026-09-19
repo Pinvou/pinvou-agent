@@ -19,6 +19,9 @@ const read = (...parts) => fs.readFileSync(path.join(root, ...parts), 'utf8');
 
 // ── interaction.js（tauri feature）─────────────────────────────────
 const sandbox = { window: {} };
+vm.runInNewContext(read('src', 'shared', 'bridge-shared-helpers.js'), sandbox, {
+  filename: 'shared/bridge-shared-helpers.js',
+});
 vm.runInNewContext(read('src', 'platform', 'tauri', 'bridge', 'interaction.js'), sandbox, {
   filename: 'interaction.js',
 });
@@ -308,24 +311,36 @@ function makeWebContext(initialState) {
   return context;
 }
 
-function loadWebUserInputActions(bridgeSource) {
+// submitUserInput 已随 dead-code dedup 合并进共享 payload 的 sharedBridgeBase；
+// cancelUserInput 是 web 侧独有实现，仍留在 web/bridge.js。按名称取到哪个用哪个，
+// webActions 环境继续提供原有 mock 绑定。
+const sharedHelpersSource = read('src', 'shared', 'bridge-shared-helpers.js');
+const webClusterSource = sharedHelpersSource.slice(
+  sharedHelpersSource.indexOf('function sharedBridgeBase(deps)'),
+  sharedHelpersSource.indexOf('"tauriMain"'),
+);
+const webLaneSource = read('src', 'platform', 'web', 'bridge.js');
+const loadWebUserInputActionsSafe = () => {
+  const asyncOf = (src0, name) => src0.includes(`async function ${name}(`) ? 'async ' : '';
   const ctx = {};
   vm.createContext(ctx);
   // web bridge 的提交函数带 async 前缀，extractFunction 按 `function name(` 定位会
-  // 丢掉 async，导致 vm 里 await 非法；检测源码前缀后补回。
-  const asyncOf = name => bridgeSource.includes(`async function ${name}(`) ? 'async ' : '';
+  // 丢掉 async，导致 vm 里 await 非法；检测源码前缀后补回。被移入 payload 的函数从
+  // cluster 提取，仍留在 lane 的（cancelUserInput）从 web/bridge.js 提取。
+  const grab = name => {
+    try { return asyncOf(webClusterSource, name) + extractFunction(webClusterSource, name); }
+    catch { return asyncOf(webLaneSource, name) + extractFunction(webLaneSource, name); }
+  };
   const code = [
-    asyncOf('submitUserInput') + extractFunction(bridgeSource, 'submitUserInput'),
-    asyncOf('cancelUserInput') + extractFunction(bridgeSource, 'cancelUserInput'),
+    grab('submitUserInput'),
+    grab('cancelUserInput'),
     'this.submitUserInput = submitUserInput;',
     'this.cancelUserInput = cancelUserInput;',
   ].join('\n');
   vm.runInContext(code, ctx);
   return ctx;
-}
-
-const webBridgeSource = read('src', 'platform', 'web', 'bridge.js');
-const webActions = loadWebUserInputActions(webBridgeSource);
+};
+const webActions = loadWebUserInputActionsSafe();
 
 // ── Web 单选提交：摘要与 restoredAnswers ───────────────────────────
 {
@@ -441,9 +456,18 @@ const webActions = loadWebUserInputActions(webBridgeSource);
   }
 }
 
+// parseUserAnswers/toolResultText 已随 dead-code dedup 合并进共享 payload（sharedBridgeBase
+// 单一共享实现），lane 里只剩转发函数，直接从 payload 提取实现。
+const parseHelpersSource = read('src', 'shared', 'bridge-shared-helpers.js');
 for (const [label, bridgeSource] of [
-  ['tauri bridge', read('src', 'platform', 'tauri', 'bridge.js')],
-  ['web bridge', read('src', 'platform', 'web', 'bridge.js')],
+  ['tauri bridge', parseHelpersSource.slice(
+    parseHelpersSource.indexOf('function sharedBridgeBase(deps)'),
+    parseHelpersSource.indexOf('const nestedInterruptedDisplayRange'),
+  )],
+  ['web bridge', parseHelpersSource.slice(
+    parseHelpersSource.indexOf('function sharedBridgeBase(deps)'),
+    parseHelpersSource.indexOf('const nestedInterruptedDisplayRange'),
+  )],
 ]) {
   const parseUserAnswers = loadParseUserAnswers(bridgeSource);
   const questions = [

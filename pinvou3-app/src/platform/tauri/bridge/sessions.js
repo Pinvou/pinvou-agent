@@ -4,7 +4,13 @@
   "use strict";
   // biome-ignore lint/suspicious/noAssignInExpressions: registry bootstrap of the verbatim payload; splitting statements would diverge from the artifact
   const registry = root.__PINVOU_TAURI_BRIDGE_FEATURES__ = root.__PINVOU_TAURI_BRIDGE_FEATURES__ || {};
-  registry.sessions = function (context) {
+  registry.sessions = function (context) {let pinvouSharedtauriSessionsCache = null;
+function pinvouSharedtauriSessions() {
+  if (!pinvouSharedtauriSessionsCache) pinvouSharedtauriSessionsCache = window.PinvouBridgeShared.create("tauriSessions", { sessionStates, freshBuffer, restoreEvictedSessionDraft, state, sessionBufferTouchClock: { get value() { return sessionBufferTouchClock; }, set value(v) { sessionBufferTouchClock = v; } }, pruneScheduledSessionBuffers, pruneSessionBuffers, scheduledRunSessionOwners, scheduledRunOwnerTouchClock: { get value() { return scheduledRunOwnerTouchClock; }, set value(v) { scheduledRunOwnerTouchClock = v; } }, MAX_SCHEDULED_RUN_SESSION_OWNERS, enterDraft, setScheduledTaskError, notify, addSystemItem, bt, hydratedMessageKey, basename, switchToSessionInternal, openScheduledRunChatOnce, scheduledRunOpenInFlight, loadWorkingSetFrom, invalidateScheduledRecentRunsForSession, purgeSessionBuffer, invoke, personaPlaceholderTitles, refreshHistoryList, sessionSwitchRequestToken: { get value() { return sessionSwitchRequestToken; }, set value(v) { sessionSwitchRequestToken = v; } }, saveWorkingSetTo, loadScheduledTaskRecentRuns });
+  return pinvouSharedtauriSessionsCache;
+}
+
+
     const state = context.state;
     // Optional hook: clean host-side per-session side tables when a
     // session buffer is reclaimed/deleted (bridge.js's modeStateEpochs,
@@ -140,23 +146,8 @@
       },
     };
   }
-  function getBuffer(id) {
-    if (!id) return null;
-    if (!sessionStates[id]) {
-      sessionStates[id] = freshBuffer();
-      restoreEvictedSessionDraft(id, sessionStates[id]);
-    }
-    return touchSessionBuffer(id, sessionStates[id], id.indexOf("sched-") === 0);
-  }
-  function isProtectedScheduledBuffer(id, buf) {
-    return id === state.activeSessionId ||
-      !!buf.busy ||
-      !!buf.remoteTurnActive ||
-      buf.scheduledInitialTurnPhase === "active" ||
-      !!(buf.queued && buf.queued.length) ||
-      !!(state.scheduledRunContext && state.scheduledRunContext.sessionId === id) ||
-      state.scheduledTaskCreationSessionId === id;
-  }
+function getBuffer(id) { return pinvouSharedtauriSessions().getBuffer(id); }
+function isProtectedScheduledBuffer(id, buf) { return pinvouSharedtauriSessions().isProtectedScheduledBuffer(id, buf); }
   function pruneScheduledSessionBuffers(keepId) {
     const scheduledIds = Object.keys(sessionStates).filter(function (id) {
       return !!sessionStates[id].scheduledRunSession;
@@ -183,14 +174,7 @@
       overflow -= 1;
     }
   }
-  function touchSessionBuffer(id, buf, scheduled) {
-    if (!buf) return null;
-    if (scheduled) buf.scheduledRunSession = true;
-    buf.lastTouched = ++sessionBufferTouchClock;
-    if (buf.scheduledRunSession) pruneScheduledSessionBuffers(id);
-    pruneSessionBuffers(id);
-    return buf;
-  }
+function touchSessionBuffer(id, buf, scheduled) { return pinvouSharedtauriSessions().touchSessionBuffer(id, buf, scheduled); }
   // All-session LRU: the scheduled protection predicates still apply (busy/
   // queued/remote turns are never reclaimed); only idle buffers are evicted.
   // messages/chatItems rehydrate from disk; non-rehydratable drafts such as
@@ -240,28 +224,9 @@
       loadWorkingSetFrom(freshBuffer());
     }
   }
-  function registerScheduledRunOwner(id, phase) {
-    if (typeof id !== "string" || !id) return null;
-    let owner = scheduledRunSessionOwners[id];
-    if (!owner) owner = scheduledRunSessionOwners[id] = { phase: null, lastTouched: 0 };
-    if (owner.phase !== "terminal" && phase) owner.phase = phase;
-    owner.lastTouched = ++scheduledRunOwnerTouchClock;
-    pruneScheduledRunSessionOwners();
-    return owner;
-  }
-  function scheduledRunOwnerVisibleRank(id) {
-    const runs = state.scheduledTaskRuns || [];
-    for (let i = 0; i < runs.length; i++) {
-      if (runs[i] && runs[i].sessionId === id) return i;
-    }
-    return -1;
-  }
-  function scheduledRunOwnerPriority(id) {
-    if (id === state.activeSessionId ||
-        (state.scheduledRunContext && state.scheduledRunContext.sessionId === id)) return 3;
-    if (scheduledRunOwnerVisibleRank(id) >= 0) return 2;
-    return 1;
-  }
+function registerScheduledRunOwner(id, phase) { return pinvouSharedtauriSessions().registerScheduledRunOwner(id, phase); }
+function scheduledRunOwnerVisibleRank(id) { return pinvouSharedtauriSessions().scheduledRunOwnerVisibleRank(id); }
+function scheduledRunOwnerPriority(id) { return pinvouSharedtauriSessions().scheduledRunOwnerPriority(id); }
   function isProtectedScheduledRunOwner(id) {
     return scheduledRunOwnerPriority(id) > 1;
   }
@@ -269,107 +234,14 @@
     if (!scheduledRunSessionOwners[id] || isProtectedScheduledRunOwner(id)) return;
     delete scheduledRunSessionOwners[id];
   }
-  function pruneScheduledRunSessionOwners() {
-    const ids = Object.keys(scheduledRunSessionOwners);
-    if (ids.length <= MAX_SCHEDULED_RUN_SESSION_OWNERS) return;
-    ids.sort(function (left, right) {
-      const priorityDelta = scheduledRunOwnerPriority(right) - scheduledRunOwnerPriority(left);
-      if (priorityDelta) return priorityDelta;
-      const leftVisibleRank = scheduledRunOwnerVisibleRank(left);
-      const rightVisibleRank = scheduledRunOwnerVisibleRank(right);
-      if (leftVisibleRank >= 0 || rightVisibleRank >= 0) {
-        if (leftVisibleRank < 0) return 1;
-        if (rightVisibleRank < 0) return -1;
-        if (leftVisibleRank !== rightVisibleRank) return leftVisibleRank - rightVisibleRank;
-      }
-      const touchDelta = (scheduledRunSessionOwners[right].lastTouched || 0) -
-        (scheduledRunSessionOwners[left].lastTouched || 0);
-      return touchDelta || left.localeCompare(right);
-    });
-    for (let i = MAX_SCHEDULED_RUN_SESSION_OWNERS; i < ids.length; i++) {
-      delete scheduledRunSessionOwners[ids[i]];
-    }
-  }
-  function isScheduledRunTerminal(status) {
-    const value = String(status || "").toLowerCase();
-    return ["completed", "failed", "canceled"].includes(value);
-  }
-  function rememberScheduledRunOwner(run) {
-    if (!run) return;
-    const id = typeof run.sessionId === "string" ? run.sessionId.trim() : "";
-    if (!id) return;
-    const status = String(run.status || "").toLowerCase();
-    const phase = isScheduledRunTerminal(status)
-      ? "terminal"
-      : (status === "queued" || status === "running" ? "active" : null);
-    registerScheduledRunOwner(id, phase);
-  }
-  function scheduledRunBuffer(id) {
-    const buf = getBuffer(id);
-    if (!buf) return null;
-    registerScheduledRunOwner(id, null);
-    return touchSessionBuffer(id, buf, true);
-  }
-  function markScheduledInitialTurnActive(id) {
-    const buf = scheduledRunBuffer(id);
-    const owner = registerScheduledRunOwner(id, "active");
-    if (!buf) return buf;
-    if (buf.scheduledInitialTurnPhase === "terminal" || (owner && owner.phase === "terminal")) {
-      buf.scheduledInitialTurnPhase = "terminal";
-      buf.busy = false;
-      if (state.activeSessionId === id) state.busy = false;
-      return buf;
-    }
-    buf.scheduledInitialTurnPhase = "active";
-    buf.busy = true;
-    if (state.activeSessionId === id) state.busy = true;
-    return buf;
-  }
-  function markScheduledInitialTurnTerminal(id) {
-    const buf = scheduledRunBuffer(id);
-    registerScheduledRunOwner(id, "terminal");
-    if (!buf || buf.scheduledInitialTurnPhase === "terminal") return buf;
-    if (buf.scheduledInitialTurnPhase !== "active") {
-      buf.scheduledInitialTurnPhase = "active";
-    }
-    buf.scheduledInitialTurnPhase = "terminal";
-    return buf;
-  }
-  function beginScheduledOpenActivation(id) {
-    const previous = sessionStates[id] || null;
-    const snapshot = {
-      id,
-      existed: !!previous,
-      previousPhase: previous && previous.scheduledInitialTurnPhase,
-      previousBusy: previous ? !!previous.busy : false,
-      previousStateBusy: state.activeSessionId === id ? !!state.busy : null,
-    };
-    const buf = markScheduledInitialTurnActive(id);
-    snapshot.buffer = buf;
-    snapshot.activationTouch = buf && buf.lastTouched;
-    snapshot.changed = !!buf && (
-      !snapshot.existed ||
-      snapshot.previousPhase !== buf.scheduledInitialTurnPhase ||
-      snapshot.previousBusy !== !!buf.busy
-    );
-    return snapshot;
-  }
-  function rollbackScheduledOpenActivation(snapshot) {
-    if (!snapshot || !snapshot.changed) return;
-    const current = sessionStates[snapshot.id];
-    if (!current || current !== snapshot.buffer) return;
-    if (current.scheduledInitialTurnPhase === "terminal") return;
-    if (current.lastTouched !== snapshot.activationTouch) return;
-    if (snapshot.existed) {
-      current.scheduledInitialTurnPhase = snapshot.previousPhase;
-      current.busy = snapshot.previousBusy;
-    } else {
-      delete sessionStates[snapshot.id];
-    }
-    if (state.activeSessionId === snapshot.id && snapshot.previousStateBusy !== null) {
-      state.busy = snapshot.previousStateBusy;
-    }
-  }
+function pruneScheduledRunSessionOwners() { return pinvouSharedtauriSessions().pruneScheduledRunSessionOwners(); }
+function isScheduledRunTerminal(status) { return pinvouSharedtauriSessions().isScheduledRunTerminal(status); }
+function rememberScheduledRunOwner(run) { return pinvouSharedtauriSessions().rememberScheduledRunOwner(run); }
+function scheduledRunBuffer(id) { return pinvouSharedtauriSessions().scheduledRunBuffer(id); }
+function markScheduledInitialTurnActive(id) { return pinvouSharedtauriSessions().markScheduledInitialTurnActive(id); }
+function markScheduledInitialTurnTerminal(id) { return pinvouSharedtauriSessions().markScheduledInitialTurnTerminal(id); }
+function beginScheduledOpenActivation(id) { return pinvouSharedtauriSessions().beginScheduledOpenActivation(id); }
+function rollbackScheduledOpenActivation(snapshot) { return pinvouSharedtauriSessions().rollbackScheduledOpenActivation(snapshot); }
   function saveWorkingSetTo(buf) {
     if (!buf) return;
     buf.messages = state.messages; buf.chatItems = state.chatItems; buf.artifacts = state.artifacts;
@@ -587,7 +459,7 @@
     notify();
   }
   // 公开「新建对话」入口(侧边栏按钮)= 进草稿态。名字保留以兼容前端调用。
-  async function createNewSession() { enterDraft(); }
+async function createNewSession() { return pinvouSharedtauriSessions().createNewSession(); }
 
   // ── Draft-state working directory selection (plain chat, mirroring the code
   // mode draft selector) ────────────────────────────────────────────────
@@ -863,14 +735,7 @@
     return p;
   }
 
-  function reportSessionSwitchFailure(error, errorScope) {
-    if (errorScope === "scheduled") {
-      setScheduledTaskError(error, "navigation");
-      notify();
-      return;
-    }
-    addSystemItem(bt("loadChatFailed") + error);
-  }
+function reportSessionSwitchFailure(error, errorScope) { return pinvouSharedtauriSessions().reportSessionSwitchFailure(error, errorScope); }
 
   function hydratedMessageKey(message, hideInternalEnvelope) {
     let blocks = message && Array.isArray(message.content) ? message.content : [];
@@ -892,23 +757,7 @@
     try { return JSON.stringify(message); } catch { return String(message); }
   }
 
-  function mergeHydratedMessages(durableMessages, liveMessages, hideInternalEnvelope) {
-    const durable = Array.isArray(durableMessages) ? [...durableMessages] : [];
-    const counts = Object.create(null);
-    durable.forEach(function (message) {
-      const key = hydratedMessageKey(message, hideInternalEnvelope);
-      counts[key] = (counts[key] || 0) + 1;
-    });
-    (Array.isArray(liveMessages) ? liveMessages : []).forEach(function (message) {
-      const key = hydratedMessageKey(message, hideInternalEnvelope);
-      if (counts[key]) {
-        counts[key] -= 1;
-      } else {
-        durable.push(message);
-      }
-    });
-    return durable;
-  }
+function mergeHydratedMessages(durableMessages, liveMessages, hideInternalEnvelope) { return pinvouSharedtauriSessions().mergeHydratedMessages(durableMessages, liveMessages, hideInternalEnvelope); }
 
   function mergeHydratedArtifacts(durableArtifacts, liveArtifacts) {
     const merged = [];
@@ -930,66 +779,18 @@
     return merged;
   }
 
-  function hydratedChatItemKey(item) {
-    if (!item || !item.type) return "";
-    if (item.type === "assistant") return "assistant:" + String(item.html || item.text || "");
-    if (item.type === "reasoning") return "reasoning:" + String(item.text || "");
-    if (item.type === "tool" && item.toolId) return "tool:" + item.toolId;
-    if (item.type === "artifact_card") return "artifact:" + basename(item.path);
-    if (item.type === "user_input" && item.toolCallId) return "user_input:" + item.toolCallId;
-    if (item.type === "careful_blocked" && item.toolCallId) return "careful_blocked:" + item.toolCallId;
-    if (item.type === "plan_card" && item.planId) return "plan:" + item.planId;
-    if (item.type === "user") return "user:" + String(item.text || item.html || "");
-    if (item.type === "system") return "system:" + String(item.text || "");
-    const stable = Object.assign({}, item);
-    delete stable.id;
-    delete stable.time;
-    delete stable.streaming;
-    try { return item.type + ":" + JSON.stringify(stable); } catch { return item.type + ":" + String(stable); }
-  }
+function hydratedChatItemKey(item) { return pinvouSharedtauriSessions().hydratedChatItemKey(item); }
 
-  function mergeHydratedChatItems(liveChatItems, liveCurrentStreamId) {
+  function mergeHydratedChatItems(liveChatItems, liveCurrentStreamId) {let pinvouSharedtauriSessionsN47342Cache = null;
+function pinvouSharedtauriSessionsN47342() {
+  if (!pinvouSharedtauriSessionsN47342Cache) pinvouSharedtauriSessionsN47342Cache = window.PinvouBridgeShared.create("tauriSessions:47342", { state });
+  return pinvouSharedtauriSessionsN47342Cache;
+}
+
+
     let remappedCurrentStreamId = 0;
     const availableByKey = Object.create(null);
-    function interruptedDisplayRange(item) {
-      if (!item || item.interruptedDisplayOnly !== true) return null;
-      let anchorIndex = -1;
-      let nextUserIndex = -1;
-      const afterMessageIndex = Number(item.afterMessageIndex);
-      if (Number.isFinite(afterMessageIndex) && afterMessageIndex >= 0) {
-        for (let index = 0; index < state.chatItems.length; index++) {
-          const candidate = state.chatItems[index];
-          if (!candidate || candidate.type !== "user") continue;
-          const candidateMessageIndex = Number(candidate.messageIndex);
-          if (candidateMessageIndex === afterMessageIndex) anchorIndex = index;
-          else if (anchorIndex >= 0 && candidateMessageIndex > afterMessageIndex) {
-            nextUserIndex = index;
-            break;
-          }
-        }
-      }
-      const afterUserOrdinal = Number(item.afterUserOrdinal);
-      if (anchorIndex < 0 && Number.isSafeInteger(afterUserOrdinal) && afterUserOrdinal >= 0) {
-        let userOrdinal = -1;
-        for (let fallbackIndex = 0; fallbackIndex < state.chatItems.length; fallbackIndex++) {
-          const fallback = state.chatItems[fallbackIndex];
-          if (!fallback || fallback.type !== "user") continue;
-          userOrdinal += 1;
-          if (userOrdinal === afterUserOrdinal) anchorIndex = fallbackIndex;
-          else if (userOrdinal > afterUserOrdinal) {
-            nextUserIndex = fallbackIndex;
-            break;
-          }
-        }
-      }
-      if (anchorIndex < 0) {
-        return { start: state.chatItems.length, end: state.chatItems.length };
-      }
-      return {
-        start: anchorIndex + 1,
-        end: nextUserIndex >= 0 ? nextUserIndex : state.chatItems.length,
-      };
-    }
+function interruptedDisplayRange(item) { return pinvouSharedtauriSessionsN47342().interruptedDisplayRange(item); }
     state.chatItems.forEach(function (item, index) {
       const key = hydratedChatItemKey(item);
       if (!key) return;
@@ -1175,9 +976,7 @@
     return true;
   }
 
-  async function switchToSession(id) {
-    return switchToSessionInternal(id, false, "chat");
-  }
+async function switchToSession(id) { return pinvouSharedtauriSessions().switchToSession(id); }
 
   async function openScheduledRunChatOnce(run, task) {
     const sessionId = run && typeof run.sessionId === "string" ? run.sessionId.trim() : "";
@@ -1247,42 +1046,11 @@
     return true;
   }
 
-  function openScheduledRunChat(run, task) {
-    const sessionId = run && typeof run.sessionId === "string" ? run.sessionId.trim() : "";
-    if (!sessionId) return openScheduledRunChatOnce(run, task);
-    if (scheduledRunOpenInFlight[sessionId]) return scheduledRunOpenInFlight[sessionId];
-    const opening = openScheduledRunChatOnce(run, task);
-    scheduledRunOpenInFlight[sessionId] = opening;
-    function clearOpening() {
-      if (scheduledRunOpenInFlight[sessionId] === opening) {
-        delete scheduledRunOpenInFlight[sessionId];
-      }
-    }
-    opening.then(clearOpening, clearOpening);
-    return opening;
-  }
+function openScheduledRunChat(run, task) { return pinvouSharedtauriSessions().openScheduledRunChat(run, task); }
 
-  async function exitScheduledRunChat() {
-    const context = state.scheduledRunContext;
-    if (!context) return false;
-    if (context.returnSessionId && context.returnSessionId !== context.sessionId) {
-      const restored = await switchToSessionInternal(context.returnSessionId, true, "scheduled");
-      if (restored) {
-        state.scheduledRunContext = null;
-        notify();
-        return true;
-      }
-      return false;
-    }
-    enterDraft();
-    return true;
-  }
+async function exitScheduledRunChat() { return pinvouSharedtauriSessions().exitScheduledRunChat(); }
 
-  function recentScheduledRunForSession(id) {
-    return (state.scheduledTaskRecentRuns || []).find(function (run) {
-      return run && run.sessionId === id;
-    }) || null;
-  }
+function recentScheduledRunForSession(id) { return pinvouSharedtauriSessions().recentScheduledRunForSession(id); }
 
   // 离开正在查看的会话:清 active + 换空工作集,并清掉指向它的定时运行上下文。
   // 必须连 scheduledRunContext 一起清 —— main.jsx 只按该字段真值决定渲染
@@ -1290,32 +1058,9 @@
   // 才渲染返回按钮;只清 active 会卡在「定时路由下的空白页且没有返回按钮」。
   // 清掉之后 currentView 仍是 'scheduled',界面自然落回定时任务列表。
   // 不负责 buffer:删除要丢弃 buffer,收纳要保留 buffer,由调用方各自处理。
-  function leaveSessionView(id) {
-    if (state.scheduledRunContext && state.scheduledRunContext.sessionId === id) {
-      state.scheduledRunContext = null;
-    }
-    if (state.activeSessionId !== id) return;
-    state.activeSessionId = null;
-    loadWorkingSetFrom(freshBuffer());
-  }
+function leaveSessionView(id) { return pinvouSharedtauriSessions().leaveSessionView(id); }
 
-  function applyDeletedSession(id) {
-    if (typeof id !== "string" || !id) return false;
-    invalidateScheduledRecentRunsForSession(id);
-    purgeSessionBuffer(id);
-    state.sessions = state.sessions.filter(function (session) { return session.id !== id; });
-    state.archivedSessions = (state.archivedSessions || []).filter(function (session) {
-      return session.id !== id;
-    });
-    state.scheduledTaskRecentRuns = (state.scheduledTaskRecentRuns || []).filter(function (run) {
-      return !run || run.sessionId !== id;
-    });
-    state.scheduledTaskRuns = (state.scheduledTaskRuns || []).filter(function (run) {
-      return !run || run.sessionId !== id;
-    });
-    notify();
-    return true;
-  }
+function applyDeletedSession(id) { return pinvouSharedtauriSessions().applyDeletedSession(id); }
 
   if (typeof listen === "function") {
     listen("session:deleted", function (event) {
@@ -1364,55 +1109,9 @@
     }
   }
 
-  async function renameSession(id, title) {
-    invalidateScheduledRecentRunsForSession(id);
-    try {
-      await invoke("rename_session", { id, title });
-      const s = state.sessions.find(function (s) { return s.id === id; });
-      if (s) s.title = title;
-      state.scheduledTaskRecentRuns = (state.scheduledTaskRecentRuns || []).map(function (run) {
-        return run && run.sessionId === id ? Object.assign({}, run, { sessionTitle: title }) : run;
-      });
-      delete personaPlaceholderTitles[id]; // 用户主动命名后不再算卡牌占位,不被对话覆盖
-      notify();
-    } catch (e) {
-      console.warn("rename failed", e);
-    }
-  }
+async function renameSession(id, title) { return pinvouSharedtauriSessions().renameSession(id, title); }
 
-  async function toggleSessionPinned(id, pinned) {
-    invalidateScheduledRecentRunsForSession(id);
-    const s = state.sessions.find(function (s) { return s.id === id; });
-    const scheduledRun = recentScheduledRunForSession(id);
-    const prev = s ? !!s.pinned : false;
-    const prevPinnedAt = s ? s.pinned_at : null;
-    const previousRunPinned = scheduledRun ? !!scheduledRun.pinned : false;
-    const previousRunPinnedAt = scheduledRun ? scheduledRun.pinnedAt : null;
-    if (s) {
-      s.pinned = !!pinned;
-      s.pinned_at = pinned ? new Date().toISOString() : null;
-    }
-    if (scheduledRun) {
-      scheduledRun.pinned = !!pinned;
-      scheduledRun.pinnedAt = pinned ? new Date().toISOString() : null;
-    }
-    notify();
-    try {
-      await invoke("set_session_pinned", { id, pinned: !!pinned });
-      await refreshHistoryList();
-    } catch (e) {
-      if (s) {
-        s.pinned = prev;
-        s.pinned_at = prevPinnedAt;
-      }
-      if (scheduledRun) {
-        scheduledRun.pinned = previousRunPinned;
-        scheduledRun.pinnedAt = previousRunPinnedAt;
-      }
-      console.warn("set_session_pinned failed", e);
-      await refreshHistoryList();
-    }
-  }
+async function toggleSessionPinned(id, pinned) { return pinvouSharedtauriSessions().toggleSessionPinned(id, pinned); }
 
   // One-click full session log export: the backend opens the native save
   // dialog and packs the full-fidelity session record (system prompt, all
@@ -1425,112 +1124,9 @@
     return invoke("export_session", { id, defaultName, includeArtifacts: true });
   }
 
-  async function archiveSession(id) {
-    invalidateScheduledRecentRunsForSession(id);
-    const idx = state.sessions.findIndex(function (s) { return s.id === id; });
-    if (idx < 0) {
-      // 定时运行会话不在 state.sessions;收起 = 从侧边栏记录移除,进设置页归档列表。
-      const scheduledRun = recentScheduledRunForSession(id);
-      // Codex 等独立会话也不在 state.sessions；交给后端判定并刷新统一历史列表。
-      if (!scheduledRun) {
-        try {
-          await invoke("set_session_archived", { id, archived: true });
-          await refreshHistoryList();
-          return true;
-        } catch (e) {
-          console.warn("set_session_archived failed", e);
-          return false;
-        }
-      }
-      const previousRuns = state.scheduledTaskRecentRuns || [];
-      const wasViewingRun = state.activeSessionId === id;
-      const previousContext = state.scheduledRunContext;
-      // 归档等待期间的导航 token：失败回滚时「activeSessionId === null」不足以
-      // 证明无新导航——用户再进草稿也保持 null（enterDraft 只推进 token），
-      // 仅 token 未前移才允许把 active 拽回归档会话（三审 P1）。
-      const navToken = sessionSwitchRequestToken;
-      // 与普通会话收纳同语义:保留 buffer(还能从设置页还原后重开),但要离开当前视图。
-      if (wasViewingRun) saveWorkingSetTo(getBuffer(id));
-      state.scheduledTaskRecentRuns = previousRuns.filter(function (run) {
-        return !run || run.sessionId !== id;
-      });
-      leaveSessionView(id);
-      notify();
-      try {
-        await invoke("set_session_archived", { id, archived: true });
-        await refreshHistoryList();
-        return true;
-      } catch (e) {
-        state.scheduledTaskRecentRuns = previousRuns;
-        // 回滚 active 仅当用户没有新导航（leaveSessionView 已置 null）：
-        // await 期间切到别的会话/再进草稿都不得劫持 active（审计、三审 P1）。
-        if (wasViewingRun && state.activeSessionId === null
-            && navToken === sessionSwitchRequestToken) {
-          // active 与 scheduledRunContext 必须成对回滚,否则会落到
-          // 「active 有值但 context 空」的错位态(界面回任务列表却仍持有会话)。
-          state.activeSessionId = id;
-          state.scheduledRunContext = previousContext;
-          loadWorkingSetFrom(getBuffer(id));
-        }
-        console.warn("set_session_archived failed", e);
-        notify();
-        return false;
-      }
-    }
-    const s = state.sessions[idx];
-    const archived = Object.assign({}, s, { archived: true, archived_at: new Date().toISOString(), pinned: false, pinned_at: null });
-    const wasActive = state.activeSessionId === id;
-    // 与 scheduled 分支同源：失败回滚须以导航 token 证明「无新导航」——
-    // 归档等待期间再进草稿 activeSessionId 仍为 null（三审 P1）。
-    const navToken = sessionSwitchRequestToken;
-    if (wasActive) saveWorkingSetTo(getBuffer(id));
-    state.sessions.splice(idx, 1);
-    state.archivedSessions = [archived, ...(state.archivedSessions || []).filter(function (x) { return x.id !== id; })];
-    leaveSessionView(id);
-    notify();
-    try {
-      await invoke("set_session_archived", { id, archived: true });
-      await refreshHistoryList();
-      return true;
-    } catch (e) {
-      state.sessions.splice(idx, 0, s);
-      state.archivedSessions = (state.archivedSessions || []).filter(function (x) { return x.id !== id; });
-      // 回滚 active 仅当用户没有新导航（leaveSessionView 已置 null）：
-      // await 期间切到别的会话/再进草稿都不得劫持 active（审计、三审 P1）。
-      if (wasActive && state.activeSessionId === null
-          && navToken === sessionSwitchRequestToken) {
-        state.activeSessionId = id;
-        loadWorkingSetFrom(getBuffer(id));
-      }
-      console.warn("set_session_archived failed", e);
-      notify();
-      return false;
-    }
-  }
+async function archiveSession(id) { return pinvouSharedtauriSessions().archiveSession(id); }
 
-  async function restoreArchivedSession(id) {
-    const idx = (state.archivedSessions || []).findIndex(function (s) { return s.id === id; });
-    if (idx < 0) return false;
-    const s = state.archivedSessions[idx];
-    invalidateScheduledRecentRunsForSession(id);
-    const restored = Object.assign({}, s, { archived: false, archived_at: null });
-    state.archivedSessions.splice(idx, 1);
-    state.sessions = [restored, ...(state.sessions || [])];
-    notify();
-    try {
-      await invoke("set_session_archived", { id, archived: false });
-      await refreshHistoryList();
-      // 还原的定时运行会话回侧边栏"定时任务记录"(refreshHistoryList 只管普通会话)。
-      if (String(id).indexOf("sched-") === 0) loadScheduledTaskRecentRuns().catch(function () {});
-      return true;
-    } catch (e) {
-      state.archivedSessions.splice(idx, 0, s);
-      state.sessions = (state.sessions || []).filter(function (x) { return x.id !== id; });
-      console.warn("restore archived session failed", e);
-      notify();
-      return false;
-    }
-  }
+async function restoreArchivedSession(id) { return pinvouSharedtauriSessions().restoreArchivedSession(id); }
 
   // 实时态有专属气泡的工具（方案卡），重建时要还原成原卡而非普通工具卡。
 

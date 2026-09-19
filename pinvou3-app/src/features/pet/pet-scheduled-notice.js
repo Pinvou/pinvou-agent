@@ -1,19 +1,17 @@
 import { dict } from '../../shared/i18n.js';
+import { sessionPayloadId } from './pet-state.js';
 
+// 持久化键仅在本模块读写(read/acknowledge),不对外暴露。
 const SCHEDULED_NOTICE_ACK_KEY = 'pinvou3-pet-scheduled-notice-ack-v1';
 
-function sessionId(payload) {
-  return String((payload && (payload.session_id || payload.sessionId || payload.id)) || '').trim();
-}
-
 export function isScheduledSessionPayload(payload) {
-  return sessionId(payload).startsWith('sched-');
+  return sessionPayloadId(payload).startsWith('sched-');
 }
 
 function normalizedNotice(task, run) {
   const status = String((run && run.status) || '').toLowerCase();
   const runId = String((run && (run.id || run.runId || run.run_id)) || '').trim();
-  const session = sessionId(run);
+  const session = sessionPayloadId(run);
   const taskName = String((task && task.name) || '').trim();
   const endedAt = String((run && (run.endedAt || run.ended_at)) || '').trim();
   const endedAtMs = Date.parse(endedAt);
