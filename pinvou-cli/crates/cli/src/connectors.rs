@@ -1768,6 +1768,33 @@ fn run_tar_bounded(args: &[String], timeout_secs: u64) -> Result<Vec<u8>, CliErr
     let mut child = command
         .spawn()
         .map_err(|error| CliError::failed(format!("cannot spawn tar: {error}")))?;
+    let mut stdout_pipe = child.stdout.take();
+    let mut stderr_pipe = child.stderr.take();
+    // Drain both pipes from the moment the child exists — the same
+    // concurrency the vendor-CLI capture above uses. A `tar -tf` listing
+    // larger than the OS pipe buffer fills it before tar can exit, so
+    // waiting for the child first would block tar on write forever and
+    // misreport the stall as a timeout. The caps bound memory when a
+    // descendant inherited the pipes (listings may be large; diagnostics
+    // are not).
+    let (out_tx, out_rx) = std::sync::mpsc::channel();
+    std::thread::spawn(move || {
+        let mut bytes = Vec::new();
+        if let Some(pipe) = stdout_pipe.as_mut() {
+            use std::io::Read as _;
+            let _ = pipe.take(64 * 1024 * 1024).read_to_end(&mut bytes);
+        }
+        let _ = out_tx.send(bytes);
+    });
+    let (err_tx, err_rx) = std::sync::mpsc::channel();
+    std::thread::spawn(move || {
+        let mut bytes = Vec::new();
+        if let Some(pipe) = stderr_pipe.as_mut() {
+            use std::io::Read as _;
+            let _ = pipe.take(1024 * 1024).read_to_end(&mut bytes);
+        }
+        let _ = err_tx.send(bytes);
+    });
     let deadline = std::time::Duration::from_secs(timeout_secs);
     let status = child
         .wait_timeout(deadline)
@@ -1779,33 +1806,17 @@ fn run_tar_bounded(args: &[String], timeout_secs: u64) -> Result<Vec<u8>, CliErr
         )));
     };
     // The direct child is reaped; collect the pipes with the shared grace
-    // and proceed with whatever arrived (never kill a reaped group).
-    let (out_tx, out_rx) = std::sync::mpsc::channel();
-    // stdout/stderr were piped; drain them so a large listing cannot deadlock.
-    let mut stdout_pipe = child.stdout.take();
-    let mut stderr_pipe = child.stderr.take();
-    std::thread::spawn(move || {
-        let mut bytes = Vec::new();
-        if let Some(pipe) = stdout_pipe.as_mut() {
-            use std::io::Read as _;
-            let _ = pipe.take(64 * 1024 * 1024).read_to_end(&mut bytes);
-        }
-        let _ = out_tx.send(bytes);
-    });
-    let err_handle = std::thread::spawn(move || {
-        let mut bytes = Vec::new();
-        if let Some(pipe) = stderr_pipe.as_mut() {
-            use std::io::Read as _;
-            let _ = pipe.take(1024 * 1024).read_to_end(&mut bytes);
-        }
-        bytes
-    });
-    // The stdout bytes travel through the channel (the sender owned the
-    // pipe); collect with the same grace discipline as the vendor drains.
-    let stdout = out_rx
-        .recv_timeout(std::time::Duration::from_secs(5))
-        .unwrap_or_default();
-    let stderr = err_handle.join().unwrap_or_default();
+    // and proceed with whatever arrived (never kill a reaped group). The
+    // grace also covers a descendant that inherited stderr and holds the
+    // pipe open past the child's exit.
+    const DRAIN_GRACE: std::time::Duration = std::time::Duration::from_secs(5);
+    let collect = |rx: std::sync::mpsc::Receiver<Vec<u8>>| -> Vec<u8> {
+        rx.recv_timeout(DRAIN_GRACE)
+            .or_else(|_| rx.recv_timeout(DRAIN_GRACE))
+            .unwrap_or_default()
+    };
+    let stdout = collect(out_rx);
+    let stderr = collect(err_rx);
     if !status.success() {
         let detail = String::from_utf8_lossy(&stderr);
         let detail = pinvou3_lib::platform::credential_store::redact_secret(detail.trim());
@@ -2636,5 +2647,51 @@ mod tests {
         };
         assert_eq!(url, "https://login.dingtalk.com/oauth/authorize?x=1");
         drain.join().expect("drainer thread must not panic");
+    }
+
+    #[test]
+    fn tar_bounded_drains_a_listing_larger_than_the_pipe_buffer() {
+        // Regression: the drains used to start only after `wait_timeout`, so
+        // a `tar -tf` listing bigger than the OS pipe buffer filled it, tar
+        // blocked on write, never exited, and the wait expired into a bogus
+        // budget kill (~64 KiB into the listing). The drains must run
+        // concurrently with the wait: this listing is several times the
+        // 64 KiB Linux pipe cap, and the final entry only arrives after the
+        // cap has been written and drained.
+        let nanos = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map(|duration| duration.as_nanos())
+            .unwrap_or(0);
+        let work =
+            std::env::temp_dir().join(format!("pinvou-tar-drain-{}-{nanos}", std::process::id()));
+        std::fs::create_dir_all(&work).expect("temp tree must be creatable");
+        let long = "x".repeat(120);
+        for index in 0..2000 {
+            std::fs::write(work.join(format!("{long}-{index}")), b"")
+                .expect("empty archive member must be writable");
+        }
+        let archive = work.with_extension("tar");
+        let packed = Command::new("tar")
+            .arg("-cf")
+            .arg(&archive)
+            .arg("-C")
+            .arg(&work)
+            .arg(".")
+            .status()
+            .expect("system tar must exist where archive extraction is supported");
+        assert!(packed.success(), "tar must archive the staged members");
+        let listing = run_tar_bounded(&["-tf".to_owned(), archive.display().to_string()], 30)
+            .expect("a large listing must drain concurrently, not time out");
+        assert!(
+            listing.len() > 128 * 1024,
+            "listing must exceed the pipe buffer, got {} bytes",
+            listing.len()
+        );
+        let listing = String::from_utf8_lossy(&listing);
+        assert!(
+            listing.contains(&format!("{long}-0")) && listing.contains(&format!("{long}-1999")),
+            "listing must cover the first and last member"
+        );
+        let _ = std::fs::remove_dir_all(&work);
     }
 }
