@@ -4,10 +4,12 @@
 //! 一切外部能力统一建模为包：
 //!
 //! ```text
-//! Bundle = { id, name, mcp_servers: [], skills: [], cli: [],
-//!            credentials: [ { key, target: env|credential|bearer, required } ] }
+//! Bundle = { id, name, kind, credentials: [ { key, target: env|credential|bearer,
+//!            required } ], ... }
 //! ```
 //!
+//! 包内组成（mcp_servers / skills / cli）只在注册期用于 kind 推导与 companion
+//! 认领；`BundleInfo` 对前端只携带展示与门控所需的功能事实。
 //! - 包是唯一真相源；`mcp.json`、会话 skills 组合目录降级为投影（后续步骤实施）
 //! - 包类型不做存储标签，`bundle_kind` 由内容现算（可信代码推导，防自报标签提权）
 //! - 一个包 = 一个开关；包内技能可见性唯一跟随所属包
@@ -214,18 +216,11 @@ pub struct BundleInfo {
     pub id: String,
     pub name: String,
     pub kind: BundleKind,
-    /// 包内 MCP server id（无则空）
-    pub mcp_servers: Vec<String>,
-    /// 包内技能 id（无则空）
-    pub skills: Vec<String>,
-    /// 包内 CLI 连接器 id（无则空）
-    pub cli: Vec<String>,
     /// 包声明的凭据项（收敛自 config_fields/secret_env/secret_headers）
     pub credentials: Vec<CredentialSpec>,
     /// 功能事实（修复方案 V4 下沉；icon/color/todayImg/welcomeQueries/i18n 留前端 overlay）
     pub description: String,
     pub version: String,
-    pub auth_required: bool,
     /// 配置弹窗字段功能事实（label/placeholder/helpText 留前端）
     pub config_fields: Vec<ConfigFieldSpec>,
     pub installed: bool,
@@ -244,13 +239,6 @@ pub struct BundleInfo {
     /// `connect`（flow=oauth）而非 `install`/`configure`。
     #[serde(default)]
     pub oauth: bool,
-    /// 业务分类（功能事实：docs/collab/life/office…，技能为 "skill"）——
-    /// 前端业务分组取数；分类的展示名（i18n label）仍留前端 overlay。
-    #[serde(default)]
-    pub category: String,
-    /// 图标相对包目录路径（`icon.svg`/`icon.png`；缺省 None → 前端用默认图标）。
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub icon: Option<String>,
     /// 用户自定义展示名/说明覆盖的**原值**（仅 source=Upload 的包；存于
     /// bundles.json extra，供前端编辑弹窗预填）。name/description 已是应用
     /// 覆盖后的生效值。
@@ -329,12 +317,6 @@ impl BundleRegistry {
             skill_claimed.extend(companions.iter().cloned());
             let credentials = tool_credentials(&tool);
             let config_fields = tool_config_fields(&tool);
-            // auth_required 功能事实：有必填凭据或远程 server（OAuth）即需授权；
-            // 本地免凭据工具（obsidian/pptx/gongwen）不需要。
-            let auth_required = !config_fields.is_empty()
-                || !tool.secret_env.is_empty()
-                || !tool.secret_headers.is_empty()
-                || !tool.servers.is_empty();
             // 上传来源的包：用户自定义展示名/说明（bundles.json extra）覆盖
             // manifest 的 name/description；空/缺 key 回退 manifest 现状。
             let upload_record = store_records.as_ref().and_then(|records| {
@@ -355,23 +337,17 @@ impl BundleRegistry {
                 } else {
                     BundleKind::Bundle
                 },
-                mcp_servers: vec![tool.id.clone()],
-                skills: companions,
-                cli: Vec::new(),
                 credentials,
                 description: display_description
                     .clone()
                     .unwrap_or_else(|| tool.description.clone()),
                 version: tool.version.clone(),
-                auth_required,
                 config_fields,
                 installed,
                 user_uploaded: upload_record.is_some(),
                 degraded,
                 update_available: false,
                 oauth: !tool.servers.is_empty(),
-                category: tool.category.clone(),
-                icon: bundle_icon_path(&tool.id),
                 display_name,
                 display_description,
             });
@@ -397,21 +373,15 @@ impl BundleRegistry {
                 id: skill.id.clone(),
                 name: skill.title.clone(),
                 kind: BundleKind::Skill,
-                mcp_servers: Vec::new(),
-                skills: vec![skill.id.clone()],
-                cli: Vec::new(),
                 credentials: Vec::new(),
                 description: skill.description.clone(),
                 version: String::new(),
-                auth_required: false,
                 config_fields: Vec::new(),
                 installed,
                 user_uploaded: false,
                 degraded,
                 update_available: skill.update_available,
                 oauth: false,
-                category: "skill".to_string(),
-                icon: bundle_icon_path(&skill.id),
                 display_name: None,
                 display_description: None,
             });
@@ -429,33 +399,26 @@ impl BundleRegistry {
                 id: skill.id.clone(),
                 name: skill.title.clone(),
                 kind: BundleKind::Skill,
-                mcp_servers: Vec::new(),
-                skills: vec![skill.id.clone()],
-                cli: Vec::new(),
                 credentials: Vec::new(),
                 description: skill.description.clone(),
                 version: String::new(),
-                auth_required: false,
                 config_fields: Vec::new(),
                 installed,
                 user_uploaded: true,
                 degraded,
                 update_available: false,
                 oauth: false,
-                category: "skill".to_string(),
-                icon: bundle_icon_path(&skill.id),
                 display_name: skill.display_name.clone(),
                 display_description: skill.display_description.clone(),
             });
         }
 
         // 4) CLI 连接器源（内置常量表；V2 后不含 ima。元数据已随 Phase 2 第七刀
-        //    下沉：desc 取自常量表、version 取 lock 表钉住版本、auth_required 恒 true
-        //    ——CLI 连接器都要授权；i18n 展示资产留前端 overlay）
-        //    skills 登记配套官方技能目录（kind 仍由 cli 优先派生为 Cli）——注册表
-        //    由此成为「连接器 → 配套技能」的单一真相源，供 companion 联动排除
-        //    与技能解包门控取数。
-        for (id, name, bin, skill_dirs, desc) in BUILTIN_CLI_BUNDLES {
+        //    下沉：desc 取自常量表、version 取 lock 表钉住版本；i18n 展示资产留
+        //    前端 overlay）。「连接器 → 配套技能」的单一真相源仍是常量表本身
+        //    （`cli_bundle_skill_dirs` / `cli_bundle_of_skill` 取数），不再经
+        //    BundleInfo 透出。
+        for (id, name, bin, _, desc) in BUILTIN_CLI_BUNDLES {
             let (installed, degraded) = store_state(id).unwrap_or((false, None));
             // version 功能事实：lock 表钉住版本（tmeet 走 npm 无 lock 条目 → 空，
             // 前端 overlay 保留自报版本展示）
@@ -466,21 +429,15 @@ impl BundleRegistry {
                 id: (*id).to_string(),
                 name: (*name).to_string(),
                 kind: BundleKind::Cli,
-                mcp_servers: Vec::new(),
-                skills: skill_dirs.iter().map(|s| (*s).to_string()).collect(),
-                cli: vec![(*id).to_string()],
                 credentials: Vec::new(),
                 description: (*desc).to_string(),
                 version,
-                auth_required: true,
                 config_fields: Vec::new(),
                 installed,
                 user_uploaded: false,
                 degraded,
                 update_available: false,
                 oauth: false,
-                category: "collab".to_string(),
-                icon: bundle_icon_path(id),
                 display_name: None,
                 display_description: None,
             });
@@ -492,7 +449,6 @@ impl BundleRegistry {
         // 注意区分「store 不可读」（回退推导）与「记录不存在」（再查别名 id）：
         // 通用 store_state 对缺记录也返回 Some((false, None))，直接 .or_else 会让
         // ima-skills 兜底永不触发（三轮评审死代码）。
-        let ima_skills = ["ima-skills"];
         let (ima_installed, ima_degraded) = match &store_records {
             Some(records) => ["ima", "ima-skills"]
                 .iter()
@@ -505,9 +461,6 @@ impl BundleRegistry {
             id: "ima".to_string(),
             name: "腾讯 ima".to_string(),
             kind: BundleKind::Skill,
-            mcp_servers: Vec::new(),
-            skills: ima_skills.iter().map(|s| s.to_string()).collect(),
-            cli: Vec::new(),
             credentials: vec![
                 CredentialSpec {
                     key: "IMA_CLIENT_ID".to_string(),
@@ -524,7 +477,6 @@ impl BundleRegistry {
             // 预置技能无版本概念（无版本号/无自动更新机制），version 留空，
             // 前端 overlay 保留自报版本展示
             version: String::new(),
-            auth_required: true,
             config_fields: vec![
                 ConfigFieldSpec {
                     key: "IMA_CLIENT_ID".to_string(),
@@ -544,8 +496,6 @@ impl BundleRegistry {
             degraded: ima_degraded,
             update_available: false,
             oauth: false,
-            category: "docs".to_string(),
-            icon: bundle_icon_path("ima"),
             display_name: None,
             display_description: None,
         });
@@ -582,16 +532,14 @@ pub fn derive_bundle_kind(
     }
 }
 
-/// 探测包目录下的图标文件（`icon.svg`/`icon.png`），返回相对包目录的路径。
-/// 已装工具图标与工具同目录（plugin-protocol §15.6）；无图标返回 None → 前端默认图标。
-pub fn bundle_icon_path(id: &str) -> Option<String> {
-    let pkg = crate::platform::paths::bundles_root().join(id);
-    for name in ["icon.svg", "icon.png"] {
-        if pkg.join(name).is_file() {
-            return Some(name.to_string());
-        }
+/// config_fields `target` 字符串 → [`CredentialTarget`]（缺省/未知 = env），
+/// 与 `types::ConfigField.target` 的 serde 缺省值（"env"）同口径。
+fn parse_credential_target(target: &str) -> CredentialTarget {
+    match target {
+        "bearer" => CredentialTarget::Bearer,
+        "credential" => CredentialTarget::Credential,
+        _ => CredentialTarget::Env,
     }
-    None
 }
 
 /// 从 MCP ToolManifest 收敛凭据声明（修复方案一）：config_fields → credentials，
@@ -612,11 +560,7 @@ pub(crate) fn tool_credentials(tool: &super::ToolManifest) -> Vec<CredentialSpec
             }
         };
     for f in &tool.config_fields {
-        let target = match f.target.as_str() {
-            "bearer" => CredentialTarget::Bearer,
-            "credential" => CredentialTarget::Credential,
-            _ => CredentialTarget::Env,
-        };
+        let target = parse_credential_target(&f.target);
         push(&mut out, f.key.clone(), target, f.required);
     }
     for s in &tool.secret_env {
@@ -657,11 +601,7 @@ fn tool_config_fields(tool: &super::ToolManifest) -> Vec<ConfigFieldSpec> {
             &mut out,
             f.key.clone(),
             f.required,
-            match f.target.as_str() {
-                "bearer" => CredentialTarget::Bearer,
-                "credential" => CredentialTarget::Credential,
-                _ => CredentialTarget::Env,
-            },
+            parse_credential_target(&f.target),
             f.secret,
         );
     }
@@ -735,29 +675,7 @@ mod tests {
     use std::io::Write;
 
     use super::*;
-
-    /// 把 PINVOU3_HOME 指到干净临时目录跑闭包,跑完恢复并清理。
-    /// 与 marketplace/mod.rs / paths 测试共享 ENV_LOCK（V6：CI rust-test 已启用，
-    /// 并行跑会互相覆盖 PINVOU3_HOME，必须串行）。
-    fn with_temp_home<F: FnOnce()>(f: F) {
-        let _g = crate::platform::paths::tests::ENV_LOCK
-            .lock()
-            .unwrap_or_else(|p| p.into_inner());
-        let dir = std::env::temp_dir().join(format!("pinvou3-bundle-test-{}", std::process::id()));
-        let _ = std::fs::remove_dir_all(&dir);
-        std::fs::create_dir_all(&dir).unwrap();
-        let prev = std::env::var("PINVOU3_HOME").ok();
-        // SAFETY: holding platform::paths::tests::ENV_LOCK; env writes serialized in-process.
-        unsafe { std::env::set_var("PINVOU3_HOME", &dir) };
-        f();
-        match prev {
-            // SAFETY: holding platform::paths::tests::ENV_LOCK; env writes serialized in-process.
-            Some(v) => unsafe { std::env::set_var("PINVOU3_HOME", v) },
-            // SAFETY: holding platform::paths::tests::ENV_LOCK; env writes serialized in-process.
-            None => unsafe { std::env::remove_var("PINVOU3_HOME") },
-        }
-        let _ = std::fs::remove_dir_all(&dir);
-    }
+    use crate::platform::test_support::with_temp_home;
 
     /// fixture：临时 home 下构造 mcp-servers manifest + 技能目录 + 上传标记。
     /// `install_gongwen=true` 时把 gongwen 写入 installed.json（V5 认领条件）。
@@ -857,21 +775,15 @@ mod tests {
             id: "x".into(),
             name: "x".into(),
             kind,
-            mcp_servers: vec![],
-            skills: vec![],
-            cli: vec![],
             credentials: creds,
             description: String::new(),
             version: String::new(),
-            auth_required: false,
             config_fields: vec![],
             installed: true,
             user_uploaded: false,
             degraded: None,
             update_available: false,
             oauth: false,
-            category: String::new(),
-            icon: None,
             display_name: None,
             display_description: None,
         };
@@ -969,8 +881,6 @@ mod tests {
                 target: "env".into(),
                 secret: false,
             }],
-            routing_rules: vec![],
-            tool_table_entries: vec![],
             pip_dependencies: vec![],
             python_dependencies: None,
             servers: vec![],
@@ -1036,8 +946,6 @@ mod tests {
                     secret: true,
                 },
             ],
-            routing_rules: vec![],
-            tool_table_entries: vec![],
             pip_dependencies: vec![],
             python_dependencies: None,
             servers: vec![],
@@ -1063,7 +971,7 @@ mod tests {
 
     #[test]
     fn registry_lists_all_source_kinds() {
-        with_temp_home(|| {
+        with_temp_home("pinvou3-bundle-test", || {
             let home = std::env::var("PINVOU3_HOME").unwrap();
             seed_fixture(std::path::Path::new(&home), true);
             // 真相源反转后 installed 以 BundleStore 为准（V5 认领条件同源）
@@ -1087,16 +995,13 @@ mod tests {
                 bundles.iter().any(|b| b.kind == BundleKind::Cli),
                 "应含 CLI 包"
             );
-            // gongwen 已装 → 组合包，携带 government-writing
+            // gongwen 已装 → 组合包（companion 技能随包认领；BundleInfo 不再透出
+            // skills 列表，认领语义由 kind = Bundle 表达）
             let gongwen = bundles
                 .iter()
                 .find(|b| b.id == "gongwen")
                 .expect("gongwen 应存在");
             assert_eq!(gongwen.kind, BundleKind::Bundle, "gongwen 已装应为组合包");
-            assert!(
-                gongwen.skills.contains(&"government-writing".to_string()),
-                "gongwen 应携带 government-writing"
-            );
             assert!(gongwen.installed);
             // government-writing 不应再以独立技能包出现（已被认领）
             assert!(
@@ -1127,7 +1032,6 @@ mod tests {
                 .find(|b| b.id == "ima")
                 .expect("ima 包应存在");
             assert_eq!(ima.kind, BundleKind::Skill, "ima 应归 Skill");
-            assert!(ima.skills.contains(&"ima-skills".to_string()));
             assert!(
                 ima.credentials
                     .iter()
@@ -1139,25 +1043,8 @@ mod tests {
                 !bundles.iter().any(|b| b.id == "ima-skills"),
                 "ima-skills 不得独立成包"
             );
-            // wecom 卡 skills = 1.1.0 的 14 新名（五轮评审必修 3：曾按 0.1.9 旧表
-            // 显示 7 个含已死的 msg/schedule、漏 9 个新名）；退役名不得出现
-            let wecom = bundles
-                .iter()
-                .find(|b| b.id == "wecom")
-                .expect("wecom 包应存在");
-            assert_eq!(wecom.skills.len(), 14, "wecom 卡应列 14 个新技能");
-            for new_name in ["wecomcli-calendar", "wecomcli-message", "wecomcli-disk"] {
-                assert!(
-                    wecom.skills.contains(&new_name.to_string()),
-                    "wecom 卡应含新技能 {new_name}"
-                );
-            }
-            for legacy in crate::platform::connector_skills::WECOM_LEGACY_SKILL_DIRS {
-                assert!(
-                    !wecom.skills.contains(&legacy.to_string()),
-                    "wecom 卡不得含退役技能 {legacy}"
-                );
-            }
+            // wecom 卡的配套技能表以 platform::connector_skills 单一真相源为准
+            //（`wecom_skill_dirs_track_platform_truth` 钉住 14 新名/退役名口径）。
             // id 唯一（一个包 = 一个开关的前提）
             let mut ids: Vec<&str> = bundles.iter().map(|b| b.id.as_str()).collect();
             ids.sort_unstable();
@@ -1172,7 +1059,7 @@ mod tests {
     /// 预置 MCP 包不受 extra 影响。
     #[test]
     fn registry_applies_display_overrides_for_uploaded_mcp_bundles() {
-        with_temp_home(|| {
+        with_temp_home("pinvou3-bundle-test", || {
             let home = std::env::var("PINVOU3_HOME").unwrap();
             seed_fixture(std::path::Path::new(&home), true);
             // weather 改为 Upload 记录并写覆盖（seed 里是磁盘 manifest 无记录；
@@ -1238,20 +1125,19 @@ mod tests {
     /// V5：包本体未装时 companion 技能保留独立纯技能包形态（存量单装兼容）。
     #[test]
     fn uninstalled_bundle_keeps_companion_skill_independent() {
-        with_temp_home(|| {
+        with_temp_home("pinvou3-bundle-test", || {
             let home = std::env::var("PINVOU3_HOME").unwrap();
             seed_fixture(std::path::Path::new(&home), false);
             // 存量单装：installed 以 BundleStore 记录为准
             store_install(&["government-writing"]);
             let reg = BundleRegistry::new();
             let bundles = reg.list_bundles();
-            // gongwen 未装 → 纯 MCP 包（不认领）
+            // gongwen 未装 → 纯 MCP 包（不认领；kind = Mcp 即技能未被认领）
             let gongwen = bundles
                 .iter()
                 .find(|b| b.id == "gongwen")
                 .expect("gongwen 应存在");
             assert_eq!(gongwen.kind, BundleKind::Mcp, "gongwen 未装应为纯 MCP 包");
-            assert!(gongwen.skills.is_empty(), "未装包不得认领技能");
             assert!(!gongwen.installed);
             // government-writing 保留独立技能包（存量单装可继续开关）
             let skill = bundles
@@ -1268,7 +1154,7 @@ mod tests {
     /// 已装 MCP：认领同名技能，derive 为 Bundle 携带技能。
     #[test]
     fn pptx_same_id_companion_claim_follows_install_state() {
-        with_temp_home(|| {
+        with_temp_home("pinvou3-bundle-test", || {
             let home = std::env::var("PINVOU3_HOME").unwrap();
             let home = std::path::Path::new(&home).to_path_buf();
             seed_fixture(&home, false);
@@ -1293,7 +1179,6 @@ mod tests {
             let pptx: Vec<_> = bundles.iter().filter(|b| b.id == "pptx").collect();
             assert_eq!(pptx.len(), 1, "同名技能不得再独立成包（包 id 唯一）");
             assert_eq!(pptx[0].kind, BundleKind::Mcp, "未装应为纯 MCP 包");
-            assert!(pptx[0].skills.is_empty(), "未装包不得认领技能");
             assert!(!pptx[0].installed);
 
             // 装后：认领同名技能 → 组合包（installed 真相源 = BundleStore）
@@ -1301,10 +1186,10 @@ mod tests {
             let bundles = BundleRegistry::new().list_bundles();
             let pptx: Vec<_> = bundles.iter().filter(|b| b.id == "pptx").collect();
             assert_eq!(pptx.len(), 1);
-            assert_eq!(pptx[0].kind, BundleKind::Bundle, "装后应为组合包");
-            assert!(
-                pptx[0].skills.contains(&"pptx".to_string()),
-                "装后应携带同名 companion 技能"
+            assert_eq!(
+                pptx[0].kind,
+                BundleKind::Bundle,
+                "装后应为组合包（携带同名 companion 技能）"
             );
             assert!(pptx[0].installed);
         });
@@ -1314,7 +1199,7 @@ mod tests {
     /// 卸载→false、degraded 透传；store 读失败（损坏 JSON）回退旧文件推导。
     #[test]
     fn installed_reads_bundle_store_with_legacy_fallback() {
-        with_temp_home(|| {
+        with_temp_home("pinvou3-bundle-test", || {
             let home = std::env::var("PINVOU3_HOME").unwrap();
             seed_fixture(std::path::Path::new(&home), true); // installed.json 含 gongwen
 
@@ -1344,18 +1229,16 @@ mod tests {
         });
     }
 
-    /// Phase 2 第七刀：CLI/ima 元数据下沉——desc/version/category/auth_required
-    /// 是功能事实而非结构占位；version 与 lock 表钉住版本一致。
+    /// Phase 2 第七刀：CLI/ima 元数据下沉——desc/version 是功能事实而非结构
+    /// 占位；version 与 lock 表钉住版本一致。
     #[test]
     fn cli_and_ima_bundles_carry_functional_metadata() {
-        with_temp_home(|| {
+        with_temp_home("pinvou3-bundle-test", || {
             let bundles = BundleRegistry::new().list_bundles();
             for (id, _, bin, _, desc) in BUILTIN_CLI_BUNDLES {
                 let b = bundles.iter().find(|b| b.id == *id).expect("CLI 包应存在");
                 assert_eq!(b.description, *desc, "{id} desc 应取自常量表");
                 assert!(!b.description.is_empty());
-                assert!(b.auth_required, "{id} 应恒需授权");
-                assert_eq!(b.category, "collab", "{id} 业务分类");
                 match crate::platform::connector_lock::artifact_pin(bin) {
                     Some(pin) => assert_eq!(
                         b.version, pin.version,
@@ -1370,8 +1253,6 @@ mod tests {
                 .find(|b| b.id == "ima")
                 .expect("ima 包应存在");
             assert!(!ima.description.is_empty(), "ima desc 应下沉");
-            assert!(ima.auth_required);
-            assert_eq!(ima.category, "docs");
             assert!(ima.version.is_empty(), "ima 无版本概念（overlay 保留展示）");
             // config_fields 与 credentials 同 key 同源（弹窗功能事实 ↔ 凭据声明）
             let cfg_keys: Vec<&str> = ima.config_fields.iter().map(|f| f.key.as_str()).collect();
@@ -1385,7 +1266,7 @@ mod tests {
     /// `.or_else(|| store_state("ima-skills"))` 永不触发（死代码），ima 卡恒未安装。
     #[test]
     fn ima_card_installed_from_ima_skills_record() {
-        with_temp_home(|| {
+        with_temp_home("pinvou3-bundle-test", || {
             // 无记录 → 未安装
             assert!(
                 !BundleRegistry::new().bundle("ima").unwrap().installed,

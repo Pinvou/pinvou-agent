@@ -391,14 +391,6 @@ pub(super) fn backend_available() -> bool {
 /// a WebDriver session must (re)bind, the host
 /// temporarily navigates this exact WebView to a fresh internal marker. No
 /// identity or challenge is ever injected into an untrusted remote document.
-pub(super) fn register_webview_binding(
-    label: &str,
-    tab_token: &str,
-    control: &Arc<WorkspaceControl>,
-) -> Result<(), String> {
-    register_webview_binding_inner(label, tab_token, control, None, false)
-}
-
 pub(super) fn register_webview_binding_with_navigation(
     label: &str,
     tab_token: &str,
@@ -704,15 +696,14 @@ fn cancel_binding_navigation(label: &str, nonce: &str) {
     }
 }
 
-/// Revalidate the exact original host operation immediately before a native
-/// WebDriver mutation. Selection and DOM resolution may take arbitrarily long;
-/// neither a stale operation from the same tab nor a current operation from a
-/// different tab may borrow this WebView binding.
-fn authorize_registered_mutation(
+/// Resolve the live control bound to `label` and revalidate that it still
+/// belongs to the exact tab of `authorization`. Neither a stale operation from
+/// the same tab nor a current operation from a different tab may borrow this
+/// WebView binding.
+fn registered_control_for_authorization(
     label: &str,
     authorization: &NativeTabLease,
-    emits_takeover_signal: bool,
-) -> Result<(), String> {
+) -> Result<Arc<WorkspaceControl>, String> {
     let control = {
         let bindings = WEBVIEW_BINDINGS
             .get()
@@ -727,6 +718,19 @@ fn authorize_registered_mutation(
         Weak::upgrade(&binding.control)
     }
     .ok_or_else(|| "browser/webkit-binding-stale".to_string())?;
+    Ok(control)
+}
+
+/// Revalidate the exact original host operation immediately before a native
+/// WebDriver mutation. Selection and DOM resolution may take arbitrarily long;
+/// neither a stale operation from the same tab nor a current operation from a
+/// different tab may borrow this WebView binding.
+fn authorize_registered_mutation(
+    label: &str,
+    authorization: &NativeTabLease,
+    emits_takeover_signal: bool,
+) -> Result<(), String> {
+    let control = registered_control_for_authorization(label, authorization)?;
     let authorized = if emits_takeover_signal {
         control.refresh_agent_input_window(authorization)
     } else {
@@ -751,23 +755,12 @@ pub(super) fn dispatch_script_mutation_if_authorized<T, F>(
 where
     F: FnOnce() -> Result<T, String>,
 {
-    let control = {
-        let bindings = WEBVIEW_BINDINGS
-            .get()
-            .ok_or_else(|| "browser/webkit-binding-stale".to_string())?
-            .lock();
-        let binding = bindings
-            .get(label)
-            .ok_or_else(|| "browser/webkit-binding-stale".to_string())?;
-        if binding.tab_token != authorization.tab_token {
-            return Err("browser/webkit-tab-binding-mismatch".to_string());
-        }
-        Weak::upgrade(&binding.control)
-    }
-    .ok_or_else(|| "browser/webkit-binding-stale".to_string())?;
-    control
-        .dispatch_if_agent_authorized(authorization, dispatch)?
-        .ok_or_else(|| "browser/webkit-control-lease-lost".to_string())
+    super::dispatch_script_mutation_with_authorized_control(
+        || registered_control_for_authorization(label, authorization),
+        authorization,
+        "webkit",
+        dispatch,
+    )
 }
 
 fn partially_committed_error(action: &str, completed_steps: usize, error: String) -> String {
@@ -2653,17 +2646,17 @@ mod tests {
         let second_label = format!("browser-webview-b-{suffix}");
         let control = Arc::new(WorkspaceControl::new(0, NativeControlOwner::Agent));
 
-        register_webview_binding(&first_label, "0000000000000001", &control)
+        register_webview_binding_inner(&first_label, "0000000000000001", &control, None, false)
             .expect("register first binding");
         let first_nonce = expected_binding_nonce(&first_label).expect("first nonce");
-        register_webview_binding(&first_label, "0000000000000001", &control)
+        register_webview_binding_inner(&first_label, "0000000000000001", &control, None, false)
             .expect("repeat first binding");
         assert_eq!(
             expected_binding_nonce(&first_label).as_deref(),
             Some(first_nonce.as_str()),
             "registration is idempotent until an actual bind rotates the challenge"
         );
-        register_webview_binding(&second_label, "0000000000000002", &control)
+        register_webview_binding_inner(&second_label, "0000000000000002", &control, None, false)
             .expect("register second binding");
         let second_nonce = expected_binding_nonce(&second_label).expect("second nonce");
 
@@ -2694,7 +2687,8 @@ mod tests {
         let tab_b = "bbbbbbbbbbbbbbbb";
         let control = Arc::new(WorkspaceControl::new(0, NativeControlOwner::Agent));
 
-        register_webview_binding(&label_a, tab_a, &control).expect("register tab a");
+        register_webview_binding_inner(&label_a, tab_a, &control, None, false)
+            .expect("register tab a");
         let authorization_a = active_authorization(&control, "session-a", tab_a, "target-a");
         assert_eq!(
             authorize_registered_mutation(&label_a, &authorization_a, false),
@@ -2722,7 +2716,8 @@ mod tests {
             "a current operation for another tab cannot borrow this label"
         );
 
-        register_webview_binding(&label_b, tab_b, &control).expect("register tab b");
+        register_webview_binding_inner(&label_b, tab_b, &control, None, false)
+            .expect("register tab b");
         assert_eq!(
             authorize_registered_mutation(&label_b, &authorization_b, false),
             Ok(())
@@ -2738,7 +2733,8 @@ mod tests {
         let label = format!("browser-webview-slow-resolve-{suffix}");
         let tab = "cccccccccccccccc";
         let control = Arc::new(WorkspaceControl::new(0, NativeControlOwner::Agent));
-        register_webview_binding(&label, tab, &control).expect("register binding");
+        register_webview_binding_inner(&label, tab, &control, None, false)
+            .expect("register binding");
         let authorization = active_authorization(&control, "session-c", tab, "target-c");
 
         // Model arbitrary selection/DOM-resolution latency: the user takes
@@ -2760,7 +2756,8 @@ mod tests {
         let label = format!("browser-webview-fill-revoke-{suffix}");
         let tab = "dddddddddddddddd";
         let control = Arc::new(WorkspaceControl::new(0, NativeControlOwner::Agent));
-        register_webview_binding(&label, tab, &control).expect("register binding");
+        register_webview_binding_inner(&label, tab, &control, None, false)
+            .expect("register binding");
         let authorization = active_authorization(&control, "session-d", tab, "target-d");
 
         let mut dispatched_steps = 0;
@@ -2833,7 +2830,8 @@ mod tests {
             rand::random::<u128>()
         );
         let control = Arc::new(WorkspaceControl::new(0, NativeControlOwner::Unclaimed));
-        register_webview_binding(&label, "eeeeeeeeeeeeeeee", &control).expect("register binding");
+        register_webview_binding_inner(&label, "eeeeeeeeeeeeeeee", &control, None, false)
+            .expect("register binding");
         let nonce = rotate_binding_nonce(&label).expect("rotate binding nonce");
         let marker = format!("{BINDING_MARKER_PREFIX}{nonce}");
 

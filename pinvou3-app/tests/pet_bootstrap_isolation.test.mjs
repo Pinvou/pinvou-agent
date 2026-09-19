@@ -27,7 +27,7 @@ const window = {
   },
 };
 
-vm.runInNewContext(bridgeSource, {
+vm.runInNewContext(readFileSync(new URL('../src/shared/bridge-shared-helpers.js', import.meta.url), 'utf8') + '\n' + bridgeSource, {
   window,
   URLSearchParams,
   console,

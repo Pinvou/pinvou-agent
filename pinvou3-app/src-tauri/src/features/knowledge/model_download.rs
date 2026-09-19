@@ -23,7 +23,6 @@ const DISPLAY_DOWNLOAD_BYTES: u64 =
 pub const MODEL_VERSION: &str = "bge-m3";
 
 static DOWNLOADING: AtomicBool = AtomicBool::new(false);
-static CANCEL: AtomicBool = AtomicBool::new(false);
 static MODEL_LOAD: ModelLoadCoordinator = ModelLoadCoordinator::new();
 static MODEL_LOAD_ERROR: Mutex<Option<String>> = Mutex::new(None);
 /// 最近一次首帧/热加载跳过确因「无使用场景」门控：模型已装但被故意延迟加载，
@@ -124,6 +123,8 @@ pub(crate) fn model_installed() -> bool {
     model_directory_is_complete(&configured_model_dir())
 }
 
+/// 当前模型状态（camelCase 回前端）。`failed` 由前端用 installed/ready/loading/error
+/// 本地推导，不再单独下发。
 #[derive(Debug, Clone, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct KbModelStatus {
@@ -133,8 +134,6 @@ pub struct KbModelStatus {
     pub ready: bool,
     /// 启动后的后台模型加载仍在进行。
     pub loading: bool,
-    /// 模型文件存在，但最近一次进程内加载失败。
-    pub failed: bool,
     /// 模型已安装，但因本地无已入库内容且远程无连接被首帧门控故意延迟加载；
     /// 语义检索退化为全文（既有降级语义），区别于真实加载失败。
     pub deferred_no_usage: bool,
@@ -158,7 +157,6 @@ pub(crate) fn current_status(service: &KnowledgeService) -> KbModelStatus {
         installed,
         ready,
         loading,
-        failed: installed && !ready && !loading && error.is_some(),
         deferred_no_usage: deferred_no_usage(
             MODEL_DEFERRED_NO_USAGE.load(Ordering::Acquire),
             installed,
@@ -175,11 +173,6 @@ pub(crate) fn current_status(service: &KnowledgeService) -> KbModelStatus {
 /// 前端查询模型状态（offline，不联网）。
 pub fn kb_model_status(service: tauri::State<'_, KnowledgeService>) -> KbModelStatus {
     current_status(&service)
-}
-
-/// 取消进行中的下载（下次网络数据块或文件校验边界生效）。
-pub fn kb_model_cancel() {
-    CANCEL.store(true, Ordering::Relaxed);
 }
 
 /// React 首帧提交后调用：在 blocking 线程池读取并构建 embedding 模型，完成后原子换入
@@ -254,7 +247,6 @@ pub async fn kb_model_download(
     if DOWNLOADING.swap(true, Ordering::SeqCst) {
         return Err("模型正在下载中".into());
     }
-    CANCEL.store(false, Ordering::Relaxed);
     // 守卫：任何提前 return（含 ?、取消）退出时都复位 DOWNLOADING。
     let guard = DownloadGuard;
 
@@ -296,7 +288,7 @@ pub async fn kb_model_download(
                 }),
             );
         },
-        || CANCEL.load(Ordering::Relaxed),
+        || false, // 取消入口已随 kb_model_cancel 命令移除
     )
     .await?;
     if !model_directory_is_complete(&tmp) {

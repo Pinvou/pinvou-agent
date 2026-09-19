@@ -476,15 +476,6 @@ impl SurfaceEntry {
     pub(super) fn finish_navigation(&self, committed_url: &str) -> NavigationCommitDecision {
         self.user_navigation.lock().finish(committed_url)
     }
-
-    pub(super) fn finish_same_document_navigation(
-        &self,
-        committed_url: &str,
-    ) -> NavigationCommitDecision {
-        self.user_navigation
-            .lock()
-            .finish_same_document(committed_url)
-    }
 }
 
 /// Authoritative host bijection between tabToken and WebView label.
@@ -639,11 +630,7 @@ impl AgentCallerEpoch {
         wrapper_instance_nonce: impl Into<String>,
     ) -> Result<Self, String> {
         let wrapper_instance_nonce = wrapper_instance_nonce.into();
-        if caller_pid == 0
-            || wrapper_instance_nonce.len() != 32
-            || !wrapper_instance_nonce
-                .bytes()
-                .all(|byte| byte.is_ascii_digit() || (b'a'..=b'f').contains(&byte))
+        if caller_pid == 0 || !super::super::is_fixed_len_lowercase_hex(&wrapper_instance_nonce, 32)
         {
             return Err("browser/invalid-caller-epoch".to_string());
         }
@@ -1555,6 +1542,27 @@ fn validate_request_id(request_id: &str) -> Result<(), String> {
     }
 }
 
+/// 测试脚手架（本文件与 host.rs 的 tests 模块共用）：领发一张新 agent lease，
+/// 并按测试固定身份（session-a / 0123456789abcdef / target-a）绑定为
+/// `NativeTabLease` 授权。返回领发时快照（revision / owner 断言用）与授权。
+/// 非固定身份的用例（如跨标签页伪造 target/token、schema round-trip 的字面
+/// revision/lease）不走本 helper，仍就地显式构造。
+#[cfg(test)]
+pub(super) fn issue_authorized_lease(
+    control: &WorkspaceControl,
+) -> (ControlSnapshot, NativeTabLease) {
+    let (snapshot, opaque_lease) = control.issue_agent_lease();
+    let authorization = NativeTabLease::from_assertion(
+        "session-a",
+        "0123456789abcdef",
+        "target-a",
+        snapshot.revision,
+        opaque_lease,
+    )
+    .unwrap();
+    (snapshot, authorization)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1883,7 +1891,10 @@ mod tests {
         same_document.remember_url(url);
         let captured = epoch(&same_document);
         assert!(matches!(
-            same_document.finish_same_document_navigation(url),
+            same_document
+                .user_navigation
+                .lock()
+                .finish_same_document(url),
             NavigationCommitDecision::Current { request_id: None }
         ));
         assert_ne!(
@@ -1978,11 +1989,17 @@ mod tests {
         assert!(!entry.navigation_in_flight());
         assert!(entry.navigation_admission_busy());
         assert_eq!(
-            entry.finish_same_document_navigation("https://example.com/page#other"),
+            entry
+                .user_navigation
+                .lock()
+                .finish_same_document("https://example.com/page#other"),
             NavigationCommitDecision::Stale
         );
         assert_eq!(
-            entry.finish_same_document_navigation("https://example.com/page#next"),
+            entry
+                .user_navigation
+                .lock()
+                .finish_same_document("https://example.com/page#next"),
             NavigationCommitDecision::Current {
                 request_id: Some("request-fragment".to_string())
             }
@@ -2109,15 +2126,7 @@ mod tests {
     #[test]
     fn mutation_cas_never_runs_after_user_takeover() {
         let control = WorkspaceControl::new(3, NativeControlOwner::Agent);
-        let (snapshot, lease) = control.issue_agent_lease();
-        let authorization = NativeTabLease::from_assertion(
-            "session-a",
-            "0123456789abcdef",
-            "target-a",
-            snapshot.revision,
-            lease,
-        )
-        .unwrap();
+        let (_snapshot, authorization) = issue_authorized_lease(&control);
         assert!(control.begin_agent_operation(&authorization, false));
         control.bump(Some(NativeControlOwner::User));
         let ran = Arc::new(AtomicBool::new(false));
@@ -2184,15 +2193,7 @@ mod tests {
     #[test]
     fn begun_dispatch_exposes_full_popup_authorization_until_end_or_takeover() {
         let control = WorkspaceControl::new(7, NativeControlOwner::Agent);
-        let (snapshot, opaque_lease) = control.issue_agent_lease();
-        let authorization = NativeTabLease::from_assertion(
-            "session-a",
-            "0123456789abcdef",
-            "target-a",
-            snapshot.revision,
-            opaque_lease,
-        )
-        .unwrap();
+        let (_snapshot, authorization) = issue_authorized_lease(&control);
 
         // Non-input tools are still atomic dispatches and may legitimately call window.open.
         assert!(control.begin_agent_operation(&authorization, false));
@@ -2207,15 +2208,7 @@ mod tests {
             "end must consume the dispatch lease so a delayed begin cannot reopen it"
         );
 
-        let (next_snapshot, next_opaque_lease) = control.issue_agent_lease();
-        let next_authorization = NativeTabLease::from_assertion(
-            "session-a",
-            "0123456789abcdef",
-            "target-a",
-            next_snapshot.revision,
-            next_opaque_lease,
-        )
-        .unwrap();
+        let (_next_snapshot, next_authorization) = issue_authorized_lease(&control);
         assert!(control.begin_agent_operation(&next_authorization, true));
         assert!(control.agent_input_in_progress());
         control.bump(Some(NativeControlOwner::User));
@@ -2226,15 +2219,7 @@ mod tests {
     #[test]
     fn retained_popup_authorization_outlives_parent_end_but_not_takeover() {
         let control = WorkspaceControl::new(7, NativeControlOwner::Agent);
-        let (snapshot, opaque_lease) = control.issue_agent_lease();
-        let authorization = NativeTabLease::from_assertion(
-            "session-a",
-            "0123456789abcdef",
-            "target-a",
-            snapshot.revision,
-            opaque_lease,
-        )
-        .unwrap();
+        let (_snapshot, authorization) = issue_authorized_lease(&control);
 
         let caller_epoch = AgentCallerEpoch::new(41, "0123456789abcdef0123456789abcdef").unwrap();
         assert!(control.begin_agent_operation_for_caller(
@@ -2266,15 +2251,7 @@ mod tests {
         control.release_retained_agent_operation(&popup);
         assert!(control.active_agent_operation().is_none());
 
-        let (next_snapshot, next_opaque_lease) = control.issue_agent_lease();
-        let next = NativeTabLease::from_assertion(
-            "session-a",
-            "0123456789abcdef",
-            "target-a",
-            next_snapshot.revision,
-            next_opaque_lease,
-        )
-        .unwrap();
+        let (_next_snapshot, next) = issue_authorized_lease(&control);
         assert!(control.begin_agent_operation_for_caller(&next, false, caller_epoch));
         let retained = control
             .retain_agent_operation_for_popup("session-a", "0123456789abcdef")
@@ -2293,15 +2270,7 @@ mod tests {
     #[test]
     fn popup_holders_preserve_epoch_and_release_independently_from_upstream() {
         let control = WorkspaceControl::new(7, NativeControlOwner::Agent);
-        let (snapshot, opaque_lease) = control.issue_agent_lease();
-        let authorization = NativeTabLease::from_assertion(
-            "session-a",
-            "0123456789abcdef",
-            "target-a",
-            snapshot.revision,
-            opaque_lease,
-        )
-        .unwrap();
+        let (_snapshot, authorization) = issue_authorized_lease(&control);
         let epoch_a = AgentCallerEpoch::new(41, "0123456789abcdef0123456789abcdef").unwrap();
         let epoch_b = AgentCallerEpoch::new(41, "fedcba9876543210fedcba9876543210").unwrap();
 
@@ -2352,15 +2321,7 @@ mod tests {
     #[test]
     fn popup_holder_cannot_refresh_an_ended_upstream_operation() {
         let control = WorkspaceControl::new(7, NativeControlOwner::Agent);
-        let (snapshot, opaque_lease) = control.issue_agent_lease();
-        let authorization = NativeTabLease::from_assertion(
-            "session-a",
-            "0123456789abcdef",
-            "target-a",
-            snapshot.revision,
-            opaque_lease,
-        )
-        .unwrap();
+        let (_snapshot, authorization) = issue_authorized_lease(&control);
 
         assert!(control.begin_agent_operation(&authorization, true));
         let retained = control
@@ -2403,15 +2364,7 @@ mod tests {
     #[test]
     fn navigation_preserves_an_active_agent_dispatch_but_advances_after_it_ends() {
         let control = WorkspaceControl::new(7, NativeControlOwner::Agent);
-        let (snapshot, opaque_lease) = control.issue_agent_lease();
-        let authorization = NativeTabLease::from_assertion(
-            "session-a",
-            "0123456789abcdef",
-            "target-a",
-            snapshot.revision,
-            opaque_lease,
-        )
-        .unwrap();
+        let (snapshot, authorization) = issue_authorized_lease(&control);
 
         assert!(control.begin_agent_operation(&authorization, true));
         assert!(
@@ -2437,15 +2390,7 @@ mod tests {
     #[test]
     fn hosted_cancellation_revokes_only_the_matching_sessions_active_operation() {
         let control = WorkspaceControl::new(7, NativeControlOwner::Agent);
-        let (snapshot, opaque_lease) = control.issue_agent_lease();
-        let authorization = NativeTabLease::from_assertion(
-            "session-a",
-            "0123456789abcdef",
-            "target-a",
-            snapshot.revision,
-            opaque_lease,
-        )
-        .unwrap();
+        let (_snapshot, authorization) = issue_authorized_lease(&control);
 
         assert!(control.begin_agent_operation(&authorization, true));
         assert!(!control.cancel_agent_operation_for_session("session-b"));
@@ -2462,15 +2407,7 @@ mod tests {
     #[test]
     fn expired_operation_cannot_authorize_dispatch_popup_or_navigation() {
         let control = WorkspaceControl::new(7, NativeControlOwner::Agent);
-        let (snapshot, opaque_lease) = control.issue_agent_lease();
-        let authorization = NativeTabLease::from_assertion(
-            "session-a",
-            "0123456789abcdef",
-            "target-a",
-            snapshot.revision,
-            opaque_lease,
-        )
-        .unwrap();
+        let (snapshot, authorization) = issue_authorized_lease(&control);
 
         assert!(control.begin_agent_operation(&authorization, true));
         {
@@ -2509,15 +2446,7 @@ mod tests {
     #[test]
     fn generic_operation_heartbeat_does_not_suppress_real_user_input() {
         let control = WorkspaceControl::new(7, NativeControlOwner::Agent);
-        let (snapshot, opaque_lease) = control.issue_agent_lease();
-        let authorization = NativeTabLease::from_assertion(
-            "session-a",
-            "0123456789abcdef",
-            "target-a",
-            snapshot.revision,
-            opaque_lease,
-        )
-        .unwrap();
+        let (_snapshot, authorization) = issue_authorized_lease(&control);
 
         assert!(control.begin_agent_operation(&authorization, false));
         assert!(control.refresh_agent_operation(&authorization));
@@ -2533,15 +2462,7 @@ mod tests {
     #[test]
     fn native_input_refresh_is_strict_and_end_keeps_only_callback_grace() {
         let control = WorkspaceControl::new(7, NativeControlOwner::Agent);
-        let (snapshot, opaque_lease) = control.issue_agent_lease();
-        let authorization = NativeTabLease::from_assertion(
-            "session-a",
-            "0123456789abcdef",
-            "target-a",
-            snapshot.revision,
-            opaque_lease,
-        )
-        .unwrap();
+        let (_snapshot, authorization) = issue_authorized_lease(&control);
 
         assert!(control.begin_agent_operation(&authorization, true));
         control.state.lock().agent_input_until = Some(Instant::now() - Duration::from_millis(1));
@@ -2599,15 +2520,7 @@ mod tests {
     #[test]
     fn non_signalling_native_dispatch_revalidates_without_suppressing_user_input() {
         let control = WorkspaceControl::new(7, NativeControlOwner::Agent);
-        let (snapshot, opaque_lease) = control.issue_agent_lease();
-        let authorization = NativeTabLease::from_assertion(
-            "session-a",
-            "0123456789abcdef",
-            "target-a",
-            snapshot.revision,
-            opaque_lease,
-        )
-        .unwrap();
+        let (_snapshot, authorization) = issue_authorized_lease(&control);
 
         assert!(control.begin_agent_operation(&authorization, false));
         assert!(control.authorize_agent_dispatch(&authorization));
@@ -2625,15 +2538,7 @@ mod tests {
     #[test]
     fn final_dispatch_guard_never_runs_after_takeover_or_operation_end() {
         let control = WorkspaceControl::new(7, NativeControlOwner::Agent);
-        let (snapshot, opaque_lease) = control.issue_agent_lease();
-        let authorization = NativeTabLease::from_assertion(
-            "session-a",
-            "0123456789abcdef",
-            "target-a",
-            snapshot.revision,
-            opaque_lease,
-        )
-        .unwrap();
+        let (_snapshot, authorization) = issue_authorized_lease(&control);
         assert!(control.begin_agent_operation(&authorization, false));
 
         let dispatches = Arc::new(std::sync::atomic::AtomicUsize::new(0));
@@ -2666,15 +2571,7 @@ mod tests {
             "takeover must win before the native dispatch closure can run"
         );
 
-        let (next_snapshot, next_opaque_lease) = control.issue_agent_lease();
-        let next = NativeTabLease::from_assertion(
-            "session-a",
-            "0123456789abcdef",
-            "target-a",
-            next_snapshot.revision,
-            next_opaque_lease,
-        )
-        .unwrap();
+        let (_next_snapshot, next) = issue_authorized_lease(&control);
         assert!(control.begin_agent_operation(&next, false));
         control.end_agent_operation(&next);
         let ended_dispatch = Arc::clone(&dispatches);

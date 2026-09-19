@@ -16,7 +16,7 @@ const bridgeDir = path.join(here, '..', 'src', 'platform', 'tauri', 'bridge');
 function loadScheduledFeature() {
   const root = { localStorage: { getItem() { return null; }, setItem() {} } };
   const src = fs.readFileSync(path.join(bridgeDir, 'scheduled.js'), 'utf8');
-  vm.runInNewContext(src, {
+  vm.runInNewContext(fs.readFileSync(path.join(bridgeDir, '..', '..', '..', 'shared', 'bridge-shared-helpers.js'), 'utf8') + '\n' + src, {
     window: root,
     globalThis: root,
     setTimeout,

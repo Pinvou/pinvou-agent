@@ -470,7 +470,6 @@ pub(crate) fn hide_tokio_console(command: &mut tokio::process::Command) {
 }
 
 #[cfg(not(target_os = "windows"))]
-#[allow(dead_code)]
 pub(crate) fn hide_tokio_console(_command: &mut tokio::process::Command) {}
 
 #[cfg(test)]

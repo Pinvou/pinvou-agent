@@ -64,6 +64,9 @@ function evalIsDeliverable(snippet, label) {
   const code = fs.readFileSync(file, "utf8");
   const ctx = { window: {} };
   vm.createContext(ctx);
+  // artifact-tracker.js delegates shared helpers to window.PinvouBridgeShared (index.html
+  // loads the payload before both bridges); the sandbox needs it installed first.
+  vm.runInContext(fs.readFileSync(path.join(appRoot, "src", "shared", "bridge-shared-helpers.js"), "utf8"), ctx, { filename: "shared/bridge-shared-helpers.js" });
   vm.runInContext(code, ctx, { filename: file });
   const factory = ctx.window.__PINVOU_TAURI_BRIDGE_FEATURES__["artifact-tracker"];
   const state = { artifacts: [], chatItems: [], turnDirtyArtifacts: [] };
@@ -197,15 +200,27 @@ function evalIsDeliverable(snippet, label) {
 // 2) web 侧 bridge.js:isDeliverable 是闭包内部函数,抽取 DELIVERABLE_EXTS..isDeliverable
 //    连续代码块 + normalizedPath(isTmpPath 复用它)执行
 {
+  // isDeliverable/isTmpPath 已随 dead-code dedup 合并进 shared payload 的 sharedBridgeBase；
+  // DELIVERABLE_EXTS 常量仍留在 web/bridge.js，两侧拼接后行为与原先逐字一致。
   const src = fs.readFileSync(path.join(appRoot, "src", "platform", "web", "bridge.js"), "utf8");
-  const blockStart = src.search(/\b(?:var|const|let) DELIVERABLE_EXTS/);
-  const blockEnd = src.indexOf("function trackArtifact");
-  assert.ok(blockStart >= 0 && blockEnd > blockStart, "web bridge.js 应存在 DELIVERABLE_EXTS..isDeliverable 代码块");
-  const snippet = extractFunction(src, "normalizedPath") + "\n" + src.slice(blockStart, blockEnd);
+  const helpersSrc = fs.readFileSync(path.join(appRoot, "src", "shared", "bridge-shared-helpers.js"), "utf8");
+  const clusterSrc = helpersSrc.slice(
+    helpersSrc.indexOf('function sharedBridgeBase(deps)'),
+    helpersSrc.indexOf('"tauriMain"'),
+  );
+  const extsStart = src.search(/\b(?:var|const|let) DELIVERABLE_EXTS/);
+  const extsEnd = src.indexOf(";", extsStart) + 1;
+  assert.ok(extsStart >= 0, "web bridge.js 应存在 DELIVERABLE_EXTS 声明");
+  // payload cluster 内 DELIVERABLE_EXTS 以惰性单元格传入，body 读取形如 .value，
+  // 这里把 lane 里的数组字面量包装成同构的 getter 单元格。
+  const extsCell = src.slice(extsStart, extsEnd)
+    .replace(/^(const\s+DELIVERABLE_EXTS\s*=\s*)/, "$1{ value: ")
+    .replace(/;\s*$/, " };");
+  const snippet = extsCell + "\n" + extractFunction(clusterSrc, "normalizedPath") + "\n" + extractFunction(clusterSrc, "isTmpPath") + "\n" + extractFunction(clusterSrc, "isDeliverable");
   checkAll(evalIsDeliverable(snippet, "web bridge.js"), "web bridge.js");
   // web 侧 isTmpPath 必须复用 normalizedPath(与 tauri 侧写法对齐),不得内联重写归一化
   assert.ok(
-    extractFunction(src, "isTmpPath").includes("normalizedPath("),
+    extractFunction(clusterSrc, "isTmpPath").includes("normalizedPath("),
     "web bridge.js isTmpPath 应复用 normalizedPath",
   );
 }
@@ -216,7 +231,16 @@ function evalIsDeliverable(snippet, label) {
 // 4) 回放(rerender)兜底补首卡门控:两侧 bridge 的预扫只在 isDeliverable 通过时
 //    记 writtenArtifacts → tmp/ 文件切 session 重放后不再冒出成品卡
 {
-  const webSrc = fs.readFileSync(path.join(appRoot, "src", "platform", "web", "bridge.js"), "utf8");
+  // 相关工具函数已合并进 shared payload 的 sharedBridgeBase（见上方第 2 侧说明）。
+  const webHelpers = fs.readFileSync(path.join(appRoot, "src", "shared", "bridge-shared-helpers.js"), "utf8");
+  const webSrc = webHelpers.slice(
+    webHelpers.indexOf('function sharedBridgeBase(deps)'),
+    webHelpers.indexOf('"tauriMain"'),
+  );
+  const webLaneSrc = fs.readFileSync(path.join(appRoot, "src", "platform", "web", "bridge.js"), "utf8");
+  const extractMovedOrLane = name => {
+    try { return extractFunction(webSrc, name); } catch { return extractFunction(webLaneSrc, name); }
+  };
   const cardState = {
     chatItems: [
       { id: 1, type: "artifact_card", path: "/workspace/one.md", title: "One" },
@@ -227,14 +251,14 @@ function evalIsDeliverable(snippet, label) {
   const cardCtx = { state: cardState };
   vm.createContext(cardCtx);
   vm.runInContext([
-    extractFunction(webSrc, "basename"),
-    extractFunction(webSrc, "isAbsPath"),
-    extractFunction(webSrc, "normalizedPath"),
-    extractFunction(webSrc, "pushArtifactPath"),
-    extractFunction(webSrc, "extractArtifactPaths"),
-    extractFunction(webSrc, "fileMutationAction"),
-    extractFunction(webSrc, "findPresentedArtifact"),
-    extractFunction(webSrc, "updatePresentedArtifact"),
+    extractMovedOrLane("basename"),
+    extractMovedOrLane("isAbsPath"),
+    extractMovedOrLane("normalizedPath"),
+    extractMovedOrLane("pushArtifactPath"),
+    extractMovedOrLane("extractArtifactPaths"),
+    extractMovedOrLane("fileMutationAction"),
+    extractMovedOrLane("findPresentedArtifact"),
+    extractMovedOrLane("updatePresentedArtifact"),
     "this.updatePresentedArtifact = updatePresentedArtifact;",
     "this.fileMutationAction = fileMutationAction;",
   ].join("\n"), cardCtx);

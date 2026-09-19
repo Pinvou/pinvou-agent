@@ -11,7 +11,7 @@ const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
 const read = (...parts) => readFileSync(path.join(root, ...parts), 'utf8');
 
 // ── tauri 端行为测试：dirty 工具轮仍更新 context window、但不更新 input ──
-const source = read('src', 'platform', 'tauri', 'bridge', 'chat-events.js');
+const source = read('src', 'shared', 'bridge-shared-helpers.js') + '\n' + read('src', 'platform', 'tauri', 'bridge', 'chat-events.js');
 const windowObject = { __PINVOU_TAURI_BRIDGE_FEATURES__: {} };
 vm.runInContext(source, vm.createContext({
   window: windowObject,

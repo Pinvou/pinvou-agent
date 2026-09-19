@@ -13,11 +13,10 @@ use crate::platform::paths;
 use crate::platform::prefs::ModelPreset;
 
 use super::io::{
-    archive_timed_memory_unlocked, commit_topic_migration_unlocked_with,
-    compact_timed_memory_store_unlocked, current_focus_path, enqueue_memory_candidate,
-    is_delivery_tool, load_preferences, load_profile, pending_item_from_suggestion,
-    reconcile_topic_migration_journals_unlocked, summarize_tool_start,
-    topic_migration_journal_path, upsert_timed_memory_unlocked, write_lock,
+    commit_topic_migration_unlocked_with, compact_timed_memory_store_unlocked, current_focus_path,
+    enqueue_memory_candidate, is_delivery_tool, load_preferences, load_profile,
+    pending_item_from_suggestion, reconcile_topic_migration_journals_unlocked,
+    summarize_tool_start, topic_migration_journal_path, upsert_timed_memory_unlocked, write_lock,
     write_never_memory_unlocked, write_pending_memory_unlocked, write_recent_work_unlocked,
     write_timed_memory_file,
 };
@@ -27,7 +26,7 @@ use super::llm_review::{
     has_explicit_remember_signal, has_memory_review_signal, memory_review_error_stage,
     parse_llm_memory_review, sanitize_llm_memory_item,
 };
-use super::render::render_from_parts;
+use super::render::{render_from_parts, render_memory_block};
 // 引入全部常量（MAX_STORED / PENDING_STATUS_* / PROFILE_VERSION / Llm* 实体）。
 use super::types::*;
 
@@ -2918,14 +2917,26 @@ async fn organize_update_skips_item_archived_during_the_llm_call() {
         ]
     });
     // The hook runs after the snapshot is loaded, while the LLM call is in
-    // flight: archive the item the same way the expiry refresh does (under the
-    // io write lock).
+    // flight: archive the item the same way the expiry refresh does (a
+    // read-modify-write under the io write lock).
     let bridge = FakeOrganizeModel {
         base_url: spawn_chat_completions_stub_with_hook(
             actions.to_string(),
             Some(Box::new(move |_body: &str| {
                 let _guard = write_lock().lock();
-                archive_timed_memory_unlocked("current_focus", "focus_race").unwrap();
+                let mut items = load_current_focus().unwrap();
+                let mut changed = false;
+                for item in &mut items {
+                    if item.id == "focus_race" && item.status != "archived" {
+                        item.status = "archived".to_string();
+                        item.updated_at = Utc::now().to_rfc3339();
+                        changed = true;
+                    }
+                }
+                if changed {
+                    write_timed_memory_file(&current_focus_path(), &items, "current_focus")
+                        .unwrap();
+                }
             })),
         ),
     };

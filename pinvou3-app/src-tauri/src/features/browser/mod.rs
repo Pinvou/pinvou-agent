@@ -5599,6 +5599,16 @@ async fn switch_active_session_locked(inner: &mut Inner, sid: &str) -> Result<()
 // Native-host automation endpoint coordination
 // ---------------------------------------------------------------------------
 
+/// True only when `value` is exactly `len` lowercase hexadecimal characters
+/// ([0-9a-f]). Shared fixed-length token validator; callers that must accept
+/// uppercase hex keep their own check.
+pub(crate) fn is_fixed_len_lowercase_hex(value: &str, len: usize) -> bool {
+    value.len() == len
+        && value
+            .bytes()
+            .all(|byte| byte.is_ascii_hexdigit() && !byte.is_ascii_uppercase())
+}
+
 fn valid_host_token(value: &str) -> bool {
     value.len() == 16 && value.bytes().all(|byte| byte.is_ascii_hexdigit())
 }
@@ -5771,10 +5781,7 @@ fn hosted_prepare_quarantine_state_path(slot: &Path, state_kind: &str) -> PathBu
 }
 
 fn valid_prepare_quarantine_token(value: &str) -> bool {
-    value.len() == 16
-        && value
-            .bytes()
-            .all(|byte| byte.is_ascii_hexdigit() && !byte.is_ascii_uppercase())
+    is_fixed_len_lowercase_hex(value, 16)
 }
 
 fn prepare_journal_token_from_path(path: &Path) -> Result<Option<String>, String> {

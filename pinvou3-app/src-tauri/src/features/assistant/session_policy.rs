@@ -129,11 +129,6 @@ impl SessionPolicy {
         self.capabilities().unavailable_tools
     }
 
-    /// 该模式不提供的内置自动技能（编译期常量表字段，组合目录物化排除）。
-    pub fn unavailable_builtin_skills(&self) -> &'static [&'static str] {
-        self.capabilities().unavailable_builtin_skills
-    }
-
     // ── 运行行为语义方法 ──────────────────────────────────────────────
     // 能力部分是编译期常量表（capabilities/MODE_TABLE）；运行行为
     // （prompt 分层、项目规则注入等本质是代码行为）收敛为本组语义方法。
@@ -226,7 +221,7 @@ mod tests {
                 row.mode
             );
             assert_eq!(
-                policy.unavailable_builtin_skills(),
+                unavailable_builtin_skills_for(row.mode),
                 row.unavailable_builtin_skills,
                 "{:?} unavailable_builtin_skills",
                 row.mode

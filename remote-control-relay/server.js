@@ -27,19 +27,19 @@ const MAX_PAYLOAD_BYTES = boundedInteger(
   16 * MIB,
 );
 const MAX_ENDPOINTS = boundedInteger(
-  process.env.MAX_ENDPOINTS ?? process.env.MAX_ROOMS,
+  process.env.MAX_ENDPOINTS,
   2000,
   1,
   100_000,
 );
 const ENDPOINT_CREATE_LIMIT = boundedInteger(
-  process.env.ENDPOINT_CREATE_LIMIT ?? process.env.ROOM_CREATE_LIMIT,
+  process.env.ENDPOINT_CREATE_LIMIT,
   20,
   1,
   10_000,
 );
 const ENDPOINT_CREATE_WINDOW_MS = boundedInteger(
-  process.env.ENDPOINT_CREATE_WINDOW_MS ?? process.env.ROOM_CREATE_WINDOW_MS,
+  process.env.ENDPOINT_CREATE_WINDOW_MS,
   60_000,
   1000,
   60 * 60_000,
@@ -635,8 +635,6 @@ function healthSummary() {
   return {
     ok: true,
     endpoint_count: values.length,
-    // Keep the aggregate-only key consumed by the current deployment probe.
-    room_count: values.length,
     connected_endpoint_count: values.filter((endpoint) => socketOpen(endpoint.desktop)).length,
     desktop_open_count: values.filter((endpoint) => socketOpen(endpoint.desktop)).length,
     desktop_offline_count: values.filter((endpoint) => !socketOpen(endpoint.desktop)).length,

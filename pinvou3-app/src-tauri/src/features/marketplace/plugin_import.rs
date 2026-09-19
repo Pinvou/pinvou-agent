@@ -324,6 +324,38 @@ pub(crate) fn read_zip_entry_bounded(
     Ok(buf)
 }
 
+/// zip pass-1 单条目安全闸（统一插件包导入与技能 zip 导入共用；穿越/symlink/
+/// 大小防护对齐底座 install.rs 的判断）：
+/// - `enclosed_name` 为 None = 路径穿越（`..` / 绝对路径），拒绝；
+/// - unix_mode 文件类型位 = symlink，拒绝；
+/// - 头部声明大小累计超 `max_bytes` 拒绝（真实解压字节由各自 pass2 的有界读取
+///   兜底计量——头部声明可被伪造）。
+/// 返回净化后的条目路径（分隔符归一为 `/`），并把本条目声明大小累进
+/// `declared_total`。
+pub(crate) fn checked_zip_entry_path(
+    entry: &mut zip::read::ZipFile<'_, std::fs::File>,
+    declared_total: &mut u64,
+    max_bytes: u64,
+    label: &str,
+) -> Result<String, String> {
+    let Some(enclosed) = entry.enclosed_name() else {
+        return Err("zip 含不安全路径(穿越),拒绝".to_string());
+    };
+    if let Some(mode) = entry.unix_mode() {
+        if mode & 0o170000 == 0o120000 {
+            return Err("zip 含 symlink,拒绝".to_string());
+        }
+    }
+    *declared_total = declared_total.saturating_add(entry.size());
+    if *declared_total > max_bytes {
+        return Err(format!(
+            "{label}解压超过 {} MiB 上限",
+            max_bytes / 1024 / 1024
+        ));
+    }
+    Ok(enclosed.to_string_lossy().replace('\\', "/"))
+}
+
 /// 进程内导入互斥锁表（按包 id，四轮评审 M-4）：同一包 id 的并发导入共享
 /// staged 路径 `bundles/<id>.tmp` 与 `.old` 备份（线程 B 可删线程 A 的在建目录），
 /// 且 same_package_content 冲突检查与原子 rename 之间无锁即 TOCTOU——必须由调用方
@@ -657,25 +689,17 @@ pub fn import_plugin_package(
         let mut entry = archive
             .by_index(i)
             .map_err(|e| format!("zip 条目 #{i}: {e}"))?;
-        let Some(enclosed) = entry.enclosed_name() else {
-            return Err("zip 含不安全路径(穿越),拒绝".to_string());
-        };
-        if let Some(mode) = entry.unix_mode() {
-            if mode & 0o170000 == 0o120000 {
-                return Err("zip 含 symlink,拒绝".to_string());
-            }
-        }
-        declared_total = declared_total.saturating_add(entry.size());
-        if declared_total > MAX_PLUGIN_SIZE_BYTES {
-            return Err(format!(
-                "插件包解压超过 {} MiB 上限",
-                MAX_PLUGIN_SIZE_BYTES / 1024 / 1024
-            ));
-        }
+        // pass1 安全闸（穿越/symlink/声明大小上限）+ 净化路径，与技能 zip
+        // 导入通道共用 `checked_zip_entry_path`。
+        let path_str = checked_zip_entry_path(
+            &mut entry,
+            &mut declared_total,
+            MAX_PLUGIN_SIZE_BYTES,
+            "插件包",
+        )?;
         if entry.is_dir() {
             continue;
         }
-        let path_str = enclosed.to_string_lossy().replace('\\', "/");
         all_paths.push(path_str.clone());
         if path_str == "plugin.json" {
             let buf = read_bounded_checked(&mut entry, "plugin.json")?;
@@ -1044,14 +1068,6 @@ pub fn import_plugin_package(
         id.clone(),
         super::store::BundleSource::Upload(display_name.to_string()),
     );
-    // upsert_preserving 的 credential_keys 取新值：供给的镜像写（install_upload）
-    // 已从 manifest 收敛凭据 key，这里必须带上同一份，否则补写会把它们冲成空表。
-    if let Some(manifest) = mgr.load_manifest(&id) {
-        record.credential_keys = super::bundle::tool_credentials(&manifest)
-            .into_iter()
-            .map(|c| c.key)
-            .collect();
-    }
     // 真实内容指纹（与 mcp_catalog 释放/技能 install 同一 dir_fingerprint 口径；
     // 计算失败不留假指纹，降级为 None）。
     record.content_fingerprint = match super::skill_marketplace::dir_fingerprint(&pkg_dir) {

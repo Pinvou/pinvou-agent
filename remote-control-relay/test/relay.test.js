@@ -277,7 +277,6 @@ test("healthz exposes aggregate endpoint counters and no identifiers", async () 
     "desktop_open_count",
     "endpoint_count",
     "ok",
-    "room_count",
     "unauthenticated_connection_count",
     "web_client_open_count",
     "ws_connection_count",

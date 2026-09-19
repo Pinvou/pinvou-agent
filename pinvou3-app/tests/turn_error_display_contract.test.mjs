@@ -89,6 +89,7 @@ const context = vm.createContext({
 });
 
 vm.runInContext(bridgeMessagesSource, context, { filename: 'src/shared/bridge-messages.js' });
+vm.runInContext(read('src', 'shared', 'bridge-shared-helpers.js'), context, { filename: 'src/shared/bridge-shared-helpers.js' });
 vm.runInContext(bridgeSource, context, { filename: 'src/platform/web/bridge.js' });
 vm.runInContext(read('src', 'platform', 'web', 'bridge', 'domain-adapter.js'), context, {
   filename: 'src/platform/web/bridge/domain-adapter.js',

@@ -21,9 +21,8 @@
 //! Exception: top-level `sched-*.json` files are rewritten whole with every
 //! message of a scheduled run, and that burst of events should produce a
 //! single refresh, so they get a 400ms trailing-edge debounce per path
-//! (scheduled_task:run_updated only drives a frontend refresh and no
-//! consumer reads the payload's event field, so emitting late keeps the
-//! semantics intact).
+//! (scheduled_task:run_updated only drives a frontend refresh and carries an
+//! empty payload, so emitting late keeps the semantics intact).
 
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
@@ -68,27 +67,24 @@ pub fn spawn(app: AppHandle, sessions_root: PathBuf) {
         }
         eprintln!("[file_watcher] watching {}", sessions_root.display());
 
-        // Pending emission table for sched-*.json: session_id -> (path, time
-        // of the last event). The main loop recv_timeouts between waiting for
-        // the next event and waiting for the earliest deadline; due entries
-        // are emitted first.
-        let mut pending_sched: HashMap<String, (PathBuf, Instant)> = HashMap::new();
+        // Pending emission table for sched-*.json: session_id -> time of the
+        // last event. The main loop recv_timeouts between waiting for the
+        // next event and waiting for the earliest deadline; due entries are
+        // emitted first.
+        let mut pending_sched: HashMap<String, Instant> = HashMap::new();
         loop {
             let now = Instant::now();
             let due: Vec<String> = pending_sched
                 .iter()
-                .filter(|(_, (_, at))| now.duration_since(*at) >= SCHED_DEBOUNCE)
+                .filter(|(_, at)| now.duration_since(**at) >= SCHED_DEBOUNCE)
                 .map(|(id, _)| id.clone())
                 .collect();
             for id in due {
-                if let Some((path, _)) = pending_sched.remove(&id) {
-                    emit_scheduled_run_updated(&app, &id, path.exists());
+                if pending_sched.remove(&id).is_some() {
+                    emit_scheduled_run_updated(&app);
                 }
             }
-            let deadline = pending_sched
-                .values()
-                .map(|(_, at)| *at + SCHED_DEBOUNCE)
-                .min();
+            let deadline = pending_sched.values().map(|at| *at + SCHED_DEBOUNCE).min();
             let event = match deadline {
                 Some(deadline) => {
                     match rx.recv_timeout(deadline.saturating_duration_since(Instant::now())) {
@@ -117,7 +113,7 @@ fn handle_event(
     app: &AppHandle,
     ev: &Event,
     root: &Path,
-    pending_sched: &mut HashMap<String, (PathBuf, Instant)>,
+    pending_sched: &mut HashMap<String, Instant>,
 ) {
     // 只处理这几类事件:
     // - Create        → 新文件
@@ -133,11 +129,9 @@ fn handle_event(
     }
     for path in &ev.paths {
         if let Some(session_id) = scheduled_session_id(path, root) {
-            // Record only, do not emit immediately: the main loop emits
-            // after the trailing-edge debounce; the event semantics
-            // (upsert/removed) are decided at emit time from the path's
-            // existence.
-            pending_sched.insert(session_id, (path.clone(), Instant::now()));
+            // Record only, do not emit immediately: the main loop emits after
+            // the trailing-edge debounce.
+            pending_sched.insert(session_id, Instant::now());
             continue;
         }
         let Some((session_id, rel)) = parse_session_relative(path, root) else {
@@ -187,17 +181,12 @@ fn handle_event(
     }
 }
 
-/// Emit one scheduled-run refresh event. `exists` is determined at emit time
-/// from the path, preserving the original upsert/removed semantics (both
-/// current frontend listeners only trigger a refresh from it and never read
-/// the event field).
-fn emit_scheduled_run_updated(app: &AppHandle, session_id: &str, exists: bool) {
-    let payload = json!({
-        "sessionId": session_id,
-        "event": if exists { "upsert" } else { "removed" },
-    });
-    let _ = app.emit("scheduled_task:run_updated", payload.clone());
-    crate::platform::app_events::forward_app_event(app, "scheduled_task:run_updated", payload);
+/// Emit one scheduled-run refresh event. All frontend listeners (web bridge,
+/// desktop chat-events bridge, pet window) only trigger a refresh from the
+/// event name and never read a payload field, so the payload is empty.
+fn emit_scheduled_run_updated(app: &AppHandle) {
+    let _ = app.emit("scheduled_task:run_updated", json!({}));
+    crate::platform::app_events::forward_app_event(app, "scheduled_task:run_updated", json!({}));
 }
 
 /// Match only the top-level persisted JSON for a scheduled conversation.

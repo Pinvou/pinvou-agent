@@ -16,6 +16,13 @@ for (const file of ['conversation-model.js', 'conversation-scroll.js']) {
     path.join(conversationDir, file),
   );
 }
+// conversation-scroll.js also exports the React hook wrapper
+// (useConversationBottomFollower), so the sandbox needs a resolvable 'react'.
+// The pure functions under test never call it; a stub suffices.
+const reactDir = path.join(temp, 'node_modules', 'react');
+mkdirSync(reactDir, { recursive: true });
+writeFileSync(path.join(reactDir, 'package.json'), '{"name":"react","type":"module","main":"index.js","exports":{".":"./index.js"}}');
+writeFileSync(path.join(reactDir, 'index.js'), 'export const useEffect = () => {};\n');
 const {
   measureConversationScrollGeometry,
   shouldForceScrollFollow,

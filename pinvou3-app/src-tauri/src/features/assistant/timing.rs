@@ -548,8 +548,9 @@ fn parse_timeline_line(line: &str) -> Option<TimelineEvent> {
         return None;
     }
     let event = v.get("event")?.as_str()?;
-    // A context snapshot has no paired user_start. compute_stats only aggregates paired
-    // (user_start, assistant_done) records, so snapshots cannot affect turn totals.
+    // A context snapshot has no paired user_start, and turn pairing only
+    // reads (user_start, assistant_done) records, so snapshots cannot affect
+    // turn totals.
     let is_base_event = matches!(event, "user_start" | "assistant_done" | "context_snapshot");
     #[cfg(any(feature = "benchmark-hooks", test))]
     let is_observation_event = matches!(
@@ -646,104 +647,6 @@ fn parse_timeline_line(line: &str) -> Option<TimelineEvent> {
     })
 }
 
-/// session 级聚合统计,供内部诊断入口使用。
-#[derive(Debug, Clone, Default, Serialize, Deserialize)]
-pub struct SessionTimelineStats {
-    pub turn_count: usize,
-    pub total_input_tokens: u64,
-    pub total_output_tokens: u64,
-    pub total_cache_hit_tokens: u64,
-    pub total_cache_miss_tokens: u64,
-    pub total_cache_write_tokens: u64,
-    pub total_reasoning_tokens: u64,
-    pub first_turn_ts: Option<String>,
-    pub last_turn_ts: Option<String>,
-    pub completed_turns: usize,
-    pub failed_turns: usize,
-    /// 用户主动 Ctrl-C / 超时中断的轮次(engine 上游 TurnOutcomeStatus::Interrupted)。
-    /// 之前被 `_ => {}` 静默丢弃,导致 turn_count 与 completed+failed 对不上。
-    pub interrupted_turns: usize,
-    /// 有 user_start 但没有 assistant_done 的轮次,常见于进程退出或文件尾部截断。
-    pub incomplete_turns: usize,
-    /// assistant_done 存在,但状态不是当前已知枚举。单独暴露,避免静默制造差值。
-    pub unknown_status_turns: usize,
-}
-
-/// 聚合 session timeline 为单个 stats 对象。
-///
-/// 算法:遍历 read_timeline(),按 turn_id 配对 (user_start, assistant_done),
-/// 每对算一个 turn。token / 状态从 assistant_done 取(失败时 usage 可能为 None)。
-pub fn compute_stats(session_id: &str) -> std::io::Result<SessionTimelineStats> {
-    let events = read_timeline(session_id)?;
-    let mut stats = SessionTimelineStats::default();
-    // 按 turn_id 索引;一个 turn 由 user_start + assistant_done 组成
-    let mut by_turn: HashMap<String, (Option<&TimelineEvent>, Option<&TimelineEvent>)> =
-        HashMap::new();
-    for e in &events {
-        let entry = by_turn.entry(e.turn_id.clone()).or_insert((None, None));
-        if e.event == "assistant_done" {
-            entry.1 = Some(e);
-        } else if e.event == "user_start" {
-            entry.0 = Some(e);
-        }
-    }
-    stats.turn_count = by_turn
-        .values()
-        .filter(|(start, _)| start.is_some())
-        .count();
-    stats.first_turn_ts = events
-        .iter()
-        .find(|event| {
-            by_turn
-                .get(&event.turn_id)
-                .is_some_and(|pair| pair.0.is_some())
-        })
-        .map(|event| event.ts.clone());
-    stats.last_turn_ts = events
-        .iter()
-        .rev()
-        .find(|event| {
-            by_turn
-                .get(&event.turn_id)
-                .is_some_and(|pair| pair.0.is_some())
-        })
-        .map(|event| event.ts.clone());
-    for (start, done) in by_turn.values() {
-        if start.is_none() {
-            continue;
-        }
-        let Some(d) = done else {
-            stats.incomplete_turns += 1;
-            continue;
-        };
-        if let Some(u) = &d.usage {
-            stats.total_input_tokens = stats.total_input_tokens.saturating_add(u.input_tokens);
-            stats.total_output_tokens = stats.total_output_tokens.saturating_add(u.output_tokens);
-            stats.total_cache_hit_tokens = stats
-                .total_cache_hit_tokens
-                .saturating_add(u.cache_hit_tokens);
-            stats.total_cache_miss_tokens = stats
-                .total_cache_miss_tokens
-                .saturating_add(u.cache_miss_tokens);
-            stats.total_cache_write_tokens = stats
-                .total_cache_write_tokens
-                .saturating_add(u.cache_write_tokens);
-            stats.total_reasoning_tokens = stats
-                .total_reasoning_tokens
-                .saturating_add(u.reasoning_tokens);
-        }
-        match d.status.as_deref() {
-            Some(s) if s.eq_ignore_ascii_case("Completed") => stats.completed_turns += 1,
-            Some(s) if s.eq_ignore_ascii_case("Failed") || s.eq_ignore_ascii_case("send_error") => {
-                stats.failed_turns += 1;
-            }
-            Some(s) if s.eq_ignore_ascii_case("Interrupted") => stats.interrupted_turns += 1,
-            _ => stats.unknown_status_turns += 1,
-        }
-    }
-    Ok(stats)
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -826,7 +729,7 @@ mod tests {
     }
 
     #[test]
-    fn context_snapshot_roundtrips_without_polluting_stats() {
+    fn context_snapshot_roundtrips_as_its_own_event_kind() {
         let _guard = ENV_LOCK.lock().unwrap_or_else(|p| p.into_inner());
         let tmp = std::env::temp_dir().join(format!(
             "pinvou3-timing-snapshot-{}",
@@ -864,10 +767,12 @@ mod tests {
         assert_eq!(usage.input_tokens, 120);
         assert_eq!(usage.context_window, 64_000);
 
-        // The unpaired snapshot must not affect turn or token totals.
-        let stats = compute_stats(sid).unwrap();
-        assert_eq!(stats.turn_count, 1);
-        assert_eq!(stats.total_input_tokens, 1000);
+        // The snapshot must roundtrip as its own event kind: turn pairing only
+        // reads user_start/assistant_done, so it can never count as a turn.
+        assert_eq!(
+            snapshots[0].event, "context_snapshot",
+            "snapshot must not be parsed as a turn record"
+        );
 
         let _ = std::fs::remove_dir_all(tmp);
     }
@@ -917,150 +822,6 @@ mod tests {
     }
 
     #[test]
-    fn compute_stats_aggregates_usage_and_status() {
-        let _guard = ENV_LOCK.lock().unwrap_or_else(|p| p.into_inner());
-        let tmp = std::env::temp_dir().join(format!(
-            "pinvou3-timing-stats-{}",
-            std::time::SystemTime::now()
-                .duration_since(std::time::UNIX_EPOCH)
-                .unwrap()
-                .as_nanos()
-        ));
-        // SAFETY: platform::paths::tests::ENV_LOCK held; env writes are serialized.
-        unsafe { std::env::set_var("PINVOU3_HOME", &tmp) };
-
-        let sid = "session-stats";
-        // 2 个 completed turn + 1 个 failed turn
-        for _ in 0..2 {
-            start_turn(sid);
-            finish_turn_with_usage(
-                sid,
-                "Completed",
-                None,
-                Some(TurnUsage {
-                    input_tokens: 1000,
-                    output_tokens: 200,
-                    cache_hit_tokens: 500,
-                    cache_miss_tokens: 500,
-                    ..Default::default()
-                }),
-            );
-        }
-        start_turn(sid);
-        finish_turn_with_usage(sid, "Failed", Some("oops"), None);
-
-        let stats = compute_stats(sid).unwrap();
-        assert_eq!(stats.turn_count, 3);
-        assert_eq!(stats.completed_turns, 2);
-        assert_eq!(stats.failed_turns, 1);
-        assert_eq!(stats.total_input_tokens, 2000);
-        assert_eq!(stats.total_output_tokens, 400);
-        assert_eq!(stats.total_cache_hit_tokens, 1000);
-        assert_eq!(stats.total_cache_miss_tokens, 1000);
-        assert!(stats.first_turn_ts.is_some());
-        assert!(stats.last_turn_ts.is_some());
-
-        let _ = std::fs::remove_dir_all(tmp);
-    }
-
-    #[test]
-    fn compute_stats_on_missing_session_is_default() {
-        let _guard = ENV_LOCK.lock().unwrap_or_else(|p| p.into_inner());
-        // SAFETY: platform::paths::tests::ENV_LOCK held; env writes are serialized.
-        unsafe {
-            std::env::set_var(
-                "PINVOU3_HOME",
-                std::env::temp_dir().join(format!("nope-{}", now_ms())),
-            )
-        };
-        let stats = compute_stats("does-not-exist").unwrap();
-        assert_eq!(stats.turn_count, 0);
-        assert_eq!(stats.total_input_tokens, 0);
-        assert!(stats.first_turn_ts.is_none());
-    }
-
-    /// [F2] Interrupted 终态之前被 `_ => {}` 静默丢弃,导致 turn_count 与
-    /// completed+failed 对不上。验证 compute_stats 现在能正确分类三个终态,
-    /// 且大小写不敏感(engine 上游落盘是 PascalCase,但脏数据可能是 lowercase)。
-    #[test]
-    fn compute_stats_counts_interrupted_terminal_state() {
-        let _guard = ENV_LOCK.lock().unwrap_or_else(|p| p.into_inner());
-        let tmp = std::env::temp_dir().join(format!(
-            "pinvou3-timing-interrupted-{}",
-            std::time::SystemTime::now()
-                .duration_since(std::time::UNIX_EPOCH)
-                .unwrap()
-                .as_nanos()
-        ));
-        // SAFETY: platform::paths::tests::ENV_LOCK held; env writes are serialized.
-        unsafe { std::env::set_var("PINVOU3_HOME", &tmp) };
-
-        let sid = "session-interrupted";
-        // 1 completed + 1 failed + 2 interrupted(一个 PascalCase 一个 lowercase,
-        // 验证 eq_ignore_ascii_case 写法不再漏变体)
-        start_turn(sid);
-        finish_turn_with_usage(sid, "Completed", None, None);
-        start_turn(sid);
-        finish_turn_with_usage(sid, "Failed", Some("err"), None);
-        start_turn(sid);
-        finish_turn_with_usage(sid, "Interrupted", Some("ctrl-c"), None);
-        start_turn(sid);
-        finish_turn_with_usage(sid, "interrupted", None, None);
-
-        let stats = compute_stats(sid).unwrap();
-        assert_eq!(stats.turn_count, 4);
-        assert_eq!(stats.completed_turns, 1);
-        assert_eq!(stats.failed_turns, 1);
-        assert_eq!(stats.interrupted_turns, 2);
-        // 三个终态加起来必须等于 turn_count——这是 F2 修复的本质保证
-        assert_eq!(
-            stats.completed_turns + stats.failed_turns + stats.interrupted_turns,
-            stats.turn_count
-        );
-
-        let _ = std::fs::remove_dir_all(tmp);
-    }
-
-    #[test]
-    fn compute_stats_classifies_real_terminal_edges() {
-        let _guard = ENV_LOCK.lock().unwrap_or_else(|p| p.into_inner());
-        let tmp = std::env::temp_dir().join(format!(
-            "pinvou3-timing-terminal-edges-{}",
-            std::time::SystemTime::now()
-                .duration_since(std::time::UNIX_EPOCH)
-                .unwrap()
-                .as_nanos()
-        ));
-        // SAFETY: platform::paths::tests::ENV_LOCK held; env writes are serialized.
-        unsafe { std::env::set_var("PINVOU3_HOME", &tmp) };
-
-        let sid = "session-terminal-edges";
-        start_turn(sid);
-        finish_turn(sid, "send_error", Some("engine unavailable"));
-        start_turn(sid);
-        finish_turn(sid, "FutureStatus", None);
-        start_turn(sid);
-
-        let stats = compute_stats(sid).unwrap();
-        assert_eq!(stats.turn_count, 3);
-        assert_eq!(stats.failed_turns, 1);
-        assert_eq!(stats.incomplete_turns, 1);
-        assert_eq!(stats.unknown_status_turns, 1);
-        assert_eq!(
-            stats.completed_turns
-                + stats.failed_turns
-                + stats.interrupted_turns
-                + stats.incomplete_turns
-                + stats.unknown_status_turns,
-            stats.turn_count
-        );
-
-        // 清掉进程内 ACTIVE_TURNS 的未完成记录,避免影响同进程后续测试。
-        finish_turn(sid, "Interrupted", None);
-        let _ = std::fs::remove_dir_all(tmp);
-    }
-
-    #[test]
     fn read_timeline_skips_events_without_required_identity() {
         let _guard = ENV_LOCK.lock().unwrap_or_else(|p| p.into_inner());
         let tmp = std::env::temp_dir().join(format!(
@@ -1092,7 +853,12 @@ mod tests {
 
         let timeline = read_timeline(sid).unwrap();
         assert_eq!(timeline.len(), 2);
-        assert_eq!(compute_stats(sid).unwrap().turn_count, 1);
+        // 注入的 user_start 缺 turn_id / 事件名未知,均被整条跳过。
+        assert!(
+            timeline
+                .iter()
+                .all(|e| e.turn_id != "missing-event" && e.turn_id != "unknown-event")
+        );
 
         let _ = std::fs::remove_dir_all(tmp);
     }
@@ -1113,7 +879,6 @@ mod tests {
         let path = crate::platform::paths::session_timing_events("session-io-error");
         std::fs::create_dir_all(&path).unwrap();
         assert!(read_timeline("session-io-error").is_err());
-        assert!(compute_stats("session-io-error").is_err());
 
         let _ = std::fs::remove_dir_all(tmp);
     }
@@ -1184,13 +949,6 @@ mod tests {
             timeline.iter().all(|e| e.timestamp > 0),
             "no event should fall back to 1970"
         );
-
-        let stats = compute_stats(sid).unwrap();
-        // turn_count 不被坏事件污染(还是 1)
-        assert_eq!(stats.turn_count, 1);
-        // first/last 都不是 1970(脏事件 timestamp=0 排序后会变成 first)
-        assert!(stats.first_turn_ts.is_some());
-        assert!(stats.last_turn_ts.is_some());
 
         let _ = std::fs::remove_dir_all(tmp);
     }
@@ -1280,10 +1038,10 @@ mod tests {
         let _ = std::fs::remove_dir_all(tmp);
     }
 
-    /// Full chain for TurnUsage: persisting all fields, reading them back, and
-    /// compute_stats accumulation. [F3] verifies the forward-compat field set
-    /// (cache_write_tokens / reasoning_tokens) keeps every field, while also
-    /// covering the basic fields (input/output/cache_hit/cache_miss).
+    /// Full chain for TurnUsage: persisting all fields and reading them back.
+    /// [F3] verifies the forward-compat field set (cache_write_tokens /
+    /// reasoning_tokens) keeps every field, while also covering the basic
+    /// fields (input/output/cache_hit/cache_miss).
     #[test]
     fn finish_turn_with_usage_records_all_usage_fields() {
         let _guard = ENV_LOCK.lock().unwrap_or_else(|p| p.into_inner());
@@ -1328,10 +1086,6 @@ mod tests {
         assert_eq!(u.cache_write_tokens, 80);
         assert_eq!(u.reasoning_tokens, 500);
         assert_eq!(u.context_window, 128_000);
-
-        let stats = compute_stats(sid).unwrap();
-        assert_eq!(stats.total_cache_write_tokens, 80);
-        assert_eq!(stats.total_reasoning_tokens, 500);
 
         let _ = std::fs::remove_dir_all(tmp);
     }

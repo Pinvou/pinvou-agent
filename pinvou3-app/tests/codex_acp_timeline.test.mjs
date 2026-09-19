@@ -40,7 +40,6 @@ try {
   const {
     appendAcpEvent,
     buildElicitationContent,
-    commandExecutionDetails,
     createAcpEventSeqTracker,
     createAcpGapResyncScheduler,
     mergeAcpTimelineSnapshot,
@@ -49,6 +48,7 @@ try {
     updateAcpAttachmentDraft,
   } = await import(`${pathToFileURL(modulePath).href}?t=${Date.now()}`);
   const {
+    commandExecutionDetails,
     collectToolWorkspaceResources,
     stripTerminalControlSequences,
     toolWorkspaceResources,
@@ -543,6 +543,7 @@ try {
     'utf8',
   );
   const i18n = ['zh', 'en', 'ja'].map((l) => readFileSync(path.join(root, 'src', 'shared', 'i18n', `${l}.js`), 'utf8')).join('\n'); // 拆分后三语在 i18n/ 目录
+  const sessionListPipeline = readFileSync(path.join(root, 'src', 'shared', 'session-list-pipeline.js'), 'utf8');
   const navigationComponents = readFileSync(path.join(root, 'src', 'components', 'layout', 'NavigationComponents.jsx'), 'utf8');
   assert.ok(main.includes("currentView === 'codex'"));
   assert.ok(
@@ -587,7 +588,8 @@ try {
     'an accepted ACP turn must refresh the shared recent-session list while it is still running',
   );
   assert.ok(main.includes("{ id: 'code', label: t.sidebarTaskFilterCodeSessions }")
-    && main.includes("if (taskListFilter === 'code') return chat.taskKind === 'codex';")
+    && sessionListPipeline.includes("if (tabId === 'code') return sessions.filter((chat) => chat.taskKind === 'codex');")
+    && main.includes('filterSessionsByTab(allSidebarTasks, taskListFilter)')
     && i18n.includes("sidebarTaskFilterCodeSessions: '代码会话'")
     && i18n.includes("sidebarTaskFilterCodeSessions: 'Code sessions'")
     && i18n.includes("sidebarTaskFilterCodeSessions: 'コードセッション'")
@@ -888,10 +890,13 @@ try {
     && codexView.includes('bottom-full')
     && !codexView.includes('bottom-[106px]'),
   'Codex streaming must pause auto-follow and place the return action above, not over, the composer');
-  assert.ok(codexView.includes('const contentElement = conversationContentRef.current')
-    && codexView.includes('return startConversationBottomFollower({')
-    && codexView.includes('onMeasured: () => {')
-    && codexView.includes('lastScrollHeightRef.current = scrollElement.scrollHeight'),
+  // Bottom following is wired through the shared useConversationBottomFollower
+  // hook (its shrink/async-layout behavior is pinned by
+  // conversation_scroll_follow.test.mjs); the codex view must consume it with
+  // its own scroll/content refs.
+  assert.ok(codexView.includes('useConversationBottomFollower({')
+    && codexView.includes('scrollRef: scroller')
+    && codexView.includes('contentRef: conversationContentRef'),
   'Codex streaming must retain bottom following across content shrink and asynchronous layout changes');
   assert.ok(!codexView.includes('<JsonBlock'), 'raw ACP JSON must not leak into normal command UI');
   assert.ok(codexView.includes('await submitAcpPrompt({')
@@ -966,7 +971,7 @@ try {
     'Codex input answers must be returned through the ACP request');
   assert.ok(conversationView.includes('className={`codex-markdown'), 'conversation Markdown must keep the isolated Codex style scope');
   assert.ok(codexView.includes('<ConversationTurn'), 'Codex must render through the shared Turn renderer by default');
-  assert.ok(codexView.includes('<ConversationActivityIndicator')
+  assert.ok(codexView.includes('<LiveConversationActivityIndicator')
     && codexView.includes('turn={activeConversationTurn}')
     && conversationView.includes("if (!turn || turn.status !== 'running') return null"),
   'Codex must show the shared composer timer only while the active turn is running');
@@ -1060,11 +1065,17 @@ try {
     && codexView.includes('function CodexComposerConfigSelect')
     && codexView.includes('data-testid={testId || `codex-config-${id}`}'),
   'the plain lane must keep its self-drawn config select group while the shared config select keeps the ACP testid contract');
+  // switchNativeModel / mountNativeKb / unmountNativeKb share
+  // applyNativeControlChange, which routes every change through
+  // invoke(command, { sessionId, ...args }) — the per-session commands stay
+  // explicit as the helper's call-site arguments.
   assert.ok(codexView.includes("invoke('get_session_model_id'")
     && codexView.includes("invoke('set_session_model'")
-    && codexView.includes("invoke('session_mount_collection'")
-    && codexView.includes("invoke('session_unmount_collection'")
     && codexView.includes("invoke('session_mounted_collection'")
+    && codexView.includes("command: 'set_session_model'")
+    && codexView.includes("command: 'session_mount_collection'")
+    && codexView.includes("command: 'session_unmount_collection'")
+    && codexView.includes('await invoke(command, { sessionId, ...args })')
     && codexView.includes("invoke('get_mode_state'")
     && codexView.includes("invoke('set_plan_mode_next'")
     && codexView.includes("invoke('exit_plan_to_yolo'")
@@ -1081,8 +1092,13 @@ try {
   const nativeCreateFinalize = codexView.indexOf('return finalizePreparedSessionCreation({', nativeCreateStart);
   const nativeCreatePrepare = codexView.indexOf('prepareSession,', nativeCreateFinalize);
   const nativeCreateLoad = codexView.indexOf('loadSession,', nativeCreateFinalize);
-  const nativeSendCreate = codexView.indexOf('const created = await createSession({', codexView.indexOf('async function sendNative'));
-  const nativeSendPrepare = codexView.indexOf('prepareSession: async sessionId => {', nativeSendCreate);
+  // sendNative persists its staged controls through the shared send pipeline
+  // (runAcpSendPipeline owns the createSession call); the clear must only run
+  // after the persist+handoff inside sendNative's materializeDraft step.
+  const nativeSendStart = codexView.indexOf('async function sendNative');
+  const nativeSendPipelineStart = codexView.indexOf('async function runAcpSendPipeline({');
+  const nativeSendPipelineCreate = codexView.indexOf('const created = await createSession({', nativeSendPipelineStart);
+  const nativeSendPrepare = codexView.indexOf('prepareSession: async sessionId => {', nativeSendStart);
   const nativeSendApply = codexView.indexOf('const prepared = await persistNativeDraftControls(', nativeSendPrepare);
   const nativeSendClear = codexView.indexOf('clearNativeDraftControls(nativeDraftControlsAtSend)', nativeSendApply);
   assert.ok(codexView.includes('nativeDraftControls')
@@ -1091,10 +1107,11 @@ try {
     && nativeCreateFinalize > nativeCreateStart
     && nativeCreatePrepare > nativeCreateFinalize
     && nativeCreatePrepare < nativeCreateLoad
-    && nativeSendCreate >= 0
-    && nativeSendPrepare > nativeSendCreate
+    && nativeSendStart >= 0
+    && nativeSendPrepare > nativeSendStart
     && nativeSendApply > nativeSendPrepare
-    && nativeSendClear > nativeSendApply,
+    && nativeSendClear > nativeSendApply
+    && nativeSendPipelineCreate > nativeSendPipelineStart,
   'draft-state control selections, including multi-agent mode, must be persisted before the first session load and cleared only after handoff');
   assert.ok(
     codexView.includes('nativeDraftControlsHandoffRef.current?.sessionId === activeId')

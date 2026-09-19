@@ -6,8 +6,11 @@ import { fileURLToPath } from 'node:url';
 
 const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
 const source = fs.readFileSync(path.join(root, 'src/platform/tauri/bridge/memory.js'), 'utf8');
+// memory.js delegates shared helpers to window.PinvouBridgeShared (loaded before the
+// bridges by index.html); run the shared payload in the same context first.
+const sharedHelpers = fs.readFileSync(path.join(root, 'src/shared/bridge-shared-helpers.js'), 'utf8');
 const windowObject = { __PINVOU_TAURI_BRIDGE_FEATURES__: {} };
-vm.runInNewContext(source, { window: windowObject, setTimeout, clearTimeout, console });
+vm.runInNewContext(sharedHelpers + '\n' + source, { window: windowObject, setTimeout, clearTimeout, console });
 
 const state = {
   activeSessionId: 'session-1',
@@ -106,7 +109,9 @@ response = command => command === 'delete_memory_preference'
   ? { value: true, runtime: null, warnings: [{ code: 'runtime_refresh_failed' }] }
   : overview();
 rejectOverview = true;
-await api.deleteMemoryPreference('pref-new');
+// deleteMemoryPreference was removed as a dead facade method; the preference path
+// goes through deleteMemoryItem('preference', ...) which routes to the same command.
+await api.deleteMemoryItem('preference', 'pref-new');
 assert.deepEqual(state.memory.preferences, [], 'committed delete must survive overview failure');
 rejectOverview = false;
 

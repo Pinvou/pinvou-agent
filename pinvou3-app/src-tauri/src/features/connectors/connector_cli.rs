@@ -22,9 +22,10 @@ use std::sync::mpsc;
 use std::time::{Duration, Instant};
 
 use serde::Serialize;
-use serde_json::Value;
+use serde_json::{Value, json};
 use tauri::{AppHandle, Emitter};
 
+use crate::features::connectors::skill_gate;
 use crate::platform::process::{REAP_GRACE, Reap, reap_killed_child};
 
 /// 一个 CLI 连接器的运行上下文(薄声明的"可执行"部分)。
@@ -306,9 +307,44 @@ pub fn kill_pid_tree(pid: u32) {
     crate::platform::os::kill_pid_tree(pid);
 }
 
-/// 给前端发连接编排事件(`<id>:qr` / `<id>:phase` / `<id>:connected` / `<id>:error`)。
+/// 给前端发连接编排事件(`<id>:qr` / `<id>:connected` / `<id>:error`)。
 pub fn emit(app: &AppHandle, event: &str, payload: Value) {
     let _ = app.emit(event, payload);
+}
+
+/// `*_ensure_cli` 公共脚手架(飞书 / 企微 / 钉钉 / 腾讯会议四份同构块收编):
+/// 已装(`present`)则秒返回;否则跑 `install`(在线安装),装完复检 `present`,
+/// 仍未就绪报 `unexecutable_error`。各连接器的预检查(版本下限等)经 `present`
+/// 闭包传入。
+pub(crate) async fn ensure_cli_with<P, I>(
+    id: &'static str,
+    present: P,
+    unexecutable_error: &'static str,
+    install: I,
+) -> Result<Value, String>
+where
+    P: Fn() -> bool + Send + 'static,
+    I: FnOnce() -> Result<(), String> + Send + 'static,
+{
+    tokio::task::spawn_blocking(move || {
+        let t = Instant::now();
+        // 已装则秒返回 —— 不跑慢吞吞、可能卡死的在线安装。
+        let present_now = present();
+        eprintln!(
+            "[{id}] ensure_cli: cli_present={present_now} in {}ms",
+            t.elapsed().as_millis()
+        );
+        if present_now {
+            return Ok::<Value, String>(json!({ "ok": true, "already": true }));
+        }
+        install()?;
+        if !present() {
+            return Err(unexecutable_error.to_string());
+        }
+        Ok::<Value, String>(json!({ "ok": true, "already": false }))
+    })
+    .await
+    .map_err(|e| format!("spawn_blocking: {e}"))?
 }
 
 // ──────────────────────── 多连接器共享的连接编排状态 ────────────────────────
@@ -371,71 +407,41 @@ impl ConnectorConn {
     }
 }
 
+/// 首屏提交后刷新鉴权门控的耗时回执(前端只读 elapsed_ms 打启动标记)。
 #[derive(Debug, Serialize)]
 pub struct ConnectorAuthGateRefresh {
-    feishu_visible: bool,
-    wecom_visible: bool,
-    dingtalk_visible: bool,
-    tmeet_visible: bool,
     elapsed_ms: u64,
 }
 
 /// 首屏提交后刷新飞书 / 企微 / 钉钉 / 腾讯会议鉴权门控。外部 CLI 在 blocking 线程池并行执行，
-/// 不占 Tauri setup 主线程；各自只修改互不重叠的技能目录。
+/// 不占 Tauri setup 主线程；各自只修改互不重叠的技能目录。四连接器的探测 + 刷新
+/// 同一形状,按 [`skill_gate::GATES`] 表驱动。
 pub async fn refresh_connector_auth_gates() -> Result<ConnectorAuthGateRefresh, String> {
     let started = Instant::now();
     crate::platform::startup::mark("connector_auth_refresh:start");
 
-    let feishu = tokio::task::spawn_blocking(|| {
-        let show = crate::features::connectors::feishu::feishu_skills_should_show();
-        crate::features::runtime_bundle::platform::Pinvou3Bundle::paths()
-            .apply_feishu_skills(show)
-            .map_err(|e| format!("刷新飞书技能门控失败: {e}"))?;
-        Ok::<bool, String>(show)
-    });
-    let wecom = tokio::task::spawn_blocking(|| {
-        let show = crate::features::connectors::wecom::wecom_skills_should_show();
-        crate::features::runtime_bundle::platform::Pinvou3Bundle::paths()
-            .apply_wecom_skills(show)
-            .map_err(|e| format!("刷新企微技能门控失败: {e}"))?;
-        Ok::<bool, String>(show)
-    });
-    let dingtalk = tokio::task::spawn_blocking(|| {
-        let show = crate::features::connectors::dingtalk::dingtalk_skills_should_show();
-        crate::features::runtime_bundle::platform::Pinvou3Bundle::paths()
-            .apply_dingtalk_skills(show)
-            .map_err(|e| format!("刷新钉钉技能门控失败: {e}"))?;
-        Ok::<bool, String>(show)
-    });
-    let tmeet = tokio::task::spawn_blocking(|| {
-        let show = crate::features::connectors::tmeet::tmeet_skills_should_show();
-        crate::features::runtime_bundle::platform::Pinvou3Bundle::paths()
-            .apply_tmeet_skills(show)
-            .map_err(|e| format!("刷新腾讯会议技能门控失败: {e}"))?;
-        Ok::<bool, String>(show)
-    });
+    let tasks: Vec<_> = skill_gate::GATES
+        .iter()
+        .map(|gate| {
+            let gate: &'static skill_gate::ConnectorGate = *gate;
+            tokio::task::spawn_blocking(move || gate.refresh_step())
+        })
+        .collect();
 
-    let (feishu_result, wecom_result, dingtalk_result, tmeet_result) =
-        tokio::join!(feishu, wecom, dingtalk, tmeet);
-    let feishu_visible = feishu_result.map_err(|e| format!("飞书鉴权探测任务失败: {e}"))??;
-    let wecom_visible = wecom_result.map_err(|e| format!("企微鉴权探测任务失败: {e}"))??;
-    let dingtalk_visible = dingtalk_result.map_err(|e| format!("钉钉鉴权探测任务失败: {e}"))??;
-    let tmeet_visible = tmeet_result.map_err(|e| format!("腾讯会议鉴权探测任务失败: {e}"))??;
+    let mut visible_marks = Vec::with_capacity(tasks.len());
+    for (gate, task) in skill_gate::GATES.iter().zip(tasks) {
+        let visible = task
+            .await
+            .map_err(|e| format!("{}鉴权探测任务失败: {e}", gate.display_name))??;
+        visible_marks.push(format!("{}_visible={visible}", gate.id));
+    }
     let elapsed_ms = started.elapsed().as_millis() as u64;
     crate::platform::startup::mark_with_detail(
         "rust",
         "connector_auth_refresh:done",
-        &format!(
-            "elapsed_ms={elapsed_ms} feishu_visible={feishu_visible} wecom_visible={wecom_visible} dingtalk_visible={dingtalk_visible} tmeet_visible={tmeet_visible}"
-        ),
+        &format!("elapsed_ms={elapsed_ms} {}", visible_marks.join(" ")),
     );
-    Ok(ConnectorAuthGateRefresh {
-        feishu_visible,
-        wecom_visible,
-        dingtalk_visible,
-        tmeet_visible,
-        elapsed_ms,
-    })
+    Ok(ConnectorAuthGateRefresh { elapsed_ms })
 }
 
 // ─────────────── BundleStore 镜像（marketplace-unification Phase 2）───────────────
@@ -443,26 +449,12 @@ pub async fn refresh_connector_auth_gates() -> Result<ConnectorAuthGateRefresh, 
 // 过渡期纪律：连接器的授权文件 / 技能目录 / CLI 二进制仍是权威，bundles.json
 // 只镜像安装态；镜像写失败不影响主操作，fail loud 到日志。
 
-/// 连接成功（授权就绪）后登记 CLI 包：`source=Builtin`，assets 按 lock 表钉住的
-/// 版本/SHA-256 登记（连接路径已经过 `ensure_native_cli` 校验；tmeet 走 npm 无
-/// lock 条目，自然无 asset），并清除 `degraded`（重连即修复，§3.2）。
-/// 既有记录保留首次登记时间与 extra（见 `BundleStore::upsert_preserving`）。
+/// 连接成功（授权就绪）后登记 CLI 包：`source=Builtin`，并清除 `degraded`
+/// （重连即修复，§3.2）。既有记录保留首次登记时间与 extra（见
+/// `BundleStore::upsert_preserving`）。
 pub fn bundle_store_on_connected(id: &str) {
-    use crate::features::marketplace::bundle;
-    use crate::features::marketplace::store::{
-        ASSET_KIND_CLI, AssetRef, BundleRecord, BundleSource, BundleStore,
-    };
-    let mut record = BundleRecord::installed_now(id, BundleSource::Builtin);
-    if let Some(bin) = bundle::cli_bundle_bin(id) {
-        if let Some(pin) = crate::platform::connector_lock::artifact_pin(bin) {
-            record.assets.push(AssetRef {
-                kind: ASSET_KIND_CLI.to_string(),
-                name: bin.to_string(),
-                version: pin.version,
-                sha256: pin.binary_sha256,
-            });
-        }
-    }
+    use crate::features::marketplace::store::{BundleRecord, BundleSource, BundleStore};
+    let record = BundleRecord::installed_now(id, BundleSource::Builtin);
     if let Err(e) = BundleStore::new().upsert_preserving(record) {
         log::warn!("[connectors] bundles.json 镜像写入失败（connect {id}）: {e}");
     }

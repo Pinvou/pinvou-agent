@@ -1417,12 +1417,11 @@ pub(crate) fn spawn_event_forwarder(
                         "risk": risk,
                         "reason": crate::platform::credential_store::redact_secret(&reason),
                     });
-                    let _ = app.emit("chat:tool_gate_decision", payload.clone());
-                    crate::features::remote_control::forward_app_event(
-                        &app,
-                        "chat:tool_gate_decision",
-                        payload,
-                    );
+                    // Desktop-only lane: "chat:tool_gate_decision" is not in
+                    // the Web access event policy, so forwarding it would only
+                    // produce rejected-event log spam when a WebUI client is
+                    // connected.
+                    let _ = app.emit("chat:tool_gate_decision", payload);
                 }
                 // v0.9.12 events with no Pinvou host projection. Keep these arms
                 // explicit: adding another foundation event must fail this match at

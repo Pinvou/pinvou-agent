@@ -16,11 +16,5 @@
       "oauth_resource": "https://open.chineselaw.com/mcp"
     }
   ],
-  "routing_rules": [
-    "法律法规/法条原文/案例文书/裁判观点/企业司法风险/合同合规/股权责任 → 优先使用 `mcp_yuandian_mcp_*`，不要直接用普通网页搜索替代"
-  ],
-  "tool_table_entries": [
-    "| 法律数据 | `mcp_yuandian_mcp_*` (华宇元典: 法规/案例/企业司法风险) |"
-  ],
   "pip_dependencies": []
 }

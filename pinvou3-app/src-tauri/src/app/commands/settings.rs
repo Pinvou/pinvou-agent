@@ -135,7 +135,6 @@ pub struct EffectiveModelConfig {
     pub provider_kind: Option<String>,
     pub vendor: Option<String>,
     pub endpoint_mode: Option<String>,
-    pub credential_mode: crate::features::assistant::runtime_model::ModelCredentialMode,
     pub requires_user_api_key: bool,
     /// 被环境变量覆盖的字段名列表（如 `["model", "base_url"]`）。
     /// 空列表表示全部走 settings.json，用户修改会生效。
@@ -184,9 +183,9 @@ pub async fn get_effective_model_config(
         .map(|model| model.preset)
         .unwrap_or_default()
         .as_str();
-    let credential_mode = pool.credential_mode_for(effective.as_ref(), bridge.api_key_required());
-    let requires_user_api_key = credential_mode
-        == crate::features::assistant::runtime_model::ModelCredentialMode::UserManaged;
+    // 运行时模型准备固定 passthrough（无后台托管凭据），是否要求用户 Key
+    // 完全由 bridge 的鉴权判定（provider + base_url）决定。
+    let requires_user_api_key = bridge.api_key_required();
     Ok(EffectiveModelConfig {
         preset: preset.to_string(),
         model: bridge.model(),
@@ -212,7 +211,6 @@ pub async fn get_effective_model_config(
         endpoint_mode: effective
             .as_ref()
             .and_then(|model| model.endpoint_mode.clone()),
-        credential_mode,
         requires_user_api_key,
         env_overrides,
     })
@@ -1420,6 +1418,8 @@ pub async fn save_search_settings_and_restart(
     app.restart();
 }
 use super::prelude::*;
+// 凭据状态迁移(`mark_*` / `clear_plaintext_key`)自 prefs 的密封 trait 提供。
+use crate::platform::prefs::CredentialStateOps;
 
 #[cfg(test)]
 mod tests {

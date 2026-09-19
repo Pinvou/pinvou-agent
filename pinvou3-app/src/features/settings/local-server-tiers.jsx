@@ -4,6 +4,13 @@
 // in params and layout, extracted here to dedupe. Probe/selection behavior matches both originals.
 import { useEffect, useState } from 'react';
 import { bridge } from '../../hooks/useBridge.js';
+import {
+  alwaysThinkingSpecForModel,
+  baseUrlUsesLocalOrPrivate,
+  localReasoningTiers,
+  reasoningEffortDisplayForTiers,
+  reasoningEffortTiersForModel,
+} from './model-catalog.js';
 
 // Probes the local server kind (vllm/ollama/lmstudio/generic) and returns { probedKind, probePending }.
 // - enabled=false (endpoint not local/private-network) synchronously clears the probe window; tiers fall back to the model catalog;
@@ -65,6 +72,52 @@ export function useLocalServerKindProbe({ enabled, baseUrl, apiKey = '', modelId
     return () => { cancelled = true; };
   }, [enabled, baseUrl, apiKey, modelId, debounceMs, probeSupported, trimInputs]);
   return { probedKind, probePending };
+}
+
+// Shared reasoning-tier glue for the two reasoning-effort surfaces (the composer model
+// popover in composer-shared.jsx and the model form in SettingsView.jsx): resolves the
+// local/private-network probe together with the static tier table into one tier state.
+// Both call sites previously carried identical copies of this block; the probe mechanics
+// themselves stay in useLocalServerKindProbe.
+//   model        - the model descriptor driving tier routing (the composer's saved model
+//                  entry, or the form's { preset, model, vendor, base_url, provider_kind }
+//                  snapshot); null (composer without an active model) means "no tiers".
+//   storedEffort - the effort value whose highlight is computed. The composer passes the
+//                  saved model's raw reasoning_effort normalized against the model's static
+//                  table; the form passes its already-normalized live state. Normalization
+//                  stays with the caller — this hook only maps the value onto the resolved
+//                  tiers for display (reasoningEffortDisplayForTiers semantics).
+//   baseUrl/apiKey/modelId/debounceMs/trimInputs - passed through to
+//                  useLocalServerKindProbe (baseUrl also feeds the local/private check; the
+//                  URL parser ignores edge whitespace so callers need not trim).
+// Returns { isLocalCompatible, probedKind, probePending, reasoningEffortTiers,
+//           noControlThinking, reasoningEffortDisplay }.
+export function useModelReasoningTierState({ model, storedEffort = null, baseUrl, apiKey = '', modelId = null, debounceMs = 0, trimInputs = false }) {
+  const isLocalCompatible = !!model
+    && model.preset === 'openai_compatible'
+    && baseUrlUsesLocalOrPrivate(baseUrl);
+  const { probedKind, probePending } = useLocalServerKindProbe({
+    enabled: isLocalCompatible,
+    baseUrl,
+    apiKey,
+    modelId,
+    debounceMs,
+    trimInputs,
+  });
+  const reasoningEffortTiers = isLocalCompatible
+    ? (probePending ? [] : (localReasoningTiers(model.model, probedKind) || []))
+    : (model ? (reasoningEffortTiersForModel(model) || []) : []);
+  // Local routes (vllm preset / local-compatible endpoints) hit the "always-thinking,
+  // no-control" knowledge table: the effort-tier area shows an "always on" hint instead of
+  // probe-unsupported.
+  const noControlThinking = !!model
+    && (model.preset === 'local_vllm' || isLocalCompatible)
+    && !!(alwaysThinkingSpecForModel(model.model) || {}).noControl;
+  // Highlight fallback: the display maps a stored tier missing from the (possibly
+  // probed-narrowed) table to the nearest tier (think:true is equivalent to high), while
+  // click/save comparison keeps the caller's original value.
+  const reasoningEffortDisplay = reasoningEffortDisplayForTiers(storedEffort, reasoningEffortTiers);
+  return { isLocalCompatible, probedKind, probePending, reasoningEffortTiers, noControlThinking, reasoningEffortDisplay };
 }
 
 // zh fallback strings for the tier hints: same semantics as the i18n copy, used only when

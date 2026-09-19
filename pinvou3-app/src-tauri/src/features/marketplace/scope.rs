@@ -358,7 +358,9 @@ pub fn load_disabled_bundles() -> Vec<String> {
     load_disabled_bundles_for(ConnectorScope::Plain)
 }
 
-/// 写全局（plain）被禁用的包 id 列表。兼容既有调用方。
+/// 写全局（plain）被禁用的包 id 列表。测试专用（生产写一律走
+/// [`save_disabled_bundles_for`] 显式给 scope）。
+#[cfg(test)]
 pub fn save_disabled_bundles(ids: &[String]) {
     save_disabled_bundles_for(ConnectorScope::Plain, ids);
 }
@@ -442,31 +444,11 @@ pub fn set_project_skills_enabled(enabled: bool) {
 #[cfg(test)]
 mod tests {
     use super::*;
-
-    /// 把 PINVOU3_HOME 指到干净临时目录跑闭包，借 ENV_LOCK 与其它 mutate 测试串行。
-    fn with_temp_home<F: FnOnce()>(f: F) {
-        let _g = crate::platform::paths::tests::ENV_LOCK
-            .lock()
-            .unwrap_or_else(|p| p.into_inner());
-        let dir = std::env::temp_dir().join(format!("pinvou3-scope-{}", std::process::id()));
-        let _ = std::fs::remove_dir_all(&dir);
-        std::fs::create_dir_all(&dir).unwrap();
-        let prev = std::env::var("PINVOU3_HOME").ok();
-        // SAFETY: holding platform::paths::tests::ENV_LOCK; env writes serialized in-process.
-        unsafe { std::env::set_var("PINVOU3_HOME", &dir) };
-        f();
-        match prev {
-            // SAFETY: holding platform::paths::tests::ENV_LOCK; env writes serialized in-process.
-            Some(v) => unsafe { std::env::set_var("PINVOU3_HOME", v) },
-            // SAFETY: holding platform::paths::tests::ENV_LOCK; env writes serialized in-process.
-            None => unsafe { std::env::remove_var("PINVOU3_HOME") },
-        }
-        let _ = std::fs::remove_dir_all(&dir);
-    }
+    use crate::platform::test_support::with_temp_home;
 
     #[test]
     fn bundles_roundtrip_per_scope() {
-        with_temp_home(|| {
+        with_temp_home("pinvou3-scope", || {
             assert!(load_disabled_bundles_for(ConnectorScope::Plain).is_empty());
             save_disabled_bundles_for(ConnectorScope::Plain, &["weather".to_string()]);
             save_disabled_bundles_for(ConnectorScope::Code, &["feishu".to_string()]);
@@ -484,7 +466,7 @@ mod tests {
     /// 开关（disabled）与可见性（hidden）两套集合正交，互不污染。
     #[test]
     fn hidden_bundles_are_orthogonal_to_disabled() {
-        with_temp_home(|| {
+        with_temp_home("pinvou3-scope", || {
             assert!(load_hidden_bundles_for(ConnectorScope::Plain).is_empty());
             save_hidden_bundles_for(ConnectorScope::Plain, &["combo-demo".to_string()]);
             // hidden 不影响 disabled
@@ -504,7 +486,7 @@ mod tests {
     /// pollute the disabled set.
     #[test]
     fn unavailable_is_union_deduped() {
-        with_temp_home(|| {
+        with_temp_home("pinvou3-scope", || {
             // Initially both sets are empty.
             assert!(load_disabled_bundles_for(ConnectorScope::Plain).is_empty());
             assert!(load_hidden_bundles_for(ConnectorScope::Plain).is_empty());
@@ -536,7 +518,7 @@ mod tests {
     /// 卸载/断开后清理残留：同时清 disabled 与 hidden 两套集合。
     #[test]
     fn remove_bundle_clears_both_sets() {
-        with_temp_home(|| {
+        with_temp_home("pinvou3-scope", || {
             save_disabled_bundles_for(ConnectorScope::Plain, &["weather".to_string()]);
             save_hidden_bundles_for(ConnectorScope::Plain, &["weather".to_string()]);
             remove_bundle_from_disabled_scopes("weather");
@@ -548,7 +530,7 @@ mod tests {
     /// 保存路径统一归一为包 id：剥 `skill:` 前缀 + companion 映射到所属包。
     #[test]
     fn save_normalizes_to_package_id() {
-        with_temp_home(|| {
+        with_temp_home("pinvou3-scope", || {
             // gongwen 未装：companion 技能保留独立纯技能包形态 → 归一为自身 id
             // （与 list_bundles 的 V5 认领展示一致，开关不回弹）。
             save_disabled_bundles_for(
@@ -589,7 +571,7 @@ mod tests {
     /// 跟随技能本体，否则用户的禁用/隐藏态在认领翻转后静默失效。
     #[test]
     fn load_normalizes_stale_skill_id_after_claim_flip() {
-        with_temp_home(|| {
+        with_temp_home("pinvou3-scope", || {
             save_disabled_bundles_for(ConnectorScope::Plain, &["government-writing".to_string()]);
             save_hidden_bundles_for(ConnectorScope::Plain, &["government-writing".to_string()]);
             assert_eq!(
@@ -626,7 +608,7 @@ mod tests {
     /// 项目级 skills 开关往返。
     #[test]
     fn project_skills_roundtrip() {
-        with_temp_home(|| {
+        with_temp_home("pinvou3-scope", || {
             assert!(!project_skills_enabled(), "项目技能默认关");
             set_project_skills_enabled(true);
             assert!(project_skills_enabled());
@@ -639,7 +621,7 @@ mod tests {
     /// 串行：持锁期间并发 load（磁盘为旧连接器文件、必然触发迁移落盘）不得先行落盘。
     #[test]
     fn read_path_migration_serializes_with_file_lock() {
-        with_temp_home(|| {
+        with_temp_home("pinvou3-scope", || {
             let legacy = r#"["weather"]"#;
             let conn = paths::pinvou3_home().join("disabled_connectors.json");
             std::fs::create_dir_all(conn.parent().unwrap()).unwrap();

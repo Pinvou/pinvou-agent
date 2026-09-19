@@ -16,7 +16,8 @@ export function loadDraftControlsCache() {
   }
 }
 
-export function snapshotSessionControls(info) {
+// 模块私有：仅 rememberDraftControls 在写缓存前归一化会话上报的控件快照。
+function snapshotSessionControls(info) {
   if (!info) return null;
   const snapshot = {
     models: Array.isArray(info.models) ? info.models : [],

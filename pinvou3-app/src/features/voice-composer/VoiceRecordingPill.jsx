@@ -1,8 +1,14 @@
 import { Check, X } from '../../components/icons.jsx';
-import { voicePostprocessingLabel } from './voice-ui-policy.mjs';
+import {
+  VOICE_ACTIVE_STATUSES,
+  VOICE_BUSY_STATUSES,
+  voicePostprocessingLabel,
+} from './voice-ui-policy.mjs';
 
-const PILL_ACTIVE_STATUSES = ['requesting_permission', 'recording', 'transcribing', 'postprocessing'];
-const PILL_BUSY_STATUSES = ['requesting_permission', 'transcribing', 'postprocessing'];
+// 状态判定集从 voice-ui-policy 派生:可见集同 isVoiceActive;busy(确认键
+// 禁用)额外含 requesting_permission——许可请求期同样没有可确认的录音。
+const PILL_ACTIVE_STATUSES = VOICE_ACTIVE_STATUSES;
+const PILL_BUSY_STATUSES = ['requesting_permission', ...VOICE_BUSY_STATUSES];
 
 const WAVE_BARS = [
   { height: 11, colors: ['#B388FF', '#7C4DFF'] },
@@ -80,4 +86,4 @@ function VoiceRecordingPill({ status, mode, message, copy, closing = false, onCa
   );
 }
 
-export { VoiceRecordingPill, VoiceWaveform };
+export { VoiceRecordingPill };

@@ -2,7 +2,7 @@ import { useEffect, useState, useSyncExternalStore } from 'react';
 import { bridge } from '../../hooks/useBridge.js';
 import { can, isWeb } from '../../shared/platform.js';
 import { getSyntaxHighlightVersion, subscribeSyntaxHighlight } from '../../shared/syntax-highlighter.js';
-import { OFFICE_HTML_STYLE } from './ArtifactsPanel.jsx';
+import { OFFICE_HTML_STYLE } from '../../shared/artifact-utils.js';
 import { loadArtifactPreview } from './artifact-preview.js';
 import { ScaledHtmlPreview } from '../settings/composer-shared.jsx';
 
