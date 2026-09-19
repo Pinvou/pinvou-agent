@@ -1095,6 +1095,13 @@ fn write_tree_node(
 ) {
     // Aggregate deadline: abort as soon as it is reached (past_deadline
     // already set truncated); the subtree written so far remains valid.
+    // Honest overshoot bound: the deadline is only checked at node entry,
+    // while a single AX attribute read can block up to
+    // AX_MESSAGING_TIMEOUT_SECS and a node performs several reads after the
+    // check — so the wall clock can exceed AX_TREE_TIME_LIMIT by up to one
+    // node's remaining reads (~+2 s typical). A hung app is cut short
+    // mid-node by the consecutive-CannotComplete poison below before it can
+    // burn a full message timeout on every remaining attribute.
     if writer.past_deadline() {
         return;
     }
@@ -1239,9 +1246,15 @@ impl MacosComputerUseBackend {
     /// trusted target (no move_to yet), the status quo is kept; when the
     /// cursor position cannot be read, it fails explicitly (fail-closed: a
     /// click whose landing spot is unknown must not proceed).
-    fn guard_click_position(&mut self) -> Result<(), ComputerUseError> {
+    ///
+    /// Returns `Ok(true)` when the pointer was re-located: the re-move is
+    /// already followed by the [`CLICK_SETTLE_MS`] settle pause here, so the
+    /// caller must skip its own settle sleep (a corrected click used to
+    /// settle twice, 60 ms instead of 30 ms). `Ok(false)` means no
+    /// re-location happened and the caller still owes the one settle pause.
+    fn guard_click_position(&mut self) -> Result<bool, ComputerUseError> {
         let Some(target) = self.pending_move_target else {
-            return Ok(());
+            return Ok(false);
         };
         let (cx, cy) = cursor_points()?;
         // i64 intermediate: with target/cursor coordinates near i32::MIN/MAX
@@ -1252,11 +1265,11 @@ impl MacosComputerUseBackend {
         if dx <= i64::from(CLICK_POSITION_TOLERANCE_PT)
             && dy <= i64::from(CLICK_POSITION_TOLERANCE_PT)
         {
-            return Ok(());
+            return Ok(false);
         }
         self.post_move(target)?;
         sleep(Duration::from_millis(CLICK_SETTLE_MS));
-        Ok(())
+        Ok(true)
     }
 
     /// Landing spot for coordinate-less click/press/release: prefer the most
@@ -1541,11 +1554,15 @@ impl ComputerUseBackend for MacosComputerUseBackend {
         // Landing guard first: when the user physically moving the mouse
         // races the synthetic move, the click would land at the user's cursor
         // (review defect 6).
-        self.guard_click_position()?;
+        let re_located = self.guard_click_position()?;
         let dest = self.click_destination()?;
         // Let the earlier move settle before clicking, so the click does not
-        // land at the old cursor position.
-        sleep(Duration::from_millis(CLICK_SETTLE_MS));
+        // land at the old cursor position. When the guard re-located the
+        // pointer it already slept the settle pause, so this is skipped there
+        // — every click path settles exactly once.
+        if !re_located {
+            sleep(Duration::from_millis(CLICK_SETTLE_MS));
+        }
         let (down, up, _) = cg_mouse_event_types(button);
         let cg_button = cg_mouse_button(button);
         let rounds = u32::from(count.max(1));
@@ -1594,9 +1611,13 @@ impl ComputerUseBackend for MacosComputerUseBackend {
     fn mouse_down(&mut self, button: MouseButton) -> Result<(), ComputerUseError> {
         // Same landing guard as click: if the press lands in the wrong place,
         // everything downstream (drag/selection) is wrong.
-        self.guard_click_position()?;
+        let re_located = self.guard_click_position()?;
         let dest = self.click_destination()?;
-        sleep(Duration::from_millis(CLICK_SETTLE_MS));
+        // Settle exactly once: the guard's re-location path already slept the
+        // settle pause (same fix as click()).
+        if !re_located {
+            sleep(Duration::from_millis(CLICK_SETTLE_MS));
+        }
         let (down, _, _) = cg_mouse_event_types(button);
         let posted = self.post_mouse_event(down, cg_mouse_button(button), dest, 1);
         if posted.is_ok() && !self.held_buttons.contains(&button) {
