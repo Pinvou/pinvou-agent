@@ -1565,7 +1565,7 @@ fn quarantine_unreadable(path: &Path) {
         std::fs::copy(path, &target).and_then(|_| std::fs::remove_file(path).map(|_| ()))
     });
     if moved.is_ok() {
-        eprintln!(
+        crate::note!(
             "pinvou: warning: quarantined malformed registry {} to {}",
             path.display(),
             target.display()
@@ -2629,7 +2629,7 @@ fn delete(id: &str, yes: bool, output: OutputMode) -> Result<CliOutcome, CliErro
             // runs are gone AND leave it in the history archive, so the next
             // delete would overwrite the only history snapshot with an empty
             // run list.
-            eprintln!(
+            crate::note!(
                 "pinvou: warning: scheduled task {id} was deleted, but its run directory \
                  could not be removed: {error}; the history archive snapshot is kept"
             );
@@ -2657,7 +2657,7 @@ fn delete(id: &str, yes: bool, output: OutputMode) -> Result<CliOutcome, CliErro
                 .unwrap_or(0)
                 > 1
         {
-            eprintln!(
+            crate::note!(
                 "pinvou: warning: scheduled task {id} was deleted, but a sidecar registry has \
                  a newer schema; its stale entry is left for the desktop app to clean up"
             );
@@ -3022,7 +3022,7 @@ fn open_sessions_for_enrichment() -> Option<SessionStore> {
     match open_sessions() {
         Ok(store) => Some(store),
         Err(error) => {
-            eprintln!(
+            crate::note!(
                 "pinvou: warning: could not open the sessions store to enrich this response: \
                  {error}"
             );

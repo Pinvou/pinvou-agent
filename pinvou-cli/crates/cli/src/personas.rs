@@ -463,9 +463,9 @@ fn delete(id: &str, yes: bool, output: OutputMode) -> Result<CliOutcome, CliErro
     // the stuck sessions are named right here.
     if !sidecar_errors.is_empty() {
         for error in &sidecar_errors {
-            eprintln!("warning: personas delete: stale persona sidecar: {error}");
+            crate::note!("warning: personas delete: stale persona sidecar: {error}");
         }
-        eprintln!(
+        crate::note!(
             "warning: personas delete: {} session sidecar(s) could not be removed; \
              unequip them per session (the persona card itself is deleted)",
             sidecar_errors.len()

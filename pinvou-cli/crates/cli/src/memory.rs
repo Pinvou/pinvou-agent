@@ -1370,7 +1370,7 @@ fn refresh_snapshot_document_after_organize() {
     // load_memory_source does, so a deferred or partial refresh is explained.
     append_warning_lines_to_stderr(&warnings);
     if !sources.values().all(available) {
-        eprintln!(
+        crate::note!(
             "[memory] snapshot_refresh_deferred snapshot: memory sources unavailable; \
 snapshot refresh deferred after organize"
         );
@@ -1390,7 +1390,7 @@ snapshot refresh deferred after organize"
         // passes None the same way when no session is open).
         None,
     ) {
-        eprintln!("[memory] snapshot_refresh_failed snapshot: write memory snapshot: {error}");
+        crate::note!("[memory] snapshot_refresh_failed snapshot: write memory snapshot: {error}");
     }
 }
 
@@ -1398,7 +1398,7 @@ snapshot refresh deferred after organize"
 /// (the post-organize refresh reports through stderr only).
 fn append_warning_lines_to_stderr(warnings: &[serde_json::Value]) {
     for warning in warnings {
-        eprintln!(
+        crate::note!(
             "[memory] {} {}: {}",
             warning["code"].as_str().unwrap_or(""),
             warning["source"].as_str().unwrap_or(""),

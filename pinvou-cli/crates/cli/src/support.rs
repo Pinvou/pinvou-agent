@@ -279,6 +279,12 @@ pub fn build_command(executable: &std::path::Path, args: &[&str]) -> std::proces
 /// Puts a long-running vendor CLI child in its own process group so a
 /// timeout kill can take its npm/shell descendants with it instead of
 /// orphaning them (the app sets the same group for connector CLI spawns).
+/// Shared cap for reading session timing/timeline journal files: both the
+/// `sessions` and `code sessions` lanes read the same files and must agree
+/// on the bound (a `take(cap + 1)` overshoot check is off-by-one
+/// sensitive, so the constant stays in one place).
+pub const MAX_JOURNAL_FILE_BYTES: u64 = 32 * 1024 * 1024;
+
 pub fn set_process_group(command: &mut std::process::Command) {
     #[cfg(unix)]
     {
@@ -313,6 +319,20 @@ pub fn kill_process_tree(child: &mut std::process::Child) {
     }
     let _ = child.kill();
     let _ = child.wait();
+}
+
+/// Guarded stderr writer: like `crate::note!`, but a broken/closed stderr
+/// (e.g. `pinvou code login ... 2>&1 | head -1`) is ignored instead of
+/// panicking the process with exit 101 mid-flow. Use this for every streamed
+/// notice, link, and echo the CLI writes to stderr.
+#[macro_export]
+macro_rules! note {
+    ($($arg:tt)*) => {{
+        let _ = std::io::Write::write_fmt(
+            &mut std::io::stderr(),
+            format_args!($($arg)*),
+        );
+    }};
 }
 
 /// Serializes `value` for `--output json` (single line) and renders `human`

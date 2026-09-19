@@ -922,7 +922,7 @@ fn remove(id: &str, yes: bool, output: OutputMode) -> Result<CliOutcome, CliErro
     .map_err(prefs_error)?;
     if let Some(reference) = reference_to_delete {
         if let Err(error) = SystemCredentialStore::new().delete(&reference) {
-            eprintln!(
+            crate::note!(
                 "pinvou: warning: model {id} removed, but its keyring secret could not be \
                  deleted: {}",
                 error.user_message()
@@ -1878,7 +1878,7 @@ fn search_set(
         // succeeds like `models remove`, instead of reporting a failure
         // whose only remedy (rerun) has nothing left to do.
         if let Err(error) = SystemCredentialStore::new().delete(&provider.credential_reference()) {
-            eprintln!(
+            crate::note!(
                 "pinvou: warning: credential cleared from settings, but the keyring entry \
                  could not be deleted: {}",
                 error.user_message()

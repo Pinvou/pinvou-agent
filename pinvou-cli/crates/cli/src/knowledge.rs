@@ -1117,7 +1117,7 @@ fn collections_delete(id: i64, output: OutputMode) -> Result<CliOutcome, CliErro
     let (unmounted, mount_sweep_error) = match open_store() {
         Ok(store) => (store.remove_mounted_collection_from_all(id), None),
         Err(error) => {
-            eprintln!(
+            crate::note!(
                 "warning: knowledge collections delete: could not sweep session mounts \
                  for the deleted collection; stale mounts may remain in a running \
                  desktop app session"

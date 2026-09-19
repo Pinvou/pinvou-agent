@@ -740,7 +740,7 @@ fn timeline(id: &str, output: OutputMode) -> Result<CliOutcome, CliError> {
             // runaway sidecar must not be read fully into memory. The file
             // may grow after the metadata check, so the limit is re-checked
             // per line like the GUI reader does.
-            const MAX_TIMING_FILE_BYTES: u64 = 32 * 1024 * 1024;
+            const MAX_TIMING_FILE_BYTES: u64 = crate::support::MAX_JOURNAL_FILE_BYTES;
             let file_len = file
                 .metadata()
                 .map_err(|error| {

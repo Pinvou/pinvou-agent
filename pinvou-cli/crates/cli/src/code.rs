@@ -2041,19 +2041,27 @@ fn login(
     std::thread::spawn(move || {
         let _ = err_tx.send(drain_stream(stderr));
     });
-    // The stdin write happens only after the drains are running: the code is
-    // up to the GUI's 4096-char max, which can exceed the OS pipe buffer, so
-    // a child that fills its own stdout before reading stdin would otherwise
-    // deadlock the write before the deadline loop below ever starts.
-    {
-        use std::io::Write;
-        let mut stdin = child.stdin.take();
-        if let (Some(code), Some(stdin)) = (code.as_deref(), stdin.as_mut()) {
-            let _ = writeln!(stdin, "{}", code.trim());
-            let _ = stdin.flush();
-        }
-        // Close stdin for non-code flows so CLI login prompts on the terminal
-        // fail fast instead of blocking on a pipe that never fills.
+    // The stdin write runs on its own thread and only after the drains are
+    // running, for two reasons: the code is up to the GUI's 4096-char max,
+    // which can exceed the OS pipe buffer (4 KiB on Windows), so a child
+    // that fills its own stdout before reading stdin would otherwise
+    // deadlock the write before the deadline loop below ever starts; and a
+    // blocking write must not sit on this thread outside the deadline's
+    // jurisdiction. Dropping the handle (no code flow) closes stdin so CLI
+    // login prompts fail fast instead of blocking on a pipe that never
+    // fills.
+    let stdin_handle = child.stdin.take();
+    if let Some(code) = code.as_deref() {
+        let code = code.trim().to_owned();
+        std::thread::spawn(move || {
+            use std::io::Write;
+            if let Some(mut stdin) = stdin_handle {
+                let _ = writeln!(stdin, "{code}");
+                let _ = stdin.flush();
+            }
+        });
+    } else {
+        drop(stdin_handle);
     }
     let deadline = Duration::from_secs(if agent == "kimi" { 1800 } else { 600 });
     let started = Instant::now();
@@ -2099,14 +2107,14 @@ fn login(
         // its login link is exactly what the user needs to finish the flow.
         let login_url = extract_login_url(agent, &combined);
         if let Some(url) = &login_url {
-            eprintln!("login link: {url}");
+            crate::note!("login link: {url}");
         }
         // Unlike the unconditionally-printed single-line link above, the
         // multi-line transcript dump below is human-gated: `--output json`
         // keeps stderr free of it.
         let echoed = pinvou3_lib::platform::credential_store::redact_secret(&combined);
         if output == OutputMode::Human && !echoed.trim().is_empty() {
-            eprintln!("{echoed}");
+            crate::note!("{echoed}");
         }
         let link_hint = match &login_url {
             Some(url) => format!("; last login link: {url}"),
@@ -2123,7 +2131,7 @@ fn login(
     // json` stdout stays a single serde_json line.
     let echoed = pinvou3_lib::platform::credential_store::redact_secret(&combined);
     if output == OutputMode::Human && !echoed.trim().is_empty() {
-        eprintln!("{echoed}");
+        crate::note!("{echoed}");
     }
     let login_url = extract_login_url(agent, &combined);
     let device_code = extract_device_code(&combined, login_url.as_deref());
@@ -2579,7 +2587,7 @@ fn providers_export(
                     path.display()
                 ))
             })?;
-            eprintln!("{PLAINTEXT_WARNING}");
+            crate::note!("{PLAINTEXT_WARNING}");
             let value = serde_json::json!({
                 "agent": agent,
                 "output": path.display().to_string(),
@@ -2598,7 +2606,7 @@ fn providers_export(
         }
         None => {
             // Same warning the GUI shows on export; stdout stays pipeable.
-            eprintln!("{PLAINTEXT_WARNING}");
+            crate::note!("{PLAINTEXT_WARNING}");
             let value = serde_json::json!({
                 "agent": agent,
                 "content": content,
@@ -2770,7 +2778,15 @@ fn code_sessions_list(output: OutputMode) -> Result<CliOutcome, CliError> {
                 item["agent_id"].as_str().unwrap_or("-"),
                 item["workspace_kind"].as_str().unwrap_or("-"),
                 metadata.updated_at.to_rfc3339(),
-                metadata.title,
+                // Titles come from user prompts (the auto-rename derives
+                // them from prompt text) and the store does not restrict
+                // their content; a tab or newline would corrupt the TSV
+                // columns, so control characters collapse to spaces.
+                metadata
+                    .title
+                    .chars()
+                    .map(|c| if c.is_control() { ' ' } else { c })
+                    .collect::<String>(),
                 item["workspace_path"].as_str().unwrap_or("-"),
             )
         })
@@ -2853,7 +2869,9 @@ fn code_sessions_timeline(id: &str, output: OutputMode) -> Result<CliOutcome, Cl
     // must not be slurped whole into memory (the GUI streams this file).
     // The read itself is bounded (`File::take`), so a journal growing between
     // a size check and the read cannot bypass the cap.
-    const MAX_TIMELINE_BYTES: u64 = 32 * 1024 * 1024;
+    // Same cap `sessions timeline` uses for the journal file (one shared
+    // constant, mirrored caps must not drift).
+    const MAX_TIMELINE_BYTES: u64 = crate::support::MAX_JOURNAL_FILE_BYTES;
     let mut events = Vec::new();
     match std::fs::File::open(&path) {
         Ok(file) => {
@@ -3447,6 +3465,73 @@ fn git_command(root: &Path, arguments: &[&str]) -> std::process::Command {
     command
 }
 
+/// Bounded variant of [`git_output`] for lanes whose output tracks content
+/// size: `git diff` on a rewritten multi-GB file loads the whole diff into
+/// memory with `Command::output()` just so the caller can truncate it after
+/// the fact. Here stdout is piped and read through `take(cap + 1)`; reading
+/// past the cap reports `cut` instead of buffering the rest.
+fn git_output_capped(
+    root: &Path,
+    arguments: &[&str],
+    cap: usize,
+) -> Result<(String, bool), CliError> {
+    use std::io::Read as _;
+    use std::process::Stdio;
+
+    let mut command = git_command(root, arguments);
+    command.stdout(Stdio::piped()).stderr(Stdio::piped());
+    let mut child = command.spawn().map_err(|error| {
+        CliError::failed(format!(
+            "code workspace: git {}: {error}",
+            arguments.join(" ")
+        ))
+    })?;
+    // stderr drains on its own thread (the pipe handle moves, the child
+    // stays here) so a chatty git process cannot fill its stderr pipe and
+    // deadlock while this thread reads stdout.
+    let stderr_handle = child.stderr.take().map(|mut stderr| {
+        std::thread::spawn(move || {
+            let mut bytes = Vec::new();
+            let _ = stderr.read_to_end(&mut bytes);
+            bytes
+        })
+    });
+    let mut bytes = Vec::new();
+    let mut cut = false;
+    if let Some(stdout) = child.stdout.as_mut() {
+        stdout
+            .take(cap as u64 + 1)
+            .read_to_end(&mut bytes)
+            .map_err(|error| {
+                CliError::failed(format!(
+                    "code workspace: git {}: {error}",
+                    arguments.join(" ")
+                ))
+            })?;
+        cut = bytes.len() > cap;
+        bytes.truncate(cap);
+    }
+    let status = child.wait().map_err(|error| {
+        CliError::failed(format!(
+            "code workspace: git {}: {error}",
+            arguments.join(" ")
+        ))
+    })?;
+    if !status.success() {
+        let stderr = stderr_handle
+            .and_then(|handle| handle.join().ok())
+            .unwrap_or_default();
+        return Err(CliError::failed(format!(
+            "code workspace: git {} failed: {}",
+            arguments.join(" "),
+            pinvou3_lib::platform::credential_store::redact_secret(
+                String::from_utf8_lossy(&stderr).trim()
+            )
+        )));
+    }
+    Ok((String::from_utf8_lossy(&bytes).into_owned(), cut))
+}
+
 fn git_output(root: &Path, arguments: &[&str]) -> Result<String, CliError> {
     let output = git_command(root, arguments).output().map_err(|error| {
         CliError::failed(format!(
@@ -3808,12 +3893,12 @@ fn workspace_diff_one(
             "code workspace diff: path escapes the workspace",
         ));
     }
+    let mut cut = false;
     let mut text = if git_root(&root).is_some_and(|git_root| git_root == root) {
-        let unstaged = git_output(
-            &root,
-            &["diff", "--no-ext-diff", "--no-color", "--", &relative],
-        )?;
-        let staged = git_output(
+        // Each git diff read is capped at the preview limit: a rewritten
+        // multi-GB generated file would otherwise be buffered whole (twice,
+        // once per diff) just to be truncated below.
+        let (staged, staged_cut) = git_output_capped(
             &root,
             &[
                 "diff",
@@ -3823,18 +3908,29 @@ fn workspace_diff_one(
                 "--",
                 &relative,
             ],
+            DIFF_LIMIT,
         )?;
+        cut = staged_cut;
         let mut combined = String::new();
         if !staged.trim().is_empty() {
             combined.push_str("# staged\n");
             combined.push_str(&staged);
         }
-        if !unstaged.trim().is_empty() {
-            if !combined.is_empty() {
-                combined.push('\n');
+        if combined.len() <= DIFF_LIMIT {
+            let budget = DIFF_LIMIT - combined.len();
+            let (unstaged, unstaged_cut) = git_output_capped(
+                &root,
+                &["diff", "--no-ext-diff", "--no-color", "--", &relative],
+                budget,
+            )?;
+            cut |= unstaged_cut;
+            if !unstaged.trim().is_empty() {
+                if !combined.is_empty() {
+                    combined.push('\n');
+                }
+                combined.push_str("# unstaged\n");
+                combined.push_str(&unstaged);
             }
-            combined.push_str("# unstaged\n");
-            combined.push_str(&unstaged);
         }
         if combined.is_empty() && path.is_file() {
             untracked_diff(&path, &relative)?
@@ -3864,7 +3960,7 @@ fn workspace_diff_one(
     } else {
         "file was deleted; a non-git workspace cannot recover the pre-delete content".to_owned()
     };
-    let truncated = text.len() > DIFF_LIMIT;
+    let truncated = cut || text.len() > DIFF_LIMIT;
     if truncated {
         truncate_utf8(&mut text, DIFF_LIMIT);
         text.push_str("\n\n...diff truncated");
@@ -4144,14 +4240,14 @@ fn checkpoints_rewind(
                     record.kept_turns,
                     cutoff,
                 ) {
-                    eprintln!(
+                    crate::note!(
                         "[pinvou-cli] stale checkpoint reconciliation failed (cleanup only): {error:#}"
                     );
                 }
             }
         }
         Err(error) => {
-            eprintln!(
+            crate::note!(
                 "[pinvou-cli] reading rewind backups failed (reconciliation skipped): {error:#}"
             );
         }
@@ -4191,7 +4287,7 @@ fn checkpoints_rewind(
         })?;
     // 3) Invalidate the abandoned branch snapshots (best-effort, same as GUI).
     if let Err(error) = checkpoints::invalidate_turn_checkpoints_after(&ledger, keep_turns) {
-        eprintln!(
+        crate::note!(
             "[pinvou-cli] invalidating abandoned checkpoints failed (rewind already applied): {error:#}"
         );
     }
