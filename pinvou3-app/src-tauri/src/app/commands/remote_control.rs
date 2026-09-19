@@ -1476,54 +1476,6 @@ fn cleanup_staged_attachment_sources(paths: &[std::path::PathBuf]) {
     }
 }
 
-/// Persist a potentially large Web transcript through bounded upload chunks.
-/// The final chunk is decoded into the native Message schema and committed by
-/// the SessionStore's content-revision CAS.
-#[tauri::command]
-pub async fn web_access_save_session_messages_chunk(
-    id: String,
-    upload_id: String,
-    expected_revision: String,
-    offset: usize,
-    total: usize,
-    data_base64: String,
-    commit: bool,
-    manager: State<'_, RemoteControlManager>,
-    store: State<'_, SessionStore>,
-) -> Result<Option<String>, String> {
-    crate::features::sessions::validate_session_id(&id)
-        .map_err(|error| format!("invalid Session id: {error:#}"))?;
-    if offset == 0 {
-        store
-            .load(&id)
-            .map_err(|error| format!("load Session {id}: {error:#}"))?;
-    }
-    let data = base64::engine::general_purpose::STANDARD
-        .decode(data_base64)
-        .map_err(|error| format!("decode Session upload chunk: {error}"))?;
-    if data.len() > MAX_TRANSFER_CHUNK_BYTES {
-        return Err("Session upload chunk exceeds 256 KiB".into());
-    }
-    let completed = manager.append_web_session_upload(
-        &upload_id,
-        &id,
-        &expected_revision,
-        offset,
-        total,
-        &data,
-        commit,
-    )?;
-    if let Some(payload) = completed {
-        let messages = serde_json::from_slice(&payload)
-            .map_err(|error| format!("parse uploaded Session messages: {error}"))?;
-        let revision = store
-            .compare_and_swap_messages(&id, &expected_revision, messages)
-            .map_err(|error| format!("save Session {id} transcript: {error:#}"))?;
-        return Ok(Some(revision));
-    }
-    Ok(None)
-}
-
 /// Base64 keeps the 20-second web-lane WAV (~853 KB) comfortably below the
 /// 1 MiB RPC request precheck (and the 2 MiB relay inbound frame cap).
 /// The desktop command (`transcribe_voice_audio`) also takes a base64 payload;

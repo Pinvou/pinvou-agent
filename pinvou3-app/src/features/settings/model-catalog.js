@@ -1478,6 +1478,11 @@ function reasoningEffortDisplayForTiers(effort, tiers) {
   return tiers.includes('high') ? 'high' : null;
 }
 
+// Only symbols consumed by other modules stay exported (main.jsx / SettingsView /
+// composer-shared / CodexAcpView / ScheduledTasksView). isPresetModel, localUserNamed,
+// defaultReasoningEffortForModel and localProbeTiersForKind are internal-only; the
+// vm-based catalog test strips this block and reads the top-level declarations, so it
+// does not depend on the export surface.
 export {
   MODEL_PRESET_DEFS,
   PROVIDER_KIND_CODING_PLAN,
@@ -1496,17 +1501,13 @@ export {
   isCodingPlanModel,
   catalogItemMatchesModel,
   catalogImageCapableForModel,
-  isPresetModel,
   groupModelsForSelector,
-  localUserNamed,
   selectorMainLabel,
   selectorSubLabel,
   reasoningEffortTiersForModel,
-  defaultReasoningEffortForModel,
   reasoningEffortForModelSwitch,
   normalizeStoredReasoningEffort,
   alwaysThinkingSpecForModel,
-  localProbeTiersForKind,
   localReasoningTiers,
   reasoningEffortDisplayForTiers,
   baseUrlUsesLocalOrPrivate,

@@ -652,4 +652,4 @@ const DesignInspectorPanel = ({ t, selectedElement, changes = EMPTY_CHANGES, onA
   );
 };
 
-export { DesignInspectorPanel, rgbToHex, pxNumber };
+export { DesignInspectorPanel };

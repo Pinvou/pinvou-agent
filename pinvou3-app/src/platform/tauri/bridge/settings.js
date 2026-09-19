@@ -126,7 +126,7 @@
     return invoke("discover_local_vllm", { request: request || null });
   }
 
-  // ── MegaCube(GB10) 本地大模型一键引导 ────────────────────────────
+  // ── 厂商预装本地大模型一键引导 ────────────────────────────
   let vllmSetupPollTimer = null;
   let vllmSetupPollStartedAt = 0;
   const VLLM_SETUP_POLL_INTERVAL_MS = 3000;

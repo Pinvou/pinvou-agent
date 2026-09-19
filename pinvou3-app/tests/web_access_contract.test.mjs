@@ -229,6 +229,18 @@ for (const command of [
 // (set_disabled_skills/get_disabled_skills) were removed with the dead-command
 // cleanup: connector toggles go through set_disabled_connectors.
 // This list must stay in sync with the connector registration surface in lib.rs.
+// The retired *_status commands left the frontend (ToolStoreView now uses
+// *_skills_state / bundle_readiness); they were dropped from the allowlist and
+// are reverse-pinned here so they cannot quietly return.
+for (const command of [
+  'feishu_status',
+  'wecom_status',
+  'dingtalk_status',
+  'tmeet_status',
+  'ima_status',
+]) {
+  assert.equal(allowed.has(command), false, `retired ${command} must not return to the Web allowlist`);
+}
 const deniedConnectorMutations = [];
 for (const connector of ["feishu", "wecom", "dingtalk", "tmeet"]) {
   deniedConnectorMutations.push(
@@ -783,8 +795,15 @@ assert.match(knowledgeView, /const cacheKey = `\$\{outputSessionId \|\| ''\}\|\$
 assert.ok((knowledgeView.match(/o\.path, outputSessionId/g) || []).length >= 5,
   'output previews must authorize every Web artifact read with the owning session');
 assert.match(knowledgeView, /<FilePreviewModal path=\{outputPreview\.path\} sessionId=\{outputPreview\.sessionId\}/);
-// Note: on main, the isWeb fallback guard inside LocalFilePreview sat in dead code (no call sites) and was removed along with it;
-// the live-path Web guard for OutputLivePreview is the session-authorized read asserted above (o.path, outputSessionId).
+assert.match(
+  knowledgeView,
+  /if \(isWeb\) \{ setPv\(\{ kind: 'fallback' \}\); return \(\) => \{ alive = false; \}; \}/,
+  'Web builds must render the fallback card instead of reading local-knowledge host paths',
+);
+// Note: the Web gate above keeps the grid's OutputLivePreview from scheduling artifact
+// reads at all; the session-authorized reads asserted above stay desktop-only for the
+// grid and remain server-scoped (web_access_* commands) for the user-initiated
+// FilePreviewModal, whose reads the backend still authorizes against the session.
 assert.match(settingsView, /const canPickHostFiles = can\('hostFilePicker'\);/);
 assert.match(toolCommon, /const canOpenArtifact = !isWeb \|\| can\('artifactDownload'\);/);
 assert.match(connectionStatus, /incompatible_desktop/);

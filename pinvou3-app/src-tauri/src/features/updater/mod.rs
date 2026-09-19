@@ -80,24 +80,6 @@ pub struct PlatformAsset {
 }
 
 #[derive(Debug, Clone, Serialize)]
-#[serde(untagged)]
-pub enum DownloadUpdateResult {
-    #[allow(dead_code)]
-    Path(String),
-    // Prepared 为平台更新流程的预留变体,当前各平台实现均不构造,
-    // 故在 lib 视角下被误报为 dead code;保留以备后续平台接入。
-    #[allow(dead_code)]
-    Prepared(PreparedUpdate),
-}
-
-#[derive(Debug, Clone, Serialize)]
-pub struct PreparedUpdate {
-    pub package_path: String,
-    pub installer_path: String,
-    pub latest_version: String,
-}
-
-#[derive(Debug, Clone, Serialize)]
 pub struct PendingUpdateReportResult {
     pub had_pending: bool,
     pub reported: bool,
@@ -121,10 +103,7 @@ pub async fn check_for_update() -> Result<UpdateInfo, String> {
 
 /// 下载更新包到 `~/.pinvou3/updates/`，流式写盘 + 校验，进度走
 /// `update:progress` 事件。
-pub async fn download_update(
-    info: UpdateInfo,
-    app: AppHandle,
-) -> Result<DownloadUpdateResult, String> {
+pub async fn download_update(info: UpdateInfo, app: AppHandle) -> Result<(), String> {
     platform::download_update_package(&info, app, &DOWNLOAD_CANCEL, DOWNLOAD_STALL_TIMEOUT).await
 }
 

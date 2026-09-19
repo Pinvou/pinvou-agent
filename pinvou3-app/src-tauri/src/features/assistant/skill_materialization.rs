@@ -5,8 +5,8 @@
 //! 下一轮 prompt 的 `## Skills` 块（空目录 → 整个块不渲染，见底座
 //! `render_skills_block` 空 registry 返回 None）。
 //!
-//! 设计对照 `.luzeyang/code-plain-decoupling/skill-scope-governance-实施方案.md`
-//! （已归档，按 §2.1/§2.2/§2.3/§2.4 实现）：
+//! 设计对照贡献者本地设计笔记「skill-scope-governance-实施方案」（已归档，不入库）
+//! （按 §2.1/§2.2/§2.3/§2.4 实现）：
 //!   - 开关落 `~/.pinvou3/disabled_skills.json`（`{scopes: {<mode>: [...]},
 //!     "initialized": [...]}`，scope 键即模式名，与 `disabled_connectors.json`
 //!     同构；旧裸数组/旧借道 `skill:` 条目/旧双 scope 对象迁移为 plain/新 map）；
@@ -527,7 +527,7 @@ mod tests {
     /// 统一包模型下，同名 connector 与用户上传 skill 共享同一包 id（`skill:` 前缀
     /// 借道已清除，id 命名空间统一）：「一个包 = 一个开关」，禁用该包（无论从连接器
     /// 开关还是技能开关进入）都会一并排除同名技能目录——与旧双文件「同名不误伤」
-    /// 语义相反，是 scope 收敛（todo A 节）的既定行为变更。
+    /// 语义相反，是 scope 收敛的既定行为变更。
     #[test]
     fn disabling_package_hides_same_named_skill_unified() {
         with_temp_home(|| {

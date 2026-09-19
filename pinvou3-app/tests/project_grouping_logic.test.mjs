@@ -188,10 +188,12 @@ test("windows roots match case-insensitively, posix roots stay case-sensitive", 
 
 test("windows roots match across separator shapes and trailing separators", () => {
   // Finding 40: the store's identity key folds `\` -> `/`, so a mixed-shape or
-  // trailing-separator root must not miss tier 2 for children. The exact path
-  // still compares unequal to a trailing-separator root before the strip —
-  // mirroring key_is_same_or_nested (pinned by the containment test below) —
-  // so it lands in its own folder bucket instead.
+  // trailing-separator root must not miss tier 2 for children. A trailing-
+  // separator root and the bare directory are the SAME root on both sides of
+  // the stack: the store trims trailing separators off both identity keys, and
+  // isUnderRoot mirrors that exactly (round-7 should-fix — the display side
+  // used to keep the exact-equality-before-strip shape and disagreed with the
+  // store on root "D:/x/" vs path "D:/x").
   const projects = [project("p1", "Alpha", ["D:\\work\\alpha\\"], 0)];
   const groups = groupSessionsWithProjects(
     [
@@ -201,8 +203,9 @@ test("windows roots match across separator shapes and trailing separators", () =
     projects,
     {},
   );
-  assert.deepEqual(groups.find((g) => g.projectId === "p1").rows.map((r) => r.id), ["a1"]);
-  assert.equal(groups.find((g) => g.kind === "folder").key, "D:\\work\\alpha");
+  // Rows sort newest-first: a2 (08-02) precedes a1 (08-01).
+  assert.deepEqual(groups.find((g) => g.projectId === "p1").rows.map((r) => r.id), ["a2", "a1"]);
+  assert.equal(groups.find((g) => g.kind === "folder"), undefined);
 });
 
 test("empty and invalid inputs degrade safely", () => {
@@ -340,15 +343,16 @@ test("containment honors separator boundaries and mirrors the store rule", () =>
   assert.deepEqual(groups.find((g) => g.projectId === "p1")?.rows, []);
 
   // Mixed separators fold for Windows-shaped paths (store identity keys fold
-  // separators and case); a trailing separator on the root still lets children
-  // match while the exact path keeps comparing unequal before the strip, and
-  // a bare separator root covers every absolute path on that side — all
-  // mirroring key_is_same_or_nested.
+  // separators and case); a trailing separator on the root makes it the SAME
+  // root as the bare directory on both sides — the store trims trailing
+  // separators off both identity keys and isUnderRoot mirrors that (round-7
+  // should-fix alignment) — and a bare separator root covers every absolute
+  // path on that side.
   const backslash = { id: "p2", name: "Win", roots: ["D:\\work\\alpha"] };
   assert.equal(projectCoversPath(backslash, "D:/Work/Alpha"), true);
   assert.equal(projectCoversPath(backslash, "D:/Work/Alpha/deep"), true);
   const trailing = { id: "p3", name: "Trail", roots: ["D:/work/alpha/"] };
-  assert.equal(projectCoversPath(trailing, "D:/work/alpha"), false);
+  assert.equal(projectCoversPath(trailing, "D:/work/alpha"), true);
   assert.equal(projectCoversPath(trailing, "D:/work/alpha/deep"), true);
   const posixRoot = { id: "p4", name: "Posix", roots: ["/"] };
   assert.equal(projectCoversPath(posixRoot, "/home/x/anything"), true);

@@ -21,6 +21,9 @@
     // through this wrapper). undefined when unavailable; pickDraftWorkspace
     // returns null early in that case.
     const dialogOpen = context.dialogOpen || null;
+    // Shared normalized directory-picker scaffold (same bridge.js helper used
+    // by pickFolder/pickFolders); returns null when unavailable or cancelled.
+    const pickDirectory = context.pickDirectory;
     const sessionStates = context.sessionStates;
     const scheduledRunSessionOwners = context.scheduledRunSessionOwners;
     const personaPlaceholderTitles = context.personaPlaceholderTitles;
@@ -482,7 +485,7 @@
     // 手机可能在桌面仍停留草稿页/其他 session 时先唤醒这个后台 session。
     // 仅 hydrate messages 而把 chatItems 留空，会让后续 switchToSession 命中缓存快路径，
     // 不再 rerenderFromMessages，桌面便只看得到手机唤醒后的新内容，历史像是“丢了”。
-    // 在首次磁盘 hydration 后先完整重建展示层，再由 mobile_user_message 追加当前轮；
+    // 在首次磁盘 hydration 后先完整重建展示层，流式增量随后照常追加；
     // buf.busy 时上方已提前返回，不会覆盖正在流式生成的实时 chatItems。
     runSyncOnSession(sid, function () {
       resetPendingAssistant();
@@ -673,8 +676,8 @@
   // without changing the current selection.
   async function pickDraftWorkspace() {
     if (state.activeSessionId || !dialogOpen) return null;
-    const selected = await dialogOpen({ directory: true, multiple: false, title: bt("pickFolderTitle") });
-    const path = Array.isArray(selected) ? selected[0] : selected;
+    const selected = await pickDirectory({ directory: true, multiple: false, title: bt("pickFolderTitle") });
+    const path = (selected && selected[0]) || null;
     if (!path) return null;
     rememberDraftWorkspaceRecent(path);
     setDraftWorkspace(path);

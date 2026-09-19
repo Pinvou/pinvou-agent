@@ -3,7 +3,7 @@ use std::time::Duration;
 
 use tauri::AppHandle;
 
-use super::super::{DownloadUpdateResult, PendingUpdateReportResult, UpdateInfo};
+use super::super::{PendingUpdateReportResult, UpdateInfo};
 
 pub fn cleanup_stale_backup() {}
 
@@ -30,7 +30,7 @@ pub async fn download_update_package(
     _app: AppHandle,
     _cancel: &AtomicBool,
     _stall_timeout: Duration,
-) -> Result<DownloadUpdateResult, String> {
+) -> Result<(), String> {
     Err("当前平台暂不支持应用内更新".to_string())
 }
 

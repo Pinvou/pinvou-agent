@@ -5,7 +5,7 @@
 // every marker resolves to real copy in all three languages, and no marker the
 // backend emits is missing from the classifier.
 import assert from "node:assert/strict";
-import { readFileSync } from "node:fs";
+import { readFileSync, readdirSync } from "node:fs";
 import { fileURLToPath } from "node:url";
 import path from "node:path";
 import test from "node:test";
@@ -20,10 +20,23 @@ import {
 } from "../src/features/projects/rebindErrors.js";
 
 const here = path.dirname(fileURLToPath(import.meta.url));
-const backendSources = [
-  path.join(here, "..", "src-tauri", "src", "app", "commands", "projects.rs"),
-  path.join(here, "..", "src-tauri", "src", "features", "projects", "store.rs"),
-];
+// The whole backend source tree, not a hand-picked pair of files: markers are
+// emitted wherever a rebind step runs (the busy/eviction path lives in the
+// assistant engine pool, codex/ACP carries its own rebind store), and a
+// hardcoded list goes stale the moment a new call site appears (round-7
+// should-fix).
+const backendSources = (() => {
+  const root = path.join(here, "..", "src-tauri", "src");
+  const out = [];
+  (function walk(dir) {
+    for (const entry of readdirSync(dir, { withFileTypes: true })) {
+      const child = path.join(dir, entry.name);
+      if (entry.isDirectory()) walk(child);
+      else if (entry.name.endsWith(".rs")) out.push(child);
+    }
+  })(root);
+  return out;
+})();
 
 test("old-root-exists escalates instead of rendering an error", () => {
   const classified = classifyRebindError(

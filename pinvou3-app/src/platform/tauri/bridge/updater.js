@@ -8,13 +8,10 @@
   // biome-ignore lint/suspicious/noAssignInExpressions: registry bootstrap of the verbatim payload; splitting statements would diverge from the artifact
   const registry = root.__PINVOU_TAURI_BRIDGE_FEATURES__ = root.__PINVOU_TAURI_BRIDGE_FEATURES__ || {};
   registry["updater"] = function (context) {
-    const state = context.state;
-    const notify = context.notify;
-    const invoke = context.invoke;
-    const refreshHistoryList = context.refreshHistoryList;
-    const listen = context.listen;
-    const getBuffer = context.getBuffer;
-    const bt = context.bt;
+  const state = context.state;
+  const notify = context.notify;
+  const invoke = context.invoke;
+  const listen = context.listen;
   const UPDATE_PROGRESS_NOTIFY_INTERVAL_MS = 200;
   /** @type {number | null} */
   let updateProgressNotifyTimer = null;
@@ -52,26 +49,6 @@
   listen("update:progress", function (e) {
     if (!state.updateDownloading || state.updateCancelling || state.updateProgress >= 100) return;
     publishUpdateProgress(e.payload || {});
-  });
-  listen("remote_control:status", function (e) {
-    state.remoteControl = Object.assign({}, state.remoteControl, e.payload || {});
-    notify();
-  });
-  listen("remote_control:session_created", function (e) {
-    const s = e && e.payload && e.payload.session;
-    if (s && s.id) {
-      getBuffer(s.id);
-      if (state.sessions.every(function (item) { return item.id !== s.id; })) {
-        state.sessions.unshift({
-          id: s.id,
-          title: s.title || bt("newChatFallbackTitle"),
-          updated_at: s.updated_at || "",
-          message_count: s.message_count || 0,
-        });
-      }
-      notify();
-    }
-    refreshHistoryList().then(function () { notify(); }).catch(function () {});
   });
   async function loadAppVersion() {
     try {

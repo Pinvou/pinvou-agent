@@ -34,8 +34,6 @@ pub(super) fn clear_web_attachments(inner: &mut Inner) {
     inner.web_attachment_bytes = 0;
     inner.web_attachment_uploads.clear();
     inner.web_attachment_upload_order.clear();
-    inner.web_session_uploads.clear();
-    inner.web_session_upload_order.clear();
     inner.web_session_downloads.clear();
     inner.web_session_download_order.clear();
 }
@@ -326,17 +324,6 @@ fn prune_expired_web_session_transfers_at(inner: &mut Inner, now: Instant) {
     inner
         .web_attachment_upload_order
         .retain(|id| active_attachment_uploads.contains(id));
-    inner.web_session_uploads.retain(|_, upload| {
-        now.saturating_duration_since(upload.last_touched) <= WEB_SESSION_TRANSFER_TTL
-    });
-    let active_uploads = inner
-        .web_session_uploads
-        .keys()
-        .cloned()
-        .collect::<HashSet<_>>();
-    inner
-        .web_session_upload_order
-        .retain(|id| active_uploads.contains(id));
     let expired_downloads = inner
         .web_session_downloads
         .iter()

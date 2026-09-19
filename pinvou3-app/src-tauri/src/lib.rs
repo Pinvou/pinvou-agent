@@ -16,11 +16,12 @@ pub mod platform;
 )]
 unsafe extern "C" {}
 
-pub use features::assistant::attachments::{
-    build_message_with_attachments, stage_file_in_workspace,
-};
-
 use tauri::Manager;
+
+/// `attachments` 模块是 `pub(crate)`，集成测试（tests/l1_dialog_harness）无法走
+/// 完整路径，只能经此 crate 根再导出使用；生产代码不经此入口。注意不能加
+/// `cfg(test)` 门控：集成测试构建本 crate 时不带 test cfg。
+pub use features::assistant::attachments::build_message_with_attachments;
 
 #[cfg(feature = "benchmark-hooks")]
 pub use features::assistant::product_runtime::{agentic_task, headless_bridge};
@@ -57,7 +58,7 @@ const RELEASE_ENV_DEFAULTS: &[(&str, &str)] = &[
     // 与 CodeWhale 的 stream_chunk_timeout 默认值保持一致。
     ("DEEPSEEK_STREAM_IDLE_TIMEOUT_SECS", "300"),
     // SSE 首响应头超时(open timeout):底座只认 env,默认 45s 是为云端调的。
-    // 本地 GB10 大上下文 SubAgent 请求首 token TTFT 偶发 >45s → 误杀子 agent。
+    // 本地统一内存设备大上下文 SubAgent 请求首 token TTFT 偶发 >45s → 误杀子 agent。
     // 280s 与
     // ~/.deepseek config 的 subagent api_timeout=300 对齐(步级超时须更大)。
     ("DEEPSEEK_STREAM_OPEN_TIMEOUT_SECS", "280"),
@@ -75,8 +76,9 @@ fn ensure_release_env() {
             // (headless_bridge.rs run_headless_host, before the tokio runtime
             // is built); at both call sites the process has only the main
             // thread — no concurrent env readers (audit conclusion: the first
-            // thread spawn happens in the lib.rs setup phase, after this
-            // function); calls inside tests run under ENV_LOCK serialization.
+            // thread spawn is the 16MiB async runtime built later in run(),
+            // after this function); calls inside tests run under ENV_LOCK
+            // serialization.
             unsafe { env::set_var(k, v) };
         }
     }
@@ -585,6 +587,22 @@ pub fn run() {
     install_rustls_provider();
     ensure_release_env();
     startup_process_env();
+    // GUI 宿主同样必须给 tokio worker 大栈:底座 engine 一次 dispatch 在 debug
+    // 构建下实测栈高水位 2.25–2.5MiB(见 CodeWhale/crates/tui/src/lib.rs 的
+    // headless 同款修复说明),tokio 默认 2MiB worker 栈会被顶穿——栈溢出不是
+    // panic,catch_unwind 看不到,进程直接 0xc00000fd/SIGABRT。headless 路径
+    // 已同款修复(headless_bridge.rs run_windowless_host),此处补齐 GUI 路径;
+    // 勿"优化"回默认 runtime。runtime 本体绑定在本函数作用域,随 run() 活到
+    // 进程退出。
+    // A runtime build failure (outside OOM-killed process death) leaves the
+    // app without async execution — no degradation path, fail fast.
+    #[allow(clippy::expect_used)]
+    let async_runtime = tokio::runtime::Builder::new_multi_thread()
+        .enable_all()
+        .thread_stack_size(16 * 1024 * 1024)
+        .build()
+        .expect("build GUI async runtime");
+    tauri::async_runtime::set(async_runtime.handle().clone());
     startup::init();
     startup::mark("environment:ready");
     // 必须早于 Tauri Builder/WebView 创建：避免升级后 WebKit 复用旧 index.html，
@@ -1234,13 +1252,9 @@ pub fn run() {
             commands::settings::get_image_input_capability,
             commands::codex::list_acp_agents,
             commands::codex::get_acp_agent_status,
-            commands::codex::prepare_codex_acp,
-            commands::codex::install_codex_homebrew,
             commands::codex::install_acp_agent,
-            commands::codex::login_codex_acp,
             commands::codex::login_acp_agent,
             commands::codex::switch_acp_agent_account,
-            commands::codex::open_codex_login_url,
             commands::codex::open_acp_agent_login_url,
             commands::codex::submit_acp_agent_login_code,
             commands::codex::get_codex_acp_session_info,
@@ -1379,7 +1393,6 @@ pub fn run() {
             commands::remote_control::web_access_list_codex_acp_sessions,
             commands::remote_control::web_access_list_acp_agents,
             commands::remote_control::web_access_get_acp_agent_status,
-            commands::remote_control::web_access_save_session_messages_chunk,
             commands::remote_control::web_access_transcribe_voice_audio,
             commands::remote_control::web_access_read_artifact_chunk,
             commands::remote_control::web_access_update_settings,
@@ -1422,7 +1435,6 @@ pub fn run() {
             commands::artifacts::reveal_session_folder,
             commands::artifacts::open_scheduled_task_folder,
             commands::artifacts::open_artifact_window,
-            commands::pet::open_detached_window,
             commands::pet::begin_detach_drag,
             commands::pet::set_pet_enabled,
             commands::pet::get_pet_scale,
@@ -1442,8 +1454,6 @@ pub fn run() {
             commands::files::ingest_draft_file_chunk,
             commands::files::cancel_draft_file_upload,
             commands::files::adopt_draft_attachment,
-            commands::files::ingest_dropped_file_chunk,
-            commands::files::cancel_dropped_file_upload,
             commands::files::discard_dropped_attachment,
             commands::files::resolve_conversation_attachment,
             commands::files::open_conversation_attachment,
@@ -1460,14 +1470,12 @@ pub fn run() {
             commands::interaction::set_multi_agent_mode,
             commands::interaction::accept_plan,
             commands::interaction::discard_plan,
-            commands::interaction::read_skill_body,
             // 多智能体执行记录投影。
             commands::multiagent::list_subagent_transcripts,
             commands::multiagent::read_subagent_transcript,
             commands::interaction::submit_user_input,
             commands::interaction::cancel_user_input,
             commands::interaction::get_pending_user_inputs,
-            commands::interaction::restart_engine,
             commands::interaction::summon_pinvou,
             commands::personas::save_session_pinvou_reviews,
             commands::personas::get_session_pinvou_reviews,
@@ -1501,7 +1509,6 @@ pub fn run() {
             commands::artifacts::detect_obsidian,
             commands::knowledge::kb_start_scan,
             commands::knowledge::kb_scan_status,
-            commands::knowledge::kb_cancel_scan,
             commands::knowledge::kb_search,
             commands::knowledge::kb_stats,
             commands::knowledge::kb_type_counts,
@@ -1523,7 +1530,6 @@ pub fn run() {
             commands::knowledge::kb_model_download,
             commands::knowledge::kb_model_cancel,
             commands::knowledge::session_mount_collection,
-            commands::knowledge::session_set_mounted_collections,
             commands::knowledge::session_add_mounted_collection,
             commands::knowledge::session_set_mounted_collection_enabled,
             commands::knowledge::session_remove_mounted_collection,
@@ -1550,8 +1556,6 @@ pub fn run() {
             commands::remote_knowledge::remote_kb_devices,
             commands::remote_knowledge::remote_kb_update_device,
             commands::remote_knowledge::remote_kb_remove_device,
-            commands::remote_knowledge::remote_kb_trashed_collections,
-            commands::remote_knowledge::remote_kb_trashed_documents,
             commands::remote_knowledge::remote_kb_permanently_delete_collection,
             commands::remote_knowledge::remote_kb_permanently_delete_document,
             commands::shared_knowledge_host::shared_kb_host_status,
@@ -1567,7 +1571,6 @@ pub fn run() {
             commands::remote_knowledge::remote_kb_remove_connection,
             commands::remote_knowledge::remote_kb_collections,
             commands::remote_knowledge::remote_kb_create_collection,
-            commands::remote_knowledge::remote_kb_update_collection,
             commands::remote_knowledge::remote_kb_delete_collection,
             commands::remote_knowledge::remote_kb_restore_collection,
             commands::remote_knowledge::remote_kb_documents,
@@ -1587,8 +1590,6 @@ pub fn run() {
             commands::marketplace::install_marketplace_skill,
             commands::marketplace::update_marketplace_skill,
             commands::marketplace::update_bundle_display_meta,
-            commands::marketplace::import_skill_package,
-            commands::marketplace::import_skill_package_bytes,
             commands::marketplace::import_plugin_package_cmd,
             commands::marketplace::import_plugin_package_bytes_cmd,
             commands::marketplace::import_skill_md_bytes,

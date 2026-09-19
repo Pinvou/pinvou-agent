@@ -8,7 +8,6 @@
 //! 不会再下探，所以无需对每个文件回溯全部祖先组件。
 
 use std::collections::HashSet;
-use std::path::{Component, Path};
 
 /// basename 命中即排除（目录则整株剪枝）。
 const SKIP_NAMES: &[&str] = &[
@@ -129,29 +128,6 @@ impl Excluder {
         }
         false
     }
-
-    /// 全路径排除：watcher 拿到的是任意路径（recursive 监听不会自动剪枝），
-    /// 需检查**每一级**组件名 + 末级扩展名是否命中排除集。
-    pub fn is_excluded_path(&self, path: &Path) -> bool {
-        for comp in path.components() {
-            if let Component::Normal(os) = comp {
-                if let Some(name) = os.to_str() {
-                    if self.names.contains(name) || self.secrets.contains(name) {
-                        return true;
-                    }
-                }
-            }
-        }
-        // 有扩展名：黑名单 ext 或 不在常用白名单 → 排除。无扩展名(目录/无后缀文件)不在此判，
-        // 避免 watcher 误排目录(此处无 is_dir 上下文)；少量无后缀文件漏网可接受。
-        if let Some(ext) = path.extension().and_then(|s| s.to_str()) {
-            let e = ext.to_lowercase();
-            if self.exts.contains(e.as_str()) || !self.allow.contains(e.as_str()) {
-                return true;
-            }
-        }
-        false
-    }
 }
 
 #[cfg(test)]
@@ -180,17 +156,6 @@ mod tests {
     }
 
     #[test]
-    fn excluded_path_checks_all_components() {
-        let ex = Excluder::default();
-        assert!(ex.is_excluded_path(Path::new("/home/u/proj/node_modules/a/b/index.js")));
-        assert!(ex.is_excluded_path(Path::new("/home/u/.ssh/config")));
-        assert!(ex.is_excluded_path(Path::new("/home/u/proj/.env")));
-        assert!(ex.is_excluded_path(Path::new("/home/u/vm/disk.qcow2")));
-        assert!(!ex.is_excluded_path(Path::new("/home/u/Documents/保险报价单.pdf")));
-        assert!(!ex.is_excluded_path(Path::new("/home/u/Downloads/report.docx")));
-    }
-
-    #[test]
     fn whitelist_skips_dev_files() {
         let ex = Excluder::default();
         // 源码/编译产物/无扩展名 → 白名单外，排除
@@ -204,9 +169,5 @@ mod tests {
         assert!(!ex.is_skipped("年报.xlsx", false, Some("xlsx")));
         assert!(!ex.is_skipped("照片.jpg", false, Some("jpg")));
         assert!(!ex.is_skipped("压缩包.zip", false, Some("zip")));
-        // watcher 路径级：源码排除、目录放行、常用保留
-        assert!(ex.is_excluded_path(Path::new("/home/u/proj/main.c")));
-        assert!(!ex.is_excluded_path(Path::new("/home/u/proj/src")));
-        assert!(!ex.is_excluded_path(Path::new("/home/u/Documents/报告.pdf")));
     }
 }

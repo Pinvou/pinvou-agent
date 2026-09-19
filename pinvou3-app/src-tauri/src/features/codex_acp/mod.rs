@@ -584,7 +584,6 @@ pub struct CodexAcpStatus {
     pub update_required: bool,
     pub bridge_ready: bool,
     pub adapter_path: Option<String>,
-    pub node_available: bool,
     pub node_version: Option<String>,
     pub node_supported: bool,
     pub npm_available: bool,
@@ -592,8 +591,6 @@ pub struct CodexAcpStatus {
     pub codex_path: Option<String>,
     pub codex_version: Option<String>,
     pub runtime_source: Option<&'static str>,
-    /// codex-acp 验证过的最低 Codex CLI 版本（所有运行时来源统一强制）。
-    pub min_codex_version: &'static str,
     /// 该 Agent CLI 的最低版本要求（"0.144.6" / "2.0.0" / "0.9.0"）。
     pub min_version: &'static str,
     /// 缺失、低于最低版本或发现官方新版本时前端应提供的安装/升级动作：
@@ -603,11 +600,6 @@ pub struct CodexAcpStatus {
     /// 已探测到 CLI 的安装来源："brew" / "npm" / "script"（官方脚本目录）/
     /// null（无 CLI 或来源未知）。
     pub install_source: Option<String>,
-    /// 仅 macOS 探测 Homebrew；其他平台恒 false。
-    pub brew_available: bool,
-    /// 系统 PATH 里找到了 codex 但版本低于 min_codex_version，
-    /// 用于 UI 区分「版本过低」与「未安装」。
-    pub system_codex_incompatible: bool,
     pub authenticated: bool,
     pub login_in_progress: bool,
     pub login_url: Option<String>,
@@ -1077,11 +1069,9 @@ struct RuntimeProbeCache {
     initialized: bool,
     node_version: Option<String>,
     codex: Option<ResolvedCodex>,
-    brew_available: bool,
     /// 已解析或 PATH/官方目录中版本过旧 codex 的安装来源（"brew"/"npm"/"script"），
     /// 供版本过旧时按来源分派 brew/npm 升级。
     codex_install_source: Option<&'static str>,
-    system_codex_incompatible: bool,
 }
 
 fn remove_agent_paths(paths: Vec<PathBuf>) -> Result<()> {
@@ -1386,10 +1376,6 @@ impl AcpPool {
         }
     }
 
-    pub fn status(&self) -> CodexAcpStatus {
-        self.status_for(AgentBackend::CodexAcp)
-    }
-
     async fn status_async(&self) -> CodexAcpStatus {
         self.status_for_async(AgentBackend::CodexAcp).await
     }
@@ -1486,7 +1472,6 @@ impl AcpPool {
                 bridge_ready: true,
                 adapter_path: kimi_path.clone(),
                 // Kimi 不经 Node bridge，Node 字段不适用；node_supported 视为无门槛满足。
-                node_available: false,
                 node_version: None,
                 node_supported: true,
                 npm_available: npm_executable().is_some(),
@@ -1494,7 +1479,6 @@ impl AcpPool {
                 codex_path: kimi_path,
                 codex_version: kimi_version,
                 runtime_source: kimi.as_ref().map(|_| "system"),
-                min_codex_version: "",
                 min_version: MIN_KIMI_VERSION,
                 install_action: if installed {
                     "none"
@@ -1507,8 +1491,6 @@ impl AcpPool {
                     )
                 },
                 install_source,
-                brew_available: false,
-                system_codex_incompatible: false,
                 authenticated,
                 login_in_progress: login.in_progress,
                 login_url: login.url,
@@ -1634,7 +1616,6 @@ impl AcpPool {
             adapter_path: adapter
                 .as_ref()
                 .map(|path| path.to_string_lossy().into_owned()),
-            node_available: node_version.is_some(),
             node_version,
             node_supported,
             npm_available: npm_executable().is_some(),
@@ -1661,11 +1642,6 @@ impl AcpPool {
                     }
                 })
             },
-            min_codex_version: if backend == AgentBackend::CodexAcp {
-                MIN_CODEX_VERSION
-            } else {
-                ""
-            },
             min_version: match backend {
                 AgentBackend::CodexAcp => MIN_CODEX_VERSION,
                 AgentBackend::ClaudeAcp => MIN_CLAUDE_VERSION,
@@ -1683,10 +1659,6 @@ impl AcpPool {
                     .map(str::to_string),
                 AgentBackend::Deepseek | AgentBackend::KimiAcp => unreachable!(),
             },
-            brew_available: probe.as_ref().is_some_and(|probe| probe.brew_available),
-            system_codex_incompatible: probe
-                .as_ref()
-                .is_some_and(|probe| probe.system_codex_incompatible),
             authenticated,
             login_in_progress: login.in_progress,
             login_url: login.url,
@@ -1710,11 +1682,6 @@ impl AcpPool {
         };
         fill_install_progress(&self.app, backend, &mut status);
         status
-    }
-
-    pub async fn refresh_status(&self) -> CodexAcpStatus {
-        self.refresh_runtime_probe(false).await;
-        self.status_async().await
     }
 
     async fn refresh_runtime_probe(&self, force: bool) {
@@ -1756,7 +1723,7 @@ impl AcpPool {
                     .unwrap_or_else(|| "none".to_string())
             ),
         );
-        // Codex、Node 与 Homebrew 探测彼此独立，并行执行；Codex 候选探测同时
+        // Codex 与 Node 探测彼此独立，并行执行；Codex 候选探测同时
         // 返回版本兼容性，避免为同一系统 CLI 重复执行两次 `--version`。
         let runtime_task = tokio::task::spawn_blocking(move || {
             let candidates = probe_codex_runtime(system_codex.clone(), legacy_codex);
@@ -1775,27 +1742,16 @@ impl AcpPool {
                     path_install_source(AgentBackend::CodexAcp, path)
                 }
             });
-            (
-                codex,
-                codex_install_source,
-                candidates.system_codex_incompatible,
-            )
+            (codex, codex_install_source)
         });
         let node_task =
             tokio::task::spawn_blocking(move || node.as_deref().and_then(installed_node_version));
-        let brew_task = tokio::task::spawn_blocking(platform::brew_available);
-        let detected = match tokio::join!(runtime_task, node_task, brew_task) {
-            (
-                Ok((codex, codex_install_source, system_codex_incompatible)),
-                Ok(node_version),
-                Ok(brew_available),
-            ) => Ok(RuntimeProbeCache {
+        let detected = match tokio::join!(runtime_task, node_task) {
+            (Ok((codex, codex_install_source)), Ok(node_version)) => Ok(RuntimeProbeCache {
                 initialized: true,
                 node_version,
                 codex,
-                brew_available,
                 codex_install_source,
-                system_codex_incompatible,
             }),
             _ => Err(()),
         };
@@ -1904,11 +1860,6 @@ impl AcpPool {
             return Err(error);
         }
         Ok(status)
-    }
-
-    /// macOS 上通过 Homebrew 安装系统 Codex（cask 名 codex）。
-    pub async fn install_via_homebrew(&self) -> Result<CodexAcpStatus> {
-        self.upgrade_via_homebrew(AgentBackend::CodexAcp).await
     }
 
     /// 通过 Homebrew 升级 Agent CLI：codex=`brew upgrade --cask codex`（未安装时
@@ -2463,14 +2414,6 @@ impl AcpPool {
             kill_install_process_tree(pid);
         }
         Ok(self.status_for_async(backend).await)
-    }
-
-    pub async fn login(&self) -> Result<CodexAcpStatus> {
-        self.login_agent("codex").await
-    }
-
-    pub fn open_login_url(&self) -> Result<()> {
-        self.open_agent_login_url("codex")
     }
 
     pub async fn login_agent(&self, agent_id: &str) -> Result<CodexAcpStatus> {

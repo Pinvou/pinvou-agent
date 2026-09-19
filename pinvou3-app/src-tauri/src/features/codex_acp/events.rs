@@ -162,9 +162,6 @@ fn project_acp_event_data_for_web(event_type: &str, value: Value) -> Value {
         "tool_call" | "tool_call_update" => project_protocol_tool_update(value),
         "plan" => project_protocol_update(value, &["entries"]),
         "available_commands" => project_protocol_update(value, &["availableCommands"]),
-        "current_mode" => project_protocol_update(value, &["currentModeId"]),
-        "config_options" => project_protocol_update(value, &["configOptions"]),
-        "session_info" => project_protocol_update(value, &["title", "updatedAt"]),
         "usage" => project_protocol_update(value, &["used", "size"]),
         "permission_requested" => project_permission_event(value),
         "elicitation_requested" => project_elicitation_event(value),
@@ -174,13 +171,10 @@ fn project_acp_event_data_for_web(event_type: &str, value: Value) -> Value {
         "elicitation_resolved" => {
             project_allowed_fields(value, &["elicitationId", "action", "reason"])
         }
-        "turn_started" | "turn_completed" | "cancel_requested" | "runtime_error" => {
+        "turn_started" | "turn_completed" | "cancel_requested" => {
             project_allowed_fields(value, &["status", "error", "message", "recoveryReason"])
         }
-        "config_change_requested"
-        | "config_change_applied"
-        | "config_change_failed"
-        | "config_persistence_failed" => {
+        "config_change_applied" => {
             project_allowed_fields(value, &["configId", "valueId", "message"])
         }
         // runtime_ready is a signal; the Web client fetches the authoritative
@@ -639,11 +633,12 @@ fn truncate_utf8(value: &str, max_bytes: usize) -> String {
         return value.to_string();
     }
     let suffix = "\n… [Web output truncated]";
-    let mut end = max_bytes.saturating_sub(suffix.len()).min(value.len());
-    while end > 0 && !value.is_char_boundary(end) {
-        end -= 1;
-    }
-    format!("{}{}", &value[..end], suffix)
+    let end = max_bytes.saturating_sub(suffix.len());
+    format!(
+        "{}{}",
+        crate::platform::strings::truncate_utf8(value, end),
+        suffix
+    )
 }
 
 fn mark_web_projection_truncated(data: &mut Value, original_bytes: usize) {
@@ -859,15 +854,6 @@ impl EventBridge {
             SessionUpdate::AvailableCommandsUpdate(commands) => {
                 self.emit_protocol("available_commands", commands, meta)
             }
-            SessionUpdate::CurrentModeUpdate(mode) => {
-                self.emit_protocol("current_mode", mode, meta)
-            }
-            SessionUpdate::ConfigOptionUpdate(options) => {
-                self.emit_protocol("config_options", options, meta)
-            }
-            SessionUpdate::SessionInfoUpdate(info) => {
-                self.emit_protocol("session_info", info, meta)
-            }
             SessionUpdate::UsageUpdate(usage) => self.emit_protocol("usage", usage, meta),
             _ => {}
         }
@@ -972,15 +958,11 @@ impl EventBridge {
                     data,
                 },
             };
-            // Turn boundaries and terminal runtime errors are the journal's
-            // crash-recovery anchors: they flush synchronously so resume and
-            // orphan-turn recovery never depend on buffered chunk bytes.
+            // Turn boundaries are the journal's crash-recovery anchors: they
+            // flush synchronously so resume and orphan-turn recovery never
+            // depend on buffered chunk bytes.
             // Everything else rides the TIMELINE_APPEND_BUFFER_BYTES window.
-            // runtime_error is a defensive anchor: no emitter exists today.
-            let flush_timeline = matches!(
-                event_type,
-                "turn_started" | "turn_completed" | "runtime_error"
-            );
+            let flush_timeline = matches!(event_type, "turn_started" | "turn_completed");
             if let Err(error) = self.append_timeline(&envelope, flush_timeline) {
                 eprintln!(
                     "[pinvou3-app] append Codex ACP timeline failed for {}: {error:#}",
@@ -995,7 +977,6 @@ impl EventBridge {
                 "elicitation_requested" => Some("waiting_input"),
                 "elicitation_resolved" => Some("running"),
                 "cancel_requested" => Some("cancelling"),
-                "runtime_error" => Some("error"),
                 _ => None,
             };
             if let Some(status) = last_status {
@@ -1111,9 +1092,7 @@ pub fn persist_acp_state(session_id: &str, mut state: Value) -> Result<()> {
     if let Some(parent) = path.parent() {
         fs::create_dir_all(parent)?;
     }
-    let temporary = path.with_extension("json.tmp");
-    fs::write(&temporary, serde_json::to_vec_pretty(&state)?)?;
-    fs::rename(&temporary, &path)?;
+    crate::platform::filesystem::atomic_write(&path, &serde_json::to_vec_pretty(&state)?)?;
     Ok(())
 }
 
@@ -2118,7 +2097,7 @@ mod tests {
     fn timeline_tail_reader_skips_malformed_complete_lines() {
         let timeline = TempTimeline::create(&[event(1, None, "turn_started")]);
         timeline.append(b"{not json}\n");
-        timeline.append(&serde_json::to_vec(&event(7, None, "runtime_error")).unwrap());
+        timeline.append(&serde_json::to_vec(&message_event(7, "chunk")).unwrap());
         timeline.append(b"\n");
         assert_eq!(
             load_timeline_last_seq_from_path(timeline.path()).unwrap(),

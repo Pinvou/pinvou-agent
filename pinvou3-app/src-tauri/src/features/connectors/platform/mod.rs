@@ -1,18 +1,10 @@
 //! 连接器按需安装的平台适配：目标 lock、可执行文件命名和权限。
 //!
 //! lock 表与可执行文件命名已下沉为跨功能原语 `crate::platform::connector_lock`
-//! （marketplace 首启导入也要对照 lock 表验存量二进制）；此处保留委托，
-//! 既有调用方（native_installer）零改动。
+//! （marketplace 首启导入也要对照 lock 表验存量二进制）；调用方（native_installer）
+//! 直接引用该原语，此处不再保留委托。
 
 use std::path::Path;
-
-pub fn lock_json() -> &'static str {
-    crate::platform::connector_lock::lock_json()
-}
-
-pub fn executable_name(name: &str) -> String {
-    crate::platform::connector_lock::executable_name(name)
-}
 
 pub fn archive_member(name: &str) -> &'static str {
     match name {

@@ -29,7 +29,7 @@
 //! - `validators` —— id / workspace / 路径校验与小型 helper
 //! - `workspace_bindings` —— per-session sidecar of plain chat sessions' user
 //!   working-directory bindings (`workspace-binding.json` in the session
-//!   directory) and legacy global-table migration
+//!   directory)
 //!
 //! 子模块通过 `impl SessionStore` 续写方法（Rust 允许同一 struct 的 impl 块
 //! 散布在子模块里），并直接读 `&self` 的私有字段——struct 字段对后代模块
@@ -69,8 +69,6 @@ use parking_lot::{Mutex, RwLock};
 pub use self::mode_state::{
     MountedCollection, MountedCollectionsSnapshot, MountedRemoteCollection, SessionModeState,
 };
-/// Re-export the turn-rewind outcome (consumed by the rewind command surface).
-pub use self::rewind::{RewoundTurnsRecord, TruncateToTurnOutcome};
 /// Re-export scheduled-run types so the historical
 /// `crate::features::sessions::X` paths stay stable.
 pub use self::scheduled::{
@@ -84,6 +82,9 @@ pub use self::transcript::transcript_revision;
 pub(crate) use self::validators::{
     validate_session_id, validate_user_workspace_path, validate_workspace_roots,
 };
+/// Re-export the rebind outcome (public rebind docs link into it; the module
+/// itself stays private).
+pub use self::workspace_bindings::RebindBindingsOutcome;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum SessionKind {

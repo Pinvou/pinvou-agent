@@ -46,11 +46,11 @@ try {
     mergeAcpTimelineSnapshot,
     projectAcpTimeline,
     resolveAcpSessionControls,
-    stripTerminalControlSequences,
     updateAcpAttachmentDraft,
   } = await import(`${pathToFileURL(modulePath).href}?t=${Date.now()}`);
   const {
     collectToolWorkspaceResources,
+    stripTerminalControlSequences,
     toolWorkspaceResources,
     workspaceMarkdownResource,
   } = await import(`${pathToFileURL(path.join(conversationDir, 'conversation-model.js')).href}?t=${Date.now()}`);

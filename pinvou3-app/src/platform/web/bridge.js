@@ -294,10 +294,10 @@
     depsChecking: false,
     depsInstalling: false,    // 一键安装进行中(pkexec apt)
     depsInstallError: null,   // 安装失败原因(apt stderr 透传/取消/pkexec 不可用)
-    // MegaCube(GB10) 本地大模型一键引导:首屏检测结果 + 引导执行态
+    // 厂商预装本地大模型一键引导:首屏检测结果 + 引导执行态
     vllmSetup: null,          // {eligible, may_offer_setup, has_packages, engine_state:ready|starting|stopped|failed, ...}
     vllmBootstrapping: false, // 引导进行中(pkexec + 拉起 + 轮询就绪)
-    vllmSetupPhase: null,     // 阶段:'authorizing'|'waiting'|'ready'(后端 vllm-setup:phase 事件驱动步骤指示)
+    vllmSetupPhase: null,     // 阶段:'authorizing'|'waiting'|'ready'(引导开始时本地置 'authorizing')
     vllmSetupAttempt: 0,      // waiting 阶段第几次探测(后端报)
     vllmBootstrapDone: null,  // 成功结果 {base_url, model}, 据此显示「立即重启」
     vllmBootstrapError: null, // 失败原因(pkexec stderr / 超时透传)
@@ -1631,7 +1631,7 @@
     // 手机可能在桌面仍停留草稿页/其他 session 时先唤醒这个后台 session。
     // 仅 hydrate messages 而把 chatItems 留空，会让后续 switchToSession 命中缓存快路径，
     // 不再 rerenderFromMessages，桌面便只看得到手机唤醒后的新内容，历史像是“丢了”。
-    // 在首次磁盘 hydration 后先完整重建展示层，再由 mobile_user_message 追加当前轮；
+    // 在首次磁盘 hydration 后先完整重建展示层，流式增量随后照常追加；
     // buf.busy 时上方已提前返回，不会覆盖正在流式生成的实时 chatItems。
     runSyncOnSession(sid, function () {
       resetPendingAssistant();
@@ -4935,13 +4935,10 @@
     if (!envelope || typeof envelope.before !== "string" || typeof envelope.after !== "string") return null;
     return envelope.before + userText + envelope.after;
   }
-  // 桌宠窗口靠全局事件感知回合起止。turn_start 补齐"发送 → 首 token"的空窗
-  // (chat:delta 之前引擎在思考,宠物不该干站着);turn_end 只兜 invoke 直接失败
-  // 这种不会有 chat:done 的路径。JS emit 是全局广播,宠物窗口 listen 收得到。
-  function emitPetEvent(name, sid) {
-    try {
-      if (TAURI && TAURI.event && TAURI.event.emit) TAURI.event.emit(name, { session_id: sid });
-    } catch { /* 桌宠是纯装饰,广播失败不影响对话 */ }
+  // 桌宠窗口靠全局事件感知回合起止,但 Web 端没有宠物窗口(capabilities.pet=false),
+  // 且 bootstrap 的事件 emit 本身就是 no-op:这里保留调用点形状,不做广播。
+  function emitPetEvent() {
+    /* 桌宠是纯装饰,Web 端不广播 */
   }
 
   // 后端命令错误的展示文本:稳定错误码(如 image_input_unsupported,与
@@ -5021,7 +5018,7 @@
       state.chatItems.push({ id: currentStreamId, type: "assistant", text: "", html: "", time: timeStr(), streaming: true });
     });
     notify();
-    emitPetEvent("pet:turn_start", sid);
+    emitPetEvent();
     const chatCommand = IS_WEB ? "web_access_chat" : "chat";
     const chatArgs = IS_WEB
       ? {
@@ -5060,7 +5057,7 @@
           error_present: true,
         }, authoritySyncBufferSnapshot(sid, turnOwnerBuffer)));
         if (turnOwnerBuffer) turnOwnerBuffer.localTurnOwned = false;
-        emitPetEvent("pet:turn_end", sid);
+        emitPetEvent();
         runSyncOnSession(sid, function () {
           // 按引用移除本地乐观提交：buffer 权威重载后引用自然消失，无需按位置
           // 二次限定（位置过滤在"引用仍在但位置移动"时会残留本地消息，且与
@@ -6746,15 +6743,6 @@
     notify();
   });
 
-  // vllm-setup:phase —— MegaCube 本地大模型引导阶段(authorizing→waiting{attempt}→ready),驱动引导框步骤指示。
-  listen("vllm-setup:phase", function (e) {
-    const p = e.payload || {};
-    if (!p.phase) return;
-    state.vllmSetupPhase = p.phase;
-    if (typeof p.attempt === "number") state.vllmSetupAttempt = p.attempt;
-    notify();
-  });
-
   // 知识库 embedding 模型下载进度（download → verify → prepare → done）
   listen("kb_model:progress", function (e) {
     const p = e && e.payload;
@@ -7216,7 +7204,7 @@
     return invoke("discover_local_vllm", { request: request || null });
   }
 
-  // ── MegaCube(GB10) 本地大模型一键引导 ────────────────────────────
+  // ── 厂商预装本地大模型一键引导 ────────────────────────────
   let vllmSetupPollTimer = null;
   let vllmSetupPollStartedAt = 0;
   const VLLM_SETUP_POLL_INTERVAL_MS = 3000;
@@ -8272,7 +8260,7 @@
     if (editBuffer) saveWorkingSetTo(editBuffer);
     notify();
     turnUsageDirty[sid] = false; // 编辑重跑=新一轮，同 doSendFor 重置口径保护
-    emitPetEvent("pet:turn_start", sid);
+    emitPetEvent();
     try {
       await invoke("edit_last_turn", { newMessage: newText, sessionId: sid });
       // 编辑重跑 = 后端受理新一轮：未提交的「打开」转正锁死（同 doSendFor）。
@@ -8281,7 +8269,7 @@
     } catch (e) {
       const errorText = String(e && e.message ? e.message : e || "");
       const concurrentTurn = errorText.includes("session_turn_in_progress");
-      emitPetEvent("pet:turn_end", sid);
+      emitPetEvent();
       if (editBuffer) editBuffer.localTurnOwned = false;
       runSyncOnSession(sid, function () {
         state.messages = previous.messages;
@@ -9083,13 +9071,8 @@
   }
 
   // ── 应用内升级 ───────────────────────────────────────────────────
-  // 链路: check_for_update(对比服务器 latest.json) → download_update(流式下载+sha256,
-  // 进度走 update:progress 事件) → install_update(pkexec apt) → restart_app。
-  listen("update:progress", function (e) {
-    const p = e.payload || {};
-    state.updateProgress = p.total ? Math.round((p.downloaded / p.total) * 100) : 0;
-    notify();
-  });
+  // 链路: check_for_update(对比服务器 latest.json) → download_update(流式下载+sha256)
+  // → install_update(pkexec apt) → restart_app。
   listen("web_access:status", function (e) {
     state.webAccess = Object.assign({}, state.webAccess, e.payload || {});
     notify();
@@ -9141,8 +9124,10 @@
       if (downloadResult && typeof downloadResult === "object" && downloadResult.installer_path) {
         await invoke("install_update", { installerPath: downloadResult.installer_path, info: state.updateInfo });
       } else {
-        // Linux/macOS:download_update 返回纯路径字符串(JSON untagged),走 debPath 分支。
-        // 传 info 让 macOS 后端做安装前 sha256 复验(TOCTOU 纵深防御);Linux 后端目前忽略此参数。
+        // Linux/macOS: download_update now only fetches and reports progress
+        // (resolves null); install_update's debPath argument is reserved for
+        // future platform implementations. `info` is still passed so the
+        // backend can re-verify sha256 before installing (TOCTOU defense).
         await invoke("install_update", { debPath: downloadResult, info: state.updateInfo });
       }
       state.updateReady = true;
@@ -10031,9 +10016,6 @@
   // ── Expose API ───────────────────────────────────────────────────
   window.TauriBridge = {
     available: true,
-    platform: PLATFORM.kind || "desktop",
-    capabilities: PLATFORM.capabilities || {},
-    hasCapability,
     subscribe,
     getState: function () { return snapshotState(); },
     init,

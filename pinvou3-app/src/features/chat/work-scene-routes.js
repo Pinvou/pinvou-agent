@@ -99,10 +99,7 @@ function createPptDesignMessageMeta(text) {
 }
 
 export {
-  DESIGN_PPT_SCENE_KEY,
   PERSONAL_WORKBENCH_SCENE_KEY,
-  WORK_DOCUMENT_SCENE_KEY,
-  buildWorkScenePayloadText,
   createDataVisualizationMessageMeta,
   createDocumentWritingMessageMeta,
   createPersonalWorkbenchMessageMeta,

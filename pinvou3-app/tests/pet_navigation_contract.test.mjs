@@ -44,7 +44,7 @@ assert.match(petCss, /\.pet-root\.pet-align-left\s*\{/);
 assert.match(petCss, /\.pet-root\.pet-align-right\s*\{/);
 assert.match(petWindow, /className="pet-character-slot"/);
 assert.match(petWindow, /invoke\(['"]set_pet_activity_visible['"]/);
-// The in-window DOM overlay contract for the context menu (GB10 malloc crash
+// The in-window DOM overlay contract for the context menu (unified-memory device malloc crash
 // regression: no longer invokes the native menu window) is owned by the
 // context-menu assertion block in pet_interaction_logic.test.mjs; not
 // repeated here.

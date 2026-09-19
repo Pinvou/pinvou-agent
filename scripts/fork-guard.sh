@@ -1,13 +1,13 @@
 #!/usr/bin/env bash
-# CodeWhale v0.9.12 clean re-fork guard: 59 commits, six maintained themes (r2 tag pending).
+# CodeWhale v0.9.12 clean re-fork guard: 64 commits, eight maintained themes (r2 tag pending).
 set -uo pipefail
 
 REPO="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 CODEWHALE="$REPO/CodeWhale"
 APP="$REPO/pinvou3-app/src-tauri"
 EXPECTED_UPSTREAM="dcd4c200f72f0c1ffd60d8e7f6850313db879fc5"
-EXPECTED_HEAD="98b87d527eb55d2e62465b5c926788da624e0496"
-EXPECTED_COMMITS=59
+EXPECTED_HEAD="0aea9feeeecb4651857b0cdae6c4b8b7330b09a0"
+EXPECTED_COMMITS=64
 # 过渡期锚点：不可变 r1 tag 的收口 commit。层 0 断言它是当前 head 的祖先，
 # 即 gitlink 沿维护分支领先 tag 而非另起分叉；r2 收口后随 TAG 常量一起退役。
 R1_CLOSURE="1fafee7e26b60a59457a43bce50c63aa2ad9dbaf"
@@ -25,7 +25,7 @@ bold()  { printf '\033[1m%s\033[0m\n' "$*"; }
 
 fail=0
 
-bold "── 第 0 层：v0.9.12 clean re-fork 拓扑（r1 tag 之后 41 个登记提交，r2 收口未切 tag）──"
+bold "── 第 0 层：v0.9.12 clean re-fork 拓扑（r1 tag 之后 49 个登记提交，r2 收口未切 tag）──"
 actual_head="$(git -C "$CODEWHALE" rev-parse HEAD 2>/dev/null || true)"
 if [[ "$actual_head" == "$EXPECTED_HEAD" ]]; then
   green "  ✓ CodeWhale gitlink 指向登记 head ${EXPECTED_HEAD}（过渡期：gitlink 领先 r1 tag，见 fork-policy 第 0 节豁免）"
@@ -56,7 +56,7 @@ else
   fail=1
 fi
 
-bold "── 第 1 层：四主题与父仓适配指纹 ──"
+bold "── 第 1 层：七主题与父仓适配指纹 ──"
 # 格式：主题|说明|文件（相对父仓根）|grep -F 固定串
 fingerprints=(
   "T2|Unix shell guidance preservation test|CodeWhale/crates/tui/src/tools/shell/guidance.rs|fn shell_guidance_preserves_unix_shell_contracts"
@@ -76,6 +76,18 @@ fingerprints=(
   "T1|陈旧取消不误杀自主续跑轮回归        |CodeWhale/crates/tui/src/core/engine/tests.rs|forkguard_cancel_turn_binding_spares_unnamed_turns_and_hits_the_observed_turn"
   "T1|自启续轮陈旧 stop 端到端回归        |CodeWhale/crates/tui/src/core/engine/tests.rs|forkguard_idle_subagent_completion_self_start_ignores_a_stale_previous_turn_cancel"
   "T1|处置入口不触发任何 token 回归      |CodeWhale/crates/tui/src/core/engine/tests.rs|engine_handle_stop_disposition_publishes_without_firing_any_token"
+  "T1|TurnStarted 回显宿主提交令牌回归    |CodeWhale/crates/tui/src/core/engine/tests.rs|forkguard_turn_started_echoes_submission_id_self_starts_stay_none"
+
+  "T1|workspace_roots 线程 DTO 字段（serde default） |CodeWhale/crates/protocol/src/lib.rs|pub workspace_roots: Vec<PathBuf>,"
+  "T1|workspace_roots 归一化（cwd 居首、空集 ≡ 单根）|CodeWhale/crates/core/src/lib.rs|pub fn normalize_workspace_roots("
+  "T1|workspace_roots SQLite v5 迁移列              |CodeWhale/crates/state/src/lib.rs|ADD COLUMN workspace_roots TEXT NOT NULL DEFAULT '[]';"
+  "T1|每回合策略物化全量根集合                       |CodeWhale/crates/tui/src/core/authority.rs|writable_roots: codewhale_core::normalize_workspace_roots(workspace, workspace_roots),"
+  "T1|多根沙箱逐根物化回归                           |CodeWhale/crates/tui/src/core/authority.rs|forkguard_workspace_roots_sandbox_materializes_every_root"
+  "T1|写豁免 carve-out 跨根判定回归                  |CodeWhale/crates/tui/src/core/authority.rs|forkguard_workspace_roots_carve_out_spans_attached_roots"
+  "T1|resolve_path 跨根放行回归                      |CodeWhale/crates/tui/src/tools/spec/tests.rs|forkguard_workspace_roots_resolve_path_spans_attached_roots"
+  "T1|指令发现仅主根回归                             |CodeWhale/crates/tui/src/project_context.rs|forkguard_workspace_roots_instruction_discovery_takes_only_the_primary_root"
+  "T1|线程记录 roots 持久化与旧载荷缺省回归            |CodeWhale/crates/tui/src/runtime_threads/tests.rs|forkguard_workspace_roots_thread_record_persists_and_legacy_defaults_empty"
+  "T1|turn_meta 附加根披露回归                        |CodeWhale/crates/tui/src/core/engine/tests.rs|forkguard_workspace_roots_turn_meta_lists_attached_roots"
 
   "T1|GLM-5.3 强制思考改写禁用 payload    |CodeWhale/crates/tui/src/client/chat.rs|fn apply_zai_forced_thinking_effort"
   "T1|BigModel host 纳入第一方 Chat 路由  |CodeWhale/crates/config/src/provider.rs|is_exact_https_route(base_url, \"open.bigmodel.cn\", \"api/paas/v4\")"
@@ -124,6 +136,7 @@ fingerprints=(
   "T2|notify 配置方法合同钉               |CodeWhale/crates/tui/src/tui/notifications.rs|fn settings_installs_configured_method_from_config"
   "T2|shell 指引与执行同一 dispatcher    |CodeWhale/crates/tui/src/tools/shell/guidance.rs|pub(super) fn runtime_command_guidance()"
   "T2|指引对齐 catalog 一致性回归        |CodeWhale/crates/tui/src/tools/shell/tests.rs|fn forkguard_shell_catalog_guidance_matches_execution"
+  "T2|computer-use zoom 子栅格换算       |CodeWhale/plugins/computer-use/src/raster.mjs|export function zoomChildRaster(prev, region)"
 
   "T3|静态 prompt composer              |CodeWhale/crates/tui/src/prompts.rs|pub fn set_static_prompt_composer_override("
   "T3|ambient project authority 密封     |CodeWhale/crates/tui/src/project_context.rs|forkguard_runtime_loader_ignores_ambient_project_authority"
@@ -152,6 +165,18 @@ fingerprints=(
   "T6|限流 AIMD 治理器                   |CodeWhale/crates/tui/src/tools/subagent/governor.rs|pub(crate) struct RateLimitGovernor"
   "T6|fleet 治理器接线全部 spawn 路径    |CodeWhale/crates/tui/src/tools/subagent/mod.rs|runtime.governor = Some(Arc::clone(&self.governor));"
   "T6|限流时间自愈行为回归               |CodeWhale/crates/tui/src/tools/subagent/governor.rs|fn forkguard_rate_limit_governor_pauses_and_time_recovers_after_window_drains"
+  "T6|取消授权重派与陈旧等待者回归       |CodeWhale/crates/tui/src/tools/subagent/governor.rs|fn forkguard_dynamic_gate_redispatches_grant_of_cancelled_waiter"
+
+  "T7|Compaction tool boundary regression|CodeWhale/crates/tui/src/runtime_handoff.rs|fn forkguard_compaction_topology_preserves_tool_round_boundary"
+  "T7|Compaction paired chat wire regression|CodeWhale/crates/tui/src/client/chat.rs|fn forkguard_compaction_tool_round_has_valid_chat_wire_roles"
+  "T7|Compaction topology round regression|CodeWhale/crates/tui/src/compaction/last_round.rs|fn forkguard_mid_round_topology_is_not_a_user_turn_on_recompaction"
+  "T7|Compaction later-turn survival regression|CodeWhale/crates/tui/src/compaction/last_round.rs|fn forkguard_recompaction_keeps_turns_after_the_previous_summary"
+  "T7|Compaction pasted-header provenance regression|CodeWhale/crates/tui/src/client/chat.rs|fn forkguard_full_summary_header_pasted_after_tool_result_is_not_relocated"
+  "T7|Restored completion boundary regression|CodeWhale/crates/tui/src/client/chat.rs|fn restored_completion_does_not_join_an_ordinary_user_turn"
+  "T7|Restored pre-fix session wire regression|CodeWhale/crates/tui/src/client/chat.rs|fn forkguard_restored_pre_fix_session_has_valid_chat_wire_roles"
+  "T7|Restore-tier quoted-header deletion regression|CodeWhale/crates/tui/src/compaction.rs|fn restore_keeps_a_user_turn_that_quotes_the_summary_header"
+  "T7|Pre-provenance carrier restore regression|CodeWhale/crates/tui/src/compaction.rs|fn restore_replaces_a_pre_provenance_carrier"
+  "T7|Checkpoint edit-target exclusion regression|CodeWhale/crates/tui/src/runtime_handoff.rs|fn compaction_checkpoint_is_never_the_edit_target"
 
   "APP|spawn 前安装 Engine session id   |pinvou3-app/src-tauri/src/features/assistant/platform/bridge.rs|cfg.session_id = Some(session_id.to_string());"
   "APP|产品白名单复用原生 allowed_tools |pinvou3-app/src-tauri/src/features/assistant/platform/bridge.rs|allowed_tools: Some(crate::features::assistant::tool_policy::allowed_tool_names())"
@@ -160,6 +185,12 @@ fingerprints=(
   "APP|逐轮精确安全策略下发               |pinvou3-app/src-tauri/src/features/assistant/platform/bridge.rs|turn_tool_security: Some(Arc::new(turn_tool_security))"
   "APP|受限操作动态工具清空               |pinvou3-app/src-tauri/src/features/assistant/platform/bridge.rs|dynamic_tools: Vec::new()"
   "APP|停止与回收级联取消子智能体          |pinvou3-app/src-tauri/src/features/assistant/engine_pool.rs|Op::CancelSubAgents"
+  "APP|取消入口在引擎槽上按轮身份分派    |pinvou3-app/src-tauri/src/features/assistant/engine.rs|fn dispatch_turn_bound_cancel"
+  "APP|绑定命中精确开火目标轮            |pinvou3-app/src-tauri/src/features/assistant/engine.rs|self.cancel_turn_with_mode(turn_id, mode)"
+  "APP|无目标轮仅发布处置绝不开火        |pinvou3-app/src-tauri/src/features/assistant/engine.rs|engine.publish_stop_disposition_only(mode)"
+  "APP|cancel 闭包接入共享轮绑定分派     |pinvou3-app/src-tauri/src/features/assistant/engine_pool.rs|dispatch_turn_bound_cancel(engine, identity.as_ref(), steer_mode)"
+  "APP|pending 取消按引擎轮身份重放      |pinvou3-app/src-tauri/src/features/assistant/forwarder.rs|approve_handle.cancel_turn("
+  "APP|超越自启轮不能消费 pending 重放    |pinvou3-app/src-tauri/src/features/assistant/engine_pool.rs|overtaking_self_started_turn_started_cannot_consume_the_replay"
   "APP|resolved route 由宿主统一解析     |pinvou3-app/src-tauri/src/features/assistant/platform/bridge.rs|pub fn resolve_runtime_route_for_model("
   "APP|GLM 小写存量配置解析到规范模型    |pinvou3-app/src-tauri/src/features/assistant/platform/bridge.rs|fn forkguard_zai_direct_route_survives_model_casing_mismatch"
   "APP|128K/256K compaction 合约        |pinvou3-app/src-tauri/src/features/assistant/platform/bridge.rs|fn forkguard_compaction_128k_scenarios"
@@ -194,9 +225,9 @@ done
 
 forkguard_count="$(grep -Rho --include='*.rs' 'forkguard_[A-Za-z0-9_]*' "$CODEWHALE/crates" 2>/dev/null | sort -u | wc -l | tr -d ' ')"
 if [[ "$forkguard_count" -ge 54 ]]; then
-  green "  ✓ CodeWhale 至少保留 54 条独立 forkguard 行为名（实际 ${forkguard_count}）"
+  green "  ✓ CodeWhale 至少保留 96 条独立 forkguard 行为名（实际 ${forkguard_count}）"
 else
-  red "  ✗ CodeWhale forkguard 行为名仅 ${forkguard_count:-0}，登记下限为 54"
+  red "  ✗ CodeWhale forkguard 行为名仅 ${forkguard_count:-0}，登记下限为 96"
   fail=1
 fi
 

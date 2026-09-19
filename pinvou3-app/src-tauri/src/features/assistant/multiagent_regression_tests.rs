@@ -604,6 +604,7 @@ async fn code_session_real_spawn_refresh_resolves_config_expert_without_project_
         .expect("engine shutdown timeout")
         .expect("engine task failed");
     server_task.abort();
-    crate::features::personas::delete_user_persona(&created.id).expect("delete probe persona");
+    crate::features::personas::delete_user_persona_with(&created.id, || ())
+        .expect("delete probe persona");
     let _ = std::fs::remove_dir_all(root);
 }

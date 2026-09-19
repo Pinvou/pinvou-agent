@@ -44,65 +44,6 @@ pub async fn session_mount_collection(
     Ok(())
 }
 
-/// 兼容整列表替换接口。新客户端的单项操作使用下方原子命令，避免多端并发覆盖。
-#[tauri::command]
-pub async fn session_set_mounted_collections(
-    session_id: String,
-    collections: Vec<crate::features::sessions::MountedCollection>,
-    store: State<'_, SessionStore>,
-    knowledge: State<'_, KnowledgeService>,
-    app: AppHandle,
-) -> Result<Vec<crate::features::sessions::MountedCollection>, String> {
-    let coordinator = knowledge.mount_mutation_coordinator();
-    let _mutation = coordinator.lock().await;
-    let normalized =
-        validate_mount_replacement(collections, knowledge.semantic_ready(), |collection_id| {
-            knowledge
-                .l1()
-                .collection_name(collection_id)
-                .map(|name| name.is_some())
-                .map_err(|error| error.to_string())
-        })?;
-    let snapshot = store.set_mounted_collections(&session_id, normalized);
-    publish_kb_mount_change(&app, &session_id, &snapshot);
-    Ok(snapshot.collections)
-}
-
-fn validate_mount_replacement<F>(
-    collections: Vec<crate::features::sessions::MountedCollection>,
-    semantic_ready: bool,
-    mut collection_exists: F,
-) -> Result<Vec<crate::features::sessions::MountedCollection>, String>
-where
-    F: FnMut(i64) -> Result<bool, String>,
-{
-    let mut normalized = Vec::new();
-    for collection in collections {
-        if collection.collection_id <= 0 {
-            return Err("知识集 id 无效".to_string());
-        }
-        if normalized
-            .iter()
-            .any(|mounted: &crate::features::sessions::MountedCollection| {
-                mounted.collection_id == collection.collection_id
-            })
-        {
-            continue;
-        }
-        if !collection_exists(collection.collection_id)? {
-            return Err(format!(
-                "知识集 {} 不存在或已删除",
-                collection.collection_id
-            ));
-        }
-        normalized.push(collection);
-    }
-    if normalized.iter().any(|collection| collection.enabled) && !semantic_ready {
-        return Err("embedding 模型未就绪,知识库暂不可用".to_string());
-    }
-    Ok(normalized)
-}
-
 fn ensure_collection_mountable(
     knowledge: &KnowledgeService,
     collection_id: i64,
@@ -271,7 +212,6 @@ use model_domain::*;
 
 sync_command_passthrough!(knowledge_domain, kb_start_scan(state: State<'_, KnowledgeService>, roots: Option<Vec<String>>) -> ScanState);
 sync_command_passthrough!(knowledge_domain, kb_scan_status(state: State<'_, KnowledgeService>) -> ScanState);
-sync_command_passthrough!(knowledge_domain, kb_cancel_scan(state: State<'_, KnowledgeService>));
 async_command_passthrough!(knowledge_domain, kb_type_counts(state: State<'_, KnowledgeService>) -> Result<Vec<TypeCount>, String>);
 async_command_passthrough!(knowledge_domain, kb_collection_list(state: State<'_, KnowledgeService>) -> Result<Vec<Collection>, String>);
 async_command_passthrough!(knowledge_domain, kb_collection_create(state: State<'_, KnowledgeService>, name: String, category: Option<String>, description: Option<String>) -> Result<i64, String>);
@@ -361,54 +301,10 @@ use super::prelude::*;
 
 #[cfg(test)]
 mod tests {
-    use super::{validate_collection_mountable, validate_mount_replacement};
+    use super::validate_collection_mountable;
     use crate::features::knowledge::KnowledgeService;
-    use crate::features::sessions::MountedCollection;
     use std::sync::atomic::{AtomicBool, Ordering};
     use std::sync::{Arc, Mutex};
-
-    #[test]
-    fn replacement_rejects_deleted_collection_instead_of_silently_dropping_it() {
-        let requested = vec![
-            MountedCollection {
-                collection_id: 7,
-                enabled: true,
-            },
-            MountedCollection {
-                collection_id: 9,
-                enabled: false,
-            },
-        ];
-        let error =
-            validate_mount_replacement(requested, true, |collection_id| Ok(collection_id == 7))
-                .unwrap_err();
-
-        assert!(error.contains('9'));
-    }
-
-    #[test]
-    fn replacement_deduplicates_but_keeps_the_first_requested_state() {
-        let requested = vec![
-            MountedCollection {
-                collection_id: 7,
-                enabled: false,
-            },
-            MountedCollection {
-                collection_id: 7,
-                enabled: true,
-            },
-        ];
-        let normalized =
-            validate_mount_replacement(requested, false, |_| Ok(true)).expect("disabled mount");
-
-        assert_eq!(
-            normalized,
-            vec![MountedCollection {
-                collection_id: 7,
-                enabled: false,
-            }]
-        );
-    }
 
     #[test]
     fn legacy_mount_validation_rejects_a_deleted_collection() {

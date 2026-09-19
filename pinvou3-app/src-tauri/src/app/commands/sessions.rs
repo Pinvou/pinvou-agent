@@ -2,7 +2,6 @@ use super::prelude::*;
 use crate::features::projects::ProjectStore;
 // Native save dialog support for `export_session`; the other session
 // commands do not interact with the dialog plugin.
-use std::path::Path;
 use std::path::PathBuf;
 use tauri_plugin_dialog::DialogExt;
 
@@ -618,8 +617,9 @@ pub struct ExportedSessionArchive {
 /// characters; abnormal input falls back to
 /// `pinvou-session-<first 8 chars of id>.tar.xz` (the fallback stem keeps
 /// only `[A-Za-z0-9_-]`, matching the upstream valid character set of
-/// session ids). Mirrors the `assistant_response` export naming guard, but
-/// keeps the multi-segment `.tar.xz` extension.
+/// session ids). The shared guard lives in `prelude::safe_export_stem`; the
+/// per-caller part here is the multi-segment `.tar.xz` extension handling and
+/// the session-id-derived fallback stem.
 fn normalized_archive_name(default_name: &str, session_id: &str) -> String {
     const EXTENSION: &str = "tar.xz";
     let fallback_stem = format!(
@@ -630,26 +630,11 @@ fn normalized_archive_name(default_name: &str, session_id: &str) -> String {
             .take(8)
             .collect::<String>()
     );
-    let Some(name) = Path::new(default_name)
-        .file_name()
-        .and_then(|name| name.to_str())
-    else {
-        return format!("{fallback_stem}.{EXTENSION}");
-    };
-    let stem = name
-        .trim()
-        .trim_end_matches(&format!(".{EXTENSION}"))
-        .trim_end_matches(['.', ' ']);
-    if stem.is_empty()
-        || stem.len() > 120
-        || stem
-            .chars()
-            .any(|ch| ch.is_control() || "<>:\"/\\|?*".contains(ch))
-    {
-        format!("{fallback_stem}.{EXTENSION}")
-    } else {
-        format!("{stem}.{EXTENSION}")
-    }
+    safe_export_stem(
+        default_name,
+        EXTENSION,
+        &format!("{fallback_stem}.{EXTENSION}"),
+    )
 }
 
 /// One-click full session log export: open the native save dialog and pack

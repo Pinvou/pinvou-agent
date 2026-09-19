@@ -78,9 +78,8 @@
     }
 
     async function deleteProject(projectId) {
-      const report = await invoke("delete_project", { projectId });
+      await invoke("delete_project", { projectId });
       await loadProjects();
-      return report;
     }
 
     async function moveSessionToProject(sessionId, projectId, addWorkspaceRoot) {

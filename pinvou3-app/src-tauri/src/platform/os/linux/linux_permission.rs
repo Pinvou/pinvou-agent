@@ -66,7 +66,7 @@ mod tests {
 
     #[test]
     fn validate_username_accepts_typical() {
-        assert!(validate_username("hexin").is_ok());
+        assert!(validate_username("dev").is_ok());
         assert!(validate_username("user-1_test").is_ok());
     }
 

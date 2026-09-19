@@ -44,16 +44,18 @@ function looksWindowsPath(value) {
 }
 
 // Component-aware "same or nested", mirroring the store's key_is_same_or_nested
-// (features/projects/store.rs) line for line — including comparing full
-// equality before stripping the root's trailing separator — so the display
-// side and the store can never disagree about which sessions belong where. A
-// bare startsWith would file /a/bc under /a/b: the character right past the
-// base must be a separator, and a bare-separator root ("/") covers every
-// absolute path, matching the store's empty-base rule. Windows-shaped paths
-// fold separators and case on both sides, mirroring filesystem_path_identity_key
-// (Windows identity keys fold case and separators, POSIX does not): the pure
-// module has no host-OS signal, so it keys off path shape — drive-letter/UNC
-// paths only ever come from Windows sessions.
+// (features/projects/store.rs) line for line: both sides lose their trailing
+// separators first (the store trims both identity keys the same way, so a
+// trailing-separator root and the bare directory are one and the same root on
+// BOTH sides of the stack — round-7 should-fix aligned the display side to
+// that), then full equality, then the prefix rule. A bare startsWith would
+// file /a/bc under /a/b: the character right past the base must be a
+// separator, and a bare-separator root ("/") covers every absolute path,
+// matching the store's empty-base rule. Windows-shaped paths fold separators
+// and case on both sides, mirroring filesystem_path_identity_key (Windows
+// identity keys fold case and separators, POSIX does not): the pure module has
+// no host-OS signal, so it keys off path shape — drive-letter/UNC paths only
+// ever come from Windows sessions.
 function isUnderRoot(path, root) {
   if (!path || !root) return false;
   let a = String(path);
@@ -63,8 +65,12 @@ function isUnderRoot(path, root) {
     a = a.toLowerCase().replaceAll('\\', '/');
     b = b.toLowerCase().replaceAll('\\', '/');
   }
+  // Trailing separators are not identity: both sides lose them, mirroring the
+  // store's trim_end_matches('/') on both identity keys (a loop, not a
+  // quantified regex — sonarjs/super-linear-regex).
+  while (a.endsWith('/')) a = a.slice(0, -1);
+  while (b.endsWith('/')) b = b.slice(0, -1);
   if (a === b) return true;
-  b = windowsShape ? b.replace(/[\\/]$/, '') : b.replace(/\/$/, '');
   if (!b) return a.startsWith('/');
   return a.startsWith(b) && a[b.length] === '/';
 }
@@ -245,4 +251,4 @@ function capUnavailableRootsForDisplay(roots, expanded) {
   return { visibleRoots: list.slice(0, 1), hiddenCount: Math.max(0, list.length - 1) };
 }
 
-export { TEMPORARY_GROUP_KEY, PROJECT_SESSION_DRAG_TYPE, groupSessionsWithProjects, projectCoversPath, resolveSessionProjectId, rootPath, needsAddFolderConfirm, hasProjectWorkspace, capUnavailableRootsForDisplay  };
+export { TEMPORARY_GROUP_KEY, PROJECT_SESSION_DRAG_TYPE, groupSessionsWithProjects, projectCoversPath, resolveSessionProjectId, rootPath, needsAddFolderConfirm, hasProjectWorkspace, capUnavailableRootsForDisplay };

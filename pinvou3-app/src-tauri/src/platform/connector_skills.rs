@@ -34,3 +34,24 @@ pub const WECOM_SKILL_DIRS: [&str; 14] = [
 /// 每次门控时清理旧扁平目录;marketplace 扁平布局迁移遇到这两个名走删除而非
 /// 搬移（搬进 `bundles/wecom/skills/` 后门控清理够不到，会永久残留）。
 pub const WECOM_LEGACY_SKILL_DIRS: [&str; 2] = ["wecomcli-msg", "wecomcli-schedule"];
+
+/// 9 个飞书 lark 域技能目录名(门控写/删与 marketplace 注册表共用)。
+/// skills_dir 下这些目录在不在 = 飞书技能对模型可见与否(引擎 `SkillRegistry`
+/// 扫目录)。
+pub const LARK_SKILL_DIRS: [&str; 9] = [
+    "lark-shared",
+    "lark-calendar",
+    "lark-doc",
+    "lark-drive",
+    "lark-sheets",
+    "lark-im",
+    "lark-task",
+    "lark-wiki",
+    "lark-base",
+];
+
+/// 钉钉 mono skill 目录名(dws)。
+pub const DINGTALK_SKILL_DIRS: [&str; 1] = ["dws"];
+
+/// 腾讯会议 mono skill 目录名(tmeet-skill)。
+pub const TMEET_SKILL_DIRS: [&str; 1] = ["tmeet-skill"];

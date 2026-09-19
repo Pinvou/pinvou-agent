@@ -72,9 +72,6 @@ export function RuntimeNotice({
     const installHints = {
       official_script: copy.officialScriptHint(agentName),
     };
-    const installButtons = {
-      official_script: copy.confirmInstall,
-    };
     const hint = managementAvailable
       ? isPackageManagerUpgrade
         ? copy.packageManagerUpgradeHint(status.install_source)
@@ -97,7 +94,7 @@ export function RuntimeNotice({
           <div className="mt-0.5 text-[12px] text-gray-500">{hint}</div>
           {visibleError && <div className="mt-1 text-[11px] text-red-500">{visibleError}</div>}
         </div>
-        {managementAvailable ? canAutoUpgrade ? (
+        {managementAvailable && canAutoUpgrade ? (
           <div className="flex shrink-0 items-center gap-2">
             {canDeferUpgrade && (
               <button type="button" onClick={() => setDeclinedUpgrade(true)} disabled={working || installing} className="px-3 py-1.5 rounded-xl border border-blue-500/20 text-[12px] font-medium disabled:opacity-50">
@@ -109,14 +106,10 @@ export function RuntimeNotice({
               {installing ? busyLabel : copy.upgrade}
             </button>
           </div>
-        ) : installButtons[action] ? (
+        ) : managementAvailable && action === 'official_script' ? (
           <button type="button" onClick={() => onInstall()} disabled={working || installing} className="px-3 py-1.5 rounded-xl bg-blue-600 text-white text-[12px] font-medium disabled:opacity-50 inline-flex items-center gap-1.5">
             {installing && <RefreshCw size={12} className="animate-spin" />}
-            {installing ? busyLabel : installButtons[action]}
-          </button>
-        ) : (
-          <button type="button" onClick={onRefresh} className="px-3 py-1.5 rounded-xl border border-blue-500/20 text-[12px] font-medium">
-            {copy.recheck}
+            {installing ? busyLabel : copy.confirmInstall}
           </button>
         ) : (
           <button type="button" onClick={onRefresh} className="px-3 py-1.5 rounded-xl border border-blue-500/20 text-[12px] font-medium">

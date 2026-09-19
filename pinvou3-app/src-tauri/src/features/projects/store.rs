@@ -62,16 +62,9 @@ struct ProjectsFile {
 
 const SCHEMA_VERSION: u32 = 1;
 
-/// 删除项目的结果汇报:受影响会话只被解绑(回落隐式分组),永不删除。
-#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
-pub struct DeleteProjectReport {
-    pub affected_session_ids: Vec<String>,
-}
-
 /// 移动归属的结果:前端据此提示"已加入项目(并添加了文件夹 xx)"。
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 pub struct MoveSessionOutcome {
-    pub project_id: Option<String>,
     /// 本次顺带加入目标项目的文件夹(canonicalized);未新增为 None。
     pub added_root: Option<PathBuf>,
 }
@@ -510,6 +503,8 @@ impl ProjectStore {
         self.state.read().projects.clone()
     }
 
+    /// 仅测试用断言原料（生产路径走 `list` / `assignments_snapshot`）。
+    #[cfg(test)]
     pub fn get(&self, project_id: &str) -> Option<Project> {
         self.state
             .read()
@@ -519,7 +514,9 @@ impl ProjectStore {
             .cloned()
     }
 
-    /// 归属解析原料:显式归属条目(`None` = 显式移出)。
+    /// 归属解析原料:显式归属条目(`None` = 显式移出)。仅测试用（生产路径走
+    /// `assignments_snapshot`）。
+    #[cfg(test)]
     pub fn assignment_of(&self, session_id: &str) -> Option<Option<String>> {
         self.state.read().assignments.get(session_id).cloned()
     }
@@ -640,21 +637,26 @@ impl ProjectStore {
         Ok(updated)
     }
 
-    /// 校验并归一化一份 roots 载荷而不改动状态。命令层在枚举「被移除根下的
-    /// 成员」之前先跑一次,让差集比较发生在 canonical 形态之间:invoke 载荷只
-    /// 做过键折叠(无 symlink/祖先解析),否则一次拼写不同但语义等价的 root
-    /// 编辑(macOS `/var` vs `/private/var`、symlink 化的 home、autofs)会被误判
-    /// 为移除,把该根下所有自动成员硬移出(评审 #484 B3)。
+    /// Validates and normalizes a roots payload without touching state. The
+    /// command layer runs this before enumerating "sessions under removed
+    /// roots" so the diff compares canonical forms on both sides: the invoke
+    /// payload only gets key folding (no symlink/ancestor resolution), and
+    /// without this step a no-op edit spelled differently (macOS `/var` vs
+    /// `/private/var`, symlinked home, autofs) would be misjudged as a
+    /// removal, hard move-outs included (review #484 B3).
     pub fn normalize_roots(roots: &[PathBuf]) -> Result<Vec<PathBuf>> {
         validate_roots(&[], None, roots)
     }
 
-    /// root 更替 + 自动成员移出放在同一个 store 事务里(评审 #484 B3):一把锁、
-    /// 一次落盘。此前更替与移出是两次 persist;若移出在新 roots 落盘后失败,命令
-    /// 返回 Err,但重试时 `removed_roots` 已算成空(roots 已替换)从而永远跳过
-    /// 移出——这些自动成员随后会被下一次 ensure 重新收编。`expel_session_ids`
-    /// 是命令层枚举的「被移除根下的会话」;无归属条目的写成显式移出(None),
-    /// 已有条目的不动(tier-① 语义,与 `expel_unassigned_sessions` 一致)。
+    /// Root replacement + auto-member expulsion in a single store transaction
+    /// (review #484 B3): one lock, one persist. Previously the two were two
+    /// persists; if expulsion failed after the new roots landed, the command
+    /// returned Err but a retry computed `removed_roots` as empty (roots were
+    /// already replaced) and skipped expulsion forever — the next ensure would
+    /// silently re-adopt those members. `expel_session_ids` enumerates the
+    /// command layer's "sessions under removed roots"; entry-less ones are
+    /// written as explicit move-outs (None), ones with existing entries are
+    /// untouched (tier-① semantics, matching `expel_unassigned_sessions`).
     pub fn update_project_and_expel(
         &self,
         project_id: &str,
@@ -783,9 +785,7 @@ impl ProjectStore {
             state.assignments.insert(session_id.clone(), None);
         }
         persist_locked(&state, &self.path)?;
-        Ok(DeleteProjectReport {
-            affected_session_ids: affected,
-        })
+        Ok(())
     }
 
     /// 移动会话归属(纯逻辑层写;不触碰会话的工作目录绑定)。
@@ -876,10 +876,119 @@ impl ProjectStore {
             state.assignments.insert(session_id.to_string(), None);
         }
         persist_locked(&state, &self.path)?;
-        Ok(MoveSessionOutcome {
-            project_id: project_id.map(str::to_string),
-            added_root,
-        })
+        Ok(MoveSessionOutcome { added_root })
+    }
+
+    /// Pure candidate computation shared by [`plan_rebind_roots`] (the
+    /// non-committing pre-flight) and [`rebind_roots`] (the commit): translates
+    /// every root under `from` onto `to` and reports the affected project ids.
+    /// Matching and the suffix cut both run in the resolved display domain.
+    fn rebind_root_candidates(
+        projects: &[Project],
+        from: &Path,
+        to: &Path,
+    ) -> (Vec<Project>, Vec<String>) {
+        // `to` is guaranteed to exist by the command layer; normalize it to
+        // the canonical display form used for storage. `from` matching runs on
+        // the folded identity key of its resolved display form (Windows folds
+        // case/separators, so a case-only rename still matches), and the
+        // suffix is cut by the resolved component count so a subdirectory
+        // keeps its original casing.
+        let to_display = root_display(to);
+        let from_display = root_display(from);
+        let from_key = identity_key_of_display(&from_display);
+        let from_depth = from_display.components().count();
+        let mut candidate = projects.to_vec();
+        let mut affected_projects = Vec::new();
+        for project in candidate.iter_mut() {
+            let mut changed = false;
+            for root in project.roots.iter_mut() {
+                let root_key_str = identity_key_of_display(root);
+                if !key_is_same_or_nested(&root_key_str, &from_key) {
+                    continue;
+                }
+                let suffix: PathBuf = root.components().skip(from_depth).collect();
+                *root = if suffix.as_os_str().is_empty() {
+                    to_display.clone()
+                } else {
+                    to_display.join(suffix)
+                };
+                changed = true;
+            }
+            if changed {
+                project.updated_at = Utc::now();
+                affected_projects.push(project.id.clone());
+            }
+        }
+        (candidate, affected_projects)
+    }
+
+    /// Non-committing pre-flight for the rebind command (review #463 round-8
+    /// M3): the session lanes now run before the project roots so an
+    /// interrupted run still leaves the old root registered (hence
+    /// badge-retryable), which means a root rewrite that cannot succeed —
+    /// an overlap conflict — must be detected BEFORE any session binding is
+    /// touched. Validates the same candidate `rebind_roots` will commit and
+    /// returns the project ids it would affect; nothing is written or
+    /// persisted. `rebind_roots` revalidates under its write lock, so a
+    /// concurrent project mutation cannot slip past the invariant.
+    pub fn plan_rebind_roots(&self, from: &Path, to: &Path) -> Result<Vec<String>> {
+        if from == to {
+            return Ok(Vec::new());
+        }
+        let (candidate, affected_projects) = {
+            let state = self.state.read();
+            Self::rebind_root_candidates(&state.projects, from, to)
+        };
+        if affected_projects.is_empty() {
+            return Ok(Vec::new());
+        }
+        for project in &candidate {
+            validate_roots(&candidate, Some(&project.id), &project.roots)
+                .context("rebind produced overlapping project roots")?;
+        }
+        Ok(affected_projects)
+    }
+
+    /// Directory rebind (broken-link repair): translate project roots under
+    /// the `from` prefix onto `to`. Matching runs in the resolved display
+    /// domain, and the suffix is cut from each stored root by the RESOLVED
+    /// `from` component count (review #463 B1): for an alias `from` (macOS
+    /// `/var/x` resolving to `/private/var/x`) the resolved form is one
+    /// component deeper, and cutting by the raw argument's count would keep
+    /// an extra component, rewriting the root to `<to>/x` instead of `<to>`.
+    /// `to` is validated by the command layer as an existing canonical path.
+    /// After rewriting, overlap invariants are revalidated per project — a
+    /// translated root may collide with another project's territory, in which
+    /// case the whole rebind fails and rolls back (memory untouched, nothing
+    /// persisted). Returns the affected project ids.
+    ///
+    /// Idempotent: no matching root is an empty Ok, not an error. The retry
+    /// contract depends on this — a rerun after a partially failed run finds
+    /// the roots already moved and must converge to a no-op while the command
+    /// layer retries the remaining session writes. A `from` that never had
+    /// any root is indistinguishable from a completed retry at this layer;
+    /// the entry normalization in the command layer (resolving `from` once
+    /// for all three storage lanes) is what prevents a silent half-migration.
+    pub fn rebind_roots(&self, from: &Path, to: &Path) -> Result<Vec<String>> {
+        let mut state = self.state.write();
+        if from == to {
+            return Ok(Vec::new());
+        }
+        // Rewrites happen on a candidate copy and commit only after
+        // revalidation — on an overlap conflict the caller observes state
+        // identical to disk.
+        let (candidate, affected_projects) =
+            Self::rebind_root_candidates(&state.projects, from, to);
+        if !affected_projects.is_empty() {
+            for project in &candidate {
+                validate_roots(&candidate, Some(&project.id), &project.roots)
+                    .context("rebind produced overlapping project roots")?;
+            }
+            state.projects = candidate;
+            persist_locked(&state, &self.path)?;
+        }
+        Ok(affected_projects)
     }
 
     /// Pure candidate computation shared by [`plan_rebind_roots`] (the

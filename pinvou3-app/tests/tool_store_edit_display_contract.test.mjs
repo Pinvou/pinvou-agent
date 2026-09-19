@@ -123,7 +123,7 @@ assert.match(
     'utf8',
   );
   const rustMax = (name) => {
-    const m = storeRs.match(new RegExp(`pub const ${name}: usize = (\\d+);`));
+    const m = storeRs.match(new RegExp(`pub(?:\\(crate\\))? const ${name}: usize = (\\d+);`));
     assert.ok(m, `${name} must exist in store.rs`);
     return Number(m[1]);
   };

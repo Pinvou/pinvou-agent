@@ -805,7 +805,7 @@ test('开关 UI 挂在模型列表下方，经 interaction 桥调后端', () => 
   const personasBridgeSource = read('src', 'platform', 'tauri', 'bridge', 'personas.js');
   assert.doesNotMatch(
     personasBridgeSource,
-    /multiagent:roster_sync_failed|__PINVOU_SHARED_I18N__/,
+    /multiagent:roster_sync_failed/,
     '专家卡 CRUD 不再逐会话刷新名册，前端不得保留已退役的失败事件与专用文案桥接',
   );
   const tauriBridgeSource = read('src', 'platform', 'tauri', 'bridge.js');

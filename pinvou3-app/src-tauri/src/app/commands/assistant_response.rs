@@ -1,5 +1,4 @@
-use std::path::Path;
-
+use super::prelude::safe_export_stem;
 use tauri_plugin_dialog::DialogExt;
 
 const MAX_EXPORT_BYTES: usize = 16 * 1024 * 1024;
@@ -14,26 +13,7 @@ fn export_extension(format: &str) -> Option<&'static str> {
 
 fn normalized_export_name(default_name: &str, extension: &str) -> String {
     let fallback = format!("pinvou-response.{extension}");
-    let Some(name) = Path::new(default_name)
-        .file_name()
-        .and_then(|name| name.to_str())
-    else {
-        return fallback;
-    };
-    let stem = name
-        .trim()
-        .trim_end_matches(&format!(".{extension}"))
-        .trim_end_matches(['.', ' ']);
-    if stem.is_empty()
-        || stem.len() > 120
-        || stem
-            .chars()
-            .any(|ch| ch.is_control() || "<>:\"/\\|?*".contains(ch))
-    {
-        fallback
-    } else {
-        format!("{stem}.{extension}")
-    }
+    safe_export_stem(default_name, extension, &fallback)
 }
 
 #[tauri::command]

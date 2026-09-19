@@ -485,7 +485,7 @@ impl SessionStore {
     /// `failed_session_ids` and the command layer merges them into the report.
     ///
     /// The candidate scan is the tolerant one shared with the command layer's
-    /// fence ([`Self::workspace_bindings_under`]): an unreadable sessions root
+    /// fence (`workspace_bindings_under`): an unreadable sessions root
     /// is logged and yields the entries already found, so a transient
     /// `read_dir` failure cannot abort an otherwise healthy rebind. The `?` on
     /// this signature is reserved for the sidecar write phase.
@@ -517,8 +517,11 @@ impl SessionStore {
             // The id is validated before joining the path (same gate as
             // bind_session_workspace): a traversal-shaped id would write
             // outside sessions_dir.
-            if let Err(error) = validate_session_id(&id) {
-                eprintln!("[sessions] rebind skips invalid session id {id:?}: {error:#}");
+            if validate_session_id(&id).is_err() {
+                // Log hygiene (round-7 should-fix): the rejected id (and the
+                // validator's message, which echoes it) stays out of the log;
+                // the report's failure list is the disclosure channel.
+                eprintln!("[sessions] rebind skipped a candidate with an invalid session id");
                 outcome.failed_session_ids.push(id);
                 continue;
             }
@@ -617,7 +620,18 @@ impl SessionStore {
                 )
             })();
             if let Err(error) = write {
-                eprintln!("[sessions] rebind workspace binding {id} failed: {error:#}");
+                // Log hygiene (round-7 should-fix): the failure list in the
+                // report is the only channel that names sessions; logs stay
+                // free of ids and host paths, matching the singular-path
+                // arm's `error.kind()` style.
+                let io_kind = error
+                    .chain()
+                    .rev()
+                    .find_map(|cause| cause.downcast_ref::<std::io::Error>())
+                    .map(|io_error| io_error.kind());
+                eprintln!(
+                    "[sessions] rebind workspace binding write failed (io kind: {io_kind:?})"
+                );
                 outcome.failed_session_ids.push(id);
                 continue;
             }
@@ -707,14 +721,16 @@ impl SessionStore {
     /// caller reports it (a silent success would resurrect old paths at the
     /// next boot).
     ///
-    /// The guard is boot migration state, not a fresh parse: `true` means the
-    /// file was not successfully parsed on the one attempt that owns the file
-    /// (`migrate_legacy_session_workspaces`), and preservation of a
-    /// possibly-repairable file wins over the symmetry — the round-3 "fix it
-    /// and retry" door stays open. Files that process parsed are rewritten or
-    /// removed here, which is the whole point of the degraded path: a table
-    /// that still holds a stale `from` path re-binds it over the fresh
-    /// sidecars at the next boot.
+    /// The guard is boot migration state, not a fresh parse: when it is set,
+    /// the file was not successfully parsed on the one attempt that owns the
+    /// file (`migrate_legacy_session_workspaces`). Preservation of a
+    /// possibly-repairable file still wins — it must not be deleted or
+    /// overwritten (the round-3 "fix it and retry" door stays open) — but the
+    /// file does survive on disk with unknown contents, which is exactly the
+    /// "sync failed" condition this function's contract describes: the caller
+    /// must report `legacy_sync_failed` instead of claiming success while a
+    /// stale table sits ready to resurrect old paths at the next boot
+    /// (round-7 should-fix: the parse-failed arm used to report "in sync").
     fn rewrite_legacy_session_workspaces_if_present(
         &self,
         plan: &[(String, PathBuf, PathBuf)],
@@ -722,12 +738,13 @@ impl SessionStore {
         // A file this process never successfully parsed (corrupt but
         // repairable) must not be deleted or overwritten — otherwise the
         // first rebind closes the "repair the file and retry" door
-        // (review #464 round-3 minor 6).
+        // (review #464 round-3 minor 6). Still-on-disk ⇒ report the sync as
+        // failed (see the doc above).
         if self
             .legacy_session_workspaces_parse_failed
             .load(std::sync::atomic::Ordering::SeqCst)
         {
-            return true;
+            return false;
         }
         let legacy = self
             .manager

@@ -12,8 +12,11 @@
 
 const crypto = require("node:crypto");
 const fs = require("node:fs");
+const https = require("node:https");
 const path = require("node:path");
 const { spawnSync } = require("node:child_process");
+const { finished, pipeline } = require("node:stream/promises");
+const { setTimeout: delay } = require("node:timers/promises");
 const { APP_ROOT } = require("./platform-config.js");
 
 const VERSION = "1.7.0";
@@ -21,6 +24,10 @@ const VERSION = "1.7.0";
 const INTEGRITY_SHA512 =
   "6xFW7oiUxTxZuHcfyYBkKQtmttjCbfifKZMSEk5CV8H2FucvKweYiJr8CblddYHtYjA4C14K9VAs1r49906RBA==";
 const TARBALL_URL = `https://registry.npmjs.org/chrome-devtools-mcp/-/chrome-devtools-mcp-${VERSION}.tgz`;
+const DOWNLOAD_ATTEMPTS = 4;
+const DOWNLOAD_RETRY_DELAY_MS = 2_000;
+const DOWNLOAD_TIMEOUT_MS = 60_000;
+const MAX_DOWNLOAD_REDIRECTS = 5;
 const MARKER_NAME = ".vendor-version.json";
 const ADAPTER_VERSION = "pinvou-target-id-v1";
 // SHA-256 of chrome-devtools-mcp@1.7.0 build/src/McpResponse.js after the
@@ -150,6 +157,21 @@ function systemTarCommand({ platform = process.platform, systemRoot = process.en
   return fs.existsSync(bsdtar) ? bsdtar : "tar";
 }
 
+function tarExtractionArguments(tarball, stagingRoot, { pathApi = path } = {}) {
+  const relativeTarball = pathApi.relative(stagingRoot, tarball);
+  const escapesStagingRoot =
+    relativeTarball === ".." ||
+    relativeTarball.startsWith(`..${pathApi.sep}`) ||
+    pathApi.isAbsolute(relativeTarball);
+  if (!relativeTarball || escapesStagingRoot) {
+    throw new Error("Vendor tarball must stay inside its staging directory");
+  }
+  // GNU tar treats the colon in a Windows drive-qualified archive path as
+  // host:file remote syntax. Running inside staging with a relative archive
+  // keeps the command portable across GNU tar and Windows bsdtar.
+  return ["-xzf", relativeTarball, "-C", "."];
+}
+
 function isPreparedRoot(root, marker = expectedMarker()) {
   try {
     const actual = JSON.parse(fs.readFileSync(path.join(root, MARKER_NAME), "utf8"));
@@ -188,6 +210,134 @@ function run(cmd, args, { cwd, inherit = false, input, env } = {}) {
     throw new Error(`${cmd} ${args.join(" ")} failed with status=${result.status}${err ? `: ${err.slice(0, 500)}` : ""}`);
   }
   return result;
+}
+
+// Known limitation vs. the curl it replaced: node:https ignores HTTPS_PROXY-style
+// environment variables unless an agent is configured, so proxied hosts must reach
+// registry.npmjs.org directly (allowed hosts can be granted at the proxy instead).
+function requestHttps(url, { get = https.get, timeoutMs = DOWNLOAD_TIMEOUT_MS, signal } = {}) {
+  const parsed = new URL(url);
+  if (parsed.protocol !== "https:") {
+    throw new Error(`Refusing non-HTTPS vendor download: ${parsed.protocol}`);
+  }
+  return new Promise((resolve, reject) => {
+    const request = get(
+      parsed,
+      {
+        signal,
+        headers: {
+          Accept: "application/octet-stream",
+          "User-Agent": `pinvou-chrome-devtools-mcp-vendor/${VERSION}`,
+        },
+      },
+      resolve,
+    );
+    request.once("error", reject);
+    request.setTimeout(timeoutMs, () => {
+      request.destroy(new Error(`Vendor download timed out after ${timeoutMs} ms`));
+    });
+  });
+}
+
+async function discardResponse(response) {
+  response.resume();
+  await finished(response);
+}
+
+async function downloadHttpsOnce(
+  url,
+  destination,
+  {
+    get = https.get,
+    timeoutMs = DOWNLOAD_TIMEOUT_MS,
+    maxRedirects = MAX_DOWNLOAD_REDIRECTS,
+  } = {},
+) {
+  // Wall-clock deadline per attempt: request.setTimeout only detects socket inactivity,
+  // so a trickle download would otherwise keep the build alive forever.
+  const deadline = new AbortController();
+  const deadlineTimer = setTimeout(
+    () => deadline.abort(new Error(`Vendor download timed out after ${timeoutMs} ms`)),
+    timeoutMs,
+  );
+  try {
+    let currentUrl = new URL(url);
+    for (let redirectCount = 0; redirectCount <= maxRedirects; redirectCount += 1) {
+      const response = await requestHttps(currentUrl, { get, timeoutMs, signal: deadline.signal });
+      if (deadline.signal.aborted) {
+        response.destroy();
+        throw deadline.signal.reason;
+      }
+      const abortResponse = () => response.destroy(deadline.signal.reason);
+      deadline.signal.addEventListener("abort", abortResponse, { once: true });
+      try {
+        const statusCode = response.statusCode || 0;
+        if (statusCode >= 300 && statusCode < 400) {
+          const location = response.headers.location;
+          await discardResponse(response);
+          if (!location) {
+            throw new Error(`Vendor download redirect ${statusCode} omitted Location`);
+          }
+          const redirectedUrl = new URL(location, currentUrl);
+          if (redirectedUrl.protocol !== "https:") {
+            throw new Error(`Refusing vendor download redirect to ${redirectedUrl.protocol}`);
+          }
+          currentUrl = redirectedUrl;
+          continue;
+        }
+        if (statusCode !== 200) {
+          await discardResponse(response);
+          throw new Error(`Vendor download failed with HTTP ${statusCode}`);
+        }
+        fs.mkdirSync(path.dirname(destination), { recursive: true });
+        await pipeline(response, fs.createWriteStream(destination, { mode: 0o600 }));
+        return;
+      } finally {
+        deadline.signal.removeEventListener("abort", abortResponse);
+      }
+    }
+    throw new Error(`Vendor download exceeded ${maxRedirects} redirects`);
+  } finally {
+    clearTimeout(deadlineTimer);
+  }
+}
+
+async function downloadWithRetries(
+  url,
+  destination,
+  {
+    attempts = DOWNLOAD_ATTEMPTS,
+    retryDelayMs = DOWNLOAD_RETRY_DELAY_MS,
+    download = downloadHttpsOnce,
+    sleep = delay,
+    removePartial = fs.rmSync,
+  } = {},
+) {
+  if (!Number.isSafeInteger(attempts) || attempts < 1) {
+    throw new Error("Vendor download attempts must be a positive integer");
+  }
+  let lastError;
+  for (let attempt = 1; attempt <= attempts; attempt += 1) {
+    try {
+      await download(url, destination);
+      return;
+    } catch (error) {
+      lastError = error;
+      // Best effort: Windows antimalware/indexer can briefly lock the freshly written
+      // tarball; a failed cleanup must not escape the loop and abandon the remaining
+      // retries. A leftover partial file is still truncated by the next attempt.
+      try {
+        removePartial(destination, { force: true });
+      } catch (cleanupError) {
+        console.warn(`[chrome-devtools-mcp] could not remove partial download: ${cleanupError.message}`);
+      }
+      if (attempt < attempts) await sleep(retryDelayMs);
+    }
+  }
+  throw new Error(
+    `Vendor download failed after ${attempts} attempts: ${lastError?.message || lastError}`,
+    { cause: lastError },
+  );
 }
 
 // Capture the MCP handshake and tool catalog in catalog-shim.json. During lazy startup,
@@ -243,7 +393,7 @@ function captureCatalog(entry, root) {
   console.log(`[chrome-devtools-mcp] catalog: ${toolsListResult.tools.length} tools`);
 }
 
-function prepareChromeDevtoolsMcp({ platform = process.platform } = {}) {
+async function prepareChromeDevtoolsMcp({ platform = process.platform } = {}) {
   if (isPrepared(platform)) return false;
 
   const root = outputRoot(platform);
@@ -253,9 +403,9 @@ function prepareChromeDevtoolsMcp({ platform = process.platform } = {}) {
   fs.mkdirSync(stagingRoot, { recursive: true });
   console.log(`[chrome-devtools-mcp] vendor ${VERSION} → ${root}`);
   try {
-    // 1) Download synchronously. curl is available on all three build platforms; retries
-    //    keep release builds from failing immediately on a weak connection.
-    run("curl", ["-fsSL", "--retry", "3", "--retry-delay", "2", "--retry-all-errors", "-o", tarball, TARBALL_URL], { cwd: stagingRoot });
+    // 1) Download with Node's HTTPS client so clean Jenkins agents do not depend on curl.
+    //    Redirects stay HTTPS-only and transient failures retain the previous retry policy.
+    await downloadWithRetries(TARBALL_URL, tarball);
     // 2) Verify SHA-512 integrity.
     const hash = crypto.createHash("sha512").update(fs.readFileSync(tarball)).digest("base64");
     if (hash !== INTEGRITY_SHA512) {
@@ -265,7 +415,7 @@ function prepareChromeDevtoolsMcp({ platform = process.platform } = {}) {
     }
     // 3) Extract with tar (bsdtar on macOS/Linux and the System32 bsdtar on Windows;
     //    see systemTarCommand for why PATH order must not decide on Windows).
-    run(systemTarCommand(), ["-xzf", tarball, "-C", stagingRoot], { cwd: stagingRoot });
+    run(systemTarCommand(), tarExtractionArguments(tarball, stagingRoot), { cwd: stagingRoot });
     const unpacked = path.join(stagingRoot, "package");
     if (!fs.existsSync(unpacked)) {
       throw new Error("Extracted tarball is missing package/; the upstream layout changed");
@@ -301,17 +451,24 @@ module.exports = {
   GITKEEP,
   applyTargetIdAdapter,
   assertTargetIdAdapterIntegrity,
+  downloadHttpsOnce,
+  downloadWithRetries,
   expectedMarker,
   prepareChromeDevtoolsMcp,
   isPrepared,
   isPreparedRoot,
   outputRoot,
   systemTarCommand,
+  tarExtractionArguments,
 };
 
 if (require.main === module) {
+  void runCli();
+}
+
+async function runCli() {
   try {
-    prepareChromeDevtoolsMcp();
+    await prepareChromeDevtoolsMcp();
   } catch (error) {
     console.error(`[chrome-devtools-mcp] ${error.message}`);
     process.exitCode = 1;

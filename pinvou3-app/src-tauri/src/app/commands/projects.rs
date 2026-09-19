@@ -245,7 +245,7 @@ pub async fn delete_project(
         .delete_project(&project_id, &expel_session_ids)
         .map_err(|e| format!("delete_project({project_id}): {e:#}"))?;
     emit_project_event(&app, "projects:list_changed", "deleted");
-    Ok(report)
+    Ok(())
 }
 
 /// 移动会话归属(纯归档操作,运行中的会话同样允许)。
@@ -272,6 +272,16 @@ pub async fn move_session_to_project(
     sessions
         .load(&session_id)
         .map_err(|e| format!("move_session_to_project({session_id}): {e:#}"))?;
+    // Rebind fence FIRST, before the workspace detection below: a rebind
+    // starting and completing inside the detection window would otherwise let
+    // this command commit a stale `from`-prefixed root — exactly the
+    // broken-link state the fence exists to prevent (review #464 round-7 B3).
+    // Root-accepting writer under the same fence: `add_workspace_root` adds a
+    // directory to a project and the store re-validates overlap, so committing
+    // mid-rebind can both re-add a `from`-prefixed root and bind a session
+    // under `from` after the rebind's candidate snapshot (review #464 round-6
+    // finding 6).
+    let _fence = store.rebind_fence()?;
     let workspace_root = if add_workspace_root.unwrap_or(false) {
         if project_id.is_none() {
             return Err(
@@ -840,9 +850,15 @@ pub async fn rebind_workspace_root(
     // Order: session bindings (index + code-session sidecars) → plain-chat
     // binding sidecars → metadata → baseline → project roots LAST. Every step
     // is idempotent; a failed retry only completes the unfinished parts. The
-    // metadata loop is driven by the snapshot above, computing the target per
-    // candidate (translated for those under the from prefix; as-is for retry
-    // candidates already under to).
+    // metadata loop is driven by the snapshot UNION the plain lane's rebound
+    // set (round-7 should-fix): entries the pre-rewrite snapshot never
+    // contained but this run's plain batch just moved must get the
+    // metadata.workspace replay and a report entry too, not silently wait for
+    // a rerun to converge them. `rebind_target_path` returns the rebound path
+    // as-is (to-prefix arm), so the same per-candidate logic serves both;
+    // metadata_rebind_targets dedupes the union by session id against the
+    // full snapshot (see its doc for why the codex rebound set would be the
+    // wrong key).
     let prefix_outcome = acp_pool
         .agents()
         .rebind_workspace_prefix(&from, &to_display)
@@ -894,7 +910,8 @@ pub async fn rebind_workspace_root(
         .collect();
     let mut rebound_session_ids = Vec::new();
     let mut failed_session_ids = Vec::new();
-    for (session_id, bound_path) in &affected {
+    for (session_id, bound_path) in metadata_rebind_targets(&affected, &plain_rebind.rebound).iter()
+    {
         let Some(new_path) = SessionAgentStore::rebind_target_path(bound_path, &from, &to_display)
         else {
             continue;
@@ -1225,6 +1242,30 @@ fn plain_lane_fence_rescan(sessions: &SessionStore, from: &Path, final_stale: &m
     }
 }
 
+/// Metadata replay targets for one rebind run: the pre-rewrite snapshot first
+/// (it already contains every plain-chat binding under `from` — the union
+/// happens at snapshot time, projects.rs `affected`), then the plain batch's
+/// rebound set ONLY for entries the snapshot never contained (a chat
+/// created+bound while the run was in flight). Deduplication is by session id
+/// against the FULL snapshot, not the codex lane's rebound set: the two lanes
+/// are structurally blind to each other, so keying the filter on the codex
+/// outcome would run the loop body twice for every plain chat — `set_workspace`
+/// twice and, worse, the id twice in `rebound_session_ids` (no dedup
+/// downstream), so the dialog would claim "Rebound 2N" for N plain chats
+/// (round-8 review finding 1).
+fn metadata_rebind_targets(
+    affected: &[(String, PathBuf)],
+    plain_rebound: &[(String, PathBuf)],
+) -> Vec<(String, PathBuf)> {
+    let mut targets = affected.to_vec();
+    for entry in plain_rebound {
+        if !targets.iter().any(|(id, _)| id == &entry.0) {
+            targets.push(entry.clone());
+        }
+    }
+    targets
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1273,6 +1314,37 @@ mod tests {
         // codex lane folds it raw), so the entry rejects it outright.
         assert!(validate_rebind_from(Path::new("relative/dir")).is_err());
         assert!(validate_rebind_from(Path::new("./also-relative")).is_err());
+    }
+
+    #[test]
+    fn metadata_rebind_targets_dedupes_plain_rebound_against_full_snapshot() {
+        // Round-8 finding 1: the snapshot already contains every plain-chat
+        // binding under `from`; deduping the plain arm against the codex
+        // rebound set (structurally blind to plain chats) would double-report
+        // every pure plain chat. Only entries absent from the SNAPSHOT may
+        // join from the plain arm — in practice, bindings created while the
+        // run was in flight.
+        let affected = vec![
+            ("code".to_string(), PathBuf::from("/from")),
+            ("plain-in-snapshot".to_string(), PathBuf::from("/from/sub")),
+        ];
+        let plain_rebound = vec![
+            // Already in the snapshot: must NOT repeat (would double-report).
+            ("plain-in-snapshot".to_string(), PathBuf::from("/to/sub")),
+            // Created+bound during the run: absent from the snapshot, joins.
+            ("midrun".to_string(), PathBuf::from("/to/midrun")),
+        ];
+        let targets = metadata_rebind_targets(&affected, &plain_rebound);
+        let ids: Vec<&str> = targets.iter().map(|(id, _)| id.as_str()).collect();
+        assert_eq!(ids, vec!["code", "plain-in-snapshot", "midrun"]);
+        // The snapshot's own path wins for duplicated ids: the loop's
+        // rebind_target_path translates it, while the plain arm's value is
+        // already the `to` path (as-is arm) — keeping the snapshot entry
+        // preserves the retry semantics documented for the snapshot.
+        assert_eq!(
+            targets.iter().find(|(id, _)| id == "plain-in-snapshot"),
+            Some(&("plain-in-snapshot".to_string(), PathBuf::from("/from/sub"))),
+        );
     }
 
     #[test]
