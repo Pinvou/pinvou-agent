@@ -651,24 +651,21 @@ fn run_cli_bounded(
             )));
         }
     };
-    // The child exited, but a descendant that inherited the pipes can keep
-    // them open forever — the deadline above only bounds the direct child.
-    // Bound the drain too: if EOF does not arrive within the grace period,
-    // kill the process group again to force the pipes closed instead of
-    // hanging the CLI.
+    // The child exited (and is reaped above), but a descendant that
+    // inherited the pipes can keep them open forever — the deadline only
+    // bounds the direct child. Bound the drain collection with a grace
+    // window and proceed with whatever arrived: killing the group here
+    // would signal a REAPED pid, and a recycled pid's new group must never
+    // take a SIGKILL meant for vendor-CLI orphans (the same policy the
+    // code/voice lanes document; this was the one site that still killed).
     const DRAIN_GRACE: std::time::Duration = std::time::Duration::from_secs(5);
-    let drain =
-        |rx: std::sync::mpsc::Receiver<String>, child: &mut std::process::Child| -> String {
-            match rx.recv_timeout(DRAIN_GRACE) {
-                Ok(text) => text,
-                Err(_) => {
-                    crate::support::kill_process_tree(child);
-                    rx.recv_timeout(DRAIN_GRACE).unwrap_or_default()
-                }
-            }
-        };
-    let stdout = drain(stdout_rx, &mut child);
-    let stderr = drain(stderr_rx, &mut child);
+    let collect = |rx: std::sync::mpsc::Receiver<String>| -> String {
+        rx.recv_timeout(DRAIN_GRACE)
+            .or_else(|_| rx.recv_timeout(DRAIN_GRACE))
+            .unwrap_or_default()
+    };
+    let stdout = collect(stdout_rx);
+    let stderr = collect(stderr_rx);
     Ok((status.success(), stdout, stderr))
 }
 
@@ -1074,7 +1071,20 @@ fn vendor_status_entry(kind: ConnectorKind) -> Result<Value, CliError> {
             entry["installed"] = json!(true);
             entry["upgrade_required"] = json!(false);
             entry["version"] = json!(raw);
-            let (ok, stdout, stderr) = run_status_probe(spec)?;
+            // A failing probe degrades this entry instead of failing
+            // `status`: the version gate already proved the binary
+            // installed and usable, so the caller's `installed:false`
+            // fallback would be false on a usable connector and would drop
+            // enabled/skills_applied.
+            let (ok, stdout, stderr) = match run_status_probe(spec) {
+                Ok(probe) => probe,
+                Err(error) => {
+                    entry["ok"] = json!(false);
+                    entry["connected"] = json!(false);
+                    entry["note"] = json!(redact_secret(&format!("status probe failed: {error}")));
+                    return Ok(entry);
+                }
+            };
             let connected = connected_from_probe(spec, ok, &stdout, &stderr);
             if spec.id == "feishu" {
                 // Mirror `feishu_status`'s extra `configured` flag (non-empty
@@ -1393,6 +1403,7 @@ fn ensure_cli(kind: ConnectorKind, output: OutputMode) -> Result<CliOutcome, Cli
         let value = json!({ "ok": true, "id": spec.id, "already": true });
         return success_or_render(output, spec.id, "already installed", value);
     }
+    #[allow(unused_assignments)]
     let installed = match spec.id {
         // Mirror `install_tmeet_cli`: npm global install of the pinned spec.
         "tmeet" => {
@@ -1409,12 +1420,19 @@ fn ensure_cli(kind: ConnectorKind, output: OutputMode) -> Result<CliOutcome, Cli
         // versioned asset directory.
         _ => ensure_native_cli(spec)?,
     };
-    if installed && !cli_installed(spec) {
+    // The execution check runs on EVERY path — including the
+    // already-staged-and-hash-matching short circuit, which skips the
+    // download. A pinned-but-unexecutable binary (bad interpreter, AV
+    // quarantine, unparseable `--version`) must fail with the repair hint
+    // instead of reporting success forever while `status` keeps saying
+    // not-installed.
+    if !cli_installed(spec) {
         return Err(CliError::failed(format!(
             "{} CLI install finished but the binary will not execute; retry",
             spec.display_name
         )));
     }
+    let _ = installed;
     let value = json!({ "ok": true, "id": spec.id, "already": false });
     success_or_render(output, spec.id, "installed", value)
 }
@@ -1704,15 +1722,12 @@ fn download_https(url: &str, destination: &Path) -> Result<(), CliError> {
 /// Extract one archive member by exact file name using the system `tar`
 /// (bsdtar also reads zip, matching the GUI's tar.gz/zip split).
 fn extract_member(archive: &Path, member: &str, target: &Path) -> Result<(), CliError> {
-    let list = Command::new("tar")
-        .arg("-tf")
-        .arg(archive)
-        .output()
-        .map_err(|error| CliError::failed(format!("cannot list archive with tar: {error}")))?;
-    if !list.status.success() {
-        return Err(CliError::failed("cannot read connector archive"));
-    }
-    let listing = String::from_utf8_lossy(&list.stdout);
+    // Every blocking external phase is bounded: a wedged tar (stalled mount,
+    // unwritable staging dir) must time out with diagnostics, never hang the
+    // CLI. The archive itself is SHA-256-pinned upstream, so the budget only
+    // covers the process, not trust in the input.
+    let list = run_tar_bounded(&["-tf".into(), archive.display().to_string()], 60)?;
+    let listing = String::from_utf8_lossy(&list);
     let entry = listing
         .lines()
         .find(|entry| {
@@ -1723,20 +1738,84 @@ fn extract_member(archive: &Path, member: &str, target: &Path) -> Result<(), Cli
         })
         .map(str::trim)
         .ok_or_else(|| CliError::failed(format!("connector archive does not contain {member}")))?;
-    let status = Command::new("tar")
-        .arg("-xf")
-        .arg(archive)
-        .arg("-C")
-        .arg(target)
-        .arg(entry)
-        .status()
-        .map_err(|error| CliError::failed(format!("cannot extract archive with tar: {error}")))?;
-    if !status.success() {
-        return Err(CliError::failed(format!(
-            "cannot extract {member} from the connector archive"
-        )));
-    }
+    run_tar_bounded(
+        &[
+            "-xf".into(),
+            archive.display().to_string(),
+            "-C".into(),
+            target.display().to_string(),
+            entry.to_string(),
+        ],
+        300,
+    )?;
     Ok(())
+}
+
+/// Runs system `tar` with the shared vendor-CLI budget: own process group,
+/// bounded wait, tree kill on expiry (stdout captured for `-tf` listings).
+/// stdin is closed so a tar variant that reads it cannot wedge the run.
+fn run_tar_bounded(args: &[String], timeout_secs: u64) -> Result<Vec<u8>, CliError> {
+    use std::process::Stdio;
+    use wait_timeout::ChildExt;
+
+    let mut command = Command::new("tar");
+    command
+        .args(args)
+        .stdin(Stdio::null())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped());
+    crate::support::set_process_group(&mut command);
+    let mut child = command
+        .spawn()
+        .map_err(|error| CliError::failed(format!("cannot spawn tar: {error}")))?;
+    let deadline = std::time::Duration::from_secs(timeout_secs);
+    let status = child
+        .wait_timeout(deadline)
+        .map_err(|error| CliError::failed(format!("waiting for tar failed: {error}")))?;
+    let Some(status) = status else {
+        crate::support::kill_process_tree(&mut child);
+        return Err(CliError::failed(format!(
+            "tar exceeded its {timeout_secs}s budget; the staging directory or archive source may be stalled"
+        )));
+    };
+    // The direct child is reaped; collect the pipes with the shared grace
+    // and proceed with whatever arrived (never kill a reaped group).
+    let (out_tx, out_rx) = std::sync::mpsc::channel();
+    // stdout/stderr were piped; drain them so a large listing cannot deadlock.
+    let mut stdout_pipe = child.stdout.take();
+    let mut stderr_pipe = child.stderr.take();
+    std::thread::spawn(move || {
+        let mut bytes = Vec::new();
+        if let Some(pipe) = stdout_pipe.as_mut() {
+            use std::io::Read as _;
+            let _ = pipe.take(64 * 1024 * 1024).read_to_end(&mut bytes);
+        }
+        let _ = out_tx.send(bytes);
+    });
+    let err_handle = std::thread::spawn(move || {
+        let mut bytes = Vec::new();
+        if let Some(pipe) = stderr_pipe.as_mut() {
+            use std::io::Read as _;
+            let _ = pipe.take(1024 * 1024).read_to_end(&mut bytes);
+        }
+        bytes
+    });
+    // The stdout bytes travel through the channel (the sender owned the
+    // pipe); collect with the same grace discipline as the vendor drains.
+    let stdout = out_rx
+        .recv_timeout(std::time::Duration::from_secs(5))
+        .unwrap_or_default();
+    let stderr = err_handle.join().unwrap_or_default();
+    if !status.success() {
+        let detail = String::from_utf8_lossy(&stderr);
+        let detail = pinvou3_lib::platform::credential_store::redact_secret(detail.trim());
+        return Err(CliError::failed(if detail.is_empty() {
+            "cannot read connector archive".to_owned()
+        } else {
+            format!("cannot read connector archive: {detail}")
+        }));
+    }
+    Ok(stdout)
 }
 
 // ─────────────────────────────── connect ───────────────────────────────
@@ -1900,7 +1979,19 @@ fn connect(kind: ConnectorKind, timeout: u64, output: OutputMode) -> Result<CliO
             };
             let (url, user_code, _status_ok) =
                 spawn_and_capture_url(spec, args, &mut notes, deadline, None)?;
-            if let Some(url) = compose_user_code(&url, user_code.as_deref()) {
+            // Only dingtalk prints a separate user-code line that belongs in
+            // the authorize URL; composing a stray `code:`-labeled line into
+            // tmeet's URL would mutate it into a false-positive deep link
+            // (the GUI composes nothing for tmeet).
+            let wants_code = spec.id == "dingtalk";
+            if let Some(url) = compose_user_code(
+                &url,
+                if wants_code {
+                    user_code.as_deref()
+                } else {
+                    None
+                },
+            ) {
                 notes.push(format!("authorize-url: {url}"));
             }
             // Mirror the GUI's exit handling: judge by the auth probe alone —
