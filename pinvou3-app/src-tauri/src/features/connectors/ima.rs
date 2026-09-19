@@ -339,7 +339,9 @@ pub async fn ima_connect(client_id: String, api_key: String) -> Result<Value, St
             crate::features::marketplace::skill_scope::sync_deny_all_scopes_after_skill_install(
                 IMA_SKILL_ID,
             )
-            .map_err(|e| format!("ima 技能默认关闭状态落盘失败（新会话将默认开启）: {e}"))?;
+            .map_err(|e| {
+                format!("ima 技能默认关闭状态落盘失败（新会话将默认开启，请在工具列表手动关闭）: {e}")
+            })?;
             Ok(())
         })();
 
