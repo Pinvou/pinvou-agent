@@ -995,3 +995,65 @@ mod tests {
         assert!(!err.user_message().contains("sk-secret-value"));
     }
 }
+
+/// Test double that records every operation, so tests can assert whether a
+/// store call happened at all (e.g. a last-model rejection must not reach the
+/// keyring) and in which order relative to other effects.
+#[cfg(test)]
+pub struct RecordingCredentialStore {
+    ops: std::sync::Mutex<Vec<String>>,
+    fail_delete: std::sync::Mutex<bool>,
+}
+
+#[cfg(test)]
+impl RecordingCredentialStore {
+    pub fn new() -> Self {
+        Self {
+            ops: std::sync::Mutex::new(Vec::new()),
+            fail_delete: std::sync::Mutex::new(false),
+        }
+    }
+
+    pub fn ops(&self) -> Vec<String> {
+        self.ops.lock().expect("recording ops lock").clone()
+    }
+
+    pub fn fail_delete(&self) {
+        *self.fail_delete.lock().expect("recording fail lock") = true;
+    }
+
+    fn label(reference: &CredentialReference) -> String {
+        format!("{}:{}", reference.service, reference.account)
+    }
+}
+
+#[cfg(test)]
+impl CredentialStore for RecordingCredentialStore {
+    fn get(&self, _reference: &CredentialReference) -> Result<Option<String>, CredentialError> {
+        self.ops
+            .lock()
+            .expect("recording ops lock")
+            .push("get".to_string());
+        Ok(None)
+    }
+
+    fn set(&self, reference: &CredentialReference, value: &str) -> Result<(), CredentialError> {
+        self.ops.lock().expect("recording ops lock").push(format!(
+            "set:{}={}",
+            Self::label(reference),
+            value
+        ));
+        Ok(())
+    }
+
+    fn delete(&self, reference: &CredentialReference) -> Result<(), CredentialError> {
+        self.ops
+            .lock()
+            .expect("recording ops lock")
+            .push(format!("delete:{}", Self::label(reference)));
+        if *self.fail_delete.lock().expect("recording fail lock") {
+            return Err(CredentialError::new("injected delete failure"));
+        }
+        Ok(())
+    }
+}
