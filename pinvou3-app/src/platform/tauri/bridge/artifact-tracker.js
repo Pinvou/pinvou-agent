@@ -186,6 +186,13 @@
   // keeps the original casing. Relative paths already resolve against the
   // CURRENT workspace and are untouched; marks are memory-only, so a restart
   // starts from the already-rebased JSON with no marks and this is a no-op.
+  // Strips trailing separators without a regex (the ESLint deny gate flags
+  // the previous /\/+$/ form as super-linear).
+  function trimTrailingSlashes(p) {
+    let s = normalizedPath(p);
+    while (s.endsWith("/")) s = s.slice(0, -1);
+    return s;
+  }
   function rebaseArtifactPathsForRebind(sid, paths) {
     const marks = state.reboundSessionIds;
     const mark = marks && sid ? marks[sid] : null;
@@ -195,8 +202,8 @@
     const segments = mark.chain
       .map(function (segment) {
         return {
-          fromKey: normalizedPath(segment.from).replace(/\/+$/, "").toLowerCase(),
-          toKey: normalizedPath(segment.to).replace(/\/+$/, ""),
+          fromKey: trimTrailingSlashes(segment.from).toLowerCase(),
+          toKey: trimTrailingSlashes(segment.to),
         };
       })
       .filter(function (segment) { return segment.fromKey; });
@@ -235,21 +242,20 @@
           if (!isDeliverable(p)) return;
           const na = { path: p, basename: bn }; state.artifacts.push(na); byName[bn] = na; added = true;
         }
-        else if (isAbsPath(p) && !isAbsPath(ex.path)) { ex.path = p; added = true; } // 相对→绝对,open 可靠
-        else if (isAbsPath(p) && isAbsPath(ex.path) && normalizedPath(ex.path) !== normalizedPath(p) && sessionRecentlyRebound(sid)) {
-          // Stale absolute → live workspace file, matched by basename — ONLY
-          // for a session the rebind command just moved (the
-          // workspace_rebound mark, review #463 round-10 Major 2). After a
-          // folder rebind the persisted entry keeps the vanished root, and
-          // the relative→absolute escape hatch above never fires for it.
-          // Without the gate this arm would also repoint a LIVE absolute
-          // entry outside the workspace (present_artifact's resolved abs
-          // path, an absolute write target) onto an unrelated same-basename
-          // workspace file and persist the damage — an outside entry is not
-          // a dead one (review #463 round-A minor). Inside the rebind window
-          // "follow the new root" is the user's expressed intent, which is
-          // exactly what the backend lane already did to the persisted
-          // paths; same accepted basename coarseness as the arm above.
+        else if (isAbsPath(p) && (!isAbsPath(ex.path) || (normalizedPath(ex.path) !== normalizedPath(p) && sessionRecentlyRebound(sid)))) {
+          // 相对→绝对,open 可靠;或 stale absolute → live workspace file,
+          // matched by basename — ONLY for a session the rebind command just
+          // moved (the workspace_rebound mark, review #463 round-10 Major 2).
+          // After a folder rebind the persisted entry keeps the vanished root,
+          // and the relative→absolute escape hatch never fires for an
+          // already-absolute entry. Without the mark gate this arm would also
+          // repoint a LIVE absolute entry outside the workspace onto an
+          // unrelated same-basename workspace file and persist the damage —
+          // an outside entry is not a dead one (review #463 round-A minor).
+          // Inside the rebind window "follow the new root" is the user's
+          // expressed intent, which is exactly what the backend lane already
+          // did to the persisted paths; same accepted basename coarseness as
+          // the arm above.
           ex.path = p; added = true;
         }
       });

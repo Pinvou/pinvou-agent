@@ -27,7 +27,6 @@
     const markRemoteTurn = context.markRemoteTurn;
     const adoptManagedAttachments = context.adoptManagedAttachments || function () { return Promise.resolve(); };
     const discardManagedAttachment = context.discardManagedAttachment || function () { return Promise.resolve(); };
-    const isScheduledRunSession = context.isScheduledRunSession;
     const userMessageDisplayText = context.userMessageDisplayText;
     const parseScheduledTaskDraftFromText = context.parseScheduledTaskDraftFromText;
     const autoCreateScheduledTaskDraft = context.autoCreateScheduledTaskDraft;

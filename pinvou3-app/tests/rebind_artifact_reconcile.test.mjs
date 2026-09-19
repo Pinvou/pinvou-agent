@@ -108,7 +108,7 @@ function makeTracker(state, workspaceFiles) {
     invoke: async (command, payload) => {
       invokes.push([command, payload]);
       if (command === 'list_workspace_files') return workspaceFiles;
-      return undefined;
+      return null;
     },
     isScheduledRunSession: () => false,
   });

@@ -4654,6 +4654,13 @@
   // semantics as the tauri bridge's artifact-tracker helper; marks are
   // stamped by the session:list_changed listener below and are memory-only
   // (a restart starts from the already-rebased JSON with no marks).
+  // Strips trailing separators without a regex (the ESLint deny gate flags
+  // the previous /\/+$/ form as super-linear).
+  function trimTrailingSlashes(p) {
+    let s = normalizedPath(p);
+    while (s.endsWith("/")) s = s.slice(0, -1);
+    return s;
+  }
   function rebaseArtifactPathsForRebind(sid, paths) {
     const marks = state.reboundSessionIds;
     const mark = marks && sid ? marks[sid] : null;
@@ -4663,8 +4670,8 @@
     const segments = mark.chain
       .map(function (segment) {
         return {
-          fromKey: normalizedPath(segment.from).replace(/\/+$/, "").toLowerCase(),
-          toKey: normalizedPath(segment.to).replace(/\/+$/, ""),
+          fromKey: trimTrailingSlashes(segment.from).toLowerCase(),
+          toKey: trimTrailingSlashes(segment.to),
         };
       })
       .filter(function (segment) { return segment.fromKey; });
