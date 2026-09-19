@@ -201,16 +201,8 @@ assert.deepStrictEqual(
   'combo tail keyup while recording must not stop the recording',
 );
 // After the injected pair is dropped, the trailing real Alt up (no longer
-// pending) must be inert.
-assert.deepStrictEqual(
-  voiceShortcutActionForKeyUp(alt(), { status: 'idle', pendingAlt: false }),
-  { type: 'none' },
-);
-// A genuine tap (Alt up while pending) must keep triggering.
-assert.deepStrictEqual(
-  voiceShortcutActionForKeyUp(alt(), { status: 'idle', pendingAlt: true }),
-  { type: 'trigger', mode: 'dictation' },
-);
+// pending) must be inert — exactly the idle pendingAlt cases asserted above
+// (none) plus the genuine tap (trigger); no new state enters the pure helper.
 
 // Right Alt triggers the same gesture as left Alt: the Rust hook classifies
 // VK_RMENU as Alt(AltSide::Right) (bare right-Alt taps are swallowed and
