@@ -1845,11 +1845,10 @@ const NAV_PREFETCH = {
       // grouped uniformly by the project layer's three tiers; unbound plain
       // sessions stay in the date view of "All". Grouping follows binding,
       // the same signal as the safety posture.
-      // Note: the upstream history chain (chatHistory/codexHistory/…) is
-      // rebuilt on every render, so these memos are recomputed each round for
-      // now — end-to-end memoization is left as follow-up (review finding
-      // 22); tier-2 grouping is O(sessions × projects × roots)
-      // (#448 finding 8).
+      // Note (aligned with the memo comment above): bridge snapshots are
+      // persistent projections, so these memos skip recomputation when their
+      // slices keep their references; tier-2 grouping remains
+      // O(sessions × projects × roots) (#448 finding 8).
       const sidebarCodeTasks = useMemo(() => (sidebarCodeListActive
         ? sidebarTaskHistory.filter(chat => chat.taskKind === 'codex'
             // The bound-work-session branch is desktop-only, like the projects
@@ -1867,26 +1866,32 @@ const NAV_PREFETCH = {
       // Sidebar group-header props per group kind (extracted so the render map
       // stays readable): the project channel (§9.9) and manage-panel (§4)
       // entries are desktop-only, gated by the projects bridge domain.
+      // Single source for the ProjectGroupHeader domain props (review #484
+      // MINOR: the mount site used to repeat onRename/onDelete/onRebind
+      // before this spread, and the spread silently shadowed the gated
+      // spellings with un-gated ones). Every bridge-backed entry
+      // is gated here: the projects domain is desktop-only (§9.8), and a
+      // web group must render no dead entries.
+      const unavailableRootsOf = (group) => (group.roots || [])
+        .filter(root => !(root && typeof root === 'object' ? root.available : root))
+        .map(root => String(typeof root === 'object' ? root.path : root));
+      const projectGroupHeaderProps = (group) => ({
+        onNewSession: bridge.projects ? () => handleProjectNewSession(group.projectId) : undefined,
+        onManage: bridge.projects ? () => setManageFoldersId(group.projectId) : undefined,
+        onRename: bridge.projects ? (name) => handleRenameProject(group.projectId, name) : undefined,
+        onDelete: bridge.projects ? () => handleDeleteProject(group.projectId) : undefined,
+        unavailableRoots: unavailableRootsOf(group),
+        onRebind: bridge.projects ? (rootPath) => startRebindWorkspace(rootPath) : undefined,
+        onDropSession: bridge.projects ? (sessionId) => handleDropSessionOnProject(sessionId, group.projectId) : undefined,
+      });
+      const folderGroupHeaderProps = (group) => ({
+        title: group.path,
+        // bridge.projects exists on desktop only: no dead entries on web.
+        onConvert: bridge.projects ? (name) => handleConvertFolderToProject(group.path, name) : undefined,
+      });
       const sidebarGroupHeaderProps = (group) => {
-        if (group.kind === 'project') {
-          return {
-            onNewSession: bridge.projects ? () => handleProjectNewSession(group.projectId) : undefined,
-            onManage: bridge.projects ? () => setManageFoldersId(group.projectId) : undefined,
-            onRename: (name) => handleRenameProject(group.projectId, name),
-            onDelete: () => handleDeleteProject(group.projectId),
-            unavailableRoots: (group.roots || [])
-              .filter(root => !(root && typeof root === 'object' ? root.available : root))
-              .map(root => String(typeof root === 'object' ? root.path : root)),
-            onRebind: (rootPath) => startRebindWorkspace(rootPath),
-          };
-        }
-        if (group.kind === 'folder') {
-          return {
-            title: group.path,
-            // bridge.projects exists on desktop only: no dead entries on web.
-            onConvert: bridge.projects ? (name) => handleConvertFolderToProject(group.path, name) : undefined,
-          };
-        }
+        if (group.kind === 'project') return projectGroupHeaderProps(group);
+        if (group.kind === 'folder') return folderGroupHeaderProps(group);
         return {};
       };
       // Picker inputs: the projects snapshot plus every directory-bound item
@@ -1911,16 +1916,19 @@ const NAV_PREFETCH = {
         const primary = pickerPrimaryRoot(project);
         if (!primary) return; // tag-only project: no root to bind; the render side already keeps the button away
         const roots = pickerProjectRoots(project);
-        applyWorkspaceTarget({
+        // Grant-notice parity: this channel grants the project's whole root set
+        // without a picker detour, so the mode-aware notice must still surface
+        // at grant time (§9.4) — but only when the draft actually staged: on
+        // an active session the staging is a silent no-op and a toast would
+        // claim access the session does not have.
+        if (applyWorkspaceTarget({
           lane: currentView === 'codex' ? 'codex' : 'chat',
           path: primary,
           projectId: project.id,
           roots,
-        });
-        // Grant-notice parity: this channel grants the project's whole root set
-        // without a picker detour, so the mode-aware notice must still surface
-        // at grant time (§9.4).
-        setSettingsToast(workspaceGrantNotice(activeLaneMode(), roots.length));
+        })) {
+          setSettingsToast(workspaceGrantNotice(activeLaneMode(), roots.length));
+        }
       };
 
       // ── Manage-folders panel (§4) ───────────────────────────────────────
@@ -2023,13 +2031,18 @@ const NAV_PREFETCH = {
         assignments: projectsListAssignments || {},
       }), [projectsListEntries, projectsListAssignments, boundWorkspaceItems]);
       const closeWorkspacePicker = () => { setWorkspacePicker(null); setPickerExcluded(null); };
+      // Returns whether the chat-lane draft actually staged (the codex lane's
+      // request object always lands); callers surface grant notices only on a
+      // real staging.
       const applyWorkspaceTarget = ({ lane, path, projectId, roots }) => {
+        let applied = true;
         if (lane === 'codex') {
           setPickerCodexRequest({ epoch: Date.now(), path: path || null, projectId: projectId || null, roots: roots || [] });
         } else if (bridge.sessions && bridge.sessions.setDraftWorkspace) {
-          bridge.sessions.setDraftWorkspace(path || null, { projectId: projectId || null, workspaceRoots: roots || [] });
+          applied = bridge.sessions.setDraftWorkspace(path || null, { projectId: projectId || null, workspaceRoots: roots || [] }) !== false;
         }
         closeWorkspacePicker();
+        return applied;
       };
       const activeLaneMode = () => (currentView === 'codex'
         ? codexLaneMode
@@ -2072,8 +2085,12 @@ const NAV_PREFETCH = {
             const outcomes = await bridge.projects.ensureFolderProjects([folder]);
             const list = Array.isArray(outcomes) ? outcomes : [];
             materialized = list.some(o => o && (o.status === 'created' || o.status === 'covered'));
+            // A failed root is NOT the exclusion list: it gets the failure
+            // toast and stops here — the excluded-folder panel is only for
+            // the "skipped without an outcome" case (review #484 MINOR).
             if (!materialized && list.some(o => o && o.status === 'failed')) {
               setSettingsToast(t.uiProjects.opFailed);
+              return;
             }
           } catch (error) {
             console.warn('ensure folder project failed', error);
@@ -3329,6 +3346,10 @@ const NAV_PREFETCH = {
         onGotoTools: () => navigateFromScheduledRun('toolStore'),
         browserDockOpen: browserPaneOpen,
         onOpenBrowserDock: openBrowserDock,
+        // Align feedback (and other keychain notices) surface as the host
+        // toast: without this prop every align outcome is silent in the chat
+        // lane (review #484 M4).
+        onNotify: setSettingsToast,
       };
       // The three byte-identical empty states in the sidebar task list (task groups / date groups / flat list) share one node.
       const sidebarTaskEmptyNode = (
@@ -3840,22 +3861,9 @@ const NAV_PREFETCH = {
                                   onToggle={() => setFolderGroupOpen(prev => ({ ...prev, [group.key]: !isOpen }))}
                                   theme={activeTheme}
                                   t={t}
-                                  title={group.kind === 'folder' ? group.path : undefined}
                                   busy={projectOpsBusy}
                                   testId="sidebar-folder-group"
-                                  // bridge.projects 仅桌面存在:web 上目录组不渲染
-                                  // 死入口(点击无反馈违反显式不支持约定)。
-                                  onConvert={bridge.projects && group.kind === 'folder' ? (name) => handleConvertFolderToProject(group.path, name) : undefined}
-                                  onRename={group.kind === 'project' ? (name) => handleRenameProject(group.projectId, name) : undefined}
-                                  onDelete={group.kind === 'project' ? () => handleDeleteProject(group.projectId) : undefined}
                                   {...sidebarGroupHeaderProps(group)}
-                                  onDropSession={bridge.projects && group.kind === 'project' ? (sessionId) => handleDropSessionOnProject(sessionId, group.projectId) : undefined}
-                                  unavailableRoots={group.kind === 'project'
-                                    ? (group.roots || [])
-                                        .filter(root => !(root && typeof root === 'object' ? root.available : root))
-                                        .map(root => String(typeof root === 'object' ? root.path : root))
-                                    : []}
-                                  onRebind={bridge.projects && group.kind === 'project' ? (rootPath) => startRebindWorkspace(rootPath) : undefined}
                                   dropActive={dropTargetGroupKey === group.key}
                                   onDropActive={(active) => setDropTargetGroupKey(active ? group.key : null)}
                                 />
@@ -4102,6 +4110,7 @@ const NAV_PREFETCH = {
                 onGotoModelSettings={() => openSettingsSection('model')}
                 onGotoSettings={() => openSettingsSection('general')}
                 onGotoTools={() => navigateFromScheduledRun('toolStore')}
+                onNotify={setSettingsToast}
               />
             )}
             {currentView === 'scheduled' && (

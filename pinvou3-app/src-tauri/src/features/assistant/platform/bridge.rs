@@ -600,7 +600,7 @@ impl Pinvou3Bridge {
     }
 
     /// 创建会话时锁定的钥匙串快照（§6）：全量可访问根；无解析器注入或该会话
-    /// 无快照（旧会话/临时会话）时返回空——经底座归一后等价于 [`workspace`]，
+    /// 无快照（旧会话/临时会话）时返回空——经底座归一后等价于 `workspace`，
     /// 单根现状不变。
     pub fn session_workspace_roots(&self, session_id: &str) -> Vec<std::path::PathBuf> {
         self.workspace_roots_resolver

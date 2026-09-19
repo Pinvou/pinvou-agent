@@ -2565,16 +2565,6 @@
     if (!selected) return null;
     return Array.isArray(selected) ? (selected[0] || null) : selected;
   }
-  // Dedicated picker for directory rebind (broken-link repair): single
-  // selection with a title that matches the rebind semantics — it used to
-  // borrow the knowledge-base multi-select import picker, whose title did not
-  // match the "only picked[0] is used" behavior (review #463 Minor 6).
-  async function pickRebindFolder() {
-    if (!dialogOpen) return null;
-    const selected = await dialogOpen({ directory: true, multiple: false, title: bt("rebindPickFolderTitle") });
-    if (!selected) return null;
-    return Array.isArray(selected) ? (selected[0] || null) : selected;
-  }
   async function pickFeedbackFiles() {
     if (!dialogOpen) return [];
     const selected = await dialogOpen({

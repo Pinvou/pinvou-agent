@@ -305,7 +305,22 @@ pub(super) fn read_code_session_sidecar(
     session_id: &str,
 ) -> Option<CodeSessionSidecar> {
     let path = code_session_sidecar_path(store_path, session_id);
-    let payload = fs::read(&path).ok()?;
+    let payload = match fs::read(&path) {
+        Ok(payload) => payload,
+        // Round-8 should-fix 6: a sidecar that exists but cannot be READ
+        // (permissions, io error) used to disappear silently, so both rebind
+        // scans skipped it and the run reported success while the orphan
+        // binding stayed at `from`. Make the skip visible; id and path stay
+        // out of the log per the rebind log-hygiene rule.
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => return None,
+        Err(error) => {
+            eprintln!(
+                "[pinvou3-app] rebind scan skips an unreadable code-session sidecar: {}",
+                error.kind()
+            );
+            return None;
+        }
+    };
     match serde_json::from_slice::<CodeSessionSidecar>(&payload) {
         Ok(sidecar) => {
             // 未来高版本格式不能静默按 v1 解析：拒读并按缺失处理，交由恢复/回填
@@ -335,7 +350,15 @@ pub(super) fn read_code_session_sidecar(
 pub(super) fn remove_code_session_sidecar(store_path: &Path, session_id: &str) {
     let sidecar = code_session_sidecar_path(store_path, session_id);
     match fs::remove_file(&sidecar) {
-        Ok(()) => {}
+        Ok(()) => {
+            // Round-8 should-fix 7: drop the session dir too when the sidecar
+            // was its last occupant, so a deleted session leaves no ghost dir
+            // for persist's create_dir_all / boot backfill to keep alive.
+            // Fails harmlessly while other files remain.
+            if let Some(parent) = sidecar.parent() {
+                let _ = fs::remove_dir(parent);
+            }
+        }
         Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
         Err(error) => eprintln!(
             "[pinvou3-app] 清理原生代码会话 sidecar 失败（{}）: {error:#}",
@@ -676,14 +699,8 @@ impl SessionAgentStore {
     /// count, preserving the subdirectory's original casing. Returns `None` =
     /// not under `from`; an empty suffix = the path IS `from`.
     fn rebind_relative_suffix(path: &Path, from: &Path) -> Option<PathBuf> {
-        let path_key = crate::platform::os::filesystem_path_identity_key(&path.to_string_lossy());
-        let from_key = crate::platform::os::filesystem_path_identity_key(&from.to_string_lossy());
-        let path_trim = path_key.trim_end_matches('/');
-        let from_trim = from_key.trim_end_matches('/');
-        if !crate::platform::os::path_identity_is_same_or_nested(path_trim, from_trim) {
-            return None;
-        }
-        Some(path.components().skip(from.components().count()).collect())
+        // Single shared suffix cut (round-8 review should-fix 9).
+        crate::platform::os::path_relative_suffix_under(path, from)
     }
 
     /// Lists project sessions bound under the `from` prefix (candidate set for
@@ -789,7 +806,7 @@ impl SessionAgentStore {
         // minor: unconditional persist() + advanced memory on failure left
         // the process believing the rebind happened while disk said
         // otherwise).
-        let mut originals: Vec<(String, Option<PathBuf>)> = Vec::new();
+        let mut originals: Vec<(String, Option<PathBuf>, Vec<PathBuf>)> = Vec::new();
         {
             let mut records = self.records.write();
             for (session_id, record) in records.iter_mut() {
@@ -807,8 +824,26 @@ impl SessionAgentStore {
                 } else {
                     to.join(suffix)
                 };
-                originals.push((session_id.clone(), record.workspace_path.clone()));
+                originals.push((
+                    session_id.clone(),
+                    record.workspace_path.clone(),
+                    record.workspace_roots.clone(),
+                ));
                 record.workspace_path = Some(next.clone());
+                // The keychain snapshot migrates with the binding (§7): roots
+                // under the `from` prefix shift onto `to`, roots outside it
+                // are untouched. Stale `/from/...` entries would otherwise be
+                // normalized into additional writable roots outside `to` on
+                // the next resume (review #484 M3).
+                for root in record.workspace_roots.iter_mut() {
+                    if let Some(root_suffix) = Self::rebind_relative_suffix(root, from) {
+                        *root = if root_suffix.as_os_str().is_empty() {
+                            to.to_path_buf()
+                        } else {
+                            to.join(root_suffix)
+                        };
+                    }
+                }
                 affected.push((session_id.clone(), next));
             }
         }
@@ -816,10 +851,12 @@ impl SessionAgentStore {
             // Roll the in-memory bindings back to the persisted state: the
             // caller reports the rebind as failed, and a retry must see the
             // original `from` bindings (not ones memory pretends moved).
+            // The keychain translation is rolled back with the path.
             let mut records = self.records.write();
-            for (session_id, original) in originals {
+            for (session_id, original_path, original_roots) in originals {
                 if let Some(record) = records.get_mut(&session_id) {
-                    record.workspace_path = original;
+                    record.workspace_path = original_path;
+                    record.workspace_roots = original_roots;
                 }
             }
             return Err(error);
@@ -849,15 +886,28 @@ impl SessionAgentStore {
             } else {
                 to.join(suffix)
             };
+            // The orphan sidecar's keychain migrates with its binding too:
+            // roots under the `from` prefix shift onto `to`, roots outside it
+            // are untouched. Preserving the snapshot verbatim would strand
+            // `/from/...` entries (usually including the old cwd) that the
+            // foundation normalizes into additional writable roots outside
+            // `to` on resume (review #484 M3).
+            let rebound_roots: Vec<PathBuf> = sidecar
+                .workspace_roots
+                .iter()
+                .map(|root| match Self::rebind_relative_suffix(root, from) {
+                    Some(root_suffix) if root_suffix.as_os_str().is_empty() => to.to_path_buf(),
+                    Some(root_suffix) => to.join(root_suffix),
+                    None => root.clone(),
+                })
+                .collect();
             match persist_code_session_sidecar(
                 &code_session_sidecar_path(&self.path, &session_id),
                 &CodeSessionSidecar {
                     version: CODE_SESSION_SIDECAR_VERSION,
                     workspace_kind: CodexWorkspaceKind::Project,
                     workspace_path: Some(next.clone()),
-                    // 孤儿 sidecar 的钥匙串随绑定一起平移:磁盘上已有的快照保持
-                    // 不动(索引内会话的平移由下方 rewrite pass 覆盖)。
-                    workspace_roots: sidecar.workspace_roots.clone(),
+                    workspace_roots: rebound_roots,
                     bound_at: sidecar.bound_at,
                 },
             ) {
@@ -911,8 +961,11 @@ impl SessionAgentStore {
                     .get(session_id)
                     .is_some_and(|record| record.mode.is_code())
                 {
-                    // 钥匙串快照随 sidecar 重写一起保留(重写只补路径/时间戳,
-                    // 不改变该会话的可访问根集合)。
+                    // The keychain snapshot rides along with the sidecar
+                    // rewrite: the record pass above already translated the
+                    // roots in memory, so re-reading them here persists the
+                    // rebound set (the rewrite itself only backfills path and
+                    // timestamp).
                     let record_roots = records
                         .get(session_id)
                         .map(|record| record.workspace_roots.clone())
@@ -1856,6 +1909,84 @@ mod tests {
         assert_eq!(
             orphan.workspace_path.as_deref(),
             Some(root.join("to2").join("deep").as_path())
+        );
+
+        fs::remove_dir_all(&root).unwrap();
+    }
+
+    #[test]
+    fn rebind_prefix_translates_keychain_snapshots_with_the_binding() {
+        // Review #484 M3: every lane of rebind_workspace_prefix must migrate
+        // the keychain snapshot with the binding — stale `/from` roots would
+        // be normalized into additional writable roots outside `to` on the
+        // next resume. Roots outside the prefix stay untouched, in the index
+        // record and in an off-index orphan sidecar alike.
+        let root =
+            std::env::temp_dir().join(format!("pinvou3-codex-rebind-roots-{}", std::process::id()));
+        let _ = fs::remove_dir_all(&root);
+        fs::create_dir_all(&root).unwrap();
+        let store = SessionAgentStore {
+            path: root.join("session-agents.json"),
+            records: Arc::new(RwLock::new(HashMap::new())),
+        };
+        let from = root.join("from");
+        let to = root.join("to");
+        fs::create_dir_all(&from).unwrap();
+        fs::create_dir_all(&to).unwrap();
+        let elsewhere = root.join("elsewhere");
+        fs::create_dir_all(&elsewhere).unwrap();
+
+        // Indexed native code session: the keychain payload is cwd-first
+        // (§6) — primary root under `from`, an attached root under `from`,
+        // and one outside it.
+        store
+            .bind_code_native_session(
+                "s1",
+                CodexWorkspaceKind::Project,
+                Some(from.clone()),
+                vec![from.clone(), from.join("extra"), elsewhere.clone()],
+            )
+            .unwrap();
+        let outcome = store.rebind_workspace_prefix(&from, &to).unwrap();
+        assert_eq!(outcome.affected.len(), 1);
+        let record = store.get("s1");
+        assert_eq!(record.workspace_path.as_deref(), Some(to.as_path()));
+        assert_eq!(
+            record.workspace_roots,
+            vec![to.clone(), to.join("extra"), elsewhere.clone()],
+            "prefix roots shift onto `to`, outside roots stay"
+        );
+        // The sidecar the bind wrote carries the same rebound set.
+        let sidecar = read_code_session_sidecar(&store.path, "s1").unwrap();
+        assert_eq!(
+            sidecar.workspace_roots,
+            vec![to.clone(), to.join("extra"), elsewhere.clone()]
+        );
+
+        // Off-index orphan sidecar: the orphan rewrite pass translates the
+        // snapshot itself (no index record owns it).
+        persist_code_session_sidecar(
+            &code_session_sidecar_path(&store.path, "orphan"),
+            &CodeSessionSidecar {
+                version: CODE_SESSION_SIDECAR_VERSION,
+                workspace_kind: CodexWorkspaceKind::Project,
+                workspace_path: Some(from.join("deep")),
+                workspace_roots: vec![from.join("deep"), elsewhere.clone()],
+                bound_at: None,
+            },
+        )
+        .unwrap();
+        let outcome = store.rebind_workspace_prefix(&from, &to).unwrap();
+        assert!(outcome.affected.iter().any(|(sid, _)| sid == "orphan"));
+        let orphan = read_code_session_sidecar(&store.path, "orphan").unwrap();
+        assert_eq!(
+            orphan.workspace_path.as_deref(),
+            Some(to.join("deep").as_path())
+        );
+        assert_eq!(
+            orphan.workspace_roots,
+            vec![to.join("deep"), elsewhere],
+            "the orphan's snapshot migrates with its binding"
         );
 
         fs::remove_dir_all(&root).unwrap();

@@ -18,11 +18,6 @@ unsafe extern "C" {}
 
 use tauri::Manager;
 
-/// `attachments` 模块是 `pub(crate)`，集成测试（tests/l1_dialog_harness）无法走
-/// 完整路径，只能经此 crate 根再导出使用；生产代码不经此入口。注意不能加
-/// `cfg(test)` 门控：集成测试构建本 crate 时不带 test cfg。
-pub use features::assistant::attachments::build_message_with_attachments;
-
 #[cfg(feature = "benchmark-hooks")]
 pub use features::assistant::product_runtime::{agentic_task, headless_bridge};
 

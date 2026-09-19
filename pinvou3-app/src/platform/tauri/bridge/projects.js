@@ -47,9 +47,11 @@
       try {
         applySnapshot(await invoke("list_projects"));
       } catch (e) {
-        // 归属是纯偏好数据,失败不打断 UI:首次拉取失败时侧栏回落隐式分组;
-        // 已有快照则继续显示旧快照(与最新无从区分),直到下一个
-        // projects:list_changed 事件才重试。
+        // Assignments are pure preference data: a fetch failure must not
+        // break the UI. On the first failed pull the sidebar falls back to
+        // implicit grouping; with an existing snapshot it keeps showing the
+        // stale one (indistinguishable from fresh) until the next
+        // projects:list_changed event retries.
         console.warn("[projects] list_projects failed:", e);
       } finally {
         fetchInFlight = false;
@@ -135,8 +137,6 @@
       return invoke("align_session_to_project", { sessionId });
     }
 
-    // 目录重绑定(修断链):confirmExisting 由前端两阶段控制——先不带确认
-    // 调用,后端在旧目录仍存在时报特定错误,前端升级为强确认后重试。
     // Directory rebind (broken-link repair): confirmExisting is driven by the
     // frontend's two-phase handshake — the first call omits the confirmation,
     // the backend rejects it with a typed marker while the old directory still

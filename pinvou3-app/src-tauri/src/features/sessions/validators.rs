@@ -222,7 +222,13 @@ mod workspace_roots_tests {
         // platform helper; this locks the lexical normalization).
         let spelled = format!("{}/./", real.display());
         let roots = validate_workspace_roots(vec![spelled]).expect("valid");
-        assert_eq!(roots, vec![real.canonicalize().unwrap()]);
+        // The expected side goes through the same projection as production
+        // (canonicalize + platform_compat_path), so Windows verbatim `\?\`
+        // prefixes are stripped on both sides of the comparison.
+        let expected = crate::platform::os::platform_compat_path(
+            &real.canonicalize().unwrap().to_string_lossy(),
+        );
+        assert_eq!(roots, vec![expected]);
     }
 
     #[test]

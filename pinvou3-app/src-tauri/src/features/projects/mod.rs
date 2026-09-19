@@ -20,4 +20,5 @@ mod tests;
 
 pub use store::{
     DeleteProjectReport, EnsureFolderOutcome, MoveSessionOutcome, Project, ProjectStore,
-    SessionAssignments, rebind_source_display, removed_roots,};
+    RebindRootsError, SessionAssignments, rebind_source_display, removed_roots,
+};

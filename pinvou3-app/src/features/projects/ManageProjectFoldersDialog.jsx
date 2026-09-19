@@ -8,6 +8,8 @@ import { useEffect, useRef, useState } from 'react';
 import { createPortal } from 'react-dom';
 import { AlertTriangle, FolderOpen, FolderPlus, PinIcon, Trash2, X } from '../../components/icons.jsx';
 import { isImeComposing } from '../../shared/ime-guard.mjs';
+import { useDialogFocusRestore } from '../../hooks/useDialogFocusRestore.js';
+import { useDialogFocusTrap } from '../../hooks/useDialogFocusTrap.js';
 import { manageFolderRows } from './manageFoldersState.js';
 
 const ManageProjectFoldersDialog = ({
@@ -33,6 +35,20 @@ const ManageProjectFoldersDialog = ({
   const onCloseRef = useRef(onClose);
   const dialogRef = useRef(null);
   const pendingRemoveRef = useRef(null);
+  // Escape grading needs the latest rename/busy state inside the window
+  // keydown listener: a focused rename input must collapse its own draft
+  // first, not close the whole panel, and a busy panel must not mis-close on
+  // a backdrop drag (review #484 M5). Mirrors use effects — refs are not
+  // written during render.
+  const renamingRef = useRef(null);
+  const backdropPressRef = useRef(false);
+  const busyRef = useRef(busy);
+  // Shared modal recipe (review #484 M5): Tab trap + focus capture/restore
+  // come from the shared hooks — the hand-rolled trap dropped focus when the
+  // busy state disabled every control, and focus was never restored on
+  // close. Only the Escape tiering stays in-component.
+  useDialogFocusTrap(dialogRef);
+  useDialogFocusRestore(dialogRef, null, null);
   // After a project switch / data refresh the confirm state may be stale (the
   // row is gone): derive it at render time instead of writing state.
   const rows = manageFolderRows(project);
@@ -42,6 +58,8 @@ const ManageProjectFoldersDialog = ({
   useEffect(() => {
     onCloseRef.current = onClose;
     pendingRemoveRef.current = activePendingRemove;
+    renamingRef.current = renaming;
+    busyRef.current = busy;
   });
 
   useEffect(() => {
@@ -49,22 +67,9 @@ const ManageProjectFoldersDialog = ({
     const onKey = (e) => {
       if (e.key === 'Escape' && !isImeComposing(e)) {
         e.preventDefault();
+        if (renamingRef.current !== null) { setRenaming(null); return; }
         if (pendingRemoveRef.current) { setPendingRemove(null); return; }
         onCloseRef.current();
-      } else if (e.key === 'Tab' && dialogRef.current) {
-        const focusables = dialogRef.current.querySelectorAll(
-          'button:not([disabled]), input:not([disabled]), [tabindex]:not([tabindex="-1"])',
-        );
-        if (!focusables.length) return;
-        const first = focusables[0];
-        const last = focusables[focusables.length - 1];
-        if (e.shiftKey && document.activeElement === first) {
-          e.preventDefault();
-          last.focus();
-        } else if (!e.shiftKey && document.activeElement === last) {
-          e.preventDefault();
-          first.focus();
-        }
       }
     };
     window.addEventListener('keydown', onKey);
@@ -92,7 +97,15 @@ const ManageProjectFoldersDialog = ({
       role="presentation"
       className="fixed inset-0 z-[200] flex items-center justify-center p-4"
       style={{ background: 'rgba(0,0,0,.34)', backdropFilter: 'blur(14px) saturate(140%)', WebkitBackdropFilter: 'blur(14px) saturate(140%)' }}
-      onClick={onClose}
+      onMouseDown={(e) => { backdropPressRef.current = e.target === e.currentTarget && !busyRef.current; }}
+      onMouseUp={(e) => {
+        // Two-phase close (MoveToProjectDialog idiom): a press that started
+        // on the backdrop AND ended there closes — a drag-select that begins
+        // inside the panel must not. Closing while busy would destroy the
+        // in-place retry context the panel deliberately preserves.
+        if (backdropPressRef.current && e.target === e.currentTarget) onCloseRef.current();
+        backdropPressRef.current = false;
+      }}
     >
       {/* biome-ignore lint/a11y/useKeyWithClickEvents: dialog body stops bubbling so backdrop close is not triggered accidentally; not interactive itself */}
       <div

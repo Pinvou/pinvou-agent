@@ -154,8 +154,9 @@ async fn take_session_if_still_idle<T>(
 /// residual gap between `get_or_spawn`'s in-lock activity refresh and the
 /// moment the guard is installed (a function return), and keeps the predicate
 /// conservative for any other caller that touches a runtime without going
-/// through the guard. The idle reaper is immune to the whole window because
-/// its predicate already requires `IDLE_EVICT_AFTER_SECS`.
+/// through the guard. The idle reaper mostly rides out the window: its
+/// predicate already requires `IDLE_EVICT_AFTER_SECS`, and since round-8
+/// should-fix 3 the rebind busy fence also reads `prompt_pending` directly.
 ///
 /// The cost is bounded and honest: a session active within the last second is
 /// reported as post-busy rather than reclaimed, and the user's retry (which
@@ -1225,11 +1226,12 @@ impl AcpPool {
         &self.agents
     }
 
-    /// Whether this ACP session has a prompt turn in flight. Operations that
-    /// rewrite workspace bindings (directory rebind) use this to reject busy
-    /// sessions (same semantics as EnginePool::is_turn_active, giving the
-    /// command layer one uniform fence). Sessions without a runtime (never
-    /// spawned) return false.
+    /// Whether this ACP session has a prompt turn in flight or admitted-but-
+    /// not-yet-started (`prompt_pending`, same predicate the rebind eviction
+    /// uses). Operations that rewrite workspace bindings (directory rebind)
+    /// use this to reject busy sessions (same semantics as
+    /// EnginePool::is_turn_active, giving the command layer one uniform
+    /// fence). Sessions without a runtime (never spawned) return false.
     pub async fn is_turn_active(&self, session_id: &str) -> bool {
         self.sessions
             .lock()
@@ -1240,6 +1242,10 @@ impl AcpPool {
                     || runtime
                         .configuring
                         .load(std::sync::atomic::Ordering::Acquire)
+                    || runtime
+                        .prompt_pending
+                        .load(std::sync::atomic::Ordering::Acquire)
+                        > 0
             })
     }
 

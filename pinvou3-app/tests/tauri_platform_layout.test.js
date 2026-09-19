@@ -119,12 +119,8 @@ assert.match(
   "the direct dev entry must route through the wrapper that generates the startup overlay",
 );
 
-const gitmodules = fs.readFileSync(path.join(repoRoot, ".gitmodules"), "utf8");
-assert.match(
-  gitmodules,
-  /\[submodule "private-runtimes\/windows"\][\s\S]*?update = none/,
-  "private Windows runtime must be explicit and excluded from automatic submodule updates",
-);
+// The private-runtimes/windows submodule pin (url + update = none) is
+// asserted by the stronger contract in windows_runtime_packaging_contract.test.js.
 assert.doesNotMatch(
   JSON.stringify({ common, windows }),
   /private-runtimes\/windows|target\/windows-runtime/,

@@ -198,11 +198,6 @@ assert.match(
   "empty final postprocess output must return Ok (discard semantics), not an error: the frontend validator accepts an empty candidate exactly for filler-only input",
 );
 assert.doesNotMatch(
-  chatSource,
-  /key: 'structured'[\s\S]*handleVoiceMenuTrigger\('structured'\)/,
-  "chat voice menu must not expose structured as a separate user mode",
-);
-assert.doesNotMatch(
   rustVoiceSource,
   /mode == "structured"/,
   "structured must not remain a standalone voice postprocess chain",

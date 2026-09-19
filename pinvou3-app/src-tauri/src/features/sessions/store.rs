@@ -97,8 +97,18 @@ impl SessionStore {
 
     /// Open the process-owned session store and recover tool histories left
     /// incomplete by a previous process, before any Engine is started.
+    ///
+    /// This is the ONLY production boot path, and the one place the legacy
+    /// binding-table migration belongs: the rebind crash-window contract
+    /// ("the legacy table is rewritten before the sidecars, so the next boot
+    /// heals forward") is only true if the boot migration actually runs here —
+    /// with the convergence missing, the first rebind would silently drop
+    /// legacy-table-only entries (round-8 review B1). Secondary stores opened
+    /// later via [`Self::boot`] must not repeat it.
     pub fn boot_for_process_startup() -> Result<Self> {
-        Self::boot_inner(true)
+        let store = Self::boot_inner(true)?;
+        store.migrate_legacy_session_workspaces();
+        Ok(store)
     }
 
     fn boot_inner(recover_interrupted_tools: bool) -> Result<Self> {

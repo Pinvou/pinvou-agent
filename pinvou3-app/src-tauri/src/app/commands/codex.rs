@@ -768,26 +768,26 @@ pub(crate) async fn create_codex_acp_session_with_workspace_binding(
             .map_err(|error| {
                 format!("create_codex_acp_session: invalid workspace_roots: {error:#}")
             })?;
-    // 项目通道(§9.3):创建即更新项目记忆主文件夹(后端同命令内写,免二次
-    // RPC;失败只记日志,不影响创建)。
-    if let (Some(project_id), Some(cwd)) = (project_id, project_workspace.clone()) {
-        if let Err(error) = projects.set_last_primary_root(&project_id, &cwd) {
-            eprintln!(
-                "[codex] create_codex_acp_session: record last_primary_root failed: {error:#}"
-            );
-        }
-    }
     verify_workspace_binding(project_workspace.as_deref(), workspace_verifier)?;
     if !backend.is_acp() {
-        return create_code_native_session(
-            project_workspace,
+        let metadata = create_code_native_session(
+            project_workspace.clone(),
             keychain,
             &pool,
             &store,
             &acp_pool,
             workspace_verifier,
         )
-        .await;
+        .await?;
+        // 项目通道(§9.3):创建即更新项目记忆主文件夹(后端同命令内写,免二次
+        // RPC;失败只记日志,不影响创建)。写入点在最后一个回滚点之后——失败的
+        // 创建不得留下无会话的项目记忆(评审 #484 MINOR)。
+        record_project_primary_root(
+            projects.inner(),
+            project_id.as_deref(),
+            project_workspace.as_deref(),
+        );
+        return Ok(metadata);
     }
     let metadata_workspace = project_workspace
         .clone()
@@ -850,7 +850,30 @@ pub(crate) async fn create_codex_acp_session_with_workspace_binding(
         rollback_created_code_session(&session.metadata.id, &store, &acp_pool);
         return Err(error);
     }
+    // 项目通道(§9.3):同上——最后一个回滚点之后才写项目记忆。
+    record_project_primary_root(
+        projects.inner(),
+        project_id.as_deref(),
+        project_workspace.as_deref(),
+    );
     Ok(session.metadata)
+}
+
+/// 项目通道记忆(§9.2/§9.3):把创建时选定的根记为项目记忆主文件夹。只在
+/// 会话创建完全落定后调用;记忆写失败只记日志(下次创建重试),绝不影响
+/// 创建结果。
+fn record_project_primary_root(
+    projects: &crate::features::projects::ProjectStore,
+    project_id: Option<&str>,
+    cwd: Option<&Path>,
+) {
+    if let (Some(project_id), Some(cwd)) = (project_id, cwd) {
+        if let Err(error) = projects.set_last_primary_root(project_id, cwd) {
+            eprintln!(
+                "[codex] create_codex_acp_session: record last_primary_root failed: {error:#}"
+            );
+        }
+    }
 }
 
 /// 创建“代码”模块原生（品悟 Engine）会话。

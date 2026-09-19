@@ -1886,6 +1886,12 @@ const ToolWelcomeCard = ({ toolId, _theme, t, onSend }) => {
       // from unbound A to bound B.
       async function resolveBindingForGate(sid) {
         if (!sid) return null;
+        // Web has no binding backend (the bridge stubs the query with null =
+        // unbound), so a web session that IS bound would silently skip the
+        // one-time YOLO gate. Fail closed for the GATE decision with the
+        // unknown-binding sentinel (treated as bound); the chip state stays
+        // untouched — web has no directory to display (round-8 should-fix 11).
+        if (isWeb) return CHAT_YOLO_GATE_UNKNOWN_BINDING;
         if (sid === activeSessionIdRef.current && sessionWorkspaceBinding !== null) return sessionWorkspaceBinding;
         if (Object.prototype.hasOwnProperty.call(workspaceBindingCacheRef.current, sid)) {
           return workspaceBindingCacheRef.current[sid];

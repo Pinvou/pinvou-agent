@@ -177,22 +177,10 @@ test('ensureSession：未选择工作区时载荷显式为 null（后端现状�
   assert.deepEqual(rt.createSessionArgs(), [{ workspacePath: null, workspaceRoots: null, projectId: null }]);
 });
 
-test('ensureSession：create_session 失败保留草稿选择以便重试', async () => {
-  const rt = loadSessionsFeature({
-    invoke(name) {
-      if (name === 'create_session') return Promise.reject(new Error('backend down'));
-      return Promise.resolve(name === 'list_sessions' || name === 'list_archived_sessions' ? [] : {});
-    },
-  });
-  rt.api.setDraftWorkspace('/work/project');
-  const id = await rt.api.ensureSession();
-  assert.equal(id, null, '创建失败返回 null');
-  assert.equal(rt.state.draftWorkspacePath, '/work/project', '失败路径必须保留选择');
-});
-
 test('ensureSession：仅路径失效失败清理最近列表；瞬时失败与中途改选不误伤', async () => {
   // Transient backend error: must not clear valid recents entries (the original
-  // implementation cleared on any create_session failure).
+  // implementation cleared on any create_session failure). The draft selection
+  // itself must also survive a failed create (retryable), asserted below.
   const rtTransient = loadSessionsFeature({
     invoke(name) {
       if (name === 'create_session') return Promise.reject(new Error('backend down'));

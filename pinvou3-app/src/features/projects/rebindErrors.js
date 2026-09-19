@@ -29,7 +29,7 @@ const REBIND_MARKER_MESSAGE_KEYS = {
   [REBIND_ROOTS_CONFLICT]: 'rebindRootsConflict',
 };
 
-/// `null` when the failure carries no marker (an unmapped backend error, which
+// `null` when the failure carries no marker (an unmapped backend error, which
 /// the dialog shows verbatim); otherwise the dialog state to apply.
 function classifyRebindError(error, t) {
   const message = String(error);

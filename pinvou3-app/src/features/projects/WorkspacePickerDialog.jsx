@@ -10,6 +10,8 @@ import { useEffect, useRef, useState } from 'react';
 import { createPortal } from 'react-dom';
 import { AlertTriangle, ChevronDown, FolderOpen, Layers, Search, Sparkles, X } from '../../components/icons.jsx';
 import { isImeComposing } from '../../shared/ime-guard.mjs';
+import { useDialogFocusRestore } from '../../hooks/useDialogFocusRestore.js';
+import { useDialogFocusTrap } from '../../hooks/useDialogFocusTrap.js';
 import { formatSessionDate } from '../../shared/date-utils.js';
 import { workspaceName } from '../../shared/workspace-recents.js';
 import { pickerPrimaryRoot, pickerProjectRoots, workspaceNoticeTone } from './workspacePickerState.js';
@@ -40,11 +42,20 @@ const WorkspacePickerDialog = ({
   // listener stays subscribed once per open instead of per render.
   const excludedFolderRef = useRef(excludedFolder);
   const onDismissExcludedRef = useRef(onDismissExcluded);
+  const backdropPressRef = useRef(false);
   useEffect(() => {
     onCloseRef.current = onClose;
     excludedFolderRef.current = excludedFolder || null;
     onDismissExcludedRef.current = onDismissExcluded;
   });
+
+  // Shared modal recipe (review #484 M5): the Tab trap and the focus
+  // capture/restore come from the shared hooks — the hand-rolled trap
+  // dropped focus when every control was busy-disabled and never restored
+  // focus on close. Only the Escape tiering stays in-component (child state
+  // backs out before the dialog closes).
+  useDialogFocusTrap(dialogRef);
+  useDialogFocusRestore(dialogRef, null, null);
 
   useEffect(() => {
     if (!open) return () => {};
@@ -59,22 +70,6 @@ const WorkspacePickerDialog = ({
           return;
         }
         onCloseRef.current();
-      } else if (e.key === 'Tab' && dialogRef.current) {
-        // Minimal focus trap (same idiom as MoveToProjectDialog): Tab cycles
-        // inside the dialog and never lands on the page behind the backdrop.
-        const focusables = dialogRef.current.querySelectorAll(
-          'button:not([disabled]), input:not([disabled]), [tabindex]:not([tabindex="-1"])',
-        );
-        if (!focusables.length) return;
-        const first = focusables[0];
-        const last = focusables[focusables.length - 1];
-        if (e.shiftKey && document.activeElement === first) {
-          e.preventDefault();
-          last.focus();
-        } else if (!e.shiftKey && document.activeElement === last) {
-          e.preventDefault();
-          first.focus();
-        }
       }
     };
     window.addEventListener('keydown', onKey);
@@ -200,7 +195,14 @@ const WorkspacePickerDialog = ({
       role="presentation"
       className="fixed inset-0 z-[200] flex items-center justify-center p-4"
       style={{ background: 'rgba(0,0,0,.34)', backdropFilter: 'blur(14px) saturate(140%)', WebkitBackdropFilter: 'blur(14px) saturate(140%)' }}
-      onClick={onClose}
+      onMouseDown={(e) => { backdropPressRef.current = e.target === e.currentTarget; }}
+      onMouseUp={(e) => {
+        // Two-phase close (MoveToProjectDialog idiom): a press that started
+        // on the backdrop AND ended there closes — a drag-select that begins
+        // inside the panel must not.
+        if (backdropPressRef.current && e.target === e.currentTarget) onCloseRef.current();
+        backdropPressRef.current = false;
+      }}
     >
       {/* biome-ignore lint/a11y/useKeyWithClickEvents: dialog body stops bubbling so backdrop close is not triggered accidentally; not interactive itself */}
       <div
@@ -223,7 +225,12 @@ const WorkspacePickerDialog = ({
             <X size={16} />
           </button>
         </div>
-        {!webOnly && filtered.length > 6 && (
+        {/* Keyed on the UNFILTERED row count: with a >6-row list the search
+            field must stay mounted while a query filters the body down —
+            otherwise typing past the threshold unmounts the input with the
+            query still set, leaving a filtered list with no way to clear it
+            and dropping focus to body (review #484 M5). */}
+        {!webOnly && (Array.isArray(rows) ? rows.length : 0) > 6 && (
           <div className="px-4 pb-2">
             <div className="flex h-9 items-center gap-2 rounded-full px-3 bg-[#EAECEF] dark:bg-[#303134]">
               <Search size={14} className="shrink-0 text-[#5F6368] dark:text-[#9AA0A6]" />

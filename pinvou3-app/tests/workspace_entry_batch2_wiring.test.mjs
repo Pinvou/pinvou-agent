@@ -44,10 +44,15 @@ test('keychain chip + align wiring (F5)', () => {
   assert.match(codexView, /refreshSessions\(\)/, 'codex 对齐后刷新');
   assert.match(chatView, /describeKeychain\(activeItem && activeItem\.workspace_roots\)/, 'chat chip 数据源');
   assert.match(codexView, /describeKeychain\(activeSession\.workspace_roots\)/, 'codex chip 数据源');
-  // chat 车道 chip 的 busy 是真实回合 flag(对齐 codex 车道),且对齐结果的
-  // 非 applied/no_change 出口不静默。
-  assert.match(chatView, /<WorkspaceKeychainChip[\s\S]*?busy=\{busy\}/, 'chat chip busy 用真实 flag');
-  assert.match(chatView, /else if \(onNotify\) onNotify\(t\.uiKeychain\.alignFailed\)/, 'chat 对齐未知出口兜底');
+  // The chat-lane chip's busy flag is the real in-turn flag (parity with the
+  // codex lane), and align outcomes other than applied/no_change are not
+  // silent. M4: the host must actually pass onNotify, or every guard in
+  // either lane stays a no-op — pin the wiring at both mount points.
+  assert.match(chatView, /<WorkspaceKeychainChip[\s\S]*?busy=\{busy\}/, 'chat chip busy uses the real flag');
+  assert.match(chatView, /else if \(onNotify\) onNotify\(t\.uiKeychain\.alignFailed\)/, 'chat align fallback exit is not silent');
+  const main = read('src', 'app', 'main.jsx');
+  assert.match(main, /onNotify: setSettingsToast/, 'host passes onNotify via chatViewBaseProps');
+  assert.match(main, /onNotify=\{setSettingsToast\}/, 'host passes onNotify to CodexAcpView');
   // codex 车道每 render 只算一次 describeKeychain(memo)。
   assert.match(codexView, /useMemo\(\s*\(\) => \(activeSession \? describeKeychain/, 'codex chip 派生 memo 化');
 });

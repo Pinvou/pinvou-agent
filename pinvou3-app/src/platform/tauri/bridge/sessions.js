@@ -655,8 +655,13 @@
 
   // Effective in draft state only; path = null means back to the default
   // (session-private directory).
+  // Returns whether the draft was staged: an active session owns the
+  // composer's binding, so a call during one is a documented silent no-op.
+  // The container reads this to keep the grant notice honest (a toast for a
+  // staging that never happened would claim access the session does not
+  // have; review #484 MINOR).
   function setDraftWorkspace(path, extras) {
-    if (state.activeSessionId) return;
+    if (state.activeSessionId) return false;
     state.draftWorkspacePath = path || null;
     state.draftProjectId = (extras && extras.projectId) || null;
     state.draftWorkspaceRoots = (extras && Array.isArray(extras.workspaceRoots))
@@ -669,6 +674,7 @@
     if (!state.draftWorkspacePath) state.pendingDraftMode = null;
     state.modeState = currentDraftModeState();
     notify();
+    return true;
   }
   // System directory picker: on success, records the path in the recents list,
   // writes it back to the draft selection, and returns the selected path;

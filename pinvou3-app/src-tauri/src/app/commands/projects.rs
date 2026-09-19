@@ -14,7 +14,7 @@ use tauri::{AppHandle, Emitter, State};
 use crate::features::codex_acp::{AcpPool, CodexWorkspaceKind, SessionAgentStore};
 use crate::features::projects::{
     DeleteProjectReport, EnsureFolderOutcome, MoveSessionOutcome, Project, ProjectStore,
-    SessionAssignments, removed_roots,
+    RebindRootsError, SessionAssignments, removed_roots,
 };
 use crate::features::sessions::SessionStore;
 
@@ -166,9 +166,18 @@ pub async fn update_project(
     drop(_fence);
     // 记住的主文件夹(§9.2):显式补丁,必须是 roots 成员(由 store 校验)。
     let project = match last_primary_root {
-        Some(root) => store
-            .set_last_primary_root(&project_id, &root)
-            .map_err(|e| format!("update_project({project_id}) primary root: {e:#}"))?,
+        Some(root) => match store.set_last_primary_root(&project_id, &root) {
+            Ok(updated) => updated,
+            Err(e) => {
+                // The roots replacement (when present) already persisted: the
+                // frontend must observe it even though the command fails, so
+                // the event goes out before the error does (review #484
+                // MINOR — a half-committed write must not leave a stale
+                // sidebar).
+                emit_project_event(&app, "projects:list_changed", "updated");
+                return Err(format!("update_project({project_id}) primary root: {e}"));
+            }
+        },
         None => project,
     };
     let count = store.assigned_session_ids(&project_id).len();
@@ -245,7 +254,7 @@ pub async fn delete_project(
         .delete_project(&project_id, &expel_session_ids)
         .map_err(|e| format!("delete_project({project_id}): {e:#}"))?;
     emit_project_event(&app, "projects:list_changed", "deleted");
-    Ok(())
+    Ok(report)
 }
 
 /// 移动会话归属(纯归档操作,运行中的会话同样允许)。
@@ -484,7 +493,7 @@ pub(crate) fn align_session_keychain(
         .map_err(|e| format!("align_session_to_project: {e:#}"))?;
     if !session_roots.bound {
         return Err(
-            "ALIGN_NO_WORKSPACE: 临时会话没有绑定工作区，无法对齐到项目 (session has no bound workspace)"
+            "ALIGN_NO_WORKSPACE: session has no bound workspace (temporary sessions cannot align)"
                 .to_string(),
         );
     }
@@ -504,7 +513,7 @@ pub(crate) fn align_session_keychain(
             .is_none()
     {
         return Err(
-            "ALIGN_NO_WORKSPACE: 临时会话没有绑定工作区，无法对齐到项目 (session has no bound workspace)"
+            "ALIGN_NO_WORKSPACE: session has no bound workspace (temporary sessions cannot align)"
                 .to_string(),
         );
     }
@@ -530,8 +539,7 @@ pub(crate) fn align_session_keychain(
 
     if busy {
         return Err(
-            "ALIGN_BUSY: 会话有活动回合，对齐被拒绝，请空闲后重试 (active turn in progress)"
-                .to_string(),
+            "ALIGN_BUSY: an active turn is in progress, retry when the session is idle".to_string(),
         );
     }
 
@@ -652,8 +660,11 @@ fn reject_nested_rebind_target(from: &Path, to_display: &Path) -> Result<(), Str
 /// matches human copy (finding 11).
 fn require_confirm_existing(from: &Path, confirm_existing: Option<bool>) -> Result<(), String> {
     if from.is_dir() && !confirm_existing.unwrap_or(false) {
+        // Marker hygiene (round-8 should-fix 2): the tail after the marker is
+        // diagnostics prose and crosses logs / the web bridge — keep it
+        // English, like the other six markers.
         return Err(
-            "REBIND_OLD_ROOT_EXISTS: 原目录仍存在，需在界面确认后重试 (original folder still exists)"
+            "REBIND_OLD_ROOT_EXISTS: original folder still exists; confirm in the dialog to proceed"
                 .to_string(),
         );
     }
@@ -910,7 +921,8 @@ pub async fn rebind_workspace_root(
         .collect();
     let mut rebound_session_ids = Vec::new();
     let mut failed_session_ids = Vec::new();
-    for (session_id, bound_path) in metadata_rebind_targets(&affected, &plain_rebind.rebound).iter()
+    for (session_id, bound_path) in
+        metadata_rebind_targets(&affected, &prefix_outcome.affected, &plain_rebind.rebound).iter()
     {
         let Some(new_path) = SessionAgentStore::rebind_target_path(bound_path, &from, &to_display)
         else {
@@ -1017,9 +1029,17 @@ pub async fn rebind_workspace_root(
     // localized conflict marker and a dialog that stays open with a retry, and
     // a rerun converges once the overlap is resolved, but the per-session
     // detail of this run is not reported alongside the error.
-    let affected_project_ids = store
-        .rebind_roots(&from, &to_display)
-        .map_err(|e| format!("REBIND_ROOTS_CONFLICT: {e:#}"))?;
+    // Only a genuine overlap conflict carries the localized conflict marker
+    // (round-8 review M3): persist and other infrastructure failures must
+    // surface as ordinary errors, or the user is told to resolve a
+    // "conflict" that no resolution fixes.
+    let affected_project_ids =
+        store
+            .rebind_roots(&from, &to_display)
+            .map_err(|error| match error {
+                RebindRootsError::Overlap(context) => format!("REBIND_ROOTS_CONFLICT: {context:#}"),
+                RebindRootsError::Other(context) => format!("rebind_workspace_root: {context:#}"),
+            })?;
 
     // Post-pass fence hits that the pre-rewrite snapshot never saw (review
     // #463 round-8 MINOR-1): a session created under `from` by a concurrent
@@ -1111,11 +1131,10 @@ pub async fn rebind_workspace_root(
     // retry nothing is left to rewrite and the rebound set is empty while the
     // stale table is still there (#464 round-6 blocking 1).
     if plain_rebind.legacy_sync_failed {
-        for session_id in &plain_rebind.legacy_resurrection_ids {
-            if !failed_session_ids.contains(session_id) {
-                failed_session_ids.push(session_id.clone());
-            }
-        }
+        merge_legacy_resurrections_into_failures(
+            &mut failed_session_ids,
+            &plain_rebind.legacy_resurrection_ids,
+        );
     }
     Ok(RebindWorkspaceReport {
         rebound_session_ids,
@@ -1242,25 +1261,49 @@ fn plain_lane_fence_rescan(sessions: &SessionStore, from: &Path, final_stale: &m
     }
 }
 
-/// Metadata replay targets for one rebind run: the pre-rewrite snapshot first
-/// (it already contains every plain-chat binding under `from` — the union
-/// happens at snapshot time, projects.rs `affected`), then the plain batch's
-/// rebound set ONLY for entries the snapshot never contained (a chat
-/// created+bound while the run was in flight). Deduplication is by session id
-/// against the FULL snapshot, not the codex lane's rebound set: the two lanes
-/// are structurally blind to each other, so keying the filter on the codex
-/// outcome would run the loop body twice for every plain chat — `set_workspace`
-/// twice and, worse, the id twice in `rebound_session_ids` (no dedup
-/// downstream), so the dialog would claim "Rebound 2N" for N plain chats
-/// (round-8 review finding 1).
+/// Round-8 should-fix 8: the round-6-B1 user-facing contract — when the
+/// legacy global table could not be synced, every session that table would
+/// resurrect at the next boot joins the report's failure list (deduplicated),
+/// so the dialog stays open with an honest retry instead of closing on a
+/// false success. Extracted from the command body for testability: the body
+/// needs the Tauri harness, this merge is pure.
+fn merge_legacy_resurrections_into_failures(
+    failed_session_ids: &mut Vec<String>,
+    legacy_resurrection_ids: &[String],
+) {
+    for session_id in legacy_resurrection_ids {
+        if !failed_session_ids.contains(session_id) {
+            failed_session_ids.push(session_id.clone());
+        }
+    }
+}
+
+/// Metadata replay targets for one rebind run: the pre-rewrite snapshot
+/// first (it already contains every binding under `from` visible before the
+/// rewrites started — the union happens at snapshot time, projects.rs
+/// `affected`), then the codex lane's rebound set ONLY for entries the
+/// snapshot never contained (a session created+bound under `from` between
+/// the snapshot and the codex rewrite — round-8 review M1: it was rewritten
+/// but neither metadata-synced nor reported, invisible to the post-pass
+/// fence because its record no longer sits under `from`), then the plain
+/// batch's rebound set under the same rule. Deduplication is by session id
+/// against the FULL snapshot (and the arms accumulated before each), not the
+/// codex lane's rebound set: the lanes are structurally blind to each other,
+/// so keying a filter on the codex outcome would run the loop body twice for
+/// every plain chat — `set_workspace` twice and, worse, the id twice in
+/// `rebound_session_ids` (no dedup downstream), so the dialog would claim
+/// "Rebound 2N" for N plain chats (round-8 review finding 1).
 fn metadata_rebind_targets(
     affected: &[(String, PathBuf)],
+    codex_rebound: &[(String, PathBuf)],
     plain_rebound: &[(String, PathBuf)],
 ) -> Vec<(String, PathBuf)> {
     let mut targets = affected.to_vec();
-    for entry in plain_rebound {
-        if !targets.iter().any(|(id, _)| id == &entry.0) {
-            targets.push(entry.clone());
+    for arm in [codex_rebound, plain_rebound] {
+        for entry in arm {
+            if !targets.iter().any(|(id, _)| id == &entry.0) {
+                targets.push(entry.clone());
+            }
         }
     }
     targets
@@ -1286,6 +1329,41 @@ mod tests {
         assert!(object.contains_key("assignments"));
         assert!(object.contains_key("never_materialize_roots"));
     }
+
+    /// Real stores under one isolated home: the align kernel reads
+    /// `session_roots`/bindings through SessionStore, the agent lane through
+    /// SessionAgentStore, and project resolution through ProjectStore, so the
+    /// outcome lattice can only be pinned against the real trio.
+    fn align_fixtures() -> (
+        tempfile::TempDir,
+        std::sync::MutexGuard<'static, ()>,
+        SessionStore,
+        SessionAgentStore,
+        ProjectStore,
+    ) {
+        let guard = crate::platform::paths::tests::ENV_LOCK
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        let tmp = tempfile::tempdir().expect("tempdir");
+        let home = tmp.path().join("home");
+        std::fs::create_dir_all(&home).expect("create home");
+        // SAFETY: platform::paths::tests::ENV_LOCK is held; env writes are
+        // serialized in-process.
+        unsafe { std::env::set_var("PINVOU3_HOME", &home) };
+        let sessions =
+            SessionStore::boot_with_scheduled_root(home.join("scheduled")).expect("session store");
+        let agents = SessionAgentStore::load().expect("agent store");
+        let projects = ProjectStore::from_paths(home.join("projects-store.json"));
+        // Production parity (lib.rs): the plain-lane roots authority resolves
+        // agent-record bindings too — without this the align kernel would
+        // see a native code session as unbound.
+        let resolver_agents = agents.clone();
+        sessions.set_execution_root_resolver(std::sync::Arc::new(move |session_id: &str| {
+            resolver_agents.get(session_id).workspace_path.clone()
+        }));
+        (tmp, guard, sessions, agents, projects)
+    }
+
     #[test]
     fn rebind_from_rejects_empty_and_root() {
         assert!(
@@ -1308,6 +1386,31 @@ mod tests {
     }
 
     #[test]
+    fn merge_legacy_resurrections_dedupes_into_failures() {
+        let mut failed = vec!["already-failed".to_string()];
+        merge_legacy_resurrections_into_failures(
+            &mut failed,
+            &[
+                "resurrected-a".to_string(),
+                "already-failed".to_string(),
+                "resurrected-b".to_string(),
+            ],
+        );
+        assert_eq!(
+            failed,
+            vec![
+                "already-failed".to_string(),
+                "resurrected-a".to_string(),
+                "resurrected-b".to_string()
+            ]
+        );
+        // An empty resurrection set (a table this process never parsed) adds
+        // nothing — legacy_sync_failed alone still failed the run upstream.
+        merge_legacy_resurrections_into_failures(&mut failed, &[]);
+        assert_eq!(failed.len(), 3);
+    }
+
+    #[test]
     fn rebind_from_rejects_relative_paths() {
         // review #463 minor: a relative `from` diverges the storage lanes
         // (the projects lane absolutizes it through ancestor resolution, the
@@ -1317,33 +1420,54 @@ mod tests {
     }
 
     #[test]
-    fn metadata_rebind_targets_dedupes_plain_rebound_against_full_snapshot() {
-        // Round-8 finding 1: the snapshot already contains every plain-chat
-        // binding under `from`; deduping the plain arm against the codex
-        // rebound set (structurally blind to plain chats) would double-report
-        // every pure plain chat. Only entries absent from the SNAPSHOT may
-        // join from the plain arm — in practice, bindings created while the
-        // run was in flight.
+    fn metadata_rebind_targets_dedupes_late_arms_against_full_snapshot() {
+        // Round-8 finding 1 + M1: the snapshot already contains every binding
+        // under `from` visible before the rewrites; the codex and plain arms
+        // contribute ONLY entries the snapshot never contained. Deduping the
+        // plain arm against the codex rebound set (structurally blind to
+        // plain chats) would double-report every pure plain chat, and
+        // dropping the codex arm entirely would lose the rewritten newcomer
+        // (metadata never synced, id never reported).
         let affected = vec![
             ("code".to_string(), PathBuf::from("/from")),
             ("plain-in-snapshot".to_string(), PathBuf::from("/from/sub")),
+        ];
+        let codex_rebound = vec![
+            // Created+bound between the snapshot and the codex rewrite (M1):
+            // absent from the snapshot, joins with its translated path.
+            ("codex-newcomer".to_string(), PathBuf::from("/from/deep")),
+            // Snapshot member the codex lane rewrote: must NOT repeat.
+            ("code".to_string(), PathBuf::from("/from")),
         ];
         let plain_rebound = vec![
             // Already in the snapshot: must NOT repeat (would double-report).
             ("plain-in-snapshot".to_string(), PathBuf::from("/to/sub")),
             // Created+bound during the run: absent from the snapshot, joins.
             ("midrun".to_string(), PathBuf::from("/to/midrun")),
+            // Already contributed by the codex arm: the later arm must not
+            // repeat it either.
+            ("codex-newcomer".to_string(), PathBuf::from("/to/deep")),
         ];
-        let targets = metadata_rebind_targets(&affected, &plain_rebound);
+        let targets = metadata_rebind_targets(&affected, &codex_rebound, &plain_rebound);
         let ids: Vec<&str> = targets.iter().map(|(id, _)| id.as_str()).collect();
-        assert_eq!(ids, vec!["code", "plain-in-snapshot", "midrun"]);
+        assert_eq!(
+            ids,
+            vec!["code", "plain-in-snapshot", "codex-newcomer", "midrun"]
+        );
         // The snapshot's own path wins for duplicated ids: the loop's
-        // rebind_target_path translates it, while the plain arm's value is
+        // rebind_target_path translates it, while a rebound arm's value is
         // already the `to` path (as-is arm) — keeping the snapshot entry
         // preserves the retry semantics documented for the snapshot.
         assert_eq!(
             targets.iter().find(|(id, _)| id == "plain-in-snapshot"),
             Some(&("plain-in-snapshot".to_string(), PathBuf::from("/from/sub"))),
+        );
+        // The codex newcomer keeps its pre-rewrite path so the loop's
+        // rebind_target_path translates it (or passes it through as-is when
+        // the lane already recorded the translated form).
+        assert_eq!(
+            targets.iter().find(|(id, _)| id == "codex-newcomer"),
+            Some(&("codex-newcomer".to_string(), PathBuf::from("/from/deep"))),
         );
     }
 
