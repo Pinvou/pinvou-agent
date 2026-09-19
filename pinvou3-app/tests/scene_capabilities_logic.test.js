@@ -5,13 +5,22 @@ const path = require('path');
 const vm = require('vm');
 
 const logicPath = path.join(__dirname, '..', 'src', 'features', 'chat', 'scene-capabilities.js');
+// scene-capabilities derives its definition keys from the canonical scene
+// registry (scene-registry.js); concatenate it (imports stripped) so the vm
+// sandbox resolves the same bindings the bundler provides.
+const sceneRegistryPath = path.join(__dirname, '..', 'src', 'features', 'chat', 'scene-registry.js');
+const sceneRegistryCode = fs.readFileSync(sceneRegistryPath, 'utf8')
+  .replace(/\bexport\s+\{[^}]+\};?/g, '')
+  .replace(/\bexport\s+/g, '');
 const code = fs.readFileSync(logicPath, 'utf8')
+  .replace(/^import[\s\S]*?from '\.\/scene-registry\.js';\r?\n/m, '')
   .replace(/\bexport\s+\{[^}]+\};?/g, '')
   .replace(/\bexport\s+/g, '');
 
 const ctx = {};
 vm.createContext(ctx);
-vm.runInContext(`${code}
+vm.runInContext(`${sceneRegistryCode}
+${code}
 this.canPrepareSceneCapabilities = canPrepareSceneCapabilities;
 this.requiredCapabilitiesForMeta = requiredCapabilitiesForMeta;`, ctx, { filename: logicPath });
 

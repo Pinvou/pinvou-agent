@@ -5,8 +5,11 @@ const vm = require('vm');
 
 const source = fs.readFileSync(path.join(__dirname, '..', 'src', 'platform', 'tauri', 'bridge', 'chat.js'), 'utf8');
 const chatViewSource = fs.readFileSync(path.join(__dirname, '..', 'src', 'features', 'chat', 'ChatView.jsx'), 'utf8');
-const tauriBridgeSource = fs.readFileSync(path.join(__dirname, '..', 'src', 'platform', 'tauri', 'bridge.js'), 'utf8');
-const webBridgeSource = fs.readFileSync(path.join(__dirname, '..', 'src', 'platform', 'web', 'bridge.js'), 'utf8');
+const tauriBridgeSource = fs.readFileSync(path.join(__dirname, '..', 'src', 'platform', 'tauri', 'bridge.js'), 'utf8') +
+  fs.readFileSync(path.join(__dirname, '..', 'src', 'shared', 'bridge-shared-helpers.js'), 'utf8');
+const webBridgeSource = fs.readFileSync(path.join(__dirname, '..', 'src', 'platform', 'web', 'bridge.js'), 'utf8') +
+  // normalizePinvouScene 已随 dead-code dedup 移入共享 payload；正则 pin 需把 payload 一并纳入。
+  fs.readFileSync(path.join(__dirname, '..', 'src', 'shared', 'bridge-shared-helpers.js'), 'utf8');
 const sessionsRustSource = fs.readFileSync(path.join(__dirname, '..', 'src-tauri', 'src', 'app', 'commands', 'sessions.rs'), 'utf8');
 
 // 提取两个 bridge 里真实的 normalizePinvouScene 白名单正则源码，供测试复用，
@@ -26,6 +29,7 @@ function createFeature(options = {}) {
     window: { __PINVOU_TAURI_BRIDGE_FEATURES__: {} },
     console,
   };
+  vm.runInNewContext(fs.readFileSync(path.join(__dirname, '..', 'src', 'shared', 'bridge-shared-helpers.js'), 'utf8'), sandbox, { filename: 'shared/bridge-shared-helpers.js' });
   vm.runInNewContext(source, sandbox, { filename: 'bridge/chat.js' });
   const factory = sandbox.window.__PINVOU_TAURI_BRIDGE_FEATURES__.chat;
   const state = {
@@ -264,13 +268,13 @@ function rec(name, pass, detail = '') {
   rec('三个场景白名单(Tauri/Web/Rust)必须同时登记 work:personal-workbench，否则 sidecar 重载后会丢标签',
     tauriNormalizeSceneRegexSource.includes('work:personal-workbench') &&
       webNormalizeSceneRegexSource.includes('work:personal-workbench') &&
-      /Some\("work:personal-workbench"\) => "work:personal-workbench"/.test(sessionsRustSource),
+      /Some\(scene @ \("work:document-writing" \| "work:personal-workbench"\)\)/.test(sessionsRustSource),
     'normalize allowlist must register work:personal-workbench across tauri bridge, web bridge and Rust backend');
 
   rec('三个场景白名单(Tauri/Web/Rust)必须同时登记 design:ppt，否则 sidecar 重载后会丢标签',
     tauriNormalizeSceneRegexSource.includes('design:ppt') &&
       webNormalizeSceneRegexSource.includes('design:ppt') &&
-      /Some\("design:ppt"\) => "design:ppt"/.test(sessionsRustSource),
+      /Some\(scene @ \("design:poster" \| "design:data-visualization" \| "design:ppt"\)\)/.test(sessionsRustSource),
     'normalize allowlist must register design:ppt across tauri bridge, web bridge and Rust backend');
 
   const failed = results.filter(item => !item.pass);

@@ -1802,7 +1802,6 @@ impl AppEngine {
     ///
     /// 不复用 `spawn_for_session` 是因为它强依赖 Tauri AppHandle (`spawn_event_forwarder`
     /// 里 `app.emit(...)`),测试场景没有 webview/event 系统跑不起来。
-    #[allow(dead_code)] // L1 runner 接入前临时 unused
     pub async fn spawn_headless(bridge: Pinvou3Bridge) -> Result<Self> {
         let mut engine_config = bridge.build_engine_config();
         // The headless engine carries the same hard-deny ruleset as real
@@ -2122,14 +2121,8 @@ impl AppEngine {
     /// 编辑/重发最后一轮 user 消息（点 ✏️ 编辑或 🔄 重发按钮）。
     /// 上游 [`Op::EditLastTurn`] 行为：砍掉 session 末尾最近的 user 消息及之后
     /// 所有消息，然后用 `new_message` 当成新 user 消息重新发送。
-    pub async fn edit_last_turn(&self, new_message: String) -> Result<()> {
-        self.send_turn_op(Op::EditLastTurn {
-            new_message,
-            submission_id: Some(self.bridge.next_submission_id()),
-        })
-        .await
-    }
-
+    /// 命令路径统一走 [`Self::edit_last_turn_reserved`]（turn 预约内提交，
+    /// 避免与重建/回收竞态）。
     pub(crate) async fn edit_last_turn_reserved(
         &self,
         new_message: String,
@@ -3884,32 +3877,12 @@ mod live_tests {
     use super::*;
     use crate::features::monitor::SelfMetrics;
     use crate::features::sessions::SerializableMode;
+    use crate::platform::test_support::EnvRestore;
 
-    /// RAII 恢复 env 原值(本模块 #[ignore] 真机测试写 DEEPSEEK_*/PINVOU3_* env,
-    /// 须保证退出时恢复——含 panic 路径,避免 `cargo test -- --ignored` 合跑时污染)。
-    struct EnvRestore {
-        saved: Vec<(&'static str, Option<String>)>,
-    }
-
-    impl EnvRestore {
-        fn snapshot(names: &'static [&'static str]) -> Self {
-            let saved = names.iter().map(|&n| (n, std::env::var(n).ok())).collect();
-            EnvRestore { saved }
-        }
-    }
-
-    impl Drop for EnvRestore {
-        fn drop(&mut self) {
-            for (name, val) in &self.saved {
-                match val {
-                    // SAFETY: platform::paths::tests::ENV_LOCK held; env writes are serialized.
-                    Some(v) => unsafe { std::env::set_var(name, v) },
-                    // SAFETY: platform::paths::tests::ENV_LOCK held; env writes are serialized.
-                    None => unsafe { std::env::remove_var(name) },
-                }
-            }
-        }
-    }
+    // RAII 恢复 env 原值的要求（本模块 #[ignore] 真机测试写 DEEPSEEK_*/PINVOU3_*
+    // env,须保证退出时恢复——含 panic 路径,避免 `cargo test -- --ignored` 合跑时
+    // 污染）由 `platform::test_support::EnvRestore` 承担（快照为 OsString，
+    // 恢复语义与原 String 版一致），与 engine_pool / multiagent 回归测试共用。
 
     /// 真机集成(#[ignore]):打真 vLLM 跑一轮,drain rx_event 时**照 forwarder 四臂
     /// 原样喂 SelfMetrics**,证明真实事件流(TurnStarted→MessageDelta→TurnComplete+真
@@ -3928,7 +3901,7 @@ mod live_tests {
         let _lock = crate::bridge::paths::tests::ENV_LOCK
             .lock()
             .unwrap_or_else(|p| p.into_inner());
-        let _restore = EnvRestore::snapshot(&[
+        let _restore = EnvRestore::capture(&[
             "DEEPSEEK_ALLOW_INSECURE_HTTP",
             "DEEPSEEK_FORCE_HTTP1",
             "PINVOU3_SKIP_WARMUP",

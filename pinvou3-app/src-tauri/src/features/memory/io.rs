@@ -84,15 +84,17 @@ pub fn snapshot_path() -> PathBuf {
     paths::user_memory_snapshot()
 }
 
-pub fn organize_history_path() -> PathBuf {
+// Internal-only path accessors: no command path or integration test reaches
+// them through the crate root, so they stay crate-private.
+pub(crate) fn organize_history_path() -> PathBuf {
     paths::user_memory_organize_history()
 }
 
-pub fn pending_memory_path() -> PathBuf {
+pub(crate) fn pending_memory_path() -> PathBuf {
     paths::user_memory_pending()
 }
 
-pub fn never_memory_path() -> PathBuf {
+pub(crate) fn never_memory_path() -> PathBuf {
     paths::user_memory_never()
 }
 
@@ -253,14 +255,6 @@ pub fn load_profile() -> io::Result<MemoryProfile> {
     }
 }
 
-pub fn save_profile(profile: &MemoryProfile) -> io::Result<()> {
-    let _guard = write_lock().lock();
-    let mut normalized = profile.clone();
-    normalized.normalize();
-    let path = profile_path();
-    write_json_atomic(&path, &normalized)
-}
-
 pub fn update_profile(patch: ProfilePatch) -> io::Result<MemoryProfile> {
     let _guard = write_lock().lock();
     let mut profile = load_profile()?;
@@ -308,29 +302,6 @@ pub fn load_recent_work() -> io::Result<Vec<RecentWorkItem>> {
         }
     }
     Ok(out)
-}
-
-pub fn archive_recent_work(id: &str) -> io::Result<bool> {
-    let _guard = write_lock().lock();
-    let id = clean_id(id);
-    let now = Utc::now().to_rfc3339();
-    let mut items = load_recent_work()?;
-    let mut changed = false;
-    for item in &mut items {
-        if item.id == id && item.status != "archived" {
-            item.status = "archived".to_string();
-            item.updated_at = now.clone();
-            changed = true;
-        }
-    }
-    if changed {
-        write_recent_work_unlocked(&items)?;
-    }
-    if !changed {
-        changed = archive_timed_memory_unlocked("current_focus", &id)?
-            || archive_timed_memory_unlocked("recent_activity", &id)?;
-    }
-    Ok(changed)
 }
 
 fn resolve_topic_authorities<T: Clone>(
@@ -943,26 +914,6 @@ pub(super) fn upsert_timed_memory_locked(
 ) -> io::Result<TimedMemoryItem> {
     let _guard = write_lock().lock();
     upsert_timed_memory_unlocked(kind, topic, content, source, ttl_days, confidence)
-}
-
-pub(super) fn archive_timed_memory_unlocked(kind: &str, id: &str) -> io::Result<bool> {
-    let kind = normalize_timed_memory_kind(kind);
-    let id = clean_id(id);
-    let path = timed_memory_path(&kind);
-    let now = Utc::now().to_rfc3339();
-    let mut items = load_timed_memory_file(&path, &kind)?;
-    let mut changed = false;
-    for item in &mut items {
-        if item.id == id && item.status != "archived" {
-            item.status = "archived".to_string();
-            item.updated_at = now.clone();
-            changed = true;
-        }
-    }
-    if changed {
-        write_timed_memory_file(&path, &items, &kind)?;
-    }
-    Ok(changed)
 }
 
 pub fn update_timed_memory(

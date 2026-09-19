@@ -197,7 +197,6 @@ command_protocol!(
         "kb_search",
         "kb_stats",
         "kb_model_status",
-        "kb_model_cancel",
         "kb_model_load_after_first_frame",
         "kb_model_download"
     ]
@@ -249,7 +248,6 @@ command_protocol!(
         "confirm_pending_memory",
         "ignore_pending_memory",
         "never_pending_memory",
-        "archive_recent_work_memory",
         "delete_memory_preference",
         "update_memory_preference",
         "update_work_context_memory",
@@ -418,7 +416,6 @@ command_protocol!(
         "rename_session",
         "set_session_pinned",
         "set_session_archived",
-        "save_session_messages",
         "save_session_artifacts",
         "save_session_pinvou_scene_events",
         "get_session_pinvou_scene_events",

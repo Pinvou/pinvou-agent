@@ -36,4 +36,14 @@ const _ARTIFACT_FMT = {
       return 'other';
     };
 
-export { _ARTIFACT_FMT, _artifactKind };
+// 注入到 office→HTML 预览 iframe 末尾:LibreOffice 导出的表格 border=0、字号 x-small,
+// 这里补网格线/字号/单元格换行,让 xlsx 读起来像表格。放在文档后 → 同特异性下后定义胜出。
+const OFFICE_HTML_STYLE = '<style>'
+  + 'body{margin:14px;background:#fff;color:#1f1f1f;font-family:system-ui,-apple-system,"Segoe UI",sans-serif;}'
+  + 'table{border-collapse:collapse;width:auto;max-width:100%;}'
+  + 'td,th{border:1px solid #d4d7dc;padding:5px 9px;font-size:13px!important;vertical-align:top;max-width:460px;overflow-wrap:anywhere;}'
+  + 'tr:first-child td{background:#eef2f8;font-weight:600;}'
+  + 'img{max-width:100%;height:auto;}'
+  + '</style>';
+
+export { _ARTIFACT_FMT, _artifactKind, OFFICE_HTML_STYLE };

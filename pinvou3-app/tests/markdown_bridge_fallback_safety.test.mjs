@@ -88,7 +88,12 @@ function buildWebBridgeContext() {
 // ── Case 1: 真实 web/bridge.js，两个渲染器都不存在 → 最末级 fallback 必须转义 ──
 {
   const { context, windowObject } = buildWebBridgeContext();
-  // 刻意不安装 PinvouMarkdownRenderer / PinvouMarkdownBridgeFallback（模拟共享脚本缺失）。
+  // 刻意不安装 PinvouMarkdownRenderer / PinvouMarkdownBridgeFallback（模拟 markdown
+  // 共享脚本缺失）。bridge-shared-helpers.js 是 bridge 的启动依赖（随 index.html 先于
+  // 两份 bridge 加载），因此这里先装 payload 再装 bridge——与真实加载顺序一致。
+  vm.runInContext(readApp('src', 'shared', 'bridge-shared-helpers.js'), context, {
+    filename: 'shared/bridge-shared-helpers.js',
+  });
   vm.runInContext(readApp('src', 'platform', 'web', 'bridge.js'), context, {
     filename: 'platform/web/bridge.js',
   });
@@ -121,6 +126,9 @@ function buildWebBridgeContext() {
   windowObject.DOMPurify = { sanitize: html => String(html || '') };
   vm.runInContext(readApp('src', 'shared', 'markdown-bridge-fallback.js'), context, {
     filename: 'shared/markdown-bridge-fallback.js',
+  });
+  vm.runInContext(readApp('src', 'shared', 'bridge-shared-helpers.js'), context, {
+    filename: 'shared/bridge-shared-helpers.js',
   });
   vm.runInContext(readApp('src', 'platform', 'web', 'bridge.js'), context, {
     filename: 'platform/web/bridge.js',

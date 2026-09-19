@@ -78,6 +78,18 @@ fn setup_isolated_home(name: &str) -> (EnvGuard, PathBuf) {
     (env, root)
 }
 
+fn write_profile_fixture(profile: &MemoryProfile) {
+    // save_profile was removed as a dead production entry point (update_profile
+    // writes inline); fixtures land the JSON directly. load_profile normalizes
+    // on read, matching the previous write-side normalize behavior.
+    let path = memory::profile_path();
+    if let Some(parent) = path.parent() {
+        std::fs::create_dir_all(parent).expect("create memory dir");
+    }
+    std::fs::write(&path, serde_json::to_vec_pretty(profile).unwrap())
+        .expect("write profile fixture");
+}
+
 fn setup_memory_fixture(name: &str) -> (EnvGuard, PathBuf) {
     let (env, root) = setup_isolated_home(name);
 
@@ -96,7 +108,7 @@ fn setup_memory_fixture(name: &str) -> (EnvGuard, PathBuf) {
             style_notes: vec!["回答先给结论".to_string(), "称呼用户为林主任".to_string()],
         },
     };
-    memory::save_profile(&profile).expect("save memory profile");
+    write_profile_fixture(&profile);
 
     let pref_dir = paths::user_memory_preferences_dir();
     std::fs::create_dir_all(&pref_dir).expect("create preferences dir");
@@ -323,7 +335,7 @@ fn memory_profile_correction_and_clear_updates_files() {
     assert!(corrected.block.contains("林主任"));
     assert!(!corrected.block.contains("王主任"));
 
-    memory::save_profile(&MemoryProfile::default()).expect("clear profile");
+    write_profile_fixture(&MemoryProfile::default());
     let cleared = memory::runtime_snapshot("correction-a").expect("cleared runtime");
     assert!(!cleared.block.contains("林主任"));
     assert!(!cleared.block.contains("画像："));

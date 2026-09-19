@@ -164,9 +164,9 @@ pub(crate) fn scale_resize_required(current: f64, next: f64, has_explicit_anchor
 /// 点 (cx,cy) 是否落在任一显示器矩形内。恢复保存位置前用窗口中心点判定——
 /// 显示器可能被拔掉/换分辨率,落在"不存在的屏"上的宠物等于消失。
 pub fn point_on_any_monitor(cx: i32, cy: i32, monitors: &[(i32, i32, u32, u32)]) -> bool {
-    monitors.iter().any(|&(x, y, w, h)| {
-        crate::features::pet::detach::point_in_rect(cx, cy, x, y, w as i32, h as i32)
-    })
+    monitors
+        .iter()
+        .any(|&(x, y, w, h)| super::point_in_rect(cx, cy, x, y, w as i32, h as i32))
 }
 
 pub(crate) fn legacy_frame_position_to_client(

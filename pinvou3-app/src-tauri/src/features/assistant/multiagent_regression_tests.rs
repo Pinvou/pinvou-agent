@@ -7,6 +7,7 @@ use super::expert_roster::ExpertRosterSnapshot;
 use super::tool_policy::is_pinvou3_allowed;
 use crate::features::assistant::platform::bridge::Pinvou3Bridge;
 use crate::features::personas::PersonaCard;
+use crate::platform::test_support::EnvRestore;
 use deepseek_tui::AppMode;
 use deepseek_tui::core::engine::Engine;
 use deepseek_tui::core::events::{Event, TurnOutcomeStatus};
@@ -16,38 +17,10 @@ use tokio::net::{TcpListener, TcpStream};
 
 const BUILTIN_EXPERT_ID: &str = "exp-engineering-frontend-developer";
 
-struct EnvRestore {
-    values: Vec<(&'static str, Option<std::ffi::OsString>)>,
-    reload_personas: bool,
-}
-
-impl EnvRestore {
-    fn capture(names: &[&'static str]) -> Self {
-        Self {
-            values: names
-                .iter()
-                .map(|name| (*name, std::env::var_os(name)))
-                .collect(),
-            reload_personas: names.contains(&"PINVOU3_HOME"),
-        }
-    }
-}
-
-impl Drop for EnvRestore {
-    fn drop(&mut self) {
-        for (name, value) in &self.values {
-            match value {
-                // SAFETY: holding platform::paths::tests::ENV_LOCK; in-process env writes are serialized.
-                Some(value) => unsafe { std::env::set_var(name, value) },
-                // SAFETY: holding platform::paths::tests::ENV_LOCK; in-process env writes are serialized.
-                None => unsafe { std::env::remove_var(name) },
-            }
-        }
-        if self.reload_personas {
-            crate::features::personas::reload_user();
-        }
-    }
-}
+// `EnvRestore`（快照 + Drop 恢复一组 env；SAFETY 前提是测试全程持有
+// platform::paths::tests::ENV_LOCK）复用 `platform::test_support` 的共享实现。
+// 涉及 PINVOU3_HOME 的用例经 `capture_with_post_restore` 挂 personas 缓存刷新，
+// 覆盖原 `reload_personas` 分支（env 恢复完成后执行）。
 
 fn unique_temp_root(label: &str) -> PathBuf {
     let suffix = crate::platform::paths::tests::unique_suffix();
@@ -340,7 +313,8 @@ async fn code_session_real_spawn_refresh_resolves_config_expert_without_project_
         "DEEPSEEK_FORCE_HTTP1",
         "DEEPSEEK_MAX_OUTPUT_TOKENS",
     ];
-    let _env_restore = EnvRestore::capture(&env_names);
+    let _env_restore =
+        EnvRestore::capture_with_post_restore(&env_names, crate::features::personas::reload_user);
     let root = unique_temp_root("real-spawn-refresh");
     let project = root.join("user-project");
     let pinvou_home = root.join("pinvou-home");

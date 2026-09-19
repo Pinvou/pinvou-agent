@@ -495,7 +495,7 @@ impl ProviderManager {
             credentials,
             claude_root: home.join(".claude"),
             codex_root: home.join(".codex"),
-            kimi_root: super::kimi_data_root(),
+            kimi_root: super::introspect::kimi_data_root(),
             switch_locks: Arc::new(parking_lot::Mutex::new(HashMap::new())),
         })
     }
@@ -1071,6 +1071,43 @@ pub(crate) fn kimi_default_context_size() -> i64 {
     KIMI_DEFAULT_CONTEXT_SIZE
 }
 
+/// 测试脚手架（providers 各写入器测试共用）：按测试线程名（= 测试函数名）
+/// 区分目录——cargo 并行跑多个测试时，同进程不同测试若共用 `{pid}` 目录会
+/// 互删文件（评审发现 27 failed）。`prefix` 由调用方按写入器区分。
+#[cfg(test)]
+fn writer_test_dir(prefix: &str) -> PathBuf {
+    let test = std::thread::current()
+        .name()
+        .unwrap_or_default()
+        .replace(['/', '\\', ':'], "_");
+    let dir = std::env::temp_dir().join(format!("{prefix}-{test}"));
+    let _ = fs::remove_dir_all(&dir);
+    fs::create_dir_all(&dir).unwrap();
+    dir
+}
+
+/// 测试用 ProviderTarget 夹具（各写入器测试共用）：中转语义的公共字段
+/// （名称 / api_key / 无槽位 / 无上下文窗口）收敛于此，base_url / model /
+/// wire_api 按 provider 差异传参。
+#[cfg(test)]
+fn fixture_target(
+    provider_id: &str,
+    base_url: &str,
+    model: &str,
+    wire_api: ProviderWireApi,
+) -> ProviderTarget {
+    ProviderTarget {
+        provider_id: provider_id.into(),
+        name: "中转".into(),
+        base_url: base_url.into(),
+        model: Some(model.into()),
+        model_slots: None,
+        context_window: None,
+        wire_api,
+        api_key: Some("test-api-key-1234567890".into()),
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1094,16 +1131,12 @@ mod tests {
     #[test]
     fn shared_writer_contract_matrix() {
         fn target(provider_id: &str) -> ProviderTarget {
-            ProviderTarget {
-                provider_id: provider_id.into(),
-                name: "中转".into(),
-                base_url: "https://api.example.com/relay/".into(),
-                model: Some("demo-model".into()),
-                model_slots: None,
-                context_window: None,
-                wire_api: ProviderWireApi::Openai,
-                api_key: Some("test-api-key-1234567890".into()),
-            }
+            fixture_target(
+                provider_id,
+                "https://api.example.com/relay/",
+                "demo-model",
+                ProviderWireApi::Openai,
+            )
         }
         fn run_case(
             name: &str,

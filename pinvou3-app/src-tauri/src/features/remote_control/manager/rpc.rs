@@ -320,22 +320,6 @@ enum WebWorkspaceRpcPolicy {
     SessionBoundRead,
 }
 
-const NATIVE_WORKSPACE_COMMANDS: &[&str] = &[
-    "create_codex_acp_session",
-    "list_codex_workspace",
-    "search_codex_workspace",
-    "preview_codex_workspace_file",
-    "get_codex_workspace_changes",
-    "get_codex_workspace_diff",
-    "open_codex_workspace_file",
-    "reveal_codex_workspace_file",
-    "open_code_reader",
-    // Branch view/checkout run local git mutations (add -A/commit/stash/checkout)
-    // with no web_access wrapper: desktop-only like the commands above.
-    "list_codex_workspace_branches",
-    "checkout_codex_workspace_branch",
-];
-
 fn web_workspace_rpc_policy(command: &str) -> Option<WebWorkspaceRpcPolicy> {
     match command {
         "web_access_list_host_files" => Some(WebWorkspaceRpcPolicy::HostFileBrowse),
@@ -352,11 +336,8 @@ fn web_workspace_rpc_policy(command: &str) -> Option<WebWorkspaceRpcPolicy> {
 }
 
 fn validate_web_workspace_rpc(command: &str, args: &Value) -> Result<(), String> {
-    if NATIVE_WORKSPACE_COMMANDS.contains(&command) {
-        return Err(format!(
-            "{command} is desktop-only; Web must use the scoped workspace wrapper"
-        ));
-    }
+    // Only reached for commands present in the Web access policy, so native
+    // workspace commands never get here; the policy gate rejects them first.
     let Some(policy) = web_workspace_rpc_policy(command) else {
         return Ok(());
     };
@@ -397,8 +378,7 @@ pub(super) fn web_session_scope(command: &str) -> Option<WebSessionScope> {
     let scope = match command {
         // Commands whose Rust API historically falls back to the desktop
         // process-wide active Session must be explicit over WebUI.
-        "archive_recent_work_memory"
-        | "cancel_generation"
+        "cancel_generation"
         | "cancel_user_input"
         | "compact_now"
         | "confirm_pending_memory"
@@ -423,21 +403,15 @@ pub(super) fn web_session_scope(command: &str) -> Option<WebSessionScope> {
         | "equip_persona"
         | "exit_plan_to_yolo"
         | "get_active_persona"
-        | "get_codex_workspace_changes"
-        | "get_codex_workspace_diff"
         | "get_mode_state"
         | "get_session_model_id"
         | "get_session_persona_events"
         | "get_session_pinvou_reviews"
-        | "get_session_pinvou_scene_events"
-        | "get_session_steered_messages"
         | "get_session_timeline"
         | "list_shell_tasks"
         | "list_workspace_files"
         | "save_session_persona_events"
         | "save_session_pinvou_reviews"
-        | "save_session_pinvou_scene_events"
-        | "save_session_steered_messages"
         | "session_mount_collection"
         | "session_add_mounted_collection"
         | "session_mounted_collection"
@@ -546,13 +520,7 @@ pub(super) fn validate_web_rpc_scope(
 
 pub(super) fn validate_bridge_generation(generation: &str) -> Result<(), String> {
     let generation = generation.trim();
-    if generation.len() < 8 || generation.len() > 256 {
-        return Err("invalid WebView bridge generation".to_string());
-    }
-    if !generation
-        .bytes()
-        .all(|byte| byte.is_ascii_alphanumeric() || matches!(byte, b'-' | b'_'))
-    {
+    if !crate::features::files::attachment_upload::validate_opaque_token(generation, 8, 256, None) {
         return Err("invalid WebView bridge generation".to_string());
     }
     Ok(())

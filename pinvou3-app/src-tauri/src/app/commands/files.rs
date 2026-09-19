@@ -48,6 +48,10 @@ pub async fn ingest_draft_file_chunk(
     sha256: Option<String>,
 ) -> Result<Option<crate::features::files::file_ingest::IngestResult>, String> {
     let result = async {
+        // Base64 decode intentionally mirrors the Web upload command in
+        // app/commands/remote_control.rs; the chunk cap is enforced inside
+        // attachment_upload::append_chunk (MAX_ATTACHMENT_CHUNK_BYTES), so
+        // the two flows cap at different layers with their own copy.
         let data = base64::engine::general_purpose::STANDARD
             .decode(data_base64)
             .map_err(|error| format!("解码附件分块失败：{error}"))?;

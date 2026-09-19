@@ -50,7 +50,7 @@ fn file_lock() -> MutexGuard<'static, ()> {
 // ---------------------------------------------------------------------------
 
 /// 清单条目：`record` 是回收时 bundles.json 原记录的快照（恢复重建登记用：
-/// source=Upload、原 installed_at、credential_keys 等一并保留）。
+/// source=Upload、原 installed_at 等一并保留）。
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct RecycledEntry {
     pub id: String,
@@ -579,8 +579,6 @@ mod tests {
             source: BundleSource::Upload(format!("{id}.zip")),
             installed: true,
             content_fingerprint: Some("fp".to_string()),
-            assets: Vec::new(),
-            credential_keys: vec!["KEY".to_string()],
             installed_at: "2026-08-20T00:00:00+00:00".to_string(),
             degraded: None,
             extra: serde_json::Map::new(),

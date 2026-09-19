@@ -23,12 +23,12 @@ fn emit_project_event(app: &AppHandle, event: &str, action: &str) {
     let _ = app.emit(event, serde_json::json!({ "action": action }));
 }
 
-/// root 的可用性(目录是否仍在磁盘上)——前端据此渲染"文件夹不可用·重新绑定",
-/// 但绝不据此自动删项目。
+/// 项目 root 的 wire 形态（仅路径）。曾带有 `available`（root 是否仍在磁盘上，
+/// 供"文件夹不可用·重新绑定"渲染），但该 UI 从未落地、前端也从未读取该字段，
+/// 连带省去列表路径的逐个 is_dir() stat。
 #[derive(Debug, Clone, Serialize)]
 pub struct ProjectRootStatus {
     pub path: PathBuf,
-    pub available: bool,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -37,8 +37,6 @@ pub struct ProjectListItem {
     pub name: String,
     pub roots: Vec<ProjectRootStatus>,
     pub position: i64,
-    pub created_at: chrono::DateTime<chrono::Utc>,
-    pub updated_at: chrono::DateTime<chrono::Utc>,
     /// 显式归属的会话数;自动归组的成员数由前端分组解析计算(Phase 1)。
     pub assigned_session_count: usize,
 }
@@ -51,14 +49,11 @@ impl ProjectListItem {
             roots: project
                 .roots
                 .iter()
-                .map(|path| ProjectRootStatus {
-                    path: path.clone(),
-                    available: path.is_dir(),
-                })
+                .map(|path| ProjectRootStatus { path: path.clone() })
                 .collect(),
             position: project.position,
-            created_at: project.created_at,
-            updated_at: project.updated_at,
+            // created_at/updated_at 只留在持久化的 Project 结构上（排期/审计均
+            // 未消费，wire DTO 不带）；侧栏排序走 position 与会话自身的活跃时间。
             assigned_session_count,
         }
     }

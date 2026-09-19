@@ -7,7 +7,13 @@
   "use strict";
   // biome-ignore lint/suspicious/noAssignInExpressions: registry bootstrap of the verbatim payload; splitting statements would diverge from the artifact
   const registry = root.__PINVOU_TAURI_BRIDGE_FEATURES__ = root.__PINVOU_TAURI_BRIDGE_FEATURES__ || {};
-  registry["updater"] = function (context) {
+  registry["updater"] = function (context) {let pinvouSharedtauriUpdaterCache = null;
+function pinvouSharedtauriUpdater() {
+  if (!pinvouSharedtauriUpdaterCache) pinvouSharedtauriUpdaterCache = window.PinvouBridgeShared.create("tauriUpdater", { state, notify, invoke });
+  return pinvouSharedtauriUpdaterCache;
+}
+
+
   const state = context.state;
   const notify = context.notify;
   const invoke = context.invoke;
@@ -65,18 +71,7 @@
     } catch { /* 静默 */ }
   }
   // 设置页手动检查: 错误和「已是最新」都要反馈。
-  async function checkForUpdate() {
-    state.updateChecking = true; state.updateCheckError = null; notify();
-    try {
-      const info = await invoke("check_for_update");
-      if (info && info.current_version) state.appVersion = info.current_version;
-      state.updateInfo = info;
-      if (!info.available) state.updateCheckError = "latest"; // 前端按 i18n 显示「已是最新」
-    } catch (e) {
-      state.updateCheckError = String(e);
-    }
-    state.updateChecking = false; notify();
-  }
+async function checkForUpdate() { return pinvouSharedtauriUpdater().checkForUpdate(); }
   // 下载+安装一条龙: Linux 下载 deb 后 pkexec apt 并自动重启;Windows 下载 zip 后解析 MSI,
   // 安装器启动成功后 Windows 退出当前进程；Linux/macOS 在安装后由前端重启。
   async function downloadAndInstallUpdate() {

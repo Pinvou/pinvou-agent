@@ -497,6 +497,9 @@ fn session_artifact_path(session_id: &str, name: &str) -> std::path::PathBuf {
 fn direct_skill_install_uninstall_scope_state_roundtrip() {
     use crate::features::assistant::skill_materialization as sm;
     use crate::features::marketplace::ConnectorScope;
+    use crate::features::marketplace::scope::{
+        load_disabled_bundles_for, save_disabled_bundles_for,
+    };
 
     let _g = crate::platform::paths::tests::ENV_LOCK
         .lock()
@@ -513,7 +516,7 @@ fn direct_skill_install_uninstall_scope_state_roundtrip() {
 
     // 用户关闭 visualizer（独立 disabled_skills.json，不再借道连接器文件）→
     // 组合目录计算排除该技能。
-    sm::save_disabled_skills_for(ConnectorScope::Plain, &["visualizer".to_string()]);
+    save_disabled_bundles_for(ConnectorScope::Plain, &["visualizer".to_string()]);
     install_marketplace_skill_sync("visualizer").unwrap();
     assert!(
         !sm::enabled_skills_for(ConnectorScope::Plain, None)
@@ -523,7 +526,7 @@ fn direct_skill_install_uninstall_scope_state_roundtrip() {
     );
     // code scope 未初始化时新装技能默认全禁，初始化后自动加入 code 禁用集。
     assert!(
-        sm::load_disabled_skills_for(ConnectorScope::Code)
+        load_disabled_bundles_for(ConnectorScope::Code)
             .iter()
             .any(|id| id == "visualizer")
     );
@@ -531,7 +534,7 @@ fn direct_skill_install_uninstall_scope_state_roundtrip() {
     uninstall_marketplace_skill_sync("visualizer").unwrap();
     // 卸载清除两个 scope 禁用集残留（与连接器同语义）→ 重装后默认启用。
     assert!(
-        !sm::load_disabled_skills_for(ConnectorScope::Plain)
+        !load_disabled_bundles_for(ConnectorScope::Plain)
             .iter()
             .any(|id| id == "visualizer"),
         "卸载应从禁用集清除残留 id"

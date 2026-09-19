@@ -30,10 +30,6 @@ pub struct ToolManifest {
     #[serde(default)]
     pub config_fields: Vec<ConfigField>,
     #[serde(default)]
-    pub routing_rules: Vec<String>,
-    #[serde(default)]
-    pub tool_table_entries: Vec<String>,
-    #[serde(default)]
     pub pip_dependencies: Vec<String>,
     /// Platform-specific, hash-locked Python wheels. A matching target is installed into an
     /// isolated user environment; only non-Windows targets may use the legacy pip fallback.
@@ -159,8 +155,6 @@ pub struct MarketplaceToolInfo {
     pub name: String,
     pub description: String,
     pub version: String,
-    pub icon: String,
-    pub category: String,
     pub installed: bool,
     /// 配套技能 id(来自 manifest `companion_skills`)。前端据此把「有配套 MCP 的技能卡」的
     /// 状态/装卸联动到本 MCP,单一真源在 manifest,避免命名不一致(gongwen↔government-writing)

@@ -2,32 +2,22 @@
  * tauri-bridge.js — Tauri 后端通信桥
  *
  * 封装所有 invoke/listen，维护前端状态，通过 pub/sub 推给 React。
- * 浏览器预览时（无 window.__TAURI__）自动降级。
+ * window.__TAURI__ 由先加载的 platform/web/bootstrap.js 保证存在（桌面为原生注入，Web 为客户端 shim），不再保留无 Tauri 的降级桩。
  */
 (function () {
   // biome-ignore lint/suspicious/noRedundantUseStrict: verbatim copy of a classic-script artifact; strict mode is part of the payload
   "use strict";
 
+let pinvouSharedtauriMainCache = null;
+function pinvouSharedtauriMain() {
+  if (!pinvouSharedtauriMainCache) pinvouSharedtauriMainCache = window.PinvouBridgeShared.create("tauriMain", { state, BT_TABLE, PINVOU_SCENE_EVENTS_STORAGE_PREFIX, invoke, startThinking, recordAuthoritySyncDiagnostic, getBuffer, runSyncOnSession, notify, scheduledRunSessionOwners, sessionStates });
+  return pinvouSharedtauriMainCache;
+}
+
   // Browser transport owns its own replay and persistence semantics.
   if (window.PinvouPlatform && (window.PinvouPlatform.kind === "web" || window.PinvouPlatform.isWeb === true)) return;
 
   const TAURI = window.__TAURI__;
-  if (!TAURI) {
-    console.warn("[TauriBridge] Tauri not available — browser preview mode");
-    window.TauriBridge = {
-      available: false,
-      lifecycle: { init: function () { return Promise.resolve(); } },
-      state: {
-        get: function () { return {}; },
-        getMany: function () { return {}; },
-        subscribe: function () { return function () {}; },
-        subscribeMany: function () { return function () {}; },
-      },
-      rendering: { renderMarkdown: function (text) { return String(text || ""); } },
-    };
-    return;
-  }
-
   const { invoke } = TAURI.core;
   const { listen } = TAURI.event;
   const dialogOpen = TAURI.dialog?.open;
@@ -416,29 +406,7 @@
       }
     } catch { /* diagnostics reporting failure must degrade silently */ }
   }
-  function authoritySyncBufferSnapshot(sid, buf) {
-    return {
-      session_id: sid || "",
-      active_session_id: state.activeSessionId || "",
-      buffer_present: !!buf,
-      local_turn_owned: !!(buf && buf.localTurnOwned),
-      remote_turn_active: !!(buf && buf.remoteTurnActive),
-      remote_terminal_seen: !!(buf && buf.remoteTerminalSeen),
-      loaded_from_disk: !!(buf && buf.loadedFromDisk),
-      buffer_busy: !!(buf && buf.busy),
-      ui_busy: !!state.busy,
-      message_count: buf && Array.isArray(buf.messages) ? buf.messages.length : null,
-      chat_item_count: buf && Array.isArray(buf.chatItems) ? buf.chatItems.length : null,
-      queued_count: buf && Array.isArray(buf.queued) ? buf.queued.length : null,
-      session_revision: String(buf && buf.sessionRevision || ""),
-      committed_revision: String(buf && buf.remoteCommittedRevision || ""),
-      expected_assistant_key_length: String(buf && buf.remoteExpectedAssistantKey || "").length,
-      baseline_message_count: buf && buf.remoteBaselineMessageCount != null
-        ? Number(buf.remoteBaselineMessageCount)
-        : null,
-      baseline_trusted: !!(buf && buf.remoteBaselineTrusted),
-    };
-  }
+function authoritySyncBufferSnapshot(sid, buf) { return pinvouSharedtauriMain().authoritySyncBufferSnapshot(sid, buf); }
 
   // ── bridge 层 UI 文案（系统消息/状态标签）──────────────────────
   // bridge 在事件回调里生成文案,拿不到 React 的 t;按 state.settings.language 取词,中文兜底。
@@ -748,23 +716,14 @@
       newChatFallbackTitle: "新对话",
     },
   };
-  function bt(key) {
-    const lang = state.settings && state.settings.language;
-    const m = lang === "en" ? BT_TABLE.en : lang === "ja" ? BT_TABLE.ja : BT_TABLE.zh;
-    return m[key] === undefined ? BT_TABLE.zh[key] : m[key];
-  }
+function bt(key) { return pinvouSharedtauriMain().bt(key); }
   // Transfer badges are restored from message text, but messages persist in the
   // UI language used at send time; replay must match all three variants instead
   // of only the current language. Used for the review/plan wording keys.
-  function textMatchesBtKey(text, key) {
-    return text.includes(BT_TABLE.zh[key]) || text.includes(BT_TABLE.en[key]) || text.includes(BT_TABLE.ja[key]);
-  }
+function textMatchesBtKey(text, key) { return pinvouSharedtauriMain().textMatchesBtKey(text, key); }
   // 默认会话标题哨兵:三语兜底标题都视为占位(自动改名/显示映射的依据),
   // 与 web 桥和 main.jsx 的同款判断保持一致。
-  function isDefaultChatTitle(title) {
-    return [BT_TABLE.zh.newChatFallbackTitle, BT_TABLE.en.newChatFallbackTitle, BT_TABLE.ja.newChatFallbackTitle]
-      .includes(title);
-  }
+function isDefaultChatTitle(title) { return pinvouSharedtauriMain().isDefaultChatTitle(title); }
 
   // ── Per-session 工作集缓冲（多 session 并发）────────────────────
   // active session 的工作集 = state.* + 上面那批模块级 stream 变量(保持原逻辑零改动)。
@@ -790,46 +749,11 @@
   // 内存态(不持久化):重启后丢标记仅影响「加卡→重启→才发首条消息」这一冷门路径。
   const personaPlaceholderTitles = {};
   const PINVOU_SCENE_EVENTS_STORAGE_PREFIX = "pinvou_scene_events_v1:";
-  function normalizePinvouScene(scene) {
-    scene = String(scene || "").trim();
-    return /^(work:document-writing|work:personal-workbench|design:poster|design:data-visualization|design:ppt)$/.test(scene) ? scene : "";
-  }
-  function pinvouSceneStorageKey(sid) {
-    return PINVOU_SCENE_EVENTS_STORAGE_PREFIX + String(sid || "").trim();
-  }
-  function normalizePinvouSceneEvents(events) {
-    return (Array.isArray(events) ? events : []).map(function (event) {
-      const pos = Number(event && event.pos);
-      const scene = normalizePinvouScene(event && event.scene);
-      if (!Number.isFinite(pos) || pos < 0 || !scene) return null;
-      return { pos: Math.floor(pos), scene };
-    }).filter(Boolean).sort(function (left, right) { return left.pos - right.pos; });
-  }
-  function loadPinvouSceneEventsForSession(sid) {
-    if (!sid || !window.localStorage) return [];
-    try {
-      return normalizePinvouSceneEvents(JSON.parse(window.localStorage.getItem(pinvouSceneStorageKey(sid)) || "[]"));
-    } catch {
-      return [];
-    }
-  }
-  function savePinvouSceneEventsForSession(sid, events) {
-    if (!sid) return;
-    const normalized = normalizePinvouSceneEvents(events);
-    try {
-      if (window.localStorage) {
-        window.localStorage.setItem(pinvouSceneStorageKey(sid), JSON.stringify(normalized));
-      }
-    } catch {
-      // localStorage 只作旧版本迁移和离线缓存，写失败不影响后端 sidecar。
-    }
-    Promise.resolve().then(function () {
-      return invoke("save_session_pinvou_scene_events", {
-        sessionId: sid,
-        events: normalized,
-      });
-    }).catch(function () {});
-  }
+
+function pinvouSceneStorageKey(sid) { return pinvouSharedtauriMain().pinvouSceneStorageKey(sid); }
+function normalizePinvouSceneEvents(events) { return pinvouSharedtauriMain().normalizePinvouSceneEvents(events); }
+function loadPinvouSceneEventsForSession(sid) { return pinvouSharedtauriMain().loadPinvouSceneEventsForSession(sid); }
+
   async function syncPinvouSceneEventsForSession(sid) {
     const cached = loadPinvouSceneEventsForSession(sid);
     if (!sid) return cached;
@@ -851,25 +775,8 @@
       return cached;
     }
   }
-  function recordPinvouSceneForMessage(sid, pos, scene) {
-    scene = normalizePinvouScene(scene);
-    pos = Number(pos);
-    if (!sid || !scene || !Number.isFinite(pos) || pos < 0) return;
-    pos = Math.floor(pos);
-    let events = normalizePinvouSceneEvents(state.pinvouSceneEvents)
-      .filter(function (event) { return event.pos !== pos; });
-    events.push({ pos, scene });
-    events = normalizePinvouSceneEvents(events);
-    state.pinvouSceneEvents = events;
-    savePinvouSceneEventsForSession(sid, events);
-  }
-  function pinvouSceneForMessagePos(pos) {
-    const events = normalizePinvouSceneEvents(state.pinvouSceneEvents);
-    for (let i = 0; i < events.length; i++) {
-      if (events[i].pos === pos) return events[i].scene;
-    }
-    return "";
-  }
+function recordPinvouSceneForMessage(sid, pos, scene) { return pinvouSharedtauriMain().recordPinvouSceneForMessage(sid, pos, scene); }
+function pinvouSceneForMessagePos(pos) { return pinvouSharedtauriMain().pinvouSceneForMessagePos(pos); }
   // ── Steered-message sidecar（mid-turn steer 位置标记）──────────────
   // steer 落盘与普通 admission 对齐、不含 <turn_meta> 块（Rust sanitize 统一
   // 剥离），重载投影无法再借信封反推"非 turn admission"，因此结算时把
@@ -1234,55 +1141,9 @@
   }
 
   // 事件监听器统一入口:按 payload.session_id 路由同步逻辑;后台变更后补一次 notify 刷新列表。
-  function markRemoteTurn(sid, buf, preserveCommittedRevision, cause) {
-    if (!sid || !buf || buf.localTurnOwned) return;
-    const wasActive = !!buf.remoteTurnActive;
-    if (!buf.remoteTurnActive) {
-      const meta = state.sessions.find(function (session) { return session.id === sid; });
-      buf.remoteBaselineTrusted = !!buf.loadedFromDisk;
-      buf.remoteBaselineMessageCount = buf.loadedFromDisk
-        ? (buf.messages || []).length
-        : Number(meta && meta.message_count);
-      if (!Number.isFinite(buf.remoteBaselineMessageCount)) buf.remoteBaselineMessageCount = null;
-      buf.remoteExpectedAssistantKey = "";
-      if (!preserveCommittedRevision) buf.remoteCommittedRevision = "";
-      buf.remoteTerminalSeen = false;
-    }
-    buf.remoteTurnActive = true;
-    buf.busy = true;
-    if (sid === state.activeSessionId) {
-      state.busy = true;
-      if (!state.thinking.active) startThinking();
-    }
-    if (!wasActive) {
-      recordAuthoritySyncDiagnostic("remote_turn_marked", Object.assign({
-        cause: String(cause || "unspecified"),
-        preserve_committed_revision: !!preserveCommittedRevision,
-      }, authoritySyncBufferSnapshot(sid, buf)));
-    }
-  }
-  function onSessionEvent(e, fn) {
-    const sid = (e && e.payload && e.payload.session_id) || state.activeSessionId;
-    if (sid) {
-      const eventBuffer = getBuffer(sid);
-      const eventName = String((e && e.event) || "");
-      const isTurnEvent = /chat:(user_message|turn_started|delta|reasoning_start|reasoning_delta|reasoning_done|tool_start|tool_end|user_input_required|transient_error)$/.test(eventName);
-      if (eventBuffer && !eventBuffer.localTurnOwned && (eventBuffer.busy || isTurnEvent)) {
-        markRemoteTurn(sid, eventBuffer, false, "event:" + eventName);
-      }
-    }
-    const isBg = sid && sid !== state.activeSessionId;
-    runSyncOnSession(sid, fn);
-    if (isBg) notify();
-  }
-  function isScheduledRunSession(sid) {
-    return !!sid && (
-      sid.indexOf("sched-") === 0 ||
-      !!scheduledRunSessionOwners[sid] ||
-      !!(sessionStates[sid] && sessionStates[sid].scheduledRunSession) ||
-      !!(state.scheduledRunContext && state.scheduledRunContext.sessionId === sid)
-    );
-  }
+function markRemoteTurn(sid, buf, preserveCommittedRevision, cause) { return pinvouSharedtauriMain().markRemoteTurn(sid, buf, preserveCommittedRevision, cause); }
+function onSessionEvent(e, fn) { return pinvouSharedtauriMain().onSessionEvent(e, fn); }
+function isScheduledRunSession(sid) { return pinvouSharedtauriMain().isScheduledRunSession(sid); }
 
   // Transcript persistence is authoritative in Rust. The UI only persists the
   // presentation-side artifact index and derives the optional auto-title.
@@ -1319,15 +1180,7 @@
     } catch (e) { console.warn("persist failed", e); }
   }
 
-  function planCardHydrationKey(item) {
-    if (!item || item.type !== "plan_card") return "";
-    if (item.planMarkdown) return "markdown:" + String(item.planMarkdown);
-    try {
-      return "snapshot:" + JSON.stringify({ plan: item.plan || null, todos: item.todos || null });
-    } catch {
-      return "";
-    }
-  }
+function planCardHydrationKey(item) { return pinvouSharedtauriMain().planCardHydrationKey(item); }
 
   async function reconcileRemoteTurn(sid) {
     if (!sid) return true;
@@ -1596,21 +1449,8 @@
   // and allocate only changed paths. Long transcripts therefore stay shared
   // between snapshots while an in-place streaming item mutation still produces
   // a stable new item for subscribers. get/getMany retain their deep-copy API.
-  function defineSubscriptionStateProperty(target, key, value) {
-    Object.defineProperty(target, key, {
-      configurable: true,
-      enumerable: true,
-      value,
-      writable: true,
-    });
-  }
-  function copySubscriptionStateObject(source) {
-    const result = {};
-    Object.keys(source).forEach(function (key) {
-      defineSubscriptionStateProperty(result, key, source[key]);
-    });
-    return result;
-  }
+function defineSubscriptionStateProperty(target, key, value) { return pinvouSharedtauriMain().defineSubscriptionStateProperty(target, key, value); }
+function copySubscriptionStateObject(source) { return pinvouSharedtauriMain().copySubscriptionStateObject(source); }
   // eslint-disable-next-line sonarjs/cognitive-complexity -- legacy bridge; refactor tracked separately
   function subscriptionStateValue(value, previous, ancestors) {
     const valueType = typeof value;
@@ -1786,97 +1626,27 @@
   const PLAN_TOOLS = new Set(["update_plan", "checklist_write", "todo_write"]);
 
   // tool_result.content 可能是 string 或 Anthropic content blocks 数组，归一成纯文本。
-  function toolResultText(content) {
-    if (typeof content === "string") return content;
-    if (Array.isArray(content)) {
-      return content.map(function (b) { return b && typeof b.text === "string" ? b.text : ""; }).join("");
-    }
-    return "";
-  }
+function toolResultText(content) { return pinvouSharedtauriMain().toolResultText(content); }
 
-  // CodeWhale may append model-only recovery guidance to a persisted tool result
-  // to preserve strict provider role ordering. Keep that guidance in durable/model
-  // context, but remove only the two known internal suffix kinds from tool cards.
-  function stripInternalToolRuntimeSuffix(value) {
-    let text = String(value == null ? "" : value);
-    const marker = "\n\n<codewhale:runtime_event";
-    while (true) {
-      const start = text.lastIndexOf(marker);
-      if (start < 0) return text;
-      const suffix = text.slice(start + 2);
-      const opening = suffix.match(/^<codewhale:runtime_event\b[^>]*>/i);
-      if (!opening || !/<\/codewhale:runtime_event>\s*$/i.test(suffix)) return text;
-      const tag = opening[0];
-      const knownKind = /\bkind=(["'])(?:stuck_guard|tool_error_degradation)\1/i.test(tag);
-      const internal = /\bvisibility=(["'])internal\1/i.test(tag);
-      if (!knownKind || !internal) return text;
-      text = text.slice(0, start);
-    }
-  }
 
-  function toolResultDisplayContent(content) {
-    if (typeof content === "string") return stripInternalToolRuntimeSuffix(content);
-    if (!Array.isArray(content)) return content;
-    return content.map(function (block) {
-      if (!block || typeof block.text !== "string") return block;
-      return Object.assign({}, block, { text: stripInternalToolRuntimeSuffix(block.text) });
-    });
-  }
+
+function toolResultDisplayContent(content) { return pinvouSharedtauriMain().toolResultDisplayContent(content); }
 
   // plan 类工具结果格式："...updated:\n{json}"——切第一个换行后 parse（与 engine.rs 一致）。
-  function parsePlanSnapshot(content) {
-    const txt = toolResultText(content);
-    const i = txt.indexOf("\n");
-    if (i < 0) return null;
-    try { return JSON.parse(txt.slice(i + 1)); } catch { return null; }
-  }
+function parsePlanSnapshot(content) { return pinvouSharedtauriMain().parsePlanSnapshot(content); }
 
   // request_user_input 结果是纯 JSON {answers:[{id,label,value}]}（turn_loop.rs ToolResult::json）。
   // 按 question.id 匹配，还原成 UserInputCard 的 answers 数组（顺序对齐 questions）。
   // multi_select 多选保留全部同 id 答案、不塌缩（与 code-native-lane parseNativeUserAnswers 对齐）。
-  function parseUserAnswers(content, questions) {
-    let ans;
-    try { ans = JSON.parse(toolResultText(content)).answers; } catch { return null; }
-    if (!Array.isArray(ans)) return null;
-    // 用无原型对象：question id 仅后端校验非空，constructor/toString/__proto__ 是合法输入，
-    // 普通 {} 会让这些键命中 Object.prototype 继承属性，.push 抛 TypeError（复核 P1）。
-    const byId = Object.create(null);
-    ans.forEach(function (a) {
-      if (a && a.id != null) {
-        byId[a.id] = byId[a.id] || [];
-        byId[a.id].push(a);
-      }
-    });
-    const out = [];
-    for (let qi = 0; qi < questions.length; qi++) {
-      const q = questions[qi];
-      const matches = byId[q.id];
-      if (!matches || !matches.length) { out.push(null); continue; }
-      matches.forEach(function (a) { out.push({ id: q.id, label: a.label, value: a.value }); });
-    }
-    return out;
-  }
+function parseUserAnswers(content, questions) { return pinvouSharedtauriMain().parseUserAnswers(content, questions); }
 
   // careful hook 拦截结果(shell.rs BLOCKED 固定格式)→ 反解出 careful_blocked 卡所需 metadata。
   // metadata 不进持久化 messages,session 重载只能从 tool_result 文本识别,否则 🛑 红卡重启即丢。
-  function parseCarefulBlocked(text) {
-    if (typeof text !== "string" || text.indexOf("BLOCKED: This command was blocked for safety reasons") !== 0) return null;
-    const rm = text.match(/Reasons: ([^\n]*)/);
-    const sm = text.match(/Suggestions: ([^\n]*)/);
-    return {
-      safety_level: "dangerous", blocked: true,
-      reasons: rm && rm[1] ? rm[1].split("; ") : [],
-      suggestions: sm && sm[1] ? sm[1].split("; ") : [],
-    };
-  }
+function parseCarefulBlocked(text) { return pinvouSharedtauriMain().parseCarefulBlocked(text); }
 
-  function userMessageInputProvenance(blocks) {
-    return window.PinvouBridgeMessages.userMessageInputProvenance(blocks);
-  }
+function userMessageInputProvenance(blocks) { return pinvouSharedtauriMain().userMessageInputProvenance(blocks); }
 
-  function isInternalUserMessageProvenance(provenance) {
-    return window.PinvouBridgeMessages.isInternalUserMessageProvenance(provenance);
-  }
+function isInternalUserMessageProvenance(provenance) { return pinvouSharedtauriMain().isInternalUserMessageProvenance(provenance); }
 
   function isInternalRuntimeEnvelopeText(value) {
     return window.PinvouBridgeMessages.isInternalRuntimeUserMessage(value);
@@ -1912,7 +1682,13 @@
   // leave the later chat:tool_end without its meta (stuck selection
   // card / degraded artifact card).
   // eslint-disable-next-line sonarjs/cognitive-complexity -- legacy bridge; refactor tracked separately
-  function rerenderFromMessages(opts) {
+  function rerenderFromMessages(opts) {let pinvouSharedtauriMainN99856Cache = null;
+function pinvouSharedtauriMainN99856() {
+  if (!pinvouSharedtauriMainN99856Cache) pinvouSharedtauriMainN99856Cache = window.PinvouBridgeShared.create("tauriMain:99856", { pe, addChatItem, bt });
+  return pinvouSharedtauriMainN99856Cache;
+}
+
+
     state.chatItems = [];
     itemIdSeq = 0;
     // Replay rebuilds toolMeta only for historical tool_uses that still have a
@@ -1925,15 +1701,7 @@
     if (!(opts && opts.keepLiveToolMeta)) toolMeta = {};
     // 卡牌事件按 pos 插回原位(pos=事件发生时的 messages 数)。让重载历史不割裂。
     const pe = Array.isArray(state.personaEvents) ? state.personaEvents : [];
-    function emitPersonaAt(atOrAfter, isTail) {
-      for (let k = 0; k < pe.length; k++) {
-        const ev = pe[k];
-        if (isTail ? (ev.pos < atOrAfter) : (ev.pos !== atOrAfter)) continue;
-        if (ev.kind === "equip" && ev.card) addChatItem({ type: "persona_equip", card: ev.card, time: "" });
-        else if (ev.kind === "unequip") addChatItem({ type: "system", text: bt("personaUnequipped") + (ev.name || ""), time: "" });
-        else if (ev.kind === "card_creator_intro") addChatItem({ type: "card_creator_intro", time: "" });
-      }
-    }
+function emitPersonaAt(atOrAfter, isTail) { return pinvouSharedtauriMainN99856().emitPersonaAt(atOrAfter, isTail); }
     // 预扫 tool_result：tool_use 在 assistant 消息、result 在后续 user 消息，需提前建映射
     // 才能在还原选择卡/方案卡时拿到结果（选项/快照）。
     const resultById = {};
@@ -2204,38 +1972,12 @@
   const finishBackgroundToolItem = terminalFeature.finishBackgroundToolItem;
   const appendToolItemOutput = terminalFeature.appendToolItemOutput;
   // 找最后一条匹配的 chat item（用于卡片状态机更新）
-  function patchLastItem(pred, patch) {
-    for (let i = state.chatItems.length - 1; i >= 0; i--) {
-      if (pred(state.chatItems[i])) {
-        Object.assign(state.chatItems[i], patch);
-        return state.chatItems[i];
-      }
-    }
-    return null;
-  }
+function patchLastItem(pred, patch) { return pinvouSharedtauriMain().patchLastItem(pred, patch); }
   // 是否已存在未处理（未 resolved）的某类型卡片 —— 防重复插入
-  function hasUnresolvedItem(type) {
-    return state.chatItems.some(function (it) { return it.type === type && !it.resolved; });
-  }
+function hasUnresolvedItem(type) { return pinvouSharedtauriMain().hasUnresolvedItem(type); }
 
   // ── Plan markdown 拼接（accept 时发给后端，与 main.js 对齐）────────
-  function composePlanMarkdown(snapshots) {
-    const lines = [];
-    const plan = snapshots && snapshots.plan;
-    const todos = snapshots && snapshots.todos;
-    function sym(s) { return s === "completed" ? "●" : s === "in_progress" ? "◎" : "○"; }
-    if (plan && Array.isArray(plan.items)) {
-      if (plan.explanation) { lines.push("**方案：**", plan.explanation, ""); }
-      lines.push("**步骤：**");
-      plan.items.forEach(function (item, i) { lines.push((i + 1) + ". " + sym(item.status) + " " + item.step); });
-      lines.push("");
-    }
-    if (todos && Array.isArray(todos.items)) {
-      lines.push("**细分待办：**");
-      todos.items.forEach(function (item, i) { lines.push((i + 1) + ". " + sym(item.status) + " " + item.content); });
-    }
-    return lines.length > 0 ? lines.join("\n") : "（plan 为空）";
-  }
+function composePlanMarkdown(snapshots) { return pinvouSharedtauriMain().composePlanMarkdown(snapshots); }
 
   async function cancelShellTask(sessionId, taskId) {
     if (!sessionId || !taskId) throw new Error("Missing shell task identity");
@@ -2414,7 +2156,6 @@
   const handleMemoryWrite = memoryFeature.handleMemoryWrite;
   const loadMemoryOverview = memoryFeature.loadMemoryOverview;
   const saveMemoryProfilePatch = memoryFeature.saveMemoryProfilePatch;
-  const deleteMemoryPreference = memoryFeature.deleteMemoryPreference;
   const updateMemoryItem = memoryFeature.updateMemoryItem;
   const deleteMemoryItem = memoryFeature.deleteMemoryItem;
   const archiveRecentWorkMemory = memoryFeature.archiveRecentWorkMemory;
@@ -2507,7 +2248,6 @@
   const appendVoiceText = voiceFeature.appendVoiceText;
   const knowledgeModelFeature = installBridgeFeature("knowledge-model", { state, notify, invoke, listen });
   const downloadKbModel = knowledgeModelFeature.downloadKbModel;
-  const cancelKbModel = knowledgeModelFeature.cancelKbModel;
 
   const projectsFeature = installBridgeFeature("projects", { state, notify, invoke, listen });
   const loadProjects = projectsFeature.loadProjects;
@@ -2661,7 +2401,6 @@
     knowledge: {
       loadKnowledgeEmbedderAfterFirstFrame,
       downloadKbModel,
-      cancelKbModel,
       mountCollection,
       setCollectionEnabled,
       removeCollection,
@@ -2795,7 +2534,6 @@
       refreshRemoteControlStatus,
       getWebRelaySettings: remoteControlFeature.getWebRelaySettings,
       setWebRelayAddress: remoteControlFeature.setWebRelayAddress,
-      resetWebRelayAddress: remoteControlFeature.resetWebRelayAddress,
     },
     artifacts: {
       artifactInfo,
@@ -2849,7 +2587,6 @@
     memory: {
       loadMemoryOverview,
       saveMemoryProfilePatch,
-      deleteMemoryPreference,
       updateMemoryItem,
       deleteMemoryItem,
       archiveRecentWorkMemory,

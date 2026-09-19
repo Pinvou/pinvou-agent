@@ -7,7 +7,13 @@
   "use strict";
   // biome-ignore lint/suspicious/noAssignInExpressions: registry bootstrap of the verbatim payload; splitting statements would diverge from the artifact
   const registry = root.__PINVOU_TAURI_BRIDGE_FEATURES__ = root.__PINVOU_TAURI_BRIDGE_FEATURES__ || {};
-  registry["settings"] = function (context) {
+  registry["settings"] = function (context) {let pinvouSharedtauriSettingsCache = null;
+function pinvouSharedtauriSettings() {
+  if (!pinvouSharedtauriSettingsCache) pinvouSharedtauriSettingsCache = window.PinvouBridgeShared.create("tauriSettings", { state, invoke, notify, settingsWriteQueue: { get value() { return settingsWriteQueue; }, set value(v) { settingsWriteQueue = v; } }, modelsLoadSeq: { get value() { return modelsLoadSeq; }, set value(v) { modelsLoadSeq = v; } }, loadSessionModel, setActiveModel });
+  return pinvouSharedtauriSettingsCache;
+}
+
+
     const state = context.state;
     const notify = context.notify;
     const invoke = context.invoke;
@@ -32,27 +38,9 @@
     }
   });
 
-  async function loadSettings() {
-    try {
-      state.settings = await invoke("get_settings");
-    } catch {
-      // Backend unreachable = nothing to judge; fall back to following the
-      // system for the color scheme (color_scheme: system).
-      state.settings = { theme: "genesis", color_scheme: "system", language: "zh-Hans" };
-    }
-    notify();
-  }
-  async function loadSelectedPet() {
-    try {
-      state.selectedPet = await invoke("get_selected_pet");
-    } catch {
-      state.selectedPet = "lingling";
-    }
-    notify();
-  }
-  async function setSelectedPet(id) {
-    return invoke("set_selected_pet", { id });
-  }
+async function loadSettings() { return pinvouSharedtauriSettings().loadSettings(); }
+async function loadSelectedPet() { return pinvouSharedtauriSettings().loadSelectedPet(); }
+async function setSelectedPet(id) { return pinvouSharedtauriSettings().setSelectedPet(id); }
   async function loadEffectiveModelConfig(sessionId) {
     const requestedSessionId = arguments.length ? (sessionId || null) : (state.activeSessionId || null);
     try {
@@ -65,11 +53,7 @@
     notify();
   }
   let settingsWriteQueue = Promise.resolve();
-  function enqueueSettingsWrite(write) {
-    const pending = settingsWriteQueue.then(write, write);
-    settingsWriteQueue = pending.then(function () {}, function () {});
-    return pending;
-  }
+function enqueueSettingsWrite(write) { return pinvouSharedtauriSettings().enqueueSettingsWrite(write); }
   async function saveSettings(patch) {
     return enqueueSettingsWrite(async function () {
       try {
@@ -119,12 +103,8 @@
     });
   }
 
-  async function submitFeedback(request) {
-    return invoke("submit_feedback", { request });
-  }
-  async function discoverLocalVllm(request) {
-    return invoke("discover_local_vllm", { request: request || null });
-  }
+async function submitFeedback(request) { return pinvouSharedtauriSettings().submitFeedback(request); }
+async function discoverLocalVllm(request) { return pinvouSharedtauriSettings().discoverLocalVllm(request); }
 
   // ── 厂商预装本地大模型一键引导 ────────────────────────────
   let vllmSetupPollTimer = null;
@@ -200,45 +180,22 @@
     detectLocalVllmSetup({ autoPoll: true });
   }
   // 点「跳过」:仅本次会话内不再弹(不写持久标记,下次启动若仍未配好会再次友好提示)。
-  function dismissVllmSetup() {
-    state.vllmSetupDismissed = true;
-    notify();
-  }
+function dismissVllmSetup() { return pinvouSharedtauriSettings().dismissVllmSetup(); }
   // 点「不再提醒 → 确认」:持久婉拒,开机引导框不再自动弹(仍可在设置→模型管理手动启用)。
   async function declineVllmSetup() {
     try { await invoke("decline_local_vllm_setup"); } catch { /* 持久失败也先隐藏本会话,不阻断 */ }
     state.vllmSetupDismissed = true;
     notify();
   }
-  async function getEffectiveModelConfig(sessionId) {
-    return invoke("get_effective_model_config", {
-      sessionId: arguments.length ? (sessionId || null) : (state.activeSessionId || null),
-    });
-  }
+async function getEffectiveModelConfig(...args) { return pinvouSharedtauriSettings().getEffectiveModelConfig(...args); }
   // 当前有效模型的图片输入能力(普通会话选图即时警告用);后端按会话模型绑定解析。
-  async function getImageInputCapability(sessionId) {
-    return invoke("get_image_input_capability", {
-      sessionId: arguments.length ? (sessionId || null) : (state.activeSessionId || null),
-    });
-  }
+async function getImageInputCapability(...args) { return pinvouSharedtauriSettings().getImageInputCapability(...args); }
 
   // ── 模型列表(「添加模型」方案)─────────────────────────────────
   // 整表覆盖加载：保存/删除/切换链式 loadModels 并发时旧列表不得覆盖新列表
   // （审计 b）。请求序号后发者胜（同 vllmDetectSeq 模式）。
   let modelsLoadSeq = 0;
-  async function loadModels() {
-    const seq = ++modelsLoadSeq;
-    try {
-      const v = await invoke("list_models");
-      if (seq !== modelsLoadSeq) return;
-      state.savedModels = (v && v.models) || [];
-      state.activeModelId = (v && v.active_model_id) || null;
-    } catch {
-      if (seq !== modelsLoadSeq) return;
-      state.savedModels = []; state.activeModelId = null;
-    }
-    notify();
-  }
+async function loadModels() { return pinvouSharedtauriSettings().loadModels(); }
   // model 对象字段须是 snake_case(SavedModel serde):
   // {id,name,preset,context_window_tokens,max_output_tokens,model,base_url,api_key,credential_action,image_capability_override,vision_model_id}
  async function saveModel(model) {
@@ -247,9 +204,7 @@
    await loadSettings();
    await loadEffectiveModelConfig();
  }
- async function revealModelApiKey(id) {
-   return invoke("reveal_model_api_key", { id });
- }
+async function revealModelApiKey(id) { return pinvouSharedtauriSettings().revealModelApiKey(id); }
  async function deleteModel(id) {
    await invoke("delete_model", { id });
    await loadModels();
@@ -277,22 +232,11 @@
     notify();
   }
   // 切当前会话模型(chip 热切)。无 session(草稿态)时改全局默认。
-  async function switchModel(sessionId, modelId) {
-    if (sessionId) {
-      await invoke("set_session_model", { sessionId, modelId });
-      await loadSessionModel(sessionId);
-    } else {
-      await setActiveModel(modelId);
-    }
-  }
-  async function testModelConnection(baseUrl, apiKey, modelId) {
-    return invoke("test_model_connection", { baseUrl, apiKey, modelId: modelId || null });
-  }
+async function switchModel(sessionId, modelId) { return pinvouSharedtauriSettings().switchModel(sessionId, modelId); }
+async function testModelConnection(baseUrl, apiKey, modelId) { return pinvouSharedtauriSettings().testModelConnection(baseUrl, apiKey, modelId); }
   // 测试图片输入能力(设计 §7.3):用当前表单的 model/base_url/key 发一张内置纯色图,
   // 仅由模型编辑弹窗主动点击触发,无任何启动/定时自动测试。
-  async function testImageInputCapability(model, baseUrl, apiKey, modelId) {
-    return invoke("test_image_input_capability", { model, baseUrl, apiKey, modelId: modelId || null });
-  }
+async function testImageInputCapability(model, baseUrl, apiKey, modelId) { return pinvouSharedtauriSettings().testImageInputCapability(model, baseUrl, apiKey, modelId); }
   async function probeLocalServerKind(baseUrl, apiKey, modelId) {
     // 本地/内网 OpenAI 兼容端点的服务类型探测（vllm/ollama/lmstudio/generic）。
     // Rust 侧按 base_url TTL 缓存；命令失败（老版本桌面/命令被拒）在这里 reject，
@@ -308,9 +252,7 @@
       modelId: modelId || null,
     });
   }
-  async function testSearchProvider(provider, apiKey) {
-    return invoke("test_search_provider", { provider, apiKey: apiKey || null });
-  }
+async function testSearchProvider(provider, apiKey) { return pinvouSharedtauriSettings().testSearchProvider(provider, apiKey); }
 
     return {
       loadSettings,

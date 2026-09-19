@@ -12,6 +12,7 @@ import { isImeComposing } from '../../shared/ime-guard.mjs';
 import { formatCompactCount } from '../../shared/format-number.js';
 import { getSyntaxHighlightVersion, subscribeSyntaxHighlight } from '../../shared/syntax-highlighter.js';
 import { renderMarkdown } from '../../shared/markdown-renderer.js';
+import { createWeakCache } from '../../shared/weak-cache.js';
 import { AppIcon, DEPT_ORDER, deptLabelFor, personaText } from '../personas/persona-shared.jsx';
 import { ComposerModelSelector, ComposerToolMenu } from '../settings/composer-shared.jsx';
 import { ComposerPopover, POPOVER_SURFACE, useOutsidePointerClose } from '../../components/ComposerPopover.jsx';
@@ -23,8 +24,8 @@ import { CarefulBlockedCard, PlanCard, PlanStuckCard, ToolCard, UserInputCard, c
 import { annotateAgentSpawnGroups } from '../multiagent/spawn-aggregation.mjs';
 import { RunningAgentsOverlay } from '../multiagent/RunningAgentsOverlay.jsx';
 import {
-  ConversationActivityIndicator,
   ConversationTimeline,
+  LiveConversationActivityIndicator,
   useConversationSecondClock,
 } from '../conversation/ConversationTimeline.jsx';
 import { HomeModeSwitcher } from '../conversation/HomeModeSwitcher.jsx';
@@ -33,10 +34,9 @@ import {
   projectDeepSeekConversation,
 } from '../conversation/deepseek-conversation.js';
 import {
-  measureConversationScrollGeometry,
   shouldForceScrollFollow,
-  startConversationBottomFollower,
   transitionConversationScrollState,
+  useConversationBottomFollower,
 } from '../conversation/conversation-scroll.js';
 import {
   captureConversationScrollPosition,
@@ -120,21 +120,29 @@ import { createVisualPosterMessageMeta, shouldUseVisualPosterScene } from './vis
 import {
   createDataVisualizationMessageMeta,
   createDocumentWritingMessageMeta,
-  createPersonalWorkbenchMessageMeta,
   createPptDesignMessageMeta,
-  PERSONAL_WORKBENCH_SCENE_KEY,
   shouldUseDataVisualizationScene,
   shouldUseDocumentWritingScene,
-  shouldUsePersonalWorkbenchScene,
   shouldUsePptDesignScene,
 } from './work-scene-routes.js';
 import {
+  PERSONAL_WORKBENCH_SCENE_KEY,
   PERSONAL_WORKBENCH_TEMPLATES,
+  createPersonalWorkbenchMessageMeta,
   findPersonalWorkbenchTemplateDraft,
   getPersonalWorkbenchTemplate,
   getPersonalWorkbenchTemplateById,
   isPersonalWorkbenchTemplateDraftForTemplate,
+  shouldUsePersonalWorkbenchScene,
 } from './personal-workbench-scene.js';
+import {
+  DATA_VISUALIZATION_SCENE_KEY,
+  DOCUMENT_WRITING_SCENE_KEY,
+  PINVOU_SCENE_KEYS,
+  PPT_DESIGN_SCENE_KEY,
+  POSTER_SCENE_KEY,
+  pinvouSceneTag,
+} from './scene-registry.js';
 import { canPrepareSceneCapabilities, prepareSceneCapabilities, requiredCapabilitiesForMeta } from './scene-capabilities.js';
 import { invokeTauri } from '../../platform/tauri/client.js';
 import {
@@ -169,59 +177,30 @@ const MULTI_AGENT_ENABLED = can('multiAgent');
 // and must not also trigger submit — otherwise one Enter both commits and sends. Matches PetWindow.
 const isPlainEnter = (e) => e.key === 'Enter' && !e.shiftKey && !isImeComposing(e);
 
-// Second-clock wrapper for the composer activity indicator: the tick used to live on ChatView
-// top-level state, so while busy the whole ChatView (including all transcript coordination)
-// re-rendered once per second; the indicator is the only place showing elapsed time, and now the
-// tick re-renders just this small subtree.
-/**
- * @param {object} props - component props
- * @param {{ status: string } | null} props.turn - active conversation turn, if any
- * @param {() => void} props.onRequestAttention - scroll-to-bottom request handler
- * @param {string} props.className - extra class for the indicator
- * @param {object} props.copy - conversation copy table
- * @returns {React.ReactElement | null} the ticking activity indicator
- */
-function LiveConversationActivityIndicator({ turn, onRequestAttention, className, copy }) {
-  const running = !!turn && turn.status === 'running';
-  const now = useConversationSecondClock(running);
-  return (
-    <ConversationActivityIndicator
-      turn={turn}
-      now={now}
-      onRequestAttention={onRequestAttention}
-      className={className}
-      copy={copy}
-    />
-  );
-}
-
 // Unified scene table after the design lane was merged into work: a scene
 // only expresses "the professional context of this message" and is
 // lane-independent; scene cards render below the empty-state greeting
 // (scene-cards.jsx).
-const SCENE_TABS = [
-  { key: PERSONAL_WORKBENCH_SCENE_KEY, labelKey: 'personalWorkbench', Icon: Briefcase },
-  { key: 'document-writing', labelKey: 'documentWriting', Icon: FileText },
-  { key: 'poster', labelKey: 'poster', Icon: ImageIcon },
-  { key: 'data-visualization', labelKey: 'dataVisualization', Icon: BarChart2 },
-  { key: 'ppt', labelKey: 'pptDesign', Icon: Presentation },
-];
+// Presentation for the canonical scene registry (scene-registry.js owns the
+// key order and the lane tags); this table only adds the UI label key + icon.
+const SCENE_TAB_PRESENTATION = {
+  [PERSONAL_WORKBENCH_SCENE_KEY]: { labelKey: 'personalWorkbench', Icon: Briefcase },
+  [DOCUMENT_WRITING_SCENE_KEY]: { labelKey: 'documentWriting', Icon: FileText },
+  [POSTER_SCENE_KEY]: { labelKey: 'poster', Icon: ImageIcon },
+  [DATA_VISUALIZATION_SCENE_KEY]: { labelKey: 'dataVisualization', Icon: BarChart2 },
+  [PPT_DESIGN_SCENE_KEY]: { labelKey: 'pptDesign', Icon: Presentation },
+};
+const SCENE_TABS = PINVOU_SCENE_KEYS.map((key) => ({ key, ...SCENE_TAB_PRESENTATION[key] }));
 
 // legacy assistant 气泡由 item.text 现算 markdown(懒语言注册后恢复高亮所必需),
 // 但 ChatBubble 未 memo 化:输入框每个按键、流式每个 delta、秒级 tick 都会全量
 // 重渲染,长会话下每次全量重跑 marked+DOMPurify。content-visibility(#275)只省
 // 浏览器合成,不省 React 渲染。item 引用稳定(bridge 会话数据),按 item 键控、
 // text+syntaxVersion 未变直接复用上次结果;版本号 bump(懒语言注册)自然失效重算。
-const legacyMarkdownCache = new WeakMap();
-function renderLegacyMarkdownCached(item, syntaxVersion) {
-  const cached = legacyMarkdownCache.get(item);
-  if (cached && cached.text === item.text && cached.version === syntaxVersion) {
-    return cached.html;
-  }
-  const html = renderMarkdown(item.text);
-  legacyMarkdownCache.set(item, { text: item.text, version: syntaxVersion, html });
-  return html;
-}
+const renderLegacyMarkdownCached = createWeakCache(
+  // eslint-disable-next-line no-unused-vars -- syntaxVersion only keys the cache (lazy language registration invalidation); renderMarkdown needs just the text
+  (item, text, syntaxVersion) => renderMarkdown(text),
+);
 
 // Same idea as legacyMarkdownCache: every composer keystroke, streaming
 // delta, and clock tick re-renders the full view, and each render of an
@@ -232,47 +211,32 @@ function renderLegacyMarkdownCached(item, syntaxVersion) {
 // per item and reused while the tuple is unchanged; while streaming, the
 // item gets a new reference per delta so the cache invalidates naturally —
 // behavior unchanged.
-const assistantParseCache = new WeakMap();
-function parseAssistantBubblesCached(item, html, streaming, allowScheduledTaskDraft, streamingDraftLabel) {
-  const cached = assistantParseCache.get(item);
-  if (cached
-    && cached.html === html
-    && cached.streaming === streaming
-    && cached.allowScheduledTaskDraft === allowScheduledTaskDraft
-    && cached.streamingDraftLabel === streamingDraftLabel) {
-    return cached.parsed;
-  }
-  const pd = streaming ? { draft: null, html: hideStreamingDraft(html, streamingDraftLabel) } : parsePersonaDraft(html);
-  const sd = (streaming || !allowScheduledTaskDraft) ? { draft: null, html: pd.html } : parseScheduledTaskDraft(pd.html);
-  const cq = streaming ? { q: null, html: sd.html } : parseCardQuestion(sd.html);
-  const parsed = { pd, sd, cq };
-  assistantParseCache.set(item, { html, streaming, allowScheduledTaskDraft, streamingDraftLabel, parsed });
-  return parsed;
-}
+const parseAssistantBubblesCached = createWeakCache(
+  (item, html, streaming, allowScheduledTaskDraft, streamingDraftLabel) => {
+    const pd = streaming ? { draft: null, html: hideStreamingDraft(html, streamingDraftLabel) } : parsePersonaDraft(html);
+    const sd = (streaming || !allowScheduledTaskDraft) ? { draft: null, html: pd.html } : parseScheduledTaskDraft(pd.html);
+    const cq = streaming ? { q: null, html: sd.html } : parseCardQuestion(sd.html);
+    return { pd, sd, cq };
+  },
+);
 
 // The memory status label map depends only on the current language
 // dictionary t (a module singleton); caching per t avoids rebuilding the
 // same map on every render of every bubble.
-const memoryStatusLabelsCache = new WeakMap();
-function getMemoryStatusLabels(t) {
-  let labels = memoryStatusLabelsCache.get(t);
-  if (!labels) {
-    const chatCopy = t.uiChat;
-    const chatViewCopy = t.uiChatView;
-    labels = {
-      '已忽略': chatCopy.ignoreOnce,
-      '不再提示': chatCopy.neverAsk,
-      '已记住': chatViewCopy.memStatusRemembered,
-      '已归档': chatViewCopy.memStatusArchived,
-      '已删除': chatViewCopy.memStatusDeleted,
-      '记忆已更新': chatCopy.memoryUpdated,
-      '记忆已归档': chatViewCopy.memStatusArchivedNotice,
-      '记忆已删除': chatViewCopy.memStatusDeletedNotice,
-    };
-    memoryStatusLabelsCache.set(t, labels);
-  }
-  return labels;
-}
+const getMemoryStatusLabels = createWeakCache((t) => {
+  const chatCopy = t.uiChat;
+  const chatViewCopy = t.uiChatView;
+  return {
+    '已忽略': chatCopy.ignoreOnce,
+    '不再提示': chatCopy.neverAsk,
+    '已记住': chatViewCopy.memStatusRemembered,
+    '已归档': chatViewCopy.memStatusArchived,
+    '已删除': chatViewCopy.memStatusDeleted,
+    '记忆已更新': chatCopy.memoryUpdated,
+    '记忆已归档': chatViewCopy.memStatusArchivedNotice,
+    '记忆已删除': chatViewCopy.memStatusDeletedNotice,
+  };
+});
 
 function localizeSceneTabs(items, copy) {
   return items.map(item => ({
@@ -281,21 +245,13 @@ function localizeSceneTabs(items, copy) {
   }));
 }
 
+// Derived from SCENE_TABS: a projected `lane:key` scene tag maps back to the
+// same tab entry, so a scene tag and its scene card can never drift apart.
 function pinvouSceneDisplay(scene, copy) {
-  switch (scene) {
-    case 'work:document-writing':
-      return { label: copy.documentWriting, Icon: FileText };
-    case 'work:personal-workbench':
-      return { label: copy.personalWorkbench, Icon: Briefcase };
-    case 'design:poster':
-      return { label: copy.poster, Icon: ImageIcon };
-    case 'design:data-visualization':
-      return { label: copy.dataVisualization, Icon: BarChart2 };
-    case 'design:ppt':
-      return { label: copy.pptDesign, Icon: Presentation };
-    default:
-      return null;
-  }
+  const tab = scene
+    ? SCENE_TABS.find((item) => pinvouSceneTag(item.key) === scene)
+    : null;
+  return tab ? { label: copy[tab.labelKey], Icon: tab.Icon } : null;
 }
 
 const openChatExternalUrl = (url) => {
@@ -307,8 +263,7 @@ const openChatExternalUrl = (url) => {
   invokeTauri('open_user_external_url', { url }).catch(() => {});
 };
 
-// eslint-disable-next-line no-unused-vars -- theme is injected uniformly by the caller; keep the contract slot
-const ToolWelcomeCard = ({ toolId, _theme, t, onSend }) => {
+const ToolWelcomeCard = ({ toolId, t, onSend }) => {
       const [hovered, setHovered] = useState(null);
       // 组合包化的本地能力(pptx)已无商店连接器卡,欢迎卡数据回退 tsToolWelcomeData
       const tool = localizeTool(tsToolsData.find(item => item.backendId === toolId) || tsToolWelcomeData.find(item => item.backendId === toolId), t);
@@ -591,8 +546,8 @@ const ToolWelcomeCard = ({ toolId, _theme, t, onSend }) => {
       // popover is expanded). The second tick reuses ConversationTimeline's second clock (timer
       // created only while active, cleaned up on unmount). Do not fold the second tick into the
       // global chatItems reconcile — that would re-render all of ChatView every second while a
-      // background task lives (why the second clock left ChatView top level; see the comment
-      // above LiveConversationActivityIndicator).
+      // background task lives (why the second clock left ChatView top level; see the
+      // LiveConversationActivityIndicator comment in ConversationTimeline).
       const now = useConversationSecondClock(true);
       // 服务端 elapsedMs 变化（新输出触发 reconcile）时，渲染期同步换基线
       // （React "adjust state when a prop changes" 模式）；基线时间戳直接用
@@ -716,8 +671,6 @@ const ToolWelcomeCard = ({ toolId, _theme, t, onSend }) => {
           return merged;
         });
       }, []);
-      // Artifacts live in the app-level Right Dock; its host owns narrow-layout fallback.
-      const artColRef = useRef(null);
       const scrollRef = useRef(null);
       const conversationContentRef = useRef(null);
       const autoScrollRef = useRef(true);
@@ -726,7 +679,6 @@ const ToolWelcomeCard = ({ toolId, _theme, t, onSend }) => {
       const lastScrollHeightRef = useRef(0);
       const subagentPanelScrollRef = useRef(null);
       const [showScrollBottom, setShowScrollBottom] = useState(false);
-      const chatRootRef = useRef(null);
       const composerRef = useRef(null);
       const pendingVoiceAfterIntroRef = useRef(null);
       const voiceIntroResolveRef = useRef(null);
@@ -1211,6 +1163,7 @@ const ToolWelcomeCard = ({ toolId, _theme, t, onSend }) => {
       }, [prefill, prefillAppend]);
 
       // 用户向上翻历史时暂停流式自动贴底；回到底部或发送新消息后恢复。
+      // transitionConversationScrollState 只回传消费的字段（following/scrollTop/scrollHeight）。
       useEffect(() => {
         const el = scrollRef.current;
         if (!el) return;
@@ -1319,32 +1272,18 @@ const ToolWelcomeCard = ({ toolId, _theme, t, onSend }) => {
       // Session content can finish measuring after the active-session effect runs, especially
       // when an inactive WebView resumes or content-visibility replaces intrinsic estimates.
       // Keep following the bottom across those layout changes, but never override a user who
-      // deliberately scrolled up.
-      useEffect(() => {
-        const scrollElement = scrollRef.current;
-        const contentElement = conversationContentRef.current;
-        if (!scrollElement || !contentElement) return;
-        return startConversationBottomFollower({
-          scrollElement,
-          contentElement,
-          isFollowing: () => autoScrollRef.current,
-          onMeasured: () => {
-            const measurement = measureConversationScrollGeometry({
-              scrollElement,
-              following: autoScrollRef.current,
-              previousScrollTop: lastScrollTopRef.current,
-              previousScrollHeight: lastScrollHeightRef.current,
-            });
-            lastScrollTopRef.current = measurement.scrollTop;
-            lastScrollHeightRef.current = measurement.scrollHeight;
-          },
-          onRestored: (scrollTop) => {
-            lastScrollTopRef.current = scrollTop;
-            lastScrollHeightRef.current = scrollElement.scrollHeight;
-            setShowScrollBottom(false);
-          },
-        });
-      }, [activeSessionId, hasMessages]);
+      // deliberately scrolled up. (Wiring shared via useConversationBottomFollower; the dep
+      // pair is ChatView's original effect dep array.)
+      useConversationBottomFollower({
+        scrollRef,
+        contentRef: conversationContentRef,
+        autoScrollRef,
+        lastScrollTopRef,
+        lastScrollHeightRef,
+        setShowScrollBottom,
+        activeSessionId,
+        hasMessages,
+      });
 
       // 安装工具后新建会话 → 本地显示欢迎卡片（不发 LLM query，不浪费 token）。
       // welcomeToolId 是一次性引导态,必须跟随会话身份:只有"装完工具"(justInstalledTool 非
@@ -2352,7 +2291,6 @@ const ToolWelcomeCard = ({ toolId, _theme, t, onSend }) => {
         bs,
         t,
         onClose: closeArtifactsPanel,
-        isWide: true,
         preferredArtifactPath: activeArtifactPath,
         onPreviewArtifact: handlePreviewArtifact,
         onGotoSettings,
@@ -2371,7 +2309,7 @@ const ToolWelcomeCard = ({ toolId, _theme, t, onSend }) => {
 
       return (
         <div className="flex-1 flex flex-row w-full h-full min-h-0 relative z-10 animate-in fade-in duration-300">
-          <div ref={chatRootRef} className="flex-1 flex flex-col min-w-0 relative h-full">
+          <div className="flex-1 flex flex-col min-w-0 relative h-full">
             <ComposerAttachmentDropOverlay
               enabled={bridge.available && (!isWeb || can('deviceFileUpload'))}
               onFiles={files => bridge.attachments.uploadDeviceFiles(files)}
@@ -2460,7 +2398,6 @@ const ToolWelcomeCard = ({ toolId, _theme, t, onSend }) => {
               <div className="max-w-[800px] w-full mx-auto mt-8">
                 <ToolWelcomeCard
                   toolId={welcomeToolId}
-                  theme={theme}
                   t={t}
                   onSend={(q) => {
                     setWelcomeToolId(null);
@@ -2840,7 +2777,7 @@ const ToolWelcomeCard = ({ toolId, _theme, t, onSend }) => {
                 rows={1}
                 className="w-full bg-transparent resize-none outline-none text-gray-800 dark:text-gray-100 text-[16px] leading-relaxed min-h-[48px] overflow-y-auto hide-scrollbar placeholder:text-gray-400 dark:placeholder:text-gray-500"
               />
-              <TextareaContextMenu inputRef={composerRef} setValue={setInputText} theme={theme} t={t} />
+              <TextareaContextMenu inputRef={composerRef} setValue={setInputText} t={t} />
               {inputLimitReached && (
                 <div role="status" aria-live="polite" data-testid="chat-input-limit-notice"
                   className={`px-1 pb-1 text-[12px] ${'text-[#C5221F] dark:text-[#F28B82]'}`}>
@@ -2883,7 +2820,7 @@ const ToolWelcomeCard = ({ toolId, _theme, t, onSend }) => {
                       engine always assembles plain config there), so the
                       entry hides up front instead of erroring on click. */}
                   <ComposerModelSelector t={t} bs={bs} onGotoSettings={onGotoModelSettings || onGotoSettings} compact={composerCompact} multiAgentAvailable={!scheduledRunContext} />
-                  <ComposerToolMenu t={t} onGotoTools={onGotoTools} sessionId={bs && bs.activeSessionId} compact={composerCompact} activeSkill={bs && bs.activeSkill} />
+                  <ComposerToolMenu t={t} onGotoTools={onGotoTools} compact={composerCompact} activeSkill={bs && bs.activeSkill} />
                   <ComposerKbSelector t={t} bs={bs} compact={composerCompact} />
                 </div>
                 <VoiceComposerButton
@@ -2980,7 +2917,6 @@ const ToolWelcomeCard = ({ toolId, _theme, t, onSend }) => {
 
           {artifactsVisible && artifactsFullscreen && artifactFullscreenPublicationReady && createPortal(
             <div
-              ref={artColRef}
               className="fixed left-0 right-0 bottom-0 z-[1000] pointer-events-auto"
               style={{ top: can('desktopChrome') ? '36px' : 0 }}
               data-testid="artifact-fullscreen-panel">
@@ -3015,7 +2951,6 @@ const ToolWelcomeCard = ({ toolId, _theme, t, onSend }) => {
               initialAgentId={subagentPanel.agentId}
               selectionRequestId={subagentPanel.selectionRequestId}
               t={t}
-              theme={theme}
               language={modelServiceLanguage}
               modelServiceState={chatModelServiceState}
               onClose={closeSubagentPanel}
@@ -3030,8 +2965,7 @@ const ToolWelcomeCard = ({ toolId, _theme, t, onSend }) => {
     // ==========================================
     // Chat Bubble (message rendering)
     // ==========================================
-    // eslint-disable-next-line no-unused-vars -- theme is injected uniformly by the caller; keep the contract slot
-const SelectionCopyButton = ({ hostRef, targetRef, _theme, t }) => {
+const SelectionCopyButton = ({ hostRef, targetRef, t }) => {
       const [selCopy, setSelCopy] = useState({ visible: false, copied: false, text: '', x: 0, y: 0 });
       const hideTimerRef = useRef(null);
 
@@ -3135,8 +3069,7 @@ const SelectionCopyButton = ({ hostRef, targetRef, _theme, t }) => {
       );
     };
 
-    // eslint-disable-next-line no-unused-vars -- theme is injected uniformly by the caller; keep the contract slot
-const TextareaContextMenu = ({ inputRef, setValue, _theme, t }) => {
+const TextareaContextMenu = ({ inputRef, setValue, t }) => {
       const [menu, setMenu] = useState({ visible: false, x: 0, y: 0, canCopy: false });
 
       const closeMenu = useCallback(() => {
@@ -3261,8 +3194,7 @@ const TextareaContextMenu = ({ inputRef, setValue, _theme, t }) => {
       ), document.body);
     };
 
-    // eslint-disable-next-line no-unused-vars -- theme is injected uniformly by the caller; keep the contract slot
-const UserBubble = ({ item, sessionId, _theme, editable, t, conversationVariant }) => {
+const UserBubble = ({ item, sessionId, editable, t, conversationVariant }) => {
       const unified = conversationVariant === 'unified';
       const deliveryState = item.deliveryState || '';
       const sceneDisplay = pinvouSceneDisplay(item.pinvouScene, t.uiChat.sceneModes);
@@ -3529,7 +3461,7 @@ const UserBubble = ({ item, sessionId, _theme, editable, t, conversationVariant 
       if (item.type === 'careful_blocked') return <CarefulBlockedCard item={item} t={t} />;
       if (item.type === 'user_input') return <UserInputCard item={item} t={t} />;
       if (item.type === 'user') {
-        return <UserBubble item={item} sessionId={sessionId} theme={theme} editable={editable} t={t} conversationVariant={conversationVariant} />;
+        return <UserBubble item={item} sessionId={sessionId} editable={editable} t={t} conversationVariant={conversationVariant} />;
       }
 
       if (item.type === 'card_creator_intro') {
@@ -3549,7 +3481,7 @@ const UserBubble = ({ item, sessionId, _theme, editable, t, conversationVariant 
         // 走 item.html(增量渲染管线);仅存 html 无 text 的旧消息无法现算,保持
         // 原样(其语言在启动核心集内,不受懒注册影响)。
         const html = (!item.streaming && item.text)
-          ? renderLegacyMarkdownCached(item, syntaxVersion)
+          ? renderLegacyMarkdownCached(item, item.text, syntaxVersion)
           : (item.html || '');
         const streamingDraftLabel = /scheduled-task-draft/.test(html) ? t.uiChatExtra.draftingScheduled : (t && t.cpDesigning);
         // The three-pass parse chain is a pure function cached per item (see
@@ -3582,7 +3514,7 @@ const UserBubble = ({ item, sessionId, _theme, editable, t, conversationVariant 
                 }}
                 dangerouslySetInnerHTML={{ __html: cq.html || '' }}
               />
-              <SelectionCopyButton hostRef={assistantSelectionHostRef} targetRef={assistantSelectionTargetRef} theme={theme} t={t} />
+              <SelectionCopyButton hostRef={assistantSelectionHostRef} targetRef={assistantSelectionTargetRef} t={t} />
               {cq.q ? (
                 <div className="mt-2 w-full" style={{ fontFamily:'-apple-system, BlinkMacSystemFont, "SF Pro Text", "PingFang SC", "Microsoft YaHei", sans-serif' }}>
                   <div className="text-[14px] font-medium mb-2" style={{ color: theme === 'dark' ? '#fff' : '#000' }}>{cq.q.question}</div>
@@ -3781,11 +3713,5 @@ const UserBubble = ({ item, sessionId, _theme, editable, t, conversationVariant 
     // references from the bridge session data; the syntaxVersion subscription
     // lives inside the component, so the memo cannot block the re-render
     // after lazy language registration.
-
-    // ==========================================
-    // Artifact Card — present_artifact 成品卡（点击打开预览）
-    // ==========================================
-    // 产物类型 → { 角标/标签文字, tile 配色, lucide 内联 SVG 路径 }（零下载；仅无封面紧凑态显图标）。
-    // 配色/字形照搬 产物卡图标预览.html（唯一权威）。
 
 export { ChatView };

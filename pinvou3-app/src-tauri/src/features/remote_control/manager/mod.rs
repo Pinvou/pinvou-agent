@@ -1282,13 +1282,12 @@ impl RemoteControlManager {
     /// by a chat turn is marked for deletion and cleaned when that reservation
     /// finishes, regardless of whether the turn succeeds or fails.
     pub fn discard_web_attachment(&self, handle: &str) -> Result<(), String> {
-        if handle.len() < 12
-            || handle.len() > 128
-            || !handle.starts_with("attachment_")
-            || !handle
-                .bytes()
-                .all(|byte| byte.is_ascii_alphanumeric() || matches!(byte, b'-' | b'_'))
-        {
+        if !crate::features::files::attachment_upload::validate_opaque_token(
+            handle,
+            12,
+            128,
+            Some("attachment_"),
+        ) {
             return Err("远程控制附件句柄无效".into());
         }
         request_web_attachment_discard(&mut self.inner.lock(), handle);
@@ -2024,23 +2023,13 @@ impl RemoteControlManager {
         if !self.policy.events.contains(event) {
             return;
         }
-        let changed = {
-            let mut inner = self.inner.lock();
-            if subscribe {
-                inner.subscriptions.insert(event.to_string())
-            } else {
-                inner.subscriptions.remove(event)
-            }
-        };
-        if changed {
-            let bridge_event = if subscribe {
-                "web_access:event_subscribe"
-            } else {
-                "web_access:event_unsubscribe"
-            };
-            let _ = self
-                .app
-                .emit_to("main", bridge_event, json!({ "event": event }));
+        // Subscribe/unsubscribe bookkeeping only; no desktop-side notification
+        // is needed for unsubscribe.
+        let mut inner = self.inner.lock();
+        if subscribe {
+            inner.subscriptions.insert(event.to_string());
+        } else {
+            inner.subscriptions.remove(event);
         }
     }
 
@@ -3659,13 +3648,7 @@ mod tests {
             "cancel_generation",
             "compact_now",
             "edit_last_turn",
-            "get_session_pinvou_scene_events",
-            "get_session_steered_messages",
             "get_session_timeline",
-            "get_codex_workspace_changes",
-            "get_codex_workspace_diff",
-            "save_session_pinvou_scene_events",
-            "save_session_steered_messages",
             "web_access_chat",
             "web_access_cancel_codex_acp",
             "web_access_get_codex_workspace_changes",

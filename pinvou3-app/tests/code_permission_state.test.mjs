@@ -279,9 +279,18 @@ try {
   assert.match(view, /resolveNativeModeValue\(/, 'chip 展示值经纯逻辑解析');
   assert.match(view, /resolveNativeModelId\(/, 'native model display must use the tested handoff resolver');
   assert.match(view, /finalizePreparedSessionCreation\(/, 'native session creation must use the tested preparation lifecycle');
+  // sendNative's preparation step moved into the shared runAcpSendPipeline:
+  // the pipeline must rebind the send operation to the created session before
+  // invoking materializeDraft, and sendNative's materializeDraft must throw
+  // the preparation error first thing inside that callback.
   assert.match(
     view,
-    /operation = beginAcpSendOperation\(targetId\);[\s\S]{0,800}if \(created\.preparationError\) throw created\.preparationError;/,
+    /operation = beginAcpSendOperation\(targetId\);[\s\S]{0,300}if \(materializeDraft\) await materializeDraft\(\{ created, targetId, operation \}\);/,
+    'native preparation errors must surface only after the send operation is rebound',
+  );
+  assert.match(
+    view,
+    /materializeDraft: async \(\{ created \}\) => \{[\s\S]{0,300}if \(created\.preparationError\) throw created\.preparationError;/,
     'native preparation errors must surface only after the send operation is rebound',
   );
   // activeIdRef 只允许在 layout effect 内重指：渲染期赋值会被携带旧 prop 的中间

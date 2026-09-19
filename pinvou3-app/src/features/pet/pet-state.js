@@ -34,8 +34,13 @@ export function createPetState() {
   };
 }
 
-function sessionId(payload) {
-  const value = payload && (payload.session_id || payload.sessionId);
+/**
+ * 从事件负载/运行记录里提取会话 id:session_id / sessionId / id 三种字段名
+ * 统一收口(pet-state 事件与 pet-scheduled-notice 的定时运行记录共用,
+ * 定时运行记录只有 id 字段)。
+ */
+export function sessionPayloadId(payload) {
+  const value = payload && (payload.session_id || payload.sessionId || payload.id);
   return value == null ? '' : String(value).trim();
 }
 
@@ -98,7 +103,7 @@ const DEFAULT_ACTIVITY_COPY = Object.freeze({
 
 /** Apply a broadcast chat/pet event to the lightweight per-session activity model. */
 export function applyEvent(state, name, payload, now = Date.now(), copy = DEFAULT_ACTIVITY_COPY) {
-  const sid = sessionId(payload);
+  const sid = sessionPayloadId(payload);
   if (!sid) return false;
 
   switch (name) {

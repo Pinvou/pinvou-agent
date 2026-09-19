@@ -10,8 +10,6 @@ import { dict } from '../../shared/i18n.js';
 
 // 调用方尚未下发 t 时回退中文词典（与现状一致），接入 t 后自动多语。
 const tc = (t) => (t && t.uiToolCommon) || dict.zh.uiToolCommon;
-
-const AcFmtIcon = FileTypeIcon;
     // 设计稿专用图标（逐字照搬 前端-产物卡片.txt，含其独有 strokeWidth）。
     const AcShieldCheck = ({ className }) => <svg aria-hidden="true" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" className={className}><path d="M20 13c0 5-3.5 7.5-7.66 8.95a1 1 0 0 1-.67-.01C7.5 20.5 4 18 4 13V6a1 1 0 0 1 1-1c2 0 4.5-1.2 6.24-2.72a1.17 1.17 0 0 1 1.52 0C14.51 3.81 17 5 19 5a1 1 0 0 1 1 1z"/><path d="m9 12 2 2 4-4"/></svg>;
     const AcSparkles = ({ className }) => <svg aria-hidden="true" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" className={className}><path d="m12 3-1.912 5.813a2 2 0 0 1-1.275 1.275L3 12l5.813 1.912a2 2 0 0 1 1.275 1.275L12 21l1.912-5.813a2 2 0 0 1 1.275-1.275L21 12l-5.813-1.912a2 2 0 0 1-1.275-1.275L12 3Z"/></svg>;
@@ -23,7 +21,9 @@ const AcFmtIcon = FileTypeIcon;
       const canOpenArtifact = !isWeb || can('artifactDownload');
       const kind = _artifactKind(path);
       const fmt = _ARTIFACT_FMT[kind] || _ARTIFACT_FMT.other;
-      const basename = (String(path).split(/[\\/]/).pop()) || '';
+      // path 已在上方归一为字符串（item.path || ''）；默认 fallback '' 与原内联写法
+      // (split().pop()) || '' 完全同义（尾随分隔符切出空末段，同样回退 ''）。
+      const basename = pathBasename(path);
       const title = item.title || basename || t.artifactLabel;
       const open = () => { if (bridge.available && path) bridge.artifacts.openArtifactExternal(path, item.sessionId); };
 
@@ -59,7 +59,7 @@ const AcFmtIcon = FileTypeIcon;
             ) : (
               <div className="px-3 pt-3 pb-2 flex items-center space-x-3">
                 <div className="w-10 h-10 rounded-[8px] flex items-center justify-center shrink-0 bg-black/[0.04] dark:bg-white/[0.08]">
-                  <AcFmtIcon kind={kind} className="w-6 h-6" />
+                  <FileTypeIcon kind={kind} className="w-6 h-6" />
                 </div>
                 <span className="text-[13px] font-semibold text-[#888] dark:text-[#999] uppercase tracking-wider">
                   {fmt.label}

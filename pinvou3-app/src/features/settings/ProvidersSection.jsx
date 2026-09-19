@@ -12,11 +12,12 @@ import {
   reseedDraftControlsAfterProviderSwitch,
 } from '../codex/acp-draft-controls.js';
 import { ProviderFormModal } from './ProviderFormModal.jsx';
+import { StatusChip } from './StatusChip.jsx';
 
 const AGENTS = [
-  { key: 'codex', agentId: 'codex' },
-  { key: 'claude', agentId: 'claude' },
-  { key: 'kimi', agentId: 'kimi' },
+  { key: 'codex' },
+  { key: 'claude' },
+  { key: 'kimi' },
 ];
 
 function WireBadge({ wireApi, agent, copy }) {
@@ -65,6 +66,26 @@ function CardConfirm({ title, desc, children, confirmLabel, cancelLabel, confirm
           <button type="button" onClick={onCancel} className="h-9 px-4 rounded-full text-[13px] font-semibold border border-black/[0.08] dark:border-white/[0.12]">{cancelLabel}</button>
           <button type="button" data-testid={confirmTestId} onClick={onConfirm} disabled={confirmDisabled} className="h-9 px-4 rounded-full bg-red-500 text-white text-[13px] font-semibold disabled:opacity-50">{confirmLabel}</button>
         </div>
+      </div>
+    </div>
+  );
+}
+
+// Shared backdrop + card shell for the provider export/import dialogs (identical
+// z-[110] blurred backdrop and w-[min(560px,...)] rounded-[24px] p-6 card; only the
+// content and close handler differ). Children render verbatim inside the card so the
+// pinned testids (acp-provider-export-json etc.) and DOM order survive: the export
+// "select all" button resolves the textarea via closest('div').previousElementSibling,
+// which requires the footer to directly follow the textarea.
+function TransferModalShell({ onClose, children }) {
+  return (
+    // biome-ignore lint/a11y/useKeyWithClickEvents: backdrop click-to-close layer; the keyboard path is handled by the close/cancel buttons inside the dialog
+    // biome-ignore lint/a11y/noStaticElementInteractions: backdrop click-to-close layer, a non-interactive container
+    <div className="fixed inset-0 z-[110] flex items-center justify-center bg-black/45 backdrop-blur-[14px] animate-in fade-in duration-200" onClick={onClose}>
+      {/* biome-ignore lint/a11y/useKeyWithClickEvents: click-bubbling stop layer; keyboard events need no bubbling handling */}
+      {/* biome-ignore lint/a11y/noStaticElementInteractions: click-bubbling stop layer, a non-interactive container */}
+      <div onClick={event => event.stopPropagation()} className={`w-[min(560px,calc(100vw-24px))] rounded-[24px] p-6 bg-white text-[#1F1F1F] dark:bg-[#1E1F20] dark:text-[#E8EAED]`}>
+        {children}
       </div>
     </div>
   );
@@ -565,9 +586,9 @@ export function ProvidersSection({ t }) {
     (installLog ? installLog.agent === activeAgent : busy === 'install:' + activeAgent);
 
   const cardStyle = `rounded-[20px] p-4 bg-[#F0F4F9] dark:bg-white/[0.05]`;
-  const badge = (label, tone) => (
-    <span className={`rounded-md px-1.5 py-0.5 text-[10px] font-semibold ${tone}`}>{label}</span>
-  );
+  // Provider badge chip: shared implementation in StatusChip.jsx (the badge variant keeps
+  // this view's free-form tone class strings local to the call sites below).
+  const badge = (label, tone) => <StatusChip variant="badge" toneClass={tone}>{label}</StatusChip>;
   const activeBadge = badge(copy.current, 'bg-[#007AFF]/15 text-[#007AFF] dark:text-[#64B5F6]');
   const officialBadge = badge(copy.official, 'bg-emerald-500/10 text-emerald-600 dark:text-emerald-400');
 
@@ -1014,77 +1035,65 @@ export function ProvidersSection({ t }) {
 
       {/* 导出（含明文 key 警告） */}
       {exportOpen && (
-        // biome-ignore lint/a11y/useKeyWithClickEvents: backdrop click-to-close layer; the keyboard path is handled by the close/cancel buttons inside the dialog
-        // biome-ignore lint/a11y/noStaticElementInteractions: backdrop click-to-close layer, a non-interactive container
-        <div className="fixed inset-0 z-[110] flex items-center justify-center bg-black/45 backdrop-blur-[14px] animate-in fade-in duration-200" onClick={() => setExportOpen(false)}>
-          {/* biome-ignore lint/a11y/useKeyWithClickEvents: click-bubbling stop layer; keyboard events need no bubbling handling */}
-          {/* biome-ignore lint/a11y/noStaticElementInteractions: click-bubbling stop layer, a non-interactive container */}
-          <div onClick={event => event.stopPropagation()} className={`w-[min(560px,calc(100vw-24px))] rounded-[24px] p-6 bg-white text-[#1F1F1F] dark:bg-[#1E1F20] dark:text-[#E8EAED]`}>
-            <div className="flex items-start gap-2">
-              <AlertTriangle size={17} className="mt-0.5 shrink-0 text-amber-500" />
-              <div className="min-w-0 flex-1">
-                <h3 className="text-[15px] font-semibold">{copy.exportWarningTitle}</h3>
-                <p className="mt-1 text-[12px] leading-relaxed opacity-75">{copy.exportWarningDesc}</p>
-              </div>
-              <button type="button" onClick={() => setExportOpen(false)} className="h-8 w-8 rounded-full flex items-center justify-center hover:bg-black/[0.06] dark:hover:bg-white/[0.08]"><X size={15} /></button>
+        <TransferModalShell onClose={() => setExportOpen(false)}>
+          <div className="flex items-start gap-2">
+            <AlertTriangle size={17} className="mt-0.5 shrink-0 text-amber-500" />
+            <div className="min-w-0 flex-1">
+              <h3 className="text-[15px] font-semibold">{copy.exportWarningTitle}</h3>
+              <p className="mt-1 text-[12px] leading-relaxed opacity-75">{copy.exportWarningDesc}</p>
             </div>
-            <textarea
-              data-testid="acp-provider-export-json"
-              readOnly
-              value={exportJson}
-              onFocus={event => event.target.select()}
-              className="mt-4 h-56 w-full rounded-xl p-3 font-mono text-[11px] outline-none bg-black/[0.05] dark:bg-white/[0.06] resize-none custom-scrollbar"
-            />
-            <div className="mt-4 flex justify-end gap-2">
-              <button type="button" onClick={() => setExportOpen(false)} className="h-9 px-4 rounded-full text-[13px] font-semibold border border-black/[0.08] dark:border-white/[0.12]">{copy.cancel}</button>
-              {/* 不自动复制到剪贴板：明文 key 意外粘贴到聊天/网页有泄露风险，
-                  改为全选让用户主动复制 */}
-              <button type="button"
-                data-testid="acp-provider-export-select"
-                onClick={event => { event.currentTarget.closest('div').previousElementSibling.select(); }}
-                className="h-9 px-4 rounded-full bg-[#007AFF] text-white text-[13px] font-semibold"
-              >
-                {copy.selectAll}
-              </button>
-            </div>
+            <button type="button" onClick={() => setExportOpen(false)} className="h-8 w-8 rounded-full flex items-center justify-center hover:bg-black/[0.06] dark:hover:bg-white/[0.08]"><X size={15} /></button>
           </div>
-        </div>
+          <textarea
+            data-testid="acp-provider-export-json"
+            readOnly
+            value={exportJson}
+            onFocus={event => event.target.select()}
+            className="mt-4 h-56 w-full rounded-xl p-3 font-mono text-[11px] outline-none bg-black/[0.05] dark:bg-white/[0.06] resize-none custom-scrollbar"
+          />
+          <div className="mt-4 flex justify-end gap-2">
+            <button type="button" onClick={() => setExportOpen(false)} className="h-9 px-4 rounded-full text-[13px] font-semibold border border-black/[0.08] dark:border-white/[0.12]">{copy.cancel}</button>
+            {/* 不自动复制到剪贴板：明文 key 意外粘贴到聊天/网页有泄露风险，
+                改为全选让用户主动复制 */}
+            <button type="button"
+              data-testid="acp-provider-export-select"
+              onClick={event => { event.currentTarget.closest('div').previousElementSibling.select(); }}
+              className="h-9 px-4 rounded-full bg-[#007AFF] text-white text-[13px] font-semibold"
+            >
+              {copy.selectAll}
+            </button>
+          </div>
+        </TransferModalShell>
       )}
 
       {/* 导入 */}
       {importOpen && (
-        // biome-ignore lint/a11y/useKeyWithClickEvents: backdrop click-to-close layer; the keyboard path is handled by the close/cancel buttons inside the dialog
-        // biome-ignore lint/a11y/noStaticElementInteractions: backdrop click-to-close layer, a non-interactive container
-        <div className="fixed inset-0 z-[110] flex items-center justify-center bg-black/45 backdrop-blur-[14px] animate-in fade-in duration-200" onClick={() => setImportOpen(false)}>
-          {/* biome-ignore lint/a11y/useKeyWithClickEvents: click-bubbling stop layer; keyboard events need no bubbling handling */}
-          {/* biome-ignore lint/a11y/noStaticElementInteractions: click-bubbling stop layer, a non-interactive container */}
-          <div onClick={event => event.stopPropagation()} className={`w-[min(560px,calc(100vw-24px))] rounded-[24px] p-6 bg-white text-[#1F1F1F] dark:bg-[#1E1F20] dark:text-[#E8EAED]`}>
-            <h3 className="text-[15px] font-semibold">{copy.import}</h3>
-            {/* 导入同样可能含明文 key：来源信任警示（复审低危 6） */}
-            <div className="mt-2 rounded-xl border border-amber-500/30 bg-amber-500/10 px-3 py-2 text-[12px] leading-relaxed">
-              <span className="font-semibold">{copy.importWarningTitle}</span>
-              <span className="opacity-70"> — {copy.importWarningDesc}</span>
-            </div>
-            <textarea
-              data-testid="acp-provider-import-json"
-              value={importJson}
-              onChange={event => setImportJson(event.target.value)}
-              placeholder='[{ "name": "...", "baseUrl": "...", "apiKey": "..." }]'
-              className="mt-3 h-52 w-full rounded-xl p-3 font-mono text-[11px] outline-none bg-black/[0.05] dark:bg-white/[0.06] resize-none custom-scrollbar"
-            />
-            <div className="mt-4 flex justify-end gap-2">
-              <button type="button" onClick={() => setImportOpen(false)} className="h-9 px-4 rounded-full text-[13px] font-semibold border border-black/[0.08] dark:border-white/[0.12]">{copy.cancel}</button>
-              <button type="button"
-                data-testid="acp-provider-import-confirm"
-                onClick={doImport}
-                disabled={busyOnAgent || !String(importJson || '').trim()}
-                className="h-9 px-4 rounded-full bg-[#007AFF] text-white text-[13px] font-semibold disabled:opacity-50"
-              >
-                {busy === 'import' ? copy.saving : copy.import}
-              </button>
-            </div>
+        <TransferModalShell onClose={() => setImportOpen(false)}>
+          <h3 className="text-[15px] font-semibold">{copy.import}</h3>
+          {/* 导入同样可能含明文 key：来源信任警示（复审低危 6） */}
+          <div className="mt-2 rounded-xl border border-amber-500/30 bg-amber-500/10 px-3 py-2 text-[12px] leading-relaxed">
+            <span className="font-semibold">{copy.importWarningTitle}</span>
+            <span className="opacity-70"> — {copy.importWarningDesc}</span>
           </div>
-        </div>
+          <textarea
+            data-testid="acp-provider-import-json"
+            value={importJson}
+            onChange={event => setImportJson(event.target.value)}
+            placeholder='[{ "name": "...", "baseUrl": "...", "apiKey": "..." }]'
+            className="mt-3 h-52 w-full rounded-xl p-3 font-mono text-[11px] outline-none bg-black/[0.05] dark:bg-white/[0.06] resize-none custom-scrollbar"
+          />
+          <div className="mt-4 flex justify-end gap-2">
+            <button type="button" onClick={() => setImportOpen(false)} className="h-9 px-4 rounded-full text-[13px] font-semibold border border-black/[0.08] dark:border-white/[0.12]">{copy.cancel}</button>
+            <button type="button"
+              data-testid="acp-provider-import-confirm"
+              onClick={doImport}
+              disabled={busyOnAgent || !String(importJson || '').trim()}
+              className="h-9 px-4 rounded-full bg-[#007AFF] text-white text-[13px] font-semibold disabled:opacity-50"
+            >
+              {busy === 'import' ? copy.saving : copy.import}
+            </button>
+          </div>
+        </TransferModalShell>
       )}
     </div>
   );

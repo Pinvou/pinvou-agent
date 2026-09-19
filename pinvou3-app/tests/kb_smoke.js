@@ -42,8 +42,8 @@ function injectSource() {
       scope:'read',deviceId:'pinvou'
     }];
     const COLLS=[
-      {id:1,name:'产品资料库',category:'产品',description:'PRD 与版本规划',createdAt:1,updatedAt:9,status:'ready',docCount:3,chunkCount:12,totalBytes:126000000},
-      {id:2,name:'市场调研',category:'调研',description:'竞品与访谈',createdAt:1,updatedAt:8,status:'indexing',docCount:1,chunkCount:4,totalBytes:88000000}
+      {id:1,name:'产品资料库',category:'产品',description:'PRD 与版本规划',status:'ready',docCount:3,chunkCount:12,totalBytes:126000000},
+      {id:2,name:'市场调研',category:'调研',description:'竞品与访谈',status:'indexing',docCount:1,chunkCount:4,totalBytes:88000000}
     ];
     let DOCS=[
       {id:11,collectionId:1,collName:'产品资料库',path:'/home/x/路线图.md',name:'路线图.md',ext:'md',size:48000,mtime:1700000000,parseStatus:'parsed',nChunks:8},
@@ -76,21 +76,21 @@ function injectSource() {
         case 'list_deliverable_index': return Promise.resolve(OUTPUTS);
         // ---- kb_* ----
         case 'kb_scan_status': return Promise.resolve({running:false,phase:'done',scanned:1248});
-        case 'kb_stats': return Promise.resolve({totalFiles:1248,totalBytes:9e9,hashed:1248,duplicateGroups:3,duplicateFiles:7,duplicateWastedBytes:1048576});
+        case 'kb_stats': return Promise.resolve({totalFiles:1248,totalBytes:9e9});
         case 'kb_type_counts': return Promise.resolve([{ext:'pdf',count:230},{ext:'docx',count:120},{ext:'xlsx',count:80},{ext:'md',count:60},{ext:'png',count:274},{ext:'zip',count:18}]);
         case 'kb_search': return Promise.resolve(FILES);
         case 'kb_collection_list': return Promise.resolve(COLLS);
         case 'kb_documents': return Promise.resolve((args&&args.collectionId>0)?DOCS:DOCS);
-        case 'kb_index_status': return Promise.resolve(window.__KB_INDEX_STATE__ || {running:false,phase:'idle',done:0,total:0,failed:0});
-        case 'kb_index_resume': window.__KB_INDEX_STATE__={...window.__KB_INDEX_STATE__,running:true,resumable:false,phase:'parsing'}; return Promise.resolve(window.__KB_INDEX_STATE__);
-        case 'kb_index_cancel': window.__KB_INDEX_STATE__={...window.__KB_INDEX_STATE__,running:false,resumable:false,phase:'cancelled'}; return Promise.resolve(null);
+        case 'kb_index_status': return Promise.resolve(window.__KB_INDEX_STATE__ || {running:false,done:0,total:0,failed:0});
+        case 'kb_index_resume': window.__KB_INDEX_STATE__={...window.__KB_INDEX_STATE__,running:true,resumable:false}; return Promise.resolve(window.__KB_INDEX_STATE__);
+        case 'kb_index_cancel': window.__KB_INDEX_STATE__={...window.__KB_INDEX_STATE__,running:false,resumable:false}; return Promise.resolve(null);
         case 'kb_index_failed_files':
           if (window.__KB_DEFER_FAILED_PAGE__) return new Promise(resolve => { window.__KB_RESOLVE_FAILED_PAGE__ = resolve; });
           if (window.__KB_FAILED_PAGES__) return Promise.resolve(window.__KB_FAILED_PAGES__[String(args.offset)] || {files:[],nextOffset:null});
           return Promise.resolve(window.__KB_FAILED_PAGE__ || {files:[],nextOffset:null});
-        case 'kb_index_retry_file': window.__KB_INDEX_STATE__={...window.__KB_INDEX_STATE__,running:true,phase:'parsing',failed:0,failedFiles:[]}; return Promise.resolve(window.__KB_INDEX_STATE__);
+        case 'kb_index_retry_file': window.__KB_INDEX_STATE__={...window.__KB_INDEX_STATE__,running:true,failed:0,failedFiles:[]}; return Promise.resolve(window.__KB_INDEX_STATE__);
         case 'kb_collection_create': return Promise.resolve(3);
-        case 'kb_collection_add_sources': return Promise.resolve({running:true,phase:'parsing',done:0,total:2});
+        case 'kb_collection_add_sources': return Promise.resolve({running:true,done:0,total:2});
         case 'kb_remove_document': {
           if (window.__KB_FAIL_REMOVE_DOCUMENT__) {
             window.__KB_FAIL_REMOVE_DOCUMENT__ = false;

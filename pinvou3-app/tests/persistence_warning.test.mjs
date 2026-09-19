@@ -3,10 +3,13 @@ import test from 'node:test';
 
 import {
   EMPTY_PERSISTENCE_WARNING,
-  isPersistenceStatusCurrent,
   persistenceWarningReducer,
   visiblePersistenceWarning,
 } from '../src/features/browser/persistence-warning.mjs';
+// The status-freshness guard is the shared snapshot-domain epoch comparison
+// (formerly the persistence-specific isPersistenceStatusCurrent alias); the
+// tests below still pin its persistence-domain semantics.
+import { isBrowserSnapshotDomainCurrent as isPersistenceStatusCurrent } from '../src/features/browser/browser-state-sync.mjs';
 
 test('dismiss hides only the currently displayed persistence warning', () => {
   let state = persistenceWarningReducer(EMPTY_PERSISTENCE_WARNING, {

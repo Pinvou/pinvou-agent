@@ -23,7 +23,7 @@ pub(crate) fn turn_reminder(scope: ConnectorScope) -> String {
     // follows the marketplace list path, including its existing repair of a
     // corrupt installed registry, rather than creating a second cached truth.
     let tools = MarketplaceManager::new().list_tools();
-    let disabled = crate::features::marketplace::load_disabled_connectors_for(scope);
+    let disabled = crate::features::marketplace::load_disabled_bundles_for(scope);
     render_inventory(&tools, &disabled)
 }
 

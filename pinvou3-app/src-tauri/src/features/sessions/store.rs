@@ -102,10 +102,33 @@ impl SessionStore {
     }
 
     fn boot_inner(recover_interrupted_tools: bool) -> Result<Self> {
+        Self::boot_inner_with(paths::scheduled_tasks_root(), recover_interrupted_tools)
+    }
+
+    /// Test-only boot over an isolated root; production boot paths are
+    /// [`Self::boot`] / [`Self::boot_for_process_startup`].
+    #[cfg(test)]
+    pub(crate) fn boot_at_test_dir(root: &std::path::Path) -> Result<Self> {
+        Self::from_paths(
+            root.join("sessions"),
+            root.join("scheduled-run-profiles.json"),
+            root.join("scheduled"),
+        )
+    }
+
+    pub(crate) fn boot_with_scheduled_root(scheduled_root: PathBuf) -> Result<Self> {
+        Self::boot_inner_with(scheduled_root, false)
+    }
+
+    /// Shared boot sequence: open the store over the ordinary sessions root
+    /// with the given scheduled root, load the five sidecar maps, then —
+    /// optionally after repairing interrupted tool histories — enforce
+    /// retention and purge scheduled side maps.
+    fn boot_inner_with(scheduled_root: PathBuf, recover_interrupted_tools: bool) -> Result<Self> {
         let store = Self::from_paths(
             paths::sessions_root(),
             paths::scheduled_run_profiles_path(),
-            paths::scheduled_tasks_root(),
+            scheduled_root,
         )?;
         // Sidecars historically load later in the Tauri setup hook. Loading
         // them here too lets reconciliation discard scheduled-only runtime
@@ -121,36 +144,6 @@ impl SessionStore {
             if recover_interrupted_tools {
                 store.recover_interrupted_tool_histories_locked()?;
             }
-            store.enforce_session_retention_locked()?;
-        }
-        store.purge_all_scheduled_side_maps();
-        Ok(store)
-    }
-
-    /// Test-only boot over an isolated root; production boot paths are
-    /// [`Self::boot`] / [`Self::boot_for_process_startup`].
-    #[cfg(test)]
-    pub(crate) fn boot_at_test_dir(root: &std::path::Path) -> Result<Self> {
-        Self::from_paths(
-            root.join("sessions"),
-            root.join("scheduled-run-profiles.json"),
-            root.join("scheduled"),
-        )
-    }
-
-    pub(crate) fn boot_with_scheduled_root(scheduled_root: PathBuf) -> Result<Self> {
-        let store = Self::from_paths(
-            paths::sessions_root(),
-            paths::scheduled_run_profiles_path(),
-            scheduled_root,
-        )?;
-        store.load_multi_agent_flags();
-        store.load_session_models();
-        store.load_pinned_sessions();
-        store.load_hidden_sessions();
-        store.load_session_mode_states();
-        {
-            let _mutation = store.scheduled_mutation.lock();
             store.enforce_session_retention_locked()?;
         }
         store.purge_all_scheduled_side_maps();
@@ -320,7 +313,11 @@ impl SessionStore {
             .map(|metadata| metadata.len())
     }
 
-    pub fn save(&self, session: &SavedSession) -> Result<PathBuf> {
+    /// Persist a whole session snapshot. Crate-internal: every durable write
+    /// goes through [`Self::update_messages`] / [`Self::update_artifacts`] /
+    /// the persist helpers above; direct whole-snapshot saves are reserved
+    /// for the store's own create/recovery paths.
+    pub(crate) fn save(&self, session: &SavedSession) -> Result<PathBuf> {
         let _mutation = self.scheduled_mutation.lock();
         if self.is_scheduled_session(&session.metadata.id)? {
             return self.persist_then_reconcile(session, "committed save");
@@ -606,40 +603,6 @@ impl SessionStore {
         session.messages = messages;
         self.persist_then_reconcile(&session, "transcript update")?;
         Ok(())
-    }
-
-    pub fn compare_and_swap_messages(
-        &self,
-        id: &str,
-        expected_revision: &str,
-        messages: Vec<Message>,
-    ) -> Result<String> {
-        let _mutation = self.scheduled_mutation.lock();
-        if self.is_scheduled_session(id)? {
-            bail!("Cannot replace messages for scheduled-run session '{id}'");
-        }
-        let mut session = self
-            .manager
-            .load_session_snapshot(id)
-            .with_context(|| format!("load_session({id}) for transcript CAS"))?;
-        let current_revision = transcript_revision(&session.messages)?;
-        if current_revision != expected_revision {
-            bail!("session_revision_conflict: 会话内容已在远程控制编辑期间发生变化");
-        }
-        if looks_like_truncating_overwrite(&session.messages, &messages) {
-            bail!(
-                "refusing to overwrite {} existing messages with {} unrelated messages",
-                session.messages.len(),
-                messages.len()
-            );
-        }
-
-        let next_revision = transcript_revision(&messages)?;
-        session.metadata.message_count = messages.len();
-        session.metadata.updated_at = Utc::now();
-        session.messages = messages;
-        self.persist_then_reconcile(&session, "transcript CAS")?;
-        Ok(next_revision)
     }
 
     pub fn update_artifacts(&self, id: &str, paths: Vec<String>) -> Result<()> {

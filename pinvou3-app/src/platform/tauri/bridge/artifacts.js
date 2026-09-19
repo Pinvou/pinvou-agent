@@ -7,7 +7,13 @@
   "use strict";
   // biome-ignore lint/suspicious/noAssignInExpressions: registry bootstrap of the verbatim payload; splitting statements would diverge from the artifact
   const registry = root.__PINVOU_TAURI_BRIDGE_FEATURES__ = root.__PINVOU_TAURI_BRIDGE_FEATURES__ || {};
-  registry["artifacts"] = function (context) {
+  registry["artifacts"] = function (context) {let pinvouSharedtauriArtifactsCache = null;
+function pinvouSharedtauriArtifacts() {
+  if (!pinvouSharedtauriArtifactsCache) pinvouSharedtauriArtifactsCache = window.PinvouBridgeShared.create("tauriArtifacts", { invoke, addSystemItem, bt, state, sessionStates, isDeliverable, basename, dialogOpen, addAttachmentByPath });
+  return pinvouSharedtauriArtifactsCache;
+}
+
+
     const state = context.state;
     const notify = context.notify;
     const invoke = context.invoke;
@@ -28,38 +34,17 @@
   // pptx 封面缩略图：读 docProps/thumbnail.jpeg → data URL（无则 null）。本地数据、无外链。
   function readArtifactThumbnail(path) { return invoke("read_artifact_thumbnail", { path }).catch(function () { return null; }); }
   function renderArtifactVisual(path) { return invoke("render_artifact_visual", { path }); }
-  function openContainingFolder(path) { return invoke("open_containing_folder", { path }).catch(function (e) { addSystemItem(bt("openFailed") + e); }); }
-  function revealSessionFolder(sessionId) { return invoke("reveal_session_folder", { sessionId }).catch(function (e) { addSystemItem(bt("openFailed") + e); }); }
-  function openScheduledTaskFolder(automationId) { return invoke("open_scheduled_task_folder", { automationId }).catch(function (e) { addSystemItem(bt("openFailed") + e); }); }
+function openContainingFolder(path) { return pinvouSharedtauriArtifacts().openContainingFolder(path); }
+function revealSessionFolder(sessionId) { return pinvouSharedtauriArtifacts().revealSessionFolder(sessionId); }
+function openScheduledTaskFolder(automationId) { return pinvouSharedtauriArtifacts().openScheduledTaskFolder(automationId); }
   function openInSystem(path) { return invoke("open_in_system", { path }).catch(function (e) { addSystemItem(bt("openFailed") + e); }); }
   // 仅放白名单 URL (metaso.cn / open.bochaai.com),后端 open_external_url 强制校验。
   function openExternalUrl(url) { return invoke("open_external_url", { url }).catch(function (e) { addSystemItem(bt("openFailed") + e); }); }
   // ACP 消息/产物预览里由用户亲自点击的 HTTP(S) 外链；后端与工具白名单入口分开校验。
   function openUserExternalUrl(url) { return invoke("open_user_external_url", { url }).catch(function (e) { addSystemItem(bt("openFailed") + e); }); }
-  function deliverableCategory(path) {
-    const ext = (String(path || "").split(".").pop() || "").toLowerCase();
-    if (["html", "htm", "mhtml", "mht"].includes(ext)) return "web";
-    if (["ppt", "pptx", "odp", "dps"].includes(ext)) return "ppt";
-    if (["png", "jpg", "jpeg", "gif", "webp", "svg", "bmp", "heic"].includes(ext)) return "img";
-    return "doc";
-  }
-  function sessionTitleById(sid) {
-    const m = state.sessions.find(function (s) { return s.id === sid; });
-    return (m && m.title) || "";
-  }
-  function currentMemoryArtifacts() {
-    const rows = [];
-    function addFrom(sid, arts) {
-      (arts || []).forEach(function (a) {
-        const path = a && a.path;
-        if (!path || !isDeliverable(path)) return;
-        rows.push({ path, sessionId: sid || state.activeSessionId, source: sessionTitleById(sid || state.activeSessionId), name: basename(path) });
-      });
-    }
-    addFrom(state.activeSessionId, state.artifacts);
-    Object.keys(sessionStates).forEach(function (sid) { addFrom(sid, sessionStates[sid] && sessionStates[sid].artifacts); });
-    return rows;
-  }
+function deliverableCategory(path) { return pinvouSharedtauriArtifacts().deliverableCategory(path); }
+function sessionTitleById(sid) { return pinvouSharedtauriArtifacts().sessionTitleById(sid); }
+function currentMemoryArtifacts() { return pinvouSharedtauriArtifacts().currentMemoryArtifacts(); }
   // 跨会话产出物索引:磁盘 session JSON 为主,再合并当前内存工作集。
   // 新产物在 chat:done/save_session_artifacts 前也能立刻出现在「产出物」一级入口。
   async function listDeliverableIndex() {
@@ -181,16 +166,7 @@
     notify();
   }
 
-  function conversationAttachmentArgs(reference) {
-    reference = reference || {};
-    return {
-      sessionId: reference.sessionId || state.activeSessionId,
-      messageIndex: Number(reference.messageIndex),
-      attachmentIndex: Number(reference.attachmentIndex),
-      basename: String(reference.basename || ""),
-      displayText: String(reference.displayText || ""),
-    };
-  }
+function conversationAttachmentArgs(reference) { return pinvouSharedtauriArtifacts().conversationAttachmentArgs(reference); }
   function resolveConversationAttachment(reference) {
     return invoke("resolve_conversation_attachment", conversationAttachmentArgs(reference));
   }
@@ -233,15 +209,7 @@
     state.attachments = [];
   }
   // 打开系统文件选择器并摄入为附件
-  async function pickAndAttach() {
-    if (!dialogOpen) { addSystemItem(bt("filePickUnavailable")); return; }
-    try {
-      const selected = await dialogOpen({ multiple: true });
-      if (!selected) return;
-      const paths = Array.isArray(selected) ? selected : [selected];
-      for (let i = 0; i < paths.length; i++) { await addAttachmentByPath(paths[i]); }
-    } catch (e) { addSystemItem(bt("filePickFailed") + e); }
-  }
+async function pickAndAttach() { return pinvouSharedtauriArtifacts().pickAndAttach(); }
   // 文件选择按钮在桌面仍走原生路径；HTML5 拖放拿不到路径时通过同一域方法
   // 分块写入 sessionless 草稿区，直到实际发送才归属到目标会话。
   async function uploadDeviceFiles(files) {

@@ -16,6 +16,55 @@ use crate::platform::credential_store::{
 mod search;
 pub use search::{SearchCredential, SearchPrefs, SearchProvider};
 
+/// 密封的凭据状态机字段访问:`SavedModel` 与 `SearchCredential` 的凭据字段
+/// 同构(`api_key` / `credential_ref` / `credential_state` / `has_secret` /
+/// `credential_action`),字段访问由各结构体提供,状态迁移逻辑见
+/// [`CredentialStateOps`]——只保留一份实现。私有 `Sealed` 限定实现者,
+/// prefs 模块树之外无法进入该状态机。
+pub trait CredentialStateAccess: sealed::Sealed {
+    fn api_key_mut(&mut self) -> &mut String;
+    fn credential_ref_mut(&mut self) -> &mut Option<CredentialReference>;
+    fn credential_state_mut(&mut self) -> &mut CredentialState;
+    fn has_secret_mut(&mut self) -> &mut bool;
+    fn credential_action_mut(&mut self) -> &mut Option<CredentialEditAction>;
+}
+
+/// 凭据状态迁移操作,对所有 [`CredentialStateAccess`] 实现统一提供
+/// (原 `SavedModel` / `SearchCredential` 各一份的同构方法收编于此)。
+pub trait CredentialStateOps: CredentialStateAccess {
+    fn clear_plaintext_key(&mut self) {
+        self.api_key_mut().clear();
+        *self.credential_action_mut() = None;
+    }
+
+    fn mark_configured(&mut self, reference: CredentialReference) {
+        *self.credential_ref_mut() = Some(reference);
+        *self.credential_state_mut() = CredentialState::Configured;
+        *self.has_secret_mut() = true;
+        self.clear_plaintext_key();
+    }
+
+    fn mark_missing(&mut self) {
+        *self.credential_ref_mut() = None;
+        *self.credential_state_mut() = CredentialState::Missing;
+        *self.has_secret_mut() = false;
+        self.clear_plaintext_key();
+    }
+
+    fn mark_unavailable(&mut self) {
+        *self.credential_state_mut() = CredentialState::Unavailable;
+        *self.has_secret_mut() = self.credential_ref_mut().is_some();
+        self.clear_plaintext_key();
+    }
+}
+
+impl<T: CredentialStateAccess> CredentialStateOps for T {}
+
+mod sealed {
+    /// 实现者限定:仅 prefs 模块树内的凭据载体(`SavedModel` / `SearchCredential`)。
+    pub trait Sealed {}
+}
+
 /// `settings.json` 的进程内统一读写锁。
 ///
 /// Tauri 命令会在不同异步任务中并发执行；如果各自执行 `load -> 修改 -> save`，
@@ -373,30 +422,25 @@ impl SavedModel {
             .clone()
             .unwrap_or_else(|| CredentialReference::for_model(&self.id))
     }
+}
 
-    pub fn clear_plaintext_key(&mut self) {
-        self.api_key.clear();
-        self.credential_action = None;
+impl sealed::Sealed for SavedModel {}
+
+impl CredentialStateAccess for SavedModel {
+    fn api_key_mut(&mut self) -> &mut String {
+        &mut self.api_key
     }
-
-    pub fn mark_configured(&mut self, reference: CredentialReference) {
-        self.credential_ref = Some(reference);
-        self.credential_state = CredentialState::Configured;
-        self.has_secret = true;
-        self.clear_plaintext_key();
+    fn credential_ref_mut(&mut self) -> &mut Option<CredentialReference> {
+        &mut self.credential_ref
     }
-
-    pub fn mark_missing(&mut self) {
-        self.credential_ref = None;
-        self.credential_state = CredentialState::Missing;
-        self.has_secret = false;
-        self.clear_plaintext_key();
+    fn credential_state_mut(&mut self) -> &mut CredentialState {
+        &mut self.credential_state
     }
-
-    pub fn mark_unavailable(&mut self) {
-        self.credential_state = CredentialState::Unavailable;
-        self.has_secret = self.credential_ref.is_some();
-        self.clear_plaintext_key();
+    fn has_secret_mut(&mut self) -> &mut bool {
+        &mut self.has_secret
+    }
+    fn credential_action_mut(&mut self) -> &mut Option<CredentialEditAction> {
+        &mut self.credential_action
     }
 }
 

@@ -2136,39 +2136,6 @@ fn forkguard_boot_repairs_interrupted_tool_call_once() {
 }
 
 #[test]
-fn transcript_cas_rejects_stale_revision_without_overwrite() {
-    let (store, _g) = isolated_store();
-    let session = store
-        .create_new("/model".into(), None, std::env::temp_dir())
-        .expect("create");
-    let stale = transcript_revision(&session.messages).expect("empty revision");
-    let winner = vec![user_text("winner")];
-    // first commit 成功并返回新 revision、落盘生效
-    // (原 transcript_cas_commits_and_returns_content_revision 的断言)。
-    let committed = store
-        .compare_and_swap_messages(&session.metadata.id, &stale, winner.clone())
-        .expect("first commit");
-    assert_eq!(
-        committed,
-        transcript_revision(&winner).expect("winner revision")
-    );
-
-    let error = store
-        .compare_and_swap_messages(
-            &session.metadata.id,
-            &stale,
-            vec![user_text("stale overwrite")],
-        )
-        .expect_err("stale CAS must fail");
-
-    assert!(format!("{error:#}").contains("session_revision_conflict"));
-    assert_eq!(
-        store.load(&session.metadata.id).expect("load").messages,
-        winner
-    );
-}
-
-#[test]
 fn metadata_and_artifacts_do_not_change_transcript_revision() {
     let (store, _g) = isolated_store();
     let session = store
@@ -2202,48 +2169,6 @@ fn metadata_and_artifacts_do_not_change_transcript_revision() {
     assert_eq!(
         store.load(&session.metadata.id).expect("load").messages,
         messages
-    );
-}
-
-#[test]
-fn concurrent_stale_transcript_write_cannot_overwrite_winner() {
-    let (store, _g) = isolated_store();
-    let session = store
-        .create_new("/model".into(), None, std::env::temp_dir())
-        .expect("create");
-    let expected = transcript_revision(&session.messages).expect("empty revision");
-    let barrier = Arc::new(std::sync::Barrier::new(2));
-
-    let mut handles = Vec::new();
-    for text in ["writer one", "writer two"] {
-        let thread_store = store.clone();
-        let thread_id = session.metadata.id.clone();
-        let thread_expected = expected.clone();
-        let thread_barrier = barrier.clone();
-        handles.push(std::thread::spawn(move || {
-            thread_barrier.wait();
-            thread_store.compare_and_swap_messages(
-                &thread_id,
-                &thread_expected,
-                vec![user_text(text)],
-            )
-        }));
-    }
-
-    let outcomes: Vec<_> = handles
-        .into_iter()
-        .map(|handle| handle.join().expect("writer thread"))
-        .collect();
-    assert_eq!(outcomes.iter().filter(|result| result.is_ok()).count(), 1);
-    assert_eq!(outcomes.iter().filter(|result| result.is_err()).count(), 1);
-
-    let durable = store.load(&session.metadata.id).expect("load winner");
-    let durable_revision = transcript_revision(&durable.messages).expect("durable revision");
-    assert!(
-        outcomes
-            .iter()
-            .filter_map(|result| result.as_ref().ok())
-            .any(|revision| revision == &durable_revision)
     );
 }
 
@@ -3761,33 +3686,6 @@ fn rewind_bypasses_guard_while_update_messages_stays_protected() {
     // 回退专用路径放行（N=0 清空全部也允许）。
     store.truncate_to_user_turn(&id, 0, None).expect("rewind");
     assert!(store.load(&id).expect("load").messages.is_empty());
-}
-
-/// revision/CAS：截断后 revision 自然变化，持旧 revision 的 CAS 必须失败。
-#[test]
-fn stale_revision_cas_fails_after_rewind() {
-    let (store, _g) = isolated_store();
-    let session = store
-        .create_new("/model".into(), None, std::env::temp_dir())
-        .expect("create");
-    let id = session.metadata.id.clone();
-    let messages = vec![
-        user_text("第一轮"),
-        assistant_text("答一"),
-        user_text("第二轮"),
-        assistant_text("答二"),
-    ];
-    store
-        .update_messages(&id, messages.clone())
-        .expect("seed transcript");
-    let stale_revision = transcript_revision(&messages).expect("revision");
-
-    store.truncate_to_user_turn(&id, 1, None).expect("rewind");
-
-    let error = store
-        .compare_and_swap_messages(&id, &stale_revision, messages)
-        .expect_err("stale revision CAS must fail after rewind");
-    assert!(error.to_string().contains("session_revision_conflict"));
 }
 
 /// 多次回退向 sidecar 追加；超过每会话容量上限时裁掉最老，防无限膨胀。

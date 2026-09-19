@@ -25,9 +25,7 @@ fn find_webkit_webdriver() -> Option<PathBuf> {
 #[derive(Debug, Clone)]
 pub struct Pinvou3Bundle {
     pub root: PathBuf,
-    pub instructions_md: PathBuf,
     pub skills_dir: PathBuf,
-    pub user_skills_dir: PathBuf,
     pub mcp_json: PathBuf,
     pub deny_sensitive_sh: PathBuf,
     pub deny_sensitive_ps1: PathBuf,
@@ -98,9 +96,7 @@ impl Pinvou3Bundle {
     pub fn paths() -> Self {
         Self {
             root: paths::bundle_root(),
-            instructions_md: paths::bundle_instructions(),
             skills_dir: paths::bundle_skills_dir(),
-            user_skills_dir: paths::user_skills_dir(),
             mcp_json: paths::bundle_mcp_json(),
             deny_sensitive_sh: paths::bundle_root().join("deny_sensitive_paths.sh"),
             deny_sensitive_ps1: paths::bundle_root().join("deny_sensitive_paths.ps1"),
@@ -113,9 +109,9 @@ impl Pinvou3Bundle {
     /// 比对 `bundle/VERSION` 与 [`BUNDLE_VERSION`]：相同跳过；
     /// 不同则覆写 bundle 内文件并更新 VERSION。**不动 user/ 和 settings.json**。
     ///
-    /// 解包时对 `INSTRUCTIONS_MD` 做模板替换，把 `{{PINVOU3_WORKSPACE}}` 占位符
-    /// 替换成 `~/.pinvou3/workspace/` 的实际绝对路径——让 AI 直接拿到完整路径
-    /// 给 write_file 用，避免先 exec_shell 探一遍 env var。
+    /// 引擎侧 system prompt 走 `mod.rs` 的 `instructions_md()` 内嵌渲染
+    /// （per-session locale / workspace / sudo 占位符在会话渲染层就地替换），
+    /// 不再落盘 `bundle/instructions.md` 副本。
     pub fn ensure_extracted(&self) -> std::io::Result<()> {
         let marketplace = crate::features::marketplace::MarketplaceManager::new();
         self.ensure_extracted_with_marketplace(&marketplace, |manager| {
@@ -205,10 +201,9 @@ impl Pinvou3Bundle {
             "rust",
             "bundle_extract:skills_migration:done",
             &format!(
-                "moved={} stale={} kept={}",
+                "moved={} stale={}",
                 migration.moved.len(),
-                migration.removed_stale.len(),
-                migration.kept.len()
+                migration.removed_stale.len()
             ),
         );
         // 自愈对账：认领错位归位/去重、孤儿副本、瘫记录、内置释放目录残旧收敛。
@@ -294,28 +289,6 @@ impl Pinvou3Bundle {
         }
         std::fs::create_dir_all(&self.root)?;
         std::fs::create_dir_all(&self.skills_dir)?;
-        let workspace_abs = paths::workspace_dir();
-        std::fs::create_dir_all(&workspace_abs)?;
-        // 首次解包按当前 sudoers 状态填 PINVOU3_SUDO_INSTRUCTION,避免占位符原文
-        // 漏到 LLM 看到的 system prompt(engine boot 时是从 disk 读的)。
-        // 用户切换开关时 set_super_permission 会 sync_session 重写。
-        let rendered = instructions_md()
-            .replace("{{PINVOU3_WORKSPACE}}", &workspace_abs.to_string_lossy())
-            .replace(
-                "{{PINVOU3_SUDO_INSTRUCTION}}",
-                crate::platform::super_permission::instruction_block(),
-            )
-            // The user memory section is filled or dropped per the current memory toggle
-            // (the on-disk copy is not the LLM's live path; this only keeps the placeholder
-            // text out of the file on disk, same as TITLE_LANG).
-            .replace(
-                "{{PINVOU3_MEMORY_SECTION}}\n",
-                super::memory_section(crate::features::memory::memory_enabled()),
-            )
-            // 落盘副本无 per-session locale,默认填中文兜底(LLM 实际走 mod.rs 的 inline 渲染,
-            // 那里按 locale 填);此处仅防 {{PINVOU3_TITLE_LANG}} 占位符原文残留在 disk 文件。
-            .replace("{{PINVOU3_TITLE_LANG}}", "简体中文");
-        std::fs::write(&self.instructions_md, rendered)?;
         // PINVOU 自有 hooks：写入 + 加可执行位
         std::fs::write(&self.deny_sensitive_sh, DENY_SENSITIVE_PATHS_SH)?;
         std::fs::write(&self.deny_sensitive_ps1, DENY_SENSITIVE_PATHS_PS1)?;
@@ -430,14 +403,19 @@ impl Pinvou3Bundle {
                     return Ok(());
                 }
                 let _ = crate::features::marketplace::MarketplaceManager::new().uninstall(tool_id);
-                let mut disabled = crate::features::marketplace::load_disabled_connectors();
+                let mut disabled = crate::features::marketplace::scope::load_disabled_bundles_for(
+                    crate::features::marketplace::ConnectorScope::Plain,
+                );
                 let before = disabled.len();
                 disabled.retain(|id| id != tool_id);
                 if disabled.len() != before {
-                    crate::features::marketplace::save_disabled_connectors(&disabled);
+                    crate::features::marketplace::scope::save_disabled_bundles_for(
+                        crate::features::marketplace::ConnectorScope::Plain,
+                        &disabled,
+                    );
                 }
                 // 代码会话的 code scope 同样清理残留。
-                crate::features::marketplace::remove_connector_from_disabled_scopes(tool_id);
+                crate::features::marketplace::scope::remove_bundle_from_disabled_scopes(tool_id);
 
                 let _ = std::fs::remove_dir_all(paths::bundle_mcp_servers_dir().join(tool_id));
                 // 按包聚合新布局的退役残留：`migrate_custom_mcp_layout` 会先把旧目录

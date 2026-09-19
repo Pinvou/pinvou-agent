@@ -8,7 +8,9 @@ function source(relativePath) {
 const selectedPetRust = source('src-tauri/src/features/pet/selected_pet.rs');
 const petCommands = source('src-tauri/src/app/commands/pet.rs');
 const rustLib = source('src-tauri/src/lib.rs');
-const bridge = source('src/platform/tauri/bridge.js') + source('src/platform/tauri/bridge/settings.js');
+const bridge = source('src/platform/tauri/bridge.js') + source('src/platform/tauri/bridge/settings.js')
+  // setSelectedPet 实现已随 dead-code dedup 移入共享 payload，结构 pin 需一并纳入。
+  + source('src/shared/bridge-shared-helpers.js');
 const petWindow = source('src/features/pet/PetWindow.jsx');
 const manifest = JSON.parse(source('src/features/pet/pet-manifest.json'));
 

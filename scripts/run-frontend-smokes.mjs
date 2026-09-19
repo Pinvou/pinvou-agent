@@ -55,7 +55,7 @@ function run(item) {
   });
 }
 
-export async function runFrontendSmokes(items = FULL_FRONTEND_SMOKES) {
+async function runFrontendSmokes(items = FULL_FRONTEND_SMOKES) {
   for (const item of items) {
     await run(item);
   }

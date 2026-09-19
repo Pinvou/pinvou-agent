@@ -11,9 +11,12 @@ mod macos_path;
 mod macos_permission;
 mod macos_system;
 
+// `user_home_dir` 经上方 `pub use super::unsupported::*` glob 继承（与原
+// macos_path 本地实现逐字相同）；其余路径 helper 现收口于 posix.rs，经
+// macos_path re-export。
 pub use macos_path::{
     apply_user_npm_prefix, connector_cli_command, filesystem_path_identity_key,
-    platform_compat_path, user_home_dir,
+    platform_compat_path,
 };
 pub use macos_permission::{
     disable_super_permission, enable_super_permission, super_permission_is_enabled,

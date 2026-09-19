@@ -1,4 +1,7 @@
-const PERSONAL_WORKBENCH_SCENE_KEY = 'personal-workbench';
+// The canonical scene key lives in the shared scene registry (single source
+// of truth for the routed scene keys); re-exported here for the ChatView
+// import contract.
+import { PERSONAL_WORKBENCH_SCENE_KEY } from './scene-registry.js';
 /**
  * No static importer: tests/personal_workbench_scene_logic.test.js reads this
  * file as text, strips the export, and evaluates it by name in a Node vm
