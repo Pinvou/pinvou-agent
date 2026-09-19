@@ -1509,9 +1509,10 @@ jobs:
       }}
     runs-on: macos-15
     # The check intentionally runs without caches and compiles the whole
-    # workspace (the app crate included) from cold; 60 minutes left little
-    # headroom on 3-vCPU runners, where the Windows analogue shares a
-    # 180-minute budget.
+    # workspace (the app crate included) from cold. Observed cold runs land
+    # in the 6-11 minute range; the budget is generous so a pathological
+    # hang (or a slower runner class) fails on the timeout instead of
+    # wedging. The Windows analogue shares a 180-minute budget.
     timeout-minutes: 90
     steps:
       - name: Checkout

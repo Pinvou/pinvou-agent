@@ -452,6 +452,9 @@ class CiGatePolicyTests(unittest.TestCase):
         )[1].split("\n  required-gate:", maxsplit=1)[0]
         self.assertIn("github.event_name == 'push' ||", macos_cli)
         self.assertIn("github.event_name == 'merge_group'", macos_cli)
+        # Pin the budget like the sibling legs (rust-lint 30, rust-test 120,
+        # windows-rust-test 180): an unpinned timeout can drift silently.
+        self.assertIn("timeout-minutes: 90", macos_cli)
         merge_group_branch = macos_cli.split(
             "github.event_name == 'merge_group'", maxsplit=1
         )[1].split("github.event_name == 'pull_request'", maxsplit=1)[0]
