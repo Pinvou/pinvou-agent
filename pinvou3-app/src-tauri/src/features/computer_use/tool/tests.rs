@@ -116,6 +116,11 @@ struct MockState {
     /// Revoke flavor of the between-injections pin: move_to revokes the
     /// session grant before answering (drives the scroll-side re-check).
     revoke_via_move_to: Option<Arc<ComputerUseShared>>,
+    /// When set, capabilities latches the emergency stop before answering —
+    /// drives the wait-window pin: a stop landing after the pre-backend
+    /// re-check but before the follow-up capture (the wait sleep) must abort
+    /// the capture.
+    stop_via_capabilities: Option<Arc<ComputerUseShared>>,
     moved_to: Vec<(i32, i32)>,
     clicked: Vec<(MouseButton, u8)>,
     /// All five injection surfaces are recorded — the "NOT executed"
@@ -135,6 +140,9 @@ struct MockState {
     /// the deterministic ordering pin for the emergency cleanup contract
     /// (button releases strictly before the OS-grant close).
     released_before_up: bool,
+    /// Number of times capture ran: the "the screenshot never happened"
+    /// assertion for post-gate stop/revoke pins on the observe lane.
+    captured: usize,
     /// When set, drag returns Err (injected drag backend failure, verifying
     /// the button-release safety net after a failure).
     drag_error: bool,
@@ -167,7 +175,9 @@ impl Default for MockState {
             revoke_grant_via: None,
             stop_via_move_to: None,
             revoke_via_move_to: None,
+            stop_via_capabilities: None,
             released_before_up: false,
+            captured: 0,
             moved_to: Vec::new(),
             clicked: Vec::new(),
             downed: Vec::new(),
@@ -211,6 +221,9 @@ impl MockBackend {
 
 impl ComputerUseBackend for MockBackend {
     fn capabilities(&self) -> Capabilities {
+        if let Some(shared) = self.state.lock().stop_via_capabilities.clone() {
+            shared.stop_all();
+        }
         let state = self.state.lock();
         Capabilities {
             screenshot: state.screenshot_cap,
@@ -221,7 +234,8 @@ impl ComputerUseBackend for MockBackend {
     }
 
     fn capture(&mut self) -> Result<Capture, ComputerUseError> {
-        let state = self.state.lock();
+        let mut state = self.state.lock();
+        state.captured += 1;
         if state.capture_error {
             return Err(ComputerUseError::unavailable("mock: capture denied"));
         }
@@ -4380,6 +4394,78 @@ async fn revoke_between_move_and_scroll_aborts_the_scroll() {
     assert!(
         fixture.mock.lock().scrolled.is_empty(),
         "the scroll must never execute after the revoke"
+    );
+}
+
+/// First-screenshot pin (cleanup fast-path reverse race): a stop landing
+/// after the async consent gate passed — while the run is still queued on
+/// the blocking pool, exactly the moment the emergency cleanup's Pending
+/// fast path skips the never-started handle as "nothing to release" — must
+/// abort the observe action before the backend is engaged. The screenshot
+/// request's cancel flag registers only at send time, so it cannot inherit
+/// that stop, and the fast-path cleanup performs no cancellation of its own;
+/// the last-moment re-check before the first backend call is the only gate
+/// left. Invoking run() directly past the (already-passed) entry gate with
+/// the stop flag latched is the deterministic form of that timing: without
+/// the re-check this test's screenshot would start the lazy backend, capture,
+/// and return success.
+#[test]
+fn stop_before_first_screenshot_aborts_without_starting_the_backend() {
+    let (fixture, _restore) = fixture();
+    fixture.shared.stop_all();
+    let parsed = parse_action(&json!({"action": "screenshot"})).expect("screenshot parses");
+    let result = run(
+        fixture.tool.parts.clone(),
+        parsed,
+        fixture.workspace.clone(),
+    );
+    assert!(
+        !result.success,
+        "the post-gate stop must fail the screenshot, got: {}",
+        result.content
+    );
+    assert!(
+        result.content.contains("stopped by the user"),
+        "the post-gate stop must surface as the stopped error: {}",
+        result.content
+    );
+    assert_eq!(
+        fixture.mock.lock().captured,
+        0,
+        "no capture may run after the stop: the backend must stay unstarted"
+    );
+}
+
+/// Wait-window pin (observe follow-up capture): a stop landing after the
+/// pre-backend re-check but during the wait sleep — hooked here via
+/// capabilities, which runs immediately before the sleep — must abort the
+/// follow-up capture. A wait's whole product is the fresh screenshot, and
+/// its sleep is the one wide pre-capture window in the observe lane, so the
+/// capture re-checks the stop flag instead of screenshotting after the stop
+/// returned.
+#[tokio::test]
+async fn stop_during_wait_sleep_aborts_the_followup_capture() {
+    let (fixture, _restore) = fixture();
+    {
+        let mut mock = fixture.mock.lock();
+        mock.stop_via_capabilities = Some(Arc::clone(&fixture.shared));
+    }
+    let result = fixture
+        .tool
+        .execute(
+            json!({"action": "wait", "ms": 20}),
+            &context(&fixture.workspace),
+        )
+        .await;
+    let text = result.ok().map(|r| r.content).unwrap_or_default();
+    assert!(
+        text.contains("stopped by the user"),
+        "the stop landing during the wait sleep must abort the capture: {text}"
+    );
+    assert_eq!(
+        fixture.mock.lock().captured,
+        0,
+        "no capture may run after a stop that landed during the wait sleep"
     );
 }
 
