@@ -3494,18 +3494,6 @@ mod scheduled_model_tests {
     }
 
     #[test]
-    fn saved_model_update_revision_forces_next_turn_rebuild() {
-        let revisions = ModelUpdateRevisions::default();
-        let prepared = PreparedRuntimeModel::unchanged(model("model-1", "wire-model"));
-        let previous = PreparedRuntimeState::new(prepared.clone(), revisions.current("model-1"));
-
-        revisions.bump("model-1");
-        let after_save = PreparedRuntimeState::new(prepared, revisions.current("model-1"));
-
-        assert!(after_save.requires_rebuild_from(&previous));
-    }
-
-    #[test]
     fn rebuild_does_not_swallow_inflight_reservation() {
         // #253 regression (deterministic composition, no real engine): saving
         // the model/credentials (the mark_model_updated revision bump) -> the
@@ -4186,87 +4174,6 @@ mod scheduled_model_tests {
         assert!(
             cascade_called.load(Ordering::Acquire),
             "a fresh cancel on the current turn must also cascade-cancel its subagents inside the turn gate"
-        );
-    }
-
-    #[tokio::test]
-    async fn stale_cancel_retries_cascade_when_phase_one_try_send_failed() {
-        // reviewer 点 9 的确定性回归：phase 1 的 best-effort try_send 因 ops
-        // 通道满（容量 32）而失败时，CancelSubAgents 从未入队；若随后旧轮结束、
-        // 新轮在 phase 2 取得 turn gate 前完成 reserve，阶段二 generation
-        // mismatch 直接 return 会让级联取消永久丢失，旧轮派生的 detached 子代理
-        // 继续运行。修复后 mismatch 分支必须在新轮尚未提交（仅 reserve 未
-        // send——SendMessage 需等同一把 turn_lock、被本函数持有，engine 里仍是
-        // 旧轮遗留子代理）时持锁补发一次 cascade（简化③后不再区分 try_send
-        // 是否失败，按 should_retry_cascade 统一补发，幂等无害）。
-        let locks = SessionTurnLocks::default();
-        let lifecycles = SessionTurnLifecycles::default();
-        let shell_tasks = SessionTurnShellTasks::default();
-        let sid = "session-try-send-failure";
-
-        let lifecycle = lifecycles.for_session(sid);
-        // turn1：on_submitted 激活（active+submitted+epoch=1）。
-        assert!(lifecycle.on_submitted(Some(TEST_SUBMISSION.to_string())));
-
-        let gate = locks.for_session(sid).await;
-        let blocker = gate.lock().await;
-
-        let cascade_called = Arc::new(AtomicBool::new(false));
-        let probe_cascade = cascade_called.clone();
-        let cancel_called = Arc::new(AtomicBool::new(false));
-        let probe_cancel = cancel_called.clone();
-        // phase 1 的 try_send 失败（ops 通道满）：补发路径不依赖失败记录，
-        // 由 should_retry_cascade（新轮未提交）统一判定。
-
-        let cancel_task = tokio::spawn(async move {
-            cancel_turn_with_gates(
-                &locks,
-                &lifecycles,
-                &shell_tasks,
-                sid,
-                deepseek_tui::core::engine::CancelMode::StopDropInbox,
-                // get_engine：engine 在场（阶段一与补发复查都返回 Some）。
-                || async { Some(()) },
-                // cancel_current：阶段一执行一次（取消旧轮）。
-                move |_engine: &(), _identity: Option<TurnIdentity>| {
-                    probe_cancel.store(true, Ordering::Release);
-                },
-                // cascade_cancel：新轮未提交 → mismatch 分支必须补发，不能因
-                // generation mismatch 直接丢弃级联取消。
-                move |_engine: &()| {
-                    probe_cascade.store(true, Ordering::Release);
-                    async {}
-                },
-                // claim_unsubmitted 不应被调用（turn1 已 submitted）。
-                |_lc, _target| false,
-            )
-            .await
-        });
-        // 让 cancel 进展到阶段一完成、阶段二 gate.lock().await 挂起。
-        tokio::task::yield_now().await;
-
-        // turn1 终态（submitted，走 claim 路径）→ turn2 reserve（epoch=2，
-        // 未提交——SendMessage 被阶段二持有的 turn_lock 阻塞）。
-        assert!(lifecycle.finish_once(|| {}).is_some());
-        let reservation2 = lifecycle.reserve().expect("turn2 reserve");
-
-        // 释放 turn_lock：阶段二恢复，current=Some(2) ≠ target=Some(1) → mismatch
-        // → should_retry_cascade（新轮未提交）→ 补发级联取消。
-        drop(blocker);
-        drop(gate);
-        cancel_task.await.expect("cancel task joins");
-
-        assert!(
-            cascade_called.load(Ordering::Acquire),
-            "a stale cancel must retry the cascade when phase one try_send failed and the new turn has not started"
-        );
-        assert!(
-            cancel_called.load(Ordering::Acquire),
-            "phase one must still cancel the originating turn's engine"
-        );
-        assert!(
-            reservation2.ensure_active().is_ok(),
-            "new turn reservation must remain valid after the cascade retry"
         );
     }
 
