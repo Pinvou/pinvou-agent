@@ -602,13 +602,17 @@ fn export(
             // destination created (or swapped onto a symlink) after a
             // plain exists() probe can no longer be truncated.
             let bytes = content.len();
-            let write_result = std::fs::OpenOptions::new()
+            // The exclusive create and the body write are matched separately:
+            // the truncated-destination cleanup is only meaningful when the
+            // create SUCCEEDED — an open() failure (missing parent directory,
+            // EACCES, ELOOP) never created a file, so remove_file must not
+            // run for it.
+            let mut file = match std::fs::OpenOptions::new()
                 .write(true)
                 .create_new(true)
                 .open(&path)
-                .and_then(|mut file| file.write_all(content.as_bytes()));
-            match write_result {
-                Ok(()) => {}
+            {
+                Ok(file) => file,
                 Err(error) if error.kind() == std::io::ErrorKind::AlreadyExists => {
                     return Err(CliError::failed(format!(
                         "sessions export({id}): refusing to overwrite {}; choose a destination \
@@ -617,16 +621,22 @@ fn export(
                     )));
                 }
                 Err(error) => {
-                    // The exclusive create succeeded but the body failed
-                    // (ENOSPC, quota): drop the truncated destination so a
-                    // retry is possible and no half-written transcript
-                    // masquerades as an export.
-                    let _ = std::fs::remove_file(&path);
                     return Err(CliError::failed(format!(
                         "sessions export({id}): cannot write {}: {error}",
                         path.display()
                     )));
                 }
+            };
+            if let Err(error) = file.write_all(content.as_bytes()) {
+                // The exclusive create succeeded but the body failed
+                // (ENOSPC, quota): drop the truncated destination so a
+                // retry is possible and no half-written transcript
+                // masquerades as an export.
+                let _ = std::fs::remove_file(&path);
+                return Err(CliError::failed(format!(
+                    "sessions export({id}): cannot write {}: {error}",
+                    path.display()
+                )));
             }
             let value = serde_json::json!({
                 "id": id,
