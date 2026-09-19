@@ -1,18 +1,18 @@
 # Pinvou 对 CodeWhale 底座的 fork 维护策略
 
-> 最后更新：2026-09-18（上游 `v0.9.12` r1 之后过渡期：gitlink 沿维护分支领先 r1 tag 至 `7fc36e587`，待 r2 收口对齐）
+> 最后更新：2026-09-18（上游 `v0.9.12` r1 之后过渡期：gitlink 沿维护分支领先 r1 tag，当前指向维护分支头 `7fc36e587` 之上的 T8 提交 `9f1210d31`/`b5d9fa7c8`/`b11c12720`，随上游 #65 合入成为维护分支头；待 r2 收口对齐）
 > 配套：`docs/fork-modifications.md`、`scripts/fork-guard.sh`、`docs/底座升级验收清单.md`
 > English: [`docs/fork-policy.en.md`](fork-policy.en.md)
 
 ## 0. 当前基线
 
 - 上游：`Hmbown/CodeWhale` tag `v0.9.12`，commit `dcd4c200f72f0c1ffd60d8e7f6850313db879fc5`。
-- 当前 fork 基线：`Pinvou/CodeWhale:pinvou3-clean`，head `7fc36e587a91bf400a38a452653933c347f699ca`，共 36 个带 DCO sign-off 的提交；不可变 tag `pinvou-v0.9.12-r1` 钉在 r1 收口 `1fafee7e26b60a59457a43bce50c63aa2ad9dbaf`（15 个提交，由 CodeWhale PR #44 与 fast-follow PR #46 形成），其后 21 个提交为 2026-09-10/11 backlog 批次（13 个）、2026-09-17 批次 #56/#58/#59/#60/#61（5 个）与 2026-09-18 批次 #55/#57/#62（3 个）经 PR squash 合入。
+- 当前 fork 基线：`Pinvou/CodeWhale:pinvou3-clean`，head `7fc36e587a91bf400a38a452653933c347f699ca`，共 36 个带 DCO sign-off 的提交；不可变 tag `pinvou-v0.9.12-r1` 钉在 r1 收口 `1fafee7e26b60a59457a43bce50c63aa2ad9dbaf`（15 个提交，由 CodeWhale PR #44 与 fast-follow PR #46 形成），其后 21 个提交为 2026-09-10/11 backlog 批次（13 个）、2026-09-17 批次 #56/#58/#59/#60/#61（5 个）与 2026-09-18 批次 #62/#57/#55（3 个）经 PR squash 合入。其上另有 T8 提交 `9f1210d31`、`b5d9fa7c8` 与 `b11c12720`（roster 宿主 profiles 呈现、`profile_query` 发现通道与评审钉点补测，当前为上游 #65 分支头），随父仓蜂群二期 PR 经上游 CodeWhale #65 合入（合入后 head 共 39 个提交、领先 tag 24 个）。
 - 升级前公开回退点是不可变 tag `pinvou-v0.9.5-r13`，head `f853f8f1566c57e6be40d5439a222a932aa79ef5`；同 SHA 的本地 branch `backup/pre-v0.9.12-sync` 只作便利引用。
 - r1 已成为可消费的受保护基线；rN 收口时父仓 gitlink、维护分支和不可变 tag 指向同一 commit。
 - 过渡期豁免（2026-09-11 起）：两次 rN 收口之间，父仓 gitlink 可沿 `pinvou3-clean` 领先不可变 tag 前进；期间 `scripts/verify-public-submodule.sh` 断言 gitlink 等于公开维护分支头、不可变 tag 仍钉在其收口 commit，rN 收口时在合并头切新不可变 tag 并恢复三方相等。
 - `.gitmodules` 不配置浮动 `branch`；发布后父仓 gitlink、维护分支和不可变标签必须指向同一 commit。
-- 当前维护 4 个长期主题与 2 个追加减量主题：
+- 当前维护 4 个长期主题、3 个追加减量主题与 1 个已合入维护分支的主题：
 
   1. 宿主嵌入与路由边界
   2. 工具兼容与命令执行安全
@@ -20,6 +20,8 @@
   4. 定时任务与运行生命周期
   5. 会话归档导出（T5，追加减量）
   6. 蜂群限流治理（T6，追加减量）
+  7. 压缩检查点角色兼容（T7，已合入维护分支）
+  8. roster 宿主 profiles 呈现（T8，追加减量）
 
 精确 commit、文件、理由和验证见 `docs/fork-modifications.md`。新增需求优先归入既有主题；只有形成新的稳定状态、验证和回退边界时才增加主题。
 

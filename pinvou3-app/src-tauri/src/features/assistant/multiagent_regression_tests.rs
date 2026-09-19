@@ -464,6 +464,7 @@ async fn code_session_real_spawn_refresh_resolves_config_expert_without_project_
             false,
             &project,
             &snapshot,
+            &[],
         )
         .expect("build multi-agent turn");
     handle.send(op).await.expect("send multi-agent turn");
@@ -585,6 +586,23 @@ async fn code_session_real_spawn_refresh_resolves_config_expert_without_project_
             .any(|body| body.contains(EXPERT_PROMPT_SENTINEL)),
         "child request did not receive the selected expert instructions"
     );
+    // 蜂群契约（本测试以 swarm=true 构造引擎配置）必须只出现在父会话系统提示：
+    // 子代理请求体由底座 FleetRole 提示 + 任务说明构造，结构性不携带父引擎
+    // instructions——在此用真实引擎端到端钉死该隔离，底座改动即红。
+    {
+        let bodies = probe.request_bodies.lock().expect("probe request lock");
+        assert!(
+            bodies.iter().any(|body| body.contains("蜂群模式")),
+            "swarm contract must ride the parent session system prompt"
+        );
+        assert!(
+            bodies
+                .iter()
+                .filter(|body| body.contains(EXPERT_PROMPT_SENTINEL))
+                .all(|body| !body.contains("蜂群模式")),
+            "swarm contract must never reach the subagent system prompt"
+        );
+    }
     assert!(
         !project.join(".codewhale").exists(),
         "real spawn must keep all control-plane state out of the user project"

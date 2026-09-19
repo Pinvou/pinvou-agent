@@ -293,74 +293,68 @@ test('停止按钮与引擎回收都级联取消子智能体', () => {
 
 // ── 会话级开关 + 每轮委派提醒（Rust 源结构契约） ─────────────────────────────
 
-test('旧独立入口退役：多智能体经会话级开关 + 每轮注入委派提醒', () => {
-  // Swarm rework: reminder generation still runs off the same per-turn
-  // candidate roster; the numeric caps lift with the swarm switch.
-  assert.match(commandSource, /fn delegation_reminder_with_roles\(roles: Vec<String>, limits: Option<&DelegationLimits>\)/, 'Work and native Code multi-agent sessions generate the delegation reminder from the same per-turn candidate roster');
-  // Reminder numbers must come from DelegationLimits, not hardcoded literals:
-  // swarm off = the shared 4/8 tier sourced from the bridge constants (the
-  // same values the engine config installs); swarm on = None (caps lifted,
-  // the reminder states no number).
+test('旧独立入口退役：多智能体经会话级开关 + spawn 级蜂群契约 + 每轮专家候选行', () => {
+  // Swarm phase 2: the per-turn delegation-reminder composer is retired. The
+  // mode contract rides spawn-level EngineConfig.instructions
+  // (features/assistant/swarm.rs), and the per-turn dynamic content is only
+  // the expert candidate lines, which must come from the same snapshot as the
+  // fleet config.
+  assert.doesNotMatch(
+    commandSource,
+    /delegation_reminder_with_roles|DelegationLimits|delegation_limits_for|compose_delegation_turn|SWARM_MODE_PROMPT/,
+    '逐轮委派提醒组装器（含 SWARM_MODE_PROMPT）已随二期退役，不得回潮',
+  );
+  assert.match(commandSource, /pub\(crate\) fn prepare_delegation_turn\(/, '普通发送与方案接受必须复用同一轮装配入口');
   assert.match(
     commandSource,
-    /pub\(crate\) struct DelegationLimits \{[\s\S]{0,300}pub max_concurrent: usize,[\s\S]{0,300}pub max_admitted: usize,[\s\S]{0,300}\}/,
-    'reminder numbers are carried by DelegationLimits so both regimes can be asserted',
+    /prepare_delegation_turn_impl\([\s\S]{0,200}content: String,[\s\S]{0,80}match_source: &str/,
+    '发送内容与匹配源必须分离：候选匹配只看用户/计划原文，不看组装后的注入文本',
   );
-  assert.match(
-    commandSource,
-    /pub\(crate\) fn delegation_limits_for\(swarm: bool\) -> Option<DelegationLimits> \{[\s\S]{0,500}MULTI_AGENT_MAX_CONCURRENT[\s\S]{0,300}MULTI_AGENT_MAX_ADMITTED/,
-    'tier numbers must reuse the bridge constants the engine config installs; swarm on yields None',
-  );
-  assert.match(
-    commandSource,
-    /match limits \{[\s\S]{0,400}None =>/,
-    'swarm-on reminder must not state any concurrency number (caps are lifted)',
-  );
-  assert.match(commandSource, /pub\(crate\) fn prepare_delegation_turn\(/, '普通发送与方案接受必须复用同一轮提醒/名册快照组装');
-  assert.match(commandSource, /snapshot\.available_role_lines\(task\)/, '候选提醒必须从本轮名册快照筛选，避免提示与实际派工错位');
-  assert.match(rosterSource, /EXPERT_CANDIDATE_LIMIT:\s*usize\s*=\s*20/, '父模型每轮最多看到 20 位专家短候选');
+  assert.match(commandSource, /snapshot\.available_role_lines\(match_source\)/, '候选提醒必须从本轮名册快照按匹配源筛选，避免提示与实际派工错位');
+  assert.match(rosterSource, /EXPERT_CANDIDATE_LIMIT:\s*usize\s*=\s*8/, '父模型每轮最多看到 8 位专家短候选');
   assert.match(rosterSource, /personas::executable_cards\(\)/, '每轮名册与候选必须一次读取可执行专家卡，不能逐张读取形成竞态');
   assert.match(personasSource, /pub fn executable_cards\(\)[\s\S]{0,900}filter\(\|card\| !card\.conversational_only\)/, '纯对话专家卡不得注册为执行型子智能体');
-  assert.match(rosterSource, /if card\.source == "user" \|\| score > 0/, '用户自创专家优先保留，内置专家按本轮相关性入选');
-  assert.match(
-    commandSource,
-    /串行的“修改→测试→审查”接力[\s\S]{0,120}默认共享工作区/,
-    '串行修改、测试与审查必须复用共享工作区',
-  );
-  assert.match(
-    commandSource,
-    /工作区不得安排两个及以上并行写入者。同一 Git 仓库确需并行写入时\\\r?\n\s*必须使用 `workspace_policy=worktree`/,
-    '同一仓库的并行写入必须使用 worktree',
-  );
-  assert.match(
-    commandSource,
-    /Git、基线或 worktree 准备失败时，说明原因并将并行写入任务改为\\\r?\n\s*串行/,
-    'worktree 无法准备时必须把并行写入改为串行',
-  );
+  assert.match(rosterSource, /if score > 0 \{/, '用户自创卡与内置卡同门槛：必须与本轮任务有文本相关性才进入候选');
+  assert.match(rosterSource, /b_user\.cmp\(&a_user\)/, '用户自创卡仅在分数并列时优先，不再凭身份无条件占位');
+  // 二期把 worktree/接力等工作区教学收进蜂群契约（swarm.rs），并保持去强制化。
+  // 负向断言针对契约 raw string 本体（r#"…"#），避免误伤测试代码里的反向引用。
+  const swarmSource = read('src-tauri', 'src', 'features', 'assistant', 'swarm.rs');
+  const contractStart = swarmSource.indexOf('SWARM_CONTRACT: &str = r#"');
+  const contractEnd = swarmSource.indexOf('"#;', contractStart);
+  assert.ok(contractStart >= 0 && contractEnd > contractStart, '蜂群契约 raw string 必须存在于 swarm.rs');
+  const contractText = swarmSource.slice(contractStart + 'SWARM_CONTRACT: &str = r#"'.length, contractEnd);
+  assert.match(contractText, /`worktree=true`/, '同一 Git 仓库并行写入的 worktree 隔离教学保留在蜂群契约');
+  assert.match(contractText, /按实际收益判断/, '契约必须保留按收益判断的可选委派立场（正向锚）');
+  assert.match(contractText, /\[BLOCKED\]/, '子智能体受阻协议（[BLOCKED] 首行）教学保留在契约中，执行记录据此标注受阻');
+  assert.match(contractText, /`name=`/, '子智能体显示名的真实机制 name= 必须写明');
+  assert.match(contractText, /ASCII/, 'name= 在底座只收 ASCII，契约必须写明该约束');
+  assert.match(contractText, /`profile_query=关键词`/, 'roster 无分页且至多 48 条，契约必须教 profile_query= 才能发现截断尾部的专家');
+  assert.doesNotMatch(contractText, /必须调用 agent|不得亲自承担|至少派一个/, '契约不得回潮强制委派话术');
+  assert.doesNotMatch(contractText, /max_depth|max_steps|wall_time_secs|agents\/list|workflow/, '不在模型 schema 的字段与 workflow 路径不得再教');
   assert.match(
     chatCommandSource,
-    /prepare_delegation_turn\([\s\S]{0,180}mode_state\.multi_agent,[\s\S]{0,80}&raw_message,[\s\S]{0,40}full/,
-    '开关开启时 chat 发送链按原始用户消息构造同轮专家快照与提醒',
+    /prepare_delegation_turn\([\s\S]{0,180}mode_state\.multi_agent,[\s\S]{0,80}full,[\s\S]{0,40}&raw_message/,
+    '开关开启时 chat 发送链按本轮装配：content 传组装后全文，匹配源传用户原文 raw_message',
+  );
+  assert.doesNotMatch(
+    memoryCommandSource,
+    /prepend_delegation_replay_reminder|prepare_delegation_turn/,
+    '编辑重发不再拼接任何提醒或候选：契约在 spawn 级 instructions，重放只逐字重发编辑后的原文',
   );
   assert.match(
     memoryCommandSource,
-    /prepend_delegation_replay_reminder\([\s\S]{0,180}mode_state\.multi_agent,[\s\S]{0,80}new_message\.clone\(\)/,
-    '编辑重发沿用底座上一轮 route，只注入不含动态候选的重放提醒',
+    /let reservation = pool\s*\.reserve_turn\(&sid\)/,
+    '编辑重发仍必须先占 turn 槽，不能与模式切换交错',
   );
   assert.match(
     memoryCommandSource,
-    /reserve_turn\(&sid\)[\s\S]{0,320}mode_state\(&sid\)/,
-    '编辑重发必须先占 turn 槽再读取开关，不能与模式切换交错',
-  );
-  assert.match(
-    memoryCommandSource,
-    /user_display_message\(new_message\)[\s\S]{0,250}edit_last_turn_reserved\(&sid, full, display_message, reservation\)/,
-    '编辑重发的模型提醒不得污染界面与落盘历史',
+    /user_display_message\(new_message\.clone\(\)\)[\s\S]{0,250}edit_last_turn_reserved\(&sid, new_message, display_message, reservation\)/,
+    '编辑重发的模型内容与界面/落盘历史逐字同源，不受注入污染',
   );
   assert.match(
     interactionCommandSource,
-    /prepare_delegation_turn\([\s\S]{0,180}accepted_mode_state\.multi_agent,[\s\S]{0,80}&plan_markdown,[\s\S]{0,80}accept_plan_instruction\(&plan_markdown\)/,
-    '接受方案触发执行时必须按批准后的开关状态构造同轮专家快照与提醒',
+    /prepare_delegation_turn\([\s\S]{0,180}accepted_mode_state\.multi_agent,[\s\S]{0,80}accept_plan_instruction\(&plan_markdown\),[\s\S]{0,40}&plan_markdown,/,
+    '接受方案触发执行时按批准后的开关状态同轮装配：content 传 accept 包装指令，匹配源传计划原文',
   );
   assert.match(
     interactionCommandSource,
@@ -394,7 +388,7 @@ test('旧独立入口退役：多智能体经会话级开关 + 每轮注入委�
   );
   assert.match(
     commandSource,
-    /PreparedDelegationTurn[\s\S]{0,300}ExpertRosterSnapshot[\s\S]{0,700}snapshot\.available_role_lines\(task\)[\s\S]{0,300}expert_snapshot: Some\(snapshot\)/,
+    /PreparedDelegationTurn[\s\S]{0,300}ExpertRosterSnapshot[\s\S]{0,2200}snapshot\.available_role_lines\(match_source\)[\s\S]{0,300}expert_snapshot: Some\(snapshot\)/,
     '候选提醒与实际 route 必须持有同一个专家快照',
   );
   assert.doesNotMatch(
@@ -410,7 +404,15 @@ test('旧独立入口退役：多智能体经会话级开关 + 每轮注入委�
 
   const assistantBridgeSource = read('src-tauri', 'src', 'features', 'assistant', 'platform', 'bridge.rs');
   const engineSource = read('src-tauri', 'src', 'features', 'assistant', 'engine.rs');
-  assert.match(assistantBridgeSource, /MULTI_AGENT_MAX_SPAWN_DEPTH:\s*u32\s*=\s*2/);
+  assert.match(
+    assistantBridgeSource,
+    /MULTI_AGENT_MAX_SPAWN_DEPTH:\s*u32\s*=\s*2/,
+  );
+  assert.match(
+    assistantBridgeSource,
+    /cfg\.instructions[\s\S]{0,120}swarm_instruction_source\(\)/,
+    '蜂群契约经 EngineConfig.instructions 在多智能体引擎 spawn 时注入一次（不逐轮）',
+  );
   // Tier constants are pub(crate): the per-turn delegation reminder reads the
   // same single source of truth as build_engine_config_for_multi_agent.
   // Swarm rework: Work and native Code merge into one shared 4/8 tier; with
@@ -477,7 +479,7 @@ test('旧独立入口退役：多智能体经会话级开关 + 每轮注入委�
   );
   assert.match(
     assistantBridgeSource,
-    /build_engine_config_for_multi_agent[\s\S]{0,2200}FleetRoster::load\([\s\S]{0,160}snapshot\.fleet_config\(\)[\s\S]{0,80}&cfg\.workspace/,
+    /build_engine_config_for_multi_agent[\s\S]{0,3200}FleetRoster::load\([\s\S]{0,160}snapshot\.fleet_config\(\)[\s\S]{0,80}&cfg\.workspace/,
     '初始名册必须把全局配置与实际 execution workspace 合并，允许项目同名 profile 按底座规则覆盖',
   );
   // Wave-2 拆分后 sessions 职责分散在 mod.rs 与 mode_state/store/retention 等
@@ -541,8 +543,8 @@ test('旧独立入口退役：多智能体经会话级开关 + 每轮注入委�
 // ── workflow 与主线持平：不禁用、不教学（2026-08-03 复审校正） ────────────────
 
 test('workflow 保持主线原状：不禁用；提醒不教它；快照供 worktree 检出', () => {
-  // 提醒文案不提 workflow 的契约由 Rust 单测
-  // delegation_reminder_never_mentions_the_workflow_path 在运行时钉死。
+  // 蜂群契约不提 workflow 的边界由 Rust 单测
+  // swarm_contract_keeps_product_boundaries 在运行时钉死。
   const bridgeSource = read('src-tauri', 'src', 'features', 'assistant', 'platform', 'bridge.rs');
   assert.match(
     bridgeSource,
