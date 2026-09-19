@@ -210,6 +210,14 @@ impl ShellReclaim {
                     log::error!(
                         "[engine_pool] shell cleanup remained incomplete before reclaim scope={scope_id}: {error}"
                     );
+                } else {
+                    // Record the authoritative outcome after a timed-out
+                    // caller has preset the flag conservatively (see the
+                    // reclaim caller in engine_pool). The reclaimed terminal
+                    // itself was already emitted with the conservative value;
+                    // this keeps the flag truthful for post-reclaim
+                    // diagnostics.
+                    self.cleanup_failed.store(false, Ordering::Release);
                 }
             }
             Err(error) => {
@@ -219,6 +227,14 @@ impl ShellReclaim {
                 );
             }
         }
+    }
+
+    /// Conservative preset for a caller that stopped awaiting [`Self::finalize`]
+    /// on its gate-budget timeout: the reclaimed terminal must not claim an
+    /// unverified clean shell state. A detached finalize overwrites the flag
+    /// with the authoritative outcome when it settles.
+    pub(crate) fn mark_cleanup_failed(&self) {
+        self.cleanup_failed.store(true, Ordering::Release);
     }
 
     pub(crate) fn cleanup_failed(&self) -> bool {
@@ -1145,6 +1161,41 @@ mod tests {
         let state = registry.inner.state.lock();
         assert_eq!(state.active_scope_id, None);
         assert!(!state.scopes.contains_key(&scope_id));
+    }
+
+    // issue #255, reclaim-finalize degradation: the engine_pool caller
+    // presets cleanup_failed conservatively when its gate-budget join times
+    // out and leaves the finalize running detached. When the detached run
+    // settles clean it must clear the preset (the flag stays truthful for
+    // later diagnostics), and the active scope must be retired so a slow
+    // finalize can never wedge the session's shell scope. The forkguard_
+    // prefix registers it as a fork-guard layer-3 behavior test
+    // (fork-policy §3).
+    #[tokio::test]
+    async fn forkguard_reclaim_cleanup_failed_preset_clears_on_success() {
+        let tasks = SessionTurnShellTasks::default();
+        let registry = tasks.for_session(
+            "session-reclaim-preset",
+            new_shared_shell_manager(std::env::temp_dir()),
+        );
+        registry.prepare_turn().await.expect("active scope");
+        let reclaim = tasks.begin_reclaim("session-reclaim-preset");
+        // The reclaim must have captured the active scope; otherwise
+        // finalize would early-return and this test would pass vacuously.
+        assert!(reclaim.registry.is_some() && reclaim.scope_id.is_some());
+
+        reclaim.mark_cleanup_failed();
+        assert!(reclaim.cleanup_failed());
+        reclaim.finalize().await;
+        assert!(
+            !reclaim.cleanup_failed(),
+            "a clean detached finalize must clear the conservative preset"
+        );
+        assert_eq!(
+            registry.active_scope_id(),
+            None,
+            "finalize must retire the active scope"
+        );
     }
 
     #[tokio::test]
