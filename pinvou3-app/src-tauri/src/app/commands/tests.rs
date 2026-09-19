@@ -1104,6 +1104,9 @@ fn agentic_guide_mentions_collection_and_kb_search() {
     assert!(g.contains("《硬件资料》"));
     assert!(g.contains("kb_search"));
     assert!(g.contains("kb_open_source"));
+    // kb_search/kb_open_source are deferred by default; the guide must teach
+    // the tool_search activation step or it names a first-turn-absent tool.
+    assert!(g.contains("`tool_search` 激活"));
     assert!(g.contains("不要对 XLSX/"));
     assert!(g.contains("绝不凭记忆编造"));
     assert!(g.contains("《团队规范》"));

@@ -130,8 +130,41 @@ fingerprints=(
   "T3|静态 prompt composer              |CodeWhale/crates/tui/src/prompts.rs|pub fn set_static_prompt_composer_override("
   "T3|ambient project authority 密封     |CodeWhale/crates/tui/src/project_context.rs|forkguard_runtime_loader_ignores_ambient_project_authority"
   "T3|显式 Skills 根排除 ambient 来源    |CodeWhale/crates/tui/src/skills/tests.rs|forkguard_explicit_skills_dir_excludes_ambient_workspace_sources"
+  "T3|技能索引 Usage 补 tool_search 激活兜底|CodeWhale/crates/tui/src/skills/mod.rs|activate it via \`tool_search\`; if it is still missing"
+  "T3|技能索引 Usage 回归                 |CodeWhale/crates/tui/src/skills/tests.rs|fn forkguard_skill_index_usage_names_tool_search_activation"
+  "T3|子代理技能段走 tool_search 发现        |CodeWhale/crates/tui/src/tools/subagent/mod.rs|activating it via \`tool_search\` first if it is not in your tool list"
+  "T3|子代理技能目录回归                  |CodeWhale/crates/tui/src/tools/subagent/tests.rs|fn forkguard_subagent_skill_catalog_uses_tool_search_discovery"
+  "T3|发现技能幻影命令自条件             |CodeWhale/crates/tui/assets/skills/mcp-discovery/SKILL.md|MCP Registry access is unavailable in"
+  "T3|registry-first 指令与注册名互钉       |CodeWhale/crates/tui/src/core/engine/tests.rs|fn forkguard_registry_first_instruction_names_registered_tool_specs"
+  "T3|mcp-discovery 命令自条件回归        |CodeWhale/crates/tui/src/skills/tests.rs|fn forkguard_mcp_discovery_skill_conditions_registry_commands"
+  "T3|tool_search 缺失态诚实兜底          |CodeWhale/crates/tui/src/skills/mod.rs|continue without skills only if that call also fails"
+  "T3|目标续轮点名 tool_search 激活       |CodeWhale/crates/tui/src/core/engine/tests.rs|fn forkguard_goal_continuation_names_tool_search_activation"
+  "T3|技能索引省略尾行守护               |CodeWhale/crates/tui/src/skills/tests.rs|fn forkguard_omitted_skills_line_stays_short"
+  "T3|捆绑技能退役名清扫回归             |CodeWhale/crates/tui/src/skills/system/tests.rs|fn forkguard_bundled_skills_cite_no_hidden_or_retired_tool_names"
+  "T3|best-of-n 目标工具自条件回归        |CodeWhale/crates/tui/src/skills/system/tests.rs|fn forkguard_best_of_n_goal_tool_is_availability_gated"
+  "T3|pdf 技能改引 read 活工具           |CodeWhale/crates/tui/assets/skills/pdf/SKILL.md|built-in \`read\` tool"
+  "T3|best-of-n 目标门控文案             |CodeWhale/crates/tui/assets/skills/best-of-n/SKILL.md|\`create_goal\` is in your tool list"
+  "T3|mcp-discovery 前言如实披露 pool 依赖 |CodeWhale/crates/tui/assets/skills/mcp-discovery/SKILL.md|the start tool once the host's MCP pool is initialized"
+  "T3|start 工具两段式激活门控           |CodeWhale/crates/tui/assets/skills/mcp-discovery/SKILL.md|\`tool_search\` as in step 1; if that fails, registry starts"
+  "T3|best-of-n 补 tool_search 激活路径    |CodeWhale/crates/tui/assets/skills/best-of-n/SKILL.md|if it is not, run \`tool_search\` first"
+  "T3|父上下文提示只点名活工具          |CodeWhale/crates/tui/src/core/engine/context.rs|verify side effects with \`read\` or \`bash\`"
   "T3|Permissions 窄 100 KiB 预算       |CodeWhale/crates/tui/src/prompts.rs|forkguard_instruction_fragment_preserves_explicit_host_budget"
   "T3|内部 reminder 不污染 working set  |CodeWhale/crates/tui/src/working_set.rs|forkguard_working_set_ignores_leading_system_reminder_paths"
+  "T3|registry-first 指令补激活路径        |CodeWhale/crates/tui/src/core/engine.rs|run \`tool_search\` first to activate it; if it cannot be surfaced"
+  "T3|start 工具独立激活披露             |CodeWhale/crates/tui/src/core/engine.rs|activate it via \`tool_search\` as well, since activating \`registry_sync\` does not activate it"
+  "T3|sync 结果提示补 start 激活          |CodeWhale/crates/tui/src/tools/mcp_registry.rs|run tool_search first to activate it"
+  "T3|sync 结果提示激活回归               |CodeWhale/crates/tui/src/tools/mcp_registry.rs|fn forkguard_registry_first_prompt_teaches_start_tool_activation"
+  "T3|worker 记录共享 handle_read 激活提示 |CodeWhale/crates/tui/src/tools/subagent/mod.rs|if \`handle_read\` is not in your tool list, activate it via \`tool_search\` first"
+  "T3|worker 记录激活提示回归             |CodeWhale/crates/tui/src/tools/subagent/tests.rs|fn forkguard_worker_record_hints_teach_handle_read_activation"
+  "T3|目标续轮直呼兜底                   |CodeWhale/crates/tui/src/prompts/text.rs|call \`update_goal\` directly anyway"
+  "T3|父上下文提示直呼兜底                |CodeWhale/crates/tui/src/core/engine/context.rs|call \`handle_read\` directly anyway"
+  "T3|fetch 溢出证据可取回标记            |CodeWhale/crates/tui/src/tools/fetch_url.rs|\"evidence_available\": true,"
+  "T3|web.run 溢出证据可取回标记          |CodeWhale/crates/tui/src/tools/web_run.rs|\"evidence_available\": true,"
+  "T3|/agent 派发简报补激活回归           |CodeWhale/crates/tui/src/commands/groups/core/agent.rs|fn forkguard_slash_agent_dispatch_teaches_handle_read_activation"
+  "T3|/goal 简报补 create_goal 激活        |CodeWhale/crates/tui/src/commands/groups/project/goal.rs|if \`create_goal\` is not in your tool list"
+  "T3|/goal 简报补直呼兜底                 |CodeWhale/crates/tui/src/commands/groups/project/goal.rs|call \`create_goal\` directly anyway"
+  "T3|/agent 简报补直呼兜底                |CodeWhale/crates/tui/src/commands/groups/core/agent.rs|call \`handle_read\` directly anyway"
+  "T3|幻影清单锚定 canonical 退役名        |CodeWhale/crates/tui/src/skills/system/tests.rs|fn forkguard_phantom_denylist_covers_canonical_lists"
 
   "T4|Automation 稳定 conversation key |CodeWhale/crates/tui/src/automation_manager.rs|add_task_with_conversation_key(new_task, Some(automation.id.clone()))"
   "T4|离线不补跑且同一任务不重叠          |CodeWhale/crates/tui/src/automation_manager.rs|forkguard_scheduler_skips_offline_backfill_and_overlapping_runs"
@@ -213,10 +246,10 @@ for fp in "${fingerprints[@]}"; do
 done
 
 forkguard_count="$(grep -Rho --include='*.rs' 'forkguard_[A-Za-z0-9_]*' "$CODEWHALE/crates" 2>/dev/null | sort -u | wc -l | tr -d ' ')"
-if [[ "$forkguard_count" -ge 54 ]]; then
-  green "  ✓ CodeWhale 至少保留 54 条独立 forkguard 行为名（实际 ${forkguard_count}）"
+if [[ "$forkguard_count" -ge 57 ]]; then
+  green "  ✓ CodeWhale 至少保留 57 条独立 forkguard 行为名（实际 ${forkguard_count}）"
 else
-  red "  ✗ CodeWhale forkguard 行为名仅 ${forkguard_count:-0}，登记下限为 54"
+  red "  ✗ CodeWhale forkguard 行为名仅 ${forkguard_count:-0}，登记下限为 57"
   fail=1
 fi
 

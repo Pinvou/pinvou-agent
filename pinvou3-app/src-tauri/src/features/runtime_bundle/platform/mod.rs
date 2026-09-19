@@ -640,7 +640,7 @@ mod tests {
     }
 
     #[test]
-    fn work_instructions_use_canonical_tools_with_narrow_preview_compatibility() {
+    fn work_instructions_use_canonical_tools_without_hidden_bash_surface() {
         let rendered = instructions_md();
         for retired in [
             "read_file",
@@ -648,6 +648,7 @@ mod tests {
             "exec_shell",
             "checklist_write",
             "File(action=",
+            "Bash(action=",
         ] {
             assert!(
                 !rendered.contains(retired),
@@ -660,8 +661,6 @@ mod tests {
             "file_search(query=",
             "bash(command=",
             "terminal/run",
-            "Bash(action=\"run\", command=\"...\", background=true)",
-            "Bash(action=\"cancel\", task_id=\"...\")",
             "todo_write",
         ] {
             assert!(
@@ -669,10 +668,9 @@ mod tests {
                 "canonical guidance missing: {canonical}"
             );
         }
-        assert_eq!(
-            rendered.matches("Bash(action=").count(),
-            2,
-            "legacy Bash must remain limited to run/cancel for Windows preview compatibility"
+        assert!(
+            rendered.contains("产物卡后端本轮不可用"),
+            "the artifact-card rule must be conditional: mcp_pinvou3_present_artifact is absent whenever the builtin MCP server is not connected"
         );
     }
 
