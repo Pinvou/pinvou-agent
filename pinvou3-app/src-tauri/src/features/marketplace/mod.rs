@@ -46,6 +46,12 @@ use crate::platform::paths;
 /// state so cleanup never acts on a stale snapshot.
 static MARKETPLACE_TRANSACTION_LOCK: Mutex<()> = Mutex::new(());
 
+/// mcp.json server keys owned by the engine boot path (`runtime_bundle`'s
+/// `ensure_builtin_mcp_servers` upserts `pinvou3`, removes the legacy `pinvou` key and
+/// historical browser-wrapper residue). Marketplace installs must never write them, and
+/// startup reconciliation must never repair them.
+const ENGINE_OWNED_MCP_SERVER_KEYS: &[&str] = &["pinvou3", "pinvou", "browser"];
+
 /// A freshly written journal on Windows can be briefly held by antivirus or indexer
 /// processes, so the commit removal retries before failing — escalating a
 /// self-healing transient hold into Integrity (which blocks every assistant startup) would be disproportionate (review 2026-08-28).
@@ -1338,6 +1344,129 @@ impl<S: CredentialStore> MarketplaceManager<S> {
         self.repair_installed_python_tools_locked(Some(python_command))
     }
 
+    /// Startup reconciliation between the installed registry (`installed.json`) and the
+    /// engine's MCP server configuration (`mcp.json`). The install write path and the
+    /// enable/disable path share no consistency check, so a crashed install or a legacy
+    /// entry pointing at a retired layout leaves `installed=true` tools without a usable
+    /// mcp.json entry — spawn then fails on every session. For each installed tool that
+    /// has a manifest:
+    /// - a missing entry is restored with the exact fresh-install serialization
+    ///   (local via `add_to_mcp_json`, remote per manifest `servers`);
+    /// - a local entry whose command/args reference an absolute path that no longer
+    ///   exists is rebuilt from the current manifest (fresh-install equivalent form);
+    /// - a remote entry whose manifest-derived shape drifted is realigned in place;
+    /// - entries that are healthy or not owned by an installed tool are never touched
+    ///   (custom/unknown entries keep the G4 guard semantics of `migrate_mcp_json_paths`).
+    /// Idempotent: a second run on healthy state performs zero writes. Per-tool failures
+    /// (e.g. a secret no longer resolvable from the credential store) are reported as
+    /// skip messages and never block startup. Runs before the Python dependency repair so
+    /// a restored entry can be upgraded to the managed-runtime form in the same startup.
+    pub fn reconcile_installed_mcp_entries(&self) -> Result<Vec<String>, String> {
+        let _transaction_guard = MARKETPLACE_TRANSACTION_LOCK
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        recover_marketplace_transaction()?;
+        let mut actions = Vec::new();
+        // Single decision-time read; the actual writes re-read mcp.json under the
+        // connector lock, and keys of different tools never overlap within one pass.
+        let snapshot = connectors::read_mcp_servers_snapshot();
+        for tool_id in self.installed_ids() {
+            if ENGINE_OWNED_MCP_SERVER_KEYS.contains(&tool_id.as_str()) {
+                continue;
+            }
+            // Same manifest precedence as install_inner: the embedded snapshot wins for
+            // catalog tools; disk manifests serve custom/uploaded packages only.
+            let manifest = match mcp_catalog::embedded_manifest(&tool_id) {
+                Ok(Some(manifest)) => manifest,
+                Ok(None) => match self.load_manifest(&tool_id) {
+                    Some(manifest) => manifest,
+                    None => {
+                        actions.push(format!(
+                            "tool '{tool_id}' has no manifest; mcp.json entries left untouched"
+                        ));
+                        continue;
+                    }
+                },
+                Err(error) => {
+                    actions.push(format!(
+                        "tool '{tool_id}' embedded manifest is invalid; mcp.json entries left untouched: {error}"
+                    ));
+                    continue;
+                }
+            };
+            if manifest.servers.is_empty() {
+                self.reconcile_local_mcp_entry(&manifest, &snapshot, &mut actions);
+            } else {
+                match self.reconcile_remote_mcp_entries(&manifest) {
+                    Ok(Some(change)) => actions.push(format!("tool '{tool_id}': {change}")),
+                    Ok(None) => {}
+                    Err(error) => actions.push(format!(
+                        "tool '{tool_id}' remote entry reconciliation skipped: {error}"
+                    )),
+                }
+            }
+        }
+        Ok(actions)
+    }
+
+    /// Reconcile the single mcp.json entry a local tool owns (keyed by its id).
+    fn reconcile_local_mcp_entry(
+        &self,
+        manifest: &ToolManifest,
+        snapshot: &serde_json::Map<String, serde_json::Value>,
+        actions: &mut Vec<String>,
+    ) {
+        if let Some(entry) = snapshot.get(&manifest.id) {
+            // Healthy entry → zero writes; only a dead target justifies a rebuild.
+            let Some(dead) = connectors::dead_local_entry_target(entry) else {
+                return;
+            };
+            match self.rebuild_local_mcp_entry(manifest) {
+                Ok(()) => actions.push(format!(
+                    "tool '{}': rebuilt mcp.json entry with dead path {dead}",
+                    manifest.id
+                )),
+                Err(error) => actions.push(format!(
+                    "tool '{}' dead mcp.json entry ({dead}) not rebuilt: {error}",
+                    manifest.id
+                )),
+            }
+            return;
+        }
+        match self.rebuild_local_mcp_entry(manifest) {
+            Ok(()) => actions.push(format!(
+                "tool '{}': restored missing mcp.json entry",
+                manifest.id
+            )),
+            Err(error) => actions.push(format!(
+                "tool '{}' missing mcp.json entry not restored: {error}",
+                manifest.id
+            )),
+        }
+    }
+
+    /// Recreate a local tool's mcp.json entry with the exact fresh-install form by
+    /// delegating to the install write path (empty user config: startup has no user
+    /// input, so secret placeholders resolve from the credential store). The package is
+    /// released/verified first, and the rebuild is refused when the manifest-derived
+    /// script target still would not exist — never write a knowingly dead entry.
+    fn rebuild_local_mcp_entry(&self, manifest: &ToolManifest) -> Result<(), String> {
+        mcp_catalog::ensure_package_released(&manifest.id)?;
+        let server_dir = mcp_catalog::package_mcp_dir(&manifest.id);
+        for arg in Self::local_server_args(manifest, &server_dir) {
+            let path = Path::new(&arg);
+            if path.is_absolute() && !path.exists() {
+                return Err(format!("package script {} is missing", path.display()));
+            }
+        }
+        self.add_to_mcp_json(
+            manifest,
+            &std::collections::HashMap::new(),
+            &server_dir,
+            None,
+        )
+    }
+
     #[cfg(test)]
     fn install_with_python(
         &self,
@@ -1659,6 +1788,309 @@ mod tests {
                 command.starts_with(&*new_dir.to_string_lossy()),
                 "重写后应指向新包目录，实际: {command}"
             );
+        });
+    }
+
+    /// Startup reconciliation must stay compatible with the G4 guard above: the
+    /// migrator keeps unknown stale paths, while reconciliation only ever rewrites
+    /// entries owned by installed tools. The tests below pin that boundary.
+
+    fn write_local_tool_fixture(tool_id: &str, secret: bool) {
+        let secret_block = if secret {
+            r#",
+            "secret_env": [{"key": "AMAP_KEY", "provider": "amap", "required": true}],
+            "config_fields": [
+                {"key": "AMAP_KEY", "label": "key", "required": true, "target": "env", "secret": true}
+            ]"#
+        } else {
+            ""
+        };
+        let manifest = format!(
+            r#"{{
+                "id":"{tool_id}","name":"{tool_id}","description":"d","version":"1","icon":"x","category":"c",
+                "mcp_tools":[],"command":"python","args":["server.py"]{secret_block}
+            }}"#
+        );
+        write_tool_manifest(tool_id, &manifest);
+        std::fs::write(
+            mcp_catalog::package_mcp_dir(tool_id).join("server.py"),
+            "print('fixture')\n",
+        )
+        .unwrap();
+    }
+
+    fn write_remote_tool_fixture(tool_id: &str, server_name: &str, url: &str) {
+        let manifest = serde_json::json!({
+            "id": tool_id,
+            "name": tool_id,
+            "description": "d",
+            "version": "1",
+            "icon": "x",
+            "category": "c",
+            "mcp_tools": [],
+            "command": "",
+            "args": [],
+            "servers": [{
+                "name": server_name,
+                "url": url,
+                "scopes": ["demo:read"],
+                "oauth_resource": url
+            }]
+        });
+        write_tool_manifest(tool_id, &serde_json::to_string_pretty(&manifest).unwrap());
+    }
+
+    fn seed_mcp_json(servers: serde_json::Value) -> PathBuf {
+        let mcp_path = paths::mcp_config_path();
+        std::fs::create_dir_all(mcp_path.parent().unwrap()).unwrap();
+        connectors::write_json_pretty(&mcp_path, &serde_json::json!({ "servers": servers }))
+            .unwrap();
+        mcp_path
+    }
+
+    /// A dead absolute script path in an installed tool's entry is rebuilt from the
+    /// manifest into the fresh-install form (secret placeholder resolved from the
+    /// credential store), while entries not owned by any installed tool stay untouched.
+    #[test]
+    fn reconcile_rebuilds_dead_local_entry_and_keeps_unknown_entries() {
+        with_temp_home(|| {
+            write_local_tool_fixture("weather-x", true);
+            write_installed_ids(&["weather-x".to_string()]);
+            let manager = MarketplaceManager::with_store(MemoryCredentialStore::default());
+            manager
+                .credential_store
+                .set(
+                    &mcp_secret_reference("weather-x", "env", "AMAP_KEY"),
+                    "stored-key",
+                )
+                .unwrap();
+            let unknown = serde_json::json!({"command": "node", "args": ["/opt/user-tool/run.js"]});
+            let mcp_path = seed_mcp_json(serde_json::json!({
+                "weather-x": {"command": "python3", "args": ["/x/w.py"]},
+                "user-own-tool": unknown,
+            }));
+
+            let actions = manager.reconcile_installed_mcp_entries().unwrap();
+            assert_eq!(actions.len(), 1, "{actions:?}");
+            assert!(actions[0].contains("weather-x") && actions[0].contains("/x/w.py"));
+
+            let mcp = read_mcp_json();
+            let entry = &mcp["servers"]["weather-x"];
+            assert_eq!(
+                entry["command"],
+                serde_json::Value::String(paths::python_command())
+            );
+            assert_eq!(
+                entry["args"][0],
+                serde_json::Value::String(
+                    mcp_catalog::package_mcp_dir("weather-x")
+                        .join("server.py")
+                        .to_string_lossy()
+                        .into_owned()
+                )
+            );
+            assert_eq!(
+                entry["env"]["AMAP_KEY"], "${PINVOU3_MCP_SECRET_AMAP_KEY}",
+                "secret must stay a placeholder, never plaintext"
+            );
+            assert_eq!(
+                mcp["servers"]["user-own-tool"], unknown,
+                "entries without an installed tool must be preserved"
+            );
+
+            // Idempotent: the rebuilt entry is healthy, the second run writes nothing.
+            let before = std::fs::read(&mcp_path).unwrap();
+            assert!(
+                manager
+                    .reconcile_installed_mcp_entries()
+                    .unwrap()
+                    .is_empty()
+            );
+            assert_eq!(std::fs::read(&mcp_path).unwrap(), before);
+        });
+    }
+
+    /// An installed local tool with no mcp.json entry at all gets one with the exact
+    /// fresh-install serialization.
+    #[test]
+    fn reconcile_restores_missing_local_entry() {
+        with_temp_home(|| {
+            write_local_tool_fixture("note-x", false);
+            write_installed_ids(&["note-x".to_string()]);
+            let mcp_path = seed_mcp_json(serde_json::json!({}));
+            let manager = MarketplaceManager::with_store(MemoryCredentialStore::default());
+
+            let actions = manager.reconcile_installed_mcp_entries().unwrap();
+            assert_eq!(
+                actions,
+                vec!["tool 'note-x': restored missing mcp.json entry".to_string()]
+            );
+            let entry = &read_mcp_json()["servers"]["note-x"];
+            assert_eq!(
+                entry["command"],
+                serde_json::Value::String(paths::python_command())
+            );
+            assert_eq!(
+                entry["args"][0],
+                serde_json::Value::String(
+                    mcp_catalog::package_mcp_dir("note-x")
+                        .join("server.py")
+                        .to_string_lossy()
+                        .into_owned()
+                )
+            );
+            assert!(
+                entry.get("env").is_none(),
+                "no secrets declared, no env written"
+            );
+
+            let before = std::fs::read(&mcp_path).unwrap();
+            assert!(
+                manager
+                    .reconcile_installed_mcp_entries()
+                    .unwrap()
+                    .is_empty()
+            );
+            assert_eq!(std::fs::read(&mcp_path).unwrap(), before);
+        });
+    }
+
+    /// A missing remote entry is recreated from the manifest even when mcp.json does
+    /// not exist yet, with exactly the fields a fresh install would write.
+    #[test]
+    fn reconcile_restores_missing_remote_entry() {
+        with_temp_home(|| {
+            write_remote_tool_fixture("canva-x", "canva-x-remote", "https://mcp.example.com/mcp");
+            write_installed_ids(&["canva-x".to_string()]);
+            let manager = MarketplaceManager::with_store(MemoryCredentialStore::default());
+
+            let actions = manager.reconcile_installed_mcp_entries().unwrap();
+            assert_eq!(
+                actions,
+                vec!["tool 'canva-x': restored missing remote entry 'canva-x-remote'".to_string()]
+            );
+            let mcp_path = paths::mcp_config_path();
+            let entry = &read_mcp_json()["servers"]["canva-x-remote"];
+            assert_eq!(entry["url"], "https://mcp.example.com/mcp");
+            assert_eq!(entry["scopes"], serde_json::json!(["demo:read"]));
+            assert_eq!(entry["oauth_resource"], "https://mcp.example.com/mcp");
+            assert!(
+                entry.get("headers").is_none()
+                    && entry.get("bearer_token_env_var").is_none()
+                    && entry.get("command").is_none(),
+                "no secret and no local command fields expected: {entry}"
+            );
+
+            let before = std::fs::read(&mcp_path).unwrap();
+            assert!(
+                manager
+                    .reconcile_installed_mcp_entries()
+                    .unwrap()
+                    .is_empty()
+            );
+            assert_eq!(std::fs::read(&mcp_path).unwrap(), before);
+        });
+    }
+
+    /// A remote entry whose manifest-derived shape drifted (e.g. after a manifest
+    /// update) is realigned in place; credential fields that cannot be re-derived at
+    /// startup are preserved.
+    #[test]
+    fn reconcile_realigns_remote_entry_and_preserves_credentials() {
+        with_temp_home(|| {
+            write_remote_tool_fixture(
+                "patsnap-x",
+                "patsnap-x-remote",
+                "https://new.example.com/mcp",
+            );
+            write_installed_ids(&["patsnap-x".to_string()]);
+            let mcp_path = seed_mcp_json(serde_json::json!({
+                "patsnap-x-remote": {
+                    "url": "https://old.example.com/mcp",
+                    "bearer_token_env_var": "PINVOU3_MCP_SECRET_PATSNAP_KEY",
+                    "env_headers": {"X-Api-Key": "PINVOU3_MCP_SECRET_PATSNAP_KEY"}
+                }
+            }));
+            let manager = MarketplaceManager::with_store(MemoryCredentialStore::default());
+
+            let actions = manager.reconcile_installed_mcp_entries().unwrap();
+            assert_eq!(
+                actions,
+                vec!["tool 'patsnap-x': realigned remote entry 'patsnap-x-remote'".to_string()]
+            );
+            let entry = &read_mcp_json()["servers"]["patsnap-x-remote"];
+            assert_eq!(entry["url"], "https://new.example.com/mcp");
+            assert_eq!(entry["scopes"], serde_json::json!(["demo:read"]));
+            assert_eq!(entry["oauth_resource"], "https://new.example.com/mcp");
+            assert_eq!(
+                entry["bearer_token_env_var"], "PINVOU3_MCP_SECRET_PATSNAP_KEY",
+                "credential fields must survive the realignment"
+            );
+            assert_eq!(
+                entry["env_headers"]["X-Api-Key"],
+                "PINVOU3_MCP_SECRET_PATSNAP_KEY"
+            );
+
+            let before = std::fs::read(&mcp_path).unwrap();
+            assert!(
+                manager
+                    .reconcile_installed_mcp_entries()
+                    .unwrap()
+                    .is_empty()
+            );
+            assert_eq!(std::fs::read(&mcp_path).unwrap(), before);
+        });
+    }
+
+    /// Healthy installed entries, entries of installed tools without a manifest, and
+    /// engine-owned keys all stay byte-identical; only the missing-manifest tool
+    /// produces a (non-mutating) skip note.
+    #[test]
+    fn reconcile_leaves_healthy_unowned_and_engine_owned_entries_untouched() {
+        with_temp_home(|| {
+            write_local_tool_fixture("healthy-local", false);
+            write_remote_tool_fixture(
+                "healthy-remote",
+                "healthy-remote-server",
+                "https://healthy.example.com/mcp",
+            );
+            write_installed_ids(&[
+                "healthy-local".to_string(),
+                "healthy-remote".to_string(),
+                "ghost".to_string(),
+                "pinvou3".to_string(),
+            ]);
+            let script = mcp_catalog::package_mcp_dir("healthy-local")
+                .join("server.py")
+                .to_string_lossy()
+                .to_string();
+            let mcp_path = seed_mcp_json(serde_json::json!({
+                "healthy-local": {"command": "python3", "args": [script]},
+                "healthy-remote-server": {
+                    "url": "https://healthy.example.com/mcp",
+                    "scopes": ["demo:read"],
+                    "oauth_resource": "https://healthy.example.com/mcp"
+                },
+                "ghost": {"command": "python3", "args": ["/ghost/server.py"]},
+                "pinvou3": {"command": "python3", "args": ["/bundle/present_artifact_server.py"]},
+                "user-own-tool": {"command": "node", "args": ["/opt/user-tool/run.js"]}
+            }));
+            let manager = MarketplaceManager::with_store(MemoryCredentialStore::default());
+
+            let before = std::fs::read(&mcp_path).unwrap();
+            let actions = manager.reconcile_installed_mcp_entries().unwrap();
+            assert_eq!(actions.len(), 1, "{actions:?}");
+            assert!(actions[0].contains("ghost") && actions[0].contains("no manifest"));
+            assert_eq!(
+                std::fs::read(&mcp_path).unwrap(),
+                before,
+                "reconciliation of healthy state must not touch mcp.json"
+            );
+
+            // Idempotent: the second run re-reports the diagnostic but writes nothing.
+            let actions = manager.reconcile_installed_mcp_entries().unwrap();
+            assert_eq!(actions.len(), 1, "{actions:?}");
+            assert_eq!(std::fs::read(&mcp_path).unwrap(), before);
         });
     }
 

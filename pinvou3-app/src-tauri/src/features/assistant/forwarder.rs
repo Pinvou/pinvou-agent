@@ -17,6 +17,44 @@ fn behavior_task_status(status: TurnOutcomeStatus, error: Option<&str>) -> &'sta
     }
 }
 
+/// Summary detail line for the persistent startup timeline describing a
+/// terminal MCP session-boot receipt. The startup channel redacts, flattens,
+/// and bounds the returned string before writing, so this only formats.
+fn mcp_boot_summary_detail(
+    session_id: &str,
+    generation: u64,
+    server_total: usize,
+    failure_count: usize,
+) -> String {
+    format!(
+        "sid={session_id} generation={generation} servers={server_total} failed={failure_count}"
+    )
+}
+
+/// One startup-timeline detail line per failed server of a terminal MCP
+/// session-boot event. A server counts as failed when it is enabled but did
+/// not reach a ready connection; disabled servers are configuration state,
+/// not boot failures. When the engine snapshot carries no error text the
+/// reason is recorded as `unknown`.
+fn mcp_boot_failure_details(
+    session_id: &str,
+    generation: u64,
+    snapshot: &deepseek_tui::mcp::McpManagerSnapshot,
+) -> Vec<String> {
+    snapshot
+        .servers
+        .iter()
+        .filter(|server| server.enabled && !server.connected)
+        .map(|server| {
+            format!(
+                "sid={session_id} generation={generation} server={} error={}",
+                server.name,
+                server.error.as_deref().unwrap_or("unknown"),
+            )
+        })
+        .collect()
+}
+
 /// 后台 task：持续读 rx_event 转 Tauri emit。
 ///
 /// 关键点：监听 `Event::ApprovalRequired` 并主动 `approve_tool_call`。
@@ -1450,17 +1488,50 @@ pub(crate) fn spawn_event_forwarder(
                 // Connector readiness is owned by Pinvou's marketplace state. The
                 // Engine event is intentionally observed only for diagnostics until
                 // that UI adopts the generation-based v0.9.12 snapshot protocol.
+                // Release builds register no log sink, so the terminal boot
+                // receipt is also persisted through the startup timeline
+                // (`~/.pinvou3/logs/startup.log`) to keep failures visible.
                 Event::McpSessionBoot {
                     generation,
+                    snapshot,
                     finished,
                     ..
                 } => {
-                    log::debug!(
-                        "[pinvou3][chat] mcp session boot sid={} generation={} finished={}",
-                        session_id,
-                        generation,
-                        finished
-                    );
+                    let failure_details =
+                        mcp_boot_failure_details(&session_id, generation, &snapshot);
+                    if finished && !failure_details.is_empty() {
+                        log::warn!(
+                            "[pinvou3][chat] mcp session boot sid={} generation={} failed={}/{}",
+                            session_id,
+                            generation,
+                            failure_details.len(),
+                            snapshot.servers.len()
+                        );
+                        crate::platform::startup::mark_with_detail(
+                            "rust",
+                            "mcp_session_boot:finished",
+                            &mcp_boot_summary_detail(
+                                &session_id,
+                                generation,
+                                snapshot.servers.len(),
+                                failure_details.len(),
+                            ),
+                        );
+                        for detail in &failure_details {
+                            crate::platform::startup::mark_with_detail(
+                                "rust",
+                                "mcp_session_boot:server_failed",
+                                detail,
+                            );
+                        }
+                    } else {
+                        log::debug!(
+                            "[pinvou3][chat] mcp session boot sid={} generation={} finished={}",
+                            session_id,
+                            generation,
+                            finished
+                        );
+                    }
                 }
                 Event::ToolProjectionWarning {
                     provider,
@@ -1559,4 +1630,82 @@ pub(crate) fn spawn_event_forwarder(
             "[pinvou3-app] event forwarder stopped for session {session_id} (engine shut down?)"
         );
     })
+}
+
+#[cfg(test)]
+mod mcp_boot_persistence_tests {
+    use super::{mcp_boot_failure_details, mcp_boot_summary_detail};
+    use deepseek_tui::mcp::{McpManagerSnapshot, McpServerCapabilityMetadata, McpServerSnapshot};
+
+    fn server(
+        name: &str,
+        enabled: bool,
+        connected: bool,
+        error: Option<&str>,
+    ) -> McpServerSnapshot {
+        McpServerSnapshot {
+            name: name.to_string(),
+            enabled,
+            required: false,
+            transport: "stdio".to_string(),
+            command_or_url: format!("/usr/bin/{name}"),
+            connect_timeout: 10,
+            execute_timeout: 60,
+            read_timeout: 30,
+            connected,
+            error: error.map(str::to_string),
+            auth_required: false,
+            capability_metadata: McpServerCapabilityMetadata::NotObserved,
+            tools: Vec::new(),
+            resources: Vec::new(),
+            prompts: Vec::new(),
+        }
+    }
+
+    fn snapshot(servers: Vec<McpServerSnapshot>) -> McpManagerSnapshot {
+        McpManagerSnapshot {
+            config_path: std::path::PathBuf::from("/tmp/mcp.json"),
+            config_exists: true,
+            reload_required: false,
+            servers,
+        }
+    }
+
+    #[test]
+    fn failed_servers_are_listed_with_engine_reported_reasons() {
+        let snap = snapshot(vec![
+            server("fs", true, true, None),
+            server("git", true, false, Some("connection refused")),
+        ]);
+        assert_eq!(
+            mcp_boot_failure_details("sess-1", 7, &snap),
+            vec!["sid=sess-1 generation=7 server=git error=connection refused"]
+        );
+    }
+
+    #[test]
+    fn enabled_server_without_error_text_is_reported_as_unknown() {
+        let snap = snapshot(vec![server("search", true, false, None)]);
+        assert_eq!(
+            mcp_boot_failure_details("sess-1", 3, &snap),
+            vec!["sid=sess-1 generation=3 server=search error=unknown"]
+        );
+    }
+
+    #[test]
+    fn connected_and_disabled_servers_are_not_boot_failures() {
+        let snap = snapshot(vec![
+            server("fs", true, true, None),
+            server("off", false, false, Some("disabled")),
+        ]);
+        assert!(mcp_boot_failure_details("sess-1", 1, &snap).is_empty());
+    }
+
+    #[test]
+    fn summary_detail_counts_total_and_failed_servers() {
+        assert_eq!(
+            mcp_boot_summary_detail("sess-1", 9, 5, 2),
+            "sid=sess-1 generation=9 servers=5 failed=2"
+        );
+    }
 }

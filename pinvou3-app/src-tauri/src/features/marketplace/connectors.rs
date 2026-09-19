@@ -195,6 +195,23 @@ impl<S: crate::platform::credential_store::CredentialStore> MarketplaceManager<S
         servers: &mut serde_json::Map<String, serde_json::Value>,
     ) -> Result<(), String> {
         for server in &manifest.servers {
+            let entry = self.build_remote_server_entry(manifest, server, user_config)?;
+            servers.insert(server.name.clone(), entry);
+        }
+        Ok(())
+    }
+
+    /// Build the fresh-install mcp.json entry for one remote server (url/headers/oauth).
+    /// Extracted verbatim from `add_remote_to_mcp_json` so the startup reconciliation
+    /// (`reconcile_remote_mcp_entries`) reuses the exact same serialization as a UI
+    /// install instead of maintaining a second writer.
+    fn build_remote_server_entry(
+        &self,
+        manifest: &ToolManifest,
+        server: &super::types::RemoteServer,
+        user_config: &HashMap<String, String>,
+    ) -> Result<serde_json::Value, String> {
+        {
             let mut headers = serde_json::Map::new();
             let mut env_headers = serde_json::Map::new();
             let mut bearer_token_env_var = None;
@@ -300,12 +317,11 @@ impl<S: crate::platform::credential_store::CredentialStore> MarketplaceManager<S
             if let Some(env_var) = bearer_token_env_var {
                 entry["bearer_token_env_var"] = serde_json::Value::String(env_var);
             }
-            servers.insert(server.name.clone(), entry);
+            Ok(entry)
         }
-        Ok(())
     }
 
-    fn local_server_args(manifest: &ToolManifest, server_dir: &Path) -> Vec<String> {
+    pub(super) fn local_server_args(manifest: &ToolManifest, server_dir: &Path) -> Vec<String> {
         manifest
             .args
             .iter()
@@ -498,5 +514,207 @@ impl<S: crate::platform::credential_store::CredentialStore> MarketplaceManager<S
         }
 
         write_json_pretty(&mcp_path, &mcp)
+    }
+
+    /// Startup reconciliation for one remote (manifest `servers`) tool:
+    /// - A missing per-server entry is added with the exact fresh-install serialization
+    ///   (startup has no user input, so secret placeholders resolve from the credential
+    ///   store, same as `sync_secret_values`).
+    /// - An existing entry whose manifest-derived shape (url/scopes/oauth/oauth_resource)
+    ///   drifted from the current manifest is realigned; credential fields
+    ///   (headers/env_headers/bearer_token_env_var) and forward-compatible fields are
+    ///   preserved because they cannot be re-derived without user input.
+    /// - Entries not owned by this manifest are never touched.
+    /// Idempotent: returns Ok(None) without writing when everything already matches.
+    pub(super) fn reconcile_remote_mcp_entries(
+        &self,
+        manifest: &ToolManifest,
+    ) -> Result<Option<String>, String> {
+        let _guard = mcp_json_lock();
+        let mcp_path = paths::mcp_config_path();
+        let mut mcp: serde_json::Value = if mcp_path.is_file() {
+            let content =
+                std::fs::read_to_string(&mcp_path).map_err(|e| format!("读取 mcp.json: {e}"))?;
+            serde_json::from_str(&content).unwrap_or_else(|_| default_mcp_json())
+        } else {
+            default_mcp_json()
+        };
+        let servers = mcp
+            .get_mut("servers")
+            .and_then(|s| s.as_object_mut())
+            .ok_or("mcp.json 格式错误")?;
+
+        let mut changed: Vec<String> = Vec::new();
+        for server in &manifest.servers {
+            if super::ENGINE_OWNED_MCP_SERVER_KEYS.contains(&server.name.as_str()) {
+                continue; // never fight the boot-time ensure_builtin_mcp_servers upsert
+            }
+            match servers
+                .get_mut(&server.name)
+                .and_then(|entry| entry.as_object_mut())
+            {
+                // Present as an object: realign in place when the manifest-derived
+                // shape drifted. A non-object value takes the restore branch below.
+                Some(object) => {
+                    if !remote_entry_matches_manifest(object, server) {
+                        align_remote_entry_fields(object, server);
+                        changed.push(format!("realigned remote entry '{}'", server.name));
+                    }
+                }
+                _ => {
+                    let entry =
+                        self.build_remote_server_entry(manifest, server, &HashMap::new())?;
+                    servers.insert(server.name.clone(), entry);
+                    changed.push(format!("restored missing remote entry '{}'", server.name));
+                }
+            }
+        }
+
+        if changed.is_empty() {
+            return Ok(None);
+        }
+        write_json_pretty(&mcp_path, &mcp)?;
+        Ok(Some(changed.join("; ")))
+    }
+}
+
+/// Read-only snapshot of the current mcp.json `servers` map for reconciliation
+/// decisions. Writers always re-read the file under `mcp_json_lock`, so a stale
+/// snapshot can only influence *whether* a repair is attempted, never its content.
+pub(super) fn read_mcp_servers_snapshot() -> serde_json::Map<String, serde_json::Value> {
+    let mcp_path = paths::mcp_config_path();
+    let parsed: serde_json::Value = if mcp_path.is_file() {
+        std::fs::read_to_string(&mcp_path)
+            .ok()
+            .and_then(|content| serde_json::from_str(&content).ok())
+            .unwrap_or_else(default_mcp_json)
+    } else {
+        default_mcp_json()
+    };
+    parsed
+        .get("servers")
+        .and_then(|s| s.as_object())
+        .cloned()
+        .unwrap_or_default()
+}
+
+/// First dead target of a local mcp.json entry: an absolute path (command or arg)
+/// that no longer exists on disk. Bare interpreter names and relative args are
+/// never judged (PATH/cwd resolution is out of scope), and neither are existing
+/// directories, so managed-environment lifecycle stays with the Python repair path.
+pub(super) fn dead_local_entry_target(entry: &serde_json::Value) -> Option<String> {
+    let mut candidates: Vec<&str> = Vec::new();
+    if let Some(command) = entry.get("command").and_then(|v| v.as_str()) {
+        candidates.push(command);
+    }
+    if let Some(args) = entry.get("args").and_then(|v| v.as_array()) {
+        candidates.extend(args.iter().filter_map(|v| v.as_str()));
+    }
+    candidates
+        .into_iter()
+        .find(|s| Path::new(s).is_absolute() && !Path::new(s).exists())
+        .map(str::to_string)
+}
+
+/// Whether an existing remote entry carries the exact manifest-derived fields a fresh
+/// install would write. Credential fields are deliberately not compared: they come from
+/// user input/keyring and may legitimately differ from what an empty startup config
+/// would produce.
+fn remote_entry_matches_manifest(
+    object: &serde_json::Map<String, serde_json::Value>,
+    server: &super::types::RemoteServer,
+) -> bool {
+    if object.get("url").and_then(|v| v.as_str()) != Some(server.url.as_str()) {
+        return false;
+    }
+    let expected_scopes = if server.scopes.is_empty() {
+        None
+    } else {
+        Some(serde_json::to_value(&server.scopes).unwrap_or_default())
+    };
+    match (expected_scopes.as_ref(), object.get("scopes")) {
+        (None, None) => {}
+        // An empty array is the absent form's alias; a fresh install never writes it.
+        (None, Some(value)) if value.as_array().is_some_and(Vec::is_empty) => {}
+        (None, Some(_)) => return false,
+        (Some(expected), actual) => {
+            if actual != Some(expected) {
+                return false;
+            }
+        }
+    }
+    let expected_oauth: Option<serde_json::Value> = match &server.oauth {
+        Some(oauth) => serde_json::to_value(oauth).ok(),
+        None => None,
+    };
+    match (expected_oauth.as_ref(), object.get("oauth")) {
+        (None, None | Some(serde_json::Value::Null)) => {}
+        (None, Some(_)) => return false,
+        (Some(expected), actual) => {
+            if actual != Some(expected) {
+                return false;
+            }
+        }
+    }
+    let resource = server
+        .oauth_resource
+        .as_deref()
+        .map(str::trim)
+        .filter(|r| !r.is_empty());
+    match (
+        resource,
+        object.get("oauth_resource").and_then(|v| v.as_str()),
+    ) {
+        (None, None | Some("")) => {}
+        (None, Some(_)) => return false,
+        (Some(expected), actual) => {
+            if actual != Some(expected) {
+                return false;
+            }
+        }
+    }
+    true
+}
+
+/// Rewrite only the manifest-derived fields of an existing remote entry; everything
+/// else (headers/env_headers/bearer_token_env_var/timeout/…) is kept as-is.
+fn align_remote_entry_fields(
+    object: &mut serde_json::Map<String, serde_json::Value>,
+    server: &super::types::RemoteServer,
+) {
+    object.insert(
+        "url".to_string(),
+        serde_json::Value::String(server.url.clone()),
+    );
+    if server.scopes.is_empty() {
+        object.remove("scopes");
+    } else if let Ok(scopes) = serde_json::to_value(&server.scopes) {
+        object.insert("scopes".to_string(), scopes);
+    }
+    match &server.oauth {
+        Some(oauth) => {
+            if let Ok(value) = serde_json::to_value(oauth) {
+                object.insert("oauth".to_string(), value);
+            }
+        }
+        None => {
+            object.remove("oauth");
+        }
+    }
+    match server
+        .oauth_resource
+        .as_deref()
+        .map(str::trim)
+        .filter(|r| !r.is_empty())
+    {
+        Some(resource) => {
+            object.insert(
+                "oauth_resource".to_string(),
+                serde_json::Value::String(resource.to_string()),
+            );
+        }
+        None => {
+            object.remove("oauth_resource");
+        }
     }
 }
