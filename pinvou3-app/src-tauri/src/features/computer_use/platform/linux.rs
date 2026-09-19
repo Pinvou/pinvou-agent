@@ -59,7 +59,7 @@ use xcap::Monitor;
 use zbus::proxy::CacheProperties;
 
 use std::sync::Arc;
-use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 
 use super::super::backend::ComputerUseBackend;
 use super::super::types::{
@@ -801,25 +801,48 @@ async fn element_at_point_async(
 /// consistent with the established semantics); budget exhausted without a
 /// verdict → `Err` (when the result is uncertain, never masquerade as
 /// "none" — the error is clearly distinct from "no element", disposition is
-/// decided by the tool layer).
+/// decided by the tool layer). The same strictness covers the active-window
+/// selection below: when no active window is found but at least one
+/// per-window state query faulted, the fault is raised instead of a
+/// misleading `Ok(None)` (a query fault is never swallowed into a pass
+/// justification).
 async fn focused_element_async(
     conn: &zbus::Connection,
 ) -> Result<Option<ElementInfo>, ComputerUseError> {
     let root = root_accessible(conn).await?;
     let windows = app_windows(conn, &root, true).await?;
-    let active = {
-        let mut active = None;
-        for window in &windows {
-            if let Ok(state) = window.get_state().await {
+    let mut active = None;
+    // First per-window state fault, kept so a total fault-out is not
+    // mistaken for a confirmed "no active window" (see the None arm below).
+    let mut state_fault = None;
+    for window in &windows {
+        match window.get_state().await {
+            Ok(state) => {
                 if state.contains(State::Active) {
                     active = Some(window);
                     break;
                 }
             }
+            Err(error) => {
+                if state_fault.is_none() {
+                    state_fault = Some(ComputerUseError::unavailable(format!(
+                        "AT-SPI window state query: {error}"
+                    )));
+                }
+            }
         }
-        active
-    };
+    }
     let Some(window) = active else {
+        // No active window AND at least one state query faulted (e.g. a
+        // transient a11y-bus fault inside the method timeout): Ok(None) here
+        // would claim "confirmed no focused element" off an unverified
+        // enumeration — raise the fault instead, matching the strict rule
+        // this module applies to every other screening query. The tool layer
+        // fails open on Err (the action still executes) while masking the
+        // typed-text preview as a secure target.
+        if let Some(fault) = state_fault {
+            return Err(fault);
+        }
         return Ok(None);
     };
     let mut budget = FOCUSED_SEARCH_MAX_NODES;
@@ -983,11 +1006,24 @@ fn probe_wayland_screenshot() -> Result<(), String> {
 /// pinned forever, and once the backend layer's call budget is exhausted the
 /// in-flight gate and the control channel (emergency release, grant release)
 /// all jam. On timeout, give up and abandon the probe
-/// thread (pure capture, no shared state touched; repeated timeouts leak a
-/// few threads at worst — better than a stuck worker). The next screenshot
-/// retries the probe — a sticky failed-probe state would regress to the old
-/// defect of "one failure loses screenshots forever".
+/// thread (pure capture, no shared state touched — better than a stuck
+/// worker). Each abandonment is counted in [`WAYLAND_PROBE_ABANDONED`]:
+/// `ensure_wayland_capture` re-probes on every capture while the probe has
+/// not succeeded, so a permanently wedged portal would otherwise accumulate
+/// one non-terminating thread per capture, forever — after
+/// [`WAYLAND_PROBE_ABANDONMENT_CAP`] timeouts the retry stops and screenshot
+/// capture sticks unavailable until restart (a bounded leak beats an
+/// unbounded one, and beats the alternative of one hung worker).
 const WAYLAND_PROBE_TIMEOUT: Duration = Duration::from_secs(20);
+
+/// Count of probe threads abandoned to an unbounded portal wait (process
+/// global: a restart is the documented recovery, see
+/// [`WAYLAND_PROBE_TIMEOUT`]).
+static WAYLAND_PROBE_ABANDONED: AtomicUsize = AtomicUsize::new(0);
+
+/// Abandonment cap after which re-probing stops: at most this many
+/// non-terminating probe threads can accumulate against a wedged portal.
+const WAYLAND_PROBE_ABANDONMENT_CAP: usize = 3;
 
 /// xcap's Wayland path contains `.expect(...)` internally (PNG re-encode);
 /// wrapping it in catch_unwind turns a potential panic into an explicit
@@ -1009,11 +1045,17 @@ fn probe_wayland_screenshot_guarded() -> Result<(), String> {
         .map_err(|error| format!("capture probe thread spawn failed: {error}"))?;
     match receiver.recv_timeout(WAYLAND_PROBE_TIMEOUT) {
         Ok(result) => result,
-        Err(std::sync::mpsc::RecvTimeoutError::Timeout) => Err(format!(
-            "the Wayland capture probe did not answer within {}s (the portal screenshot \
-             request may be waiting on an interactive dialog)",
-            WAYLAND_PROBE_TIMEOUT.as_secs()
-        )),
+        Err(std::sync::mpsc::RecvTimeoutError::Timeout) => {
+            // The abandoned thread stays blocked in xcap's unbounded portal
+            // wait; count it so ensure_wayland_capture can stop re-probing
+            // once the accumulation cap is reached.
+            WAYLAND_PROBE_ABANDONED.fetch_add(1, Ordering::Relaxed);
+            Err(format!(
+                "the Wayland capture probe did not answer within {}s (the portal screenshot \
+                 request may be waiting on an interactive dialog)",
+                WAYLAND_PROBE_TIMEOUT.as_secs()
+            ))
+        }
         Err(std::sync::mpsc::RecvTimeoutError::Disconnected) => {
             Err("capture probe thread terminated unexpectedly".to_string())
         }
@@ -1152,6 +1194,21 @@ impl LinuxComputerUseBackend {
     fn ensure_wayland_capture(&mut self) -> Result<(), ComputerUseError> {
         if !self.is_wayland() || self.wayland_screenshot_ok {
             return Ok(());
+        }
+        // Sticky abandonment cap: each timed-out probe leaves one thread
+        // blocked in xcap's unbounded portal wait, so past the cap a wedged
+        // portal would keep leaking one non-terminating thread per capture —
+        // stop re-probing and fail with the distinct sticky error (the
+        // process-global counter resets only on restart; that is the
+        // documented recovery, see WAYLAND_PROBE_TIMEOUT).
+        let abandoned = WAYLAND_PROBE_ABANDONED.load(Ordering::Relaxed);
+        if abandoned >= WAYLAND_PROBE_ABANDONMENT_CAP {
+            let message = format!(
+                "portal probe timed out {abandoned} times; screenshot capture disabled \
+                 until restart"
+            );
+            self.wayland_screenshot_error = Some(message.clone());
+            return Err(ComputerUseError::unsupported("screenshot", message));
         }
         match probe_wayland_screenshot_guarded() {
             Ok(()) => {
@@ -1318,6 +1375,12 @@ impl ComputerUseBackend for LinuxComputerUseBackend {
             let experimental = "Wayland input is experimental (compositor implementations \
                  differ), and typing non-Latin-1 text (CJK etc.) is explicitly rejected: \
                  mutter silently drops keysyms outside the active keymap";
+            // Honest disclosure: the portal keysym mapping covers F1-F12 only
+            // (wayland_portal::map_keysym fails closed beyond, deliberately —
+            // mutter silently drops what the active keymap lacks), narrower
+            // than X11's F1-F20; the model must not assume F13-F20 work here.
+            let fkey_range = "function keys above F12 are rejected (the portal mapping \
+                 covers F1-F12, unlike X11's F1-F20)";
             // Honest disclosure: when the portal stream is unavailable,
             // the xcap fallback goes through XCB/XWayland or a compositor
             // screenshot protocol, whose multi-monitor coordinate system is
@@ -1342,7 +1405,7 @@ impl ComputerUseBackend for LinuxComputerUseBackend {
                 ui_tree,
                 notes: format!(
                     "Wayland session ({}): {input_note}; {screenshot_note}{fallback_note}; \
-                     {experimental}; \
+                     {experimental}; {fkey_range}; \
                      AT-SPI bounds best-effort on Wayland",
                     self.session.desktop_label()
                 ),
@@ -1367,6 +1430,15 @@ impl ComputerUseBackend for LinuxComputerUseBackend {
             } else {
                 ""
             };
+            // Honest disclosure (matching the PR body): enigo's X11 per-char
+            // Unicode injection resolves each character at keymap column 0
+            // and does not clear held modifiers — with CapsLock on or Shift
+            // held, typed lowercase can come out corrupted (the same class
+            // as xdotool without --clearmodifiers). The model must see this
+            // before typing under those modifier states.
+            let typing_caveat = "; typing caveat: typed lowercase can corrupt while CapsLock is \
+                 on or Shift is held (enigo's X11 injection does keymap column-0 lookups and \
+                 does not clear modifiers — same class as xdotool without --clearmodifiers)";
             Capabilities {
                 screenshot: true,
                 input: self.input.is_some(),
@@ -1375,7 +1447,8 @@ impl ComputerUseBackend for LinuxComputerUseBackend {
                     "X11 session ({}): full support (xcap capture, {input_note}, AT-SPI \
                      tree{}){mismatch}; capture is cursor-anchored, so on multi-monitor setups \
                      only the monitor holding the cursor is visible/clickable this turn \
-                     (move the pointer there via an initial screenshot on that monitor)",
+                     (move the pointer there via an initial screenshot on that \
+                     monitor){typing_caveat}",
                     self.session.desktop_label(),
                     if ui_tree { "" } else { " unavailable" },
                 ),
@@ -1436,6 +1509,22 @@ impl ComputerUseBackend for LinuxComputerUseBackend {
             .ok_or_else(|| {
                 ComputerUseError::unavailable("no monitors reported by the display server")
             })?;
+        // The origin math below must use the CAPTURED monitor's own scale, not
+        // whichever monitor enumerated first: on mixed-DPI multi-monitor
+        // layouts a secondary at a different scale would otherwise get a
+        // mis-multiplied origin. Residual (xcap 0.9.8): its X11 scale_factor
+        // is a global Xft.dpi/96 lookup — the same value for every monitor —
+        // and its Wayland path reports the max over all outputs, so a true
+        // per-output mixed-DPI scale cannot be expressed through this API and
+        // the origin stays wrong when the captured monitor's real per-output
+        // scale differs (disclosed; no per-monitor scale API exists to call).
+        // The cursor→logical conversion above has the same limitation (the
+        // captured monitor is not yet known there).
+        let scale = monitor
+            .scale_factor()
+            .ok()
+            .filter(|s| *s > 0.0)
+            .unwrap_or(scale);
         // xcap's Wayland chain contains `.expect(...)` internally (PNG
         // re-encode, see the same wrapping at the probe): per-frame capture is
         // likewise wrapped in catch_unwind, turning a potential panic into an
@@ -1689,6 +1778,11 @@ impl ComputerUseBackend for LinuxComputerUseBackend {
                 // "release at the end no matter what happened midway"
                 // guarantee below applies to the press failing as well.
                 let _ = portal.button(wayland_portal::map_button(MouseButton::Left), false);
+                // The motion_absolute above verifiably moved the pointer to
+                // the drag start: record it the same way move_to does, so
+                // cursor_position does not keep reporting the stale
+                // pre-drag spot.
+                portal.track_pointer(from.0, from.1);
                 return Err(error);
             }
             // Interpolated movement; the button must be released at the end
