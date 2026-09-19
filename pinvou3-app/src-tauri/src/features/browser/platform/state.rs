@@ -414,10 +414,6 @@ impl SurfaceEntry {
         true
     }
 
-    pub(super) fn remember_title(&self, url: impl Into<String>, title: impl Into<String>) {
-        *self.last_known_title.write() = Some((url.into(), title.into()));
-    }
-
     pub(super) fn title_for_url(&self, url: &str) -> Option<String> {
         self.last_known_title
             .read()
@@ -461,29 +457,10 @@ impl SurfaceEntry {
         self.user_navigation.lock().cancel_active();
     }
 
-    pub(super) fn observe_requested_navigation_target(&self, target_url: &str) -> bool {
-        self.user_navigation
-            .lock()
-            .observe_requested_target(target_url)
-    }
-
     pub(super) fn current_request_id_for_blocked_target(&self, target_url: &str) -> Option<String> {
         self.user_navigation
             .lock()
             .current_request_id_for_blocked_target(target_url)
-    }
-
-    pub(super) fn finish_navigation(&self, committed_url: &str) -> NavigationCommitDecision {
-        self.user_navigation.lock().finish(committed_url)
-    }
-
-    pub(super) fn finish_same_document_navigation(
-        &self,
-        committed_url: &str,
-    ) -> NavigationCommitDecision {
-        self.user_navigation
-            .lock()
-            .finish_same_document(committed_url)
     }
 }
 
@@ -521,6 +498,9 @@ impl TabRegistry {
         self.entries.iter().find(|entry| entry.token == token)
     }
 
+    /// Test-only mutable access (the sole caller is a host.rs test seeding
+    /// automation targets); production mutates entries through dedicated methods.
+    #[cfg(test)]
     pub(super) fn by_token_mut(&mut self, token: &str) -> Option<&mut SurfaceEntry> {
         self.entries.iter_mut().find(|entry| entry.token == token)
     }
@@ -1583,7 +1563,10 @@ mod tests {
         assert!(entry.remember_url("https://example.com/next"));
         assert_eq!(clone.last_known_url(), "https://example.com/next");
         assert!(!clone.remember_url("https://example.com/next"));
-        clone.remember_title("https://example.com/next", "Next page");
+        *clone.last_known_title.write() = Some((
+            "https://example.com/next".to_string(),
+            "Next page".to_string(),
+        ));
         assert_eq!(
             entry.title_for_url("https://example.com/next").as_deref(),
             Some("Next page")
@@ -1599,7 +1582,10 @@ mod tests {
         entry
             .begin_user_navigation("request-a", "https://example.com/a", true)
             .unwrap();
-        entry.observe_requested_navigation_target("https://example.com/a");
+        entry
+            .user_navigation
+            .lock()
+            .observe_requested_target("https://example.com/a");
         entry
             .user_navigation
             .lock()
@@ -1609,14 +1595,17 @@ mod tests {
             .begin_user_navigation("request-b", "https://example.com/b", true)
             .unwrap();
         assert_eq!(
-            entry.finish_navigation("https://example.com/a"),
+            entry.user_navigation.lock().finish("https://example.com/a"),
             NavigationCommitDecision::Stale
         );
-        entry.observe_requested_navigation_target("https://example.com/b");
+        entry
+            .user_navigation
+            .lock()
+            .observe_requested_target("https://example.com/b");
         // A matching policy callback alone is not enough: an old same-URL
         // Finished cannot complete B until its document Started is observed.
         assert_eq!(
-            entry.finish_navigation("https://example.com/b"),
+            entry.user_navigation.lock().finish("https://example.com/b"),
             NavigationCommitDecision::Stale
         );
         entry
@@ -1624,11 +1613,11 @@ mod tests {
             .lock()
             .observe_started("https://example.com/b");
         assert_eq!(
-            entry.finish_navigation("https://example.com/a"),
+            entry.user_navigation.lock().finish("https://example.com/a"),
             NavigationCommitDecision::Stale
         );
         assert_eq!(
-            entry.finish_navigation("https://example.com/b"),
+            entry.user_navigation.lock().finish("https://example.com/b"),
             NavigationCommitDecision::Current {
                 request_id: Some("request-b".to_string())
             }
@@ -1641,7 +1630,10 @@ mod tests {
         entry
             .begin_user_navigation("request-http", "http://example.com/start", true)
             .unwrap();
-        entry.observe_requested_navigation_target("http://example.com/start");
+        entry
+            .user_navigation
+            .lock()
+            .observe_requested_target("http://example.com/start");
         entry
             .user_navigation
             .lock()
@@ -1652,7 +1644,10 @@ mod tests {
             .observe_started("https://example.com/final");
 
         assert_eq!(
-            entry.finish_navigation("https://example.com/final"),
+            entry
+                .user_navigation
+                .lock()
+                .finish("https://example.com/final"),
             NavigationCommitDecision::Current {
                 request_id: Some("request-http".to_string())
             }
@@ -1665,7 +1660,12 @@ mod tests {
         entry
             .begin_user_navigation("request-a", "https://example.com/a", true)
             .unwrap();
-        assert!(entry.observe_requested_navigation_target("https://example.com/a"));
+        assert!(
+            entry
+                .user_navigation
+                .lock()
+                .observe_requested_target("https://example.com/a")
+        );
         {
             let mut navigation = entry.user_navigation.lock();
             navigation.observe_started("https://example.com/a");
@@ -1676,11 +1676,14 @@ mod tests {
         // close the cross-document gate before the matching Finished callback.
         assert!(entry.navigation_in_flight());
         assert_eq!(
-            entry.finish_navigation("https://example.com/a"),
+            entry.user_navigation.lock().finish("https://example.com/a"),
             NavigationCommitDecision::Stale
         );
         assert_eq!(
-            entry.finish_navigation("https://example.com/a#ready"),
+            entry
+                .user_navigation
+                .lock()
+                .finish("https://example.com/a#ready"),
             NavigationCommitDecision::Current {
                 request_id: Some("request-a".to_string())
             }
@@ -1693,7 +1696,10 @@ mod tests {
         entry
             .begin_user_navigation("request-old", "https://example.com/old", true)
             .unwrap();
-        entry.observe_requested_navigation_target("https://example.com/old");
+        entry
+            .user_navigation
+            .lock()
+            .observe_requested_target("https://example.com/old");
         entry
             .user_navigation
             .lock()
@@ -1712,7 +1718,10 @@ mod tests {
         );
         assert!(!entry.navigation_admission_busy());
         assert_eq!(
-            entry.finish_navigation("https://example.com/old"),
+            entry
+                .user_navigation
+                .lock()
+                .finish("https://example.com/old"),
             NavigationCommitDecision::Stale
         );
 
@@ -1722,7 +1731,10 @@ mod tests {
             .observe_started("https://example.com/fresh");
         assert!(entry.navigation_admission_busy());
         assert_eq!(
-            entry.finish_navigation("https://example.com/fresh"),
+            entry
+                .user_navigation
+                .lock()
+                .finish("https://example.com/fresh"),
             NavigationCommitDecision::Current { request_id: None }
         );
         assert!(!entry.navigation_admission_busy());
@@ -1734,7 +1746,10 @@ mod tests {
         entry
             .begin_user_navigation("request-a", "https://example.com/same", true)
             .unwrap();
-        entry.observe_requested_navigation_target("https://example.com/same");
+        entry
+            .user_navigation
+            .lock()
+            .observe_requested_target("https://example.com/same");
         entry
             .user_navigation
             .lock()
@@ -1745,7 +1760,10 @@ mod tests {
             .unwrap_err();
         assert!(error.contains("browser/navigation-same-url-in-flight"));
         assert_eq!(
-            entry.finish_navigation("https://example.com/same"),
+            entry
+                .user_navigation
+                .lock()
+                .finish("https://example.com/same"),
             NavigationCommitDecision::Current {
                 request_id: Some("request-a".to_string())
             }
@@ -1758,7 +1776,10 @@ mod tests {
         entry
             .begin_user_navigation("request-a", "https://example.com/same", true)
             .unwrap();
-        entry.observe_requested_navigation_target("https://example.com/same");
+        entry
+            .user_navigation
+            .lock()
+            .observe_requested_target("https://example.com/same");
         entry.fail_user_navigation("request-a");
 
         assert!(!entry.navigation_admission_busy());
@@ -1771,7 +1792,10 @@ mod tests {
             .lock()
             .observe_started("https://example.com/same");
         assert_eq!(
-            entry.finish_navigation("https://example.com/same"),
+            entry
+                .user_navigation
+                .lock()
+                .finish("https://example.com/same"),
             NavigationCommitDecision::Stale
         );
     }
@@ -1883,7 +1907,10 @@ mod tests {
         same_document.remember_url(url);
         let captured = epoch(&same_document);
         assert!(matches!(
-            same_document.finish_same_document_navigation(url),
+            same_document
+                .user_navigation
+                .lock()
+                .finish_same_document(url),
             NavigationCommitDecision::Current { request_id: None }
         ));
         assert_ne!(
@@ -1905,18 +1932,32 @@ mod tests {
             .begin_user_navigation("request-new", "https://example.com/new", true)
             .unwrap();
 
-        assert!(!entry.observe_requested_navigation_target("https://example.com/old"));
+        assert!(
+            !entry
+                .user_navigation
+                .lock()
+                .observe_requested_target("https://example.com/old")
+        );
         assert_eq!(
-            entry.finish_navigation("https://example.com/old"),
+            entry
+                .user_navigation
+                .lock()
+                .finish("https://example.com/old"),
             NavigationCommitDecision::Stale
         );
-        entry.observe_requested_navigation_target("https://example.com/new");
+        entry
+            .user_navigation
+            .lock()
+            .observe_requested_target("https://example.com/new");
         entry
             .user_navigation
             .lock()
             .observe_started("https://example.com/new");
         assert_eq!(
-            entry.finish_navigation("https://example.com/new"),
+            entry
+                .user_navigation
+                .lock()
+                .finish("https://example.com/new"),
             NavigationCommitDecision::Current {
                 request_id: Some("request-new".to_string())
             }
@@ -1929,15 +1970,28 @@ mod tests {
         entry
             .begin_user_navigation("request-main", "https://example.com/main", true)
             .unwrap();
-        assert!(entry.observe_requested_navigation_target("https://example.com/main"));
-        assert!(!entry.observe_requested_navigation_target("https://frames.test/child"));
+        assert!(
+            entry
+                .user_navigation
+                .lock()
+                .observe_requested_target("https://example.com/main")
+        );
+        assert!(
+            !entry
+                .user_navigation
+                .lock()
+                .observe_requested_target("https://frames.test/child")
+        );
         entry
             .user_navigation
             .lock()
             .observe_started("https://example.com/main");
 
         assert_eq!(
-            entry.finish_navigation("https://example.com/main"),
+            entry
+                .user_navigation
+                .lock()
+                .finish("https://example.com/main"),
             NavigationCommitDecision::Current {
                 request_id: Some("request-main".to_string())
             }
@@ -1950,7 +2004,10 @@ mod tests {
         entry
             .begin_user_navigation("request-http", "http://example.com/start", true)
             .unwrap();
-        entry.observe_requested_navigation_target("http://example.com/start");
+        entry
+            .user_navigation
+            .lock()
+            .observe_requested_target("http://example.com/start");
         {
             let mut navigation = entry.user_navigation.lock();
             navigation.observe_started("http://example.com/start");
@@ -1958,11 +2015,17 @@ mod tests {
         }
 
         assert_eq!(
-            entry.finish_navigation("http://example.com/start"),
+            entry
+                .user_navigation
+                .lock()
+                .finish("http://example.com/start"),
             NavigationCommitDecision::Stale
         );
         assert_eq!(
-            entry.finish_navigation("https://example.com/final"),
+            entry
+                .user_navigation
+                .lock()
+                .finish("https://example.com/final"),
             NavigationCommitDecision::Current {
                 request_id: Some("request-http".to_string())
             }
@@ -1978,11 +2041,17 @@ mod tests {
         assert!(!entry.navigation_in_flight());
         assert!(entry.navigation_admission_busy());
         assert_eq!(
-            entry.finish_same_document_navigation("https://example.com/page#other"),
+            entry
+                .user_navigation
+                .lock()
+                .finish_same_document("https://example.com/page#other"),
             NavigationCommitDecision::Stale
         );
         assert_eq!(
-            entry.finish_same_document_navigation("https://example.com/page#next"),
+            entry
+                .user_navigation
+                .lock()
+                .finish_same_document("https://example.com/page#next"),
             NavigationCommitDecision::Current {
                 request_id: Some("request-fragment".to_string())
             }
@@ -1996,7 +2065,10 @@ mod tests {
         entry
             .begin_user_navigation("request-main", "https://example.com/main", true)
             .unwrap();
-        entry.observe_requested_navigation_target("https://example.com/main");
+        entry
+            .user_navigation
+            .lock()
+            .observe_requested_target("https://example.com/main");
 
         assert_eq!(
             entry.current_request_id_for_blocked_target("custom://child"),

@@ -387,6 +387,10 @@ impl L1Store {
     }
 
     /// 插入或更新一条文档记录，返回 doc id。
+    /// Test-only fixture seeding: production ingestion goes through the
+    /// resumable `ingest_import_item` staging pipeline, which has its own
+    /// document upsert.
+    #[cfg(test)]
     pub fn upsert_document(
         &self,
         collection_id: i64,
@@ -420,6 +424,7 @@ impl L1Store {
         Ok(())
     }
 
+    #[cfg(test)]
     fn replace_doc_chunks(
         &self,
         doc_id: i64,
@@ -449,6 +454,7 @@ impl L1Store {
         tx.commit()
     }
 
+    #[cfg(test)]
     fn set_doc_status(&self, doc_id: i64, status: &str, n_chunks: usize) {
         let _ = self.conn.lock().execute(
             "UPDATE documents SET parse_status=?1,n_chunks=?2,parsed_at=?3 WHERE id=?4",
@@ -456,9 +462,11 @@ impl L1Store {
         );
     }
 
-    // ───────────────────────── 解析 + 入库（单文件，供后台批量调） ─────────────────────────
+    // ─────────────── 解析 + 入库（单文件；生产入库走 ingest_import_item 暂存管线，
+    // ─────────────── 本路径仅作为测试 fixture 播种保留） ───────────────
 
     /// 解析单个文件 → 切块 → 写入。返回 parse_status（parsed/skipped/failed）。
+    #[cfg(test)]
     pub fn ingest_file(&self, collection_id: i64, path: &Path) -> String {
         let path_str = path.to_string_lossy().to_string();
         let name = path
