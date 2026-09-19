@@ -830,11 +830,14 @@ pub async fn web_access_create_session_and_chat(
     )
     .await
     {
-        pool.evict(&session_id).await;
-        let rollback = store
-            .delete(&session_id)
+        // Roll back through the gated, aux-aware pool delete (the same path
+        // delete_session uses): a bare store.delete would leave an aux engine
+        // bound to this session running as a handle-less orphan, and would
+        // skip the turn gate (round-13 M-B).
+        let rollback = pool
+            .delete_chat_session(&session_id)
+            .await
             .map_err(|rollback_error| format!("rollback Session {session_id}: {rollback_error:#}"));
-        pool.forget_session(&session_id);
         // The chat may have already run (possibly past start_turn):
         // process-level residual keys such as the timing queue / pending
         // user input are cleaned uniformly by the SessionPurgedHook fired
@@ -1810,6 +1813,67 @@ mod tests {
         assert!(ensure_web_chat_session_supported(false).is_ok());
         // 桌面开了多智能体开关的普通会话同样拒绝：Web 看不到也停不掉子智能体。
         assert!(ensure_web_chat_session_supported(true).is_err());
+    }
+
+    /// web_access_chat_for_session's session gates (validate_session_id →
+    /// multi_agent rejection → store.load existence) do not go through
+    /// list(). Auxiliary conversations (`aux-` prefixed) are filtered out of
+    /// the ordinary session list by store.list(), but all three gates pass
+    /// for them naturally — the WebUI auxChat domain (auxChatSend →
+    /// web_access_chat) is not hit by the visibility filtering.
+    #[test]
+    fn web_chat_preflight_accepts_aux_sessions() {
+        let _g = crate::platform::paths::tests::ENV_LOCK
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        let root = std::env::temp_dir().join(format!(
+            "pinvou3-web-aux-preflight-test-{}",
+            std::process::id()
+        ));
+        let _ = std::fs::remove_dir_all(&root);
+        let previous = std::env::var("PINVOU3_HOME").ok();
+        // SAFETY: platform::paths::tests::ENV_LOCK is held; env writes are
+        // serialized in-process.
+        unsafe { std::env::set_var("PINVOU3_HOME", &root) };
+        let store = crate::features::sessions::SessionStore::boot_with_scheduled_root(
+            root.join("scheduled"),
+        )
+        .expect("session store");
+        let main = store
+            .create_new("model".to_string(), None, root.clone())
+            .expect("create main session");
+        let aux = store
+            .create_aux_session(&main.metadata.id)
+            .expect("create aux session");
+
+        // Precondition: list isolation holds — the aux session is not in the
+        // ordinary session list.
+        assert!(
+            !store
+                .list()
+                .expect("list sessions")
+                .iter()
+                .any(|metadata| metadata.id == aux.id),
+            "aux sessions must stay out of the ordinary chat list"
+        );
+        // web_access_chat_for_session's three session gates each pass:
+        crate::features::sessions::validate_session_id(&aux.id).expect("aux id charset");
+        ensure_web_chat_session_supported(store.mode_state(&aux.id).multi_agent).expect(
+            "fresh aux sessions default to single-agent mode (set_multi_agent_mode does \
+                     not reject aux- ids; the zero-tools invariant rests on the spawn pin + the \
+                     per-turn gate, not on this flag)",
+        );
+        store.load(&aux.id).expect("aux session loads by id");
+
+        match previous {
+            // SAFETY: platform::paths::tests::ENV_LOCK is held; env writes are
+            // serialized in-process.
+            Some(value) => unsafe { std::env::set_var("PINVOU3_HOME", value) },
+            // SAFETY: platform::paths::tests::ENV_LOCK is held; env writes are
+            // serialized in-process.
+            None => unsafe { std::env::remove_var("PINVOU3_HOME") },
+        }
+        let _ = std::fs::remove_dir_all(&root);
     }
 
     #[test]

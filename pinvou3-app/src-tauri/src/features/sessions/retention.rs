@@ -69,12 +69,47 @@ impl SessionStore {
             // Scheduled sessions own additional records outside sessions/.
             // Generic chat cleanup must not delete only the transcript and
             // strand the other half of their history.
-            if metadata.id.starts_with("sched-") {
+            // The lifecycle of an auxiliary conversation (aux-) is owned by the
+            // main session's cascade/discard (same precedent as sched-): it is
+            // never an eviction candidate and does not consume the retention
+            // budget of visible sessions.
+            if super::validators::is_sched_session_id(&metadata.id)
+                || super::validators::is_aux_session_id(&metadata.id)
+            {
                 continue;
             }
             chat_count += 1;
             if chat_count > MAX_SESSIONS_PER_KIND {
                 let id = metadata.id;
+                // Evicting a main session cascade-evicts its aux session:
+                // resolve the mapping first (purge_session_side_maps removes it
+                // once the main record commits), then let the aux record and
+                // the main record enter the same deleted_ids set so side-map
+                // cleanup runs uniformly. This mirrors the existing eviction
+                // semantics of main sessions: the store layer cannot reach the
+                // pool (dependency direction), so deleting the aux record here
+                // reclaims no engine and emits no session:deleted — a still
+                // running aux engine is reclaimed by id as a fallback by the
+                // pool's idle-eviction sweep.
+                if let Some(aux_id) = self.aux_session_id(&id) {
+                    let (aux_committed, aux_result) = self.delete_session_record(&aux_id);
+                    if aux_committed {
+                        deleted_ids.push(aux_id.clone());
+                    }
+                    if let Err(error) = aux_result {
+                        if error.kind() != ErrorKind::NotFound && delete_error.is_none() {
+                            // No raw ids in log-reachable chains (see the
+                            // cleartext-logging stance in sidecars.rs): this
+                            // context ends up in the boot eprintln through
+                            // `{error:#}`, so the step identifies the failure
+                            // and the id stays out.
+                            delete_error = Some(
+                                anyhow::anyhow!(error)
+                                    .context("delete the evicted session's aux record"),
+                            );
+                        }
+                    }
+                }
                 let (committed, result) = self.delete_session_record(&id);
                 if committed {
                     deleted_ids.push(id.clone());
@@ -262,6 +297,22 @@ impl SessionStore {
             self.save_hidden_sessions();
         }
 
+        let removed_aux = {
+            let mut aux_sessions = self.aux_sessions.write();
+            let before = aux_sessions.len();
+            // Bidirectional cleanup: remove an entry when either the key (main
+            // session) or the value (aux session) hits the deleted set — neither
+            // deleting a main session nor deleting an aux session alone may
+            // leave a ghost mapping behind.
+            aux_sessions.retain(|main_id, aux_id| {
+                !contains(main_id.as_str()) && !contains(aux_id.as_str())
+            });
+            aux_sessions.len() != before
+        };
+        if removed_aux {
+            self.save_aux_sessions();
+        }
+
         // Keys of process-level turn-state maps (timing/pending_user_input)
         // accumulate per session id and are cleaned by the purge hook
         // registered by the app composition root (see SessionPurgedHook;
@@ -274,6 +325,253 @@ impl SessionStore {
         }
         // 回退备份 sidecar 同样随会话清理（best-effort，见其实现注释）。
         Self::purge_rewound_turns_backups(ids);
+    }
+
+    /// Orphan reconciliation for auxiliary conversations (`aux-` prefix), with
+    /// the same startup-reclamation semantics as
+    /// `purge_all_scheduled_side_maps`: a crash between "persist the aux
+    /// record" and "persist the `_aux_sessions.json` mapping", or a corrupted
+    /// mapping sidecar, leaves an invisible orphan that never enters the
+    /// session list and is unconditionally skipped by retention (`aux-` prefix,
+    /// see enforce_session_retention_locked); a main session dying first
+    /// (external cleanup / interrupted cascade delete) accumulates the same way
+    /// without reconciliation.
+    ///
+    /// Two cases, two dispositions: when the mapping is missing but the record
+    /// is on disk, **first rebuild the mapping from the record's backlink
+    /// `parent_session_id`** (as long as the main session is still alive the
+    /// user's Q&A content is not lost; a record left over from the crash window
+    /// is empty, so resurrecting it is equivalent to creating a fresh one; this
+    /// matches the sched- side's "preserve the transcript first" protective
+    /// posture). Only when the mapping cannot be rebuilt (main is dead / record
+    /// unreadable / the main is ambiguously claimed by another aux) or the
+    /// mapping exists but the main session record is no longer on disk do we
+    /// reclaim it as an orphan: delete the record + `purge_session_side_maps`
+    /// bidirectional cleanup (which also strips the ghost mapping of a dead
+    /// main with a surviving aux).
+    ///
+    /// Called only on the startup path (same as the sched- side table
+    /// reconciliation): at that point no get-or-create is in flight, so the
+    /// legitimate creation window of "record persisted, mapping not yet" cannot
+    /// overlap with reconciliation — therefore this function **must not** be
+    /// wired into enforce_session_retention_locked (the save inside
+    /// create_aux_session would trigger enforce and misdelete the newborn as an
+    /// orphan).
+    pub(crate) fn reconcile_aux_sessions(&self) -> Result<()> {
+        // Skip entirely when the sidecar was never successfully read this
+        // boot: mapping-based decisions (missing mapping ⇒ rebuild/delete)
+        // would run against an artificially empty map and delete live
+        // transcripts. The next boot retries the reconcile.
+        if !self
+            .aux_sessions_loaded
+            .load(std::sync::atomic::Ordering::SeqCst)
+        {
+            eprintln!("[sessions] aux reconciliation skipped: bindings not loaded this boot");
+            return Ok(());
+        }
+        let mut aux_ids: Vec<String> = self
+            .list_sessions_cached()
+            .context("list sessions for aux session reconciliation")?
+            .iter()
+            .filter(|metadata| super::validators::is_aux_session_id(&metadata.id))
+            .map(|metadata| metadata.id.clone())
+            .collect();
+        // Deterministic order, and the *same* survivor rule the sidecar load
+        // uses (the sorted-first claim wins). Two unmapped records whose
+        // backlink names the same parent both want the rebuild, and the loser
+        // is reclaimed as an ambiguous duplicate — if this pass picked by the
+        // store's updated_at ordering instead, the winner could differ from
+        // the load-time provisional owner and the ownership would flip between
+        // boots (round-12 S3: the two layers disagreed on the tie-break).
+        aux_ids.sort();
+        // The listing is file-driven, so two files whose contents declare the
+        // same metadata id (a case-variant alias file on a case-sensitive
+        // filesystem, or any duplicated record) yield the same logical record
+        // twice. Collapse them: the loop below adopts a record by binding its
+        // parent, so a second pass over the same id would see a parent that is
+        // now bound and reclaim the record it just repaired as an ambiguous
+        // duplicate — deleting the transcript this pass exists to save.
+        aux_ids.dedup();
+        // Validate every binding against the record it names, *before* the
+        // record loop. A value that cannot be loaded under its own name is
+        // unusable: either the transcript was deleted out of band (the loop
+        // below cannot see it — no record means no iteration) or it is a
+        // case-variant alias that `load` rejects on identity. Clearing it first
+        // lets the loop rebuild the real record from its backlink in the same
+        // pass, instead of reclaiming a live transcript because a stale binding
+        // was still occupying its parent (round-12 P3/S3).
+        //
+        // Membership in the listed ids is deliberately *not* the test: on a
+        // case-insensitive filesystem the alias is listed as its own record, so
+        // a string-set check would accept the alias, the loop would then fail to
+        // load it (identity), keep the binding, and reclaim the canonical
+        // record as an unbound orphan — losing the very transcript this pass
+        // exists to repair.
+        //
+        // This runs *before* the empty-early-return on purpose: when every aux
+        // record is gone, `aux_ids` is empty and the record loop has nothing to
+        // iterate, which is exactly the state whose stale bindings must still
+        // be stripped.
+        let bindings = self.aux_sessions.read().clone();
+        let invalid_mains: Vec<String> = bindings
+            .iter()
+            .filter(|(_, mapped)| binding_is_unusable(self, mapped))
+            .map(|(main_id, _)| main_id.clone())
+            .collect();
+        if !invalid_mains.is_empty() {
+            let mut stripped = false;
+            {
+                let mut aux_sessions = self.aux_sessions.write();
+                for main_id in &invalid_mains {
+                    // Re-check under the write lock: the snapshot above is only
+                    // a read, and a concurrent set_aux_session may have
+                    // re-bound the key since.
+                    let still_invalid = aux_sessions
+                        .get(main_id)
+                        .is_some_and(|mapped| binding_is_unusable(self, mapped));
+                    if still_invalid && aux_sessions.remove(main_id).is_some() {
+                        stripped = true;
+                    }
+                }
+            }
+            if stripped {
+                self.save_aux_sessions();
+            }
+        }
+        if aux_ids.is_empty() {
+            return Ok(());
+        }
+        let mappings = self.aux_sessions.read().clone();
+        let mut orphan_ids = Vec::new();
+        for aux_id in &aux_ids {
+            match mappings.iter().find(|(_, mapped)| *mapped == aux_id) {
+                // Mapping exists, but the main session record is no longer on
+                // disk → dead main with a surviving aux.
+                Some((main_id, _)) => {
+                    let main_gone =
+                        !chat_session_file(&self.manager, main_id).is_ok_and(|path| path.exists());
+                    // A hand-edited sidecar can map mainA to an aux whose
+                    // record backlink names mainB — without this check the
+                    // mapping is trusted and mainA's panel would read mainB's
+                    // transcript. On mismatch (main still alive) detach the
+                    // false mapping so the record can be re-adopted by its true
+                    // parent; when the main is gone the record is orphaned
+                    // outright. A record read failure keeps the mapping (fail
+                    // open to "unknown", matching the transient-fault stance of
+                    // the rebuild side).
+                    let backlink_mismatch = match self.load(aux_id) {
+                        Ok(session) => {
+                            session.metadata.parent_session_id.as_deref() != Some(main_id.as_str())
+                        }
+                        Err(_) => false,
+                    };
+                    if main_gone {
+                        orphan_ids.push(aux_id.clone());
+                    } else if backlink_mismatch {
+                        // Detach, then rebuild for the true parent in this same
+                        // pass. Deferring the rebuild to the next boot left a
+                        // window where a panel opened in between minted a fresh
+                        // aux under the true parent — the stranded transcript
+                        // was then reclaimed as an ambiguous duplicate and the
+                        // user's Q&A was lost for good (round-12 S3).
+                        if let Err(error) = self.set_aux_session(main_id, None) {
+                            // Identity-free: this surfaces through the boot log.
+                            eprintln!("[sessions] detach mismatched aux mapping failed: {error:#}");
+                            // Abort this record's repair: the failed detach was
+                            // rolled back in memory, so the map still holds the
+                            // false main→aux entry — continuing would persist
+                            // the whole map with the true parent's entry added,
+                            // doubling the mapping on disk and letting the false
+                            // parent's panel read the true parent's transcript
+                            // until the next boot. Leave the lying mapping to
+                            // the next boot, matching the transient-fault stance.
+                            continue;
+                        }
+                        if !self.rebuild_aux_mapping_from_record(aux_id)? {
+                            // The true parent is gone, already bound to another
+                            // aux, or invalid: nothing can adopt this record,
+                            // so reclaim it now instead of leaving a ghost that
+                            // only a future boot would collect.
+                            orphan_ids.push(aux_id.clone());
+                        }
+                    }
+                }
+                // Mapping missing: crash in the creation window / corrupted
+                // sidecar → try to repair first, delete only if that fails.
+                None => {
+                    if !self.rebuild_aux_mapping_from_record(aux_id)? {
+                        orphan_ids.push(aux_id.clone());
+                    }
+                }
+            }
+        }
+        let mut deleted_ids = Vec::new();
+        let mut delete_error = None;
+        for id in &orphan_ids {
+            let (committed, result) = self.delete_session_record(id);
+            if committed {
+                deleted_ids.push(id.clone());
+            }
+            if let Err(error) = result {
+                if error.kind() != ErrorKind::NotFound && delete_error.is_none() {
+                    delete_error =
+                        Some(anyhow::anyhow!(error).context("delete the orphan aux record"));
+                }
+            }
+        }
+        if !deleted_ids.is_empty() {
+            // Same wrap-up as a retention eviction: stale the list snapshot +
+            // bidirectional side-table purge (which also strips and persists
+            // any main→aux ghost mapping whose value was hit).
+            self.invalidate_list_cache();
+            self.purge_session_side_maps(&deleted_ids);
+        }
+        match delete_error {
+            Some(error) => Err(error),
+            None => Ok(()),
+        }
+    }
+
+    /// An aux record whose mapping is missing: rebuild the main→aux mapping
+    /// from the record's backlink `parent_session_id` and persist it. The main
+    /// session must genuinely exist on disk, must have no mapping of its own
+    /// (being claimed by another aux = ambiguous duplicate, keep the existing
+    /// binding), and must not carry an aux-/sched- prefix (aux-of-aux /
+    /// scheduled records do not get auxiliary conversations). Returns
+    /// Ok(true) = rebuilt; Ok(false) = cannot rebuild, caller reclaims it as
+    /// an orphan.
+    fn rebuild_aux_mapping_from_record(&self, aux_id: &str) -> Result<bool> {
+        let parent_id = match self.load(aux_id) {
+            Ok(session) => session.metadata.parent_session_id,
+            // Fail closed on anything but a genuinely unusable name: a transient
+            // boot-time read fault (EIO, a held file) must not classify a
+            // live record as an orphan — the caller would delete it. The
+            // error aborts the reconcile pass, which retries on next boot.
+            // A NotFound or a case-variant alias (the record loads, but under a
+            // different spelling) is not transient: nobody can ever use that
+            // name, so the caller may reclaim it.
+            Err(error) if super::store::is_not_found_error(&error) => return Ok(false),
+            Err(error) if super::store::is_identity_mismatch_error(&error) => return Ok(false),
+            Err(error) => {
+                return Err(error).with_context(|| "load the aux record for reconciliation");
+            }
+        };
+        let Some(parent_id) = parent_id else {
+            return Ok(false);
+        };
+        if super::validators::is_aux_session_id(&parent_id)
+            || super::validators::is_sched_session_id(&parent_id)
+        {
+            return Ok(false);
+        }
+        if self.aux_session_id(&parent_id).is_some()
+            || !chat_session_file(&self.manager, &parent_id).is_ok_and(|path| path.exists())
+        {
+            return Ok(false);
+        }
+        self.set_aux_session(&parent_id, Some(aux_id.to_string()))
+            .with_context(|| "rebuild the aux record's mapping from its backlink")?;
+        Ok(true)
     }
 
     pub(crate) fn purge_all_scheduled_side_maps(&self) {
@@ -726,5 +1024,22 @@ impl SessionStore {
             "committed artifact append",
         )?;
         Ok(())
+    }
+}
+
+/// True when a main→aux binding names a record that can never be used: the
+/// transcript is gone, or the name is a case-variant alias that [`SessionStore::load`]
+/// rejects on identity.
+///
+/// Transient read faults deliberately return `false`: clearing the binding
+/// there would hand the next boot a mapping-less live transcript, and on a
+/// fail-closed path it would orphan it outright.
+fn binding_is_unusable(store: &SessionStore, mapped: &str) -> bool {
+    match store.load(mapped) {
+        Ok(_) => false,
+        Err(error) => {
+            super::store::is_not_found_error(&error)
+                || super::store::is_identity_mismatch_error(&error)
+        }
     }
 }

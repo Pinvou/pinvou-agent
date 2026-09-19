@@ -44,6 +44,12 @@ static POST_RECORD_DELETE_FAULTS: LazyLock<Mutex<HashMap<String, ErrorKind>>> =
 /// oldest is evicted by [`super::retention::SessionStore::enforce_session_retention_locked`].
 pub(crate) const MAX_SESSIONS_PER_KIND: usize = 50;
 
+/// The aux conversation's internal default title (Chinese constant): aux
+/// sessions never enter the regular session list, so this title is only used
+/// in the detail view and the on-disk record, and does not switch with the UI
+/// language.
+pub(crate) const AUX_SESSION_TITLE: &str = "辅助对话";
+
 impl SessionStore {
     /// Repair persisted tool histories only at process boot, before any
     /// session engine can own an in-flight tool call. Runtime reads use the
@@ -115,6 +121,7 @@ impl SessionStore {
         store.load_session_models();
         store.load_pinned_sessions();
         store.load_hidden_sessions();
+        store.load_aux_sessions();
         store.load_session_mode_states();
         {
             let _mutation = store.scheduled_mutation.lock();
@@ -124,6 +131,13 @@ impl SessionStore {
             store.enforce_session_retention_locked()?;
         }
         store.purge_all_scheduled_side_maps();
+        // Aux orphan reconciliation hooks in at the same point as the sched-
+        // side-map reconciliation (for the criteria and why it must not join
+        // enforce, see the reconcile_aux_sessions comment); a failure does
+        // not block startup — the next startup finishes the job.
+        if let Err(error) = store.reconcile_aux_sessions() {
+            eprintln!("[sessions] startup aux session reconciliation failed: {error:#}");
+        }
         Ok(store)
     }
 
@@ -148,12 +162,18 @@ impl SessionStore {
         store.load_session_models();
         store.load_pinned_sessions();
         store.load_hidden_sessions();
+        store.load_aux_sessions();
         store.load_session_mode_states();
         {
             let _mutation = store.scheduled_mutation.lock();
             store.enforce_session_retention_locked()?;
         }
         store.purge_all_scheduled_side_maps();
+        // Same as boot_inner: aux orphan reconciliation; a failure does not
+        // block startup.
+        if let Err(error) = store.reconcile_aux_sessions() {
+            eprintln!("[sessions] startup aux session reconciliation failed: {error:#}");
+        }
         Ok(store)
     }
 
@@ -194,6 +214,9 @@ impl SessionStore {
             session_models: Arc::new(RwLock::new(HashMap::new())),
             pinned_sessions: Arc::new(RwLock::new(HashMap::new())),
             hidden_sessions: Arc::new(RwLock::new(HashMap::new())),
+            aux_sessions: Arc::new(RwLock::new(HashMap::new())),
+            aux_sessions_loaded: Arc::new(std::sync::atomic::AtomicBool::new(false)),
+            aux_sessions_io: Arc::new(Mutex::new(())),
             execution_root_resolver: Arc::new(RwLock::new(None)),
             session_workspaces: Arc::new(RwLock::new(HashMap::new())),
             code_session_predicate: Arc::new(RwLock::new(None)),
@@ -258,10 +281,17 @@ impl SessionStore {
         // load them normally, but remain owned by the Scheduled Tasks surface.
         // 多智能体是普通会话的持久开关，不是独立会话类型；这里只隔离定时
         // 会话，其余历史统一进入普通列表。
+        // Aux conversations (aux- prefix) share the durable store too, so the
+        // detail view and history load normally, but they are attached to
+        // their main session, opened only through the aux chat panel, and
+        // never enter the regular session list.
         // benchmark 构建中,评测会话(eval_ 前缀,含 GAIA 私有题目)不进用户历史:
         // 正常路径由评测运行器清理,崩溃残留也不能把私密题目带进会话列表。
         // 默认桌面构建不保留这项前缀语义,避免 benchmark 未启用时改变普通会话列表。
-        out.retain(|metadata| !metadata.id.starts_with("sched-"));
+        out.retain(|metadata| {
+            !super::validators::is_sched_session_id(&metadata.id)
+                && !super::validators::is_aux_session_id(&metadata.id)
+        });
         #[cfg(feature = "benchmark-hooks")]
         out.retain(|metadata| !metadata.id.starts_with("eval_"));
         out.sort_by_key(|b| std::cmp::Reverse(b.updated_at));
@@ -269,9 +299,24 @@ impl SessionStore {
     }
 
     pub fn load(&self, id: &str) -> Result<SavedSession> {
-        self.manager
+        let session = self
+            .manager
             .load_session_snapshot(id)
-            .with_context(|| format!("load_session({id})"))
+            .with_context(|| format!("load_session({id})"))?;
+        // Fail closed on case-variant aliases: on case-insensitive
+        // filesystems `AUX-<suffix>.json` resolves to the real `aux-…` record
+        // while case-sensitive identity tests miss the mismatch, so a caller
+        // holding an alias would operate on a different session than the id
+        // claims. Requiring the loaded metadata id to equal the requested id
+        // makes every downstream prefix/identity decision trustworthy
+        // regardless of filesystem case semantics.
+        if session.metadata.id != id {
+            return Err(anyhow::Error::new(SessionIdMismatch {
+                requested: id.to_string(),
+                actual: session.metadata.id,
+            }));
+        }
+        Ok(session)
     }
 
     /// Pack one session into a full-fidelity `.tar.xz` archive, reusing the
@@ -329,8 +374,39 @@ impl SessionStore {
     }
 
     pub fn delete(&self, id: &str) -> Result<()> {
+        // An aux session is never a scheduled session, so this refusal guard
+        // applies to cascade targets naturally and the auxiliary-conversation
+        // path cannot bypass it.
         if self.is_scheduled_session(id)? {
             bail!("Scheduled-run sessions are deleted through their automation");
+        }
+        // Hold the aux-creation lock across a main-session delete: mapping
+        // resolution + cascade deletion is atomic against a concurrent
+        // get_or_create_aux_session, so a creation cannot slip between "no
+        // mapping found" and "record deleted" and leave a fresh orphan behind.
+        // The recursive cascade target is always an aux- id and skips the lock
+        // outright (the outer call already holds it; parking_lot Mutex is not
+        // reentrant either). Lock order stays aux_sessions_io →
+        // scheduled_mutation with no reverse acquisition path (retention
+        // eviction goes through delete_session_record, never this function).
+        //
+        // Note: hooks fired from delete_session_record / purge_session_side_
+        // maps below therefore run while this lock is held. That is safe only
+        // because no hook re-enters the aux surface today — a hook doing so
+        // would self-deadlock. See the notify_session_purged contract.
+        let _aux_io_guard = if super::validators::is_aux_session_id(id) {
+            None
+        } else {
+            Some(self.aux_sessions_io.lock())
+        };
+        // Auxiliary-conversation cascade: deleting a main session first deletes
+        // its aux session. Mapping keys are always main session ids and an aux
+        // session never holds a mapping itself, so the recursion depth is
+        // bounded at 1; once the aux delete commits, the bidirectional cleanup
+        // in purge_session_side_maps removes the main→aux mapping as well.
+        if let Some(aux_id) = self.aux_session_id(id) {
+            self.delete(&aux_id)
+                .with_context(|| format!("delete aux session {aux_id} of {id}"))?;
         }
         // 上游 delete_session 先删会话 JSON 再清目录:目录清理失败时 JSON 已
         // 不在盘上但错误会向上传播——按「已发起删除即可能变更盘面」失效快照,
@@ -470,8 +546,11 @@ impl SessionStore {
     /// store ([`SessionStore::delete`] and deep paths without an app handle
     /// such as retention policy/scheduled cleanup). Failures are silent
     /// (hook implementations own their idempotency) and must not block the
-    /// deletion path; callers must fire this only after all store-side
-    /// locks are released.
+    /// deletion path. Callers should fire this after store-side locks are
+    /// released where possible; main-session deletes hold `aux_sessions_io`
+    /// across the purge by design, so hooks must never re-enter the aux
+    /// mapping surface (parking_lot Mutex is non-reentrant and would
+    /// self-deadlock).
     pub(crate) fn notify_session_purged(&self, id: &str) {
         let hooks = self.session_purged_hooks.read().clone();
         for hook in hooks {
@@ -586,6 +665,158 @@ impl SessionStore {
             });
         }
         Ok(session)
+    }
+
+    /// Creates the auxiliary conversation of `parent_id` (`aux-`-prefixed id,
+    /// same prefixed-creation pattern as the `sched-` precedent): a fixed
+    /// internal default title, model and workspace inherited from the main
+    /// session (including the per-session model binding in
+    /// `_session_models.json`), `parent_session_id` pointing back at the main
+    /// session, and the main→aux mapping written to `_aux_sessions.json`.
+    /// Any failed step rolls back the persisted session JSON so no orphan aux
+    /// session survives that a restart could never reclaim.
+    /// Reuse semantics (return the existing mapping when its target is still
+    /// on disk) live in [`Self::get_or_create_aux_session`], not here.
+    pub fn create_aux_session(&self, parent_id: &str) -> Result<SessionMetadata> {
+        // Reject aux-of-aux in the creation path itself (not only via the
+        // get-or-create wrapper): an auxiliary conversation must not own
+        // another one, and an aux session is itself a Chat kind, so the
+        // command layer's `ensure_chat_session` cannot catch it.
+        if super::validators::is_aux_session_id(parent_id) {
+            bail!("Auxiliary session '{parent_id}' cannot own an aux session");
+        }
+        // `sched-` parents are rejected for the same reason: a sched- keyed
+        // mapping is exactly the entry class the sidecar load filter and the
+        // startup reconciliation drop, so such an aux transcript would be
+        // reclaimed as corrupted state on the next boot.
+        if super::validators::is_sched_session_id(parent_id) {
+            bail!("Scheduled-run session '{parent_id}' cannot own an aux session");
+        }
+        let parent = self
+            .load(parent_id)
+            .with_context(|| "load the parent session for aux creation")?;
+        let id = format!("aux-{}", generate_session_id());
+        let mut session = create_saved_session_with_id_and_mode(
+            id.clone(),
+            &[],
+            &parent.metadata.model,
+            &parent.metadata.workspace,
+            0,
+            None,
+            None,
+        );
+        session.metadata.title = AUX_SESSION_TITLE.to_string();
+        session.metadata.parent_session_id = Some(parent_id.to_string());
+        // The per-session model binding lives in the `_session_models.json`
+        // sidecar, not in `metadata.model`: same order as `create_new` — write
+        // the sidecar before publishing the session JSON; when a later step
+        // fails and the session is rolled back, `purge_session_side_maps`
+        // removes this binding along with it.
+        if let Some(model_id) = self.session_model_override(parent_id) {
+            self.set_session_model_id(&id, Some(model_id))?;
+        }
+        if let Err(error) = self.save(&session) {
+            let rollback = self.delete(&id);
+            return Err(match rollback {
+                Ok(()) => error,
+                Err(rollback_error) => {
+                    anyhow::anyhow!(
+                        "{error:#}; rollback of the aux record failed: {rollback_error:#}"
+                    )
+                }
+            });
+        }
+        if let Err(error) = self.set_aux_session(parent_id, Some(id.clone())) {
+            let rollback = self.delete(&id);
+            return Err(match rollback {
+                Ok(()) => error,
+                Err(rollback_error) => {
+                    anyhow::anyhow!(
+                        "{error:#}; rollback of the aux record failed: {rollback_error:#}"
+                    )
+                }
+            });
+        }
+        // The retention sweep bypasses aux_sessions_io (store layer cannot
+        // take the creation lock): a save() above can trigger an eviction of
+        // the parent in the window before the mapping lands, leaving a
+        // dead-parent/live-aux orphan. Re-check inside the caller's lock and
+        // roll back instead of publishing the mapping. (Round-10 minor-1.)
+        if self.load(parent_id).is_err() {
+            // A failed unpublish must not be silent: the mapping of a rejected
+            // create would survive on disk and re-point the next boot at a
+            // record that was rolled back (round-12 P3).
+            if let Err(error) = self.set_aux_session(parent_id, None) {
+                eprintln!("[sessions] rollback of the aux mapping failed: {error:#}");
+            }
+            let rollback = self.delete(&id);
+            // Ids stay out of these messages too: the command layer surfaces
+            // them to the caller and the boot reconciliation logs the chain.
+            return Err(match rollback {
+                Ok(()) => {
+                    anyhow::anyhow!("the parent session was evicted while creating its aux session")
+                }
+                Err(rollback_error) => anyhow::anyhow!(
+                    "the parent session was evicted while creating its aux session; rollback of the aux record failed: {rollback_error:#}"
+                ),
+            });
+        }
+        Ok(session.metadata)
+    }
+
+    /// Atomic get-or-create: the mapping lookup (including ghost-mapping
+    /// removal) and the creation run in the same aux-creation lock, so two
+    /// concurrent calls cannot each create a session and have the later write
+    /// overwrite the mapping, orphaning the first aux session.
+    /// An auxiliary conversation must not own an aux session (aux-of-aux): an
+    /// aux session is itself a Chat kind, so the command layer's
+    /// `ensure_chat_session` cannot catch it — the single creation entry point
+    /// must reject it explicitly.
+    pub fn get_or_create_aux_session(&self, parent_id: &str) -> Result<SessionMetadata> {
+        if super::validators::is_aux_session_id(parent_id) {
+            bail!("Auxiliary session '{parent_id}' cannot own an aux session");
+        }
+        if super::validators::is_sched_session_id(parent_id) {
+            bail!("Scheduled-run session '{parent_id}' cannot own an aux session");
+        }
+        let _create = self.aux_sessions_io.lock();
+        // Fail closed when the sidecar read failed this boot (the in-memory
+        // map is empty but the on-disk bindings are unknown): creating here
+        // would overwrite the sidecar with only the fresh mapping and hand
+        // the next boot's reconciliation a real orphan to delete. A parse
+        // failure is NOT covered — the sidecar content is provably dead, so
+        // rebuilding from records+backlinks is the recovery path, and this
+        // function is part of it. The panel surfaces a refusal as
+        // ensureFailed; the next boot reloads the file.
+        if !self
+            .aux_sessions_loaded
+            .load(std::sync::atomic::Ordering::SeqCst)
+        {
+            bail!("Aux session bindings were not loaded this boot; refusing to create");
+        }
+        if let Some(aux_id) = self.aux_session_id(parent_id) {
+            match self.load(&aux_id) {
+                Ok(aux) => return Ok(aux.metadata),
+                // Ghost mapping (the aux record is gone from disk) or an
+                // invalid binding (a hand-edited `AUX-…` value that `load`
+                // rejects on identity): both are provably dead, so clear and
+                // rebuild. Treating the identity rejection as a transient fault
+                // kept the bad mapping forever and made every later
+                // get-or-create for that task fail (round-12 P3).
+                Err(error) if is_not_found_error(&error) || is_identity_mismatch_error(&error) => {
+                    self.set_aux_session(parent_id, None)
+                        .context("clear the stale aux mapping")?;
+                }
+                // Any other load failure (permissions, a held file, transient
+                // IO) must not clear the mapping and replace the session: the
+                // orphaned record would be reclaimed on the next boot and the
+                // transcript lost. Fail closed and surface the error.
+                Err(error) => {
+                    return Err(error).with_context(|| "load the session bound to this task");
+                }
+            }
+        }
+        self.create_aux_session(parent_id)
     }
 
     pub fn update_messages(&self, id: &str, messages: Vec<Message>) -> Result<()> {
@@ -803,4 +1034,52 @@ impl SessionStore {
         )?;
         Ok(session)
     }
+}
+
+/// True when `error` carries an `io::Error` of kind `NotFound` anywhere in its
+/// chain — the "record is not on disk" case. Any other failure kind must be
+/// treated as "unknown" rather than "absent", so transient IO errors are never
+/// conflated with a missing record.
+pub(super) fn is_not_found_error(error: &anyhow::Error) -> bool {
+    error.chain().any(|cause| {
+        cause
+            .downcast_ref::<std::io::Error>()
+            .is_some_and(|e| e.kind() == ErrorKind::NotFound)
+    })
+}
+
+/// The case-variant alias rejection of [`SessionStore::load`], as a typed error
+/// so callers can tell it apart from a transient read fault.
+///
+/// The distinction matters at the one place that deliberately fails closed on
+/// "unknown" load errors (`get_or_create_aux_session`): a hand-edited `AUX-…`
+/// mapping value is a *provably invalid binding* on a case-insensitive
+/// filesystem, and keeping it would poison that task's aux chat permanently,
+/// while a held file or an EIO must still keep the mapping (clearing it there
+/// would orphan a live transcript). The message is kept byte-compatible with
+/// the previous `bail!` text.
+#[derive(Debug)]
+pub(crate) struct SessionIdMismatch {
+    requested: String,
+    actual: String,
+}
+
+impl std::fmt::Display for SessionIdMismatch {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(
+            formatter,
+            "session id mismatch: requested '{}' but record holds '{}'",
+            self.requested, self.actual
+        )
+    }
+}
+
+impl std::error::Error for SessionIdMismatch {}
+
+/// True when `error` is the case-variant alias rejection rather than an IO
+/// fault: the binding is invalid by construction, so it may be cleared.
+pub(super) fn is_identity_mismatch_error(error: &anyhow::Error) -> bool {
+    error
+        .chain()
+        .any(|cause| cause.downcast_ref::<SessionIdMismatch>().is_some())
 }

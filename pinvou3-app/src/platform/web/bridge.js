@@ -5160,6 +5160,90 @@
     return { accepted: true, queued: false, completion };
   }
 
+  // ── Aux chat ─────────────────────────────────────────────────────
+  // Same shape as desktop platform/tauri/bridge/aux-chat.js: aux sessions are
+  // filtered out of list_sessions by the backend (they never enter
+  // state.sessions), so sendMessageToSession cannot be reused; turn events are
+  // still routed into the per-session buffer by the existing chat:* listeners
+  // keyed on session_id.
+  const auxIdByTask = Object.create(null); // domain-private index: discard purges the local buffer by auxId
+  function auxChatIsAuxSession(id) {
+    return typeof id === "string" && id.indexOf("aux-") === 0;
+  }
+  function auxChatEmptySnapshot() {
+    return { chatItems: [], busy: false, queued: [] };
+  }
+  async function auxChatEnsure(taskId) {
+    const task = String(taskId || "").trim();
+    if (!task) throw new Error(bt("targetSessionMissing"));
+    const metadata = await invoke("get_or_create_aux_session", { sessionId: task });
+    const auxId = metadata && typeof metadata.id === "string" ? metadata.id : "";
+    if (!auxChatIsAuxSession(auxId)) throw new Error(bt("sessionDataInvalid"));
+    auxIdByTask[task] = auxId;
+    await ensureSessionBufferLoaded(auxId);
+    return auxId;
+  }
+  async function auxChatSend(auxId, text) {
+    const sid = String(auxId || "").trim();
+    const message = String(text || "").trim();
+    if (!auxChatIsAuxSession(sid)) throw new Error(bt("targetSessionMissing"));
+    if (!message) throw new Error(bt("replyContentEmpty"));
+    await ensureSessionBufferLoaded(sid);
+    const buf = sessionStates[sid];
+    // Aux sessions never queue (queue is user-input semantics): reject
+    // outright when busy or queued messages exist; the caller retries.
+    if (isBusyFor(sid) || (buf && Array.isArray(buf.queued) && buf.queued.length > 0)) {
+      throw new Error(bt("turnAlreadyInProgress"));
+    }
+    // Command parity with doSendFor: Web goes through web_access_chat (the
+    // attachment-handle channel), desktop goes through chat.
+    return IS_WEB
+      ? invoke("web_access_chat", { message, attachmentHandles: [], sessionId: sid, restrictTools: true })
+      : invoke("chat", { message, attachments: [], sessionId: sid, restrictTools: true });
+  }
+  // Synchronous snapshot: when not loaded (no buffer) returns an empty
+  // structure — never throws and never triggers a load. Items are shallow-
+  // copied one by one (same shape as desktop aux-chat.js): streaming deltas
+  // mutate buffer items in place, so copying only the array would share
+  // object references and a caller comparing field by field could not
+  // detect changes.
+  function auxChatSnapshotItems(items) {
+    return (Array.isArray(items) ? items : []).map(function (item) {
+      return item && typeof item === "object" ? Object.assign({}, item) : item;
+    });
+  }
+  function auxChatSnapshot(auxId) {
+    const sid = String(auxId || "").trim();
+    if (!sid) return auxChatEmptySnapshot();
+    if (sid === state.activeSessionId) {
+      return {
+        chatItems: auxChatSnapshotItems(state.chatItems),
+        busy: !!state.busy,
+        queued: auxChatSnapshotItems(state.queued),
+      };
+    }
+    const buf = sessionStates[sid];
+    if (!buf) return auxChatEmptySnapshot();
+    // Same shape as desktop aux-chat.js: an always-open panel polling
+    // snapshot() counts as "reading" and refreshes LRU recency, otherwise
+    // after 32+ session switches the buffer is evicted by capacity and the
+    // panel wrongly shows the empty state.
+    touchSessionBuffer(sid, buf, false);
+    return {
+      chatItems: auxChatSnapshotItems(buf.chatItems),
+      busy: !!buf.busy,
+      queued: auxChatSnapshotItems(buf.queued),
+    };
+  }
+  async function auxChatDiscard(taskId) {
+    const task = String(taskId || "").trim();
+    if (!task) throw new Error(bt("targetSessionMissing"));
+    await invoke("discard_aux_session", { sessionId: task });
+    const auxId = auxIdByTask[task];
+    delete auxIdByTask[task];
+    if (auxId) purgeSessionBuffer(auxId);
+  }
+
   function findFirstTurnItem(clientMessageId) {
     return state.chatItems.find(function (item) {
       return item && item.clientMessageId === clientMessageId;
@@ -10009,6 +10093,11 @@
     init,
     sendMessage,
     sendMessageToSession,
+    auxChatEnsure,
+    auxChatSend,
+    auxChatSnapshot,
+    auxChatDiscard,
+    auxChatIsAuxSession,
     getComposerDraft,
     setComposerDraft,
     retryFirstTurn,

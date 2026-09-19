@@ -60,6 +60,26 @@ test('subagent selection and its first render share the App ACK-gated publicatio
   assert.match(chatView, /restorePanelId: current[\s\S]*?current\.restorePanelId/);
 });
 
+test('closing the aux chat panel restores the dock panel recorded at open', () => {
+  // Same parity intent as the subagent panel: the first open records
+  // restorePanelId (repeat opens keep the first record) and close jumps back
+  // to the recorded panel. Unlike the subagent panel, an unrecorded close
+  // still falls back to 'browser' — deliberate divergence: when the aux panel
+  // was opened with the dock closed, falling back to the dock's default pane
+  // beats leaving the dock with no selection.
+  const openBlock = chatView.slice(
+    chatView.indexOf('const openAuxChatPanel'),
+    chatView.indexOf('const closeAuxChatPanel'),
+  );
+  const closeBlock = chatView.slice(
+    chatView.indexOf('const closeAuxChatPanel'),
+    chatView.indexOf('const handlePreviewArtifact'),
+  );
+  assert.match(openBlock, /restorePanelId: current[\s\S]*?current\.restorePanelId[\s\S]*?rightDockActivePanelId/);
+  assert.match(closeBlock, /const restorePanelId = auxChatPanel\?\.restorePanelId \|\| null/);
+  assert.match(closeBlock, /\[restorePanelId \|\| 'browser', activeSessionId\]/);
+});
+
 test('a newer subagent open invalidates a delayed close across same-session ABA', () => {
   const sessionId = 'session-a';
   const delayedCloseRequestId = 2;

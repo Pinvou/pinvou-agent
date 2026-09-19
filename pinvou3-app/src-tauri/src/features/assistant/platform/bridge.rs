@@ -755,9 +755,9 @@ impl Pinvou3Bridge {
         }
         match crate::features::memory::ensure_runtime_prompt(session_id) {
             Ok(path) => out.push(InstructionSource::File(path)),
-            Err(err) => eprintln!(
-                "[pinvou3-app] memory runtime prompt unavailable for session {session_id}: {err}"
-            ),
+            Err(err) => {
+                eprintln!("[pinvou3-app] memory runtime prompt unavailable for a session: {err}")
+            }
         }
         out
     }
@@ -1936,6 +1936,18 @@ impl Pinvou3Bridge {
         cfg.exec_policy_engine = codewhale_execpolicy::ExecPolicyEngine::with_rulesets(vec![
             self.scope_deny_ruleset(session_id),
         ]);
+        // An auxiliary conversation (aux- prefix) is a pure Q&A session: the
+        // spawn config pins zero tools (empty allowed_tools). The foundation's
+        // Op::EditLastTurn resend carries no tool surface and directly reuses
+        // the engine config's allowed_tools, which SendMessage's per-turn
+        // allowlist cannot reach — the window of "the first operation after a
+        // restart/idle reclaim is an edit-resend" can only be covered by this
+        // backstop; the per-turn enforcement for regular sends lives in
+        // EnginePool::send_reserved_user_message (turn_restrict_tools). Both
+        // places share the same rule and back each other up.
+        if crate::features::sessions::is_aux_session_id(session_id) {
+            cfg.allowed_tools = Some(Vec::new());
+        }
         // Native Code-mode and external ACP sessions do not expose Browser MCP tools. They
         // fall back to global mcp.json, which has no browser entry. System instructions and
         // tool registration share this gate.
@@ -5488,6 +5500,66 @@ mod tests {
             Some(crate::features::assistant::tool_policy::allowed_tool_names()),
             "code 会话未限制时必须恢复 Pinvou 基础白名单"
         );
+    }
+
+    /// PR #433 review (MAJOR): both server-side enforcement paths for
+    /// aux-session zero-tools must hold simultaneously —
+    /// ① spawn config `allowed_tools=Some(empty list)`: the foundation's
+    /// `Op::EditLastTurn` resend carries no tool surface and directly reuses
+    /// the engine config — this is the tool-surface source for edit-resends
+    /// (including the window of "the first operation after restart/reclaim is
+    /// an edit"); ② per-turn sends go through `turn_restrict_tools` (the same
+    /// decision function as `EnginePool::send_reserved_user_message`), and a
+    /// caller passing `restrict_tools=false` is still pressed to an empty
+    /// allowlist by the `aux-` prefix. Ordinary sessions are enforced on
+    /// neither side.
+    #[test]
+    fn aux_session_is_tool_free_on_spawn_config_and_send_op() {
+        let bridge = fixture_bridge();
+        let root = std::env::temp_dir().join(format!(
+            "pinvou3-aux-tool-free-{}-{:p}",
+            std::process::id(),
+            &bridge
+        ));
+        let roots = |name: &str| SessionRoots {
+            execution: root.join(format!("{name}-exec")),
+            ledger: root.join(format!("{name}-ledger")),
+            bound: false,
+        };
+
+        // ① spawn config: edit_last_turn resends reuse this allowed_tools.
+        let aux_cfg = bridge.build_engine_config_for_session_roots("aux-xyz", roots("aux"));
+        assert_eq!(
+            aux_cfg.allowed_tools,
+            Some(Vec::new()),
+            "aux 会话 spawn 配置必须零工具(空 allowed_tools),兜住 edit_last_turn 重发"
+        );
+
+        // ② per-turn send: a caller restrict=false is still forced to an
+        // empty list (the web_access_chat bypass surface).
+        let restrict =
+            crate::features::assistant::engine_pool::turn_restrict_tools("aux-xyz", false, false);
+        let op = bridge
+            .build_send_message_op("aux-xyz", "hi".to_string(), AppMode::Agent, None, restrict)
+            .expect("resolve test route");
+        match op {
+            Op::SendMessage { allowed_tools, .. } => assert_eq!(
+                allowed_tools,
+                Some(Vec::new()),
+                "aux 轮必须零工具(空白名单),与调用方传值无关"
+            ),
+            other => panic!("期望 SendMessage,得到 {other:?}"),
+        }
+
+        // Control: ordinary sessions' spawn config keeps the Pinvou
+        // allowlist, unharmed by the aux rule.
+        let normal_cfg = bridge.build_engine_config_for_session_roots("sess-plain", roots("plain"));
+        assert_eq!(
+            normal_cfg.allowed_tools,
+            Some(crate::features::assistant::tool_policy::allowed_tool_names()),
+            "普通会话 spawn 配置必须保持 Pinvou 基础白名单"
+        );
+        let _ = std::fs::remove_dir_all(root);
     }
 
     #[cfg(feature = "benchmark-hooks")]

@@ -8,6 +8,7 @@
 //! - `_session_models.json` — session_id -> SavedModel.id override.
 //! - `_pinned_sessions.json` — pinned conversation id list with timestamps.
 //! - `_hidden_sessions.json` — collapsed conversation id list with timestamps.
+//! - `_aux_sessions.json` — main session_id -> aux (`aux-` prefixed) session_id.
 //!
 //! Mode / pinvou_review / plan-phase remain in-memory only by design.
 
@@ -21,6 +22,7 @@ use chrono::Utc;
 const SESSION_MODELS_FILE: &str = "_session_models.json";
 const PINNED_SESSIONS_FILE: &str = "_pinned_sessions.json";
 const HIDDEN_SESSIONS_FILE: &str = "_hidden_sessions.json";
+const AUX_SESSIONS_FILE: &str = "_aux_sessions.json";
 
 /// Shared save core for the pinned / hidden sidecars: both files carry the
 /// same shape (an array of `{ id, <ts_key> }` objects sorted by id) and the
@@ -247,5 +249,173 @@ impl SessionStore {
         {
             *self.hidden_sessions.write() = hidden_sessions;
         }
+    }
+
+    /// Auxiliary conversation mapping lookup: main session id → aux session
+    /// (`aux-` prefixed) id.
+    pub fn aux_session_id(&self, main_id: &str) -> Option<String> {
+        self.aux_sessions.read().get(main_id).cloned()
+    }
+
+    /// Write/clear the main→aux mapping and persist it; on persist failure the
+    /// in-memory state is rolled back — same transactional semantics as
+    /// `set_session_model_id`: never leave an in-memory state that "looks
+    /// successful but is lost on restart".
+    pub fn set_aux_session(&self, main_id: &str, aux_id: Option<String>) -> Result<()> {
+        // The pub write entry seals both ends of the mapping: keys must be
+        // valid, unprefixed main-session ids, values must carry the aux-
+        // prefix. The cascade-delete depth bound and the "aux- ids skip the
+        // creation lock" argument both rest on keys/values keeping these
+        // shapes; the invariant is guarded at load and creation and sealed
+        // here at the single write API (same defense as
+        // validate_scheduled_session_id on registry keys). Note: the
+        // value==key (self-mapping) case cannot survive this validation —
+        // the value must be aux- prefixed while the key must not be.
+        super::validators::validate_session_id(main_id)?;
+        if super::validators::is_aux_session_id(main_id)
+            || super::validators::is_sched_session_id(main_id)
+        {
+            anyhow::bail!("Auxiliary mapping key must be an unprefixed main session id: {main_id}");
+        }
+        if let Some(aux_id) = &aux_id {
+            super::validators::validate_session_id(aux_id)?;
+            if !super::validators::is_aux_session_id(aux_id) {
+                anyhow::bail!("Auxiliary session id must start with 'aux-': {aux_id}");
+            }
+        }
+        let mut aux_sessions = self.aux_sessions.write();
+        let previous = aux_sessions.get(main_id).cloned();
+        match aux_id {
+            Some(aux_id) => {
+                aux_sessions.insert(main_id.to_string(), aux_id);
+            }
+            None => {
+                aux_sessions.remove(main_id);
+            }
+        }
+        if let Err(error) = Self::persist_aux_sessions(&aux_sessions) {
+            match previous {
+                Some(previous) => {
+                    aux_sessions.insert(main_id.to_string(), previous);
+                }
+                None => {
+                    aux_sessions.remove(main_id);
+                }
+            }
+            return Err(error);
+        }
+        Ok(())
+    }
+
+    pub(crate) fn persist_aux_sessions(aux_sessions: &HashMap<String, String>) -> Result<()> {
+        let file = crate::platform::paths::sessions_root().join(AUX_SESSIONS_FILE);
+        if aux_sessions.is_empty() {
+            return match std::fs::remove_file(&file) {
+                Ok(()) => Ok(()),
+                Err(error) if error.kind() == ErrorKind::NotFound => Ok(()),
+                // Name the sidecar, never its absolute path: `save_aux_sessions`
+                // prints the chain, and the sessions root embeds the host home
+                // directory (same no-host-paths stance as the read-failure log
+                // below).
+                Err(error) => Err(error).with_context(|| format!("remove {AUX_SESSIONS_FILE}")),
+            };
+        }
+        let payload =
+            serde_json::to_vec_pretty(aux_sessions).context("serialize aux session bindings")?;
+        deepseek_tui::utils::write_atomic(&file, &payload)
+            .with_context(|| format!("persist aux session bindings to {AUX_SESSIONS_FILE}"))
+    }
+
+    pub fn save_aux_sessions(&self) {
+        if let Err(error) = Self::persist_aux_sessions(&self.aux_sessions.read()) {
+            eprintln!("[sessions] save_aux_sessions failed: {error:#}");
+        }
+    }
+
+    pub fn load_aux_sessions(&self) {
+        let file = crate::platform::paths::sessions_root().join(AUX_SESSIONS_FILE);
+        // Absent sidecar = nothing to load, and that is a healthy state (the
+        // flag still flips true): only a read failure on an existing file
+        // must leave the "not loaded" mark that fails get_or_create and the
+        // startup reconciliation closed.
+        if !file.exists() {
+            self.aux_sessions_loaded
+                .store(true, std::sync::atomic::Ordering::SeqCst);
+            return;
+        }
+        let content = match std::fs::read_to_string(&file) {
+            Ok(c) => c,
+            // A silent swallow here chains into real transcript loss: the
+            // empty in-memory map makes the next set_aux_session overwrite
+            // the sidecar with only the fresh mapping, and the next boot's
+            // reconciliation then deletes the pre-existing aux records as
+            // ambiguous duplicates. Log (same level as the parse-error
+            // branch below) and leave aux_sessions_loaded false so the
+            // writers/reconciler fail closed this boot.
+            Err(error) => {
+                eprintln!("[sessions] load_aux_sessions read failed: {error}");
+                return;
+            }
+        };
+        match serde_json::from_str::<HashMap<String, String>>(&content) {
+            Ok(map) => {
+                // Corrupted-but-parseable entries must be dropped: a mapping
+                // whose key/value is not a valid session id, or whose value
+                // lacks the aux- prefix, would let get_or_create return the
+                // main session as its own aux and write side-chat questions
+                // straight into the main context (same load-time defense as
+                // the sched- profile load); entries with aux-/sched- prefixed
+                // keys or self-mappings would remove the "main→aux, one level"
+                // depth bound from delete's cascade recursion (stack
+                // overflow), so they are dropped too.
+                // Duplicate values (two mains mapping to the same aux) are
+                // dropped *deterministically*: iterating a HashMap would hand
+                // ownership to per-process RandomState iteration order, so the
+                // entries are sorted by (key, value) and the first claim wins
+                // — which owner survives is stable across boots. The winning
+                // owner keeps its mapping; the losers become mapping-less
+                // orphans, whose records the startup reconciliation rebuilds
+                // from the backlink when unambiguous or reclaims otherwise.
+                let mut entries: Vec<(String, String)> = map.into_iter().collect();
+                entries.sort();
+                let mut seen_aux_ids: std::collections::HashSet<String> =
+                    std::collections::HashSet::new();
+                let map: HashMap<String, String> = entries
+                    .into_iter()
+                    .filter(|(main_id, aux_id)| {
+                        let valid = super::validators::validate_session_id(main_id).is_ok()
+                            && super::validators::validate_session_id(aux_id).is_ok()
+                            && super::validators::is_aux_session_id(aux_id)
+                            && !super::validators::is_aux_session_id(main_id)
+                            && !super::validators::is_sched_session_id(main_id)
+                            && main_id != aux_id
+                            && seen_aux_ids.insert(aux_id.clone());
+                        if !valid {
+                            // No raw ids in logs (the CodeQL cleartext-logging
+                            // stance this PR settled on); the entry kinds still
+                            // identify the dropped shape for debugging.
+                            eprintln!("[sessions] drop invalid aux mapping entry");
+                        }
+                        valid
+                    })
+                    .collect();
+                *self.aux_sessions.write() = map;
+            }
+            // A parse failure is NOT the fail-closed case: the sidecar's
+            // content is provably unrecoverable, so the records+backlinks on
+            // disk carry all remaining truth, and orphan classification (with
+            // its backlink-first rebuild) is safe to run. The corrupted file
+            // is only ever overwritten once a fresh, validated mapping exists
+            // (the empty-map write is suppressed by the not-loaded flag only
+            // for the read-failure case, where the file may be intact).
+            Err(e) => {
+                eprintln!("[sessions] load_aux_sessions failed: {e}");
+                self.aux_sessions_loaded
+                    .store(true, std::sync::atomic::Ordering::SeqCst);
+                return;
+            }
+        }
+        self.aux_sessions_loaded
+            .store(true, std::sync::atomic::Ordering::SeqCst);
     }
 }

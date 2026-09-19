@@ -4,7 +4,7 @@ import {
   invokeObservedPanelSelection,
   isSubagentPanelPublicationCurrent,
 } from './subagent-panel-publication.mjs';
-import { AlertTriangle, ArrowLeft, BarChart2, Brain, Briefcase, Check, ChevronDown, ChevronRight, ClipboardList, Copy, Edit2, FileText, FolderOpen, Globe, ImageIcon, Monitor, Package, Paperclip, PinIcon, Presentation, Send, Sparkles, StopCircle, Terminal, Upload, X, Zap } from '../../components/icons.jsx';
+import { AlertTriangle, ArrowLeft, BarChart2, Brain, Briefcase, Check, ChevronDown, ChevronRight, ClipboardList, Copy, Edit2, FileText, FolderOpen, Globe, ImageIcon, MessageSquare, Monitor, Package, Paperclip, PinIcon, Presentation, Send, Sparkles, StopCircle, Terminal, Upload, X, Zap } from '../../components/icons.jsx';
 import { bridge } from '../../hooks/useBridge.js';
 import { useCopyFlash } from '../../hooks/useCopyFlash.js';
 import { can, isWeb } from '../../shared/platform.js';
@@ -27,6 +27,7 @@ import {
   ConversationTimeline,
   useConversationSecondClock,
 } from '../conversation/ConversationTimeline.jsx';
+import { AuxQuoteSelection } from '../aux-chat/AuxQuoteSelection.jsx';
 import { HomeModeSwitcher } from '../conversation/HomeModeSwitcher.jsx';
 import {
   conversationItemsForMode,
@@ -77,9 +78,11 @@ import { AssistantMessageActions, AssistantMessageFooter } from '../conversation
 const CHAT_PANEL_LOADERS = Object.freeze({
   artifacts: () => import('../artifacts/ArtifactsPanel.jsx'),
   subagent: () => import('../multiagent/SubagentTranscriptPanel.jsx'),
+  auxChat: () => import('../aux-chat/AuxChatPanel.jsx'),
 });
 const LazyArtifactsPanel = React.lazy(() => CHAT_PANEL_LOADERS.artifacts().then((m) => ({ default: m.ArtifactsPanel })));
 const LazySubagentTranscriptPanel = React.lazy(() => CHAT_PANEL_LOADERS.subagent().then((m) => ({ default: m.SubagentTranscriptPanel })));
+const LazyAuxChatPanel = React.lazy(() => CHAT_PANEL_LOADERS.auxChat().then((m) => ({ default: m.AuxChatPanel })));
 const prefetchChatPanel = (key) => {
   const loader = CHAT_PANEL_LOADERS[key];
   if (loader) loader().catch(() => {});
@@ -1407,8 +1410,28 @@ const ToolWelcomeCard = ({ toolId, _theme, t, onSend }) => {
       // detail -> list -> same parent card a new selection even when agentId is unchanged.
       const [subagentPanel, setSubagentPanel] = useState(null);
       const subagentPanelRequestRef = useRef(0);
+      // The aux chat panel's mount state is declared early: the scroll-restore
+      // useLayoutEffect below depends on it (opening/closing the panel changes
+      // the right dock layout, so the main conversation scroll position must
+      // be restored, same as in CodexAcpView).
+      const [auxChatPanel, setAuxChatPanel] = useState(null);
+      // The panel's real visibility in the dock (same mechanism as
+      // CodexAcpView's auxChatDockActive): when another dock panel covers the
+      // aux panel the entry pill does not highlight, and clicking it again
+      // brings the panel to the front via the openTick bump.
+      const [auxChatDockActive, setAuxChatDockActive] = useState(false);
+      const auxChatPanelRequestRef = useRef(0);
       // eslint-disable-next-line react-hooks/set-state-in-effect -- synchronously close the sub-agent panel on session switch
       useEffect(() => { setSubagentPanel(null); }, [activeSessionId]);
+      // When the mount condition drops (sched- session / no active session),
+      // the panel unmounts outright and RightDockPanel's onActiveChange has no
+      // unmount cleanup, so the highlight would linger; reset it here and let
+      // the re-mounted panel report its real visibility again.
+      useEffect(() => {
+        if (auxChatPanel && activeSessionId && !activeSessionId.startsWith('sched-')) return;
+        // eslint-disable-next-line react-hooks/set-state-in-effect -- synchronously reset dock highlight when the panel unmounts; one-shot mirror, same pattern as CodexAcpView
+        setAuxChatDockActive(false);
+      }, [auxChatPanel, activeSessionId]);
       const rememberScrollBeforeSubagentPanelChange = useCallback(() => {
         subagentPanelScrollRef.current = captureConversationScrollPosition(
           scrollRef.current,
@@ -1460,7 +1483,7 @@ const ToolWelcomeCard = ({ toolId, _theme, t, onSend }) => {
           autoScrollRef.current = true;
           setShowScrollBottom(false);
         }
-      }, [subagentPanel]);
+      }, [subagentPanel, auxChatPanel]);
       useEffect(() => {
         if (typeof window === 'undefined') return;
         const onOpen = (event) => {
@@ -1514,6 +1537,63 @@ const ToolWelcomeCard = ({ toolId, _theme, t, onSend }) => {
         rememberScrollBeforeSubagentPanelChange,
         rightDockActivePanelId,
       ]);
+      // Aux chat panel (an independent Q&A-only conversation in the right
+      // dock, outside the sub-agent system). Unlike subagentPanel: it does
+      // **not** close on main-session switch; the new sessionId is passed in
+      // to rebind. Before opening/closing, record the main conversation
+      // scroll position (subagentPanelScrollRef); the restore useLayoutEffect
+      // above replays it uniformly, matching the aux entry behavior in
+      // CodexAcpView.
+      const openAuxChatPanel = useCallback(() => {
+        const requestedSessionId = activeSessionId;
+        if (!requestedSessionId) return;
+        const requestId = auxChatPanelRequestRef.current + 1;
+        auxChatPanelRequestRef.current = requestId;
+        prefetchChatPanel('auxChat');
+        const publishOpen = ({ isCurrent = () => true } = {}) => {
+          if (!isSubagentPanelPublicationCurrent({
+            transitionCurrent: isCurrent(),
+            requestId,
+            currentRequestId: auxChatPanelRequestRef.current,
+            sessionId: requestedSessionId,
+            currentSessionId: activeSessionIdRef.current,
+          })) return false;
+          rememberScrollBeforeSubagentPanelChange();
+          setAuxChatPanel((current) => ({
+            openTick: (current?.openTick || 0) + 1,
+            // Remember the dock panel active at first open and jump back to
+            // it on close (same pattern as the subagent panel; repeat opens
+            // must keep the first record, or the restore target would be
+            // overwritten by the panel itself).
+            restorePanelId: current
+              ? current.restorePanelId
+              : browserDockOpen ? rightDockActivePanelId : null,
+          }));
+          return true;
+        };
+        if (onRightDockPanelSelectionChange) {
+          void invokeObservedPanelSelection(
+            onRightDockPanelSelectionChange,
+            ['aux-chat', requestedSessionId, publishOpen],
+            reportRightDockSelectionFailure,
+          );
+        } else {
+          publishOpen();
+        }
+      }, [activeSessionId, browserDockOpen, onRightDockPanelSelectionChange, rememberScrollBeforeSubagentPanelChange, rightDockActivePanelId]);
+      const closeAuxChatPanel = useCallback(() => {
+        auxChatPanelRequestRef.current += 1;
+        rememberScrollBeforeSubagentPanelChange();
+        const restorePanelId = auxChatPanel?.restorePanelId || null;
+        setAuxChatPanel(null);
+        if (browserDockOpen && onRightDockPanelSelectionChange) {
+          void invokeObservedPanelSelection(
+            onRightDockPanelSelectionChange,
+            [restorePanelId || 'browser', activeSessionId],
+            reportRightDockSelectionFailure,
+          );
+        }
+      }, [activeSessionId, auxChatPanel, browserDockOpen, onRightDockPanelSelectionChange, rememberScrollBeforeSubagentPanelChange]);
       const handlePreviewArtifact = useCallback((artifact) => {
         setActiveArtifactPath(artifact && artifact.path ? artifact.path : null);
         setArtifactDockActivation((value) => value + 1);
@@ -2396,6 +2476,29 @@ const ToolWelcomeCard = ({ toolId, _theme, t, onSend }) => {
               )}
             </div>
             <div className="flex items-center gap-2">
+              {activeSessionId && !activeSessionId.startsWith('sched-') && bridge.available && bridge.auxChat && (
+                <button
+                  type="button"
+                  data-testid="aux-chat-open"
+                  aria-label={t.uiAuxChat.openLabel}
+                  title={t.uiAuxChat.openLabel}
+                  onMouseEnter={() => prefetchChatPanel('auxChat')}
+                  onFocus={() => prefetchChatPanel('auxChat')}
+                  onClick={openAuxChatPanel}
+                  className={`pointer-events-auto flex h-10 shrink-0 items-center gap-2 rounded-full border px-3 text-[14px] font-medium shadow-sm transition-colors ${
+                    auxChatPanel && auxChatDockActive
+                      ? theme === 'dark'
+                        ? 'border-blue-400/30 bg-blue-500/15 text-blue-300'
+                        : 'border-blue-500/20 bg-blue-500/10 text-blue-600'
+                      : theme === 'dark'
+                        ? 'border-white/10 bg-[#1E1F20] text-[#E3E3E3] hover:bg-[#333537]'
+                        : 'border-black/10 bg-white text-[#1F1F1F] hover:bg-[#F0F4F9]'
+                  }`}
+                >
+                  <MessageSquare size={16} />
+                  <span className="max-sm:hidden">{t.uiAuxChat.openLabel}</span>
+                </button>
+              )}
               {activeSessionId && (
                 <RunningAgentsOverlay
                   sessionId={activeSessionId}
@@ -2488,6 +2591,18 @@ const ToolWelcomeCard = ({ toolId, _theme, t, onSend }) => {
                     renderToolItem={handleTimelineRenderToolItem}
                     onOpenExternal={openChatExternalUrl}
                   />
+                {/* 划词引用:主对话时间线内选中文字 → 暂存为该任务的辅助对话
+                    引用并打开辅助面板。可用条件与顶栏入口一致(sched- 会话无辅助对话)。 */}
+                <AuxQuoteSelection
+                  containerRef={conversationContentRef}
+                  sessionId={
+                    activeSessionId && !activeSessionId.startsWith('sched-') && bridge.available && bridge.auxChat
+                      ? activeSessionId
+                      : null
+                  }
+                  copy={t.uiAuxChat}
+                  onQuote={openAuxChatPanel}
+                />
                 {/* 实体占位必须覆盖输入框和其上方渐变区，保证滚到底时最后一张卡
                     完整停在渐变之外，而不是虽然能滚到却被遮罩淡化。 */}
                 <div data-testid="chat-bottom-spacer" aria-hidden="true" className="w-full shrink-0"
@@ -3019,6 +3134,24 @@ const ToolWelcomeCard = ({ toolId, _theme, t, onSend }) => {
               language={modelServiceLanguage}
               modelServiceState={chatModelServiceState}
               onClose={closeSubagentPanel}
+            />
+            </PanelSuspense>
+            </ViewErrorBoundary>
+          )}
+          {/* sched- run sessions have no aux chat (the entry button is hidden
+              too): switching to sched- unmounts the panel with the mount
+              condition, and switching back to a normal session re-mounts it
+              and re-runs ensure automatically. */}
+          {auxChatPanel && activeSessionId && !activeSessionId.startsWith('sched-') && (
+            <ViewErrorBoundary t={t} variant="panel">
+            <PanelSuspense>
+            <LazyAuxChatPanel
+              sessionId={activeSessionId}
+              activationKey={auxChatPanel.openTick}
+              onActiveChange={setAuxChatDockActive}
+              t={t}
+              theme={theme}
+              onClose={closeAuxChatPanel}
             />
             </PanelSuspense>
             </ViewErrorBoundary>

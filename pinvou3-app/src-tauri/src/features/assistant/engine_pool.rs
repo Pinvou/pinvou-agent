@@ -236,6 +236,122 @@ impl SessionTurnLifecycles {
     }
 }
 
+/// Whether this turn is forced to zero tools: pure-conversation meta card /
+/// caller per-turn request / an `aux-` auxiliary conversation — any one
+/// forces it.
+/// `aux-` is server-side enforced (same idea as the `sched-` prefix guard):
+/// the bridge layer always passes `restrictTools: true`, but `restrict_tools`
+/// is only an optional call parameter of `chat` / `web_access_chat` — a
+/// browser passing false, or any caller bypassing the first-party bridge,
+/// could get a full-tool turn in an aux session; hence it is pinned at the
+/// pool send chokepoint regardless of the caller's value.
+/// edit_last_turn resends do not go through this function (the foundation's
+/// Op::EditLastTurn carries no tool surface and reuses the engine config);
+/// their zero-tool state is backstopped by the spawn config — see the `aux-`
+/// branch of `bridge::build_engine_config_for_session_roots` — and the
+/// zero-tool *reminder* is merged into the resent message by
+/// `edit_last_turn_reserved` (round-14 minor-1).
+pub(crate) fn turn_restrict_tools(
+    session_id: &str,
+    persona_conversational: bool,
+    caller_restrict: bool,
+) -> bool {
+    persona_conversational
+        || caller_restrict
+        || crate::features::sessions::is_aux_session_id(session_id)
+}
+
+/// Zero-tool leakage guard for aux turns. The empty tool table removes the
+/// tool *declarations* from the request, but tool-trained models (DeepSeek
+/// emits its native DSML invoke markup) still "call" the removed tools by
+/// writing the call syntax into the answer as plain text — the user then sees
+/// raw tool-call markup in the aux panel. The per-turn reminder channel (the
+/// same one persona anchors ride, stripped from the stored transcript by the
+/// foundation) tells the model the turn is tool-less up front. The zero-tool
+/// guarantee itself is unchanged: this only makes the model aware of it.
+pub(crate) const AUX_ZERO_TOOL_REMINDER: &str = "You are answering in an auxiliary Q&A session. This turn has NO tools: the tool list is empty. Do not attempt to call tools or run commands, and never emit tool-call markup or invoke blocks as text. Answer directly in plain text from the conversation and your own knowledge; if an action is truly needed, explain how the user can do it instead.";
+
+/// Merge the aux zero-tool boundary into the per-turn reminder (aux sessions
+/// only; persona anchors, when present, keep their text ahead of it).
+pub(crate) fn merge_aux_zero_tool_reminder(
+    session_id: &str,
+    persona_reminder: Option<String>,
+) -> Option<String> {
+    if !crate::features::sessions::is_aux_session_id(session_id) {
+        return persona_reminder;
+    }
+    Some(match persona_reminder {
+        Some(existing) => format!("{existing}\n\n{AUX_ZERO_TOOL_REMINDER}"),
+        None => AUX_ZERO_TOOL_REMINDER.to_string(),
+    })
+}
+
+/// Per-turn tool restriction, mintable only through the policy above.
+///
+/// PR #433 review round-10 (S2(b)): `AppEngine::send_reserved_user_message`'s
+/// per-turn restriction used to be a bare `bool`, so replacing this composition
+/// with the caller's `restrict_tools_for_turn` kept the whole suite green while
+/// aux sessions regained full tools — the headline zero-tool wiring rested on
+/// review alone. The engine's per-turn send entry now takes this token: the
+/// field is private to this module, so outside it a token can only be obtained
+/// from [`TurnToolRestrict::forced`], which folds in `turn_restrict_tools`.
+/// Handing the caller's `bool` straight to the engine is therefore a compile
+/// error, not a silent regression.
+pub(crate) mod turn_tool_restrict {
+    /// See the module documentation.
+    #[derive(Debug, Clone, Copy)]
+    pub(crate) struct TurnToolRestrict(bool);
+
+    impl TurnToolRestrict {
+        /// Sole constructor: no path from raw flags skips the policy.
+        pub(super) fn forced(
+            session_id: &str,
+            persona_conversational: bool,
+            caller_restrict: bool,
+        ) -> Self {
+            Self(super::turn_restrict_tools(
+                session_id,
+                persona_conversational,
+                caller_restrict,
+            ))
+        }
+
+        /// The composed per-turn decision (`turn_restrict_tools`: caller
+        /// request | pure-conversation meta card | `aux-` prefix).
+        pub(crate) fn restricts_tools(self) -> bool {
+            self.0
+        }
+
+        /// The restriction to apply on the engine that owns `engine_session_id`.
+        ///
+        /// The `aux-` test runs again against the engine's own id, so a token
+        /// minted with an unrelated (or empty — the headless harness uses `""`)
+        /// session id can never hand an aux session a full-tool turn.
+        pub(crate) fn restricts_tools_for(self, engine_session_id: &str) -> bool {
+            self.restricts_tools()
+                || crate::features::sessions::is_aux_session_id(engine_session_id)
+        }
+    }
+}
+
+/// The "last mile" from decision to dispatch is folded into one function: the
+/// forced result computed by `send_reserved_user_message` is handed to the
+/// engine's per-turn send entry as a [`turn_tool_restrict::TurnToolRestrict`],
+/// whose only constructor is this path. The doc comment above records why the
+/// parameter is a token instead of the caller's `bool`.
+pub(crate) fn forward_forced_turn_restrict<F>(
+    session_id: &str,
+    persona_conversational: bool,
+    caller_restrict: bool,
+    send: impl FnOnce(turn_tool_restrict::TurnToolRestrict) -> F,
+) -> F {
+    send(turn_tool_restrict::TurnToolRestrict::forced(
+        session_id,
+        persona_conversational,
+        caller_restrict,
+    ))
+}
+
 fn scheduled_profile_after_turn_gate(
     store: &SessionStore,
     session_id: &str,
@@ -301,6 +417,34 @@ where
     // hook cleanup fired from store.delete; no duplicated side effects.
     crate::features::assistant::timing::clear_session(session_id);
     Ok(())
+}
+
+/// Aux-aware chat delete: deleting a main chat first deletes its aux session
+/// through the same supplied gated delete (depth 1 — aux sessions never own
+/// another aux, so no recursion guard is needed beyond the prefix check).
+/// `SessionStore::delete`'s record-level cascade alone cannot reach the
+/// engine/forwarder and would leave a still-running aux engine as a
+/// handle-less orphan, so every deletion of a chat session must go through
+/// this wrapper rather than bare `store.delete` (round-13 M-B: the eval
+/// close path and the web-session rollback both bypassed the command-layer
+/// cascade before this wrapper existed).
+async fn delete_chat_session_with_aux_cascade<De, DeFut>(
+    store: &SessionStore,
+    session_id: &str,
+    mut delete: De,
+) -> Result<()>
+where
+    De: FnMut(&str) -> DeFut,
+    DeFut: Future<Output = Result<()>>,
+{
+    if !crate::features::sessions::is_aux_session_id(session_id) {
+        if let Some(aux_id) = store.aux_session_id(session_id) {
+            delete(&aux_id)
+                .await
+                .context("delete the aux session before its main session")?;
+        }
+    }
+    delete(session_id).await
 }
 
 #[cfg(test)]
@@ -973,8 +1117,11 @@ impl EnginePool {
         };
         for (session_id, snapshot_last_active) in candidates {
             if self.evict_if_idle(&session_id, snapshot_last_active).await {
+                // No session id in the log: even a digested rendering trips
+                // the cleartext-logging scanner (its source is tainted and
+                // sanitizer-less, same as checkpoints.rs:556/564 on main).
                 eprintln!(
-                    "[engine_pool] 会话 {session_id} 空闲超过 {IDLE_EVICT_AFTER_SECS} 秒，回收 engine（下次发消息时 lazy 重建）"
+                    "[engine_pool] a session idle for over {IDLE_EVICT_AFTER_SECS}s had its engine reclaimed (lazily respawned on the next message)"
                 );
             }
         }
@@ -1465,14 +1612,26 @@ impl EnginePool {
     /// Delete an ordinary chat under the exact turn gate used by lazy spawn
     /// and send. No queued sender can slip between engine reclaim, disk delete,
     /// and lifecycle cleanup to resurrect the session.
+    ///
+    /// Aux-aware: deleting a main chat first deletes its aux session through
+    /// this same gated path (depth 1 — aux sessions never own another aux), so
+    /// callers that bypass the command-layer cascade (`delete_session`) still
+    /// reclaim the aux engine instead of orphaning it. Never substitute a bare
+    /// `store.delete` for this method on a chat session.
     pub(crate) async fn delete_chat_session(&self, session_id: &str) -> Result<()> {
-        delete_chat_session_with_gate(
-            &self.turn_locks,
-            &self.store,
-            session_id,
-            || self.evict_locked(session_id),
-            || self.forget_session(session_id),
-        )
+        delete_chat_session_with_aux_cascade(&self.store, session_id, |id| {
+            let id = id.to_string();
+            async move {
+                delete_chat_session_with_gate(
+                    &self.turn_locks,
+                    &self.store,
+                    &id,
+                    || self.evict_locked(&id),
+                    || self.forget_session(&id),
+                )
+                .await
+            }
+        })
         .await?;
         // 裸 `agent` 对**所有**会话可用（不只多智能体开关开启的），
         // 底座取消子智能体后的后台 ledger 写
@@ -2015,7 +2174,8 @@ impl EnginePool {
             baseline_revision,
         )?;
         let scheduled_profile = self.store.scheduled_profile(session_id);
-        if scheduled_profile.is_none() && session_id.starts_with("sched-") {
+        if scheduled_profile.is_none() && crate::features::sessions::is_sched_session_id(session_id)
+        {
             bail!("Scheduled session '{session_id}' no longer exists");
         }
         let turn_lock = self.turn_locks.for_session(session_id).await;
@@ -2044,19 +2204,25 @@ impl EnginePool {
         let persona_reminder = active_card
             .as_ref()
             .map(crate::features::personas::equip_anchor);
-        let restrict_tools = active_card.as_ref().is_some_and(|c| c.conversational_only);
-        let restrict_tools = restrict_tools || restrict_tools_for_turn;
-        self.get_or_spawn(session_id)
-            .await?
-            .send_reserved_user_message(
-                content,
-                mode,
-                persona_reminder,
-                restrict_tools,
-                expert_snapshot,
-                reservation,
-            )
-            .await
+        let persona_conversational = active_card.as_ref().is_some_and(|c| c.conversational_only);
+        let persona_reminder = merge_aux_zero_tool_reminder(session_id, persona_reminder);
+        let engine = self.get_or_spawn(session_id).await?;
+        forward_forced_turn_restrict(
+            session_id,
+            persona_conversational,
+            restrict_tools_for_turn,
+            |restrict_tools| {
+                engine.send_reserved_user_message(
+                    content,
+                    mode,
+                    persona_reminder,
+                    restrict_tools,
+                    expert_snapshot,
+                    reservation,
+                )
+            },
+        )
+        .await
     }
 
     /// Execute the initial turn for a pre-created scheduled session and wait
@@ -2450,7 +2616,7 @@ impl EnginePool {
     pub(crate) async fn edit_last_turn_reserved(
         &self,
         session_id: &str,
-        new_message: String,
+        mut new_message: String,
         display_message: Message,
         mut reservation: TurnReservation,
     ) -> Result<()> {
@@ -2464,7 +2630,8 @@ impl EnginePool {
             baseline_revision,
         )?;
         let scheduled_profile = self.store.scheduled_profile(session_id);
-        if scheduled_profile.is_none() && session_id.starts_with("sched-") {
+        if scheduled_profile.is_none() && crate::features::sessions::is_sched_session_id(session_id)
+        {
             bail!("Scheduled session '{session_id}' no longer exists");
         }
         let turn_lock = self.turn_locks.for_session(session_id).await;
@@ -2479,6 +2646,18 @@ impl EnginePool {
         reservation.ensure_active()?;
         // 重发也是 turn 提交：刷新空闲时钟（理由同 send_reserved_user_message）。
         self.touch_engine_activity(session_id).await;
+        // Aux zero-tool reminder for edit resends (round-14 minor-1): this
+        // path bypasses send_reserved_user_message, so merge the reminder
+        // into the resent message here — otherwise an aux edit-resend can
+        // regress to literal tool-call markup in the answer. The foundation
+        // strips the <system-reminder> block from the stored context the same
+        // way as on the send path. The tool *surface* stays zero via the
+        // spawn config; persona anchors share the pre-existing gap and are
+        // unchanged.
+        if let Some(reminder) = merge_aux_zero_tool_reminder(session_id, None) {
+            new_message =
+                format!("<system-reminder>\n{reminder}\n</system-reminder>\n\n{new_message}");
+        }
         self.get_or_spawn(session_id)
             .await?
             .edit_last_turn_reserved(new_message, reservation)
@@ -2854,16 +3033,18 @@ where
 mod scheduled_model_tests {
     const TEST_SUBMISSION: &str = "sub-test";
     use super::{
-        EvalModelSnapshots, ModelIdentity, ModelUpdateRevisions, Pinvou3Bridge,
-        PreparedRuntimeState, SESSION_MODEL_BINDING_STALE_ERROR, ScheduledUnattendedGuard,
-        SessionShellManagers, SessionTurnLifecycles, SessionTurnLocks, SessionTurnShellTasks,
-        TranscriptOperation, TurnIdentity, cancel_turn_with_gates,
-        default_model_for_new_session_from, delete_chat_session_with_gate,
-        delete_scheduled_run_with_gate, delete_then_forget, dispatch_turn_bound_cancel,
-        evict_if_idle_with_gates, generation_matches, identity_for_active_model,
-        identity_for_saved_model, quiesce_engine_before_reclaim, resolve_eval_model_selection_from,
-        resolve_runtime_model_override, resolve_scheduled_model, resolve_spawn_model,
-        scheduled_profile_after_turn_gate, should_still_reap_after_snapshot, user_display_message,
+        AUX_ZERO_TOOL_REMINDER, EvalModelSnapshots, ModelIdentity, ModelUpdateRevisions,
+        Pinvou3Bridge, PreparedRuntimeState, SESSION_MODEL_BINDING_STALE_ERROR,
+        ScheduledUnattendedGuard, SessionShellManagers, SessionTurnLifecycles, SessionTurnLocks,
+        SessionTurnShellTasks, TranscriptOperation, TurnIdentity, cancel_turn_with_gates,
+        default_model_for_new_session_from, delete_chat_session_with_aux_cascade,
+        delete_chat_session_with_gate, delete_scheduled_run_with_gate, delete_then_forget,
+        dispatch_turn_bound_cancel, evict_if_idle_with_gates, forward_forced_turn_restrict,
+        generation_matches, identity_for_active_model, identity_for_saved_model,
+        merge_aux_zero_tool_reminder, quiesce_engine_before_reclaim,
+        resolve_eval_model_selection_from, resolve_runtime_model_override, resolve_scheduled_model,
+        resolve_spawn_model, scheduled_profile_after_turn_gate, should_still_reap_after_snapshot,
+        turn_restrict_tools, user_display_message,
     };
     use crate::features::assistant::engine::TurnBoundCancelOps;
     use crate::features::assistant::runtime_model::PreparedRuntimeModel;
@@ -2924,6 +3105,192 @@ mod scheduled_model_tests {
         unsafe { std::env::remove_var("DEEPSEEK_BASE_URL") };
         let bridge = Pinvou3Bridge::boot().expect("boot isolated test bridge");
         (bridge, home, restore)
+    }
+
+    /// PR #433 review (MAJOR): `restrict_tools` is only an optional call
+    /// parameter of `chat` / `web_access_chat`, so an aux session's tool
+    /// restriction cannot rely on caller discipline — the `aux-` prefix
+    /// forces zero tools at the pool send chokepoint, and a caller passing
+    /// false is restricted all the same; ordinary sessions are unchanged.
+    #[test]
+    fn aux_session_turn_is_tool_free_regardless_of_caller() {
+        // aux session: caller passes false / true, with or without a meta
+        // card — always zero tools.
+        assert!(turn_restrict_tools("aux-1", false, false));
+        assert!(turn_restrict_tools("aux-1", false, true));
+        assert!(turn_restrict_tools("aux-1", true, false));
+        // ordinary session: keep the existing semantics (restricted only by
+        // a caller per-turn request / a pure-conversation meta card).
+        assert!(!turn_restrict_tools("sess-plain", false, false));
+        assert!(turn_restrict_tools("sess-plain", false, true));
+        assert!(turn_restrict_tools("sess-plain", true, false));
+        // sched- and other prefixed sessions do not take the aux rule.
+        assert!(!turn_restrict_tools("sched-1", false, false));
+    }
+
+    /// The zero-tool table alone does not stop tool-trained models from
+    /// emitting their native tool-call markup as answer text (live repro: a
+    /// DeepSeek aux turn answered with a literal DSML invoke block). Aux
+    /// turns must therefore carry the zero-tool boundary in the per-turn
+    /// reminder, merged after any persona anchor; non-aux sessions must not
+    /// gain a reminder they never had.
+    #[test]
+    fn aux_turn_carries_zero_tool_boundary_reminder() {
+        // Plain session: reminder untouched (None stays None, persona text
+        // passes through verbatim — no aux boundary appended).
+        assert_eq!(merge_aux_zero_tool_reminder("sess-plain", None), None);
+        let persona = "persona anchor".to_string();
+        assert_eq!(
+            merge_aux_zero_tool_reminder("sess-plain", Some(persona.clone())),
+            Some(persona)
+        );
+        // Aux session without a persona: boundary alone.
+        assert_eq!(
+            merge_aux_zero_tool_reminder("aux-1", None),
+            Some(AUX_ZERO_TOOL_REMINDER.to_string())
+        );
+        // Aux session with a persona: anchor first, boundary second.
+        let merged =
+            merge_aux_zero_tool_reminder("aux-1", Some("persona anchor".to_string())).unwrap();
+        assert!(merged.starts_with("persona anchor\n\n"));
+        assert!(merged.ends_with(AUX_ZERO_TOOL_REMINDER));
+        // Case-insensitive aux prefix, same as the tool gate.
+        assert!(merge_aux_zero_tool_reminder("AUX-1", None).is_some());
+        assert!(merge_aux_zero_tool_reminder("sched-1", None).is_none());
+    }
+
+    /// PR #433 review round-8 (M-1): the is-aux decision is a prefix test on
+    /// the client-supplied id string, but id validation allows uppercase and
+    /// ids resolve to files without case canonicalization — on
+    /// case-insensitive filesystems an `AUX-<suffix>` alias loads the real
+    /// aux record. The gate must therefore be case-insensitive, or the alias
+    /// runs a full-tool turn over the aux session.
+    #[test]
+    fn aux_tool_gate_is_case_insensitive_against_id_aliases() {
+        assert!(turn_restrict_tools("AUX-1", false, false));
+        assert!(turn_restrict_tools("Aux-1", false, false));
+        assert!(turn_restrict_tools("aUx-1", false, false));
+        // A normal id can never collide: the generator emits lowercase
+        // base36, and a non-prefixed id stays caller-driven either way.
+        assert!(!turn_restrict_tools("SESS-plain", false, false));
+        assert!(!turn_restrict_tools("AUXILIARY-1", false, false));
+        // Round-9 MAJOR-1: multibyte ids must not panic the prefix helpers
+        // (byte slicing at a non-char boundary panics; these guards run on
+        // client-supplied ids before charset validation).
+        assert!(!turn_restrict_tools("aux帮", false, false));
+        assert!(!turn_restrict_tools("sched计划", false, false));
+    }
+
+    /// Round-9 MAJOR-1 regression pin: the case-insensitive helpers must be
+    /// boundary-safe — byte slicing panics inside a multibyte char, and the
+    /// guards run on client-supplied ids before any charset validation.
+    #[test]
+    fn aux_sched_prefix_helpers_never_panic_on_multibyte_ids() {
+        use crate::features::sessions::{is_aux_session_id, is_sched_session_id};
+        for id in ["aux帮", "sched计划", "au€", "sched-", "aux-é", "日", ""] {
+            // The assertion is the absence of a panic; ASCII-correct results
+            // are covered by the gate truth table above.
+            let _ = is_aux_session_id(id);
+            let _ = is_sched_session_id(id);
+        }
+        assert!(is_aux_session_id("AUX-1"));
+        assert!(!is_aux_session_id("aux帮"));
+        assert!(!is_sched_session_id("sched计划"));
+    }
+
+    /// PR #433 review round-6 (MAJOR) + round-10 (S2(b)): the "last mile" from
+    /// decision to dispatch — `send_reserved_user_message` hands the forced
+    /// result of `turn_restrict_tools` to the engine's per-turn send entry.
+    /// Round-6 pinned the value with this capture closure but left the caller's
+    /// `bool` an equally valid argument type, so passing it straight through
+    /// kept every test green. The entry now takes
+    /// [`TurnToolRestrict`](super::turn_tool_restrict::TurnToolRestrict), which
+    /// only `forward_forced_turn_restrict` can mint: this test pins the value
+    /// the engine reads, and the type makes "hand the caller's `bool` to the
+    /// engine" a compile error instead of a silent regression.
+    #[test]
+    fn send_dispatch_forwards_forced_restrict_to_engine_entry() {
+        let captured = std::cell::Cell::new(None);
+        {
+            let captured = &captured;
+            forward_forced_turn_restrict("aux-1", false, false, |turn_tool_restrict| {
+                captured.set(Some(turn_tool_restrict));
+            });
+        }
+        let aux = captured.get().expect("aux 会话必须产出限制令牌");
+        assert!(
+            aux.restricts_tools(),
+            "aux 会话即使调用方传 false,组合结果也必须为限制(零工具)"
+        );
+        assert!(
+            aux.restricts_tools_for("aux-1"),
+            "aux 会话到达引擎的逐轮 restrict 必须为 true(零工具)"
+        );
+
+        captured.set(None);
+        {
+            let captured = &captured;
+            forward_forced_turn_restrict("sess-plain", false, false, |turn_tool_restrict| {
+                captured.set(Some(turn_tool_restrict));
+            });
+        }
+        let plain = captured.get().expect("普通会话必须产出令牌");
+        assert!(
+            !plain.restricts_tools(),
+            "对照:普通会话调用方不限制、无元卡时,组合结果保持不限制"
+        );
+        assert!(
+            !plain.restricts_tools_for("sess-plain"),
+            "对照:普通会话调用方不限制、无元卡时,引擎收到的 restrict 保持 false"
+        );
+
+        captured.set(None);
+        {
+            let captured = &captured;
+            forward_forced_turn_restrict("sess-plain", false, true, |turn_tool_restrict| {
+                captured.set(Some(turn_tool_restrict));
+            });
+        }
+        let caller_forced = captured.get().expect("调用方限制必须产出令牌");
+        assert!(
+            caller_forced.restricts_tools(),
+            "对照:调用方逐轮要求限制时原样透传"
+        );
+        assert!(caller_forced.restricts_tools_for("sess-plain"));
+
+        // A pure-conversation meta card forces the restriction on its own.
+        captured.set(None);
+        {
+            let captured = &captured;
+            forward_forced_turn_restrict("sess-plain", true, false, |turn_tool_restrict| {
+                captured.set(Some(turn_tool_restrict));
+            });
+        }
+        assert!(
+            captured
+                .get()
+                .expect("纯对话元卡必须产出令牌")
+                .restricts_tools(),
+            "纯对话元卡(conversational_only)加持期间组合结果必须为限制"
+        );
+
+        // Even a token minted for another session (wrong/empty id — the
+        // headless harness uses "") cannot un-restrict the aux session: the
+        // engine entry re-checks the aux prefix against its OWN session id.
+        let mismatched =
+            super::turn_tool_restrict::TurnToolRestrict::forced("sess-plain", false, false);
+        assert!(
+            !mismatched.restricts_tools(),
+            "令牌自身的组合值来自铸造时的会话,不因引擎 id 改变"
+        );
+        assert!(
+            mismatched.restricts_tools_for("aux-1"),
+            "引擎侧 aux 前缀复查必须兜住会话 id 不匹配的令牌"
+        );
+        assert!(
+            !mismatched.restricts_tools_for(""),
+            "空 id(headless 引擎)不构成 aux 会话,按令牌自身取值"
+        );
     }
 
     /// ADR-0006：引擎回收必须**先**取消全部子智能体、**后**发 Shutdown。
@@ -3811,6 +4178,91 @@ mod scheduled_model_tests {
         let _ = std::fs::remove_dir_all(home);
     }
 
+    /// PR #433 review round-13 (M-B): the pool-level chat delete must cascade
+    /// to the aux session through the gated delete *first* (depth 1), so
+    /// callers that bypass the command-layer cascade (eval close, web-session
+    /// rollback) cannot leave a running aux engine as a handle-less orphan.
+    /// Reordering the wrapper (main before aux) or dropping the aux leg must
+    /// fail this test.
+    #[tokio::test]
+    async fn chat_delete_cascades_to_aux_before_main() {
+        let _env_guard = crate::platform::paths::tests::ENV_LOCK
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        let home = std::env::temp_dir().join(format!(
+            "pinvou3-engine-pool-aux-cascade-{}",
+            std::process::id()
+        ));
+        let previous_home = std::env::var("PINVOU3_HOME").ok();
+        let _ = std::fs::remove_dir_all(&home);
+        // SAFETY: platform::paths::tests::ENV_LOCK held; env writes are serialized.
+        unsafe { std::env::set_var("PINVOU3_HOME", &home) };
+
+        let store = SessionStore::boot().expect("session store");
+        let main = store
+            .create_new("/model".into(), None, std::env::temp_dir())
+            .expect("create main");
+        let aux = store
+            .get_or_create_aux_session(&main.metadata.id)
+            .expect("create aux");
+
+        let deleted = Arc::new(StdMutex::new(Vec::new()));
+        let recording_delete = |id: &str| {
+            let id = id.to_string();
+            let store = store.clone();
+            let deleted = deleted.clone();
+            async move {
+                deleted.lock().unwrap().push(id.clone());
+                store.delete(&id)
+            }
+        };
+        delete_chat_session_with_aux_cascade(&store, &main.metadata.id, recording_delete)
+            .await
+            .expect("cascaded delete");
+
+        assert_eq!(
+            deleted.lock().unwrap().as_slice(),
+            &[aux.id.clone(), main.metadata.id.clone()],
+            "the aux session must be deleted strictly before its main session"
+        );
+        assert!(store.load(&aux.id).is_err());
+        assert!(store.load(&main.metadata.id).is_err());
+
+        // Depth 1: deleting an aux session directly must not look up a mapping
+        // (aux sessions never own another aux) — a single delete, no cascade.
+        let main_b = store
+            .create_new("/model".into(), None, std::env::temp_dir())
+            .expect("create main B");
+        let aux_b = store
+            .get_or_create_aux_session(&main_b.metadata.id)
+            .expect("create aux B");
+        let deleted_b = Arc::new(StdMutex::new(Vec::new()));
+        let recording_delete_b = |id: &str| {
+            let id = id.to_string();
+            let store = store.clone();
+            let deleted = deleted_b.clone();
+            async move {
+                deleted.lock().unwrap().push(id.clone());
+                store.delete(&id)
+            }
+        };
+        delete_chat_session_with_aux_cascade(&store, &aux_b.id, recording_delete_b)
+            .await
+            .expect("direct aux delete");
+        assert_eq!(
+            deleted_b.lock().unwrap().as_slice(),
+            std::slice::from_ref(&aux_b.id)
+        );
+
+        match previous_home {
+            // SAFETY: platform::paths::tests::ENV_LOCK held; env writes are serialized.
+            Some(value) => unsafe { std::env::set_var("PINVOU3_HOME", value) },
+            // SAFETY: platform::paths::tests::ENV_LOCK held; env writes are serialized.
+            None => unsafe { std::env::remove_var("PINVOU3_HOME") },
+        }
+        let _ = std::fs::remove_dir_all(home);
+    }
+
     #[tokio::test]
     async fn engine_reclaim_quiesces_event_producer_before_persistence() {
         let order = Arc::new(StdMutex::new(Vec::new()));
@@ -3924,6 +4376,113 @@ mod scheduled_model_tests {
         assert!(!fake_engine_present.load(Ordering::Acquire));
         assert!(forgotten.load(Ordering::Acquire));
         assert!(store.load(&session_id).is_err());
+
+        match previous_home {
+            // SAFETY: platform::paths::tests::ENV_LOCK held; env writes are serialized.
+            Some(value) => unsafe { std::env::set_var("PINVOU3_HOME", value) },
+            // SAFETY: platform::paths::tests::ENV_LOCK held; env writes are serialized.
+            None => unsafe { std::env::remove_var("PINVOU3_HOME") },
+        }
+        let _ = std::fs::remove_dir_all(home);
+    }
+
+    /// PR #433 review regression: `delete_session`'s Chat branch cascades the
+    /// auxiliary session through the gate (same pipeline as
+    /// `discard_aux_session`) — first `pool.delete_chat_session(aux)`
+    /// (reclaim the engine + store.delete + late sweep inside the turn gate),
+    /// then delete the main session; `store.delete`'s on-disk cascade only
+    /// removes the record and would leave a running aux engine as a
+    /// handle-less orphan.
+    /// The command body depends on AppHandle/Tauri State (the repo has no
+    /// mock_app precedent, see the cancel test comment) and cannot be unit
+    /// tested directly; here we replay the command's order with the same
+    /// `delete_chat_session_with_gate` + bare components, verifying the pool
+    /// delete path does reclaim the aux engine, delete the aux record, and
+    /// strip the mapping, strictly before the main session's deletion.
+    #[tokio::test]
+    async fn chat_delete_cascades_aux_engine_reclaim_before_main_delete() {
+        let _env_guard = crate::platform::paths::tests::ENV_LOCK
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        let home = std::env::temp_dir().join(format!(
+            "pinvou3-engine-pool-aux-cascade-{}",
+            std::process::id()
+        ));
+        let previous_home = std::env::var("PINVOU3_HOME").ok();
+        let _ = std::fs::remove_dir_all(&home);
+        // SAFETY: platform::paths::tests::ENV_LOCK held; env writes are serialized.
+        unsafe { std::env::set_var("PINVOU3_HOME", &home) };
+
+        let store = SessionStore::boot().expect("session store");
+        let main_id = store
+            .create_new("wire-model".to_string(), None, home.join("workspace"))
+            .expect("chat session")
+            .metadata
+            .id;
+        let aux_id = store
+            .get_or_create_aux_session(&main_id)
+            .expect("aux session")
+            .id;
+        let locks = SessionTurnLocks::default();
+        let aux_engine_present = Arc::new(AtomicBool::new(true));
+        let main_engine_present = Arc::new(AtomicBool::new(true));
+        let order = Arc::new(StdMutex::new(Vec::new()));
+
+        // An in-order replay of the delete_session command's Chat branch
+        // (app/commands/sessions.rs): resolve the mapping first, gated-delete
+        // the aux (reclaim engine + delete record), then gated-delete the
+        // main session.
+        let resolved_aux = store.aux_session_id(&main_id).expect("aux mapping");
+        assert_eq!(resolved_aux, aux_id);
+        {
+            let engine = aux_engine_present.clone();
+            let steps = order.clone();
+            delete_chat_session_with_gate(
+                &locks,
+                &store,
+                &resolved_aux,
+                || async move {
+                    engine.store(false, Ordering::Release);
+                    steps.lock().unwrap().push("evict-aux");
+                },
+                || {},
+            )
+            .await
+            .expect("delete aux session");
+        }
+        {
+            let engine = main_engine_present.clone();
+            let steps = order.clone();
+            delete_chat_session_with_gate(
+                &locks,
+                &store,
+                &main_id,
+                || async move {
+                    engine.store(false, Ordering::Release);
+                    steps.lock().unwrap().push("evict-main");
+                },
+                || {},
+            )
+            .await
+            .expect("delete main session");
+        }
+
+        assert!(
+            !aux_engine_present.load(Ordering::Acquire),
+            "级联删除必须回收 aux 引擎,不得留无句柄孤儿"
+        );
+        assert!(!main_engine_present.load(Ordering::Acquire));
+        assert_eq!(
+            *order.lock().unwrap(),
+            vec!["evict-aux", "evict-main"],
+            "aux 引擎回收必须严格先于主会话删除"
+        );
+        assert!(store.load(&aux_id).is_err(), "aux 会话记录必须删除");
+        assert!(store.load(&main_id).is_err());
+        assert!(
+            store.aux_session_id(&main_id).is_none(),
+            "级联删除后 主→辅 映射不得残留"
+        );
 
         match previous_home {
             // SAFETY: platform::paths::tests::ENV_LOCK held; env writes are serialized.

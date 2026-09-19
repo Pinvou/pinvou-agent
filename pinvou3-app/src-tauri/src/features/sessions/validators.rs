@@ -32,6 +32,37 @@ pub(crate) fn validate_scheduled_session_id(id: &str) -> Result<()> {
     Ok(())
 }
 
+/// Case-insensitive `aux-` prefix test. The aux zero-tools gates
+/// (`turn_restrict_tools`, the spawn-config backstop) and the aux-of-aux /
+/// sidecar guards decide "is this an aux session" from the client-supplied id
+/// string, but `validate_session_id` allows uppercase and ids resolve to
+/// files without case canonicalization — on case-insensitive filesystems
+/// (NTFS/APFS) an `AUX-<suffix>` alias would load the real aux record while
+/// every case-sensitive prefix test misses it, running a full-tool turn over
+/// the aux session. Every is-aux decision must go through this helper so the
+/// gates hold regardless of filesystem case semantics.
+pub(crate) fn is_aux_session_id(id: &str) -> bool {
+    // `get(..4)` instead of slicing: byte slicing panics when the index falls
+    // inside a multibyte UTF-8 char, and these guards run on client-supplied
+    // ids before any charset validation (e.g. the delete_session cascade
+    // resolves the aux mapping before the session manager's validate).
+    id.get(..4)
+        .is_some_and(|prefix| prefix.eq_ignore_ascii_case("aux-"))
+}
+
+/// Case-insensitive `sched-` prefix test — same alias-defeating argument as
+/// [`is_aux_session_id`]. Applied at the guards this module owns (aux
+/// creation, sidecar validation, list/retention filters, sched- turn gates);
+/// the sched-side registries (`is_scheduled_session`, `purge_all_scheduled_
+/// side_maps`, `list_scheduled`) keep their pre-existing exact-match checks —
+/// scheduled profiles are only ever written through the validating API, so
+/// their registry keys cannot carry case variants.
+pub(crate) fn is_sched_session_id(id: &str) -> bool {
+    // See is_aux_session_id for the boundary-safe `get(..6)`.
+    id.get(..6)
+        .is_some_and(|prefix| prefix.eq_ignore_ascii_case("sched-"))
+}
+
 pub(crate) fn validate_scheduled_task_id(id: &str) -> Result<()> {
     if id.trim().is_empty()
         || !id.chars().all(|character| {

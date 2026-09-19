@@ -40,6 +40,7 @@ import path from 'node:path';
 import test from 'node:test';
 import vm from 'node:vm';
 import { fileURLToPath } from 'node:url';
+import { auxSnapshotsEqual } from '../src/features/aux-chat/aux-chat-state.mjs';
 
 const here = path.dirname(fileURLToPath(import.meta.url));
 const bridgeDir = path.join(here, '..', 'src', 'platform', 'tauri', 'bridge');
@@ -555,7 +556,6 @@ test('web scheduled-run reopen: after eviction, the scheduled open restores the 
 });
 
 // ── web getBuffer restore: the rebuild point for late events ──────────
-
 test('web late chat:usage event: buffer rebuilt by the event via getBuffer, draft restored', async () => {
   const rt = bootWebBridge();
   assert.equal(await rt.flat.switchToSession('s1'), true);
@@ -575,4 +575,173 @@ test('web late chat:usage event: buffer rebuilt by the event via getBuffer, draf
   assert.equal(await rt.flat.switchToSession('s1'), true);
   assert.equal(rt.flat.getComposerDraft(), 'late-event-draft',
     'a late event rebuilding the buffer via getBuffer must restore the side-table draft');
+});
+
+// ── aux-chat: snapshot() refreshes LRU recency so an open aux panel survives ──
+//
+// An always-open aux panel repulls auxChat.snapshot() on every chat-domain
+// notify (no timer — see the AuxChatPanel subscription), but snapshot used to
+// read sessionStates[sid] without touching lastTouched — after 32+ session
+// switches the panel's own buffer was the oldest idle entry and the
+// all-session LRU evicted it, leaving the open panel on a false empty state.
+// Fix: snapshot() (like every other read path) refreshes the buffer's LRU
+// recency via touchSessionBuffer, on both the tauri and the web bridge.
+
+function loadTauriAuxChatFeature(sessionsBoot) {
+  const root = { __PINVOU_SHARED_I18N__: {} };
+  const src = fs.readFileSync(path.join(bridgeDir, 'aux-chat.js'), 'utf8');
+  vm.runInNewContext(src, { window: root, globalThis: root, setTimeout, clearTimeout });
+  const factory = root.__PINVOU_TAURI_BRIDGE_FEATURES__.auxChat;
+  return factory({
+    state: sessionsBoot.state,
+    sessionStates: sessionsBoot.sessionStates,
+    bt(key) { return key; },
+    invoke() { return Promise.resolve({}); },
+    ensureSessionBufferLoaded: sessionsBoot.api.ensureSessionBufferLoaded,
+    purgeSessionBuffer: sessionsBoot.api.purgeSessionBuffer,
+    touchSessionBuffer: sessionsBoot.api.touchSessionBuffer,
+    isBusyFor() { return false; },
+  });
+}
+
+test('tauri aux snapshot() refreshes LRU recency: an open aux panel survives 33 session switches', () => {
+  const boot = loadTauriSessionsFeature();
+  const auxChat = loadTauriAuxChatFeature(boot);
+  // The open panel's aux buffer (materialized by ensure via the getBuffer
+  // path) holds one committed turn.
+  const buf = boot.api.getBuffer('aux-1');
+  buf.chatItems.push({ id: 1, type: 'user', text: 'q' });
+  buf.loadedFromDisk = true;
+  for (let i = 1; i <= 33; i++) {
+    boot.api.switchActiveTo(`s${i}`, null);
+    // The open panel repulls snapshot on every chat-domain notify (no timer):
+    // each pull proves the panel is alive and must count as a read for LRU
+    // recency. The guarantee leans on "notify reaches subscribers" — if a
+    // change gate is ever added to subscribeMany, the pull must move to
+    // another always-on driver or the LRU touch is lost with it.
+    const snap = auxChat.snapshot('aux-1');
+    assert.equal(snap.chatItems.length, 1, `the aux buffer must survive switch ${i}`);
+  }
+  assert.notEqual(boot.sessionStates['aux-1'], undefined,
+    'snapshot repulls must refresh LRU recency so an open aux buffer survives pruning');
+  assert.equal(auxChat.snapshot('aux-1').chatItems[0].text, 'q');
+});
+
+test('tauri aux buffer without snapshot polling is evicted (control)', () => {
+  const boot = loadTauriSessionsFeature();
+  const auxChat = loadTauriAuxChatFeature(boot);
+  const buf = boot.api.getBuffer('aux-1');
+  buf.chatItems.push({ id: 1, type: 'user', text: 'q' });
+  for (let i = 1; i <= 33; i++) {
+    boot.api.switchActiveTo(`s${i}`, null);
+  }
+  assert.equal(boot.sessionStates['aux-1'], undefined,
+    'control: the untouched aux buffer is the oldest idle entry and is evicted');
+  // The factory runs in a vm realm: compare field-wise instead of deepEqual
+  // (cross-realm Array/Object prototypes fail deepStrictEqual).
+  const snap = auxChat.snapshot('aux-1');
+  assert.equal(snap.chatItems.length, 0);
+  assert.equal(snap.busy, false);
+  assert.equal(snap.queued.length, 0);
+});
+
+test('web aux snapshot repulls keep an open aux buffer alive through 34 session switches (no rehydration)', async () => {
+  const rt = bootWebBridge();
+  rt.handlers.get_or_create_aux_session = args => ({ id: `aux-${args.sessionId}` });
+  const auxId = await rt.flat.auxChatEnsure('task-1');
+  assert.equal(auxId, 'aux-task-1');
+  assert.equal(rt.calls.chunkLoads.filter(id => id === auxId).length, 1,
+    'precondition: ensure cold-loaded the aux buffer exactly once');
+  // The open panel repulls snapshot on every chat-domain notify (no timer)
+  // while the user switches sessions.
+  for (let i = 1; i <= 34; i++) {
+    assert.equal(await rt.flat.switchToSession(`s${i}`), true);
+    rt.flat.auxChatSnapshot(auxId);
+  }
+  // Re-ensure (e.g. the restart flow) must hit the resident buffer's
+  // loadedFromDisk fast path. Before the recency fix the untouched aux
+  // buffer was the oldest idle entry, got evicted at switch 32, and this
+  // ensure rehydrated from disk (second chunk load).
+  await rt.flat.auxChatEnsure('task-1');
+  assert.equal(rt.calls.chunkLoads.filter(id => id === auxId).length, 1,
+    'snapshot polling must refresh LRU recency so the open aux buffer survives pruning');
+});
+
+test('web aux buffer without snapshot polling is evicted and rehydrated on re-ensure (control)', async () => {
+  const rt = bootWebBridge();
+  rt.handlers.get_or_create_aux_session = args => ({ id: `aux-${args.sessionId}` });
+  const auxId = await rt.flat.auxChatEnsure('task-1');
+  for (let i = 1; i <= 34; i++) {
+    assert.equal(await rt.flat.switchToSession(`s${i}`), true);
+  }
+  await rt.flat.auxChatEnsure('task-1');
+  assert.equal(rt.calls.chunkLoads.filter(id => id === auxId).length, 2,
+    'control: without the recency touch the idle aux buffer is evicted and rehydrates');
+});
+
+// ── aux-chat: snapshot() must copy items, not share buffer references ──
+//
+// Streaming deltas mutate buffer items in place (item.text/html assignments),
+// so a snapshot that only shallow-copies the array shares item objects across
+// pulls: the panel's field-wise auxSnapshotsEqual short-circuits on reference
+// equality and the live stream freezes on the first rendered frame. Both
+// bridges must copy each item per pull so field comparison tracks real
+// content, while unchanged content still compares equal (no per-token
+// re-render of idle panels).
+
+test('tauri aux snapshot() copies items so in-place streaming deltas stay visible', () => {
+  const boot = loadTauriSessionsFeature();
+  const auxChat = loadTauriAuxChatFeature(boot);
+  const buf = boot.api.getBuffer('aux-1');
+  buf.loadedFromDisk = true;
+  const bufferItem = { id: 1, type: 'assistant', text: '流式', streaming: true };
+  buf.chatItems.push(bufferItem);
+
+  const first = auxChat.snapshot('aux-1');
+  // Streaming delta mutates the buffer item in place (same object).
+  bufferItem.text = '流式中';
+  bufferItem.html = '<p>流式中</p>';
+  const second = auxChat.snapshot('aux-1');
+
+  assert.equal(second.chatItems[0].text, '流式中',
+    'the second pull must observe the in-place mutation');
+  assert.notEqual(first.chatItems[0], second.chatItems[0],
+    'each pull must hand out its own item copy, never the shared buffer object');
+  assert.equal(auxSnapshotsEqual(first, second), false,
+    'field comparison must flag the streamed change so the panel re-renders');
+  assert.equal(auxSnapshotsEqual(second, auxChat.snapshot('aux-1')), true,
+    'unchanged content between pulls must still compare equal (no per-token re-render)');
+
+  // Copy-on-out: mutating a returned snapshot must not write through to the buffer.
+  second.chatItems[0].text = 'caller tamper';
+  assert.equal(bufferItem.text, '流式中');
+  assert.equal(auxChat.snapshot('aux-1').chatItems[0].text, '流式中');
+});
+
+test('web aux snapshot() copies items so in-place streaming deltas stay visible', async () => {
+  const rt = bootWebBridge();
+  rt.handlers.get_or_create_aux_session = args => ({ id: `aux-${args.sessionId}` });
+  const auxId = await rt.flat.auxChatEnsure('task-1');
+  // Drive the production streaming path: chat:delta routed to the background
+  // aux session mutates its buffer item in place (item.text assignment).
+  const fireDelta = text => {
+    for (const fn of rt.listeners['chat:delta'] || []) {
+      fn({ event: 'chat:delta', payload: { session_id: auxId, text } });
+    }
+  };
+  fireDelta('流式');
+  const first = rt.flat.auxChatSnapshot(auxId);
+  fireDelta('中');
+  const second = rt.flat.auxChatSnapshot(auxId);
+
+  const streamedItem = second.chatItems.find(item => item.id === first.chatItems[0].id);
+  assert.ok(streamedItem, 'the streamed item must keep its id across pulls');
+  assert.equal(streamedItem.text, '流式中', 'the second pull must observe the in-place mutation');
+  assert.notEqual(first.chatItems[0], second.chatItems[0],
+    'each pull must hand out its own item copy, never the shared buffer object');
+  assert.equal(auxSnapshotsEqual(first, second), false,
+    'field comparison must flag the streamed change so the panel re-renders');
+  const third = rt.flat.auxChatSnapshot(auxId);
+  assert.equal(auxSnapshotsEqual(second, third), true,
+    'unchanged content between pulls must still compare equal (no per-token re-render)');
 });

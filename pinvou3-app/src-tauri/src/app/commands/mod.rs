@@ -11,6 +11,9 @@
 //! 阶段 C 新增（多对话历史）：
 //! - `list_sessions()` / `create_session()` / `load_session(id)`
 //! - `delete_session(id)` / `rename_session(id, title)`
+//!
+//! Auxiliary conversation (aux session; not in the ordinary session list):
+//! - `get_or_create_aux_session(session_id)` / `discard_aux_session(session_id)`
 
 pub(crate) mod acp_providers;
 pub(crate) mod artifacts;
