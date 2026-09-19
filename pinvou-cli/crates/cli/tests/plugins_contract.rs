@@ -1419,6 +1419,47 @@ fn readiness_zero_state_reports_uninstalled_catalog() {
     assert_eq!(canva["ready"], serde_json::json!(true));
 }
 
+/// Execution-level regression for the headless readiness verdict: an
+/// installed CLI connector whose record was marked degraded by a logout
+/// (logout keeps installed=true and only sets degraded) must answer
+/// ready=false with the desktop's not_connected reason — installed alone
+/// was answered `ready` by an earlier revision of the headless fallback,
+/// which read optimistic where the desktop reads the live status.
+#[test]
+fn readiness_reports_a_logged_out_cli_connector_not_connected() {
+    let _env = ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+    let _home = SandboxHome::new("readiness-logged-out");
+
+    let store = pinvou3_lib::features::marketplace::store::BundleStore::new();
+    store
+        .upsert(
+            pinvou3_lib::features::marketplace::store::BundleRecord::installed_now(
+                "dingtalk",
+                pinvou3_lib::features::marketplace::store::BundleSource::Builtin,
+            ),
+        )
+        .expect("seed the installed record");
+    store
+        .mark_degraded(
+            "dingtalk",
+            "已断开授权：配套技能已随断开移除，重新连接即可恢复",
+        )
+        .expect("mark the seeded record degraded");
+
+    let value = run_json(&["pinvoy", "plugins", "readiness"]);
+    let dingtalk = value["bundles"]
+        .as_array()
+        .and_then(|bundles| {
+            bundles
+                .iter()
+                .find(|bundle| bundle["bundle_id"] == "dingtalk")
+        })
+        .expect("dingtalk listed in the catalog");
+    assert_eq!(dingtalk["installed"], serde_json::json!(true));
+    assert_eq!(dingtalk["ready"], serde_json::json!(false));
+    assert_eq!(dingtalk["reason"], serde_json::json!("not_connected"));
+}
+
 #[test]
 fn plugins_reject_a_flag_looking_id() {
     // A `--`-prefixed "id" is a mistyped flag (e.g. `plugins disable --scope

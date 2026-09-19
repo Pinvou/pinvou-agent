@@ -358,8 +358,8 @@ pub use types::{
 // 统一按包 id 落盘,`skill:` 前缀跨文件借道清除。
 pub use crate::features::marketplace::scope::{
     load_disabled_bundles, load_disabled_bundles_for, load_hidden_bundles_for, package_id_for,
-    remove_bundle_from_disabled_scopes, save_disabled_bundles, save_disabled_bundles_for,
-    save_hidden_bundles_for, sync_deny_all_scopes_after_install,
+    persisted_disabled_bundle_ids, remove_bundle_from_disabled_scopes, save_disabled_bundles,
+    save_disabled_bundles_for, save_hidden_bundles_for, sync_deny_all_scopes_after_install,
     sync_disabled_bundles_for_connector_switch, unavailable_bundles_for,
     update_disabled_bundles_for,
 };

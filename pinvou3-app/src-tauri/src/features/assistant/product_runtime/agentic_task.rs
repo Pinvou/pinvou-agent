@@ -369,107 +369,61 @@ pub async fn run_agentic_task(
     // Only this run's eval observation mark is dropped, and the session is
     // left in place for the caller.
     //
-    // One exception to keep-by-default: an `Err` outcome on a FRESHLY
-    // created session. The session was created by prepare under the eval
-    // factory title and the turn never produced a report (the CLI rename
-    // never ran either — the CLI got `Err`), so keeping it would leave an
-    // empty eval-titled stray chat in the GUI's session list. Such a session
-    // is deleted through the exact cleanup the KEEP=0 branch uses (same
-    // order: schedule the late sweep, then the turn-gated delete) — but only
-    // while it still wears the factory title: a GUI user who adopted the
-    // session mid-run (renamed it in the session list) owns it now, and
-    // their rename must survive a failed run — even when the harness set
-    // PINVOU3_AGENT_TASK_KEEP_SESSION=0, whose one-shot cleanup therefore
-    // carries the same adoption exception. Both cleanup
-    // steps are best-effort and the delete result is discarded, so a failed
-    // cleanup never masks the original error returned below. Failures
-    // before prepare created anything degrade to a no-op: the delete of a
-    // not-yet-existing id fails with NotFound and the late sweep of its
-    // (absent) directory converges immediately.
+    // A failed run (submit never ran, or the turn errored) cleans up after
+    // itself only when the durable record proves litter — see
+    // `failed_run_cleanup_decision` below: a zero-message stub is deleted
+    // only while it still wears the eval factory title (a GUI rename before
+    // the first message is ownership too), admitted messages make it a
+    // started transcript that stays inspectable under the default keep
+    // contract, and an unloadable record keeps because deleting on unknown
+    // state is the unsafe direction. The delete of a not-yet-existing id
+    // fails with NotFound and the late sweep of its (absent) directory
+    // converges immediately, so failures before prepare created anything
+    // degrade to a no-op.
     let keep_session = keep_session_from_env();
     if existing_session {
         crate::features::assistant::timing::unregister_eval_observation(&session_id);
-    } else if !submitted {
+    } else if !submitted || outcome.is_err() {
+        // A failed run: the submit never ran, or the turn errored after the
+        // engine could durably admit messages (the submit boundary is not
+        // atomic with transcript admission — a submit error or the setup
+        // timeout can land right after admission). Both failure paths share
+        // ONE classification on the durable record, never on the submit
+        // flag or the title alone: admitted messages are a started
+        // transcript that stays inspectable under the default keep
+        // contract, a zero-message stub is litter only while it still wears
+        // the eval factory title, and an unloadable record keeps because
+        // deleting on unknown state is the unsafe direction.
         crate::features::assistant::timing::unregister_eval_observation(&session_id);
-        // The submit boundary is not atomic with transcript admission: the
-        // engine lazily spawns on submit and can durably admit the user
-        // message before the fault surfaces (a submit error, or the setup
-        // timeout landing right after admission). The classification reads
-        // the durable record, not the submit flag: a zero-message stub is
-        // cleanup-eligible regardless of `KEEP_SESSION` (it would otherwise
-        // litter the shared store — and the GUI history — one eviction per
-        // failing batch), while a stub that already carries admitted
-        // messages is a started transcript and the only copy — it stays
-        // inspectable unless the caller explicitly restored the legacy
-        // one-shot contract. An unloadable record also keeps: deleting on
-        // unknown state is the unsafe direction.
-        //
-        // The zero-message arm carries the same adoption exception as the
-        // `Err`-outcome branch below: a GUI rename before the first message
-        // is ownership too, so a stub is only litter while it still wears
-        // the eval factory title. An unloadable record is not proven
-        // factory-titled and keeps for the same unknown-state reason.
-        match store.chat_session_has_messages(&session_id) {
-            Ok(false) => {
-                let factory_titled = store
-                    .load(&session_id)
-                    .map(|record| record.metadata.title == EVAL_SESSION_FACTORY_TITLE)
-                    .unwrap_or(false);
-                if factory_titled {
-                    runtime.schedule_eval_cleanup(&session_id);
-                    let _ = runtime.close_eval_session_result(&session_id).await;
-                } else {
-                    runtime.pool.evict(&session_id).await;
-                }
-            }
-            Ok(true) if !keep_session => {
-                runtime.schedule_eval_cleanup(&session_id);
-                let _ = runtime.close_eval_session_result(&session_id).await;
-            }
-            _ => runtime.pool.evict(&session_id).await,
-        }
-    } else if outcome.is_err() {
+        let has_messages = store.chat_session_has_messages(&session_id);
         let factory_titled = store
             .load(&session_id)
             .map(|record| record.metadata.title == EVAL_SESSION_FACTORY_TITLE)
             .unwrap_or(false);
-        if factory_titled {
-            crate::features::assistant::timing::unregister_eval_observation(&session_id);
-            runtime.schedule_eval_cleanup(&session_id);
-            let _ = runtime.close_eval_session_result(&session_id).await;
-        } else {
-            crate::features::assistant::timing::unregister_eval_observation(&session_id);
-        }
-    } else if !keep_session {
-        crate::features::assistant::timing::unregister_eval_observation(&session_id);
-        // The submit boundary is not atomic with transcript admission: the
-        // engine lazily spawns on submit and can durably admit the user
-        // message before the fault surfaces (a submit error, or the setup
-        // timeout landing right after admission). A record that carries
-        // messages has therefore started — its transcript is the only copy,
-        // so it stays inspectable like any submitted run unless the caller
-        // explicitly opted back into the legacy one-shot cleanup. Only a
-        // truly zero-message stub is cleanup-eligible regardless of
-        // `KEEP_SESSION`; an unloadable record also keeps (deleting on
-        // unknown state is the unsafe direction).
-        match store.chat_session_has_messages(&session_id) {
-            Ok(false) => {
+        match failed_run_cleanup_decision(has_messages, factory_titled, keep_session) {
+            FailedRunCleanup::Delete => {
                 runtime.schedule_eval_cleanup(&session_id);
                 log_cleanup_delete(&runtime, &session_id).await;
             }
-            Ok(true) if keep_session => runtime.pool.evict(&session_id).await,
-            Ok(true) => {
-                runtime.schedule_eval_cleanup(&session_id);
-                log_cleanup_delete(&runtime, &session_id).await;
-            }
-            Err(_) => runtime.pool.evict(&session_id).await,
+            FailedRunCleanup::Keep => runtime.pool.evict(&session_id).await,
         }
     } else if keep_session {
+        // Success under the default keep contract: nothing to clean up.
         crate::features::assistant::timing::unregister_eval_observation(&session_id);
         runtime.pool.evict(&session_id).await;
     } else {
-        runtime.schedule_eval_cleanup(&session_id);
-        log_cleanup_delete(&runtime, &session_id).await;
+        // Success under the explicit legacy one-shot contract
+        // (`KEEP_SESSION=0`): everything this run created goes. An
+        // unloadable record still keeps — deleting on unknown state is the
+        // unsafe direction even here.
+        crate::features::assistant::timing::unregister_eval_observation(&session_id);
+        match store.chat_session_has_messages(&session_id) {
+            Err(_) => runtime.pool.evict(&session_id).await,
+            Ok(_) => {
+                runtime.schedule_eval_cleanup(&session_id);
+                log_cleanup_delete(&runtime, &session_id).await;
+            }
+        }
     }
     // Disarm before reporting: the prepare-time save happened before any setup
     // fault could surface, so the evictions are real regardless of the final
@@ -485,6 +439,37 @@ pub async fn run_agentic_task(
 /// Best-effort cleanup delete: a failed delete must not mask the run's own
 /// outcome, but silently stranding the session in the shared store hides the
 /// failure from the operator — log it instead of discarding the result.
+/// What a failed headless run does with the fresh session it created: the
+/// union of the durable-record classification (admitted messages make a
+/// started transcript) and the rename-ownership exception (a zero-message
+/// stub is litter only while it still wears the eval factory title).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum FailedRunCleanup {
+    /// Delete through the eval cleanup (schedule the late sweep, then the
+    /// turn-gated delete).
+    Delete,
+    /// Evict only the pooled engine and keep the record: a renamed stub
+    /// (ownership), an admitted transcript under the default keep contract,
+    /// or an unloadable record (deleting on unknown state is the unsafe
+    /// direction).
+    Keep,
+}
+
+/// Pure classification so the full matrix is unit-testable without an
+/// engine: the same decision serves the submit-never-ran path and the
+/// errored-after-submit path.
+fn failed_run_cleanup_decision<E>(
+    has_messages: Result<bool, E>,
+    factory_titled: bool,
+    keep_session: bool,
+) -> FailedRunCleanup {
+    match has_messages {
+        Ok(false) if factory_titled => FailedRunCleanup::Delete,
+        Ok(true) if !keep_session => FailedRunCleanup::Delete,
+        _ => FailedRunCleanup::Keep,
+    }
+}
+
 async fn log_cleanup_delete(runtime: &EnginePoolRuntime, session_id: &str) {
     if let Err(error) = runtime.close_eval_session_result(session_id).await {
         eprintln!("[agent-task] cleanup delete for session {session_id} failed: {error:#}");
@@ -1084,9 +1069,10 @@ fn fresh_session_id() -> String {
 mod tests {
     use super::{
         AgenticTaskAttachment, AgenticTaskMode, AgenticTaskReport, AgenticTaskRequest,
-        AgenticToolEvent, DEFAULT_TIMEOUT_SECS, MAX_ATTACHMENT_BYTES, MAX_ATTACHMENTS,
-        MAX_TIMEOUT_SECS, ensure_existing_chat_session, ensure_model_exists, fresh_session_id,
-        keep_session_from_env, retention_eviction_warning, validate_attachments,
+        AgenticToolEvent, DEFAULT_TIMEOUT_SECS, FailedRunCleanup, MAX_ATTACHMENT_BYTES,
+        MAX_ATTACHMENTS, MAX_TIMEOUT_SECS, ensure_existing_chat_session, ensure_model_exists,
+        failed_run_cleanup_decision, fresh_session_id, keep_session_from_env,
+        retention_eviction_warning, validate_attachments,
     };
     use crate::features::sessions::{
         MAX_SESSIONS_PER_KIND, ScheduledRunMode, ScheduledRunProfile, SessionStore,
@@ -1428,6 +1414,55 @@ mod tests {
     /// cap records nothing. The runner's own arm/report half is pinned by
     /// `retention_eviction_warning_keys_on_the_record_regardless_of_outcome`
     /// below.
+    /// The failed-run cleanup matrix: both failure paths (submit never
+    /// ran, errored after submit) classify identically on the durable
+    /// record. Regression pin for the union contract — an errored-after-
+    /// submit run whose engine admitted messages must KEEP the transcript
+    /// under the default keep contract (a prior revision deleted it on the
+    /// factory title alone, silently dropping the only copy).
+    #[test]
+    fn failed_run_cleanup_decision_union_matrix() {
+        let ok = |v: bool| Ok::<bool, std::io::Error>(v);
+        // Zero-message stub: litter only while it wears the eval factory
+        // title, regardless of KEEP_SESSION.
+        assert_eq!(
+            failed_run_cleanup_decision(ok(false), true, false),
+            FailedRunCleanup::Delete
+        );
+        assert_eq!(
+            failed_run_cleanup_decision(ok(false), true, true),
+            FailedRunCleanup::Delete
+        );
+        assert_eq!(
+            failed_run_cleanup_decision(ok(false), false, true),
+            FailedRunCleanup::Keep
+        );
+        // Admitted messages: a started transcript — kept under the default
+        // keep contract, deleted only under the explicit legacy one-shot.
+        assert_eq!(
+            failed_run_cleanup_decision(ok(true), true, true),
+            FailedRunCleanup::Keep
+        );
+        assert_eq!(
+            failed_run_cleanup_decision(ok(true), false, true),
+            FailedRunCleanup::Keep
+        );
+        assert_eq!(
+            failed_run_cleanup_decision(ok(true), true, false),
+            FailedRunCleanup::Delete
+        );
+        // Unloadable record: unknown state keeps — deleting is the unsafe
+        // direction.
+        assert_eq!(
+            failed_run_cleanup_decision(
+                Err(std::io::Error::other("unloadable record")),
+                true,
+                false
+            ),
+            FailedRunCleanup::Keep
+        );
+    }
+
     #[test]
     fn retention_sweep_records_real_evictions_and_below_cap_stays_silent() {
         let (_lock, _env) = locked_env(&["PINVOU3_HOME"]);

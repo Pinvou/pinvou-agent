@@ -421,6 +421,21 @@ pub fn load_disabled_bundles_for(scope: ConnectorScope) -> Vec<String> {
     resolve_scope_disabled_ids(&file, scope)
 }
 
+/// Raw persisted disabled ids across every scope, merged, normalized and
+/// deduplicated — the write-level truth WITHOUT the per-mode policy
+/// fallback. The headless CLI's `connectors enable/disable` read-back uses
+/// this: the policy-resolved read answers "disabled by default" for every
+/// builtin id on an uninitialized DenyAll scope, which cannot distinguish a
+/// dropped enable from a defaulted one.
+pub fn persisted_disabled_bundle_ids() -> Vec<String> {
+    let file = load_disabled_bundles_file();
+    let all: Vec<String> = file.scopes.values().flatten().cloned().collect();
+    let mut ids = normalize_stored_pkg_ids(&all);
+    ids.sort();
+    ids.dedup();
+    ids
+}
+
 /// 已加载文件 → 某 scope 的有效禁用包 id 列表（含 DenyAll 默认兜底）。供
 /// `load_disabled_bundles_for` 与持锁写方（单临界区 RMW）共用，口径一致。
 fn resolve_scope_disabled_ids(file: &DisabledBundlesFile, scope: ConnectorScope) -> Vec<String> {
@@ -612,11 +627,15 @@ pub fn remove_bundle_from_disabled_scopes(raw_id: &str) -> Result<(), String> {
 /// inside the desktop app; the execpolicy CLI hard-block and the skill
 /// materialization exclusion read `disabled_bundles.json`, so a switch must
 /// sync the connector id there too. Disabling adds the id to **every**
-/// session mode's disabled set and marks each scope initialized — the switch
+/// session mode's disabled set: for a scope whose resolved set does not
+/// contain the id yet, the add also marks the scope initialized (the switch
 /// is an explicit user decision, so from then on the read path trusts the
-/// persisted list instead of a policy fallback. Enabling removes the id from
-/// every disabled and hidden list again. Sole caller is the pinvou-cli
-/// `connectors enable/disable` command, mirroring the GUI command layer.
+/// persisted list instead of a policy fallback); a scope that already
+/// resolves the id — notably an uninitialized DenyAll scope, where the id is
+/// disabled by default anyway — is skipped untouched and stays
+/// uninitialized. Enabling removes the id from every disabled and hidden
+/// list again. Sole caller is the pinvou-cli `connectors enable/disable`
+/// command, mirroring the GUI command layer.
 ///
 /// Fails closed like the other writers: an unavailable cross-process lock
 /// refuses the write with `Err`.

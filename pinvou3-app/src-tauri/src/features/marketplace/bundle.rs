@@ -691,20 +691,29 @@ fn tool_config_fields(tool: &super::ToolManifest) -> Vec<ConfigFieldSpec> {
 /// 就绪态判定（派生态，现算不进存储）。
 /// - CLI 包：桌面端由命令层经 `bundle_readiness` 分派到各 status 查询注入授权态
 ///   （注册表不直连 CLI 运行时，注入闭包保持依赖方向 app → features）；headless
-///   调用方（pinvou-cli `plugins readiness`）没有命令层，落到下方按 installed
-///   的保守回退
+///   调用方（pinvou-cli `plugins readiness`）没有命令层，落到下方回退：读存储里
+///   的 installed + degraded 标志。installed=true 而 degraded 非空（logout /
+///   断链只标 degraded）时必须报 not_connected——按 installed 单独判定会把已
+///   断开的连接器报成 ready，与桌面端语义相反。
 /// - 凭据型：credentials 必填项在系统凭据存储中齐不齐（现算）
 /// - 本地免凭据：恒 Ready
 pub fn readiness_for(bundle: &BundleInfo, credential_has: impl Fn(&str) -> bool) -> Readiness {
     match bundle.kind {
         // The desktop command layer overrides this arm with its `*_status`
         // dispatch; headless callers (pinvou-cli has no command layer) get
-        // the conservative installed-based verdict instead of a panic.
+        // this store-record verdict instead of a panic. installed=true alone
+        // is OPTIMISTIC, not conservative: `connectors logout` keeps
+        // installed and marks degraded, so a degraded record must answer
+        // not_connected (the desktop reason for the same state) — a live
+        // status probe is impossible headless, but a disconnected record
+        // must never read ready.
         BundleKind::Cli => {
-            if bundle.installed {
-                Readiness::Ready
-            } else {
+            if !bundle.installed {
                 Readiness::NotReady("cli_not_installed")
+            } else if bundle.degraded.is_some() {
+                Readiness::NotReady("not_connected")
+            } else {
+                Readiness::Ready
             }
         }
         BundleKind::Mcp | BundleKind::Bundle => {
@@ -728,10 +737,18 @@ pub fn readiness_for(bundle: &BundleInfo, credential_has: impl Fn(&str) -> bool)
                 .filter(|c| c.required && !credential_has(&c.key))
                 .map(|c| c.key.as_str())
                 .collect();
-            if missing.is_empty() {
-                Readiness::Ready
-            } else {
+            if !missing.is_empty() {
                 Readiness::NotReady("missing_credentials")
+            } else if !bundle.installed {
+                // The desktop verdict for credential Skill bundles also
+                // requires the companion skill to be installed
+                // (`skill_not_installed` after a companion uninstall with
+                // creds still present); mirror it headless from the record.
+                Readiness::NotReady("skill_not_installed")
+            } else if bundle.degraded.is_some() {
+                Readiness::NotReady("not_connected")
+            } else {
+                Readiness::Ready
             }
         }
     }
@@ -908,12 +925,15 @@ mod tests {
             required: false,
         }];
         assert_eq!(
-            readiness_for(&b(BundleKind::Skill, opt), |_| false),
+            readiness_for(&b(BundleKind::Skill, opt.clone()), |_| false),
             Readiness::Ready
         );
         // Headless fallback (pinvou-cli has no command layer to inject the
-        // `*_status` verdict): an installed CLI bundle is Ready, an
-        // uninstalled one reports cli_not_installed instead of panicking.
+        // `*_status` verdict): a clean installed CLI bundle is Ready, an
+        // uninstalled one reports cli_not_installed instead of panicking,
+        // and an installed-but-degraded one (logout keeps installed=true
+        // and only marks degraded) reports the desktop's not_connected
+        // reason instead of a false ready.
         assert_eq!(
             readiness_for(&b(BundleKind::Cli, vec![]), |_| false),
             Readiness::Ready
@@ -923,6 +943,31 @@ mod tests {
         assert_eq!(
             readiness_for(&uninstalled_cli, |_| false),
             Readiness::NotReady("cli_not_installed")
+        );
+        let mut disconnected_cli = b(BundleKind::Cli, vec![]);
+        disconnected_cli.degraded = Some("已断开授权：token 已失效".into());
+        assert_eq!(
+            readiness_for(&disconnected_cli, |_| false),
+            Readiness::NotReady("not_connected")
+        );
+        // Credential Skill bundles mirror the desktop's install-state
+        // requirement: credentials alone are not ready when the companion
+        // skill is uninstalled, and a degraded record is not connected.
+        assert_eq!(
+            readiness_for(&b(BundleKind::Skill, opt.clone()), |_| true),
+            Readiness::Ready
+        );
+        let mut uninstalled_skill = b(BundleKind::Skill, opt.clone());
+        uninstalled_skill.installed = false;
+        assert_eq!(
+            readiness_for(&uninstalled_skill, |_| true),
+            Readiness::NotReady("skill_not_installed")
+        );
+        let mut degraded_skill = b(BundleKind::Skill, opt);
+        degraded_skill.degraded = Some("已断开授权：token 已失效".into());
+        assert_eq!(
+            readiness_for(&degraded_skill, |_| true),
+            Readiness::NotReady("not_connected")
         );
     }
 

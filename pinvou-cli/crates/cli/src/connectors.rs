@@ -1115,6 +1115,23 @@ fn set_enabled(
             spec.id
         ))
     })?;
+    // Read-back verification, mirroring `plugins set_enabled`: the scope
+    // persist swallows write failures at the storage layer, and a dropped
+    // disable leaves the package ACTIVE for the execpolicy hard-block while
+    // this command reports success. The read-back must use the RAW
+    // persisted set (`persisted_disabled_bundle_ids`), not the
+    // policy-resolved view: an uninitialized DenyAll scope resolves every
+    // builtin id as disabled by default, which would bless a dropped enable.
+    // A disable must record the id, an enable must have removed it.
+    let mirrored = pinvou3_lib::features::marketplace::persisted_disabled_bundle_ids()
+        .iter()
+        .any(|existing| existing == &spec.id);
+    if mirrored == enabled {
+        return Err(CliError::failed(format!(
+            "connectors {}: the disabled-bundles mirror did not persist the              switch (the write failed or was dropped; the package is still              active)",
+            spec.id
+        )));
+    }
     let connected = cli_connected(spec).unwrap_or(false);
     let skills_should_show = connected && !is_disabled(kind);
     let action = if enabled { "enabled" } else { "disabled" };
