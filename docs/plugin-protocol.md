@@ -334,8 +334,10 @@ workflows 非空                              → Workflow
 `import_plugin_package_bytes_cmd`（对话框 / 拖放 base64）暴露，内部走
 `plugin_import::import_plugin_package`。更早的旧命令 `import_skill_package` /
 `import_skill_package_bytes` 已随死代码清扫（PR #539）删除——删除前前端即已全部
-切换到新命令，旧入口零调用方。命令层返回 `Result<bool, String>`
-（true=已导入，false=用户取消），未演进为
+切换到新命令，旧入口零调用方。命令层返回类型：`import_plugin_package_cmd`
+返回 `Result<Option<String>, String>`（Some=新包 id，None=用户取消），
+`import_plugin_package_bytes_cmd` 返回 `Result<String, String>`（返回新包 id；
+base64 通道无取消路径）。均未演进为
 `PluginImportReport`。`PluginImportReport` 目前仅是管线内部与
 `import_skill_md_content`（.md 包装导入）的返回类型，不暴露到命令层。
 

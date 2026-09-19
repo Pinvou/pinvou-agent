@@ -2,7 +2,7 @@
 //
 // 每个用户 turn 边界渲染一个 RewindChip（由 CodexAcpView 用 rewindEntriesByTurnId
 // 对齐）：点击打开 RewindConfirmDialog，懒加载 checkpoint_diff 展示「将撤销的
-// 变更」摘要（计数 + 文件清单，patch 不上屏），并明示对话将截断到的位置；确认后
+// 变更」摘要（计数 + 文件清单），并明示对话将截断到的位置；确认后
 // 由视图层调 rewind_to_turn 编排（恢复代码 + 截断对话 + engine 回收重注水）。
 // 无 Turn 快照的边界是「仅回退对话」变体（conversationOnly），文案明示代码不回退。
 

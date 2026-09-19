@@ -489,7 +489,7 @@ impl BundleRegistry {
         // 5) 凭据型技能包：ima（OpenAPI 凭据 + companion 技能 ima-skills；V2 归 Skill）。
         // 登记侧写入的记录 id 是 `ima-skills`（技能包 install 的登记口径），卡 id 是
         // `ima`——两个 id 任一有记录都算已装，保证「一个包 = 一张卡 = 一个开关」。
-        // 注意区分「store 不可读」（回退推导）与「记录不存在」（再查别名 id）：
+        // 注意区分「store 不可读」与「记录不存在」（再查别名 id）：
         // 通用 store_state 对缺记录也返回 Some((false, None))，直接 .or_else 会让
         // ima-skills 兜底永不触发（三轮评审死代码）。
         let ima_skills = ["ima-skills"];
