@@ -1,13 +1,13 @@
 #!/usr/bin/env bash
-# CodeWhale v0.9.12 clean re-fork guard: 36 commits, seven maintained themes (r2 tag pending).
+# CodeWhale v0.9.12 clean re-fork guard: 64 commits, eight maintained themes (r2 tag pending).
 set -uo pipefail
 
 REPO="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 CODEWHALE="$REPO/CodeWhale"
 APP="$REPO/pinvou3-app/src-tauri"
 EXPECTED_UPSTREAM="dcd4c200f72f0c1ffd60d8e7f6850313db879fc5"
-EXPECTED_HEAD="7fc36e587a91bf400a38a452653933c347f699ca"
-EXPECTED_COMMITS=36
+EXPECTED_HEAD="0aea9feeeecb4651857b0cdae6c4b8b7330b09a0"
+EXPECTED_COMMITS=64
 # 过渡期锚点：不可变 r1 tag 的收口 commit。层 0 断言它是当前 head 的祖先，
 # 即 gitlink 沿维护分支领先 tag 而非另起分叉；r2 收口后随 TAG 常量一起退役。
 R1_CLOSURE="1fafee7e26b60a59457a43bce50c63aa2ad9dbaf"
@@ -25,7 +25,7 @@ bold()  { printf '\033[1m%s\033[0m\n' "$*"; }
 
 fail=0
 
-bold "── 第 0 层：v0.9.12 clean re-fork 拓扑（r1 tag 之后 21 个登记提交，r2 收口未切 tag）──"
+bold "── 第 0 层：v0.9.12 clean re-fork 拓扑（r1 tag 之后 49 个登记提交，r2 收口未切 tag）──"
 actual_head="$(git -C "$CODEWHALE" rev-parse HEAD 2>/dev/null || true)"
 if [[ "$actual_head" == "$EXPECTED_HEAD" ]]; then
   green "  ✓ CodeWhale gitlink 指向登记 head ${EXPECTED_HEAD}（过渡期：gitlink 领先 r1 tag，见 fork-policy 第 0 节豁免）"
@@ -77,6 +77,17 @@ fingerprints=(
   "T1|自启续轮陈旧 stop 端到端回归        |CodeWhale/crates/tui/src/core/engine/tests.rs|forkguard_idle_subagent_completion_self_start_ignores_a_stale_previous_turn_cancel"
   "T1|处置入口不触发任何 token 回归      |CodeWhale/crates/tui/src/core/engine/tests.rs|engine_handle_stop_disposition_publishes_without_firing_any_token"
   "T1|TurnStarted 回显宿主提交令牌回归    |CodeWhale/crates/tui/src/core/engine/tests.rs|forkguard_turn_started_echoes_submission_id_self_starts_stay_none"
+
+  "T1|workspace_roots 线程 DTO 字段（serde default） |CodeWhale/crates/protocol/src/lib.rs|pub workspace_roots: Vec<PathBuf>,"
+  "T1|workspace_roots 归一化（cwd 居首、空集 ≡ 单根）|CodeWhale/crates/core/src/lib.rs|pub fn normalize_workspace_roots("
+  "T1|workspace_roots SQLite v5 迁移列              |CodeWhale/crates/state/src/lib.rs|ADD COLUMN workspace_roots TEXT NOT NULL DEFAULT '[]';"
+  "T1|每回合策略物化全量根集合                       |CodeWhale/crates/tui/src/core/authority.rs|writable_roots: codewhale_core::normalize_workspace_roots(workspace, workspace_roots),"
+  "T1|多根沙箱逐根物化回归                           |CodeWhale/crates/tui/src/core/authority.rs|forkguard_workspace_roots_sandbox_materializes_every_root"
+  "T1|写豁免 carve-out 跨根判定回归                  |CodeWhale/crates/tui/src/core/authority.rs|forkguard_workspace_roots_carve_out_spans_attached_roots"
+  "T1|resolve_path 跨根放行回归                      |CodeWhale/crates/tui/src/tools/spec/tests.rs|forkguard_workspace_roots_resolve_path_spans_attached_roots"
+  "T1|指令发现仅主根回归                             |CodeWhale/crates/tui/src/project_context.rs|forkguard_workspace_roots_instruction_discovery_takes_only_the_primary_root"
+  "T1|线程记录 roots 持久化与旧载荷缺省回归            |CodeWhale/crates/tui/src/runtime_threads/tests.rs|forkguard_workspace_roots_thread_record_persists_and_legacy_defaults_empty"
+  "T1|turn_meta 附加根披露回归                        |CodeWhale/crates/tui/src/core/engine/tests.rs|forkguard_workspace_roots_turn_meta_lists_attached_roots"
 
   "T1|GLM-5.3 强制思考改写禁用 payload    |CodeWhale/crates/tui/src/client/chat.rs|fn apply_zai_forced_thinking_effort"
   "T1|BigModel host 纳入第一方 Chat 路由  |CodeWhale/crates/config/src/provider.rs|is_exact_https_route(base_url, \"open.bigmodel.cn\", \"api/paas/v4\")"
@@ -214,9 +225,9 @@ done
 
 forkguard_count="$(grep -Rho --include='*.rs' 'forkguard_[A-Za-z0-9_]*' "$CODEWHALE/crates" 2>/dev/null | sort -u | wc -l | tr -d ' ')"
 if [[ "$forkguard_count" -ge 54 ]]; then
-  green "  ✓ CodeWhale 至少保留 54 条独立 forkguard 行为名（实际 ${forkguard_count}）"
+  green "  ✓ CodeWhale 至少保留 96 条独立 forkguard 行为名（实际 ${forkguard_count}）"
 else
-  red "  ✗ CodeWhale forkguard 行为名仅 ${forkguard_count:-0}，登记下限为 54"
+  red "  ✗ CodeWhale forkguard 行为名仅 ${forkguard_count:-0}，登记下限为 96"
   fail=1
 fi
 

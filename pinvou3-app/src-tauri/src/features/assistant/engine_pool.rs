@@ -5839,6 +5839,7 @@ mod probed_facts_wiring_tests {
             code_session_predicate: None,
             external_acp_session_predicate: None,
             image_analyze_always: false,
+            workspace_roots_resolver: None,
         }
     }
 

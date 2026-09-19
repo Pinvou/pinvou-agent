@@ -98,45 +98,62 @@ fn create_rejects_duplicate_and_nested_roots_within_project() {
 }
 
 #[test]
-fn create_rejects_overlap_with_other_projects() {
+fn create_allows_overlap_with_other_projects() {
+    // §9.9 legalizes cross-project root overlap: a folder may be referenced by
+    // several projects (auto-materialization and the browse channel both rely
+    // on it). The intra-set no-nesting invariant is what still holds.
     let temp = tempfile::tempdir().expect("tempdir");
     let store = store_in(&temp);
     create(&store, "已有项目", &[abs("work")]);
 
-    let same = store
+    store
         .create_project("同路径".to_string(), vec![abs("work")])
-        .expect_err("same root across projects rejected");
-    assert!(same.to_string().contains("overlaps project '已有项目'"));
+        .expect("same root across projects is legal");
 
-    let nested = store
+    store
         .create_project("子路径".to_string(), vec![abs("work").join("sub")])
-        .expect_err("nested root across projects rejected");
-    assert!(nested.to_string().contains("overlaps project"));
+        .expect("nested root across projects is legal");
 
-    // 无关路径不受影响;父路径方向同样拦截。
     create(&store, "无关", &[abs("other")]);
-    let parent = store
+    store
         .create_project(
             "父路径".to_string(),
             vec![abs("work").parent().unwrap().to_path_buf()],
         )
-        .expect_err("parent root across projects rejected");
-    assert!(parent.to_string().contains("overlaps project"));
+        .expect("ancestor root across projects is legal");
+
+    // 组内不嵌套不变量仍然成立:同一个项目的 roots 不得互相嵌套。
+    let nested = store
+        .create_project(
+            "组内嵌套".to_string(),
+            vec![abs("work"), abs("work").join("sub")],
+        )
+        .expect_err("intra-set nesting rejected");
+    assert!(nested.to_string().contains("must not nest"), "{nested}");
 }
 
 #[test]
-fn canonicalized_real_dirs_catch_overlap_across_projects() {
+fn canonicalized_real_dirs_still_reject_intra_set_nesting() {
+    // Canonicalization must keep working with the overlap legalization: two
+    // real, symlink-resolved directories that nest inside ONE project are
+    // still rejected (the cross-project direction is legal since §9.9).
     let temp = tempfile::tempdir().expect("tempdir");
     let parent = temp.path().join("repo");
     let child = parent.join("sub");
     std::fs::create_dir_all(&child).expect("create dirs");
 
     let store = store_in(&temp);
-    create(&store, "父", std::slice::from_ref(&parent));
+    store
+        .create_project("父".to_string(), vec![parent.clone()])
+        .expect("first project");
+    store
+        .create_project("子".to_string(), vec![child.clone()])
+        .expect("cross-project overlap is legal");
+
     let error = store
-        .create_project("子".to_string(), vec![child])
-        .expect_err("canonical overlap rejected");
-    assert!(error.to_string().contains("overlaps project"));
+        .create_project("组内".to_string(), vec![parent, child])
+        .expect_err("intra-set nesting rejected");
+    assert!(error.to_string().contains("must not nest"), "{error}");
 }
 
 #[test]
@@ -201,21 +218,29 @@ fn delete_unassigns_sessions_but_keeps_explicit_move_out() {
         .move_session_to_project("s4", Some(&other.id), None)
         .expect("assign s4");
 
-    store.delete_project(&project.id).expect("delete project");
+    let report = store
+        .delete_project(&project.id, &[])
+        .expect("delete project");
+    let mut affected = report.affected_session_ids;
+    affected.sort();
+    assert_eq!(affected, vec!["s1", "s2"]);
 
-    assert_eq!(store.assignment_of("s1"), None);
-    assert_eq!(store.assignment_of("s2"), None);
-    // s3 的显式移出条目保留,不被删除项目连带清理。
+    // 删除把成员写成显式移出(tombstone),而不是清空条目:否则该文件夹下一次
+    // 自动物化会把它们重新收编,删除结果死而复生。
+    assert_eq!(store.assignment_of("s1"), Some(None));
+    assert_eq!(store.assignment_of("s2"), Some(None));
+    // s3 已有的显式移出条目保留(不被删除项目连带改写)。
     assert_eq!(store.assignment_of("s3"), Some(None));
     assert_eq!(store.assignment_of("s4"), Some(Some(other.id.clone())));
     assert!(store.get(&project.id).is_none());
 
-    // 全部项目删除 + 归属清空后,空状态不留文件。
-    store
-        .move_session_to_project("s3", None, None)
-        .expect("re-move s3");
-    store.delete_project(&other.id).expect("delete other");
+    // 仅剩 tombstone 时仍要保留文件(否则重启后删除过的文件夹会被重新物化);
+    // 真正无项目、无归属、无排除表时,空状态不留文件。
+    store.delete_project(&other.id, &[]).expect("delete other");
+    store.forget_session("s1");
+    store.forget_session("s2");
     store.forget_session("s3");
+    store.forget_session("s4");
     assert!(!temp.path().join("projects.json").exists());
 }
 
@@ -281,15 +306,15 @@ fn move_add_workspace_root_atomically_and_idempotently() {
     assert_eq!(again.added_root, None);
     assert_eq!(store.get(&project.id).unwrap().roots.len(), 2);
 
-    // 落在他人领地内的目录必须拦截,且不得污染两个项目。
-    let conflict = store
+    // 落在他人领地内的目录现在合法(§9.9):归属与根一并落盘,两个项目各自
+    // 保留自己的 roots。
+    store
         .move_session_to_project("s3", Some(&project.id), Some(&foreign.join("deeper")))
         .map(|_| ())
-        .expect_err("cross-project overlap rejected");
-    assert!(conflict.to_string().contains("overlaps project '他人领地'"));
-    assert_eq!(store.assignment_of("s3"), None);
+        .expect("cross-project overlap is legal");
+    assert_eq!(store.assignment_of("s3"), Some(Some(project.id.clone())));
     assert_eq!(store.get(&other.id).unwrap().roots.len(), 1);
-    assert_eq!(store.get(&project.id).unwrap().roots.len(), 2);
+    assert_eq!(store.get(&project.id).unwrap().roots.len(), 3);
 }
 
 #[test]
@@ -600,23 +625,62 @@ fn rebind_fence_excludes_writers_and_rebinds_in_both_directions() {
 }
 
 #[test]
-fn rebind_roots_rejects_overlap_and_keeps_state() {
+fn rebind_roots_legalizes_cross_project_overlap_and_keeps_intra_set_rule() {
+    // Section-9.9: a rebind may land a root on (or nested under) another
+    // project's territory — cross-project overlap is legal, so plan and
+    // commit both succeed there and the surviving project is untouched. What
+    // the commit still rejects is the intra-set no-nesting invariant, and the
+    // rollback contract is unchanged for it.
     let temp = tempfile::tempdir().expect("tempdir");
     let store = store_in(&temp);
     let from = abs("from2");
     let occupied = temp.path().join("occupied");
     std::fs::create_dir_all(&occupied).expect("create occupied dir");
 
+    // Cross-project: `from` translates onto `occupied`, which another project
+    // holds — plan and commit agree it is legal.
     let project = create(&store, "待搬", std::slice::from_ref(&from));
-    create(&store, "已有领地", std::slice::from_ref(&occupied));
+    let other = create(&store, "已有领地", std::slice::from_ref(&occupied));
+    assert_eq!(
+        store.plan_rebind_roots(&from, &occupied).expect("plan"),
+        vec![project.id.clone()],
+        "cross-project overlap is legal in the pre-flight too"
+    );
+    assert_eq!(
+        store.rebind_roots(&from, &occupied).expect("commit"),
+        vec![project.id.clone()]
+    );
+    assert_eq!(
+        store.get(&project.id).unwrap().roots,
+        vec![occupied.clone()]
+    );
+    assert_eq!(
+        store.get(&other.id).unwrap().roots,
+        vec![occupied],
+        "the surviving project is untouched"
+    );
 
-    let before = store.get(&project.id).unwrap();
+    // Intra-set: a translation that would nest the translated root against a
+    // sibling root of the SAME project is rejected by plan and commit alike,
+    // with the memory state rolled back to the on-disk state.
+    let nested_from = abs("nest-from");
+    let to = temp.path().join("nest-to");
+    std::fs::create_dir_all(to.join("sub")).expect("create target dirs");
+    let both = create(&store, "组内嵌套", &[nested_from.clone(), to.join("sub")]);
+    let before = store.get(&both.id).unwrap();
     let error = store
-        .rebind_roots(&from, &occupied)
-        .expect_err("overlap after rebind rejected");
-    assert!(error.to_string().contains("overlap"));
-    // Error rolls back: memory state unchanged (nothing persisted).
-    assert_eq!(store.get(&project.id).unwrap(), before);
+        .plan_rebind_roots(&nested_from, &to)
+        .expect_err("intra-set nesting rejected in the pre-flight");
+    assert!(error.to_string().contains("nest"));
+    let error = store
+        .rebind_roots(&nested_from, &to)
+        .expect_err("intra-set nesting rejected at commit");
+    assert!(error.to_string().contains("nest"));
+    assert_eq!(
+        store.get(&both.id).unwrap(),
+        before,
+        "commit rollback leaves memory identical to disk"
+    );
 }
 
 /// Pre-flight for the reordered rebind (review #463 round-8 M3): the session
@@ -628,50 +692,199 @@ fn plan_rebind_roots_previews_without_mutating() {
     let temp = tempfile::tempdir().expect("tempdir");
     let store = store_in(&temp);
     let from = abs("plan-from");
-    let occupied = temp.path().join("plan-occupied");
-    std::fs::create_dir_all(&occupied).expect("create occupied dir");
+    let to = temp.path().join("plan-to");
+    std::fs::create_dir_all(to.join("sub")).expect("create target dirs");
 
-    let project = create(&store, "To be moved", std::slice::from_ref(&from));
-    create(
-        &store,
-        "Holds the territory",
-        std::slice::from_ref(&occupied),
-    );
+    // Conflict: the translation would nest `to` against the project's own
+    // `to/sub` sibling root — the one failure mode the commit still has. The
+    // plan must fail without touching state…
+    let project = create(&store, "To be moved", &[from.clone(), to.join("sub")]);
     let before = store.get(&project.id).unwrap();
-
-    // Conflict: the plan must fail without touching state…
     let error = store
-        .plan_rebind_roots(&from, &occupied)
-        .expect_err("overlap rejected in the pre-flight");
-    assert!(error.to_string().contains("overlap"));
+        .plan_rebind_roots(&from, &to)
+        .expect_err("intra-set nesting rejected in the pre-flight");
+    assert!(error.to_string().contains("nest"));
     assert_eq!(store.get(&project.id).unwrap(), before);
 
     // …and on a clean target it must report the same set `rebind_roots`
     // commits, still without writing.
-    let to = temp.path().join("plan-target");
-    std::fs::create_dir_all(&to).expect("create target dir");
+    let clean_from = abs("plan-clean-from");
+    let clean_to = temp.path().join("plan-clean-to");
+    std::fs::create_dir_all(&clean_to).expect("create clean target dir");
+    let lone = create(&store, "Lone holder", std::slice::from_ref(&clean_from));
     assert_eq!(
-        store.plan_rebind_roots(&from, &to).expect("plan"),
-        vec![project.id.clone()]
+        store
+            .plan_rebind_roots(&clean_from, &clean_to)
+            .expect("plan"),
+        vec![lone.id.clone()]
     );
     assert_eq!(
         store.get(&project.id).unwrap(),
         before,
         "planning must not persist the rewrite"
     );
-    // The plan is idempotent with no matching roots, matching the retry contract.
-    assert!(
+    // The plan is a pure preview: rerunning it on the untouched state reports
+    // the same set again.
+    assert_eq!(
         store
-            .plan_rebind_roots(&from, &to)
-            .expect("plan again")
-            .contains(&project.id)
+            .plan_rebind_roots(&clean_from, &clean_to)
+            .expect("plan again"),
+        vec![lone.id.clone()]
     );
-    assert!(store.rebind_roots(&from, &to).expect("commit").len() == 1);
+    // The commit lands exactly what the plan previewed; afterwards nothing
+    // matches `clean_from` any more, matching the retry contract.
     assert!(
         store
-            .plan_rebind_roots(&from, &temp.path().join("unrelated"))
-            .expect("nothing left under from")
+            .rebind_roots(&clean_from, &clean_to)
+            .expect("commit")
+            .len()
+            == 1
+    );
+    assert!(
+        store
+            .plan_rebind_roots(&clean_from, &clean_to)
+            .expect("nothing left under clean_from")
             .is_empty()
+    );
+}
+
+#[test]
+fn ensure_folder_roots_materializes_reuses_and_honors_exclusions() {
+    // §3 client-driven auto-materialization: per-root outcomes, anchored
+    // reuse (§9.9), exclusion skip without an outcome, and per-root failure
+    // isolation.
+    let temp = tempfile::tempdir().expect("tempdir");
+    let store = store_in(&temp);
+    let folder = abs("browse-folder");
+
+    // Created: named after the directory basename, anchored at the folder.
+    let outcomes = store
+        .ensure_folder_roots(&[folder.clone()])
+        .expect("ensure");
+    match outcomes.as_slice() {
+        [super::EnsureFolderOutcome::Created { project }] => {
+            assert_eq!(project.name, "browse-folder");
+            assert_eq!(project.origin.as_deref(), Some("folder"));
+            assert_eq!(project.roots, vec![display(&folder)]);
+        }
+        other => panic!("expected Created, got {other:?}"),
+    }
+
+    // Anchored reuse (and idempotency): the same folder is Covered, never a
+    // duplicate project.
+    let outcomes = store
+        .ensure_folder_roots(&[folder.clone()])
+        .expect("ensure again");
+    assert!(
+        matches!(
+            outcomes.as_slice(),
+            [super::EnsureFolderOutcome::Covered { .. }]
+        ),
+        "second run must be Covered, got {outcomes:?}"
+    );
+    assert_eq!(store.list().len(), 1);
+
+    // A manual project that merely REFERENCES a folder does not anchor it
+    // (§9.9): the browse channel materializes its own same-named project —
+    // legal cross-project overlap.
+    let referenced = abs("referenced");
+    create(&store, "手动引用", &[referenced.clone()]);
+    let outcomes = store
+        .ensure_folder_roots(&[referenced.clone()])
+        .expect("ensure referenced");
+    assert!(
+        matches!(
+            outcomes.as_slice(),
+            [super::EnsureFolderOutcome::Created { .. }]
+        ),
+        "referencing does not anchor; got {outcomes:?}"
+    );
+
+    // Exclusion (§3): a banned folder is skipped WITHOUT an outcome — the
+    // browse channel can tell exclusion apart from failure.
+    store.set_never_materialize(&folder, true).expect("exclude");
+    let outcomes = store
+        .ensure_folder_roots(&[folder.clone(), abs("fresh-tail")])
+        .expect("ensure with excluded root");
+    assert_eq!(outcomes.len(), 1, "excluded roots produce no outcome");
+    assert!(matches!(
+        &outcomes[0],
+        super::EnsureFolderOutcome::Created { .. }
+    ));
+
+    // Failure isolation: a relative path fails alone and never blocks the
+    // rest of the batch.
+    let outcomes = store
+        .ensure_folder_roots(&[PathBuf::from("relative/path"), abs("after-failure")])
+        .expect("ensure batch");
+    assert_eq!(outcomes.len(), 2);
+    assert!(matches!(
+        &outcomes[0],
+        super::EnsureFolderOutcome::Failed { .. }
+    ));
+    assert!(matches!(
+        &outcomes[1],
+        super::EnsureFolderOutcome::Created { .. }
+    ));
+}
+
+#[test]
+fn set_never_materialize_is_idempotent_and_only_gates_future_ensure() {
+    let temp = tempfile::tempdir().expect("tempdir");
+    let store = store_in(&temp);
+    let folder = abs("excluded-folder");
+    // Materialize via ensure (not a manual create): anchored reuse in the
+    // revoked step requires an origin=folder project.
+    let outcomes = store
+        .ensure_folder_roots(&[folder.clone()])
+        .expect("ensure");
+    assert!(matches!(
+        outcomes.as_slice(),
+        [super::EnsureFolderOutcome::Created { .. }]
+    ));
+
+    // Idempotent registration; the list is exposed for the manage panel.
+    let registered = store.set_never_materialize(&folder, true).expect("set");
+    assert_eq!(registered.len(), 1);
+    assert_eq!(
+        store
+            .set_never_materialize(&folder, true)
+            .expect("set again"),
+        registered,
+        "re-adding must not duplicate the entry"
+    );
+    // Existing projects and their assignments are untouched: the list gates
+    // only FUTURE auto-materialization.
+    assert_eq!(store.list().len(), 1);
+
+    // Revocation re-opens the folder; a fresh ensure reuses the surviving
+    // project (anchored) instead of materializing a second one.
+    store.set_never_materialize(&folder, false).expect("revoke");
+    assert!(store.never_materialize_roots().is_empty());
+    let outcomes = store
+        .ensure_folder_roots(&[folder.clone()])
+        .expect("ensure");
+    assert!(matches!(
+        outcomes.as_slice(),
+        [super::EnsureFolderOutcome::Covered { .. }]
+    ));
+    assert_eq!(store.list().len(), 1);
+}
+
+#[test]
+fn keychain_for_workspace_keeps_cwd_primary_and_project_order() {
+    // §6: the primary slot is always the session's own cwd; additional roots
+    // follow the project's root order minus the cwd. Empty project roots are
+    // single-root semantics (cwd only).
+    let cwd = abs("k-cwd");
+    let roots = vec![abs("k-b"), cwd.clone(), abs("k-a")];
+    assert_eq!(
+        ProjectStore::keychain_for_workspace(&cwd, &roots),
+        vec![display(&cwd), display(&abs("k-b")), display(&abs("k-a"))]
+    );
+    assert_eq!(
+        ProjectStore::keychain_for_workspace(&cwd, &[]),
+        vec![display(&cwd)]
     );
 }
 
@@ -735,11 +948,16 @@ fn move_workspace_ancestor_collapses_descendant_roots() {
 
 #[test]
 fn root_keys_fold_case_only_on_windows() {
-    // Windows 大小写不敏感:同一(不存在的)目录的两种大小写/分隔符写法必须
-    // 折叠为同一 root,否则重叠校验对 `C:\Work` vs `c:\work` 失明;
-    // Unix 文件系统大小写敏感,两种写法是两个互不重叠的 root,都允许创建。
-    // 用 std::env::consts::OS 常量分支而非 cfg 语法:平台条件编译不得出现在
-    // 适配层外(architecture-guard rust_target_cfg_outside_adapter)。
+    // Windows folds case/separators: two spellings of the same (absent)
+    // directory are one identity root. Since the section-9.9 overlap
+    // legalization a folded identity shared ACROSS projects is legal, so the
+    // fold contract is locked by the intra-set duplicate rejection instead:
+    // the same two spellings inside one create call are one root twice. Unix
+    // filesystems are case-sensitive: the two spellings are distinct roots,
+    // legal even in one root set.
+    // Branches on the std::env::consts::OS constant rather than cfg syntax:
+    // platform conditional compilation must not appear outside the adapter
+    // layer (architecture-guard rust_target_cfg_outside_adapter).
     let temp = tempfile::tempdir().expect("tempdir");
     let store = store_in(&temp);
     if std::env::consts::OS == "windows" {
@@ -747,11 +965,20 @@ fn root_keys_fold_case_only_on_windows() {
         let lower = abs("caseprobe").to_string_lossy().replace('/', "\\");
         assert_ne!(upper, lower);
 
+        // Cross-project identity equality is legal since section-9.9
+        // (anchored coverage and the browse channel both rely on it).
         create(&store, "大写", &[PathBuf::from(&upper)]);
+        create(&store, "小写", &[PathBuf::from(&lower)]);
+        assert_eq!(store.list().len(), 2);
+
+        // The fold itself is what the intra-set duplicate check exercises.
         let error = store
-            .create_project("小写".to_string(), vec![PathBuf::from(&lower)])
-            .expect_err("case-folded duplicate root rejected");
-        assert!(error.to_string().contains("overlaps project"));
+            .create_project(
+                "组内重复".to_string(),
+                vec![PathBuf::from(&upper), PathBuf::from(&lower)],
+            )
+            .expect_err("case-folded intra-set duplicate rejected");
+        assert!(error.to_string().contains("duplicate project root"));
     } else {
         create(&store, "大写", &[abs("CaseProbe")]);
         create(&store, "小写", &[abs("caseprobe")]);

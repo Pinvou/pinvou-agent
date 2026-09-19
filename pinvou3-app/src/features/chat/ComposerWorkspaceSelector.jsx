@@ -10,7 +10,7 @@ import { ChevronDown, FolderOpen, Sparkles } from '../../components/icons.jsx';
 import { useOutsidePointerClose } from '../../components/ComposerPopover.jsx';
 import { loadRecentWorkspaces, workspaceName } from '../../shared/workspace-recents.js';
 
-export function ComposerWorkspaceSelector({ copy, draftWorkspacePath, onPickWorkspace, onSelectWorkspace }) {
+export function ComposerWorkspaceSelector({ copy, draftWorkspacePath, onPickWorkspace, onSelectWorkspace, grantNotice }) {
   const [open, setOpen] = useState(false);
   const [recentWorkspaces, setRecentWorkspaces] = useState(loadRecentWorkspaces);
   const [pickError, setPickError] = useState('');
@@ -78,6 +78,12 @@ export function ComposerWorkspaceSelector({ copy, draftWorkspacePath, onPickWork
           {recentWorkspaces.length > 0 && (
             <div className="mt-1 pt-2 border-t border-black/[0.05] dark:border-white/[0.06]">
               <div className="px-3 pb-1 text-[10px] uppercase tracking-wider text-gray-400">{copy.recentDirectories}</div>
+              {/* Grant-notice parity (§9.4): a recents pick grants the chosen
+                  folder directly (single root), the same notice weight as the
+                  in-app picker's rows. The host computes the mode-aware copy. */}
+              {grantNotice && (
+                <div className="px-3 pb-1 text-[10px] text-gray-400">{grantNotice}</div>
+              )}
               {recentWorkspaces.map(path => (
                 <button key={path} type="button" title={path}
                   onClick={() => select(path)}

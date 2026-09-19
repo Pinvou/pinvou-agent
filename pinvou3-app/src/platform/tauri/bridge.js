@@ -277,6 +277,11 @@
     // create_session via the workspacePath parameter, cleared after successful
     // materialization, reset by enterDraft.
     draftWorkspacePath: null,
+    // Draft staging for the project channel (§9.3): the keychain snapshot and
+    // project ownership, passed down with the materializing create_session;
+    // null/empty = a plain-folder or temporary draft.
+    draftWorkspaceRoots: [],
+    draftProjectId: null,
     // 最新 plan/todos 快照（用于 mode header 进度 chip，与 plan_ready 卡解耦）
     planSnapshot: { plan: null, todos: null },
     // 当前 session 产物列表 [{ path, basename }]
@@ -2519,6 +2524,11 @@
   const deleteProject = projectsFeature.deleteProject;
   const moveSessionToProject = projectsFeature.moveSessionToProject;
   const rebindWorkspaceRoot = projectsFeature.rebindWorkspaceRoot;
+  const ensureFolderProjects = projectsFeature.ensureFolderProjects;
+  const updateProjectRoots = projectsFeature.updateProjectRoots;
+  const setPrimaryRoot = projectsFeature.setPrimaryRoot;
+  const setNeverMaterialize = projectsFeature.setNeverMaterialize;
+  const alignSessionToProject = projectsFeature.alignSessionToProject;
 
   const multiAgentFeature = installBridgeFeature("multiagent", { state, notify, invoke, listen });
   const listMultiAgentSubagents = multiAgentFeature.listSubagentTranscripts;
@@ -2735,6 +2745,11 @@
       deleteProject,
       moveSessionToProject,
       rebindWorkspaceRoot,
+      ensureFolderProjects,
+      updateProjectRoots,
+      setPrimaryRoot,
+      setNeverMaterialize,
+      alignSessionToProject,
     },
     monitor: {
       startMonitorPolling,

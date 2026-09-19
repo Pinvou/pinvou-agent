@@ -4518,6 +4518,92 @@ fn rebind_preserves_corrupt_legacy_workspaces_file() {
 /// never parsed, closing the "repair it and retry" door. The preservation flag has
 /// to be set in that arm too, mirroring the JSON-parse arm.
 #[test]
+fn keychain_roots_round_trip_through_the_plain_binding_store() {
+    // Review #484 round-2 checklist: write the keychain at bind time,
+    // read it back, replace it wholesale (the align path), and read that
+    // back — the binding store is the snapshot's persistence contract.
+    let (store, _g) = isolated_store();
+    let session = store
+        .create_new("model".to_string(), None, std::env::temp_dir())
+        .expect("create session");
+    let id = session.metadata.id.clone();
+    let base = unique_temp_dir("keychain-roundtrip");
+    let primary = base.join("primary");
+    let extra = base.join("extra");
+    std::fs::create_dir_all(&primary).expect("create primary");
+    std::fs::create_dir_all(&extra).expect("create extra");
+
+    store
+        .bind_session_workspace_with_roots(
+            &id,
+            primary.clone(),
+            vec![primary.clone(), extra.clone()],
+        )
+        .expect("bind with keychain");
+    let snapshot = store.session_workspace_roots(&id);
+    assert_eq!(snapshot.len(), 2, "bind persists the full root set");
+    assert!(
+        snapshot.iter().any(|root| root.ends_with("primary")),
+        "the primary root rides in the snapshot: {snapshot:?}"
+    );
+    assert!(
+        snapshot.iter().any(|root| root.ends_with("extra")),
+        "the attached root rides in the snapshot: {snapshot:?}"
+    );
+
+    // Wholesale replacement (align §9.7 shape): primary first, project
+    // roots after.
+    let next = vec![primary.clone(), extra.clone(), base.join("third")];
+    std::fs::create_dir_all(base.join("third")).expect("create third");
+    store
+        .set_session_workspace_roots(&id, next.clone())
+        .expect("replace keychain");
+    assert_eq!(store.session_workspace_roots(&id), next);
+
+    let _ = std::fs::remove_dir_all(&base);
+}
+
+#[test]
+fn rebind_workspace_bindings_translates_keychain_roots() {
+    // Review #484 M3 (plain lane): the keychain snapshot migrates with
+    // the binding — roots under the `from` prefix shift onto `to`, roots
+    // outside it stay.
+    let (store, _g) = isolated_store();
+    let session = store
+        .create_new("model".to_string(), None, std::env::temp_dir())
+        .expect("create session");
+    let id = session.metadata.id.clone();
+    let from = unique_temp_dir("keychain-rebind-from");
+    std::fs::create_dir_all(&from).expect("create from");
+    let to = unique_temp_dir("keychain-rebind-to");
+    std::fs::create_dir_all(&to).expect("create to");
+    let elsewhere = unique_temp_dir("keychain-rebind-elsewhere");
+    std::fs::create_dir_all(&elsewhere).expect("create elsewhere");
+
+    store
+        .bind_session_workspace_with_roots(
+            &id,
+            from.clone(),
+            vec![from.clone(), from.join("extra"), elsewhere.clone()],
+        )
+        .expect("bind");
+
+    let outcome = store.rebind_workspace_bindings(&from, &to).expect("rebind");
+    assert!(outcome.rebound.iter().any(|(sid, _)| sid == &id));
+
+    let snapshot = store.session_workspace_roots(&id);
+    assert_eq!(
+        snapshot,
+        vec![to.clone(), to.join("extra"), elsewhere.clone()],
+        "prefix roots shift onto `to`, outside roots stay"
+    );
+
+    let _ = std::fs::remove_dir_all(&from);
+    let _ = std::fs::remove_dir_all(&to);
+    let _ = std::fs::remove_dir_all(&elsewhere);
+}
+
+#[test]
 fn unreadable_legacy_workspaces_file_is_preserved_across_rebind() {
     let (store, _g) = isolated_store();
     let legacy = store

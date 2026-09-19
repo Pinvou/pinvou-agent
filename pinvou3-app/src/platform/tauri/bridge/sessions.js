@@ -569,6 +569,8 @@
     // A new draft resets to the default workspace: the previous draft's directory
     // choice must not carry over (shared by both early-return branches).
     state.draftWorkspacePath = null;
+    state.draftWorkspaceRoots = [];
+    state.draftProjectId = null;
 
     // 已在干净草稿态 → 只 notify(epoch 已自增)。注意要连 chatItems 一起判空:messages 与 chatItems
     // 会背离(persona 气泡 / ensureSession 失败的 system 报错卡只进 chatItems),否则残留卡顶掉「你好」。
@@ -653,9 +655,18 @@
 
   // Effective in draft state only; path = null means back to the default
   // (session-private directory).
-  function setDraftWorkspace(path) {
-    if (state.activeSessionId) return;
+  // Returns whether the draft was staged: an active session owns the
+  // composer's binding, so a call during one is a documented silent no-op.
+  // The container reads this to keep the grant notice honest (a toast for a
+  // staging that never happened would claim access the session does not
+  // have; review #484 MINOR).
+  function setDraftWorkspace(path, extras) {
+    if (state.activeSessionId) return false;
     state.draftWorkspacePath = path || null;
+    state.draftProjectId = (extras && extras.projectId) || null;
+    state.draftWorkspaceRoots = (extras && Array.isArray(extras.workspaceRoots))
+      ? extras.workspaceRoots
+      : (path ? [String(path)] : []);
     // Binding/unbinding switches the draft mode display lane (bound → code lane,
     // unbound → back to this lane's default); on unbind, the previous bound
     // draft's staged explicit mode is invalidated and must not carry into an
@@ -663,6 +674,7 @@
     if (!state.draftWorkspacePath) state.pendingDraftMode = null;
     state.modeState = currentDraftModeState();
     notify();
+    return true;
   }
   // System directory picker: on success, records the path in the recents list,
   // writes it back to the draft selection, and returns the selected path;
@@ -709,6 +721,24 @@
   // 并发防护（审计）：草稿态双击发送会并发 create_session，导致两条消息分家到两个新
   // 会话——in-flight 复用同一 promise；create_session await 期间用户切走会物化在错误
   // 会话（导航被劫持）——物化前校验 activeSessionId 仍为空，已切走则只登记后台 buffer。
+  // Synchronous capture point for the materialization payload (workspace
+  // binding + keychain snapshot + project ownership); a standalone small
+  // function so ensureSession's decision complexity does not keep growing.
+  function captureDraftWorkspaceBinding() {
+    const boundWorkspace = state.draftWorkspacePath || null;
+    const roots = state.draftWorkspaceRoots || [];
+    return {
+      boundWorkspace,
+      // The keychain/project ownership is only passed with a bound draft (a
+      // temporary draft is always null); the materialization-failure rollback
+      // path restores the draft by value, so this returns the raw values, not
+      // read-only copies.
+      boundRoots: roots,
+      boundProjectId: state.draftProjectId || null,
+      payloadRoots: boundWorkspace && roots.length ? roots : null,
+      payloadProjectId: boundWorkspace ? (state.draftProjectId || null) : null,
+    };
+  }
   let ensureSessionInFlight = null;
   async function ensureSession() {
     if (state.activeSessionId) return state.activeSessionId;
@@ -717,20 +747,20 @@
     // 只推进 token 不改 activeSessionId（仍为 null），在途 create_session 返回
     // 后必须连同 token 一起校验，否则会劫持用户新进的草稿（三审 P1）。
     const navToken = sessionSwitchRequestToken;
-    // boundWorkspace is captured outside the try: the catch-side recents
-    // cleanup must also use the directory bound by this materialization, not
-    // the live draftWorkspacePath.
-    const boundWorkspace = state.draftWorkspacePath || null;
+    // Capture the materialization payload synchronously, outside the try: the
+    // catch-side rollback and the recents cleanup both need the values bound by
+    // THIS creation, and a try-scoped const would be out of scope there. Later
+    // selections made during the await cannot affect this creation.
+    const { boundWorkspace, boundRoots, boundProjectId, payloadRoots, payloadProjectId } =
+      captureDraftWorkspaceBinding();
     const p = (async function () {
       // 多 session 并发:不预热 engine。新建空 session 的 buffer 由 switchActiveTo({fresh}) 起。
       try {
-        // The draft's selected working directory is sent along with
-        // materialization; null = backend default (session-private directory).
-        // The argument is captured at the invoke's synchronous evaluation, so a
-        // later selection during the await does not affect this creation. The
-        // post-materialization lane default application likewise keys off
-        // whether this creation was bound.
-        const meta = await invoke("create_session", { workspacePath: boundWorkspace });
+        const meta = await invoke("create_session", {
+          workspacePath: boundWorkspace,
+          workspaceRoots: payloadRoots,
+          projectId: payloadProjectId,
+        });
         // create_session 等待期间用户可能已发送/清空输入，必须读取最新值，
         // 不能把 await 前的已发送文本带入新 session。
         const composerDraft = state.composerDraft || "";
@@ -757,6 +787,8 @@
         // Materialization committed: clear the draft directory; on
         // create_session failure (outer catch) it is kept for retry.
         state.draftWorkspacePath = null;
+        state.draftWorkspaceRoots = [];
+        state.draftProjectId = null;
         switchActiveTo(meta.id, { fresh: true });
         // 草稿态因首条消息/加卡等实质操作物化为 session 时，输入草稿也要
         // 跟随迁移；这不是用户主动切换到另一个已有会话。
@@ -780,6 +812,8 @@
             // retry must keep the user's explicit toggle.
             state.pendingDraftMultiAgent = true;
             state.draftWorkspacePath = boundWorkspace;
+            state.draftWorkspaceRoots = boundRoots;
+            state.draftProjectId = boundProjectId;
             state.pendingDraftMode = stagedDraftMode || null;
             state.modeState = {
               mode: stagedDraftMode || currentDraftModeState().mode,

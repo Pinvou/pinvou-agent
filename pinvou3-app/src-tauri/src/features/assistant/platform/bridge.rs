@@ -179,6 +179,11 @@ fn official_deepseek_model_name(model: &str) -> String {
 /// 此处 re-export 保持既有调用路径不变。
 pub use crate::features::sessions::{ExecutionRootResolver, SessionRoots};
 
+/// 会话钥匙串快照解析器闭包（创建时锁定的全量可访问根，§6）。注入理由同
+/// [`ExecutionRootResolver`]：bridge 够不到 SessionStore/AcpPool。
+pub type WorkspaceRootsResolver =
+    std::sync::Arc<dyn Fn(&str) -> Vec<std::path::PathBuf> + Send + Sync>;
+
 #[derive(Clone)]
 pub struct Pinvou3Bridge {
     pub prefs: UserPrefs,
@@ -213,6 +218,9 @@ pub struct Pinvou3Bridge {
     /// 项目绑定，所有会话都用会话私有目录。账本根（附件/审计/产物）不受其影响，
     /// 仍由 `SessionStore::session_roots` 的 `ledger` 字段统一决定。
     pub execution_root_resolver: Option<ExecutionRootResolver>,
+    /// 会话钥匙串快照解析器：创建会话时锁定的全量可访问根（空 = 单根语义）。
+    /// 与执行根解析器在同一处（组合根，AcpPool 就绪后）注入一次。
+    pub workspace_roots_resolver: Option<WorkspaceRootsResolver>,
     /// 原生代码会话判定（code_session=true，含临时与绑项目两种）。用于
     /// instructions 的 work/code 分支渲染与工具整形；lib.rs 与执行根解析器
     /// 共用 AcpPool 那份 SessionAgentStore 注入。
@@ -244,6 +252,10 @@ impl std::fmt::Debug for Pinvou3Bridge {
             .field(
                 "execution_root_resolver",
                 &self.execution_root_resolver.as_ref().map(|_| "Some(..)"),
+            )
+            .field(
+                "workspace_roots_resolver",
+                &self.workspace_roots_resolver.as_ref().map(|_| "Some(..)"),
             )
             .field(
                 "code_session_predicate",
@@ -366,6 +378,7 @@ impl Pinvou3Bridge {
             probed_output_tokens: None,
             probed_local_kind: None,
             execution_root_resolver: None,
+            workspace_roots_resolver: None,
             code_session_predicate: None,
             external_acp_session_predicate: None,
             image_analyze_always: false,
@@ -579,6 +592,21 @@ impl Pinvou3Bridge {
     /// is ready.
     pub fn set_execution_root_resolver(&mut self, resolver: ExecutionRootResolver) {
         self.execution_root_resolver = Some(resolver);
+    }
+
+    /// 注入钥匙串快照解析器；由 app 组合根在与执行根解析器同一处装配。
+    pub fn set_workspace_roots_resolver(&mut self, resolver: WorkspaceRootsResolver) {
+        self.workspace_roots_resolver = Some(resolver);
+    }
+
+    /// 创建会话时锁定的钥匙串快照（§6）：全量可访问根；无解析器注入或该会话
+    /// 无快照（旧会话/临时会话）时返回空——经底座归一后等价于 `workspace`，
+    /// 单根现状不变。
+    pub fn session_workspace_roots(&self, session_id: &str) -> Vec<std::path::PathBuf> {
+        self.workspace_roots_resolver
+            .as_ref()
+            .map(|resolver| resolver(session_id))
+            .unwrap_or_default()
     }
 
     /// 注入原生代码会话判定（与执行根解析器同一份 SessionAgentStore）。
@@ -1630,6 +1658,10 @@ impl Pinvou3Bridge {
             terminal_chrome_enabled,
             advisor_config,
             subagent_state_root,
+            // v0.9.12 workspace_roots foundation field: this stage only
+            // enumerates the default shape; the real per-session keychain is
+            // assigned in `build_engine_config_for_session_roots`.
+            workspace_roots: _,
         } = EngineConfig::default();
 
         // hook 有两条消费路径：turn_loop 从 EngineConfig.hook_executor 跑
@@ -1655,6 +1687,9 @@ impl Pinvou3Bridge {
             // pinvou3 覆盖
             model: self.model(),
             workspace: self.workspace.clone(),
+            // 编译收敛:空集合 = 仅主根(单根现状);多根钥匙串在
+            // `build_engine_config_for_session_roots` 里按会话赋值。
+            workspace_roots: Vec::new(),
             session_id: None,
             allow_shell: self.allow_shell(),
             trust_mode: true,
@@ -1919,6 +1954,9 @@ impl Pinvou3Bridge {
         cfg.workspace = roots.execution;
         cfg.session_id = Some(session_id.to_string());
         cfg.subagent_state_root = Some(roots.ledger);
+        // 钥匙串快照(§6):创建时锁定的全量根;空 = 单根(底座 normalize
+        // 会归约到 [workspace];cwd 优先去重由底座保证)。
+        cfg.workspace_roots = self.session_workspace_roots(session_id);
         cfg.instructions = self.session_instructions(session_id);
         // 技能发现根按会话指向组合目录（skill 双 scope 治理：目录内容 = 该会话
         // scope 的启用技能集）。spawn 前的物化由 EnginePool 负责；此处只注入路径。
@@ -2815,6 +2853,7 @@ mod tests {
             probed_output_tokens: None,
             probed_local_kind: None,
             execution_root_resolver: None,
+            workspace_roots_resolver: None,
             code_session_predicate: None,
             external_acp_session_predicate: None,
             image_analyze_always: false,
@@ -3605,6 +3644,7 @@ mod tests {
                     path: None,
                     ask_for_approval: codewhale_execpolicy::AskForApproval::Never,
                     sandbox_mode: None,
+                    workspace_roots: Vec::new(),
                 })
                 .unwrap()
         };
@@ -3656,6 +3696,7 @@ mod tests {
                     path: None,
                     ask_for_approval: codewhale_execpolicy::AskForApproval::Never,
                     sandbox_mode: None,
+                    workspace_roots: Vec::new(),
                 })
                 .unwrap()
         };
@@ -3715,6 +3756,7 @@ mod tests {
                     path: None,
                     ask_for_approval: codewhale_execpolicy::AskForApproval::Never,
                     sandbox_mode: None,
+                    workspace_roots: Vec::new(),
                 })
                 .unwrap()
         };
@@ -3899,6 +3941,7 @@ mod tests {
                     path: None,
                     ask_for_approval: codewhale_execpolicy::AskForApproval::Never,
                     sandbox_mode: None,
+                    workspace_roots: Vec::new(),
                 })
                 .unwrap()
         };
