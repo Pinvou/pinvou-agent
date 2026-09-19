@@ -519,7 +519,9 @@ fn unrecognized_output_value_falls_through_to_usage_error() {
     // The usage line enumerates every family; pin the prefix instead of the
     // whole enumeration so adding a family does not touch this test.
     assert!(
-        error.to_string().starts_with("usage: pinvou benchmark <command>"),
+        error
+            .to_string()
+            .starts_with("usage: pinvou benchmark <command>"),
         "{error}"
     );
 }

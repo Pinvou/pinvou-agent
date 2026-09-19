@@ -910,15 +910,16 @@ fn feedback_rejects_invalid_usage_with_exit_two() {
         vec!["pinvou", "feedback", "submit"],
         // Missing --title or --body-file must be usage errors naming the
         // flag; there is no --type on the swept request shape.
+        vec!["pinvou", "feedback", "submit", "--body-file", "/tmp/b.md"],
+        vec!["pinvou", "feedback", "submit", "--title", "t"],
         vec![
             "pinvou",
             "feedback",
             "submit",
+            "--title",
             "--body-file",
-            "/tmp/b.md",
+            "x",
         ],
-        vec!["pinvou", "feedback", "submit", "--title", "t"],
-        vec!["pinvou", "feedback", "submit", "--title", "--body-file", "x"],
         vec![
             "pinvou",
             "feedback",

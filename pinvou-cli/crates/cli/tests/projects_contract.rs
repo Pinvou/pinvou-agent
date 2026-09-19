@@ -341,7 +341,7 @@ fn projects_create_list_update_delete_round_trip_persists_the_store() {
     assert_eq!(value["id"], id);
     assert_eq!(value["action"], "deleted");
     // The payload carries only id/action: main's delete_project returns ()
-    // (the swept report struct), so there is no affected-session list. 
+    // (the swept report struct), so there is no affected-session list.
     assert!(
         !home.store_file().exists(),
         "the empty store must not keep a file"
