@@ -2062,6 +2062,10 @@ const NAV_PREFETCH = {
         const folder = Array.isArray(picked) ? picked[0] : picked;
         if (!folder) return;
         let materialized = false;
+        // An IPC-level rejection is neither an outcome nor an exclusion: the
+        // folder's exclusion status is unverified, so the excluded-folder
+        // panel (whose copy asserts the list) must not render for it.
+        let errored = false;
         if (bridge.projects && bridge.projects.ensureFolderProjects) {
           setPickerBusy(true);
           try {
@@ -2073,12 +2077,13 @@ const NAV_PREFETCH = {
             }
           } catch (error) {
             console.warn('ensure folder project failed', error);
+            errored = true;
             setSettingsToast(t.uiProjects.opFailed);
           } finally {
             setPickerBusy(false);
           }
         }
-        if (!materialized && bridge.projects) {
+        if (!materialized && !errored && bridge.projects) {
           // Exclusion list (§3): the backend skipped it → no outcome; the
           // picker says so honestly and still allows starting as a plain
           // folder (no projectId).
