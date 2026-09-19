@@ -3,7 +3,7 @@
 //! 职责边界——本模块只管「向 upstream 探一次模型健康 + 拉本地 vLLM `/metrics`」，
 //! 不涉及系统自指标采集（CPU/GPU/内存见 [`super::self_metrics`]）。
 //! 入口：[`active_model_snapshot`] / [`vllm_snapshot`] / [`snapshot_for_model_config`]。
-//! 对外类型：[`VllmSnapshot`] / [`VllmStatus`] / [`MonitorDiagnostic`]。
+//! 对外类型：[`VllmSnapshot`] / [`VllmStatus`]。
 
 use std::time::Duration;
 

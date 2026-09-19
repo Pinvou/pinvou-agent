@@ -1222,3 +1222,34 @@ pub fn render_smoke_markdown(
         analysis.findings().len()
     ))
 }
+
+#[cfg(test)]
+mod wire_contract_tests {
+    use super::*;
+
+    /// Pins the serde wire contract noted on [`FindingSource`]: finding JSON
+    /// emitted with `"source": "judge"` must still deserialize (round-trips
+    /// through on-disk reports), and the default stays `rule`.
+    #[test]
+    fn finding_source_judge_wire_value_still_deserializes() {
+        let finding: SmokeFinding = serde_json::from_str(
+            r#"{
+                "id": "f1",
+                "severity": "p1",
+                "case_id": null,
+                "title": "t",
+                "recommendation": "r",
+                "source": "judge"
+            }"#,
+        )
+        .expect("legacy judge source must still deserialize");
+        assert_eq!(finding.severity, FindingSeverity::P1);
+        assert_eq!(finding.source, FindingSource::Judge);
+
+        let without_source: SmokeFinding = serde_json::from_str(
+            r#"{ "id": "f2", "severity": "p0", "case_id": null, "title": "t", "recommendation": "r" }"#,
+        )
+        .expect("missing source must fall back to the default");
+        assert_eq!(without_source.source, FindingSource::Rule);
+    }
+}

@@ -435,9 +435,9 @@ pub async fn uninstall_marketplace_tool(
     pool: tauri::State<'_, crate::features::assistant::engine_pool::EnginePool>,
 ) -> Result<(), String> {
     uninstall_marketplace_tool_sync(&tool_id)?;
-    // 联动卸载的 companion 技能影响两个 scope 的启用集：重写在线会话组合目录
-    // （async 命令必须用 async 版：blocking 版的 blocking_lock 在 tokio runtime
-    // 线程上必 panic）。
+    // Companion-skill uninstalls affect the enabled sets of two scopes: rewrite
+    // the live session composition catalog. This is an async command, so it
+    // must await the async refresh.
     pool.refresh_live_sessions_skills().await;
     // 卸载包的 CLI/技能脚本移出 deny 规则集（M-6：uninstall 路径热刷）。
     pool.refresh_permission_rulesets().await;

@@ -7193,7 +7193,6 @@ async function scheduledDeletePreservesHistoryAndSessionBuffers() {
   harness.handlers.delete_scheduled_task = function () {
     return {
       id: "automation-delete",
-      deletedSessionIds: [],
     };
   };
   await bridge.scheduled.loadScheduledTasks();
@@ -7280,7 +7279,7 @@ async function scheduledRecentRunsIgnoreStaleAggregate() {
   };
   harness.handlers.list_scheduled_runs = function () { return staleRuns.promise; };
   harness.handlers.delete_scheduled_task = function () {
-    return { id: "automation-stale", deletedSessionIds: [] };
+    return { id: "automation-stale" };
   };
   await harness.bridge.scheduled.loadScheduledTasks();
   const loading = harness.bridge.scheduled.loadScheduledTaskRecentRuns();
@@ -7447,10 +7446,6 @@ async function scheduledSessionPersistenceBehavior() {
   assert.ok(
     !scheduledCalls.some(function (call) { return call.cmd === "save_session_artifacts"; }),
     "scheduled chat completion and stop must never replace backend-owned artifact paths"
-  );
-  assert.ok(
-    !scheduledCalls.some(function (call) { return call.cmd === "save_session_messages"; }),
-    "scheduled transcripts are backend-owned"
   );
   assert.ok(
     scheduledCalls.some(function (call) { return call.cmd === "rename_session"; }),

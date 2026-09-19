@@ -846,7 +846,7 @@ mod tests {
 
     // ── 回退反悔（rewind_undo_state / undo_last_rewind 编排件）──────────────
 
-    use deepseek_tui::models::ContentBlock;
+    use deepseek_tui::models::{ContentBlock, Message};
 
     fn user_msg(text: &str) -> Message {
         Message {

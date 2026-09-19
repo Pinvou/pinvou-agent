@@ -418,7 +418,6 @@ command_protocol!(
         "rename_session",
         "set_session_pinned",
         "set_session_archived",
-        "save_session_messages",
         "save_session_artifacts",
         "save_session_pinvou_scene_events",
         "get_session_pinvou_scene_events",

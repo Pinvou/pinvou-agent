@@ -230,8 +230,9 @@ for (const command of [
 // cleanup: connector toggles go through set_disabled_connectors.
 // This list must stay in sync with the connector registration surface in lib.rs.
 // The retired *_status commands left the frontend (ToolStoreView now uses
-// *_skills_state / bundle_readiness); they were dropped from the allowlist and
-// are reverse-pinned here so they cannot quietly return.
+// *_skills_state / bundle_readiness); they were never web-allowed (not in the
+// allowlist on main either) and are reverse-pinned here so they cannot
+// quietly return.
 for (const command of [
   'feishu_status',
   'wecom_status',

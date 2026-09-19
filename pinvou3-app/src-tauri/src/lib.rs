@@ -1321,7 +1321,6 @@ pub fn run() {
             commands::scheduled::run_scheduled_task_now,
             commands::scheduled::mark_scheduled_run_viewed,
             commands::scheduled::scheduled_task_chat_prompt,
-            commands::sessions::save_session_messages,
             commands::sessions::save_session_artifacts,
             commands::sessions::save_session_pinvou_scene_events,
             commands::sessions::get_session_pinvou_scene_events,

@@ -1388,6 +1388,10 @@ impl Store {
         self.list_devices_page(None, 0)
     }
 
+    /// Test-only oracle for the device-grant queries below; the production
+    /// consumer (`KnowledgeService::device_count`) was removed with the
+    /// dead-code sweep and no command exposes a device count anymore.
+    #[cfg(test)]
     pub fn device_count(&self) -> rusqlite::Result<i64> {
         self.with_read_connection(|connection| {
             connection.query_row("SELECT COUNT(*) FROM devices WHERE revoked=0", [], |row| {
