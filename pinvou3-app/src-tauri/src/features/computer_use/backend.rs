@@ -460,8 +460,12 @@ impl BackendInner {
                 };
                 let (tx, rx) = channel::<BackendRequest>();
                 let (startup_tx, startup_rx) = channel::<Result<(), ComputerUseError>>();
+                // The name must come from WORKER_THREAD_NAME: the process panic
+                // hook redacts payloads only on the thread with this exact
+                // name, so a one-sided rename here would silently disable
+                // payload redaction for every worker panic.
                 let thread = match std::thread::Builder::new()
-                    .name("computer-use-backend".to_string())
+                    .name(WORKER_THREAD_NAME.to_string())
                     .spawn(move || worker_loop(factory, rx, startup_tx))
                 {
                     Ok(thread) => thread,
@@ -590,9 +594,27 @@ impl BackendInner {
                 "another computer use request is still in flight",
             ));
         }
-        let result = self.request_inner(kind, false);
-        self.in_flight.store(false, Ordering::SeqCst);
-        result
+        // Panic-safe release: `request_inner` can unwind (a panic in a
+        // channel/lock op on this caller thread), and the previous bare
+        // post-call store let such a panic latch `in_flight` at true
+        // forever — every later request of the session would then fail fast
+        // with "another computer use request is still in flight" until
+        // process exit. The guard stores false on drop, covering both the
+        // normal path and an unwind; the success path relies on the guard
+        // alone (an additional explicit store of false would be harmless —
+        // the store is idempotent — but redundant).
+        struct ReleaseInFlight<'a> {
+            flag: &'a AtomicBool,
+        }
+        impl Drop for ReleaseInFlight<'_> {
+            fn drop(&mut self) {
+                self.flag.store(false, Ordering::SeqCst);
+            }
+        }
+        let _release_in_flight = ReleaseInFlight {
+            flag: &self.in_flight,
+        };
+        self.request_inner(kind, false)
     }
 
     fn request_inner(
@@ -920,6 +942,16 @@ impl BackendHandle {
             None => Ok(()),
         }
     }
+
+    /// Whether the backend has never been started: the state machine is
+    /// still `Pending`, so the factory never ran, no worker thread exists,
+    /// and no request was ever sent — nothing was injected (no button can
+    /// be held) and no persistent OS grant was ever obtained. Cheap: one
+    /// state-mutex lock, no backend construction. Used by
+    /// [`emergency_cleanup`]'s fast path.
+    fn is_never_started(&self) -> bool {
+        matches!(&*self.inner.state.lock(), WorkerState::Pending(_))
+    }
 }
 
 /// Session → backend-handle registry. Registered when a tool is constructed, unregistered on
@@ -1043,12 +1075,42 @@ impl BackendRegistry {
 /// physical left button first, then close the persistent OS-level grant.
 /// Runs on detached threads (see [`BackendRegistry::emergency_release`]);
 /// errors are only logged with the existing `eprintln!` convention.
+///
+/// Pending-state fast path: a handle whose backend was never started is
+/// skipped entirely. Nothing was ever injected (no button can be held) and
+/// no OS grant exists, so running the cleanup would only make
+/// `ensure_sender` lazily construct the full platform backend
+/// (xcap/enigo/portal, possibly OS permission work) just to issue three
+/// no-op mouse-ups — each holding the state mutex for up to
+/// BACKEND_CALL_TIMEOUT while the construction runs. The check lives at
+/// this shared funnel point (every spawn site — per-session revoke, tool
+/// Drop, global stop — routes through here), so all of them get the fast
+/// path; the failure direction of the inherent race is safe: if a request
+/// starts the backend concurrently, the handle is no longer Pending by the
+/// time this reads it and the cleanup runs.
 fn emergency_cleanup(handle: BackendHandle) {
-    if let Err(error) = handle.emergency_mouse_up() {
-        eprintln!("[computer_use] emergency_mouse_up failed: {error}");
+    if handle.is_never_started() {
+        return;
     }
-    if let Err(error) = handle.release_os_grant() {
-        eprintln!("[computer_use] release_os_grant failed: {error}");
+    // A panic on this bare detached thread must not silently strand a held
+    // button / portal grant, so the body runs inside catch_unwind and the
+    // caught payload is logged with the same input-safe summary the worker
+    // uses. (The redacting process hook covers only the worker thread name;
+    // on this thread the default hook runs first — the summary below keeps
+    // our own log line payload-free regardless.)
+    let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+        if let Err(error) = handle.emergency_mouse_up() {
+            eprintln!("[computer_use] emergency_mouse_up failed: {error}");
+        }
+        if let Err(error) = handle.release_os_grant() {
+            eprintln!("[computer_use] release_os_grant failed: {error}");
+        }
+    }));
+    if let Err(panic) = result {
+        eprintln!(
+            "[computer_use] emergency cleanup panicked: {}",
+            panic_payload_summary(&panic)
+        );
     }
 }
 
@@ -1714,7 +1776,11 @@ mod tests {
     fn emergency_release_keeps_registration_and_cleans_up() {
         let state = Arc::new(Mutex::new(ProbeState::default()));
         let registry = BackendRegistry::default();
-        registry.insert("s-revoke", probe_handle(&state));
+        let handle = probe_handle(&state);
+        registry.insert("s-revoke", handle.clone());
+        // Start the backend first: a never-started (Pending) handle takes
+        // emergency_cleanup's fast path and would skip the cleanup entirely.
+        assert!(handle.capabilities().is_ok());
 
         registry.emergency_release("s-revoke");
         assert!(
@@ -1763,6 +1829,9 @@ mod tests {
         let registry = BackendRegistry::default();
         let handle = probe_handle(&state);
         registry.insert("s-drop", handle.clone());
+        // Start the backend first: a never-started (Pending) handle takes
+        // emergency_cleanup's fast path and would skip the cleanup entirely.
+        assert!(handle.capabilities().is_ok());
 
         registry.release_and_unregister("s-drop", &handle);
         assert!(
@@ -1793,6 +1862,10 @@ mod tests {
         // The new tool registered before the old tool dropped: the entry is
         // now the new handle.
         registry.insert("s-rereg", new_handle.clone());
+        // Start the old backend first: a never-started (Pending) handle
+        // takes emergency_cleanup's fast path and would skip the cleanup
+        // the assertions below wait for.
+        assert!(old_handle.capabilities().is_ok());
 
         registry.release_and_unregister("s-rereg", &old_handle);
         assert!(
@@ -1819,7 +1892,11 @@ mod tests {
     fn emergency_release_all_reaches_a_revoked_then_re_granted_session() {
         let state = Arc::new(Mutex::new(ProbeState::default()));
         let registry = BackendRegistry::default();
-        registry.insert("s-regrant", probe_handle(&state));
+        let handle = probe_handle(&state);
+        registry.insert("s-regrant", handle.clone());
+        // Start the backend first: a never-started (Pending) handle takes
+        // emergency_cleanup's fast path and would skip the cleanup entirely.
+        assert!(handle.capabilities().is_ok());
 
         registry.emergency_release("s-regrant");
         wait_for_cleanup(&state, |s| s.releases > 0);
@@ -1831,6 +1908,42 @@ mod tests {
         assert_eq!(
             state.releases, 2,
             "global stop must reach the re-granted session"
+        );
+    }
+
+    /// Pending-state fast path: emergency cleanup for a handle whose
+    /// backend was never started must skip the cleanup entirely — nothing
+    /// was ever injected, so there is nothing to release, and running it
+    /// would only lazily construct the platform backend. The factory probe
+    /// proves the factory never ran; a subsequent real request must still
+    /// start the backend normally. Called through the `emergency_cleanup`
+    /// funnel synchronously (every registry spawn site routes through it),
+    /// so the skip is observed deterministically — no detached thread, no
+    /// polling.
+    #[test]
+    fn emergency_cleanup_skips_a_never_started_backend() {
+        let constructed = Arc::new(AtomicUsize::new(0));
+        let counter = Arc::clone(&constructed);
+        let handle = BackendHandle::lazy(move || {
+            counter.fetch_add(1, Ordering::SeqCst);
+            Ok(Box::new(MockBackend { clicks: 0, ups: 0 }) as Box<dyn ComputerUseBackend>)
+        });
+        emergency_cleanup(handle.clone());
+        assert_eq!(
+            constructed.load(Ordering::SeqCst),
+            0,
+            "cleanup for a never-started backend must not construct the backend"
+        );
+        // The factory is untouched: a subsequent real request starts the
+        // backend through the normal lazy path.
+        assert!(
+            handle.capabilities().is_ok(),
+            "the skipped cleanup must leave the handle usable"
+        );
+        assert_eq!(
+            constructed.load(Ordering::SeqCst),
+            1,
+            "the real request must start the backend exactly once"
         );
     }
 

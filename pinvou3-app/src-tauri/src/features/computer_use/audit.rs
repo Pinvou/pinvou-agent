@@ -10,7 +10,10 @@
 //!
 //! Records land in `<pinvou3 data dir>/computer-use/` via the platform
 //! private-file base: 0700 directory + 0600 file (O_APPEND create, no umask
-//! exposure window) + `sync_data` per record so a crash cannot tear the
+//! exposure window), one `write_all` per line (line atomicity comes from
+//! O_APPEND plus that single write), and `sync_data` per record so a crash
+//! cannot LOSE an already-written record — fsync does not make the line
+//! indivisible: a partial write mid-line (e.g. ENOSPC) can still tear the
 //! last JSONL line. Append failures are fail-open: the log is
 //! informational, so the caller warns and continues — an audit write error
 //! never blocks an action.
@@ -182,8 +185,11 @@ impl AuditLog {
         // exposure window).
         let mut file = crate::platform::filesystem::open_private_append_file(&self.path)?;
         file.write_all(line.as_bytes())?;
-        // fsync each record: a crash must not tear the last JSONL line. One
-        // fsync per record is acceptable at audit's per-tool-call frequency.
+        // fsync each record: a crash must not LOSE an already-written
+        // record. Line atomicity comes from O_APPEND plus the single
+        // write_all above, not from fsync — a partial write mid-line
+        // (e.g. ENOSPC) can still tear the last JSONL line. One fsync per
+        // record is acceptable at audit's per-tool-call frequency.
         file.sync_data()
     }
 }

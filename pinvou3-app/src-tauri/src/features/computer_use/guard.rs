@@ -217,13 +217,6 @@ pub enum GrantOutcome {
     Stopped,
 }
 
-/// A session grant records only "whether this session holds a grant": the
-/// grant is bound to the tool instance's lifetime — it ends on revoke / stop
-/// / master-switch off, or when the engine reclaims the tool (the tool's
-/// `Drop` revokes), which includes the engine pool's idle reaper silently
-/// reaping an idle engine (the grant then lapses without any user action and
-/// the next input attempt reads `GrantRequired`).
-
 /// A T3 confirmation (pending) waiting for the user's decision. The approval
 /// token is minted by the `computer_use_confirm` Tauri command via
 /// [`ComputerUseShared::mint_confirmation`]; unanswered past
@@ -293,9 +286,13 @@ struct ConsentMaps {
 pub struct ComputerUseShared {
     enabled: AtomicBool,
     stop: AtomicBool,
-    /// The set of session ids holding a session grant (grant lifetime: see
-    /// the note at the top of this module — bound to the tool instance, so
-    /// engine idle reclaim also ends it).
+    /// The set of session ids holding a session grant. A session grant
+    /// records only "whether this session holds a grant": the grant is bound
+    /// to the tool instance's lifetime — it ends on revoke / stop /
+    /// master-switch off, or when the engine reclaims the tool (the tool's
+    /// `Drop` revokes), which includes the engine pool's idle reaper
+    /// silently reaping an idle engine (the grant then lapses without any
+    /// user action and the next input attempt reads `GrantRequired`).
     sessions: Mutex<HashSet<String>>,
     /// The physical mouse/keyboard is a globally exclusive resource, but the
     /// backend has one worker per session — this process-level lock
@@ -350,9 +347,29 @@ impl ComputerUseShared {
     }
 
     /// The settings toggle (called by the integration layer's settings
-    /// command).
+    /// command). The consent sweeps are part of the flip itself, not a
+    /// caller duty: consent state from the off period must not survive a
+    /// re-enable and consent state from the stopped period must not survive
+    /// the resume, so `set_enabled(false)` performs the full
+    /// [`Self::revoke_all_sessions`] sweep and `set_enabled(true)`
+    /// performs the full [`Self::reset_stop`] sweep — no future caller can
+    /// flip the flag without the sweep (previously the invariant was
+    /// enforced only by the command remembering to pair the calls). The
+    /// flip preserves the swept methods' semantics: disabling does not
+    /// raise the stop flag and enabling restores no grants. What the guard
+    /// does not own stays with the caller — the backend OS-grant
+    /// termination on disable.
     pub fn set_enabled(&self, enabled: bool) {
+        // Store first, sweep second (the order the command previously
+        // used): a grant racing the disable slips in only before the store
+        // and is then removed by the sweep; after the store,
+        // `grant_session` refuses under the sessions lock.
         self.enabled.store(enabled, Ordering::SeqCst);
+        if enabled {
+            self.reset_stop();
+        } else {
+            self.revoke_all_sessions();
+        }
     }
 
     pub fn is_stopped(&self) -> bool {
@@ -426,7 +443,9 @@ impl ComputerUseShared {
     /// stop and the re-enable: a pending minted during the stopped window
     /// would otherwise become mintable the moment the stop is lifted —
     /// consent state from the stopped period must not survive the resume,
-    /// same rule as `revoke_all_sessions` for the off period.
+    /// same rule as `revoke_all_sessions` for the off period. Also invoked
+    /// by [`Self::set_enabled`] on re-enable, so the sweep cannot be
+    /// skipped by a flag-only caller.
     pub fn reset_stop(&self) {
         self.stop.store(false, Ordering::SeqCst);
         self.grant_requests.lock().clear();
@@ -442,6 +461,8 @@ impl ComputerUseShared {
     /// should remain after re-enabling (the `computer_use_set_enabled(false)`
     /// call). Consent state from the off period must not survive a re-enable:
     /// the old grant and old approval tokens would otherwise remain valid.
+    /// Also invoked by [`Self::set_enabled`] on disable, so the sweep cannot
+    /// be skipped by a flag-only caller.
     pub fn revoke_all_sessions(&self) {
         self.sessions.lock().clear();
         self.grant_requests.lock().clear();
@@ -1234,6 +1255,56 @@ mod tests {
         // observe actions still work.
         assert!(!shared.is_stopped());
         assert!(shared.check_readonly().is_ok());
+    }
+
+    /// The off-period invariant is self-enforcing: the sweeps live inside
+    /// `set_enabled`, so a caller that only flips the flag still gets them
+    /// (previously the invariant depended on the command pairing
+    /// `set_enabled(false)` with `revoke_all_sessions` and
+    /// `set_enabled(true)` with `reset_stop`). A grant, a pending and a
+    /// minted token from before the disable are gone after the disable AND
+    /// stay gone after a bare re-enable.
+    #[test]
+    fn set_enabled_itself_sweeps_consent_across_a_disable_enable_cycle() {
+        let shared = ComputerUseShared::new();
+        shared.set_enabled(true);
+        assert_eq!(shared.grant_session("s1"), GrantOutcome::Granted);
+        let pending_id = new_pending(&shared, "s1", "left click");
+        let token_id = new_pending(&shared, "s2", "type 3 characters");
+        assert!(shared.mint_confirmation(&token_id));
+
+        // Disable: the guard sweeps without any explicit revoke call.
+        shared.set_enabled(false);
+        assert!(!shared.has_active_grant("s1"));
+        assert!(shared.pending_confirmation(&pending_id).is_none());
+        assert_eq!(
+            take(&shared, &token_id, "s2", "type 3 characters"),
+            ConfirmationCheck::Unknown,
+            "a flag-only disable must wipe minted approval tokens"
+        );
+
+        // Bare re-enable: the off-period artifacts must not resurrect.
+        shared.set_enabled(true);
+        assert!(
+            !shared.has_active_grant("s1"),
+            "a grant from before the off period must not survive re-enable"
+        );
+        assert!(shared.pending_confirmation(&pending_id).is_none());
+        assert_eq!(
+            take(&shared, &token_id, "s2", "type 3 characters"),
+            ConfirmationCheck::Unknown
+        );
+
+        // The enable-side sweep (reset_stop semantics) rides on the same
+        // flip: consent created in the stopped window does not survive
+        // re-enable even when the caller never calls reset_stop.
+        shared.stop_all();
+        let stopped_window = new_pending(&shared, "s3", "left click");
+        shared.set_enabled(true);
+        assert!(
+            shared.pending_confirmation(&stopped_window).is_none(),
+            "re-enabling must sweep consent created in the stopped window"
+        );
     }
 
     #[test]
