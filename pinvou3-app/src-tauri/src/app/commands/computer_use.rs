@@ -77,7 +77,6 @@ pub struct ComputerUseStatus {
     /// Server truth for the consent UI: whether this session's grant
     /// request is still unanswered. Lets every window collapse a grant
     /// dialog resolved elsewhere and reconstruct it after a reload.
-    #[serde(default)]
     pub pending_grant: bool,
     /// The newest unexpired `confirm_required` payload for this session,
     /// exactly as broadcast (null when nothing is pending — the key is
@@ -221,11 +220,14 @@ pub fn computer_use_deny(
 
 /// Set the master toggle. Persist to disk first, then flip the in-memory
 /// flag (same order as set_voice_shortcut_enabled): if the write fails the
-/// in-memory state must not diverge from settings.json. Re-enabling clears
-/// the stop flag (the guard's established semantics) but restores no
-/// session grants; disabling revokes all session grants and clears pending
-/// confirmations — otherwise old grants and old approval tokens would
-/// survive a disable/enable cycle. Finally, hot-refresh the
+/// in-memory state must not diverge from settings.json. The consent sweeps
+/// ride inside the guard's `set_enabled` (re-enable resets the stop flag
+/// and sweeps consent created in the stopped window; disable revokes all
+/// session grants and clears pending confirmations and minted tokens —
+/// otherwise old grants and old approval tokens would survive a
+/// disable/enable cycle), so this command only adds what the guard does
+/// not own: the backend OS-grant termination on disable. Finally,
+/// hot-refresh the
 /// disallowed_tools: the tool_policy closure only re-evaluates when
 /// refreshed; without an explicit refresh the catalog of already-running
 /// engines would lag until some unrelated policy refresh (same established
@@ -252,13 +254,16 @@ pub async fn computer_use_set_enabled(
         prefs.computer_use.enabled = enabled;
         Ok(())
     })?;
+    // set_enabled itself performs the consent sweeps (re-enable: reset_stop
+    // semantics; disable: revoke_all_sessions semantics — see guard.rs), so
+    // the explicit reset_stop/revoke_all_sessions calls the command used to
+    // pair with the flip are gone: no caller can flip the flag without the
+    // sweep anymore.
     shared.set_enabled(enabled);
-    if enabled {
-        shared.reset_stop();
-    } else {
-        shared.revoke_all_sessions();
+    if !enabled {
         // Master toggle off: terminate every backend's persistent OS-level
-        // grant as well (detached threads).
+        // grant as well (detached threads). Stays in the command: the guard
+        // does not own the backend registry.
         // Emergency variant: also unpress any physically held left button.
         shared.backends.emergency_release_all();
     }
@@ -319,7 +324,9 @@ mod tests {
             })
         );
         // A served pending_confirm is exactly the confirm_required event
-        // payload; a None one is omitted so old consumers see no new key.
+        // payload; None still serializes as a PRESENT null key (asserted
+        // below), so consumers can tell "server says none" apart from an
+        // older backend that predates the field.
         let no_confirm = ComputerUseStatus {
             pending_grant: false,
             pending_confirm: None,
