@@ -279,7 +279,17 @@ fn run_pw_loop(
                         let size = info.size();
                         shared.negotiated = Some((size.width, size.height));
                     }
-                    Err(error) => shared.last_state = Some(error),
+                    Err(error) => {
+                        // Mid-stream re-negotiation to a non-BGRx format must
+                        // also drop the stale BGRx-era size: keeping it would
+                        // let `process` keep converting new-format buffers as
+                        // BGRx — exactly the wrong-color failure this
+                        // fail-closed validation exists to prevent. Clearing
+                        // makes subsequent frames skip conversion (the
+                        // `negotiated` guard) and the error surface.
+                        shared.last_state = Some(error);
+                        shared.negotiated = None;
+                    }
                 }
             }
         })
