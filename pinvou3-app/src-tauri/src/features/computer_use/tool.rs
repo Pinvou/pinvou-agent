@@ -8,9 +8,11 @@
 //! - Every screenshot generates a new ScaleMap stored in session state; a
 //!   coordinate-carrying action without a ScaleMap captures one automatically
 //!   first.
-//! - After input-class and scroll actions, wait [`POST_ACTION_SETTLE_MS`],
-//!   take a fresh screenshot and attach it, so the model always sees the
-//!   latest state.
+//! - After an action that changes screen content, wait
+//!   [`POST_ACTION_SETTLE_MS`], take a fresh screenshot and attach it, so the
+//!   model always sees the latest state; which actions attach one is derived
+//!   from [`ComputerUseAction::attaches_screenshot`] (bare pointer moves do
+//!   not).
 //! - Consent gating ([`ComputerUseShared`]) is checked before every
 //!   injection; a target hitting the consequential denylist or a password
 //!   field must be confirmed by the user (a single-use token bound to the
@@ -899,6 +901,22 @@ fn requires_t3_check(action: &ComputerUseAction) -> bool {
         )
 }
 
+/// T3 actions whose screening resolves the target through a SCREEN POINT
+/// (element_at_point / cursor mapping): those need the session's ScaleMap
+/// even when the action itself carries no coordinates. Keyboard actions
+/// (type/key/hold_key) screen through the FOCUSED element only, so they must
+/// not inherit a capture dependency: a broken capture path (e.g. macOS
+/// Accessibility granted without Screen Recording) must not stop typing.
+fn t3_screening_needs_scale_map(action: &ComputerUseAction) -> bool {
+    matches!(
+        action,
+        ComputerUseAction::Click { .. }
+            | ComputerUseAction::MouseDown { .. }
+            | ComputerUseAction::MouseUp { .. }
+            | ComputerUseAction::Drag { .. }
+    )
+}
+
 /// Whether the full typed text may ride the confirm event
 /// (`type_preview_full`), or `None` when it must not. Included ONLY when:
 /// - the action is `Type` (other actions have no typed text),
@@ -987,9 +1005,17 @@ struct ConfirmActionDetails {
     /// for non-typing actions and for masked (secure) targets, where the
     /// masking contract — not the length — is why there is no preview.
     text_preview_truncated: bool,
-    /// The chord string (key/hold_key) for the localized confirm line.
+    /// The chord string (key/hold_key) for the localized confirm line. On
+    /// masked (secure) targets only the named keys survive here — character
+    /// keys are typed content, exactly what the masking contract must never
+    /// ride the confirm payload or the get_status replay with.
     #[serde(skip_serializing_if = "Option::is_none")]
     chord: Option<String>,
+    /// Number of masked character keys (key/hold_key, secure targets only):
+    /// the dialog renders "N masked characters" from the localized templates
+    /// — the same count-only vocabulary the summary and the audit use.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    chord_masked_chars: Option<usize>,
     /// Hold duration in ms (hold_key).
     #[serde(skip_serializing_if = "Option::is_none")]
     hold_ms: Option<u64>,
@@ -1018,6 +1044,7 @@ impl ConfirmActionDetails {
             text_preview: preview.map(str::to_string),
             text_preview_truncated: false,
             chord: None,
+            chord_masked_chars: None,
             hold_ms: None,
         };
         match action {
@@ -1057,9 +1084,29 @@ impl ConfirmActionDetails {
                 keys, chord: text, ..
             } => {
                 // The localized chord/hold lines render the chord string (and
-                // hold duration); the raw chord never contains typed content
-                // beyond Char keys, which the summary already counts.
-                details.chord = Some(text.clone());
+                // hold duration). Character keys ARE typed content: on a
+                // masked (secure) target the raw chord must not reach the
+                // dialog or the event/status stream (a password can be
+                // spelled in chunks of up to MAX_KEY_CHORD_TOKENS chars), so
+                // the payload degrades to named keys plus a masked-character
+                // count — the same count-only vocabulary as the summary and
+                // the audit.
+                let char_keys = keys
+                    .iter()
+                    .filter(|key| matches!(key, Key::Char(_)))
+                    .count();
+                if masked_target && char_keys > 0 {
+                    let named: Vec<String> = keys
+                        .iter()
+                        .filter_map(|key| {
+                            (!matches!(key, Key::Char(_))).then(|| key.canonical_name())
+                        })
+                        .collect();
+                    details.chord = (!named.is_empty()).then(|| named.join(" + "));
+                    details.chord_masked_chars = Some(char_keys);
+                } else {
+                    details.chord = Some(text.clone());
+                }
                 if let ComputerUseAction::HoldKey { ms, .. } = action {
                     details.hold_ms = Some(*ms);
                 }
@@ -1067,12 +1114,8 @@ impl ConfirmActionDetails {
                 // audit redaction: only character-carrying chords disclose
                 // (a count of) typed content.
                 if is_typed_text_chord(keys) {
-                    let count = keys
-                        .iter()
-                        .filter(|key| matches!(key, Key::Char(_)))
-                        .count();
-                    details.text_length = Some(count);
-                    details.text_preview_truncated = !masked_target && count > 4096;
+                    details.text_length = Some(char_keys);
+                    details.text_preview_truncated = !masked_target && char_keys > 4096;
                 }
             }
             _ => {}
@@ -1209,10 +1252,12 @@ fn run(parts: Parts, parsed: ParsedCall, workspace: PathBuf) -> ToolResult {
             .map_err(|rejection| rejection.message())?;
 
         // Coordinate-carrying actions auto-capture first when there is no
-        // ScaleMap (session's first); T3 actions need the map too — the
-        // screening point's coordinate conversion and cursor mapping both
-        // depend on it.
-        if (action.needs_scale_map() || requires_t3_check(&action))
+        // ScaleMap (session's first); point-screened T3 actions need the map
+        // too — the screening point's coordinate conversion and cursor
+        // mapping both depend on it. Keyboard T3 actions screen through the
+        // focused element only, so they proceed without a map and must not
+        // hard-fail when capture is unavailable.
+        if (action.needs_scale_map() || t3_screening_needs_scale_map(&action))
             && parts.state.lock().last_map.is_none()
         {
             let auto = capture_and_store(&parts, &workspace).map_err(|e| backend_error_text(&e))?;
@@ -1332,7 +1377,7 @@ fn run(parts: Parts, parsed: ParsedCall, workspace: PathBuf) -> ToolResult {
                             {
                                 return Err(rejection.message());
                             }
-                            return Err(request_confirmation(
+                            let mut blocked = request_confirmation(
                                 &parts,
                                 &action,
                                 &summary,
@@ -1341,7 +1386,16 @@ fn run(parts: Parts, parsed: ParsedCall, workspace: PathBuf) -> ToolResult {
                                 type_preview_full.clone(),
                                 secure_type_target,
                                 binding,
-                            ));
+                            );
+                            // Warnings ride the blocked error too: the
+                            // auto-captured screenshot was persisted and
+                            // audited, but the success path that would attach
+                            // it never runs on a blocked action (the same gap
+                            // the drag failure path works around).
+                            for warning in &warnings {
+                                blocked.push_str(&format!("\nwarning: {warning}"));
+                            }
+                            return Err(blocked);
                         }
                     }
                 }
@@ -1628,9 +1682,12 @@ fn execute_action(
     // mint/spend, but a stop/disable/revoke landing after that point — or a
     // request registering with the backend worker after the stop latched the
     // cancel registry — would otherwise still inject, landing AFTER the
-    // emergency releases that the same stop issued. Re-verify immediately
-    // before the injecting calls; Observe actions never touch hardware and
-    // skip this.
+    // emergency releases that the same stop issued. This gates the first
+    // injecting request; composite actions that inject through a second
+    // backend request (a coordinate click/scroll: move_to, then the
+    // click/scroll) re-verify between the two, because a stop landing in
+    // that gap cancels only the finished move and this gate is stale by
+    // then. Observe actions never touch hardware and skip this.
     if action.class() == ActionClass::Input {
         if let Err(rejection) = parts.shared.verify_input_action(&parts.session_id) {
             return Err(ComputerUseError::failed(rejection.message()));
@@ -1748,6 +1805,14 @@ fn execute_action(
                     return Err(ComputerUseError::failed("missing scroll target"));
                 };
                 backend.move_to(ix, iy)?;
+                // Second injection request of a composite action: once
+                // move_to's request completed, the entry gate above is stale
+                // and the scroll request below would not inherit a stop that
+                // landed in between (its cancel flag registers only now).
+                // Re-verify so a post-stop scroll cannot inject.
+                if let Err(rejection) = parts.shared.verify_input_action(&parts.session_id) {
+                    return Err(ComputerUseError::failed(rejection.message()));
+                }
             }
             backend.scroll(*direction, *amount)?;
             Ok(format!(
@@ -1768,8 +1833,25 @@ fn execute_action(
                     return Err(ComputerUseError::failed("missing click target"));
                 };
                 backend.move_to(ix, iy)?;
+                // Second injection request of a composite action: once
+                // move_to's request completed, the entry gate above is stale
+                // and the click request below would not inherit a stop that
+                // landed in between (its cancel flag registers only now).
+                // Re-verify so a post-stop click cannot land after the
+                // stop's emergency releases.
+                if let Err(rejection) = parts.shared.verify_input_action(&parts.session_id) {
+                    return Err(ComputerUseError::failed(rejection.message()));
+                }
             }
             backend.click(*button, *count)?;
+            // A click completes press+release inside the backend: like drag,
+            // it leaves no button physically held — clear the
+            // fallback-release flag so a later failed drag never "releases" a
+            // button this tool did not hold (a left_click after
+            // left_mouse_down used to leave the flag latched).
+            if *button == MouseButton::Left {
+                parts.state.lock().mouse_buttons_held = false;
+            }
             let verb = match count {
                 2 => "double-",
                 3 => "triple-",

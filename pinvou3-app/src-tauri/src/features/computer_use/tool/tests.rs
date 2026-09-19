@@ -107,6 +107,15 @@ struct MockState {
     /// answering — drives the last-moment re-check pin (a revoke landing
     /// mid-screening must abort before injection).
     revoke_grant_via: Option<Arc<ComputerUseShared>>,
+    /// When set, move_to latches the emergency stop before answering —
+    /// drives the between-injections pin: a stop landing after the move_to
+    /// request of a coordinate click must abort the second injection (the
+    /// click request registers a fresh cancel flag that cannot inherit the
+    /// stop).
+    stop_via_move_to: Option<Arc<ComputerUseShared>>,
+    /// Revoke flavor of the between-injections pin: move_to revokes the
+    /// session grant before answering (drives the scroll-side re-check).
+    revoke_via_move_to: Option<Arc<ComputerUseShared>>,
     moved_to: Vec<(i32, i32)>,
     clicked: Vec<(MouseButton, u8)>,
     /// All five injection surfaces are recorded — the "NOT executed"
@@ -122,6 +131,10 @@ struct MockState {
     /// Number of times release_os_grant was called: revoke/stop must
     /// trigger the backend to close its persistent OS-level grant.
     released: u64,
+    /// Set when release_os_grant ran before all three physical releases —
+    /// the deterministic ordering pin for the emergency cleanup contract
+    /// (button releases strictly before the OS-grant close).
+    released_before_up: bool,
     /// When set, drag returns Err (injected drag backend failure, verifying
     /// the button-release safety net after a failure).
     drag_error: bool,
@@ -152,6 +165,9 @@ impl Default for MockState {
             screenshot_cap: true,
             ui_tree_cap: true,
             revoke_grant_via: None,
+            stop_via_move_to: None,
+            revoke_via_move_to: None,
+            released_before_up: false,
             moved_to: Vec::new(),
             clicked: Vec::new(),
             downed: Vec::new(),
@@ -238,6 +254,16 @@ impl ComputerUseBackend for MockBackend {
     }
 
     fn move_to(&mut self, x: i32, y: i32) -> Result<(), ComputerUseError> {
+        // Between-injections hooks: the stop/revoke lands after the move
+        // request completed but before the second request (click / scroll)
+        // registers — exactly the window the re-verify between the two
+        // injections of a composite action must catch.
+        if let Some(shared) = self.state.lock().stop_via_move_to.clone() {
+            shared.stop_all();
+        }
+        if let Some(shared) = self.state.lock().revoke_via_move_to.clone() {
+            shared.revoke_session("s-test");
+        }
         self.state.lock().moved_to.push((x, y));
         Ok(())
     }
@@ -331,7 +357,16 @@ impl ComputerUseBackend for MockBackend {
     }
 
     fn release_os_grant(&mut self) -> Result<(), ComputerUseError> {
-        self.state.lock().released += 1;
+        let mut state = self.state.lock();
+        // Deterministic ordering pin: emergency_cleanup releases the three
+        // buttons BEFORE closing the OS-level grant — a grant close observed
+        // with any physical release still pending means the ordering broke
+        // (polling both counters cannot pin this; observing inside the mock
+        // can).
+        if state.upped.len() < 3 {
+            state.released_before_up = true;
+        }
+        state.released += 1;
         Ok(())
     }
 }
@@ -388,7 +423,7 @@ fn fixture() -> (TestFixture, EnvRestore) {
     unsafe { std::env::set_var("PINVOU3_HOME", &home) };
 
     let workspace = home.join("sessions").join("s-test").join("workspace");
-    let _ = std::fs::create_dir_all(&workspace);
+    std::fs::create_dir_all(&workspace).expect("create fixture workspace dir");
 
     let shared = Arc::new(ComputerUseShared::new());
     shared.set_enabled(true);
@@ -1735,7 +1770,7 @@ async fn type_summary_masks_preview_for_secure_targets() {
 /// a capital H — are covered too). Multi-key shortcut chords keep the
 /// readable `keys: <chord>` target, and no crypto fields exist in the JSONL.
 #[tokio::test]
-async fn single_char_key_chord_is_audited_as_typed_text() {
+async fn single_char_key_chord_is_audited_count_only() {
     let (fixture, _restore) = fixture();
     fixture.shared.grant_session("s-test");
     for chord in [
@@ -1893,7 +1928,7 @@ async fn multi_char_letter_chords_are_audited_as_counts_only() {
 
 /// The audit is an informational, fail-open log: when the audit directory
 /// cannot be created (PINVOU3_HOME points at a plain file), the append
-/// fails, the caller warns via eprintln, and the action still executes —
+/// fails, the caller warns via eprintln (not captured here), and the action still executes —
 /// for every action class.
 #[tokio::test]
 // ENV_LOCK must be held across the awaits: run() resolves PINVOU3_HOME from
@@ -2462,6 +2497,16 @@ async fn emergency_release_keeps_registration_releases_button_then_os_grant() {
         fixture.shared.backends.contains("s-test"),
         "tool construction must register its backend handle"
     );
+    // Start the backend first: cleanup of a never-started handle takes the
+    // Pending fast path (nothing was ever injected, nothing to release), so
+    // this contract test needs a backend that actually ran.
+    let _ = fixture
+        .tool
+        .execute(
+            json!({"action": "screenshot"}),
+            &context(&fixture.workspace),
+        )
+        .await;
     fixture.shared.backends.emergency_release("s-test");
     assert!(
         fixture.shared.backends.contains("s-test"),
@@ -2496,6 +2541,10 @@ async fn emergency_release_keeps_registration_releases_button_then_os_grant() {
         mock.upped,
         vec![MouseButton::Left, MouseButton::Right, MouseButton::Middle]
     );
+    assert!(
+        !mock.released_before_up,
+        "the OS-grant close must never precede the physical releases"
+    );
 }
 
 /// Tool drop goes through the emergency release: the physical left button
@@ -2506,6 +2555,15 @@ async fn emergency_release_keeps_registration_releases_button_then_os_grant() {
 async fn dropping_the_tool_releases_the_button_and_os_grant() {
     let (fixture, _restore) = fixture();
     assert!(fixture.shared.backends.contains("s-test"));
+    // Pending fast path: a never-started handle's cleanup is a no-op, so the
+    // drop-cleanup contract needs a backend that actually ran.
+    let _ = fixture
+        .tool
+        .execute(
+            json!({"action": "screenshot"}),
+            &context(&fixture.workspace),
+        )
+        .await;
     drop(fixture.tool);
     let mut done = false;
     for _ in 0..300 {
@@ -2910,6 +2968,110 @@ async fn failed_drag_releases_a_held_left_button() {
         fixture.mock.lock().upped,
         vec![MouseButton::Left],
         "exactly one best-effort release: the held state was cleared by the first"
+    );
+}
+
+/// The held-button flag must track backend truth: a click completes
+/// press+release internally, so a left_click after left_mouse_down clears
+/// the flag and a later FAILED drag must not issue a best-effort release —
+/// the spurious release would lift a button the tool no longer holds, i.e. a
+/// button the USER is physically holding.
+#[tokio::test]
+async fn click_clears_the_held_flag_so_failed_drag_spares_the_button() {
+    let (fixture, _restore) = fixture();
+    fixture.shared.grant_session("s-test");
+    fixture.mock.lock().element = Some(benign_element(0, 0, 16, 16));
+    let down = fixture
+        .tool
+        .execute(
+            json!({"action": "left_mouse_down"}),
+            &context(&fixture.workspace),
+        )
+        .await;
+    assert!(
+        down.ok()
+            .map(|r| r.content)
+            .unwrap_or_default()
+            .contains("mouse button is down"),
+        "setup: the press must execute"
+    );
+
+    // The click consumes the press: the button is physically up again.
+    let click = fixture
+        .tool
+        .execute(
+            json!({"action": "left_click"}),
+            &context(&fixture.workspace),
+        )
+        .await;
+    assert!(
+        click
+            .ok()
+            .map(|r| r.content)
+            .unwrap_or_default()
+            .contains("click executed"),
+        "setup: the click must execute: {}",
+        fixture.mock.lock().clicked.len()
+    );
+
+    // The drag fails at the backend; with the flag cleared by the click, the
+    // safety net must NOT fire.
+    fixture.mock.lock().drag_error = true;
+    let result = fixture
+        .tool
+        .execute(
+            json!({"action": "left_click_drag", "start_x": 1, "start_y": 1, "x": 5, "y": 5}),
+            &context(&fixture.workspace),
+        )
+        .await;
+    assert!(
+        result
+            .ok()
+            .map(|r| r.content)
+            .unwrap_or_default()
+            .contains("drag backend failed"),
+        "setup: the drag must fail at the backend"
+    );
+    assert!(
+        fixture.mock.lock().upped.is_empty(),
+        "no best-effort release may fire for a button the tool did not hold: {:?}",
+        fixture.mock.lock().upped
+    );
+}
+
+/// Keyboard T3 screening must not depend on capture availability: type/key
+/// screen through the FOCUSED element only, so a broken capture path (e.g.
+/// macOS Accessibility granted without Screen Recording) must not stop
+/// typing with the auto-capture error (round-15 finding: the shared
+/// auto-capture condition hard-failed keyboard actions when no screenshot
+/// existed yet).
+#[tokio::test]
+async fn broken_capture_does_not_block_keyboard_actions() {
+    let (fixture, _restore) = fixture();
+    fixture.shared.grant_session("s-test");
+    fixture.mock.lock().capture_error = true;
+    let result = fixture
+        .tool
+        .execute(
+            json!({"action": "type", "text": "hello"}),
+            &context(&fixture.workspace),
+        )
+        .await;
+    let text = result.ok().map(|r| r.content).unwrap_or_default();
+    assert!(
+        text.contains("typed 5"),
+        "the action must succeed without a ScaleMap: {text}"
+    );
+    // The follow-up capture still degrades to its documented warning; the
+    // auto-capture error must not be the action's outcome.
+    assert!(
+        text.contains("post-action capture failed"),
+        "the post-action capture failure must degrade to the documented warning: {text}"
+    );
+    assert_eq!(
+        fixture.mock.lock().typed,
+        vec!["hello".to_string()],
+        "the typing must execute without a ScaleMap"
     );
 }
 
@@ -3423,7 +3585,14 @@ async fn key_chord_text_length_is_capped() {
             &context(&fixture.workspace),
         )
         .await;
-    assert!(result.is_err(), "an oversized hold_key text must not parse");
+    let hold_error = match result {
+        Ok(r) => panic!("an oversized hold_key text must not parse: {r:?}"),
+        Err(e) => e.to_string(),
+    };
+    assert!(
+        hold_error.contains("too long for hold_key"),
+        "expected the hold_key length-cap error, mirroring the key leg: {hold_error}"
+    );
 }
 
 /// The bounds returned by
@@ -3714,6 +3883,17 @@ async fn char_carrying_chord_confirm_stays_masked_on_secure_target() {
     assert!(
         payload["type_preview_full"].is_null(),
         "secure targets never carry the preview: {payload}"
+    );
+    // The same contract on the structured confirm line: the raw characters
+    // must not ride the chord field (round-15 leak), the masked count does.
+    assert!(
+        payload["chord"].is_null(),
+        "a pure character chord keeps no named keys on a secure target: {payload}"
+    );
+    assert_eq!(
+        payload["chord_masked_chars"].as_u64(),
+        Some(4),
+        "the masked-character count must replace the raw characters: {payload}"
     );
 }
 
@@ -4137,6 +4317,72 @@ async fn revoke_during_screening_aborts_before_injection() {
     );
 }
 
+/// Between-injections pin (click): an emergency stop landing after the
+/// move_to request of a coordinate click completed — but before the click
+/// request registers — must abort the click. The click request would carry a
+/// fresh cancel flag that cannot inherit the stop, so only the re-verify
+/// between the two injections prevents a post-stop click landing after the
+/// stop's emergency releases.
+#[tokio::test]
+async fn stop_between_move_and_click_aborts_the_click() {
+    let (fixture, _restore) = fixture();
+    fixture.shared.grant_session("s-test");
+    {
+        let mut mock = fixture.mock.lock();
+        mock.stop_via_move_to = Some(Arc::clone(&fixture.shared));
+    }
+    let result = fixture
+        .tool
+        .execute(
+            json!({"action": "left_click", "x": 5, "y": 6}),
+            &context(&fixture.workspace),
+        )
+        .await;
+    let text = result.ok().map(|r| r.content).unwrap_or_default();
+    assert!(
+        text.contains("stopped by the user"),
+        "the between-injections stop must surface as the stopped error: {text}"
+    );
+    assert_eq!(
+        fixture.mock.lock().moved_to.len(),
+        1,
+        "the move itself ran; the stop landed after it"
+    );
+    assert!(
+        fixture.mock.lock().clicked.is_empty(),
+        "the click must never execute after the stop"
+    );
+}
+
+/// Between-injections pin (scroll): the revoke flavor — the grant dying
+/// between the move_to request and the scroll request must abort the scroll
+/// instead of injecting with a stale entry-gate verdict.
+#[tokio::test]
+async fn revoke_between_move_and_scroll_aborts_the_scroll() {
+    let (fixture, _restore) = fixture();
+    fixture.shared.grant_session("s-test");
+    {
+        let mut mock = fixture.mock.lock();
+        mock.revoke_via_move_to = Some(Arc::clone(&fixture.shared));
+    }
+    let result = fixture
+        .tool
+        .execute(
+            json!({"action": "scroll", "direction": "down", "amount": 2, "x": 5, "y": 6}),
+            &context(&fixture.workspace),
+        )
+        .await;
+    let text = result.ok().map(|r| r.content).unwrap_or_default();
+    assert!(
+        text.contains("has not granted control"),
+        "the between-injections revoke must surface as the grant error: {text}"
+    );
+    assert!(
+        fixture.mock.lock().scrolled.is_empty(),
+        "the scroll must never execute after the revoke"
+    );
+}
+
 // ---------------------------------------------------------------------------
 // Round-14 fix-wave regressions
 // ---------------------------------------------------------------------------
@@ -4210,4 +4456,48 @@ fn confirm_payload_pins_structured_fields() {
     });
     assert!(scroll.get("direction").is_none(), "{scroll}");
     assert!(scroll.get("amount").is_none(), "{scroll}");
+    // Masked (secure) targets: character keys are typed content, so the raw
+    // chord must not ride the payload — named keys plus the masked-character
+    // count replace it (round-15 finding: the raw "h+a+c+k" chord surfaced
+    // verbatim in the dialog on password fields, and the count replays the
+    // same way through get_status).
+    let masked = build_confirm_payload(
+        "s1",
+        "cu-test",
+        &ComputerUseAction::KeyChord {
+            keys: vec![
+                Key::Char('h'),
+                Key::Char('a'),
+                Key::Char('c'),
+                Key::Char('k'),
+            ],
+            chord: "h+a+c+k".into(),
+        },
+        "summary",
+        "element",
+        None,
+        true,
+    );
+    assert!(
+        masked.get("chord").is_none(),
+        "a pure character chord carries no named keys to keep: {masked}"
+    );
+    assert_eq!(masked["chord_masked_chars"], 4, "{masked}");
+    let masked_mixed = build_confirm_payload(
+        "s1",
+        "cu-test",
+        &ComputerUseAction::KeyChord {
+            keys: vec![Key::Control, Key::Char('p')],
+            chord: "ctrl+p".into(),
+        },
+        "summary",
+        "element",
+        None,
+        true,
+    );
+    assert_eq!(
+        masked_mixed["chord"], "ctrl",
+        "only the named (non-secret) keys survive masking: {masked_mixed}"
+    );
+    assert_eq!(masked_mixed["chord_masked_chars"], 1, "{masked_mixed}");
 }
