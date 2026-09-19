@@ -390,9 +390,12 @@ const REBIND_EVICT_GATE_TIMEOUT: Duration = Duration::from_secs(2);
 /// turn gate + runtime lock, and a successful take ALSO drops the per-session
 /// shell state under the same gates.
 ///
-/// Unlike [`evict_if_idle_with_gates`] the turn gate is acquired under a
-/// timeout (see [`REBIND_EVICT_GATE_TIMEOUT`]) and a timeout counts as "not
-/// evicted", keeping the command responsive.
+/// Unlike [`evict_if_idle_with_gates`] BOTH gates — the turn gate and the
+/// runtime lock — are acquired under a timeout (see
+/// [`REBIND_EVICT_GATE_TIMEOUT`]) and a timeout counts as "not evicted",
+/// keeping the command responsive. The runtime lock needs its own timeout
+/// because a cold spawn holds it for many seconds, far beyond any turn gate
+/// wait (round-8 should-fix 4).
 ///
 /// Both registries have to go. `SessionShellManagers::for_session` is
 /// `entry().or_insert_with` and the manager's cwd is pinned at construction,
@@ -431,7 +434,13 @@ where
         return false;
     };
     let runtime_lock = runtime_locks.for_session(session_id).await;
-    let _runtime = runtime_lock.lock().await;
+    let Ok(_runtime) = tokio::time::timeout(REBIND_EVICT_GATE_TIMEOUT, runtime_lock.lock()).await
+    else {
+        // A spawn in flight holds this lock far longer than a turn gate wait;
+        // skipping this round is the honest answer, same as a turn-gate
+        // timeout.
+        return false;
+    };
     let Some(entry) = take_entry().await else {
         return false;
     };
@@ -2227,6 +2236,23 @@ impl EnginePool {
                     .insert(session_id.to_string());
             }
         }
+        // Round-8 should-fix 5: the slot used to be removed only after the
+        // round future resolved; a panic inside a round skipped the removal
+        // and permanently wedged the new rebind fences for this session until
+        // restart. A drop guard removes it on every exit path.
+        struct ScheduledRunningSlotGuard<'a> {
+            slots: &'a SyncMutex<HashSet<String>>,
+            session_id: &'a str,
+        }
+        impl Drop for ScheduledRunningSlotGuard<'_> {
+            fn drop(&mut self) {
+                self.slots.lock().remove(self.session_id);
+            }
+        }
+        let _running_slot = ScheduledRunningSlotGuard {
+            slots: &self.scheduled_running_sessions,
+            session_id,
+        };
         let result = async {
             self.touch_engine_activity(session_id).await;
             let profile = self
@@ -2292,7 +2318,7 @@ impl EnginePool {
         }
         .await;
 
-        self.scheduled_running_sessions.lock().remove(session_id);
+        drop(_running_slot);
         self.evict_locked(session_id).await;
         result
     }

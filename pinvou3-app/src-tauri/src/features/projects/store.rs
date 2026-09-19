@@ -54,7 +54,45 @@ pub struct MoveSessionOutcome {
     pub added_root: Option<PathBuf>,
 }
 
-#[derive(Debug, Default)]
+/// Round-8 review M3: a rebind failure must distinguish a genuine overlap
+/// conflict (the localized `REBIND_ROOTS_CONFLICT` marker + retry dialog)
+/// from an infrastructure failure — laundering a persist error into the
+/// conflict marker told the user to resolve a "conflict" that no resolution
+/// fixes, and combined with commit-before-persist the retry then
+/// false-succeeded.
+#[derive(Debug)]
+pub enum RebindRootsError {
+    Overlap(anyhow::Error),
+    Other(anyhow::Error),
+}
+
+impl std::fmt::Display for RebindRootsError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            RebindRootsError::Overlap(error) => {
+                write!(f, "rebind produced overlapping project roots: {error}")
+            }
+            RebindRootsError::Other(error) => write!(f, "{error}"),
+        }
+    }
+}
+
+impl std::error::Error for RebindRootsError {
+    fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
+        let inner: &(dyn std::error::Error + 'static) = match self {
+            RebindRootsError::Overlap(error) | RebindRootsError::Other(error) => &**error,
+        };
+        inner.source()
+    }
+}
+
+impl From<anyhow::Error> for RebindRootsError {
+    fn from(error: anyhow::Error) -> Self {
+        RebindRootsError::Other(error)
+    }
+}
+
+#[derive(Debug, Default, Clone)]
 struct StoreState {
     /// 恒按 (position, id) 有序,`list` 直接返回快照。
     projects: Vec<Project>,
@@ -668,18 +706,18 @@ impl ProjectStore {
         // keeps its original casing.
         let to_display = root_display(to);
         let from_display = root_display(from);
-        let from_key = identity_key_of_display(&from_display);
-        let from_depth = from_display.components().count();
         let mut candidate = projects.to_vec();
         let mut affected_projects = Vec::new();
         for project in candidate.iter_mut() {
             let mut changed = false;
             for root in project.roots.iter_mut() {
-                let root_key_str = identity_key_of_display(root);
-                if !key_is_same_or_nested(&root_key_str, &from_key) {
+                // Shared containment + suffix cut (round-8 review should-fix
+                // 9): one platform predicate serves all three lanes.
+                let Some(suffix) =
+                    crate::platform::os::path_relative_suffix_under(root, &from_display)
+                else {
                     continue;
-                }
-                let suffix: PathBuf = root.components().skip(from_depth).collect();
+                };
                 *root = if suffix.as_os_str().is_empty() {
                     to_display.clone()
                 } else {
@@ -742,7 +780,7 @@ impl ProjectStore {
     /// any root is indistinguishable from a completed retry at this layer;
     /// the entry normalization in the command layer (resolving `from` once
     /// for all three storage lanes) is what prevents a silent half-migration.
-    pub fn rebind_roots(&self, from: &Path, to: &Path) -> Result<Vec<String>> {
+    pub fn rebind_roots(&self, from: &Path, to: &Path) -> Result<Vec<String>, RebindRootsError> {
         let mut state = self.state.write();
         if from == to {
             return Ok(Vec::new());
@@ -754,11 +792,22 @@ impl ProjectStore {
             Self::rebind_root_candidates(&state.projects, from, to);
         if !affected_projects.is_empty() {
             for project in &candidate {
-                validate_roots(&candidate, Some(&project.id), &project.roots)
-                    .context("rebind produced overlapping project roots")?;
+                validate_roots(&candidate, Some(&project.id), &project.roots).map_err(|error| {
+                    RebindRootsError::Overlap(
+                        error.context("rebind produced overlapping project roots"),
+                    )
+                })?;
             }
-            state.projects = candidate;
-            persist_locked(&state, &self.path)?;
+            // Persist FIRST, commit the in-memory candidate only on success
+            // (round-8 review M2, mirroring the codex lane): committing
+            // before the write let a persist failure leave memory at `to`
+            // over a disk still holding `from` — an in-process retry then
+            // found no `from`-roots and reported success while the persisted
+            // file stayed unmigrated.
+            let mut persisted = state.clone();
+            persisted.projects = candidate;
+            persist_locked(&persisted, &self.path)?;
+            state.projects = persisted.projects;
         }
         Ok(affected_projects)
     }

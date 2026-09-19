@@ -44,9 +44,11 @@
       try {
         applySnapshot(await invoke("list_projects"));
       } catch (e) {
-        // 归属是纯偏好数据,失败不打断 UI:首次拉取失败时侧栏回落隐式分组;
-        // 已有快照则继续显示旧快照(与最新无从区分),直到下一个
-        // projects:list_changed 事件才重试。
+        // Assignments are pure preference data: a fetch failure must not
+        // break the UI. On the first failed pull the sidebar falls back to
+        // implicit grouping; with an existing snapshot it keeps showing the
+        // stale one (indistinguishable from fresh) until the next
+        // projects:list_changed event retries.
         console.warn("[projects] list_projects failed:", e);
       } finally {
         fetchInFlight = false;

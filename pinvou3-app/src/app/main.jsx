@@ -1841,11 +1841,10 @@ const NAV_PREFETCH = {
       // grouped uniformly by the project layer's three tiers; unbound plain
       // sessions stay in the date view of "All". Grouping follows binding,
       // the same signal as the safety posture.
-      // Note: the upstream history chain (chatHistory/codexHistory/…) is
-      // rebuilt on every render, so these memos are recomputed each round for
-      // now — end-to-end memoization is left as follow-up (review finding
-      // 22); tier-2 grouping is O(sessions × projects × roots)
-      // (#448 finding 8).
+      // Note (aligned with the memo comment above): bridge snapshots are
+      // persistent projections, so these memos skip recomputation when their
+      // slices keep their references; tier-2 grouping remains
+      // O(sessions × projects × roots) (#448 finding 8).
       const sidebarCodeTasks = useMemo(() => (sidebarCodeListActive
         ? sidebarTaskHistory.filter(chat => chat.taskKind === 'codex'
             // The bound-work-session branch is desktop-only, like the projects

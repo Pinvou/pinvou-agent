@@ -65,9 +65,11 @@ function isUnderRoot(path, root) {
     a = a.toLowerCase().replaceAll('\\', '/');
     b = b.toLowerCase().replaceAll('\\', '/');
   }
-  // Trailing separators are not identity: both sides lose them, mirroring the
-  // store's trim_end_matches('/') on both identity keys (a loop, not a
-  // quantified regex — sonarjs/super-linear-regex).
+  // Trailing separators are not identity: both sides lose them, matching the
+  // store's strip_suffix('/') per side. The JS loop strips runs of trailing
+  // separators while the Rust call site strips exactly one — a superset that
+  // only differs on malformed multi-separator tails — written as a loop, not
+  // a quantified regex (sonarjs/super-linear-regex).
   while (a.endsWith('/')) a = a.slice(0, -1);
   while (b.endsWith('/')) b = b.slice(0, -1);
   if (a === b) return true;

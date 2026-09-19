@@ -354,6 +354,10 @@ test("containment honors separator boundaries and mirrors the store rule", () =>
   const trailing = { id: "p3", name: "Trail", roots: ["D:/work/alpha/"] };
   assert.equal(projectCoversPath(trailing, "D:/work/alpha"), true);
   assert.equal(projectCoversPath(trailing, "D:/work/alpha/deep"), true);
+  // Round-8 should-fix 12: the path side loses trailing separators too, so a
+  // trailing-separator PATH is the same directory as the bare root.
+  assert.equal(projectCoversPath(trailing, "D:/work/alpha/"), true);
+  assert.equal(projectCoversPath(trailing, "D:/work/alpha//"), true);
   const posixRoot = { id: "p4", name: "Posix", roots: ["/"] };
   assert.equal(projectCoversPath(posixRoot, "/home/x/anything"), true);
 

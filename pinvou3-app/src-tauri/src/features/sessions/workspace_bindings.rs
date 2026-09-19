@@ -43,6 +43,14 @@ use serde::{Deserialize, Serialize};
 
 use super::{SessionStore, validate_session_id};
 
+/// Round-8 review M4: test-only crash seam between the legacy-table rewrite
+/// (phase 2) and the sidecar pass (phase 3) of `rebind_workspace_bindings`.
+/// Armed by `inject_rebind_crash_after_legacy_rewrite`; production never
+/// touches it.
+#[cfg(test)]
+static REBIND_CRASH_AFTER_LEGACY_REWRITE: std::sync::atomic::AtomicBool =
+    std::sync::atomic::AtomicBool::new(false);
+
 /// Outcome of rebind_workspace_bindings: translated entries plus per-entry
 /// failure isolation (review #464 MAJOR 4: an invalid id or a single write
 /// failure no longer aborts the whole round; failures go into the failure
@@ -66,20 +74,6 @@ pub struct RebindBindingsOutcome {
     /// survived (review #464 round-6 blocking 1). Ids only: they are data for
     /// the report; the paths stay out of the logs.
     pub legacy_resurrection_ids: Vec<String>,
-}
-
-/// "Equal to or nested under" prefix check on folded identity keys: Windows
-/// folds separators and case, same convention as the store's
-/// key_is_same_or_nested; an empty from matches everything (shared by the two
-/// candidate scans in this file — review #464 MINOR 8: the same closure was
-/// once byte-for-byte duplicated and its semantics had drifted from the
-/// project layer).
-fn folded_covers(from: &Path, path: &Path) -> bool {
-    let from_key = crate::platform::os::filesystem_path_identity_key(&from.to_string_lossy());
-    let from_trim = from_key.trim_end_matches('/');
-    let key = crate::platform::os::filesystem_path_identity_key(&path.to_string_lossy());
-    let trim = key.trim_end_matches('/');
-    from_trim.is_empty() || trim == from_trim || trim.starts_with(&format!("{from_trim}/"))
 }
 
 /// Schema version of the binding sidecar; used for migration if fields evolve.
@@ -427,13 +421,16 @@ impl SessionStore {
     /// (see `rewrite_legacy_session_workspaces_if_present`), the outcome also
     /// names every session that table would resurrect, so the report can be
     /// honest on a retry too. See [`RebindBindingsOutcome::legacy_resurrection_ids`].
+    #[cfg(test)]
+    pub(crate) fn inject_rebind_crash_after_legacy_rewrite(&self) {
+        REBIND_CRASH_AFTER_LEGACY_REWRITE.store(true, std::sync::atomic::Ordering::SeqCst);
+    }
+
     pub fn rebind_workspace_bindings(
         &self,
         from: &Path,
         to: &Path,
     ) -> Result<RebindBindingsOutcome> {
-        let covered = |path: &Path| folded_covers(from, path);
-        let skip = from.components().count();
         let mut outcome = RebindBindingsOutcome::default();
         // Phase 1 — plan. Candidates = sidecar scan ∪ in-memory legacy table,
         // via workspace_bindings_under (already the union — review #464 round-5
@@ -444,9 +441,11 @@ impl SessionStore {
         let candidates: Vec<(String, PathBuf)> = self.workspace_bindings_under(from);
         let mut plan: Vec<(String, PathBuf, PathBuf)> = Vec::new();
         for (id, path) in candidates {
-            if !covered(&path) {
+            // Shared containment + suffix cut (round-8 review should-fix 9):
+            // one platform predicate serves all three lanes.
+            let Some(suffix) = crate::platform::os::path_relative_suffix_under(&path, from) else {
                 continue;
-            }
+            };
             // The id is validated before joining the path (same gate as
             // bind_session_workspace): a traversal-shaped id would write
             // outside sessions_dir.
@@ -458,7 +457,6 @@ impl SessionStore {
                 outcome.failed_session_ids.push(id);
                 continue;
             }
-            let suffix: PathBuf = path.components().skip(skip).collect();
             let next = if suffix.as_os_str().is_empty() {
                 to.to_path_buf()
             } else {
@@ -498,6 +496,15 @@ impl SessionStore {
             // already put the translated values on disk) must not report the
             // sessions as resurrectable.
             outcome.legacy_resurrection_ids = diverged;
+        }
+        // Test-only crash seam between phase 2 and phase 3 (round-8 review
+        // M4): it simulates a process death exactly where the phase order
+        // matters — the translated table is on disk while every sidecar is
+        // still at `from` — and returns "successfully crashed" instead of
+        // erroring, like a killed process would. Production never arms it.
+        #[cfg(test)]
+        if REBIND_CRASH_AFTER_LEGACY_REWRITE.swap(false, std::sync::atomic::Ordering::SeqCst) {
+            return Ok(outcome);
         }
         // Phase 3 — move the in-memory cache and the sidecars. Per-entry
         // isolation: one failed write does not abort the round (review #464
@@ -695,7 +702,10 @@ impl SessionStore {
                 Ok(()) => true,
                 Err(error) if error.kind() == std::io::ErrorKind::NotFound => true,
                 Err(error) => {
-                    eprintln!("[sessions] remove legacy session workspaces failed: {error:#}");
+                    eprintln!(
+                        "[sessions] remove legacy session workspaces failed: {}",
+                        error.kind()
+                    );
                     false
                 }
             };
@@ -704,12 +714,15 @@ impl SessionStore {
             Ok(payload) => match crate::platform::filesystem::atomic_write(&legacy, &payload) {
                 Ok(()) => true,
                 Err(error) => {
-                    eprintln!("[sessions] rewrite legacy session workspaces failed: {error:#}");
+                    eprintln!(
+                        "[sessions] rewrite legacy session workspaces failed: {}",
+                        error.kind()
+                    );
                     false
                 }
             },
             Err(error) => {
-                eprintln!("[sessions] serialize legacy session workspaces failed: {error:#}");
+                eprintln!("[sessions] serialize legacy session workspaces failed: {error}");
                 false
             }
         }
@@ -739,10 +752,11 @@ impl SessionStore {
                 // rebind treat a never-parsed file as syncable — with an empty
                 // cache it would delete a repairable table. The module
                 // invariant is stricter: only a file this process successfully
-                // parsed may be rewritten or removed.
+                // parsed may be rewritten or removed. Log hygiene (round-8
+                // should-fix): the path stays out of the log.
                 eprintln!(
-                    "[sessions] read legacy session workspaces failed ({}): {error:#}",
-                    legacy.display()
+                    "[sessions] read legacy session workspaces failed: {}",
+                    error.kind()
                 );
                 self.legacy_session_workspaces_parse_failed
                     .store(true, std::sync::atomic::Ordering::SeqCst);
@@ -772,7 +786,13 @@ impl SessionStore {
                 continue;
             }
             if let Err(error) = self.bind_session_workspace(&id, path.clone()) {
-                eprintln!("[sessions] migrate workspace binding for {id} failed: {error:#}");
+                // Log hygiene (round-8 should-fix): the unmigrated id reaches
+                // the in-memory table, not the log; the failure list of a
+                // subsequent rebind is the disclosure channel.
+                eprintln!(
+                    "[sessions] migrate workspace binding failed: {}",
+                    error.root_cause()
+                );
                 unmigrated.insert(id, path);
             }
         }
@@ -781,8 +801,8 @@ impl SessionStore {
                 Ok(()) => {}
                 Err(error) if error.kind() == ErrorKind::NotFound => {}
                 Err(error) => eprintln!(
-                    "[sessions] remove legacy session workspaces failed ({}): {error:#}",
-                    legacy.display()
+                    "[sessions] remove legacy session workspaces failed: {}",
+                    error.kind()
                 ),
             }
         } else {

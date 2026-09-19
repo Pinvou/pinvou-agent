@@ -295,7 +295,22 @@ pub(super) fn read_code_session_sidecar(
     session_id: &str,
 ) -> Option<CodeSessionSidecar> {
     let path = code_session_sidecar_path(store_path, session_id);
-    let payload = fs::read(&path).ok()?;
+    let payload = match fs::read(&path) {
+        Ok(payload) => payload,
+        // Round-8 should-fix 6: a sidecar that exists but cannot be READ
+        // (permissions, io error) used to disappear silently, so both rebind
+        // scans skipped it and the run reported success while the orphan
+        // binding stayed at `from`. Make the skip visible; id and path stay
+        // out of the log per the rebind log-hygiene rule.
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => return None,
+        Err(error) => {
+            eprintln!(
+                "[pinvou3-app] rebind scan skips an unreadable code-session sidecar: {}",
+                error.kind()
+            );
+            return None;
+        }
+    };
     match serde_json::from_slice::<CodeSessionSidecar>(&payload) {
         Ok(sidecar) => {
             // 未来高版本格式不能静默按 v1 解析：拒读并按缺失处理，交由恢复/回填
@@ -325,7 +340,15 @@ pub(super) fn read_code_session_sidecar(
 pub(super) fn remove_code_session_sidecar(store_path: &Path, session_id: &str) {
     let sidecar = code_session_sidecar_path(store_path, session_id);
     match fs::remove_file(&sidecar) {
-        Ok(()) => {}
+        Ok(()) => {
+            // Round-8 should-fix 7: drop the session dir too when the sidecar
+            // was its last occupant, so a deleted session leaves no ghost dir
+            // for persist's create_dir_all / boot backfill to keep alive.
+            // Fails harmlessly while other files remain.
+            if let Some(parent) = sidecar.parent() {
+                let _ = fs::remove_dir(parent);
+            }
+        }
         Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
         Err(error) => eprintln!(
             "[pinvou3-app] 清理原生代码会话 sidecar 失败（{}）: {error:#}",
@@ -601,14 +624,8 @@ impl SessionAgentStore {
     /// count, preserving the subdirectory's original casing. Returns `None` =
     /// not under `from`; an empty suffix = the path IS `from`.
     fn rebind_relative_suffix(path: &Path, from: &Path) -> Option<PathBuf> {
-        let path_key = crate::platform::os::filesystem_path_identity_key(&path.to_string_lossy());
-        let from_key = crate::platform::os::filesystem_path_identity_key(&from.to_string_lossy());
-        let path_trim = path_key.trim_end_matches('/');
-        let from_trim = from_key.trim_end_matches('/');
-        if !crate::platform::os::path_identity_is_same_or_nested(path_trim, from_trim) {
-            return None;
-        }
-        Some(path.components().skip(from.components().count()).collect())
+        // Single shared suffix cut (round-8 review should-fix 9).
+        crate::platform::os::path_relative_suffix_under(path, from)
     }
 
     /// Lists project sessions bound under the `from` prefix (candidate set for

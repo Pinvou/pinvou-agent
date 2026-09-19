@@ -4773,7 +4773,6 @@ fn heal_session_dir_after_rebind_obstruction(store: &SessionStore, id: &str) {
 #[test]
 fn rebind_crash_window_heals_forward_through_boot_migration() {
     let (store, _g) = isolated_store();
-    let home = std::env::var("PINVOU3_HOME").expect("isolated_store pins PINVOU3_HOME");
     let from = unique_temp_dir("rebind-crash-from");
     std::fs::create_dir_all(&from).expect("create from");
     let to = unique_temp_dir("rebind-crash-to");
@@ -4855,9 +4854,10 @@ fn rebind_crash_window_heals_forward_through_boot_migration() {
     // "Next boot": reopen the same home; the boot migration converges the
     // stuck session's sidecar to `to` and retires the table.
     heal_session_dir_after_rebind_obstruction(&store, &stuck_session.metadata.id);
-    let rebooted =
-        SessionStore::boot_with_scheduled_root(std::path::PathBuf::from(&home).join("scheduled"))
-            .expect("reopen home");
+    // Reopen through the PRODUCTION boot path (round-8 review B1): the boot
+    // migration is wired there, and the test must pin that path, not a
+    // test-only constructor.
+    let rebooted = SessionStore::boot_for_process_startup().expect("reopen home");
     assert!(
         !legacy.exists(),
         "a fully migrated table must not survive the boot"
@@ -4962,6 +4962,94 @@ fn rebind_batch_isolates_per_entry_failures_and_retry_converges() {
     let _ = std::fs::remove_dir_all(&to);
 }
 
+/// Round-8 review M4: the between-phases fault pin. The crash seam aborts
+/// the run exactly between phase 2 (legacy table rewritten) and phase 3
+/// (sidecar pass) — the only point where the phase ORDER is observable: the
+/// on-disk table already holds `to` while every sidecar is still at `from`,
+/// and the boot migration must heal FORWARD to `to`, never resurrect `from`.
+/// Under a sidecars-first order this crash leaves the stale table behind and
+/// the reopen below would re-bind the deleted `from` directory.
+#[test]
+fn rebind_crash_between_phases_heals_forward_on_boot() {
+    let (store, _g) = isolated_store();
+    let from = unique_temp_dir("rebind-seam-from");
+    std::fs::create_dir_all(&from).expect("create from");
+    let to = unique_temp_dir("rebind-seam-to");
+    std::fs::create_dir_all(&to).expect("create to");
+
+    let session = store
+        .create_new("/model".into(), None, std::env::temp_dir())
+        .expect("create");
+    store
+        .bind_session_workspace(&session.metadata.id, from.clone())
+        .expect("bind under from");
+    let legacy = store
+        .manager
+        .sessions_dir()
+        .join("_session_workspaces.json");
+    std::fs::write(
+        &legacy,
+        serde_json::to_vec(&serde_json::json!({
+            session.metadata.id.clone(): from.display().to_string(),
+        }))
+        .expect("serialize legacy table"),
+    )
+    .expect("seed legacy file");
+
+    store.inject_rebind_crash_after_legacy_rewrite();
+    let outcome = store
+        .rebind_workspace_bindings(&from, &to)
+        .expect("the simulated crash returns without an error");
+    assert!(
+        outcome.rebound.is_empty() && outcome.failed_session_ids.is_empty(),
+        "the crash leaves both lanes untouched"
+    );
+    // The crash point's defining state: translated table on disk, sidecar
+    // still at `from`.
+    let on_disk: std::collections::HashMap<String, PathBuf> =
+        serde_json::from_str(&std::fs::read_to_string(&legacy).expect("read legacy table"))
+            .expect("legacy table parses");
+    assert_eq!(
+        on_disk.get(&session.metadata.id).map(PathBuf::as_path),
+        Some(to.as_path()),
+        "the table was rewritten before the crash",
+    );
+    let sidecar = store
+        .manager
+        .sessions_dir()
+        .join(&session.metadata.id)
+        .join("workspace-binding.json");
+    let sidecar: serde_json::Value =
+        serde_json::from_str(&std::fs::read_to_string(&sidecar).expect("sidecar exists"))
+            .expect("sidecar parses");
+    // Stored paths are canonicalized, so textual containment is fragile;
+    // compare against the translated value the crash-left table holds: a
+    // moved sidecar would carry exactly that `to` string.
+    let translated = on_disk
+        .get(&session.metadata.id)
+        .map(|p| p.to_string_lossy().to_string());
+    assert_ne!(
+        sidecar.get("path").and_then(|p| p.as_str()),
+        translated.as_deref(),
+        "the sidecar was not yet moved",
+    );
+
+    // Next boot (production path): the migration heals the sidecar forward
+    // to `to` and retires the table — never back to the deleted `from`.
+    let rebooted = SessionStore::boot_for_process_startup().expect("reopen home");
+    assert!(!legacy.exists(), "a fully migrated table must not survive");
+    assert_eq!(
+        rebooted
+            .session_workspace_binding(&session.metadata.id)
+            .as_deref(),
+        Some(to.as_path()),
+        "the boot must heal the crashed entry forward, to `to`",
+    );
+
+    let _ = std::fs::remove_dir_all(&from);
+    let _ = std::fs::remove_dir_all(&to);
+}
+
 /// Round-8 finding 3: the boot migration's PARTIAL-failure branch lost its
 /// dedicated test when main's dead-code sweep deleted the test together with
 /// the function this PR restored. One entry migrates, one fails (session
@@ -4972,7 +5060,6 @@ fn rebind_batch_isolates_per_entry_failures_and_retry_converges() {
 #[test]
 fn boot_migration_partial_failure_retains_and_extends() {
     let (store, _g) = isolated_store();
-    let home = std::env::var("PINVOU3_HOME").expect("isolated_store pins PINVOU3_HOME");
     let target = unique_temp_dir("boot-partial-target");
     std::fs::create_dir_all(&target).expect("create target");
     let migrated = store
@@ -4999,9 +5086,9 @@ fn boot_migration_partial_failure_retains_and_extends() {
     obstruct_session_dir_for_rebind(&store, &stuck.metadata.id);
 
     // Boot 1: one write fails mid-migration.
-    let booted =
-        SessionStore::boot_with_scheduled_root(std::path::PathBuf::from(&home).join("scheduled"))
-            .expect("boot 1");
+    // Boot 1 through the PRODUCTION boot path (round-8 review B1): this is
+    // where the boot migration is wired in production.
+    let booted = SessionStore::boot_for_process_startup().expect("boot 1");
     assert!(
         legacy.is_file(),
         "a partially migrated table must be kept for the next boot"
@@ -5041,9 +5128,7 @@ fn boot_migration_partial_failure_retains_and_extends() {
     // Boot 2 after the obstruction clears: the straggler converges, the file
     // is retired.
     heal_session_dir_after_rebind_obstruction(&store, &stuck.metadata.id);
-    let converged =
-        SessionStore::boot_with_scheduled_root(std::path::PathBuf::from(&home).join("scheduled"))
-            .expect("boot 2");
+    let converged = SessionStore::boot_for_process_startup().expect("boot 2");
     assert!(
         !legacy.exists(),
         "a fully migrated table must not survive the boot"

@@ -456,6 +456,62 @@ fn rebind_roots_rewrites_prefix_and_stays_idempotent() {
     assert_eq!(store.get(&project.id).unwrap().roots, roots);
 }
 
+/// Round-8 review M2: rebind_roots must persist BEFORE committing the
+/// in-memory candidate. The store's final `projects.json` path is replaced
+/// by a NON-EMPTY directory — atomic_write's rename onto it fails on every
+/// platform (empty dirs would be silently replaced on POSIX) — so the
+/// persist fails deterministically after the candidate is built, and the
+/// memory must still hold `from`, so a retry (after clearing the obstacle)
+/// converges instead of false-succeeding. Mirrors the codex lane's
+/// `rebind_prefix_rolls_back_memory_when_index_persist_fails`.
+#[test]
+fn rebind_roots_rolls_back_memory_when_persist_fails() {
+    let temp = tempfile::tempdir().expect("tempdir");
+    let store = store_in(&temp);
+    let from = abs("from");
+    let to = temp.path().join("moved");
+    std::fs::create_dir_all(&to).expect("create to dir");
+
+    let project = create(&store, "搬家", &[from.clone()]);
+    let before = store.get(&project.id).unwrap();
+
+    // Replace the store's final path with a non-empty directory: rename
+    // onto it fails on every platform.
+    let store_path = temp.path().join("projects.json");
+    std::fs::remove_file(&store_path).expect("remove store file");
+    std::fs::create_dir_all(&store_path).expect("recreate as dir");
+    std::fs::write(store_path.join("obstruction"), b"x").expect("make dir non-empty");
+
+    let error = store
+        .rebind_roots(&from, &to)
+        .expect_err("persist failure surfaces as an error");
+    assert!(
+        !matches!(
+            error,
+            crate::features::projects::RebindRootsError::Overlap(_)
+        ),
+        "a persist failure must not be classified as an overlap conflict (round-8 M3)"
+    );
+    assert_eq!(
+        store.get(&project.id).unwrap(),
+        before,
+        "memory must roll back to the on-disk state on persist failure"
+    );
+
+    // After clearing the obstacle a retry converges: the from-root is still
+    // there to be moved.
+    std::fs::remove_dir_all(&store_path).expect("clear obstruction");
+    let affected = store.rebind_roots(&from, &to).expect("retry rebind");
+    assert_eq!(affected, vec![project.id.clone()]);
+    assert!(
+        store
+            .get(&project.id)
+            .unwrap()
+            .roots
+            .contains(&display(&to))
+    );
+}
+
 #[cfg(unix)]
 #[test]
 fn rebind_roots_cuts_suffix_by_resolved_form_for_alias_callers() {
