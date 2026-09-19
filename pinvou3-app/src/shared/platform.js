@@ -19,6 +19,9 @@ const DEFAULT_DESKTOP_CAPABILITIES = Object.freeze({
   toolStoreMutations: true,
   multiAgent: true,
   acpCodeMode: true,
+  // Explicit rather than default-true: the correct value hangs on two
+  // different default-polarity rules otherwise (review finding).
+  computerUse: true,
   // Zap-send goes through the foundation EnginePool's Tauri command channel; web has no such backend.
   interruptSend: true,
   // 桌面端的系统选择器本就选择"本机"文件,无需浏览器上传通道;显式关闭
