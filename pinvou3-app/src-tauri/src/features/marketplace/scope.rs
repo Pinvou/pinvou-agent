@@ -709,10 +709,16 @@ pub fn save_disabled_bundles_for(scope: ConnectorScope, ids: &[String]) {
     // The persist here remains fail-silent, deliberately (review R14 should-fix
     // registration): the composer whole-list replace is the #515 rework target
     // (cross-process RMW), and layering a second error surface onto it before
-    // that rework was declined in rounds 12/13. The honest direction note: a
-    // lost switch-OFF write leaves the pack live while the UI renders it off —
-    // fail-open, the same direction the enable/install-sync paths refuse to
-    // swallow. Do not cite this call as a precedent for new writers.
+    // that rework was declined in rounds 12/13. The honest direction notes:
+    // (a) a lost switch-OFF write leaves the pack live while the UI renders it
+    // off — fail-open, the same direction the enable/install-sync paths refuse
+    // to swallow; (b) a stale composer snapshot can silently resurrect a
+    // just-installed default-off pack (round-14 M1): the install commits
+    // stored+marker while the menu is open, the menu never refreshes (install
+    // emits no tools_changed), and its whole-list write drops the entry and
+    // marker — zero-consent next session. Closing shape: per-id toggles routed
+    // through the single-critical-section RMW, or a frontend-snapshot
+    // merge-on-write. Do not cite this call as a precedent for new writers.
     save_disabled_bundles_file(&file);
 }
 
@@ -1077,6 +1083,11 @@ mod tests {
         let prev = std::env::var("PINVOU3_HOME").ok();
         // SAFETY: holding platform::paths::tests::ENV_LOCK; env writes serialized in-process.
         unsafe { std::env::set_var("PINVOU3_HOME", &dir) };
+        // The write-failure memos are keyed by home path and this harness
+        // reuses a pid-keyed dir: clear them so a prior case's memo cannot
+        // bleed into the next one (round-14 minor #10; mod.rs's harness does
+        // the same).
+        clear_unpersisted_verdict_for_test();
         f();
         match prev {
             // SAFETY: holding platform::paths::tests::ENV_LOCK; env writes serialized in-process.
@@ -1649,6 +1660,61 @@ mod tests {
                     .map(|ids| ids.iter().any(|id| id == "pptx"))
                     .unwrap_or(false),
                 "the retried sync marked the entry install-default: {file:?}"
+            );
+        });
+    }
+
+    /// Round-14 minor #2: the freeze persist-failure memo (`UNPERSISTED_VERDICT`)
+    /// is load-bearing but was completely unpinned — deleting it kept every test
+    /// green. Fixture: fresh home, first read under a read-only home (freeze
+    /// persist fails, memo carries the verdict), then a first-boot trace
+    /// (`sessions/default`) appears and the file is re-read. With the memo the
+    /// fresh-install verdict survives (plain stays DenyAll); without it the
+    /// wide signal judges the install upgraded and flips plain fully on
+    /// (fail-open).
+    #[cfg(unix)]
+    #[test]
+    fn freeze_persist_failure_survives_first_boot_trace_within_process() {
+        use std::os::unix::fs::PermissionsExt;
+
+        with_temp_home(|| {
+            let home = crate::platform::paths::pinvou3_home();
+            std::fs::set_permissions(&home, std::fs::Permissions::from_mode(0o555)).unwrap();
+            let probe = home.join(".root-probe");
+            if std::fs::write(&probe, b"").is_ok() {
+                let _ = std::fs::remove_file(&probe);
+                std::fs::set_permissions(&home, std::fs::Permissions::from_mode(0o755)).unwrap();
+                eprintln!(
+                    "ROOT-SKIP[freeze_persist_failure_survives_first_boot_trace_within_process]: running as root - read-only home fixture stays writable; NOT exercised"
+                );
+                return;
+            }
+
+            // First read on a fresh home: fresh-install verdict, persist fails,
+            // the in-process memo carries the verdict.
+            let file = load_disabled_bundles_file();
+            assert!(
+                file.plain_defaults_migrated && !file.initialized.contains("plain"),
+                "fresh-install verdict held in memory: {file:?}"
+            );
+            assert!(
+                !disabled_bundles_path().exists(),
+                "the freeze persist must have failed under the read-only home"
+            );
+
+            // First-boot trace appears, then a later read in the same process.
+            std::fs::set_permissions(&home, std::fs::Permissions::from_mode(0o755)).unwrap();
+            std::fs::create_dir_all(paths::sessions_root().join("default")).unwrap();
+
+            let file = load_disabled_bundles_file();
+            assert!(
+                !file.initialized.contains("plain"),
+                "the memo must deny the first-boot trace a re-evaluation (fail-open flip otherwise): {file:?}"
+            );
+            // The verdict now persists: the next save path lands the frozen file.
+            assert!(
+                disabled_bundles_path().exists() || file.plain_defaults_migrated,
+                "frozen verdict available for persist: {file:?}"
             );
         });
     }

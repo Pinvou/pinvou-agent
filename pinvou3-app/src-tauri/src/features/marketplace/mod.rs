@@ -1238,8 +1238,16 @@ impl<S: CredentialStore> MarketplaceManager<S> {
     fn active_python_locks_from_committed_state(
         &self,
     ) -> Result<Vec<python_dependencies::PythonDependencyLock>, String> {
+        // Round-14 minor #5: same collapsing-reader hazard the repair path
+        // guards — an unreadable registry collapsing to an empty preserve-set
+        // would turn prune_unused into "delete every managed environment".
+        // Distinguish "confirmed empty" from "set unknown" and let the caller
+        // skip the prune on Err. Uninstall holds the transaction lock while
+        // re-reading the just-committed registry, so the writer variant
+        // applies (no re-acquisition).
+        let installed = self.try_installed_ids_for_writer()?;
         let mut locks = Vec::new();
-        for installed_id in self.installed_ids() {
+        for installed_id in installed {
             let manifest = self
                 .trusted_dependency_manifest(&installed_id, None)
                 .map_err(|error| error.message().to_string())?;

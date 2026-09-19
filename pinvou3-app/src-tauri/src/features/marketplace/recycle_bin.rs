@@ -447,11 +447,16 @@ pub(crate) fn package_kind(pkg_dir: &Path) -> &'static str {
 ///      (the record leans to the safe side). The hidden set is only cleared,
 ///      never written (restored packages must stay visible to the user).
 ///
-/// 并发契约：全程持同 id `import_lock_for`（与导入/卸载/展示编辑同一把锁；
-/// 锁序 import → recycle → store，与卸载路径一致，无死锁面），恢复整链路
+/// 并发契约：全程持同 id `import_lock_for`（与导入/展示编辑同一把锁；
+/// 锁序 import → recycle → store），恢复整链路
 /// （取回 → 重建登记 → 供给）对并发的同 id 重导入/再卸载串行——取回前抢锁，
 /// 避免与并发导入的「rename → 备份重基线」交错；`install_upload` 只取全局
 /// 事务锁，不在本锁上重入。与卸载侧的 recycle preflight 对称：先锁再动目录。
+/// 注意（评审 R14-minor #9，如实的边界声明）：本函数持 import_lock 跨
+/// `install_upload` → 全局事务锁，而卸载侧的 companion 清理在事务锁内取
+/// import_lock——TRANSACTION↔import_lock 这一对**没有全局定序**（理论同实例
+/// 交叉见 `MARKETPLACE_TRANSACTION_LOCK` 文档），此处只声明本函数内部的锁序，
+/// 不声称与卸载路径全局一致。
 pub fn restore_plugin(pkg_id: &str) -> Result<RestoreRecycledResult, String> {
     let import_lock = super::plugin_import::import_lock_for(pkg_id);
     let _import_guard = import_lock.lock().unwrap_or_else(|p| p.into_inner());

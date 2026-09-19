@@ -340,7 +340,9 @@ pub async fn ima_connect(client_id: String, api_key: String) -> Result<Value, St
                 IMA_SKILL_ID,
             )
             .map_err(|e| {
-                format!("ima 技能默认关闭状态落盘失败（新会话将默认开启，请在工具列表手动关闭）: {e}")
+                format!(
+                    "ima 技能默认关闭状态落盘失败（新会话将默认开启，请在工具列表手动关闭）: {e}"
+                )
             })?;
             Ok(())
         })();
