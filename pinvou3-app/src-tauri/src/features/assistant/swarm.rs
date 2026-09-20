@@ -43,7 +43,7 @@ pub(crate) fn expert_candidates_reminder(lines: &[String]) -> Option<String> {
         return None;
     }
     Some(format!(
-        "本轮候选专家（用 profile=<id> 指定；更多可用 agent action=roster 查询）：\n{}",
+        "本轮候选专家（用 profile=<id> 指定；更多可用 agent action=roster 查询，可加 profile_query=关键词 过滤）：\n{}",
         lines.join("\n")
     ))
 }
