@@ -949,14 +949,14 @@ fn tools_list_shows_embedded_catalog_with_installed_state() {
     let tools = value["tools"].as_array().expect("tools array");
     assert!(tools.len() >= 11, "embedded catalog has 11 packages");
     let weather = tools.iter().find(|tool| tool["id"] == "weather").unwrap();
-    // JSON mirrors the GUI MarketplaceToolInfo DTO.
+    // JSON mirrors the GUI MarketplaceToolInfo DTO. Presentation-only
+    // fields (icon/color/category) stay in the frontend overlay on main,
+    // so the CLI's catalog view does not carry them.
     for field in [
         "id",
         "name",
         "description",
         "version",
-        "icon",
-        "category",
         "installed",
         "companion_skills",
         "source",

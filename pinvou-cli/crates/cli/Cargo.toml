@@ -15,9 +15,54 @@ adapter-smoke = { path = "../adapter-smoke" }
 agent-backend-api = { path = "../agent-backend-api" }
 benchmark-core = { path = "../benchmark-core" }
 serde_json.workspace = true
+# `code agents status kimi` mirrors the GUI's kimi config.toml gate
+# (`introspect::kimi_runtime_config_ready`); same major as pinvou3-tauri.
+toml = "1"
 anyhow = { workspace = true, optional = true }
 async-trait = { workspace = true, optional = true }
 pinvou-product-backend = { path = "../pinvou-product-backend", optional = true }
+# Product feature layer (prefs/credential store); same feature set as the
+# product-backend crate uses so the workspace builds one pinvou3-tauri.
+pinvou3-lib = { package = "pinvou3-tauri", path = "../../../pinvou3-app/src-tauri", default-features = false, features = [
+    "benchmark-hooks",
+    "local-embed",
+] }
+# Connection probes (`models test` / `models probe-local` / `settings search
+# test`): standalone HTTP mirroring app/commands/settings.rs; blocking client
+# so the CLI needs no async runtime. TLS stack unifies with pinvou3-tauri's
+# rustls configuration.
+reqwest = { version = "0.13", default-features = false, features = [
+    "blocking",
+    "json",
+    "rustls",
+    "system-proxy",
+] }
+# Bounded waits for vendor CLI child processes (`code login/logout`,
+# `connectors connect`); same crate as pinvou3-tauri's process helpers.
+wait-timeout = "0.2"
+# Cross-process advisory locks for mutating code-session state (rewind/undo/
+# checkout); already in the dependency graph and used by the app's
+# remote-control owner lock.
+fd-lock = "4"
+# Task/run storage ids; same v4 generator as the foundation's automation
+# manager (already in the graph via pinvou3-tauri). Platform-independent —
+# `scheduled` generates ids on every target.
+uuid = { version = "1", features = ["v4"] }
+# ONCE AT validation resolves naive local stamps through the system timezone
+# exactly like the foundation's `parse_once_at` (same major as pinvou3-tauri,
+# already in the graph), so a spring-forward gap is rejected at the CLI
+# instead of wedging the GUI scheduler sweep with an unparseable record.
+chrono = { version = "0.4", default-features = false, features = ["clock"] }
+
+# Process-group tree kill for timed-out vendor CLI children; Windows uses
+# `taskkill /T` instead (same split as the app's kill_pid_tree).
+[target.'cfg(unix)'.dependencies]
+libc = "0.2"
+
+[dev-dependencies]
+# Contract tests hold the same advisory lock files a second CLI process would
+# hold, pinning the busy-path contract.
+fd-lock = "4"
 
 [[bin]]
 name = "pinvou"

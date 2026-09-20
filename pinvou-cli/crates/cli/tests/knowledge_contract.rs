@@ -511,7 +511,6 @@ fn stats_type_counts_and_search_answer_zero_state_offline() {
     let stats = run_json(&["pinvou", "knowledge", "stats"]);
     assert_eq!(stats["totalFiles"], serde_json::json!(0));
     assert_eq!(stats["totalBytes"], serde_json::json!(0));
-    assert_eq!(stats["duplicateGroups"], serde_json::json!(0));
 
     let counts = run_json(&["pinvou", "knowledge", "type-counts"]);
     assert_eq!(counts["typeCounts"], serde_json::json!([]));
@@ -693,8 +692,8 @@ fn add_sources_indexes_a_text_file_end_to_end() {
     };
     assert_eq!(state["jobId"], serde_json::json!(job_id));
     assert!(
-        state["completed"].as_u64().unwrap_or(0) >= 1,
-        "expected one completed item"
+        state["done"].as_u64().unwrap_or(0) >= 1,
+        "expected one processed item"
     );
 
     let documents = run_json(&["pinvou", "knowledge", "documents", &id.to_string()]);

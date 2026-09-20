@@ -599,9 +599,6 @@ pub fn execute(parsed: ParsedCli) -> Result<CliOutcome, CliError> {
         CliCommand::Benchmark(BenchmarkCommand::RunNotAvailable(error)) => {
             Err(CliError::usage(error))
         }
-        CliCommand::Benchmark(BenchmarkCommand::NotAvailable(command)) => Err(CliError::usage(
-            format!("benchmark command '{command}' is not_available"),
-        )),
         CliCommand::Agent(command) => agent_task::execute(command, output),
         CliCommand::Sessions(command) => sessions::execute(command, output),
         CliCommand::Models(command) => models::execute(command, output),

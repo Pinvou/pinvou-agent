@@ -1093,7 +1093,7 @@ fn status_finds_a_gui_installed_npm_prefix_cli() {
     let script = prefix.join("bin").join("tmeet");
     std::fs::write(
         &script,
-        "#!/bin/sh\nif [ \"$1\" = \"--version\" ]; then echo \"1.0.15\"; exit 0; fi\nif [ \"$1\" = \"auth\" ]; then echo \"Logged in as someone@example.com\"; exit 0; fi\nexit 1\n",
+        "#!/bin/sh\nif [ \"$1\" = \"--version\" ]; then echo \"1.0.18\"; exit 0; fi\nif [ \"$1\" = \"auth\" ]; then echo \"Logged in as someone@example.com\"; exit 0; fi\nexit 1\n",
     )
     .unwrap();
     std::fs::set_permissions(&script, std::fs::Permissions::from_mode(0o755)).unwrap();

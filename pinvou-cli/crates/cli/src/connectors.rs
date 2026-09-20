@@ -49,15 +49,14 @@ use wait_timeout::ChildExt;
 
 use crate::support::{render, require_yes, resolve_secret, sandbox_home, success};
 use crate::{CliError, CliOutcome, OutputMode};
-use pinvou3_lib::features::marketplace::bundle::{
-    DINGTALK_SKILL_DIRS, LARK_SKILL_DIRS, TMEET_SKILL_DIRS,
-};
 use pinvou3_lib::features::marketplace::skill_marketplace::SkillMarketplaceManager;
 use pinvou3_lib::features::marketplace::store::{BundleRecord, BundleSource, BundleStore};
 use pinvou3_lib::platform::connector_lock::{
     artifact_pin, executable_name, file_sha256_hex, locked_cli_path,
 };
-use pinvou3_lib::platform::connector_skills::WECOM_SKILL_DIRS;
+use pinvou3_lib::platform::connector_skills::{
+    DINGTALK_SKILL_DIRS, LARK_SKILL_DIRS, TMEET_SKILL_DIRS, WECOM_SKILL_DIRS,
+};
 
 use pinvou3_lib::platform::connector_state::skills_visible_for;
 use pinvou3_lib::platform::credential_store::{
@@ -197,10 +196,10 @@ impl ConnectorKind {
         // The same tables the runtime bundle gate iterates, imported from the
         // app's single source of truth so the two surfaces cannot drift.
         match self {
-            Self::Feishu => LARK_SKILL_DIRS,
+            Self::Feishu => &LARK_SKILL_DIRS,
             Self::Wecom => &WECOM_SKILL_DIRS,
-            Self::Dingtalk => DINGTALK_SKILL_DIRS,
-            Self::Tmeet => TMEET_SKILL_DIRS,
+            Self::Dingtalk => &DINGTALK_SKILL_DIRS,
+            Self::Tmeet => &TMEET_SKILL_DIRS,
         }
     }
 }

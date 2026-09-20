@@ -841,14 +841,8 @@ fn stats(output: OutputMode) -> Result<CliOutcome, CliError> {
         .stats()
         .map_err(|error| feature_error("stats", error))?;
     let human = format!(
-        "total_files: {}\ntotal_bytes: {}\nhashed: {}\nduplicate_groups: {}\n\
-         duplicate_files: {}\nduplicate_wasted_bytes: {}",
-        stats.total_files,
-        stats.total_bytes,
-        stats.hashed,
-        stats.duplicate_groups,
-        stats.duplicate_files,
-        stats.duplicate_wasted_bytes
+        "total_files: {}\ntotal_bytes: {}",
+        stats.total_files, stats.total_bytes
     );
     Ok(success(render(
         output,
@@ -1209,14 +1203,12 @@ fn collections_add_sources(
     // Success requires a genuinely new job (or one demonstrably in flight);
     // the pre-call latest job re-reported in a terminal phase means no
     // import was created and the requested sources were never enqueued.
-    if state.job_id == previous_job
-        && !matches!(state.phase.as_str(), "preparing" | "running" | "parsing")
-    {
+    if state.job_id == previous_job && !state.running {
         return Err(CliError::failed(format!(
             "knowledge index start failed: collection {id} has no freshly created index \
-             job (latest: {}, phase: {}); the requested sources were not enqueued",
+             job (latest: {}, running: {}); the requested sources were not enqueued",
             state.job_id.as_deref().unwrap_or("none"),
-            state.phase
+            state.running
         )));
     }
     index_started("index job", Ok(state), output)
@@ -1377,12 +1369,13 @@ fn index_cancel(job_id: &str, output: OutputMode) -> Result<CliOutcome, CliError
         format!("index cancel signalled for job {job_id}")
     } else {
         format!(
-            "index cancel: job {job_id} was not active (phase: {}); nothing was signalled",
-            latest.phase
+            "index cancel: job {job_id} was not active (running: {}); nothing was signalled",
+            latest.running
         )
     };
     let human = format!("{header}\n{}", render_index_state(&state));
-    let value = serde_json::to_value(&state).unwrap_or_default();
+    let mut value = serde_json::to_value(&state).unwrap_or_default();
+    value["phase"] = serde_json::json!(display_phase(&state));
     Ok(success(render(output, human, &value)))
 }
 
@@ -1458,21 +1451,39 @@ fn index_started(
 
 fn index_out(header: &str, state: IndexState, output: OutputMode) -> Result<CliOutcome, CliError> {
     let human = format!("{header}\n{}", render_index_state(&state));
-    let value = serde_json::to_value(&state).unwrap_or_default();
+    let mut value = serde_json::to_value(&state).unwrap_or_default();
+    value["phase"] = serde_json::json!(display_phase(&state));
     Ok(success(render(output, human, &value)))
 }
 
+/// The app's job state no longer carries a phase string; derive the CLI's
+/// display phase from the surviving flags so the command's output contract
+/// (human and JSON) stays stable across the app's state redesign.
+fn display_phase(state: &IndexState) -> String {
+    if state.running {
+        "running".into()
+    } else if state.resumable {
+        "interrupted".into()
+    } else if state.job_id.is_some() {
+        if state.failed > 0 {
+            "done_with_errors".into()
+        } else {
+            "done".into()
+        }
+    } else {
+        "idle".into()
+    }
+}
+
 fn render_index_state(state: &IndexState) -> String {
+    let phase = display_phase(state);
     let mut lines = vec![
         format!("job: {}", state.job_id.as_deref().unwrap_or("none")),
-        format!("phase: {}", state.phase),
+        format!("phase: {phase}"),
         format!("running: {}", state.running),
         format!("resumable: {}", state.resumable),
         format!("progress: {}/{}", state.done, state.total),
-        format!(
-            "completed: {}, skipped: {}, failed: {}",
-            state.completed, state.skipped, state.failed
-        ),
+        format!("failed: {}", state.failed),
     ];
     if let Some(path) = &state.current_path {
         lines.push(format!("current: {path}"));
