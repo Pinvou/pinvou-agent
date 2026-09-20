@@ -65,6 +65,37 @@ static MARKETPLACE_TRANSACTION_LOCK: Mutex<()> = Mutex::new(());
 /// any entry; that self-heal is complementary and outside this key-set footprint.)
 pub(crate) const ENGINE_OWNED_MCP_SERVER_KEYS: &[&str] = &["pinvou3", "pinvou", "browser"];
 
+/// Back up a corrupt JSON config file next to itself as `<stem>.<epoch>`,
+/// skipping the write when an existing backup already holds identical bytes —
+/// a persistent parse failure must never mint one copy per boot. Shared by
+/// `mcp.json` (reconcile loaders) and `installed.json` (registry recovery).
+pub(super) fn backup_corrupt_json_file(path: &std::path::Path, stem: &str, content: &str) {
+    let Some(parent) = path.parent() else {
+        return;
+    };
+    let prefix = format!("{stem}.");
+    if let Ok(entries) = std::fs::read_dir(parent) {
+        let identical_backup_exists = entries.flatten().any(|entry| {
+            entry.file_name().to_string_lossy().starts_with(&prefix)
+                && std::fs::read(entry.path()).is_ok_and(|bytes| bytes == content.as_bytes())
+        });
+        if identical_backup_exists {
+            return;
+        }
+    }
+    let ts = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_secs())
+        .unwrap_or(0);
+    let backup = parent.join(format!("{prefix}{ts}"));
+    if let Err(e) = std::fs::write(&backup, content) {
+        log::warn!(
+            "[marketplace] failed to backup corrupt {stem} to {}: {e}",
+            backup.display()
+        );
+    }
+}
+
 /// A freshly written journal on Windows can be briefly held by antivirus or indexer
 /// processes, so the commit removal retries before failing — escalating a
 /// self-healing transient hold into Integrity (which blocks every assistant startup) would be disproportionate (review 2026-08-28).
@@ -1406,10 +1437,13 @@ impl<S: CredentialStore> MarketplaceManager<S> {
     ///   (custom/unknown entries keep the G4 guard semantics of `migrate_mcp_json_paths`).
     ///   An unparseable mcp.json is backed up and left untouched for that boot instead
     ///   of being reset — a reset would destroy the custom entries and preserved user
-    ///   fields, re-creating the parse-failure drift listed above. The whole boot
-    ///   honors the same guarantee: `run_mcp_startup_maintenance` consults
-    ///   `mcp_json_unparseable` and keeps the builtin upsert off the file too, so the
-    ///   original bytes survive every writer until the user fixes or removes the file.
+    ///   fields, re-creating the parse-failure drift listed above. The whole boot and
+    ///   the user-action writers honor the same guarantee: every mcp.json writer
+    ///   (install/uninstall, the retired-tool cleanup and the Python-repair downgrade
+    ///   that route through them, the builtin upsert) either consults
+    ///   `mcp_json_unparseable`, refuses via `load_mcp_json_for_reconcile`, or parses
+    ///   with a clean `Err` — so the original bytes survive every writer until the
+    ///   user fixes or removes the file.
     /// Idempotent: a second run on healthy state performs zero writes. Per-tool failures
     /// never block startup. A credential that is absent from the store degrades: the
     /// entry is restored/rebuilt without its credential wiring and the auth failure
@@ -1605,15 +1639,59 @@ impl<S: CredentialStore> MarketplaceManager<S> {
             })
             .unwrap_or_default();
         match self.rebuild_local_mcp_entry(manifest, &preserved) {
-            Ok(()) => actions.push(format!(
-                "tool '{}': rebuilt mcp.json entry with {reason}",
-                manifest.id
-            )),
+            Ok(()) => {
+                let mut note = format!(
+                    "tool '{}': rebuilt mcp.json entry with {reason}",
+                    manifest.id
+                );
+                // The rebuild re-derives env from the manifest and the credential
+                // store; install-time (or hand-edited) env values that neither
+                // source can reproduce are gone. Name the keys so the note is
+                // actionable — never their values, which may be sensitive.
+                if let Some(caveat) = Self::dropped_local_env_keys(manifest, entry) {
+                    note.push_str(&caveat);
+                }
+                actions.push(note);
+            }
             Err(error) => actions.push(format!(
                 "tool '{}' mcp.json entry ({reason}) not rebuilt: {error}",
                 manifest.id
             )),
         }
+    }
+
+    /// Env keys of a dead/malformed local entry that the fresh-install rebuild
+    /// cannot reproduce: anything outside the manifest's declarative env,
+    /// secret channels, and config fields — i.e. install-time user input or a
+    /// hand edit. Key names only, never values.
+    fn dropped_local_env_keys(
+        manifest: &types::ToolManifest,
+        old_entry: &serde_json::Value,
+    ) -> Option<String> {
+        let old_env = old_entry.get("env")?.as_object()?;
+        let mut reproducible = std::collections::HashSet::new();
+        reproducible.extend(manifest.env.keys().cloned());
+        reproducible.extend(manifest.secret_env.iter().map(|s| s.key.clone()));
+        reproducible.extend(
+            manifest
+                .config_fields
+                .iter()
+                .filter(|field| field.target == "env")
+                .map(|field| field.key.clone()),
+        );
+        let dropped: Vec<&str> = old_env
+            .keys()
+            .map(String::as_str)
+            .filter(|key| !reproducible.contains(*key))
+            .collect();
+        if dropped.is_empty() {
+            return None;
+        }
+        Some(format!(
+            "; its env key(s) {} came from install-time input or a hand edit and were not \
+             preserved — reinstall the tool to re-enter them",
+            dropped.join(", ")
+        ))
     }
 
     /// Recreate a local tool's mcp.json entry with the exact fresh-install form,
@@ -1840,20 +1918,7 @@ impl<S: CredentialStore> MarketplaceManager<S> {
     }
 
     fn backup_corrupt_installed(&self, content: &str) {
-        let Some(parent) = self.installed_file.parent() else {
-            return;
-        };
-        let ts = std::time::SystemTime::now()
-            .duration_since(std::time::UNIX_EPOCH)
-            .map(|d| d.as_secs())
-            .unwrap_or(0);
-        let backup = parent.join(format!("installed.json.corrupt.{ts}"));
-        if let Err(e) = std::fs::write(&backup, content) {
-            eprintln!(
-                "[marketplace] failed to backup corrupt installed.json to {}: {e}",
-                backup.display()
-            );
-        }
+        backup_corrupt_json_file(&self.installed_file, "installed.json.corrupt", content);
     }
 
     fn recover_installed_ids_from_mcp(&self) -> Vec<String> {
@@ -2593,7 +2658,13 @@ mod tests {
             let actions = manager.reconcile_installed_mcp_entries().unwrap();
             assert_eq!(
                 actions,
-                vec!["tool 'cf-y': restored missing remote entry 'cf-remote-y'".to_string()]
+                vec![
+                    "tool 'cf-y': restored missing remote entry 'cf-remote-y'; no stored \
+                      credential for LOST_KEY — restored without that auth wiring; reinstall \
+                      the tool to re-enter it"
+                        .to_string()
+                ],
+                "the restore note must disclose the degraded credential channel"
             );
             let entry = &read_mcp_json()["servers"]["cf-remote-y"];
             assert_eq!(entry["url"], "https://cf.example.com/mcp");
@@ -2824,8 +2895,13 @@ mod tests {
             let actions = manager.reconcile_installed_mcp_entries().unwrap();
             assert_eq!(
                 actions,
-                vec!["tool 'sh-y': restored missing remote entry 'sh-remote-y'".to_string()],
-                "the restore must degrade, not skip the whole tool"
+                vec![
+                    "tool 'sh-y': restored missing remote entry 'sh-remote-y'; no stored \
+                      credential for SH_LOST_KEY — restored without that auth wiring; reinstall \
+                      the tool to re-enter it"
+                        .to_string()
+                ],
+                "the restore must degrade, not skip the whole tool, and say so"
             );
             let entry = &read_mcp_json()["servers"]["sh-remote-y"];
             assert_eq!(entry["url"], "https://sh.example.com/mcp");
@@ -6314,6 +6390,278 @@ mod tests {
             let before = std::fs::read(&mcp_path).unwrap();
             assert_eq!(manager.reconcile_installed_mcp_entries().unwrap().len(), 1);
             assert_eq!(std::fs::read(&mcp_path).unwrap(), before);
+        });
+    }
+
+    /// Credential store modeling the OS-keyring-unavailable state: reads are
+    /// served by the file fallback (a plain miss, `Ok(None)`), and
+    /// `os_keyring_unreachable` reports the fallback while the flag is set.
+    /// A miss under fallback may be a credential sitting in the unreachable
+    /// keyring, so it must be classified as a store read failure, not as an
+    /// absent credential.
+    struct FallbackKeyringStore {
+        inner: MemoryCredentialStore,
+        fallback_active: std::sync::Arc<std::sync::atomic::AtomicBool>,
+    }
+
+    impl CredentialStore for FallbackKeyringStore {
+        fn get(&self, reference: &CredentialReference) -> Result<Option<String>, CredentialError> {
+            self.inner.get(reference)
+        }
+        fn set(&self, reference: &CredentialReference, value: &str) -> Result<(), CredentialError> {
+            self.inner.set(reference, value)
+        }
+        fn delete(&self, reference: &CredentialReference) -> Result<(), CredentialError> {
+            self.inner.delete(reference)
+        }
+        fn os_keyring_unreachable(&self, _reference: &CredentialReference) -> bool {
+            self.fallback_active
+                .load(std::sync::atomic::Ordering::SeqCst)
+        }
+    }
+
+    /// The probe-fallback regression: when the OS keyring is unreachable at
+    /// startup, a stored credential reads as a plain miss through the file
+    /// fallback. Classifying that miss as "absent" would write an unwired
+    /// entry that no later startup repairs (the remote matcher ignores
+    /// credential fields); it must skip the restore instead, and the next
+    /// startup — keyring reachable again — heals the entry with full wiring.
+    #[test]
+    fn restore_retries_while_os_keyring_falls_back_and_heals_when_reachable() {
+        with_temp_home(|| {
+            let manifest = serde_json::json!({
+                "id":"fb-x","name":"fb-x","description":"d","version":"1","icon":"x","category":"c",
+                "mcp_tools":[],"command":"","args":[],
+                "servers":[{"name":"fb-remote","url":"https://fb.example.com/mcp"}],
+                "secret_headers":[{"header":"Authorization","scheme":"Bearer","source_key":"FB_KEY","provider":"fb","required":true}]
+            });
+            write_tool_manifest("fb-x", &serde_json::to_string_pretty(&manifest).unwrap());
+            write_installed_ids(&["fb-x".to_string()]);
+            let fallback_active = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(true));
+            let manager = MarketplaceManager::with_store(FallbackKeyringStore {
+                inner: MemoryCredentialStore::default(),
+                fallback_active: fallback_active.clone(),
+            });
+
+            // Phase 1: keyring unreachable at startup — the credential lives
+            // in the OS keyring, so the file fallback reads a plain miss.
+            // The tool must be skipped with a note, zero writes (mcp.json may
+            // not even exist yet).
+            let actions = manager.reconcile_installed_mcp_entries().unwrap();
+            assert_eq!(actions.len(), 1, "{actions:?}");
+            assert!(
+                actions[0].contains("reconciliation skipped"),
+                "the fallback miss must fail the restore as a store error: {actions:?}"
+            );
+            assert!(
+                !paths::mcp_config_path().exists(),
+                "no unwired entry may be written while the keyring is unreachable"
+            );
+
+            // Phase 2: keyring reachable again (the credential is readable
+            // through it) — the entry is restored with its full wiring.
+            fallback_active.store(false, std::sync::atomic::Ordering::SeqCst);
+            manager
+                .credential_store
+                .set(
+                    &mcp_secret_reference("fb-x", "header", "FB_KEY"),
+                    "stored-token",
+                )
+                .unwrap();
+            let actions = manager.reconcile_installed_mcp_entries().unwrap();
+            assert_eq!(
+                actions,
+                vec!["tool 'fb-x': restored missing remote entry 'fb-remote'".to_string()]
+            );
+            let entry = &read_mcp_json()["servers"]["fb-remote"];
+            assert_eq!(
+                entry["bearer_token_env_var"],
+                serde_json::Value::String(mcp_secret_env_var("FB_KEY")),
+                "the healed keyring must yield full credential wiring: {entry}"
+            );
+        });
+    }
+
+    /// An uninstall must refuse to rewrite an unparseable mcp.json: the boot
+    /// retired-tool cleanup and the Python-repair downgrade both route through
+    /// `uninstall`, and a reset there would destroy the file before (cleanup)
+    /// or despite (downgrade) the reconcile's backup — the exact data loss the
+    /// corrupt-file contract exists to prevent. The uninstall rolls back
+    /// instead and the bytes survive untouched.
+    #[test]
+    fn uninstall_refuses_to_reset_a_corrupt_mcp_json() {
+        with_temp_home(|| {
+            write_local_tool_fixture("corrupt-u", false);
+            write_installed_ids(&["corrupt-u".to_string()]);
+            let mcp_path = paths::mcp_config_path();
+            std::fs::create_dir_all(mcp_path.parent().unwrap()).unwrap();
+            let corrupt = r#"{"servers": {,"trailing":"comma"}"#;
+            std::fs::write(&mcp_path, corrupt).unwrap();
+
+            let manager = MarketplaceManager::with_store(MemoryCredentialStore::default());
+            let error = manager.uninstall("corrupt-u").unwrap_err();
+            assert!(
+                error.contains("mcp.json is unparseable"),
+                "the uninstall must refuse with an actionable error: {error}"
+            );
+            assert_eq!(
+                std::fs::read(&mcp_path).unwrap(),
+                corrupt.as_bytes(),
+                "the uninstall must not touch the corrupt file"
+            );
+            let installed: Vec<String> = serde_json::from_str(
+                &std::fs::read_to_string(
+                    paths::pinvou3_home()
+                        .join("marketplace")
+                        .join("installed.json"),
+                )
+                .unwrap(),
+            )
+            .unwrap();
+            assert_eq!(
+                installed,
+                vec!["corrupt-u".to_string()],
+                "the rolled-back uninstall must leave the registry unchanged"
+            );
+        });
+    }
+
+    /// The UI install writer must refuse an unparseable mcp.json the same way:
+    /// an install that silently reset the file would destroy custom entries
+    /// during exactly the window the timeline note tells the user to fix it.
+    #[test]
+    fn install_writer_refuses_to_reset_a_corrupt_mcp_json() {
+        with_temp_home(|| {
+            write_local_tool_fixture("corrupt-i", false);
+            let mcp_path = paths::mcp_config_path();
+            std::fs::create_dir_all(mcp_path.parent().unwrap()).unwrap();
+            let corrupt = r#"{"servers": {,"trailing":"comma"}"#;
+            std::fs::write(&mcp_path, corrupt).unwrap();
+
+            let manager = MarketplaceManager::with_store(MemoryCredentialStore::default());
+            let manifest = manager.load_manifest("corrupt-i").unwrap();
+            let error = manager
+                .add_to_mcp_json(
+                    &manifest,
+                    &std::collections::HashMap::new(),
+                    &mcp_catalog::package_mcp_dir("corrupt-i"),
+                    None,
+                )
+                .unwrap_err();
+            assert!(
+                error.contains("mcp.json is unparseable"),
+                "the install writer must refuse with an actionable error: {error}"
+            );
+            assert_eq!(
+                std::fs::read(&mcp_path).unwrap(),
+                corrupt.as_bytes(),
+                "the install writer must not touch the corrupt file"
+            );
+        });
+    }
+
+    /// A rebuild re-derives env from the manifest and the credential store;
+    /// install-time (or hand-edited) env values outside those sources are
+    /// gone. The success note must say so — naming keys, never values —
+    /// instead of reporting an unqualified success.
+    #[test]
+    fn rebuild_notes_dropped_install_time_env_keys() {
+        with_temp_home(|| {
+            write_local_tool_fixture("env-x", false);
+            write_installed_ids(&["env-x".to_string()]);
+            seed_mcp_json(serde_json::json!({
+                "env-x": {
+                    "command": "/x/w.py",
+                    "args": [],
+                    "env": {"MY_INSTALL_TIME_VAR": "install-input", "KEEP_MANIFEST_VAR": "m"}
+                }
+            }));
+            let manager = MarketplaceManager::with_store(MemoryCredentialStore::default());
+
+            let actions = manager.reconcile_installed_mcp_entries().unwrap();
+            assert_eq!(actions.len(), 1, "{actions:?}");
+            assert!(
+                actions[0].contains("rebuilt mcp.json entry")
+                    && actions[0].contains("MY_INSTALL_TIME_VAR")
+                    && actions[0].contains("not preserved"),
+                "the rebuild note must disclose the dropped env key: {actions:?}"
+            );
+            assert!(
+                !actions[0].contains("install-input"),
+                "the note must never carry the dropped value: {actions:?}"
+            );
+            let entry = &read_mcp_json()["servers"]["env-x"];
+            assert!(
+                entry["env"].get("MY_INSTALL_TIME_VAR").is_none(),
+                "the dropped key must actually be gone: {entry}"
+            );
+        });
+    }
+
+    /// A restore that degraded a secret channel (no stored credential) must
+    /// say so in its note instead of reporting an unqualified success that
+    /// 401s on first use.
+    #[test]
+    fn restore_notes_secret_channels_restored_without_wiring() {
+        with_temp_home(|| {
+            let manifest = serde_json::json!({
+                "id":"nc-x","name":"nc-x","description":"d","version":"1","icon":"x","category":"c",
+                "mcp_tools":[],"command":"","args":[],
+                "servers":[{"name":"nc-remote","url":"https://nc.example.com/mcp"}],
+                "secret_headers":[{"header":"Authorization","scheme":"Bearer","source_key":"NC_KEY","provider":"nc","required":true}]
+            });
+            write_tool_manifest("nc-x", &serde_json::to_string_pretty(&manifest).unwrap());
+            write_installed_ids(&["nc-x".to_string()]);
+            let manager = MarketplaceManager::with_store(MemoryCredentialStore::default());
+
+            let actions = manager.reconcile_installed_mcp_entries().unwrap();
+            assert_eq!(actions.len(), 1, "{actions:?}");
+            assert!(
+                actions[0].contains("restored missing remote entry 'nc-remote'")
+                    && actions[0].contains("no stored credential for NC_KEY"),
+                "the restore note must disclose the degraded channel: {actions:?}"
+            );
+            let entry = &read_mcp_json()["servers"]["nc-remote"];
+            assert!(
+                entry.get("bearer_token_env_var").is_none() && entry.get("env_headers").is_none(),
+                "the degraded entry must carry no auth wiring: {entry}"
+            );
+        });
+    }
+
+    /// Legacy remote manifests (sensitive `manifest.env` key, no secret
+    /// channels) must install the env-var NAME wiring the engine resolves at
+    /// request time (`bearer_token_env_var`) — not a literal `${...}`
+    /// placeholder in `headers`, which the engine sends as-is and never
+    /// expands.
+    #[test]
+    fn legacy_remote_env_key_installs_bearer_env_var_not_literal_header() {
+        with_temp_home(|| {
+            let manifest = serde_json::json!({
+                "id":"lg-x","name":"lg-x","description":"d","version":"1","icon":"x","category":"c",
+                "mcp_tools":[],"command":"","args":[],
+                "servers":[{"name":"lg-remote","url":"https://lg.example.com/mcp"}],
+                "env":{"VENDOR_API_KEY":"placeholder-in-manifest"}
+            });
+            write_tool_manifest("lg-x", &serde_json::to_string_pretty(&manifest).unwrap());
+            write_installed_ids(&["lg-x".to_string()]);
+            let manager = MarketplaceManager::with_store(MemoryCredentialStore::default());
+
+            let actions = manager.reconcile_installed_mcp_entries().unwrap();
+            assert_eq!(
+                actions,
+                vec!["tool 'lg-x': restored missing remote entry 'lg-remote'".to_string()]
+            );
+            let entry = &read_mcp_json()["servers"]["lg-remote"];
+            assert_eq!(
+                entry["bearer_token_env_var"],
+                serde_json::Value::String(mcp_secret_env_var("VENDOR_API_KEY")),
+                "the legacy channel must land in the resolved bearer env var: {entry}"
+            );
+            assert!(
+                entry.get("headers").is_none(),
+                "no literal ${{}} placeholder may be written into headers: {entry}"
+            );
         });
     }
 }
