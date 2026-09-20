@@ -1289,8 +1289,13 @@ impl AcpPool {
     pub async fn rebind_blocking_sessions(&self, session_ids: &[String]) -> Option<Vec<String>> {
         rebind_blocking_from_sessions(&self.sessions, session_ids, |runtime| {
             runtime.busy.load(std::sync::atomic::Ordering::Acquire)
-                || runtime.configuring.load(std::sync::atomic::Ordering::Acquire)
-                || runtime.prompt_pending.load(std::sync::atomic::Ordering::Acquire) > 0
+                || runtime
+                    .configuring
+                    .load(std::sync::atomic::Ordering::Acquire)
+                || runtime
+                    .prompt_pending
+                    .load(std::sync::atomic::Ordering::Acquire)
+                    > 0
         })
         .await
     }
@@ -4877,7 +4882,10 @@ mod tests {
     async fn rebind_fence_lists_only_blocking_sessions() {
         let sessions: Mutex<HashMap<String, FakeRebindEntry>> = Mutex::new(HashMap::from([
             ("busy-session".to_string(), FakeRebindEntry::busy()),
-            ("pending-session".to_string(), FakeRebindEntry::awaiting_admission()),
+            (
+                "pending-session".to_string(),
+                FakeRebindEntry::awaiting_admission(),
+            ),
             ("idle-session".to_string(), FakeRebindEntry::idle()),
         ]));
         let decided = rebind_blocking_from_sessions(

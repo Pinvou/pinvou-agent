@@ -5208,4 +5208,3 @@ fn boot_migration_partial_failure_retains_and_extends() {
     let _ = std::fs::remove_dir_all(&target);
     let _ = std::fs::remove_dir_all(&stuck_path);
 }
-
