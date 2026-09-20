@@ -56,10 +56,10 @@ pub async fn set_bundle_visibility(
     let scope = parse_connector_scope(scope.as_deref())?;
     let ids = bundle_ids.clone();
     tokio::task::spawn_blocking(move || {
-        crate::features::marketplace::save_hidden_bundles_for(scope, &ids);
+        crate::features::marketplace::save_hidden_bundles_for(scope, &ids)
     })
     .await
-    .map_err(|e| format!("set_bundle_visibility join: {e}"))?;
+    .map_err(|e| format!("set_bundle_visibility join: {e}"))??;
     refresh_tools_and_broadcast(&app, pool.inner()).await;
     Ok(())
 }
