@@ -3112,7 +3112,7 @@ impl AcpPool {
     }
 
     /// Rebind eviction (review #463 eviction-tail TOCTOU + round-8 M1/M2):
-    /// like [`evict_if_idle`](Self::evict_if_idle) the recheck and the removal
+    /// like `evict_if_idle` the recheck and the removal
     /// are atomic under the sessions lock, but with the rebind predicate — a
     /// turn that starts after the command layer's post-migration recheck is
     /// observed as busy/configuring and keeps its runtime instead of being
