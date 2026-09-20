@@ -1136,18 +1136,24 @@ mod tests {
         std::fs::create_dir_all(&primary).expect("create primary");
         std::fs::create_dir_all(&extra).expect("create extra");
 
-        assert!(project_keychain_roots(&store, &id).is_empty(), "unbound = empty");
+        assert!(
+            project_keychain_roots(&store, &id).is_empty(),
+            "unbound = empty"
+        );
 
         store
-            .bind_session_workspace_with_roots(
-                &id,
-                primary.clone(),
-                vec![primary, extra.clone()],
-            )
+            .bind_session_workspace_with_roots(&id, primary.clone(), vec![primary, extra.clone()])
             .expect("bind with keychain");
         let projected = project_keychain_roots(&store, &id);
-        assert_eq!(projected.len(), 2, "the list item must project the store's keychain");
-        assert!(projected.iter().any(|root| root.ends_with("extra")), "{projected:?}");
+        assert_eq!(
+            projected.len(),
+            2,
+            "the list item must project the store's keychain"
+        );
+        assert!(
+            projected.iter().any(|root| root.ends_with("extra")),
+            "{projected:?}"
+        );
 
         let _ = std::fs::remove_dir_all(&tmp);
     }
