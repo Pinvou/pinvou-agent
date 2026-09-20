@@ -2808,7 +2808,8 @@ mod tests {
         let _ = std::fs::remove_dir_all(&tmp);
     }
 
-    /// 保护契约回归：只剩无标记旧扁平目录（内置/手放）时仍拒绝删除。
+    /// 保护契约回归：只剩无标记旧扁平目录（内置/手放,任意名字含历史用例 pua）时
+    /// 仍拒绝删除。
     #[test]
     fn uninstall_still_protects_unmarked_legacy_dir() {
         let tmp = fresh_dir("protect_unmarked");
@@ -3436,19 +3437,6 @@ mod tests {
             mgr.uninstall("tencent-docs-skill").unwrap();
             assert!(!skill_dir.exists(), "卸载应删目录");
         });
-    }
-
-    /// 不在包目录的目录（旧布局内置/手放）拒绝卸载,防误删。
-    #[test]
-    fn uninstall_refuses_non_market_dir() {
-        let tmp = fresh_dir("protect");
-        let legacy = tmp.join("bundle/skills");
-        std::fs::create_dir_all(legacy.join("pua")).unwrap();
-        std::fs::write(legacy.join("pua").join("SKILL.md"), "---\nname: pua\n---").unwrap();
-        let mgr = SkillMarketplaceManager::with_roots(tmp.clone());
-        assert!(mgr.uninstall("pua").is_err(), "非市场目录应拒删");
-        assert!(legacy.join("pua").exists(), "目录应保留");
-        let _ = std::fs::remove_dir_all(&tmp);
     }
 
     /// 用户上传 zip:解压找 SKILL.md → 按 frontmatter name 落盘 → list 标 user_uploaded。

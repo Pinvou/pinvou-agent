@@ -474,6 +474,7 @@
       folderPickerUnavailable: "The folder picker cannot be opened in this environment",
       pickFolderTitle: "Choose a working directory",
       kbPickFolderTitle: "Choose a folder to import into the knowledge base",
+      rebindPickFolderTitle: "Choose the folder to rebind this project to",
       gateApproveFailed: "⚠️ Approval failed: ",
       gateRejectFailed: "⚠️ Rejection failed: ",
       roleRetried: (roleId, result) => "🔄 Rerunning " + roleId + ": " + result,
@@ -606,6 +607,7 @@
       folderPickerUnavailable: "現在の環境ではフォルダー選択を開けません",
       pickFolderTitle: "作業ディレクトリを選択",
       kbPickFolderTitle: "知識ベースにインポートするフォルダーを選択",
+      rebindPickFolderTitle: "このプロジェクトの再バインド先フォルダーを選択",
       gateApproveFailed: "⚠️ 承認に失敗: ",
       gateRejectFailed: "⚠️ 差し戻しに失敗: ",
       roleRetried: (roleId, result) => "🔄 再実行 " + roleId + ": " + result,
@@ -738,6 +740,7 @@
       folderPickerUnavailable: "当前环境无法打开文件夹选择器",
       pickFolderTitle: "选择工作目录",
       kbPickFolderTitle: "选择要导入知识库的文件夹",
+      rebindPickFolderTitle: "选择重绑定项目的新文件夹",
       gateApproveFailed: "⚠️ 通过失败: ",
       gateRejectFailed: "⚠️ 打回失败: ",
       roleRetried: (roleId, result) => "🔄 重跑 " + roleId + ": " + result,
@@ -9907,6 +9910,15 @@
     const p = Array.isArray(selected) ? selected[0] : selected;
     return p ? [p] : [];
   }
+  // Dedicated picker for directory rebind (broken-link repair): single
+  // selection with a title that matches the rebind semantics; same surface as
+  // the desktop bridge (review #463 Minor 6).
+  async function pickRebindFolder() {
+    if (!dialogOpen) { addSystemItem(bt("filePickUnavailable")); return null; }
+    const selected = await dialogOpen({ directory: true, multiple: false, title: bt("rebindPickFolderTitle") });
+    if (!selected) return null;
+    return Array.isArray(selected) ? (selected[0] || null) : selected;
+  }
   async function pickFeedbackFiles() {
     if (!dialogOpen) return [];
     const selected = await dialogOpen({
@@ -10148,6 +10160,7 @@
     // 通用宿主文件选择器（知识库、反馈等功能继续复用）。
     pickFiles,
     pickFolders,
+    pickRebindFolder,
     pickFeedbackFiles,
     // 卡片池: 专家面具
     loadPersonas,

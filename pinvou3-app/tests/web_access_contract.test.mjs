@@ -127,7 +127,6 @@ for (const command of [
   'chat',
   'ingest_file',
   'save_session_messages',
-  'web_access_save_session_messages_chunk',
   'transcribe_voice_audio',
   'save_model',
   'delete_model',
@@ -142,8 +141,6 @@ for (const command of [
   'install_marketplace_tool',
   'uninstall_marketplace_skill',
   'uninstall_marketplace_tool',
-  'import_skill_package',
-  'import_skill_package_bytes',
   'codex_acp_prompt',
   'get_codex_acp_timeline',
   'get_codex_acp_session_info',
@@ -851,5 +848,19 @@ assert.match(chatView, /composerH \? composerH \+ 64 : 176/,
   'the bottom spacer must clear both the floating composer and its fade mask');
 assert.match(chatView, /composerH \? composerH \+ 48 : 172/,
   'the fade mask must remain shorter than the bottom spacer');
+
+
+// review #464 round-5 item 3: the web session list must delegate the
+// whole-list projection (metadata + workspace_binding) to the extracted
+// project_session_list_for_web — reverting that one line must not stay green.
+{
+  const start = remoteControlCommands.indexOf('pub async fn web_access_list_sessions');
+  assert.notStrictEqual(start, -1);
+  const body = remoteControlCommands.slice(start, start + 900);
+  assert.ok(
+    body.includes('project_session_list_for_web(&mut sessions)'),
+    'web_access_list_sessions must delegate the web projection to project_session_list_for_web',
+  );
+}
 
 console.log('web access contract tests passed');
