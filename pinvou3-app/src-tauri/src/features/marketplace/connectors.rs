@@ -6,7 +6,7 @@
 //! 是否含远程 server 委托给 `add_remote_to_mcp_json` / `add_local_to_mcp_json`。
 
 use std::collections::HashMap;
-use std::path::Path;
+use std::path::{Path, PathBuf};
 use std::sync::{Mutex, MutexGuard};
 
 use crate::platform::paths;
@@ -14,7 +14,7 @@ use crate::platform::paths;
 use super::MarketplaceManager;
 use super::bundle;
 use super::python_dependencies;
-use super::secrets::{is_sensitive_key_name, set_remote_secret_header};
+use super::secrets::{is_sensitive_key_name, mcp_secret_missing_error, set_remote_secret_header};
 use super::types::ToolManifest;
 
 /// mcp.json 读-改-写的进程内串行化（四轮评审 M-8）：add/remove 是裸读-改-写，
@@ -56,6 +56,46 @@ pub(super) fn write_json_pretty(path: &Path, value: &serde_json::Value) -> Resul
 
 fn default_mcp_json() -> serde_json::Value {
     serde_json::json!({"servers": {}})
+}
+
+/// Load mcp.json for a reconcile write. A file that exists but cannot be
+/// parsed is backed up (`mcp.json.corrupt.<ts>`, mirroring the corrupt
+/// `installed.json` handling) and reported as an error — the reconcile never
+/// resets a file it cannot read. Resetting would destroy custom entries and
+/// preserved user fields, re-creating the exact parse-failure drift the
+/// startup reconcile exists to heal.
+pub(super) fn load_mcp_json_for_reconcile() -> Result<(PathBuf, serde_json::Value), String> {
+    let mcp_path = paths::mcp_config_path();
+    if !mcp_path.is_file() {
+        return Ok((mcp_path, default_mcp_json()));
+    }
+    let content = std::fs::read_to_string(&mcp_path).map_err(|e| format!("读取 mcp.json: {e}"))?;
+    match serde_json::from_str(&content) {
+        Ok(mcp) => Ok((mcp_path, mcp)),
+        Err(error) => {
+            backup_corrupt_mcp_json(&mcp_path, &content);
+            Err(format!(
+                "mcp.json is unparseable; original file backed up, reconciliation skipped this boot: {error}"
+            ))
+        }
+    }
+}
+
+fn backup_corrupt_mcp_json(mcp_path: &Path, content: &str) {
+    let Some(parent) = mcp_path.parent() else {
+        return;
+    };
+    let ts = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_secs())
+        .unwrap_or(0);
+    let backup = parent.join(format!("mcp.json.corrupt.{ts}"));
+    if let Err(e) = std::fs::write(&backup, content) {
+        log::warn!(
+            "[pinvou3-app] failed to backup corrupt mcp.json to {}: {e}",
+            backup.display()
+        );
+    }
 }
 
 impl<S: crate::platform::credential_store::CredentialStore> MarketplaceManager<S> {
@@ -264,27 +304,32 @@ impl<S: crate::platform::credential_store::CredentialStore> MarketplaceManager<S
                 } else if field.secret {
                     // Startup reconciliation has no user input this run, so re-wire
                     // the bearer fields from the credential store (installed with a
-                    // value that `resolve_secret_placeholder` can still resolve). A
-                    // secret that never resolves simply leaves the field unwritten;
-                    // see `degrade_unresolved_secrets` above.
-                    if self
-                        .resolve_secret_placeholder(
-                            &manifest.id,
-                            bundle::keyring_target(bundle::CredentialTarget::Bearer),
-                            &field.key,
-                            user_config,
-                            &manifest.env,
-                        )
-                        .is_ok()
-                        && !secret_header_auth_keys.contains(field.key.as_str())
-                    {
-                        set_remote_secret_header(
-                            &mut env_headers,
-                            &mut bearer_token_env_var,
-                            "Authorization",
-                            "Bearer",
-                            &field.key,
-                        )?;
+                    // value the store can still resolve). An absent credential
+                    // leaves the field unwritten (see `degrade_unresolved_secrets`
+                    // above); a credential-store failure must not — degrading on it
+                    // would bake a transiently locked keyring into a permanently
+                    // unwired entry, so it fails the build and the next startup
+                    // retries the restore.
+                    match self.try_resolve_secret_placeholder(
+                        &manifest.id,
+                        bundle::keyring_target(bundle::CredentialTarget::Bearer),
+                        &field.key,
+                        user_config,
+                        &manifest.env,
+                    ) {
+                        Ok(Some(_)) => {
+                            if !secret_header_auth_keys.contains(field.key.as_str()) {
+                                set_remote_secret_header(
+                                    &mut env_headers,
+                                    &mut bearer_token_env_var,
+                                    "Authorization",
+                                    "Bearer",
+                                    &field.key,
+                                )?;
+                            }
+                        }
+                        Ok(None) => {}
+                        Err(error) => return Err(error),
                     }
                 }
             }
@@ -292,16 +337,21 @@ impl<S: crate::platform::credential_store::CredentialStore> MarketplaceManager<S
 
         // 2. manifest.secret_headers 声明的敏感 header（不落明文）
         for secret in &manifest.secret_headers {
-            match self.resolve_secret_placeholder(
+            match self.try_resolve_secret_placeholder(
                 &manifest.id,
                 bundle::keyring_target(bundle::CredentialTarget::Bearer),
                 &secret.source_key,
                 user_config,
                 &manifest.env,
             ) {
-                // 用户当次输入仍需落库;resolve 的占位符值本身不在此使用。
-                Ok(_) => {}
-                Err(_) if degrade_unresolved_secrets => continue,
+                // The user's current input must still be persisted to the
+                // store; the resolved placeholder value itself is unused here.
+                Ok(Some(_)) => {}
+                // An absent credential degrades at startup; a store failure
+                // propagates in both modes so a locked keyring is never baked
+                // into an unwired entry.
+                Ok(None) if degrade_unresolved_secrets => continue,
+                Ok(None) => return Err(mcp_secret_missing_error(&manifest.id, &secret.source_key)),
                 Err(error) => return Err(error),
             }
             set_remote_secret_header(
@@ -317,15 +367,16 @@ impl<S: crate::platform::credential_store::CredentialStore> MarketplaceManager<S
         if headers.is_empty() {
             for k in manifest.env.keys() {
                 if is_sensitive_key_name(k) {
-                    let placeholder = match self.resolve_secret_placeholder(
+                    let placeholder = match self.try_resolve_secret_placeholder(
                         &manifest.id,
                         bundle::keyring_target(bundle::CredentialTarget::Bearer),
                         k,
                         user_config,
                         &manifest.env,
                     ) {
-                        Ok(placeholder) => placeholder,
-                        Err(_) if degrade_unresolved_secrets => continue,
+                        Ok(Some(placeholder)) => placeholder,
+                        Ok(None) if degrade_unresolved_secrets => continue,
+                        Ok(None) => return Err(mcp_secret_missing_error(&manifest.id, k)),
                         Err(error) => return Err(error),
                     };
                     headers.insert(
@@ -532,37 +583,61 @@ impl<S: crate::platform::credential_store::CredentialStore> MarketplaceManager<S
                     } else {
                         env.insert(field.key.clone(), val.clone());
                     }
+                } else if degrade_unresolved_secrets
+                    && (field.secret || is_sensitive_key_name(&field.key))
+                {
+                    // Startup rebuild has no user input: re-derive a secret
+                    // config field from the credential store, the same channel
+                    // the install writer filled from the user's input. An
+                    // absent credential degrades; a store failure fails the
+                    // rebuild so the next startup retries instead of silently
+                    // dropping the wiring.
+                    match self.try_resolve_secret_placeholder(
+                        &manifest.id,
+                        "env",
+                        &field.key,
+                        user_config,
+                        &manifest.env,
+                    ) {
+                        Ok(Some(placeholder)) => {
+                            env.insert(field.key.clone(), placeholder);
+                        }
+                        Ok(None) => {}
+                        Err(error) => return Err(error),
+                    }
                 }
             }
         }
         for secret in &manifest.secret_env {
-            match self.resolve_secret_placeholder(
+            match self.try_resolve_secret_placeholder(
                 &manifest.id,
                 "env",
                 &secret.key,
                 user_config,
                 &manifest.env,
             ) {
-                Ok(placeholder) => {
+                Ok(Some(placeholder)) => {
                     env.insert(secret.key.clone(), placeholder);
                 }
-                Err(_) if degrade_unresolved_secrets => continue,
+                Ok(None) if degrade_unresolved_secrets => continue,
+                Ok(None) => return Err(mcp_secret_missing_error(&manifest.id, &secret.key)),
                 Err(error) => return Err(error),
             }
         }
         for key in manifest.env.keys().filter(|k| is_sensitive_key_name(k)) {
             if !env.contains_key(key) {
-                match self.resolve_secret_placeholder(
+                match self.try_resolve_secret_placeholder(
                     &manifest.id,
                     "env",
                     key,
                     user_config,
                     &manifest.env,
                 ) {
-                    Ok(placeholder) => {
+                    Ok(Some(placeholder)) => {
                         env.insert(key.clone(), placeholder);
                     }
-                    Err(_) if degrade_unresolved_secrets => continue,
+                    Ok(None) if degrade_unresolved_secrets => continue,
+                    Ok(None) => return Err(mcp_secret_missing_error(&manifest.id, key)),
                     Err(error) => return Err(error),
                 }
             }
@@ -600,14 +675,7 @@ impl<S: crate::platform::credential_store::CredentialStore> MarketplaceManager<S
             }
         }
         let _guard = mcp_json_lock();
-        let mcp_path = paths::mcp_config_path();
-        let mut mcp: serde_json::Value = if mcp_path.is_file() {
-            let content =
-                std::fs::read_to_string(&mcp_path).map_err(|e| format!("读取 mcp.json: {e}"))?;
-            serde_json::from_str(&content).unwrap_or_else(|_| default_mcp_json())
-        } else {
-            default_mcp_json()
-        };
+        let (mcp_path, mut mcp) = load_mcp_json_for_reconcile()?;
         let servers = mcp
             .get_mut("servers")
             .and_then(|s| s.as_object_mut())
@@ -649,9 +717,10 @@ impl<S: crate::platform::credential_store::CredentialStore> MarketplaceManager<S
     /// `&manifest.servers` or a subset with contested keys removed):
     /// - A missing per-server entry is added with the exact fresh-install serialization
     ///   (startup has no user input, so secret placeholders resolve from the credential
-    ///   store, same as `sync_secret_values`; a secret that no longer resolves leaves
-    ///   its wiring unwritten rather than failing the restore — all secret channels
-    ///   degrade uniformly here, installs keep the fail-loud contract).
+    ///   store; a credential that is absent from the store leaves its wiring unwritten
+    ///   rather than failing the restore, while a credential-store read failure fails
+    ///   the restore so the next startup retries — installs keep the fail-loud
+    ///   contract for both cases).
     /// - An existing entry whose manifest-derived shape (url/scopes/oauth/oauth_resource)
     ///   drifted from the current manifest is realigned; credential fields
     ///   (headers/env_headers/bearer_token_env_var) and forward-compatible fields are
@@ -664,14 +733,7 @@ impl<S: crate::platform::credential_store::CredentialStore> MarketplaceManager<S
         servers: &[&super::types::RemoteServer],
     ) -> Result<Option<String>, String> {
         let _guard = mcp_json_lock();
-        let mcp_path = paths::mcp_config_path();
-        let mut mcp: serde_json::Value = if mcp_path.is_file() {
-            let content =
-                std::fs::read_to_string(&mcp_path).map_err(|e| format!("读取 mcp.json: {e}"))?;
-            serde_json::from_str(&content).unwrap_or_else(|_| default_mcp_json())
-        } else {
-            default_mcp_json()
-        };
+        let (mcp_path, mut mcp) = load_mcp_json_for_reconcile()?;
         let servers_map = mcp
             .get_mut("servers")
             .and_then(|s| s.as_object_mut())

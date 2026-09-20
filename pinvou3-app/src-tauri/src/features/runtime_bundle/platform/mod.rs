@@ -1864,9 +1864,11 @@ mod tests {
         cleanup(&tmp);
     }
 
-    /// ensure_builtin_mcp_servers 的写足印被钉死在 pinvou3/pinvou/browser 三键:
-    /// marketplace 侧的 ENGINE_OWNED_MCP_SERVER_KEYS 镜像了这一集合(启动对账靠它
-    /// 避开引擎键)。新增/改名内置 server 键时,必须同步更新该常量与本测试。
+    /// The write footprint of ensure_builtin_mcp_servers is pinned to the three
+    /// engine keys pinvou3/pinvou/browser; the marketplace-side
+    /// ENGINE_OWNED_MCP_SERVER_KEYS mirrors this set (the startup reconcile
+    /// relies on it to avoid engine keys). When adding or renaming a builtin
+    /// server key, this constant and this test must be updated in lockstep.
     #[test]
     fn ensure_builtin_mcp_servers_touches_only_engine_owned_keys() {
         let _g = ENV_LOCK.lock().unwrap_or_else(|p| p.into_inner());
@@ -1876,10 +1878,11 @@ mod tests {
         paths::ensure_dirs().unwrap();
         let bundle = Pinvou3Bundle::paths();
         std::fs::create_dir_all(bundle.mcp_json.parent().unwrap()).unwrap();
-        // 三个引擎键各取一个形态(pinvou 迁移 / pinvou3 upsert / browser-wrapper 残留
-        // 清除) + 两个用户条目哨兵。哨兵刻意用 node 命令,避开
-        // refresh_mcp_python_commands 的陈旧 python 改写路径——本测试钉的是键集合
-        // 足印,不是 python 自愈语义。
+        // One entry per engine-key form (pinvou migration / pinvou3 upsert /
+        // browser-wrapper residue cleanup) plus two user-entry sentinels. The
+        // sentinels deliberately use node commands to dodge the stale-python
+        // rewrite path of refresh_mcp_python_commands — this test pins the
+        // key-set footprint, not the python self-heal semantics.
         std::fs::write(
             &bundle.mcp_json,
             r#"{"servers":{
@@ -1902,7 +1905,7 @@ mod tests {
         assert_eq!(
             keys,
             vec!["pinvou3", "user-node", "user-node2"],
-            "写足印必须只有引擎三键:pinvou 迁移走、pinvou3 upsert、browser 残留删除"
+            "write footprint must be exactly the three engine keys: pinvou migrated away, pinvou3 upserted, browser residue deleted"
         );
         assert_eq!(
             servers["pinvou3"]["command"],
@@ -1914,7 +1917,14 @@ mod tests {
                 "command":"node","args":["/opt/user-tool/run.js"],
                 "enabled":false,"custom_hint":"keep"
             }),
-            "足印外的用户条目必须逐字节保留"
+            "user entries outside the footprint must be preserved verbatim"
+        );
+        assert_eq!(
+            servers["user-node2"],
+            serde_json::json!({
+                "command":"node","args":["/opt/user-tool/run2.js"]
+            }),
+            "user entries outside the footprint must be preserved verbatim"
         );
         cleanup(&tmp);
     }

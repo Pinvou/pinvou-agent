@@ -241,19 +241,43 @@ impl<S: CredentialStore> MarketplaceManager<S> {
         user_config: &HashMap<String, String>,
         legacy_env: &HashMap<String, String>,
     ) -> Result<String, String> {
+        match self.try_resolve_secret_placeholder(tool_id, target, key, user_config, legacy_env) {
+            Ok(Some(placeholder)) => Ok(placeholder),
+            Ok(None) => Err(mcp_secret_missing_error(tool_id, key)),
+            Err(error) => Err(error),
+        }
+    }
+
+    /// Degrade-aware variant of `resolve_secret_placeholder` for the startup
+    /// reconcile: `Ok(None)` means the credential is genuinely absent (never
+    /// entered, no legacy copy) and the caller may degrade to an entry without
+    /// that wiring. `Err` means the credential store itself failed. The two
+    /// cases must stay distinguishable: degrading on a store failure would
+    /// bake a transiently locked keyring into a permanently unwired entry that
+    /// later startups never repair (healthy entries are skipped and the remote
+    /// matcher ignores credential fields), so the caller propagates `Err` and
+    /// the next startup retries the restore.
+    pub(super) fn try_resolve_secret_placeholder(
+        &self,
+        tool_id: &str,
+        target: &str,
+        key: &str,
+        user_config: &HashMap<String, String>,
+        legacy_env: &HashMap<String, String>,
+    ) -> Result<Option<String>, String> {
         let reference = mcp_secret_reference(tool_id, target, key);
         if let Some(value) = user_config.get(key).filter(|v| !v.trim().is_empty()) {
             self.credential_store
                 .set(&reference, value)
                 .map_err(|e| mcp_secret_store_error(tool_id, key, e))?;
             store_secret_value(mcp_secret_env_var(key), value.clone());
-            return Ok(mcp_secret_placeholder(key));
+            return Ok(Some(mcp_secret_placeholder(key)));
         }
 
         match self.credential_store.get(&reference) {
             Ok(Some(value)) if !value.trim().is_empty() => {
                 store_secret_value(mcp_secret_env_var(key), value);
-                Ok(mcp_secret_placeholder(key))
+                Ok(Some(mcp_secret_placeholder(key)))
             }
             Ok(_) => {
                 if let Some(value) = legacy_env.get(key).filter(|v| !v.trim().is_empty()) {
@@ -261,9 +285,9 @@ impl<S: CredentialStore> MarketplaceManager<S> {
                         .set(&reference, value)
                         .map_err(|e| mcp_secret_store_error(tool_id, key, e))?;
                     store_secret_value(mcp_secret_env_var(key), value.clone());
-                    Ok(mcp_secret_placeholder(key))
+                    Ok(Some(mcp_secret_placeholder(key)))
                 } else {
-                    Err(mcp_secret_missing_error(tool_id, key))
+                    Ok(None)
                 }
             }
             Err(e) => Err(mcp_secret_store_error(tool_id, key, e)),
