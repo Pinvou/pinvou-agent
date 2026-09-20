@@ -448,10 +448,13 @@ test('app lifecycle snapshots cannot resurrect state after activated or stopped 
 });
 
 test('rapid bridge session changes always enqueue the latest serialized publication', () => {
-  const syncEffect = appMain.slice(
-    appMain.indexOf('// Sync from bridge state'),
-    appMain.indexOf('// HMR or legacy frontend state'),
-  );
+  // Slice covers the bridge activeChat sync effect body (from the session id
+  // capture through the serialized transition publication), ending at the
+  // next independent settings projection inside the same effect.
+  const syncStart = appMain.indexOf('const nextSessionId = bs.activeSessionId;');
+  const syncEnd = appMain.indexOf('if (bs.superPermEnabled !== superPerm)');
+  assert.ok(syncStart > 0 && syncEnd > syncStart, 'bridge sync effect anchors must exist');
+  const syncEffect = appMain.slice(syncStart, syncEnd);
 
   assert.match(syncEffect, /const bridgeObservation = browserSessionCommandEchoGuard\.observe\(nextSessionId\)/);
   assert.match(syncEffect, /const isCommandEcho = bridgeObservation\.type === 'command-echo'/);

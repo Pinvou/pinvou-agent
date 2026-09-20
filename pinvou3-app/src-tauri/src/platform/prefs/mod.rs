@@ -2015,12 +2015,6 @@ mod tests {
     }
 
     #[test]
-    fn invalid_settings_uses_system_language() {
-        let prefs = UserPrefs::parse_settings(Some("{broken"), Some("en-US"));
-        assert_eq!(prefs.language, Language::En);
-    }
-
-    #[test]
     fn invalid_settings_never_allow_normalization_persist() {
         for (raw, locale, expected_language) in [
             ("{broken", "en-US", Language::En),

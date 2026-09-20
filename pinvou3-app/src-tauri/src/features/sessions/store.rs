@@ -13,7 +13,7 @@ use std::path::{Path, PathBuf};
 use std::sync::Arc;
 #[cfg(test)]
 use std::sync::LazyLock;
-use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 
 use anyhow::{Context, Result, bail};
 use chrono::Utc;
@@ -97,8 +97,18 @@ impl SessionStore {
 
     /// Open the process-owned session store and recover tool histories left
     /// incomplete by a previous process, before any Engine is started.
+    ///
+    /// This is the ONLY production boot path, and the one place the legacy
+    /// binding-table migration belongs: the rebind crash-window contract
+    /// ("the legacy table is rewritten before the sidecars, so the next boot
+    /// heals forward") is only true if the boot migration actually runs here —
+    /// with the convergence missing, the first rebind would silently drop
+    /// legacy-table-only entries (round-8 review B1). Secondary stores opened
+    /// later via [`Self::boot`] must not repeat it.
     pub fn boot_for_process_startup() -> Result<Self> {
-        Self::boot_inner(true)
+        let store = Self::boot_inner(true)?;
+        store.migrate_legacy_session_workspaces();
+        Ok(store)
     }
 
     fn boot_inner(recover_interrupted_tools: bool) -> Result<Self> {
@@ -149,6 +159,12 @@ impl SessionStore {
         store.load_pinned_sessions();
         store.load_hidden_sessions();
         store.load_session_mode_states();
+        // Converge the intermediate legacy global binding table before any
+        // consumer reads a binding: this is the "next boot" half of the rebind
+        // crash-window contract (the legacy table is rewritten before the
+        // sidecars move, so a boot heals forward — review #464 round-6
+        // finding 5).
+        store.migrate_legacy_session_workspaces();
         {
             let _mutation = store.scheduled_mutation.lock();
             store.enforce_session_retention_locked()?;
@@ -196,6 +212,7 @@ impl SessionStore {
             hidden_sessions: Arc::new(RwLock::new(HashMap::new())),
             execution_root_resolver: Arc::new(RwLock::new(None)),
             session_workspaces: Arc::new(RwLock::new(HashMap::new())),
+            legacy_session_workspaces_parse_failed: Arc::new(AtomicBool::new(false)),
             code_session_predicate: Arc::new(RwLock::new(None)),
             session_mode_states: Arc::new(RwLock::new(HashMap::new())),
             code_permission: Arc::new(RwLock::new(prefs_snapshot.code_permission)),

@@ -17,14 +17,18 @@ import { fileURLToPath } from 'node:url';
 
 const here = path.dirname(fileURLToPath(import.meta.url));
 const chatPath = path.join(here, '..', 'src', 'features', 'chat', 'ChatView.jsx');
-const src = fs.readFileSync(chatPath, 'utf8');
+// Normalize CRLF so the multi-line anchors below behave the same on a Windows
+// working tree (core.autocrlf=true) as in CI.
+const src = fs.readFileSync(chatPath, 'utf8').replace(/\r\n/g, '\n');
 
 // 1. resolveBindingForGate's post-await state write must be compared against the
 //    latest ref value (comparison against the render-time constant is always
-//    true, a dead guard).
+//    true, a dead guard). #464 round-6 finding 8a introduced a generation-guarded
+//    cache write in the same block, so the state write is allowed to carry the
+//    binding-sid bookkeeping; what stays pinned is the ref comparison itself.
 assert.match(
   src,
-  /if \(sid === activeSessionIdRef\.current\) setSessionWorkspaceBinding\(normalized\);/,
+  /if \(sid === activeSessionIdRef\.current\) \{\n\s*(?:bindingSidRef\.current = sid;\n\s*)?setSessionWorkspaceBinding\(normalized\);/,
   'binding state write after await must compare against activeSessionIdRef.current',
 );
 assert.doesNotMatch(

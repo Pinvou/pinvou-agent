@@ -34,31 +34,6 @@ pub struct Project {
 /// 归组,直接回落隐式文件夹分组);无条目 = 未裁决,走自动归组。
 pub type SessionAssignments = HashMap<String, Option<String>>;
 
-/// Failure mode of [`ProjectStore::rebind_roots`] (review #463 round-10 R2):
-/// typed so the command layer can report a user-actionable root conflict
-/// separately from an I/O failure. Collapsing both into one marker told a user
-/// whose disk was full that the destination "overlaps another project", and
-/// pointed them at a retry that cannot converge.
-#[derive(Debug)]
-pub enum RebindRootsError {
-    /// The translated candidate violates the root-overlap invariant; nothing
-    /// was persisted and memory was not advanced.
-    Conflict(anyhow::Error),
-    /// The candidate was valid but could not be persisted; memory was restored
-    /// to the on-disk state (see [`ProjectStore::rebind_roots`]).
-    Persist(anyhow::Error),
-}
-
-impl std::fmt::Display for RebindRootsError {
-    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        match self {
-            Self::Conflict(error) | Self::Persist(error) => write!(formatter, "{error:#}"),
-        }
-    }
-}
-
-impl std::error::Error for RebindRootsError {}
-
 /// 单文件持久化结构。schema_version 供未来结构演进识别:读到更新版本时
 /// 按空状态降级启动,但置位拒绝后续写入(见 `StoreState::refuse_writes`),
 /// 否则空状态 + 下次变更会把新结构文件降级覆盖写坏。
@@ -79,7 +54,45 @@ pub struct MoveSessionOutcome {
     pub added_root: Option<PathBuf>,
 }
 
-#[derive(Debug, Default)]
+/// Round-8 review M3: a rebind failure must distinguish a genuine overlap
+/// conflict (the localized `REBIND_ROOTS_CONFLICT` marker + retry dialog)
+/// from an infrastructure failure — laundering a persist error into the
+/// conflict marker told the user to resolve a "conflict" that no resolution
+/// fixes, and combined with commit-before-persist the retry then
+/// false-succeeded.
+#[derive(Debug)]
+pub enum RebindRootsError {
+    Overlap(anyhow::Error),
+    Other(anyhow::Error),
+}
+
+impl std::fmt::Display for RebindRootsError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            RebindRootsError::Overlap(error) => {
+                write!(f, "rebind produced overlapping project roots: {error}")
+            }
+            RebindRootsError::Other(error) => write!(f, "{error}"),
+        }
+    }
+}
+
+impl std::error::Error for RebindRootsError {
+    fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
+        let inner: &(dyn std::error::Error + 'static) = match self {
+            RebindRootsError::Overlap(error) | RebindRootsError::Other(error) => &**error,
+        };
+        inner.source()
+    }
+}
+
+impl From<anyhow::Error> for RebindRootsError {
+    fn from(error: anyhow::Error) -> Self {
+        RebindRootsError::Other(error)
+    }
+}
+
+#[derive(Debug, Default, Clone)]
 struct StoreState {
     /// 恒按 (position, id) 有序,`list` 直接返回快照。
     projects: Vec<Project>,
@@ -103,10 +116,11 @@ pub struct ProjectStore {
     rebind_gate: Arc<parking_lot::Mutex<bool>>,
 }
 
-/// RAII token of `begin_rebind`: while held, other rebind calls are rejected;
-/// Drop clears the flag. It holds only the `Arc<Mutex<bool>>`, not a lock
-/// guard, so it is Send-safe across await points; clearing happens in Drop,
-/// so error paths cannot leave a permanently closed gate.
+/// RAII token of `begin_rebind`: while held, other rebind calls and every
+/// fenced project writer are rejected; Drop clears the flag. It holds only the
+/// `Arc<Mutex<bool>>`, not a lock guard, so it is Send-safe across await
+/// points; clearing happens in Drop, so error paths cannot leave a permanently
+/// closed gate.
 #[derive(Debug)]
 pub struct RebindGate {
     flag: Arc<parking_lot::Mutex<bool>>,
@@ -117,6 +131,12 @@ impl Drop for RebindGate {
         *self.flag.lock() = false;
     }
 }
+
+/// Same flag, entered from the writer side (`rebind_fence`). A distinct name
+/// keeps intent legible at the call sites — a root-accepting writer is not
+/// "beginning a rebind", it is refusing to commit into one — while sharing the
+/// token's RAII semantics with [`RebindGate`].
+pub type RebindFence = RebindGate;
 
 /// 进程内单调计数叠加纳秒时间戳生成项目 id:时间戳保证跨进程唯一,
 /// 计数兜底同一时钟粒度(Windows 较粗)内连续创建的碰撞。
@@ -153,7 +173,7 @@ fn validate_name(raw: String) -> Result<String> {
 /// canonical p) == p)。再经共享的 `platform_compat_path` 归一,剥掉
 /// Windows canonicalize 产生的 `\\?\` verbatim 前缀(非 Windows 为恒等
 /// 映射),与 `validate_codex_project_workspace` 的既有约定同源。
-pub(super) fn root_display(path: &Path) -> PathBuf {
+pub(crate) fn root_display(path: &Path) -> PathBuf {
     let canonical =
         std::fs::canonicalize(path).unwrap_or_else(|_| resolve_through_existing_ancestor(path));
     crate::platform::os::platform_compat_path(&canonical.to_string_lossy())
@@ -416,6 +436,33 @@ impl ProjectStore {
         })
     }
 
+    /// Enters the read/observational side of the same critical section: while a
+    /// directory rebind is running, the root-accepting project writers must not
+    /// commit. They validate the caller's roots against the *current* project
+    /// table and add suffixes, so a write interleaved with an in-flight rebind
+    /// can re-add a `from`-prefixed root or bind a session under `from` after
+    /// the rebind's candidate snapshot — either way reintroducing the broken
+    /// link the rebind is repairing (review #464 round-6 finding 6). Rejection
+    /// reuses the `REBIND_IN_PROGRESS` marker, so the frontend's existing
+    /// mapping covers it; the token is dropped as soon as the writer committed,
+    /// which keeps the window to the write itself rather than the whole
+    /// command.
+    pub fn rebind_fence(&self) -> std::result::Result<RebindFence, String> {
+        let mut flag = self.rebind_gate.lock();
+        if *flag {
+            return Err(
+                "REBIND_IN_PROGRESS: another directory rebind is already running".to_string(),
+            );
+        }
+        // Hold the gate for the writer's duration: mutually exclusive with
+        // both `begin_rebind` and other fenced writers (check-and-set).
+        *flag = true;
+        drop(flag);
+        Ok(RebindFence {
+            flag: Arc::clone(&self.rebind_gate),
+        })
+    }
+
     /// 按 (position, id) 有序返回项目快照。
     pub fn list(&self) -> Vec<Project> {
         self.state.read().projects.clone()
@@ -659,18 +706,18 @@ impl ProjectStore {
         // keeps its original casing.
         let to_display = root_display(to);
         let from_display = root_display(from);
-        let from_key = identity_key_of_display(&from_display);
-        let from_depth = from_display.components().count();
         let mut candidate = projects.to_vec();
         let mut affected_projects = Vec::new();
         for project in candidate.iter_mut() {
             let mut changed = false;
             for root in project.roots.iter_mut() {
-                let root_key_str = identity_key_of_display(root);
-                if !key_is_same_or_nested(&root_key_str, &from_key) {
+                // Shared containment + suffix cut (round-8 review should-fix
+                // 9): one platform predicate serves all three lanes.
+                let Some(suffix) =
+                    crate::platform::os::path_relative_suffix_under(root, &from_display)
+                else {
                     continue;
-                }
-                let suffix: PathBuf = root.components().skip(from_depth).collect();
+                };
                 *root = if suffix.as_os_str().is_empty() {
                     to_display.clone()
                 } else {
@@ -684,29 +731,6 @@ impl ProjectStore {
             }
         }
         (candidate, affected_projects)
-    }
-
-    /// Overlap revalidation for a rebind candidate, scoped to the CHANGED
-    /// projects (review #463 round-10 minor 5): any overlap this rebind could
-    /// introduce involves at least one translated root, and each changed
-    /// project is still validated against the whole candidate — changed and
-    /// unchanged neighbors alike — so scoping loses no new-conflict coverage.
-    /// What it does lose is the false block: a pre-existing overlap between
-    /// two projects this rebind never touched used to fail an unrelated
-    /// rebind with `REBIND_ROOTS_CONFLICT`, whose user copy advises picking a
-    /// different destination — advice that cannot help.
-    fn validate_rebind_candidates(
-        candidate: &[Project],
-        affected_projects: &[String],
-    ) -> Result<()> {
-        for project in candidate.iter().filter(|project| {
-            affected_projects
-                .iter()
-                .any(|affected| affected == &project.id)
-        }) {
-            validate_roots(candidate, Some(&project.id), &project.roots)?;
-        }
-        Ok(())
     }
 
     /// Non-committing pre-flight for the rebind command (review #463 round-8
@@ -729,7 +753,10 @@ impl ProjectStore {
         if affected_projects.is_empty() {
             return Ok(Vec::new());
         }
-        Self::validate_rebind_candidates(&candidate, &affected_projects)?;
+        for project in &candidate {
+            validate_roots(&candidate, Some(&project.id), &project.roots)
+                .context("rebind produced overlapping project roots")?;
+        }
         Ok(affected_projects)
     }
 
@@ -746,20 +773,6 @@ impl ProjectStore {
     /// case the whole rebind fails and rolls back (memory untouched, nothing
     /// persisted). Returns the affected project ids.
     ///
-    /// Both failure arms leave memory identical to disk, which is what the
-    /// command layer's retry contract assumes. The overlap arm never advances
-    /// memory; the persist arm advances it inside the write lock and restores
-    /// it when the write fails (review #463 round-10 R2). The previous order
-    /// committed `state.projects` first and only then persisted, so a persist
-    /// failure (disk full, permissions, `refuse_writes` on a newer on-disk
-    /// schema) left memory claiming the roots had moved while disk still held
-    /// the old ones. Because the command layer snapshots this memory, a rerun
-    /// in the same process then found no root under `from`, returned an empty
-    /// `Ok` and reported success — the bad state was only observable, and only
-    /// converged, after a restart reloaded the file. Mirrors the codex lane's
-    /// commit-on-success contract (see
-    /// `codex_acp::store::SessionAgentStore::rebind_workspace_prefix`).
-    ///
     /// Idempotent: no matching root is an empty Ok, not an error. The retry
     /// contract depends on this — a rerun after a partially failed run finds
     /// the roots already moved and must converge to a no-op while the command
@@ -767,11 +780,7 @@ impl ProjectStore {
     /// any root is indistinguishable from a completed retry at this layer;
     /// the entry normalization in the command layer (resolving `from` once
     /// for all three storage lanes) is what prevents a silent half-migration.
-    pub fn rebind_roots(
-        &self,
-        from: &Path,
-        to: &Path,
-    ) -> std::result::Result<Vec<String>, RebindRootsError> {
+    pub fn rebind_roots(&self, from: &Path, to: &Path) -> Result<Vec<String>, RebindRootsError> {
         let mut state = self.state.write();
         if from == to {
             return Ok(Vec::new());
@@ -782,18 +791,23 @@ impl ProjectStore {
         let (candidate, affected_projects) =
             Self::rebind_root_candidates(&state.projects, from, to);
         if !affected_projects.is_empty() {
-            Self::validate_rebind_candidates(&candidate, &affected_projects)
-                .context("rebind produced overlapping project roots")
-                .map_err(RebindRootsError::Conflict)?;
-            // Commit-on-success: persist the candidate while the write lock is
-            // held, and restore the previous projects on failure so memory
-            // never claims a rebind disk does not have. `persist_locked` reads
-            // `state.projects`, hence the temporary swap.
-            let previous = std::mem::replace(&mut state.projects, candidate);
-            if let Err(error) = persist_locked(&state, &self.path) {
-                state.projects = previous;
-                return Err(RebindRootsError::Persist(error));
+            for project in &candidate {
+                validate_roots(&candidate, Some(&project.id), &project.roots).map_err(|error| {
+                    RebindRootsError::Overlap(
+                        error.context("rebind produced overlapping project roots"),
+                    )
+                })?;
             }
+            // Persist FIRST, commit the in-memory candidate only on success
+            // (round-8 review M2, mirroring the codex lane): committing
+            // before the write let a persist failure leave memory at `to`
+            // over a disk still holding `from` — an in-process retry then
+            // found no `from`-roots and reported success while the persisted
+            // file stayed unmigrated.
+            let mut persisted = state.clone();
+            persisted.projects = candidate;
+            persist_locked(&persisted, &self.path)?;
+            state.projects = persisted.projects;
         }
         Ok(affected_projects)
     }

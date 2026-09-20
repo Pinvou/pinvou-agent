@@ -48,6 +48,26 @@ pub fn path_identity_is_same_or_nested(key: &str, base: &str) -> bool {
     key.starts_with(base) && key[base.len()..].starts_with('/')
 }
 
+/// The subdirectory content of `path` relative to `base`: containment uses
+/// [`path_identity_is_same_or_nested`] on the folded identity keys, and the
+/// suffix is cut by `base`'s component count so a nested path keeps its
+/// original casing. `None` = not under `base`; an empty suffix = the path IS
+/// `base`. Single source of truth for the three rebind lanes' suffix cut
+/// (round-8 review should-fix 9): codex/ACP index records, plain-chat
+/// binding sidecars and project roots all translate `from`-prefixed paths
+/// the same way.
+pub fn path_relative_suffix_under(path: &Path, base: &Path) -> Option<PathBuf> {
+    let path_key = filesystem_path_identity_key(&path.to_string_lossy());
+    let base_key = filesystem_path_identity_key(&base.to_string_lossy());
+    if !path_identity_is_same_or_nested(
+        path_key.trim_end_matches('/'),
+        base_key.trim_end_matches('/'),
+    ) {
+        return None;
+    }
+    Some(path.components().skip(base.components().count()).collect())
+}
+
 pub fn python_command() -> String {
     super::super::platform::python_command()
 }
@@ -141,6 +161,25 @@ mod tests {
         assert!(
             path_identity_is_same_or_nested("/a", "/"),
             "the POSIX root nests every absolute path"
+        );
+    }
+
+    #[test]
+    fn path_relative_suffix_under_cuts_by_component_count() {
+        let base = std::path::Path::new("/work/alpha");
+        assert_eq!(
+            path_relative_suffix_under(std::path::Path::new("/work/alpha/sub"), base),
+            Some(std::path::PathBuf::from("sub"))
+        );
+        assert_eq!(
+            path_relative_suffix_under(base, base),
+            Some(std::path::PathBuf::new()),
+            "the path IS the base: empty suffix"
+        );
+        assert_eq!(
+            path_relative_suffix_under(std::path::Path::new("/work/alpha-beta"), base),
+            None,
+            "sibling prefix must not count as under"
         );
     }
 }

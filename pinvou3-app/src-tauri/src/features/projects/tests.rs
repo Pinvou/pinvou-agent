@@ -293,6 +293,52 @@ fn move_add_workspace_root_atomically_and_idempotently() {
 }
 
 #[test]
+fn covered_workspace_skip_survives_symlinked_ancestor() {
+    // Review #464 MAJOR 3 (same shape as macOS /var→/private/var): roots are
+    // canonicalized on insertion, but when the workspace path under the
+    // covered check does not exist, the old purely lexical fallback kept the
+    // symlink form, so the identity key was no longer nested and the path was
+    // re-added as uncovered. Reproduce on any platform with a symlinked
+    // ancestor. Branch on the std::env::consts::OS constant instead of cfg
+    // syntax: platform conditional compilation must not appear outside the
+    // adapter layer (architecture-guard); Windows directory symlinks require
+    // admin/developer mode, so the mechanism is covered by unix/macOS.
+    if std::env::consts::OS == "windows" {
+        return;
+    }
+    let temp = tempfile::tempdir().expect("tempdir");
+    let workspace = temp.path().join("real").join("workspace");
+    std::fs::create_dir_all(&workspace).expect("create workspace");
+    let link = temp.path().join("link");
+    let status = std::process::Command::new("ln")
+        .arg("-s")
+        .arg(temp.path().join("real"))
+        .arg(&link)
+        .status()
+        .expect("spawn ln");
+    assert!(status.success(), "ln -s must succeed on unix-likes");
+
+    let store = store_in(&temp);
+    let project = create(
+        &store,
+        "目标",
+        std::slice::from_ref(&link.join("workspace")),
+    );
+
+    // A nonexistent nested path written through the symlinked ancestor: the
+    // covered check must hit the existing root.
+    let covered = link.join("workspace").join("deep");
+    let outcome = store
+        .move_session_to_project("s1", Some(&project.id), Some(&covered))
+        .expect("move with covered workspace");
+    assert_eq!(
+        outcome.added_root, None,
+        "symlink 形态不得绕过 covered 跳过"
+    );
+    assert_eq!(store.get(&project.id).unwrap().roots.len(), 1);
+}
+
+#[test]
 fn nonexistent_leaf_resolves_into_existing_ancestors_territory() {
     // 评审 #471 Major 回归锁:macOS 默认 TMPDIR 位于 /var 下(→ /private/var),
     // 不存在的叶子必须经最深已存在祖先 canonicalize,与已存在路径键入同一
@@ -385,8 +431,8 @@ fn rebind_roots_rewrites_prefix_and_stays_idempotent() {
     let to = temp.path().join("moved");
     std::fs::create_dir_all(&to).expect("create to dir");
 
-    let project = create(&store, "mover", &[from.clone(), abs("untouched")]);
-    let other = create(&store, "unrelated", &[abs("elsewhere")]);
+    let project = create(&store, "搬家", &[from.clone(), abs("untouched")]);
+    let other = create(&store, "无关", &[abs("elsewhere")]);
 
     let affected = store.rebind_roots(&from, &to).expect("rebind roots");
     assert_eq!(affected, vec![project.id.clone()]);
@@ -398,7 +444,7 @@ fn rebind_roots_rewrites_prefix_and_stays_idempotent() {
     // twice on this).
     assert!(
         roots.contains(&display(&abs("untouched"))),
-        "a root outside the prefix must not move"
+        "prefix 外的 root 不动"
     );
     assert_eq!(
         store.get(&other.id).unwrap().roots,
@@ -408,6 +454,62 @@ fn rebind_roots_rewrites_prefix_and_stays_idempotent() {
     // Idempotent: nothing matches the from prefix anymore, rerun is a no-op.
     assert!(store.rebind_roots(&from, &to).unwrap().is_empty());
     assert_eq!(store.get(&project.id).unwrap().roots, roots);
+}
+
+/// Round-8 review M2: rebind_roots must persist BEFORE committing the
+/// in-memory candidate. The store's final `projects.json` path is replaced
+/// by a NON-EMPTY directory — atomic_write's rename onto it fails on every
+/// platform (empty dirs would be silently replaced on POSIX) — so the
+/// persist fails deterministically after the candidate is built, and the
+/// memory must still hold `from`, so a retry (after clearing the obstacle)
+/// converges instead of false-succeeding. Mirrors the codex lane's
+/// `rebind_prefix_rolls_back_memory_when_index_persist_fails`.
+#[test]
+fn rebind_roots_rolls_back_memory_when_persist_fails() {
+    let temp = tempfile::tempdir().expect("tempdir");
+    let store = store_in(&temp);
+    let from = abs("from");
+    let to = temp.path().join("moved");
+    std::fs::create_dir_all(&to).expect("create to dir");
+
+    let project = create(&store, "搬家", std::slice::from_ref(&from));
+    let before = store.get(&project.id).unwrap();
+
+    // Replace the store's final path with a non-empty directory: rename
+    // onto it fails on every platform.
+    let store_path = temp.path().join("projects.json");
+    std::fs::remove_file(&store_path).expect("remove store file");
+    std::fs::create_dir_all(&store_path).expect("recreate as dir");
+    std::fs::write(store_path.join("obstruction"), b"x").expect("make dir non-empty");
+
+    let error = store
+        .rebind_roots(&from, &to)
+        .expect_err("persist failure surfaces as an error");
+    assert!(
+        !matches!(
+            error,
+            crate::features::projects::RebindRootsError::Overlap(_)
+        ),
+        "a persist failure must not be classified as an overlap conflict (round-8 M3)"
+    );
+    assert_eq!(
+        store.get(&project.id).unwrap(),
+        before,
+        "memory must roll back to the on-disk state on persist failure"
+    );
+
+    // After clearing the obstacle a retry converges: the from-root is still
+    // there to be moved.
+    std::fs::remove_dir_all(&store_path).expect("clear obstruction");
+    let affected = store.rebind_roots(&from, &to).expect("retry rebind");
+    assert_eq!(affected, vec![project.id.clone()]);
+    assert!(
+        store
+            .get(&project.id)
+            .unwrap()
+            .roots
+            .contains(&display(&to))
+    );
 }
 
 #[cfg(unix)]
@@ -448,6 +550,56 @@ fn rebind_roots_cuts_suffix_by_resolved_form_for_alias_callers() {
 }
 
 #[test]
+fn begin_rebind_serializes_and_releases_on_drop() {
+    // round-7 m7: the gate's check-and-set and Drop release had zero coverage.
+    let store =
+        ProjectStore::from_paths(std::env::temp_dir().join("pinvou3-rebind-gate-test.json"));
+    let _gate = store.begin_rebind().expect("first acquire wins");
+    let error = store
+        .begin_rebind()
+        .expect_err("second acquire must be rejected");
+    assert!(error.starts_with("REBIND_IN_PROGRESS:"));
+    drop(_gate);
+    store.begin_rebind().expect("gate released by Drop");
+}
+
+#[test]
+fn rebind_fence_excludes_writers_and_rebinds_in_both_directions() {
+    // review #464 round-6 finding 6: the root-accepting writers must not commit
+    // into an in-flight rebind, and a rebind must not start while a writer
+    // holds the fence — one flag, both directions.
+    let store =
+        ProjectStore::from_paths(std::env::temp_dir().join("pinvou3-rebind-fence-test.json"));
+    let fence = store.rebind_fence().expect("first writer wins the fence");
+    assert!(
+        store.begin_rebind().is_err(),
+        "a rebind must not start while a fenced writer is committing"
+    );
+    assert!(
+        store
+            .rebind_fence()
+            .expect_err("second writer must be rejected")
+            .starts_with("REBIND_IN_PROGRESS:"),
+        "writers are mutually exclusive under the same marker the frontend maps"
+    );
+    drop(fence);
+    store
+        .rebind_fence()
+        .expect("fence released by Drop, so error paths cannot close it forever");
+    let gate = store
+        .begin_rebind()
+        .expect("rebind after the fence is released");
+    assert!(
+        store.rebind_fence().is_err(),
+        "a writer must not commit while the rebind holds the gate"
+    );
+    drop(gate);
+    store
+        .rebind_fence()
+        .expect("fence available again after the rebind");
+}
+
+#[test]
 fn rebind_roots_rejects_overlap_and_keeps_state() {
     let temp = tempfile::tempdir().expect("tempdir");
     let store = store_in(&temp);
@@ -455,12 +607,8 @@ fn rebind_roots_rejects_overlap_and_keeps_state() {
     let occupied = temp.path().join("occupied");
     std::fs::create_dir_all(&occupied).expect("create occupied dir");
 
-    let project = create(&store, "to-move", std::slice::from_ref(&from));
-    create(
-        &store,
-        "existing-territory",
-        std::slice::from_ref(&occupied),
-    );
+    let project = create(&store, "待搬", std::slice::from_ref(&from));
+    create(&store, "已有领地", std::slice::from_ref(&occupied));
 
     let before = store.get(&project.id).unwrap();
     let error = store
@@ -469,110 +617,6 @@ fn rebind_roots_rejects_overlap_and_keeps_state() {
     assert!(error.to_string().contains("overlap"));
     // Error rolls back: memory state unchanged (nothing persisted).
     assert_eq!(store.get(&project.id).unwrap(), before);
-}
-
-/// round-10 minor 5: the revalidation is scoped to the CHANGED projects, so a
-/// pre-existing overlap between two legacy projects this rebind never touched
-/// no longer hard-blocks an unrelated rebind with `REBIND_ROOTS_CONFLICT`
-/// (whose user copy advises picking a different destination — advice that
-/// cannot help). A conflict the rebind itself introduces still rejects.
-#[test]
-fn rebind_roots_ignores_pre_existing_overlap_between_untouched_projects() {
-    let temp = tempfile::tempdir().expect("tempdir");
-    let store = store_in(&temp);
-    let outer = abs("legacy-outer");
-    let inner = abs("legacy-outer").join("nested");
-    let from = abs("unrelated-from");
-    let to = temp.path().join("unrelated-to");
-    std::fs::create_dir_all(&to).expect("create target dir");
-
-    let mover = create(&store, "to-move", std::slice::from_ref(&from));
-    create(&store, "legacy-outer", std::slice::from_ref(&outer));
-    let legacy_inner = create(
-        &store,
-        "legacy-inner",
-        std::slice::from_ref(&abs("legacy-inner-original")),
-    );
-    // create_project validates, so the overlap is introduced AFTER the fact by
-    // editing the persisted file directly — the legacy-data shape load_state
-    // accepts without revalidation.
-    let store_path = temp.path().join("projects.json");
-    let mut file: serde_json::Value =
-        serde_json::from_str(&std::fs::read_to_string(&store_path).expect("read store"))
-            .expect("parse store");
-    file["projects"]
-        .as_array_mut()
-        .expect("projects array")
-        .iter_mut()
-        .find(|project| project["id"].as_str() == Some(legacy_inner.id.as_str()))
-        .expect("find legacy-inner")["roots"][0] =
-        serde_json::json!(display(&inner).to_string_lossy().into_owned());
-    // `outer` folds to the parent of `inner`: the two now overlap on disk.
-    std::fs::write(
-        &store_path,
-        serde_json::to_vec_pretty(&file).expect("serialize"),
-    )
-    .expect("write store");
-    let store = store_in(&temp);
-    assert!(
-        store.rebind_roots(&from, &to).is_ok(),
-        "an overlap between two untouched legacy projects must not block an unrelated rebind"
-    );
-    assert_eq!(store.get(&mover.id).unwrap().roots, vec![display(&to)]);
-
-    // A conflict the rebind itself introduces still rejects: moving `mover`
-    // back under a legacy project's territory.
-    let error = store
-        .rebind_roots(&to, &outer)
-        .expect_err("a NEW overlap with a legacy project still rejects");
-    assert!(error.to_string().contains("overlap"));
-}
-
-/// Persist failure of the root commit must not advance memory (review #463
-/// round-10 R2). The pre-fix order assigned `state.projects = candidate` and
-/// only then persisted, so a failed write left memory claiming the roots had
-/// moved while disk still held the old ones — and because the rebind command
-/// snapshots memory, a same-process rerun found no root under `from`, returned
-/// an empty `Ok` and reported success. Only a restart converged. The store path
-/// is occupied by a directory so the atomic rename stage fails deterministically
-/// (the temp file is written under a random name, so it cannot be pre-occupied).
-#[test]
-fn rebind_roots_keeps_memory_when_persist_fails() {
-    let temp = tempfile::tempdir().expect("tempdir");
-    let store = store_in(&temp);
-    let from = abs("persist-from");
-    let to = temp.path().join("persist-to");
-    std::fs::create_dir_all(&to).expect("create target dir");
-
-    let project = create(&store, "persist", std::slice::from_ref(&from));
-    let before = store.get(&project.id).unwrap();
-    assert_eq!(before.roots, vec![display(&from)]);
-
-    let store_path = temp.path().join("projects.json");
-    std::fs::remove_file(&store_path).expect("remove store file");
-    std::fs::create_dir(&store_path).expect("occupy store path with a directory");
-
-    let error = store
-        .rebind_roots(&from, &to)
-        .expect_err("a persist failure must be reported");
-    assert!(
-        matches!(&error, super::store::RebindRootsError::Persist(_)),
-        "a write failure must not be classified as an overlap conflict (the command layer \
-         localizes the two markers differently): {error:?}"
-    );
-    assert_eq!(
-        store.get(&project.id).unwrap(),
-        before,
-        "memory must not claim a rebind that disk does not have"
-    );
-
-    // Clearing the obstruction converges on a same-process rerun: the root is
-    // still under `from` in memory, so it is re-attempted instead of being
-    // reported as already up to date.
-    std::fs::remove_dir(&store_path).expect("free store path");
-    let affected = store.rebind_roots(&from, &to).expect("retry converges");
-    assert_eq!(affected, vec![project.id.clone()]);
-    assert_eq!(store.get(&project.id).unwrap().roots, vec![display(&to)]);
 }
 
 /// Pre-flight for the reordered rebind (review #463 round-8 M3): the session
@@ -725,7 +769,7 @@ fn rebind_roots_display_form_preserves_nested_suffix() {
     let to = temp.path().join("nested-to");
     std::fs::create_dir_all(&to).expect("create to dir");
 
-    let project = create(&store, "nested-mover", &[from.join("Sub")]);
+    let project = create(&store, "嵌套搬家", &[from.join("Sub")]);
     let affected = store.rebind_roots(&from, &to).expect("rebind nested root");
     assert_eq!(affected, vec![project.id.clone()]);
     assert_eq!(
@@ -768,7 +812,7 @@ fn rebind_roots_via_symlink_alias_cuts_suffix_by_resolved_depth() {
 
     let store = store_in(&temp);
     // Stored root in canonical (real) form, nested one level below `from`.
-    let project = create(&store, "alias", &[deep.join("proj").join("sub")]);
+    let project = create(&store, "别名", &[deep.join("proj").join("sub")]);
 
     let affected = store.rebind_roots(&from, &to).expect("rebind via alias");
     assert_eq!(affected, vec![project.id.clone()]);
