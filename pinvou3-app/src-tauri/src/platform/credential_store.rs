@@ -169,6 +169,7 @@ pub enum CredentialState {
     Missing,
     Configured,
     EnvOverride,
+    NeedsMigration,
     Unavailable,
 }
 

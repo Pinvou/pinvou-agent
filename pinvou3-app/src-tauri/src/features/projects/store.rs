@@ -61,8 +61,16 @@ const SCHEMA_VERSION: u32 = 1;
 /// 移动归属的结果:前端据此提示"已加入项目(并添加了文件夹 xx)"。
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 pub struct MoveSessionOutcome {
+    /// 目标项目 id;显式移出(None)时同样为 None。
+    pub project_id: Option<String>,
     /// 本次顺带加入目标项目的文件夹(canonicalized);未新增为 None。
     pub added_root: Option<PathBuf>,
+}
+
+/// 删除项目的结果汇报:受影响会话只被解绑(回落隐式分组),永不删除。
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+pub struct DeleteProjectReport {
+    pub affected_session_ids: Vec<String>,
 }
 
 /// Round-8 review M3: a rebind failure must distinguish a genuine overlap
@@ -572,7 +580,7 @@ impl ProjectStore {
         Ok(updated)
     }
 
-    pub fn delete_project(&self, project_id: &str) -> Result<()> {
+    pub fn delete_project(&self, project_id: &str) -> Result<DeleteProjectReport> {
         let mut state = self.state.write();
         let Some(index) = state
             .projects
@@ -589,7 +597,9 @@ impl ProjectStore {
             state.assignments.remove(session_id);
         }
         persist_locked(&state, &self.path)?;
-        Ok(())
+        Ok(DeleteProjectReport {
+            affected_session_ids: affected,
+        })
     }
 
     /// 移动会话归属(纯逻辑层写;不触碰会话的工作目录绑定)。
@@ -684,7 +694,10 @@ impl ProjectStore {
             state.assignments.insert(session_id.to_string(), None);
         }
         persist_locked(&state, &self.path)?;
-        Ok(MoveSessionOutcome { added_root })
+        Ok(MoveSessionOutcome {
+            project_id: project_id.map(str::to_string),
+            added_root,
+        })
     }
 
     /// Pure candidate computation shared by [`plan_rebind_roots`] (the

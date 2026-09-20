@@ -585,9 +585,9 @@ impl KnowledgeService {
         self.scan_state.lock().clone()
     }
 
-    /// 仅测试用：kb_cancel_scan 命令已下线（懒触发扫描无前端取消入口），
-    /// 生产路径不再有调用方；扫描线程内的 cancel 分支保留（语义不变）。
-    #[cfg(test)]
+    /// 请求取消进行中的扫描。GUI 懒触发扫描没有前端取消入口，消费方是
+    /// `knowledge scan cancel` CLI：进程内一次性信号，扫描线程内的 cancel
+    /// 分支据此提前收口（语义不变）。
     pub fn cancel_scan(&self) {
         self.cancel.store(true, Ordering::Relaxed);
     }
