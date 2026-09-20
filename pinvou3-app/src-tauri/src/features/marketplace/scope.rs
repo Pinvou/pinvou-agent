@@ -246,7 +246,7 @@ const LOG_READ_DATA: u8 = 1 << 2;
 ///   fabrication would destroy the on-disk state. The write path refuses;
 ///   policy reads degrade loudly to the default.
 /// - Corrupt JSON → the corrupt bytes are moved aside
-///   (`disabled_bundles.json.corrupt.<unix-seconds>`, locked path only — the
+///   (`disabled_bundles.json.corrupt.<nanos>`, locked path only — the
 ///   degraded path never writes, mirroring the installed.json backup
 ///   convention), then `Err`. The next locked load starts from the migration
 ///   default, so DenyAll scopes re-derive fail-closed, and the evidence
@@ -291,11 +291,14 @@ fn read_disabled_bundles_file(persist_repairs: bool) -> Result<DisabledBundlesFi
     }
 }
 
-/// Moves a corrupt data file aside (`<name>.corrupt.<unix-seconds>`) so the
+/// Moves a corrupt data file aside (`<name>.corrupt.<nanos>`) so the
 /// evidence survives AND the next locked load starts from the migration
 /// default — leaving the corrupt bytes in place would trip (and refuse) every
-/// later write forever. Best effort: if the rename fails, the parse error
-/// still refuses the caller and the file stays as found. Locked path only.
+/// later write forever. The nanosecond suffix keeps back-to-back quarantines
+/// from colliding on the backup name (a silent evidence loss on unix, where
+/// rename replaces the destination). Best effort: if the rename fails, the
+/// parse error still refuses the caller and the file stays as found.
+/// Locked path only.
 fn backup_corrupt_file(path: &std::path::Path) {
     let file_name = match path.file_name() {
         Some(name) => name.to_string_lossy().into_owned(),
@@ -306,7 +309,7 @@ fn backup_corrupt_file(path: &std::path::Path) {
     };
     let ts = std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
-        .map(|d| d.as_secs())
+        .map(|d| d.as_nanos())
         .unwrap_or(0);
     let backup = parent.join(format!("{file_name}.corrupt.{ts}"));
     if let Err(error) = std::fs::rename(path, &backup) {
@@ -1470,15 +1473,26 @@ mod tests {
                 error.contains("disabled_bundles.lock"),
                 "refusal must name the lock failure: {error}"
             );
-            assert!(save_hidden_bundles_for(ConnectorScope::Plain, &["w".to_string()]).is_err());
-            assert!(set_project_skills_enabled(true).is_err());
+            let hidden_error =
+                save_hidden_bundles_for(ConnectorScope::Plain, &["w".to_string()]).unwrap_err();
             assert!(
-                sync_deny_all_scopes_after_install("weather").is_err(),
-                "the DenyAll consent-gate sync must refuse too"
+                hidden_error.contains("disabled_bundles.lock"),
+                "refusal must name the lock failure: {hidden_error}"
             );
+            let toggle_error = set_project_skills_enabled(true).unwrap_err();
             assert!(
-                remove_bundle_from_disabled_scopes("weather").is_err(),
-                "the uninstall/restore cleanup must refuse too"
+                toggle_error.contains("disabled_bundles.lock"),
+                "refusal must name the lock failure: {toggle_error}"
+            );
+            let gate_error = sync_deny_all_scopes_after_install("weather").unwrap_err();
+            assert!(
+                gate_error.contains("disabled_bundles.lock"),
+                "the DenyAll consent-gate sync must refuse too, naming the lock: {gate_error}"
+            );
+            let remove_error = remove_bundle_from_disabled_scopes("weather").unwrap_err();
+            assert!(
+                remove_error.contains("disabled_bundles.lock"),
+                "the uninstall/restore cleanup must refuse too, naming the lock: {remove_error}"
             );
             assert!(!disabled_bundles_path().exists());
         });
@@ -1629,22 +1643,24 @@ mod tests {
     fn read_failure_refuses_all_write_entry_points() {
         with_temp_home("pinvou3-scope-read-refused", || {
             std::fs::create_dir_all(disabled_bundles_path()).unwrap();
-            assert!(
-                save_disabled_bundles_for(ConnectorScope::Plain, &["weather".to_string()]).is_err()
+            let refuse = |error: String| {
+                assert!(
+                    error.contains("disabled_bundles.json"),
+                    "refusal must name the data-file failure: {error}"
+                );
+            };
+            refuse(
+                save_disabled_bundles_for(ConnectorScope::Plain, &["weather".to_string()])
+                    .unwrap_err(),
             );
-            assert!(save_hidden_bundles_for(ConnectorScope::Plain, &["w".to_string()]).is_err());
-            assert!(
-                set_project_skills_enabled(true).is_err(),
-                "the project-skills toggle must fail loudly when its RMW fails"
-            );
-            assert!(
-                sync_deny_all_scopes_after_install("weather").is_err(),
-                "the DenyAll consent-gate sync must refuse, never no-op on a fabricated state"
-            );
-            assert!(
-                remove_bundle_from_disabled_scopes("weather").is_err(),
-                "the uninstall/restore cleanup must refuse too"
-            );
+            refuse(save_hidden_bundles_for(ConnectorScope::Plain, &["w".to_string()]).unwrap_err());
+            // The project-skills toggle must fail loudly when its RMW fails.
+            refuse(set_project_skills_enabled(true).unwrap_err());
+            // The DenyAll consent-gate sync must refuse, never no-op on a
+            // fabricated state.
+            refuse(sync_deny_all_scopes_after_install("weather").unwrap_err());
+            // The uninstall/restore cleanup must refuse too.
+            refuse(remove_bundle_from_disabled_scopes("weather").unwrap_err());
         });
     }
 
