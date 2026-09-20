@@ -112,29 +112,11 @@ impl SessionStore {
     }
 
     fn boot_inner(recover_interrupted_tools: bool) -> Result<Self> {
-        let store = Self::from_paths(
-            paths::sessions_root(),
-            paths::scheduled_run_profiles_path(),
+        Self::boot_inner_with(
             paths::scheduled_tasks_root(),
-        )?;
-        // Sidecars historically load later in the Tauri setup hook. Loading
-        // them here too lets reconciliation discard scheduled-only runtime
-        // state immediately instead of resurrecting it after stale profiles
-        // have already been removed.
-        store.load_multi_agent_flags();
-        store.load_session_models();
-        store.load_pinned_sessions();
-        store.load_hidden_sessions();
-        store.load_session_mode_states();
-        {
-            let _mutation = store.scheduled_mutation.lock();
-            if recover_interrupted_tools {
-                store.recover_interrupted_tool_histories_locked()?;
-            }
-            store.enforce_session_retention_locked()?;
-        }
-        store.purge_all_scheduled_side_maps();
-        Ok(store)
+            recover_interrupted_tools,
+            false,
+        )
     }
 
     /// Test-only boot over an isolated root; production boot paths are
@@ -149,24 +131,48 @@ impl SessionStore {
     }
 
     pub(crate) fn boot_with_scheduled_root(scheduled_root: PathBuf) -> Result<Self> {
+        Self::boot_inner_with(scheduled_root, false, true)
+    }
+
+    /// Shared boot sequence: open the store over the ordinary sessions root
+    /// with the given scheduled root, load the five sidecar maps, then —
+    /// optionally after repairing interrupted tool histories — enforce
+    /// retention and purge scheduled side maps.
+    ///
+    /// `migrate_legacy` converges the intermediate legacy global binding table
+    /// before any consumer reads a binding: this is the "next boot" half of
+    /// the rebind crash-window contract (the legacy table is rewritten before
+    /// the sidecars move, so a boot heals forward — review #464 round-6
+    /// finding 5). Only boot paths that may run before the startup migration
+    /// in [`Self::boot_for_process_startup`] set it; plain [`Self::boot`]
+    /// must not repeat the migration.
+    fn boot_inner_with(
+        scheduled_root: PathBuf,
+        recover_interrupted_tools: bool,
+        migrate_legacy: bool,
+    ) -> Result<Self> {
         let store = Self::from_paths(
             paths::sessions_root(),
             paths::scheduled_run_profiles_path(),
             scheduled_root,
         )?;
+        // Sidecars historically load later in the Tauri setup hook. Loading
+        // them here too lets reconciliation discard scheduled-only runtime
+        // state immediately instead of resurrecting it after stale profiles
+        // have already been removed.
         store.load_multi_agent_flags();
         store.load_session_models();
         store.load_pinned_sessions();
         store.load_hidden_sessions();
         store.load_session_mode_states();
-        // Converge the intermediate legacy global binding table before any
-        // consumer reads a binding: this is the "next boot" half of the rebind
-        // crash-window contract (the legacy table is rewritten before the
-        // sidecars move, so a boot heals forward — review #464 round-6
-        // finding 5).
-        store.migrate_legacy_session_workspaces();
+        if migrate_legacy {
+            store.migrate_legacy_session_workspaces();
+        }
         {
             let _mutation = store.scheduled_mutation.lock();
+            if recover_interrupted_tools {
+                store.recover_interrupted_tool_histories_locked()?;
+            }
             store.enforce_session_retention_locked()?;
         }
         store.purge_all_scheduled_side_maps();
@@ -337,7 +343,11 @@ impl SessionStore {
             .map(|metadata| metadata.len())
     }
 
-    pub fn save(&self, session: &SavedSession) -> Result<PathBuf> {
+    /// Persist a whole session snapshot. Crate-internal: every durable write
+    /// goes through [`Self::update_messages`] / [`Self::update_artifacts`] /
+    /// the persist helpers above; direct whole-snapshot saves are reserved
+    /// for the store's own create/recovery paths.
+    pub(crate) fn save(&self, session: &SavedSession) -> Result<PathBuf> {
         let _mutation = self.scheduled_mutation.lock();
         if self.is_scheduled_session(&session.metadata.id)? {
             return self.persist_then_reconcile(session, "committed save");
@@ -694,6 +704,11 @@ impl SessionStore {
         Ok(())
     }
 
+    /// Test-only seam: the production CAS consumer (the legacy web
+    /// transcript-save command) was removed with the dead-code sweep. Kept
+    /// gated because these tests pin the revision-conflict, truncation-guard,
+    /// and write-race semantics shared with the live revision-checked writers.
+    #[cfg(test)]
     pub fn compare_and_swap_messages(
         &self,
         id: &str,

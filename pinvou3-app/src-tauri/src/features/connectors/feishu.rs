@@ -21,7 +21,7 @@ use serde_json::{Value, json};
 use tauri::{AppHandle, Manager};
 
 use crate::features::connectors::connector_cli::{self as cc, CliCtx, ConnectorConn};
-use crate::features::connectors::skill_gate::ConnectorSkillGate;
+use crate::features::connectors::skill_gate::ConnectorGate;
 
 /// 连接器 id(事件前缀 + ConnectorConn 槽位键)。
 const ID: &str = "feishu";
@@ -45,7 +45,7 @@ fn lark_cli_present() -> bool {
 }
 
 /// `auth status` 里用户身份是否 ready(已授权)。
-fn is_user_ready() -> bool {
+pub(crate) fn is_user_ready() -> bool {
     if let Ok((_, so, se)) = cc::run(lark(&["auth", "status", "--json"])) {
         let p = cc::parse_json(&so).or_else(|| cc::parse_json(&se));
         return p
@@ -62,25 +62,13 @@ fn is_user_ready() -> bool {
 
 /// 引导:首次使用时下载并校验锁定版本的 lark-cli，已装则秒返回。
 pub async fn feishu_ensure_cli() -> Result<Value, String> {
-    tokio::task::spawn_blocking(|| {
-        let t = std::time::Instant::now();
-        // 已装则秒返回 —— 不跑慢吞吞、可能卡死的 npx install。
-        let present = lark_cli_present();
-        eprintln!(
-            "[feishu] ensure_cli: lark_cli_present={present} in {}ms",
-            t.elapsed().as_millis()
-        );
-        if present {
-            return Ok::<Value, String>(json!({ "ok": true, "already": true }));
-        }
-        crate::features::connectors::native_installer::ensure_native_cli("lark-cli")?;
-        if !lark_cli_present() {
-            return Err("飞书 CLI 安装完成但无法执行，请重试".to_string());
-        }
-        Ok::<Value, String>(json!({ "ok": true, "already": false }))
-    })
+    cc::ensure_cli_with(
+        "feishu",
+        lark_cli_present,
+        "飞书 CLI 安装完成但无法执行，请重试",
+        || crate::features::connectors::native_installer::ensure_native_cli("lark-cli"),
+    )
     .await
-    .map_err(|e| format!("spawn_blocking: {e}"))?
 }
 
 /// 查询当前飞书连接状态:`lark-cli auth status --json`。
@@ -127,7 +115,7 @@ pub async fn feishu_status() -> Result<Value, String> {
 /// 开始连接飞书(`config init --new` 自建 app,两段扫码):
 /// 段① `config init --new` 长驻 → 抓二维码 URL(emit `feishu:qr` phase=register)→ 用户扫码注册 app。
 /// 段② `auth login --recommend` → 二维码(emit phase=authorize)→ 轮询 device-code → user:ready。
-/// 进度全程走事件:`feishu:qr` / `feishu:phase` / `feishu:connected` / `feishu:error`。
+/// 进度全程走事件:`feishu:qr` / `feishu:connected` / `feishu:error`。
 /// 立即返回 `{started:true}`;前端 listen 事件驱动 UI。
 pub async fn feishu_connect_begin(app: AppHandle) -> Result<Value, String> {
     app.state::<ConnectorConn>().reset(ID);
@@ -216,7 +204,6 @@ fn phase_register(app: &AppHandle) -> Result<bool, String> {
                 if !status.success() {
                     return Err("注册应用未完成(可能已取消或超时)".into());
                 }
-                cc::emit(app, "feishu:phase", json!({ "phase": "registered" }));
                 return Ok(true);
             }
             Ok(None) => std::thread::sleep(Duration::from_millis(400)),
@@ -317,66 +304,31 @@ pub async fn feishu_logout() -> Result<Value, String> {
 // 规则:**已连接(user:ready) 且 未手动停用** 才写技能;否则删掉(省 token / 关闭)。
 // 手动停用标志:`~/.pinvou3/feishu_disabled` 文件存在 = 停用。与连接状态正交。
 
-/// 飞书技能门控:停用标志文件机制走 [`ConnectorSkillGate`] 默认实现,
-/// `apply_skills` 指向 `apply_feishu_skills`。
-struct FeishuGate;
-impl ConnectorSkillGate for FeishuGate {
-    fn id(&self) -> &'static str {
-        ID
-    }
-    fn disabled_filename(&self) -> &'static str {
-        "feishu_disabled"
-    }
-    fn apply_skills(&self, visible: bool) -> Result<(), String> {
-        crate::features::runtime_bundle::platform::Pinvou3Bundle::paths()
-            .apply_feishu_skills(visible)
-            .map_err(|e| format!("更新飞书技能失败: {e}"))
-    }
-}
-const GATE: FeishuGate = FeishuGate;
-
-/// 用户是否手动停用了飞书技能。
-fn is_feishu_disabled() -> bool {
-    GATE.is_disabled()
+/// 按 visible 写 / 删飞书技能文件(调 [`Pinvou3Bundle::apply_feishu_skills`])。
+pub(crate) fn apply_bundle_skills(visible: bool) -> std::io::Result<()> {
+    crate::features::runtime_bundle::platform::Pinvou3Bundle::paths().apply_feishu_skills(visible)
 }
 
-/// 飞书技能此刻该不该出现在 skills_dir:**未手动停用 且 已连接**。
-/// 启动时(bundle)与命令里都用它判定。注:会 spawn lark-cli 查 auth status(未装则 false)。
-pub fn feishu_skills_should_show() -> bool {
-    !is_feishu_disabled() && is_user_ready()
-}
+/// 飞书门控表项:停用标志 + 就绪探测 + 技能落盘;
+/// apply/skills_state 等命令公共体见 [`ConnectorGate`]。
+pub(crate) static FEISHU_GATE: ConnectorGate = ConnectorGate {
+    id: "feishu",
+    // 原飞书版 apply_skills 独有的两条注释(其余三连接器写「见 feishu 同名注释」):
+    // 技能写盘即可——连接成功弹窗已引导「新建对话」,新会话 spawn 时自然扫到飞书技能;
+    // 不再原地广播刷新当前对话(故不依赖子模块 Op::RefreshSystemPrompt)。
+    disabled_filename: "feishu_disabled",
+    display_name: "飞书",
+    ready_probe: is_user_ready,
+    apply_bundle_skills: apply_bundle_skills,
+};
 
 /// 按当前"应否可见"状态写 / 删技能文件,并广播刷新在跑会话(当前对话即时生效)。
 /// 前端在 **连接成功 / 断开 / 切开关** 后调,统一收口。
 pub async fn feishu_apply_skills() -> Result<Value, String> {
-    let show = tokio::task::spawn_blocking(|| -> Result<bool, String> {
-        let show = feishu_skills_should_show();
-        GATE.apply_skills(show)?;
-        Ok(show)
-    })
-    .await
-    .map_err(|e| format!("spawn_blocking: {e}"))??;
-    // scope 门禁同步：连接器转为可用等同「新装」——已初始化 code 开关时加入 code
-    // 禁用集，保持「code 会话外部能力默认关」语义（与 MCP 新装连接器一致）。
-    if show {
-        crate::features::marketplace::sync_deny_all_scopes_after_install("feishu");
-    }
-    // 技能写盘即可——连接成功弹窗已引导「新建对话」,新会话 spawn 时自然扫到飞书技能;
-    // 不再原地广播刷新当前对话(故不依赖子模块 Op::RefreshSystemPrompt)。
-    Ok(json!({ "visible": show }))
+    FEISHU_GATE.apply_skills_command().await
 }
 
 /// 给前端渲染开关态:`{connected, enabled(=未停用), visible(=connected&&enabled)}`。
 pub async fn feishu_skills_state() -> Result<Value, String> {
-    tokio::task::spawn_blocking(|| {
-        let disabled = is_feishu_disabled();
-        let connected = is_user_ready();
-        Ok::<Value, String>(json!({
-            "connected": connected,
-            "enabled": !disabled,
-            "visible": connected && !disabled,
-        }))
-    })
-    .await
-    .map_err(|e| format!("spawn_blocking: {e}"))?
+    FEISHU_GATE.skills_state_command().await
 }

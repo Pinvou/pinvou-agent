@@ -161,12 +161,12 @@ pub struct PinvouReview {
     /// 覆盖镜头:产物缺/薄弱的维度。
     #[serde(default)]
     pub coverage: Vec<PinvouGap>,
-    pub risk: Option<String>,
-    pub confidence: Option<f64>,
     /// 核账模式终态：pass=通过可交付 / continue=还有未结账目（首轮模式为 None）。
     pub verdict: Option<String>,
     /// 这次审的产出物 path，存进 sidecar 供下次召唤核账匹配同一产出物。
     pub artifact_path: Option<String>,
+    /// guard 诊断日志（无前端消费者），不随 payload 序列化。
+    #[serde(skip_serializing)]
     pub guard_reasons: Vec<String>,
 }
 
@@ -185,9 +185,7 @@ struct ModelReview {
     #[serde(default)]
     framework: Vec<String>,
     #[serde(default)]
-    coverage: Vec<PinvouGap>,
-    risk: Option<String>,
-    confidence: Option<f64>,
+    pub coverage: Vec<PinvouGap>,
     verdict: Option<String>,
 }
 
@@ -593,27 +591,6 @@ fn review_model_preset(bridge: &Pinvou3Bridge) -> ModelPreset {
         .unwrap_or_else(|| bridge.prefs.advanced.model_preset.unwrap_or_default())
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-enum ReviewReasoningDialect {
-    None,
-    ThinkingDisabled,
-    QwenEnableThinking,
-    VllmChatTemplate,
-    Minimax,
-}
-
-impl From<crate::core::reasoning_dialect::ReasoningDialect> for ReviewReasoningDialect {
-    fn from(d: crate::core::reasoning_dialect::ReasoningDialect) -> Self {
-        use crate::core::reasoning_dialect::ReasoningDialect as D;
-        match d {
-            D::None => ReviewReasoningDialect::None,
-            D::ThinkingDisabled => ReviewReasoningDialect::ThinkingDisabled,
-            D::QwenEnableThinking => ReviewReasoningDialect::QwenEnableThinking,
-            D::Minimax => ReviewReasoningDialect::Minimax,
-        }
-    }
-}
-
 fn apply_review_reasoning_controls(
     body: &mut Value,
     preset: ModelPreset,
@@ -621,22 +598,10 @@ fn apply_review_reasoning_controls(
     base_url: &str,
     model: &str,
 ) {
-    match review_reasoning_dialect(preset, provider, base_url, model) {
-        ReviewReasoningDialect::ThinkingDisabled => {
-            body["thinking"] = json!({ "type": "disabled" });
-        }
-        ReviewReasoningDialect::QwenEnableThinking => {
-            body["enable_thinking"] = json!(false);
-        }
-        ReviewReasoningDialect::VllmChatTemplate => {
-            body["chat_template_kwargs"] = json!({ "enable_thinking": false });
-        }
-        ReviewReasoningDialect::Minimax => {
-            body["thinking"] = json!({ "type": "disabled" });
-            body["reasoning_split"] = json!(true);
-        }
-        ReviewReasoningDialect::None => {}
-    }
+    crate::core::reasoning_dialect::apply_reasoning_dialect_controls(
+        body,
+        review_reasoning_dialect(preset, provider, base_url, model),
+    );
 }
 
 fn review_reasoning_dialect(
@@ -644,37 +609,37 @@ fn review_reasoning_dialect(
     provider: &str,
     base_url: &str,
     model: &str,
-) -> ReviewReasoningDialect {
+) -> crate::core::reasoning_dialect::ReasoningDialect {
     use crate::core::reasoning_dialect::{
-        kimi_supports_disabled_thinking, reasoning_dialect_from_base_url,
+        ReasoningDialect, kimi_supports_disabled_thinking, reasoning_dialect_from_base_url,
     };
     if provider == "vllm" || preset == ModelPreset::LocalVllm {
-        return ReviewReasoningDialect::VllmChatTemplate;
+        return ReasoningDialect::VllmChatTemplate;
     }
     if provider == "deepseek" || preset == ModelPreset::Deepseek {
-        return ReviewReasoningDialect::ThinkingDisabled;
+        return ReasoningDialect::ThinkingDisabled;
     }
 
     match preset {
         ModelPreset::Kimi => {
             if kimi_supports_disabled_thinking(model) {
-                ReviewReasoningDialect::ThinkingDisabled
+                ReasoningDialect::ThinkingDisabled
             } else {
-                ReviewReasoningDialect::None
+                ReasoningDialect::None
             }
         }
-        ModelPreset::Qwen => ReviewReasoningDialect::QwenEnableThinking,
+        ModelPreset::Qwen => ReasoningDialect::QwenEnableThinking,
         ModelPreset::Doubao | ModelPreset::Glm | ModelPreset::Mimo => {
-            ReviewReasoningDialect::ThinkingDisabled
+            ReasoningDialect::ThinkingDisabled
         }
-        ModelPreset::Minimax => ReviewReasoningDialect::Minimax,
+        ModelPreset::Minimax => ReasoningDialect::Minimax,
         ModelPreset::OpenaiCompatible
         | ModelPreset::LocalVllm
         | ModelPreset::Deepseek
         | ModelPreset::Openai
         | ModelPreset::Anthropic
         | ModelPreset::Gemini
-        | ModelPreset::Xai => reasoning_dialect_from_base_url(base_url, model).into(),
+        | ModelPreset::Xai => reasoning_dialect_from_base_url(base_url, model),
     }
 }
 
@@ -927,8 +892,6 @@ fn apply_guard(raw: ModelReview, locale_tag: &str) -> PinvouReview {
         issues,
         framework: raw.framework,
         coverage: raw.coverage,
-        risk: raw.risk,
-        confidence: raw.confidence,
         verdict: raw.verdict,
         artifact_path: None,
         guard_reasons,
@@ -1037,7 +1000,7 @@ mod tests {
                 "https://dashscope.aliyuncs.com/compatible-mode/v1",
                 "qwen3.6-flash",
             ),
-            ReviewReasoningDialect::QwenEnableThinking
+            crate::core::reasoning_dialect::ReasoningDialect::QwenEnableThinking
         );
         assert_eq!(
             review_reasoning_dialect(
@@ -1046,7 +1009,7 @@ mod tests {
                 "https://open.bigmodel.cn/api/paas/v4",
                 "glm-5.1",
             ),
-            ReviewReasoningDialect::ThinkingDisabled
+            crate::core::reasoning_dialect::ReasoningDialect::ThinkingDisabled
         );
         assert_eq!(
             review_reasoning_dialect(
@@ -1055,7 +1018,7 @@ mod tests {
                 "https://api.openai.com/v1",
                 "gpt-4o",
             ),
-            ReviewReasoningDialect::None
+            crate::core::reasoning_dialect::ReasoningDialect::None
         );
     }
 
@@ -1475,8 +1438,6 @@ mod tests {
                     suggestion: String::new(),
                 },
             ],
-            risk: Some("high".into()),
-            confidence: Some(0.8),
             verdict: None,
             framework: vec![],
             coverage: vec![],

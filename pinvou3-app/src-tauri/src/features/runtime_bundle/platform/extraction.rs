@@ -25,9 +25,7 @@ fn find_webkit_webdriver() -> Option<PathBuf> {
 #[derive(Debug, Clone)]
 pub struct Pinvou3Bundle {
     pub root: PathBuf,
-    pub instructions_md: PathBuf,
     pub skills_dir: PathBuf,
-    pub user_skills_dir: PathBuf,
     pub mcp_json: PathBuf,
     pub deny_sensitive_sh: PathBuf,
     pub deny_sensitive_ps1: PathBuf,
@@ -98,9 +96,7 @@ impl Pinvou3Bundle {
     pub fn paths() -> Self {
         Self {
             root: paths::bundle_root(),
-            instructions_md: paths::bundle_instructions(),
             skills_dir: paths::bundle_skills_dir(),
-            user_skills_dir: paths::user_skills_dir(),
             mcp_json: paths::bundle_mcp_json(),
             deny_sensitive_sh: paths::bundle_root().join("deny_sensitive_paths.sh"),
             deny_sensitive_ps1: paths::bundle_root().join("deny_sensitive_paths.ps1"),
@@ -113,9 +109,9 @@ impl Pinvou3Bundle {
     /// 比对 `bundle/VERSION` 与 [`BUNDLE_VERSION`]：相同跳过；
     /// 不同则覆写 bundle 内文件并更新 VERSION。**不动 user/ 和 settings.json**。
     ///
-    /// 解包时对 `INSTRUCTIONS_MD` 做模板替换，把 `{{PINVOU3_WORKSPACE}}` 占位符
-    /// 替换成 `~/.pinvou3/workspace/` 的实际绝对路径——让 AI 直接拿到完整路径
-    /// 给 write_file 用，避免先 exec_shell 探一遍 env var。
+    /// 引擎侧 system prompt 走 `mod.rs` 的 `instructions_md()` 内嵌渲染
+    /// （per-session locale / workspace / sudo 占位符在会话渲染层就地替换），
+    /// 不再落盘 `bundle/instructions.md` 副本。
     pub fn ensure_extracted(&self) -> std::io::Result<()> {
         let marketplace = crate::features::marketplace::MarketplaceManager::new();
         self.ensure_extracted_with_marketplace(&marketplace, |manager| {
@@ -205,10 +201,9 @@ impl Pinvou3Bundle {
             "rust",
             "bundle_extract:skills_migration:done",
             &format!(
-                "moved={} stale={} kept={}",
+                "moved={} stale={}",
                 migration.moved.len(),
-                migration.removed_stale.len(),
-                migration.kept.len()
+                migration.removed_stale.len()
             ),
         );
         // 自愈对账：认领错位归位/去重、孤儿副本、瘫记录、内置释放目录残旧收敛。
@@ -274,19 +269,10 @@ impl Pinvou3Bundle {
         // deleting legacy plaintext before it has been copied into the credential store.
         crate::platform::startup::mark("bundle_extract:write_mcp_servers:start");
         self.write_mcp_servers(mcp_secret_migration_ok)?;
-        // Existing Python MCP entries may still launch server.py directly without the managed
-        // dependency environment. Repair or atomically downgrade them before any engine reads
-        // mcp.json, leaving a stable install target for the UI to retry.
-        let repair_errors = repair_python_tools(marketplace).map_err(std::io::Error::other)?;
-        for error in repair_errors {
-            // The packaged Windows GUI has no stderr; the log is the only way users see downgrade/retry outcomes.
-            log::warn!("[pinvou3-app] {error}");
-        }
-        // mcp.json merge:每次启动 upsert 内置 pinvou server,保留 marketplace 条目。
-        // 不受 VERSION gate 限制——marketplace 安装可能在任何时候发生。启动自愈(刷新
-        // 陈旧的本地 python server command)也在同一次调用里完成,两者共享一次读盘
-        // +parse;必须在引擎 spawn 前跑(引擎从 mcp.json 拉起 server)。
-        self.ensure_builtin_mcp_servers()?;
+        // Reconcile → Python repair → builtin upsert, in that order; see
+        // `run_mcp_startup_maintenance` for why the order is load-bearing and
+        // which test pins the wiring.
+        self.run_mcp_startup_maintenance(marketplace, repair_python_tools)?;
         crate::platform::startup::mark("bundle_extract:write_mcp_servers:done");
 
         if !bundle_changed {
@@ -294,28 +280,6 @@ impl Pinvou3Bundle {
         }
         std::fs::create_dir_all(&self.root)?;
         std::fs::create_dir_all(&self.skills_dir)?;
-        let workspace_abs = paths::workspace_dir();
-        std::fs::create_dir_all(&workspace_abs)?;
-        // 首次解包按当前 sudoers 状态填 PINVOU3_SUDO_INSTRUCTION,避免占位符原文
-        // 漏到 LLM 看到的 system prompt(engine boot 时是从 disk 读的)。
-        // 用户切换开关时 set_super_permission 会 sync_session 重写。
-        let rendered = instructions_md()
-            .replace("{{PINVOU3_WORKSPACE}}", &workspace_abs.to_string_lossy())
-            .replace(
-                "{{PINVOU3_SUDO_INSTRUCTION}}",
-                crate::platform::super_permission::instruction_block(),
-            )
-            // The user memory section is filled or dropped per the current memory toggle
-            // (the on-disk copy is not the LLM's live path; this only keeps the placeholder
-            // text out of the file on disk, same as TITLE_LANG).
-            .replace(
-                "{{PINVOU3_MEMORY_SECTION}}\n",
-                super::memory_section(crate::features::memory::memory_enabled()),
-            )
-            // 落盘副本无 per-session locale,默认填中文兜底(LLM 实际走 mod.rs 的 inline 渲染,
-            // 那里按 locale 填);此处仅防 {{PINVOU3_TITLE_LANG}} 占位符原文残留在 disk 文件。
-            .replace("{{PINVOU3_TITLE_LANG}}", "简体中文");
-        std::fs::write(&self.instructions_md, rendered)?;
         // PINVOU 自有 hooks：写入 + 加可执行位
         std::fs::write(&self.deny_sensitive_sh, DENY_SENSITIVE_PATHS_SH)?;
         std::fs::write(&self.deny_sensitive_ps1, DENY_SENSITIVE_PATHS_PS1)?;
@@ -342,6 +306,85 @@ impl Pinvou3Bundle {
             BUNDLE_VERSION
         );
         Ok(())
+    }
+
+    /// MCP startup maintenance, in a fixed order: reconcile the marketplace
+    /// registry into mcp.json first (the managed-runtime patch fails while an
+    /// entry is missing entirely, so restoring missing/dead entries first lets
+    /// one startup converge to the managed form), then the Python repair
+    /// (upgrades a restored entry to the managed-runtime form before any engine
+    /// reads mcp.json), then the builtin-server upsert. Engine-owned keys
+    /// (pinvou3/pinvou/browser — see `ENGINE_OWNED_MCP_SERVER_KEYS`) are skipped
+    /// by the reconcile, and `ensure_builtin_mcp_servers` re-asserts them
+    /// afterwards; note it also runs `refresh_mcp_python_commands`, which may
+    /// rewrite the python command of any stale entry — a complementary self-heal
+    /// outside the key-set footprint.
+    ///
+    /// A corrupt mcp.json is preserved for the whole boot: the reconcile backs
+    /// it up and returns early, and the builtin upsert below is skipped (its
+    /// repair loader would reset the file to a builtin-only skeleton). Sessions
+    /// degrade to an empty MCP pool rather than fail, and the recovery path is
+    /// the backup plus the timeline note. Pinned end to end by
+    /// `startup_maintenance_preserves_corrupt_mcp_json_bytes`.
+    ///
+    /// The ordering and the reconcile call itself are load-bearing and pinned by
+    /// `startup_maintenance_restores_missing_entry_before_python_repair`:
+    /// deleting the reconcile call, or moving it after the repair, fails that
+    /// test. Reconcile actions go through the startup timeline: release builds
+    /// register no log sink, so `log::info!` alone would leave the outcomes
+    /// invisible. Reconcile failures never block startup; the repair closure's
+    /// integrity result and the builtin upsert's structural errors propagate to
+    /// the caller, which treats them like any other extraction failure.
+    pub(super) fn run_mcp_startup_maintenance<S, F>(
+        &self,
+        marketplace: &crate::features::marketplace::MarketplaceManager<S>,
+        repair_python_tools: F,
+    ) -> std::io::Result<Vec<String>>
+    where
+        S: crate::platform::credential_store::CredentialStore,
+        F: FnOnce(
+            &crate::features::marketplace::MarketplaceManager<S>,
+        ) -> Result<Vec<String>, String>,
+    {
+        let reconcile_actions = match marketplace.reconcile_installed_mcp_entries() {
+            Ok(actions) => actions,
+            Err(error) => {
+                log::warn!("[pinvou3-app] mcp.json reconcile failed (non-blocking): {error}");
+                crate::platform::startup::mark_with_detail("rust", "mcp_reconcile:failed", &error);
+                Vec::new()
+            }
+        };
+        for action in &reconcile_actions {
+            log::info!("[pinvou3-app] mcp.json reconcile: {action}");
+            crate::platform::startup::mark_with_detail("rust", "mcp_reconcile", action);
+        }
+        // Existing Python MCP entries may still launch server.py directly without the managed
+        // dependency environment. Repair or atomically downgrade them before any engine reads
+        // mcp.json, leaving a stable install target for the UI to retry.
+        let repair_errors = repair_python_tools(marketplace).map_err(std::io::Error::other)?;
+        for error in repair_errors {
+            // The packaged Windows GUI has no stderr; the log is the only way users see downgrade/retry outcomes.
+            log::warn!("[pinvou3-app] {error}");
+        }
+        // mcp.json merge:每次启动 upsert 内置 pinvou server,保留 marketplace 条目。
+        // 不受 VERSION gate 限制——marketplace 安装可能在任何时候发生。启动自愈(刷新
+        // 陈旧的本地 python server command)也在同一次调用里完成,两者共享一次读盘
+        // +parse;必须在引擎 spawn 前跑(引擎从 mcp.json 拉起 server)。
+        // 损坏文件例外:reconcile 刚刚备份过的坏文件绝不能在这里被 repair loader
+        // 重置成 builtin-only 骨架——那会毁掉备份刚保护下来的自定义条目。跳过本次
+        // upsert(引擎对解析失败降级为空 MCP 池,会话不受阻),恢复路径 = 备份 +
+        // timeline 提示。检测独立于 reconcile 的返回值:即使 reconcile 因其它原因
+        // 提前失败,这条防线依然挡住对坏文件的重写。
+        if crate::features::marketplace::mcp_json_unparseable() {
+            let note = "mcp.json is unparseable; builtin MCP upsert skipped this boot to \
+                        preserve the backed-up original — fix or delete the file to restore \
+                        MCP servers";
+            log::warn!("[pinvou3-app] {note}");
+            crate::platform::startup::mark_with_detail("rust", "mcp_builtin_skip", note);
+        } else {
+            self.ensure_builtin_mcp_servers()?;
+        }
+        Ok(reconcile_actions)
     }
 
     /// 清理已下线内置 skills 的残留目录(被 ensure_extracted 在 VERSION check 前
@@ -430,14 +473,22 @@ impl Pinvou3Bundle {
                     return Ok(());
                 }
                 let _ = crate::features::marketplace::MarketplaceManager::new().uninstall(tool_id);
-                let mut disabled = crate::features::marketplace::load_disabled_connectors();
+                let mut disabled = crate::features::marketplace::scope::load_disabled_bundles_for(
+                    crate::features::marketplace::ConnectorScope::Plain,
+                );
                 let before = disabled.len();
                 disabled.retain(|id| id != tool_id);
                 if disabled.len() != before {
-                    crate::features::marketplace::save_disabled_connectors(&disabled);
+                    crate::features::marketplace::scope::save_disabled_bundles_for(
+                        crate::features::marketplace::ConnectorScope::Plain,
+                        &disabled,
+                    )
+                    .unwrap_or_else(|error| {
+                        eprintln!("[scope] write disabled_bundles.json failed: {error}")
+                    });
                 }
                 // 代码会话的 code scope 同样清理残留。
-                crate::features::marketplace::remove_connector_from_disabled_scopes(tool_id);
+                crate::features::marketplace::scope::remove_bundle_from_disabled_scopes(tool_id);
 
                 let _ = std::fs::remove_dir_all(paths::bundle_mcp_servers_dir().join(tool_id));
                 // 按包聚合新布局的退役残留：`migrate_custom_mcp_layout` 会先把旧目录
@@ -535,11 +586,14 @@ impl Pinvou3Bundle {
         paths::bundles_root().join(id).join("skills")
     }
 
-    /// CLI 连接器域技能门控的公共实现:`show` → 解包内嵌技能目录到
-    /// `bundles/<id>/skills/`;否则**删掉**技能目录 + NOTICE。幂等(删不存在
-    /// 的目录不报错)。可见性 = 目录在不在,引擎重刷系统提示时重扫即生效。
-    /// {feishu,wecom,dingtalk,tmeet} 四个 `apply_*_skills` 原本逐字重复
-    /// (仅内嵌目录 / 目录表 / NOTICE 文件名不同),收编为表驱动助手。
+    /// CLI 连接器技能门的共享实现：`show` 为真时把内嵌技能目录解包到
+    /// `bundles/<id>/skills/`；否则移除技能目录 + NOTICE。幂等（目录本就不存在
+    /// 时移除不算错误）。可见性 = 目录是否存在；引擎在下次 system-prompt
+    /// 刷新时重扫。
+    ///
+    /// 四个 `apply_*_skills` 包装器原是近似重复（差异仅在内嵌目录、目录表和
+    /// NOTICE 文件名），已折叠为这个表驱动助手。wecom 的包装器额外把
+    /// legacy 0.1.9 目录清理内联保留在本助手之外。
     fn apply_connector_skills(
         connector_id: &str,
         embedded_dir: &Dir<'_>,
@@ -703,7 +757,10 @@ impl Pinvou3Bundle {
     }
 
     /// mcp.json merge：upsert 内置 pinvou server，保留 marketplace 已安装的条目。
-    /// 每次启动都调用（不受 VERSION gate 限制）。
+    /// 每次启动都调用（不受 VERSION gate 限制）。启动维护链只会在 mcp.json 可解析
+    /// （或缺失）时调用本函数——损坏文件由 reconcile 备份并整轮保持原样，repair
+    /// loader 的空骨架重建因此只服务于直接调用方（测试、防御兜底），不再承担
+    /// 生产链路上的坏文件自愈；那个职责已让位给数据保全（备份 + 跳过重置）。
     pub(super) fn ensure_builtin_mcp_servers(&self) -> std::io::Result<()> {
         // mcp.json 只读 + parse 一次,upsert 与 python command 自愈共享(两段语义
         // 不同:前者修内置 server 条目,后者修 marketplace 条目的陈旧 python 路径;
@@ -761,18 +818,22 @@ impl Pinvou3Bundle {
             servers.remove("browser");
         }
         self.refresh_mcp_python_commands(&mut mcp, &python_cmd)?;
-        let json = serde_json::to_string_pretty(&mcp).map_err(std::io::Error::other)?;
         // 写回前与现有文件比对:内容一致则跳过写盘(避免每次启动重写 mcp.json)。
+        // 原子落盘复用 marketplace 的共享写方(write_json_pretty → write_atomic,
+        // tmp+rename):裸写被崩溃打断会制造出启动维护防御的损坏文件本身。
+        let json = serde_json::to_string_pretty(&mcp).map_err(std::io::Error::other)?;
         if std::fs::read_to_string(&self.mcp_json).is_ok_and(|existing| existing == json) {
             return Ok(());
         }
-        std::fs::write(&self.mcp_json, json)
+        crate::features::marketplace::write_json_pretty(&self.mcp_json, &mcp)
+            .map_err(std::io::Error::other)
     }
 
     /// 读 + parse mcp.json 供启动自愈路径复用:文件缺失给空骨架;坏 json 同样重建
-    /// 空骨架(`{"servers":{}}`)——自愈路径的职责就是把内置 server 条目修回来,
-    /// 坏文件若原样放过,present_artifact 会永久失效。代价是丢弃坏文件里可能
-    /// 残留的 marketplace 条目,可接受:坏 json 本就无法被引擎消费。
+    /// 空骨架(`{"servers":{}}`)。生产启动维护链不会在文件损坏时调用本函数
+    /// (`run_mcp_startup_maintenance` 以 `mcp_json_unparseable` 把整个 upsert 挡在
+    /// 备份过的坏文件之外),这条重建路径只覆盖直接调用方与防御兜底;数据保全
+    /// (备份 + 整轮保持原样)优先于坏文件自动重置。
     fn load_mcp_json_for_repair(&self) -> serde_json::Value {
         if !self.mcp_json.is_file() {
             return serde_json::json!({"servers": {}});
@@ -1330,6 +1391,205 @@ mod tests {
 
         // SAFETY: the caller's test holds platform::paths::tests::ENV_LOCK throughout; env writes are serialized in-process.
         unsafe { std::env::remove_var("PINVOU3_HOME") };
+        let _ = std::fs::remove_dir_all(&tmp);
+    }
+
+    /// Startup-maintenance wiring: the reconcile must actually run, and must run
+    /// BEFORE the Python repair (the managed-runtime patch errors while an entry
+    /// is missing entirely, so repair-before-reconcile never converges in one
+    /// startup). The injected repair closure probes mcp.json at its invocation
+    /// time: the entry seeded as missing must already exist by then, and the
+    /// final file must contain the restored entry. Deleting the reconcile call
+    /// from `run_mcp_startup_maintenance`, or moving it after the repair, turns
+    /// this test red.
+    #[test]
+    fn startup_maintenance_restores_missing_entry_before_python_repair() {
+        let _g = crate::platform::paths::tests::ENV_LOCK
+            .lock()
+            .unwrap_or_else(|p| p.into_inner());
+        // Restores the host's PINVOU3_HOME (present or absent) on drop, panic paths included.
+        let _env = crate::platform::paths::tests::EnvVarGuard::capture(&["PINVOU3_HOME"]);
+        let tmp = std::env::temp_dir().join(format!(
+            "pinvou3-mcp-maintenance-{}-{}",
+            std::process::id(),
+            crate::platform::paths::tests::unique_suffix()
+        ));
+        let _ = std::fs::remove_dir_all(&tmp);
+        std::fs::create_dir_all(&tmp).unwrap();
+        // SAFETY: the caller's test holds platform::paths::tests::ENV_LOCK throughout; env writes are serialized in-process.
+        unsafe { std::env::set_var("PINVOU3_HOME", &tmp) };
+
+        // Seed one installed local tool (disk manifest, absolute existing command)
+        // whose mcp.json entry is missing entirely.
+        let marketplace_dir = crate::platform::paths::pinvou3_home().join("marketplace");
+        std::fs::create_dir_all(&marketplace_dir).unwrap();
+        std::fs::write(marketplace_dir.join("installed.json"), r#"["maint-x"]"#).unwrap();
+        let manifest = serde_json::json!({
+            "id":"maint-x","name":"MaintX","description":"d","version":"1","icon":"x","category":"c",
+            "mcp_tools":[],"command":std::env::current_exe().unwrap().to_string_lossy(),"args":[]
+        });
+        std::fs::create_dir_all(crate::features::marketplace::mcp_catalog::package_mcp_dir(
+            "maint-x",
+        ))
+        .unwrap();
+        std::fs::write(
+            crate::features::marketplace::mcp_catalog::package_mcp_dir("maint-x")
+                .join("manifest.json"),
+            serde_json::to_string_pretty(&manifest).unwrap(),
+        )
+        .unwrap();
+
+        let manager = crate::features::marketplace::MarketplaceManager::with_store(
+            crate::platform::credential_store::MemoryCredentialStore::default(),
+        );
+        let bundle = super::Pinvou3Bundle::paths();
+        assert!(!bundle.mcp_json.exists(), "precondition: no mcp.json yet");
+
+        let entry_seen_at_repair = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
+        let repair_probe = entry_seen_at_repair.clone();
+        let mcp_json = bundle.mcp_json.clone();
+        let actions = bundle
+            .run_mcp_startup_maintenance(&manager, move |_manager| {
+                repair_probe.store(
+                    std::fs::read_to_string(&mcp_json)
+                        .map(|content| content.contains("maint-x"))
+                        .unwrap_or(false),
+                    std::sync::atomic::Ordering::SeqCst,
+                );
+                Ok(Vec::new())
+            })
+            .unwrap();
+
+        assert!(
+            actions
+                .iter()
+                .any(|action| action.contains("restored missing mcp.json entry")),
+            "the reconcile call inside startup maintenance must restore the entry: {actions:?}"
+        );
+        assert!(
+            entry_seen_at_repair.load(std::sync::atomic::Ordering::SeqCst),
+            "the reconcile must run before the python repair sees mcp.json"
+        );
+        let mcp: serde_json::Value =
+            serde_json::from_str(&std::fs::read_to_string(&bundle.mcp_json).unwrap()).unwrap();
+        assert_eq!(
+            mcp["servers"]["maint-x"]["command"],
+            serde_json::Value::String(
+                std::env::current_exe()
+                    .unwrap()
+                    .to_string_lossy()
+                    .into_owned()
+            ),
+            "the missing entry must be restored by the end of startup maintenance"
+        );
+
+        let _ = std::fs::remove_dir_all(&tmp);
+    }
+
+    /// The corrupt-file contract must hold across the WHOLE startup maintenance
+    /// chain, not just the reconcile step: a corrupt mcp.json is backed up, the
+    /// reconcile returns early, and the builtin upsert must NOT reset the live
+    /// file to a builtin-only skeleton (its repair loader would, unchecked).
+    /// The original bytes survive every writer, the backup stays a single
+    /// byte-identical copy across repeated boots, and a healthy file still gets
+    /// the upsert.
+    #[test]
+    fn startup_maintenance_preserves_corrupt_mcp_json_bytes() {
+        let _g = crate::platform::paths::tests::ENV_LOCK
+            .lock()
+            .unwrap_or_else(|p| p.into_inner());
+        let _env = crate::platform::paths::tests::EnvVarGuard::capture(&["PINVOU3_HOME"]);
+        let tmp = std::env::temp_dir().join(format!(
+            "pinvou3-mcp-corrupt-{}-{}",
+            std::process::id(),
+            crate::platform::paths::tests::unique_suffix()
+        ));
+        let _ = std::fs::remove_dir_all(&tmp);
+        std::fs::create_dir_all(&tmp).unwrap();
+        // SAFETY: the caller's test holds platform::paths::tests::ENV_LOCK throughout; env writes are serialized in-process.
+        unsafe { std::env::set_var("PINVOU3_HOME", &tmp) };
+
+        let manager = crate::features::marketplace::MarketplaceManager::with_store(
+            crate::platform::credential_store::MemoryCredentialStore::default(),
+        );
+        let bundle = super::Pinvou3Bundle::paths();
+        std::fs::create_dir_all(bundle.mcp_json.parent().unwrap()).unwrap();
+        // Corrupt by truncation: two hand-added custom entries, no closing brace.
+        let corrupt = r#"{
+  "servers": {
+    "my-custom-tool": {"command": "/usr/local/bin/my-tool", "args": ["--serve"]},
+    "another-custom": {"command": "echo", "args": ["hi"]}"#;
+        std::fs::write(&bundle.mcp_json, corrupt).unwrap();
+
+        let run = || bundle.run_mcp_startup_maintenance(&manager, |_manager| Ok(Vec::new()));
+        let actions = run().unwrap();
+
+        assert!(
+            actions
+                .iter()
+                .any(|action| action.contains("unparseable") && action.contains("backed up")),
+            "the reconcile must report the skipped boot: {actions:?}"
+        );
+        assert_eq!(
+            std::fs::read(&bundle.mcp_json).unwrap(),
+            corrupt.as_bytes(),
+            "the corrupt file must stay byte-identical through the whole maintenance chain"
+        );
+        let backups: Vec<_> = std::fs::read_dir(bundle.mcp_json.parent().unwrap())
+            .unwrap()
+            .flatten()
+            .filter(|entry| {
+                entry
+                    .file_name()
+                    .to_string_lossy()
+                    .starts_with("mcp.json.corrupt.")
+            })
+            .collect();
+        assert_eq!(backups.len(), 1, "exactly one backup must exist");
+        assert_eq!(
+            std::fs::read(backups[0].path()).unwrap(),
+            corrupt.as_bytes(),
+            "the backup must hold the original bytes"
+        );
+
+        // A persistent parse failure repeats the boot: no second backup, no rewrite.
+        let actions = run().unwrap();
+        assert!(actions.iter().any(|action| action.contains("unparseable")));
+        assert_eq!(std::fs::read(&bundle.mcp_json).unwrap(), corrupt.as_bytes());
+        let backups: Vec<_> = std::fs::read_dir(bundle.mcp_json.parent().unwrap())
+            .unwrap()
+            .flatten()
+            .filter(|entry| {
+                entry
+                    .file_name()
+                    .to_string_lossy()
+                    .starts_with("mcp.json.corrupt.")
+            })
+            .collect();
+        assert_eq!(
+            backups.len(),
+            1,
+            "an identical corrupt file must not mint a second backup"
+        );
+
+        // Once the user repairs the file, the builtin upsert works again.
+        std::fs::write(
+            &bundle.mcp_json,
+            r#"{"servers":{"my-custom-tool":{"command":"node","args":["/opt/t/run.js"]}}}"#,
+        )
+        .unwrap();
+        run().unwrap();
+        let mcp: serde_json::Value =
+            serde_json::from_str(&std::fs::read_to_string(&bundle.mcp_json).unwrap()).unwrap();
+        assert!(
+            mcp["servers"].get("pinvou3").is_some(),
+            "a repaired file gets the builtin upsert again: {mcp}"
+        );
+        assert!(
+            mcp["servers"].get("my-custom-tool").is_some(),
+            "the upsert must keep the user's entries"
+        );
+
         let _ = std::fs::remove_dir_all(&tmp);
     }
 }

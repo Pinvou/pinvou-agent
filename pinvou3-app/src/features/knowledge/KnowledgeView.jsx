@@ -394,7 +394,6 @@ const OutputLivePreview = ({ o, onOpen, outPreviewCache, runQueuedPreview, remem
       const outputsOnly = mode === 'outputs';
       const isDark = theme === 'dark';
       const bs = useBridgeState(['knowledge', 'chat']); // 取知识模型进度和当前产物
-      const inv = invokeTauri;
       const canDownloadArtifacts = !isWeb || can('artifactDownload');
       const canPickHostFiles = !isWeb || can('hostFilePicker');
       const canOpenSystemFiles = !isWeb && can('externalSystemOpen');
@@ -403,8 +402,8 @@ const OutputLivePreview = ({ o, onOpen, outPreviewCache, runQueuedPreview, remem
       const [sub, setSub] = useState(outputsOnly ? 'output' : 'kb'); // 'output' | 'files' | 'kb' | 'remote'；统一知识库入口默认落本地知识库
 
       // ---------- 共用 ----------
-      const openFile = (p) => canOpenSystemFiles ? inv('open_in_system', { path: p }).catch(() => {}) : Promise.resolve(false);
-      const openFolder = (p) => canOpenSystemFiles ? inv('open_containing_folder', { path: p }).catch(() => {}) : Promise.resolve(false);
+      const openFile = (p) => canOpenSystemFiles ? invokeTauri('open_in_system', { path: p }).catch(() => {}) : Promise.resolve(false);
+      const openFolder = (p) => canOpenSystemFiles ? invokeTauri('open_containing_folder', { path: p }).catch(() => {}) : Promise.resolve(false);
       // Byte / date formatting consolidated into shared (formatBytes GB tier unified from 2 decimals to 1; fmtDate takes seconds and converts to ms).
       const fmtSize = (b) => formatBytes(b, { missing: '' });
       const fmtDate = (s) => formatLocalDate(s ? s * 1000 : null);
@@ -521,7 +520,7 @@ const OutputLivePreview = ({ o, onOpen, outPreviewCache, runQueuedPreview, remem
       const refreshOutputs = useCallback(async () => {
         const list = bridge && bridge.artifacts.listDeliverableIndex
           ? await bridge.artifacts.listDeliverableIndex().catch(() => [])
-          : await inv('list_deliverable_index').catch(() => []);
+          : await invokeTauri('list_deliverable_index').catch(() => []);
         // Unmount cleanup already released the big table: an in-flight
         // request started before unmount must not write the index back into
         // the module-level cache once it resolves, or it would undo the
@@ -536,7 +535,6 @@ const OutputLivePreview = ({ o, onOpen, outPreviewCache, runQueuedPreview, remem
         }
         setOutputsLoaded(true);
         kbCache.outputsLoaded = true;
-      // eslint-disable-next-line react-hooks/exhaustive-deps -- dependency list manually reviewed: this effect only needs the listed deps; completing it would cause duplicate requests or polling loops
       }, []);
       useEffect(() => { if (sub === 'output') refreshOutputs(); }, [sub, refreshOutputs]);
       useEffect(() => {
@@ -653,9 +651,9 @@ const OutputLivePreview = ({ o, onOpen, outPreviewCache, runQueuedPreview, remem
       const refreshL0 = useCallback(async () => {
         // 三个查询并行(原顺序 await 累加延迟);拉完更新缓存 + loaded,供 remount 秒显。
         const [s, st, ty] = await Promise.all([
-          inv('kb_scan_status').catch(() => null),
-          inv('kb_stats').catch(() => null),
-          inv('kb_type_counts').catch(() => []),
+          invokeTauri('kb_scan_status').catch(() => null),
+          invokeTauri('kb_stats').catch(() => null),
+          invokeTauri('kb_type_counts').catch(() => []),
         ]);
         if (s) setScan(s);
         if (st) setStats(st);
@@ -665,7 +663,6 @@ const OutputLivePreview = ({ o, onOpen, outPreviewCache, runQueuedPreview, remem
         kbCache.types = ty || kbCache.types;
         kbCache.loaded = true;
         setLoaded(true);
-      // eslint-disable-next-line react-hooks/exhaustive-deps -- dependency list manually reviewed: this effect only needs the listed deps; completing it would cause duplicate requests or polling loops
       }, []);
       useEffect(() => {
       // eslint-disable-next-line react-hooks/set-state-in-effect -- synchronous setState in this effect is intentional: mirrors into local state right after reading the backend snapshot, avoiding first-frame flicker
@@ -685,14 +682,14 @@ const OutputLivePreview = ({ o, onOpen, outPreviewCache, runQueuedPreview, remem
         const c = CATS.find((x) => x.key === catKey) || CATS[0];
         const q = { text: text || null, limit: 200 };
         if (c.exts) q.exts = c.exts;
-        try { setResults(await inv('kb_search', { query: q }) || []); }
+        try { setResults(await invokeTauri('kb_search', { query: q }) || []); }
         catch { setResults([]); }
         setSearched(true);
       };
       // eslint-disable-next-line react-hooks/exhaustive-deps -- dependency list manually reviewed: this effect only needs the listed deps; completing it would cause duplicate requests or polling loops
       useEffect(() => { if (sub === 'files') runSearch(cat, query); }, [cat, sub]);
 
-      const startScan = async () => { try { setScan(await inv('kb_start_scan', { roots: null })); } catch { /* silently degrade */ } };
+      const startScan = async () => { try { setScan(await invokeTauri('kb_start_scan', { roots: null })); } catch { /* silently degrade */ } };
       useEffect(() => {
       // eslint-disable-next-line react-hooks/set-state-in-effect -- synchronous setState in this effect is intentional: mirrors into local state right after reading the backend snapshot, avoiding first-frame flicker
         if (!outputsOnly && scan && !scan.running && scan.phase === 'done') { refreshL0(); runSearch(cat, query); }
@@ -757,19 +754,18 @@ const OutputLivePreview = ({ o, onOpen, outPreviewCache, runQueuedPreview, remem
       const [kbModel, setKbModel] = useState(kbCache.model); // embedding 模型部署状态(null=未知)
       const [kbCat, setKbCat] = useState('all'); // 知识库分类筛选 tab
 
-      const loadDocs = async (cid) => { try { setDocs(await inv('kb_documents', { collectionId: cid, limit: 0 }) || []); } catch { /* silently degrade */ } };
+      const loadDocs = async (cid) => { try { setDocs(await invokeTauri('kb_documents', { collectionId: cid, limit: 0 }) || []); } catch { /* silently degrade */ } };
       const loadColls = useCallback(async () => {
         try {
-          const c = await inv('kb_collection_list') || [];
+          const c = await invokeTauri('kb_collection_list') || [];
           setColls(c);
           setActiveColl((current) => (current ? c.find((item) => item.id === current.id) || null : null));
           kbCache.colls = c;
         } catch { /* silently degrade */ }
-        try { const d = await inv('kb_documents', { collectionId: 0, limit: 0 }) || []; setAllDocs(d); kbCache.allDocs = capCachedAllDocs(d); } catch { /* silently degrade */ }
-        try { const ei = await inv('kb_embed_info'); setEmbedInfo(ei); kbCache.embedInfo = ei; } catch { /* silently degrade */ }
-        try { const m = await inv('kb_model_status'); setKbModel(m); kbCache.model = m; } catch { /* silently degrade */ }
-        try { replaceIndexState(await inv('kb_index_status')); } catch { /* silently degrade */ }
-      // eslint-disable-next-line react-hooks/exhaustive-deps -- dependency list manually reviewed: this effect only needs the listed deps; completing it would cause duplicate requests or polling loops
+        try { const d = await invokeTauri('kb_documents', { collectionId: 0, limit: 0 }) || []; setAllDocs(d); kbCache.allDocs = capCachedAllDocs(d); } catch { /* silently degrade */ }
+        try { const ei = await invokeTauri('kb_embed_info'); setEmbedInfo(ei); kbCache.embedInfo = ei; } catch { /* silently degrade */ }
+        try { const m = await invokeTauri('kb_model_status'); setKbModel(m); kbCache.model = m; } catch { /* silently degrade */ }
+        try { replaceIndexState(await invokeTauri('kb_index_status')); } catch { /* silently degrade */ }
       }, [replaceIndexState]);
       // 本地文件与本地知识库两个分区依赖本机知识集数据；远程分区自行加载服务器数据。
       // 一级「产出物」只读产出物索引，不应触发任何知识库查询。
@@ -827,7 +823,7 @@ const OutputLivePreview = ({ o, onOpen, outPreviewCache, runQueuedPreview, remem
         if (!indexing) return;
         const id = setInterval(async () => {
           try {
-            const s = await inv('kb_index_status'); replaceIndexState(s);
+            const s = await invokeTauri('kb_index_status'); replaceIndexState(s);
             if (!s.running) { loadColls(); if (activeColl) loadDocs(activeColl.id); }
           } catch { /* silently degrade */ }
         }, 1000);
@@ -840,10 +836,10 @@ const OutputLivePreview = ({ o, onOpen, outPreviewCache, runQueuedPreview, remem
         invalidateFailedPagination();
         setImportError('');
         try {
-          replaceIndexState(await inv('kb_index_resume', { jobId: idx.jobId }));
+          replaceIndexState(await invokeTauri('kb_index_resume', { jobId: idx.jobId }));
         } catch (e) {
           setImportError(`${t.kbResumeImportFailed}: ${String((e && e.message) || e)}`);
-          try { replaceIndexState(await inv('kb_index_status')); } catch { /* silently degrade */ }
+          try { replaceIndexState(await invokeTauri('kb_index_status')); } catch { /* silently degrade */ }
         }
       };
       const cancelImport = async () => {
@@ -851,12 +847,12 @@ const OutputLivePreview = ({ o, onOpen, outPreviewCache, runQueuedPreview, remem
         invalidateFailedPagination();
         setImportError('');
         try {
-          await inv('kb_index_cancel');
-          replaceIndexState(await inv('kb_index_status'));
+          await invokeTauri('kb_index_cancel');
+          replaceIndexState(await invokeTauri('kb_index_status'));
           loadColls();
         } catch (e) {
           setImportError(`${t.kbCancelImportFailed}: ${String((e && e.message) || e)}`);
-          try { replaceIndexState(await inv('kb_index_status')); } catch { /* silently degrade */ }
+          try { replaceIndexState(await invokeTauri('kb_index_status')); } catch { /* silently degrade */ }
         }
       };
       const retryImportFile = async (itemId) => {
@@ -864,10 +860,10 @@ const OutputLivePreview = ({ o, onOpen, outPreviewCache, runQueuedPreview, remem
         invalidateFailedPagination();
         setImportError('');
         try {
-          replaceIndexState(await inv('kb_index_retry_file', { jobId: idx.jobId, itemId }));
+          replaceIndexState(await invokeTauri('kb_index_retry_file', { jobId: idx.jobId, itemId }));
         } catch (e) {
           setImportError(`${t.kbRetryImportFailed}: ${String((e && e.message) || e)}`);
-          try { replaceIndexState(await inv('kb_index_status')); } catch { /* silently degrade */ }
+          try { replaceIndexState(await invokeTauri('kb_index_status')); } catch { /* silently degrade */ }
         }
       };
       const loadMoreFailedFiles = async () => {
@@ -886,7 +882,7 @@ const OutputLivePreview = ({ o, onOpen, outPreviewCache, runQueuedPreview, remem
           return;
         }
         try {
-          const page = await inv('kb_index_failed_files', { jobId: request.jobId, offset: request.offset, limit: 50 });
+          const page = await invokeTauri('kb_index_failed_files', { jobId: request.jobId, offset: request.offset, limit: 50 });
           const currentPage = failedPaginationRef.current;
           if (currentPage.jobId !== request.jobId || currentPage.generation !== request.generation) return;
           failedPaginationRef.current = {
@@ -920,16 +916,16 @@ const OutputLivePreview = ({ o, onOpen, outPreviewCache, runQueuedPreview, remem
         const name = newColl.name.trim(), category = (newColl.category || '').trim() || null;
         try {
           if (newColl.id) {
-            await inv('kb_collection_update', { id: newColl.id, name, category, description: newColl.description ?? null });
+            await invokeTauri('kb_collection_update', { id: newColl.id, name, category, description: newColl.description ?? null });
             if (activeColl && activeColl.id === newColl.id) setActiveColl({ ...activeColl, name, category });
           } else {
-            await inv('kb_collection_create', { name, category, description: null });
+            await invokeTauri('kb_collection_create', { name, category, description: null });
           }
         } catch { /* silently degrade */ }
         setNewColl(null); loadColls();
       };
       const deleteColl = async (id) => {
-        try { await inv('kb_collection_delete', { id }); } catch { /* silently degrade */ }
+        try { await invokeTauri('kb_collection_delete', { id }); } catch { /* silently degrade */ }
         if (activeColl && activeColl.id === id) setActiveColl(null);
         loadColls();
       };
@@ -945,7 +941,7 @@ const OutputLivePreview = ({ o, onOpen, outPreviewCache, runQueuedPreview, remem
         // Optimistic collection-count update (docCount/chunkCount/totalBytes all lowered on delete, clamped >= 0) consolidated into shared.
         setColls((current) => applyDocumentDelta(current, document.collectionId, document, -1));
         try {
-          await inv('kb_remove_document', { docId: document.id });
+          await invokeTauri('kb_remove_document', { docId: document.id });
         } catch (error) {
           setRemoveDocError(`${t.kbRemoveFailed}: ${String((error && error.message) || error)}`);
           const currentCollectionId = activeCollRef.current?.id;
@@ -971,11 +967,11 @@ const OutputLivePreview = ({ o, onOpen, outPreviewCache, runQueuedPreview, remem
         try { paths = await picker(); } catch { paths = []; }
         if (!paths || !paths.length) return;
         if (singleCollectionShortcut) {
-          if (colls.length === 1) { try { replaceIndexState(await inv('kb_collection_add_sources', { collectionId: colls[0].id, paths })); } catch { /* silently degrade */ } }
+          if (colls.length === 1) { try { replaceIndexState(await invokeTauri('kb_collection_add_sources', { collectionId: colls[0].id, paths })); } catch { /* silently degrade */ } }
           else { setAddToKb(paths); }
           return;
         }
-        try { replaceIndexState(await inv('kb_collection_add_sources', { collectionId, paths })); } catch { /* silently degrade */ }
+        try { replaceIndexState(await invokeTauri('kb_collection_add_sources', { collectionId, paths })); } catch { /* silently degrade */ }
       };
       // 「+ 添加 ▾」下拉菜单：文件 / 文件夹。portal 到 body 以免被 overflow-y-auto 裁剪。
       const [addMenu, setAddMenu] = useState(null); // null | {left,top,width,src}
@@ -1263,7 +1259,7 @@ const OutputLivePreview = ({ o, onOpen, outPreviewCache, runQueuedPreview, remem
                 )}
               </div>
             )}
-            {outputPreview && <FilePreviewModal path={outputPreview.path} sessionId={outputPreview.sessionId} theme={theme} t={t} onClose={() => setOutputPreview(null)} />}
+            {outputPreview && <FilePreviewModal path={outputPreview.path} sessionId={outputPreview.sessionId} t={t} onClose={() => setOutputPreview(null)} />}
 
             {sub === 'remote' && <RemoteKnowledgeView t={t} embedded />}
 
@@ -1622,7 +1618,7 @@ const OutputLivePreview = ({ o, onOpen, outPreviewCache, runQueuedPreview, remem
               ) : (
                 <div className="flex flex-col gap-1 mb-4 max-h-[240px] overflow-y-auto">
                   {colls.map((c) => (
-                    <button type="button" key={c.id} onClick={async () => { try { replaceIndexState(await inv('kb_collection_add_sources', { collectionId: c.id, paths: Array.isArray(addToKb) ? addToKb : [addToKb] })); } catch { /* silently degrade */ } setAddToKb(null); if (!outputsOnly) setSub('kb'); }}
+                    <button type="button" key={c.id} onClick={async () => { try { replaceIndexState(await invokeTauri('kb_collection_add_sources', { collectionId: c.id, paths: Array.isArray(addToKb) ? addToKb : [addToKb] })); } catch { /* silently degrade */ } setAddToKb(null); if (!outputsOnly) setSub('kb'); }}
                       className={`text-left px-4 py-2.5 rounded-xl text-[14px] ${card} ${iconHover} ${ink}`}>{c.name}</button>
                   ))}
                 </div>

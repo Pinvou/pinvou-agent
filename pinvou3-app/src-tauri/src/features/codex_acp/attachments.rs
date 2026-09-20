@@ -5,7 +5,7 @@ use agent_client_protocol::schema::v1::{
     ContentBlock, EmbeddedResource, EmbeddedResourceResource, ImageContent, PromptCapabilities,
     ResourceLink, TextContent, TextResourceContents,
 };
-use anyhow::{Context, Result, bail};
+use anyhow::{Context, Result, anyhow, bail};
 use base64::Engine;
 use serde::Serialize;
 
@@ -66,7 +66,7 @@ pub(super) fn prepare_codex_prompt(
             blocks.push(ContentBlock::Image(
                 ImageContent::new(
                     base64::engine::general_purpose::STANDARD.encode(data),
-                    image_mime_type(&path)?,
+                    codex_image_mime_type(&path)?,
                 )
                 .uri(uri),
             ));
@@ -132,7 +132,9 @@ pub(super) fn prepare_codex_prompt(
     })
 }
 
-fn image_mime_type(path: &Path) -> Result<&'static str> {
+/// 扩展名 → 图片 MIME 的唯一映射表：附件内嵌与工作区图片预览共用，取两处
+/// 原有表格的超集。返回 None 表示表外扩展名，由调用方决定回退或拒绝。
+pub(super) fn image_mime_type(path: &Path) -> Option<&'static str> {
     match path
         .extension()
         .and_then(|value| value.to_str())
@@ -140,12 +142,27 @@ fn image_mime_type(path: &Path) -> Result<&'static str> {
         .to_ascii_lowercase()
         .as_str()
     {
-        "png" => Ok("image/png"),
-        "jpg" | "jpeg" => Ok("image/jpeg"),
-        "webp" => Ok("image/webp"),
-        "gif" => Ok("image/gif"),
-        other => bail!("Codex 不支持该图片格式: .{other}"),
+        "png" => Some("image/png"),
+        "jpg" | "jpeg" => Some("image/jpeg"),
+        "gif" => Some("image/gif"),
+        "webp" => Some("image/webp"),
+        "svg" => Some("image/svg+xml"),
+        "bmp" => Some("image/bmp"),
+        _ => None,
     }
+}
+
+/// Codex 图片附件仅接受栅格格式：svg/bmp 虽在共享 MIME 表内（工作区预览用），
+/// 附件内嵌保持既有行为显式拒绝；其余表外扩展名同样拒绝。
+fn codex_image_mime_type(path: &Path) -> Result<&'static str> {
+    let extension = path
+        .extension()
+        .and_then(|value| value.to_str())
+        .unwrap_or_default()
+        .to_ascii_lowercase();
+    image_mime_type(path)
+        .filter(|mime| *mime != "image/svg+xml" && *mime != "image/bmp")
+        .ok_or_else(|| anyhow!("Codex 不支持该图片格式: .{extension}"))
 }
 
 fn text_mime_type(path: &Path) -> &'static str {
@@ -186,37 +203,26 @@ fn resource_mime_type(path: &Path, kind: &str) -> &'static str {
 mod tests {
     use super::*;
     use std::io::Write;
-    use std::path::PathBuf;
-    use std::time::{SystemTime, UNIX_EPOCH};
 
-    struct TestDir(PathBuf);
+    /// 附件夹具目录：`prepare_codex_prompt` forces attachments to live under
+    /// `$HOME` via `validate_path` (validate_upload_location). The fixture must
+    /// follow suit, or the guard rejects the legitimate fixture when the tests
+    /// run from a checkout outside $HOME (e.g. a /tmp worktree). 建目录 +
+    /// Drop 清理脚手架复用 codex_acp 的共享 `TestDir` 实现（Drop 经 newtype
+    /// 转发），本地只保留附件语义的基目录与命名前缀。
+    struct TestDir(crate::features::codex_acp::TestDir);
 
     impl TestDir {
         fn new(label: &str) -> Self {
-            let nonce = SystemTime::now()
-                .duration_since(UNIX_EPOCH)
-                .unwrap()
-                .as_nanos();
-            // `prepare_codex_prompt` forces attachments to live under `$HOME`
-            // via `validate_path` (validate_upload_location). The fixture must
-            // follow suit, or the guard rejects the legitimate fixture when the
-            // tests run from a checkout outside $HOME (e.g. a /tmp worktree).
-            let path = crate::platform::os::user_home_dir().join(format!(
-                ".pinvou3-codex-attachment-test-{label}-{}-{nonce}",
-                std::process::id()
-            ));
-            fs::create_dir_all(&path).unwrap();
-            Self(path)
+            Self(crate::features::codex_acp::TestDir::new(
+                &crate::platform::os::user_home_dir(),
+                ".pinvou3-codex-attachment-test",
+                label,
+            ))
         }
 
         fn path(&self) -> &Path {
-            &self.0
-        }
-    }
-
-    impl Drop for TestDir {
-        fn drop(&mut self) {
-            let _ = fs::remove_dir_all(&self.0);
+            self.0.path()
         }
     }
 

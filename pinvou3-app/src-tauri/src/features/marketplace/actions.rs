@@ -12,9 +12,6 @@
 //! - `edit_display` 上传包（source=Upload）的 UI 展示名/说明编辑（写 bundles.json
 //!   extra 覆盖，不动包清单；仅已装上传包下发）
 //! - `repair`     Degraded 修复（登记在、资源缺；按来源重新获取，§3.2），置前
-//! - `enable_in(scope)` 已装包按模式 scope 的启用开关（scope 收敛后单一禁用集为
-//!   包 id × SessionMode；`scope` 字段携带模式 kebab-case 名，当前开/关态由
-//!   `get_disabled_bundles` 读取，本动作仅下发「该 scope 存在开关」这一事实）。
 //!
 //! 不纳入本刀（注释说明理由）：
 //! - 占位卡（即将上线）/内置标记卡：目前仍是前端 overlay（§8 Phase 4 才改
@@ -23,7 +20,6 @@
 use serde::Serialize;
 
 use super::bundle::{BundleInfo, BundleKind, Readiness};
-use crate::core::session_mode::SessionMode;
 
 const ACTION_INSTALL: &str = "install";
 const ACTION_CONFIGURE: &str = "configure";
@@ -33,7 +29,6 @@ const ACTION_UPDATE: &str = "update";
 const ACTION_UNINSTALL: &str = "uninstall";
 const ACTION_EDIT_DISPLAY: &str = "edit_display";
 const ACTION_REPAIR: &str = "repair";
-const ACTION_ENABLE_IN: &str = "enable_in";
 
 /// 交互流程标记（§3.3：交互流程建模为动作的 flow payload）。本刀只给类型标记，
 /// 具体交互描述（二维码、流程卡、OAuth 五态机）仍由前端现有组件承担，
@@ -51,8 +46,7 @@ enum ActionFlow {
 }
 
 /// 一个可下发动作。`reason` 是动作附带的用户可读提示：`enabled=false` 时为
-/// 不可用原因（前端置灰 + 提示），`repair` 动作透传 degraded 详情。`scope` 仅
-/// `enable_in` 动作携带（模式 kebab-case 名）。
+/// 不可用原因（前端置灰 + 提示），`repair` 动作透传 degraded 详情。
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 pub struct BundleAction {
     pub id: String,
@@ -61,8 +55,6 @@ pub struct BundleAction {
     pub reason: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     flow: Option<ActionFlow>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub scope: Option<String>,
 }
 
 fn action(id: &str, flow: Option<ActionFlow>) -> BundleAction {
@@ -71,7 +63,6 @@ fn action(id: &str, flow: Option<ActionFlow>) -> BundleAction {
         enabled: true,
         reason: None,
         flow,
-        scope: None,
     }
 }
 
@@ -146,15 +137,6 @@ pub fn actions_for(bundle: &BundleInfo, readiness: Readiness) -> Vec<BundleActio
             }
         }
     }
-    // 已装包：每模式一个 enable_in(scope) 开关动作（scope 收敛后开关粒度 = 包 id ×
-    // SessionMode）。当前开/关态由 get_disabled_bundles 读取，这里只下发「存在开关」。
-    if bundle.installed {
-        for mode in SessionMode::ALL {
-            let mut enable = action(ACTION_ENABLE_IN, None);
-            enable.scope = Some(mode.as_str().to_string());
-            out.push(enable);
-        }
-    }
     out
 }
 
@@ -168,33 +150,22 @@ mod tests {
             id: "x".into(),
             name: "x".into(),
             kind,
-            mcp_servers: vec![],
-            skills: vec![],
-            cli: vec![],
             credentials: vec![],
             description: String::new(),
             version: String::new(),
-            auth_required: false,
             config_fields: vec![],
             installed: false,
             user_uploaded: false,
             degraded: None,
             update_available: false,
             oauth: false,
-            category: String::new(),
-            icon: None,
             display_name: None,
             display_description: None,
         }
     }
 
     fn ids(actions: &[BundleAction]) -> Vec<&str> {
-        // 生命周期动作与 enable_in 开关分列：这里聚焦 install/connect/... 序列。
-        actions
-            .iter()
-            .filter(|a| a.id != ACTION_ENABLE_IN)
-            .map(|a| a.id.as_str())
-            .collect()
+        actions.iter().map(|a| a.id.as_str()).collect()
     }
 
     fn credential() -> CredentialSpec {
@@ -346,29 +317,5 @@ mod tests {
                 .unwrap();
         assert!(plain.get("flow").is_none());
         assert!(plain.get("reason").is_none());
-    }
-
-    /// 已装包每模式下发一个 `enable_in(scope)` 开关动作；未装包不下发。
-    #[test]
-    fn installed_bundle_gets_enable_in_per_scope() {
-        let mut b = bundle(BundleKind::Mcp);
-        b.installed = true;
-        let actions = actions_for(&b, Readiness::Ready);
-        let enable_in: Vec<_> = actions
-            .iter()
-            .filter(|a| a.id == ACTION_ENABLE_IN)
-            .collect();
-        assert_eq!(enable_in.len(), SessionMode::ALL.len());
-        for mode in SessionMode::ALL {
-            assert!(
-                enable_in
-                    .iter()
-                    .any(|a| a.scope.as_deref() == Some(mode.as_str())),
-                "缺少 {mode:?} 的 enable_in 动作"
-            );
-        }
-        // 未装包不下发 enable_in。
-        let uninstalled = actions_for(&bundle(BundleKind::Mcp), Readiness::Ready);
-        assert!(uninstalled.iter().all(|a| a.id != ACTION_ENABLE_IN));
     }
 }

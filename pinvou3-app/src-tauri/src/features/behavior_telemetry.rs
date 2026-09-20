@@ -89,6 +89,76 @@ pub struct BehaviorEvent {
     pub model_name: Option<String>,
 }
 
+/// `track_behavior_event` 命令的 wire 入参，与命令层共用同一声明（此前命令层
+/// 镜像维护过一份逐字段副本）。字段集是 [`BehaviorEvent`] 里允许前端提供的
+/// 子集：服务端注入的 event_id/occurred_at/app_version/platform 与内部
+/// provider/model 字段不进该 wire。
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct BehaviorEventRequest {
+    pub event_name: String,
+    pub session_id: Option<String>,
+    pub turn_id: Option<String>,
+    pub input_type: Option<String>,
+    pub status: Option<String>,
+    pub stage: Option<String>,
+    pub tool_key: Option<String>,
+    pub tool_name: Option<String>,
+    pub tool_type: Option<String>,
+    pub success: Option<bool>,
+    pub scene_l1: Option<String>,
+    pub scene_l2: Option<String>,
+}
+
+impl BehaviorEventRequest {
+    /// 构造 BehaviorEvent。`allowed_event_names` 为命令层事件白名单；可选项经
+    /// 既有 builder 归一（nonempty 截断等），tool/scene 保持「任一字段出现即
+    /// 整组生效，缺失侧取空串」的原命令语义。
+    pub fn build_event(
+        self,
+        allowed_event_names: &[&'static str],
+    ) -> Result<BehaviorEvent, String> {
+        let event_name = allowed_event_names
+            .iter()
+            .find(|name| **name == self.event_name)
+            .copied()
+            .ok_or_else(|| "unsupported behavior event".to_string())?;
+        let mut event = BehaviorEvent::new(event_name);
+        if let Some(value) = self.session_id {
+            event = event.session(value);
+        }
+        if let Some(value) = self.turn_id {
+            event = event.turn(value);
+        }
+        if let Some(value) = self.input_type {
+            event = event.input_type(value);
+        }
+        if let Some(value) = self.status {
+            event = event.status(value);
+        }
+        if let Some(value) = self.stage {
+            event = event.stage(value);
+        }
+        if self.tool_key.is_some() || self.tool_name.is_some() || self.tool_type.is_some() {
+            event = event.tool(
+                self.tool_key.unwrap_or_default(),
+                self.tool_name.unwrap_or_default(),
+                self.tool_type.unwrap_or_default(),
+            );
+        }
+        if let Some(value) = self.success {
+            event = event.success(value);
+        }
+        if self.scene_l1.is_some() || self.scene_l2.is_some() {
+            event = event.scene(
+                self.scene_l1.unwrap_or_default(),
+                self.scene_l2.unwrap_or_default(),
+            );
+        }
+        Ok(event)
+    }
+}
+
 impl BehaviorEvent {
     pub fn new(event_name: &'static str) -> Self {
         Self {
@@ -181,11 +251,7 @@ impl BehaviorEvent {
 impl BehaviorTelemetry {
     pub fn new() -> Self {
         let runtime = Arc::new(RuntimeConfig::from_env());
-        let event_tx = runtime.enabled.then(|| {
-            let (tx, rx) = mpsc::channel(EVENT_QUEUE_CAPACITY);
-            tauri::async_runtime::spawn(Self::run_worker(rx, Self::worker_clone(runtime.clone())));
-            tx
-        });
+        let enabled = runtime.enabled;
         let telemetry = Self {
             client: reqwest::Client::builder()
                 .connect_timeout(Duration::from_secs(5))
@@ -195,12 +261,24 @@ impl BehaviorTelemetry {
             runtime,
             state: Arc::new(Mutex::new(load_state().ok().flatten())),
             credential_gate: Arc::new(Mutex::new(())),
-            event_tx,
+            event_tx: None,
         };
-        if telemetry.runtime.enabled && telemetry.event_tx.is_none() {
-            log::debug!("[pinvou3][behavior] telemetry disabled: queue initialization failed");
+        let event_tx = enabled.then(|| {
+            let (tx, rx) = mpsc::channel(EVENT_QUEUE_CAPACITY);
+            // worker 与引导实例共享全部字段（client/state 等均 Clone），唯一差异
+            // 是不持有事件通道——原 worker_clone 手工构造器（重复 build client +
+            // 二次读盘 load_state）由该结构体更新表达式取代。
+            let worker = Self {
+                event_tx: None,
+                ..telemetry.clone()
+            };
+            tauri::async_runtime::spawn(Self::run_worker(rx, worker));
+            tx
+        });
+        Self {
+            event_tx,
+            ..telemetry
         }
-        telemetry
     }
 
     pub fn track(&self, event: BehaviorEvent) {
@@ -209,20 +287,6 @@ impl BehaviorTelemetry {
         };
         if let Err(error) = tx.try_send(event) {
             log::debug!("[pinvou3][behavior] telemetry queue skipped event: {error}");
-        }
-    }
-
-    fn worker_clone(runtime: Arc<RuntimeConfig>) -> Self {
-        Self {
-            client: reqwest::Client::builder()
-                .connect_timeout(Duration::from_secs(5))
-                .timeout(Duration::from_secs(12))
-                .build()
-                .unwrap_or_else(|_| reqwest::Client::new()),
-            runtime,
-            state: Arc::new(Mutex::new(load_state().ok().flatten())),
-            credential_gate: Arc::new(Mutex::new(())),
-            event_tx: None,
         }
     }
 

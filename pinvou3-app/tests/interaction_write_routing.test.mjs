@@ -16,7 +16,7 @@ const interactionBridgeSource = fs.readFileSync(path.join(here, '..', 'src', 'pl
 // 顺序——epoch 校验必须在场（审计 P1）。
 function loadInteractionRuntime() {
   const root = {};
-  vm.runInNewContext(interactionBridgeSource, { window: root, globalThis: root });
+  vm.runInNewContext(fs.readFileSync(path.join(here, '..', 'src', 'shared', 'bridge-shared-helpers.js'), 'utf8') + '\n' + interactionBridgeSource, { window: root, globalThis: root });
   const factory = root.__PINVOU_TAURI_BRIDGE_FEATURES__.interaction;
   const state = {
     activeSessionId: 'chat-a',

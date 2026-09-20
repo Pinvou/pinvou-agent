@@ -162,17 +162,6 @@ jobs:
         working-directory: pinvou3-app
         run: npm ci --prefer-offline --no-audit
 
-      # bge-m3 是 gitignored 大资源(559MB),CI 干净 checkout 没有它,
-      # 而 tauri_build::build() 会校验 tauri.conf resources 路径存在。
-      # 造空占位文件骗过资源校验即可(同 pr-check.yml 的 linux rust-test)。
-      - name: bge-m3 占位 (骗过 tauri-build 资源校验)
-        run: |
-          d=pinvou3-app/src-tauri/resources/bge-m3
-          mkdir -p "$d"
-          for f in config.json model.onnx tokenizer.json tokenizer_config.json special_tokens_map.json; do
-            : > "$d/$f"
-          done
-
       - name: Cargo check (aarch64-apple-darwin)
         working-directory: pinvou3-app/src-tauri
         run: cargo check --target aarch64-apple-darwin --lib

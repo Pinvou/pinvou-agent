@@ -34,7 +34,7 @@ export function isAgentSpawnChatItem(item) {
 }
 
 /** Whether a spawn-type chat item has failed, by tool completion or state. */
-export function isFailedSpawn(item) {
+function isFailedSpawn(item) {
   return !!item && (item.success === false || item.state === 'failed');
 }
 

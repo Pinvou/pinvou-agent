@@ -1,4 +1,5 @@
-export function fallbackCopyText(text) {
+// execCommand('copy') 的降级通道,仅被下方 copyClipboardText 使用。
+function fallbackCopyText(text) {
   return new Promise((resolve) => {
     if (typeof document === 'undefined' || !document.body) {
       resolve(false);

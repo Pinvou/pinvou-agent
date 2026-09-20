@@ -55,6 +55,21 @@ fn wait_idle(svc: &KnowledgeService, what: &str) {
     }
 }
 
+/// 等后台导入任务结束（生产入口 start_index 的线程化语义）。
+fn wait_index_idle(svc: &KnowledgeService, what: &str) {
+    let start = Instant::now();
+    loop {
+        let s = svc.index_status();
+        if !s.running && !s.resumable {
+            return;
+        }
+        if start.elapsed() > Duration::from_secs(300) {
+            panic!("{what} 超时未完成");
+        }
+        std::thread::sleep(Duration::from_millis(200));
+    }
+}
+
 #[test]
 fn service_starts_without_embedder() {
     let root = std::env::temp_dir().join(format!(
@@ -230,7 +245,7 @@ fn full_l0_l1_e2e() {
         .unwrap_or(0);
     assert!(md >= 3, "md 计数应 ≥3，实际 {}", md);
 
-    // ───── L1：知识集 + 真实解析 + embedding ─────
+    // ───── L1：知识集 + 真实解析 + embedding（生产导入入口，后台线程跑） ─────
     assert!(
         svc.l1().has_embedder(),
         "L1 embedding 应已启用(env 配了 bge-m3)"
@@ -239,14 +254,11 @@ fn full_l0_l1_e2e() {
         .l1()
         .create_collection("调研集", Some("调研"), Some("访谈与报告"))
         .expect("create coll");
-    assert_eq!(
-        svc.l1().ingest_file(cid, &root.join("docs/访谈纪要.md")),
-        "parsed"
+    svc.start_index(
+        cid,
+        vec![root.join("docs/访谈纪要.md"), root.join("docs/季度报告.md")],
     );
-    assert_eq!(
-        svc.l1().ingest_file(cid, &root.join("docs/季度报告.md")),
-        "parsed"
-    );
+    wait_index_idle(&svc, "import");
 
     // ───── L1：关键词检索(命中原词) ─────
     let kw = svc

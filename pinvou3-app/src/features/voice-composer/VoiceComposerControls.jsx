@@ -43,7 +43,6 @@ function VoiceComposerButton({
   voiceAsrSetup,
   voiceAsrPopoverOpen,
   copy,
-  asrCopy,
   disabled,
   testId = 'composer-voice-button',
   onClick,
@@ -51,7 +50,7 @@ function VoiceComposerButton({
   onCloseAsrPopover,
   onCancelAsr,
 }) {
-  const resolvedAsrCopy = asrCopy || (copy && copy.uiChat) || copy;
+  const resolvedAsrCopy = (copy && copy.uiChat) || copy;
   const asrBusy = voiceAsrBusyState(voiceAsrSetup, resolvedAsrCopy);
   const active = isVoiceActive(voiceInput);
   const recording = isVoiceRecording(voiceInput);

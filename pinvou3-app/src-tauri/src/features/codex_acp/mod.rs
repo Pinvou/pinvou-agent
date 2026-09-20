@@ -22,13 +22,24 @@ mod store;
 pub(crate) mod workspace;
 
 // 纯提取：连接池自身仍是本 facade 的 impl 块；安装、登录与 Kimi 内省的
-// 无副作用自由函数已迁入对应子模块，这里 glob 引入以保持调用点不变。
-#[allow(unused_imports)]
-use install::*;
-#[allow(unused_imports)]
-use introspect::*;
-#[allow(unused_imports)]
-use login::*;
+// 无副作用自由函数已迁入对应子模块，这里显式引入 mod.rs 实际使用的符号。
+use install::{
+    brew_install_args, brew_package_installed, bundled_adapter_candidates,
+    claude_version_supported, clear_install_progress, codex_path_for_adapter,
+    codex_upgrade_required, codex_version_changed, command_version_output, detect_install_source,
+    emit_install_progress, fill_install_progress, find_in_path, install_action_for,
+    installed_node_version, kill_install_process_tree, kimi_version_supported,
+    move_official_binaries_aside, node_major_version, npm_executable, npm_package,
+    official_script_supported, official_script_urls, parse_install_action, path_install_source,
+    resolve_adapter_from, resolve_claude_adapter_from, resolve_claude_cli, resolve_codex_cli,
+    resolve_kimi_path, run_npm_global_upgrade, run_official_install_script, script_url_reachable,
+    stale_official_target, stream_std_lines,
+};
+use introspect::{kimi_diagnostic_cursor, kimi_failure_after};
+use login::{
+    agent_login_command, capture_agent_login_output, cli_status_success, kimi_login_failure_detail,
+    nonempty_env, setup_hint_message,
+};
 
 use std::collections::{BTreeMap, HashMap, HashSet, VecDeque};
 use std::io::{BufRead, Read};
@@ -63,6 +74,14 @@ use tokio_util::compat::{TokioAsyncReadCompatExt, TokioAsyncWriteCompatExt};
 use wait_timeout::ChildExt;
 
 use crate::features::sessions::SessionStore;
+// ACP 空闲回收阈值/巡检间隔（IDLE_EVICT_AFTER_SECS / REAP_INTERVAL_SECS）、
+// 回收判定本体、锁内复核 + 原子移除（take_session_if_still_idle）与巡检
+// 句柄/循环（IdleReaperGuard / start_idle_reaper）收敛到 `core::reaper`：
+// 每个空闲会话都是一个活的 node/codex/kimi 子进程（spawn 带 kill_on_drop），
+// 池无上限、内存随会话数线性涨。空闲超过阈值且无在跑 turn / 配置同步 /
+// 非 active 会话时回收。回收只是回到 lazy spawn 语义（下次 get_or_spawn
+// 重新起进程），30 分钟取偏保守值：宁可少回收也不误杀刚要被使用的会话。
+use crate::core::reaper::{IDLE_EVICT_AFTER_SECS, IdleReaperGuard, take_session_if_still_idle};
 use attachments::{CodexDisplayAttachment, prepare_codex_prompt};
 use deepseek_tui::session_manager::SessionMetadata;
 pub(crate) use events::project_acp_value_for_web;
@@ -105,45 +124,58 @@ const CLAUDE_INSTALL_SCRIPT_WINDOWS: &str = "https://claude.ai/install.ps1";
 const KIMI_INSTALL_SCRIPT_UNIX: &str = "https://code.kimi.com/kimi-code/install.sh";
 const KIMI_INSTALL_SCRIPT_WINDOWS: &str = "https://code.kimi.com/kimi-code/install.ps1";
 
-/// ACP 空闲会话回收阈值：每个空闲会话都是一个活的 node/codex/kimi 子进程
-/// （spawn 带 kill_on_drop），池无上限、内存随会话数线性涨。空闲超过该时长
-/// 且无在跑 turn / 配置同步 / 非 active 会话时回收。回收只是回到 lazy spawn
-/// 语义（下次 get_or_spawn 重新起进程），30 分钟取偏保守值：宁可少回收也不
-/// 误杀刚要被使用的会话。
-const IDLE_EVICT_AFTER_SECS: u64 = 30 * 60;
-/// 空闲回收巡检间隔：5 分钟一轮，及时性与巡检开销的折中（与 EnginePool
-/// 空闲回收、embedder 空闲卸载的巡检节奏保持一致）。
-const REAP_INTERVAL_SECS: u64 = 5 * 60;
+// ACP 空闲回收阈值/巡检间隔（IDLE_EVICT_AFTER_SECS / REAP_INTERVAL_SECS）、
+// 回收判定本体、锁内复核 + 原子移除（take_session_if_still_idle）与巡检
+// 句柄/循环（IdleReaperGuard / start_idle_reaper）收敛到 `core::reaper`：
+// 每个空闲会话都是一个活的 node/codex/kimi 子进程（spawn 带 kill_on_drop），
+// 池无上限、内存随会话数线性涨。空闲超过阈值且无在跑 turn / 配置同步 /
+// 非 active 会话时回收。回收只是回到 lazy spawn 语义（下次 get_or_spawn
+// 重新起进程），30 分钟取偏保守值：宁可少回收也不误杀刚要被使用的会话。
 
 /// 空闲回收判定（纯函数，便于单测）：busy（prompt 在途，含等待权限/问询的
-/// turn）、configuring（配置同步中）与当前 active 会话一律不回收。
+/// turn）、configuring（配置同步中）与当前 active 会话一律不回收。判定本体
+/// 与 EnginePool 侧共用 `core::reaper::should_reap_idle`，这里保留 ACP 的
+/// 参数语义命名。
 fn should_reap_idle_session(
     busy: bool,
     configuring: bool,
     is_active_session: bool,
     idle_for: Duration,
 ) -> bool {
-    !busy
-        && !configuring
-        && !is_active_session
-        && idle_for >= Duration::from_secs(IDLE_EVICT_AFTER_SECS)
+    crate::core::reaper::should_reap_idle(busy, configuring, is_active_session, idle_for)
 }
 
-/// `evict_if_idle` 的锁内复核 + 原子移除（泛型抽出以便用裸组件确定性测试）：
-/// 在同一把 sessions 锁内按现值复核回收条件，满足才 remove 并返回；不满足
-/// （快照后到达的 send_message 已置 busy / 刷新活动，或会话正被打开）返回
-/// `None`，调用方不得回收。复核与移除原子完成，消除快照→回收的 TOCTOU。
-async fn take_session_if_still_idle<T>(
-    sessions: &Mutex<HashMap<String, T>>,
-    session_id: &str,
-    is_still_idle: impl Fn(&T) -> bool,
-) -> Option<T> {
-    let mut sessions = sessions.lock().await;
-    let entry = sessions.get(session_id)?;
-    if !is_still_idle(entry) {
-        return None;
+/// codex_acp 测试共用的临时目录夹具（attachments / workspace 的 tests 模块
+/// 复用）：`create_dir_all` 建目录，Drop 时 `remove_dir_all` 清理；目录名按
+/// `{prefix}-{label}-{pid}-{nonce}` 区分（nonce 取纳秒时间戳，避免并行轮次
+/// 碰撞）。基目录由调用方决定，语义不同不强行统一：attachments 的上传校验
+/// 强制附件位于 `$HOME` 下（validate_upload_location），夹具必须跟随；
+/// workspace 用系统临时目录。
+#[cfg(test)]
+pub(crate) struct TestDir(PathBuf);
+
+#[cfg(test)]
+impl TestDir {
+    pub(crate) fn new(base: &Path, prefix: &str, label: &str) -> Self {
+        let nonce = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_nanos();
+        let path = base.join(format!("{prefix}-{label}-{}-{nonce}", std::process::id()));
+        std::fs::create_dir_all(&path).unwrap();
+        Self(path)
     }
-    sessions.remove(session_id)
+
+    pub(crate) fn path(&self) -> &Path {
+        &self.0
+    }
+}
+
+#[cfg(test)]
+impl Drop for TestDir {
+    fn drop(&mut self) {
+        let _ = std::fs::remove_dir_all(&self.0);
+    }
 }
 
 /// Minimum idle time before a rebind may reclaim a resident ACP runtime.
@@ -624,13 +656,8 @@ pub struct CodexAcpStatus {
     /// Agent 明确报告必须升级；这是不可暂缓的动态门禁。
     pub update_required: bool,
     pub bridge_ready: bool,
-    pub adapter_path: Option<String>,
-    pub node_version: Option<String>,
     pub node_supported: bool,
-    pub npm_available: bool,
     pub codex_available: bool,
-    pub codex_path: Option<String>,
-    pub codex_version: Option<String>,
     pub runtime_source: Option<&'static str>,
     /// 该 Agent CLI 的最低版本要求（"0.144.6" / "2.0.0" / "0.9.0"）。
     pub min_version: &'static str,
@@ -926,22 +953,6 @@ impl AcpSession {
         }
     }
 
-    async fn set_model(&self, model_id: &str) -> Result<()> {
-        let mut options = self.config_options.read().clone();
-        apply_config_option(
-            &self.connection,
-            &self.acp_session_id,
-            &mut options,
-            "model",
-            model_id,
-        )
-        .await?;
-        let current_model = current_config_value(&options, "model");
-        *self.config_options.write() = options;
-        *self.current_model.write() = current_model;
-        Ok(())
-    }
-
     async fn set_config_option(&self, config_id: &str, value_id: &str) -> Result<()> {
         let mut options = self.config_options.read().clone();
         apply_config_option(
@@ -1033,19 +1044,9 @@ pub struct AcpPool {
     idle_reaper: Arc<parking_lot::Mutex<Option<IdleReaperGuard>>>,
 }
 
-/// 后台巡检任务句柄：Drop 时先 cancel 再 abort，双保险停止巡检
-/// （参考 scheduled/tasks.rs ScheduledTaskState 的 Drop 清理模式）。
-struct IdleReaperGuard {
-    cancel: tokio_util::sync::CancellationToken,
-    handle: tauri::async_runtime::JoinHandle<()>,
-}
-
-impl Drop for IdleReaperGuard {
-    fn drop(&mut self) {
-        self.cancel.cancel();
-        self.handle.abort();
-    }
-}
+/// `IdleReaperGuard`（Drop 时先 cancel 再 abort，双保险停止巡检，参考
+/// scheduled/tasks.rs ScheduledTaskState 的 Drop 清理模式）收敛到
+/// `core::reaper`，与 EnginePool 侧共用同一实现。
 
 /// 同一 Agent 的安装/升级互斥，不同 Agent 的状态与任务彼此隔离。
 /// guard 在外部命令完成后显式 drop，使随后返回的 status 已恢复 installing=false；
@@ -1450,10 +1451,6 @@ impl AcpPool {
         }
     }
 
-    async fn status_async(&self) -> CodexAcpStatus {
-        self.status_for_async(AgentBackend::CodexAcp).await
-    }
-
     /// 「重新检测」入口：忽略探测缓存强制重新探测后返回最新状态，
     /// 供用户在 App 外手动安装/升级 CLI 后刷新（安装/升级成功路径
     /// 已通过 refresh_agent_cli_probe 自动失效缓存）。
@@ -1515,9 +1512,6 @@ impl AcpPool {
         if backend == AgentBackend::KimiAcp {
             let kimi = self.cli_probe_for(backend);
             let installing = self.installing_agents.read().contains(&backend);
-            let kimi_path = kimi
-                .as_ref()
-                .map(|cli| cli.path.to_string_lossy().into_owned());
             let kimi_version = kimi.as_ref().and_then(|cli| cli.version.clone());
             let install_source = kimi
                 .as_ref()
@@ -1536,7 +1530,7 @@ impl AcpPool {
             let mut status = CodexAcpStatus {
                 agent_id: "kimi",
                 agent_name: "Kimi",
-                version: kimi_version.clone(),
+                version: kimi_version,
                 latest_version: None,
                 installed,
                 update_available: false,
@@ -1544,14 +1538,9 @@ impl AcpPool {
                 // Kimi 直接运行原生 CLI，不依赖独立 Bridge。CLI 是否可用由
                 // installed 单独表达，避免未安装时被前端 Bridge 错误分支截断。
                 bridge_ready: true,
-                adapter_path: kimi_path.clone(),
                 // Kimi 不经 Node bridge，Node 字段不适用；node_supported 视为无门槛满足。
-                node_version: None,
                 node_supported: true,
-                npm_available: npm_executable().is_some(),
                 codex_available: cli_ready,
-                codex_path: kimi_path,
-                codex_version: kimi_version,
                 runtime_source: kimi.as_ref().map(|_| "system"),
                 min_version: MIN_KIMI_VERSION,
                 install_action: if installed {
@@ -1681,29 +1670,14 @@ impl AcpPool {
         let mut status = CodexAcpStatus {
             agent_id,
             agent_name,
-            version: provider_version.clone(),
+            version: provider_version,
             latest_version: None,
             installed,
             update_available: false,
             update_required: dynamic_codex_upgrade_required,
             bridge_ready,
-            adapter_path: adapter
-                .as_ref()
-                .map(|path| path.to_string_lossy().into_owned()),
-            node_version,
             node_supported,
-            npm_available: npm_executable().is_some(),
             codex_available,
-            codex_path: if backend == AgentBackend::CodexAcp {
-                codex
-                    .as_ref()
-                    .map(|resolved| resolved.path.to_string_lossy().into_owned())
-            } else {
-                claude
-                    .as_ref()
-                    .map(|cli| cli.path.to_string_lossy().into_owned())
-            },
-            codex_version: provider_version,
             runtime_source: if backend == AgentBackend::CodexAcp {
                 codex.as_ref().map(|resolved| resolved.source.as_str())
             } else {
@@ -1879,7 +1853,7 @@ impl AcpPool {
     /// 验证 Codex Bridge 与 CLI 已就绪；不会隐式安装或执行外部脚本。
     async fn ensure_codex_ready(&self) -> Result<CodexAcpStatus> {
         self.refresh_runtime_probe(false).await;
-        let status = self.status_async().await;
+        let status = self.status_for_async(AgentBackend::CodexAcp).await;
         if !status.bridge_ready {
             bail!("Pinvou 安装包缺少可用的 Codex ACP Bridge，请重新安装或重新生成 Bridge Runtime");
         }
@@ -1917,7 +1891,7 @@ impl AcpPool {
             !self.codex_upgrade_required.load(Ordering::Acquire)
                 || codex_version_changed(
                     previous_codex_version.as_deref(),
-                    status.codex_version.as_deref(),
+                    status.version.as_deref(),
                 )
         } else {
             true
@@ -3015,8 +2989,9 @@ impl AcpPool {
     fn login_executable(&self, backend: AgentBackend) -> Option<PathBuf> {
         match backend {
             AgentBackend::CodexAcp => {
-                let adapter = self.resolve_adapter()?;
-                self.resolve_codex(&adapter).map(|resolved| resolved.path)
+                // Bridge adapter 存在性保留为 Codex 登录入口的前置检查。
+                self.resolve_adapter()?;
+                self.resolve_codex().map(|resolved| resolved.path)
             }
             AgentBackend::ClaudeAcp => {
                 let adapter = self.resolve_claude_adapter()?;
@@ -3203,9 +3178,6 @@ impl AcpPool {
             Some(runtime) => {
                 if runtime.busy.load(Ordering::Acquire) {
                     runtime.cancel();
-                    runtime
-                        .bridge
-                        .emit("cancel_requested", json!({ "status": "cancelling" }));
                 } else {
                     // session 已恢复但当前进程没有活跃 prompt 时，session/cancel 无法
                     // 命中旧进程的 turn。直接收口持久化孤儿回合，让停止操作可恢复且幂等。
@@ -3345,34 +3317,12 @@ impl AcpPool {
     /// 常驻的只有一个每 5 分钟醒一次的轻任务）。
     pub fn start_idle_reaper(&self) {
         let mut slot = self.idle_reaper.lock();
-        if slot.is_some() {
-            return;
-        }
-        let cancel = tokio_util::sync::CancellationToken::new();
-        let task_cancel = cancel.clone();
-        let pool = self.clone();
-        let handle = tauri::async_runtime::spawn(async move {
-            let mut interval = tokio::time::interval(Duration::from_secs(REAP_INTERVAL_SECS));
-            // tokio::interval 首个 tick 立即到期：跳过它，统一走周期节奏。
-            interval.tick().await;
-            loop {
-                tokio::select! {
-                    _ = task_cancel.cancelled() => break,
-                    _ = interval.tick() => {}
-                }
-                // 单轮 panic 隔离（与 EnginePool 巡检同款）：回收逻辑 panic 只
-                // 终止当轮 task，外层循环下轮照常继续，ACP 会话回收不停摆。
-                let round_pool = pool.clone();
-                let round =
-                    tauri::async_runtime::spawn(
-                        async move { round_pool.reap_idle_sessions().await },
-                    );
-                if let Err(error) = round.await {
-                    eprintln!("[codex_acp] 空闲巡检单轮失败（已隔离，下轮继续）: {error}");
-                }
-            }
-        });
-        *slot = Some(IdleReaperGuard { cancel, handle });
+        crate::core::reaper::start_idle_reaper(
+            &mut slot,
+            self.clone(),
+            |pool| async move { pool.reap_idle_sessions().await },
+            "codex_acp",
+        );
     }
 
     /// 单轮空闲回收。busy/configuring 会话（含 turn 等待权限/问询期间）与
@@ -3811,7 +3761,7 @@ impl AcpPool {
             AgentBackend::CodexAcp => {
                 let adapter = self.resolve_adapter().context("Codex ACP 尚未安装")?;
                 let mut command = self.adapter_command(&adapter)?;
-                self.configure_codex_path(&mut command, &adapter)?;
+                self.configure_codex_path(&mut command)?;
                 self.configure_codex_provider_env(&mut command, pinvou_session_id)?;
                 (command, adapter, CODEX_ACP_PACKAGE, CODEX_ACP_VERSION)
             }
@@ -4189,7 +4139,7 @@ impl AcpPool {
         None
     }
 
-    fn resolve_codex(&self, _adapter: &Path) -> Option<ResolvedCodex> {
+    fn resolve_codex(&self) -> Option<ResolvedCodex> {
         self.runtime_probe.read().codex.clone()
     }
 
@@ -4197,9 +4147,9 @@ impl AcpPool {
         platform::adapter_command(adapter, self.resolve_node(adapter).as_deref())
     }
 
-    fn configure_codex_path(&self, command: &mut Command, adapter: &Path) -> Result<()> {
+    fn configure_codex_path(&self, command: &mut Command) -> Result<()> {
         let codex = self
-            .resolve_codex(adapter)
+            .resolve_codex()
             .context("未检测到可用 Codex；请通过官方方式安装或升级 Codex")?;
         command.env(
             "CODEX_PATH",

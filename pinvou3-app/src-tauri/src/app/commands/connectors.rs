@@ -39,7 +39,7 @@ pub async fn set_disabled_connectors(
 #[tauri::command]
 pub async fn get_disabled_connectors(scope: Option<String>) -> Result<Vec<String>, String> {
     let scope = parse_connector_scope(scope.as_deref())?;
-    Ok(crate::features::marketplace::load_disabled_connectors_for(
+    Ok(crate::features::marketplace::load_disabled_bundles_for(
         scope,
     ))
 }
@@ -85,7 +85,7 @@ pub async fn set_project_skills_enabled(
     app: AppHandle,
     pool: State<'_, EnginePool>,
 ) -> Result<(), String> {
-    crate::features::marketplace::skill_scope::set_project_skills_enabled(enabled);
+    crate::features::marketplace::scope::set_project_skills_enabled(enabled);
     // 开关影响 code 会话组合目录：重写在线会话组合目录 + 热刷 load_skill 隐藏
     // 判定 + execpolicy 规则集（项目级 skills 重新纳入 deny/allow 集合），并广播
     // 工具变更（其它窗口/实例借此刷新开关状态）。
@@ -96,7 +96,7 @@ pub async fn set_project_skills_enabled(
 /// 项目级 skills 开关状态（默认关）。
 #[tauri::command]
 pub async fn get_project_skills_enabled() -> Result<bool, String> {
-    Ok(crate::features::marketplace::skill_scope::project_skills_enabled())
+    Ok(crate::features::marketplace::scope::project_skills_enabled())
 }
 
 /// 解析前端传入的 scope:缺省/空 = plain;已注册模式名(`SessionMode` 的

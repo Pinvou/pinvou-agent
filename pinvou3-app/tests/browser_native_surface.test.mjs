@@ -770,7 +770,7 @@ test('Linux WebDriver safely rebinds with a host marker without injecting remote
 test('each Linux WebDriver mutation revalidates exact tab and active lease before POST', () => {
   assert.match(
     linuxAutomation,
-    /fn authorize_registered_mutation[\s\S]{0,900}binding\.tab_token != authorization\.tab_token[\s\S]{0,700}refresh_agent_input_window\(authorization\)[\s\S]{0,180}authorize_agent_dispatch\(authorization\)/,
+    /fn registered_control_for_authorization[\s\S]{0,500}binding\.tab_token != authorization\.tab_token[\s\S]{0,600}fn authorize_registered_mutation[\s\S]{0,300}registered_control_for_authorization\(label, authorization\)\?[\s\S]{0,300}refresh_agent_input_window\(authorization\)[\s\S]{0,180}authorize_agent_dispatch\(authorization\)/,
   );
   assert.match(
     linuxAutomation,

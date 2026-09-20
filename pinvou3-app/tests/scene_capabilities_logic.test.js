@@ -6,9 +6,16 @@ const vm = require('vm');
 
 const companionPath = path.join(__dirname, '..', 'src', 'shared', 'companion-packages.js');
 const logicPath = path.join(__dirname, '..', 'src', 'features', 'chat', 'scene-capabilities.js');
-// scene-capabilities 经 import 引用 shared/companion-packages：vm script 语义
-// 下剥掉 import/export 声明，共享模块先入上下文，两个源共用同一作用域。
+// scene-capabilities derives its definition keys from the canonical scene
+// registry (scene-registry.js) and its package map from shared/companion-packages;
+// concatenate all three (imports stripped) so the vm sandbox resolves the same
+// bindings the bundler provides.
+const sceneRegistryPath = path.join(__dirname, '..', 'src', 'features', 'chat', 'scene-registry.js');
+const sceneRegistryCode = fs.readFileSync(sceneRegistryPath, 'utf8')
+  .replace(/\bexport\s+\{[^}]+\};?/g, '')
+  .replace(/\bexport\s+/g, '');
 const stripModuleSyntax = (source) => source
+  .replace(/^import[\s\S]*?from '\.\/scene-registry\.js';\r?\n/m, '')
   .replace(/\bexport\s+\{[^}]+\};?/g, '')
   .replace(/\bexport\s+/g, '')
   .replace(/^\s*import\s[^\n]*\n/gm, '');
@@ -18,7 +25,8 @@ const code = [fs.readFileSync(companionPath, 'utf8'), fs.readFileSync(logicPath,
 
 const ctx = {};
 vm.createContext(ctx);
-vm.runInContext(`${code}
+vm.runInContext(`${sceneRegistryCode}
+${code}
 this.canPrepareSceneCapabilities = canPrepareSceneCapabilities;
 this.requiredCapabilitiesForMeta = requiredCapabilitiesForMeta;
 this.prepareSceneCapabilities = prepareSceneCapabilities;`, ctx, { filename: logicPath });

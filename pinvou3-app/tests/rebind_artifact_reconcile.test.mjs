@@ -23,6 +23,14 @@ const read = relative => fs.readFileSync(new URL(`../src/${relative}`, import.me
 
 const windowObject = {};
 const context = vm.createContext({ window: windowObject, console });
+// The shared-helper dedup relocated the tracker's function bodies into
+// bridge-shared-helpers.js; the lane file's wrappers resolve them through
+// window.PinvouBridgeShared, so the harness must load the shared base first
+// (same order as the runtime: index.html loads the shared base before the
+// bridges).
+vm.runInContext(read('shared/bridge-shared-helpers.js'), context, {
+  filename: 'shared/bridge-shared-helpers.js',
+});
 vm.runInContext(read('platform/tauri/bridge/artifact-tracker.js'), context, {
   filename: 'bridge/artifact-tracker.js',
 });

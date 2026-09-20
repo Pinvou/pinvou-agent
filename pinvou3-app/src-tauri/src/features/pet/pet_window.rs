@@ -13,7 +13,7 @@ use tauri::{AppHandle, Emitter, Manager, State, WebviewUrl, WebviewWindowBuilder
 
 // 纯几何函数、常量与 PetVerticalAlignment/ScaleAnchor 类型抽离到 geometry 子模块;
 // 这里复用其计算并保持本文件的 pub 面不变。
-pub use super::geometry::{PET_LABEL, PetVerticalAlignment, clamp_scale, point_on_any_monitor};
+use super::geometry::{PET_LABEL, PetVerticalAlignment, clamp_scale, point_on_any_monitor};
 pub(crate) use super::geometry::{ScaleAnchor, edge_anchor, resized_position};
 use super::geometry::{
     character_anchor_position, character_local_top_left, clamp_scale_to_character_work_area,

@@ -17,6 +17,7 @@ function createFeature(options = {}) {
     setTimeout,
     clearTimeout,
   };
+  vm.runInNewContext(fs.readFileSync(path.join(__dirname, '..', 'src', 'shared', 'bridge-shared-helpers.js'), 'utf8'), sandbox, { filename: 'shared/bridge-shared-helpers.js' });
   vm.runInNewContext(chatSource, sandbox, { filename: 'bridge/chat.js' });
   const factory = sandbox.window.__PINVOU_TAURI_BRIDGE_FEATURES__.chat;
   const state = {

@@ -24,4 +24,4 @@ function npmInstallInvocation({
   };
 }
 
-module.exports = { NPM_CI_ARGS, npmInstallInvocation };
+module.exports = { npmInstallInvocation };

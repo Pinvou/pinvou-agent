@@ -12,6 +12,7 @@ import {
   statusPresentation,
 } from './overlay-model.mjs';
 import { useSubagentLedgerPoll } from './useSubagentLedgerPoll.js';
+import { dispatchOpenSubagent } from './subagent-panel-event.mjs';
 
 /**
  * Swarm running overlay (top-right, ADR-0006 swarm rework): shown while the
@@ -58,6 +59,45 @@ const dotClass = {
   // failure (red) nor a success (green).
   stopped: 'bg-[#9AA0A6]',
 };
+
+// One row renderer shared by the active and recent lists; `recent` switches
+// the test id, the faded name, and the terminal status colors (a failed entry
+// keeps its red, a stopped one its gray, instead of the neutral active gray).
+function OverlayAgentRow({ entry, recent, isDark, copy, onOpen }) {
+  // Recent entries carry their real terminal status: a failed agent must not
+  // borrow the success styling of the window.
+  const status = statusPresentation(entry, copy);
+  return (
+    <li>
+      <button
+        type="button"
+        data-testid={recent ? 'running-agents-entry-done' : 'running-agents-entry'}
+        onClick={() => onOpen(entry.agentId, entry.sessionId)}
+        className={`flex w-full items-center gap-2 px-3 py-1.5 text-left text-[12.5px] transition-colors ${
+          isDark ? 'hover:bg-white/[0.06]' : 'hover:bg-black/[0.04]'
+        }`}
+      >
+        <span className={`inline-block h-1.5 w-1.5 shrink-0 rounded-full ${dotClass[status.dot]}`} />
+        <span className={`min-w-0 flex-1 truncate font-medium ${recent ? 'opacity-70' : ''}`}>
+          {entry.role || entry.agentId}
+        </span>
+        <span
+          className={recent
+            ? `shrink-0 text-[10.5px] ${
+              status.dot === 'failed'
+                ? (isDark ? 'text-[#F28B82]' : 'text-[#C5221F]')
+                : status.dot === 'stopped'
+                  ? 'text-[#9AA0A6]'
+                  : (isDark ? 'text-[#93D5A6]' : 'text-[#137333]')
+            }`
+            : `shrink-0 truncate text-[10.5px] ${isDark ? 'text-[#9AA0A6]' : 'text-[#757575]'}`}
+        >
+          {status.text}
+        </span>
+      </button>
+    </li>
+  );
+}
 
 export const RunningAgentsOverlay = ({ sessionId, theme, t, swarmOn = false }) => {
   const copy = t.uiMultiAgent;
@@ -234,10 +274,7 @@ export const RunningAgentsOverlay = ({ sessionId, theme, t, swarmOn = false }) =
   }, []);
 
   const openAgent = useCallback((agentId, agentSessionId) => {
-    if (typeof window === 'undefined' || !agentId) return;
-    window.dispatchEvent(new CustomEvent('pinvou:open-subagent', {
-      detail: { agentId, sessionId: agentSessionId || sessionId || null },
-    }));
+    dispatchOpenSubagent(agentId, agentSessionId || sessionId || null);
   }, [sessionId]);
 
   if (!visible) return null;
@@ -279,64 +316,30 @@ export const RunningAgentsOverlay = ({ sessionId, theme, t, swarmOn = false }) =
           <div className={`px-3 py-2 text-[11px] font-semibold ${isDark ? 'text-[#9AA0A6]' : 'text-[#757575]'}`}>
             {copy.runningAgentsTitle}
           </div>
-          {active.length === 0 && recent.length === 0 ? null : (
-            <ul className="max-h-64 overflow-y-auto pb-1 custom-scrollbar">
-              {active.map(entry => {
-                const status = statusPresentation(entry, copy);
-                return (
-                  <li key={entryKey(entry.sessionId, entry.agentId)}>
-                    <button
-                      type="button"
-                      data-testid="running-agents-entry"
-                      onClick={() => openAgent(entry.agentId, entry.sessionId)}
-                      className={`flex w-full items-center gap-2 px-3 py-1.5 text-left text-[12.5px] transition-colors ${
-                        isDark ? 'hover:bg-white/[0.06]' : 'hover:bg-black/[0.04]'
-                      }`}
-                    >
-                      <span className={`inline-block h-1.5 w-1.5 shrink-0 rounded-full ${dotClass[status.dot]}`} />
-                      <span className="min-w-0 flex-1 truncate font-medium">
-                        {entry.role || entry.agentId}
-                      </span>
-                      <span className={`shrink-0 truncate text-[10.5px] ${isDark ? 'text-[#9AA0A6]' : 'text-[#757575]'}`}>
-                        {status.text}
-                      </span>
-                    </button>
-                  </li>
-                );
-              })}
-              {recent.map(entry => {
-                // Recent entries carry their real terminal status: a failed
-                // agent must not borrow the success styling of the window.
-                const status = statusPresentation(entry, copy);
-                return (
-                  <li key={entryKey(entry.sessionId, entry.agentId)}>
-                    <button
-                      type="button"
-                      data-testid="running-agents-entry-done"
-                      onClick={() => openAgent(entry.agentId, entry.sessionId)}
-                      className={`flex w-full items-center gap-2 px-3 py-1.5 text-left text-[12.5px] transition-colors ${
-                        isDark ? 'hover:bg-white/[0.06]' : 'hover:bg-black/[0.04]'
-                      }`}
-                    >
-                      <span className={`inline-block h-1.5 w-1.5 shrink-0 rounded-full ${dotClass[status.dot]}`} />
-                      <span className="min-w-0 flex-1 truncate font-medium opacity-70">
-                        {entry.role || entry.agentId}
-                      </span>
-                      <span className={`shrink-0 text-[10.5px] ${
-                        status.dot === 'failed'
-                          ? (isDark ? 'text-[#F28B82]' : 'text-[#C5221F]')
-                          : status.dot === 'stopped'
-                            ? 'text-[#9AA0A6]'
-                            : (isDark ? 'text-[#93D5A6]' : 'text-[#137333]')
-                      }`}>
-                        {status.text}
-                      </span>
-                    </button>
-                  </li>
-                );
-              })}
-            </ul>
-          )}
+          {/* `visible` above already requires a non-empty list, so no empty
+              guard is needed on the <ul> itself. */}
+          <ul className="max-h-64 overflow-y-auto pb-1 custom-scrollbar">
+            {active.map(entry => (
+              <OverlayAgentRow
+                key={entryKey(entry.sessionId, entry.agentId)}
+                entry={entry}
+                recent={false}
+                isDark={isDark}
+                copy={copy}
+                onOpen={openAgent}
+              />
+            ))}
+            {recent.map(entry => (
+              <OverlayAgentRow
+                key={entryKey(entry.sessionId, entry.agentId)}
+                entry={entry}
+                recent
+                isDark={isDark}
+                copy={copy}
+                onOpen={openAgent}
+              />
+            ))}
+          </ul>
         </div>
       )}
     </div>

@@ -169,14 +169,6 @@ function normalizeTurnItems(turn) {
 }
 
 /**
- * Item 是事实语义，presentation 只控制视觉聚合。工具组不会改写、合并或丢弃
- * 任何 Item；展开后仍按原始时序逐项展示。
- */
-function presentTurnItems(items) {
-  return presentConversationItems(items);
-}
-
-/**
  * 把不可变 ACP event log 投影成 Codex 的 Thread → Turn → Item 模型。
  * 原始 event log 仍是事实源；tool update 只更新同一个 tool_call_id。
  */
@@ -359,7 +351,7 @@ export function projectAcpTimeline(input, options = {}) {
     turn.waitingInput = !turn.completedAt
       && turn.elicitations.some(elicitation => !elicitation.resolved);
     turn.items = normalizeTurnItems(turn);
-    turn.presentation = presentTurnItems(turn.items);
+    turn.presentation = presentConversationItems(turn.items);
     const operations = turn.items.filter(item => (
       ['command_execution', 'file_change', 'tool'].includes(item.type)
     ));
@@ -536,7 +528,3 @@ export function buildElicitationContent(groups) {
   }
   return content;
 }
-
-export {
-  commandExecutionDetails,
-};

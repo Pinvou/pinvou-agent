@@ -87,7 +87,6 @@ assert.equal(readyGeneration, 'webview_11111111_2222_3333_4444_555555555555');
 for (const event of [
   'web_access:rpc_request',
   'web_access:event_subscribe',
-  'web_access:event_unsubscribe',
   'web_access:status',
   'chat:delta',
 ]) {
@@ -180,6 +179,13 @@ const loadedSessionModels = [];
 let personaSyncs = 0;
 const sessionWindow = { __PINVOU_TAURI_BRIDGE_FEATURES__: {} };
 const sessionContext = vm.createContext({ window: sessionWindow, console });
+// sessions.js delegates shared helpers to window.PinvouBridgeShared (index.html loads
+// the shared payload before the bridges); load it into the context first.
+vm.runInContext(
+  fs.readFileSync(path.join(root, 'src', 'shared', 'bridge-shared-helpers.js'), 'utf8'),
+  sessionContext,
+  { filename: 'shared/bridge-shared-helpers.js' },
+);
 vm.runInContext(sessionsSource, sessionContext, {
   filename: 'platform/tauri/bridge/sessions.js',
 });
@@ -205,7 +211,6 @@ const sessionState = {
   queued: [],
   activePersona: null,
   mountedCollection: null,
-  scheduledTaskDraft: null,
 };
 const sessionStates = { [deletedSessionId]: { messages: sessionState.messages } };
 const sessionFactory = sessionWindow.__PINVOU_TAURI_BRIDGE_FEATURES__.sessions;

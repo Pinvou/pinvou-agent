@@ -31,19 +31,6 @@ use objc2_speech::{
     SFSpeechRecognizer, SFSpeechURLRecognitionRequest,
 };
 
-/// 根据 on-device 支持情况决定识别模式（纯函数，可单测）。
-///
-/// `supports_on_device` 来自 `SFSpeechRecognizer::supportsOnDeviceRecognition()`：
-/// - true → 要求端上识别。
-/// - false → 不强制端上，由系统 Speech 服务在线处理。
-///
-/// 目前是直传（语义：能端上就端上），但抽成函数是为后续加策略（如用户偏好
-/// "强制联网换更高精度"）留扩展点，也便于单测覆盖。
-pub fn decide_on_device(supports_on_device: bool) -> bool {
-    // 支持端上识别时明确要求端上；不支持时由系统走在线 Speech 服务。
-    supports_on_device
-}
-
 /// 对 wav 文件做语音识别，返回识别文本。
 ///
 /// 前端录音 → 16kHz mono 16-bit PCM WAV（首选格式，零转码）→ 写到临时文件 →
@@ -93,8 +80,9 @@ pub fn transcribe_with_speech(wav_path: &Path, locale_tag: &str) -> Result<Strin
     // 3. on-device vs. Apple 服务：按 recognizer/locale 的运行时能力判断，
     //    不能按 Apple Silicon / Intel 架构预判。
     //    requiresOnDeviceRecognition 仅在 supportsOnDeviceRecognition=true 时设置。
-    // SAFETY: supportsOnDeviceRecognition 只读属性。
-    let on_device = decide_on_device(unsafe { recognizer.supportsOnDeviceRecognition() });
+    // SAFETY: supportsOnDeviceRecognition 只读属性。语义：支持端上识别时明确
+    // 要求端上；不支持时不强制（由系统 Speech 服务在线处理）。
+    let on_device = unsafe { recognizer.supportsOnDeviceRecognition() };
 
     // 4. 文件识别请求。SFSpeechURLRecognitionRequest 是 SFSpeechRecognitionRequest 的
     //    子类，initWithURL: 接受文件 URL（不是 Data）。

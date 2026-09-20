@@ -153,8 +153,9 @@ where
     Some(format!("{attachment_dir}/{candidate}"))
 }
 
-/// 将附件以受控文件名落进 workspace 子目录;供 GUI 附件命令与 headless
-/// 评测附件 staging(lib 根 re-export)共用。
+/// Stages an attachment into a workspace subdirectory under a controlled file
+/// name; shared by the GUI attachment commands and the headless eval
+/// attachment staging path.
 pub fn stage_file_in_workspace(
     src: &str,
     basename: &str,
@@ -201,7 +202,6 @@ pub(crate) fn existing_workspace_relative_file(
 
 /// Copy a remote-control upload into the session workspace before the
 /// temporary upload directory is removed.
-#[allow(dead_code)]
 pub(crate) fn stage_remote_attachment_source(
     src: &str,
     basename: &str,

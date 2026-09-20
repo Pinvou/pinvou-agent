@@ -78,10 +78,17 @@ impl EngineScheduledRuntime {
     }
 }
 
+/// Shell 开关的唯一读取点：与普通 Yolo 会话同口径（`Pinvou3Bridge::allow_shell_for_prefs`）。
+/// 任务创建（tasks.rs 的 build_create_request）与运行时（下面的 trait impl）共用，
+/// 避免两份同样的偏好读取各自漂移。
+pub(crate) fn current_yolo_allow_shell() -> bool {
+    Pinvou3Bridge::allow_shell_for_prefs(&UserPrefs::load())
+}
+
 #[async_trait]
 impl ScheduledConversationRuntime for EngineScheduledRuntime {
     fn yolo_allow_shell(&self) -> bool {
-        Pinvou3Bridge::allow_shell_for_prefs(&UserPrefs::load())
+        current_yolo_allow_shell()
     }
 
     fn model_id_for_automation(&self, automation_id: &str, model: &str) -> Option<String> {

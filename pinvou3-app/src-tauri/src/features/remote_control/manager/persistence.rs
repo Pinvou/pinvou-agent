@@ -7,7 +7,7 @@
 
 use std::collections::HashSet;
 use std::fs::{File, OpenOptions};
-use std::io::{Read, Write};
+use std::io::Read;
 use std::path::{Path, PathBuf};
 
 use serde::{Deserialize, Serialize};
@@ -534,62 +534,23 @@ pub(super) fn atomic_write_private_json<T: Serialize>(
         .map_err(|error| format!("create {}: {error}", parent.display()))?;
     let data =
         serde_json::to_vec_pretty(value).map_err(|error| format!("serialize {label}: {error}"))?;
-
-    let file_name = path
-        .file_name()
-        .and_then(|name| name.to_str())
-        .unwrap_or("web-access");
-    let mut temporary = None;
-    for _ in 0..16 {
-        let candidate = parent.join(format!(
-            ".{file_name}.tmp-{}-{}",
-            std::process::id(),
-            crate::features::remote_control::short_token(12)
-        ));
-        let mut options = OpenOptions::new();
-        options.write(true).create_new(true);
-        platform::configure_private_open_options(&mut options);
-        match options.open(&candidate) {
-            Ok(file) => {
-                platform::enforce_private_permissions(&file, &candidate).map_err(|error| {
-                    format!(
-                        "set private permissions on {}: {error}",
-                        candidate.display()
-                    )
-                })?;
-                temporary = Some((candidate, file));
-                break;
-            }
-            Err(error) if error.kind() == std::io::ErrorKind::AlreadyExists => {}
-            Err(error) => return Err(format!("create {}: {error}", candidate.display())),
-        }
-    }
-    let (temporary, mut file) =
-        temporary.ok_or_else(|| format!("allocate a temporary file next to {}", path.display()))?;
-    let result = (|| {
-        file.write_all(&data)
-            .map_err(|error| format!("write {}: {error}", temporary.display()))?;
-        file.sync_all()
-            .map_err(|error| format!("sync {}: {error}", temporary.display()))?;
-        drop(file);
-        platform::atomic_replace(&temporary, path)
-            .map_err(|error| format!("commit {}: {error}", path.display()))?;
-        platform::sync_parent_directory(parent)
-            .map_err(|error| format!("sync {}: {error}", parent.display()))?;
-        Ok(())
-    })();
-    if result.is_err() {
-        let _ = std::fs::remove_file(&temporary);
-    }
-    result
+    // Private temp file + fsync + atomic replace + failure cleanup are provided
+    // by the shared platform filesystem helper.
+    crate::platform::filesystem::atomic_write_private(path, &data)
+        .map_err(|error| format!("write {}: {error}", path.display()))
 }
 
 pub(super) fn remove_private_file(path: &Path) -> Result<(), String> {
     match std::fs::remove_file(path) {
         Ok(()) => {
             if let Some(parent) = path.parent() {
-                platform::sync_parent_directory(parent)
-                    .map_err(|error| format!("sync {}: {error}", parent.display()))?;
+                // Best-effort durability for the directory-entry deletion; on
+                // platforms where a directory cannot be opened as a file the
+                // sync is skipped.
+                if let Ok(dir) = std::fs::File::open(parent) {
+                    dir.sync_all()
+                        .map_err(|error| format!("sync {}: {error}", parent.display()))?;
+                }
             }
             Ok(())
         }

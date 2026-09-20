@@ -12,6 +12,9 @@
 
 use super::*;
 
+// mod.rs 不再 glob 引入 login::*，本文件显式引入其使用的登录辅助函数。
+use super::login::nonempty_env;
+
 #[derive(Debug)]
 pub(super) struct KimiDiagnosticCursor {
     session_id: String,

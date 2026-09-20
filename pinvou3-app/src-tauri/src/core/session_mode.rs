@@ -25,7 +25,7 @@ pub enum SessionMode {
 /// 该模式的会话默认禁用全部已装条目、由用户显式开启（安全姿态）；AllowAll =
 /// 默认全开。策略放 core（不放 assistant/marketplace）：marketplace 的 load
 /// 路径需要它兜底，而 assistant 已依赖 marketplace，放 assistant 会形成
-/// feature 依赖环（见 marketplace/skill_scope.rs 头注释）。
+/// feature 依赖环（见 marketplace/scope.rs 头注释）。
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum PackDefaultPolicy {
     AllowAll,

@@ -4,7 +4,6 @@ use std::io::{BufReader, Read, Write};
 use std::path::{Path, PathBuf};
 use std::str::FromStr;
 
-use age::secrecy::ExposeSecret;
 use age::x25519::{Identity, Recipient};
 use age::{Decryptor, Encryptor};
 use flate2::Compression;
@@ -69,12 +68,6 @@ pub fn recover_interrupted_restore(data_dir: &Path) -> Result<(), String> {
             .map_err(|error| format!("无法恢复中断前的共享知识库数据：{error}"))?;
     }
     Ok(())
-}
-
-pub fn generate_identity() -> (String, String) {
-    let identity = Identity::generate();
-    let recipient = identity.to_public().to_string();
-    (identity.to_string().expose_secret().to_string(), recipient)
 }
 
 pub fn create_encrypted_backup(
@@ -656,6 +649,16 @@ fn hash_file(path: &Path) -> Result<String, String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    use age::secrecy::ExposeSecret;
+
+    /// 测试专用：生成 age 身份与接收公钥。生产路径的密钥由主机引导流程
+    /// 生成并安全存储，不经过此函数。
+    fn generate_identity() -> (String, String) {
+        let identity = Identity::generate();
+        let recipient = identity.to_public().to_string();
+        (identity.to_string().expose_secret().to_string(), recipient)
+    }
 
     fn seed_data(root: &Path, server_id: &str, device_id: &str) {
         fs::create_dir_all(root.join(DOCUMENTS_NAME)).unwrap();

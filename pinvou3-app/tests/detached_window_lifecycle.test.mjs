@@ -67,6 +67,7 @@ async function initialize(search) {
     URL,
     Blob,
   });
+  vm.runInContext(fs.readFileSync(path.join(root, 'src', 'shared', 'bridge-shared-helpers.js'), 'utf8'), context, { filename: 'shared/bridge-shared-helpers.js' });
   vm.runInContext(bridgeSource, context, { filename: 'tauri-bridge.js' });
   await windowObject.TauriBridge.lifecycle.init();
   return calls;

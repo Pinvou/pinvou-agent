@@ -178,17 +178,6 @@ jobs:
       - name: 同步版本号
         run: node scripts/sync-version.mjs
 
-      # bge-m3 是 gitignored 大资源(559MB),CI 干净 checkout 没有它。
-      # 当前配置已不直接引用 bge-m3,空占位是防御性保留(同 pr-check.yml 的做法),
-      # 防止资源清单日后恢复引用时 tauri-build 资源校验失败。
-      - name: bge-m3 占位 (防御性保留)
-        run: |
-          d=pinvou3-app/src-tauri/resources/bge-m3
-          mkdir -p "$d"
-          for f in config.json model.onnx tokenizer.json tokenizer_config.json special_tokens_map.json; do
-            : > "$d/$f"
-          done
-
       # build.js 自动注入 config/platforms/linux overlay,并自动准备 codex bridge。
       # 只打 deb(config overlay 的 targets 也只列了 deb)。
       - name: 构建 deb
@@ -310,14 +299,6 @@ jobs:
       - name: 同步版本号
         run: node scripts/sync-version.mjs
 
-      - name: bge-m3 占位 (防御性保留)
-        run: |
-          d=pinvou3-app/src-tauri/resources/bge-m3
-          mkdir -p "$d"
-          for f in config.json model.onnx tokenizer.json tokenizer_config.json special_tokens_map.json; do
-            : > "$d/$f"
-          done
-
       # 连接器 CLI 不在构建期下载或打入安装包；用户首次连接时，应用按
       # connectors.lock.json 在线下载、校验并安装到用户目录。
       # VERSION bump 与人工触发都产出正式 artifact，完整使用 release profile。
@@ -427,14 +408,6 @@ jobs:
       - name: 同步版本号
         run: node scripts/sync-version.mjs
 
-      - name: bge-m3 占位 (防御性保留)
-        run: |
-          d=pinvou3-app/src-tauri/resources/bge-m3
-          mkdir -p "$d"
-          for f in config.json model.onnx tokenizer.json tokenizer_config.json special_tokens_map.json; do
-            : > "$d/$f"
-          done
-
       - name: 构建 nsis
         working-directory: pinvou3-app
         run: npm run build:nsis
@@ -542,17 +515,6 @@ jobs:
 
       - name: 同步版本号
         run: node scripts/sync-version.mjs
-
-      # bge-m3 是 gitignored 大资源(559MB),CI 干净 checkout 没有它。
-      # 当前配置已不直接引用 bge-m3,空占位是防御性保留(同 mac-build.yml 的做法),
-      # 防止资源清单日后恢复引用时 tauri-build 资源校验失败。
-      - name: bge-m3 占位 (防御性保留)
-        run: |
-          d=pinvou3-app/src-tauri/resources/bge-m3
-          mkdir -p "$d"
-          for f in config.json model.onnx tokenizer.json tokenizer_config.json special_tokens_map.json; do
-            : > "$d/$f"
-          done
 
       - name: 构建 dmg
         working-directory: pinvou3-app

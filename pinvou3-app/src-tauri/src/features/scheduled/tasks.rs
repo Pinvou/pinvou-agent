@@ -19,7 +19,7 @@ use tokio_util::sync::CancellationToken;
 
 use crate::features::assistant::engine_pool::EnginePool;
 use crate::features::assistant::platform::bridge::Pinvou3Bridge;
-use crate::features::scheduled::executor::ScheduledChatExecutor;
+use crate::features::scheduled::executor::{ScheduledChatExecutor, current_yolo_allow_shell};
 use crate::features::sessions::SessionStore;
 use crate::platform::prefs::UserPrefs;
 
@@ -119,28 +119,22 @@ pub struct ScheduledTaskDto {
     pub status: String,
     pub next_run_at: Option<String>,
     pub last_run_at: Option<String>,
-    pub cwds: Vec<String>,
     pub model: Option<String>,
     pub model_id: Option<String>,
     /// Task kind; None = ordinary chat task, `memory_organize` = app-side memory
     /// organize run.
     pub kind: Option<String>,
-    pub mode: Option<String>,
-    pub allow_shell: bool,
-    pub trust_mode: bool,
-    pub auto_approve: bool,
     pub has_unread_runs: bool,
     pub is_running: bool,
     pub pinned: bool,
     pub pinned_at: Option<String>,
 }
 
-#[derive(Debug, Clone, serde::Serialize)]
-#[serde(rename_all = "camelCase")]
-pub struct DeletedScheduledTaskDto {
-    #[serde(flatten)]
-    pub task: ScheduledTaskDto,
-}
+/// 删除回执与任务详情历史上各有一个包装/别名类型；serde(flatten) 使其与
+/// [`ScheduledTaskDto`] 线上完全同形（删除回执本来就是平铺的任务字段）。
+/// app/commands 的 passthrough 宏仍按名字引用这两个别名，保留为纯类型别名，
+/// 不再有独立包装结构体。
+pub type DeletedScheduledTaskDto = ScheduledTaskDto;
 
 pub type ScheduledTaskDetailDto = ScheduledTaskDto;
 
@@ -207,11 +201,8 @@ pub struct ScheduledRunDto {
     pub scheduled_for: String,
     pub status: String,
     pub created_at: String,
-    pub started_at: Option<String>,
     pub ended_at: Option<String>,
-    pub task_id: Option<String>,
     pub thread_id: Option<String>,
-    pub turn_id: Option<String>,
     pub error: Option<String>,
     pub unread: bool,
     pub session_title: Option<String>,
@@ -259,7 +250,7 @@ const SCHEDULED_TASK_CHAT_PROMPT: &str = r#"我想创建一个 Pinvou 定时任�
 ```
 输出代码块后不要继续提问，也不要假装自己调用了创建命令；前端会负责创建任务。"#;
 
-pub fn scheduled_automation_root() -> std::path::PathBuf {
+fn scheduled_automation_root() -> std::path::PathBuf {
     crate::platform::paths::pinvou3_home().join("automations")
 }
 
@@ -283,7 +274,7 @@ fn open_scheduled_automation_manager(root: PathBuf) -> Result<AutomationManager>
     AutomationManager::open(root)
 }
 
-pub fn scheduled_task_data_root() -> std::path::PathBuf {
+fn scheduled_task_data_root() -> std::path::PathBuf {
     crate::platform::paths::pinvou3_home().join("tasks")
 }
 
@@ -826,14 +817,12 @@ impl ScheduledTaskState {
             }
             // Build the DTO before clearing the kind: the delete receipt keeps the kind so
             // the frontend can render the template marker.
-            let deleted = DeletedScheduledTaskDto {
-                task: map_scheduled_task_with_bindings(
-                    deleted,
-                    Some(&self.model_bindings),
-                    Some(&self.task_kinds),
-                    Some(&self.ui_metadata),
-                ),
-            };
+            let deleted = map_scheduled_task_with_bindings(
+                deleted,
+                Some(&self.model_bindings),
+                Some(&self.task_kinds),
+                Some(&self.ui_metadata),
+            );
             if let Err(error) = self.task_kinds.remove(id) {
                 log::warn!(
                     "Deleted scheduled task {id}, but failed to remove its kind: {error:#}"
@@ -933,18 +922,25 @@ fn current_automation_model(fallback: &str) -> String {
         .unwrap_or_else(|| fallback.to_string())
 }
 
-fn current_yolo_allow_shell() -> bool {
-    Pinvou3Bridge::allow_shell_for_prefs(&UserPrefs::load())
-}
-
-fn owned_session_id(record: &AutomationRunRecord, sessions: &SessionStore) -> Option<String> {
+/// 会话归属判定的可注入核心：`session_exists` 决定 thread_id 是否仍指向一个
+/// 存活会话——实时路径查 SessionStore，快照路径查已取出的会话标题表，
+/// 除此之外两条路径的语义完全一致。
+fn owned_session_id_with(
+    record: &AutomationRunRecord,
+    sessions: &SessionStore,
+    session_exists: &dyn Fn(&str) -> bool,
+) -> Option<String> {
     let thread_id = record.thread_id.as_deref()?;
     sessions
         .scheduled_profile(thread_id)
-        .filter(|profile| {
-            profile.task_id == record.automation_id && sessions.scheduled_session_exists(thread_id)
-        })
+        .filter(|profile| profile.task_id == record.automation_id && session_exists(thread_id))
         .map(|_| thread_id.to_string())
+}
+
+fn owned_session_id(record: &AutomationRunRecord, sessions: &SessionStore) -> Option<String> {
+    owned_session_id_with(record, sessions, &|thread_id| {
+        sessions.scheduled_session_exists(thread_id)
+    })
 }
 
 fn owned_session_id_from_snapshot(
@@ -952,13 +948,9 @@ fn owned_session_id_from_snapshot(
     sessions: &SessionStore,
     session_titles: &HashMap<String, String>,
 ) -> Option<String> {
-    let thread_id = record.thread_id.as_deref()?;
-    sessions
-        .scheduled_profile(thread_id)
-        .filter(|profile| {
-            profile.task_id == record.automation_id && session_titles.contains_key(thread_id)
-        })
-        .map(|_| thread_id.to_string())
+    owned_session_id_with(record, sessions, &|thread_id| {
+        session_titles.contains_key(thread_id)
+    })
 }
 
 fn ensure_scheduled_run_is_viewable(
@@ -1137,17 +1129,9 @@ fn map_scheduled_task_with_run_state(
         status: automation_status_label(&record.status),
         next_run_at: record.next_run_at.map(|value| value.to_rfc3339()),
         last_run_at: record.last_run_at.map(|value| value.to_rfc3339()),
-        // The automation manager still needs a durable execution workspace,
-        // but scheduled-task workspace selection is no longer a user-facing
-        // setting. Keep the DTO contract empty so old UI affordances stay gone.
-        cwds: Vec::new(),
         model: record.model,
         model_id,
         kind,
-        mode: record.mode,
-        allow_shell: record.allow_shell.unwrap_or(false),
-        trust_mode: record.trust_mode.unwrap_or(false),
-        auto_approve: record.auto_approve.unwrap_or(true),
         has_unread_runs,
         is_running,
         pinned,
@@ -1187,12 +1171,13 @@ fn ensure_all_automation_workspaces(manager: &AutomationManager) -> Result<()> {
     Ok(())
 }
 
-fn scheduled_run_is_unread(
+fn scheduled_run_is_unread_with(
     record: &AutomationRunRecord,
     sessions: &SessionStore,
     read_state: &ScheduledRunReadStore,
+    session_exists: &dyn Fn(&str) -> bool,
 ) -> bool {
-    let Some(session_id) = owned_session_id(record, sessions) else {
+    let Some(session_id) = owned_session_id_with(record, sessions, session_exists) else {
         return false;
     };
     matches!(record.status, AutomationRunStatus::Completed)
@@ -1200,14 +1185,37 @@ fn scheduled_run_is_unread(
         && !read_state.is_viewed(&record.automation_id, &record.id)
 }
 
+fn scheduled_run_is_unread(
+    record: &AutomationRunRecord,
+    sessions: &SessionStore,
+    read_state: &ScheduledRunReadStore,
+) -> bool {
+    scheduled_run_is_unread_with(record, sessions, read_state, &|thread_id| {
+        sessions.scheduled_session_exists(thread_id)
+    })
+}
+
+/// 与 [`has_unread_scheduled_runs_from_snapshot`] 的唯一差异是会话存在性的
+/// 数据源（实时查 SessionStore vs 注入闭包查快照），核心判定共享。
+fn has_unread_scheduled_runs_with(
+    records: &[AutomationRunRecord],
+    sessions: &SessionStore,
+    read_state: &ScheduledRunReadStore,
+    session_exists: &dyn Fn(&str) -> bool,
+) -> bool {
+    records
+        .iter()
+        .any(|record| scheduled_run_is_unread_with(record, sessions, read_state, session_exists))
+}
+
 fn has_unread_scheduled_runs(
     records: &[AutomationRunRecord],
     sessions: &SessionStore,
     read_state: &ScheduledRunReadStore,
 ) -> bool {
-    records
-        .iter()
-        .any(|record| scheduled_run_is_unread(record, sessions, read_state))
+    has_unread_scheduled_runs_with(records, sessions, read_state, &|thread_id| {
+        sessions.scheduled_session_exists(thread_id)
+    })
 }
 
 fn has_unread_scheduled_runs_from_snapshot(
@@ -1216,14 +1224,8 @@ fn has_unread_scheduled_runs_from_snapshot(
     read_state: &ScheduledRunReadStore,
     session_titles: &HashMap<String, String>,
 ) -> bool {
-    records.iter().any(|record| {
-        let Some(session_id) = owned_session_id_from_snapshot(record, sessions, session_titles)
-        else {
-            return false;
-        };
-        matches!(record.status, AutomationRunStatus::Completed)
-            && !sessions.is_hidden(&session_id)
-            && !read_state.is_viewed(&record.automation_id, &record.id)
+    has_unread_scheduled_runs_with(records, sessions, read_state, &|thread_id| {
+        session_titles.contains_key(thread_id)
     })
 }
 
@@ -1325,11 +1327,8 @@ fn map_scheduled_run_with_task(
         scheduled_for: record.scheduled_for.to_rfc3339(),
         status: automation_run_status_label(&record.status),
         created_at: record.created_at.to_rfc3339(),
-        started_at: record.started_at.map(|value| value.to_rfc3339()),
         ended_at: record.ended_at.map(|value| value.to_rfc3339()),
-        task_id: record.task_id,
         thread_id: record.thread_id,
-        turn_id: record.turn_id,
         error: record.error,
         unread,
         session_title,
@@ -1526,7 +1525,7 @@ fn weekday_label(day: Weekday) -> &'static str {
     }
 }
 
-pub fn humanize_rrule(rrule: &str) -> String {
+fn humanize_rrule(rrule: &str) -> String {
     match AutomationSchedule::parse_rrule(rrule) {
         Ok(AutomationSchedule::Hourly {
             interval_hours,
@@ -2652,7 +2651,7 @@ mod tests {
             .into_iter()
             .find(|archived| archived.task.id == fixture.automation_id)
             .expect("persisted archived task");
-        assert_eq!(reopened_task.task.name, deleted.task.name);
+        assert_eq!(reopened_task.task.name, deleted.name);
         assert_eq!(reopened_task.runs.len(), 2);
 
         fixture
@@ -3033,7 +3032,7 @@ mod tests {
         assert_eq!(paused.status, "paused");
 
         let deleted = state.delete_for_test(created.id).await.expect("delete");
-        assert_eq!(deleted.task.name, "测试计划");
+        assert_eq!(deleted.name, "测试计划");
         let serialized = serde_json::to_value(&deleted).expect("delete response json");
         assert_eq!(
             serialized.get("name").and_then(serde_json::Value::as_str),
@@ -3109,7 +3108,6 @@ mod tests {
             .await
             .expect("create without workspace");
         assert_eq!(created.status, "active");
-        assert!(created.cwds.is_empty(), "configured cwds must be ignored");
         let persisted = state
             .automations
             .lock()
@@ -3424,7 +3422,7 @@ mod tests {
             .await
             .expect("delete memory organize task");
         assert_eq!(
-            deleted.task.kind.as_deref(),
+            deleted.kind.as_deref(),
             Some(SCHEDULED_TASK_KIND_MEMORY_ORGANIZE)
         );
         assert_eq!(state.task_kinds.kind_for(&created.id), None);
@@ -3629,15 +3627,34 @@ mod tests {
         assert_eq!(updated.name, "晚检");
         assert_eq!(updated.prompt, "检查夜间任务");
         assert_eq!(updated.rrule, "FREQ=HOURLY;INTERVAL=4");
-        assert!(updated.cwds.is_empty(), "cwds updates must be ignored");
-        assert_eq!(updated.mode.as_deref(), Some("yolo"));
+        assert_eq!(updated.status, "paused");
+        // 权限/目录/模式不再出现在 DTO 里；契约锚定在持久化的 automation 记录上：
+        // 目录更新被忽略、模式恒为 yolo、Shell 跟随全局 Yolo 设置、信任与自动批准恒开。
+        let persisted = state
+            .automations
+            .lock()
+            .await
+            .get_automation(&updated.id)
+            .expect("persisted automation after update");
+        assert!(
+            persisted.cwds
+                == vec![crate::platform::paths::scheduled_task_workspace_dir(
+                    &updated.id
+                )],
+            "cwds updates must be ignored and the internally assigned workspace kept"
+        );
+        assert_eq!(persisted.mode.as_deref(), Some("yolo"));
         assert_eq!(
-            updated.allow_shell, expected_allow_shell,
+            persisted.allow_shell,
+            Some(expected_allow_shell),
             "Shell must follow the global Yolo setting"
         );
-        assert!(updated.trust_mode, "scheduled Yolo must stay trusted");
-        assert!(updated.auto_approve);
-        assert_eq!(updated.status, "paused");
+        assert_eq!(
+            persisted.trust_mode,
+            Some(true),
+            "scheduled Yolo must stay trusted"
+        );
+        assert_eq!(persisted.auto_approve, Some(true));
 
         let resumed = state
             .resume_for_test(created.id.clone())
@@ -4417,7 +4434,7 @@ mod tests {
             .delete_for_test(created.id.clone())
             .await
             .expect("automation deletion must remain successful");
-        assert_eq!(deleted.task.id, created.id);
+        assert_eq!(deleted.id, created.id);
         assert!(
             state
                 .automations

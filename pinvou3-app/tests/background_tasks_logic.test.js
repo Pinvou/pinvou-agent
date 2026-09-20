@@ -8,12 +8,18 @@ const vm = require('vm');
 
 const logicPath = path.join(__dirname, '..', 'src', 'features', 'chat', 'background-tasks.js');
 const code = fs.readFileSync(logicPath, 'utf8')
+  // formatElapsedMs lives in shared/format-utils.mjs; strip the import and
+  // evaluate the formatter's real implementation alongside (vm 拼接执行).
+  .replace(/^import[\s\S]*?from '\.\.\/\.\.\/shared\/format-utils\.mjs';\r?\n/m, '')
   .replace(/\bexport\s+\{[^}]+\};?/g, '')
+  .replace(/\bexport\s+/g, '');
+const formatUtilsPath = path.join(__dirname, '..', 'src', 'shared', 'format-utils.mjs');
+const formatUtilsCode = fs.readFileSync(formatUtilsPath, 'utf8')
   .replace(/\bexport\s+/g, '');
 const context = {};
 vm.createContext(context);
 vm.runInContext(
-  `${code}\nthis.deriveRunningShellTasks = deriveRunningShellTasks; this.formatElapsedMs = formatElapsedMs; this.tailOutputLines = tailOutputLines; this.COMMAND_SUMMARY_MAX = COMMAND_SUMMARY_MAX;`,
+  `${formatUtilsCode}\n${code}\nthis.deriveRunningShellTasks = deriveRunningShellTasks; this.formatElapsedMs = formatElapsedMs; this.tailOutputLines = tailOutputLines; this.COMMAND_SUMMARY_MAX = COMMAND_SUMMARY_MAX;`,
   context,
   { filename: logicPath },
 );

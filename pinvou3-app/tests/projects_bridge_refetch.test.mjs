@@ -14,6 +14,7 @@ const source = fs.readFileSync(path.join(root, 'src/platform/tauri/bridge/projec
 
 function setup() {
   const windowObject = { __PINVOU_TAURI_BRIDGE_FEATURES__: {} };
+  vm.runInNewContext(fs.readFileSync(path.join(root, 'src/shared/bridge-shared-helpers.js'), 'utf8'), { window: windowObject, console });
   vm.runInNewContext(source, { window: windowObject, console });
   const state = {};
   const listeners = {};
