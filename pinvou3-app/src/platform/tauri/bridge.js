@@ -531,6 +531,7 @@
       pickFolderTitle: "Choose a working directory",
       fileMediaFilterName: "Images and videos",
       kbPickFolderTitle: "Choose folders to import into the knowledge base",
+      rebindPickFolderTitle: "Choose the folder to rebind this project to",
       memoryWriteFailed: "Memory write failed: ", memoryIgnoreFailed: "Failed to ignore memory: ", memoryNeverFailed: "Failed to set \"never ask\": ",
       attachNeedSession: "⚠️ Start a new chat before adding attachments", attachEmptyFile: "Empty files cannot be added", attachAddCancelled: "Attachment add canceled", attachInvalidResult: "Attachment add returned no valid result", deviceUploadFailed: "⚠️ Upload failed: ",
       planTicketInvalid: "⚠️ The plan credential is no longer valid. Regenerate the plan before executing.",
@@ -632,6 +633,7 @@
       pickFolderTitle: "作業ディレクトリを選択",
       fileMediaFilterName: "画像と動画",
       kbPickFolderTitle: "知識ベースにインポートするフォルダーを選択",
+      rebindPickFolderTitle: "このプロジェクトの再バインド先フォルダーを選択",
       memoryWriteFailed: "メモリの書き込みに失敗: ", memoryIgnoreFailed: "メモリの無視に失敗: ", memoryNeverFailed: "「今後表示しない」の設定に失敗: ",
       attachNeedSession: "⚠️ 添付ファイルを追加する前に新しいチャットを開始してください", attachEmptyFile: "空のファイルは追加できません", attachAddCancelled: "添付ファイルの追加はキャンセルされました", attachInvalidResult: "添付ファイルの追加で有効な結果が返されませんでした", deviceUploadFailed: "⚠️ アップロードに失敗: ",
       planTicketInvalid: "⚠️ プランの資格情報が無効になりました。プランを再生成してから実行してください。",
@@ -733,6 +735,7 @@
       pickFolderTitle: "选择工作目录",
       fileMediaFilterName: "图片和视频",
       kbPickFolderTitle: "选择要导入知识库的文件夹",
+      rebindPickFolderTitle: "选择重绑定项目的新文件夹",
       memoryWriteFailed: "记忆写入失败：", memoryIgnoreFailed: "忽略记忆失败：", memoryNeverFailed: "设置不再提示失败：",
       attachNeedSession: "⚠️ 请先新建会话再添加附件", attachEmptyFile: "空文件无法添加", attachAddCancelled: "附件添加已取消", attachInvalidResult: "附件添加未返回有效结果", deviceUploadFailed: "⚠️ 上传失败: ",
       planTicketInvalid: "⚠️ 方案凭证已失效，请重新生成方案后再执行",
@@ -2526,6 +2529,7 @@
   const renameProject = projectsFeature.renameProject;
   const deleteProject = projectsFeature.deleteProject;
   const moveSessionToProject = projectsFeature.moveSessionToProject;
+  const rebindWorkspaceRoot = projectsFeature.rebindWorkspaceRoot;
 
   const multiAgentFeature = installBridgeFeature("multiagent", { state, notify, invoke, listen });
   const listMultiAgentSubagents = multiAgentFeature.listSubagentTranscripts;
@@ -2551,6 +2555,16 @@
   }
   async function pickFolders() {
     return (await pickDirectory({ directory: true, multiple: true, title: bt("kbPickFolderTitle") })) || [];
+  }
+  // Dedicated picker for directory rebind (broken-link repair): single
+  // selection with a title that matches the rebind semantics — it used to
+  // borrow the knowledge-base multi-select import picker, whose title did not
+  // match the "only picked[0] is used" behavior (review #463 Minor 6).
+  async function pickRebindFolder() {
+    if (!dialogOpen) return null;
+    const selected = await dialogOpen({ directory: true, multiple: false, title: bt("rebindPickFolderTitle") });
+    if (!selected) return null;
+    return Array.isArray(selected) ? (selected[0] || null) : selected;
   }
   async function pickFeedbackFiles() {
     if (!dialogOpen) return [];
@@ -2738,6 +2752,7 @@
       renameProject,
       deleteProject,
       moveSessionToProject,
+      rebindWorkspaceRoot,
     },
     monitor: {
       startMonitorPolling,
@@ -2851,6 +2866,7 @@
     files: {
       pickFiles,
       pickFolders,
+      pickRebindFolder,
       pickFeedbackFiles,
     },
     personas: {

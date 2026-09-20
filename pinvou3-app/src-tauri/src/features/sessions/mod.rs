@@ -53,7 +53,7 @@ mod tests;
 use std::collections::HashMap;
 use std::path::PathBuf;
 use std::sync::Arc;
-use std::sync::atomic::AtomicU64;
+use std::sync::atomic::{AtomicBool, AtomicU64};
 
 pub use crate::core::mode_state::{ModeLane, SerializableMode};
 use crate::platform::paths;
@@ -82,6 +82,9 @@ pub use self::transcript::transcript_revision;
 pub(crate) use self::validators::{
     is_aux_session_id, is_sched_session_id, validate_session_id, validate_user_workspace_path,
 };
+/// Re-export the rebind outcome (public rebind docs link into it; the module
+/// itself stays private).
+pub use self::workspace_bindings::RebindBindingsOutcome;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum SessionKind {
@@ -184,6 +187,11 @@ pub struct SessionStore {
     /// execution = bound directory and ledger = session-private directory (the
     /// same dual-root semantics as native code session bindings).
     pub(crate) session_workspaces: Arc<RwLock<HashMap<String, PathBuf>>>,
+    /// Boot parse of the legacy `_session_workspaces.json` failed (corrupt but
+    /// potentially repairable file kept on disk). While set, the rebind
+    /// degraded-path rewrite must not delete or overwrite the file — only a
+    /// file this process successfully parsed may be rewritten/removed.
+    pub(crate) legacy_session_workspaces_parse_failed: Arc<AtomicBool>,
     /// 品悟原生 code 会话判定（ACP 会话恒为 plain，见 codex_acp store）。
     /// 与 Engine bridge / 远程端共用同一份 `SessionAgentStore` 闭包，由 app 组合根
     /// (lib.rs) 注入；None = 无 code 会话判定（测试/启动早期），全部按 plain 语义。

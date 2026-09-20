@@ -12,6 +12,39 @@ pub struct SessionListItem {
     pub pinned_at: Option<String>,
     #[serde(skip_serializing_if = "Vec::is_empty")]
     pub title_attachment_names: Vec<String>,
+    /// User workspace binding for plain sessions (#445; None = unbound). The
+    /// project layer uses it to pull bound work sessions into project grouping
+    /// (grouping follows binding, the same signal as the safety posture).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub workspace_binding: Option<String>,
+}
+
+/// Web boundary projection for SessionListItem: degrade the host absolute
+/// workspace-binding path to its last component, mirroring the metadata
+/// redaction, so the WebUI never receives host directory structure. The
+/// projects slice is desktop-only and the frontend gates the matching
+/// grouping branch on the same desktop capability, so on web the field is an
+/// inert leaf name rather than a grouping key (review #464 round-6 finding 8b:
+/// an earlier comment claimed the field "carries no function on web", which
+/// stopped being true once the bound-session grouping filter became
+/// path-based — the capability gate is what keeps leaf-name collisions from
+/// collapsing distinct directories; the projection stays because the field is
+/// still serialized and must not leak host paths).
+pub(crate) fn redact_session_list_item_for_web(item: &mut SessionListItem) {
+    if let Some(binding) = &item.workspace_binding {
+        item.workspace_binding = Some(super::codex::redact_workspace_path_for_web(binding));
+    }
+}
+
+/// Whole-list web projection applied by `web_access_list_sessions`: metadata
+/// redaction plus `workspace_binding` degradation in one place, so the web
+/// entry point cannot ship half the projection (review #464 round-4 — the
+/// call site delegates here, which is what the test pins).
+pub(crate) fn project_session_list_for_web(items: &mut [SessionListItem]) {
+    for item in items.iter_mut() {
+        item.metadata = super::codex::redact_session_metadata_for_web(item.metadata.clone());
+        redact_session_list_item_for_web(item);
+    }
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -142,10 +175,20 @@ pub async fn list_sessions(
         .into_iter()
         .map(|metadata| {
             let title_attachment_names = session_title_attachment_names(&store, &metadata);
+            // On a read-cache miss the sidecar is re-read; the list is ≤50
+            // entries. Bound sessions stay resident once backfilled, while
+            // unbound sessions get no negative caching — each refresh still
+            // costs on the order of ≤2 syscalls × 50 (acceptable; review #464
+            // nit: the comment must not exaggerate this as "resident after a
+            // single N-read pass").
+            let workspace_binding = store
+                .session_workspace_binding(&metadata.id)
+                .map(|path| path.display().to_string());
             SessionListItem {
                 pinned: store.is_pinned(&metadata.id),
                 pinned_at: store.pinned_at(&metadata.id),
                 title_attachment_names,
+                workspace_binding,
                 metadata,
             }
         })
@@ -1446,6 +1489,89 @@ mod session_archive_name_tests {
         assert_eq!(
             normalized_archive_name(&long, "abcd1234-0000"),
             "pinvou-session-abcd1234.tar.xz"
+        );
+    }
+}
+
+#[cfg(test)]
+mod web_projection_tests {
+    use super::*;
+
+    /// The web session list must never carry the host absolute binding path:
+    /// `workspace_binding` degrades to its last component, mirroring the
+    /// metadata redaction and the codex list-item projection.
+    #[test]
+    fn redact_session_list_item_for_web_degrades_workspace_binding() {
+        let metadata: SessionMetadata = serde_json::from_value(serde_json::json!({
+            "id": "session-web-binding",
+            "title": "Web binding projection",
+            "created_at": "2026-01-01T00:00:00Z",
+            "updated_at": "2026-01-01T00:00:00Z",
+            "message_count": 0,
+            "total_tokens": 0,
+            "model": "test-model",
+            "workspace": "/tmp/workspace"
+        }))
+        .expect("metadata");
+        let mut item = SessionListItem {
+            pinned: false,
+            pinned_at: None,
+            title_attachment_names: Vec::new(),
+            workspace_binding: Some("/Users/host/Documents/secret-project".to_string()),
+            metadata,
+        };
+
+        redact_session_list_item_for_web(&mut item);
+
+        assert_eq!(
+            item.workspace_binding.as_deref(),
+            Some("secret-project"),
+            "workspace_binding 过 Web 边界必须降级为末级目录名"
+        );
+
+        // Unbound sessions (None) are unaffected; the Windows form likewise
+        // keeps only the final segment.
+        item.workspace_binding = None;
+        redact_session_list_item_for_web(&mut item);
+        assert_eq!(item.workspace_binding, None);
+        item.workspace_binding = Some(r#"C:\Users\host\proj"#.to_string());
+        redact_session_list_item_for_web(&mut item);
+        assert_eq!(item.workspace_binding.as_deref(), Some("proj"));
+    }
+
+    /// `web_access_list_sessions` delegates to `project_session_list_for_web`;
+    /// this pins the whole-list contract (metadata + workspace_binding both
+    /// projected) so deleting the one-line application at the call site cannot
+    /// stay green (review #464 round-4 minor 3).
+    #[test]
+    fn project_session_list_for_web_projects_metadata_and_binding() {
+        let metadata: SessionMetadata = serde_json::from_value(serde_json::json!({
+            "id": "session-web-list",
+            "title": "Web list projection",
+            "created_at": "2026-01-01T00:00:00Z",
+            "updated_at": "2026-01-01T00:00:00Z",
+            "message_count": 0,
+            "total_tokens": 0,
+            "model": "test-model",
+            "workspace": "/Users/host/Documents/secret-project"
+        }))
+        .expect("metadata");
+        let mut items = vec![SessionListItem {
+            pinned: false,
+            pinned_at: None,
+            title_attachment_names: Vec::new(),
+            workspace_binding: Some("/Users/host/Documents/secret-project".to_string()),
+            metadata,
+        }];
+
+        project_session_list_for_web(&mut items);
+
+        let json = serde_json::to_value(&items[0]).expect("serialize projected item");
+        assert_eq!(json["workspace"], "secret-project");
+        assert_eq!(json["workspace_binding"], "secret-project");
+        assert!(
+            !json.to_string().contains("/Users/host"),
+            "no host path component may cross the web boundary"
         );
     }
 }
