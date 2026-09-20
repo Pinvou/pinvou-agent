@@ -121,7 +121,21 @@ fn folded_path_is_same_or_nested(path: &Path, base: &Path) -> bool {
 /// refuse to read it and treat it as missing (bind rewrites it in the current
 /// version, which self-heals); all parse errors are logged.
 fn read_workspace_sidecar(path: &Path) -> Option<SessionWorkspaceSidecar> {
-    let payload = std::fs::read(path).ok()?;
+    // Present-but-unreadable must not masquerade as absent (review #463
+    // round-11 minor 2): both the scan and the post-pass fence consume this
+    // accessor, so a silent skip reports success while the session's binding
+    // was never examined. Same disclosure treatment as the codex lane.
+    let payload = match std::fs::read(path) {
+        Ok(payload) => payload,
+        Err(error) if error.kind() == ErrorKind::NotFound => return None,
+        Err(error) => {
+            eprintln!(
+                "[sessions] read workspace binding sidecar failed ({}): {error:#}",
+                path.display()
+            );
+            return None;
+        }
+    };
     match serde_json::from_slice::<SessionWorkspaceSidecar>(&payload) {
         Ok(sidecar) if sidecar.version <= SESSION_WORKSPACE_SIDECAR_VERSION => Some(sidecar),
         Ok(sidecar) => {

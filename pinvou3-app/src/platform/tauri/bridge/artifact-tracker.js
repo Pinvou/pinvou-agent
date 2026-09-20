@@ -243,7 +243,8 @@
           const na = { path: p, basename: bn }; state.artifacts.push(na); byName[bn] = na; added = true;
         }
         else if (isAbsPath(p) && (!isAbsPath(ex.path) || (normalizedPath(ex.path) !== normalizedPath(p) && sessionRecentlyRebound(sid)))) {
-          // 相对→绝对,open 可靠;或 stale absolute → live workspace file,
+          // Relative→absolute opens reliably; or stale absolute → live
+          // workspace file,
           // matched by basename — ONLY for a session the rebind command just
           // moved (the workspace_rebound mark, review #463 round-10 Major 2).
           // After a folder rebind the persisted entry keeps the vanished root,
