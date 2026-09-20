@@ -272,9 +272,11 @@ const withUiTimeout = (promise, timeoutMs, fallbackResult) => {
     //   qrStepsExtra   Feishu's QR event additionally marks the connect step done (two-stage stage one already finished).
     //   qrPayloadExtra Extra fields on the QR event: dingtalk user_code; tmeet browserAuth flag.
     //   openAuthUrl    When tmeet's QR event carries a url, open the browser directly (embedded-QR render fallback).
-    //   connectedMode  apply=fire-and-forget skill write (feishu/wecom); applyAwait=await the skill write,
-    //                  turning failure into a flow error (dingtalk); readinessAwait=re-verify the real login
-    //                  state via bundle_readiness before writing skills (tmeet).
+    //   connectedMode  applyAwait=await the skill write, turning failure into a flow error
+    //                  (feishu/wecom/dingtalk — round-17 minor 7 retired the fire-and-forget
+    //                  'apply' mode whose success card fired before the sync could reject);
+    //                  readinessAwait=re-verify the real login state via bundle_readiness
+    //                  before writing skills (tmeet).
     /* eslint-disable unicorn/no-this-outside-of-class -- module-level connection store singleton; object-literal methods reference itself via this, and converting to a class would just move the same complexity */
     const createFlowStore = () => ({
       flow: null,
@@ -329,21 +331,7 @@ const withUiTimeout = (promise, timeoutMs, fallbackResult) => {
             };
           });
         });
-        ev.listen(cfg.events.connected, cfg.connectedMode === 'apply' ? () => {
-          conn.stopTick();
-          conn.setFlow(f => ({ ...f, phase: 'done', steps: { ...(f && f.steps), qr: 'done' } }));
-          // Connected → write skills per the DenyAll rules (the pack stays default-off until opted in)
-          // + broadcast refresh; view-independent, so it lives in the global listener.
-          // Review #455 R15-MAJOR2: the backend's fail-visible sync error must not vanish here —
-          // surface it on the flow card (translated copy; raw string to the console) instead of swallowing it.
-          invokeTauri(cfg.commands.applySkills).then(() => {
-            // Auto-collapse the flow card later (the detail dialog's "Connected" state is now driven by derived connection state)
-            setTimeout(() => conn.setFlow(null), 1800);
-          }).catch((e) => {
-            console.error(`${cfg.key} apply skills failed:`, e);
-            conn.setFlow(f => ({ ...f, phase: 'error', err: skillsFailed || connFailed || String(e).slice(0, 300), errStep: 'qr', steps: { ...(f && f.steps), qr: 'error' } }));
-          });
-        } : async () => {
+        ev.listen(cfg.events.connected, async () => {
           conn.stopTick();
           try {
             if (cfg.readiness) {
@@ -434,7 +422,9 @@ const withUiTimeout = (promise, timeoutMs, fallbackResult) => {
       events: { qr: 'feishu:qr', connected: 'feishu:connected', error: 'feishu:error' },
       commands: { ensureCli: 'feishu_ensure_cli', begin: 'feishu_connect_begin', cancel: 'feishu_cancel', logout: 'feishu_logout', applySkills: 'feishu_apply_skills' },
       qrStepsExtra: { connect: 'done' },
-      connectedMode: 'apply',
+      connectedMode: 'applyAwait',
+      skillsFailedCopyKey: 'feishuSkillsFailed',
+      applyErrorMessage: (e, h) => h.skillsFailed(String(e).slice(0, 220)),
       disconnectedTitle: ({ storeCopy }) => storeCopy.disconnectedTool(storeCopy.toolNames.feishu),
     });
     const ensureFeishuListeners = feishuFlowApi.ensureListeners;
@@ -443,7 +433,9 @@ const withUiTimeout = (promise, timeoutMs, fallbackResult) => {
       key: 'wecom', conn: wecomConn, twoStep: false,
       events: { qr: 'wecom:qr', connected: 'wecom:connected', error: 'wecom:error' },
       commands: { ensureCli: 'wecom_ensure_cli', begin: 'wecom_connect_begin', cancel: 'wecom_cancel', logout: 'wecom_logout', applySkills: 'wecom_apply_skills' },
-      connectedMode: 'apply',
+      connectedMode: 'applyAwait',
+      skillsFailedCopyKey: 'wecomSkillsFailed',
+      applyErrorMessage: (e, h) => h.skillsFailed(String(e).slice(0, 220)),
       disconnectedTitle: ({ storeCopy }) => storeCopy.disconnectedTool(storeCopy.toolNames.wecom),
     });
     const ensureWecomListeners = wecomFlowApi.ensureListeners;
@@ -1271,7 +1263,7 @@ const withUiTimeout = (promise, timeoutMs, fallbackResult) => {
         track(ev.listen('wecom:connected', () => {
           setWecomQr(null); setBusyId((current) => releaseBusy(current, 'wecom'));
           // 连上 → 按 DenyAll 规则写技能（默认关，需显式开启）;连接态经 readiness 重取。
-          // 评审 #455 R15-MAJOR2：后端 fail-visible 的同步失败不能在此被吞——落 error 弹窗。
+          // 评审 #455 R16-MAJOR2：后端 fail-visible 的同步失败不能在此被吞——落 error 弹窗。
           // Round-2 review：subtitle 用翻译引导句包裹后端详情（wecomSkillsFailed，同
           // dingtalkSkillsFailed 先例），不能把后端中文原文直接渲染给 en/ja 用户。
           invokeTauri('wecom_apply_skills').then(() => {

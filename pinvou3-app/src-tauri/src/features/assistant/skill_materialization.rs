@@ -172,7 +172,7 @@ pub(crate) fn disabled_skill_names_for(scope: ConnectorScope) -> HashSet<String>
             let Some(name) = entry.file_name().to_str().map(str::to_string) else {
                 continue;
             };
-            let owner = crate::features::marketplace::bundle::skill_owner_package(&name);
+            let owner = crate::features::marketplace::bundle::skill_gating_owner(&name);
             if disabled_packages.contains(&owner) {
                 names.insert(name);
             }
@@ -439,6 +439,7 @@ mod tests {
             assert!(
                 crate::features::marketplace::MarketplaceManager::new()
                     .unavailable_companion_skills()
+                    .unwrap()
                     .contains(&"government-writing".to_string())
             );
 

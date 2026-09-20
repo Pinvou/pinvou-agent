@@ -340,7 +340,7 @@ pub async fn ima_connect(client_id: String, api_key: String) -> Result<Value, St
                 IMA_SKILL_ID,
             )
             .map_err(|e| {
-                // 前端 fire-and-forget 调用可能吞掉该 Err（评审 #455 R15-MAJOR2），此处必须留痕。
+                // 前端 fire-and-forget 调用可能吞掉该 Err（评审 #455 R16-MAJOR2），此处必须留痕。
                 log::warn!("[ima] 技能默认关闭状态落盘失败: {e}");
                 format!(
                     "ima 技能默认关闭状态落盘失败（新会话将默认开启，请在工具列表手动关闭）: {e}"
@@ -381,7 +381,7 @@ pub async fn ima_logout() -> Result<Value, String> {
         // 已卸载技能从各 scope 禁用集清除残留；在线会话组合目录由命令层
         // （connectors::ima_logout）重写。引用 marketplace::skill_scope 避免
         // connectors → assistant 依赖环。
-        crate::features::marketplace::skill_scope::remove_skill_from_disabled_scopes(IMA_SKILL_ID);
+        crate::features::marketplace::skill_scope::remove_skill_from_disabled_scopes(IMA_SKILL_ID)?;
         client_result.map_err(|e| e.user_message())?;
         api_key_result.map_err(|e| e.user_message())?;
         Ok::<Value, String>(json!({ "ok": true, "connected": false }))

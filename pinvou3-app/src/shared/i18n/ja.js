@@ -857,7 +857,7 @@ desktopHint:'先にデスクトップで Obsidian をインストールして保
 { key:'cli', label:'接続コンポーネントをインストール', sub:'dws · 初回は約 40 秒' },
 { key:'qr', label:'スキャンしてログイン', sub:'DingTalk アプリでスキャン' },
   ],
-  connFailed:'接続に失敗しました', dingtalkSkillsFailed:err=>`DingTalk は認証されましたが、スキルの有効化に失敗しました：${err}`, wecomSkillsFailed:err=>`WeCom は接続しましたが、ツール状態の保存に失敗しました。新しいセッションでは既定で有効になります。入力欄のツールリストでオフにしてください：${err}`, tmeetAuthIncomplete:'Tencent Meeting の認証が完了していません。ブラウザーでログインを完了してから再試行してください',
+  connFailed:'接続に失敗しました', dingtalkSkillsFailed:err=>`DingTalk は認証されましたが、スキルの有効化に失敗しました：${err}`, wecomSkillsFailed:err=>`WeCom は接続しましたが、ツール状態の保存に失敗しました。新しいセッションでは既定で有効になります。入力欄のツールリストでオフにしてください：${err}`, feishuSkillsFailed:err=>`Feishu は接続しましたが、スキルの有効化に失敗しました。新しいセッションでは既定で有効になります。入力欄のツールリストでオフにしてください：${err}`, tmeetAuthIncomplete:'Tencent Meeting の認証が完了していません。ブラウザーでログインを完了してから再試行してください',
   emptyNoMatch:'一致するツールが見つかりません', emptyNoInstalled:'インストール済みのツールはまだありません', emptyNoTools:'ツールが見つかりません',
   emptyNoMatchHint:'別のキーワードを試すか、綴りを確認してください。', emptyNoInstalledHint:'ストアでコネクターやスキルをインストールすると、ここに表示されます。', emptyNoInstalledHintReadonly:'デスクトップにツールやスキルはまだインストールされていません。',
   emptyNoToolsHint:'検索語を変更するか、API 開発ドキュメントをご確認ください。',

@@ -139,7 +139,7 @@ async function prepareSceneCapabilities(meta, invoke) {
   // opt-in — enable_marketplace_packages persists it (and un-hides) and
   // hot-refreshes the running session's tool allowlist and skill-composition
   // directory, taking effect on the current turn.
-  // Round-15 minor 13: raw required ids are compared against the backend's
+  // Round-16 minor 13: raw required ids are compared against the backend's
   // normalized sets. Safe today only because every companion-requiring scene
   // also requires its owner tool (the owner pack id is what the sets carry);
   // if a scene ever requires a bare companion skill id, normalize it through

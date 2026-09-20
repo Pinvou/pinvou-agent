@@ -100,7 +100,7 @@ pub(crate) fn cli_bundle_of_skill(skill_dir: &str) -> Option<&'static str> {
         .map(|(id, ..)| *id)
 }
 
-/// 技能目录名 → 所属包 id（物理布局归属，§4「一个包 = 一个目录 = 一个属主」）。
+/// 技能目录名 → 所属包 id（manifest 声明语义，导入碰撞检查与 UI 展示口径）。
 ///
 /// **条件认领**（与 list_bundles 的 V5 决策一致）：ima 认领 ima-skills（同
 /// list_bundles 的 skill_claimed 预置）→ CLI 内置清单 → MCP manifest
@@ -108,6 +108,11 @@ pub(crate) fn cli_bundle_of_skill(skill_dir: &str) -> Option<&'static str> {
 /// 纯技能包形态，owner = 技能名自身）→ 独立成包。迁移层
 /// （`skill_marketplace::legacy_companion_owners`）按同一条件口径推导，
 /// 两侧不得分叉（四轮评审 M-7）。
+///
+/// 门控/物化侧的归属判定用 [`skill_gating_owner`]（额外含物理布局回退）：
+/// 导入碰撞检查必须停留在 manifest 声明语义——导入暂存目录
+/// （`<id>.tmp`）与既有安装的物理嵌套都会让物理判定把"自己撞自己"误判成
+/// 跨包占用（R17-MAJOR1 修复第一版踩过的坑）。
 pub(crate) fn skill_owner_package(skill_name: &str) -> String {
     if skill_name == "ima-skills" {
         return "ima".to_string();
@@ -125,6 +130,33 @@ pub(crate) fn skill_owner_package(skill_name: &str) -> String {
                 return tool.id;
             }
             break;
+        }
+    }
+    skill_name.to_string()
+}
+
+/// 技能目录名 → 门控/物化侧属主：[`skill_owner_package`] 的条件认领之上，
+/// 追加**物理布局回退**（R17-MAJOR1）。技能目录物理嵌在
+/// `bundles/<pkg>/skills/<name>/` 下时归 `<pkg>`，无论 manifest 是否声明——
+/// 会话物化按目录扫描、只看物理布局；门控若把未声明技能归到技能名自身，
+/// 该技能会以零同意进入所有 scope，且 composer 无行可关（record 驱动的
+/// 列表没有这一行）。回退与扫描同口径、纯物理判定（不查安装记录，也不排除
+/// 暂存目录——门控侧不区分"正在导入"的目录；导入碰撞检查不走本函数）。
+/// 排序取首个，保证同名目录被多个包嵌套时的确定性。仍未命中 → 独立成包。
+pub(crate) fn skill_gating_owner(skill_name: &str) -> String {
+    let claimed = skill_owner_package(skill_name);
+    if claimed != skill_name {
+        return claimed;
+    }
+    if let Ok(rd) = std::fs::read_dir(crate::platform::paths::bundles_root()) {
+        let mut owners: Vec<String> = rd
+            .flatten()
+            .filter(|pkg| pkg.path().join("skills").join(skill_name).is_dir())
+            .filter_map(|pkg| pkg.file_name().into_string().ok())
+            .collect();
+        owners.sort();
+        if let Some(pkg) = owners.first() {
+            return pkg.clone();
         }
     }
     skill_name.to_string()
@@ -940,6 +972,50 @@ mod tests {
             assert!(!dirs.contains(&legacy), "{legacy} 不应在现行表");
             assert_eq!(cli_bundle_of_skill(legacy), None, "{legacy} 反查应不命中");
         }
+    }
+
+    /// R17-MAJOR1 regression: a skill directory physically nested under
+    /// `bundles/<pkg>/skills/<name>/` belongs to `<pkg>` for GATING even when
+    /// **no manifest declares it** (under-declared `companion_skills`, author
+    /// omission, or a bare structural-detection pack). Session materialization
+    /// is directory-scan based and sees the skill; if gating attributed it to
+    /// the skill name itself, it would render into every scope with zero
+    /// consent and no composer row to turn it off. The manifest-claim
+    /// semantics (`skill_owner_package`, import collision checks and UI
+    /// display) deliberately stay claim-only: the import staging dir
+    /// (`<id>.tmp`) and an existing same-pack install would otherwise turn
+    /// self-collisions into false cross-package rejections. Also pins
+    /// determinism when the same name is nested in two packs (sorted first)
+    /// and the negative (no nesting → standalone).
+    #[test]
+    fn under_declared_nested_skill_claims_physical_owner() {
+        with_temp_home(|| {
+            let bundles = crate::platform::paths::bundles_root();
+            std::fs::create_dir_all(bundles.join("combo-pack").join("skills").join("stowaway"))
+                .unwrap();
+            assert_eq!(
+                skill_gating_owner("stowaway"),
+                "combo-pack",
+                "a nested-but-undeclared skill must attribute to its physical pack"
+            );
+            assert_eq!(
+                skill_owner_package("stowaway"),
+                "stowaway",
+                "manifest-claim semantics stay claim-only (import/UI口径)"
+            );
+            std::fs::create_dir_all(bundles.join("a-pack").join("skills").join("stowaway"))
+                .unwrap();
+            assert_eq!(
+                skill_gating_owner("stowaway"),
+                "a-pack",
+                "same-name nesting resolves deterministically (sorted first)"
+            );
+            assert_eq!(
+                skill_gating_owner("nowhere"),
+                "nowhere",
+                "a skill with no physical nesting stays standalone"
+            );
+        });
     }
 
     #[test]

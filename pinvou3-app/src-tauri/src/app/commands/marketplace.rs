@@ -197,7 +197,7 @@ pub async fn install_marketplace_tool(
         // （评审 #455 R13-B3）。
         crate::features::marketplace::sync_deny_all_scopes_after_install(&companion_tool_id)
             .map_err(|e| {
-                format!("新装连接器 '{companion_tool_id}' 默认关闭状态落盘失败（新会话将默认开启，请在工具列表手动关闭）: {e}")
+                format!("新装连接器 '{companion_tool_id}' 默认关闭状态落盘失败（新会话将默认开启，请在工具列表手动关闭；配套技能未安装，可稍后重试安装）: {e}")
             })?;
         for sid in mgr.companion_skills(&companion_tool_id) {
             if let Err(e) =
@@ -513,17 +513,18 @@ pub(super) fn uninstall_marketplace_tool_sync(tool_id: &str) -> Result<(), Strin
             .map_err(|e| format!("联动卸载配套技能 '{sid}' 失败（已中止工具卸载，请重试）: {e}"))?;
         // Scope entries are cleared only after the skill is actually gone —
         // otherwise a still-installed skill would be silently re-enabled.
-        crate::features::marketplace::skill_scope::remove_skill_from_disabled_scopes(sid);
+        crate::features::marketplace::skill_scope::remove_skill_from_disabled_scopes(sid)?;
     }
     mgr.uninstall(tool_id)?;
     if recycles_with_package {
         // 整包已回收（companion 目录随包搬离）→ 此时技能确实没了，再清 scope。
         for sid in &companions {
-            crate::features::marketplace::skill_scope::remove_skill_from_disabled_scopes(sid);
+            crate::features::marketplace::skill_scope::remove_skill_from_disabled_scopes(sid)?;
         }
     }
-    // 已卸载的连接器从两个 scope 的禁用集移除(避免残留 id)。
-    crate::features::marketplace::remove_connector_from_disabled_scopes(tool_id);
+    // 已卸载的连接器从两个 scope 的禁用集移除(避免残留 id)。fail-visible
+    // （round-17 minor 1）：残留条目 + 标记会被同 id 重装的 install-sync 继承。
+    crate::features::marketplace::remove_connector_from_disabled_scopes(tool_id)?;
     Ok(())
 }
 // ---------------------------------------------------------------------------
@@ -902,7 +903,7 @@ pub(super) fn uninstall_marketplace_skill_sync(skill_id: &str) -> Result<(), Str
     crate::features::marketplace::skill_marketplace::SkillMarketplaceManager::new()
         .uninstall(skill_id)?;
     // 已卸载的技能从两个 scope 的禁用集移除（避免残留 id，与连接器同语义）。
-    crate::features::marketplace::skill_scope::remove_skill_from_disabled_scopes(skill_id);
+    crate::features::marketplace::skill_scope::remove_skill_from_disabled_scopes(skill_id)?;
     Ok(())
 }
 

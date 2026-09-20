@@ -18,9 +18,9 @@ use deepseek_tui::prompts::{self, PromptSessionContext};
 use pinvou3_lib::features::assistant::platform::bridge::Pinvou3Bridge;
 
 fn main() -> Result<()> {
-    // session id 走临时值；注意（评审 #455 R15 minor 5）：bridge 的 ensure_dirs
+    // session id 走临时值；注意（评审 #455 R16 minor 5）：bridge 的 ensure_dirs
     // 仍会在真实家目录写 sessions/__dump_system_prompt__/workspace，对全新家目录
-    // 构成升级信号证据——上方首读冻结因此必须在 boot 之前执行。
+    // 构成升级信号证据——下方的首读冻结因此必须在 boot 之前执行。
     let sid = "__dump_system_prompt__";
 
     // Same order as the GUI/windowless hosts: freeze the fresh-vs-upgraded

@@ -1,6 +1,6 @@
 # Pinvou CodeWhale Fork Policy
 
-> Updated: 2026-09-18. Upstream `v0.9.12` r1; transition state: the parent gitlink advances along the maintenance branch ahead of the r1 tag to `7fc36e587` until the r2 closure realigns them.
+> Updated: 2026-09-20. Upstream `v0.9.12` r1; transition state: the parent gitlink advances along the maintenance branch ahead of the r1 tag to `c4e6caf9` until the r2 closure realigns them.
 > Canonical Chinese policy: [`docs/fork-policy.md`](fork-policy.md). This English page is a condensed summary; the Chinese version is the complete, authoritative process.
 
 ## Baseline

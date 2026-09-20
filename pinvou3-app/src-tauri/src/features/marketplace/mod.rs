@@ -1339,18 +1339,43 @@ impl<S: CredentialStore> MarketplaceManager<S> {
             let _ = self.credential_store.delete(&reference);
             secrets::remove_secret_value(&secrets::mcp_secret_env_var(key));
         }
-        remove_connector_from_disabled_scopes(tool_id);
+        if let Err(e) = remove_connector_from_disabled_scopes(tool_id) {
+            // Teardown itself returns (): the uninstall commit succeeded, so a
+            // failed consent-sync persist cannot roll it back — but it must not
+            // vanish (round-17 minor 1): a stale stored entry + marker would
+            // let a same-id reinstall inherit the old consent state.
+            log::warn!(
+                "[marketplace] 卸载 {tool_id} 后的开关/可见性清理落盘失败（残留条目会被同 id 重装继承）: {e}"
+            );
+        }
         if preserve_companion_skills {
             return;
         }
         let unavailable: std::collections::HashSet<String> =
-            self.unavailable_companion_skills().into_iter().collect();
+            // Round-17 minor 5: the read is try-style; on Err the companion
+            // deletion pass is skipped entirely — deleting leftovers based on
+            // an unknown installed set would garbage-collect live skills.
+            match self.unavailable_companion_skills() {
+                Ok(unavailable) => unavailable,
+                Err(e) => {
+                    log::warn!(
+                        "[marketplace] 卸载 {tool_id} 后跳过配套技能残留清理（安装集不可读时宁留不删）: {e}"
+                    );
+                    return;
+                }
+            }
+            .into_iter()
+            .collect();
         for skill_id in self.companion_skills(tool_id) {
             if !unavailable.contains(&skill_id) {
                 continue;
             }
             let _ = skill_marketplace::SkillMarketplaceManager::new().uninstall(&skill_id);
-            skill_scope::remove_skill_from_disabled_scopes(&skill_id);
+            if let Err(e) = skill_scope::remove_skill_from_disabled_scopes(&skill_id) {
+                log::warn!(
+                    "[marketplace] 卸载 {tool_id} 后配套技能 '{skill_id}' 的开关清理落盘失败（残留条目会被同 id 重装继承）: {e}"
+                );
+            }
         }
     }
 
@@ -1600,9 +1625,15 @@ impl<S: CredentialStore> MarketplaceManager<S> {
 
     /// Companion skills declared only by uninstalled connectors, i.e. with no live
     /// claimant left. Cleanup uses this to remove leftover directories; a skill still claimed by any installed connector must be kept.
-    pub fn unavailable_companion_skills(&self) -> Vec<String> {
+    ///
+    /// Round-17 minor 5: the installed set feeds a **destructive** decision
+    /// (leftover companion directories get deleted), so the collapsing
+    /// `installed_ids()` (Err → empty → everything looks unclaimed → delete)
+    /// is the wrong read here; the writer variant fails loudly and the caller
+    /// skips the deletion pass.
+    pub fn unavailable_companion_skills(&self) -> Result<Vec<String>, String> {
         let installed: std::collections::HashSet<String> =
-            self.installed_ids().into_iter().collect();
+            self.try_installed_ids_for_writer()?.into_iter().collect();
         let mut declared = std::collections::HashSet::new();
         let mut active = std::collections::HashSet::new();
         for manifest in self.available_tools() {
@@ -1613,7 +1644,7 @@ impl<S: CredentialStore> MarketplaceManager<S> {
                 }
             }
         }
-        declared.difference(&active).cloned().collect()
+        Ok(declared.difference(&active).cloned().collect())
     }
 
     pub fn oauth_remote_server_name(&self, tool_id: &str) -> Option<String> {
@@ -3011,6 +3042,7 @@ mod tests {
             assert!(
                 !manager
                     .unavailable_companion_skills()
+                    .unwrap()
                     .contains(&"shared-skill".to_string())
             );
 
@@ -3018,6 +3050,7 @@ mod tests {
             assert!(
                 !manager
                     .unavailable_companion_skills()
+                    .unwrap()
                     .contains(&"shared-skill".to_string())
             );
 
@@ -3025,6 +3058,7 @@ mod tests {
             assert!(
                 manager
                     .unavailable_companion_skills()
+                    .unwrap()
                     .contains(&"shared-skill".to_string())
             );
         });
@@ -3993,7 +4027,7 @@ mod tests {
                 &["weather".to_string(), "pptx".to_string()],
             );
             save_disabled_connectors_for(ConnectorScope::Code, &["weather".to_string()]);
-            remove_connector_from_disabled_scopes("weather");
+            remove_connector_from_disabled_scopes("weather").unwrap();
             assert_eq!(
                 load_disabled_connectors_for(ConnectorScope::Plain),
                 vec!["pptx".to_string()]

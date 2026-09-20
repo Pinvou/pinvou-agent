@@ -439,7 +439,7 @@ pub async fn dingtalk_apply_skills() -> Result<Value, String> {
     if show {
         crate::features::marketplace::sync_deny_all_scopes_after_install("dingtalk").map_err(
             |e| {
-                // 前端 fire-and-forget 调用可能吞掉该 Err（评审 #455 R15-MAJOR2），此处必须留痕。
+                // 前端 fire-and-forget 调用可能吞掉该 Err（评审 #455 R16-MAJOR2），此处必须留痕。
                 log::warn!("[dingtalk] 默认关闭状态落盘失败: {e}");
                 format!(
                     "dingtalk 默认关闭状态落盘失败（新会话将默认开启，请在工具列表手动关闭）: {e}"

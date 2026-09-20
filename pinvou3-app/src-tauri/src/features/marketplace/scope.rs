@@ -6,12 +6,12 @@
 //! 技能 id / CLI 连接器 id），一个包 = 一个开关，包内技能（companion skills）可见性
 //! 唯一跟随所属包（§5.2 不变量）。
 //!
-//! 落盘格式与 #287 泛化后的两份旧文件同构：`{scopes: {"<mode>": [...]},
-//! "initialized": ["<mode>"], project_skills_enabled, plain_defaults_migrated}`，
-//! Scope keys are the kebab-case names of `SessionMode`. `plain_defaults_migrated`
-//! is the plain scope default-policy migration marker: an old file (false) was
-//! written while plain was still AllowAll; read-time migration initializes plain
-//! to the persisted list and then sets the marker on disk. The first version
+//! 落盘格式与 #287 泛化后的两份旧文件同构：`{scopes, hidden_scopes,
+//! default_off_scopes: {"<mode>": [...]}, initialized: ["<mode>"],
+//! project_skills_enabled, plain_defaults_migrated}`。Scope keys 用 `SessionMode`
+//! 的 kebab-case 名。`plain_defaults_migrated`：plain 仍为 AllowAll 时写下的旧
+//! 文件标记；读时迁移把 plain 初始化为已持久化列表并落盘标记。首次读入即把两
+//! 份旧文件迁移进本文件
 //! migrates the two legacy files into this file on read (migrate-on-read):
 //! 旧连接器 id 原样进包 id（连接器 id 即包 id）；旧技能 id 经 `bundle::skill_owner_package`
 //! 映射到所属包（companion → MCP/CLI 包，独立技能 → 自身）；`skill:` 前缀跨文件借道
@@ -383,11 +383,14 @@ fn normalize_stored_lists(file: &mut DisabledBundlesFile) -> bool {
     changed
 }
 
-/// 原始条目 → 包 id。连接器/CLI id 原样保留（`skill_owner_package` 对它们恒等）；
-/// `skill:` 前缀剥除后按技能名映射到所属包（companion → MCP/CLI 包，独立技能 → 自身）。
+/// 原始条目 → 包 id。连接器/CLI id 原样保留（`skill_gating_owner` 对它们恒等）；
+/// `skill:` 前缀剥除后按技能名映射到所属包。门控侧用物理感知的
+/// `skill_gating_owner`（R17-MAJOR1）：存储条目可能携带组合包的圈内技能名
+/// （restore 门按 bin 侧技能目录扫描写入），未声明的嵌套技能必须归到物理
+/// 所属包，否则以零同意进入所有 scope 且无行可关。
 fn to_package_id(raw: &str) -> String {
     let stripped = raw.strip_prefix("skill:").unwrap_or(raw);
-    skill_owner_package(stripped)
+    crate::features::marketplace::bundle::skill_gating_owner(stripped)
 }
 
 /// 读时归一：存储条目按**当前**认领状态重映射为包 id 并去重（保序）。
@@ -575,7 +578,8 @@ fn try_save_disabled_bundles_file(file: &DisabledBundlesFile) -> Result<(), Stri
 /// 读某 scope 被禁用的**包 id** 列表（读不到/空 → 空）。
 ///
 /// Initialized scopes follow the persisted list; uninitialized scopes fall
-/// back to DenyAll (all installed package ids ∪ all built-in CLI package ids)
+/// back to DenyAll (all installed package ids ∪ all built-in CLI package ids
+/// ∪ the owner packages of installed standalone skills)
 /// — "default fully off, external capabilities enabled explicitly". All modes
 /// are DenyAll; existing plain installs are initialized by the read-time
 /// migration in `load_disabled_bundles_file_locked` (locking in the
@@ -834,7 +838,13 @@ pub fn sync_deny_all_scopes_after_install(raw_id: &str) -> Result<(), String> {
 /// missing package. Shared entry point for connector, skill, and package
 /// teardown: the argument may be a connector id / skill id / package id and is
 /// normalized to the package id.
-pub fn remove_bundle_from_disabled_scopes(raw_id: &str) {
+///
+/// Fail-visible (round-17 minor 1): a lost removal save leaves the stale
+/// stored entry + install-default marker behind, and a same-id reinstall
+/// inherits them through the install sync's initialized-arm no-op — the
+/// mirror image of the install-sync fail-visible direction (round-13 B3), so
+/// the persist propagates instead of degrading to a log line.
+pub fn remove_bundle_from_disabled_scopes(raw_id: &str) -> Result<(), String> {
     let package_id = to_package_id(raw_id);
     let _guard = DISABLED_BUNDLES_FILE_LOCK
         .lock()
@@ -862,8 +872,9 @@ pub fn remove_bundle_from_disabled_scopes(raw_id: &str) {
         changed |= defaults.len() != before;
     }
     if changed {
-        save_disabled_bundles_file(&file);
+        try_save_disabled_bundles_file(&file)?;
     }
+    Ok(())
 }
 
 /// Batch-enable entry for user actions such as scenario opt-ins (review #455
@@ -917,7 +928,7 @@ pub fn enable_packages_in_scope(
         // (round-11 B2 fixes the round-10 Major 2 contradiction: install-sync
         // writes stored+default_off, so a just-installed pack stays enableable
         // and the welcome/scene opt-in works for the upgraded cohort).
-        // Round-15 minor 2 caveat: ids absent from the stored list are treated
+        // Round-16 minor 2 caveat: ids absent from the stored list are treated
         // as already-on (`not_applied` stays empty here) — the
         // install-commits-after-snapshot race that m3 reports for the
         // expansion arm has no equivalent signal in this arm.
@@ -1014,7 +1025,7 @@ pub fn apply_restore_consent_gate(raw_ids: &[String]) -> Result<(), String> {
     apply_restore_consent_gate_impl(raw_ids, false)
 }
 
-/// Force variant for the supply-skipped restore cohort (review #455 R15-MAJOR1):
+/// Force variant for the supply-skipped restore cohort (review #455 R16-MAJOR1):
 /// a secrets-declaring pack skips `install_upload`, so its id never re-enters
 /// `installed.json`; a combination pack has no `skills/<pack-id>/` directory, so
 /// `find_skill_dir` hides it from `list_skills`. Its id is therefore in NONE of
@@ -1044,7 +1055,7 @@ fn apply_restore_consent_gate_impl(
         .unwrap_or_else(|poisoned| poisoned.into_inner());
     let mut file = load_disabled_bundles_file_locked();
     let mut changed = false;
-    // Round-15 MAJOR1, force pass: materialize uninitialized DenyAll scopes
+    // Round-16 MAJOR1, force pass: materialize uninitialized DenyAll scopes
     // once, before the per-id loop — `expansion ∪ ids` with install-default
     // markers, then initialize the scope. Per-id re-add below then finds every
     // id already stored and only asserts the markers.
@@ -1081,7 +1092,7 @@ fn apply_restore_consent_gate_impl(
         // (consent gate) and mark it install-default (round-11 B2): the
         // restore click is not a verdict against future opt-ins — the
         // welcome/scene enable may still lift it, same as a fresh install's
-        // default-off. Round-15 minor 1: the marker push lives inside the
+        // default-off. Round-16 minor 1: the marker push lives inside the
         // new-entry guard — re-arming a marker on a stored entry without one
         // would re-attribute a surviving user verdict as install-default.
         for mode in SessionMode::ALL {

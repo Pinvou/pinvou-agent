@@ -436,8 +436,17 @@ impl Pinvou3Bundle {
                 if disabled.len() != before {
                     crate::features::marketplace::save_disabled_connectors(&disabled);
                 }
-                // 代码会话的 code scope 同样清理残留。
-                crate::features::marketplace::remove_connector_from_disabled_scopes(tool_id);
+                // 代码会话的 code scope 同样清理残留。fail-visible
+                // （round-17 minor 1）：残留条目会让退役工具在 scope 里复活。
+                // 本清理段整体是 best-effort（外层签名 io::Error、周围 `let _ =`），
+                // 失败以响亮日志留痕而非中断退役。
+                if let Err(e) =
+                    crate::features::marketplace::remove_connector_from_disabled_scopes(tool_id)
+                {
+                    log::warn!(
+                        "[runtime-bundle] 退役 {tool_id} 后的开关/可见性清理落盘失败（残留条目会让退役工具在 scope 里复活）: {e}"
+                    );
+                }
 
                 let _ = std::fs::remove_dir_all(paths::bundle_mcp_servers_dir().join(tool_id));
                 // 按包聚合新布局的退役残留：`migrate_custom_mcp_layout` 会先把旧目录

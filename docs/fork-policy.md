@@ -1,6 +1,6 @@
 # Pinvou 对 CodeWhale 底座的 fork 维护策略
 
-> 最后更新：2026-09-18（上游 `v0.9.12` r1 之后过渡期：gitlink 沿维护分支领先 r1 tag 至 `7fc36e587`，待 r2 收口对齐）
+> 最后更新：2026-09-20（上游 `v0.9.12` r1 之后过渡期：gitlink 沿维护分支领先 r1 tag 至 `c4e6caf9`，待 r2 收口对齐）
 > 配套：`docs/fork-modifications.md`、`scripts/fork-guard.sh`、`docs/底座升级验收清单.md`
 > English: [`docs/fork-policy.en.md`](fork-policy.en.md)
 
