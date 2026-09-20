@@ -251,6 +251,19 @@ pub fn removed_roots(old: &[PathBuf], new: &[PathBuf]) -> Vec<PathBuf> {
         .collect()
 }
 
+/// 会话工作区是否仍被(编辑后的)新 roots 覆盖——相等或嵌套于其一之下。
+/// 窄化编辑(旧 `[A]` → 新 `[A/sub]`)会让被移除的旧根 `A` 下的部分会话
+/// 仍居于新根领地内;这些会话不是移出对象:tier-① 的显式移出是用户声明,
+/// 而非根集合编辑的副作用(评审 #484 round-6——`removed_roots` 只看
+/// 「旧根未被新根覆盖」,照搬枚举会把仍在新根下的成员一并写成显式移出,
+/// 永久挡住 tier-② 重收编)。
+pub fn workspace_covered_by_roots(workspace: &Path, roots: &[PathBuf]) -> bool {
+    let key = identity_key_of_display(workspace);
+    roots
+        .iter()
+        .any(|root| key_is_same_or_nested(&key, &identity_key_of_display(root)))
+}
+
 /// root 的展示形态:目录存在时用 fs::canonicalize(消 symlink),不存在时
 /// 经最深已存在祖先解析(见 `resolve_through_existing_ancestor`)——目录被
 /// 移走后 overlap 校验仍需可判定,且形态对已存值幂等(canonicalize(

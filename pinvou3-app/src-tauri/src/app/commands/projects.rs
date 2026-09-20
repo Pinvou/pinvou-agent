@@ -14,7 +14,7 @@ use tauri::{AppHandle, Emitter, State};
 use crate::features::codex_acp::{AcpPool, CodexWorkspaceKind, SessionAgentStore};
 use crate::features::projects::{
     DeleteProjectReport, EnsureFolderOutcome, MoveSessionOutcome, Project, ProjectStore,
-    RebindRootsError, SessionAssignments, removed_roots,
+    RebindRootsError, SessionAssignments, removed_roots, workspace_covered_by_roots,
 };
 use crate::features::sessions::SessionStore;
 
@@ -32,12 +32,14 @@ fn emit_project_event(app: &AppHandle, event: &str, action: &str) {
     let _ = app.emit(event, serde_json::json!({ "action": action }));
 }
 
-/// 项目 root 的 wire 形态（仅路径）。曾带有 `available`（root 是否仍在磁盘上，
-/// 供"文件夹不可用·重新绑定"渲染），但该 UI 从未落地、前端也从未读取该字段，
-/// 连带省去列表路径的逐个 is_dir() stat。
+/// 项目 root 的 wire 形态：路径 + `available`（root 是否仍在磁盘上，供侧栏
+/// "文件夹不可用·重新绑定"徽章与管理面板的逐根可用性标记读取，蓝图 §4）。
+/// 列表路径因此对每个 root 做一次 `is_dir()` stat；root 数量以个位数计，
+/// 成本可忽略。
 #[derive(Debug, Clone, Serialize)]
 pub struct ProjectRootStatus {
     pub path: PathBuf,
+    pub available: bool,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -67,7 +69,10 @@ impl ProjectListItem {
             roots: project
                 .roots
                 .iter()
-                .map(|path| ProjectRootStatus { path: path.clone() })
+                .map(|path| ProjectRootStatus {
+                    available: path.is_dir(),
+                    path: path.clone(),
+                })
                 .collect(),
             position: project.position,
             created_at: project.created_at,
@@ -207,12 +212,17 @@ pub(crate) fn replace_project_roots_and_expel(
     for root in &removed {
         // 与 delete_project 同一套枚举:两个绑定 store 里位于被移除根下的会话;
         // store 侧按 tier-① 语义跳过已有归属条目的 id。扫描失败必须上报,不能
-        // 静默漏掉移出(那正是「根移除了、成员却复活」的成因)。
-        for (session_id, _) in agents.sessions_under_workspace(root) {
-            expel_session_ids.push(session_id);
+        // 静默漏掉移出(那正是「根移除了、成员却复活」的成因)。窄化编辑例外:
+        // 仍在新根领地内的会话不驱逐(workspace_covered_by_roots)。
+        for (session_id, path) in agents.sessions_under_workspace(root) {
+            if !workspace_covered_by_roots(&path, &normalized) {
+                expel_session_ids.push(session_id);
+            }
         }
-        for (session_id, _) in sessions.workspace_bindings_under(root) {
-            expel_session_ids.push(session_id);
+        for (session_id, path) in sessions.workspace_bindings_under(root) {
+            if !workspace_covered_by_roots(&path, &normalized) {
+                expel_session_ids.push(session_id);
+            }
         }
     }
     expel_session_ids.sort();
@@ -408,7 +418,9 @@ pub struct AlignOutcome {
 ///
 /// 双 store 写入(agent 记录 / 纯绑定 sidecar,与 rebind 同一套双写);
 /// 存活引擎经 `Op::SyncSession` 推送,下个回合生效。围栏:活动回合(ACP
-/// prompt / 原生回合 / 定时轮)以类型化 ALIGN_BUSY 拒绝;无绑定工作区的
+/// prompt / 原生回合 / 定时轮)以类型化 ALIGN_BUSY 拒绝;rebind 进行中则由
+/// rebind 门拒绝(读 project.roots 与写入必须在同一条 rebind 线之内,否则
+/// 会把未翻译的 from 拼写根写回刚翻译过的会话钥匙串);无绑定工作区的
 /// 临时/定时会话得到 ALIGN_NO_WORKSPACE。幂等:钥匙串与当前完全一致时返回
 /// applied=false、reason=no_change。
 #[tauri::command]
@@ -420,6 +432,13 @@ pub async fn align_session_to_project(
     acp_pool: State<'_, AcpPool>,
     engines: State<'_, crate::features::assistant::engine_pool::EnginePool>,
 ) -> Result<AlignOutcome, String> {
+    // Same fence as its sibling root-accepting writers: align snapshots
+    // project.roots into the binding stores, so committing mid-rebind would
+    // read the still-untranslated `from`-spelled roots (the rebind's project
+    // lane runs last) and overwrite the just-translated session keychains
+    // with dead prefixes (review #484 round-6 finding; same hazard class as
+    // the round-1 M3 fixes).
+    let _fence = store.rebind_fence()?;
     // 活动回合围栏(与 rebind 门同规则):运行中的 prompt/回合/定时轮一律拒绝。
     let busy = acp_pool.is_turn_active(&session_id).await
         || engines.is_turn_active(&session_id)
@@ -433,6 +452,9 @@ pub async fn align_session_to_project(
         },
         busy,
     )?;
+    // Released after the read+write pair, before the engine-push awaits: a
+    // concurrent rebind must not wait on live-engine I/O (sibling pattern).
+    drop(_fence);
     if !outcome.applied {
         // 什么都没写(no_project / no_change / write_skipped):不推送存活引擎、
         // 不发事件——运行态不得与磁盘分叉(评审 #484 B3)。
@@ -1738,6 +1760,80 @@ mod tests {
         let _ = std::fs::remove_dir_all(&root_a);
         let _ = std::fs::remove_dir_all(&root_b);
         let _ = std::fs::remove_dir_all(&agents_dir);
+    }
+
+    /// Round-6: a *narrowing* edit (old `[A]` → new `[A/sub]`) must not expel
+    /// the members that still live under the surviving new root — the explicit
+    /// move-out is the user's tier-① declaration, not a side effect of a root
+    /// set edit — while members outside the narrowed territory are still
+    /// expelled.
+    #[test]
+    fn update_narrowing_edit_keeps_members_under_the_new_root() {
+        let (sessions, _g) = isolated_home_session_store();
+        let root_a = unique_dir("narrow-a");
+        let nested = root_a.join("sub");
+        let other = root_a.join("other");
+        std::fs::create_dir_all(&nested).unwrap();
+        std::fs::create_dir_all(&other).unwrap();
+        let agents_dir = unique_dir("narrow-agents");
+        std::fs::create_dir_all(&agents_dir).unwrap();
+        let agents = SessionAgentStore::for_test(agents_dir.join("session-agents.json"));
+        // Bound directly at the nested directory: still inside the project's
+        // territory after the narrowing.
+        let keep_id = create_plain_bound_session(&sessions, &nested, vec![nested.clone()]);
+        // Bound under A but outside the narrowed root: must be expelled.
+        let expel_id = create_plain_bound_session(&sessions, &other, vec![other.clone()]);
+
+        let store = project_store_in(&unique_dir("narrow-store"));
+        let project = store
+            .create_project("p".to_string(), vec![root_a.clone()])
+            .expect("create project");
+
+        let updated = replace_project_roots_and_expel(
+            &store,
+            &sessions,
+            &agents,
+            &project.id,
+            None,
+            vec![nested.clone()],
+        )
+        .expect("narrowing roots edit");
+        assert_eq!(updated.roots.len(), 1);
+        assert_eq!(
+            store.assignment_of(&keep_id),
+            None,
+            "a member still under the surviving new root must not be written as an explicit move-out"
+        );
+        assert_eq!(
+            store.assignment_of(&expel_id),
+            Some(None),
+            "a member outside the narrowed root must still be expelled"
+        );
+        let _ = std::fs::remove_dir_all(&root_a);
+        let _ = std::fs::remove_dir_all(&agents_dir);
+    }
+
+    /// Round-6 wire-shape lock: roots carry per-root availability (blueprint
+    /// §4). The manage panel and the sidebar's unavailable-root badges read
+    /// this field; the wire previously lacked it, so every healthy folder
+    /// rendered "unavailable" (review #484 round-6 blocker).
+    #[test]
+    fn project_root_wire_shape_reports_availability() {
+        let existing = unique_dir("avail-root");
+        std::fs::create_dir_all(&existing).unwrap();
+        let missing = unique_dir("avail-missing");
+
+        let store = project_store_in(&unique_dir("avail-store"));
+        let project = store
+            .create_project("p".to_string(), vec![existing.clone(), missing.clone()])
+            .expect("create project (a missing dir is soft-kept)");
+        let item = ProjectListItem::from_project(&project, 0);
+        let value = serde_json::to_value(&item).expect("serialize ProjectListItem");
+        let roots = value["roots"].as_array().expect("roots array");
+        assert_eq!(roots.len(), 2);
+        assert_eq!(roots[0]["available"], serde_json::json!(true));
+        assert_eq!(roots[1]["available"], serde_json::json!(false));
+        let _ = std::fs::remove_dir_all(&existing);
     }
 
     #[test]

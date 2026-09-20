@@ -1151,3 +1151,75 @@ fn begin_rebind_rejects_concurrent_rebind_and_releases_on_drop() {
     drop(gate);
     let _gate = store.begin_rebind().expect("gate released on drop");
 }
+
+/// §9.9 backend authority (review #484 round-6): tier-② multi-hit resolution
+/// must follow the (position, id) order the store loads in — the frontend
+/// `matchProjectByPath` pins the same rule, and `align_session_to_project`
+/// resolves through this store method. The fixture lists projects in an order
+/// that disagrees with both rules, so a resolution trusting file order alone
+/// cannot pass.
+#[test]
+fn resolve_session_project_multi_hit_follows_position_then_id() {
+    let temp = tempfile::tempdir().expect("tempdir");
+    let workspace = abs("overlap-ws");
+    let root = workspace.to_string_lossy().to_string();
+    let now = "2026-09-01T00:00:00Z";
+    let project = |id: &str, position: i64| {
+        serde_json::json!({
+            "id": id,
+            "name": id,
+            "roots": [root],
+            "position": position,
+            "created_at": now,
+            "updated_at": now,
+        })
+    };
+    // File order: highest position first, then the id-order loser of the
+    // position-0 tie — trusting file order picks prj-b-high; skipping the id
+    // tiebreak leaves the position-0 pair ambiguous.
+    let file = serde_json::json!({
+        "schema_version": 1,
+        "projects": [
+            project("prj-b-high", 1),
+            project("prj-zz", 0),
+            project("prj-aa", 0),
+        ],
+        "assignments": {},
+        "never_materialize_roots": [],
+    });
+    std::fs::write(
+        temp.path().join("projects.json"),
+        serde_json::to_vec(&file).expect("serialize fixture"),
+    )
+    .expect("write fixture");
+    let store = store_in(&temp);
+
+    let resolved = store
+        .resolve_session_project("s1", &workspace)
+        .expect("multi-hit workspace resolves");
+    assert_eq!(
+        resolved.id, "prj-aa",
+        "smallest position wins; the position tie breaks by id order"
+    );
+
+    // tier-① beats tier-②: an explicit assignment overrides the position rule.
+    let assigned = serde_json::json!({
+        "schema_version": 1,
+        "projects": file["projects"].clone(),
+        "assignments": { "s1": "prj-b-high" },
+        "never_materialize_roots": [],
+    });
+    std::fs::write(
+        temp.path().join("projects.json"),
+        serde_json::to_vec(&assigned).expect("serialize fixture"),
+    )
+    .expect("rewrite fixture");
+    let store = store_in(&temp);
+    let resolved = store
+        .resolve_session_project("s1", &workspace)
+        .expect("explicit assignment resolves");
+    assert_eq!(
+        resolved.id, "prj-b-high",
+        "explicit assignment beats the position rule"
+    );
+}
