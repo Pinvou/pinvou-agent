@@ -4,7 +4,7 @@ API base path: `openapi/wiki/v1`.
 
 Use knowledge-base APIs when the user's target is a knowledge-base entry, folder, file, imported URL, or source media.
 
-Do not use shell commands or environment inspection for credentials. Call the native `ima_openapi` tool; credentials are never tool arguments.
+Do not use shell commands or environment inspection for credentials. Call the native `ima_openapi` tool (deferred by default: if it is not in your tool list, activate it with `tool_search` first); credentials are never tool arguments.
 
 ## Operations
 

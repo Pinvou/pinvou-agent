@@ -17,7 +17,7 @@ Do not ask the user to paste credentials into the chat. Do not write credentials
 
 Do not probe credentials with shell commands, environment inspection, local files, or ad-hoc network requests. Never pass a host, URL, Client ID, API Key, or HTTP header as tool input.
 
-To verify access or perform any IMA operation, call `ima_openapi`. If it reports missing credentials, tell the user to connect "腾讯 ima" from the Pinvou Plugin Center.
+To verify access or perform any IMA operation, call `ima_openapi`. The tool is deferred by default: if `ima_openapi` is not in your tool list, activate it with `tool_search` first; if `tool_search` cannot surface it, the ima backend is unavailable this round — say so instead of improvising. If the call reports missing credentials, tell the user to connect "腾讯 ima" from the Pinvou Plugin Center.
 
 ## Module Routing
 

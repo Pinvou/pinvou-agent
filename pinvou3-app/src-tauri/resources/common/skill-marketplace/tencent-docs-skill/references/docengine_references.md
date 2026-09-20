@@ -1655,7 +1655,7 @@ mkdir -p <workspace>/.tmp/tencent_docs
 base64 -w 0 <workspace>/.tmp/tencent_docs/<标题>.md > <workspace>/.tmp/tencent_docs/encoded_<标题>.txt
 # macOS 无需 -w 0
 ```
-再用 `read_file` 读取 `encoded_<标题>.txt` 获取 base64 内容传入 `base64_markdown`。
+再用 `read` 读取 `encoded_<标题>.txt` 获取 base64 内容传入 `base64_markdown`。
 
 ### 调用示例
 ```json
@@ -1971,14 +1971,14 @@ base64 -w 0 <workspace>/.tmp/tencent_docs/<标题>.md > <workspace>/.tmp/tencent
 
 ```
 1. 准备好 Markdown 格式的文档内容，将其保存为 <workspace>/.tmp/tencent_docs/<标题>.md 文件（<标题> 为文档标题）
-2. 使用系统 base64 命令进行编码，并将结果写入工作区目录下的文件（确保 agent 可通过 read_file 访问）：
+2. 使用系统 base64 命令进行编码，并将结果写入工作区目录下的文件（确保 agent 可通过 `read` 访问）：
    mkdir -p <workspace>/.tmp/tencent_docs
    base64 -w 0 <workspace>/.tmp/tencent_docs/<标题>.md > <workspace>/.tmp/tencent_docs/encoded_<标题>.txt
    或：echo -n "Markdown文本" | base64 -w 0 > <workspace>/.tmp/tencent_docs/encoded_<标题>.txt
    （macOS 上无需 -w 0 参数；<workspace> 为当前项目工作区根目录绝对路径）
 3. 调用 manage.create_file 创建一个空 Word 文档（file_type=doc），获取返回的 file_id
 4. 调用 doc.get_last_operable_pos（传入 file_id），获取文档末尾可操作的 position 和当前 version
-5. 使用 read_file 工具读取步骤 2 生成的 encoded_<标题>.txt，拿到 base64 编码后的 Markdown 内容
+5. 使用 `read` 工具读取步骤 2 生成的 encoded_<标题>.txt，拿到 base64 编码后的 Markdown 内容
 6. 调用 doc.insert_markdown，传入 file_id、idx=position、base64_markdown（可选传 version_info.base_version=上一步的 version），将 Markdown 内容写入文档
 7. 如需修改文档标题，调用 manage.rename_file_title
 ```
