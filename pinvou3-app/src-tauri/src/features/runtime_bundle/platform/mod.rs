@@ -544,6 +544,7 @@ fn install_work_mode_browser_server(
 mod tests {
     use super::*;
     use crate::bridge::paths::tests::ENV_LOCK;
+    use crate::features::marketplace::ENGINE_OWNED_MCP_SERVER_KEYS;
     use crate::platform::credential_store::{
         CredentialError, CredentialReference, CredentialStore,
     };
@@ -1060,7 +1061,6 @@ mod tests {
         // 1) 首次解包：文件被写入 + VERSION 记录
         let bundle = Pinvou3Bundle::paths();
         bundle.ensure_extracted().unwrap();
-        assert!(bundle.instructions_md.is_file());
         assert!(bundle.mcp_json.is_file());
         assert!(bundle.deny_sensitive_sh.is_file());
         assert!(bundle.deny_sensitive_ps1.is_file());
@@ -1176,10 +1176,10 @@ mod tests {
         let v = std::fs::read_to_string(paths::bundle_version_file()).unwrap();
         assert_eq!(v.trim(), BUNDLE_VERSION);
 
-        // 2) VERSION 匹配则跳过：故意改 instructions.md，再 ensure，不应覆写
-        std::fs::write(&bundle.instructions_md, "USER TOUCHED").unwrap();
+        // 2) VERSION 匹配则跳过：故意改 bundle 内文件，再 ensure，不应覆写
+        std::fs::write(&bundle.shell_env_sh, "USER TOUCHED").unwrap();
         bundle.ensure_extracted().unwrap();
-        let content = std::fs::read_to_string(&bundle.instructions_md).unwrap();
+        let content = std::fs::read_to_string(&bundle.shell_env_sh).unwrap();
         assert_eq!(
             content, "USER TOUCHED",
             "VERSION 匹配时不应覆写已存在的 bundle 文件"
@@ -1783,10 +1783,11 @@ mod tests {
             r#"{"servers":{"data_analysis":{"command":"python","args":["server.py"]},"weather":{"command":"python","args":["server.py"]}}}"#,
         )
         .unwrap();
-        crate::features::marketplace::save_disabled_connectors(&[
-            "data_analysis".to_string(),
-            "weather".to_string(),
-        ]);
+        crate::features::marketplace::scope::save_disabled_bundles_for(
+            crate::features::marketplace::ConnectorScope::Plain,
+            &["data_analysis".to_string(), "weather".to_string()],
+        )
+        .unwrap();
 
         bundle.cleanup_removed_marketplace_tools().unwrap();
 
@@ -1801,7 +1802,9 @@ mod tests {
             !mcp.contains("data_analysis"),
             "mcp.json 不应残留 data_analysis server"
         );
-        let disabled = crate::features::marketplace::load_disabled_connectors();
+        let disabled = crate::features::marketplace::scope::load_disabled_bundles_for(
+            crate::features::marketplace::ConnectorScope::Plain,
+        );
         assert!(
             !disabled.contains(&"data_analysis".to_string()),
             "disabled_connectors 不应残留 data_analysis"
@@ -1870,6 +1873,102 @@ mod tests {
             servers.keys().collect::<Vec<_>>()
         );
         assert!(!servers.contains_key("pinvou"), "旧 pinvou 不残留");
+        cleanup(&tmp);
+    }
+
+    /// The write footprint of ensure_builtin_mcp_servers is pinned to the three
+    /// engine keys pinvou3/pinvou/browser. The observed footprint is cross-checked
+    /// against the marketplace-side `ENGINE_OWNED_MCP_SERVER_KEYS` constant (the
+    /// startup reconcile relies on it to avoid engine keys): adding or renaming a
+    /// builtin server key without updating the constant turns this test red, and
+    /// the marketplace-side exact-set test keeps the constant itself honest, so
+    /// the two sides can no longer drift apart silently.
+    #[test]
+    fn ensure_builtin_mcp_servers_touches_only_engine_owned_keys() {
+        let _g = ENV_LOCK.lock().unwrap_or_else(|p| p.into_inner());
+        let tmp = tempdir();
+        // SAFETY: holding platform::paths::tests::ENV_LOCK; env writes serialized in-process.
+        unsafe { std::env::set_var("PINVOU3_HOME", &tmp) };
+        paths::ensure_dirs().unwrap();
+        let bundle = Pinvou3Bundle::paths();
+        std::fs::create_dir_all(bundle.mcp_json.parent().unwrap()).unwrap();
+        // One entry per engine-key form (pinvou migration / pinvou3 upsert /
+        // browser-wrapper residue cleanup) plus two user-entry sentinels. The
+        // sentinels deliberately use node commands to dodge the stale-python
+        // rewrite path of refresh_mcp_python_commands — this test pins the
+        // key-set footprint, not the python self-heal semantics.
+        std::fs::write(
+            &bundle.mcp_json,
+            r#"{"servers":{
+                "pinvou":{"command":"python3","args":["/old/present.py"]},
+                "pinvou3":{"command":"/usr/bin/obsolete-python","args":["/old/present.py"]},
+                "browser":{"command":"node","args":["/old/browser-wrapper.mjs"]},
+                "user-node":{"command":"node","args":["/opt/user-tool/run.js"],"enabled":false,"custom_hint":"keep"},
+                "user-node2":{"command":"node","args":["/opt/user-tool/run2.js"]}
+            }}"#,
+        )
+        .unwrap();
+        let before: serde_json::Value =
+            serde_json::from_str(&std::fs::read_to_string(&bundle.mcp_json).unwrap()).unwrap();
+        let before_servers = before["servers"].as_object().unwrap();
+
+        bundle.ensure_builtin_mcp_servers().unwrap();
+
+        let mcp: serde_json::Value =
+            serde_json::from_str(&std::fs::read_to_string(&bundle.mcp_json).unwrap()).unwrap();
+        let servers = mcp["servers"].as_object().unwrap();
+        let mut keys: Vec<&str> = servers.keys().map(String::as_str).collect();
+        keys.sort_unstable();
+        assert_eq!(
+            keys,
+            vec!["pinvou3", "user-node", "user-node2"],
+            "write footprint must be exactly the three engine keys: pinvou migrated away, pinvou3 upserted, browser residue deleted"
+        );
+        // Real cross-check against the marketplace-side constant: the keys the
+        // upsert actually manages — the engine keys surviving the pass plus the
+        // constant's keys it removed (pinvou migration, browser residue) — must
+        // equal ENGINE_OWNED_MCP_SERVER_KEYS exactly. An engine-side key added
+        // without the constant turns red, and a constant entry the boot path
+        // never touches turns red too; the marketplace-side exact-set test pins
+        // the constant against its literal.
+        let mut managed_keys: Vec<String> = servers
+            .keys()
+            .map(String::clone)
+            .filter(|key| !key.starts_with("user-node"))
+            .collect();
+        for key in before_servers.keys() {
+            if ENGINE_OWNED_MCP_SERVER_KEYS.contains(&key.as_str()) && !servers.contains_key(key) {
+                managed_keys.push(key.clone());
+            }
+        }
+        managed_keys.sort_unstable();
+        managed_keys.dedup();
+        let mut expected: Vec<&str> = ENGINE_OWNED_MCP_SERVER_KEYS.to_vec();
+        expected.sort_unstable();
+        assert_eq!(
+            managed_keys, expected,
+            "ensure_builtin_mcp_servers' managed key set drifted from \
+             ENGINE_OWNED_MCP_SERVER_KEYS — update the marketplace constant in the same PR"
+        );
+        assert_eq!(
+            servers["pinvou3"]["command"],
+            serde_json::Value::String(paths::python_command())
+        );
+        assert_eq!(
+            servers["user-node"],
+            serde_json::json!({
+                "command":"node","args":["/opt/user-tool/run.js"],
+                "enabled":false,"custom_hint":"keep"
+            }),
+            "user entries outside the footprint must be preserved verbatim"
+        );
+        assert_eq!(
+            servers["user-node2"],
+            serde_json::json!({
+                "command":"node","args":["/opt/user-tool/run2.js"]
+            }),
+            "user entries outside the footprint must be preserved verbatim"
+        );
         cleanup(&tmp);
     }
 

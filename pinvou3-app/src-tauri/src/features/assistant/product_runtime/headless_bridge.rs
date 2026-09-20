@@ -1339,7 +1339,7 @@ where
             // touched by a windowless host freezes a polluted "upgrade"
             // verdict, plain flips back to fully open, and later GUI starts
             // respect the already-frozen marker (review #455 blocking item 3).
-            let _ = crate::features::assistant::skill_materialization::load_disabled_skills();
+            let _ = crate::features::marketplace::scope::load_disabled_bundles();
             if let Ok(resource_dir) = app.path().resource_dir() {
                 crate::platform::paths::set_runtime_resource_dir(resource_dir);
             }

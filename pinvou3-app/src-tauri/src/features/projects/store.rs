@@ -34,6 +34,17 @@ pub struct Project {
 /// 归组,直接回落隐式文件夹分组);无条目 = 未裁决,走自动归组。
 pub type SessionAssignments = HashMap<String, Option<String>>;
 
+/// assignments 里显式归属 `project_id` 的会话 id（命令层统计与 delete_project
+/// 的解绑清理共用同一实现；吃裸 map，便于写路径在已持 state 写锁时复用）。
+fn explicit_assignments_of(assignments: &SessionAssignments, project_id: &str) -> Vec<String> {
+    assignments
+        .iter()
+        .filter_map(|(session_id, assigned)| {
+            (assigned.as_deref() == Some(project_id)).then(|| session_id.clone())
+        })
+        .collect()
+}
+
 /// 单文件持久化结构。schema_version 供未来结构演进识别:读到更新版本时
 /// 按空状态降级启动,但置位拒绝后续写入(见 `StoreState::refuse_writes`),
 /// 否则空状态 + 下次变更会把新结构文件降级覆盖写坏。
@@ -493,14 +504,7 @@ impl ProjectStore {
 
     /// 显式归属到某项目的会话 id 列表(命令层统计成员数用)。
     pub fn assigned_session_ids(&self, project_id: &str) -> Vec<String> {
-        self.state
-            .read()
-            .assignments
-            .iter()
-            .filter_map(|(session_id, assigned)| {
-                (assigned.as_deref() == Some(project_id)).then(|| session_id.clone())
-            })
-            .collect()
+        explicit_assignments_of(&self.state.read().assignments, project_id)
     }
 
     /// 创建项目。roots 可为空(纯标签项目);非空时逐个过绝对性/重叠校验。
@@ -580,13 +584,7 @@ impl ProjectStore {
         state.projects.remove(index);
         // 只清 Some(pid) 条目;显式移出条目(None)的语义是"不进任何项目",
         // 与项目存亡无关,保留。被清掉的会话回落自动/隐式分组。
-        let affected: Vec<String> = state
-            .assignments
-            .iter()
-            .filter_map(|(session_id, assigned)| {
-                (assigned.as_deref() == Some(project_id)).then(|| session_id.clone())
-            })
-            .collect();
+        let affected = explicit_assignments_of(&state.assignments, project_id);
         for session_id in &affected {
             state.assignments.remove(session_id);
         }

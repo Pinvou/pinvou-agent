@@ -11,17 +11,17 @@ function voicePostprocessingLabel(mode, copy) {
   return copy.voicePostprocessing;
 }
 
+// 语音会话状态集(单一来源):isVoiceActive/isVoiceBusy 与 UI 层(如
+// VoiceRecordingPill)的状态判定都从这里派生,新增状态只改这两处。
+export const VOICE_ACTIVE_STATUSES = ['requesting_permission', 'recording', 'transcribing', 'postprocessing'];
+export const VOICE_BUSY_STATUSES = ['transcribing', 'postprocessing'];
+
 function isVoiceActive(voiceInput) {
-  const status = voiceInput && voiceInput.status;
-  return status === 'requesting_permission'
-    || status === 'recording'
-    || status === 'transcribing'
-    || status === 'postprocessing';
+  return VOICE_ACTIVE_STATUSES.includes(voiceInput && voiceInput.status);
 }
 
 function isVoiceBusy(voiceInput) {
-  const status = voiceInput && voiceInput.status;
-  return status === 'transcribing' || status === 'postprocessing';
+  return VOICE_BUSY_STATUSES.includes(voiceInput && voiceInput.status);
 }
 
 function isVoiceRecording(voiceInput) {
@@ -78,7 +78,6 @@ function voiceAsrBusyState(voiceAsrSetup, chatCopy) {
     busy,
     cancelling,
     pct,
-    progress: setup.progress || {},
     label,
   };
 }
@@ -92,6 +91,5 @@ export {
   shouldShowVoicePill,
   voiceAsrBusyState,
   voicePostprocessingLabel,
-  voiceAsrProgressPercent,
   voiceStatusLabel,
 };

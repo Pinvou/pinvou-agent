@@ -21,6 +21,9 @@ const { conversationItemsForMode } = await import(
 );
 
 const sandbox = { window: {} };
+// chat.js delegates shared helpers to window.PinvouBridgeShared (index.html loads the
+// shared payload before both bridges); the sandbox needs it loaded first.
+vm.runInNewContext(read('src', 'shared', 'bridge-shared-helpers.js'), sandbox, { filename: 'shared/bridge-shared-helpers.js' });
 vm.runInNewContext(chatSource, sandbox, { filename: 'chat.js' });
 const installChat = sandbox.window.__PINVOU_TAURI_BRIDGE_FEATURES__.chat;
 

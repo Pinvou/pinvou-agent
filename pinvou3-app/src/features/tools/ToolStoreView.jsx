@@ -256,7 +256,7 @@ const withUiTimeout = (promise, timeoutMs, fallbackResult) => {
         : (flow.active === 'runtime' ? copy.extract(Math.round(flow.pct || 0)) : copy.connecting));
       return (
         <button type="button" onClick={(e) => { e.stopPropagation(); onClick(); }} title={copy.title} className="shrink-0 flex items-center gap-1.5 pl-1.5 pr-2.5 py-1.5 rounded-full bg-blue-50 dark:bg-blue-500/10 border border-blue-200 dark:border-blue-500/30 text-blue-600 dark:text-blue-300 text-[12px] font-medium">
-          <Spinner size={12} variant="top" tone="brand" />
+          <Spinner size={12} tone="brand" />
           <span className="tabular-nums whitespace-nowrap">{label}</span>
         </button>
       );
@@ -273,11 +273,9 @@ const withUiTimeout = (promise, timeoutMs, fallbackResult) => {
     //   qrStepsExtra   Feishu's QR event additionally marks the connect step done (two-stage stage one already finished).
     //   qrPayloadExtra Extra fields on the QR event: dingtalk user_code; tmeet browserAuth flag.
     //   openAuthUrl    When tmeet's QR event carries a url, open the browser directly (embedded-QR render fallback).
-    //   connectedMode  applyAwait=await the skill write, turning failure into a flow error
-    //                  (feishu/wecom/dingtalk — round-17 minor 7 retired the fire-and-forget
-    //                  'apply' mode whose success card fired before the sync could reject);
-    //                  readinessAwait=re-verify the real login state via bundle_readiness
-    //                  before writing skills (tmeet).
+    //   skill write     every connector awaits its skill write and turns failure into a
+    //                  flow error (apply_skills_command / readiness re-verify for tmeet);
+    //                  the fire-and-forget 'apply' mode was retired (round-17 minor 7).
     /* eslint-disable unicorn/no-this-outside-of-class -- module-level connection store singleton; object-literal methods reference itself via this, and converting to a class would just move the same complexity */
     const createFlowStore = () => ({
       flow: null,
@@ -396,8 +394,6 @@ const withUiTimeout = (promise, timeoutMs, fallbackResult) => {
         invokeTauri(cfg.commands.cancel).catch(() => {});
         conn.setFlow(null); setBusyId((current) => releaseBusy(current, cfg.key));
       };
-      // Retry: ensure_cli is idempotent, so simply rerun the whole connection flow.
-      const retry = (deps) => { connect(deps); };
       const disconnect = async ({ setBusyId, busyRef, storeCopy, detailCopy, loadBackendState, setAlert }) => {
         if (busyRef.current) return;
         setBusyId(cfg.key);
@@ -415,7 +411,7 @@ const withUiTimeout = (promise, timeoutMs, fallbackResult) => {
           setBusyId((current) => releaseBusy(current, cfg.key));
         }
       };
-      return { conn, ensureListeners, connect, disconnect, resetFlow, retry };
+      return { conn, ensureListeners, connect, disconnect, resetFlow };
     };
 
     const feishuFlowApi = createConnectorFlow({
@@ -423,7 +419,6 @@ const withUiTimeout = (promise, timeoutMs, fallbackResult) => {
       events: { qr: 'feishu:qr', connected: 'feishu:connected', error: 'feishu:error' },
       commands: { ensureCli: 'feishu_ensure_cli', begin: 'feishu_connect_begin', cancel: 'feishu_cancel', logout: 'feishu_logout', applySkills: 'feishu_apply_skills' },
       qrStepsExtra: { connect: 'done' },
-      connectedMode: 'applyAwait',
       skillsFailedCopyKey: 'feishuSkillsFailed',
       applyErrorMessage: (e, h) => h.skillsFailed(String(e).slice(0, 220)),
       disconnectedTitle: ({ storeCopy }) => storeCopy.disconnectedTool(storeCopy.toolNames.feishu),
@@ -434,7 +429,6 @@ const withUiTimeout = (promise, timeoutMs, fallbackResult) => {
       key: 'wecom', conn: wecomConn, twoStep: false,
       events: { qr: 'wecom:qr', connected: 'wecom:connected', error: 'wecom:error' },
       commands: { ensureCli: 'wecom_ensure_cli', begin: 'wecom_connect_begin', cancel: 'wecom_cancel', logout: 'wecom_logout', applySkills: 'wecom_apply_skills' },
-      connectedMode: 'applyAwait',
       skillsFailedCopyKey: 'wecomSkillsFailed',
       applyErrorMessage: (e, h) => h.skillsFailed(String(e).slice(0, 220)),
       disconnectedTitle: ({ storeCopy }) => storeCopy.disconnectedTool(storeCopy.toolNames.wecom),
@@ -446,7 +440,6 @@ const withUiTimeout = (promise, timeoutMs, fallbackResult) => {
       events: { qr: 'dingtalk:qr', connected: 'dingtalk:connected', error: 'dingtalk:error' },
       commands: { ensureCli: 'dingtalk_ensure_cli', begin: 'dingtalk_connect_begin', cancel: 'dingtalk_cancel', logout: 'dingtalk_logout', applySkills: 'dingtalk_apply_skills' },
       qrPayloadExtra: p => ({ userCode: p.user_code }),
-      connectedMode: 'applyAwait',
       skillsFailedCopyKey: 'dingtalkSkillsFailed',
       applyErrorMessage: (e, h) => h.skillsFailed(String(e).slice(0, 220)),
       disconnectedTitle: ({ storeCopy }) => storeCopy.disconnectedTool(storeCopy.toolNames.dingtalk),
@@ -459,10 +452,10 @@ const withUiTimeout = (promise, timeoutMs, fallbackResult) => {
       commands: { ensureCli: 'tmeet_ensure_cli', begin: 'tmeet_connect_begin', cancel: 'tmeet_cancel', logout: 'tmeet_logout', applySkills: 'tmeet_apply_skills' },
       qrPayloadExtra: () => ({ browserAuth: true }),
       openAuthUrl: true,
-      connectedMode: 'readinessAwait',
       readiness: { bundleId: 'tmeet' },
       authIncompleteCopyKey: 'tmeetAuthIncomplete',
-      applyErrorMessage: e => String(e && e.message ? e.message : e).slice(0, 220),
+      skillsFailedCopyKey: 'tmeetSkillsFailed',
+      applyErrorMessage: (e, h) => h.skillsFailed(String(e && e.message ? e.message : e).slice(0, 220)),
       disconnectedTitle: ({ detailCopy }) => detailCopy.actions.disconnectedTmeet,
     });
     const ensureTmeetListeners = tmeetFlowApi.ensureListeners;
@@ -626,14 +619,6 @@ const withUiTimeout = (promise, timeoutMs, fallbackResult) => {
                 </button>
               )}
               {/* 引导链接放最上,不夹在输入框中间 */}
-              {fields.find(f => f.helpUrl) && (
-                <button type="button"
-                  onClick={() => invokeTauri('open_external_url', { url: fields.find(f => f.helpUrl).helpUrl })}
-                  className={`text-[13px] mb-4 inline-block text-[#007AFF] dark:text-[#0A84FF] hover:underline`}
-                >
-                  {copy.configHelpFeishu}
-                </button>
-              )}
               {/* 所有输入框紧挨着 */}
               {fields.map((field) => (
                 <div key={field.key} className="text-left mb-3">
@@ -674,7 +659,7 @@ const withUiTimeout = (promise, timeoutMs, fallbackResult) => {
                     : 'text-slate-300 dark:text-slate-600'
                 }`}
               >
-                {config.backendId === 'feishu' || fields.length > 0 ? copy.configConnect : copy.configInstall}
+                {fields.length > 0 ? copy.configConnect : copy.configInstall}
               </button>
             </div>
           </div>
@@ -1135,9 +1120,9 @@ const withUiTimeout = (promise, timeoutMs, fallbackResult) => {
       // { phase:'running'|'qr'|'error'|'done', steps:{runtime,cli,connect,qr}, active, pct, sec, log, err, qr, qrUrl, qrPhase }
       const [feishuFlow, setFeishuFlow] = useState(feishuConn.flow); // 从跨视图 store 水合：切走再回来不丢进度
 
-      // 企业微信(CLI 路线)连接流程卡(跨视图水合);连接态由 bundleStates 派生(见上)
+      // 企业微信(CLI 路线)连接流程卡(跨视图水合);连接态由 bundleStates 派生(见上)。
+      // 扫码弹窗不单独存 state:直接由流程态派生(phase==='qr' 时弹出,渲染 wecomFlow.qr/qrUrl)。
       const [wecomFlow, setWecomFlow] = useState(wecomConn.flow); // 企微连接流程卡(跨视图水合)
-      const [wecomQr, setWecomQr] = useState(null); // { qr: dataUrl, url } 扫码弹窗(单段)
 
       // 钉钉(CLI 路线)连接流程卡;连接态由 bundleStates 派生
       const [dingtalkFlow, setDingtalkFlow] = useState(dingtalkConn.flow);
@@ -1242,53 +1227,6 @@ const withUiTimeout = (promise, timeoutMs, fallbackResult) => {
 
       // Subscribe to the tmeet store (mirrors the dingtalk one): mirror into rendering + done/failure finalization (done toast uses a dedicated phrase)
       useConnectorFlowSubscription({ enabled: externalAuthAvailable, conn: tmeetConn, ensureListeners: ensureTmeetListeners, setFlow: setTmeetFlow, storeCopy, detailCopy, setBusyId, loadBackendState, setAlert, doneTitle: detailCopy.actions.connectedTmeet, toolId: 'tmeet' });
-
-      // 企微连接编排事件:后端推进度,前端驱动 UI。
-      useEffect(() => {
-        const ev = isTauriAvailable() ? tauriEvents : null;
-        if (!ev) return;
-        let disposed = false;
-        const unlisten = [];
-        // Registration is async: a listener resolving after unmount must be
-        // unregistered immediately — nobody consumes the array entries and
-        // the listener leaks.
-        const track = (p) => p.then((u) => {
-          if (disposed) { try { u(); } catch { /* silent: listeners may already be stale at unmount */ } return; }
-          unlisten.push(u);
-        });
-        track(ev.listen('wecom:qr', (e) => {
-          const p = e.payload || {};
-          // 二维码到了 → 清掉一直显示的"正在生成…"loading,再弹出二维码弹窗。
-          setAlert(a => ({ ...a, visible: false, loading: false }));
-          setWecomQr({ qr: p.qr_data_url, url: p.url, phase: p.phase });
-        }));
-        track(ev.listen('wecom:connected', () => {
-          setWecomQr(null); setBusyId((current) => releaseBusy(current, 'wecom'));
-          // 连上 → 按 DenyAll 规则写技能（默认关，需显式开启）;连接态经 readiness 重取。
-          // 评审 #455 R16-MAJOR2：后端 fail-visible 的同步失败不能在此被吞——落 error 弹窗。
-          // Round-2 review：subtitle 用翻译引导句包裹后端详情（wecomSkillsFailed，同
-          // dingtalkSkillsFailed 先例），不能把后端中文原文直接渲染给 en/ja 用户。
-          invokeTauri('wecom_apply_skills').then(() => {
-            loadBackendState();
-            setAlert({ visible: true, loading: false, title: storeCopy.connectedTool(storeCopy.toolNames.wecom), subtitle: '', isInstall: true, isError: false, toolId: 'wecom' });
-            notifyComposerToolsChanged();
-          }).catch((e) => {
-            console.error('wecom apply skills failed:', e);
-            loadBackendState();
-            setAlert({ visible: true, loading: false, title: storeCopy.connectFailed(storeCopy.toolNames.wecom), subtitle: storeCopy.wecomSkillsFailed(String(e).slice(0, 200)), isError: true, toolId: 'wecom' });
-          });
-        }));
-        track(ev.listen('wecom:error', (e) => {
-          const p = e.payload || {};
-          setWecomQr(null); setBusyId((current) => releaseBusy(current, 'wecom'));
-          setAlert({ visible: true, loading: false, title: storeCopy.connectFailed(storeCopy.toolNames.wecom), subtitle: String(p.message || '').slice(0, 240), isError: true });
-        }));
-        return () => {
-          disposed = true;
-          unlisten.forEach(u => { try { u(); } catch { /* silent: listeners may already be stale at unmount */ } });
-        };
-      // eslint-disable-next-line react-hooks/exhaustive-deps -- subscription mounts/unmounts only with externalAuthAvailable; the copy snapshot is read on demand by the callback, so resubscribing is unnecessary
-      }, [externalAuthAvailable]);
 
       // 合并后端安装状态到 mock 数据(飞书/企微/钉钉的 installed = 已连接)
       // 业务分类直接取条目数据 category(tool-common.jsx 已落业务类 id),不再按 id 硬编码映射。
@@ -2136,11 +2074,14 @@ const withUiTimeout = (promise, timeoutMs, fallbackResult) => {
             />
           ), document.body)}
           {/* 飞书扫码二维码已内联进 FeishuFlowCard（详情弹窗内），不再单独浮层 */}
-          {wecomQr && (() => {
-            // Mirrors the wecom flow reset (factory resetFlow): backend cancel is now
-            // silent (no wecom:error cleanup), so we must clear the flow here, otherwise
-            // the detail/mini flow cards stay stale on "waiting for scan".
-            const cancel = () => { wecomConn.stopTick(); invokeTauri('wecom_cancel').catch(() => {}); wecomConn.setFlow(null); setWecomQr(null); setBusyId((current) => releaseBusy(current, 'wecom')); };
+          {/* 企微扫码弹窗由流程态派生（无独立 state）：factory 的 wecom:qr 监听把
+              qr/qrUrl 写进跨视图流程卡，phase==='qr' 时弹出；取消/成功/失败都会让
+              流程离开 qr 相位，弹窗随之关闭。 */}
+          {wecomFlow && wecomFlow.phase === 'qr' && (() => {
+            // Factory resetFlow：backend cancel is silent (no wecom:error cleanup),
+            // so the cancel must clear the flow itself, otherwise the detail/mini
+            // flow cards stay stale on "waiting for scan".
+            const cancel = () => resetConnectorFlow('wecom');
             return createPortal((
             // biome-ignore lint/a11y/useKeyWithClickEvents: backdrop click-to-close layer; the keyboard path is covered by the dialog's cancel control
             // biome-ignore lint/a11y/noStaticElementInteractions: backdrop click-to-close layer, non-interactive container
@@ -2152,14 +2093,14 @@ const withUiTimeout = (promise, timeoutMs, fallbackResult) => {
                 {/* Real auth QR emitted by the backend (wecom-cli --output-qrcode PNG), one scan straight to authorization.
                     Previously an iframe embedded the /ai/qc/gen landing page: WKWebView often failed to render the code,
                     and encoding the landing-page URL as a QR made users scan a second time. */}
-                {wecomQr.qr && (
-                  <img src={wecomQr.qr} alt={storeCopy.wecomQrAlt} decoding="async" className="w-52 h-52 rounded-2xl border border-slate-200 bg-white p-1 dark:border-white/10" />
+                {wecomFlow.qr && (
+                  <img src={wecomFlow.qr} alt={storeCopy.wecomQrAlt} decoding="async" className="w-52 h-52 rounded-2xl border border-slate-200 bg-white p-1 dark:border-white/10" />
                 )}
                 <div className="mt-4 text-[13px] text-slate-500 dark:text-slate-400">{storeCopy.wecomScanHint}</div>
                 <div className="flex items-center gap-1.5 mt-2 text-[13px] text-slate-500 dark:text-slate-400">
                   <span className="w-2 h-2 rounded-full bg-amber-400 animate-pulse"></span> {storeCopy.waitingAuth}
                 </div>
-                <button type="button" onClick={() => { if (wecomQr.url) invokeTauri('open_external_url', { url: wecomQr.url }).catch(browserOpenFailed); }} className="mt-4 text-[13px] text-blue-600 dark:text-blue-400 hover:underline">{storeCopy.openInBrowser}</button>
+                <button type="button" onClick={() => { if (wecomFlow.qrUrl) invokeTauri('open_external_url', { url: wecomFlow.qrUrl }).catch(browserOpenFailed); }} className="mt-4 text-[13px] text-blue-600 dark:text-blue-400 hover:underline">{storeCopy.openInBrowser}</button>
                 <button type="button" onClick={cancel} className="mt-3 px-6 py-2 rounded-full text-[14px] font-semibold bg-slate-100 dark:bg-[#2C2C2E] text-slate-600 dark:text-slate-300">{storeCopy.cancel}</button>
               </div>
             </div>
@@ -2190,7 +2131,6 @@ const withUiTimeout = (promise, timeoutMs, fallbackResult) => {
               onCancel={() => setPurgeConfirm(null)}
             />
           ), document.body)}
-          {/* 飞书/企微扫码二维码已内联进 FeishuFlowCard（详情弹窗内），不再单独浮层 */}
           {/* 回收站子页面:点入口后整个插件中心内容区切换为回收站页面(非弹窗),
               返回按钮回到主列表;彻底删除二次确认仍用弹窗(见上方 purgeConfirm) */}
           {showRecycleBin && (
@@ -2255,7 +2195,7 @@ const withUiTimeout = (promise, timeoutMs, fallbackResult) => {
                   <EmptyState
                     testId="recycle-bin-loading"
                     className="py-24 flex flex-col items-center"
-                    icon={<Spinner size={24} variant="top" tone="brand" className="mb-4" />}
+                    icon={<Spinner size={24} tone="brand" className="mb-4" />}
                     title={storeCopy.recycleBinLoading}
                     titleClassName="text-slate-500 dark:text-slate-400"
                   />

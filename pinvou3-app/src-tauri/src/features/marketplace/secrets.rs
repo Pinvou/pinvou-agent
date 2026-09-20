@@ -1,11 +1,15 @@
 //! Secret/credential management: MCP tool secrets are neither written in
-//! plaintext nor placed in `headers` (the foundation sends that field as a
-//! literal); they live in the system credential store plus an in-process
-//! registry, and `mcp.json` keeps only `${ENV}` placeholders.
+//! plaintext nor placed in `headers` (the foundation sends `headers` values
+//! as-is and does not expand `${ENV}` placeholders in them); they live in the
+//! system credential store plus an in-process registry, and `mcp.json` keeps
+//! only `${ENV}` placeholders for subprocess env plus env-var NAME references
+//! (`env_headers` values, `bearer_token_env_var`) that the foundation
+//! resolves at request time through the host resolver.
 //!
 //! Placeholders are resolved on demand by the foundation's MCP secret resolver
 //! hook (`install_mcp_secret_resolver`, registered at boot) when MCP
-//! subprocess env is expanded / request headers are parsed — the process
+//! subprocess env is expanded and when env-var NAME references in
+//! `env_headers`/`bearer_token_env_var` are resolved — the process
 //! environment is no longer written at runtime: under edition 2024 a runtime
 //! `set_var` racing uncoordinated concurrent readers (the foundation's
 //! `vars_os()` child-process env snapshots, WebKit/glib libc `getenv`) is a
@@ -255,19 +259,46 @@ impl<S: CredentialStore> MarketplaceManager<S> {
         user_config: &HashMap<String, String>,
         legacy_env: &HashMap<String, String>,
     ) -> Result<String, String> {
+        match self.try_resolve_secret_placeholder(tool_id, target, key, user_config, legacy_env) {
+            Ok(Some(placeholder)) => Ok(placeholder),
+            Ok(None) => Err(mcp_secret_missing_error(tool_id, key)),
+            Err(error) => Err(error),
+        }
+    }
+
+    /// Degrade-aware variant of `resolve_secret_placeholder` for the startup
+    /// reconcile: `Ok(None)` means the credential is genuinely absent (never
+    /// entered, no legacy copy) and the caller may degrade to an entry without
+    /// that wiring. `Err` means the credential store itself failed — including
+    /// a miss while the OS keyring is unreachable and reads are served by the
+    /// file fallback, which cannot be distinguished from a credential stored
+    /// in the unreachable keyring. The two cases must stay distinguishable:
+    /// degrading on a store failure would bake a transiently locked keyring
+    /// into a permanently unwired entry that later startups never repair
+    /// (healthy entries are skipped and the remote matcher ignores credential
+    /// fields), so the caller propagates `Err` and the next startup retries
+    /// the restore.
+    pub(super) fn try_resolve_secret_placeholder(
+        &self,
+        tool_id: &str,
+        target: &str,
+        key: &str,
+        user_config: &HashMap<String, String>,
+        legacy_env: &HashMap<String, String>,
+    ) -> Result<Option<String>, String> {
         let reference = mcp_secret_reference(tool_id, target, key);
         if let Some(value) = user_config.get(key).filter(|v| !v.trim().is_empty()) {
             self.credential_store
                 .set(&reference, value)
                 .map_err(|e| mcp_secret_store_error(tool_id, key, e))?;
             store_secret_value(mcp_secret_env_var(key), value.clone());
-            return Ok(mcp_secret_placeholder(key));
+            return Ok(Some(mcp_secret_placeholder(key)));
         }
 
         match self.credential_store.get(&reference) {
             Ok(Some(value)) if !value.trim().is_empty() => {
                 store_secret_value(mcp_secret_env_var(key), value);
-                Ok(mcp_secret_placeholder(key))
+                Ok(Some(mcp_secret_placeholder(key)))
             }
             Ok(_) => {
                 if let Some(value) = legacy_env.get(key).filter(|v| !v.trim().is_empty()) {
@@ -275,9 +306,26 @@ impl<S: CredentialStore> MarketplaceManager<S> {
                         .set(&reference, value)
                         .map_err(|e| mcp_secret_store_error(tool_id, key, e))?;
                     store_secret_value(mcp_secret_env_var(key), value.clone());
-                    Ok(mcp_secret_placeholder(key))
+                    Ok(Some(mcp_secret_placeholder(key)))
+                } else if self.credential_store.os_keyring_unreachable(&reference) {
+                    // The OS keyring is unreachable and reads are served by the
+                    // file fallback, so a miss here may be a credential sitting
+                    // in the keyring we cannot reach — it cannot be classified
+                    // as absent. Treat it as a store read failure: the startup
+                    // reconcile skips the tool and the next startup retries,
+                    // installs fail loud; nothing bakes a transiently
+                    // unavailable keyring into a permanently unwired entry.
+                    Err(mcp_secret_store_error(
+                        tool_id,
+                        key,
+                        CredentialError::new(format!(
+                            "the OS keyring is unreachable (file-backed fallback active), so it \
+                             cannot be determined whether credential {key} exists; the \
+                             operation retries on the next startup"
+                        )),
+                    ))
                 } else {
-                    Err(mcp_secret_missing_error(tool_id, key))
+                    Ok(None)
                 }
             }
             Err(e) => Err(mcp_secret_store_error(tool_id, key, e)),

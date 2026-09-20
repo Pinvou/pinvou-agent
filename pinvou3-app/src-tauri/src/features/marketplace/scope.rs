@@ -119,6 +119,16 @@ static UNPERSISTED_VERDICT: Mutex<Option<(PathBuf, DisabledBundlesFile)>> = Mute
 /// process self-heals.
 static PENDING_CORRUPT_RECOVERY: Mutex<Option<(PathBuf, DisabledBundlesFile)>> = Mutex::new(None);
 
+/// Round-19 MAJOR 4: set when a read finds the on-disk `disabled_bundles.json`
+/// UNREADABLE (chmod-000 file, AV lock — bytes exist but cannot be salvaged).
+/// The next persist must not blind-rename over those unrecoverable bytes:
+/// `try_save` first renames the original aside (a rename needs only directory
+/// write permission, so it always succeeds) and clears this memo. Without it,
+/// "unreadable original → any write" permanently destroys the user's explicit
+/// opt-outs with no quarantine copy — the R6-B1 violation the read path
+/// already refuses for itself.
+static UNREADABLE_ORIGINAL: Mutex<Option<PathBuf>> = Mutex::new(None);
+
 /// Clears the verdict memos. Test-only: with_temp_home reuses a pid-keyed temp
 /// directory, so the previous case's memo would be matched by path and bleed
 /// into the next one; production paths never need to clear (the file is the
@@ -279,6 +289,13 @@ fn load_disabled_bundles_file_locked() -> DisabledBundlesFile {
                     eprintln!(
                         "[marketplace] disabled_bundles.json exists but is unreadable ({error}; salvage read failed: {salvage_error}); skipping quarantine and overwrite this read, fail-closed applies in memory"
                     );
+                    // Round-19 MAJOR 4: mark the home so the next persist
+                    // preserves the unreadable bytes (rename-aside) instead of
+                    // destroying them.
+                    *UNREADABLE_ORIGINAL
+                        .lock()
+                        .unwrap_or_else(|poisoned| poisoned.into_inner()) =
+                        Some(paths::pinvou3_home());
                     return recovered;
                 }
             }
@@ -552,6 +569,40 @@ fn save_disabled_bundles_file(file: &DisabledBundlesFile) {
 /// "silently lost".
 fn try_save_disabled_bundles_file(file: &DisabledBundlesFile) -> Result<(), String> {
     let path = disabled_bundles_path();
+    let home = paths::pinvou3_home();
+    // Round-19 MAJOR 4: when a prior read found the on-disk file UNREADABLE,
+    // this persist must not blind-rename over bytes nobody could read. Rename
+    // the original aside first (needs only directory write permission, so it
+    // works even where the file is unreadable) — the bytes survive either way;
+    // a failed rename refuses the write instead of destroying them.
+    {
+        let degraded = UNREADABLE_ORIGINAL
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+            .as_ref()
+            .map(|p| p == &home)
+            .unwrap_or(false);
+        if degraded && path.exists() {
+            let stamp = std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .map(|d| d.as_nanos())
+                .unwrap_or(0);
+            let sidecar = path.with_file_name(format!("disabled_bundles.json.corrupt.{stamp}"));
+            std::fs::rename(&path, &sidecar).map_err(|error| {
+                format!(
+                    "refusing to overwrite unreadable disabled_bundles.json: rename-aside to {} failed: {error}",
+                    sidecar.display()
+                )
+            })?;
+            *UNREADABLE_ORIGINAL
+                .lock()
+                .unwrap_or_else(|poisoned| poisoned.into_inner()) = None;
+            eprintln!(
+                "[marketplace] unreadable disabled_bundles.json preserved as {} before overwrite",
+                sidecar.display()
+            );
+        }
+    }
     if let Some(parent) = path.parent() {
         std::fs::create_dir_all(parent).map_err(|error| {
             format!("create parent dir for disabled_bundles.json failed: {error}")
@@ -572,6 +623,11 @@ fn try_save_disabled_bundles_file(file: &DisabledBundlesFile) -> Result<(), Stri
             }
         }
     }
+    // Round-19 MAJOR 4: the unreadable-original marker has no payload tuple —
+    // a successful persist means the (renamed-aside) file is the truth again.
+    *UNREADABLE_ORIGINAL
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner()) = None;
     Ok(())
 }
 
@@ -644,6 +700,32 @@ fn resolve_scope_disabled_ids(file: &DisabledBundlesFile, scope: ConnectorScope)
                     ids.push(pkg);
                 }
             }
+            // Disk-derived skill arm (round-19 MAJOR 2): the record-driven
+            // enumeration above misses packs whose skills live on disk but
+            // whose ids never enter the records — MCP-free plugin.json packs
+            // (import skips install_upload), under-declared combinations,
+            // half-registered states. Materialization is directory-scan
+            // based, so derive the same owners from the same walk: every
+            // nested skill dir claims its physical owner pack
+            // (`skill_gating_owner`), keeping the expansion and
+            // materialization on one truth.
+            if let Ok(rd) = std::fs::read_dir(paths::bundles_root()) {
+                for entry in rd.flatten() {
+                    let Ok(skills_dir) = std::fs::read_dir(entry.path().join("skills")) else {
+                        continue;
+                    };
+                    for skill in skills_dir.flatten() {
+                        let name = skill.file_name().to_string_lossy().into_owned();
+                        if name.is_empty() {
+                            continue;
+                        }
+                        let pkg = crate::features::marketplace::bundle::skill_gating_owner(&name);
+                        if !ids.iter().any(|id| id == &pkg) {
+                            ids.push(pkg);
+                        }
+                    }
+                }
+            }
             ids
         }
     }
@@ -651,9 +733,9 @@ fn resolve_scope_disabled_ids(file: &DisabledBundlesFile, scope: ConnectorScope)
 
 /// 写某 scope 被禁用的包 id 列表（写入即标记该 scope 已初始化）。入参统一归一为包
 /// id（剥 `skill:` 前缀 + companion 映射），防御历史版本误写入的带前缀条目。
-/// 写失败降级为日志：composer 整集写的调用方可见失败形态是 #515 登记项，
-/// 本 PR 不扩大（round-17 合并对 main #563 上抛版次的裁决）。
-pub fn save_disabled_bundles_for(scope: ConnectorScope, ids: &[String]) {
+/// 写失败原样上抛（round-19 MAJOR 1：main #563 的 fail-loud 契约是既成用户
+/// 可见语义，本 PR 不降级——composer 调用方的重试/回滚 UX 由 #515 重work 落实）。
+pub fn save_disabled_bundles_for(scope: ConnectorScope, ids: &[String]) -> Result<(), String> {
     let _guard = DISABLED_BUNDLES_FILE_LOCK
         .lock()
         .unwrap_or_else(|poisoned| poisoned.into_inner());
@@ -720,20 +802,15 @@ pub fn save_disabled_bundles_for(scope: ConnectorScope, ids: &[String]) {
     } else {
         file.default_off_scopes.insert(key.clone(), retained);
     }
-    // The persist here remains fail-silent, deliberately (review R14 should-fix
-    // registration): the composer whole-list replace is the #515 rework target
-    // (cross-process RMW), and layering a second error surface onto it before
-    // that rework was declined in rounds 12/13. The honest direction notes:
-    // (a) a lost switch-OFF write leaves the pack live while the UI renders it
-    // off — fail-open, the same direction the enable/install-sync paths refuse
-    // to swallow; (b) a stale composer snapshot can silently resurrect a
-    // just-installed default-off pack (round-14 M1): the install commits
-    // stored+marker while the menu is open, the menu never refreshes (install
-    // emits no tools_changed), and its whole-list write drops the entry and
-    // marker — zero-consent next session. Closing shape: per-id toggles routed
-    // through the single-critical-section RMW, or a frontend-snapshot
-    // merge-on-write. Do not cite this call as a precedent for new writers.
-    save_disabled_bundles_file(&file);
+    // The persist is fail-loud (round-19 MAJOR 1): main's #563 made this
+    // writer's failure a user-visible command error (the frontend rolls the
+    // toggle back and alerts), and with #563 now in this PR's merge base,
+    // keeping the old fire-and-forget tail would silently downgrade a shipped
+    // contract. The #515 rework still owns the deeper composer concerns — the
+    // whole-list replace's cross-process RMW and the stale-snapshot
+    // resurrection (round-14 M1) — but a lost write now surfaces instead of
+    // rendering success over unpersisted state.
+    try_save_disabled_bundles_file(&file)
 }
 
 /// 读某 scope 被「不可见」（可见性过滤）的包 id 列表。缺省空 = 全可见。
@@ -751,8 +828,8 @@ pub fn load_hidden_bundles_for(scope: ConnectorScope) -> Vec<String> {
 }
 
 /// 写某 scope 被「不可见」的包 id 列表（不参与 DenyAll 默认，显式写入才隐藏）。
-/// 写失败降级为日志（与 save_disabled_bundles_for 同一 #515 登记口径）。
-pub fn save_hidden_bundles_for(scope: ConnectorScope, ids: &[String]) {
+/// 写失败原样上抛（round-19 MAJOR 1，同 save_disabled_bundles_for）。
+pub fn save_hidden_bundles_for(scope: ConnectorScope, ids: &[String]) -> Result<(), String> {
     let _guard = DISABLED_BUNDLES_FILE_LOCK
         .lock()
         .unwrap_or_else(|poisoned| poisoned.into_inner());
@@ -760,7 +837,7 @@ pub fn save_hidden_bundles_for(scope: ConnectorScope, ids: &[String]) {
     let mut file = load_disabled_bundles_file_locked();
     file.hidden_scopes
         .insert(scope.as_str().to_string(), normalized);
-    save_disabled_bundles_file(&file);
+    try_save_disabled_bundles_file(&file)
 }
 
 /// 该 scope 对底座「不可用」的包 id 并集 = 开关关（disabled）+ 不可见（hidden）。
@@ -780,8 +857,10 @@ pub fn load_disabled_bundles() -> Vec<String> {
     load_disabled_bundles_for(ConnectorScope::Plain)
 }
 
-/// 写全局（plain）被禁用的包 id 列表。兼容既有调用方；启动期 best-effort，
+/// 写全局（plain）被禁用的包 id 列表。测试专用（生产写一律走
+/// [`save_disabled_bundles_for`] 显式给 scope）。启动期 best-effort，
 /// 写失败降级为日志（调用方无法处理治理写失败）。
+#[cfg(test)]
 pub fn save_disabled_bundles(ids: &[String]) {
     save_disabled_bundles_for(ConnectorScope::Plain, ids);
 }
@@ -917,7 +996,8 @@ pub fn enable_packages_in_scope(
     scope: ConnectorScope,
     raw_ids: &[String],
 ) -> Result<EnablePackagesOutcome, String> {
-    let ids: Vec<String> = raw_ids.iter().map(|id| to_package_id(id)).collect();
+    let mut ids: Vec<String> = raw_ids.iter().map(|id| to_package_id(id)).collect();
+    ids.dedup();
     if ids.is_empty() {
         return Ok(EnablePackagesOutcome::default());
     }
@@ -1148,40 +1228,108 @@ pub fn set_project_skills_enabled(enabled: bool) {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::platform::test_support::with_temp_home;
 
-    /// 把 PINVOU3_HOME 指到干净临时目录跑闭包，借 ENV_LOCK 与其它 mutate 测试串行。
-    fn with_temp_home<F: FnOnce()>(f: F) {
-        let _g = crate::platform::paths::tests::ENV_LOCK
-            .lock()
-            .unwrap_or_else(|p| p.into_inner());
-        let dir = std::env::temp_dir().join(format!("pinvou3-scope-{}", std::process::id()));
-        let _ = std::fs::remove_dir_all(&dir);
-        std::fs::create_dir_all(&dir).unwrap();
-        let prev = std::env::var("PINVOU3_HOME").ok();
-        // SAFETY: holding platform::paths::tests::ENV_LOCK; env writes serialized in-process.
-        unsafe { std::env::set_var("PINVOU3_HOME", &dir) };
-        // The write-failure memos are keyed by home path and this harness
-        // reuses a pid-keyed dir: clear them so a prior case's memo cannot
-        // bleed into the next one (round-14 minor #10; mod.rs's harness does
-        // the same).
-        clear_unpersisted_verdict_for_test();
-        f();
-        match prev {
-            // SAFETY: holding platform::paths::tests::ENV_LOCK; env writes serialized in-process.
-            Some(v) => unsafe { std::env::set_var("PINVOU3_HOME", v) },
-            // SAFETY: holding platform::paths::tests::ENV_LOCK; env writes serialized in-process.
-            None => unsafe { std::env::remove_var("PINVOU3_HOME") },
-        }
-        let _ = std::fs::remove_dir_all(&dir);
+    /// Round-19 MAJOR 2 regression: an MCP-free skills-only plugin pack whose
+    /// skill ids differ from the pack id is invisible to the record-driven
+    /// enumeration (import skips install_upload; list_skills' Upload leg skips
+    /// records whose skills/<pack-id>/ dir is absent) — yet directory-scan
+    /// materialization sees its skills. The DenyAll expansion must therefore
+    /// derive those owners from the same disk walk, so an uninitialized scope
+    /// gates the pack without any opt-in.
+    #[test]
+    fn mcp_free_plugin_pack_gates_via_disk_derived_expansion() {
+        with_temp_home("pinvou3-scope", || {
+            let pkg = paths::bundles_root().join("skills-only-pack");
+            for name in ["skill-a", "skill-b"] {
+                std::fs::create_dir_all(pkg.join("skills").join(name)).unwrap();
+                std::fs::write(
+                    pkg.join("skills").join(name).join("SKILL.md"),
+                    format!("---\nname: {name}\n---\n# {name}\n"),
+                )
+                .unwrap();
+            }
+            // No records anywhere: the pack exists only as a directory tree.
+            let unavailable = load_disabled_bundles_for(ConnectorScope::Plain);
+            assert!(
+                unavailable.iter().any(|id| id == "skills-only-pack"),
+                "the disk-derived expansion must gate the pack id: {unavailable:?}"
+            );
+        });
+    }
+
+    /// Round-19 MAJOR 4: a persist over an UNREADABLE on-disk store must
+    /// preserve the original bytes (rename-aside) instead of blind-renaming
+    /// over them — "unreadable but recoverable" must never become
+    /// "permanently lost" (R6-B1). The write itself still succeeds on a
+    /// writable home, and the store loads cleanly afterwards.
+    #[cfg(unix)]
+    #[test]
+    fn save_over_unreadable_original_preserves_bytes() {
+        use std::os::unix::fs::PermissionsExt;
+        with_temp_home("pinvou3-scope", || {
+            let path = disabled_bundles_path();
+            let original = b"unrecoverable-user-optouts{{{".to_vec();
+            std::fs::write(&path, &original).unwrap();
+            std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o000)).unwrap();
+            // Root probe (mode bits are no-ops for root): if the file is still
+            // readable, the unreadable-read branch never runs — skip loudly.
+            if std::fs::read(&path).is_ok() {
+                std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o644)).unwrap();
+                eprintln!(
+                    "ROOT-SKIP[save_over_unreadable_original_preserves_bytes]: running as root - the unreadable-file fixture stays readable; NOT exercised"
+                );
+                return;
+            }
+
+            let result = save_disabled_bundles_for(ConnectorScope::Plain, &[]);
+            assert!(
+                result.is_ok(),
+                "a writable home lets the consent save succeed: {result:?}"
+            );
+
+            // The unreadable original survived the overwrite, renamed aside.
+            let parent = path.parent().unwrap();
+            let sidecars: Vec<std::path::PathBuf> = std::fs::read_dir(parent)
+                .unwrap()
+                .flatten()
+                .map(|e| e.path())
+                .filter(|p| {
+                    p.file_name()
+                        .and_then(|n| n.to_str())
+                        .map(|n| n.contains(".corrupt."))
+                        .unwrap_or(false)
+                })
+                .collect();
+            assert_eq!(
+                sidecars.len(),
+                1,
+                "exactly one preserved copy: {sidecars:?}"
+            );
+            // The rename preserves the 0o000 mode: grant read access to prove
+            // the original bytes survived (only the test can do this — the
+            // production path never needs to read them).
+            std::fs::set_permissions(&sidecars[0], std::fs::Permissions::from_mode(0o644)).unwrap();
+            assert_eq!(
+                std::fs::read(&sidecars[0]).unwrap(),
+                original,
+                "the preserved copy must carry the original bytes"
+            );
+
+            // The store is the new write's state again and loads cleanly.
+            let file = load_disabled_bundles_file();
+            assert!(
+                file.initialized.contains("plain"),
+                "the opt-in write landed: {file:?}"
+            );
+        });
     }
 
     #[test]
     fn bundles_roundtrip_per_scope() {
-        with_temp_home(|| {
-            // After all modes went DenyAll, an uninitialized scope on a fresh
-            // home defaults fully off (including built-in CLI packs); this
-            // test focuses on the per-scope read/write roundtrip, so
-            // explicitly initialize plain as an empty set first.
+        with_temp_home("pinvou3-scope", || {
+            // DenyAll: an uninitialized plain scope reads as the on-the-fly
+            // expansion, so pin an explicitly initialized empty baseline first.
             save_disabled_bundles_for(ConnectorScope::Plain, &[]);
             assert!(load_disabled_bundles_for(ConnectorScope::Plain).is_empty());
             save_disabled_bundles_for(ConnectorScope::Plain, &["weather".to_string()]);
@@ -1201,7 +1349,7 @@ mod tests {
     /// pollute the disabled set (the two sets stay orthogonal).
     #[test]
     fn unavailable_is_union_deduped() {
-        with_temp_home(|| {
+        with_temp_home("pinvou3-scope", || {
             // Hidden starts empty; disabled does not — after the DenyAll
             // convergence an uninitialized plain scope falls back to the
             // on-the-fly expansion, so pin an explicitly initialized empty
@@ -1244,7 +1392,7 @@ mod tests {
     /// untouched install-default pack into an explicit opt-out).
     #[test]
     fn default_off_scopes_schema_backward_compat_and_roundtrip() {
-        with_temp_home(|| {
+        with_temp_home("pinvou3-scope", || {
             // Old-format file: no default_off_scopes key at all.
             let path = disabled_bundles_path();
             std::fs::write(
@@ -1334,7 +1482,7 @@ mod tests {
     /// behind would let the next welcome/scene opt-in lift that user verdict.
     #[test]
     fn remove_bundle_clears_the_install_default_marker() {
-        with_temp_home(|| {
+        with_temp_home("pinvou3-scope", || {
             let path = disabled_bundles_path();
             std::fs::write(
                 &path,
@@ -1361,7 +1509,7 @@ mod tests {
     /// `save_disabled_bundles_for`).
     #[test]
     fn connector_switch_off_clears_the_install_default_marker() {
-        with_temp_home(|| {
+        with_temp_home("pinvou3-scope", || {
             let path = disabled_bundles_path();
             std::fs::write(
                 &path,
@@ -1403,9 +1551,9 @@ mod tests {
     /// 卸载/断开后清理残留：同时清 disabled 与 hidden 两套集合。
     #[test]
     fn remove_bundle_clears_both_sets() {
-        with_temp_home(|| {
-            save_disabled_bundles_for(ConnectorScope::Plain, &["weather".to_string()]);
-            save_hidden_bundles_for(ConnectorScope::Plain, &["weather".to_string()]);
+        with_temp_home("pinvou3-scope", || {
+            save_disabled_bundles_for(ConnectorScope::Plain, &["weather".to_string()]).unwrap();
+            save_hidden_bundles_for(ConnectorScope::Plain, &["weather".to_string()]).unwrap();
             remove_bundle_from_disabled_scopes("weather");
             assert!(load_disabled_bundles_for(ConnectorScope::Plain).is_empty());
             assert!(load_hidden_bundles_for(ConnectorScope::Plain).is_empty());
@@ -1415,7 +1563,7 @@ mod tests {
     /// 保存路径统一归一为包 id：剥 `skill:` 前缀 + companion 映射到所属包。
     #[test]
     fn save_normalizes_to_package_id() {
-        with_temp_home(|| {
+        with_temp_home("pinvou3-scope", || {
             // gongwen 未装：companion 技能保留独立纯技能包形态 → 归一为自身 id
             // （与 list_bundles 的 V5 认领展示一致，开关不回弹）。
             save_disabled_bundles_for(
@@ -1456,9 +1604,11 @@ mod tests {
     /// 跟随技能本体，否则用户的禁用/隐藏态在认领翻转后静默失效。
     #[test]
     fn load_normalizes_stale_skill_id_after_claim_flip() {
-        with_temp_home(|| {
-            save_disabled_bundles_for(ConnectorScope::Plain, &["government-writing".to_string()]);
-            save_hidden_bundles_for(ConnectorScope::Plain, &["government-writing".to_string()]);
+        with_temp_home("pinvou3-scope", || {
+            save_disabled_bundles_for(ConnectorScope::Plain, &["government-writing".to_string()])
+                .unwrap();
+            save_hidden_bundles_for(ConnectorScope::Plain, &["government-writing".to_string()])
+                .unwrap();
             assert_eq!(
                 load_disabled_bundles_for(ConnectorScope::Plain),
                 vec!["government-writing".to_string()]
@@ -1502,7 +1652,7 @@ mod tests {
     /// 项目级 skills 开关往返。
     #[test]
     fn project_skills_roundtrip() {
-        with_temp_home(|| {
+        with_temp_home("pinvou3-scope", || {
             assert!(!project_skills_enabled(), "项目技能默认关");
             set_project_skills_enabled(true);
             assert!(project_skills_enabled());
@@ -1515,7 +1665,7 @@ mod tests {
     /// 串行：持锁期间并发 load（磁盘为旧连接器文件、必然触发迁移落盘）不得先行落盘。
     #[test]
     fn read_path_migration_serializes_with_file_lock() {
-        with_temp_home(|| {
+        with_temp_home("pinvou3-scope", || {
             let legacy = r#"["weather"]"#;
             let conn = paths::pinvou3_home().join("disabled_connectors.json");
             std::fs::create_dir_all(conn.parent().unwrap()).unwrap();
@@ -1553,7 +1703,7 @@ mod tests {
     /// the user never made.
     #[test]
     fn composer_first_write_on_fresh_install_seeds_default_markers() {
-        with_temp_home(|| {
+        with_temp_home("pinvou3-scope", || {
             // Fresh install: plain uninitialized, the effective disabled set
             // is the on-the-fly DenyAll expansion (covers the builtin CLI
             // packs).
@@ -1618,7 +1768,7 @@ mod tests {
     /// the snapshot, or an unknown id).
     #[test]
     fn enable_reports_ids_absent_from_the_expansion() {
-        with_temp_home(|| {
+        with_temp_home("pinvou3-scope", || {
             // Pure miss: no opt-in materialized, nothing persisted.
             let outcome =
                 enable_packages_in_scope(ConnectorScope::Plain, &["not-a-pack".to_string()])
@@ -1667,7 +1817,7 @@ mod tests {
     fn install_sync_persist_failure_is_reported_and_retryable() {
         use std::os::unix::fs::PermissionsExt;
 
-        with_temp_home(|| {
+        with_temp_home("pinvou3-scope", || {
             // Upgraded cohort: plain initialized with an empty stored list.
             let path = disabled_bundles_path();
             std::fs::write(
@@ -1730,7 +1880,7 @@ mod tests {
     fn freeze_persist_failure_survives_first_boot_trace_within_process() {
         use std::os::unix::fs::PermissionsExt;
 
-        with_temp_home(|| {
+        with_temp_home("pinvou3-scope", || {
             let home = crate::platform::paths::pinvou3_home();
             std::fs::set_permissions(&home, std::fs::Permissions::from_mode(0o555)).unwrap();
             let probe = home.join(".root-probe");

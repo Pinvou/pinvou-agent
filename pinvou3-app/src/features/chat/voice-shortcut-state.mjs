@@ -125,10 +125,8 @@ function isVoiceShortcutIntroOpen() {
 }
 
 export {
-  isAltSpaceKey,
   isPlainAltKey,
   isVoiceShortcutIntroOpen,
-  normalizeVoiceShortcutMode,
   setVoiceShortcutIntroOpen,
   shouldIgnoreVoiceShortcutEvent,
   voiceShortcutActionForKeyDown,

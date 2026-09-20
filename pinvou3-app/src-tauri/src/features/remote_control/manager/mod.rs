@@ -38,7 +38,7 @@ use persistence::{
     normalize_relay_address, pairing_info, pending_revocation_ack, pending_revocation_key,
     persist_config, persist_rpc_ledger, process_lock_path, public_url, queue_pending_revocation,
     relay_settings_path, remote_public_base_url, remote_relay_ws_url, remove_config,
-    remove_private_file, remove_rpc_ledger, validate_config,
+    remove_rpc_ledger, validate_config,
 };
 
 // RPC admission, response shaping, scope validation, and the stream/event
@@ -910,16 +910,6 @@ impl RemoteControlManager {
         Ok(self.relay_settings())
     }
 
-    /// 恢复内置默认 Relay。语义与 `set_relay_address` 对称。
-    pub fn reset_relay_address(&self) -> Result<RelaySettingsInfo, String> {
-        remove_private_file(&relay_settings_path())?;
-        let has_endpoint = self.inner.lock().endpoint.is_some();
-        if has_endpoint || load_config()?.is_some() {
-            self.refresh()?;
-        }
-        Ok(self.relay_settings())
-    }
-
     pub fn stop_current(&self) -> Result<(), String> {
         let _lifecycle = self.lifecycle.lock();
         self.ensure_process_ownership()?;
@@ -1282,13 +1272,12 @@ impl RemoteControlManager {
     /// by a chat turn is marked for deletion and cleaned when that reservation
     /// finishes, regardless of whether the turn succeeds or fails.
     pub fn discard_web_attachment(&self, handle: &str) -> Result<(), String> {
-        if handle.len() < 12
-            || handle.len() > 128
-            || !handle.starts_with("attachment_")
-            || !handle
-                .bytes()
-                .all(|byte| byte.is_ascii_alphanumeric() || matches!(byte, b'-' | b'_'))
-        {
+        if !crate::features::files::attachment_upload::validate_opaque_token(
+            handle,
+            12,
+            128,
+            Some("attachment_"),
+        ) {
             return Err("远程控制附件句柄无效".into());
         }
         request_web_attachment_discard(&mut self.inner.lock(), handle);
@@ -2024,23 +2013,13 @@ impl RemoteControlManager {
         if !self.policy.events.contains(event) {
             return;
         }
-        let changed = {
-            let mut inner = self.inner.lock();
-            if subscribe {
-                inner.subscriptions.insert(event.to_string())
-            } else {
-                inner.subscriptions.remove(event)
-            }
-        };
-        if changed {
-            let bridge_event = if subscribe {
-                "web_access:event_subscribe"
-            } else {
-                "web_access:event_unsubscribe"
-            };
-            let _ = self
-                .app
-                .emit_to("main", bridge_event, json!({ "event": event }));
+        // Subscribe/unsubscribe bookkeeping only; no desktop-side notification
+        // is needed for unsubscribe.
+        let mut inner = self.inner.lock();
+        if subscribe {
+            inner.subscriptions.insert(event.to_string());
+        } else {
+            inner.subscriptions.remove(event);
         }
     }
 
@@ -2621,8 +2600,9 @@ impl RemoteControlManager {
         }
         // 远程端正式支持代码会话列表/授权/UI 之前，先过滤原生代码会话事件：事件
         // payload 携带的会话 id（`session_id` 用于 chat:* / artifact:disk，
-        // `id` 用于 session:*，`sessionId` 用于 scheduled_task:run_updated）指向
-        // 品悟原生代码会话（仅原生，不含 ACP 会话）时不转发。远程 WebUI 不会收到
+        // `id` 用于 session:*）指向品悟原生代码会话（仅原生，不含 ACP 会话）时
+        // 不转发（scheduled_task:run_updated 的 payload 现为空，不会命中本过滤）。
+        // 远程 WebUI 不会收到
         // 它无法展示/授权的代码会话消息流；predicate 只对真实代码会话 id 返回
         // true，普通会话不受影响。
         if should_filter_code_session_event(
@@ -3303,7 +3283,6 @@ mod tests {
         for command in [
             "chat",
             "ingest_file",
-            "save_session_messages",
             "delete_model",
             "save_model",
             "set_active_model",
@@ -3659,13 +3638,7 @@ mod tests {
             "cancel_generation",
             "compact_now",
             "edit_last_turn",
-            "get_session_pinvou_scene_events",
-            "get_session_steered_messages",
             "get_session_timeline",
-            "get_codex_workspace_changes",
-            "get_codex_workspace_diff",
-            "save_session_pinvou_scene_events",
-            "save_session_steered_messages",
             "web_access_chat",
             "web_access_cancel_codex_acp",
             "web_access_get_codex_workspace_changes",

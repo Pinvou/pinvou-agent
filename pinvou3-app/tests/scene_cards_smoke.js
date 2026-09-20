@@ -95,9 +95,6 @@ function injectSource() {
         case 'chat':
           window.__PINVOU_TEST_CHAT_CALLS.push(args || {});
           return Promise.resolve(null);
-        case 'save_session_messages':
-          if (args && args.id && CONV[args.id]) CONV[args.id].messages = args.messages || [];
-          return Promise.resolve(null);
         case 'get_super_permission_status': return Promise.resolve(false);
         case 'list_personas': return Promise.resolve([]);
         case 'get_backend_status': return Promise.resolve({online:true,ok:true,status:'online'});

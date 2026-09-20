@@ -36,11 +36,5 @@
       "url": "https://connect.zhihuiya.com/2b0355/logic-mcp"
     }
   ],
-  "routing_rules": [
-    "专利/论文/文献/公开号/申请人/IPC/CPC/专利布局/技术路线/竞品专利 → `mcp_patsnap-search_*`，不要凭模型记忆编造检索结论"
-  ],
-  "tool_table_entries": [
-    "| 专利与文献检索 | `mcp_patsnap-search_*` (智慧芽: 专利/论文融合检索与详情获取) |"
-  ],
   "pip_dependencies": []
 }

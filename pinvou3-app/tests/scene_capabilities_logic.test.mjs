@@ -5,6 +5,12 @@ import path from 'node:path';
 import vm from 'node:vm';
 import { fileURLToPath } from 'node:url';
 import { companionPackageMap } from '../src/shared/companion-packages.js';
+import {
+  DATA_VISUALIZATION_SCENE_KEY,
+  DOCUMENT_WRITING_SCENE_KEY,
+  PPT_DESIGN_SCENE_KEY,
+  pinvouSceneTag,
+} from '../src/features/chat/scene-registry.js';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 
@@ -14,7 +20,13 @@ const code = fs.readFileSync(logicPath, 'utf8')
   .replace(/\bexport\s+\{[^}]+\};?/g, '')
   .replace(/\bexport\s+/g, '');
 
-const ctx = { companionPackageMap };
+const ctx = {
+  companionPackageMap,
+  DATA_VISUALIZATION_SCENE_KEY,
+  DOCUMENT_WRITING_SCENE_KEY,
+  PPT_DESIGN_SCENE_KEY,
+  pinvouSceneTag,
+};
 vm.createContext(ctx);
 vm.runInContext(`${code}
 this.canPrepareSceneCapabilities = canPrepareSceneCapabilities;

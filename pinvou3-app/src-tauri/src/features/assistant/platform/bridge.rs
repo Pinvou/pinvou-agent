@@ -40,7 +40,6 @@ use crate::features::assistant::expert_roster::ExpertRosterSnapshot;
 use crate::features::assistant::image_capability::{
     EffectiveImageCapability, effective_image_capability,
 };
-use crate::features::assistant::runtime_model::RuntimeModelCredential;
 use crate::features::assistant::session_policy::SessionPolicy;
 use crate::platform::credential_store::{CredentialStore, SystemCredentialStore};
 
@@ -187,9 +186,6 @@ pub struct Pinvou3Bridge {
     /// 本 engine 绑定的 session 锁定模型(per-session 不同模型)。None = 用 prefs 全局
     /// active。EnginePool spawn 时按该 session 的 model_id 注入。
     pub session_model: Option<SavedModel>,
-    /// RuntimeModelProvider 为本次引擎准备的内存凭据。Some 时是最终值，不能再被
-    /// 环境变量或本地凭据库覆盖；Debug 由包装类型强制脱敏。
-    pub runtime_model_credential: Option<RuntimeModelCredential>,
     /// `max_model_len` (context window) probed from the local vLLM
     /// `/v1/models` endpoint. Injected at
     /// EnginePool spawn by `resolve_served_model` (the matched entry's own
@@ -237,7 +233,6 @@ impl std::fmt::Debug for Pinvou3Bridge {
             .field("bundle", &self.bundle)
             .field("workspace", &self.workspace)
             .field("session_model", &self.session_model)
-            .field("runtime_model_credential", &self.runtime_model_credential)
             .field("probed_context_tokens", &self.probed_context_tokens)
             .field("probed_output_tokens", &self.probed_output_tokens)
             .field("probed_local_kind", &self.probed_local_kind)
@@ -361,7 +356,6 @@ impl Pinvou3Bridge {
             bundle,
             workspace: paths::user_home_dir(),
             session_model: None,
-            runtime_model_credential: None,
             probed_context_tokens: None,
             probed_output_tokens: None,
             probed_local_kind: None,
@@ -1119,9 +1113,6 @@ impl Pinvou3Bridge {
 
     /// 当前 active api_key（传给底座 `DtConfig.api_key`）。
     pub fn api_key(&self) -> String {
-        if let Some(credential) = &self.runtime_model_credential {
-            return credential.expose_api_key().to_string();
-        }
         if let Ok(v) = std::env::var("DEEPSEEK_API_KEY") {
             if !v.trim().is_empty() {
                 return v;
@@ -2752,6 +2743,30 @@ fn interpreters_for_script(path: &std::path::Path) -> &'static [&'static str] {
 }
 
 #[cfg(test)]
+impl Pinvou3Bridge {
+    /// 测试夹具（单一实现，供 bridge.rs / engine_pool.rs 的测试共用）：全
+    /// 默认字段，仅 `session_model` 由调用方按用例语义给出（EnginePool 的
+    /// wiring 用例注入 per-session 锁定模型，其余用例传 `None` 走 prefs 全局
+    /// active）。bundle 按 `Pinvou3Bundle::paths()` 解析（测试如需 env 隔离
+    /// 自行持 ENV_LOCK）。
+    pub(crate) fn test_fixture(session_model: Option<SavedModel>) -> Self {
+        Pinvou3Bridge {
+            prefs: UserPrefs::default(),
+            bundle: Pinvou3Bundle::paths(),
+            workspace: std::env::temp_dir(),
+            session_model,
+            probed_context_tokens: None,
+            probed_output_tokens: None,
+            probed_local_kind: None,
+            execution_root_resolver: None,
+            code_session_predicate: None,
+            external_acp_session_predicate: None,
+            image_analyze_always: false,
+        }
+    }
+}
+
+#[cfg(test)]
 // Tests borrow platform::paths::tests::ENV_LOCK (std Mutex) to serialize global env access;
 // cargo test runs test threads in parallel, but env-writing tests are mutually serialized, and
 // the lock is held across await only inside a current_thread runtime with no reentrant path,
@@ -2809,20 +2824,7 @@ mod tests {
     }
 
     fn fixture_bridge() -> Pinvou3Bridge {
-        Pinvou3Bridge {
-            prefs: UserPrefs::default(),
-            bundle: Pinvou3Bundle::paths(),
-            workspace: std::env::temp_dir(),
-            session_model: None,
-            runtime_model_credential: None,
-            probed_context_tokens: None,
-            probed_output_tokens: None,
-            probed_local_kind: None,
-            execution_root_resolver: None,
-            code_session_predicate: None,
-            external_acp_session_predicate: None,
-            image_analyze_always: false,
-        }
+        Pinvou3Bridge::test_fixture(None)
     }
 
     #[test]
@@ -3345,9 +3347,10 @@ mod tests {
                 .contains("## 市场 MCP 应用发现"),
             "inventory interpretation belongs in the static session prompt"
         );
-        use crate::features::marketplace::{ConnectorScope, save_disabled_connectors_for};
-        save_disabled_connectors_for(ConnectorScope::Plain, &["weather".into(), "qcc".into()]);
-        save_disabled_connectors_for(ConnectorScope::Code, &[]);
+        use crate::features::marketplace::{ConnectorScope, save_disabled_bundles_for};
+        save_disabled_bundles_for(ConnectorScope::Plain, &["weather".into(), "qcc".into()])
+            .unwrap();
+        save_disabled_bundles_for(ConnectorScope::Code, &[]).unwrap();
 
         let inventory = |sid: &str| -> serde_json::Value {
             let Op::SendMessage { content, .. } = bridge
@@ -3402,7 +3405,7 @@ mod tests {
             crate::features::marketplace::unavailable_tool_names_for(ConnectorScope::Plain);
         assert!(denied.contains(&"mcp_weather_get_weather".to_string()));
         assert!(denied.contains(&"mcp_qcc-company_*".to_string()));
-        save_disabled_connectors_for(ConnectorScope::Plain, &[]);
+        save_disabled_bundles_for(ConnectorScope::Plain, &[]).unwrap();
         assert!(
             inventory("plain")
                 .as_array()
@@ -3531,10 +3534,11 @@ mod tests {
 
         use crate::features::marketplace::ConnectorScope;
         // plain 禁 weather(模拟普通会话里用户关了天气)。
-        crate::features::marketplace::save_disabled_connectors_for(
+        crate::features::marketplace::save_disabled_bundles_for(
             ConnectorScope::Plain,
             &["weather".to_string()],
-        );
+        )
+        .unwrap();
         // code scope 未初始化 → 默认全禁已装连接器。
         let tools = vec!["kb_search".to_string()];
         let shaped = bridge.shape_disallowed_tools("sess-code", tools.clone());
@@ -3545,10 +3549,11 @@ mod tests {
         assert!(shaped.contains(&"load_skill".to_string()));
 
         // code 显式只禁 pptx → weather 恢复,pptx 仍禁;plain 的 weather 禁用不再影响代码会话。
-        crate::features::marketplace::save_disabled_connectors_for(
+        crate::features::marketplace::save_disabled_bundles_for(
             ConnectorScope::Code,
             &["pptx".to_string()],
-        );
+        )
+        .unwrap();
         let shaped = bridge.shape_disallowed_tools("sess-code", tools.clone());
         assert!(!shaped.contains(&weather[0]));
         assert!(shaped.contains(&pptx[0]));
@@ -3624,10 +3629,11 @@ mod tests {
         );
 
         // plain explicitly disables only feishu → just the lark-cli deny remains.
-        crate::features::marketplace::save_disabled_connectors_for(
+        crate::features::marketplace::save_disabled_bundles_for(
             ConnectorScope::Plain,
             &["feishu".to_string()],
-        );
+        )
+        .unwrap();
         let rs = bridge.scope_deny_ruleset_with("sess-plain", Vec::new());
         assert_eq!(
             denied_bins(&rs),
@@ -3650,10 +3656,11 @@ mod tests {
         );
 
         // code 显式只禁 dingtalk → 仅剩 dws 被硬拒（含 .exe/.cmd 变体）。
-        crate::features::marketplace::save_disabled_connectors_for(
+        crate::features::marketplace::save_disabled_bundles_for(
             ConnectorScope::Code,
             &["dingtalk".to_string()],
-        );
+        )
+        .unwrap();
         let rs = bridge.scope_deny_ruleset_with("sess-code", Vec::new());
         let mut cmds: Vec<&str> = rs
             .ask_rules
@@ -3709,10 +3716,11 @@ mod tests {
         bridge.set_code_session_predicate(std::sync::Arc::new(|_| false));
 
         use crate::features::marketplace::ConnectorScope;
-        crate::features::marketplace::save_disabled_connectors_for(
+        crate::features::marketplace::save_disabled_bundles_for(
             ConnectorScope::Plain,
             &["feishu".to_string()],
-        );
+        )
+        .unwrap();
         let rs = bridge.scope_deny_ruleset_with("sess-plain", Vec::new());
 
         let engine = codewhale_execpolicy::ExecPolicyEngine::with_rulesets(vec![rs]);
@@ -3863,10 +3871,11 @@ mod tests {
         // fallback depends on when the process env is read, which is
         // non-deterministic under the parallel suite; the fallback semantics
         // themselves are covered by the marketplace plain_deny_all_* tests).
-        crate::features::marketplace::skill_scope::save_disabled_skills_for(
+        crate::features::marketplace::scope::save_disabled_bundles_for(
             ConnectorScope::Plain,
             &["my-skill".to_string()],
-        );
+        )
+        .unwrap();
         let rs = bridge.scope_deny_ruleset("sess-plain");
         assert!(
             rs.ask_rules
@@ -3892,6 +3901,14 @@ mod tests {
             rs.denied_prefixes.iter().any(|p| p.starts_with("mkfs")),
             "safety-net rules should be promoted into denied_prefixes"
         );
+
+        // plain disables my-skill → contains a deny rule pointing at the script
+        crate::features::marketplace::scope::save_disabled_bundles_for(
+            ConnectorScope::Plain,
+            &["my-skill".to_string()],
+        )
+        .unwrap();
+        let rs = bridge.scope_deny_ruleset("sess-plain");
         assert!(
             rs.ask_rules.iter().any(|r| r
                 .command
@@ -3904,10 +3921,8 @@ mod tests {
 
         // Re-enabled → script rule disappears (same computation as the hot
         // refresh; safety-net rules remain)
-        crate::features::marketplace::skill_scope::save_disabled_skills_for(
-            ConnectorScope::Plain,
-            &[],
-        );
+        crate::features::marketplace::scope::save_disabled_bundles_for(ConnectorScope::Plain, &[])
+            .unwrap();
         assert!(
             bridge
                 .scope_deny_ruleset("sess-plain")
@@ -6941,39 +6956,6 @@ mod tests {
         assert_eq!(bridge.provider(), "env-provider");
         assert_eq!(bridge.base_url(), "http://env:8000/v1");
         assert_eq!(bridge.api_key(), "env-key");
-    }
-
-    #[test]
-    fn runtime_credential_is_final_and_reaches_model_client_config() {
-        let (_lock, _env) = locked_env(&[
-            "DEEPSEEK_MODEL",
-            "DEEPSEEK_PROVIDER",
-            "DEEPSEEK_BASE_URL",
-            "DEEPSEEK_API_KEY",
-        ]);
-        let mut bridge = fixture_bridge();
-        set_active_model(
-            &mut bridge,
-            ModelPreset::OpenaiCompatible,
-            "runtime-model",
-            "https://api.openai.com/v1",
-            "saved-key",
-        );
-        // SAFETY: platform::paths::tests::ENV_LOCK held; env writes are serialized.
-        unsafe { std::env::set_var("DEEPSEEK_API_KEY", "env-key") };
-        bridge.runtime_model_credential =
-            Some(RuntimeModelCredential::api_key("runtime-key").expect("runtime credential"));
-
-        assert_eq!(bridge.api_key(), "runtime-key");
-        let config = bridge.build_dt_config();
-        assert_eq!(config.api_key.as_deref(), Some("runtime-key"));
-        assert_eq!(
-            config
-                .providers
-                .as_ref()
-                .and_then(|providers| providers.openai.api_key.as_deref()),
-            Some("runtime-key")
-        );
     }
 
     #[test]

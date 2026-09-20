@@ -311,7 +311,6 @@ pinvou3-app/src/platform/tauri/bridge/scheduled.js
 - `startScheduledTaskChat`
 - `normalizeScheduledTaskDraft`
 - `autoCreateScheduledTaskDraft`
-- `confirmScheduledTaskDraft`
 - `createScheduledTask`
 
 需要强化：
@@ -1680,7 +1679,7 @@ cargo test -p pinvou3-tauri engine_pool --no-run
 
 - 侧边栏记录的删除**只删这一次运行**，绝不调用 `delete_scheduled_task`。
 - 运行中/排队中的运行记录不允许删除（后端返回“正在运行的定时任务记录不能删除”）。
-- 定时运行的 transcript 由 Engine 独占持久化，`save_session_messages` / `save_session_artifacts` 仍拒绝 `sched-*`（`ensure_chat_session` 现在守卫六个会话覆盖类命令：save/get `pinvou_scene_events`、save/get `steered_messages`，加这两个覆盖类命令）。
+- 定时运行的 transcript 由 Engine 独占持久化，`save_session_artifacts` 仍拒绝 `sched-*`（`ensure_chat_session` 现在守卫五个会话覆盖类命令：save/get `pinvou_scene_events`、save/get `steered_messages`，加 `save_session_artifacts`）。
 
 #### 3. 侧边栏“定时任务记录”的范围
 

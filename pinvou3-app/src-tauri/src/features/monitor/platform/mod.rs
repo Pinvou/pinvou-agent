@@ -5,8 +5,8 @@
 //! | 平台 | CPU | GPU | 内存 |
 //! |------|-----|-----|------|
 //! | Windows | ✅ PDH 性能计数器 | ✅ 性能计数器 | ✅ |
-//! | macOS | ✅ `host_statistics64`/`getrusage` FFI | ✅ `ioreg` IOAccelerator | ✅ |
-//! | Linux | ✅ `/proc/stat` + `/proc/self/stat` | ❌ 仅 `nvidia-smi` 回退 | ✅ |
+//! | macOS | ✅ `host_statistics64` FFI | ✅ `ioreg` IOAccelerator | ✅ |
+//! | Linux | ✅ `/proc/stat` | ❌ 仅 `nvidia-smi` 回退 | ✅ |
 //!
 //! Linux 的平台级 GPU 采样**有意返回 None**——尚未实现 Linux 专属采集器，这不是
 //! bug。任何采样失败均 graceful degrade（返回 None / OFFLINE），不影响应用功能。

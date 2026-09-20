@@ -22,6 +22,7 @@ function createTerminal(initialItems = [], runtime = 'tauri') {
     setTimeout,
     clearTimeout,
   });
+  vm.runInContext(fs.readFileSync(path.join(appRoot, 'src', 'shared', 'bridge-shared-helpers.js'), 'utf8'), scriptContext, { filename: 'src/shared/bridge-shared-helpers.js' });
   vm.runInContext(terminalSource, scriptContext, { filename: terminalPath });
 
   let notifications = 0;
@@ -42,10 +43,51 @@ function createTerminal(initialItems = [], runtime = 'tauri') {
   if (runtime === 'web') {
     const webSource = fs.readFileSync(path.join(appRoot, 'src', 'platform', 'web', 'bridge.js'), 'utf8');
     const start = webSource.indexOf('  const SHELL_TOOL_NAMES =');
-    const end = webSource.indexOf('  function scheduleShellPoll(', start);
+    // scheduleShellPoll 已随 dedup 移入共享 payload，lane 侧转发函数无缩进
+    let end = webSource.indexOf('  function scheduleShellPoll(', start);
+    if (end === -1) end = webSource.indexOf('\nfunction scheduleShellPoll(', start);
     assert.ok(start >= 0 && end > start, 'Web shell projection helpers must be present');
+    // shell 投影的实现已随 dead-code dedup 合并进共享 payload 的 sharedBridgeBase（单一共享实现）；
+    // 追加 base 内的函数声明（同名覆盖 lane 转发器），保持被测行为为线上真实代码。
+    // 切片止于 FORWARDER_DEP_NAMES 段之前：该段引用 deps，而本 harness 以自由变量注入依赖。
+    const helpersSrc = fs.readFileSync(path.join(appRoot, 'src', 'shared', 'bridge-shared-helpers.js'), 'utf8');
+    const clusterStart = helpersSrc.indexOf('function sharedBridgeBase(deps)');
+    const clusterEnd = helpersSrc.indexOf('const nestedInterruptedDisplayRange', clusterStart);
+    const clusterBody = helpersSrc.slice(clusterStart, clusterEnd);
+    const fnStart = clusterBody.search(/\n {2}(?:async )?function /);
+    const fnEnd = clusterBody.indexOf('\n  // lane 转发优先');
+    assert.ok(fnStart >= 0 && fnEnd > fnStart, 'payload shared base must contain function bodies');
     Object.assign(scriptContext, context);
-    vm.runInContext(`${webSource.slice(start, end)}\nthis.webTerminal = { applyShellSnapshots };`, scriptContext);
+    // SHELL_TOOL_NAMES 在 payload cluster 内为惰性单元格（body 读 .value），
+    // 这里把 lane 的数组字面量包装成同构的 getter 单元格。
+    // bt 的文案表 BT_TABLE 仍定义在 web/bridge.js 顶层（未参与 dedup），需一并注入。
+  const btStart = webSource.indexOf('  const BT_TABLE = {');
+  assert.ok(btStart !== -1, 'BT_TABLE must exist in web bridge');
+  let btDecl = '';
+  {
+    let depth = 0;
+    let i = webSource.indexOf('{', btStart);
+    while (i < webSource.length) {
+      const ch = webSource[i];
+      if (ch === '"' || ch === "'" || ch === '`') {
+        const q = ch; i++;
+        while (i < webSource.length) { if (webSource[i] === '\\') { i += 2; continue; } if (webSource[i] === q) break; i++; }
+        i++; continue;
+      }
+      if (ch === '{') depth++;
+      else if (ch === '}') { depth--; if (depth === 0) { btDecl = webSource.slice(btStart, i + 1) + ';'; break; } }
+      i++;
+    }
+    // payload cluster 内 BT_TABLE 以惰性单元格传入（body 读 .value），
+    // 这里把提取出的对象字面量包装成同构的 getter 单元格。
+    const btObj = btDecl.slice(0, -1); // strip trailing ';'
+    btDecl = 'const BT_TABLE = { value: ' + btObj.slice(btObj.indexOf('=') + 1).trim() + ' };';
+  }
+  const extsDecl = webSource.slice(start, end).replace(
+      /^(\s*const\s+SHELL_TOOL_NAMES\s*=\s*)\[([\s\S]*?)\];\s*$/m,
+      (m0, head, body) => `${head}{ value: [${body}] };`,
+    );
+    vm.runInContext(`${btDecl}\n${extsDecl}\n${clusterBody.slice(fnStart, fnEnd)}\nthis.webTerminal = { applyShellSnapshots };`, scriptContext);
     terminal = scriptContext.webTerminal;
   } else {
     terminal = windowObject.__PINVOU_TAURI_BRIDGE_FEATURES__.terminal(context);
@@ -478,9 +520,18 @@ for (const runtime of ['tauri', 'web']) {
 }
 
 test('the web bridge keeps the same stale-completion guard', () => {
+  // guard 主体已随 dedup 合并进共享 payload 的 sharedBridgeBase（SHELL_TOOL_NAMES /
+  // SHELL_WAIT_TOOL_NAMES 常量仍留在 lane），两侧拼接后与线上行为一致。
+  const helpersWebSrc = fs.readFileSync(
+    path.join(appRoot, 'src', 'shared', 'bridge-shared-helpers.js'),
+    'utf8',
+  );
   const webBridge = fs.readFileSync(
     path.join(appRoot, 'src', 'platform', 'web', 'bridge.js'),
     'utf8',
+  ) + helpersWebSrc.slice(
+    helpersWebSrc.indexOf('function sharedBridgeBase(deps)'),
+    helpersWebSrc.indexOf('"tauriMain"'),
   );
   assert.match(
     webBridge,

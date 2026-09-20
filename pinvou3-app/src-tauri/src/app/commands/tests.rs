@@ -497,6 +497,9 @@ fn session_artifact_path(session_id: &str, name: &str) -> std::path::PathBuf {
 fn direct_skill_install_uninstall_scope_state_roundtrip() {
     use crate::features::assistant::skill_materialization as sm;
     use crate::features::marketplace::ConnectorScope;
+    use crate::features::marketplace::scope::{
+        load_disabled_bundles_for, save_disabled_bundles_for,
+    };
 
     let _g = crate::platform::paths::tests::ENV_LOCK
         .lock()
@@ -511,9 +514,9 @@ fn direct_skill_install_uninstall_scope_state_roundtrip() {
     // SAFETY: holding platform::paths::tests::ENV_LOCK; env writes serialized in-process.
     unsafe { std::env::set_var("PINVOU3_HOME", &root) };
 
-    // 用户关闭 visualizer（独立 disabled_skills.json，不再借道连接器文件）→
+    // 用户关闭 visualizer（包开关统一落 disabled_bundles.json）→
     // 组合目录计算排除该技能。
-    sm::save_disabled_skills_for(ConnectorScope::Plain, &["visualizer".to_string()]);
+    save_disabled_bundles_for(ConnectorScope::Plain, &["visualizer".to_string()]).unwrap();
     install_marketplace_skill_sync("visualizer").unwrap();
     assert!(
         !sm::enabled_skills_for(ConnectorScope::Plain, None)
@@ -523,7 +526,7 @@ fn direct_skill_install_uninstall_scope_state_roundtrip() {
     );
     // code scope 未初始化时新装技能默认全禁，初始化后自动加入 code 禁用集。
     assert!(
-        sm::load_disabled_skills_for(ConnectorScope::Code)
+        load_disabled_bundles_for(ConnectorScope::Code)
             .iter()
             .any(|id| id == "visualizer")
     );
@@ -531,7 +534,7 @@ fn direct_skill_install_uninstall_scope_state_roundtrip() {
     uninstall_marketplace_skill_sync("visualizer").unwrap();
     // Uninstall clears the pack's residue from both scope disabled sets (same semantics as connectors).
     assert!(
-        !sm::load_disabled_skills_for(ConnectorScope::Plain)
+        !load_disabled_bundles_for(ConnectorScope::Plain)
             .iter()
             .any(|id| id == "visualizer"),
         "卸载应从禁用集清除残留 id"
@@ -542,7 +545,7 @@ fn direct_skill_install_uninstall_scope_state_roundtrip() {
     // user explicitly enables it (matching the connectors' fresh-install
     // default-off semantics).
     assert!(
-        sm::load_disabled_skills_for(ConnectorScope::Plain)
+        crate::features::marketplace::load_disabled_bundles_for(ConnectorScope::Plain)
             .iter()
             .any(|id| id == "visualizer"),
         "重装后 plain scope 默认关闭（DenyAll 收敛语义）"
@@ -646,7 +649,8 @@ fn mcp_uninstall_removes_companion_skills_from_package_dir() {
         crate::features::marketplace::save_disabled_bundles_for(
             scope,
             &["government-writing".to_string()],
-        );
+        )
+        .unwrap();
         crate::features::marketplace::save_hidden_bundles_for(
             scope,
             &["government-writing".to_string()],
@@ -1302,8 +1306,9 @@ fn scheduled_attachment_staging_and_artifact_resolution_use_task_workspace() {
         })
         .expect("scheduled session");
     // transcript 覆盖类命令仍拒绝 scheduled 会话(引擎独占持久化)。
-    let manage_error = ensure_chat_session(&store, &scheduled.metadata.id, "save_session_messages")
-        .expect_err("scheduled runs must reject UI transcript overwrites");
+    let manage_error =
+        ensure_chat_session(&store, &scheduled.metadata.id, "save_session_artifacts")
+            .expect_err("scheduled runs must reject UI transcript overwrites");
     assert!(manage_error.contains("scheduled-run sessions are managed from Scheduled"));
     let locked = store
         .ledger_root(&scheduled.metadata.id)

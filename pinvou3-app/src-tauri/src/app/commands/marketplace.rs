@@ -10,6 +10,32 @@ pub fn list_marketplace_tools()
     Ok(tools)
 }
 
+/// 变更落盘后的统一热刷收尾（安装/卸载/更新/导入/恢复各命令共用，替代各自
+/// 手写的 refresh 调用序列，保证顺序一致）：
+/// - `disallowed`：mcp/spanner 供给面变化（导入/恢复出现新包）→ 先热刷引擎的
+///   disallowed_tools 白名单；
+/// - 随后重写在线会话组合目录（skills 影响两个 scope 的启用集，下一轮 prompt
+///   生效）+ 刷新 deny 规则集（包的 CLI/技能脚本纳入/移出，M-6 热刷）。
+async fn hot_refresh(
+    pool: &tauri::State<'_, crate::features::assistant::engine_pool::EnginePool>,
+    disallowed: bool,
+) {
+    if disallowed {
+        pool.refresh_disallowed_tools().await;
+    }
+    pool.refresh_live_sessions_skills().await;
+    pool.refresh_permission_rulesets().await;
+}
+
+/// 上传展示名净化（仅写 bundles.json 的 upload 来源标记用）：去路径分隔符与
+/// 控制字符，截 128 字符。zip 名与裸 `.md` 文件名两个上传通道共用同一口径。
+fn sanitize_display_name(raw: &str) -> String {
+    raw.chars()
+        .filter(|c| !c.is_control() && *c != '/' && *c != '\\')
+        .take(128)
+        .collect()
+}
+
 #[derive(Debug, Clone, Serialize)]
 pub struct MarketplaceOAuthLoginResult {
     pub status: String,
@@ -211,8 +237,7 @@ pub async fn install_marketplace_tool(
             // 开启，与独立技能安装 install_marketplace_skill_sync 同语义）。
             // companion 的 owner 包即本工具，上方的工具同步已覆盖其同意状态，
             // 故本调用失败只留痕继续（不阻断其余 companion，也无需整体报错）。
-            if let Err(e) = crate::features::marketplace::skill_scope::
-                sync_deny_all_scopes_after_skill_install(&sid)
+            if let Err(e) = crate::features::marketplace::scope::sync_deny_all_scopes_after_install(&sid)
             {
                 eprintln!(
                     "[marketplace] 配套技能 '{sid}' 默认关闭状态落盘失败（owner 包已由工具同步覆盖）: {e}"
@@ -234,15 +259,12 @@ pub async fn install_marketplace_tool(
     // mtime+hash 自愈，此时重建是冗余但无害的一次性开销（与 mark_model_updated
     // 同粒度的取舍）。
     pool.mark_mcp_config_updated();
-    pool.refresh_live_sessions_skills().await;
     // Install state flows into the deny snapshot in both directions (the
     // NATIVE_PACKAGE_TOOLS ownership gate and the DenyAll scope syncs above
     // read it): without this refresh live engines keep the pre-install
     // admission — a package's native tool stays denied, and a newly installed
     // connector's tools stay admitted — until respawn.
-    pool.refresh_disallowed_tools().await;
-    // 新装包的 CLI/技能脚本纳入/移出 deny 规则集（M-6：install 路径热刷）。
-    pool.refresh_permission_rulesets().await;
+    hot_refresh(&pool, true).await;
     crate::features::behavior_telemetry::track(
         &app,
         crate::features::behavior_telemetry::BehaviorEvent::new("tool_install_completed")
@@ -465,16 +487,11 @@ pub async fn uninstall_marketplace_tool(
     // 安全重建（同 install 路径，mark_mcp_config_updated 契约），残留的已卸
     // 连接器工具不再出现在模型目录。
     pool.mark_mcp_config_updated();
-    // 联动卸载的 companion 技能影响两个 scope 的启用集：重写在线会话组合目录
-    // （async 命令必须用 async 版：blocking 版的 blocking_lock 在 tokio runtime
-    // 线程上必 panic）。
-    pool.refresh_live_sessions_skills().await;
+    // 联动卸载的 companion 技能影响两个 scope 的启用集：重写在线会话组合目录。
     // Keep the native-tool deny list uniform with the skill uninstall path
     // (no live effect today: no current MCP manifest owns a native tool, but
     // the uninstall postcondition must not depend on that accident).
-    pool.refresh_disallowed_tools().await;
-    // 卸载包的 CLI/技能脚本移出 deny 规则集（M-6：uninstall 路径热刷）。
-    pool.refresh_permission_rulesets().await;
+    hot_refresh(&pool, true).await;
     Ok(())
 }
 
@@ -535,18 +552,18 @@ pub(super) fn uninstall_marketplace_tool_sync(tool_id: &str) -> Result<(), Strin
             .map_err(|e| format!("联动卸载配套技能 '{sid}' 失败（已中止工具卸载，请重试）: {e}"))?;
         // Scope entries are cleared only after the skill is actually gone —
         // otherwise a still-installed skill would be silently re-enabled.
-        crate::features::marketplace::skill_scope::remove_skill_from_disabled_scopes(sid)?;
+        crate::features::marketplace::scope::remove_bundle_from_disabled_scopes(sid)?;
     }
     mgr.uninstall(tool_id)?;
     if recycles_with_package {
         // 整包已回收（companion 目录随包搬离）→ 此时技能确实没了，再清 scope。
         for sid in &companions {
-            crate::features::marketplace::skill_scope::remove_skill_from_disabled_scopes(sid)?;
+            crate::features::marketplace::scope::remove_bundle_from_disabled_scopes(sid)?;
         }
     }
     // 已卸载的连接器从两个 scope 的禁用集移除(避免残留 id)。fail-visible
     // （round-17 minor 1）：残留条目 + 标记会被同 id 重装的 install-sync 继承。
-    crate::features::marketplace::remove_connector_from_disabled_scopes(tool_id)?;
+    crate::features::marketplace::remove_bundle_from_disabled_scopes(tool_id)?;
     Ok(())
 }
 // ---------------------------------------------------------------------------
@@ -579,9 +596,7 @@ pub async fn install_marketplace_skill(
     // The native-tool ownership gate (NATIVE_PACKAGE_TOOLS) reads install
     // state: without this refresh a package owning a native tool (ima) stays
     // denied in live engines until respawn.
-    pool.refresh_disallowed_tools().await;
-    // 导入包的 CLI/技能脚本纳入 deny 规则集（M-6：import 路径热刷）。
-    pool.refresh_permission_rulesets().await;
+    hot_refresh(&pool, true).await;
     crate::features::behavior_telemetry::track(
         &app,
         crate::features::behavior_telemetry::BehaviorEvent::new("tool_install_completed")
@@ -597,7 +612,7 @@ pub(super) fn install_marketplace_skill_sync(skill_id: &str) -> Result<(), Strin
     // 新装技能默认加入 DenyAll scope（当前 code）禁用集（与连接器同语义：
     // 外部能力显式开启）；组合目录由调用方在命令层重写（install_marketplace_skill）。
     // 持久化失败 fail-visible（评审 #455 R13-B3）：吞掉错误会让技能以零同意上线。
-    crate::features::marketplace::skill_scope::sync_deny_all_scopes_after_skill_install(skill_id)
+    crate::features::marketplace::scope::sync_deny_all_scopes_after_install(skill_id)
         .map_err(|e| {
             format!("新装技能 '{skill_id}' 默认关闭状态落盘失败（新会话将默认开启，请在工具列表手动关闭）: {e}")
         })?;
@@ -627,9 +642,7 @@ pub async fn update_marketplace_skill(
     .await
     .map_err(|e| format!("任务执行失败: {e}"))??;
     // 内容变了:重写在线会话组合目录（下一轮 prompt 生效,与安装/卸载一致）。
-    pool.refresh_live_sessions_skills().await;
-    // 导入包的 CLI/技能脚本纳入 deny 规则集（M-6：import 路径热刷）。
-    pool.refresh_permission_rulesets().await;
+    hot_refresh(&pool, false).await;
     Ok(())
 }
 
@@ -661,8 +674,7 @@ pub async fn update_bundle_display_meta(
     // 已动过 SKILL.md（窄窗口），失败点在 sync 前/中/后不可知，按「可能动过」
     // 处理——热刷是幂等的目录重扫，多刷一次无害。
     if may_touch_skill_md {
-        pool.refresh_live_sessions_skills().await;
-        pool.refresh_permission_rulesets().await;
+        hot_refresh(&pool, false).await;
     }
     result
 }
@@ -716,11 +728,7 @@ fn import_skill_md_content(
         zw.finish().map_err(|e| e.to_string())?;
     }
     // 展示名 = 原始文件名（写 bundles.json 的 upload 来源标记）。
-    let display: String = filename
-        .chars()
-        .filter(|c| !c.is_control() && *c != '/' && *c != '\\')
-        .take(128)
-        .collect();
+    let display = sanitize_display_name(filename);
     let result = crate::features::marketplace::plugin_import::import_plugin_package(
         &tmp.to_string_lossy(),
         &display,
@@ -788,10 +796,7 @@ pub async fn import_plugin_package_cmd(
     // 导入包含本地 MCP 时 mcp.json 已变，同样要递增修订号触发在线引擎下轮
     // 重建（与 install_marketplace_tool 同口径，mark_mcp_config_updated 契约）。
     pool.mark_mcp_config_updated();
-    pool.refresh_disallowed_tools().await;
-    pool.refresh_live_sessions_skills().await;
-    // 导入包的 CLI/技能脚本纳入 deny 规则集（M-6：import 路径热刷）。
-    pool.refresh_permission_rulesets().await;
+    hot_refresh(&pool, true).await;
     log::info!(
         "[marketplace] 插件导入: id={} kind={:?} icon={}",
         report.id,
@@ -825,11 +830,7 @@ pub async fn import_plugin_package_bytes_cmd(
         return Err(format!("插件包超过 {} MiB 上限", max_bytes / 1024 / 1024));
     }
     // 展示名净化(仅写 bundles.json 的 upload 来源标记用):去路径分隔符/控制字符,截 128
-    let safe_name: String = filename
-        .chars()
-        .filter(|c| !c.is_control() && *c != '/' && *c != '\\')
-        .take(128)
-        .collect();
+    let safe_name = sanitize_display_name(&filename);
     let tmp = std::env::temp_dir().join(format!(
         "pinvou3-plugin-{}-{}.zip",
         std::process::id(),
@@ -862,10 +863,7 @@ pub async fn import_plugin_package_bytes_cmd(
     // 导入包含本地 MCP 时 mcp.json 已变，同样要递增修订号触发在线引擎下轮
     // 重建（与 install_marketplace_tool 同口径，mark_mcp_config_updated 契约）。
     pool.mark_mcp_config_updated();
-    pool.refresh_disallowed_tools().await;
-    pool.refresh_live_sessions_skills().await;
-    // 导入包的 CLI/技能脚本纳入 deny 规则集（M-6：import 路径热刷）。
-    pool.refresh_permission_rulesets().await;
+    hot_refresh(&pool, true).await;
     Ok(report.id)
 }
 
@@ -903,20 +901,19 @@ pub async fn import_skill_md_bytes(
             .map_err(|e| format!("任务执行失败: {e}"))??;
     // 上传安全默认：与插件包导入同口径，加入 DenyAll scope。持久化失败
     // fail-visible（评审 #455 R13-B3）。
-    crate::features::marketplace::skill_scope::sync_deny_all_scopes_after_skill_install(&report.id)
-        .map_err(|e| {
+    crate::features::marketplace::scope::sync_deny_all_scopes_after_install(&report.id).map_err(
+        |e| {
             format!(
                 "技能 '{}' 默认关闭状态落盘失败（新会话将默认开启，请在工具列表手动关闭）: {e}",
                 report.id
             )
-        })?;
+        },
+    )?;
     pool.refresh_live_sessions_skills().await;
     // An imported id can collide with a package owning a native tool
     // (NATIVE_PACKAGE_TOOLS keys on package ids), so the deny snapshot must
     // follow the same install postcondition as the marketplace paths.
-    pool.refresh_disallowed_tools().await;
-    // 导入包的 CLI/技能脚本纳入 deny 规则集（M-6：import 路径热刷）。
-    pool.refresh_permission_rulesets().await;
+    hot_refresh(&pool, true).await;
     Ok(report.id)
 }
 
@@ -929,14 +926,11 @@ pub async fn uninstall_marketplace_skill(
         .await
         .map_err(|e| format!("任务执行失败: {e}"))??;
     // 卸载影响两个 scope 的启用集：重写在线会话的组合目录。
-    pool.refresh_live_sessions_skills().await;
     // The deny list is snapshot state in live engines, and uninstall (unlike
     // ima_logout) keeps the package's keyring credentials: a skill owning a
     // native tool (ima) would stay admitted and executable until respawn
     // without this refresh.
-    pool.refresh_disallowed_tools().await;
-    // 导入包的 CLI/技能脚本纳入 deny 规则集（M-6：import 路径热刷）。
-    pool.refresh_permission_rulesets().await;
+    hot_refresh(&pool, true).await;
     Ok(())
 }
 
@@ -944,7 +938,7 @@ pub(super) fn uninstall_marketplace_skill_sync(skill_id: &str) -> Result<(), Str
     crate::features::marketplace::skill_marketplace::SkillMarketplaceManager::new()
         .uninstall(skill_id)?;
     // 已卸载的技能从两个 scope 的禁用集移除（避免残留 id，与连接器同语义）。
-    crate::features::marketplace::skill_scope::remove_skill_from_disabled_scopes(skill_id)?;
+    crate::features::marketplace::scope::remove_bundle_from_disabled_scopes(skill_id)?;
     Ok(())
 }
 
@@ -977,9 +971,7 @@ pub async fn restore_recycled_plugin(
     pool.mark_mcp_config_updated();
     // 恢复 = 重新进入供给：mcp 热刷工具白名单 + skills 热刷会话组合目录 +
     // 包脚本纳入 deny 规则集（与 import/uninstall 同一时机语义）。
-    pool.refresh_disallowed_tools().await;
-    pool.refresh_live_sessions_skills().await;
-    pool.refresh_permission_rulesets().await;
+    hot_refresh(&pool, true).await;
     Ok(result)
 }
 
@@ -1076,12 +1068,8 @@ pub async fn export_installed_plugin(
 
 #[derive(Debug, Clone, Serialize)]
 pub struct BundleReadinessResult {
-    pub bundle_id: String,
     pub installed: bool,
     pub ready: bool,
-    pub reason: Option<String>,
-    /// 原连接器 status 的完整 detail（CLI/ima 型透传，向前兼容）
-    pub detail: Option<serde_json::Value>,
     /// 动作下发（§3.3）：后端按当前状态推导的可用动作集。serde default 保持
     /// 契约纯增量；前端切换为动作渲染器在后续 PR。
     #[serde(default)]
@@ -1125,36 +1113,22 @@ where
     };
     // CLI/ima 包的 installed 在注册表是保守占位（恒 false），此处用连接器 status
     // 的真实字段覆盖，避免对消费方产出 (installed=false, ready=true) 的矛盾组合。
-    let (installed, ready, reason, detail) = match bundle.kind {
+    let (installed, ready, reason) = match bundle.kind {
         BundleKind::Cli => {
-            let (connected, detail) = match bundle_id.as_str() {
-                "feishu" => {
-                    let v = crate::features::connectors::feishu::feishu_status().await?;
-                    (connected_of(&v), Some(v))
-                }
-                "wecom" => {
-                    let v = crate::features::connectors::wecom::wecom_status().await?;
-                    (connected_of(&v), Some(v))
-                }
-                "dingtalk" => {
-                    let v = crate::features::connectors::dingtalk::dingtalk_status().await?;
-                    (connected_of(&v), Some(v))
-                }
-                "tmeet" => {
-                    let v = crate::features::connectors::tmeet::tmeet_status().await?;
-                    (connected_of(&v), Some(v))
-                }
+            let status = match bundle_id.as_str() {
+                "feishu" => crate::features::connectors::feishu::feishu_status().await?,
+                "wecom" => crate::features::connectors::wecom::wecom_status().await?,
+                "dingtalk" => crate::features::connectors::dingtalk::dingtalk_status().await?,
+                "tmeet" => crate::features::connectors::tmeet::tmeet_status().await?,
                 other => return Err(format!("未知 CLI 包 '{other}'")),
             };
+            let connected = connected_of(&status);
             // wecom/dingtalk/tmeet 返回 installed（CLI 二进制在位），
             // feishu 返回 configured（已配置）；都没有则退化为 connected。
-            let installed = detail
-                .as_ref()
-                .and_then(|v| {
-                    v.get("installed")
-                        .or_else(|| v.get("configured"))
-                        .and_then(|x| x.as_bool())
-                })
+            let installed = status
+                .get("installed")
+                .or_else(|| status.get("configured"))
+                .and_then(|x| x.as_bool())
                 .unwrap_or(connected);
             (
                 installed,
@@ -1164,7 +1138,6 @@ where
                 } else {
                     Some("not_connected".to_string())
                 },
-                detail,
             )
         }
         BundleKind::Skill if bundle.id == "ima" => {
@@ -1186,7 +1159,7 @@ where
             } else {
                 Some("skill_not_installed".to_string())
             };
-            (creds || skill, ready, reason, Some(v))
+            (creds || skill, ready, reason)
         }
         _ => {
             // keychain 读可能阻塞数秒甚至数分钟（macOS 首次访问弹授权窗），
@@ -1225,7 +1198,7 @@ where
                 Readiness::Ready => (true, None),
                 Readiness::NotReady(reason) => (false, Some(reason.to_string())),
             };
-            (bundle.installed, ready, reason, None)
+            (bundle.installed, ready, reason)
         }
     };
     // 动作推导输入的 Readiness 重建：CLI/ima 分支的 reason 是自定义字符串，
@@ -1239,11 +1212,8 @@ where
     };
     let actions = crate::features::marketplace::actions::actions_for(&bundle, readiness);
     Ok(BundleReadinessResult {
-        bundle_id,
         installed,
         ready,
-        reason,
-        detail,
         actions,
         bundle: Some(bundle),
     })
@@ -1342,7 +1312,6 @@ mod tests {
         let bundle = result.bundle.expect("响应应携带 BundleInfo");
         assert_eq!(bundle.version, "1.2.3");
         assert_eq!(bundle.description, "天气查询");
-        assert_eq!(bundle.category, "life");
         assert_eq!(bundle.config_fields.len(), 1);
         assert_eq!(bundle.config_fields[0].key, "AMAP_KEY");
         assert!(bundle.config_fields[0].secret);

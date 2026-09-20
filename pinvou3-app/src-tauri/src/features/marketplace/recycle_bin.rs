@@ -59,7 +59,7 @@ fn file_lock() -> MutexGuard<'static, ()> {
 // ---------------------------------------------------------------------------
 
 /// 清单条目：`record` 是回收时 bundles.json 原记录的快照（恢复重建登记用：
-/// source=Upload、原 installed_at、credential_keys 等一并保留）。
+/// source=Upload、原 installed_at 等一并保留）。
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct RecycledEntry {
     pub id: String,
@@ -331,8 +331,25 @@ impl RecycleBin {
             ));
         }
         let entry = file.entries.remove(index);
-        // 目录已搬回，清单移除失败不搬回目录（恢复主操作已成功），fail loud 到错误。
-        save_locked(&self.file, &file)?;
+        // 清单落盘失败必须补偿（round-19 MAJOR 3）：目录已搬回 bundles_root 而
+        // 条目尚未消费——若不搬回，就是「目录在根、无登记、条目滞留回收站」的
+        // 不可重试半恢复态（重试撞 src.is_dir() 守卫；按提示 purge 只清滞留
+        // 条目，留下的是无登记的活目录，未初始化 scope 会零同意物化其技能）。
+        // 盘上清单从未改变，dst→src 原样搬回即完整复原。
+        if let Err(e) = save_locked(&self.file, &file) {
+            if let Err(re) = super::plugin_import::rename_dir_with_retry(&dst, &src) {
+                log::error!(
+                    "[recycle-bin] 取回 {pkg_id} 清单落盘失败后的补偿回滚也失败（{} 可能处于半恢复态）: {re}",
+                    dst.display()
+                );
+                return Err(format!(
+                    "取回 {pkg_id} 后清单落盘失败，且补偿回滚也失败: {e}; 补偿回滚失败: {re}"
+                ));
+            }
+            return Err(format!(
+                "取回 {pkg_id} 后清单落盘失败（已整体回滚至回收站，可重试）: {e}"
+            ));
+        }
         log::info!("[recycle-bin] 已取回包 {pkg_id} → {}", dst.display());
         Ok(entry.record)
     }
@@ -510,9 +527,10 @@ pub fn restore_plugin(pkg_id: &str) -> Result<RestoreRecycledResult, String> {
     // skips supply on the same failure, so degrading to the normal gate would
     // re-open the R16-MAJOR1 zero-consent shape for exactly this entry. A
     // skill-only entry has no manifest by design and takes the normal gate:
-    // its registration rebuild re-enters installed.json after take_back, so
-    // the expansion covers it (and the gate's inner-name scan normalizes to
-    // the physical owner via skill_gating_owner).
+    // after take_back the pack dir lands in bundles_root, where the
+    // disk-derived skill arm of the DenyAll expansion
+    // (`resolve_scope_disabled_ids`) sees it — the gate's inner-name scan
+    // normalizes to the physical owner via skill_gating_owner.
     let manifest_path = bin.root.join(pkg_id).join("mcp").join("manifest.json");
     let secrets_declared = if manifest_path.exists() {
         std::fs::read_to_string(&manifest_path)
@@ -639,8 +657,19 @@ fn load_locked(path: &Path) -> Result<RecycleBinFile, String> {
     }
 }
 
+/// Test-only failpoint（mod.rs 的 `FAIL_NEXT_INSTALLED_WRITE` 同款惯例）：置位后
+/// 下一次 `save_locked` 注入失败并自复位，用于钉住 take_back 的补偿回滚
+/// （round-19 MAJOR 3）。
+#[cfg(test)]
+pub(crate) static FAIL_NEXT_RECYCLE_SAVE: std::sync::atomic::AtomicBool =
+    std::sync::atomic::AtomicBool::new(false);
+
 /// 内层写：tmp + rename 原子替换（底座 `write_atomic`，含 Windows 替换重试）。
 fn save_locked(path: &Path, file: &RecycleBinFile) -> Result<(), String> {
+    #[cfg(test)]
+    if FAIL_NEXT_RECYCLE_SAVE.swap(false, std::sync::atomic::Ordering::SeqCst) {
+        return Err("injected recycle-bin save failure (test failpoint)".to_string());
+    }
     if let Some(parent) = path.parent() {
         std::fs::create_dir_all(parent)
             .map_err(|e| format!("创建 {} 失败: {e}", parent.display()))?;
@@ -710,8 +739,6 @@ mod tests {
             source: BundleSource::Upload(format!("{id}.zip")),
             installed: true,
             content_fingerprint: Some("fp".to_string()),
-            assets: Vec::new(),
-            credential_keys: vec!["KEY".to_string()],
             installed_at: "2026-08-20T00:00:00+00:00".to_string(),
             degraded: None,
             extra: serde_json::Map::new(),
@@ -1880,6 +1907,68 @@ mod tests {
                     .count()
             })
             .unwrap_or(0)
+    }
+
+    /// Round-19 MAJOR 3 regression: `take_back`'s manifest-save failure must
+    /// compensate (dst→src rename) instead of leaving the recordless
+    /// half-restore — directory in bundles_root, no record, stale bin entry:
+    /// unretryable (retry hits the src.is_dir() guard), and uninitialized
+    /// scopes would zero-consent materialize its skills. Driven by the test
+    /// failpoint; the retry then succeeds end to end.
+    #[test]
+    fn take_back_save_failure_compensates_and_stays_retryable() {
+        let _g = crate::platform::paths::tests::ENV_LOCK
+            .lock()
+            .unwrap_or_else(|p| p.into_inner());
+        let prev = std::env::var("PINVOU3_HOME").ok();
+        let tmp = fresh_dir("take-back-compensate");
+        unsafe { std::env::set_var("PINVOU3_HOME", &tmp) };
+
+        let pkg = paths::bundles_root().join("compensated");
+        std::fs::create_dir_all(pkg.join("skills/member")).unwrap();
+        std::fs::write(
+            pkg.join("skills/member/SKILL.md"),
+            "---\nname: member\n---\n",
+        )
+        .unwrap();
+        let store = BundleStore::new();
+        store.upsert(upload_record("compensated")).unwrap();
+        let record = store.get("compensated").unwrap().unwrap();
+        store.remove("compensated").unwrap();
+        RecycleBin::new()
+            .recycle_package("compensated", KIND_SKILL, "compensated.zip", record)
+            .unwrap();
+
+        // Inject the save failure at exactly take_back's manifest persist.
+        FAIL_NEXT_RECYCLE_SAVE.store(true, std::sync::atomic::Ordering::SeqCst);
+        let err = restore_plugin("compensated").unwrap_err();
+        assert!(
+            err.contains("整体回滚"),
+            "the compensation must report the rollback: {err}"
+        );
+        assert!(
+            tmp.join("marketplace/recycle-bin/compensated/skills/member/SKILL.md")
+                .is_file(),
+            "the package directory must be back in the bin"
+        );
+        assert!(!pkg.exists(), "bundles_root must not keep the live dir");
+        assert_eq!(
+            RecycleBin::new().list().unwrap().len(),
+            1,
+            "the bin entry must survive (retry is real)"
+        );
+
+        // Retry without the failpoint: the restore succeeds end to end.
+        let result = restore_plugin("compensated").expect("retry must succeed");
+        assert!(!result.credentials_required);
+        assert!(pkg.join("skills/member/SKILL.md").is_file());
+        assert!(RecycleBin::new().list().unwrap().is_empty());
+
+        match prev {
+            Some(v) => unsafe { std::env::set_var("PINVOU3_HOME", v) },
+            None => unsafe { std::env::remove_var("PINVOU3_HOME") },
+        }
+        let _ = std::fs::remove_dir_all(&tmp);
     }
 
     /// Round-16 MAJOR 1 regression: restoring a secrets-declaring combination

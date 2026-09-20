@@ -5,22 +5,31 @@ const path = require('path');
 const vm = require('vm');
 
 const logicPath = path.join(__dirname, '..', 'src', 'features', 'chat', 'pinvou-mode-state.js');
-const code = fs.readFileSync(logicPath, 'utf8')
+// scene-registry.js supplies the canonical scene keys consumed by the other
+// three modules; concatenate it (imports stripped) so the vm sandbox sees the
+// same bindings the bundler provides.
+const sceneRegistryPath = path.join(__dirname, '..', 'src', 'features', 'chat', 'scene-registry.js');
+const sceneRegistryCode = fs.readFileSync(sceneRegistryPath, 'utf8')
+  .replace(/\bexport\s+\{[^}]+\};?/g, '')
+  .replace(/\bexport\s+/g, '');
+const stripSceneRegistryImport = (code) => code
+  .replace(/^import[\s\S]*?from '\.\/scene-registry\.js';\r?\n/m, '');
+const code = stripSceneRegistryImport(fs.readFileSync(logicPath, 'utf8'))
   .replace(/\bexport\s+\{[^}]+\};?/g, '')
   .replace(/\bexport\s+/g, '');
 const workScenePath = path.join(__dirname, '..', 'src', 'features', 'chat', 'work-scene-routes.js');
-const workSceneCode = fs.readFileSync(workScenePath, 'utf8')
-  .replace(/import[\s\S]+?from '\.\/personal-workbench-scene\.js';\r?\n/, '')
+const workSceneCode = stripSceneRegistryImport(fs.readFileSync(workScenePath, 'utf8'))
   .replace(/\bexport\s+\{[^}]+\};?/g, '')
   .replace(/\bexport\s+/g, '');
 const personalWorkbenchPath = path.join(__dirname, '..', 'src', 'features', 'chat', 'personal-workbench-scene.js');
-const personalWorkbenchCode = fs.readFileSync(personalWorkbenchPath, 'utf8')
+const personalWorkbenchCode = stripSceneRegistryImport(fs.readFileSync(personalWorkbenchPath, 'utf8'))
   .replace(/\bexport\s+\{[^}]+\};?/g, '')
   .replace(/\bexport\s+/g, '');
 
 const ctx = {};
 vm.createContext(ctx);
-vm.runInContext(`${code}
+vm.runInContext(`${sceneRegistryCode}
+${code}
 this.PINVOU_MODE_STORAGE_KEY = PINVOU_MODE_STORAGE_KEY;
 this.PINVOU_MODES = PINVOU_MODES;
 this.SUBTABS = SUBTABS;

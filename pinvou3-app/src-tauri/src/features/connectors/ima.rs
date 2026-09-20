@@ -332,14 +332,12 @@ pub async fn ima_connect(client_id: String, api_key: String) -> Result<Value, St
             // 新装技能默认加入 DenyAll scope（当前 code）禁用集（外部能力显式
             // 开启）；在线会话组合目录
             // 由命令层（connectors::ima_connect）重写。
-            // 注意引用 marketplace::skill_scope（持久化层）而非 assistant：避免
+            // 注意引用 marketplace::scope（持久化层）而非 assistant：避免
             // connectors → assistant 依赖环（架构守卫 rust_feature_cycles）。
             // 持久化失败 fail-visible（评审 #455 R13-B3）：与上方 install 的 Err
             // 同样走整体回滚（撤销 secrets），不让技能以零同意上线。
-            crate::features::marketplace::skill_scope::sync_deny_all_scopes_after_skill_install(
-                IMA_SKILL_ID,
-            )
-            .map_err(|e| {
+            crate::features::marketplace::scope::sync_deny_all_scopes_after_install(IMA_SKILL_ID)
+                .map_err(|e| {
                 // 前端 fire-and-forget 调用可能吞掉该 Err（评审 #455 R16-MAJOR2），此处必须留痕。
                 log::warn!("[ima] 技能默认关闭状态落盘失败: {e}");
                 format!(
@@ -379,9 +377,9 @@ pub async fn ima_logout() -> Result<Value, String> {
         let api_key_result = store.delete(&api_key_ref());
         let _ = SkillMarketplaceManager::new().uninstall(IMA_SKILL_ID);
         // 已卸载技能从各 scope 禁用集清除残留；在线会话组合目录由命令层
-        // （connectors::ima_logout）重写。引用 marketplace::skill_scope 避免
+        // （connectors::ima_logout）重写。引用 marketplace::scope 避免
         // connectors → assistant 依赖环。
-        crate::features::marketplace::skill_scope::remove_skill_from_disabled_scopes(IMA_SKILL_ID)?;
+        crate::features::marketplace::scope::remove_bundle_from_disabled_scopes(IMA_SKILL_ID)?;
         client_result.map_err(|e| e.user_message())?;
         api_key_result.map_err(|e| e.user_message())?;
         Ok::<Value, String>(json!({ "ok": true, "connected": false }))

@@ -1,4 +1,10 @@
 import { companionPackageMap } from '../../shared/companion-packages.js';
+import {
+  DATA_VISUALIZATION_SCENE_KEY,
+  DOCUMENT_WRITING_SCENE_KEY,
+  PPT_DESIGN_SCENE_KEY,
+  pinvouSceneTag,
+} from './scene-registry.js';
 
 function itemId(item) {
   return String((item && (item.id || item.backendId || item.skillId)) || '').trim();
@@ -62,18 +68,19 @@ async function listMarketplaceSkills(invoke) {
 
 // 用户可见文案由 UI 层按当前语言从 t.uiChatScenes[requirements.key] 取值，
 // 模块本身只输出场景 key 与能力清单，不携带任何语言上下文。
+// 定义键是场景注册表（scene-registry.js）的 `lane:key` 场景标签。
 const SCENE_CAPABILITY_DEFINITIONS = {
-  'work:document-writing': {
+  [pinvouSceneTag(DOCUMENT_WRITING_SCENE_KEY)]: {
     key: 'documentWriting',
     tools: ['gongwen'],
     skills: ['government-writing'],
   },
-  'design:data-visualization': {
+  [pinvouSceneTag(DATA_VISUALIZATION_SCENE_KEY)]: {
     key: 'dataVisualization',
     tools: [],
     skills: ['visualizer'],
   },
-  'design:ppt': {
+  [pinvouSceneTag(PPT_DESIGN_SCENE_KEY)]: {
     key: 'pptDesign',
     tools: ['pptx'],
     skills: ['pptx'],

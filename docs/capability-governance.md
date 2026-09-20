@@ -12,7 +12,7 @@
 > 统一包模型与「一个包 = 一个开关」已部分落地（`BundleStore` + `bundle_readiness`），
 > §3.3 的运行时工具名发现（现为 manifest 预测）、内置 CLI 连接器归并、统一失效入口
 > （现为各开关命令分别触发刷新）与 §6 的泛化命令面（现为 `set_disabled_connectors` /
-> `set_bundle_visibility` 等；`set_disabled_skills` 已随死代码清扫 PR #539 删除）为**已定方向、未实施**，实施时以本文档为准并更新本注记。
+> `set_bundle_visibility` 等；`set_disabled_skills` 已随死测试与死命令清理 PR #540 删除）为**已定方向、未实施**，实施时以本文档为准并更新本注记。
 
 ---
 
@@ -294,8 +294,8 @@ UI 或状态层出 bug 也放不出白名单外能力。已知开放侧翼：CLI
 - **`tool_credentials` / `tool_config_fields` 不按 (key, target) 去重**：
   两个收敛函数把 `config_fields`、`secret_env`、`secret_headers` 三路声明
   简单拼接（`bundle.rs`），同一 `(key, target)` 在多路重复声明时会重复出现在
-  `BundleInfo.credentials` / `config_fields` 与落盘的 `credential_keys` 中，
-  凭据收集弹窗与缺失判定可能重复处理同一凭据。
+  `BundleInfo.credentials` / `config_fields` 中，凭据收集弹窗与缺失判定可能
+  重复处理同一凭据。
 
 另有两条限制已随文内联登记：会话中关闭的上下文不可撤回边界（§3.3 末）、
 CLI 包真实执行面经 `bash` 的开放侧翼（§5 末）。

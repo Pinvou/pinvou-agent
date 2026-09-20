@@ -27,6 +27,7 @@ import { MoveToProjectDialog } from '../features/projects/MoveToProjectDialog.js
 import { RebindFolderDialog } from '../features/projects/RebindFolderDialog.jsx';
 import { classifyRebindError } from '../features/projects/rebindErrors.js';
 import { runSessionBatch } from '../shared/session-management.js';
+import { filterSessionsByTab, groupSessionsByLocalDate, sessionListComparator } from '../shared/session-list-pipeline.js';
 import { can, isWeb } from '../shared/platform.js';
 import { installGlobalMarkdownRenderer } from '../shared/markdown-renderer.js';
 import {
@@ -1032,16 +1033,10 @@ const NAV_PREFETCH = {
       // bs.settings 加载后 useEffect 同步进来。
       const [searchProvider, setSearchProvider] = useState('bing');
       const [enabledSearchProviders, setEnabledSearchProviders] = useState(['bing']);
-      const [searchApiKey, setSearchApiKey] = useState('');
       const [searchKeyDrafts, setSearchKeyDrafts] = useState({});
       const [searchKeyActions, setSearchKeyActions] = useState({});
       const searchConfigInitRef = useRef(false);
       const uiPrefsInitRef = useRef(false);
-      // engine 启动时生效的语言(= 进程启动时的 settings.language)。语言只写盘不重启
-      // engine,LLM 的 locale_tag 要重启 app 才更新 —— 草稿偏离此基线就提示「需重启」。
-      const bootedLanguageRef = useRef(null);
-      // dirty 基线:已保存的搜索源配置。草稿偏离基线才显示「保存并重启」操作条。
-      const savedSearchConfigRef = useRef(null);
 
       const [isSidebarOpen, setIsSidebarOpen] = useState(false);
       const [openSidePanelCount, setOpenSidePanelCount] = useState(0);
@@ -1251,16 +1246,13 @@ const NAV_PREFETCH = {
         }
         setSearchProvider(saved.provider);
         setEnabledSearchProviders(saved.enabledProviders);
-        setSearchApiKey(drafts[saved.provider] || '');
         setSearchKeyDrafts(drafts);
         setSearchKeyActions(actions);
-        savedSearchConfigRef.current = saved;
         searchConfigInitRef.current = true;
       };
       // One-shot bootstrap: restore persisted UI language/theme and notification prefs (desktop); on Web the language uses local storage.
       const initUiPrefsFromSettings = (settings) => {
         if (isWeb) {
-          bootedLanguageRef.current = language;
           // On web the color-scheme preference lives in localStorage; with no
           // choice made (first visit / storage disabled) follow the system,
           // light when undeterminable.
@@ -1271,8 +1263,6 @@ const NAV_PREFETCH = {
           const lang = TAG_TO_LANG[settings.language];
           // 落盘语言可能尚未装载(en/ja 惰性 chunk);ensure 后再切,失败停在系统语言
           if (lang && lang !== language) ensureLanguage(lang).then((ok) => { if (ok) setLanguage(lang); }).catch(() => {});
-          // engine 已用此语言启动,作为「需重启」基线(切语言不重启 engine,见 commands.rs)
-          bootedLanguageRef.current = lang || language;
           // `color_scheme` (light/dark/system) is the authoritative preference;
           // fresh installs keep `system`. `theme` (genesis/liquid-light/liquid-dark)
           // is the legacy field: the backend derives color_scheme from it once for
@@ -1359,22 +1349,8 @@ const NAV_PREFETCH = {
         // eslint-disable-next-line react-hooks/exhaustive-deps
       }, [bs, sessionSyncEpoch]);
 
-      function searchCredentialForProvider(provider) {
-        const saved = savedSearchConfigRef.current;
-        return (saved && saved.credentials && saved.credentials[provider]) || {};
-      }
-      function searchHasSavedKey(provider) {
-        const credential = searchCredentialForProvider(provider);
-        const state = credential.credential_state || (credential.has_secret ? 'configured' : 'missing');
-        return !!credential.has_secret || state === 'configured' || state === 'env_override';
-      }
       function searchProviderKeyAction(provider) {
         return searchKeyActions[provider] || 'keep_existing';
-      }
-      function searchProviderCredentialDirty(provider) {
-        const action = searchProviderKeyAction(provider);
-        const draft = searchKeyDrafts[provider] || '';
-        return action === 'delete' || (action === 'replace' && !!draft.trim());
       }
       function buildSearchSettingsPayload() {
         const baseSearch = (bs && bs.settings && bs.settings.search) || {};
@@ -1398,18 +1374,6 @@ const NAV_PREFETCH = {
           credentials,
         };
       }
-      // 搜索配置也影响 EngineConfig,需保存后重启进程才生效。
-      const savedSearch = savedSearchConfigRef.current;
-      const searchCredentialDirty = SEARCH_KEY_PROVIDERS.some(searchProviderCredentialDirty);
-      const providerSetKey = (providers) => JSON.stringify([...new Set(providers)].sort((a, b) => a.localeCompare(b)));
-      const searchNeedsRestart = !!savedSearch && (
-        searchProvider !== savedSearch.provider ||
-        providerSetKey(enabledSearchProviders) !== providerSetKey(savedSearch.enabledProviders || ['bing']) ||
-        searchCredentialDirty
-      );
-      // 语言已即时写盘+切 UI,但 LLM 的 locale_tag 要重启 engine 才生效 → 偏离启动语言就提示。
-      const languageNeedsRestart = !!bootedLanguageRef.current && language !== bootedLanguageRef.current;
-
       // Scheduled-run status copy (depends on the current language
       // dictionary); defined before the derived useMemos below so they can
       // depend on it.
@@ -1790,25 +1754,9 @@ const NAV_PREFETCH = {
       // changing the callback identity per render just to read a value.
       const allSidebarTasksRef = useRef(allSidebarTasks);
       allSidebarTasksRef.current = allSidebarTasks;
-      const sidebarTaskHistory = useMemo(() => allSidebarTasks
-        .filter((chat) => {
-          if (taskListFilter === 'pinned') return !!chat.pinned;
-          if (taskListFilter === 'code') return chat.taskKind === 'codex';
-          if (taskListFilter === 'scheduled') return chat.taskKind === 'scheduled';
-          return true;
-        })
-        .sort((a, b) => {
-          if (taskListSort === 'pinned_first' && !!a.pinned !== !!b.pinned) {
-            return a.pinned ? -1 : 1;
-          }
-          const aTime = (taskListSort === 'pinned_first' && a.pinned)
-            ? (a.pinnedAt || a.updatedAt)
-            : (a.updatedAt || a.pinnedAt);
-          const bTime = (taskListSort === 'pinned_first' && b.pinned)
-            ? (b.pinnedAt || b.updatedAt)
-            : (b.updatedAt || b.pinnedAt);
-          return String(bTime || '').localeCompare(String(aTime || ''));
-        }), [allSidebarTasks, taskListFilter, taskListSort]);
+      const sidebarTaskHistory = useMemo(() => (
+        filterSessionsByTab(allSidebarTasks, taskListFilter).sort(sessionListComparator(taskListSort))
+      ), [allSidebarTasks, taskListFilter, taskListSort]);
 
       // 任务列表按日期堆叠:今天默认展开、以往默认折叠;组内顺序沿用上面的筛选+排序结果,
       // 组间按日期倒序,无时间戳的落 'unknown' 组沉底。
@@ -1818,23 +1766,10 @@ const NAV_PREFETCH = {
       const sidebarPinnedHoisted = useMemo(() => (taskListSort === 'pinned_first'
         ? sidebarTaskHistory.filter(chat => !!chat.pinned)
         : []), [taskListSort, sidebarTaskHistory]);
-      const sidebarTaskGroups = useMemo(() => {
-        const groups = [];
-        const byDate = new Map();
-        sidebarTaskHistory.forEach(chat => {
-          if (sidebarPinnedHoisted.length && chat.pinned) return;
-          const key = localDateKey(chat.updatedAt || chat.pinnedAt);
-          if (!byDate.has(key)) byDate.set(key, []);
-          byDate.get(key).push(chat);
-        });
-        byDate.forEach((rows, key) => { groups.push({ key, rows }); });
-        groups.sort((a, b) => {
-          if (a.key === 'unknown') return 1;
-          if (b.key === 'unknown') return -1;
-          return b.key.localeCompare(a.key);
-        });
-        return groups;
-      }, [sidebarTaskHistory, sidebarPinnedHoisted]);
+      const sidebarTaskGroups = useMemo(() => groupSessionsByLocalDate(
+        sidebarTaskHistory.filter(chat => !(sidebarPinnedHoisted.length && chat.pinned)),
+        (chat) => localDateKey(chat.updatedAt || chat.pinnedAt),
+      ), [sidebarTaskHistory, sidebarPinnedHoisted]);
 
       // Project view (formerly the "Code" form): every session bound to a
       // real directory — code/ACP sessions and #445 bound work sessions — is
@@ -2772,7 +2707,6 @@ const NAV_PREFETCH = {
         if (p === searchProvider) return;
         setEnabledSearchProviders(prev => [...new Set(['bing', ...prev, p])]);
         setSearchProvider(p);
-        setSearchApiKey(searchKeyDrafts[p] || '');
       }
 
       function handleAddSearchProvider(p) {
@@ -2791,16 +2725,8 @@ const NAV_PREFETCH = {
         if (searchProvider === p) handleSetSearchProvider('bing');
       }
 
-      function handleTestSearchProvider(p) {
-        if (!bridge.available || !bridge.settings.testSearchProvider) return Promise.resolve(t.uiMainApp.searchTestUnavailable);
-        const action = searchProviderKeyAction(p);
-        const draft = searchKeyDrafts[p] || '';
-        return bridge.settings.testSearchProvider(p, action === 'replace' ? draft : '');
-      }
-
       function handleSetSearchApiKey(k, providerOverride) {
         const targetProvider = providerOverride || searchProvider;
-        if (targetProvider === searchProvider) setSearchApiKey(k);
         setSearchKeyDrafts(prev => ({ ...prev, [targetProvider]: k }));
         setSearchKeyActions(prev => ({ ...prev, [targetProvider]: k.trim() ? 'replace' : 'keep_existing' }));
       }
@@ -3758,9 +3684,7 @@ const NAV_PREFETCH = {
                   enabledSearchProviders={enabledSearchProviders}
                   onAddSearchProvider={handleAddSearchProvider}
                   onDeleteSearchProvider={handleDeleteSearchProvider}
-                  onTestSearchProvider={handleTestSearchProvider}
-                  searchApiKey={searchApiKey} setSearchApiKey={handleSetSearchApiKey}
-                  searchHasSavedKey={searchHasSavedKey(searchProvider)}
+                  setSearchApiKey={handleSetSearchApiKey}
                   savedModels={(bs && bs.savedModels) || []}
                   activeModelId={bs && bs.activeModelId}
                   onSaveModel={(m) => bridge.available && bridge.models.saveModel(m)}
@@ -3770,8 +3694,6 @@ const NAV_PREFETCH = {
                   onConfirmSearchConfig={handleConfirmSearchConfig}
                   onMemoryEnabledChange={handleSetMemoryEnabled}
                   onPetEnabledChange={handleSetPetEnabled}
-                  searchNeedsRestart={searchNeedsRestart}
-                  languageNeedsRestart={languageNeedsRestart}
                   bs={bs}
                   t={t}
                   sidebarDateGrouping={sidebarDateGrouping}
@@ -3792,7 +3714,7 @@ const NAV_PREFETCH = {
               />
             )}
             {currentView === 'toolStore' && <LazyToolStoreView t={t} onNewChat={handleNewChat} />}
-            {currentView === 'cardpool' && <LazyCardPoolView theme={activeTheme} t={t} bs={bs} onEquipped={() => { setCodeModeOn(false); setCurrentView('chat'); }} onAICreate={startAICard} initialMyOnly={poolMyOnly} />}
+            {currentView === 'cardpool' && <LazyCardPoolView theme={activeTheme} t={t} bs={bs} onAICreate={startAICard} initialMyOnly={poolMyOnly} />}
             {currentView === 'chat' && (
               <ChatView
                 {...chatViewBaseProps}
@@ -3868,7 +3790,7 @@ const NAV_PREFETCH = {
             {can('webAccessAdmin') && webAccessOpen && browserOverlayPublicationReady && (
               <ViewErrorBoundary t={t}>
               <Suspense fallback={null}>
-              <LazyWebAccessModal theme={activeTheme} bs={bs} t={t} onClose={() => setWebAccessOpen(false)} />
+              <LazyWebAccessModal bs={bs} t={t} onClose={() => setWebAccessOpen(false)} />
             </Suspense>
             </ViewErrorBoundary>
             )}
@@ -3878,7 +3800,7 @@ const NAV_PREFETCH = {
             {personaEditor && browserOverlayPublicationReady && (
               <ViewErrorBoundary t={t}>
               <Suspense fallback={null}>
-              <LazyPersonaEditorModal initial={personaEditor.initial} isDark={activeTheme === 'dark'} t={t}
+              <LazyPersonaEditorModal initial={personaEditor.initial} t={t}
                 onClose={() => setPersonaEditor(null)}
                 onSaved={(sum) => { const isEdit = personaEditor.initial && personaEditor.initial.id; setPersonaEditor(null); if (!isEdit) setSavedConfirm({ name: sum && sum.name }); }}
                 onDeleted={() => setPersonaEditor(null)} />

@@ -1,11 +1,18 @@
 use super::prelude::*;
-use crate::features::pet::{
-    detach as detach_domain, pet_window as pet_domain, selected_pet as selected_pet_domain,
-};
+use crate::features::pet::{pet_window as pet_domain, selected_pet as selected_pet_domain};
 use pet_domain::*;
 use selected_pet_domain::*;
 
-async_command_passthrough!(detach_domain, begin_detach_drag(kind: String, id: Option<String>, app: AppHandle) -> Result<(), String>);
+/// 撕离拖拽入口：feature 侧为裸 fn（pet::detach 转发壳已扁平化），不适用
+/// domain 模块的 passthrough 宏，直接薄转发。
+#[tauri::command]
+pub async fn begin_detach_drag(
+    kind: String,
+    id: Option<String>,
+    app: AppHandle,
+) -> Result<(), String> {
+    crate::features::pet::begin_detach_drag(kind, id, app).await
+}
 
 async_command_passthrough!(pet_domain, set_pet_enabled(enabled: bool, app: AppHandle) -> Result<(), String>);
 async_command_passthrough!(pet_domain, get_pet_scale() -> Result<f64, String>);

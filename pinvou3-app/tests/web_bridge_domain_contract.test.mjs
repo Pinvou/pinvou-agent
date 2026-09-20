@@ -8,6 +8,9 @@ import { expectedWebBridgeApi } from './bridge_domain_contract.mjs';
 const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
 const webBridgeRoot = path.join(root, 'src', 'platform', 'web');
 const read = relativePath => fs.readFileSync(path.join(webBridgeRoot, relativePath), 'utf8');
+// bridge.js now delegates shared helpers to window.PinvouBridgeShared; index.html loads
+// the shared payload before both bridges, so VM harnesses must do the same first.
+const readSharedHelpers = () => fs.readFileSync(path.join(root, 'src', 'shared', 'bridge-shared-helpers.js'), 'utf8');
 
 const storage = new Map();
 const localStorage = {
@@ -70,6 +73,7 @@ const context = vm.createContext({
   TextDecoder,
 });
 
+vm.runInContext(readSharedHelpers(), context, { filename: 'shared/bridge-shared-helpers.js' });
 vm.runInContext(read('bridge.js'), context, { filename: 'platform/web/bridge.js' });
 const flat = windowObject.TauriBridge;
 assert.equal(typeof flat.getState, 'function', 'Web transport must expose its private flat state before adaptation');
@@ -261,12 +265,12 @@ unsubscribeSettings();
 
 const memorySources = {
   profile: { available: true }, preferences: { available: true }, work_context: { available: true },
-  current_focus: { available: true }, recent_activity: { available: true }, recent_work: { available: true },
-  pending: { available: true }, never: { available: true }, runtime: { available: true }, snapshot: { available: true },
+  current_focus: { available: true }, recent_activity: { available: true },
+  pending: { available: true }, runtime: { available: true }, snapshot: { available: true },
 };
 const memoryOverview = overrides => ({
   profile: null, preferences: [], work_context: [], current_focus: [], recent_activity: [],
-  recent_work: [], pending: [], never: [], runtime: null, snapshot_path: '', warnings: [],
+  pending: [], runtime: null, snapshot_path: '', warnings: [],
   sources: memorySources, ...(overrides || {}),
 });
 invokeResponse = async command => command === 'get_memory_overview'

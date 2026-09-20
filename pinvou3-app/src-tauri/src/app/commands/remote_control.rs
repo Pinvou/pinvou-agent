@@ -130,43 +130,45 @@ impl WebSessionOperation {
     }
 }
 
+/// 三组 `web_*_result` 折叠器的公共实现：日志只留组标签 + 操作名 + 底层错误，
+/// 对外固定 wire code `{prefix}_{operation}_failed`，绝不外泄宿主路径等底层
+/// 错误细节。`stable_web_error_codes_are_locked` 钉死全部 wire code。
+fn web_operation_result<T, E: std::fmt::Display>(
+    log_label: &str,
+    prefix: &str,
+    operation: &'static str,
+    result: Result<T, E>,
+) -> Result<T, String> {
+    result.map_err(|error| {
+        log::warn!("[remote_control] {log_label} {operation} failed: {error:#}");
+        format!("{prefix}_{operation}_failed")
+    })
+}
+
 fn web_session_result<T, E: std::fmt::Display>(
     operation: WebSessionOperation,
     result: Result<T, E>,
 ) -> Result<T, String> {
-    result.map_err(|error| {
-        log::warn!(
-            "[remote_control] Web session {} failed: {error}",
-            operation.as_str()
-        );
-        format!("web_session_{}_failed", operation.as_str())
-    })
+    web_operation_result("Web session", "web_session", operation.as_str(), result)
 }
 
 fn web_workspace_result<T, E: std::fmt::Display>(
     operation: WebWorkspaceOperation,
     result: Result<T, E>,
 ) -> Result<T, String> {
-    result.map_err(|error| {
-        log::warn!(
-            "[remote_control] Web code workspace {} failed: {error}",
-            operation.as_str()
-        );
-        format!("web_workspace_{}_failed", operation.as_str())
-    })
+    web_operation_result(
+        "Web code workspace",
+        "web_workspace",
+        operation.as_str(),
+        result,
+    )
 }
 
 fn web_acp_result<T, E: std::fmt::Display>(
     operation: WebAcpOperation,
     result: Result<T, E>,
 ) -> Result<T, String> {
-    result.map_err(|error| {
-        log::warn!(
-            "[remote_control] Web ACP {} failed: {error:#}",
-            operation.as_str()
-        );
-        format!("web_acp_{}_failed", operation.as_str())
-    })
+    web_operation_result("Web ACP", "web_acp", operation.as_str(), result)
 }
 
 fn require_main_webview(window: &WebviewWindow) -> Result<(), String> {
@@ -219,13 +221,6 @@ pub fn web_access_set_relay(
     manager: State<'_, RemoteControlManager>,
 ) -> Result<RelaySettingsInfo, String> {
     manager.set_relay_address(&address)
-}
-
-#[tauri::command]
-pub fn web_access_reset_relay(
-    manager: State<'_, RemoteControlManager>,
-) -> Result<RelaySettingsInfo, String> {
-    manager.reset_relay_address()
 }
 
 /// Desktop-only readiness handshake. It is intentionally absent from the Web
@@ -703,6 +698,10 @@ pub async fn web_access_upload_attachment_chunk(
     sha256: Option<String>,
     manager: State<'_, RemoteControlManager>,
 ) -> Result<Option<manager::WebAttachmentSummary>, String> {
+    // Base64 decode + 256 KiB chunk cap intentionally mirrors the desktop
+    // draft-upload command in app/commands/files.rs, but with its own cap
+    // constant (MAX_TRANSFER_CHUNK_BYTES) and wire copy; the flows enforce
+    // their caps in different layers and are not unified.
     let data = base64::engine::general_purpose::STANDARD
         .decode(data_base64)
         .map_err(|error| format!("decode attachment upload chunk: {error}"))?;
@@ -1281,8 +1280,6 @@ pub async fn web_access_respond_codex_acp_elicitation(
 fn project_acp_status_for_web(
     mut status: crate::features::codex_acp::CodexAcpStatus,
 ) -> crate::features::codex_acp::CodexAcpStatus {
-    status.adapter_path = None;
-    status.codex_path = None;
     status.login_url = None;
     status.login_code = None;
     status.error = None;

@@ -394,6 +394,37 @@ impl RemoteKnowledgeService {
         self.persist_local_owner_connection(endpoint, server, grant, token)
     }
 
+    /// 把新的所有者连接原位写进连接列表并持久化 + 同步内存副本：按 server_id
+    /// 命中原槽位则替换；未命中时 `insert_missing=true` 追加新连接（register
+    /// 首次授权），否则如实报错（rebind 只允许更新既有所有者连接，静默新建会
+    /// 掩盖「连接列表已被并发改动」）。最后按名称排序落盘。
+    ///
+    /// `_persistence`：调用方必须已持有的 persistence 锁——register 的凭据写入
+    /// 与连接落盘须在同一原子区间（落盘失败要回滚凭据），借 guard 证明锁在持、
+    /// 也避免 helper 内重复加锁死锁。
+    fn upsert_owner_connection(
+        &self,
+        connection: RemoteConnection,
+        insert_missing: bool,
+        _persistence: &parking_lot::MutexGuard<'_, ()>,
+    ) -> Result<RemoteConnection, String> {
+        let mut next = self.configured_connections();
+        if let Some(slot) = next
+            .iter_mut()
+            .find(|item| item.server_id == connection.server_id)
+        {
+            *slot = connection.clone();
+        } else if insert_missing {
+            next.push(connection.clone());
+        } else {
+            return Err("本机共享知识库连接已发生变化，请重试".to_string());
+        }
+        next.sort_by(|left, right| left.name.cmp(&right.name));
+        save_connections(&self.path, &next)?;
+        *self.connections.write() = next;
+        Ok(connection)
+    }
+
     fn persist_local_owner_connection(
         &self,
         endpoint: String,
@@ -420,17 +451,7 @@ impl RemoteKnowledgeService {
             .set(&reference, token)
             .map_err(|error| error.user_message())?;
 
-        let mut next = self.configured_connections();
-        if let Some(slot) = next
-            .iter_mut()
-            .find(|item| item.server_id == connection.server_id)
-        {
-            *slot = connection.clone();
-        } else {
-            next.push(connection.clone());
-        }
-        next.sort_by(|left, right| left.name.cmp(&right.name));
-        if let Err(error) = save_connections(&self.path, &next) {
+        if let Err(error) = self.upsert_owner_connection(connection.clone(), true, &_persistence) {
             let rollback = if let Some(previous_token) = previous_token {
                 self.credentials.set(&reference, &previous_token)
             } else {
@@ -444,7 +465,6 @@ impl RemoteKnowledgeService {
                 ),
             });
         }
-        *self.connections.write() = next;
         Ok(connection)
     }
 
@@ -485,16 +505,7 @@ impl RemoteKnowledgeService {
             legacy_insecure_http: false,
         };
         let _persistence = self.persistence.lock();
-        let mut next = self.configured_connections();
-        let slot = next
-            .iter_mut()
-            .find(|item| item.server_id == server.server_id)
-            .ok_or_else(|| "本机共享知识库连接已发生变化，请重试".to_string())?;
-        *slot = connection.clone();
-        next.sort_by(|left, right| left.name.cmp(&right.name));
-        save_connections(&self.path, &next)?;
-        *self.connections.write() = next;
-        Ok(connection)
+        self.upsert_owner_connection(connection, false, &_persistence)
     }
 
     pub fn pending_joins(&self) -> Vec<PendingJoin> {

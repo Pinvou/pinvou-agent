@@ -43,20 +43,14 @@ pub struct ImportJobState {
     pub running: bool,
     pub resumable: bool,
     pub collection_id: i64,
-    /// idle / preparing / parsing / interrupted / done / done_with_errors / cancelled
-    pub phase: String,
     /// 已处理文件数（成功、跳过和失败）。
     pub done: u64,
     pub total: u64,
-    pub completed: u64,
-    pub skipped: u64,
     pub failed: u64,
     pub current_path: Option<String>,
     pub current_chunks_done: u64,
     pub current_chunks_total: u64,
     pub failed_files: Vec<FailedImportFile>,
-    pub started_at: i64,
-    pub finished_at: i64,
 }
 
 #[derive(Clone)]
@@ -382,8 +376,7 @@ impl ImportJobStore {
         let c = self.conn.lock();
         let row = if let Some(id) = job_id {
             c.query_row(
-                "SELECT id,collection_id,state,created_at,COALESCE(finished_at,0) \
-                 FROM knowledge_import_jobs WHERE id=?1",
+                "SELECT id,collection_id,state FROM knowledge_import_jobs WHERE id=?1",
                 params![id],
                 read_job_row,
             )
@@ -392,7 +385,7 @@ impl ImportJobStore {
             // 当前运行/可恢复/有失败项的任务始终优先于普通历史任务，避免新的成功任务
             // 遮蔽仍需用户处理的旧失败任务。多个失败任务按更新时间依次处理即可。
             c.query_row(
-                "SELECT id,collection_id,state,created_at,COALESCE(finished_at,0) \
+                "SELECT id,collection_id,state \
                  FROM knowledge_import_jobs ORDER BY \
                  CASE state \
                    WHEN 'preparing' THEN 0 WHEN 'running' THEN 0 \
@@ -403,7 +396,7 @@ impl ImportJobStore {
             )
             .optional()?
         };
-        let Some((id, collection_id, phase, started_at, finished_at)) = row else {
+        let Some((id, collection_id, phase)) = row else {
             return Ok(None);
         };
         let (total, completed, skipped, failed): (i64, i64, i64, i64) = c.query_row(
@@ -452,33 +445,19 @@ impl ImportJobStore {
             running: matches!(phase.as_str(), "preparing" | "running"),
             resumable: phase == "interrupted",
             collection_id,
-            phase: match phase.as_str() {
-                "running" => "parsing".into(),
-                other => other.into(),
-            },
             done: (completed + skipped + failed) as u64,
             total: total as u64,
-            completed: completed as u64,
-            skipped: skipped as u64,
             failed: failed as u64,
             current_path,
             current_chunks_done,
             current_chunks_total,
             failed_files,
-            started_at,
-            finished_at,
         }))
     }
 }
 
-fn read_job_row(row: &rusqlite::Row<'_>) -> rusqlite::Result<(String, i64, String, i64, i64)> {
-    Ok((
-        row.get(0)?,
-        row.get(1)?,
-        row.get(2)?,
-        row.get(3)?,
-        row.get(4)?,
-    ))
+fn read_job_row(row: &rusqlite::Row<'_>) -> rusqlite::Result<(String, i64, String)> {
+    Ok((row.get(0)?, row.get(1)?, row.get(2)?))
 }
 
 pub(super) fn unique_existing_files(files: impl IntoIterator<Item = PathBuf>) -> Vec<PathBuf> {
@@ -548,7 +527,9 @@ mod tests {
 
         let recovered = jobs.recover_interrupted().unwrap().unwrap();
         assert!(recovered.resumable);
-        assert_eq!(recovered.completed, 1);
+        // a.md 已完成、b.md 退回 pending：done 只计已完成的那份。
+        assert_eq!(recovered.done, 1);
+        assert_eq!(recovered.total, 2);
         let pending: String = jobs
             .conn
             .lock()
@@ -690,8 +671,8 @@ mod tests {
 
         assert!(jobs.retry_item(&job_id, first.id).is_err());
         let job_state = jobs.state(&job_id).unwrap();
-        assert_eq!(
-            job_state.phase, "cancelled",
+        assert!(
+            !job_state.running && !job_state.resumable,
             "已取消任务不得被单文件重试复活"
         );
         let item_state: String = jobs

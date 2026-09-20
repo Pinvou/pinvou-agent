@@ -61,7 +61,10 @@ vm.runInContext(
   assert.match(chatSource, /\{!su\.installing && \(/);
 
   const voiceInputStart = bridgeSource.indexOf("  async function startVoiceInput(");
-  const voiceInputEnd = bridgeSource.indexOf("\n  function cancelVoiceInput", voiceInputStart);
+  // dedup 后 cancelVoiceInput 变为无缩进的转发函数
+  const voiceInputEnd = bridgeSource.includes("\nfunction cancelVoiceInput", voiceInputStart)
+    ? bridgeSource.indexOf("\nfunction cancelVoiceInput", voiceInputStart)
+    : bridgeSource.indexOf("\n  function cancelVoiceInput", voiceInputStart);
   assert.notStrictEqual(voiceInputStart, -1, "startVoiceInput must exist");
   assert.notStrictEqual(voiceInputEnd, -1, "startVoiceInput boundary must exist");
 

@@ -1,5 +1,4 @@
 use std::sync::OnceLock;
-use std::time::Instant;
 
 use parking_lot::Mutex;
 use windows_sys::Win32::Foundation::FILETIME;
@@ -11,7 +10,7 @@ use windows_sys::Win32::System::Registry::{
     HKEY, HKEY_LOCAL_MACHINE, KEY_READ, REG_EXPAND_SZ, REG_SZ, RegCloseKey, RegOpenKeyExW,
     RegQueryValueExW,
 };
-use windows_sys::Win32::System::Threading::{GetCurrentProcess, GetProcessTimes, GetSystemTimes};
+use windows_sys::Win32::System::Threading::GetSystemTimes;
 
 use super::super::CpuSnapshot;
 
@@ -23,24 +22,15 @@ struct SystemTimes {
     total_100ns: u64,
 }
 
-#[derive(Debug, Clone, Copy)]
-struct ProcessTimes {
-    cpu_100ns: u64,
-    sampled_at: Instant,
-}
-
 #[derive(Debug, Default)]
 struct CpuSampleState {
     system: Option<SystemTimes>,
-    process: Option<ProcessTimes>,
     pdh: Option<PdhCpuCounter>,
 }
 
 pub fn cpu_snapshot() -> Option<CpuSnapshot> {
-    let logical_processors = logical_processor_count();
     let name = cpu_name().unwrap_or_else(|| "CPU".to_string());
     let system = read_system_times();
-    let process = read_process_times();
     let state = CPU_SAMPLE_STATE.get_or_init(|| Mutex::new(CpuSampleState::default()));
     let mut state = state.lock();
 
@@ -57,23 +47,14 @@ pub fn cpu_snapshot() -> Option<CpuSnapshot> {
         .as_mut()
         .and_then(PdhCpuCounter::sample)
         .or(system_usage);
-    let process_usage_pct = match (state.process, process) {
-        (Some(prev), Some(current)) => process_usage_pct(prev, current, logical_processors),
-        _ => None,
-    };
 
     if system.is_some() {
         state.system = system;
-    }
-    if process.is_some() {
-        state.process = process;
     }
 
     Some(CpuSnapshot {
         name,
         total_usage_pct,
-        process_usage_pct,
-        logical_processors,
     })
 }
 
@@ -186,32 +167,6 @@ fn read_system_times() -> Option<SystemTimes> {
     })
 }
 
-fn read_process_times() -> Option<ProcessTimes> {
-    let mut creation = FILETIME::default();
-    let mut exit = FILETIME::default();
-    let mut kernel = FILETIME::default();
-    let mut user = FILETIME::default();
-    // SAFETY: GetCurrentProcess returns a pseudo-handle valid for this
-    // process that needs no closing; all four out-parameters are pointers to
-    // live, writable FILETIME locals owned by this stack frame.
-    let ok = unsafe {
-        GetProcessTimes(
-            GetCurrentProcess(),
-            &mut creation,
-            &mut exit,
-            &mut kernel,
-            &mut user,
-        )
-    };
-    if ok == 0 {
-        return None;
-    }
-    Some(ProcessTimes {
-        cpu_100ns: filetime_to_u64(kernel).saturating_add(filetime_to_u64(user)),
-        sampled_at: Instant::now(),
-    })
-}
-
 fn system_usage_pct(prev: SystemTimes, current: SystemTimes) -> Option<f64> {
     let total_delta = current.total_100ns.checked_sub(prev.total_100ns)?;
     if total_delta == 0 {
@@ -222,40 +177,12 @@ fn system_usage_pct(prev: SystemTimes, current: SystemTimes) -> Option<f64> {
     Some(clamp_pct(busy_delta as f64 * 100.0 / total_delta as f64))
 }
 
-fn process_usage_pct(
-    prev: ProcessTimes,
-    current: ProcessTimes,
-    logical_processors: u32,
-) -> Option<f64> {
-    if logical_processors == 0 {
-        return None;
-    }
-    let cpu_delta = current.cpu_100ns.checked_sub(prev.cpu_100ns)?;
-    let elapsed_100ns = current
-        .sampled_at
-        .checked_duration_since(prev.sampled_at)?
-        .as_secs_f64()
-        * 10_000_000.0;
-    if elapsed_100ns <= 0.0 {
-        return None;
-    }
-    Some(clamp_pct(
-        cpu_delta as f64 * 100.0 / elapsed_100ns / logical_processors as f64,
-    ))
-}
-
 fn clamp_pct(value: f64) -> f64 {
     if value.is_finite() {
         value.clamp(0.0, 100.0)
     } else {
         0.0
     }
-}
-
-fn logical_processor_count() -> u32 {
-    std::thread::available_parallelism()
-        .map(|n| n.get() as u32)
-        .unwrap_or(0)
 }
 
 fn cpu_name() -> Option<String> {
@@ -348,7 +275,6 @@ fn filetime_to_u64(value: FILETIME) -> u64 {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use std::time::Duration;
 
     #[test]
     fn clamp_usage_pct_clamps_range() {
@@ -380,33 +306,8 @@ mod tests {
     }
 
     #[test]
-    fn process_usage_accounts_for_logical_processors() {
-        let now = Instant::now();
-        let prev = ProcessTimes {
-            cpu_100ns: 0,
-            sampled_at: now,
-        };
-        let current = ProcessTimes {
-            cpu_100ns: 10_000_000,
-            sampled_at: now + Duration::from_secs(1),
-        };
-        assert_eq!(process_usage_pct(prev, current, 4), Some(25.0));
-    }
-
-    #[test]
-    fn process_usage_returns_none_without_elapsed_wall_time() {
-        let now = Instant::now();
-        let sample = ProcessTimes {
-            cpu_100ns: 10,
-            sampled_at: now,
-        };
-        assert_eq!(process_usage_pct(sample, sample, 4), None);
-    }
-
-    #[test]
     fn cpu_snapshot_returns_basic_identity() {
         let snapshot = cpu_snapshot().expect("Windows CPU snapshot should include basic identity");
         assert!(!snapshot.name.trim().is_empty());
-        assert!(snapshot.logical_processors > 0);
     }
 }

@@ -12,7 +12,7 @@ use serde_json::{Value, json};
 use tauri::{AppHandle, Manager};
 
 use crate::features::connectors::connector_cli::{self as cc, CliCtx, ConnectorConn};
-use crate::features::connectors::skill_gate::ConnectorSkillGate;
+use crate::features::connectors::skill_gate::ConnectorGate;
 
 const ID: &str = "tmeet";
 const TMEET_NPM_SPEC: &str = "@tencentcloud/tmeet@1.0.18";
@@ -69,7 +69,8 @@ fn status_is_logged_in(s: &str) -> bool {
     s.contains("Logged in")
 }
 
-fn is_logged_in() -> bool {
+/// `tmeet auth status` 判当前是否已登录。会 spawn tmeet。
+pub(crate) fn is_logged_in() -> bool {
     if !tmeet_cli_present() {
         return false;
     }
@@ -109,29 +110,29 @@ fn safe_auth_log_line(line: &str) -> Option<String> {
     cc::safe_auth_log_line(line, true)
 }
 
-fn install_tmeet_cli() -> Result<bool, String> {
+fn install_tmeet_cli() -> Result<(), String> {
     let mut c = TMEET_CTX.base_cmd("npm");
     cc::apply_user_npm_prefix(&mut c);
     c.args(["install", "-g", TMEET_NPM_SPEC]);
-    cc::run_with_timeout(c, 180)
+    // run_with_timeout 只回成败布尔;失败统一落到 cli-install.log 可诊断。
+    cc::run_with_timeout(c, 180).and_then(|installed| {
+        if installed {
+            Ok(())
+        } else {
+            Err("腾讯会议 CLI 安装失败，请查看 ~/.pinvou3/cli-install.log".to_string())
+        }
+    })
 }
 
 /// Bootstrap: ensure the tmeet CLI is installed and at least 1.0.18.
 pub async fn tmeet_ensure_cli() -> Result<Value, String> {
-    tokio::task::spawn_blocking(|| {
-        if tmeet_cli_present() {
-            return Ok::<Value, String>(json!({ "ok": true, "already": true }));
-        }
-        if !install_tmeet_cli()? {
-            return Err("腾讯会议 CLI 安装失败，请查看 ~/.pinvou3/cli-install.log".to_string());
-        }
-        if !tmeet_cli_present() {
-            return Err("腾讯会议 CLI 安装完成但无法执行，请重试或修复应用运行时".to_string());
-        }
-        Ok::<Value, String>(json!({ "ok": true, "already": false }))
-    })
+    cc::ensure_cli_with(
+        "tmeet",
+        tmeet_cli_present,
+        "腾讯会议 CLI 安装完成但无法执行，请重试或修复应用运行时",
+        install_tmeet_cli,
+    )
     .await
-    .map_err(|e| format!("spawn_blocking: {e}"))?
 }
 
 /// 查询当前腾讯会议连接状态。只返回布尔,不把身份 / token 信息带进 webview。
@@ -404,64 +405,27 @@ pub async fn tmeet_logout() -> Result<Value, String> {
 
 // ─────────────────────── 腾讯会议 skill 门控 ────────────────────────
 
-/// 腾讯会议技能门控:停用标志文件机制走 [`ConnectorSkillGate`] 默认实现,
-/// `apply_skills` 指向 `apply_tmeet_skills`。
-struct TmeetGate;
-impl ConnectorSkillGate for TmeetGate {
-    fn id(&self) -> &'static str {
-        ID
-    }
-    fn disabled_filename(&self) -> &'static str {
-        "tmeet_disabled"
-    }
-    fn apply_skills(&self, visible: bool) -> Result<(), String> {
-        crate::features::runtime_bundle::platform::Pinvou3Bundle::paths()
-            .apply_tmeet_skills(visible)
-            .map_err(|e| format!("更新腾讯会议技能失败: {e}"))
-    }
-}
-const GATE: TmeetGate = TmeetGate;
-
-fn is_tmeet_disabled() -> bool {
-    GATE.is_disabled()
+/// 按 visible 写 / 删腾讯会议技能文件(调 [`Pinvou3Bundle::apply_tmeet_skills`])。
+pub(crate) fn apply_bundle_skills(visible: bool) -> std::io::Result<()> {
+    crate::features::runtime_bundle::platform::Pinvou3Bundle::paths().apply_tmeet_skills(visible)
 }
 
-pub fn tmeet_skills_should_show() -> bool {
-    !is_tmeet_disabled() && is_logged_in()
-}
+/// 腾讯会议门控表项:停用标志 + 就绪探测 + 技能落盘;
+/// apply/skills_state 等命令公共体见 [`ConnectorGate`]。
+pub(crate) static TMEET_GATE: ConnectorGate = ConnectorGate {
+    id: "tmeet",
+    disabled_filename: "tmeet_disabled",
+    display_name: "腾讯会议",
+    ready_probe: is_logged_in,
+    apply_bundle_skills: apply_bundle_skills,
+};
 
 pub async fn tmeet_apply_skills() -> Result<Value, String> {
-    let show = tokio::task::spawn_blocking(|| -> Result<bool, String> {
-        let show = tmeet_skills_should_show();
-        GATE.apply_skills(show)?;
-        Ok(show)
-    })
-    .await
-    .map_err(|e| format!("spawn_blocking: {e}"))??;
-    // scope 门禁同步：见 feishu_apply_skills 同名注释（code 默认关语义对齐）。
-    // 持久化失败 fail-visible（评审 #455 R13-B3）。
-    if show {
-        crate::features::marketplace::sync_deny_all_scopes_after_install("tmeet").map_err(|e| {
-            // 前端 fire-and-forget 调用可能吞掉该 Err（评审 #455 R16-MAJOR2），此处必须留痕。
-            log::warn!("[tmeet] 默认关闭状态落盘失败: {e}");
-            format!("tmeet 默认关闭状态落盘失败（新会话将默认开启，请在工具列表手动关闭）: {e}")
-        })?;
-    }
-    Ok(json!({ "visible": show }))
+    TMEET_GATE.apply_skills_command().await
 }
 
 pub async fn tmeet_skills_state() -> Result<Value, String> {
-    tokio::task::spawn_blocking(|| {
-        let disabled = is_tmeet_disabled();
-        let connected = is_logged_in();
-        Ok::<Value, String>(json!({
-            "connected": connected,
-            "enabled": !disabled,
-            "visible": connected && !disabled,
-        }))
-    })
-    .await
-    .map_err(|e| format!("spawn_blocking: {e}"))?
+    TMEET_GATE.skills_state_command().await
 }
 
 #[cfg(test)]
