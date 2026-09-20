@@ -1271,8 +1271,9 @@ const withUiTimeout = (promise, timeoutMs, fallbackResult) => {
         track(ev.listen('wecom:connected', () => {
           setWecomQr(null); setBusyId((current) => releaseBusy(current, 'wecom'));
           // 连上 → 按 DenyAll 规则写技能（默认关，需显式开启）;连接态经 readiness 重取。
-          // 评审 #455 R15-MAJOR2：后端 fail-visible 的同步失败不能在此被吞——落 error 弹窗
-          // （标题用翻译文案，subtitle 沿用 wecom:error 的后端消息先例），否则包会以零同意上线。
+          // 评审 #455 R15-MAJOR2：后端 fail-visible 的同步失败不能在此被吞——落 error 弹窗。
+          // Round-2 review：subtitle 用翻译引导句包裹后端详情（wecomSkillsFailed，同
+          // dingtalkSkillsFailed 先例），不能把后端中文原文直接渲染给 en/ja 用户。
           invokeTauri('wecom_apply_skills').then(() => {
             loadBackendState();
             setAlert({ visible: true, loading: false, title: storeCopy.connectedTool(storeCopy.toolNames.wecom), subtitle: '', isInstall: true, isError: false, toolId: 'wecom' });
@@ -1280,7 +1281,7 @@ const withUiTimeout = (promise, timeoutMs, fallbackResult) => {
           }).catch((e) => {
             console.error('wecom apply skills failed:', e);
             loadBackendState();
-            setAlert({ visible: true, loading: false, title: storeCopy.connectFailed(storeCopy.toolNames.wecom), subtitle: String(e).slice(0, 240), isError: true, toolId: 'wecom' });
+            setAlert({ visible: true, loading: false, title: storeCopy.connectFailed(storeCopy.toolNames.wecom), subtitle: storeCopy.wecomSkillsFailed(String(e).slice(0, 200)), isError: true, toolId: 'wecom' });
           });
         }));
         track(ev.listen('wecom:error', (e) => {

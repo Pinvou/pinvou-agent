@@ -1854,6 +1854,10 @@ const ToolWelcomeCard = ({ toolId, _theme, t, onSend }) => {
           setWelcomeToolId(null);
           welcomeToolIdRef.current = null;
           welcomeSessionKeyRef.current = null;
+          // Round-2 review: drop any in-flight opt-in attempt slot from the
+          // previous session — a send in a new card-less session must never
+          // join it (it would inherit the previous pack's failure banner).
+          welcomeOptInAttemptRef.current = null;
         }
         // justInstalledTool stays in the deps (a one-shot directive; parent
         // rerenders do not retrigger: the effect clears it immediately via

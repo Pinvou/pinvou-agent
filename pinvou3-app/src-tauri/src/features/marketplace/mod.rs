@@ -7,7 +7,7 @@
 //! 本模块是 facade:把原本 2600+ 行的 god-module 按职责拆成子模块,
 //! 对外 pub 面通过 `pub use` 保持不变。
 //!
-// architecture-guard: allow-target-cfg -- fail-closed regression tests for unreadable state files need a chmod 000 fixture; test-only inline cfg(unix)+PermissionsExt (same exemption precedent as package_export.rs, review #455 R9-M5); a real open() probe guards against running as root, Windows is covered by link checks.
+// architecture-guard: allow-target-cfg -- fail-closed regression tests for unreadable state files need an unreadable (0o555 directory / 0o000 file) fixture; test-only inline cfg(unix)+PermissionsExt (same exemption precedent as package_export.rs, review #455 R9-M5); a real open() probe guards against running as root, Windows is covered by link checks.
 //!
 //! - `types`      — manifest/info/迁移结果等数据类型
 //! - `secrets`    — 密钥/凭证助手 + MarketplaceManager 的 secret 读写方法

@@ -17,7 +17,7 @@
 //! 映射到所属包（companion → MCP/CLI 包，独立技能 → 自身）；`skill:` 前缀跨文件借道
 //! 残留统一剥除并清出连接器文件。迁移幂等，失败回退默认值（安全兜底）。
 //!
-// architecture-guard: allow-target-cfg -- the round-13 B3 install-sync persist-failure regression needs an unreadable (0o555 directory / 0o000 file) fixture; test-only inline cfg(unix)+PermissionsExt (same exemption precedent as mod.rs / package_export.rs, review #455); a real open() probe guards against running as root, Windows is covered by link checks.
+// architecture-guard: allow-target-cfg -- the unix regression tests in this file (the round-13 B3 install-sync persist failure and the round-14 #2 freeze memo) need unreadable (0o555 directory / 0o000 file) fixtures; test-only inline cfg(unix)+PermissionsExt (same exemption precedent as mod.rs / package_export.rs, review #455); a real open() probe guards against running as root, Windows is covered by link checks.
 //!
 //! 依赖方向：本模块与 `bundle` / `skill_marketplace` 同属 marketplace 领域，只依赖
 //! `platform::paths` 与 marketplace 内既有类型，不反向依赖 assistant 运行时。
@@ -106,9 +106,14 @@ static UNPERSISTED_VERDICT: Mutex<Option<(PathBuf, DisabledBundlesFile)>> = Mute
 
 /// In-process memo for corrupt-recovery "quarantine kept, overwrite save
 /// failed" (review #455 R9-M1): when the recovery save fails the corrupt
-/// original is still on disk; without remembering this, the next read would
-/// re-quarantine (fresh nanosecond timestamp) → `.corrupt.*` copies accumulate
-/// unboundedly — the very behavior this PR flags as a blocker elsewhere. Reads
+/// original is still on disk and every subsequent read re-enters the corrupt
+/// branch. The no-sibling quarantine rule already caps `.corrupt.*`
+/// accumulation, so the memo's residual value is suppressing the pointless
+/// repeated failed-write attempts (quarantine skip + save attempt) on every
+/// read while the environment is broken — and it must NOT self-heal by
+/// rewriting the file behind a later reader's back once the environment
+/// recovers (the next WRITER owns that transition; pinned by
+/// recycle_bin's `corrupt_recovery_pins_no_sibling_rule_and_memo`). Reads
 /// hitting the memo reuse the in-memory fail-closed state directly; any
 /// successful save (the file becomes valid JSON again) clears it, and the
 /// process self-heals.

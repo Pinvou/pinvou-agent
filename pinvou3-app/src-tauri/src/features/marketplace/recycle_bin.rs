@@ -1,6 +1,8 @@
-// architecture-guard: allow-target-cfg -- the round-11 M3 regression test
-// (restore_consent_gate_persist_failure_is_retryable) needs a read-only-home
-// fixture (chmod 0555) to force the consent-gate persist failure; test-only
+// architecture-guard: allow-target-cfg -- the unix regression tests in this
+// file (restore_consent_gate_persist_failure_is_retryable, the round-13 B2
+// restore rollback, corrupt_recovery_pins_no_sibling_rule_and_memo,
+// restore_secrets_pack_into_uninitialized_scope_persists_consent) need
+// read-only-home (0o555 directory) fixtures; test-only
 // inline cfg(unix)+PermissionsExt, same exemption precedent as
 // package_export.rs / marketplace/mod.rs (review #455 R9-M5). A write probe
 // guards against running as root (loud ROOT-SKIP marker, round-11 m12);
@@ -1625,17 +1627,60 @@ mod tests {
         let _ = std::fs::remove_dir_all(&tmp);
     }
 
-    /// Round-15 minor 3: the `PENDING_CORRUPT_RECOVERY` memo is load-bearing
-    /// ("quarantine kept, overwrite failed — attempt once, then reuse") but was
-    /// completely unpinned. Fixture: a corrupt `disabled_bundles.json` whose
-    /// no-sibling sidecar is pre-seeded (so the quarantine is skipped while the
-    /// overwrite still runs against a read-only home), then a second read must
-    /// reuse the memo without re-quarantining, and a successful save must clear
-    /// the memo by making the file the truth again.
+    /// Round-15 minor 3, restructured after the round-2 review (the previous
+    /// form passed with the memo AND the no-sibling rule deleted — every
+    /// quarantine write failed under the read-only home, so "one sidecar" was
+    /// true coincidentally). Two distinguishable pins:
+    /// - Part 1 (writable home) pins the no-sibling rule: a second corrupt
+    ///   read must not add a second sidecar (deleting the rule → count 2).
+    /// - Part 2 (read-only home) pins `PENDING_CORRUPT_RECOVERY`: a read
+    ///   after the home becomes writable must return the memo WITHOUT
+    ///   touching disk — the corrupt bytes are still on file (deleting the
+    ///   memo → the read's self-heal overwrites them). A successful writer
+    ///   then clears the memo and the file becomes the truth again.
     #[cfg(unix)]
     #[test]
-    fn corrupt_recovery_memo_pins_single_quarantine_and_reuse() {
+    fn corrupt_recovery_pins_no_sibling_rule_and_memo() {
         use std::os::unix::fs::PermissionsExt;
+
+        // Part 1 — writable home: the no-sibling rule caps sidecar copies.
+        with_temp_home(|| {
+            let path = crate::platform::paths::pinvou3_home().join("disabled_bundles.json");
+            std::fs::write(&path, b"not-json{{{").unwrap();
+            let file = load_disabled_bundles_file();
+            assert!(
+                file.plain_defaults_migrated && !file.initialized.contains("plain"),
+                "fail-closed recovered state: {file:?}"
+            );
+            assert_eq!(
+                quarantine_copy_count(),
+                1,
+                "first corrupt read quarantines once"
+            );
+            assert!(
+                std::fs::read_to_string(&path)
+                    .unwrap()
+                    .contains("plain_defaults_migrated"),
+                "a writable home self-heals on the same read"
+            );
+
+            // Corrupt again: the sibling from the first read must suppress the
+            // second quarantine (the overwrite itself succeeds and heals).
+            std::fs::write(&path, b"not-json{{{").unwrap();
+            let file = load_disabled_bundles_file();
+            assert!(
+                file.plain_defaults_migrated && !file.initialized.contains("plain"),
+                "second recovery: {file:?}"
+            );
+            assert_eq!(
+                quarantine_copy_count(),
+                1,
+                "the no-sibling rule must cap the sidecar at one"
+            );
+        });
+
+        // Part 2 — read-only home: the memo carries the recovery and defers
+        // to the next writer without touching disk.
         with_temp_home(|| {
             let path = crate::platform::paths::pinvou3_home().join("disabled_bundles.json");
             std::fs::write(&path, b"not-json{{{").unwrap();
@@ -1651,7 +1696,7 @@ mod tests {
                 let _ = std::fs::remove_file(&probe);
                 std::fs::set_permissions(&home, std::fs::Permissions::from_mode(0o755)).unwrap();
                 eprintln!(
-                    "ROOT-SKIP[corrupt_recovery_memo_pins_single_quarantine_and_reuse]: running as root - read-only home fixture stays writable; NOT exercised"
+                    "ROOT-SKIP[corrupt_recovery_pins_no_sibling_rule_and_memo]: running as root - read-only home fixture stays writable; NOT exercised"
                 );
                 return;
             }
@@ -1671,15 +1716,21 @@ mod tests {
                 file.plain_defaults_migrated && !file.initialized.contains("plain"),
                 "memo hit must reuse the recovery: {file:?}"
             );
+
+            // The memo is load-bearing: with the home writable again, a READ
+            // (not a writer) must not touch disk — the corrupt bytes survive.
+            // Without the memo, this read's fail-closed reset would overwrite
+            // the file and self-heal it, a distinguishable on-disk state.
+            std::fs::set_permissions(&home, std::fs::Permissions::from_mode(0o755)).unwrap();
+            let _ = load_disabled_bundles_file();
             assert_eq!(
-                quarantine_copy_count(),
-                1,
-                "memo hit must not re-quarantine"
+                std::fs::read(&path).unwrap(),
+                b"not-json{{{".to_vec(),
+                "the memo-hit read must not rewrite the corrupt file"
             );
 
-            // A successful save clears the memo: the file is the truth again.
-            std::fs::set_permissions(&home, std::fs::Permissions::from_mode(0o755)).unwrap();
-            // The composer write always transitions (uninitialized →
+            // A successful writer clears the memo: the file is the truth
+            // again. The composer write always transitions (uninitialized →
             // initialized), unlike the install-sync — a no-op for
             // uninitialized scopes, so it would never persist here.
             crate::features::marketplace::scope::save_disabled_bundles_for(

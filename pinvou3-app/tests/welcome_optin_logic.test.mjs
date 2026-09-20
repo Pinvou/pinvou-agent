@@ -173,4 +173,40 @@ const { consumeWelcomeOptIn, resolveSendCapabilityStatus, runSharedWelcomeOptIn 
   assert.strictEqual(slot.current, null);
 }
 
+// 6c. The slot clear is identity-guarded: settling attempt A must not clear
+// the slot while attempt B (started later) is still in flight — a third
+// B-send joins B instead of re-running it (the unguarded-clear mutation is
+// the exact concurrency class round-16 minor 13 fixes).
+{
+  const slot = { current: null };
+  const runs = [];
+  const releases = {};
+  const gatedRun = (toolId) => new Promise((resolve) => {
+    releases[toolId] = () => resolve({ attempted: true, toolId });
+    runs.push(toolId);
+  });
+  const runFor = (toolId) => runSharedWelcomeOptIn(slot, { toolId, run: () => gatedRun(toolId) });
+  const a = runFor('gongwen');
+  await Promise.resolve();
+  await Promise.resolve();
+  let releaseB;
+  const bGate = new Promise((resolve) => { releaseB = resolve; });
+  const bAttempt = runSharedWelcomeOptIn(slot, {
+    toolId: 'visualizer',
+    run: () => { runs.push('visualizer-b'); return bGate.then(() => ({ attempted: true, toolId: 'visualizer' })); },
+  });
+  await Promise.resolve();
+  await Promise.resolve();
+  releases.gongwen();
+  await a;
+  assert.strictEqual(slot.current && slot.current.toolId, 'visualizer', 'settling A must not clear B\'s slot entry');
+  const bJoin = runFor('visualizer');
+  await Promise.resolve();
+  await Promise.resolve();
+  releaseB();
+  const [, bOutcome] = await Promise.all([bJoin, bAttempt]);
+  assert.strictEqual(bOutcome.toolId, 'visualizer');
+  assert.strictEqual(runs.filter((id) => id === 'visualizer-b').length, 1, 'the B-send joined the in-flight attempt instead of re-running');
+}
+
 console.log('welcome_optin_logic: ok');

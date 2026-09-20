@@ -856,7 +856,7 @@ desktopHint:'Install Obsidian on the desktop and create a vault first, then chec
 { key:'cli', label:'Install connector', sub:'dws · about 40 seconds on first use' },
 { key:'qr', label:'Scan to sign in', sub:'Scan with the DingTalk app' },
   ],
-  connFailed:'Connection failed', dingtalkSkillsFailed:err=>`DingTalk authorized, but enabling the skill failed: ${err}`, tmeetAuthIncomplete:'Tencent Meeting authorization is incomplete—finish the browser sign-in and retry',
+  connFailed:'Connection failed', dingtalkSkillsFailed:err=>`DingTalk authorized, but enabling the skill failed: ${err}`, wecomSkillsFailed:err=>`WeCom connected, but saving the tool state failed — new sessions will enable it by default; switch it off in the composer tools list: ${err}`, tmeetAuthIncomplete:'Tencent Meeting authorization is incomplete—finish the browser sign-in and retry',
   emptyNoMatch:'No matching tools found', emptyNoInstalled:'No tools installed yet', emptyNoTools:'No tools found',
   emptyNoMatchHint:'Try a different keyword, or check the spelling.', emptyNoInstalledHint:'Install connectors or skills from the store and they will appear here.', emptyNoInstalledHintReadonly:'No tools or skills installed on the desktop yet.',
   emptyNoToolsHint:'Try another search term or check the API documentation.',
