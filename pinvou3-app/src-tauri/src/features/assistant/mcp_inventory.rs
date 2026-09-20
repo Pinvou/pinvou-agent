@@ -45,10 +45,10 @@ fn render_inventory(tools: &[MarketplaceToolInfo], unavailable: &[String]) -> St
     entries.sort_by_key(|entry| entry.id);
     // Names are metadata, not instructions; keep them inside JSON strings and
     // prevent uploaded display names from closing the surrounding reminder.
-    let inventory = serde_json::to_string(&entries)
-        .unwrap_or_else(|_| "[]".to_string())
-        .replace('<', "\\u003c")
-        .replace('>', "\\u003e");
+    // 转义与卡片文案共用 personas 的信封标签出口，避免两份惯例各自漂移。
+    let inventory = crate::features::personas::escape_envelope_tag_chars(
+        &serde_json::to_string(&entries).unwrap_or_else(|_| "[]".to_string()),
+    );
     format!("市场 MCP 应用（当前会话模式）: {inventory}")
 }
 
