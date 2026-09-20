@@ -1489,7 +1489,7 @@ const NAV_PREFETCH = {
       // 日期组展开状态:未点过的组按默认值走(今天展开、以往折叠),点过后记住用户选择
       const [dateGroupOpen, setDateGroupOpen] = useState({});
       // Code-style sidebar: enabled by default in code mode (folder grouping +
-      // collapsed primary nav); the 全部/代码 pill switches style explicitly.
+      // collapsed primary nav); the 全部/项目 pill switches style explicitly.
       // null means the user never picked: standard list outside code mode, code
       // style inside code mode (the long-standing default). Once picked, the
       // choice is persisted and applies in every mode.
@@ -1501,7 +1501,7 @@ const NAV_PREFETCH = {
           return null;
         }
       });
-      // The 全部/代码 pill drives both state and the persisted choice in one place.
+      // The 全部/项目 pill drives both state and the persisted choice in one place.
       const setSidebarCodeStylePersisted = useCallback((next) => {
         setSidebarCodeStyle(next);
         try {
@@ -1535,7 +1535,7 @@ const NAV_PREFETCH = {
       // code sessions; only explicitly switching back to work, or opening a normal
       // chat session, exits it.
       const [codeModeOn, setCodeModeOn] = useState(false);
-      // 任务列表的展示形态由 全部/代码 胶囊决定;未显式选择(null)时普通模式
+      // 任务列表的展示形态由 全部/项目 胶囊决定;未显式选择(null)时普通模式
       // 默认「全部」标准列表、code 模式默认 code 样式(沿用既有默认)。
       const sidebarCodeListActive = sidebarCodeStyle === null ? codeModeOn : sidebarCodeStyle === 'code';
       // code 形态下「代码会话」筛选等同「全部」、「定时任务」恒为空(菜单已隐藏这两项);
@@ -3350,7 +3350,7 @@ const NAV_PREFETCH = {
                 <div data-testid="sidebar-recents" className="pt-5 pb-2 max-sm:pt-2">
                   <div ref={taskFilterRef} className="relative mb-2">
                     {/* 第一行:「任务列表」标题 + 查看全部/筛选按钮;
-                        第二行:全部/代码 胶囊 + 一键折叠(分组)按钮。
+                        第二行:全部/项目 胶囊 + 一键折叠(分组)按钮。
                         胶囊选择任务列表展示形态(标准列表 / code 样式按文件夹分组),
                         与是否处于 code 模式无关;折叠按钮切换下方任务分组
                         (日期组 / 文件夹组)的整体展开状态。 */}
@@ -3385,7 +3385,7 @@ const NAV_PREFETCH = {
                         </button>
                         </span>
                       </div>
-                      {/* 全部/代码 胶囊 + 一键折叠(分组)按钮:位于「任务列表」标题下方。
+                      {/* 全部/项目 胶囊 + 一键折叠(分组)按钮:位于「任务列表」标题下方。
                           flex-wrap 兜底:ja 等语言在 220px 最小宽度下此行已无富余
                           (实测正好占满),字体渲染偏宽的环境让折叠按钮换行而非溢出。 */}
                       <div className="flex flex-wrap items-center justify-between gap-2 px-1">
@@ -3508,8 +3508,8 @@ const NAV_PREFETCH = {
                                   // bridge.projects 仅桌面存在:web 上目录组不渲染
                                   // 死入口(点击无反馈违反显式不支持约定)。
                                   onConvert={bridge.projects && group.kind === 'folder' ? (name) => handleConvertFolderToProject(group.path, name) : undefined}
-                                  onRename={group.kind === 'project' ? (name) => handleRenameProject(group.projectId, name) : undefined}
-                                  onDelete={group.kind === 'project' ? () => handleDeleteProject(group.projectId) : undefined}
+                                  onRename={bridge.projects && group.kind === 'project' ? (name) => handleRenameProject(group.projectId, name) : undefined}
+                                  onDelete={bridge.projects && group.kind === 'project' ? () => handleDeleteProject(group.projectId) : undefined}
                                   onDropSession={bridge.projects && group.kind === 'project' ? (sessionId) => handleDropSessionOnProject(sessionId, group.projectId) : undefined}
                                   unavailableRoots={group.kind === 'project'
                                     ? (group.roots || [])

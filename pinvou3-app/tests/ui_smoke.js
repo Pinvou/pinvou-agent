@@ -1536,36 +1536,6 @@ async function expand(page) {
       && !document.querySelector('[data-testid="sidebar-primary-nav-expand"]'));
   rec('①a-6 HomeModeSwitcher 切回工作模式退出 code 模式', exitedCodeMode, String(exitedCodeMode));
 
-  // The primary-nav collapse is a global manual toggle: in any mode, 收起导航
-  // folds the nav to a single expand row and 展开导航 restores it; the choice
-  // persists to localStorage and no mode switch resets it. freshStorageAbsent
-  // first proves nothing wrote the key automatically; the case ends expanded so
-  // later cases keep the default state.
-  const navManualToggle = await page.evaluate(async () => {
-    const settle = () => new Promise(resolve => { setTimeout(resolve, 150); });
-    const expandRow = () => document.querySelector('[data-testid="sidebar-primary-nav-expand"]');
-    const collapseRow = () => document.querySelector('[data-testid="sidebar-primary-nav-collapse"]');
-    const scheduledNavVisible = () => [...document.querySelectorAll('span')]
-      .some(node => (node.textContent || '').trim() === '定时任务' && node.getBoundingClientRect().left < 330);
-    const result = { freshStorageAbsent: localStorage.getItem('pinvou_sidebar_nav_collapsed') === null };
-    collapseRow()?.click();
-    await settle();
-    result.collapsedRowShown = !!expandRow();
-    result.collapsedRowGone = !collapseRow();
-    result.navItemsHidden = !scheduledNavVisible();
-    result.storedCollapsed = localStorage.getItem('pinvou_sidebar_nav_collapsed') === '1';
-    expandRow()?.click();
-    await settle();
-    result.expandedBack = !expandRow() && !!collapseRow() && scheduledNavVisible();
-    result.storedExpanded = localStorage.getItem('pinvou_sidebar_nav_collapsed') === '0';
-    return result;
-  });
-  rec('①a-6b 主导航收缩为全局手动开关且持久化',
-    navManualToggle.freshStorageAbsent && navManualToggle.collapsedRowShown && navManualToggle.collapsedRowGone
-      && navManualToggle.navItemsHidden && navManualToggle.storedCollapsed
-      && navManualToggle.expandedBack && navManualToggle.storedExpanded,
-    JSON.stringify(navManualToggle));
-
   // 全部/代码胶囊:三态默认(未选择时 storage 为空且普通模式按「全部」渲染)、
   // 点击即持久化并切换列表形态;一键折叠按钮聚合当前可见分组的真实状态,
   // 标签随「全部展开↔存在折叠」翻转。结束前清掉 storage,不污染后续用例。

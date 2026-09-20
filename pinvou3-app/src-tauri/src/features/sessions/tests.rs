@@ -4,7 +4,7 @@
 //! `sessions/mod.rs`. These tests exercise the full store across every
 //! submodule, so they live next to the facade and pull in the re-exported
 //! public surface plus the few crate-visible helpers they need directly.
-// architecture-guard: allow-target-cfg -- the legacy-table sync-failure regression needs POSIX permission modes to make the atomic rewrite fail deterministically; PermissionsExt/from_mode do not exist on Windows, so the test is cfg(unix)-gated and no platform behavior leaks into shared code.
+// architecture-guard: allow-target-cfg -- the legacy-table sync-failure regression needs POSIX permission modes to make the atomic rewrite fail deterministically, and the symlink-alias regression needs a real directory symlink to emulate macOS /var → /private/var ancestor resolution; PermissionsExt/from_mode and std::os::unix::fs::symlink do not exist on Windows, so those tests are cfg(unix)-gated and no platform behavior leaks into shared code.
 
 use super::*;
 use crate::platform::paths;
@@ -464,6 +464,71 @@ fn rebound_plain_chat_bindings_are_scanned_and_rewritten() {
     let _ = std::fs::remove_dir_all(&from);
     let _ = std::fs::remove_dir_all(&elsewhere);
     let _ = std::fs::remove_dir_all(&sibling_prefix);
+    let _ = std::fs::remove_dir_all(&to);
+}
+
+/// Symlink-alias regression for the plain-chat lane (review #464 follow-up
+/// minor 12), analogous to the projects lane's two cfg(unix) tests: this lane
+/// folds LEXICALLY and never resolves symlinks itself — an alias caller works
+/// only because the command entry normalizes `from` through
+/// `rebind_source_display` (deepest-existing-ancestor resolution) before any
+/// lane sees it. Pin that contract: a binding stored in the canonical
+/// spelling (as bind-time canonicalization writes it) is invisible to the raw
+/// alias, matches once `from` is normalized, and the suffix cut lands exactly
+/// on the nested component. cfg(unix)-gated under the file-top
+/// allow-target-cfg exception: std::os::unix::fs::symlink does not exist on
+/// Windows.
+#[cfg(unix)]
+#[test]
+fn rebind_workspace_bindings_via_symlink_alias_needs_normalized_from() {
+    let (store, _g) = isolated_store();
+    let root = unique_temp_dir("rebind-symlink-alias");
+    let real = root.join("real");
+    let alias = root.join("alias");
+    std::fs::create_dir_all(real.join("proj").join("nested")).expect("create real dir");
+    std::os::unix::fs::symlink(&real, &alias).expect("symlink");
+
+    let session = store
+        .create_new("/model".into(), None, std::env::temp_dir())
+        .expect("create");
+    // Bind-time canonicalization stores the resolved spelling.
+    let bound = real.join("proj").join("nested");
+    store
+        .bind_session_workspace(&session.metadata.id, bound.clone())
+        .expect("bind");
+
+    // The raw alias spelling does not match the lexical fold — the lane
+    // deliberately does not resolve symlinks, so an unnormalized caller
+    // half-misses instead of half-migrating.
+    let from_alias = alias.join("proj");
+    assert!(
+        store.workspace_bindings_under(&from_alias).is_empty(),
+        "the raw alias spelling must not match a canonicalized binding"
+    );
+
+    // The command entry normalizes `from` through the deepest existing
+    // ancestor, landing on the stored spelling; the rebind then cuts the
+    // suffix in that domain.
+    let from = crate::features::projects::rebind_source_display(&from_alias);
+    assert_eq!(
+        store.workspace_bindings_under(&from),
+        vec![(session.metadata.id.clone(), bound.clone())]
+    );
+    let to = unique_temp_dir("rebind-symlink-alias-to");
+    std::fs::create_dir_all(&to).expect("create to dir");
+    let outcome = store.rebind_workspace_bindings(&from, &to).expect("rebind");
+    assert!(outcome.failed_session_ids.is_empty());
+    assert_eq!(
+        outcome.rebound,
+        vec![(session.metadata.id.clone(), to.join("nested"))],
+        "the suffix cut lands exactly on the nested component"
+    );
+    assert_eq!(
+        store.session_workspace_binding(&session.metadata.id),
+        Some(to.join("nested"))
+    );
+
+    let _ = std::fs::remove_dir_all(&root);
     let _ = std::fs::remove_dir_all(&to);
 }
 

@@ -215,15 +215,15 @@ const ProjectGroupHeader = ({
           <button>), one per root; rebinding one keeps the other entries.
           Multiple roots collapse into a +N expander (m3); the expanded
           container wraps instead of overflowing. */}
-      {visibleRoots.map((rootPath) => (
+      {visibleRoots.map((unavailableRoot) => (
         <button
-          key={rootPath}
+          key={unavailableRoot}
           type="button"
           data-testid="project-folder-unavailable"
-          title={rootPath}
-          aria-label={`${t.uiProjects.folderUnavailable} · ${t.uiProjects.rebindFolder} · ${rootPath}`}
+          title={unavailableRoot}
+          aria-label={`${t.uiProjects.folderUnavailable} · ${t.uiProjects.rebindFolder} · ${unavailableRoot}`}
           disabled={busy}
-          onClick={(e) => { e.stopPropagation(); onRebind && onRebind(rootPath); }}
+          onClick={(e) => { e.stopPropagation(); onRebind && onRebind(unavailableRoot); }}
           className="mr-2 shrink-0 max-w-[9rem] truncate rounded-full bg-[#FCE8E6] dark:bg-[#3C2A29] px-2 py-0.5 text-[11px] text-[#C5221F] dark:text-[#F28B82] hover:opacity-80 disabled:opacity-50"
         >
           {t.uiProjects.folderUnavailable} · {t.uiProjects.rebindFolder}

@@ -21,8 +21,10 @@
     const listen = context.listen;
 
     let fetchInFlight = false;
-    // 飞行中的 fetch 之后又来了个变更事件 → 结束后补一轮,防止快照滞留
-    // (评审 #448 finding 14:事件在 fetch 期间到达会被吞,侧栏一直用旧值)。
+    // A change event arriving while a fetch is in flight schedules one extra
+    // round after it settles, so the snapshot cannot go stale (review #448
+    // finding 14: an event landing mid-fetch would be swallowed and the
+    // sidebar would keep showing the old value).
     let refetchNeeded = false;
 
     function applySnapshot(snapshot) {
