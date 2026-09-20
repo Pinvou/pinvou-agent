@@ -7,7 +7,7 @@
 //   1. explicit assignment wins — assignments[sessionId] is a project id
 //      (or null = explicit move-out, which skips tier 2 on purpose);
 //   2. workspace path under a project root -> auto-group into that project
-//      (longest matching root wins);
+//      (projects ordered by (position, id), first root match wins — §9.9);
 //   3. implicit folder group by workspace path; temporary sessions merge into
 //      one bottom group (unchanged legacy behavior).
 // Projects sort by manual position, implicit folders follow by latest
@@ -83,21 +83,19 @@ function rootPath(root) {
   return root && typeof root === 'object' ? root.path : root;
 }
 
-// Longest root wins so nested project roots cannot steal sessions from a
-// deeper project (backend also rejects cross-project nesting, this is the
-// display-side guard for hand-edited state).
+// Membership follows the backend's §9.9 ruling: cross-project nesting is
+// legal, projects are ordered by (position, id), and the first project whose
+// roots contain the workspace wins — the old longest-root-wins rule is
+// retired (workspace-single-entry-blueprint.md).
 function matchProjectByPath(projects, workspacePath) {
-  let best = null;
-  let bestRoot = '';
-  projects.forEach((project) => {
-    (project && project.roots ? project.roots : []).forEach((root) => {
-      if (isUnderRoot(workspacePath, rootPath(root)) && String(rootPath(root)).length > bestRoot.length) {
-        best = project;
-        bestRoot = String(rootPath(root));
-      }
-    });
-  });
-  return best;
+  const ordered = [...projects].sort(
+    (a, b) => (a.position || 0) - (b.position || 0) || String(a.id).localeCompare(String(b.id)),
+  );
+  return (
+    ordered.find((project) =>
+      (project && project.roots ? project.roots : []).some((root) => isUnderRoot(workspacePath, rootPath(root))),
+    ) || null
+  );
 }
 
 // Resolve the project a session currently belongs to for UI affordances
