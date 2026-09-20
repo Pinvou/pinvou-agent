@@ -516,7 +516,7 @@ fn direct_skill_install_uninstall_scope_state_roundtrip() {
 
     // 用户关闭 visualizer（包开关统一落 disabled_bundles.json）→
     // 组合目录计算排除该技能。
-    save_disabled_bundles_for(ConnectorScope::Plain, &["visualizer".to_string()]);
+    save_disabled_bundles_for(ConnectorScope::Plain, &["visualizer".to_string()]).unwrap();
     install_marketplace_skill_sync("visualizer").unwrap();
     assert!(
         !sm::enabled_skills_for(ConnectorScope::Plain, None)

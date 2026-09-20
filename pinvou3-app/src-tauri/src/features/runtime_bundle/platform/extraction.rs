@@ -412,7 +412,10 @@ impl Pinvou3Bundle {
                     crate::features::marketplace::scope::save_disabled_bundles_for(
                         crate::features::marketplace::ConnectorScope::Plain,
                         &disabled,
-                    );
+                    )
+                    .unwrap_or_else(|error| {
+                        eprintln!("[scope] write disabled_bundles.json failed: {error}")
+                    });
                 }
                 // 代码会话的 code scope 同样清理残留。
                 crate::features::marketplace::scope::remove_bundle_from_disabled_scopes(tool_id);

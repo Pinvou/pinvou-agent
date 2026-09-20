@@ -887,18 +887,11 @@ pub async fn uninstall_marketplace_skill(
         .await
         .map_err(|e| format!("任务执行失败: {e}"))??;
     // 卸载影响两个 scope 的启用集：重写在线会话的组合目录。
-<<<<<<< HEAD
-    pool.refresh_live_sessions_skills().await;
     // The deny list is snapshot state in live engines, and uninstall (unlike
     // ima_logout) keeps the package's keyring credentials: a skill owning a
     // native tool (ima) would stay admitted and executable until respawn
     // without this refresh.
-    pool.refresh_disallowed_tools().await;
-    // 导入包的 CLI/技能脚本纳入 deny 规则集（M-6：import 路径热刷）。
-    pool.refresh_permission_rulesets().await;
-=======
-    hot_refresh(&pool, false).await;
->>>>>>> a1632882b (chore: sweep dead code and consolidate helpers)
+    hot_refresh(&pool, true).await;
     Ok(())
 }
 

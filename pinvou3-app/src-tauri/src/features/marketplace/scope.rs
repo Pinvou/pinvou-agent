@@ -364,10 +364,13 @@ pub fn load_disabled_bundles() -> Vec<String> {
 }
 
 /// 写全局（plain）被禁用的包 id 列表。测试专用（生产写一律走
-/// [`save_disabled_bundles_for`] 显式给 scope）。
+/// [`save_disabled_bundles_for`] 显式给 scope）。启动期 best-effort，
+/// 写失败降级为日志（调用方无法处理治理写失败）。
 #[cfg(test)]
 pub fn save_disabled_bundles(ids: &[String]) {
-    save_disabled_bundles_for(ConnectorScope::Plain, ids);
+    if let Err(error) = save_disabled_bundles_for(ConnectorScope::Plain, ids) {
+        eprintln!("[scope] write disabled_bundles.json failed: {error}");
+    }
 }
 
 /// 包安装/连接后同步所有 DenyAll 且已初始化的 scope：用户已改过这类会话开关时，
@@ -461,8 +464,8 @@ mod tests {
     fn bundles_roundtrip_per_scope() {
         with_temp_home("pinvou3-scope", || {
             assert!(load_disabled_bundles_for(ConnectorScope::Plain).is_empty());
-            save_disabled_bundles_for(ConnectorScope::Plain, &["weather".to_string()]);
-            save_disabled_bundles_for(ConnectorScope::Code, &["feishu".to_string()]);
+            save_disabled_bundles_for(ConnectorScope::Plain, &["weather".to_string()]).unwrap();
+            save_disabled_bundles_for(ConnectorScope::Code, &["feishu".to_string()]).unwrap();
             assert_eq!(
                 load_disabled_bundles_for(ConnectorScope::Plain),
                 vec!["weather".to_string()]
@@ -484,11 +487,12 @@ mod tests {
             assert!(load_hidden_bundles_for(ConnectorScope::Plain).is_empty());
 
             // Disable weather, hide weather + pptx (weather appears in both sets).
-            save_disabled_bundles_for(ConnectorScope::Plain, &["weather".to_string()]);
+            save_disabled_bundles_for(ConnectorScope::Plain, &["weather".to_string()]).unwrap();
             save_hidden_bundles_for(
                 ConnectorScope::Plain,
                 &["weather".to_string(), "pptx".to_string()],
-            );
+            )
+            .unwrap();
 
             // Visibility writes do not pollute the disabled set.
             assert_eq!(
@@ -511,8 +515,8 @@ mod tests {
     #[test]
     fn remove_bundle_clears_both_sets() {
         with_temp_home("pinvou3-scope", || {
-            save_disabled_bundles_for(ConnectorScope::Plain, &["weather".to_string()]);
-            save_hidden_bundles_for(ConnectorScope::Plain, &["weather".to_string()]);
+            save_disabled_bundles_for(ConnectorScope::Plain, &["weather".to_string()]).unwrap();
+            save_hidden_bundles_for(ConnectorScope::Plain, &["weather".to_string()]).unwrap();
             remove_bundle_from_disabled_scopes("weather");
             assert!(load_disabled_bundles_for(ConnectorScope::Plain).is_empty());
             assert!(load_hidden_bundles_for(ConnectorScope::Plain).is_empty());
@@ -566,8 +570,10 @@ mod tests {
     #[test]
     fn load_normalizes_stale_skill_id_after_claim_flip() {
         with_temp_home("pinvou3-scope", || {
-            save_disabled_bundles_for(ConnectorScope::Plain, &["government-writing".to_string()]);
-            save_hidden_bundles_for(ConnectorScope::Plain, &["government-writing".to_string()]);
+            save_disabled_bundles_for(ConnectorScope::Plain, &["government-writing".to_string()])
+                .unwrap();
+            save_hidden_bundles_for(ConnectorScope::Plain, &["government-writing".to_string()])
+                .unwrap();
             assert_eq!(
                 load_disabled_bundles_for(ConnectorScope::Plain),
                 vec!["government-writing".to_string()]

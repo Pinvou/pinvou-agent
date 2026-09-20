@@ -3347,8 +3347,9 @@ mod tests {
             "inventory interpretation belongs in the static session prompt"
         );
         use crate::features::marketplace::{ConnectorScope, save_disabled_bundles_for};
-        save_disabled_bundles_for(ConnectorScope::Plain, &["weather".into(), "qcc".into()]);
-        save_disabled_bundles_for(ConnectorScope::Code, &[]);
+        save_disabled_bundles_for(ConnectorScope::Plain, &["weather".into(), "qcc".into()])
+            .unwrap();
+        save_disabled_bundles_for(ConnectorScope::Code, &[]).unwrap();
 
         let inventory = |sid: &str| -> serde_json::Value {
             let Op::SendMessage { content, .. } = bridge
@@ -3403,7 +3404,7 @@ mod tests {
             crate::features::marketplace::unavailable_tool_names_for(ConnectorScope::Plain);
         assert!(denied.contains(&"mcp_weather_get_weather".to_string()));
         assert!(denied.contains(&"mcp_qcc-company_*".to_string()));
-        save_disabled_bundles_for(ConnectorScope::Plain, &[]);
+        save_disabled_bundles_for(ConnectorScope::Plain, &[]).unwrap();
         assert!(
             inventory("plain")
                 .as_array()
@@ -3902,7 +3903,8 @@ mod tests {
 
         // Re-enabled → script rule disappears (same computation as the hot
         // refresh; safety-net rules remain)
-        crate::features::marketplace::scope::save_disabled_bundles_for(ConnectorScope::Plain, &[]);
+        crate::features::marketplace::scope::save_disabled_bundles_for(ConnectorScope::Plain, &[])
+            .unwrap();
         assert!(
             bridge
                 .scope_deny_ruleset("sess-plain")

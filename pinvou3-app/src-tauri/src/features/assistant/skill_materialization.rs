@@ -489,14 +489,14 @@ mod tests {
                 .install("visualizer")
                 .unwrap();
 
-            save_disabled_bundles_for(ConnectorScope::Plain, &["visualizer".to_string()]);
+            save_disabled_bundles_for(ConnectorScope::Plain, &["visualizer".to_string()]).unwrap();
             let enabled = enabled_skills_for(ConnectorScope::Plain, None);
             assert!(
                 !enabled.iter().any(|(n, _)| n == "visualizer"),
                 "禁用 skill id 后应从组合目录排除"
             );
 
-            save_disabled_bundles_for(ConnectorScope::Plain, &[]);
+            save_disabled_bundles_for(ConnectorScope::Plain, &[]).unwrap();
             let enabled = enabled_skills_for(ConnectorScope::Plain, None);
             assert!(
                 enabled.iter().any(|(n, _)| n == "visualizer"),
@@ -580,7 +580,7 @@ mod tests {
             assert_eq!(src, &paths::user_skills_dir().join("visualizer"));
 
             // plain 关 visualizer → 组合集不含（market 版本也被 user 覆盖，整名排除）
-            save_disabled_bundles_for(ConnectorScope::Plain, &["visualizer".to_string()]);
+            save_disabled_bundles_for(ConnectorScope::Plain, &["visualizer".to_string()]).unwrap();
             let enabled = enabled_skills_for(ConnectorScope::Plain, None);
             assert!(!enabled.iter().any(|(n, _)| n == "visualizer"));
             assert!(enabled.iter().any(|(n, _)| n == "government-writing"));
@@ -614,10 +614,10 @@ mod tests {
             assert_eq!(names.len(), 4, "增量重写幂等：目录数不变: {names:?}");
 
             // 增量：关一个 → 目录删除；再开 → 目录回来
-            save_disabled_bundles_for(ConnectorScope::Plain, &["visualizer".to_string()]);
+            save_disabled_bundles_for(ConnectorScope::Plain, &["visualizer".to_string()]).unwrap();
             rewrite_session_skills(sid, ConnectorScope::Plain, None);
             assert!(!dir.join("visualizer").exists());
-            save_disabled_bundles_for(ConnectorScope::Plain, &[]);
+            save_disabled_bundles_for(ConnectorScope::Plain, &[]).unwrap();
             rewrite_session_skills(sid, ConnectorScope::Plain, None);
             assert!(dir.join("visualizer").exists());
         });
@@ -691,7 +691,7 @@ mod tests {
             // 本测试聚焦项目技能的门控与优先级覆盖。code scope「未初始化默认全禁」
             // 语义会把已装技能也排除掉，与测试意图无关——先显式初始化 code scope
             // （空禁用集 = 全部启用），让项目技能覆盖链路可被断言。
-            save_disabled_bundles_for(ConnectorScope::Code, &[]);
+            save_disabled_bundles_for(ConnectorScope::Code, &[]).unwrap();
 
             // 默认关：code 组合集不含项目技能
             let enabled = enabled_skills_for(ConnectorScope::Code, Some(&project));
