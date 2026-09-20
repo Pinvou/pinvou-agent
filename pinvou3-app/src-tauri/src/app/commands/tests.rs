@@ -725,8 +725,7 @@ fn mcp_uninstall_aborts_when_companion_uninstall_fails() {
     .unwrap();
     // The package-level disable entry (normalized to the package id while the
     // claim holds) must survive the abort.
-    crate::features::marketplace::save_disabled_bundles(&["government-writing".to_string()])
-        .unwrap();
+    crate::features::marketplace::save_disabled_bundles(&["government-writing".to_string()]);
 
     let err = uninstall_marketplace_tool_sync("gongwen").unwrap_err();
     assert!(

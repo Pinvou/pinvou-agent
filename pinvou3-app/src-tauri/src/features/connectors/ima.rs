@@ -343,11 +343,9 @@ fn ima_connect_sync_with_store<S: CredentialStore>(
         // 新装技能默认加入 DenyAll scope（当前 code）禁用集（外部能力显式
         // 开启）；在线会话组合目录
         // 由命令层（connectors::ima_connect）重写。
-        // 注意引用 marketplace::skill_scope（持久化层）而非 assistant：避免
+        // 注意引用 marketplace::scope（持久化层）而非 assistant：避免
         // connectors → assistant 依赖环（架构守卫 rust_feature_cycles）。
-        crate::features::marketplace::skill_scope::sync_deny_all_scopes_after_skill_install(
-            IMA_SKILL_ID,
-        )?;
+        crate::features::marketplace::scope::sync_deny_all_scopes_after_install(IMA_SKILL_ID)?;
         store
             .set(&client_id_ref(), client_id.trim())
             .map_err(|e| e.user_message())?;

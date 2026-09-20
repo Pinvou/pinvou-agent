@@ -1364,6 +1364,8 @@ jobs:
             'connector_introspection_guard_matches_complete_names_only' \
             'features::marketplace::scope::tests::' \
             'refuse' \
+            'preserves_consent_state' \
+            'connector_gate_registers_only_when_shown' \
             'features::projects::tests::' \
             'run_with_timeout_reaps_and_stays_bounded' \
             'reap_killed_child_' \

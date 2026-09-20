@@ -559,8 +559,7 @@ pub(super) fn uninstall_marketplace_tool_sync(tool_id: &str) -> Result<(), Strin
     // 已卸载的连接器从两个 scope 的禁用集移除(避免残留 id)。
     // A refused cleanup (lock unavailable, #515) only logs: the leftover entry
     // fails closed and the uninstall itself has already succeeded.
-    if let Err(error) = crate::features::marketplace::remove_bundle_from_disabled_scopes(tool_id)
-    {
+    if let Err(error) = crate::features::marketplace::remove_bundle_from_disabled_scopes(tool_id) {
         eprintln!("[marketplace] scope cleanup for {tool_id} skipped: {error}");
     }
     Ok(())
@@ -653,9 +652,7 @@ pub(super) fn install_marketplace_tool_companions(tool_id: &str) {
         // 新装的 companion 技能默认加入 DenyAll scope（当前 code）禁用集
         // （外部能力显式开启，与独立技能安装 install_marketplace_skill_sync 同语义）。
         if let Err(e) =
-            crate::features::marketplace::scope::sync_deny_all_scopes_after_install(
-                &sid,
-            )
+            crate::features::marketplace::scope::sync_deny_all_scopes_after_install(&sid)
         {
             eprintln!("[marketplace] companion skill '{sid}' DenyAll sync refused, skipped: {e}");
             continue;
@@ -1578,7 +1575,7 @@ mod tests {
     /// instead of silently flipping the package's consent state — the v1
     /// content and its enabled state stay intact.
     #[test]
-    fn reimport_conflict_preserves_package_and_consent_state() {
+    fn reimport_conflict_preserves_consent_state() {
         with_temp_home(|| {
             let plugin_json = r#"{"manifest_version":1,"id":"gate-rb-plugin","name":"p","components":{"skills":[{"id":"gate-rb-skill2","dir":"skills/gate-rb-skill2"}]}}"#;
             let zip_for = |skill_body: &str| {

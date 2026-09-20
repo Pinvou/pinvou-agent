@@ -1522,7 +1522,7 @@ mod tests {
     /// previously working installation with no recovery path.
     #[test]
     fn consent_gate_skips_known_bundles_registers_fresh_ones() {
-        with_temp_home(|| {
+        with_temp_home("pinvou3-scope-gate-fresh", || {
             crate::features::marketplace::store::BundleStore::new()
                 .upsert(
                     crate::features::marketplace::store::BundleRecord::installed_now(
@@ -1556,7 +1556,7 @@ mod tests {
     /// state at all.
     #[test]
     fn connector_gate_registers_only_when_shown() {
-        with_temp_home(|| {
+        with_temp_home("pinvou3-scope-gate-shown", || {
             save_disabled_bundles_for(ConnectorScope::Code, &["seed-bundle".to_string()]).unwrap();
 
             deny_first_register_connector("feishu", false)
