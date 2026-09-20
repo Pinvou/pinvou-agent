@@ -28,7 +28,8 @@ use pinvou3_lib::platform::credential_store::{
     CredentialReference, CredentialState, CredentialStore, SystemCredentialStore, redact_secret,
 };
 use pinvou3_lib::platform::prefs::{
-    ColorScheme, Language, ModelPreset, SavedModel, SearchProvider, Theme, UserPrefs,
+    ColorScheme, CredentialStateOps, Language, ModelPreset, SavedModel, SearchProvider, Theme,
+    UserPrefs,
 };
 
 use crate::support::{render, require_yes, resolve_secret, success};
