@@ -44,6 +44,17 @@ const RESTART_CONFIRM_MS = 4000;
 // only for the discard's lifetime.
 const discardInFlightByTask = new Map();
 
+// taskId -> pending send promise, module-scoped for the same reason as the
+// discard registry above: the duplicate-send window outlives the component
+// instance. The rebind effect resets the component-level sendingRef on every
+// task switch (a never-settling invoke must not latch the next task), so a
+// send on task A → switch to B → back to A would otherwise pass every guard
+// before turn_started lands in the buffer, firing a duplicate turn on the
+// same aux session (round-15 MAJOR-2). Keyed by task — aux ids are 1:1 with
+// tasks and ensure is idempotent — and entries are removed by the exact send
+// that registered them once it settles.
+const sendInFlightByTask = new Map();
+
 // taskId -> unsent composer draft, module-scoped for the same reason as the
 // discard registry above: a draft belongs to the task, not to this instance,
 // while the panel unmounts on close and on sched- switches. Wiping it on a
@@ -122,7 +133,9 @@ export function AuxChatPanel({ sessionId, activationKey, t, theme, onClose, onAc
     // can no longer be relied on once its generation went stale).
     setRestarting(false);
     // Same latch class for sends: a never-settling auxChat.send invoke must
-    // not permanently block sends across later task rebinds either.
+    // not permanently block sends across later task rebinds either. Only the
+    // component-level latch resets here — the duplicate-send guard itself
+    // lives in sendInFlightByTask, which survives the rebind by design.
     sendingRef.current = false;
     setSending(false);
     // Restore this task's unsent draft instead of wiping the composer.
@@ -244,11 +257,18 @@ export function AuxChatPanel({ sessionId, activationKey, t, theme, onClose, onAc
     const sentGeneration = generationRef.current;
     const sentTaskId = sessionId;
     if (!auxChat || !sentAuxId || (!text && !quoteBlock) || busy || restarting || sendingRef.current) return;
+    // The registry is the guard that survives rebinds: the rebind effect
+    // resets sendingRef on every task switch, so a switch away and back while
+    // this send is still in flight would otherwise re-open the duplicate-send
+    // window (turn_started lags the dispatch by one event round trip).
+    if (sendInFlightByTask.has(sentTaskId)) return;
     sendingRef.current = true;
     setSending(true);
     setSendFailed(false);
+    const sendPromise = auxChat.send(sentAuxId, quoteBlock ? text + quoteBlock : text);
+    sendInFlightByTask.set(sentTaskId, sendPromise);
     try {
-      await auxChat.send(sentAuxId, quoteBlock ? text + quoteBlock : text);
+      await sendPromise;
       // The message was delivered to sentAuxId. A switch away and back
       // re-binds the *same* aux id (ensure is idempotent) and aux ids are
       // 1:1 with tasks, so when the binding still resolves to sentAuxId the
@@ -277,6 +297,13 @@ export function AuxChatPanel({ sessionId, activationKey, t, theme, onClose, onAc
       if (auxIdRef.current !== sentAuxId) return;
       setSendFailed(true);
     } finally {
+      // The registry entry is removed by the exact send that registered it,
+      // unconditionally — unlike the component latch it must not depend on
+      // the binding state, or a send settling after a rebind would leak the
+      // entry and block this task's sends forever.
+      if (sendInFlightByTask.get(sentTaskId) === sendPromise) {
+        sendInFlightByTask.delete(sentTaskId);
+      }
       // The latch may be released only by the exact send that set it: a
       // same-id rebind (switch away and back) keeps auxIdRef equal to
       // sentAuxId, so a binding-only gate would let a stale send's late

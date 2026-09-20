@@ -29,11 +29,13 @@ use super::validators::generate_session_id;
 fn isolated_store() -> (SessionStore, std::sync::MutexGuard<'static, ()>) {
     let guard = ENV_LOCK.lock().unwrap_or_else(|p| p.into_inner());
     let tmp = std::env::temp_dir().join(format!(
-        "pinvou3-sessions-test-{}",
-        std::time::SystemTime::now()
-            .duration_since(std::time::UNIX_EPOCH)
-            .map(|d| d.as_nanos())
-            .unwrap_or(0)
+        // pid + in-process counter: paths::tests::ENV_LOCK doc warns nanos-only
+        // names can collide across two concurrent cargo test processes (the
+        // lock only serializes in-process) — a collision shares the dir, and
+        // the other process's boot reconcile can reclaim this test's records.
+        "pinvou3-sessions-test-{}-{}",
+        std::process::id(),
+        paths::tests::unique_suffix()
     ));
     // SAFETY: platform::paths::tests::ENV_LOCK held; env writes are serialized.
     unsafe { std::env::set_var("PINVOU3_HOME", &tmp) };
