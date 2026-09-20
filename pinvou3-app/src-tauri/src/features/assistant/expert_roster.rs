@@ -198,7 +198,8 @@ fn expert_role_slug(card_id: &str) -> String {
             }
         })
         .collect();
-    // `exp-` 前缀 4 字符 + 冲突后缀至多 `-NNN` 4 字符，120 + 8 仍在 128 以内。
+    // slug 截短到 `EXPERT_ROLE_ID_CHAR_LIMIT - 4`，加 `exp-` 前缀共 120；
+    // 冲突后缀 `-{n}` 在 8 字符内（覆盖百万级重名），120 + 8 不超底座 128。
     let slug = slug
         .chars()
         .take(EXPERT_ROLE_ID_CHAR_LIMIT - 4)
@@ -935,6 +936,14 @@ pub(crate) mod tests {
             EXPERT_CANDIDATE_LIMIT,
             "10 张有效卡也应截断到固定候选上限: {lines:?}"
         );
+    }
+
+    /// 上限本身是登记在案的产品数值（ADR-0006：每轮候选 20→8），不是可自由
+    /// 调整的实现细节——上面的行为测试只钉「存在上限」，任何 ≤10 的常量都能
+    /// 通过，这里把字面量钉住，无意放大直接红。
+    #[test]
+    fn expert_candidate_limit_is_the_registered_product_number() {
+        assert_eq!(EXPERT_CANDIDATE_LIMIT, 8);
     }
 
     #[test]

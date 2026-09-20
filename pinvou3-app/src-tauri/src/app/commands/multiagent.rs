@@ -246,4 +246,23 @@ mod tests {
             "匹配源命中时必须产出候选（content 噪声不影响）"
         );
     }
+
+    /// 类型系统只保证 `prepare_delegation_turn` 的参数次序（`String` 与
+    /// `MatchSource` 类型不同），保证不了调用点把「哪根串」交给 `MatchSource`
+    /// ——两个实参都是 String，`MatchSource(&full)` 也能编译。这里把两个生产
+    /// 调用点的语义选择钉在源码上（随 006682ea 移除的 node 侧正则钉的 Rust
+    /// 替身，rust-test 对任何 Rust 改动必跑）。
+    #[test]
+    fn match_source_call_sites_pass_the_unassembled_text() {
+        let chat = include_str!("chat.rs");
+        assert!(
+            chat.contains("super::multiagent::MatchSource(&raw_message)"),
+            "chat 发送链必须以用户原文 raw_message 作为候选匹配源"
+        );
+        let interaction = include_str!("interaction.rs");
+        assert!(
+            interaction.contains("super::multiagent::MatchSource(&plan_markdown)"),
+            "accept_plan 必须以计划原文 plan_markdown 作为候选匹配源"
+        );
+    }
 }
