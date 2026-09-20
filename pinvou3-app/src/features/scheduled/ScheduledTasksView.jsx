@@ -214,6 +214,9 @@ import memoryOrganizeImage from '../../assets/scheduled/memory-organize.jpg';
         ? (options || []).filter(option => selectedValues.includes(option.value))
           .map(option => option.shortLabel || option.label).join(separator)
         : (selected ? selected.label : emptyLabel);
+      // DOM 契约：scheduled smoke 直接读触发按钮的 .value（HTMLButtonElement 反射
+      // value 属性），不能省略。
+      const serializedValue = multiple ? selectedValues.join(',') : (value || '');
       const closeMenu = () => {
         setOpen(false);
         if (onClose) onClose();
@@ -309,7 +312,7 @@ import memoryOrganizeImage from '../../assets/scheduled/memory-organize.jpg';
 
       return (
         <div ref={rootRef} className="relative justify-self-end min-w-0">
-          <button type="button" data-testid={testId}
+          <button type="button" value={serializedValue} data-testid={testId}
             aria-label={ariaLabel} aria-haspopup="listbox" aria-expanded={open}
             onClick={(event) => open ? closeMenu() : openMenu(event.currentTarget)}
             className={`h-8 max-w-[260px] rounded-[9px] pl-3 pr-2 inline-flex items-center justify-end gap-2 text-[14px] font-medium transition-colors outline-none focus-visible:ring-2 focus-visible:ring-[#0B57D0]/40 text-[#1F1F1F] hover:bg-[#F1F3F4] dark:text-[#E3E3E3] dark:hover:bg-[#2B2C2F]`}>
