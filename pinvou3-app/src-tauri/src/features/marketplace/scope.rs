@@ -20,7 +20,9 @@ use std::path::PathBuf;
 use std::sync::Mutex;
 
 use crate::core::session_mode::{PackDefaultPolicy, SessionMode};
-use crate::features::marketplace::bundle::{builtin_cli_bundle_ids, skill_owner_package};
+use crate::features::marketplace::bundle::{
+    builtin_cli_bundle_ids, bundle_installed, skill_owner_package,
+};
 use crate::features::marketplace::skill_marketplace::SkillMarketplaceManager;
 use crate::features::marketplace::{ConnectorScope, MarketplaceManager};
 use crate::platform::paths;
@@ -659,14 +661,45 @@ pub fn save_disabled_bundles(ids: &[String]) {
     }
 }
 
-/// 包安装/连接后同步所有 DenyAll 且已初始化的 scope：用户已改过这类会话开关时，
-/// 新装的包默认仍保持关闭（加入该 scope 禁用集）；未初始化时无需处理（load 会按
-/// 「默认全禁已装包」兜底）。AllowAll 模式无需同步（默认全开）。连接器与技能安装
-/// 共用本入口：入参可为连接器 id / 技能 id / 包 id，统一归一为包 id。
+/// Whether the normalized consent-gate id is already installed in this home:
+/// a tool/CLI bundle with an install record (or an `installed.json` entry),
+/// or a skill on disk (standalone, or claimed by its installed owner).
+/// Built-in connectors deliberately stay NOT-known (they have no install
+/// record), so the connector channels keep their deny-first registration and
+/// refusal boundary.
+fn consent_gate_bundle_already_known(package_id: &str) -> bool {
+    if bundle_installed(package_id) {
+        return true;
+    }
+    SkillMarketplaceManager::new()
+        .installed_skill_ids()
+        .iter()
+        .any(|skill| skill_owner_package(skill) == package_id)
+}
+
+/// 包安装/连接后同步所有 DenyAll 且已初始化的 scope：**新装**的包默认保持关闭
+/// （加入该 scope 禁用集）；未初始化时无需处理（load 会按「默认全禁已装包」兜底）。
+/// AllowAll 模式无需同步（默认全开）。连接器与技能安装共用本入口：入参可为连接器
+/// id / 技能 id / 包 id，统一归一为包 id。
 /// This is the safety-default write for the DenyAll consent gate: refused with
 /// `Err` when the cross-process lock is unavailable, never unsynchronized.
+///
+/// Reinstall/update of an ALREADY-installed bundle skips the write entirely
+/// and returns `Ok`: every initialized scope's current entry is the user's
+/// recorded consent, so re-registering would both reset an explicit enable on
+/// the success path and — worse — silently disable the previously working
+/// installation whenever any post-gate step fails (pip deps, disk full,
+/// content conflict, remote validation) with no recovery path. This is the
+/// same preserve-state contract as `update_marketplace_skill`. Only unknown
+/// (fresh) ids register deny-first, so the boundary this gate exists to close
+/// — a new package is never exposed outside the deny lists of the initialized
+/// DenyAll scopes — is unchanged, and a leftover entry from a failed fresh
+/// install stays fail-closed and converges on the next successful install.
 pub fn sync_deny_all_scopes_after_install(raw_id: &str) -> Result<(), String> {
     let package_id = to_package_id(raw_id);
+    if consent_gate_bundle_already_known(&package_id) {
+        return Ok(());
+    }
     with_scope_file_lock(|| {
         let mut file = load_disabled_bundles_file_locked()?;
         let mut changed = false;
@@ -1451,6 +1484,43 @@ mod tests {
         });
     }
 
+    /// The consent gate must distinguish fresh installs from reinstalls: an
+    /// unknown id registers deny-first (default-off in every initialized
+    /// DenyAll scope), while an already-installed bundle is a no-op — every
+    /// scope's current entry is the user's recorded consent, and re-denying
+    /// it would let any post-gate install failure silently disable a
+    /// previously working installation with no recovery path.
+    #[test]
+    fn consent_gate_skips_known_bundles_registers_fresh_ones() {
+        with_temp_home(|| {
+            crate::features::marketplace::store::BundleStore::new()
+                .upsert(
+                    crate::features::marketplace::store::BundleRecord::installed_now(
+                        "weather",
+                        crate::features::marketplace::store::BundleSource::Preset,
+                    ),
+                )
+                .unwrap();
+            save_disabled_bundles_for(ConnectorScope::Code, &["seed-bundle".to_string()]).unwrap();
+
+            // Known bundle: Ok without adding it to any deny list.
+            sync_deny_all_scopes_after_install("weather")
+                .expect("a known bundle must skip the consent-gate write");
+            assert_eq!(
+                load_disabled_bundles_for(ConnectorScope::Code),
+                vec!["seed-bundle".to_string()],
+                "a reinstall must not re-deny the installed bundle"
+            );
+
+            // Fresh bundle: registers deny-first.
+            sync_deny_all_scopes_after_install("fresh-gate-tool").unwrap();
+            assert_eq!(
+                load_disabled_bundles_for(ConnectorScope::Code),
+                vec!["seed-bundle".to_string(), "fresh-gate-tool".to_string()]
+            );
+        });
+    }
+
     /// A corrupt data file must stop every locked RMW instead of feeding it a
     /// fabricated empty state: an `Ok` here would persist the fabrication and
     /// silently destroy the user's recorded denies (fail-open on the DenyAll
@@ -1549,8 +1619,10 @@ mod tests {
     /// Any failure inside the locked critical section must surface as `Err` —
     /// an `Ok` that silently dropped the caller's change would re-open the
     /// fail-open hole on the DenyAll gate. Injected here via a directory at
-    /// the data path (the load inside the RMW fails); the pure atomic-write
-    /// failure is pinned by `write_failure_surfaces_as_err` on unix.
+    /// the data path (the load inside the RMW fails), which pins the load leg
+    /// for every write entry point. The pure atomic-write failure leg has no
+    /// inline pin — see the note on
+    /// `read_degrades_without_persist_when_lock_unavailable` below.
     /// Unlike before the load-refusal gate, even the conditional DenyAll sync
     /// now refuses instead of legitimately no-oping on a fabricated state.
     #[test]

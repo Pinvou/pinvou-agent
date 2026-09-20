@@ -1404,12 +1404,15 @@ mod tests {
         });
     }
 
-    /// Review round 4 regression: re-installing an ALREADY-installed preset
-    /// skill (the update path) under a refused gate must keep the existing
-    /// installation byte-for-byte — the old rollback uninstalled it, which
-    /// destroyed a pre-existing copy that a fresh extraction cannot restore.
+    /// Review round 4 regression, final semantics: re-installing an
+    /// ALREADY-installed preset skill (the update path) must not touch the
+    /// recorded consent state at all. The gate skips known bundles, so the
+    /// reinstall goes through even with the scope lock unavailable and the
+    /// skill stays ENABLED in the initialized DenyAll scope — the old
+    /// unconditional re-registration silently disabled a working install,
+    /// both on success and (with no recovery path) on any post-gate failure.
     #[test]
-    fn reinstall_preset_skill_survives_refused_deny_sync() {
+    fn reinstall_preset_skill_preserves_consent_state() {
         with_temp_home(|| {
             let skills =
                 crate::features::marketplace::skill_marketplace::SkillMarketplaceManager::new();
@@ -1424,21 +1427,25 @@ mod tests {
 
             init_code_scope_then_break_lock();
 
-            let error = install_marketplace_skill_sync("pptx").unwrap_err();
-            assert!(
-                error.contains("disabled_bundles.lock"),
-                "refusal must name the lock failure: {error}"
-            );
+            install_marketplace_skill_sync("pptx")
+                .expect("a known bundle's reinstall must not need the consent-gate write");
             assert!(
                 skill_md.is_file(),
-                "the pre-existing installation must be untouched by a refused gate"
+                "the reinstalled skill must still be on disk"
             );
             assert!(
                 crate::features::marketplace::store::BundleStore::new()
                     .get("pptx")
                     .unwrap()
                     .is_some(),
-                "the pre-existing install record must survive"
+                "the install record must survive the reinstall"
+            );
+            assert_eq!(
+                crate::features::marketplace::load_disabled_bundles_for(
+                    crate::features::marketplace::ConnectorScope::Code
+                ),
+                vec!["seed-bundle".to_string()],
+                "the reinstall must not re-deny the enabled skill"
             );
         });
     }
@@ -1476,14 +1483,19 @@ mod tests {
         });
     }
 
-    /// Review round 4 regression: an already-installed tool must survive a
-    /// refused gate untouched (the old rollback uninstalled it). The
-    /// precondition install injects a `MemoryCredentialStore`: the default
-    /// constructor would write AMAP_KEY to the REAL system keychain, which
-    /// both fails on machines holding a weather credential (keyring refuses
-    /// the conflicting write) and risks clobbering the user's real key.
+    /// Review round 4 regression, final semantics: an already-installed tool
+    /// keeps its consent state across a reinstall — the gate skips known
+    /// bundles, so even with the scope lock unavailable the gate returns
+    /// `Ok` without writing and the previously-working installation stays
+    /// ENABLED. The old unconditional re-registration would have re-denied
+    /// it, and any post-gate install failure (pip, disk, remote validation)
+    /// then left it disabled with no recovery path. The precondition install
+    /// injects a `MemoryCredentialStore`: the default constructor would
+    /// write AMAP_KEY to the REAL system keychain, which both fails on
+    /// machines holding a weather credential (keyring refuses the
+    /// conflicting write) and risks clobbering the user's real key.
     #[test]
-    fn existing_tool_install_survives_refused_deny_sync() {
+    fn existing_tool_reinstall_preserves_consent_state() {
         with_temp_home(|| {
             let mgr = crate::features::marketplace::MarketplaceManager::with_store(
                 crate::platform::credential_store::MemoryCredentialStore::default(),
@@ -1497,14 +1509,11 @@ mod tests {
 
             init_code_scope_then_break_lock();
 
-            let error = install_marketplace_tool_gates("weather").unwrap_err();
-            assert!(
-                error.contains("disabled_bundles.lock"),
-                "refusal must name the lock failure: {error}"
-            );
+            install_marketplace_tool_gates("weather")
+                .expect("a known bundle's gate must skip the consent-gate write");
             assert!(
                 pkg_dir.exists(),
-                "the pre-existing installation must be untouched by a refused gate"
+                "the pre-existing installation must be untouched by the gate"
             );
             assert!(
                 crate::features::marketplace::store::BundleStore::new()
@@ -1513,14 +1522,23 @@ mod tests {
                     .is_some(),
                 "the pre-existing install record must survive"
             );
+            assert_eq!(
+                crate::features::marketplace::load_disabled_bundles_for(
+                    crate::features::marketplace::ConnectorScope::Code
+                ),
+                vec!["seed-bundle".to_string()],
+                "the reinstall must not re-deny the enabled tool"
+            );
         });
     }
 
-    /// Review round 4 regression: a companion that already exists as a
-    /// standalone install must not be uninstalled when its consent-gate
-    /// registration is refused — the old rollback destroyed the user's copy.
+    /// Review round 4 regression, final semantics: a companion that already
+    /// exists as a standalone install is a known bundle for the consent
+    /// gate, so its re-install never touches the deny state (the old
+    /// unconditional registration re-denied it, and the pre-deny-first
+    /// rollback destroyed the user's copy outright).
     #[test]
-    fn existing_companion_survives_refused_deny_sync() {
+    fn existing_companion_reinstall_preserves_consent_state() {
         with_temp_home(|| {
             let skills =
                 crate::features::marketplace::skill_marketplace::SkillMarketplaceManager::new();
@@ -1536,21 +1554,31 @@ mod tests {
 
             init_code_scope_then_break_lock();
 
-            // Companion handling is best-effort: a refused gate skips the
-            // companion (logged) and never fails the tool install.
+            // Companion handling is best-effort; with the gate skipping the
+            // known bundle the companion re-installs normally.
             install_marketplace_tool_companions("gongwen");
             assert!(
                 skill_md.is_file(),
-                "the pre-existing companion must be untouched by a refused gate"
+                "the pre-existing companion must be untouched"
+            );
+            assert!(
+                !crate::features::marketplace::load_disabled_bundles_for(
+                    crate::features::marketplace::ConnectorScope::Code
+                )
+                .iter()
+                .any(|id| id == "government-writing"),
+                "the companion reinstall must not re-deny the enabled skill"
             );
         });
     }
 
-    /// Same regression for the unified plugin-package import channel: a
-    /// same-content re-import under a refused gate must leave the existing
-    /// package installed (the old rollback recycled it).
+    /// Final semantics for the unified plugin-package import channel: the
+    /// consent gate runs before the same-content check but SKIPS installed
+    /// bundles, so a rejected re-import hits the content-conflict refusal
+    /// instead of silently flipping the package's consent state — the v1
+    /// content and its enabled state stay intact.
     #[test]
-    fn reimport_plugin_zip_survives_refused_deny_sync() {
+    fn reimport_conflict_preserves_package_and_consent_state() {
         with_temp_home(|| {
             let plugin_json = r#"{"manifest_version":1,"id":"gate-rb-plugin","name":"p","components":{"skills":[{"id":"gate-rb-skill2","dir":"skills/gate-rb-skill2"}]}}"#;
             let zip_for = |skill_body: &str| {
@@ -1586,8 +1614,9 @@ mod tests {
             let error = import_plugin_package_sync(&v2.to_string_lossy(), "gate-rb-plugin.zip")
                 .unwrap_err();
             assert!(
-                error.contains("disabled_bundles.lock"),
-                "the gate refusal must abort before the content-conflict check: {error}"
+                error.contains("已存在且内容不同"),
+                "a rejected re-import must fail on the content conflict, not the gate \
+                 (the gate skips installed bundles): {error}"
             );
 
             let pkg_dir = crate::platform::paths::bundles_root().join("gate-rb-plugin");
@@ -1607,6 +1636,13 @@ mod tests {
                     .unwrap()
                     .is_some(),
                 "the pre-existing install record must survive"
+            );
+            assert_eq!(
+                crate::features::marketplace::load_disabled_bundles_for(
+                    crate::features::marketplace::ConnectorScope::Code
+                ),
+                vec!["seed-bundle".to_string()],
+                "the rejected re-import must not flip the package's consent state"
             );
             let _ = std::fs::remove_file(&v1);
             let _ = std::fs::remove_file(&v2);

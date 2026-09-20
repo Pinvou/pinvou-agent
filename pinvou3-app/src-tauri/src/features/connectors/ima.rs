@@ -455,26 +455,14 @@ mod tests {
         assert!(status_with_store(&store).unwrap().credentials_present);
     }
 
-    /// Review round 4 (#517): a connect whose DenyAll consent-gate
-    /// registration is refused must abort BEFORE the credentials are touched
-    /// or the skill content is replaced. A connect re-runs `install` over an
-    /// existing skill, so the previous uninstall-based rollback destroyed the
-    /// user's pre-existing copy; deny-first keeps both the credentials and
-    /// the skill exactly as found.
+    /// Final semantics for a FRESH ima connect (#517 deny-first): the
+    /// consent-gate registration is refused when the scope lock is
+    /// unavailable, and the refusal must abort BEFORE the credentials are
+    /// touched or any skill content lands.
     #[test]
-    fn connect_refused_sync_keeps_existing_skill_and_credentials() {
+    fn connect_refused_sync_aborts_before_anything_lands() {
         with_temp_home(|| {
             let store = MemoryCredentialStore::default();
-            store.set(&client_id_ref(), "client-v1").unwrap();
-            store.set(&api_key_ref(), "key-v1").unwrap();
-            let skills = SkillMarketplaceManager::new();
-            skills
-                .install(IMA_SKILL_ID)
-                .expect("skill install must succeed while the lock works");
-            let skill_md = skills
-                .find_skill_dir(IMA_SKILL_ID)
-                .expect("precondition: ima skill installed")
-                .join("SKILL.md");
 
             // Initialize the code scope (makes the DenyAll sync a required
             // write), then make the lock file unopenable so the sync refuses.
@@ -494,19 +482,79 @@ mod tests {
                 error.contains("disabled_bundles.lock"),
                 "refusal must name the lock failure: {error}"
             );
+            assert!(
+                store.get(&client_id_ref()).unwrap().is_none(),
+                "credentials must never be written on a refused connect"
+            );
+            assert!(
+                store.get(&api_key_ref()).unwrap().is_none(),
+                "credentials must never be written on a refused connect"
+            );
+            assert!(
+                SkillMarketplaceManager::new()
+                    .find_skill_dir(IMA_SKILL_ID)
+                    .is_none(),
+                "the skill must never land on a refused connect"
+            );
+        });
+    }
+
+    /// Review round 4 (#517) + the reinstall-semantics fix: a RE-connect of
+    /// the already-installed ima skill is a known-bundle operation — the
+    /// consent gate skips the write entirely (even with the scope lock
+    /// unavailable), so the reconnect proceeds and the recorded consent
+    /// state stays untouched. The old unconditional re-registration would
+    /// have re-denied the enabled skill, and a post-gate failure then left
+    /// it disabled with no recovery path.
+    #[test]
+    fn ima_reconnect_of_installed_skill_preserves_consent_state() {
+        with_temp_home(|| {
+            let store = MemoryCredentialStore::default();
+            store.set(&client_id_ref(), "client-v1").unwrap();
+            store.set(&api_key_ref(), "key-v1").unwrap();
+            let skills = SkillMarketplaceManager::new();
+            skills
+                .install(IMA_SKILL_ID)
+                .expect("skill install must succeed while the lock works");
+            let skill_md = skills
+                .find_skill_dir(IMA_SKILL_ID)
+                .expect("precondition: ima skill installed")
+                .join("SKILL.md");
+
+            // Initialize the code scope (ima stays absent = enabled), then
+            // break the lock to prove the reconnect needs no scope write.
+            crate::features::marketplace::save_disabled_bundles_for(
+                crate::features::marketplace::ConnectorScope::Code,
+                &["seed-bundle".to_string()],
+            )
+            .expect("code scope must initialize while the lock works");
+            let lock = crate::platform::paths::pinvou3_home().join("disabled_bundles.lock");
+            std::fs::remove_file(&lock).unwrap();
+            std::fs::create_dir_all(&lock).unwrap();
+
+            ima_connect_sync_with_store("client-v2".to_string(), "key-v2".to_string(), &store)
+                .expect("a known bundle's reconnect must not need the consent-gate write");
             assert_eq!(
                 store.get(&client_id_ref()).unwrap().as_deref(),
-                Some("client-v1"),
-                "credentials must be untouched by a refused connect"
+                Some("client-v2"),
+                "the reconnect must update the credentials"
             );
             assert_eq!(
                 store.get(&api_key_ref()).unwrap().as_deref(),
-                Some("key-v1"),
-                "credentials must be untouched by a refused connect"
+                Some("key-v2"),
+                "the reconnect must update the credentials"
             );
             assert!(
                 skill_md.is_file(),
-                "the pre-existing skill must survive a refused connect"
+                "the reconnected skill must still be on disk"
+            );
+            assert!(
+                !crate::features::marketplace::load_disabled_bundles_for(
+                    crate::features::marketplace::ConnectorScope::Code
+                )
+                .iter()
+                .any(|id| id == "ima"),
+                "the reconnect must not re-deny the enabled skill"
             );
         });
     }
