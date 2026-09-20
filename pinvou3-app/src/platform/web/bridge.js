@@ -7534,7 +7534,6 @@ function appendVoiceText(base, text) { return pinvouSharedweb().appendVoiceText(
     auxChatSend,
     auxChatSnapshot,
     auxChatDiscard,
-    auxChatIsAuxSession,
     getComposerDraft,
     setComposerDraft,
     retryFirstTurn,

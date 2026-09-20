@@ -645,7 +645,7 @@ assert.match(webBridge, /composerDraft: ""/,
   'WebUI must keep a per-session in-memory composer draft');
 assert.match(webDomainAdapter, /chat: domain\(\["sendMessage", "sendMessageToSession", "getComposerDraft", "setComposerDraft"/,
   'WebUI domain facade must expose the same composer draft API as desktop');
-assert.match(webDomainAdapter, /auxChat: domain\(\[\], \{\s*ensure: "auxChatEnsure",\s*send: "auxChatSend",\s*snapshot: "auxChatSnapshot",\s*discard: "auxChatDiscard",\s*isAuxSession: "auxChatIsAuxSession"/,
+assert.match(webDomainAdapter, /auxChat: domain\(\[\], \{\s*ensure: "auxChatEnsure",\s*send: "auxChatSend",\s*snapshot: "auxChatSnapshot",\s*discard: "auxChatDiscard"/,
   'WebUI domain facade must expose the same auxChat domain as desktop');
 assert.match(webBridge, /async function auxChatEnsure\(taskId\)/);
 assert.match(webBridge, /invoke\("get_or_create_aux_session", \{ sessionId: task \}\)/,

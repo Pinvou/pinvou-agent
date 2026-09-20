@@ -284,8 +284,10 @@ assert.match(auxChatPanel, /discardInFlightByTask\.get\(sessionId\)/);
 // so nobody awaits the first one anymore — and on the web relay (invoke
 // responses are not FIFO) that orphaned discard can land after this restart's
 // recreate and delete the aux session the panel just bound to. The guard must
-// run before the arm/confirm branch so an in-flight discard also cannot arm.
-const duplicateDiscardGuard = restartBlock.indexOf('if (discardInFlightByTask.has(sessionId)) return;');
+// run before the arm/confirm branch so an in-flight discard also cannot arm;
+// the refusal un-arms the confirm so a click in this window is never a
+// silent no-op (the rebind's binding hint is the visible in-progress state).
+const duplicateDiscardGuard = restartBlock.indexOf('if (discardInFlightByTask.has(sessionId)) {');
 assert.ok(duplicateDiscardGuard >= 0, 'handleRestart must refuse a second discard while one is in flight');
 assert.ok(
   duplicateDiscardGuard < restartBlock.indexOf('if (!restartArmed) {'),
@@ -501,6 +503,12 @@ assert.match(codex, /t\.uiAuxChat\.openLabel/);
 // default model while the panel copy implies the task's own assistant — the
 // same reason the quote popover suppresses on external ACP.
 assert.match(codex, /\{activeSession && isNativeAgent && bridge\.available && bridge\.auxChat && \(/);
+// The same gate must hold on the two paths that were reachable without it
+// (fixed in the round-19 hardening): the quote-selection feed (a null
+// sessionId suppresses the popover entirely) and the panel mount (switching
+// to an external-ACP agent must unmount the open panel, not rebind it).
+assert.match(codex, /sessionId=\{activeSession && isNativeAgent && bridge\.available && bridge\.auxChat \? activeSession\.id : null\}/);
+assert.match(codex, /\{auxChatPanel && activeSession && isNativeAgent && \(/);
 assert.match(codex, /<AuxChatPanel/);
 const workspace = source('features/codex/CodexWorkspacePanel.jsx');
 assert.match(workspace, /\{copy\.title\}/);

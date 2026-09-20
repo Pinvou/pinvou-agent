@@ -10,6 +10,7 @@ import { CodexWorkspacePanel } from './CodexWorkspacePanel.jsx';
 import { SubagentTranscriptPanel } from '../multiagent/SubagentTranscriptPanel.jsx';
 import { AuxChatPanel } from '../aux-chat/AuxChatPanel.jsx';
 import { AuxQuoteSelection } from '../aux-chat/AuxQuoteSelection.jsx';
+import { ViewErrorBoundary } from '../../shared/ViewErrorBoundary.jsx';
 import { RunningAgentsOverlay } from '../multiagent/RunningAgentsOverlay.jsx';
 import {
   refreshAcpAgentCatalog,
@@ -1239,17 +1240,19 @@ export function CodexAcpView({
     rememberScrollBeforeRightPanelChange();
     setAuxChatPanel(null);
   }, [rememberScrollBeforeRightPanelChange]);
-  // When the mount condition (auxChatPanel && activeSession, see the panel
-  // mount point below) goes away, the panel unmounts outright, and
-  // RightDockPanel's onActiveChange has no unmount cleanup, so the highlight
-  // would linger; reset it synchronously here when the mount condition drops,
-  // and once the session is back the panel re-mounts and reports its real
-  // visibility again.
+  // When the mount condition (auxChatPanel && activeSession && isNativeAgent,
+  // see the panel mount point below) goes away, the panel unmounts outright,
+  // and RightDockPanel's onActiveChange has no unmount cleanup, so the
+  // highlight would linger; reset it synchronously here when the mount
+  // condition drops, and once the session is back the panel re-mounts and
+  // reports its real visibility again. isNativeAgent is part of the condition:
+  // switching to an external-ACP agent must unmount the panel, not leave it
+  // rebound to a session the side chat must not answer on.
   useEffect(() => {
-    if (auxChatPanel && activeSession) return;
+    if (auxChatPanel && activeSession && isNativeAgent) return;
     // eslint-disable-next-line react-hooks/set-state-in-effect -- synchronously reset dock highlight when the panel unmounts; one-shot mirror, same pattern as the subagent reset below
     setAuxChatDockActive(false);
-  }, [auxChatPanel, activeSession]);
+  }, [auxChatPanel, activeSession, isNativeAgent]);
   useLayoutEffect(() => {
     const snapshot = rightPanelScrollRef.current;
     if (!snapshot) return;
@@ -3390,7 +3393,8 @@ export function CodexAcpView({
               native-agent-only: on an external-ACP task the side chat would
               silently answer on the default model while the panel copy
               implies the task's own assistant (round-18 must-land; the quote
-              popover suppresses on external ACP for the same reason). */}
+              popover and the panel mount suppress on external ACP for the
+              same reason). */}
           {activeSession && isNativeAgent && bridge.available && bridge.auxChat && (
             <button
               type="button"
@@ -3592,10 +3596,12 @@ export function CodexAcpView({
               />
             )}
             {/* 划词引用：代码车道时间线内选中文字 → 暂存为该会话的辅助对话
-                引用并打开辅助面板。可用条件与顶栏辅助对话入口一致。 */}
+                引用并打开辅助面板。可用条件与顶栏辅助对话入口一致：外部 ACP
+                会话不出引用浮层（辅助对话由品悟内部引擎作答，见入口注释；
+                round-18 边界此前只落在入口按钮上，划词与面板挂载曾被绕过）。 */}
             <AuxQuoteSelection
               containerRef={conversationContentRef}
-              sessionId={activeSession && bridge.available && bridge.auxChat ? activeSession.id : null}
+              sessionId={activeSession && isNativeAgent && bridge.available && bridge.auxChat ? activeSession.id : null}
               copy={t.uiAuxChat}
               onQuote={openAuxChatPanel}
             />
@@ -4353,15 +4359,17 @@ export function CodexAcpView({
             onClose={closeSubagentPanel}
           />
         )}
-        {auxChatPanel && activeSession && (
-          <AuxChatPanel
-            sessionId={activeSession.id}
-            activationKey={auxChatPanel.openTick}
-            onActiveChange={setAuxChatDockActive}
-            t={t}
-            theme={theme}
-            onClose={closeAuxChatPanel}
-          />
+        {auxChatPanel && activeSession && isNativeAgent && (
+          <ViewErrorBoundary t={t} variant="panel">
+            <AuxChatPanel
+              sessionId={activeSession.id}
+              activationKey={auxChatPanel.openTick}
+              onActiveChange={setAuxChatDockActive}
+              t={t}
+              theme={theme}
+              onClose={closeAuxChatPanel}
+            />
+          </ViewErrorBoundary>
         )}
         </div>
     </div>

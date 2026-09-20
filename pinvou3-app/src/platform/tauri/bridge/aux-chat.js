@@ -114,6 +114,10 @@
       if (auxId) purgeSessionBuffer(auxId);
     }
 
-    return { ensure, send, snapshot, discard, isAuxSession };
+    // isAuxSession stays domain-private: both facades only validate their own
+    // ensure/send inputs with it, and no feature ever needed it across the
+    // bridge — the dead public export (pinned by the domain contract) is gone
+    // instead of being maintained on both sides forever.
+    return { ensure, send, snapshot, discard };
   };
 })(typeof window === "undefined" ? globalThis : window);

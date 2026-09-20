@@ -98,6 +98,9 @@ export function AuxChatPanel({ sessionId, activationKey, t, theme, onClose, onAc
   // must know which task the panel shows *now* (round-17 M-A).
   const sessionIdRef = useRef(sessionId);
   const scrollRef = useRef(null);
+  // Auto-grow anchor: the composer grows with its content like the main
+  // conversation composer instead of scrolling inside a one-row-tall box.
+  const composerRef = useRef(null);
   // In-flight send latch: the bridge marks the session busy only when the
   // backend turn_started event lands, so snapshot-busy lags a dispatch by the
   // relay round trip — without this latch a double Enter fires a duplicate
@@ -184,6 +187,17 @@ export function AuxChatPanel({ sessionId, activationKey, t, theme, onClose, onAc
     }
     return () => { disposed = true; };
   }, [auxChat, sessionId, pullSnapshot]);
+
+  // Composer auto-grow, same mechanism as the main conversation composer:
+  // grow with the content up to the max-h-32 cap (then scroll internally) and
+  // shrink back when the draft clears. Re-runs on rebind so a restored draft
+  // sizes the box immediately.
+  useEffect(() => {
+    const el = composerRef.current;
+    if (!el) return;
+    el.style.height = 'auto';
+    el.style.height = Math.min(Math.max(el.scrollHeight, 24), 128) + 'px';
+  }, [draft, sessionId]);
 
   // Quotes staged while this panel is mounted (the selection popover runs in
   // the main view, not here) arrive through the store subscription; the
@@ -353,8 +367,14 @@ export function AuxChatPanel({ sessionId, activationKey, t, theme, onClose, onAc
     // after this restart's recreate, deleting the aux session the panel just
     // bound to, with no JS continuation left to notice. The rebind effect
     // already re-ensures this task once the pending discard settles, which is
-    // precisely the fresh session this action asks for, so stop here.
-    if (discardInFlightByTask.has(sessionId)) return;
+    // precisely the fresh session this action asks for, so stop here — but
+    // not silently: a remounted panel lost the armed confirm, so un-arm here
+    // (the binding hint the rebind shows while the discard is parked is the
+    // visible "new topic in preparation" feedback for this window).
+    if (discardInFlightByTask.has(sessionId)) {
+      setRestartArmed(false);
+      return;
+    }
     if (!restartArmed) {
       setRestartArmed(true);
       return;
@@ -587,6 +607,7 @@ export function AuxChatPanel({ sessionId, activationKey, t, theme, onClose, onAc
           <div className="flex items-end gap-2">
           <textarea
             rows={1}
+            ref={composerRef}
             value={draft}
             data-testid="aux-chat-input"
             onChange={(event) => {

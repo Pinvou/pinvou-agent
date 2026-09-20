@@ -89,9 +89,12 @@ export function AuxQuoteSelection({ containerRef, sessionId, copy, onQuote }) {
       // never surface the action; a macrotask fires in every visibility state.
       setTimeout(evaluateSelection, 0);
     };
-    const onKeyUp = (event) => {
-      if (event.key !== 'Shift' && event.key !== 'ArrowLeft' && event.key !== 'ArrowRight'
-        && event.key !== 'ArrowUp' && event.key !== 'ArrowDown' && event.key !== 'End' && event.key !== 'Home') return;
+    const onKeyUp = () => {
+      // No key whitelist: a whitelist misses selection-changing keys outside
+      // the shift/arrow family — most importantly Ctrl+A ("a"), the standard
+      // keyboard path to select a whole assistant reply. Evaluating on every
+      // keyup mirrors the unconditional mouseup handler and is cheap: a
+      // collapsed selection just hides (or no-ops) the popover.
       setTimeout(evaluateSelection, 0);
     };
     document.addEventListener('mouseup', onMouseUp);

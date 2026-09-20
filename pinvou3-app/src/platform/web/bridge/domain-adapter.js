@@ -143,7 +143,6 @@
       send: "auxChatSend",
       snapshot: "auxChatSnapshot",
       discard: "auxChatDiscard",
-      isAuxSession: "auxChatIsAuxSession",
     }),
     voice: domain(["startVoiceInput", "installVoiceAsr", "cancelVoiceAsrSetup", "closeVoiceAsrSetup", "cancelVoiceInput", "clearVoiceInput", "appendVoiceText"]),
     knowledge: domain(["downloadKbModel", "mountCollection", "setCollectionEnabled", "removeCollection", "unmountCollection", "listCollections", "kbModelStatus"]),
