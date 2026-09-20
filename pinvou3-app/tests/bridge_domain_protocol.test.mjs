@@ -215,6 +215,20 @@ for (const [domain, files] of Object.entries(protocolSources)) {
   else assert.equal(hash, expectedProtocolHashes[domain], `${domain} bridge protocol changed`);
 }
 
+// The shared payload base carries the invoke/listen bodies that the batch dedup
+// relocated out of the per-lane files, so the domain hashes above no longer
+// cover that text. Hash the shared file's surface with the same extractor to
+// pin payload edits inside the shared base the same way the lane files are.
+const expectedSharedBaseHash = '4e63e15a4ec6b41f2f38a667d9e94d9761c230ab927e91d0c5ae49f3c4abedb4';
+const sharedBaseSource = fs.readFileSync(path.join(root, 'src', 'shared', 'bridge-shared-helpers.js'), 'utf8');
+const sharedBaseSignatures = [
+  ...extractCalls(sharedBaseSource, 'invoke').map(call => `shared/bridge-shared-helpers.js:invoke:${call}`),
+  ...extractCalls(sharedBaseSource, 'listen').map(call => `shared/bridge-shared-helpers.js:listen:${call}`),
+];
+const sharedBaseHash = crypto.createHash('sha256').update(sharedBaseSignatures.join('\n')).digest('hex');
+if (!expectedSharedBaseHash) console.log(`sharedBase: ${sharedBaseHash} (${sharedBaseSignatures.length} signatures)`);
+else assert.equal(sharedBaseHash, expectedSharedBaseHash, 'shared bridge payload protocol changed');
+
 const featureRegistry = new Proxy({}, {
   get() {
     return () => new Proxy({}, { get: () => function () {} });
