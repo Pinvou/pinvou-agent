@@ -1225,9 +1225,8 @@ async fn unbounded_deadline_runs_without_a_harness_task_timeout() {
                     ToolPolicyId::new("smoke/v1"),
                     OutputContract::new("text/v1"),
                 ),
-                None,
             ),
-            &RunContext::new("unbounded", base.clone()),
+            &RunContext::new("unbounded"),
         )
         .await
         .expect("no harness timeout for a None deadline");
@@ -1256,9 +1255,8 @@ async fn some_deadline_cuts_off_the_same_slow_backend() {
                     ToolPolicyId::new("smoke/v1"),
                     OutputContract::new("text/v1"),
                 ),
-                None,
             ),
-            &RunContext::new("some-deadline-slow", base.clone()),
+            &RunContext::new("some-deadline-slow"),
         )
         .await
         .expect("the harness machinery itself must not fail");
