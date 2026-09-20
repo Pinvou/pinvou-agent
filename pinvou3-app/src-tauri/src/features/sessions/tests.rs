@@ -5416,3 +5416,122 @@ fn boot_migration_partial_failure_retains_and_extends() {
     let _ = std::fs::remove_dir_all(&target);
     let _ = std::fs::remove_dir_all(&stuck_path);
 }
+
+// ---------------------------------------------------------------------------
+// Cross-process sidecar persistence: a pin/mode/model write from this process
+// must never rewrite entries another process persisted after this one booted
+// (the in-memory maps are boot-time snapshots, not live shared state).
+// ---------------------------------------------------------------------------
+
+fn seed_session(store: &SessionStore, id: &str, older_by_seconds: i64) {
+    let mut session = create_saved_session_with_id_and_mode(
+        id.to_string(),
+        &[],
+        "/sidecar-model",
+        &std::env::temp_dir(),
+        0,
+        None,
+        None,
+    );
+    session.metadata.updated_at = Utc::now() - chrono::Duration::seconds(older_by_seconds);
+    store
+        .save_session_atomic(&session)
+        .expect("seed session without eager retention");
+}
+
+#[test]
+fn pin_persist_keeps_entries_written_after_boot() {
+    let (store, _g) = isolated_store();
+    let file = paths::sessions_root().join("_pinned_sessions.json");
+    // Simulate a GUI process pinning two sessions after this process booted
+    // with an empty pin map.
+    std::fs::write(
+        &file,
+        r#"[
+  {"id": "gui-a", "pinned_at": "2026-09-20T00:00:00Z"},
+  {"id": "gui-b", "pinned_at": "2026-09-20T00:00:01Z"}
+]"#,
+    )
+    .expect("seed concurrent pin file");
+    store.set_pinned("headless-c", true);
+    let durable = std::fs::read_to_string(&file).expect("read pin file");
+    for id in ["gui-a", "gui-b", "headless-c"] {
+        assert!(
+            durable.contains(id),
+            "a pin from this process must not revert pins persisted after boot: {durable}"
+        );
+    }
+}
+
+#[test]
+fn unpin_persist_removes_only_the_target_id() {
+    let (store, _g) = isolated_store();
+    let file = paths::sessions_root().join("_pinned_sessions.json");
+    std::fs::write(
+        &file,
+        r#"[
+  {"id": "gui-a", "pinned_at": "2026-09-20T00:00:00Z"},
+  {"id": "gui-b", "pinned_at": "2026-09-20T00:00:01Z"}
+]"#,
+    )
+    .expect("seed concurrent pin file");
+    store.set_pinned("gui-a", false);
+    let durable = std::fs::read_to_string(&file).expect("read pin file");
+    assert!(
+        !durable.contains("gui-a"),
+        "the unpinned id must leave the durable file: {durable}"
+    );
+    assert!(
+        durable.contains("gui-b"),
+        "the untouched concurrent pin must survive: {durable}"
+    );
+}
+
+#[test]
+fn retention_purge_keeps_pins_written_by_other_processes() {
+    let (store, _g) = isolated_store();
+    seed_session(&store, "purge-a", 10);
+    seed_session(&store, "purge-b", 20);
+    store.set_pinned("purge-a", true);
+    store.set_pinned("purge-b", true);
+    let file = paths::sessions_root().join("_pinned_sessions.json");
+    // A concurrent GUI process pins an unrelated session after this one
+    // booted; the purge below runs with a map that never saw it.
+    std::fs::write(
+        &file,
+        r#"[
+  {"id": "purge-a", "pinned_at": "2026-09-20T00:00:00Z"},
+  {"id": "purge-b", "pinned_at": "2026-09-20T00:00:01Z"},
+  {"id": "foreign-x", "pinned_at": "2026-09-20T00:00:02Z"}
+]"#,
+    )
+    .expect("seed concurrent pin file");
+    store.delete("purge-a").expect("delete purged session");
+    let durable = std::fs::read_to_string(&file).expect("read pin file");
+    assert!(
+        !durable.contains("purge-a"),
+        "the purged id must leave the durable pin file: {durable}"
+    );
+    assert!(
+        durable.contains("purge-b") && durable.contains("foreign-x"),
+        "the purge must not rewrite entries it does not own: {durable}"
+    );
+}
+
+#[test]
+fn mode_persist_keeps_entries_written_after_boot() {
+    let (store, _g) = isolated_store();
+    let file = paths::sessions_root().join("_session_mode_states.json");
+    // A GUI process switched gui-a to Plan after this process booted; the
+    // headless Plan persist below must not flip it back (Plan → Yolo is the
+    // unsafe reopen divergence).
+    std::fs::write(&file, r#"{"gui-a": "plan"}"#).expect("seed concurrent mode file");
+    store
+        .set_mode_and_persist("headless-c", SerializableMode::Yolo)
+        .expect("persist headless mode");
+    let durable = std::fs::read_to_string(&file).expect("read mode file");
+    assert!(
+        durable.contains("gui-a") && durable.contains("headless-c"),
+        "a mode persist from this process must not revert modes persisted after boot: {durable}"
+    );
+}
