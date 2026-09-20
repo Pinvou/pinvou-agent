@@ -363,7 +363,17 @@ const ANCHOR_NAME_CHAR_LIMIT: usize = 80;
 /// 模型不可见、可被用来夹带隐形指令（或把信封标签拆成剥除/匹配不到的
 /// 残片），在任何插值点之前统一剥除。
 pub fn strip_invisible_chars(value: &str) -> String {
-    value.chars().filter(|c| !is_unseen(*c)).collect()
+    value
+        .chars()
+        .map(|c| {
+            if matches!(c, '\u{2028}' | '\u{2029}') {
+                ' '
+            } else {
+                c
+            }
+        })
+        .filter(|c| !is_unseen(*c))
+        .collect()
 }
 
 fn is_unseen(c: char) -> bool {
