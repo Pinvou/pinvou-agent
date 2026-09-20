@@ -31,6 +31,7 @@ pub mod plugin_import;
 pub mod recycle_bin;
 pub mod scope;
 pub mod skill_marketplace;
+pub mod skill_scope;
 pub mod store;
 
 use std::path::{Path, PathBuf};

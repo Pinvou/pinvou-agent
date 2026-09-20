@@ -148,6 +148,8 @@ pub struct CheckpointMeta {
     /// 第几个用户 turn（1-based）；计数失败时为 None，前端按顺序兜底对齐。
     pub turn: Option<u32>,
     pub kind: CheckpointKind,
+    /// 展示标签（用户消息摘要或「回滚前自动快照」）。
+    pub label: String,
     /// 影子仓库中的 commit sha（orphan commit，互不为父子）。
     pub commit: String,
     pub created_at: i64,
@@ -752,6 +754,7 @@ fn create_checkpoint_preserving(
         id: format!("c{}-{}", index.entries.len() + 1, now_nanos()),
         turn,
         kind,
+        label: String::new(),
         commit,
         created_at: now_seconds(),
     };
@@ -1623,6 +1626,7 @@ mod tests {
             id: "c1-1".into(),
             turn: Some(1),
             kind: CheckpointKind::Turn,
+            label: String::new(),
             commit: commit.clone(),
             created_at: 0,
         };
@@ -1712,6 +1716,7 @@ mod tests {
                     id: "c1-1".into(),
                     turn: Some(1),
                     kind: CheckpointKind::Turn,
+                    label: String::new(),
                     commit,
                     created_at: 0,
                 }],
@@ -1898,6 +1903,7 @@ mod tests {
                     id: "c1-1".into(),
                     turn: Some(1),
                     kind: CheckpointKind::Turn,
+                    label: String::new(),
                     commit,
                     created_at: 0,
                 }],
