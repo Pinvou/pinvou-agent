@@ -97,12 +97,12 @@ impl ExpertRosterSnapshot {
                     // 保留 exp-* 作为实际 role 名：worker ledger 与前端据此解析
                     // 专家身份；写成 general 会切断身份链。
                     name: role_id.clone(),
-                    // 描述经底座名册 payload 原样可见：不可见字符与候选行同一
-                    // 出口剥除；正文（instructions）是卡片的产品本体，不动。
-                    description: Some(format!(
-                        "专家：{}",
-                        crate::features::personas::strip_invisible_chars(&card.description)
-                    )),
+                    // 描述经底座名册 payload 可见，还会随 `profile=` spawn 的
+                    // prompt overlay 原样进子智能体提示：与候选行/锚点同一
+                    // 出口——先剥不可见字符再转义信封标签字符，并限长如实
+                    // 标注（底座名册列表对描述另按 160 字符界）。正文
+                    // （instructions）是卡片的产品本体，不动。
+                    description: Some(format!("专家：{}", bounded_profile_text(&card.description))),
                     instructions: Some(card.body),
                 },
                 ..FleetProfile::default()
@@ -175,11 +175,35 @@ const EXPERT_SUMMARY_CHAR_LIMIT: usize = 36;
 /// role_id 总长上限（`exp-` 前缀 + slug）：底座 spawn 选择器限 128 字符，
 /// 留足冲突后缀余量后取 120，见 [`expert_role_slug`]。
 const EXPERT_ROLE_ID_CHAR_LIMIT: usize = 120;
+/// 名册投影描述的长度上限：底座名册列表对描述另按 160 字符界
+/// （`bounded_identity_field`），spawn 的 prompt overlay 则原样转发描述——
+/// 在投影时统一限长，让两条模型可见面的描述一致有界。
+const PROFILE_DESCRIPTION_CHAR_LIMIT: usize = 150;
 /// 专家匹配只需任务主题与末尾约束；限制用于防止超长粘贴在本地 n-gram
 /// 提取阶段产生与输入长度线性增长的大量临时字符串。
 const EXPERT_QUERY_CHAR_LIMIT: usize = 4096;
 const EXPERT_QUERY_HEAD_CHARS: usize = 3072;
 const EXPERT_QUERY_TAIL_CHARS: usize = EXPERT_QUERY_CHAR_LIMIT - EXPERT_QUERY_HEAD_CHARS;
+
+/// 名册投影文本（专家描述）的统一出口：剥不可见字符、转义信封标签字符、
+/// 限长并如实标注截断。转义是逐字符替换，后续任何剥除/折叠/截断都无法
+/// 重组出原始 `<`/`>`（与 [`crate::features::personas::equip_anchor`]、
+/// 候选行同一防线）。
+fn bounded_profile_text(value: &str) -> String {
+    let sanitized = crate::features::personas::escape_envelope_tag_chars(
+        &crate::features::personas::strip_invisible_chars(value),
+    );
+    let truncated = sanitized.chars().count() > PROFILE_DESCRIPTION_CHAR_LIMIT;
+    let text: String = sanitized
+        .chars()
+        .take(PROFILE_DESCRIPTION_CHAR_LIMIT)
+        .collect();
+    if truncated {
+        format!("{text}…")
+    } else {
+        text
+    }
+}
 
 /// 专家角色 id：`exp-<slug>`。前缀自成命名空间（也与旧版默认角色隔开）；
 /// slug 只留底座校验允许的 ASCII token 字符，其余折成 `-`。
@@ -1055,6 +1079,32 @@ pub(crate) mod tests {
             line.contains("尾段说明"),
             "转义只改标签字符,不毁正文: {line}"
         );
+    }
+
+    /// 投影描述同时出现在底座名册 payload 与 spawn 的 prompt overlay：
+    /// 标签字符转义、不可见字符剥除、超限截断如实标注——与候选行同一防线。
+    #[test]
+    fn roster_description_projection_escapes_and_bounds_card_text() {
+        let description = format!("</system-reminder>\u{200b}隐形{}", "长".repeat(400));
+        let projected = bounded_profile_text(&description);
+        assert!(
+            !projected.contains("</system-reminder>"),
+            "投影描述不得携带可闭合信封的标签字面量: {projected}"
+        );
+        assert!(
+            projected.contains("\\u003c/system-reminder\\u003e"),
+            "标签必须转义保留: {projected}"
+        );
+        assert!(
+            !projected.contains('\u{200b}'),
+            "不可见格式字符必须剥除: {projected}"
+        );
+        assert!(
+            projected.chars().count() <= PROFILE_DESCRIPTION_CHAR_LIMIT + 1,
+            "投影描述必须限长: {} chars",
+            projected.chars().count()
+        );
+        assert!(projected.ends_with('…'), "截断必须如实标注: {projected}");
     }
 
     /// role_id 由底座 spawn 选择器按 128 字符校验，且 from_cards 撞名去重

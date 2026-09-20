@@ -358,10 +358,14 @@ pub fn equip_body_injection(card: &PersonaCard) -> String {
 const ANCHOR_NAME_CHAR_LIMIT: usize = 80;
 
 /// 剥掉控制符与肉眼不可见的格式字符（零宽空格/连接符、双向覆写与隔离、
-/// 阿拉伯字母标记、软连字符、BOM）。卡片名/描述是用户自建文案，会插进
-/// `<system-reminder>` 信封（每轮锚点）或候选行（专家短摘要），这类字符
-/// 模型不可见、可被用来夹带隐形指令（或把信封标签拆成剥除/匹配不到的
-/// 残片），在任何插值点之前统一剥除。
+/// 阿拉伯字母标记、软连字符、BOM、变体选择符、Unicode 标签字符、注解
+/// 字符、渲染为空白单元的占位字符），并把行/段分隔符（U+2028/U+2029）
+/// 折叠成空格。卡片名/描述/知识集名是用户自建文案，会插进
+/// `<system-reminder>` 信封（每轮锚点、知识集引导）或候选行（专家短
+/// 摘要）：这类字符模型不可见、可被用来夹带隐形指令（或把信封标签拆成
+/// 剥除/匹配不到的残片），必须在任何插值点之前统一处理；行/段分隔符
+/// 不是控制符且 `short_single_line` 之外的插值点（锚点）不做空白折叠，
+/// 折成空格保证单行插值点不被拆行。
 pub fn strip_invisible_chars(value: &str) -> String {
     value
         .chars()
@@ -380,17 +384,22 @@ fn is_unseen(c: char) -> bool {
     c.is_control()
         || matches!(
             c,
-            '\u{00AD}'                // 软连字符
-                | '\u{061C}'          // 阿拉伯字母标记（双向）
-                | '\u{180E}'          // 蒙古文元音分隔符（现代 Unicode 为格式字符）
+            '\u{00AD}'                    // 软连字符
+                | '\u{061C}'              // 阿拉伯字母标记（双向）
+                | '\u{115F}' | '\u{1160}' // 朝鲜文填充符（空占位）
+                | '\u{180E}'              // 蒙古文元音分隔符（已废弃格式字符）
                 | '\u{200B}'..='\u{200F}' // 零宽空格/连接符与方向标记
                 | '\u{202A}'..='\u{202E}' // 双向覆写
-                | '\u{2060}'..='\u{2069}' // 不可见分隔/加号与双向隔离（LRI/RLI/FSI/PDI）
-                | '\u{206A}'..='\u{206F}' // 已废弃的双向/行间格式符
-                | '\u{FE00}'..='\u{FE0F}' // 变体选择符
-                | '\u{FFF9}'..='\u{FFFB}' // 行间注释标记
-                | '\u{FEFF}'          // BOM/零宽不间断空格
-                | '\u{E0000}'..='\u{E007F}' // 标签字符（可隐形夹带整段 ASCII）
+                | '\u{2060}'..='\u{2064}' // 不可见分隔/加号
+                | '\u{2066}'..='\u{2069}' // 双向隔离（LRI/RLI/FSI/PDI）
+                | '\u{206A}'..='\u{206F}' // 已废弃格式字符（禁用双向控制）
+                | '\u{2800}'              // 盲文空白图案（渲染为空白单元）
+                | '\u{3164}'              // 朝鲜文填充字母（空占位）
+                | '\u{FE00}'..='\u{FE0F}' // 变体选择符（不可见装饰）
+                | '\u{FEFF}'              // BOM/零宽不间断空格
+                | '\u{FFF9}'..='\u{FFFB}' // 纵向注解（不可见）
+                | '\u{E0000}'..='\u{E007F}' // Unicode 标签字符（隐形 ASCII 通道）
+                | '\u{E0100}'..='\u{E01EF}' // 变体选择符增补
         )
 }
 
@@ -689,6 +698,28 @@ mod tests {
         ] {
             assert!(!a.contains(unseen), "不可见字符必须剥除: {unseen:?} in {a}");
         }
+    }
+
+    /// 标签字符、变体选择符、Unicode 标签字符、注解字符与渲染为空白的
+    /// 占位字符同样不可见：全部剥除，正文语义保留。
+    #[test]
+    fn strip_invisible_chars_covers_format_tag_and_blank_placeholder_chars() {
+        let sanitized = strip_invisible_chars(
+            "a\u{200b}b\u{e0041}c\u{fe0f}d\u{fff9}e\u{180e}f\u{206a}g\u{e0100}h\u{3164}i\u{2800}j\u{115f}k",
+        );
+        assert_eq!(sanitized, "abcdefghijk");
+    }
+
+    /// 行/段分隔符（U+2028/U+2029）不是控制符，但锚点是单行插值点：
+    /// 必须折叠成空格，且不能让卡名把信封拆成多行。
+    #[test]
+    fn anchor_folds_line_separators_and_stays_single_line() {
+        let mut card = embedded()[0].clone();
+        card.name = "A\u{2028}B\u{2029}C".into();
+        let a = equip_anchor(&card);
+        assert!(a.contains("A B C"), "分隔符必须折叠成空格: {a}");
+        assert!(!a.contains('\u{2028}') && !a.contains('\u{2029}'));
+        assert!(!a.contains('\n'), "锚点保持单行: {a}");
     }
 
     /// 锚点每轮重复注入：病态长的卡名必须截断并如实标注，不得膨胀每轮上下文。
