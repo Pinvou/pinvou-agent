@@ -122,7 +122,7 @@ pub async fn exit_plan_to_yolo(
 /// 模型列表下方的会话级开关。开启：装配专家名册，并让下一次发送按多智能体
 /// 资源边界重建引擎；关闭：让下一次发送恢复普通对话的底座资源配置。切换时
 /// 回收空闲旧引擎，避免旧 hook / 深度 / 并发配置泄漏到新模式；正在生成时拒绝
-/// 切换。工具面不随开关变化——与主线完全一致：`workflow` 保持可用（委派提醒
+/// 切换。工具面不随开关变化——与主线完全一致：`workflow` 保持可用（蜂群契约
 /// 不教学不推荐），裸 `agent` 本就对所有会话可用。
 #[tauri::command]
 pub async fn set_multi_agent_mode(
@@ -226,7 +226,7 @@ pub async fn accept_plan(
         &session_id,
         accepted_mode_state.multi_agent,
         accept_plan_instruction(&plan_markdown),
-        &plan_markdown,
+        super::multiagent::MatchSource(&plan_markdown),
     );
     let display_content = display_message
         .map(|message| message.trim().to_string())

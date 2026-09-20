@@ -293,7 +293,7 @@ pub(crate) async fn chat_with_reservation(
         &sid,
         mode_state.multi_agent,
         full,
-        &raw_message,
+        super::multiagent::MatchSource(&raw_message),
     );
     full = prepared_delegation.content;
     let mode = mode_state.mode;

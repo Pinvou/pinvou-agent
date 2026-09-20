@@ -41,7 +41,6 @@ const subagentPanelEventSource = read('src', 'features', 'multiagent', 'subagent
 const timelineSource = read('src', 'features', 'conversation', 'ConversationTimeline.jsx');
 const chatViewSource = read('src', 'features', 'chat', 'ChatView.jsx');
 const commandSource = read('src-tauri', 'src', 'app', 'commands', 'multiagent.rs');
-const chatCommandSource = read('src-tauri', 'src', 'app', 'commands', 'chat.rs');
 const memoryCommandSource = read('src-tauri', 'src', 'app', 'commands', 'memory.rs');
 const interactionCommandSource = read('src-tauri', 'src', 'app', 'commands', 'interaction.rs');
 const interactionBridgeSource = read('src', 'platform', 'tauri', 'bridge', 'interaction.js');
@@ -313,37 +312,22 @@ test('旧独立入口退役：多智能体经会话级开关 + spawn 级蜂群�
     '逐轮委派提醒组装器（含 SWARM_MODE_PROMPT）已随二期退役，不得回潮',
   );
   assert.match(commandSource, /pub\(crate\) fn prepare_delegation_turn\(/, '普通发送与方案接受必须复用同一轮装配入口');
-  assert.match(
-    commandSource,
-    /prepare_delegation_turn_impl\([\s\S]{0,200}content: String,[\s\S]{0,80}match_source: &str/,
-    '发送内容与匹配源必须分离：候选匹配只看用户/计划原文，不看组装后的注入文本',
-  );
+  // 发送内容与匹配源的分离由 Rust 类型系统强制：`MatchSource` newtype 让
+  // “匹配看原文、发送看组装稿”的参数次序错误直接变成编译错误。此前这里用
+  // 正则钉两个调用点的实参次序，但纯 Rust 改动只触发 rust-test job、不会
+  // 运行本文件，钉了也无法在正确的时机生效。
   assert.match(commandSource, /snapshot\.available_role_lines\(match_source\)/, '候选提醒必须从本轮名册快照按匹配源筛选，避免提示与实际派工错位');
-  assert.match(rosterSource, /EXPERT_CANDIDATE_LIMIT:\s*usize\s*=\s*8/, '父模型每轮最多看到 8 位专家短候选');
   assert.match(rosterSource, /personas::executable_cards\(\)/, '每轮名册与候选必须一次读取可执行专家卡，不能逐张读取形成竞态');
   assert.match(personasSource, /pub fn executable_cards\(\)[\s\S]{0,900}filter\(\|card\| !card\.conversational_only\)/, '纯对话专家卡不得注册为执行型子智能体');
   assert.match(rosterSource, /if score > 0 \{/, '用户自创卡与内置卡同门槛：必须与本轮任务有文本相关性才进入候选');
   assert.match(rosterSource, /b_user\.cmp\(&a_user\)/, '用户自创卡仅在分数并列时优先，不再凭身份无条件占位');
-  // 二期把 worktree/接力等工作区教学收进蜂群契约（swarm.rs），并保持去强制化。
-  // 负向断言针对契约 raw string 本体（r#"…"#），避免误伤测试代码里的反向引用。
-  const swarmSource = read('src-tauri', 'src', 'features', 'assistant', 'swarm.rs');
-  const contractStart = swarmSource.indexOf('SWARM_CONTRACT: &str = r#"');
-  const contractEnd = swarmSource.indexOf('"#;', contractStart);
-  assert.ok(contractStart >= 0 && contractEnd > contractStart, '蜂群契约 raw string 必须存在于 swarm.rs');
-  const contractText = swarmSource.slice(contractStart + 'SWARM_CONTRACT: &str = r#"'.length, contractEnd);
-  assert.match(contractText, /`worktree=true`/, '同一 Git 仓库并行写入的 worktree 隔离教学保留在蜂群契约');
-  assert.match(contractText, /按实际收益判断/, '契约必须保留按收益判断的可选委派立场（正向锚）');
-  assert.match(contractText, /\[BLOCKED\]/, '子智能体受阻协议（[BLOCKED] 首行）教学保留在契约中，执行记录据此标注受阻');
-  assert.match(contractText, /`name=`/, '子智能体显示名的真实机制 name= 必须写明');
-  assert.match(contractText, /ASCII/, 'name= 在底座只收 ASCII，契约必须写明该约束');
-  assert.match(contractText, /`profile_query=关键词`/, 'roster 无分页且至多 48 条，契约必须教 profile_query= 才能发现截断尾部的专家');
-  assert.doesNotMatch(contractText, /必须调用 agent|不得亲自承担|至少派一个/, '契约不得回潮强制委派话术');
-  assert.doesNotMatch(contractText, /max_depth|max_steps|wall_time_secs|agents\/list|workflow/, '不在模型 schema 的字段与 workflow 路径不得再教');
-  assert.match(
-    chatCommandSource,
-    /prepare_delegation_turn\([\s\S]{0,180}mode_state\.multi_agent,[\s\S]{0,80}full,[\s\S]{0,40}&raw_message/,
-    '开关开启时 chat 发送链按本轮装配：content 传组装后全文，匹配源传用户原文 raw_message',
-  );
+  // 蜂群契约正文的产品签发边界（worktree 隔离、按收益判断、[BLOCKED]、
+  // name=/ASCII、profile_query、去强制化、不教 schema 外字段）统一钉在
+  // features/assistant/swarm.rs 的 swarm_contract_keeps_product_boundaries：
+  // 它在真正随 swarm.rs 变化而触发的 rust-test job 里运行且断言更强（另钉
+  // action=roster、48、type=/profile= 分工等），此处不再维护一份换行重排就
+  // 误报的正则副本；每轮候选上限（8）由 expert_roster 的行为测试按真实
+  // 截断结果钉住，而非钉常量声明。
   assert.doesNotMatch(
     memoryCommandSource,
     /prepend_delegation_replay_reminder|prepare_delegation_turn/,
@@ -358,11 +342,6 @@ test('旧独立入口退役：多智能体经会话级开关 + spawn 级蜂群�
     memoryCommandSource,
     /user_display_message\(new_message\.clone\(\)\)[\s\S]{0,250}edit_last_turn_reserved\(&sid, new_message, display_message, reservation\)/,
     '编辑重发的模型内容与界面/落盘历史逐字同源，不受注入污染',
-  );
-  assert.match(
-    interactionCommandSource,
-    /prepare_delegation_turn\([\s\S]{0,180}accepted_mode_state\.multi_agent,[\s\S]{0,80}accept_plan_instruction\(&plan_markdown\),[\s\S]{0,40}&plan_markdown,/,
-    '接受方案触发执行时按批准后的开关状态同轮装配：content 传 accept 包装指令，匹配源传计划原文',
   );
   assert.match(
     interactionCommandSource,
@@ -421,13 +400,9 @@ test('旧独立入口退役：多智能体经会话级开关 + spawn 级蜂群�
     /cfg\.instructions[\s\S]{0,120}swarm_instruction_source\(\)/,
     '蜂群契约经 EngineConfig.instructions 在多智能体引擎 spawn 时注入一次（不逐轮）',
   );
-  // Tier constants are pub(crate): the per-turn delegation reminder reads the
-  // same single source of truth as build_engine_config_for_multi_agent.
-  // Swarm rework: Work and native Code merge into one shared 4/8 tier; with
-  // swarm on the engine config pins the foundation hard caps (the reminder
-  // states no number), and with swarm off it falls back to this tier.
-  assert.match(assistantBridgeSource, /pub\(crate\) const MULTI_AGENT_MAX_CONCURRENT: usize = 4;/, 'Shared tier direct-child concurrency is 4');
-  assert.match(assistantBridgeSource, /pub\(crate\) const MULTI_AGENT_MAX_ADMITTED: usize = 8;/, 'Shared tier tree-wide admission is 8');
+  // 4/8 分档常量不再在这里钉声明：bridge.rs 的 Rust 测试按构建出的引擎配置
+  // 实值钉住（max_subagents/launch_concurrency 断言），钉声明对真实上限改动
+  // 不敏感（改运行时钳制、留声明，测试照样绿）。
   assert.match(
     assistantBridgeSource,
     /build_multi_agent_send_message_op[\s\S]{0,700}build_multi_agent_hook_executor/,

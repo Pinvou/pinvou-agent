@@ -24,18 +24,23 @@ pub(crate) struct PreparedDelegationTurn {
     pub expert_candidates: Vec<String>,
 }
 
+/// 候选匹配的输入文本（用户消息原文或计划原文），与 `content`（实际发送的
+/// 组装稿）刻意区分成不同类型：两个字符串参数按位置传反仍能编译，而类型
+/// 区分让“匹配看原文、发送看组装稿”的次序错误直接变成编译错误。
+pub(crate) struct MatchSource<'a>(pub &'a str);
+
 pub(crate) fn prepare_delegation_turn(
     pool: &EnginePool,
     session_id: &str,
     enabled: bool,
     content: String,
-    match_source: &str,
+    match_source: MatchSource<'_>,
 ) -> PreparedDelegationTurn {
     prepare_delegation_turn_impl(
         enabled,
         pool.swarm_mode_available(session_id),
         content,
-        match_source,
+        match_source.0,
     )
 }
 
