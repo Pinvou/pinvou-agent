@@ -318,6 +318,52 @@ fn move_add_workspace_root_atomically_and_idempotently() {
 }
 
 #[test]
+fn covered_workspace_skip_survives_symlinked_ancestor() {
+    // Review #464 MAJOR 3 (same shape as macOS /var→/private/var): roots are
+    // canonicalized on insertion, but when the workspace path under the
+    // covered check does not exist, the old purely lexical fallback kept the
+    // symlink form, so the identity key was no longer nested and the path was
+    // re-added as uncovered. Reproduce on any platform with a symlinked
+    // ancestor. Branch on the std::env::consts::OS constant instead of cfg
+    // syntax: platform conditional compilation must not appear outside the
+    // adapter layer (architecture-guard); Windows directory symlinks require
+    // admin/developer mode, so the mechanism is covered by unix/macOS.
+    if std::env::consts::OS == "windows" {
+        return;
+    }
+    let temp = tempfile::tempdir().expect("tempdir");
+    let workspace = temp.path().join("real").join("workspace");
+    std::fs::create_dir_all(&workspace).expect("create workspace");
+    let link = temp.path().join("link");
+    let status = std::process::Command::new("ln")
+        .arg("-s")
+        .arg(temp.path().join("real"))
+        .arg(&link)
+        .status()
+        .expect("spawn ln");
+    assert!(status.success(), "ln -s must succeed on unix-likes");
+
+    let store = store_in(&temp);
+    let project = create(
+        &store,
+        "目标",
+        std::slice::from_ref(&link.join("workspace")),
+    );
+
+    // A nonexistent nested path written through the symlinked ancestor: the
+    // covered check must hit the existing root.
+    let covered = link.join("workspace").join("deep");
+    let outcome = store
+        .move_session_to_project("s1", Some(&project.id), Some(&covered))
+        .expect("move with covered workspace");
+    assert_eq!(
+        outcome.added_root, None,
+        "symlink 形态不得绕过 covered 跳过"
+    );
+    assert_eq!(store.get(&project.id).unwrap().roots.len(), 1);
+}
+
+#[test]
 fn nonexistent_leaf_resolves_into_existing_ancestors_territory() {
     // 评审 #471 Major 回归锁:macOS 默认 TMPDIR 位于 /var 下(→ /private/var),
     // 不存在的叶子必须经最深已存在祖先 canonicalize,与已存在路径键入同一
@@ -701,6 +747,152 @@ fn plan_rebind_roots_previews_without_mutating() {
             .plan_rebind_roots(&clean_from, &clean_to)
             .expect("nothing left under clean_from")
             .is_empty()
+    );
+}
+
+#[test]
+fn ensure_folder_roots_materializes_reuses_and_honors_exclusions() {
+    // §3 client-driven auto-materialization: per-root outcomes, anchored
+    // reuse (§9.9), exclusion skip without an outcome, and per-root failure
+    // isolation.
+    let temp = tempfile::tempdir().expect("tempdir");
+    let store = store_in(&temp);
+    let folder = abs("browse-folder");
+
+    // Created: named after the directory basename, anchored at the folder.
+    let outcomes = store
+        .ensure_folder_roots(std::slice::from_ref(&folder))
+        .expect("ensure");
+    match outcomes.as_slice() {
+        [super::EnsureFolderOutcome::Created { project }] => {
+            assert_eq!(project.name, "browse-folder");
+            assert_eq!(project.origin.as_deref(), Some("folder"));
+            assert_eq!(project.roots, vec![display(&folder)]);
+        }
+        other => panic!("expected Created, got {other:?}"),
+    }
+
+    // Anchored reuse (and idempotency): the same folder is Covered, never a
+    // duplicate project.
+    let outcomes = store
+        .ensure_folder_roots(std::slice::from_ref(&folder))
+        .expect("ensure again");
+    assert!(
+        matches!(
+            outcomes.as_slice(),
+            [super::EnsureFolderOutcome::Covered { .. }]
+        ),
+        "second run must be Covered, got {outcomes:?}"
+    );
+    assert_eq!(store.list().len(), 1);
+
+    // A manual project that merely REFERENCES a folder does not anchor it
+    // (§9.9): the browse channel materializes its own same-named project —
+    // legal cross-project overlap.
+    let referenced = abs("referenced");
+    create(&store, "手动引用", std::slice::from_ref(&referenced));
+    let outcomes = store
+        .ensure_folder_roots(std::slice::from_ref(&referenced))
+        .expect("ensure referenced");
+    assert!(
+        matches!(
+            outcomes.as_slice(),
+            [super::EnsureFolderOutcome::Created { .. }]
+        ),
+        "referencing does not anchor; got {outcomes:?}"
+    );
+
+    // Exclusion (§3): a banned folder is skipped WITHOUT an outcome — the
+    // browse channel can tell exclusion apart from failure.
+    store.set_never_materialize(&folder, true).expect("exclude");
+    let outcomes = store
+        .ensure_folder_roots(&[folder.clone(), abs("fresh-tail")])
+        .expect("ensure with excluded root");
+    assert_eq!(outcomes.len(), 1, "excluded roots produce no outcome");
+    assert!(matches!(
+        &outcomes[0],
+        super::EnsureFolderOutcome::Created { .. }
+    ));
+
+    // Failure isolation: a relative path fails alone and never blocks the
+    // rest of the batch.
+    let outcomes = store
+        .ensure_folder_roots(&[PathBuf::from("relative/path"), abs("after-failure")])
+        .expect("ensure batch");
+    assert_eq!(outcomes.len(), 2);
+    assert!(matches!(
+        &outcomes[0],
+        super::EnsureFolderOutcome::Failed { .. }
+    ));
+    assert!(matches!(
+        &outcomes[1],
+        super::EnsureFolderOutcome::Created { .. }
+    ));
+}
+
+#[test]
+fn set_never_materialize_is_idempotent_and_only_gates_future_ensure() {
+    let temp = tempfile::tempdir().expect("tempdir");
+    let store = store_in(&temp);
+    let folder = abs("excluded-folder");
+    // Materialize via ensure (not a manual create): anchored reuse in the
+    // revoked step requires an origin=folder project.
+    let outcomes = store
+        .ensure_folder_roots(std::slice::from_ref(&folder))
+        .expect("ensure");
+    assert!(matches!(
+        outcomes.as_slice(),
+        [super::EnsureFolderOutcome::Created { .. }]
+    ));
+
+    // Idempotent registration; the list is exposed for the manage panel.
+    let registered = store.set_never_materialize(&folder, true).expect("set");
+    assert_eq!(registered.len(), 1);
+    assert_eq!(
+        store
+            .set_never_materialize(&folder, true)
+            .expect("set again"),
+        registered,
+        "re-adding must not duplicate the entry"
+    );
+    // Existing projects and their assignments are untouched: the list gates
+    // only FUTURE auto-materialization.
+    assert_eq!(store.list().len(), 1);
+
+    // Revocation re-opens the folder; a fresh ensure reuses the surviving
+    // project (anchored) instead of materializing a second one.
+    store.set_never_materialize(&folder, false).expect("revoke");
+    assert!(store.never_materialize_roots().is_empty());
+    let outcomes = store
+        .ensure_folder_roots(std::slice::from_ref(&folder))
+        .expect("ensure");
+    assert!(matches!(
+        outcomes.as_slice(),
+        [super::EnsureFolderOutcome::Covered { .. }]
+    ));
+    assert_eq!(store.list().len(), 1);
+}
+
+#[test]
+fn keychain_for_workspace_keeps_cwd_primary_and_project_order() {
+    // §6: the primary slot is always the session's own cwd (display form);
+    // additional roots are the caller's roots VERBATIM, in order, minus the
+    // identity equal to the cwd. The store hands over stored DISPLAY forms,
+    // so the test must too: on Windows hosts whose temp path carries an 8.3
+    // short-name segment (GitHub runners: RUNNER~1), a raw spelling and the
+    // display form fold to DIFFERENT identity keys and the cwd root would
+    // survive into the keychain as a bogus additional root.
+    let cwd = abs("k-cwd");
+    let roots = vec![display(&abs("k-b")), display(&cwd), display(&abs("k-a"))];
+    let keychain = ProjectStore::keychain_for_workspace(&cwd, &roots);
+    assert_eq!(keychain.len(), 3);
+    assert_eq!(keychain[0], display(&cwd));
+    assert_eq!(keychain[1], roots[0]);
+    assert_eq!(keychain[2], roots[2]);
+    // Empty project roots → single-root semantics (cwd only).
+    assert_eq!(
+        ProjectStore::keychain_for_workspace(&cwd, &[]),
+        vec![display(&cwd)]
     );
 }
 
