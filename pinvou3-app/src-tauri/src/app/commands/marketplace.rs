@@ -235,6 +235,12 @@ pub async fn install_marketplace_tool(
     // 同粒度的取舍）。
     pool.mark_mcp_config_updated();
     pool.refresh_live_sessions_skills().await;
+    // Install state flows into the deny snapshot in both directions (the
+    // NATIVE_PACKAGE_TOOLS ownership gate and the DenyAll scope syncs above
+    // read it): without this refresh live engines keep the pre-install
+    // admission — a package's native tool stays denied, and a newly installed
+    // connector's tools stay admitted — until respawn.
+    pool.refresh_disallowed_tools().await;
     // 新装包的 CLI/技能脚本纳入/移出 deny 规则集（M-6：install 路径热刷）。
     pool.refresh_permission_rulesets().await;
     crate::features::behavior_telemetry::track(
@@ -463,6 +469,10 @@ pub async fn uninstall_marketplace_tool(
     // （async 命令必须用 async 版：blocking 版的 blocking_lock 在 tokio runtime
     // 线程上必 panic）。
     pool.refresh_live_sessions_skills().await;
+    // Keep the native-tool deny list uniform with the skill uninstall path
+    // (no live effect today: no current MCP manifest owns a native tool, but
+    // the uninstall postcondition must not depend on that accident).
+    pool.refresh_disallowed_tools().await;
     // 卸载包的 CLI/技能脚本移出 deny 规则集（M-6：uninstall 路径热刷）。
     pool.refresh_permission_rulesets().await;
     Ok(())
@@ -566,6 +576,10 @@ pub async fn install_marketplace_skill(
     // DenyAll scope（含 plain）已初始化时新装技能默认仍关闭（sync 进各 scope 禁用集，
     // 见 install_marketplace_skill_sync）；未初始化 scope 按 DenyAll 现算兜底，同样默认关。
     pool.refresh_live_sessions_skills().await;
+    // The native-tool ownership gate (NATIVE_PACKAGE_TOOLS) reads install
+    // state: without this refresh a package owning a native tool (ima) stays
+    // denied in live engines until respawn.
+    pool.refresh_disallowed_tools().await;
     // 导入包的 CLI/技能脚本纳入 deny 规则集（M-6：import 路径热刷）。
     pool.refresh_permission_rulesets().await;
     crate::features::behavior_telemetry::track(
@@ -897,6 +911,10 @@ pub async fn import_skill_md_bytes(
             )
         })?;
     pool.refresh_live_sessions_skills().await;
+    // An imported id can collide with a package owning a native tool
+    // (NATIVE_PACKAGE_TOOLS keys on package ids), so the deny snapshot must
+    // follow the same install postcondition as the marketplace paths.
+    pool.refresh_disallowed_tools().await;
     // 导入包的 CLI/技能脚本纳入 deny 规则集（M-6：import 路径热刷）。
     pool.refresh_permission_rulesets().await;
     Ok(report.id)
@@ -912,6 +930,11 @@ pub async fn uninstall_marketplace_skill(
         .map_err(|e| format!("任务执行失败: {e}"))??;
     // 卸载影响两个 scope 的启用集：重写在线会话的组合目录。
     pool.refresh_live_sessions_skills().await;
+    // The deny list is snapshot state in live engines, and uninstall (unlike
+    // ima_logout) keeps the package's keyring credentials: a skill owning a
+    // native tool (ima) would stay admitted and executable until respawn
+    // without this refresh.
+    pool.refresh_disallowed_tools().await;
     // 导入包的 CLI/技能脚本纳入 deny 规则集（M-6：import 路径热刷）。
     pool.refresh_permission_rulesets().await;
     Ok(())

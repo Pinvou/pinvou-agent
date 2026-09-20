@@ -4,7 +4,7 @@ API base path: `openapi/note/v1`.
 
 Use notes APIs when the user's real target is a note: search notes, list notebooks, list notes, read note content, create a new note, or append to an existing note.
 
-Do not use shell commands or environment inspection for credentials. Call the native `ima_openapi` tool; credentials are never tool arguments.
+Do not use shell commands or environment inspection for credentials. Call the native `ima_openapi` tool (deferred by default: if it is not in your tool list, activate it with `tool_search` first); credentials are never tool arguments.
 
 ## Operations
 

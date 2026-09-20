@@ -640,7 +640,7 @@ mod tests {
     }
 
     #[test]
-    fn work_instructions_use_canonical_tools_with_narrow_preview_compatibility() {
+    fn work_instructions_use_canonical_tools_without_hidden_bash_surface() {
         let rendered = instructions_md();
         for retired in [
             "read_file",
@@ -648,6 +648,7 @@ mod tests {
             "exec_shell",
             "checklist_write",
             "File(action=",
+            "Bash(action=",
         ] {
             assert!(
                 !rendered.contains(retired),
@@ -660,8 +661,6 @@ mod tests {
             "file_search(query=",
             "bash(command=",
             "terminal/run",
-            "Bash(action=\"run\", command=\"...\", background=true)",
-            "Bash(action=\"cancel\", task_id=\"...\")",
             "todo_write",
         ] {
             assert!(
@@ -669,10 +668,20 @@ mod tests {
                 "canonical guidance missing: {canonical}"
             );
         }
-        assert_eq!(
-            rendered.matches("Bash(action=").count(),
-            2,
-            "legacy Bash must remain limited to run/cancel for Windows preview compatibility"
+        // The artifact-card rule must teach two-stage activation:
+        // `mcp_pinvou3_present_artifact` is a deferred builtin MCP tool, so it
+        // is absent from the first-turn tool list even when the server is
+        // healthy — only a failed `tool_search` means the backend is
+        // unavailable. The same two-stage pattern must cover the deferred
+        // browser tools (their "unavailable" branch is reachable only through
+        // a failed `tool_search`, never through plain list absence).
+        assert!(
+            rendered.contains("先 `tool_search` 激活") && rendered.contains("产物卡后端本轮不可用"),
+            "the artifact-card rule must teach tool_search activation before declaring the backend unavailable"
+        );
+        assert!(
+            rendered.contains("If `tool_search` cannot surface any `mcp_browser_*` tools"),
+            "the browser unavailability branch must be gated on a failed tool_search, not on first-turn list absence"
         );
     }
 

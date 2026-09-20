@@ -79,11 +79,11 @@
 
 通过「`manage.create_file` 创建空 Word 文档 + `doc.insert_markdown` 插入 Markdown 内容」的组合，可将 Markdown 内容写入一个新的 Word 文档。
 
-> 💡 **base64 编码**：使用系统 `base64` 命令将 Markdown 内容编码后写入**工作区目录下**的文件，再通过 read_file 工具读取编码结果填入请求参数。
+> 💡 **base64 编码**：使用系统 `base64` 命令将 Markdown 内容编码后写入**工作区目录下**的文件，再通过 `read` 工具读取编码结果填入请求参数。
 
 ```
 1. 准备好 Markdown 格式的文档内容，将其保存为 <workspace>/.tmp/tencent_docs/<标题>.md 文件（<标题> 为文档标题）
-2. 使用系统 base64 命令将 Markdown 文件编码并写入工作区目录下的文件（确保 agent 可通过 read_file 访问）：
+2. 使用系统 base64 命令将 Markdown 文件编码并写入工作区目录下的文件（确保 agent 可通过 `read` 访问）：
    mkdir -p <workspace>/.tmp/tencent_docs
    # 输入为已保存的 .md 文件
    base64 -w 0 <workspace>/.tmp/tencent_docs/<标题>.md > <workspace>/.tmp/tencent_docs/encoded_<标题>.txt
@@ -92,7 +92,7 @@
    （macOS 下不需要 -w 0 参数；<workspace> 为当前项目工作区根目录绝对路径）
 3. 调用 manage.create_file（file_type=doc, title=<标题>）创建一个空 Word 文档，记下返回的 file_id
 4. 调用 doc.get_last_operable_pos（传入 file_id）获取文档末尾可操作位置 position 以及当前 version
-5. 使用 read_file 工具读取步骤 2 生成的 encoded_<标题>.txt，拿到 base64 编码后的 Markdown 内容
+5. 使用 `read` 工具读取步骤 2 生成的 encoded_<标题>.txt，拿到 base64 编码后的 Markdown 内容
 6. 调用 doc.insert_markdown，传入 file_id、index=position、base64_markdown（可选 version_info.base_version=上一步的 version），将 Markdown 写入文档
 7. 如需继续编辑，使用 file_id 调用其他 docengine 工具；如需修改文档标题，调用 manage.rename_file_title
 ```

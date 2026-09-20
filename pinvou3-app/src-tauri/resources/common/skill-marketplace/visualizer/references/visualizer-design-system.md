@@ -7,11 +7,11 @@
 - **Text goes in your response, visuals go in the tool**: All explanatory text, descriptions, introductions, and summaries must be written as normal response text outside the visual artifact. The tool output should contain only the visual element.
 
 ## Pinvou delivery rule
-Pinvou sanitizes normal chat Markdown and will not reliably execute inline `<script>` in ordinary assistant text. For Chart.js visualizations, write a `.html` artifact and call `present_artifact(path, title)`. Do not paste the full HTML into the chat response as the final deliverable.
+Pinvou sanitizes normal chat Markdown and will not reliably execute inline `<script>` in ordinary assistant text. For Chart.js visualizations, write a `.html` artifact and call `mcp_pinvou3_present_artifact(path, title)` (a deferred builtin MCP tool: if it is absent from your tool list, activate it with `tool_search` first; only if `tool_search` cannot surface it either is the artifact-card backend unavailable this round — say so in your reply). Do not paste the full HTML into the chat response as the final deliverable.
 
 ## Preflight failure checks
 Before delivery, rewrite the artifact if any of these checks fail:
-- The final answer pastes the full HTML instead of calling `present_artifact(path, title)`.
+- The final answer pastes the full HTML instead of calling `mcp_pinvou3_present_artifact(path, title)`.
 - The HTML contains `echarts`, `Plotly`, `cdn.plot.ly`, or `cdn.jsdelivr.net/npm/echarts`.
 - Chart.js is not loaded from `https://cdnjs.cloudflare.com/ajax/libs/Chart.js/4.4.1/chart.umd.js`.
 - Any Chart.js `<canvas>` is missing `role="img"`, a useful `aria-label`, or fallback text.
