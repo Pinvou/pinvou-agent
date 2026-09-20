@@ -523,14 +523,36 @@ pub async fn rebind_workspace_root(
     // is_turn_active folds in configuring, so the config-sync window is also
     // covered by the rejection. There is deliberately no stale escape hatch,
     // to avoid reclaiming a session with an in-flight turn by mistake.
+    // The ACP side is decided in ONE bounded acquisition of the pool's
+    // sessions lock (restored, review #463 round-11 B2/T13): `get_or_spawn`
+    // holds that lock across a whole cold spawn, so a per-session unbounded
+    // wait would stall this command — and the process-wide rebind gate it
+    // holds — for as long as some unrelated session takes to start,
+    // multiplied by the affected count. `None` = the state could not be read
+    // inside the bound: reject with a dedicated marker.
+    let fenced_ids: Vec<String> = affected.iter().map(|(id, _)| id.clone()).collect();
+    let acp_busy_state = acp_pool.rebind_blocking_sessions(&fenced_ids).await;
+    let acp_busy_unknown = acp_busy_state.is_none();
+    let acp_busy = acp_busy_state.unwrap_or_default();
     let mut busy_ids = Vec::new();
     for (session_id, _) in &affected {
-        if acp_pool.is_turn_active(session_id).await
+        if acp_busy.iter().any(|id| id == session_id)
             || engines.is_turn_active(session_id)
             || engines.is_scheduled_turn_running(session_id)
         {
             busy_ids.push(session_id.clone());
         }
+    }
+    if acp_busy_unknown {
+        // Dedicated marker rather than an id-less REBIND_SESSIONS_BUSY: the
+        // frontend renders the busy copy only when it has ids to list, so an
+        // empty list would make this rejection completely silent. Typed like
+        // every other user-reachable outcome, and honest about what is
+        // unknown: an ACP runtime is starting up, so whether these sessions
+        // are busy could not be read inside the bound.
+        return Err(
+            "REBIND_RUNTIME_STARTING: an ACP runtime is starting up; retry in a moment".to_string(),
+        );
     }
     if !busy_ids.is_empty() {
         // Typed marker (Minor 7): a busy rejection is the fence's normal
@@ -793,6 +815,7 @@ pub async fn rebind_workspace_root(
             );
             return Err(match error {
                 RebindRootsError::Overlap(context) => format!("REBIND_ROOTS_CONFLICT: {context:#}"),
+                RebindRootsError::Persist(context) => format!("REBIND_ROOTS_PERSIST: {context:#}"),
                 RebindRootsError::Other(context) => format!("rebind_workspace_root: {context:#}"),
             });
         }
@@ -815,9 +838,22 @@ pub async fn rebind_workspace_root(
     // are already moved; report honestly and let the frontend suggest one
     // retry when idle. Scheduled rounds share the entry-fence semantics
     // (M5).
+    // Same single bounded ACP acquisition as the entry fence (restored,
+    // review #463 round-11 B2/T13); an unreadable state (`None`) is reported
+    // "not busy" here, because the reclaim tail re-checks under its own bound
+    // and is what actually reports a refusal — inventing post-busy ids for
+    // sessions nothing was refused for would keep the dialog open on a false
+    // report. The id list is rebuilt here rather than reused from the entry
+    // fence: the codex lane's newcomers folded into `affected` above were not
+    // in the snapshot the fence saw.
+    let post_fence_ids: Vec<String> = affected.iter().map(|(id, _)| id.clone()).collect();
+    let acp_busy_after = acp_pool
+        .rebind_blocking_sessions(&post_fence_ids)
+        .await
+        .unwrap_or_default();
     let mut post_busy_session_ids = Vec::new();
     for (session_id, _) in &affected {
-        if acp_pool.is_turn_active(session_id).await
+        if acp_busy_after.iter().any(|id| id == session_id)
             || engines.is_turn_active(session_id)
             || engines.is_scheduled_turn_running(session_id)
         {

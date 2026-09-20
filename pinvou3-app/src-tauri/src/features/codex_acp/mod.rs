@@ -232,6 +232,16 @@ fn rebind_evictable(
 /// "busy" (in-flight prompt/config sync — the caller must not evict and
 /// reports the session as post-busy). `take_session_if_still_idle`'s bare
 /// `Option` cannot express that difference.
+/// Bound on the rebind path's waits for the pool's `sessions` lock (review #463
+/// round-10 T13, restored by round-11 B2). `get_or_spawn` holds that lock
+/// across the WHOLE cold spawn — including the ACP ready handshake — so an
+/// unbounded wait here stalls `rebind_workspace_root` (and the process-wide
+/// rebind gate it holds) for as long as some unrelated session takes to
+/// start. Mirrors the engine lane's `REBIND_EVICT_GATE_TIMEOUT`: a timeout is
+/// reported as busy / "not idle", never as success, and the user's retry
+/// converges once the spawn settles.
+const REBIND_ACP_LOCK_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(2);
+
 enum RebindEvictTake<T> {
     Reclaimed(T),
     Busy,
@@ -251,7 +261,14 @@ async fn take_session_for_rebind<T>(
     session_id: &str,
     is_rebind_evictable: impl Fn(&T) -> bool,
 ) -> RebindEvictTake<T> {
-    let mut sessions = sessions.lock().await;
+    // The lock wait is bounded (review #463 round-10 T13): a timeout is
+    // treated as busy, so a concurrent cold spawn cannot hang the rebind.
+    // Cancelling a `Mutex::lock` future never leaves the lock held — no
+    // permit was acquired.
+    let Ok(mut sessions) = tokio::time::timeout(REBIND_ACP_LOCK_TIMEOUT, sessions.lock()).await
+    else {
+        return RebindEvictTake::Busy;
+    };
     let Some(entry) = sessions.get(session_id) else {
         return RebindEvictTake::NoRuntime;
     };
@@ -261,6 +278,31 @@ async fn take_session_for_rebind<T>(
     sessions
         .remove(session_id)
         .map_or(RebindEvictTake::NoRuntime, RebindEvictTake::Reclaimed)
+}
+
+/// The fence decision of [`AcpPool::rebind_blocking_sessions`], extracted as
+/// a generic so bare components give deterministic tests (same shape as
+/// [`take_session_for_rebind`]): one bounded acquisition decides the whole
+/// set; a timeout reads as `None` — refuse, never guess.
+async fn rebind_blocking_from_sessions<T>(
+    sessions: &Mutex<HashMap<String, T>>,
+    session_ids: &[String],
+    is_blocking: impl Fn(&T) -> bool,
+) -> Option<Vec<String>> {
+    let sessions = tokio::time::timeout(REBIND_ACP_LOCK_TIMEOUT, sessions.lock())
+        .await
+        .ok()?;
+    Some(
+        session_ids
+            .iter()
+            .filter(|session_id| {
+                sessions
+                    .get(session_id.as_str())
+                    .is_some_and(|runtime| is_blocking(runtime))
+            })
+            .cloned()
+            .collect(),
+    )
 }
 
 fn backend_for_session_model(model: &str) -> Option<AgentBackend> {
@@ -1230,6 +1272,29 @@ impl AcpPool {
     /// use this to reject busy sessions (same semantics as
     /// EnginePool::is_turn_active, giving the command layer one uniform
     /// fence). Sessions without a runtime (never spawned) return false.
+    /// Rebind fence (review #463 round-10 T13/T16, restored by round-11 B2):
+    /// the subset of `session_ids` that must block a directory rebind,
+    /// decided under ONE bounded acquisition of the pool's sessions lock.
+    /// `None` means the state could not be read inside
+    /// [`REBIND_ACP_LOCK_TIMEOUT`] — a concurrent cold spawn holds that lock
+    /// across its handshake — and the caller must refuse the run instead of
+    /// stalling. One lock for the whole set rather than one per session: a
+    /// per-session bound would multiply the same stall by the number of
+    /// affected sessions.
+    ///
+    /// Stricter than [`Self::is_turn_active`] in one respect: a prompt that
+    /// has been admitted but not yet started (`prompt_pending`) also counts,
+    /// which closes the pre-admission window the eviction already guards
+    /// against being killed.
+    pub async fn rebind_blocking_sessions(&self, session_ids: &[String]) -> Option<Vec<String>> {
+        rebind_blocking_from_sessions(&self.sessions, session_ids, |runtime| {
+            runtime.busy.load(std::sync::atomic::Ordering::Acquire)
+                || runtime.configuring.load(std::sync::atomic::Ordering::Acquire)
+                || runtime.prompt_pending.load(std::sync::atomic::Ordering::Acquire) > 0
+        })
+        .await
+    }
+
     pub async fn is_turn_active(&self, session_id: &str) -> bool {
         self.sessions
             .lock()
@@ -4606,6 +4671,12 @@ mod tests {
             }
         }
 
+        fn busy() -> Self {
+            let entry = Self::idle();
+            entry.busy.store(true, Ordering::Release);
+            entry
+        }
+
         /// A session whose runtime was just resolved by `get_or_spawn` and
         /// whose sender is still preparing the prompt (round-8 M1).
         fn awaiting_admission() -> Self {
@@ -4740,6 +4811,96 @@ mod tests {
         assert!(
             sessions.lock().await.contains_key("awaiting-admission"),
             "the sender's runtime stays in the pool"
+        );
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn rebind_take_gives_up_when_the_pool_lock_is_held() {
+        // review #463 round-10 T13 (restored by round-11 B2): `get_or_spawn`
+        // holds this lock across a whole cold spawn (including the ACP ready
+        // handshake), so the rebind take must refuse rather than stall the
+        // command — and the process-wide rebind gate it holds — for as long
+        // as an unrelated session takes to start. The paused clock makes the
+        // new bound deterministic: the 2 s timeout elapses without real
+        // waiting. Dropping the bound turns this into a hang, and treating
+        // the timeout as success fails the first assertion.
+        let sessions: Mutex<HashMap<String, FakeRebindEntry>> = Mutex::new(HashMap::from([(
+            "idle-session".to_string(),
+            FakeRebindEntry::idle(),
+        )]));
+
+        let held = sessions.lock().await;
+        let taken =
+            take_session_for_rebind(&sessions, "idle-session", FakeRebindEntry::evictable).await;
+        assert!(
+            matches!(taken, RebindEvictTake::Busy),
+            "an unreadable pool state must read as busy, never as a successful reclaim"
+        );
+        assert!(
+            held.contains_key("idle-session"),
+            "a refused take touches nothing"
+        );
+        drop(held);
+
+        // Once the spawn settles the same call reclaims the idle runtime,
+        // which is what makes the user's retry converge.
+        let taken =
+            take_session_for_rebind(&sessions, "idle-session", FakeRebindEntry::evictable).await;
+        assert!(matches!(taken, RebindEvictTake::Reclaimed(_)));
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn rebind_fence_refuses_when_the_pool_lock_is_held() {
+        // The fence half of the same bound (round-11 B2): a held sessions
+        // lock must read as `None` — the command layer rejects with
+        // REBIND_RUNTIME_STARTING instead of guessing busy ids.
+        let sessions: Mutex<HashMap<String, FakeRebindEntry>> = Mutex::new(HashMap::from([(
+            "idle-session".to_string(),
+            FakeRebindEntry::idle(),
+        )]));
+        let fence = |entry: &FakeRebindEntry| {
+            entry.busy.load(Ordering::Acquire)
+                || entry.configuring.load(Ordering::Acquire)
+                || entry.prompt_pending.load(Ordering::Acquire) > 0
+        };
+        let held = sessions.lock().await;
+        let decided =
+            rebind_blocking_from_sessions(&sessions, &["idle-session".to_string()], &fence).await;
+        assert!(decided.is_none(), "a held lock must refuse, not guess");
+        drop(held);
+        let decided =
+            rebind_blocking_from_sessions(&sessions, &["idle-session".to_string()], &fence).await;
+        assert_eq!(decided, Some(vec![]), "idle sessions do not block");
+    }
+
+    #[tokio::test]
+    async fn rebind_fence_lists_only_blocking_sessions() {
+        let sessions: Mutex<HashMap<String, FakeRebindEntry>> = Mutex::new(HashMap::from([
+            ("busy-session".to_string(), FakeRebindEntry::busy()),
+            ("pending-session".to_string(), FakeRebindEntry::awaiting_admission()),
+            ("idle-session".to_string(), FakeRebindEntry::idle()),
+        ]));
+        let decided = rebind_blocking_from_sessions(
+            &sessions,
+            &[
+                "busy-session".to_string(),
+                "pending-session".to_string(),
+                "idle-session".to_string(),
+                "absent-session".to_string(),
+            ],
+            |entry| {
+                entry.busy.load(Ordering::Acquire)
+                    || entry.configuring.load(Ordering::Acquire)
+                    || entry.prompt_pending.load(Ordering::Acquire) > 0
+            },
+        )
+        .await;
+        assert_eq!(
+            decided,
+            Some(vec![
+                "busy-session".to_string(),
+                "pending-session".to_string()
+            ])
         );
     }
 

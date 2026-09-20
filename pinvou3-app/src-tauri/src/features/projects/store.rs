@@ -63,6 +63,10 @@ pub struct MoveSessionOutcome {
 #[derive(Debug)]
 pub enum RebindRootsError {
     Overlap(anyhow::Error),
+    /// The candidate was valid but could not be persisted (restored, review
+    /// #463 round-11 B2/T16): the command layer surfaces this with the typed
+    /// `REBIND_ROOTS_PERSIST` marker instead of an untyped failure.
+    Persist(anyhow::Error),
     Other(anyhow::Error),
 }
 
@@ -72,7 +76,9 @@ impl std::fmt::Display for RebindRootsError {
             RebindRootsError::Overlap(error) => {
                 write!(f, "rebind produced overlapping project roots: {error}")
             }
-            RebindRootsError::Other(error) => write!(f, "{error}"),
+            RebindRootsError::Persist(error) | RebindRootsError::Other(error) => {
+                write!(f, "{error}")
+            }
         }
     }
 }
@@ -80,7 +86,9 @@ impl std::fmt::Display for RebindRootsError {
 impl std::error::Error for RebindRootsError {
     fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
         let inner: &(dyn std::error::Error + 'static) = match self {
-            RebindRootsError::Overlap(error) | RebindRootsError::Other(error) => &**error,
+            RebindRootsError::Overlap(error)
+            | RebindRootsError::Persist(error)
+            | RebindRootsError::Other(error) => &**error,
         };
         inner.source()
     }
@@ -821,7 +829,7 @@ impl ProjectStore {
             // file stayed unmigrated.
             let mut persisted = state.clone();
             persisted.projects = candidate;
-            persist_locked(&persisted, &self.path)?;
+            persist_locked(&persisted, &self.path).map_err(RebindRootsError::Persist)?;
             state.projects = persisted.projects;
         }
         Ok(affected_projects)

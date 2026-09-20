@@ -16,6 +16,16 @@ const REBIND_TO_ROOT = 'REBIND_TO_ROOT';
 const REBIND_TO_NESTED = 'REBIND_TO_NESTED';
 const REBIND_TO_UNUSABLE = 'REBIND_TO_UNUSABLE';
 const REBIND_ROOTS_CONFLICT = 'REBIND_ROOTS_CONFLICT';
+// The root write failed for a non-conflict reason (disk full, permissions,
+// newer on-disk schema). Distinct from the conflict marker so the copy does
+// not send the user off to pick another destination, which cannot help
+// (review #463 round-10 R2, restored by round-11 B2).
+const REBIND_ROOTS_PERSIST = 'REBIND_ROOTS_PERSIST';
+// An ACP runtime was starting up (its spawn holds the pool state lock), so the
+// busy fence could not read whether the affected sessions are busy. Distinct
+// from SESSIONS_BUSY, which carries the ids of sessions that ARE busy
+// (review #463 round-10 T13, restored by round-11 B2).
+const REBIND_RUNTIME_STARTING = 'REBIND_RUNTIME_STARTING';
 
 // Markers that resolve to a single trilingual `uiProjects` key. Busy and
 // old-root-exists are handled separately below: the former carries a
@@ -27,6 +37,8 @@ const REBIND_MARKER_MESSAGE_KEYS = {
   [REBIND_TO_NESTED]: 'rebindToNested',
   [REBIND_TO_UNUSABLE]: 'rebindToUnusable',
   [REBIND_ROOTS_CONFLICT]: 'rebindRootsConflict',
+  [REBIND_ROOTS_PERSIST]: 'rebindRootsPersist',
+  [REBIND_RUNTIME_STARTING]: 'rebindRuntimeStarting',
 };
 
 // `null` when the failure carries no marker (an unmapped backend error, which
