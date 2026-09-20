@@ -636,11 +636,7 @@ pub async fn list_codex_acp_sessions(
             let workspace = acp_pool
                 .workspace_info(&metadata.id)
                 .map_err(|error| format!("读取代码会话 {} 工作目录失败: {error:#}", metadata.id))?;
-            let workspace_roots = store
-                .session_workspace_roots(&metadata.id)
-                .iter()
-                .map(|path| path.display().to_string())
-                .collect();
+            let workspace_roots = project_keychain_roots(&store, &metadata.id);
             Ok(CodexAcpSessionListItem {
                 pinned: store.is_pinned(&metadata.id),
                 pinned_at: store.pinned_at(&metadata.id),
@@ -651,6 +647,17 @@ pub async fn list_codex_acp_sessions(
                 agent_name: backend.display_name().to_string(),
             })
         })
+        .collect()
+}
+
+/// 钥匙串投影(§6):绑定 store 是权威,列表项按 store 的快照投影。
+/// 单独成函数,让 store→列表项的接线可被变异测试钉住(评审 #484 round-4
+/// minor 5:手工构造 roots 的 Web 脱敏测试测不出「投影被清空」这类回归)。
+fn project_keychain_roots(store: &SessionStore, session_id: &str) -> Vec<String> {
+    store
+        .session_workspace_roots(session_id)
+        .iter()
+        .map(|path| path.display().to_string())
         .collect()
 }
 
@@ -713,11 +720,7 @@ pub async fn list_codex_acp_sessions_for_web(
             let workspace = acp_pool
                 .workspace_info(&metadata.id)
                 .map_err(|error| format!("读取代码会话 {} 工作目录失败: {error:#}", metadata.id))?;
-            let workspace_roots = store
-                .session_workspace_roots(&metadata.id)
-                .iter()
-                .map(|path| path.display().to_string())
-                .collect();
+            let workspace_roots = project_keychain_roots(&store, &metadata.id);
             Ok(CodexAcpSessionListItem {
                 pinned: store.is_pinned(&metadata.id),
                 pinned_at: store.pinned_at(&metadata.id),
@@ -1107,6 +1110,46 @@ mod tests {
         );
         assert!(!item_json.to_string().contains("secret-extra/.."));
         assert!(!item_json.to_string().contains("/Users/asto"));
+    }
+
+    #[test]
+    fn code_list_projects_the_keychain_from_the_binding_store() {
+        // 变异锁定(评审 #484 round-4 minor 5):Web 脱敏测试用的是手工构造
+        // 的 roots,若 store→列表项的投影被清空(直接 mutate 成 Vec::new()),
+        // 那条测试依然全绿。这里用真实绑定 store 钉住投影接线:绑定的会话
+        // 投影出完整钥匙串,未绑定的会话投影为空。
+        let tmp = std::env::temp_dir().join(format!(
+            "pinvou3-codex-keychain-projection-{}",
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .map(|d| d.as_nanos())
+                .unwrap_or(0)
+        ));
+        let store = SessionStore::boot_with_scheduled_root(tmp.join("scheduled"))
+            .expect("boot session store");
+        let session = store
+            .create_new("model".to_string(), None, std::env::temp_dir())
+            .expect("create session");
+        let id = session.metadata.id.clone();
+        let primary = tmp.join("primary");
+        let extra = tmp.join("extra");
+        std::fs::create_dir_all(&primary).expect("create primary");
+        std::fs::create_dir_all(&extra).expect("create extra");
+
+        assert!(project_keychain_roots(&store, &id).is_empty(), "unbound = empty");
+
+        store
+            .bind_session_workspace_with_roots(
+                &id,
+                primary.clone(),
+                vec![primary, extra.clone()],
+            )
+            .expect("bind with keychain");
+        let projected = project_keychain_roots(&store, &id);
+        assert_eq!(projected.len(), 2, "the list item must project the store's keychain");
+        assert!(projected.iter().any(|root| root.ends_with("extra")), "{projected:?}");
+
+        let _ = std::fs::remove_dir_all(&tmp);
     }
 
     #[test]

@@ -570,6 +570,29 @@ impl ProjectStore {
         self.state.read().never_materialize_roots.clone()
     }
 
+    /// 排除表的展示形态(管理面板展示/撤销用)。表本身按折叠身份键存储
+    /// (Windows 上是小写折叠键,直接下发会把 `C:/Users/X` 显示成
+    /// `c:/users/x`),这里在已知范围内反查展示形态:项目 roots 是排除条目
+    /// 的常见来源;查不到的条目(手工挑选的任意文件夹)原样返回——键仍是
+    /// 身份的权威形态,撤销路径 set_never_materialize 先折叠再比较,两侧
+    /// 一致。
+    pub fn never_materialize_display_roots(&self) -> Vec<String> {
+        let state = self.state.read();
+        state
+            .never_materialize_roots
+            .iter()
+            .map(|key| {
+                state
+                    .projects
+                    .iter()
+                    .flat_map(|project| project.roots.iter())
+                    .find(|root| &identity_key_of_display(root) == key)
+                    .map(|root| root_display(root).to_string_lossy().to_string())
+                    .unwrap_or_else(|| key.clone())
+            })
+            .collect()
+    }
+
     /// 显式反物化(§3):`never = true` 把该文件夹(canonical 键)加入排除表,
     /// 之后 ensure 跳过它;`false` 撤销。幂等;返回更新后的表。只影响未来的自动
     /// 物化,既有项目与会话归属不受影响。

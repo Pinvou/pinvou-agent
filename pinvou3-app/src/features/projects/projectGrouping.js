@@ -251,4 +251,4 @@ function capUnavailableRootsForDisplay(roots, expanded) {
   return { visibleRoots: list.slice(0, 1), hiddenCount: Math.max(0, list.length - 1) };
 }
 
-export { TEMPORARY_GROUP_KEY, PROJECT_SESSION_DRAG_TYPE, groupSessionsWithProjects, projectCoversPath, resolveSessionProjectId, rootPath, needsAddFolderConfirm, hasProjectWorkspace, capUnavailableRootsForDisplay };
+export { TEMPORARY_GROUP_KEY, PROJECT_SESSION_DRAG_TYPE, groupSessionsWithProjects, projectCoversPath, resolveSessionProjectId, rootPath, needsAddFolderConfirm, hasProjectWorkspace, capUnavailableRootsForDisplay, isUnderRoot };

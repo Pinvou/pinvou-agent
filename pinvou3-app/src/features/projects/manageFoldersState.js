@@ -2,6 +2,8 @@
 // decisions, primary-root resolution. No UI/i18n dependencies; node-side unit
 // testable.
 
+import { isUnderRoot } from './projectGrouping.js';
+
 function rootPathOf(root) {
   return String((root && typeof root === 'object' ? root.path : root) || '');
 }
@@ -42,12 +44,24 @@ export function removeRootPlan(project, path) {
   };
 }
 
-// Add duplicate check: already covered (exact same path) needs no add;
-// nesting/overlap is legal (§9.9) — only exact duplicates are blocked (adding
-// the same path twice would trip update_project's in-group dedup validation,
-// so block it early).
+// Add duplicate check: already covered (exact same path) needs no add; only
+// exact duplicates are blocked (adding the same path twice would trip
+// update_project's in-group dedup validation, so block it early).
 export function rootAlreadyPresent(project, path) {
   const target = String(path || '');
   if (!target) return false;
   return manageFolderRows(project).some(row => row.path === target);
+}
+
+// Intra-set nesting guard: §9.9 legalized cross-project overlap only — within
+// one project's root set the store still rejects nesting/containment
+// (validate_roots: "project roots must not nest"). The panel checks before
+// invoking so picking a child of an existing root in the system folder picker
+// surfaces a specific message instead of the backend's generic failure.
+export function rootConflictsWithExisting(project, path) {
+  const target = String(path || '');
+  if (!target) return false;
+  return manageFolderRows(project).some(
+    row => isUnderRoot(target, row.path) || isUnderRoot(row.path, target),
+  );
 }

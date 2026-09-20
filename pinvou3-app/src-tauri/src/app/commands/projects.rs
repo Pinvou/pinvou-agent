@@ -85,7 +85,7 @@ impl ProjectListItem {
 pub struct ProjectListResponse {
     pub projects: Vec<ProjectListItem>,
     pub assignments: SessionAssignments,
-    /// 反物化排除表(§3,canonical 键;管理面板据此展示与撤销)。
+    /// 反物化排除表(§3,展示形态;折叠键已在 store 层反查,管理面板据此展示与撤销)。
     pub never_materialize_roots: Vec<String>,
 }
 
@@ -103,7 +103,7 @@ pub async fn list_projects(store: State<'_, ProjectStore>) -> Result<ProjectList
     Ok(ProjectListResponse {
         projects,
         assignments,
-        never_materialize_roots: store.never_materialize_roots(),
+        never_materialize_roots: store.never_materialize_display_roots(),
     })
 }
 

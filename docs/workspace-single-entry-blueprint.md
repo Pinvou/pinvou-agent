@@ -342,8 +342,10 @@ Decided by `removeRootPlan` (panel) and enforced by `update_project`
 - Non-primary roots are removable directly; duplicate/nonexistent paths are
   no-ops.
 - Removing a root never affects in-flight sessions: their keychain
-  snapshots (§6) and working-directory bindings are untouched; only the
-  logical membership of auto-grouped sessions under the removed roots is
+  snapshots (§6) and working-directory bindings are untouched — and the
+  snapshot persists across restarts, keeping the removed folder reachable
+  for that session until the session itself is deleted; only the logical
+  membership of auto-grouped sessions under the removed roots is
   expelled (§4).
 
 ### §9.6 Moving sessions between projects

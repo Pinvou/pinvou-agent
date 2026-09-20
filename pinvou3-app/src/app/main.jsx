@@ -27,7 +27,7 @@ import { MoveToProjectDialog } from '../features/projects/MoveToProjectDialog.js
 import { RebindFolderDialog } from '../features/projects/RebindFolderDialog.jsx';
 import { WorkspacePickerDialog } from '../features/projects/WorkspacePickerDialog.jsx';
 import { computePickerRows, pickerPrimaryRoot, pickerProjectRoots, workspaceNoticeTone } from '../features/projects/workspacePickerState.js';
-import { removeRootPlan, rootAlreadyPresent } from '../features/projects/manageFoldersState.js';
+import { removeRootPlan, rootAlreadyPresent, rootConflictsWithExisting } from '../features/projects/manageFoldersState.js';
 import { ManageProjectFoldersDialog } from '../features/projects/ManageProjectFoldersDialog.jsx';
 import { classifyRebindError } from '../features/projects/rebindErrors.js';
 import { runSessionBatch } from '../shared/session-management.js';
@@ -1906,6 +1906,10 @@ const NAV_PREFETCH = {
         if (!folder) return;
         if (rootAlreadyPresent(manageFoldersProject, folder)) {
           setSettingsToast(t.uiManageFolders.addDuplicate);
+          return;
+        }
+        if (rootConflictsWithExisting(manageFoldersProject, folder)) {
+          setSettingsToast(t.uiManageFolders.addNested);
           return;
         }
         setProjectOpsBusy(true);
