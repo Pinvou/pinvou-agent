@@ -5,8 +5,8 @@
 //! 不写 CodeWhale 个人目录，也不再给每个会话复制一整套 TOML。
 //!
 //! 每轮候选由本地轻量关键词匹配（含泛化词抑制与相关性门槛）从轻摘要中挑选，
-//! 仅作提醒提示；候选之外的专家可经底座 roster 通道发现（列表按编号排序、
-//! 至多 48 条，截断由响应如实标注），不依赖这里的截断。
+//! 仅作提醒提示；候选之外的专家可经底座 roster 通道发现（专家按 id 字典序
+//! 排序、单次至多 48 条，截断由响应如实标注），不依赖这里的截断。
 
 use std::collections::{BTreeMap, HashSet};
 use std::path::Path;
@@ -163,8 +163,8 @@ fn strip_reminder_tag_literals(value: &str) -> String {
 // 最相关的短摘要。这样内置专家真正参与委派，同时不会把约两百张卡的正文灌入父上下文。
 //
 // 每轮匹配是本地轻量关键词启发式（泛化词抑制 + 相关性门槛 + 候选截断），结果只作
-// 提醒提示；候选之外的专家可经底座 roster 通道发现（列表按编号排序、至多 48 条，
-// 截断由响应如实标注），不依赖这里的截断结果。
+// 提醒提示；候选之外的专家可经底座 roster 通道发现（专家按 id 字典序排序、单次
+// 至多 48 条，截断由响应如实标注），不依赖这里的截断结果。
 
 /// 每轮提供给主 agent 的候选上限。完整人设只进被派中的子智能体提示
 /// （底座 `spawn_profile_prompt_overlay`），主 agent 全程不付全文成本。
@@ -1007,14 +1007,20 @@ pub(crate) mod tests {
         assert!(line.contains("尾段说明"), "剥除只去标签,不毁正文: {line}");
     }
 
-    /// role_id 由底座 spawn 选择器按 128 字符校验：超长卡 id 截断后仍必须
-    /// 可派，不能落进「可列出、永不可派」的死区。
+    /// role_id 由底座 spawn 选择器按 128 字符校验，且 from_cards 撞名去重
+    /// 还会在截断结果后追加 `-N` 后缀：截断上限必须落在自身常量内，并相对
+    /// 底座限留出后缀余量；超长卡 id 截断后仍必须可派，不能落进
+    /// 「可列出、永不可派」的死区。
     #[test]
     fn expert_role_slug_is_capped_to_the_spawnable_length() {
+        assert!(
+            EXPERT_ROLE_ID_CHAR_LIMIT + 8 <= 128,
+            "slug 常量必须为撞名后缀（-N）相对底座 128 字符选择器限留出余量: {EXPERT_ROLE_ID_CHAR_LIMIT}"
+        );
         let role_id = expert_role_slug(&format!("user-{}", "a".repeat(200)));
         assert!(
-            role_id.len() <= 128,
-            "role_id 必须落在底座 spawn 选择器 128 字符限内: {} ({role_id})",
+            role_id.len() <= EXPERT_ROLE_ID_CHAR_LIMIT,
+            "role_id 必须落在 slug 常量限内（{EXPERT_ROLE_ID_CHAR_LIMIT}）: {} ({role_id})",
             role_id.len()
         );
         assert!(
@@ -1023,5 +1029,32 @@ pub(crate) mod tests {
         );
         let other = expert_role_slug(&format!("user-{}", "b".repeat(200)));
         assert_ne!(role_id, other, "不同卡截断后仍不得互相撞名");
+    }
+
+    /// 两张卡 id 只有截断点之后的尾字符不同时，朴素截断会得到同名 slug；
+    /// from_cards 必须以 `-N` 后缀去重，保证两卡都可派——真正的防撞名
+    /// 保证在快照装配层，而不是 slug 纯函数。
+    #[test]
+    fn expert_role_slugs_dedup_when_long_ids_share_a_truncated_prefix() {
+        let prefix = format!("user-{}", "x".repeat(120));
+        let cards = vec![
+            card(&format!("{prefix}a"), "卡甲", "user", "任务相关描述甲"),
+            card(&format!("{prefix}b"), "卡乙", "user", "任务相关描述乙"),
+        ];
+        let snapshot = ExpertRosterSnapshot::from_cards(cards);
+        let ids: Vec<&str> = snapshot
+            .candidates
+            .iter()
+            .map(|(role_id, _)| role_id.as_str())
+            .collect();
+        assert_eq!(ids.len(), 2, "两卡都必须保留为可派角色: {ids:?}");
+        assert_ne!(
+            ids[0], ids[1],
+            "截断前缀相同的卡必须经 -N 后缀去重: {ids:?}"
+        );
+        assert!(
+            ids.iter().all(|id| id.len() <= 128),
+            "去重后的 role_id 仍须落在底座 spawn 选择器限内: {ids:?}"
+        );
     }
 }

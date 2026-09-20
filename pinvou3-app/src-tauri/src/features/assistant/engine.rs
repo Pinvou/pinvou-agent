@@ -1824,13 +1824,20 @@ impl AppEngine {
         restrict_tools: bool,
     ) -> Result<()> {
         let expert_snapshot = self.multi_agent_enabled.then(ExpertRosterSnapshot::capture);
+        // 候选行必须与快照同源（同一次 capture 产出），与
+        // commands::multiagent::prepare_delegation_turn 的计算保持一致；
+        // 带快照却传空候选会让该轮静默退化为名册兜底提示。
+        let expert_candidates = expert_snapshot
+            .as_ref()
+            .map(|snapshot| snapshot.available_role_lines(&content))
+            .unwrap_or_default();
         let op = self.build_interactive_send_message_op(
             content,
             mode,
             persona_reminder,
             restrict_tools,
             expert_snapshot,
-            Vec::new(),
+            expert_candidates,
         )?;
         self.send_turn_op(op).await
     }

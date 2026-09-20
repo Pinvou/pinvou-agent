@@ -2193,7 +2193,8 @@ impl Pinvou3Bridge {
         // 旧提醒逐字教的 per-call 预算字段不在模型 schema 里（#5324 裁剪）；预算归
         // 引擎配置，角色默认步数本就无限制。这里把默认墙钟钉到底座上限 86400s
         // （底座按 1..=86400 钳制），子智能体未显式传 wall_time_secs 时不再被
-        // 1800s 底座默认提前截断；已有的 subagents 配置项逐字保留。
+        // 1800s 底座默认提前截断。App 配置面不暴露 subagents 偏好，且基底
+        // `build_dt_config` 从不填充 `subagents`——此处是无条件钉定，不会覆盖用户值。
         let subagents = config.subagents.get_or_insert_with(Default::default);
         subagents.default_wall_time_secs = Some(86_400);
         config

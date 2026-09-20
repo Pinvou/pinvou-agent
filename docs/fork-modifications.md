@@ -124,7 +124,7 @@
 | `2ab5e64b5` | T7 修复 | 压缩交接保持工具轮边界：chat wire 角色合法性校验（压缩轮保持合法 assistant/tool 序列）、重压缩保真实用户边界、压缩轮跨恢复保留、生成式压缩摘要识别、restored 拓扑合并限域，7 条 forkguard 互钉（#62） |
 | `ce783728c` | T2 修复 | computer-use 插件：zoom 后按裁剪区在父尺度重绑 raster 帧偏移（子栅格坐标不再错配全图）、ssh 下元素状态宿主侧记忆与 `state_wrong_computer` 校验、recording 与 switch_display/left_mouse_down 在 ssh 显式 fail-closed 并给出可操作原因、zoom 在 ssh 可用（远端裁剪源注入+宿主侧几何重绑）（#57） |
 | `7fc36e587` | T6 重构 | DynamicGate 重建于 tokio `Semaphore`（取消授权重派、陈旧等待者跳过不漏槽、缩容低于在途后续再准入），抽取 `is_governor_reported_rate_limit` 谓词并以 forkguard 钉 QuotaExhausted 不进治理窗，删除按成功/限流比例缩门的 ratio 启发式（治理窗缩容只认绝对阈值）、清理失实注释与死分支（#55，#43 评审收尾） |
-| `9f1210d31` | T8 新增 | `agent action=roster` 额外列出宿主呈现的 prompt-only profiles：增量键 `host_profiles`（按 member id 排序、上限 48）、`host_profile_count` 与 `host_profiles_truncated`，`profile=<member_id>` 与 spawn 解析逐字互钉；嵌入方注入的 profiles 首次获得模型可见发现通道（随蜂群二期 PR 合入维护分支） |
+| `9f1210d31` | T8 新增 | `agent action=roster` 额外列出宿主呈现的 prompt-only profiles：增量键 `host_profiles`（按 member id 排序、上限 48）、`host_profile_count` 与 `host_profiles_truncated`，`profile=<member_id>` 与 spawn 解析共用同一宽容准入（去首尾空白、ASCII 大小写不敏感）互钉；嵌入方注入的 profiles 首次获得模型可见发现通道（随蜂群二期 PR 合入维护分支） |
 | `b5d9fa7c8` | T8 增强 | roster 新增广告化 `profile_query` 关键词过滤（roster 作用域、大小写不敏感子串匹配 member id 与展示描述、截断前生效、空白与非字符串输入不过滤）：48 条上限无分页，截断尾部的宿主 profiles 由此可继续发现；`host_profile_count`/`host_profiles_truncated` 随过滤集如实上报，广告 schema 12→13 字段，`SUBAGENTS.md` 同步（随蜂群二期 PR 合入维护分支） |
 | `b11c12720` | T8 补测 | 评审钉点收口：forkguard 影子镜像改在含改名 role-token 成员的名册上解析 spawn（钉 `FleetRole::from_str`-over-roster 优先级）、发现回归补部分 id 子串匹配钉、`ROSTER_PROFILE_QUERY_MAX_CHARS` 注释如实写明截断不拒绝约定、`docs/FLEET.md` 交叉引用随广告面改 13 字段 |
 

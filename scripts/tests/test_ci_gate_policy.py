@@ -173,6 +173,41 @@ class CiGatePolicyTests(unittest.TestCase):
                 f"静态门禁配置 {path} 不在 frontend filter 中,config-only PR 会静默跳过 frontend-test",
             )
 
+    def test_cross_language_contract_rust_sources_route_to_frontend_test(self):
+        # multiagent_plan_normalize.test.mjs reads the Rust sources below for
+        # cross-language contract pins (swarm contract text, same-snapshot
+        # invariant, edit-resend replay, roster caps). If they are absent from
+        # the frontend path filter, a Rust-only PR silently skips that node
+        # gate — the same structural blind spot the static-analysis configs
+        # above guard against.
+        changes = _without_yaml_comments(
+            self.pr_workflow.split("\n  changes:", maxsplit=1)[1].split(
+                "\n  fast-gate:", maxsplit=1
+            )[0]
+        )
+        frontend_paths = changes.split(
+            "            frontend:", maxsplit=1
+        )[1].split("            relay:", maxsplit=1)[0]
+        for path in (
+            "pinvou3-app/src-tauri/src/features/assistant/**",
+            "pinvou3-app/src-tauri/src/features/multiagent/transcripts.rs",
+            "pinvou3-app/src-tauri/src/features/sessions/mode_state.rs",
+            "pinvou3-app/src-tauri/src/features/personas/mod.rs",
+            "pinvou3-app/src-tauri/src/features/files/file_ingest.rs",
+            "pinvou3-app/src-tauri/src/app/commands/multiagent.rs",
+            "pinvou3-app/src-tauri/src/app/commands/chat.rs",
+            "pinvou3-app/src-tauri/src/app/commands/memory.rs",
+            "pinvou3-app/src-tauri/src/app/commands/interaction.rs",
+            "pinvou3-app/src-tauri/src/app/commands/remote_control.rs",
+            "pinvou3-app/src-tauri/src/app/commands/personas.rs",
+            "pinvou3-app/src-tauri/src/lib.rs",
+        ):
+            self.assertIn(
+                f"- '{path}'",
+                frontend_paths,
+                f"跨语言契约测试读取的 Rust 源 {path} 不在 frontend filter 中,Rust-only PR 会静默跳过该 node 门禁",
+            )
+
     def test_merge_queue_uses_real_path_filtering_and_product_gates(self):
         changes = self.pr_workflow.split(
             "\n  changes:", maxsplit=1

@@ -594,9 +594,22 @@ async fn code_session_real_spawn_refresh_resolves_config_expert_without_project_
     // instructions——在此用真实引擎端到端钉死该隔离，底座改动即红。
     {
         let bodies = probe.request_bodies.lock().expect("probe request lock");
+        let parent_bodies: Vec<&String> = bodies
+            .iter()
+            .filter(|body| body.contains("蜂群模式"))
+            .collect();
         assert!(
-            bodies.iter().any(|body| body.contains("蜂群模式")),
+            !parent_bodies.is_empty(),
             "swarm contract must ride the parent session system prompt"
+        );
+        // 契约必须渲染为父会话的 <instructions> 系统块（spawn 级注入），
+        // 而不是拼进某轮用户消息或 system-reminder 信封；捕获体是原始 HTTP
+        // 请求，JSON 引号转义不影响 `instructions source=` 子串。
+        assert!(
+            parent_bodies
+                .iter()
+                .all(|body| body.contains("instructions source=")),
+            "swarm contract must render as the parent <instructions> system block, never a per-turn reminder"
         );
         assert!(
             bodies

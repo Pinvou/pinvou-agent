@@ -91,7 +91,6 @@ test('共享界面不订阅废弃运行态，并阻止 Web 续写多智能体会
   );
   assert.match(chatViewSource, /data-testid="multiagent-desktop-only"/);
   assert.match(settingsSource, /const canMultiAgent = can\('multiAgent'\)/, '开关行必须按 capability 门禁');
-  assert.match(panelSource, /listSubagentTranscripts\(sessionId\)/);
   assert.match(
     remoteCommands,
     /ensure_web_chat_session_supported\(store\.mode_state\(&session_id\)\.multi_agent\)\?/,
@@ -681,8 +680,8 @@ test('开关 UI 挂在模型列表下方，经 interaction 桥调后端', () => 
   const multiagentBridgeSource = read('src', 'platform', 'tauri', 'bridge', 'multiagent.js');
   assert.match(
     multiagentBridgeSource,
-    /return null;/,
-    '读取失败返回 null 而不是 []——界面要能区分"没有子智能体"和"读取失败"（复核 P2）',
+    /async function listSubagentTranscripts\(runId\) \{[\s\S]{0,400}catch \(err\) \{[\s\S]{0,200}return null;/,
+    'listSubagentTranscripts 读取失败必须返回 null 而不是 []——界面要能区分「没有子智能体」和「读取失败」（复核 P2）',
   );
   const panelSource = read('src', 'features', 'multiagent', 'SubagentTranscriptPanel.jsx');
   assert.match(
