@@ -48,6 +48,8 @@ pub use turns::count_user_turns_in_json;
 
 /// 每会话保留的 checkpoint 上限（LRU，超出裁掉最老条目）。
 const MAX_CHECKPOINTS: usize = 20;
+/// diff 预览的 patch 文本上限（超出截断，changes 清单不受影响）。
+const DIFF_PATCH_LIMIT: usize = 512 * 1024;
 /// 执行根体积门（对齐底座 snapshot 的 DEFAULT_MAX_WORKSPACE_BYTES_FOR_SNAPSHOT）：
 /// 超过 2GB 的目录不做快照——每轮全量 `add -A` 的 IO/CPU 与影子仓库存储都不
 /// 划算，该会话如实没有回退入口（设计 §5 降级语义）。
@@ -174,6 +176,9 @@ pub struct CheckpointDiff {
     pub checkpoint: CheckpointMeta,
     /// 从快照到当前执行根的变更清单（即「回滚将撤销的变更」）。
     pub changes: Vec<CheckpointChange>,
+    /// unified diff 文本（可能截断）。
+    pub patch: String,
+    pub patch_truncated: bool,
 }
 
 fn checkpoints_dir(ledger_root: &Path) -> PathBuf {
@@ -938,6 +943,86 @@ fn secret_path_matches(path: &str) -> bool {
     })
 }
 
+/// diff --git 段头是否指向敏感文件。常规按空白切 token、剥 a//b/ 前缀与引号；
+/// 含空格/tab 的路径（git C-quoting 输出 `diff --git "a/x y" "b/x y"`）按引号
+/// 段解析；仍解析不了时由 ---/+++ 行兜底（见 filter_secret_paths_from_patch）。
+fn diff_section_is_secret(header: &str) -> bool {
+    if let Some(rest) = header.strip_prefix("diff --git \"") {
+        // C-quoted 形式：按引号段提取 a/ 与 b/ 路径（路径可含空格）。
+        if let Some(path) = rest.strip_prefix("a/").and_then(|s| s.split('"').next()) {
+            if secret_path_matches(path) {
+                return true;
+            }
+        }
+        if let Some(path) = rest
+            .split("\" \"")
+            .nth(1)
+            .and_then(|s| s.strip_prefix("b/"))
+            .and_then(|s| s.split('"').next())
+        {
+            if secret_path_matches(path) {
+                return true;
+            }
+        }
+    }
+    header
+        .split_whitespace()
+        .map(|token| token.trim_matches('"'))
+        .filter_map(|token| {
+            token
+                .strip_prefix("a/")
+                .or_else(|| token.strip_prefix("b/"))
+        })
+        .any(|token| secret_path_matches(token))
+}
+
+/// `--- a/<path>` / `+++ b/<path>` 行的路径判定（整行剩余部分即路径，容忍空格；
+/// 删除文件的 marker 行尾部带 tab 填充，先剥掉；路径含 tab/引号时 git 用
+/// C-quoting 输出 `--- "a/x"`，剥掉外层引号再判定；/dev/null 如实不命中）。
+fn marker_line_is_secret(line: &str) -> bool {
+    let path = line
+        .strip_prefix("--- a/")
+        .or_else(|| line.strip_prefix("+++ b/"))
+        .or_else(|| line.strip_prefix("--- \"a/"))
+        .or_else(|| line.strip_prefix("+++ \"b/"));
+    match path {
+        Some(path) => secret_path_matches(path.trim_end().trim_matches('"')),
+        None => false,
+    }
+}
+
+/// 从 unified diff 文本剔除命中敏感文件模式的整段文件 diff：迁移前打的旧
+/// 快照 tree 里可能仍有秘密原文（purge 只清 index），预览不得把原文带进 UI。
+/// 按段缓冲后判定（header 或 ---/+++ 行任一命中即整段剔除）——含空格路径
+/// 无法从段头 token 解析，必须看到 ---/+++ 行才能判定（评审 M1）。
+fn filter_secret_paths_from_patch(patch: &str) -> String {
+    let mut out = String::with_capacity(patch.len());
+    let mut section: Vec<&str> = Vec::new();
+    let mut section_secret = false;
+    let flush = |out: &mut String, section: &mut Vec<&str>, secret: &mut bool| {
+        if !*secret {
+            for line in section.drain(..) {
+                out.push_str(line);
+                out.push('\n');
+            }
+        } else {
+            section.clear();
+        }
+        *secret = false;
+    };
+    for line in patch.lines() {
+        if line.starts_with("diff --git ") {
+            flush(&mut out, &mut section, &mut section_secret);
+            section_secret = diff_section_is_secret(line);
+        } else if marker_line_is_secret(line) {
+            section_secret = true;
+        }
+        section.push(line);
+    }
+    flush(&mut out, &mut section, &mut section_secret);
+    out
+}
+
 /// 快照与当前执行根的差异预览（即「回滚将撤销的变更」），供 UI 确认前展示。
 pub fn diff_checkpoint(
     ledger_root: &Path,
@@ -966,17 +1051,45 @@ pub fn diff_checkpoint(
             &meta.commit,
         ],
     )?;
-    // legacy 快照（迁移前打的）tree 里可能仍含秘密原文：清单剔除命中敏感
-    // 模式的条目，预览不谎称「回滚将删除 .env」（restore 实际保留工作区现有
-    // 同名文件）。过滤恒大小写不敏感，与 exclude/purge 三层同向。UI 只渲染
-    // changes 清单，不上屏 patch 文本（见 RewindChip），unified diff 不再生成。
+    let raw_patch = git_ok(
+        &repo,
+        &execution_root,
+        // 与 --raw 同开 -M + quotepath：changes 清单标 renamed 时 patch
+        // 也是 rename 形态，中文路径在两处都是原文。
+        &[
+            "-c",
+            "core.quotepath=false",
+            "diff",
+            "--cached",
+            "-M",
+            "--no-color",
+            "--no-ext-diff",
+            &meta.commit,
+        ],
+    )?;
+    // legacy 快照（迁移前打的）tree 里可能仍含秘密原文：清单与 patch 都剔除
+    // 命中敏感模式的条目，预览既不带原文上屏，也不谎称「回滚将删除 .env」
+    // （restore 实际保留工作区现有同名文件）。过滤恒大小写不敏感，与
+    // exclude/purge 三层同向。
     let changes: Vec<CheckpointChange> = parse_raw_status(&raw_status)
         .into_iter()
         .filter(|change| !secret_path_matches(&change.path))
         .collect();
+    let mut patch = filter_secret_paths_from_patch(&raw_patch);
+    let patch_truncated = patch.len() > DIFF_PATCH_LIMIT;
+    if patch_truncated {
+        let mut end = DIFF_PATCH_LIMIT;
+        while !patch.is_char_boundary(end) {
+            end -= 1;
+        }
+        patch.truncate(end);
+        patch.push_str("\n\n…差异过大，已截断");
+    }
     Ok(CheckpointDiff {
         checkpoint: meta,
         changes,
+        patch,
+        patch_truncated,
     })
 }
 
