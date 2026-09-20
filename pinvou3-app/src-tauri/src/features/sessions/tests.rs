@@ -4949,6 +4949,155 @@ fn reconcile_keeps_aux_when_mapped_main_record_stat_faults() {
     std::fs::remove_file(&record).expect("clean up the symlink");
 }
 
+/// PR #433 review round-16 (B2): a lying mapping whose mapped main is DEAD
+/// must still get the backlink rebuild in the same pass — the record's true
+/// parent may be alive and unbound, and short-circuiting to orphan would
+/// delete a transcript its live parent could have re-adopted.
+#[test]
+fn reconcile_readopts_mismatched_aux_when_mapped_main_is_dead() {
+    let (store, _g) = isolated_store();
+    let main_a = store
+        .create_new("/model".into(), None, std::env::temp_dir())
+        .expect("create main A");
+    let main_b = store
+        .create_new("/model".into(), None, std::env::temp_dir())
+        .expect("create main B");
+    let aux = store
+        .get_or_create_aux_session(&main_b.metadata.id)
+        .expect("create aux for main B");
+
+    // Lying mapping: A (about to die) maps to B's aux, whose backlink names B.
+    store
+        .set_aux_session(&main_b.metadata.id, None)
+        .expect("clear the true mapping");
+    store
+        .set_aux_session(&main_a.metadata.id, Some(aux.id.clone()))
+        .expect("plant the lying mapping");
+    // A dies out of band (crash / manual cleanup / mixed-epoch restore):
+    // removing the record file directly keeps the aux record and the lying
+    // mapping, which is exactly the state reconcile exists to repair.
+    std::fs::remove_file(
+        store
+            .manager
+            .sessions_dir()
+            .join(format!("{}.json", main_a.metadata.id)),
+    )
+    .expect("delete main A's record out of band");
+
+    store.reconcile_aux_sessions().expect("reconcile completes");
+    store
+        .load(&aux.id)
+        .expect("the transcript must be re-adopted, not reclaimed");
+    assert!(
+        store.aux_session_id(&main_a.metadata.id).is_none(),
+        "the dead main's entry must be detached"
+    );
+    assert_eq!(
+        store.aux_session_id(&main_b.metadata.id).as_deref(),
+        Some(aux.id.as_str()),
+        "the live true parent must re-adopt the record in the same pass"
+    );
+}
+
+/// PR #433 review round-16 (B3a): a permanently unloadable aux record
+/// (InvalidData — here a newer schema_version) must be isolated per record
+/// and reclaimed, not abort the whole reconcile pass. The listing path is
+/// lenient (it never checks schema_version), so the corrupt record shows up
+/// in every boot's candidates — aborting on it would wedge convergence and
+/// leave every other orphan un-reclaimed forever.
+#[test]
+fn reconcile_isolates_permanently_unloadable_aux_record() {
+    let (store, _g) = isolated_store();
+    let main = store
+        .create_new("/model".into(), None, std::env::temp_dir())
+        .expect("create main");
+    let healthy = store
+        .get_or_create_aux_session(&main.metadata.id)
+        .expect("create healthy aux");
+    let main_b = store
+        .create_new("/model".into(), None, std::env::temp_dir())
+        .expect("create main B");
+    let corrupt = store
+        .get_or_create_aux_session(&main_b.metadata.id)
+        .expect("create aux to corrupt");
+    // Both records start unmapped so the rebuild path visits them.
+    store
+        .set_aux_session(&main.metadata.id, None)
+        .expect("clear mapping A");
+    store
+        .set_aux_session(&main_b.metadata.id, None)
+        .expect("clear mapping B");
+
+    // Bump the schema version far beyond this build: the record still lists
+    // (the prefix parses) but load fails with InvalidData on every boot.
+    let corrupt_path = store
+        .manager
+        .sessions_dir()
+        .join(format!("{}.json", corrupt.id));
+    let mut record: serde_json::Value = serde_json::from_str(
+        &std::fs::read_to_string(&corrupt_path).expect("read the corrupt-to-be record"),
+    )
+    .expect("parse the record");
+    record["schema_version"] = serde_json::json!(999);
+    std::fs::write(
+        &corrupt_path,
+        serde_json::to_string_pretty(&record).unwrap(),
+    )
+    .expect("rewrite the record with a future schema_version");
+
+    store
+        .reconcile_aux_sessions()
+        .expect("a permanently unloadable record must not wedge the pass");
+    assert!(
+        !corrupt_path.exists(),
+        "the permanently unreadable record must be reclaimed"
+    );
+    store
+        .load(&healthy.id)
+        .expect("the healthy record must not be sacrificed to the wedge");
+    assert_eq!(
+        store.aux_session_id(&main.metadata.id).as_deref(),
+        Some(healthy.id.as_str()),
+        "the healthy record's backlink rebuild must still run in the same pass"
+    );
+}
+
+/// PR #433 review round-16 (B3b): a syntactically invalid backlink id
+/// classifies the record as unusable (reclaim) instead of aborting the pass
+/// inside set_aux_session's validation.
+#[test]
+fn reconcile_reclaims_aux_record_with_invalid_backlink() {
+    let (store, _g) = isolated_store();
+    let main = store
+        .create_new("/model".into(), None, std::env::temp_dir())
+        .expect("create main");
+    let aux = store
+        .get_or_create_aux_session(&main.metadata.id)
+        .expect("create aux");
+    store
+        .set_aux_session(&main.metadata.id, None)
+        .expect("clear the mapping so the rebuild path runs");
+
+    let record_path = store
+        .manager
+        .sessions_dir()
+        .join(format!("{}.json", aux.id));
+    let mut record: serde_json::Value =
+        serde_json::from_str(&std::fs::read_to_string(&record_path).expect("read the record"))
+            .expect("parse the record");
+    record["metadata"]["parent_session_id"] = serde_json::json!("not a valid session id!!");
+    std::fs::write(&record_path, serde_json::to_string_pretty(&record).unwrap())
+        .expect("rewrite the record with an invalid backlink");
+
+    store
+        .reconcile_aux_sessions()
+        .expect("an invalid backlink must not abort the pass");
+    assert!(
+        !record_path.exists(),
+        "a record whose backlink can never be mapped must be reclaimed"
+    );
+}
+
 /// Same NotFound-only discipline on the rebuild side (round-15 MAJOR-1, site
 /// 2): an unmapped aux record whose parent cannot be stat'ed must not be
 /// reclaimed as an orphan — a transient fault counts as "unknown", and

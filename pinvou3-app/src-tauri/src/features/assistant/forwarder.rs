@@ -1156,7 +1156,7 @@ pub(crate) fn spawn_event_forwarder(
                         // the review below is gated on memory_review_in_scope
                         // — aux side-chat turns must never reach it.
                         let capture = crate::features::memory::take_turn_capture(&session_id);
-                        if memory_review_in_scope(&session_id) {
+                        if should_spawn_memory_review(true, &session_id, capture.is_some()) {
                             if let Some(capture) = capture {
                                 let app_clone = app.clone();
                                 let bridge_clone = bridge.clone();
@@ -1582,9 +1582,18 @@ fn memory_review_in_scope(session_id: &str) -> bool {
     !crate::features::sessions::is_aux_session_id(session_id)
 }
 
+/// The full "spawn the memory review for this turn" decision, centralized so
+/// it is unit-testable without an AppHandle (round-16 B6): memory must be
+/// enabled, the session must be in scope (never aux — round-15 MAJOR-4), and
+/// there must be a capture to review. The call site delegates to this so the
+/// wiring and the tested decision are the same expression.
+fn should_spawn_memory_review(enabled: bool, session_id: &str, capture_present: bool) -> bool {
+    enabled && memory_review_in_scope(session_id) && capture_present
+}
+
 #[cfg(test)]
 mod tests {
-    use super::memory_review_in_scope;
+    use super::{memory_review_in_scope, should_spawn_memory_review};
 
     /// Round-15 MAJOR-4: aux sessions are out of scope for the global memory
     /// review; every other session class keeps the existing behavior.
@@ -1601,6 +1610,41 @@ mod tests {
         ));
         assert!(memory_review_in_scope(
             "sched-019f8e2a-7b1c-7d3e-8f4a-5b6c7d8e9f0a"
+        ));
+    }
+
+    /// Round-16 B6: the spawn decision the call site delegates to, exercised
+    /// as one composition — an aux session must never reach the review even
+    /// with memory enabled and a capture present. Weakening any conjunct
+    /// (dropping the scope gate, the enabled gate, or the capture gate)
+    /// flips one of these assertions; the call site calls this exact
+    /// function, so the wiring and the tested decision cannot drift apart.
+    #[test]
+    fn memory_review_spawn_decision_keeps_aux_out_when_enabled_with_capture() {
+        assert!(!should_spawn_memory_review(
+            true,
+            "aux-019f8e2a-7b1c-7d3e-8f4a-5b6c7d8e9f0a",
+            true
+        ));
+        assert!(!should_spawn_memory_review(
+            true,
+            "AUX-019F8E2A-7B1C-7D3E-8F4A-5B6C7D8E9F0A",
+            true
+        ));
+        assert!(should_spawn_memory_review(
+            true,
+            "019f8e2a-7b1c-7d3e-8f4a-5b6c7d8e9f0a",
+            true
+        ));
+        assert!(!should_spawn_memory_review(
+            false,
+            "019f8e2a-7b1c-7d3e-8f4a-5b6c7d8e9f0a",
+            true
+        ));
+        assert!(!should_spawn_memory_review(
+            true,
+            "019f8e2a-7b1c-7d3e-8f4a-5b6c7d8e9f0a",
+            false
         ));
     }
 }

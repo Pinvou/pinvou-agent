@@ -368,6 +368,15 @@ export function AuxChatPanel({ sessionId, activationKey, t, theme, onClose, onAc
     // Enter would silently no-op behind a visually enabled composer.
     sendingRef.current = false;
     setSending(false);
+    // The module-scoped send registry needs the same recovery (round-16 B1):
+    // a never-settling invoke leaves its entry behind forever, and since the
+    // registry outlives rebinds by design, every later Enter on this task
+    // would silently no-op at the guard — and New Topic itself would not
+    // help, because the fresh aux session binds under the same task key.
+    // Deleting the entry here is safe: the late send's finally removes only
+    // the entry it registered (promise identity), so a stale settle cannot
+    // resurrect or double-clear anything.
+    sendInFlightByTask.delete(sessionId);
     // Feedback for the discard+ensure window (the backend turn gate can hold
     // the discard for seconds, and `restarting` only disables controls): the
     // composer and timeline would otherwise just sit there with no hint that a

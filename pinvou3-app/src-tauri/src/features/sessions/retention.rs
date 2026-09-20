@@ -471,7 +471,7 @@ impl SessionStore {
                         }
                         Err(_) => false,
                     };
-                    if main_gone {
+                    if main_gone && !backlink_mismatch {
                         orphan_ids.push(aux_id.clone());
                     } else if backlink_mismatch {
                         // Detach, then rebuild for the true parent in this same
@@ -479,7 +479,13 @@ impl SessionStore {
                         // window where a panel opened in between minted a fresh
                         // aux under the true parent — the stranded transcript
                         // was then reclaimed as an ambiguous duplicate and the
-                        // user's Q&A was lost for good (round-12 S3).
+                        // user's Q&A was lost for good (round-12 S3). The
+                        // detach+rebuild also runs when the *mapped* main is
+                        // dead (round-16 B2): the record's true parent may be
+                        // alive and unbound, and reclaiming here would delete a
+                        // transcript its live parent could have re-adopted in
+                        // this same pass; the detach doubles as the dead main's
+                        // map cleanup.
                         if let Err(error) = self.set_aux_session(main_id, None) {
                             // Identity-free: this surfaces through the boot log.
                             eprintln!("[sessions] detach mismatched aux mapping failed: {error:#}");
@@ -558,6 +564,18 @@ impl SessionStore {
             // name, so the caller may reclaim it.
             Err(error) if super::store::is_not_found_error(&error) => return Ok(false),
             Err(error) if super::store::is_identity_mismatch_error(&error) => return Ok(false),
+            // Permanent corruption (InvalidData: truncated body, a newer
+            // schema_version, malformed receipts) is isolated per record
+            // (round-16 B3): the record can never load, so the caller
+            // reclaims it — aborting the whole pass on it would wedge
+            // convergence across every boot and discard the orphans already
+            // classified before it.
+            Err(error) if super::store::is_invalid_data_error(&error) => {
+                eprintln!(
+                    "[sessions] reclaim permanently unreadable aux record during reconciliation"
+                );
+                return Ok(false);
+            }
             Err(error) => {
                 return Err(error).with_context(|| "load the aux record for reconciliation");
             }
@@ -565,6 +583,12 @@ impl SessionStore {
         let Some(parent_id) = parent_id else {
             return Ok(false);
         };
+        // A syntactically invalid backlink can never be mapped: classify the
+        // record as unusable (the caller reclaims it) instead of letting
+        // set_aux_session's validation abort the whole pass (round-16 B3).
+        if validate_session_id(&parent_id).is_err() {
+            return Ok(false);
+        }
         if super::validators::is_aux_session_id(&parent_id)
             || super::validators::is_sched_session_id(&parent_id)
         {

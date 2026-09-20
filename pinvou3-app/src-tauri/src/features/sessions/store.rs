@@ -1125,3 +1125,16 @@ pub(super) fn is_identity_mismatch_error(error: &anyhow::Error) -> bool {
         .chain()
         .any(|cause| cause.downcast_ref::<SessionIdMismatch>().is_some())
 }
+
+/// True when `error` carries an `io::Error` of kind `InvalidData` anywhere in
+/// its chain — the "record is permanently unreadable" case (truncated body, a
+/// newer `schema_version` than this build supports, malformed receipts).
+/// Unlike a transient fault this class can never heal, so a maintenance pass
+/// may isolate the record instead of aborting (and wedging) on it.
+pub(super) fn is_invalid_data_error(error: &anyhow::Error) -> bool {
+    error.chain().any(|cause| {
+        cause
+            .downcast_ref::<std::io::Error>()
+            .is_some_and(|e| e.kind() == ErrorKind::InvalidData)
+    })
+}

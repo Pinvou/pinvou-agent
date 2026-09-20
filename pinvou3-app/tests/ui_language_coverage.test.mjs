@@ -287,7 +287,22 @@ const sendLatchReset = restartBlock.indexOf('sendingRef.current = false;');
 assert.ok(sendLatchReset >= 0, 'handleRestart must release the in-flight send latch');
 assert.ok(
   sendLatchReset < restartBlock.indexOf('const discardPromise = auxChat.discard(sessionId);'),
+
   'the send latch must be released at restart entry, before the discard await',
+);
+// Registry recovery at restart entry (round-16 B1): a never-settling invoke
+// leaves its sendInFlightByTask entry forever, and the registry outlives
+// rebinds by design — without this clear, every later Enter on the task
+// silently no-ops at the guard, and New Topic itself could not recover the
+// panel because the fresh aux binds under the same task key. Deleting the
+// entry at restart entry is safe because the stale send's finally only
+// removes the entry it registered (promise identity).
+const sendRegistryReset = restartBlock.indexOf('sendInFlightByTask.delete(sessionId);');
+assert.ok(sendRegistryReset >= 0, 'handleRestart must clear the task\'s send registry entry');
+assert.ok(
+  sendRegistryReset > sendLatchReset
+    && sendRegistryReset < restartBlock.indexOf('const discardPromise = auxChat.discard(sessionId);'),
+  'the registry entry must be cleared at restart entry, before the discard await',
 );
 // Binding-pending hint (round-12 UX): "first open / rebind shows a false
 // 'nothing here yet' while ensure is in flight". The pending flag must be
