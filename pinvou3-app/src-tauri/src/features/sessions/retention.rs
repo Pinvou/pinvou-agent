@@ -448,8 +448,14 @@ impl SessionStore {
                 // Mapping exists, but the main session record is no longer on
                 // disk → dead main with a surviving aux.
                 Some((main_id, _)) => {
-                    let main_gone =
-                        !chat_session_file(&self.manager, main_id).is_ok_and(|path| path.exists());
+                    // NotFound-only (round-15 MAJOR-1): Path::exists() is
+                    // false on ANY stat error (EACCES under sync/AV clients,
+                    // EIO), conflating a transient fault with "absent" — the
+                    // aux transcript would then be reclaimed while its main
+                    // session is alive. durable_session_record_is_absent is
+                    // the store's own fail-closed predicate for exactly this
+                    // distinction (unknown counts as present).
+                    let main_gone = self.durable_session_record_is_absent(main_id);
                     // A hand-edited sidecar can map mainA to an aux whose
                     // record backlink names mainB — without this check the
                     // mapping is trusted and mainA's panel would read mainB's
@@ -565,7 +571,10 @@ impl SessionStore {
             return Ok(false);
         }
         if self.aux_session_id(&parent_id).is_some()
-            || !chat_session_file(&self.manager, &parent_id).is_ok_and(|path| path.exists())
+            // Same NotFound-only discipline as the orphan classification
+            // above: a transient stat fault must not read as "parent gone",
+            // or the record is reclaimed while its parent is alive.
+            || self.durable_session_record_is_absent(&parent_id)
         {
             return Ok(false);
         }

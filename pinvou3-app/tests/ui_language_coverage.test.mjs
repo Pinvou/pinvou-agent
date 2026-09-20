@@ -332,7 +332,7 @@ assert.match(
 // draft clear is equality-guarded for the same reason.
 assert.match(
   auxChatPanel,
-  /await auxChat\.send\(sentAuxId, quoteBlock \? text \+ quoteBlock : text\);\s*\n[\s\S]{0,900}?if \(auxIdRef\.current !== sentAuxId\) return;\s*if \(sentTaskId\) \{/,
+  /const sendPromise = auxChat\.send\(sentAuxId, quoteBlock \? text \+ quoteBlock : text\);[\s\S]{0,200}?await sendPromise;\s*\n[\s\S]{0,900}?if \(auxIdRef\.current !== sentAuxId\) return;\s*if \(sentTaskId\) \{/,
   'consumption must follow the binding check directly, with no generation guard before it',
 );
 assert.match(auxChatPanel, /setDraft\(\(current\) => \(current\.trim\(\) === text \? '' : current\)\)/);
@@ -341,7 +341,7 @@ assert.doesNotMatch(restartBlock, /setDraft\(''\)/);
 // (module scope, same ownership as the draft) and appended to the outgoing
 // message as an inline userselect block; a quote-only send is allowed.
 assert.match(auxChatPanel, /const quoteBlock = buildAuxQuoteBlock\(quotes\);/);
-assert.match(auxChatPanel, /await auxChat\.send\(sentAuxId, quoteBlock \? text \+ quoteBlock : text\);/);
+assert.match(auxChatPanel, /const sendPromise = auxChat\.send\(sentAuxId, quoteBlock \? text \+ quoteBlock : text\);/);
 assert.match(auxChatPanel, /\(!text && !quoteBlock\)/);
 assert.match(auxChatPanel, /subscribeAuxQuotes\(sessionId/);
 assert.match(auxChatPanel, /data-testid="aux-quote-chips"/);
@@ -380,7 +380,7 @@ assert.match(restartBlock.slice(finallyClause), /} finally \{[\s\S]*?if \(genera
 // key-repeat Enter must be ignored outright. The latch must be released on
 // every outcome via finally, or the composer would lock after one failure.
 assert.match(auxChatPanel, /if \(!auxChat \|\| !sentAuxId \|\| \(!text && !quoteBlock\) \|\| busy \|\| restarting \|\| sendingRef\.current\) return;/);
-assert.match(auxChatPanel, /sendingRef\.current = true;[\s\S]*?await auxChat\.send\(sentAuxId, quoteBlock \? text \+ quoteBlock : text\);[\s\S]*?\} finally \{[\s\S]*?if \(auxIdRef\.current === sentAuxId && generationRef\.current === sentGeneration\) \{\s*sendingRef\.current = false;/);
+assert.match(auxChatPanel, /sendingRef\.current = true;[\s\S]*?const sendPromise = auxChat\.send\(sentAuxId, quoteBlock \? text \+ quoteBlock : text\);[\s\S]*?await sendPromise;[\s\S]*?\} finally \{[\s\S]*?if \(auxIdRef\.current === sentAuxId && generationRef\.current === sentGeneration\) \{\s*sendingRef\.current = false;/);
 assert.match(auxChatPanel, /if \(event\.repeat\) return;/);
 // Rebind resets restarting (round-7 m11): the restart invokes have no
 // transport timeout, so a promise that never settles must not latch the next
@@ -400,7 +400,19 @@ assert.match(rebindBlock, /sendingRef\.current = false;/, 'the rebind effect mus
 // a same-id rebind (switch A→B→A; ensure is idempotent) keeps auxIdRef equal
 // to sentAuxId, so the release must be gated on the send's generation as well
 // as the binding.
-assert.match(auxChatPanel, /finally \{[\s\S]{0,700}if \(auxIdRef\.current === sentAuxId && generationRef\.current === sentGeneration\) \{\s*sendingRef\.current = false;\s*setSending\(false\);\s*\}/);
+assert.match(auxChatPanel, /finally \{[\s\S]{0,1300}if \(auxIdRef\.current === sentAuxId && generationRef\.current === sentGeneration\) \{\s*sendingRef\.current = false;\s*setSending\(false\);\s*\}/);
+// Task-keyed in-flight send registry (round-15 MAJOR-2): the rebind effect
+// resets sendingRef on every task switch, so without a module-scoped registry
+// a send on task A → switch to B → back to A would pass every guard before
+// turn_started lands, firing a duplicate turn on the same aux session. The
+// registry must be checked in the guard, registered synchronously with the
+// dispatch, and removed by the exact send that registered it (identity check,
+// independent of the binding state, or a post-rebind settle would leak the
+// entry and block the task's sends forever).
+assert.match(auxChatPanel, /const sendInFlightByTask = new Map\(\);/);
+assert.match(auxChatPanel, /if \(sendInFlightByTask\.has\(sentTaskId\)\) return;/);
+assert.match(auxChatPanel, /sendInFlightByTask\.set\(sentTaskId, sendPromise\);/);
+assert.match(auxChatPanel, /finally \{[\s\S]{0,400}?if \(sendInFlightByTask\.get\(sentTaskId\) === sendPromise\) \{\s*sendInFlightByTask\.delete\(sentTaskId\);\s*\}/);
 // Double-banner guard (round-9 minor-1): entering the restart flow must
 // clear a stale sendFailed too, or a failed send's "retry" banner renders
 // next to the ensure-failure banner after the binding was cleared.
