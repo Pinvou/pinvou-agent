@@ -1,3 +1,5 @@
+import { companionPackageMap } from '../../shared/companion-packages.js';
+
 function itemId(item) {
   return String((item && (item.id || item.backendId || item.skillId)) || '').trim();
 }
@@ -122,6 +124,10 @@ async function prepareSceneCapabilities(meta, invoke) {
     skills = await listMarketplaceSkills(invoke);
   }
 
+  // 装上 ≠ 会话可见：开关/可见性任一关闭都会让会话侧排除该包（PPT 场景实测：
+  // pptx 在 plain 隐藏集残留，装了也调不到）——下方的可用性预读 + 显式开启
+  // （enable_marketplace_packages）就地处理 disabled 与 hidden 两个集合。
+
   const missingTools = requirements.tools.filter((toolId) => !isInstalled(tools, toolId));
   const missingSkills = requirements.skills.filter((skillId) => !isInstalled(skills, skillId));
   if (missingTools.length || missingSkills.length) {
@@ -139,12 +145,16 @@ async function prepareSceneCapabilities(meta, invoke) {
   // opt-in — enable_marketplace_packages persists it (and un-hides) and
   // hot-refreshes the running session's tool allowlist and skill-composition
   // directory, taking effect on the current turn.
-  // Round-16 minor 13: raw required ids are compared against the backend's
-  // normalized sets. Safe today only because every companion-requiring scene
-  // also requires its owner tool (the owner pack id is what the sets carry);
-  // if a scene ever requires a bare companion skill id, normalize it through
-  // skill_owner_package first.
-  const requiredPackages = [...new Set([...requirements.tools, ...requirements.skills])];
+  // Round-16 minor 13, closed by the shared companion map (main's #563
+  // extracted it so the scene path and ToolStoreView cannot drift): the
+  // backend's disabled/hidden sets and the DenyAll expansion carry OWNER pack
+  // ids, so a bare companion skill id must opt in for its owner pack.
+  const ownerMap = companionPackageMap(tools);
+  const requiredPackages = [...new Set([
+    ...requirements.tools,
+    ...requirements.skills,
+    ...requirements.skills.flatMap((id) => (ownerMap[id] ? [ownerMap[id]] : [])),
+  ])];
   // Naming per R8 nit: true = a scene pack was default-gated (or hidden) and
   // this send completed the opt-in; future consumers must not misread it as
   // availability.

@@ -12,6 +12,7 @@ import { invokeTauri, isTauriAvailable, tauriEvents } from '../../platform/tauri
 import { can } from '../../shared/platform.js';
 import { isImeComposing } from '../../shared/ime-guard.mjs';
 import { pathBasename } from '../../shared/path-utils.js';
+import { companionPackageMap } from '../../shared/companion-packages.js';
 
 const OAUTH_UI_TIMEOUT_MS = 90_000;
 
@@ -1156,14 +1157,15 @@ const withUiTimeout = (promise, timeoutMs, fallbackResult) => {
           const fetched = await invokeTauri('list_marketplace_tools');
           list = Array.isArray(fetched) ? fetched : [];
           const states = {};
-          const s2m = {}; // 配套技能 → 所属 MCP(manifest companion_skills 反建,单一真源)。
-          // 映射与安装态无关：组合包语义要求 companion 卡的「安装」始终路由到
-          // 所属 MCP（装 MCP 联动装技能）；「卸载」与卡片安装态在下游按 MCP
-          // 是否已装分流（MCP 已装 → 包级卸载；仅技能独立已装 → 技能级卸载，
-          // 后端 uninstall 按实际物理位置删除，G3）。
+          // 配套技能 → 所属 MCP：shared/companion-packages.js 单一真源（与
+          // 场景可用性自愈共用，manifest companion_skills 反建）。映射与安装
+          // 态无关：组合包语义要求 companion 卡的「安装」始终路由到所属 MCP
+          // （装 MCP 联动装技能）；「卸载」与卡片安装态在下游按 MCP 是否已装
+          // 分流（MCP 已装 → 包级卸载；仅技能独立已装 → 技能级卸载，后端
+          // uninstall 按实际物理位置删除，G3）。
+          const s2m = companionPackageMap(list);
           list.forEach(t => {
             states[t.id] = t.installed;
-            (t.companion_skills || []).forEach(sid => { s2m[sid] = t.id; });
           });
           setToolStates(states);
           setSkillToMcp(s2m);

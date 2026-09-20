@@ -226,6 +226,14 @@ pub async fn install_marketplace_tool(
     // 联动安装的 companion 技能影响两个 scope 的启用集：重写在线会话组合目录
     // （下一轮 prompt 即生效，与 uninstall_marketplace_tool 对称，skill 双 scope
     // 治理事件驱动时机 §2.3.2）。
+    // mcp.json 可能新增了 server：递增修订号让在线引擎下一轮 get_or_spawn
+    // 安全重建并重新发现工具（mark_mcp_config_updated 契约）。plain 会话的
+    // 引擎读按会话派生的 mcp 配置（仅 spawn 时从全局 mcp.json 重写），不递增
+    // 则中途安装的 server 对活跃引擎永不可见（PPT 场景实测：自动装完 pptx 后
+    // 同会话 mcp_pptx_make_pptx 仍不可见）。code 会话读全局文件、底座每轮
+    // mtime+hash 自愈，此时重建是冗余但无害的一次性开销（与 mark_model_updated
+    // 同粒度的取舍）。
+    pool.mark_mcp_config_updated();
     pool.refresh_live_sessions_skills().await;
     // 新装包的 CLI/技能脚本纳入/移出 deny 规则集（M-6：install 路径热刷）。
     pool.refresh_permission_rulesets().await;
@@ -447,6 +455,10 @@ pub async fn uninstall_marketplace_tool(
     pool: tauri::State<'_, crate::features::assistant::engine_pool::EnginePool>,
 ) -> Result<(), String> {
     uninstall_marketplace_tool_sync(&tool_id)?;
+    // mcp.json 可能移除了 server：递增修订号让在线引擎下一轮 get_or_spawn
+    // 安全重建（同 install 路径，mark_mcp_config_updated 契约），残留的已卸
+    // 连接器工具不再出现在模型目录。
+    pool.mark_mcp_config_updated();
     // 联动卸载的 companion 技能影响两个 scope 的启用集：重写在线会话组合目录
     // （async 命令必须用 async 版：blocking 版的 blocking_lock 在 tokio runtime
     // 线程上必 panic）。
@@ -759,6 +771,9 @@ pub async fn import_plugin_package_cmd(
         )
     })?;
     // 新装包进入供给：mcp/spanner 热刷工具白名单 + skills 热刷会话组合目录。
+    // 导入包含本地 MCP 时 mcp.json 已变，同样要递增修订号触发在线引擎下轮
+    // 重建（与 install_marketplace_tool 同口径，mark_mcp_config_updated 契约）。
+    pool.mark_mcp_config_updated();
     pool.refresh_disallowed_tools().await;
     pool.refresh_live_sessions_skills().await;
     // 导入包的 CLI/技能脚本纳入 deny 规则集（M-6：import 路径热刷）。
@@ -830,6 +845,9 @@ pub async fn import_plugin_package_bytes_cmd(
         )
     })?;
     // 新装包进入供给：mcp/spanner 热刷工具白名单 + skills 热刷会话组合目录。
+    // 导入包含本地 MCP 时 mcp.json 已变，同样要递增修订号触发在线引擎下轮
+    // 重建（与 install_marketplace_tool 同口径，mark_mcp_config_updated 契约）。
+    pool.mark_mcp_config_updated();
     pool.refresh_disallowed_tools().await;
     pool.refresh_live_sessions_skills().await;
     // 导入包的 CLI/技能脚本纳入 deny 规则集（M-6：import 路径热刷）。
@@ -930,6 +948,10 @@ pub async fn restore_recycled_plugin(
     })
     .await
     .map_err(|e| format!("任务执行失败: {e}"))??;
+    // mcp.json 可能重新写入了 server：递增修订号让在线引擎下一轮 get_or_spawn
+    // 安全重建（与 install/import 同口径，mark_mcp_config_updated 契约），否则
+    // 恢复的插件 server 对活跃 plain 引擎不可见。
+    pool.mark_mcp_config_updated();
     // 恢复 = 重新进入供给：mcp 热刷工具白名单 + skills 热刷会话组合目录 +
     // 包脚本纳入 deny 规则集（与 import/uninstall 同一时机语义）。
     pool.refresh_disallowed_tools().await;

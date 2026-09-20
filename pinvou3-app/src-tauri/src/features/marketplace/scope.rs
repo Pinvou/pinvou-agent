@@ -651,6 +651,8 @@ fn resolve_scope_disabled_ids(file: &DisabledBundlesFile, scope: ConnectorScope)
 
 /// 写某 scope 被禁用的包 id 列表（写入即标记该 scope 已初始化）。入参统一归一为包
 /// id（剥 `skill:` 前缀 + companion 映射），防御历史版本误写入的带前缀条目。
+/// 写失败降级为日志：composer 整集写的调用方可见失败形态是 #515 登记项，
+/// 本 PR 不扩大（round-17 合并对 main #563 上抛版次的裁决）。
 pub fn save_disabled_bundles_for(scope: ConnectorScope, ids: &[String]) {
     let _guard = DISABLED_BUNDLES_FILE_LOCK
         .lock()
@@ -749,6 +751,7 @@ pub fn load_hidden_bundles_for(scope: ConnectorScope) -> Vec<String> {
 }
 
 /// 写某 scope 被「不可见」的包 id 列表（不参与 DenyAll 默认，显式写入才隐藏）。
+/// 写失败降级为日志（与 save_disabled_bundles_for 同一 #515 登记口径）。
 pub fn save_hidden_bundles_for(scope: ConnectorScope, ids: &[String]) {
     let _guard = DISABLED_BUNDLES_FILE_LOCK
         .lock()
@@ -777,7 +780,8 @@ pub fn load_disabled_bundles() -> Vec<String> {
     load_disabled_bundles_for(ConnectorScope::Plain)
 }
 
-/// 写全局（plain）被禁用的包 id 列表。兼容既有调用方。
+/// 写全局（plain）被禁用的包 id 列表。兼容既有调用方；启动期 best-effort，
+/// 写失败降级为日志（调用方无法处理治理写失败）。
 pub fn save_disabled_bundles(ids: &[String]) {
     save_disabled_bundles_for(ConnectorScope::Plain, ids);
 }

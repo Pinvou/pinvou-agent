@@ -1396,7 +1396,7 @@ pub(crate) fn build_pool(app: tauri::AppHandle, store: SessionStore) -> Result<E
         ]
     });
     let tool_policy: ToolPolicy = Arc::new(|app| {
-        let mut tools = crate::features::marketplace::disabled_tool_names();
+        let mut tools = crate::features::marketplace::unavailable_tool_names();
         let kb_usable = app
             .try_state::<knowledge::KnowledgeService>()
             .map(|service| service.has_indexed_content() && service.semantic_ready())

@@ -928,7 +928,7 @@ pub fn run() {
                 });
             let tool_policy: crate::features::assistant::engine_pool::ToolPolicy =
                 std::sync::Arc::new(|app| {
-                    let mut tools = crate::features::marketplace::disabled_tool_names();
+                    let mut tools = crate::features::marketplace::unavailable_tool_names();
                     // 语义与单一真相源见 KnowledgeService::kb_tools_usable:
                     // 只看有没有内容,不看模型在位状态(可见性随模型波动会让
                     // 自愈重载路径不可达)。

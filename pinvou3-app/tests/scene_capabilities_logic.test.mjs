@@ -4,15 +4,17 @@ import fs from 'node:fs';
 import path from 'node:path';
 import vm from 'node:vm';
 import { fileURLToPath } from 'node:url';
+import { companionPackageMap } from '../src/shared/companion-packages.js';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 
 const logicPath = path.join(__dirname, '..', 'src', 'features', 'chat', 'scene-capabilities.js');
 const code = fs.readFileSync(logicPath, 'utf8')
+  .replace(/\bimport\s+\{[^}]+\}\s+from\s+'[^']*';?/g, '')
   .replace(/\bexport\s+\{[^}]+\};?/g, '')
   .replace(/\bexport\s+/g, '');
 
-const ctx = {};
+const ctx = { companionPackageMap };
 vm.createContext(ctx);
 vm.runInContext(`${code}
 this.canPrepareSceneCapabilities = canPrepareSceneCapabilities;
@@ -73,7 +75,9 @@ function makeInvoke({ tools = [], skills = [], disabled = [], hidden = [], block
     notAppliedOnEnable: new Set(notAppliedOnEnable),
     enableCalls: [],
   };
-  const toolList = () => [...state.tools].map((id) => ({ id, installed: true }));
+  const toolList = () => [...state.tools].map((entry) => (
+    typeof entry === 'string' ? { id: entry, installed: true } : { installed: true, ...entry }
+  ));
   const skillList = () => [...state.skills].map((id) => ({ id, installed: true }));
   const invoke = async (command, args) => {
     if (command === 'list_marketplace_tools') return toolList();
@@ -237,6 +241,31 @@ async function runDenyAllOptInScenarios() {
     assert.deepStrictEqual([...prepared.notApplied], ['gongwen']);
     assert.deepStrictEqual([...prepared.missing], [], 'not-applied is not reported as missing-install');
     assert.strictEqual(state.disabled.has('gongwen'), true, 'not-applied pack stays disabled');
+  }
+
+  // Main's #563 pin, adapted (round-17 merge): a bare companion skill id in
+  // the scene requirements must opt in through its OWNER pack id from the
+  // shared companion map — the backend sets carry owner ids only. Divergent
+  // fixture: the map claims government-writing belongs to 'other-pack', so
+  // the enable batch must carry 'other-pack' (mutation-verified: an empty
+  // map drops it and this assertion fails).
+  {
+    const { invoke, state } = makeInvoke({
+      tools: [
+        'gongwen',
+        { id: 'other-pack', installed: true, companionSkills: ['government-writing'] },
+      ],
+      skills: ['government-writing'],
+      disabled: ['other-pack'],
+    });
+    const prepared = await prepareSceneCapabilities({ pinvouScene: 'work:document-writing' }, invoke);
+    assert.strictEqual(prepared.ok, true, 'the mapped owner opt-in must let the send proceed');
+    assert.deepStrictEqual(
+      state.enableCalls[0].filter((id) => id === 'other-pack'),
+      ['other-pack'],
+      'the companion id must normalize to its mapped owner pack in the enable batch',
+    );
+    assert.strictEqual(state.disabled.has('other-pack'), false, 'the owner pack is opted in');
   }
 
   console.log('scene_capabilities_logic deny-all opt-in: ok');

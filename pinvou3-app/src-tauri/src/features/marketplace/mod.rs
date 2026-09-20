@@ -490,11 +490,11 @@ pub async fn apply_disabled_connectors_for(
     scope: ConnectorScope,
     connector_ids: Vec<String>,
 ) -> Result<(), String> {
-    tokio::task::spawn_blocking(move || {
-        save_disabled_connectors_for(scope, &connector_ids);
-    })
-    .await
-    .map_err(|error| format!("apply_disabled_connectors_for join: {error}"))?;
+    // Composer 整集写保持 fire-and-forget（#515 登记口径，round-17 合并对
+    // main #563 上抛版次的裁决）：写失败在 save 内降级为日志。
+    tokio::task::spawn_blocking(move || save_disabled_connectors_for(scope, &connector_ids))
+        .await
+        .map_err(|error| format!("apply_disabled_connectors_for join: {error}"))?;
     Ok(())
 }
 
@@ -530,14 +530,18 @@ pub fn install_mcp_secret_resolver() {
     }));
 }
 
-/// 当前(plain)被禁用连接器 → 模型可见工具全名(喂给引擎 disallowed_tools 的)。
-pub fn disabled_tool_names() -> Vec<String> {
-    disabled_tool_names_for(ConnectorScope::Plain)
+/// 当前(plain)会话侧不可用包 → 模型可见工具全名(喂给引擎 disallowed_tools 的)。
+pub fn unavailable_tool_names() -> Vec<String> {
+    unavailable_tool_names_for(ConnectorScope::Plain)
 }
 
-/// 按会话类型 scope:被禁用连接器 → 模型可见工具全名(喂给引擎 disallowed_tools 的)。
-pub fn disabled_tool_names_for(scope: ConnectorScope) -> Vec<String> {
-    MarketplaceManager::new().model_tool_names(&load_disabled_connectors_for(scope))
+/// 按会话类型 scope：会话侧不可用包 → 模型可见工具全名(喂给引擎
+/// disallowed_tools 的)。不可用 = 开关关(disabled) ∪ 不可见(hidden)，与技能
+/// 物化/execpolicy（`unavailable_bundles_for`）及 turn 快照（enabled）同一
+/// 口径：只按开关集会让「已装但被隐藏」的包的工具留在模型目录里，模型被两
+/// 个互相矛盾的真相源同时喂养（PPT 场景实测）。
+pub fn unavailable_tool_names_for(scope: ConnectorScope) -> Vec<String> {
+    MarketplaceManager::new().model_tool_names(&unavailable_bundles_for(scope))
 }
 
 /// 存量 mcp.json 条目的路径迁移：指向旧布局（`bundle/mcp-servers/<id>/`）的

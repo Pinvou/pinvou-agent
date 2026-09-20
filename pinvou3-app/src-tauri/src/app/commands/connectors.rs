@@ -55,8 +55,10 @@ pub async fn set_bundle_visibility(
 ) -> Result<(), String> {
     let scope = parse_connector_scope(scope.as_deref())?;
     let ids = bundle_ids.clone();
+    // 可见性写与开关写同一 #515 登记口径：整集写保持 fire-and-forget，写失败
+    // 在 save 内降级为日志（调用方可见失败形态待 #515 重work 时一并裁决）。
     tokio::task::spawn_blocking(move || {
-        crate::features::marketplace::save_hidden_bundles_for(scope, &ids);
+        crate::features::marketplace::save_hidden_bundles_for(scope, &ids)
     })
     .await
     .map_err(|e| format!("set_bundle_visibility join: {e}"))?;
