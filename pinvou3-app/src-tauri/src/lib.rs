@@ -1750,6 +1750,22 @@ mod tool_allowlist_contract {
                 "always-loaded tool {always_loaded} has no matching allowlist rule"
             );
         }
+        // Membership guard: the static instructions and the registry-first
+        // policy name these tools directly, so each must stay in the
+        // always-loaded list. The live-catalog regression iterates this same
+        // constant, so dropping an entry here would silence that check and
+        // re-create the first-turn-absent phantom with a green suite.
+        for load_bearing in [
+            "load_skill",
+            "file_search",
+            "registry_sync",
+            "start_registry_mcp_server",
+        ] {
+            assert!(
+                PINVOU3_ALWAYS_LOADED_TOOLS.contains(&load_bearing),
+                "always-loaded list dropped {load_bearing}: static text names it, so it must ship non-deferred on the first turn"
+            );
+        }
         // `is_pinvou3_allowed` is deliberately case-insensitive, so the
         // legacy `Bash` spelling remains executable when replaying an old
         // transcript. The source catalog still teaches only canonical `bash`.

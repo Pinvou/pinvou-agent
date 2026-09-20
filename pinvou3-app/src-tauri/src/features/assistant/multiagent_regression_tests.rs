@@ -567,6 +567,11 @@ async fn code_session_real_spawn_refresh_resolves_config_expert_without_project_
         "terminal/reset",
         "agent",
         "load_skill",
+        // Conditionally registered tools: pinning presence here catches the
+        // registration half going away, which the always-loaded loop above
+        // cannot (it iterates the constant and skips absent names).
+        "registry_sync",
+        "start_registry_mcp_server",
         "request_user_input",
         "revert_turn",
         "todo_write",
@@ -575,7 +580,7 @@ async fn code_session_real_spawn_refresh_resolves_config_expert_without_project_
     ] {
         assert!(
             catalog_names.contains(expected),
-            "allowlisted native tool {expected} no longer resolves through the live v0.9.12 registry: {catalog_names:?}"
+            "allowlisted tool {expected} missing from the live model-visible catalog: {catalog_names:?}"
         );
     }
     for replay_only in ["Bash", "File", "work_update", "update_plan"] {
@@ -584,6 +589,15 @@ async fn code_session_real_spawn_refresh_resolves_config_expert_without_project_
             "hidden replay alias {replay_only} leaked into the model-visible catalog"
         );
     }
+    // In this fixture the ima package is uninstalled, so the native-tool
+    // ownership gate must keep `ima_openapi` out of the live catalog at
+    // construction time (deny wins — the tool must not even ship deferred).
+    // This is the end-to-end half of the gate: the marketplace unit tests
+    // only cover the name-mapping function.
+    assert!(
+        !catalog_names.contains("ima_openapi"),
+        "native tool ima_openapi leaked into the live catalog while its owning package is uninstalled"
+    );
     assert!(
         errors
             .iter()
