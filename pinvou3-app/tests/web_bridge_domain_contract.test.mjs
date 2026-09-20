@@ -265,12 +265,12 @@ unsubscribeSettings();
 
 const memorySources = {
   profile: { available: true }, preferences: { available: true }, work_context: { available: true },
-  current_focus: { available: true }, recent_activity: { available: true }, recent_work: { available: true },
-  pending: { available: true }, never: { available: true }, runtime: { available: true }, snapshot: { available: true },
+  current_focus: { available: true }, recent_activity: { available: true },
+  pending: { available: true }, runtime: { available: true }, snapshot: { available: true },
 };
 const memoryOverview = overrides => ({
   profile: null, preferences: [], work_context: [], current_focus: [], recent_activity: [],
-  recent_work: [], pending: [], never: [], runtime: null, snapshot_path: '', warnings: [],
+  pending: [], runtime: null, snapshot_path: '', warnings: [],
   sources: memorySources, ...(overrides || {}),
 });
 invokeResponse = async command => command === 'get_memory_overview'

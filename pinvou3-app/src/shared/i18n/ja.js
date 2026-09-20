@@ -615,7 +615,7 @@ dictJa.uiChatView = {
   designAdjustSelected:(label, raw)=>`現在選択中の ${label} を調整：${raw}`,
 };
 
-dictJa.uiMainApp = { petSummon:'コンパニオンを呼び出す', closeNavigation:'ナビゲーションを閉じる', superPermFailed:'高度な実行権限を有効にできません', searchTestUnavailable:'現在の環境では検索ソースをテストできません', searchSaveFailed:'検索設定の保存に失敗しました。もう一度お試しください', petSessionMissing:'対象のセッションが存在しません', petTaskStartFailed:'タスクを開始できませんでした', detachedSessionMissing:'対象の Coding セッションが存在しないか、削除されました', detachedSessionLoadFailed:'Coding セッションの読み込みに失敗しました。ウィンドウを閉じて再試行してください', panelLoadFailed:err=>`パネルの読み込みに失敗しました: ${err}`, viewLoadFailed:'ページの読み込みに失敗しました。ネットワークを確認して再試行してください', viewReload:'再読み込み' };
+dictJa.uiMainApp = { petSummon:'コンパニオンを呼び出す', closeNavigation:'ナビゲーションを閉じる', superPermFailed:'高度な実行権限を有効にできません', searchSaveFailed:'検索設定の保存に失敗しました。もう一度お試しください', petSessionMissing:'対象のセッションが存在しません', petTaskStartFailed:'タスクを開始できませんでした', detachedSessionMissing:'対象の Coding セッションが存在しないか、削除されました', detachedSessionLoadFailed:'Coding セッションの読み込みに失敗しました。ウィンドウを閉じて再試行してください', panelLoadFailed:err=>`パネルの読み込みに失敗しました: ${err}`, viewLoadFailed:'ページの読み込みに失敗しました。ネットワークを確認して再試行してください', viewReload:'再読み込み' };
 
 dictJa.uiToolCommon = {
   open: '開く', coverAlt: 'カバー',
@@ -804,7 +804,7 @@ Object.assign(dictJa.uiAttachments, { uploading:pct=>`アップロード中 ${pc
 
 Object.assign(dictJa.uiToolStore, {
   toolNames:{ feishu:'Feishu', wecom:'WeCom', dingtalk:'DingTalk', tmeet:'Tencent Meeting' },
-  connectFailed:name=>`${name} の接続に失敗しました`, connectTitle:name=>`${name} に接続`,
+  connectTitle:name=>`${name} に接続`,
   wecomScanHint:'WeCom アプリでスキャンしてください', wecomQrAlt:'WeCom ログイン用QRコード', waitingAuth:'認証を待機中…', openInBrowser:'ブラウザーで開く',
   connected:'接続済み', installed:'インストール済み', builtin:'内蔵', keyRequired:'キーが必要', localLatency:'ローカル',
   cancel:'キャンセル', ok:'了解', newChat:'新しいチャット',

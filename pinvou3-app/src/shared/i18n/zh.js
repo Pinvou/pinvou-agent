@@ -626,7 +626,7 @@ dictZh.uiChatView = {
 };
 
 
-dictZh.uiMainApp = { petSummon:'召唤公仔', closeNavigation:'关闭导航', superPermFailed:'无法开启高级执行权限', searchTestUnavailable:'当前环境不可测试搜索源', searchSaveFailed:'搜索配置保存失败，请重试', petSessionMissing:'目标会话不存在', petTaskStartFailed:'任务未能启动', detachedSessionMissing:'目标 Coding 会话不存在或已被删除', detachedSessionLoadFailed:'Coding 会话加载失败，请关闭窗口后重试', panelLoadFailed:err=>`面板加载失败:${err}`, viewLoadFailed:'页面加载失败，请检查网络后重试', viewReload:'重新加载' };
+dictZh.uiMainApp = { petSummon:'召唤公仔', closeNavigation:'关闭导航', superPermFailed:'无法开启高级执行权限', searchSaveFailed:'搜索配置保存失败，请重试', petSessionMissing:'目标会话不存在', petTaskStartFailed:'任务未能启动', detachedSessionMissing:'目标 Coding 会话不存在或已被删除', detachedSessionLoadFailed:'Coding 会话加载失败，请关闭窗口后重试', panelLoadFailed:err=>`面板加载失败:${err}`, viewLoadFailed:'页面加载失败，请检查网络后重试', viewReload:'重新加载' };
 
 
 // tool-common.jsx(产物卡 aria/alt、diff 展开收起、天气卡、股票卡、工具商店动作按钮)。
@@ -833,7 +833,7 @@ Object.assign(dictZh.uiAttachments, { uploading:pct=>`上传中 ${pct}%`,  devic
 // uiToolStore 词条补充（ToolStoreView / oauth-marketplace-logic）：命名空间已在 dict 主体定义，这里增量合并。
 Object.assign(dictZh.uiToolStore, {
   toolNames:{ feishu:'飞书', wecom:'企业微信', dingtalk:'钉钉', tmeet:'腾讯会议' },
-  connectFailed:name=>`${name}连接失败`, connectTitle:name=>`连接${name}`,
+  connectTitle:name=>`连接${name}`,
   wecomScanHint:'请使用企业微信 App 扫一扫', wecomQrAlt:'企业微信登录二维码', waitingAuth:'等待授权中…', openInBrowser:'在浏览器打开',
   connected:'已连接', installed:'已安装', builtin:'内置', keyRequired:'需密钥', localLatency:'本地',
   cancel:'取消', ok:'知道了', newChat:'新建会话',

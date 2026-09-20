@@ -614,7 +614,7 @@ dictEn.uiChatView = {
   designAdjustSelected:(label, raw)=>`Adjust the currently selected ${label}: ${raw}`,
 };
 
-dictEn.uiMainApp = { petSummon:'Summon Companion', closeNavigation:'Close navigation', superPermFailed:'Unable to enable advanced execution permission', searchTestUnavailable:'Search sources cannot be tested in this environment', searchSaveFailed:'Failed to save search settings. Please try again', petSessionMissing:'Target session does not exist', petTaskStartFailed:'Task failed to start', detachedSessionMissing:'The target Coding session does not exist or was deleted', detachedSessionLoadFailed:'Failed to load the Coding session. Close this window and try again', panelLoadFailed:err=>`Panel failed to load: ${err}`, viewLoadFailed:'Failed to load this page. Check your network and try again', viewReload:'Reload' };
+dictEn.uiMainApp = { petSummon:'Summon Companion', closeNavigation:'Close navigation', superPermFailed:'Unable to enable advanced execution permission', searchSaveFailed:'Failed to save search settings. Please try again', petSessionMissing:'Target session does not exist', petTaskStartFailed:'Task failed to start', detachedSessionMissing:'The target Coding session does not exist or was deleted', detachedSessionLoadFailed:'Failed to load the Coding session. Close this window and try again', panelLoadFailed:err=>`Panel failed to load: ${err}`, viewLoadFailed:'Failed to load this page. Check your network and try again', viewReload:'Reload' };
 
 dictEn.uiToolCommon = {
   open: 'Open', coverAlt: 'Cover',
@@ -803,7 +803,7 @@ Object.assign(dictEn.uiAttachments, { uploading:pct=>`Uploading ${pct}%`,  devic
 
 Object.assign(dictEn.uiToolStore, {
   toolNames:{ feishu:'Feishu', wecom:'WeCom', dingtalk:'DingTalk', tmeet:'Tencent Meeting' },
-  connectFailed:name=>`${name} connection failed`, connectTitle:name=>`Connect ${name}`,
+  connectTitle:name=>`Connect ${name}`,
   wecomScanHint:'Scan with the WeCom app', wecomQrAlt:'WeCom sign-in QR code', waitingAuth:'Waiting for authorization…', openInBrowser:'Open in browser',
   connected:'Connected', installed:'Installed', builtin:'Built-in', keyRequired:'Key required', localLatency:'Local',
   cancel:'Cancel', ok:'Got it', newChat:'New Chat',
