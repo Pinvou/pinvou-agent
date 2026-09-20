@@ -329,6 +329,9 @@ mod tests {
         let prev = std::env::var("PINVOU3_HOME").ok();
         // SAFETY: holding platform::paths::tests::ENV_LOCK; env writes serialized in-process.
         unsafe { std::env::set_var("PINVOU3_HOME", &dir) };
+        // Clear the write-failure memos (pid-keyed dir reuse would bleed a prior
+        // case's memo into this one; review #455 R15 minor 12).
+        crate::features::marketplace::scope::clear_unpersisted_verdict_for_test();
         f();
         match prev {
             // SAFETY: holding platform::paths::tests::ENV_LOCK; env writes serialized in-process.

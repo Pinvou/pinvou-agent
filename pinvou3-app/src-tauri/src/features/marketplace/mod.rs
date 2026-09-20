@@ -85,8 +85,8 @@ static FAIL_NEXT_INSTALLED_WRITE: std::sync::atomic::AtomicBool =
 /// (including panic unwind, early failure before the target path, or an
 /// unconsumed injection) so the flag cannot leak into later tests (it once
 /// leaked when install failed before save_installed and broke unrelated
-/// cases). All three injection points share this guard
-/// (review #455: three verbatim-duplicated guard structs merged into one).
+/// cases). All injection points share this guard
+/// (review #455: the verbatim-duplicated guard structs merged into one).
 #[cfg(test)]
 pub(crate) struct FailpointResetGuard(&'static std::sync::atomic::AtomicBool);
 
@@ -227,7 +227,10 @@ pub(crate) fn quarantine_corrupt_state_file(path: &Path, content: &[u8]) -> Resu
         }
     }
     let backup = parent.join(format!("{name}.corrupt.{ts}"));
-    std::fs::write(&backup, content).map_err(|error| {
+    // Atomic (tmp + rename): the no-sibling rule keeps at most one sidecar, so a
+    // torn plain write here would permanently strand the only recoverable copy
+    // (review #455 R15 minor 11).
+    write_atomic_file(&backup, content).map_err(|error| {
         format!(
             "failed to quarantine corrupt {name} to {}: {error}",
             backup.display()
@@ -1762,10 +1765,6 @@ impl<S: CredentialStore> MarketplaceManager<S> {
         std::fs::create_dir_all(dir).map_err(|e| format!("创建目录失败: {e}"))?;
         let json = serde_json::to_string_pretty(ids).map_err(|e| e.to_string())?;
         write_atomic_file(&self.installed_file, json.as_bytes())
-    }
-
-    fn backup_corrupt_installed(&self, content: &str) -> Result<(), String> {
-        quarantine_corrupt_state_file(&self.installed_file, content.as_bytes())
     }
 
     fn backup_corrupt_installed_bytes(&self, raw: &[u8]) -> Result<(), String> {

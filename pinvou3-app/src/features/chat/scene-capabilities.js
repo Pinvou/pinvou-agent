@@ -139,6 +139,11 @@ async function prepareSceneCapabilities(meta, invoke) {
   // opt-in — enable_marketplace_packages persists it (and un-hides) and
   // hot-refreshes the running session's tool allowlist and skill-composition
   // directory, taking effect on the current turn.
+  // Round-15 minor 13: raw required ids are compared against the backend's
+  // normalized sets. Safe today only because every companion-requiring scene
+  // also requires its owner tool (the owner pack id is what the sets carry);
+  // if a scene ever requires a bare companion skill id, normalize it through
+  // skill_owner_package first.
   const requiredPackages = [...new Set([...requirements.tools, ...requirements.skills])];
   // Naming per R8 nit: true = a scene pack was default-gated (or hidden) and
   // this send completed the opt-in; future consumers must not misread it as

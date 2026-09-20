@@ -17,7 +17,7 @@
 //! 映射到所属包（companion → MCP/CLI 包，独立技能 → 自身）；`skill:` 前缀跨文件借道
 //! 残留统一剥除并清出连接器文件。迁移幂等，失败回退默认值（安全兜底）。
 //!
-// architecture-guard: allow-target-cfg -- the round-13 B3 install-sync persist-failure regression needs a chmod 000 fixture; test-only inline cfg(unix)+PermissionsExt (same exemption precedent as mod.rs / package_export.rs, review #455); a real open() probe guards against running as root, Windows is covered by link checks.
+// architecture-guard: allow-target-cfg -- the round-13 B3 install-sync persist-failure regression needs an unreadable (0o555 directory / 0o000 file) fixture; test-only inline cfg(unix)+PermissionsExt (same exemption precedent as mod.rs / package_export.rs, review #455); a real open() probe guards against running as root, Windows is covered by link checks.
 //!
 //! 依赖方向：本模块与 `bundle` / `skill_marketplace` 同属 marketplace 领域，只依赖
 //! `platform::paths` 与 marketplace 内既有类型，不反向依赖 assistant 运行时。
@@ -88,9 +88,10 @@ fn disabled_bundles_path() -> PathBuf {
 /// (e.g. uninstall holds the transaction lock for switch cleanup); this lock's
 /// holder **must not** acquire the transaction lock — corrupt `installed.json`
 /// recovery on the DenyAll resolution / switch-write paths rebuilds in memory
-/// only, taking no lock and persisting nothing (see the read-only recovery
+/// only, taking no transaction lock and persisting no registry state (the only
+/// side effect is the quarantine sidecar copy; see the read-only recovery
 /// branch of `try_installed_ids`); the next writer holding the transaction lock
-/// persists it.
+/// persists the registry.
 static DISABLED_BUNDLES_FILE_LOCK: Mutex<()> = Mutex::new(());
 
 /// In-process verdict memo for freeze persist failures (review #455 R7-M2):
@@ -573,7 +574,9 @@ fn try_save_disabled_bundles_file(file: &DisabledBundlesFile) -> Result<(), Stri
 /// — "default fully off, external capabilities enabled explicitly". All modes
 /// are DenyAll; existing plain installs are initialized by the read-time
 /// migration in `load_disabled_bundles_file_locked` (locking in the
-/// pre-upgrade switch state) and never take this fallback. Including
+/// pre-upgrade switch state) and, on a clean read path, never take this
+/// fallback (the disclosed R11-M4 exception: an upgraded install whose freeze
+/// persist failed re-enters it after restart). Including
 /// unconnected CLI packs is harmless (companion skills are not on disk, so
 /// excluding them is a no-op), and "connected later" is also off by default.
 pub fn load_disabled_bundles_for(scope: ConnectorScope) -> Vec<String> {
@@ -909,6 +912,10 @@ pub fn enable_packages_in_scope(
         // (round-11 B2 fixes the round-10 Major 2 contradiction: install-sync
         // writes stored+default_off, so a just-installed pack stays enableable
         // and the welcome/scene opt-in works for the upgraded cohort).
+        // Round-15 minor 2 caveat: ids absent from the stored list are treated
+        // as already-on (`not_applied` stays empty here) — the
+        // install-commits-after-snapshot race that m3 reports for the
+        // expansion arm has no equivalent signal in this arm.
         let stored = file.scopes.get(key).cloned().unwrap_or_default();
         let defaults = file
             .default_off_scopes
@@ -999,6 +1006,30 @@ pub fn enable_packages_in_scope(
 /// DenyAll on-the-fly expansion already covers them), and the hidden set is
 /// only cleared, never written (restored packs must stay visible to the user).
 pub fn apply_restore_consent_gate(raw_ids: &[String]) -> Result<(), String> {
+    apply_restore_consent_gate_impl(raw_ids, false)
+}
+
+/// Force variant for the supply-skipped restore cohort (review #455 R15-MAJOR1):
+/// a secrets-declaring pack skips `install_upload`, so its id never re-enters
+/// `installed.json`; a combination pack has no `skills/<pack-id>/` directory, so
+/// `find_skill_dir` hides it from `list_skills`. Its id is therefore in NONE of
+/// the three DenyAll expansion inputs, while directory-scan session
+/// materialization still sees the on-disk skills — for uninitialized scopes the
+/// gate's "the expansion covers the pack" premise is false and the pack (and its
+/// scripts, via the same disabled set) would go live with zero consent. For
+/// those scopes this variant materializes `expansion ∪ ids` as the stored list
+/// with install-default markers and initializes the scope: the pack is
+/// explicitly off, untouched defaults stay liftable, and the freeze trade-off
+/// (later added builtins default on in this scope) is accepted exactly as for
+/// the enable path's materialization arm.
+pub fn apply_restore_consent_gate_secrets_pack(raw_ids: &[String]) -> Result<(), String> {
+    apply_restore_consent_gate_impl(raw_ids, true)
+}
+
+fn apply_restore_consent_gate_impl(
+    raw_ids: &[String],
+    force_uninitialized: bool,
+) -> Result<(), String> {
     let ids: Vec<String> = raw_ids.iter().map(|id| to_package_id(id)).collect();
     if ids.is_empty() {
         return Ok(());
@@ -1008,6 +1039,31 @@ pub fn apply_restore_consent_gate(raw_ids: &[String]) -> Result<(), String> {
         .unwrap_or_else(|poisoned| poisoned.into_inner());
     let mut file = load_disabled_bundles_file_locked();
     let mut changed = false;
+    // Round-15 MAJOR1, force pass: materialize uninitialized DenyAll scopes
+    // once, before the per-id loop — `expansion ∪ ids` with install-default
+    // markers, then initialize the scope. Per-id re-add below then finds every
+    // id already stored and only asserts the markers.
+    if force_uninitialized {
+        for mode in SessionMode::ALL {
+            if mode.pack_default_policy() != PackDefaultPolicy::DenyAll {
+                continue;
+            }
+            let key = mode.as_str();
+            if file.initialized.contains(key) {
+                continue;
+            }
+            let mut stored = resolve_scope_disabled_ids(&file, *mode);
+            for id in &ids {
+                if !stored.iter().any(|x| x == id) {
+                    stored.push(id.clone());
+                }
+            }
+            file.scopes.insert(key.to_string(), stored.clone());
+            file.default_off_scopes.insert(key.to_string(), stored);
+            file.initialized.insert(key.to_string());
+            changed = true;
+        }
+    }
     for id in &ids {
         // Hidden leftover cleanup: hidden entries left after an uninstall
         // would wrongly hide restored packs.
@@ -1020,7 +1076,9 @@ pub fn apply_restore_consent_gate(raw_ids: &[String]) -> Result<(), String> {
         // (consent gate) and mark it install-default (round-11 B2): the
         // restore click is not a verdict against future opt-ins — the
         // welcome/scene enable may still lift it, same as a fresh install's
-        // default-off.
+        // default-off. Round-15 minor 1: the marker push lives inside the
+        // new-entry guard — re-arming a marker on a stored entry without one
+        // would re-attribute a surviving user verdict as install-default.
         for mode in SessionMode::ALL {
             if mode.pack_default_policy() != PackDefaultPolicy::DenyAll {
                 continue;
@@ -1033,11 +1091,10 @@ pub fn apply_restore_consent_gate(raw_ids: &[String]) -> Result<(), String> {
             if !list.iter().any(|x| x == id) {
                 list.push(id.clone());
                 changed = true;
-            }
-            let defaults = file.default_off_scopes.entry(key.to_string()).or_default();
-            if !defaults.iter().any(|x| x == id) {
-                defaults.push(id.clone());
-                changed = true;
+                let defaults = file.default_off_scopes.entry(key.to_string()).or_default();
+                if !defaults.iter().any(|x| x == id) {
+                    defaults.push(id.clone());
+                }
             }
         }
     }
@@ -1711,10 +1768,12 @@ mod tests {
                 !file.initialized.contains("plain"),
                 "the memo must deny the first-boot trace a re-evaluation (fail-open flip otherwise): {file:?}"
             );
-            // The verdict now persists: the next save path lands the frozen file.
+            // The verdict now persists: a further save path lands the frozen file.
+            sync_deny_all_scopes_after_install("pptx").unwrap();
             assert!(
-                disabled_bundles_path().exists() || file.plain_defaults_migrated,
-                "frozen verdict available for persist: {file:?}"
+                disabled_bundles_path().exists(),
+                "the memo-carried verdict must reach disk on the next save: {:?}",
+                load_disabled_bundles_file()
             );
         });
     }

@@ -494,7 +494,27 @@ pub fn restore_plugin(pkg_id: &str) -> Result<RestoreRecycledResult, String> {
             }
         }
     }
-    super::scope::apply_restore_consent_gate(&consent_ids).map_err(|save_error| {
+    // Secrets-declaring packs take the supply-skipped branch below (install_upload
+    // never runs), so their id never re-enters installed.json — one of the three
+    // DenyAll expansion inputs — and combination packs have no `skills/<pack-id>/`
+    // dir for `list_skills` (a second input). For uninitialized scopes the gate's
+    // "the expansion covers the pack" premise would be false and directory-scan
+    // materialization would enable the pack with zero consent (review #455
+    // R15-MAJOR1). Detect the declaration from the bin-side manifest copy now
+    // (before take_back, so a gate persist failure stays retryable) and let the
+    // gate force-materialize uninitialized scopes for this cohort.
+    let secrets_declared =
+        std::fs::read_to_string(bin.root.join(pkg_id).join("mcp").join("manifest.json"))
+            .ok()
+            .and_then(|content| serde_json::from_str::<super::types::ToolManifest>(&content).ok())
+            .map(|m| !super::secrets::manifest_secret_targets(&m).is_empty())
+            .unwrap_or(false);
+    let gate = if secrets_declared {
+        super::scope::apply_restore_consent_gate_secrets_pack(&consent_ids)
+    } else {
+        super::scope::apply_restore_consent_gate(&consent_ids)
+    };
+    gate.map_err(|save_error| {
         format!(
             "恢复 {pkg_id} 前置检查失败（回收站条目未动，可直接重试）：重新禁用状态落盘失败: {save_error}"
         )
@@ -1571,6 +1591,166 @@ mod tests {
             store.get("my-skill").unwrap().is_none(),
             "登记重建失败不得留下半写入的记录"
         );
+        match prev {
+            Some(v) => unsafe { std::env::set_var("PINVOU3_HOME", v) },
+            None => unsafe { std::env::remove_var("PINVOU3_HOME") },
+        }
+        let _ = std::fs::remove_dir_all(&tmp);
+    }
+
+    /// Round-15 minor 3: the `PENDING_CORRUPT_RECOVERY` memo is load-bearing
+    /// ("quarantine kept, overwrite failed — attempt once, then reuse") but was
+    /// completely unpinned. Fixture: a corrupt `disabled_bundles.json` whose
+    /// no-sibling sidecar is pre-seeded (so the quarantine is skipped while the
+    /// overwrite still runs against a read-only home), then a second read must
+    /// reuse the memo without re-quarantining, and a successful save must clear
+    /// the memo by making the file the truth again.
+    #[cfg(unix)]
+    #[test]
+    fn corrupt_recovery_memo_pins_single_quarantine_and_reuse() {
+        use std::os::unix::fs::PermissionsExt;
+        with_temp_home(|| {
+            let path = crate::platform::paths::pinvou3_home().join("disabled_bundles.json");
+            std::fs::write(&path, b"not-json{{{").unwrap();
+            // Pre-seed the single sidecar the no-sibling rule allows: the
+            // quarantine is then skipped (Ok) while the overwrite still fails.
+            let sidecar = path.with_file_name("disabled_bundles.json.corrupt.1");
+            std::fs::write(&sidecar, b"not-json{{{").unwrap();
+
+            let home = crate::platform::paths::pinvou3_home();
+            std::fs::set_permissions(&home, std::fs::Permissions::from_mode(0o555)).unwrap();
+            let probe = home.join(".root-probe");
+            if std::fs::write(&probe, b"").is_ok() {
+                let _ = std::fs::remove_file(&probe);
+                std::fs::set_permissions(&home, std::fs::Permissions::from_mode(0o755)).unwrap();
+                eprintln!(
+                    "ROOT-SKIP[corrupt_recovery_memo_pins_single_quarantine_and_reuse]: running as root - read-only home fixture stays writable; NOT exercised"
+                );
+                return;
+            }
+
+            // First read: quarantine skipped (sibling kept), overwrite fails,
+            // the in-memory fail-closed state carries the recovery.
+            let file = load_disabled_bundles_file();
+            assert!(
+                file.plain_defaults_migrated && !file.initialized.contains("plain"),
+                "fail-closed recovered state: {file:?}"
+            );
+            assert_eq!(quarantine_copy_count(), 1, "no sibling may accumulate");
+
+            // Second read reuses the memo: still exactly one sidecar copy.
+            let file = load_disabled_bundles_file();
+            assert!(
+                file.plain_defaults_migrated && !file.initialized.contains("plain"),
+                "memo hit must reuse the recovery: {file:?}"
+            );
+            assert_eq!(
+                quarantine_copy_count(),
+                1,
+                "memo hit must not re-quarantine"
+            );
+
+            // A successful save clears the memo: the file is the truth again.
+            std::fs::set_permissions(&home, std::fs::Permissions::from_mode(0o755)).unwrap();
+            sync_deny_all_scopes_after_install("pptx").unwrap();
+            let content = std::fs::read_to_string(&path).unwrap();
+            assert!(
+                content.contains("plain_defaults_migrated"),
+                "the file is valid JSON again: {content}"
+            );
+        });
+    }
+
+    fn quarantine_copy_count() -> usize {
+        let parent = crate::platform::paths::pinvou3_home().to_path_buf();
+        std::fs::read_dir(parent)
+            .map(|rd| {
+                rd.flatten()
+                    .filter(|e| {
+                        e.file_name()
+                            .to_string_lossy()
+                            .starts_with("disabled_bundles.json.corrupt.")
+                    })
+                    .count()
+            })
+            .unwrap_or(0)
+    }
+
+    /// Round-15 MAJOR 1 regression: restoring a secrets-declaring combination
+    /// pack (skills inside the package, supply skipped because credentials were
+    /// wiped) into an **uninitialized** scope must not rely on the DenyAll
+    /// expansion — the pack id is in none of the three expansion inputs (no
+    /// `installed.json` re-entry, no builtin CLI id, no `skills/<pack-id>/` dir
+    /// for `list_skills`), while directory-scan materialization still sees the
+    /// on-disk skills. The gate's force pass materializes the scope so the pack
+    /// is explicitly off with install-default markers.
+    #[cfg(unix)]
+    #[test]
+    fn restore_secrets_pack_into_uninitialized_scope_persists_consent() {
+        let _g = crate::platform::paths::tests::ENV_LOCK
+            .lock()
+            .unwrap_or_else(|p| p.into_inner());
+        let prev = std::env::var("PINVOU3_HOME").ok();
+        let tmp = fresh_dir("restore-secrets-uninit");
+        unsafe { std::env::set_var("PINVOU3_HOME", &tmp) };
+
+        // Combination pack: mcp manifest declaring a secret + in-package skills.
+        let pkg = paths::bundles_root().join("combo-pack");
+        std::fs::create_dir_all(pkg.join("mcp")).unwrap();
+        std::fs::write(
+            pkg.join("mcp").join("manifest.json"),
+            r#"{"id":"combo-pack","name":"combo","description":"d","version":"1","icon":"x","category":"c","mcp_tools":["t1"],"command":"python","args":["s.py"],"secret_env":[{"key":"API_KEY","provider":"builtin"}]}"#,
+        )
+        .unwrap();
+        std::fs::create_dir_all(pkg.join("skills/combo-skill")).unwrap();
+        std::fs::write(
+            pkg.join("skills/combo-skill/SKILL.md"),
+            "---\nname: combo-skill\n---\n",
+        )
+        .unwrap();
+        let store = BundleStore::new();
+        store.upsert(upload_record("combo-pack")).unwrap();
+        let record = store.get("combo-pack").unwrap().unwrap();
+        store.remove("combo-pack").unwrap();
+        RecycleBin::new()
+            .recycle_package("combo-pack", KIND_MCP, "combo-pack.zip", record)
+            .unwrap();
+
+        let result = restore_plugin("combo-pack").unwrap();
+        assert!(result.credentials_required, "secrets pack skips supply");
+
+        // The consent gate force-materialized the uninitialized plain scope:
+        // the pack id is explicitly stored-off with an install-default marker,
+        // so directory-scan materialization cannot enable it without consent.
+        let file = crate::features::marketplace::scope::load_disabled_bundles_file();
+        assert!(
+            file.initialized.contains("plain"),
+            "the secrets cohort must materialize uninitialized scopes: {file:?}"
+        );
+        assert!(
+            file.scopes
+                .get("plain")
+                .map(|ids| ids.iter().any(|id| id == "combo-pack"))
+                .unwrap_or(false),
+            "the pack id must be stored-off: {file:?}"
+        );
+        assert!(
+            file.default_off_scopes
+                .get("plain")
+                .map(|ids| ids.iter().any(|id| id == "combo-pack"))
+                .unwrap_or(false),
+            "the gate-written off carries an install-default marker: {file:?}"
+        );
+        let outcome = crate::features::marketplace::scope::enable_packages_in_scope(
+            crate::features::marketplace::ConnectorScope::Plain,
+            &["combo-pack".to_string()],
+        )
+        .unwrap();
+        assert!(
+            outcome.blocked.is_empty(),
+            "an install-default off lifts freely: {outcome:?}"
+        );
+
         match prev {
             Some(v) => unsafe { std::env::set_var("PINVOU3_HOME", v) },
             None => unsafe { std::env::remove_var("PINVOU3_HOME") },

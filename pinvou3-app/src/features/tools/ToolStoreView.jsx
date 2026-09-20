@@ -332,10 +332,17 @@ const withUiTimeout = (promise, timeoutMs, fallbackResult) => {
         ev.listen(cfg.events.connected, cfg.connectedMode === 'apply' ? () => {
           conn.stopTick();
           conn.setFlow(f => ({ ...f, phase: 'done', steps: { ...(f && f.steps), qr: 'done' } }));
-          // Connected → write skills per the rules (enabled by default) + broadcast refresh; view-independent, so it lives in the global listener.
-          invokeTauri(cfg.commands.applySkills).catch(() => {});
-          // Auto-collapse the flow card later (the detail dialog's "Connected" state is now driven by derived connection state)
-          setTimeout(() => conn.setFlow(null), 1800);
+          // Connected → write skills per the DenyAll rules (the pack stays default-off until opted in)
+          // + broadcast refresh; view-independent, so it lives in the global listener.
+          // Review #455 R15-MAJOR2: the backend's fail-visible sync error must not vanish here —
+          // surface it on the flow card (translated copy; raw string to the console) instead of swallowing it.
+          invokeTauri(cfg.commands.applySkills).then(() => {
+            // Auto-collapse the flow card later (the detail dialog's "Connected" state is now driven by derived connection state)
+            setTimeout(() => conn.setFlow(null), 1800);
+          }).catch((e) => {
+            console.error(`${cfg.key} apply skills failed:`, e);
+            conn.setFlow(f => ({ ...f, phase: 'error', err: skillsFailed || connFailed || String(e).slice(0, 300), errStep: 'qr', steps: { ...(f && f.steps), qr: 'error' } }));
+          });
         } : async () => {
           conn.stopTick();
           try {
@@ -1263,11 +1270,18 @@ const withUiTimeout = (promise, timeoutMs, fallbackResult) => {
         }));
         track(ev.listen('wecom:connected', () => {
           setWecomQr(null); setBusyId((current) => releaseBusy(current, 'wecom'));
-          // 连上 → 按规则写技能(默认启用),企微技能即刻对模型可见;连接态经 readiness 重取。
-          invokeTauri('wecom_apply_skills').catch(() => {});
-          loadBackendState();
-          setAlert({ visible: true, loading: false, title: storeCopy.connectedTool(storeCopy.toolNames.wecom), subtitle: '', isInstall: true, isError: false, toolId: 'wecom' });
-          notifyComposerToolsChanged();
+          // 连上 → 按 DenyAll 规则写技能（默认关，需显式开启）;连接态经 readiness 重取。
+          // 评审 #455 R15-MAJOR2：后端 fail-visible 的同步失败不能在此被吞——落 error 弹窗
+          // （标题用翻译文案，subtitle 沿用 wecom:error 的后端消息先例），否则包会以零同意上线。
+          invokeTauri('wecom_apply_skills').then(() => {
+            loadBackendState();
+            setAlert({ visible: true, loading: false, title: storeCopy.connectedTool(storeCopy.toolNames.wecom), subtitle: '', isInstall: true, isError: false, toolId: 'wecom' });
+            notifyComposerToolsChanged();
+          }).catch((e) => {
+            console.error('wecom apply skills failed:', e);
+            loadBackendState();
+            setAlert({ visible: true, loading: false, title: storeCopy.connectFailed(storeCopy.toolNames.wecom), subtitle: String(e).slice(0, 240), isError: true, toolId: 'wecom' });
+          });
         }));
         track(ev.listen('wecom:error', (e) => {
           const p = e.payload || {};
