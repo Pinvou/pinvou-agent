@@ -744,6 +744,17 @@ where
     (target, claimed_unsubmitted)
 }
 
+/// get_or_spawn 的陈旧判定：运行时模型变更（`requires_rebuild_from`）或 mcp
+/// 配置修订递增（`mark_mcp_config_updated`）任一命中，下一轮都要安全重建。
+/// 独立成纯函数：无真实引擎即可与 `requires_rebuild_from` 同层钉住行为。
+fn entry_is_fresh(
+    requires_model_rebuild: bool,
+    entry_mcp_config_revision: u64,
+    current_mcp_config_revision: u64,
+) -> bool {
+    !requires_model_rebuild && entry_mcp_config_revision == current_mcp_config_revision
+}
+
 /// 池里一个 session 的常驻条目:engine + 它专属的 event forwarder task。
 struct EngineEntry {
     engine: AppEngine,
@@ -751,8 +762,10 @@ struct EngineEntry {
     forwarder: JoinHandle<()>,
     /// 创建该 engine 时实际使用的运行时模型、提供器版本和本地模型修订号。
     runtime_model: PreparedRuntimeState,
-    /// MCP 配置修订号。后台迁移原子更新 mcp.json 后递增；下一轮取 engine 时安全
-    /// 回收旧实例并 lazy 重建，使新增依赖/启动参数无需重启应用即可生效。
+    /// MCP 配置修订号。mcp.json 变更方（marketplace 安装/卸载/导入/回收站恢复
+    /// 命令）经 `mark_mcp_config_updated` 递增；下一轮取 engine 时安全回收旧
+    /// 实例并 lazy 重建。plain 会话的引擎读按会话派生的 mcp 配置（仅 spawn 时
+    /// 从全局 mcp.json 重写），不重建则中途安装的 server 对活跃引擎永不可见。
     mcp_config_revision: u64,
     /// 引擎纪元（UNIX ms）：worker ledger 上"仍在跑"的记录只有在本纪元内
     /// 有过活动才算真的活着。底座重启加载只翻内存状态、不回写落盘 running
@@ -1361,9 +1374,11 @@ impl EnginePool {
         let stale = {
             let mut entries = self.entries.lock().await;
             if let Some(entry) = entries.get(session_id) {
-                if !prepared.requires_rebuild_from(&entry.runtime_model)
-                    && entry.mcp_config_revision == mcp_config_revision
-                {
+                if entry_is_fresh(
+                    prepared.requires_rebuild_from(&entry.runtime_model),
+                    entry.mcp_config_revision,
+                    mcp_config_revision,
+                ) {
                     return Ok(entry.engine.clone());
                 }
             }
@@ -3026,7 +3041,7 @@ mod scheduled_model_tests {
         SessionTurnShellTasks, TranscriptOperation, TurnIdentity, cancel_turn_with_gates,
         default_model_for_new_session_from, delete_chat_session_with_gate,
         delete_scheduled_run_with_gate, delete_then_forget, dispatch_turn_bound_cancel,
-        evict_if_idle_with_gates, generation_matches, identity_for_active_model,
+        entry_is_fresh, evict_if_idle_with_gates, generation_matches, identity_for_active_model,
         identity_for_saved_model, quiesce_engine_before_reclaim, rebind_evict_with_gates,
         rebind_evictable, resolve_eval_model_selection_from, resolve_runtime_model_override,
         resolve_scheduled_model, resolve_spawn_model, scheduled_profile_after_turn_gate,
@@ -3892,6 +3907,17 @@ mod scheduled_model_tests {
         );
         managers.remove("session-1");
         assert!(managers.get("session-1").is_none());
+    }
+
+    #[test]
+    fn mcp_config_revision_bump_forces_next_turn_rebuild() {
+        // mark_mcp_config_updated 契约的钉子（对偶模型路径 requires_rebuild_from
+        // 的判定）：模型未变、仅 mcp 配置修订递增时，旧 entry 对下一轮必须判
+        // 陈旧——plain 会话的引擎读仅 spawn 时重写的按会话派生 mcp 配置，
+        // 不重建则中途安装的 server 永不可见。
+        assert!(entry_is_fresh(false, 7, 7));
+        assert!(!entry_is_fresh(false, 7, 8), "mcp 配置修订递增必须触发重建");
+        assert!(!entry_is_fresh(true, 7, 7), "模型变更路径保持原有判定");
     }
 
     #[test]

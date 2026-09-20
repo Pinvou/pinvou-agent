@@ -4,10 +4,17 @@ const fs = require('fs');
 const path = require('path');
 const vm = require('vm');
 
+const companionPath = path.join(__dirname, '..', 'src', 'shared', 'companion-packages.js');
 const logicPath = path.join(__dirname, '..', 'src', 'features', 'chat', 'scene-capabilities.js');
-const code = fs.readFileSync(logicPath, 'utf8')
+// scene-capabilities 经 import 引用 shared/companion-packages：vm script 语义
+// 下剥掉 import/export 声明，共享模块先入上下文，两个源共用同一作用域。
+const stripModuleSyntax = (source) => source
   .replace(/\bexport\s+\{[^}]+\};?/g, '')
-  .replace(/\bexport\s+/g, '');
+  .replace(/\bexport\s+/g, '')
+  .replace(/^\s*import\s[^\n]*\n/gm, '');
+const code = [fs.readFileSync(companionPath, 'utf8'), fs.readFileSync(logicPath, 'utf8')]
+  .map(stripModuleSyntax)
+  .join('\n');
 
 const ctx = {};
 vm.createContext(ctx);
@@ -85,7 +92,7 @@ function createAvailabilityHarness({ tools = [], skills = [], disabled = [], hid
         const entry = list.find((item) => item.id === id);
         if (entry) entry.installed = true;
         else list.push({ id, installed: true, companion_skills: [] });
-        return undefined;
+        return;
       }
       case 'get_disabled_connectors':
         return state.disabled;
@@ -93,10 +100,10 @@ function createAvailabilityHarness({ tools = [], skills = [], disabled = [], hid
         return state.hidden;
       case 'set_disabled_connectors':
         state.disabled = [...args.connectorIds];
-        return undefined;
+        return;
       case 'set_bundle_visibility':
         state.hidden = [...args.bundleIds];
-        return undefined;
+        return;
       default:
         throw new Error(`unexpected command: ${command}`);
     }
@@ -116,6 +123,7 @@ const pptMeta = { pinvouScene: 'design:ppt' };
   });
   const prepared = await prepareSceneCapabilities(pptMeta, harness.invoke);
   assert.strictEqual(prepared.ok, true, '隐藏集残留必须被就地开启而不是让强制场景落空');
+  assert.strictEqual(prepared.reEnabled, true, '自动开启是对治理状态的变更，必须告知调用方');
   assert.deepStrictEqual(harness.state.hidden, ['weather'], '只移除场景点名的包，其余可见性保留');
   assert.deepStrictEqual(harness.state.disabled, ['weather'], '开关集未被误写');
   const writes = harness.calls.filter(([cmd]) => cmd.startsWith('set_'));
@@ -131,6 +139,7 @@ const pptMeta = { pinvouScene: 'design:ppt' };
   });
   const prepared = await prepareSceneCapabilities(pptMeta, harness.invoke);
   assert.strictEqual(prepared.ok, true);
+  assert.strictEqual(prepared.reEnabled, true, '自动开启是对治理状态的变更，必须告知调用方');
   assert.deepStrictEqual(harness.state.disabled, ['weather']);
   assert.deepStrictEqual(harness.state.hidden, []);
   const writes = harness.calls.filter(([cmd]) => cmd.startsWith('set_'));
@@ -147,6 +156,7 @@ const pptMeta = { pinvouScene: 'design:ppt' };
   });
   const prepared = await prepareSceneCapabilities(pptMeta, harness.invoke);
   assert.strictEqual(prepared.ok, true);
+  assert.strictEqual(prepared.reEnabled, false, '未触碰治理状态时不得标记 reEnabled');
   assert.strictEqual(
     harness.calls.filter(([cmd]) => cmd.startsWith('set_')).length,
     0,
@@ -167,6 +177,7 @@ const pptMeta = { pinvouScene: 'design:ppt' };
     harness.invoke,
   );
   assert.strictEqual(prepared.ok, true);
+  assert.strictEqual(prepared.reEnabled, true);
   assert.deepStrictEqual(harness.state.disabled, [], 'companion 技能经包 id 命中禁用集并开启');
 }
 
@@ -180,8 +191,10 @@ const pptMeta = { pinvouScene: 'design:ppt' };
   const prepared = await prepareSceneCapabilities(pptMeta, harness.invoke);
   assert.strictEqual(prepared.ok, true);
   assert.strictEqual(prepared.installed, true);
+  assert.strictEqual(prepared.reEnabled, true, '安装后残留的隐藏集仍要清掉且必须提示');
   assert.deepStrictEqual(harness.state.hidden, [], '安装后残留的隐藏集仍要清掉');
 }
+// eslint-disable-next-line unicorn/prefer-top-level-await -- smoke script keeps its existing async main() structure
 })().catch((error) => {
   console.error(error);
   process.exit(1);

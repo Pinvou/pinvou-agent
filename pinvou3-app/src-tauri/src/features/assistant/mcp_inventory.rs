@@ -24,21 +24,22 @@ pub(crate) fn turn_reminder(scope: ConnectorScope) -> String {
     // corrupt installed registry, rather than creating a second cached truth.
     let tools = MarketplaceManager::new().list_tools();
     // enabled 口径必须与会话侧门控一致：unavailable = 开关关（disabled）∪
-    // 不可见（hidden），技能物化与工具可用性都按这个并集排除（scope.rs）。
+    // 不可见（hidden），技能物化、execpolicy 与工具白名单
+    // （unavailable_tool_names_for）都按这个并集排除（scope.rs）。
     // 只读开关集会让「已装但被隐藏」的包在快照里报 enabled=true，而会话实际
     // 调不到——模型被两个互相矛盾的真相源同时喂养（PPT 场景实测）。
     let unavailable = crate::features::marketplace::unavailable_bundles_for(scope);
     render_inventory(&tools, &unavailable)
 }
 
-fn render_inventory(tools: &[MarketplaceToolInfo], disabled: &[String]) -> String {
+fn render_inventory(tools: &[MarketplaceToolInfo], unavailable: &[String]) -> String {
     let mut entries: Vec<_> = tools
         .iter()
         .filter(|tool| tool.installed)
         .map(|tool| InventoryEntry {
             id: &tool.id,
             name: &tool.name,
-            enabled: !disabled.contains(&tool.id),
+            enabled: !unavailable.contains(&tool.id),
         })
         .collect();
     entries.sort_by_key(|entry| entry.id);

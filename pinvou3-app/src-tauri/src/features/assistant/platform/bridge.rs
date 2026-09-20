@@ -672,8 +672,8 @@ impl Pinvou3Bridge {
         // tracked separately.
         let scope = policy.mode();
         if scope != SessionMode::Plain {
-            let plain_connector = crate::features::marketplace::disabled_tool_names();
-            let scoped_connector = crate::features::marketplace::disabled_tool_names_for(scope);
+            let plain_connector = crate::features::marketplace::unavailable_tool_names();
+            let scoped_connector = crate::features::marketplace::unavailable_tool_names_for(scope);
             tools.retain(|tool| !plain_connector.iter().any(|blocked| blocked == tool));
             for blocked in scoped_connector {
                 if !tools.iter().any(|tool| tool == &blocked) {
@@ -1817,7 +1817,7 @@ impl Pinvou3Bridge {
             // 注册的 WorkflowTool 对所有会话可用，本分支保持能力持平。委派提醒只教
             // agent 集群、不教 workflow；已知底座限制记录在 ADR-0006。
             disallowed_tools: {
-                let n = crate::features::marketplace::disabled_tool_names();
+                let n = crate::features::marketplace::unavailable_tool_names();
                 if n.is_empty() { None } else { Some(n) }
             },
             max_tool_calls: {
@@ -3394,7 +3394,8 @@ mod tests {
                 .iter()
                 .all(|entry| entry["enabled"] == true)
         );
-        let denied = crate::features::marketplace::disabled_tool_names_for(ConnectorScope::Plain);
+        let denied =
+            crate::features::marketplace::unavailable_tool_names_for(ConnectorScope::Plain);
         assert!(denied.contains(&"mcp_weather_get_weather".to_string()));
         assert!(denied.contains(&"mcp_qcc-company_*".to_string()));
         save_disabled_connectors_for(ConnectorScope::Plain, &[]);
@@ -3422,6 +3423,60 @@ mod tests {
             panic!("expected SendMessage")
         };
         assert!(content.contains("市场 MCP 应用（当前会话模式）: []"));
+    }
+
+    /// PPT 场景回归（隐藏集口径）：开关全开、仅「不可见」隐藏的包必须同时被
+    /// 两个通道排除——turn 快照报 enabled=false，工具全名进 disallowed 口径。
+    /// 快照（mcp_inventory::turn_reminder）与工具白名单
+    /// （unavailable_tool_names_for）都吃 unavailable = disabled ∪ hidden 并集，
+    /// 模型不会再被两个互相矛盾的真相源喂养。
+    #[test]
+    fn hidden_bundle_gates_snapshot_and_tool_allowlist_alike() {
+        let (_lock, _env) = locked_env(&["PINVOU3_HOME"]);
+        let dir = tempfile::tempdir().unwrap();
+        // SAFETY: platform::paths::tests::ENV_LOCK held by locked_env.
+        unsafe { std::env::set_var("PINVOU3_HOME", dir.path()) };
+        let installed = dir.path().join("marketplace/installed.json");
+        std::fs::create_dir_all(installed.parent().unwrap()).unwrap();
+        std::fs::write(&installed, r#"["weather"]"#).unwrap();
+        let mut bridge = fixture_bridge();
+        bridge.set_code_session_predicate(Arc::new(|sid| sid == "code"));
+        use crate::features::marketplace::{ConnectorScope, save_hidden_bundles_for};
+        // 只写隐藏集、不碰开关集：旧口径（只读开关集）下快照会报 enabled=true
+        // 且工具留在目录里，本测试对两条通道都钉住并集口径。
+        save_hidden_bundles_for(ConnectorScope::Plain, &["weather".into()]);
+
+        let Op::SendMessage { content, .. } = bridge
+            .build_send_message_op(
+                "plain",
+                "List my MCP applications".into(),
+                AppMode::Agent,
+                None,
+                false,
+            )
+            .unwrap()
+        else {
+            panic!("expected SendMessage")
+        };
+        let line = content
+            .lines()
+            .find_map(|line| line.strip_prefix("市场 MCP 应用（当前会话模式）: "))
+            .expect("inventory must reach the model input");
+        let entries: serde_json::Value = serde_json::from_str(line).unwrap();
+        assert!(
+            entries
+                .as_array()
+                .unwrap()
+                .iter()
+                .any(|entry| entry["id"] == "weather" && entry["enabled"] == false),
+            "仅隐藏（开关开）的包必须在快照里报 enabled=false: {line}"
+        );
+        let denied =
+            crate::features::marketplace::unavailable_tool_names_for(ConnectorScope::Plain);
+        assert!(
+            denied.contains(&"mcp_weather_get_weather".to_string()),
+            "仅隐藏的包的工具必须进 disallowed 口径: {denied:?}"
+        );
     }
 
     /// 代码会话的连接器禁用集来自 code scope(独立于 plain scope):
@@ -7889,8 +7944,8 @@ mod tests {
     /// 一致（workflow 也同样可用——不教不荐，但不禁用）。
     #[test]
     fn multi_agent_engine_config_adds_roles_and_resource_guards() {
-        // The engine config reads the marketplace disabled-tool registry
-        // (disabled_tool_names) under PINVOU3_HOME. This test never writes
+        // The engine config reads the marketplace unavailable-tool registry
+        // (unavailable_tool_names) under PINVOU3_HOME. This test never writes
         // env and used to read it bare;
         // mcp_inventory_tracks_live_scope_toggles_without_enabling_tools
         // flips PINVOU3_HOME and writes non-empty disabled entries, so under

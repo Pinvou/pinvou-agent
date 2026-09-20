@@ -215,11 +215,12 @@ pub async fn install_marketplace_tool(
     // （下一轮 prompt 即生效，与 uninstall_marketplace_tool 对称，skill 双 scope
     // 治理事件驱动时机 §2.3.2）。
     // mcp.json 可能新增了 server：递增修订号让在线引擎下一轮 get_or_spawn
-    // 安全重建并重新发现工具（mark_mcp_config_updated 契约）。不递增则已 spawn
-    // 的引擎永远读不到新 server——引擎侧 mcp_manager 只在启动时读一次配置
-    // （PPT 场景实测：自动装完 pptx 后同会话 mcp_pptx_make_pptx 仍不可见）。
-    // 已经是最新配置时重建是冗余但无害的一次性开销（与 mark_model_updated 同
-    // 粒度的取舍）。
+    // 安全重建并重新发现工具（mark_mcp_config_updated 契约）。plain 会话的
+    // 引擎读按会话派生的 mcp 配置（仅 spawn 时从全局 mcp.json 重写），不递增
+    // 则中途安装的 server 对活跃引擎永不可见（PPT 场景实测：自动装完 pptx 后
+    // 同会话 mcp_pptx_make_pptx 仍不可见）。code 会话读全局文件、底座每轮
+    // mtime+hash 自愈，此时重建是冗余但无害的一次性开销（与 mark_model_updated
+    // 同粒度的取舍）。
     pool.mark_mcp_config_updated();
     pool.refresh_live_sessions_skills().await;
     // 新装包的 CLI/技能脚本纳入/移出 deny 规则集（M-6：install 路径热刷）。
@@ -912,6 +913,10 @@ pub async fn restore_recycled_plugin(
     })
     .await
     .map_err(|e| format!("任务执行失败: {e}"))??;
+    // mcp.json 可能重新写入了 server：递增修订号让在线引擎下一轮 get_or_spawn
+    // 安全重建（与 install/import 同口径，mark_mcp_config_updated 契约），否则
+    // 恢复的插件 server 对活跃 plain 引擎不可见。
+    pool.mark_mcp_config_updated();
     // 恢复 = 重新进入供给：mcp 热刷工具白名单 + skills 热刷会话组合目录 +
     // 包脚本纳入 deny 规则集（与 import/uninstall 同一时机语义）。
     pool.refresh_disallowed_tools().await;
