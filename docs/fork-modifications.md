@@ -45,7 +45,7 @@
 | 维护分支 | `pinvou3-clean` = `7fc36e587a91bf400a38a452653933c347f699ca`（r1 基线 `1fafee7e2` 之上 21 个 squash 合入：#41/#47/#49、2026-09-10/11 遗留 PR 清理批次 #31/#37/#38/#39/#43/#48/#50/#51/#52/#53、2026-09-17 批次 #56/#58/#59/#60/#61 与 2026-09-18 批次 #62/#57/#55）；其上另有 T8 提交 `9f1210d31`（roster 宿主 profiles 呈现）、`b5d9fa7c8`（roster `profile_query` 发现通道）与 `b11c12720`（T8 评审钉点补测），随父仓蜂群二期 PR 一并走 PR 合入维护分支 |
 | 发布状态 | 过渡期（fork-policy 第 0 节豁免）：不可变 tag `pinvou-v0.9.12-r1` 保持 r1 收口状态（15 个提交），父仓 gitlink 指向维护分支头 `7fc36e587` 之上的 T8 提交、领先 tag 24 个提交，直至下一次 r2 发布收口对齐 |
 | 升级前回退点 | 公开不可变 tag `pinvou-v0.9.5-r13` → `f853f8f1566c57e6be40d5439a222a932aa79ef5`；同 SHA 的本地 `backup/pre-v0.9.12-sync` 仅作便利引用 |
-| 历史组织 | 上游之上 39 个带 DCO sign-off 的提交，归属 4 个长期主题（T1–T4）+ 3 个追加减量主题（T5 会话归档导出、T6 蜂群限流治理、T8 roster 宿主 profiles 呈现）+ 1 个已合入维护分支的主题（T7 压缩检查点角色兼容）；r1 之后的提交全部经 PR squash 合入并过五项必需门禁。在途例外：T8 的 3 个提交（Pinvou/CodeWhale#65）必须经 PR 保持提交落位合入（不 squash）——父仓 gitlink 与公开可达性校验按精确 head 钉定，squash 会同时破坏钉定 SHA 与登记的提交序列 |
+| 历史组织 | 上游之上 39 个带 DCO sign-off 的提交，归属 4 个长期主题（T1–T4）+ 3 个追加减量主题（T5 会话归档导出、T6 蜂群限流治理、T8 roster 宿主 profiles 呈现，即 Pinvou/CodeWhale#65 提交主题里的 T7，按 #365 先例在父仓登记时重编号）+ 1 个已合入维护分支的主题（T7 压缩检查点角色兼容）；r1 之后的提交全部经 PR squash 合入并过五项必需门禁。在途例外：T8 的 3 个提交（Pinvou/CodeWhale#65）必须经 PR 保持提交落位合入（不 squash）——父仓 gitlink 与公开可达性校验按精确 head 钉定，squash 会同时破坏钉定 SHA 与登记的提交序列 |
 | drift | `182 files, +14135/-1604`，净增 12531 行；r1 为 `94 files, +5022/-944`，旧 r13 为 `110 files, +10895/-1195` |
 | 守护 | 91 条独立 CodeWhale `forkguard_*` 行为名（登记下限 54，其中 6 条钉在 `benchmark-eval-controls` 门控面）+ 父仓指纹与行为测试 |
 | 父仓适配 | v0.9.12 EngineConfig、Agent/Plan 模式、逐轮 reasoning/安全、ExtraTools、owner 事件隔离、Automation v3/v4 数据兼容、rusqlite 0.40.2、Shell 任务来源对账；消费方 PR #396（execpolicy）、#408（轮次取消）、#444（蜂群）、#468（computer-use）、#472（一键导出）依赖本批底座能力 |

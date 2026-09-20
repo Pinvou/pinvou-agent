@@ -638,7 +638,7 @@ test('开关 UI 挂在模型列表下方，经 interaction 桥调后端', () => 
   );
   assert.match(
     modeStateSource,
-    /关闭停止注入并回收引擎，取消\s*\/\/\/ 仍在后台运行的子智能体/,
+    /关闭停止注入并回收引擎，取消仍在后台运行的/,
     'Rust 状态注释必须与关闭时的取消级联一致',
   );
   assert.match(
