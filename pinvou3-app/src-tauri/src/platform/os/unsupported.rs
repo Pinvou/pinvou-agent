@@ -287,6 +287,13 @@ pub fn process_alive(_pid: u32) -> bool {
 /// Unsupported platforms do not provide a portable directory-permission primitive.
 pub fn make_private_dir(_path: &Path) {}
 
+/// The macOS WebView carries image items natively in paste events, so no
+/// native clipboard fallback is needed; always returns `None` (the
+/// `pasteImageClipboardRead` capability is false on macOS).
+pub fn read_clipboard_image(_app: &tauri::AppHandle) -> Option<Vec<u8>> {
+    None
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

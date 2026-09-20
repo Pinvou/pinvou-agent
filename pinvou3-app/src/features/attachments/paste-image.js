@@ -36,3 +36,35 @@ export function readPasteImageAsBytes(file) {
     reader.readAsArrayBuffer(file);
   });
 }
+
+/**
+ * True when the paste event carries no data at all (no image items, empty types) —
+ * the signature WebKitGTK (Linux) produces for an image clipboard, verified against
+ * 2.52.6: image-only and image+text clipboards both surface an empty clipboardData
+ * (the text part is swallowed too). Windows (WebView2) and macOS (WKWebView) always
+ * list the image among the items, and text pastes expose text/plain, so those
+ * events never match and keep the default paste path.
+ */
+export function pasteEventNeedsClipboardFallback(event) {
+  const data = event && event.clipboardData;
+  if (!data) return false;
+  if (collectClipboardImages(event).length) return false;
+  const types = data.types;
+  return !types || types.length === 0;
+}
+
+/**
+ * The native clipboard-image fallback exists on Linux only (see the platform
+ * capability `paste_image_clipboard_read`); the flag reaches the frontend through
+ * get_platform_capabilities as `pasteImageClipboardRead` on the bridge's
+ * platformCapabilities slice. `loaded` guards the pre-startup window: a paste
+ * before capabilities arrive keeps the previous "nothing pasted" behavior instead
+ * of a command roundtrip that other platforms cannot answer. Note the conservative
+ * failure mode: if the capability load itself fails, `loaded` never turns true and
+ * the fallback stays off for the whole session (the bridge logs the failure).
+ */
+export function pasteImageClipboardFallbackAvailable(platformCapabilities) {
+  return !!(platformCapabilities
+    && platformCapabilities.loaded
+    && platformCapabilities.pasteImageClipboardRead === true);
+}

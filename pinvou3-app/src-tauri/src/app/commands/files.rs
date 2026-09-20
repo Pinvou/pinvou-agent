@@ -193,3 +193,23 @@ pub async fn save_paste_image(filename: String, bytes: Vec<u8>) -> Result<String
     let path = crate::features::files::file_ingest::save_paste_image(&filename, &bytes)?;
     Ok(path.to_string_lossy().to_string())
 }
+
+/// Linux 输入框粘贴图片的原生兜底：WebKitGTK 的 paste 事件不向页面携带图像数据
+/// （剪贴板为图像时 clipboardData 为空，见 features/attachments/paste-image.js），
+/// 由原生层读剪贴板图像 → PNG bytes → 复用 `save_paste_image` 落盘 → 返回路径。
+/// 图像不经 IPC 传输，前端只收 path；无图像（含 macOS/Windows 未启用兜底的桩）
+/// 返回 `None`，前端静默维持「无内容可贴」的既有行为。
+#[tauri::command]
+pub async fn paste_clipboard_image(app: tauri::AppHandle) -> Result<Option<String>, String> {
+    // 主线程回程有 3s 上限，按仓库阻塞操作惯例挪出 async runtime 工作线程。
+    let bytes = tauri::async_runtime::spawn_blocking(move || {
+        crate::platform::os::read_clipboard_image(&app)
+    })
+    .await
+    .map_err(|error| format!("paste_clipboard_image join: {error}"))?;
+    let Some(bytes) = bytes else {
+        return Ok(None);
+    };
+    let path = crate::features::files::file_ingest::save_paste_image("paste.png", &bytes)?;
+    Ok(Some(path.to_string_lossy().to_string()))
+}

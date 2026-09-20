@@ -47,7 +47,12 @@ import {
   restoreConversationScrollPosition,
 } from '../conversation/conversation-model.js';
 import { AttachmentChips } from '../attachments/AttachmentChips.jsx';
-import { collectClipboardImages, readPasteImageAsBytes } from '../attachments/paste-image.js';
+import {
+  collectClipboardImages,
+  pasteEventNeedsClipboardFallback,
+  pasteImageClipboardFallbackAvailable,
+  readPasteImageAsBytes,
+} from '../attachments/paste-image.js';
 import { formatAttachmentLimitError } from '../attachments/attachment-limit-errors.js';
 import { ComposerAttachmentDropOverlay } from '../attachments/ComposerAttachmentDropOverlay.jsx';
 import { ConversationAttachmentBubble } from '../attachments/ConversationAttachmentBubble.jsx';
@@ -2372,20 +2377,30 @@ const ToolWelcomeCard = ({ toolId, t, onSend }) => {
         if (isWeb) return;
         // WebKit-compatible image filtering + FileReader byte reads (incl. jpeg→jpg normalization) live in the shared module.
         const images = collectClipboardImages(e);
-        if (!images.length) return;
-        e.preventDefault();
-        for (const file of images) {
-          try {
-            const { bytes, ext } = await readPasteImageAsBytes(file);
-            if (bridge.available) {
-              bridge.attachments.addPasteImage(
-                `paste-${Date.now()}.${ext}`,
-                bytes,
-                formatAttachmentError,
-              );
-            }
-          } catch { /* A single failed read is silently dropped, as before; the rest of the pasted images proceed */ }
+        if (images.length) {
+          e.preventDefault();
+          for (const file of images) {
+            try {
+              const { bytes, ext } = await readPasteImageAsBytes(file);
+              if (bridge.available) {
+                bridge.attachments.addPasteImage(
+                  `paste-${Date.now()}.${ext}`,
+                  bytes,
+                  formatAttachmentError,
+                );
+              }
+            } catch { /* A single failed read is silently dropped, as before; the rest of the pasted images proceed */ }
+          }
+          return;
         }
+        // Linux WebKitGTK never exposes image clipboard data through the paste event
+        // (an image clipboard surfaces as an empty clipboardData, swallowing text too).
+        // Swallow that shape and let the native layer read the clipboard instead;
+        // text pastes keep their clipboardData and the default path stays untouched.
+        if (!pasteImageClipboardFallbackAvailable(bs && bs.platformCapabilities)) return;
+        if (!pasteEventNeedsClipboardFallback(e)) return;
+        e.preventDefault();
+        if (bridge.available) await bridge.attachments.addPasteImageFromClipboard(formatAttachmentError);
       }
 
       const responsiveGutterStyle = {

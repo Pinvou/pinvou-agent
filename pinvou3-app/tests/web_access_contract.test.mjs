@@ -176,6 +176,9 @@ for (const command of [
   // stash / checkout): desktop-only, the web client rejects them explicitly.
   'list_codex_workspace_branches',
   'checkout_codex_workspace_branch',
+  // Clipboard reads are desktop-privacy surface: the paste fallback runs on
+  // the desktop host only; web pastes go through the device-upload path.
+  'paste_clipboard_image',
 ]) {
   assert.equal(allowed.has(command), false, `${command} must remain desktop-only`);
 }

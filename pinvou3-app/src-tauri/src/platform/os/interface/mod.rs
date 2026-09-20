@@ -1,6 +1,9 @@
+mod clipboard;
 mod path;
 mod permission;
 mod system;
+
+pub use clipboard::read_clipboard_image;
 
 pub use path::{
     apply_user_npm_prefix, configure_onnxruntime_dylib, connector_cli_command,

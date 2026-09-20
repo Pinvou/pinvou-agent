@@ -82,6 +82,12 @@ pub fn process_alive(pid: u32) -> bool {
 /// Windows user-profile ACLs provide the directory privacy boundary.
 pub fn make_private_dir(_path: &Path) {}
 
+/// WebView2 在 paste 事件中原生携带图像条目，前端无需原生剪贴板兜底，
+/// 恒返回 `None`（能力位 `pasteImageClipboardRead` 在 Windows 为 false）。
+pub fn read_clipboard_image(_app: &tauri::AppHandle) -> Option<Vec<u8>> {
+    None
+}
+
 pub fn open_target(target: impl AsRef<OsStr>, label: &str) -> Result<(), String> {
     HiddenCommand::new("cmd")
         .args(["/C", "start", ""])

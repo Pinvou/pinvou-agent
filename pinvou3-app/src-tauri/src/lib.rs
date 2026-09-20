@@ -1495,6 +1495,7 @@ pub fn run() {
             commands::files::open_conversation_attachment,
             commands::files::reveal_conversation_attachment,
             commands::files::save_paste_image,
+            commands::files::paste_clipboard_image,
             commands::interaction::compact_now,
             commands::interaction::get_mode_state,
             commands::interaction::get_code_permission_prefs,

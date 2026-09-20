@@ -313,6 +313,9 @@ pipewire = "0.10"
 # 尚未完成 map 就执行 present。直接在 GTK 主线程原子 show/deiconify/present。
 gtk = "0.18"
 webkit2gtk = "2.0"
+# 输入框粘贴图片兜底(platform/os/linux/linux_clipboard.rs):WebKitGTK 的 paste
+# 事件不携带图像数据,经 GTK 剪贴板读图(gtk::gdk::SELECTION_CLIPBOARD)并编码
+# PNG;gdk 经 gtk 的 re-export 访问,不引入直接依赖(避免双 Cargo.lock 同步)。
 # 多窗口撕离(detach.rs begin_detach_drag):X11 XQueryPointer 读全局鼠标坐标+左键状态,
 # 驱动鬼影跨屏跟随 + 松手落位。Wayland(无 XWayland)下不可用 → 降级(后续 task)。
 # 直连 x11 而非经 device_query 封装:x11 已被 gdkx11(wry/tauri 栈)拉入图,直连零新增 crate,
