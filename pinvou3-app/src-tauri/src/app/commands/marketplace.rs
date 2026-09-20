@@ -223,6 +223,12 @@ pub async fn install_marketplace_tool(
     // 同粒度的取舍）。
     pool.mark_mcp_config_updated();
     pool.refresh_live_sessions_skills().await;
+    // Install state flows into the deny snapshot in both directions (the
+    // NATIVE_PACKAGE_TOOLS ownership gate and the DenyAll scope syncs above
+    // read it): without this refresh live engines keep the pre-install
+    // admission — a package's native tool stays denied, and a newly installed
+    // connector's tools stay admitted — until respawn.
+    pool.refresh_disallowed_tools().await;
     // 新装包的 CLI/技能脚本纳入/移出 deny 规则集（M-6：install 路径热刷）。
     pool.refresh_permission_rulesets().await;
     crate::features::behavior_telemetry::track(
@@ -870,6 +876,10 @@ pub async fn import_skill_md_bytes(
     // 上传安全默认：与插件包导入同口径，加入 DenyAll scope。
     crate::features::marketplace::skill_scope::sync_deny_all_scopes_after_skill_install(&report.id);
     pool.refresh_live_sessions_skills().await;
+    // An imported id can collide with a package owning a native tool
+    // (NATIVE_PACKAGE_TOOLS keys on package ids), so the deny snapshot must
+    // follow the same install postcondition as the marketplace paths.
+    pool.refresh_disallowed_tools().await;
     // 导入包的 CLI/技能脚本纳入 deny 规则集（M-6：import 路径热刷）。
     pool.refresh_permission_rulesets().await;
     Ok(report.id)
