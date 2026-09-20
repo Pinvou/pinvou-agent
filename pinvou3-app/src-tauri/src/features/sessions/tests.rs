@@ -5208,3 +5208,52 @@ fn boot_migration_partial_failure_retains_and_extends() {
     let _ = std::fs::remove_dir_all(&target);
     let _ = std::fs::remove_dir_all(&stuck_path);
 }
+
+/// round-10 minor 1 pin (restored, review #463 round-11 B1a): the #464
+/// absorption re-imported the boot migration without the convergence arm, so
+/// a rebind that translated a cache-only legacy entry was silently re-bound
+/// to the stale legacy path on the next boot.
+#[test]
+fn migrate_legacy_session_workspaces_keeps_a_rebound_binding_over_the_stale_entry() {
+    let (store, _g) = isolated_store();
+    let s = store
+        .create_new("/model".into(), None, std::env::temp_dir())
+        .expect("create");
+    let from = unique_temp_dir("user-workspace-legacy-from");
+    let to = unique_temp_dir("user-workspace-legacy-to");
+    std::fs::create_dir_all(&from).expect("create from dir");
+    std::fs::create_dir_all(&to).expect("create to dir");
+    // The cache-only legacy entry: its original migration write failed, so it
+    // lives in the table AND the cache; a rebind then moved it (sidecar +
+    // cache onto `to`) without the table knowing.
+    store
+        .bind_session_workspace(&s.metadata.id, from.clone())
+        .expect("initial bind");
+    assert!(store.rebind_workspace_binding(&s.metadata.id, to.clone()));
+    let legacy = paths::sessions_root().join("_session_workspaces.json");
+    std::fs::write(
+        &legacy,
+        serde_json::to_string(&std::collections::HashMap::from([(
+            s.metadata.id.clone(),
+            from.clone(),
+        )]))
+        .expect("serialize legacy"),
+    )
+    .expect("write legacy");
+
+    store.migrate_legacy_session_workspaces();
+    // The sidecar (authoritative) wins: the binding still resolves to the
+    // rebound target, not the vanished one, and the entry converged away.
+    store.session_workspaces.write().clear();
+    assert_eq!(
+        store.session_workspace_binding(&s.metadata.id),
+        Some(to.clone())
+    );
+    assert!(
+        !legacy.exists(),
+        "the converged entry lets the table converge away"
+    );
+
+    let _ = std::fs::remove_dir_all(&from);
+    let _ = std::fs::remove_dir_all(&to);
+}

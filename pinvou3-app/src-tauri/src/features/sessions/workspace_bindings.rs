@@ -796,6 +796,16 @@ impl SessionStore {
             {
                 continue;
             }
+            // Convergence (review #463 round-10 minor 1, restored): a sidecar
+            // that already disagrees with the legacy entry is authoritative —
+            // a rebind that translated the binding must not be silently
+            // re-bound to the stale legacy path on the next boot.
+            if let Some(sidecar) = read_workspace_sidecar(&self.session_workspace_sidecar_path(&id))
+            {
+                if sidecar.path != path {
+                    continue;
+                }
+            }
             if let Err(error) = self.bind_session_workspace(&id, path.clone()) {
                 // Log hygiene (round-8 should-fix): the unmigrated id reaches
                 // the in-memory table, not the log; the failure list of a

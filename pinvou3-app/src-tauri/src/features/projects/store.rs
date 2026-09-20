@@ -742,6 +742,25 @@ impl ProjectStore {
     /// returns the project ids it would affect; nothing is written or
     /// persisted. `rebind_roots` revalidates under its write lock, so a
     /// concurrent project mutation cannot slip past the invariant.
+    /// Scoped revalidation (review #463 round-10 minor 5): only the projects
+    /// this rebind actually touches are validated against the whole
+    /// candidate — a pre-existing overlap between two untouched legacy
+    /// projects (load_state revalidates nothing) must not hard-block an
+    /// unrelated rebind with a conflict whose copy cannot help.
+    fn validate_rebind_candidates(
+        candidate: &[Project],
+        affected_projects: &[String],
+    ) -> Result<()> {
+        for project in candidate.iter().filter(|project| {
+            affected_projects
+                .iter()
+                .any(|affected| affected == &project.id)
+        }) {
+            validate_roots(candidate, Some(&project.id), &project.roots)?;
+        }
+        Ok(())
+    }
+
     pub fn plan_rebind_roots(&self, from: &Path, to: &Path) -> Result<Vec<String>> {
         if from == to {
             return Ok(Vec::new());
@@ -753,10 +772,8 @@ impl ProjectStore {
         if affected_projects.is_empty() {
             return Ok(Vec::new());
         }
-        for project in &candidate {
-            validate_roots(&candidate, Some(&project.id), &project.roots)
-                .context("rebind produced overlapping project roots")?;
-        }
+        Self::validate_rebind_candidates(&candidate, &affected_projects)
+            .context("rebind produced overlapping project roots")?;
         Ok(affected_projects)
     }
 
@@ -791,13 +808,11 @@ impl ProjectStore {
         let (candidate, affected_projects) =
             Self::rebind_root_candidates(&state.projects, from, to);
         if !affected_projects.is_empty() {
-            for project in &candidate {
-                validate_roots(&candidate, Some(&project.id), &project.roots).map_err(|error| {
-                    RebindRootsError::Overlap(
-                        error.context("rebind produced overlapping project roots"),
-                    )
-                })?;
-            }
+            Self::validate_rebind_candidates(&candidate, &affected_projects).map_err(|error| {
+                RebindRootsError::Overlap(
+                    error.context("rebind produced overlapping project roots"),
+                )
+            })?;
             // Persist FIRST, commit the in-memory candidate only on success
             // (round-8 review M2, mirroring the codex lane): committing
             // before the write let a persist failure leave memory at `to`

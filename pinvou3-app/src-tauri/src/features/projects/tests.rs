@@ -842,3 +842,55 @@ fn begin_rebind_rejects_concurrent_rebind_and_releases_on_drop() {
     drop(gate);
     let _gate = store.begin_rebind().expect("gate released on drop");
 }
+
+#[test]
+fn rebind_roots_ignores_pre_existing_overlap_between_untouched_projects() {
+    let temp = tempfile::tempdir().expect("tempdir");
+    let store = store_in(&temp);
+    let outer = abs("legacy-outer");
+    let inner = abs("legacy-outer").join("nested");
+    let from = abs("unrelated-from");
+    let to = temp.path().join("unrelated-to");
+    std::fs::create_dir_all(&to).expect("create target dir");
+
+    let mover = create(&store, "to-move", std::slice::from_ref(&from));
+    create(&store, "legacy-outer", std::slice::from_ref(&outer));
+    let legacy_inner = create(
+        &store,
+        "legacy-inner",
+        std::slice::from_ref(&abs("legacy-inner-original")),
+    );
+    // create_project validates, so the overlap is introduced AFTER the fact by
+    // editing the persisted file directly — the legacy-data shape load_state
+    // accepts without revalidation.
+    let store_path = temp.path().join("projects.json");
+    let mut file: serde_json::Value =
+        serde_json::from_str(&std::fs::read_to_string(&store_path).expect("read store"))
+            .expect("parse store");
+    file["projects"]
+        .as_array_mut()
+        .expect("projects array")
+        .iter_mut()
+        .find(|project| project["id"].as_str() == Some(legacy_inner.id.as_str()))
+        .expect("find legacy-inner")["roots"][0] =
+        serde_json::json!(display(&inner).to_string_lossy().into_owned());
+    // `outer` folds to the parent of `inner`: the two now overlap on disk.
+    std::fs::write(
+        &store_path,
+        serde_json::to_vec_pretty(&file).expect("serialize"),
+    )
+    .expect("write store");
+    let store = store_in(&temp);
+    assert!(
+        store.rebind_roots(&from, &to).is_ok(),
+        "an overlap between two untouched legacy projects must not block an unrelated rebind"
+    );
+    assert_eq!(store.get(&mover.id).unwrap().roots, vec![display(&to)]);
+
+    // A conflict the rebind itself introduces still rejects: moving `mover`
+    // back under a legacy project's territory.
+    let error = store
+        .rebind_roots(&to, &outer)
+        .expect_err("a NEW overlap with a legacy project still rejects");
+    assert!(error.to_string().contains("overlap"));
+}
