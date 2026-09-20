@@ -4906,6 +4906,83 @@ fn reconcile_aborts_mismatch_repair_when_detach_persist_fails() {
     );
 }
 
+/// PR #433 review round-15 (MAJOR-1): a transient stat fault on the main
+/// record must not read as "main gone". `Path::exists()` is false on ANY
+/// metadata error, so the orphan classification is NotFound-only — otherwise
+/// a sync/AV client holding the file (EACCES/EIO) would get a live aux
+/// transcript reclaimed. The fault is simulated with a self-referential
+/// symlink (stat → ELOOP, not NotFound); unix-only because the fault needs a
+/// filesystem-level stand-in.
+#[cfg(unix)]
+#[test]
+fn reconcile_keeps_aux_when_mapped_main_record_stat_faults() {
+    let (store, _g) = isolated_store();
+    let main = store
+        .create_new("/model".into(), None, std::env::temp_dir())
+        .expect("create main");
+    let aux = store
+        .get_or_create_aux_session(&main.metadata.id)
+        .expect("create aux");
+
+    let record = store
+        .manager
+        .sessions_dir()
+        .join(format!("{}.json", main.metadata.id));
+    std::fs::remove_file(&record).expect("remove the healthy record");
+    std::os::unix::fs::symlink(&record, &record)
+        .expect("self-referential symlink: stat fails ELOOP");
+
+    store
+        .reconcile_aux_sessions()
+        .expect("reconcile completes under the fault");
+    store
+        .load(&aux.id)
+        .expect("the aux transcript must survive a transient main-record stat fault");
+    assert_eq!(
+        store.aux_session_id(&main.metadata.id).as_deref(),
+        Some(aux.id.as_str()),
+        "the mapping must survive too"
+    );
+
+    std::fs::remove_file(&record).expect("clean up the symlink");
+}
+
+/// Same NotFound-only discipline on the rebuild side (round-15 MAJOR-1, site
+/// 2): an unmapped aux record whose parent cannot be stat'ed must not be
+/// reclaimed as an orphan — a transient fault counts as "unknown", and
+/// unknown is not "absent".
+#[cfg(unix)]
+#[test]
+fn reconcile_keeps_unmapped_aux_when_parent_stat_faults() {
+    let (store, _g) = isolated_store();
+    let main = store
+        .create_new("/model".into(), None, std::env::temp_dir())
+        .expect("create main");
+    let aux = store
+        .get_or_create_aux_session(&main.metadata.id)
+        .expect("create aux");
+    store
+        .set_aux_session(&main.metadata.id, None)
+        .expect("clear the mapping so the rebuild path runs");
+
+    let record = store
+        .manager
+        .sessions_dir()
+        .join(format!("{}.json", main.metadata.id));
+    std::fs::remove_file(&record).expect("remove the healthy record");
+    std::os::unix::fs::symlink(&record, &record)
+        .expect("self-referential symlink: stat fails ELOOP");
+
+    store
+        .reconcile_aux_sessions()
+        .expect("reconcile completes under the fault");
+    store
+        .load(&aux.id)
+        .expect("the unmapped aux transcript must survive a transient parent stat fault");
+
+    std::fs::remove_file(&record).expect("clean up the symlink");
+}
+
 /// Creating an aux session must inherit the main session's per-session
 /// model binding in `_session_models.json` (the override beyond
 /// metadata.model), otherwise aux chat silently lands on a different model.
