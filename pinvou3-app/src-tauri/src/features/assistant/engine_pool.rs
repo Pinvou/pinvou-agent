@@ -2561,10 +2561,11 @@ impl EnginePool {
         }
     }
 
-    /// pinvou3 工具开关(全局持久):把"被禁用的工具全名"(模型可见全名,小写)广播给
-    /// **所有在跑的 session engine** → 写入各自 config.disallowed_tools,下一轮即隐藏。
-    /// 没起的会话下次 spawn 时从持久列表读初值(build_engine_config),所以新窗口/新对话
-    /// 都继承同一份禁用状态。
+    /// pinvou3 工具开关(全局持久):把"不可用的工具全名"(开关关闭∪隐藏;模型可见
+    /// 全名,小写)广播给 **所有在跑的 session engine** → 写入各自
+    /// config.disallowed_tools,下一轮即隐藏。没起的会话下次 spawn
+    /// 时从持久列表读初值(build_engine_config),所以新窗口/新对话都继承同一份
+    /// 治理状态。
     pub async fn set_disallowed_all(&self, tools: Vec<String>) {
         let targets = self
             .entries

@@ -73,14 +73,18 @@ fn load_disabled_bundles_file_locked() -> DisabledBundlesFile {
         Err(_) => {
             let file = migrate_from_legacy_files();
             if !file.scopes.is_empty() || file.initialized.iter().any(|k| !k.is_empty()) {
-                save_disabled_bundles_file(&file);
+                if let Err(error) = save_disabled_bundles_file(&file) {
+                    eprintln!("[scope] write disabled_bundles.json failed: {error}");
+                }
             }
             return file;
         }
     };
     let mut file: DisabledBundlesFile = serde_json::from_str(&content).unwrap_or_default();
     if strip_skill_prefixes(&mut file) {
-        save_disabled_bundles_file(&file);
+        if let Err(error) = save_disabled_bundles_file(&file) {
+            eprintln!("[scope] write disabled_bundles.json failed: {error}");
+        }
     }
     file
 }
@@ -253,15 +257,14 @@ fn merge_ids_into_scope(file: &mut DisabledBundlesFile, key: &str, ids: Vec<Stri
     }
 }
 
-/// 写完整文件（原子替换，与旧文件同范式）。
-fn save_disabled_bundles_file(file: &DisabledBundlesFile) {
-    if let Ok(json) = serde_json::to_string(file) {
-        if let Err(error) =
-            deepseek_tui::utils::write_atomic(&disabled_bundles_path(), json.as_bytes())
-        {
-            eprintln!("[scope] write disabled_bundles.json failed: {error}");
-        }
-    }
+/// 写完整文件（原子替换，与旧文件同范式）。写失败上抛：开关/可见性是用户治理
+/// 状态，「静默丢写」会让调用方在半应用状态上继续走（前端按成功提示）。内部
+/// best-effort 调用方（读路径迁移、卸载清理、默认策略同步）自行降级为日志。
+fn save_disabled_bundles_file(file: &DisabledBundlesFile) -> Result<(), String> {
+    let json = serde_json::to_string(file)
+        .map_err(|error| format!("serialize disabled_bundles.json failed: {error}"))?;
+    deepseek_tui::utils::write_atomic(&disabled_bundles_path(), json.as_bytes())
+        .map_err(|error| format!("write disabled_bundles.json failed: {error}"))
 }
 
 /// 读某 scope 被禁用的**包 id** 列表（读不到/空 → 空）。
@@ -303,7 +306,8 @@ fn resolve_scope_disabled_ids(file: &DisabledBundlesFile, scope: ConnectorScope)
 
 /// 写某 scope 被禁用的包 id 列表（写入即标记该 scope 已初始化）。入参统一归一为包
 /// id（剥 `skill:` 前缀 + companion 映射），防御历史版本误写入的带前缀条目。
-pub fn save_disabled_bundles_for(scope: ConnectorScope, ids: &[String]) {
+/// 写失败原样上抛（用户治理状态不得静默丢写）。
+pub fn save_disabled_bundles_for(scope: ConnectorScope, ids: &[String]) -> Result<(), String> {
     let _guard = DISABLED_BUNDLES_FILE_LOCK
         .lock()
         .unwrap_or_else(|poisoned| poisoned.into_inner());
@@ -312,7 +316,7 @@ pub fn save_disabled_bundles_for(scope: ConnectorScope, ids: &[String]) {
     let key = scope.as_str().to_string();
     file.scopes.insert(key.clone(), normalized);
     file.initialized.insert(key);
-    save_disabled_bundles_file(&file);
+    save_disabled_bundles_file(&file)
 }
 
 /// 读某 scope 被「不可见」（可见性过滤）的包 id 列表。缺省空 = 全可见。
@@ -330,7 +334,8 @@ pub fn load_hidden_bundles_for(scope: ConnectorScope) -> Vec<String> {
 }
 
 /// 写某 scope 被「不可见」的包 id 列表（不参与 DenyAll 默认，显式写入才隐藏）。
-pub fn save_hidden_bundles_for(scope: ConnectorScope, ids: &[String]) {
+/// 写失败原样上抛（用户治理状态不得静默丢写）。
+pub fn save_hidden_bundles_for(scope: ConnectorScope, ids: &[String]) -> Result<(), String> {
     let _guard = DISABLED_BUNDLES_FILE_LOCK
         .lock()
         .unwrap_or_else(|poisoned| poisoned.into_inner());
@@ -338,7 +343,7 @@ pub fn save_hidden_bundles_for(scope: ConnectorScope, ids: &[String]) {
     let mut file = load_disabled_bundles_file_locked();
     file.hidden_scopes
         .insert(scope.as_str().to_string(), normalized);
-    save_disabled_bundles_file(&file);
+    save_disabled_bundles_file(&file)
 }
 
 /// 该 scope 对底座「不可用」的包 id 并集 = 开关关（disabled）+ 不可见（hidden）。
@@ -358,9 +363,12 @@ pub fn load_disabled_bundles() -> Vec<String> {
     load_disabled_bundles_for(ConnectorScope::Plain)
 }
 
-/// 写全局（plain）被禁用的包 id 列表。兼容既有调用方。
+/// 写全局（plain）被禁用的包 id 列表。兼容既有调用方；启动期 best-effort，
+/// 写失败降级为日志（调用方无法处理治理写失败）。
 pub fn save_disabled_bundles(ids: &[String]) {
-    save_disabled_bundles_for(ConnectorScope::Plain, ids);
+    if let Err(error) = save_disabled_bundles_for(ConnectorScope::Plain, ids) {
+        eprintln!("[scope] write disabled_bundles.json failed: {error}");
+    }
 }
 
 /// 包安装/连接后同步所有 DenyAll 且已初始化的 scope：用户已改过这类会话开关时，
@@ -389,7 +397,9 @@ pub fn sync_deny_all_scopes_after_install(raw_id: &str) {
         }
     }
     if changed {
-        save_disabled_bundles_file(&file);
+        if let Err(error) = save_disabled_bundles_file(&file) {
+            eprintln!("[scope] write disabled_bundles.json failed: {error}");
+        }
     }
 }
 
@@ -417,7 +427,9 @@ pub fn remove_bundle_from_disabled_scopes(raw_id: &str) {
         changed |= ids.len() != before;
     }
     if changed {
-        save_disabled_bundles_file(&file);
+        if let Err(error) = save_disabled_bundles_file(&file) {
+            eprintln!("[scope] write disabled_bundles.json failed: {error}");
+        }
     }
 }
 
@@ -436,7 +448,9 @@ pub fn set_project_skills_enabled(enabled: bool) {
         return;
     }
     file.project_skills_enabled = enabled;
-    save_disabled_bundles_file(&file);
+    if let Err(error) = save_disabled_bundles_file(&file) {
+        eprintln!("[scope] write disabled_bundles.json failed: {error}");
+    }
 }
 
 #[cfg(test)]
@@ -468,8 +482,8 @@ mod tests {
     fn bundles_roundtrip_per_scope() {
         with_temp_home(|| {
             assert!(load_disabled_bundles_for(ConnectorScope::Plain).is_empty());
-            save_disabled_bundles_for(ConnectorScope::Plain, &["weather".to_string()]);
-            save_disabled_bundles_for(ConnectorScope::Code, &["feishu".to_string()]);
+            save_disabled_bundles_for(ConnectorScope::Plain, &["weather".to_string()]).unwrap();
+            save_disabled_bundles_for(ConnectorScope::Code, &["feishu".to_string()]).unwrap();
             assert_eq!(
                 load_disabled_bundles_for(ConnectorScope::Plain),
                 vec!["weather".to_string()]
@@ -491,11 +505,12 @@ mod tests {
             assert!(load_hidden_bundles_for(ConnectorScope::Plain).is_empty());
 
             // Disable weather, hide weather + pptx (weather appears in both sets).
-            save_disabled_bundles_for(ConnectorScope::Plain, &["weather".to_string()]);
+            save_disabled_bundles_for(ConnectorScope::Plain, &["weather".to_string()]).unwrap();
             save_hidden_bundles_for(
                 ConnectorScope::Plain,
                 &["weather".to_string(), "pptx".to_string()],
-            );
+            )
+            .unwrap();
 
             // Visibility writes do not pollute the disabled set.
             assert_eq!(
@@ -518,8 +533,8 @@ mod tests {
     #[test]
     fn remove_bundle_clears_both_sets() {
         with_temp_home(|| {
-            save_disabled_bundles_for(ConnectorScope::Plain, &["weather".to_string()]);
-            save_hidden_bundles_for(ConnectorScope::Plain, &["weather".to_string()]);
+            save_disabled_bundles_for(ConnectorScope::Plain, &["weather".to_string()]).unwrap();
+            save_hidden_bundles_for(ConnectorScope::Plain, &["weather".to_string()]).unwrap();
             remove_bundle_from_disabled_scopes("weather");
             assert!(load_disabled_bundles_for(ConnectorScope::Plain).is_empty());
             assert!(load_hidden_bundles_for(ConnectorScope::Plain).is_empty());
@@ -535,7 +550,8 @@ mod tests {
             save_disabled_bundles_for(
                 ConnectorScope::Plain,
                 &["skill:government-writing".to_string()],
-            );
+            )
+            .unwrap();
             assert_eq!(
                 load_disabled_bundles_for(ConnectorScope::Plain),
                 vec!["government-writing".to_string()]
@@ -556,7 +572,8 @@ mod tests {
                     "skill:visualizer".to_string(),
                     "government-writing".to_string(),
                 ],
-            );
+            )
+            .unwrap();
             // government-writing 是内嵌 gongwen manifest 的 companion 技能 → gongwen 包。
             assert_eq!(
                 load_disabled_bundles_for(ConnectorScope::Plain),
@@ -571,8 +588,10 @@ mod tests {
     #[test]
     fn load_normalizes_stale_skill_id_after_claim_flip() {
         with_temp_home(|| {
-            save_disabled_bundles_for(ConnectorScope::Plain, &["government-writing".to_string()]);
-            save_hidden_bundles_for(ConnectorScope::Plain, &["government-writing".to_string()]);
+            save_disabled_bundles_for(ConnectorScope::Plain, &["government-writing".to_string()])
+                .unwrap();
+            save_hidden_bundles_for(ConnectorScope::Plain, &["government-writing".to_string()])
+                .unwrap();
             assert_eq!(
                 load_disabled_bundles_for(ConnectorScope::Plain),
                 vec!["government-writing".to_string()]

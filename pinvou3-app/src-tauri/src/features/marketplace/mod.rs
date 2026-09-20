@@ -382,11 +382,9 @@ pub async fn apply_disabled_connectors_for(
     scope: ConnectorScope,
     connector_ids: Vec<String>,
 ) -> Result<(), String> {
-    tokio::task::spawn_blocking(move || {
-        save_disabled_connectors_for(scope, &connector_ids);
-    })
-    .await
-    .map_err(|error| format!("apply_disabled_connectors_for join: {error}"))?;
+    tokio::task::spawn_blocking(move || save_disabled_connectors_for(scope, &connector_ids))
+        .await
+        .map_err(|error| format!("apply_disabled_connectors_for join: {error}"))??;
     Ok(())
 }
 
@@ -3205,7 +3203,7 @@ mod tests {
                 deny_all_default()
             );
             // plain 写 weather → code 不受影响(仍默认全禁)。
-            save_disabled_connectors_for(ConnectorScope::Plain, &["weather".to_string()]);
+            save_disabled_connectors_for(ConnectorScope::Plain, &["weather".to_string()]).unwrap();
             assert_eq!(
                 load_disabled_connectors_for(ConnectorScope::Plain),
                 vec!["weather".to_string()]
@@ -3215,13 +3213,13 @@ mod tests {
                 deny_all_default()
             );
             // code 显式写 → 标记初始化,此后以落盘为准。
-            save_disabled_connectors_for(ConnectorScope::Code, &["pptx".to_string()]);
+            save_disabled_connectors_for(ConnectorScope::Code, &["pptx".to_string()]).unwrap();
             assert_eq!(
                 load_disabled_connectors_for(ConnectorScope::Code),
                 vec!["pptx".to_string()]
             );
             // plain 再写空,不影响 code。
-            save_disabled_connectors_for(ConnectorScope::Plain, &[]);
+            save_disabled_connectors_for(ConnectorScope::Plain, &[]).unwrap();
             assert!(load_disabled_connectors_for(ConnectorScope::Plain).is_empty());
             assert_eq!(
                 load_disabled_connectors_for(ConnectorScope::Code),
@@ -3345,7 +3343,7 @@ mod tests {
                 r#"{"scopes":{"plain":["weather"]},"initialized":["plain"],"future_field":{"v":1}}"#,
             )
             .unwrap();
-            save_disabled_connectors_for(ConnectorScope::Plain, &["pptx".to_string()]);
+            save_disabled_connectors_for(ConnectorScope::Plain, &["pptx".to_string()]).unwrap();
             let content = std::fs::read_to_string(&path).unwrap();
             assert!(
                 content.contains("future_field"),
@@ -3372,7 +3370,7 @@ mod tests {
                     .unwrap_or(true)
             );
             // 初始化 code 后(显式开掉 pptx),新装 weather → 自动进 code 禁用集。
-            save_disabled_connectors_for(ConnectorScope::Code, &[]);
+            save_disabled_connectors_for(ConnectorScope::Code, &[]).unwrap();
             sync_deny_all_scopes_after_install("weather");
             assert_eq!(
                 load_disabled_connectors_for(ConnectorScope::Code),
@@ -3401,8 +3399,9 @@ mod tests {
             save_disabled_connectors_for(
                 ConnectorScope::Plain,
                 &["weather".to_string(), "pptx".to_string()],
-            );
-            save_disabled_connectors_for(ConnectorScope::Code, &["weather".to_string()]);
+            )
+            .unwrap();
+            save_disabled_connectors_for(ConnectorScope::Code, &["weather".to_string()]).unwrap();
             remove_connector_from_disabled_scopes("weather");
             assert_eq!(
                 load_disabled_connectors_for(ConnectorScope::Plain),
@@ -3419,12 +3418,14 @@ mod tests {
         with_temp_home(|| {
             let plain_writer = std::thread::spawn(|| {
                 for _ in 0..50 {
-                    save_disabled_connectors_for(ConnectorScope::Plain, &["weather".to_string()]);
+                    save_disabled_connectors_for(ConnectorScope::Plain, &["weather".to_string()])
+                        .unwrap();
                 }
             });
             let code_writer = std::thread::spawn(|| {
                 for _ in 0..50 {
-                    save_disabled_connectors_for(ConnectorScope::Code, &["pptx".to_string()]);
+                    save_disabled_connectors_for(ConnectorScope::Code, &["pptx".to_string()])
+                        .unwrap();
                 }
             });
             plain_writer.join().unwrap();

@@ -194,6 +194,55 @@ const pptMeta = { pinvouScene: 'design:ppt' };
   assert.strictEqual(prepared.reEnabled, true, '安装后残留的隐藏集仍要清掉且必须提示');
   assert.deepStrictEqual(harness.state.hidden, [], '安装后残留的隐藏集仍要清掉');
 }
+
+// ⑥ 映射承重回归（合成的 id 分叉对）：companion 技能 id ≠ 所属包 id，且两个
+//    集合里只有包 id。映射失效（表为空或映射错包）时 wanted 里只有技能 id、
+//    命中不了包 id 集合，下面的 reEnabled 与写盘断言必然失败。④ 的真实目录
+//    数据里 gongwen 同时被场景点名，原始 id 即可命中，映射断言不承重；这里
+//    用分叉对钉住「技能 id 必须经映射才能比对包 id 口径的集合」这一契约。
+{
+  const harness = createAvailabilityHarness({
+    tools: [{ id: 'chart-engine', installed: true, companion_skills: ['visualizer'] }],
+    skills: [{ id: 'visualizer', installed: true }],
+    disabled: ['weather', 'chart-engine'],
+    hidden: ['chart-engine'],
+  });
+  const prepared = await prepareSceneCapabilities(
+    { pinvouScene: 'design:data-visualization' },
+    harness.invoke,
+  );
+  assert.strictEqual(prepared.ok, true);
+  assert.strictEqual(prepared.reEnabled, true, '映射命中的包必须被识别为治理变更');
+  assert.deepStrictEqual(harness.state.disabled, ['weather'], '只移除映射命中的包，其余保留');
+  assert.deepStrictEqual(harness.state.hidden, []);
+  const writes = harness.calls.filter(([cmd]) => cmd.startsWith('set_'));
+  assert.deepStrictEqual(
+    writes.map(([cmd]) => cmd),
+    ['set_disabled_connectors', 'set_bundle_visibility'],
+  );
+}
+
+// ⑦ 治理写失败必须上抛：后端 set_* 命令把落盘错误透传为命令错误，调用方拿到
+//    的必须是失败（走既有失败提示），而不是吞掉后弹假 ready。
+{
+  const harness = createAvailabilityHarness({
+    tools: [{ id: 'pptx', installed: true, companion_skills: [] }],
+    skills: [{ id: 'pptx', installed: true }],
+    hidden: ['pptx'],
+  });
+  const original = harness.invoke;
+  const failingInvoke = async (command, args) => {
+    if (command === 'set_bundle_visibility') {
+      throw new Error('disk full');
+    }
+    return original(command, args);
+  };
+  await assert.rejects(
+    prepareSceneCapabilities(pptMeta, failingInvoke),
+    /disk full/,
+    '治理写失败必须向调用方上抛，不得吞成假成功',
+  );
+}
 // eslint-disable-next-line unicorn/prefer-top-level-await -- smoke script keeps its existing async main() structure
 })().catch((error) => {
   console.error(error);

@@ -640,11 +640,12 @@ impl Pinvou3Bridge {
     /// 会话级工具整形:按会话策略（[`SessionPolicy`]）并入模式差量——
     /// 无差量时原样返回。spawn 初值与全局热刷都经此整形。
     ///
-    /// 传入的 `tools` 是全局(plain scope)的禁用工具名。差量项（均由编译期
+    /// 传入的 `tools` 是全局(plain scope)的不可用工具名（开关关闭∪隐藏）。
+    /// 差量项（均由编译期
     /// 静态表 `MODE_TABLE` 驱动，见 session_policy）：
     /// - 模式缺席工具（表字段 `unavailable_tools`；code: 产物卡）
     ///   ——"该模式架构上无此能力"，非用户偏好;
-    /// - 连接器禁用集：非 plain 模式改用其 scope 的禁用集
+    /// - 连接器不可用集（开关关闭∪隐藏）：非 plain 模式改用其 scope 的同名集合
     ///   ——scope 键即模式，各 scope 各自持久化(见 marketplace),互不影响;
     ///   非连接器禁用(kb_search 等)仍保留;
     /// - `load_skill` 按**该会话组合目录是否为空**动态决定（表字段
@@ -655,16 +656,17 @@ impl Pinvou3Bridge {
         let policy = self.session_policy(session_id);
         // 模式缺席工具（编译期常量表）：并入 disallowed（所有模式）。
         // ⚠️ 顺序约束：先于下方 connector retain——缺席名单应避开连接器全名
-        // （当前 code 的 mcp_pinvou3_present_artifact 与连接器禁用集无交集），
+        // （当前 code 的 mcp_pinvou3_present_artifact 与连接器不可用集无交集），
         // 否则会被 retain 误删；新增条目时同样注意（或先做 retain 再追加）。
         for name in policy.unavailable_tools() {
             if !tools.iter().any(|tool| tool == name) {
                 tools.push((*name).to_string());
             }
         }
-        // 连接器禁用集：非 plain 模式用其 scope 的禁用集替换传入的 plain scope
-        // disabled set (the plain disabled set is the incoming value itself, no
-        // replacement needed). Scope follows mode — a plain session with a bound
+        // 连接器不可用集（开关关闭∪隐藏）：非 plain 模式用其 scope 的不可用集
+        // 替换传入的 plain scope unavailable set (the plain unavailable set is
+        // the incoming value itself, no replacement needed). Scope follows
+        // mode — a plain session with a bound
         // working directory still belongs to the plain scope and never borrows the
         // code scope. Note that on this fork an uninitialized plain scope = AllowAll
         // (connectors/bundles on by default): bound sessions compensate with
@@ -1811,8 +1813,9 @@ impl Pinvou3Bridge {
             launch_concurrency,
             goal_token_budget,
             goal_status,
-            // pinvou3 工具开关:从全局持久的"被禁用连接器"算出禁用工具全名作为初值,
-            // 让新对话/新窗口的引擎都继承用户的开关状态(持久语义)。
+            // pinvou3 工具开关:从全局持久的"不可用集"(开关关闭∪隐藏)算出不可用
+            // 工具全名作为初值,让新对话/新窗口的引擎都继承用户的开关与可见性
+            // 治理状态(持久语义)。
             // [多智能体] 不追加 `workflow` 禁令：主线上底座在 subagents_enabled 时
             // 注册的 WorkflowTool 对所有会话可用，本分支保持能力持平。委派提醒只教
             // agent 集群、不教 workflow；已知底座限制记录在 ADR-0006。
@@ -3342,8 +3345,9 @@ mod tests {
             "inventory interpretation belongs in the static session prompt"
         );
         use crate::features::marketplace::{ConnectorScope, save_disabled_connectors_for};
-        save_disabled_connectors_for(ConnectorScope::Plain, &["weather".into(), "qcc".into()]);
-        save_disabled_connectors_for(ConnectorScope::Code, &[]);
+        save_disabled_connectors_for(ConnectorScope::Plain, &["weather".into(), "qcc".into()])
+            .unwrap();
+        save_disabled_connectors_for(ConnectorScope::Code, &[]).unwrap();
 
         let inventory = |sid: &str| -> serde_json::Value {
             let Op::SendMessage { content, .. } = bridge
@@ -3398,7 +3402,7 @@ mod tests {
             crate::features::marketplace::unavailable_tool_names_for(ConnectorScope::Plain);
         assert!(denied.contains(&"mcp_weather_get_weather".to_string()));
         assert!(denied.contains(&"mcp_qcc-company_*".to_string()));
-        save_disabled_connectors_for(ConnectorScope::Plain, &[]);
+        save_disabled_connectors_for(ConnectorScope::Plain, &[]).unwrap();
         assert!(
             inventory("plain")
                 .as_array()
@@ -3444,7 +3448,7 @@ mod tests {
         use crate::features::marketplace::{ConnectorScope, save_hidden_bundles_for};
         // 只写隐藏集、不碰开关集：旧口径（只读开关集）下快照会报 enabled=true
         // 且工具留在目录里，本测试对两条通道都钉住并集口径。
-        save_hidden_bundles_for(ConnectorScope::Plain, &["weather".into()]);
+        save_hidden_bundles_for(ConnectorScope::Plain, &["weather".into()]).unwrap();
 
         let Op::SendMessage { content, .. } = bridge
             .build_send_message_op(
@@ -3530,7 +3534,8 @@ mod tests {
         crate::features::marketplace::save_disabled_connectors_for(
             ConnectorScope::Plain,
             &["weather".to_string()],
-        );
+        )
+        .unwrap();
         // code scope 未初始化 → 默认全禁已装连接器。
         let tools = vec!["kb_search".to_string()];
         let shaped = bridge.shape_disallowed_tools("sess-code", tools.clone());
@@ -3544,7 +3549,8 @@ mod tests {
         crate::features::marketplace::save_disabled_connectors_for(
             ConnectorScope::Code,
             &["pptx".to_string()],
-        );
+        )
+        .unwrap();
         let shaped = bridge.shape_disallowed_tools("sess-code", tools.clone());
         assert!(!shaped.contains(&weather[0]));
         assert!(shaped.contains(&pptx[0]));
@@ -3588,7 +3594,8 @@ mod tests {
         crate::features::marketplace::save_disabled_connectors_for(
             ConnectorScope::Plain,
             &["feishu".to_string()],
-        );
+        )
+        .unwrap();
         let rs = bridge.scope_deny_ruleset_with("sess-plain", Vec::new());
         let mut cmds: Vec<&str> = rs
             .ask_rules
@@ -3639,7 +3646,8 @@ mod tests {
         crate::features::marketplace::save_disabled_connectors_for(
             ConnectorScope::Code,
             &["dingtalk".to_string()],
-        );
+        )
+        .unwrap();
         let rs = bridge.scope_deny_ruleset_with("sess-code", Vec::new());
         let mut cmds: Vec<&str> = rs
             .ask_rules
@@ -3698,7 +3706,8 @@ mod tests {
         crate::features::marketplace::save_disabled_connectors_for(
             ConnectorScope::Plain,
             &["feishu".to_string()],
-        );
+        )
+        .unwrap();
         let rs = bridge.scope_deny_ruleset_with("sess-plain", Vec::new());
 
         let engine = codewhale_execpolicy::ExecPolicyEngine::with_rulesets(vec![rs]);
@@ -3877,7 +3886,8 @@ mod tests {
         crate::features::marketplace::skill_scope::save_disabled_skills_for(
             ConnectorScope::Plain,
             &["my-skill".to_string()],
-        );
+        )
+        .unwrap();
         let rs = bridge.scope_deny_ruleset("sess-plain");
         assert!(
             rs.ask_rules.iter().any(|r| r
@@ -3894,7 +3904,8 @@ mod tests {
         crate::features::marketplace::skill_scope::save_disabled_skills_for(
             ConnectorScope::Plain,
             &[],
-        );
+        )
+        .unwrap();
         assert!(
             bridge
                 .scope_deny_ruleset("sess-plain")
