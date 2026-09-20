@@ -4719,12 +4719,13 @@ mod scheduled_model_tests {
     /// then delete the main session; `store.delete`'s on-disk cascade only
     /// removes the record and would leave a running aux engine as a
     /// handle-less orphan.
-    /// The command body depends on AppHandle/Tauri State (the repo has no
-    /// mock_app precedent, see the cancel test comment) and cannot be unit
-    /// tested directly; here we replay the command's order with the same
-    /// `delete_chat_session_with_gate` + bare components, verifying the pool
-    /// delete path does reclaim the aux engine, delete the aux record, and
-    /// strip the mapping, strictly before the main session's deletion.
+    /// The command body itself is now covered directly: the extracted,
+    /// Tauri-free `delete_chat_session_cascade` pins the command's exact
+    /// order at the command layer. This test keeps its own value: it drives
+    /// the pool side (`delete_chat_session_with_gate`) over a real store and
+    /// engine, verifying the pool delete path reclaims the aux engine,
+    /// deletes the aux record, and strips the mapping, strictly before the
+    /// main session's deletion.
     #[tokio::test]
     async fn chat_delete_cascades_aux_engine_reclaim_before_main_delete() {
         let _env_guard = crate::platform::paths::tests::ENV_LOCK

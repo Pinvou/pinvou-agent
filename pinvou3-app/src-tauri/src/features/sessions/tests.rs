@@ -4581,6 +4581,73 @@ fn get_or_create_aux_session_fails_closed_on_transient_load_error() {
     assert_ne!(rebuilt.id, aux.id, "ghost mapping rebuilds with a new id");
 }
 
+/// A permanently unreadable (InvalidData) aux record behind a live mapping
+/// must rebuild like a ghost mapping, not wedge the task forever: the record
+/// can never load again, so keeping the mapping failed every later
+/// get-or-create for this task with ensureFailed and no self-heal — while the
+/// same record unmapped is classified by the boot reconcile (corrupt ⇒
+/// reclaimed). Taxonomy alignment with `rebuild_aux_mapping_from_record`
+/// (round-16 B3); a *transient* fault keeps the fail-closed posture (see the
+/// test above).
+#[test]
+fn get_or_create_aux_session_rebuilds_when_bound_record_is_permanently_corrupt() {
+    let (store, _g) = isolated_store();
+    let main = store
+        .create_new("/model".into(), None, std::env::temp_dir())
+        .expect("create main");
+    let aux = store
+        .get_or_create_aux_session(&main.metadata.id)
+        .expect("create aux");
+
+    // Corrupt the record so every load of it fails with InvalidData, not
+    // NotFound and not a transient IO class — using a future schema_version
+    // (the round-16 B3a fixture): a truncated body would drop the record from
+    // the listing itself, while a future version still lists and fails only
+    // on load, which is exactly the mapped-and-unreadable combination here.
+    let record = store
+        .manager
+        .sessions_dir()
+        .join(format!("{}.json", aux.id));
+    let mut record_body: serde_json::Value = serde_json::from_str(
+        &std::fs::read_to_string(&record).expect("read the corrupt-to-be record"),
+    )
+    .expect("parse the record");
+    record_body["schema_version"] = serde_json::json!(999);
+    std::fs::write(&record, serde_json::to_string_pretty(&record_body).unwrap())
+        .expect("rewrite the record with a future schema_version");
+    let load_error = store
+        .load(&aux.id)
+        .expect_err("corrupt record must fail to load");
+    assert!(
+        super::store::is_invalid_data_error(&load_error),
+        "fixture must produce the InvalidData (permanent corruption) class: {load_error:#}"
+    );
+
+    // The mapped-corrupt combination now heals: fresh aux, mapping moved.
+    let rebuilt = store
+        .get_or_create_aux_session(&main.metadata.id)
+        .expect("a permanently corrupt record must rebuild, not fail forever");
+    assert_ne!(rebuilt.id, aux.id);
+    assert_eq!(
+        store.aux_session_id(&main.metadata.id).as_deref(),
+        Some(rebuilt.id.as_str()),
+        "the mapping must point at the fresh aux session"
+    );
+
+    // The corrupt record survives as an unmapped orphan only until the next
+    // boot's reconciliation classifies it (InvalidData ⇒ reclaim).
+    let corrupt_record = record.clone();
+    store.reconcile_aux_sessions().expect("reconcile runs");
+    assert!(
+        !corrupt_record.exists(),
+        "the unmapped corrupt record must be reclaimed by the reconcile"
+    );
+    assert!(
+        store.load(&rebuilt.id).is_ok(),
+        "the fresh aux record must be untouched by the reconcile"
+    );
+}
+
 /// The pub write entry must validate the key end of the mapping too: an
 /// aux-/sched- prefixed or illegal key would break the "keys are always main
 /// session ids" invariant that the cascade depth bound rests on — sealed at
@@ -4732,9 +4799,18 @@ fn reconcile_aux_sessions_fails_closed_on_transient_load_error() {
     let error = store
         .reconcile_aux_sessions()
         .expect_err("a transient load error must abort the reconcile, not delete the record");
+    // This chain surfaces through the boot `eprintln!` (reconciliation
+    // failure), so it must stay identity-free: the context names the failure
+    // class, never the record it failed on.
+    let formatted = format!("{error:#}");
     assert!(
-        format!("{error:#}").contains(&aux.id),
-        "the error must name the unreadable record: {error:#}"
+        !formatted.contains(&aux.id),
+        "boot-log-reachable chains must not carry the session id: {error:#}"
+    );
+    assert!(
+        formatted.contains("load a session record")
+            && formatted.contains("load the aux record for reconciliation"),
+        "the error must still name the failing step: {error:#}"
     );
     assert!(
         record.is_dir(),

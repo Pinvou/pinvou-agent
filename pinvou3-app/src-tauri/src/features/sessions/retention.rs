@@ -565,7 +565,11 @@ impl SessionStore {
     /// Ok(true) = rebuilt; Ok(false) = cannot rebuild, caller reclaims it as
     /// an orphan.
     fn rebuild_aux_mapping_from_record(&self, aux_id: &str) -> Result<bool> {
-        let parent_id = match self.load(aux_id) {
+        // Identity-free load: this function's transient-fault error is the
+        // one chain that reaches the boot `eprintln!` (reconciliation
+        // failure), so `load`'s id-bearing `load_session({id})` context must
+        // not ride along (same posture as the aux-eviction context below).
+        let parent_id = match self.load_identity_free(aux_id) {
             Ok(session) => session.metadata.parent_session_id,
             // Fail closed on anything but a genuinely unusable name: a transient
             // boot-time read fault (EIO, a held file) must not classify a

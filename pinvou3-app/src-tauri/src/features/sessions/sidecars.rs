@@ -262,6 +262,21 @@ impl SessionStore {
     /// `set_session_model_id`: never leave an in-memory state that "looks
     /// successful but is lost on restart".
     pub fn set_aux_session(&self, main_id: &str, aux_id: Option<String>) -> Result<()> {
+        // The loaded-flag invariant is sealed at the single write API too: with
+        // `aux_sessions_loaded` false the in-memory map is artificially empty
+        // (the sidecar read failed this boot), and one write here would
+        // persist that map minus nothing plus the new entry — wiping every
+        // existing binding on disk (the mod.rs field comment's disaster).
+        // Every current caller runs under the flag (get-or-create checks,
+        // the reconciliation skips, creation runs after the check), but the
+        // guard keeps the write unreachable for future callers instead of
+        // relying on that discipline.
+        if !self
+            .aux_sessions_loaded
+            .load(std::sync::atomic::Ordering::SeqCst)
+        {
+            anyhow::bail!("Aux session bindings were not loaded this boot; refusing to write");
+        }
         // The pub write entry seals both ends of the mapping: keys must be
         // valid, unprefixed main-session ids, values must carry the aux-
         // prefix. The cascade-delete depth bound and the "aux- ids skip the

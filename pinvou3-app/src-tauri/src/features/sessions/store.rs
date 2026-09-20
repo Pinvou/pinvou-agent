@@ -314,10 +314,28 @@ impl SessionStore {
     }
 
     pub fn load(&self, id: &str) -> Result<SavedSession> {
+        self.load_with_context(id, || format!("load_session({id})"))
+    }
+
+    /// `load` for error chains that can reach the boot log (the startup aux
+    /// reconciliation's rebuild path surfaces through the boot `eprintln!`):
+    /// the context must not embed the session id, matching the identity-free
+    /// posture of the aux-eviction and sidecar contexts. Callers of this
+    /// variant classify `SessionIdMismatch` locally — that error still
+    /// carries ids, but it never reaches a log sink from here.
+    pub(super) fn load_identity_free(&self, id: &str) -> Result<SavedSession> {
+        self.load_with_context(id, || "load a session record".to_string())
+    }
+
+    fn load_with_context(
+        &self,
+        id: &str,
+        context: impl FnOnce() -> String,
+    ) -> Result<SavedSession> {
         let session = self
             .manager
             .load_session_snapshot(id)
-            .with_context(|| format!("load_session({id})"))?;
+            .with_context(context)?;
         // Fail closed on case-variant aliases: on case-insensitive
         // filesystems `AUX-<suffix>.json` resolves to the real `aux-…` record
         // while case-sensitive identity tests miss the mismatch, so a caller
@@ -721,7 +739,12 @@ impl SessionStore {
     /// session survives that a restart could never reclaim.
     /// Reuse semantics (return the existing mapping when its target is still
     /// on disk) live in [`Self::get_or_create_aux_session`], not here.
-    pub fn create_aux_session(&self, parent_id: &str) -> Result<SessionMetadata> {
+    ///
+    /// The caller must hold the `aux_sessions_io` lock: the in-lock eviction
+    /// re-check below and the atomicity of lookup+create both depend on it.
+    /// Crate-visible for tests and the command layer only — outside callers
+    /// must go through [`Self::get_or_create_aux_session`].
+    pub(crate) fn create_aux_session(&self, parent_id: &str) -> Result<SessionMetadata> {
         // Reject aux-of-aux in the creation path itself (not only via the
         // get-or-create wrapper): an auxiliary conversation must not own
         // another one, and an aux session is itself a Chat kind, so the
@@ -841,13 +864,23 @@ impl SessionStore {
         if let Some(aux_id) = self.aux_session_id(parent_id) {
             match self.load(&aux_id) {
                 Ok(aux) => return Ok(aux.metadata),
-                // Ghost mapping (the aux record is gone from disk) or an
+                // Ghost mapping (the aux record is gone from disk), an
                 // invalid binding (a hand-edited `AUX-…` value that `load`
-                // rejects on identity): both are provably dead, so clear and
-                // rebuild. Treating the identity rejection as a transient fault
-                // kept the bad mapping forever and made every later
-                // get-or-create for that task fail (round-12 P3).
-                Err(error) if is_not_found_error(&error) || is_identity_mismatch_error(&error) => {
+                // rejects on identity), or a permanently unreadable record
+                // (InvalidData: truncated body, newer schema — the round-16
+                // B3 taxonomy, same as `rebuild_aux_mapping_from_record`):
+                // all three can provably never load, so clear and rebuild.
+                // InvalidData was the odd one out: keeping the mapping failed
+                // every later get-or-create for this task forever
+                // (ensureFailed with no self-heal), while the same record
+                // unmapped is classified by the next boot's reconcile — a
+                // corrupt record is reclaimed, a transient fault keeps it
+                // parked until it can be read again.
+                Err(error)
+                    if is_not_found_error(&error)
+                        || is_identity_mismatch_error(&error)
+                        || is_invalid_data_error(&error) =>
+                {
                     self.set_aux_session(parent_id, None)
                         .context("clear the stale aux mapping")?;
                 }
