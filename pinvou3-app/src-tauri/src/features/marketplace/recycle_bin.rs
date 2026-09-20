@@ -647,11 +647,16 @@ fn now_iso8601() -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::features::marketplace::scope::load_disabled_bundles_file;
     use crate::features::marketplace::store::BundleSource;
+    // Unix-gated: the only callers are the #[cfg(unix)] regression tests, so
+    // on Windows this import would be unused (denied by `-D unused-imports`).
+    #[cfg(unix)]
+    use crate::features::marketplace::scope::load_disabled_bundles_file;
 
     /// 把 PINVOU3_HOME 指到干净临时目录跑闭包，借 ENV_LOCK 与其它 mutate 测试串行
     /// （repo 惯例：scope.rs / mod.rs 各有同名 test 助手，不跨模块复用）。
+    /// Unix-only:目前只有只读权限夹具的回归测试使用它。
+    #[cfg(unix)]
     fn with_temp_home<F: FnOnce()>(f: F) {
         let _g = crate::platform::paths::tests::ENV_LOCK
             .lock()
@@ -1752,6 +1757,7 @@ mod tests {
         });
     }
 
+    #[cfg(unix)]
     fn quarantine_copy_count() -> usize {
         let parent = crate::platform::paths::pinvou3_home().to_path_buf();
         std::fs::read_dir(parent)

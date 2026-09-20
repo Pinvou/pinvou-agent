@@ -69,13 +69,13 @@ function resolveSendCapabilityStatus({ welcomeFailed, welcomeText, sceneStatus }
 // the raw promise is safe to store and share.
 //
 // Share condition: an in-flight attempt whose tool id matches, or whose id is
-// null — a null ref while an attempt is in flight means that attempt consumed
-// it (consume() clears the ref at attempt start), not that no card exists; a
-// null ref with an empty slot never reaches this branch. A non-null id that
-// differs from the in-flight one is a session switch: start a fresh attempt
-// for the new pack (the backend's DISABLED_BUNDLES_FILE_LOCK serializes the
-// two invokes).
-async function runSharedWelcomeOptIn(attemptSlot, { toolId, run }) {
+// null — a null ref while an attempt is in flight means that attempt already
+// consumed the ref (consume() clears it at attempt start), not that no card
+// exists; a null ref with an empty slot never reaches this branch. A non-null
+// id that differs from the in-flight one is a session switch: start a fresh
+// attempt for the new pack (the backend's DISABLED_BUNDLES_FILE_LOCK
+// serializes the two invokes).
+function runSharedWelcomeOptIn(attemptSlot, { toolId, run }) {
   const shared = attemptSlot.current;
   if (shared && (shared.toolId === toolId || toolId == null)) {
     return shared.promise;
