@@ -46,6 +46,7 @@ pub struct ScanState {
     pub running: bool,
     /// idle / scanning / done / cancelled
     pub phase: String,
+    pub roots: Vec<String>,
     pub scanned: u64,
     pub finished_at: i64,
 }
@@ -531,6 +532,7 @@ impl KnowledgeService {
             *st = ScanState {
                 running: true,
                 phase: "scanning".into(),
+                roots: roots.iter().map(|p| p.display().to_string()).collect(),
                 ..Default::default()
             };
         }
@@ -682,6 +684,7 @@ pub struct SearchQueryDto {
     #[serde(default)]
     pub exts: Vec<String>,
     pub mtime_after: Option<i64>,
+    pub mtime_before: Option<i64>,
     pub min_size: Option<u64>,
     pub max_size: Option<u64>,
     #[serde(default)]
@@ -694,6 +697,7 @@ impl From<SearchQueryDto> for SearchQuery {
             text: d.text,
             exts: d.exts,
             mtime_after: d.mtime_after,
+            mtime_before: d.mtime_before,
             min_size: d.min_size,
             max_size: d.max_size,
             limit: d.limit,
