@@ -270,8 +270,14 @@ impl Pinvou3Bundle {
         crate::platform::startup::mark("bundle_extract:write_mcp_servers:start");
         self.write_mcp_servers(mcp_secret_migration_ok)?;
         // Reconcile → Python repair → builtin upsert, in that order; see
-        // `run_mcp_startup_maintenance` for why the order is load-bearing and
-        // which test pins the wiring.
+        // `run_mcp_startup_maintenance` for why the order is load-bearing.
+        // Coverage boundary: tests pin the order and the corrupt-file gate
+        // *inside* `run_mcp_startup_maintenance`
+        // (`startup_maintenance_restores_missing_entry_before_python_repair`,
+        // `startup_maintenance_preserves_corrupt_mcp_json_bytes`); this call
+        // site itself is driven end to end by
+        // `ensure_extracted_preserves_corrupt_mcp_json_bytes`, which runs the
+        // real boot chain including the retired-tool cleanup that precedes it.
         self.run_mcp_startup_maintenance(marketplace, repair_python_tools)?;
         crate::platform::startup::mark("bundle_extract:write_mcp_servers:done");
 
@@ -1588,6 +1594,93 @@ mod tests {
         assert!(
             mcp["servers"].get("my-custom-tool").is_some(),
             "the upsert must keep the user's entries"
+        );
+
+        let _ = std::fs::remove_dir_all(&tmp);
+    }
+
+    /// The preservation contract must hold through the REAL boot chain, not
+    /// just `run_mcp_startup_maintenance`: `ensure_extracted` first runs the
+    /// retired-tool cleanup, whose residue probe treats a corrupt mcp.json as
+    /// "residue present" and calls `uninstall` — and an uninstall that reset
+    /// the file would destroy the original bytes *before* the reconcile ever
+    /// got to back them up. With the refusal in `remove_from_mcp_json`, the
+    /// uninstall rolls back, the corrupt file (and its single backup) survive
+    /// the whole chain, and the engine builtin keys stay untouched.
+    #[test]
+    fn ensure_extracted_preserves_corrupt_mcp_json_bytes() {
+        let _g = crate::platform::paths::tests::ENV_LOCK
+            .lock()
+            .unwrap_or_else(|p| p.into_inner());
+        let _env = crate::platform::paths::tests::EnvVarGuard::capture(&["PINVOU3_HOME"]);
+        let tmp = std::env::temp_dir().join(format!(
+            "pinvou3-boot-corrupt-{}-{}",
+            std::process::id(),
+            crate::platform::paths::tests::unique_suffix()
+        ));
+        let _ = std::fs::remove_dir_all(&tmp);
+        std::fs::create_dir_all(&tmp).unwrap();
+        // SAFETY: the caller's test holds platform::paths::tests::ENV_LOCK throughout; env writes are serialized in-process.
+        unsafe { std::env::set_var("PINVOU3_HOME", &tmp) };
+
+        // A retired preset tool still present in the registry: the cleanup's
+        // uninstall path runs against the corrupt file (probe returns true).
+        let marketplace_dir = crate::platform::paths::pinvou3_home().join("marketplace");
+        std::fs::create_dir_all(&marketplace_dir).unwrap();
+        std::fs::write(
+            marketplace_dir.join("installed.json"),
+            r#"["data_analysis"]"#,
+        )
+        .unwrap();
+
+        let bundle = super::Pinvou3Bundle::paths();
+        std::fs::create_dir_all(bundle.mcp_json.parent().unwrap()).unwrap();
+        let corrupt = r#"{
+  "servers": {
+    "my-custom-tool": {"command": "/usr/local/bin/my-tool", "args": ["--serve"], "enabled": false}
+  }"#;
+        std::fs::write(&bundle.mcp_json, corrupt).unwrap();
+        // Seed the bundle VERSION so the boot skips re-extraction and returns
+        // right after the maintenance block (the code path every normal boot
+        // with an unchanged bundle takes).
+        std::fs::write(super::paths::bundle_version_file(), super::BUNDLE_VERSION).unwrap();
+
+        let manager = crate::features::marketplace::MarketplaceManager::with_store(
+            crate::platform::credential_store::MemoryCredentialStore::default(),
+        );
+        bundle
+            .ensure_extracted_with_marketplace(&manager, |_manager| Ok(Vec::new()))
+            .unwrap();
+
+        assert_eq!(
+            std::fs::read(&bundle.mcp_json).unwrap(),
+            corrupt.as_bytes(),
+            "the corrupt file must stay byte-identical through the real boot chain"
+        );
+        let backups: Vec<_> = std::fs::read_dir(bundle.mcp_json.parent().unwrap())
+            .unwrap()
+            .flatten()
+            .filter(|entry| {
+                entry
+                    .file_name()
+                    .to_string_lossy()
+                    .starts_with("mcp.json.corrupt.")
+            })
+            .collect();
+        assert_eq!(backups.len(), 1, "exactly one backup must exist");
+        assert_eq!(
+            std::fs::read(backups[0].path()).unwrap(),
+            corrupt.as_bytes(),
+            "the backup must hold the original bytes"
+        );
+        let installed: serde_json::Value = serde_json::from_str(
+            &std::fs::read_to_string(marketplace_dir.join("installed.json")).unwrap(),
+        )
+        .unwrap();
+        assert_eq!(
+            installed,
+            serde_json::json!(["data_analysis"]),
+            "the rolled-back uninstall must leave the registry unchanged"
         );
 
         let _ = std::fs::remove_dir_all(&tmp);

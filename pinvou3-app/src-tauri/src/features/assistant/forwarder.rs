@@ -87,10 +87,11 @@ fn mcp_boot_failure_signature(
             )
         })
         .collect();
-    // The engine's snapshot iterates a HashMap, so an unchanged failure set can
-    // arrive in a different order after a config swap; sort before the equality
-    // compare in `mcp_boot_persistence` so only content changes count as
-    // "changed" and trigger a re-persist.
+    // Sorted before the equality compare in `mcp_boot_persistence`, so only
+    // content changes count as "changed" and trigger a re-persist. The engine
+    // already orders its snapshot by server name; the sort here is a local
+    // invariant that keeps the dedupe decision correct regardless of that
+    // upstream ordering, instead of silently depending on it.
     signature.sort();
     signature
 }
@@ -136,34 +137,40 @@ fn mcp_boot_persistence(
     ))
 }
 
-/// The `Event::McpSessionBoot` arm's body: decide whether the receipt persists
-/// (`mcp_boot_persistence`) and, when it does, write it to the startup timeline
-/// (`persist_mcp_boot_receipt`). Extracted verbatim from the arm so the decision
-/// and the persistence glue are exercised *together* against the real
-/// `startup.log` by `mcp_boot_receipt_persists_through_the_startup_timeline` —
-/// swapping either half, or breaking the hand-off between them, fails that test.
-/// Not covered by any test: the two-line `match` arm in the forwarder task that
-/// forwards the event fields into this function; everything downstream of that
-/// forwarding is.
+/// The `Event::McpSessionBoot` arm's body: destructure the event and, for a
+/// terminal receipt, decide whether it persists (`mcp_boot_persistence`) and
+/// write it to the startup timeline (`persist_mcp_boot_receipt`). Takes the
+/// whole event so the field forwarding the arm used to do by hand — the one
+/// production step between the engine event and the persistence decision — is
+/// part of this function and exercised against the real `startup.log` by
+/// `mcp_boot_receipt_persists_through_the_startup_timeline`. The remaining
+/// untested seam is the one-line `match` arm that hands the event over here.
 fn record_mcp_session_boot(
     session_id: &str,
-    generation: u64,
-    finished: bool,
-    snapshot: &deepseek_tui::mcp::McpManagerSnapshot,
+    event: &deepseek_tui::core::events::Event,
     last_persisted_failure_set: &mut Option<Vec<(String, bool, String)>>,
 ) {
+    let Event::McpSessionBoot {
+        generation,
+        snapshot,
+        finished,
+        ..
+    } = event
+    else {
+        return;
+    };
     // Same enabled-only denominator the persisted summary uses.
     let enabled_total = snapshot.servers.iter().filter(|s| s.enabled).count();
     if let Some((summary, failure_details)) = mcp_boot_persistence(
         session_id,
-        generation,
-        finished,
+        *generation,
+        *finished,
         snapshot,
         last_persisted_failure_set,
     ) {
         persist_mcp_boot_receipt(
             session_id,
-            generation,
+            *generation,
             &summary,
             &failure_details,
             enabled_total,
@@ -1648,19 +1655,8 @@ pub(crate) fn spawn_event_forwarder(
                 // (`~/.pinvou3/logs/startup.log`) to keep failures visible.
                 // The engine re-reports the receipt on every real turn; only a
                 // changed failure set is persisted.
-                Event::McpSessionBoot {
-                    generation,
-                    snapshot,
-                    finished,
-                    ..
-                } => {
-                    record_mcp_session_boot(
-                        &session_id,
-                        generation,
-                        finished,
-                        &snapshot,
-                        &mut last_mcp_boot_failure_set,
-                    );
+                Event::McpSessionBoot { .. } => {
+                    record_mcp_session_boot(&session_id, &event, &mut last_mcp_boot_failure_set);
                 }
                 Event::ToolProjectionWarning {
                     provider,
@@ -1954,11 +1950,11 @@ mod mcp_boot_persistence_tests {
 
     /// The arm's body, driven end to end: a terminal failure receipt must land in
     /// the real `startup.log` (summary + per-server lines), and a repeated receipt
-    /// must add nothing. The test calls the arm's extracted body
-    /// (`record_mcp_session_boot`), so swapping the decision or the persistence
-    /// glue — or breaking the hand-off between them — turns this red. The only
-    /// wiring outside its reach is the two-line `match` arm that forwards the
-    /// event fields into that function.
+    /// must add nothing. The test calls the arm's body (`record_mcp_session_boot`)
+    /// with real `Event::McpSessionBoot` values, so swapping the decision, the
+    /// persistence glue, or the event destructuring/forwarding — or breaking the
+    /// hand-off between them — turns this red. The only wiring outside its reach
+    /// is the one-line `match` arm that hands the event to that function.
     #[test]
     fn mcp_boot_receipt_persists_through_the_startup_timeline() {
         use crate::platform::paths::tests::{ENV_LOCK, EnvVarGuard, unique_suffix};
@@ -1977,13 +1973,21 @@ mod mcp_boot_persistence_tests {
         crate::platform::startup::init();
         let log_path = tmp.join("logs").join("startup.log");
 
-        let snap = snapshot(vec![
-            server("fs", true, true, None),
-            server("git", true, false, Some("connection refused")),
-            server("off", false, false, Some("disabled")),
-        ]);
+        let boot_event = |generation: u64| {
+            let snap = snapshot(vec![
+                server("fs", true, true, None),
+                server("git", true, false, Some("connection refused")),
+                server("off", false, false, Some("disabled")),
+            ]);
+            deepseek_tui::core::events::Event::McpSessionBoot {
+                generation,
+                snapshot: snap,
+                connecting: Vec::new(),
+                finished: true,
+            }
+        };
         let mut last = None;
-        super::record_mcp_session_boot("sess-tl", 4, true, &snap, &mut last);
+        super::record_mcp_session_boot("sess-tl", &boot_event(4), &mut last);
         let log = std::fs::read_to_string(&log_path).unwrap();
         assert!(
             log.contains("mcp_session_boot:finished | sid=sess-tl generation=4 servers=2 failed=1"),
@@ -1996,7 +2000,7 @@ mod mcp_boot_persistence_tests {
 
         // The dedupe contract holds through the real sink: a repeat writes nothing.
         let before = std::fs::read(&log_path).unwrap();
-        super::record_mcp_session_boot("sess-tl", 5, true, &snap, &mut last);
+        super::record_mcp_session_boot("sess-tl", &boot_event(5), &mut last);
         assert_eq!(std::fs::read(&log_path).unwrap(), before);
     }
 }
