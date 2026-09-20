@@ -354,6 +354,10 @@ pub async fn ensure_folder_projects(
     app: AppHandle,
     store: State<'_, ProjectStore>,
 ) -> Result<Vec<EnsureFolderOutcome>, String> {
+    // Same fence as its sibling root-accepting writers: materializing a
+    // project mid-rebind could re-add a `from`-prefixed root after the
+    // rebind's candidate snapshot (review #484 round-3 minor).
+    let _fence = store.rebind_fence()?;
     let outcomes = store
         .ensure_folder_roots(&roots)
         .map_err(|e| format!("ensure_folder_projects: {e:#}"))?;
@@ -1700,7 +1704,12 @@ mod tests {
             vec![root_b.clone()],
         )
         .expect("replace roots");
-        assert_eq!(updated.roots, vec![root_b.canonicalize().unwrap()]);
+        assert_eq!(
+            updated.roots,
+            vec![crate::platform::os::platform_compat_path(
+                &root_b.canonicalize().unwrap().to_string_lossy()
+            )]
+        );
         for id in [&plain_id, "code-under-a"] {
             assert_eq!(
                 store.assignment_of(id),
@@ -1719,7 +1728,12 @@ mod tests {
             vec![root_b.clone()],
         )
         .expect("retry");
-        assert_eq!(again.roots, vec![root_b.canonicalize().unwrap()]);
+        assert_eq!(
+            again.roots,
+            vec![crate::platform::os::platform_compat_path(
+                &root_b.canonicalize().unwrap().to_string_lossy()
+            )]
+        );
         assert_eq!(store.assignment_of(&plain_id), Some(None));
         let _ = std::fs::remove_dir_all(&root_a);
         let _ = std::fs::remove_dir_all(&root_b);

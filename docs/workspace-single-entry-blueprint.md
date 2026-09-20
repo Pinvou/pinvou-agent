@@ -202,6 +202,16 @@ key.
   roots; engine spawn/resume resolves the snapshot into
   `EngineConfig.workspace_roots` (the CodeWhale foundation normalizes
   `cwd`-first, deduped).
+- **ACP-lane stage-gate (disclosed):** the snapshot is recorded, shown,
+  and grant-noticed for ACP sessions, but the host does **not** deliver
+  additional roots to a third-party ACP agent yet — the wire
+  `session/new` carries a single `cwd` and the fork-side session
+  metadata stays empty, so the agent-side sandbox materializes `[cwd]`
+  only. The direction is fail-safe (the agent never gets more access
+  than the notice promises for the primary root); the gap is the
+  additional roots being promised-but-not-enforced on this lane.
+  Delivering roots on `session/new` (protocol extension or fork
+  adapter) is the follow-up that closes the gap.
 - **Rebind migration** (§7): roots under the rebound prefix are translated
   `from → to`; roots outside the prefix are untouched.
 - **Replacement** happens only through the explicit "align to project"
@@ -310,7 +320,10 @@ panel carry the same-weight notice through a different surface — picker
 single-root rows and the browse entry show it inline; the no-detour
 channels (project-row "new session", composer recents) surface it as a
 toast at grant time. The notice copy comes from one shared pure function so
-no channel drifts.
+no channel drifts. On the ACP lane the notice describes the recorded
+keychain, while delivery is stage-gated (see §6) — the notice text
+therefore promises only what a later stage-gate closure will enforce;
+until then the additional roots are advisory on this lane.
 
 ### §9.5 Root-removal semantics
 

@@ -351,14 +351,13 @@ fn lexical_absolute(path: &Path) -> PathBuf {
 /// 校验一组 roots 并返回展示形态(canonicalized):重的判定与嵌套判定都在
 /// 身份键上进行(Windows 折叠大小写/分隔符后可判定)。
 /// - 必须是绝对路径;
-/// - 组内不得重复或互相嵌套;
-/// - 不得与其它项目(skip_project_id 之外)的任何 root 重复或嵌套——自动
-///   归组按 root 前缀匹配,跨项目重叠会让归属二义(Codex #22767 错归组的根源)。
-fn validate_roots(
-    projects: &[Project],
-    skip_project_id: Option<&str>,
-    roots: &[PathBuf],
-) -> Result<Vec<PathBuf>> {
+/// - 组内不得重复或互相嵌套。
+///
+/// 跨项目重叠不在校验范围内(§9.9 裁定合法):`projects`/`skip_project_id`
+/// 形参已随 §9.9 移除——历史上这里会拦截跨项目重叠("Codex #22767 错归组"
+/// 的根源),§9.9 用确定性 (position, id) 归属规则消解了二义,合法化由
+/// `create_allows_overlap_with_other_projects` 等测试锁定。
+fn validate_roots(roots: &[PathBuf]) -> Result<Vec<PathBuf>> {
     let mut displays = Vec::with_capacity(roots.len());
     let mut keys = Vec::with_capacity(roots.len());
     for root in roots {
@@ -381,26 +380,6 @@ fn validate_roots(
                     display.display(),
                     other_display.display()
                 );
-            }
-        }
-    }
-    for project in projects {
-        if Some(project.id.as_str()) == skip_project_id {
-            continue;
-        }
-        for existing in &project.roots {
-            let existing_key = identity_key_of_display(existing);
-            for (key, display) in keys.iter().zip(displays.iter()) {
-                if key_is_same_or_nested(key, &existing_key)
-                    || key_is_same_or_nested(&existing_key, key)
-                {
-                    bail!(
-                        "project root overlaps project '{}' ({} vs {})",
-                        project.name,
-                        existing.display(),
-                        display.display()
-                    );
-                }
             }
         }
     }
@@ -624,7 +603,7 @@ impl ProjectStore {
     pub fn create_project(&self, name: String, roots: Vec<PathBuf>) -> Result<Project> {
         let name = validate_name(name)?;
         let mut state = self.state.write();
-        let roots = validate_roots(&[], None, &roots)?;
+        let roots = validate_roots(&roots)?;
         let now = Utc::now();
         let position = state
             .projects
@@ -667,7 +646,7 @@ impl ProjectStore {
             bail!("project not found: {project_id}");
         };
         let roots = match roots {
-            Some(roots) => Some(validate_roots(&[], None, &roots)?),
+            Some(roots) => Some(validate_roots(&roots)?),
             None => None,
         };
         let project = &mut state.projects[index];
@@ -692,7 +671,7 @@ impl ProjectStore {
     /// `/private/var`, symlinked home, autofs) would be misjudged as a
     /// removal, hard move-outs included (review #484 B3).
     pub fn normalize_roots(roots: &[PathBuf]) -> Result<Vec<PathBuf>> {
-        validate_roots(&[], None, roots)
+        validate_roots(roots)
     }
 
     /// Root replacement + auto-member expulsion in a single store transaction
@@ -725,7 +704,7 @@ impl ProjectStore {
         // here. A folder project overlapping a manual project is a designed
         // legal state, and editing the manual project's roots from the manage
         // panel must not be rejected because of it.
-        let roots = validate_roots(&[], None, &roots)?;
+        let roots = validate_roots(&roots)?;
         {
             let project = &mut state.projects[index];
             if let Some(name) = name {
@@ -872,10 +851,10 @@ impl ProjectStore {
                         workspace.display()
                     );
                 }
-                // 单元素集组内校验退化为此路径自身的绝对性;跨项目重叠在此
-                // 一并拦截(错误信息指向冲突项目)。
+                // 单元素集组内校验退化为绝对路径检查(§9.9:跨项目重叠合法,
+                // 不再在此拦截)。
                 let owned_root = workspace.to_path_buf();
-                let mut displays = validate_roots(&[], None, std::slice::from_ref(&owned_root))?;
+                let mut displays = validate_roots(std::slice::from_ref(&owned_root))?;
                 let Some(display) = displays.pop() else {
                     bail!("add_workspace_root produced no canonical key");
                 };
@@ -1046,8 +1025,7 @@ impl ProjectStore {
         // detected-before-anything-moved condition instead of a mid-run
         // rollback.
         for project in &candidate {
-            validate_roots(&[], None, &project.roots)
-                .context("rebind produced nesting project roots")?;
+            validate_roots(&project.roots).context("rebind produced nesting project roots")?;
         }
         Ok(affected_projects)
     }
@@ -1089,7 +1067,7 @@ impl ProjectStore {
                 // conflict stays classified as Overlap (the localized
                 // REBIND_ROOTS_CONFLICT marker and the retry dialog are the
                 // right UX for it); other failures surface as Other.
-                validate_roots(&[], None, &project.roots).map_err(|error| {
+                validate_roots(&project.roots).map_err(|error| {
                     RebindRootsError::Overlap(
                         error.context("rebind produced nesting project roots"),
                     )
@@ -1178,7 +1156,7 @@ impl ProjectStore {
                 .unwrap_or_else(|| display.to_string_lossy().into_owned());
             // 同批内先前创建的文件夹项目已在 state.projects 中;相同根由
             // seen_keys 去重;锚定按精确路径判定,嵌套输入各自物化。
-            match validate_roots(&[], None, std::slice::from_ref(root)) {
+            match validate_roots(std::slice::from_ref(root)) {
                 Ok(displays) => {
                     let now = Utc::now();
                     let position = state

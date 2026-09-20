@@ -1841,12 +1841,20 @@ const NAV_PREFETCH = {
       // (code/ACP project sessions and #445 bound work sessions).
       const projectsListEntries = sidebarProjectsData && sidebarProjectsData.projects;
       const projectsListAssignments = sidebarProjectsData && sidebarProjectsData.assignments;
+      // Hot-view inputs come from the UNFILTERED task pool: deriving from
+      // sidebarCodeTasks (the sidebar-filtered slice) made a warm folder go
+      // cold — or vanish from the picker — whenever the sidebar sat in
+      // another filter/style, which has nothing to do with recency
+      // (review #484 round-3 minor).
       const boundWorkspaceItems = useMemo(() => [
-        ...sidebarCodeTasks.map(s => ({ id: s.id, workspaceKind: s.workspaceKind, workspacePath: s.workspacePath, updatedAt: s.updatedAt || '' })),
+        ...allSidebarTasks
+          .filter(s => s.taskKind === 'codex'
+            || (can('desktopChrome') && s.taskKind === 'regular' && s.workspacePath))
+          .map(s => ({ id: s.id, workspaceKind: s.workspaceKind, workspacePath: s.workspacePath, updatedAt: s.updatedAt || '' })),
         ...codexSessions
           .filter(s => s && s.workspace_kind === 'project' && s.workspace_path)
           .map(s => ({ id: s.id, workspaceKind: 'project', workspacePath: String(s.workspace_path), updatedAt: s.updated_at || '' })),
-      ], [sidebarCodeTasks, codexSessions]);
+      ], [allSidebarTasks, codexSessions]);
       // Dedicated channel for the project row's "new session" (§9.9 project
       // channel): no picker detour — cwd = the project's remembered primary
       // root (written by the picker / manage panel), keychain = all of the
