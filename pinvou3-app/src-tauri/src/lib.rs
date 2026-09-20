@@ -1758,6 +1758,29 @@ mod tool_allowlist_contract {
         assert!(PINVOU3_ALLOWED_TOOLS.contains(&"mcp_*"));
     }
 
+    /// The native ima tool's name is spelled independently in the engine
+    /// registration, the allowlist, and the marketplace deny table; a rename
+    /// that updates the allowlist but not the deny table fails open silently
+    /// (a stale deny of a nonexistent name) while every list-only test stays
+    /// green. Pin all three to the tool's actual registered name.
+    #[test]
+    fn native_ima_tool_name_is_pinned_across_allowlist_and_deny_table() {
+        let registered = crate::features::connectors::ima::ImaOpenApiTool::new()
+            .name()
+            .to_string();
+        assert_eq!(registered, "ima_openapi");
+        assert!(
+            is_pinvou3_allowed(&registered),
+            "native tool {registered} must keep an exact allowlist rule (the mcp_ prefix never admits it)"
+        );
+        assert!(
+            crate::features::marketplace::NATIVE_PACKAGE_TOOLS
+                .iter()
+                .any(|(tool, _)| *tool == registered),
+            "native tool {registered} must keep its marketplace ownership mapping"
+        );
+    }
+
     /// Conditional host tools and dynamically discovered MCP tools do not
     /// appear in every session. Register representative tools through the
     /// v0.9.12 registry and verify the allowlist sees exactly its
