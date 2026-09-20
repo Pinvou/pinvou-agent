@@ -8,8 +8,8 @@ APP="$REPO/pinvou3-app/src-tauri"
 EXPECTED_UPSTREAM="dcd4c200f72f0c1ffd60d8e7f6850313db879fc5"
 EXPECTED_HEAD="6f780290f1c35e8a3c5dff86b4f76da142744b0c"
 EXPECTED_COMMITS=39
-# 过渡期锚点：不可变 r1 tag 的收口 commit。层 0 断言它是当前 head 的祖先，
-# 即 gitlink 沿维护分支领先 tag 而非另起分叉；r2 收口后随 TAG 常量一起退役。
+# r1 收口锚点：不可变 r1 tag 的收口 commit。层 0 断言它是当前 head 的祖先，
+# 即维护分支自 r1 收口线性前进而非另起分叉（r2 收口后 gitlink=分支头=tag）。
 R1_CLOSURE="1fafee7e26b60a59457a43bce50c63aa2ad9dbaf"
 FAST_ONLY=0
 
@@ -42,7 +42,7 @@ else
 fi
 
 if git -C "$CODEWHALE" merge-base --is-ancestor "$R1_CLOSURE" HEAD 2>/dev/null; then
-  green "  ✓ 过渡期领先成立：r1 收口是当前 head 的祖先（gitlink 沿维护分支领先 tag）"
+  green "  ✓ 线性前进成立：r1 收口是当前 head 的祖先（r2 收口后 gitlink=分支头=tag）"
 else
   red "  ✗ r1 收口 $R1_CLOSURE 不是当前 head 的祖先，过渡期领先关系断裂"
   fail=1
