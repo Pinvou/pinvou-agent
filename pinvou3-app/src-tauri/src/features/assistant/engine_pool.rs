@@ -1300,7 +1300,17 @@ impl EnginePool {
     }
 
     pub async fn refresh_disallowed_tools(&self) -> Vec<String> {
-        let tools = self.compute_disallowed_tools();
+        // The policy closure reads the cross-process bundle lock; keep the
+        // potentially blocking read off the async worker like the other
+        // lock-taking paths (a wedged CLI process must not freeze the worker).
+        let app = self.app.clone();
+        let tool_policy = self.tool_policy.clone();
+        let tools = tokio::task::spawn_blocking(move || tool_policy(&app))
+            .await
+            .unwrap_or_else(|error| {
+                eprintln!("[engine_pool] tool policy task failed: {error}");
+                Vec::new()
+            });
         self.set_disallowed_all(tools.clone()).await;
         tools
     }
@@ -1590,14 +1600,24 @@ impl EnginePool {
             .steer_incarnation_seq
             .fetch_add(1, Ordering::Relaxed)
             .saturating_add(1);
+        // The tool policy closure reads the cross-process bundle lock; keep
+        // the potentially blocking read off the async worker (same rationale
+        // as refresh_disallowed_tools).
+        let disallowed_tools = {
+            let app = self.app.clone();
+            let tool_policy = self.tool_policy.clone();
+            let computed = tokio::task::spawn_blocking(move || tool_policy(&app))
+                .await
+                .map_err(|e| anyhow::anyhow!("tool policy join: {e}"))?;
+            self.bridge.shape_disallowed_tools(session_id, computed)
+        };
         let (engine, forwarder) = AppEngine::spawn_for_session(
             self.app.clone(),
             self.store.clone(),
             bridge,
             session_id,
             extra_tools,
-            self.bridge
-                .shape_disallowed_tools(session_id, self.compute_disallowed_tools()),
+            disallowed_tools,
             turn_lifecycle.clone(),
             shell_manager,
             turn_shell_tasks,
@@ -2838,11 +2858,27 @@ impl EnginePool {
             .map(|(sid, entry)| (sid.clone(), entry.engine.clone()))
             .collect::<Vec<_>>();
         for (sid, engine) in targets {
+            // scope_deny_ruleset reads the cross-process bundle lock (twice
+            // per session); keep the potentially blocking read off the async
+            // worker like the other lock-taking paths.
+            let ruleset = {
+                let bridge = self.bridge.clone();
+                let sid_for_task = sid.clone();
+                match tokio::task::spawn_blocking(move || bridge.scope_deny_ruleset(&sid_for_task))
+                    .await
+                {
+                    Ok(ruleset) => ruleset,
+                    Err(error) => {
+                        eprintln!(
+                            "[engine_pool] refresh_permission_rulesets {sid} failed: {error:?}"
+                        );
+                        continue;
+                    }
+                }
+            };
             if let Err(e) = engine
                 .handle
-                .send(Op::SetPermissionRuleset {
-                    ruleset: self.bridge.scope_deny_ruleset(&sid),
-                })
+                .send(Op::SetPermissionRuleset { ruleset })
                 .await
             {
                 eprintln!("[engine_pool] refresh_permission_rulesets {sid} failed: {e:?}");
