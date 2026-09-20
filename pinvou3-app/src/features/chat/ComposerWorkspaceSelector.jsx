@@ -26,7 +26,12 @@ export function ComposerWorkspaceSelector({ copy, draftWorkspacePath, onPickWork
   function chooseDirectory() {
     setOpen(false);
     setPickError('');
-    onPickWorkspace()
+    // The callback contract covers both host wirings: the in-app picker opens
+    // and resolves void (no path to refresh), the legacy dialog returns a
+    // promise of the path. Promise.resolve keeps a void-returning wiring from
+    // throwing on `.then` (review #484 round-6: the picker branch returned
+    // undefined and every click died inside this handler).
+    Promise.resolve(onPickWorkspace())
       .then(path => { if (path) setRecentWorkspaces(loadRecentWorkspaces()); })
       // Directory dialog failures (including an old backend without the
       // command) must be visible — silently closing the menu would make the

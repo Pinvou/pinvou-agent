@@ -86,7 +86,10 @@ function rootPath(root) {
 // Membership follows the backend's §9.9 ruling: cross-project nesting is
 // legal, projects are ordered by (position, id), and the first project whose
 // roots contain the workspace wins — the old longest-root-wins rule is
-// retired (workspace-single-entry-blueprint.md).
+// retired (workspace-single-entry-blueprint.md). The id tiebreak uses
+// localeCompare where the store sorts byte-wise (`Ord` on `(&i64, &String)`);
+// the orders coincide for the generated id alphabet (`prj-` + fixed-width
+// base-36) — the sort here is display-order insurance, not a separate rule.
 function matchProjectByPath(projects, workspacePath) {
   const ordered = [...projects].sort(
     (a, b) => (a.position || 0) - (b.position || 0) || String(a.id).localeCompare(String(b.id)),

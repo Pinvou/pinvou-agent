@@ -115,3 +115,21 @@ test('keychain/manage i18n keys exist in all three languages', () => {
     }
   }
 });
+
+test('round-6 pins: picker promise contract, keyboard reveal, availability default', () => {
+  const read = (...segments) => fs.readFileSync(path.join(root, ...segments), 'utf8');
+  // Chat lane "choose directory": the host's picker opener resolves void, the
+  // legacy dialog resolves a path — the selector must tolerate both without
+  // throwing on `.then` (review #484 round-6 major).
+  const selector = read('src', 'features', 'chat', 'ComposerWorkspaceSelector.jsx');
+  assert.match(selector, /Promise\.resolve\(onPickWorkspace\(\)\)/, 'chooseDirectory normalizes the callback to a promise');
+  // The project-row "+ new conversation" wrapper reveals on keyboard focus
+  // like the menu button (display:none would remove it from the tab order).
+  const header = read('src', 'features', 'projects', 'ProjectGroupHeader.jsx');
+  const focusReveals = header.split('group-focus-within/header:flex').length - 1;
+  assert.ok(focusReveals >= 2, 'project new-session entry reveals on focus-within like the menu button');
+  // A roots row without the `available` key reads as available (the inverted
+  // default painted every healthy folder unavailable).
+  const manage = read('src', 'features', 'projects', 'manageFoldersState.js');
+  assert.match(manage, /root\.available !== false/, 'missing availability data defaults to available');
+});

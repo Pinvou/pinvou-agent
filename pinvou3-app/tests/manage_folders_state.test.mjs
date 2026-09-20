@@ -59,3 +59,20 @@ test('rootAlreadyPresent dedupes exact paths only', () => {
   assert.equal(rootAlreadyPresent(p, '/a/sub'), false, '嵌套合法(§9.9),不算重复');
   assert.equal(rootAlreadyPresent(p, ''), false);
 });
+
+test('manageFolderRows: real wire shape — missing available key means available', () => {
+  // ProjectRootStatus carries { path, available }; a row without the key
+  // (older host, hand-built stub) is "no availability data", which must read
+  // as available — the inverted default painted every healthy folder with the
+  // unavailable badge (review #484 round-6 blocker).
+  const rows = manageFolderRows(project('p1', [
+    { path: '/live' },
+    { path: '/gone', available: false },
+    { path: '/kept', available: true },
+  ]));
+  assert.deepEqual(rows.map(row => [row.path, row.available]), [
+    ['/live', true],
+    ['/gone', false],
+    ['/kept', true],
+  ]);
+});

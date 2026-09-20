@@ -2862,16 +2862,20 @@ const ToolWelcomeCard = ({ toolId, t, onSend }) => {
                     <ComposerWorkspaceSelector
                       copy={t.uiChatWorkspace}
                       draftWorkspacePath={(bs && bs.draftWorkspacePath) || null}
-                      onPickWorkspace={() => (
+                      onPickWorkspace={() => {
                         // Single entry (§2): the in-app "choose workspace"
                         // picker; the system directory dialog is folded into the
                         // picker's "browse for another folder" channel. Hosts
                         // without the picker wired fall back to the old behavior
-                        // (test stubs / old hosts).
-                        onOpenWorkspacePicker
-                          ? onOpenWorkspacePicker({ lane: 'chat', mode: (bs && bs.modeState && bs.modeState.mode) || null })
-                          : bridge.sessions.pickDraftWorkspace()
-                      )}
+                        // (test stubs / old hosts). Both branches return a
+                        // promise — the selector refreshes recents from the
+                        // resolved path (review #484 round-6).
+                        if (onOpenWorkspacePicker) {
+                          onOpenWorkspacePicker({ lane: 'chat', mode: (bs && bs.modeState && bs.modeState.mode) || null });
+                          return Promise.resolve(null);
+                        }
+                        return bridge.sessions.pickDraftWorkspace();
+                      }}
                       onSelectWorkspace={path => bridge.sessions.setDraftWorkspace(path)}
                       // Grant notice parity (§9.4): the recents channel grants
                       // the picked folder directly (single root), the same

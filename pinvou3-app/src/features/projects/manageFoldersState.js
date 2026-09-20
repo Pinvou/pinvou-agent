@@ -8,6 +8,8 @@ function rootPathOf(root) {
   return String((root && typeof root === 'object' ? root.path : root) || '');
 }
 
+export { rootPathOf };
+
 // Panel row: path + availability badge + primary marker. Primary =
 // last_primary_root (adopted only while still a roots member), otherwise the
 // first roots entry (same criterion as pickerPrimaryRoot).
@@ -15,7 +17,11 @@ export function manageFolderRows(project) {
   const roots = (project && Array.isArray(project.roots) ? project.roots : [])
     .map(root => ({
       path: rootPathOf(root),
-      available: !!(root && typeof root === 'object' ? root.available : true),
+      // The wire shape (ProjectRootStatus) carries `available`; a missing key
+      // (older host / test stub) means "no availability data" — treat as
+      // available, never as unavailable (review #484 round-6: an inverted
+      // default painted every healthy folder with the unavailable badge).
+      available: !(root && typeof root === 'object') || root.available !== false,
     }))
     .filter(row => row.path);
   if (!roots.length) return [];

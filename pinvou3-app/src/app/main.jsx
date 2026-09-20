@@ -27,7 +27,7 @@ import { MoveToProjectDialog } from '../features/projects/MoveToProjectDialog.js
 import { RebindFolderDialog } from '../features/projects/RebindFolderDialog.jsx';
 import { WorkspacePickerDialog } from '../features/projects/WorkspacePickerDialog.jsx';
 import { computePickerRows, pickerPrimaryRoot, pickerProjectRoots, workspaceNoticeTone } from '../features/projects/workspacePickerState.js';
-import { removeRootPlan, rootAlreadyPresent, rootConflictsWithExisting } from '../features/projects/manageFoldersState.js';
+import { removeRootPlan, rootAlreadyPresent, rootConflictsWithExisting, rootPathOf } from '../features/projects/manageFoldersState.js';
 import { ManageProjectFoldersDialog } from '../features/projects/ManageProjectFoldersDialog.jsx';
 import { classifyRebindError } from '../features/projects/rebindErrors.js';
 import { runSessionBatch } from '../shared/session-management.js';
@@ -1816,7 +1816,9 @@ const NAV_PREFETCH = {
       // is gated here: the projects domain is desktop-only (§9.8), and a
       // web group must render no dead entries.
       const unavailableRootsOf = (group) => (group.roots || [])
-        .filter(root => !(root && typeof root === 'object' ? root.available : root))
+        // Missing availability data (older host, stub) counts as available —
+        // same default as manageFolderRows (review #484 round-6).
+        .filter(root => !!(root && typeof root === 'object' ? root.available !== false : root))
         .map(root => String(typeof root === 'object' ? root.path : root));
       const projectGroupHeaderProps = (group) => ({
         onNewSession: bridge.projects ? () => handleProjectNewSession(group.projectId) : undefined,
@@ -1916,7 +1918,7 @@ const NAV_PREFETCH = {
         try {
           await bridge.projects.updateProjectRoots(
             manageFoldersProject.id,
-            [...manageFoldersProject.roots.map(root => String(root.path)), folder],
+            [...manageFoldersProject.roots.map(root => rootPathOf(root)), folder],
           );
         } catch (error) {
           console.warn('add project folder failed', error);
@@ -2030,11 +2032,16 @@ const NAV_PREFETCH = {
         const folder = Array.isArray(picked) ? picked[0] : picked;
         if (!folder) return;
         let materialized = false;
-        // An IPC-level rejection is neither an outcome nor an exclusion: the
-        // folder's exclusion status is unverified, so the excluded-folder
-        // panel (whose copy asserts the list) must not render for it.
+        // Only an ensure that actually ran may interpret "no outcome" as the
+        // exclusion list; a missing bridge entry proves nothing about the
+        // folder (review #484 round-6: the panel's copy asserts the list, so
+        // it must not render on an unverified claim). An IPC-level rejection
+        // is neither an outcome nor an exclusion either — the folder's
+        // exclusion status stays unverified.
+        let ensured = false;
         let errored = false;
         if (bridge.projects && bridge.projects.ensureFolderProjects) {
+          ensured = true;
           setPickerBusy(true);
           try {
             const outcomes = await bridge.projects.ensureFolderProjects([folder]);
@@ -2048,14 +2055,16 @@ const NAV_PREFETCH = {
               return;
             }
           } catch (error) {
+            // Log and start the plain folder conversation — browse promises a
+            // conversation at the picked folder, and the failed-outcome branch
+            // above is the stop surface for a real backend refusal.
             console.warn('ensure folder project failed', error);
             errored = true;
-            setSettingsToast(t.uiProjects.opFailed);
           } finally {
             setPickerBusy(false);
           }
         }
-        if (!materialized && !errored && bridge.projects) {
+        if (!materialized && ensured && !errored) {
           // Exclusion list (§3): the backend skipped it → no outcome; the
           // picker says so honestly and still allows starting as a plain
           // folder (no projectId).

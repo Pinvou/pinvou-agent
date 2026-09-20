@@ -261,9 +261,10 @@ const ProjectGroupHeader = ({
       )}
       {/* Project channel (§9.9): dedicated "new conversation" entry — cwd =
           the project's remembered primary root, keychain = the project's full
-          root set. Hover/touch reveal matches the menu button's contract. */}
+          root set. Reveal matches the menu button's contract: hover/touch,
+          and group-focus-within so keyboard focus keeps it in the tab order. */}
       {kind === 'project' && onNewSession && (
-        <div className="hidden group-hover/header:flex max-sm:flex items-center shrink-0">
+        <div className="hidden group-hover/header:flex group-focus-within/header:flex max-sm:flex items-center shrink-0">
           <button
             type="button"
             data-testid="project-new-session"
