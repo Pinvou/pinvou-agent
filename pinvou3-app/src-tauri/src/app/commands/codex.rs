@@ -31,6 +31,11 @@ pub struct CodexAcpSessionListItem {
     pub pinned_at: Option<String>,
     #[serde(flatten)]
     pub workspace: CodexAcpWorkspaceInfo,
+    /// 钥匙串快照(§6):从绑定 store 投影(store 是权威,metadata 里那份
+    /// 只有 fork 原生快照流才写)。空 = 单根语义(仅 cwd)。Web 投影会把它
+    /// 降级为末级目录名,与 workspace.workspace_path 同一套主机路径纪律。
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub workspace_roots: Vec<String>,
     pub agent_id: String,
     pub agent_name: String,
 }
@@ -631,11 +636,17 @@ pub async fn list_codex_acp_sessions(
             let workspace = acp_pool
                 .workspace_info(&metadata.id)
                 .map_err(|error| format!("读取代码会话 {} 工作目录失败: {error:#}", metadata.id))?;
+            let workspace_roots = store
+                .session_workspace_roots(&metadata.id)
+                .iter()
+                .map(|path| path.display().to_string())
+                .collect();
             Ok(CodexAcpSessionListItem {
                 pinned: store.is_pinned(&metadata.id),
                 pinned_at: store.pinned_at(&metadata.id),
                 metadata,
                 workspace,
+                workspace_roots,
                 agent_id: code_session_agent_id(backend),
                 agent_name: backend.display_name().to_string(),
             })
@@ -673,6 +684,12 @@ fn redact_session_metadata_for_web_in_place(metadata: &mut SessionMetadata) {
 fn redact_codex_session_list_item_for_web(item: &mut CodexAcpSessionListItem) {
     redact_session_metadata_for_web_in_place(&mut item.metadata);
     item.workspace.workspace_path = redact_workspace_path_for_web(&item.workspace.workspace_path);
+    // The keychain snapshot is host-absolute paths too: degrade each root to
+    // its last directory name before the web boundary (same discipline as
+    // workspace.workspace_path; the web lane does not group by it).
+    for root in item.workspace_roots.iter_mut() {
+        *root = redact_workspace_path_for_web(root);
+    }
 }
 
 /// Web 版代码会话列表：复用桌面端列表逻辑，但把工作区路径投影为目录名，
@@ -696,11 +713,17 @@ pub async fn list_codex_acp_sessions_for_web(
             let workspace = acp_pool
                 .workspace_info(&metadata.id)
                 .map_err(|error| format!("读取代码会话 {} 工作目录失败: {error:#}", metadata.id))?;
+            let workspace_roots = store
+                .session_workspace_roots(&metadata.id)
+                .iter()
+                .map(|path| path.display().to_string())
+                .collect();
             Ok(CodexAcpSessionListItem {
                 pinned: store.is_pinned(&metadata.id),
                 pinned_at: store.pinned_at(&metadata.id),
                 metadata,
                 workspace,
+                workspace_roots,
                 agent_id: code_session_agent_id(backend),
                 agent_name: backend.display_name().to_string(),
             })
@@ -1064,6 +1087,10 @@ mod tests {
                 workspace_path: PRIVATE_WORKSPACE.to_string(),
                 workspace_available: true,
             },
+            workspace_roots: vec![
+                "/Users/asto/Documents/secret-project".to_string(),
+                "/Users/asto/Documents/secret-extra".to_string(),
+            ],
             agent_id: "codex".to_string(),
             agent_name: "Codex".to_string(),
         };
@@ -1072,6 +1099,14 @@ mod tests {
         assert_eq!(item_json["workspace"], "secret-project");
         assert_eq!(item_json["workspace_path"], "secret-project");
         assert!(!item_json.to_string().contains(PRIVATE_WORKSPACE));
+        // The keychain snapshot rides the same discipline (review #484 M2):
+        // each root degrades to its last directory name.
+        assert_eq!(
+            item_json["workspace_roots"],
+            serde_json::json!(["secret-project", "secret-extra"])
+        );
+        assert!(!item_json.to_string().contains("secret-extra/.."));
+        assert!(!item_json.to_string().contains("/Users/asto"));
     }
 
     #[test]
