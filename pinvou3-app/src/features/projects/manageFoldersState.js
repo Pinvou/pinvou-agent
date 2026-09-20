@@ -44,13 +44,16 @@ export function removeRootPlan(project, path) {
   };
 }
 
-// Add duplicate check: already covered (exact same path) needs no add; only
-// exact duplicates are blocked (adding the same path twice would trip
+// Add duplicate check: already covered (folded identity — Windows-shaped
+// paths fold case and separators, per isUnderRoot) needs no add; only
+// duplicates are blocked here (adding the same path twice would trip
 // update_project's in-group dedup validation, so block it early).
 export function rootAlreadyPresent(project, path) {
   const target = String(path || '');
   if (!target) return false;
-  return manageFolderRows(project).some(row => row.path === target);
+  return manageFolderRows(project).some(
+    row => isUnderRoot(target, row.path) && isUnderRoot(row.path, target),
+  );
 }
 
 // Intra-set nesting guard: §9.9 legalized cross-project overlap only — within
