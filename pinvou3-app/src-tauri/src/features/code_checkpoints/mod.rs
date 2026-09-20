@@ -1556,9 +1556,8 @@ mod tests {
         );
     }
 
-    /// Diff preview against a legacy snapshot (taken before the migration, its
-    /// tree contains .env): the changes list must not surface sensitive
-    /// entries or secret plaintext; ordinary file changes render normally.
+    /// 对迁移前的 legacy 快照做 diff 预览（快照树里含 .env）：变更列表不得
+    /// 泄露敏感条目或密钥明文；普通文件变更正常渲染。
     #[test]
     fn diff_preview_filters_secret_paths_from_legacy_snapshot() {
         if !git_available() {

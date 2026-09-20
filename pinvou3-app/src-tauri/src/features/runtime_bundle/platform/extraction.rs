@@ -513,16 +513,14 @@ impl Pinvou3Bundle {
         paths::bundles_root().join(id).join("skills")
     }
 
-    /// Shared implementation of the CLI-connector skill gate: `show` extracts
-    /// the embedded skill dir into `bundles/<id>/skills/`; otherwise the skill
-    /// dirs + NOTICE are REMOVED. Idempotent (removing a missing dir is not an
-    /// error). Visibility = dir presence; the engine rescans on the next
-    /// system-prompt refresh.
+    /// CLI 连接器技能门的共享实现：`show` 为真时把内嵌技能目录解包到
+    /// `bundles/<id>/skills/`；否则移除技能目录 + NOTICE。幂等（目录本就不存在
+    /// 时移除不算错误）。可见性 = 目录是否存在；引擎在下次 system-prompt
+    /// 刷新时重扫。
     ///
-    /// The four `apply_*_skills` wrappers were near-duplicates (differing in
-    /// the embedded dir, the dir table, and the NOTICE file name), folded into
-    /// this table-driven helper. Wecom's wrapper additionally keeps its
-    /// legacy 0.1.9 directory cleanup inline, outside this helper.
+    /// 四个 `apply_*_skills` 包装器原是近似重复（差异仅在内嵌目录、目录表和
+    /// NOTICE 文件名），已折叠为这个表驱动助手。wecom 的包装器额外把
+    /// legacy 0.1.9 目录清理内联保留在本助手之外。
     fn apply_connector_skills(
         connector_id: &str,
         embedded_dir: &Dir<'_>,
