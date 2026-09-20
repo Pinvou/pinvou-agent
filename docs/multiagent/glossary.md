@@ -22,7 +22,7 @@ _Avoid_: 品悟原生代码会话
 _Avoid_: 编排、调度
 
 **委派提醒（Delegation Reminder）**：
-多智能体模式开启时注入的蜂群契约与候选提示，由两部分组成：蜂群契约是一段紧凑中文文本，在引擎 spawn 时经 `EngineConfig.instructions` 内联来源 `pinvou3:swarm` 注入一次（系统提示中渲染为 `<instructions source="pinvou3:swarm">`），随压缩存活，且不进入子智能体系统提示（子智能体只收到 FleetRole 提示与任务说明）；每轮随 App 既有 `<system-reminder>` 信封附带的专业候选行（≤8 条，见「角色」；本轮无匹配时改为一句名册提示，零候选轮保持可见）是唯一的逐轮蜂群材料，编辑上一轮重放不再注入任何提醒。工作模式与原生 Code 复用同一组装，不复制进 `instructions-work.md` 或 `instructions-code.md`；关闭开关后新 spawn 的引擎不再注入契约。2026-09-17 蜂群二期改写：此前为每轮前置到用户消息的英文 `SWARM_MODE_PROMPT` 加 8 点中文委派提醒。
+多智能体模式开启时注入的蜂群契约与候选提示，由两部分组成：蜂群契约是一段紧凑中文文本，在引擎 spawn 时经 `EngineConfig.instructions` 内联来源 `pinvou3:swarm` 注入一次（系统提示中渲染为 `<instructions source="pinvou3:swarm">`），随压缩存活，且不进入子智能体系统提示（子智能体只收到 FleetRole 提示与任务说明）；每轮随 App 既有 `<system-reminder>` 信封附带的专业候选行（≤8 条，见「角色」；本轮无匹配时改为一句名册提示，零候选轮保持可见）是唯一的逐轮蜂群材料，编辑上一轮重放与回合中途的 steer 追加指令不再注入任何提醒。工作模式与原生 Code 复用同一组装，不复制进 `instructions-work.md` 或 `instructions-code.md`；关闭开关后新 spawn 的引擎不再注入契约。2026-09-17 蜂群二期改写：此前为每轮前置到用户消息的英文 `SWARM_MODE_PROMPT` 加 8 点中文委派提醒。
 _Avoid_: 用户提示词、多智能体 system 文件
 
 **子智能体（Subagent）**：
