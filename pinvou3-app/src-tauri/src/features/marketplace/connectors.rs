@@ -14,7 +14,9 @@ use crate::platform::paths;
 use super::MarketplaceManager;
 use super::bundle;
 use super::python_dependencies;
-use super::secrets::{is_sensitive_key_name, mcp_secret_missing_error, set_remote_secret_header};
+use super::secrets::{
+    is_sensitive_key_name, mcp_secret_env_var, mcp_secret_missing_error, set_remote_secret_header,
+};
 use super::types::ToolManifest;
 
 /// mcp.json 读-改-写的进程内串行化（四轮评审 M-8）：add/remove 是裸读-改-写，
@@ -58,15 +60,17 @@ fn default_mcp_json() -> serde_json::Value {
     serde_json::json!({"servers": {}})
 }
 
-/// Load mcp.json for a reconcile write. A file that exists but cannot be
+/// Load mcp.json for any read-modify-write that must never reset a file it
+/// cannot read (reconcile restores, rebuilt entries, and the UI install /
+/// uninstall writers all go through here). A file that exists but cannot be
 /// parsed is backed up (`mcp.json.corrupt.<ts>`, mirroring the corrupt
-/// `installed.json` handling) and reported as an error — the reconcile never
-/// resets a file it cannot read. Resetting would destroy custom entries and
-/// preserved user fields, re-creating the exact parse-failure drift the
-/// startup reconcile exists to heal. The same guarantee holds across the
-/// whole boot: `run_mcp_startup_maintenance` keeps every later writer (the
-/// builtin upsert included) off a file reported by [`mcp_json_unparseable`],
-/// so the live file stays byte-identical until the user fixes or removes it.
+/// `installed.json` handling) and reported as an error. Resetting would
+/// destroy custom entries and preserved user fields, re-creating the exact
+/// parse-failure drift the startup reconcile exists to heal. The same
+/// guarantee holds across the whole boot: `run_mcp_startup_maintenance` keeps
+/// every later writer (the builtin upsert included) off a file reported by
+/// [`mcp_json_unparseable`], so the live file stays byte-identical until the
+/// user fixes or removes it.
 pub(super) fn load_mcp_json_for_reconcile() -> Result<(PathBuf, serde_json::Value), String> {
     let mcp_path = paths::mcp_config_path();
     if !mcp_path.is_file() {
@@ -78,7 +82,9 @@ pub(super) fn load_mcp_json_for_reconcile() -> Result<(PathBuf, serde_json::Valu
         Err(error) => {
             backup_corrupt_mcp_json(&mcp_path, &content);
             Err(format!(
-                "mcp.json is unparseable; original file backed up, reconciliation skipped this boot: {error}"
+                "mcp.json is unparseable; the original file was backed up as \
+                 mcp.json.corrupt.<timestamp> and left untouched — fix or remove it and \
+                 retry: {error}"
             ))
         }
     }
@@ -106,35 +112,7 @@ pub(crate) fn mcp_json_unparseable() -> bool {
 }
 
 fn backup_corrupt_mcp_json(mcp_path: &Path, content: &str) {
-    let Some(parent) = mcp_path.parent() else {
-        return;
-    };
-    // A persistent parse failure would otherwise mint one timestamped backup
-    // per boot. If an existing backup already holds the same bytes, the
-    // original is already preserved — keep the single copy.
-    if let Ok(entries) = std::fs::read_dir(parent) {
-        let identical_backup_exists = entries.flatten().any(|entry| {
-            entry
-                .file_name()
-                .to_string_lossy()
-                .starts_with("mcp.json.corrupt.")
-                && std::fs::read(entry.path()).is_ok_and(|bytes| bytes == content.as_bytes())
-        });
-        if identical_backup_exists {
-            return;
-        }
-    }
-    let ts = std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
-        .map(|d| d.as_secs())
-        .unwrap_or(0);
-    let backup = parent.join(format!("mcp.json.corrupt.{ts}"));
-    if let Err(e) = std::fs::write(&backup, content) {
-        log::warn!(
-            "[pinvou3-app] failed to backup corrupt mcp.json to {}: {e}",
-            backup.display()
-        );
-    }
+    super::backup_corrupt_json_file(mcp_path, "mcp.json.corrupt", content);
 }
 
 impl<S: crate::platform::credential_store::CredentialStore> MarketplaceManager<S> {
@@ -236,14 +214,12 @@ impl<S: crate::platform::credential_store::CredentialStore> MarketplaceManager<S
         python_environment: Option<&python_dependencies::InstalledPythonEnvironment>,
     ) -> Result<(), String> {
         let _guard = mcp_json_lock();
-        let mcp_path = paths::mcp_config_path();
-        let mut mcp: serde_json::Value = if mcp_path.is_file() {
-            let content =
-                std::fs::read_to_string(&mcp_path).map_err(|e| format!("读取 mcp.json: {e}"))?;
-            serde_json::from_str(&content).unwrap_or_else(|_| default_mcp_json())
-        } else {
-            default_mcp_json()
-        };
+        // An unparseable mcp.json is backed up and refused, never reset: an
+        // install that silently reset the file would destroy the custom
+        // entries and preserved user fields the startup reconcile exists to
+        // heal. The transaction in `install_inner` rolls the install back, so
+        // the user fixes or removes the file and retries.
+        let (mcp_path, mut mcp) = load_mcp_json_for_reconcile()?;
 
         let servers = mcp
             .get_mut("servers")
@@ -355,12 +331,12 @@ impl<S: crate::platform::credential_store::CredentialStore> MarketplaceManager<S
                     // restore (which has no user input at all) and also a re-install
                     // over a previously configured tool, whose credential would
                     // otherwise be dropped. A genuinely absent credential leaves the
-                    // field unwritten — installs report the unwired entry (historical
-                    // behavior for an omitted optional key), the startup reconcile
-                    // degrades by design and the auth failure surfaces through the
-                    // boot receipt. A credential-store read failure must not degrade
-                    // into a permanently unwired entry, so it fails the build in
-                    // every mode and the next startup retries the restore.
+                    // field unwritten — installs do so silently (historical behavior
+                    // for an omitted optional key), the startup reconcile degrades by
+                    // design and the auth failure surfaces through the boot receipt
+                    // and the restore note. A credential-store read failure must not
+                    // degrade into a permanently unwired entry, so it fails the build
+                    // in every mode and the next startup retries the restore.
                     match self.try_resolve_secret_placeholder(
                         &manifest.id,
                         bundle::keyring_target(bundle::CredentialTarget::Bearer),
@@ -414,26 +390,37 @@ impl<S: crate::platform::credential_store::CredentialStore> MarketplaceManager<S
             )?;
         }
 
-        // 3. 兼容旧 manifest.env 中以 _API_KEY 结尾的字段，迁移后只写占位。
-        if headers.is_empty() {
+        // 3. 兼容旧 manifest.env 中以 _API_KEY 结尾的字段。与明文迁移的落盘同形：
+        //    走 `bearer_token_env_var`（env 变量名，请求时经宿主 resolver 解析），
+        //    而不是把 `${...}` 占位符写进 `headers` —— 引擎按原样发送 headers 的
+        //    字面值、不展开占位符（底座 mcp.rs `headers` 字段文档），字面占位符
+        //    是一条永远鉴权失败的接线。
+        if headers.is_empty() && env_headers.is_empty() && bearer_token_env_var.is_none() {
             for k in manifest.env.keys() {
                 if is_sensitive_key_name(k) {
-                    let placeholder = match self.try_resolve_secret_placeholder(
+                    match self.try_resolve_secret_placeholder(
                         &manifest.id,
                         bundle::keyring_target(bundle::CredentialTarget::Bearer),
                         k,
                         user_config,
                         &manifest.env,
                     ) {
-                        Ok(Some(placeholder)) => placeholder,
+                        // The resolved value is persisted to the store/registry
+                        // inside `try_resolve_secret_placeholder`; the entry
+                        // only ever carries the env-var NAME.
+                        Ok(Some(_)) => {
+                            set_remote_secret_header(
+                                &mut env_headers,
+                                &mut bearer_token_env_var,
+                                "Authorization",
+                                "Bearer",
+                                k,
+                            )?;
+                        }
                         Ok(None) if degrade_unresolved_secrets => continue,
                         Ok(None) => return Err(mcp_secret_missing_error(&manifest.id, k)),
                         Err(error) => return Err(error),
-                    };
-                    headers.insert(
-                        "Authorization".to_string(),
-                        serde_json::Value::String(format!("Bearer {}", placeholder)),
-                    );
+                    }
                     break;
                 }
             }
@@ -741,10 +728,13 @@ impl<S: crate::platform::credential_store::CredentialStore> MarketplaceManager<S
         if !mcp_path.is_file() {
             return Ok(());
         }
-        let content =
-            std::fs::read_to_string(&mcp_path).map_err(|e| format!("读取 mcp.json: {e}"))?;
-        let mut mcp: serde_json::Value =
-            serde_json::from_str(&content).unwrap_or_else(|_| default_mcp_json());
+        // An unparseable mcp.json is backed up and refused, never reset. This
+        // writer is reachable at boot from the retired-tool cleanup and the
+        // Python-repair downgrade, and from the UI uninstall: a reset there
+        // would destroy the file before (cleanup) or despite (downgrade,
+        // uninstall) the reconcile's backup — the callers' transactions roll
+        // back instead, and the cleanup simply retries on a later boot.
+        let (mcp_path, mut mcp) = load_mcp_json_for_reconcile()?;
 
         if let Some(servers) = mcp.get_mut("servers").and_then(|s| s.as_object_mut()) {
             // 先尝试加载 manifest 看是否有 servers 字段（远程工具有多条目）
@@ -815,11 +805,9 @@ impl<S: crate::platform::credential_store::CredentialStore> MarketplaceManager<S
                 _ => {
                     let entry =
                         self.build_remote_server_entry(manifest, server, &HashMap::new(), true)?;
-                    servers_map.insert(server.name.clone(), entry);
-                    // A non-secret bearer key lives only in the user's install-time
-                    // input — it was never persisted anywhere, so a restore cannot
-                    // re-derive it. Say so instead of reporting an unqualified
-                    // success that will 401 on first use.
+                    servers_map.insert(server.name.clone(), entry.clone());
+                    // Say what the restore could not do instead of reporting an
+                    // unqualified success that 401s on first use.
                     let mut note = format!("restored missing remote entry '{}'", server.name);
                     if manifest
                         .config_fields
@@ -830,6 +818,14 @@ impl<S: crate::platform::credential_store::CredentialStore> MarketplaceManager<S
                             "; its non-secret bearer key is not stored and could not be \
                              re-derived — reinstall the tool to re-enter it",
                         );
+                    }
+                    let missing_secrets = entry_secret_keys_without_wiring(manifest, &entry);
+                    if !missing_secrets.is_empty() {
+                        note.push_str(&format!(
+                            "; no stored credential for {} — restored without that auth \
+                             wiring; reinstall the tool to re-enter it",
+                            missing_secrets.join(", ")
+                        ));
                     }
                     changed.push(note);
                 }
@@ -889,6 +885,39 @@ pub(super) fn dead_local_entry_target(entry: &serde_json::Value) -> Option<Strin
         .into_iter()
         .find(|s| Path::new(s).is_absolute() && !Path::new(s).exists())
         .map(str::to_string)
+}
+
+/// Secret source keys of `manifest` (secret_headers, secret bearer config
+/// fields, legacy sensitive manifest.env keys) whose env-var NAME appears
+/// nowhere in a restored remote entry: the restore degraded to an entry
+/// without that wiring because no stored credential resolved. Only names are
+/// reported — never values.
+fn entry_secret_keys_without_wiring(
+    manifest: &ToolManifest,
+    entry: &serde_json::Value,
+) -> Vec<String> {
+    let rendered = entry.to_string();
+    let mut keys: Vec<String> = Vec::new();
+    let mut push = |key: &str| {
+        if rendered.contains(&mcp_secret_env_var(key)) {
+            return;
+        }
+        if !keys.iter().any(|k| k == key) {
+            keys.push(key.to_string());
+        }
+    };
+    for secret in &manifest.secret_headers {
+        push(&secret.source_key);
+    }
+    for field in &manifest.config_fields {
+        if field.target == "bearer" && field.secret {
+            push(&field.key);
+        }
+    }
+    for key in manifest.env.keys().filter(|k| is_sensitive_key_name(k)) {
+        push(key);
+    }
+    keys
 }
 
 /// Whether an existing remote entry carries the exact manifest-derived fields a fresh
