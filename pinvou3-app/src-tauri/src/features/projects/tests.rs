@@ -855,7 +855,7 @@ fn move_ancestor_absorb_demotes_a_covered_primary() {
     let child = parent.join("child");
     std::fs::create_dir_all(&child).expect("create dirs");
 
-    let project = create(&store, "目标", &[child.clone()]);
+    let project = create(&store, "目标", std::slice::from_ref(&child));
     store
         .set_last_primary_root(&project.id, &child)
         .expect("remember the child as primary");
