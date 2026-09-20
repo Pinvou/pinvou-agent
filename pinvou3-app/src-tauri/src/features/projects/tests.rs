@@ -803,6 +803,80 @@ fn root_keys_fold_case_only_on_windows() {
 }
 
 #[test]
+fn rebind_roots_translates_the_remembered_primary_folder() {
+    // §9.2 + review #484 round-3 M1: the remembered primary folder moves
+    // with its directory — stranding a `/from`-spelled memory would break
+    // "new conversation" on every later project-row entry with a
+    // nonexistent-path rejection, minted by the very command that repairs
+    // broken links. A primary OUTSIDE the prefix stays.
+    let temp = tempfile::tempdir().expect("tempdir");
+    let store = store_in(&temp);
+    let from = abs("mem-from");
+    let outside_primary = abs("mem-outside");
+    let to = temp.path().join("mem-to");
+    std::fs::create_dir_all(&to).expect("create to");
+
+    let project = create(&store, "搬家", std::slice::from_ref(&from));
+    store
+        .set_last_primary_root(&project.id, &from)
+        .expect("remember primary under from");
+    let other = create(&store, "别的项目", std::slice::from_ref(&outside_primary));
+    store
+        .set_last_primary_root(&other.id, &outside_primary)
+        .expect("remember primary outside from");
+
+    store
+        .rebind_roots(&from, &to)
+        .expect("rebind translates the primary");
+    let moved = store.get(&project.id).unwrap();
+    assert_eq!(moved.roots, vec![display(&to)]);
+    assert_eq!(
+        moved.last_primary_root.as_deref(),
+        Some(display(&to).as_path()),
+        "the remembered primary is translated, not stranded"
+    );
+    let untouched = store.get(&other.id).unwrap();
+    assert_eq!(
+        untouched.last_primary_root.as_deref(),
+        Some(display(&outside_primary).as_path()),
+        "a primary outside the prefix stays"
+    );
+}
+
+#[test]
+fn move_ancestor_absorb_demotes_a_covered_primary() {
+    // Review #484 round-3 M1: when add_workspace_root absorbs covered
+    // descendants, a remembered primary that was one of them must be
+    // demoted (the channel falls back to the first roots entry) instead of
+    // stranding a path the project no longer claims.
+    let temp = tempfile::tempdir().expect("tempdir");
+    let store = store_in(&temp);
+    let parent = temp.path().join("ancestor");
+    let child = parent.join("child");
+    std::fs::create_dir_all(&child).expect("create dirs");
+
+    let project = create(&store, "目标", &[child.clone()]);
+    store
+        .set_last_primary_root(&project.id, &child)
+        .expect("remember the child as primary");
+
+    // Adding the workspace = the parent: the covered child is absorbed and
+    // the remembered primary demoted. The store layer writes assignments
+    // without loading sessions (the command layer owns the existence check),
+    // so a synthetic id is enough here.
+    let outcome = store
+        .move_session_to_project("s1", Some(&project.id), Some(&parent))
+        .expect("move with ancestor add");
+    assert_eq!(outcome.added_root, Some(display(&parent)));
+    let updated = store.get(&project.id).unwrap();
+    assert_eq!(updated.roots, vec![display(&parent)]);
+    assert_eq!(
+        updated.last_primary_root, None,
+        "the covered primary is demoted, not stranded"
+    );
+}
+
+#[test]
 fn rebind_roots_display_form_preserves_nested_suffix() {
     // Display-form `from` (the documented IPC contract): a root nested one
     // level below `from` moves to `to`/suffix with its original casing kept.

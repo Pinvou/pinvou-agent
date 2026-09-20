@@ -901,6 +901,19 @@ impl ProjectStore {
                     .iter()
                     .any(|existing_key| key_is_same_or_nested(&key, existing_key));
                 if !covered.is_empty() && !already_covered {
+                    // Capture the absorbed paths before the drain: a covered
+                    // descendant that served as the remembered primary is
+                    // about to leave `roots`, and stranding the memory would
+                    // break "new conversation" on every later project-row
+                    // entry (demote per §9.2 — the channel falls back to the
+                    // first roots entry).
+                    let covered_paths: Vec<PathBuf> = project
+                        .roots
+                        .iter()
+                        .enumerate()
+                        .filter(|(index, _)| covered.contains(index))
+                        .map(|(_, root)| root.clone())
+                        .collect();
                     project.roots = project
                         .roots
                         .drain(..)
@@ -909,6 +922,15 @@ impl ProjectStore {
                         .map(|(_, root)| root)
                         .collect();
                     project.roots.push(display.clone());
+                    if let Some(primary) = project.last_primary_root.as_ref() {
+                        let primary_key = identity_key_of_display(primary);
+                        if covered_paths
+                            .iter()
+                            .any(|path| identity_key_of_display(path) == primary_key)
+                        {
+                            project.last_primary_root = None;
+                        }
+                    }
                     project.updated_at = Utc::now();
                     added_root = Some(display);
                 } else if !already_covered {
@@ -971,6 +993,22 @@ impl ProjectStore {
                     to_display.join(suffix)
                 };
                 changed = true;
+            }
+            // The remembered primary folder moves with its directory (§9.2):
+            // it is the project channel's default cwd, so stranding a
+            // `/from`-spelled memory would break "new conversation" on every
+            // later project-row entry with a nonexistent-path rejection —
+            // minted by the very command that repairs broken links.
+            if let Some(primary) = project.last_primary_root.as_mut() {
+                if let Some(suffix) =
+                    crate::platform::os::path_relative_suffix_under(primary, &from_display)
+                {
+                    *primary = if suffix.as_os_str().is_empty() {
+                        to_display.clone()
+                    } else {
+                        to_display.join(suffix)
+                    };
+                }
             }
             if changed {
                 project.updated_at = Utc::now();
