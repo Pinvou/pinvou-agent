@@ -56,7 +56,7 @@ else
   fail=1
 fi
 
-bold "── 第 1 层：七主题与父仓适配指纹 ──"
+bold "── 第 1 层：八主题与父仓适配指纹 ──"
 # 格式：主题|说明|文件（相对父仓根）|grep -F 固定串
 fingerprints=(
   "T2|Unix shell guidance preservation test|CodeWhale/crates/tui/src/tools/shell/guidance.rs|fn shell_guidance_preserves_unix_shell_contracts"
@@ -257,7 +257,7 @@ for fp in "${fingerprints[@]}"; do
 done
 
 forkguard_count="$(grep -Rho --include='*.rs' 'forkguard_[A-Za-z0-9_]*' "$CODEWHALE/crates" 2>/dev/null | sort -u | wc -l | tr -d ' ')"
-if [[ "$forkguard_count" -ge 54 ]]; then
+if [[ "$forkguard_count" -ge 96 ]]; then
   green "  ✓ CodeWhale 至少保留 96 条独立 forkguard 行为名（实际 ${forkguard_count}）"
 else
   red "  ✗ CodeWhale forkguard 行为名仅 ${forkguard_count:-0}，登记下限为 96"
