@@ -92,6 +92,24 @@ pub struct EnablePackagesOutcome {
     pub not_applied: Vec<String>,
 }
 
+// Round-16 minor 9: the IPC shape carries `enabled`; the domain shape
+// (`features::marketplace::scope::EnablePackagesOutcome`) does not. The
+// mapping lives in this single conversion so the two structs cannot drift:
+// `enabled` is honest about coverage — a refused batch or any id that matched
+// nothing (not_applied) means the batch did not fully apply, so it is not
+// reported as a plain success; the caller surfaces blocked/not_applied.
+impl From<crate::features::marketplace::scope::EnablePackagesOutcome> for EnablePackagesOutcome {
+    fn from(value: crate::features::marketplace::scope::EnablePackagesOutcome) -> Self {
+        let blocked = value.blocked;
+        let not_applied = value.not_applied;
+        Self {
+            enabled: blocked.is_empty() && not_applied.is_empty(),
+            blocked,
+            not_applied,
+        }
+    }
+}
+
 /// Batch package enabling for user actions such as scene opt-in (review #455
 /// R7-M3): the backend performs "read the currently effective disabled set →
 /// remove package_ids → persist" inside the `DISABLED_BUNDLES_FILE_LOCK`
@@ -118,34 +136,13 @@ pub async fn enable_marketplace_packages(
     })
     .await
     .map_err(|e| format!("enable_marketplace_packages join: {e}"))??;
-    if !outcome.blocked.is_empty() {
-        // Refused (round-10 Major 2): nothing was enabled; the hot-refresh
-        // below is skipped because no state changed.
-        return Ok(EnablePackagesOutcome {
-            enabled: false,
-            blocked: outcome.blocked,
-            not_applied: outcome.not_applied,
-        });
+    if outcome.blocked.is_empty() {
+        // Identical finalization to the other switch writers (round-16 minor
+        // 9: previously re-inlined the same seven statements). Skipped only
+        // when the batch was refused (round-10 Major 2) and no state changed.
+        refresh_tools_and_broadcast(&app, pool.inner()).await;
     }
-    pool.refresh_live_sessions_skills().await;
-    pool.refresh_disallowed_tools().await;
-    pool.refresh_permission_rulesets().await;
-    let payload = serde_json::json!({});
-    let _ = app.emit("remote_control:tools_changed", payload.clone());
-    crate::features::remote_control::forward_app_event(
-        &app,
-        "remote_control:tools_changed",
-        payload,
-    );
-    Ok(EnablePackagesOutcome {
-        // Round-13 m3: `enabled` is honest about coverage — any id that
-        // matched nothing (not_applied) means the batch did not fully apply,
-        // so it is not reported as a plain success; the caller surfaces
-        // not_applied.
-        enabled: outcome.not_applied.is_empty(),
-        blocked: outcome.blocked,
-        not_applied: outcome.not_applied,
-    })
+    Ok(outcome.into())
 }
 
 // ---------------------------------------------------------------------------

@@ -136,7 +136,7 @@ import {
   isPersonalWorkbenchTemplateDraftForTemplate,
 } from './personal-workbench-scene.js';
 import { canPrepareSceneCapabilities, prepareSceneCapabilities, requiredCapabilitiesForMeta } from './scene-capabilities.js';
-import { consumeWelcomeOptIn, resolveSendCapabilityStatus } from './welcome-optin.js';
+import { consumeWelcomeOptIn, resolveSendCapabilityStatus, runSharedWelcomeOptIn } from './welcome-optin.js';
 import { invokeTauri } from '../../platform/tauri/client.js';
 import {
   COMPOSER_ICON_BUTTON_CLASS,
@@ -1360,6 +1360,11 @@ const ToolWelcomeCard = ({ toolId, _theme, t, onSend }) => {
       // identity-churn rebuilds); the free-input path consumes the current
       // welcome pack through this ref (review #455 R8-2).
       const welcomeToolIdRef = useRef(null);
+      // Round-16 minor 13: in-flight welcome opt-in attempt ({ toolId,
+      // promise } | null) shared across concurrent sends — a send arriving
+      // during the first enable's await window joins it instead of no-op'ing
+      // and later clearing the first send's failure banner.
+      const welcomeOptInAttemptRef = useRef(null);
       const welcomeSessionKeyRef = useRef(null);
       // Web 只读判定：多智能体是桌面专属能力（ADR-0006），Web 端只读呈现。
       // modeState.multiAgent 经 get_mode_state 双端同步（开关已持久化）。
@@ -1582,13 +1587,16 @@ const ToolWelcomeCard = ({ toolId, _theme, t, onSend }) => {
         // welcome-optin.js for direct testing): failure must not block the
         // send but must stay fail-visible — banner notice + console trace
         // (review #455 R9-M4); the tool's absence is likewise visible in the reply.
-        const welcomeOptIn = await consumeWelcomeOptIn({
-          getToolId: () => welcomeToolIdRef.current,
-          consume: () => {
-            welcomeToolIdRef.current = null;
-            setWelcomeToolId(null);
-          },
-          invoke: invokeTauri,
+        const welcomeOptIn = await runSharedWelcomeOptIn(welcomeOptInAttemptRef, {
+          toolId: welcomeToolIdRef.current,
+          run: () => consumeWelcomeOptIn({
+            getToolId: () => welcomeToolIdRef.current,
+            consume: () => {
+              welcomeToolIdRef.current = null;
+              setWelcomeToolId(null);
+            },
+            invoke: invokeTauri,
+          }),
         });
         if (welcomeOptIn.failed) {
           console.warn("[pinvou3][chat-ui] welcome-card opt-in failed:", welcomeOptIn.error);
@@ -1639,11 +1647,17 @@ const ToolWelcomeCard = ({ toolId, _theme, t, onSend }) => {
                 if (prepared.error) {
                   console.warn('[pinvou3][chat-ui] scene capability prepare failed:', prepared.error);
                 }
+                // Round-16 minor 13: notApplied (installed but matched no
+                // expansion entry) gets its own retry-inviting copy — the
+                // missingCapabilities branch would invite a reinstall that
+                // cannot help.
                 const detail = prepared.blocked && prepared.blocked.length
                   ? t.uiChatScenes.switchedOffPacks(prepared.blocked.join(', '))
-                  : (prepared.missing && prepared.missing.length
-                    ? t.uiChatScenes.missingCapabilities(prepared.missing.join(', '))
-                    : '');
+                  : (prepared.notApplied && prepared.notApplied.length
+                    ? t.uiChatScenes.notAppliedPacks(prepared.notApplied.join(', '))
+                    : (prepared.missing && prepared.missing.length
+                      ? t.uiChatScenes.missingCapabilities(prepared.missing.join(', '))
+                      : ''));
                 // Round-13 m2: the welcome card is one-shot — if its opt-in
                 // failed, a later resend never re-attempts it, so the welcome
                 // failure must win over the scene failure copy here (the

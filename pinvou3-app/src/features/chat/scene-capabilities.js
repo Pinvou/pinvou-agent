@@ -171,15 +171,17 @@ async function prepareSceneCapabilities(meta, invoke) {
       }
       if (notApplied.length) {
         // Round-13 m3: those ids matched nothing in the expansion (likely a
-        // concurrent install that had not committed) — treat like the
-        // missing-install path so the send aborts with the existing missing
-        // copy instead of proceeding without the tools.
+        // concurrent install that had not committed) — abort the send, but
+        // NOT under the missing-install copy (round-16 minor 13): the packs
+        // are installed, so a reinstall invitation would not help. The
+        // dedicated notApplied shape renders the retry-inviting copy instead.
         return {
           ok: false,
           requirements,
           installed,
-          missing: [...notApplied],
+          missing: [],
           blocked: [],
+          notApplied: [...notApplied],
           error: String(notApplied.join(', ')),
         };
       }

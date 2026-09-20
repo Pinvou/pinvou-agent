@@ -221,8 +221,10 @@ async function runDenyAllOptInScenarios() {
   }
 
   // Round-13 m3: not_applied — an id that matched nothing in the DenyAll
-  // expansion (concurrent install not yet committed) must abort the send via
-  // the missing-copy path instead of proceeding without the tool.
+  // expansion (concurrent install not yet committed) must abort the send.
+  // Round-16 minor 13: it reports the dedicated notApplied shape (not
+  // `missing`) — the packs are installed, so the missing copy's reinstall
+  // invitation cannot help; ChatView renders the retry-inviting copy instead.
   {
     const { invoke, state } = makeInvoke({
       tools: ['gongwen'],
@@ -232,7 +234,8 @@ async function runDenyAllOptInScenarios() {
     });
     const prepared = await prepareSceneCapabilities({ pinvouScene: 'work:document-writing' }, invoke);
     assert.strictEqual(prepared.ok, false, 'a not-applied opt-in must not pass as ready');
-    assert.deepStrictEqual([...prepared.missing], ['gongwen']);
+    assert.deepStrictEqual([...prepared.notApplied], ['gongwen']);
+    assert.deepStrictEqual([...prepared.missing], [], 'not-applied is not reported as missing-install');
     assert.strictEqual(state.disabled.has('gongwen'), true, 'not-applied pack stays disabled');
   }
 

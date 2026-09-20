@@ -59,4 +59,36 @@ function resolveSendCapabilityStatus({ welcomeFailed, welcomeText, sceneStatus }
   return sceneStatus || null;
 }
 
-export { consumeWelcomeOptIn, resolveSendCapabilityStatus };
+// Round-16 minor 13: a send arriving while the welcome opt-in's enable invoke
+// is still in flight must await the SAME attempt, not start a second one (the
+// tool id is already consumed, so a second attempt would no-op and the second
+// send's own banner resolution would later clear the first send's failure
+// notice). `attemptSlot` is the caller-owned ref-style holder ({ current } —
+// a React useRef on the ChatView side); `run` must never reject
+// (consumeWelcomeOptIn catches internally and returns a result object), so
+// the raw promise is safe to store and share.
+//
+// Share condition: an in-flight attempt whose tool id matches, or whose id is
+// null — a null ref while an attempt is in flight means that attempt consumed
+// it (consume() clears the ref at attempt start), not that no card exists; a
+// null ref with an empty slot never reaches this branch. A non-null id that
+// differs from the in-flight one is a session switch: start a fresh attempt
+// for the new pack (the backend's DISABLED_BUNDLES_FILE_LOCK serializes the
+// two invokes).
+async function runSharedWelcomeOptIn(attemptSlot, { toolId, run }) {
+  const shared = attemptSlot.current;
+  if (shared && (shared.toolId === toolId || toolId == null)) {
+    return shared.promise;
+  }
+  const promise = Promise.resolve().then(run);
+  attemptSlot.current = { toolId, promise };
+  const clear = () => {
+    if (attemptSlot.current && attemptSlot.current.promise === promise) {
+      attemptSlot.current = null;
+    }
+  };
+  promise.then(clear, clear);
+  return promise;
+}
+
+export { consumeWelcomeOptIn, resolveSendCapabilityStatus, runSharedWelcomeOptIn };

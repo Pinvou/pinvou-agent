@@ -16,8 +16,8 @@ const code = fs.readFileSync(logicPath, 'utf8')
 
 const ctx = {};
 vm.createContext(ctx);
-vm.runInContext(`${code}\nthis.consumeWelcomeOptIn = consumeWelcomeOptIn;\nthis.resolveSendCapabilityStatus = resolveSendCapabilityStatus;`, ctx, { filename: logicPath });
-const { consumeWelcomeOptIn, resolveSendCapabilityStatus } = ctx;
+vm.runInContext(`${code}\nthis.consumeWelcomeOptIn = consumeWelcomeOptIn;\nthis.resolveSendCapabilityStatus = resolveSendCapabilityStatus;\nthis.runSharedWelcomeOptIn = runSharedWelcomeOptIn;`, ctx, { filename: logicPath });
+const { consumeWelcomeOptIn, resolveSendCapabilityStatus, runSharedWelcomeOptIn } = ctx;
 
 // 1. No welcome card: zero actions.
 {
@@ -107,6 +107,70 @@ const { consumeWelcomeOptIn, resolveSendCapabilityStatus } = ctx;
   assert.strictEqual(ready.kind, 'ready');
   assert.strictEqual(ready.text, 'ok');
   assert.strictEqual(resolveSendCapabilityStatus({ welcomeFailed: false, welcomeText: '', sceneStatus: null }), null);
+}
+
+// 6. Round-16 minor 13: a send arriving while the enable invoke is in flight
+// shares the SAME attempt — run starts once, both callers get the same
+// outcome, and the slot clears after settle (a later send starts fresh).
+// The second send passes toolId null: consume() already cleared the ref at
+// attempt start, and a null id with an in-flight attempt must still join it.
+{
+  const slot = { current: null };
+  let runs = 0;
+  let release;
+  const gate = new Promise((resolve) => { release = resolve; });
+  const attemptWith = (toolId) => runSharedWelcomeOptIn(slot, {
+    toolId,
+    run: () => {
+      runs += 1;
+      return gate.then(() => ({ attempted: true, failed: false }));
+    },
+  });
+  const first = attemptWith('gongwen');
+  await Promise.resolve();
+  await Promise.resolve();
+  assert.strictEqual(runs, 1, 'the first send starts exactly one attempt');
+  const second = attemptWith(null);
+  const third = attemptWith(null);
+  assert.strictEqual(runs, 1, 'concurrent sends share one in-flight attempt');
+  release();
+  const [r1, r2, r3] = await Promise.all([first, second, third]);
+  assert.strictEqual(r1.attempted, true);
+  assert.strictEqual(r2, r1, 'the second send gets the same outcome object');
+  assert.strictEqual(r3, r1);
+  assert.strictEqual(slot.current, null, 'the slot clears once the attempt settles');
+  const after = await attemptWith('gongwen');
+  assert.strictEqual(runs, 2, 'a post-settle send starts a fresh attempt');
+  assert.strictEqual(after.attempted, true);
+}
+
+// 6b. Session switch mid-flight: a non-null tool id that differs from the
+// in-flight one starts a fresh attempt instead of joining the stale one.
+{
+  const slot = { current: null };
+  let runs = 0;
+  let release;
+  const gate = new Promise((resolve) => { release = resolve; });
+  const runFor = (toolId) => runSharedWelcomeOptIn(slot, {
+    toolId,
+    run: () => {
+      runs += 1;
+      return gate.then(() => ({ attempted: true, toolId }));
+    },
+  });
+  const first = runFor('gongwen');
+  await Promise.resolve();
+  await Promise.resolve();
+  const second = runFor('visualizer');
+  await Promise.resolve();
+  await Promise.resolve();
+  assert.strictEqual(runs, 2, 'a different pack mid-flight starts its own attempt');
+  release();
+  const r1 = await first;
+  const r2 = await second;
+  assert.strictEqual(r1.toolId, 'gongwen');
+  assert.strictEqual(r2.toolId, 'visualizer');
+  assert.strictEqual(slot.current, null);
 }
 
 console.log('welcome_optin_logic: ok');
