@@ -1706,6 +1706,15 @@ mod tool_allowlist_contract {
             "kb_search",
             "kb_open_source",
             "mcp_weather_get_weather",
+            // Tools named by the base registry-first policy: the instruction
+            // says "call these first", so the allowlist must admit them
+            // (capability is governed by the allowlist, not by deleting
+            // descriptions).
+            "registry_sync",
+            "start_registry_mcp_server",
+            // The ima connector skill teaches a direct call to this native
+            // tool; without an exact rule the `mcp_*` prefix never admits it.
+            "ima_openapi",
         ] {
             assert!(is_pinvou3_allowed(core), "核心工具 {core} 应在白名单");
         }
@@ -1734,16 +1743,60 @@ mod tool_allowlist_contract {
             );
         }
 
-        assert_eq!(
-            PINVOU3_ALWAYS_LOADED_TOOLS,
-            &["request_user_input", "image_analyze"]
-        );
+        // Always-loading a name the allowlist strips is dead configuration
+        // (the per-turn retain wins), so every entry must resolve through the
+        // real matcher; a typo here must fail instead of silently deferring.
+        for always_loaded in PINVOU3_ALWAYS_LOADED_TOOLS {
+            assert!(
+                is_pinvou3_allowed(always_loaded),
+                "always-loaded tool {always_loaded} has no matching allowlist rule"
+            );
+        }
+        // Membership guard: the static instructions and the registry-first
+        // policy name these tools directly, so each must stay in the
+        // always-loaded list. The live-catalog regression iterates this same
+        // constant, so dropping an entry here would silence that check and
+        // re-create the first-turn-absent phantom with a green suite.
+        for load_bearing in [
+            "load_skill",
+            "file_search",
+            "registry_sync",
+            "start_registry_mcp_server",
+        ] {
+            assert!(
+                PINVOU3_ALWAYS_LOADED_TOOLS.contains(&load_bearing),
+                "always-loaded list dropped {load_bearing}: static text names it, so it must ship non-deferred on the first turn"
+            );
+        }
         // `is_pinvou3_allowed` is deliberately case-insensitive, so the
         // legacy `Bash` spelling remains executable when replaying an old
         // transcript. The source catalog still teaches only canonical `bash`.
         assert!(!PINVOU3_ALLOWED_TOOLS.contains(&"Bash"));
         assert!(!PINVOU3_ALLOWED_TOOLS.contains(&"File"));
         assert!(PINVOU3_ALLOWED_TOOLS.contains(&"mcp_*"));
+    }
+
+    /// The native ima tool's name is spelled independently in the engine
+    /// registration, the allowlist, and the marketplace deny table; a rename
+    /// that updates the allowlist but not the deny table fails open silently
+    /// (a stale deny of a nonexistent name) while every list-only test stays
+    /// green. Pin all three to the tool's actual registered name.
+    #[test]
+    fn native_ima_tool_name_is_pinned_across_allowlist_and_deny_table() {
+        let registered = crate::features::connectors::ima::ImaOpenApiTool::new()
+            .name()
+            .to_string();
+        assert_eq!(registered, "ima_openapi");
+        assert!(
+            is_pinvou3_allowed(&registered),
+            "native tool {registered} must keep an exact allowlist rule (the mcp_ prefix never admits it)"
+        );
+        assert!(
+            crate::features::marketplace::NATIVE_PACKAGE_TOOLS
+                .iter()
+                .any(|(tool, _)| *tool == registered),
+            "native tool {registered} must keep its marketplace ownership mapping"
+        );
     }
 
     /// Conditional host tools and dynamically discovered MCP tools do not
