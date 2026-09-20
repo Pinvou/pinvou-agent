@@ -20,6 +20,8 @@ mod secrets;
 mod types;
 mod validation;
 
+pub(crate) use connectors::{mcp_json_unparseable, write_json_pretty};
+
 // PR #302 WIP 拆分的子模块（main 的 Wave 2 没有接这块）—— 需要补 mod 声明。
 pub mod actions;
 pub mod bundle;
@@ -53,14 +55,16 @@ static MARKETPLACE_TRANSACTION_LOCK: Mutex<()> = Mutex::new(());
 /// per-remote-server names). Marketplace installs have no symmetric guard — a custom
 /// tool id colliding with these keys is rejected by nothing — so "never write" holds by
 /// registry convention, not by enforcement. Keep in sync with
-/// `ensure_builtin_mcp_servers`: the engine-side write footprint is pinned by the
-/// `ensure_builtin_mcp_servers_touches_only_engine_owned_keys` test in
-/// runtime_bundle/platform, and this exact set is pinned on the marketplace side by
-/// `engine_owned_mcp_server_keys_are_exactly_the_engine_footprint` — change both in
-/// lockstep. (ensure_builtin also runs `refresh_mcp_python_commands`, which may
-/// rewrite the python command of any entry; that self-heal is complementary and
-/// outside this key-set footprint.)
-const ENGINE_OWNED_MCP_SERVER_KEYS: &[&str] = &["pinvou3", "pinvou", "browser"];
+/// `ensure_builtin_mcp_servers`: the lockstep is enforced by two tests that cannot
+/// both be satisfied while the set and the engine's real write footprint disagree —
+/// the engine-side footprint is pinned by
+/// `ensure_builtin_mcp_servers_touches_only_engine_owned_keys` in runtime_bundle/platform
+/// against *this constant* (an engine-side key added without updating it turns red),
+/// and this exact set is pinned on the marketplace side by
+/// `engine_owned_mcp_server_keys_are_exactly_the_engine_footprint`. (ensure_builtin
+/// also runs `refresh_mcp_python_commands`, which may rewrite the python command of
+/// any entry; that self-heal is complementary and outside this key-set footprint.)
+pub(crate) const ENGINE_OWNED_MCP_SERVER_KEYS: &[&str] = &["pinvou3", "pinvou", "browser"];
 
 /// A freshly written journal on Windows can be briefly held by antivirus or indexer
 /// processes, so the commit removal retries before failing — escalating a
@@ -1378,7 +1382,10 @@ impl<S: CredentialStore> MarketplaceManager<S> {
     ///   (custom/unknown entries keep the G4 guard semantics of `migrate_mcp_json_paths`).
     ///   An unparseable mcp.json is backed up and left untouched for that boot instead
     ///   of being reset — a reset would destroy the custom entries and preserved user
-    ///   fields, re-creating the parse-failure drift listed above.
+    ///   fields, re-creating the parse-failure drift listed above. The whole boot
+    ///   honors the same guarantee: `run_mcp_startup_maintenance` consults
+    ///   `mcp_json_unparseable` and keeps the builtin upsert off the file too, so the
+    ///   original bytes survive every writer until the user fixes or removes the file.
     /// Idempotent: a second run on healthy state performs zero writes. Per-tool failures
     /// never block startup. A credential that is absent from the store degrades: the
     /// entry is restored/rebuilt without its credential wiring and the auth failure
@@ -1396,7 +1403,9 @@ impl<S: CredentialStore> MarketplaceManager<S> {
         // An unparseable mcp.json is backed up and left untouched this boot:
         // the snapshot would read every entry as missing and the restores
         // would reset the file, destroying custom entries and preserved user
-        // fields (see `load_mcp_json_for_reconcile`).
+        // fields (see `load_mcp_json_for_reconcile`). The startup maintenance
+        // extends the same preservation to the rest of the boot by keeping
+        // the builtin upsert off the file too (`mcp_json_unparseable`).
         if let Err(error) = connectors::load_mcp_json_for_reconcile() {
             actions.push(error);
             return Ok(actions);
@@ -1407,6 +1416,12 @@ impl<S: CredentialStore> MarketplaceManager<S> {
         let mut seen_ids = std::collections::HashSet::new();
         for tool_id in self.installed_ids() {
             if ENGINE_OWNED_MCP_SERVER_KEYS.contains(&tool_id.as_str()) {
+                // Say why instead of skipping silently: a tool whose id collides
+                // with an engine-owned key would otherwise look installed-but-
+                // never-reconciled with no trace in the startup timeline.
+                actions.push(format!(
+                    "tool '{tool_id}' has an engine-reserved mcp.json key; left untouched"
+                ));
                 continue;
             }
             if !seen_ids.insert(tool_id.clone()) {
@@ -1461,10 +1476,28 @@ impl<S: CredentialStore> MarketplaceManager<S> {
                 }
                 self.reconcile_local_mcp_entry(manifest, &snapshot, &mut actions);
             } else {
-                let (exclusive, contested): (Vec<&types::RemoteServer>, Vec<&types::RemoteServer>) =
+                // Three-way split: engine-reserved keys are reported and skipped
+                // outright (whatever their owner count), and the rest partition
+                // into single-owner (reconcilable) vs multi-owner (contested).
+                let (reserved, claimable): (Vec<&types::RemoteServer>, Vec<&types::RemoteServer>) =
                     manifest.servers.iter().partition(|server| {
+                        ENGINE_OWNED_MCP_SERVER_KEYS.contains(&server.name.as_str())
+                    });
+                let (exclusive, contested): (Vec<&types::RemoteServer>, Vec<&types::RemoteServer>) =
+                    claimable.into_iter().partition(|server| {
                         key_owners.get(server.name.as_str()).copied().unwrap_or(1) <= 1
                     });
+                if !reserved.is_empty() {
+                    let names = reserved
+                        .iter()
+                        .map(|server| server.name.as_str())
+                        .collect::<Vec<_>>()
+                        .join(", ");
+                    actions.push(format!(
+                        "tool '{}': mcp.json server key(s) reserved by the engine left untouched: {names}",
+                        manifest.id
+                    ));
+                }
                 if !contested.is_empty() {
                     let names = contested
                         .iter()
@@ -2181,6 +2214,108 @@ mod tests {
         });
     }
 
+    /// The engine documents the `oauth` block as the user-set client override for
+    /// servers that require a pre-registered public client. A block the user wrote
+    /// into the entry therefore belongs to the user: realignment fixes the
+    /// manifest-derived fields around it and never judges or rewrites the override.
+    #[test]
+    fn reconcile_realign_preserves_user_oauth_client_override() {
+        with_temp_home(|| {
+            write_remote_tool_fixture(
+                "override-x",
+                "override-x-remote",
+                "https://new.example.com/mcp",
+            );
+            write_installed_ids(&["override-x".to_string()]);
+            let mcp_path = seed_mcp_json(serde_json::json!({
+                "override-x-remote": {
+                    "url": "https://old.example.com/mcp",
+                    "oauth": {"client_id": "my-pre-registered-client"},
+                    "custom_hint": "keep"
+                }
+            }));
+            let manager = MarketplaceManager::with_store(MemoryCredentialStore::default());
+
+            let actions = manager.reconcile_installed_mcp_entries().unwrap();
+            assert_eq!(
+                actions,
+                vec!["tool 'override-x': realigned remote entry 'override-x-remote'".to_string()],
+                "the drifted url must heal even though the oauth block is user-owned"
+            );
+            let entry = &read_mcp_json()["servers"]["override-x-remote"];
+            assert_eq!(entry["url"], "https://new.example.com/mcp");
+            assert_eq!(
+                entry["oauth"],
+                serde_json::json!({"client_id": "my-pre-registered-client"}),
+                "the user's client override must survive the realignment verbatim"
+            );
+            assert_eq!(entry["custom_hint"], "keep");
+
+            // Idempotent: the override never reads as drift on the next run.
+            let before = std::fs::read(&mcp_path).unwrap();
+            assert!(
+                manager
+                    .reconcile_installed_mcp_entries()
+                    .unwrap()
+                    .is_empty()
+            );
+            assert_eq!(std::fs::read(&mcp_path).unwrap(), before);
+        });
+    }
+
+    /// A manifest-declared oauth block is still the fresh-install default: an entry
+    /// missing it is healed, and once present the block is never rewritten again
+    /// (a manifest update cannot clobber what the user may have customized).
+    #[test]
+    fn reconcile_heals_missing_oauth_block_from_manifest() {
+        with_temp_home(|| {
+            let manifest = serde_json::json!({
+                "id": "oauth-heal",
+                "name": "oauth-heal",
+                "description": "d",
+                "version": "1",
+                "icon": "x",
+                "category": "c",
+                "mcp_tools": [],
+                "command": "",
+                "args": [],
+                "servers": [{
+                    "name": "oauth-heal-remote",
+                    "url": "https://heal.example.com/mcp",
+                    "oauth": {"client_id": "catalog-public-client"}
+                }]
+            });
+            write_tool_manifest(
+                "oauth-heal",
+                &serde_json::to_string_pretty(&manifest).unwrap(),
+            );
+            write_installed_ids(&["oauth-heal".to_string()]);
+            let mcp_path = seed_mcp_json(serde_json::json!({
+                "oauth-heal-remote": {"url": "https://heal.example.com/mcp"}
+            }));
+            let manager = MarketplaceManager::with_store(MemoryCredentialStore::default());
+
+            let actions = manager.reconcile_installed_mcp_entries().unwrap();
+            assert_eq!(
+                actions,
+                vec!["tool 'oauth-heal': realigned remote entry 'oauth-heal-remote'".to_string()]
+            );
+            let entry = &read_mcp_json()["servers"]["oauth-heal-remote"];
+            assert_eq!(
+                entry["oauth"],
+                serde_json::json!({"client_id": "catalog-public-client"}),
+                "a missing oauth block is healed from the manifest"
+            );
+
+            // Once present, the block is never re-judged: a manifest update that
+            // changes it must not clobber the entry's copy.
+            let actions = manager.reconcile_installed_mcp_entries().unwrap();
+            assert!(actions.is_empty(), "{actions:?}");
+            let before = std::fs::read(&mcp_path).unwrap();
+            assert_eq!(std::fs::read(&mcp_path).unwrap(), before);
+        });
+    }
+
     /// Healthy installed entries, entries of installed tools without a manifest, and
     /// engine-owned keys all stay byte-identical; only the missing-manifest tool
     /// produces a (non-mutating) skip note.
@@ -2218,18 +2353,51 @@ mod tests {
 
             let before = std::fs::read(&mcp_path).unwrap();
             let actions = manager.reconcile_installed_mcp_entries().unwrap();
-            assert_eq!(actions.len(), 1, "{actions:?}");
+            assert_eq!(actions.len(), 2, "{actions:?}");
             assert!(actions[0].contains("ghost") && actions[0].contains("no manifest"));
+            assert!(
+                actions[1].contains("pinvou3") && actions[1].contains("engine-reserved"),
+                "the engine-reserved id must be reported, not skipped silently: {actions:?}"
+            );
             assert_eq!(
                 std::fs::read(&mcp_path).unwrap(),
                 before,
                 "reconciliation of healthy state must not touch mcp.json"
             );
 
-            // Idempotent: the second run re-reports the diagnostic but writes nothing.
+            // Idempotent: the second run re-reports the diagnostics but writes nothing.
+            let actions = manager.reconcile_installed_mcp_entries().unwrap();
+            assert_eq!(actions.len(), 2, "{actions:?}");
+            assert_eq!(std::fs::read(&mcp_path).unwrap(), before);
+        });
+    }
+
+    /// A remote server name colliding with an engine-owned key must be reported and
+    /// excluded, like contested keys — not silently skipped while install accepted it.
+    #[test]
+    fn reconcile_notes_engine_reserved_server_keys() {
+        with_temp_home(|| {
+            write_remote_tool_fixture(
+                "reserved-name",
+                "browser",
+                "https://reserved.example.com/mcp",
+            );
+            write_installed_ids(&["reserved-name".to_string()]);
+            let mcp_path = seed_mcp_json(serde_json::json!({}));
+            let manager = MarketplaceManager::with_store(MemoryCredentialStore::default());
+
+            let before = std::fs::read(&mcp_path).unwrap();
             let actions = manager.reconcile_installed_mcp_entries().unwrap();
             assert_eq!(actions.len(), 1, "{actions:?}");
-            assert_eq!(std::fs::read(&mcp_path).unwrap(), before);
+            assert!(
+                actions[0].contains("reserved by the engine") && actions[0].contains("browser"),
+                "the engine-reserved server key must be reported: {actions:?}"
+            );
+            assert_eq!(
+                std::fs::read(&mcp_path).unwrap(),
+                before,
+                "the reserved key must not be created behind the caller's back"
+            );
         });
     }
 
@@ -2658,11 +2826,11 @@ mod tests {
         });
     }
 
-    /// The reconcile's engine-key avoidance depends on this constant matching the
-    /// engine-side write footprint verbatim. The engine side is pinned by the
-    /// runtime_bundle `ensure_builtin_mcp_servers_touches_only_engine_owned_keys`
-    /// test; this test pins the mirror side — either side changing its key set
-    /// must update both in the same change.
+    /// Pins the marketplace-side literal of `ENGINE_OWNED_MCP_SERVER_KEYS`. This is
+    /// the second half of the lockstep: the runtime_bundle footprint test asserts
+    /// the engine's *observed* write footprint against this same constant, and this
+    /// test keeps the constant itself from drifting silently — changing the key set
+    /// requires touching both, and skipping either turns one of the two red.
     #[test]
     fn engine_owned_mcp_server_keys_are_exactly_the_engine_footprint() {
         assert_eq!(

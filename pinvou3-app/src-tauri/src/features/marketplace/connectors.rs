@@ -44,7 +44,7 @@ pub(super) fn mcp_json_lock() -> MutexGuard<'static, ()> {
 /// 写前创建父目录：全新 PINVOU3_HOME 下 `bundle/` 尚不存在，直接写会 ENOENT。
 /// tmp + rename 原子落盘（底座 `write_atomic`，与 store.rs 同一做法）——安装
 /// 中途崩溃不得留下半写的 mcp.json（幽灵 server，四轮评审 M-8）。
-pub(super) fn write_json_pretty(path: &Path, value: &serde_json::Value) -> Result<(), String> {
+pub(crate) fn write_json_pretty(path: &Path, value: &serde_json::Value) -> Result<(), String> {
     if let Some(parent) = path.parent() {
         std::fs::create_dir_all(parent)
             .map_err(|e| format!("创建 {} 失败: {e}", parent.display()))?;
@@ -63,7 +63,10 @@ fn default_mcp_json() -> serde_json::Value {
 /// `installed.json` handling) and reported as an error — the reconcile never
 /// resets a file it cannot read. Resetting would destroy custom entries and
 /// preserved user fields, re-creating the exact parse-failure drift the
-/// startup reconcile exists to heal.
+/// startup reconcile exists to heal. The same guarantee holds across the
+/// whole boot: `run_mcp_startup_maintenance` keeps every later writer (the
+/// builtin upsert included) off a file reported by [`mcp_json_unparseable`],
+/// so the live file stays byte-identical until the user fixes or removes it.
 pub(super) fn load_mcp_json_for_reconcile() -> Result<(PathBuf, serde_json::Value), String> {
     let mcp_path = paths::mcp_config_path();
     if !mcp_path.is_file() {
@@ -81,10 +84,46 @@ pub(super) fn load_mcp_json_for_reconcile() -> Result<(PathBuf, serde_json::Valu
     }
 }
 
+/// Whether mcp.json exists on disk but cannot currently be parsed (or read).
+/// The startup maintenance keeps every writer off such a file — in
+/// particular the builtin upsert's repair loader, which would otherwise
+/// reset it to a builtin-only skeleton in the same boot that the reconcile
+/// just backed it up. Sessions degrade to an empty MCP pool instead
+/// (engine `load_config` failure → empty pool), so preserving the file never
+/// blocks a session; the recovery path is the backup plus the timeline note.
+pub(crate) fn mcp_json_unparseable() -> bool {
+    let mcp_path = paths::mcp_config_path();
+    if !mcp_path.is_file() {
+        return false;
+    }
+    // An unreadable file is treated like an unparseable one: the builtin
+    // repair loader reads through `unwrap_or_default`, so a permission
+    // failure would reset the file to an empty skeleton.
+    std::fs::read_to_string(&mcp_path)
+        .ok()
+        .and_then(|content| serde_json::from_str::<serde_json::Value>(&content).ok())
+        .is_none()
+}
+
 fn backup_corrupt_mcp_json(mcp_path: &Path, content: &str) {
     let Some(parent) = mcp_path.parent() else {
         return;
     };
+    // A persistent parse failure would otherwise mint one timestamped backup
+    // per boot. If an existing backup already holds the same bytes, the
+    // original is already preserved — keep the single copy.
+    if let Ok(entries) = std::fs::read_dir(parent) {
+        let identical_backup_exists = entries.flatten().any(|entry| {
+            entry
+                .file_name()
+                .to_string_lossy()
+                .starts_with("mcp.json.corrupt.")
+                && std::fs::read(entry.path()).is_ok_and(|bytes| bytes == content.as_bytes())
+        });
+        if identical_backup_exists {
+            return;
+        }
+    }
     let ts = std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
         .map(|d| d.as_secs())
@@ -242,16 +281,25 @@ impl<S: crate::platform::credential_store::CredentialStore> MarketplaceManager<S
     }
 
     /// Build the fresh-install mcp.json entry for one remote server (url/headers/oauth).
-    /// Extracted verbatim from `add_remote_to_mcp_json` so the startup reconciliation
+    /// Extracted from `add_remote_to_mcp_json` so the startup reconciliation
     /// (`reconcile_remote_mcp_entries`) reuses the exact same serialization as a UI
-    /// install instead of maintaining a second writer.
+    /// install instead of maintaining a second writer. One deliberate addition over
+    /// the pre-extraction install writer: the `field.secret` bearer fallback below
+    /// also re-derives wiring from the credential store when `user_config` omits
+    /// the field — startup restores have no user input at all, and a re-install
+    /// over a previously configured tool keeps its credential instead of coming
+    /// back unwired (behavior disclosed in the PR description).
     ///
     /// `degrade_unresolved_secrets` marks the startup-reconciliation caller: startup
     /// has no user input this run, so a secret whose credential-store entry no longer
     /// resolves (never entered, or the keyring entry was removed) leaves its wiring
     /// unwritten instead of failing the whole entry — the auth failure then surfaces
     /// through the engine's boot receipt instead of blocking the restore. Installs
-    /// keep the fail-loud contract so the user is asked for the key.
+    /// keep the fail-loud contract so the user is asked for the key; in both modes
+    /// a credential-store read failure propagates instead of degrading, so a
+    /// transiently locked keyring never gets baked into a permanently unwired
+    /// entry (at install it fails the install; at startup it skips the tool and
+    /// the next startup retries).
     fn build_remote_server_entry(
         &self,
         manifest: &ToolManifest,
@@ -302,14 +350,17 @@ impl<S: crate::platform::credential_store::CredentialStore> MarketplaceManager<S
                         );
                     }
                 } else if field.secret {
-                    // Startup reconciliation has no user input this run, so re-wire
-                    // the bearer fields from the credential store (installed with a
-                    // value the store can still resolve). An absent credential
-                    // leaves the field unwritten (see `degrade_unresolved_secrets`
-                    // above); a credential-store failure must not — degrading on it
-                    // would bake a transiently locked keyring into a permanently
-                    // unwired entry, so it fails the build and the next startup
-                    // retries the restore.
+                    // `user_config` omitted this secret bearer field: re-derive the
+                    // wiring from the credential store. This serves the startup
+                    // restore (which has no user input at all) and also a re-install
+                    // over a previously configured tool, whose credential would
+                    // otherwise be dropped. A genuinely absent credential leaves the
+                    // field unwritten — installs report the unwired entry (historical
+                    // behavior for an omitted optional key), the startup reconcile
+                    // degrades by design and the auth failure surfaces through the
+                    // boot receipt. A credential-store read failure must not degrade
+                    // into a permanently unwired entry, so it fails the build in
+                    // every mode and the next startup retries the restore.
                     match self.try_resolve_secret_placeholder(
                         &manifest.id,
                         bundle::keyring_target(bundle::CredentialTarget::Bearer),
@@ -721,10 +772,12 @@ impl<S: crate::platform::credential_store::CredentialStore> MarketplaceManager<S
     ///   rather than failing the restore, while a credential-store read failure fails
     ///   the restore so the next startup retries — installs keep the fail-loud
     ///   contract for both cases).
-    /// - An existing entry whose manifest-derived shape (url/scopes/oauth/oauth_resource)
+    /// - An existing entry whose manifest-derived shape (url/scopes/oauth_resource)
     ///   drifted from the current manifest is realigned; credential fields
     ///   (headers/env_headers/bearer_token_env_var) and forward-compatible fields are
-    ///   preserved because they cannot be re-derived without user input.
+    ///   preserved because they cannot be re-derived without user input. The `oauth`
+    ///   block is the documented user-set client override, so an existing block is
+    ///   never judged or rewritten — only a missing one is healed from the manifest.
     /// - Entries not owned by this manifest are never touched.
     /// Idempotent: returns Ok(None) without writing when everything already matches.
     pub(super) fn reconcile_remote_mcp_entries(
@@ -742,7 +795,10 @@ impl<S: crate::platform::credential_store::CredentialStore> MarketplaceManager<S
         let mut changed: Vec<String> = Vec::new();
         for server in servers {
             if super::ENGINE_OWNED_MCP_SERVER_KEYS.contains(&server.name.as_str()) {
-                continue; // never fight the boot-time ensure_builtin_mcp_servers upsert
+                // Unreachable via reconcile_installed_mcp_entries (the caller
+                // filters these with a timeline note); kept as defense in depth
+                // so a direct caller can never fight the boot-time builtin upsert.
+                continue;
             }
             match servers_map
                 .get_mut(&server.name)
@@ -760,7 +816,22 @@ impl<S: crate::platform::credential_store::CredentialStore> MarketplaceManager<S
                     let entry =
                         self.build_remote_server_entry(manifest, server, &HashMap::new(), true)?;
                     servers_map.insert(server.name.clone(), entry);
-                    changed.push(format!("restored missing remote entry '{}'", server.name));
+                    // A non-secret bearer key lives only in the user's install-time
+                    // input — it was never persisted anywhere, so a restore cannot
+                    // re-derive it. Say so instead of reporting an unqualified
+                    // success that will 401 on first use.
+                    let mut note = format!("restored missing remote entry '{}'", server.name);
+                    if manifest
+                        .config_fields
+                        .iter()
+                        .any(|field| field.target == "bearer" && !field.secret)
+                    {
+                        note.push_str(
+                            "; its non-secret bearer key is not stored and could not be \
+                             re-derived — reinstall the tool to re-enter it",
+                        );
+                    }
+                    changed.push(note);
                 }
             }
         }
@@ -851,14 +922,15 @@ fn remote_entry_matches_manifest(
         Some(oauth) => serde_json::to_value(oauth).ok(),
         None => None,
     };
-    match (expected_oauth.as_ref(), object.get("oauth")) {
-        (None, None | Some(serde_json::Value::Null)) => {}
-        (None, Some(_)) => return false,
-        (Some(expected), actual) => {
-            if actual != Some(expected) {
-                return false;
-            }
-        }
+    // The engine documents `oauth` as the user-set client override for
+    // servers that require a pre-registered public client (instead of
+    // dynamic registration). An existing block therefore belongs to the
+    // user, not the manifest: it is never judged drifted and never
+    // rewritten — only a missing (or null) block is healed from the
+    // manifest (`align_remote_entry_fields`).
+    let user_oauth_override = object.get("oauth").is_some_and(|value| !value.is_null());
+    if !user_oauth_override && expected_oauth.is_some() {
+        return false;
     }
     let resource = server
         .oauth_resource
@@ -881,7 +953,11 @@ fn remote_entry_matches_manifest(
 }
 
 /// Rewrite only the manifest-derived fields of an existing remote entry; everything
-/// else (headers/env_headers/bearer_token_env_var/timeout/…) is kept as-is.
+/// else (headers/env_headers/bearer_token_env_var/timeout/…) is kept as-is. The
+/// one exception to "manifest-derived" is `oauth`: the engine documents it as the
+/// user-set client override for servers requiring a pre-registered public client,
+/// so an existing block is preserved verbatim and only a missing one is healed
+/// from the manifest (matching `remote_entry_matches_manifest`).
 fn align_remote_entry_fields(
     object: &mut serde_json::Map<String, serde_json::Value>,
     server: &super::types::RemoteServer,
@@ -895,14 +971,21 @@ fn align_remote_entry_fields(
     } else if let Ok(scopes) = serde_json::to_value(&server.scopes) {
         object.insert("scopes".to_string(), scopes);
     }
-    match &server.oauth {
-        Some(oauth) => {
-            if let Ok(value) = serde_json::to_value(oauth) {
-                object.insert("oauth".to_string(), value);
+    if object.get("oauth").is_some_and(|value| !value.is_null()) {
+        // User-set client override: preserved verbatim (see
+        // `remote_entry_matches_manifest`).
+    } else {
+        // Absent or an explicit null: write the manifest default, or clear a
+        // null placeholder so the entry converges on the canonical absent form.
+        match &server.oauth {
+            Some(oauth) => {
+                if let Ok(value) = serde_json::to_value(oauth) {
+                    object.insert("oauth".to_string(), value);
+                }
             }
-        }
-        None => {
-            object.remove("oauth");
+            None => {
+                object.remove("oauth");
+            }
         }
     }
     match server

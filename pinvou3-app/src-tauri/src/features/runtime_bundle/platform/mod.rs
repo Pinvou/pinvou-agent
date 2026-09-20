@@ -544,6 +544,7 @@ fn install_work_mode_browser_server(
 mod tests {
     use super::*;
     use crate::bridge::paths::tests::ENV_LOCK;
+    use crate::features::marketplace::ENGINE_OWNED_MCP_SERVER_KEYS;
     use crate::platform::credential_store::{
         CredentialError, CredentialReference, CredentialStore,
     };
@@ -1865,10 +1866,12 @@ mod tests {
     }
 
     /// The write footprint of ensure_builtin_mcp_servers is pinned to the three
-    /// engine keys pinvou3/pinvou/browser; the marketplace-side
-    /// ENGINE_OWNED_MCP_SERVER_KEYS mirrors this set (the startup reconcile
-    /// relies on it to avoid engine keys). When adding or renaming a builtin
-    /// server key, this constant and this test must be updated in lockstep.
+    /// engine keys pinvou3/pinvou/browser. The observed footprint is cross-checked
+    /// against the marketplace-side `ENGINE_OWNED_MCP_SERVER_KEYS` constant (the
+    /// startup reconcile relies on it to avoid engine keys): adding or renaming a
+    /// builtin server key without updating the constant turns this test red, and
+    /// the marketplace-side exact-set test keeps the constant itself honest, so
+    /// the two sides can no longer drift apart silently.
     #[test]
     fn ensure_builtin_mcp_servers_touches_only_engine_owned_keys() {
         let _g = ENV_LOCK.lock().unwrap_or_else(|p| p.into_inner());
@@ -1894,6 +1897,9 @@ mod tests {
             }}"#,
         )
         .unwrap();
+        let before: serde_json::Value =
+            serde_json::from_str(&std::fs::read_to_string(&bundle.mcp_json).unwrap()).unwrap();
+        let before_servers = before["servers"].as_object().unwrap();
 
         bundle.ensure_builtin_mcp_servers().unwrap();
 
@@ -1906,6 +1912,32 @@ mod tests {
             keys,
             vec!["pinvou3", "user-node", "user-node2"],
             "write footprint must be exactly the three engine keys: pinvou migrated away, pinvou3 upserted, browser residue deleted"
+        );
+        // Real cross-check against the marketplace-side constant: the keys the
+        // upsert actually manages — the engine keys surviving the pass plus the
+        // constant's keys it removed (pinvou migration, browser residue) — must
+        // equal ENGINE_OWNED_MCP_SERVER_KEYS exactly. An engine-side key added
+        // without the constant turns red, and a constant entry the boot path
+        // never touches turns red too; the marketplace-side exact-set test pins
+        // the constant against its literal.
+        let mut managed_keys: Vec<String> = servers
+            .keys()
+            .map(String::clone)
+            .filter(|key| !key.starts_with("user-node"))
+            .collect();
+        for key in before_servers.keys() {
+            if ENGINE_OWNED_MCP_SERVER_KEYS.contains(&key.as_str()) && !servers.contains_key(key) {
+                managed_keys.push(key.clone());
+            }
+        }
+        managed_keys.sort_unstable();
+        managed_keys.dedup();
+        let mut expected: Vec<&str> = ENGINE_OWNED_MCP_SERVER_KEYS.to_vec();
+        expected.sort_unstable();
+        assert_eq!(
+            managed_keys, expected,
+            "ensure_builtin_mcp_servers' managed key set drifted from \
+             ENGINE_OWNED_MCP_SERVER_KEYS — update the marketplace constant in the same PR"
         );
         assert_eq!(
             servers["pinvou3"]["command"],
