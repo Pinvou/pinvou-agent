@@ -38,7 +38,7 @@ _Avoid_: 子代理聊天、抽屉
 _Avoid_: Agent
 
 **角色名册（Roster）**：
-供模型按名字派工的角色集合。Pinvou 的内置卡与用户自建专家卡是全局唯一持久化源，App 将可执行专家转换成 CodeWhale 原生 `fleet.profiles` 并随 Engine 配置提供；不再为每个会话复制整份 `exp-*.toml`。CodeWhale 的个人目录与项目 `.codewhale/agents/` 仍按原生优先级参与加载，同名 profile 允许覆盖 Pinvou 全局配置。升级时只清理 Pinvou 自有 session ledger 内的旧投影；项目或个人目录中的同名文件不自动删除，因为无法可靠证明它仍由 Pinvou 独占所有权。2026-09-17 蜂群二期起，底座 `agent action=roster` 除内置成员外还列出宿主呈现的 prompt-only profiles（fork 主题 T7；列表按编号排序、至多 48 条，截断如实标注），模型可经 `profile=<member_id>` 直接选用。
+供模型按名字派工的角色集合。Pinvou 的内置卡与用户自建专家卡是全局唯一持久化源，App 将可执行专家转换成 CodeWhale 原生 `fleet.profiles` 并随 Engine 配置提供；不再为每个会话复制整份 `exp-*.toml`。CodeWhale 的个人目录与项目 `.codewhale/agents/` 仍按原生优先级参与加载，同名 profile 允许覆盖 Pinvou 全局配置。升级时只清理 Pinvou 自有 session ledger 内的旧投影；项目或个人目录中的同名文件不自动删除，因为无法可靠证明它仍由 Pinvou 独占所有权。2026-09-17 蜂群二期起，底座 `agent action=roster` 除内置成员外还列出宿主呈现的 prompt-only profiles（fork 主题 T8；列表按编号排序、至多 48 条，截断如实标注），模型可经 `profile=<member_id>` 直接选用。
 _Avoid_: 团队、卡池
 
 **CodeWhale 执行根与状态根（Execution Root / Subagent State Root）**：
