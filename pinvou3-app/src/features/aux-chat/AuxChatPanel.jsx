@@ -387,6 +387,15 @@ export function AuxChatPanel({ sessionId, activationKey, t, theme, onClose, onAc
     // the entry it registered (promise identity), so a stale settle cannot
     // resurrect or double-clear anything.
     sendInFlightByTask.delete(sessionId);
+    // Null the binding at restart entry (round-18 B-1): a send settling inside
+    // the discard window must read as the restart case — otherwise its
+    // success continuation still sees the old aux id, consumes the draft and
+    // staged quotes as "delivered", and the discard then destroys both the
+    // transcript and the recovery material. With the binding nulled (same
+    // reset as the rebind effect), every late settle takes the keep-draft
+    // skip; the re-ensure below writes the fresh id back.
+    auxIdRef.current = null;
+    setAuxId(null);
     // Feedback for the discard+ensure window (the backend turn gate can hold
     // the discard for seconds, and `restarting` only disables controls): the
     // composer and timeline would otherwise just sit there with no hint that a

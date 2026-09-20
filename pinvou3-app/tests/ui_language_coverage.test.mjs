@@ -317,6 +317,20 @@ assert.ok(
     && sendRegistryReset < restartBlock.indexOf('const discardPromise = auxChat.discard(sessionId);'),
   'the registry entry must be cleared at restart entry, before the discard await',
 );
+// Binding null at restart entry (round-18 B-1): a send settling inside the
+// discard window must read as the restart case (keep-draft skip). With the
+// binding left set, its success continuation would consume the draft and
+// staged quotes as "delivered" and the discard would then destroy both the
+// transcript and the recovery material. The null must precede the discard
+// await and mirror the rebind effect's reset (ref + state).
+const bindingNull = restartBlock.indexOf('auxIdRef.current = null;');
+assert.ok(bindingNull >= 0, 'handleRestart must null the binding at entry');
+assert.ok(
+  bindingNull > sendRegistryReset
+    && bindingNull < restartBlock.indexOf('const discardPromise = auxChat.discard(sessionId);'),
+  'the binding must be nulled at restart entry, before the discard await',
+);
+assert.match(restartBlock, /auxIdRef\.current = null;\s*setAuxId\(null\);/);
 // Binding-pending hint (round-12 UX): "first open / rebind shows a false
 // 'nothing here yet' while ensure is in flight". The pending flag must be
 // raised wherever a binding is being acquired (rebind effect and restart
@@ -482,6 +496,11 @@ assert.match(codex, /copy=\{t\.uiConversation\}/);
 assert.match(codex, /copy=\{t\.uiCodexWorkspace\}/);
 assert.match(codex, /data-testid="aux-chat-open"/);
 assert.match(codex, /t\.uiAuxChat\.openLabel/);
+// The code-mode aux entry must be native-agent-only (round-18 must-land): an
+// external-ACP task's side chat would silently answer on Pinvou's internal
+// default model while the panel copy implies the task's own assistant — the
+// same reason the quote popover suppresses on external ACP.
+assert.match(codex, /\{activeSession && isNativeAgent && bridge\.available && bridge\.auxChat && \(/);
 assert.match(codex, /<AuxChatPanel/);
 const workspace = source('features/codex/CodexWorkspacePanel.jsx');
 assert.match(workspace, /\{copy\.title\}/);

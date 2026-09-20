@@ -3386,7 +3386,12 @@ export function CodexAcpView({
               swarmOn={nativeMultiAgentEnabled}
             />
           )}
-          {activeSession && bridge.available && bridge.auxChat && (
+          {/* Aux chat answers on Pinvou's internal engine, so the entry is
+              native-agent-only: on an external-ACP task the side chat would
+              silently answer on the default model while the panel copy
+              implies the task's own assistant (round-18 must-land; the quote
+              popover suppresses on external ACP for the same reason). */}
+          {activeSession && isNativeAgent && bridge.available && bridge.auxChat && (
             <button
               type="button"
               data-testid="aux-chat-open"
