@@ -33,7 +33,7 @@
 | Item | Value |
 |---|---|
 | Upstream | `v0.9.12`, `dcd4c200f72f0c1ffd60d8e7f6850313db879fc5` |
-| Maintenance branch | `pinvou3-clean` = `7fc36e587a91bf400a38a452653933c347f699ca` (21 squash merges above the r1 baseline `1fafee7e2`: #41/#47/#49, the 2026-09-10/11 backlog batch #31/#37/#38/#39/#43/#48/#50/#51/#52/#53, the 2026-09-17 batch #56/#58/#59/#60/#61, and the 2026-09-18 batch #55/#57/#62) |
+| Maintenance branch | `pinvou3-clean` = `c4e6caf9405bf6872df670d359731cbda7872d78` (22 squash merges above the r1 baseline `1fafee7e2`: #41/#47/#49, the 2026-09-10/11 backlog batch #31/#37/#38/#39/#43/#48/#50/#51/#52/#53, the 2026-09-17 batch #56/#58/#59/#60/#61, the 2026-09-18 batch #55/#57/#62, and the 2026-09-20 batch #66) |
 | Publication | Transition (fork-policy §0 exemption): the immutable tag `pinvou-v0.9.12-r1` stays at the r1 closure (15 commits) while the parent gitlink points at `7fc36e587`, 21 commits ahead, until the next r2 release closure realigns the three |
 | Rollback | Public immutable tag `pinvou-v0.9.5-r13` at `f853f8f1566c57e6be40d5439a222a932aa79ef5`; the local branch `backup/pre-v0.9.12-sync` at the same SHA is only a convenience ref |
 | History | 36 DCO-signed-off commits above upstream in four long-lived topics (T1–T4) plus two append topics (T5 session archive export, T6 swarm rate-limit governor) and one merged-into-maintenance topic (T7 compaction checkpoint role compatibility); all 21 post-r1 commits landed via squash-merged PRs through the five required gates |

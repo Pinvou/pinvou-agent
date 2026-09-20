@@ -7,7 +7,7 @@
 ## 0. 当前基线
 
 - 上游：`Hmbown/CodeWhale` tag `v0.9.12`，commit `dcd4c200f72f0c1ffd60d8e7f6850313db879fc5`。
-- 当前 fork 基线：`Pinvou/CodeWhale:pinvou3-clean`，head `7fc36e587a91bf400a38a452653933c347f699ca`，共 36 个带 DCO sign-off 的提交；不可变 tag `pinvou-v0.9.12-r1` 钉在 r1 收口 `1fafee7e26b60a59457a43bce50c63aa2ad9dbaf`（15 个提交，由 CodeWhale PR #44 与 fast-follow PR #46 形成），其后 21 个提交为 2026-09-10/11 backlog 批次（13 个）、2026-09-17 批次 #56/#58/#59/#60/#61（5 个）与 2026-09-18 批次 #55/#57/#62（3 个）经 PR squash 合入。
+- 当前 fork 基线：`Pinvou/CodeWhale:pinvou3-clean`，head `c4e6caf9405bf6872df670d359731cbda7872d78`，共 37 个带 DCO sign-off 的提交；不可变 tag `pinvou-v0.9.12-r1` 钉在 r1 收口 `1fafee7e26b60a59457a43bce50c63aa2ad9dbaf`（15 个提交，由 CodeWhale PR #44 与 fast-follow PR #46 形成），其后 22 个提交为 2026-09-10/11 backlog 批次（13 个）、2026-09-17 批次 #56/#58/#59/#60/#61（5 个）、2026-09-18 批次 #55/#57/#62（3 个）与 2026-09-20 批次 #66（1 个）经 PR squash 合入。
 - 升级前公开回退点是不可变 tag `pinvou-v0.9.5-r13`，head `f853f8f1566c57e6be40d5439a222a932aa79ef5`；同 SHA 的本地 branch `backup/pre-v0.9.12-sync` 只作便利引用。
 - r1 已成为可消费的受保护基线；rN 收口时父仓 gitlink、维护分支和不可变 tag 指向同一 commit。
 - 过渡期豁免（2026-09-11 起）：两次 rN 收口之间，父仓 gitlink 可沿 `pinvou3-clean` 领先不可变 tag 前进；期间 `scripts/verify-public-submodule.sh` 断言 gitlink 等于公开维护分支头、不可变 tag 仍钉在其收口 commit，rN 收口时在合并头切新不可变 tag 并恢复三方相等。
