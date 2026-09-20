@@ -796,16 +796,19 @@ impl SessionStore {
             {
                 continue;
             }
-            // Convergence (review #463 round-10 minor 1, restored): a sidecar
-            // that already disagrees with the legacy entry is authoritative —
-            // a rebind that translated the binding must not be silently
-            // re-bound to the stale legacy path on the next boot.
-            if let Some(sidecar) = read_workspace_sidecar(&self.session_workspace_sidecar_path(&id))
-            {
-                if sidecar.path != path {
-                    continue;
-                }
-            }
+            // Disagreement handling (review #463 round-11 B1a disposition):
+            // a sidecar that disagrees with a legacy entry is NOT skipped in
+            // favor of the entry, unlike the pre-absorption convergence arm —
+            // the absorbed (#464) phase order rewrites the table BEFORE the
+            // sidecars move, so the crash window between the two phases leaves
+            // table@to over sidecar@from, and this boot pass is what heals it
+            // forward (rebind_crash_between_phases_heals_forward_on_boot). A
+            // successful rebind can never leave the table BEHIND a moved
+            // sidecar: phase 2 publishes every plan translation, cache-only
+            // entries included (rebind_publishes_cache_only_legacy_entry_
+            // translation). The stale-table state (table@from, sidecar@to) is
+            // reachable only through a failed phase-2 write, which the run
+            // discloses via legacy_sync_failed + legacy_resurrection_ids.
             if let Err(error) = self.bind_session_workspace(&id, path.clone()) {
                 // Log hygiene (round-8 should-fix): the unmigrated id reaches
                 // the in-memory table, not the log; the failure list of a
