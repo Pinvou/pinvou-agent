@@ -312,10 +312,14 @@ test('旧独立入口退役：多智能体经会话级开关 + spawn 级蜂群�
   );
   assert.match(commandSource, /pub\(crate\) fn prepare_delegation_turn\(/, '普通发送与方案接受必须复用同一轮装配入口');
   // 发送内容与匹配源的分离由 Rust 类型系统强制：`MatchSource` newtype 让
-  // “匹配看原文、发送看组装稿”的参数次序错误直接变成编译错误。此前这里用
-  // 正则钉两个调用点的实参次序，但纯 Rust 改动只触发 rust-test job、不会
-  // 运行本文件，钉了也无法在正确的时机生效。
+  // “匹配看原文、发送看组装稿”的参数次序错误直接变成编译错误。但类型只
+  // 保证次序——`MatchSource(&full)` 一样能编译，所以调用位“匹配源到底是
+  // 哪个字符串”仍需正则钉住；chat.rs 已在 frontend filter 里，纯 Rust 改动
+  // 也能触发本文件。
   assert.match(commandSource, /snapshot\.available_role_lines\(match_source\)/, '候选提醒必须从本轮名册快照按匹配源筛选，避免提示与实际派工错位');
+  // 「匹配源到底是哪根串」由 app/commands/multiagent.rs 的
+  // match_source_call_sites_pass_the_unassembled_text 以 include_str! 钉在
+  // rust-test（对任何 Rust 改动必跑，无路由依赖），此处不再重复。
   assert.match(rosterSource, /personas::executable_cards\(\)/, '每轮名册与候选必须一次读取可执行专家卡，不能逐张读取形成竞态');
   assert.match(personasSource, /pub fn executable_cards\(\)[\s\S]{0,900}filter\(\|card\| !card\.conversational_only\)/, '纯对话专家卡不得注册为执行型子智能体');
   assert.match(rosterSource, /if score > 0 \{/, '用户自创卡与内置卡同门槛：必须与本轮任务有文本相关性才进入候选');
@@ -326,7 +330,9 @@ test('旧独立入口退役：多智能体经会话级开关 + spawn 级蜂群�
   // 它在真正随 swarm.rs 变化而触发的 rust-test job 里运行且断言更强（另钉
   // action=roster、48、type=/profile= 分工等），此处不再维护一份换行重排就
   // 误报的正则副本；每轮候选上限（8）由 expert_roster 的行为测试按真实
-  // 截断结果钉住，而非钉常量声明。
+  // 截断结果钉住，常量字面另由 expert_roster 的
+  // expert_candidate_limit_is_the_registered_product_number 钉死（行为测试
+  // 只能证上限 ≤10）。
   assert.doesNotMatch(
     memoryCommandSource,
     /prepend_delegation_replay_reminder|prepare_delegation_turn/,

@@ -4561,6 +4561,27 @@ mod tests {
         );
     }
 
+    /// 纵深防御自检：候选行只允许伴随专家快照出现。发布路径的硬错误在
+    /// engine.rs::validate_ordinary_turn_has_no_expert_material，组装器自身
+    /// 的 debug_assert 是最后一道闸——必须证明它真的会在接错线时触发，
+    /// 而不是一条永不执行的装饰（cargo test 的 dev profile 开着
+    /// debug_assertions）。
+    #[test]
+    #[should_panic(expected = "ordinary turns must not carry expert candidate lines")]
+    fn assembler_debug_assert_rejects_candidates_without_snapshot() {
+        let bridge = fixture_bridge();
+        let _ = bridge.build_send_message_op_with_hooks(
+            "sess-plain",
+            "hi".to_string(),
+            AppMode::Agent,
+            None,
+            false,
+            bridge.build_hook_executor(),
+            None,
+            &["- `exp-a`：A｜做 A 事".to_string()],
+        );
+    }
+
     #[test]
     fn known_cloud_window_fills_route_limits_and_compaction_window() {
         let mut bridge = fixture_bridge();

@@ -602,14 +602,17 @@ async fn code_session_real_spawn_refresh_resolves_config_expert_without_project_
             !parent_bodies.is_empty(),
             "swarm contract must ride the parent session system prompt"
         );
-        // 契约必须渲染为父会话的 <instructions> 系统块（spawn 级注入），
-        // 而不是拼进某轮用户消息或 system-reminder 信封；捕获体是原始 HTTP
-        // 请求，JSON 引号转义不影响 `instructions source=` 子串。
+        // 契约必须渲染为父会话的 <instructions source="pinvou3:swarm">
+        // 系统块（spawn 级注入），而不是拼进某轮用户消息或 system-reminder
+        // 信封。只断 `instructions source=` 是空转——常驻的
+        // `pinvou3:instructions` 源让每个父请求体都含该子串；因此同时断
+        // 蜂群源名 `pinvou3:swarm`（契约块唯一的携带者）。捕获体是原始
+        // HTTP 请求，JSON 引号转义不影响这两个子串。
         assert!(
             parent_bodies
                 .iter()
-                .all(|body| body.contains("instructions source=")),
-            "swarm contract must render as the parent <instructions> system block, never a per-turn reminder"
+                .all(|body| body.contains("instructions source=") && body.contains("pinvou3:swarm")),
+            "swarm contract must render as the parent <instructions source=\"pinvou3:swarm\"> block, never a per-turn reminder"
         );
         assert!(
             bodies
