@@ -320,6 +320,6 @@
 ## 13. 发布与回退
 
 - 公开回退点是不可变 tag `pinvou-v0.9.5-r13`；本地 `backup/pre-v0.9.12-sync` 不是发布前提。
-- 不可变 `pinvou-v0.9.12-r1` 停在 r1 收口 `1fafee7e26b60a59457a43bce50c63aa2ad9dbaf`；当前处于过渡期：父仓 gitlink 指向维护分支头 `7fc36e587` 之上的 T8 提交 `9f1210d31`/`b5d9fa7c8`/`b11c12720`（领先 tag 24 个提交），这三个提交随父仓蜂群二期 PR 经上游 CodeWhale #65 合入后即成为公开维护分支头，下一次 r2 发布收口时在合并头切不可变 tag 并对齐三方（分支/tag/gitlink），以 `scripts/verify-public-submodule.sh` 验证公开可达性（过渡期断言 gitlink=分支头、tag 钉在 r1 收口，r2 收口后恢复三方相等；依据 `docs/fork-policy.md` 第 0 节过渡期豁免）。
+- 不可变 `pinvou-v0.9.12-r1` 停在 r1 收口 `1fafee7e26b60a59457a43bce50c63aa2ad9dbaf`；当前处于过渡期：父仓 gitlink 指向维护分支头 `7fc36e587` 之上的 T8 提交 `9f1210d31`/`b5d9fa7c8`/`b11c12720`（领先 tag 24 个提交），这三个提交随父仓蜂群二期 PR 经上游 CodeWhale #65 保持提交落位合入（不得 squash，否则失去公开 refs 可达性、gitlink 悬空）；维护分支其后已合入 #66（`c4e6caf9`），#65 已无法以快进方式落到 gitlink——合入后维护分支头前进到 `b11c12720` 之外的合并提交，父仓紧随一次重钉提交把 gitlink 与 `scripts/fork-guard.sh` 的 `EXPECTED_HEAD`/`EXPECTED_COMMITS` 对齐到新头；下一次 r2 发布收口时在合并头切不可变 tag 并对齐三方（分支/tag/gitlink），以 `scripts/verify-public-submodule.sh` 验证公开可达性（过渡期断言 gitlink=分支头、tag 钉在 r1 收口，r2 收口后恢复三方相等；依据 `docs/fork-policy.md` 第 0 节过渡期豁免）。
 - 发布过程中只为精确 head 的受保护分支更新临时移除无法在该维护分支触发的 required status contexts，完成快进后立即恢复原保护配置；未关闭 force-push 防护，也未重写已发布 tag。
 - 后续发布仍不得降低公开校验或把本地 object 当成发布成功。
