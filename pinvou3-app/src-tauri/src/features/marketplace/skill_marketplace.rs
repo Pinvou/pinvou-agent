@@ -366,7 +366,7 @@ impl SkillMarketplaceManager {
     }
 
     /// 已安装技能的市场 id（含预置与用户上传）。code scope 未初始化「默认全禁
-    /// 已装技能」的兜底集合来源（见 `skill_materialization::load_disabled_skills_for`）。
+    /// 已装技能」的兜底集合来源（见 `scope::load_disabled_bundles_for`）。
     pub fn installed_skill_ids(&self) -> Vec<String> {
         self.list_skills()
             .into_iter()

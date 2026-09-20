@@ -2600,8 +2600,9 @@ impl RemoteControlManager {
         }
         // 远程端正式支持代码会话列表/授权/UI 之前，先过滤原生代码会话事件：事件
         // payload 携带的会话 id（`session_id` 用于 chat:* / artifact:disk，
-        // `id` 用于 session:*，`sessionId` 用于 scheduled_task:run_updated）指向
-        // 品悟原生代码会话（仅原生，不含 ACP 会话）时不转发。远程 WebUI 不会收到
+        // `id` 用于 session:*）指向品悟原生代码会话（仅原生，不含 ACP 会话）时
+        // 不转发（scheduled_task:run_updated 的 payload 现为空，不会命中本过滤）。
+        // 远程 WebUI 不会收到
         // 它无法展示/授权的代码会话消息流；predicate 只对真实代码会话 id 返回
         // true，普通会话不受影响。
         if should_filter_code_session_event(

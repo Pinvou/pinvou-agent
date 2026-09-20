@@ -86,7 +86,7 @@
 ### 3.3 动作下发
 
 后端按当前状态下发可用动作集（install / connect / configure / update /
-disconnect / uninstall / enable_in(scope)…），每个动作带可用性与原因；
+disconnect / uninstall…），每个动作带可用性与原因；
 交互流程（飞书流程卡、企微扫码 iframe 等）建模为动作的 flow payload。
 前端 `ToolStoreView` 退化为动作渲染器，新增连接器零前端改动。
 

@@ -202,7 +202,7 @@ const renderLegacyMarkdownCached = createWeakCache(
   (item, text, syntaxVersion) => renderMarkdown(text), // eslint-disable-line no-unused-vars -- syntaxVersion only keys the cache (lazy language registration invalidation); renderMarkdown needs just the text
 );
 
-// Same idea as legacyMarkdownCache: every composer keystroke, streaming
+// Same idea as renderLegacyMarkdownCached: every composer keystroke, streaming
 // delta, and clock tick re-renders the full view, and each render of an
 // assistant bubble ran three rounds of pre/code regex parsing (persona
 // draft, scheduled-task draft, card-question follow-up) plus the streaming

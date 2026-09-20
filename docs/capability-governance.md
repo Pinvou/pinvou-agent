@@ -229,8 +229,8 @@ UI 或状态层出 bug 也放不出白名单外能力。已知开放侧翼：CLI
 - **`tool_credentials` / `tool_config_fields` 不按 (key, target) 去重**：
   两个收敛函数把 `config_fields`、`secret_env`、`secret_headers` 三路声明
   简单拼接（`bundle.rs`），同一 `(key, target)` 在多路重复声明时会重复出现在
-  `BundleInfo.credentials` / `config_fields` 与落盘的 `credential_keys` 中，
-  凭据收集弹窗与缺失判定可能重复处理同一凭据。
+  `BundleInfo.credentials` / `config_fields` 中，凭据收集弹窗与缺失判定可能
+  重复处理同一凭据。
 
 另有两条限制已随文内联登记：会话中关闭的上下文不可撤回边界（§3.3 末）、
 CLI 包真实执行面经 `bash` 的开放侧翼（§5 末）。

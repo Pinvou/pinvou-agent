@@ -440,11 +440,8 @@ export default function PetWindow({
         }).catch(() => {});
       }
     }));
-    subscriptions.push(ev.listen('scheduled_task:run_updated', (event) => {
-      const payload = event.payload || {};
-      const run = payload.run || payload;
-      if (String(run.status || '').toLowerCase() === 'completed') scheduleNoticeRefresh();
-    }));
+    // scheduled_task:run_updated 不订阅：唯一 emit 方（file_watcher）payload 恒为
+    // 空对象，任何读取 run.status 的分支都是死路；完成通知刷新由上面 chat:done 路径承担。
     subscriptions.push(ev.listen('pet:scheduled_notice_opened', (event) => {
       const payload = event.payload || {};
       const runId = String(payload.run_id || payload.runId || '');

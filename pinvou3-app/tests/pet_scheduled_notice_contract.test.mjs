@@ -12,7 +12,9 @@ assert.match(
   /\.filter\(\(session\) => !isScheduledSessionPayload\(session\)\)[\s\S]{0,120}?applyActivitySnapshot\(/,
   'scheduled snapshot sessions must not become ordinary activity cards',
 );
-assert.match(petWindow, /listen\(['"]scheduled_task:run_updated['"]/);
+// scheduled_task:run_updated 不再由 pet 窗口订阅：file_watcher 的 payload 恒为空，
+// 任何读取 run.status 的分支都是死路；完成通知刷新由 chat:done 路径（PET_EVENTS 内
+// isScheduledSessionPayload 分支）承担，故此处的旧订阅契约一并移除。
 assert.match(petWindow, /className="pet-activity pet-activity-scheduled"/);
 assert.match(petWindow, /scheduledRun:\s*scheduledNotice/);
 assert.match(petWindow, /petCopy\.scheduledDone/);

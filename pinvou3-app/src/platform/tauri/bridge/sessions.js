@@ -28,7 +28,7 @@ function pinvouSharedtauriSessions() {
     // returns null early in that case.
     const dialogOpen = context.dialogOpen || null;
     // Shared normalized directory-picker scaffold (same bridge.js helper used
-    // by pickFolder/pickFolders); returns null when unavailable or cancelled.
+    // by pickFolders); returns null when unavailable or cancelled.
     const pickDirectory = context.pickDirectory;
     const sessionStates = context.sessionStates;
     const scheduledRunSessionOwners = context.scheduledRunSessionOwners;

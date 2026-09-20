@@ -4,7 +4,9 @@
 //! 记忆回顾（features/memory）选 Anthropic preset 时走 Messages 原生协议，
 //! 鉴权与地址口径与上述探测一致。
 
-// R12 去重批次：`reaper`（空闲回收脚手架）与 `test_support`（跨特性测试
+// R12 去重批次：`reaper`（空闲回收脚手架）与 `test_support`（跨特性测试脚
+// 手架）已分别收敛至 `core/reaper.rs` 与 `platform/test_support.rs`，本文件仅保留
+// 模型端点共用判定。
 use std::sync::Arc;
 use std::time::Duration;
 

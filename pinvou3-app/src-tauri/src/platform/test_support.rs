@@ -7,8 +7,8 @@
 //! 「快照/恢复一组 env」两个高频脚手架收敛为单一实现，供 assistant /
 //! connectors / marketplace 等模块的测试复用，避免逐文件复制出细微漂移。
 //!
-//! 模块声明暂由 `core/model_endpoint.rs` 以 `#[path]` 挂载（本批次文件所有权
-//! 不含 platform/mod.rs）；后续把该声明挪回 platform/mod.rs 即可。
+//! 模块声明位于 `platform/mod.rs`（`#[cfg(test)] pub(crate) mod test_support;`），
+//! 不进发布产物。
 
 #[cfg(test)]
 use std::ffi::OsString;

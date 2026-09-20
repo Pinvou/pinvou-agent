@@ -5,9 +5,10 @@
 //!
 //! 其中 model_available、download_current_model、transcribe、
 //! model_file_verified 等函数仅被 `platform/{windows,linux}.rs` 调用;macOS 用系统
-//! Speech 框架(见 `platform/voice_asr_speech.rs`),不引用这些函数。因此它们仅在 macOS
-//! 编译目标下被 clippy 误报为 dead code,但删除会破坏 Windows/Linux 构建——
-//! allow 只对 macOS 开启(linux/windows 下每一项当前均可达)。
+//! Speech 框架(见 `platform/voice_asr_speech.rs`),不引用这些函数。因此仅 macOS
+//! 编译目标需要压制该误报(这些函数不能删,删了会破坏 Windows/Linux 构建)。
+//! 本 allow 无条件开启、不按 target 门控:linux/windows 下每一项当前均可达,
+//! 多余的 allow 无害,而 cfg 门控会让三平台行号漂移、增加维护成本。
 #![allow(dead_code)]
 
 use std::path::{Path, PathBuf};

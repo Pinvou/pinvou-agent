@@ -182,8 +182,8 @@ fn handle_event(
 }
 
 /// Emit one scheduled-run refresh event. All frontend listeners (web bridge,
-/// desktop chat-events bridge, pet window) only trigger a refresh from the
-/// event name and never read a payload field, so the payload is empty.
+/// desktop chat-events bridge) only trigger a refresh from the event name and
+/// never read a payload field, so the payload is empty.
 fn emit_scheduled_run_updated(app: &AppHandle) {
     let _ = app.emit("scheduled_task:run_updated", json!({}));
     crate::platform::app_events::forward_app_event(app, "scheduled_task:run_updated", json!({}));
