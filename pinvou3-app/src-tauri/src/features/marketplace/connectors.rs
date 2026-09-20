@@ -254,6 +254,34 @@ impl<S: crate::platform::credential_store::CredentialStore> MarketplaceManager<S
                                 serde_json::Value::String(format!("Bearer {}", val)),
                             );
                         }
+                    } else if field.secret {
+                        // Startup reconciliation has no user input this run, so re-wire
+                        // the bearer fields from the credential store (installed with a
+                        // value that `resolve_secret_placeholder` can still resolve). A
+                        // secret that never resolves — never entered, or the keyring
+                        // entry was removed — simply leaves the field unwritten: the
+                        // entry restores without credentials and the auth failure
+                        // surfaces through the engine's boot receipt instead of
+                        // blocking the restore.
+                        if self
+                            .resolve_secret_placeholder(
+                                &manifest.id,
+                                bundle::keyring_target(bundle::CredentialTarget::Bearer),
+                                &field.key,
+                                user_config,
+                                &manifest.env,
+                            )
+                            .is_ok()
+                            && !secret_header_auth_keys.contains(field.key.as_str())
+                        {
+                            set_remote_secret_header(
+                                &mut env_headers,
+                                &mut bearer_token_env_var,
+                                "Authorization",
+                                "Bearer",
+                                &field.key,
+                            )?;
+                        }
                     }
                 }
             }
@@ -333,6 +361,18 @@ impl<S: crate::platform::credential_store::CredentialStore> MarketplaceManager<S
                 }
             })
             .collect()
+    }
+
+    /// The command a local mcp.json entry launches: the bare python family resolves to
+    /// the current runtime, anything else is the manifest value verbatim. Shared by the
+    /// install writer (`add_local_to_mcp_json`) and the startup rebuild validator so
+    /// both judge the same launch target.
+    pub(super) fn local_server_command(manifest: &ToolManifest) -> String {
+        if manifest.command == "python" || manifest.command == "python3" {
+            paths::python_command()
+        } else {
+            manifest.command.clone()
+        }
     }
 
     fn managed_python_runtime_fields(
@@ -420,12 +460,10 @@ impl<S: crate::platform::credential_store::CredentialStore> MarketplaceManager<S
         let (command, args) = if let Some(environment) = python_environment {
             Self::managed_python_runtime_fields(manifest, server_dir, environment)?
         } else {
-            let command = if manifest.command == "python" || manifest.command == "python3" {
-                paths::python_command()
-            } else {
-                manifest.command.clone()
-            };
-            (command, Self::local_server_args(manifest, server_dir))
+            (
+                Self::local_server_command(manifest),
+                Self::local_server_args(manifest, server_dir),
+            )
         };
 
         let mut env = manifest
@@ -516,10 +554,12 @@ impl<S: crate::platform::credential_store::CredentialStore> MarketplaceManager<S
         write_json_pretty(&mcp_path, &mcp)
     }
 
-    /// Startup reconciliation for one remote (manifest `servers`) tool:
+    /// Startup reconciliation for the given remote servers of one tool (callers pass
+    /// `&manifest.servers` or a subset with contested keys removed):
     /// - A missing per-server entry is added with the exact fresh-install serialization
     ///   (startup has no user input, so secret placeholders resolve from the credential
-    ///   store, same as `sync_secret_values`).
+    ///   store, same as `sync_secret_values`; a bearer secret that no longer resolves
+    ///   leaves its field unwritten rather than failing the restore).
     /// - An existing entry whose manifest-derived shape (url/scopes/oauth/oauth_resource)
     ///   drifted from the current manifest is realigned; credential fields
     ///   (headers/env_headers/bearer_token_env_var) and forward-compatible fields are
@@ -529,6 +569,7 @@ impl<S: crate::platform::credential_store::CredentialStore> MarketplaceManager<S
     pub(super) fn reconcile_remote_mcp_entries(
         &self,
         manifest: &ToolManifest,
+        servers: &[&super::types::RemoteServer],
     ) -> Result<Option<String>, String> {
         let _guard = mcp_json_lock();
         let mcp_path = paths::mcp_config_path();
@@ -539,17 +580,17 @@ impl<S: crate::platform::credential_store::CredentialStore> MarketplaceManager<S
         } else {
             default_mcp_json()
         };
-        let servers = mcp
+        let servers_map = mcp
             .get_mut("servers")
             .and_then(|s| s.as_object_mut())
             .ok_or("mcp.json 格式错误")?;
 
         let mut changed: Vec<String> = Vec::new();
-        for server in &manifest.servers {
+        for server in servers {
             if super::ENGINE_OWNED_MCP_SERVER_KEYS.contains(&server.name.as_str()) {
                 continue; // never fight the boot-time ensure_builtin_mcp_servers upsert
             }
-            match servers
+            match servers_map
                 .get_mut(&server.name)
                 .and_then(|entry| entry.as_object_mut())
             {
@@ -564,7 +605,7 @@ impl<S: crate::platform::credential_store::CredentialStore> MarketplaceManager<S
                 _ => {
                     let entry =
                         self.build_remote_server_entry(manifest, server, &HashMap::new())?;
-                    servers.insert(server.name.clone(), entry);
+                    servers_map.insert(server.name.clone(), entry);
                     changed.push(format!("restored missing remote entry '{}'", server.name));
                 }
             }
@@ -575,6 +616,52 @@ impl<S: crate::platform::credential_store::CredentialStore> MarketplaceManager<S
         }
         write_json_pretty(&mcp_path, &mcp)?;
         Ok(Some(changed.join("; ")))
+    }
+
+    /// Re-apply the user-owned fields of a pre-rebuild mcp.json entry (everything
+    /// except the manifest-derived `command`/`args`/`env`), matching the field
+    /// retention contract of `patch_managed_python_runtime`: `enabled`, timeouts,
+    /// and forward-compatible fields survive a rebuild instead of being silently
+    /// reset (a hand-disabled tool must not come back enabled). No-op when the old
+    /// entry carries nothing preservable.
+    pub(super) fn reapply_preserved_entry_fields(
+        &self,
+        tool_id: &str,
+        old_entry: &serde_json::Value,
+    ) -> Result<(), String> {
+        let Some(preserved): Option<serde_json::Map<String, serde_json::Value>> =
+            old_entry.as_object().map(|object| {
+                object
+                    .iter()
+                    .filter(|(k, _)| !matches!(k.as_str(), "command" | "args" | "env"))
+                    .map(|(k, v)| (k.clone(), v.clone()))
+                    .collect()
+            })
+        else {
+            return Ok(());
+        };
+        if preserved.is_empty() {
+            return Ok(());
+        }
+        let _guard = mcp_json_lock();
+        let mcp_path = paths::mcp_config_path();
+        let content =
+            std::fs::read_to_string(&mcp_path).map_err(|e| format!("读取 mcp.json: {e}"))?;
+        let mut mcp: serde_json::Value =
+            serde_json::from_str(&content).unwrap_or_else(|_| default_mcp_json());
+        let Some(entry) = mcp
+            .get_mut("servers")
+            .and_then(|s| s.as_object_mut())
+            .and_then(|servers| servers.get_mut(tool_id))
+            .and_then(|entry| entry.as_object_mut())
+        else {
+            // The rebuilt entry is gone again (concurrent writer); nothing to merge.
+            return Ok(());
+        };
+        for (key, value) in preserved {
+            entry.insert(key, value);
+        }
+        write_json_pretty(&mcp_path, &mcp)
     }
 }
 

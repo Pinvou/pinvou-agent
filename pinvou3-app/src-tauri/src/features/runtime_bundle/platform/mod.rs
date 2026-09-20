@@ -1864,6 +1864,61 @@ mod tests {
         cleanup(&tmp);
     }
 
+    /// ensure_builtin_mcp_servers 的写足印被钉死在 pinvou3/pinvou/browser 三键:
+    /// marketplace 侧的 ENGINE_OWNED_MCP_SERVER_KEYS 镜像了这一集合(启动对账靠它
+    /// 避开引擎键)。新增/改名内置 server 键时,必须同步更新该常量与本测试。
+    #[test]
+    fn ensure_builtin_mcp_servers_touches_only_engine_owned_keys() {
+        let _g = ENV_LOCK.lock().unwrap_or_else(|p| p.into_inner());
+        let tmp = tempdir();
+        // SAFETY: holding platform::paths::tests::ENV_LOCK; env writes serialized in-process.
+        unsafe { std::env::set_var("PINVOU3_HOME", &tmp) };
+        paths::ensure_dirs().unwrap();
+        let bundle = Pinvou3Bundle::paths();
+        std::fs::create_dir_all(bundle.mcp_json.parent().unwrap()).unwrap();
+        // 三个引擎键各取一个形态(pinvou 迁移 / pinvou3 upsert / browser-wrapper 残留
+        // 清除) + 两个用户条目哨兵。哨兵刻意用 node 命令,避开
+        // refresh_mcp_python_commands 的陈旧 python 改写路径——本测试钉的是键集合
+        // 足印,不是 python 自愈语义。
+        std::fs::write(
+            &bundle.mcp_json,
+            r#"{"servers":{
+                "pinvou":{"command":"python3","args":["/old/present.py"]},
+                "pinvou3":{"command":"/usr/bin/obsolete-python","args":["/old/present.py"]},
+                "browser":{"command":"node","args":["/old/browser-wrapper.mjs"]},
+                "user-node":{"command":"node","args":["/opt/user-tool/run.js"],"enabled":false,"custom_hint":"keep"},
+                "user-node2":{"command":"node","args":["/opt/user-tool/run2.js"]}
+            }}"#,
+        )
+        .unwrap();
+
+        bundle.ensure_builtin_mcp_servers().unwrap();
+
+        let mcp: serde_json::Value =
+            serde_json::from_str(&std::fs::read_to_string(&bundle.mcp_json).unwrap()).unwrap();
+        let servers = mcp["servers"].as_object().unwrap();
+        let mut keys: Vec<&str> = servers.keys().map(String::as_str).collect();
+        keys.sort_unstable();
+        assert_eq!(
+            keys,
+            vec!["pinvou3", "user-node", "user-node2"],
+            "写足印必须只有引擎三键:pinvou 迁移走、pinvou3 upsert、browser 残留删除"
+        );
+        assert_eq!(
+            servers["pinvou3"]["command"],
+            serde_json::Value::String(paths::python_command())
+        );
+        assert_eq!(
+            servers["user-node"],
+            serde_json::json!({
+                "command":"node","args":["/opt/user-tool/run.js"],
+                "enabled":false,"custom_hint":"keep"
+            }),
+            "足印外的用户条目必须逐字节保留"
+        );
+        cleanup(&tmp);
+    }
+
     /// write_if_changed:内容逐字节一致时跳过写盘(返回 false 且不动文件);
     /// 内容不同才实际写入(返回 true)。
     #[test]

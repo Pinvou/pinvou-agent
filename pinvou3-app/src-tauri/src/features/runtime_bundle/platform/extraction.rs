@@ -277,16 +277,21 @@ impl Pinvou3Bundle {
         // Reconcile the marketplace installed registry with mcp.json BEFORE the Python
         // repair: the managed-runtime patch fails while an entry is missing entirely, so
         // restoring missing/dead entries first lets one startup converge to the managed
-        // form. Engine-owned keys (pinvou3) are skipped, and ensure_builtin_mcp_servers
+        // form. Engine-owned keys (pinvou3/pinvou/browser — see
+        // ENGINE_OWNED_MCP_SERVER_KEYS) are skipped, and ensure_builtin_mcp_servers
         // below re-asserts them afterwards, so neither pass can overwrite the other.
+        // Actions go through the startup timeline as well: release builds register no
+        // log sink, so log::info! alone would leave the reconcile outcomes invisible.
         match marketplace.reconcile_installed_mcp_entries() {
             Ok(actions) => {
                 for action in actions {
                     log::info!("[pinvou3-app] mcp.json reconcile: {action}");
+                    crate::platform::startup::mark_with_detail("rust", "mcp_reconcile", &action);
                 }
             }
             Err(error) => {
                 log::warn!("[pinvou3-app] mcp.json reconcile failed (non-blocking): {error}");
+                crate::platform::startup::mark_with_detail("rust", "mcp_reconcile:failed", &error);
             }
         }
         // Existing Python MCP entries may still launch server.py directly without the managed
@@ -301,6 +306,10 @@ impl Pinvou3Bundle {
         // 不受 VERSION gate 限制——marketplace 安装可能在任何时候发生。启动自愈(刷新
         // 陈旧的本地 python server command)也在同一次调用里完成,两者共享一次读盘
         // +parse;必须在引擎 spawn 前跑(引擎从 mcp.json 拉起 server)。
+        // 本函数只动 pinvou3/pinvou/browser 三个键;marketplace 侧的
+        // ENGINE_OWNED_MCP_SERVER_KEYS 镜像了这一集合,两侧由
+        // ensure_builtin_mcp_servers_touches_only_engine_owned_keys 测试钉住,
+        // 改动键集合时必须同步。
         self.ensure_builtin_mcp_servers()?;
         crate::platform::startup::mark("bundle_extract:write_mcp_servers:done");
 
