@@ -250,7 +250,12 @@ test('ensureSession：绑定草稿不套用 work lane 默认（后端按 code la
   rt.api.setDraftWorkspace('/work/project');
   const id = await rt.api.ensureSession();
   assert.equal(id, 'chat-new');
-  assert.deepEqual(rt.invokeArgs('create_session'), [{ workspacePath: '/work/project' }]);
+  assert.deepEqual(rt.invokeArgs('create_session'), [{
+    workspacePath: '/work/project',
+    // 钥匙串快照随绑定草稿下发(单根 = 自身)。
+    workspaceRoots: ['/work/project'],
+    projectId: null,
+  }]);
   assert.ok(!rt.invokeNames().includes('set_plan_mode_next'),
     '绑定会话不得把 work lane 默认经 set_plan_mode_next 套用');
 });

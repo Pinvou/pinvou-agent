@@ -20,6 +20,7 @@ use crate::features::codex_acp::{
     CodexAcpPendingPermission, CodexAcpSessionInfo, CodexAcpStatus, CodexAcpWorkspaceInfo,
     CodexWorkspaceKind, validate_codex_project_workspace,
 };
+use crate::features::projects::ProjectStore;
 use crate::features::sessions::{SessionKind, SessionStore};
 
 #[derive(Debug, Clone, Serialize)]
@@ -715,16 +716,22 @@ pub async fn list_codex_acp_sessions_for_web(
 pub async fn create_codex_acp_session(
     workspace_path: Option<String>,
     agent_id: Option<String>,
+    workspace_roots: Option<Vec<String>>,
+    project_id: Option<String>,
     store: State<'_, SessionStore>,
     pool: State<'_, EnginePool>,
     acp_pool: State<'_, AcpPool>,
+    projects: State<'_, ProjectStore>,
 ) -> Result<SessionMetadata, String> {
     create_codex_acp_session_with_workspace_binding(
         workspace_path.map(PathBuf::from),
         agent_id,
+        workspace_roots,
+        project_id,
         store,
         pool,
         acp_pool,
+        projects,
         None,
     )
     .await
@@ -739,9 +746,12 @@ pub async fn create_codex_acp_session(
 pub(crate) async fn create_codex_acp_session_with_workspace_binding(
     workspace_path: Option<PathBuf>,
     agent_id: Option<String>,
+    workspace_roots: Option<Vec<String>>,
+    project_id: Option<String>,
     store: State<'_, SessionStore>,
     pool: State<'_, EnginePool>,
     acp_pool: State<'_, AcpPool>,
+    projects: State<'_, ProjectStore>,
     workspace_verifier: Option<&WorkspaceBindingVerifier<'_>>,
 ) -> Result<SessionMetadata, String> {
     let backend = AgentBackend::parse(agent_id.as_deref().or(Some("pinvou")))
@@ -751,16 +761,33 @@ pub(crate) async fn create_codex_acp_session_with_workspace_binding(
         .map(validate_codex_project_workspace)
         .transpose()
         .map_err(|error| format!("{error:#}"))?;
+    // 钥匙串快照(§6):绝对路径硬拒,不存在的附加根软警告保留(与
+    // sessions::create_session 同一条校验)。
+    let keychain =
+        crate::features::sessions::validate_workspace_roots(workspace_roots.unwrap_or_default())
+            .map_err(|error| {
+                format!("create_codex_acp_session: invalid workspace_roots: {error:#}")
+            })?;
     verify_workspace_binding(project_workspace.as_deref(), workspace_verifier)?;
     if !backend.is_acp() {
-        return create_code_native_session(
-            project_workspace,
+        let metadata = create_code_native_session(
+            project_workspace.clone(),
+            keychain,
             &pool,
             &store,
             &acp_pool,
             workspace_verifier,
         )
-        .await;
+        .await?;
+        // 项目通道(§9.3):创建即更新项目记忆主文件夹(后端同命令内写,免二次
+        // RPC;失败只记日志,不影响创建)。写入点在最后一个回滚点之后——失败的
+        // 创建不得留下无会话的项目记忆(评审 #484 MINOR)。
+        record_project_primary_root(
+            projects.inner(),
+            project_id.as_deref(),
+            project_workspace.as_deref(),
+        );
+        return Ok(metadata);
     }
     let metadata_workspace = project_workspace
         .clone()
@@ -792,6 +819,7 @@ pub(crate) async fn create_codex_acp_session_with_workspace_binding(
         backend,
         kind,
         project_workspace.clone(),
+        keychain.clone(),
     ) {
         rollback_created_code_session(&session.metadata.id, &store, &acp_pool);
         return Err(format!("保存 Codex ACP 会话工作目录失败: {error:#}"));
@@ -822,7 +850,30 @@ pub(crate) async fn create_codex_acp_session_with_workspace_binding(
         rollback_created_code_session(&session.metadata.id, &store, &acp_pool);
         return Err(error);
     }
+    // 项目通道(§9.3):同上——最后一个回滚点之后才写项目记忆。
+    record_project_primary_root(
+        projects.inner(),
+        project_id.as_deref(),
+        project_workspace.as_deref(),
+    );
     Ok(session.metadata)
+}
+
+/// 项目通道记忆(§9.2/§9.3):把创建时选定的根记为项目记忆主文件夹。只在
+/// 会话创建完全落定后调用;记忆写失败只记日志(下次创建重试),绝不影响
+/// 创建结果。
+fn record_project_primary_root(
+    projects: &crate::features::projects::ProjectStore,
+    project_id: Option<&str>,
+    cwd: Option<&Path>,
+) {
+    if let (Some(project_id), Some(cwd)) = (project_id, cwd) {
+        if let Err(error) = projects.set_last_primary_root(project_id, cwd) {
+            eprintln!(
+                "[codex] create_codex_acp_session: record last_primary_root failed: {error:#}"
+            );
+        }
+    }
 }
 
 /// 创建“代码”模块原生（品悟 Engine）会话。
@@ -833,6 +884,7 @@ pub(crate) async fn create_codex_acp_session_with_workspace_binding(
 /// engine/shell 启动时解析，发消息走现有 `chat` 命令。
 async fn create_code_native_session(
     project_workspace: Option<PathBuf>,
+    workspace_roots: Vec<PathBuf>,
     pool: &EnginePool,
     store: &SessionStore,
     acp_pool: &AcpPool,
@@ -857,6 +909,7 @@ async fn create_code_native_session(
         &session.metadata.id,
         kind,
         project_workspace.clone(),
+        workspace_roots,
     ) {
         rollback_created_code_session(&session.metadata.id, store, acp_pool);
         return Err(format!("保存原生代码会话标记失败: {error:#}"));

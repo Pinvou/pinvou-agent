@@ -50,7 +50,17 @@ test('runtime guidance does not teach retired or hidden replay tool names', () =
   for (const file of runtimeGuidanceFiles(RESOURCES_COMMON)) {
     const lines = fs.readFileSync(file, 'utf8').split(/\r?\n/);
     lines.forEach((line, index) => {
-      if (RETIRED.test(line) || line.includes('File(action=') || line.includes('Bash(action=')) {
+      // Normalize separators: path.relative yields backslashes on Windows,
+      // which could never match the forward-slash exception key below (the
+      // exception silently degraded into a leak on Windows hosts).
+      const relative = path.relative(ROOT, file).split(path.sep).join('/');
+      const windowsPreviewControl = relative === 'src-tauri/resources/common/bundle/instructions-work.md'
+        && line.includes('retained compatibility control surface')
+        && line.includes('Bash(action="run", command="...", background=true)')
+        && line.includes('Bash(action="cancel", task_id="...")')
+        && (line.match(/Bash\(action=/g) || []).length === 2;
+      if (windowsPreviewControl) previewControlExceptions.push(`${relative}:${index + 1}`);
+      if (RETIRED.test(line) || line.includes('File(action=') || (line.includes('Bash(action=') && !windowsPreviewControl)) {
         leaks.push(`${path.relative(ROOT, file)}:${index + 1}: ${line.trim()}`);
       }
     });

@@ -1,4 +1,5 @@
 use super::prelude::*;
+use crate::features::projects::ProjectStore;
 // Native save dialog support for `export_session`; the other session
 // commands do not interact with the dialog plugin.
 use std::path::PathBuf;
@@ -17,6 +18,10 @@ pub struct SessionListItem {
     /// (grouping follows binding, the same signal as the safety posture).
     #[serde(skip_serializing_if = "Option::is_none")]
     pub workspace_binding: Option<String>,
+    /// 创建时锁定的钥匙串快照(§6,含主根的全量可访问根);空 = 单根语义。
+    /// picker/管理面板据此展示「本对话可访问的文件夹集合」。
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub workspace_roots: Vec<String>,
 }
 
 /// Web boundary projection for SessionListItem: degrade the host absolute
@@ -33,6 +38,11 @@ pub struct SessionListItem {
 pub(crate) fn redact_session_list_item_for_web(item: &mut SessionListItem) {
     if let Some(binding) = &item.workspace_binding {
         item.workspace_binding = Some(super::codex::redact_workspace_path_for_web(binding));
+    }
+    // 钥匙串快照同样是主机绝对路径:过 Web 边界前逐项降级为末级目录名,与
+    // workspace_binding 同一套投影(Web 端不用它做分组,仅作惰性叶子)。
+    for root in item.workspace_roots.iter_mut() {
+        *root = super::codex::redact_workspace_path_for_web(root);
     }
 }
 
@@ -183,11 +193,22 @@ pub async fn list_sessions(
             let workspace_binding = store
                 .session_workspace_binding(&metadata.id)
                 .map(|path| path.display().to_string());
+            // 钥匙串快照只在已绑定时存在;sidecar 冷读(与 binding 同一量级)。
+            let workspace_roots = if workspace_binding.is_some() {
+                store
+                    .session_workspace_roots(&metadata.id)
+                    .iter()
+                    .map(|path| path.display().to_string())
+                    .collect()
+            } else {
+                Vec::new()
+            };
             SessionListItem {
                 pinned: store.is_pinned(&metadata.id),
                 pinned_at: store.pinned_at(&metadata.id),
                 title_attachment_names,
                 workspace_binding,
+                workspace_roots,
                 metadata,
             }
         })
@@ -387,23 +408,33 @@ pub(super) fn create_session_record(
 pub async fn create_session(
     set_active: Option<bool>,
     workspace_path: Option<String>,
+    workspace_roots: Option<Vec<String>>,
+    project_id: Option<String>,
     app: AppHandle,
     store: State<'_, SessionStore>,
     pool: State<'_, EnginePool>,
+    projects: State<'_, ProjectStore>,
 ) -> Result<SessionMetadata, String> {
     let workspace = workspace_path
         .as_deref()
         .map(crate::features::sessions::validate_user_workspace_path)
         .transpose()
         .map_err(|e| format!("create_session: invalid workspace_path: {e:#}"))?;
+    // 钥匙串快照(§6):绝对路径硬拒;不存在的目录软警告保留(参照 rebind 的
+    // 宽松语义,附加根可能稍后重建)。空/未传 = 单根(仅 cwd)。
+    let roots =
+        crate::features::sessions::validate_workspace_roots(workspace_roots.unwrap_or_default())
+            .map_err(|e| format!("create_session: invalid workspace_roots: {e:#}"))?;
     let metadata =
         create_session_record(set_active.unwrap_or(true), &store, &pool, workspace.clone())?;
-    if let Some(workspace) = workspace {
+    if let Some(workspace) = workspace.clone() {
         // A failed binding persist must not leave behind a session that "looked
         // created but falls back to the private execution root after restart":
         // roll back by deleting the just-created empty session (in the rollback
         // style of create_new).
-        if let Err(error) = store.bind_session_workspace(&metadata.id, workspace) {
+        if let Err(error) =
+            store.bind_session_workspace_with_roots(&metadata.id, workspace.clone(), roots)
+        {
             let rollback = store.delete(&metadata.id);
             return Err(match rollback {
                 Ok(()) => format!("create_session: bind workspace: {error:#}"),
@@ -412,6 +443,14 @@ pub async fn create_session(
                     metadata.id
                 ),
             });
+        }
+        // 项目通道(§9.3):创建即更新项目记忆主文件夹。后端在同一命令内写比
+        // 前端补一发 update_project 更原子(免二次 RPC、免漏写);记忆写失败
+        // 不影响会话创建本身(下次创建会重试),只记日志。
+        if let Some(project_id) = project_id {
+            if let Err(error) = projects.set_last_primary_root(&project_id, &workspace) {
+                eprintln!("[sessions] create_session: record last_primary_root failed: {error:#}");
+            }
         }
     }
     emit_session_event(&app, "session:list_changed", &metadata.id, "created");
@@ -1161,11 +1200,23 @@ mod web_projection_tests {
             pinned_at: None,
             title_attachment_names: Vec::new(),
             workspace_binding: Some("/Users/host/Documents/secret-project".to_string()),
+            workspace_roots: vec![
+                "/Users/host/Documents/secret-project".to_string(),
+                "/Users/host/very-secret-extra".to_string(),
+            ],
             metadata,
         };
 
         redact_session_list_item_for_web(&mut item);
 
+        assert_eq!(
+            item.workspace_roots,
+            vec![
+                "secret-project".to_string(),
+                "very-secret-extra".to_string()
+            ],
+            "钥匙串快照过 Web 边界同样必须逐项降级为末级目录名"
+        );
         assert_eq!(
             item.workspace_binding.as_deref(),
             Some("secret-project"),
@@ -1204,6 +1255,7 @@ mod web_projection_tests {
             pinned_at: None,
             title_attachment_names: Vec::new(),
             workspace_binding: Some("/Users/host/Documents/secret-project".to_string()),
+            workspace_roots: vec!["/Users/host/Documents/secret-project".to_string()],
             metadata,
         }];
 

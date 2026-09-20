@@ -137,6 +137,7 @@ import { collectClipboardImages, readPasteImageAsBytes } from '../attachments/pa
 import { ComposerAttachmentDropOverlay } from '../attachments/ComposerAttachmentDropOverlay.jsx';
 import { HomeModeSwitcher } from '../conversation/HomeModeSwitcher.jsx';
 import { bridge } from '../../hooks/useBridge.js';
+import { describeKeychain, workspaceNoticeTone } from '../projects/workspacePickerState.js';
 import {
   invokeTauri,
   listenTauri,
@@ -163,7 +164,10 @@ import {
   setAcpModel,
   submitAcpPrompt,
   uploadAcpDeviceAttachment,
+  alignAcpSession,
 } from './acpClient.js';
+import { WorkspaceKeychainChip } from '../projects/WorkspaceKeychainChip.jsx';
+import { resolveSessionProjectId } from '../projects/projectGrouping.js';
 import { can, canInvoke, isWeb, onPlatformConnectionChange } from '../../shared/platform.js';
 import {
   forgetWorkspace,
@@ -666,6 +670,17 @@ export function CodexAcpView({
   onGotoModelSettings,
   onGotoSettings,
   fixedSession = false,
+  // The "choose workspace" picker (§2) delivers its result through here:
+  // { epoch, path, projectId, roots }; path=null = temporary session.
+  // onOpenWorkspacePicker opens the picker (held by the host, main.jsx).
+  onOpenWorkspacePicker,
+  workspacePickerRequest = null,
+  // Toast channel for the align action's result feedback (§9.7).
+  onNotify,
+  // The host (main.jsx) mirrors the lane's effective mode so sidebar surfaces
+  // opened while the codex lane is active (manage-folders panel) show the
+  // same mode-aware copy as the lane itself.
+  onLaneModeChange,
 }) {
   const codexCopy = t.uiCodex;
   const [agents, setAgents] = useState(null); // null=加载中，[] 才允许回退当前 Agent。
@@ -823,6 +838,10 @@ export function CodexAcpView({
   }
   const [dismissedFailureKey, setDismissedFailureKey] = useState('');
   const [draftWorkspacePath, setDraftWorkspacePath] = useState(null);
+  // Ownership and keychain snapshot brought in by the project channel
+  // (picker) (§9.3): passed down with createAcpSession at materialization;
+  // beginDraft's other entries (temporary/recent directory) clear it.
+  const [draftProjectBinding, setDraftProjectBinding] = useState(null);
   // 会话内用 sessionId 解析工作区；草稿态（会话未创建）直接扫描已选目录。
   const branchWorkspacePath = activeId ? null : draftWorkspacePath;
   // Branch context marker mirrored from activeId/branchWorkspacePath; checkout
@@ -955,6 +974,10 @@ export function CodexAcpView({
   const composerModeValue = sessionControlsInfo
     ? controls.effectiveMode || ''
     : (draftConfigSelection && draftConfigSelection.mode) || controls.effectiveMode || '';
+  // Report the lane's effective mode upward (see the prop contract above).
+  useEffect(() => {
+    if (onLaneModeChange) onLaneModeChange(composerModeValue || null);
+  }, [composerModeValue, onLaneModeChange]);
   function composerConfigOptionValue(option) {
     if (sessionControlsInfo) return option.currentValue || '';
     const staged = draftConfigSelection && draftConfigSelection.configs
@@ -978,6 +1001,12 @@ export function CodexAcpView({
     [sessions, activeId],
   );
   const activeAgentId = activeSession?.agent_id || draftAgentId;
+  // Keychain chip derivation, memoized: computing describeKeychain four times
+  // per render (once per chip prop) was pure waste.
+  const activeKeychain = useMemo(
+    () => (activeSession ? describeKeychain(activeSession.workspace_roots) : null),
+    [activeSession],
+  );
   // 原生（品悟 Engine）代码会话：发消息走 chat 命令 + chat:* 事件，会话状态按
   // session 缓存在 lane Map 里（后台会话的 turn 也能继续推进，切回不丢流式内容）。
   const isNativeAgent = activeAgentId === 'pinvou';
@@ -1996,10 +2025,15 @@ export function CodexAcpView({
     const requestedAgentId = draftAgentId;
     setError('');
     setWorkspaceMenuOpen(false);
+    // Capture the keychain/project ownership synchronously (re-picking during
+    // the await does not affect this creation).
+    const requestedProjectBinding = draftProjectBinding;
     const metadata = await createAcpSession({
       workspacePath: requestedWorkspacePath,
       workspaceHandle: requestedWorkspaceHandle,
       agentId: requestedAgentId,
+      workspaceRoots: requestedProjectBinding ? requestedProjectBinding.roots : null,
+      projectId: requestedProjectBinding ? requestedProjectBinding.projectId : null,
     });
     // loadSession 用 nativeSessionIdsRef 判定分流；新会话先登记，避免它读到旧 prop。
     if (requestedAgentId === 'pinvou') nativeSessionIdsRef.current.add(metadata.id);
@@ -2034,6 +2068,7 @@ export function CodexAcpView({
     setWorkspaceMenuOpen(false);
     setDraftWorkspacePath(workspacePath);
     setDraftWorkspaceHandle(workspaceHandle);
+    setDraftProjectBinding(null);
     // 选定项目工作区即默认展开工作区面板（无会话也可浏览文件）；临时会话无路径可浏览。
     setWorkspaceOpen(Boolean(workspacePath) && !isWeb);
     if (clearComposer) {
@@ -2084,6 +2119,21 @@ export function CodexAcpView({
     setError('');
     if (onActiveSessionChange) onActiveSessionChange(null);
   }
+
+  // Picker result landing: project/folder channels → beginDraft(path) with the
+  // ownership and keychain staged; temporary session → beginDraft(null). The
+  // effect depends on epoch, so re-delivering the same choice still applies.
+  const pickerRequestEpochRef = useRef(0);
+  useEffect(() => {
+    if (!workspacePickerRequest || workspacePickerRequest.epoch === pickerRequestEpochRef.current) return;
+    pickerRequestEpochRef.current = workspacePickerRequest.epoch;
+    const { path, projectId, roots } = workspacePickerRequest;
+    // beginDraft first (it clears the old staged binding internally), then set
+    // the target values — the later write wins within the same batch.
+    beginDraft(path || null, { clearComposer: false });
+    setDraftProjectBinding(projectId ? { projectId, roots: roots || [] } : null);
+    // eslint-disable-next-line react-hooks/exhaustive-deps -- beginDraft is a stable local function; the effect is driven by the request epoch only
+  }, [workspacePickerRequest]);
 
   function recreateUnavailableWorkspaceSession() {
     if (activeSession && activeSession.workspace_path) {
@@ -3317,6 +3367,30 @@ export function CodexAcpView({
     await applyAcpConfigChange('mode', targetId => setAcpMode(targetId, modeId));
   }
 
+  // Align to project (§9.7): the session keychain is replaced by the owning
+  // project's full root set at that moment; a busy rejection maps to copy by
+  // marker; on success the session list refreshes (the chip's roots update
+  // with the list).
+  async function alignKeychainToProject() {
+    if (!activeId) return;
+    try {
+      const outcome = await alignAcpSession(activeId);
+      if (outcome && outcome.applied) {
+        await refreshSessions().catch(() => {});
+        if (onNotify) onNotify(t.uiKeychain.alignDone);
+      } else if (outcome && outcome.reason === 'no_change' && onNotify) {
+        onNotify(t.uiKeychain.alignNoChange);
+      }
+    } catch (error) {
+      const message = String((error && error.message) || error || '');
+      if (message.startsWith('ALIGN_BUSY') && onNotify) {
+        onNotify(t.uiKeychain.alignBusy);
+      } else {
+        showError(error);
+      }
+    }
+  }
+
   return (
     <div className={`relative h-full min-h-0 flex flex-col ${theme === 'dark' ? 'text-[#E3E3E3]' : 'text-[#1F1F1F]'}`}>
         <ComposerAttachmentDropOverlay enabled={deviceFileUploadAvailable || (!isWeb && canInvoke('ingest_draft_file_chunk'))} onFiles={files => uploadDeviceFiles(files, attachmentKey)} dark={theme === 'dark'} variant={isWeb ? 'web' : 'desktop'} copy={t.uiAttachments} />
@@ -3327,7 +3401,33 @@ export function CodexAcpView({
             <div className="text-[14px] font-semibold">{activeSession.title || 'Codex'}</div>
             <div className={`text-[10px] truncate ${activeSession && !activeSession.workspace_available ? 'text-red-500' : 'text-gray-400'}`}
               title={activeSession && activeSession.workspace_path}>
-              {activeAgentName + ' · ' + (activeSession.workspace_kind === 'project' ? activeSession.workspace_path : codexCopy.temporaryWorkspace) + (activeSession.workspace_available ? '' : ' · ' + codexCopy.projectMissing)}
+              {activeAgentName + ' · '}
+              {/* Keychain chip (§6): project sessions show the primary
+                  directory + N and offer "align to project" (§9.7); temporary
+                  sessions / unavailable directories keep the original text
+                  line. */}
+              {activeSession.workspace_kind === 'project' && activeSession.workspace_available !== false ? (
+                <WorkspaceKeychainChip
+                  copy={t.uiKeychain}
+                  primary={(activeKeychain && activeKeychain.primary) || activeSession.workspace_path}
+                  additionalCount={activeKeychain && activeKeychain.primary
+                    ? activeKeychain.additional
+                    : 0}
+                  roots={activeKeychain && activeKeychain.primary
+                    ? activeKeychain.roots
+                    : [activeSession.workspace_path]}
+                  canAlign={!isWeb && !!resolveSessionProjectId(
+                    { id: activeId, workspaceKind: 'project', workspacePath: activeSession.workspace_path },
+                    (bs && bs.projectsList && bs.projectsList.projects) || [],
+                    (bs && bs.projectsList && bs.projectsList.assignments) || {},
+                  )}
+                  busy={busy}
+                  onAlign={alignKeychainToProject}
+                />
+              ) : (
+                activeSession.workspace_kind === 'project' ? activeSession.workspace_path : codexCopy.temporaryWorkspace
+              )}
+              {activeSession.workspace_available ? '' : ' · ' + codexCopy.projectMissing}
             </div>
           </div>
           {configApplying && <span className="text-[10px] text-blue-500 animate-pulse">{codexCopy.applyingConfig}</span>}
@@ -3711,7 +3811,7 @@ export function CodexAcpView({
                       </button>
                       {workspaceMenuOpen && (
                         <div ref={workspaceMenuPanelRef} className="absolute z-40 bottom-9 left-0 w-[280px] max-w-[calc(100vw-32px)] rounded-2xl border border-black/[0.08] dark:border-white/10 bg-white/95 dark:bg-[#202124]/95 backdrop-blur-xl shadow-xl p-2">
-                            <button type="button" onClick={() => chooseProjectDraft().catch(showError)}
+                            <button type="button" onClick={() => (isWeb || !onOpenWorkspacePicker) ? chooseProjectDraft().catch(showError) : onOpenWorkspacePicker({ lane: 'codex', mode: nativeDraftControls.mode })}
                               className="w-full rounded-xl px-3 py-2.5 flex items-center gap-3 text-left hover:bg-black/[0.04] dark:hover:bg-white/[0.06]">
                               <FolderOpen size={16} className="text-blue-500 shrink-0" />
                               <span><span className="block text-[12px] font-semibold">{codexCopy.chooseProject}</span><span className="block text-[10px] text-gray-400 mt-0.5">{codexCopy.chooseProjectDesc}</span></span>
@@ -3724,6 +3824,16 @@ export function CodexAcpView({
                             {recentWorkspaces.length > 0 && (
                               <div className="mt-1 pt-2 border-t border-black/[0.05] dark:border-white/[0.06]">
                                 <div className="px-3 pb-1 text-[10px] uppercase tracking-wider text-gray-400">{codexCopy.recentProjects}</div>
+                                {/* Grant-notice parity (§9.4, the same shape as the chat lane's
+    ComposerWorkspaceSelector): a recents pick grants the folder directly
+    (single root), so the mode-aware notice sits on the recents section. The
+    mode mirrors the picker entry above (native draft staging first, then the
+    lane's reported effective mode). */}
+                                <div className="px-3 pb-1 text-[10px] text-gray-400">
+                                  {workspaceNoticeTone(nativeDraftControls.mode || composerModeValue || null) === 'restricted'
+                                    ? t.uiWorkspacePicker.noticeRestricted(1)
+                                    : t.uiWorkspacePicker.noticeVisibility(1)}
+                                </div>
                                 {recentWorkspaces.map(path => (
                                   <button key={path} type="button" title={path}
                                     onClick={() => {
