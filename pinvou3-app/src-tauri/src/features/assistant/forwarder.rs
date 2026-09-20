@@ -104,10 +104,9 @@ fn mcp_boot_failure_signature(
 /// turn registry refresh reconnects and re-reports), so without the dedupe a
 /// session with one persistently broken server would append near-identical
 /// lines to `startup.log` on every turn; a healthy boot clears the memory so
-/// a later re-failure persists again. Unit-tested; the forwarder arm only
-/// forwards the result to `persist_mcp_boot_receipt`, which has its own test
-/// against the real startup-timeline file, so a decision or wiring regression
-/// cannot silently switch release builds back to zero diagnostics.
+/// a later re-failure persists again. Unit-tested in isolation, and exercised
+/// together with the persistence glue through
+/// `record_mcp_session_boot` (see that function for the coverage boundary).
 fn mcp_boot_persistence(
     session_id: &str,
     generation: u64,
@@ -137,12 +136,50 @@ fn mcp_boot_persistence(
     ))
 }
 
-/// The forwarder arm's persistence half: turn a `mcp_boot_persistence` verdict
-/// into startup-timeline writes. Extracted from the arm so the glue (planner
-/// verdict → `mark_with_detail` lines on disk) is unit-tested against the real
-/// `startup.log` (`mcp_boot_receipt_persists_through_the_startup_timeline`) —
-/// deleting the arm's call, or swapping a stage/detail string, fails that test
-/// instead of silently reverting release builds to zero diagnostics.
+/// The `Event::McpSessionBoot` arm's body: decide whether the receipt persists
+/// (`mcp_boot_persistence`) and, when it does, write it to the startup timeline
+/// (`persist_mcp_boot_receipt`). Extracted verbatim from the arm so the decision
+/// and the persistence glue are exercised *together* against the real
+/// `startup.log` by `mcp_boot_receipt_persists_through_the_startup_timeline` —
+/// swapping either half, or breaking the hand-off between them, fails that test.
+/// Not covered by any test: the two-line `match` arm in the forwarder task that
+/// forwards the event fields into this function; everything downstream of that
+/// forwarding is.
+fn record_mcp_session_boot(
+    session_id: &str,
+    generation: u64,
+    finished: bool,
+    snapshot: &deepseek_tui::mcp::McpManagerSnapshot,
+    last_persisted_failure_set: &mut Option<Vec<(String, bool, String)>>,
+) {
+    // Same enabled-only denominator the persisted summary uses.
+    let enabled_total = snapshot.servers.iter().filter(|s| s.enabled).count();
+    if let Some((summary, failure_details)) = mcp_boot_persistence(
+        session_id,
+        generation,
+        finished,
+        snapshot,
+        last_persisted_failure_set,
+    ) {
+        persist_mcp_boot_receipt(
+            session_id,
+            generation,
+            &summary,
+            &failure_details,
+            enabled_total,
+        );
+    } else {
+        log::debug!(
+            "[pinvou3][chat] mcp session boot sid={} generation={} finished={}",
+            session_id,
+            generation,
+            finished
+        );
+    }
+}
+
+/// Turn a `mcp_boot_persistence` verdict into startup-timeline writes (the
+/// persistence half of `record_mcp_session_boot`).
 fn persist_mcp_boot_receipt(
     session_id: &str,
     generation: u64,
@@ -1618,30 +1655,13 @@ pub(crate) fn spawn_event_forwarder(
                     finished,
                     ..
                 } => {
-                    // Same enabled-only denominator the persisted summary uses.
-                    let enabled_total = snapshot.servers.iter().filter(|s| s.enabled).count();
-                    if let Some((summary, failure_details)) = mcp_boot_persistence(
+                    record_mcp_session_boot(
                         &session_id,
                         generation,
                         finished,
                         &snapshot,
                         &mut last_mcp_boot_failure_set,
-                    ) {
-                        persist_mcp_boot_receipt(
-                            &session_id,
-                            generation,
-                            &summary,
-                            &failure_details,
-                            enabled_total,
-                        );
-                    } else {
-                        log::debug!(
-                            "[pinvou3][chat] mcp session boot sid={} generation={} finished={}",
-                            session_id,
-                            generation,
-                            finished
-                        );
-                    }
+                    );
                 }
                 Event::ToolProjectionWarning {
                     provider,
@@ -1933,15 +1953,19 @@ mod mcp_boot_persistence_tests {
         );
     }
 
-    /// The arm's persistence glue, driven end to end: a terminal failure
-    /// receipt must land in the real `startup.log` (summary + per-server
-    /// lines), and a repeated receipt must add nothing. Deleting the
-    /// `persist_mcp_boot_receipt` call from the arm, or swapping a stage or
-    /// detail string, turns this red.
+    /// The arm's body, driven end to end: a terminal failure receipt must land in
+    /// the real `startup.log` (summary + per-server lines), and a repeated receipt
+    /// must add nothing. The test calls the arm's extracted body
+    /// (`record_mcp_session_boot`), so swapping the decision or the persistence
+    /// glue — or breaking the hand-off between them — turns this red. The only
+    /// wiring outside its reach is the two-line `match` arm that forwards the
+    /// event fields into that function.
     #[test]
     fn mcp_boot_receipt_persists_through_the_startup_timeline() {
-        use crate::platform::paths::tests::{ENV_LOCK, unique_suffix};
+        use crate::platform::paths::tests::{ENV_LOCK, EnvVarGuard, unique_suffix};
         let _g = ENV_LOCK.lock().unwrap_or_else(|p| p.into_inner());
+        // Restores the host's PINVOU3_HOME (present or absent) on drop, panic paths included.
+        let _env = EnvVarGuard::capture(&["PINVOU3_HOME"]);
         let tmp = std::env::temp_dir().join(format!(
             "pinvou3-fwd-timeline-{}-{}",
             std::process::id(),
@@ -1960,9 +1984,7 @@ mod mcp_boot_persistence_tests {
             server("off", false, false, Some("disabled")),
         ]);
         let mut last = None;
-        let (summary, failures) =
-            mcp_boot_persistence("sess-tl", 4, true, &snap, &mut last).expect("must persist");
-        super::persist_mcp_boot_receipt("sess-tl", 4, &summary, &failures, 2);
+        super::record_mcp_session_boot("sess-tl", 4, true, &snap, &mut last);
         let log = std::fs::read_to_string(&log_path).unwrap();
         assert!(
             log.contains("mcp_session_boot:finished | sid=sess-tl generation=4 servers=2 failed=1"),
@@ -1975,12 +1997,7 @@ mod mcp_boot_persistence_tests {
 
         // The dedupe contract holds through the real sink: a repeat writes nothing.
         let before = std::fs::read(&log_path).unwrap();
-        assert_eq!(
-            mcp_boot_persistence("sess-tl", 5, true, &snap, &mut last),
-            None
-        );
+        super::record_mcp_session_boot("sess-tl", 5, true, &snap, &mut last);
         assert_eq!(std::fs::read(&log_path).unwrap(), before);
-        drop(_g);
-        let _ = std::fs::remove_dir_all(&tmp);
     }
 }
