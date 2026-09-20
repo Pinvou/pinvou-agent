@@ -645,7 +645,34 @@ fn now_iso8601() -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::features::marketplace::scope::load_disabled_bundles_file;
     use crate::features::marketplace::store::BundleSource;
+
+    /// 把 PINVOU3_HOME 指到干净临时目录跑闭包，借 ENV_LOCK 与其它 mutate 测试串行
+    /// （repo 惯例：scope.rs / mod.rs 各有同名 test 助手，不跨模块复用）。
+    fn with_temp_home<F: FnOnce()>(f: F) {
+        let _g = crate::platform::paths::tests::ENV_LOCK
+            .lock()
+            .unwrap_or_else(|p| p.into_inner());
+        let dir = std::env::temp_dir().join(format!("pinvou3-recyclebin-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        let prev = std::env::var("PINVOU3_HOME").ok();
+        // SAFETY: holding platform::paths::tests::ENV_LOCK; env writes serialized in-process.
+        unsafe { std::env::set_var("PINVOU3_HOME", &dir) };
+        // The write-failure memos are keyed by home path and this harness
+        // reuses a pid-keyed dir: clear them so a prior case's memo cannot
+        // bleed into the next one (same shape as scope.rs's harness).
+        crate::features::marketplace::scope::clear_unpersisted_verdict_for_test();
+        f();
+        match prev {
+            // SAFETY: holding platform::paths::tests::ENV_LOCK; env writes serialized in-process.
+            Some(v) => unsafe { std::env::set_var("PINVOU3_HOME", v) },
+            // SAFETY: holding platform::paths::tests::ENV_LOCK; env writes serialized in-process.
+            None => unsafe { std::env::remove_var("PINVOU3_HOME") },
+        }
+        let _ = std::fs::remove_dir_all(&dir);
+    }
 
     fn fresh_dir(tag: &str) -> PathBuf {
         let dir = std::env::temp_dir().join(format!(
@@ -1652,11 +1679,24 @@ mod tests {
 
             // A successful save clears the memo: the file is the truth again.
             std::fs::set_permissions(&home, std::fs::Permissions::from_mode(0o755)).unwrap();
-            sync_deny_all_scopes_after_install("pptx").unwrap();
+            // The composer write always transitions (uninitialized →
+            // initialized), unlike the install-sync — a no-op for
+            // uninitialized scopes, so it would never persist here.
+            crate::features::marketplace::scope::save_disabled_bundles_for(
+                crate::features::marketplace::ConnectorScope::Plain,
+                &[],
+            );
             let content = std::fs::read_to_string(&path).unwrap();
             assert!(
                 content.contains("plain_defaults_migrated"),
                 "the file is valid JSON again: {content}"
+            );
+            // The memo is gone: the read now follows the file (plain
+            // initialized by the composer write), not the in-memory recovery.
+            let file = load_disabled_bundles_file();
+            assert!(
+                file.initialized.contains("plain"),
+                "the read follows the file again: {file:?}"
             );
         });
     }

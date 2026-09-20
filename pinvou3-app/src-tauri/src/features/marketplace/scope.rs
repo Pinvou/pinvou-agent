@@ -1768,8 +1768,11 @@ mod tests {
                 !file.initialized.contains("plain"),
                 "the memo must deny the first-boot trace a re-evaluation (fail-open flip otherwise): {file:?}"
             );
-            // The verdict now persists: a further save path lands the frozen file.
-            sync_deny_all_scopes_after_install("pptx").unwrap();
+            // The verdict now persists: a further save path lands the frozen
+            // file. The composer write always transitions (uninitialized →
+            // initialized), unlike the install-sync — a no-op for
+            // uninitialized scopes, so it would never persist here.
+            save_disabled_bundles_for(ConnectorScope::Plain, &[]);
             assert!(
                 disabled_bundles_path().exists(),
                 "the memo-carried verdict must reach disk on the next save: {:?}",
