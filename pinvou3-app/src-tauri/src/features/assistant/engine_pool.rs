@@ -2091,6 +2091,20 @@ impl EnginePool {
         self.eval_model_snapshots.discard_suite(suite);
     }
 
+    /// Resolve and privately pin the complete SavedModel while returning only a
+    /// non-sensitive opaque selection to the evaluation layer. Callers that do
+    /// not pass the selection to `prepare_eval_session` must explicitly discard it.
+    #[cfg(any(feature = "benchmark-hooks", test))]
+    pub(crate) fn pin_eval_model_selection(&self, model_id: &str) -> Result<EvalModelSelection> {
+        let prefs = UserPrefs::load();
+        let (saved, identity) = resolve_eval_model_selection_from(
+            &self.bridge,
+            &prefs.advanced.saved_models,
+            model_id,
+        )?;
+        Ok(self.eval_model_snapshots.pin(saved, identity))
+    }
+
     /// 创建并加载一次性评测会话。评测 runner 预先决定 session ID，以便报告和
     /// 清理精确关联；普通 GUI 会话继续使用 SessionStore 自动生成的 ID。
     #[cfg(any(feature = "benchmark-hooks", test))]
