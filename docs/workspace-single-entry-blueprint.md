@@ -82,10 +82,11 @@ actions are handed to the host container in `main.jsx` via callbacks).
 ## §3 Auto-materialization and the anti-materialization exclusion list
 
 **Auto-materialization** (`ensure_folder_projects` /
-`ProjectStore::ensure_folder_roots`) is client-driven: the frontend
-aggregates the distinct workspace folders backing sessions
-(`uncoveredWorkspaceRoots`) and asks the backend to adopt them, isomorphic
-to Codex's `project/import` being initiated by the desktop client. Per-root
+`ProjectStore::ensure_folder_roots`) is client-driven: the picker's browse
+channel asks the backend to adopt the explicitly picked folder (one root
+per call; the backend API takes a batch, which keeps the door open for a
+future aggregation of session-backing folders), isomorphic to Codex's
+`project/import` being initiated by the desktop client. Per-root
 outcomes:
 
 - `Created` — a new `origin=folder` project named after the directory
@@ -267,9 +268,11 @@ key.
 A temporary session binds no workspace: its directory is derived from the
 session id (session-private), its keychain snapshot is always empty, and it
 never auto-joins a project — it enters one only via explicit assignment
-(the adopt flow, §9.6). Temporary sessions are excluded from
-auto-materialization aggregation. "Temporary session" is an explicit
-first-class option in the picker (§2), not an error state.
+(the adopt flow, §9.6). It therefore presents no folder for
+auto-materialization (P1 has no aggregation flow at all — §3: only the
+browse channel's explicitly picked folder reaches `ensure`; any future
+aggregation must keep the same exclusion). "Temporary session" is an
+explicit first-class option in the picker (§2), not an error state.
 
 ### §9.2 The project-remembered primary folder
 
