@@ -3380,6 +3380,10 @@ export function CodexAcpView({
         if (onNotify) onNotify(t.uiKeychain.alignDone);
       } else if (outcome && outcome.reason === 'no_change' && onNotify) {
         onNotify(t.uiKeychain.alignNoChange);
+      } else if (outcome && outcome.reason === 'write_skipped' && onNotify) {
+        // Nothing failed and nothing was written (the binding store had no
+        // readable record) — surfacing it beats silence either way.
+        onNotify(t.uiKeychain.alignWriteSkipped);
       }
     } catch (error) {
       const message = String((error && error.message) || error || '');

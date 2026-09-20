@@ -527,8 +527,13 @@ impl SessionAgentStore {
             record.workspace_kind = kind;
             record.workspace_path = workspace_path;
             // 钥匙串快照(§6):创建时锁定的全量根;重复设置(同一会话再次
-            // 调用)保持最后一次的值,与 workspace_path 同一写入点。
-            record.workspace_roots = workspace_roots;
+            // 调用)保持最后一次的值,与 workspace_path 同一写入点。临时会话
+            // 恒为空(§9.1:无绑定工作区),与原生通道一致。
+            record.workspace_roots = if kind == CodexWorkspaceKind::Temporary {
+                Vec::new()
+            } else {
+                workspace_roots
+            };
             // ACP 会话不是代码模式会话：绑定 ACP 时重置为 plain 模式，
             // 避免 is_code_session() 误判、且 restore 时不会拒绝 ACP 覆盖。
             record.mode = SessionMode::Plain;
@@ -1210,6 +1215,10 @@ impl SessionAgentStore {
             workspace_kind: recovered.workspace_kind,
             workspace_path: recovered.workspace_path,
             mode: SessionMode::Code,
+            // The keychain rides in the sidecar (review #484 round-3 minor):
+            // dropping it here turns a lost index into a silent keychain
+            // loss — the session would resume single-root after a crash.
+            workspace_roots: recovered.workspace_roots,
             ..Default::default()
         };
         if record.workspace_kind == CodexWorkspaceKind::Project && record.workspace_path.is_none() {

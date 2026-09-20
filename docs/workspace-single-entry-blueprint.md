@@ -38,6 +38,10 @@ lane):
   folder access, how access is announced, and how overlap, deletion, and
   re-adoption behave.
 
+**Phasing.** This lands as P1: the workspace-entry feature itself. The
+ACP lane's root *delivery* is stage-gated (§6 disclosure below);
+everything else ships whole.
+
 **Non-goals.**
 
 - Projects never delete, move, or rebind session *data*; membership is a
@@ -319,8 +323,9 @@ Parity rule: channels that grant access **without** the picker's expansion
 panel carry the same-weight notice through a different surface — picker
 single-root rows and the browse entry show it inline; the no-detour
 channels (project-row "new session", composer recents) surface it as a
-toast at grant time. The notice copy comes from one shared pure function so
-no channel drifts. On the ACP lane the notice describes the recorded
+toast at grant time, while the picker's own rows render it inline in the
+popover. The notice copy comes from one shared pure function so no
+channel drifts. On the ACP lane the notice describes the recorded
 keychain, while delivery is stage-gated (see §6) — the notice text
 therefore promises only what a later stage-gate closure will enforce;
 until then the additional roots are advisory on this lane.
