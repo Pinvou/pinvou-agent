@@ -4999,6 +4999,56 @@ fn reconcile_readopts_mismatched_aux_when_mapped_main_is_dead() {
     );
 }
 
+/// PR #433 review round-17 (B-A): with the mapped main dead, a TRANSIENT
+/// read fault on the aux record must leave the pair for the next boot —
+/// probing the error as backlink_mismatch = false would classify a live
+/// transcript as an orphan and delete it. The fault is a self-referential
+/// symlink (stat → ELOOP, not a permanent class); unix-only.
+#[cfg(unix)]
+#[test]
+fn reconcile_keeps_pair_when_aux_stat_faults_and_mapped_main_is_dead() {
+    let (store, _g) = isolated_store();
+    let main = store
+        .create_new("/model".into(), None, std::env::temp_dir())
+        .expect("create main");
+    let aux = store
+        .get_or_create_aux_session(&main.metadata.id)
+        .expect("create aux");
+
+    // The mapped main dies out of band; the aux record's load then faults
+    // transiently (ELOOP — neither NotFound nor identity-mismatch nor
+    // InvalidData).
+    std::fs::remove_file(
+        store
+            .manager
+            .sessions_dir()
+            .join(format!("{}.json", main.metadata.id)),
+    )
+    .expect("delete the main record out of band");
+    let record = store
+        .manager
+        .sessions_dir()
+        .join(format!("{}.json", aux.id));
+    std::fs::remove_file(&record).expect("remove the healthy aux record");
+    std::os::unix::fs::symlink(&record, &record)
+        .expect("self-referential symlink: load fails ELOOP");
+
+    store
+        .reconcile_aux_sessions()
+        .expect("reconcile completes under the fault");
+    assert!(
+        record.is_symlink(),
+        "the record path must be left exactly as found"
+    );
+    assert_eq!(
+        store.aux_session_id(&main.metadata.id).as_deref(),
+        Some(aux.id.as_str()),
+        "a transient read fault must not cost the mapping (or the transcript)"
+    );
+
+    std::fs::remove_file(&record).expect("clean up the symlink");
+}
+
 /// PR #433 review round-16 (B3a): a permanently unloadable aux record
 /// (InvalidData — here a newer schema_version) must be isolated per record
 /// and reclaimed, not abort the whole reconcile pass. The listing path is

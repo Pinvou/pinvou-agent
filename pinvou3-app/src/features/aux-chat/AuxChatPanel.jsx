@@ -93,6 +93,10 @@ export function AuxChatPanel({ sessionId, activationKey, t, theme, onClose, onAc
   const [sending, setSending] = useState(false);
   const generationRef = useRef(0);
   const auxIdRef = useRef(null);
+  // Live mirror of the sessionId prop for async continuations: the closure
+  // captured at send time freezes it, but a send settling after a task switch
+  // must know which task the panel shows *now* (round-17 M-A).
+  const sessionIdRef = useRef(sessionId);
   const scrollRef = useRef(null);
   // In-flight send latch: the bridge marks the session busy only when the
   // backend turn_started event lands, so snapshot-busy lags a dispatch by the
@@ -120,6 +124,7 @@ export function AuxChatPanel({ sessionId, activationKey, t, theme, onClose, onAc
     const generation = generationRef.current + 1;
     generationRef.current = generation;
     auxIdRef.current = null;
+    sessionIdRef.current = sessionId;
     // eslint-disable-next-line react-hooks/set-state-in-effect -- synchronously reset binding state on session switch; one-shot mirror, same pattern as SubagentTranscriptPanel
     setAuxId(null);
     setSnapshot(normalizeAuxSnapshot(null));
@@ -269,15 +274,19 @@ export function AuxChatPanel({ sessionId, activationKey, t, theme, onClose, onAc
     sendInFlightByTask.set(sentTaskId, sendPromise);
     try {
       await sendPromise;
-      // The message was delivered to sentAuxId. A switch away and back
-      // re-binds the *same* aux id (ensure is idempotent) and aux ids are
-      // 1:1 with tasks, so when the binding still resolves to sentAuxId the
-      // visible composer shows this task — consumption must proceed even
-      // across a generation bump, or the composer keeps the delivered text
-      // and the next Enter re-sends it with its quote block (round-14 B3).
-      // The restart case (re-bind to a *new* aux) is excluded by this
-      // binding check, so the generation guard is not needed here.
-      if (auxIdRef.current !== sentAuxId) return;
+      // Same binding (aux ids are 1:1 with tasks and ensure is idempotent):
+      // the visible composer shows this task and the message was delivered —
+      // consume, even across a generation bump (round-14 B3). Same task but a
+      // *different* binding is the restart case: the old aux was discarded,
+      // so the delivery is gone and the draft stays as recovery material.
+      // Anything else means the panel moved to another task while this send
+      // settled into A's *live* transcript — the store maps must still be
+      // consumed, or returning to A restores already-delivered text and
+      // staged quotes for a duplicate send (round-17 M-A). Only the
+      // UI-touching part stays binding-gated.
+      const sameBinding = auxIdRef.current === sentAuxId;
+      const onSameTask = sessionIdRef.current === sentTaskId;
+      if (!sameBinding && onSameTask) return;
       if (sentTaskId) {
         // Consume only what was actually sent: text typed after this send
         // started belongs to the next message, and quotes staged from the
@@ -289,6 +298,7 @@ export function AuxChatPanel({ sessionId, activationKey, t, theme, onClose, onAc
         }
         dropAuxQuotes(sentTaskId, quotes);
       }
+      if (!sameBinding) return;
       setDraft((current) => (current.trim() === text ? '' : current));
       pullSnapshot(auxIdRef.current);
     } catch (error) {

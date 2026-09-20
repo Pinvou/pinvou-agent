@@ -340,16 +340,26 @@ assert.match(
   auxChatPanel,
   /if \(sentTaskId\) \{[\s\S]{0,600}?draftByTask\.delete\(sentTaskId\);[\s\S]{0,300}?dropAuxQuotes\(sentTaskId, quotes\);\s*\}/,
 );
-// Same-binding consumption regardless of generation (round-14 B3): a mid-send
-// switch A→B→A re-binds the *same* aux id (ensure is idempotent), so the
-// success path must not skip consumption on a generation bump — the binding
-// check alone distinguishes the restart case (a new aux id). The visible
-// draft clear is equality-guarded for the same reason.
+// Same-binding consumption regardless of generation (round-14 B3), widened
+// in round-17 M-A: the success path consumes whenever the send settled into a
+// live transcript — same binding (the composer shows this task) OR the panel
+// moved to another task (A's aux is alive on its own binding). Only the
+// same-task fresh-aux restart case skips, keeping the draft as recovery. The
+// skip must be the restart-only conjunction, and consumption must follow it
+// with no generation guard.
 assert.match(
   auxChatPanel,
-  /const sendPromise = auxChat\.send\(sentAuxId, quoteBlock \? text \+ quoteBlock : text\);[\s\S]{0,200}?await sendPromise;\s*\n[\s\S]{0,900}?if \(auxIdRef\.current !== sentAuxId\) return;\s*if \(sentTaskId\) \{/,
-  'consumption must follow the binding check directly, with no generation guard before it',
+  /const sendPromise = auxChat\.send\(sentAuxId, quoteBlock \? text \+ quoteBlock : text\);[\s\S]{0,200}?await sendPromise;\s*\n[\s\S]{0,1200}?const sameBinding = auxIdRef\.current === sentAuxId;\s*const onSameTask = sessionIdRef\.current === sentTaskId;\s*if \(!sameBinding && onSameTask\) return;\s*if \(sentTaskId\) \{/,
+  'consumption must follow the restart-only skip directly, gated on binding and live task identity',
 );
+// The UI-touching part (visible draft clear, snapshot pull) stays
+// binding-gated after the store-map consumption.
+assert.match(
+  auxChatPanel,
+  /dropAuxQuotes\(sentTaskId, quotes\);\s*\}\s*if \(!sameBinding\) return;\s*setDraft\(\(current\) =>/,
+  'only the store-map consumption runs for a send settling into another task',
+);
+assert.match(auxChatPanel, /const sessionIdRef = useRef\(sessionId\);/);
 assert.match(auxChatPanel, /setDraft\(\(current\) => \(current\.trim\(\) === text \? '' : current\)\)/);
 assert.doesNotMatch(restartBlock, /setDraft\(''\)/);
 // Conversation quotes ("划词引用"): staged per task through the aux-quote store
@@ -401,10 +411,18 @@ assert.match(auxChatPanel, /if \(event\.repeat\) return;/);
 // transport timeout, so a promise that never settles must not latch the next
 // task's panel disabled — the rebind effect resets the flag itself, between
 // the restartArmed reset and the draft reset in the binding-state reset block.
-const rebindBlock = auxChatPanel.slice(
-  auxChatPanel.indexOf('const generation = generationRef.current + 1;'),
-  auxChatPanel.indexOf("setDraft('');\n    if (!auxChat || !sessionId) return;"),
+// The slice anchors must resolve (round-17 B-B): the previous end anchor was
+// deleted by the round-14 draft-preservation change, so indexOf returned -1
+// and slice(start, -1) ran to EOF — both assertions were vacuously satisfied
+// by handleRestart's own copies. Anchor to the effect's closing deps line
+// and assert the anchors resolve, so a future rename fails loudly.
+const rebindStart = auxChatPanel.indexOf('const generation = generationRef.current + 1;');
+const rebindEnd = auxChatPanel.indexOf('}, [auxChat, sessionId, pullSnapshot]);');
+assert.ok(
+  rebindStart >= 0 && rebindEnd > rebindStart,
+  'rebind effect anchors must resolve (a vacuous slice would pass on handleRestart copies)',
 );
+const rebindBlock = auxChatPanel.slice(rebindStart, rebindEnd);
 assert.match(rebindBlock, /setRestarting\(false\);/, 'the rebind effect must reset restarting itself');
 // Rebind also resets the send latch (round-8 m3): a never-settling
 // auxChat.send invoke (same no-transport-timeout class) must not latch sends

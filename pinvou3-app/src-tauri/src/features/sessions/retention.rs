@@ -462,14 +462,26 @@ impl SessionStore {
                     // transcript. On mismatch (main still alive) detach the
                     // false mapping so the record can be re-adopted by its true
                     // parent; when the main is gone the record is orphaned
-                    // outright. A record read failure keeps the mapping (fail
-                    // open to "unknown", matching the transient-fault stance of
-                    // the rebuild side).
+                    // outright. The read-failure taxonomy mirrors the rebuild
+                    // side (round-17 B-A): only permanent classes — NotFound,
+                    // case-variant alias, InvalidData — count as "unusable as
+                    // mapped" (mismatch = false, the branches below decide).
+                    // A transient fault (EIO, an AV/sync oplock) skips the
+                    // record for this boot: with a dead mapped main, probing
+                    // the error as mismatch = false would classify a live
+                    // transcript as an orphan and delete it.
                     let backlink_mismatch = match self.load(aux_id) {
                         Ok(session) => {
                             session.metadata.parent_session_id.as_deref() != Some(main_id.as_str())
                         }
-                        Err(_) => false,
+                        Err(error)
+                            if super::store::is_not_found_error(&error)
+                                || super::store::is_identity_mismatch_error(&error)
+                                || super::store::is_invalid_data_error(&error) =>
+                        {
+                            false
+                        }
+                        Err(_) => continue,
                     };
                     if main_gone && !backlink_mismatch {
                         orphan_ids.push(aux_id.clone());
