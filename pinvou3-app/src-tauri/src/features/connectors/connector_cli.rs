@@ -184,6 +184,41 @@ pub(crate) fn run_probe(cmd: Command) -> Result<(bool, String, String), ProbeErr
         })
 }
 
+/// 断开登录路径对探测结果的**唯一裁决**:只有「进程没起来」
+/// ([`ProbeError::Spawn`] ≈ 二进制不存在)允许按未安装降级。
+///
+/// 其余一切非成功探测——超时、执行异常、乃至探测**成功执行**但 CLI
+/// 自报失败(`--version` 退出非零/版本无法解析,各连接器折叠为
+/// `Ok(false)` 传入)——都只说明 CLI 没能正常响应,不能证明它不存在:
+/// 此时 `auth logout` 根本没执行、token 未撤销,按未安装降级会清掉
+/// bundle store 并向用户谎报「已断开」。该分支历史上曾被调用点
+/// 折叠成「未安装」,故裁决收敛到本函数并用测试钉死。
+#[derive(Debug)]
+pub(crate) enum LogoutProbeVerdict {
+    /// 探测通过,继续执行 `auth logout`。
+    Installed,
+    /// 真未安装,调用方按 `installed:false` 降级(清 bundle store 合法)。
+    NotInstalled,
+    /// 凭据状态未确认,携带人类可读文案原样上抛,不得动 bundle store。
+    Unconfirmed(String),
+}
+
+/// 按 [`LogoutProbeVerdict`] 裁决;`label` 是连接器中文名(如「钉钉」),
+/// 用于「已安装但版本探测未通过」文案。
+pub(crate) fn logout_probe_verdict(
+    label: &str,
+    probe: Result<bool, ProbeError>,
+) -> LogoutProbeVerdict {
+    match probe {
+        Ok(true) => LogoutProbeVerdict::Installed,
+        Ok(false) => LogoutProbeVerdict::Unconfirmed(format!(
+            "{label} CLI 已安装但版本探测未通过，登录状态未确认；请重试或重新安装 CLI 后再断开"
+        )),
+        Err(ProbeError::Spawn(_)) => LogoutProbeVerdict::NotInstalled,
+        Err(error) => LogoutProbeVerdict::Unconfirmed(error.message()),
+    }
+}
+
 /// 同 [`run_probe`],但把分型错误折叠成人类可读文案,供不区分失败原因的
 /// 调用方(状态轮询、ensure 流程、`auth logout` 执行本身)继续用 `?` 上抛。
 pub fn run(cmd: Command) -> Result<(bool, String, String), String> {
@@ -628,6 +663,58 @@ mod tests {
         assert!(matches!(
             run_probe(Command::new("pinvou3-no-such-connector-cli-for-tests")),
             Err(ProbeError::Spawn(_))
+        ));
+    }
+
+    /// 断开登录的裁决表:只有 Spawn(≈二进制不存在)允许按「未安装」
+    /// 降级;其余一切非成功探测——超时、执行异常、乃至探测成功执行但
+    /// CLI 自报失败(`--version` 退出非零/版本无法解析,调用点折叠为
+    /// `Ok(false)` 传入)——都只说明 CLI 没能正常响应,不能证明不存在:
+    /// 此时 `auth logout` 根本没执行,按未安装降级会在 token 未撤销时
+    /// 清掉 bundle store 并谎报「已断开」。该折叠分支曾真实存在
+    /// (dingtalk `Ok(false)` / tmeet `Ok(None)`),故整表钉死。
+    #[test]
+    fn logout_probe_verdict_degrades_only_on_spawn() {
+        let label = "测试";
+
+        // 真未安装:唯一保留降级的路径。
+        let spawn = ProbeError::classify(String::from("spawn dws failed: program not found"));
+        assert!(matches!(
+            logout_probe_verdict(label, Err(spawn)),
+            LogoutProbeVerdict::NotInstalled
+        ));
+
+        // 探测通过:继续执行 auth logout。
+        assert!(matches!(
+            logout_probe_verdict(label, Ok(true)),
+            LogoutProbeVerdict::Installed
+        ));
+
+        // 已安装但版本探测未通过:不得降级,文案须标明「未确认」且不得
+        // 诱导重装路径之外的误判。
+        match logout_probe_verdict(label, Ok(false)) {
+            LogoutProbeVerdict::Unconfirmed(message) => {
+                assert!(message.contains(label), "{message}");
+                assert!(message.contains("登录状态未确认"), "{message}");
+                assert!(!message.contains("未安装"), "{message}");
+            }
+            other => panic!("Ok(false) 不得按未安装降级,实际 {other:?}"),
+        }
+
+        // 超时/执行异常维持原分型文案,同样不得降级。
+        let timeout = ProbeError::classify(String::from(
+            "dws timed out after 30s: subprocess tree termination requested",
+        ));
+        match logout_probe_verdict(label, Err(timeout)) {
+            LogoutProbeVerdict::Unconfirmed(message) => {
+                assert!(message.contains("探测超时"), "{message}");
+            }
+            other => panic!("Timeout 应转为未确认错误,实际 {other:?}"),
+        }
+        let other = ProbeError::classify(String::from("dws wait error: no child process"));
+        assert!(matches!(
+            logout_probe_verdict(label, Err(other)),
+            LogoutProbeVerdict::Unconfirmed(_)
         ));
     }
 

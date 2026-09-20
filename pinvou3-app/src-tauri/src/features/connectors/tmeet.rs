@@ -55,8 +55,8 @@ fn tmeet_cli_version() -> Option<(u64, u64, u64)> {
 
 /// `--version` 探测三态:`Ok(Some(v))` 已安装可用;`Ok(None)` 已安装但退出
 /// 非零/版本无法解析;`Err(ProbeError)` 探测本身失败,按 Spawn/Timeout/Other
-/// 分型。状态轮询把失败都折叠成「未连接」;断开登录路径必须按分型区别
-/// 对待,见 [`tmeet_logout`]。
+/// 分型。状态轮询把失败都折叠成「未连接」;断开登录路径必须按分型与探测
+/// 结果区别对待,见 [`tmeet_logout`]。
 fn tmeet_cli_version_probe() -> Result<Option<(u64, u64, u64)>, cc::ProbeError> {
     let (ok, so, se) = cc::run_probe(tmeet(&["--version"]))?;
     if !ok {
@@ -393,22 +393,25 @@ pub async fn tmeet_cancel(app: AppHandle) -> Result<Value, String> {
 
 /// 断开腾讯会议:`tmeet auth logout`。未安装时也视为已断开。
 ///
-/// 探测**失败**(超时/执行异常)不能沿用状态轮询的「按未安装降级」:
-/// CLI 只是挂死时 `auth logout` 并未执行、token 未撤销,返回
+/// 探测的任何非成功结果都不能沿用状态轮询的「按未安装降级」:无论是
+/// 超时/执行异常(CLI 挂死),还是版本探测成功执行但报非成功(`--version`
+/// 退出非零、或版本无法解析/输出格式变更——只证明它没能正常自报版本,
+/// 不能证明不存在),`auth logout` 都未曾执行、token 未撤销,返回
 /// `ok:true/installed:false` 会向用户谎报已断开。只有
-/// [`cc::ProbeError::Spawn`](≈二进制不存在,真未安装)保留原降级,
-/// 其余按分型转为人类可读文案原样上抛(超时文案自带重试指引)。
+/// [`cc::ProbeError::Spawn`](≈二进制不存在,真未安装)保留原降级。
+/// 裁决统一走 [`cc::logout_probe_verdict`],其余按分型转为人类可读
+/// 文案原样上抛(超时文案自带重试指引)。
 pub async fn tmeet_logout() -> Result<Value, String> {
     tokio::task::spawn_blocking(|| {
         let not_installed = || {
             cc::bundle_store_on_disconnected(ID);
             Ok::<Value, String>(json!({ "ok": true, "installed": false }))
         };
-        match tmeet_cli_version_probe() {
-            Ok(Some(_)) => {}
-            Ok(None) => return not_installed(),
-            Err(cc::ProbeError::Spawn(_)) => return not_installed(),
-            Err(error) => return Err(error.message()),
+        let probe = tmeet_cli_version_probe().map(|version| version.is_some());
+        match cc::logout_probe_verdict("腾讯会议", probe) {
+            cc::LogoutProbeVerdict::Installed => {}
+            cc::LogoutProbeVerdict::NotInstalled => return not_installed(),
+            cc::LogoutProbeVerdict::Unconfirmed(message) => return Err(message),
         }
         let (ok, _, _) = cc::run(tmeet(&["auth", "logout"]))?;
         if !ok {
