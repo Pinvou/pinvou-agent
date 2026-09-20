@@ -72,7 +72,7 @@ fn mcp_boot_failure_details(
 fn mcp_boot_failure_signature(
     snapshot: &deepseek_tui::mcp::McpManagerSnapshot,
 ) -> Vec<(String, bool, String)> {
-    snapshot
+    let mut signature: Vec<(String, bool, String)> = snapshot
         .servers
         .iter()
         .filter(|server| server.enabled && !server.connected)
@@ -86,7 +86,13 @@ fn mcp_boot_failure_signature(
                     .unwrap_or_else(|| "unknown".to_string()),
             )
         })
-        .collect()
+        .collect();
+    // The engine's snapshot iterates a HashMap, so an unchanged failure set can
+    // arrive in a different order after a config swap; sort before the equality
+    // compare in `mcp_boot_persistence` so only content changes count as
+    // "changed" and trigger a re-persist.
+    signature.sort();
+    signature
 }
 
 /// Decide what a terminal MCP session-boot receipt persists to the startup
@@ -99,9 +105,9 @@ fn mcp_boot_failure_signature(
 /// session with one persistently broken server would append near-identical
 /// lines to `startup.log` on every turn; a healthy boot clears the memory so
 /// a later re-failure persists again. Unit-tested; the forwarder arm only
-/// forwards the result (the `mark_with_detail` wiring itself is host glue
-/// without its own test), so a decision regression cannot silently switch
-/// release builds back to zero diagnostics.
+/// forwards the result to `persist_mcp_boot_receipt`, which has its own test
+/// against the real startup-timeline file, so a decision or wiring regression
+/// cannot silently switch release builds back to zero diagnostics.
 fn mcp_boot_persistence(
     session_id: &str,
     generation: u64,
@@ -129,6 +135,36 @@ fn mcp_boot_persistence(
         mcp_boot_summary_detail(session_id, generation, enabled_servers, failures.len()),
         failures,
     ))
+}
+
+/// The forwarder arm's persistence half: turn a `mcp_boot_persistence` verdict
+/// into startup-timeline writes. Extracted from the arm so the glue (planner
+/// verdict → `mark_with_detail` lines on disk) is unit-tested against the real
+/// `startup.log` (`mcp_boot_receipt_persists_through_the_startup_timeline`) —
+/// deleting the arm's call, or swapping a stage/detail string, fails that test
+/// instead of silently reverting release builds to zero diagnostics.
+fn persist_mcp_boot_receipt(
+    session_id: &str,
+    generation: u64,
+    summary: &str,
+    failure_details: &[String],
+    enabled_total: usize,
+) {
+    log::warn!(
+        "[pinvou3][chat] mcp session boot sid={} generation={} failed={}/{}",
+        session_id,
+        generation,
+        failure_details.len(),
+        enabled_total
+    );
+    crate::platform::startup::mark_with_detail("rust", "mcp_session_boot:finished", summary);
+    for detail in failure_details {
+        crate::platform::startup::mark_with_detail(
+            "rust",
+            "mcp_session_boot:server_failed",
+            detail,
+        );
+    }
 }
 
 /// 后台 task：持续读 rx_event 转 Tauri emit。
@@ -205,7 +241,10 @@ pub(crate) fn spawn_event_forwarder(
         let mut current_turn_id: Option<String> = None;
         // Dedupe memory for MCP boot receipts: the engine re-reports on every
         // real turn, so only failure-set changes are persisted (see
-        // `mcp_boot_persistence`). Per-forwarder == per-session.
+        // `mcp_boot_persistence`). The memory lives per forwarder task, i.e.
+        // per engine incarnation: an evicted or rebuilt engine starts with a
+        // fresh forwarder, so a persistent failure re-persists once per engine
+        // rebuild (bounded per lifecycle), not per turn.
         let mut last_mcp_boot_failure_set: Option<Vec<(String, bool, String)>> = None;
         #[cfg(feature = "benchmark-hooks")]
         let mut first_delta_done: std::collections::HashSet<String> =
@@ -1578,35 +1617,24 @@ pub(crate) fn spawn_event_forwarder(
                     snapshot,
                     finished,
                     ..
-                } => match mcp_boot_persistence(
-                    &session_id,
-                    generation,
-                    finished,
-                    &snapshot,
-                    &mut last_mcp_boot_failure_set,
-                ) {
-                    Some((summary, failure_details)) => {
-                        log::warn!(
-                            "[pinvou3][chat] mcp session boot sid={} generation={} failed={}/{}",
-                            session_id,
+                } => {
+                    // Same enabled-only denominator the persisted summary uses.
+                    let enabled_total = snapshot.servers.iter().filter(|s| s.enabled).count();
+                    if let Some((summary, failure_details)) = mcp_boot_persistence(
+                        &session_id,
+                        generation,
+                        finished,
+                        &snapshot,
+                        &mut last_mcp_boot_failure_set,
+                    ) {
+                        persist_mcp_boot_receipt(
+                            &session_id,
                             generation,
-                            failure_details.len(),
-                            snapshot.servers.len()
-                        );
-                        crate::platform::startup::mark_with_detail(
-                            "rust",
-                            "mcp_session_boot:finished",
                             &summary,
+                            &failure_details,
+                            enabled_total,
                         );
-                        for detail in &failure_details {
-                            crate::platform::startup::mark_with_detail(
-                                "rust",
-                                "mcp_session_boot:server_failed",
-                                detail,
-                            );
-                        }
-                    }
-                    None => {
+                    } else {
                         log::debug!(
                             "[pinvou3][chat] mcp session boot sid={} generation={} finished={}",
                             session_id,
@@ -1614,7 +1642,7 @@ pub(crate) fn spawn_event_forwarder(
                             finished
                         );
                     }
-                },
+                }
                 Event::ToolProjectionWarning {
                     provider,
                     omitted_tool_count,
@@ -1886,5 +1914,73 @@ mod mcp_boot_persistence_tests {
             "disabled servers are configuration, not boot participants"
         );
         assert_eq!(details.len(), 1);
+    }
+
+    #[test]
+    fn identical_failure_set_in_different_order_persists_once() {
+        let mut alpha = server("alpha", true, false, Some("down"));
+        alpha.auth_required = true;
+        let beta = server("beta", true, false, Some("port changed"));
+        // The engine's snapshot iterates a HashMap, so a config swap can hand
+        // back the same failure set in a different order.
+        let first = snapshot(vec![alpha.clone(), beta.clone()]);
+        let second = snapshot(vec![beta, alpha]);
+        let mut last = None;
+        assert!(mcp_boot_persistence("sess-1", 1, true, &first, &mut last).is_some());
+        assert!(
+            mcp_boot_persistence("sess-1", 2, true, &second, &mut last).is_none(),
+            "an order-only change must not re-persist"
+        );
+    }
+
+    /// The arm's persistence glue, driven end to end: a terminal failure
+    /// receipt must land in the real `startup.log` (summary + per-server
+    /// lines), and a repeated receipt must add nothing. Deleting the
+    /// `persist_mcp_boot_receipt` call from the arm, or swapping a stage or
+    /// detail string, turns this red.
+    #[test]
+    fn mcp_boot_receipt_persists_through_the_startup_timeline() {
+        use crate::platform::paths::tests::{ENV_LOCK, unique_suffix};
+        let _g = ENV_LOCK.lock().unwrap_or_else(|p| p.into_inner());
+        let tmp = std::env::temp_dir().join(format!(
+            "pinvou3-fwd-timeline-{}-{}",
+            std::process::id(),
+            unique_suffix()
+        ));
+        let _ = std::fs::remove_dir_all(&tmp);
+        std::fs::create_dir_all(&tmp).unwrap();
+        // SAFETY: holding platform::paths::tests::ENV_LOCK; env writes serialized in-process.
+        unsafe { std::env::set_var("PINVOU3_HOME", &tmp) };
+        crate::platform::startup::init();
+        let log_path = tmp.join("logs").join("startup.log");
+
+        let snap = snapshot(vec![
+            server("fs", true, true, None),
+            server("git", true, false, Some("connection refused")),
+            server("off", false, false, Some("disabled")),
+        ]);
+        let mut last = None;
+        let (summary, failures) =
+            mcp_boot_persistence("sess-tl", 4, true, &snap, &mut last).expect("must persist");
+        super::persist_mcp_boot_receipt("sess-tl", 4, &summary, &failures, 2);
+        let log = std::fs::read_to_string(&log_path).unwrap();
+        assert!(
+            log.contains("mcp_session_boot:finished | sid=sess-tl generation=4 servers=2 failed=1"),
+            "summary line missing from the timeline: {log}"
+        );
+        assert!(
+            log.contains("mcp_session_boot:server_failed | sid=sess-tl generation=4 server=git error=connection refused"),
+            "failure line missing from the timeline: {log}"
+        );
+
+        // The dedupe contract holds through the real sink: a repeat writes nothing.
+        let before = std::fs::read(&log_path).unwrap();
+        assert_eq!(
+            mcp_boot_persistence("sess-tl", 5, true, &snap, &mut last),
+            None
+        );
+        assert_eq!(std::fs::read(&log_path).unwrap(), before);
+        drop(_g);
+        let _ = std::fs::remove_dir_all(&tmp);
     }
 }
