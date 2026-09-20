@@ -729,6 +729,22 @@ pub fn sync_deny_all_scopes_after_install(raw_id: &str) -> Result<(), String> {
     })?
 }
 
+/// Deny-first consent registration for the CLI connector channels
+/// (`feishu`/`wecom`/`dingtalk`/`tmeet` `*_apply_skills`): when the connector
+/// is about to become visible (materialize its skill files), register it in
+/// the initialized DenyAll scopes FIRST, so a refused registration aborts
+/// before anything is exposed. A hidden (`show == false`) connector needs no
+/// registration. Connectors are built-ins without an install record, so they
+/// always take the registration path of the gate (never the known-bundle
+/// skip).
+pub fn deny_first_register_connector(connector_id: &str, show: bool) -> Result<(), String> {
+    if show {
+        sync_deny_all_scopes_after_install(connector_id)
+    } else {
+        Ok(())
+    }
+}
+
 /// Sync every scope after a bundle uninstall/disconnect: drop the id from each
 /// scope's disabled and visibility sets so no stale entry keeps pointing at a
 /// missing package. Shared entry point for connector, skill, and package
@@ -1531,6 +1547,31 @@ mod tests {
             assert_eq!(
                 load_disabled_bundles_for(ConnectorScope::Code),
                 vec!["seed-bundle".to_string(), "fresh-gate-tool".to_string()]
+            );
+        });
+    }
+
+    /// The CLI-connector gate helper registers only when the connector is
+    /// about to become visible; a hidden connector must not write the deny
+    /// state at all.
+    #[test]
+    fn connector_gate_registers_only_when_shown() {
+        with_temp_home(|| {
+            save_disabled_bundles_for(ConnectorScope::Code, &["seed-bundle".to_string()]).unwrap();
+
+            deny_first_register_connector("feishu", false)
+                .expect("a hidden connector needs no registration");
+            assert_eq!(
+                load_disabled_bundles_for(ConnectorScope::Code),
+                vec!["seed-bundle".to_string()],
+                "a hidden connector must not be registered"
+            );
+
+            deny_first_register_connector("feishu", true)
+                .expect("a visible connector registers deny-first");
+            assert_eq!(
+                load_disabled_bundles_for(ConnectorScope::Code),
+                vec!["seed-bundle".to_string(), "feishu".to_string()]
             );
         });
     }

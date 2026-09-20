@@ -71,9 +71,7 @@ impl ConnectorGate {
             // cross-process flock (#515), hence inside spawn_blocking; a
             // refused write (lock unavailable) fails the call so the safety
             // default is never silently skipped.
-            if show {
-                crate::features::marketplace::sync_deny_all_scopes_after_install(self.id)?;
-            }
+            crate::features::marketplace::deny_first_register_connector(self.id, show)?;
             self.apply_skills(show)?;
             Ok(show)
         })
