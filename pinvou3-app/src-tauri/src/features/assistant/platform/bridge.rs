@@ -1812,7 +1812,7 @@ impl Pinvou3Bridge {
             // 工具全名作为初值,让新对话/新窗口的引擎都继承用户的开关与可见性
             // 治理状态(持久语义)。
             // [多智能体] 不追加 `workflow` 禁令：主线上底座在 subagents_enabled 时
-            // 注册的 WorkflowTool 对所有会话可用，本分支保持能力持平。委派提醒只教
+            // 注册的 WorkflowTool 对所有会话可用，本分支保持能力持平。蜂群契约只教
             // agent 集群、不教 workflow；已知底座限制记录在 ADR-0006。
             disallowed_tools: {
                 let n = crate::features::marketplace::unavailable_tool_names();
@@ -2548,6 +2548,13 @@ impl Pinvou3Bridge {
         expert_candidates: &[String],
     ) -> Result<Op> {
         let policy = self.session_policy(session_id);
+        // 纵深防御：候选行只允许伴随专家快照出现。发布路径的硬错误在
+        // engine.rs::validate_ordinary_turn_has_no_expert_material，这里让
+        // 组装器自身在未来调用方接错线时尽早暴露。
+        debug_assert!(
+            expert_snapshot.is_some() || expert_candidates.is_empty(),
+            "ordinary turns must not carry expert candidate lines",
+        );
         // CodeWhale 0.9.12 no longer represents bypass authority as an
         // AppMode variant. Keep mode and approval as separate typed inputs.
         let (auto_approve, approval_mode) = policy.approval_params();

@@ -474,7 +474,11 @@ fn matched_experts(
 }
 
 fn short_single_line(value: &str, limit: usize) -> String {
-    let normalized = value.split_whitespace().collect::<Vec<_>>().join(" ");
+    // 用户自建卡文案：先剥控制符与零宽/双向格式字符（模型不可见、可被用来
+    // 夹带隐形指令，见 [`crate::features::personas::strip_invisible_chars`]），
+    // 再折叠空白成单行。
+    let visible = crate::features::personas::strip_invisible_chars(value);
+    let normalized = visible.split_whitespace().collect::<Vec<_>>().join(" ");
     let mut short = normalized.chars().take(limit).collect::<String>();
     if normalized.chars().count() > limit {
         short.push('…');
@@ -960,6 +964,31 @@ pub(crate) mod tests {
             "候选行不得携带信封标签字面量: {line}"
         );
         assert!(line.contains("描述尾部"), "剥除只去标签,不毁正文: {line}");
+    }
+
+    /// 候选行与锚点同处 `<system-reminder>` 信封：控制符与零宽/双向格式字符
+    /// 模型不可见、可被用来夹带隐形指令，必须在进摘要前剥除（对齐底座
+    /// `bounded_visible_text` 的可见性下限）。剥掉 ESC 后 ANSI 序列的剩余
+    /// 参数（`[31m`）只是可见的普通文本，序列本身已失效。
+    #[test]
+    fn candidate_lines_drop_invisible_and_control_characters() {
+        let mut card = card("user-invisible", "隐形", "user", "PROFILE_SENTINEL");
+        card.description = "\u{200b}隐\u{1b}[31m形\u{202e}说明\u{feff}".into();
+        let lines = ExpertRosterSnapshot::from_cards(vec![card]).available_role_lines("隐形");
+        assert_eq!(lines.len(), 1, "与任务相关的卡应产出唯一候选行: {lines:?}");
+        let line = &lines[0];
+        for visible in ['隐', '形', '说', '明'] {
+            assert!(
+                line.contains(visible),
+                "正文语义必须保留: {visible} in {line}"
+            );
+        }
+        for unseen in ['\u{200b}', '\u{1b}', '\u{202e}', '\u{feff}'] {
+            assert!(
+                !line.contains(unseen),
+                "不可见字符必须剥除: {unseen:?} in {line}"
+            );
+        }
     }
 
     /// 标签恰跨摘要截断边界时，先截后剥会留下半截字面量（底座按完整标签
