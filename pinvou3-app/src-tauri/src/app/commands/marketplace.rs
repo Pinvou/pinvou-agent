@@ -735,7 +735,8 @@ fn stable_stem_hash(stem: &str) -> String {
 /// 把单个 `.md`/`.markdown` 技能文件的内容包装成「根放 SKILL.md 的裸 skill 包」走
 /// 统一导入。frontmatter 有 `name` 用之；没有则用文件名 stem 兜底并注入最小
 /// frontmatter。返回 PluginImportReport（调用方负责热刷 skills 组合目录）。
-/// `pre_land` 透传统一导入管线的 pre-land 钩子（DenyAll deny-first 门禁）。
+/// `pre_land` is forwarded as the pre-land hook of the unified import
+/// pipeline (the DenyAll deny-first gate).
 fn import_skill_md_content(
     md: String,
     filename: &str,
@@ -1476,11 +1477,17 @@ mod tests {
     }
 
     /// Review round 4 regression: an already-installed tool must survive a
-    /// refused gate untouched (the old rollback uninstalled it).
+    /// refused gate untouched (the old rollback uninstalled it). The
+    /// precondition install injects a `MemoryCredentialStore`: the default
+    /// constructor would write AMAP_KEY to the REAL system keychain, which
+    /// both fails on machines holding a weather credential (keyring refuses
+    /// the conflicting write) and risks clobbering the user's real key.
     #[test]
     fn existing_tool_install_survives_refused_deny_sync() {
         with_temp_home(|| {
-            let mgr = crate::features::marketplace::MarketplaceManager::new();
+            let mgr = crate::features::marketplace::MarketplaceManager::with_store(
+                crate::platform::credential_store::MemoryCredentialStore::default(),
+            );
             let mut config = std::collections::HashMap::new();
             config.insert("AMAP_KEY".to_string(), "test-key".to_string());
             mgr.install("weather", &config)
