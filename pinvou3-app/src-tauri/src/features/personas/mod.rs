@@ -357,10 +357,11 @@ pub fn equip_body_injection(card: &PersonaCard) -> String {
 /// 膨胀每轮上下文；正常名字远短于此。
 const ANCHOR_NAME_CHAR_LIMIT: usize = 80;
 
-/// 剥掉控制符与肉眼不可见的格式字符（零宽空格/连接符、双向覆写、软连字符、
-/// BOM）。卡片名/描述是用户自建文案，会插进 `<system-reminder>` 信封（每轮
-/// 锚点）或候选行（专家短摘要），这类字符模型不可见、可被用来夹带隐形指令，
-/// 在任何插值点之前统一剥除。
+/// 剥掉控制符与肉眼不可见的格式字符（零宽空格/连接符、双向覆写与隔离、
+/// 阿拉伯字母标记、软连字符、BOM）。卡片名/描述是用户自建文案，会插进
+/// `<system-reminder>` 信封（每轮锚点）或候选行（专家短摘要），这类字符
+/// 模型不可见、可被用来夹带隐形指令（或把信封标签拆成剥除/匹配不到的
+/// 残片），在任何插值点之前统一剥除。
 pub fn strip_invisible_chars(value: &str) -> String {
     value.chars().filter(|c| !is_unseen(*c)).collect()
 }
@@ -370,11 +371,21 @@ fn is_unseen(c: char) -> bool {
         || matches!(
             c,
             '\u{00AD}'                // 软连字符
+                | '\u{061C}'          // 阿拉伯字母标记（双向）
                 | '\u{200B}'..='\u{200F}' // 零宽空格/连接符与方向标记
                 | '\u{202A}'..='\u{202E}' // 双向覆写
                 | '\u{2060}'..='\u{2064}' // 不可见分隔/加号
+                | '\u{2066}'..='\u{2069}' // 双向隔离（LRI/RLI/FSI/PDI）
                 | '\u{FEFF}'          // BOM/零宽不间断空格
         )
+}
+
+/// 把信封标签字符（`<`/`>`）转义成 `\u003c`/`\u003e`（同 assistant 域
+/// `mcp_inventory` 惯例）。这是用户自建文案进入 `<system-reminder>` 信封的
+/// 统一出口：转义是逐字符替换，后续的不可见字符剥除、空白折叠或截断都无法
+/// 重组出原始标签；删除式剥除则会被拆在中间的标签残片绕过。
+pub fn escape_envelope_tag_chars(value: &str) -> String {
+    value.replace('<', "\\u003c").replace('>', "\\u003e")
 }
 
 /// **每 turn**注入的轻锚点(短,放 `<system-reminder>`,防小模型长对话脱戏)。
@@ -383,9 +394,7 @@ fn is_unseen(c: char) -> bool {
 /// 惯例转义而非删除——提前闭合 `<system-reminder>` 等于在宿主最高信任
 /// 信道里伪造宿主提醒。名字超限截断并如实标注。
 pub fn equip_anchor(card: &PersonaCard) -> String {
-    let escaped = strip_invisible_chars(&card.name)
-        .replace('<', "\\u003c")
-        .replace('>', "\\u003e");
+    let escaped = escape_envelope_tag_chars(&strip_invisible_chars(&card.name));
     let truncated = escaped.chars().count() > ANCHOR_NAME_CHAR_LIMIT;
     let name: String = escaped.chars().take(ANCHOR_NAME_CHAR_LIMIT).collect();
     format!(
@@ -654,12 +663,15 @@ mod tests {
     #[test]
     fn anchor_strips_invisible_format_characters() {
         let mut card = embedded()[0].clone();
-        card.name = "\u{200b}隐\u{1b}[31m形\u{202e}顾\u{feff}问\u{ad}".into();
+        card.name = "\u{200b}隐\u{1b}[31m形\u{202e}顾\u{feff}问\u{ad}\u{2066}\u{061c}".into();
         let a = equip_anchor(&card);
         for visible in ['隐', '形', '顾', '问'] {
             assert!(a.contains(visible), "正文语义必须保留: {visible} in {a}");
         }
-        for unseen in ['\u{200b}', '\u{1b}', '\u{202e}', '\u{feff}', '\u{ad}'] {
+        for unseen in [
+            '\u{200b}', '\u{1b}', '\u{202e}', '\u{feff}', '\u{ad}', '\u{2066}', '\u{2069}',
+            '\u{061c}',
+        ] {
             assert!(!a.contains(unseen), "不可见字符必须剥除: {unseen:?} in {a}");
         }
     }
