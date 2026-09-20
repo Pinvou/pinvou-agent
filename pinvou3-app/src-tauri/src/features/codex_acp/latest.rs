@@ -93,7 +93,7 @@ impl LatestVersionProbe {
         status.install_action = install_action_for(
             backend,
             source,
-            status.npm_available,
+            super::install::npm_executable().is_some(),
             official_script_supported(backend),
         );
         // CLI 已满足最低门禁，missing 类提示不能再误报；认证类提示仍然有效。
@@ -225,14 +225,14 @@ pub(super) fn ensure_agent_cli_ready(backend: AgentBackend, status: &CodexAcpSta
     if backend == AgentBackend::CodexAcp && status.update_required {
         bail!(
             "Codex 升级流程已完成，但检测到的版本 {} 未发生变化，仍无法支持所选模型；请确认官方或包管理器已提供更新版本",
-            status.codex_version.as_deref().unwrap_or("未知版本")
+            status.version.as_deref().unwrap_or("未知版本")
         );
     }
     bail!(
         "{} 升级流程已完成，但检测到的版本 {} 仍低于最低要求 {}；\
          请检查包管理器源，或按官方文档手动升级",
         backend.display_name(),
-        status.codex_version.as_deref().unwrap_or("未知版本"),
+        status.version.as_deref().unwrap_or("未知版本"),
         status.min_version
     )
 }
@@ -407,13 +407,8 @@ mod tests {
             update_available: false,
             update_required: false,
             bridge_ready: true,
-            adapter_path: None,
-            node_version: Some("20.0.0".to_string()),
             node_supported: true,
-            npm_available: false,
             codex_available: true,
-            codex_path: None,
-            codex_version: Some("0.144.6".to_string()),
             runtime_source: Some("system"),
             min_version: "0.144.6",
             install_action: "none",

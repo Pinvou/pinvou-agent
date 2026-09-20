@@ -16,7 +16,7 @@ const bridgeDir = path.join(here, '..', 'src', 'platform', 'tauri', 'bridge');
 function loadScheduledFeature() {
   const root = { localStorage: { getItem() { return null; }, setItem() {} } };
   const src = fs.readFileSync(path.join(bridgeDir, 'scheduled.js'), 'utf8');
-  vm.runInNewContext(src, {
+  vm.runInNewContext(fs.readFileSync(path.join(bridgeDir, '..', '..', '..', 'shared', 'bridge-shared-helpers.js'), 'utf8') + '\n' + src, {
     window: root,
     globalThis: root,
     setTimeout,
@@ -73,7 +73,7 @@ test('deleteScheduledTask 作废删除前在途的整表 list 响应（已删任
   const pDelete = rt.api.deleteScheduledTask('task-a');
   // delete invoke 排在 list 之后（deferred 按名占用）。
   const dDelete = rt.defer('delete_scheduled_task');
-  dDelete.resolve({ deletedSessionIds: [] });
+  dDelete.resolve({});
   await pDelete;
   assert.ok(
     !rt.state.scheduledTasks.some((task) => task.id === 'task-a'),

@@ -6,6 +6,35 @@ import { useDialogFocusTrap } from '../../hooks/useDialogFocusTrap.js';
 import { isWeb } from '../../shared/platform.js';
 import { setVoiceShortcutIntroOpen } from '../chat/voice-shortcut-state.mjs';
 
+// 两张模式卡同形异文案/同构异配色:配置驱动渲染,不再复制两份 JSX。
+// requiresEditSupport: web 通道无 edit 能力时整卡不渲染(见 editSupported)。
+const INTRO_MODE_CARDS = [
+  {
+    key: 'dictation',
+    requiresEditSupport: false,
+    cardClass: 'bg-[linear-gradient(120deg,#E0E0E0_0%,#F8FAFC_52%,#DCDCDC_100%)] shadow-[0_12px_36px_-18px_rgba(0,0,0,0.35)]',
+    labelKey: 'voiceIntroShortcutLabel',
+    keyClass: 'text-slate-950',
+    modeKey: 'voiceIntroDictationMode',
+    panelClass: 'w-full max-w-sm rounded-2xl bg-white/95 p-5 text-slate-700 shadow-[0_18px_36px_-22px_rgba(15,23,42,0.45)]',
+    stepsKey: 'voiceIntroDictationSteps',
+    badgeClass: 'bg-slate-900',
+  },
+  {
+    key: 'task',
+    requiresEditSupport: true,
+    cardClass: 'bg-[linear-gradient(120deg,#E0F2FE_0%,#FCE7F3_50%,#DBEAFE_100%)] shadow-[0_14px_40px_-18px_rgba(79,70,229,0.55)]',
+    labelKey: 'voiceIntroComboLabel',
+    keyClass: 'text-indigo-600',
+    modeKey: 'voiceIntroTaskMode',
+    panelClass: 'w-full max-w-md rounded-[24px] bg-white/95 p-6 text-slate-700 shadow-[0_18px_36px_-22px_rgba(79,70,229,0.5)]',
+    stepsKey: 'voiceIntroTaskSteps',
+    badgeClass: 'bg-indigo-600',
+    exampleLabelKey: 'voiceIntroTaskExampleLabel',
+    exampleKey: 'voiceIntroTaskExample',
+  },
+];
+
 function VoiceShortcutIntroModal({
   isDark,
   copy,
@@ -101,67 +130,43 @@ function VoiceShortcutIntroModal({
             </h2>
           </div>
           <div className={`grid grid-cols-1 gap-4 md:gap-5 ${editSupported ? 'md:grid-cols-2' : 'md:max-w-[520px] md:mx-auto'}`}>
-            <div className="flex min-h-[360px] flex-col overflow-hidden rounded-[28px] bg-[linear-gradient(120deg,#E0E0E0_0%,#F8FAFC_52%,#DCDCDC_100%)] shadow-[0_12px_36px_-18px_rgba(0,0,0,0.35)]">
-              <div className="m-3 flex shrink-0 items-start justify-between rounded-[24px] bg-white/85 p-5 shadow-sm backdrop-blur-xl">
-                <div>
-                  <div className="mb-1 text-[13px] font-semibold text-slate-500">{copy.voiceIntroShortcutLabel}</div>
-                  <div className="text-[38px] font-extrabold leading-none tracking-tight text-slate-950">Alt</div>
-                </div>
-                <div className="text-right">
-                  <div className="mb-1 text-[11px] font-semibold uppercase tracking-wide text-slate-500">{copy.voiceIntroModeLabel}</div>
-                  <div className="text-[17px] font-bold text-slate-800">{copy.voiceIntroDictationMode}</div>
-                </div>
-              </div>
-              <div className="flex flex-1 items-center justify-center px-6 pb-8 pt-3">
-                <div className="w-full max-w-sm rounded-2xl bg-white/95 p-5 text-slate-700 shadow-[0_18px_36px_-22px_rgba(15,23,42,0.45)]">
-                  <div className="space-y-3">
-                    {copy.voiceIntroDictationSteps.map((step, index) => (
-                      <div key={step} className="flex items-start gap-3">
-                        <span className="mt-0.5 flex h-6 w-6 shrink-0 items-center justify-center rounded-full bg-slate-900 text-[12px] font-bold text-white">
-                          {index + 1}
-                        </span>
-                        <span className="text-[15px] font-semibold leading-6 text-slate-700">{step}</span>
-                      </div>
-                    ))}
+            {INTRO_MODE_CARDS.filter((card) => !card.requiresEditSupport || editSupported).map((card) => (
+              <div key={card.key} className={`flex min-h-[360px] flex-col overflow-hidden rounded-[28px] ${card.cardClass}`}>
+                <div className="m-3 flex shrink-0 items-start justify-between rounded-[24px] bg-white/85 p-5 shadow-sm backdrop-blur-xl">
+                  <div>
+                    <div className="mb-1 text-[13px] font-semibold text-slate-500">{copy[card.labelKey]}</div>
+                    <div className={`text-[38px] font-extrabold leading-none tracking-tight ${card.keyClass}`}>Alt</div>
+                  </div>
+                  <div className="text-right">
+                    <div className="mb-1 text-[11px] font-semibold uppercase tracking-wide text-slate-500">{copy.voiceIntroModeLabel}</div>
+                    <div className="text-[17px] font-bold text-slate-800">{copy[card.modeKey]}</div>
                   </div>
                 </div>
-              </div>
-            </div>
-            {editSupported && (
-            <div className="flex min-h-[360px] flex-col overflow-hidden rounded-[28px] bg-[linear-gradient(120deg,#E0F2FE_0%,#FCE7F3_50%,#DBEAFE_100%)] shadow-[0_14px_40px_-18px_rgba(79,70,229,0.55)]">
-              <div className="m-3 flex shrink-0 items-start justify-between rounded-[24px] bg-white/85 p-5 shadow-sm backdrop-blur-xl">
-                <div>
-                  <div className="mb-1 text-[13px] font-semibold text-slate-500">{copy.voiceIntroComboLabel}</div>
-                  <div className="text-[38px] font-extrabold leading-none tracking-tight text-indigo-600">Alt</div>
-                </div>
-                <div className="text-right">
-                  <div className="mb-1 text-[11px] font-semibold uppercase tracking-wide text-slate-500">{copy.voiceIntroModeLabel}</div>
-                  <div className="text-[17px] font-bold text-slate-800">{copy.voiceIntroTaskMode}</div>
-                </div>
-              </div>
-              <div className="flex flex-1 items-center justify-center px-6 pb-8 pt-3">
-                <div className="w-full max-w-md rounded-[24px] bg-white/95 p-6 text-slate-700 shadow-[0_18px_36px_-22px_rgba(79,70,229,0.5)]">
-                  <div className="space-y-3">
-                    {copy.voiceIntroTaskSteps.map((step, index) => (
-                      <div key={step} className="flex items-start gap-3">
-                        <span className="mt-0.5 flex h-6 w-6 shrink-0 items-center justify-center rounded-full bg-indigo-600 text-[12px] font-bold text-white">
-                          {index + 1}
-                        </span>
-                        <span className="text-[15px] font-semibold leading-6 text-slate-700">{step}</span>
-                      </div>
-                    ))}
-                  </div>
-                  <div className="mt-5 rounded-2xl bg-indigo-50/80 px-4 py-3 text-[14px] font-medium leading-6 text-slate-600">
-                    <div className="mb-1 flex items-center gap-1.5 text-[12px] font-bold text-indigo-600">
-                      <Sparkles size={14} />
-                      {copy.voiceIntroTaskExampleLabel}
+                <div className="flex flex-1 items-center justify-center px-6 pb-8 pt-3">
+                  <div className={card.panelClass}>
+                    <div className="space-y-3">
+                      {copy[card.stepsKey].map((step, index) => (
+                        <div key={step} className="flex items-start gap-3">
+                          <span className={`mt-0.5 flex h-6 w-6 shrink-0 items-center justify-center rounded-full text-[12px] font-bold text-white ${card.badgeClass}`}>
+                            {index + 1}
+                          </span>
+                          <span className="text-[15px] font-semibold leading-6 text-slate-700">{step}</span>
+                        </div>
+                      ))}
                     </div>
-                    {copy.voiceIntroTaskExample}
+                    {card.exampleKey && (
+                      <div className="mt-5 rounded-2xl bg-indigo-50/80 px-4 py-3 text-[14px] font-medium leading-6 text-slate-600">
+                        <div className="mb-1 flex items-center gap-1.5 text-[12px] font-bold text-indigo-600">
+                          <Sparkles size={14} />
+                          {copy[card.exampleLabelKey]}
+                        </div>
+                        {copy[card.exampleKey]}
+                      </div>
+                    )}
                   </div>
                 </div>
               </div>
-            </div>
-            )}
+            ))}
           </div>
           <div className="mt-5 flex flex-col-reverse gap-2 sm:flex-row sm:justify-end">
             {canEnable && (

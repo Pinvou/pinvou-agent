@@ -31,8 +31,9 @@ python scripts/architecture-guard.py
   `libc::kill(2)` 直调（`platform::process::kill_process_tree` /
   `platform::os::kill_pid_tree`）。背景：procps-ng 4.0.4 会把 `kill -9 -<pgid>` 的
   合法负 pid 错解析成 `kill(-1)`，杀光当前用户全部进程（2026-09-04 实际事故）。
-  此规则对所有 Rust 文件生效、无文件级例外：`unsupported.rs` 的 `cfg(unix)` 分支
-  就是 macOS 在用的 `kill_pid_tree` 实现，不得因「合约存根」豁免整个文件。
+  此规则对所有 Rust 文件生效、无文件级例外：`kill_pid_tree` 的 Unix 实现收敛在
+  `platform/os/posix.rs`（macOS 经 `unsupported.rs` 的 `cfg(unix)` re-export 使用），
+  不得因「合约存根」豁免整个文件。
 
 门禁只约束可以稳定、客观检测的架构边界，不以文件行数或仓库总代码量作为模块化
 合规条件。模块是否需要拆分，应依据职责、依赖、状态耦合和独立测试能力，遵循根目录

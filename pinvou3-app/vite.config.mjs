@@ -25,6 +25,7 @@ export const staticRuntimeScripts = new Set([
   'platform/web/access-policy.json',
   'shared/authority-sync-diagnostics.js',
   'shared/bridge-messages.js',
+  'shared/bridge-shared-helpers.js',
   'shared/chunked-file-upload.js',
   'shared/format-utils.js',
   'shared/legacy-polyfills.js',

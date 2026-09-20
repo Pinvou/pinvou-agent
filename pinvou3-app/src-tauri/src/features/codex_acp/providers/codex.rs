@@ -305,36 +305,20 @@ impl AgentConfigWriter for CodexConfigWriter {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::features::codex_acp::providers::ProviderWireApi;
-
-    /// 按测试名区分目录（cargo 并行跑时同 pid 共享目录会互删，见 kimi.rs）。
-    fn tmp_dir() -> PathBuf {
-        let test = std::thread::current()
-            .name()
-            .unwrap_or_default()
-            .replace(['/', '\\', ':'], "_");
-        let dir = std::env::temp_dir().join(format!("codex-writer-test-{test}"));
-        let _ = fs::remove_dir_all(&dir);
-        fs::create_dir_all(&dir).unwrap();
-        dir
-    }
+    use crate::features::codex_acp::providers::{ProviderWireApi, fixture_target, writer_test_dir};
 
     fn target(provider_id: &str) -> ProviderTarget {
-        ProviderTarget {
-            provider_id: provider_id.into(),
-            name: "中转".into(),
-            base_url: "https://api.example.com/v1".into(),
-            model: Some("gpt-5.2".into()),
-            model_slots: None,
-            context_window: None,
-            wire_api: ProviderWireApi::Openai,
-            api_key: Some("test-api-key-1234567890".into()),
-        }
+        fixture_target(
+            provider_id,
+            "https://api.example.com/v1",
+            "gpt-5.2",
+            ProviderWireApi::Openai,
+        )
     }
 
     #[test]
     fn apply_writes_provider_and_preserves_other_tables() {
-        let dir = tmp_dir();
+        let dir = writer_test_dir("codex-writer-test");
         let writer = CodexConfigWriter::new(&dir);
         fs::write(
             dir.join("config.toml"),
@@ -358,7 +342,7 @@ mod tests {
 
     #[test]
     fn revert_removes_only_managed_blocks() {
-        let dir = tmp_dir();
+        let dir = writer_test_dir("codex-writer-test");
         let writer = CodexConfigWriter::new(&dir);
         fs::write(
             dir.join("config.toml"),
@@ -390,7 +374,7 @@ mod tests {
 
     #[test]
     fn apply_uses_custom_context_window_in_catalog() {
-        let dir = tmp_dir();
+        let dir = writer_test_dir("codex-writer-test");
         let writer = CodexConfigWriter::new(&dir);
         let mut custom = target("pv-aaaaaaaaaaaa");
         custom.context_window = Some(1_048_576);
@@ -408,7 +392,7 @@ mod tests {
 
     #[test]
     fn apply_writes_model_catalog_and_revert_cleans_it() {
-        let dir = tmp_dir();
+        let dir = writer_test_dir("codex-writer-test");
         let writer = CodexConfigWriter::new(&dir);
         writer.apply(&target("pv-aaaaaaaaaaaa")).unwrap();
         let raw = fs::read_to_string(dir.join("config.toml")).unwrap();
@@ -442,7 +426,7 @@ mod tests {
 
     #[test]
     fn revert_keeps_user_owned_top_level_model() {
-        let dir = tmp_dir();
+        let dir = writer_test_dir("codex-writer-test");
         let writer = CodexConfigWriter::new(&dir);
         fs::write(
             dir.join("config.toml"),
@@ -466,7 +450,7 @@ mod tests {
 
     #[test]
     fn effective_errors_on_unparseable_file() {
-        let dir = tmp_dir();
+        let dir = writer_test_dir("codex-writer-test");
         let writer = CodexConfigWriter::new(&dir);
         fs::write(
             dir.join("config.toml"),

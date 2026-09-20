@@ -920,17 +920,6 @@ jobs:
           sudo apt-get clean
           sudo rm -rf /var/lib/apt/lists/*
 
-      # bge-m3 是 gitignored 大资源(559M),CI 干净 checkout 没有它,而 tauri_build::build()
-      # 会校验 tauri.conf resources 路径存在。单测用 mem()=embedder None、不加载真模型,真
-      # bge-m3/vLLM 的 e2e 测试都已 #[ignore] —— 故造空占位文件骗过资源校验即可(已实测可行)。
-      - name: bge-m3 占位 (骗过 tauri-build 资源校验)
-        run: |
-          d=pinvou3-app/src-tauri/resources/bge-m3
-          mkdir -p "$d"
-          for f in config.json model.onnx tokenizer.json tokenizer_config.json special_tokens_map.json; do
-            : > "$d/$f"
-          done
-
       - name: Rust toolchain
         uses: dtolnay/rust-toolchain@stable
 
@@ -1095,13 +1084,6 @@ jobs:
           sudo apt-get clean
           sudo rm -rf /var/lib/apt/lists/*
 
-      - name: bge-m3 placeholder (tauri-build resource check)
-        run: |
-          d=pinvou3-app/src-tauri/resources/bge-m3
-          mkdir -p "$d"
-          for f in config.json model.onnx tokenizer.json tokenizer_config.json special_tokens_map.json; do
-            : > "$d/$f"
-          done
 
       # rustfmt is required by the `cargo fmt --check` step below (minimal
       # profile otherwise).

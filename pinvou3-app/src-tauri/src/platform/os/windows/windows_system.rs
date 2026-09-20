@@ -193,16 +193,14 @@ pub fn archive_tool_exists() -> bool {
     windows_path::bundled_archive_tool_path().is_some() || command_exists("7z")
 }
 
-pub fn msg_native_supported() -> bool {
-    true
-}
-
 pub fn msg_converter_required() -> bool {
     false
 }
 
 pub fn email_tool_exists() -> bool {
-    msg_native_supported()
+    // Windows 解析 .msg 走原生通道，始终可用（原 1:1 包装
+    // msg_native_supported 已内联）。
+    true
 }
 
 pub fn show_pdf_dependency_check() -> bool {

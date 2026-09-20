@@ -496,7 +496,7 @@ const MONITOR_CLOCK_LOCALE = { zh: 'zh-CN', en: 'en-US', ja: 'ja-JP' };
                     </div>
                     <div className="flex items-center gap-2">
                       <span className="px-3.5 py-2 rounded-full bg-black/[0.04] dark:bg-[#2C2C2E] text-[12px] font-bold tracking-[0.04em] text-black/55 dark:text-white/60 border border-black/[0.04] dark:border-white/[0.055]">{runModeText}</span>
-                      <button type="button" className="bg-black/5 dark:bg-[#2C2C2E] hover:bg-black/10 dark:hover:bg-[#3A3A3C] px-4 py-2 rounded-full text-[12px] font-bold tracking-[0.04em] transition-colors">{statusText}</button>
+                      <span className="bg-black/5 dark:bg-[#2C2C2E] hover:bg-black/10 dark:hover:bg-[#3A3A3C] px-4 py-2 rounded-full text-[12px] font-bold tracking-[0.04em] transition-colors">{statusText}</span>
                       <button type="button"
                         onMouseDown={handleModelClearStart}
                         onMouseUp={handleModelClearEnd}

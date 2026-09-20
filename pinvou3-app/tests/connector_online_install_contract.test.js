@@ -9,6 +9,7 @@ const paths = read("src-tauri", "src", "platform", "paths.rs");
 const build = read("scripts", "tauri", "build.js");
 const tmeet = read("src-tauri", "src", "features", "connectors", "tmeet.rs");
 const toolCommon = read("src", "features", "tools", "tool-common.jsx");
+const posix = read("src-tauri", "src", "platform", "os", "posix.rs");
 const linux = read("src-tauri", "src", "platform", "os", "linux", "linux_path.rs");
 const macos = read("src-tauri", "src", "platform", "os", "macos", "macos_path.rs");
 
@@ -35,10 +36,12 @@ assert.match(installer, /normalized_path_eq/);
 assert.match(installer, /\.installing-/);
 
 assert.match(tmeet, /@tencentcloud\/tmeet@1\.0\.18/);
+// 连接器 CLI 解析实现已收敛到 posix.rs（Wave 3 去重），linux/macos 仅 re-export。
+assert.match(posix, /bundled_connector_npm_cli/);
+assert.match(posix, /cli_bin == "tmeet"/);
+assert.match(posix, /bundled_connector_node/);
 for (const platformSource of [linux, macos]) {
-  assert.match(platformSource, /bundled_connector_npm_cli/);
-  assert.match(platformSource, /cli_bin == "tmeet"/);
-  assert.match(platformSource, /bundled_connector_node/);
+  assert.match(platformSource, /connector_cli_command/);
 }
 
 // 版本联动：工具卡展示版本必须与 lock 钉扎（及 tmeet.rs npm 钉扎）一致，

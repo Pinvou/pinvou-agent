@@ -1,6 +1,7 @@
 // 会话内后台 shell 任务指示器的纯逻辑：从 chatItems 派生当前会话仍在运行的
 // 后台任务列表。抽成独立模块以便 node:test 直接单测
 // （见 tests/background_tasks_logic.test.js）。
+import { formatElapsedMs } from '../../shared/format-utils.mjs';
 
 const COMMAND_SUMMARY_MAX = 80;
 
@@ -40,16 +41,9 @@ function deriveRunningShellTasks(chatItems) {
   }));
 }
 
-// 耗时格式化：秒级以下显示秒，分钟级显示 "Xm Ys"，更长显示 "Xh Ym"。
-function formatElapsedMs(ms) {
-  const totalSeconds = Math.max(0, Math.floor((Number(ms) || 0) / 1000));
-  const hours = Math.floor(totalSeconds / 3600);
-  const minutes = Math.floor((totalSeconds % 3600) / 60);
-  const seconds = totalSeconds % 60;
-  if (hours > 0) return `${hours}h ${minutes}m`;
-  if (minutes > 0) return `${minutes}m ${seconds}s`;
-  return `${seconds}s`;
-}
+// 耗时格式化（formatElapsedMs）已收敛到 shared/format-utils.mjs（与
+// window.PinvouFormatUtils 的 bridge 版本同为唯一实现），此处仅转发，
+// 保持 ChatView 的既有导入路径不变。
 
 // 输出 tail：取最后 n 行（空行不计），供指示器浮层展示。
 function tailOutputLines(output, lineCount = 3) {

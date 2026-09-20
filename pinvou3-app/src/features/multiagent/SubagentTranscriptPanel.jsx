@@ -96,14 +96,12 @@ export function SubagentTranscriptPanel({
   initialAgentId,
   selectionRequestId,
   t,
-  theme,
   language,
   modelServiceState,
   onClose,
 }) {
   const copy = t.uiMultiAgent;
   const conversationCopy = t.uiConversation;
-  const isDark = theme === 'dark';
   const personas = bridge.available && bridge.personas ? bridge.personas.getPersonas() : [];
 
   const [selectedAgentId, setSelectedAgentId] = useState(initialAgentId || null);
@@ -333,7 +331,6 @@ export function SubagentTranscriptPanel({
             {detailIdentity && (
               <AppIcon
                 card={{ id: detailIdentity.avatarKey, name: detailSubtitle || detailName, dept: detailIdentity.personaDept }}
-                isDark={isDark}
                 cls="h-8 w-8 shrink-0 overflow-hidden rounded-[10px]"
                 fb={14}
               />
@@ -422,7 +419,6 @@ export function SubagentTranscriptPanel({
                 assistantAvatar={detailIdentity ? (
                   <AppIcon
                     card={{ id: detailIdentity.avatarKey, name: detailSubtitle || detailName, dept: detailIdentity.personaDept }}
-                    isDark={isDark}
                     cls="mt-1 h-7 w-7 shrink-0 overflow-hidden rounded-xl"
                     fb={13}
                   />
@@ -484,7 +480,6 @@ export function SubagentTranscriptPanel({
                 >
                   <AppIcon
                     card={{ id: identity.avatarKey, name: subtitle || name, dept: identity.personaDept }}
-                    isDark={isDark}
                     cls="h-8 w-8 shrink-0 overflow-hidden rounded-[10px]"
                     fb={14}
                   />

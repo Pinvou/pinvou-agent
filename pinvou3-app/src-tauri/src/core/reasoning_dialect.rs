@@ -5,24 +5,32 @@
 //! 用户决策：以 review 覆盖面为准修正 memory 缺口。
 //!
 //! 此模块提供：
-//! - [`ReasoningDialect`]：统一的 dialect 枚举（两特性变体集相同）
+//! - [`ReasoningDialect`]：统一的 dialect 枚举（含仅由 preset/provider 判定的
+//!   `VllmChatTemplate` 变体）
 //! - [`reasoning_dialect_from_base_url`]：URL 嗅探（7 厂商簇 + 剥 `/v1`）
 //! - [`kimi_supports_disabled_thinking`]：Kimi 模型门控
+//! - [`apply_reasoning_dialect_controls`]：按 dialect 写入请求体的共享 match
 //!
 //! 各 feature 的 wrapper（`review_reasoning_dialect` / `memory_review_reasoning_dialect`）
-//! 仍保留各自的 preset 分发逻辑，但 URL 回退统一委托此模块。
+//! 仍保留各自的 preset 分发逻辑（Kimi 分支顺序与 OpenAI 兼容回退细节有意不同），
+//! 但 URL 回退统一委托此模块。
 
-/// 推理 dialect 枚举：仅描述 [`reasoning_dialect_from_base_url`] 实际能嗅探出的
-/// URL 结果（None / ThinkingDisabled / QwenEnableThinking / Minimax）。
+use serde_json::{Value, json};
+
+/// 推理 dialect 枚举。
 ///
-/// VllmChatTemplate 不在此列：它只能由调用方按 `provider`/`preset`（`vllm` /
-/// `LocalVllm`）判定，永远不来自 URL 嗅探。各 feature 保留各自的本地枚举承载该
-/// 变体，并在 OpenAI 兼容 URL 回退分支经 `From<ReasoningDialect>` 转换共享结果。
+/// `None / ThinkingDisabled / QwenEnableThinking / Minimax` 可由
+/// [`reasoning_dialect_from_base_url`] 从 URL 嗅探得出。
+///
+/// `VllmChatTemplate` 只能由调用方按 `provider`/`preset`（`vllm` /
+/// `LocalVllm`）判定，永远不来自 URL 嗅探；它留在统一枚举里是为了让
+/// 各 feature 的 dispatch 直接返回本类型，免去各自的本地枚举与 `From` 转换。
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ReasoningDialect {
     None,
     ThinkingDisabled,
     QwenEnableThinking,
+    VllmChatTemplate,
     Minimax,
 }
 
@@ -78,6 +86,29 @@ pub fn reasoning_dialect_from_base_url(base_url: &str, model: &str) -> Reasoning
         ReasoningDialect::ThinkingDisabled
     } else {
         ReasoningDialect::None
+    }
+}
+
+/// 按 dialect 把推理控制字段写进 OpenAI 兼容 chat/completions 请求体。
+///
+/// review 与 memory 此前各维护一份字节等价的 match（仅枚举名不同），现统一至此；
+/// 各 feature 先经自己的 preset dispatch 判定 dialect，再调用本函数落盘请求体。
+pub fn apply_reasoning_dialect_controls(body: &mut Value, dialect: ReasoningDialect) {
+    match dialect {
+        ReasoningDialect::ThinkingDisabled => {
+            body["thinking"] = json!({ "type": "disabled" });
+        }
+        ReasoningDialect::QwenEnableThinking => {
+            body["enable_thinking"] = json!(false);
+        }
+        ReasoningDialect::VllmChatTemplate => {
+            body["chat_template_kwargs"] = json!({ "enable_thinking": false });
+        }
+        ReasoningDialect::Minimax => {
+            body["thinking"] = json!({ "type": "disabled" });
+            body["reasoning_split"] = json!(true);
+        }
+        ReasoningDialect::None => {}
     }
 }
 

@@ -42,7 +42,10 @@ function createTauriChat(overrides = {}) {
     setTimeout,
     clearTimeout,
   };
-  vm.runInNewContext(read('src', 'platform', 'tauri', 'bridge', 'chat.js'), sandbox, {
+  vm.runInNewContext(read('src', 'shared', 'bridge-shared-helpers.js'), sandbox, {
+  filename: 'shared/bridge-shared-helpers.js',
+});
+vm.runInNewContext(read('src', 'platform', 'tauri', 'bridge', 'chat.js'), sandbox, {
     filename: 'bridge/chat.js',
   });
   const factory = sandbox.window.__PINVOU_TAURI_BRIDGE_FEATURES__.chat;
@@ -165,6 +168,7 @@ function createWebBridge() {
     TextEncoder,
     TextDecoder,
   });
+  vm.runInContext(read('src', 'shared', 'bridge-shared-helpers.js'), context, { filename: 'shared/bridge-shared-helpers.js' });
   vm.runInContext(read('src', 'platform', 'web', 'bridge.js'), context, {
     filename: 'platform/web/bridge.js',
   });

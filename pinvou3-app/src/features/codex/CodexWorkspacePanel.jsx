@@ -330,57 +330,54 @@ export function CodexWorkspacePanel({
     if (willOpen) await loadDirectory(path);
   }
 
-  async function showFile(entry) {
-    // 请求序号防竞态：只应用最后一次点击的响应，慢响应（旧文件/旧工作区）直接丢弃。
+  // showFile/showDiff 共用的 viewer 打开管线：请求序号防竞态（只应用最后一次
+  // 点击的响应，慢响应/旧工作区直接丢弃），loading/success/error 三个 setState
+  // 形状一致；base 携带模式差异字段（文件预览 {preview:null}，diff 视图额外
+  // {diff:null}），adapt 把加载结果映射为 success viewer 的模式字段。
+  async function openViewer(loader, adapt, { base, name, relativePath, errorLabel }) {
     const requestId = ++previewRequestRef.current;
-    setViewer({ name: entry.name, relativePath: entry.relativePath, preview: null, loading: true, error: '' });
+    setViewer({ ...base, name, relativePath, loading: true, error: '' });
     try {
-      const preview = await previewAcpWorkspaceFile({
-        ...scopePayload(),
-        relativePath: entry.relativePath,
-      });
+      const result = await loader();
       if (requestId !== previewRequestRef.current) return;
-      setViewer({ name: entry.name, relativePath: entry.relativePath, preview, loading: false, error: '' });
+      setViewer({ ...base, ...adapt(result), name, relativePath, loading: false, error: '' });
       setError('');
     } catch (nextError) {
       if (requestId !== previewRequestRef.current) return;
-      console.error('Codex workspace preview failed:', nextError);
+      console.error(errorLabel, nextError);
       setViewer({
-        name: entry.name,
-        relativePath: entry.relativePath,
-        preview: null,
+        ...base,
+        name,
+        relativePath,
         loading: false,
         error: acpErrorMessage(nextError, copy, { allowRaw: !isWeb }),
       });
     }
   }
 
+  async function showFile(entry) {
+    await openViewer(
+      () => previewAcpWorkspaceFile({
+        ...scopePayload(),
+        relativePath: entry.relativePath,
+      }),
+      preview => ({ preview }),
+      { base: { preview: null }, name: entry.name, relativePath: entry.relativePath, errorLabel: 'Codex workspace preview failed:' },
+    );
+  }
+
   // 变更项 → 弹窗 diff 视图；与 showFile 共用 viewer 弹窗（diff 字段驱动 diff 模式），
   // 同样用请求序号防竞态。
   async function showDiff(change) {
     const name = pathBasename(change.relativePath, { fallback: change.relativePath });
-    const requestId = ++previewRequestRef.current;
-    setViewer({ name, relativePath: change.relativePath, preview: null, diff: null, loading: true, error: '' });
-    try {
-      const diff = await loadAcpWorkspaceDiff({
+    await openViewer(
+      () => loadAcpWorkspaceDiff({
         sessionId,
         relativePath: change.relativePath,
-      });
-      if (requestId !== previewRequestRef.current) return;
-      setViewer({ name, relativePath: change.relativePath, preview: null, diff, loading: false, error: '' });
-      setError('');
-    } catch (nextError) {
-      if (requestId !== previewRequestRef.current) return;
-      console.error('Codex workspace diff failed:', nextError);
-      setViewer({
-        name,
-        relativePath: change.relativePath,
-        preview: null,
-        diff: null,
-        loading: false,
-        error: acpErrorMessage(nextError, copy, { allowRaw: !isWeb }),
-      });
-    }
+      }),
+      diff => ({ diff }),
+      { base: { preview: null, diff: null }, name, relativePath: change.relativePath, errorLabel: 'Codex workspace diff failed:' },
+    );
   }
 
   async function openWorkspacePath(command, relativePath, extra = {}) {

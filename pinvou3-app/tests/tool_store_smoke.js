@@ -478,14 +478,13 @@ async function visibilityBox(page, cardText, modeLabel, click) {
       rec('飞书详情版本号以后端 lock 表为准',await page.evaluate(()=>document.body.innerText.includes('v9.9.9-lock')));
     }
     if(id==='wecom'){
-      // WeCom QR renders through the standalone wecomQr modal (kept — the
-      // busy-release contract on main pins this path) while the consolidated
-      // connector-flow factory keeps its own wecom:connected pipeline, so the
-      // legacy listener and the factory both still invoke wecom_apply_skills
-      // per connect, unchanged from main. Pinned behaviors are unchanged: the backend-emitted
-      // qr_data_url goes straight into <img>; an allowlist-rejected "Open in browser"
-      // must surface a visible error (previously silent); cancel must clear the flow
-      // card — backend cancel is now silent, no wecom:error implicit cleanup.
+      // WeCom QR renders through the standalone modal, which is derived directly
+      // from the connector-flow state (phase==='qr'); the factory listener is the
+      // single path that invokes wecom_apply_skills per connect. Pinned behaviors
+      // are unchanged: the backend-emitted qr_data_url goes straight into <img>;
+      // an allowlist-rejected "Open in browser" must surface a visible error
+      // (previously silent); cancel must clear the flow card — backend cancel is
+      // silent, no wecom:error implicit cleanup.
       await page.evaluate(() => window.__emitTauri('wecom:qr', {
         phase: 'authorize',
         url: 'https://work.weixin.qq.com/ai/qc/gen?source=wecom_cli_external&test=1',

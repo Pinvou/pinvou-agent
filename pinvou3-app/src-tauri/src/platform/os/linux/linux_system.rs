@@ -85,10 +85,6 @@ pub fn archive_tool_exists() -> bool {
     command_exists("7z")
 }
 
-pub fn msg_native_supported() -> bool {
-    false
-}
-
 pub fn msg_converter_required() -> bool {
     true
 }
@@ -160,7 +156,6 @@ mod tests {
 
     #[test]
     fn linux_keeps_email_msgconvert_dependency_visible() {
-        assert!(!msg_native_supported());
         assert!(msg_converter_required());
         assert_eq!(
             email_dependency_packages(),

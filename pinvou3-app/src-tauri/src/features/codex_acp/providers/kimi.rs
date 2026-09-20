@@ -312,37 +312,20 @@ impl AgentConfigWriter for KimiConfigWriter {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::features::codex_acp::providers::ProviderWireApi;
-
-    /// 用测试线程名（= 测试函数名）区分目录：cargo 并行跑多个测试时
-    /// 同进程不同测试若共用 `{pid}` 目录会互删文件（评审发现 27 failed）。
-    fn tmp_dir() -> PathBuf {
-        let test = std::thread::current()
-            .name()
-            .unwrap_or_default()
-            .replace(['/', '\\', ':'], "_");
-        let dir = std::env::temp_dir().join(format!("kimi-writer-test-{test}"));
-        let _ = fs::remove_dir_all(&dir);
-        fs::create_dir_all(&dir).unwrap();
-        dir
-    }
+    use crate::features::codex_acp::providers::{ProviderWireApi, fixture_target, writer_test_dir};
 
     fn target(provider_id: &str) -> ProviderTarget {
-        ProviderTarget {
-            provider_id: provider_id.into(),
-            name: "中转".into(),
-            base_url: "https://api.moonshot.cn/v1".into(),
-            model: Some("kimi-k2.5".into()),
-            model_slots: None,
-            context_window: None,
-            wire_api: ProviderWireApi::Openai,
-            api_key: Some("test-api-key-1234567890".into()),
-        }
+        fixture_target(
+            provider_id,
+            "https://api.moonshot.cn/v1",
+            "kimi-k2.5",
+            ProviderWireApi::Openai,
+        )
     }
 
     #[test]
     fn apply_output_passes_runtime_config_ready() {
-        let dir = tmp_dir();
+        let dir = writer_test_dir("kimi-writer-test");
         let writer = KimiConfigWriter::new(&dir);
         writer.apply(&target("pv-aaaaaaaaaaaa")).unwrap();
         let raw = fs::read_to_string(dir.join("config.toml")).unwrap();
@@ -367,7 +350,7 @@ mod tests {
 
     #[test]
     fn kimi_native_wire_writes_type_kimi() {
-        let dir = tmp_dir();
+        let dir = writer_test_dir("kimi-writer-test");
         let writer = KimiConfigWriter::new(&dir);
         let mut target = target("pv-aaaaaaaaaaaa");
         target.wire_api = ProviderWireApi::Kimi;
@@ -386,7 +369,7 @@ mod tests {
 
     #[test]
     fn apply_uses_custom_context_window() {
-        let dir = tmp_dir();
+        let dir = writer_test_dir("kimi-writer-test");
         let writer = KimiConfigWriter::new(&dir);
         let mut custom = target("pv-aaaaaaaaaaaa");
         custom.context_window = Some(262_144);
@@ -402,7 +385,7 @@ mod tests {
 
     #[test]
     fn apply_preserves_official_login_tables() {
-        let dir = tmp_dir();
+        let dir = writer_test_dir("kimi-writer-test");
         let writer = KimiConfigWriter::new(&dir);
         // 模拟官方登录写入的 OAuth provider 表
         // 表名含点号必须加引号（`[models."kimi-k2.5"]`），否则 TOML 把 `.5`
@@ -423,7 +406,7 @@ mod tests {
 
     #[test]
     fn revert_removes_only_managed_blocks() {
-        let dir = tmp_dir();
+        let dir = writer_test_dir("kimi-writer-test");
         let writer = KimiConfigWriter::new(&dir);
         fs::write(
             dir.join("config.toml"),
@@ -464,7 +447,7 @@ mod tests {
 
     #[test]
     fn official_default_model_roundtrip() {
-        let dir = tmp_dir();
+        let dir = writer_test_dir("kimi-writer-test");
         let writer = KimiConfigWriter::new(&dir);
         // 模拟官方登录写入的配置：官方 OAuth 登录会写 `[…].oauth` 子表，
         // `kimi_runtime_config_ready` 依赖它（缺失会被判为未就绪）。
@@ -505,7 +488,7 @@ mod tests {
 
     #[test]
     fn restore_default_model_keeps_user_override() {
-        let dir = tmp_dir();
+        let dir = writer_test_dir("kimi-writer-test");
         let writer = KimiConfigWriter::new(&dir);
         fs::write(
             dir.join("config.toml"),
@@ -521,7 +504,7 @@ mod tests {
 
     #[test]
     fn effective_errors_on_unparseable_file() {
-        let dir = tmp_dir();
+        let dir = writer_test_dir("kimi-writer-test");
         let writer = KimiConfigWriter::new(&dir);
         fs::write(dir.join("config.toml"), "default_model = \"x\"\n[unclosed").unwrap();
         // 损坏文件必须返回 Err（config_unreadable 依赖该 Err），而非静默按官方
@@ -531,7 +514,7 @@ mod tests {
 
     #[test]
     fn effective_detects_relay_provider() {
-        let dir = tmp_dir();
+        let dir = writer_test_dir("kimi-writer-test");
         let writer = KimiConfigWriter::new(&dir);
         assert_eq!(writer.effective().unwrap(), EffectiveConfig::default());
         writer.apply(&target("pv-aaaaaaaaaaaa")).unwrap();
@@ -565,7 +548,7 @@ mod tests {
 
     #[test]
     fn official_oauth_config_is_not_relay() {
-        let dir = tmp_dir();
+        let dir = writer_test_dir("kimi-writer-test");
         let writer = KimiConfigWriter::new(&dir);
         // 官方登录（kimi login OAuth）写入的结构：managed provider + oauth 子表，
         // 也满足 default_model → models → provider 链条，但不得判为中转

@@ -138,7 +138,7 @@ function injectSource() {
         case 'get_backend_status':
           if(window.__PAUSE_BACKEND_STATUS_POLL__) return new Promise(function(){});
           return Promise.resolve({online:true,ok:true,status:'online',model:'qwen36_35b_256k'});
-        case 'get_memory_overview': return Promise.resolve({profile:null,preferences:[],work_context:[],current_focus:[],recent_activity:[],recent_work:[],pending:[],never:[],runtime:null,snapshot_path:''});
+        case 'get_memory_overview': return Promise.resolve({profile:null,preferences:[],work_context:[],current_focus:[],recent_activity:[],pending:[],runtime:null,snapshot_path:''});
         case 'confirm_pending_memory': return Promise.resolve({value:true});
         case 'ignore_pending_memory': return Promise.resolve({value:true});
         case 'never_pending_memory': return Promise.resolve({value:true});

@@ -4,10 +4,8 @@
 //! `app::commands::artifacts`，本模块只根据会话磁盘真相装配交付物索引。
 
 use serde::{Deserialize, Serialize};
-use std::collections::HashMap;
-use std::path::PathBuf;
-use std::sync::{Mutex, OnceLock};
-use std::time::SystemTime;
+
+use crate::core::stamp_cache::{FileStamp, StampCache};
 
 /// 「产出物」跨会话索引:遍历 `~/.pinvou3/sessions/*.json`,把每个会话跟踪的
 /// artifacts 汇成一张扁平表(供「产出物」一级入口用)。只走磁盘真相:
@@ -64,9 +62,7 @@ const DV_VIEW_CACHE_LIMIT: usize = 512;
 /// derived data (artifact file mtime/size read live from the fs, extension
 /// filtering, sorting) is recomputed on every call. Parsing is a pure read
 /// with no side effects, so the cached value is safe to reuse.
-static DV_VIEW_CACHE: OnceLock<
-    Mutex<HashMap<PathBuf, ((Option<SystemTime>, u64), DvSessionView)>>,
-> = OnceLock::new();
+static DV_VIEW_CACHE: StampCache<DvSessionView> = StampCache::new(DV_VIEW_CACHE_LIMIT);
 
 fn deliverable_category(ext: &str) -> &'static str {
     match ext {
@@ -99,18 +95,8 @@ pub(crate) fn list_deliverable_index_impl() -> Vec<DeliverableItem> {
         if !meta.is_file() {
             continue;
         }
-        let stamp = (meta.modified().ok(), meta.len());
-        let cache = DV_VIEW_CACHE.get_or_init(|| Mutex::new(HashMap::new()));
-        let cached = {
-            let guard = cache
-                .lock()
-                .unwrap_or_else(|poisoned| poisoned.into_inner());
-            guard
-                .get(&file)
-                .filter(|(cached_stamp, _)| *cached_stamp == stamp)
-                .map(|(_, view)| view.clone())
-        };
-        let view = match cached {
+        let stamp = FileStamp::of(&meta);
+        let view = match DV_VIEW_CACHE.get(&file, stamp) {
             Some(view) => view,
             None => {
                 let Ok(raw) = std::fs::read_to_string(&file) else {
@@ -119,18 +105,7 @@ pub(crate) fn list_deliverable_index_impl() -> Vec<DeliverableItem> {
                 let Ok(view) = serde_json::from_str::<DvSessionView>(&raw) else {
                     continue;
                 };
-                let mut guard = cache
-                    .lock()
-                    .unwrap_or_else(|poisoned| poisoned.into_inner());
-                // When full, evict a single entry (rationale in
-                // DV_VIEW_CACHE_LIMIT); entries with mismatched signatures
-                // expire naturally via (mtime, len).
-                if guard.len() >= DV_VIEW_CACHE_LIMIT && !guard.contains_key(&file) {
-                    if let Some(evicted) = guard.keys().next().cloned() {
-                        guard.remove(&evicted);
-                    }
-                }
-                guard.insert(file.clone(), (stamp, view.clone()));
+                DV_VIEW_CACHE.insert(&file, stamp, view.clone());
                 view
             }
         };

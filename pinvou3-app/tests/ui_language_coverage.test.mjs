@@ -54,12 +54,25 @@ for (const language of ['zh', 'en', 'ja']) {
     'login', 'logout', 'loginWaiting', 'openLoginUrl', 'loginCodePlaceholder', 'submitCode', 'logoutRelayDisabled',
     'cancelInstall', 'installCancelled',
     'modelSlotsTitle', 'modelSlotsHint', 'modelSlotsRequired',
-    // 注意：ProviderFormModal 用 `copy[`slot_${slot}`]` 动态取键（CLAUDE_MODEL_SLOT_IDS），
-    // 静态扫描查不到消费方，此处断言是防误删的唯一钉子。
+    // Dynamically-built keys invisible to static scans; these assertions are
+    // the deletion guard for all three families:
+    // - `copy[`slot_${slot}`]` in ProviderFormModal (CLAUDE_MODEL_SLOT_IDS),
+    // - `copy[`agent${Cap(key)}`]` in ProvidersSection (agent registry keys),
     'slot_opus', 'slot_sonnet', 'slot_haiku', 'slot_fable', 'slot_subagent',
+    'agentClaude', 'agentCodex', 'agentKimi',
     'contextWindow', 'contextWindowHint', 'contextWindowInvalid',
   ]) {
     assert.ok(dict[language].uiAcpProviders[key], `${language}.uiAcpProviders.${key} must exist`);
+  }
+  // - `t[`dep_${dep.key}`]` / `t[`depHint_${dep.hint}`]` in SettingsView, with
+  //   the key values supplied at runtime by the Rust `checkDependencies`
+  //   probes (top-level dict entries).
+  for (const key of [
+    'dep_pdf', 'dep_office_modern', 'dep_office_legacy', 'dep_ocr', 'dep_archive',
+    'dep_email', 'dep_voice_asr', 'dep_voice_asr_model', 'dep_knowledge_embedding_model',
+    'depHint_email_manual',
+  ]) {
+    assert.ok(dict[language][key], `${language}.${key} must exist`);
   }
   assert.ok(dict[language].uiScheduled.createFromTemplate, `${language}.uiScheduled.createFromTemplate must exist`);
   assert.ok(dict[language].uiScheduled.runHistory, `${language}.uiScheduled.runHistory must exist`);

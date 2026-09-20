@@ -1,15 +1,5 @@
 // 用户消息的展示文本由 bridge 统一拼装为 `正文\n\n📎 <JSON 文件名数组>`。
 // JSON 数组能无损表达合法文件名中的分隔符与空格；旧版 `name · name` 记录仍兼容。
-export function formatAttachmentDisplayText(text, attachmentNames = []) {
-  const body = String(text == null ? '' : text);
-  const names = attachmentNames
-    .map(name => String(name == null ? '' : name))
-    .filter(Boolean);
-  if (!names.length) return body;
-  const attachmentLine = `📎 ${JSON.stringify(names)}`;
-  return body.trim() ? `${body}\n\n${attachmentLine}` : attachmentLine;
-}
-
 export function splitAttachmentLine(text) {
   const raw = String(text == null ? '' : text);
   if (raw.startsWith('📎 ') && !raw.includes('\n')) {

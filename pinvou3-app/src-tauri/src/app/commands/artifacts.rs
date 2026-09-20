@@ -883,14 +883,12 @@ pub(super) fn resolve_artifact_path(
     match sid {
         Some(sid) => store
             .ledger_root(&sid)
-            .map(|workspace| resolve_artifact_path_in_workspace(raw, &workspace))
+            .map(|workspace| {
+                crate::platform::path_policy::resolve_artifact_path_in_workspace(raw, &workspace)
+            })
             .map_err(|error| format!("resolve ledger root for {sid}: {error:#}")),
         None => Ok(raw.to_string()),
     }
-}
-
-pub(crate) fn resolve_artifact_path_in_workspace(raw: &str, workspace: &std::path::Path) -> String {
-    crate::platform::path_policy::resolve_artifact_path_in_workspace(raw, workspace)
 }
 
 /// 用系统默认应用打开文件；

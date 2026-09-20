@@ -5,21 +5,28 @@ const path = require('path');
 const vm = require('vm');
 
 const logicPath = path.join(__dirname, '..', 'src', 'features', 'chat', 'personal-workbench-scene.js');
-const code = fs.readFileSync(logicPath, 'utf8')
+// scene-registry.js owns the canonical scene keys; concatenate it (imports
+// stripped) so the sandbox resolves the same bindings the bundler provides.
+const sceneRegistryPath = path.join(__dirname, '..', 'src', 'features', 'chat', 'scene-registry.js');
+const sceneRegistryCode = fs.readFileSync(sceneRegistryPath, 'utf8')
+  .replace(/\bexport\s+\{[^}]+\};?/g, '')
+  .replace(/\bexport\s+/g, '');
+const stripSceneRegistryImport = (code) => code
+  .replace(/^import[\s\S]*?from '\.\/scene-registry\.js';\r?\n/m, '');
+const code = stripSceneRegistryImport(fs.readFileSync(logicPath, 'utf8'))
   .replace(/\bexport\s+\{[^}]+\};?/g, '')
   .replace(/\bexport\s+/g, '');
 const visualPosterPath = path.join(__dirname, '..', 'src', 'features', 'chat', 'visual-poster-scene.js');
-const visualPosterCode = fs.readFileSync(visualPosterPath, 'utf8')
+const visualPosterCode = stripSceneRegistryImport(fs.readFileSync(visualPosterPath, 'utf8'))
   .replace(/\bexport\s+\{[^}]+\};?/g, '')
   .replace(/\bexport\s+/g, '');
 
 const ctx = {};
 vm.createContext(ctx);
-vm.runInContext(`${code}
+vm.runInContext(`${sceneRegistryCode}
+${code}
 ${visualPosterCode}
-this.PERSONAL_WORKBENCH_SCENE_ID = PERSONAL_WORKBENCH_SCENE_ID;
 this.PERSONAL_WORKBENCH_SCENE_KEY = PERSONAL_WORKBENCH_SCENE_KEY;
-this.PERSONAL_WORKBENCH_SCENE_NAME = PERSONAL_WORKBENCH_SCENE_NAME;
 this.PERSONAL_WORKBENCH_TEMPLATES = PERSONAL_WORKBENCH_TEMPLATES;
 this.DEFAULT_PERSONAL_WORKBENCH_PROMPT = DEFAULT_PERSONAL_WORKBENCH_PROMPT;
 this.buildDefaultPersonalWorkbenchPayloadText = buildDefaultPersonalWorkbenchPayloadText;
@@ -34,9 +41,7 @@ this.shouldUseVisualPosterScene = shouldUseVisualPosterScene;`, ctx, {
 });
 
 const {
-  PERSONAL_WORKBENCH_SCENE_ID,
   PERSONAL_WORKBENCH_SCENE_KEY,
-  PERSONAL_WORKBENCH_SCENE_NAME,
   PERSONAL_WORKBENCH_TEMPLATES,
   DEFAULT_PERSONAL_WORKBENCH_PROMPT,
   buildDefaultPersonalWorkbenchPayloadText,
@@ -49,9 +54,7 @@ const {
   shouldUseVisualPosterScene,
 } = ctx;
 
-assert.strictEqual(PERSONAL_WORKBENCH_SCENE_ID, 39);
 assert.strictEqual(PERSONAL_WORKBENCH_SCENE_KEY, 'personal-workbench');
-assert.strictEqual(PERSONAL_WORKBENCH_SCENE_NAME, '个人工作台');
 assert.deepStrictEqual(Array.from(PERSONAL_WORKBENCH_TEMPLATES, item => item.title), [
   '生活记录',
   '个人账本',

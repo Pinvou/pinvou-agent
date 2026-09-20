@@ -7,7 +7,13 @@
   "use strict";
   // biome-ignore lint/suspicious/noAssignInExpressions: registry bootstrap of the verbatim payload; splitting statements would diverge from the artifact
   const registry = root.__PINVOU_TAURI_BRIDGE_FEATURES__ = root.__PINVOU_TAURI_BRIDGE_FEATURES__ || {};
-  registry["knowledge-model"] = function (context) {
+  registry["knowledge-model"] = function (context) {let pinvouSharedtauriKnowledgeModelCache = null;
+function pinvouSharedtauriKnowledgeModel() {
+  if (!pinvouSharedtauriKnowledgeModelCache) pinvouSharedtauriKnowledgeModelCache = window.PinvouBridgeShared.create("tauriKnowledgeModel", { state, notify, invoke });
+  return pinvouSharedtauriKnowledgeModelCache;
+}
+
+
     const state = context.state;
     const notify = context.notify;
     const invoke = context.invoke;
@@ -28,41 +34,10 @@
   });
   // 知识库 embedding 模型按需下载（下载 → 校验 → 解压部署 → 热加载），进度走
   // kb_model:progress 事件。repair=true 时重新下载并验证候选模型，成功后原子替换旧目录。
-  async function downloadKbModel(repair) {
-    if (state.kbModelSetup.downloading) return state.kbModelSetup.status;
-    state.kbModelSetup = Object.assign({}, state.kbModelSetup, { downloading: true, error: null, progress: { stage: "start" } });
-    notify();
-    try {
-      const st = await invoke("kb_model_download", { repair: !!repair });
-      state.kbModelSetup = Object.assign({}, state.kbModelSetup, {
-        downloading: false,
-        startupLoading: false,
-        startupReady: st && typeof st.ready === "boolean" ? st.ready : true,
-        status: st,
-        progress: { stage: "done" },
-      });
-      notify();
-      return st;
-    } catch (e) {
-      const failedStatus = await invoke("kb_model_status").catch(function () { return null; });
-      state.kbModelSetup = Object.assign({}, state.kbModelSetup, {
-        downloading: false,
-        startupLoading: false,
-        startupReady: failedStatus && typeof failedStatus.ready === "boolean" ? failedStatus.ready : false,
-        status: failedStatus || state.kbModelSetup.status,
-        error: String(e),
-      });
-      notify();
-      throw e;
-    }
-  }
+async function downloadKbModel(repair) { return pinvouSharedtauriKnowledgeModel().downloadKbModel(repair); }
 
-  function cancelKbModel() {
-    invoke("kb_model_cancel").catch(function () {});
-  }
     return {
-      downloadKbModel,
-      cancelKbModel
+      downloadKbModel
     };
   };
 })(window);

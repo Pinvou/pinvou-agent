@@ -154,13 +154,30 @@ fn record_matches_session(
         || (allow_legacy_unscoped && record.session_id.is_none())
 }
 
+/// Shared shape check for opaque Web Access identifiers: optional required
+/// prefix, inclusive length bounds, and an ASCII alphanumeric plus `-`/`_`
+/// charset. Length bounds are deliberately per call site; do not unify them.
+pub(crate) fn validate_opaque_token(
+    token: &str,
+    min_len: usize,
+    max_len: usize,
+    prefix: Option<&str>,
+) -> bool {
+    if token.len() < min_len || token.len() > max_len {
+        return false;
+    }
+    if let Some(prefix) = prefix {
+        if !token.starts_with(prefix) {
+            return false;
+        }
+    }
+    token
+        .bytes()
+        .all(|byte| byte.is_ascii_alphanumeric() || matches!(byte, b'-' | b'_'))
+}
+
 fn validate_upload_id(upload_id: &str) -> Result<&str, String> {
-    if upload_id.len() < 8
-        || upload_id.len() > 128
-        || !upload_id
-            .bytes()
-            .all(|byte| byte.is_ascii_alphanumeric() || matches!(byte, b'-' | b'_'))
-    {
+    if !validate_opaque_token(upload_id, 8, 128, None) {
         return Err("附件上传 ID 无效".into());
     }
     Ok(upload_id)

@@ -8,6 +8,10 @@ const bridgePath = path.join(__dirname, "..", "src", "platform", "tauri", "bridg
 const source = fs.readFileSync(bridgePath, "utf8");
 const rustVoicePath = path.join(__dirname, "..", "src-tauri", "src", "app", "commands", "voice.rs");
 const rustVoiceSource = fs.readFileSync(rustVoicePath, "utf8");
+const dialectSource = fs.readFileSync(path.join(__dirname, "..", "src-tauri", "src", "core", "reasoning_dialect.rs"), "utf8");
+// reasoning dialect 写 body 的 match 已收敛到 core/reasoning_dialect.rs（去重）；
+// voice.rs 保留构造入口。契约跨两个文件断言。
+const voiceReasoningSource = rustVoiceSource + dialectSource;
 const rustVoiceTempWavPath = path.join(__dirname, "..", "src-tauri", "src", "features", "voice", "temp_wav.rs");
 const rustVoiceTempWavSource = fs.readFileSync(rustVoiceTempWavPath, "utf8");
 const chatPath = path.join(__dirname, "..", "src", "features", "chat", "ChatView.jsx");
@@ -24,7 +28,10 @@ const voiceHookPath = path.join(__dirname, "..", "src", "features", "voice-compo
 const voiceHookSource = fs.readFileSync(voiceHookPath, "utf8");
 const settingsPath = path.join(__dirname, "..", "src", "features", "settings", "SettingsView.jsx");
 const settingsSource = fs.readFileSync(settingsPath, "utf8");
-const webBridgeSource = fs.readFileSync(path.join(__dirname, "..", "src", "platform", "web", "bridge.js"), "utf8");
+// startVoiceInput/cancelVoiceInput 的 web 实现已随 dead-code dedup 移入共享 payload；
+// 相关结构 pin 的 haystack 需要 payload 一并纳入。
+const webBridgeSource = fs.readFileSync(path.join(__dirname, "..", "src", "platform", "web", "bridge.js"), "utf8") +
+  fs.readFileSync(path.join(__dirname, "..", "src", "shared", "bridge-shared-helpers.js"), "utf8");
 const rustShortcutPlatformPath = path.join(__dirname, "..", "src-tauri", "src", "features", "voice_shortcut", "platform", "mod.rs");
 const rustShortcutPlatformSource = fs.existsSync(rustShortcutPlatformPath) ? fs.readFileSync(rustShortcutPlatformPath, "utf8") : "";
 // voice.js copy comes from bridge.js's BT_TABLE (bt(key): per-language lookup
@@ -203,13 +210,13 @@ assert.doesNotMatch(
   "structured must not remain a standalone voice postprocess chain",
 );
 assert.match(
-  rustVoiceSource,
-  /VoiceReasoningDialect::ThinkingDisabled[\s\S]*body\["thinking"\] = json!\(\{ "type": "disabled" \}\)/,
+  voiceReasoningSource,
+  /ReasoningDialect::ThinkingDisabled[\s\S]*body\["thinking"\] = json!\(\{ "type": "disabled" \}\)/,
   "voice postprocess must disable thinking for DeepSeek-style providers",
 );
 assert.match(
-  rustVoiceSource,
-  /VoiceReasoningDialect::QwenEnableThinking[\s\S]*body\["enable_thinking"\] = json!\(false\)/,
+  voiceReasoningSource,
+  /ReasoningDialect::QwenEnableThinking[\s\S]*body\["enable_thinking"\] = json!\(false\)/,
   "voice postprocess must disable Qwen thinking with enable_thinking=false",
 );
 assert.match(
@@ -656,7 +663,9 @@ assert.strictEqual(deviceTimeout.category, "device_unavailable");
 assert.match(deviceTimeout.message, /检测超时/);
 
 const mediaStart = source.indexOf("  function stopMediaTracks(");
-const mediaEnd = source.indexOf("\n  function mergeFloatChunks(", mediaStart);
+// mergeFloatChunks 已随 dedup 移入共享 payload：lane 侧只剩无缩进的转发函数。
+let mediaEnd = source.indexOf("\n  function mergeFloatChunks(", mediaStart);
+if (mediaEnd === -1) mediaEnd = source.indexOf("\nfunction mergeFloatChunks(", mediaStart);
 assert.notStrictEqual(mediaStart, -1, "voice media helpers must exist");
 assert.notStrictEqual(mediaEnd, -1, "voice media helper boundary must exist");
 
@@ -673,8 +682,26 @@ const mediaContext = {
   clearTimeout,
 };
 vm.createContext(mediaContext);
+// requestVoiceMedia 已随 dedup 移入共享 payload：lane 侧该位置只剩转发函数。
+// 在切片末尾追加 payload 里的真实实现（同名声明后者覆盖前者），行为契约不变。
+function extractBalancedFunction(src0, name) {
+  const start0 = src0.indexOf(`function ${name}(`);
+  if (start0 === -1) throw new Error(`function ${name} not found`);
+  const braceStart = src0.indexOf("{", start0);
+  let depth = 0;
+  for (let i = braceStart; i < src0.length; i++) {
+    if (src0[i] === "{") depth++;
+    else if (src0[i] === "}") { depth--; if (depth === 0) return src0.slice(start0, i + 1); }
+  }
+  throw new Error(`function ${name} 花括号未闭合`);
+}
+const helpersVoiceSrc = fs.readFileSync(path.join(__dirname, "..", "src", "shared", "bridge-shared-helpers.js"), "utf8");
+const voiceClusterSrc = helpersVoiceSrc.slice(
+  helpersVoiceSrc.indexOf('function sharedBridgeBase(deps)'),
+  helpersVoiceSrc.indexOf('"tauriMain"'),
+);
 vm.runInContext(
-  `${source.slice(mediaStart, mediaEnd)}\nthis.probeVoiceAudioInput = probeVoiceAudioInput; this.requestVoiceMedia = requestVoiceMedia;`,
+  `${source.slice(mediaStart, mediaEnd)}\n${extractBalancedFunction(voiceClusterSrc, "voiceFlowError")}\n${extractBalancedFunction(voiceClusterSrc, "requestVoiceMedia")}\nthis.probeVoiceAudioInput = probeVoiceAudioInput; this.requestVoiceMedia = requestVoiceMedia;`,
   mediaContext,
   { filename: bridgePath },
 );

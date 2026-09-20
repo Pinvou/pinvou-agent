@@ -37,6 +37,7 @@ const read = (...parts) => fs.readFileSync(path.join(here, '..', ...parts), 'utf
 const source = read('src', 'platform', 'tauri', 'bridge', 'multiagent.js');
 const panelSource = read('src', 'features', 'multiagent', 'SubagentTranscriptPanel.jsx');
 const toolRenderersSource = read('src', 'features', 'tools', 'tool-renderers.jsx');
+const subagentPanelEventSource = read('src', 'features', 'multiagent', 'subagent-panel-event.mjs');
 const timelineSource = read('src', 'features', 'conversation', 'ConversationTimeline.jsx');
 const chatViewSource = read('src', 'features', 'chat', 'ChatView.jsx');
 const commandSource = read('src-tauri', 'src', 'app', 'commands', 'multiagent.rs');
@@ -152,8 +153,15 @@ test('多智能体能力门禁与会话策略契约（multiagent_desktop_scope �
   );
   assert.match(settings, /multiAgentEnabled:\s*multiAgentEnabledProp/);
   assert.match(settings, /if \(onToggleMultiAgent\) await onToggleMultiAgent\(!multiAgentOn\)/);
+  // The swarm count row delegates to the shared event contract
+  // (subagent-panel-event.mjs); the payload shape and host/agentId guards are
+  // pinned on that module.
   assert.match(
     toolRenderersSource,
+    /dispatchOpenSubagent\(null, sessionId\)/,
+  );
+  assert.match(
+    subagentPanelEventSource,
     /detail: \{ agentId, sessionId: sessionId \|\| null \}/,
   );
   // Pin the guard's code shape, not the adjacent comment wording: the intent
@@ -161,14 +169,14 @@ test('多智能体能力门禁与会话策略契约（multiagent_desktop_scope �
   // passes (it opens the panel's list state for the swarm count row) while
   // undefined does not.
   assert.match(
-    toolRenderersSource,
-    /if \(typeof window === 'undefined'\) return;\s*(?:\/\/[^\n]*\n\s*)*if \(!agentId && agentId !== null\) return;/,
+    subagentPanelEventSource,
+    /if \(typeof window === 'undefined'(?: \|\| typeof window\.dispatchEvent !== 'function')?\) return;\s*(?:\/\/[^\n]*\n\s*)*if \(!agentId && agentId !== null\) return;/,
     'the subagent panel poll must guard on both the host and agentId; agentId=null is allowed to open the panel list state (the swarm count row entry point)',
   );
 });
 test('空白新对话切换多智能体后立即通知界面，且不提前物化会话', async () => {
   const root = {};
-  vm.runInNewContext(interactionBridgeSource, { window: root, globalThis: root });
+  vm.runInNewContext(read('src', 'shared', 'bridge-shared-helpers.js') + '\n' + interactionBridgeSource, { window: root, globalThis: root });
   const factory = root.__PINVOU_TAURI_BRIDGE_FEATURES__.interaction;
   const state = {
     activeSessionId: null,
@@ -1476,7 +1484,7 @@ test('详情清单未解析或终态无 transcript 时不发起读取', async ()
 // 顺序——epoch 校验必须在场（审计 P1）。
 function loadInteractionRuntime() {
   const root = {};
-  vm.runInNewContext(interactionBridgeSource, { window: root, globalThis: root });
+  vm.runInNewContext(read('src', 'shared', 'bridge-shared-helpers.js') + '\n' + interactionBridgeSource, { window: root, globalThis: root });
   const factory = root.__PINVOU_TAURI_BRIDGE_FEATURES__.interaction;
   const state = {
     activeSessionId: 'chat-a',

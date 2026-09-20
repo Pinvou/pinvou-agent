@@ -173,27 +173,41 @@ pub fn user_home_dir() -> PathBuf {
 }
 
 pub fn validate_upload_location(canon: &Path) -> Result<(), String> {
-    let home_raw = user_home_dir();
-    let home = platform_compat_path(
-        &std::fs::canonicalize(&home_raw)
-            .unwrap_or_else(|_| home_raw.clone())
-            .to_string_lossy(),
-    );
-    if !canon.starts_with(&home) {
-        return Err(format!("path {} not under $HOME", canon.display()));
+    #[cfg(unix)]
+    {
+        super::posix::validate_upload_location_under_home(&user_home_dir(), canon)
     }
-    Ok(())
+    #[cfg(not(unix))]
+    {
+        let home_raw = user_home_dir();
+        let home = platform_compat_path(
+            &std::fs::canonicalize(&home_raw)
+                .unwrap_or_else(|_| home_raw.clone())
+                .to_string_lossy(),
+        );
+        if !canon.starts_with(&home) {
+            return Err(format!("path {} not under $HOME", canon.display()));
+        }
+        Ok(())
+    }
 }
 
 // Unix 通用 helper 从 posix.rs 继承（Wave 3 去重，与 linux_path.rs 一致）。
 // `posix` 模块仅在 `#[cfg(unix)]` 编译，故这里必须守卫：macOS（unix）走
 // re-export；其余非 unix 兜底平台走本地等价实现，避免 E0432 未解析模块。
+// `path_component_eq` / `python_command` 在 macOS 由 mod.rs 经本模块 glob
+// 消费（未被显式 re-export 遮蔽），转发计为已用。
 #[cfg(unix)]
-pub use super::posix::{path_component_eq, platform_compat_path, python_command};
+pub use super::posix::{path_component_eq, python_command};
 
-// macOS 由 macos_path 提供自有实现（APFS 注释在案），经 glob 消费时被显式
-// re-export 遮蔽，这里的转发在其编译面上不可达；仅当 unsupported 自身作为
+// macOS 经 macos_path 直接 re-export posix 实现（经 mod.rs 显式 re-export 遮蔽
+// 本转发，unused_imports=deny 会拦），且 validate_upload_location 的 unix 臂现
+// 直调 posix helper、不再于本模块内消费该名字；仅当 unsupported 自身作为
 // platform（linux/windows/macos 之外的 unix 兜底目标）时才需要从 posix 继承。
+#[cfg(all(unix, not(target_os = "macos")))]
+pub use super::posix::platform_compat_path;
+
+// 同上：macOS 由 macos_path re-export posix 实现遮蔽，本转发仅服务兜底目标。
 #[cfg(all(unix, not(target_os = "macos")))]
 pub use super::posix::filesystem_path_identity_key;
 
@@ -228,42 +242,20 @@ pub fn connector_cli_command(_cli_bin: &str, program: &str) -> Command {
 
 pub fn apply_user_npm_prefix(_cmd: &mut Command) {}
 
-/// 退出收割用的树杀(macOS 走此实现)。连接器 CLI 是 npm shim(shell→node),
-/// spawn 侧已 `process_group(0)` 成组,这里按负 pid 杀整组;单杀 shim pid 会把
-/// node 孙进程孤儿化。组杀失败(进程未成组的旧登记)追加单 pid 兜底。
-///
-/// **严禁**委托外部 `/usr/bin/kill` 执行组杀,后续模块开发一律直调系统调用,
-/// 并由 `scripts/architecture-guard.py` 强制检查:外部工具的参数解析可能把
-/// 合法负 pid 错路由成 kill(-1)(procps-ng 4.0.4 在 Linux 上即如此,曾杀光
-/// 整个桌面会话);kill(2) 语义与其完全一致且不经过任何解析器。非 unix 目标
-/// 无 POSIX 进程组语义,合约分支遵循本文件「未支持能力」约定显式不做任何事,
-/// 全文件保持受 guard 检查,不得再引入外部 kill 调用形态。
-///
-/// `pid <= 1` 或无法以正数收入 `i32` 的 pid 一律拒绝:kill(2) 对 0 与 -1 有
-/// 特殊语义(0 = 调用方所在整组,-1 = 当前用户全部进程),边界在本函数自检,
-/// 不依赖调用方审计。
+/// Unix 实现收口于 `posix::kill_pid_tree`（组杀语义与 kill(-1) 事故警告见其
+/// 文档）；macOS 经本模块 glob 继承这里的 re-export。非 unix 目标无 POSIX
+/// 进程组语义，合约分支遵循本文件「未支持能力」约定显式不做任何事，并保持
+/// 受 `scripts/architecture-guard.py` 检查，不得引入外部 kill 调用形态。
+#[cfg(unix)]
+pub use super::posix::kill_pid_tree;
+
+#[cfg(not(unix))]
 pub fn kill_pid_tree(pid: u32) {
-    #[cfg(unix)]
-    {
-        let Some(group) = i32::try_from(pid).ok().filter(|group| *group > 1) else {
-            return;
-        };
-        // SAFETY: libc::kill is a direct kill(2) wrapper; no memory is touched.
-        let group_ok = unsafe { libc::kill(-group, libc::SIGKILL) } == 0;
-        if !group_ok {
-            // SAFETY: libc::kill is a direct kill(2) wrapper; no memory is touched.
-            let _ = unsafe { libc::kill(group, libc::SIGKILL) };
-        }
-        return;
-    }
-    #[cfg(not(unix))]
-    {
-        // Non-unix targets have no POSIX process-group semantics; per this
-        // file's unsupported-capability contract the branch does nothing
-        // instead of delegating to an external tool. It stays under the
-        // architecture guard, so an external kill must never return here.
-        let _ = pid;
-    }
+    // Non-unix targets have no POSIX process-group semantics; per this
+    // file's unsupported-capability contract the branch does nothing
+    // instead of delegating to an external tool. It stays under the
+    // architecture guard, so an external kill must never return here.
+    let _ = pid;
 }
 
 pub fn super_permission_is_enabled() -> bool {

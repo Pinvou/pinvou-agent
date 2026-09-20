@@ -207,8 +207,8 @@ bridge 的 chat 状态机绑定单一 activeSession，代码页与主聊天并�
 > **修订注记（2026-08-22）**：本节与 §8.6 描述的双文件（`disabled_connectors.json` /
 > `disabled_skills.json`）形态已被 #287/#302 的能力包统一模型取代——现行实现为单一
 > `~/.pinvou3/disabled_bundles.json`（`features/marketplace/scope.rs`：包 id × 模式
-> 禁用集 + `hidden_scopes` 可见性轴，读到旧双文件即迁移不删；`skill_scope.rs` 为纯
-> re-export 兼容别名层）。开关粒度从"连接器 id"变为"包 id"（含技能/CLI）。
+> 禁用集 + `hidden_scopes` 可见性轴，读到旧双文件即迁移不删；曾有的 `skill_scope.rs`
+> re-export 别名层已删除，调用方直接使用 `scope` 模块）。开关粒度从"连接器 id"变为"包 id"（含技能/CLI）。
 > 本节其余机制（DenyAll 安全默认、初始化语义、组合目录联动）仍准确；现行完整
 > 形态以 `docs/capability-governance.md` 为准。下文保留双文件描述作历史语义参考。
 

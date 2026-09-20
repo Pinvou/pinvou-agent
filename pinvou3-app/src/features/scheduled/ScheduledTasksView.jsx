@@ -196,7 +196,9 @@ import memoryOrganizeImage from '../../assets/scheduled/memory-organize.jpg';
 
     const ScheduledSelect = ({
       value, options, onChange, testId, ariaLabel, theme, minWidth = 180,
-      multiple = false, minSelected = 0, onClose, emptyLabel = '—', separator = '、',
+      // minSelected/emptyLabel/separator 不设默认值：仅 multiple 分支消费 separator，
+      // 而现有调用点（重复/间隔/星期/模型）全部显式传入所需项；缺省即「无最少保留数」。
+      multiple = false, minSelected, onClose, emptyLabel, separator,
       footerAction, alwaysCommit = false,
     }) => {
       const [open, setOpen] = useState(false);
@@ -212,6 +214,8 @@ import memoryOrganizeImage from '../../assets/scheduled/memory-organize.jpg';
         ? (options || []).filter(option => selectedValues.includes(option.value))
           .map(option => option.shortLabel || option.label).join(separator)
         : (selected ? selected.label : emptyLabel);
+      // DOM 契约：scheduled smoke 直接读触发按钮的 .value（HTMLButtonElement 反射
+      // value 属性），不能省略。
       const serializedValue = multiple ? selectedValues.join(',') : (value || '');
       const closeMenu = () => {
         setOpen(false);
@@ -451,14 +455,16 @@ import memoryOrganizeImage from '../../assets/scheduled/memory-organize.jpg';
     const dialogOverlayClass = 'fixed inset-0 z-[200] flex items-center justify-center bg-black/45 px-4 py-6 backdrop-blur-[6px]';
     const dialogBodyClass = 'min-h-0 flex-1 space-y-5 overflow-y-auto px-6 pb-5 custom-scrollbar';
     const dialogPanelClass = (maxWidth) => `mx-4 flex max-h-[calc(100vh-48px)] w-full ${maxWidth} flex-col overflow-hidden rounded-[28px] shadow-[0_18px_60px_rgba(0,0,0,0.22)] bg-white dark:bg-[#1C1C1E]`;
-    const dialogFooterSurface = (separator) => `border-t px-6 py-4 ${separator} bg-white/95 dark:bg-[#1C1C1E]/95 backdrop-blur-xl`;
-    /** @param {{ task: ScheduledTask, toggleTask: (event: { stopPropagation(): void }, task: ScheduledTask) => Promise<void>, busyAction?: string | null, scheduledCopy: ScheduledCopy }} props - Task switch state and actions. */
-    const MacSwitch = ({ task, toggleTask, busyAction, scheduledCopy }) => {
+    // 两个对话框页脚共用同一分隔线样式（与组件内 iosSeparator 常量同值）：常量串，
+    // 不再留 separator 参数（历史调用恒传同一个 iosSeparator）。
+    const dialogFooterSurface = 'border-t px-6 py-4 border-[#3C3C43]/20 dark:border-[#545458]/50 bg-white/95 dark:bg-[#1C1C1E]/95 backdrop-blur-xl';
+    /** @param {{ task: ScheduledTask, onToggle: (task: ScheduledTask) => Promise<void>, busyAction?: string | null, scheduledCopy: ScheduledCopy }} props - Task switch state and actions. The switch itself stops row-click propagation and forwards only the task. */
+    const MacSwitch = ({ task, onToggle, busyAction, scheduledCopy }) => {
       const checked = task.status === 'active';
       return (
         <button
           type="button"
-          onClick={(event) => toggleTask(event, task)}
+          onClick={(event) => { event.stopPropagation(); onToggle(task); }}
           disabled={!!busyAction}
           aria-pressed={checked}
           aria-label={checked ? scheduledCopy.pause(task.name) : scheduledCopy.resume(task.name)}
@@ -494,47 +500,8 @@ import memoryOrganizeImage from '../../assets/scheduled/memory-organize.jpg';
         ))}
       </div>
     );
-    // Factory: binds the shared state and render callbacks needed by the "My Tasks" list and returns a
-    // render function whose only remaining argument is className. Call sites invoke it as a plain
-    // function (not a JSX element), so no component type or remount semantics are involved.
-    /**
-     * @param {{
-     *   scheduledCopy: ScheduledCopy, taskFilter: string, setTaskFilter: (value: string) => void, error?: string,
-     *   filtered: ScheduledTask[], loading?: boolean,
-     *   renderTaskRow: (task: ScheduledTask, index: number, list: ScheduledTask[]) => import('react').ReactNode,
-     * }} shared - Task list section state and row renderer.
-     */
-    const makeMyTasksSection = ({ scheduledCopy, taskFilter, setTaskFilter, error, filtered, loading, renderTaskRow }) => {
-      const MyTasksSection = ({ className = '' } = {}) => (
-        <section className={className || 'mb-5'}>
-          <div className="mb-4 ml-1 flex items-center justify-between gap-4">
-            <h2 className={`text-[13px] font-bold uppercase tracking-wider ${mutedValue}`}>{scheduledCopy.myTasks}</h2>
-            <FilterTabs scheduledCopy={scheduledCopy} taskFilter={taskFilter} setTaskFilter={setTaskFilter} />
-          </div>
-          <div className={`overflow-hidden rounded-[20px] border shadow-[0_2px_10px_rgba(0,0,0,0.02),0_8px_32px_rgba(0,0,0,0.04)] border-black/5 bg-white dark:border-white/15 dark:bg-[#1C1C1E]`}>
-            {error && (
-              <div role="alert" data-testid="scheduled-error" className={`m-3 flex items-start gap-2 rounded-[12px] px-3 py-2 text-[13px] bg-[#FCE8E6] text-[#A50E0E] dark:bg-[#3A2424] dark:text-[#F2B8B5]`}>
-                <span className="min-w-0 flex-1">{error}</span>
-                <button type="button" onClick={() => bridge?.dismissScheduledTaskError?.()}
-                  aria-label={scheduledCopy.closeError} className="mt-[-2px] rounded-full p-1 opacity-65 transition-opacity hover:opacity-100">
-                  <X className="h-3.5 w-3.5" />
-                </button>
-              </div>
-            )}
-            {filtered.length ? (
-              <div data-testid="scheduled-task-groups">
-                {filtered.map((task, index) => renderTaskRow(task, index, filtered))}
-              </div>
-            ) : (
-              <div className={`px-4 py-8 text-center text-[14px] ${mutedValue}`}>
-                {loading ? scheduledCopy.loading : scheduledCopy.empty}
-              </div>
-            )}
-          </div>
-        </section>
-      );
-      return MyTasksSection;
-    };
+    // ScheduledTasksView 内的 MyTasksSection 分区（见组件内定义）直接闭包共享状态；
+    // 原模块级 makeMyTasksSection 工厂只有一个调用点，已内联为普通渲染函数。
 
     const ScheduledTasksView = ({ theme, t, onOpenChat, onGotoModelSettings }) => {
       // The settings slice is required here: the memory-organize template card
@@ -978,11 +945,6 @@ import memoryOrganizeImage from '../../assets/scheduled/memory-organize.jpg';
         } catch { /* silent: bridge failures are already surfaced at the UI layer */ }
       }
 
-      async function toggleTask(e, task) {
-        if (e) e.stopPropagation();
-        return toggleTaskPaused(task);
-      }
-
       async function startChatCreation() {
         if (!bridge || !bridge.scheduled.startScheduledTaskChat) {
           if (onOpenChat) onOpenChat();
@@ -1334,7 +1296,7 @@ import memoryOrganizeImage from '../../assets/scheduled/memory-organize.jpg';
 
             </div>
 
-            <div className={`flex shrink-0 justify-end gap-3 ${dialogFooterSurface(iosSeparator)}`}>
+            <div className={`flex shrink-0 justify-end gap-3 ${dialogFooterSurface}`}>
               <button type="submit" data-testid="scheduled-create-submit"
                 disabled={!!busyAction || !String(createForm.name || '').trim() || !String(createForm.prompt || '').trim()}
                 className="h-11 rounded-full bg-[#007AFF] px-6 text-[15px] font-medium text-white shadow-sm transition-colors hover:bg-[#0066D6] disabled:opacity-40">
@@ -1395,9 +1357,9 @@ import memoryOrganizeImage from '../../assets/scheduled/memory-organize.jpg';
       /**
        * @param {ScheduledTask} task - Scheduled task.
        * @param {number} index - Row index.
-       * @param {ScheduledTask[]} [list] - Task list used for the last-row separator.
+       * @param {ScheduledTask[]} list - Task list used for the last-row separator.
        */
-      const renderTaskRow = (task, index, list = filtered) => {
+      const renderTaskRow = (task, index, list) => {
         const { Icon, className } = taskIconMeta(task);
         return (
           <div key={task.id} className="task-item" data-status={task.status === 'active' ? 'active' : 'paused'}>
@@ -1433,7 +1395,7 @@ import memoryOrganizeImage from '../../assets/scheduled/memory-organize.jpg';
                 </span>
               </button>
               <div className="flex shrink-0 items-center gap-2 pr-2">
-                <MacSwitch task={task} toggleTask={toggleTask} busyAction={busyAction} scheduledCopy={scheduledCopy} />
+                <MacSwitch task={task} onToggle={toggleTaskPaused} busyAction={busyAction} scheduledCopy={scheduledCopy} />
               </div>
             </div>
             {index !== list.length - 1 && (
@@ -1443,10 +1405,38 @@ import memoryOrganizeImage from '../../assets/scheduled/memory-organize.jpg';
         );
       };
 
-      // After binding shared state, call sites only pass className (invoked as a plain function here;
-      // do not switch to JSX usage — the factory runs during rendering, and JSX usage would create a
-      // new component type on every render and remount the subtree).
-      const MyTasksSection = makeMyTasksSection({ scheduledCopy, taskFilter, setTaskFilter, error, filtered, loading, renderTaskRow });
+      // My Tasks 分区（原 makeMyTasksSection 工厂内联为普通渲染函数）：闭包共享本视图的
+      // 过滤/加载状态；按普通函数调用而非 JSX 元素——每次渲染新建组件类型会导致子树重挂载。
+      // 唯一调用点固定传 'mb-0'，className 缺省即该值。
+      // eslint-disable-next-line @eslint-react/no-nested-component-definitions -- plain render function, never used as a JSX element (call site is MyTasksSection({ className: 'mb-0' })); the props-like signature only exists because that call form is pinned by tests
+      const MyTasksSection = ({ className = 'mb-0' } = {}) => (
+        <section className={className}>
+          <div className="mb-4 ml-1 flex items-center justify-between gap-4">
+            <h2 className={`text-[13px] font-bold uppercase tracking-wider ${mutedValue}`}>{scheduledCopy.myTasks}</h2>
+            <FilterTabs scheduledCopy={scheduledCopy} taskFilter={taskFilter} setTaskFilter={setTaskFilter} />
+          </div>
+          <div className={`overflow-hidden rounded-[20px] border shadow-[0_2px_10px_rgba(0,0,0,0.02),0_8px_32px_rgba(0,0,0,0.04)] border-black/5 bg-white dark:border-white/15 dark:bg-[#1C1C1E]`}>
+            {error && (
+              <div role="alert" data-testid="scheduled-error" className={`m-3 flex items-start gap-2 rounded-[12px] px-3 py-2 text-[13px] bg-[#FCE8E6] text-[#A50E0E] dark:bg-[#3A2424] dark:text-[#F2B8B5]`}>
+                <span className="min-w-0 flex-1">{error}</span>
+                <button type="button" onClick={() => bridge?.dismissScheduledTaskError?.()}
+                  aria-label={scheduledCopy.closeError} className="mt-[-2px] rounded-full p-1 opacity-65 transition-opacity hover:opacity-100">
+                  <X className="h-3.5 w-3.5" />
+                </button>
+              </div>
+            )}
+            {filtered.length ? (
+              <div data-testid="scheduled-task-groups">
+                {filtered.map((task, index) => renderTaskRow(task, index, filtered))}
+              </div>
+            ) : (
+              <div className={`px-4 py-8 text-center text-[14px] ${mutedValue}`}>
+                {loading ? scheduledCopy.loading : scheduledCopy.empty}
+              </div>
+            )}
+          </div>
+        </section>
+      );
 
       const DetailTaskDialog = () => (selected && detailForm) ? renderModal(
         <div className={dialogOverlayClass}>
@@ -1538,7 +1528,7 @@ import memoryOrganizeImage from '../../assets/scheduled/memory-organize.jpg';
                 </div>
                 <div className="flex items-center justify-between gap-3">
                   <span className={mutedValue}>{scheduledCopy.enableTask}</span>
-                  <MacSwitch task={selected} toggleTask={toggleTask} busyAction={busyAction} scheduledCopy={scheduledCopy} />
+                  <MacSwitch task={selected} onToggle={toggleTaskPaused} busyAction={busyAction} scheduledCopy={scheduledCopy} />
                 </div>
               </div>
 
@@ -1606,7 +1596,7 @@ import memoryOrganizeImage from '../../assets/scheduled/memory-organize.jpg';
               </section>
             </div>
 
-            <div className={`flex shrink-0 flex-wrap items-center justify-between gap-3 ${dialogFooterSurface(iosSeparator)}`}>
+            <div className={`flex shrink-0 flex-wrap items-center justify-between gap-3 ${dialogFooterSurface}`}>
               <button type="button" data-testid="scheduled-detail-delete"
                 onClick={(event) => requestDeleteTask(event, selected)}
                 disabled={!!busyAction}

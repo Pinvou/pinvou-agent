@@ -4,10 +4,10 @@ export const PET_FRAME_W = 192;
 export const PET_FRAME_H = 208;
 export const PET_ATLAS_COLS = 8;
 
-export const CODEX_IDLE_FRAME_DURATIONS_MS = Object.freeze([280, 110, 110, 140, 140, 320]);
+const CODEX_IDLE_FRAME_DURATIONS_MS = Object.freeze([280, 110, 110, 140, 140, 320]);
 const PREVIEW_ACTION_DURATION_SCALE = 1.8;
 
-export const CODEX_ANIMATIONS = Object.freeze({
+const CODEX_ANIMATIONS = Object.freeze({
   idle: Object.freeze({ row: 0, frames: 6, frameDurationMs: 140 }),
   'running-right': Object.freeze({ row: 1, frames: 8, frameDurationMs: 120, lastFrameDurationMs: 220 }),
   'running-left': Object.freeze({ row: 2, frames: 8, frameDurationMs: 120, lastFrameDurationMs: 220 }),

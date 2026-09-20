@@ -26,6 +26,9 @@ import { fileURLToPath } from 'node:url';
 
 const webBridgeRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..', 'src', 'platform', 'web');
 const read = relativePath => fs.readFileSync(path.join(webBridgeRoot, relativePath), 'utf8');
+// bridge.js delegates shared helpers to window.PinvouBridgeShared (index.html loads the
+// shared payload before both bridges); VM harnesses must do the same first.
+const readSharedHelpers = () => fs.readFileSync(path.join(webBridgeRoot, '..', '..', 'shared', 'bridge-shared-helpers.js'), 'utf8');
 
 function bootWebBridge() {
   const storage = new Map();
@@ -117,6 +120,7 @@ function bootWebBridge() {
     TextEncoder,
     TextDecoder,
   });
+  vm.runInContext(readSharedHelpers(), context, { filename: 'shared/bridge-shared-helpers.js' });
   vm.runInContext(read('bridge.js'), context, { filename: 'platform/web/bridge.js' });
   const flat = windowObject.TauriBridge;
   assert.equal(typeof flat.getState, 'function', 'Web transport must expose its private flat state');

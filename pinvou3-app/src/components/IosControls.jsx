@@ -13,7 +13,6 @@ function IosSearchField({
   compact = false,
   inputRef,
   inputTestId,
-  trailing,
 }) {
   return (
     <div className={`relative ${compact ? 'h-9' : 'h-12'} ${className}`}>
@@ -30,7 +29,6 @@ function IosSearchField({
         className={`h-full w-full rounded-[14px] border-none bg-[rgba(118,118,128,.12)] dark:bg-[rgba(118,118,128,.24)] text-[#000] dark:text-[#fff] pl-10 pr-10 font-normal outline-none placeholder:text-[#8E8E93] disabled:cursor-default ${compact ? 'text-[13px]' : 'text-[16px]'} ${inputClassName}`}
       />
       <div className="absolute right-3 top-1/2 flex -translate-y-1/2 items-center gap-1.5">
-        {trailing || null}
         {value ? (
           <button
             type="button"

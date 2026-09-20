@@ -33,10 +33,3 @@ export function persistenceWarningReducer(state, action) {
 export function visiblePersistenceWarning(state) {
   return state?.dismissed ? '' : (state?.message || '');
 }
-
-// Status is a point-in-time snapshot, while warning/restored events are newer
-// authoritative transitions. A response may hydrate only when no persistence
-// event has arrived since that request started.
-export function isPersistenceStatusCurrent(requestEventEpoch, currentEventEpoch) {
-  return requestEventEpoch === currentEventEpoch;
-}

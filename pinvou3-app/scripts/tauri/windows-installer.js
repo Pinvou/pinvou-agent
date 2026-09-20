@@ -79,7 +79,5 @@ function stageWindowsInstaller({
 
 module.exports = {
   WINDOWS_NSIS_STAGING_ROOT,
-  fileSha256,
   stageWindowsInstaller,
-  verifiedFile,
 };

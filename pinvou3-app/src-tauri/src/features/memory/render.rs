@@ -19,7 +19,7 @@ use super::types::{
 };
 use super::util::{push_if_present, write_text_atomic};
 
-pub fn render_memory_block() -> stdio::Result<(String, Vec<InjectedMemoryItem>)> {
+pub(crate) fn render_memory_block() -> stdio::Result<(String, Vec<InjectedMemoryItem>)> {
     let profile = io::load_profile()?;
     let preferences = io::load_preferences()?;
     let work_context = io::load_work_context()?;

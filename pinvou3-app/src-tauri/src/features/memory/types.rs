@@ -259,6 +259,10 @@ pub struct InjectedMemoryItem {
 pub struct RuntimeMemorySnapshot {
     pub session_id: String,
     pub runtime_path: String,
+    /// Full rendered memory block. Only the Rust-side snapshot document
+    /// (`write_memory_snapshot_document`) consumes it; skipped from IPC
+    /// serialization since the multi-KB text is never read by the frontend.
+    #[serde(skip_serializing)]
     pub block: String,
     pub items: Vec<InjectedMemoryItem>,
 }

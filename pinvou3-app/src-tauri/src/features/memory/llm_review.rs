@@ -974,27 +974,6 @@ pub(super) fn extract_json_object(value: &str) -> Option<&str> {
     (start <= end).then(|| &value[start..=end])
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-enum MemoryReviewReasoningDialect {
-    None,
-    ThinkingDisabled,
-    QwenEnableThinking,
-    VllmChatTemplate,
-    Minimax,
-}
-
-impl From<crate::core::reasoning_dialect::ReasoningDialect> for MemoryReviewReasoningDialect {
-    fn from(d: crate::core::reasoning_dialect::ReasoningDialect) -> Self {
-        use crate::core::reasoning_dialect::ReasoningDialect as D;
-        match d {
-            D::None => MemoryReviewReasoningDialect::None,
-            D::ThinkingDisabled => MemoryReviewReasoningDialect::ThinkingDisabled,
-            D::QwenEnableThinking => MemoryReviewReasoningDialect::QwenEnableThinking,
-            D::Minimax => MemoryReviewReasoningDialect::Minimax,
-        }
-    }
-}
-
 pub(super) fn apply_memory_review_reasoning_controls(
     body: &mut Value,
     preset: ModelPreset,
@@ -1002,22 +981,10 @@ pub(super) fn apply_memory_review_reasoning_controls(
     base_url: &str,
     model: &str,
 ) {
-    match memory_review_reasoning_dialect(preset, provider, base_url, model) {
-        MemoryReviewReasoningDialect::ThinkingDisabled => {
-            body["thinking"] = json!({ "type": "disabled" });
-        }
-        MemoryReviewReasoningDialect::QwenEnableThinking => {
-            body["enable_thinking"] = json!(false);
-        }
-        MemoryReviewReasoningDialect::VllmChatTemplate => {
-            body["chat_template_kwargs"] = json!({ "enable_thinking": false });
-        }
-        MemoryReviewReasoningDialect::Minimax => {
-            body["thinking"] = json!({ "type": "disabled" });
-            body["reasoning_split"] = json!(true);
-        }
-        MemoryReviewReasoningDialect::None => {}
-    }
+    crate::core::reasoning_dialect::apply_reasoning_dialect_controls(
+        body,
+        memory_review_reasoning_dialect(preset, provider, base_url, model),
+    );
 }
 
 fn memory_review_reasoning_dialect(
@@ -1025,30 +992,30 @@ fn memory_review_reasoning_dialect(
     provider: &str,
     base_url: &str,
     model: &str,
-) -> MemoryReviewReasoningDialect {
+) -> crate::core::reasoning_dialect::ReasoningDialect {
     use crate::core::reasoning_dialect::{
-        kimi_supports_disabled_thinking, reasoning_dialect_from_base_url,
+        ReasoningDialect, kimi_supports_disabled_thinking, reasoning_dialect_from_base_url,
     };
     if provider == "vllm" || preset == ModelPreset::LocalVllm {
-        return MemoryReviewReasoningDialect::VllmChatTemplate;
+        return ReasoningDialect::VllmChatTemplate;
     }
     if provider == "deepseek" || preset == ModelPreset::Deepseek {
-        return MemoryReviewReasoningDialect::ThinkingDisabled;
+        return ReasoningDialect::ThinkingDisabled;
     }
     match preset {
-        ModelPreset::Qwen => MemoryReviewReasoningDialect::QwenEnableThinking,
+        ModelPreset::Qwen => ReasoningDialect::QwenEnableThinking,
         ModelPreset::Doubao | ModelPreset::Glm | ModelPreset::Mimo => {
-            MemoryReviewReasoningDialect::ThinkingDisabled
+            ReasoningDialect::ThinkingDisabled
         }
-        ModelPreset::Minimax => MemoryReviewReasoningDialect::Minimax,
+        ModelPreset::Minimax => ReasoningDialect::Minimax,
         ModelPreset::Kimi => {
             // Wave 3 统一：使用共享的 kimi_supports_disabled_thinking（与 review 一致）。
             // 原 memory 用 model.contains("k2.6")||model.contains("kimi-k2") 门控更宽，
             // 统一后 kimi-k2.5 也被正确识别，k2.7/thinking 变体被正确排除。
             if kimi_supports_disabled_thinking(model) {
-                MemoryReviewReasoningDialect::ThinkingDisabled
+                ReasoningDialect::ThinkingDisabled
             } else {
-                MemoryReviewReasoningDialect::None
+                ReasoningDialect::None
             }
         }
         ModelPreset::OpenaiCompatible
@@ -1061,16 +1028,16 @@ fn memory_review_reasoning_dialect(
             // 先取共享的 URL sniff 结果;若 URL 无法识别厂商,回退到 model 名匹配
             // (保留原 memory 的 model.contains 回退,覆盖自定义 OpenAI 兼容端点)。
             let d = reasoning_dialect_from_base_url(base_url, model);
-            if matches!(d, crate::core::reasoning_dialect::ReasoningDialect::None) {
+            if matches!(d, ReasoningDialect::None) {
                 let lower = model.to_ascii_lowercase();
                 if lower.contains("qwen") {
-                    return MemoryReviewReasoningDialect::QwenEnableThinking;
+                    return ReasoningDialect::QwenEnableThinking;
                 }
                 if lower.contains("deepseek") {
-                    return MemoryReviewReasoningDialect::ThinkingDisabled;
+                    return ReasoningDialect::ThinkingDisabled;
                 }
             }
-            d.into()
+            d
         }
     }
 }

@@ -12,6 +12,7 @@ import { fileURLToPath } from 'node:url';
 const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
 const source = fs.readFileSync(path.join(root, 'src/platform/tauri/bridge/scheduled.js'), 'utf8');
 const windowObject = { __PINVOU_TAURI_BRIDGE_FEATURES__: {} };
+vm.runInNewContext(fs.readFileSync(path.join(root, 'src/shared/bridge-shared-helpers.js'), 'utf8'), { window: windowObject, setTimeout, clearTimeout, console });
 vm.runInNewContext(source, { window: windowObject, setTimeout, clearTimeout, console });
 
 const state = { scheduledTasks: [], scheduledTaskError: null, scheduledTaskBusyAction: null };

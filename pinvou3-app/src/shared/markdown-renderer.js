@@ -5,10 +5,14 @@ import { escapeCodeHtml, highlightCode } from './syntax-highlighter.js';
 import { MARKDOWN_OPTIONS, scanMarkdownFences } from './markdown-fences.js';
 
 const DANGEROUS_TAGS_RE = /<(\/?(?:script|style|iframe|object|embed|link|meta)\b[^>]*)>/giu;
+// 危险标签/属性禁列表单一来源:pet 窗口等其它 DOMPurify 消费方直接复用,
+// 不要各自再抄一份(此前 pet 副本漏了 u 标志,就是双写的实际事故面)。
+export const MARKDOWN_FORBID_TAGS = ['style', 'iframe', 'object', 'embed', 'link', 'meta'];
+export const MARKDOWN_FORBID_ATTR = ['onerror', 'onload', 'onclick', 'onmouseover', 'onfocus', 'onblur'];
 const SANITIZE_OPTIONS = {
   USE_PROFILES: { html: true },
-  FORBID_TAGS: ['style', 'iframe', 'object', 'embed', 'link', 'meta'],
-  FORBID_ATTR: ['onerror', 'onload', 'onclick', 'onmouseover', 'onfocus', 'onblur'],
+  FORBID_TAGS: MARKDOWN_FORBID_TAGS,
+  FORBID_ATTR: MARKDOWN_FORBID_ATTR,
 };
 
 let purifier;
@@ -22,7 +26,8 @@ function getPurifier() {
   return purifier;
 }
 
-function neutralizeRawDangerousTags(html) {
+/** Neutralize raw dangerous tags after marked.parse, before DOMPurify. */
+export function neutralizeRawDangerousTags(html) {
   return html.replaceAll(DANGEROUS_TAGS_RE, (_, inner) => `&lt;${inner}&gt;`);
 }
 

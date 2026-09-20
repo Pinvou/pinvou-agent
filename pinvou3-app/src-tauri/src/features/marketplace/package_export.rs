@@ -267,28 +267,7 @@ fn sanitize_manifest_args(raw: &[u8], pkg_mcp_dir: &Path) -> Vec<u8> {
 #[cfg(test)]
 mod tests {
     use super::*;
-
-    /// 把 PINVOU3_HOME 指到干净临时目录跑闭包，借 ENV_LOCK 与其它 env 测试串行。
-    fn with_temp_home<F: FnOnce()>(f: F) {
-        let _g = crate::platform::paths::tests::ENV_LOCK
-            .lock()
-            .unwrap_or_else(|p| p.into_inner());
-        let prev = std::env::var("PINVOU3_HOME").ok();
-        let dir = std::env::temp_dir().join(format!(
-            "pinvou3-pkgexport-test-{}-{}",
-            std::process::id(),
-            crate::platform::paths::tests::unique_suffix()
-        ));
-        let _ = std::fs::remove_dir_all(&dir);
-        std::fs::create_dir_all(&dir).unwrap();
-        unsafe { std::env::set_var("PINVOU3_HOME", &dir) };
-        f();
-        match prev {
-            Some(v) => unsafe { std::env::set_var("PINVOU3_HOME", v) },
-            None => unsafe { std::env::remove_var("PINVOU3_HOME") },
-        }
-        let _ = std::fs::remove_dir_all(&dir);
-    }
+    use crate::platform::test_support::with_temp_home;
 
     /// args 净化（纯函数）：包内 mcp/ 绝对路径还原相对形式；相对参数与包外
     /// 绝对路径不动；非法 JSON 原样透传。路径用平台真实绝对路径构造（Windows 上
@@ -326,7 +305,7 @@ mod tests {
     /// manifest args 的包内绝对路径已还原为相对形式。
     #[test]
     fn export_installed_plugin_writes_sanitized_zip() {
-        with_temp_home(|| {
+        with_temp_home("pinvou3-pkgexport-test", || {
             let pkg = paths::bundles_root().join("exp-mcp");
             let mcp_dir = pkg.join("mcp");
             std::fs::create_dir_all(pkg.join("skills/exp-skill")).unwrap();
@@ -396,7 +375,7 @@ mod tests {
     /// fail-closed：未安装（目录不存在）/ 非法 id 报错，不留导出文件。
     #[test]
     fn export_installed_plugin_rejects_unknown_and_unsafe_id() {
-        with_temp_home(|| {
+        with_temp_home("pinvou3-pkgexport-test", || {
             let dest = paths::pinvou3_home().join("export.zip");
             assert!(export_installed_plugin("never-installed", &dest).is_err());
             assert!(export_installed_plugin("../etc", &dest).is_err());
@@ -409,7 +388,7 @@ mod tests {
     /// 登记为 Preset 的手写自定义 MCP 不在 `mcp_catalog` 内，不受此限。
     #[test]
     fn export_installed_plugin_rejects_preset_catalog_id() {
-        with_temp_home(|| {
+        with_temp_home("pinvou3-pkgexport-test", || {
             let preset_id = crate::features::marketplace::mcp_catalog::MCP_PACKAGES[0].id;
             let pkg = paths::bundles_root().join(preset_id);
             std::fs::create_dir_all(&pkg).unwrap();
@@ -425,7 +404,7 @@ mod tests {
     /// 技能目录的包导出的 zip 无法重新导入，fail-fast 报错，不留导出文件。
     #[test]
     fn export_installed_plugin_rejects_preset_skill_component() {
-        with_temp_home(|| {
+        with_temp_home("pinvou3-pkgexport-test", || {
             let preset_name = "government-writing"; // skill_marketplace::preset_manifests 首个注册项
             assert!(
                 crate::features::marketplace::skill_marketplace::is_preset_skill_name(preset_name)
@@ -451,7 +430,7 @@ mod tests {
     /// 管线只按技能组件名拒绝预置名，不限制包 id，这类 zip 可正常重新导入。
     #[test]
     fn export_installed_plugin_allows_preset_named_id_without_preset_skill() {
-        with_temp_home(|| {
+        with_temp_home("pinvou3-pkgexport-test", || {
             let id = "government-writing"; // 预置技能名，但不在 mcp_catalog/CLI/退役名单内
             assert!(crate::features::marketplace::skill_marketplace::is_preset_skill_name(id));
             assert!(crate::features::marketplace::mcp_catalog::spec_for(id).is_none());
@@ -493,7 +472,7 @@ mod tests {
     /// 导出的已安装包 zip 可经统一导入管线重新导入（组件识别 + 落盘 + 登记）。
     #[test]
     fn exported_installed_zip_reimports_via_plugin_pipeline() {
-        with_temp_home(|| {
+        with_temp_home("pinvou3-pkgexport-test", || {
             let pkg = paths::bundles_root().join("exp-mcp");
             std::fs::create_dir_all(pkg.join("mcp")).unwrap();
             std::fs::write(pkg.join("mcp/server.py"), b"print('hi')").unwrap();

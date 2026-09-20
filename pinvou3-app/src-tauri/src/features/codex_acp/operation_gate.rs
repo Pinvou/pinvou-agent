@@ -123,7 +123,7 @@ impl SessionConfigChange<'_> {
 
     async fn apply(&self, runtime: &AcpSession) -> Result<()> {
         match self {
-            Self::Model(model_id) => runtime.set_model(model_id).await,
+            Self::Model(model_id) => runtime.set_config_option("model", model_id).await,
             Self::Mode(mode_id) => runtime.set_mode(mode_id).await,
             Self::Option {
                 config_id,
@@ -172,10 +172,6 @@ impl AcpPool {
             return Err(error);
         }
         self.remember_config_choice(session_id, config_id, value_id);
-        runtime.bridge.emit(
-            "config_change_applied",
-            json!({ "configId": config_id, "valueId": value_id }),
-        );
         let info = runtime.info(
             self.pending_permissions_for(session_id).await,
             self.pending_elicitations_for(session_id).await,

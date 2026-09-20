@@ -24,6 +24,73 @@ fn resolve_code_session_roots(
     Ok((roots.ledger, roots.execution))
 }
 
+/// Turn 开始前的影子 git checkpoint 前奏，`chat` 与 `accept_plan`（均发送真实
+/// 用户消息，`is_user_turn_prompt` 计数口径一致）共用。流程：执行根体积门 →
+/// turn 序号计数 → `create_checkpoint` → 失败/alias 冲突按级别记日志。失败/
+/// 超预算不阻断 turn（设计 §5 降级语义）。返回本轮成功登记的快照 id；发送
+/// 失败时调用方按 id 精确作废「未成活」快照（评审 M5，见各自 Err 分支）。
+pub(super) async fn create_turn_checkpoint(
+    store: &SessionStore,
+    session_id: &str,
+    ledger: std::path::PathBuf,
+    execution: std::path::PathBuf,
+    label: String,
+    caller: &str,
+) -> Option<String> {
+    let store_count = store.clone();
+    let sid_count = session_id.to_string();
+    let snapshot = tauri::async_runtime::spawn_blocking(move || {
+        // 执行根体积门（对齐底座 snapshot 机制）：超过 2GB 的目录不做快照——
+        // 全量 add -A 的 IO 与影子仓库存储都不划算，该轮如实没有回退入口
+        // （返回 None 表示主动跳过，与快照失败区分）。
+        if !checkpoints::execution_root_within_snapshot_budget(&execution, &ledger) {
+            return Ok(None);
+        }
+        // turn 序号用 is_user_turn_prompt 同口径计数（tool_result 不计入），
+        // 计数失败（会话加载失败等）登记 None，前端按顺序兜底对齐。会话 JSON
+        // 读取是阻塞 IO，与快照同驻 spawn_blocking。
+        let turn_number = store_count
+            .load(&sid_count)
+            .map(|session| checkpoints::count_user_turns(&session.messages) + 1)
+            .ok();
+        checkpoints::create_checkpoint(
+            &ledger,
+            &execution,
+            turn_number,
+            checkpoints::CheckpointKind::Turn,
+            &label,
+        )
+        .map(Some)
+    })
+    .await;
+    match snapshot {
+        Ok(Ok(Some(meta))) => Some(meta.id),
+        Ok(Ok(None)) => {
+            log::info!(
+                "[pinvou3][{caller}] checkpoint skipped sid={session_id}: execution root over snapshot size budget or not fully readable (see earlier checkpoint estimate log)"
+            );
+            None
+        }
+        Ok(Err(error)) => {
+            // git alias 冲突（大小写不敏感目录下 Makefile/makefile 共存）会让
+            // 该会话每轮快照都失败、永久没有回退入口——error 级显式上报，
+            // 不静默 warn（评审 M1）。
+            if format!("{error:#}").contains("alias") {
+                log::error!(
+                    "[pinvou3][{caller}] checkpoint failed (git alias conflict, session has no rewind entries) sid={session_id}: {error:#}"
+                );
+            } else {
+                log::warn!("[pinvou3][{caller}] checkpoint failed sid={session_id}: {error:#}")
+            }
+            None
+        }
+        Err(error) => {
+            log::warn!("[pinvou3][{caller}] checkpoint task failed sid={session_id}: {error}");
+            None
+        }
+    }
+}
+
 #[tauri::command]
 pub async fn list_checkpoints(
     session_id: String,
@@ -62,19 +129,15 @@ pub async fn checkpoint_diff(
     // 跨会话软门：同执行根的其它会话在跑时，本 diff 的 add -A 会读到对方
     // 引擎写了一半的文件（影子仓库按会话分目录，peer 间不共享 index.lock——
     // 门的理由是共享执行根的中间态，不是锁竞争）。
-    let store_gate = store.inner().clone();
-    let session_id_gate = session_id.clone();
-    let pool_gate = pool.inner().clone();
+    reject_if_peer_busy(
+        &store,
+        &pool,
+        &session_id,
+        &execution,
+        "请稍后再读取变更预览",
+    )
+    .await?;
     tauri::async_runtime::spawn_blocking(move || {
-        if let Some(busy) =
-            busy_peer_on_same_execution_root(&store_gate, &session_id_gate, &execution, |id| {
-                pool_gate.is_turn_active(id) || pool_gate.is_scheduled_turn_running(id)
-            })?
-        {
-            return Err(format!(
-                "会话「{busy}」绑定同一项目目录且正在执行，请稍后再读取变更预览"
-            ));
-        }
         checkpoints::diff_checkpoint(&ledger, &execution, &checkpoint_id)
             .map_err(|error| format!("读取检查点差异失败: {error:#}"))
     })
@@ -142,6 +205,36 @@ fn resolve_rewind_plan(
 
 fn normalize_root(path: &std::path::Path) -> std::path::PathBuf {
     std::fs::canonicalize(path).unwrap_or_else(|_| path.to_path_buf())
+}
+
+/// 跨会话忙碌门的 async 包装（diff / rewind / undo 三处共用的 4 个 State clone +
+/// spawn_blocking + map_err 编排）：在阻塞线程上执行
+/// [`busy_peer_on_same_execution_root`]，任一同执行根 peer 在跑时返回带上下文
+/// 的错误（`action` 为各调用方的动作文案，如「请先停止该会话再回退」）。
+async fn reject_if_peer_busy(
+    store: &SessionStore,
+    pool: &EnginePool,
+    session_id: &str,
+    execution: &std::path::Path,
+    action: &str,
+) -> Result<(), String> {
+    let store_gate = store.clone();
+    let session_id_gate = session_id.to_string();
+    let execution_gate = execution.to_path_buf();
+    let pool_gate = pool.clone();
+    if let Some(busy) = tauri::async_runtime::spawn_blocking(move || {
+        busy_peer_on_same_execution_root(&store_gate, &session_id_gate, &execution_gate, |id| {
+            pool_gate.is_turn_active(id) || pool_gate.is_scheduled_turn_running(id)
+        })
+    })
+    .await
+    .map_err(|error| format!("跨会话忙碌检查任务失败: {error}"))??
+    {
+        return Err(format!(
+            "会话「{busy}」绑定同一项目目录且正在执行，{action}"
+        ));
+    }
+    Ok(())
 }
 
 /// 跨会话忙碌门（设计 §6 防线二）：枚举全部会话（`list_sessions_cached`，含
@@ -231,22 +324,14 @@ pub async fn rewind_to_turn(
     // 跨会话忙碌门：恢复单位是执行根，同根其它会话在跑时回退会撤销它正在写的
     // 文件，如实拒绝并告知哪个会话在忙。全量枚举（含 scheduled）是阻塞 IO，
     // 移出 async worker。
-    let store_gate = store.inner().clone();
-    let session_id_gate = session_id.clone();
-    let execution_gate = execution.clone();
-    let pool_gate = pool.inner().clone();
-    if let Some(busy) = tauri::async_runtime::spawn_blocking(move || {
-        busy_peer_on_same_execution_root(&store_gate, &session_id_gate, &execution_gate, |id| {
-            pool_gate.is_turn_active(id) || pool_gate.is_scheduled_turn_running(id)
-        })
-    })
-    .await
-    .map_err(|error| format!("跨会话忙碌检查任务失败: {error}"))??
-    {
-        return Err(format!(
-            "会话「{busy}」绑定同一项目目录且正在执行，请先停止该会话再回退"
-        ));
-    }
+    reject_if_peer_busy(
+        &store,
+        &pool,
+        &session_id,
+        &execution,
+        "请先停止该会话再回退",
+    )
+    .await?;
 
     // 定位 checkpoint + 截断可行性预检。必须在 restore 之前：先恢复代码才发现
     // 对话无可截内容，会留下「代码已回退、对话未动」的不一致状态。
@@ -489,22 +574,14 @@ pub async fn undo_last_rewind(
         .map_err(|error| format!("预约会话 turn 失败（会话忙碌？）: {error:#}"))?;
     // 执行根互斥：与 rewind_to_turn 同款（check-and-set 置位 + 在途 peer 复查）。
     let _root_guard = pool.begin_execution_root_rewind(&execution)?;
-    let store_gate = store.inner().clone();
-    let session_id_gate = session_id.clone();
-    let execution_gate = execution.clone();
-    let pool_gate = pool.inner().clone();
-    if let Some(busy) = tauri::async_runtime::spawn_blocking(move || {
-        busy_peer_on_same_execution_root(&store_gate, &session_id_gate, &execution_gate, |id| {
-            pool_gate.is_turn_active(id) || pool_gate.is_scheduled_turn_running(id)
-        })
-    })
-    .await
-    .map_err(|error| format!("跨会话忙碌检查任务失败: {error}"))??
-    {
-        return Err(format!(
-            "会话「{busy}」绑定同一项目目录且正在执行，请先停止该会话再反悔"
-        ));
-    }
+    reject_if_peer_busy(
+        &store,
+        &pool,
+        &session_id,
+        &execution,
+        "请先停止该会话再反悔",
+    )
+    .await?;
 
     // 预检先于 restore：可反悔条件全部满足才动代码，把「代码已反悔、对话未
     // 反悔」的窗口压到最小（restore_rewound_turns 落盘前还会在 mutation 锁内
@@ -581,13 +658,18 @@ pub async fn undo_last_rewind(
 mod tests {
     use super::*;
     use std::sync::Arc;
+    // Message came from the commands prelude while save_session_messages was
+    // alive; the prelude re-export died with it, so the test helpers import
+    // it directly.
+    use deepseek_tui::models::Message;
+    // git 可用性探测与 feature 层测试共用（features/code_checkpoints 内唯一实现）。
+    use checkpoints::git_available;
 
     fn meta(id: &str, turn: Option<u32>, kind: CheckpointKind) -> CheckpointMeta {
         CheckpointMeta {
             id: id.into(),
             turn,
             kind,
-            label: String::new(),
             commit: format!("commit-{id}"),
             created_at: 0,
         }
@@ -773,14 +855,6 @@ mod tests {
         assert_eq!(none, None, "不同执行根的忙碌会话不得拦截");
     }
 
-    fn git_available() -> bool {
-        crate::platform::process::HiddenCommand::new("git")
-            .arg("--version")
-            .output()
-            .map(|output| output.status.success())
-            .unwrap_or(false)
-    }
-
     /// 编排层 P0 场景：旧分支 turn 1..3 的快照在回退到第 1 轮后被作废，
     /// index 不再含 turn > keep_turns 的 Turn 条目；重新创作打同号新快照后，
     /// first-wins 对齐命中的必须是新分支快照而不是被遗弃分支的旧快照。
@@ -846,6 +920,8 @@ mod tests {
 
     // ── 回退反悔（rewind_undo_state / undo_last_rewind 编排件）──────────────
 
+    // Message is imported once at the top of this test module; the
+    // rewind-undo section only adds ContentBlock.
     use deepseek_tui::models::ContentBlock;
 
     fn user_msg(text: &str) -> Message {

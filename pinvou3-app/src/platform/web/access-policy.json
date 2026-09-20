@@ -2,7 +2,6 @@
   "protocol_version": 2,
   "allowed_commands": [
     "accept_plan",
-    "archive_recent_work_memory",
     "bundle_readiness",
     "cancel_generation",
     "cancel_shell_task",

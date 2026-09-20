@@ -143,10 +143,9 @@ export function timelineUserError(event, options = {}) {
   const helper = globalThis.PinvouModelServiceErrors;
   if (!error || !helper || typeof helper.build !== 'function') return null;
   if (typeof helper.isModelServiceError === 'function' && !helper.isModelServiceError(error)) return null;
-  const providerLabel = options.providerLabel
-    || (typeof helper.providerLabelFromState === 'function'
-      ? helper.providerLabelFromState(options.modelServiceState, options.language)
-      : '');
+  const providerLabel = typeof helper.providerLabelFromState === 'function'
+    ? helper.providerLabelFromState(options.modelServiceState, options.language)
+    : '';
   return helper.build(error, {
     language: options.language,
     providerLabel,
@@ -319,7 +318,6 @@ export function projectDeepSeekConversation({
   timelineEvents = [],
   allowScheduledTaskDraft = false,
   language = 'zh-Hans',
-  providerLabel = '',
   modelServiceState = null,
 } = {}) {
   const turns = [];
@@ -372,7 +370,7 @@ export function projectDeepSeekConversation({
     ));
   }
 
-  assignDeepSeekTimelines(userTurns, timelineEvents, busy, { language, providerLabel, modelServiceState });
+  assignDeepSeekTimelines(userTurns, timelineEvents, busy, { language, modelServiceState });
   if (!busy) transferSteeredRunTerminals(turns);
 
   const activeTurn = turns[turns.length - 1];

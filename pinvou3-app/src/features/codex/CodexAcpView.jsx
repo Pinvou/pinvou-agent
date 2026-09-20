@@ -86,16 +86,14 @@ import {
 } from './RewindChip.jsx';
 import { useDialogFocusRestore } from '../../hooks/useDialogFocusRestore.js';
 import {
-  ConversationActivityIndicator,
   ConversationMarkdown,
   ConversationStatusBadge,
   ConversationTurn,
-  useConversationSecondClock,
+  LiveConversationActivityIndicator,
 } from '../conversation/ConversationTimeline.jsx';
 import {
-  measureConversationScrollGeometry,
-  startConversationBottomFollower,
   transitionConversationScrollState,
+  useConversationBottomFollower,
 } from '../conversation/conversation-scroll.js';
 import { ComposerModelSelector, ComposerToolMenu } from '../settings/composer-shared.jsx';
 import {
@@ -126,7 +124,13 @@ import {
   restoreConversationScrollPosition,
 } from '../conversation/conversation-model.js';
 import { QuestionChoiceCard } from '../conversation/QuestionChoiceCard.jsx';
-import { PlanLayer, ToolCard, cardBoxCls, cardBtnCls } from '../tools/tool-renderers.jsx';
+import {
+  PlanLayer,
+  ToolCard,
+  cardBoxCls,
+  cardBtnCls,
+  isFreeTextPlaceholderOption,
+} from '../tools/tool-renderers.jsx';
 import { YoloConfirmCard } from '../../shared/yolo-confirm-card.jsx';
 import { notifyChatRoundCommitted } from '../tools/tool-events.js';
 import { AttachmentChips } from '../attachments/AttachmentChips.jsx';
@@ -228,6 +232,34 @@ function BranchSelector({ copy, branches, disabled, busy, menuOpen, onToggle, on
         </div>
       )}
     </div>
+  );
+}
+
+// 工作区面板开关 pill：会话 header 与草稿 header（已选项目目录、未开会话）共用，
+// 标记/类名完全一致；差异仅两处——草稿 header 保留 codex-workspace-toggle 测试
+// 锚点（testId），变更计数徽标只出现在会话 header（changeCount 传 undefined 即
+// 不渲染徽标，与原草稿 header 的静态标记一致）。
+function WorkspacePanelToggle({ testId, active, changeCount, onToggle, copy }) {
+  return (
+    <button
+      type="button"
+      data-testid={testId}
+      onClick={onToggle}
+      className={`h-8 px-2.5 rounded-lg inline-flex items-center gap-1.5 text-[11px] transition-colors ${
+        active
+          ? 'bg-blue-500/10 text-blue-600 dark:text-blue-300'
+          : 'text-gray-500 dark:text-gray-400 hover:bg-black/[0.04] dark:hover:bg-white/[0.06]'
+      }`}
+      title={copy.workspaceTitle}
+    >
+      <FolderOpen size={14} />
+      <span>{copy.workspace}</span>
+      {changeCount > 0 && (
+        <span className="min-w-4 h-4 px-1 rounded-full bg-amber-500/15 text-amber-600 dark:text-amber-300 inline-flex items-center justify-center text-[9px] font-medium">
+          {changeCount > 99 ? '99+' : changeCount}
+        </span>
+      )}
+    </button>
   );
 }
 
@@ -409,23 +441,10 @@ function CodexComposerConfigSelect({
 }
 
 // The 1Hz clock used to live in CodexAcpView top-level state (re-rendering
-// the whole 4000+ line view every second while busy); it now sinks down with
-// the same pattern as ChatView's LiveConversationActivityIndicator: only the
-// running indicator that actually shows "elapsed" owns a clock, so each tick
+// the whole 4000+ line view every second while busy); it now sinks into
+// ConversationTimeline's LiveConversationActivityIndicator: only the running
+// indicator that actually shows "elapsed" owns a clock, so each tick
 // re-renders just that small subtree.
-function LiveConversationActivityIndicator({ turn, onRequestAttention, className, copy }) {
-  const running = !!turn && turn.status === 'running';
-  const now = useConversationSecondClock(running);
-  return (
-    <ConversationActivityIndicator
-      turn={turn}
-      now={now}
-      onRequestAttention={onRequestAttention}
-      className={className}
-      copy={copy}
-    />
-  );
-}
 
 function ElicitationCard({ elicitation, pending, onRespond, responding, copy, conversationCopy }) {
   const request = elicitation.request || {};
@@ -525,16 +544,13 @@ const NATIVE_CHAT_EVENTS = [
   'chat:user_input_required',
   'chat:plan_snapshot',
   'chat:plan_ready',
+  // discard_plan 后端广播（多端/远端 discard 回声）：把匹配的 active 方案卡幂等
+  // 冻结为 discarded。处理逻辑在 code-native-lane.js（applyNativeChatEvent 的
+  // chat:plan_resolved 分支，与 bridge chat-events.js plan_resolved 对齐）。
+  'chat:plan_resolved',
   'chat:transient_error',
   'chat:done',
 ];
-
-function isFreeTextPlaceholderOption(option) {
-  const label = String(option?.label || '').trim();
-  // the parens hold free text excluding delimiters; the quantifier is not nested in its own char class, so backtracking is linear
-  // eslint-disable-next-line no-useless-escape -- keep \( \) escaped inside the char class to mark them as literal parens, echoing the negated paren class
-  return /^(?:其他|其它|other)(?:\s*[\(（][^()（）]*[\)）])?$/i.test(label);
-}
 
 function NativeUserInputCard({ item, responding, onSubmitAnswers, onCancelInput, copy, conversationCopy }) {
   const questions = (item.questions || []).map((question, index) => {
@@ -1083,8 +1099,8 @@ export function CodexAcpView({
     ? Boolean(activeNativeLane && activeNativeLane.busy)
     : projection.turns.some(turn => turn.status === 'running');
   // The per-second clock lives in the display subtrees (ConversationTurnView's internal
-  // useConversationSecondClock, LiveConversationActivityIndicator below), so busy no longer
-  // re-renders the whole view at 1Hz; no top-level `now` is passed down.
+  // useConversationSecondClock, ConversationTimeline's LiveConversationActivityIndicator),
+  // so busy no longer re-renders the whole view at 1Hz; no top-level `now` is passed down.
   // 「回退到第 N 轮」入口（仅原生代码车道）：checkpoint 列表 + turn 边界对齐。
   // 回退编排（rewind_to_turn）由 confirmRewind 发起；成功后走既有 loadSession
   // 重载（磁盘对话已截断、engine 已被后端回收重注水）。refreshKey 含 busy 边沿：
@@ -1511,17 +1527,28 @@ export function CodexAcpView({
     return true;
   }
 
-  /// 切模型：set_session_model 会 evict 该会话 engine，lane busy 时由控件禁用兜底。
-  async function switchNativeModel(sessionId, modelId) {
+  /// switchNativeModel / mountNativeKb / unmountNativeKb 的共用骨架：草稿态暂存
+  /// 到 draft controls（建会话时持久化），已物化会话则调用对应命令并刷新控件。
+  /// set_session_model 会 evict 该会话 engine，lane busy 时由控件禁用兜底。
+  async function applyNativeControlChange({ sessionId, draftControls, command, args }) {
     if (!sessionId) {
-      setNativeDraftControls(current => ({ ...current, modelId }));
+      setNativeDraftControls(current => ({ ...current, ...draftControls }));
       return;
     }
     setError('');
     try {
-      await invoke('set_session_model', { sessionId, modelId });
+      await invoke(command, { sessionId, ...args });
       await refreshNativeControls(sessionId);
     } catch (err) { showError(err); }
+  }
+
+  async function switchNativeModel(sessionId, modelId) {
+    return applyNativeControlChange({
+      sessionId,
+      draftControls: { modelId },
+      command: 'set_session_model',
+      args: { modelId },
+    });
   }
 
   async function switchNativeMultiAgent(enabled) {
@@ -1554,27 +1581,21 @@ export function CodexAcpView({
   }
 
   async function mountNativeKb(collectionId) {
-    if (!activeId) {
-      setNativeDraftControls(current => ({ ...current, mountedId: collectionId }));
-      return;
-    }
-    setError('');
-    try {
-      await invoke('session_mount_collection', { sessionId: activeId, collectionId });
-      await refreshNativeControls(activeId);
-    } catch (err) { showError(err); }
+    return applyNativeControlChange({
+      sessionId: activeId,
+      draftControls: { mountedId: collectionId },
+      command: 'session_mount_collection',
+      args: { collectionId },
+    });
   }
 
   async function unmountNativeKb() {
-    if (!activeId) {
-      setNativeDraftControls(current => ({ ...current, mountedId: null }));
-      return;
-    }
-    setError('');
-    try {
-      await invoke('session_unmount_collection', { sessionId: activeId });
-      await refreshNativeControls(activeId);
-    } catch (err) { showError(err); }
+    return applyNativeControlChange({
+      sessionId: activeId,
+      draftControls: { mountedId: null },
+      command: 'session_unmount_collection',
+      args: {},
+    });
   }
 
   /// Plan↔Yolo 只改变后续 turn 使用的模式。正在运行的 turn 保持提交时捕获
@@ -2002,10 +2023,6 @@ export function CodexAcpView({
     setPendingElicitations(elicitations || []);
   }
 
-  function scheduleAcpGapResync(sessionId) {
-    acpGapResyncRef.current.schedule(sessionId);
-  }
-
   async function createSession({ shouldActivate = () => true, prepareSession = null } = {}) {
     const requestedWorkspacePath = draftWorkspacePath;
     const requestedWorkspaceHandle = draftWorkspaceHandle;
@@ -2407,7 +2424,7 @@ export function CodexAcpView({
       // debounce-refetch the authoritative timeline to self-heal.
       if (incoming && acpEventSeqTrackerRef.current.note(incoming.sessionId, incoming.seq) === 'gap'
           && incoming.sessionId === activeIdRef.current) {
-        scheduleAcpGapResync(incoming.sessionId);
+        acpGapResyncRef.current.schedule(incoming.sessionId);
       }
       setEvents(current => incoming && incoming.sessionId === activeIdRef.current ? appendAcpEvent(current, incoming) : current);
       if (incoming && incoming.sessionId === activeIdRef.current) {
@@ -2661,31 +2678,20 @@ export function CodexAcpView({
     return () => window.cancelAnimationFrame(frame);
   }, [activeId]);
 
-  useEffect(() => {
-    const scrollElement = scroller.current;
-    const contentElement = conversationContentRef.current;
-    if (!scrollElement || !contentElement) return;
-    return startConversationBottomFollower({
-      scrollElement,
-      contentElement,
-      isFollowing: () => autoScrollRef.current,
-      onMeasured: () => {
-        const measurement = measureConversationScrollGeometry({
-          scrollElement,
-          following: autoScrollRef.current,
-          previousScrollTop: lastScrollTopRef.current,
-          previousScrollHeight: lastScrollHeightRef.current,
-        });
-        lastScrollTopRef.current = measurement.scrollTop;
-        lastScrollHeightRef.current = measurement.scrollHeight;
-      },
-      onRestored: (scrollTop) => {
-        lastScrollTopRef.current = scrollTop;
-        lastScrollHeightRef.current = scrollElement.scrollHeight;
-        setShowScrollBottom(false);
-      },
-    });
-  }, [activeId]);
+  // Shared ChatView/CodexAcpView bottom-follower wiring. The codex content
+  // element is statically mounted (no conditional timeline wrapper), so
+  // `hasMessages` is constant true and the effect re-runs only on session
+  // switch — the same [activeId] dependency the inline effect had.
+  useConversationBottomFollower({
+    scrollRef: scroller,
+    contentRef: conversationContentRef,
+    autoScrollRef,
+    lastScrollTopRef,
+    lastScrollHeightRef,
+    setShowScrollBottom,
+    activeSessionId: activeId,
+    hasMessages: true,
+  });
 
   function scrollConversationToBottom() {
     const element = scroller.current;
@@ -2782,6 +2788,83 @@ export function CodexAcpView({
     }
   }
 
+  /// send 与 sendNative 共用的草稿交接/收尾管线：把发送操作绑定到当前（或即将
+  /// 创建的）会话，首次物化会话时转移草稿附件/工作区引用，随后执行调用方差异
+  /// 部分（materializeDraft：建会话后的准备；sendBody：实际发送），最后统一收尾
+  /// （updateAttachments 过滤 + removeAcpDraftItems）与 catch 分流（仍持有操作
+  /// → 上屏错误并恢复输入框；已切会话 → 只记日志不吞错）与 finally。
+  async function runAcpSendPipeline({
+    message,
+    readyAttachments,
+    attachmentsAtSend,
+    workspaceReferencesAtSend,
+    prepareSession,
+    materializeDraft,
+    sendBody,
+    draftFailureCleanup,
+    backgroundErrorLabel,
+  }) {
+    let targetId = activeId;
+    const materializingDraft = !targetId;
+    let operation = beginAcpSendOperation(targetId);
+    if (!operation) return false;
+    setError('');
+    try {
+      if (!targetId) {
+        const created = await createSession({
+          shouldActivate: () => canApplyAcpSendOperation(operation),
+          prepareSession,
+        });
+        targetId = created.id;
+        if (created.activated && activeIdRef.current === targetId) {
+          acpSendOperationTracker.switchSession(targetId);
+          operation = beginAcpSendOperation(targetId);
+        }
+        if (materializeDraft) await materializeDraft({ created, targetId, operation });
+        setAttachmentDrafts(current => transferAcpDraftItems(
+          current,
+          DRAFT_ATTACHMENT_KEY,
+          targetId,
+          attachmentsAtSend,
+          attachment => attachment.id,
+        ));
+        setWorkspaceReferenceDrafts(current => transferAcpDraftItems(
+          current,
+          DRAFT_ATTACHMENT_KEY,
+          targetId,
+          workspaceReferencesAtSend,
+          reference => reference,
+        ));
+      }
+      await sendBody({ targetId, operation });
+      updateAttachments(targetId, current => current.filter(
+        attachment => readyAttachments.every(ready => ready.id !== attachment.id),
+      ));
+      setWorkspaceReferenceDrafts(current => removeAcpDraftItems(
+        current,
+        targetId,
+        workspaceReferencesAtSend,
+        reference => reference,
+      ));
+      // Voice sendTask treats === false as failure: a real acceptance must explicitly report success.
+      return true;
+    } catch (err) {
+      if (materializingDraft && draftFailureCleanup) draftFailureCleanup();
+      if (canApplyAcpSendOperation(operation)) {
+        showError(err);
+        setDraft(message);
+      } else {
+        // The user switched sessions before this send failed. The draft
+        // belongs to the original session, so keep the new session's UI
+        // untouched, but never swallow the failure silently.
+        console.error(`[codex] background ${backgroundErrorLabel} send failed`, err);
+      }
+      return false;
+    } finally {
+      finishAcpSendOperation(operation);
+    }
+  }
+
   async function send(messageOverride) {
     const hasMessageOverride = typeof messageOverride === 'string';
     if (!hasMessageOverride && nativeVoice && nativeVoice.editPreview) {
@@ -2810,20 +2893,13 @@ export function CodexAcpView({
     if (isNativeAgent) {
       return sendNative(message, readyAttachments);
     }
-    let targetId = activeId;
-    let operation = beginAcpSendOperation(targetId);
-    if (!operation) return false;
-    setError('');
-    try {
-      if (!targetId) {
-        const created = await createSession({
-          shouldActivate: () => canApplyAcpSendOperation(operation),
-        });
-        targetId = created.id;
-        if (created.activated && activeIdRef.current === targetId) {
-          acpSendOperationTracker.switchSession(targetId);
-          operation = beginAcpSendOperation(targetId);
-        }
+    return runAcpSendPipeline({
+      message,
+      readyAttachments,
+      attachmentsAtSend,
+      workspaceReferencesAtSend,
+      backgroundErrorLabel: 'ACP',
+      materializeDraft: async ({ created, targetId, operation }) => {
         const appliedInfo = await applyDraftConfigSelections(
           targetId,
           created.info,
@@ -2837,57 +2913,21 @@ export function CodexAcpView({
           delete next[draftAgentAtSend];
           return next;
         });
-        setAttachmentDrafts(current => transferAcpDraftItems(
-          current,
-          DRAFT_ATTACHMENT_KEY,
-          targetId,
-          attachmentsAtSend,
-          attachment => attachment.id,
-        ));
-        setWorkspaceReferenceDrafts(current => transferAcpDraftItems(
-          current,
-          DRAFT_ATTACHMENT_KEY,
-          targetId,
-          workspaceReferencesAtSend,
-          reference => reference,
-        ));
-      }
-      if (canApplyAcpSendOperation(operation)) {
-        autoScrollRef.current = true;
-        setShowScrollBottom(false);
-        setDraft('');
-      }
-      await submitAcpPrompt({
-        sessionId: targetId,
-        message,
-        attachments: readyAttachments.map(attachment => attachment.result),
-        workspaceReferences: workspaceReferencesAtSend,
-      });
-      updateAttachments(targetId, current => current.filter(
-        attachment => readyAttachments.every(ready => ready.id !== attachment.id),
-      ));
-      setWorkspaceReferenceDrafts(current => removeAcpDraftItems(
-        current,
-        targetId,
-        workspaceReferencesAtSend,
-        reference => reference,
-      ));
-      // Voice sendTask treats === false as failure: a real acceptance must explicitly report success.
-      return true;
-    } catch (err) {
-      if (canApplyAcpSendOperation(operation)) {
-        showError(err);
-        setDraft(message);
-      } else {
-        // The user switched sessions before this send failed. The draft
-        // belongs to the original session, so keep the new session's UI
-        // untouched, but never swallow the failure silently.
-        console.error('[codex] background ACP send failed', err);
-      }
-      return false;
-    } finally {
-      finishAcpSendOperation(operation);
-    }
+      },
+      sendBody: async ({ targetId, operation }) => {
+        if (canApplyAcpSendOperation(operation)) {
+          autoScrollRef.current = true;
+          setShowScrollBottom(false);
+          setDraft('');
+        }
+        await submitAcpPrompt({
+          sessionId: targetId,
+          message,
+          attachments: readyAttachments.map(attachment => attachment.result),
+          workspaceReferences: workspaceReferencesAtSend,
+        });
+      },
+    });
   }
 
   /// 原生（品悟 Engine）发送：草稿态先建会话（强制临时工作区），随后走 chat 命令；
@@ -2896,33 +2936,25 @@ export function CodexAcpView({
     const attachmentsAtSend = attachments;
     const workspaceReferencesAtSend = workspaceReferences;
     const nativeDraftControlsAtSend = nativeDraftControls;
-    let targetId = activeId;
-    const materializingDraft = !targetId;
-    let operation = beginAcpSendOperation(targetId);
-    if (!operation) return false;
-    setError('');
-    try {
-      if (!targetId) {
-        const created = await createSession({
-          shouldActivate: () => canApplyAcpSendOperation(operation),
-          prepareSession: async sessionId => {
-            const prepared = await persistNativeDraftControls(
-              sessionId,
-              nativeDraftControlsAtSend,
-            );
-            if (prepared) {
-              nativeDraftControlsHandoffRef.current = {
-                sessionId,
-                controls: nativeDraftControlsAtSend,
-              };
-            }
-          },
-        });
-        targetId = created.id;
-        if (created.activated && activeIdRef.current === targetId) {
-          acpSendOperationTracker.switchSession(targetId);
-          operation = beginAcpSendOperation(targetId);
+    return runAcpSendPipeline({
+      message,
+      readyAttachments,
+      attachmentsAtSend,
+      workspaceReferencesAtSend,
+      backgroundErrorLabel: 'native',
+      prepareSession: async sessionId => {
+        const prepared = await persistNativeDraftControls(
+          sessionId,
+          nativeDraftControlsAtSend,
+        );
+        if (prepared) {
+          nativeDraftControlsHandoffRef.current = {
+            sessionId,
+            controls: nativeDraftControlsAtSend,
+          };
         }
+      },
+      materializeDraft: async ({ created }) => {
         // Activation invalidates the draft-scoped operation token. Report preparation
         // failures only after rebinding to the created session so the visible error path
         // remains current and the user's message is restored for retry in this session.
@@ -2931,80 +2963,44 @@ export function CodexAcpView({
         // and the authoritative load now owns the displayed values. Clear only after
         // that handoff completes so the selected model label remains stable.
         clearNativeDraftControls(nativeDraftControlsAtSend);
-        setAttachmentDrafts(current => transferAcpDraftItems(
-          current,
-          DRAFT_ATTACHMENT_KEY,
-          targetId,
-          attachmentsAtSend,
-          attachment => attachment.id,
-        ));
-        setWorkspaceReferenceDrafts(current => transferAcpDraftItems(
-          current,
-          DRAFT_ATTACHMENT_KEY,
-          targetId,
-          workspaceReferencesAtSend,
-          reference => reference,
-        ));
-      }
-      const referenceMentions = workspaceReferencesAtSend.map(path => `@${path}`).join(' ');
-      const referencePrefix = workspaceReferencesAtSend.length
-        ? `${referenceMentions}\n\n`
-        : '';
-      const attachmentLead = message ? '\n' : '';
-      const displayText = message + (readyAttachments.length
-        ? `${attachmentLead}📎 ${readyAttachments.map(attachment => attachment.basename).join(', ')}`
-        : '');
-      const lane = getNativeLane(targetId);
-      const optimisticId = appendLocalUserMessage(lane, displayText);
-      setNativeLaneTick(tick => tick + 1);
-      if (canApplyAcpSendOperation(operation)) {
-        autoScrollRef.current = true;
-        setShowScrollBottom(false);
-        setDraft('');
-      }
-      try {
-        await invoke('chat', {
-          message: referencePrefix + message,
-          attachments: readyAttachments.map(attachment => attachment.result),
-          sessionId: targetId,
-          // 逐轮工具白名单入口（R-2）：参数链路对 code 会话已贯通（后端 op
-          // allowed_tools 按此生效），本期恒 false 不限制；S-1 安全分化落地时
-          // 按 SessionPolicy 逐轮驱动（docs/code-mode-解耦与权限持久化-改动说明.md）。
-          restrictTools: false,
-        });
-        // 发送成功 = 新一轮已受理：code scope 未提交的「打开」转正锁死。
-        notifyChatRoundCommitted('code');
-      } catch (sendError) {
-        removeLocalUserMessage(lane, optimisticId);
+      },
+      sendBody: async ({ targetId, operation }) => {
+        const referenceMentions = workspaceReferencesAtSend.map(path => `@${path}`).join(' ');
+        const referencePrefix = workspaceReferencesAtSend.length
+          ? `${referenceMentions}\n\n`
+          : '';
+        const attachmentLead = message ? '\n' : '';
+        const displayText = message + (readyAttachments.length
+          ? `${attachmentLead}📎 ${readyAttachments.map(attachment => attachment.basename).join(', ')}`
+          : '');
+        const lane = getNativeLane(targetId);
+        const optimisticId = appendLocalUserMessage(lane, displayText);
         setNativeLaneTick(tick => tick + 1);
-        throw sendError;
-      }
-      updateAttachments(targetId, current => current.filter(
-        attachment => readyAttachments.every(ready => ready.id !== attachment.id),
-      ));
-      setWorkspaceReferenceDrafts(current => removeAcpDraftItems(
-        current,
-        targetId,
-        workspaceReferencesAtSend,
-        reference => reference,
-      ));
-      // Voice sendTask treats === false as failure: a real acceptance must explicitly report success.
-      return true;
-    } catch (err) {
-      if (materializingDraft) clearNativeDraftControls(nativeDraftControlsAtSend);
-      if (canApplyAcpSendOperation(operation)) {
-        showError(err);
-        setDraft(message);
-      } else {
-        // The user switched sessions before this send failed. The draft
-        // belongs to the original session, so keep the new session's UI
-        // untouched, but never swallow the failure silently.
-        console.error('[codex] background native send failed', err);
-      }
-      return false;
-    } finally {
-      finishAcpSendOperation(operation);
-    }
+        if (canApplyAcpSendOperation(operation)) {
+          autoScrollRef.current = true;
+          setShowScrollBottom(false);
+          setDraft('');
+        }
+        try {
+          await invoke('chat', {
+            message: referencePrefix + message,
+            attachments: readyAttachments.map(attachment => attachment.result),
+            sessionId: targetId,
+            // 逐轮工具白名单入口（R-2）：参数链路对 code 会话已贯通（后端 op
+            // allowed_tools 按此生效），本期恒 false 不限制；S-1 安全分化落地时
+            // 按 SessionPolicy 逐轮驱动（docs/code-mode-解耦与权限持久化-改动说明.md）。
+            restrictTools: false,
+          });
+          // 发送成功 = 新一轮已受理：code scope 未提交的「打开」转正锁死。
+          notifyChatRoundCommitted('code');
+        } catch (sendError) {
+          removeLocalUserMessage(lane, optimisticId);
+          setNativeLaneTick(tick => tick + 1);
+          throw sendError;
+        }
+      },
+      draftFailureCleanup: () => clearNativeDraftControls(nativeDraftControlsAtSend),
+    });
   }
 
   async function cancel() {
@@ -3308,23 +3304,32 @@ export function CodexAcpView({
     }
   }
 
-  async function changeModel(modelId) {
-    if (!modelId || activeRuntimeBusy || configApplying) return;
-    if (!activeId) {
-      stageDraftConfigSelection({ model: modelId });
-      return;
-    }
+  /// changeModel / changeConfig / changeMode 的共用骨架：guard 与草稿暂存由调用方
+  /// 表达（三者各自校验的字段与暂存形状不同），这里统一认领 config 操作（key 命名
+  /// 占用的配置槽，供「配置应用中」UI 显示）、执行 setter，并仅当操作仍是当前持有
+  /// 时投影权威 session info；错误也只对当前持有者上屏。
+  async function applyAcpConfigChange(key, setter) {
     const targetId = activeId;
-    const operation = beginAcpConfigOperation(targetId, 'model');
+    const operation = beginAcpConfigOperation(targetId, key);
     if (!operation) return;
+    setError('');
     try {
-      const next = await setAcpModel(targetId, modelId);
+      const next = await setter(targetId);
       if (canApplyAcpConfigOperation(operation)) applySessionInfo(next, targetId);
     } catch (err) {
       if (canApplyAcpConfigOperation(operation)) showError(err);
     } finally {
       finishAcpConfigOperation(operation);
     }
+  }
+
+  async function changeModel(modelId) {
+    if (!modelId || activeRuntimeBusy || configApplying) return;
+    if (!activeId) {
+      stageDraftConfigSelection({ model: modelId });
+      return;
+    }
+    await applyAcpConfigChange('model', targetId => setAcpModel(targetId, modelId));
   }
 
   async function changeConfig(configId, valueId) {
@@ -3333,18 +3338,7 @@ export function CodexAcpView({
       stageDraftConfigSelection({ configs: { [configId]: valueId } });
       return;
     }
-    const targetId = activeId;
-    const operation = beginAcpConfigOperation(targetId, configId);
-    if (!operation) return;
-    setError('');
-    try {
-      const next = await setAcpConfigOption(targetId, configId, valueId);
-      if (canApplyAcpConfigOperation(operation)) applySessionInfo(next, targetId);
-    } catch (err) {
-      if (canApplyAcpConfigOperation(operation)) showError(err);
-    } finally {
-      finishAcpConfigOperation(operation);
-    }
+    await applyAcpConfigChange(configId, targetId => setAcpConfigOption(targetId, configId, valueId));
   }
 
   async function changeMode(modeId) {
@@ -3353,18 +3347,7 @@ export function CodexAcpView({
       stageDraftConfigSelection({ mode: modeId });
       return;
     }
-    const targetId = activeId;
-    const operation = beginAcpConfigOperation(targetId, 'mode');
-    if (!operation) return;
-    setError('');
-    try {
-      const next = await setAcpMode(targetId, modeId);
-      if (canApplyAcpConfigOperation(operation)) applySessionInfo(next, targetId);
-    } catch (err) {
-      if (canApplyAcpConfigOperation(operation)) showError(err);
-    } finally {
-      finishAcpConfigOperation(operation);
-    }
+    await applyAcpConfigChange('mode', targetId => setAcpMode(targetId, modeId));
   }
 
   return (
@@ -3420,24 +3403,12 @@ export function CodexAcpView({
               <span>{t.uiAuxChat.openLabel}</span>
             </button>
           )}
-          <button
-            type="button"
-            onClick={toggleWorkspacePanel}
-            className={`h-8 px-2.5 rounded-lg inline-flex items-center gap-1.5 text-[11px] transition-colors ${
-              workspaceOpen && workspaceDockActive
-                ? 'bg-blue-500/10 text-blue-600 dark:text-blue-300'
-                : 'text-gray-500 dark:text-gray-400 hover:bg-black/[0.04] dark:hover:bg-white/[0.06]'
-            }`}
-            title={codexCopy.workspaceTitle}
-          >
-            <FolderOpen size={14} />
-            <span>{codexCopy.workspace}</span>
-            {workspaceChangeCount > 0 && (
-              <span className="min-w-4 h-4 px-1 rounded-full bg-amber-500/15 text-amber-600 dark:text-amber-300 inline-flex items-center justify-center text-[9px] font-medium">
-                {workspaceChangeCount > 99 ? '99+' : workspaceChangeCount}
-              </span>
-            )}
-          </button>
+          <WorkspacePanelToggle
+            active={workspaceOpen && workspaceDockActive}
+            changeCount={workspaceChangeCount}
+            onToggle={toggleWorkspacePanel}
+            copy={codexCopy}
+          />
         </header>
         )}
         {!isWeb && !activeSession && draftWorkspacePath && (
@@ -3453,20 +3424,12 @@ export function CodexAcpView({
             triggerRef={branchMenuTriggerRef}
             panelRef={branchMenuPanelRef}
           />
-          <button
-            type="button"
-            data-testid="codex-workspace-toggle"
-            onClick={toggleWorkspacePanel}
-            className={`h-8 px-2.5 rounded-lg inline-flex items-center gap-1.5 text-[11px] transition-colors ${
-              workspaceOpen && workspaceDockActive
-                ? 'bg-blue-500/10 text-blue-600 dark:text-blue-300'
-                : 'text-gray-500 dark:text-gray-400 hover:bg-black/[0.04] dark:hover:bg-white/[0.06]'
-            }`}
-            title={codexCopy.workspaceTitle}
-          >
-            <FolderOpen size={14} />
-            <span>{codexCopy.workspace}</span>
-          </button>
+          <WorkspacePanelToggle
+            testId="codex-workspace-toggle"
+            active={workspaceOpen && workspaceDockActive}
+            onToggle={toggleWorkspacePanel}
+            copy={codexCopy}
+          />
         </header>
         )}
 
@@ -4382,7 +4345,6 @@ export function CodexAcpView({
             initialAgentId={subagentPanel.agentId}
             selectionRequestId={subagentPanel.selectionRequestId}
             t={t}
-            theme={theme}
             onClose={closeSubagentPanel}
           />
         )}

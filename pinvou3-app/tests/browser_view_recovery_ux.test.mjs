@@ -164,7 +164,10 @@ test('initial status retry is bounded and the failed empty state exposes retry',
   assert.equal(browserStatusRetryDelay(3), null);
   assert.throws(() => browserStatusRetryDelay(-1), /non-negative safe integer/);
   assert.match(browserView, /const hydrateInitialStatus = async \(failedAttempt = 0\)/);
-  assert.match(browserView, /outcome !== 'failed'/);
+  // refreshStatus resolves false only on a thrown status RPC; the retry fires on
+  // that failure alone (ok=false), never on stale/aborted rounds.
+  assert.match(browserView, /const ok = await refreshStatus\(\)/);
+  assert.match(browserView, /if \(disposed \|\| ok \|\| listenerRegistrationFailed\) return;/);
   assert.match(browserView, /browserStatusRetryDelay\(failedAttempt\)/);
   assert.match(browserView, /data-testid="browser-status-retry"/);
   assert.match(browserView, /onClick=\{retryStatus\}/);

@@ -118,7 +118,7 @@ const describeSelectedElement = (element, L) => {
 // and re-renders memoized children.
 const EMPTY_CHANGES = [];
 
-const DesignInspectorPanel = ({ t, selectedElement, changes = EMPTY_CHANGES, onApplyChange, onClearChanges, docked = false }) => {
+const DesignInspectorPanel = ({ t, selectedElement, changes = EMPTY_CHANGES, onApplyChange, onClearChanges }) => {
   const L = t.uiArtifacts;
   const style = (selectedElement && selectedElement.computedStyle) || {};
   const [textDraft, setTextDraft] = useState('');
@@ -146,9 +146,7 @@ const DesignInspectorPanel = ({ t, selectedElement, changes = EMPTY_CHANGES, onA
     setAdvancedOpen(false);
   }, [selectedElementId, style.fontFamily]);
 
-  const panelCls = docked
-    ? 'flex h-full w-full flex-col overflow-hidden bg-[#F5F5F7] text-[#1D1D1F] dark:bg-[#1C1C1E] dark:text-[#F5F5F7]'
-    : 'w-full max-h-full overflow-y-auto rounded-[16px] border p-3 border-black/[0.08] bg-white text-[#1F1F1F] shadow-lg shadow-black/10 dark:border-white/10 dark:bg-[#1E1F20] dark:text-[#E3E3E3] dark:shadow-xl dark:shadow-black/30';
+  const panelCls = 'flex h-full w-full flex-col overflow-hidden bg-[#F5F5F7] text-[#1D1D1F] dark:bg-[#1C1C1E] dark:text-[#F5F5F7]';
   const inputCls = 'h-9 min-w-0 rounded-[12px] border px-3 text-[13px] outline-none transition-colors border-black/[0.08] bg-white text-[#1D1D1F] focus:border-[#007AFF]/50 dark:border-white/10 dark:bg-[#2C2C2E] dark:text-[#F5F5F7] dark:focus:border-[#0A84FF]/60';
   const labelCls = 'text-[12px] font-medium text-[#6E6E73] dark:text-[#A1A1AA]';
   const sectionCls = 'mt-3 rounded-[18px] border shadow-sm border-black/[0.06] bg-white shadow-black/[0.03] dark:border-white/[0.08] dark:bg-[#2C2C2E] dark:shadow-black/10';
@@ -403,14 +401,14 @@ const DesignInspectorPanel = ({ t, selectedElement, changes = EMPTY_CHANGES, onA
   if (!selectedElement) {
     return (
       <div data-testid="design-inspector-panel" className={panelCls}>
-        <div className={docked ? 'p-4 text-[13px] font-semibold' : 'text-[13px] font-semibold'}>{L.diSelectHint}</div>
+        <div className="p-4 text-[13px] font-semibold">{L.diSelectHint}</div>
       </div>
     );
   }
 
   return (
     <div data-testid="design-inspector-panel" className={panelCls}>
-      <div className={`${docked ? 'min-h-0 flex-1 overflow-y-auto p-4' : ''}`}>
+      <div className="min-h-0 flex-1 overflow-y-auto p-4">
         <div className="flex items-center justify-between gap-3">
           <div className="min-w-0">
             <div className="text-[14px] font-semibold truncate" data-testid="design-selected-element" title={selectedSummary.subtitle}>

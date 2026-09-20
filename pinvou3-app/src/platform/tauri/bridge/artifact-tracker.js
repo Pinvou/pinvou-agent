@@ -4,54 +4,26 @@
 
   // biome-ignore lint/suspicious/noAssignInExpressions: registry bootstrap of the verbatim payload; splitting the statement would diverge from the artifact
   const registry = window.__PINVOU_TAURI_BRIDGE_FEATURES__ = window.__PINVOU_TAURI_BRIDGE_FEATURES__ || {};
-  registry["artifact-tracker"] = function (context) {
+  registry["artifact-tracker"] = function (context) {let pinvouSharedtauriArtifactTrackerCache = null;
+function pinvouSharedtauriArtifactTracker() {
+  if (!pinvouSharedtauriArtifactTrackerCache) pinvouSharedtauriArtifactTrackerCache = window.PinvouBridgeShared.create("tauriArtifactTracker", { state, notify, DELIVERABLE_EXTS, extractArtifactPaths, parseToolResultPayload });
+  return pinvouSharedtauriArtifactTrackerCache;
+}
+
+
     const state = context.state;
     const invoke = context.invoke;
     const notify = context.notify;
     const isScheduledRunSession = context.isScheduledRunSession;
 
   // ── 产物跟踪 ─────────────────────────────────────────────────────
-  function basename(p) {
-    if (!p) return "";
-    const parts = String(p).split(/[\\/]/);
-    return parts[parts.length - 1] || p;
-  }
-  function isAbsPath(p) {
-    return typeof p === "string" && (p.charAt(0) === "/" || /^[A-Za-z]:[\\/]/.test(p));
-  }
-  function normalizedPath(p) {
-    return String(p || "").replaceAll('\\', "/");
-  }
-  function noteArtifactChange(path, event, sessionId) {
-    if (!path) return;
-    state.artifactChange = {
-      seq: (state.artifactChange && state.artifactChange.seq || 0) + 1,
-      path,
-      event: event || "modified",
-      sessionId: sessionId || "",
-      at: Date.now(),
-    };
-    notify();
-  }
-  function isSharedMcpArtifactPath(path) {
-    return normalizedPath(path).includes("/sessions/default/artifacts/");
-  }
-  function artifactBelongsToSession(path, sid) {
-    if (!path || !sid) return false;
-    if (!isAbsPath(path)) return true;
-    if (isSharedMcpArtifactPath(path)) return true;
-    const normalized = normalizedPath(path);
-    if (normalized.includes("/sessions/")) {
-      return normalized.includes("/sessions/" + sid + "/workspace/") ||
-        normalized.includes("/sessions/" + sid + "/artifacts/");
-    }
-    return true;
-  }
-  function filterSessionArtifacts(artifacts, sid) {
-    return (Array.isArray(artifacts) ? artifacts : []).filter(function (a) {
-      return artifactBelongsToSession(a && a.path, sid);
-    });
-  }
+function basename(p) { return pinvouSharedtauriArtifactTracker().basename(p); }
+function isAbsPath(p) { return pinvouSharedtauriArtifactTracker().isAbsPath(p); }
+function normalizedPath(p) { return pinvouSharedtauriArtifactTracker().normalizedPath(p); }
+function noteArtifactChange(path, event, sessionId) { return pinvouSharedtauriArtifactTracker().noteArtifactChange(path, event, sessionId); }
+function isSharedMcpArtifactPath(path) { return pinvouSharedtauriArtifactTracker().isSharedMcpArtifactPath(path); }
+function artifactBelongsToSession(path, sid) { return pinvouSharedtauriArtifactTracker().artifactBelongsToSession(path, sid); }
+function filterSessionArtifacts(artifacts, sid) { return pinvouSharedtauriArtifactTracker().filterSessionArtifacts(artifacts, sid); }
   // 「成品型」扩展名:write_file 写出这类文件即自动当成品进面板(模型常忘 present_artifact)。
   // 办公文档 + markdown 报告 + 数据表 + 图片 + 打包件都算成品(覆盖 AI 常见产出格式)。
   // 中间/草稿(.txt/.json/.xml 等)刻意不在此列 → 不进面板,避免一堆过程文件污染产物列表;
@@ -60,21 +32,8 @@
     "pptx", "ppt", "docx", "doc", "pdf", "html", "htm", "xlsx", "xls",
     "md", "csv", "png", "jpg", "jpeg", "svg", "gif", "webp", "zip",
   ]);
-  // tmp/ 是提示词约定的中间文件目录(instructions.md:中间/临时文件一律写 tmp/,
-  // 不进产出物列表)。tmp/ 下的文件即使扩展名是成品型(.md/.html 等)也不算自动成品;
-  // 确需展示只能靠模型显式 present_artifact(显式 present 不经 isDeliverable 门控)。
-  function isTmpPath(path) {
-    const segs = normalizedPath(path).split("/");
-    for (let i = 0; i < segs.length; i++) {
-      if (segs[i] === "tmp") return true;
-    }
-    return false;
-  }
-  function isDeliverable(path) {
-    if (isTmpPath(path)) return false;
-    const ext = (String(path || "").split(".").pop() || "").toLowerCase();
-    return DELIVERABLE_EXTS.has(ext);
-  }
+
+function isDeliverable(path) { return pinvouSharedtauriArtifactTracker().isDeliverable(path); }
   function trackArtifact(path) {
     if (!path) return;
     const bn = basename(path);
@@ -92,33 +51,12 @@
     state.artifacts.push({ path, basename: bn });
     notify();
   }
-  function markTurnDirtyArtifact(path) {
-    const bn = basename(path);
-    if (!bn) return;
-    if ((state.turnDirtyArtifacts || []).some(function (p) { return basename(p) === bn; })) return;
-    state.turnDirtyArtifacts.push(path);
-  }
-  function untrackArtifact(path) {
-    const before = state.artifacts.length;
-    state.artifacts = state.artifacts.filter(function (a) { return a.path !== path; });
-    if (state.artifacts.length !== before) notify();
-  }
+function markTurnDirtyArtifact(path) { return pinvouSharedtauriArtifactTracker().markTurnDirtyArtifact(path); }
+function untrackArtifact(path) { return pinvouSharedtauriArtifactTracker().untrackArtifact(path); }
   // Prefer an exact normalized path so an older card is not hidden by a newer
   // same-named artifact from another directory. Fall back to the basename for
   // persisted relative paths that must reconcile with an absolute watcher path.
-  function findPresentedArtifact(path) {
-    const bn = basename(path);
-    if (!bn) return null;
-    const normalized = normalizedPath(path);
-    let basenameMatch = null;
-    for (let i = state.chatItems.length - 1; i >= 0; i--) {
-      const it = state.chatItems[i];
-      if (it.type !== "artifact_card" || basename(it.path) !== bn) continue;
-      if (normalizedPath(it.path) === normalized) return it;
-      if (!basenameMatch) basenameMatch = it;
-    }
-    return basenameMatch;
-  }
+function findPresentedArtifact(path) { return pinvouSharedtauriArtifactTracker().findPresentedArtifact(path); }
   // Updates an existing presentation card in place (stable id and position)
   // instead of appending a duplicate card. Returns null when the caller must
   // append a fresh card instead:
@@ -128,33 +66,7 @@
   // - a user message is newer than the existing card with no file mutation
   //   after it: the model is answering a fresh "show it again" request, and
   //   replaying that turn must stay a visible new card.
-  function updatePresentedArtifact(card) {
-    if (!card || !card.path) return null;
-    const existing = findPresentedArtifact(card.path);
-    if (!existing) return null;
-    // A relative tool path may be the only bridge between a persisted relative
-    // card and its absolute watcher path. When it contains no resolvable
-    // directory, same-named files remain ambiguous, so retain the basename
-    // fallback for backward compatibility and rely on abs_path when available.
-    if (isAbsPath(existing.path) && isAbsPath(card.path) &&
-        normalizedPath(existing.path) !== normalizedPath(card.path)) return null;
-    const bn = basename(card.path);
-    for (let i = state.chatItems.length - 1; i >= 0; i--) {
-      const it = state.chatItems[i];
-      if (it === existing) break;
-      if (it.type === "user") return null;
-      if (it.type === "tool" && fileMutationAction(it.name, it.args) &&
-          extractArtifactPaths(it.args).some(function (ap) { return basename(ap) === bn; })) break;
-    }
-    const stableId = existing.id;
-    const stableAbsolutePath = isAbsPath(existing.path) && !isAbsPath(card.path)
-      ? existing.path
-      : null;
-    Object.assign(existing, card, { type: "artifact_card" });
-    if (stableId !== undefined) existing.id = stableId;
-    if (stableAbsolutePath) existing.path = stableAbsolutePath;
-    return existing;
-  }
+function updatePresentedArtifact(card) { return pinvouSharedtauriArtifactTracker().updatePresentedArtifact(card); }
   // 切换 session 时对账:扫 workspace 磁盘,把实际存在、但跟踪列表里没有的文件补进来。
   // 修「文件已生成在盘上、却因 app 中途重启/跟踪遗漏而不在产物面板」(以磁盘为准)。
   async function reconcileArtifacts(sid) {
@@ -183,11 +95,7 @@
       }
     } catch { /* workspace 不存在(新 session)等,忽略 */ }
   }
-  function pushArtifactPath(paths, path) {
-    if (typeof path !== "string" || !path.trim()) return;
-    path = path.trim();
-    if (!paths.includes(path)) paths.push(path);
-  }
+function pushArtifactPath(paths, path) { return pinvouSharedtauriArtifactTracker().pushArtifactPath(paths, path); }
   function extractPatchHeaderPaths(patch, paths) {
     String(patch || "").split(/\r?\n/).forEach(function (line) {
       // eslint-disable-next-line sonarjs/super-linear-regex -- input is split by line and line length is bounded by the patch header; backtracking is negligible
@@ -216,28 +124,12 @@
     extractPatchHeaderPaths(args.patch, paths);
     return paths;
   }
-  function extractArtifactPath(args) {
-    return extractArtifactPaths(args)[0] || null;
-  }
+function extractArtifactPath(args) { return pinvouSharedtauriArtifactTracker().extractArtifactPath(args); }
 
-  function fileMutationAction(name, args) {
-    if (typeof args === "string") {
-      try { args = JSON.parse(args); } catch { args = null; }
-    }
-    if (String(name || "").toLowerCase() === "file") {
-      const action = String(args && args.action || "").toLowerCase();
-      return ["write", "edit", "patch"].includes(action) ? action : null;
-    }
-    if (name === "write" || name === "write_file") return "write";
-    if (name === "edit" || name === "edit_file") return "edit";
-    return null;
-  }
+function fileMutationAction(name, args) { return pinvouSharedtauriArtifactTracker().fileMutationAction(name, args); }
 
 
-  function isPresentArtifactTool(name) {
-    return name === "present_artifact" ||
-      (typeof name === "string" && name.endsWith("present_artifact"));
-  }
+function isPresentArtifactTool(name) { return pinvouSharedtauriArtifactTracker().isPresentArtifactTool(name); }
 
   // 成品卡路径:优先用 server(present_artifact_server.py)解析并验证过的绝对路径 abs_path——
   // 模型常给相对路径,直接拿 args.path 渲染会让卡片 path 是相对,点 Open 报「path must be
@@ -258,25 +150,9 @@
       return null;
     }
   }
-  function artifactPathFromToolOutput(toolResultContent) {
-    const obj = parseToolResultPayload(toolResultContent);
-    if (!obj || typeof obj !== "object") return null;
-    const p = obj.abs_path || obj.path || obj.file_path || obj.local_path;
-    return typeof p === "string" && p ? p : null;
-  }
-  function shouldUseToolOutputAsArtifact(name) {
-    if (!name || isPresentArtifactTool(name)) return false;
-    // Only MCP-style producer tools should be parsed from result JSON. Shell/read
-    // tools often return diagnostic JSON with a `path` field, which is not a
-    // newly created artifact.
-    return typeof name === "string" && name.indexOf("mcp_") === 0;
-  }
-  function presentArtifactAbsPath(toolResultContent, fallbackPath) {
-    fallbackPath = fallbackPath || "";
-    const parsed = artifactPathFromToolOutput(toolResultContent);
-    if (parsed) return parsed;
-    return fallbackPath;
-  }
+function artifactPathFromToolOutput(toolResultContent) { return pinvouSharedtauriArtifactTracker().artifactPathFromToolOutput(toolResultContent); }
+function shouldUseToolOutputAsArtifact(name) { return pinvouSharedtauriArtifactTracker().shouldUseToolOutputAsArtifact(name); }
+function presentArtifactAbsPath(toolResultContent, fallbackPath) { return pinvouSharedtauriArtifactTracker().presentArtifactAbsPath(toolResultContent, fallbackPath); }
 
 
     return {
