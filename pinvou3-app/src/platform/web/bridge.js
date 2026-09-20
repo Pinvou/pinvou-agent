@@ -429,7 +429,6 @@ function pinvouSharedweb() {
       deviceUploadIntegrityMismatch: "the attachment content was corrupted in transit. Upload it again.",
       turnAlreadyInProgress: "⚠️ This chat is already processing a turn. The duplicate send was not executed.",
       compactStart: "⏳ Compacting context", compactDone: "✓ Context compacted", compactFail: "⚠️ Compaction failed", compactCancel: "Context compaction canceled", compactAuto: " (auto)",
-      toolGateDecision: "Permission gate", toolGateAllowed: "allowed", toolGateDenied: "denied", toolGateUnavailable: "could not review and denied", toolGateAgent: "agent", toolGateRisk: "risk",
       compactPruneMerged: "Auto-compaction: tool-result cleanup, messages unchanged",
       compactInactive: "The session engine is not running yet. Send a message before compacting the context",
       gpuUnavailable: "GPU info unavailable",
@@ -560,7 +559,6 @@ function pinvouSharedweb() {
       deviceUploadIntegrityMismatch: "添付ファイルの内容が転送中に破損しました。再度アップロードしてください。",
       turnAlreadyInProgress: "⚠️ このチャットでは別のターンを処理中です。重複した送信は実行されませんでした。",
       compactStart: "⏳ コンテキストを圧縮中", compactDone: "✓ コンテキスト圧縮完了", compactFail: "⚠️ 圧縮に失敗", compactCancel: "コンテキストの圧縮をキャンセルしました", compactAuto: "（自動）",
-      toolGateDecision: "権限ゲート", toolGateAllowed: "許可", toolGateDenied: "拒否", toolGateUnavailable: "レビュー不能のため拒否", toolGateAgent: "エージェント", toolGateRisk: "リスク",
       compactPruneMerged: "自動圧縮: ツール結果を整理、メッセージ数は不変",
       compactInactive: "セッション Engine はまだ起動していません。メッセージを送信してからコンテキストを圧縮してください",
       gpuUnavailable: "GPU 情報を取得できません",
@@ -691,7 +689,6 @@ function pinvouSharedweb() {
       deviceUploadIntegrityMismatch: "附件内容在传输中损坏，请重新上传",
       turnAlreadyInProgress: "⚠️ 当前会话已有一轮正在处理，本次重复发送未执行。",
       compactStart: "⏳ 正在压缩上下文", compactDone: "✓ 上下文压缩完成", compactFail: "⚠️ 压缩失败", compactCancel: "已取消上下文压缩", compactAuto: "（自动）",
-      toolGateDecision: "权限闸门", toolGateAllowed: "允许", toolGateDenied: "拒绝", toolGateUnavailable: "无法审查并拒绝", toolGateAgent: "子智能体", toolGateRisk: "风险",
       compactPruneMerged: "自动压缩：已整理工具结果，消息数不变",
       compactInactive: "会话引擎尚未运行。请先发送一条消息，再压缩上下文",
       gpuUnavailable: "GPU 信息不可用",
@@ -5446,8 +5443,6 @@ async function testImageInputCapability(model, baseUrl, apiKey, modelId) { retur
       modelId: modelId || null,
     });
   }
-async function testSearchProvider(provider, apiKey) { return pinvouSharedweb().testSearchProvider(provider, apiKey); }
-
   // ── Super permission ─────────────────────────────────────────────
 async function refreshSuperPerm() { return pinvouSharedweb().refreshSuperPerm(); }
   async function toggleSuperPerm() {
@@ -5705,26 +5700,6 @@ function discardStaleLoad(seq) { return pinvouSharedweb().discardStaleLoad(seq);
           if (!changed) return;
           const source = kind === "preference" ? "preferences" : kind;
           next[source] = (next[source] || []).filter(function (item) { return item.id !== id; });
-        });
-      }
-      await loadMemoryOverview();
-      return !!(res && res.value);
-    } catch (e) {
-      if (sid === state.activeSessionId) {
-        state.memory = Object.assign({}, state.memory, { error: String(e) });
-        notify();
-      }
-      throw e;
-    }
-  }
-  async function archiveRecentWorkMemory(id) {
-    if (!id || !invoke) return false;
-    const sid = state.activeSessionId; // 同 saveMemoryProfilePatch：切走后不写 B 的面板(与 tauri 对齐，审计补充)
-    try {
-      const res = await invoke("archive_recent_work_memory", { id, sessionId: state.activeSessionId });
-      if (sid === state.activeSessionId) {
-        applyMemoryWriteState(res, function (next, changed) {
-          if (changed) next.recent_work = (next.recent_work || []).filter(function (item) { return item.id !== id; });
         });
       }
       await loadMemoryOverview();
@@ -7486,7 +7461,8 @@ function appendVoiceText(base, text) { return pinvouSharedweb().appendVoiceText(
     installVoiceAsr,
     cancelVoiceAsrSetup,
     closeVoiceAsrSetup,
-    downloadKbModel,    cancelVoiceInput,
+    downloadKbModel,
+    cancelVoiceInput,
     clearVoiceInput,
     appendVoiceText,
     loadScheduledTasks,
@@ -7542,7 +7518,6 @@ function appendVoiceText(base, text) { return pinvouSharedweb().appendVoiceText(
     switchModel,
     testModelConnection,
     probeLocalServerKind,
-    testSearchProvider,
     toggleSuperPerm,
     renderMarkdown,
     enableWebAccess,
@@ -7627,7 +7602,6 @@ function appendVoiceText(base, text) { return pinvouSharedweb().appendVoiceText(
     saveMemoryProfilePatch,
     updateMemoryItem,
     deleteMemoryItem,
-    archiveRecentWorkMemory,
     confirmMemoryCandidate,
     ignoreMemoryCandidate,
     neverMemoryCandidate,

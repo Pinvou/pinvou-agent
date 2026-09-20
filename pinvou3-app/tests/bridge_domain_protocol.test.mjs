@@ -160,7 +160,7 @@ const expectedProtocolHashes = {
   // Recomputed again for the dead-code sweep: the dead deleteMemoryPreference facade
   // (delete_memory_preference invoke) was removed; deleteMemoryItem('preference', ...)
   // still routes to the same command, so the backend surface is unchanged.
-  memory: 'dd38bad3c5861662afece5f17fbf2b1613cd55e960e1993c286d8a02ccbda28a',
+  memory: '30cab38634446a7bef24d559db799641d115e0f07a22a28540a5fd48a9ff7347',
   monitor: '01bf9a7c9b9b3f313cf49e975e6503627ff373caed0f4b3be07a6a98492a7c43',
   // Recomputed for the shared-helper dedup (see batch note above).
   personas: 'c168ac5ede23cb76ef6a93b5323ca4837b4d97395d5e5ca9c2eabf4eb40dd01f',

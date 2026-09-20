@@ -256,7 +256,7 @@ const withUiTimeout = (promise, timeoutMs, fallbackResult) => {
         : (flow.active === 'runtime' ? copy.extract(Math.round(flow.pct || 0)) : copy.connecting));
       return (
         <button type="button" onClick={(e) => { e.stopPropagation(); onClick(); }} title={copy.title} className="shrink-0 flex items-center gap-1.5 pl-1.5 pr-2.5 py-1.5 rounded-full bg-blue-50 dark:bg-blue-500/10 border border-blue-200 dark:border-blue-500/30 text-blue-600 dark:text-blue-300 text-[12px] font-medium">
-          <Spinner size={12} variant="top" tone="brand" />
+          <Spinner size={12} tone="brand" />
           <span className="tabular-nums whitespace-nowrap">{label}</span>
         </button>
       );
@@ -2196,7 +2196,7 @@ const withUiTimeout = (promise, timeoutMs, fallbackResult) => {
                   <EmptyState
                     testId="recycle-bin-loading"
                     className="py-24 flex flex-col items-center"
-                    icon={<Spinner size={24} variant="top" tone="brand" className="mb-4" />}
+                    icon={<Spinner size={24} tone="brand" className="mb-4" />}
                     title={storeCopy.recycleBinLoading}
                     titleClassName="text-slate-500 dark:text-slate-400"
                   />

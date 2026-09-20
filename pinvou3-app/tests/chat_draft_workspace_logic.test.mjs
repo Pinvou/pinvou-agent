@@ -59,7 +59,6 @@ function loadSessionsFeature(overrides) {
     personaEvents: [],
     pinvouReviews: [],
     pinvouSceneEvents: [],
-    scheduledTaskDraft: null,
   };
   const sessionStates = {};
   const deferreds = {};

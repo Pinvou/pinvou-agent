@@ -211,7 +211,6 @@ const sessionState = {
   queued: [],
   activePersona: null,
   mountedCollection: null,
-  scheduledTaskDraft: null,
 };
 const sessionStates = { [deletedSessionId]: { messages: sessionState.messages } };
 const sessionFactory = sessionWindow.__PINVOU_TAURI_BRIDGE_FEATURES__.sessions;

@@ -82,7 +82,6 @@ function loadTauriSessionsFeature(overrides) {
     personaEvents: [],
     pinvouReviews: [],
     pinvouSceneEvents: [],
-    scheduledTaskDraft: null,
   };
   const sessionStates = {};
   const purgeLog = [];

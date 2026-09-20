@@ -472,78 +472,6 @@ pub async fn get_image_input_capability(
     })
 }
 
-fn parse_search_provider(raw: &str) -> Result<SearchProvider, String> {
-    match raw.trim().to_ascii_lowercase().as_str() {
-        "bing" => Ok(SearchProvider::Bing),
-        "metaso" => Ok(SearchProvider::Metaso),
-        "bocha" => Ok(SearchProvider::Bocha),
-        "baidu" => Ok(SearchProvider::Baidu),
-        "tavily" => Ok(SearchProvider::Tavily),
-        other => Err(format!("不支持的搜索源: {other}")),
-    }
-}
-
-fn resolve_saved_search_key(provider: SearchProvider) -> Result<Option<String>, String> {
-    for name in provider.env_key_names() {
-        if let Ok(value) = std::env::var(name) {
-            let trimmed = value.trim();
-            if !trimmed.is_empty() {
-                return Ok(Some(trimmed.to_string()));
-            }
-        }
-    }
-    let mut prefs = UserPrefs::load();
-    prefs.refresh_credential_states_with_store(&SystemCredentialStore::new());
-    let Some(credential) = prefs.search.credentials.get(&provider) else {
-        return Ok(None);
-    };
-    let Some(reference) = &credential.credential_ref else {
-        return Ok(None);
-    };
-    SystemCredentialStore::new()
-        .get(reference)
-        .map_err(|error| error.user_message())
-        .map(|value| {
-            value
-                .map(|key| key.trim().to_string())
-                .filter(|key| !key.is_empty())
-        })
-}
-
-#[tauri::command]
-pub async fn test_search_provider(
-    provider: String,
-    api_key: Option<String>,
-) -> Result<String, String> {
-    let provider = parse_search_provider(&provider)?;
-    if provider == SearchProvider::Bing {
-        let client = reqwest::Client::builder()
-            .timeout(std::time::Duration::from_secs(8))
-            .build()
-            .map_err(|e| format!("client: {e}"))?;
-        return match client
-            .get("https://www.bing.com/search")
-            .query(&[("q", "pinvou")])
-            .send()
-            .await
-        {
-            Ok(resp) if resp.status().is_success() => Ok("Bing 搜索可用".to_string()),
-            Ok(resp) => Err(format!("Bing HTTP {}", resp.status().as_u16())),
-            Err(e) => Err(format!("Bing 搜索不可达: {e}")),
-        };
-    }
-    let provided_key = api_key.unwrap_or_default().trim().to_string();
-    let key = if provided_key.is_empty() {
-        resolve_saved_search_key(provider)?.unwrap_or_default()
-    } else {
-        provided_key
-    };
-    if key.trim().is_empty() {
-        return Err("请先填写并保存该搜索源的 API Key".to_string());
-    }
-    Ok("搜索源凭据已配置".to_string())
-}
-
 #[derive(Debug, Clone, Serialize)]
 pub struct ModelConnectionTestResult {
     pub ok: bool,
@@ -1425,6 +1353,8 @@ use crate::platform::prefs::CredentialStateOps;
 mod tests {
     use super::*;
     use crate::platform::paths::tests::ENV_LOCK;
+    // SearchProvider 已从 commands prelude 收窄（lib 侧仅测试仍引用）。
+    use crate::platform::prefs::SearchProvider;
 
     #[test]
     fn model_connection_http_result_maps_actionable_categories() {

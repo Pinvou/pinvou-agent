@@ -1,11 +1,26 @@
 import assert from 'node:assert/strict';
 import { readFile } from 'node:fs/promises';
+import vm from 'node:vm';
 import {
   sessionTitlePlainText,
   sessionTitlePresentation,
   splitAttachmentLine,
 } from '../src/features/attachments/attachment-message.js';
 import { _ARTIFACT_FMT } from '../src/shared/artifact-utils.js';
+
+// formatAttachmentDisplayText 已并入共享载荷（bridge-shared-helpers.js，普通脚本无
+// ES 导出）：从源码提取函数体求值，保证断言始终绑定两条 lane 实际执行的实现。
+const helpersSource = await readFile(
+  new URL('../src/shared/bridge-shared-helpers.js', import.meta.url),
+  'utf8',
+);
+const formatFnSource = helpersSource.match(
+  /function formatAttachmentDisplayText\(text, attachments\) \{[\s\S]*?\n {2}\}/,
+);
+assert.ok(formatFnSource, 'formatAttachmentDisplayText must stay in bridge-shared-helpers.js');
+const formatAttachmentDisplayText = vm.runInNewContext(
+  `(${formatFnSource[0]})`,
+);
 
 assert.equal(
   Object.keys(_ARTIFACT_FMT).length,
@@ -16,6 +31,17 @@ assert.equal(
   _ARTIFACT_FMT.data.viewBox,
   '0 -960 960 960',
   'the data icon uses negative Material coordinates and must remain inside its SVG viewBox',
+);
+
+// ── formatAttachmentDisplayText: 序列化方向（与 splitAttachmentLine 的解析方向互为逆）──
+assert.equal(
+  formatAttachmentDisplayText('看一下这个', ['预算 · 最终.xlsx', ' leading.txt']),
+  '看一下这个\n\n📎 ["预算 · 最终.xlsx"," leading.txt"]',
+);
+assert.equal(
+  formatAttachmentDisplayText('第一条\n\n第二条', ['一.pdf', '二.xlsx']),
+  '第一条\n\n第二条\n\n📎 ["一.pdf","二.xlsx"]',
+  'a merged queue must emit one attachment marker containing every attachment',
 );
 
 // ── splitAttachmentLine: JSON 协议无损保存文件名，旧分隔格式继续可读 ──

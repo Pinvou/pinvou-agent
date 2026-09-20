@@ -223,13 +223,6 @@ pub fn web_access_set_relay(
     manager.set_relay_address(&address)
 }
 
-#[tauri::command]
-pub fn web_access_reset_relay(
-    manager: State<'_, RemoteControlManager>,
-) -> Result<RelaySettingsInfo, String> {
-    manager.reset_relay_address()
-}
-
 /// Desktop-only readiness handshake. It is intentionally absent from the Web
 /// command allowlist.
 #[tauri::command]

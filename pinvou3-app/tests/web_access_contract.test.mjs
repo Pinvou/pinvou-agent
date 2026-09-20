@@ -126,7 +126,6 @@ function rustCommandBlock(source, command) {
 for (const command of [
   'chat',
   'ingest_file',
-  'save_session_messages',
   'transcribe_voice_audio',
   'save_model',
   'delete_model',

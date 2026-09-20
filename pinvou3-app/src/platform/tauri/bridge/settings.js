@@ -252,7 +252,6 @@ async function testImageInputCapability(model, baseUrl, apiKey, modelId) { retur
       modelId: modelId || null,
     });
   }
-async function testSearchProvider(provider, apiKey) { return pinvouSharedtauriSettings().testSearchProvider(provider, apiKey); }
 
     return {
       loadSettings,
@@ -280,8 +279,7 @@ async function testSearchProvider(provider, apiKey) { return pinvouSharedtauriSe
       switchModel,
       testModelConnection,
       testImageInputCapability,
-      probeLocalServerKind,
-      testSearchProvider
+      probeLocalServerKind
     };
   };
 })(window);

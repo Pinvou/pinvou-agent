@@ -2091,7 +2091,6 @@ function composePlanMarkdown(snapshots) { return pinvouSharedtauriMain().compose
   const getImageInputCapability = settingsFeature.getImageInputCapability;
   const testImageInputCapability = settingsFeature.testImageInputCapability;
   const probeLocalServerKind = settingsFeature.probeLocalServerKind;
-  const testSearchProvider = settingsFeature.testSearchProvider;
 
   const interactionFeature = installBridgeFeature("interaction", {
     state, invoke, notify, bt,
@@ -2155,7 +2154,6 @@ function composePlanMarkdown(snapshots) { return pinvouSharedtauriMain().compose
   const saveMemoryProfilePatch = memoryFeature.saveMemoryProfilePatch;
   const updateMemoryItem = memoryFeature.updateMemoryItem;
   const deleteMemoryItem = memoryFeature.deleteMemoryItem;
-  const archiveRecentWorkMemory = memoryFeature.archiveRecentWorkMemory;
   const confirmMemoryCandidate = memoryFeature.confirmMemoryCandidate;
   const ignoreMemoryCandidate = memoryFeature.ignoreMemoryCandidate;
   const neverMemoryCandidate = memoryFeature.neverMemoryCandidate;
@@ -2473,7 +2471,6 @@ function composePlanMarkdown(snapshots) { return pinvouSharedtauriMain().compose
       saveSettingsAndRestart,
       saveSearchSettings,
       saveSearchSettingsAndRestart,
-      testSearchProvider,
     },
     feedback: { submitFeedback },
     vllm: {
@@ -2592,7 +2589,6 @@ function composePlanMarkdown(snapshots) { return pinvouSharedtauriMain().compose
       saveMemoryProfilePatch,
       updateMemoryItem,
       deleteMemoryItem,
-      archiveRecentWorkMemory,
       confirmMemoryCandidate,
       ignoreMemoryCandidate,
       neverMemoryCandidate,

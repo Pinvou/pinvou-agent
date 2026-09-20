@@ -38,7 +38,7 @@ use persistence::{
     normalize_relay_address, pairing_info, pending_revocation_ack, pending_revocation_key,
     persist_config, persist_rpc_ledger, process_lock_path, public_url, queue_pending_revocation,
     relay_settings_path, remote_public_base_url, remote_relay_ws_url, remove_config,
-    remove_private_file, remove_rpc_ledger, validate_config,
+    remove_rpc_ledger, validate_config,
 };
 
 // RPC admission, response shaping, scope validation, and the stream/event
@@ -903,16 +903,6 @@ impl RemoteControlManager {
     pub fn set_relay_address(&self, input: &str) -> Result<RelaySettingsInfo, String> {
         let settings = normalize_relay_address(input)?;
         atomic_write_private_json(&relay_settings_path(), &settings, "Web relay settings")?;
-        let has_endpoint = self.inner.lock().endpoint.is_some();
-        if has_endpoint || load_config()?.is_some() {
-            self.refresh()?;
-        }
-        Ok(self.relay_settings())
-    }
-
-    /// 恢复内置默认 Relay。语义与 `set_relay_address` 对称。
-    pub fn reset_relay_address(&self) -> Result<RelaySettingsInfo, String> {
-        remove_private_file(&relay_settings_path())?;
         let has_endpoint = self.inner.lock().endpoint.is_some();
         if has_endpoint || load_config()?.is_some() {
             self.refresh()?;

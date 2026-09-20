@@ -92,7 +92,6 @@ function loadFeature(name, contextOverrides, stateOverrides) {
     personaEvents: [],
     pinvouReviews: [],
     pinvouSceneEvents: [],
-    scheduledTaskDraft: null,
   }, stateOverrides || {});
   const calls = { invoke: [], notify: 0 };
   // The custom invoke responder is wired separately from the overrides: the

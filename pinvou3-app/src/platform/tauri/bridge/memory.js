@@ -173,26 +173,6 @@ function discardStaleLoad(seq) { return pinvouSharedtauriMemory().discardStaleLo
       throw e;
     }
   }
-  async function archiveRecentWorkMemory(id) {
-    if (!id || !invoke) return false;
-    const sid = state.activeSessionId; // same as saveMemoryProfilePatch: after switching away, never write to B's panel (audit follow-up)
-    try {
-      const res = await invoke("archive_recent_work_memory", { id, sessionId: state.activeSessionId });
-      if (sid === state.activeSessionId) {
-        applyMemoryWriteState(res, function (next, changed) {
-          if (changed) next.recent_work = (next.recent_work || []).filter(function (item) { return item.id !== id; });
-        });
-      }
-      await loadMemoryOverview();
-      return !!(res && res.value);
-    } catch (e) {
-      if (sid === state.activeSessionId) {
-        state.memory = Object.assign({}, state.memory, { error: String(e) });
-        notify();
-      }
-      throw e;
-    }
-  }
   async function confirmMemoryCandidate(memoryId, chatItemId) {
     if (!memoryId) return;
     const sid = state.activeSessionId; // captured at entry: both the candidate-card patch and panel writes route back to the originating session (audit follow-up)
@@ -276,7 +256,6 @@ async function loadOrganizeHistory() { return pinvouSharedtauriMemory().loadOrga
       saveMemoryProfilePatch,
       updateMemoryItem,
       deleteMemoryItem,
-      archiveRecentWorkMemory,
       confirmMemoryCandidate,
       ignoreMemoryCandidate,
       neverMemoryCandidate,
