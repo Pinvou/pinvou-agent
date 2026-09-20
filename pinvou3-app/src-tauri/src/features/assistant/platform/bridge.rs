@@ -2813,6 +2813,7 @@ impl Pinvou3Bridge {
             workspace_roots_resolver: None,
             code_session_predicate: None,
             external_acp_session_predicate: None,
+            workspace_roots_resolver: None,
             image_analyze_always: false,
         }
     }
