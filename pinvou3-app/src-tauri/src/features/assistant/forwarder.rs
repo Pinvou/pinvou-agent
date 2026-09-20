@@ -35,7 +35,8 @@ fn mcp_boot_summary_detail(
 /// session-boot event. A server counts as failed when it is enabled but did
 /// not reach a ready connection; disabled servers are configuration state,
 /// not boot failures. When the engine snapshot carries no error text the
-/// reason is recorded as `unknown`.
+/// reason is recorded as `unknown`; a server waiting on OAuth is flagged
+/// `auth_required=true` so "needs login" stays distinguishable from "broken".
 fn mcp_boot_failure_details(
     session_id: &str,
     generation: u64,
@@ -46,13 +47,49 @@ fn mcp_boot_failure_details(
         .iter()
         .filter(|server| server.enabled && !server.connected)
         .map(|server| {
+            let auth_flag = if server.auth_required {
+                " auth_required=true"
+            } else {
+                ""
+            };
             format!(
-                "sid={session_id} generation={generation} server={} error={}",
+                "sid={session_id} generation={generation} server={}{auth_flag} error={}",
                 server.name,
                 server.error.as_deref().unwrap_or("unknown"),
             )
         })
         .collect()
+}
+
+/// Decide what a terminal MCP session-boot receipt persists to the startup
+/// timeline: `Some((summary line, per-server failure lines))` for a finished
+/// boot with at least one failed server, `None` for progress events and for
+/// boots where every enabled server reached a ready connection (nothing worth
+/// persisting). Unit-tested; the forwarder arm only forwards the result, so a
+/// wiring regression cannot silently switch release builds back to zero
+/// diagnostics.
+fn mcp_boot_persistence(
+    session_id: &str,
+    generation: u64,
+    finished: bool,
+    snapshot: &deepseek_tui::mcp::McpManagerSnapshot,
+) -> Option<(String, Vec<String>)> {
+    if !finished {
+        return None;
+    }
+    let failures = mcp_boot_failure_details(session_id, generation, snapshot);
+    if failures.is_empty() {
+        return None;
+    }
+    Some((
+        mcp_boot_summary_detail(
+            session_id,
+            generation,
+            snapshot.servers.len(),
+            failures.len(),
+        ),
+        failures,
+    ))
 }
 
 /// 后台 task：持续读 rx_event 转 Tauri emit。
@@ -1496,10 +1533,8 @@ pub(crate) fn spawn_event_forwarder(
                     snapshot,
                     finished,
                     ..
-                } => {
-                    let failure_details =
-                        mcp_boot_failure_details(&session_id, generation, &snapshot);
-                    if finished && !failure_details.is_empty() {
+                } => match mcp_boot_persistence(&session_id, generation, finished, &snapshot) {
+                    Some((summary, failure_details)) => {
                         log::warn!(
                             "[pinvou3][chat] mcp session boot sid={} generation={} failed={}/{}",
                             session_id,
@@ -1510,12 +1545,7 @@ pub(crate) fn spawn_event_forwarder(
                         crate::platform::startup::mark_with_detail(
                             "rust",
                             "mcp_session_boot:finished",
-                            &mcp_boot_summary_detail(
-                                &session_id,
-                                generation,
-                                snapshot.servers.len(),
-                                failure_details.len(),
-                            ),
+                            &summary,
                         );
                         for detail in &failure_details {
                             crate::platform::startup::mark_with_detail(
@@ -1524,7 +1554,8 @@ pub(crate) fn spawn_event_forwarder(
                                 detail,
                             );
                         }
-                    } else {
+                    }
+                    None => {
                         log::debug!(
                             "[pinvou3][chat] mcp session boot sid={} generation={} finished={}",
                             session_id,
@@ -1532,7 +1563,7 @@ pub(crate) fn spawn_event_forwarder(
                             finished
                         );
                     }
-                }
+                },
                 Event::ToolProjectionWarning {
                     provider,
                     omitted_tool_count,
@@ -1634,7 +1665,7 @@ pub(crate) fn spawn_event_forwarder(
 
 #[cfg(test)]
 mod mcp_boot_persistence_tests {
-    use super::{mcp_boot_failure_details, mcp_boot_summary_detail};
+    use super::{mcp_boot_failure_details, mcp_boot_persistence, mcp_boot_summary_detail};
     use deepseek_tui::mcp::{McpManagerSnapshot, McpServerCapabilityMetadata, McpServerSnapshot};
 
     fn server(
@@ -1706,6 +1737,36 @@ mod mcp_boot_persistence_tests {
         assert_eq!(
             mcp_boot_summary_detail("sess-1", 9, 5, 2),
             "sid=sess-1 generation=9 servers=5 failed=2"
+        );
+    }
+
+    #[test]
+    fn auth_required_failures_are_flagged_as_needing_login() {
+        let mut pending = server("git", true, false, Some("oauth pending"));
+        pending.auth_required = true;
+        let snap = snapshot(vec![pending]);
+        assert_eq!(
+            mcp_boot_failure_details("sess-1", 4, &snap),
+            vec!["sid=sess-1 generation=4 server=git auth_required=true error=oauth pending"]
+        );
+    }
+
+    #[test]
+    fn only_terminal_boots_with_failures_are_persisted() {
+        let failed = snapshot(vec![server("git", true, false, Some("connection refused"))]);
+        let healthy = snapshot(vec![server("fs", true, true, None)]);
+
+        // Progress receipts and finished healthy boots are not persisted.
+        assert_eq!(mcp_boot_persistence("sess-1", 1, false, &failed), None);
+        assert_eq!(mcp_boot_persistence("sess-1", 2, true, &healthy), None);
+
+        // A finished boot with failures persists one summary + one line per failure.
+        let (summary, details) = mcp_boot_persistence("sess-1", 3, true, &failed)
+            .expect("terminal failure must persist");
+        assert_eq!(summary, "sid=sess-1 generation=3 servers=1 failed=1");
+        assert_eq!(
+            details,
+            vec!["sid=sess-1 generation=3 server=git error=connection refused"]
         );
     }
 }
