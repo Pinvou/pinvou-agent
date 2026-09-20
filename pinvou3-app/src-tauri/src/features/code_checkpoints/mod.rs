@@ -48,8 +48,10 @@ pub use turns::count_user_turns_in_json;
 
 /// 每会话保留的 checkpoint 上限（LRU，超出裁掉最老条目）。
 const MAX_CHECKPOINTS: usize = 20;
-/// diff 预览的 patch 文本上限（超出截断，changes 清单不受影响）。
-const DIFF_PATCH_LIMIT: usize = 512 * 1024;
+/// diff 预览的 patch 文本上限（超出截断，changes 清单不受影响）。pub 供 CLI
+/// 消费方直接引用本常量而非镜像字面量（与 codex_acp workspace 限值同一契约：
+/// 本处漂移必须断 CLI 的 build）。
+pub const DIFF_PATCH_LIMIT: usize = 512 * 1024;
 /// 执行根体积门（对齐底座 snapshot 的 DEFAULT_MAX_WORKSPACE_BYTES_FOR_SNAPSHOT）：
 /// 超过 2GB 的目录不做快照——每轮全量 `add -A` 的 IO/CPU 与影子仓库存储都不
 /// 划算，该会话如实没有回退入口（设计 §5 降级语义）。
@@ -1727,6 +1729,12 @@ mod tests {
             "含空格的秘密路径不得出现在清单: {:?}",
             diff.changes
         );
+        // patch 同样不得携带秘密段（---/+++ 兜底剔除对含空格路径的覆盖）。
+        assert!(
+            !diff.patch.contains("SECRET") && !diff.patch.contains(".env"),
+            "含空格的秘密段不得进入 patch: {:?}",
+            diff.patch
+        );
     }
 
     /// 评审 M2 回归：restore 打 PreRestore 触发 LRU 淘汰时不得淘汰恢复目标
@@ -1908,6 +1916,69 @@ mod tests {
             diff.changes
         );
         assert!(diff.changes.iter().any(|change| change.path == "ok.txt"));
+        // patch 面向 CLI 直接上屏：秘密段（含路径与原文）必须被整段剔除，
+        // 正常文件的差异必须保留。
+        assert!(
+            !diff.patch.contains("SECRET"),
+            "秘密原文不得进入 patch: {:?}",
+            diff.patch
+        );
+        assert!(
+            !diff.patch.contains(".env"),
+            "秘密路径不得进入 patch: {:?}",
+            diff.patch
+        );
+        assert!(
+            diff.patch.contains("ok.txt"),
+            "正常文件差异必须保留在 patch: {:?}",
+            diff.patch
+        );
+    }
+
+    /// patch 输出超过 `DIFF_PATCH_LIMIT` 时必须截断并打标，且截断在秘密
+    /// 过滤之后执行（被截掉的尾部不可能是未过滤内容）。
+    #[test]
+    fn diff_patch_truncates_to_limit_with_flag() {
+        if !git_available() {
+            return;
+        }
+        let ledger = TestDir::new("patchtrunc-ledger");
+        let exec = TestDir::new("patchtrunc-exec");
+        exec.write("big.txt", "v1\n");
+        let target = create_checkpoint(
+            ledger.path(),
+            exec.path(),
+            Some(1),
+            CheckpointKind::Turn,
+            "t1",
+        )
+        .unwrap();
+        exec.write(
+            "big.txt",
+            &format!("v2\n{}\n", "x".repeat(DIFF_PATCH_LIMIT)),
+        );
+        let diff = diff_checkpoint(ledger.path(), exec.path(), &target.id).unwrap();
+        assert!(
+            diff.patch_truncated,
+            "超过上限的 patch 必须打截断标: len={}",
+            diff.patch.len()
+        );
+        // 截断语义：正文钳在 DIFF_PATCH_LIMIT，尾部追加截断提示。
+        assert!(
+            diff.patch.ends_with("已截断"),
+            "截断必须带提示尾注: {:?}",
+            &diff.patch[diff.patch.len() - 64..]
+        );
+        assert!(
+            diff.patch.len() <= DIFF_PATCH_LIMIT + 64,
+            "patch 长度必须被钳制（正文 + 尾注）: len={}",
+            diff.patch.len()
+        );
+        assert!(
+            diff.patch.contains("big.txt"),
+            "截断保留的头部应仍含文件头: {:?}",
+            &diff.patch[..diff.patch.len().min(200)]
+        );
     }
 
     /// 按 id 作废「未成活」快照：条目与 ref 都移除；不存在幂等 false；
