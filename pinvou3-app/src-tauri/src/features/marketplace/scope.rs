@@ -259,7 +259,10 @@ fn merge_ids_into_scope(file: &mut DisabledBundlesFile, key: &str, ids: Vec<Stri
 
 /// 写完整文件（原子替换，与旧文件同范式）。写失败上抛：开关/可见性是用户治理
 /// 状态，「静默丢写」会让调用方在半应用状态上继续走（前端按成功提示）。内部
-/// best-effort 调用方（读路径迁移、卸载清理、默认策略同步）自行降级为日志。
+/// best-effort 调用方自行降级为日志：读路径迁移、卸载清理（残留方向
+/// fail-closed）、DenyAll 安装同步。注意 DenyAll 同步的降级是同意门 fail-open
+/// （写失败 = 新装包在已初始化 DenyAll scope 默认可用），是已知的过渡让步，
+/// 不是无害降级。
 fn save_disabled_bundles_file(file: &DisabledBundlesFile) -> Result<(), String> {
     let json = serde_json::to_string(file)
         .map_err(|error| format!("serialize disabled_bundles.json failed: {error}"))?;
@@ -487,19 +490,18 @@ pub fn project_skills_enabled() -> bool {
     load_disabled_bundles_file().project_skills_enabled
 }
 
-/// 写项目级 skills 开关。落盘后由调用方重写在线会话组合目录。
-pub fn set_project_skills_enabled(enabled: bool) {
+/// 写项目级 skills 开关。落盘后由调用方重写在线会话组合目录。写失败原样上抛
+/// （用户治理状态不得静默丢写，与开关/可见性写同一原则）。
+pub fn set_project_skills_enabled(enabled: bool) -> Result<(), String> {
     let _guard = DISABLED_BUNDLES_FILE_LOCK
         .lock()
         .unwrap_or_else(|poisoned| poisoned.into_inner());
     let mut file = load_disabled_bundles_file_locked();
     if file.project_skills_enabled == enabled {
-        return;
+        return Ok(());
     }
     file.project_skills_enabled = enabled;
-    if let Err(error) = save_disabled_bundles_file(&file) {
-        eprintln!("[scope] write disabled_bundles.json failed: {error}");
-    }
+    save_disabled_bundles_file(&file)
 }
 
 #[cfg(test)]
@@ -713,9 +715,9 @@ mod tests {
     fn project_skills_roundtrip() {
         with_temp_home("pinvou3-scope", || {
             assert!(!project_skills_enabled(), "项目技能默认关");
-            set_project_skills_enabled(true);
+            set_project_skills_enabled(true).unwrap();
             assert!(project_skills_enabled());
-            set_project_skills_enabled(false);
+            set_project_skills_enabled(false).unwrap();
             assert!(!project_skills_enabled());
         });
     }

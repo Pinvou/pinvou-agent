@@ -3449,7 +3449,10 @@ mod tests {
     /// 两个通道排除——turn 快照报 enabled=false，工具全名进 disallowed 口径。
     /// 快照（mcp_inventory::turn_reminder）与工具白名单
     /// （unavailable_tool_names_for）都吃 unavailable = disabled ∪ hidden 并集，
-    /// 模型不会再被两个互相矛盾的真相源喂养。
+    /// 模型不会再被两个互相矛盾的真相源喂养。注：快照腿经 build_send_message_op
+    /// 全链端到端；白名单腿是 `unavailable_tool_names_for` 的映射级断言，引擎
+    /// 组装点（build_engine_config / shape_disallowed_tools）经改名编译期绑定
+    /// 同一来源，无运行时测试。
     #[test]
     fn hidden_bundle_gates_snapshot_and_tool_allowlist_alike() {
         let (_lock, _env) = locked_env(&["PINVOU3_HOME"]);

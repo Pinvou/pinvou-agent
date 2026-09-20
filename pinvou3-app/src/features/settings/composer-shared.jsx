@@ -454,6 +454,9 @@ window.addEventListener('pinvou:chat-round-committed', (event) => {
       const [hidden, setHidden] = useState(() => new Set()); // 被不可见的包 id(可见性预过滤，按 scope 持久)
       const [projectSkillsEnabled, setProjectSkillsEnabled] = useState(false); // 项目级 skills(仅 code scope 生效)
       const [projectSkillsHelp, setProjectSkillsHelp] = useState(false); // 项目技能帮助弹窗(功能说明+扫描目录)
+      // 工具菜单内开关/项目技能的落盘失败提示：后端把治理写失败上抛到命令边界，
+      // 这里回滚乐观置位后展示（下一次切换尝试前清除），不得按成功提示。
+      const [toggleError, setToggleError] = useState('');
       // CLI 连接器连接/技能状态：key → { on: 是否已连接, enabled: 技能是否启用(未手动停用) }。
       const [connectorStates, setConnectorStates] = useState(initialConnectorStates);
       // 启动时加载已装工具 + 全局持久的禁用列表(持久语义:新窗口/新对话都继承)
@@ -528,26 +531,47 @@ window.addEventListener('pinvou:chat-round-committed', (event) => {
         if (toolSwitchDisabled || (hasActiveSession && enabled && !pending.ids.has(id))) return;
         // scope 收敛后：工具/技能/CLI 开关统一为包 id 单一禁用集（后端
         // disabled_bundles.json），技能行 id 即包 id，不再带 `skill:` 前缀。
+        setToggleError('');
         const next = new Set(disabled);
         next.has(id) ? next.delete(id) : next.add(id);
         setDisabled(next);
         // 记录/撤销未提交的「打开」：发送新一轮后由 pinvou:chat-round-committed 转正锁死。
+        const wasPending = pending.ids.has(id);
         if (enabled) pending.ids.delete(id); else pending.ids.add(id);
         // 按 scope 持久:落盘 + 广播给所有在跑引擎,关一次该 scope 所有新对话/新窗口都继承。
+        // 落盘失败时后端已把错误上抛到命令边界：回滚乐观置位与 pending 记录并展示，
+        // 不得吞掉后让开关停在假成功态。
         if (bridge.available) {
           invokeTauri('set_disabled_connectors',
-            { connectorIds: [...next], scope: toolScope }).catch(() => {});
+            { connectorIds: [...next], scope: toolScope })
+            .catch((error) => {
+              // 回滚到后端真值（重读禁用/可见性/项目技能三态），不回放本地
+              // 快照——与并发的后续切换可组合；pending 的未提交「打开」按
+              // 切换前成员资格反演撤销。
+              refreshToolsMenu(() => true);
+              if (wasPending) pending.ids.add(id); else pending.ids.delete(id);
+              const copy = t && t.uiToolStore && t.uiToolStore.operationFailedWith;
+              setToggleError(copy ? copy(String(error)) : String(error));
+            });
         }
       }
       function toggleProjectSkills() {
         // 与 toggleTool 同一规则：pending 的「打开」在发送新一轮前可改回。
         const pending = pendingEnablesFor(toolScope);
         if (toolSwitchDisabled || (hasActiveSession && projectSkillsEnabled && !pending.projectSkills)) return;
+        setToggleError('');
         const next = !projectSkillsEnabled;
         setProjectSkillsEnabled(next);
+        const wasPending = pending.projectSkills;
         pending.projectSkills = next;
         if (bridge.available) {
-          invokeTauri('set_project_skills_enabled', { enabled: next }).catch(() => {});
+          // 落盘失败回滚同 toggleTool：用户治理写不得停在假成功态。
+          invokeTauri('set_project_skills_enabled', { enabled: next }).catch((error) => {
+            refreshToolsMenu(() => true);
+            pending.projectSkills = wasPending;
+            const copy = t && t.uiToolStore && t.uiToolStore.operationFailedWith;
+            setToggleError(copy ? copy(String(error)) : String(error));
+          });
         }
       }
       const menuState = buildComposerToolMenuState({
@@ -639,6 +663,9 @@ window.addEventListener('pinvou:chat-round-committed', (event) => {
           <ComposerPopover open={open} onClose={() => setOpen(false)} triggerRef={triggerRef} compact={compact}
             menuProps={{ 'data-testid': 'composer-tool-menu' }}
             desktopClassName="absolute bottom-full left-0 mb-2 w-72 max-h-[420px] z-50 overflow-y-auto custom-scrollbar bg-white dark:bg-[#1E1E20] border border-black/5 dark:border-white/10 rounded-2xl shadow-xl p-1.5">
+                {toggleError && (
+                  <div className="px-3 py-1.5 text-[11px] leading-4 text-[#FF3B30] dark:text-[#FF6B6B]" data-testid="composer-tool-menu-error">{toggleError}</div>
+                )}
                 {connectedServices.map(switchRow)}
                 {toolRows.map(switchRow)}
                 {localizedSkillRows.length === 0 ? (
