@@ -1598,7 +1598,9 @@ const ToolWelcomeCard = ({ toolId, _theme, t, onSend }) => {
                   : '';
                 throw new Error(missing || sceneCopy.failure);
               }
-              if (prepared.installed) {
+              // 自动安装与自动就地开启（隐藏/禁用 → 可用）都是对用户治理状态
+              // 的变更：必须给 ready 提示，不得静默改写。
+              if (prepared.installed || prepared.reEnabled) {
                 setSceneCapabilityStatus({ kind: 'ready', text: sceneCopy.ready });
                 window.setTimeout(() => setSceneCapabilityStatus((current) => (
                   current && current.kind === 'ready' ? null : current

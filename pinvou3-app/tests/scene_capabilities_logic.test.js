@@ -4,18 +4,26 @@ const fs = require('fs');
 const path = require('path');
 const vm = require('vm');
 
+const companionPath = path.join(__dirname, '..', 'src', 'shared', 'companion-packages.js');
 const logicPath = path.join(__dirname, '..', 'src', 'features', 'chat', 'scene-capabilities.js');
-const code = fs.readFileSync(logicPath, 'utf8')
+// scene-capabilities 经 import 引用 shared/companion-packages：vm script 语义
+// 下剥掉 import/export 声明，共享模块先入上下文，两个源共用同一作用域。
+const stripModuleSyntax = (source) => source
   .replace(/\bexport\s+\{[^}]+\};?/g, '')
-  .replace(/\bexport\s+/g, '');
+  .replace(/\bexport\s+/g, '')
+  .replace(/^\s*import\s[^\n]*\n/gm, '');
+const code = [fs.readFileSync(companionPath, 'utf8'), fs.readFileSync(logicPath, 'utf8')]
+  .map(stripModuleSyntax)
+  .join('\n');
 
 const ctx = {};
 vm.createContext(ctx);
 vm.runInContext(`${code}
 this.canPrepareSceneCapabilities = canPrepareSceneCapabilities;
-this.requiredCapabilitiesForMeta = requiredCapabilitiesForMeta;`, ctx, { filename: logicPath });
+this.requiredCapabilitiesForMeta = requiredCapabilitiesForMeta;
+this.prepareSceneCapabilities = prepareSceneCapabilities;`, ctx, { filename: logicPath });
 
-const { canPrepareSceneCapabilities, requiredCapabilitiesForMeta } = ctx;
+const { canPrepareSceneCapabilities, requiredCapabilitiesForMeta, prepareSceneCapabilities } = ctx;
 
 assert.strictEqual(
   canPrepareSceneCapabilities({ isWebHost: true, dependencyInstallAvailable: true }),
@@ -53,5 +61,192 @@ assert.strictEqual(requiredCapabilitiesForMeta({ pinvouScene: 'design:poster' })
 // 用户可见文案由 UI 层从 t.uiChatScenes[requirements.key] 取值，模块不得再携带文案字段。
 assert.strictEqual('label' in dataVisualizationRequirements, false);
 assert.strictEqual('preparingText' in dataVisualizationRequirements, false);
+
+// ---------------------------------------------------------------------------
+// prepareSceneCapabilities 的可用性闭环：装上 ≠ 会话可见。开关禁用集与可见性
+// 隐藏集任一命中场景要求包（PPT 实测回归：pptx 残留在 plain 隐藏集，安装成功
+// 但 load_skill / mcp_pptx_make_pptx 均不可用），必须在发送前显式开启。
+// ---------------------------------------------------------------------------
+(async () => {
+
+function createAvailabilityHarness({ tools = [], skills = [], disabled = [], hidden = [] } = {}) {
+  const calls = [];
+  const state = {
+    tools: tools.map((t) => ({ ...t })),
+    skills: skills.map((s) => ({ ...s })),
+    disabled: [...disabled],
+    hidden: [...hidden],
+  };
+  const invoke = async (command, args = {}) => {
+    calls.push([command, args]);
+    switch (command) {
+      case 'list_marketplace_tools':
+        return state.tools;
+      case 'list_marketplace_skills':
+        return state.skills;
+      case 'install_marketplace_tool':
+      case 'install_marketplace_skill': {
+        // 与后端一致：安装把对应条目置为已安装。
+        const list = command === 'install_marketplace_tool' ? state.tools : state.skills;
+        const id = args.toolId || args.skillId;
+        const entry = list.find((item) => item.id === id);
+        if (entry) entry.installed = true;
+        else list.push({ id, installed: true, companion_skills: [] });
+        return;
+      }
+      case 'get_disabled_connectors':
+        return state.disabled;
+      case 'get_bundle_visibility':
+        return state.hidden;
+      case 'set_disabled_connectors':
+        state.disabled = [...args.connectorIds];
+        return;
+      case 'set_bundle_visibility':
+        state.hidden = [...args.bundleIds];
+        return;
+      default:
+        throw new Error(`unexpected command: ${command}`);
+    }
+  };
+  return { invoke, calls, state };
+}
+
+const pptMeta = { pinvouScene: 'design:ppt' };
+
+// ① 已安装但残留在 plain 隐藏集 → 发送前自动移出隐藏集，其余条目原样保留。
+{
+  const harness = createAvailabilityHarness({
+    tools: [{ id: 'pptx', installed: true, companion_skills: [] }],
+    skills: [{ id: 'pptx', installed: true }],
+    hidden: ['weather', 'pptx'],
+    disabled: ['weather'],
+  });
+  const prepared = await prepareSceneCapabilities(pptMeta, harness.invoke);
+  assert.strictEqual(prepared.ok, true, '隐藏集残留必须被就地开启而不是让强制场景落空');
+  assert.strictEqual(prepared.reEnabled, true, '自动开启是对治理状态的变更，必须告知调用方');
+  assert.deepStrictEqual(harness.state.hidden, ['weather'], '只移除场景点名的包，其余可见性保留');
+  assert.deepStrictEqual(harness.state.disabled, ['weather'], '开关集未被误写');
+  const writes = harness.calls.filter(([cmd]) => cmd.startsWith('set_'));
+  assert.deepStrictEqual(writes.map(([cmd]) => cmd), ['set_bundle_visibility']);
+}
+
+// ② 已安装但被开关禁用 → 发送前自动开启，其余禁用项保留。
+{
+  const harness = createAvailabilityHarness({
+    tools: [{ id: 'pptx', installed: true, companion_skills: [] }],
+    skills: [{ id: 'pptx', installed: true }],
+    disabled: ['weather', 'pptx'],
+  });
+  const prepared = await prepareSceneCapabilities(pptMeta, harness.invoke);
+  assert.strictEqual(prepared.ok, true);
+  assert.strictEqual(prepared.reEnabled, true, '自动开启是对治理状态的变更，必须告知调用方');
+  assert.deepStrictEqual(harness.state.disabled, ['weather']);
+  assert.deepStrictEqual(harness.state.hidden, []);
+  const writes = harness.calls.filter(([cmd]) => cmd.startsWith('set_'));
+  assert.deepStrictEqual(writes.map(([cmd]) => cmd), ['set_disabled_connectors']);
+}
+
+// ③ 已安装且可见可用 → 零写操作（不重写用户的整集配置）。
+{
+  const harness = createAvailabilityHarness({
+    tools: [{ id: 'pptx', installed: true, companion_skills: [] }],
+    skills: [{ id: 'pptx', installed: true }],
+    disabled: ['weather'],
+    hidden: ['weather'],
+  });
+  const prepared = await prepareSceneCapabilities(pptMeta, harness.invoke);
+  assert.strictEqual(prepared.ok, true);
+  assert.strictEqual(prepared.reEnabled, false, '未触碰治理状态时不得标记 reEnabled');
+  assert.strictEqual(
+    harness.calls.filter(([cmd]) => cmd.startsWith('set_')).length,
+    0,
+    '能力可用时不得触发任何开关/可见性写盘',
+  );
+}
+
+// ④ companion 技能按所属包 id 比对（gongwen ↔ government-writing）：场景点名
+//    技能 id，禁用集里是包 id，同样要被识别并开启。
+{
+  const harness = createAvailabilityHarness({
+    tools: [{ id: 'gongwen', installed: true, companion_skills: ['government-writing'] }],
+    skills: [{ id: 'government-writing', installed: true }],
+    disabled: ['gongwen'],
+  });
+  const prepared = await prepareSceneCapabilities(
+    { pinvouScene: 'work:document-writing' },
+    harness.invoke,
+  );
+  assert.strictEqual(prepared.ok, true);
+  assert.strictEqual(prepared.reEnabled, true);
+  assert.deepStrictEqual(harness.state.disabled, [], 'companion 技能经包 id 命中禁用集并开启');
+}
+
+// ⑤ 未安装路径：安装后照样执行可用性检查（安装不会自动清隐藏集）。
+{
+  const harness = createAvailabilityHarness({
+    skills: [],
+    tools: [],
+    hidden: ['pptx'],
+  });
+  const prepared = await prepareSceneCapabilities(pptMeta, harness.invoke);
+  assert.strictEqual(prepared.ok, true);
+  assert.strictEqual(prepared.installed, true);
+  assert.strictEqual(prepared.reEnabled, true, '安装后残留的隐藏集仍要清掉且必须提示');
+  assert.deepStrictEqual(harness.state.hidden, [], '安装后残留的隐藏集仍要清掉');
+}
+
+// ⑥ 映射承重回归（合成的 id 分叉对）：companion 技能 id ≠ 所属包 id，且两个
+//    集合里只有包 id。映射失效（表为空或映射错包）时 wanted 里只有技能 id、
+//    命中不了包 id 集合，下面的 reEnabled 与写盘断言必然失败。④ 的真实目录
+//    数据里 gongwen 同时被场景点名，原始 id 即可命中，映射断言不承重；这里
+//    用分叉对钉住「技能 id 必须经映射才能比对包 id 口径的集合」这一契约。
+{
+  const harness = createAvailabilityHarness({
+    tools: [{ id: 'chart-engine', installed: true, companion_skills: ['visualizer'] }],
+    skills: [{ id: 'visualizer', installed: true }],
+    disabled: ['weather', 'chart-engine'],
+    hidden: ['chart-engine'],
+  });
+  const prepared = await prepareSceneCapabilities(
+    { pinvouScene: 'design:data-visualization' },
+    harness.invoke,
+  );
+  assert.strictEqual(prepared.ok, true);
+  assert.strictEqual(prepared.reEnabled, true, '映射命中的包必须被识别为治理变更');
+  assert.deepStrictEqual(harness.state.disabled, ['weather'], '只移除映射命中的包，其余保留');
+  assert.deepStrictEqual(harness.state.hidden, []);
+  const writes = harness.calls.filter(([cmd]) => cmd.startsWith('set_'));
+  assert.deepStrictEqual(
+    writes.map(([cmd]) => cmd),
+    ['set_disabled_connectors', 'set_bundle_visibility'],
+  );
+}
+
+// ⑦ 治理写失败必须上抛：后端 set_* 命令把落盘错误透传为命令错误，调用方拿到
+//    的必须是失败（走既有失败提示），而不是吞掉后弹假 ready。
+{
+  const harness = createAvailabilityHarness({
+    tools: [{ id: 'pptx', installed: true, companion_skills: [] }],
+    skills: [{ id: 'pptx', installed: true }],
+    hidden: ['pptx'],
+  });
+  const original = harness.invoke;
+  const failingInvoke = async (command, args) => {
+    if (command === 'set_bundle_visibility') {
+      throw new Error('disk full');
+    }
+    return original(command, args);
+  };
+  await assert.rejects(
+    prepareSceneCapabilities(pptMeta, failingInvoke),
+    /disk full/,
+    '治理写失败必须向调用方上抛，不得吞成假成功',
+  );
+}
+// eslint-disable-next-line unicorn/prefer-top-level-await -- smoke script keeps its existing async main() structure
+})().catch((error) => {
+  console.error(error);
+  process.exit(1);
+});
 
 console.log('scene_capabilities_logic: ok');
