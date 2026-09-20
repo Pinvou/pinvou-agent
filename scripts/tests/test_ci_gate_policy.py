@@ -191,7 +191,8 @@ class CiGatePolicyTests(unittest.TestCase):
         for path in (
             "pinvou3-app/src-tauri/src/features/assistant/**",
             "pinvou3-app/src-tauri/src/features/multiagent/transcripts.rs",
-            "pinvou3-app/src-tauri/src/features/sessions/mode_state.rs",
+            "pinvou3-app/src-tauri/src/features/remote_control/manager/**",
+            "pinvou3-app/src-tauri/src/features/sessions/**",
             "pinvou3-app/src-tauri/src/features/personas/mod.rs",
             "pinvou3-app/src-tauri/src/features/files/file_ingest.rs",
             "pinvou3-app/src-tauri/src/app/commands/multiagent.rs",
@@ -206,6 +207,48 @@ class CiGatePolicyTests(unittest.TestCase):
                 f"- '{path}'",
                 frontend_paths,
                 f"跨语言契约测试读取的 Rust 源 {path} 不在 frontend filter 中,Rust-only PR 会静默跳过该 node 门禁",
+            )
+
+    def test_cross_language_contract_reads_fully_routed(self):
+        # 上面的静态清单会随 .mjs 演进漂移:这里从
+        # multiagent_plan_normalize.test.mjs 本身派生它读取的全部 src-tauri
+        # 目标(单文件 read(...) 与 readdirSync 整目录拼接),逐一断言 frontend
+        # filter 覆盖。给契约测试新增 Rust read 而不路由、或把已路由文件挪走,
+        # 都会在这里失败(本套件在 fast-gate 每个 PR 必跑)。
+        changes = _without_yaml_comments(
+            self.pr_workflow.split("\n  changes:", maxsplit=1)[1].split(
+                "\n  fast-gate:", maxsplit=1
+            )[0]
+        )
+        frontend_entries = _extract_quoted_paths(
+            changes.split("            frontend:", maxsplit=1)[1].split(
+                "            relay:", maxsplit=1
+            )[0]
+        )
+        contract_test = (
+            ROOT / "pinvou3-app/tests/multiagent_plan_normalize.test.mjs"
+        ).read_text(encoding="utf-8")
+
+        targets = []
+        for args in re.findall(r"read\('src-tauri',\s*([^)]*)\)", contract_test):
+            parts = re.findall(r"'([^']*)'", args)
+            self.assertTrue(parts, f"无法解析的契约测试 read 目标: {args}")
+            targets.append("pinvou3-app/src-tauri/" + "/".join(parts))
+        for args in re.findall(
+            r"path\.join\(here, '\.\.', 'src-tauri',\s*([^)]*)\)", contract_test
+        ):
+            parts = re.findall(r"'([^']*)'", args)
+            targets.append("pinvou3-app/src-tauri/" + "/".join(parts) + "/**")
+
+        self.assertTrue(
+            targets,
+            "未能从 multiagent_plan_normalize.test.mjs 解析出 src-tauri 读取目标",
+        )
+        for target in targets:
+            self.assertTrue(
+                _is_covered_by_trigger(target, frontend_entries),
+                f"跨语言契约测试读取的 {target} 未被 frontend filter 覆盖,"
+                "Rust-only 改动会静默跳过该 node 门禁",
             )
 
     def test_merge_queue_uses_real_path_filtering_and_product_gates(self):

@@ -281,9 +281,12 @@ jobs:
               # 契约断言(蜂群契约/同快照不变式/编辑重发等);不列出则
               # Rust-only 改动会静默跳过该 node 门禁(同 resources/** 的
               # connector 契约测试先例;test_ci_gate_policy 锁定此路由)。
+              # sessions 与 remote_control/manager 是 readdirSync 整目录拼接
+              # 读取,必须整目录路由——只列单个文件必漏其余模块。
               - 'pinvou3-app/src-tauri/src/features/assistant/**'
               - 'pinvou3-app/src-tauri/src/features/multiagent/transcripts.rs'
-              - 'pinvou3-app/src-tauri/src/features/sessions/mode_state.rs'
+              - 'pinvou3-app/src-tauri/src/features/remote_control/manager/**'
+              - 'pinvou3-app/src-tauri/src/features/sessions/**'
               - 'pinvou3-app/src-tauri/src/features/personas/mod.rs'
               - 'pinvou3-app/src-tauri/src/features/files/file_ingest.rs'
               - 'pinvou3-app/src-tauri/src/app/commands/multiagent.rs'
