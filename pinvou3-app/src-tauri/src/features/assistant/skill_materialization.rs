@@ -514,6 +514,38 @@ mod tests {
         });
     }
 
+    /// Main's #563 test, adapted to the DenyAll default (round-17 merge): the
+    /// code scope uninitialized disables the CLI connector skills; plain
+    /// admits them once the user opts in (empty disable list). On the
+    /// pre-DenyAll tree plain needed no opt-in; here the contrast is
+    /// explicit-opt-in vs default-off.
+    #[test]
+    fn code_scope_default_disables_cli_connector_skills() {
+        with_temp_home(|| {
+            for name in crate::features::marketplace::bundle::LARK_SKILL_DIRS {
+                write_skill(&paths::bundle_skills_dir(), name, "# Lark\n");
+            }
+            // The user opts plain in (empty disable list); code stays
+            // uninitialized (DenyAll default).
+            save_disabled_skills_for(ConnectorScope::Plain, &[]);
+
+            let enabled = enabled_skills_for(ConnectorScope::Code, None);
+            assert!(
+                !enabled.iter().any(|(n, _)| n.starts_with("lark-")),
+                "code 未初始化时 lark-* 技能应默认全禁"
+            );
+            let enabled_plain = enabled_skills_for(ConnectorScope::Plain, None);
+            assert_eq!(
+                enabled_plain
+                    .iter()
+                    .filter(|(n, _)| n.starts_with("lark-"))
+                    .count(),
+                crate::features::marketplace::bundle::LARK_SKILL_DIRS.len(),
+                "plain 已显式开启时应纳入全部 lark-* 技能"
+            );
+        });
+    }
+
     /// 独立安装的 marketplace skill 没有 companion MCP，但 composer 工具菜单也
     /// 允许直接开关它；技能开关走独立 disabled_skills.json 双 scope 持久化
     /// （不再借道连接器文件的 skill: 前缀）。
