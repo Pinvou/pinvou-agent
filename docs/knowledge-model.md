@@ -20,10 +20,10 @@ Pinvou 的本地知识库与共享知识库使用同一份 BGE-M3 INT8 ONNX 模�
 
 ## Hugging Face 兼容镜像
 
-默认根地址为 `https://huggingface.co`。共享知识库服务可设置：
+默认根地址为 `https://huggingface.co`。中国大陆网络环境可改用第三方公共镜像 `https://hf-mirror.com`（非官方服务，网络可达官方源时优先官方源）；共享知识库服务可设置：
 
 ```bash
-PINVOU_KNOWLEDGE_HF_BASE_URL=https://hf-mirror.example.com
+PINVOU_KNOWLEDGE_HF_BASE_URL=https://hf-mirror.com
 ```
 
-桌面端可设置 `PINVOU3_KB_HF_BASE_URL`；未设置时回退到 `PINVOU_KNOWLEDGE_HF_BASE_URL`。变量值必须是 Hugging Face `resolve` API 兼容的服务根地址，例如 `https://hf-mirror.example.com`，不要包含仓库名、revision、文件路径或查询参数。镜像无法绕过固定 revision、文件大小和 SHA-256 校验。
+桌面端可设置 `PINVOU3_KB_HF_BASE_URL`；未设置时回退到 `PINVOU_KNOWLEDGE_HF_BASE_URL`。变量值必须是 Hugging Face `resolve` API 兼容的服务根地址，例如 `https://hf-mirror.com`，不要包含仓库名、revision、文件路径或查询参数。镜像无法绕过固定 revision、文件大小和 SHA-256 校验。
