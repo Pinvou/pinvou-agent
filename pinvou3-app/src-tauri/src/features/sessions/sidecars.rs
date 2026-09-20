@@ -46,19 +46,18 @@ fn save_timestamped_id_map(map: &HashMap<String, String>, file_name: &str, ts_ke
             .and_then(|v| v.as_str())
             .cmp(&b.get("id").and_then(|v| v.as_str()))
     });
-        // Persisted through tmp+rename: these files are the cross-process
-        // truth for their consumers (the pinned map gates the retention
-        // sweep), and a plain truncating write would let a concurrent reader
-        // in another process observe an empty or partial file.
-        match serde_json::to_string_pretty(&out) {
-            Ok(json) => {
-                if let Err(error) = crate::platform::filesystem::atomic_write(&file, json.as_bytes())
-                {
-                    eprintln!("[sessions] persist {file_name} failed: {error}");
-                }
+    // Persisted through tmp+rename: these files are the cross-process
+    // truth for their consumers (the pinned map gates the retention
+    // sweep), and a plain truncating write would let a concurrent reader
+    // in another process observe an empty or partial file.
+    match serde_json::to_string_pretty(&out) {
+        Ok(json) => {
+            if let Err(error) = crate::platform::filesystem::atomic_write(&file, json.as_bytes()) {
+                eprintln!("[sessions] persist {file_name} failed: {error}");
             }
-            Err(error) => eprintln!("[sessions] serialize {file_name} failed: {error}"),
         }
+        Err(error) => eprintln!("[sessions] serialize {file_name} failed: {error}"),
+    }
 }
 
 /// Shared load core for the pinned / hidden sidecars. `None` = nothing to load
