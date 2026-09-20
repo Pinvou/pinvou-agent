@@ -32,6 +32,20 @@ function runtimeGuidanceFiles(dir) {
 }
 
 test('runtime guidance does not teach retired or hidden replay tool names', () => {
+  // Guard against a vacuous green: if either shipped subtree disappears or
+  // is renamed, the scan must fail loudly instead of silently covering less.
+  const bundleFiles = runtimeGuidanceFiles(BUNDLE);
+  const marketplaceFiles = runtimeGuidanceFiles(
+    path.join(RESOURCES_COMMON, 'skill-marketplace'),
+  );
+  assert.ok(
+    bundleFiles.length > 0,
+    'resources/common/bundle contributed no files to the scan',
+  );
+  assert.ok(
+    marketplaceFiles.length > 0,
+    'resources/common/skill-marketplace contributed no files to the scan',
+  );
   const leaks = [];
   for (const file of runtimeGuidanceFiles(RESOURCES_COMMON)) {
     const lines = fs.readFileSync(file, 'utf8').split(/\r?\n/);

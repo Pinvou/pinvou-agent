@@ -668,9 +668,20 @@ mod tests {
                 "canonical guidance missing: {canonical}"
             );
         }
+        // The artifact-card rule must teach two-stage activation:
+        // `mcp_pinvou3_present_artifact` is a deferred builtin MCP tool, so it
+        // is absent from the first-turn tool list even when the server is
+        // healthy — only a failed `tool_search` means the backend is
+        // unavailable. The same two-stage pattern must cover the deferred
+        // browser tools (their "unavailable" branch is reachable only through
+        // a failed `tool_search`, never through plain list absence).
         assert!(
-            rendered.contains("产物卡后端本轮不可用"),
-            "the artifact-card rule must be conditional: mcp_pinvou3_present_artifact is absent whenever the builtin MCP server is not connected"
+            rendered.contains("先 `tool_search` 激活") && rendered.contains("产物卡后端本轮不可用"),
+            "the artifact-card rule must teach tool_search activation before declaring the backend unavailable"
+        );
+        assert!(
+            rendered.contains("If `tool_search` cannot surface any `mcp_browser_*` tools"),
+            "the browser unavailability branch must be gated on a failed tool_search, not on first-turn list absence"
         );
     }
 

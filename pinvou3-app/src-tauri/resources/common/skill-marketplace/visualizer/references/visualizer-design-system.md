@@ -7,7 +7,7 @@
 - **Text goes in your response, visuals go in the tool**: All explanatory text, descriptions, introductions, and summaries must be written as normal response text outside the visual artifact. The tool output should contain only the visual element.
 
 ## Pinvou delivery rule
-Pinvou sanitizes normal chat Markdown and will not reliably execute inline `<script>` in ordinary assistant text. For Chart.js visualizations, write a `.html` artifact and call `mcp_pinvou3_present_artifact(path, title)` (if that tool is absent from your tool list, the artifact-card backend is unavailable this round — say so in your reply). Do not paste the full HTML into the chat response as the final deliverable.
+Pinvou sanitizes normal chat Markdown and will not reliably execute inline `<script>` in ordinary assistant text. For Chart.js visualizations, write a `.html` artifact and call `mcp_pinvou3_present_artifact(path, title)` (a deferred builtin MCP tool: if it is absent from your tool list, activate it with `tool_search` first; only if `tool_search` cannot surface it either is the artifact-card backend unavailable this round — say so in your reply). Do not paste the full HTML into the chat response as the final deliverable.
 
 ## Preflight failure checks
 Before delivery, rewrite the artifact if any of these checks fail:

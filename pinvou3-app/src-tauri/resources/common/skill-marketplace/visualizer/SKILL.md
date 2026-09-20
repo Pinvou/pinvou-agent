@@ -12,7 +12,7 @@ description: 当用户要求数据可视化、做图表、生成看板、数据�
 - 已读取 `references/visualizer-design-system.md`。
 - 已用 `write` 写出 `.html` 文件。
 - 已用本技能目录下的 `scripts/validate_visualizer_html.py` 校验最终 `.html`，且结果为通过。
-- 已调用 `mcp_pinvou3_present_artifact(path, title)` 展示产物卡（若你的工具列表里没有这个工具，说明产物卡后端本轮不可用——在回复里说明即可）。
+- 已调用 `mcp_pinvou3_present_artifact(path, title)` 展示产物卡（内置 MCP 工具默认延迟加载：工具列表里没有它时先 `tool_search` 激活；`tool_search` 也搜不到，才算产物卡后端本轮不可用——在回复里说明即可）。
 - HTML 使用 Chart.js UMD：`https://cdnjs.cloudflare.com/ajax/libs/Chart.js/4.4.1/chart.umd.js`。
 - 每个 `<canvas>` 都有 `role="img"`、描述性 `aria-label` 和 fallback text。
 - Chart.js 默认 legend 关闭，并使用自定义 HTML legend。
@@ -43,7 +43,7 @@ Pinvou 的聊天正文会转义或清理 `<script>`，所以不要把带 Chart.j
    `python <visualizer-skill-dir>/scripts/validate_visualizer_html.py <artifact.html> --json`
    其中 `<visualizer-skill-dir>` 是 `load_skill` 返回的 Source 所在目录。
 3. 如果校验失败，读取错误列表，重写 `.html`，再次运行校验器；不要展示失败产物。
-4. 只有校验通过后，才能调用 `mcp_pinvou3_present_artifact(path, title)` 展示产物卡（若你的工具列表里没有这个工具，说明产物卡后端本轮不可用——在回复里说明即可）。
+4. 只有校验通过后，才能调用 `mcp_pinvou3_present_artifact(path, title)` 展示产物卡（内置 MCP 工具默认延迟加载：工具列表里没有它时先 `tool_search` 激活；`tool_search` 也搜不到，才算产物卡后端本轮不可用——在回复里说明即可）。
 5. 普通回复只保留简短说明，不重复粘贴整段 HTML。
 
 ## 触发边界

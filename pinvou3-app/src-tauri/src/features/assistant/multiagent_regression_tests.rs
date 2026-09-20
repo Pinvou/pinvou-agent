@@ -4,7 +4,7 @@ use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
 use super::expert_roster::ExpertRosterSnapshot;
-use super::tool_policy::is_pinvou3_allowed;
+use super::tool_policy::{PINVOU3_ALWAYS_LOADED_TOOLS, is_pinvou3_allowed};
 use crate::features::assistant::platform::bridge::Pinvou3Bridge;
 use crate::features::personas::PersonaCard;
 use deepseek_tui::AppMode;
@@ -535,6 +535,21 @@ async fn code_session_real_spawn_refresh_resolves_config_expert_without_project_
         catalog_names.iter().all(|name| is_pinvou3_allowed(name)),
         "the bridge admitted tools outside the Pinvou allowlist: {catalog_names:?}"
     );
+    // The TurnComplete catalog carries the full surface including deferred
+    // entries, so membership alone proves nothing about first-turn visibility.
+    // Every always-loaded name that the static instructions promise must
+    // actually ship non-deferred, or the text names a first-turn-absent tool.
+    for always_loaded in PINVOU3_ALWAYS_LOADED_TOOLS {
+        if let Some(tool) = parent_tool_catalog
+            .iter()
+            .find(|tool| tool.name == *always_loaded)
+        {
+            assert!(
+                tool.defer_loading != Some(true),
+                "always-loaded tool {always_loaded} is still deferred on the live catalog: static text would name an absent tool"
+            );
+        }
+    }
     for expected in [
         "bash",
         "read",
