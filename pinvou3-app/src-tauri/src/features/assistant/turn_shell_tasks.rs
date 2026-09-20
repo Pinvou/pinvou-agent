@@ -172,6 +172,15 @@ impl SessionTurnShellTasks {
         self.registries.lock().remove(session_id);
     }
 
+    /// Test-only probe: whether a session still owns a turn-scope registry.
+    /// Used by the rebind eviction tests, which assert the registry is reset
+    /// together with the shell manager (the registry pins that same manager,
+    /// so a survivor would diff baselines and clean up against the old one).
+    #[cfg(test)]
+    pub(crate) fn has_registry(&self, session_id: &str) -> bool {
+        self.registries.lock().contains_key(session_id)
+    }
+
     pub(crate) fn begin_reclaim(&self, session_id: &str) -> ShellReclaim {
         let registry = self.registries.lock().get(session_id).cloned();
         let scope_id = registry

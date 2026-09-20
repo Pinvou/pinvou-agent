@@ -1177,32 +1177,8 @@ mod tests {
         });
     }
 
-    /// 开关（disabled）与可见性（hidden）两套集合正交，互不污染。
-    #[test]
-    fn hidden_bundles_are_orthogonal_to_disabled() {
-        with_temp_home(|| {
-            assert!(load_hidden_bundles_for(ConnectorScope::Plain).is_empty());
-            // Explicitly initialize plain as an empty set (after the DenyAll
-            // convergence, a fresh home's uninitialized default is fully off;
-            // the hidden-orthogonality assertions need an empty disabled
-            // baseline).
-            save_disabled_bundles_for(ConnectorScope::Plain, &[]);
-            save_hidden_bundles_for(ConnectorScope::Plain, &["combo-demo".to_string()]);
-            // hidden 不影响 disabled
-            assert!(load_disabled_bundles_for(ConnectorScope::Plain).is_empty());
-            assert_eq!(
-                load_hidden_bundles_for(ConnectorScope::Plain),
-                vec!["combo-demo".to_string()]
-            );
-            // 并集：不可用集包含 hidden
-            assert!(
-                unavailable_bundles_for(ConnectorScope::Plain).contains(&"combo-demo".to_string())
-            );
-        });
-    }
-
     /// Unavailable = disabled + hidden, deduped; visibility writes must not
-    /// pollute the disabled set.
+    /// pollute the disabled set (the two sets stay orthogonal).
     #[test]
     fn unavailable_is_union_deduped() {
         with_temp_home(|| {

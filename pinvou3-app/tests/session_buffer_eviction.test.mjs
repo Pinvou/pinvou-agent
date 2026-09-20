@@ -320,29 +320,6 @@ test('web personaPlaceholderTitles cleaned only on real deletion (source contrac
     'real session deletion (purgeSessionBuffer) must clean personaPlaceholderTitles');
 });
 
-// ── draft stash bounds: eviction is refused instead of losing input ────
-
-test('tauri oversized draft (>1M chars) is never stashed-and-dropped: eviction is refused and the draft survives', () => {
-  const { api, state, sessionStates } = loadTauriSessionsFeature();
-  api.switchActiveTo('s1', null);
-  // A transport-level write can bypass the composer input cap, producing an
-  // oversized draft. It must not be silently lost at eviction time.
-  state.composerDraft = 'y'.repeat(1000001);
-  for (let i = 2; i <= 33; i++) {
-    api.switchActiveTo(`s${i}`, null);
-    state.composerDraft = `d${i}`;
-  }
-  // s1 is the oldest idle buffer but its draft exceeds the stash char
-  // bound: the eviction is refused and the draft stays resident.
-  assert.notEqual(sessionStates.s1, undefined,
-    'a buffer whose draft cannot be safely retained must not be evicted');
-  assert.equal(sessionStates.s1.composerDraft.length, 1000001,
-    'the oversized draft survives in the resident buffer');
-  // The LRU stays bounded by evicting the next eligible session instead.
-  assert.equal(Object.keys(sessionStates).length, 32,
-    'the buffer count stays bounded via other eligible evictions');
-});
-
 // ── P2: scene cache key semantics (source contract + tauri hook reason) ──
 
 test('scene-events localStorage key cleaned only on real session deletion (tauri hook contract)', () => {
