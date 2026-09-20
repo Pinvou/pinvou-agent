@@ -26,6 +26,7 @@ const DISPLAY_DOWNLOAD_BYTES: u64 =
 pub const MODEL_VERSION: &str = "bge-m3";
 
 static DOWNLOADING: AtomicBool = AtomicBool::new(false);
+static CANCEL: AtomicBool = AtomicBool::new(false);
 static MODEL_LOAD: ModelLoadCoordinator = ModelLoadCoordinator::new();
 static MODEL_LOAD_ERROR: Mutex<Option<String>> = Mutex::new(None);
 /// 最近一次首帧/热加载跳过确因「无使用场景」门控：模型已装但被故意延迟加载，
@@ -174,6 +175,11 @@ pub(crate) fn current_status(service: &KnowledgeService) -> KbModelStatus {
 }
 
 /// 前端查询模型状态（offline，不联网）。
+/// 取消进行中的下载（下次网络数据块或文件校验边界生效）。
+pub fn kb_model_cancel() {
+    CANCEL.store(true, Ordering::Relaxed);
+}
+
 pub fn kb_model_status(service: tauri::State<'_, KnowledgeService>) -> KbModelStatus {
     current_status(&service)
 }
@@ -291,7 +297,7 @@ pub async fn kb_model_download(
                 }),
             );
         },
-        || false, // 取消入口已随 kb_model_cancel 命令移除
+        || CANCEL.load(Ordering::Relaxed),
     )
     .await?;
     if !model_directory_is_complete(&tmp) {
