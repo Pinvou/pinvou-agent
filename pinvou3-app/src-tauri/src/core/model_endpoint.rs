@@ -4,6 +4,9 @@
 //! 记忆回顾（features/memory）选 Anthropic preset 时走 Messages 原生协议，
 //! 鉴权与地址口径与上述探测一致。
 
+// R12 去重批次：`reaper`（空闲回收脚手架）与 `test_support`（跨特性测试脚
+// 手架）已分别收敛至 `core/reaper.rs` 与 `platform/test_support.rs`，本文件仅保留
+// 模型端点共用判定。
 use std::sync::Arc;
 use std::time::Duration;
 
@@ -191,10 +194,9 @@ fn apply_bearer(req: reqwest::RequestBuilder, bearer: Option<&str>) -> reqwest::
     }
 }
 
-/// Process-wide HTTP client shared by probes: feature-endpoint probes reuse
-/// one connection pool instead of building a client per call (monitor's vLLM
-/// served-name probe shares this pool via [`fetch_v1_models`]). Two
-/// semantics aligned with the `features::monitor` probe singleton:
+/// Process-wide HTTP clients shared by probes: probes reuse one connection
+/// pool instead of building a client per call. Two semantics aligned with the
+/// `features::monitor` probe singleton:
 /// 1. The connection pool and proxy config are snapshotted at first build
 ///    and do not follow system proxy changes within the process;
 /// 2. A build failure is cached process-wide as `None` with no per-call
@@ -202,18 +204,40 @@ fn apply_bearer(req: reqwest::RequestBuilder, bearer: Option<&str>) -> reqwest::
 ///    "probe failure → fall back to Generic/configured value"
 ///    (`Client::default()` panics on the same failure and cannot serve as
 ///    the fallback).
-/// The per-request timeout stays at each probe's original 3 seconds;
-/// request-level errors are unaffected and still handled by callers.
+///
+/// `timeout` pins the client-level default request timeout. The crate uses
+/// exactly two forms and each form has its own singleton (first build wins
+/// per form):
+/// - `Some(Duration::from_secs(3))` — this module's probes keep their
+///   original client-level 3s timeout;
+/// - `None` — `features::monitor`'s probes, whose 3s timeout moves to
+///   per-request (its 1 Hz polling shares the no-timeout pool).
+/// Request-level errors are unaffected and still handled by callers.
+pub(crate) fn shared_probe_client_with_timeout(
+    timeout: Option<Duration>,
+) -> Option<&'static reqwest::Client> {
+    static WITH_TIMEOUT: std::sync::OnceLock<Option<reqwest::Client>> = std::sync::OnceLock::new();
+    static WITHOUT_TIMEOUT: std::sync::OnceLock<Option<reqwest::Client>> =
+        std::sync::OnceLock::new();
+    let build = || {
+        let mut builder = reqwest::Client::builder();
+        if let Some(timeout) = timeout {
+            builder = builder.timeout(timeout);
+        }
+        builder.build().ok()
+    };
+    match timeout {
+        // 每种形态各自一个单例：core（客户端级 3s）与 monitor（无客户端级
+        // 超时、逐请求 3s）不会互相污染对方的超时语义。
+        Some(_) => WITH_TIMEOUT.get_or_init(build).as_ref(),
+        None => WITHOUT_TIMEOUT.get_or_init(build).as_ref(),
+    }
+}
+
+/// 本 crate 自有探测（连接测试 / 本地服务类型 / served-name / 模型列表）
+/// 共享的连接池：客户端级默认超时保持原有的 3 秒。
 fn shared_probe_client() -> Option<&'static reqwest::Client> {
-    static CLIENT: std::sync::OnceLock<Option<reqwest::Client>> = std::sync::OnceLock::new();
-    CLIENT
-        .get_or_init(|| {
-            reqwest::Client::builder()
-                .timeout(Duration::from_secs(3))
-                .build()
-                .ok()
-        })
-        .as_ref()
+    shared_probe_client_with_timeout(Some(Duration::from_secs(3)))
 }
 
 /// 探测 Ollama：区分"已加载"（/api/ps）与"仅下载未加载"（/api/tags）。

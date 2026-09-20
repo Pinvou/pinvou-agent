@@ -17,7 +17,7 @@ const bridgeDir = path.join(here, '..', 'src', 'platform', 'tauri', 'bridge');
 function loadFeature(fileName, state, contextOverrides) {
   const root = {};
   const src = fs.readFileSync(path.join(bridgeDir, fileName), 'utf8');
-  vm.runInNewContext(src, {
+  vm.runInNewContext(fs.readFileSync(path.join(bridgeDir, '..', '..', '..', 'shared', 'bridge-shared-helpers.js'), 'utf8') + '\n' + src, {
     window: root,
     globalThis: root,
     setTimeout,

@@ -47,8 +47,8 @@ assert.match(
   "releaseBusy helper must exist and only clear its own slot",
 );
 
-// 不变量①：裸清空一律禁止（连接器订阅、wecom 遗留监听器、QR 弹窗取消、各
-// try/finally）。新增释放点必须写 `setBusyId((current) => releaseBusy(current, <id>))`。
+// 不变量①：裸清空一律禁止（连接器订阅、各 try/finally）。新增释放点必须写
+// `setBusyId((current) => releaseBusy(current, <id>))`。
 assert.doesNotMatch(
   toolStoreCode,
   /setBusyId\(null\)/,
@@ -76,18 +76,18 @@ assert.match(
   "late error event must release only its own busy slot",
 );
 
-// wecom 组件级遗留监听器（connected/error）与工厂监听器并存于同一组后端事件，
-// 其释放点历史上漏改过：显式钉住 'wecom' 释放 ≥3 处（两个监听器 + QR 弹窗取消）。
-const wecomReleases = toolStoreSource.match(
-  /setBusyId\(\(current\) => releaseBusy\(current, 'wecom'\)\)/g,
-);
-assert.ok(
-  wecomReleases && wecomReleases.length >= 3,
-  `wecom legacy listeners + QR-modal cancel must release via releaseBusy(current, 'wecom'); found ${wecomReleases ? wecomReleases.length : 0}`,
+// wecom 连接编排已完全并入工厂管线（组件级遗留监听器与独立 QR state 已删除）：
+// 其全部释放点走通用路径——工厂四件套按 cfg.key、订阅回调按 toolId。这里反向钉住
+// 组件级字面量 'wecom' 释放点不得再出现（历史上它曾与工厂管线并存且漏改过一次），
+// 防止未来有人绕开通用路径新增第三条 wecom 释放管线。
+assert.doesNotMatch(
+  toolStoreCode,
+  /setBusyId\(\(current\) => releaseBusy\(current, 'wecom'\)\)/,
+  "wecom releases must go through the factory (cfg.key) and subscription (toolId) paths only; no component-level literal-id release points",
 );
 
 // 不变量②：flowDeps 把 busyRef 送进连接器四件套，connect/disconnect 占槽前
-// 拒绝重叠启动（retry 复用 connect，同获保护）。
+// 拒绝重叠启动（流程卡的 Retry 按钮复用 connect，同获保护）。
 assert.match(
   toolStoreSource,
   /const flowDeps = \{ setBusyId, busyRef, storeCopy, detailCopy, loadBackendState, setAlert \};/,

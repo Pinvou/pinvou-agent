@@ -31,7 +31,6 @@ pub mod plugin_import;
 pub mod recycle_bin;
 pub mod scope;
 pub mod skill_marketplace;
-pub mod skill_scope;
 pub mod store;
 
 use std::path::{Path, PathBuf};
@@ -376,18 +375,13 @@ pub use types::{
 // scope.rs 统一落盘单一 `disabled_bundles.json`(取代 `disabled_connectors.json` /
 // `disabled_skills.json` 双文件)。这里 re-export 保留调用路径;连接器/技能/CLI 开关
 // 统一按包 id 落盘,`skill:` 前缀跨文件借道清除。
+// `save_disabled_bundles`（plain 快捷写）仅测试在用，随实现一并 cfg(test)。
+#[cfg(test)]
+pub use crate::features::marketplace::scope::save_disabled_bundles;
 pub use crate::features::marketplace::scope::{
     load_disabled_bundles, load_disabled_bundles_for, load_hidden_bundles_for,
-    remove_bundle_from_disabled_scopes, save_disabled_bundles, save_disabled_bundles_for,
-    save_hidden_bundles_for, sync_deny_all_scopes_after_install, unavailable_bundles_for,
-};
-// 兼容旧名（原「连接器开关」调用方）：语义已收敛为包 id，旧名仅作别名过渡。
-pub use crate::features::marketplace::scope::{
-    load_disabled_bundles as load_disabled_connectors,
-    load_disabled_bundles_for as load_disabled_connectors_for,
-    remove_bundle_from_disabled_scopes as remove_connector_from_disabled_scopes,
-    save_disabled_bundles as save_disabled_connectors,
-    save_disabled_bundles_for as save_disabled_connectors_for,
+    remove_bundle_from_disabled_scopes, save_disabled_bundles_for, save_hidden_bundles_for,
+    sync_deny_all_scopes_after_install, unavailable_bundles_for,
 };
 
 /// 按会话类型 scope 持久化连接器禁用列表并刷新技能目录。
@@ -402,7 +396,7 @@ pub async fn apply_disabled_connectors_for(
     scope: ConnectorScope,
     connector_ids: Vec<String>,
 ) -> Result<(), String> {
-    tokio::task::spawn_blocking(move || save_disabled_connectors_for(scope, &connector_ids))
+    tokio::task::spawn_blocking(move || save_disabled_bundles_for(scope, &connector_ids))
         .await
         .map_err(|error| format!("apply_disabled_connectors_for join: {error}"))??;
     Ok(())
@@ -764,8 +758,6 @@ impl<S: CredentialStore> MarketplaceManager<S> {
                     name,
                     description,
                     version: m.version,
-                    icon: m.icon,
-                    category: m.category,
                     companion_skills: m.companion_skills,
                 }
             })
@@ -909,10 +901,6 @@ impl<S: CredentialStore> MarketplaceManager<S> {
             source
         };
         let mut record = store::BundleRecord::installed_now(tool_id, source);
-        record.credential_keys = bundle::tool_credentials(&manifest)
-            .into_iter()
-            .map(|c| c.key)
-            .collect();
         record.content_fingerprint = fingerprint;
         if let Err(e) = store::BundleStore::new().upsert_preserving(record) {
             log::warn!("[marketplace] bundles.json 镜像写入失败（install {tool_id}）: {e}");
@@ -1173,7 +1161,7 @@ impl<S: CredentialStore> MarketplaceManager<S> {
             let _ = self.credential_store.delete(&reference);
             secrets::remove_secret_value(&secrets::mcp_secret_env_var(key));
         }
-        remove_connector_from_disabled_scopes(tool_id);
+        remove_bundle_from_disabled_scopes(tool_id);
         if preserve_companion_skills {
             return;
         }
@@ -1184,7 +1172,7 @@ impl<S: CredentialStore> MarketplaceManager<S> {
                 continue;
             }
             let _ = skill_marketplace::SkillMarketplaceManager::new().uninstall(&skill_id);
-            skill_scope::remove_skill_from_disabled_scopes(&skill_id);
+            scope::remove_bundle_from_disabled_scopes(&skill_id);
         }
     }
 
@@ -4372,14 +4360,14 @@ mod tests {
     #[test]
     fn disabled_connectors_persist_roundtrip() {
         with_temp_home(|| {
-            assert!(load_disabled_connectors().is_empty()); // 无文件 → 空
-            save_disabled_connectors(&["weather".to_string(), "pptx".to_string()]);
+            assert!(load_disabled_bundles().is_empty()); // 无文件 → 空
+            save_disabled_bundles(&["weather".to_string(), "pptx".to_string()]);
             assert_eq!(
-                load_disabled_connectors(),
+                load_disabled_bundles(),
                 vec!["weather".to_string(), "pptx".to_string()]
             );
-            save_disabled_connectors(&[]); // 全开回去
-            assert!(load_disabled_connectors().is_empty());
+            save_disabled_bundles(&[]); // 全开回去
+            assert!(load_disabled_bundles().is_empty());
         });
     }
 
@@ -4408,32 +4396,32 @@ mod tests {
                     "tmeet".to_string(),
                 ]
             };
-            assert!(load_disabled_connectors_for(ConnectorScope::Plain).is_empty());
+            assert!(load_disabled_bundles_for(ConnectorScope::Plain).is_empty());
             assert_eq!(
-                load_disabled_connectors_for(ConnectorScope::Code),
+                load_disabled_bundles_for(ConnectorScope::Code),
                 deny_all_default()
             );
             // plain 写 weather → code 不受影响(仍默认全禁)。
-            save_disabled_connectors_for(ConnectorScope::Plain, &["weather".to_string()]).unwrap();
+            save_disabled_bundles_for(ConnectorScope::Plain, &["weather".to_string()]).unwrap();
             assert_eq!(
-                load_disabled_connectors_for(ConnectorScope::Plain),
+                load_disabled_bundles_for(ConnectorScope::Plain),
                 vec!["weather".to_string()]
             );
             assert_eq!(
-                load_disabled_connectors_for(ConnectorScope::Code),
+                load_disabled_bundles_for(ConnectorScope::Code),
                 deny_all_default()
             );
             // code 显式写 → 标记初始化,此后以落盘为准。
-            save_disabled_connectors_for(ConnectorScope::Code, &["pptx".to_string()]).unwrap();
+            save_disabled_bundles_for(ConnectorScope::Code, &["pptx".to_string()]).unwrap();
             assert_eq!(
-                load_disabled_connectors_for(ConnectorScope::Code),
+                load_disabled_bundles_for(ConnectorScope::Code),
                 vec!["pptx".to_string()]
             );
             // plain 再写空,不影响 code。
-            save_disabled_connectors_for(ConnectorScope::Plain, &[]).unwrap();
-            assert!(load_disabled_connectors_for(ConnectorScope::Plain).is_empty());
+            save_disabled_bundles_for(ConnectorScope::Plain, &[]).unwrap();
+            assert!(load_disabled_bundles_for(ConnectorScope::Plain).is_empty());
             assert_eq!(
-                load_disabled_connectors_for(ConnectorScope::Code),
+                load_disabled_bundles_for(ConnectorScope::Code),
                 vec!["pptx".to_string()]
             );
         });
@@ -4478,14 +4466,14 @@ mod tests {
             );
             // Disabling the package in plain (the Plugin Center skill switch)
             // gates the tool in that scope only.
-            save_disabled_connectors_for(ConnectorScope::Plain, &["ima-skills".to_string()]);
+            save_disabled_bundles_for(ConnectorScope::Plain, &["ima-skills".to_string()]).unwrap();
             assert!(
                 unavailable_tool_names_for(ConnectorScope::Plain)
                     .contains(&"ima_openapi".to_string())
             );
             // Explicitly initializing code with an empty disable list (the
             // user turned the package on there) re-admits the tool.
-            save_disabled_connectors_for(ConnectorScope::Code, &[]);
+            save_disabled_bundles_for(ConnectorScope::Code, &[]).unwrap();
             assert!(
                 !unavailable_tool_names_for(ConnectorScope::Code)
                     .contains(&"ima_openapi".to_string())
@@ -4503,13 +4491,13 @@ mod tests {
             // toggle): the package's skills are materialized away, so the
             // native tool must be denied through the same
             // `unavailable_bundles_for` union, not left searchable.
-            save_hidden_bundles_for(ConnectorScope::Plain, &["ima-skills".to_string()]);
+            save_hidden_bundles_for(ConnectorScope::Plain, &["ima-skills".to_string()]).unwrap();
             assert!(
                 unavailable_tool_names_for(ConnectorScope::Plain)
                     .contains(&"ima_openapi".to_string())
             );
             // Restoring visibility re-admits the tool in that scope.
-            save_hidden_bundles_for(ConnectorScope::Plain, &[]);
+            save_hidden_bundles_for(ConnectorScope::Plain, &[]).unwrap();
             assert!(
                 !unavailable_tool_names_for(ConnectorScope::Plain)
                     .contains(&"ima_openapi".to_string())
@@ -4525,13 +4513,13 @@ mod tests {
             std::fs::create_dir_all(path.parent().unwrap()).unwrap();
             std::fs::write(&path, r#"["weather","pptx"]"#).unwrap();
             assert_eq!(
-                load_disabled_connectors(),
+                load_disabled_bundles(),
                 vec!["weather".to_string(), "pptx".to_string()]
             );
             // 旧格式不初始化 code scope → 仍默认全禁（已装连接器 ∪ 内置 CLI 四连接器，
             // DenyAll 扩集是有意语义）。
             assert_eq!(
-                load_disabled_connectors_for(ConnectorScope::Code),
+                load_disabled_bundles_for(ConnectorScope::Code),
                 vec![
                     "weather".to_string(),
                     "pptx".to_string(),
@@ -4565,11 +4553,11 @@ mod tests {
             )
             .unwrap();
             assert_eq!(
-                load_disabled_connectors_for(ConnectorScope::Plain),
+                load_disabled_bundles_for(ConnectorScope::Plain),
                 vec!["weather".to_string()]
             );
             assert_eq!(
-                load_disabled_connectors_for(ConnectorScope::Code),
+                load_disabled_bundles_for(ConnectorScope::Code),
                 vec!["pptx".to_string()]
             );
             let file = crate::features::marketplace::scope::load_disabled_bundles_file();
@@ -4603,11 +4591,11 @@ mod tests {
             )
             .unwrap();
             assert_eq!(
-                load_disabled_connectors_for(ConnectorScope::Plain),
+                load_disabled_bundles_for(ConnectorScope::Plain),
                 vec!["weather".to_string()]
             );
             assert_eq!(
-                load_disabled_connectors_for(ConnectorScope::Code),
+                load_disabled_bundles_for(ConnectorScope::Code),
                 vec![
                     "weather".to_string(),
                     "pptx".to_string(),
@@ -4632,14 +4620,14 @@ mod tests {
                 r#"{"scopes":{"plain":["weather"]},"initialized":["plain"],"future_field":{"v":1}}"#,
             )
             .unwrap();
-            save_disabled_connectors_for(ConnectorScope::Plain, &["pptx".to_string()]).unwrap();
+            save_disabled_bundles_for(ConnectorScope::Plain, &["pptx".to_string()]).unwrap();
             let content = std::fs::read_to_string(&path).unwrap();
             assert!(
                 content.contains("future_field"),
                 "未知键应在读写后保留: {content}"
             );
             assert_eq!(
-                load_disabled_connectors_for(ConnectorScope::Plain),
+                load_disabled_bundles_for(ConnectorScope::Plain),
                 vec!["pptx".to_string()]
             );
         });
@@ -4659,10 +4647,10 @@ mod tests {
                     .unwrap_or(true)
             );
             // 初始化 code 后(显式开掉 pptx),新装 weather → 自动进 code 禁用集。
-            save_disabled_connectors_for(ConnectorScope::Code, &[]).unwrap();
+            save_disabled_bundles_for(ConnectorScope::Code, &[]).unwrap();
             sync_deny_all_scopes_after_install("weather");
             assert_eq!(
-                load_disabled_connectors_for(ConnectorScope::Code),
+                load_disabled_bundles_for(ConnectorScope::Code),
                 vec!["weather".to_string()]
             );
             // With DenyAll, a default-off install lands only in the disabled set
@@ -4676,7 +4664,7 @@ mod tests {
             // 已存在不重复。
             sync_deny_all_scopes_after_install("weather");
             assert_eq!(
-                load_disabled_connectors_for(ConnectorScope::Code),
+                load_disabled_bundles_for(ConnectorScope::Code),
                 vec!["weather".to_string()]
             );
         });
@@ -4685,18 +4673,18 @@ mod tests {
     #[test]
     fn remove_connector_cleans_both_scopes() {
         with_temp_home(|| {
-            save_disabled_connectors_for(
+            save_disabled_bundles_for(
                 ConnectorScope::Plain,
                 &["weather".to_string(), "pptx".to_string()],
             )
             .unwrap();
-            save_disabled_connectors_for(ConnectorScope::Code, &["weather".to_string()]).unwrap();
-            remove_connector_from_disabled_scopes("weather");
+            save_disabled_bundles_for(ConnectorScope::Code, &["weather".to_string()]).unwrap();
+            remove_bundle_from_disabled_scopes("weather");
             assert_eq!(
-                load_disabled_connectors_for(ConnectorScope::Plain),
+                load_disabled_bundles_for(ConnectorScope::Plain),
                 vec!["pptx".to_string()]
             );
-            assert!(load_disabled_connectors_for(ConnectorScope::Code).is_empty());
+            assert!(load_disabled_bundles_for(ConnectorScope::Code).is_empty());
         });
     }
 
@@ -4707,14 +4695,13 @@ mod tests {
         with_temp_home(|| {
             let plain_writer = std::thread::spawn(|| {
                 for _ in 0..50 {
-                    save_disabled_connectors_for(ConnectorScope::Plain, &["weather".to_string()])
+                    save_disabled_bundles_for(ConnectorScope::Plain, &["weather".to_string()])
                         .unwrap();
                 }
             });
             let code_writer = std::thread::spawn(|| {
                 for _ in 0..50 {
-                    save_disabled_connectors_for(ConnectorScope::Code, &["pptx".to_string()])
-                        .unwrap();
+                    save_disabled_bundles_for(ConnectorScope::Code, &["pptx".to_string()]).unwrap();
                 }
             });
             plain_writer.join().unwrap();
@@ -6100,7 +6087,7 @@ mod tests {
     #[test]
     fn tool_info_source_defaults_to_builtin_when_absent() {
         let info: MarketplaceToolInfo = serde_json::from_str(
-            r#"{"id":"x","name":"n","description":"d","version":"1","icon":"i","category":"c","installed":false}"#,
+            r#"{"id":"x","name":"n","description":"d","version":"1","installed":false}"#,
         )
         .unwrap();
         assert_eq!(info.source, "builtin");

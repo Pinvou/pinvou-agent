@@ -33,7 +33,7 @@ function loadSessionsFeature(overrides) {
   };
   const root = {};
   const src = fs.readFileSync(path.join(bridgeDir, 'sessions.js'), 'utf8');
-  vm.runInNewContext(src, { window: root, globalThis: root, localStorage, setTimeout, clearTimeout });
+  vm.runInNewContext(fs.readFileSync(path.join(bridgeDir, '..', '..', '..', 'shared', 'bridge-shared-helpers.js'), 'utf8') + '\n' + src, { window: root, globalThis: root, localStorage, setTimeout, clearTimeout });
   const factory = root.__PINVOU_TAURI_BRIDGE_FEATURES__.sessions;
   const state = {
     activeSessionId: null,
@@ -59,7 +59,6 @@ function loadSessionsFeature(overrides) {
     personaEvents: [],
     pinvouReviews: [],
     pinvouSceneEvents: [],
-    scheduledTaskDraft: null,
   };
   const sessionStates = {};
   const deferreds = {};

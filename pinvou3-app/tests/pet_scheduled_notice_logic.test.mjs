@@ -11,6 +11,12 @@ const tmp = path.join(dir, 'a', 'b', 'pet-scheduled-notice.mjs');
 mkdirSync(path.join(dir, 'a', 'b'), { recursive: true });
 mkdirSync(path.join(dir, 'shared'), { recursive: true });
 copyFileSync(path.join(here, '..', 'src', 'features', 'pet', 'pet-scheduled-notice.js'), tmp);
+// pet-scheduled-notice.js 还 import './pet-state.js'(sessionPayloadId 共用),
+// 副本需带上同目录的 pet-state.js 才能解析
+copyFileSync(
+  path.join(here, '..', 'src', 'features', 'pet', 'pet-state.js'),
+  path.join(dir, 'a', 'b', 'pet-state.js'),
+);
 copyFileSync(path.join(here, '..', 'src', 'shared', 'i18n.js'), path.join(dir, 'shared', 'i18n.js'));
 // i18n.js 现按语言拆分(zh 内嵌),临时副本需带上 i18n/ 目录才能解析
 mkdirSync(path.join(dir, 'shared', 'i18n'), { recursive: true });

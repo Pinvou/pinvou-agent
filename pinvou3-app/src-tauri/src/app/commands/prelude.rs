@@ -1,4 +1,3 @@
-pub(super) use deepseek_tui::models::Message;
 pub(super) use deepseek_tui::session_manager::{SavedSession, SessionMetadata};
 pub(super) use deepseek_tui::tools::user_input::{UserInputAnswer, UserInputResponse};
 pub(super) use serde::{Deserialize, Serialize};
@@ -13,8 +12,8 @@ pub(super) use crate::platform::credential_store::{
     CredentialEditAction, CredentialState, CredentialStore, SystemCredentialStore,
 };
 pub(super) use crate::platform::prefs::{
-    AdvancedPrefs, ColorScheme, Language, NotificationPrefs, SavedModel, SearchPrefs,
-    SearchProvider, SidebarPrefs, Theme, UserPrefs,
+    AdvancedPrefs, ColorScheme, Language, NotificationPrefs, SavedModel, SearchPrefs, SidebarPrefs,
+    Theme, UserPrefs,
 };
 
 /// Keep the Tauri transport boundary in `app::commands` while domain modules

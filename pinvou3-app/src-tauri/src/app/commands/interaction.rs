@@ -206,62 +206,15 @@ pub async fn accept_plan(
             .session_roots(&session_id)
             .map_err(|error| format!("解析会话根失败: {error:#}"))?;
         checkpoint_ledger_root = Some(roots.ledger.clone());
-        let store_count = store.inner().clone();
-        let sid_count = session_id.clone();
-        let checkpoint_ledger = roots.ledger.clone();
-        let checkpoint_execution = roots.execution.clone();
-        let label = "✅ 就这么干".to_string();
-        let snapshot = tauri::async_runtime::spawn_blocking(move || {
-            if !crate::features::code_checkpoints::execution_root_within_snapshot_budget(
-                &checkpoint_execution,
-                &checkpoint_ledger,
-            ) {
-                return Ok(None);
-            }
-            let turn_number = store_count
-                .load(&sid_count)
-                .map(|session| {
-                    crate::features::code_checkpoints::count_user_turns(&session.messages) + 1
-                })
-                .ok();
-            crate::features::code_checkpoints::create_checkpoint(
-                &checkpoint_ledger,
-                &checkpoint_execution,
-                turn_number,
-                crate::features::code_checkpoints::CheckpointKind::Turn,
-                &label,
-            )
-            .map(Some)
-        })
+        created_snapshot_id = super::checkpoints::create_turn_checkpoint(
+            store.inner(),
+            &session_id,
+            roots.ledger,
+            roots.execution,
+            "✅ 就这么干".to_string(),
+            "accept_plan",
+        )
         .await;
-        created_snapshot_id = match snapshot {
-            Ok(Ok(Some(meta))) => Some(meta.id),
-            Ok(Ok(None)) => {
-                log::info!(
-                    "[pinvou3][accept_plan] checkpoint skipped sid={session_id}: execution root over snapshot size budget or not fully readable (see earlier checkpoint estimate log)"
-                );
-                None
-            }
-            Ok(Err(error)) => {
-                // git alias 冲突：与 chat.rs 同款 error 级显式上报（评审 M1）。
-                if format!("{error:#}").contains("alias") {
-                    log::error!(
-                        "[pinvou3][accept_plan] checkpoint failed (git alias conflict, session has no rewind entries) sid={session_id}: {error:#}"
-                    );
-                } else {
-                    log::warn!(
-                        "[pinvou3][accept_plan] checkpoint failed sid={session_id}: {error:#}"
-                    );
-                }
-                None
-            }
-            Err(error) => {
-                log::warn!(
-                    "[pinvou3][accept_plan] checkpoint task failed sid={session_id}: {error}"
-                );
-                None
-            }
-        };
     }
     let plan_claim = match store.claim_pending_plan(&session_id, &plan_id) {
         Ok(claim) => claim,

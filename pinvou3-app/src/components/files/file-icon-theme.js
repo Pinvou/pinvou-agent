@@ -106,12 +106,5 @@ export function resolveFileIcon(name, { isDir = false, isOpen = false } = {}) {
   }
   return FILE_EXTENSION_ICONS[extensionOf(base)] || DEFAULT_FILE_ICON;
 }
-
-export {
-  DEFAULT_FILE_ICON,
-  FILE_EXTENSION_ICONS,
-  FOLDER_ICON,
-  FOLDER_OPEN_ICON,
-  SPECIAL_FILE_ICONS,
-  SPECIAL_FILE_RULES,
-};
+// 上方的表/规则常量只服务 resolveFileIcon：tests/file_icon_theme.test.js 在
+// vm 副本里自行重新暴露它们，源码不再重复导出。

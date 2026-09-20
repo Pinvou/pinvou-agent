@@ -1,6 +1,8 @@
 // The design lane has been merged into work: only work remains here (the
 // code lane does not persist through this module). Any historical value
 // (including 'design') folds into work on read.
+import { PINVOU_SCENE_KEYS } from './scene-registry.js';
+
 const PINVOU_MODES = ['work'];
 
 const PINVOU_MODE_STORAGE_KEY = 'pinvou_mode_state_v4';
@@ -12,9 +14,11 @@ const MAX_SESSION_MODE_STATES = 200;
 
 const UNROUTED_SUBTAB = 'general';
 const DEFAULT_SUBTAB = UNROUTED_SUBTAB;
-// Merged scene list: work's originals (personal workbench / document
-// writing) + the design additions folded in (poster / data visualization / PPT).
-const SUBTABS = [UNROUTED_SUBTAB, 'personal-workbench', 'document-writing', 'poster', 'data-visualization', 'ppt'];
+// Routed scene subtabs come from the canonical scene registry
+// (scene-registry.js): work's originals (personal workbench / document
+// writing) + the design additions folded in (poster / data visualization /
+// PPT).
+const SUBTABS = [UNROUTED_SUBTAB, ...PINVOU_SCENE_KEYS];
 
 function normalizePinvouMode(value) {
   return PINVOU_MODES.includes(value) ? value : 'work';
@@ -209,7 +213,6 @@ function reducePinvouModeState(state, action) {
 }
 
 export {
-  DEFAULT_PINVOU_MODE_SCOPE,
   PINVOU_MODE_STORAGE_KEY,
   PINVOU_MODES,
   SUBTABS,

@@ -7,13 +7,12 @@ const DESIGN_MESSAGE_TYPES = {
   CLEAR_CHANGES: 'pinvou:design-clear-changes',
   ERROR: 'pinvou:design-runtime-error',
   DESTROY: 'pinvou:design-runtime-destroy',
-  DESTROYED: 'pinvou:design-runtime-destroyed',
 };
 
 function buildDesignRuntimeScript() {
   // Message types are injected verbatim from DESIGN_MESSAGE_TYPES as the IIFE
   // argument (the function body is itself a template interpolation, so a
-  // nested ${...} would not parse) and the 9 'pinvou:design-*' strings exist
+  // nested ${...} would not parse) and the 8 'pinvou:design-*' strings exist
   // only once in the source tree.
   return `(${function designRuntime(TYPES) {
     const STYLE_FIELDS = ['color','backgroundColor','fontSize','fontWeight','margin','padding','width','height','minWidth','maxWidth','minHeight','maxHeight','display','position','top','right','bottom','left','zIndex','opacity','lineHeight','letterSpacing','textAlign','fontFamily','backgroundImage','backgroundSize','backgroundPosition','backgroundRepeat','marginTop','marginRight','marginBottom','marginLeft','paddingTop','paddingRight','paddingBottom','paddingLeft','gap','rowGap','columnGap','flexDirection','justifyContent','alignItems','alignSelf','overflow','borderTopWidth','borderRightWidth','borderBottomWidth','borderLeftWidth','borderTopStyle','borderRightStyle','borderBottomStyle','borderLeftStyle','borderTopColor','borderRightColor','borderBottomColor','borderLeftColor','borderTopLeftRadius','borderTopRightRadius','borderBottomRightRadius','borderBottomLeftRadius','borderRadius','visibility','cursor'];
@@ -686,7 +685,6 @@ function buildDesignRuntimeScript() {
       currentHover = null;
       currentSelected = null;
       window.__PINVOU_DESIGN_RUNTIME__ = null;
-      post(TYPES.DESTROYED);
     }
 
     try {

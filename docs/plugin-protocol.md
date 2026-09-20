@@ -205,7 +205,8 @@ pub struct PluginImportReport {
 - `PluginImportReport` 不含 `components` / `has_executables` / `manifest`：
   组件清单随规范化 `plugin.json` 落盘在 `bundles/<id>/`（裸包由导入层合成
   派生清单，带声明的包按解析后规范化字节写回），`BundleRecord` 登记
-  `credential_keys` / `content_fingerprint` 等镜像字段（§7）；`has_executables`
+  `content_fingerprint` 等字段（凭据不再镜像进登记记录，统一由
+  `tool_credentials` 从落盘 manifest 收敛，§7）；`has_executables`
   显式确认流程为 §9.5 目标形态（⏳ 未实现），规范化 manifest 副本不回传调用方。
 - 早期草案的五字段 `DetectedPlugin` 类型从未落地，已按现状删除；若未来需要
   向命令层回传组件向量，再按「目标形态」单独立项并回改本节。
@@ -267,8 +268,9 @@ workflows 非空                              → Workflow
    解包后的内容目录（`skill_marketplace::dir_fingerprint` 同口径，跳过隐藏/
    标记文件）。
 3. 登记 `BundleRecord { id, source: Upload("<zip名>"), installed: true,
-   content_fingerprint, credential_keys, assets: [], … }`，保持 store 前向兼容。
-   （现状：`credential_keys` 由 `tool_credentials` 从落盘 manifest 收敛、
+   content_fingerprint, … }`，保持 store 前向兼容。
+   （现状：`credential_keys` / `assets` 镜像字段已删除——凭据由 `tool_credentials`
+   从落盘 manifest 收敛、资源完整性走 `installed` ∧ `degraded` 二态；
    `content_fingerprint` 走 `dir_fingerprint` 同口径；「插件语义版本与组件清单
    进 `extra`」未实施——组件清单由 `bundles/<id>/plugin.json` 自描述承担。）
 4. 纯 Skill 插件落盘后与现有上传技能**目录完全同构**（`bundles/<id>/skills/<name>/`），
@@ -334,8 +336,10 @@ workflows 非空                              → Workflow
 `import_plugin_package_bytes_cmd`（对话框 / 拖放 base64）暴露，内部走
 `plugin_import::import_plugin_package`。更早的旧命令 `import_skill_package` /
 `import_skill_package_bytes` 已随死代码清扫（PR #539）删除——删除前前端即已全部
-切换到新命令，旧入口零调用方。命令层返回 `Result<bool, String>`
-（true=已导入，false=用户取消），未演进为
+切换到新命令，旧入口零调用方。命令层返回类型：`import_plugin_package_cmd`
+返回 `Result<Option<String>, String>`（Some=新包 id，None=用户取消），
+`import_plugin_package_bytes_cmd` 返回 `Result<String, String>`（返回新包 id；
+base64 通道无取消路径）。均未演进为
 `PluginImportReport`。`PluginImportReport` 目前仅是管线内部与
 `import_skill_md_content`（.md 包装导入）的返回类型，不暴露到命令层。
 

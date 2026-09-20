@@ -146,22 +146,33 @@ pub async fn session_unmount_collection(
     Ok(snapshot)
 }
 
-fn publish_kb_mount_change(
+/// Build + fan out the `remote_control:kb_mount_changed` payload shared by the
+/// local and remote knowledge mount commands. `remote_collections` is the
+/// remote-specific drift: local-only emitters pass `None`, which keeps the
+/// historic local payload shape (no `remote_collections` key). The warn tail is
+/// unified too — remote callers previously logged a `[remote-knowledge]`
+/// variant; the single revision-aware diagnostic now covers both.
+pub(super) fn publish_kb_mount_change_with_remote(
     app: &AppHandle,
     session_id: &str,
     snapshot: &crate::features::sessions::MountedCollectionsSnapshot,
+    remote_collections: Option<&[crate::features::sessions::MountedRemoteCollection]>,
 ) {
     let collection_id = snapshot
         .collections
         .iter()
         .find(|collection| collection.enabled)
         .map(|collection| collection.collection_id);
-    let payload = serde_json::json!({
+    let mut payload = serde_json::json!({
         "session_id": session_id,
         "collection_id": collection_id,
         "collections": &snapshot.collections,
         "revision": snapshot.revision,
     });
+    if let Some(remote_collections) = remote_collections {
+        payload["remote_collections"] =
+            serde_json::to_value(remote_collections).unwrap_or(serde_json::Value::Null);
+    }
     if let Err(error) = app.emit("remote_control:kb_mount_changed", payload.clone()) {
         // The invoking client still receives the authoritative snapshot (including revision), and
         // later events carry a full snapshot rather than a delta. Keep the mutation successful but
@@ -176,6 +187,14 @@ fn publish_kb_mount_change(
         "remote_control:kb_mount_changed",
         payload,
     );
+}
+
+fn publish_kb_mount_change(
+    app: &AppHandle,
+    session_id: &str,
+    snapshot: &crate::features::sessions::MountedCollectionsSnapshot,
+) {
+    publish_kb_mount_change_with_remote(app, session_id, snapshot, None);
 }
 
 /// 读会话当前挂载的知识集 id(前端切会话时重读,恢复挂载条显示)。
@@ -267,7 +286,6 @@ pub async fn kb_model_status(
     let _ = app.emit("kb_model:status", &status);
     Ok(status)
 }
-sync_command_passthrough!(model_domain, kb_model_cancel());
 async_command_passthrough!(model_domain, kb_model_load_after_first_frame(app: AppHandle, service: State<'_, KnowledgeService>, pool: State<'_, EnginePool>) -> Result<bool, String>);
 
 #[tauri::command]

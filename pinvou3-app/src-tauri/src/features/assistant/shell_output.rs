@@ -423,8 +423,10 @@ fn emit_monitor_event(app: &AppHandle, session_id: &str, emission: MonitorEmissi
                 "stream": stream,
                 "content": content,
             });
-            let _ = app.emit("chat:tool_delta", payload.clone());
-            crate::platform::app_events::forward_app_event(app, "chat:tool_delta", payload);
+            // Desktop-only lane: "chat:tool_delta" is not in the Web access
+            // event policy, so forwarding it would only produce rejected-event
+            // log spam when a WebUI client is connected.
+            let _ = app.emit("chat:tool_delta", payload);
         }
         MonitorEmission::BackgroundFinished {
             tool_id,
@@ -492,8 +494,10 @@ fn emit_shell_task_status(
         "stdout_tail": stdout_tail,
         "stderr_tail": stderr_tail,
     });
-    let _ = app.emit("chat:shell_task_status", payload.clone());
-    crate::platform::app_events::forward_app_event(app, "chat:shell_task_status", payload);
+    // Desktop-only lane: "chat:shell_task_status" is not in the Web access
+    // event policy, so forwarding it would only produce rejected-event log
+    // spam when a WebUI client is connected.
+    let _ = app.emit("chat:shell_task_status", payload);
 }
 
 #[cfg(test)]

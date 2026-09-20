@@ -1,13 +1,13 @@
 import { dict } from '../../shared/i18n.js';
 
-export const ACTIVITY_PRIORITY = Object.freeze({
+const ACTIVITY_PRIORITY = Object.freeze({
   waiting: 0,
   failed: 1,
   review: 2,
   running: 3,
 });
 
-export const ACTIVITY_TTL_MS = Object.freeze({
+const ACTIVITY_TTL_MS = Object.freeze({
   running: 3 * 60 * 1000,
   failed: 60 * 60 * 1000,
   waiting: 24 * 60 * 60 * 1000,
@@ -18,7 +18,7 @@ export const ACTIVITY_TTL_MS = Object.freeze({
 // 多会话并发时主窗口的 busy 状态与桌宠窗口的事件流不同步：快照可能先到
 // （主窗口已清 busy）而终态事件还在路上。立即删卡会让窗口收起又展开，
 // 多会话下高频反复即"闪现"。宽限期结束后仍未收到任何事件才真正删卡。
-export const SNAPSHOT_REMOVAL_GRACE_MS = 2500;
+const SNAPSHOT_REMOVAL_GRACE_MS = 2500;
 
 export function createPetState() {
   return {
@@ -34,8 +34,13 @@ export function createPetState() {
   };
 }
 
-function sessionId(payload) {
-  const value = payload && (payload.session_id || payload.sessionId);
+/**
+ * 从事件负载/运行记录里提取会话 id:session_id / sessionId / id 三种字段名
+ * 统一收口(pet-state 事件与 pet-scheduled-notice 的定时运行记录共用,
+ * 定时运行记录只有 id 字段)。
+ */
+export function sessionPayloadId(payload) {
+  const value = payload && (payload.session_id || payload.sessionId || payload.id);
   return value == null ? '' : String(value).trim();
 }
 
@@ -98,7 +103,7 @@ const DEFAULT_ACTIVITY_COPY = Object.freeze({
 
 /** Apply a broadcast chat/pet event to the lightweight per-session activity model. */
 export function applyEvent(state, name, payload, now = Date.now(), copy = DEFAULT_ACTIVITY_COPY) {
-  const sid = sessionId(payload);
+  const sid = sessionPayloadId(payload);
   if (!sid) return false;
 
   switch (name) {
@@ -253,18 +258,6 @@ export function deriveActivities(state, now = Date.now(), copy = DEFAULT_ACTIVIT
       || (b.updatedAt - a.updatedAt)
       || a.sessionId.localeCompare(b.sessionId)
     ));
-}
-
-/**
- * tests/pet_state_logic.test.mjs copies this file to a temp directory and
- * dynamically imports this export via a computed URL; knip cannot build an
- * edge for that channel, so the `@public` tag keeps it from being removed as a
- * dead export.
- * @public
- */
-export function deriveAnimation(state, now = Date.now()) {
-  const first = deriveActivities(state, now)[0];
-  return first ? first.status : null;
 }
 
 /** Ready/Blocked are read-like notices; active and waiting work stays visible. */

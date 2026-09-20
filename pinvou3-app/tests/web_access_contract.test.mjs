@@ -126,7 +126,6 @@ function rustCommandBlock(source, command) {
 for (const command of [
   'chat',
   'ingest_file',
-  'save_session_messages',
   'transcribe_voice_audio',
   'save_model',
   'delete_model',
@@ -227,8 +226,9 @@ for (const command of [
 // cleanup: connector toggles go through set_disabled_connectors.
 // This list must stay in sync with the connector registration surface in lib.rs.
 // The retired *_status commands left the frontend (ToolStoreView now uses
-// *_skills_state / bundle_readiness); they were dropped from the allowlist and
-// are reverse-pinned here so they cannot quietly return.
+// *_skills_state / bundle_readiness); they were never web-allowed (not in the
+// allowlist on main either) and are reverse-pinned here so they cannot
+// quietly return.
 for (const command of [
   'feishu_status',
   'wecom_status',
@@ -386,7 +386,7 @@ assert.match(webBridge,
   /IS_WEB \? "web_access_list_sessions" : "list_sessions"[\s\S]*?IS_WEB \? "web_access_list_archived_sessions" : "list_archived_sessions"/,
   'Web history refreshes must use path-redacted session list commands');
 assert.match(remoteControlCommands,
-  /fn web_workspace_result[\s\S]*?web_workspace_\{\}_failed", operation\.as_str\(\)[\s\S]*?web_access_list_codex_workspace[\s\S]*?web_workspace_result\(WebWorkspaceOperation::Listing, result\)[\s\S]*?web_access_search_codex_workspace[\s\S]*?web_workspace_result\(WebWorkspaceOperation::Search, result\)[\s\S]*?web_access_preview_codex_workspace_file[\s\S]*?web_workspace_result\(WebWorkspaceOperation::Preview, result\)[\s\S]*?web_access_get_codex_workspace_changes[\s\S]*?web_workspace_result\(WebWorkspaceOperation::Changes, result\)[\s\S]*?web_access_get_codex_workspace_diff[\s\S]*?web_workspace_result\(WebWorkspaceOperation::Diff, result\)/,
+  /fn web_operation_result[\s\S]*?format!\("\{prefix\}_\{operation\}_failed"\)[\s\S]*?fn web_workspace_result[\s\S]*?web_operation_result\([\s\S]*?"web_workspace"[\s\S]*?web_access_list_codex_workspace[\s\S]*?web_workspace_result\(WebWorkspaceOperation::Listing, result\)[\s\S]*?web_access_search_codex_workspace[\s\S]*?web_workspace_result\(WebWorkspaceOperation::Search, result\)[\s\S]*?web_access_preview_codex_workspace_file[\s\S]*?web_workspace_result\(WebWorkspaceOperation::Preview, result\)[\s\S]*?web_access_get_codex_workspace_changes[\s\S]*?web_workspace_result\(WebWorkspaceOperation::Changes, result\)[\s\S]*?web_access_get_codex_workspace_diff[\s\S]*?web_workspace_result\(WebWorkspaceOperation::Diff, result\)/,
   'Web workspace RPC failures must not return host paths embedded in native errors');
 assert.match(remoteControlCommands,
   /web_access_get_codex_acp_timeline[\s\S]*?web_acp_result\(WebAcpOperation::Timeline/,
@@ -483,7 +483,7 @@ assert.equal((i18n.match(/deviceUploadIntegrityMismatch:/g) || []).length, 3,
 // an envelope-seq hole; the listener must detect the jump and debounce-refetch
 // the authoritative timeline to self-heal (instead of waiting for a
 // reconnect/session reopen), merging the snapshot and rebasing the tracker.
-assert.match(codexView, /acpEventSeqTrackerRef\.current\.note\(incoming\.sessionId, incoming\.seq\) === 'gap'[\s\S]*?scheduleAcpGapResync\(incoming\.sessionId\)/,
+assert.match(codexView, /acpEventSeqTrackerRef\.current\.note\(incoming\.sessionId, incoming\.seq\) === 'gap'[\s\S]*?acpGapResyncRef\.current\.schedule\(incoming\.sessionId\)/,
   'the live acp:event listener must detect envelope-seq gaps and schedule a resync');
 assert.match(codexView, /createAcpGapResyncScheduler\(sessionId => \{[\s\S]*?resyncAcpSessionAfterGap\(sessionId\);[\s\S]*?\}, \{/,
   'the gap resync must go through the bounded-retry scheduler wrapping resyncAcpSessionAfterGap');

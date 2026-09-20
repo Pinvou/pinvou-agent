@@ -20,7 +20,7 @@ mod query;
 mod scanner;
 mod store;
 
-pub use exclude::Excluder;
+pub(crate) use exclude::Excluder;
 pub use import_jobs::{FailedImportFilePage, ImportJobState as IndexState};
 pub use kb_tool::{KbOpenSourceTool, KbSearchTool};
 pub use l1::{Collection, Document};
@@ -39,16 +39,14 @@ use tauri::State;
 pub use store::{FileHit, Stats, TypeCount};
 use store::{SearchQuery, Store};
 
-/// 后台扫描进度（回前端轮询）。
+/// 后台扫描进度（回前端轮询）。前端只读 running/phase/scanned/finishedAt。
 #[derive(Debug, Clone, Serialize, Default)]
 #[serde(rename_all = "camelCase")]
 pub struct ScanState {
     pub running: bool,
     /// idle / scanning / done / cancelled
     pub phase: String,
-    pub roots: Vec<String>,
     pub scanned: u64,
-    pub started_at: i64,
     pub finished_at: i64,
 }
 
@@ -312,10 +310,7 @@ impl KnowledgeService {
             .latest_state()
             .ok()
             .flatten()
-            .unwrap_or_else(|| IndexState {
-                phase: "idle".into(),
-                ..Default::default()
-            })
+            .unwrap_or_default()
     }
 
     pub fn cancel_index(&self) -> Result<(), String> {
@@ -519,8 +514,6 @@ impl KnowledgeService {
             *st = ScanState {
                 running: true,
                 phase: "scanning".into(),
-                roots: roots.iter().map(|p| p.display().to_string()).collect(),
-                started_at: now(),
                 ..Default::default()
             };
         }
@@ -645,7 +638,6 @@ pub struct SearchQueryDto {
     #[serde(default)]
     pub exts: Vec<String>,
     pub mtime_after: Option<i64>,
-    pub mtime_before: Option<i64>,
     pub min_size: Option<u64>,
     pub max_size: Option<u64>,
     #[serde(default)]
@@ -658,7 +650,6 @@ impl From<SearchQueryDto> for SearchQuery {
             text: d.text,
             exts: d.exts,
             mtime_after: d.mtime_after,
-            mtime_before: d.mtime_before,
             min_size: d.min_size,
             max_size: d.max_size,
             limit: d.limit,
@@ -847,9 +838,6 @@ pub async fn kb_search(
         }
         if sq.mtime_after.is_none() {
             sq.mtime_after = parsed.mtime_after;
-        }
-        if sq.mtime_before.is_none() {
-            sq.mtime_before = parsed.mtime_before;
         }
         if sq.min_size.is_none() {
             sq.min_size = parsed.min_size;

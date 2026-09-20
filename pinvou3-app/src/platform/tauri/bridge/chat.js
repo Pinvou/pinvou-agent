@@ -4,7 +4,13 @@
 
   // biome-ignore lint/suspicious/noAssignInExpressions: registry bootstrap of the verbatim payload; splitting statements would diverge from the artifact
   const registry = window.__PINVOU_TAURI_BRIDGE_FEATURES__ = window.__PINVOU_TAURI_BRIDGE_FEATURES__ || {};
-  registry.chat = function (context) {
+  registry.chat = function (context) {let pinvouSharedtauriChatCache = null;
+function pinvouSharedtauriChat() {
+  if (!pinvouSharedtauriChatCache) pinvouSharedtauriChatCache = window.PinvouBridgeShared.create("tauriChat", { state, sessionStates, messageHasToolBlock, addChatItem, notify, bt, summonPinvou, invoke });
+  return pinvouSharedtauriChatCache;
+}
+
+
     const state = context.state;
     const invoke = context.invoke;
     const notify = context.notify;
@@ -34,16 +40,8 @@
   // Composer 草稿是纯前端短期状态：写入时不 notify，避免每次按键都克隆
   // 整个 chat slice 并触发 App 重渲染。会话切换本身会 notify，ChatView 会在
   // activeSessionId 变化后主动读取目标 working set 的草稿。
-  function getComposerDraft() {
-    return String(state.composerDraft || "");
-  }
-  function setComposerDraft(value) {
-    const text = value == null ? "" : String(value);
-    state.composerDraft = text;
-    const activeBuffer = state.activeSessionId && sessionStates[state.activeSessionId];
-    if (activeBuffer) activeBuffer.composerDraft = text;
-    return text;
-  }
+function getComposerDraft() { return pinvouSharedtauriChat().getComposerDraft(); }
+function setComposerDraft(value) { return pinvouSharedtauriChat().setComposerDraft(value); }
 
   // Single observable, session-scoped path for restoring dropped/failed steer
   // text (self-review P0 + re-review #1) and send text abandoned by a session
@@ -152,64 +150,14 @@
     })) return true;
     return messageHasToolBlock("tool_use", toolCallId);
   }
-  function toolCallAlreadyFinished(toolCallId) {
-    return messageHasToolBlock("tool_result", toolCallId);
-  }
-  function hasChatItemForTool(type, toolCallId) {
-    return !!toolCallId && state.chatItems.some(function (item) {
-      return item && item.type === type && item.toolCallId === toolCallId;
-    });
-  }
-  function addSystemItem(text, meta) {
-    const item = { type: "system", text, time: timeStr() };
-    if (meta) {
-      for (const k in meta) item[k] = meta[k];
-    }
-    addChatItem(item);
-    notify();
-  }
-  function addAuthoritySyncNotice(text) {
-    if (state.chatItems.some(function (item) {
-      return item && item.authoritySyncNotice;
-    })) return;
-    addSystemItem(text, { authoritySyncNotice: true });
-  }
-  function compactPruneRollupText(count) {
-    return bt("compactDone") + bt("compactAuto") + " " +
-      bt("compactPruneMerged") + " ×" + count;
-  }
-  function removeCompactionStartItem(compactId) {
-    if (!compactId) return;
-    for (let i = state.chatItems.length - 1; i >= 0; i--) {
-      const it = state.chatItems[i];
-      if (it.type === "system" && it.compactId === compactId && it.compactPhase === "start") {
-        state.chatItems.splice(i, 1);
-        return;
-      }
-    }
-  }
-  function addOrMergePruneCompaction(compactId) {
-    removeCompactionStartItem(compactId);
-    const last = state.chatItems[state.chatItems.length - 1];
-    if (last && last.type === "system" && last.compactPruneRollup) {
-      last.compactPruneCount = (last.compactPruneCount || 1) + 1;
-      last.text = compactPruneRollupText(last.compactPruneCount);
-      last.time = timeStr();
-      notify();
-      return;
-    }
-    addChatItem({
-      type: "system",
-      text: compactPruneRollupText(1),
-      time: timeStr(),
-      compactPruneRollup: true,
-      compactPruneCount: 1,
-    });
-    notify();
-  }
-  function timeStr() {
-    return new Date().toTimeString().slice(0, 5);
-  }
+function toolCallAlreadyFinished(toolCallId) { return pinvouSharedtauriChat().toolCallAlreadyFinished(toolCallId); }
+function hasChatItemForTool(type, toolCallId) { return pinvouSharedtauriChat().hasChatItemForTool(type, toolCallId); }
+function addSystemItem(text, meta) { return pinvouSharedtauriChat().addSystemItem(text, meta); }
+function addAuthoritySyncNotice(text) { return pinvouSharedtauriChat().addAuthoritySyncNotice(text); }
+function compactPruneRollupText(count) { return pinvouSharedtauriChat().compactPruneRollupText(count); }
+function removeCompactionStartItem(compactId) { return pinvouSharedtauriChat().removeCompactionStartItem(compactId); }
+function addOrMergePruneCompaction(compactId) { return pinvouSharedtauriChat().addOrMergePruneCompaction(compactId); }
+function timeStr() { return pinvouSharedtauriChat().timeStr(); }
 
   // ── Flush helpers (same as main.js) ──────────────────────────────
   function flushPendingTextBlock() {
@@ -245,75 +193,12 @@
 
   // ── Send message ─────────────────────────────────────────────────
   // 指定 session 是否正在生成(active 看工作集 busy,后台看其 buffer)。
-  function isBusyFor(sid) {
-    return sid === state.activeSessionId ? state.busy : !!(sessionStates[sid] && sessionStates[sid].busy);
-  }
-  function formatAttachmentDisplayText(text, attachments) {
-    const names = (attachments || []).map(function (attachment) {
-      return typeof attachment === "string" ? attachment : attachment && attachment.basename;
-    }).filter(Boolean).map(String);
-    if (!names.length) return String(text || "");
-    const attachmentLine = "📎 " + JSON.stringify(names);
-    return String(text || "").trim()
-      ? String(text) + "\n\n" + attachmentLine
-      : attachmentLine;
-  }
-  // Queue chips expose only the user's editable text. The model payload may
-  // additionally contain a scheduled-task guide or scene instructions, so
-  // keep it separately and remember the exact envelope around the original
-  // user text. Editing can then rebuild the payload without exposing or
-  // discarding those internal constraints.
-  function queuedPayloadEnvelope(userText, payloadText, meta) {
-    const user = String(userText || "");
-    const payload = String(payloadText == null ? user : payloadText);
-    if (!user) return { before: payload, after: "" };
-    const requested = meta && meta.pinvouPayloadText
-      ? String(meta.pinvouPayloadText).trim()
-      : "";
-    let index = -1;
-    if (requested) {
-      const requestedIndex = payload.indexOf(requested);
-      let userIndex = -1;
-      if (requested.startsWith(user)) userIndex = 0;
-      else if (requested.endsWith(user)) userIndex = requested.length - user.length;
-      else if (requested.indexOf(user) === requested.lastIndexOf(user)) userIndex = requested.indexOf(user);
-      if (requestedIndex >= 0 && userIndex >= 0) index = requestedIndex + userIndex;
-    } else if (payload === user || payload.endsWith(user)) {
-      index = payload.length - user.length;
-    } else if (payload.indexOf(user) === payload.lastIndexOf(user)) {
-      index = payload.indexOf(user);
-    }
-    if (index < 0) return payload === user ? { before: "", after: "" } : null;
-    return {
-      before: payload.slice(0, index),
-      after: payload.slice(index + user.length),
-    };
-  }
-  function makeQueuedMessage(id, userText, payloadText, displayText, attachments, meta, restrictTools) {
-    return {
-      id,
-      text: userText,
-      payloadText,
-      payloadEnvelope: queuedPayloadEnvelope(userText, payloadText, meta),
-      metaPayloadEnvelope: meta && meta.pinvouPayloadText
-        ? queuedPayloadEnvelope(userText, meta.pinvouPayloadText, meta)
-        : null,
-      displayText,
-      attachments,
-      meta,
-      restrictTools,
-    };
-  }
-  function rebuiltQueuedPayload(item, userText) {
-    const envelope = item && item.payloadEnvelope;
-    if (!envelope || typeof envelope.before !== "string" || typeof envelope.after !== "string") return null;
-    return envelope.before + userText + envelope.after;
-  }
-  function rebuiltQueuedMetaPayload(item, userText) {
-    const envelope = item && item.metaPayloadEnvelope;
-    if (!envelope || typeof envelope.before !== "string" || typeof envelope.after !== "string") return null;
-    return envelope.before + userText + envelope.after;
-  }
+function isBusyFor(sid) { return pinvouSharedtauriChat().isBusyFor(sid); }
+function formatAttachmentDisplayText(text, attachments) { return pinvouSharedtauriChat().formatAttachmentDisplayText(text, attachments); }
+
+function makeQueuedMessage(id, userText, payloadText, displayText, attachments, meta, restrictTools) { return pinvouSharedtauriChat().makeQueuedMessage(id, userText, payloadText, displayText, attachments, meta, restrictTools); }
+function rebuiltQueuedPayload(item, userText) { return pinvouSharedtauriChat().rebuiltQueuedPayload(item, userText); }
+function rebuiltQueuedMetaPayload(item, userText) { return pinvouSharedtauriChat().rebuiltQueuedMetaPayload(item, userText); }
   function queuedMetaNeedsAdmission(meta) {
     if (!meta || typeof meta !== "object") return false;
     return Object.keys(meta).some(function (key) {
@@ -617,7 +502,6 @@
     if (snap && state.activeSessionId === sid) {
       state.scheduledTaskPendingGuide = snap.scheduledTaskPendingGuide;
       state.scheduledTaskCreationSessionId = snap.scheduledTaskCreationSessionId;
-      state.scheduledTaskDraft = snap.scheduledTaskDraft;
       state.activeSkill = snap.activeSkill;
     }
     if (failureIndex >= 0 && state.activeSessionId === sid &&
@@ -668,7 +552,13 @@
   //                draft back (handleSend's empty-vs-typed restore).
   // Main-path send failures still throw (surfaceFailure) and the caller
   // restores through its catch.
-  async function sendMessage(text, meta) {
+  async function sendMessage(text, meta) {let pinvouSharedtauriChatN31666Cache = null;
+function pinvouSharedtauriChatN31666() {
+  if (!pinvouSharedtauriChatN31666Cache) pinvouSharedtauriChatN31666Cache = window.PinvouBridgeShared.create("tauriChat:31666", { state, sid: { get value() { return sid; } } });
+  return pinvouSharedtauriChatN31666Cache;
+}
+
+
     text = (text || "").trim();
     const readyAttachments = state.attachments.filter(function (a) { return a.status === "ready" && a.result; });
     if (!text && readyAttachments.length === 0) return false;
@@ -733,7 +623,6 @@
       const consumed = {
         scheduledTaskPendingGuide: state.scheduledTaskPendingGuide,
         scheduledTaskCreationSessionId: state.scheduledTaskCreationSessionId,
-        scheduledTaskDraft: state.scheduledTaskDraft,
         activeSkill: state.activeSkill,
       };
       const requestedPayloadText = meta && meta.pinvouPayloadText
@@ -747,18 +636,11 @@
         restrictTools = true;
         state.scheduledTaskPendingGuide = null;
         state.scheduledTaskCreationSessionId = sid;
-        state.scheduledTaskDraft = null;
       }
       state.activeSkill = null;
       return { snapshot: consumed, payloadText, restrictTools };
     }
-    function restoreUiTurnState(consumed) {
-      if (!consumed || state.activeSessionId !== sid) return;
-      state.scheduledTaskPendingGuide = consumed.scheduledTaskPendingGuide;
-      state.scheduledTaskCreationSessionId = consumed.scheduledTaskCreationSessionId;
-      state.scheduledTaskDraft = consumed.scheduledTaskDraft;
-      state.activeSkill = consumed.activeSkill;
-    }
+function restoreUiTurnState(consumed) { return pinvouSharedtauriChatN31666().restoreUiTurnState(consumed); }
     function queuePrepared(prepared) {
       state.queued.push(makeQueuedMessage(
         ++context.itemIdSeq,
@@ -938,14 +820,7 @@
   // recovery passes append=true to APPEND with a "\n" separator so a draft
   // the user started typing during the await window is not clobbered.
   // ChatView consumes the flag through the prefillAppend prop.
-  function prefillComposer(text, append) {
-    state.composerPrefill = {
-      id: (state.composerPrefill.id || 0) + 1,
-      text: String(text || ""),
-      append: !!append,
-    };
-    notify();
-  }
+function prefillComposer(text, append) { return pinvouSharedtauriChat().prefillComposer(text, append); }
   // Undo a pending message (chip ×). A plain queued chip (with attachments)
   // = local removal + discard attachments, zero engine calls; a steered chip
   // = optimistic removal + a real withdraw_steer (the withdrawal is confirmed
@@ -1198,21 +1073,11 @@
   }
 
   // 通盘体检(覆盖镜头):查产物"全不全"=缺哪些完整性维度。独立入口,走 mode=coverage。
-  function inspectPinvou(focus) {
-    return summonPinvou(focus, "coverage");
-  }
+function inspectPinvou(focus) { return pinvouSharedtauriChat().inspectPinvou(focus); }
 
   // B2: 审查卡进 sidecar 时间线(pos=当前 messages 数),落盘。同 recordPersonaEvent
   // 范式,**不进 messages/LLM**;rerenderFromMessages 按 pos 插回,切会话/重载不丢。
-  function recordPinvouReview(review) {
-    if (!state.activeSessionId || !review) return null;
-    const pos = state.messages.length;
-    state.pinvouReviews.push({ pos, review });
-    const sid = state.activeSessionId;
-    const snapshot = JSON.parse(JSON.stringify(state.pinvouReviews));
-    invoke("save_session_pinvou_reviews", { sessionId: sid, reviews: snapshot }).catch(function () {});
-    return pos; // 供卡片记 reviewPos,裁决时按 pos 定位原 state 写 resolution
-  }
+function recordPinvouReview(review) { return pinvouSharedtauriChat().recordPinvouReview(review); }
 
   // §2 按勾选裁决:resolution 已由前端写回 review 对象(引用→sidecar),这里持久化 +
   // 把勾「让AI改」的条目走 B1 发定向修订指令(只改对应段落、禁全文重写)。Boss 驾驶,非自动。
@@ -1271,20 +1136,9 @@
   }
 
   // 整卡跳过:Boss 看了不处理这次检阅 → 直接关窗(sidecar entry 留着、无 resolution,无害)。
-  function dismissPinvouReview() {
-    // 关窗即解召唤守卫:否则若在 await 期间被关(切 session 等路径),会留下"窗没了但
-    // pinvouSummoning 仍 held"的死区——重复点品/悟在守卫处(summonPinvou 开头)被吞,要等
-    // 整个直连 vLLM 调用(≤30s)返回才解锁。in-flight 结果靠 summonPinvou 内 `if (state.pinvouModal)` 守卫自然丢弃。
-    state.pinvouModal = null;
-    state.pinvouSummoning = false;
-    notify();
-  }
+function dismissPinvouReview() { return pinvouSharedtauriChat().dismissPinvouReview(); }
   // 把当前 session 的审查时间线(含勾选写回的 resolution)重新落盘。返回 promise 供 await。
-  function persistPinvouReviews() {
-    if (!state.activeSessionId) return Promise.resolve();
-    const snapshot = JSON.parse(JSON.stringify(state.pinvouReviews));
-    return invoke("save_session_pinvou_reviews", { sessionId: state.activeSessionId, reviews: snapshot }).catch(function () {});
-  }
+function persistPinvouReviews() { return pinvouSharedtauriChat().persistPinvouReviews(); }
 
   // Mid-turn inject channel (thin wrapper over the steer_chat command).
   // steer_id contract: steer_chat resolves with an opaque steer_id (the pool

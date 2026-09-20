@@ -7,7 +7,13 @@
   "use strict";
   // biome-ignore lint/suspicious/noAssignInExpressions: registry bootstrap of the verbatim payload; splitting the statement would diverge from the artifact
   const registry = root.__PINVOU_TAURI_BRIDGE_FEATURES__ = root.__PINVOU_TAURI_BRIDGE_FEATURES__ || {};
-  registry["voice"] = function (context) {
+  registry["voice"] = function (context) {let pinvouSharedtauriVoiceCache = null;
+function pinvouSharedtauriVoice() {
+  if (!pinvouSharedtauriVoiceCache) pinvouSharedtauriVoiceCache = window.PinvouBridgeShared.create("tauriVoice", { state, notify, activeVoiceInput: { get value() { return activeVoiceInput; }, set value(v) { activeVoiceInput = v; } }, stopMediaTracks, bt, VOICE_DEVICE_REQUEST_TIMEOUT_MS, finishVoiceInput });
+  return pinvouSharedtauriVoiceCache;
+}
+
+
     const state = context.state;
     const notify = context.notify;
     const invoke = context.invoke;
@@ -300,28 +306,9 @@
     } catch { /* event dispatch is best-effort */ }
   }
 
-  function setVoiceInputStatus(status, patch) {
-    const next = Object.assign({}, state.voiceInput, patch || {});
-    next.status = status;
-    if (status !== "failed") {
-      next.error = null;
-      next.category = null;
-    }
-    state.voiceInput = next;
-    notify();
-  }
+function setVoiceInputStatus(status, patch) { return pinvouSharedtauriVoice().setVoiceInputStatus(status, patch); }
 
-  function emitVoiceDiagnostic(stage, level, message, userMessage, category) {
-    const event = {
-      stage,
-      level,
-      message,
-      user_message: userMessage || "",
-      category: category || "",
-    };
-    const fn = level === "error" ? console.error : level === "warn" ? console.warn : console.info;
-    fn.call(console, "[voice-input]", event);
-  }
+function emitVoiceDiagnostic(stage, level, message, userMessage, category) { return pinvouSharedtauriVoice().emitVoiceDiagnostic(stage, level, message, userMessage, category); }
 
   // Stable VoiceCommandError codes from the Rust side → trilingual copy keys inside the
   // bridge. Codes take precedence over rawMessage: the Rust message is Chinese engineering
@@ -421,12 +408,7 @@
   // error carrier for the voice flow: an Error instance with extra category/stage fields for normalizeVoiceError classification.
   // (the original threw a bare object literal, violating no-throw-literal; consolidated here into an Error factory,
   // keeping the semantics of normalizeVoiceError's category/stage/message classification fields unchanged.)
-  function voiceFlowError(category, stage, message) {
-    const error = new Error(message);
-    error.category = category;
-    error.stage = stage;
-    return error;
-  }
+function voiceFlowError(category, stage, message) { return pinvouSharedtauriVoice().voiceFlowError(category, stage, message); }
 
   function cleanupVoiceInputSession(session) {
     if (!session) return;
@@ -480,60 +462,11 @@
     }
   }
 
-  function requestVoiceMedia(session, constraints, timeoutMs) {
-    let abandoned = false;
-    const mediaPromise = navigator.mediaDevices.getUserMedia(constraints).then(function (stream) {
-      if (abandoned || activeVoiceInput !== session) {
-        stopMediaTracks(stream);
-        throw voiceFlowError("cancelled", "permission", bt("voiceCancelled"));
-      }
-      return stream;
-    });
-    const timeoutPromise = new Promise(function (_, reject) {
-      session.permissionTimeoutId = setTimeout(function () {
-        abandoned = true;
-        reject(voiceFlowError("device_unavailable", "device", bt("voiceDeviceTimeout")));
-      }, timeoutMs || VOICE_DEVICE_REQUEST_TIMEOUT_MS);
-    });
-    const cancelPromise = new Promise(function (_, reject) {
-      session.cancelPermissionRequest = function () {
-        abandoned = true;
-        reject(voiceFlowError("cancelled", "permission", bt("voiceCancelled")));
-      };
-    });
-    return Promise.race([mediaPromise, timeoutPromise, cancelPromise]).finally(function () {
-      if (session.permissionTimeoutId) clearTimeout(session.permissionTimeoutId);
-      session.permissionTimeoutId = null;
-      session.cancelPermissionRequest = null;
-    });
-  }
+function requestVoiceMedia(session, constraints, timeoutMs) { return pinvouSharedtauriVoice().requestVoiceMedia(session, constraints, timeoutMs); }
 
-  function mergeFloatChunks(chunks) {
-    const total = chunks.reduce(function (sum, chunk) { return sum + chunk.length; }, 0);
-    const out = new Float32Array(total);
-    let offset = 0;
-    chunks.forEach(function (chunk) {
-      out.set(chunk, offset);
-      offset += chunk.length;
-    });
-    return out;
-  }
+function mergeFloatChunks(chunks) { return pinvouSharedtauriVoice().mergeFloatChunks(chunks); }
 
-  function downsamplePcm(samples, sourceRate, targetRate) {
-    if (!samples.length || sourceRate === targetRate) return samples;
-    const ratio = sourceRate / targetRate;
-    const len = Math.max(1, Math.round(samples.length / ratio));
-    const out = new Float32Array(len);
-    for (let i = 0; i < len; i++) {
-      const start = Math.floor(i * ratio);
-      const end = Math.min(samples.length, Math.floor((i + 1) * ratio));
-      let sum = 0;
-      let count = 0;
-      for (let j = start; j < end; j++) { sum += samples[j]; count++; }
-      out[i] = count ? sum / count : samples[Math.min(start, samples.length - 1)];
-    }
-    return out;
-  }
+function downsamplePcm(samples, sourceRate, targetRate) { return pinvouSharedtauriVoice().downsamplePcm(samples, sourceRate, targetRate); }
 
   function encodeWav(samples, sampleRate) {
     const dataSize = samples.length * 2;
@@ -887,10 +820,7 @@
     }
   }
 
-  function closeVoiceAsrSetup() {
-    state.voiceAsrSetup = Object.assign({}, state.voiceAsrSetup, { open: false });
-    notify();
-  }
+function closeVoiceAsrSetup() { return pinvouSharedtauriVoice().closeVoiceAsrSetup(); }
 
 
   // eslint-disable-next-line sonarjs/cognitive-complexity -- single entry covering permission/recording/mode branches; split tracked separately
@@ -1075,31 +1005,11 @@
     }
   }
 
-  function cancelVoiceInput() {
-    finishVoiceInput(true, false);
-  }
+function cancelVoiceInput() { return pinvouSharedtauriVoice().cancelVoiceInput(); }
 
-  function clearVoiceInput() {
-    if (activeVoiceInput) {
-      finishVoiceInput(true, false);
-      return;
-    }
-    setVoiceInputStatus("idle", {
-      message: "",
-      error: null,
-      category: null,
-      stage: null,
-      sessionId: null,
-    });
-  }
+function clearVoiceInput() { return pinvouSharedtauriVoice().clearVoiceInput(); }
 
-  function appendVoiceText(base, text) {
-    const left = String(base || "").trimEnd();
-    const right = String(text || "").trim();
-    if (!left) return right;
-    if (!right) return left;
-    return left + (/[。！？.!?，,;；:]$/.test(left) ? " " : "\n") + right;
-  }
+function appendVoiceText(base, text) { return pinvouSharedtauriVoice().appendVoiceText(base, text); }
 
   // Cross-window recording mutex: the recording lifecycle syncs this window's label to the
   // native shortcut hook, and Rust uses it to route other windows' Alt gestures to the

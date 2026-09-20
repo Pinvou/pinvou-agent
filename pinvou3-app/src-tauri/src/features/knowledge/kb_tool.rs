@@ -22,9 +22,9 @@ use crate::features::{
 };
 
 /// 工具单次检索 top-K(精排;太多稀释小模型注意力)。
-pub(crate) const KB_INJECT_TOP_K: usize = 5;
+const KB_INJECT_TOP_K: usize = 5;
 /// 返回片段总字符上限,超出截断(保证至少第一条)。~6K 字符 ≈ 5K token。
-pub(crate) const KB_INJECT_MAX_CHARS: usize = 6_000;
+const KB_INJECT_MAX_CHARS: usize = 6_000;
 /// `kb_open_source` 默认/最大返回 chunk 数。索引切块约 600 字符，8 块仍远低于单次
 /// 工具结果预算，避免把整份工作簿重新灌入上下文。
 const KB_OPEN_DEFAULT_CHUNKS: usize = 3;
@@ -654,9 +654,12 @@ impl ToolSpec for KbOpenSourceTool {
 
 #[cfg(test)]
 mod tests {
-    use super::super::{l1::L1Store, store::Store};
+    use super::super::import_jobs::ImportJobStore;
+    use super::super::l1::{ImportIngestOutcome, L1Store};
+    use super::super::store::Store;
     use super::*;
     use std::path::Path;
+    use std::sync::atomic::AtomicBool;
 
     #[test]
     fn remote_source_reference_round_trips_without_exposing_paths() {
@@ -757,7 +760,19 @@ mod tests {
         let other = l1.create_collection("其他资料", None, None).unwrap();
         let fixture = Path::new(env!("CARGO_MANIFEST_DIR")).join("test-fixtures/multi_sheet.xlsx");
 
-        assert_eq!(l1.ingest_file(mounted, &fixture), "parsed");
+        // The production ingest path goes through the resumable import job
+        // state machine; the direct single-file helper no longer exists.
+        let jobs = ImportJobStore::new(store.conn_arc());
+        let job_id = jobs
+            .create(mounted, std::slice::from_ref(&fixture))
+            .unwrap();
+        jobs.prepare_items(&job_id, std::slice::from_ref(&fixture))
+            .unwrap();
+        let item = jobs.claim_next(&job_id).unwrap().unwrap();
+        assert!(matches!(
+            l1.ingest_import_item(&job_id, item.id, mounted, &fixture, &AtomicBool::new(false)),
+            ImportIngestOutcome::Completed
+        ));
         let hits = l1.retrieve_for_chat_multi(&[mounted], "83.6", 5).unwrap();
         let hit = hits
             .first()

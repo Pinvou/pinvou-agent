@@ -1,9 +1,13 @@
+import { useEffect } from 'react';
 import {
   isNearConversationBottom,
   isShrinkClampedToBottom,
   restoreConversationScrollPosition,
 } from './conversation-model.js';
 
+// Consumers (ChatView / CodexAcpView onScroll handlers) read only the
+// follow-state and the refreshed geometry; the intermediate movingUp /
+// nearBottom / shrinkClamped signals stay internal to the transition.
 export function transitionConversationScrollState({
   scrollElement,
   following,
@@ -13,9 +17,6 @@ export function transitionConversationScrollState({
   if (!scrollElement) {
     return {
       following,
-      movingUp: false,
-      nearBottom: true,
-      shrinkClamped: false,
       scrollTop: Number(previousScrollTop) || 0,
       scrollHeight: Number(previousScrollHeight) || 0,
     };
@@ -27,9 +28,6 @@ export function transitionConversationScrollState({
     && !shrinkClamped;
   return {
     following: movingUp ? false : ((!shrinkClamped && nearBottom) || following),
-    movingUp,
-    nearBottom,
-    shrinkClamped,
     scrollTop: scrollElement.scrollTop,
     scrollHeight: scrollElement.scrollHeight,
   };
@@ -124,4 +122,47 @@ export function startConversationBottomFollower({
     documentObject.removeEventListener('visibilitychange', onVisibilityChange);
     if (frame !== null) windowObject.cancelAnimationFrame(frame);
   };
+}
+
+// React wiring around startConversationBottomFollower (ChatView's scroll
+// effect, extracted so other hosts can reuse it). All refs/setters are
+// caller-owned so the hook stays a thin effect wrapper; re-runs follow the
+// ChatView dep-array semantics: the session identity plus whether the
+// conversation content is mounted (contentElement only exists once messages
+// render, so a bare session id would miss the first content attach).
+export function useConversationBottomFollower({
+  scrollRef,
+  contentRef,
+  autoScrollRef,
+  lastScrollTopRef,
+  lastScrollHeightRef,
+  setShowScrollBottom,
+  activeSessionId,
+  hasMessages,
+}) {
+  useEffect(() => {
+    const scrollElement = scrollRef.current;
+    const contentElement = contentRef.current;
+    if (!scrollElement || !contentElement) return;
+    return startConversationBottomFollower({
+      scrollElement,
+      contentElement,
+      isFollowing: () => autoScrollRef.current,
+      onMeasured: () => {
+        const measurement = measureConversationScrollGeometry({
+          scrollElement,
+          following: autoScrollRef.current,
+          previousScrollTop: lastScrollTopRef.current,
+          previousScrollHeight: lastScrollHeightRef.current,
+        });
+        lastScrollTopRef.current = measurement.scrollTop;
+        lastScrollHeightRef.current = measurement.scrollHeight;
+      },
+      onRestored: (scrollTop) => {
+        lastScrollTopRef.current = scrollTop;
+        lastScrollHeightRef.current = scrollElement.scrollHeight;
+        setShowScrollBottom(false);
+      },
+    });
+  }, [activeSessionId, hasMessages, scrollRef, contentRef, autoScrollRef, lastScrollTopRef, lastScrollHeightRef, setShowScrollBottom]);
 }

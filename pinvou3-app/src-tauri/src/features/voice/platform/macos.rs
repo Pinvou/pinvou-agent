@@ -1,13 +1,8 @@
 use std::path::{Path, PathBuf};
 
-use super::super::voice_asr::{self, AsrModelSpec};
+use super::super::voice_asr;
 use super::voice_asr_speech;
 
-const ASR_MODEL_URL: &str = "https://www.modelscope.cn/models/lovemefan/SenseVoiceGGUF/resolve/master/sense-voice-small-q4_k.gguf";
-const ASR_MODEL_MIRROR_URL: &str =
-    "https://huggingface.co/lovemefan/sense-voice-gguf/resolve/main/sense-voice-small-q4_k.gguf";
-const ASR_MODEL_SIZE: u64 = 182_278_688;
-const ASR_MODEL_SHA256: &str = "c8e7bf77acd860c5b83d2106da44aa7b985026ef4e7dbf5236c7f0f4001d9e9b";
 pub fn engine_binary_name() -> &'static str {
     // macOS 不再打包引擎；该名称仅保留给显式配置的兼容 CLI 路径。
     "pinvou-asr"
@@ -22,34 +17,9 @@ pub fn bundled_engine_intact(_path: &Path, _bundled_dir: Option<&Path>) -> bool 
     true
 }
 
-fn explicit_asr_tool_path() -> Option<PathBuf> {
-    for name in [
-        "PINVOU3_ASR_CMD",
-        "PINVOU3_DEEPSPEECH2_CMD",
-        "PADDLESPEECH_BIN",
-    ] {
-        if let Ok(path) = std::env::var(name) {
-            if !path.trim().is_empty() {
-                return Some(PathBuf::from(path));
-            }
-        }
-    }
-    None
-}
-
 pub fn asr_tool_path() -> PathBuf {
-    explicit_asr_tool_path().unwrap_or_else(voice_asr::engine_path)
-}
-
-pub fn asr_model_spec() -> AsrModelSpec {
-    AsrModelSpec {
-        id: "sensevoice-q4-k",
-        filename: "sense-voice-small-q4_k.gguf",
-        expected_size: ASR_MODEL_SIZE,
-        sha256: ASR_MODEL_SHA256,
-        primary_url: ASR_MODEL_URL,
-        mirror_url: ASR_MODEL_MIRROR_URL,
-    }
+    // 环境变量探测循环与 linux/windows 共用（platform::asr_tool_path_from_env）。
+    super::asr_tool_path_from_env().unwrap_or_else(voice_asr::engine_path)
 }
 
 pub fn asr_model_path() -> PathBuf {

@@ -27,10 +27,6 @@ use crate::platform::paths;
 /// bundles.json 当前 schema 版本。后续 schema 演进时递增并在读路径做迁移。
 const SCHEMA_VERSION: u32 = 1;
 
-/// 资产种类：厂商 CLI 二进制（版本化外部资产，终态住 `assets/cli/<name>/<version>/`，
-/// 包只引用不拥有 —— §4 规则 2）。后续收编 pip 依赖时新增种类常量。
-pub const ASSET_KIND_CLI: &str = "cli";
-
 /// 上传包的用户自定义 UI 展示名/说明在记录 `extra` map 里的 key（只改展示，
 /// 机读 id / 目录 / frontmatter name 一律不动；见 docs/plugin-package-spec.md）。
 pub const EXTRA_DISPLAY_NAME: &str = "display_name";
@@ -112,16 +108,6 @@ impl<'de> Deserialize<'de> for BundleSource {
     }
 }
 
-/// 外部资产引用（§3.1：name + version + sha256；kind 区分 CLI 二进制 / 后续 pip 等）。
-/// kind 用 String 而非枚举：新资产种类在老版本二进制上应能无损 roundtrip。
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-pub struct AssetRef {
-    pub kind: String,
-    pub name: String,
-    pub version: String,
-    pub sha256: String,
-}
-
 /// 存储层包记录（§3.1：bundles.json 里唯一可写的部分）。
 /// `ready` 是派生态，永不进存储；`kind` 由查询层现算，同样不落盘。
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -134,12 +120,6 @@ pub struct BundleRecord {
     /// 由后续完整性校验/统一管线填写。
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub content_fingerprint: Option<String>,
-    /// 外部资产引用（CLI 二进制等，包只引用不拥有）
-    #[serde(default, skip_serializing_if = "Vec::is_empty")]
-    pub assets: Vec<AssetRef>,
-    /// 凭据引用（只有 key；凭据本体在 keyring，永不落盘 —— §4 规则 3）
-    #[serde(default, skip_serializing_if = "Vec::is_empty")]
-    pub credential_keys: Vec<String>,
     /// 安装时间，RFC3339/ISO8601 UTC（对齐 SessionMetadata.updated_at 的 chrono 惯例）
     pub installed_at: String,
     /// `Degraded` 异常态（§3.2：登记在、资源缺）的原因；修复动作统一为按来源
@@ -154,15 +134,13 @@ pub struct BundleRecord {
 impl BundleRecord {
     /// 安装/连接登记的构造入口：`installed=true`、时间为现在、指纹留空
     /// （磁盘遍历只在完整性校验时发生，§4 规则 4）。调用方按需再填
-    /// `credential_keys` / `assets` / `degraded`。
+    /// `degraded`。
     pub fn installed_now(id: impl Into<String>, source: BundleSource) -> Self {
         Self {
             id: id.into(),
             source,
             installed: true,
             content_fingerprint: None,
-            assets: Vec::new(),
-            credential_keys: Vec::new(),
             installed_at: now_iso8601(),
             degraded: None,
             extra: serde_json::Map::new(),
@@ -291,8 +269,6 @@ impl BundleStore {
                 content_fingerprint: record
                     .content_fingerprint
                     .or_else(|| existing.content_fingerprint.clone()),
-                assets: record.assets,
-                credential_keys: record.credential_keys,
                 installed_at: existing.installed_at.clone(),
                 degraded: record.degraded,
                 extra: existing.extra.clone(),
@@ -650,40 +626,24 @@ fn collect_legacy_records() -> Vec<BundleRecord> {
     out
 }
 
-/// installed.json（MCP 安装态）→ 预置包记录；凭据 key 从 manifest 现算收敛
-/// （与查询层 `bundle::tool_credentials` 同一推导，keyring 本体不动）。
+/// installed.json（MCP 安装态）→ 预置包记录。
 fn legacy_mcp_records() -> Vec<BundleRecord> {
     let manager = MarketplaceManager::new();
     let installed = manager.installed_ids();
     if installed.is_empty() {
         return Vec::new();
     }
-    let manifests = manager.available_tools();
     let now = now_iso8601();
     installed
         .into_iter()
-        .map(|id| {
-            let credential_keys = manifests
-                .iter()
-                .find(|m| m.id == id)
-                .map(|m| {
-                    bundle::tool_credentials(m)
-                        .into_iter()
-                        .map(|c| c.key)
-                        .collect()
-                })
-                .unwrap_or_default();
-            BundleRecord {
-                id,
-                source: BundleSource::Preset,
-                installed: true,
-                content_fingerprint: None,
-                assets: Vec::new(),
-                credential_keys,
-                installed_at: now.clone(),
-                degraded: None,
-                extra: serde_json::Map::new(),
-            }
+        .map(|id| BundleRecord {
+            id,
+            source: BundleSource::Preset,
+            installed: true,
+            content_fingerprint: None,
+            installed_at: now.clone(),
+            degraded: None,
+            extra: serde_json::Map::new(),
         })
         .collect()
 }
@@ -725,8 +685,6 @@ fn legacy_skill_records() -> Vec<BundleRecord> {
             source,
             installed: true,
             content_fingerprint: None,
-            assets: Vec::new(),
-            credential_keys: Vec::new(),
             installed_at: now.clone(),
             degraded: None,
             extra: serde_json::Map::new(),
@@ -737,7 +695,7 @@ fn legacy_skill_records() -> Vec<BundleRecord> {
 
 /// 内置 CLI 连接器 → Builtin 包记录。安装态判定：companion 技能目录在盘
 /// （连接时才解包）或 CLI 二进制在盘。存量二进制对照 lock 表验 SHA-256：
-/// 匹配 → 登记版本化 assets 引用；不匹配/无法校验 → 记 `degraded`（§9.3，
+/// 匹配 → 正常登记；不匹配/无法校验 → 记 `degraded`（§9.3，
 /// 修复动作 = 重新下载，物理搬移 `assets/cli/` 在后续 PR）。
 fn legacy_cli_records() -> Vec<BundleRecord> {
     let skills_dir = paths::bundle_skills_dir();
@@ -747,17 +705,17 @@ fn legacy_cli_records() -> Vec<BundleRecord> {
         let skills_present = bundle::cli_bundle_skill_dirs(id)
             .iter()
             .any(|d| skills_dir.join(d).join("SKILL.md").is_file());
-        let mut assets = Vec::new();
+        let mut binary_verified = false;
         let mut degraded = None;
         if let Some(bin) = bundle::cli_bundle_bin(id) {
             match cli_asset_state(bin) {
-                CliAssetState::Verified(asset) => assets.push(asset),
+                CliAssetState::Verified => binary_verified = true,
                 CliAssetState::Mismatch(reason) => degraded = Some(reason),
                 CliAssetState::Absent => {}
             }
         }
         // 技能目录与二进制都不在盘 = 未连接过，不登记
-        if !skills_present && assets.is_empty() && degraded.is_none() {
+        if !skills_present && !binary_verified && degraded.is_none() {
             continue;
         }
         out.push(BundleRecord {
@@ -765,8 +723,6 @@ fn legacy_cli_records() -> Vec<BundleRecord> {
             source: BundleSource::Builtin,
             installed: true,
             content_fingerprint: None,
-            assets,
-            credential_keys: Vec::new(),
             installed_at: now.clone(),
             degraded,
             extra: serde_json::Map::new(),
@@ -776,7 +732,7 @@ fn legacy_cli_records() -> Vec<BundleRecord> {
 }
 
 enum CliAssetState {
-    Verified(AssetRef),
+    Verified,
     Mismatch(String),
     Absent,
 }
@@ -800,12 +756,7 @@ fn cli_asset_state(bin: &str) -> CliAssetState {
         ));
     };
     match connector_lock::file_sha256_hex(&path) {
-        Ok(actual) if actual == pin.binary_sha256 => CliAssetState::Verified(AssetRef {
-            kind: ASSET_KIND_CLI.to_string(),
-            name: bin.to_string(),
-            version: pin.version,
-            sha256: pin.binary_sha256,
-        }),
+        Ok(actual) if actual == pin.binary_sha256 => CliAssetState::Verified,
         Ok(actual) => CliAssetState::Mismatch(format!(
             "CLI 二进制 SHA-256 与 lock 表不符（expected {}, got {actual}），待重新下载",
             pin.binary_sha256
@@ -817,32 +768,7 @@ fn cli_asset_state(bin: &str) -> CliAssetState {
 #[cfg(test)]
 mod tests {
     use super::*;
-
-    /// 把 PINVOU3_HOME 指到干净临时目录跑闭包，跑完恢复并清理。
-    /// 借 `platform::paths::tests::ENV_LOCK` 与其它 mutate PINVOU3_HOME 的测试串行。
-    fn with_temp_home<F: FnOnce()>(f: F) {
-        let _g = crate::platform::paths::tests::ENV_LOCK
-            .lock()
-            .unwrap_or_else(|p| p.into_inner());
-        let dir = std::env::temp_dir().join(format!(
-            "pinvou3-store-test-{}-{}",
-            std::process::id(),
-            crate::platform::paths::tests::unique_suffix()
-        ));
-        let _ = std::fs::remove_dir_all(&dir);
-        std::fs::create_dir_all(&dir).unwrap();
-        let prev = std::env::var("PINVOU3_HOME").ok();
-        // SAFETY: holding platform::paths::tests::ENV_LOCK; env writes serialized in-process.
-        unsafe { std::env::set_var("PINVOU3_HOME", &dir) };
-        f();
-        match prev {
-            // SAFETY: holding platform::paths::tests::ENV_LOCK; env writes serialized in-process.
-            Some(v) => unsafe { std::env::set_var("PINVOU3_HOME", v) },
-            // SAFETY: holding platform::paths::tests::ENV_LOCK; env writes serialized in-process.
-            None => unsafe { std::env::remove_var("PINVOU3_HOME") },
-        }
-        let _ = std::fs::remove_dir_all(&dir);
-    }
+    use crate::platform::test_support::with_temp_home;
 
     fn record(id: &str, source: BundleSource) -> BundleRecord {
         BundleRecord {
@@ -850,8 +776,6 @@ mod tests {
             source,
             installed: true,
             content_fingerprint: None,
-            assets: Vec::new(),
-            credential_keys: Vec::new(),
             installed_at: "2026-08-14T00:00:00+00:00".to_string(),
             degraded: None,
             extra: serde_json::Map::new(),
@@ -860,7 +784,7 @@ mod tests {
 
     #[test]
     fn empty_store_loads_missing_file_as_empty() {
-        with_temp_home(|| {
+        with_temp_home("pinvou3-store-test", || {
             let store = BundleStore::new();
             let file = store.load().unwrap();
             assert!(file.records.is_empty());
@@ -871,17 +795,10 @@ mod tests {
 
     #[test]
     fn save_load_roundtrip_preserves_all_fields() {
-        with_temp_home(|| {
+        with_temp_home("pinvou3-store-test", || {
             let store = BundleStore::new();
             let mut full = record("feishu", BundleSource::Builtin);
             full.content_fingerprint = Some("abc123".to_string());
-            full.assets = vec![AssetRef {
-                kind: ASSET_KIND_CLI.to_string(),
-                name: "lark-cli".to_string(),
-                version: "1.2.3".to_string(),
-                sha256: "deadbeef".to_string(),
-            }];
-            full.credential_keys = vec!["LARK_APP_ID".to_string()];
             full.degraded = Some("reason".to_string());
             store.upsert(full.clone()).unwrap();
             store
@@ -907,7 +824,7 @@ mod tests {
 
     #[test]
     fn atomic_write_leaves_no_tmp_files() {
-        with_temp_home(|| {
+        with_temp_home("pinvou3-store-test", || {
             let store = BundleStore::new();
             store.upsert(record("a", BundleSource::Preset)).unwrap();
             let dir = paths::pinvou3_home().join("marketplace");
@@ -929,7 +846,7 @@ mod tests {
     /// （老版本二进制读写新 schema 文件不丢数据）。
     #[test]
     fn unknown_keys_survive_roundtrip() {
-        with_temp_home(|| {
+        with_temp_home("pinvou3-store-test", || {
             let store = BundleStore::new();
             let path = store.file_path();
             std::fs::create_dir_all(path.parent().unwrap()).unwrap();
@@ -977,7 +894,7 @@ mod tests {
     /// 损坏 JSON 必须 fail loud：报错且绝不回写（真相源不静默重建）。
     #[test]
     fn corrupt_json_fails_loud_without_overwrite() {
-        with_temp_home(|| {
+        with_temp_home("pinvou3-store-test", || {
             let store = BundleStore::new();
             let path = store.file_path();
             std::fs::create_dir_all(path.parent().unwrap()).unwrap();
@@ -997,7 +914,7 @@ mod tests {
     /// CLI 连接器（companion 技能在盘 + 存量二进制对照 lock 表）全部归位。
     #[test]
     fn import_legacy_collects_mcp_skills_and_cli() {
-        with_temp_home(|| {
+        with_temp_home("pinvou3-store-test", || {
             let home = paths::pinvou3_home();
             let write = |rel: &str, content: &str| {
                 let p = home.join(rel);
@@ -1005,8 +922,8 @@ mod tests {
                 std::fs::write(p, content).unwrap();
             };
             write("marketplace/installed.json", r#"["gongwen"]"#);
-            // MCP manifest 已迁按包聚合新布局：`legacy_mcp_records` 经 available_tools()
-            // 读 `bundles/<id>/mcp/manifest.json`（+ 内嵌），凭据 key 从现算收敛。
+            // MCP manifest 已迁按包聚合新布局：`legacy_mcp_records` 经 installed_ids()
+            // 读登记 id（manifest 本体现在只影响 kind/凭据查询，不进记录）。
             write(
                 "bundles/gongwen/mcp/manifest.json",
                 r#"{"id":"gongwen","name":"公文写作","description":"d","version":"1.0.0","icon":"","category":"office","mcp_tools":[],"command":"","args":[],"config_fields":[{"key":"GONGWEN_KEY","label":"k","required":true}]}"#,
@@ -1054,11 +971,6 @@ mod tests {
                 .expect("gongwen 应登记");
             assert_eq!(gongwen.source, BundleSource::Preset);
             assert!(gongwen.installed);
-            assert_eq!(
-                gongwen.credential_keys,
-                vec!["GONGWEN_KEY".to_string()],
-                "凭据 key 应从 manifest 现算收敛"
-            );
 
             let preset = file
                 .records
@@ -1085,7 +997,6 @@ mod tests {
                     feishu.degraded.is_some(),
                     "二进制与 lock 表不符应记 degraded"
                 );
-                assert!(feishu.assets.is_empty(), "校验不过不得登记 assets");
                 assert!(report.degraded.contains(&"feishu".to_string()));
             }
             // companion 技能目录自身不独立登记
@@ -1105,7 +1016,7 @@ mod tests {
     /// 闸一次性置位，错过即永久错过）。
     #[test]
     fn import_legacy_registers_wecom_by_new_skill_dirs() {
-        with_temp_home(|| {
+        with_temp_home("pinvou3-store-test", || {
             let legacy = paths::bundle_skills_dir();
             // 只放 1.1.0 新名（0.1.9 旧 7 名表覆盖不到的名字）
             let dir = legacy.join("wecomcli-calendar");
@@ -1130,7 +1041,7 @@ mod tests {
     /// 导入幂等：二次调用直接跳过；已有同 id 记录永远保留，不被反推结果覆盖。
     #[test]
     fn import_legacy_is_idempotent_and_never_overwrites_existing() {
-        with_temp_home(|| {
+        with_temp_home("pinvou3-store-test", || {
             let home = paths::pinvou3_home();
             let marketplace = home.join("marketplace");
             std::fs::create_dir_all(&marketplace).unwrap();
@@ -1169,7 +1080,7 @@ mod tests {
 
     #[test]
     fn remove_deletes_record_and_missing_id_is_false() {
-        with_temp_home(|| {
+        with_temp_home("pinvou3-store-test", || {
             let store = BundleStore::new();
             store
                 .upsert(record("weather", BundleSource::Preset))
@@ -1189,7 +1100,7 @@ mod tests {
 
     #[test]
     fn mark_and_clear_degraded_roundtrip() {
-        with_temp_home(|| {
+        with_temp_home("pinvou3-store-test", || {
             let store = BundleStore::new();
             store
                 .upsert(record("feishu", BundleSource::Builtin))
@@ -1213,7 +1124,7 @@ mod tests {
     /// 镜像写路径的语义：重装/重复连接不得冲掉首次安装时间、extra 与既有指纹。
     #[test]
     fn upsert_preserving_keeps_first_install_metadata() {
-        with_temp_home(|| {
+        with_temp_home("pinvou3-store-test", || {
             let store = BundleStore::new();
             let mut first = record("gongwen", BundleSource::Preset);
             first.installed_at = "2026-01-01T00:00:00+00:00".to_string();
@@ -1223,16 +1134,14 @@ mod tests {
                 .insert("future_key".to_string(), serde_json::json!(1));
             store.upsert(first).unwrap();
 
-            // 重装：新记录只带新凭据列表，时间/extra/指纹应保留
-            let mut again = BundleRecord::installed_now("gongwen", BundleSource::Preset);
-            again.credential_keys = vec!["GONGWEN_KEY".to_string()];
+            // 重装：新记录只带新 degraded/installed 值，时间/extra/指纹应保留
+            let again = BundleRecord::installed_now("gongwen", BundleSource::Preset);
             store.upsert_preserving(again).unwrap();
 
             let merged = store.get("gongwen").unwrap().unwrap();
             assert_eq!(merged.installed_at, "2026-01-01T00:00:00+00:00");
             assert_eq!(merged.extra.get("future_key"), Some(&serde_json::json!(1)));
             assert_eq!(merged.content_fingerprint, Some("fp-v1".to_string()));
-            assert_eq!(merged.credential_keys, vec!["GONGWEN_KEY".to_string()]);
             assert_eq!(store.records().unwrap().len(), 1, "不得产生重复记录");
         });
     }
@@ -1242,7 +1151,7 @@ mod tests {
     /// 可删目录（用户上传内容无其他副本）。source 只在无旧记录时取新值。
     #[test]
     fn upsert_preserving_keeps_existing_source() {
-        with_temp_home(|| {
+        with_temp_home("pinvou3-store-test", || {
             let store = BundleStore::new();
             store
                 .upsert(record("up", BundleSource::Upload("pkg.zip".to_string())))
@@ -1273,7 +1182,7 @@ mod tests {
     /// 镜像写（upsert_preserving）不得丢 extra 里的展示覆盖。
     #[test]
     fn set_display_meta_roundtrip_and_clear() {
-        with_temp_home(|| {
+        with_temp_home("pinvou3-store-test", || {
             let store = BundleStore::new();
             store
                 .upsert(record("up", BundleSource::Upload("pkg.zip".to_string())))
@@ -1361,7 +1270,7 @@ mod tests {
     /// 展示覆盖的写入门禁：记录不存在 / 非 Upload 来源 / 超长一律 Err 且不写盘。
     #[test]
     fn set_display_meta_rejects_invalid_targets_and_lengths() {
-        with_temp_home(|| {
+        with_temp_home("pinvou3-store-test", || {
             let store = BundleStore::new();
             store
                 .upsert(record("weather", BundleSource::Preset))
@@ -1477,7 +1386,7 @@ mod tests {
     /// （upsert_preserving 对不存在的 id 直接插入），而整个套件仍全绿。
     #[test]
     fn update_content_fingerprint_does_not_resurrect_removed_record() {
-        with_temp_home(|| {
+        with_temp_home("pinvou3-store-test", || {
             let store = BundleStore::new();
             store
                 .upsert(record("up", BundleSource::Upload("pkg.zip".to_string())))
@@ -1496,7 +1405,7 @@ mod tests {
     /// upsert_preserving 保留。
     #[test]
     fn skill_desc_backup_roundtrip_and_gates() {
-        with_temp_home(|| {
+        with_temp_home("pinvou3-store-test", || {
             let store = BundleStore::new();
             store
                 .upsert(record("up", BundleSource::Upload("pkg.zip".to_string())))

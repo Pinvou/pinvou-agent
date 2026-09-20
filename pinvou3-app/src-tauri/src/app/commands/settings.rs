@@ -135,7 +135,6 @@ pub struct EffectiveModelConfig {
     pub provider_kind: Option<String>,
     pub vendor: Option<String>,
     pub endpoint_mode: Option<String>,
-    pub credential_mode: crate::features::assistant::runtime_model::ModelCredentialMode,
     pub requires_user_api_key: bool,
     /// 被环境变量覆盖的字段名列表（如 `["model", "base_url"]`）。
     /// 空列表表示全部走 settings.json，用户修改会生效。
@@ -184,9 +183,9 @@ pub async fn get_effective_model_config(
         .map(|model| model.preset)
         .unwrap_or_default()
         .as_str();
-    let credential_mode = pool.credential_mode_for(effective.as_ref(), bridge.api_key_required());
-    let requires_user_api_key = credential_mode
-        == crate::features::assistant::runtime_model::ModelCredentialMode::UserManaged;
+    // 运行时模型准备固定 passthrough（无后台托管凭据），是否要求用户 Key
+    // 完全由 bridge 的鉴权判定（provider + base_url）决定。
+    let requires_user_api_key = bridge.api_key_required();
     Ok(EffectiveModelConfig {
         preset: preset.to_string(),
         model: bridge.model(),
@@ -212,7 +211,6 @@ pub async fn get_effective_model_config(
         endpoint_mode: effective
             .as_ref()
             .and_then(|model| model.endpoint_mode.clone()),
-        credential_mode,
         requires_user_api_key,
         env_overrides,
     })
@@ -472,78 +470,6 @@ pub async fn get_image_input_capability(
         is_local_endpoint: bridge.is_local_endpoint(),
         vision_is_local_endpoint: bridge.vision_uses_local_endpoint(),
     })
-}
-
-fn parse_search_provider(raw: &str) -> Result<SearchProvider, String> {
-    match raw.trim().to_ascii_lowercase().as_str() {
-        "bing" => Ok(SearchProvider::Bing),
-        "metaso" => Ok(SearchProvider::Metaso),
-        "bocha" => Ok(SearchProvider::Bocha),
-        "baidu" => Ok(SearchProvider::Baidu),
-        "tavily" => Ok(SearchProvider::Tavily),
-        other => Err(format!("不支持的搜索源: {other}")),
-    }
-}
-
-fn resolve_saved_search_key(provider: SearchProvider) -> Result<Option<String>, String> {
-    for name in provider.env_key_names() {
-        if let Ok(value) = std::env::var(name) {
-            let trimmed = value.trim();
-            if !trimmed.is_empty() {
-                return Ok(Some(trimmed.to_string()));
-            }
-        }
-    }
-    let mut prefs = UserPrefs::load();
-    prefs.refresh_credential_states_with_store(&SystemCredentialStore::new());
-    let Some(credential) = prefs.search.credentials.get(&provider) else {
-        return Ok(None);
-    };
-    let Some(reference) = &credential.credential_ref else {
-        return Ok(None);
-    };
-    SystemCredentialStore::new()
-        .get(reference)
-        .map_err(|error| error.user_message())
-        .map(|value| {
-            value
-                .map(|key| key.trim().to_string())
-                .filter(|key| !key.is_empty())
-        })
-}
-
-#[tauri::command]
-pub async fn test_search_provider(
-    provider: String,
-    api_key: Option<String>,
-) -> Result<String, String> {
-    let provider = parse_search_provider(&provider)?;
-    if provider == SearchProvider::Bing {
-        let client = reqwest::Client::builder()
-            .timeout(std::time::Duration::from_secs(8))
-            .build()
-            .map_err(|e| format!("client: {e}"))?;
-        return match client
-            .get("https://www.bing.com/search")
-            .query(&[("q", "pinvou")])
-            .send()
-            .await
-        {
-            Ok(resp) if resp.status().is_success() => Ok("Bing 搜索可用".to_string()),
-            Ok(resp) => Err(format!("Bing HTTP {}", resp.status().as_u16())),
-            Err(e) => Err(format!("Bing 搜索不可达: {e}")),
-        };
-    }
-    let provided_key = api_key.unwrap_or_default().trim().to_string();
-    let key = if provided_key.is_empty() {
-        resolve_saved_search_key(provider)?.unwrap_or_default()
-    } else {
-        provided_key
-    };
-    if key.trim().is_empty() {
-        return Err("请先填写并保存该搜索源的 API Key".to_string());
-    }
-    Ok("搜索源凭据已配置".to_string())
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -1420,11 +1346,15 @@ pub async fn save_search_settings_and_restart(
     app.restart();
 }
 use super::prelude::*;
+// 凭据状态迁移(`mark_*` / `clear_plaintext_key`)自 prefs 的密封 trait 提供。
+use crate::platform::prefs::CredentialStateOps;
 
 #[cfg(test)]
 mod tests {
     use super::*;
     use crate::platform::paths::tests::ENV_LOCK;
+    // SearchProvider 已从 commands prelude 收窄（lib 侧仅测试仍引用）。
+    use crate::platform::prefs::SearchProvider;
 
     #[test]
     fn model_connection_http_result_maps_actionable_categories() {
