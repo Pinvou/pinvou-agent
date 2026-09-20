@@ -10,7 +10,8 @@
 // 2. every wholesale artifact save (turn end / session switch / reconcile)
 //    rebases from→to while the mark exists — a chat turn's buffer save must
 //    not durably revert the backend lane's rebase of SavedSession.artifacts.
-// The mark {at, from, to} is stamped by the sessions.js listener from the
+// The mark {at, chain: [{from, to}...]} is stamped by the sessions.js
+// listener from the
 // session:list_changed payload; the backend emits it for rebound, failed AND
 // post-busy ids with the rebind geometry (app/commands/projects.rs
 // emit_workspace_rebound_events). The backend rebase itself is pinned in

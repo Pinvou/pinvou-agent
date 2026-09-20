@@ -582,7 +582,18 @@ pub async fn rebind_workspace_root(
     // scan still matches it.
     let plain_rebind = sessions
         .rebind_workspace_bindings(&from, &to_display)
-        .map_err(|e| format!("rebind_workspace_root: {e:#}"))?;
+        .map_err(|e| {
+            // Typed markers (REBIND_LEGACY_TABLE_UNWRITABLE) must reach the
+            // frontend with the marker as the message prefix, so the stable-
+            // prefix mapping in rebindErrors.js can classify them; only
+            // untyped infrastructure failures get the function prefix.
+            let msg = e.to_string();
+            if msg.starts_with("REBIND_") {
+                msg
+            } else {
+                format!("rebind_workspace_root: {msg}")
+            }
+        })?;
     let binding_final_stale: Vec<String> = plain_rebind.failed_session_ids.clone();
     // Finally-stale sidecar list (Major 2): an orphan rewrite failure, or an
     // indexed session whose rewrite + retry passes both failed — no
@@ -626,9 +637,15 @@ pub async fn rebind_workspace_root(
     // metadata already synced never enters `affected`, and a rerun would
     // otherwise report full success forever while the index stays at the
     // vanished intermediate target.
-    let stranded = detect_stranded_index_records(&codex_to_lane_hits, |session_id| {
-        acp_pool.agents().code_project_workspace(session_id)
-    });
+    let lane_moved_ids: Vec<String> = prefix_outcome
+        .affected
+        .iter()
+        .map(|(session_id, _)| session_id.clone())
+        .collect();
+    let stranded =
+        detect_stranded_index_records(&codex_to_lane_hits, &lane_moved_ids, |session_id| {
+            acp_pool.agents().code_project_workspace(session_id)
+        });
     if !stranded.is_empty() {
         acp_pool
             .agents()
@@ -842,9 +859,10 @@ pub async fn rebind_workspace_root(
     // "not busy" here, because the reclaim tail re-checks under its own bound
     // and is what actually reports a refusal — inventing post-busy ids for
     // sessions nothing was refused for would keep the dialog open on a false
-    // report. The id list is rebuilt here rather than reused from the entry
-    // fence: the codex lane's newcomers folded into `affected` above were not
-    // in the snapshot the fence saw.
+    // report. The id list is rebuilt from the live `affected` rather than
+    // reused from the entry fence: the two fences are evaluated
+    // independently, so this recheck never trusts a list assembled before
+    // the migration ran.
     let post_fence_ids: Vec<String> = affected.iter().map(|(id, _)| id.clone()).collect();
     let acp_busy_after = acp_pool
         .rebind_blocking_sessions(&post_fence_ids)
@@ -928,12 +946,6 @@ pub async fn rebind_workspace_root(
     // table would actually resurrect, not by this run's rewrite log: on a
     // retry nothing is left to rewrite and the rebound set is empty while the
     // stale table is still there (#464 round-6 blocking 1).
-    if plain_rebind.legacy_sync_failed {
-        merge_legacy_resurrections_into_failures(
-            &mut failed_session_ids,
-            &plain_rebind.legacy_resurrection_ids,
-        );
-    }
     // workspace_rebound events carry the rebind geometry and cover every
     // session whose persisted artifact paths this PR's lanes rebased —
     // rebound, failed (lanes moved; something else did not finish), and
@@ -1075,6 +1087,7 @@ fn classify_absent_record_session(
 /// need a persisted pending-rebind marker, the remedy already on record.
 fn detect_stranded_index_records(
     to_lane_hits: &[(String, PathBuf)],
+    lane_moved_ids: &[String],
     index_path_of: impl Fn(&str) -> Option<PathBuf>,
 ) -> Vec<(String, PathBuf)> {
     // Deliberately NOT scoped to `affected` (review #463 round-11 B3): a
@@ -1084,8 +1097,17 @@ fn detect_stranded_index_records(
     // irrelevant to it. Every to-lane hit whose index disagrees with the
     // surfaced (sidecar-authoritative) path drives the re-key; a healthy
     // record has index == sidecar and is untouched.
+    //
+    // Except the sessions THIS run's codex lane itself just moved (review
+    // #463 round-12 M1): their surfaced path was captured at scan time,
+    // before the lane rewrote them — comparing it against the fresh index
+    // reports a false "disagreement" and the repair would re-key the index
+    // BACK onto the stale captured path (for a from-inside-to rebind, onto
+    // the vanished directory). Only records no writer of this run touched
+    // can honestly disagree.
     to_lane_hits
         .iter()
+        .filter(|(session_id, _)| !lane_moved_ids.iter().any(|id| id == session_id))
         .filter(|(session_id, path)| {
             index_path_of(session_id).is_some_and(|indexed| &indexed != path)
         })
@@ -1180,23 +1202,6 @@ fn plain_lane_fence_rescan(sessions: &SessionStore, from: &Path, final_stale: &m
     }
 }
 
-/// Round-8 should-fix 8: the round-6-B1 user-facing contract — when the
-/// legacy global table could not be synced, every session that table would
-/// resurrect at the next boot joins the report's failure list (deduplicated),
-/// so the dialog stays open with an honest retry instead of closing on a
-/// false success. Extracted from the command body for testability: the body
-/// needs the Tauri harness, this merge is pure.
-fn merge_legacy_resurrections_into_failures(
-    failed_session_ids: &mut Vec<String>,
-    legacy_resurrection_ids: &[String],
-) {
-    for session_id in legacy_resurrection_ids {
-        if !failed_session_ids.contains(session_id) {
-            failed_session_ids.push(session_id.clone());
-        }
-    }
-}
-
 /// Metadata replay targets for one rebind run: the pre-rewrite snapshot
 /// first (it already contains every binding under `from` visible before the
 /// rewrites started — the union happens at snapshot time, projects.rs
@@ -1265,31 +1270,6 @@ mod tests {
         );
         let normal = std::env::temp_dir().join("pinvou3-rebind-from-check");
         assert!(validate_rebind_from(&normal).is_ok());
-    }
-
-    #[test]
-    fn merge_legacy_resurrections_dedupes_into_failures() {
-        let mut failed = vec!["already-failed".to_string()];
-        merge_legacy_resurrections_into_failures(
-            &mut failed,
-            &[
-                "resurrected-a".to_string(),
-                "already-failed".to_string(),
-                "resurrected-b".to_string(),
-            ],
-        );
-        assert_eq!(
-            failed,
-            vec![
-                "already-failed".to_string(),
-                "resurrected-a".to_string(),
-                "resurrected-b".to_string()
-            ]
-        );
-        // An empty resurrection set (a table this process never parsed) adds
-        // nothing — legacy_sync_failed alone still failed the run upstream.
-        merge_legacy_resurrections_into_failures(&mut failed, &[]);
-        assert_eq!(failed.len(), 3);
     }
 
     #[test]
@@ -1370,6 +1350,7 @@ mod tests {
             ("not-code".to_string(), to.clone()),
             ("healthy".to_string(), to.clone()),
             ("metadata-synced-strand".to_string(), to.clone()),
+            ("lane-moved".to_string(), to.clone()),
         ];
         let index_of = |id: &str| -> Option<PathBuf> {
             match id {
@@ -1381,10 +1362,17 @@ mod tests {
                 // round-11 B3: metadata already synced (never in `affected`),
                 // the index still disagrees — must be repaired.
                 "metadata-synced-strand" => Some(PathBuf::from("/gone/intermediate")),
+                // round-12 M1: moved by this run's lane — the index now agrees
+                // with the live path but disagrees with the stale capture;
+                // excluded so the repair cannot resurrect it.
+                "lane-moved" => Some(PathBuf::from("/gone/intermediate")),
                 _ => None,
             }
         };
-        let detected = detect_stranded_index_records(&hits, index_of);
+        // round-12 M1: a hit this run's own codex lane just moved is
+        // excluded — its surfaced path is a stale scan-time capture, and
+        // "repairing" it re-keys the index onto the vanished path.
+        let detected = detect_stranded_index_records(&hits, &["lane-moved".to_string()], index_of);
         assert_eq!(
             detected,
             vec![

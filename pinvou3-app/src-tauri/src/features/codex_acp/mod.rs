@@ -1269,10 +1269,31 @@ impl AcpPool {
 
     /// Whether this ACP session has a prompt turn in flight or admitted-but-
     /// not-yet-started (`prompt_pending`, same predicate the rebind eviction
-    /// uses). Operations that rewrite workspace bindings (directory rebind)
-    /// use this to reject busy sessions (same semantics as
-    /// EnginePool::is_turn_active, giving the command layer one uniform
-    /// fence). Sessions without a runtime (never spawned) return false.
+    /// and fence use). Sessions without a runtime (never spawned) return
+    /// false.
+    ///
+    /// Directory rebind does NOT fence through this accessor: its wait for
+    /// the sessions lock is unbounded, and rebind holds the process-wide gate
+    /// across the call — the rebind fences go through
+    /// [`Self::rebind_blocking_sessions`] instead (review #463 round-10
+    /// T13/T16).
+    pub async fn is_turn_active(&self, session_id: &str) -> bool {
+        self.sessions
+            .lock()
+            .await
+            .get(session_id)
+            .is_some_and(|runtime| {
+                runtime.busy.load(std::sync::atomic::Ordering::Acquire)
+                    || runtime
+                        .configuring
+                        .load(std::sync::atomic::Ordering::Acquire)
+                    || runtime
+                        .prompt_pending
+                        .load(std::sync::atomic::Ordering::Acquire)
+                        > 0
+            })
+    }
+
     /// Rebind fence (review #463 round-10 T13/T16, restored by round-11 B2):
     /// the subset of `session_ids` that must block a directory rebind,
     /// decided under ONE bounded acquisition of the pool's sessions lock.
@@ -1299,23 +1320,6 @@ impl AcpPool {
                     > 0
         })
         .await
-    }
-
-    pub async fn is_turn_active(&self, session_id: &str) -> bool {
-        self.sessions
-            .lock()
-            .await
-            .get(session_id)
-            .is_some_and(|runtime| {
-                runtime.busy.load(std::sync::atomic::Ordering::Acquire)
-                    || runtime
-                        .configuring
-                        .load(std::sync::atomic::Ordering::Acquire)
-                    || runtime
-                        .prompt_pending
-                        .load(std::sync::atomic::Ordering::Acquire)
-                        > 0
-            })
     }
 
     /// 会话类型以 ACP 辅助索引为主，并用 SavedSession 中持久化的 Agent 模型类型兜底。

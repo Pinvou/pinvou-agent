@@ -4551,25 +4551,23 @@ fn rebind_preserves_corrupt_legacy_workspaces_file() {
     std::fs::create_dir_all(&from).expect("create from");
     let to = unique_temp_dir("rebind-corrupt-to");
     std::fs::create_dir_all(&to).expect("create to");
-    let outcome = store
+    // Round-12 B1: a table this process never parsed aborts the rebind
+    // outright — the degraded continue would have published fresh sidecars
+    // under a table whose contents are unknown, and the next boot could
+    // resurrect old paths over them after a success report.
+    let error = store
         .rebind_workspace_bindings(&from, &to)
-        .expect("rebind with empty table");
+        .expect_err("an unparsed table aborts the rebind");
+    assert!(
+        error
+            .to_string()
+            .starts_with("REBIND_LEGACY_TABLE_UNWRITABLE"),
+        "typed marker follows the stable-prefix convention: {error}"
+    );
     assert_eq!(
         std::fs::read(&legacy).expect("legacy file must survive rebind"),
         b"{ not valid json",
         "corrupt-but-repairable legacy file must be preserved verbatim",
-    );
-    // Round-7 should-fix (report honesty): the corrupt file survives, so it is
-    // still on disk with unknown contents — the outcome must NOT claim "in
-    // sync"; a later boot that parses it could resurrect old paths over fresh
-    // sidecars after a success report.
-    assert!(
-        outcome.legacy_sync_failed,
-        "a preserved-but-unparsed table must be reported as a sync failure",
-    );
-    assert!(
-        outcome.legacy_resurrection_ids.is_empty(),
-        "the corrupt table cannot be parsed, so no ids can be named",
     );
 
     let _ = std::fs::remove_dir_all(&from);
@@ -4602,18 +4600,19 @@ fn unreadable_legacy_workspaces_file_is_preserved_across_rebind() {
     std::fs::create_dir_all(&from).expect("create from");
     let to = unique_temp_dir("rebind-unreadable-to");
     std::fs::create_dir_all(&to).expect("create to");
-    let outcome = store
+    let error = store
         .rebind_workspace_bindings(&from, &to)
-        .expect("rebind with unparsed legacy table");
+        .expect_err("an unreadable table aborts the rebind");
+    assert!(
+        error
+            .to_string()
+            .starts_with("REBIND_LEGACY_TABLE_UNWRITABLE"),
+        "typed marker follows the stable-prefix convention: {error}"
+    );
     assert_eq!(
         std::fs::read(&legacy).expect("legacy file must survive rebind"),
         bytes,
         "a never-parsed legacy file must be preserved verbatim, not deleted",
-    );
-    // Report honesty (round-7 should-fix): still-on-disk ⇒ not "in sync".
-    assert!(
-        outcome.legacy_sync_failed,
-        "a preserved-but-unparsed table must be reported as a sync failure",
     );
 
     let _ = std::fs::remove_dir_all(&from);
@@ -4693,26 +4692,34 @@ fn rebind_reports_legacy_table_sync_failure() {
     std::fs::set_permissions(&sessions_dir, std::fs::Permissions::from_mode(0o555))
         .expect("read-only sessions dir");
 
-    let outcome = store.rebind_workspace_bindings(&from, &to).expect("rebind");
-
+    // Round-12 B1: the phase-2 failure now ABORTS the run before any
+    // sidecar moves — continuing would leave table@from over sidecar@to,
+    // the resurrection state every later boot replays.
+    let error = store
+        .rebind_workspace_bindings(&from, &to)
+        .expect_err("an unwritable legacy table aborts the rebind");
     std::fs::set_permissions(&sessions_dir, original).expect("restore permissions");
     assert!(
-        outcome.legacy_sync_failed,
-        "legacy table sync failure must be flagged in the outcome"
+        error
+            .to_string()
+            .starts_with("REBIND_LEGACY_TABLE_UNWRITABLE"),
+        "typed marker follows the stable-prefix convention: {error}"
     );
-    // The sidecar itself rewrote fine (its directory stays writable); the
-    // resurrection hazard comes purely from the stale legacy table.
-    assert!(
-        outcome
-            .rebound
-            .iter()
-            .any(|(id, _)| id == &session.metadata.id),
-        "the sidecar rewrite succeeded and is reported as rebound"
-    );
+    // Nothing moved: the sidecar still resolves the pre-rebind path, so the
+    // on-disk state is consistent (table@from + sidecar@from) and the retry
+    // redoes the whole run.
+    let sidecar = store
+        .manager
+        .sessions_dir()
+        .join(&session.metadata.id)
+        .join("workspace-binding.json");
+    let sidecar: serde_json::Value =
+        serde_json::from_str(&std::fs::read_to_string(&sidecar).expect("sidecar exists"))
+            .expect("sidecar parses");
     assert_eq!(
-        outcome.legacy_resurrection_ids,
-        vec![session.metadata.id.clone()],
-        "the stale table's divergent entries are named even with an empty report",
+        sidecar.get("path").and_then(|p| p.as_str()),
+        Some(from.display().to_string()).as_deref(),
+        "the abort must leave the sidecar at `from` — nothing moved",
     );
 
     let _ = std::fs::remove_dir_all(&from);
@@ -4767,35 +4774,32 @@ fn rebind_retry_with_stale_legacy_table_still_reports_failure() {
     // same persistent one the round-5 comment prescribes a retry under.
     std::fs::set_permissions(&sessions_dir, std::fs::Permissions::from_mode(0o555))
         .expect("read-only sessions dir");
-    let first = store.rebind_workspace_bindings(&from, &to).expect("rebind");
-    let retry = store.rebind_workspace_bindings(&from, &to).expect("retry");
+    let first = store
+        .rebind_workspace_bindings(&from, &to)
+        .expect_err("run 1 aborts on the unwritable table");
     std::fs::set_permissions(&sessions_dir, original).expect("restore permissions");
 
-    assert!(!first.rebound.is_empty(), "run 1 must rewrite the sidecar");
-    assert!(first.legacy_sync_failed, "run 1 must flag the sync failure");
     assert!(
-        retry.rebound.is_empty(),
-        "run 2 has nothing left to rewrite — this is the state that used to \
-         collapse into a silent success",
+        first
+            .to_string()
+            .starts_with("REBIND_LEGACY_TABLE_UNWRITABLE"),
+        "typed marker follows the stable-prefix convention: {first}"
     );
     assert!(
-        retry.legacy_sync_failed,
-        "the legacy table is still unwritable on the retry"
+        !first.to_string().is_empty(),
+        "run 1 aborted before any sidecar moved — nothing to report as rebound"
     );
-    assert_eq!(
-        retry.legacy_resurrection_ids,
-        vec![session.metadata.id.clone()],
-        "the retry must keep naming the sessions the stale table would resurrect",
-    );
-    // The retry must converge once the write becomes possible again. The
-    // table is REWRITTEN, not deleted: it still holds a live-session entry, now
-    // carrying the translated path (deletion is only for a table with nothing
-    // left to migrate). Asserting removal here contradicted the rewrite
-    // semantics the degraded path exists for.
+    // The retry must converge once the write becomes possible again — and
+    // because run 1 aborted before any sidecar moved, that retry is a FULL
+    // redo: the sidecar still sits at `from`, and the writable rerun moves
+    // it and reports it rebound.
     let converged = store.rebind_workspace_bindings(&from, &to).expect("rebind");
     assert!(
-        !converged.legacy_sync_failed && converged.legacy_resurrection_ids.is_empty(),
-        "a writable rerun rewrites the table and drops the failure report",
+        converged
+            .rebound
+            .iter()
+            .any(|(id, _)| id == &session.metadata.id),
+        "a writable rerun redoes the whole run and reports the rebound session",
     );
     let _ = std::fs::remove_dir_all(&from);
     let _ = std::fs::remove_dir_all(&to);
@@ -4894,7 +4898,6 @@ fn rebind_crash_window_heals_forward_through_boot_migration() {
             .iter()
             .any(|(id, _)| id == &stuck_session.metadata.id),
     );
-    assert!(!outcome.legacy_sync_failed, "the table rewrite succeeded");
     // CRASH-WINDOW STATE: after a run where a sidecar moved while a sibling
     // failed, the on-disk table carries `to` for the moved session — the
     // mid-run state the crash-window contract requires (the rewrite lands
@@ -5207,4 +5210,86 @@ fn boot_migration_partial_failure_retains_and_extends() {
 
     let _ = std::fs::remove_dir_all(&target);
     let _ = std::fs::remove_dir_all(&stuck_path);
+}
+
+/// Round-10 minor 1 / round-12 B1: the load-bearing invariant of the absorbed
+/// (#464) phase order — phase 2 publishes EVERY plan translation into the
+/// surviving on-disk table, cache-only entries included (an entry whose
+/// original migration write failed lives in the table and the cache but has
+/// no sidecar). Without this pin a regression that skips cache-only entries
+/// in the merged view would leave table@from behind a sidecar/cache at `to`,
+/// and the next boot would resurrect the vanished path.
+#[test]
+fn rebind_publishes_cache_only_legacy_entry_translation() {
+    let (store, _g) = isolated_store();
+    let from = unique_temp_dir("rebind-cacheonly-from");
+    let to = unique_temp_dir("rebind-cacheonly-to");
+    std::fs::create_dir_all(&from).expect("create from");
+    std::fs::create_dir_all(&to).expect("create to");
+
+    let session = store
+        .create_new("/model".into(), None, std::env::temp_dir())
+        .expect("create");
+    store
+        .bind_session_workspace(&session.metadata.id, from.clone())
+        .expect("bind under from");
+    // Cache-only shape: the sidecar is removed after the bind, leaving the
+    // entry alive in the legacy table and the in-memory cache only.
+    let sidecar = store
+        .manager
+        .sessions_dir()
+        .join(&session.metadata.id)
+        .join("workspace-binding.json");
+    std::fs::remove_file(&sidecar).expect("remove sidecar");
+    // Seed the on-disk table so the phase-2 merged-view publish (table ∪
+    // plan translations) is observable on disk, not only through the cache.
+    let legacy = store
+        .manager
+        .sessions_dir()
+        .join("_session_workspaces.json");
+    std::fs::write(
+        &legacy,
+        serde_json::to_vec(&serde_json::json!({
+            session.metadata.id.clone(): from.display().to_string()
+        }))
+        .expect("serialize legacy table"),
+    )
+    .expect("seed legacy file");
+
+    let outcome = store
+        .rebind_workspace_bindings(&from, &to)
+        .expect("rebind succeeds");
+    assert!(
+        outcome
+            .rebound
+            .iter()
+            .any(|(id, _)| id == &session.metadata.id),
+        "the cache-only entry is translated and its sidecar materialized"
+    );
+
+    // The pin itself: phase 2 must land the translation in the ON-DISK
+    // table (not merely the in-memory cache) — a regression that drops
+    // cache-only entries from the merged view fails exactly here.
+    let on_disk: std::collections::HashMap<String, PathBuf> =
+        serde_json::from_str(&std::fs::read_to_string(&legacy).expect("read legacy table"))
+            .expect("legacy table parses");
+    assert_eq!(
+        on_disk.get(&session.metadata.id).map(PathBuf::as_path),
+        Some(to.as_path()),
+        "phase 2 must publish the cache-only entry's translation to disk",
+    );
+
+    // And the fresh-boot migration lands on the translated target — never
+    // back on the vanished `from`.
+    let rebooted = SessionStore::boot_for_process_startup().expect("reopen home");
+    assert_eq!(
+        rebooted
+            .session_workspace_binding(&session.metadata.id)
+            .as_deref(),
+        Some(to.as_path()),
+        "the boot must not resurrect the pre-rebind path from a stale table"
+    );
+
+    let _ = std::fs::remove_dir_all(&from);
+    let _ = std::fs::remove_dir_all(&to);
 }

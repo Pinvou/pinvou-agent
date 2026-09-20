@@ -37,7 +37,7 @@ use std::collections::HashMap;
 use std::io::ErrorKind;
 use std::path::{Path, PathBuf};
 
-use anyhow::{Context, Result};
+use anyhow::{Context, Result, bail};
 use parking_lot::RwLock;
 use serde::{Deserialize, Serialize};
 
@@ -59,21 +59,6 @@ static REBIND_CRASH_AFTER_LEGACY_REWRITE: std::sync::atomic::AtomicBool =
 pub struct RebindBindingsOutcome {
     pub rebound: Vec<(String, PathBuf)>,
     pub failed_session_ids: Vec<String>,
-    /// True when the legacy global table is still on disk but this process
-    /// failed to rewrite/remove it in sync: the next boot migration would
-    /// re-bind the old paths over the fresh sidecars (silent resurrection),
-    /// so the report must not claim success (review #464 round-5 blocker 1).
-    /// A rerun converges — the rewrite is retried from the in-memory table.
-    pub legacy_sync_failed: bool,
-    /// Sessions the surviving legacy table would re-bind over their fresh
-    /// sidecars at the next boot (see `legacy_diverged_bindings`): non-empty
-    /// only together with `legacy_sync_failed`. The command layer merges these
-    /// ids into the report's failure list **independently of this run's
-    /// `rebound` set** — on a retry nothing is left to rewrite, so driving the
-    /// merge off `rebound` reported full success while the stale table
-    /// survived (review #464 round-6 blocking 1). Ids only: they are data for
-    /// the report; the paths stay out of the logs.
-    pub legacy_resurrection_ids: Vec<String>,
 }
 
 /// Schema version of the binding sidecar; used for migration if fields evolve.
@@ -327,7 +312,17 @@ impl SessionStore {
                 return matched;
             }
         };
-        for entry in entries.flatten() {
+        // An entry that cannot be stat-ed is disclosed, not silently skipped
+        // (review #463 round-12 minor 2): the scan and the post-pass fence
+        // both consume this iterator, so a dropped entry reads as absence and
+        // the run could report success without ever examining that session.
+        for entry in entries.filter_map(|entry| match entry {
+            Ok(entry) => Some(entry),
+            Err(error) => {
+                eprintln!("[sessions] rebind workspace-binding scan dropped an entry ({error})");
+                None
+            }
+        }) {
             let Ok(file_type) = entry.file_type() else {
                 continue;
             };
@@ -513,14 +508,20 @@ impl SessionStore {
         // not from this run's write log: on a retry nothing is left to rewrite
         // and the rebound set is empty while the stale table is still there
         // (review #464 round-6 blocking 1).
-        let diverged = self.legacy_diverged_bindings(&plan);
+        // Phase-2 failure aborts the run BEFORE any sidecar moves (review
+        // #463 round-12 B1): a surviving stale table (table@from) over fresh
+        // sidecars (sidecar@to) is the resurrection state — every later boot
+        // re-binds the vanished `from` over the moved sidecar, silently
+        // undoing a reported success. Aborting leaves table@from +
+        // sidecar@from consistent (nothing was written anywhere), and the
+        // retry redoes the whole run once the table is writable. This does
+        // NOT conflict with the crash-heal pin: that window is process death
+        // between the phases (table@to over sidecars@from), which this Err
+        // path never produces.
         if !self.rewrite_legacy_session_workspaces_if_present(&plan) {
-            outcome.legacy_sync_failed = true;
-            // Assigned only on the failure path: `diverged` describes the file
-            // as it was before the rewrite, so a successful rewrite (which
-            // already put the translated values on disk) must not report the
-            // sessions as resurrectable.
-            outcome.legacy_resurrection_ids = diverged;
+            bail!(
+                "REBIND_LEGACY_TABLE_UNWRITABLE: the legacy workspace table could not be synced, so nothing was moved — make the sessions directory writable and retry"
+            );
         }
         // Test-only crash seam between phase 2 and phase 3 (round-8 review
         // M4): it simulates a process death exactly where the phase order
@@ -590,68 +591,6 @@ impl SessionStore {
             outcome.rebound.push((id, next));
         }
         Ok(outcome)
-    }
-
-    /// Sessions whose live binding in the legacy global table differs from the
-    /// current in-memory binding — i.e. exactly the entries a next-boot
-    /// migration would write back over the fresh sidecars, resurrecting the
-    /// pre-rebind directory (review #464 round-6 blocking 1). The comparison
-    /// mirrors the boot migration's own population rule: a session record must
-    /// exist (`migrate_legacy_session_workspaces` skips ghost entries), and
-    /// only a file this process successfully parsed is consulted — a file whose
-    /// parse failed is deliberately preserved and can be neither trusted nor
-    /// rewritten (round-3 minor 6).
-    ///
-    /// Returned sorted by id so a retry reports the same set in the same order.
-    fn legacy_diverged_bindings(&self, plan: &[(String, PathBuf, PathBuf)]) -> Vec<String> {
-        if self
-            .legacy_session_workspaces_parse_failed
-            .load(std::sync::atomic::Ordering::SeqCst)
-        {
-            return Vec::new();
-        }
-        let legacy = self
-            .manager
-            .sessions_dir()
-            .join(LEGACY_SESSION_WORKSPACES_FILE);
-        let Ok(content) = std::fs::read_to_string(&legacy) else {
-            return Vec::new();
-        };
-        let Ok(entries) = serde_json::from_str::<HashMap<String, PathBuf>>(&content) else {
-            // Readable but unparseable (the boot pass owns flagging that case;
-            // this call can also run on a long-lived process whose boot read a
-            // file that has since been damaged): nothing may be rewritten, so
-            // no session can be named as resurrectable.
-            return Vec::new();
-        };
-        let live = self.session_workspaces.read();
-        let sessions_dir = self.manager.sessions_dir();
-        // This runs BEFORE phase 3 applies the plan to the cache, so the cache
-        // still holds the pre-rebind values. The target must therefore be the
-        // planned translation first, falling back to the cache: comparing the
-        // stale table against the equally stale cache made every entry look in
-        // sync and reported an empty resurrection set (review #464 round-6
-        // blocking 1 regression).
-        let translations: HashMap<&str, &Path> = plan
-            .iter()
-            .map(|(id, next, _)| (id.as_str(), next.as_path()))
-            .collect();
-        let mut diverged: Vec<String> = entries
-            .into_iter()
-            .filter(|(id, path)| {
-                let target = translations
-                    .get(id.as_str())
-                    .copied()
-                    .or_else(|| live.get(id).map(|current| current.as_path()));
-                if target.is_some_and(|current| current == path) {
-                    return false;
-                }
-                sessions_dir.join(format!("{id}.json")).is_file()
-            })
-            .map(|(id, _)| id)
-            .collect();
-        diverged.sort_unstable();
-        diverged
     }
 
     /// Minimal rewrite of the old global table (used only for the rebind's

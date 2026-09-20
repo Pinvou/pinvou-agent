@@ -24,11 +24,6 @@ const RebindFolderDialog = ({ from, to, warnExisting, errorMessage, partial, bus
     onCancelRef.current = onCancel;
     busyRef.current = busy;
   });
-  // On close, focus returns to the triggering badge (review #463 Minor 8,
-  // same as MoveToProjectDialog); pressing Enter after the restore re-triggers
-  // onRebind — by then rebindDraft is already cleared, so that starts a
-  // brand-new rebind flow rather than a duplicate submit, consistent with
-  // the guard's semantics.
   // On close, focus returns to the project header row that opened this
   // dialog via the container-supplied resolver (review #463 round-10 T7):
   // the badge is unmounted by the operation it starts, so the hook's default
