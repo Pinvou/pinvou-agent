@@ -626,8 +626,12 @@ pub async fn rebind_workspace_root(
     // and the index disagrees with both. Re-key it onto the sidecar's target
     // here, BEFORE the metadata loop — a persist failure then returns with
     // the metadata still stale, so the dialog's own retry re-admits (and
-    // re-repairs) the session instead of reporting a hollow success.
-    let stranded = detect_stranded_index_records(&codex_to_lane_hits, &affected, |session_id| {
+    // re-repairs) the session instead of reporting a hollow success. The
+    // detection is not scoped to `affected` (round-11 B3): a strand whose
+    // metadata already synced never enters `affected`, and a rerun would
+    // otherwise report full success forever while the index stays at the
+    // vanished intermediate target.
+    let stranded = detect_stranded_index_records(&codex_to_lane_hits, |session_id| {
         acp_pool.agents().code_project_workspace(session_id)
     });
     if !stranded.is_empty() {
@@ -1040,14 +1044,22 @@ fn classify_absent_record_session(
     artifacts_exist: bool,
     moved_this_run: bool,
 ) -> AbsentRecordOutcome {
-    if !artifacts_exist || !moved_this_run {
+    if !artifacts_exist {
         return AbsentRecordOutcome::Skip;
     }
+    // Stale wins over moved (review #463 round-11 B4): an orphan whose
+    // sidecar write failed is in `final_stale` but not `affected`, so the
+    // orphan branch computes moved=false — a plain moved gate would Skip it,
+    // and every rerun would repeat the silence while a stale sidecar sits
+    // under the vanished `from`. Something WAS attempted for this session,
+    // so the enum's own "report failed" promise applies regardless.
     if stale {
-        AbsentRecordOutcome::Failed
-    } else {
-        AbsentRecordOutcome::Rebound
+        return AbsentRecordOutcome::Failed;
     }
+    if !moved_this_run {
+        return AbsentRecordOutcome::Skip;
+    }
+    AbsentRecordOutcome::Rebound
 }
 
 /// Stranded-index detection (review #463 round-10 Major 1): among the codex
@@ -1068,12 +1080,17 @@ fn classify_absent_record_session(
 /// need a persisted pending-rebind marker, the remedy already on record.
 fn detect_stranded_index_records(
     to_lane_hits: &[(String, PathBuf)],
-    affected: &[(String, PathBuf)],
     index_path_of: impl Fn(&str) -> Option<PathBuf>,
 ) -> Vec<(String, PathBuf)> {
+    // Deliberately NOT scoped to `affected` (review #463 round-11 B3): a
+    // strand whose metadata already synced (metadata == surfaced path, e.g.
+    // after a run that failed only the sidecar passes) never enters
+    // `affected`, yet the damage is index ≠ sidecar and metadata is
+    // irrelevant to it. Every to-lane hit whose index disagrees with the
+    // surfaced (sidecar-authoritative) path drives the re-key; a healthy
+    // record has index == sidecar and is untouched.
     to_lane_hits
         .iter()
-        .filter(|(session_id, _)| affected.iter().any(|(sid, _)| sid == session_id))
         .filter(|(session_id, path)| {
             index_path_of(session_id).is_some_and(|indexed| &indexed != path)
         })
@@ -1342,13 +1359,14 @@ mod tests {
     }
 
     #[test]
-    fn stranded_index_detection_admits_only_disagreeing_affected_hits() {
-        // review #463 round-10 Major 1: only a to-lane hit that was admitted
-        // into `affected` (fenced, metadata ≠ binding) whose index record
-        // disagrees with the scan-surfaced (sidecar-authoritative) path is a
-        // strand. Agreeing records, non-candidate records (index returns
-        // None), and healthy to-lane sessions never admitted to `affected`
-        // must not be re-keyed.
+    fn stranded_index_detection_admits_only_disagreeing_hits() {
+        // review #463 round-10 Major 1 + round-11 B3: a to-lane hit whose
+        // index record disagrees with the scan-surfaced (sidecar-
+        // authoritative) path is a strand, whether or not it was admitted
+        // into `affected` — a metadata-healthy strand (metadata == path,
+        // never in `affected`) used to escape the repair and report full
+        // success forever. Agreeing records and non-candidate records (index
+        // returns None) must not be re-keyed.
         let to = PathBuf::from("/vault/beta");
         let stranded = PathBuf::from("/vault/beta/deep");
         let hits = vec![
@@ -1356,11 +1374,7 @@ mod tests {
             ("agreeing".to_string(), to.clone()),
             ("not-code".to_string(), to.clone()),
             ("healthy".to_string(), to.clone()),
-        ];
-        let affected = vec![
-            ("stranded".to_string(), stranded.clone()),
-            ("agreeing".to_string(), to.clone()),
-            ("not-code".to_string(), to.clone()),
+            ("metadata-synced-strand".to_string(), to.clone()),
         ];
         let index_of = |id: &str| -> Option<PathBuf> {
             match id {
@@ -1369,14 +1383,20 @@ mod tests {
                 "agreeing" => Some(to.clone()),
                 // An ACP/plain record: code_project_workspace returns None.
                 "not-code" => None,
+                // round-11 B3: metadata already synced (never in `affected`),
+                // the index still disagrees — must be repaired.
+                "metadata-synced-strand" => Some(PathBuf::from("/gone/intermediate")),
                 _ => None,
             }
         };
-        let detected = detect_stranded_index_records(&hits, &affected, index_of);
+        let detected = detect_stranded_index_records(&hits, index_of);
         assert_eq!(
             detected,
-            vec![("stranded".to_string(), stranded)],
-            "only the affected session whose index disagrees with its sidecar target is repaired"
+            vec![
+                ("stranded".to_string(), stranded),
+                ("metadata-synced-strand".to_string(), to),
+            ],
+            "every disagreeing to-lane hit is repaired, affected membership irrelevant"
         );
     }
 
@@ -1401,6 +1421,19 @@ mod tests {
         assert!(
             matches!(failed, Failed),
             "a lane write that did not stick is reported failed for retry"
+        );
+        // round-11 B4: an orphan whose sidecar write failed is in
+        // `final_stale` but not `affected`, so moved=false — the old moved
+        // gate Skipped it and every rerun reproduced the silence.
+        let orphan_stale = classify_absent_record_session(true, true, false);
+        assert!(
+            matches!(orphan_stale, Failed),
+            "a stale orphan sidecar reports failed even when moved is false"
+        );
+        let dead_stale = classify_absent_record_session(true, false, false);
+        assert!(
+            matches!(dead_stale, Skip),
+            "deleted mid-run: artifacts gone, nothing to report even if stale"
         );
     }
 
