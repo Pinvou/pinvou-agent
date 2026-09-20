@@ -80,3 +80,11 @@ condition = "AND"
 regexTarget = "line"
 paths = ['''^pinvou3-app/src/shared/model-service-errors\.js$''']
 regexes = ['''abc123def456''']
+
+[[allowlists]]
+description = "Marketplace reconcile fixtures carry env-var NAME placeholders, not credentials"
+targetRules = ["generic-api-key"]
+condition = "AND"
+regexTarget = "line"
+paths = ['''^pinvou3-app/src-tauri/src/features/marketplace/mod\.rs$''']
+regexes = ['''PINVOU3_MCP_SECRET_PATSNAP_KEY''']
