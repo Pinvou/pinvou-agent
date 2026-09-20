@@ -142,13 +142,13 @@ assert.match(viewSource, /let operation = beginAcpSendOperation\(targetId\)/,
   'ACP sends must capture a Session-scoped operation before awaiting');
 assert.equal(
   viewSource.match(/shouldActivate: \(\) => canApplyAcpSendOperation\(operation\)/g)?.length,
-  2,
-  'ACP and native draft creation must not navigate after the user switched Sessions',
+  1,
+  'the shared ACP/native send pipeline must not navigate after the user switched Sessions',
 );
 assert.equal(
   viewSource.match(/if \(created\.activated && activeIdRef\.current === targetId\) \{\s*acpSendOperationTracker\.switchSession\(targetId\);\s*operation = beginAcpSendOperation\(targetId\);/g)?.length,
-  2,
-  'late draft Session creation may only retarget ACP/native sends while that Session is active',
+  1,
+  'late draft Session creation may only retarget the shared ACP/native send pipeline while that Session is active',
 );
 assert.match(viewSource, /if \(canApplyAcpSendOperation\(operation\)\) \{\s*showError\(err\);\s*setDraft\(message\);/,
   'a failed ACP send may only restore the draft and error to its owning Session');

@@ -86,9 +86,18 @@ const expectedProtocolHashes = {
   // ensureSessionBufferLoaded injected by the sessions domain (the
   // load_session hash is accounted in the sessions domain).
   auxChat: 'f82a39c964d1049ffe0f77f895d0ec690b424ee7d52bfd7a66fdf70c7de14eab',
+  // Batch-A dead-code/dedup sweep: byte-identical helpers shared between the web and
+  // tauri lanes moved verbatim into src/shared/bridge-shared-helpers.js (loaded by
+  // index.html before both bridges). The moved bodies carry their invoke( calls with
+  // them, so per-domain captures shrink by exactly the relocated call sites — every
+  // dropped signature still executes at runtime via the shared payload, and the
+  // command + payload text of each invoke is unchanged. Hashes below marked
+  // "Recomputed for the shared-helper dedup" reflect that relocation only.
   multiAgent: 'a6d045e87f7f5f3537fdeadb262d54622edd6dcafa2c0253f0b44e7de439315d',
-  orchestration: '0f6d0ff37a357fe9dab1873879d98ebf5e0e1c176c02c431452f5b5dc48b7e22',
-  artifacts: '37ca694534c7e6cf44b6d262c40e388999c3ba136faca0d6f57821d5b9b3df53',
+  // Recomputed for the shared-helper dedup (see batch note above).
+  orchestration: '341efb3b1e4a4036269559294c33b76a744bcde7c3903b9ba3525711d6182f6f',
+  // Recomputed for the shared-helper dedup (see batch note above).
+  artifacts: '852935f8094d353fef871d1db804c7a4ed5fbefeaf9cb6af9f0c3932f850e259',
   // Recomputed for #308 follow-ups: prefillComposer(text, append) recovery
   // entry + comment translations touching `invoke(` mentions (the extractor
   // scans raw source, so comment wording is part of the digest). Recomputed
@@ -133,28 +142,43 @@ const expectedProtocolHashes = {
   // and the never-emitted remote_control:mobile_user_message / vllm-setup:phase
   // listeners dropped. The captured surface shrank by persistMessages'
   // save_session_messages/save_session_artifacts/rename_session invokes, the
-  // terminal.js cancel_shell_task invoke, and the two dead listeners; every
-  // dropped invoke stays reachable via bridge.js orchestration paths, so the
-  // exposed bridge.chat API is unchanged).
-  chat: 'a5315f07ce07d52767c967d3df57c8d86a5dd7a605e07daaa8d85427089c52ad',
-  dependencies: '2cb185d38dabeb35f48773457c182e1c35951b210f5d0fc853b074eb2eb68626',
+  // terminal.js cancel_shell_task invoke, and the two dead listeners.
+  // save_session_artifacts/rename_session stay reachable via bridge.js
+  // orchestration paths (the session-switch persist flow issues both), while
+  // save_session_messages had no remaining caller, so its Rust command is
+  // retired with it; the exposed bridge.chat API is unchanged).
+  // Recomputed for the shared-helper dedup (see batch note above).
+  chat: '2258b9ed785b1a73bfd271427689c7db902edc5fa0d06eab47c28a11e7f40b86',
+  // Recomputed for the shared-helper dedup (see batch note above).
+  dependencies: 'bcc3fb2ec60c5e80df5ac86bc8b4e14c810aa449d5ee5f4e3bc8ab1f32ffdff3',
   // Recomputed for #445 round-8: exitPlanToYolo accepts an explicit target
   // session id (the YOLO gate passes the adjudicated sid), so the
   // exit_plan_to_yolo invoke payload text changes from
   // { sessionId: state.activeSessionId } to { sessionId: sid } — same
   // command surface, no new invoke or listen entries.
-  interaction: '7a58372cdc0b3eabe1b0744dda4a18a31926ba929b67307309803e88a30e5fab',
-  knowledge: '9105a42c6b69f04d0bc28b6a72e0746648110a44823891ded3261cdcbc99766b',
+  // Recomputed for the shared-helper dedup (see batch note above).
+  interaction: '9b330edc21e6db76559a368cc54fd22b930c6e3fc0f714141aaa763dcb5fd0c9',
+  // Recomputed for the shared-helper dedup (see batch note above).
+  knowledge: 'f9e241acb18d04c8d5d7d71b18d3d0350c3264bbc50e896b0f21b0e036286868',
   // memory recomputed for the memory-maintenance feature: organize_memory +
   // get_memory_organize_history invokes added to bridge/memory.js.
-  memory: '843ccd95e2f23d865e76e1ed0b2a34bac2abb4e3faa4b2c16226113551985cec',
+  // Recomputed for the shared-helper dedup (see batch note above).
+  // Recomputed again for the dead-code sweep: the dead deleteMemoryPreference facade
+  // (delete_memory_preference invoke) was removed; deleteMemoryItem('preference', ...)
+  // still routes to the same command, so the backend surface is unchanged.
+  memory: '30cab38634446a7bef24d559db799641d115e0f07a22a28540a5fd48a9ff7347',
   monitor: '01bf9a7c9b9b3f313cf49e975e6503627ff373caed0f4b3be07a6a98492a7c43',
-  personas: 'd16d99104c45bb3e7a6585862b0ba30936bf31a4fef2238453a0a0a35e3c1806',
+  // Recomputed for the shared-helper dedup (see batch note above).
+  personas: 'c168ac5ede23cb76ef6a93b5323ca4837b4d97395d5e5ca9c2eabf4eb40dd01f',
   // Recomputed for the voice error-code relay: web_access_rpc_respond gains
   // errorCode/errorCategory so structured VoiceCommandError identity reaches
   // the browser lane's trilingual mapping instead of only the message text.
-  remoteControl: '0f3bbabae65f0551e335354019de7f97578fde257829505ad74c13196b173fc5',
-  scheduled: '7d6ca9783925a5071a364097ebdf0112511f9503b5e4534346b9fda6873ec036',
+  // Recomputed again for the dead-code sweep: the JS-side resetWebRelayAddress
+  // facade (web_access_reset_relay invoke) was removed — no production caller,
+  // and the Rust command is removed in parallel by the backend sweep.
+  remoteControl: '099f4c07968f53331bac9e51b7379ab9fc8c3db4a7102d9629a652c26b5c99ae',
+  // Recomputed for the shared-helper dedup (see batch note above).
+  scheduled: '28247031a7401d232000c469c1eed0954c2eb1265817e7d0a1a5fd5768f5871a',
   // Recomputed for one-click full-fidelity session log export: the tauri
   // sessions bridge gains the export_session_archive invoke wrapping the
   // export_session command (web lane intentionally has no such backend).
@@ -163,12 +187,15 @@ const expectedProtocolHashes = {
   // (bridge/sessions.js). Recomputed again for workspace-bound sessions:
   // get_session_workspace_binding query + bound-draft staged mode application
   // (set_plan_mode_next / exit_plan_to_yolo) at materialization.
-  sessions: 'c85e365dcf0874b577396a02f764cb6f108ad34a4b54c0853cd8f918ffa39b5c',
-  settings: 'a44929caff59641eb059f28885f1674d4e277412526d31c1d3ddfd75e44d0496',
+  // Recomputed for the shared-helper dedup (see batch note above).
+  sessions: 'bd3a774950c3be99938f4bdc403ceef47cdf598952d47b0655c7371887764702',
+  // Recomputed for the shared-helper dedup (see batch note above).
+  settings: 'a5c68eadcad49dd2f3e58157d0262209610696fb0e37f0b8e6888a97199729b5',
   // Recomputed for the audit dead-code cleanup: the never-emitted
   // remote_control:status / remote_control:session_created listeners were
   // removed (update:progress stays — pinned by tests/updater_progress_state).
-  updater: 'd603bbac5c51f3b53bf19272fbafd9c430786fd5e35a9b8da9aa67f4c2334e5f',
+  // Recomputed for the shared-helper dedup (see batch note above).
+  updater: '30a3762ee45f378d476efec934dc4be50522a02a5b9a97111191496510d4d7d4',
   // Recomputed for the comment-only English translation of the voice bridge
   // (PR-added Chinese comments inside the postprocess_voice_text invoke
   // span are part of the hashed source; no invoke/listen surface changed).
@@ -193,6 +220,20 @@ for (const [domain, files] of Object.entries(protocolSources)) {
   if (!expectedProtocolHashes[domain]) console.log(`${domain}: ${hash}`);
   else assert.equal(hash, expectedProtocolHashes[domain], `${domain} bridge protocol changed`);
 }
+
+// The shared payload base carries the invoke/listen bodies that the batch dedup
+// relocated out of the per-lane files, so the domain hashes above no longer
+// cover that text. Hash the shared file's surface with the same extractor to
+// pin payload edits inside the shared base the same way the lane files are.
+const expectedSharedBaseHash = '4e63e15a4ec6b41f2f38a667d9e94d9761c230ab927e91d0c5ae49f3c4abedb4';
+const sharedBaseSource = fs.readFileSync(path.join(root, 'src', 'shared', 'bridge-shared-helpers.js'), 'utf8');
+const sharedBaseSignatures = [
+  ...extractCalls(sharedBaseSource, 'invoke').map(call => `shared/bridge-shared-helpers.js:invoke:${call}`),
+  ...extractCalls(sharedBaseSource, 'listen').map(call => `shared/bridge-shared-helpers.js:listen:${call}`),
+];
+const sharedBaseHash = crypto.createHash('sha256').update(sharedBaseSignatures.join('\n')).digest('hex');
+if (!expectedSharedBaseHash) console.log(`sharedBase: ${sharedBaseHash} (${sharedBaseSignatures.length} signatures)`);
+else assert.equal(sharedBaseHash, expectedSharedBaseHash, 'shared bridge payload protocol changed');
 
 const featureRegistry = new Proxy({}, {
   get() {
@@ -221,6 +262,10 @@ const context = vm.createContext({
   URL,
   Blob,
 });
+// bridge.js delegates shared helpers to window.PinvouBridgeShared; index.html loads
+// the shared payload before the bridges, so the harness loads it first too.
+vm.runInContext(fs.readFileSync(path.join(root, 'src', 'shared', 'bridge-shared-helpers.js'), 'utf8'),
+  context, { filename: 'shared/bridge-shared-helpers.js' });
 vm.runInContext(read('bridge.js'), context, { filename: 'bridge.js' });
 
 const api = windowObject.TauriBridge;

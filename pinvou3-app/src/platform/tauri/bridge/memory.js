@@ -7,7 +7,13 @@
   "use strict";
   // biome-ignore lint/suspicious/noAssignInExpressions: registry bootstrap of the verbatim payload; splitting the statements would diverge from the artifact
   const registry = root.__PINVOU_TAURI_BRIDGE_FEATURES__ = root.__PINVOU_TAURI_BRIDGE_FEATURES__ || {};
-  registry["memory"] = function (context) {
+  registry["memory"] = function (context) {let pinvouSharedtauriMemoryCache = null;
+function pinvouSharedtauriMemory() {
+  if (!pinvouSharedtauriMemoryCache) pinvouSharedtauriMemoryCache = window.PinvouBridgeShared.create("tauriMemory", { state, runOnSession, invoke, notify, timeStr, addChatItem, loadMemoryOverview, memoryOverviewSeq: { get value() { return memoryOverviewSeq; }, set value(v) { memoryOverviewSeq = v; } } });
+  return pinvouSharedtauriMemoryCache;
+}
+
+
     const state = context.state;
     const notify = context.notify;
     const invoke = context.invoke;
@@ -17,98 +23,10 @@
     const runOnSession = context.runOnSession;
     const addChatItem = context.addChatItem;
     const timeStr = context.timeStr;
-  function memoryWriteLabel(event) {
-    const text = event && event.text || "";
-    if (!text) return "记忆已更新";
-    return text;
-  }
-  function memoryWriteStatusLabel(event) {
-    const action = event && event.action || "";
-    if (action === "confirmed" || action === "remembered") return "记忆已更新";
-    if (action === "archived") return "记忆已归档";
-    if (action === "deleted") return "记忆已删除";
-    return "记忆已更新";
-  }
-  function normalizeMemoryCandidateText(text) {
-    return String(text || "").replaceAll(/\s+/g, " ").trim().toLowerCase();
-  }
-  function handleMemoryWrite(payload) {
-    const sid = payload && payload.session_id || state.activeSessionId;
-    const events = payload && Array.isArray(payload.events) ? payload.events : [];
-    if (!sid || !events.length) return;
-    runOnSession(sid, function () {
-      events.forEach(function (event) {
-        if (!event) return;
-        if (event.action === "pending") {
-          const label = memoryWriteLabel(event);
-          const labelKey = normalizeMemoryCandidateText(label);
-          const existing = state.chatItems.find(function (it) {
-            return it.type === "memory_candidate" && !it.resolved && (
-              (event.id && it.memoryId === event.id) ||
-              (labelKey && normalizeMemoryCandidateText(it.text) === labelKey)
-            );
-          });
-          if (existing) {
-            existing.memoryId = event.id || existing.memoryId;
-            existing.kind = event.kind || existing.kind || "preference";
-            existing.text = label;
-            existing.time = timeStr();
-            return;
-          }
-          addChatItem({
-            type: "memory_candidate",
-            memoryId: event.id,
-            kind: event.kind || "preference",
-            text: label,
-            time: timeStr(),
-            resolved: false,
-          });
-          return;
-        }
-        const label = memoryWriteLabel(event);
-        const labelKey = normalizeMemoryCandidateText(label);
-        const existing = state.chatItems.find(function (it) {
-          return it.type === "memory_candidate" && (
-            (event.id && it.memoryId === event.id) ||
-            (labelKey && normalizeMemoryCandidateText(it.text) === labelKey)
-          );
-        });
-        if (existing) {
-          if (event.action === "ignored" || event.action === "never") {
-            state.chatItems = state.chatItems.filter(function (it) { return it !== existing; });
-            return;
-          }
-          existing.resolved = true;
-          existing.statusLabel = event.action === "ignored" ? "已忽略"
-            : event.action === "never" ? "不再提示"
-            : event.action === "archived" ? "已归档"
-            : event.action === "deleted" ? "已删除"
-            : "已记住";
-          existing.kind = event.kind || existing.kind || "preference";
-          existing.text = label;
-          existing.time = timeStr();
-          return;
-        }
-        if (event.action === "ignored" || event.action === "never") {
-          return;
-        }
-        addChatItem({
-          type: "memory_notice",
-          memoryId: event.id,
-          kind: event.kind || "preference",
-          text: label,
-          statusLabel: memoryWriteStatusLabel(event),
-          time: timeStr(),
-        });
-      });
-      notify();
-    });
-    if (invoke) {
-      setTimeout(function () {
-        loadMemoryOverview({ rehydratePending: true });
-      }, 0);
-    }
-  }
+
+
+
+function handleMemoryWrite(payload) { return pinvouSharedtauriMemory().handleMemoryWrite(payload); }
 
   function applyMemoryOverview(overview) {
     const previous = state.memory || {};
@@ -132,86 +50,19 @@
       work_context: sourceValue("work_context", overview && Array.isArray(overview.work_context) ? overview.work_context : [], []),
       current_focus: sourceValue("current_focus", overview && Array.isArray(overview.current_focus) ? overview.current_focus : [], []),
       recent_activity: sourceValue("recent_activity", overview && Array.isArray(overview.recent_activity) ? overview.recent_activity : [], []),
-      recent_work: sourceValue("recent_work", overview && Array.isArray(overview.recent_work) ? overview.recent_work : [], []),
       pending: sourceValue("pending", overview && Array.isArray(overview.pending) ? overview.pending : [], []),
-      never: sourceValue("never", overview && Array.isArray(overview.never) ? overview.never : [], []),
       runtime: sourceValue("runtime", overview && overview.runtime || null, null),
       snapshot_path: sourceValue("snapshot", overview && overview.snapshot_path || "", "", "snapshot_path"),
       warnings: orderedMemoryWarnings(overview && overview.warnings),
       sources: sourceStates,
     };
   }
-  function orderedMemoryWarnings(warnings) {
-    const items = Array.isArray(warnings) ? warnings : [];
-    return [
-      ...items.filter(function (warning) {
-        return warning && warning.code === "memory_topic_cleanup_required";
-      }),
-      ...items.filter(function (warning) {
-        return !warning || warning.code !== "memory_topic_cleanup_required";
-      }),
-    ];
-  }
-  function applyMemoryProfileState(result) {
-    if (!result || !result.profile) return;
-    state.memory = Object.assign({}, state.memory, {
-      loading: false,
-      error: null,
-      profile: result.profile,
-      runtime: result.runtime || null,
-      warnings: orderedMemoryWarnings(result.warnings),
-    });
-  }
-  function applyMemoryWriteState(result, update) {
-    if (!result) return;
-    const next = Object.assign({}, state.memory, {
-      loading: false,
-      error: null,
-      runtime: result.runtime || null,
-      warnings: orderedMemoryWarnings(result.warnings),
-    });
-    if (update) update(next, result.value);
-    state.memory = next;
-    notify();
-  }
-  function upsertMemoryValue(items, value, replacedId) {
-    if (!value) return items || [];
-    const next = (items || []).filter(function (item) {
-      return item && item.id !== value.id && item.id !== replacedId;
-    });
-    next.push(value);
-    return next;
-  }
-  function upsertPendingMemoryCandidate(item) {
-    if (!item || item.status !== "pending_confirm") return;
-    const label = item.content || item.text || "";
-    if (!label) return;
-    const labelKey = normalizeMemoryCandidateText(label);
-    const existing = state.chatItems.find(function (it) {
-      return it.type === "memory_candidate" && !it.resolved && (
-        (item.id && it.memoryId === item.id) ||
-        (labelKey && normalizeMemoryCandidateText(it.text) === labelKey)
-      );
-    });
-    if (existing) {
-      existing.memoryId = item.id || existing.memoryId;
-      existing.kind = item.kind || existing.kind || "preference";
-      existing.text = label;
-      return;
-    }
-    addChatItem({
-      type: "memory_candidate",
-      memoryId: item.id,
-      kind: item.kind || "preference",
-      text: label,
-      time: timeStr(),
-      resolved: false,
-    });
-  }
-  function rehydratePendingMemoryCandidates(overview) {
-    const pending = overview && Array.isArray(overview.pending) ? overview.pending : [];
-    pending.forEach(upsertPendingMemoryCandidate);
-  }
+function orderedMemoryWarnings(warnings) { return pinvouSharedtauriMemory().orderedMemoryWarnings(warnings); }
+function applyMemoryProfileState(result) { return pinvouSharedtauriMemory().applyMemoryProfileState(result); }
+function applyMemoryWriteState(result, update) { return pinvouSharedtauriMemory().applyMemoryWriteState(result, update); }
+function upsertMemoryValue(items, value, replacedId) { return pinvouSharedtauriMemory().upsertMemoryValue(items, value, replacedId); }
+
+function rehydratePendingMemoryCandidates(overview) { return pinvouSharedtauriMemory().rehydratePendingMemoryCandidates(overview); }
   // 记忆面板混合两类数据：runtime 按 session 分文件，profile/preferences/
   // pending 等为全局单文件(见后端 paths.rs)。加载仍必须带归属+序号校验：
   // await 挂起期间切会话或再次加载，旧响应返回后不得覆盖当前显示(尤其
@@ -243,13 +94,7 @@
   // 守卫命中的善后：序号已被更新加载接管时由它负责收尾 loading；仅会话
   // 变化、无人接管时(如切草稿不续发加载)必须自己清掉 loading，否则面板
   // 永远停在"同步中"(审计补充)。
-  function discardStaleLoad(seq) {
-    if (seq === memoryOverviewSeq) {
-      state.memory = Object.assign({}, state.memory, { loading: false });
-      notify();
-    }
-    return null;
-  }
+function discardStaleLoad(seq) { return pinvouSharedtauriMemory().discardStaleLoad(seq); }
   async function saveMemoryProfilePatch(patch) {
     if (!invoke) return null;
     // 入口捕获触发会话：invoke 往返期间切走，A 的写结果/错误不得渲染进
@@ -260,26 +105,6 @@
       if (sid === state.activeSessionId) { applyMemoryProfileState(result); notify(); }
       const overview = await loadMemoryOverview();
       return overview || result;
-    } catch (e) {
-      if (sid === state.activeSessionId) {
-        state.memory = Object.assign({}, state.memory, { error: String(e) });
-        notify();
-      }
-      throw e;
-    }
-  }
-  async function deleteMemoryPreference(id) {
-    if (!id || !invoke) return false;
-    const sid = state.activeSessionId; // same as saveMemoryProfilePatch: after switching away, never write to B's panel (audit follow-up)
-    try {
-      const res = await invoke("delete_memory_preference", { id, sessionId: state.activeSessionId });
-      if (sid === state.activeSessionId) {
-        applyMemoryWriteState(res, function (next, changed) {
-          if (changed) next.preferences = (next.preferences || []).filter(function (item) { return item.id !== id; });
-        });
-      }
-      await loadMemoryOverview();
-      return !!(res && res.value);
     } catch (e) {
       if (sid === state.activeSessionId) {
         state.memory = Object.assign({}, state.memory, { error: String(e) });
@@ -334,26 +159,6 @@
           if (!changed) return;
           const source = kind === "preference" ? "preferences" : kind;
           next[source] = (next[source] || []).filter(function (item) { return item.id !== id; });
-        });
-      }
-      await loadMemoryOverview();
-      return !!(res && res.value);
-    } catch (e) {
-      if (sid === state.activeSessionId) {
-        state.memory = Object.assign({}, state.memory, { error: String(e) });
-        notify();
-      }
-      throw e;
-    }
-  }
-  async function archiveRecentWorkMemory(id) {
-    if (!id || !invoke) return false;
-    const sid = state.activeSessionId; // same as saveMemoryProfilePatch: after switching away, never write to B's panel (audit follow-up)
-    try {
-      const res = await invoke("archive_recent_work_memory", { id, sessionId: state.activeSessionId });
-      if (sid === state.activeSessionId) {
-        applyMemoryWriteState(res, function (next, changed) {
-          if (changed) next.recent_work = (next.recent_work || []).filter(function (item) { return item.id !== id; });
         });
       }
       await loadMemoryOverview();
@@ -442,18 +247,13 @@
     await loadMemoryOverview();
     return result;
   }
-  async function loadOrganizeHistory() {
-    if (!invoke) return [];
-    return invoke("get_memory_organize_history");
-  }
+async function loadOrganizeHistory() { return pinvouSharedtauriMemory().loadOrganizeHistory(); }
     return {
       handleMemoryWrite,
       loadMemoryOverview,
       saveMemoryProfilePatch,
-      deleteMemoryPreference,
       updateMemoryItem,
       deleteMemoryItem,
-      archiveRecentWorkMemory,
       confirmMemoryCandidate,
       ignoreMemoryCandidate,
       neverMemoryCandidate,

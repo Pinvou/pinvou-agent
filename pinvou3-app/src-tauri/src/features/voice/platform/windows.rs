@@ -22,19 +22,11 @@ const ASR_MODEL_SIZE: u64 = 254_208_320;
 const ASR_MODEL_SHA256: &str = "4ae45c94422de949b387e2e0fb10d7e14e4c42c69db30c3444ecc7d4b844b7c5";
 
 pub fn asr_tool_path() -> PathBuf {
-    for name in [
-        "PINVOU3_ASR_CMD",
-        "PINVOU3_DEEPSPEECH2_CMD",
-        "PADDLESPEECH_BIN",
-    ] {
-        if let Ok(path) = std::env::var(name) {
-            if !path.trim().is_empty() {
-                return PathBuf::from(path);
-            }
-        }
-    }
-    crate::platform::os::windows::bundled_asr_tool_path()
-        .unwrap_or_else(|| PathBuf::from("pinvou-asr"))
+    // 环境变量探测循环与 macos/linux 共用（platform::asr_tool_path_from_env）。
+    super::asr_tool_path_from_env().unwrap_or_else(|| {
+        crate::platform::os::windows::bundled_asr_tool_path()
+            .unwrap_or_else(|| PathBuf::from("pinvou-asr"))
+    })
 }
 
 pub fn asr_model_spec() -> AsrModelSpec {

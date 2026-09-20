@@ -936,9 +936,12 @@ fn dispatch_script_mutation_if_authorized<T, F>(
 where
     F: FnOnce() -> Result<T, String>,
 {
-    registered_control_for_authorization(label, authorization)?
-        .dispatch_if_agent_authorized(authorization, dispatch)?
-        .ok_or_else(|| "browser/wkwebview-control-lease-lost".to_string())
+    super::dispatch_script_mutation_with_authorized_control(
+        || registered_control_for_authorization(label, authorization),
+        authorization,
+        "wkwebview",
+        dispatch,
+    )
 }
 
 fn authorize_agent_input_for_label(

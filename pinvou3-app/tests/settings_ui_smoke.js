@@ -198,12 +198,12 @@ function injectSource() {
         { id: 'pref-to-delete', text: '待删除的偏好记忆', status: 'active' },
         { id: 'pref-to-keep', text: '保留的偏好记忆', status: 'active' },
       ],
-      work_context: [{ id: 'wc-to-delete', text: '待删除的工作上下文', status: 'active' }], current_focus: [], recent_activity: [], recent_work: [], pending: [], never: [],
+      work_context: [{ id: 'wc-to-delete', text: '待删除的工作上下文', status: 'active' }], current_focus: [], recent_activity: [], pending: [],
       runtime: null, snapshot_path: '', warnings: [],
       sources: {
         profile: { available: true }, preferences: { available: true }, work_context: { available: true },
-        current_focus: { available: true }, recent_activity: { available: true }, recent_work: { available: true },
-        pending: { available: true }, never: { available: true },
+        current_focus: { available: true }, recent_activity: { available: true },
+        pending: { available: true },
       },
     };
     var failMemoryOverview = false;

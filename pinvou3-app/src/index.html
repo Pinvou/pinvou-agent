@@ -198,6 +198,8 @@
   <script src="%BASE_URL%shared/model-service-errors.js"></script>
   <script src="%BASE_URL%shared/bridge-messages.js"></script>
   <script src="%BASE_URL%shared/chunked-file-upload.js"></script>
+  <!-- web/tauri 两条 bridge 共用的工具函数集；必须先于两份 bridge 加载（见文件头注释）。 -->
+  <script src="%BASE_URL%shared/bridge-shared-helpers.js"></script>
   <script src="%BASE_URL%shared/markdown-bridge-fallback.js"></script>
   <script src="%BASE_URL%shared/format-utils.js"></script>
   <script src="%BASE_URL%platform/web/bridge/turn-terminal.js"></script>

@@ -62,9 +62,9 @@
 ### 3.1 分层
 
 - **存储层 `BundleRecord`**（bundles.json，唯一可写）：id / source
-  （`preset` | `upload:<zip名>` | 内置快照 + 内容指纹）/ installed / 内容指纹 /
-  assets 引用（name + version + sha256）/ credentials 引用 / 安装时间。
-- **查询层 `BundleInfo`**（现算投影，不落盘）：在现有 `bundle.rs:145` 基础上演进：
+  （`preset` | `upload:<zip名>` | 内置快照 + 内容指纹）/ installed（资源缺失时置
+  `degraded` 并记原因）/ 内容指纹 / 安装时间。
+- **查询层 `BundleInfo`**（现算投影，不落盘）：在现有 `bundle.rs:215` 基础上演进：
   - `components: { mcp_servers, skills, cli }`，后续扩展 `commands` / `hooks`；
   - `kind` 由内容现算（沿用 `derive_bundle_kind`，防自报标签提权）；
   - 功能事实：description / version / auth_required / config_fields（V4 已下沉）；
@@ -86,7 +86,7 @@
 ### 3.3 动作下发
 
 后端按当前状态下发可用动作集（install / connect / configure / update /
-disconnect / uninstall / enable_in(scope)…），每个动作带可用性与原因；
+disconnect / uninstall…），每个动作带可用性与原因；
 交互流程（飞书流程卡、企微扫码 iframe 等）建模为动作的 flow payload。
 前端 `ToolStoreView` 退化为动作渲染器，新增连接器零前端改动。
 

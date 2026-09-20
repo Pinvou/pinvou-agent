@@ -372,6 +372,77 @@ impl<T: VersionedRegistry> VersionedJsonStore<T> {
     }
 }
 
+/// Registries whose state is a per-automation `tasks` map keyed by automation id
+/// (UI metadata / task kinds / model bindings / history archive). Carries the
+/// map access needed by the shared remove / compact / rollback helpers below so
+/// the four stores cannot drift apart again.
+pub(crate) trait ScheduledTasksMapRegistry {
+    type Entry: Clone;
+
+    fn tasks_map(&mut self) -> &mut HashMap<String, Self::Entry>;
+
+    /// Restore the previous entry after a failed persist: re-insert the old
+    /// value, or remove the key when there was none. Shared by set_pinned /
+    /// set_kind / set / archive_task / restore_task rollback tails.
+    fn restore_entry(
+        map: &mut HashMap<String, Self::Entry>,
+        automation_id: &str,
+        previous: Option<Self::Entry>,
+    ) {
+        match previous {
+            Some(entry) => {
+                map.insert(automation_id.to_string(), entry);
+            }
+            None => {
+                map.remove(automation_id);
+            }
+        }
+    }
+}
+
+impl<T> VersionedJsonStore<T>
+where
+    T: VersionedRegistry + ScheduledTasksMapRegistry,
+{
+    /// Remove one automation's entry; a missing key is a no-op (idempotent
+    /// delete), and a failed persist rolls the in-memory map back so it never
+    /// diverges from disk.
+    pub(crate) fn remove(&self, automation_id: &str) -> Result<()> {
+        let mut registry = self.registry.write();
+        let Some(previous) = registry.tasks_map().remove(automation_id) else {
+            return Ok(());
+        };
+        if let Err(error) = self.persist(&registry) {
+            registry
+                .tasks_map()
+                .insert(automation_id.to_string(), previous);
+            return Err(error);
+        }
+        Ok(())
+    }
+
+    /// Keep only the given automation ids; unchanged maps skip the disk write,
+    /// and a failed persist restores the pre-compact snapshot.
+    pub(crate) fn compact(&self, automation_ids: &HashSet<String>) -> Result<()>
+    where
+        T::Entry: PartialEq,
+    {
+        let mut registry = self.registry.write();
+        let before = registry.tasks_map().clone();
+        registry
+            .tasks_map()
+            .retain(|id, _| automation_ids.contains(id));
+        if *registry.tasks_map() == before {
+            return Ok(());
+        }
+        if let Err(error) = self.persist(&registry) {
+            *registry.tasks_map() = before;
+            return Err(error);
+        }
+        Ok(())
+    }
+}
+
 impl VersionedRegistry for ScheduledTaskUiMetadataRegistry {
     const SUPPORTED_VERSION: u32 = SCHEDULED_TASK_UI_METADATA_SCHEMA_VERSION;
     const QUARANTINE: QuarantineStrategy = QuarantineStrategy::LogInPlace;
@@ -388,6 +459,14 @@ impl VersionedRegistry for ScheduledTaskUiMetadataRegistry {
             schema_version: SCHEDULED_TASK_UI_METADATA_SCHEMA_VERSION,
             tasks: self.tasks,
         }
+    }
+}
+
+impl ScheduledTasksMapRegistry for ScheduledTaskUiMetadataRegistry {
+    type Entry = ScheduledTaskUiMetadata;
+
+    fn tasks_map(&mut self) -> &mut HashMap<String, Self::Entry> {
+        &mut self.tasks
     }
 }
 
@@ -429,6 +508,14 @@ impl VersionedRegistry for ScheduledTaskKindRegistry {
     }
 }
 
+impl ScheduledTasksMapRegistry for ScheduledTaskKindRegistry {
+    type Entry = ScheduledTaskKindEntry;
+
+    fn tasks_map(&mut self) -> &mut HashMap<String, Self::Entry> {
+        &mut self.tasks
+    }
+}
+
 impl VersionedRegistry for ScheduledTaskModelBindingRegistry {
     const SUPPORTED_VERSION: u32 = SCHEDULED_MODEL_BINDING_SCHEMA_VERSION;
     const QUARANTINE: QuarantineStrategy = QuarantineStrategy::Rename;
@@ -466,6 +553,22 @@ impl VersionedRegistry for ScheduledRunReadRegistry {
     }
 }
 
+impl ScheduledTasksMapRegistry for ScheduledTaskModelBindingRegistry {
+    type Entry = ScheduledTaskModelBinding;
+
+    fn tasks_map(&mut self) -> &mut HashMap<String, Self::Entry> {
+        &mut self.tasks
+    }
+}
+
+impl ScheduledTasksMapRegistry for ScheduledHistoryArchiveRegistry {
+    type Entry = ArchivedScheduledTask;
+
+    fn tasks_map(&mut self) -> &mut HashMap<String, Self::Entry> {
+        &mut self.tasks
+    }
+}
+
 pub(crate) type ScheduledTaskUiMetadataStore = VersionedJsonStore<ScheduledTaskUiMetadataRegistry>;
 
 pub(crate) type ScheduledHistoryArchiveStore = VersionedJsonStore<ScheduledHistoryArchiveRegistry>;
@@ -499,14 +602,11 @@ impl VersionedJsonStore<ScheduledHistoryArchiveRegistry> {
             },
         );
         if let Err(error) = self.persist(&registry) {
-            match previous {
-                Some(archived) => {
-                    registry.tasks.insert(automation_id, archived);
-                }
-                None => {
-                    registry.tasks.remove(&automation_id);
-                }
-            }
+            <ScheduledHistoryArchiveRegistry as ScheduledTasksMapRegistry>::restore_entry(
+                &mut registry.tasks,
+                &automation_id,
+                previous,
+            );
             return Err(error);
         }
         Ok(())
@@ -563,7 +663,11 @@ impl VersionedJsonStore<ScheduledHistoryArchiveRegistry> {
             registry.tasks.insert(automation_id.to_string(), updated);
         }
         if let Err(error) = self.persist(&registry) {
-            registry.tasks.insert(automation_id.to_string(), previous);
+            <ScheduledHistoryArchiveRegistry as ScheduledTasksMapRegistry>::restore_entry(
+                &mut registry.tasks,
+                automation_id,
+                Some(previous),
+            );
             return Err(error);
         }
         Ok(Some(RemovedArchivedRun {
@@ -580,29 +684,18 @@ impl VersionedJsonStore<ScheduledHistoryArchiveRegistry> {
         let mut registry = self.registry.write();
         let previous = registry.tasks.insert(automation_id.clone(), archived);
         if let Err(error) = self.persist(&registry) {
-            match previous {
-                Some(previous) => {
-                    registry.tasks.insert(automation_id, previous);
-                }
-                None => {
-                    registry.tasks.remove(&automation_id);
-                }
-            }
+            <ScheduledHistoryArchiveRegistry as ScheduledTasksMapRegistry>::restore_entry(
+                &mut registry.tasks,
+                &automation_id,
+                previous,
+            );
             return Err(error);
         }
         Ok(())
     }
 
     pub(crate) fn remove_task(&self, automation_id: &str) -> Result<()> {
-        let mut registry = self.registry.write();
-        let Some(previous) = registry.tasks.remove(automation_id) else {
-            return Ok(());
-        };
-        if let Err(error) = self.persist(&registry) {
-            registry.tasks.insert(automation_id.to_string(), previous);
-            return Err(error);
-        }
-        Ok(())
+        self.remove(automation_id)
     }
 }
 
@@ -642,40 +735,11 @@ impl VersionedJsonStore<ScheduledTaskUiMetadataRegistry> {
             registry.tasks.remove(automation_id);
         }
         if let Err(error) = self.persist(&registry) {
-            match previous {
-                Some(metadata) => {
-                    registry.tasks.insert(automation_id.to_string(), metadata);
-                }
-                None => {
-                    registry.tasks.remove(automation_id);
-                }
-            }
-            return Err(error);
-        }
-        Ok(())
-    }
-
-    pub(crate) fn remove(&self, automation_id: &str) -> Result<()> {
-        let mut registry = self.registry.write();
-        let Some(previous) = registry.tasks.remove(automation_id) else {
-            return Ok(());
-        };
-        if let Err(error) = self.persist(&registry) {
-            registry.tasks.insert(automation_id.to_string(), previous);
-            return Err(error);
-        }
-        Ok(())
-    }
-
-    pub(crate) fn compact(&self, automation_ids: &HashSet<String>) -> Result<()> {
-        let mut registry = self.registry.write();
-        let before = registry.tasks.clone();
-        registry.tasks.retain(|id, _| automation_ids.contains(id));
-        if registry.tasks == before {
-            return Ok(());
-        }
-        if let Err(error) = self.persist(&registry) {
-            registry.tasks = before;
+            <ScheduledTaskUiMetadataRegistry as ScheduledTasksMapRegistry>::restore_entry(
+                &mut registry.tasks,
+                automation_id,
+                previous,
+            );
             return Err(error);
         }
         Ok(())
@@ -751,40 +815,11 @@ impl VersionedJsonStore<ScheduledTaskKindRegistry> {
             }
         }
         if let Err(error) = self.persist(&registry) {
-            match previous {
-                Some(entry) => {
-                    registry.tasks.insert(automation_id.to_string(), entry);
-                }
-                None => {
-                    registry.tasks.remove(automation_id);
-                }
-            }
-            return Err(error);
-        }
-        Ok(())
-    }
-
-    pub(crate) fn remove(&self, automation_id: &str) -> Result<()> {
-        let mut registry = self.registry.write();
-        let Some(previous) = registry.tasks.remove(automation_id) else {
-            return Ok(());
-        };
-        if let Err(error) = self.persist(&registry) {
-            registry.tasks.insert(automation_id.to_string(), previous);
-            return Err(error);
-        }
-        Ok(())
-    }
-
-    pub(crate) fn compact(&self, automation_ids: &HashSet<String>) -> Result<()> {
-        let mut registry = self.registry.write();
-        let before = registry.tasks.clone();
-        registry.tasks.retain(|id, _| automation_ids.contains(id));
-        if registry.tasks == before {
-            return Ok(());
-        }
-        if let Err(error) = self.persist(&registry) {
-            registry.tasks = before;
+            <ScheduledTaskKindRegistry as ScheduledTasksMapRegistry>::restore_entry(
+                &mut registry.tasks,
+                automation_id,
+                previous,
+            );
             return Err(error);
         }
         Ok(())
@@ -837,40 +872,11 @@ impl VersionedJsonStore<ScheduledTaskModelBindingRegistry> {
             }
         }
         if let Err(error) = self.persist(&registry) {
-            match previous {
-                Some(binding) => {
-                    registry.tasks.insert(automation_id.to_string(), binding);
-                }
-                None => {
-                    registry.tasks.remove(automation_id);
-                }
-            }
-            return Err(error);
-        }
-        Ok(())
-    }
-
-    pub(crate) fn remove(&self, automation_id: &str) -> Result<()> {
-        let mut registry = self.registry.write();
-        let Some(previous) = registry.tasks.remove(automation_id) else {
-            return Ok(());
-        };
-        if let Err(error) = self.persist(&registry) {
-            registry.tasks.insert(automation_id.to_string(), previous);
-            return Err(error);
-        }
-        Ok(())
-    }
-
-    pub(crate) fn compact(&self, automation_ids: &HashSet<String>) -> Result<()> {
-        let mut registry = self.registry.write();
-        let before = registry.tasks.clone();
-        registry.tasks.retain(|id, _| automation_ids.contains(id));
-        if registry.tasks == before {
-            return Ok(());
-        }
-        if let Err(error) = self.persist(&registry) {
-            registry.tasks = before;
+            <ScheduledTaskModelBindingRegistry as ScheduledTasksMapRegistry>::restore_entry(
+                &mut registry.tasks,
+                automation_id,
+                previous,
+            );
             return Err(error);
         }
         Ok(())

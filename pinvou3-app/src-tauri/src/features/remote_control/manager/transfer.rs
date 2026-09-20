@@ -106,12 +106,7 @@ pub(super) fn append_web_attachment_upload_chunk(
     commit: bool,
     sha256: Option<&str>,
 ) -> Result<Option<(String, Vec<u8>)>, String> {
-    if upload_id.len() < 8
-        || upload_id.len() > 128
-        || !upload_id
-            .bytes()
-            .all(|byte| byte.is_ascii_alphanumeric() || matches!(byte, b'-' | b'_'))
-    {
+    if !crate::features::files::attachment_upload::validate_opaque_token(upload_id, 8, 128, None) {
         return Err("远程控制附件上传 ID 无效".into());
     }
     let file_name = file_name.trim();
@@ -286,12 +281,13 @@ fn is_owned_session_snapshot_name(name: &std::ffi::OsStr) -> bool {
 }
 
 pub(super) fn is_owned_session_download_id(download_id: &str) -> bool {
-    download_id.starts_with("download_")
-        && download_id.len() > "download_".len()
-        && download_id.len() <= 128
-        && download_id
-            .bytes()
-            .all(|byte| byte.is_ascii_alphanumeric() || matches!(byte, b'-' | b'_'))
+    // `len() > prefix.len()` on the wire ⇒ an inclusive min of prefix len + 1.
+    crate::features::files::attachment_upload::validate_opaque_token(
+        download_id,
+        "download_".len() + 1,
+        128,
+        Some("download_"),
+    )
 }
 
 fn sweep_stale_web_session_downloads_in(

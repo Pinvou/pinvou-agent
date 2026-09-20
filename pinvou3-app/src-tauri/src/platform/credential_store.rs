@@ -558,7 +558,7 @@ pub fn redact_secret(input: &str) -> String {
     output
 }
 
-pub fn is_secret_like(value: &str) -> bool {
+fn is_secret_like(value: &str) -> bool {
     let trimmed = value.trim_matches(|c: char| c == '"' || c == '\'' || c == ',' || c == ';');
     if trimmed.len() < 8 {
         return false;

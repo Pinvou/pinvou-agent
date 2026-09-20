@@ -33,11 +33,5 @@
       "oauth_resource": "https://mcp.canva.cn/mcp"
     }
   ],
-  "routing_rules": [
-    "Canva/可画/海报/演示文稿/小红书封面/品牌模板/设计生成/设计编辑 → 优先使用 `mcp_canva_mcp_*`，不要直接用网页搜索或普通图片生成替代"
-  ],
-  "tool_table_entries": [
-    "| 设计生成与编辑 | `mcp_canva_mcp_*` (Canva 可画: 设计稿生成、读取、编辑、品牌模板与素材) |"
-  ],
   "pip_dependencies": []
 }

@@ -28,14 +28,6 @@ pub(super) fn enforce_private_permissions(file: &File, path: &Path) -> std::io::
     imp::enforce_private_permissions(file, path)
 }
 
-pub(super) fn atomic_replace(source: &Path, target: &Path) -> std::io::Result<()> {
-    imp::atomic_replace(source, target)
-}
-
-pub(super) fn sync_parent_directory(parent: &Path) -> std::io::Result<()> {
-    imp::sync_parent_directory(parent)
-}
-
 pub(super) fn display_path(path: &Path) -> String {
     imp::display_path(path)
 }

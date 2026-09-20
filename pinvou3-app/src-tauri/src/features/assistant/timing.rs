@@ -548,8 +548,9 @@ fn parse_timeline_line(line: &str) -> Option<TimelineEvent> {
         return None;
     }
     let event = v.get("event")?.as_str()?;
-    // A context snapshot has no paired user_start; turn aggregates must skip it.
-    // (user_start, assistant_done) records, so snapshots cannot affect turn totals.
+    // A context snapshot has no paired user_start, and turn pairing only
+    // reads (user_start, assistant_done) records, so snapshots cannot affect
+    // turn totals.
     let is_base_event = matches!(event, "user_start" | "assistant_done" | "context_snapshot");
     #[cfg(any(feature = "benchmark-hooks", test))]
     let is_observation_event = matches!(
@@ -685,7 +686,7 @@ mod tests {
     }
 
     #[test]
-    fn context_snapshot_roundtrips_without_polluting_stats() {
+    fn context_snapshot_roundtrips_as_its_own_event_kind() {
         let _guard = ENV_LOCK.lock().unwrap_or_else(|p| p.into_inner());
         let tmp = std::env::temp_dir().join(format!(
             "pinvou3-timing-snapshot-{}",
@@ -722,6 +723,13 @@ mod tests {
         let usage = snapshots[0].usage.expect("snapshot usage recorded");
         assert_eq!(usage.input_tokens, 120);
         assert_eq!(usage.context_window, 64_000);
+
+        // The snapshot must roundtrip as its own event kind: turn pairing only
+        // reads user_start/assistant_done, so it can never count as a turn.
+        assert_eq!(
+            snapshots[0].event, "context_snapshot",
+            "snapshot must not be parsed as a turn record"
+        );
 
         let _ = std::fs::remove_dir_all(tmp);
     }
@@ -802,6 +810,12 @@ mod tests {
 
         let timeline = read_timeline(sid).unwrap();
         assert_eq!(timeline.len(), 2);
+        // 注入的 user_start 缺 turn_id / 事件名未知,均被整条跳过。
+        assert!(
+            timeline
+                .iter()
+                .all(|e| e.turn_id != "missing-event" && e.turn_id != "unknown-event")
+        );
 
         let _ = std::fs::remove_dir_all(tmp);
     }
@@ -896,6 +910,59 @@ mod tests {
         let _ = std::fs::remove_dir_all(tmp);
     }
 
+    /// Earlier entries in the queue can only be stale ids left by the
+    /// "canceled before submit" path (no terminal recorded). Start two
+    /// turns in a row to simulate stale residue, then finish: the terminal
+    /// must be attributed to the last queued turn, and once the queue is
+    /// cleared a further finish records nothing — a FIFO pop would
+    /// attribute assistant_done to the stale turn while the real id stays
+    /// stuck in the queue, mis-attributing later turns.
+    #[test]
+    fn finish_turn_attributes_terminal_to_newest_queued_turn() {
+        let _guard = ENV_LOCK.lock().unwrap_or_else(|p| p.into_inner());
+        let tmp = std::env::temp_dir().join(format!(
+            "pinvou3-timing-tail-pop-{}",
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        // SAFETY: the caller's test holds platform::paths::tests::ENV_LOCK throughout; env writes are serialized in-process.
+        unsafe { std::env::set_var("PINVOU3_HOME", &tmp) };
+
+        let sid = "session-tail-pop";
+        let stale = start_turn(sid);
+        let live = start_turn(sid);
+        finish_turn(sid, "Completed", None);
+
+        let timeline = read_timeline(sid).unwrap();
+        let done: Vec<_> = timeline
+            .iter()
+            .filter(|e| e.event == "assistant_done")
+            .collect();
+        assert_eq!(done.len(), 1);
+        assert_eq!(
+            done[0].turn_id, live,
+            "terminal must be attributed to the newest queued turn"
+        );
+        assert_ne!(done[0].turn_id, stale);
+
+        // The queue has been fully cleared: another finish must not record a terminal event.
+        finish_turn(sid, "Completed", None);
+        assert_eq!(
+            read_timeline(sid)
+                .unwrap()
+                .iter()
+                .filter(|e| e.event == "assistant_done")
+                .count(),
+            1,
+            "finish on an emptied queue must be a no-op"
+        );
+
+        clear_session(sid);
+        let _ = std::fs::remove_dir_all(tmp);
+    }
+
     /// After clear_session removes a session's residual unpaired queues, a
     /// late finish must not record events to that session's sidecar;
     /// repeated clears are idempotent.
@@ -929,9 +996,9 @@ mod tests {
     }
 
     /// Full chain for TurnUsage: persisting all fields and reading them back.
-    /// [F3] verifies the forward-compat field set
-    /// (cache_write_tokens / reasoning_tokens) keeps every field, while also
-    /// covering the basic fields (input/output/cache_hit/cache_miss).
+    /// [F3] verifies the forward-compat field set (cache_write_tokens /
+    /// reasoning_tokens) keeps every field, while also covering the basic
+    /// fields (input/output/cache_hit/cache_miss).
     #[test]
     fn finish_turn_with_usage_records_all_usage_fields() {
         let _guard = ENV_LOCK.lock().unwrap_or_else(|p| p.into_inner());

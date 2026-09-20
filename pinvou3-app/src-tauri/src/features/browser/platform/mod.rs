@@ -66,6 +66,33 @@ fn evaluation_authorization(
     }
 }
 
+/// Shared core of the platform `dispatch_script_mutation_if_authorized`
+/// adapters. Resolve the tab's live control through `control_lookup`, then
+/// keep the control lock held through `dispatch` so a user takeover either
+/// revokes the operation first or is ordered after this native dispatch; there
+/// is no check/enqueue gap. Script execution can synthesize page state but
+/// cannot produce an OS-trusted input event, so it still needs the exact live
+/// Agent lease. `error_prefix` preserves each platform's stable
+/// `browser/<platform>-*` error codes.
+pub(in crate::features::browser::platform) fn dispatch_script_mutation_with_authorized_control<
+    T,
+    F,
+    L,
+>(
+    control_lookup: L,
+    authorization: &state::NativeTabLease,
+    error_prefix: &str,
+    dispatch: F,
+) -> Result<T, String>
+where
+    L: FnOnce() -> Result<std::sync::Arc<state::WorkspaceControl>, String>,
+    F: FnOnce() -> Result<T, String>,
+{
+    control_lookup()?
+        .dispatch_if_agent_authorized(authorization, dispatch)?
+        .ok_or_else(|| format!("browser/{error_prefix}-control-lease-lost"))
+}
+
 pub(crate) const ACTION_COMMIT_UNKNOWN_SCRIPT_INTERRUPTION: &str =
     "browser/action-commit-unknown-after-script-interruption";
 
@@ -1098,6 +1125,49 @@ mod async_dispatch_tests {
             Ok(None),
             "read-only observations must not retain a page-mutation capability"
         );
+    }
+
+    #[test]
+    fn script_mutation_helper_maps_lookup_and_lease_failures_with_platform_prefix() {
+        let lease = state::NativeTabLease::from_assertion(
+            "session-a",
+            "0123456789abcdef",
+            "target-a",
+            7,
+            "0123456789abcdeffedcba9876543210",
+        )
+        .unwrap();
+        let never_authorized = std::sync::Arc::new(state::WorkspaceControl::new(
+            7,
+            state::NativeControlOwner::User,
+        ));
+        let dispatched = std::cell::Cell::new(false);
+        let dispatch = || -> Result<(), String> {
+            dispatched.set(true);
+            Ok(())
+        };
+
+        // A live control without a valid Agent lease must surface as the
+        // platform-prefixed lease-lost error and never run the dispatch.
+        let result = dispatch_script_mutation_with_authorized_control(
+            || Ok(std::sync::Arc::clone(&never_authorized)),
+            &lease,
+            "webkit",
+            dispatch,
+        );
+        assert_eq!(result, Err("browser/webkit-control-lease-lost".to_string()));
+        assert!(!dispatched.get(), "unauthorized control must not dispatch");
+
+        // Lookup failures propagate verbatim so stale-binding codes stay
+        // platform-specific.
+        let result = dispatch_script_mutation_with_authorized_control(
+            || Err("browser/webkit-binding-stale".to_string()),
+            &lease,
+            "wkwebview",
+            dispatch,
+        );
+        assert_eq!(result, Err("browser/webkit-binding-stale".to_string()));
+        assert!(!dispatched.get());
     }
 
     #[tokio::test]

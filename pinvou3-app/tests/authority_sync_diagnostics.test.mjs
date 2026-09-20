@@ -134,13 +134,17 @@ test('disconnected diagnostic queue stays within its persisted bound', () => {
 });
 
 test('bridge sources register the centralized reconciliation lifecycle events', () => {
-  const webBridge = fs.readFileSync(path.join(root, 'src/platform/web/bridge.js'), 'utf8');
+  const webBridge = fs.readFileSync(path.join(root, 'src/platform/web/bridge.js'), 'utf8') +
+    // lifecycle 监听实现已随 dedup 移入共享 payload，haystack 需一并纳入
+    fs.readFileSync(path.join(root, 'src/shared/bridge-shared-helpers.js'), 'utf8');
   const desktopBridge = [
     'src/platform/tauri/bridge.js',
     'src/platform/tauri/bridge/chat-events.js',
     'src/platform/tauri/bridge/chat.js',
     'src/platform/tauri/bridge/interaction.js',
-  ].map(file => fs.readFileSync(path.join(root, file), 'utf8')).join('\n');
+  ].map(file => fs.readFileSync(path.join(root, file), 'utf8')).join('\n') +
+    // 事件消费实现已随 dedup 移入共享 payload，haystack 需一并纳入
+    fs.readFileSync(path.join(root, 'src/shared/bridge-shared-helpers.js'), 'utf8');
   const backend = [
     'src-tauri/src/features/assistant/engine.rs',
     'src-tauri/src/features/remote_control/manager/mod.rs',

@@ -1479,7 +1479,8 @@ function reasoningEffortDisplayForTiers(effort, tiers) {
 }
 
 // Only symbols consumed by other modules stay exported (main.jsx / SettingsView /
-// composer-shared / CodexAcpView / ScheduledTasksView). isPresetModel, localUserNamed,
+// composer-shared / CodexAcpView / ScheduledTasksView; local-server-tiers.jsx consumes the
+// reasoning-tier helpers). isPresetModel, localUserNamed, presetOptionsI18n,
 // defaultReasoningEffortForModel and localProbeTiersForKind are internal-only; the
 // vm-based catalog test strips this block and reads the top-level declarations, so it
 // does not depend on the export surface.
@@ -1493,7 +1494,6 @@ export {
   CLOUD_MODEL_PROVIDERS,
   BRAND_ICON_BY_PRESET,
   BRAND_ICON_BY_VENDOR,
-  presetOptionsI18n,
   presetProviderLabel,
   normalizedProviderBaseUrl,
   findCloudProviderForModel,

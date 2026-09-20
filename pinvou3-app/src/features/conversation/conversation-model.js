@@ -214,8 +214,7 @@ function searchSourceLabel(name, rawOutput) {
 }
 
 function validSearchUrl(value) {
-  const url = decodeSearchFragment(value);
-  return /^https?:\/\/[^\s]+$/i.test(url) ? url : '';
+  return externalMarkdownUrl(decodeSearchFragment(value));
 }
 
 function collectSearchResults(rawOutput) {
@@ -393,7 +392,7 @@ export function commandExecutionDetails(tool) {
   };
 }
 
-export function timestampMs(value) {
+function timestampMs(value) {
   if (typeof value === 'number') return Number.isFinite(value) ? value : NaN;
   const parsed = Date.parse(value || '');
   return Number.isFinite(parsed) ? parsed : NaN;

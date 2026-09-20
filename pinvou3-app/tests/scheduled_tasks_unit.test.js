@@ -31,21 +31,29 @@ const bridgeMessages = fs.readFileSync(
   path.join(__dirname, '..', 'src', 'shared', 'bridge-messages.js'),
   'utf8'
 );
-const tauriBridge = [bridgeMessages,
+// The bridges delegate shared helpers to window.PinvouBridgeShared; index.html loads
+// the shared payload before both bridges, so the concatenated harness source needs it first.
+const bridgeSharedHelpers = fs.readFileSync(
+  path.join(__dirname, '..', 'src', 'shared', 'bridge-shared-helpers.js'),
+  'utf8'
+);
+const tauriBridge = [bridgeSharedHelpers, bridgeMessages,
     ...tauriBridgeFeatureNames.map(name => fs.readFileSync(path.join(__dirname, '..', 'src', 'platform', 'tauri', 'bridge', `${name}.js`), 'utf8')),
     fs.readFileSync(path.join(__dirname, '..', 'src', 'platform', 'tauri', 'bridge.js'), 'utf8'),
   ].join('\n');
 const webBridge = [
+  bridgeSharedHelpers,
   bridgeMessages,
   fs.readFileSync(path.join(__dirname, '..', 'src', 'platform', 'web', 'bridge', 'turn-terminal.js'), 'utf8'),
   fs.readFileSync(path.join(__dirname, '..', 'src', 'platform', 'web', 'bridge.js'), 'utf8'),
 ].join('\n');
 const scheduledTasksRust = fs.readFileSync(path.join(__dirname, '..', 'src-tauri', 'src', 'features', 'scheduled', 'tasks.rs'), 'utf8');
+const scheduledBridge = fs.readFileSync(path.join(__dirname, '..', 'src', 'platform', 'tauri', 'bridge', 'scheduled.js'), 'utf8');
 // Wave 2 把版本化存储层拆到 stores.rs；read-state 迁移（migrate→default）落该子模块。
 const scheduledStoresRust = fs.readFileSync(path.join(__dirname, '..', 'src-tauri', 'src', 'features', 'scheduled', 'stores.rs'), 'utf8');
 const scheduledTaskPromptRust = scheduledTasksRust.slice(
   scheduledTasksRust.indexOf('const SCHEDULED_TASK_CHAT_PROMPT'),
-  scheduledTasksRust.indexOf('pub fn scheduled_automation_root')
+  scheduledTasksRust.indexOf('fn scheduled_automation_root')
 );
 const scheduledTemplateSource = indexHtml.slice(
   indexHtml.indexOf('const SCHEDULED_TASK_TEMPLATES'),
@@ -114,10 +122,7 @@ assert.ok(
 mustContain("loadScheduledTasks");
 mustContain("readScheduledTask");
 mustContain("startScheduledTaskChat");
-mustContain("confirmScheduledTaskDraft");
-mustContain("clearScheduledTaskDraft");
 mustContain("scheduledTasks:");
-mustContain("scheduledTaskDraft: null");
 mustContain("scheduledTaskCreationSessionId: null");
 mustContain("scheduledTaskPendingGuide: null");
 mustContain("scheduledRunContext: null");
@@ -193,8 +198,7 @@ assert.ok(
 );
 assert.ok(
   /function lockScheduledTaskDraftModel\(draft\)[\s\S]{0,260}draft\.model = draft\.model \|\| \(active && active\.model\)/.test(tauriBridge) &&
-    /draft\.modelId = draft\.modelId \|\| \(active && active\.id\)/.test(tauriBridge) &&
-    /(?:var|const|let) lockedModelId = state\.scheduledTaskDraft\.modelId \|\| \(active && active\.id\)/.test(tauriBridge),
+    /draft\.modelId = draft\.modelId \|\| \(active && active\.id\)/.test(tauriBridge),
   'the final draft should lock the active saved model wire name and stable model id before creation'
 );
 assert.ok(
@@ -214,8 +218,9 @@ assert.ok(
   'each scheduled run DTO should expose its own unread conversation state'
 );
 assert.ok(
-  /MAX_SCHEDULED_RUN_SESSION_OWNERS\s*=\s*64/.test(tauriBridge) &&
-    /function pruneScheduledRunSessionOwners\([\s\S]{0,1800}MAX_SCHEDULED_RUN_SESSION_OWNERS; i < ids\.length; i\+\+/.test(tauriBridge) &&
+    /MAX_SCHEDULED_RUN_SESSION_OWNERS\s*=\s*64/.test(tauriBridge) &&
+    // 合并后 pruneScheduledRunSessionOwners 取 web 镜像正文，上界常量经惰性单元格读取（.value）。
+    /function pruneScheduledRunSessionOwners\([\s\S]{0,1800}MAX_SCHEDULED_RUN_SESSION_OWNERS(?:\.value)?; i < ids\.length; i\+\+/.test(tauriBridge) &&
     /function scheduledRunOwnerPriority\([\s\S]{0,260}activeSessionId[\s\S]{0,260}scheduledRunContext[\s\S]{0,120}return 3/.test(tauriBridge),
   'scheduled run owner tombstones should have a fixed 64-entry LRU bound'
 );
@@ -318,7 +323,11 @@ assert.ok(
     !/data-testid="scheduled-live-mode"/.test(indexHtml) &&
     /function scheduledTaskBackendInput\(input\)/.test(tauriBridge) &&
     /(?:var|const|let) backendInput = \{ mode: "yolo" \}/.test(tauriBridge) &&
-    (tauriBridge.match(/scheduledTaskBackendInput\(input\)/g) || []).length === 3,
+    // createScheduledTask stayed in bridge/scheduled.js (web 版本不同未被去重)，
+    // updateScheduledTask 已随 dedup 合并进 bridge-shared-helpers.js 的 sharedBridgeBase（单一共享实现）。
+    // 拦截点本身仍是同一份 scheduledTaskBackendInput：mode 必须只在这里被强制为 "yolo"。
+    (scheduledBridge.match(/scheduledTaskBackendInput\(input\)/g) || []).length === 2 &&
+    (bridgeSharedHelpers.match(/scheduledTaskBackendInput\(input\)/g) || []).length === 1,
   'scheduled tasks should hide mode controls and force Yolo on every write'
 );
 assert.ok(
@@ -421,7 +430,7 @@ assert.ok(
   'scheduled run record operations belong to the sidebar RecentItem, not the scheduled task definition list'
 );
 assert.ok(
-    /multiple = false, minSelected = 0/.test(indexHtml) &&
+    /multiple = false, minSelected, onClose, emptyLabel, separator,/.test(indexHtml) &&
     /aria-multiselectable=\{multiple \|\| undefined\}/.test(indexHtml) &&
     /const lastRequiredSelection = multiple && active && selectedValues\.length <= minSelected/.test(indexHtml) &&
     /onChange=\{values => editSchedule\('days', values\)\} multiple minSelected=\{1\}/.test(indexHtml) &&
@@ -2216,19 +2225,6 @@ async function scheduledRunUnreadBehavior() {
     markCount,
     "a conversation that failed to load must remain unread"
   );
-}
-
-async function scheduledFolderPickerBehavior() {
-  const harness = createBridgeHarness();
-  harness.setDialogResult("D:/workspace-picked");
-  assert.strictEqual(await harness.bridge.scheduled.pickFolder(), "D:/workspace-picked");
-  assert.strictEqual(JSON.stringify(harness.dialogCalls[0]), JSON.stringify({
-    directory: true,
-    multiple: false,
-    title: "选择工作目录",
-  }));
-  harness.setDialogResult(null);
-  assert.strictEqual(await harness.bridge.scheduled.pickFolder(), null, "canceling folder selection should preserve the typed path");
 }
 
 async function scheduledRunningHydrationRaceBehavior() {
@@ -7193,7 +7189,6 @@ async function scheduledDeletePreservesHistoryAndSessionBuffers() {
   harness.handlers.delete_scheduled_task = function () {
     return {
       id: "automation-delete",
-      deletedSessionIds: [],
     };
   };
   await bridge.scheduled.loadScheduledTasks();
@@ -7280,7 +7275,7 @@ async function scheduledRecentRunsIgnoreStaleAggregate() {
   };
   harness.handlers.list_scheduled_runs = function () { return staleRuns.promise; };
   harness.handlers.delete_scheduled_task = function () {
-    return { id: "automation-stale", deletedSessionIds: [] };
+    return { id: "automation-stale" };
   };
   await harness.bridge.scheduled.loadScheduledTasks();
   const loading = harness.bridge.scheduled.loadScheduledTaskRecentRuns();
@@ -7318,7 +7313,7 @@ async function scheduledRunRecordSessionActionsBehavior() {
   harness.handlers.list_sessions = function () { return []; };
   harness.handlers.list_archived_sessions = function () {
     return archivedIds.map(function (id) {
-      return { id, title: sessionTitle, hidden_at: "2026-07-15T11:00:00Z", archived_at: "2026-07-15T11:00:00Z" };
+      return { id, title: sessionTitle, archived_at: "2026-07-15T11:00:00Z" };
     });
   };
   harness.handlers.list_scheduled_tasks = function () { return [Object.assign({}, task)]; };
@@ -7449,10 +7444,6 @@ async function scheduledSessionPersistenceBehavior() {
     "scheduled chat completion and stop must never replace backend-owned artifact paths"
   );
   assert.ok(
-    !scheduledCalls.some(function (call) { return call.cmd === "save_session_messages"; }),
-    "scheduled transcripts are backend-owned"
-  );
-  assert.ok(
     scheduledCalls.some(function (call) { return call.cmd === "rename_session"; }),
     "scheduled run record titles may be user-renamed through the sidebar session action"
   );
@@ -7482,7 +7473,6 @@ async function scheduledDraftModelBehavior() {
   harness.emit("chat:done", { session_id: sessionId });
   await tick();
   await tick();
-  assert.strictEqual(harness.bridge.state.getMany(['sessions', 'chat', 'scheduled']).scheduledTaskDraft, null, "chat-generated parameters must not create a confirmation-card state");
   assert.ok(String(harness.bridge.state.getMany(['sessions', 'chat', 'scheduled']).scheduledTaskError).includes("cannot create scheduled draft"));
   assert.ok(
     harness.bridge.state.getMany(['sessions', 'chat', 'scheduled']).chatItems.some(function (item) {
@@ -8736,7 +8726,6 @@ Promise.resolve()
   .then(function () { return presentationReconciliationUsesStableEventIdentity("tauri"); })
   .then(function () { return presentationReconciliationUsesStableEventIdentity("web"); })
   .then(scheduledUnreadPollingRaceBehavior)
-  .then(scheduledFolderPickerBehavior)
   .then(scheduledTemplateSourcePersistenceBehavior)
   .then(scheduledSelectionGenerationBehavior)
   .then(scheduledRefreshDoesNotOverlap)

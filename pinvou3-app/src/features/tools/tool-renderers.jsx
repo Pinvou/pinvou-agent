@@ -5,6 +5,7 @@ import { bridge } from '../../hooks/useBridge.js';
 import { can } from '../../shared/platform.js';
 import { isAgentWaitCall, isExpertDelegationCall } from '../conversation/conversation-model.js';
 import { spawnGroupOf } from '../multiagent/spawn-aggregation.mjs';
+import { dispatchOpenSubagent } from '../multiagent/subagent-panel-event.mjs';
 import { QuestionChoiceCard } from '../conversation/QuestionChoiceCard.jsx';
 import { useShellTaskCancel } from '../chat/shell-task-cancel.js';
 import { AcShieldCheck, AcSparkles, DiffView, GrepView, ListDirView, OutputError, OutputPre, ReceiptBlock, ShellTextView, ShellView, StockQuoteCard, TODO_TOOLS, TodoView, WeatherCard, isQuietTool, isReceipt, isStockQuoteTool, isWeatherTool, looksDiff, toolSummary, tryParseJson, tryTailJson } from './tool-common.jsx';
@@ -28,29 +29,27 @@ const EXPERT_CARD_ENABLED = can('multiAgent');
 // Web 端的多智能体会话是只读的（桌面专属，ADR-0006）：计划裁决/受阻兜底
 // 这类会触发新一轮模型执行的卡片操作，与输入框一同置灰。权威拦截在后端
 // remote_control 漏斗（复核 P1），前端只是如实反馈。桌面端恒 false。
-const multiAgentWebReadOnly = () => {
-  if (can('multiAgent')) return false;
-  const chat = (bridge.state && bridge.state.get && bridge.state.get('chat')) || {};
-  return !!(chat.modeState && chat.modeState.multiAgent);
+// 两个读取器共享同一次 bridge modeState 读取，只差桌面/Web 门卫：
+// multiAgentWebReadOnly 先看 multiAgent 能力（桌面恒 false），swarmModeOn
+// 先看 bridge 可用性（装饰性边框用，bridge 缺席时视作未开启）。
+const chatModeState = () => {
+  if (!bridge.state || typeof bridge.state.get !== 'function') return null;
+  const chat = bridge.state.get('chat') || {};
+  return (chat.modeState && chat.modeState.multiAgent) ? chat.modeState : null;
 };
 
-function openSubagentTranscript(agentId, sessionId) {
-  if (typeof window === 'undefined') return;
-  // agentId === null is a valid request: open the panel's list state (the
-  // swarm count row's entry point).
-  if (!agentId && agentId !== null) return;
-  window.dispatchEvent(new CustomEvent('pinvou:open-subagent', {
-    detail: { agentId, sessionId: sessionId || null },
-  }));
-}
+const multiAgentWebReadOnly = () => {
+  if (can('multiAgent')) return false;
+  return !!chatModeState();
+};
 
 // Read-only mirror of the swarm mode switch (same source as composer-shared:
-// modeState.multiAgent). Decorative border color only; the authoritative state
+// modeState.multiAgent, read through the shared chatModeState helper above).
+// Decorative border color only; the authoritative state
 // and the switch interaction live on the composer / bridge side.
 function swarmModeOn() {
-  if (!bridge.available || !bridge.state || typeof bridge.state.get !== 'function') return false;
-  const chat = bridge.state.get('chat') || {};
-  return !!(chat.modeState && chat.modeState.multiAgent);
+  if (!bridge.available) return false;
+  return !!chatModeState();
 }
 
 /**
@@ -79,7 +78,7 @@ const AgentSpawnCountRow = ({ count, failed = 0, running = 0, sessionId, t, inte
       type="button"
       data-testid="agent-spawn-count-row"
       disabled={!clickable}
-      onClick={clickable ? () => openSubagentTranscript(null, sessionId) : undefined}
+      onClick={clickable ? () => dispatchOpenSubagent(null, sessionId) : undefined}
       title={clickable ? copy.spawnedAgentsRowHint : undefined}
       className={`my-1 flex max-w-[520px] items-center gap-2 rounded-full px-2 py-1 text-[11.5px] text-[#8E8E93] ${
         clickable ? 'cursor-pointer hover:bg-black/[0.04] dark:hover:bg-white/[0.06]' : 'cursor-default'
@@ -816,4 +815,4 @@ const ToolOutput = ({ item, t }) => {
       );
     };
 
-export { ToolOutput, ToolCard, PlanLayer, cardBoxCls, cardBtnCls, PinvouSummonCard, PlanCard, PlanStuckCard, CarefulBlockedCard, UserInputCard };
+export { ToolOutput, ToolCard, PlanLayer, cardBoxCls, cardBtnCls, isFreeTextPlaceholderOption, PinvouSummonCard, PlanCard, PlanStuckCard, CarefulBlockedCard, UserInputCard };

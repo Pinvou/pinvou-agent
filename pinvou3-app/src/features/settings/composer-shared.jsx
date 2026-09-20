@@ -19,10 +19,10 @@ import {
 } from '../artifacts/artifact-preview-navigation.js';
 import {
   groupModelsForSelector, selectorMainLabel, selectorSubLabel,
-  reasoningEffortTiersForModel, normalizeStoredReasoningEffort,
-  alwaysThinkingSpecForModel, localReasoningTiers, reasoningEffortDisplayForTiers, baseUrlUsesLocalOrPrivate,
+  normalizeStoredReasoningEffort,
 } from './model-catalog.js';
-import { ReasoningTierPicker, useLocalServerKindProbe } from './local-server-tiers.jsx';
+import { ReasoningTierPicker, useModelReasoningTierState } from './local-server-tiers.jsx';
+import { StatusChip } from './StatusChip.jsx';
 
 // 会话中「打开」是未提交态：新一轮对话发出前允许改回（误开可撤销），发出后
 // 该工具/技能才真正进入上下文并按「只增不减」锁死。挂模块级按 scope 存，
@@ -116,34 +116,23 @@ window.addEventListener('pinvou:chat-round-committed', (event) => {
       // 本地/私网 openai_compatible 端点：探测服务类型，按探测结果下发真实档位
       // (vllm → four tiers, ollama → off/high, lmstudio/generic → unsupported hint). Credentials are saved values
       // that do not change per keystroke, so no debounce is needed (only the form entry needs 400ms, see the hook comment).
+      // 探测+档位+高亮映射的共享胶水在 useModelReasoningTierState（与设置页模型表单同一份）。
       const currentBaseUrl = current ? (current.base_url || '') : '';
-      const currentModelId = current ? current.id : null;
-      const isLocalCompatible = !!current && current.preset === 'openai_compatible' && baseUrlUsesLocalOrPrivate(currentBaseUrl);
-      const { probedKind: currentProbedKind, probePending: currentProbePending } = useLocalServerKindProbe({
-        enabled: isLocalCompatible,
-        baseUrl: currentBaseUrl,
-        apiKey: '',
-        modelId: currentModelId,
-        debounceMs: 0,
-      });
-      const reasoningEffortTiers = isLocalCompatible
-        ? (currentProbePending ? [] : (localReasoningTiers(current ? current.model : null, currentProbedKind) || []))
-        : (current ? (reasoningEffortTiersForModel(current) || []) : []);
-      // Local routes (vllm preset / local-compatible endpoints) hit the "always-thinking,
-      // no-control" knowledge table: the effort-tier area shows an "always on" hint instead of probe-unsupported.
-      const currentNoControlThinking = !!current
-        && (current.preset === 'local_vllm' || isLocalCompatible)
-        && !!(alwaysThinkingSpecForModel(current.model) || {}).noControl;
       // 存量档位（可能保存过底座归一前的旧值，如 deepseek 的 medium）先归一到
-      // 档位表内等价档位再高亮，避免「档位表不含该值 → 下拉无高亮」。
+      // 档位表内等价档位，再交给 hook 做高亮回落。
       const reasoningEffortValue = current ? normalizeStoredReasoningEffort(current, current.reasoning_effort) : null;
-      // Highlight fallback: normalization uses the static four-tier table, but
-      // once ollama is probed only the off/high tiers render, so a stored
-      // low/medium would land on no button; the display maps to the nearest
-      // tier (think:true is equivalent to high), while click comparison still
-      // uses the normalized original value, so a saved low survives switching
-      // back to a four-tier endpoint.
-      const reasoningEffortDisplay = reasoningEffortDisplayForTiers(reasoningEffortValue, reasoningEffortTiers);
+      const {
+        isLocalCompatible,
+        probePending: currentProbePending,
+        reasoningEffortTiers,
+        noControlThinking: currentNoControlThinking,
+        reasoningEffortDisplay,
+      } = useModelReasoningTierState({
+        model: current,
+        storedEffort: reasoningEffortValue,
+        baseUrl: currentBaseUrl,
+        modelId: current ? current.id : null,
+      });
       const [effortSaveError, setEffortSaveError] = useState('');
       function setReasoningEffortForCurrent(tier) {
         if (!current) return;
@@ -440,9 +429,8 @@ window.addEventListener('pinvou:chat-round-committed', (event) => {
 
     // 输入框底栏:工具菜单(只展示已装工具 + 跳工具商店;无会话级开关——后端无此概念)。
     // 可选触发器变体：triggerVariant='pill' 时触发器渲染为代码页配置组同款 pill
-    //（triggerLabel 为可选 10px 前缀文案；triggerTestId 覆盖默认 testid），
-    // 下拉内容不变；不传变体时聊天页外观逐字节不变。
-    const ComposerToolMenu = ({ t, onGotoTools, compact, activeSkill, triggerVariant, triggerLabel, triggerTestId, scope, activeSessionId: activeSessionIdProp }) => {
+    //（triggerTestId 覆盖默认 testid），下拉内容不变；不传变体时聊天页外观逐字节不变。
+    const ComposerToolMenu = ({ t, onGotoTools, compact, activeSkill, triggerVariant, triggerTestId, scope, activeSessionId: activeSessionIdProp }) => {
       const [open, setOpen] = useState(false);
       const triggerRef = useRef(null);
       const canMutateToolStore = can('toolStoreMutations');
@@ -577,16 +565,13 @@ window.addEventListener('pinvou:chat-round-committed', (event) => {
         })),
       });
       const { connectedServices, toolRows, skillRows, enabledCount, allSkillsDisabled } = menuState;
-      // 内置技能名称/描述由 composer-tool-menu-logic.js 数据提供，在 UI 边界按当前语言覆盖
+      // 内置技能名称由 composer-tool-menu-logic.js 数据提供，在 UI 边界按当前语言覆盖
       const localizedSkillRows = skillRows.map(row => (row.kind === 'builtin-skill' && row.skillId === 'visual-design')
-        ? { ...row, title: t.uiSettingsView.visualDesignSkillName, description: t.uiSettingsView.visualDesignSkillDesc }
+        ? { ...row, title: t.uiSettingsView.visualDesignSkillName }
         : row);
-      const statusBadge = (label, tone = 'green') => {
-        const cls = tone === 'blue'
-          ? 'text-[#007AFF] dark:text-[#5AC8FA] bg-[#007AFF]/10 dark:bg-[#0A84FF]/15'
-          : 'text-[#34C759] bg-[#34C759]/10';
-        return <span className={`shrink-0 inline-flex items-center gap-1 text-[10px] font-semibold ${cls} px-2 py-0.5 rounded-full leading-none`}><span className={`w-1.5 h-1.5 rounded-full ${tone === 'blue' ? 'bg-[#007AFF] dark:bg-[#5AC8FA]' : 'bg-[#34C759]'}`} />{label}</span>;
-      };
+      // Dot-pill status chip（已连接/内置标识）：实现统一在 StatusChip.jsx（与
+      // SettingsView 的 Tag、ProvidersSection 的 badge 共用一份）。
+      const statusBadge = (label, tone = 'green') => <StatusChip variant="dot" tone={tone}>{label}</StatusChip>;
       const switchRow = (row) => {
         // 未提交的「打开」（pending）不锁：发送新一轮前允许改回。
         const rowDisabled = toolSwitchDisabled
@@ -601,15 +586,9 @@ window.addEventListener('pinvou:chat-round-committed', (event) => {
         </div>
         );
       };
-      const readonlyRow = (row, label, tone = 'green') => (
-        <div key={row.id} className="flex items-center justify-between gap-2 px-3 py-2.5 rounded-xl font-medium">
-          <span className="min-w-0">
-            <span className="block text-[13px] text-gray-700 dark:text-gray-200 truncate">{row.title}</span>
-          </span>
-          {statusBadge(label, tone)}
-        </div>
-      );
       // 权限只读开关：显示开关状态（受静态表控制），但不可手动切换；保留「内置」标识。
+      // （composer-tool-menu-logic.js 的行只会是 switchable:true 或 readonly:true 二选一，
+      // 无第三形态。）
       const readonlySwitchRow = (row) => (
         <div key={row.id} className="flex items-center justify-between gap-2 px-3 py-2.5 rounded-xl font-medium">
           <span className="min-w-0 flex items-center gap-1.5">
@@ -634,11 +613,6 @@ window.addEventListener('pinvou:chat-round-committed', (event) => {
               aria-expanded={open}
               className="inline-flex h-8 min-w-0 max-w-[220px] items-center gap-1.5 overflow-hidden rounded-xl border px-2.5 transition-all cursor-pointer hover:-translate-y-px hover:shadow-sm focus-within:border-[#007AFF]/45 focus-within:ring-2 focus-within:ring-[#007AFF]/10 border-black/[0.07] bg-black/[0.025] text-[#1F1F1F] dark:border-white/[0.09] dark:bg-white/[0.055] dark:text-[#E8EAED]"
             >
-              {triggerLabel && (
-                <span className="pointer-events-none shrink-0 text-[10px] font-medium text-gray-400 dark:text-gray-500">
-                  {triggerLabel}
-                </span>
-              )}
               <span className="pointer-events-none min-w-0 truncate text-[11px] font-semibold">
                 {t.composerTools}
               </span>
@@ -675,9 +649,7 @@ window.addEventListener('pinvou:chat-round-committed', (event) => {
                   <>
                     {localizedSkillRows.map(row => row.switchable
                       ? switchRow(row)
-                      : row.readonly
-                        ? readonlySwitchRow(row)
-                        : readonlyRow(row, row.active ? t.composerSkillInUse : t.composerBuiltinAuto, row.active ? 'green' : 'blue'))}
+                      : readonlySwitchRow(row))}
                     {/* 该 scope 全部技能被关：空态提示（组合目录为空 → 模型看不到任何技能） */}
                     {allSkillsDisabled && (
                       <div className="px-3 pt-1 pb-1 text-[11px] text-gray-400 dark:text-gray-500">{t.composerSkillAllDisabled}</div>

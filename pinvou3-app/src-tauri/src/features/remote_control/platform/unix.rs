@@ -16,14 +16,6 @@ pub(super) fn enforce_private_permissions(file: &File, _path: &Path) -> std::io:
     file.set_permissions(std::fs::Permissions::from_mode(0o600))
 }
 
-pub(super) fn atomic_replace(source: &Path, target: &Path) -> std::io::Result<()> {
-    std::fs::rename(source, target)
-}
-
-pub(super) fn sync_parent_directory(parent: &Path) -> std::io::Result<()> {
-    File::open(parent)?.sync_all()
-}
-
 pub(super) fn display_path(path: &Path) -> String {
     path.to_string_lossy().into_owned()
 }

@@ -43,7 +43,6 @@ CREATE TABLE IF NOT EXISTS files (
 CREATE INDEX IF NOT EXISTS idx_files_size  ON files(size);
 CREATE INDEX IF NOT EXISTS idx_files_ext   ON files(ext);
 CREATE INDEX IF NOT EXISTS idx_files_mtime ON files(mtime);
-CREATE INDEX IF NOT EXISTS idx_files_hash  ON files(hash);
 
 -- 可重建索引的轻量运行元数据。与业务数据分表，后续增加 key 无需 bump schema
 -- 并清空整个大索引库。
@@ -169,14 +168,15 @@ CREATE TABLE IF NOT EXISTS knowledge_import_staged_chunks (
 );
 "#;
 
+// hash 只剩历史库里的遗留值（去重功能已下线，不再写入/读取）；列保留 nullable 以兼容
+// 用户的既有 index.db，UPSERT 不再触碰它。
 const UPSERT_SQL: &str = r#"
-INSERT INTO files(path, name, ext, size, mtime, is_dir, status, indexed_at, hash)
-VALUES(?1, ?2, ?3, ?4, ?5, ?6, 'indexed', strftime('%s','now'), NULL)
+INSERT INTO files(path, name, ext, size, mtime, is_dir, status, indexed_at)
+VALUES(?1, ?2, ?3, ?4, ?5, ?6, 'indexed', strftime('%s','now'))
 ON CONFLICT(path) DO UPDATE SET
     name=excluded.name, ext=excluded.ext, size=excluded.size,
     mtime=excluded.mtime, is_dir=excluded.is_dir, status='indexed',
-    indexed_at=excluded.indexed_at,
-    hash=CASE WHEN files.size != excluded.size THEN NULL ELSE files.hash END
+    indexed_at=excluded.indexed_at
 "#;
 
 /// 一条待写入的文件元数据。
@@ -208,7 +208,6 @@ pub struct SearchQuery {
     pub text: Option<String>,
     pub exts: Vec<String>,
     pub mtime_after: Option<i64>,
-    pub mtime_before: Option<i64>,
     pub min_size: Option<u64>,
     pub max_size: Option<u64>,
     pub limit: usize,
@@ -220,11 +219,6 @@ pub struct SearchQuery {
 pub struct Stats {
     pub total_files: u64,
     pub total_bytes: u64,
-    pub hashed: u64,
-    pub duplicate_groups: u64,
-    pub duplicate_files: u64,
-    /// 去重可回收字节 = Σ(组内冗余份数 × 单份大小)。
-    pub duplicate_wasted_bytes: u64,
 }
 
 /// 按扩展名的文件计数（文件管理「按类型浏览」用）。
@@ -414,10 +408,6 @@ impl Store {
             sql.push_str(" AND f.mtime >= ?");
             vals.push(Value::Integer(v));
         }
-        if let Some(v) = q.mtime_before {
-            sql.push_str(" AND f.mtime <= ?");
-            vals.push(Value::Integer(v));
-        }
         if let Some(v) = q.min_size {
             sql.push_str(" AND f.size >= ?");
             vals.push(Value::Integer(v as i64));
@@ -444,43 +434,19 @@ impl Store {
         rows.collect()
     }
 
-    /// 索引概况 + 去重统计。
+    /// 索引概况。去重统计已随去重功能一起下线（hash 不再写入，恒为 NULL）；
+    /// 前端只消费 totalFiles。
     pub fn stats(&self) -> rusqlite::Result<Stats> {
         let guard = self.read.lock();
-        let (total_files, total_bytes, hashed) = guard.query_row(
-            "SELECT COUNT(*), COALESCE(SUM(size),0), \
-             COALESCE(SUM(CASE WHEN hash IS NOT NULL THEN 1 ELSE 0 END),0) \
+        let (total_files, total_bytes) = guard.query_row(
+            "SELECT COUNT(*), COALESCE(SUM(size),0) \
              FROM files WHERE status='indexed' AND is_dir=0",
             [],
-            |r| {
-                Ok((
-                    r.get::<_, i64>(0)? as u64,
-                    r.get::<_, i64>(1)? as u64,
-                    r.get::<_, i64>(2)? as u64,
-                ))
-            },
-        )?;
-        let (groups, dup_files, wasted) = guard.query_row(
-            "SELECT COUNT(*), COALESCE(SUM(cnt),0), COALESCE(SUM((cnt-1)*size),0) FROM (\
-               SELECT size, COUNT(*) cnt FROM files \
-               WHERE status='indexed' AND is_dir=0 AND hash IS NOT NULL \
-               GROUP BY hash HAVING cnt>1)",
-            [],
-            |r| {
-                Ok((
-                    r.get::<_, i64>(0)? as u64,
-                    r.get::<_, i64>(1)? as u64,
-                    r.get::<_, i64>(2)? as u64,
-                ))
-            },
+            |r| Ok((r.get::<_, i64>(0)? as u64, r.get::<_, i64>(1)? as u64)),
         )?;
         Ok(Stats {
             total_files,
             total_bytes,
-            hashed,
-            duplicate_groups: groups,
-            duplicate_files: dup_files,
-            duplicate_wasted_bytes: wasted,
         })
     }
 

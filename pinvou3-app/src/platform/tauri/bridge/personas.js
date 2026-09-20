@@ -7,7 +7,13 @@
   "use strict";
   // biome-ignore lint/suspicious/noAssignInExpressions: registry bootstrap of the verbatim payload; splitting statements would diverge from the artifact
   const registry = root.__PINVOU_TAURI_BRIDGE_FEATURES__ = root.__PINVOU_TAURI_BRIDGE_FEATURES__ || {};
-  registry["personas"] = function (context) {
+  registry["personas"] = function (context) {let pinvouSharedtauriPersonasCache = null;
+function pinvouSharedtauriPersonas() {
+  if (!pinvouSharedtauriPersonasCache) pinvouSharedtauriPersonasCache = window.PinvouBridgeShared.create("tauriPersonas", { state, notify, personaPoolCache: { get value() { return personaPoolCache; }, set value(v) { personaPoolCache = v; } }, invoke, deletedPersonaIds, sessionStates, lastEquippedSid: { get value() { return lastEquippedSid; }, set value(v) { lastEquippedSid = v; } }, runOnSession, addChatItem, mountedCollectionDraftTarget: { get value() { return mountedCollectionDraftTarget; }, set value(v) { mountedCollectionDraftTarget = v; } }, ensureSession, mountedCollectionUpdate: { get value() { return mountedCollectionUpdate; }, set value(v) { mountedCollectionUpdate = v; } }, addSystemItem, bt });
+  return pinvouSharedtauriPersonasCache;
+}
+
+
     const state = context.state;
     const sessionStates = context.sessionStates;
     const notify = context.notify;
@@ -23,70 +29,18 @@
     let personaPoolCache = [];
   // ── 卡片池: 专家面具加持 ─────────────────────────────────────────
   // 懒加载全部专家卡(1078 张),前端缓存供 facet/搜索。只拉一次。
-  async function loadPersonas() {
-    if (state.personaPool.loadState === "ready" || state.personaPool.loadState === "loading") return;
-    await refreshPersonas();
-  }
-  // 强制重拉卡牌列表(自创卡增删改后调,让池子立即反映)。
-  async function refreshPersonas() {
-    state.personaPool.loadState = "loading"; notify();
-    try {
-      personaPoolCache = await invoke("list_personas");
-      state.personaPool.loadState = "ready";
-    } catch (e) {
-      personaPoolCache = []; state.personaPool.loadState = "error";
-      console.warn("list_personas failed", e);
-    }
-    notify();
-  }
+async function loadPersonas() { return pinvouSharedtauriPersonas().loadPersonas(); }
+
   // ── 用户自创卡 CRUD(写盘后刷新缓存) ──
-  async function createPersona(input) {
-    const sum = await invoke("create_persona", { input });
-    deletedPersonaIds.delete(sum.id);
-    await refreshPersonas();
-    return sum;
-  }
-  async function updatePersona(personaId, input) {
-    const sum = await invoke("update_persona", { personaId, input });
-    await refreshPersonas();
-    if (deletedPersonaIds.has(personaId)) return null;
-    // 若改的正是当前 session 加持的卡, 同步挂件显示
-    if (state.activePersona && state.activePersona.id === personaId) { state.activePersona = sum; notify(); }
-    return sum;
-  }
-  async function deletePersona(personaId) {
-    await invoke("delete_persona", { personaId });
-    // Invalidate live and cached selections only after deletion succeeds.
-    // Late reads/equip responses must not restore a card that no longer exists.
-    deletedPersonaIds.add(personaId);
-    if (state.activePersona && state.activePersona.id === personaId) state.activePersona = null;
-    Object.values(sessionStates).forEach(function (buffer) {
-      if (buffer.activePersona && buffer.activePersona.id === personaId) buffer.activePersona = null;
-    });
-    notify();
-    await refreshPersonas();
-  }
+async function createPersona(input) { return pinvouSharedtauriPersonas().createPersona(input); }
+async function updatePersona(personaId, input) { return pinvouSharedtauriPersonas().updatePersona(personaId, input); }
+async function deletePersona(personaId) { return pinvouSharedtauriPersonas().deletePersona(personaId); }
   // 给当前 session 加持一张专家面具。后端存 persona_id + 每 turn 注入人设;
   // 前端记 activePersona(挂件) + 发一条系统消息播报。
   // 取专家显示名(兼容 Side A 的 cn_name / Side B 的 name)。
-  function personaName(p) {
-    if (!p) return "";
-    // 内置卡名按 UI 语言显示(personas-i18n.js overlay),中文兜底;自制卡不翻
-    const lang = state.settings && state.settings.language;
-    const L = lang === "en" ? "en" : lang === "ja" ? "ja" : null;
-    const tr = L && p.source !== "user" && window.PERSONA_I18N && window.PERSONA_I18N[p.id] && window.PERSONA_I18N[p.id][L];
-    if (tr && tr.name) return tr.name;
-    return (p.name || p.cn_name) || "";
-  }
+function personaName(p) { return pinvouSharedtauriPersonas().personaName(p); }
   // 记一条卡牌事件到时间线 sidecar(pos=当前 messages 数),并落盘。重载历史时按 pos 插回。
-  function recordPersonaEvent(ev) {
-    if (!state.activeSessionId) return;
-    ev.pos = state.messages.length;
-    state.personaEvents.push(ev);
-    const sid = state.activeSessionId;
-    const snapshot = JSON.parse(JSON.stringify(state.personaEvents));
-    invoke("save_session_persona_events", { sessionId: sid, events: snapshot }).catch(function () {});
-  }
+function recordPersonaEvent(ev) { return pinvouSharedtauriPersonas().recordPersonaEvent(ev); }
   async function equipPersona(personaId) {
     if (!state.activeSessionId) {
       // 草稿态加卡 → 先物化 session(lazy session)。用返回值判空：切走场景
@@ -182,108 +136,18 @@
   // 默认定向最近一次成功 equip 的目标会话：AI 造卡链路 equip→intro 之间用户
   // 切走时,intro 必须仍落在发起(已加持)会话,而不是写进切走后的当前显示
   // (错误会话被插卡是持久化污染,不可自愈)。显式传 sid 可覆盖(审计补充)。
-  function postCardCreatorIntro(sid) {
-    const target = sid || lastEquippedSid || state.activeSessionId;
-    if (!target) return;
-    runOnSession(target, function () {
-      addChatItem({ type: "card_creator_intro", time: "" });
-      recordPersonaEvent({ kind: "card_creator_intro" });
-      notify();
-    });
-  }
+function postCardCreatorIntro(sid) { return pinvouSharedtauriPersonas().postCardCreatorIntro(sid); }
 
-  // ── 多知识库挂载(会话级粘连,仿 persona) ──
-  function normalizeMountedCollections(value) {
-    if (!Array.isArray(value)) return [];
-    const seen = Object.create(null);
-    return value.map(function (entry) {
-      if (entry == null) return null;
-      const collectionId = typeof entry === "object"
-        ? (entry.collectionId == null ? entry.collection_id : entry.collectionId)
-        : entry;
-      if (collectionId == null || seen[String(collectionId)]) return null;
-      seen[String(collectionId)] = true;
-      return { collectionId, enabled: typeof entry === "object" ? entry.enabled !== false : true };
-    }).filter(Boolean);
-  }
-  function applyMountedCollections(value) {
-    const hasSnapshot = value && !Array.isArray(value) && Array.isArray(value.collections);
-    const revision = hasSnapshot ? Number(value.revision || 0) : Number(state.mountedCollectionsRevision || 0);
-    if (hasSnapshot && revision < Number(state.mountedCollectionsRevision || 0)) {
-      return normalizeMountedCollections(state.mountedCollections);
-    }
-    const normalized = normalizeMountedCollections(hasSnapshot ? value.collections : value);
-    state.mountedCollections = normalized;
-    state.mountedCollectionsRevision = revision;
-    const firstEnabled = normalized.find(function (entry) { return entry.enabled; });
-    state.mountedCollection = firstEnabled ? firstEnabled.collectionId : null;
-    return normalized;
-  }
+
+function applyMountedCollections(value) { return pinvouSharedtauriPersonas().applyMountedCollections(value); }
   let mountedCollectionUpdate = Promise.resolve();
   let mountedCollectionDraftTarget = null;
-  function mountedCollectionTargetAtEnqueue() {
-    if (state.activeSessionId) return { draft: false, promise: Promise.resolve(state.activeSessionId) };
-    const draftEpoch = Number(state.draftEpoch || 0);
-    if (!mountedCollectionDraftTarget || mountedCollectionDraftTarget.epoch !== draftEpoch || mountedCollectionDraftTarget.failed) {
-      const target = { draft: true, epoch: draftEpoch, failed: false, pending: 0, promise: null };
-      target.promise = Promise.resolve().then(async function () {
-        // Navigation before draft materialization cancels this batch instead of
-        // silently retargeting it to the newly active session.
-        if (state.activeSessionId) return null;
-        const sessionId = await ensureSession();
-        if (!sessionId) target.failed = true;
-        return sessionId;
-      });
-      mountedCollectionDraftTarget = target;
-    }
-    mountedCollectionDraftTarget.pending += 1;
-    return mountedCollectionDraftTarget;
-  }
-  function updateMountedCollections(command, args) {
-    const requestedTarget = mountedCollectionTargetAtEnqueue();
-    mountedCollectionUpdate = mountedCollectionUpdate.catch(function () {}).then(async function () {
-      // The target is captured at click time. Rapid draft actions share one
-      // materialization promise and remain bound to that session after navigation.
-      const sessionId = await requestedTarget.promise;
-      if (!sessionId) return null;
-      try {
-        const saved = await invoke(command, Object.assign({ sessionId }, args || {}));
-        const normalized = normalizeMountedCollections(saved && saved.collections);
-        if (state.activeSessionId === sessionId) {
-          applyMountedCollections(saved);
-          notify();
-        }
-        return normalized;
-      } catch (e) {
-        addSystemItem(bt("mountCollectionFailed") + e);
-        return null;
-      }
-    });
-    if (requestedTarget.draft) {
-      mountedCollectionUpdate = mountedCollectionUpdate.finally(function () {
-        requestedTarget.pending -= 1;
-        if (requestedTarget.pending === 0 && mountedCollectionDraftTarget === requestedTarget) {
-          mountedCollectionDraftTarget = null;
-        }
-      });
-    }
-    return mountedCollectionUpdate;
-  }
+function mountedCollectionTargetAtEnqueue() { return pinvouSharedtauriPersonas().mountedCollectionTargetAtEnqueue(); }
+function updateMountedCollections(command, args) { return pinvouSharedtauriPersonas().updateMountedCollections(command, args); }
   // 添加知识集；已挂载但停用时重新启用，不覆盖其他挂载项。
-  async function mountCollection(collectionId) {
-    if (collectionId == null) return null;
-    const saved = await updateMountedCollections("session_add_mounted_collection", { collectionId });
-    return saved ? collectionId : null;
-  }
-  async function setCollectionEnabled(collectionId, enabled) {
-    return updateMountedCollections("session_set_mounted_collection_enabled", {
-      collectionId,
-      enabled: !!enabled,
-    });
-  }
-  async function removeCollection(collectionId) {
-    return updateMountedCollections("session_remove_mounted_collection", { collectionId });
-  }
+async function mountCollection(collectionId) { return pinvouSharedtauriPersonas().mountCollection(collectionId); }
+async function setCollectionEnabled(collectionId, enabled) { return pinvouSharedtauriPersonas().setCollectionEnabled(collectionId, enabled); }
+async function removeCollection(collectionId) { return pinvouSharedtauriPersonas().removeCollection(collectionId); }
   // 兼容旧入口：摘下当前对话的全部知识集挂载。
   async function unmountCollection() {
     if (!state.activeSessionId) {

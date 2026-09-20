@@ -249,32 +249,41 @@ export function windowSubagentTranscript(projection, visibleItemCount) {
  * slug 规则与 Rust 侧 roster::expert_role_slug 一致（仅展示用途的镜像：
  * 非 [a-z0-9._-] 折成 '-'，前缀 exp-）；对不上就回退，不会错认。
  */
-const SUBAGENT_TYPE_ALIASES = new Set([
-  'general', 'general-purpose', 'general_purpose', 'worker', 'default',
-  'explore', 'exploration', 'explorer', 'scout',
-  'plan', 'planning', 'planner', 'awaiter', 'manager',
-  'implementer', 'implement', 'implementation', 'builder',
-  'review', 'code-review', 'code_review', 'reviewer',
-  'verifier', 'verify', 'verification', 'validator', 'tester',
-]);
+// agent_type/role 别名表(单一来源):键是内置角色卡的 roleKey,值是该角色
+// 认可的所有别名;subagentRoleForType 与 SUBAGENT_TYPE_ALIASES 都从这里派生,
+// 新增别名只改这一处。general 别名(worker/default 等)映射回兜底角色。
+const SUBAGENT_ROLE_ALIASES = {
+  general: ['general', 'general-purpose', 'general_purpose', 'worker', 'default'],
+  scout: ['explore', 'exploration', 'explorer', 'scout'],
+  manager: ['plan', 'planning', 'planner', 'awaiter', 'manager'],
+  builder: ['implementer', 'implement', 'implementation', 'builder'],
+  reviewer: [
+    'review', 'code-review', 'code_review', 'reviewer',
+    'verifier', 'verify', 'verification', 'validator', 'tester',
+  ],
+};
+
+const SUBAGENT_TYPE_ALIASES = new Set(Object.values(SUBAGENT_ROLE_ALIASES).flat());
 
 function subagentRoleForType(agentType) {
   const normalized = String(agentType || '').trim().toLowerCase();
-  if (['explore', 'exploration', 'explorer', 'scout'].includes(normalized)) return 'scout';
-  if (['plan', 'planning', 'planner', 'awaiter', 'manager'].includes(normalized)) return 'manager';
-  if (['implementer', 'implement', 'implementation', 'builder'].includes(normalized)) return 'builder';
-  if (
-    ['review', 'code-review', 'code_review', 'reviewer',
-      'verifier', 'verify', 'verification', 'validator', 'tester'].includes(normalized)
-  ) return 'reviewer';
+  for (const [roleKey, aliases] of Object.entries(SUBAGENT_ROLE_ALIASES)) {
+    if (aliases.includes(normalized)) return roleKey;
+  }
   return 'general';
 }
 
-export function resolveSubagentIdentity(role, personas, agentId, agentType) {
+// role 字段的规范化 roleKey:内置别名折回内置角色卡,其余(自定义名/exp-*)
+// 按原样保留;没有 role 时按 agent_type 推导。行内卡与面板共用同一份判定。
+function roleKeyOf(role, agentType) {
   const rawRole = String(role || '').trim();
-  const roleId = rawRole
+  return rawRole
     ? (SUBAGENT_TYPE_ALIASES.has(rawRole.toLowerCase()) ? subagentRoleForType(rawRole) : rawRole)
     : subagentRoleForType(agentType);
+}
+
+export function resolveSubagentIdentity(role, personas, agentId, agentType) {
+  const roleId = roleKeyOf(role, agentType);
   const builtin = ['scout', 'manager', 'builder', 'reviewer', 'general'];
   // 通用角色卡没有"真人"人设：有 agentId 时头像按实例散列（AppIcon 按 id
   // 哈希 50 张本地头像），同角色派多个实例各有面孔——四个同貌"调研专家"
@@ -318,10 +327,7 @@ export function subagentRoleOrdinals(summaries) {
   const assigned = new Map();
   for (const entry of summaries || []) {
     if (!entry || !entry.agent_id) continue;
-    const rawRole = String(entry.role || '').trim();
-    const key = rawRole
-      ? (SUBAGENT_TYPE_ALIASES.has(rawRole.toLowerCase()) ? subagentRoleForType(rawRole) : rawRole)
-      : subagentRoleForType(entry.agent_type);
+    const key = roleKeyOf(entry.role, entry.agent_type);
     const seq = (counts.get(key) || 0) + 1;
     counts.set(key, seq);
     assigned.set(entry.agent_id, { key, seq });
@@ -482,10 +488,8 @@ export function subagentObjectiveName(text, maxLength = 12) {
     .replace(/\s+/g, ' ')
     .trim();
   if (!candidate) return null;
-  const characters = [...candidate];
-  return characters.length > maxLength
-    ? `${characters.slice(0, maxLength).join('')}…`
-    : candidate;
+  // 截断复用 compactSubagentDisplayName(同一展示规则),不在内联一份。
+  return compactSubagentDisplayName(candidate, maxLength);
 }
 
 function compactSubagentDisplayName(value, maxLength = 12) {
@@ -546,7 +550,6 @@ export function resolveSubagentPresentation({
     subtitle,
     task: (title.name ? title.rest : String(objective || '')).trim(),
     explicitName,
-    objectiveName,
   };
 }
 

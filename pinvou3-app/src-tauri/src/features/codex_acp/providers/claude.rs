@@ -173,31 +173,15 @@ impl AgentConfigWriter for ClaudeConfigWriter {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::features::codex_acp::providers::ProviderWireApi;
-
-    /// 按测试名区分目录（cargo 并行跑时同 pid 共享目录会互删，见 kimi.rs）。
-    fn tmp_dir() -> PathBuf {
-        let test = std::thread::current()
-            .name()
-            .unwrap_or_default()
-            .replace(['/', '\\', ':'], "_");
-        let dir = std::env::temp_dir().join(format!("claude-writer-test-{test}"));
-        let _ = fs::remove_dir_all(&dir);
-        fs::create_dir_all(&dir).unwrap();
-        dir
-    }
+    use crate::features::codex_acp::providers::{ProviderWireApi, fixture_target, writer_test_dir};
 
     fn target(provider_id: &str) -> ProviderTarget {
-        ProviderTarget {
-            provider_id: provider_id.into(),
-            name: "中转".into(),
-            base_url: "https://api.example.com/anthropic/".into(),
-            model: Some("claude-sonnet-4-5".into()),
-            model_slots: None,
-            context_window: None,
-            wire_api: ProviderWireApi::Anthropic,
-            api_key: Some("test-api-key-1234567890".into()),
-        }
+        fixture_target(
+            provider_id,
+            "https://api.example.com/anthropic/",
+            "claude-sonnet-4-5",
+            ProviderWireApi::Anthropic,
+        )
     }
 
     fn target_with_slots(provider_id: &str) -> ProviderTarget {
@@ -213,7 +197,7 @@ mod tests {
 
     #[test]
     fn apply_writes_model_slots_and_revert_removes_them() {
-        let dir = tmp_dir();
+        let dir = writer_test_dir("claude-writer-test");
         let writer = ClaudeConfigWriter::new(&dir);
         writer.apply(&target_with_slots("pv-aaaaaaaaaaaa")).unwrap();
         let config: Value =
@@ -246,7 +230,7 @@ mod tests {
 
     #[test]
     fn apply_without_key_removes_stale_auth_token() {
-        let dir = tmp_dir();
+        let dir = writer_test_dir("claude-writer-test");
         let writer = ClaudeConfigWriter::new(&dir);
         writer.apply(&target("pv-aaaaaaaaaaaa")).unwrap();
         // 编辑生效中 Provider 删除 key（api_key=None）：受管 AUTH_TOKEN 必须
@@ -272,7 +256,7 @@ mod tests {
 
     #[test]
     fn apply_without_slots_clears_stale_slot_keys() {
-        let dir = tmp_dir();
+        let dir = writer_test_dir("claude-writer-test");
         let writer = ClaudeConfigWriter::new(&dir);
         writer.apply(&target_with_slots("pv-aaaaaaaaaaaa")).unwrap();
         // 切到无槽位的 Provider：受管槽位键必须清除，避免残留指向旧中转
@@ -290,7 +274,7 @@ mod tests {
 
     #[test]
     fn apply_merges_and_preserves_other_keys() {
-        let dir = tmp_dir();
+        let dir = writer_test_dir("claude-writer-test");
         let writer = ClaudeConfigWriter::new(&dir);
         // 预置用户自己的配置
         fs::write(
@@ -318,7 +302,7 @@ mod tests {
 
     #[test]
     fn revert_only_removes_managed_env_keys() {
-        let dir = tmp_dir();
+        let dir = writer_test_dir("claude-writer-test");
         let writer = ClaudeConfigWriter::new(&dir);
         fs::write(
             dir.join("settings.json"),
@@ -358,7 +342,7 @@ mod tests {
 
     #[test]
     fn effective_detects_relay() {
-        let dir = tmp_dir();
+        let dir = writer_test_dir("claude-writer-test");
         let writer = ClaudeConfigWriter::new(&dir);
         assert_eq!(
             writer.effective().unwrap(),
@@ -387,7 +371,7 @@ mod tests {
 
     #[test]
     fn effective_entries_expose_base_url_and_model_only() {
-        let dir = tmp_dir();
+        let dir = writer_test_dir("claude-writer-test");
         let writer = ClaudeConfigWriter::new(&dir);
         writer.apply(&target("pv-aaaaaaaaaaaa")).unwrap();
         let effective = writer.effective().unwrap();

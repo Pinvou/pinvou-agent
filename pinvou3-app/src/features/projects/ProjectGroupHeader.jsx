@@ -36,7 +36,6 @@ const ProjectGroupHeader = ({
   dropActive,
   onDropActive,
   testId,
-  headerExtra,
 }) => {
   const [editing, setEditing] = useState(null);
   const [confirming, setConfirming] = useState(false);
@@ -207,7 +206,6 @@ const ProjectGroupHeader = ({
         className="flex min-w-0 flex-1 self-stretch items-center border-0 bg-transparent px-4 text-left"
       >
         <span className="min-w-0 flex-1 truncate pr-2">{label} ({count})</span>
-        {headerExtra}
         <ChevronDown size={14} className={`shrink-0 transition-transform ${isOpen ? '' : '-rotate-90'}`} />
       </button>
       {/* Per-root badges for unavailable roots with one-click rebind. The

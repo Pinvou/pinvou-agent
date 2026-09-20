@@ -1061,7 +1061,6 @@ mod tests {
         // 1) 首次解包：文件被写入 + VERSION 记录
         let bundle = Pinvou3Bundle::paths();
         bundle.ensure_extracted().unwrap();
-        assert!(bundle.instructions_md.is_file());
         assert!(bundle.mcp_json.is_file());
         assert!(bundle.deny_sensitive_sh.is_file());
         assert!(bundle.deny_sensitive_ps1.is_file());
@@ -1177,10 +1176,10 @@ mod tests {
         let v = std::fs::read_to_string(paths::bundle_version_file()).unwrap();
         assert_eq!(v.trim(), BUNDLE_VERSION);
 
-        // 2) VERSION 匹配则跳过：故意改 instructions.md，再 ensure，不应覆写
-        std::fs::write(&bundle.instructions_md, "USER TOUCHED").unwrap();
+        // 2) VERSION 匹配则跳过：故意改 bundle 内文件，再 ensure，不应覆写
+        std::fs::write(&bundle.shell_env_sh, "USER TOUCHED").unwrap();
         bundle.ensure_extracted().unwrap();
-        let content = std::fs::read_to_string(&bundle.instructions_md).unwrap();
+        let content = std::fs::read_to_string(&bundle.shell_env_sh).unwrap();
         assert_eq!(
             content, "USER TOUCHED",
             "VERSION 匹配时不应覆写已存在的 bundle 文件"
@@ -1784,10 +1783,11 @@ mod tests {
             r#"{"servers":{"data_analysis":{"command":"python","args":["server.py"]},"weather":{"command":"python","args":["server.py"]}}}"#,
         )
         .unwrap();
-        crate::features::marketplace::save_disabled_connectors(&[
-            "data_analysis".to_string(),
-            "weather".to_string(),
-        ]);
+        crate::features::marketplace::scope::save_disabled_bundles_for(
+            crate::features::marketplace::ConnectorScope::Plain,
+            &["data_analysis".to_string(), "weather".to_string()],
+        )
+        .unwrap();
 
         bundle.cleanup_removed_marketplace_tools().unwrap();
 
@@ -1802,7 +1802,9 @@ mod tests {
             !mcp.contains("data_analysis"),
             "mcp.json 不应残留 data_analysis server"
         );
-        let disabled = crate::features::marketplace::load_disabled_connectors();
+        let disabled = crate::features::marketplace::scope::load_disabled_bundles_for(
+            crate::features::marketplace::ConnectorScope::Plain,
+        );
         assert!(
             !disabled.contains(&"data_analysis".to_string()),
             "disabled_connectors 不应残留 data_analysis"

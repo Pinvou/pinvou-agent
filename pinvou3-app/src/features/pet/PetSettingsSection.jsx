@@ -57,6 +57,8 @@ export default function PetSettingsSection({ enabled, selectedPetId, t, onSelect
 
   const currentId = normalizePetId(selectedPetId);
 
+  const pendingSelectRef = useRef(null);
+
   // 封面与图集分两级进状态机：封面是轻量资源，先到先显示——图集 decode
   // 期间卡片必须一直露出封面（需求硬性要求），而不是空白占位。
   const loadCoverInto = (id) => {
@@ -80,24 +82,35 @@ export default function PetSettingsSection({ enabled, selectedPetId, t, onSelect
     loadCoverInto(id);
   };
 
-  const loadPetAssets = (id) => {
-    // 与在途加载去重:重试可重复点击,封面或图集任一在途时不再重复发请求。
-    const current = assets[id];
-    if (current && (current.status === 'loading' || current.atlasStatus === 'loading')) return;
+  // 图集装载的唯一收口(原 loadPetAssets 与 ensurePetAtlas 合并):loadCover
+  // 标记区分两条入口——
+  //   loadCover:true  = 失败重试:封面+图集一起重载,清掉封面失败标记;
+  //   loadCover:false = hover/选中/预载:只确保图集,不碰封面状态。
+  // 与在途加载去重:重试可重复点击,封面或图集任一在途时不再重复发请求。
+  const ensurePetAtlas = (id, { loadCover = false } = {}) => {
+    const entry = assets[id];
+    if (loadCover) {
+      if (entry && (entry.status === 'loading' || entry.atlasStatus === 'loading')) return;
+    } else if (entry && (entry.atlas || entry.atlasStatus === 'loading')) {
+      // entry 不存在时也要照常发起:预载 effect 首次运行时封面尚未入库,
+      // 在此早退会让「当前宠图集随区域出现预载」在主路径上从不生效。
+      return;
+    }
     setAssets((state) => ({
       ...state,
-      [id]: { ...state[id], status: 'loading', coverFailed: false, atlasStatus: 'loading' },
+      [id]: loadCover
+        ? { ...state[id], status: 'loading', coverFailed: false, atlasStatus: 'loading' }
+        : { ...state[id], atlasStatus: 'loading' },
     }));
-    loadCoverInto(id);
-    const entry = PET_REGISTRY[id];
-    entry.atlas()
+    if (loadCover) loadCoverInto(id);
+    PET_REGISTRY[id].atlas()
       .then(loadImage)
       .then((atlas) => {
         if (!aliveRef.current) return;
         setAssets((state) => ({ ...state, [id]: { ...state[id], atlas, atlasStatus: 'ready', status: 'ready' } }));
-        // 重试路径与 ensurePetAtlas 同一收口语义:加载期间用户已点击该卡
-        // (重试在途时点击只能排队,ensurePetAtlas 因 atlasStatus=loading 早退、
-        // 无人发起回调),完成即执行排队的选择,不丢点击。
+        // 重试路径与预载路径同一收口语义:加载期间用户已点击该卡(重试在途时
+        // 点击只能排队,ensurePetAtlas 因 atlasStatus=loading 早退、无人发起
+        // 回调),完成即执行排队的选择,不丢点击。
         const pending = pendingSelectRef.current;
         if (pending === id) {
           pendingSelectRef.current = null;
@@ -109,9 +122,15 @@ export default function PetSettingsSection({ enabled, selectedPetId, t, onSelect
       .catch(() => {
         if (!aliveRef.current) return;
         // 失败腿同样消费排队:排队的选择等不到就绪,丢弃并让用户看到失败态,
-        // 不残留误触发(之后 hover 不会再无点击切换)。
+        // 不残留误触发(之后 hover 不会再无点击切换)。重试入口还要把卡片
+        // 状态标成 error,给出整卡失败展示。
         if (pendingSelectRef.current === id) pendingSelectRef.current = null;
-        setAssets((state) => ({ ...state, [id]: { ...state[id], status: 'error', atlasStatus: 'error' } }));
+        setAssets((state) => ({
+          ...state,
+          [id]: loadCover
+            ? { ...state[id], status: 'error', atlasStatus: 'error' }
+            : { ...state[id], atlasStatus: 'error' },
+        }));
       });
   };
 
@@ -130,38 +149,10 @@ export default function PetSettingsSection({ enabled, selectedPetId, t, onSelect
   // 不把 entry 纳入依赖:图集失败会写新 entry,重跑会变成失败-重试死循环;
   // 主路径靠 ensurePetAtlas 在 !entry 时也照常发起(见下)来保证生效。
   useEffect(() => {
-    // eslint-disable-next-line react-hooks/immutability -- ensurePetAtlas is declared after the effect as a preload entry only; it is initialized by the time it runs
+    // eslint-disable-next-line react-hooks/set-state-in-effect -- the atlas preload intentionally seeds the loading state on mount; the async completion commits via its callback
     if (enabled && currentId) ensurePetAtlas(currentId);
     // eslint-disable-next-line react-hooks/exhaustive-deps -- including ensurePetAtlas/assets would retrigger via the atlas-failure write
   }, [enabled, currentId]);
-
-  const pendingSelectRef = useRef(null);
-  const ensurePetAtlas = (id) => {
-    const entry = assets[id];
-    // entry 不存在时也要照常发起:预载 effect 首次运行时封面尚未入库,
-    // 在此早退会让「当前宠图集随区域出现预载」在主路径上从不生效。
-    if (entry && (entry.atlas || entry.atlasStatus === 'loading')) return;
-    setAssets((state) => ({ ...state, [id]: { ...state[id], atlasStatus: 'loading' } }));
-    PET_REGISTRY[id].atlas()
-      .then(loadImage)
-      .then((atlas) => {
-        if (!aliveRef.current) return;
-        setAssets((state) => ({ ...state, [id]: { ...state[id], atlas, atlasStatus: 'ready', status: 'ready' } }));
-        // 加载期间用户已点击该卡:完成即执行排队的选择。
-        const pending = pendingSelectRef.current;
-        if (pending === id) {
-          pendingSelectRef.current = null;
-          Promise.resolve(onSelect(id)).catch((error) => {
-            console.error('[pet-selector] switch failed, keeping previous pet', error);
-          });
-        }
-      })
-      .catch(() => {
-        if (!aliveRef.current) return;
-        if (pendingSelectRef.current === id) pendingSelectRef.current = null;
-        setAssets((state) => ({ ...state, [id]: { ...state[id], atlasStatus: 'error' } }));
-      });
-  };
 
   const handleSelect = (id) => {
     ensurePetAtlas(id);
@@ -257,7 +248,7 @@ export default function PetSettingsSection({ enabled, selectedPetId, t, onSelect
                 <div className="pet-card-error pet-card-error--dark">
                   <AlertTriangle size={14} />
                   <span>{entry.status === 'error' || entry.atlasStatus === 'error' ? t.uiPetSettings.animationFailed : t.uiPetSettings.coverFailed}</span>
-                  <button type="button" className="pet-card-retry" onClick={() => loadPetAssets(id)}>
+                  <button type="button" className="pet-card-retry" onClick={() => ensurePetAtlas(id, { loadCover: true })}>
                     {t.uiPetSettings.retry}
                   </button>
                 </div>
