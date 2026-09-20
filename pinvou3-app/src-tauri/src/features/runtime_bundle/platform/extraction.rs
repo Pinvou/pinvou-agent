@@ -306,10 +306,12 @@ impl Pinvou3Bundle {
         // 不受 VERSION gate 限制——marketplace 安装可能在任何时候发生。启动自愈(刷新
         // 陈旧的本地 python server command)也在同一次调用里完成,两者共享一次读盘
         // +parse;必须在引擎 spawn 前跑(引擎从 mcp.json 拉起 server)。
-        // 本函数只动 pinvou3/pinvou/browser 三个键;marketplace 侧的
-        // ENGINE_OWNED_MCP_SERVER_KEYS 镜像了这一集合,两侧由
+        // ensure_builtin_mcp_servers 自身的 upsert/迁移/清理只动 pinvou3/pinvou/browser
+        // 三个键;marketplace 侧的 ENGINE_OWNED_MCP_SERVER_KEYS 镜像了这一集合,两侧由
         // ensure_builtin_mcp_servers_touches_only_engine_owned_keys 测试钉住,
-        // 改动键集合时必须同步。
+        // 改动键集合时必须同步。注意它内部的 refresh_mcp_python_commands 还会把
+        // 任意条目的陈旧 python command 改写为当前运行时——那是与 marketplace
+        // 对账互补的另一种自愈,不属于这里的键集合足印。
         self.ensure_builtin_mcp_servers()?;
         crate::platform::startup::mark("bundle_extract:write_mcp_servers:done");
 

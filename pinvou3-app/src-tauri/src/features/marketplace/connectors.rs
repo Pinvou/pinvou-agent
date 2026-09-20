@@ -195,7 +195,7 @@ impl<S: crate::platform::credential_store::CredentialStore> MarketplaceManager<S
         servers: &mut serde_json::Map<String, serde_json::Value>,
     ) -> Result<(), String> {
         for server in &manifest.servers {
-            let entry = self.build_remote_server_entry(manifest, server, user_config)?;
+            let entry = self.build_remote_server_entry(manifest, server, user_config, false)?;
             servers.insert(server.name.clone(), entry);
         }
         Ok(())
@@ -205,148 +205,163 @@ impl<S: crate::platform::credential_store::CredentialStore> MarketplaceManager<S
     /// Extracted verbatim from `add_remote_to_mcp_json` so the startup reconciliation
     /// (`reconcile_remote_mcp_entries`) reuses the exact same serialization as a UI
     /// install instead of maintaining a second writer.
+    ///
+    /// `degrade_unresolved_secrets` marks the startup-reconciliation caller: startup
+    /// has no user input this run, so a secret whose credential-store entry no longer
+    /// resolves (never entered, or the keyring entry was removed) leaves its wiring
+    /// unwritten instead of failing the whole entry — the auth failure then surfaces
+    /// through the engine's boot receipt instead of blocking the restore. Installs
+    /// keep the fail-loud contract so the user is asked for the key.
     fn build_remote_server_entry(
         &self,
         manifest: &ToolManifest,
         server: &super::types::RemoteServer,
         user_config: &HashMap<String, String>,
+        degrade_unresolved_secrets: bool,
     ) -> Result<serde_json::Value, String> {
-        {
-            let mut headers = serde_json::Map::new();
-            let mut env_headers = serde_json::Map::new();
-            let mut bearer_token_env_var = None;
+        let mut headers = serde_json::Map::new();
+        let mut env_headers = serde_json::Map::new();
+        let mut bearer_token_env_var = None;
 
-            // 1. config_fields 中 target="bearer" 的字段（用户填入）。
-            //    同一 source_key 已由 secret_headers 声明 Authorization 时跳过:两个通道
-            //    都写 Authorization,scheme 分歧时(bearer 前缀 vs 原始值)会同时落
-            //    bearer_token_env_var 与 env_headers,产生自相矛盾的条目。secret_headers
-            //    是权威声明;此处仍先 resolve_secret_placeholder,保证用户当次输入落库。
-            let secret_header_auth_keys: std::collections::HashSet<&str> = manifest
-                .secret_headers
-                .iter()
-                .filter(|s| s.header.eq_ignore_ascii_case("authorization"))
-                .map(|s| s.source_key.as_str())
-                .collect();
-            for field in &manifest.config_fields {
-                if field.target == "bearer" {
-                    if let Some(val) = user_config.get(&field.key) {
-                        if field.secret {
-                            self.resolve_secret_placeholder(
-                                &manifest.id,
-                                bundle::keyring_target(bundle::CredentialTarget::Bearer),
-                                &field.key,
-                                user_config,
-                                &manifest.env,
-                            )?;
-                            if secret_header_auth_keys.contains(field.key.as_str()) {
-                                continue;
-                            }
-                            set_remote_secret_header(
-                                &mut env_headers,
-                                &mut bearer_token_env_var,
-                                "Authorization",
-                                "Bearer",
-                                &field.key,
-                            )?;
-                        } else {
-                            headers.insert(
-                                "Authorization".to_string(),
-                                serde_json::Value::String(format!("Bearer {}", val)),
-                            );
-                        }
-                    } else if field.secret {
-                        // Startup reconciliation has no user input this run, so re-wire
-                        // the bearer fields from the credential store (installed with a
-                        // value that `resolve_secret_placeholder` can still resolve). A
-                        // secret that never resolves — never entered, or the keyring
-                        // entry was removed — simply leaves the field unwritten: the
-                        // entry restores without credentials and the auth failure
-                        // surfaces through the engine's boot receipt instead of
-                        // blocking the restore.
-                        if self
-                            .resolve_secret_placeholder(
-                                &manifest.id,
-                                bundle::keyring_target(bundle::CredentialTarget::Bearer),
-                                &field.key,
-                                user_config,
-                                &manifest.env,
-                            )
-                            .is_ok()
-                            && !secret_header_auth_keys.contains(field.key.as_str())
-                        {
-                            set_remote_secret_header(
-                                &mut env_headers,
-                                &mut bearer_token_env_var,
-                                "Authorization",
-                                "Bearer",
-                                &field.key,
-                            )?;
-                        }
-                    }
-                }
-            }
-
-            // 2. manifest.secret_headers 声明的敏感 header（不落明文）
-            for secret in &manifest.secret_headers {
-                self.resolve_secret_placeholder(
-                    &manifest.id,
-                    bundle::keyring_target(bundle::CredentialTarget::Bearer),
-                    &secret.source_key,
-                    user_config,
-                    &manifest.env,
-                )?;
-                set_remote_secret_header(
-                    &mut env_headers,
-                    &mut bearer_token_env_var,
-                    &secret.header,
-                    &secret.scheme,
-                    &secret.source_key,
-                )?;
-            }
-
-            // 3. 兼容旧 manifest.env 中以 _API_KEY 结尾的字段，迁移后只写占位。
-            if headers.is_empty() {
-                for k in manifest.env.keys() {
-                    if is_sensitive_key_name(k) {
-                        let placeholder = self.resolve_secret_placeholder(
+        // 1. config_fields 中 target="bearer" 的字段（用户填入）。
+        //    同一 source_key 已由 secret_headers 声明 Authorization 时跳过:两个通道
+        //    都写 Authorization,scheme 分歧时(bearer 前缀 vs 原始值)会同时落
+        //    bearer_token_env_var 与 env_headers,产生自相矛盾的条目。secret_headers
+        //    是权威声明;此处仍先 resolve_secret_placeholder,保证用户当次输入落库。
+        let secret_header_auth_keys: std::collections::HashSet<&str> = manifest
+            .secret_headers
+            .iter()
+            .filter(|s| s.header.eq_ignore_ascii_case("authorization"))
+            .map(|s| s.source_key.as_str())
+            .collect();
+        for field in &manifest.config_fields {
+            if field.target == "bearer" {
+                if let Some(val) = user_config.get(&field.key) {
+                    if field.secret {
+                        self.resolve_secret_placeholder(
                             &manifest.id,
                             bundle::keyring_target(bundle::CredentialTarget::Bearer),
-                            k,
+                            &field.key,
                             user_config,
                             &manifest.env,
                         )?;
+                        if secret_header_auth_keys.contains(field.key.as_str()) {
+                            continue;
+                        }
+                        set_remote_secret_header(
+                            &mut env_headers,
+                            &mut bearer_token_env_var,
+                            "Authorization",
+                            "Bearer",
+                            &field.key,
+                        )?;
+                    } else {
                         headers.insert(
                             "Authorization".to_string(),
-                            serde_json::Value::String(format!("Bearer {}", placeholder)),
+                            serde_json::Value::String(format!("Bearer {}", val)),
                         );
-                        break;
+                    }
+                } else if field.secret {
+                    // Startup reconciliation has no user input this run, so re-wire
+                    // the bearer fields from the credential store (installed with a
+                    // value that `resolve_secret_placeholder` can still resolve). A
+                    // secret that never resolves simply leaves the field unwritten;
+                    // see `degrade_unresolved_secrets` above.
+                    if self
+                        .resolve_secret_placeholder(
+                            &manifest.id,
+                            bundle::keyring_target(bundle::CredentialTarget::Bearer),
+                            &field.key,
+                            user_config,
+                            &manifest.env,
+                        )
+                        .is_ok()
+                        && !secret_header_auth_keys.contains(field.key.as_str())
+                    {
+                        set_remote_secret_header(
+                            &mut env_headers,
+                            &mut bearer_token_env_var,
+                            "Authorization",
+                            "Bearer",
+                            &field.key,
+                        )?;
                     }
                 }
             }
+        }
 
-            let mut entry = serde_json::json!({ "url": server.url });
-            if !server.scopes.is_empty() {
-                entry["scopes"] = serde_json::to_value(&server.scopes).unwrap_or_default();
+        // 2. manifest.secret_headers 声明的敏感 header（不落明文）
+        for secret in &manifest.secret_headers {
+            match self.resolve_secret_placeholder(
+                &manifest.id,
+                bundle::keyring_target(bundle::CredentialTarget::Bearer),
+                &secret.source_key,
+                user_config,
+                &manifest.env,
+            ) {
+                // 用户当次输入仍需落库;resolve 的占位符值本身不在此使用。
+                Ok(_) => {}
+                Err(_) if degrade_unresolved_secrets => continue,
+                Err(error) => return Err(error),
             }
-            if let Some(oauth) = &server.oauth {
-                entry["oauth"] = serde_json::to_value(oauth).unwrap_or_default();
-            }
-            if let Some(resource) = &server.oauth_resource {
-                if !resource.trim().is_empty() {
-                    entry["oauth_resource"] = serde_json::Value::String(resource.clone());
+            set_remote_secret_header(
+                &mut env_headers,
+                &mut bearer_token_env_var,
+                &secret.header,
+                &secret.scheme,
+                &secret.source_key,
+            )?;
+        }
+
+        // 3. 兼容旧 manifest.env 中以 _API_KEY 结尾的字段，迁移后只写占位。
+        if headers.is_empty() {
+            for k in manifest.env.keys() {
+                if is_sensitive_key_name(k) {
+                    let placeholder = match self.resolve_secret_placeholder(
+                        &manifest.id,
+                        bundle::keyring_target(bundle::CredentialTarget::Bearer),
+                        k,
+                        user_config,
+                        &manifest.env,
+                    ) {
+                        Ok(placeholder) => placeholder,
+                        Err(_) if degrade_unresolved_secrets => continue,
+                        Err(error) => return Err(error),
+                    };
+                    headers.insert(
+                        "Authorization".to_string(),
+                        serde_json::Value::String(format!("Bearer {}", placeholder)),
+                    );
+                    break;
                 }
             }
-            if !headers.is_empty() {
-                entry["headers"] = serde_json::Value::Object(headers);
-            }
-            if !env_headers.is_empty() {
-                entry["env_headers"] = serde_json::Value::Object(env_headers);
-            }
-            if let Some(env_var) = bearer_token_env_var {
-                entry["bearer_token_env_var"] = serde_json::Value::String(env_var);
-            }
-            Ok(entry)
         }
+
+        let mut entry = serde_json::json!({ "url": server.url });
+        if !server.scopes.is_empty() {
+            entry["scopes"] = serde_json::to_value(&server.scopes).unwrap_or_default();
+        }
+        if let Some(oauth) = &server.oauth {
+            entry["oauth"] = serde_json::to_value(oauth).unwrap_or_default();
+        }
+        if let Some(resource) = &server.oauth_resource {
+            if !resource.trim().is_empty() {
+                // Same trimmed form `align_remote_entry_fields` writes and
+                // `remote_entry_matches_manifest` compares, so a padded manifest
+                // converges at install time instead of costing a realign write.
+                entry["oauth_resource"] = serde_json::Value::String(resource.trim().to_string());
+            }
+        }
+        if !headers.is_empty() {
+            entry["headers"] = serde_json::Value::Object(headers);
+        }
+        if !env_headers.is_empty() {
+            entry["env_headers"] = serde_json::Value::Object(env_headers);
+        }
+        if let Some(env_var) = bearer_token_env_var {
+            entry["bearer_token_env_var"] = serde_json::Value::String(env_var);
+        }
+        Ok(entry)
     }
 
     pub(super) fn local_server_args(manifest: &ToolManifest, server_dir: &Path) -> Vec<String> {
@@ -457,6 +472,36 @@ impl<S: crate::platform::credential_store::CredentialStore> MarketplaceManager<S
         python_environment: Option<&python_dependencies::InstalledPythonEnvironment>,
         servers: &mut serde_json::Map<String, serde_json::Value>,
     ) -> Result<(), String> {
+        let entry = self.build_local_server_entry(
+            manifest,
+            user_config,
+            server_dir,
+            python_environment,
+            false,
+        )?;
+        servers.insert(manifest.id.clone(), entry);
+        Ok(())
+    }
+
+    /// Build the fresh-install mcp.json entry for one local tool (command/args/env).
+    /// Extracted from `add_local_to_mcp_json` so the startup rebuild can merge the
+    /// preserved user fields in memory and land them in the same single atomic write
+    /// as a fresh install (`write_rebuilt_local_entry`) instead of a
+    /// rebuild-then-reapply write pair.
+    ///
+    /// `degrade_unresolved_secrets` marks the startup-reconciliation caller: startup
+    /// has no user input, so a secret whose credential-store entry no longer resolves
+    /// is left out of `env` instead of failing the whole entry (the spawn failure
+    /// then surfaces through the engine's boot receipt). Installs keep the fail-loud
+    /// contract so the user is asked for the key.
+    fn build_local_server_entry(
+        &self,
+        manifest: &ToolManifest,
+        user_config: &HashMap<String, String>,
+        server_dir: &std::path::Path,
+        python_environment: Option<&python_dependencies::InstalledPythonEnvironment>,
+        degrade_unresolved_secrets: bool,
+    ) -> Result<serde_json::Value, String> {
         let (command, args) = if let Some(environment) = python_environment {
             Self::managed_python_runtime_fields(manifest, server_dir, environment)?
         } else {
@@ -491,25 +536,35 @@ impl<S: crate::platform::credential_store::CredentialStore> MarketplaceManager<S
             }
         }
         for secret in &manifest.secret_env {
-            let placeholder = self.resolve_secret_placeholder(
+            match self.resolve_secret_placeholder(
                 &manifest.id,
                 "env",
                 &secret.key,
                 user_config,
                 &manifest.env,
-            )?;
-            env.insert(secret.key.clone(), placeholder);
+            ) {
+                Ok(placeholder) => {
+                    env.insert(secret.key.clone(), placeholder);
+                }
+                Err(_) if degrade_unresolved_secrets => continue,
+                Err(error) => return Err(error),
+            }
         }
         for key in manifest.env.keys().filter(|k| is_sensitive_key_name(k)) {
             if !env.contains_key(key) {
-                let placeholder = self.resolve_secret_placeholder(
+                match self.resolve_secret_placeholder(
                     &manifest.id,
                     "env",
                     key,
                     user_config,
                     &manifest.env,
-                )?;
-                env.insert(key.clone(), placeholder);
+                ) {
+                    Ok(placeholder) => {
+                        env.insert(key.clone(), placeholder);
+                    }
+                    Err(_) if degrade_unresolved_secrets => continue,
+                    Err(error) => return Err(error),
+                }
             }
         }
 
@@ -520,9 +575,45 @@ impl<S: crate::platform::credential_store::CredentialStore> MarketplaceManager<S
         if !env.is_empty() {
             entry["env"] = serde_json::to_value(&env).unwrap_or_default();
         }
+        Ok(entry)
+    }
 
+    /// Single-write startup rebuild of a local tool's mcp.json entry: build the
+    /// fresh-install form (empty user config — startup has no user input, so secret
+    /// placeholders resolve from the credential store, degrading per
+    /// `build_local_server_entry` when they no longer resolve), merge the
+    /// caller-supplied preserved user fields (everything except command/args/env)
+    /// in memory, and write once. One atomic write instead of a
+    /// rebuild-then-reapply pair: a crash can never leave the fresh form without
+    /// the preserved fields.
+    pub(super) fn write_rebuilt_local_entry(
+        &self,
+        manifest: &ToolManifest,
+        server_dir: &std::path::Path,
+        preserved: serde_json::Map<String, serde_json::Value>,
+    ) -> Result<(), String> {
+        let mut entry =
+            self.build_local_server_entry(manifest, &HashMap::new(), server_dir, None, true)?;
+        if let Some(object) = entry.as_object_mut() {
+            for (key, value) in preserved {
+                object.insert(key, value);
+            }
+        }
+        let _guard = mcp_json_lock();
+        let mcp_path = paths::mcp_config_path();
+        let mut mcp: serde_json::Value = if mcp_path.is_file() {
+            let content =
+                std::fs::read_to_string(&mcp_path).map_err(|e| format!("读取 mcp.json: {e}"))?;
+            serde_json::from_str(&content).unwrap_or_else(|_| default_mcp_json())
+        } else {
+            default_mcp_json()
+        };
+        let servers = mcp
+            .get_mut("servers")
+            .and_then(|s| s.as_object_mut())
+            .ok_or("mcp.json 格式错误")?;
         servers.insert(manifest.id.clone(), entry);
-        Ok(())
+        write_json_pretty(&mcp_path, &mcp)
     }
 
     pub(super) fn remove_from_mcp_json(&self, tool_id: &str) -> Result<(), String> {
@@ -558,8 +649,9 @@ impl<S: crate::platform::credential_store::CredentialStore> MarketplaceManager<S
     /// `&manifest.servers` or a subset with contested keys removed):
     /// - A missing per-server entry is added with the exact fresh-install serialization
     ///   (startup has no user input, so secret placeholders resolve from the credential
-    ///   store, same as `sync_secret_values`; a bearer secret that no longer resolves
-    ///   leaves its field unwritten rather than failing the restore).
+    ///   store, same as `sync_secret_values`; a secret that no longer resolves leaves
+    ///   its wiring unwritten rather than failing the restore — all secret channels
+    ///   degrade uniformly here, installs keep the fail-loud contract).
     /// - An existing entry whose manifest-derived shape (url/scopes/oauth/oauth_resource)
     ///   drifted from the current manifest is realigned; credential fields
     ///   (headers/env_headers/bearer_token_env_var) and forward-compatible fields are
@@ -604,7 +696,7 @@ impl<S: crate::platform::credential_store::CredentialStore> MarketplaceManager<S
                 }
                 _ => {
                     let entry =
-                        self.build_remote_server_entry(manifest, server, &HashMap::new())?;
+                        self.build_remote_server_entry(manifest, server, &HashMap::new(), true)?;
                     servers_map.insert(server.name.clone(), entry);
                     changed.push(format!("restored missing remote entry '{}'", server.name));
                 }
@@ -618,56 +710,19 @@ impl<S: crate::platform::credential_store::CredentialStore> MarketplaceManager<S
         Ok(Some(changed.join("; ")))
     }
 
-    /// Re-apply the user-owned fields of a pre-rebuild mcp.json entry (everything
-    /// except the manifest-derived `command`/`args`/`env`), matching the field
-    /// retention contract of `patch_managed_python_runtime`: `enabled`, timeouts,
-    /// and forward-compatible fields survive a rebuild instead of being silently
-    /// reset (a hand-disabled tool must not come back enabled). No-op when the old
-    /// entry carries nothing preservable.
-    pub(super) fn reapply_preserved_entry_fields(
-        &self,
-        tool_id: &str,
-        old_entry: &serde_json::Value,
-    ) -> Result<(), String> {
-        let Some(preserved): Option<serde_json::Map<String, serde_json::Value>> =
-            old_entry.as_object().map(|object| {
-                object
-                    .iter()
-                    .filter(|(k, _)| !matches!(k.as_str(), "command" | "args" | "env"))
-                    .map(|(k, v)| (k.clone(), v.clone()))
-                    .collect()
-            })
-        else {
-            return Ok(());
-        };
-        if preserved.is_empty() {
-            return Ok(());
-        }
-        let _guard = mcp_json_lock();
-        let mcp_path = paths::mcp_config_path();
-        let content =
-            std::fs::read_to_string(&mcp_path).map_err(|e| format!("读取 mcp.json: {e}"))?;
-        let mut mcp: serde_json::Value =
-            serde_json::from_str(&content).unwrap_or_else(|_| default_mcp_json());
-        let Some(entry) = mcp
-            .get_mut("servers")
-            .and_then(|s| s.as_object_mut())
-            .and_then(|servers| servers.get_mut(tool_id))
-            .and_then(|entry| entry.as_object_mut())
-        else {
-            // The rebuilt entry is gone again (concurrent writer); nothing to merge.
-            return Ok(());
-        };
-        for (key, value) in preserved {
-            entry.insert(key, value);
-        }
-        write_json_pretty(&mcp_path, &mcp)
-    }
+    // Preserved user fields are folded into the rebuild itself
+    // (`write_rebuilt_local_entry`): the fresh form and the preserved fields
+    // land in one atomic write, so a crash between phases can never leave the
+    // fresh form without them.
 }
 
 /// Read-only snapshot of the current mcp.json `servers` map for reconciliation
-/// decisions. Writers always re-read the file under `mcp_json_lock`, so a stale
-/// snapshot can only influence *whether* a repair is attempted, never its content.
+/// decisions, taken without `mcp_json_lock`. It gates *whether* a repair is
+/// attempted and sources the user fields preserved across a rebuilt local
+/// entry; the writes themselves re-read the file under the lock, and every
+/// concurrent marketplace writer is excluded by
+/// MARKETPLACE_TRANSACTION_LOCK (the boot-path writers run sequentially on the
+/// same thread), so the merge cannot clobber a concurrent change.
 pub(super) fn read_mcp_servers_snapshot() -> serde_json::Map<String, serde_json::Value> {
     let mcp_path = paths::mcp_config_path();
     let parsed: serde_json::Value = if mcp_path.is_file() {

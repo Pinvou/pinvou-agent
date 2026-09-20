@@ -50,9 +50,13 @@ static MARKETPLACE_TRANSACTION_LOCK: Mutex<()> = Mutex::new(());
 /// `ensure_builtin_mcp_servers` upserts `pinvou3`, removes the legacy `pinvou` key and
 /// historical browser-wrapper residue). Marketplace installs must never write them, and
 /// startup reconciliation must never repair them. Keep in sync with
-/// `ensure_builtin_mcp_servers`: its write footprint is pinned by the
+/// `ensure_builtin_mcp_servers`: the engine-side write footprint is pinned by the
 /// `ensure_builtin_mcp_servers_touches_only_engine_owned_keys` test in
-/// runtime_bundle/platform.
+/// runtime_bundle/platform, and this exact set is pinned on the marketplace side by
+/// `engine_owned_mcp_server_keys_are_exactly_the_engine_footprint` — change both in
+/// lockstep. (ensure_builtin also runs `refresh_mcp_python_commands`, which may
+/// rewrite the python command of any entry; that self-heal is complementary and
+/// outside this key-set footprint.)
 const ENGINE_OWNED_MCP_SERVER_KEYS: &[&str] = &["pinvou3", "pinvou", "browser"];
 
 /// A freshly written journal on Windows can be briefly held by antivirus or indexer
@@ -1355,10 +1359,14 @@ impl<S: CredentialStore> MarketplaceManager<S> {
     /// without a usable mcp.json entry — spawn then fails on every session. For each
     /// installed tool that has a manifest:
     /// - a missing entry is restored with the exact fresh-install serialization
-    ///   (local via `add_to_mcp_json`, remote per manifest `servers`);
+    ///   (local via `write_rebuilt_local_entry`, remote per manifest `servers`);
     /// - a local entry whose command/args reference an absolute path that no longer
-    ///   exists is rebuilt from the current manifest (fresh-install equivalent form,
-    ///   keeping user-set fields such as `enabled`);
+    ///   exists — or a malformed entry (non-object, or no usable command) — is
+    ///   rebuilt from the current manifest (fresh-install equivalent form). The
+    ///   rebuild merges the preserved user fields (enabled/timeouts/
+    ///   forward-compatible) in memory and writes once, so a crash can never leave
+    ///   the fresh form without them (a hand-disabled tool must not come back
+    ///   enabled);
     /// - a remote entry whose manifest-derived shape drifted is realigned in place;
     /// - a server key claimed by more than one installed tool has no single owner and
     ///   is left untouched (otherwise the tools would overwrite each other every
@@ -1467,60 +1475,87 @@ impl<S: CredentialStore> MarketplaceManager<S> {
     }
 
     /// Reconcile the single mcp.json entry a local tool owns (keyed by its id).
+    /// A healthy entry (usable command, no dead absolute target) is never
+    /// touched. A dead-target entry and a malformed entry (non-object, or no
+    /// usable command — the engine could never have launched it) are rebuilt;
+    /// the rebuild carries the user-owned fields (enabled/timeouts/
+    /// forward-compatible) across in the same single write, so a hand-tuned or
+    /// hand-disabled entry survives the repair.
     fn reconcile_local_mcp_entry(
         &self,
         manifest: &ToolManifest,
         snapshot: &serde_json::Map<String, serde_json::Value>,
         actions: &mut Vec<String>,
     ) {
-        if let Some(entry) = snapshot.get(&manifest.id) {
-            // Healthy entry → zero writes; only a dead target justifies a rebuild.
-            let Some(dead) = connectors::dead_local_entry_target(entry) else {
-                return;
-            };
-            match self.rebuild_local_mcp_entry(manifest) {
-                Ok(()) => {
-                    // A rebuild replaces the whole entry; carry the user-owned fields
-                    // (enabled/timeouts/forward-compatible) across so a hand-tuned or
-                    // hand-disabled entry survives the repair.
-                    let preserved = match self.reapply_preserved_entry_fields(&manifest.id, entry) {
-                        Ok(()) => String::new(),
-                        Err(error) => format!("; preserving user fields failed: {error}"),
-                    };
-                    actions.push(format!(
-                        "tool '{}': rebuilt mcp.json entry with dead path {dead}{preserved}",
-                        manifest.id
-                    ));
-                }
+        let Some(entry) = snapshot.get(&manifest.id) else {
+            match self.rebuild_local_mcp_entry(manifest, &serde_json::Map::new()) {
+                Ok(()) => actions.push(format!(
+                    "tool '{}': restored missing mcp.json entry",
+                    manifest.id
+                )),
                 Err(error) => actions.push(format!(
-                    "tool '{}' dead mcp.json entry ({dead}) not rebuilt: {error}",
+                    "tool '{}' missing mcp.json entry not restored: {error}",
                     manifest.id
                 )),
             }
             return;
+        };
+        // A usable entry launches something: an object with a non-empty string
+        // command. Anything else (hand-edited garbage, a wiped shape) takes the
+        // same rebuild path as a dead target instead of being silently skipped
+        // while every session spawn keeps failing.
+        let usable_command = entry
+            .as_object()
+            .and_then(|object| object.get("command"))
+            .and_then(|value| value.as_str())
+            .is_some_and(|command| !command.is_empty());
+        let dead = connectors::dead_local_entry_target(entry);
+        if usable_command && dead.is_none() {
+            return; // healthy entry → zero writes
         }
-        match self.rebuild_local_mcp_entry(manifest) {
+        let reason = match dead {
+            Some(dead) => format!("dead path {dead}"),
+            None => "malformed entry with no usable command".to_string(),
+        };
+        // Preserve the user-owned fields of a salvageable object; a non-object
+        // entry has nothing to preserve.
+        let preserved = entry
+            .as_object()
+            .map(|object| {
+                object
+                    .iter()
+                    .filter(|(k, _)| !matches!(k.as_str(), "command" | "args" | "env"))
+                    .map(|(k, v)| (k.clone(), v.clone()))
+                    .collect()
+            })
+            .unwrap_or_default();
+        match self.rebuild_local_mcp_entry(manifest, &preserved) {
             Ok(()) => actions.push(format!(
-                "tool '{}': restored missing mcp.json entry",
+                "tool '{}': rebuilt mcp.json entry with {reason}",
                 manifest.id
             )),
             Err(error) => actions.push(format!(
-                "tool '{}' missing mcp.json entry not restored: {error}",
+                "tool '{}' mcp.json entry ({reason}) not rebuilt: {error}",
                 manifest.id
             )),
         }
     }
 
-    /// Recreate a local tool's mcp.json entry with the exact fresh-install form by
-    /// delegating to the install write path (empty user config: startup has no user
-    /// input, so secret placeholders resolve from the credential store). The package is
-    /// released/verified first, and the rebuild is refused when the manifest-derived
-    /// command or script target still would not exist — never write a knowingly dead
-    /// entry, and never rewrite the same dead target on every startup.
-    fn rebuild_local_mcp_entry(&self, manifest: &ToolManifest) -> Result<(), String> {
+    /// Recreate a local tool's mcp.json entry with the exact fresh-install form,
+    /// merging `preserved` user-owned fields (everything except
+    /// command/args/env) into the same single write (see
+    /// `write_rebuilt_local_entry`). The package is released/verified first, and
+    /// the rebuild is refused when the manifest-derived command or script target
+    /// still would not exist — never write a knowingly dead entry, and never
+    /// rewrite the same dead target on every startup.
+    fn rebuild_local_mcp_entry(
+        &self,
+        manifest: &ToolManifest,
+        preserved: &serde_json::Map<String, serde_json::Value>,
+    ) -> Result<(), String> {
         mcp_catalog::ensure_package_released(&manifest.id)?;
         let server_dir = mcp_catalog::package_mcp_dir(&manifest.id);
-        // Judge exactly the launch target `add_to_mcp_json` would write, via the same
+        // Judge exactly the launch target the writer produces, via the same
         // derivation (`local_server_command`/`local_server_args`).
         let command = Self::local_server_command(manifest);
         if Path::new(&command).is_absolute() && !Path::new(&command).exists() {
@@ -1532,12 +1567,7 @@ impl<S: CredentialStore> MarketplaceManager<S> {
                 return Err(format!("package script {} is missing", path.display()));
             }
         }
-        self.add_to_mcp_json(
-            manifest,
-            &std::collections::HashMap::new(),
-            &server_dir,
-            None,
-        )
+        self.write_rebuilt_local_entry(manifest, &server_dir, preserved.clone())
     }
 
     #[cfg(test)]
@@ -2232,7 +2262,7 @@ mod tests {
             );
             write_remote_tool_fixture("collide-d", "shared", "https://d.example.com/mcp");
             write_installed_ids(&["collide-c".to_string(), "collide-d".to_string()]);
-            seed_mcp_json(serde_json::json!({
+            let mcp_path = seed_mcp_json(serde_json::json!({
                 "own-c": {"url": "https://stale.example.com/mcp"}
             }));
             let manager = MarketplaceManager::with_store(MemoryCredentialStore::default());
@@ -2262,6 +2292,12 @@ mod tests {
                 mcp["servers"]["own-c"]["url"],
                 "https://own.example.com/mcp"
             );
+
+            // Converged: the second run re-reports the contested keys and writes nothing.
+            let before = std::fs::read(&mcp_path).unwrap();
+            let actions = manager.reconcile_installed_mcp_entries().unwrap();
+            assert_eq!(actions.len(), 2, "{actions:?}");
+            assert_eq!(std::fs::read(&mcp_path).unwrap(), before);
         });
     }
 
@@ -2349,6 +2385,18 @@ mod tests {
                     && entry.get("headers").is_none(),
                 "no credential wiring may be invented when nothing resolves: {entry}"
             );
+
+            // Idempotent: the declarative restore matches the manifest on the
+            // second run, which writes nothing.
+            let mcp_path = paths::mcp_config_path();
+            let before = std::fs::read(&mcp_path).unwrap();
+            assert!(
+                manager
+                    .reconcile_installed_mcp_entries()
+                    .unwrap()
+                    .is_empty()
+            );
+            assert_eq!(std::fs::read(&mcp_path).unwrap(), before);
         });
     }
 
@@ -2438,6 +2486,161 @@ mod tests {
                 "a knowingly dead entry must not be rewritten"
             );
         });
+    }
+
+    /// A hand-edited malformed entry of an installed tool (non-object, or an
+    /// object without a usable command) is replaced by the fresh-install form —
+    /// the engine could never launch it, and silence would hide a permanently
+    /// broken supply path. Salvageable user fields of an object survive the
+    /// replacement.
+    #[test]
+    fn reconcile_replaces_malformed_local_entries() {
+        with_temp_home(|| {
+            write_local_tool_fixture("broken-x", false);
+            write_local_tool_fixture("broken-y", false);
+            write_installed_ids(&["broken-x".to_string(), "broken-y".to_string()]);
+            let manager = MarketplaceManager::with_store(MemoryCredentialStore::default());
+            let mcp_path = seed_mcp_json(serde_json::json!({
+                "broken-x": "garbage",
+                "broken-y": {"enabled": false, "custom_hint": "keep"}
+            }));
+
+            let actions = manager.reconcile_installed_mcp_entries().unwrap();
+            assert_eq!(actions.len(), 2, "{actions:?}");
+            assert!(
+                actions
+                    .iter()
+                    .all(|a| a.contains("malformed entry with no usable command")),
+                "{actions:?}"
+            );
+
+            let mcp = read_mcp_json();
+            assert_eq!(
+                mcp["servers"]["broken-x"]["command"],
+                serde_json::Value::String(paths::python_command())
+            );
+            assert!(
+                mcp["servers"]["broken-x"].get("enabled").is_none(),
+                "a non-object entry has nothing to preserve: {}",
+                mcp["servers"]["broken-x"]
+            );
+            assert_eq!(
+                mcp["servers"]["broken-y"]["enabled"],
+                serde_json::Value::Bool(false),
+                "salvageable user fields survive the replacement"
+            );
+            assert_eq!(mcp["servers"]["broken-y"]["custom_hint"], "keep");
+
+            // Idempotent: the replaced entries are healthy on the second run.
+            let before = std::fs::read(&mcp_path).unwrap();
+            assert!(
+                manager
+                    .reconcile_installed_mcp_entries()
+                    .unwrap()
+                    .is_empty()
+            );
+            assert_eq!(std::fs::read(&mcp_path).unwrap(), before);
+        });
+    }
+
+    /// The uniform startup secret policy: a local tool whose `secret_env` entry
+    /// no longer resolves still gets its entry rebuilt (without the secret in
+    /// `env`), instead of the whole rebuild being refused on every startup. The
+    /// spawn then surfaces the missing credential through the boot receipt.
+    #[test]
+    fn reconcile_rebuilds_local_tool_with_unresolvable_secret() {
+        with_temp_home(|| {
+            write_local_tool_fixture("lostkey-x", true);
+            write_installed_ids(&["lostkey-x".to_string()]);
+            let manager = MarketplaceManager::with_store(MemoryCredentialStore::default());
+            // No credential-store entry for AMAP_KEY.
+            let mcp_path = seed_mcp_json(serde_json::json!({
+                "lostkey-x": {"command": "python3", "args": ["/x/w.py"]}
+            }));
+
+            let actions = manager.reconcile_installed_mcp_entries().unwrap();
+            assert_eq!(actions.len(), 1, "{actions:?}");
+            assert!(actions[0].contains("rebuilt"), "{actions:?}");
+
+            let entry = &read_mcp_json()["servers"]["lostkey-x"];
+            assert_eq!(
+                entry["command"],
+                serde_json::Value::String(paths::python_command())
+            );
+            assert!(
+                entry.get("env").is_none(),
+                "an unresolvable secret must not be written, nor fail the rebuild: {entry}"
+            );
+
+            // Idempotent: the degraded entry is healthy on the second run.
+            let before = std::fs::read(&mcp_path).unwrap();
+            assert!(
+                manager
+                    .reconcile_installed_mcp_entries()
+                    .unwrap()
+                    .is_empty()
+            );
+            assert_eq!(std::fs::read(&mcp_path).unwrap(), before);
+        });
+    }
+
+    /// The remote counterpart of the uniform startup secret policy: a
+    /// `secret_headers` tool whose keyring entry was wiped restores
+    /// declaratively (no invented wiring) instead of the whole-tool restore
+    /// re-failing on every startup.
+    #[test]
+    fn reconcile_restores_secret_headers_tool_without_resolvable_credential() {
+        with_temp_home(|| {
+            let manifest = serde_json::json!({
+                "id":"sh-y","name":"sh-y","description":"d","version":"1","icon":"x","category":"c",
+                "mcp_tools":[],"command":"","args":[],
+                "servers":[{"name":"sh-remote-y","url":"https://sh.example.com/mcp"}],
+                "secret_headers":[
+                    {"header":"X-Api-Key","source_key":"SH_LOST_KEY","provider":"demo"}
+                ]
+            });
+            write_tool_manifest("sh-y", &serde_json::to_string_pretty(&manifest).unwrap());
+            write_installed_ids(&["sh-y".to_string()]);
+            let manager = MarketplaceManager::with_store(MemoryCredentialStore::default());
+
+            let actions = manager.reconcile_installed_mcp_entries().unwrap();
+            assert_eq!(
+                actions,
+                vec!["tool 'sh-y': restored missing remote entry 'sh-remote-y'".to_string()],
+                "the restore must degrade, not skip the whole tool"
+            );
+            let entry = &read_mcp_json()["servers"]["sh-remote-y"];
+            assert_eq!(entry["url"], "https://sh.example.com/mcp");
+            assert!(
+                entry.get("headers").is_none()
+                    && entry.get("env_headers").is_none()
+                    && entry.get("bearer_token_env_var").is_none(),
+                "no credential wiring may be invented when nothing resolves: {entry}"
+            );
+
+            // Idempotent: the declarative restore matches the manifest on the
+            // second run, which writes nothing.
+            let mcp_path = paths::mcp_config_path();
+            let before = std::fs::read(&mcp_path).unwrap();
+            assert!(
+                manager
+                    .reconcile_installed_mcp_entries()
+                    .unwrap()
+                    .is_empty()
+            );
+            assert_eq!(std::fs::read(&mcp_path).unwrap(), before);
+        });
+    }
+
+    /// 启动对账的引擎键避让依赖该常量与引擎侧写足印逐字一致。引擎侧由
+    /// runtime_bundle 的 ensure_builtin_mcp_servers_touches_only_engine_owned_keys
+    /// 测试钉住;本测试钉住镜像侧,两侧任一改动键集合都必须同步。
+    #[test]
+    fn engine_owned_mcp_server_keys_are_exactly_the_engine_footprint() {
+        assert_eq!(
+            ENGINE_OWNED_MCP_SERVER_KEYS,
+            ["pinvou3", "pinvou", "browser"]
+        );
     }
 
     async fn with_temp_home_async<F, Fut>(f: F)
