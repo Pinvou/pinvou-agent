@@ -3181,7 +3181,6 @@ function hasUnresolvedItem(type) { return pinvouSharedweb().hasUnresolvedItem(ty
 function basename(p) { return pinvouSharedweb().basename(p); }
 function isAbsPath(p) { return pinvouSharedweb().isAbsPath(p); }
 function normalizedPath(p) { return pinvouSharedweb().normalizedPath(p); }
-function sessionRecentlyRebound(sid) { return pinvouSharedweb().sessionRecentlyRebound(sid); }
 function rebaseArtifactPathsForRebind(sid, paths) { return pinvouSharedweb().rebaseArtifactPathsForRebind(sid, paths); }
 function noteArtifactChange(path, event, sessionId) { return pinvouSharedweb().noteArtifactChange(path, event, sessionId); }
 function isSharedMcpArtifactPath(path) { return pinvouSharedweb().isSharedMcpArtifactPath(path); }
