@@ -33,7 +33,7 @@ use serde::{Deserialize, Serialize};
 
 use crate::core::mode_state::SerializableMode;
 use crate::features::assistant::attachments::{
-    build_message_with_attachments_in_dir, stage_file_in_workspace,
+    build_message_with_attachments_in_dir, copy_bounded, stage_file_in_workspace_with_copier,
 };
 use crate::features::assistant::engine_pool::EnginePool;
 use crate::features::assistant::product_runtime::headless_bridge::run_windowless_host;
@@ -308,9 +308,6 @@ pub async fn run_agentic_task(
     };
     // The resolver owns its copy (it must be 'static); run_turn persists the
     // same validated string as the durable binding (passed below).
-    // The resolver owns its own clone (it must be 'static); the original
-    // binding is passed to run_turn, which persists the same validated
-    // string as the durable binding.
     let resolver_workspace = bound_workspace.clone();
     let matched_session = session_id.clone();
     let resolver: ExecutionRootResolver = Arc::new(move |id: &str| {
@@ -987,11 +984,15 @@ async fn prompt_with_attachments(
                         attachment.path.display()
                     ))?;
                 staged_total = ensure_stage_size(&attachment.path, staged_total)?;
-                let relative = stage_file_in_workspace(
+                // The re-stat above caps the validated size, but the source
+                // can still grow while the copy streams — bound the staged
+                // bytes too, exactly like the eval pipeline's staging.
+                let relative = stage_file_in_workspace_with_copier(
                     &attachment.path.to_string_lossy(),
                     &basename,
                     &staging_root,
                     "attachments",
+                    |source, destination| copy_bounded(source, destination, MAX_ATTACHMENT_BYTES),
                 )
                 .context(
                     "agent_attachment_stage_failed: staging into the session workspace failed",
@@ -1082,6 +1083,9 @@ mod tests {
         MAX_ATTACHMENTS_TOTAL_BYTES, MAX_TIMEOUT_SECS, ensure_existing_chat_session,
         ensure_model_exists, ensure_stage_size, keep_session_from_env, retention_eviction_warning,
         validate_attachments,
+    };
+    use crate::features::assistant::attachments::{
+        copy_bounded, stage_file_in_workspace_with_copier,
     };
     use crate::features::sessions::{
         MAX_SESSIONS_PER_KIND, ScheduledRunMode, ScheduledRunProfile, SessionStore,
@@ -1406,6 +1410,52 @@ mod tests {
         std::fs::remove_file(&path).unwrap();
         let error = ensure_stage_size(&path, 0).unwrap_err();
         assert!(error.to_string().contains("vanished before staging"));
+    }
+
+    #[test]
+    fn staged_copy_bounds_a_source_that_grows_while_streaming() {
+        // The stage-time re-stat closes the stat→copy gap, but a caller-owned
+        // source can still grow DURING the copy; `copy_bounded` caps the
+        // staged bytes (take(MAX + 1) + over-check), and the staging helper
+        // removes the partial destination when the copier refuses.
+        let workspace = tempfile::tempdir().unwrap();
+        let source = workspace.path().join("grower-mid-copy.bin");
+        std::fs::write(&source, vec![0_u8; 64]).unwrap();
+
+        let staged = stage_file_in_workspace_with_copier(
+            source.to_str().unwrap(),
+            "grower-mid-copy.bin",
+            workspace.path(),
+            "attachments",
+            |source, destination| copy_bounded(source, destination, 8),
+        );
+        assert!(
+            staged.is_none(),
+            "a source over the copier's cap must refuse to stage"
+        );
+        let leftovers: Vec<_> = std::fs::read_dir(workspace.path().join("attachments"))
+            .unwrap()
+            .collect();
+        assert!(
+            leftovers.is_empty(),
+            "the partial staged copy must be removed on refusal"
+        );
+
+        // A source within the cap stages normally through the same copier.
+        std::fs::write(&source, b"tiny").unwrap();
+        let staged = stage_file_in_workspace_with_copier(
+            source.to_str().unwrap(),
+            "grower-mid-copy.bin",
+            workspace.path(),
+            "attachments",
+            |source, destination| copy_bounded(source, destination, 8),
+        );
+        let relative = staged.expect("a within-cap source stages through the bounded copier");
+        assert_eq!(
+            std::fs::read(workspace.path().join(&relative)).unwrap(),
+            b"tiny",
+            "the staged bytes are the bounded copy's exact contents"
+        );
     }
 
     #[test]
