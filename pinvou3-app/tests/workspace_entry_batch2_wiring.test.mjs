@@ -165,4 +165,10 @@ test('round-6 pins: picker promise contract, keyboard reveal, availability defau
   // default painted every healthy folder unavailable).
   const manage = read('src', 'features', 'projects', 'manageFoldersState.js');
   assert.match(manage, /root\.available !== false/, 'missing availability data defaults to available');
+  // The sidebar's unavailable-badge list keeps only strictly-false roots:
+  // `available !== false` as the keep predicate inverts the list and pins the
+  // "folder unavailable · rebind" badge on every healthy root.
+  const main = read('src', 'app', 'main.jsx');
+  assert.match(main, /unavailableRootsOf[\s\S]{0,700}?root\.available === false/, 'sidebar badge list keeps only unavailable roots');
+  assert.doesNotMatch(main, /unavailableRootsOf[\s\S]{0,700}?root\.available !== false/, 'sidebar badge list must not keep available roots');
 });

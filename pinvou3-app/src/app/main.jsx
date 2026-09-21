@@ -1817,10 +1817,14 @@ const NAV_PREFETCH = {
       // is gated here: the projects domain is desktop-only (§9.8), and a
       // web group must render no dead entries.
       const unavailableRootsOf = (group) => (group.roots || [])
-        // Missing availability data (older host, stub) counts as available —
-        // same default as manageFolderRows (review #484 round-6).
-        .filter(root => !!(root && typeof root === 'object' ? root.available !== false : root))
-        .map(root => String(typeof root === 'object' ? root.path : root));
+        // Only a root explicitly marked available=false is unavailable;
+        // missing availability data (older host, stub) counts as available —
+        // same default as manageFolderRows (review #484 round-6). The keep
+        // predicate must select strictly-false roots: `available !== false`
+        // here would invert the list and pin the unavailable badge on every
+        // healthy folder.
+        .filter(root => !!(root && typeof root === 'object' && root.available === false))
+        .map(root => String(root.path));
       const projectGroupHeaderProps = (group) => ({
         // Tag-only projects (no roots left) have no directory to bind: the
         // "new session" entry must not render for them — the handler would
