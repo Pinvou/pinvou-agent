@@ -698,7 +698,7 @@ pub fn create_checkpoint(
     turn: Option<u32>,
     kind: CheckpointKind,
 ) -> Result<CheckpointMeta> {
-    create_checkpoint_preserving(ledger_root, execution_root, turn, kind, "", &[])
+    create_checkpoint_preserving(ledger_root, execution_root, turn, kind, &[])
 }
 
 /// `create_checkpoint` 的保留变体：LRU/存储压力淘汰跳过 `preserve` 中的条目。
@@ -710,7 +710,6 @@ fn create_checkpoint_preserving(
     execution_root: &Path,
     turn: Option<u32>,
     kind: CheckpointKind,
-    _label: &str,
     preserve: &[&str],
 ) -> Result<CheckpointMeta> {
     let execution_root = canonical_execution_root(execution_root)?;
@@ -998,7 +997,6 @@ pub fn restore_checkpoint(
         &execution_root,
         None,
         CheckpointKind::PreRestore,
-        &format!("回滚到 {} 前的自动快照", meta.id),
         &[&meta.id],
     )
     .context("回滚前自动快照失败，已中止回滚")?;

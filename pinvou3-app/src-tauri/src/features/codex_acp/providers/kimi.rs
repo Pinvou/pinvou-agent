@@ -72,11 +72,11 @@ impl AgentConfigWriter for KimiConfigWriter {
         );
         if let Some(key) = target.api_key.as_deref() {
             entry.insert("api_key".into(), Value::String(key.into()));
-        } else {
-            // api_key 为 None（编辑生效中 Provider 删除 key）时删除受管旧值，
-            // 否则旧 key 残留并继续发给新 base_url（与 claude.rs 写入口径一致）。
-            entry.remove("api_key");
         }
+        // Unlike claude.rs (which mutates a shared `env` object in place and
+        // needs an explicit removal), this writer rebuilds the provider entry
+        // from scratch and replaces it wholesale, so an absent api_key can
+        // never leave a stale key behind.
         providers_table.insert(target.provider_id.clone(), Value::Table(entry));
 
         let models = table
@@ -353,12 +353,12 @@ mod tests {
     }
 
     #[test]
-    fn apply_without_key_removes_stale_api_key() {
+    fn apply_without_key_writes_entry_without_api_key() {
         let dir = writer_test_dir("kimi-writer-test");
         let writer = KimiConfigWriter::new(&dir);
         writer.apply(&target("pv-aaaaaaaaaaaa")).unwrap();
-        // 编辑生效中 Provider 删除 key（api_key=None）：受管 api_key 必须
-        // 清除，否则旧 key 残留并继续发给新 base_url（与 claude.rs 同一高危）。
+        // Deleting the key (api_key=None) rewrites the entry from scratch, so
+        // the serialized provider table must not carry an api_key field.
         let mut no_key = target("pv-aaaaaaaaaaaa");
         no_key.api_key = None;
         no_key.base_url = "https://api.example.com/v2".into();
@@ -366,8 +366,10 @@ mod tests {
         let raw = fs::read_to_string(dir.join("config.toml")).unwrap();
         let config: Value = toml::from_str(&raw).unwrap();
         assert!(
-            config["providers"]["pv-aaaaaaaaaaaa"].get("api_key").is_none(),
-            "删除 key 后 api_key 不应残留"
+            config["providers"]["pv-aaaaaaaaaaaa"]
+                .get("api_key")
+                .is_none(),
+            "api_key must not survive a writer pass without a key"
         );
         let _ = fs::remove_dir_all(&dir);
     }

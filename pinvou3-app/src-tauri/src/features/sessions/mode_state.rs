@@ -7,7 +7,7 @@
 //! 正式 re-export，消费方一律从 `crate::features::sessions::{...}` 导入，
 //! 不再经过 `core` 垫片（避免形成 `core → features` 反向依赖）。
 //!
-//! These methods drive the in-memory `mode_states` map (mode, pinvou_review,
+//! These methods drive the in-memory `mode_states` map (mode,
 //! pending Plan ticket + claim-in-flight, persona,
 //! mounted collection). All state is deliberately in-memory only: mode /
 //! plan_phase is runtime interaction state that should reset to Yolo + None on
@@ -239,7 +239,7 @@ impl SessionStore {
     }
 
     /// 设置 mode。砍 PlanPhase 后是 Plan/Yolo 唯一 setter(流转命令都调它),
-    /// 只改 mode,保留其他字段。
+    /// changes only mode, leaving other fields untouched.
     ///
     /// Per-session persistence (two-lane semantics): every session writes
     /// `_session_mode_states.json` (reopening restores its own last mode);

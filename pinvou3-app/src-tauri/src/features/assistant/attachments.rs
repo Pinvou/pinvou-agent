@@ -371,13 +371,13 @@ fn staged_reference(
     }
 }
 
-/// 非图片（文本类）附件的消息段渲染，由消息装配路径
-/// （`build_message_with_attachments_in_dir_with_access`）与原生图片输入路径
-/// （`prepare_native_user_message_in_dir`）共用：header（名称/kind/字节/token）
-/// + 原始路径、按 token 预算分流（小→完整内容 fenced block，大→落盘+预览+工具引导，
-/// 见 `push_large_attachment_section`）、转换失败警告分支。两条调用路径输出逐字节
-/// 一致；`read_only_tools` / `reference_absolute` 只切换引导措辞与落盘引用形式。
-/// `inline_spent` 跨附件累计已内联 token 预算。
+/// Message-section rendering for non-image (text) attachments, shared by the
+/// message-assembly path (`build_message_with_attachments_in_dir_with_access`) and the native
+/// image-input path (`prepare_native_user_message_in_dir`): header (name/kind/bytes/token)
+/// + original path, token-budget routing (small → full-content fenced block, large → staged + preview + tool guidance,
+/// see `push_large_attachment_section`), and the conversion-failure warning branch. Both call paths produce
+/// byte-for-byte identical output; `read_only_tools` / `reference_absolute` only switch guidance wording and staged-reference form.
+/// `inline_spent` accumulates the inlined token budget across attachments.
 fn push_text_attachment_section(
     out: &mut String,
     a: &crate::features::files::file_ingest::IngestResult,
@@ -395,8 +395,8 @@ fn push_text_attachment_section(
         out.push_str(&format!(", ~{} tokens", a.token_estimate));
     }
     out.push_str(")\n");
-    // 真实路径 —— AI 如果一定要用 read 也能找到对的位置，
-    // 同时避免 AI 凭想象编造 workspace/<timestamp>-... 这种伪路径
+    // Real path — if the AI must use read it can still find the right location,
+    // while also preventing the AI from hallucinating pseudo paths like workspace/<timestamp>-...
     out.push_str(&format!("原始路径: `{}`\n", a.path));
     if let Some(md) = &a.markdown {
         let fits = a.token_estimate <= ATTACH_INLINE_MAX_TOKENS
@@ -471,8 +471,8 @@ fn build_message_with_attachments_in_dir_with_access(
                 out.push_str(&format!(", ~{} tokens", a.token_estimate));
             }
             out.push_str(")\n");
-            // 真实路径 —— AI 如果一定要用 read 也能找到对的位置，
-            // 同时避免 AI 凭想象编造 workspace/<timestamp>-... 这种伪路径
+            // Real path — if the AI must use read it can still find the right location,
+            // while also preventing the AI from hallucinating pseudo paths like workspace/<timestamp>-...
             out.push_str(&format!("原始路径: `{}`\n", a.path));
             // 把图拷进 workspace,硬约束引导 LLM 调 image_analyze 读图。
             // 关键:不能说"你有视觉能力"——那会让模型以为可直接描述而凭空幻觉
@@ -502,6 +502,10 @@ fn build_message_with_attachments_in_dir_with_access(
                     );
                 }
             }
+            // The legacy assembly loop appended a blank line after every
+            // attachment, image or not; keep the image section's trailing
+            // newline so the assembled prompt stays byte-identical to it.
+            out.push('\n');
         } else {
             push_text_attachment_section(
                 &mut out,
@@ -621,7 +625,7 @@ pub(crate) fn prepare_native_user_message_in_dir(
             a,
             workspace,
             attachment_dir,
-            // Native 分支图片/文件都暂存到执行根,落盘根与引擎 cwd 一致,相对引用。
+            // In the native branch, images/files are staged to the execution root; the staging root matches the engine cwd, with relative references.
             false,
             false,
             &mut inline_spent,
