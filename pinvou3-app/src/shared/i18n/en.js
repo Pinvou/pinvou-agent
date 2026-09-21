@@ -628,6 +628,26 @@ Object.assign(dictEn.uiToolDetails.tools, {
   gongwen:{ title:'Official Document Writing', subtitle:'Party/government official documents as GB/T 9704-compliant .docx', latency:'Local', desc:'Say \u201Cwrite a notice / draft an opinion\u201D and the AI writes the content following the document-type structure and fixed phrasing, then the renderer applies the national standard format for party/government documents (FangZheng XiaoBiaoSong title, FangSong_GB2312 body, standard margins, red header and red separator line) to produce a .docx\u2014fully local, your data never leaves the device. Works best with the \u201COfficial Document Writing\u201D skill. The first install downloads the python-docx dependency (requires network).', welcomeQueries:['Draft a notice on issuing management measures','Write an implementation opinion on strengthening certain work','Draft a meeting notice','Write a situation report'] },
 });
 
+// Built-in plugins read-only section (Built-in Toolset Long-term Contract §3.1):
+// section title / read-only badge / audit field labels / security level copy /
+// data-access scope copy. Unknown dataAccess scope keys fall back to the raw key
+// on the card and are not enumerated here.
+dictEn.uiBuiltinPlugins = {
+  sectionTitle:'Built-in Plugins',
+  readonlyBadge:'Built-in · Always on',
+  toolsLabel:'Tools',
+  securityLabel:'Security level',
+  versionLabel:'Version',
+  versionNote:'Updates with the app',
+  dataAccessLabel:'Data access',
+  levels:{ L0:'Read-only: modifies no state; content is marked untrusted', L1:'Write: produces user-visible side effects (e.g. send messages, create tasks)', L2:'Destructive: irreversible delete/overwrite; requires explicit authorization' },
+  dataAccess:{ 'sessions.read':'Local session store (read-only)' },
+};
+
+// Generic built-in feature degradation copy (contract §3.3 hook): reused by future
+// feature settings pages for the "feature turned off" fallback.
+dictEn.uiBuiltinFeatures = { disabledNotice:'This built-in feature is turned off; its entry points and capabilities are disabled.' };
+
 Object.assign(dictEn.uiCodexWorkspace, { showRawErrors:false, operationFailed:'Workspace operation failed. Please retry' });
 
 dictEn.uiComponents = { openNavigation:'Open navigation' };

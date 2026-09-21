@@ -232,6 +232,15 @@ async function testImageInputCapability(model, baseUrl, apiKey, modelId) { retur
     });
   }
 
+  // ── 内置功能开关（《内置工具集长期契约》挂接点）────────────────
+  // 仅封装命令通道，供后续各功能设置页接入；本期无消费方、不做 UI。
+  async function listBuiltinFeatures() {
+    return invoke("list_builtin_features");
+  }
+  async function setBuiltinFeatureEnabled(id, enabled) {
+    return invoke("set_builtin_feature_enabled", { id, enabled });
+  }
+
     return {
       loadSettings,
       loadSelectedPet,
@@ -257,7 +266,9 @@ async function testImageInputCapability(model, baseUrl, apiKey, modelId) { retur
       switchModel,
       testModelConnection,
       testImageInputCapability,
-      probeLocalServerKind
+      probeLocalServerKind,
+      listBuiltinFeatures,
+      setBuiltinFeatureEnabled
     };
   };
 })(window);

@@ -213,11 +213,12 @@ const expectedProtocolHashes = {
   // (set_plan_mode_next / exit_plan_to_yolo) at materialization.
   // Recomputed for the shared-helper dedup (see batch note above).
   sessions: 'bd3a774950c3be99938f4bdc403ceef47cdf598952d47b0655c7371887764702',
-  // Recomputed for the dead-code cleanup: the dead saveSettingsAndRestart
-  // wrapper (save_settings_and_restart invoke) was removed — no production
-  // caller; the plain saveSettings + restart_app path stays the update route.
-  settings: '6ec54b363e711927cb1ac65fbb9c468fa8255c89ad49e7c1e695acca131fcb3a',
-  // Recomputed for the dead-code cleanup: the never-emitted
+
+  // Recomputed for the dead-code cleanup (the dead saveSettingsAndRestart
+  // wrapper was removed) and for the built-in feature toggles hook: settings.js
+  // gains the list_builtin_features / set_builtin_feature_enabled invoke
+  // wrappers (contract hook for future feature settings pages; no consumer yet).
+  settings: '203759c7b74e87674ef7698c69bc6b35508a7d183d937df6f5d0c20aea465969',
   // remote_control:status / remote_control:session_created listeners were
   // removed, and the update:progress listener plus its coalescing timer
   // machinery were deleted with it (the backend download loop no longer has a

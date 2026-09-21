@@ -1,6 +1,7 @@
 import { useEffect, useMemo, useState } from 'react';
 import { FileTypeIcon } from '../../components/files/FileTypeIcon.jsx';
-import { BookOpen, Building2, ChevronDown, CloudSun, Code, FileText, Hexagon, Layout, LineChart, Mail, MessageCircle, Navigation, Palette, Presentation, Search, Send, TrendingDown, TrendingUp, Video } from '../../components/icons.jsx';
+import { BookOpen, Building2, ChevronDown, CloudSun, Code, FileText, Hexagon, Layout, LineChart, Mail, MessageCircle, Navigation, Package, Palette, Presentation, Search, Send, TrendingDown, TrendingUp, Video } from '../../components/icons.jsx';
+import { builtinToolShortName } from './builtin-plugin-logic.js';
 import { bridge } from '../../hooks/useBridge.js';
 import { _ARTIFACT_FMT, _artifactKind } from '../../shared/artifact-utils.js';
 import { can, isWeb } from '../../shared/platform.js';
@@ -895,4 +896,71 @@ const tc = (t) => (t && t.uiToolCommon) || dict.zh.uiToolCommon;
       );
     };
 
-export { AcShieldCheck, AcSparkles, ArtifactCard, isQuietTool, toolSummary, isReceipt, ReceiptBlock, tryParseJson, tryTailJson, unwrapMcpTextEnvelope, looksDiff, TODO_TOOLS, OutputPre, OutputError, ListDirView, GrepView, DiffView, ShellView, ShellTextView, TodoView, tsToolsData, tsToolWelcomeData, localizeTool, mergeConfigFields, WeatherCard, isWeatherTool, isStockQuoteTool, StockQuoteCard, tsSkillsData, tsSkillIconByName, tsCategories, TOOL_TYPE_GROUPS, getToolTypeGroup, TOOL_BUSINESS_GROUPS, getToolBusinessGroup, TsActionBtn };
+
+    // 内置插件只读卡（《内置工具集长期契约》§3.1 透明性/审计窗口）：展示工具清单、
+    // 安全级别、版本与数据访问范围；无任何操作按钮（无卸载、无开关），只读徽章
+    // 复用 PlatformToolAction 的 Web 只读降级样式。文案全部走 uiBuiltinPlugins，
+    // 未传 copy 时按 tc 先例回退中文词典；数据访问 scope 未知键原样兜底。
+    const BuiltinPluginCard = ({ tool, copy }) => {
+      const C = copy || dict.zh.uiBuiltinPlugins;
+      const Icon = tool.icon || Package;
+      const mcpTools = Array.isArray(tool.mcpTools) ? tool.mcpTools : [];
+      const dataAccess = Array.isArray(tool.dataAccess) ? tool.dataAccess : [];
+      const levelDesc = (tool.securityLevel && C.levels) ? C.levels[tool.securityLevel] : null;
+      const rowCls = 'flex items-start gap-2 text-[12px]';
+      const labelCls = 'shrink-0 w-[72px] font-semibold text-slate-400 dark:text-slate-500 leading-5';
+      return (
+        <div data-testid="builtin-plugin-card" data-tool-id={tool.backendId || ''}
+          className="flex items-start gap-4 py-3 px-3 border-b border-slate-100 dark:border-white/5 last:border-0">
+          <div className={`h-16 w-16 flex-shrink-0 rounded-[16px] border border-black/5 shadow-sm dark:border-white/5 flex items-center justify-center text-white ${tool.color || 'bg-gradient-to-b from-slate-400 to-slate-600'}`}>
+            <Icon size={30} strokeWidth={1.5} />
+          </div>
+          <div className="flex-1 min-w-0 flex flex-col gap-1.5 py-1">
+            <div className="flex items-center gap-2 flex-wrap">
+              <h3 className="text-[17px] font-semibold text-slate-900 dark:text-white truncate tracking-tight">{tool.title}</h3>
+              <span className="px-3 py-1 text-[12px] rounded-full font-bold bg-emerald-50 dark:bg-emerald-500/10 text-emerald-700 dark:text-emerald-300 whitespace-nowrap">{C.readonlyBadge}</span>
+            </div>
+            {tool.subtitle && <p className="text-[13px] text-slate-500 dark:text-slate-400 font-medium">{tool.subtitle}</p>}
+            {tool.desc && <p className="text-[12px] text-slate-500 dark:text-slate-400 leading-relaxed">{tool.desc}</p>}
+            {mcpTools.length > 0 && (
+              <div className={rowCls}>
+                <span className={labelCls}>{C.toolsLabel}</span>
+                <div className="flex flex-wrap gap-1.5">
+                  {mcpTools.map(name => (
+                    <span key={name} title={name} className="text-[11px] font-mono px-1.5 py-0.5 rounded bg-slate-100 dark:bg-slate-800 text-slate-600 dark:text-slate-300">{builtinToolShortName(name, tool.backendId)}</span>
+                  ))}
+                </div>
+              </div>
+            )}
+            {tool.securityLevel && (
+              <div className={rowCls}>
+                <span className={labelCls}>{C.securityLabel}</span>
+                <span className="inline-flex items-center gap-1.5 leading-5">
+                  <span className="text-[10px] font-bold px-1.5 py-0.5 rounded uppercase tracking-wide bg-blue-50 dark:bg-blue-500/10 text-blue-600 dark:text-blue-400" title={levelDesc || undefined}>{tool.securityLevel}</span>
+                  {levelDesc && <span className="text-slate-500 dark:text-slate-400">{levelDesc}</span>}
+                </span>
+              </div>
+            )}
+            {tool.bundleVersion && (
+              <div className={rowCls}>
+                <span className={labelCls}>{C.versionLabel}</span>
+                <span className="leading-5 text-slate-600 dark:text-slate-300">v{tool.bundleVersion}<span className="ml-1.5 text-slate-400 dark:text-slate-500">{C.versionNote}</span></span>
+              </div>
+            )}
+            {dataAccess.length > 0 && (
+              <div className={rowCls}>
+                <span className={labelCls}>{C.dataAccessLabel}</span>
+                <div className="flex flex-wrap gap-1.5">
+                  {dataAccess.map(scope => (
+                    <span key={scope} title={scope} className="text-[11px] px-1.5 py-0.5 rounded bg-slate-100 dark:bg-slate-800 text-slate-600 dark:text-slate-300">{(C.dataAccess && C.dataAccess[scope]) || scope}</span>
+                  ))}
+                </div>
+              </div>
+            )}
+          </div>
+        </div>
+      );
+    };
+
+
+export { AcShieldCheck, AcSparkles, ArtifactCard, isQuietTool, toolSummary, isReceipt, ReceiptBlock, tryParseJson, tryTailJson, unwrapMcpTextEnvelope, looksDiff, TODO_TOOLS, OutputPre, OutputError, ListDirView, GrepView, DiffView, ShellView, ShellTextView, TodoView, tsToolsData, tsToolWelcomeData, localizeTool, mergeConfigFields, WeatherCard, isWeatherTool, isStockQuoteTool, StockQuoteCard, tsSkillsData, tsSkillIconByName, tsCategories, TOOL_TYPE_GROUPS, getToolTypeGroup, TOOL_BUSINESS_GROUPS, getToolBusinessGroup, TsActionBtn, BuiltinPluginCard };
