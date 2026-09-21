@@ -7,7 +7,7 @@
 //! 本模块是 facade:把原本 2600+ 行的 god-module 按职责拆成子模块,
 //! 对外 pub 面通过 `pub use` 保持不变。
 //!
-//! - `types`      — manifest/info 等数据类型
+//! - `types`      — data types such as manifest/info
 //! - `secrets`    — 密钥/凭证助手 + MarketplaceManager 的 secret 读写方法
 //! - `validation` — 远程 MCP 连接校验
 //! - `migration`  — mcp.json 旧版明文密钥迁移
@@ -766,23 +766,23 @@ impl<S: CredentialStore> MarketplaceManager<S> {
         }
     }
 
-    /// 前端列表：所有可用工具 + 安装状态。`installed` 与 `BundleRegistry::list`
-    /// （bundle_readiness）同一真相源口径：bundles.json 记录优先（缺记录 =
-    /// 未安装），store 读失败回退 installed.json 推导（degraded 信息随之丢失）
-    /// ——此前只读 installed.json，与就绪卡在「store 已卸载登记 / store 损坏」
-    /// 两种状态下口径分叉（工具卡显示已装、就绪卡显示未装）。上传包若有用户
-    /// 自定义展示名/说明覆盖（bundles.json extra，仅 Upload 来源生效），
-    /// name/description 用覆盖值——与 `BundleRegistry::list` 同一读法
-    /// （`store::apply_display_override`），避免卡片与 composer 菜单两处标题
-    /// 不一致。`source` 按 bundles.json 记录的实际 BundleSource 填充（M4：前端
-    /// 据此区分「上传包卸载进回收站」与「预置/自定义卸载保留目录」）。
+    /// Frontend list: all available tools + install state. `installed` follows the same truth-source policy as `BundleRegistry::list`
+    /// (bundle_readiness): bundles.json records win (a missing record =
+    /// not installed), falling back to installed.json derivation when the store read fails (degraded info is lost with it)
+    /// — previously only installed.json was read, diverging from the readiness card in the two states
+    /// "store has an uninstalled record / store corrupted" (the tool card showed installed while the readiness card showed not installed). If an uploaded package has user
+    /// display name/description overrides (bundles.json extra, only effective for Upload-source records),
+    /// name/description use the overridden values — the same read as `BundleRegistry::list`
+    /// (`store::apply_display_override`), so card titles and composer menu titles
+    /// do not diverge. `source` is filled from the actual BundleSource of the bundles.json record (M4: the frontend
+    /// uses it to distinguish "uploaded package uninstalls into the recycle bin" from "preset/custom uninstall keeps the directory").
     pub fn list_tools(&self) -> Vec<MarketplaceToolInfo> {
         let installed = self.installed_ids();
-        // 一次读全量记录，同时供安装态、展示覆盖（仅 Upload 记录生效）与 source
-        // 填充，避免逐工具取锁+整文件解析的 N+1。读失败（如损坏 JSON）warn 后
-        // 降级：安装态回退 installed.json 推导（与 bundle.rs 同口径），展示覆盖
-        // 按「无覆盖」，source 按「无记录 = builtin」（宁可少提示「移入回收站」，
-        // 不说谎）。
+        // Read all records in one pass, serving install state, display overrides (only Upload records take effect), and source
+        // filling at once, avoiding the N+1 of per-tool locking + whole-file parsing. On read failure (e.g. corrupt JSON), warn and
+        // degrade: install state falls back to installed.json derivation (same policy as bundle.rs), display overrides
+        // treated as "no override", source as "no record = builtin" (better to under-report "moved to the recycle bin"
+        // than to lie).
         let store_records: Option<Vec<store::BundleRecord>> = match store::BundleStore::new()
             .records()
         {
@@ -807,8 +807,8 @@ impl<S: CredentialStore> MarketplaceManager<S> {
         self.available_tools()
             .into_iter()
             .map(|m| {
-                // 安装态真相源反转（§3.2）：store 记录优先，读失败回退
-                // installed.json（store_state 的 None 分支约定）。
+                // Install-state truth-source inversion (§3.2): store records win; on read failure fall back to
+                // installed.json (the None-branch convention of store_state).
                 let (installed_flag, _) = bundle::store_state(store_records.as_deref(), &m.id)
                     .unwrap_or_else(|| (installed.contains(&m.id), None));
                 let (name, description) = match upload_by_id.get(m.id.as_str()) {
@@ -4332,6 +4332,68 @@ mod tests {
         });
     }
 
+    /// §3.2 contract pin: `list_tools.installed` shares the readiness card's
+    /// store-first source of truth — the BundleStore record wins, a missing
+    /// record means not-installed (standalone installed.json writes don't
+    /// count), and a store read failure falls back to the installed.json
+    /// derivation. Same four phases as bundle.rs's
+    /// `installed_reads_bundle_store_with_legacy_fallback`.
+    #[test]
+    fn list_tools_installed_reads_bundle_store_first() {
+        with_temp_home(|| {
+            write_tool_manifest(
+                "store-truth",
+                r#"{
+                    "id":"store-truth","name":"ManifestName","description":"manifest d","version":"1","icon":"x","category":"c",
+                    "mcp_tools":[],"command":"python","args":["server.py"]
+                }"#,
+            );
+            // Stale installed.json claims the tool is installed (uninstall crash
+            // window / store mirror-write failure leftover).
+            let installed_path = crate::platform::paths::pinvou3_home()
+                .join("marketplace")
+                .join("installed.json");
+            std::fs::create_dir_all(installed_path.parent().unwrap()).unwrap();
+            std::fs::write(&installed_path, r#"["store-truth"]"#).unwrap();
+            let installed = || {
+                MarketplaceManager::new()
+                    .list_tools()
+                    .iter()
+                    .find(|t| t.id == "store-truth")
+                    .unwrap()
+                    .installed
+            };
+
+            // 1) No store record -> not installed (store-wins; installed.json is ignored)
+            assert!(
+                !installed(),
+                "missing store record must read as not installed"
+            );
+
+            // 2) Store record -> installed
+            let store = store::BundleStore::new();
+            store
+                .upsert(store::BundleRecord::installed_now(
+                    "store-truth",
+                    store::BundleSource::Upload("pkg.zip".to_string()),
+                ))
+                .unwrap();
+            assert!(installed(), "store record must read as installed");
+
+            // 3) Store record removed -> not installed
+            store.remove("store-truth").unwrap();
+            assert!(!installed());
+
+            // 4) Corrupt store -> fall back to the installed.json derivation (which
+            // claims installed)
+            std::fs::write(store.file_path(), "corrupt{{{").unwrap();
+            assert!(
+                installed(),
+                "store read failure must fall back to the installed.json derivation"
+            );
+        });
+    }
+
     #[test]
     fn model_tool_names_prefix_dedup_and_lowercase() {
         with_temp_home(|| {
@@ -5383,10 +5445,10 @@ mod tests {
             config.insert("PATSNAP_API_KEY".to_string(), "valid-token".to_string());
 
             mgr.install("patsnap-mock", &config).unwrap();
-            // Ok(()) 即已验证：握手成功、工具非空，且 manifest 期望工具
-            // （patsnap_search / patsnap_fetch）全部被发现——缺任一都会 Err。
-            // 旧返回值携带 tools 明细，现改由 mock 收到的 methods 观测真实
-            // 发生了 tools/list。
+            // Ok(()) means validated: the handshake succeeded, tools were non-empty, and every tool the manifest
+            // expects (patsnap_search / patsnap_fetch) was discovered — missing any one yields Err.
+            // The old return value carried the tool details; now the real tools/list call is observed
+            // via the methods the mock received.
             mgr.validate_remote_connection("patsnap-mock")
                 .await
                 .unwrap();
@@ -5487,8 +5549,8 @@ mod tests {
             )
             .unwrap();
             assert!(!content.contains(&secret));
-            // 迁移观测（旧 McpSecretMigrationResult 计数断言的替代）：AMAP_KEY 键
-            // 从 env 整体移除、无关键值保留，恰好一次迁移落盘。
+            // Migration observation (replacement for the old McpSecretMigrationResult count assertions): the AMAP_KEY key
+            // is removed from env wholesale, the keyless value is kept, and exactly one migration is persisted.
             assert!(
                 !content.contains("AMAP_KEY"),
                 "迁移应把 env 里的 AMAP_KEY 键整体移除: {content}"
@@ -5528,7 +5590,7 @@ mod tests {
             assert_eq!(stored.as_deref(), Some(secret.as_str()));
             let content = std::fs::read_to_string(&mcp_path).unwrap();
             assert!(!content.contains(&secret));
-            // 迁移观测：明文 Authorization 头被整体移除并改写为 env-var 接线。
+            // Migration observation: the plaintext Authorization header is removed wholesale and rewritten to env-var wiring.
             assert!(
                 !content.contains("Authorization"),
                 "迁移应移除明文 Authorization 头: {content}"
@@ -5571,8 +5633,8 @@ mod tests {
 
             mgr.migrate_mcp_plaintext_secrets().unwrap();
 
-            // 跳过观测：既有凭据保持原值未被覆盖，文件明文清理并改写为
-            // env-var 接线（清明文但不清存储，即「跳过覆盖」分支）。
+            // Skip observation: the existing credential keeps its original value, the file plaintext is cleaned up and rewritten to
+            // env-var wiring (file plaintext cleared but the store not touched, i.e. the "skip override" branch).
             let stored = store
                 .get(&mcp_secret_reference("qcc", "header", "QCC_API_KEY"))
                 .unwrap();

@@ -377,6 +377,11 @@ assert.ok(
   'hourly schedules should expose a themed 1-24 hour interval selector'
 );
 assert.ok(
+  /const byday = days\.length \? `;BYDAY=\$\{days\.join\(','\)\}` : '';/.test(scheduledViewSource) &&
+    /FREQ=HOURLY;INTERVAL=\$\{Math\.max\(1, interval \|\| 1\)\}\$\{byday\}\$\{anchor\}/.test(scheduledViewSource),
+  'hourly schedule edits must carry inherited BYDAY restrictions into the rule instead of silently dropping them; the Rust scheduler honors BYDAY when triggering hourly tasks'
+);
+assert.ok(
   /SCHEDULED_TASK_WRITABLE_FIELDS\s*=\s*\["name", "prompt", "rrule", "model", "modelId", "paused"\]/.test(tauriBridge) &&
     !/SCHEDULED_TASK_WRITABLE_FIELDS[^;]*allowShell/.test(tauriBridge) &&
     !/SCHEDULED_TASK_WRITABLE_FIELDS[^;]*trustMode/.test(tauriBridge) &&
