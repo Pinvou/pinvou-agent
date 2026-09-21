@@ -20,6 +20,22 @@ const RECONNECT_BASE_DELAY_MS: u64 = 500;
 const RECONNECT_MAX_DELAY_MS: u64 = 10_000;
 const HEARTBEAT_INTERVAL: Duration = Duration::from_secs(25);
 const REVOKE_ACK_TIMEOUT: Duration = Duration::from_secs(12);
+
+/// True when nothing inbound has arrived for two full heartbeat windows: a
+/// half-open socket (sleep/resume, NAT rebind) keeps absorbing outbound
+/// pings into kernel buffers, so only inbound activity is proof of life.
+/// Pure function so the boundary (exactly two windows must reconnect, one
+/// window must not) stays pinned by a test.
+///
+/// The 50s window assumes the relay pings at least every ~25s (the bundled
+/// relay defaults to 15s, floor 5s). A deployment raising the relay's ping
+/// interval above this window makes every idle connection cycle
+/// connect→register→force-reconnect forever — raise `HEARTBEAT_INTERVAL`
+/// together with the relay side, don't just retune the server.
+fn inbound_silence_exceeded(silence: Duration) -> bool {
+    silence >= HEARTBEAT_INTERVAL * 2
+}
+
 const MAX_PENDING_MESSAGES: usize = 2_048;
 const OUTBOUND_CHANNEL_CAPACITY: usize = 2_048;
 // RelayInbound queues raw JSON text, so 32 slots at the 2 MiB frame ceiling
@@ -624,6 +640,22 @@ async fn run_loop(
         // Consume interval's immediate first tick; the registration message is
         // already proof of life.
         heartbeat.tick().await;
+        // Inbound-activity tracking: sending Pings into a half-open socket
+        // keeps succeeding (kernel buffers absorb them), so without this the
+        // client would report "connected" for tens of minutes on a dead path
+        // (sleep/resume, NAT rebind) while every phone request queues.
+        // Any inbound frame counts as proof of life; 2 missed heartbeat
+        // windows with nothing inbound forces the reconnect path.
+        //
+        // Scope notes: (1) the check rides the heartbeat tick, so it is only
+        // evaluated while no write/read is parked — a send blocked on a full
+        // kernel buffer (active session when the path died) is still bounded
+        // only by TCP retransmission timeouts, not by this check. (2)
+        // `Instant` excludes suspend time, so after system resume detection
+        // lands within one or two awake windows, not instantly. A healthy
+        // relay answers every ping within one window (RFC 6455 auto-pong),
+        // which is what keeps steady state from tripping this path.
+        let mut last_inbound = std::time::Instant::now();
         loop {
             tokio::select! {
                 biased;
@@ -652,6 +684,8 @@ async fn run_loop(
                 }
                 message = read.next() => {
                     let Some(message) = message else { break; };
+                    // Any inbound frame (text, ping, pong) is proof of life.
+                    last_inbound = std::time::Instant::now();
                     match message {
                         Ok(Message::Text(text)) => {
                             if inbound_text_too_large(text.len()) {
@@ -701,6 +735,13 @@ async fn run_loop(
                     }
                 }
                 _ = heartbeat.tick() => {
+                    if inbound_silence_exceeded(last_inbound.elapsed()) {
+                        // Nothing inbound for two heartbeat windows: treat
+                        // the connection as dead and take the normal
+                        // reconnect path (pending frames are preserved).
+                        eprintln!("[web-access] relay connection silent, forcing reconnect");
+                        break;
+                    }
                     let ping_result = tokio::select! {
                         biased;
                         _ = shutdown.cancelled() => return,
@@ -815,6 +856,18 @@ mod tests {
             desktop_secret: "desktop".into(),
             allow_host_workspace: false,
         }
+    }
+
+    /// Two silent heartbeat windows mean dead path (forced reconnect); one
+    /// window of silence must NOT disconnect a healthy-but-quiet socket.
+    #[test]
+    fn inbound_silence_boundary_matches_two_heartbeat_windows() {
+        assert!(!inbound_silence_exceeded(HEARTBEAT_INTERVAL));
+        assert!(!inbound_silence_exceeded(
+            HEARTBEAT_INTERVAL * 2 - Duration::from_millis(1)
+        ));
+        assert!(inbound_silence_exceeded(HEARTBEAT_INTERVAL * 2));
+        assert!(inbound_silence_exceeded(HEARTBEAT_INTERVAL * 3));
     }
 
     #[test]

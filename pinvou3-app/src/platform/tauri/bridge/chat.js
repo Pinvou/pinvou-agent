@@ -114,12 +114,16 @@ function setComposerDraft(value) { return pinvouSharedtauriChat().setComposerDra
     return kind === "pending" ? null : kind;
   }
 
-  // Transport-layer timeout for steer_chat invokes. The Rust steer() awaits
-  // a foundation mpsc send; if the engine task is stuck (alive but not
-  // draining its channel) the invoke never settles — the composer is already
-  // cleared and the chip has no steerId backfilled, so the queue would be
-  // blocked by that hanging chip. 25s matches the waitForChatDone fallback: a
-  // healthy engine enqueues synchronously, so 25s only catches a real wedge.
+  // Transport-layer timeout for chat queue/steer invokes: steer_chat,
+  // withdraw_steer and cancel_generation all share this constant. The Rust
+  // steer() awaits a foundation mpsc send; if the engine task is stuck
+  // (alive but not draining its channel) the invoke never settles — the
+  // composer is already cleared and the chip has no steerId backfilled, so
+  // the queue would be blocked by that hanging chip. For cancel_generation
+  // a wedged engine would otherwise leave the stop button's single-flight
+  // flag set forever, permanently disabling the user's only recovery
+  // action. 25s matches the waitForChatDone fallback: a healthy engine
+  // enqueues synchronously, so 25s only catches a real wedge.
   const STEER_INVOKE_TIMEOUT_MS = 25000;
 
   // ── Chat Items (display format for React) ────────────────────────
@@ -2149,7 +2153,26 @@ function persistPinvouReviews() { return pinvouSharedtauriChat().persistPinvouRe
     if (!state.busy) return;
     try {
       safeConsoleInfo("[pinvou3][chat-ui] cancel invoke start", { sid: state.activeSessionId });
-      await invoke("cancel_generation", { sessionId: state.activeSessionId });
+      // Same transport timeout as the interrupt path's cancel: a wedged
+      // engine (turn_lock held, not draining) never settles the invoke, and
+      // without the race this function never returns — the stop button's
+      // single-flight flag in ChatView never clears and the user's only
+      // recovery action is dead. A late resolve is harmless (cancel is
+      // idempotent) and its rejection is swallowed to avoid
+      // unhandledrejection.
+      const cancelPromise = invoke("cancel_generation", { sessionId: state.activeSessionId });
+      let cancelTimeoutId = null;
+      const cancelTimeout = new Promise(function (_, reject) {
+        cancelTimeoutId = setTimeout(function () {
+          reject(new Error("cancel_generation timed out"));
+        }, STEER_INVOKE_TIMEOUT_MS);
+      });
+      cancelPromise.catch(function () { /* swallow the late rejection after a timeout */ });
+      try {
+        await Promise.race([cancelPromise, cancelTimeout]);
+      } finally {
+        clearTimeout(cancelTimeoutId);
+      }
       safeConsoleInfo("[pinvou3][chat-ui] cancel invoke ok", { sid: state.activeSessionId });
     } catch (e) {
       console.warn("[pinvou3][chat-ui] cancel invoke failed", {

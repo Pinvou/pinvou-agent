@@ -42,9 +42,12 @@ pub fn reveal_target(target: &Path) -> Result<(), String> {
 }
 
 pub fn command_exists(command: &str) -> bool {
-    Command::new("which")
-        .arg(command)
-        .output()
+    // `which` 本身只读 PATH，但 GUI 会话的 PATH 可能含停摆的网络盘/FUSE
+    // 条目；首次摄入会在 OnceLock 里连跑多个探测，一次卡死会缓存到进程
+    // 退出。10s 与 monitor 的 GPU 探测同量级，远超正常 `which` 耗时。
+    let mut probe = Command::new("which");
+    probe.arg(command);
+    crate::platform::process::output_with_timeout(probe, std::time::Duration::from_secs(10))
         .map(|o| o.status.success())
         .unwrap_or(false)
 }

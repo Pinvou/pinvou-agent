@@ -1,5 +1,3 @@
-use std::time::Duration;
-
 use serde_json::Value;
 
 use super::super::GpuSnapshot;
@@ -41,8 +39,11 @@ try {
         "-Command",
         script,
     ]);
+    // PowerShell 冷启动本身要 1-3s，这里统一走 GPU_PROBE_TIMEOUT（10s）：
+    // 与 nvidia-smi / ioreg 同一挂类同一预算，Get-Counter 停摆时按无数据降级。
     let output =
-        crate::platform::process::output_with_timeout(command, Duration::from_secs(15)).ok()?;
+        crate::platform::process::output_with_timeout(command, super::super::GPU_PROBE_TIMEOUT)
+            .ok()?;
     if !output.status.success() {
         return None;
     }
