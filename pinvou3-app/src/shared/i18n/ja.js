@@ -634,6 +634,7 @@ Object.assign(dictJa.uiToolDetails.tools, {
 // データアクセス scope 文案。未知の dataAccess scope キーはカード側でそのまま表示。
 dictJa.uiBuiltinPlugins = {
   sectionTitle:'内蔵プラグイン',
+  pageIntro:'アプリに同梱され、アプリと共に更新されるプラグインです。このページは能力とデータアクセス範囲の透明な表示のみを目的としており、アンインストールやオフの操作はできません。',
   readonlyBadge:'内蔵 · 常時有効',
   toolsLabel:'ツール一覧',
   securityLabel:'セキュリティレベル',
