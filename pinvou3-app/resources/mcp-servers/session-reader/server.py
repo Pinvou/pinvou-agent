@@ -34,6 +34,17 @@ transport:每条消息一行 JSON + '\n',read_line 读)。protocolVersion 2024-1
 底座 child_env sanitize 放行 HOME/USERPROFILE,不透传 PINVOU3_HOME,所以测试与
 开发侧的 PINVOU3_HOME 重定位对引擎拉起的实例不生效——这正是显式 --sessions-dir
 参数存在的原因。
+
+功能开关兜底(内置工具集长期契约 §3.3):功能级开关关闭某功能后,其专属工具会从
+注册表摘除,模型看不到;但陈旧上下文(关闭前已注入契约的旧会话续跑)仍可能发来
+工具调用,此时必须返回结构化 feature_disabled 错误并写明替代动作,不能用通用
+not_found。工具↔功能是多对多并集语义:同目录 manifest.json 的 tool_features 把
+工具全名(mcp_<server>_<tool>)映射到其服务的功能列表,仅当列表中的功能**全部**
+出现在 ~/.pinvou3/marketplace/builtin_features.json 的 disabled_features 中时才
+视为禁用;工具未登记功能(映射缺失/为空)不受门控。状态文件每次调用重读(开关
+运行时可变,本进程长驻),manifest 启动时读一次(随包发布,运行期不变);状态文件
+缺失/损坏一律按「全部启用」容错放行。引擎 env sanitize 不透传自定义环境变量,
+开关状态只能从文件读。
 """
 import argparse
 import base64
@@ -42,6 +53,7 @@ import json
 import os
 import re
 import sys
+from pathlib import Path
 
 # Windows 默认 stdout/stdin 编码为 GBK，MCP 协议要求 UTF-8
 if sys.platform == "win32":
@@ -66,6 +78,9 @@ DEFAULT_MAX_OUTPUT_CHARS = 2000
 MAX_MAX_OUTPUT_CHARS = 20000
 
 TRUNCATED_MARK = "\u2026[truncated]"
+
+# server key(与 marketplace 包 id 一致),用于拼注册表工具全名 mcp_<server>_<tool>。
+SERVER_KEY = "session-reader"
 
 TOOL_DEFS = [
     {
@@ -144,6 +159,79 @@ def resolve_sessions_dir(argv=None):
     if home:
         return os.path.join(home, "sessions")
     return os.path.join(os.path.expanduser("~"), ".pinvou3", "sessions")
+
+
+def full_tool_name(tool_name):
+    """本地工具名 → 注册表全名 mcp_<server>_<tool>(与 Rust 侧注册约定一致)。"""
+    return "mcp_%s_%s" % (SERVER_KEY, tool_name)
+
+
+def load_tool_features(manifest_path=None):
+    """读 manifest.json 的 tool_features(工具全名 → 功能列表)。
+
+    文件缺失/损坏/字段缺失一律返回 {}(无功能门控)。启动时读一次即可——
+    manifest 随包发布,运行期不变。
+    """
+    path = (Path(manifest_path) if manifest_path
+            else Path(__file__).with_name("manifest.json"))
+    try:
+        data = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return {}
+    mapping = data.get("tool_features") if isinstance(data, dict) else None
+    if not isinstance(mapping, dict):
+        return {}
+    return {
+        str(name): [str(feature) for feature in features]
+        for name, features in mapping.items()
+        if isinstance(features, list)
+    }
+
+
+def load_disabled_features(sessions_dir):
+    """读 builtin_features.json 的 disabled_features,返回 set。
+
+    文件缺失/损坏 = 全部启用(容错,不因此拒绝调用)。状态相对 sessions 目录定位:
+    <pinvou3_home>/marketplace/builtin_features.json。必须每次调用重读——开关
+    运行时可变,而本进程长驻。
+    """
+    path = Path(sessions_dir).parent / "marketplace" / "builtin_features.json"
+    try:
+        data = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return set()
+    disabled = data.get("disabled_features") if isinstance(data, dict) else None
+    if not isinstance(disabled, list):
+        return set()
+    return {str(feature) for feature in disabled}
+
+
+def feature_gate_error(tool_name, sessions_dir, tool_features):
+    """契约 §3.3 兜底:工具依赖的功能全部关闭时返回 feature_disabled payload,否则 None。
+
+    多对多并集语义:仅当 tool_features 映射的功能列表全部出现在
+    disabled_features 中才视为禁用;工具未登记功能(映射缺失/为空)不受门控。
+    """
+    features = tool_features.get(full_tool_name(tool_name))
+    if not features:
+        return None
+    disabled = load_disabled_features(sessions_dir)
+    if not all(feature in disabled for feature in features):
+        return None
+    names = ", ".join(features)
+    return {
+        "ok": False,
+        "code": "feature_disabled",
+        "error": (
+            "This tool is unavailable: the feature(s) %s are disabled, and this "
+            "tool requires all of them to be enabled." % names
+        ),
+        "alternative": (
+            "Tell the user the feature(s) %s are turned off and can be re-enabled "
+            "in Settings, or answer using information already available in this "
+            "conversation." % names
+        ),
+    }
 
 
 def validate_session_id(session_id):
@@ -452,9 +540,14 @@ def _text_content(payload, is_error=False):
     }
 
 
-def _handle_call(req_id, params, sessions_dir):
+def _handle_call(req_id, params, sessions_dir, tool_features):
     name = (params or {}).get("name")
     args = (params or {}).get("arguments") or {}
+    # 契约 §3.3 兜底:陈旧上下文的工具调用,功能全关时返回结构化 feature_disabled。
+    gate = feature_gate_error(name, sessions_dir, tool_features)
+    if gate is not None:
+        _result(req_id, _text_content(gate, is_error=True))
+        return
     if name == "read_session":
         session_id = str(args.get("session_id") or "").strip()
         payload, error = read_session_history(
@@ -482,7 +575,7 @@ def _handle_call(req_id, params, sessions_dir):
         _result(req_id, _text_content(payload))
 
 
-def _handle(msg, sessions_dir):
+def _handle(msg, sessions_dir, tool_features):
     method = msg.get("method")
     req_id = msg.get("id")
 
@@ -499,13 +592,14 @@ def _handle(msg, sessions_dir):
     elif method == "tools/list":
         _result(req_id, {"tools": TOOL_DEFS})
     elif method == "tools/call":
-        _handle_call(req_id, msg.get("params"), sessions_dir)
+        _handle_call(req_id, msg.get("params"), sessions_dir, tool_features)
     else:
         _error(req_id, -32601, "method not found: %s" % method)
 
 
 def main():
     sessions_dir = resolve_sessions_dir()
+    tool_features = load_tool_features()
     for line in sys.stdin:
         line = line.strip()
         if not line:
@@ -515,7 +609,7 @@ def main():
         except Exception:
             continue  # 跳过坏行,不崩
         try:
-            _handle(msg, sessions_dir)
+            _handle(msg, sessions_dir, tool_features)
         except Exception as e:
             rid = msg.get("id") if isinstance(msg, dict) else None
             if rid is not None:
