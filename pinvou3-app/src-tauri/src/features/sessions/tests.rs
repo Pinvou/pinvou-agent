@@ -5668,10 +5668,128 @@ fn pin_mutation_refuses_to_rewrite_a_corrupt_file() {
     store.set_pinned("headless-c", true);
     // The mutation must refuse: rewriting from an empty parse would destroy
     // every entry the unreadable file still holds and the next sweep would
-    // enforce the narrowed file. The corrupt bytes stay untouched for repair.
-    let durable = std::fs::read_to_string(&file).expect("read pin file");
-    assert_eq!(
-        durable, "{\"ids\": [",
-        "a corrupt pin file must be left for repair, not overwritten from empty"
+    // enforce the narrowed file. The corrupt bytes are quarantined aside
+    // verbatim (evidence, not destroyed), the canonical file is gone, and
+    // the refused pin must NOT stay in the in-memory cache (the file is the
+    // durable truth; a cache claiming a pin the file does not hold would
+    // diverge until reload).
+    assert!(
+        !file.exists(),
+        "the canonical corrupt file is quarantined aside, not left in place"
     );
+    let evidence = std::fs::read_dir(paths::sessions_root())
+        .expect("list sessions root")
+        .filter_map(|entry| entry.ok())
+        .find(|entry| {
+            entry
+                .file_name()
+                .to_string_lossy()
+                .contains("_pinned_sessions.json.corrupt-")
+        })
+        .expect("quarantine evidence file");
+    assert_eq!(
+        std::fs::read(evidence.path()).expect("read quarantine evidence"),
+        b"{\"ids\": [",
+        "the quarantined bytes must be preserved verbatim"
+    );
+    assert!(
+        !store.is_pinned("headless-c"),
+        "a refused persist must roll the in-memory cache back"
+    );
+    // The next mutation starts from "absent" instead of staying bricked by
+    // the corrupt bytes until someone deletes the file by hand.
+    store.set_pinned("headless-c", true);
+    let durable = std::fs::read_to_string(&file).expect("read rebuilt pin file");
+    let parsed: Vec<serde_json::Value> = serde_json::from_str(&durable).expect("valid JSON");
+    assert_eq!(
+        parsed.len(),
+        1,
+        "the rebuilt file carries exactly the new pin"
+    );
+}
+
+#[test]
+fn pin_mutation_refuses_a_semantically_corrupt_zero_id_file() {
+    // Both file handles resolve INSIDE the env guard: sessions_root() reads
+    // PINVOU3_HOME, and a path taken before isolated_store() points at the
+    // real home instead of the isolated one.
+    {
+        let (store, _g) = isolated_store();
+        let file = paths::sessions_root().join("_pinned_sessions.json");
+        // JSON-valid, but every entry lacks a usable `id`: reading it as "no
+        // pins" would refuse the mutation-path protection and widen the sweep's
+        // eviction set on the fallback path.
+        let seeded = r#"[{"nope": 1}, 42]"#;
+        std::fs::write(&file, seeded).expect("seed a zero-id pin file");
+        store.set_pinned("headless-c", true);
+        assert!(!store.is_pinned("headless-c"));
+        assert!(
+            !file.exists() && !store.is_pinned("headless-c"),
+            "the semantically corrupt file is quarantined and the mutation refused"
+        );
+        let evidence = std::fs::read_dir(paths::sessions_root())
+            .expect("list sessions root")
+            .filter_map(|entry| entry.ok())
+            .find(|entry| {
+                entry
+                    .file_name()
+                    .to_string_lossy()
+                    .contains("_pinned_sessions.json.corrupt-")
+            })
+            .expect("quarantine evidence file");
+        assert_eq!(
+            std::fs::read(evidence.path()).expect("read quarantine evidence"),
+            seeded.as_bytes(),
+            "the zero-id bytes must be preserved verbatim"
+        );
+    }
+
+    // Sweep side: a JSON-valid-but-id-less array must fall back to the
+    // boot-time map instead of parsing as "nobody is pinned".
+    let (store, _g) = isolated_store();
+    let file = paths::sessions_root().join("_pinned_sessions.json");
+    store.set_pinned("boot-pin", true);
+    std::fs::write(&file, r#"[{"nope": 1}]"#).expect("re-seed a zero-id pin file");
+    let durable_pins = store.durable_pinned_sessions();
+    assert!(
+        durable_pins.contains("boot-pin"),
+        "the zero-id file must fall back to the boot map, not parse as no pins"
+    );
+}
+
+#[test]
+fn set_mode_and_persist_fails_loud_on_a_corrupt_mode_file() {
+    let (store, _g) = isolated_store();
+    let file = paths::sessions_root().join("_session_mode_states.json");
+    std::fs::write(&file, "{ not json").expect("seed a corrupt mode file");
+    // The headless contract: a failed durable persist is a failed run —
+    // reporting success while the session would reopen in the stale mode is
+    // the unsafe divergence (Plan → Yolo).
+    let result = store.set_mode_and_persist("headless-c", SerializableMode::Plan);
+    assert!(
+        result.is_err(),
+        "a corrupt mode sidecar must fail the durable persist loudly"
+    );
+    assert!(
+        !file.exists(),
+        "the corrupt mode file is quarantined aside, not left in place"
+    );
+    let evidence = std::fs::read_dir(paths::sessions_root())
+        .expect("list sessions root")
+        .filter_map(|entry| entry.ok())
+        .find(|entry| {
+            entry
+                .file_name()
+                .to_string_lossy()
+                .contains("_session_mode_states.json.corrupt-")
+        })
+        .expect("quarantine evidence file");
+    assert_eq!(
+        std::fs::read(evidence.path()).expect("read quarantine evidence"),
+        b"{ not json",
+        "the corrupt mode bytes must be preserved verbatim"
+    );
+    // The interactive GUI keeps the lenient path: in-memory switched, the
+    // persist failure logged, Ok returned.
+    assert!(store.set_mode("headless-d", SerializableMode::Yolo).is_ok());
 }

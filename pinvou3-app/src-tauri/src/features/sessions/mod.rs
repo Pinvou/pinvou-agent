@@ -202,6 +202,19 @@ pub struct SessionStore {
     /// 区内完成。少了它，两个并发保存会各自读到不同时刻的快照，**后完成写盘的
     /// 旧快照**会覆盖新快照——重启后部分会话的开关状态消失。
     multi_agent_flags_io: Arc<Mutex<()>>,
+    /// `_pinned_sessions.json` 的持久化互斥（与 `multi_agent_flags_io` 同一
+    /// 契约）：set_pinned 与保留清扫的 id 级 RMW 必须串行，否则丢失更新会把
+    /// 刚写入的置顶抹掉，清扫随即把它变成可驱逐会话。
+    pinned_sessions_io: Arc<Mutex<()>>,
+    /// `_hidden_sessions.json` 的持久化互斥（同 `pinned_sessions_io` 契约）。
+    hidden_sessions_io: Arc<Mutex<()>>,
+    /// `_session_models.json` 的持久化互斥（同 `pinned_sessions_io` 契约）：
+    /// set_session_model_id 持缓存写锁跨 RMW 自洽，但清扫侧的批量移除此前
+    /// 无锁，两边交错即丢失更新。
+    session_models_io: Arc<Mutex<()>>,
+    /// `_session_mode_states.json` 的持久化互斥（同 `pinned_sessions_io`
+    /// 契约）：set_mode / set_mode_and_persist / 保留清扫共用。
+    session_mode_states_io: Arc<Mutex<()>>,
     /// `manager.list_sessions()` 的进程内快照缓存。上游每次调用都会全目录
     /// read_dir + 逐文件前缀解析，而启动路径(boot 恢复/保留策略/AcpPool 元数据)
     /// 与每个 list 命令都会调它——同代元数据重复扫描 3+ 次。缓存以

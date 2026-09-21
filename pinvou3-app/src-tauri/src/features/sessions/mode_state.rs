@@ -248,8 +248,13 @@ impl SessionStore {
     /// ACP 会话不经此命令（有自己的权限模式）。落盘失败只记日志不打断交互
     /// ——内存切换已生效，落盘只做尽力持久化。
     pub fn set_mode(&self, id: &str, mode: SerializableMode) -> Result<()> {
+        // One critical section for the in-memory switch and the durable RMW,
+        // same as set_multi_agent (a concurrent purge or headless Plan
+        // persist must not interleave its file RMW with this one).
+        let _io = self.session_mode_states_io.lock();
         self.set_mode_in_memory(id, mode.clone());
-        if let Err(error) = Self::apply_session_mode_mutation(&[(id.to_string(), mode)], &[]) {
+        if let Err(error) = Self::apply_session_mode_mutation_locked(&[(id.to_string(), mode)], &[])
+        {
             eprintln!("[sessions] persist mode for {id} failed: {error:#}");
         }
         Ok(())
@@ -279,8 +284,9 @@ impl SessionStore {
     /// failed run. The interactive GUI keeps the lenient [`Self::set_mode`]
     /// path, where the in-memory switch already took effect.
     pub fn set_mode_and_persist(&self, id: &str, mode: SerializableMode) -> Result<()> {
+        let _io = self.session_mode_states_io.lock();
         self.set_mode_in_memory(id, mode.clone());
-        Self::apply_session_mode_mutation(&[(id.to_string(), mode)], &[])
+        Self::apply_session_mode_mutation_locked(&[(id.to_string(), mode)], &[])
             .context("persist session mode states")
     }
 
@@ -360,7 +366,20 @@ impl SessionStore {
         let mut ids: Vec<String> = if file.exists() {
             let content =
                 std::fs::read_to_string(&file).context("read _multi_agent.json failed")?;
-            serde_json::from_str(&content).context("parse _multi_agent.json failed")?
+            serde_json::from_str(&content).map_err(|error| {
+                // Quarantine-then-refuse, matching the other sidecar
+                // mutators: this write fails, the evidence survives aside,
+                // and the next mutation starts from an empty list.
+                let note = match crate::platform::filesystem::quarantine_corrupt_file(&file) {
+                    Ok(quarantine) => {
+                        format!("; corrupt bytes quarantined at {}", quarantine.display())
+                    }
+                    Err(quarantine_error) => {
+                        format!("; quarantining failed ({quarantine_error})")
+                    }
+                };
+                anyhow::Error::new(error).context(format!("parse _multi_agent.json failed{note}"))
+            })?
         } else {
             Vec::new()
         };
@@ -902,7 +921,14 @@ impl SessionStore {
     /// 原子写 + 失败可见：直接 `std::fs::write` 在进程中断时可能留下截断文件，
     /// 而 `load_session_mode_states` 对损坏文件是静默跳过——一次中断写入会让所有
     /// per-session mode 记录永久丢失，表现为「显式切过 mode，重启后回 Plan」。
-    pub(crate) fn apply_session_mode_mutation(
+    ///
+    /// The `_locked` suffix is the caller contract shared with the other
+    /// sidecar mutators: the durable RMW must run under the store's
+    /// `session_mode_states_io` mutex (`set_mode`, `set_mode_and_persist`,
+    /// `persist_accepted_yolo_mode`, and the retention purge all do), or two
+    /// concurrent RMWs interleave and the later write lands over the earlier
+    /// one's change.
+    pub(crate) fn apply_session_mode_mutation_locked(
         upserts: &[(String, SerializableMode)],
         removes: &[String],
     ) -> Result<()> {
@@ -1014,12 +1040,14 @@ impl SessionStore {
     /// touching disk, and the in-memory return to Plan stays consistent with
     /// disk.
     pub(crate) fn persist_accepted_yolo_mode(&self, id: &str) {
+        let _io = self.session_mode_states_io.lock();
         self.session_mode_states
             .write()
             .insert(id.to_string(), SerializableMode::Yolo);
-        if let Err(error) =
-            Self::apply_session_mode_mutation(&[(id.to_string(), SerializableMode::Yolo)], &[])
-        {
+        if let Err(error) = Self::apply_session_mode_mutation_locked(
+            &[(id.to_string(), SerializableMode::Yolo)],
+            &[],
+        ) {
             eprintln!("[sessions] persist accepted yolo mode for {id} failed: {error:#}");
         }
     }
