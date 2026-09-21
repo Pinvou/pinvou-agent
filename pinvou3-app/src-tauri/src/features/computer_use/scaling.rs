@@ -27,9 +27,19 @@ pub const MAX_LONG_EDGE: u32 = 1440;
 /// **silently skipped** (the model loses vision for that turn). PNG compresses photo-like
 /// content poorly, and a noisy 1440px screenshot can far exceed 5 MB. When
 /// the encoded size exceeds the cap, re-encode at 0.8 resolution steps to keep the visual
-/// channel alive, with the long edge never below [`MIN_LONG_EDGE_FLOOR`].
+/// channel alive, stopping once the long edge reaches [`MIN_LONG_EDGE_FLOOR`] — so an
+/// incompressible capture whose ladder crosses the floor can land as low as
+/// ~0.8 × 640 ≈ 512, slightly below the floor itself.
 pub const MAX_IMAGE_BYTES: usize = 4 * 1024 * 1024;
 pub const MIN_LONG_EDGE_FLOOR: u32 = 640;
+
+/// The foundation's **hard attach cap** (`CodeWhale/crates/tui/src/image_attach.rs`,
+/// `MAX_IMAGE_BYTES` = 5 MB). Deliberate duplicate while the foundation
+/// constant is not importable from the app (disclosed follow-up): the
+/// tool's "will NOT be attached" warning must key on this value, because
+/// the engine still attaches a 4–5 MB PNG that the 4 MB scaling target
+/// above failed to squeeze under.
+pub const FOUNDATION_ATTACH_CAP_BYTES: usize = 5 * 1024 * 1024;
 
 /// Uniform scale factor: squeeze the long edge to ≤ [`MAX_LONG_EDGE`], never upscale small
 /// images.
@@ -56,6 +66,10 @@ pub struct ScaleMap {
     /// Device physical pixels → input coordinate scale (Windows/X11 = 1.0; macOS Retina 2x = 0.5).
     pub input_scale_x: f64,
     pub input_scale_y: f64,
+    /// Whether shot→input conversion is trusted. Carried from
+    /// [`Capture::input_aligned`]; `false` makes every coordinate-carrying
+    /// input refuse rather than inject at a believed-wrong position.
+    pub input_aligned: bool,
 }
 
 impl ScaleMap {
@@ -85,6 +99,7 @@ impl ScaleMap {
             origin_y: capture.origin_y,
             input_scale_x,
             input_scale_y,
+            input_aligned: capture.input_aligned,
         })
     }
 
@@ -268,6 +283,7 @@ mod tests {
             origin_y: oy,
             input_scale_x: sx,
             input_scale_y: sy,
+            input_aligned: true,
         }
     }
 
@@ -490,6 +506,7 @@ mod tests {
             origin_y: 0,
             input_scale_x: 1.0,
             input_scale_y: 1.0,
+            input_aligned: true,
         };
         // Linear congruential noise: incompressible, forces a genuinely large PNG.
         let mut state = 123_456_789u32;
@@ -504,10 +521,12 @@ mod tests {
             scaled.png.len()
         );
         assert_eq!(&scaled.png[..4], b"\x89PNG");
-        // Real termination condition: the downgrade ladder starts at the long-edge cap and
-        // multiplies by 0.8 per step, so four steps land at/below MIN_LONG_EDGE_FLOOR where
-        // the loop stops — the final long edge is always inside
-        // [0.8^4 * MAX_LONG_EDGE, MAX_LONG_EDGE] and the encoded PNG fits the cap.
+        // Real termination condition: starting from the long-edge cap, the
+        // downgrade ladder multiplies by 0.8 per step and stops once the long
+        // edge is at/below MIN_LONG_EDGE_FLOOR, so the final long edge is
+        // always inside [0.8^4 * MAX_LONG_EDGE, MAX_LONG_EDGE] on this path.
+        // (Smaller incompressible captures can end lower: a 700px-long-edge
+        // image stops at ~560, below the 640 floor — see the const docs.)
         let long_edge = scaled.map.shot_w.max(scaled.map.shot_h);
         let ladder_floor = (f64::from(MAX_LONG_EDGE) * 0.8f64.powi(4)).round() as u32;
         assert!(
@@ -526,6 +545,7 @@ mod tests {
             origin_y: 0,
             input_scale_x: 1.0,
             input_scale_y: 1.0,
+            input_aligned: true,
         };
         assert!(downscale_and_encode(&bad).is_err());
     }
@@ -542,6 +562,7 @@ mod tests {
             origin_y: 0,
             input_scale_x: 1.0,
             input_scale_y: 1.0,
+            input_aligned: true,
         };
         let error = match downscale_and_encode(&huge) {
             Err(error) => error,

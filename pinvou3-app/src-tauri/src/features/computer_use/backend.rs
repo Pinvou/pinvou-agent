@@ -568,11 +568,16 @@ impl BackendInner {
     }
 
     /// Sets the cancel flag of every live action request (see
-    /// [`BackendInner::live_cancels`]).
-    fn cancel_live_requests(&self) {
-        for flag in self.live_cancels.lock().iter() {
+    /// [`BackendInner::live_cancels`]) and returns the registry lock guard.
+    /// Control callers hold the guard across their channel send so a request
+    /// registering between the cancel and the send cannot slip past the
+    /// sweep; fire-and-forget callers just drop the guard immediately.
+    fn cancel_live_requests(&self) -> parking_lot::MutexGuard<'_, Vec<Arc<AtomicBool>>> {
+        let live = self.live_cancels.lock();
+        for flag in live.iter() {
             flag.store(true, Ordering::SeqCst);
         }
+        live
     }
 
     /// Drops the registration of a request whose reply the caller received:
@@ -635,25 +640,44 @@ impl BackendInner {
             // behind them. The control request's own flag is deliberately
             // NOT registered: control requests are exempt from the dequeue
             // skip and must still execute when their turn comes.
-            self.cancel_live_requests();
+            //
+            // The registry guard is held across the send: a request
+            // registering between the sweep and the send would otherwise
+            // queue (or even execute) ahead of the control request with a
+            // clear flag — exactly the committed work the sweep exists to
+            // stop. Holding it is deadlock-free: the worker never takes
+            // this lock, and the mpsc send cannot block, so any concurrent
+            // registration just waits out the enqueue.
+            let live = self.cancel_live_requests();
+            let sent = tx.send(BackendRequest {
+                kind,
+                reply: reply_tx,
+                cancelled: Arc::clone(&cancelled),
+                control,
+            });
+            drop(live);
+            sent.map_err(|_| {
+                // All senders dead means the worker thread is dead: migrate the state machine
+                // from Running to sticky StartFailed so this request and all later ones get a
+                // clear error.
+                self.mark_thread_dead();
+                ComputerUseError::unavailable("computer use backend thread died")
+            })?;
         } else {
             // Register before the send so a control request racing this one
             // already sees the flag (dequeue-skip + between-event checks).
             self.register_cancel(Arc::clone(&cancelled));
+            tx.send(BackendRequest {
+                kind,
+                reply: reply_tx,
+                cancelled: Arc::clone(&cancelled),
+                control,
+            })
+            .map_err(|_| {
+                self.mark_thread_dead();
+                ComputerUseError::unavailable("computer use backend thread died")
+            })?;
         }
-        tx.send(BackendRequest {
-            kind,
-            reply: reply_tx,
-            cancelled: Arc::clone(&cancelled),
-            control,
-        })
-        .map_err(|_| {
-            // All senders dead means the worker thread is dead: migrate the state machine
-            // from Running to sticky StartFailed so this request and all later ones get a
-            // clear error.
-            self.mark_thread_dead();
-            ComputerUseError::unavailable("computer use backend thread died")
-        })?;
         match reply_rx.recv_timeout(BACKEND_CALL_TIMEOUT) {
             // Reply received: the worker consumed the request (executed or
             // skipped) — drop the registration. The timeout branch keeps it:
@@ -727,8 +751,16 @@ impl Drop for BackendInner {
         // Cancel everything queued or executing before the Shutdown request
         // is enqueued: the worker consumes its channel in order, so without
         // this a `type` still mid-run would finish injecting after the handle
-        // was dropped.
-        self.cancel_live_requests();
+        // was dropped. The registry guard is held across the whole teardown
+        // (state transition, Shutdown send, sender drop): a request
+        // registering in that window would otherwise enqueue behind the
+        // Shutdown request, never be dequeued, and burn the full call budget
+        // on a misleading timeout — holding the lock makes it wait out the
+        // microsecond-scale teardown and fail with the honest
+        // "backend thread died" send error instead. Deadlock-free for the
+        // same reason as the control path: the worker never takes this lock
+        // and the mpsc send cannot block.
+        let live = self.cancel_live_requests();
         let previous = {
             let mut state = self.state.lock();
             std::mem::replace(&mut *state, WorkerState::Shutdown)
@@ -753,6 +785,7 @@ impl Drop for BackendInner {
             drop(tx);
             drop(thread);
         }
+        drop(live);
     }
 }
 
@@ -1148,6 +1181,7 @@ mod tests {
                 origin_y: 0,
                 input_scale_x: 1.0,
                 input_scale_y: 1.0,
+                input_aligned: true,
             })
         }
 
@@ -1571,6 +1605,7 @@ mod tests {
                 origin_y: 0,
                 input_scale_x: 1.0,
                 input_scale_y: 1.0,
+                input_aligned: true,
             })
         }
 

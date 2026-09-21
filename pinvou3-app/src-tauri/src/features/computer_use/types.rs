@@ -273,6 +273,11 @@ pub struct Capabilities {
 ///   (Windows/X11 physical pixels; macOS CGEvent points).
 /// - `input_scale_x/input_scale_y`: the device-physical-pixel → input-coordinate scale.
 ///   Windows/X11 is 1.0; macOS is 1/backing_scale_factor (0.5 on a 2x Retina).
+/// - `input_aligned`: whether the capture→input coordinate map is **trusted**.
+///   `false` marks the one capture path whose mapping is known-unverified
+///   (the Wayland xcap fallback at display scale ≠ 100%): coordinate input
+///   must be refused for shots carrying it instead of injecting at believed
+///   -wrong positions (see `platform/linux.rs`).
 #[derive(Debug, Clone)]
 pub struct Capture {
     pub rgba: Vec<u8>,
@@ -282,6 +287,7 @@ pub struct Capture {
     pub origin_y: i32,
     pub input_scale_x: f64,
     pub input_scale_y: f64,
+    pub input_aligned: bool,
 }
 
 impl Capture {

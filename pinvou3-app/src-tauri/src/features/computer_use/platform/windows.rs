@@ -907,6 +907,7 @@ impl ComputerUseBackend for WindowsComputerUseBackend {
             origin_y,
             input_scale_x: 1.0,
             input_scale_y: 1.0,
+            input_aligned: true,
         })
     }
 

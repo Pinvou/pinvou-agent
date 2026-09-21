@@ -90,6 +90,12 @@ const T3_CONFIRM_REQUIRED_ERROR: &str = "t3-confirmation-required";
 /// `attachments/` is its established root.
 const ATTACHMENTS_DIR: &str = "attachments/computer_use";
 
+/// Retention cap for stored screenshots (per workspace directory). Screens
+/// can show passwords/secrets, so unbounded accumulation is a privacy
+/// liability the audit log does not need (it keeps the SHA-256 + path
+/// trail; old files simply expire out of the store).
+const MAX_RETAINED_SCREENSHOTS: usize = 100;
+
 /// The full action set exposed by the tool schema. Single source of truth:
 /// the schema's enum, the unknown-action error text, and `parse_action`'s
 /// dispatch must agree — the parity test (tool/tests.rs) pins all three so
@@ -634,6 +640,7 @@ fn capture_and_store(parts: &Parts, workspace: &Path) -> Result<ShotOutcome, Com
     directory
         .atomic_write_private_file(std::ffi::OsStr::new(&file_name), &scaled.png)
         .map_err(|error| ComputerUseError::failed(format!("cannot write screenshot: {error}")))?;
+    prune_old_screenshots(&dir, MAX_RETAINED_SCREENSHOTS);
     let map = scaled.map;
     state.last_map = Some(map.clone());
     drop(state);
@@ -662,8 +669,10 @@ fn shot_result_text(shot: &ShotOutcome) -> String {
     );
     // Review finding: at the minimum scale floor the PNG can still exceed
     // the foundation's attach cap, which silently skips it — the model must
-    // be told instead of going blind.
-    if shot.png.len() > scaling::MAX_IMAGE_BYTES {
+    // be told instead of going blind. The warning keys on the foundation's
+    // 5 MB hard cap (a 4–5 MB result IS attached despite missing the 4 MB
+    // scaling target above), not on the scaling target.
+    if shot.png.len() > scaling::FOUNDATION_ATTACH_CAP_BYTES {
         text.push_str(
             "\nwarning: this encoded image exceeds the attach size cap even at the minimum \
              scale, so it will NOT be attached; use image_analyze with image_path to view it.",
@@ -678,19 +687,56 @@ fn with_image_metadata(result: ToolResult, shot: &ShotOutcome) -> ToolResult {
     }))
 }
 
+/// Keeps only the newest `keep` PNGs in the screenshot directory (filenames
+/// sort chronologically: `%Y%m%d-%H%M%S`-{seq} — the stamp is fixed-width,
+/// the per-session sequence zero-padded). Best-effort: any error (vanished
+/// directory, unreadable entry, failed unlink) is ignored — retention must
+/// never fail the action that just captured.
+fn prune_old_screenshots(dir: &Path, keep: usize) {
+    let Ok(entries) = std::fs::read_dir(dir) else {
+        return;
+    };
+    let mut names: Vec<String> = entries
+        .flatten()
+        .filter(|entry| entry.path().extension().is_some_and(|ext| ext == "png"))
+        .filter_map(|entry| entry.file_name().into_string().ok())
+        .collect();
+    if names.len() <= keep {
+        return;
+    }
+    names.sort();
+    let excess = names.len() - keep;
+    for name in names.iter().take(excess) {
+        let _ = std::fs::remove_file(dir.join(name));
+    }
+}
+
 fn backend_error_text(error: &ComputerUseError) -> String {
     format!("computer use action failed: {error}")
 }
 
 /// Resolves the target of a coordinate-carrying action: clamps to the
 /// screenshot range (out-of-bounds gives a warning, not a failure) → input
-/// coordinates.
+/// coordinates. Fails closed when the capture came from a path whose
+/// shot→input mapping is unverified (Wayland xcap fallback at scale ≠ 1):
+/// injecting a believed-wrong position executes an action on whatever is
+/// really under the cursor, so the refusal — not a disclosure — is the safe
+/// direction.
 fn resolve_targets(
     map: &ScaleMap,
     coords: &[(i64, i64)],
     warnings: &mut Vec<String>,
-) -> Vec<(i32, i32)> {
-    coords
+) -> Result<Vec<(i32, i32)>, ComputerUseError> {
+    if !map.input_aligned {
+        return Err(ComputerUseError::unavailable(
+            "input coordinates cannot be aligned with this screenshot: it was captured \
+             on the Wayland xcap fallback at a display scale other than 100%, whose \
+             mapping into the portal input space is unverified; coordinate input is \
+             refused until a portal capture is available (restart capture or the app \
+             to re-probe)",
+        ));
+    }
+    Ok(coords
         .iter()
         .map(|(x, y)| {
             let (cx, cy, clamped) = map.clamp_shot(*x, *y);
@@ -702,7 +748,7 @@ fn resolve_targets(
             }
             map.shot_to_input(cx, cy)
         })
-        .collect()
+        .collect())
 }
 
 /// The T3 screening verdict. Screening is best-effort category detection:
@@ -968,12 +1014,19 @@ fn full_type_preview(action: &ComputerUseAction, secure_type_target: bool) -> Op
 /// changing what the user sees). Hashes the action's Debug rendering — every
 /// parameter participates, nothing user-visible changes. In-process only
 /// (tokens are memory-bound with a 5-minute TTL), so hash stability across
-/// builds does not matter.
+/// builds does not matter — but the hash must be **unpredictable to the
+/// model**: the adversary who could profit from a binding collision is the
+/// code-executing model itself, so a fixed-key `DefaultHasher` (offline
+/// birthday-collidable at ~2^32 work) would let it get a benign text
+/// approved and spend the token on colliding malicious text. Truncated
+/// SHA-256 keeps the same in-process semantics with no offline collision
+/// shortcut.
 fn action_binding(action: &ComputerUseAction) -> u64 {
-    use std::hash::{Hash, Hasher};
-    let mut hasher = std::collections::hash_map::DefaultHasher::new();
-    format!("{action:?}").hash(&mut hasher);
-    hasher.finish()
+    use sha2::Digest;
+    let digest = sha2::Sha256::digest(format!("{action:?}").as_bytes());
+    let mut prefix = [0u8; 8];
+    prefix.copy_from_slice(&digest[..8]);
+    u64::from_be_bytes(prefix)
 }
 
 /// Structured i18n source for the consent dialog, serialized into the
@@ -1179,13 +1232,23 @@ fn request_confirmation(
     // broadcast and the guard's server-truth store (re-served through
     // `computer_use_get_status` so every window can reconstruct or collapse
     // the dialog). The confirm_id comes from the mint, so the payload is
-    // attached to the stored pending right after building it.
-    let confirm_id = parts.shared.new_pending_confirmation(
+    // attached to the stored pending right after building it. The guard
+    // refuses to register while disabled/stopped (an in-flight run racing a
+    // toggle/stop must not raise an unapprovable dialog): report the same
+    // stable audit prefix with the actual state, and no confirm_id.
+    let Some(confirm_id) = parts.shared.new_pending_confirmation(
         &parts.session_id,
         summary.to_string(),
         element_label.to_string(),
         binding,
-    );
+    ) else {
+        return format!(
+            "{T3_CONFIRM_REQUIRED_ERROR}: this action targets {reason_phrase}: \
+             \"{element_label}\". It was NOT executed. Computer use was disabled or \
+             stopped while the confirmation was being asked for; it must be re-enabled \
+             (or the stop resumed) before this action can be confirmed."
+        );
+    };
     let payload = build_confirm_payload(
         &parts.session_id,
         &confirm_id,
@@ -1780,7 +1843,7 @@ fn execute_action(
                     "no screenshot has been taken this session; take one before element_at_point",
                 ));
             };
-            let targets = resolve_targets(m, &[(*x, *y)], warnings);
+            let targets = resolve_targets(m, &[(*x, *y)], warnings)?;
             let Some(&(ix, iy)) = targets.first() else {
                 return Err(ComputerUseError::failed("missing element target"));
             };
@@ -1814,7 +1877,7 @@ fn execute_action(
                     "no screenshot has been taken this session; take one before mouse_move",
                 ));
             };
-            let targets = resolve_targets(m, &[(*x, *y)], warnings);
+            let targets = resolve_targets(m, &[(*x, *y)], warnings)?;
             let Some(&(ix, iy)) = targets.first() else {
                 return Err(ComputerUseError::failed("missing move target"));
             };
@@ -1832,7 +1895,7 @@ fn execute_action(
                         "no screenshot has been taken this session; take one before scroll with coordinates",
                     ));
                 };
-                let targets = resolve_targets(m, &[(*x, *y)], warnings);
+                let targets = resolve_targets(m, &[(*x, *y)], warnings)?;
                 let Some(&(ix, iy)) = targets.first() else {
                     return Err(ComputerUseError::failed("missing scroll target"));
                 };
@@ -1860,7 +1923,7 @@ fn execute_action(
                         "no screenshot has been taken this session; take one before clicking with coordinates",
                     ));
                 };
-                let targets = resolve_targets(m, &[(*x, *y)], warnings);
+                let targets = resolve_targets(m, &[(*x, *y)], warnings)?;
                 let Some(&(ix, iy)) = targets.first() else {
                     return Err(ComputerUseError::failed("missing click target"));
                 };
@@ -1914,7 +1977,7 @@ fn execute_action(
                     "no screenshot has been taken this session; take one before dragging",
                 ));
             };
-            let targets = resolve_targets(m, &[*start, *end], warnings);
+            let targets = resolve_targets(m, &[*start, *end], warnings)?;
             let (Some(&from), Some(&to)) = (targets.first(), targets.get(1)) else {
                 return Err(ComputerUseError::failed("missing drag targets"));
             };

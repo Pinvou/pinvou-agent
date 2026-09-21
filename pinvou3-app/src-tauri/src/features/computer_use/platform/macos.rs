@@ -1427,6 +1427,7 @@ impl MacosComputerUseBackend {
             origin_y,
             input_scale_x,
             input_scale_y,
+            input_aligned: true,
         })
     }
 }
@@ -1525,6 +1526,7 @@ impl ComputerUseBackend for MacosComputerUseBackend {
             origin_y,
             input_scale_x,
             input_scale_y,
+            input_aligned: true,
         })
     }
 
@@ -1648,6 +1650,12 @@ impl ComputerUseBackend for MacosComputerUseBackend {
             self.held_buttons.push(MouseButton::Left);
         }
         sleep(Duration::from_millis(DRAG_PRESS_SETTLE_MS));
+        // Track the last waypoint actually posted: the synthetic mouse-up
+        // carries its own location, so releasing at the endpoint `to` on a
+        // cancelled/failed path would teleport the cursor somewhere the drag
+        // never reached. The release must go to the last reached waypoint
+        // (which on the success path IS `to` — see below).
+        let mut last_posted = from;
         let result = (|| {
             for (x, y) in drag_waypoints(from, to, DRAG_STEPS) {
                 // Same abandonment contract as type_text and the Linux drag:
@@ -1668,6 +1676,7 @@ impl ComputerUseBackend for MacosComputerUseBackend {
                 // Send LeftMouseDragged while held (some apps only recognize
                 // the dragged type).
                 self.post_mouse_event(dragged, left, (x, y), 1)?;
+                last_posted = (x, y);
                 sleep(Duration::from_millis(DRAG_STEP_DELAY_MS));
             }
             Ok(())
@@ -1677,8 +1686,11 @@ impl ComputerUseBackend for MacosComputerUseBackend {
         // Inspect both results instead of `Result::and`, which keeps only the
         // first error: when the release fails too, the caller must still
         // learn that the button may be stranded pressed (mirrors click()'s
-        // stranded-button wording).
-        let release = self.post_mouse_event(up, left, to, 1);
+        // stranded-button wording). On a failed/cancelled path the release
+        // posts at the last reached waypoint, matching the cancel wording
+        // (the pointer does not jump to the unreached endpoint).
+        let release_at = if result.is_ok() { to } else { last_posted };
+        let release = self.post_mouse_event(up, left, release_at, 1);
         if release.is_ok() {
             self.held_buttons.retain(|held| *held != MouseButton::Left);
         }

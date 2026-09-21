@@ -1159,6 +1159,7 @@ impl LinuxComputerUseBackend {
             origin_y: 0,
             input_scale_x: input_scale.0,
             input_scale_y: input_scale.1,
+            input_aligned: true,
         })
     }
     fn require_enigo(&mut self) -> Result<&mut Enigo, ComputerUseError> {
@@ -1371,10 +1372,15 @@ impl ComputerUseBackend for LinuxComputerUseBackend {
             // experimental overall (compositor implementation differences);
             // injection of non-Latin-1 text is explicitly rejected (mutter
             // silently drops keysyms outside the keymap, see
-            // wayland_portal::char_keysym).
+            // wayland_portal::char_keysym). Latin-1 characters are always
+            // sent as-is — the portal path cannot check the active keymap —
+            // so they can equally be silently dropped when the keymap lacks
+            // them; only the explicit rejection is a guarantee.
             let experimental = "Wayland input is experimental (compositor implementations \
-                 differ), and typing non-Latin-1 text (CJK etc.) is explicitly rejected: \
-                 mutter silently drops keysyms outside the active keymap";
+                 differ), typing non-Latin-1 text (CJK etc.) is explicitly rejected: \
+                 mutter silently drops keysyms outside the active keymap, and Latin-1 \
+                 characters are sent unmapped and may equally be dropped when the active \
+                 keymap lacks them";
             // Honest disclosure: the portal keysym mapping covers F1-F12 only
             // (wayland_portal::map_keysym fails closed beyond, deliberately —
             // mutter silently drops what the active keymap lacks), narrower
@@ -1391,11 +1397,12 @@ impl ComputerUseBackend for LinuxComputerUseBackend {
             let fallback_note = if (self.wayland_screenshot_ok && !portal_ok)
                 || self.wayland_portal_capture_degraded
             {
-                "; capture is on the xcap fallback: multi-monitor coordinate alignment with \
-                 input is best-effort (the fallback assumes xcap's logical geometry matches \
-                 the portal input space, which is unverified against real compositors and \
-                 likely mispoints at fractional scale), only the PRIMARY monitor is \
-                 captured/input-able, and the compositor may prompt per capture"
+                "; capture is on the xcap fallback: coordinate input is REFUSED while the \
+                 fallback runs at a display scale other than 100% (the fallback's map into \
+                 the portal input space is unverified and mispointing is unsafe, so the \
+                 refusal is deliberate); at 100% scale multi-monitor coordinate alignment \
+                 with input is best-effort, only the PRIMARY monitor is captured/input-able, \
+                 and the compositor may prompt per capture"
             } else {
                 ""
             };
@@ -1439,6 +1446,15 @@ impl ComputerUseBackend for LinuxComputerUseBackend {
             let typing_caveat = "; typing caveat: typed lowercase can corrupt while CapsLock is \
                  on or Shift is held (enigo's X11 injection does keymap column-0 lookups and \
                  does not clear modifiers — same class as xdotool without --clearmodifiers)";
+            // Honest disclosure (matching the optimistic `screenshot: true`):
+            // the capability bit is declared without a probe; capture errors
+            // surface per call. On X11 some RandR layouts — notably a
+            // monitor at a negative origin — cannot be captured at all, so
+            // the model must expect a named per-call error instead of
+            // assuming every capture succeeds.
+            let capture_caveat = "; the screenshot capability is declared without probing \
+                 and capture errors surface per call (some X11 RandR layouts, e.g. a \
+                 negative-origin monitor, cannot be captured)";
             Capabilities {
                 screenshot: true,
                 input: self.input.is_some(),
@@ -1448,7 +1464,7 @@ impl ComputerUseBackend for LinuxComputerUseBackend {
                      tree{}){mismatch}; capture is cursor-anchored, so on multi-monitor setups \
                      only the monitor holding the cursor is visible/clickable this turn \
                      (move the pointer there via an initial screenshot on that \
-                     monitor){typing_caveat}",
+                     monitor){typing_caveat}{capture_caveat}",
                     self.session.desktop_label(),
                     if ui_tree { "" } else { " unavailable" },
                 ),
@@ -1590,14 +1606,18 @@ impl ComputerUseBackend for LinuxComputerUseBackend {
         // inverted at scale != 1 (mispoint ~scale²) and double-counts the
         // monitor origin on multi-monitor, the same class of unverified gap
         // as the AvailableCursorModes probe: it needs a live-portal check
-        // before the math is trusted or changed. Disclosed in capabilities()
-        // and the PR body; coordinate alignment here is best-effort until
-        // verified.
-        let (origin_x, origin_y, input_scale_x, input_scale_y) = if self.is_wayland() {
+        // before the math is trusted or changed. Until then the map is only
+        // handed out as `input_aligned` at scale == 1.0; at any other scale
+        // the capture is marked unaligned and coordinate input REFUSES
+        // instead of injecting at a believed-wrong position (a capabilities
+        // note the model may disregard does not make a mispointed click
+        // safe).
+        let (origin_x, origin_y, input_scale_x, input_scale_y, input_aligned) = if self.is_wayland()
+        {
             let scale = f64::from(scale);
             let origin_x = monitor.x().unwrap_or(0);
             let origin_y = monitor.y().unwrap_or(0);
-            (origin_x, origin_y, 1.0 / scale, 1.0 / scale)
+            (origin_x, origin_y, 1.0 / scale, 1.0 / scale, scale == 1.0)
         } else {
             let origin_x = monitor
                 .x()
@@ -1607,7 +1627,7 @@ impl ComputerUseBackend for LinuxComputerUseBackend {
                 .y()
                 .map(|y| (y as f32 * scale).round() as i32)
                 .unwrap_or(0);
-            (origin_x, origin_y, 1.0, 1.0)
+            (origin_x, origin_y, 1.0, 1.0, true)
         };
         Ok(Capture {
             rgba: image.into_raw(),
@@ -1617,6 +1637,7 @@ impl ComputerUseBackend for LinuxComputerUseBackend {
             origin_y,
             input_scale_x,
             input_scale_y,
+            input_aligned,
         })
     }
 
@@ -2102,12 +2123,25 @@ impl ComputerUseBackend for LinuxComputerUseBackend {
                     .as_ref()
                     .is_some_and(|flag| flag.load(Ordering::SeqCst))
                 {
-                    for keysym in mapped.iter().rev() {
-                        let _ = portal.keysym_event(*keysym, false);
-                    }
-                    return Err(ComputerUseError::unavailable(
-                        "hold was cancelled (caller timeout or stop); the keys have been released",
-                    ));
+                    // Same compensating retry as the normal release below:
+                    // the cancel path is exactly the "caller timeout or
+                    // stop" case the retry exists for, and a single failed
+                    // notify may strand the key on the compositor (mutter
+                    // never synthesizes the missing release when the session
+                    // closes).
+                    let release = release_keysyms_with_retry(
+                        |keysym, pressed| portal.keysym_event(keysym, pressed),
+                        &mapped,
+                    );
+                    return Err(match release {
+                        Ok(()) => ComputerUseError::unavailable(
+                            "hold was cancelled (caller timeout or stop); the keys have been released",
+                        ),
+                        Err(release_error) => ComputerUseError::unavailable(format!(
+                            "hold was cancelled (caller timeout or stop); the compensating \
+                             release failed ({release_error}); the keys may still be held down"
+                        )),
+                    });
                 }
                 let step = remaining.min(HOLD_CANCEL_POLL_MS);
                 sleep(Duration::from_millis(step));
@@ -2132,10 +2166,18 @@ impl ComputerUseBackend for LinuxComputerUseBackend {
                 .as_ref()
                 .is_some_and(|flag| flag.load(Ordering::SeqCst))
             {
-                let _ = Self::release_chord(enigo, &mapped);
-                return Err(ComputerUseError::unavailable(
-                    "hold was cancelled (caller timeout or stop); the keys have been released",
-                ));
+                // Surface a failed release instead of claiming success: an
+                // XTEST release error usually means the connection is dead,
+                // and the caller must know the keys may be stranded down.
+                return Err(match Self::release_chord(enigo, &mapped) {
+                    Ok(()) => ComputerUseError::unavailable(
+                        "hold was cancelled (caller timeout or stop); the keys have been released",
+                    ),
+                    Err(release_error) => ComputerUseError::unavailable(format!(
+                        "hold was cancelled (caller timeout or stop); the compensating \
+                         release failed ({release_error}); the keys may still be held down"
+                    )),
+                });
             }
             let step = remaining.min(HOLD_CANCEL_POLL_MS);
             sleep(Duration::from_millis(step));
@@ -3311,7 +3353,8 @@ mod x11_live_tests {
         let summary = "left click x1 at Some((200, 300))";
         let confirm_id = fx
             .shared
-            .new_pending_confirmation(SESSION, summary, "Live", 0);
+            .new_pending_confirmation(SESSION, summary, "Live", 0)
+            .expect("pending registered");
         assert!(fx.shared.pending_confirmation(&confirm_id).is_some());
         assert_eq!(
             fx.shared
@@ -3441,12 +3484,10 @@ mod x11_live_tests {
         // A live pending confirmation (raised via the guard exactly as the
         // tool's blocked-action path raises one; with AT-SPI absent no denylist
         // element is reachable here, so the guard API is used directly).
-        let confirm_id = fx.shared.new_pending_confirmation(
-            SESSION,
-            "left click x1 at Some((300, 200))",
-            "Live",
-            0,
-        );
+        let confirm_id = fx
+            .shared
+            .new_pending_confirmation(SESSION, "left click x1 at Some((300, 200))", "Live", 0)
+            .expect("pending registered");
         assert!(fx.shared.pending_confirmation(&confirm_id).is_some());
 
         // The computer_use_stop command path, verbatim.

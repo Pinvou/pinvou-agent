@@ -533,19 +533,29 @@ impl ComputerUseShared {
     /// Registers a T3 confirmation waiting for the user's decision and
     /// returns the confirm_id. At most one pending per session: a new request
     /// replaces the session's existing pending (newest wins, like an ordinary
-    /// dialog), so this method cannot fail. `action_binding` is the tool
-    /// layer's content hash of the blocked action and is carried into the
-    /// minted token. Also sweeps expired pendings.
+    /// dialog). `action_binding` is the tool layer's content hash of the
+    /// blocked action and is carried into the minted token. Also sweeps
+    /// expired pendings.
+    ///
+    /// Returns `None` when the master switch is off or the stop is latched:
+    /// `mint_confirmation` refuses in that state, so a pending registered
+    /// there could never be approved — an in-flight run racing a
+    /// disable/stop must not leave an unapprovable dialog on screen for the
+    /// TTL (its caller reports the refusal as part of the same stable error
+    /// prefix, so the audit shape is unchanged).
     pub fn new_pending_confirmation(
         &self,
         session_id: &str,
         action_summary: impl Into<String>,
         element_label: impl Into<String>,
         action_binding: u64,
-    ) -> String {
+    ) -> Option<String> {
         let confirm_id = format!("cu-{:016x}", rand::random::<u64>());
         let now = Instant::now();
         let mut consent = self.consent.lock();
+        if !self.is_enabled() || self.is_stopped() {
+            return None;
+        }
         let pending = &mut consent.pending;
         pending.retain(|_, entry| now.duration_since(entry.created_at) <= CONFIRM_TTL);
         // At most one pending per session: the newest request wins (a normal
@@ -569,7 +579,7 @@ impl ComputerUseShared {
                 payload: serde_json::Value::Null,
             },
         );
-        confirm_id
+        Some(confirm_id)
     }
 
     /// Server truth for the consent UI: the newest unexpired pending for
@@ -672,13 +682,28 @@ impl ComputerUseShared {
         if !self.is_enabled() || self.is_stopped() {
             return false;
         }
-        let entry = consent.pending.remove(confirm_id);
-        let Some(entry) = entry else {
+        let Some(entry) = consent.pending.get(confirm_id) else {
             return false;
         };
-        if entry.created_at.elapsed() > CONFIRM_TTL {
+        let expired = entry.created_at.elapsed() > CONFIRM_TTL;
+        // The session must still hold its grant: a pending created by an
+        // in-flight run whose grant was concurrently revoked must not mint a
+        // token for a grant-less session. (The tool's last-moment verify
+        // rejects the action anyway — this only stops the dead token from
+        // existing at all, and sweeping the pending here collapses the
+        // dialog instead of serving it until the TTL.) Checked under the
+        // consent lock with a nested `sessions` read — the reverse nesting
+        // nowhere exists (grant_session nests sessions → grant_requests;
+        // the sweeps take the locks sequentially), so no ordering cycle is
+        // introduced.
+        let granted = self.sessions.lock().contains(entry.session_id.as_str());
+        if expired || !granted {
+            consent.pending.remove(confirm_id);
             return false;
         }
+        let Some(entry) = consent.pending.remove(confirm_id) else {
+            unreachable!("entry was read under the same unexpired consent lock")
+        };
         let now = Instant::now();
         let tokens = &mut consent.approved_tokens;
         tokens.retain(|_, token| now.duration_since(token.minted_at) <= CONFIRM_TTL);
@@ -754,7 +779,9 @@ mod tests {
     /// Tests that don't exercise the content binding pass a zero binding on
     /// both sides (mint copies it verbatim, spend compares it verbatim).
     fn new_pending(shared: &ComputerUseShared, session: &str, summary: &str) -> String {
-        shared.new_pending_confirmation(session, summary, "Buy now", 0)
+        shared
+            .new_pending_confirmation(session, summary, "Buy now", 0)
+            .expect("pending minted while the feature is enabled")
     }
 
     fn take(
@@ -1004,6 +1031,7 @@ mod tests {
     #[test]
     fn confirmation_tokens_are_single_use_and_bound_to_session_and_action() {
         let shared = enabled_shared();
+        shared.grant_session("s1");
         let summary = "left click x1 at Some((100, 200))";
         let id = new_pending(&shared, "s1", summary);
         let pending = shared.pending_confirmation(&id);
@@ -1051,6 +1079,7 @@ mod tests {
     #[test]
     fn deny_confirmation_consumes_the_pending_and_retry_mints_a_new_one() {
         let shared = enabled_shared();
+        shared.grant_session("s1");
         let id = new_pending(&shared, "s1", "left click");
         assert!(shared.deny_confirmation(&id));
         // deny clears the pending: it can no longer mint (mint returns false,
@@ -1087,6 +1116,7 @@ mod tests {
     #[test]
     fn deny_after_mint_retracts_the_unspent_token() {
         let shared = enabled_shared();
+        shared.grant_session("s1");
         let id = new_pending(&shared, "s1", "left click x1 at Some((5, 6))");
         assert!(shared.mint_confirmation(&id));
         // Change of heart: retract the unspent token.
@@ -1234,6 +1264,7 @@ mod tests {
         // new_pending_confirmation replaced the first pending, so mint the
         // token from a separate session-bound request order: re-mint via a
         // fresh pending for s2 to keep the s1 replacement semantics intact.
+        shared.grant_session("s2");
         let s2_pending = new_pending(&shared, "s2", "left click 3");
         assert!(shared.mint_confirmation(&s2_pending));
         shared.revoke_all_sessions();
@@ -1269,6 +1300,7 @@ mod tests {
         let shared = ComputerUseShared::new();
         shared.set_enabled(true);
         assert_eq!(shared.grant_session("s1"), GrantOutcome::Granted);
+        shared.grant_session("s2");
         let pending_id = new_pending(&shared, "s1", "left click");
         let token_id = new_pending(&shared, "s2", "type 3 characters");
         assert!(shared.mint_confirmation(&token_id));
@@ -1299,12 +1331,24 @@ mod tests {
         // flip: consent created in the stopped window does not survive
         // re-enable even when the caller never calls reset_stop.
         shared.stop_all();
-        let stopped_window = new_pending(&shared, "s3", "left click");
-        shared.set_enabled(true);
+        // A pending can no longer be registered in the stopped window at all
+        // (the insert-side gate), so the enable-side sweep is defense in
+        // depth for artifacts that raced in before the stop landed; the
+        // model-facing consequence of a stopped-window ask is the refusal,
+        // not a dead dialog.
         assert!(
-            shared.pending_confirmation(&stopped_window).is_none(),
-            "re-enabling must sweep consent created in the stopped window"
+            shared
+                .new_pending_confirmation("s3", "left click", "Buy now", 0)
+                .is_none(),
+            "no pending may be registered while the stop latch is raised"
         );
+        shared.set_enabled(true);
+        // Re-enable restores the ability to ask (a fresh id), while nothing
+        // from the stopped window exists.
+        let fresh = shared
+            .new_pending_confirmation("s3", "left click", "Buy now", 0)
+            .expect("pending registered after re-enable");
+        assert!(shared.pending_confirmation(&fresh).is_some());
     }
 
     #[test]
@@ -1336,6 +1380,7 @@ mod tests {
     #[test]
     fn minted_token_expires_at_spend() {
         let shared = enabled_shared();
+        shared.grant_session("s1");
         let summary = "left click x1 at Some((100, 200))";
         let id = new_pending(&shared, "s1", summary);
         assert!(shared.mint_confirmation(&id), "fresh pending must mint");
@@ -1383,6 +1428,7 @@ mod tests {
     #[test]
     fn revoke_session_wipes_that_sessions_minted_tokens() {
         let shared = enabled_shared();
+        shared.grant_session("s1");
         let summary = "left click x1 at Some((100, 200))";
         let id = new_pending(&shared, "s1", summary);
         assert!(shared.mint_confirmation(&id));
@@ -1406,6 +1452,7 @@ mod tests {
     #[test]
     fn revoke_session_spares_other_sessions_tokens() {
         let shared = enabled_shared();
+        shared.grant_session("s2");
         let summary = "left click x1 at Some((100, 200))";
         let other_id = new_pending(&shared, "s2", summary);
         assert!(shared.mint_confirmation(&other_id));
@@ -1428,6 +1475,7 @@ mod tests {
             // A distinct session per pending mirrors real usage (one pending
             // per session at a time).
             let session = format!("s{i}");
+            shared.grant_session(&session);
             let id = new_pending(&shared, &session, "left click");
             assert!(shared.mint_confirmation(&id));
             ids.push((session, id));
@@ -1445,27 +1493,35 @@ mod tests {
         }
     }
 
-    /// Stop race: a pending that an in-flight run re-creates AFTER stop_all
-    /// must not mint a token while the stop latch is raised — and must still
-    /// be unusable after a later re-enable (reset_stop sweeps consent created
-    /// during the stopped window).
+    /// Stop race: an in-flight run can no longer register a pending AFTER
+    /// stop_all (the insert-side gate refuses while the stop latch is
+    /// raised), and a pending that raced in before the stop must not mint
+    /// while stopped — nor after a later re-enable (reset_stop sweeps
+    /// consent created before the stop landed).
     #[test]
     fn mint_refuses_consent_created_while_stopped() {
         let shared = enabled_shared();
+        shared.grant_session("s1");
+        let raced = new_pending(&shared, "s1", "left click");
         shared.stop_all();
-        let id = new_pending(&shared, "s1", "left click");
         assert!(
-            !shared.mint_confirmation(&id),
+            shared
+                .new_pending_confirmation("s1", "left click", "Buy now", 0)
+                .is_none(),
+            "no pending may be registered while the stop latch is raised"
+        );
+        assert!(
+            !shared.mint_confirmation(&raced),
             "mint must refuse while the stop latch is raised"
         );
-        // Re-enabling sweeps the stopped-window pending: the stale dialog
-        // stays dead even though the stop flag is now cleared.
+        // Re-enabling sweeps consent created before the stop: the stale
+        // dialog stays dead even though the stop flag is now cleared.
         shared.reset_stop();
         assert!(
-            !shared.mint_confirmation(&id),
-            "a pending created during the stop window must not mint after resume"
+            !shared.mint_confirmation(&raced),
+            "a pending from before the stop must not mint after resume"
         );
-        assert!(shared.pending_confirmation(&id).is_none());
+        assert!(shared.pending_confirmation(&raced).is_none());
     }
 
     /// Stop race, mint side: a token minted before the stop is wiped by
@@ -1473,6 +1529,7 @@ mod tests {
     #[test]
     fn stop_then_resume_leaves_no_mintable_token() {
         let shared = enabled_shared();
+        shared.grant_session("s1");
         let id = new_pending(&shared, "s1", "left click");
         assert!(shared.mint_confirmation(&id));
         shared.stop_all();
@@ -1490,7 +1547,10 @@ mod tests {
     #[test]
     fn token_binding_covers_the_action_content() {
         let shared = enabled_shared();
-        let id = shared.new_pending_confirmation("s1", "type 3 characters", "field", 42);
+        shared.grant_session("s1");
+        let id = shared
+            .new_pending_confirmation("s1", "type 3 characters", "field", 42)
+            .expect("pending registered");
         assert!(shared.mint_confirmation(&id));
         assert_eq!(
             shared.take_confirmation(&id, "s1", "type 3 characters", 43),
@@ -1504,11 +1564,55 @@ mod tests {
         );
         // Mint refuses while disabled, too (toggle-off race symmetry).
         let shared2 = enabled_shared();
-        let id2 = shared2.new_pending_confirmation("s2", "left click", "Buy now", 7);
+        let id2 = shared2
+            .new_pending_confirmation("s2", "left click", "Buy now", 7)
+            .expect("pending registered");
         shared2.set_enabled(false);
         assert!(
             !shared2.mint_confirmation(&id2),
             "mint must refuse while the master switch is off"
+        );
+    }
+
+    /// A pending whose session grant was revoked concurrently must not mint
+    /// an approval token for a grant-less session (the dead pending is swept
+    /// at mint, so the dialog collapses instead of hanging unapprovable
+    /// until the TTL; the tool's last-moment verify would reject the action
+    /// anyway — this only stops the dead token from existing at all).
+    #[test]
+    fn mint_refuses_after_the_sessions_grant_was_revoked() {
+        let shared = enabled_shared();
+        shared.grant_session("s1");
+        let id = shared
+            .new_pending_confirmation("s1", "left click", "Buy now", 0)
+            .expect("pending registered");
+        shared.revoke_session("s1");
+        assert!(!shared.mint_confirmation(&id));
+        assert!(
+            shared.pending_confirmation(&id).is_none(),
+            "the dead pending must not stay served for the TTL"
+        );
+    }
+
+    /// No pending may be registered while the feature is disabled or the
+    /// stop is latched: mint refuses in those states, so a pending
+    /// registered there could never be approved — the in-flight caller gets
+    /// the refusal and no unapprovable dialog is served for the TTL.
+    #[test]
+    fn no_pending_is_registered_while_disabled_or_stopped() {
+        let shared = enabled_shared();
+        shared.set_enabled(false);
+        assert!(
+            shared
+                .new_pending_confirmation("s1", "left click", "Buy now", 0)
+                .is_none()
+        );
+        shared.set_enabled(true);
+        shared.stop_all();
+        assert!(
+            shared
+                .new_pending_confirmation("s1", "left click", "Buy now", 0)
+                .is_none()
         );
     }
 
@@ -1520,14 +1624,18 @@ mod tests {
     fn pending_payload_serves_newest_and_collapses_on_decision() {
         let shared = enabled_shared();
         assert!(shared.pending_payload_for_session("s1").is_none());
-        let id1 = shared.new_pending_confirmation("s1", "left click", "Buy now", 0);
+        let id1 = shared
+            .new_pending_confirmation("s1", "left click", "Buy now", 0)
+            .expect("pending registered");
         shared.set_pending_payload(&id1, serde_json::json!({ "confirm_id": id1 }));
         let served = shared
             .pending_payload_for_session("s1")
             .expect("payload served");
         assert_eq!(served["confirm_id"], id1);
         // Newest wins: the replacement's payload is the one served.
-        let id2 = shared.new_pending_confirmation("s1", "type 3 characters", "Buy now", 0);
+        let id2 = shared
+            .new_pending_confirmation("s1", "type 3 characters", "Buy now", 0)
+            .expect("pending registered");
         shared.set_pending_payload(&id2, serde_json::json!({ "confirm_id": id2 }));
         let served = shared
             .pending_payload_for_session("s1")
@@ -1575,6 +1683,7 @@ mod tests {
     #[test]
     fn take_confirmation_refuses_while_disabled_or_stopped() {
         let shared = enabled_shared();
+        shared.grant_session("s1");
         let id = new_pending(&shared, "s1", "left click");
         assert!(shared.mint_confirmation(&id));
         shared.set_enabled(false);

@@ -252,6 +252,7 @@ impl ComputerUseBackend for MockBackend {
             origin_y: state.capture_origin.1,
             input_scale_x: state.input_scale.0,
             input_scale_y: state.input_scale.1,
+            input_aligned: true,
         })
     }
 
@@ -2622,11 +2623,13 @@ async fn dropping_the_tool_revokes_the_grant_and_consent_artifacts() {
     let summary = "left click x1 at Some((5, 5))";
     let own_token = fixture
         .shared
-        .new_pending_confirmation("s-test", summary, "Buy now", 0);
+        .new_pending_confirmation("s-test", summary, "Buy now", 0)
+        .expect("pending registered");
     assert!(fixture.shared.mint_confirmation(&own_token));
     let other_token = fixture
         .shared
-        .new_pending_confirmation("s-other", summary, "Buy now", 0);
+        .new_pending_confirmation("s-other", summary, "Buy now", 0)
+        .expect("pending registered");
     assert!(fixture.shared.mint_confirmation(&other_token));
 
     drop(fixture.tool);
@@ -3547,8 +3550,12 @@ fn stop_all_wipes_pending_confirmations_and_approved_tokens() {
     // first per "newest wins"; only across sessions can one pending and one
     // minted token coexist.
     shared.grant_session("s2");
-    let pending_id = shared.new_pending_confirmation("s1", "left click", "Buy now", 0);
-    let token_id = shared.new_pending_confirmation("s2", "type 3 characters", "secret-field", 0);
+    let pending_id = shared
+        .new_pending_confirmation("s1", "left click", "Buy now", 0)
+        .expect("pending registered");
+    let token_id = shared
+        .new_pending_confirmation("s2", "type 3 characters", "secret-field", 0)
+        .expect("pending registered");
     assert!(shared.pending_confirmation(&pending_id).is_some());
     assert!(shared.mint_confirmation(&token_id));
 
@@ -3908,6 +3915,59 @@ async fn char_carrying_chord_confirm_stays_masked_on_secure_target() {
         payload["chord_masked_chars"].as_u64(),
         Some(4),
         "the masked-character count must replace the raw characters: {payload}"
+    );
+    // The get_status replay serves the SAME stored payload (the masked one
+    // built for the event), not a rebuild from raw fields — a rebuild from
+    // raw action data would leak the chord here while every event-side
+    // assert above stays green (round-16: the replay half of the claim had
+    // no test).
+    let replay = fixture_secure
+        .shared
+        .pending_payload_for_session("s-test")
+        .expect("get_status replay serves the live pending");
+    assert!(
+        replay["type_preview_full"].is_null() && replay["chord"].is_null(),
+        "the replay must be exactly as masked as the event: {replay}"
+    );
+    assert_eq!(replay["chord_masked_chars"].as_u64(), Some(4), "{replay}");
+    assert_eq!(replay["confirm_id"], payload["confirm_id"]);
+}
+
+/// Retention: only the newest [`MAX_RETAINED_SCREENSHOTS`] PNGs stay in the
+/// screenshot directory — older files are pruned on write, and files that
+/// are not screenshots are never touched (screens can show secrets;
+/// unbounded accumulation is a privacy liability).
+#[test]
+fn screenshot_retention_prunes_oldest_files() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    for i in 0..5 {
+        std::fs::write(
+            dir.path().join(format!("20260921-000000-000{i}.png")),
+            b"png",
+        )
+        .expect("write");
+    }
+    // Non-screenshot files in the same directory are never touched.
+    std::fs::write(dir.path().join("notes.txt"), b"x").expect("write");
+    super::prune_old_screenshots(dir.path(), 2);
+    let mut remaining: Vec<String> = std::fs::read_dir(dir.path())
+        .expect("read dir")
+        .map(|entry| {
+            entry
+                .expect("entry")
+                .file_name()
+                .into_string()
+                .expect("utf8")
+        })
+        .collect();
+    remaining.sort();
+    assert_eq!(
+        remaining,
+        vec![
+            "20260921-000000-0003.png".to_string(),
+            "20260921-000000-0004.png".to_string(),
+            "notes.txt".to_string(),
+        ]
     );
 }
 
