@@ -63,14 +63,20 @@ impl ConnectorGate {
     pub async fn apply_skills_command(&'static self) -> Result<Value, String> {
         let show = tokio::task::spawn_blocking(|| -> Result<bool, String> {
             let show = self.skills_should_show();
+            // Deny-first transaction boundary (#517 review): register the
+            // connector in the initialized DenyAll scopes BEFORE materializing
+            // skill files, so a refused gate sync aborts before `apply_skills`
+            // exposes anything — the connector can never end up enabled
+            // outside the deny list. The sync write can block on the
+            // cross-process flock (#515), hence inside spawn_blocking; a
+            // refused write (lock unavailable) fails the call so the safety
+            // default is never silently skipped.
+            crate::features::marketplace::deny_first_register_connector(self.id, show)?;
             self.apply_skills(show)?;
             Ok(show)
         })
         .await
         .map_err(|e| format!("spawn_blocking: {e}"))??;
-        if show {
-            crate::features::marketplace::sync_deny_all_scopes_after_install(self.id);
-        }
         Ok(json!({ "visible": show }))
     }
 

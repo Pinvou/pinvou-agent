@@ -444,9 +444,9 @@ pub use types::{
 #[cfg(test)]
 pub use crate::features::marketplace::scope::save_disabled_bundles;
 pub use crate::features::marketplace::scope::{
-    load_disabled_bundles, load_disabled_bundles_for, load_hidden_bundles_for,
-    remove_bundle_from_disabled_scopes, save_disabled_bundles_for, save_hidden_bundles_for,
-    sync_deny_all_scopes_after_install, unavailable_bundles_for,
+    deny_first_register_connector, load_disabled_bundles, load_disabled_bundles_for,
+    load_hidden_bundles_for, remove_bundle_from_disabled_scopes, save_disabled_bundles_for,
+    save_hidden_bundles_for, sync_deny_all_scopes_after_install, unavailable_bundles_for,
 };
 
 /// 按会话类型 scope 持久化连接器禁用列表并刷新技能目录。
@@ -748,7 +748,22 @@ impl<S: CredentialStore> MarketplaceManager<S> {
     pub fn installed_ids(&self) -> Vec<String> {
         let content = match std::fs::read_to_string(&self.installed_file) {
             Ok(c) => c,
-            Err(_) => return Vec::new(),
+            // Missing file before the first install: an empty list IS the true state.
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Vec::new(),
+            Err(e) => {
+                // Returning an empty list when the file exists but cannot be
+                // read (AV/permission transient) would silently shrink the
+                // uninitialized DenyAll scope's "deny every installed package"
+                // default to builtins only (fail-open direction). Recover ids
+                // read-only from mcp.json (no installed.json rewrite), same
+                // discipline as the corrupt-parse branch below, to keep the
+                // failure direction conservative; the unreadable file itself
+                // is still logged loudly.
+                eprintln!(
+                    "[marketplace] installed.json unreadable: {e}; recovering ids from mcp.json"
+                );
+                return self.recover_installed_ids_from_mcp();
+            }
         };
         match serde_json::from_str::<Vec<String>>(&content) {
             Ok(ids) => ids,
@@ -1234,7 +1249,12 @@ impl<S: CredentialStore> MarketplaceManager<S> {
             let _ = self.credential_store.delete(&reference);
             secrets::remove_secret_value(&secrets::mcp_secret_env_var(key));
         }
-        remove_bundle_from_disabled_scopes(tool_id);
+        // A refused cleanup (cross-process lock unavailable, #515) only logs:
+        // the leftover entry fails closed (the package stays off after a
+        // reinstall) and the uninstall itself has already succeeded.
+        if let Err(error) = remove_bundle_from_disabled_scopes(tool_id) {
+            eprintln!("[marketplace] scope cleanup for {tool_id} skipped: {error}");
+        }
         if preserve_companion_skills {
             return;
         }
@@ -1245,7 +1265,9 @@ impl<S: CredentialStore> MarketplaceManager<S> {
                 continue;
             }
             let _ = skill_marketplace::SkillMarketplaceManager::new().uninstall(&skill_id);
-            scope::remove_bundle_from_disabled_scopes(&skill_id);
+            if let Err(error) = scope::remove_bundle_from_disabled_scopes(&skill_id) {
+                eprintln!("[marketplace] scope cleanup for {skill_id} skipped: {error}");
+            }
         }
     }
 
@@ -4774,7 +4796,7 @@ mod tests {
         with_temp_home(|| {
             write_installed_ids(&["pptx".to_string()]);
             // 未初始化 → 不落盘,文件保持无/空。
-            sync_deny_all_scopes_after_install("weather");
+            sync_deny_all_scopes_after_install("weather").unwrap();
             assert!(
                 crate::features::marketplace::scope::load_disabled_bundles_file()
                     .scopes
@@ -4784,7 +4806,7 @@ mod tests {
             );
             // 初始化 code 后(显式开掉 pptx),新装 weather → 自动进 code 禁用集。
             save_disabled_bundles_for(ConnectorScope::Code, &[]).unwrap();
-            sync_deny_all_scopes_after_install("weather");
+            sync_deny_all_scopes_after_install("weather").unwrap();
             assert_eq!(
                 load_disabled_bundles_for(ConnectorScope::Code),
                 vec!["weather".to_string()]
@@ -4798,7 +4820,7 @@ mod tests {
                     .is_empty()
             );
             // 已存在不重复。
-            sync_deny_all_scopes_after_install("weather");
+            sync_deny_all_scopes_after_install("weather").unwrap();
             assert_eq!(
                 load_disabled_bundles_for(ConnectorScope::Code),
                 vec!["weather".to_string()]
@@ -4815,7 +4837,7 @@ mod tests {
             )
             .unwrap();
             save_disabled_bundles_for(ConnectorScope::Code, &["weather".to_string()]).unwrap();
-            remove_bundle_from_disabled_scopes("weather");
+            remove_bundle_from_disabled_scopes("weather").unwrap();
             assert_eq!(
                 load_disabled_bundles_for(ConnectorScope::Plain),
                 vec!["pptx".to_string()]

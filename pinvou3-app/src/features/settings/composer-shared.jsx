@@ -456,6 +456,14 @@ window.addEventListener('pinvou:chat-round-committed', (event) => {
       const [projectSkillsHelp, setProjectSkillsHelp] = useState(false); // 项目技能帮助弹窗(功能说明+扫描目录)
       // CLI 连接器连接/技能状态：key → { on: 是否已连接, enabled: 技能是否启用(未手动停用) }。
       const [connectorStates, setConnectorStates] = useState(initialConnectorStates);
+      // Persist-refusal banner (backend refuses when the cross-process lock is
+      // unavailable or the disk write fails). Failures must stay visible: the
+      // local toggle rolls back to backend truth instead of being swallowed
+      // (same handling as the ToolStoreView visibility switches). The sequence
+      // token keeps a later successful toggle from clearing an earlier
+      // failure's message.
+      const [writeError, setWriteError] = useState('');
+      const writeSeqRef = useRef(0);
       // 启动时加载已装工具 + 全局持久的禁用列表(持久语义:新窗口/新对话都继承)
       async function refreshToolsMenu(isAlive) {
         try {
@@ -535,8 +543,24 @@ window.addEventListener('pinvou:chat-round-committed', (event) => {
         if (enabled) pending.ids.delete(id); else pending.ids.add(id);
         // 按 scope 持久:落盘 + 广播给所有在跑引擎,关一次该 scope 所有新对话/新窗口都继承。
         if (bridge.available) {
+          const seq = ++writeSeqRef.current;
           invokeTauri('set_disabled_connectors',
-            { connectorIds: [...next], scope: toolScope }).catch(() => {});
+            { connectorIds: [...next], scope: toolScope })
+            .then(() => {
+              if (seq === writeSeqRef.current) setWriteError('');
+            })
+            .catch((e) => {
+              // Persistence refused (cross-process lock unavailable / disk
+              // write failed): roll the local toggle back to backend truth and
+              // surface the reason — swallowing it would leave the toggle on
+              // locally while the disk says otherwise, silently reverting on
+              // restart. Undo the pending bookkeeping too, or an undone
+              // uncommitted open stays locked until the next round commits.
+              if (enabled) pending.ids.add(id); else pending.ids.delete(id);
+              bumpPendingVersion();
+              refreshToolsMenu(() => true);
+              setWriteError(String(e));
+            });
         }
       }
       function toggleProjectSkills() {
@@ -547,7 +571,19 @@ window.addEventListener('pinvou:chat-round-committed', (event) => {
         setProjectSkillsEnabled(next);
         pending.projectSkills = next;
         if (bridge.available) {
-          invokeTauri('set_project_skills_enabled', { enabled: next }).catch(() => {});
+          const seq = ++writeSeqRef.current;
+          invokeTauri('set_project_skills_enabled', { enabled: next })
+            .then(() => {
+              if (seq === writeSeqRef.current) setWriteError('');
+            })
+            .catch((e) => {
+              // Persist refused: undo the pending bookkeeping along with the
+              // backend-truth rollback.
+              pending.projectSkills = !next;
+              bumpPendingVersion();
+              refreshToolsMenu(() => true);
+              setWriteError(String(e));
+            });
         }
       }
       const menuState = buildComposerToolMenuState({
@@ -655,6 +691,16 @@ window.addEventListener('pinvou:chat-round-committed', (event) => {
                       <div className="px-3 pt-1 pb-1 text-[11px] text-gray-400 dark:text-gray-500">{t.composerSkillAllDisabled}</div>
                     )}
                   </>
+                )}
+                {/* Toggle persistence failed: the local state was already rolled
+                    back to backend truth; show the reason (cross-process lock
+                    unavailable / disk write failed). Placed at the popover top
+                    level so tool-switch failures stay visible even when no skill
+                    rows are rendered. */}
+                {writeError && (
+                  <div className="px-3 pt-1 pb-1 text-[11px] leading-snug text-amber-600 dark:text-amber-400" data-testid="composer-tool-write-error">
+                    {t.uiToolStore.operationFailedWith(writeError)}
+                  </div>
                 )}
                 {toolScope === 'code' && (
                   <>

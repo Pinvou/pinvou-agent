@@ -20,7 +20,9 @@ use std::path::PathBuf;
 use std::sync::Mutex;
 
 use crate::core::session_mode::{PackDefaultPolicy, SessionMode};
-use crate::features::marketplace::bundle::{builtin_cli_bundle_ids, skill_owner_package};
+use crate::features::marketplace::bundle::{
+    builtin_cli_bundle_ids, bundle_installed, skill_owner_package,
+};
 use crate::features::marketplace::skill_marketplace::SkillMarketplaceManager;
 use crate::features::marketplace::{ConnectorScope, MarketplaceManager};
 use crate::platform::paths;
@@ -52,41 +54,279 @@ fn disabled_bundles_path() -> PathBuf {
     paths::pinvou3_home().join("disabled_bundles.json")
 }
 
-/// `disabled_bundles.json` 读-改-写的进程内串行化。
+/// In-process serialization for the `disabled_bundles.json` read-modify-write.
+///
+/// #515: an in-process mutex alone cannot stop cross-process races — the GUI
+/// and headless hosts can share one `~/.pinvou3` home and both install/toggle
+/// packs, so two concurrent load→save sections silently drop each other's
+/// writes (a lost update; the lost side is the user's explicit off, which is
+/// fail-open on the DenyAll gate). Every write critical section must go
+/// through `with_scope_file_lock`: take this mutex first, then the OS-level
+/// file lock (flock / LockFileEx via `fd-lock`, the same primitive and crate
+/// as the remote-control process-ownership lock). Each acquisition opens a
+/// fresh file, so the OS lock actually excludes other threads of this process
+/// too; the in-process mutex stays in front of it so the read path's
+/// `try_write` can only ever be beaten by a *peer* process, and so a write's
+/// load→modify→save is exclusive before the OS lock is even attempted.
 static DISABLED_BUNDLES_FILE_LOCK: Mutex<()> = Mutex::new(());
 
-/// 读完整文件（取文件锁）。可能触发「读到即迁移」的读路径必须走本入口与持锁写方
-/// 串行（与旧两份文件的 #287 竞态范式一致）。
-pub(crate) fn load_disabled_bundles_file() -> DisabledBundlesFile {
-    let _guard = DISABLED_BUNDLES_FILE_LOCK
-        .lock()
-        .unwrap_or_else(|poisoned| poisoned.into_inner());
-    load_disabled_bundles_file_locked()
+/// Cross-process lock file path (same directory as the data file; holds no
+/// user data).
+fn disabled_bundles_lock_path() -> PathBuf {
+    paths::pinvou3_home().join("disabled_bundles.lock")
 }
 
-/// 已持锁读实现。首个版本：文件不存在时从两份旧文件迁移（幂等）；文件存在时按新
-/// 格式解析，防御性剥除 `skill:` 前缀残留（新写路径不会再产生）。
-fn load_disabled_bundles_file_locked() -> DisabledBundlesFile {
-    let path = disabled_bundles_path();
-    let content = match std::fs::read_to_string(&path) {
-        Ok(c) => c,
-        Err(_) => {
-            let file = migrate_from_legacy_files();
-            if !file.scopes.is_empty() || file.initialized.iter().any(|k| !k.is_empty()) {
-                if let Err(error) = save_disabled_bundles_file(&file) {
-                    eprintln!("[scope] write disabled_bundles.json failed: {error}");
-                }
+/// Opens (creating if missing) the cross-process lock file. Shared by the
+/// blocking write path and the try-lock read path.
+fn open_scope_lock_file() -> Result<std::fs::File, String> {
+    let lock_path = disabled_bundles_lock_path();
+    if let Some(parent) = lock_path.parent() {
+        std::fs::create_dir_all(parent)
+            .map_err(|error| format!("create {}: {error}", parent.display()))?;
+    }
+    std::fs::OpenOptions::new()
+        .read(true)
+        .write(true)
+        .create(true)
+        .open(&lock_path)
+        .map_err(|error| format!("open {}: {error}", lock_path.display()))
+}
+
+/// Runs a write critical section `f` while holding the combined in-process
+/// mutex + OS file lock that serializes every `disabled_bundles.json`
+/// load→save against the peer process (GUI / headless sharing the home)
+/// (#515). Fallible, not non-blocking: the wait is unbounded by design.
+///
+/// Returns `Err` when cross-process serialization cannot be established (the
+/// lock file cannot be opened or locked, e.g. a filesystem without lock
+/// support). Callers must then refuse the read-modify-write instead of running
+/// it unsynchronized — an unlocked RMW is exactly the cross-process lost
+/// update this module guards against.
+///
+/// Blocking has no timeout (fd-lock v4 has no timeout API): the OS releases
+/// the lock when the peer process exits or crashes (flock / LockFileEx die
+/// with the fd), but a frozen peer (SIGSTOP / debugger) makes this process
+/// wait indefinitely. The critical section is a local JSON read-modify-write
+/// (the widest variant, the connector-switch sync, additionally enumerates
+/// installed ids), so that fail-stop hang (frozen peer only) is accepted over
+/// a fail-open lost update. Hot readers are immune to that hang via
+/// `try_lock` degradation (see `load_disabled_bundles_file`).
+///
+/// Lock order is uniform module-wide: in-process mutex → OS file lock, and
+/// the only other lock reachable inside a critical section is the bundle
+/// store's own mutex (via `resolve_scope_disabled_ids` → installed-ids
+/// enumeration). That ordering is never reversed — no store method enters
+/// this module's critical sections — so no deadlock class exists.
+fn with_scope_file_lock<F, R>(f: F) -> Result<R, String>
+where
+    F: FnOnce() -> R,
+{
+    let _process_guard = DISABLED_BUNDLES_FILE_LOCK
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner());
+    let file = open_scope_lock_file()?;
+    let mut lock = fd_lock::RwLock::new(file);
+    // The in-process mutex is already held while the OS lock is taken, and
+    // the store mutex (see the lock-order note above) is never held by
+    // another thread waiting on this one, so deadlock is impossible. A
+    // signal-interrupted flock retries instead of surfacing as a spurious
+    // write refusal.
+    let _os_guard = loop {
+        match lock.write() {
+            Ok(guard) => break guard,
+            Err(error) if error.kind() == std::io::ErrorKind::Interrupted => continue,
+            Err(error) => {
+                return Err(format!(
+                    "lock {}: {error}",
+                    disabled_bundles_lock_path().display()
+                ));
             }
-            return file;
         }
     };
-    let mut file: DisabledBundlesFile = serde_json::from_str(&content).unwrap_or_default();
-    if strip_skill_prefixes(&mut file) {
-        if let Err(error) = save_disabled_bundles_file(&file) {
-            eprintln!("[scope] write disabled_bundles.json failed: {error}");
+    Ok(f())
+}
+
+/// Loads the file for policy reads. Bounded by construction against *both*
+/// contention dimensions: the in-process mutex is only *tried* (a local write
+/// parked on a frozen peer's OS lock holds it, and hot readers must not hang
+/// behind that), and the OS lock is only *tried* as well. When either is
+/// unavailable the read degrades to a never-persisting unlocked snapshot —
+/// `write_atomic` replaces the file atomically, so the snapshot is always a
+/// complete (possibly just-superseded) state, and the next uncontended read
+/// converges the file.
+///
+/// When the read runs fully locked, a read-time repair (legacy migration,
+/// `skill:` strip) persists serialized with writers.
+///
+/// The bounded degrade is what keeps the engine-side hot readers (per-turn
+/// inventory reminders, deny rulesets, engine spawn config) safe to call
+/// directly: unlike the write path no operation needs to be kept off the
+/// Tokio executor for them. Contention on either lock is a normal, silent
+/// degradation; an unexpected error (unreadable or corrupt data file, broken
+/// lock probe) is logged and degrades to the default state rather than
+/// fabricating a snapshot that a later write could persist over the user's
+/// real state.
+pub(crate) fn load_disabled_bundles_file() -> DisabledBundlesFile {
+    let _process_guard = match DISABLED_BUNDLES_FILE_LOCK.try_lock() {
+        Ok(guard) => guard,
+        // A local writer is inside its critical section (possibly parked on a
+        // frozen peer's OS lock): degrade exactly like peer contention.
+        Err(std::sync::TryLockError::WouldBlock) => {
+            return read_disabled_bundles_file_degraded();
+        }
+        Err(std::sync::TryLockError::Poisoned(p)) => p.into_inner(),
+    };
+    match open_scope_lock_file() {
+        Ok(file) => match fd_lock::RwLock::new(file).try_write() {
+            Ok(_guard) => match load_disabled_bundles_file_locked() {
+                Ok(file) => file,
+                Err(error) => {
+                    log_scope_read_failure(LOG_READ_DATA, &error);
+                    DisabledBundlesFile::default()
+                }
+            },
+            // Peer contention is the designed, silent degradation.
+            Err(error) if error.kind() == std::io::ErrorKind::WouldBlock => {
+                read_disabled_bundles_file_degraded()
+            }
+            Err(error) => {
+                log_scope_read_failure(
+                    LOG_LOCK_PROBE,
+                    &format!("unlocked read without persist: {error}"),
+                );
+                read_disabled_bundles_file_degraded()
+            }
+        },
+        Err(error) => {
+            log_scope_read_failure(
+                LOG_LOCK_OPEN,
+                &format!("unlocked read without persist: {error}"),
+            );
+            read_disabled_bundles_file_degraded()
         }
     }
-    file
+}
+
+/// The bounded degrade: unlocked, never-persisting read of the data file.
+/// A corrupt or unreadable file degrades loudly to the default state —
+/// never to a fabricated snapshot, and never with a write: uninitialized
+/// DenyAll scopes then re-derive the fail-closed full-deny default.
+fn read_disabled_bundles_file_degraded() -> DisabledBundlesFile {
+    match read_disabled_bundles_file(false) {
+        Ok(file) => file,
+        Err(error) => {
+            log_scope_read_failure(LOG_READ_DATA, &error);
+            DisabledBundlesFile::default()
+        }
+    }
+}
+
+/// Per-mode once-only logging for scope-read failures. The engine-side hot
+/// readers hit these paths on every turn, so a persistently unavailable lock
+/// or an unreadable data file must not print a line per read — the first
+/// occurrence per failure mode is enough to make the degradation diagnosable.
+fn log_scope_read_failure(mode: u8, detail: &str) {
+    use std::sync::atomic::{AtomicU8, Ordering};
+    static LOGGED: AtomicU8 = AtomicU8::new(0);
+    if LOGGED.fetch_or(mode, Ordering::Relaxed) & mode == 0 {
+        eprintln!("[scope] {detail}");
+    }
+}
+
+const LOG_LOCK_OPEN: u8 = 1 << 0;
+const LOG_LOCK_PROBE: u8 = 1 << 1;
+const LOG_READ_DATA: u8 = 1 << 2;
+
+/// Read implementation shared by the locked and degraded paths:
+/// - Missing file → first-version migration of the two legacy files
+///   (idempotent, read-only inputs).
+/// - Unreadable file (anything but a missing file) → `Err`. Fabricating a
+///   state here would silently drop the user's recorded denies — fail-open
+///   on the DenyAll consent gate — and a locked caller persisting that
+///   fabrication would destroy the on-disk state. The write path refuses;
+///   policy reads degrade loudly to the default.
+/// - Corrupt JSON → the corrupt bytes are moved aside
+///   (`disabled_bundles.json.corrupt.<nanos>`, locked path only — the
+///   degraded path never writes, mirroring the installed.json backup
+///   convention), then `Err`. The next locked load starts from the migration
+///   default, so DenyAll scopes re-derive fail-closed, and the evidence
+///   survives.
+/// - Valid file → parsed with a defensive `skill:` prefix strip (new write
+///   paths no longer produce it). Read-time repairs persist only when
+///   `persist_repairs` is set — i.e. only under the full lock, so the
+///   on-disk file converges to the new format without any unsynchronized
+///   write.
+fn read_disabled_bundles_file(persist_repairs: bool) -> Result<DisabledBundlesFile, String> {
+    let path = disabled_bundles_path();
+    let content = match std::fs::read_to_string(&path) {
+        Ok(content) => content,
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
+            let file = migrate_from_legacy_files();
+            if persist_repairs
+                && (!file.scopes.is_empty() || file.initialized.iter().any(|k| !k.is_empty()))
+            {
+                if let Err(error) = save_disabled_bundles_file(&file) {
+                    eprintln!("[scope] read-repair persist failed: {error}");
+                }
+            }
+            return Ok(file);
+        }
+        Err(error) => return Err(format!("read {}: {error}", path.display())),
+    };
+    match serde_json::from_str::<DisabledBundlesFile>(&content) {
+        Ok(mut file) => {
+            if strip_skill_prefixes(&mut file) && persist_repairs {
+                if let Err(error) = save_disabled_bundles_file(&file) {
+                    eprintln!("[scope] read-repair persist failed: {error}");
+                }
+            }
+            Ok(file)
+        }
+        Err(error) => {
+            if persist_repairs {
+                backup_corrupt_file(&path);
+            }
+            Err(format!("parse {}: {error}", path.display()))
+        }
+    }
+}
+
+/// Moves a corrupt data file aside (`<name>.corrupt.<nanos>`) so the
+/// evidence survives AND the next locked load starts from the migration
+/// default — leaving the corrupt bytes in place would trip (and refuse) every
+/// later write forever. The nanosecond suffix keeps back-to-back quarantines
+/// from colliding on the backup name (a silent evidence loss on unix, where
+/// rename replaces the destination). Best effort: if the rename fails, the
+/// parse error still refuses the caller and the file stays as found.
+/// Locked path only.
+fn backup_corrupt_file(path: &std::path::Path) {
+    let file_name = match path.file_name() {
+        Some(name) => name.to_string_lossy().into_owned(),
+        None => return,
+    };
+    let Some(parent) = path.parent() else {
+        return;
+    };
+    let ts = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_nanos())
+        .unwrap_or(0);
+    let backup = parent.join(format!("{file_name}.corrupt.{ts}"));
+    if let Err(error) = std::fs::rename(path, &backup) {
+        eprintln!(
+            "[scope] failed to move corrupt {} aside to {}: {error}",
+            path.display(),
+            backup.display()
+        );
+    }
+}
+
+/// Read under the full write lock: repairs persist (serialized with every
+/// other lock holder) and a corrupt file is quarantined. Write critical
+/// sections load through this and refuse on `Err` — an unreadable or corrupt
+/// file must stop the read-modify-write, never feed it a fabricated state.
+fn load_disabled_bundles_file_locked() -> Result<DisabledBundlesFile, String> {
+    read_disabled_bundles_file(true)
 }
 
 /// 防御：剥除所有 scope 禁用集与不可见集里的 `skill:` 前缀（旧前端 bug 窗口期
@@ -257,14 +497,16 @@ fn merge_ids_into_scope(file: &mut DisabledBundlesFile, key: &str, ids: Vec<Stri
     }
 }
 
-/// 写完整文件（原子替换，与旧文件同范式）。写失败上抛：开关/可见性是用户治理
-/// 状态，「静默丢写」会让调用方在半应用状态上继续走（前端按成功提示）。内部
-/// best-effort 调用方（读路径迁移、卸载清理、默认策略同步）自行降级为日志。
+/// 写完整文件（原子替换，与旧文件同范式）。The write is part of the locked
+/// critical section, so a failure is returned and the caller's critical
+/// section reports `Err` — an `Ok` must mean the caller's change landed,
+/// otherwise the DenyAll consent gate could still fail open (silently
+/// dropping the write) on a full disk or an unwritable home.
 fn save_disabled_bundles_file(file: &DisabledBundlesFile) -> Result<(), String> {
     let json = serde_json::to_string(file)
-        .map_err(|error| format!("serialize disabled_bundles.json failed: {error}"))?;
+        .map_err(|error| format!("serialize disabled bundles: {error}"))?;
     deepseek_tui::utils::write_atomic(&disabled_bundles_path(), json.as_bytes())
-        .map_err(|error| format!("write disabled_bundles.json failed: {error}"))
+        .map_err(|error| format!("write {}: {error}", disabled_bundles_path().display()))
 }
 
 /// 读某 scope 被禁用的**包 id** 列表（读不到/空 → 空）。
@@ -342,17 +584,18 @@ fn resolve_scope_disabled_ids(file: &DisabledBundlesFile, scope: ConnectorScope)
 
 /// 写某 scope 被禁用的包 id 列表（写入即标记该 scope 已初始化）。入参统一归一为包
 /// id（剥 `skill:` 前缀 + companion 映射），防御历史版本误写入的带前缀条目。
-/// 写失败原样上抛（用户治理状态不得静默丢写）。
+/// Cross-process lock unavailable → `Err`: the write is refused, never
+/// performed unsynchronized (#515).
 pub fn save_disabled_bundles_for(scope: ConnectorScope, ids: &[String]) -> Result<(), String> {
-    let _guard = DISABLED_BUNDLES_FILE_LOCK
-        .lock()
-        .unwrap_or_else(|poisoned| poisoned.into_inner());
-    let normalized: Vec<String> = ids.iter().map(|id| to_package_id(id)).collect();
-    let mut file = load_disabled_bundles_file_locked();
-    let key = scope.as_str().to_string();
-    file.scopes.insert(key.clone(), normalized);
-    file.initialized.insert(key);
-    save_disabled_bundles_file(&file)
+    with_scope_file_lock(|| {
+        let normalized: Vec<String> = ids.iter().map(|id| to_package_id(id)).collect();
+        let mut file = load_disabled_bundles_file_locked()?;
+        let key = scope.as_str().to_string();
+        file.scopes.insert(key.clone(), normalized);
+        file.initialized.insert(key);
+        save_disabled_bundles_file(&file)
+            .map_err(|error| format!("save disabled bundles ({}): {error}", scope.as_str()))
+    })?
 }
 
 /// 读某 scope 被「不可见」（可见性过滤）的包 id 列表。缺省空 = 全可见。
@@ -377,16 +620,17 @@ fn resolve_scope_hidden_ids(file: &DisabledBundlesFile, scope: ConnectorScope) -
 }
 
 /// 写某 scope 被「不可见」的包 id 列表（不参与 DenyAll 默认，显式写入才隐藏）。
-/// 写失败原样上抛（用户治理状态不得静默丢写）。
+/// Cross-process lock unavailable → `Err`: the write is refused, never
+/// performed unsynchronized (#515).
 pub fn save_hidden_bundles_for(scope: ConnectorScope, ids: &[String]) -> Result<(), String> {
-    let _guard = DISABLED_BUNDLES_FILE_LOCK
-        .lock()
-        .unwrap_or_else(|poisoned| poisoned.into_inner());
-    let normalized: Vec<String> = ids.iter().map(|id| to_package_id(id)).collect();
-    let mut file = load_disabled_bundles_file_locked();
-    file.hidden_scopes
-        .insert(scope.as_str().to_string(), normalized);
-    save_disabled_bundles_file(&file)
+    with_scope_file_lock(|| {
+        let normalized: Vec<String> = ids.iter().map(|id| to_package_id(id)).collect();
+        let mut file = load_disabled_bundles_file_locked()?;
+        file.hidden_scopes
+            .insert(scope.as_str().to_string(), normalized);
+        save_disabled_bundles_file(&file)
+            .map_err(|error| format!("save hidden bundles ({}): {error}", scope.as_str()))
+    })?
 }
 
 /// 该 scope 对底座「不可用」的包 id 并集 = 开关关（disabled）+ 不可见（hidden）。
@@ -420,35 +664,84 @@ pub fn save_disabled_bundles(ids: &[String]) {
     }
 }
 
-/// 包安装/连接后同步所有 DenyAll 且已初始化的 scope：用户已改过这类会话开关时，
-/// 新装的包默认仍保持关闭（加入该 scope 禁用集）；未初始化时无需处理（load 会按
-/// 「默认全禁已装包」兜底）。AllowAll 模式无需同步（默认全开）。连接器与技能安装
-/// 共用本入口：入参可为连接器 id / 技能 id / 包 id，统一归一为包 id。
-pub fn sync_deny_all_scopes_after_install(raw_id: &str) {
-    let package_id = to_package_id(raw_id);
-    let _guard = DISABLED_BUNDLES_FILE_LOCK
-        .lock()
-        .unwrap_or_else(|poisoned| poisoned.into_inner());
-    let mut file = load_disabled_bundles_file_locked();
-    let mut changed = false;
-    for mode in SessionMode::ALL {
-        if mode.pack_default_policy() != PackDefaultPolicy::DenyAll {
-            continue;
-        }
-        let key = mode.as_str();
-        if !file.initialized.contains(key) {
-            continue;
-        }
-        let ids = file.scopes.entry(key.to_string()).or_default();
-        if !ids.iter().any(|id| id == &package_id) {
-            ids.push(package_id.clone());
-            changed = true;
-        }
+/// Whether the normalized consent-gate id is already installed in this home:
+/// a tool/CLI bundle with an install record (or an `installed.json` entry),
+/// or a skill on disk (standalone, or claimed by its installed owner).
+/// Built-in connectors deliberately stay NOT-known (they have no install
+/// record), so the connector channels keep their deny-first registration and
+/// refusal boundary.
+fn consent_gate_bundle_already_known(package_id: &str) -> bool {
+    if bundle_installed(package_id) {
+        return true;
     }
-    if changed {
-        if let Err(error) = save_disabled_bundles_file(&file) {
-            eprintln!("[scope] write disabled_bundles.json failed: {error}");
+    SkillMarketplaceManager::new()
+        .installed_skill_ids()
+        .iter()
+        .any(|skill| skill_owner_package(skill) == package_id)
+}
+
+/// 包安装/连接后同步所有 DenyAll 且已初始化的 scope：**新装**的包默认保持关闭
+/// （加入该 scope 禁用集）；未初始化时无需处理（load 会按「默认全禁已装包」兜底）。
+/// AllowAll 模式无需同步（默认全开）。连接器与技能安装共用本入口：入参可为连接器
+/// id / 技能 id / 包 id，统一归一为包 id。
+/// This is the safety-default write for the DenyAll consent gate: refused with
+/// `Err` when the cross-process lock is unavailable, never unsynchronized.
+///
+/// Reinstall/update of an ALREADY-installed bundle skips the write entirely
+/// and returns `Ok`: every initialized scope's current entry is the user's
+/// recorded consent, so re-registering would both reset an explicit enable on
+/// the success path and — worse — silently disable the previously working
+/// installation whenever any post-gate step fails (pip deps, disk full,
+/// content conflict, remote validation) with no recovery path. This is the
+/// same preserve-state contract as `update_marketplace_skill`. Only unknown
+/// (fresh) ids register deny-first, so the boundary this gate exists to close
+/// — a new package is never exposed outside the deny lists of the initialized
+/// DenyAll scopes — is unchanged, and a leftover entry from a failed fresh
+/// install stays fail-closed and converges on the next successful install.
+pub fn sync_deny_all_scopes_after_install(raw_id: &str) -> Result<(), String> {
+    let package_id = to_package_id(raw_id);
+    if consent_gate_bundle_already_known(&package_id) {
+        return Ok(());
+    }
+    with_scope_file_lock(|| {
+        let mut file = load_disabled_bundles_file_locked()?;
+        let mut changed = false;
+        for mode in SessionMode::ALL {
+            if mode.pack_default_policy() != PackDefaultPolicy::DenyAll {
+                continue;
+            }
+            let key = mode.as_str();
+            if !file.initialized.contains(key) {
+                continue;
+            }
+            let ids = file.scopes.entry(key.to_string()).or_default();
+            if !ids.iter().any(|id| id == &package_id) {
+                ids.push(package_id.clone());
+                changed = true;
+            }
         }
+        if changed {
+            save_disabled_bundles_file(&file).map_err(|error| {
+                format!("sync DenyAll scopes after install ({package_id}): {error}")
+            })?;
+        }
+        Ok(())
+    })?
+}
+
+/// Deny-first consent registration for the CLI connector channels
+/// (`feishu`/`wecom`/`dingtalk`/`tmeet` `*_apply_skills`): when the connector
+/// is about to become visible (materialize its skill files), register it in
+/// the initialized DenyAll scopes FIRST, so a refused registration aborts
+/// before anything is exposed. A hidden (`show == false`) connector needs no
+/// registration. Connectors are built-ins without an install record, so they
+/// always take the registration path of the gate (never the known-bundle
+/// skip).
+pub fn deny_first_register_connector(connector_id: &str, show: bool) -> Result<(), String> {
+    if show {
+        sync_deny_all_scopes_after_install(connector_id)
+    } else {
+        Ok(())
     }
 }
 
@@ -457,29 +750,28 @@ pub fn sync_deny_all_scopes_after_install(raw_id: &str) {
 /// missing package. Shared entry point for connector, skill, and package
 /// teardown: the argument may be a connector id / skill id / package id and is
 /// normalized to the package id.
-pub fn remove_bundle_from_disabled_scopes(raw_id: &str) {
+pub fn remove_bundle_from_disabled_scopes(raw_id: &str) -> Result<(), String> {
     let package_id = to_package_id(raw_id);
-    let _guard = DISABLED_BUNDLES_FILE_LOCK
-        .lock()
-        .unwrap_or_else(|poisoned| poisoned.into_inner());
-    let mut file = load_disabled_bundles_file_locked();
-    let mut changed = false;
-    for ids in file.scopes.values_mut() {
-        let before = ids.len();
-        ids.retain(|id| id != &package_id);
-        changed |= ids.len() != before;
-    }
-    // 可见性集同样清理：卸载后残留 hidden 会误隐藏未来同名重装。
-    for ids in file.hidden_scopes.values_mut() {
-        let before = ids.len();
-        ids.retain(|id| id != &package_id);
-        changed |= ids.len() != before;
-    }
-    if changed {
-        if let Err(error) = save_disabled_bundles_file(&file) {
-            eprintln!("[scope] write disabled_bundles.json failed: {error}");
+    with_scope_file_lock(|| {
+        let mut file = load_disabled_bundles_file_locked()?;
+        let mut changed = false;
+        for ids in file.scopes.values_mut() {
+            let before = ids.len();
+            ids.retain(|id| id != &package_id);
+            changed |= ids.len() != before;
         }
-    }
+        // 可见性集同样清理：卸载后残留 hidden 会误隐藏未来同名重装。
+        for ids in file.hidden_scopes.values_mut() {
+            let before = ids.len();
+            ids.retain(|id| id != &package_id);
+            changed |= ids.len() != before;
+        }
+        if changed {
+            save_disabled_bundles_file(&file)
+                .map_err(|error| format!("remove {package_id} from disabled scopes: {error}"))?;
+        }
+        Ok(())
+    })?
 }
 
 /// 项目级 skills 开关（默认关）。
@@ -488,18 +780,18 @@ pub fn project_skills_enabled() -> bool {
 }
 
 /// 写项目级 skills 开关。落盘后由调用方重写在线会话组合目录。
-pub fn set_project_skills_enabled(enabled: bool) {
-    let _guard = DISABLED_BUNDLES_FILE_LOCK
-        .lock()
-        .unwrap_or_else(|poisoned| poisoned.into_inner());
-    let mut file = load_disabled_bundles_file_locked();
-    if file.project_skills_enabled == enabled {
-        return;
-    }
-    file.project_skills_enabled = enabled;
-    if let Err(error) = save_disabled_bundles_file(&file) {
-        eprintln!("[scope] write disabled_bundles.json failed: {error}");
-    }
+/// Cross-process lock unavailable → `Err`: the write is refused, never
+/// performed unsynchronized (#515).
+pub fn set_project_skills_enabled(enabled: bool) -> Result<(), String> {
+    with_scope_file_lock(|| {
+        let mut file = load_disabled_bundles_file_locked()?;
+        if file.project_skills_enabled == enabled {
+            return Ok(());
+        }
+        file.project_skills_enabled = enabled;
+        save_disabled_bundles_file(&file)
+            .map_err(|error| format!("set project skills enabled: {error}"))
+    })?
 }
 
 #[cfg(test)]
@@ -586,7 +878,7 @@ mod tests {
         with_temp_home("pinvou3-scope", || {
             save_disabled_bundles_for(ConnectorScope::Plain, &["weather".to_string()]).unwrap();
             save_hidden_bundles_for(ConnectorScope::Plain, &["weather".to_string()]).unwrap();
-            remove_bundle_from_disabled_scopes("weather");
+            remove_bundle_from_disabled_scopes("weather").unwrap();
             assert!(load_disabled_bundles_for(ConnectorScope::Plain).is_empty());
             assert!(load_hidden_bundles_for(ConnectorScope::Plain).is_empty());
         });
@@ -713,15 +1005,22 @@ mod tests {
     fn project_skills_roundtrip() {
         with_temp_home("pinvou3-scope", || {
             assert!(!project_skills_enabled(), "项目技能默认关");
-            set_project_skills_enabled(true);
+            set_project_skills_enabled(true).unwrap();
             assert!(project_skills_enabled());
-            set_project_skills_enabled(false);
+            set_project_skills_enabled(false).unwrap();
             assert!(!project_skills_enabled());
         });
     }
 
-    /// 读路径的「读到即迁移落盘」必须取 `DISABLED_BUNDLES_FILE_LOCK` 与持锁写方
-    /// 串行：持锁期间并发 load（磁盘为旧连接器文件、必然触发迁移落盘）不得先行落盘。
+    /// The read path's read-then-migrate-persist must serialize with lock
+    /// holders: while the test thread holds `DISABLED_BUNDLES_FILE_LOCK`, a
+    /// concurrent load must neither block unbounded nor land its migration
+    /// write on disk (it degrades to the unlocked, never-persisting view).
+    /// The worker signals readiness before calling load, and the assertion is
+    /// a bounded poll window: if serialization were broken, the migration
+    /// write would land inside the window and be caught. Convergence of the
+    /// on-disk format happens on the next *uncontended* read, which the test
+    /// performs after releasing the guard.
     #[test]
     fn read_path_migration_serializes_with_file_lock() {
         with_temp_home("pinvou3-scope", || {
@@ -732,19 +1031,32 @@ mod tests {
             let guard = DISABLED_BUNDLES_FILE_LOCK
                 .lock()
                 .unwrap_or_else(|p| p.into_inner());
-            let reader = std::thread::spawn(load_disabled_bundles_for_plain_for_lock_test);
-            std::thread::sleep(std::time::Duration::from_millis(200));
-            // 持锁期间 bundles 文件尚未写入（迁移被串行化）。
-            assert!(
-                !disabled_bundles_path().exists(),
-                "持锁期间读路径不得先行迁移落盘"
-            );
+            let (ready_tx, ready_rx) = std::sync::mpsc::channel();
+            let reader = std::thread::spawn(move || {
+                ready_tx
+                    .send(())
+                    .expect("reader start signal before taking the lock");
+                load_disabled_bundles_for_plain_for_lock_test()
+            });
+            ready_rx
+                .recv()
+                .expect("reader thread should signal it started");
+            // The lock is held here, so a working lock keeps the migration
+            // write pending; broken serialization makes it land immediately.
+            assert_data_file_absent_within();
             drop(guard);
+            // The contended read degrades (in-process mutex held by this
+            // thread) and returns the migrated view without persisting.
             assert_eq!(reader.join().unwrap(), vec!["weather".to_string()]);
+            assert!(!disabled_bundles_path().exists());
+            // The next uncontended read runs fully locked and converges the
+            // file to the new format.
+            let got = load_disabled_bundles_for_plain_for_lock_test();
+            assert_eq!(got, vec!["weather".to_string()]);
             let content = std::fs::read_to_string(disabled_bundles_path()).unwrap();
             assert!(
                 content.contains("\"scopes\""),
-                "释放锁后迁移完成: {content}"
+                "migration should land on the next uncontended read: {content}"
             );
         });
     }
@@ -962,6 +1274,477 @@ mod tests {
                 load_disabled_bundles_for(ConnectorScope::Code),
                 vec!["weather".to_string()],
                 "an initialized scope sticks to its persisted list, unaffected by degradation"
+            );
+        });
+    }
+
+    /// Blocks until some thread holds the in-process scope mutex, i.e. the
+    /// worker has provably reached the critical section and its OS-lock
+    /// attempt has started. Deterministic handshake for the cross-process
+    /// lock regressions (no sleep-before-assert races).
+    fn wait_until_scope_mutex_held() {
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
+        loop {
+            match DISABLED_BUNDLES_FILE_LOCK.try_lock() {
+                // Not held by the worker yet — retry shortly.
+                Ok(guard) => drop(guard),
+                // Held by the worker: with the foreign lock held, it is now
+                // either blocked on the OS lock or its acquisition failed.
+                Err(std::sync::TryLockError::WouldBlock) => return,
+                Err(std::sync::TryLockError::Poisoned(p)) => {
+                    drop(p.into_inner());
+                    return;
+                }
+            }
+            assert!(
+                std::time::Instant::now() < deadline,
+                "worker never reached the scope lock acquisition point"
+            );
+            std::thread::sleep(std::time::Duration::from_millis(2));
+        }
+    }
+
+    /// Asserts the data file does not appear within the poll window. Must run
+    /// after the worker provably reached the acquisition point (handshake
+    /// above or a start signal): a broken lock then makes the write land
+    /// within milliseconds and fails the assertion deterministically, while a
+    /// working lock simply runs out the window.
+    fn assert_data_file_absent_within() {
+        let window = std::time::Duration::from_secs(2);
+        let deadline = std::time::Instant::now() + window;
+        while std::time::Instant::now() < deadline {
+            assert!(
+                !disabled_bundles_path().exists(),
+                "data file written while the lock was still held — serialization is broken"
+            );
+            std::thread::sleep(std::time::Duration::from_millis(10));
+        }
+    }
+
+    /// Harness for the cross-process WRITE regression: holds the lock with a
+    /// foreign fd, runs `worker` on a fresh thread, deterministically proves
+    /// the worker cannot write the data file while the foreign lock is held,
+    /// releases the lock, and joins. Returns the worker's result.
+    ///
+    /// The foreign fd stands in for the peer process: flock ownership is per
+    /// open file description, so a second fd inside this process contends
+    /// exactly like another process. The write guard borrows the local
+    /// `RwLock`, so both stay plain locals of this function.
+    fn assert_blocked_until_foreign_lock_release<R, F>(worker: F) -> R
+    where
+        F: FnOnce() -> R + Send + 'static,
+        R: Send + 'static,
+    {
+        let file = std::fs::OpenOptions::new()
+            .read(true)
+            .write(true)
+            .create(true)
+            .open(disabled_bundles_lock_path())
+            .expect("test should be able to open the lock file");
+        let mut foreign = fd_lock::RwLock::new(file);
+        let foreign_guard = foreign
+            .write()
+            .expect("test should be able to take the foreign cross-process write lock");
+        let handle = std::thread::spawn(worker);
+        wait_until_scope_mutex_held();
+        assert_data_file_absent_within();
+        drop(foreign_guard);
+        handle
+            .join()
+            .expect("worker should finish once the foreign lock is released")
+    }
+
+    /// #515 cross-process contention on the READ path: while a peer holds the
+    /// OS lock, a load must degrade promptly to the unlocked, never-persisting
+    /// view (bounded — hot readers never couple to a peer's critical section)
+    /// instead of blocking or writing unsynchronized. A later uncontended read
+    /// converges the on-disk format.
+    #[test]
+    fn cross_process_lock_contention_degrades_read_without_persist() {
+        with_temp_home("pinvou3-scope-cross-process", || {
+            let legacy = r#"["weather"]"#;
+            let conn = paths::pinvou3_home().join("disabled_connectors.json");
+            std::fs::create_dir_all(conn.parent().unwrap()).unwrap();
+            std::fs::write(&conn, legacy).unwrap();
+
+            let file = std::fs::OpenOptions::new()
+                .read(true)
+                .write(true)
+                .create(true)
+                .open(disabled_bundles_lock_path())
+                .expect("test should be able to open the lock file");
+            let mut foreign = fd_lock::RwLock::new(file);
+            let foreign_guard = foreign
+                .write()
+                .expect("test should be able to take the foreign cross-process write lock");
+
+            let (done_tx, done_rx) = std::sync::mpsc::channel();
+            let reader = std::thread::spawn(move || {
+                let got = load_disabled_bundles_for_plain_for_lock_test();
+                done_tx.send(got).expect("reader should send its result");
+            });
+            // A contended read must return promptly. recv_timeout doubles as
+            // the regression assertion: a blocking read hangs here and fails
+            // the test with a bounded, diagnosable timeout.
+            let got = done_rx
+                .recv_timeout(std::time::Duration::from_secs(5))
+                .expect("contended read must degrade instead of blocking on the peer's lock");
+            assert_eq!(got, vec!["weather".to_string()]);
+            assert!(
+                !disabled_bundles_path().exists(),
+                "a contended read must not persist the migration"
+            );
+
+            drop(foreign_guard);
+            reader.join().expect("reader thread should finish");
+
+            // A later uncontended read runs fully locked and converges the
+            // file to the new format.
+            let got = load_disabled_bundles_for_plain_for_lock_test();
+            assert_eq!(got, vec!["weather".to_string()]);
+            let content = std::fs::read_to_string(disabled_bundles_path()).unwrap();
+            assert!(
+                content.contains("\"scopes\""),
+                "migration should land on the next uncontended read: {content}"
+            );
+        });
+    }
+
+    /// #515 symmetric case for the WRITE path: while a foreign fd holds the
+    /// lock, the save must not land first; after the release the write lands
+    /// with its full content.
+    #[test]
+    fn cross_process_lock_blocks_save_write_until_release() {
+        with_temp_home("pinvou3-scope-cross-process-save", || {
+            assert_blocked_until_foreign_lock_release(|| {
+                save_disabled_bundles_for(ConnectorScope::Plain, &["weather".to_string()])
+                    .expect("write should succeed once the foreign lock is released");
+            });
+            let content = std::fs::read_to_string(disabled_bundles_path()).unwrap();
+            assert!(
+                content.contains("\"weather\""),
+                "write should land after the lock is released: {content}"
+            );
+        });
+    }
+
+    /// The bounded-degrade invariant must hold against the in-process
+    /// dimension too: a local write parked inside its critical section holds
+    /// `DISABLED_BUNDLES_FILE_LOCK` (worst case: parked on a frozen peer's OS
+    /// lock, which blocks without timeout), and a hot reader that waited on
+    /// that mutex would hang the engine's per-turn reads. The reader must
+    /// degrade promptly to the unlocked snapshot instead — pinned with the
+    /// same bounded recv_timeout idiom as the peer-contention regression.
+    #[test]
+    fn hot_read_degrades_while_local_write_parks_in_critical_section() {
+        with_temp_home("pinvou3-scope-hot-read", || {
+            save_disabled_bundles_for(ConnectorScope::Plain, &["weather".to_string()])
+                .expect("seeding the stored state should succeed");
+            let (park_tx, park_rx) = std::sync::mpsc::channel();
+            let (release_tx, release_rx) = std::sync::mpsc::channel();
+            let writer = std::thread::spawn(move || {
+                with_scope_file_lock(|| {
+                    park_tx
+                        .send(())
+                        .expect("writer should signal it reached the critical section");
+                    release_rx
+                        .recv_timeout(std::time::Duration::from_secs(10))
+                        .expect("test should release the parked writer");
+                })
+                .expect("parked writer should complete normally");
+            });
+            park_rx
+                .recv_timeout(std::time::Duration::from_secs(5))
+                .expect("writer should reach the critical section");
+            // The OS lock is free here, so the ONLY thing that could block the
+            // read is the in-process mutex the parked writer holds.
+            let (done_tx, done_rx) = std::sync::mpsc::channel();
+            let reader = std::thread::spawn(move || {
+                let got = load_disabled_bundles_for_plain_for_lock_test();
+                done_tx.send(got).expect("reader should send its result");
+            });
+            let got = done_rx
+                .recv_timeout(std::time::Duration::from_secs(5))
+                .expect("hot read must degrade instead of blocking on the parked local writer");
+            assert_eq!(got, vec!["weather".to_string()]);
+            reader.join().expect("reader thread should finish");
+
+            release_tx.send(()).expect("test should release the writer");
+            writer.join().expect("writer thread should finish");
+        });
+    }
+
+    /// #515 hard-fail: when the lock file cannot be opened (a directory at the
+    /// lock path), every write entry point is refused with `Err` — never run
+    /// unsynchronized — and the data file stays untouched. The refusal must
+    /// name the lock failure so a spurious unrelated error cannot pass the
+    /// assertion (the false-pass half of the #528 pattern).
+    #[test]
+    fn writes_refused_when_lock_file_unavailable() {
+        with_temp_home("pinvou3-scope-write-refused", || {
+            std::fs::create_dir_all(disabled_bundles_lock_path()).unwrap();
+            let error = save_disabled_bundles_for(ConnectorScope::Plain, &["weather".to_string()])
+                .unwrap_err();
+            assert!(
+                error.contains("disabled_bundles.lock"),
+                "refusal must name the lock failure: {error}"
+            );
+            let hidden_error =
+                save_hidden_bundles_for(ConnectorScope::Plain, &["w".to_string()]).unwrap_err();
+            assert!(
+                hidden_error.contains("disabled_bundles.lock"),
+                "refusal must name the lock failure: {hidden_error}"
+            );
+            let toggle_error = set_project_skills_enabled(true).unwrap_err();
+            assert!(
+                toggle_error.contains("disabled_bundles.lock"),
+                "refusal must name the lock failure: {toggle_error}"
+            );
+            let gate_error = sync_deny_all_scopes_after_install("weather").unwrap_err();
+            assert!(
+                gate_error.contains("disabled_bundles.lock"),
+                "the DenyAll consent-gate sync must refuse too, naming the lock: {gate_error}"
+            );
+            let remove_error = remove_bundle_from_disabled_scopes("weather").unwrap_err();
+            assert!(
+                remove_error.contains("disabled_bundles.lock"),
+                "the uninstall/restore cleanup must refuse too, naming the lock: {remove_error}"
+            );
+            assert!(!disabled_bundles_path().exists());
+        });
+    }
+
+    /// The consent gate must distinguish fresh installs from reinstalls: an
+    /// unknown id registers deny-first (default-off in every initialized
+    /// DenyAll scope), while an already-installed bundle is a no-op — every
+    /// scope's current entry is the user's recorded consent, and re-denying
+    /// it would let any post-gate install failure silently disable a
+    /// previously working installation with no recovery path.
+    #[test]
+    fn consent_gate_skips_known_bundles_registers_fresh_ones() {
+        with_temp_home("pinvou3-scope-gate-fresh", || {
+            crate::features::marketplace::store::BundleStore::new()
+                .upsert(
+                    crate::features::marketplace::store::BundleRecord::installed_now(
+                        "weather",
+                        crate::features::marketplace::store::BundleSource::Preset,
+                    ),
+                )
+                .unwrap();
+            save_disabled_bundles_for(ConnectorScope::Code, &["seed-bundle".to_string()]).unwrap();
+
+            // Known bundle: Ok without adding it to any deny list.
+            sync_deny_all_scopes_after_install("weather")
+                .expect("a known bundle must skip the consent-gate write");
+            assert_eq!(
+                load_disabled_bundles_for(ConnectorScope::Code),
+                vec!["seed-bundle".to_string()],
+                "a reinstall must not re-deny the installed bundle"
+            );
+
+            // Fresh bundle: registers deny-first.
+            sync_deny_all_scopes_after_install("fresh-gate-tool").unwrap();
+            assert_eq!(
+                load_disabled_bundles_for(ConnectorScope::Code),
+                vec!["seed-bundle".to_string(), "fresh-gate-tool".to_string()]
+            );
+        });
+    }
+
+    /// The CLI-connector gate helper registers only when the connector is
+    /// about to become visible; a hidden connector must not write the deny
+    /// state at all.
+    #[test]
+    fn connector_gate_registers_only_when_shown() {
+        with_temp_home("pinvou3-scope-gate-shown", || {
+            save_disabled_bundles_for(ConnectorScope::Code, &["seed-bundle".to_string()]).unwrap();
+
+            deny_first_register_connector("feishu", false)
+                .expect("a hidden connector needs no registration");
+            assert_eq!(
+                load_disabled_bundles_for(ConnectorScope::Code),
+                vec!["seed-bundle".to_string()],
+                "a hidden connector must not be registered"
+            );
+
+            deny_first_register_connector("feishu", true)
+                .expect("a visible connector registers deny-first");
+            assert_eq!(
+                load_disabled_bundles_for(ConnectorScope::Code),
+                vec!["seed-bundle".to_string(), "feishu".to_string()]
+            );
+        });
+    }
+
+    /// A corrupt data file must stop every locked RMW instead of feeding it a
+    /// fabricated empty state: an `Ok` here would persist the fabrication and
+    /// silently destroy the user's recorded denies (fail-open on the DenyAll
+    /// gate). The locked path quarantines the corrupt bytes, and the next
+    /// write starts from the migration default (DenyAll scopes re-derive
+    /// fail-closed). During the corrupt window, policy reads of an
+    /// uninitialized DenyAll scope still compute the full-deny default.
+    #[test]
+    fn corrupt_file_refuses_write_then_quarantine_recovers() {
+        with_temp_home("pinvou3-scope-corrupt-quarantine", || {
+            save_disabled_bundles_for(ConnectorScope::Plain, &["weather".to_string()]).unwrap();
+            let path = disabled_bundles_path();
+            let corrupt = "{not json";
+            std::fs::write(&path, corrupt).unwrap();
+
+            assert!(
+                save_disabled_bundles_for(ConnectorScope::Plain, &["pptx".to_string()]).is_err(),
+                "a corrupt file must refuse the read-modify-write"
+            );
+            let home = paths::pinvou3_home();
+            let quarantined: Vec<std::path::PathBuf> = std::fs::read_dir(&home)
+                .unwrap()
+                .filter_map(|entry| entry.ok())
+                .map(|entry| entry.path())
+                .filter(|path| {
+                    path.file_name()
+                        .map(|name| {
+                            name.to_string_lossy()
+                                .starts_with("disabled_bundles.json.corrupt.")
+                        })
+                        .unwrap_or(false)
+                })
+                .collect();
+            assert_eq!(
+                quarantined.len(),
+                1,
+                "the corrupt file must be quarantined exactly once: {quarantined:?}"
+            );
+            assert_eq!(
+                std::fs::read_to_string(&quarantined[0]).unwrap(),
+                corrupt,
+                "the quarantine must preserve the evidence"
+            );
+            assert!(
+                !path.exists(),
+                "the corrupt file must be moved aside, not left to trip every later write"
+            );
+
+            // The next locked write starts from the migration default and
+            // lands; the DenyAll code scope fails closed in between.
+            assert!(!load_disabled_bundles_for(ConnectorScope::Code).is_empty());
+            save_disabled_bundles_for(ConnectorScope::Plain, &["pptx".to_string()]).unwrap();
+            assert_eq!(
+                load_disabled_bundles_for(ConnectorScope::Plain),
+                vec!["pptx".to_string()]
+            );
+        });
+    }
+
+    /// The degraded read path never writes — not even the quarantine: a
+    /// corrupt file read without the lock is reported loudly and left exactly
+    /// as found, and the policy surface falls back to its defaults
+    /// (project skills off, uninitialized DenyAll scopes fully denied).
+    #[test]
+    fn corrupt_file_degrades_read_without_persist_or_quarantine() {
+        with_temp_home("pinvou3-scope-corrupt-degrade", || {
+            let corrupt = "{not json";
+            std::fs::write(disabled_bundles_path(), corrupt).unwrap();
+            std::fs::create_dir_all(disabled_bundles_lock_path()).unwrap();
+
+            assert!(load_disabled_bundles_for(ConnectorScope::Plain).is_empty());
+            assert!(
+                !load_disabled_bundles_for(ConnectorScope::Code).is_empty(),
+                "an uninitialized DenyAll scope must still default to full deny"
+            );
+            assert!(!project_skills_enabled());
+
+            let content = std::fs::read_to_string(disabled_bundles_path()).unwrap();
+            assert_eq!(
+                content, corrupt,
+                "the degraded read must not rewrite the file"
+            );
+            let quarantined = std::fs::read_dir(paths::pinvou3_home())
+                .unwrap()
+                .filter_map(|entry| entry.ok())
+                .any(|entry| {
+                    entry
+                        .file_name()
+                        .to_string_lossy()
+                        .starts_with("disabled_bundles.json.corrupt.")
+                });
+            assert!(!quarantined, "the degraded read must not quarantine either");
+        });
+    }
+
+    /// Any failure inside the locked critical section must surface as `Err` —
+    /// an `Ok` that silently dropped the caller's change would re-open the
+    /// fail-open hole on the DenyAll gate. Injected here via a directory at
+    /// the data path (the load inside the RMW fails), which pins the load leg
+    /// for every write entry point. The pure atomic-write failure leg has no
+    /// inline pin — see the note on
+    /// `read_degrades_without_persist_when_lock_unavailable` below.
+    /// Unlike before the load-refusal gate, even the conditional DenyAll sync
+    /// now refuses instead of legitimately no-oping on a fabricated state.
+    #[test]
+    fn read_failure_refuses_all_write_entry_points() {
+        with_temp_home("pinvou3-scope-read-refused", || {
+            std::fs::create_dir_all(disabled_bundles_path()).unwrap();
+            let refuse = |error: String| {
+                assert!(
+                    error.contains("disabled_bundles.json"),
+                    "refusal must name the data-file failure: {error}"
+                );
+            };
+            refuse(
+                save_disabled_bundles_for(ConnectorScope::Plain, &["weather".to_string()])
+                    .unwrap_err(),
+            );
+            refuse(save_hidden_bundles_for(ConnectorScope::Plain, &["w".to_string()]).unwrap_err());
+            // The project-skills toggle must fail loudly when its RMW fails.
+            refuse(set_project_skills_enabled(true).unwrap_err());
+            // The DenyAll consent-gate sync must refuse, never no-op on a
+            // fabricated state.
+            refuse(sync_deny_all_scopes_after_install("weather").unwrap_err());
+            // The uninstall/restore cleanup must refuse too.
+            refuse(remove_bundle_from_disabled_scopes("weather").unwrap_err());
+        });
+    }
+
+    /// The pure atomic-write failure (unix-only read-only-home injection) has
+    /// no inline pin: the platform selector would violate the architecture
+    /// guard's adapter-layer confinement, so it died with the #540 cleanup of
+    /// the never-CI-run integration suite (a follow-up may add an injectable
+    /// write seam).
+    ///
+    /// Reads degrade to an unlocked, never-persisting read when the lock is
+    /// unavailable: existing data still loads, and the migration path computes
+    /// in memory without writing the data file.
+    #[test]
+    fn read_degrades_without_persist_when_lock_unavailable() {
+        with_temp_home("pinvou3-scope-read-degraded", || {
+            std::fs::create_dir_all(disabled_bundles_lock_path()).unwrap();
+            // Seed a data file directly (the save path is refused without the lock).
+            let mut file = DisabledBundlesFile::default();
+            file.scopes
+                .insert("plain".to_string(), vec!["weather".to_string()]);
+            std::fs::write(
+                disabled_bundles_path(),
+                serde_json::to_string(&file).unwrap(),
+            )
+            .unwrap();
+            assert_eq!(
+                load_disabled_bundles_for(ConnectorScope::Plain),
+                vec!["weather".to_string()]
+            );
+
+            // Migration path (no data file, legacy connectors file present):
+            // loads the migrated view without persisting it.
+            std::fs::remove_file(disabled_bundles_path()).unwrap();
+            let conn = paths::pinvou3_home().join("disabled_connectors.json");
+            std::fs::create_dir_all(conn.parent().unwrap()).unwrap();
+            std::fs::write(&conn, r#"["weather"]"#).unwrap();
+            assert_eq!(
+                load_disabled_bundles_for(ConnectorScope::Plain),
+                vec!["weather".to_string()]
+            );
+            assert!(
+                !disabled_bundles_path().exists(),
+                "degraded read must not persist"
             );
         });
     }
