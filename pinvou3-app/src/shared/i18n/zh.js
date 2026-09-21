@@ -838,7 +838,7 @@ Object.assign(dictZh.uiToolStore, {
   connected:'已连接', installed:'已安装', builtin:'内置', keyRequired:'需密钥', localLatency:'本地',
   cancel:'取消', ok:'知道了', newChat:'新建会话',
   installHint:'新工具开关默认关闭，请在输入框工具列表中开启后使用', removeHint:'已移除，新会话将不再加载该工具', firstUseOnlineInstall:'首次连接会联网下载并校验官方 CLI',
-  configTitle:name=>`配置「${name}」`, configConnect:'连接', configInstall:'安装', configDocDefault:'查看配置说明', configHelpFeishu:'不会建应用？去飞书开放平台建一个 →',
+  configTitle:name=>`配置「${name}」`, configConnect:'连接', configInstall:'安装', configDocDefault:'查看配置说明',
   obsidianGuide:{
 not_installed:{ title:'需要先安装 Obsidian', body:'「Obsidian 知识库」需配合 Obsidian 使用。检测到你尚未安装，安装并创建一个库后即可连接。', primary:'下载 Obsidian', retry:'我已安装，重新检测' },
 no_vault:{ title:'还没有笔记库', body:'已检测到 Obsidian，但你还没创建过笔记库。请在 Obsidian 里新建一个库后再连接。', primary:null, retry:'我已新建，重新检测' },

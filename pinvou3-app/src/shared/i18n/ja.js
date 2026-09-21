@@ -809,7 +809,7 @@ Object.assign(dictJa.uiToolStore, {
   connected:'接続済み', installed:'インストール済み', builtin:'内蔵', keyRequired:'キーが必要', localLatency:'ローカル',
   cancel:'キャンセル', ok:'了解', newChat:'新しいチャット',
   installHint:'ツールスイッチはデフォルトでオフです。新しいツールは入力欄のツールリストでオンにしてから利用してください', removeHint:'削除しました。新しい会話ではこのツールは読み込まれません', firstUseOnlineInstall:'初回接続時に公式 CLI をダウンロードして検証します',
-  configTitle:name=>`「${name}」の設定`, configConnect:'接続', configInstall:'インストール', configDocDefault:'設定ガイドを見る', configHelpFeishu:'アプリの作成方法が分からない場合は Feishu オープンプラットフォームで作成 →',
+  configTitle:name=>`「${name}」の設定`, configConnect:'接続', configInstall:'インストール', configDocDefault:'設定ガイドを見る',
   obsidianGuide:{
 not_installed:{ title:'Obsidian のインストールが必要です', body:'「Obsidian ナレッジベース」は Obsidian と併用します。まだインストールされていません。インストールして保管庫を作成すると接続できます。', primary:'Obsidian をダウンロード', retry:'インストールしました。再検出' },
 no_vault:{ title:'保管庫がまだありません', body:'Obsidian は検出されましたが、保管庫がまだ作成されていません。Obsidian で保管庫を作成してから接続してください。', primary:null, retry:'作成しました。再検出' },

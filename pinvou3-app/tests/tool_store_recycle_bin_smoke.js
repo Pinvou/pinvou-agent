@@ -368,7 +368,7 @@ async function dismiss(page) {
       window.__PINVOU_MOCK_CALLS__.some(c => c.cmd === 'restore_recycled_plugin' && c.args.id === 'my-mcp')));
     rec('恢复后提示重新填写凭据', await page.evaluate(() =>
       document.body.innerText.includes('已恢复「my-mcp.zip」') && document.body.innerText.includes('请重新填写')));
-    rec('恢复成功副标题为「开关默认关闭」而非「已移除」', await page.evaluate(() =>
+    rec('restore-success subtitle shows the switch-off guidance, not removal', await page.evaluate(() =>
       document.body.innerText.includes('新工具开关默认关闭，请在输入框工具列表中开启后使用')
       && !document.body.innerText.includes('已移除，新会话将不再加载该工具')));
     await dismiss(page);

@@ -101,20 +101,25 @@ pub(crate) fn cli_bundle_of_skill(skill_dir: &str) -> Option<&'static str> {
         .find(|(.., dirs, _)| dirs.contains(&skill_dir))
         .map(|(id, ..)| *id)
 }
-
-/// 技能目录名 → 所属包 id（manifest 声明语义，导入碰撞检查与 UI 展示口径）。
+/// Skill dir name → owner pack id (manifest-claim semantics; the lens for
+/// import collision checks and UI display).
 ///
-/// **条件认领**（与 list_bundles 的 V5 决策一致）：ima 认领 ima-skills（同
-/// list_bundles 的 skill_claimed 预置）→ CLI 内置清单 → MCP manifest
-/// companion_skills（仅当所属 MCP 包当前已装才归 MCP；未装时技能保留独立
-/// 纯技能包形态，owner = 技能名自身）→ 独立成包。迁移层
-/// （`skill_marketplace::legacy_companion_owners`）按同一条件口径推导，
-/// 两侧不得分叉（四轮评审 M-7）。
+/// **Conditional claim** (matching list_bundles' V5 decision): ima claims
+/// ima-skills (same as list_bundles' skill_claimed preset) → the CLI builtin
+/// manifests → MCP manifest companion_skills (attributed to the MCP pack only
+/// while that MCP pack is currently installed; uninstalled, the skill keeps
+/// its standalone pure-skill-pack form, owner = the skill name itself) →
+/// otherwise its own pack. The migration layer
+/// (`skill_marketplace::legacy_companion_owners`) derives owners under the
+/// same conditional lens; the two sides must not diverge (four review rounds,
+/// M-7).
 ///
-/// 门控/物化侧的归属判定用 [`skill_gating_owner`]（额外含物理布局回退）：
-/// 导入碰撞检查必须停留在 manifest 声明语义——导入暂存目录
-/// （`<id>.tmp`）与既有安装的物理嵌套都会让物理判定把"自己撞自己"误判成
-/// 跨包占用（R17-MAJOR1 修复第一版踩过的坑）。
+/// The gating/materialization side resolves ownership via
+/// [`skill_gating_owner`] (physical-layout fallback included): import
+/// collision checks must stay on manifest-claim semantics — import staging
+/// dirs (`<id>.tmp`) and an existing install's physical nesting would both
+/// make the physical lens misread a self-collision as a cross-pack conflict
+/// (the pitfall the first R17-MAJOR1 fix cut itself on).
 pub(crate) fn skill_owner_package(skill_name: &str) -> String {
     if skill_name == "ima-skills" {
         return "ima".to_string();
@@ -136,15 +141,19 @@ pub(crate) fn skill_owner_package(skill_name: &str) -> String {
     }
     skill_name.to_string()
 }
-
-/// 技能目录名 → 门控/物化侧属主：[`skill_owner_package`] 的条件认领之上，
-/// 追加**物理布局回退**（R17-MAJOR1）。技能目录物理嵌在
-/// `bundles/<pkg>/skills/<name>/` 下时归 `<pkg>`，无论 manifest 是否声明——
-/// 会话物化按目录扫描、只看物理布局；门控若把未声明技能归到技能名自身，
-/// 该技能会以零同意进入所有 scope，且 composer 无行可关（record 驱动的
-/// 列表没有这一行）。回退与扫描同口径、纯物理判定（不查安装记录，也不排除
-/// 暂存目录——门控侧不区分"正在导入"的目录；导入碰撞检查不走本函数）。
-/// 排序取首个，保证同名目录被多个包嵌套时的确定性。仍未命中 → 独立成包。
+/// Skill dir name → the gating/materialization owner: [`skill_owner_package`]'s
+/// conditional claim plus a **physical-layout fallback** (R17-MAJOR1). A skill
+/// dir physically nested under `bundles/<pkg>/skills/<name>/` belongs to
+/// `<pkg>` whether or not the manifest declares it — session materialization
+/// scans directories and sees only physical layout; if the gate attributed an
+/// undeclared skill to the skill name itself, it would enter every scope with
+/// zero consent and no composer row to turn it off (the record-driven lists
+/// have no such row). The fallback shares materialization's lens: purely
+/// physical (no install-record lookups, staging dirs not excluded either —
+/// the gating side does not distinguish "currently importing" dirs; import
+/// collision checks never route through this function). First match in sorted
+/// order keeps the outcome deterministic when several packs nest the same
+/// name; no hit → the skill is its own pack.
 pub(crate) fn skill_gating_owner(skill_name: &str) -> String {
     let claimed = skill_owner_package(skill_name);
     if claimed != skill_name {
@@ -913,7 +922,7 @@ mod tests {
             assert_eq!(
                 skill_owner_package("stowaway"),
                 "stowaway",
-                "manifest-claim semantics stay claim-only (import/UI口径)"
+                "manifest-claim semantics stay claim-only (import/UI lens)"
             );
             std::fs::create_dir_all(bundles.join("a-pack").join("skills").join("stowaway"))
                 .unwrap();

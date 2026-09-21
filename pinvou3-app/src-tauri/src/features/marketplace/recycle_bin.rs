@@ -331,23 +331,26 @@ impl RecycleBin {
             ));
         }
         let entry = file.entries.remove(index);
-        // 清单落盘失败必须补偿（round-19 MAJOR 3）：目录已搬回 bundles_root 而
-        // 条目尚未消费——若不搬回，就是「目录在根、无登记、条目滞留回收站」的
-        // 不可重试半恢复态（重试撞 src.is_dir() 守卫；按提示 purge 只清滞留
-        // 条目，留下的是无登记的活目录，未初始化 scope 会零同意物化其技能）。
-        // 盘上清单从未改变，dst→src 原样搬回即完整复原。
+        // A failed manifest persist must be compensated (round-19 MAJOR 3): the
+        // directory has already moved back to bundles_root while the bin entry is
+        // not yet consumed — without the rename-back this is an unretryable
+        // half-restore ("directory at the root, no record, entry stuck in the
+        // bin": a retry hits the src.is_dir() guard, and the suggested purge
+        // only clears the stuck entry, leaving a recordless live directory
+        // behind). The on-disk manifest never changed, so the dst→src rename
+        // restores consistency exactly.
         if let Err(e) = save_locked(&self.file, &file) {
             if let Err(re) = super::plugin_import::rename_dir_with_retry(&dst, &src) {
                 log::error!(
-                    "[recycle-bin] 取回 {pkg_id} 清单落盘失败后的补偿回滚也失败（{} 可能处于半恢复态）: {re}",
+                    "[recycle-bin] restoring {pkg_id}: the compensation rollback after the failed manifest persist failed too ({} may be in a half-restored state): {re}",
                     dst.display()
                 );
                 return Err(format!(
-                    "取回 {pkg_id} 后清单落盘失败，且补偿回滚也失败: {e}; 补偿回滚失败: {re}"
+                    "restoring {pkg_id}: the manifest persist failed and the compensation rollback failed too: {e}; rollback error: {re}"
                 ));
             }
             return Err(format!(
-                "取回 {pkg_id} 后清单落盘失败（已整体回滚至回收站，可重试）: {e}"
+                "restoring {pkg_id}: the manifest persist failed (fully rolled back to the recycle bin, retry is safe): {e}"
             ));
         }
         log::info!("[recycle-bin] 已取回包 {pkg_id} → {}", dst.display());
@@ -466,16 +469,23 @@ pub(crate) fn package_kind(pkg_dir: &Path) -> &'static str {
 ///      (the record leans to the safe side). The hidden set is only cleared,
 ///      never written (restored packages must stay visible to the user).
 ///
-/// 并发契约：全程持同 id `import_lock_for`（与导入/展示编辑同一把锁；
-/// 锁序 import → recycle → store），恢复整链路
-/// （取回 → 重建登记 → 供给）对并发的同 id 重导入/再卸载串行——取回前抢锁，
-/// 避免与并发导入的「rename → 备份重基线」交错；`install_upload` 只取全局
-/// 事务锁，不在本锁上重入。与卸载侧的 recycle preflight 对称：先锁再动目录。
-/// 注意（评审 R14-minor #9，如实的边界声明）：本函数持 import_lock 跨
-/// `install_upload` → 全局事务锁，而卸载侧的 companion 清理在事务锁内取
-/// import_lock——TRANSACTION↔import_lock 这一对**没有全局定序**（理论同实例
-/// 交叉见 `MARKETPLACE_TRANSACTION_LOCK` 文档），此处只声明本函数内部的锁序，
-/// 不声称与卸载路径全局一致。
+/// Concurrency contract: holds the per-id `import_lock_for` for the whole
+/// restore (the same lock as import/display editing; lock order
+/// import → recycle → store), serializing the entire restore chain (take_back
+/// → registration rebuild → supply) against concurrent same-id
+/// re-imports/uninstalls — the lock is taken before take_back so a concurrent
+/// import's "rename → backup re-baseline" cannot interleave; `install_upload`
+/// takes only the global transaction lock and does not re-enter this one.
+/// Symmetric with the uninstall side's recycle preflight: lock first, then
+/// touch directories.
+/// Boundary note (review R14-minor #9, stated honestly): this function holds
+/// import_lock across `install_upload` → the global transaction lock, while
+/// the uninstall side's companion cleanup takes import_lock INSIDE the
+/// transaction lock — the TRANSACTION↔import_lock pair has **no global
+/// ordering** (the theoretical same-instance crossing is documented on
+/// `MARKETPLACE_TRANSACTION_LOCK`; the second crossing, `import_plugin_package`,
+/// is named there too — round-21 minor 4). Only this function's internal
+/// order is claimed here, not global consistency with the uninstall path.
 pub fn restore_plugin(pkg_id: &str) -> Result<RestoreRecycledResult, String> {
     let import_lock = super::plugin_import::import_lock_for(pkg_id);
     let _import_guard = import_lock.lock().unwrap_or_else(|p| p.into_inner());
@@ -516,19 +526,25 @@ pub fn restore_plugin(pkg_id: &str) -> Result<RestoreRecycledResult, String> {
     // Secrets-declaring packs take the supply-skipped branch below (install_upload
     // never runs), so their id never re-enters installed.json — one of the three
     // DenyAll expansion inputs — and combination packs have no `skills/<pack-id>/`
-    // dir for `list_skills` (a second input). For uninitialized scopes the gate's
-    // "the expansion covers the pack" premise would be false and directory-scan
-    // materialization would enable the pack with zero consent (review #455
-    // R16-MAJOR1). Detect the declaration from the bin-side manifest copy now
-    // (before take_back, so a gate persist failure stays retryable) and let the
-    // gate force-materialize uninitialized scopes for this cohort.
+    // dir for `list_skills` (a second input). At round-16 that made the gate's
+    // "the expansion covers the pack" premise false for uninitialized scopes:
+    // directory-scan materialization enabled the pack with zero consent (review
+    // #455 R16-MAJOR1). The round-19 disk-derived arm has since closed that
+    // recordless gap (a restored pack's skills re-enter the expansion via the
+    // bundles_root walk), so the force pass below survives as fail-closed
+    // redundancy rather than the only barrier. Detect the declaration from the
+    // bin-side manifest copy now (before take_back, so a gate persist failure
+    // stays retryable) and let the gate force-materialize uninitialized scopes
+    // anyway.
     // Round-17 minor 2: an MCP entry whose bin-side manifest EXISTS but cannot
     // be read or parsed must fail TOWARD force — the live read below still
-    // skips supply on the same failure, so degrading to the normal gate would
-    // re-open the R16-MAJOR1 zero-consent shape for exactly this entry. A
-    // skill-only entry has no manifest by design and takes the normal gate:
-    // after take_back the pack dir lands in bundles_root, where the
-    // disk-derived skill arm of the DenyAll expansion
+    // skips supply on the same failure, so the entry would land recordless with
+    // its supply state unverifiable; keeping the strictest consent treatment
+    // for exactly this entry is cheap and fail-closed (the zero-consent shape
+    // that motivated it is itself closed by the disk leg — this direction is
+    // retained as redundancy). A skill-only entry has no manifest by design
+    // and takes the normal gate: after take_back the pack dir lands in
+    // bundles_root, where the disk-derived skill arm of the DenyAll expansion
     // (`resolve_scope_disabled_ids`) sees it — the gate's inner-name scan
     // normalizes to the physical owner via skill_gating_owner.
     let manifest_path = bin.root.join(pkg_id).join("mcp").join("manifest.json");
@@ -548,7 +564,7 @@ pub fn restore_plugin(pkg_id: &str) -> Result<RestoreRecycledResult, String> {
     };
     gate.map_err(|save_error| {
         format!(
-            "恢复 {pkg_id} 前置检查失败（回收站条目未动，可直接重试）：重新禁用状态落盘失败: {save_error}"
+            "restoring {pkg_id}: the pre-check failed (bin entry untouched, retry is safe): persisting the re-disabled state failed: {save_error}"
         )
     })?;
 
@@ -559,13 +575,18 @@ pub fn restore_plugin(pkg_id: &str) -> Result<RestoreRecycledResult, String> {
 
     // 重建登记：快照即原记录（installed_at/source/extra 原样保留）。upsert_preserving
     // 在记录已被卸载移除的常态下等价 upsert；并发重装写了新记录时保留其首装元数据。
-    // 登记重建失败必须回滚到回收站（评审 #455 R13-B2，与下方供给失败分支同形）：
-    // 此刻目录已搬回 bundles_root 而记录不存在——记录驱动的枚举（installed_ids、
-    // list_skills 上传技能）看不到该包，但会话物化直接扫描 bundles_root 目录，
-    // 包内技能会以零同意进入新的 plain 会话；且回收站条目已被消费，「重试」
-    // 必失败。不回滚会残留这种半恢复态，回滚自身失败必须响亮留痕并如实上报。
-    // 登记未写入成功（upsert 返回 Err）故无需 remove；并发重装的记录若存在，
-    // 恰恰不应被本路径删除。
+    // A failed registration rebuild must roll back to the recycle bin (review
+    // #455 R13-B2, same shape as the supply-failure branch below): at this
+    // point the directory has moved back to bundles_root while no record
+    // exists — record-driven enumeration (installed_ids, list_skills' upload
+    // leg) cannot see the pack, and the bin entry is already consumed so a
+    // "retry" would always fail. The round-19 disk-derived arm keeps the
+    // pack's skills gated in uninitialized scopes, but the half-restored state
+    // itself persists without the rollback (unmanaged, unretryable); a rollback
+    // failure of its own must be logged loudly and reported honestly. The
+    // registration was never written (upsert returned Err), so no remove is
+    // needed; a concurrent reinstall's record, if any, must NOT be deleted by
+    // this path.
     let mut restored = record.clone();
     restored.installed = true;
     if let Err(e) = BundleStore::new().upsert_preserving(restored) {
@@ -578,14 +599,16 @@ pub fn restore_plugin(pkg_id: &str) -> Result<RestoreRecycledResult, String> {
             bin.recycle_package(pkg_id, rollback_kind, &rollback_display, record.clone())
         {
             log::error!(
-                "[recycle-bin] 恢复 {pkg_id} 登记重建失败（{e}），回滚到回收站也失败：包目录仍在 {}、无登记、无回收站条目: {re}",
+                "[recycle-bin] restoring {pkg_id}: the registration rebuild failed ({e}) and the rollback to the recycle bin failed too: the package directory is still at {}, unregistered, with no bin entry: {re}",
                 pkg_dir.display()
             );
             return Err(format!(
-                "恢复 {pkg_id} 失败: {e}；回滚到回收站也失败（包目录仍在原位，未登记，可手动删除）: {re}"
+                "restoring {pkg_id} failed: {e}; the rollback to the recycle bin failed too (the package directory is still in place, unregistered, safe to delete manually): {re}"
             ));
         }
-        return Err(format!("恢复 {pkg_id} 失败（已回滚至回收站，可重试）: {e}"));
+        return Err(format!(
+            "restoring {pkg_id} failed (rolled back to the recycle bin, retry is safe): {e}"
+        ));
     }
 
     let mut credentials_required = false;
@@ -657,9 +680,9 @@ fn load_locked(path: &Path) -> Result<RecycleBinFile, String> {
     }
 }
 
-/// Test-only failpoint（mod.rs 的 `FAIL_NEXT_INSTALLED_WRITE` 同款惯例）：置位后
-/// 下一次 `save_locked` 注入失败并自复位，用于钉住 take_back 的补偿回滚
-/// （round-19 MAJOR 3）。
+/// Test-only failpoint (the mod.rs `FAIL_NEXT_INSTALLED_WRITE` convention):
+/// once armed, the next `save_locked` fails with an injected error and the flag
+/// self-resets; pins take_back's compensation rollback (round-19 MAJOR 3).
 #[cfg(test)]
 pub(crate) static FAIL_NEXT_RECYCLE_SAVE: std::sync::atomic::AtomicBool =
     std::sync::atomic::AtomicBool::new(false);
@@ -694,9 +717,11 @@ mod tests {
     #[cfg(unix)]
     use crate::features::marketplace::scope::load_disabled_bundles_file;
 
-    /// 把 PINVOU3_HOME 指到干净临时目录跑闭包，借 ENV_LOCK 与其它 mutate 测试串行
-    /// （repo 惯例：scope.rs / mod.rs 各有同名 test 助手，不跨模块复用）。
-    /// Unix-only:目前只有只读权限夹具的回归测试使用它。
+    /// Points PINVOU3_HOME at a clean temp dir for the closure, serializing via
+    /// ENV_LOCK with the other env-mutating tests (repo convention: scope.rs /
+    /// mod.rs each keep their own same-named test helper; no cross-module
+    /// sharing). Unix-only: currently used only by the read-only-permission
+    /// fixture regressions.
     #[cfg(unix)]
     fn with_temp_home<F: FnOnce()>(f: F) {
         let _g = crate::platform::paths::tests::ENV_LOCK
@@ -957,7 +982,7 @@ mod tests {
             )
             .iter()
             .any(|id| id == "my-skill-rr"),
-            "卸载后禁用条目应被清理"
+            "the disabled entries must be cleaned up after uninstall"
         );
 
         let result = restore_plugin("my-skill-rr").unwrap();
@@ -971,14 +996,14 @@ mod tests {
             )
             .iter()
             .any(|id| id == "my-skill-rr"),
-            "恢复后已初始化 scope 必须回到禁用态（同意门）"
+            "after restore, an initialized scope must be back in the disabled set (the consent gate)"
         );
         // The uninitialized scope (code) is not written: the DenyAll
         // on-the-fly expansion already covers it; user state is not persisted.
         let file = crate::features::marketplace::scope::load_disabled_bundles_file();
         assert!(
             !file.initialized.contains("code"),
-            "恢复不得初始化未初始化 scope: {file:?}"
+            "restore must not initialize an uninitialized scope: {file:?}"
         );
 
         match prev {
@@ -1208,7 +1233,7 @@ mod tests {
 
             let err = restore_plugin("gate-skill").unwrap_err();
             assert!(
-                err.contains("重试"),
+                err.contains("retry"),
                 "the failure must name retry as the remedy ({tag}): {err}"
             );
             assert_eq!(
@@ -1294,6 +1319,10 @@ mod tests {
         // The home is writable, so the gate's force pass persists BEFORE
         // take_back even though the manifest cannot be parsed.
         let err = restore_plugin("broken-combo").unwrap_err();
+        // This assertion pins MAIN's pre-existing Chinese error text (the
+        // non-translated return in the rollback tail below) — the message is
+        // main-authored, outside this PR's diff sweep; re-translate both
+        // together when main sweeps it.
         assert!(
             err.contains("回滚"),
             "supply must fail on the corrupt manifest and roll back: {err}"
@@ -1686,11 +1715,14 @@ mod tests {
         let _ = std::fs::remove_dir_all(&tmp);
     }
 
-    /// 登记重建失败必须回滚到回收站（评审 #455 R13-B2，与供给失败分支同形）：
-    /// take_back 之后 upsert_preserving 失败（此处以不可读的 bundles.json 注入）
-    /// 会留下「目录在 bundles_root、无登记、回收站条目已消费」的半恢复态——
-    /// 记录驱动的枚举看不到该包，但会话物化按目录扫描，包内技能会以零同意进入
-    /// 新 plain 会话，且「重试」必失败。回滚 = 目录搬回 + 清单条目复原。
+    /// A failed registration rebuild must roll back to the recycle bin (review
+    /// #455 R13-B2, same shape as the supply-failure branch): an upsert_preserving
+    /// failure after take_back (injected here via an unreadable bundles.json)
+    /// leaves the half-restored state "directory in bundles_root, no record, bin
+    /// entry consumed" — record-driven enumeration cannot see the pack, and the
+    /// consumed entry makes "retry" always fail (the round-19 disk leg keeps the
+    /// skills gated, but the pack stays unmanaged). Rollback = directory moved
+    /// back + manifest entry restored.
     #[cfg(unix)]
     #[test]
     fn restore_registration_rebuild_failure_rolls_back_to_bin() {
@@ -1717,7 +1749,7 @@ mod tests {
             .recycle_package("my-skill", KIND_SKILL, "my-skill.zip", record)
             .unwrap();
 
-        // 失败注入：bundles.json 存在但不可读 → upsert_preserving 读取即 Err。
+        // Failure injection: bundles.json exists but is unreadable → upsert_preserving errors on read.
         let store_path = tmp.join("marketplace").join("bundles.json");
         std::fs::write(&store_path, "{}").unwrap();
         std::fs::set_permissions(&store_path, std::fs::Permissions::from_mode(0o000)).unwrap();
@@ -1736,12 +1768,12 @@ mod tests {
 
         let err = restore_plugin("my-skill").unwrap_err();
         assert!(
-            err.contains("回滚"),
-            "失败必须如实上报已回滚到回收站（重试是真实补救）: {err}"
+            err.contains("rolled back"),
+            "the failure must honestly report the rollback to the recycle bin (retry is a real remedy): {err}"
         );
         assert!(
             !pkg.exists(),
-            "包目录必须搬回回收站，不得残留无登记的半恢复态"
+            "the package directory must be moved back to the recycle bin, never left as a recordless half-restore"
         );
         assert!(
             RecycleBin::new()
@@ -1749,19 +1781,19 @@ mod tests {
                 .unwrap()
                 .iter()
                 .any(|e| e.id == "my-skill"),
-            "回收站条目必须复原"
+            "the recycle bin entry must be restored"
         );
-        // bundles.json 此刻仍不可读：登记查询本身必须报错（fail loud，不得伪造）。
+        // bundles.json is still unreadable at this point: the registration query itself must error (fail loud, never fabricate).
         assert!(
             store.get("my-skill").is_err(),
-            "不可读的登记文件必须让 get 报错"
+            "an unreadable store file must make get error"
         );
 
-        // 收尾：恢复权限后再断言登记确实未被半写入，并清理临时目录。
+        // Cleanup: restore permissions, then assert the store really was not half-written, and clean the temp dir.
         std::fs::set_permissions(&store_path, std::fs::Permissions::from_mode(0o644)).unwrap();
         assert!(
             store.get("my-skill").unwrap().is_none(),
-            "登记重建失败不得留下半写入的记录"
+            "a failed registration rebuild must not leave a half-written record"
         );
         match prev {
             Some(v) => unsafe { std::env::set_var("PINVOU3_HOME", v) },
@@ -1950,7 +1982,7 @@ mod tests {
         let _fail = crate::features::marketplace::arm_failpoint(&FAIL_NEXT_RECYCLE_SAVE);
         let err = restore_plugin("compensated").unwrap_err();
         assert!(
-            err.contains("整体回滚"),
+            err.contains("fully rolled back"),
             "the compensation must report the rollback: {err}"
         );
         assert!(

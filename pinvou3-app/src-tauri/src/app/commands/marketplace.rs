@@ -250,14 +250,17 @@ pub async fn install_marketplace_tool(
                 eprintln!("[marketplace] 配套技能 '{sid}' 安装失败: {e}");
                 continue;
             }
-            // 新装的 companion 技能默认加入 DenyAll scope 禁用集（外部能力显式
-            // 开启，与独立技能安装 install_marketplace_skill_sync 同语义）。
-            // companion 的 owner 包即本工具，上方的工具同步已覆盖其同意状态，
-            // 故本调用失败只留痕继续（不阻断其余 companion，也无需整体报错）。
+            // A newly installed companion skill joins the DenyAll scope disabled
+            // sets by default (external capabilities are explicit opt-in, same
+            // semantics as the standalone install_marketplace_skill_sync). The
+            // companion's owner pack is this tool, whose consent state the sync
+            // above already covered, so a failure here is logged and the loop
+            // continues (it must not block the remaining companions, nor fail
+            // the whole command).
             if let Err(e) = crate::features::marketplace::scope::sync_deny_all_scopes_after_install(&sid)
             {
                 eprintln!(
-                    "[marketplace] 配套技能 '{sid}' 默认关闭状态落盘失败（owner 包已由工具同步覆盖）: {e}"
+                    "[marketplace] persisting the default-off state for companion skill '{sid}' failed (its owner pack is already covered by the tool sync): {e}"
                 );
             }
         }
@@ -578,8 +581,9 @@ pub(super) fn uninstall_marketplace_tool_sync(tool_id: &str) -> Result<(), Strin
             crate::features::marketplace::scope::remove_bundle_from_disabled_scopes(sid)?;
         }
     }
-    // 已卸载的连接器从两个 scope 的禁用集移除(避免残留 id)。fail-visible
-    // （round-17 minor 1）：残留条目 + 标记会被同 id 重装的 install-sync 继承。
+    // The uninstalled connector is removed from both scopes' disabled sets (no
+    // stale ids). Fail-visible (round-17 minor 1): a stale entry + marker would
+    // be inherited by a same-id reinstall's install sync.
     crate::features::marketplace::remove_bundle_from_disabled_scopes(tool_id)?;
     Ok(())
 }
@@ -606,11 +610,14 @@ pub async fn install_marketplace_skill(
     tokio::task::spawn_blocking(move || install_marketplace_skill_sync(&install_skill_id))
         .await
         .map_err(|e| format!("任务执行失败: {e}"))??;
-    // 安装影响两个 scope 的启用集：DenyAll scope（含 plain）已初始化时新装技能
-    // 默认仍关闭（sync 进各 scope 禁用集，见 install_marketplace_skill_sync）；
-    // 未初始化 scope 按 DenyAll 现算兜底，同样默认关。组合目录重写由下面的
-    // hot_refresh 统一收尾（round-20 minor 4：此前在其前面重复手写了一次
-    // refresh_live_sessions_skills，效果幂等但白做一遍）。
+    // The install affects both scopes' enabled sets: an initialized DenyAll
+    // scope (plain included) keeps a newly installed skill off by default
+    // (synced into the scope disabled sets, see install_marketplace_skill_sync);
+    // an uninitialized scope falls back to the on-the-fly DenyAll expansion,
+    // also off by default. The composite-dir rewrite is finalized by
+    // hot_refresh below (round-20 minor 4: a hand-written
+    // refresh_live_sessions_skills call used to duplicate what hot_refresh
+    // already does — idempotent but wasted work).
     // The native-tool ownership gate (NATIVE_PACKAGE_TOOLS) reads install
     // state: without this refresh a package owning a native tool (ima) stays
     // denied in live engines until respawn.
@@ -629,10 +636,12 @@ pub(super) fn install_marketplace_skill_sync(skill_id: &str) -> Result<(), Strin
         .install(skill_id)?;
     // 新装技能默认加入 DenyAll scope（当前 code）禁用集（与连接器同语义：
     // 外部能力显式开启）；组合目录由调用方在命令层重写（install_marketplace_skill）。
-    // 持久化失败 fail-visible（评审 #455 R13-B3）：吞掉错误会让技能以零同意上线。
+    // Fail-visible persist (review #455 R13-B3): swallowing the error would let the skill go live with zero consent.
     crate::features::marketplace::scope::sync_deny_all_scopes_after_install(skill_id)
         .map_err(|e| {
-            format!("新装技能 '{skill_id}' 默认关闭状态落盘失败（新会话将默认开启，请在工具列表手动关闭）: {e}")
+            format!(
+                "skill '{skill_id}' installed, but persisting its default-off consent state failed: new sessions will enable it by default — turn it off in the tools list: {e}"
+            )
         })?;
     Ok(())
 }
@@ -803,10 +812,10 @@ pub async fn import_plugin_package_cmd(
     .await
     .map_err(|e| format!("任务执行失败: {e}"))??;
     // 上传安全默认：插件包导入后加入 DenyAll 禁用集，需用户在前端开关显式开启。
-    // 与 `install_marketplace_tool` 同口径。持久化失败 fail-visible（评审 #455 R13-B3）。
+    // Same contract as install_marketplace_tool. Fail-visible persist (review #455 R13-B3).
     crate::features::marketplace::sync_deny_all_scopes_after_install(&report.id).map_err(|e| {
         format!(
-            "插件 '{}' 默认关闭状态落盘失败（新会话将默认开启，请在工具列表手动关闭）: {e}",
+            "plugin '{}' installed, but persisting its default-off consent state failed: new sessions will enable it by default — turn it off in the tools list: {e}",
             report.id
         )
     })?;
@@ -870,10 +879,10 @@ pub async fn import_plugin_package_bytes_cmd(
     let _ = std::fs::remove_file(&tmp); // 清理临时文件(含失败路径)
     let report = report?;
     // 上传安全默认：拖放导入插件包后加入 DenyAll 禁用集，需用户开关显式开启。
-    // 持久化失败 fail-visible（评审 #455 R13-B3）。
+    // Fail-visible persist (review #455 R13-B3).
     crate::features::marketplace::sync_deny_all_scopes_after_install(&report.id).map_err(|e| {
         format!(
-            "插件 '{}' 默认关闭状态落盘失败（新会话将默认开启，请在工具列表手动关闭）: {e}",
+            "plugin '{}' installed, but persisting its default-off consent state failed: new sessions will enable it by default — turn it off in the tools list: {e}",
             report.id
         )
     })?;
@@ -917,12 +926,12 @@ pub async fn import_skill_md_bytes(
         tokio::task::spawn_blocking(move || import_skill_md_content(md, &filename_for_import))
             .await
             .map_err(|e| format!("任务执行失败: {e}"))??;
-    // 上传安全默认：与插件包导入同口径，加入 DenyAll scope。持久化失败
-    // fail-visible（评审 #455 R13-B3）。
+    // Upload safe default: same as plugin import, joins the DenyAll scopes.
+    // Fail-visible persist (review #455 R13-B3).
     crate::features::marketplace::scope::sync_deny_all_scopes_after_install(&report.id).map_err(
         |e| {
             format!(
-                "技能 '{}' 默认关闭状态落盘失败（新会话将默认开启，请在工具列表手动关闭）: {e}",
+                "skill '{}' installed, but persisting its default-off consent state failed: new sessions will enable it by default — turn it off in the tools list: {e}",
                 report.id
             )
         },
@@ -930,8 +939,8 @@ pub async fn import_skill_md_bytes(
     // An imported id can collide with a package owning a native tool
     // (NATIVE_PACKAGE_TOOLS keys on package ids), so the deny snapshot must
     // follow the same install postcondition as the marketplace paths.
-    // 组合目录重写由 hot_refresh 统一收尾（round-20 minor 4：去掉此前重复
-    // 手写的 refresh_live_sessions_skills）。
+    // The composite-dir rewrite is finalized by hot_refresh (round-20 minor 4:
+    // the duplicate hand-written refresh_live_sessions_skills call is gone).
     hot_refresh(&pool, true).await;
     Ok(report.id)
 }

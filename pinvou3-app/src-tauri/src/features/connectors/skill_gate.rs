@@ -69,13 +69,14 @@ impl ConnectorGate {
         .await
         .map_err(|e| format!("spawn_blocking: {e}"))??;
         if show {
-            // 持久化失败 fail-visible（评审 #455 R13-B3，round-19 合并保留）：
-            // 吞掉错误会让连接器以零同意上线；错误文案带恢复指引。
+            // Fail-visible persist (review #455 R13-B3, preserved through the
+            // round-19 merge): swallowing the error would let the connector go
+            // live with zero consent; the error text carries recovery guidance.
             crate::features::marketplace::sync_deny_all_scopes_after_install(self.id).map_err(
                 |e| {
-                    log::warn!("[{}] 默认关闭状态落盘失败: {e}", self.id);
+                    log::warn!("[{}] persisting the default-off consent state failed: {e}", self.id);
                     format!(
-                        "{} 默认关闭状态落盘失败（新会话将默认开启，请在工具列表手动关闭）: {e}",
+                        "{} connected, but persisting its default-off consent state failed: new sessions will enable it by default — turn it off in the tools list: {e}",
                         self.id
                     )
                 },

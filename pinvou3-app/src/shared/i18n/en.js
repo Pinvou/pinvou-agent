@@ -808,7 +808,7 @@ Object.assign(dictEn.uiToolStore, {
   connected:'Connected', installed:'Installed', builtin:'Built-in', keyRequired:'Key required', localLatency:'Local',
   cancel:'Cancel', ok:'Got it', newChat:'New Chat',
   installHint:'Tool switches are off by default; turn new tools on in the composer tools list to use them', removeHint:'Removed; new conversations will no longer load this tool', firstUseOnlineInstall:'The first connection downloads and verifies the official CLI',
-  configTitle:name=>`Configure ${name}`, configConnect:'Connect', configInstall:'Install', configDocDefault:'View setup guide', configHelpFeishu:'No app yet? Create one on the Feishu Open Platform →',
+  configTitle:name=>`Configure ${name}`, configConnect:'Connect', configInstall:'Install', configDocDefault:'View setup guide',
   obsidianGuide:{
 not_installed:{ title:'Obsidian required', body:'"Obsidian Vault" works together with Obsidian. It is not installed yet—install Obsidian and create a vault to connect.', primary:'Download Obsidian', retry:'I have installed it—check again' },
 no_vault:{ title:'No vault yet', body:'Obsidian was detected, but no vault has been created yet. Create a vault in Obsidian, then connect.', primary:null, retry:'I have created one—check again' },

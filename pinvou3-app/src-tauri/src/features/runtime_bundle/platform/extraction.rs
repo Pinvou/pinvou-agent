@@ -493,15 +493,17 @@ impl Pinvou3Bundle {
                         eprintln!("[scope] write disabled_bundles.json failed: {error}")
                     });
                 }
-                // 代码会话的 code scope 同样清理残留。fail-visible
-                // （round-17 minor 1）：残留条目会让退役工具在 scope 里复活。
-                // 本清理段整体是 best-effort（外层签名 io::Error、周围 `let _ =`），
-                // 失败以响亮日志留痕而非中断退役。
+                // The code sessions' code scope gets the same stale-entry cleanup.
+                // Fail-visible (round-17 minor 1): a stale entry would resurrect a
+                // retired tool inside the scope. This cleanup segment as a whole is
+                // best-effort (the outer signature is io::Error and the surroundings
+                // are `let _ =`), so a failure is logged loudly instead of aborting
+                // the retirement.
                 if let Err(e) =
                     crate::features::marketplace::remove_bundle_from_disabled_scopes(tool_id)
                 {
                     log::warn!(
-                        "[runtime-bundle] 退役 {tool_id} 后的开关/可见性清理落盘失败（残留条目会让退役工具在 scope 里复活）: {e}"
+                        "[runtime-bundle] persisting the post-retirement switch/visibility cleanup for {tool_id} failed (a stale entry would resurrect the retired tool in the scope): {e}"
                     );
                 }
                 let _ = std::fs::remove_dir_all(paths::bundle_mcp_servers_dir().join(tool_id));

@@ -55,9 +55,11 @@ pub async fn set_bundle_visibility(
 ) -> Result<(), String> {
     let scope = parse_connector_scope(scope.as_deref())?;
     let ids = bundle_ids.clone();
-    // 可见性写与开关写同走 round-19 MAJOR 1 恢复的 fail-loud 契约：save 失败
-    // 经 `??` 原样上抛（前端回滚开关并告警），不再降级为日志。跨进程 RMW 与
-    // 过期快照问题仍归 #515 重work 所有（调用方可见失败形态不变）。
+    // The visibility write shares the fail-loud contract restored by round-19
+    // MAJOR 1: a save failure propagates via `??` (the frontend rolls the
+    // toggle back and alerts) instead of degrading to a log line. The
+    // cross-process RMW and stale-snapshot concerns stay with the #515 rework
+    // (the caller-visible failure shape is unchanged).
     tokio::task::spawn_blocking(move || {
         crate::features::marketplace::save_hidden_bundles_for(scope, &ids)
     })

@@ -548,7 +548,7 @@ fn direct_skill_install_uninstall_scope_state_roundtrip() {
         crate::features::marketplace::load_disabled_bundles_for(ConnectorScope::Plain)
             .iter()
             .any(|id| id == "visualizer"),
-        "重装后 plain scope 默认关闭（DenyAll 收敛语义）"
+        "after reinstall the plain scope is disabled by default (DenyAll convergence semantics)"
     );
 
     match previous {

@@ -133,9 +133,11 @@ async function prepareSceneCapabilities(meta, invoke) {
     skills = await listMarketplaceSkills(invoke);
   }
 
-  // 装上 ≠ 会话可见：开关/可见性任一关闭都会让会话侧排除该包（PPT 场景实测：
-  // pptx 在 plain 隐藏集残留，装了也调不到）——下方的可用性预读 + 显式开启
-  // （enable_marketplace_packages）就地处理 disabled 与 hidden 两个集合。
+  // Installed ≠ session-visible: either the switch or the visibility set
+  // excludes the pack on the session side (observed in the PPT scene: pptx
+  // lingered in the plain hidden set and stayed unreachable after install) —
+  // the availability pre-read plus the explicit enable below
+  // (enable_marketplace_packages) clear both the disabled and hidden sets.
 
   const missingTools = requirements.tools.filter((toolId) => !isInstalled(tools, toolId));
   const missingSkills = requirements.skills.filter((skillId) => !isInstalled(skills, skillId));

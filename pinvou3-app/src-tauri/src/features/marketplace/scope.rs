@@ -6,16 +6,16 @@
 //! 技能 id / CLI 连接器 id），一个包 = 一个开关，包内技能（companion skills）可见性
 //! 唯一跟随所属包（§5.2 不变量）。
 //!
-//! 落盘格式与 #287 泛化后的两份旧文件同构：`{scopes, hidden_scopes,
+//! On-disk format, isomorphic to the #287-generalized legacy pair: `{scopes, hidden_scopes,
 //! default_off_scopes: {"<mode>": [...]}, initialized: ["<mode>"],
-//! project_skills_enabled, plain_defaults_migrated}`。Scope keys 用 `SessionMode`
-//! 的 kebab-case 名。`plain_defaults_migrated`：plain 仍为 AllowAll 时写下的旧
-//! 文件标记；读时迁移把 plain 初始化为已持久化列表并落盘标记。首次读入即把两
-//! 份旧文件迁移进本文件
+//! project_skills_enabled, plain_defaults_migrated}`. Scope keys use `SessionMode`
+//! kebab-case names. `plain_defaults_migrated`: marks files written while plain
+//! was still AllowAll; migrate-on-read initializes plain to the persisted list
+//! and lands the marker on disk. First read merges the two legacy files in:
 //! migrates the two legacy files into this file on read (migrate-on-read):
-//! 旧连接器 id 原样进包 id（连接器 id 即包 id）；旧技能 id 经 `to_package_id`
-//! （R17-MAJOR1 起为门控口径 `skill_gating_owner`，含物理布局兜底）映射到所属包；
-//! `skill:` 前缀残留统一剥除。迁移幂等，失败回退默认值（安全兜底）。
+//! Legacy connector ids pass through as pack ids (connector id = pack id); legacy
+//! skill ids map to their owner via `to_package_id` (the gating mapping `skill_gating_owner` since R17-MAJOR1);
+//! `skill:` prefix residue is stripped. Migration is idempotent; failure falls back to defaults (safe).
 //!
 // architecture-guard: allow-target-cfg -- the unix regression tests in this file (the round-13 B3 install-sync persist failure and the round-14 #2 freeze memo) need unreadable (0o555 directory / 0o000 file) fixtures; test-only inline cfg(unix)+PermissionsExt (same exemption precedent as mod.rs / package_export.rs, review #455); a real open() probe guards against running as root, Windows is covered by link checks.
 //!
@@ -454,11 +454,14 @@ fn normalize_stored_lists(file: &mut DisabledBundlesFile) -> bool {
     changed
 }
 
-/// 原始条目 → 包 id。连接器/CLI id 原样保留（`skill_gating_owner` 对它们恒等）；
-/// `skill:` 前缀剥除后按技能名映射到所属包。门控侧用物理感知的
-/// `skill_gating_owner`（R17-MAJOR1）：存储条目可能携带组合包的圈内技能名
-/// （restore 门按 bin 侧技能目录扫描写入），未声明的嵌套技能必须归到物理
-/// 所属包，否则以零同意进入所有 scope 且无行可关。
+/// Raw entry → pack id. Connector/CLI ids pass through unchanged
+/// (`skill_gating_owner` is the identity for them); a `skill:` prefix is
+/// stripped and the skill name maps to its owner pack. The gating side uses
+/// the physical-aware `skill_gating_owner` (R17-MAJOR1): stored entries may
+/// carry combination-pack inner skill names (written by the restore gate's
+/// bin-side skill-dir scan), and an undeclared nested skill must resolve to
+/// its physical owner pack — otherwise it enters every scope with zero
+/// consent and no composer row to turn it off.
 fn to_package_id(raw: &str) -> String {
     let stripped = raw.strip_prefix("skill:").unwrap_or(raw);
     crate::features::marketplace::bundle::skill_gating_owner(stripped)
@@ -652,7 +655,12 @@ fn try_save_disabled_bundles_file(file: &DisabledBundlesFile) -> Result<(), Stri
                 .duration_since(std::time::UNIX_EPOCH)
                 .map(|d| d.as_nanos())
                 .unwrap_or(0);
-            let sidecar = path.with_file_name(format!("disabled_bundles.json.corrupt.{stamp}"));
+            // Round-21 minor 1: rename-aside copies use their OWN `.unreadable.`
+            // namespace, deliberately distinct from quarantine's `.corrupt.` —
+            // a stale preservation copy must not satisfy the no-sibling rule
+            // and rob a later genuine corruption of its preserved copy. Both
+            // kinds count as store-existed evidence for the NotFound read.
+            let sidecar = path.with_file_name(format!("disabled_bundles.json.unreadable.{stamp}"));
             std::fs::rename(&path, &sidecar).map_err(|error| {
                 format!(
                     "refusing to overwrite unreadable disabled_bundles.json: rename-aside to {} failed: {error}",
@@ -722,20 +730,23 @@ fn try_save_disabled_bundles_file(file: &DisabledBundlesFile) -> Result<(), Stri
     Ok(())
 }
 
-/// Whether any `disabled_bundles.json.corrupt.*` sibling exists in the home:
-/// both quarantine copies (`quarantine_corrupt_state_file`) and the
-/// rename-aside preservation (`try_save_disabled_bundles_file`) share the
-/// naming pattern, and either proves the converged-era store existed
-/// (round-20 MAJOR B).
+/// Whether any preserved-copy sibling of `disabled_bundles.json` exists in
+/// the home: quarantine copies (`…corrupt.<ts>`, shared with installed.json's
+/// no-sibling rule) and the rename-aside preservation (`…unreadable.<ts>`,
+/// round-21 minor 1 keeps the two kinds in separate namespaces) both prove
+/// the converged-era store existed (round-20 MAJOR B).
 fn corrupt_sidecar_evidence_exists(home: &std::path::Path) -> bool {
-    const EVIDENCE_PREFIX: &str = "disabled_bundles.json.corrupt.";
+    const EVIDENCE_PREFIXES: [&str; 2] = [
+        "disabled_bundles.json.corrupt.",
+        "disabled_bundles.json.unreadable.",
+    ];
     std::fs::read_dir(home)
         .map(|entries| {
             entries.flatten().any(|entry| {
                 entry
                     .file_name()
                     .to_str()
-                    .is_some_and(|name| name.starts_with(EVIDENCE_PREFIX))
+                    .is_some_and(|name| EVIDENCE_PREFIXES.iter().any(|p| name.starts_with(p)))
             })
         })
         .unwrap_or(false)
@@ -801,12 +812,14 @@ fn resolve_scope_disabled_ids(file: &DisabledBundlesFile, scope: ConnectorScope)
                         .into_iter()
                         .map(|manifest| manifest.id)
                         .collect();
-                    // 两条记录臂刻意用认领口径（`skill_owner_package`）：它们的
-                    // 输入是登记表自己认领的技能 id——有认领时与门控口径一致，
-                    // 独立登记的技能没有可兜底的物理嵌套布局。只有下面的 disk
-                    // leg 走 `skill_gating_owner`：它枚举的正是**无认领**的物理
-                    // 目录，必须与物化层的目录扫描同一口径（round-20 minor 3：
-                    // 与记录臂的口径差异在此显式标注，非遗漏）。
+                    // The two record arms deliberately use the claim mapping
+                    // (`skill_owner_package`): their inputs are ids the registry itself claims —
+                    // identical to the gating mapping whenever a claim exists, and standalone
+                    // registered skills have no physical nested layout to fall back to. Only the
+                    // disk leg below walks `skill_gating_owner`: it enumerates exactly the
+                    // **unclaimed** physical directories and must stay on the same lens as
+                    // materialization's directory scan (round-20 minor 3: the asymmetry vs the
+                    // record arms is annotated here deliberately, not an oversight).
                     for info in SkillMarketplaceManager::new().list_skills() {
                         let pkg = skill_owner_package(&info.id);
                         if !catalog.iter().any(|id| id == &pkg) {
@@ -817,7 +830,7 @@ fn resolve_scope_disabled_ids(file: &DisabledBundlesFile, scope: ConnectorScope)
                 }
             };
             ids.extend(builtin_cli_bundle_ids().map(str::to_string));
-            // 同上（round-20 minor 3）：登记表臂用认领口径，disk leg 用门控口径。
+            // Same as above (round-20 minor 3): the record arm uses the claim mapping, the disk leg the gating mapping.
             // #584 composition: the record arm probes STRICTLY — when skill
             // enumeration degrades, the blanket union below biases the freshly
             // computed default toward over-denial instead of letting a failed
@@ -890,8 +903,9 @@ fn resolve_scope_disabled_ids(file: &DisabledBundlesFile, scope: ConnectorScope)
 
 /// 写某 scope 被禁用的包 id 列表（写入即标记该 scope 已初始化）。入参统一归一为包
 /// id（剥 `skill:` 前缀 + companion 映射），防御历史版本误写入的带前缀条目。
-/// 写失败原样上抛（round-19 MAJOR 1：main #563 的 fail-loud 契约是既成用户
-/// 可见语义，本 PR 不降级——composer 调用方的重试/回滚 UX 由 #515 重work 落实）。
+/// Write failures propagate as-is (round-19 MAJOR 1: main #563's fail-loud
+/// contract is shipped user-visible semantics and this PR does not downgrade
+/// it — the composer caller's retry/rollback UX is #515 rework's to deliver).
 pub fn save_disabled_bundles_for(scope: ConnectorScope, ids: &[String]) -> Result<(), String> {
     let _guard = DISABLED_BUNDLES_FILE_LOCK
         .lock()
@@ -985,7 +999,7 @@ pub fn load_hidden_bundles_for(scope: ConnectorScope) -> Vec<String> {
 }
 
 /// 写某 scope 被「不可见」的包 id 列表（不参与 DenyAll 默认，显式写入才隐藏）。
-/// 写失败原样上抛（round-19 MAJOR 1，同 save_disabled_bundles_for）。
+/// Write failures propagate as-is (round-19 MAJOR 1, same as save_disabled_bundles_for).
 pub fn save_hidden_bundles_for(scope: ConnectorScope, ids: &[String]) -> Result<(), String> {
     let _guard = DISABLED_BUNDLES_FILE_LOCK
         .lock()
@@ -1468,7 +1482,7 @@ mod tests {
                 .filter(|p| {
                     p.file_name()
                         .and_then(|n| n.to_str())
-                        .map(|n| n.contains(".corrupt."))
+                        .map(|n| n.contains(".unreadable."))
                         .unwrap_or(false)
                 })
                 .collect();
@@ -1544,7 +1558,7 @@ mod tests {
                 .filter(|p| {
                     p.file_name()
                         .and_then(|n| n.to_str())
-                        .map(|n| n.contains(".corrupt."))
+                        .map(|n| n.contains(".unreadable."))
                         .unwrap_or(false)
                 })
                 .collect();
@@ -1567,7 +1581,7 @@ mod tests {
                 .filter(|p| {
                     p.file_name()
                         .and_then(|n| n.to_str())
-                        .map(|n| n.contains(".corrupt."))
+                        .map(|n| n.contains(".unreadable."))
                         .unwrap_or(false)
                 })
                 .collect();
@@ -1787,12 +1801,21 @@ mod tests {
             .unwrap();
             remove_bundle_from_disabled_scopes("pptx").unwrap();
             let file = load_disabled_bundles_file();
+            // Round-21 minor 2: assert BOTH halves — a mutation that cleared
+            // the marker but leaked the stored entry must fail here.
             assert!(
                 file.default_off_scopes
                     .get("plain")
                     .map(|d| d.is_empty())
                     .unwrap_or(true),
                 "the marker goes with the stored entry: {file:?}"
+            );
+            assert!(
+                !file
+                    .scopes
+                    .values()
+                    .any(|ids| ids.iter().any(|id| id == "pptx")),
+                "the stored entry itself must be removed from every scope: {file:?}"
             );
         });
     }
@@ -1942,7 +1965,7 @@ mod tests {
             let persisted = std::fs::read_to_string(disabled_bundles_path()).unwrap();
             assert!(
                 persisted.contains("\"gongwen\"") && !persisted.contains("government-writing"),
-                "归一化结果应落盘替换原始条目: {persisted}"
+                "the normalized result must be persisted over the raw entries: {persisted}"
             );
         });
     }

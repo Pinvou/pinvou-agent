@@ -3639,7 +3639,7 @@ mod tests {
         assert_eq!(
             denied_bins(&rs),
             all_four_cli_denied,
-            "plain 未初始化默认全禁内置 CLI（DenyAll 收敛）"
+            "an uninitialized plain denies the built-in CLI packs by default (the DenyAll convergence)"
         );
 
         // plain explicitly disables only feishu → just the lark-cli deny remains.
@@ -3895,7 +3895,7 @@ mod tests {
             rs.ask_rules
                 .iter()
                 .any(|r| r.command.as_deref().is_some_and(|c| c.contains("run.py"))),
-            "plain 禁用已装技能后，脚本 deny 规则应在场"
+            "after plain disables an installed skill, the script deny ruleset must be present"
         );
         // Since the v3 rollback, safety-net rules are command-only (the File
         // path face was removed): mkfs-style fallback denies are always

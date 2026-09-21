@@ -1653,13 +1653,13 @@ mod startup_order_contract {
     fn assert_migration_read_precedes(source: &str, earlier: &str, later: &str, file: &str) {
         let pos_earlier = source
             .find(earlier)
-            .unwrap_or_else(|| panic!("{file} 缺迁移读取调用点: {earlier}"));
-        let pos_later = source
-            .find(later)
-            .unwrap_or_else(|| panic!("{file} 缺首启自写调用点: {later}"));
+            .unwrap_or_else(|| panic!("{file} is missing the migration-read call site: {earlier}"));
+        let pos_later = source.find(later).unwrap_or_else(|| {
+            panic!("{file} is missing the first-boot self-write call site: {later}")
+        });
         assert!(
             pos_earlier < pos_later,
-            "{file}: 迁移读取（{earlier}）必须早于首启自写（{later}）"
+            "{file}: the migration read ({earlier}) must precede the first-boot self-write ({later})"
         );
     }
 

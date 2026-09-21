@@ -334,14 +334,17 @@ pub async fn ima_connect(client_id: String, api_key: String) -> Result<Value, St
             // 由命令层（connectors::ima_connect）重写。
             // 注意引用 marketplace::scope（持久化层）而非 assistant：避免
             // connectors → assistant 依赖环（架构守卫 rust_feature_cycles）。
-            // 持久化失败 fail-visible（评审 #455 R13-B3）：与上方 install 的 Err
-            // 同样走整体回滚（撤销 secrets），不让技能以零同意上线。
+            // Fail-visible persist (review #455 R13-B3): like the install Err above,
+            // this rolls back the secrets, so the reconnect does not complete with
+            // credentials committed and consent state lost. The pack itself is not
+            // uninstalled here (live-by-absence until the denied state applies on
+            // reconnect) — that residual is named in the registered follow-up.
             crate::features::marketplace::scope::sync_deny_all_scopes_after_install(IMA_SKILL_ID)
                 .map_err(|e| {
-                // 前端 fire-and-forget 调用可能吞掉该 Err（评审 #455 R16-MAJOR2），此处必须留痕。
-                log::warn!("[ima] 技能默认关闭状态落盘失败: {e}");
+                // The frontend fire-and-forget call may swallow this Err (review #455 R16-MAJOR2), so it must be logged here.
+                log::warn!("[ima] persisting the skills' default-off consent state failed: {e}");
                 format!(
-                    "ima 技能默认关闭状态落盘失败（新会话将默认开启，请在工具列表手动关闭）: {e}"
+                    "ima skills installed, but persisting their default-off consent state failed: new sessions will enable them by default — turn them off in the tools list: {e}"
                 )
             })?;
             Ok(())

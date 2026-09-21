@@ -63,7 +63,9 @@ use crate::platform::paths;
 /// TRANSACTION↔FILE edge. The pre-existing TRANSACTION↔import_lock pairing
 /// is not ordered: uninstall nests TRANSACTION → import_lock (companion
 /// cleanup), while `restore_plugin` holds import_lock across `install_upload`
-/// → TRANSACTION. Both directions pre-date this PR. A theoretical
+/// → TRANSACTION (round-21 minor 4: `import_plugin_package` in plugin_import.rs
+/// is a second import_lock → TRANSACTION crossing of the same shape). Both
+/// directions pre-date this PR. A theoretical
 /// same-instance inversion exists at their cross (review R14 minor): pack X
 /// sits in the recycle bin while also being a declared companion of a tool
 /// being uninstalled — cleanup's `uninstall(X)` waits on import_lock(X) under
@@ -544,7 +546,7 @@ pub async fn apply_disabled_connectors_for(
     scope: ConnectorScope,
     connector_ids: Vec<String>,
 ) -> Result<(), String> {
-    // Composer 整集写 fail-loud（main #563 契约，round-19 MAJOR 1：本 PR 不再回退为 fire-and-forget）：写失败原样上抛。
+    // The composer whole-list write is fail-loud (main #563's contract, restored by round-19 MAJOR 1: this PR no longer downgrades to fire-and-forget): write failures propagate via `?`.
     tokio::task::spawn_blocking(move || save_disabled_bundles_for(scope, &connector_ids))
         .await
         .map_err(|error| format!("apply_disabled_connectors_for join: {error}"))??;
@@ -1428,7 +1430,7 @@ impl<S: CredentialStore> MarketplaceManager<S> {
             // vanish (round-17 minor 1): a stale stored entry + marker would
             // let a same-id reinstall inherit the old consent state.
             log::warn!(
-                "[marketplace] 卸载 {tool_id} 后的开关/可见性清理落盘失败（残留条目会被同 id 重装继承）: {e}"
+                "[marketplace] persisting the post-uninstall switch/visibility cleanup for {tool_id} failed (stale entries would be inherited by a same-id reinstall): {e}"
             );
         }
         if preserve_companion_skills {
@@ -1442,7 +1444,7 @@ impl<S: CredentialStore> MarketplaceManager<S> {
                 Ok(unavailable) => unavailable,
                 Err(e) => {
                     log::warn!(
-                        "[marketplace] 卸载 {tool_id} 后跳过配套技能残留清理（安装集不可读时宁留不删）: {e}"
+                        "[marketplace] skipping the post-uninstall companion-skill cleanup for {tool_id} (prefer keeping entries over deleting while the install set is unreadable): {e}"
                     );
                     return;
                 }
@@ -1456,7 +1458,7 @@ impl<S: CredentialStore> MarketplaceManager<S> {
             let _ = skill_marketplace::SkillMarketplaceManager::new().uninstall(&skill_id);
             if let Err(e) = scope::remove_bundle_from_disabled_scopes(&skill_id) {
                 log::warn!(
-                    "[marketplace] 卸载 {tool_id} 后配套技能 '{skill_id}' 的开关清理落盘失败（残留条目会被同 id 重装继承）: {e}"
+                    "[marketplace] persisting the post-uninstall switch cleanup for companion skill '{skill_id}' of {tool_id} failed (stale entries would be inherited by a same-id reinstall): {e}"
                 );
             }
         }
@@ -4854,17 +4856,18 @@ mod tests {
                     "dingtalk".to_string(),
                     "tmeet".to_string(),
                 ],
-                "损坏恢复必须 fail-closed：plain 按 DenyAll 兜底全关"
+                "corrupt recovery must fail closed: plain falls back to fully-off via DenyAll"
             );
             // The recovered state is persisted: marker set and no scope
             // initialized (memory and disk agree).
-            let on_disk: serde_json::Value =
-                serde_json::from_str(&std::fs::read_to_string(&path).expect("恢复态应覆盖落盘"))
-                    .expect("落盘应为合法 JSON");
+            let on_disk: serde_json::Value = serde_json::from_str(
+                &std::fs::read_to_string(&path).expect("the recovered state must reach disk"),
+            )
+            .expect("the persisted file must be valid JSON");
             assert_eq!(
                 on_disk.get("plain_defaults_migrated"),
                 Some(&serde_json::Value::Bool(true)),
-                "迁移标记应置位落盘: {on_disk}"
+                "the migration marker must be set on disk: {on_disk}"
             );
             assert!(
                 on_disk
@@ -4872,12 +4875,12 @@ mod tests {
                     .and_then(|v| v.as_array())
                     .map(|a| a.is_empty())
                     .unwrap_or(true),
-                "不得初始化任何 scope（fail-closed 靠 DenyAll 兜底）: {on_disk}"
+                "no scope may be initialized (fail-closed via the DenyAll fallback): {on_disk}"
             );
             let file = crate::features::marketplace::scope::load_disabled_bundles_file();
             assert!(
                 file.plain_defaults_migrated,
-                "恢复后迁移标记应置位（不重复走升级判定）: {file:?}"
+                "the migration marker must stay set after recovery (no re-running the upgrade verdict): {file:?}"
             );
             // A repeated read does not re-quarantine: recovery completes in
             // one shot (wait past the second boundary to rule out a
@@ -4893,18 +4896,22 @@ mod tests {
                         .starts_with("disabled_bundles.json.corrupt.")
                 })
                 .collect();
-            assert_eq!(backups.len(), 1, "重复读不得产生新的隔离副本");
+            assert_eq!(
+                backups.len(),
+                1,
+                "repeated reads must not produce additional quarantine copies"
+            );
             assert_eq!(
                 std::fs::read_to_string(backups[0].path()).unwrap(),
                 "{\"plain_defaults_migrated\":",
-                "隔离副本应保留原始字节"
+                "the quarantine copy must preserve the original bytes"
             );
         });
     }
 
-    /// list_tools（composer 工具菜单数据源）必须与 BundleRegistry::list
-    /// （bundle_readiness）同口径应用上传包的展示名/说明覆盖——两处标题
-    /// 不一致就是这条路径漏了覆盖（评审发现的测试空缺）。
+    /// list_tools (the composer tools-menu data source) must apply upload-pack
+    /// BundleRegistry::list (bundle_readiness) — a title mismatch between the
+    /// two means this path missed the override (test gap found in review).
     #[test]
     fn list_tools_applies_upload_display_override() {
         with_temp_home(|| {
@@ -4923,15 +4930,18 @@ mod tests {
                 ))
                 .unwrap();
             store
-                .set_display_meta("up-disp", Some("我的工具"), Some("自定义说明"))
+                .set_display_meta("up-disp", Some("My Tool"), Some("Custom description"))
                 .unwrap();
 
             let tools = MarketplaceManager::new().list_tools();
             let t = tools.iter().find(|t| t.id == "up-disp").unwrap();
-            assert_eq!(t.name, "我的工具", "extra 覆盖应优先于 manifest name");
-            assert_eq!(t.description, "自定义说明");
+            assert_eq!(
+                t.name, "My Tool",
+                "the extra override must win over the manifest name"
+            );
+            assert_eq!(t.description, "Custom description");
 
-            // 清空覆盖 → 回退 manifest 值
+            // Clearing the overrides falls back to the manifest values
             store
                 .set_display_meta("up-disp", Some(""), Some(""))
                 .unwrap();
@@ -4942,8 +4952,8 @@ mod tests {
         });
     }
 
-    /// bundles.json 损坏时 list_tools 降级为「无覆盖」（warn + manifest 原值），
-    /// 不得 panic 或丢工具——与 bundle.rs 的 store 读回退同口径。
+    /// With a corrupt bundles.json, list_tools degrades to "no overrides" (warn
+    /// + manifest values) — it must not panic or drop tools (same as bundle.rs).
     #[test]
     fn list_tools_degrades_to_manifest_values_when_store_corrupt() {
         with_temp_home(|| {
@@ -4962,14 +4972,17 @@ mod tests {
                 ))
                 .unwrap();
             store
-                .set_display_meta("up-corrupt", Some("我的工具"), None)
+                .set_display_meta("up-corrupt", Some("My Tool"), None)
                 .unwrap();
-            // 直接腐坏 bundles.json（绕过 store 的原子写）
+            // Corrupt bundles.json directly (bypassing the store's atomic write)
             std::fs::write(store.file_path(), "{not json").unwrap();
 
             let tools = MarketplaceManager::new().list_tools();
             let t = tools.iter().find(|t| t.id == "up-corrupt").unwrap();
-            assert_eq!(t.name, "ManifestName", "store 读失败应降级为 manifest 值");
+            assert_eq!(
+                t.name, "ManifestName",
+                "a failed store read must degrade to the manifest values"
+            );
         });
     }
 
@@ -4990,18 +5003,18 @@ mod tests {
             assert_eq!(
                 names,
                 vec![
-                    "mcp_demo_bare_tool".to_string(),  // 裸名 → 补前缀
-                    "mcp_demo_already".to_string(), // 已带 mcp_ → 原样,不变成 mcp_demo_mcp_demo_already
-                    "mcp_demo_upper_tool".to_string(), // 小写化
+                    "mcp_demo_bare_tool".to_string(),  // bare name gets the prefix
+                    "mcp_demo_already".to_string(), // already prefixed stays as-is (no double prefix)
+                    "mcp_demo_upper_tool".to_string(), // lowercased
                 ]
             );
-            // 没装/不存在的连接器 → 跳过(不报错,空)
+            // uninstalled/unknown connectors are skipped (no error, empty)
             assert!(mgr.model_tool_names(&["nope".to_string()]).is_empty());
         });
     }
 
-    /// 远程 server 连接器可能没有静态 mcp_tools 列表(qcc 即如此)。禁用时必须按
-    /// server 名生成前缀规则,否则底座仍会暴露该连接器动态发现出来的全部工具。
+    /// A remote-server connector may have no static mcp_tools list (qcc is one).
+    /// Disabling it must derive prefix rules from the server name, otherwise the
     #[test]
     fn model_tool_names_generates_prefix_rules_for_remote_servers() {
         with_temp_home(|| {
@@ -5256,8 +5269,8 @@ mod tests {
                 load_disabled_bundles(),
                 vec!["weather".to_string(), "pptx".to_string()]
             );
-            // 旧格式不初始化 code scope → 仍默认全禁（已装连接器 ∪ 内置 CLI 四连接器，
-            // DenyAll 扩集是有意语义）。
+            // The legacy format leaves the code scope uninitialized → still fully
+            // disabled by default: installed connectors ∪ the four built-in CLI
             assert_eq!(
                 load_disabled_bundles_for(ConnectorScope::Code),
                 vec![
@@ -5269,18 +5282,19 @@ mod tests {
                     "tmeet".to_string(),
                 ]
             );
-            // 读到即迁移：迁移结果落盘到单一真相源 `disabled_bundles.json`（旧文件不回写）。
+            // Migrate on read: the result lands in `disabled_bundles.json` (legacy files are never written back).
             let file = crate::features::marketplace::scope::load_disabled_bundles_file();
             assert_eq!(
                 file.scopes.get("plain"),
                 Some(&vec!["weather".to_string(), "pptx".to_string()]),
-                "迁移后应写入 disabled_bundles.json 的 plain scope: {file:?}"
+                "the migration must write the plain scope of disabled_bundles.json: {file:?}"
             );
         });
     }
 
-    /// 旧双 scope 对象 `{plain, code, code_initialized}` 迁移为 scopes map:
-    /// 迁移前后行为一致(code_initialized=true → 以落盘为准;false → 默认全禁)。
+    /// The legacy dual-scope object `{plain, code, code_initialized}` migrates
+    /// into the scopes map with identical pre/post behavior (code_initialized=true
+    /// → the persisted state wins; false → fully disabled by default).
     #[test]
     fn disabled_connectors_legacy_object_migrates_to_scopes_map() {
         with_temp_home(|| {
@@ -5539,10 +5553,13 @@ mod tests {
             // the DenyAll fully-off fallback.
             assert_eq!(load_disabled_bundles(), Vec::<String>::new());
             let file = crate::features::marketplace::scope::load_disabled_bundles_file();
-            assert!(file.plain_defaults_migrated, "迁移标记应置位: {file:?}");
+            assert!(
+                file.plain_defaults_migrated,
+                "the migration marker must be set: {file:?}"
+            );
             assert!(
                 file.initialized.contains("plain"),
-                "plain 应被初始化: {file:?}"
+                "plain must be initialized: {file:?}"
             );
         });
     }
@@ -5568,17 +5585,18 @@ mod tests {
                     "dingtalk".to_string(),
                     "tmeet".to_string(),
                 ],
-                "全新装机 plain 未初始化 → DenyAll 默认全关（内置 CLI）"
+                "a fresh install leaves plain uninitialized → DenyAll fully-off default (built-in CLI packs)"
             );
             let path = crate::platform::paths::pinvou3_home().join("disabled_bundles.json");
-            let content = std::fs::read_to_string(&path).expect("首读应落盘冻结迁移判定");
+            let content = std::fs::read_to_string(&path)
+                .expect("the first read must persist the frozen migration verdict");
             assert!(
                 content.contains("\"plain_defaults_migrated\":true"),
-                "冻结的判定只置迁移标记、不初始化 plain: {content}"
+                "the frozen verdict only sets the migration marker, plain stays uninitialized: {content}"
             );
             assert!(
                 !content.contains("\"plain\""),
-                "不得初始化 plain: {content}"
+                "plain must not be initialized: {content}"
             );
         });
     }
@@ -5619,13 +5637,13 @@ mod tests {
             assert_eq!(
                 load_disabled_bundles(),
                 builtin_cli(),
-                "首启痕迹不得把已冻结的全新装机判定翻回全开"
+                "first-boot traces must not flip the frozen fresh-install verdict back to fully-on"
             );
             let file = crate::features::marketplace::scope::load_disabled_bundles_file();
             assert!(file.plain_defaults_migrated);
             assert!(
                 !file.initialized.contains("plain"),
-                "全新装机 plain 不得被初始化: {file:?}"
+                "plain must stay uninitialized on a fresh install: {file:?}"
             );
         });
     }
@@ -5661,7 +5679,7 @@ mod tests {
                 let file = crate::features::marketplace::scope::load_disabled_bundles_file();
                 assert!(
                     file.initialized.contains("plain"),
-                    "既有状态 ⇒ 升级装机,plain 初始化: {file:?}"
+                    "existing state ⇒ upgraded install, plain initialized: {file:?}"
                 );
             });
         }
@@ -5686,7 +5704,7 @@ mod tests {
                     "dingtalk".to_string(),
                     "tmeet".to_string(),
                 ],
-                "预置 settings.json 不得触发升级判定，plain 仍 DenyAll 全关"
+                "a provisioned settings.json must not trigger the upgrade verdict; plain stays fully-off via DenyAll"
             );
             let file = crate::features::marketplace::scope::load_disabled_bundles_file();
             assert!(!file.initialized.contains("plain"), "{file:?}");
@@ -5917,7 +5935,7 @@ mod tests {
             assert_eq!(
                 file.scopes.get("plain"),
                 Some(&vec!["weather".to_string()]),
-                "用户显式初始化的 plain 列表必须原样保留: {file:?}"
+                "a user-initialized plain list must be preserved verbatim: {file:?}"
             );
         });
     }
@@ -5947,7 +5965,7 @@ mod tests {
                     "dingtalk".to_string(),
                     "tmeet".to_string(),
                 ],
-                "升级装机的损坏恢复同样 fail-closed（有效禁用集 = 已装包 ∪ 内置 CLI）"
+                "corrupt recovery on an upgraded install fails closed too (effective disabled set = installed packs ∪ built-in CLI)"
             );
             let file = crate::features::marketplace::scope::load_disabled_bundles_file();
             assert!(file.plain_defaults_migrated);
@@ -5965,7 +5983,11 @@ mod tests {
                         .starts_with("disabled_bundles.json.corrupt.")
                 })
                 .collect();
-            assert_eq!(backups.len(), 1, "重复读不得产生新的隔离副本");
+            assert_eq!(
+                backups.len(),
+                1,
+                "repeated reads must not produce additional quarantine copies"
+            );
         });
     }
 
@@ -6024,7 +6046,7 @@ mod tests {
                     "dingtalk".to_string(),
                     "tmeet".to_string(),
                 ],
-                "不可读必须内存 fail-closed（不得按升级迁移初始化 plain 为全开）"
+                "unreadable must fail closed in memory (never initialize plain fully-on via the upgrade migration)"
             );
             // Assertions after restoring permissions: original file bytes
             // as-is, no quarantine copy, no degraded-state overwrite on disk.
@@ -6032,7 +6054,7 @@ mod tests {
             assert_eq!(
                 std::fs::read_to_string(&path).unwrap(),
                 original,
-                "salvage 读失败时不得覆盖原文件（R6-B1）"
+                "a failed salvage read must not overwrite the original (R6-B1)"
             );
             let backups: Vec<_> = std::fs::read_dir(path.parent().unwrap())
                 .unwrap()
@@ -6045,16 +6067,19 @@ mod tests {
                 .collect();
             assert!(
                 backups.is_empty(),
-                "占位符隔离不落地：不可读不得产生隔离副本"
+                "a placeholder quarantine that never lands: unreadable must not produce a quarantine copy"
             );
             // After permissions are restored it parses normally from the
             // original content (the marker comes from the file itself, not
             // the degraded state).
             let file = crate::features::marketplace::scope::load_disabled_bundles_file();
-            assert!(file.plain_defaults_migrated, "原内容含 marker: {file:?}");
+            assert!(
+                file.plain_defaults_migrated,
+                "the original content carries the marker: {file:?}"
+            );
             assert!(
                 !file.initialized.contains("plain"),
-                "不得初始化 plain（那是旧 AllowAll 全开语义）: {file:?}"
+                "plain must not be initialized (that is the old AllowAll fully-on semantics): {file:?}"
             );
         });
     }
@@ -6108,15 +6133,15 @@ mod tests {
             let manager = MarketplaceManager::new();
             assert!(
                 manager.try_installed_ids().is_err(),
-                "不可读必须按错误区分（不得静默按空已装集）"
+                "unreadable must be distinguished as an error (never silently treated as an empty install set)"
             );
             let disabled = load_disabled_bundles();
             let builtin = bundle::builtin_cli_bundle_ids()
                 .next()
-                .expect("至少一个内置 CLI 包");
+                .expect("at least one built-in CLI pack");
             assert!(
                 disabled.iter().any(|id| id == builtin),
-                "fail-closed 扩集必须含内置 CLI 包: {disabled:?}"
+                "the fail-closed expansion must contain the built-in CLI packs: {disabled:?}"
             );
             // Direct evidence the fail-closed branch is in effect: the
             // logged full-catalog fallback. (Under the empty-installed-set
@@ -6124,14 +6149,14 @@ mod tests {
             // installed skill packs, far smaller than the full catalog.)
             assert!(
                 disabled.len() > 4,
-                "fail-closed 扩集必须覆盖全部可装包，而非只剩内置 CLI: {disabled:?}"
+                "the fail-closed expansion must cover every installable pack, not just the built-in CLI: {disabled:?}"
             );
             // The file is preserved as-is; no quarantine copy is produced.
             std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o644)).unwrap();
             assert_eq!(
                 std::fs::read_to_string(&path).unwrap(),
                 "[\"feishu\"]",
-                "不可读不得动原文件"
+                "unreadable must leave the original file untouched"
             );
             let quarantined: Vec<_> = std::fs::read_dir(&dir)
                 .unwrap()
@@ -6142,7 +6167,10 @@ mod tests {
                         .starts_with("installed.json.corrupt.")
                 })
                 .collect();
-            assert!(quarantined.is_empty(), "不可读不属于损坏，不得隔离");
+            assert!(
+                quarantined.is_empty(),
+                "unreadable is not corrupt; no quarantine"
+            );
             // After recovery it computes from the real installed set (the
             // corrupt-JSON path's quarantine-rebuild is unaffected).
             assert_eq!(
@@ -6167,7 +6195,7 @@ mod tests {
                     "dingtalk".to_string(),
                     "tmeet".to_string(),
                 ],
-                "空 sessions/ 目录不算升级信号，plain 仍 DenyAll 默认全关"
+                "an empty sessions/ directory is no upgrade signal; plain stays fully-off via DenyAll"
             );
             let file = crate::features::marketplace::scope::load_disabled_bundles_file();
             assert!(!file.initialized.contains("plain"));
@@ -6192,7 +6220,7 @@ mod tests {
                     "dingtalk".to_string(),
                     "tmeet".to_string(),
                 ],
-                "logs/ 单独存在不算升级信号，plain 仍 DenyAll 默认全关"
+                "logs/ alone is no upgrade signal; plain stays fully-off via DenyAll"
             );
             let file = crate::features::marketplace::scope::load_disabled_bundles_file();
             assert!(!file.initialized.contains("plain"));

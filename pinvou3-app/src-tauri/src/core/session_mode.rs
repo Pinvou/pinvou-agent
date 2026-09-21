@@ -131,7 +131,7 @@ mod tests {
             assert_eq!(
                 mode.pack_default_policy(),
                 PackDefaultPolicy::DenyAll,
-                "{mode:?} 必须默认全禁"
+                "{mode:?} must default to fully disabled"
             );
         }
     }
