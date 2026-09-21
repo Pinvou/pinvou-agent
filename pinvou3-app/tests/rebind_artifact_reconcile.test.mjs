@@ -349,4 +349,45 @@ const MARK = { at: Date.now(), chain: [{ from: '/old/root', to: '/new/root' }] }
   );
 }
 
+// 10. Round-14 R3: the mark chain is APPEND — driven behaviorally through the
+//     shared base, not by source regex: two stamped payloads must keep both
+//     segments resolvable (a `chain = [{...}]` replace — verbatim the round-E
+//     regression the source pins name — would drop the older vintage while
+//     every regex above stays green), and an identical retry refreshes the
+//     window without resetting the chain.
+{
+  const state = {};
+  const shared = windowObject.PinvouBridgeShared.create('web', { state });
+  const stamp = (from, to) =>
+    shared.applyWorkspaceReboundMark({ action: 'workspace_rebound', id: 's10', from, to });
+  stamp('/old/root', '/new/root');
+  stamp('/new/root', '/newer/root');
+  // The chain is built inside the vm realm; compare a primitive
+  // serialization (deepStrictEqual rejects cross-realm prototypes).
+  assert.equal(
+    state.reboundSessionIds.s10.chain.map((segment) => `${segment.from} -> ${segment.to}`).join(' | '),
+    '/old/root -> /new/root | /new/root -> /newer/root',
+    'a chained rebind must APPEND its segment, not replace the chain',
+  );
+  assert.deepEqual(
+    shared.rebaseArtifactPathsForRebind('s10', ['/old/root/sub/a.md', '/new/root/b.md']),
+    ['/newer/root/sub/a.md', '/newer/root/b.md'],
+    'every buffer vintage resolves through the whole chain in order',
+  );
+  // Identical retry of the last segment: refresh the window only.
+  const stampedAt = state.reboundSessionIds.s10.at;
+  stamp('/new/root', '/newer/root');
+  assert.equal(
+    state.reboundSessionIds.s10.chain.length,
+    2,
+    'an identical retry must refresh the window without resetting the chain',
+  );
+  assert.ok(state.reboundSessionIds.s10.at >= stampedAt);
+  assert.deepEqual(
+    shared.rebaseArtifactPathsForRebind('s10', ['/old/root/sub/a.md']),
+    ['/newer/root/sub/a.md'],
+    'the chain still resolves after the retry refresh',
+  );
+}
+
 console.log('rebind artifact reconcile contract passed');

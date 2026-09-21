@@ -43,9 +43,10 @@ test('rebind dialog participates in the browser-surface suspend protocol', () =>
 
 test('close-time focus restore targets a node that survives the refresh', () => {
   // The badge that opens the dialog is unmounted by the operation it starts
-  // (its root becomes available), so the hook's default restore target is
-  // detached and focus fell to <body>; the project header row survives
-  // (round-10 T7).
+  // (its root reads available again via the `available` wire field — the
+  // backend's per-root is_dir() stat, review #463 round-14 B1), so the
+  // hook's default restore target is detached and focus fell to <body>; the
+  // project header row survives (round-10 T7).
   assert.match(
     DIALOG,
     /useDialogFocusRestore\(dialogRef, confirmButtonRef, restoreTargetRef\)/,

@@ -1110,6 +1110,47 @@ pub fn patch_acp_state(session_id: &str, patch: Value) -> Result<()> {
     persist_acp_state(session_id, state)
 }
 
+/// Rebind support (review #463 round-14 B2): translate the persisted
+/// `workspace.path` of a session's acp-state.json through the caller's
+/// mapping. `acp-state.json` is a persisted workspace-path lane of its own:
+/// the boot recovery (`load_acp_recovery_record`) reads this field FIRST and
+/// only falls back to `codex-workspace-baseline.json` when it is absent or
+/// empty — so an untranslated state file preempts even a successfully
+/// recaptured baseline and, if the agent index is later lost or corrupted,
+/// re-inserts the record at the vanished root (the resurrection class the
+/// other lanes close). Same load→patch→persist shape as
+/// `SessionStore::rebase_workspace_artifact_paths`: a missing state file, a
+/// missing/empty field, an unmapped path and an already-converged value all
+/// persist nothing and report `false`; the path math (from→to) lives with
+/// the caller, single-sourced with the other lanes.
+pub fn translate_acp_state_workspace(
+    session_id: &str,
+    translate: &dyn Fn(&Path) -> Option<PathBuf>,
+) -> Result<bool> {
+    let path = state_path(session_id)?;
+    if !path.exists() {
+        return Ok(false);
+    }
+    let mut state: Value = serde_json::from_slice(&fs::read(&path)?)
+        .with_context(|| "parse acp-state for workspace rebind".to_string())?;
+    let Some(current) = state["workspace"]["path"]
+        .as_str()
+        .filter(|value| !value.is_empty())
+        .map(PathBuf::from)
+    else {
+        return Ok(false);
+    };
+    let Some(next) = translate(&current) else {
+        return Ok(false);
+    };
+    if next == current {
+        return Ok(false);
+    }
+    state["workspace"]["path"] = json!(next.to_string_lossy().to_string());
+    persist_acp_state(session_id, state)?;
+    Ok(true)
+}
+
 /// Cached append handle for one session's ACP timeline journal.
 ///
 /// `EventBridge` is the single writer for its session's journal and every
@@ -2291,5 +2332,57 @@ mod tests {
             .map(|line| serde_json::from_str::<AcpEventEnvelope>(line).unwrap().seq)
             .collect();
         assert_eq!(seqs, vec![3, 4]);
+    }
+
+    /// Review #463 round-14 B2: acp-state.json is a persisted workspace lane
+    /// of its own — the boot recovery reads workspace.path BEFORE the
+    /// baseline, so the rebind's metadata pass translates it. Only the
+    /// caller-mapped path moves; unrelated fields, unrelated sessions and an
+    /// already-converged value persist nothing.
+    #[test]
+    fn translate_acp_state_workspace_rewrites_only_mapped_paths() {
+        let _root = TempSessionsRoot::new("acp-state-rebind");
+        let session_id = "acp-state-rebind-session";
+        let unique = format!("pinvou3-acp-state-{}", std::process::id());
+        let from = std::env::temp_dir().join(format!("{unique}-from"));
+        let to = std::env::temp_dir().join(format!("{unique}-to"));
+        persist_acp_state(
+            session_id,
+            json!({
+                "workspace": { "path": from.to_string_lossy() },
+                "other": "untouched"
+            }),
+        )
+        .expect("persist initial state");
+
+        let translate = |path: &Path| -> Option<PathBuf> { (path == from).then(|| to.clone()) };
+        assert!(
+            translate_acp_state_workspace(session_id, &translate).expect("translate"),
+            "a mapped path reports the translation"
+        );
+        let state: Value = serde_json::from_slice(
+            &fs::read(state_path(session_id).expect("state path")).expect("read state"),
+        )
+        .expect("parse state");
+        assert_eq!(
+            state["workspace"]["path"],
+            json!(to.to_string_lossy().to_string())
+        );
+        assert_eq!(state["other"], json!("untouched"));
+        // Already converged: persists nothing, reports false.
+        assert!(
+            !translate_acp_state_workspace(session_id, &translate).expect("idempotent"),
+            "an already-converged value persists nothing"
+        );
+        // No state file at all: false, no error, no file fabricated.
+        assert!(
+            !translate_acp_state_workspace("acp-state-rebind-absent", &translate)
+                .expect("absent state file"),
+        );
+        assert!(
+            !state_path("acp-state-rebind-absent")
+                .expect("state path")
+                .exists()
+        );
     }
 }

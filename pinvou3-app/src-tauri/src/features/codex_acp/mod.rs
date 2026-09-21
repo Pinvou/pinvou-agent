@@ -85,6 +85,7 @@ use crate::core::reaper::{IDLE_EVICT_AFTER_SECS, IdleReaperGuard, take_session_i
 use attachments::{CodexDisplayAttachment, prepare_codex_prompt};
 use deepseek_tui::session_manager::SessionMetadata;
 pub(crate) use events::project_acp_value_for_web;
+pub(crate) use events::translate_acp_state_workspace;
 pub use events::{
     AcpEventEnvelope, project_acp_elicitation_request_for_web,
     project_acp_permission_request_for_web,
@@ -5338,5 +5339,40 @@ mod tests {
         assert!(!stale_official_target(&root.join("absent"), None));
 
         std::fs::remove_dir_all(&root).unwrap();
+    }
+
+    /// Production-wiring probe (review #463 round-14 R2): every behavioral
+    /// test injects a hand-copied closure (FakeRebindEntry mirrors the reads
+    /// by hand), so dropping `prompt_pending` from the PRODUCTION closures —
+    /// the exact round-13 change — leaves every test green. AcpSession holds
+    /// a live connection and child process and cannot be unit-constructed,
+    /// so pin the reads in the production bodies — the layer the
+    /// pure-predicate pins cannot cover.
+    fn production_body<'a>(src: &'a str, signature: &str) -> &'a str {
+        let start = src.find(signature).expect("production fn must exist");
+        let end = src[start + signature.len()..]
+            .find("\n    pub ")
+            .map(|offset| start + signature.len() + offset)
+            .unwrap_or(src.len());
+        &src[start..end]
+    }
+
+    #[test]
+    fn rebind_acp_production_closures_read_prompt_pending() {
+        let src = include_str!("mod.rs");
+        let fence = production_body(src, "pub async fn rebind_blocking_sessions");
+        assert!(
+            fence.contains("prompt_pending"),
+            "the fence must count a resolved-but-unadmitted prompt as busy",
+        );
+        let take = production_body(src, "pub async fn evict_if_idle_for_rebind");
+        assert!(
+            take.contains("prompt_pending"),
+            "the eviction recheck must count a resolved-but-unadmitted prompt",
+        );
+        assert!(
+            take.contains("idle_for()"),
+            "the eviction recheck must include the recent-activity window",
+        );
     }
 }

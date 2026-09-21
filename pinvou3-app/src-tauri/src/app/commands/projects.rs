@@ -660,10 +660,12 @@ pub async fn rebind_workspace_root(
         .iter()
         .map(|(session_id, _)| session_id.clone())
         .collect();
-    let stranded =
-        detect_stranded_index_records(&codex_to_lane_hits, &lane_moved_ids, |session_id| {
-            acp_pool.agents().code_project_workspace(session_id)
-        });
+    let stranded = detect_stranded_index_records(
+        &codex_to_lane_hits,
+        &lane_moved_ids,
+        |session_id| acp_pool.agents().code_project_workspace(session_id),
+        |session_id| acp_pool.agents().code_sidecar_workspace(session_id),
+    );
     if !stranded.is_empty() {
         acp_pool
             .agents()
@@ -736,6 +738,28 @@ pub async fn rebind_workspace_root(
             // Same CodeQL root-cause-only rule as set_workspace below.
             eprintln!(
                 "[projects] rebind artifact-path rebase failed: {}",
+                error.root_cause()
+            );
+            failed_session_ids.push(session_id.clone());
+            continue;
+        }
+        // acp-state workspace translation (review #463 round-14 B2): every
+        // ACP spawn persists workspace.path into sessions/<id>/acp-state.json,
+        // and the boot recovery reads that field BEFORE the workspace
+        // baseline — an untranslated state file preempts even a successfully
+        // recaptured baseline and resurrects the vanished root if the agent
+        // index is later lost. Same ordering rule as the artifact rebase
+        // above: it must run before set_workspace, so a failure keeps the
+        // metadata stale and the rerun re-admits the session — a converged
+        // metadata would strand the stale state file forever.
+        if let Err(error) =
+            crate::features::codex_acp::translate_acp_state_workspace(session_id, &|path: &Path| {
+                SessionAgentStore::rebind_target_path(path, &from, &to_display)
+            })
+        {
+            // Same CodeQL root-cause-only rule as set_workspace below.
+            eprintln!(
+                "[projects] rebind acp-state workspace translation failed: {}",
                 error.root_cause()
             );
             failed_session_ids.push(session_id.clone());
@@ -814,7 +838,10 @@ pub async fn rebind_workspace_root(
     // This retry entry exists exactly while `from` is unavailable, which is
     // also the only state in which the badge (the sole rebind entry) is
     // rendered — so the reorder restores the entry for every interrupted run
-    // that the user could have started in the first place. In the
+    // that the user could have started in the first place. The badge's
+    // availability signal is the `available` wire field (`is_dir()` in
+    // from_project, review #463 round-14 B1; dropping it badges EVERY root —
+    // pinned by project_root_status_wire_carries_available). In the
     // strong-confirm path (`from` reappeared after the badge was shown, see
     // require_confirm_existing) the folder is available again and no badge is
     // rendered either way; the dialog that drove the run is still open and its
@@ -1109,11 +1136,13 @@ fn classify_absent_record_session(
 /// Stranded-index detection (review #463 round-10 Major 1): among the codex
 /// to-lane hits, the sessions admitted into `affected` (metadata ≠ binding,
 /// hence fenced) whose index record disagrees with the path the scan
-/// surfaced. The scan surfaces the SIDECAR-authoritative path for such a
-/// session (its index record at the vanished intermediate target matched
-/// neither lane), so a disagreement means the index is stranded and must be
-/// re-keyed onto the scan path. `index_path_of` is
-/// `SessionAgentStore::code_project_workspace`; only code sessions are
+/// surfaced. The comparison authority is the session's SIDECAR, read
+/// directly via `sidecar_path_of` (review #463 round-14 R1): an index-arm
+/// scan hit surfaces the index path itself, so comparing against the
+/// surfaced value would compare the index with itself and make the
+/// divergence structurally invisible. A disagreement means the index is
+/// stranded and must be re-keyed onto the sidecar's path. `index_path_of`
+/// is `SessionAgentStore::code_project_workspace`; only code sessions are
 /// considered because the disagreement shape requires a sidecar to compare
 /// against, and ACP records carry none — the round-10 divergence shape
 /// (index ≠ sidecar) cannot exist for them. This does NOT claim ACP records
@@ -1126,14 +1155,25 @@ fn detect_stranded_index_records(
     to_lane_hits: &[(String, PathBuf)],
     lane_moved_ids: &[String],
     index_path_of: impl Fn(&str) -> Option<PathBuf>,
+    sidecar_path_of: impl Fn(&str) -> Option<PathBuf>,
 ) -> Vec<(String, PathBuf)> {
     // Deliberately NOT scoped to `affected` (review #463 round-11 B3): a
     // strand whose metadata already synced (metadata == surfaced path, e.g.
     // after a run that failed only the sidecar passes) never enters
     // `affected`, yet the damage is index ≠ sidecar and metadata is
     // irrelevant to it. Every to-lane hit whose index disagrees with the
-    // surfaced (sidecar-authoritative) path drives the re-key; a healthy
-    // record has index == sidecar and is untouched.
+    // authoritative path drives the re-key; a healthy record has
+    // index == sidecar and is untouched.
+    //
+    // The authority is the SIDECAR, read directly (review #463 round-14 R1):
+    // `sessions_under_workspace` surfaces index records first and skips the
+    // sidecar read for those ids, so for an index-arm hit the "surfaced"
+    // path IS the index path — comparing the index against it can never
+    // detect the divergence (the three-run interleave: index@`to`,
+    // sidecar@`to2`, reported as an empty success forever). The repair
+    // target is the sidecar's path, and a missing/unreadable sidecar falls
+    // back to the surfaced path (the off-index orphan arm, where surfaced
+    // already is the sidecar value).
     //
     // Except the sessions THIS run's codex lane itself just moved (review
     // #463 round-12 M1): their surfaced path was captured at scan time,
@@ -1156,11 +1196,12 @@ fn detect_stranded_index_records(
     to_lane_hits
         .iter()
         .filter(|(session_id, _)| !lane_moved_ids.iter().any(|id| id == session_id))
-        .filter(|(session_id, path)| {
+        .filter_map(|(session_id, surfaced)| {
+            let authority = sidecar_path_of(session_id).unwrap_or_else(|| surfaced.clone());
             index_path_of(session_id)
-                .is_some_and(|indexed| identity_key(&indexed) != identity_key(path))
+                .filter(|indexed| identity_key(indexed) != identity_key(&authority))
+                .map(|_| (session_id.clone(), authority))
         })
-        .cloned()
         .collect()
 }
 
@@ -1449,7 +1490,9 @@ mod tests {
         // round-12 M1: a hit this run's own codex lane just moved is
         // excluded — its surfaced path is a stale scan-time capture, and
         // "repairing" it re-keys the index onto the vanished path.
-        let detected = detect_stranded_index_records(&hits, &["lane-moved".to_string()], index_of);
+        let no_sidecar = |_: &str| -> Option<PathBuf> { None };
+        let detected =
+            detect_stranded_index_records(&hits, &["lane-moved".to_string()], index_of, no_sidecar);
         assert_eq!(
             detected,
             vec![
@@ -1472,16 +1515,69 @@ mod tests {
         // different path must still be detected.
         let hits = vec![("s".to_string(), PathBuf::from("/vault/beta"))];
         let trailing_sep = |_: &str| -> Option<PathBuf> { Some(PathBuf::from("/vault/beta/")) };
+        let no_sidecar = |_: &str| -> Option<PathBuf> { None };
         assert!(
-            detect_stranded_index_records(&hits, &[], trailing_sep).is_empty(),
+            detect_stranded_index_records(&hits, &[], trailing_sep, no_sidecar).is_empty(),
             "a spelling-only difference is the same directory, not a strand"
         );
         let genuinely_different =
             |_: &str| -> Option<PathBuf> { Some(PathBuf::from("/gone/intermediate")) };
         assert_eq!(
-            detect_stranded_index_records(&hits, &[], genuinely_different),
+            detect_stranded_index_records(&hits, &[], genuinely_different, no_sidecar),
             vec![("s".to_string(), PathBuf::from("/vault/beta"))],
             "a real disagreement is still re-keyed onto the surfaced path"
+        );
+    }
+
+    #[test]
+    fn stranded_index_detection_compares_the_index_against_the_sidecar() {
+        // review #463 round-14 R1: `sessions_under_workspace` surfaces index
+        // records first, so for an index-arm hit the surfaced path IS the
+        // index path — comparing index vs surfaced compares the index with
+        // itself and the strand is structurally invisible (the three-run
+        // interleave: run 1 leaves index@`to`/sidecar@`from`, run 2 moves the
+        // sidecar to `to2` but its index re-key persist fails, run 3's
+        // to-scan surfaces the id via the index arm). The detector must read
+        // the sidecar directly and re-key the index onto the SIDECAR's path.
+        let to = PathBuf::from("/vault/beta");
+        let to2 = PathBuf::from("/vault/gamma");
+        let hits = vec![
+            // Index-arm hit: surfaced == index@to; the sidecar sits at to2.
+            ("index-arm-strand".to_string(), to.clone()),
+            // Index-arm hit whose sidecar agrees: healthy, untouched.
+            ("index-arm-healthy".to_string(), to.clone()),
+            // Index-arm hit with NO sidecar: falls back to the surfaced
+            // path (== index), nothing to disagree with.
+            ("index-arm-no-sidecar".to_string(), to.clone()),
+            // Sidecar-arm hit (off-index orphan shape): surfaced is already
+            // the sidecar value; an index record that disagrees is repaired
+            // onto it.
+            ("sidecar-arm-strand".to_string(), to.clone()),
+        ];
+        let index_of = |id: &str| -> Option<PathBuf> {
+            match id {
+                "index-arm-strand" => Some(to.clone()),
+                "index-arm-healthy" => Some(to.clone()),
+                "index-arm-no-sidecar" => Some(to.clone()),
+                "sidecar-arm-strand" => Some(PathBuf::from("/gone/intermediate")),
+                _ => None,
+            }
+        };
+        let sidecar_of = |id: &str| -> Option<PathBuf> {
+            match id {
+                "index-arm-strand" => Some(to2.clone()),
+                "index-arm-healthy" => Some(to.clone()),
+                "sidecar-arm-strand" => Some(to.clone()),
+                _ => None,
+            }
+        };
+        assert_eq!(
+            detect_stranded_index_records(&hits, &[], index_of, sidecar_of),
+            vec![
+                ("index-arm-strand".to_string(), to2),
+                ("sidecar-arm-strand".to_string(), to),
+            ],
+            "an index-arm hit is compared against its sidecar and re-keyed onto it"
         );
     }
 

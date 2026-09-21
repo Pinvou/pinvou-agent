@@ -2563,7 +2563,10 @@ const NAV_PREFETCH = {
           // runtime the idle gate refused (round-8 MAJOR-2: closing on the
           // post-busy-only case left "retry once when idle" with no entry
           // point, because the unavailable-root badge disappears once the root
-          // has moved). Rerunning the backend with the same from/to converges
+          // has moved — the badge renders strictly off the `available` wire
+          // field, the backend's per-root is_dir() stat; review #463 round-14
+          // B1 restored it after main #566 dropped it and badged every root).
+          // Rerunning the backend with the same from/to converges
           // (the snapshot includes unsynced sessions; already-rebound ones are
           // no-ops). The post-busy ids are kept for the next retry's
           // feed-back (F-Major).

@@ -457,5 +457,5 @@ test("unavailableProjectRootPaths keys the badge strictly off the wire `availabl
   assert.deepEqual(unavailableProjectRootPaths([{ path: "/a/unknown" }]), ["/a/unknown"]);
   // Legacy bare-string roots stay supported, and a non-array is empty.
   assert.deepEqual(unavailableProjectRootPaths(["/c/gone"]), []);
-  assert.deepEqual(unavailableProjectRootPaths(undefined), []);
+  assert.deepEqual(unavailableProjectRootPaths(), []);
 });

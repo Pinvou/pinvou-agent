@@ -277,9 +277,12 @@ impl SessionStore {
         match std::fs::remove_file(&file) {
             Ok(()) => {}
             Err(error) if error.kind() == ErrorKind::NotFound => {}
+            // Same log-hygiene rule as the read/write arms (review #463
+            // round-14 minor 4): the path embeds sessions/<id>/, so only the
+            // error kind is logged.
             Err(error) => eprintln!(
-                "[sessions] remove workspace binding sidecar failed ({}): {error:#}",
-                file.display()
+                "[sessions] remove workspace binding sidecar failed: {:?}",
+                error.kind()
             ),
         }
     }

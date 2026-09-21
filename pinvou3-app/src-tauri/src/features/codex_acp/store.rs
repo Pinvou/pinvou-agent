@@ -591,6 +591,21 @@ impl SessionAgentStore {
         }
     }
 
+    /// The workspace path recorded by the session's code-session SIDECAR (the
+    /// authoritative store for native code sessions), None when the sidecar
+    /// is absent, unreadable, or not a project binding. The rebind's
+    /// stranded-index detector compares the index against this directly
+    /// (review #463 round-14 R1): for an index-arm scan hit the surfaced
+    /// path IS the index path, so comparing against it can never detect an
+    /// index/sidecar divergence.
+    pub fn code_sidecar_workspace(&self, session_id: &str) -> Option<PathBuf> {
+        let sidecar = read_code_session_sidecar(&self.path, session_id)?;
+        if sidecar.workspace_kind != CodexWorkspaceKind::Project {
+            return None;
+        }
+        sidecar.workspace_path
+    }
+
     /// Index records still bound under `from`, i.e. a rewrite that did not
     /// stick. Used by the post-pass fence of
     /// [`Self::rebind_workspace_prefix`] (review #463 round-8 minor 8) and
