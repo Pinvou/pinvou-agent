@@ -592,10 +592,18 @@ assert.match(remoteControlCommands, /web_access_update_settings\([\s\S]{0,120}pa
   'the bounded Web settings command must return canonical preferences');
 assert.match(bootstrap, /pinvou:web-capabilities/);
 // The collapsed/expanded footer buttons were consolidated into one shared
-// renderer, so a single can()-gated occurrence covers both sidebar layouts.
-assert.ok((main.match(/\{can\('webAccessAdmin'\) && <button[\s\S]{0,220}handleOpenWebAccess/g) || []).length >= 1,
+// renderer: one definition plus exactly one call per sidebar layout. A layout
+// that stops calling the renderer, or a second inline copy of the buttons,
+// changes the count.
+assert.ok((main.match(/renderFooterButtons\(/g) || []).length === 2,
+  'footer buttons must stay consolidated: one shared renderer called from both sidebar layouts');
+assert.match(main, /\{!isSidebarOpen && renderFooterButtons\(true\)\}/,
+  'the collapsed sidebar layout must render the shared footer buttons');
+assert.match(main, /\{\s*renderFooterButtons\(false\)\s*\}/,
+  'the expanded sidebar layout must render the shared footer buttons');
+assert.match(main, /const renderFooterButtons = \(collapsed\) => \{[\s\S]{0,900}\{can\('webAccessAdmin'\) && <button[\s\S]{0,220}handleOpenWebAccess/,
   'desktop Web-access controls must stay hidden inside WebUI in both sidebar layouts');
-assert.ok((main.match(/\{can\('pet'\) && <button[\s\S]{0,220}handleSetPetEnabled/g) || []).length >= 1,
+assert.match(main, /const renderFooterButtons = \(collapsed\) => \{[\s\S]{0,1200}\{can\('pet'\) && <button[\s\S]{0,220}handleSetPetEnabled/,
   'desktop pet controls must stay hidden inside WebUI in both sidebar layouts');
 assert.doesNotMatch(webBridge, /registerWebAccessDesktopProxy|web_access:rpc_request/,
   'the browser-only bridge must not own the desktop RPC proxy');
@@ -827,8 +835,10 @@ assert.doesNotMatch(settingsView, /getWebRelaySettings/);
 assert.match(main, /title=\{t\.uiRemote\.title\}/);
 assert.match(main, /const isWebAccessConnected = !!\(bs && bs\.webAccess && bs\.webAccess\.web_client_connected\);/,
   'desktop indicator must reflect an actual browser connection, not a persistent access link');
-// The collapsed/expanded footer consolidation shares one indicator render.
-assert.ok((main.match(/isWebAccessConnected && <span/g) || []).length >= 1,
+// The collapsed/expanded footer consolidation shares one indicator render:
+// the indicator must live inside the shared renderer (distance-bounded match),
+// so neither layout can silently lose it.
+assert.match(main, /const renderFooterButtons = \(collapsed\) => \{[\s\S]{0,900}isWebAccessConnected && <span/,
   'expanded and collapsed navigation must use the actual connection indicator');
 assert.doesNotMatch(main, /bs\.webAccess\.active && <span/,
   'an enabled access link must not be presented as a connected phone');

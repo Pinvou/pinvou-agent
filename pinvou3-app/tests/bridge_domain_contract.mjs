@@ -33,7 +33,7 @@ export const desktopBridgeApi = {
 // These methods intentionally depend on desktop lifecycle or local machine
 // resources. Web may omit them, but every other desktop method must exist.
 export const desktopOnlyBridgeApi = {
-  platform: ['loadPlatformCapabilities', 'refreshConnectorAuthGates'],
+  platform: ['refreshConnectorAuthGates'],
   voice: ['installVoiceAsr', 'setVoiceShortcutEnabled', 'syncVoiceShortcutRecording'],
   knowledge: ['downloadKbModel', 'loadKnowledgeEmbedderAfterFirstFrame', 'mountRemoteCollection', 'removeRemoteCollection', 'setRemoteCollectionEnabled'],
   // 多智能体开关是桌面专属操作（ADR-0006）：Web 端只读呈现。

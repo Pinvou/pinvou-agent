@@ -345,7 +345,7 @@ function pinvouSharedtauriMain() {
     // 厂商预装本地大模型一键引导:首屏检测结果 + 引导执行态
     vllmSetup: null,          // {eligible, may_offer_setup, has_packages, engine_state:ready|starting|stopped|failed, ...}
     vllmBootstrapping: false, // 引导进行中(pkexec + 拉起 + 轮询就绪)
-    vllmSetupPhase: null,     // 阶段:'authorizing'|'waiting'|'ready'(引导开始时本地置 'authorizing';防御性:厂商版界面字段,社区版后端从不发阶段事件)
+    vllmSetupPhase: null,     // phase: 'authorizing'|'waiting'|'ready' (set locally to 'authorizing' when the flow starts; defensive vendor-edition UI field — the community backend never emits phase events)
     vllmSetupAttempt: 0,      // probe count during the waiting phase (defensive: vendor-edition UI field; the community-edition backend never emits phase events)
     vllmBootstrapDone: null,  // 成功结果 {base_url, model}, 据此显示「立即重启」
     vllmBootstrapError: null, // 失败原因(pkexec stderr / 超时透传)

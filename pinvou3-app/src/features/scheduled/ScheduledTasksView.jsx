@@ -41,12 +41,12 @@ import memoryOrganizeImage from '../../assets/scheduled/memory-organize.jpg';
  * @property {string} empty - Empty list placeholder copy.
  */
 
-    // 新建/编辑表单的兜底 RRULE(工作日 8:00),taskForm 与新建表单复位共用同一值。
+    // Fallback RRULE for the create/edit form (workdays at 8:00); shared by taskForm and the create-form reset.
     const DEFAULT_TASK_RRULE = 'FREQ=WEEKLY;BYDAY=MO,TU,WE,TH,FR;BYHOUR=8;BYMINUTE=0';
 
     // 点模板即激活（开箱即用）：工作间由任务自动分配，不再需要选目录或先暂停。
-    // 名称/说明/执行内容等展示文案由 scheduledCopy.templateMap 三语覆盖(见
-    // visibleSuggestions),这里只保留创建所需的结构化字段。
+    // Display copy (name/description/prompt) is covered in three languages by
+    // scheduledCopy.templateMap (see visibleSuggestions); only the structural fields needed for creation live here.
     const SCHEDULED_TASK_TEMPLATES = [
       {
         id: 'daily-brief',
@@ -77,8 +77,8 @@ import memoryOrganizeImage from '../../assets/scheduled/memory-organize.jpg';
     ];
 
     const PREVIEW_SCHEDULED_TASKS = [
-      // 展示文案(name/scheduleLabel/prompt)由 scheduledCopy.previewTasks 三语覆盖;
-      // model: null 表示预览态的「自动选择」(渲染时回退 scheduledCopy.autoModel)。
+      // Display copy (name/scheduleLabel/prompt) is covered in three languages by
+      // scheduledCopy.previewTasks; model: null means the preview "auto select" (rendering falls back to scheduledCopy.autoModel).
       {
         id: "preview-daily-brief",
         templateId: "daily-brief",
@@ -127,7 +127,7 @@ import memoryOrganizeImage from '../../assets/scheduled/memory-organize.jpg';
       ],
     };
 
-    // 裸代码数组:展示 label 由组件按当前语言重建(见 weekdayOptions/hourlyIntervalOptions)。
+    // Bare code arrays: display labels are rebuilt per current language by the component (see weekdayOptions/hourlyIntervalOptions).
     const WEEKDAY_CODES = ['MO', 'TU', 'WE', 'TH', 'FR', 'SA', 'SU'];
     const HOURLY_INTERVAL_OPTIONS = Array.from({ length: 24 }, (_, index) => index + 1);
     const normalizeScheduleDays = (value) => {
@@ -1037,14 +1037,14 @@ import memoryOrganizeImage from '../../assets/scheduled/memory-organize.jpg';
         if (!editor) return '';
         if (editor.repeat === 'once') {
           if (!editor.time) return scheduledCopy.repeatOptions.once;
-          // 与 Rust humanize 同口径:日期 + 时间(scheduledCopy.date 自带尾随空格)。
+          // Mirrors the Rust humanize wording: date + time (scheduledCopy.date carries a trailing space).
           const [, month, day] = String(editor.date || '').split('-');
           const dateLabel = month && day ? scheduledCopy.date(Number(month), Number(day)) : '';
           return `${scheduledCopy.repeatOptions.once} · ${dateLabel}${editor.time}`;
         }
         if (editor.repeat === 'hourly') {
           const interval = editor.interval === 1 ? scheduledCopy.repeatOptions.hourly : scheduledCopy.everyHours(editor.interval);
-          // 天限制与 weekly 分支同源:把选中的天拼成「周一、周二」缀在间隔后。
+          // Day restriction shares the weekly branch's wording: join the selected days as "Mon、Tue" and append after the interval.
           const days = normalizeScheduleDays(editor.days);
           const dayLabel = days.length
             ? days.map(day => scheduledCopy.weekdays[WEEKDAY_CODES.indexOf(day)][1]).join('、')
@@ -1091,8 +1091,8 @@ import memoryOrganizeImage from '../../assets/scheduled/memory-organize.jpg';
         }
         if (editor.repeat === 'hourly') {
           const interval = previousEditor.repeat === 'hourly' ? editor.interval : 1;
-          // BYDAY(全周选满或部分天)写入规则,与 Rust humanize 的「周一、周二 每 N 小时」对齐;
-          // 未选天(纯每小时)时省略,语义同每天。
+          // BYDAY rule (full week or a subset of days) aligns with the Rust humanize "Mon、Tue every N hours";
+          // omitted when no day is selected (pure hourly), which reads the same as every day.
           const days = normalizeScheduleDays(editor.days);
           const byday = days.length ? `;BYDAY=${days.join(',')}` : '';
           const anchor = previousEditor.hasTimeAnchor

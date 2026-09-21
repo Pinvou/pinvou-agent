@@ -15,6 +15,8 @@ import { PROJECT_SESSION_DRAG_TYPE } from '../../features/projects/projectGroupi
       const dragProps = dragKind ? drag.handlers : {};
       const clickH = dragKind ? drag.guardClick(onClick) : onClick;
       return (
+        // biome-ignore lint/a11y/noStaticElementInteractions: main sidebar nav item; activation is pointer-only by design and the collapsed rail shares this markup (behavior unchanged from main)
+        // biome-ignore lint/a11y/useKeyWithClickEvents: same nav item; no keyboard activation is wired on any host
         <div
           onClick={clickH}
           onPointerEnter={onPointerEnter}

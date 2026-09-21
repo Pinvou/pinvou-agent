@@ -370,9 +370,6 @@ function pinvouSharedweb() {
   let monitorPollInFlight = false;
   let gpuUtilHistory = [];
   // 0 = no real max_model_len received yet from get_backend_status or the
-  // monitor snapshot; write state.tokens.max back only for real values
-  // (both assignment sites are truthiness-guarded).
-  let maxModelLen = 0;
   // 监控页「清除统计」基准点：vLLM 的几个累计 counter（TTFT/TPOT/tokens/prefix
   // cache）无法真正清零（它们跟随远端 vLLM 进程生命周期，归零要重启共享进程）。
   // 改为记一个基准快照，显示值 = 当前 counter − 基准。换模型 / vLLM 重启 → counter
@@ -939,7 +936,7 @@ function pinvouSceneForMessagePos(pos) { return pinvouSharedweb().pinvouSceneFor
       planSnapshot: { plan: null, todos: null },
       modeState: { mode: "yolo" },
       thinking: { active: false, phase: "thinking", toolName: "", startedAt: 0 },
-      tokens: { input: 0, max: maxModelLen },
+      tokens: { input: 0, max: 0 },
       activePersona: null, // 卡片池: 该 session 加持的专家面具(挂件用)
       mountedCollection: null, // 知识库: 该 session 挂载的知识集 id 或 null
       mountedCollections: [], // 多知识库挂载项 [{ collectionId, enabled }]
@@ -5267,8 +5264,7 @@ function adjustCounters(sp, v) { return pinvouSharedweb().adjustCounters(sp, v);
         updatedAt: snap.generated_at_ms ? new Date(snap.generated_at_ms).toLocaleTimeString() : "—",
       };
       if (snap.vllm && snap.vllm.max_model_len) {
-        maxModelLen = snap.vllm.max_model_len;
-        state.tokens.max = maxModelLen;
+        state.tokens.max = snap.vllm.max_model_len;
       }
       // Display-equivalent snapshots neither overwrite state.monitor nor
       // notify (must send on the first frame or after an errored round).
@@ -5299,8 +5295,7 @@ function stopMonitorPolling() { return pinvouSharedweb().stopMonitorPolling(); }
       state.backendOnline = !!s.vllm_online;
       // 修 token 分母时机 bug：不再依赖用户打开监控页才拿到真实 max_model_len
       if (s.max_model_len) {
-        maxModelLen = s.max_model_len;
-        state.tokens.max = maxModelLen;
+        state.tokens.max = s.max_model_len;
       }
     } catch {
       state.backendOnline = false;

@@ -131,9 +131,9 @@ deepCloneCalls = 0;
 invokeResponse = async command => command === 'web_access_ingest_file'
   ? { basename: 'stable-snapshot.txt', handle: 'attachment-handle' }
   : null;
-// addAttachmentByPath is no longer on the adapted domain surface (removed from
-// the desktop facade too); drive the same ingest flow through the private flat
-// facade, which shares the identical function implementation.
+// addAttachmentByPath is no longer on the adapted web domain surface (the
+// desktop facade still exports it); drive the same ingest flow through the
+// private flat facade, which shares the identical function implementation.
 await flat.addAttachmentByPath('/tmp/stable-snapshot.txt');
 assert.equal(snapshotReads, 0, 'subscription notifications must use the supplied transport snapshot');
 assert.equal(deepCloneCalls, 0, 'subscription notifications must not deep-clone the transcript');
