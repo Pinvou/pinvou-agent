@@ -456,7 +456,7 @@ const jaBase = {
         cpDescLabel: '説明',
         cpEquipBubbleNote: '能力プロファイルを注入しました。AI はこのエキスパートの方法論でタスクを担当します。',
         cpTargetMarkTitle: '装備先 · カードプールで選んだエキスパートがこの会話に注入されます',
-        riGenerating: '生成中…', riDelQ: '削除?', riDelConfirm: '削除を確認', riRename: '名前を変更', riPin: 'ピン留め', riUnpin: 'ピン留め解除', riOpenFolder: 'フォルダを開く', riAwaitingInput: 'あなたの入力を待っています', riMore: 'その他',
+        riGenerating: '生成中…', riDelQ: '削除?', riDelConfirm: '削除を確認', riRename: '名前を変更', riPin: 'ピン留め', riUnpin: 'ピン留め解除', riOpenFolder: 'フォルダを開く', riAwaitingInput: 'あなたの入力を待っています', riMore: 'その他', riViewWorkspace: 'ワークスペースを表示',
         // —— チャット/グローバル chrome ——
         appTitle: 'PINVOU アシスタント（ベータ版）', winMin: '最小化', winMax: '最大化', winClose: '閉じる',
         sidebarCollapse: 'サイドバーを折りたたむ', sidebarExpand: 'サイドバーを展開',
@@ -918,6 +918,18 @@ dictJa.uiChatWorkspace = {
   // 「プロジェクトディレクトリ」ではなく「作業ディレクトリ」の表現のため別キー）。
   yoloConfirmTitle:'YOLO モードに切り替えますか？', yoloConfirmBody:'このモードでは、モデルが作業ディレクトリを全自動で読み書きし、shell コマンドを実行できます。段階的な承認はありません。',
   yoloConfirmHint:'確認後はグローバルに記憶され、今後は表示されません。', yoloConfirmOk:'確認', yoloConfirmCancel:'キャンセル',
+};
+
+// セッションの「その他」メニューにあるワークスペース表示ダイアログ
+// （features/projects/SessionWorkspaceDialog.jsx）：セッションがアクセスできる
+// フォルダーのスナップショット（§6 キーチェーン、roots[0] = 作成時の cwd の
+// メインフォルダー）を読み取り専用で表示します。未バインドのセッション
+// （既定のワークスペース / コードの一時セッション）には実際の範囲をでっち上げず、
+// 正直な注記だけを表示します。
+dictJa.uiSessionWorkspace = {
+  title:'ワークスペースを表示', scope:'アクセス可能なフォルダー', primary:'メイン',
+  unknownFolder:'不明なフォルダー',
+  unbound:'フォルダー未バインド：Pinvou が管理する既定のセッション用ディレクトリを使用しています',
 };
 
 dictJa.uiSettingsDetail.memoryLoadFailed = 'メモリプロフィールの読み込みに失敗しました。再試行してください。';

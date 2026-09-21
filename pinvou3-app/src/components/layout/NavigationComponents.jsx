@@ -1,6 +1,6 @@
 import { memo, useEffect, useRef, useState } from 'react';
 import { createPortal } from 'react-dom';
-import { Archive, Check, Download, Edit2, FolderOpen, Layers, MoreHorizontal, PinIcon, PinOffIcon, Sparkles, Trash2, X } from '../icons.jsx';
+import { Archive, Briefcase, Check, Download, Edit2, FolderOpen, Layers, MoreHorizontal, PinIcon, PinOffIcon, Sparkles, Trash2, X } from '../icons.jsx';
 import { useLongPressDrag } from '../../hooks/useLongPressDrag.js';
 import { usePortalMenu } from '../../hooks/usePortalMenu.js';
 import { isImeComposing } from '../../shared/ime-guard.mjs';
@@ -216,7 +216,7 @@ import { PROJECT_SESSION_DRAG_TYPE } from '../../features/projects/projectGroupi
     // derived by the parent's useMemo and callbacks come from the parent's
     // useCallback / per-item closure cache (see renderSidebarTaskItem in
     // main.jsx); the default shallow compare then skips correctly.
-    const RecentItem = memo(function RecentItem({ chat, active, personaTarget, theme, t, onSelect, onRename, onDelete, onTogglePinned, onOpenFolder, onExportArchive, onArchive, onMoveToProject, dragKind = 'session', dragging, onPickUp, dndPayload, dndDisabled, onDragEnd }) {
+    const RecentItem = memo(function RecentItem({ chat, active, personaTarget, theme, t, onSelect, onRename, onDelete, onTogglePinned, onOpenFolder, onExportArchive, onArchive, onMoveToProject, onViewWorkspace, dragKind = 'session', dragging, onPickUp, dndPayload, dndDisabled, onDragEnd }) {
       const isDark = theme === 'dark';
       const [editing, setEditing] = useState(false);
       const [confirming, setConfirming] = useState(false);
@@ -228,12 +228,13 @@ import { PROJECT_SESSION_DRAG_TYPE } from '../../features/projects/projectGroupi
       function save() { const tx = val.trim(); setEditing(false); if (tx && tx !== chat.title) onRename(chat.id, tx); }
       // Portal "more" menu placement/close lives in the shared hook (same
       // plumbing as the project-group header menu). Height covers the tallest
-      // variant actually rendered — 6 menu items at h-9 (36px) + 9px divider +
-      // 8px vertical padding ≈ 233: codex rows render move-to-project, other
-      // rows render export-archive, and the two are taskKind-exclusive. It
-      // only drives the bottom-edge flip decision and the portal clips
-      // (per-menu height convention, see ProjectGroupHeader).
-      const { menuOpen, menuStyle, closeMenu, toggleMenu, openMenuAt } = usePortalMenu({ height: 233 });
+      // variant actually rendered — 7 menu items at h-9 (36px) + 9px divider +
+      // 8px vertical padding ≈ 269: the view-workspace entry is desktop-gated,
+      // codex rows render move-to-project, other rows render export-archive,
+      // and the two are taskKind-exclusive. It only drives the bottom-edge
+      // flip decision and the portal clips (per-menu height convention, see
+      // ProjectGroupHeader).
+      const { menuOpen, menuStyle, closeMenu, toggleMenu, openMenuAt } = usePortalMenu({ height: 269 });
       // 移动菜单项把流程移交给 App 级弹窗:菜单门户与弹窗在同一次提交里
       // 卸载/挂载,被聚焦的菜单项随门户消失,弹窗的焦点还原来不及捕获它;
       // 且此刻行的 :hover/focus-within 都已失效,hover 显隐的按钮容器是
@@ -255,6 +256,12 @@ import { PROJECT_SESSION_DRAG_TYPE } from '../../features/projects/projectGroupi
             <Edit2 size={15} />
             <span>{t.riRename}</span>
           </button>
+          {onViewWorkspace && (
+            <button type="button" className={menuItemCls} data-testid="session-view-workspace" onClick={() => { closeMenu(); onViewWorkspace(chat); }}>
+              <Briefcase size={15} />
+              <span>{t.riViewWorkspace}</span>
+            </button>
+          )}
           {onMoveToProject && (
             <button type="button" className={menuItemCls} onClick={() => { rowLabelRef.current?.focus(); closeMenu(); onMoveToProject(chat); }}>
               <Layers size={15} />

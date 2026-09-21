@@ -172,3 +172,35 @@ test('round-6 pins: picker promise contract, keyboard reveal, availability defau
   assert.match(main, /unavailableRootsOf[\s\S]{0,700}?root\.available === false/, 'sidebar badge list keeps only unavailable roots');
   assert.doesNotMatch(main, /unavailableRootsOf[\s\S]{0,700}?root\.available !== false/, 'sidebar badge list must not keep available roots');
 });
+
+test('session "view workspace" entry wiring', () => {
+  const read = (...segments) => fs.readFileSync(path.join(root, ...segments), 'utf8');
+  const nav = read('src', 'components', 'layout', 'NavigationComponents.jsx');
+  const main = read('src', 'app', 'main.jsx');
+  const dialog = read('src', 'features', 'projects', 'SessionWorkspaceDialog.jsx');
+  // Menu entry lives in RecentItem's "more" menu and hands the chat to the host.
+  assert.match(nav, /onViewWorkspace[\s\S]{0,300}?data-testid="session-view-workspace"/, 'menu entry rendered when wired');
+  assert.match(nav, /onViewWorkspace\(chat\)/, 'entry hands the chat object to the host');
+  // The host feeds the §6 keychain snapshot (both lanes) and gates the entry to
+  // desktop (the web lane redacts host absolute paths).
+  assert.match(main, /workspaceRoots: Array\.isArray\(s\.workspace_roots\)/, 'chat lane carries workspace_roots');
+  assert.match(main, /workspaceRoots: Array\.isArray\(session\.workspace_roots\)/, 'codex lane carries workspace_roots');
+  assert.match(main, /onViewWorkspace=\{can\('desktopChrome'\) \? openSessionWorkspaceViewer : undefined\}/, 'desktop-gated entry');
+  assert.match(main, /<SessionWorkspaceDialog[\s\S]*?roots=\{/, 'dialog mounted by the host');
+  // The dialog is read-only and honest: primary = roots[0], unbound sessions get
+  // a note instead of a fabricated scope; no Tauri access inside the component.
+  assert.match(dialog, /index === 0[\s\S]{0,200}?copy\.primary/, 'roots[0] marked as primary');
+  assert.match(dialog, /copy\.unbound/, 'unbound note');
+  assert.doesNotMatch(dialog, /__TAURI__|invoke\(/, 'dialog never touches Tauri globals');
+});
+
+test('session workspace i18n keys exist in all three languages', () => {
+  for (const lang of ['zh', 'en', 'ja']) {
+    const source = read('src', 'shared', 'i18n', `${lang}.js`);
+    assert.match(source, /riViewWorkspace:/, `${lang} 缺 riViewWorkspace`);
+    assert.match(source, /uiSessionWorkspace = \{/, `${lang} 缺 uiSessionWorkspace 段`);
+    for (const key of ['title', 'scope', 'primary', 'unknownFolder', 'unbound']) {
+      assert.ok(source.includes(`${key}:`), `${lang} 缺键 uiSessionWorkspace.${key}`);
+    }
+  }
+});

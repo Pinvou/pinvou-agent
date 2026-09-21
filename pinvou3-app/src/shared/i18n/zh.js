@@ -458,7 +458,7 @@ export const dictZh = {
         cpDescLabel: '简介',
         cpEquipBubbleNote: '完整能力档案已注入,AI 将以该专家的方法论承接后续任务。',
         cpTargetMarkTitle: '加持目标 · 在卡牌池选的专家会注入到这个对话',
-        riGenerating: '正在生成中', riDelQ: '删除?', riDelConfirm: '确认删除', riRename: '重命名', riPin: '置顶', riUnpin: '取消置顶', riOpenFolder: '打开文件夹', riAwaitingInput: '等待你的选择', riMore: '更多',
+        riGenerating: '正在生成中', riDelQ: '删除?', riDelConfirm: '确认删除', riRename: '重命名', riPin: '置顶', riUnpin: '取消置顶', riOpenFolder: '打开文件夹', riAwaitingInput: '等待你的选择', riMore: '更多', riViewWorkspace: '查看工作区',
         // —— 聊天链路/全局 chrome ——
         appTitle: 'PINVOU 智能助手（内测版）', winMin: '最小化', winMax: '最大化', winClose: '关闭',
         sidebarCollapse: '收起侧边栏', sidebarExpand: '展开侧边栏',
@@ -958,6 +958,15 @@ dictZh.uiChatWorkspace = {
   // modeYoloConfirm*，但措辞是「工作目录」而非「项目目录」，故独立成键）。
   yoloConfirmTitle:'切换到 YOLO 模式？', yoloConfirmBody:'该模式下模型将对你的工作目录全自动读写、可执行 shell 命令，无逐步审批。',
   yoloConfirmHint:'确认后全局记住，以后切换不再提示。', yoloConfirmOk:'确认切换', yoloConfirmCancel:'取消',
+};
+
+// 会话「更多」菜单的查看工作区弹窗（features/projects/SessionWorkspaceDialog.jsx）：
+// 只读展示会话可访问文件夹快照（§6 钥匙串，roots[0] = 主文件夹即创建时 cwd）。
+// 未绑定会话（默认工作区/代码临时会话）不展示臆造的范围，只给如实说明。
+dictZh.uiSessionWorkspace = {
+  title:'查看工作区', scope:'可访问文件夹', primary:'主文件夹',
+  unknownFolder:'未知文件夹',
+  unbound:'未绑定文件夹：使用 Pinvou 管理的默认会话目录',
 };
 
 // 静态桥脚本（vite 原样拷贝，不能 ES import）经此读取共享词典，

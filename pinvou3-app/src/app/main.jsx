@@ -30,6 +30,7 @@ import { WorkspacePickerDialog } from '../features/projects/WorkspacePickerDialo
 import { computePickerRows, pickerPrimaryRoot, pickerProjectRoots, workspaceNoticeTone } from '../features/projects/workspacePickerState.js';
 import { removeRootPlan, rootAlreadyPresent, rootConflictsWithExisting, rootPathOf } from '../features/projects/manageFoldersState.js';
 import { ManageProjectFoldersDialog } from '../features/projects/ManageProjectFoldersDialog.jsx';
+import { SessionWorkspaceDialog } from '../features/projects/SessionWorkspaceDialog.jsx';
 import { classifyRebindError } from '../features/projects/rebindErrors.js';
 import { runSessionBatch } from '../shared/session-management.js';
 import { filterSessionsByTab, groupSessionsByLocalDate, sessionListComparator } from '../shared/session-list-pipeline.js';
@@ -1424,6 +1425,9 @@ const NAV_PREFETCH = {
             // posture). Unbound sessions leave both values empty and stay in
             // the date view.
             workspacePath: s.workspace_binding || '',
+            // §6 keychain snapshot (cwd first): powers the "view workspace"
+            // menu entry's access-scope list. Absent on older hosts → [].
+            workspaceRoots: Array.isArray(s.workspace_roots) ? s.workspace_roots : [],
             // A standalone 'bound' kind: shares the three-tier grouping with
             // the code/ACP 'project' kind, but is not a disguised
             // project-kind (review #452 finding 5).
@@ -1446,6 +1450,9 @@ const NAV_PREFETCH = {
         updatedAt: session.updated_at || session.created_at || '',
         workspacePath: session.workspace_path || '',
         workspaceKind: session.workspace_kind || '',
+        // §6 keychain snapshot for the "view workspace" menu entry (same
+        // cwd-first shape as the chat lane's workspaceRoots).
+        workspaceRoots: Array.isArray(session.workspace_roots) ? session.workspace_roots : [],
         pinned: !!session.pinned,
         pinnedAt: session.pinned_at || '',
         working: !!codexBusyBySession[session.id],
@@ -1889,6 +1896,14 @@ const NAV_PREFETCH = {
           setSettingsToast(workspaceGrantNotice(activeLaneMode(), roots.length));
         }
       };
+
+      // ── Session workspace viewer (sidebar "more" menu) ──────────────────
+      // Read-only access-scope view: the session's §6 keychain snapshot with
+      // the primary folder marked. Desktop-only: the web lane's session list
+      // redacts host absolute paths, so a scope viewer there would display
+      // misleading redacted data.
+      const [viewWorkspaceChat, setViewWorkspaceChat] = useState(null);
+      const openSessionWorkspaceViewer = useCallback((chat) => setViewWorkspaceChat(chat), []);
 
       // ── Manage-folders panel (§4) ───────────────────────────────────────
       // View/add/remove project roots, primary-root memory, rename, and the
@@ -3201,6 +3216,7 @@ const NAV_PREFETCH = {
             onExportArchive={chat.taskKind !== 'codex' && !exportingSessionIds.has(chat.id) && bridge.sessions.exportSessionArchive ? handleExportSessionArchive : undefined}
             onArchive={handleArchiveSession}
             onMoveToProject={projectMovesAvailable ? openMovePicker : undefined}
+            onViewWorkspace={can('desktopChrome') ? openSessionWorkspaceViewer : undefined}
             dndPayload={projectMovesAvailable && sidebarCodeListActive
               ? cachedItemCallback(sidebarDndPayloads, chat, (c) => ({ sessionId: c.id }))
               : undefined}
@@ -3426,6 +3442,20 @@ const NAV_PREFETCH = {
               onRename={(name) => handleRenameProject(manageFoldersProject.id, name)}
               onExcludeRoot={(root) => handleSetNeverMaterialize(root, true)}
               onRevokeExclusion={(root) => handleSetNeverMaterialize(root, false)}
+            />
+          )}
+
+          {viewWorkspaceChat && (
+            // Conditional mount (the ManageProjectFoldersDialog idiom): the
+            // snapshot shown belongs to the chat captured at open time.
+            <SessionWorkspaceDialog
+              open
+              sessionTitle={viewWorkspaceChat.title}
+              roots={viewWorkspaceChat.workspaceRoots && viewWorkspaceChat.workspaceRoots.length
+                ? viewWorkspaceChat.workspaceRoots
+                : (viewWorkspaceChat.workspacePath ? [viewWorkspaceChat.workspacePath] : [])}
+              t={t}
+              onClose={() => setViewWorkspaceChat(null)}
             />
           )}
 

@@ -458,7 +458,7 @@ export const dictEn = {
         cpDescLabel: 'Description',
         cpEquipBubbleNote: "Full capability profile injected — the AI will handle following tasks with this expert's methodology.",
         cpTargetMarkTitle: 'Equip target · experts picked in the card deck are injected into this chat',
-        riGenerating: 'Generating…', riDelQ: 'Delete?', riDelConfirm: 'Confirm delete', riRename: 'Rename', riPin: 'Pin', riUnpin: 'Unpin', riOpenFolder: 'Open folder', riAwaitingInput: 'Awaiting your input', riMore: 'More',
+        riGenerating: 'Generating…', riDelQ: 'Delete?', riDelConfirm: 'Confirm delete', riRename: 'Rename', riPin: 'Pin', riUnpin: 'Unpin', riOpenFolder: 'Open folder', riAwaitingInput: 'Awaiting your input', riMore: 'More', riViewWorkspace: 'View workspace',
         // —— Chat & global chrome ——
         appTitle: 'PINVOU AI Assistant (Beta)', winMin: 'Minimize', winMax: 'Maximize', winClose: 'Close',
         sidebarCollapse: 'Collapse sidebar', sidebarExpand: 'Expand sidebar',
@@ -917,6 +917,16 @@ dictEn.uiChatWorkspace = {
   // directory" instead of "project directory", hence separate keys).
   yoloConfirmTitle:'Switch to YOLO mode?', yoloConfirmBody:'In this mode the model reads and writes your working directory fully automatically and can run shell commands, without step-by-step approvals.',
   yoloConfirmHint:'Remembered globally once confirmed — you will not be asked again.', yoloConfirmOk:'Confirm', yoloConfirmCancel:'Cancel',
+};
+
+// Session "more" menu's workspace viewer (features/projects/SessionWorkspaceDialog.jsx):
+// a read-only view of the session's accessible-folder snapshot (§6 keychain;
+// roots[0] = the primary folder, i.e. the creation-time cwd). Unbound sessions
+// (default workspace / codex temporary) get an honest note, not a fabricated scope.
+dictEn.uiSessionWorkspace = {
+  title:'View workspace', scope:'Accessible folders', primary:'Primary',
+  unknownFolder:'Unknown folder',
+  unbound:'No folder bound: using the Pinvou-managed default session directory',
 };
 
 dictEn.uiSettingsDetail.memoryLoadFailed = 'Failed to load memory profile. Please try again.';
