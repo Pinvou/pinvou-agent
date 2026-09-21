@@ -139,4 +139,26 @@ mod tests {
         assert!(!receipt.retryable);
         assert!(receipt.message.contains(COMMUNITY_ISSUES_URL));
     }
+
+    #[test]
+    fn base_era_payload_without_privacy_notice_version_still_validates() {
+        // The `#[serde(default)]` on `privacy_notice_version` is what lets a
+        // base-era payload reach validation at all — this exact attribute was
+        // lost once in this stack already, and reverting it currently passes
+        // every other test. Pin the deserialize + validate path.
+        let payload = serde_json::json!({
+            "type": "issue",
+            "description": "复现步骤",
+            "entry_point": "settings",
+        });
+        let request: FeedbackSubmitRequest = serde_json::from_value(payload)
+            .expect("base-era payloads omit privacy_notice_version and must deserialize");
+        assert_eq!(request.privacy_notice_version, "");
+        assert_eq!(request.title, None);
+        assert!(request.attachments.is_empty());
+        assert!(
+            validate_feedback_request(&request).is_ok(),
+            "a base-era payload must reach and pass validation"
+        );
+    }
 }
