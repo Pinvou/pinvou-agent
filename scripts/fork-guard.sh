@@ -1,13 +1,13 @@
 #!/usr/bin/env bash
-# CodeWhale v0.9.12 clean re-fork guard: 74 commits, eight maintained themes (r2 closed on main without this topic; this PR keeps the transition layering).
+# CodeWhale v0.9.12 clean re-fork guard: 78 commits, eight maintained themes (r2 closed on main without this topic; this PR keeps the transition layering).
 set -uo pipefail
 
 REPO="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 CODEWHALE="$REPO/CodeWhale"
 APP="$REPO/pinvou3-app/src-tauri"
 EXPECTED_UPSTREAM="dcd4c200f72f0c1ffd60d8e7f6850313db879fc5"
-EXPECTED_HEAD="282eda740c0453ba145fa65ead97f659a4ed2da3"
-EXPECTED_COMMITS=74
+EXPECTED_HEAD="28956fdeb5ce1a71d6624a38a85c7909160298ed"
+EXPECTED_COMMITS=78
 # 过渡期锚点：不可变 r1 tag 的收口 commit。层 0 断言它是当前 head 的祖先，
 # 即 gitlink 沿主题分支领先 tag 而非另起分叉；#54 合入后随登记回收重钉到维护分支头。
 R1_CLOSURE="1fafee7e26b60a59457a43bce50c63aa2ad9dbaf"
@@ -25,7 +25,7 @@ bold()  { printf '\033[1m%s\033[0m\n' "$*"; }
 
 fail=0
 
-bold "── 第 0 层：v0.9.12 clean re-fork 拓扑（r1 tag 之后 59 个登记提交；r2 已收口但不含本主题，本 PR 继续过渡期叠层）──"
+bold "── 第 0 层：v0.9.12 clean re-fork 拓扑（r1 tag 之后 63 个登记提交；r2 已收口但不含本主题，本 PR 继续过渡期叠层）──"
 actual_head="$(git -C "$CODEWHALE" rev-parse HEAD 2>/dev/null || true)"
 if [[ "$actual_head" == "$EXPECTED_HEAD" ]]; then
   green "  ✓ CodeWhale gitlink 指向登记 head ${EXPECTED_HEAD}（过渡期：gitlink 领先 r1 tag，见 fork-policy 第 0 节豁免）"
@@ -168,13 +168,13 @@ fingerprints=(
   "T3|worker 记录共享 handle_read 激活提示 |CodeWhale/crates/tui/src/tools/subagent/mod.rs|if \`handle_read\` is not in your tool list, activate it via \`tool_search\` first"
   "T3|worker 记录激活提示回归             |CodeWhale/crates/tui/src/tools/subagent/tests.rs|fn forkguard_worker_record_hints_teach_handle_read_activation"
   "T3|目标续轮直呼兜底                   |CodeWhale/crates/tui/src/prompts/text.rs|call \`update_goal\` directly anyway"
-  "T3|父上下文提示直呼兜底                |CodeWhale/crates/tui/src/core/engine/context.rs|call \`handle_read\` directly anyway"
+  "T3|父上下文提示直呼兜底                |CodeWhale/crates/tui/src/core/engine/context.rs|handle_read_hint = crate::tools::subagent::HANDLE_READ_ACTIVATION_HINT"
   "T3|fetch 溢出证据可取回标记            |CodeWhale/crates/tui/src/tools/fetch_url.rs|\"evidence_available\": true,"
   "T3|web.run 溢出证据可取回标记          |CodeWhale/crates/tui/src/tools/web_run.rs|\"evidence_available\": true,"
   "T3|/agent 派发简报补激活回归           |CodeWhale/crates/tui/src/commands/groups/core/agent.rs|fn forkguard_slash_agent_dispatch_teaches_handle_read_activation"
   "T3|/goal 简报补 create_goal 激活        |CodeWhale/crates/tui/src/commands/groups/project/goal.rs|if \`create_goal\` is not in your tool list"
   "T3|/goal 简报补直呼兜底                 |CodeWhale/crates/tui/src/commands/groups/project/goal.rs|call \`create_goal\` directly anyway"
-  "T3|/agent 简报补直呼兜底                |CodeWhale/crates/tui/src/commands/groups/core/agent.rs|call \`handle_read\` directly anyway"
+  "T3|/agent 简报补直呼兜底                |CodeWhale/crates/tui/src/commands/groups/core/agent.rs|handle_read_hint = crate::tools::subagent::HANDLE_READ_ACTIVATION_HINT"
   "T3|幻影清单锚定 canonical 退役名        |CodeWhale/crates/tui/src/skills/system/tests.rs|fn forkguard_phantom_denylist_covers_canonical_lists"
 
   "T4|Automation 稳定 conversation key |CodeWhale/crates/tui/src/automation_manager.rs|add_task_with_conversation_key(new_task, Some(automation.id.clone()))"
