@@ -48,6 +48,8 @@ async function setSelectedPet(id) { return pinvouSharedtauriSettings().setSelect
       if (requestedSessionId !== (state.activeSessionId || null)) return;
       state.effectiveModelConfig = config;
     } catch {
+      // 快速切会话时，旧请求可能晚于新请求返回；禁止旧会话配置覆盖当前遮罩状态。
+      if ((state.activeSessionId || null) !== requestedSessionId) return;
       state.effectiveModelConfig = null;
     }
     notify();
@@ -63,17 +65,6 @@ function enqueueSettingsWrite(write) { return pinvouSharedtauriSettings().enqueu
         return true;
       } catch (e) {
         console.warn("save settings failed", e);
-        return false;
-      }
-    });
-  }
-  async function saveSettingsAndRestart(patch) {
-    return enqueueSettingsWrite(async function () {
-      try {
-        await invoke("save_settings_and_restart", { patch });
-        return true;
-      } catch (e) {
-        console.warn("save settings and restart failed", e);
         return false;
       }
     });
@@ -259,7 +250,6 @@ async function testImageInputCapability(model, baseUrl, apiKey, modelId) { retur
       setSelectedPet,
       loadEffectiveModelConfig,
       saveSettings,
-      saveSettingsAndRestart,
       saveSearchSettings,
       saveSearchSettingsAndRestart,
       submitFeedback,

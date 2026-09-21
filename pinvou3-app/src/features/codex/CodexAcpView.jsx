@@ -1,9 +1,8 @@
 import { Fragment, useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react';
-import { createPortal } from 'react-dom';
 import { isImeComposing } from '../../shared/ime-guard.mjs';
 import {
   Brain, Check, ChevronDown, FileText, FolderOpen, GitBranch, Monitor, Paperclip,
-  Plus, RefreshCw, Send, Sparkles, StopCircle, Upload, User,
+  RefreshCw, Send, Sparkles, StopCircle, Upload, User,
 } from '../../components/icons.jsx';
 import { AcpAgentLogo } from './AcpAgentLogo.jsx';
 import { CodexWorkspacePanel } from './CodexWorkspacePanel.jsx';
@@ -17,7 +16,6 @@ import {
 import {
   classifyAcpServiceFailure,
   isAcpAuthenticationFailure,
-  runtimeOperationFor,
 } from './runtimeNoticeState.js';
 import {
   AgentServiceFailureNotice,
@@ -80,9 +78,8 @@ import {
   RewindConfirmDialog,
   RewindUndoChip,
   RewindUndoConfirmDialog,
-  useDialogEscapeKey,
 } from './RewindChip.jsx';
-import { useDialogFocusRestore } from '../../hooks/useDialogFocusRestore.js';
+import { ModalDialogShell } from './ModalDialogShell.jsx';
 import {
   ConversationMarkdown,
   ConversationStatusBadge,
@@ -122,12 +119,12 @@ import {
   restoreConversationScrollPosition,
 } from '../conversation/conversation-model.js';
 import { QuestionChoiceCard } from '../conversation/QuestionChoiceCard.jsx';
+import { buildUserInputAnswers, normalizeUserInputQuestions } from '../conversation/user-input-shared.js';
 import {
   PlanLayer,
   ToolCard,
   cardBoxCls,
   cardBtnCls,
-  isFreeTextPlaceholderOption,
 } from '../tools/tool-renderers.jsx';
 import { YoloConfirmCard } from '../../shared/yolo-confirm-card.jsx';
 import { notifyChatRoundCommitted } from '../tools/tool-events.js';
@@ -269,30 +266,20 @@ function WorkspacePanelToggle({ testId, active, changeCount, onToggle, copy }) {
 // not hide the dialog into the background. Mounted only while the dialog is
 // open (conditional rendering at the call site).
 function BranchDialogShell({ copy, busy, testid, labelledBy, initialFocusRef, onCancel, children }) {
-  const dialogRef = useRef(null);
-  useDialogFocusRestore(dialogRef, initialFocusRef);
-  useDialogEscapeKey(busy, onCancel);
-  return createPortal(
-    <div data-testid={testid} className="fixed inset-0 z-[120] flex items-center justify-center p-4">
-      <button
-        type="button"
-        aria-label={copy.branchSwitchCancel}
-        className="absolute inset-0 cursor-default bg-black/45 backdrop-blur-[14px] animate-in fade-in duration-200"
-        disabled={busy}
-        onClick={onCancel}
-      />
-      <div
-        ref={dialogRef}
-        role="dialog"
-        aria-modal="true"
-        aria-labelledby={labelledBy}
-        tabIndex={-1}
-        className="relative w-[min(400px,calc(100vw-24px))] rounded-[24px] p-6 bg-white text-[#1F1F1F] outline-none dark:bg-[#1E1F20] dark:text-[#E8EAED]"
-      >
-        {children}
-      </div>
-    </div>,
-    document.body,
+  return (
+    <ModalDialogShell
+      testid={testid}
+      zIndexClass="z-[120]"
+      backdropLabel={copy.branchSwitchCancel}
+      backdropClass="absolute inset-0 cursor-default bg-black/45 backdrop-blur-[14px] animate-in fade-in duration-200"
+      panelClass="relative w-[min(400px,calc(100vw-24px))] rounded-[24px] p-6 bg-white text-[#1F1F1F] outline-none dark:bg-[#1E1F20] dark:text-[#E8EAED]"
+      busy={busy}
+      initialFocusRef={initialFocusRef}
+      labelledBy={labelledBy}
+      onCancel={onCancel}
+    >
+      {children}
+    </ModalDialogShell>
   );
 }
 
@@ -352,7 +339,6 @@ function CodexComposerConfigSelect({
   title,
   unsetLabel,
   testId,
-  footerAction,
 }) {
   const [open, setOpen] = useState(false);
   const triggerRef = useRef(null);
@@ -420,19 +406,6 @@ function CodexComposerConfigSelect({
             </button>
           );
         })}
-        {footerAction && (
-          <>
-            <div className="my-1 mx-2 h-px bg-black/5 dark:bg-white/10" />
-            <button
-              type="button"
-              onClick={() => { setOpen(false); footerAction.onClick(); }}
-              className="group flex w-full items-center gap-2.5 rounded-xl px-3 py-2.5 text-left text-[13px] text-gray-700 transition-colors hover:bg-[#007AFF] hover:text-white dark:text-gray-200"
-            >
-              <Plus size={15} className="shrink-0 text-gray-400 group-hover:text-white/90" />
-              <span className="min-w-0 truncate">{footerAction.label}</span>
-            </button>
-          </>
-        )}
       </ComposerPopover>
     </div>
   );
@@ -551,35 +524,11 @@ const NATIVE_CHAT_EVENTS = [
 ];
 
 function NativeUserInputCard({ item, responding, onSubmitAnswers, onCancelInput, copy, conversationCopy }) {
-  const questions = (item.questions || []).map((question, index) => {
-    const allowOther = question.allow_free_text !== false;
-    return {
-      id: question.id || `question-${index + 1}`,
-      header: question.header || `Q${index + 1}`,
-      question: question.question || '',
-      options: (question.options || [])
-        .filter(option => !allowOther || !isFreeTextPlaceholderOption(option))
-        .map(option => ({
-          value: option.label,
-          label: option.label,
-          description: option.description || '',
-        })),
-      allowOther,
-      multiSelect: Boolean(question.multi_select),
-      required: !question.multi_select,
-    };
-  });
+  const questions = normalizeUserInputQuestions(item.questions);
   const actionable = !item.resolved;
 
   function submit(groups) {
-    const answers = groups.flatMap(group => group.answers.map(answer => ({
-      id: group.questionId,
-      label: answer.other ? (conversationCopy && conversationCopy.otherAnswer) || answer.label : answer.label,
-      value: String(answer.value),
-      // 保留 other 标记：QuestionChoiceCard 还原历史答案时据此把“其他”与预设选项区分开，
-      // 避免“其他值 == 预设 value”被误判为预设（评审 P2）。
-      other: answer.other,
-    })));
+    const answers = buildUserInputAnswers(groups, conversationCopy && conversationCopy.otherAnswer);
     onSubmitAnswers(item.toolCallId, answers);
   }
 
@@ -592,6 +541,7 @@ function NativeUserInputCard({ item, responding, onSubmitAnswers, onCancelInput,
       submitting={responding}
       submitLabel={copy.submit}
       cancelLabel={copy.cancel}
+      otherPlaceholder={conversationCopy && conversationCopy.otherAnswer}
       otherAnswerLabel={conversationCopy && conversationCopy.otherAnswer}
       inputPlaceholder={conversationCopy && conversationCopy.inputPlaceholder}
       statusText={actionable
@@ -844,13 +794,13 @@ export function CodexAcpView({
   }, [activeId, branchWorkspacePath]);
   // 会话或草稿工作区变化时加载分支（仅桌面端；非 git 工作区返回 git:false，控件自动隐藏）。
   useEffect(() => {
-    /* eslint-disable react-hooks/set-state-in-effect -- 会话/草稿切换必须同步丢弃上一工作区的菜单、弹窗与分支数据，异步重载前不能显示旧工作区状态 */
+     
     branchContextRef.current = activeId ? `session:${activeId}` : `draft:${branchWorkspacePath || ''}`;
     setBranchMenuOpen(false);
     setPendingBranchSwitch(null);
     setCommitBranchSwitch(null);
     setWorkspaceBranches(null);
-    /* eslint-enable react-hooks/set-state-in-effect */
+     
     loadWorkspaceBranches();
   }, [activeId, branchWorkspacePath, loadWorkspaceBranches]);
   // 打开分支菜单时后台重取：长会话里 Agent 每回合都可能改动文件，关闭期间的
@@ -1137,7 +1087,7 @@ export function CodexAcpView({
     // 可反悔状态消失（回退后发了新轮/记录被消费）时收回弹窗；reloadFailed
     // 重试窗口豁免（弹窗由本地副本驱动，重试只补重载、不再发 undo）。
     if (!rewindUndoAvailable(rewindUndoState)) {
-      // eslint-disable-next-line react-hooks/set-state-in-effect -- one-shot mirror of the undo-state lifecycle; same pattern as the session-switch reset below
+       
       setRewindUndoEntry(current => (current && current.reloadFailed ? current : null));
     }
   }, [rewindUndoState]);
@@ -1192,6 +1142,8 @@ export function CodexAcpView({
   const activeAgentName = activeSession?.agent_name
     || agents?.find(agent => agent.agent_id === activeAgentId)?.agent_name
     || (activeAgentId === 'pinvou' ? '品悟' : activeAgentId === 'claude' ? 'Claude Code' : activeAgentId === 'kimi' ? 'Kimi' : 'Codex');
+  // 账户菜单里的运行来源后缀:只算一次,渲染处判空复用。
+  const activeRuntimeSourceLabel = runtimeSourceLabel(activeStatus, codexCopy);
   const activeAgentIdRef = useRef(activeAgentId);
   activeAgentIdRef.current = activeAgentId;
   const rememberScrollBeforeRightPanelChange = useCallback(() => {
@@ -1232,7 +1184,7 @@ export function CodexAcpView({
     }
   }, [subagentPanel, workspaceDockActivation, workspaceOpen]);
   useEffect(() => {
-    // eslint-disable-next-line react-hooks/set-state-in-effect -- synchronously collapse the subagent panel on session switch; one-shot mirror
+     
     setSubagentPanel(null);
     setRewindTarget(null);
     setRewindError('');
@@ -1261,7 +1213,7 @@ export function CodexAcpView({
   }, [isNativeAgent, rememberScrollBeforeRightPanelChange]);
   const { acceptStatus, refreshStatus } = useAcpAgentStatus(activeAgentIdRef, setStatus);
   const activeStatus = status?.agent_id === activeAgentId ? status : null;
-  const activeRuntimeOperation = runtimeOperationFor(runtimeOperations, activeAgentId);
+  const activeRuntimeOperation = (activeAgentId && runtimeOperations && runtimeOperations[activeAgentId]) || '';
   const activeRuntimeBusy = Boolean(activeRuntimeOperation);
   const activeRuntimeError = runtimeErrors[activeAgentId] || '';
   const serviceFailure = useMemo(() => {
@@ -1279,12 +1231,34 @@ export function CodexAcpView({
       && activeSession.workspace_available === false,
   );
   const attachmentKey = activeId || DRAFT_ATTACHMENT_KEY;
-  const attachments = attachmentDrafts[attachmentKey] || [];
+  // Stable identity across renders keeps composerSendBlockers' useMemo deps
+  // from churning in the no-draft state.
+  const attachments = useMemo(
+    () => attachmentDrafts[attachmentKey] || [],
+    [attachmentDrafts, attachmentKey],
+  );
   const workspaceReferences = workspaceReferenceDrafts[attachmentKey] || [];
   const sessionReady = isNativeAgent
     ? (!activeId || Boolean(activeNativeLane && activeNativeLane.hydrated))
     : (!activeId || (sessionInfoSessionId === activeId && Boolean(sessionInfo)));
   const sessionSyncing = Boolean(activeId && !sessionReady && sessionLoading);
+  // 统一的发送阻塞因子派生:发送按钮禁用态、语音直发守卫(canSendNativeVoiceTask)
+  // 与 send() 守卫三个入口各自读取自己需要的子集,同一谓词只在这里写一次,
+  // 避免三处漂移(语音通道原先漏判 'uploading' 附件正是这种漂移)。
+  // 各入口的附加规则(按钮的 editPreview/空内容禁用、send 的错误文案等)
+  // 仍留在各自通道内。
+  const composerSendBlockers = useMemo(() => ({
+    busy,
+    working: working || activeRuntimeBusy,
+    configApplying: Boolean(configApplying),
+    sessionNotReady: Boolean(activeId && !sessionReady),
+    sessionSyncing,
+    noSendTarget: !activeId && !draftWorkspacePath,
+    workspaceUnavailable,
+    pendingAttachment: attachments.some(isPendingAcpAttachment),
+    authMissing: !isNativeAgent && (!activeStatus || !activeStatus.authenticated),
+    setupMissing: !isNativeAgent && (!activeStatus || !activeStatus.installed || !activeStatus.authenticated),
+  }), [activeId, activeRuntimeBusy, activeStatus, attachments, busy, configApplying, draftWorkspacePath, isNativeAgent, sessionReady, sessionSyncing, working, workspaceUnavailable]);
   const deviceFileUploadAvailable = can('deviceFileUpload');
   const runtimeManagementAvailable = [
     'install_acp_agent',
@@ -1445,7 +1419,7 @@ export function CodexAcpView({
 
   // 启动时拉一次全局 code 权限偏好（草稿态默认 mode + yolo 确认门）。
   useEffect(() => {
-    // eslint-disable-next-line react-hooks/set-state-in-effect -- fetch global permission prefs once on mount; afterwards refreshed in place by switch/confirm paths
+     
     refreshCodePermPrefs();
     // 仅挂载拉取一次；后续由切换/确认路径就地刷新。
   }, []);
@@ -1659,29 +1633,31 @@ export function CodexAcpView({
     }
   }
   useEffect(() => {
-    // eslint-disable-next-line react-hooks/set-state-in-effect -- synchronously write this agent's Provider view cache on the agent switch edge
+     
     if (activeAgentId) refreshProviders(activeAgentId);
     // activeAgentId 变化时刷新一次即可；切换/回退后由调用方显式刷新。
     // eslint-disable-next-line react-hooks/exhaustive-deps -- refresh only on the agent switch edge; refreshProviders reference changes must not retrigger fetching
   }, [activeAgentId]);
   const activeProvidersView = providersViews[activeAgentId] || null;
-  // Kimi 中转激活时（会话覆盖 > 全局当前 Provider），模型列表只保留受管
-  // pv-* 条目：writer 按设计保留官方登录的模型表，CLI 会一并上报，全列出
-  // 会让用户误以为还在走官方。
-  const kimiRelayActive = activeAgentId === 'kimi' && Boolean(
-    (sessionControlsInfo && sessionControlsInfo.provider)
-    || (activeProvidersView && activeProvidersView.currentProviderId)
-  );
-  // Codex 中转激活时同理：CLI 的 model/list 会暴露官方内置模型（gpt 系列），
-  // 中转商并不提供它们，用户选中会 404——只保留当前 Provider 的模型
-  // （Codex 的模型选项 id 是模型名，无 pv- 前缀，按名字匹配）。
+  // 中转激活判定:已有会话(activeId 存在)只认会话快照里显式写入的会话级
+  // 覆盖(sessionControlsInfo.provider),不再回退到全局 currentProviderId——
+  // 否则用户在设置里切换全局 Provider 后,官方登录会话的模型列表会被中转
+  // 规则错误过滤。草稿态(无会话)没有会话快照可读,保留全局回退。
+  // kimi 与 Codex 的中转分支都从这一个 relayProviderId 派生,避免两处表达式漂移。
   const relayProviderId = (sessionControlsInfo && sessionControlsInfo.provider)
-    || (activeProvidersView && activeProvidersView.currentProviderId)
-    || null;
+    || (activeId
+      ? null
+      : (activeProvidersView && activeProvidersView.currentProviderId) || null);
+  // Kimi 中转激活时,模型列表只保留受管 pv-* 条目:writer 按设计保留官方
+  // 登录的模型表,CLI 会一并上报,全列出会让用户误以为还在走官方。
+  const kimiRelayActive = activeAgentId === 'kimi' && Boolean(relayProviderId);
   const relayProviderRecord = relayProviderId
     ? (((activeProvidersView && activeProvidersView.providers) || [])
         .find(provider => provider.id === relayProviderId)) || null
     : null;
+  // Codex 中转激活时同理：CLI 的 model/list 会暴露官方内置模型（gpt 系列），
+  // 中转商并不提供它们，用户选中会 404——只保留当前 Provider 的模型
+  // （Codex 的模型选项 id 是模型名，无 pv- 前缀，按名字匹配）。
   const codexRelayModel = activeAgentId === 'codex' && relayProviderRecord && relayProviderRecord.model
     ? relayProviderRecord.model
     : null;
@@ -2264,7 +2240,7 @@ export function CodexAcpView({
   const nativeVoiceAsrBusy = !!(nativeVoiceAsrSetup.installing || nativeVoiceAsrSetup.cancelling);
 
   useEffect(() => {
-    // eslint-disable-next-line react-hooks/set-state-in-effect -- close the install popover when busy state clears; mirrors ChatView pattern
+     
     if (!nativeVoiceAsrBusy) setVoiceAsrPopoverOpen(false);
   }, [nativeVoiceAsrBusy]);
 
@@ -2285,11 +2261,12 @@ export function CodexAcpView({
 
   function canSendNativeVoiceTask(outgoing) {
     if (!String(outgoing || '').trim()) return false;
-    if (busy || working || activeRuntimeBusy || workspaceUnavailable || sessionSyncing) return false;
-    if (!activeId && !draftWorkspacePath) return false;
-    if (attachments.some(attachment => attachment.status === 'parsing')) return false;
-    if (activeId && !sessionReady) return false;
-    if (!isNativeAgent && !activeStatus?.authenticated) return false;
+    if (composerSendBlockers.busy || composerSendBlockers.working
+      || composerSendBlockers.workspaceUnavailable || composerSendBlockers.sessionSyncing) return false;
+    if (composerSendBlockers.noSendTarget) return false;
+    if (composerSendBlockers.pendingAttachment) return false;
+    if (composerSendBlockers.sessionNotReady) return false;
+    if (composerSendBlockers.authMissing) return false;
     return true;
   }
 
@@ -2506,7 +2483,7 @@ export function CodexAcpView({
     // sessions have no ACP state machine; skip get_acp_agent_status (the
     // backend rejects non-ACP agents).
     if (activeAgentId === 'pinvou') {
-      // eslint-disable-next-line react-hooks/set-state-in-effect -- native sessions have no ACP state machine; synchronously clear the status display
+       
       setStatus(null);
       return;
     }
@@ -2549,7 +2526,7 @@ export function CodexAcpView({
       sessionLoadRequestRef.current += 1;
       if (preserveDraftWorkspaceRef.current) preserveDraftWorkspaceRef.current = false;
       else setDraftWorkspacePath(null);
-      // eslint-disable-next-line react-hooks/set-state-in-effect -- synchronously reset events/pending/session info when returning to draft; one-shot mirror
+       
       setEvents([]);
       setPending([]);
       setPendingElicitations([]);
@@ -2591,7 +2568,7 @@ export function CodexAcpView({
 
   // 切会话/回草稿时关掉记忆弹层（徽标内容按新会话 lane 自动切换）。
   useEffect(() => {
-    // eslint-disable-next-line react-hooks/set-state-in-effect -- synchronously close the memory popover on session switch; one-shot mirror
+     
     setMemoryOpen(false);
   }, [activeId]);
 
@@ -2632,7 +2609,7 @@ export function CodexAcpView({
   useEffect(() => {
     autoScrollRef.current = true;
     lastScrollTopRef.current = 0;
-    // eslint-disable-next-line react-hooks/set-state-in-effect -- synchronously hide the scroll-to-bottom button when a session switch resets the scroll baseline
+     
     setShowScrollBottom(false);
     const frame = window.requestAnimationFrame(() => {
       const element = scroller.current;
@@ -2846,17 +2823,17 @@ export function CodexAcpView({
     const draftAgentAtSend = draftAgentId;
     const draftConfigAtSend = draftConfigSelections[draftAgentAtSend];
     if ((!message && !readyAttachments.length && !workspaceReferences.length)
-      || busy || working || activeRuntimeBusy || configApplying) return false;
-    if (!isNativeAgent && !activeStatus?.authenticated) {
+      || composerSendBlockers.busy || composerSendBlockers.working || composerSendBlockers.configApplying) return false;
+    if (composerSendBlockers.authMissing) {
       setError(codexCopy.loginRequiredBeforeSend);
       return false;
     }
-    if (attachments.some(attachment => ['parsing', 'uploading'].includes(attachment.status))) {
+    if (composerSendBlockers.pendingAttachment) {
       setError(codexCopy.attachmentsParsing);
       return false;
     }
-    if (workspaceUnavailable) return false;
-    if (activeId && !sessionReady) return false;
+    if (composerSendBlockers.workspaceUnavailable) return false;
+    if (composerSendBlockers.sessionNotReady) return false;
     if (isNativeAgent) {
       return sendNative(message, readyAttachments);
     }
@@ -3949,7 +3926,7 @@ export function CodexAcpView({
                                   : activeStatus?.authenticated
                                     ? codexCopy.accountAuthorized
                                     : codexCopy.accountNotAuthorized}
-                                {runtimeSourceLabel(activeStatus, codexCopy) ? ` · ${runtimeSourceLabel(activeStatus, codexCopy)}` : ''}
+                                {activeRuntimeSourceLabel ? ` · ${activeRuntimeSourceLabel}` : ''}
                               </div>
                             </div>
                           </div>
@@ -4091,7 +4068,7 @@ export function CodexAcpView({
                     {/* While a voice rewrite preview is open, disable the primary send: sending is
                         funneled into the preview card (apply and send), so buttons based on draft
                         cannot send the raw text or double-send during the preview. */}
-                    <button type="button" onClick={() => send()} disabled={!!nativeVoice.editPreview || !sessionReady || (!draft.trim() && attachments.every(attachment => attachment.status !== 'ready') && !workspaceReferences.length) || working || activeRuntimeBusy || Boolean(configApplying) || (!isNativeAgent && (!activeStatus || !activeStatus.installed || !activeStatus.authenticated))}
+                    <button type="button" onClick={() => send()} disabled={!!nativeVoice.editPreview || composerSendBlockers.sessionNotReady || (!draft.trim() && attachments.every(attachment => attachment.status !== 'ready') && !workspaceReferences.length) || composerSendBlockers.working || composerSendBlockers.configApplying || composerSendBlockers.setupMissing}
                       className="w-9 h-9 rounded-full flex items-center justify-center bg-[#007AFF] text-white shadow-sm hover:bg-[#006EE6] disabled:bg-black/[0.06] dark:disabled:bg-white/10 disabled:text-gray-400 disabled:shadow-none">
                       <Send size={16} />
                     </button>

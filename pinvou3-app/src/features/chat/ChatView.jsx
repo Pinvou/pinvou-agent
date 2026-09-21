@@ -7,6 +7,7 @@ import {
 import { AlertTriangle, ArrowLeft, BarChart2, Brain, Briefcase, Check, ChevronDown, ChevronRight, ClipboardList, Copy, Edit2, FileText, FolderOpen, Globe, ImageIcon, Monitor, Package, Paperclip, PinIcon, Presentation, Send, Sparkles, StopCircle, Terminal, Upload, X, Zap } from '../../components/icons.jsx';
 import { bridge } from '../../hooks/useBridge.js';
 import { useCopyFlash } from '../../hooks/useCopyFlash.js';
+import { useAutoResizeTextarea } from '../../hooks/useAutoResizeTextarea.js';
 import { can, isWeb } from '../../shared/platform.js';
 import { isImeComposing } from '../../shared/ime-guard.mjs';
 import { formatCompactCount } from '../../shared/format-number.js';
@@ -52,7 +53,8 @@ import { ComposerAttachmentDropOverlay } from '../attachments/ComposerAttachment
 import { ConversationAttachmentBubble } from '../attachments/ConversationAttachmentBubble.jsx';
 import { splitAttachmentLine } from '../attachments/attachment-message.js';
 import { CHAT_INPUT_MAX_LENGTH, constrainChatInput } from './chat-input-limit.js';
-import { deriveRunningShellTasks, formatElapsedMs, tailOutputLines } from './background-tasks.js';
+import { deriveRunningShellTasks, tailOutputLines } from './background-tasks.js';
+import { formatElapsedMs } from '../../shared/format-utils.mjs';
 import { useShellTaskCancel } from './shell-task-cancel.js';
 import {
   VOICE_SHORTCUT_ENABLED_KEY,
@@ -89,6 +91,10 @@ const prefetchChatPanel = (key) => {
 const reportRightDockSelectionFailure = (error) => {
   console.error('[chat] Right Dock selection failed', error);
 };
+// 设计 AI 状态条的模块级镜像:视图切换会卸载 ChatView,镜像跨卸载保留,
+// 重新进入 artifact 全屏时可以恢复。仅本模块读写(原 window.__PINVOU_DESIGN_AI_STATE__
+// 全局没有模块外读者,收敛为模块内变量)。
+let designAiStateSnapshot = null;
 // 面板槽位级挂起 fallback:与 LazyCodexAcpView 同款容器,懒 chunk 解析的
 // 微任务窗口内占住面板位置,避免挂起冒泡到应用级边界把整视图闪断成 fallback。
 function PanelSuspense({ children }) {
@@ -116,7 +122,7 @@ import {
   savePinvouModeState,
 } from './pinvou-mode-state.js';
 import { SceneCardGrid, TemplateCardGrid } from './scene-cards.jsx';
-import { createDesignChange, createDesignChangeScopeKey, reduceScopedDesignChanges, uniqueDesignChanges } from './design-changes.js';
+import { createDesignChange, createDesignChangeScopeKey, reduceScopedDesignChanges, sameDesignChange, uniqueDesignChanges } from './design-changes.js';
 import { createVisualPosterMessageMeta, shouldUseVisualPosterScene } from './visual-poster-scene.js';
 import {
   createDataVisualizationMessageMeta,
@@ -168,6 +174,7 @@ import {
   isVoiceActive,
   isVoiceBusy,
   normalizeVoiceMode,
+  voiceAsrProgressPercent,
 } from '../voice-composer/voice-ui-policy.mjs';
 import { useComposerVoiceInput } from '../voice-composer/useComposerVoiceInput.js';
 
@@ -668,12 +675,10 @@ const ToolWelcomeCard = ({ toolId, t, onSend }) => {
         setDesignAiState((prev) => {
           const next = typeof valueOrUpdater === 'function' ? valueOrUpdater(prev) : valueOrUpdater;
           const merged = { text: '', status: 'idle', lastPrompt: '', pendingPath: '', startedAt: 0, ...next };
-          if (typeof window !== 'undefined') {
-            if (merged.status !== 'idle' || merged.text || merged.lastPrompt) {
-              window.__PINVOU_DESIGN_AI_STATE__ = merged;
-            } else {
-              window.__PINVOU_DESIGN_AI_STATE__ = null;
-            }
+          if (merged.status !== 'idle' || merged.text || merged.lastPrompt) {
+            designAiStateSnapshot = merged;
+          } else {
+            designAiStateSnapshot = null;
           }
           return merged;
         });
@@ -731,12 +736,7 @@ const ToolWelcomeCard = ({ toolId, t, onSend }) => {
       }, [focusComposerTick]);
       // 输入框自动增高:随内容从最小(~2行)长到上限 160px,再内部滚动(iOS 手感)。
       // 清空(发送后)inputText 变 '' → 自动缩回最小高。
-      useEffect(() => {
-        const el = composerRef.current;
-        if (!el) return;
-        el.style.height = 'auto';
-        el.style.height = Math.min(Math.max(el.scrollHeight, 48), 160) + 'px';
-      }, [inputText]);
+      useAutoResizeTextarea(composerRef, inputText);
       // 输入框是浮动绝对定位,会随 auto-grow / 附件 / 排队 chips 变高 → 量它实际高度,
       // 动态给滚动区底部留白(= 输入框高 + 间距),保证最后几条消息永不被遮挡、也不浪费空间。
       const composerWrapRef = useRef(null);
@@ -1008,13 +1008,14 @@ const ToolWelcomeCard = ({ toolId, t, onSend }) => {
       const handleApplyDesignChange = useCallback(({ type, property, oldValue, newValue }) => {
         if (!selectedDesignElement || !selectedDesignElement.selector) return;
         if (String(oldValue == null ? '' : oldValue) === String(newValue == null ? '' : newValue)) return;
-        if (designChanges.some((change) => (
-          change.selector === selectedDesignElement.selector &&
-          change.type === type &&
-          change.property === property &&
-          change.oldValue === String(oldValue == null ? '' : oldValue) &&
-          change.newValue === String(newValue == null ? '' : newValue)
-        ))) return;
+        const candidate = {
+          selector: selectedDesignElement.selector,
+          type,
+          property,
+          oldValue: oldValue == null ? '' : String(oldValue),
+          newValue: newValue == null ? '' : String(newValue),
+        };
+        if (designChanges.some((change) => sameDesignChange(change, candidate))) return;
         const change = createDesignChange({
           element: selectedDesignElement,
           type,
@@ -1350,13 +1351,13 @@ const ToolWelcomeCard = ({ toolId, t, onSend }) => {
       useEffect(() => {
         if (designAiSessionRef.current && designAiSessionRef.current !== activeSessionId) {
           updateDesignAiState({ text: '', status: 'idle', lastPrompt: '', pendingPath: '', startedAt: 0 });
-          if (typeof window !== 'undefined') window.__PINVOU_DESIGN_AI_STATE__ = null;
+          designAiStateSnapshot = null;
         }
         designAiSessionRef.current = activeSessionId || null;
       }, [activeSessionId, updateDesignAiState]);
       useEffect(() => {
-        if (!artifactsFullscreen || typeof window === 'undefined') return;
-        const saved = window.__PINVOU_DESIGN_AI_STATE__;
+        if (!artifactsFullscreen) return;
+        const saved = designAiStateSnapshot;
         if (!saved || (!saved.text && !saved.lastPrompt && saved.status === 'idle')) return;
         if (!designAiState.text && !designAiState.lastPrompt && designAiState.status === 'idle') {
           // eslint-disable-next-line react-hooks/set-state-in-effect -- mirror the design AI snapshot on window back into local state when fullscreen opens
@@ -2764,7 +2765,7 @@ const ToolWelcomeCard = ({ toolId, t, onSend }) => {
             {voiceAsrSetup.open && canInstallLocalAsr && !voiceAsrSetup.status?.installable && voiceAsrSetupPublicationReady && (() => {
               const su = voiceAsrSetup;
               const prog = su.progress || {};
-              const pct = (prog.stage === 'model' && prog.total) ? Math.floor(prog.downloaded / prog.total * 100) : null;
+              const pct = voiceAsrProgressPercent(su);
               const missing = (su.status && su.status.missing) || [];
               const needFfmpeg = missing.includes('ffmpeg');
               const needModel = missing.includes('model');
@@ -3622,7 +3623,7 @@ const UserBubble = ({ item, sessionId, editable, t, conversationVariant }) => {
                   const href = a.getAttribute('href') || '';
                   if (/^https?:\/\//i.test(href)) {
                     e.preventDefault();
-                    invokeTauri('open_user_external_url', { url: href }).catch(() => {});
+                    openChatExternalUrl(href);
                   }
                 }}
                 dangerouslySetInnerHTML={{ __html: cq.html || '' }}

@@ -22,6 +22,22 @@ const button = 'inline-flex h-9 items-center justify-center gap-1.5 whitespace-n
 const primary = `${button} bg-[#0B57D0] text-white hover:bg-[#0848ad] dark:bg-[#A8C7FA] dark:text-[#062E6F] dark:hover:bg-[#c2d8fb]`;
 const soft = `${button} bg-[#F0F4F9] text-[#0B57D0] hover:bg-[#E1E5EA] dark:bg-[#2A2B2D] dark:text-[#A8C7FA] dark:hover:bg-[#333537]`;
 const quiet = `${button} px-3 text-[#444746] hover:bg-[#F0F4F9] dark:text-[#C4C7C5] dark:hover:bg-[#333537]`;
+
+// 加入/连接成功后的反馈停留时长(两个连接器入口共用同一节奏)。
+const JOIN_FEEDBACK_SETTLE_MS = 550;
+
+// 后端文档状态 → 队列态(上传收口与轮询共用同一映射):ready→success、
+// failed→index_failed、其余(提交/索引中)→pending_index;duplicate=true
+// 取「同路径已存在」变体(duplicate / duplicate_failed / duplicate_pending)。
+function classifyUploadedDocument(document, duplicate) {
+  const base = document?.status === 'ready' ? 'success'
+    : document?.status === 'failed' ? 'index_failed'
+      : 'pending_index';
+  if (!duplicate) return base;
+  return base === 'success' ? 'duplicate'
+    : base === 'index_failed' ? 'duplicate_failed'
+      : 'duplicate_pending';
+}
 const danger = `${button} px-3 text-[#d63a3a] hover:bg-[#d63a3a]/10`;
 const iconButton = 'grid h-8 w-8 shrink-0 place-items-center rounded-full text-[#444746] transition-colors hover:bg-[#E1E5EA] dark:text-[#C4C7C5] dark:hover:bg-[#333537] disabled:cursor-not-allowed disabled:opacity-45';
 const field = 'h-10 w-full rounded-xl border border-[#dfe3ea] bg-white px-3.5 text-[13px] text-[#1F1F1F] outline-none transition-shadow placeholder:text-[#8b8d94] focus:border-[#0B57D0] focus:ring-2 focus:ring-[#0B57D0]/10 dark:border-white/10 dark:bg-[#171719] dark:text-[#E3E3E3] dark:focus:border-[#A8C7FA]';
@@ -466,7 +482,7 @@ function RemoteKnowledgeView({ t }) {
             status: 'approved',
             serverName: connected.name || current?.serverName,
           }));
-          await wait(550);
+          await wait(JOIN_FEEDBACK_SETTLE_MS);
           setShowConnector(false);
           setJoinFeedback(null);
         }
@@ -686,7 +702,7 @@ function RemoteKnowledgeView({ t }) {
         await loadConnections();
         selectServer(outcome.connection.serverId);
         setNotice({ type: 'success', text: t.remoteKbConnected });
-        await wait(550);
+        await wait(JOIN_FEEDBACK_SETTLE_MS);
         setShowConnector(false);
         setJoinFeedback(null);
       } else {
@@ -1153,7 +1169,7 @@ function RemoteKnowledgeView({ t }) {
     setShowUploadDialog(true);
   }
 
-  // eslint-disable-next-line sonarjs/cognitive-complexity -- the upload-queue state machine includes polling/retry/failure classification; splitting would break the existing structure
+   
   async function startUpload() {
     const retryable = item => item.status === 'queued' || item.status === 'failed';
     const pending = item => item.status === 'pending_index' || item.status === 'duplicate_pending';
@@ -1199,9 +1215,7 @@ function RemoteKnowledgeView({ t }) {
         nextQueue[index] = {
           ...nextQueue[index],
           documentId: document?.id,
-          status: duplicate
-            ? (document?.status === 'ready' ? 'duplicate' : (document?.status === 'failed' ? 'duplicate_failed' : 'duplicate_pending'))
-            : (document?.status === 'ready' ? 'success' : (document?.status === 'failed' ? 'index_failed' : 'pending_index')),
+          status: classifyUploadedDocument(document, duplicate),
           error: document?.status === 'failed' ? (document.error || t.remoteKbUploadIndexFailed) : '',
           pollTimedOut: false,
         };
@@ -1231,13 +1245,12 @@ function RemoteKnowledgeView({ t }) {
       nextQueue.forEach((item, index) => {
         if (!pending(item) || !item.documentId) return;
         const document = byId.get(item.documentId);
-        if (document?.status === 'ready') {
-          nextQueue[index] = { ...item, status: item.status === 'duplicate_pending' ? 'duplicate' : 'success', error: '' };
-        } else if (document?.status === 'failed') {
+        const settled = document?.status === 'ready' || document?.status === 'failed';
+        if (settled) {
           nextQueue[index] = {
             ...item,
-            status: item.status === 'duplicate_pending' ? 'duplicate_failed' : 'index_failed',
-            error: document.error || t.remoteKbUploadIndexFailed,
+            status: classifyUploadedDocument(document, item.status === 'duplicate_pending'),
+            error: document?.status === 'failed' ? (document.error || t.remoteKbUploadIndexFailed) : '',
           };
         }
       });

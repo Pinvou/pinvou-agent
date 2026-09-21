@@ -298,7 +298,8 @@ function injectSource() {
         case 'find_resumable_run': return Promise.resolve(null);
         case 'check_dependencies': return Promise.resolve(dependencyCheckResponse.slice());
         case 'install_dependencies': return Promise.resolve(null);
-        case 'submit_feedback': return Promise.resolve({ status: 'submitted', message: '反馈已提交，感谢你的帮助。' });
+        // 社区版行为：后端不接收在线反馈，提交以 failed_validation 收场（见 ⑰）。
+        case 'submit_feedback': return Promise.resolve({ status: 'failed_validation', message: '反馈提交失败，请稍后重试。' });
         case 'list_marketplace_tools': return Promise.resolve([]);
         case 'get_mode_state': return Promise.resolve({ mode: 'yolo', plan_phase: 'none' });
         case 'get_active_persona': return Promise.resolve(null);
@@ -610,7 +611,6 @@ async function modalWidth(page, headingText) {
   await sleep(500);
   const beforeDownloadCalls = await callCount(page, 'download_update');
   await page.click('#settings-version-update [data-settings-update-action="true"]');
-  await page.evaluate(() => window.__SETTINGS_TEST__.emit('update:progress', { downloaded: 37, total: 100 }));
   await sleep(500);
   const updateDownloadState = await page.evaluate(() => {
     const root = document.querySelector('#settings-version-update');
@@ -622,50 +622,15 @@ async function modalWidth(page, headingText) {
     };
   });
   const afterDownloadCalls = await callCount(page, 'download_update');
-  rec('①b 设置页下载按钮进入下载态后可取消并显示进度',
+  // 下载进度不再走 update:progress 前端事件（监听已删除），下载态只断言按钮进入
+  // 「取消下载」、描述进入「正在下载更新」文案，不断言具体百分比。
+  rec('①b 设置页下载按钮进入下载态后可取消',
     beforeDownloadCalls === 0
     && afterDownloadCalls === 1
     && !updateDownloadState.disabled
     && updateDownloadState.text.includes('取消下载')
-    && updateDownloadState.desc.includes('正在下载更新 37%'),
+    && updateDownloadState.desc.includes('正在下载更新'),
     JSON.stringify(updateDownloadState));
-  await page.evaluate(() => {
-    let downloaded = 37000;
-    window.__SETTINGS_TEST__.progressFloodHandledCount = 0;
-    const timer = window.setInterval(() => {
-      downloaded = Math.min(downloaded + 16, 99000);
-      void window.__SETTINGS_TEST__.emit('update:progress', { downloaded, total: 100000 }).then(() => {
-        window.__SETTINGS_TEST__.progressFloodHandledCount += 1;
-      });
-    }, 0);
-    window.__SETTINGS_TEST__.stopProgressFlood = () => window.clearInterval(timer);
-  });
-  await page.waitForFunction(() => window.__SETTINGS_TEST__.progressFloodHandledCount >= 50, { timeout: 5000 });
-  await page.waitForFunction(() => {
-    const root = document.querySelector('#settings-version-update');
-    return root && !root.innerText.includes('37%');
-  }, { timeout: 5000 });
-  const floodBeforeNavigation = await page.evaluate(() => ({
-    handled: window.__SETTINGS_TEST__.progressFloodHandledCount,
-    description: document.querySelector('#settings-version-update')?.innerText || '',
-  }));
-  const navigationStartedAt = Date.now();
-  let floodAfterNavigation;
-  try {
-    await page.click('[data-testid="settings-section-model"]');
-    await page.waitForFunction(() =>
-      (document.querySelector('[data-testid="settings-content"] h1')?.textContent || '').trim() === '模型',
-    { timeout: 2000 });
-    floodAfterNavigation = await page.evaluate(() => window.__SETTINGS_TEST__.progressFloodHandledCount);
-  } finally {
-    await page.evaluate(() => window.__SETTINGS_TEST__.stopProgressFlood());
-  }
-  rec('Update progress bursts do not block settings navigation',
-    floodBeforeNavigation.handled >= 50
-    && !floodBeforeNavigation.description.includes('37%')
-    && floodAfterNavigation > floodBeforeNavigation.handled
-    && Date.now() - navigationStartedAt < 2000,
-    `handled=${floodBeforeNavigation.handled}->${floodAfterNavigation}, latency=${Date.now() - navigationStartedAt}ms`);
   await page.click('[data-testid="settings-section-update"]');
   await page.waitForFunction(() => !!document.querySelector('#settings-version-update'));
   await page.click('#settings-version-update [data-settings-update-action="true"]');
@@ -2017,11 +1982,20 @@ async function modalWidth(page, headingText) {
   const feedbackSubmit = await page.evaluate(() => ({
     nativeAlertCalls: window.__SETTINGS_TEST__.calls.filter(call => call.cmd === 'window_alert').length,
     submitCalls: window.__SETTINGS_TEST__.calls.filter(call => call.cmd === 'submit_feedback').length,
-    toast: document.body.innerText.includes('反馈已提交，感谢你的帮助。'),
-    dialogClosed: !document.querySelector('[data-feedback-dialog="true"]'),
+    failureBanner: document.body.innerText.includes('反馈提交失败，请稍后重试。'),
+    dialogStillOpen: !!document.querySelector('[data-feedback-dialog="true"]'),
   }));
-  rec('⑰ 提交反馈成功使用应用内 toast，不弹系统 alert', feedbackTyped === '反馈弹窗测试' && feedbackSubmit.nativeAlertCalls === 0 && feedbackSubmit.submitCalls === 1 && feedbackSubmit.toast && feedbackSubmit.dialogClosed, JSON.stringify({ feedbackTyped, ...feedbackSubmit }));
+  rec('⑰ 提交反馈失败走应用内红色横幅，不弹系统 alert（社区版行为）', feedbackTyped === '反馈弹窗测试' && feedbackSubmit.nativeAlertCalls === 0 && feedbackSubmit.submitCalls === 1 && feedbackSubmit.failureBanner && feedbackSubmit.dialogStillOpen, JSON.stringify({ feedbackTyped, ...feedbackSubmit }));
   await sleep(200);
+  // 失败路径不自动关窗：先经应用内确认层把带草稿的弹窗关掉（不提交），⑰.5 再重新打开。
+  await page.evaluate(() => {
+    const modal = document.querySelector('[data-feedback-dialog="true"]');
+    const button = modal && [...modal.querySelectorAll('button')].find(node => (node.textContent || '').trim() === '取消');
+    if (button) button.click();
+  });
+  await page.waitForFunction(() => !!document.querySelector('[data-testid="feedback-close-confirm"]'));
+  await page.click('[data-testid="feedback-close-confirm-ok"]');
+  await page.waitForFunction(() => !document.querySelector('[data-testid="feedback-close-confirm"]') && !document.querySelector('[data-feedback-dialog="true"]'));
 
   // ⑰.5 dirty-draft close: goes through the in-app confirm layer (no native
   // confirm in Tauri WebView2); cancel keeps the draft and the panel, confirm

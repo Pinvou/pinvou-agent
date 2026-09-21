@@ -314,7 +314,7 @@ test('task switches discard stale status and mount a fresh BrowserView instance'
   assert.match(browserView, /const tabsRequestEpochRef = useRef\(0\)/);
   assert.match(browserView, /sessionIdRef\.current === requestedSessionId/);
   assert.match(browserView, /st\?\.sessionId !== requestedSessionId/);
-  const keyedBrowserViews = main.match(/<BrowserView\s+[\s\S]{0,100}?key=\{browserViewSessionId\}/g) || [];
+  const keyedBrowserViews = main.match(/<BrowserView\s+[\s\S]{0,100}?key=\{browserSessionId\}/g) || [];
   assert.equal(keyedBrowserViews.length, 2, 'compact and dock BrowserView instances must both be keyed by session');
 });
 

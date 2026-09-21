@@ -145,10 +145,6 @@ try {
   assert.deepEqual(projected.turns[1].usage, {
     inputTokens: 120,
     outputTokens: 30,
-    cacheHitTokens: 0,
-    cacheMissTokens: 0,
-    cacheWriteTokens: 0,
-    reasoningTokens: 0,
   });
   assert.equal(projected.turns[1].items[2].legacyItem, chatItems[4], 'tool cards must retain the original item for provider rendering');
   assert.equal(projected.turns[1].items[3].tool.name, 'read', 'shared presentation must retain the provider tool name');
@@ -433,6 +429,7 @@ try {
   const conversationScroll = readFileSync(path.join(root, 'src', 'features', 'conversation', 'conversation-scroll.js'), 'utf8');
   const questionChoiceCard = readFileSync(path.join(root, 'src', 'features', 'conversation', 'QuestionChoiceCard.jsx'), 'utf8');
   const toolRenderers = readFileSync(path.join(root, 'src', 'features', 'tools', 'tool-renderers.jsx'), 'utf8');
+  const userInputShared = readFileSync(path.join(root, 'src', 'features', 'conversation', 'user-input-shared.js'), 'utf8');
   // The busy block must clear userError in lockstep with error (R2 L1):
   // when a turn re-runs, a leftover userError card would show the previous
   // turn's "has stopped" wording while the turn claims to be running.
@@ -473,7 +470,7 @@ try {
   assert.ok(toolRenderers.includes('<QuestionChoiceCard'),
     'DeepSeek request_user_input must use the shared Codex-style choice card');
   assert.ok(toolRenderers.includes('isFreeTextPlaceholderOption')
-    && toolRenderers.includes('!allowOther || !isFreeTextPlaceholderOption(option)'),
+    && userInputShared.includes('!allowOther || !isFreeTextPlaceholderOption(option)'),
   'free-text questions must not render duplicate Other placeholder choices');
   assert.ok(toolRenderers.includes('otherPlaceholder={t.uiToolRender.other}'),
     'DeepSeek and Codex question cards must use the same free-text placeholder');

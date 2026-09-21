@@ -131,7 +131,10 @@ deepCloneCalls = 0;
 invokeResponse = async command => command === 'web_access_ingest_file'
   ? { basename: 'stable-snapshot.txt', handle: 'attachment-handle' }
   : null;
-await api.attachments.addAttachmentByPath('/tmp/stable-snapshot.txt');
+// addAttachmentByPath is no longer on the adapted domain surface (removed from
+// the desktop facade too); drive the same ingest flow through the private flat
+// facade, which shares the identical function implementation.
+await flat.addAttachmentByPath('/tmp/stable-snapshot.txt');
 assert.equal(snapshotReads, 0, 'subscription notifications must use the supplied transport snapshot');
 assert.equal(deepCloneCalls, 0, 'subscription notifications must not deep-clone the transcript');
 assert.equal(flatSnapshots.length, 2, 'Web flat subscribers should observe parsing and ready updates');
@@ -367,13 +370,13 @@ assert.equal(stableCombined[2].composerPrefill.text, 'stable-combined-identity-2
 unsubscribeStableCombined();
 
 invokeResponse = async command => command === 'web_access_ingest_file' ? new Date(0) : null;
-await assert.rejects(api.attachments.addAttachmentByPath('/tmp/non-plain.txt'), /only supports arrays and plain objects/);
+await assert.rejects(flat.addAttachmentByPath('/tmp/non-plain.txt'), /only supports arrays and plain objects/);
 const nonPlainAttachment = flat.getState().attachments.at(-1);
 api.attachments.removeAttachment(nonPlainAttachment.id);
 const cyclic = { value: 'cycle' };
 cyclic.self = cyclic;
 invokeResponse = async command => command === 'web_access_ingest_file' ? cyclic : null;
-await assert.rejects(api.attachments.addAttachmentByPath('/tmp/cyclic.txt'), /must not contain cycles/);
+await assert.rejects(flat.addAttachmentByPath('/tmp/cyclic.txt'), /must not contain cycles/);
 
 // probeLocalServerKind 降级契约（PR #218 五审 P2）：web 桥层不得吞错伪造成
 // generic——命令失败（web 白名单不含该命令/老版本桌面）必须 reject，由消费方

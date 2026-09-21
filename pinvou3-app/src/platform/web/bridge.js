@@ -170,6 +170,9 @@ function pinvouSharedweb() {
     // 复位 effect 挂它 → 即便 activeSessionId 没变(draft→draft)也能重新求值,否则残留的工具欢迎卡
     // 会一直顶掉「你好」欢迎语(该 tool 无 welcomeQueries 时整块空白)。
     draftEpoch: 0,
+    // 桌面切片同形桩：草稿工作目录绑定是桌面专属能力(Web 无系统目录选择通道),
+    // Web 上恒为 null,但 sessions 切片必须与桌面逐键一致(见 bridge_state_domains 契约)。
+    draftWorkspacePath: null,
     // 跨页面预填输入框请求。比如侧边栏「产出物」一级入口点击「续写/新项目」：
     // 只把草稿放进 composer，不自动发送给模型。
     composerPrefill: { id: 0, text: "" },
@@ -254,6 +257,8 @@ function pinvouSharedweb() {
     // 仅驻内存(后端也只驻内存),重启回到未挂载。名字由前端用知识集列表解析。
     mountedCollection: null,
     mountedCollections: [],
+    // 桌面切片同形桩：远程知识库挂载只在桌面可操作,Web 上恒为空数组。
+    mountedRemoteCollections: [],
     mountedCollectionsRevision: 0,
     // personaPool 只放轻量元信息(loadState),1078 张卡放模块级 personaPoolCache,
     // 不进 state/订阅快照，避免每个流式 token 都复制完整卡池。
@@ -289,6 +294,8 @@ function pinvouSharedweb() {
     depsChecking: false,
     depsInstalling: false,    // 一键安装进行中(pkexec apt)
     depsInstallError: null,   // 安装失败原因(apt stderr 透传/取消/pkexec 不可用)
+    // 桌面切片同形桩：安装进度事件只在桌面一键安装期间产生,Web 上恒为 null。
+    depsInstallProgress: null,
     // 厂商预装本地大模型一键引导:首屏检测结果 + 引导执行态
     vllmSetup: null,          // {eligible, may_offer_setup, has_packages, engine_state:ready|starting|stopped|failed, ...}
     vllmBootstrapping: false, // 引导进行中(pkexec + 拉起 + 轮询就绪)
@@ -1907,8 +1914,6 @@ function dismissScheduledTaskError() { return pinvouSharedweb().dismissScheduled
 
 function selectScheduledTask(id) { return pinvouSharedweb().selectScheduledTask(id); }
 
-function clearScheduledTaskSelection() { return pinvouSharedweb().clearScheduledTaskSelection(); }
-
 function extractBalancedJsonObject(text) { return pinvouSharedweb().extractBalancedJsonObject(text); }
 
   function parseLooseJsonObject(text) {
@@ -1991,12 +1996,6 @@ function scheduledTaskInputFromDraft(draft) { return pinvouSharedweb().scheduled
 
 async function loadScheduledTasks() { return pinvouSharedweb().loadScheduledTasks(); }
 
-async function readScheduledTask(id) { return pinvouSharedweb().readScheduledTask(id); }
-
-
-
-async function loadScheduledTaskRuns(id, limit) { return pinvouSharedweb().loadScheduledTaskRuns(id, limit); }
-
   // 侧边栏"定时任务记录"一次读取所有保留的运行。后端只做一次 reconcile 和
   // Session 元数据扫描，避免任务数增长后形成 N 次命令调用与重复完整会话读取。
 async function loadScheduledTaskRecentRuns() { return pinvouSharedweb().loadScheduledTaskRecentRuns(); }
@@ -2064,8 +2063,6 @@ async function updateScheduledTask(id, input) { return pinvouSharedweb().updateS
 async function pauseScheduledTask(id) { return pinvouSharedweb().pauseScheduledTask(id); }
 
 async function resumeScheduledTask(id) { return pinvouSharedweb().resumeScheduledTask(id); }
-
-async function toggleScheduledTaskPinned(id, pinned) { return pinvouSharedweb().toggleScheduledTaskPinned(id, pinned); }
 
 async function deleteScheduledTask(id) { return pinvouSharedweb().deleteScheduledTask(id); }
 
@@ -3091,7 +3088,8 @@ function emitPersonaAt(atOrAfter, isTail) { return pinvouSharedwebN189622().emit
     return null;
   }
 
-  const SHELL_TOOL_NAMES = ["bash", "exec_shell", "task_shell_start", "shell", "Bash"];
+  // keep in sync with tauri/bridge/terminal.js
+  const SHELL_TOOL_NAMES = ["bash", "exec_shell", "exec_shell_wait", "exec_wait", "task_shell_start", "task_shell_wait", "shell", "Bash"];
   const SHELL_WAIT_TOOL_NAMES = ["exec_shell_wait", "exec_wait", "task_shell_wait"];
 
 function isShellExecutionTool(name) { return pinvouSharedweb().isShellExecutionTool(name); }
@@ -5061,9 +5059,20 @@ function presentArtifactAbsPath(toolResultContent, fallbackPath) { return pinvou
   });
 
   // ── Monitor ──────────────────────────────────────────────────────
+  // The shared format-utils script is loaded statically; the inline fallbacks
+  // are verbatim copies of its bodies so the monitor never falls back to raw
+  // numbers when the shared script is missing.
   const PinvouFU = window.PinvouFormatUtils || {};
-  const fmtMiB = PinvouFU.fmtMiB || function (mib) { return mib == null ? "—" : String(mib); };
-  const fmtKiB = PinvouFU.fmtKiB || function (kib) { return kib == null ? "—" : String(kib); };
+  const fmtMiB = PinvouFU.fmtMiB || function (mib) {
+    if (mib == null) return "—";
+    return mib >= 1024 ? (mib / 1024).toFixed(1) + " GB" : mib + " MB";
+  };
+  const fmtKiB = PinvouFU.fmtKiB || function (kib) {
+    if (kib == null) return "—";
+    if (kib >= 1024 * 1024) return (kib / 1024 / 1024).toFixed(1) + " GB";
+    if (kib >= 1024) return (kib / 1024).toFixed(0) + " MB";
+    return kib + " KB";
+  };
   const fmtDuration = PinvouFU.fmtDuration || function (secs) { return secs == null ? "—" : String(secs); };
   const fmtTok = PinvouFU.fmtTok || function (n) { return n == null ? "—" : String(n); };
 
@@ -5123,12 +5132,57 @@ function adjustCounters(sp, v) { return pinvouSharedweb().adjustCounters(sp, v);
     return { running, waiting };
   }
 
+  // MonitorView only consumes state.monitor._fmt (plus one level of vllmRaw
+  // nesting), so shallow equality means display equivalence. The poll runs
+  // once per second; when a snapshot is display-equivalent, skip the
+  // assignment + notify to avoid a full App re-render every second while the
+  // monitor page is open. Numeric values jitter naturally (cpu/gpu
+  // percentages etc.), so comparisons allow a 0.5 tolerance (prefer one
+  // extra notify over ever getting stuck); counters are mostly strings after
+  // toFixed/round and compare exactly. updatedAt is a poll-tick marker (never
+  // rendered, only a sampling trigger) and must be excluded, otherwise every
+  // second counts as "changed"; the page clock is driven by MonitorView's
+  // local 1s timer and does not depend on it.
+  function monitorFmtEqual(prev, next) {
+    if (prev === next) return true;
+    if (!prev || !next) return false;
+    const numEq = function (a, b) {
+      if (a === b) return true;
+      return typeof a === "number" && typeof b === "number"
+        && Number.isFinite(a) && Number.isFinite(b)
+        && Math.abs(a - b) <= 0.5;
+    };
+    const keys = Object.keys(next);
+    if (keys.length !== Object.keys(prev).length) return false;
+    for (let i = 0; i < keys.length; i++) {
+      const key = keys[i];
+      if (key === "updatedAt") continue;
+      const a = prev[key];
+      const b = next[key];
+      if (a && b && typeof a === "object" && typeof b === "object") {
+        const inner = Object.keys(b);
+        if (inner.length !== Object.keys(a).length) return false;
+        let same = true;
+        for (let j = 0; j < inner.length; j++) {
+          if (!numEq(a[inner[j]], b[inner[j]])) { same = false; break; }
+        }
+        if (!same) return false;
+        continue;
+      }
+      if (!numEq(a, b)) return false;
+    }
+    return true;
+  }
+
   // eslint-disable-next-line sonarjs/cognitive-complexity -- legacy bridge; refactor tracked separately
   async function pollMonitor() {
     if (monitorPollInFlight) return;
     monitorPollInFlight = true;
     try {
       const snap = await invoke("get_monitor_snapshot");
+      // The previous round errored → this round must notify once so the
+      // "read failed" banner switches back to the normal panel.
+      const hadMonitorError = !!state.monitorError;
       state.monitorError = null;
       // GPU util sliding window
       if (snap.gpu) {
@@ -5151,12 +5205,23 @@ function adjustCounters(sp, v) { return pinvouSharedweb().adjustCounters(sp, v);
       const vllmDisplayModel = vllm ? (vllm.model || vllm.configured_model || "—") : "—";
       const healthStatus = vllm && vllm.health_status ? vllm.health_status : (vllm ? "verified" : "offline");
       const appQueue = appQueueSnapshot();
+      const cpu = snap.cpu || null;
+      const cpuUsage = cpu && typeof cpu.total_usage_pct === "number" && Number.isFinite(cpu.total_usage_pct)
+        ? Math.round(Math.max(0, Math.min(100, cpu.total_usage_pct)))
+        : null;
+      const computeName = snap.gpu ? snap.gpu.name : (cpu && cpu.name ? cpu.name : bt("gpuUnavailable"));
       snap._fmt = {
-        gpuName: snap.gpu ? snap.gpu.name : bt("gpuUnavailable"),
+        gpuName: computeName,
+        cpuName: cpu && cpu.name ? cpu.name : "",
+        cpuAvailable: !!cpu,
+        computeAvailable: !!(snap.gpu || cpu),
+        computeName,
         gpuVramPct: snap.gpu && snap.gpu.vram_total_mib > 0
           ? Math.round(snap.gpu.vram_used_mib / snap.gpu.vram_total_mib * 100) : 0,
         gpuUtilPct: snap.gpu ? snap.gpu._utilMax : 0,
-        processorUtilPct: snap.gpu && snap.gpu.processor_utilization_pct != null ? snap.gpu.processor_utilization_pct : 0,
+        processorUtilPct: cpuUsage == null
+          ? (snap.gpu && snap.gpu.processor_utilization_pct != null ? snap.gpu.processor_utilization_pct : 0)
+          : cpuUsage,
         gpuSharedMemory: snap.gpu && snap.gpu.shared_memory_used_mib != null ? fmtMiB(snap.gpu.shared_memory_used_mib) : "—",
         gpuTemp: snap.gpu && snap.gpu.temperature_c != null ? snap.gpu.temperature_c + "°C" : null,
         gpuPower: snap.gpu && snap.gpu.power_w != null ? snap.gpu.power_w.toFixed(1) + " W" : null,
@@ -5205,8 +5270,13 @@ function adjustCounters(sp, v) { return pinvouSharedweb().adjustCounters(sp, v);
         maxModelLen = snap.vllm.max_model_len;
         state.tokens.max = maxModelLen;
       }
-      state.monitor = snap;
-      notify();
+      // Display-equivalent snapshots neither overwrite state.monitor nor
+      // notify (must send on the first frame or after an errored round).
+      const prevFmt = state.monitor && state.monitor._fmt;
+      if (hadMonitorError || !prevFmt || !monitorFmtEqual(prevFmt, snap._fmt)) {
+        state.monitor = snap;
+        notify();
+      }
     } catch (e) {
       state.monitorError = e && e.message ? e.message : String(e || "monitor poll failed");
       console.warn("monitor poll failed", e);
@@ -5264,25 +5334,11 @@ function enqueueSettingsWrite(write) { return pinvouSharedweb().enqueueSettingsW
     return enqueueSettingsWrite(async function () {
       try {
         state.settings = await invoke(IS_WEB ? "web_access_update_settings" : "update_settings", { patch });
+        await loadEffectiveModelConfig();
         notify();
         return true;
       } catch (e) {
         console.warn("save settings failed", e);
-        return false;
-      }
-    });
-  }
-  async function saveSettingsAndRestart(patch) {
-    if (IS_WEB) {
-      console.warn("saveSettingsAndRestart is unsupported by the Web host");
-      return false;
-    }
-    return enqueueSettingsWrite(async function () {
-      try {
-        await invoke("save_settings_and_restart", { patch });
-        return true;
-      } catch (e) {
-        console.warn("save settings and restart failed", e);
         return false;
       }
     });
@@ -5295,6 +5351,7 @@ function enqueueSettingsWrite(write) { return pinvouSharedweb().enqueueSettingsW
         } else {
           state.settings = await invoke("update_search_settings", { search });
         }
+        await loadEffectiveModelConfig();
         notify();
         return true;
       } catch (e) {
@@ -5303,93 +5360,8 @@ function enqueueSettingsWrite(write) { return pinvouSharedweb().enqueueSettingsW
       }
     });
   }
-  async function saveSearchSettingsAndRestart(search) {
-    if (IS_WEB) {
-      console.warn("saveSearchSettingsAndRestart is unsupported by the Web host");
-      return false;
-    }
-    return enqueueSettingsWrite(async function () {
-      try {
-        await invoke("save_search_settings_and_restart", { search });
-        return true;
-      } catch (e) {
-        console.warn("save search settings and restart failed", e);
-        return false;
-      }
-    });
-  }
 async function submitFeedback(request) { return pinvouSharedweb().submitFeedback(request); }
-async function discoverLocalVllm(request) { return pinvouSharedweb().discoverLocalVllm(request); }
 
-  // ── 厂商预装本地大模型一键引导 ────────────────────────────
-  let vllmSetupPollTimer = null;
-  let vllmSetupPollStartedAt = 0;
-  const VLLM_SETUP_POLL_INTERVAL_MS = 3000;
-  const VLLM_SETUP_POLL_TIMEOUT_MS = 12 * 60 * 1000;
-  // 首屏检测「预装但未启用」状态;eligible 时前端弹引导框。
-  // 开机加载中不弹框，每 3 秒静默复查；12 分钟后仍 starting 则恢复可重试入口。
-  // autoPoll 只供内部定时器续接；用户手动检测会重置本轮截止时间。
-  async function detectLocalVllmSetup(options) {
-    const autoPoll = !!(options && options.autoPoll);
-    if (vllmSetupPollTimer) {
-      clearTimeout(vllmSetupPollTimer);
-      vllmSetupPollTimer = null;
-    }
-    if (!autoPoll) vllmSetupPollStartedAt = Date.now();
-    try {
-      state.vllmSetup = await invoke("detect_local_vllm_setup");
-    } catch {
-      state.vllmSetup = null; // 检测失败静默,不打扰(等同不弹)
-      vllmSetupPollStartedAt = 0;
-    }
-    if (state.vllmSetup && state.vllmSetup.engine_state === 'starting' && state.vllmSetup.may_offer_setup !== false) {
-      const elapsed = Date.now() - vllmSetupPollStartedAt;
-      if (vllmSetupPollStartedAt > 0 && elapsed >= VLLM_SETUP_POLL_TIMEOUT_MS) {
-        state.vllmSetup = Object.assign({}, state.vllmSetup, {
-          engine_state: 'failed',
-          eligible: !!state.vllmSetup.may_offer_setup,
-          detection_timed_out: true,
-        });
-        vllmSetupPollStartedAt = 0;
-      } else {
-        vllmSetupPollTimer = setTimeout(function () {
-          vllmSetupPollTimer = null;
-          detectLocalVllmSetup({ autoPoll: true });
-        }, VLLM_SETUP_POLL_INTERVAL_MS);
-      }
-    } else {
-      vllmSetupPollStartedAt = 0;
-    }
-    notify();
-    return state.vllmSetup; // 返回供设置页「检测本机 vLLM」判断 has_packages
-  }
-  // 用户点「启用」:后端一次 pkexec 拉起引擎+装 systemd 服务,轮询就绪后写模型配置。
-  // 引擎首次载模型可能几分钟,全程 vllmBootstrapping 显示 spinner。
-  async function bootstrapLocalVllm() {
-    if (state.vllmBootstrapping) return;
-    state.vllmBootstrapping = true;
-    state.vllmBootstrapError = null;
-    state.vllmBootstrapDone = null;
-    state.vllmSetupPhase = 'authorizing'; // 后端事件到达前先本地置首阶段(pkexec 阻塞期也有步骤显示)
-    state.vllmSetupAttempt = 0;
-    notify();
-    try {
-      state.vllmBootstrapDone = await invoke("bootstrap_local_vllm");
-    } catch (e) {
-      state.vllmBootstrapError = String(e && e.message ? e.message : e);
-    }
-    state.vllmBootstrapping = false;
-    notify();
-  }
-  // 点「跳过」:仅本次会话内不再弹(不写持久标记,下次启动若仍未配好会再次友好提示)。
-function dismissVllmSetup() { return pinvouSharedweb().dismissVllmSetup(); }
-  // 点「不再提醒 → 确认」:持久婉拒,开机引导框不再自动弹(仍可在设置→模型管理手动启用)。
-  async function declineVllmSetup() {
-    try { await invoke("decline_local_vllm_setup"); } catch { /* 持久失败也先隐藏本会话,不阻断 */ }
-    state.vllmSetupDismissed = true;
-    notify();
-  }
-async function getEffectiveModelConfig(...args) { return pinvouSharedweb().getEffectiveModelConfig(...args); }
   // 当前有效模型的图片输入能力(普通会话选图即时警告用);后端按会话模型绑定解析。
 async function getImageInputCapability(...args) { return pinvouSharedweb().getImageInputCapability(...args); }
 
@@ -5568,7 +5540,6 @@ function patchItemById(id, patch) { return pinvouSharedweb().patchItemById(id, p
     }
     return { item, message };
   }
-function markResolved(id, statusLabel) { return pinvouSharedweb().markResolved(id, statusLabel); }
 
   // ── Per-session UI 路由 ─────────────────────────────────────────
   // 卡片动作链路有多个 await 边界,用户可能中途切 session。所有 UI 写入(chatItem 增改、
@@ -6087,7 +6058,6 @@ async function submitUserInput(itemId, toolCallId, answers, questions) { return 
       flushQueued(sid);
     }
   }
-async function compactNow() { return pinvouSharedweb().compactNow(); }
 
   // ── 产物面板 ─────────────────────────────────────────────────────
   function invokeArtifact(nativeCommand, webCommand, path, sessionId, extra) {
@@ -6120,18 +6090,6 @@ async function compactNow() { return pinvouSharedweb().compactNow(); }
 function openContainingFolder(path) { return pinvouSharedweb().openContainingFolder(path); }
 function revealSessionFolder(sessionId) { return pinvouSharedweb().revealSessionFolder(sessionId); }
 function openScheduledTaskFolder(automationId) { return pinvouSharedweb().openScheduledTaskFolder(automationId); }
-  function openInSystem(path) {
-    if (IS_WEB) return downloadArtifact(path, null);
-    return invoke("open_in_system", { path }).catch(function (e) { addSystemItem(bt("openFailed") + e); });
-  }
-  // 仅放白名单 URL (metaso.cn / open.bochaai.com),后端 open_external_url 强制校验。
-  function openExternalUrl(url) {
-    if (IS_WEB) {
-      const opened = window.open(url, "_blank", "noopener,noreferrer");
-      return Promise.resolve(!!opened);
-    }
-    return invoke("open_external_url", { url }).catch(function (e) { addSystemItem(bt("openFailed") + e); });
-  }
   function openUserExternalUrl(url) {
     try {
       const rawUrl = String(url || "").trim();
@@ -6455,11 +6413,6 @@ function conversationAttachmentArgs(reference) { return pinvouSharedweb().conver
     releaseAttachmentOnDesktop(removed);
     notify();
   }
-  function clearAttachments() {
-    const removed = [...state.attachments];
-    state.attachments = [];
-    removed.forEach(releaseAttachmentOnDesktop);
-  }
   // 打开系统文件选择器并摄入为附件
 async function pickAndAttach() { return pinvouSharedweb().pickAndAttach(); }
 
@@ -6680,172 +6633,20 @@ async function removeCollection(collectionId) { return pinvouSharedweb().removeC
   }
 
   // ── 应用内升级 ───────────────────────────────────────────────────
-  // 链路: check_for_update(对比服务器 latest.json) → download_update(流式下载+sha256)
-  // → install_update(pkexec apt) → restart_app。
+  // Web 端只有版本号读取是活的：appUpdate 能力在浏览器部署恒为 false，
+  // check/download/install/restart 系列命令不在 access-policy 白名单内，
+  // 对应的桌面升级面只在桌面桥提供。
   async function loadAppVersion() {
     try {
       state.appVersion = await invoke("get_app_version");
     } catch { /* version read failure: leaving it empty is fine */ }
   }
-  // 启动静默检查: 失败全吞(网络差/更新源挂了不打扰用户)。结果不管新旧都存——
-  // available 驱动红点,current_version 给设置页显示当前版本用。
-  async function checkForUpdateSilently() {
-    try {
-      const info = await invoke("check_for_update");
-      if (info && info.current_version) state.appVersion = info.current_version;
-      if (info) { state.updateInfo = info; notify(); }
-    } catch { /* 静默 */ }
-  }
-  // 设置页手动检查: 错误和「已是最新」都要反馈。
-async function checkForUpdate() { return pinvouSharedweb().checkForUpdate(); }
-  // 下载+安装一条龙: Linux 下载 deb 后 pkexec apt 并自动重启;macOS 下载 dmg 后
-  // hdiutil attach + cp -R 并自动重启(与 Linux 同型);Windows 下载 zip 后解析 MSI,
-  // 安装器启动成功后后端退出当前进程。返回 true 表示安装链路已成功走完。
-  async function downloadAndInstallUpdate() {
-    if (!state.updateInfo || !state.updateInfo.available || state.updateDownloading) return false;
-    // macOS 与 Linux 一样安装后自动重启:app.restart() 按路径 exec,
-    // bundle 被替换后该路径已指向新文件,spawn 新进程即加载新版(inode 语义与 Linux 同)。
-    // Ok(false) 表示「安装完成,进程未退出,由前端决定 restart」,不是「需手动重启」。
-    // 唯一不自动重启的是 Windows(MSI 安装器接管,后端 Ok(true)→app.exit)。
-    const shouldRestartAfterInstall =
-      state.updateInfo.platform === "linux" || state.updateInfo.platform === "macos";
-    let installed = false;
-    state.updateDownloading = true; state.updateCancelling = false;
-    state.updateProgress = 0; state.updateError = null; notify();
-    try {
-      const downloadResult = await invoke("download_update", { info: state.updateInfo });
-      state.updateProgress = 100; notify();
-      if (downloadResult && typeof downloadResult === "object" && downloadResult.installer_path) {
-        await invoke("install_update", { installerPath: downloadResult.installer_path, info: state.updateInfo });
-      } else {
-        // Linux/macOS: download_update now only fetches and reports progress
-        // (resolves null); install_update's debPath argument is reserved for
-        // future platform implementations. `info` is still passed so the
-        // backend can re-verify sha256 before installing (TOCTOU defense).
-        await invoke("install_update", { debPath: downloadResult, info: state.updateInfo });
-      }
-      state.updateReady = true;
-      installed = true;
-    } catch (e) {
-      // 用户主动取消下载时后端返回「已取消下载」,当正常处理不弹错误
-      if (state.updateCancelling) state.updateProgress = 0;
-      else state.updateError = String(e);
-    }
-    state.updateDownloading = false; state.updateCancelling = false; notify();
-    if (installed && shouldRestartAfterInstall) restartApp();
-    return installed;
-  }
-  // 取消进行中的下载: 置前端标志 + 通知后端中断下载循环。仅下载阶段有效;
-  // 已进入 install(pkexec/apt)则无效(系统接管,装一半不能停)。
-  function cancelUpdate() {
-    if (!state.updateDownloading || state.updateCancelling) return;
-    state.updateCancelling = true; notify();
-    invoke("cancel_download").catch(function () { /* 忽略,下载循环超时也会退 */ });
-  }
-  function restartApp() {
-    invoke("restart_app").catch(function () { /* restart 成功不会返回 */ });
-  }
-  function reportPendingUpdateResult() {
-    invoke("report_pending_update_result").catch(function () { /* 静默重试,不阻塞启动 */ });
-  }
 
-  // ── Persistent instance-scoped Web access ──────────────────────
-  async function refreshWebAccessStatus() {
-    try {
-      const status = await invoke("web_access_status");
-      state.webAccess = Object.assign({}, state.webAccess, status || {});
-    } catch (e) {
-      state.webAccess = Object.assign({}, state.webAccess, { last_error: String(e) });
-    }
-    notify();
-  }
-  async function enableWebAccess() {
-    state.webAccess = Object.assign({}, state.webAccess, { starting: true, last_error: null });
-    notify();
-    try {
-      const info = await invoke("web_access_enable");
-      state.webAccess = Object.assign({}, state.webAccess, info || {}, { active: true, starting: false, last_error: null });
-      await refreshWebAccessStatus();
-      return info;
-    } catch (e) {
-      state.webAccess = Object.assign({}, state.webAccess, { active: false, starting: false, status: "error", last_error: String(e) });
-      notify();
-      throw e;
-    }
-  }
-  async function disableWebAccess() {
-    try {
-      await invoke("web_access_disable");
-    } catch (e) {
-      state.webAccess = Object.assign({}, state.webAccess, { status: "error", last_error: String(e) });
-      notify();
-      throw e;
-    }
-    state.webAccess = Object.assign({}, state.webAccess, { active: false, endpoint_id: null, url: null, qr_data_url: null, status: "stopped" });
-    notify();
-  }
-  async function rotateWebAccessLink() {
-    try {
-      const info = await invoke("web_access_rotate");
-      state.webAccess = Object.assign({}, state.webAccess, info || {}, { active: true, last_error: null });
-      await refreshWebAccessStatus();
-      return info;
-    } catch (e) {
-      state.webAccess = Object.assign({}, state.webAccess, { status: "error", last_error: String(e) });
-      notify();
-      throw e;
-    }
-  }
-  // 自定义 Relay 服务器：查询/保存/恢复默认。保存与恢复在已启用时会触发后端
-  // refresh（旧链接失效、新链接换服务器），所以随后同步一次 webAccess 状态。
-  async function getWebRelaySettings() {
-    return invoke("web_access_relay_settings");
-  }
-  async function setWebRelayAddress(address) {
-    const info = await invoke("web_access_set_relay", { address });
-    await refreshWebAccessStatus();
-    return info;
-  }
   // ── 依赖体检 ─────────────────────────────────────────────────────
   // 实时检测各文件解析能力(PDF/Office/OCR/压缩包/邮件)的系统依赖是否齐全,
-  // 设置页展示缺失项 + 一键 apt 命令。后端 check_dependencies 不走缓存,装完可复检。
-async function checkDependencies() { return pinvouSharedweb().checkDependencies(); }
-  // 一键安装缺失依赖: 收集缺失项的包名 → 后端 pkexec apt 提权安装 → 装完实时重检。
-  async function installDependencies() {
-    const deps = state.deps || [];
-    const missing = deps.filter(function (d) { return !d.installed; });
-    if (!missing.length || state.depsInstalling) return;
-    const pkgs = [];
-    const actions = [];
-    missing.forEach(function (d) {
-      const action = String(d.install_action || "").trim();
-      if (/^[a-z0-9_]+$/i.test(action) && !actions.includes(action)) {
-        actions.push(action);
-      }
-      const parts = String(d.apt).trim().split(/\s+/).filter(Boolean);
-      if (!parts.length || parts.some(function (p) { return !/^[a-z0-9][a-z0-9+.-]*$/i.test(p); })) {
-        return;
-      }
-      parts.forEach(function (p) {
-        if (!pkgs.includes(p)) pkgs.push(p);
-      });
-    });
-    if (!pkgs.length && !actions.length) {
-      state.depsInstallError = bt("depsNotInstallable");
-      notify();
-      return;
-    }
-    state.depsInstalling = true; state.depsInstallError = null; notify();
-    try {
-      await invoke("install_dependencies", { packages: pkgs, actions });
-    } catch (e) {
-      state.depsInstallError = String(e);
-    }
-    try {
-      state.deps = await invoke("check_dependencies"); // 成功或部分成功后均实时反映当前状态
-    } catch { /* keep the last successful dependency snapshot */ }
-    state.depsInstalling = false; notify();
-  }
+  // 设置页展示缺失项。后端 check_dependencies 不走缓存,装完可复检;
+  // 一键安装(install_dependencies)只在桌面桥提供。
+  async function checkDependencies() { return pinvouSharedweb().checkDependencies(); }
 
   // ── 语音输入（WebView one-shot 录音 → 本地 SenseVoice/FunASR ASR；Linux webview 录音授权见 lib.rs setup）──────────────
   let activeVoiceInput = null;
@@ -7121,37 +6922,16 @@ function downsamplePcm(samples, sourceRate, targetRate) { return pinvouSharedweb
     }
   }
 
-  // 一键安装本地语音识别依赖（模型下载 + 缺 ffmpeg 走 pkexec apt），进度走
-  // voice_asr:progress 事件。装完 ready 自动关框。
-  async function installVoiceAsr() {
-    if (state.voiceAsrSetup.installing) return;
-    state.voiceAsrSetup = Object.assign({}, state.voiceAsrSetup, { installing: true, error: null, progress: { stage: "start" } });
-    notify();
-    try {
-      const st = await invoke("install_voice_asr");
-      const patch = { installing: false, status: st, progress: { stage: "done" } };
-      if (st && st.ready) patch.open = false;
-      state.voiceAsrSetup = Object.assign({}, state.voiceAsrSetup, patch);
-      notify();
-    } catch (e) {
-      state.voiceAsrSetup = Object.assign({}, state.voiceAsrSetup, { installing: false, error: String(e) });
-      notify();
-    }
-  }
-
 function closeVoiceAsrSetup() { return pinvouSharedweb().closeVoiceAsrSetup(); }
 
   // The web lane has no local ASR model download (startVoiceInput fails fast with
-  // dependency_unavailable when missing), so there is no interruptible install process;
-  // keep a same-named cancel entry as desktop that just collapses the install dialog and
-  // resolves, avoiding a TypeError when ChatView calls it on web.
+  // dependency_unavailable when missing; the install_voice_asr command is not on
+  // the web access-policy allowlist either), so there is no interruptible install
+  // process; keep a same-named cancel entry as desktop that just collapses the
+  // install dialog and resolves, avoiding a TypeError when ChatView calls it on web.
   async function cancelVoiceAsrSetup() {
     closeVoiceAsrSetup();
   }
-
-  // 知识库 embedding 模型按需下载（下载 → 校验 → 解压部署 → 热加载），进度走
-  // kb_model:progress 事件。resolve 时模型已就绪，调用方据 status.installed 收起 gate。
-async function downloadKbModel(repair) { return pinvouSharedweb().downloadKbModel(repair); }
 
   // Same as desktop: invoke the beforePermission callback before requesting the microphone
   // (shortcut-intro first-use gate). Returns true to continue recording; false means the
@@ -7215,8 +6995,10 @@ async function downloadKbModel(repair) { return pinvouSharedweb().downloadKbMode
     // 首次/缺组件：先检测本地语音识别依赖，缺则弹安装框、不进录音。
     try {
       const asrStatus = await invoke("voice_asr_status");
-      // VoiceAsrStatus 只有 engine/ffmpeg/model/ready/missing,无 installable 字段。
-      // 未装好即弹安装引导;平台 gating 若要做,需先给后端补 installable(当前无此需求)。
+      // The Rust VoiceAsrStatus carries an installable field (the tauri lane uses
+      // it to decide whether a local install can be offered); the web lane never
+      // installs locally, so it only branches on ready and fails with
+      // "needs desktop" guidance.
       if (asrStatus && !asrStatus.ready) {
         if (IS_WEB) {
           if (primedAudioContext) primedAudioContext.close().catch(function () {});
@@ -7433,11 +7215,6 @@ function appendVoiceText(base, text) { return pinvouSharedweb().appendVoiceText(
     loadPersonas(); // 预载卡池(让聊天里草稿"已存入"判定能查到同名自制卡), fire-and-forget
     pollBackendStatus();
     setInterval(pollBackendStatus, 10000);
-    if (hasCapability("appUpdate")) {
-      reportPendingUpdateResult();
-      checkForUpdateSilently();
-    }
-    if (hasCapability("webAccessAdmin")) refreshWebAccessStatus();
     notify();
     })();
     initPromise = attempt.then(function (result) {
@@ -7473,26 +7250,20 @@ function appendVoiceText(base, text) { return pinvouSharedweb().appendVoiceText(
     prioritizeQueued,
     editQueued,
     startVoiceInput,
-    installVoiceAsr,
     cancelVoiceAsrSetup,
     closeVoiceAsrSetup,
-    downloadKbModel,
     cancelVoiceInput,
     clearVoiceInput,
     appendVoiceText,
     loadScheduledTasks,
-    readScheduledTask,
-    loadScheduledTaskRuns,
     loadScheduledTaskRecentRuns,
     selectScheduledTask,
     refreshScheduledTaskData,
-    clearScheduledTaskSelection,
     dismissScheduledTaskError,
     createScheduledTask,
     updateScheduledTask,
     pauseScheduledTask,
     resumeScheduledTask,
-    toggleScheduledTaskPinned,
     deleteScheduledTask,
     runScheduledTaskNow,
     startScheduledTaskChat,
@@ -7512,17 +7283,8 @@ function appendVoiceText(base, text) { return pinvouSharedweb().appendVoiceText(
     clearMonitorStats,
     setSelectedPet,
     saveSettings,
-    saveSettingsAndRestart,
     saveSearchSettings,
-    saveSearchSettingsAndRestart,
     submitFeedback,
-    discoverLocalVllm,
-    detectLocalVllmSetup,
-    bootstrapLocalVllm,
-    dismissVllmSetup,
-    declineVllmSetup,
-    getEffectiveModelConfig,
-   loadModels,
    saveModel,
    revealModelApiKey,
    deleteModel,
@@ -7535,12 +7297,6 @@ function appendVoiceText(base, text) { return pinvouSharedweb().appendVoiceText(
     probeLocalServerKind,
     toggleSuperPerm,
     renderMarkdown,
-    enableWebAccess,
-    disableWebAccess,
-    rotateWebAccessLink,
-    refreshWebAccessStatus,
-    getWebRelaySettings,
-    setWebRelayAddress,
     // modeState 权威读取（评审 P1 后纳入公开面，与 tauri 端对齐）
     syncModeState,
     // Plan/YOLO
@@ -7548,9 +7304,7 @@ function appendVoiceText(base, text) { return pinvouSharedweb().appendVoiceText(
     discardPlan,
     exitPlanToYolo,
     setPlanModeNext,
-    setDraftMode,
     setModeLane,
-    refreshModeDefaults,
     // Web stubs for desktop-only capabilities (bound-workspace sessions / YOLO
     // confirmation gate; API symmetric on both sides)
     getSessionWorkspaceBinding,
@@ -7567,7 +7321,6 @@ function appendVoiceText(base, text) { return pinvouSharedweb().appendVoiceText(
     dismissPinvouReview,
     // 编辑/压缩
     editLastTurn,
-    compactNow,
     // 产物
     artifactInfo,
     readArtifactText,
@@ -7578,23 +7331,19 @@ function appendVoiceText(base, text) { return pinvouSharedweb().appendVoiceText(
     openContainingFolder,
     revealSessionFolder,
     openScheduledTaskFolder,
-    openInSystem,
     openArtifactExternal,
     downloadArtifact,
     listDeliverableIndex,
-    openExternalUrl,
     openUserExternalUrl,
     // 附件
     addAttachmentByPath,
     addPasteImage,
     removeAttachment,
-    clearAttachments,
     pickAndAttach,
     uploadDeviceFiles,
     resolveConversationAttachment,
     openConversationAttachment,
     revealConversationAttachment,
-    markResolved,
     // 通用宿主文件选择器（知识库、反馈等功能继续复用）。
     pickFiles,
     pickFolders,
@@ -7629,13 +7378,8 @@ function appendVoiceText(base, text) { return pinvouSharedweb().appendVoiceText(
     createPersona,
     updatePersona,
     deletePersona,
-    // 应用内升级
-    checkForUpdate,
-    downloadAndInstallUpdate,
-    cancelUpdate,
-    restartApp,
+    // 依赖体检（一键安装只在桌面桥提供）
     checkDependencies,
-    installDependencies,
   };
 
   function retryWebAuthoritySynchronization() {

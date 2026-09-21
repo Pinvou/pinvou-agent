@@ -90,6 +90,7 @@ export {
   primaryVoiceLabel,
   shouldShowVoicePill,
   voiceAsrBusyState,
+  voiceAsrProgressPercent,
   voicePostprocessingLabel,
   voiceStatusLabel,
 };

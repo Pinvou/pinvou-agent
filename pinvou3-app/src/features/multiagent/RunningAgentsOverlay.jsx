@@ -13,6 +13,7 @@ import {
 } from './overlay-model.mjs';
 import { useSubagentLedgerPoll } from './useSubagentLedgerPoll.js';
 import { dispatchOpenSubagent } from './subagent-panel-event.mjs';
+import { roleKeyOf } from './subagent-conversation.mjs';
 
 /**
  * Swarm running overlay (top-right, ADR-0006 swarm rework): shown while the
@@ -79,7 +80,9 @@ function OverlayAgentRow({ entry, recent, isDark, copy, onOpen }) {
       >
         <span className={`inline-block h-1.5 w-1.5 shrink-0 rounded-full ${dotClass[status.dot]}`} />
         <span className={`min-w-0 flex-1 truncate font-medium ${recent ? 'opacity-70' : ''}`}>
-          {entry.role || entry.agentId}
+          {/* 与转录面板同一套角色本地化:内置别名折回 roleCards 文案;自定义角色
+              原样展示,无 role 时回退 agentId。 */}
+          {(copy.roleCards && copy.roleCards[roleKeyOf(entry.role, entry.agentType)]) || entry.role || entry.agentId}
         </span>
         <span
           className={recent

@@ -170,6 +170,18 @@ const DETACHED_VIEWS = {
   outputs: ({ theme, t }) => <LazyKnowledgeView theme={theme} t={t} mode="outputs" />,
 };
 
+// 撕离窗标题栏的视图名:kind 原始 id 映射到与主窗侧栏/顶栏一致的既有 i18n
+// 文案;未知 kind(理论上不出现)回退为原始 id。
+const DETACHED_KIND_LABEL_KEYS = {
+  session: (t) => t.currentChat,
+  'codex-session': (t) => t.sidebarTaskFilterCodeSessions,
+  monitor: (t) => t.monitor,
+  cardpool: (t) => t.cardPool,
+  toolstore: (t) => t.toolStore,
+  knowledge: (t) => t.knowledge,
+  outputs: (t) => t.outputs,
+};
+
 export function DetachedShell({ kind, id }) {
   const { bs, activeTheme, t } = useDetachedBase();
 
@@ -183,6 +195,8 @@ export function DetachedShell({ kind, id }) {
   }, [kind, id]);
 
   const View = DETACHED_VIEWS[kind] || DETACHED_VIEWS.monitor;
+  const kindLabelFn = DETACHED_KIND_LABEL_KEYS[kind];
+  const kindLabel = kindLabelFn ? kindLabelFn(t) : kind;
   return (
     <div className={`h-screen w-screen flex flex-col bg-white text-[#1F1F1F] dark:bg-[#1B1C1D] dark:text-[#E3E3E3]`}>
       <VoiceShortcutRouter />
@@ -191,7 +205,7 @@ export function DetachedShell({ kind, id }) {
         className="h-9 shrink-0 flex items-center px-3 text-[13px] font-medium select-none"
         style={{ borderBottom: '1px solid rgba(128,128,128,.2)' }}
       >
-        <span data-tauri-drag-region className="pointer-events-none">{t.tearoffTitle} · {kind}</span>
+        <span data-tauri-drag-region className="pointer-events-none">{t.tearoffTitle} · {kindLabel}</span>
       </div>
       <div className="flex-1 min-h-0 overflow-auto">
         {bs

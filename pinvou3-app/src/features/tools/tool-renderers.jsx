@@ -7,9 +7,13 @@ import { isAgentWaitCall, isExpertDelegationCall } from '../conversation/convers
 import { spawnGroupOf } from '../multiagent/spawn-aggregation.mjs';
 import { dispatchOpenSubagent } from '../multiagent/subagent-panel-event.mjs';
 import { QuestionChoiceCard } from '../conversation/QuestionChoiceCard.jsx';
+import {
+  buildUserInputAnswers,
+  normalizeUserInputQuestions,
+} from '../conversation/user-input-shared.js';
 import { useShellTaskCancel } from '../chat/shell-task-cancel.js';
 import { extractComputerUseScreenshotPath } from '../computer-use/computer-use-logic.js';
-import { AcShieldCheck, AcSparkles, DiffView, GrepView, ListDirView, OutputError, OutputPre, ReceiptBlock, ShellTextView, ShellView, StockQuoteCard, TODO_TOOLS, TodoView, WeatherCard, isQuietTool, isReceipt, isStockQuoteTool, isWeatherTool, looksDiff, toolSummary, tryParseJson, tryTailJson } from './tool-common.jsx';
+import { AcShieldCheck, AcSparkles, DiffView, GrepView, ListDirView, OutputError, OutputPre, ReceiptBlock, ShellTextView, ShellView, StockQuoteCard, TODO_TOOLS, TodoView, WeatherCard, isQuietTool, isReceipt, isStockQuoteTool, isWeatherTool, looksDiff, toolSummary, tryParseJson, tryTailJson, unwrapMcpTextEnvelope } from './tool-common.jsx';
 
 const isShellExecutionTool = name => [
   'bash',
@@ -196,23 +200,13 @@ const ToolOutput = ({ item, t }) => {
         return <OutputPre text={out} />;
       }
       if (isWeatherTool(item.name)) {
-        let raw = out;
-        const envelope = tryParseJson(out);
-        if (envelope && Array.isArray(envelope.content)) {
-          const txt = envelope.content.find(c => c.type === 'text');
-          if (txt && txt.text) raw = txt.text;
-        }
+        const raw = unwrapMcpTextEnvelope(out);
         const w = tryParseJson(raw);
         if (w && w.type === 'weather' && !w.error) return <WeatherCard data={w} t={t} />;
       }
       // 股票报价卡片：iwencai 返回表格数据 → 映射为卡片
       if (isStockQuoteTool(item.name)) {
-        let raw = out;
-        const envelope = tryParseJson(out);
-        if (envelope && Array.isArray(envelope.content)) {
-          const txt = envelope.content.find(c => c.type === 'text');
-          if (txt && txt.text) raw = txt.text;
-        }
+        const raw = unwrapMcpTextEnvelope(out);
         const w = tryParseJson(raw);
         if (w && Array.isArray(w.datas) && w.datas.length > 0) {
           const d = w.datas[0];
@@ -822,45 +816,19 @@ const ToolOutput = ({ item, t }) => {
     // ==========================================
     // UserInputCard — 🤔 AI 想问你几个问题
     // ==========================================
-    const isFreeTextPlaceholderOption = (option) => {
-      const label = String(option?.label || '').trim();
-      return /^(?:其他|其它|other)(?:\s*[（(][^()（）]*[)）])?$/i.test(label);
-    };
+    // isFreeTextPlaceholderOption / 问题归一化 / 答案组装与代码会话的
+    // NativeUserInputCard 共用 conversation/user-input-shared.js。
 
     const UserInputCard = ({ item, t }) => {
       // Web 只读会话：呈现为锁定卡并说明去桌面端操作（后端漏斗是权威拦截，
       // 这里避免"能点但必败"的按钮，复核 P2）。
       const webReadOnly = multiAgentWebReadOnly();
       const questions = item.questions || [];
-      const normalizedQuestions = questions.map((question, index) => {
-        const allowOther = question.allow_free_text !== false;
-        return {
-          id: question.id || `question-${index + 1}`,
-          header: question.header || `Q${index + 1}`,
-          question: question.question || '',
-          options: (question.options || [])
-            .filter(option => !allowOther || !isFreeTextPlaceholderOption(option))
-            .map(option => ({
-              value: option.label,
-              label: option.label,
-              description: option.description || '',
-            })),
-          allowOther,
-          multiSelect: Boolean(question.multi_select),
-          required: !question.multi_select,
-        };
-      });
+      const normalizedQuestions = normalizeUserInputQuestions(questions);
 
       function submit(groups) {
         if (webReadOnly) return;
-        const answers = groups.flatMap(group => group.answers.map(answer => ({
-          id: group.questionId,
-          label: answer.other ? t.uiToolRender.other : answer.label,
-          value: String(answer.value),
-          // 保留 other 标记：QuestionChoiceCard 还原历史答案时据此把“其他”与预设选项区分开，
-          // 避免“其他值 == 预设 value”被误判为预设（评审 P2）。
-          other: answer.other,
-        })));
+        const answers = buildUserInputAnswers(groups, t.uiToolRender.other);
         bridge.interaction.submitUserInput(item.id, item.toolCallId, answers, questions);
       }
 
@@ -892,4 +860,4 @@ const ToolOutput = ({ item, t }) => {
       );
     };
 
-export { ToolOutput, ToolCard, PlanLayer, cardBoxCls, cardBtnCls, isFreeTextPlaceholderOption, PinvouSummonCard, PlanCard, PlanStuckCard, CarefulBlockedCard, UserInputCard };
+export { ToolOutput, ToolCard, PlanLayer, cardBoxCls, cardBtnCls, PinvouSummonCard, PlanCard, PlanStuckCard, CarefulBlockedCard, UserInputCard };

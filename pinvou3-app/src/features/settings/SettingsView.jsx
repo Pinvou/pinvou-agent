@@ -1,7 +1,6 @@
 import { useEffect, useRef, useState } from 'react';
 import { Check, ChevronDown, Code, Cpu, Database, Globe, MessageSquare, Plus, RefreshCw, Search, Sparkles, Users, Wrench, X } from '../../components/icons.jsx';
 import { Toggle } from '../../components/Toggle.jsx';
-import { VllmSetupProgress } from '../../components/VllmSetupProgress.jsx';
 import PetSettingsSection from '../pet/PetSettingsSection.jsx';
 import { DEFAULT_PET_ID } from '../pet/pet-registry.js';
 import { bridge, isLocalModel, useBridgeState } from '../../hooks/useBridge.js';
@@ -102,6 +101,13 @@ const formatMemoryTime = (item, copy) => {
   if (diff >= day && diff < 7 * day) return copy.memoryTimeDaysAgo(Math.floor(diff / day));
   return copy.memoryTimeDate(date.getMonth() + 1, date.getDate());
 };
+
+// 钥匙串凭据判定(模型表单与搜索源列表共用):存有凭据,或 credential_state
+// 显式标记 configured / env_override。
+function hasStoredCredential(record) {
+  const state = (record && record.credential_state) || ((record && record.has_secret) ? 'configured' : 'missing');
+  return !!(record && record.has_secret) || state === 'configured' || state === 'env_override';
+}
 
     const SSegmented = ({ options, value, onChange }) => (
       <div data-testid="settings-segmented" className={`p-1 rounded-full flex flex-wrap justify-end gap-1 max-w-full max-sm:w-full max-sm:flex-nowrap bg-[#E1E5EA] dark:bg-[#131314]`}>
@@ -305,7 +311,6 @@ const formatMemoryTime = (item, copy) => {
         && (!initialProvider || group.key === initialProvider.key)
         && group.items.some(item => !item.custom && catalogItemMatchesModel(item, initial.model))
       );
-      const canSetUpLocalModel = can('localModelSetup');
       const [name, setName] = useState(initial.name || '');
       const [alias, setAlias] = useState(initial.alias || '');
       const [nameTouched, setNameTouched] = useState(!initial.__new && !!initial.name);
@@ -371,9 +376,6 @@ const formatMemoryTime = (item, copy) => {
       const [imageTestResult, setImageTestResult] = useState(null); // { status, verified, summary } | null
       // eslint-disable-next-line react-hooks/set-state-in-effect -- synchronous setState in this effect is intentional: mirrors the backend snapshot into local state once it lands, avoiding first-frame flicker
       useEffect(() => { setImageTestResult(null); }, [model, baseUrl, apiKey, preset]);
-      // 本机预装大模型「再入口」:检测无运行实例但有预装时,提示启用;走同一 bootstrap。
-      const [offerSetup, setOfferSetup] = useState(false);   // 检测到预装,显示启用提示
-      const [bootstrapHere, setBootstrapHere] = useState(false); // 从本页发起了 bootstrap(隔离全局态,避免开机引导的成功态串到这里)
       const localizeProvider = group => group
         ? { ...group, ...settingsCopy.providerCatalog[group.key] }
         : null;
@@ -551,7 +553,7 @@ const formatMemoryTime = (item, copy) => {
         : (isCodingPlan ? settingsCopy.editProvider(selectedProvider) : t.modelFormEditTitle);
       const saveName = showDisplayNameField || isLocalPreset ? (name.trim() || settingsCopy.localModelName(model.trim())) : (model.trim() || selectedProvider);
       const credentialState = initial.credential_state || (initial.has_secret ? 'configured' : 'missing');
-      const hasSavedKey = !!initial.has_secret || credentialState === 'configured' || credentialState === 'env_override';
+      const hasSavedKey = hasStoredCredential(initial);
       const hasUsableApiKey = isLocalPreset || hasSavedKey || !!apiKey.trim();
       const canSave = !!(saveName && model.trim() && baseUrl.trim() && hasUsableApiKey);
       async function toggleApiKeyVisibility() {
@@ -571,8 +573,7 @@ const formatMemoryTime = (item, copy) => {
       // (pinvou 档,内置已验证能力表兜底);需要确证时用表单内「测试图片能力」。
       async function doSave() {
         if (!canSave || savingModel) return;
-      // eslint-disable-next-line react-hooks/purity, sonarjs/pseudo-random -- id generation via Date.now/Math.random is existing behavior, runs only once at creation
-        const id = initial.__new ? ('m_' + Date.now().toString(36) + Math.random().toString(36).slice(2, 7)) : initial.id;
+        const id = initial.__new ? makeModelId() : initial.id;
         const contextTokens = Number(contextWindow);
         const outputTokens = Number(maxOutput);
         const nextKeyAction = isLocalPreset
@@ -1270,7 +1271,6 @@ const formatMemoryTime = (item, copy) => {
                   {!isLocalPreset && (
                     <div className={`px-1 mt-1.5 text-[12px] leading-4 ${isDark ? 'text-[#8E8E93]' : 'text-[#8A8A8E]'}`}>{settingsCopy.modelContextWindowHint}</div>
                   )}
-                  {keyRevealError && <div className="px-1 mt-1.5 text-[12px] leading-4 text-[#FF3B30]">{keyRevealError}</div>}
                 </section>
               )}
               {renderImageInputSection()}
@@ -1306,44 +1306,6 @@ const formatMemoryTime = (item, copy) => {
                     </div>
                   </div>
                 </section>
-              )}
-              {preset === 'local_vllm' && canSetUpLocalModel && (offerSetup || bootstrapHere) && (
-                <div className={`rounded-xl border p-3 border-[#E0E3E7] bg-[#F8F9FB] dark:border-[#333537] dark:bg-[#131314]`}>
-                  {bootstrapHere ? (
-                    bs && bs.vllmBootstrapDone ? (
-                      <div>
-                        <div className="text-[13px] leading-relaxed mb-3">{t.vllmSetupDone}</div>
-                        <div className="flex justify-end">
-                          <button type="button" onClick={() => bridge.available && bridge.updater.restartApp()}
-                            className="h-8 px-4 rounded-lg text-[13px] font-medium text-white" style={{ background: '#0A84FF' }}>{t.restartNow}</button>
-                        </div>
-                      </div>
-                    ) : bs && bs.vllmBootstrapError ? (
-                      <div>
-                        <div className="text-[12px] font-medium mb-1" style={{ color: '#E5484D' }}>{t.vllmSetupFailed}</div>
-                        <div className="text-[12px] leading-relaxed mb-3 break-words" style={{ opacity: .75 }}>{bs.vllmBootstrapError}</div>
-                        <div className="flex justify-end gap-2">
-                          <button type="button" onClick={() => { setBootstrapHere(false); setOfferSetup(false); }}
-                            className={`h-8 px-4 rounded-lg text-[13px] bg-[#F0F4F9] text-[#1F1F1F] dark:bg-[#2B2C2F] dark:text-[#E3E3E3]`}>{t.cpCancel}</button>
-                          <button type="button" onClick={() => bridge.vllm.bootstrapLocalVllm()}
-                            className="h-8 px-4 rounded-lg text-[13px] font-medium text-white" style={{ background: '#0A84FF' }}>{t.vllmSetupRetry}</button>
-                        </div>
-                      </div>
-                    ) : (
-                      <VllmSetupProgress phase={bs && bs.vllmSetupPhase} attempt={(bs && bs.vllmSetupAttempt) || 0} t={t} />
-                    )
-                  ) : (
-                    <div>
-                      <div className="text-[13px] leading-relaxed mb-3">{t.vllmReentryOffer}</div>
-                      <div className="flex justify-end gap-2">
-                        <button type="button" onClick={() => setOfferSetup(false)}
-                          className={`h-8 px-4 rounded-lg text-[13px] bg-[#F0F4F9] text-[#1F1F1F] dark:bg-[#2B2C2F] dark:text-[#E3E3E3]`}>{t.cpCancel}</button>
-                        <button type="button" onClick={() => { setBootstrapHere(true); bridge.vllm.bootstrapLocalVllm(); }}
-                          className="h-8 px-4 rounded-lg text-[13px] font-medium text-white" style={{ background: '#0A84FF' }}>{t.vllmSetupEnable}</button>
-                      </div>
-                    </div>
-                  )}
-                </div>
               )}
             </div>
             {/* 保存失败行内提示:弹窗保持,交用户修正后重试。 */}
@@ -1446,7 +1408,7 @@ const formatMemoryTime = (item, copy) => {
       const [showSearchKey, setShowSearchKey] = useState(false);
       const [draftKey, setDraftKey] = useState('');
       const hasSavedKey = searchHasKey(provider);
-      const canSaveSearch = (provider === 'bing' && isNew) || !!String(draftKey || '').trim();
+      const canSaveSearch = !!String(draftKey || '').trim();
       useEffect(() => {
         // eslint-disable-next-line react-hooks/set-state-in-effect -- reset the in-progress draft when switching search providers while the modal is open; controlled mirror of the provider prop
         setDraftKey('');
@@ -1795,7 +1757,7 @@ const formatMemoryTime = (item, copy) => {
       };
       const closeFeedback = () => {
         const dirty = feedbackDraft.title.trim() || feedbackDraft.description.trim() || feedbackDraft.attachments.length > 0;
-        if (dirty && feedbackStatus.state !== 'submitted' && !feedbackCloseConfirm) {
+        if (dirty && !feedbackCloseConfirm) {
           // The native window.confirm does not render in Tauri WebView2; in-app
           // dialogs do (same as ProviderFormModal / MemoryDeleteDialog). Show the
           // in-app confirm layer first and close only after confirmation.
@@ -1804,7 +1766,6 @@ const formatMemoryTime = (item, copy) => {
         }
         setFeedbackCloseConfirm(false);
         setFeedbackOpen(false);
-        if (feedbackStatus.state === 'submitted') resetFeedback();
       };
       const pickFeedbackAttachments = async () => {
         if (!bridge.available || !bridge.files.pickFeedbackFiles) {
@@ -1910,12 +1871,7 @@ const formatMemoryTime = (item, copy) => {
         const credentials = (bs && bs.settings && bs.settings.search && bs.settings.search.credentials) || {};
         return credentials[provider] || {};
       };
-      const searchHasKey = provider => {
-        if (provider === 'bing') return true;
-        const credential = searchCredentialFor(provider);
-        const state = credential.credential_state || (credential.has_secret ? 'configured' : 'missing');
-        return !!credential.has_secret || state === 'configured' || state === 'env_override';
-      };
+      const searchHasKey = provider => hasStoredCredential(searchCredentialFor(provider));
       const newModelDraft = preset => {
         const defs = MODEL_PRESET_DEFS[preset] || MODEL_PRESET_DEFS.deepseek;
         return {
@@ -2603,7 +2559,7 @@ const formatMemoryTime = (item, copy) => {
             <ModelFormModal isDark={activeTheme === 'dark'} t={t} initial={editingModel} bs={bs} models={userModels}
               onCancel={() => setEditingModel(null)}
               // 保存/错误提示由弹窗内部控制关闭(保存失败保持打开展示行内错误)。
-              onSave={async m => onSaveModel(m)} />
+              onSave={onSaveModel} />
           )}
           {modelDeleteConfirm && <ModelDeleteDialog model={modelDeleteConfirm} settingsCopy={settingsCopy} onDeleteModel={onDeleteModel} setModelDeleteConfirm={setModelDeleteConfirm} />}
           {searchDeleteConfirm && <SearchDeleteDialog source={searchDeleteConfirm} settingsCopy={settingsCopy} onDeleteSearchProvider={onDeleteSearchProvider} setSearchDeleteConfirm={setSearchDeleteConfirm} setRestartDialog={setRestartDialog} />}
@@ -2774,7 +2730,9 @@ const formatMemoryTime = (item, copy) => {
                   </section>
                   <div className={`px-1 text-[12px] leading-5 text-[#8A8A8E] dark:text-[#98989D]`}>{t.feedbackPrivacy}</div>
                   {feedbackStatus.message && (
-                    <div className={`rounded-[14px] px-4 py-3 text-[14px] ${feedbackStatus.state === 'submitted' ? 'bg-[#34C759]/15 text-[#248A3D]' : 'bg-[#FF3B30]/15 text-[#FF3B30]'}`}>
+                    // 失败横幅:成功路径直接 toast + 关窗并复位状态,状态机里
+                    // 不存在带 message 的 'submitted' 态,绿色横幅不可达。
+                    <div className={`rounded-[14px] px-4 py-3 text-[14px] bg-[#FF3B30]/15 text-[#FF3B30]`}>
                       {feedbackStatus.message}
                     </div>
                   )}

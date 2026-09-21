@@ -36,7 +36,8 @@ export async function loadActivePet(requestedId, {
       state.requestSequence += 1;
       state.pendingId = null;
     }
-    if (state.pendingId === null && typeof onActivationFailed === 'function') {
+    // pendingId 在上方分支刚被置 null,这里无需再判(原写法是恒真子句)。
+    if (typeof onActivationFailed === 'function') {
       onActivationFailed(false);
     }
     return state.activePet;

@@ -345,8 +345,8 @@ function pinvouSharedtauriMain() {
     // 厂商预装本地大模型一键引导:首屏检测结果 + 引导执行态
     vllmSetup: null,          // {eligible, may_offer_setup, has_packages, engine_state:ready|starting|stopped|failed, ...}
     vllmBootstrapping: false, // 引导进行中(pkexec + 拉起 + 轮询就绪)
-    vllmSetupPhase: null,     // 阶段:'authorizing'|'waiting'|'ready'(引导开始时本地置 'authorizing')
-    vllmSetupAttempt: 0,      // waiting 阶段第几次探测(后端报)
+    vllmSetupPhase: null,     // 阶段:'authorizing'|'waiting'|'ready'(引导开始时本地置 'authorizing';防御性:厂商版界面字段,社区版后端从不发阶段事件)
+    vllmSetupAttempt: 0,      // waiting 阶段第几次探测(防御性:厂商版界面字段,社区版后端从不发阶段事件)
     vllmBootstrapDone: null,  // 成功结果 {base_url, model}, 据此显示「立即重启」
     vllmBootstrapError: null, // 失败原因(pkexec stderr / 超时透传)
     vllmSetupDismissed: false,// 本次会话内点了「跳过」,不再弹(不写持久标记)
@@ -967,8 +967,6 @@ function pinvouSceneForMessagePos(pos) { return pinvouSharedtauriMain().pinvouSc
   const removeQueued = chatFeature.removeQueued;
   const prioritizeQueued = chatFeature.prioritizeQueued;
   const editQueued = chatFeature.editQueued;
-  const steer = chatFeature.steer;
-  const interruptAndSend = chatFeature.interruptAndSend;
   const interruptAndSendQueued = chatFeature.interruptAndSendQueued;
   const settleSteerCommitted = chatFeature.settleSteerCommitted;
   const settleSteerDropped = chatFeature.settleSteerDropped;
@@ -1624,15 +1622,12 @@ function copySubscriptionStateObject(source) { return pinvouSharedtauriMain().co
   const parseScheduledTaskDraftFromText = scheduledFeature.parseScheduledTaskDraftFromText;
   const autoCreateScheduledTaskDraft = scheduledFeature.autoCreateScheduledTaskDraft;
   const loadScheduledTasks = scheduledFeature.loadScheduledTasks;
-  const readScheduledTask = scheduledFeature.readScheduledTask;
-  const loadScheduledTaskRuns = scheduledFeature.loadScheduledTaskRuns;
   const loadScheduledTaskRecentRuns = scheduledFeature.loadScheduledTaskRecentRuns;
   const refreshScheduledTaskData = scheduledFeature.refreshScheduledTaskData;
   const createScheduledTask = scheduledFeature.createScheduledTask;
   const updateScheduledTask = scheduledFeature.updateScheduledTask;
   const pauseScheduledTask = scheduledFeature.pauseScheduledTask;
   const resumeScheduledTask = scheduledFeature.resumeScheduledTask;
-  const toggleScheduledTaskPinned = scheduledFeature.toggleScheduledTaskPinned;
   const deleteScheduledTask = scheduledFeature.deleteScheduledTask;
   const runScheduledTaskNow = scheduledFeature.runScheduledTaskNow;
   const startScheduledTaskChat = scheduledFeature.startScheduledTaskChat;
@@ -2087,7 +2082,6 @@ function composePlanMarkdown(snapshots) { return pinvouSharedtauriMain().compose
   const setSelectedPet = settingsFeature.setSelectedPet;
   const loadEffectiveModelConfig = settingsFeature.loadEffectiveModelConfig;
   const saveSettings = settingsFeature.saveSettings;
-  const saveSettingsAndRestart = settingsFeature.saveSettingsAndRestart;
   const saveSearchSettings = settingsFeature.saveSearchSettings;
   const saveSearchSettingsAndRestart = settingsFeature.saveSearchSettingsAndRestart;
   const submitFeedback = settingsFeature.submitFeedback;
@@ -2096,8 +2090,7 @@ function composePlanMarkdown(snapshots) { return pinvouSharedtauriMain().compose
   const bootstrapLocalVllm = settingsFeature.bootstrapLocalVllm;
   const dismissVllmSetup = settingsFeature.dismissVllmSetup;
   const declineVllmSetup = settingsFeature.declineVllmSetup;
-  const getEffectiveModelConfig = settingsFeature.getEffectiveModelConfig;
-  const loadModels = settingsFeature.loadModels;
+  const loadModels = settingsFeature.loadModels; // startup loader (init); not on the facade
   const saveModel = settingsFeature.saveModel;
   const revealModelApiKey = settingsFeature.revealModelApiKey;
   const deleteModel = settingsFeature.deleteModel;
@@ -2141,7 +2134,6 @@ function composePlanMarkdown(snapshots) { return pinvouSharedtauriMain().compose
   const toggleSuperPerm = interactionFeature.toggleSuperPerm;
   const syncModeState = interactionFeature.syncModeState;
   const patchItemById = interactionFeature.patchItemById;
-  const markResolved = interactionFeature.markResolved;
   const runOnSession = interactionFeature.runOnSession;
   const patchItemByIdFor = interactionFeature.patchItemByIdFor;
   const startThinking = interactionFeature.startThinking;
@@ -2152,7 +2144,6 @@ function composePlanMarkdown(snapshots) { return pinvouSharedtauriMain().compose
   const discardPlan = interactionFeature.discardPlan;
   const exitPlanToYolo = interactionFeature.exitPlanToYolo;
   const setPlanModeNext = interactionFeature.setPlanModeNext;
-  const setDraftMode = interactionFeature.setDraftMode;
   const setModeLane = interactionFeature.setModeLane;
   const refreshModeDefaults = interactionFeature.refreshModeDefaults;
   const getCodePermissionPrefs = interactionFeature.getCodePermissionPrefs;
@@ -2163,7 +2154,6 @@ function composePlanMarkdown(snapshots) { return pinvouSharedtauriMain().compose
   const submitUserInput = interactionFeature.submitUserInput;
   const cancelUserInput = interactionFeature.cancelUserInput;
   const editLastTurn = interactionFeature.editLastTurn;
-  const compactNow = interactionFeature.compactNow;
 
   const memoryFeature = installBridgeFeature("memory", { state, notify, invoke, bt, addSystemItem, runSyncOnSession, patchItemById, patchItemByIdFor, runOnSession, addChatItem, timeStr });
   const handleMemoryWrite = memoryFeature.handleMemoryWrite;
@@ -2186,16 +2176,13 @@ function composePlanMarkdown(snapshots) { return pinvouSharedtauriMain().compose
   const openContainingFolder = artifactsFeature.openContainingFolder;
   const revealSessionFolder = artifactsFeature.revealSessionFolder;
   const openScheduledTaskFolder = artifactsFeature.openScheduledTaskFolder;
-  const openInSystem = artifactsFeature.openInSystem;
   const openArtifactExternal = artifactsFeature.openArtifactExternal;
   const downloadArtifact = artifactsFeature.downloadArtifact;
   const listDeliverableIndex = artifactsFeature.listDeliverableIndex;
-  const openExternalUrl = artifactsFeature.openExternalUrl;
   const openUserExternalUrl = artifactsFeature.openUserExternalUrl;
   const addAttachmentByPath = artifactsFeature.addAttachmentByPath;
   const addPasteImage = artifactsFeature.addPasteImage;
   const removeAttachment = artifactsFeature.removeAttachment;
-  const clearAttachments = artifactsFeature.clearAttachments;
   const pickAndAttach = artifactsFeature.pickAndAttach;
   const uploadDeviceFiles = artifactsFeature.uploadDeviceFiles;
   const adoptManagedAttachments = artifactsFeature.adoptManagedAttachments;
@@ -2220,7 +2207,7 @@ function composePlanMarkdown(snapshots) { return pinvouSharedtauriMain().compose
   const setRemoteCollectionEnabled = personasFeature.setRemoteCollectionEnabled;
   const removeRemoteCollection = personasFeature.removeRemoteCollection;
   const syncMountedCollection = personasFeature.syncMountedCollection;
-  const updaterFeature = installBridgeFeature("updater", { state, notify, invoke, refreshHistoryList, listen, getBuffer, bt });
+  const updaterFeature = installBridgeFeature("updater", { state, notify, invoke });
   const loadAppVersion = updaterFeature.loadAppVersion;
   const checkForUpdateSilently = updaterFeature.checkForUpdateSilently;
   const checkForUpdate = updaterFeature.checkForUpdate;
@@ -2389,7 +2376,6 @@ function composePlanMarkdown(snapshots) { return pinvouSharedtauriMain().compose
     },
     platform: {
       refreshConnectorAuthGates,
-      loadPlatformCapabilities,
     },
     chat: {
       sendMessage,
@@ -2401,8 +2387,6 @@ function composePlanMarkdown(snapshots) { return pinvouSharedtauriMain().compose
       removeQueued,
       prioritizeQueued,
       editQueued,
-      steer,
-      interruptAndSend,
       interruptAndSendQueued,
       cancelGeneration,
       cancelShellTask,
@@ -2433,18 +2417,14 @@ function composePlanMarkdown(snapshots) { return pinvouSharedtauriMain().compose
     },
     scheduled: {
       loadScheduledTasks,
-      readScheduledTask,
-      loadScheduledTaskRuns,
       loadScheduledTaskRecentRuns,
       selectScheduledTask,
       refreshScheduledTaskData,
-      clearScheduledTaskSelection,
       dismissScheduledTaskError,
       createScheduledTask,
       updateScheduledTask,
       pauseScheduledTask,
       resumeScheduledTask,
-      toggleScheduledTaskPinned,
       deleteScheduledTask,
       runScheduledTaskNow,
       startScheduledTaskChat,
@@ -2486,7 +2466,6 @@ function composePlanMarkdown(snapshots) { return pinvouSharedtauriMain().compose
     settings: {
       setSelectedPet,
       saveSettings,
-      saveSettingsAndRestart,
       saveSearchSettings,
       saveSearchSettingsAndRestart,
     },
@@ -2499,8 +2478,6 @@ function composePlanMarkdown(snapshots) { return pinvouSharedtauriMain().compose
       declineVllmSetup,
     },
     models: {
-      getEffectiveModelConfig,
-      loadModels,
       saveModel,
       revealModelApiKey,
       deleteModel,
@@ -2522,9 +2499,7 @@ function composePlanMarkdown(snapshots) { return pinvouSharedtauriMain().compose
     discardPlan,
     exitPlanToYolo,
     setPlanModeNext,
-    setDraftMode,
     setModeLane,
-    refreshModeDefaults,
       // One-shot YOLO confirmation gate for bound-workspace sessions (same
       // source of truth as the code mode)
     getCodePermissionPrefs,
@@ -2541,14 +2516,12 @@ function composePlanMarkdown(snapshots) { return pinvouSharedtauriMain().compose
     dismissPinvouReview,
     // 编辑/压缩
     editLastTurn,
-      compactNow,
     },
     rendering: { renderMarkdown },
     remoteControl: {
       startRemoteControl,
       stopRemoteControl,
       refreshRemoteControlQr,
-      refreshRemoteControlStatus,
       getWebRelaySettings: remoteControlFeature.getWebRelaySettings,
       setWebRelayAddress: remoteControlFeature.setWebRelayAddress,
     },
@@ -2562,25 +2535,21 @@ function composePlanMarkdown(snapshots) { return pinvouSharedtauriMain().compose
       openContainingFolder,
       revealSessionFolder,
       openScheduledTaskFolder,
-      openInSystem,
       openArtifactExternal,
       downloadArtifact,
       listDeliverableIndex,
-      openExternalUrl,
       openUserExternalUrl,
     },
     attachments: {
       addAttachmentByPath,
       addPasteImage,
       removeAttachment,
-      clearAttachments,
       pickAndAttach,
       uploadDeviceFiles,
       resolveConversationAttachment,
       openConversationAttachment,
       revealConversationAttachment,
     },
-    resolutions: { markResolved },
     multiAgent: {
       listSubagentTranscripts: listMultiAgentSubagents,
       readSubagentTranscript: readMultiAgentSubagent,
