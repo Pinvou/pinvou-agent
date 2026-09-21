@@ -3473,3 +3473,64 @@ fn organize_report_serializes_snake_case_for_frontend() {
     assert!(serialized.contains("\"started_at\""));
     assert!(!serialized.contains("startedAt"));
 }
+
+/// Round-trip contract for the restored CLI-consumed write surface: an
+/// upsert creates then updates in place, and an archive flips the status
+/// without deleting the item. These entry points had no executable proof in
+/// this crate (their consumer lives in the stacked CLI) — the shared write
+/// path is too load-bearing to ship untested.
+#[test]
+fn recent_work_upsert_and_archive_round_trip() {
+    let _home = IsolatedPinvouHome::new("recent-work-round-trip");
+
+    let created = upsert_recent_work(RecentWorkPatch {
+        id: None,
+        title: "Refactor session store".to_string(),
+        summary: Some("split sidecars from the boot map".to_string()),
+        source: Some("test".to_string()),
+        ttl_days: None,
+    })
+    .unwrap();
+    assert_eq!(created.status, "active");
+    assert_eq!(created.title, "Refactor session store");
+
+    // Same-title upsert without an id resolves to the same stable id and
+    // updates in place instead of duplicating the entry.
+    let updated = upsert_recent_work(RecentWorkPatch {
+        id: Some(created.id.clone()),
+        title: "Refactor session store v2".to_string(),
+        summary: None,
+        source: None,
+        ttl_days: Some(200), // clamped to the 90-day ceiling
+    })
+    .unwrap();
+    assert_eq!(updated.id, created.id);
+    let items = load_recent_work().unwrap();
+    assert_eq!(items.len(), 1, "an upsert must not duplicate the entry");
+    assert_eq!(items[0].title, "Refactor session store v2");
+
+    assert!(archive_recent_work(&created.id).unwrap());
+    let items = load_recent_work().unwrap();
+    assert_eq!(items.len(), 1, "archiving keeps the item");
+    assert_eq!(items[0].status, "archived");
+    assert!(
+        !archive_recent_work(&created.id).unwrap(),
+        "re-archiving an already-archived item reports no change"
+    );
+    assert!(
+        !archive_recent_work("no-such-id").unwrap(),
+        "archiving an absent id reports no change"
+    );
+
+    // An empty (all-whitespace) title is rejected as invalid input, matching
+    // the clean_text normalization contract.
+    let error = upsert_recent_work(RecentWorkPatch {
+        id: None,
+        title: "   ".to_string(),
+        summary: None,
+        source: None,
+        ttl_days: None,
+    })
+    .unwrap_err();
+    assert_eq!(error.kind(), io::ErrorKind::InvalidInput);
+}
