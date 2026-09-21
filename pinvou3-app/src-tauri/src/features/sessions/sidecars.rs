@@ -271,12 +271,13 @@ fn parse_timestamped_id_map(
                 }
             }
             if parsed.is_empty() {
-                // A non-empty array that yields zero ids is semantically
+                // A zero-id map — including the literal `[]` — is treated as
                 // corrupt, not "no pins": reading it as empty would refuse
                 // the mutation path's protection and silently widen the
-                // retention eviction set on the sweep path. The empty array
-                // `[]` (a real "no pins" state the save path writes) still
-                // parses to Some(empty).
+                // retention eviction set on the sweep path. The save path
+                // never writes `[]` (an empty map deletes the file), so a
+                // `[]` on disk means a hand edit or a foreign writer; the
+                // refusal quarantines it once and the next mutation rebuilds.
                 eprintln!("[sessions] {label} failed: array carries no usable ids");
                 return None;
             }

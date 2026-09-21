@@ -5850,6 +5850,27 @@ fn pin_mutation_refuses_a_semantically_corrupt_zero_id_file() {
 }
 
 #[test]
+fn literal_empty_array_pin_file_is_refused_as_corrupt() {
+    // `[]` is JSON-valid and semantically "no pins", but the save path never
+    // writes it (an empty map deletes the file) — a `[]` on disk means a hand
+    // edit or a foreign writer. The zero-id refusal stays total: the file is
+    // quarantined, the mutation is refused once, and the next mutation
+    // rebuilds from scratch.
+    let (store, _g) = isolated_store();
+    let file = paths::sessions_root().join("_pinned_sessions.json");
+    std::fs::write(&file, "[]").expect("seed a literal empty-array pin file");
+    store.set_pinned("headless-empty", true);
+    assert!(
+        !store.is_pinned("headless-empty"),
+        "the mutation over a literal `[]` is refused"
+    );
+    assert!(
+        !file.exists(),
+        "the `[]` file is quarantined like any zero-id array"
+    );
+}
+
+#[test]
 fn set_mode_and_persist_fails_loud_on_a_corrupt_mode_file() {
     let (store, _g) = isolated_store();
     let file = paths::sessions_root().join("_session_mode_states.json");
