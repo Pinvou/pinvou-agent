@@ -40,7 +40,11 @@ function buildComposerToolMenuState({
     }));
 
   const toolRows = installedTools
-    .filter(tool => tool && !hidden.has(tool.id))
+    // 《内置工具集长期契约》§3.2 配置可见性：内置插件（builtin === true，如
+    // session-reader）从输入框工具列表隐藏；执行可见性（对话时间线 ToolCard 的
+    // 工具调用展示）不受影响。字段缺省（旧后端/普通插件）时 undefined !== true
+    // 自然放行；调用方 refreshToolsMenu 直接透传 list_marketplace_tools 结果。
+    .filter(tool => tool && !hidden.has(tool.id) && tool.builtin !== true)
     .map(tool => ({
       id: tool.id,
       kind: 'tool',

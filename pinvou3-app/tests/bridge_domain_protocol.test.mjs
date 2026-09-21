@@ -238,7 +238,10 @@ const expectedProtocolHashes = {
   // Recomputed for the preinstalled-model startup removal: the
   // detect_local_vllm_setup / bootstrap_local_vllm / decline_local_vllm_setup
   // invokes left with the dead one-click setup chain.
-  settings: '2ceb4dabd59dc3c2eec0046915ccb04d7003035040511f961e15409fc4eb990a',
+  // Recomputed for the built-in feature toggles hook: settings.js gains the
+  // list_builtin_features / set_builtin_feature_enabled invoke wrappers
+  // (contract hook for future feature settings pages; no consumer yet).
+  settings: 'a8c564b09274c722e266a9798b82cb59d1cebc70c5d4ee04f9323bafd0439168',
   // Recomputed for the dead-code cleanup: the never-emitted
   // remote_control:status / remote_control:session_created listeners were
   // removed, and the update:progress listener plus its coalescing timer
