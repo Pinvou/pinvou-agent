@@ -1675,21 +1675,33 @@ impl AppEngine {
         // above is driven directly by that boolean), so dispatch on roster
         // presence instead of re-asserting the same invariant twice between
         // the bool and the Option.
-        let mut engine_config = match expert_snapshot.as_deref() {
-            Some(snapshot) => {
-                // Multi-agent surface: assemble the expert roster and the
-                // dedicated resource caps; the tool surface stays identical to
-                // a plain session, which inherits none of these limits. The
-                // swarm switch and the session's multi_agent switch share one
-                // source (the mode_state just read above).
-                bridge.build_engine_config_for_multi_agent(
-                    session_id,
-                    roots,
-                    snapshot,
-                    multi_agent_enabled,
-                )
-            }
-            None => bridge.build_engine_config_for_session_roots(session_id, roots),
+        // The config build reads the cross-process bundle lock twice per
+        // session (scope_deny_ruleset's CLI-binary and skill-script deny
+        // rules both consult the scope unavailable sets); keep it off the
+        // async worker like every other lock-taking path — a wedged CLI
+        // process must not freeze the spawn.
+        let mut engine_config = {
+            let bridge = bridge.clone();
+            let session_id = session_id.to_string();
+            let snapshot = expert_snapshot.clone();
+            tokio::task::spawn_blocking(move || match snapshot.as_deref() {
+                Some(snapshot) => {
+                    // Multi-agent surface: assemble the expert roster and the
+                    // dedicated resource caps; the tool surface stays identical to
+                    // a plain session, which inherits none of these limits. The
+                    // swarm switch and the session's multi_agent switch share one
+                    // source (the mode_state just read above).
+                    bridge.build_engine_config_for_multi_agent(
+                        &session_id,
+                        roots,
+                        snapshot,
+                        multi_agent_enabled,
+                    )
+                }
+                None => bridge.build_engine_config_for_session_roots(&session_id, roots),
+            })
+            .await
+            .map_err(|e| anyhow::anyhow!("engine config build join: {e}"))?
         };
         engine_config.runtime_services.shell_manager = Some(shell_manager.clone());
         // Agentic RAG:给该 session 的 engine 注入 kb_search + kb_open_source(都持
