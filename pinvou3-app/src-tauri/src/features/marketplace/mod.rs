@@ -6859,6 +6859,82 @@ mod tests {
         });
     }
 
+    /// qcc introduced the first OPTIONAL (required: false) secret config
+    /// field. Under the file-backed fallback a store miss is
+    /// "undeterminable", and for a required field that fails closed — but an
+    /// optional field must treat it the same as absent: OAuth carries the
+    /// auth and an install must not block on an unreachable keyring (this
+    /// regressed the keyring-less Linux rust-test job).
+    #[test]
+    fn optional_bearer_config_field_installs_without_a_keyring() {
+        with_temp_home(|| {
+            let manifest = serde_json::json!({
+                "id":"opt-bearer","name":"opt-bearer","description":"d","version":"1","icon":"x","category":"c",
+                "mcp_tools":[],"command":"","args":[],
+                "servers":[{"name":"opt-bearer-remote","url":"https://opt.example.com/mcp"}],
+                "config_fields":[
+                    {"key":"OPT_BEARER_API_KEY","label":"k","required":false,"target":"bearer","secret":true}
+                ]
+            });
+            write_tool_manifest(
+                "opt-bearer",
+                &serde_json::to_string_pretty(&manifest).unwrap(),
+            );
+            let manager = MarketplaceManager::with_store(FallbackKeyringStore {
+                inner: MemoryCredentialStore::default(),
+                fallback_active: std::sync::Arc::new(std::sync::atomic::AtomicBool::new(true)),
+            });
+
+            manager
+                .install("opt-bearer", &std::collections::HashMap::new())
+                .unwrap();
+
+            let mcp = read_mcp_json();
+            assert_eq!(
+                mcp["servers"]["opt-bearer-remote"],
+                serde_json::json!({"url": "https://opt.example.com/mcp"}),
+                "the optional-secret tool must install on a keyring-less host, unwired"
+            );
+        });
+    }
+
+    /// The required-field counterpart keeps the fail-closed classification:
+    /// an undeterminable credential store must fail the install instead of
+    /// baking a permanently unwired entry.
+    #[test]
+    fn required_bearer_config_field_still_fails_closed_without_a_keyring() {
+        with_temp_home(|| {
+            let manifest = serde_json::json!({
+                "id":"req-bearer","name":"req-bearer","description":"d","version":"1","icon":"x","category":"c",
+                "mcp_tools":[],"command":"","args":[],
+                "servers":[{"name":"req-bearer-remote","url":"https://req.example.com/mcp"}],
+                "config_fields":[
+                    {"key":"REQ_BEARER_API_KEY","label":"k","required":true,"target":"bearer","secret":true}
+                ]
+            });
+            write_tool_manifest(
+                "req-bearer",
+                &serde_json::to_string_pretty(&manifest).unwrap(),
+            );
+            let manager = MarketplaceManager::with_store(FallbackKeyringStore {
+                inner: MemoryCredentialStore::default(),
+                fallback_active: std::sync::Arc::new(std::sync::atomic::AtomicBool::new(true)),
+            });
+
+            let error = manager
+                .install("req-bearer", &std::collections::HashMap::new())
+                .unwrap_err();
+            assert!(
+                error.contains("OS keyring is unreachable"),
+                "the required field must keep the fail-closed classification: {error}"
+            );
+            assert!(
+                !paths::mcp_config_path().exists(),
+                "no unwired entry may be written by the failed install"
+            );
+        });
+    }
+
     /// A non-secret install-time env config field is dropped by the startup
     /// rebuild just like a secret one (the rebuild has no user input), so the
     /// honesty note must name it too — the note's reproducible set must match

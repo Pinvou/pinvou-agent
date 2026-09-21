@@ -334,9 +334,14 @@ impl<S: crate::platform::credential_store::CredentialStore> MarketplaceManager<S
                     // field unwritten — installs do so silently (historical behavior
                     // for an omitted optional key), the startup reconcile degrades by
                     // design and the auth failure surfaces through the boot receipt
-                    // and the restore note. A credential-store read failure must not
-                    // degrade into a permanently unwired entry, so it fails the build
-                    // in every mode and the next startup retries the restore.
+                    // and the restore note. For a REQUIRED field a credential-store
+                    // read failure must not degrade into a permanently unwired entry,
+                    // so it fails the build in every mode and the next startup
+                    // retries the restore. An OPTIONAL field (the qcc shape:
+                    // OAuth-first, key never mandatory) treats "undeterminable
+                    // under the file-backed fallback" the same as absent — nothing
+                    // is baked into the wiring, and an install must not block on
+                    // an unreachable keyring.
                     match self.try_resolve_secret_placeholder(
                         &manifest.id,
                         bundle::keyring_target(bundle::CredentialTarget::Bearer),
@@ -356,7 +361,8 @@ impl<S: crate::platform::credential_store::CredentialStore> MarketplaceManager<S
                             }
                         }
                         Ok(None) => {}
-                        Err(error) => return Err(error),
+                        Err(error) if field.required => return Err(error),
+                        Err(_) => {}
                     }
                 }
             }
