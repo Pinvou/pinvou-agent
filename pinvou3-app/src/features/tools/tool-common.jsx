@@ -126,7 +126,7 @@ const tc = (t) => (t && t.uiToolCommon) || dict.zh.uiToolCommon;
       return item.name === 'File' && ['read', 'list', 'search_name', 'search_content'].includes(item.args?.action);
     };
 
-    // read/read_file 与 File(action=read) 共用的 A 档读文件摘要格式。
+    // Tier-A read-file summary format shared by read/read_file and File(action=read).
     const readFileSummary = (args, t) => {
       const base = pathBasename(args.path, { collapseTrailing: true, fallback: args.path });
       if (args.start_line || args.max_lines) {
@@ -227,8 +227,8 @@ const tc = (t) => (t && t.uiToolCommon) || dict.zh.uiToolCommon;
 
     // ── 每工具定制结果视图（仿 Claude Code）：解析失败一律 fallback 纯文本，永不崩 ──
     const tryParseJson = (text) => { try { return JSON.parse(text); } catch { return null; } };
-    // MCP 文本信封解包（天气/股票卡输出预处理共用）：output 为
-    // { content: [{ type: 'text', text }] } 结构时取内层文本，否则原样返回。
+    // MCP text envelope unwrap (shared by weather/stock card output preprocessing): when output is
+    // the { content: [{ type: 'text', text }] } structure, take the inner text; otherwise return it as-is.
     const unwrapMcpTextEnvelope = (out) => {
       const envelope = tryParseJson(out);
       if (envelope && Array.isArray(envelope.content)) {
@@ -824,8 +824,8 @@ const tc = (t) => (t && t.uiToolCommon) || dict.zh.uiToolCommon;
           <div className="flex items-center gap-2">
             {list.map((a) => {
               const s = specs[a.id];
-              // 后端 actions 的 enabled 恒为 true（wire 字段保留但前端不再渲染
-              // 禁用分支）；reason 提示语保留为按钮 tooltip。
+              // The backend's actions always have enabled = true (the wire field is kept, but the frontend no longer
+              // renders a disabled branch); the reason text is kept as the button tooltip.
               return (
                 <button type="button"
                   key={a.id}

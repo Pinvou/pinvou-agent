@@ -774,7 +774,7 @@
     return state.scheduledTaskDetail;
   }
 
-  // web+tauriScheduled 共享
+  // web+tauriScheduled shared
   // Upsert one run row into the recent-runs working set: replace by id or
   // append, then drop invalid rows (no session / archived) and keep the list
   // sorted by scheduledFor (fallback createdAt) descending. Returns a new array.
@@ -1463,8 +1463,8 @@
     }
   }
 
-  // tauriSessions 共享：草稿态工作目录最近选择（classic-script 侧的
-  // shared/workspace-recents.js 镜像；两侧无法互相 import，改动须同步）。
+  // tauriSessions shared: recent draft-state workspace directory choices (a mirror of
+  // shared/workspace-recents.js on the classic-script side; the two cannot import each other, changes must be synced).
   const DRAFT_WORKSPACE_RECENTS_KEY = "pinvou_codex_recent_workspaces";
   function readDraftWorkspaceRecents() {
     try {

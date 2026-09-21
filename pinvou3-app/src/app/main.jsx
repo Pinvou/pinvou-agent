@@ -1342,9 +1342,9 @@ const NAV_PREFETCH = {
         return (t.uiScheduled.runStatus[value] || value || t.uiScheduled.unknown);
       }, [t]);
 
-      // 定时运行条目的标题/副标题派生:侧栏条目(scheduledRunItems)与聊天条目
-      // 装饰(decorateScheduledRunChat)共用同一规则,避免两处拷贝漂移。
-      // 无 chat 时从 run DTO 的 sessionTitle 派生;有 chat 时用会话标题。
+      // Title/subtitle derivation for scheduled run entries: sidebar entries (scheduledRunItems) and chat entry
+      // decoration (decorateScheduledRunChat) share one rule to avoid drift between the two copies.
+      // Without a chat, derive from the run DTO's sessionTitle; with a chat, use the chat title.
       const scheduledRunDisplayFields = useCallback((run, chat) => {
         const rawTitle = chat ? chat.title : (run.sessionTitle || '');
         const title = (!rawTitle || isDefaultChatTitle(rawTitle))
@@ -2997,9 +2997,9 @@ const NAV_PREFETCH = {
         </div>
       );
 
-      // 侧栏底部按钮(远程访问 / 桌宠 / 设置):collapsed 与 expanded 两套变体
-      // 只差尺寸(w-10/w-9)与暗态闲置文字色,由同一 helper 派生避免拷贝漂移;
-      // 设置齿轮统一走 openSettingsSection(记录返回视图 + general 分区)。
+      // Sidebar footer buttons (remote access / pet / settings): the collapsed and expanded variants
+      // differ only in size (w-10/w-9) and dark-mode idle text color; one shared helper derives both to avoid copy drift;
+      // the settings gear always goes through openSettingsSection (records the return view + general section).
       const renderFooterButtons = (collapsed) => {
         const sizeCls = collapsed ? 'w-10 h-10' : 'w-9 h-9';
         const idleColorCls = activeTheme === 'dark'

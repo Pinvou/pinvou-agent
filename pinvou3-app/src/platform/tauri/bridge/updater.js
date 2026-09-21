@@ -18,8 +18,8 @@ function pinvouSharedtauriUpdater() {
   const notify = context.notify;
   const invoke = context.invoke;
   // ── 应用内升级 ───────────────────────────────────────────────────
-  // 链路: check_for_update(对比服务器 latest.json) → download_update(流式下载+sha256)
-  // → install_update(pkexec apt) → restart_app。下载进度不另发前端事件。
+  // Chain: check_for_update (compares the server's latest.json) → download_update (streamed download + sha256)
+  // → install_update (pkexec apt) → restart_app. Download progress emits no separate frontend event.
   async function loadAppVersion() {
     try {
       state.appVersion = await invoke("get_app_version");

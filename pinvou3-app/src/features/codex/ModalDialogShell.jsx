@@ -1,9 +1,9 @@
-// Codex 系确认弹窗的共享外壳:portal 到 <body>(与共享 YoloConfirmCard 相同——
-// 避免 composer 容器的 backdrop-blur 成为 fixed 后代的包含块)、焦点捕获/还原
-// (useDialogFocusRestore)、Escape 关闭(busy 时禁用)、背景按钮随 busy 一起
-// 禁用(进行中的确认不能靠点击空白处关掉)。
-// 标题/错误行/底部按钮均为可选节点,由调用方组合:Rewind 确认/撤销弹窗
-// (RewindChip.jsx)用全套,CodexAcpView 的分支切换弹窗只用外壳 + 自有面板。
+// Shared shell for the Codex-family confirm dialogs: portal to <body> (same as the shared
+// YoloConfirmCard — keeps the composer container's backdrop-blur from becoming the containing
+// block for fixed descendants), focus capture/restore (useDialogFocusRestore), Escape to close
+// (disabled while busy), and backdrop buttons disabled together with busy (an in-flight confirmation cannot be dismissed by clicking the backdrop).
+// Title/error row/footer are all optional nodes composed by callers: the Rewind confirm/undo dialog
+// (RewindChip.jsx) uses the full set, while CodexAcpView's branch-switch dialog uses only the shell + its own panel.
 
 import { useEffect, useRef } from 'react';
 import { createPortal } from 'react-dom';

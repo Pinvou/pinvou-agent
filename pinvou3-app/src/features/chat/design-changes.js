@@ -16,8 +16,8 @@ function createDesignChange({ element, type, property, oldValue, newValue, group
   };
 }
 
-// 两条改动是否完全同值(同 selector/type/property 且新旧值一致):
-// add 去重与 ChatView 应用前的预检共用同一比较,避免两处字段漂移。
+// Whether two design changes are fully equal (same selector/type/property and identical old/new values):
+// add dedup and ChatView's pre-apply check share this one comparison to avoid field drift between the two copies.
 function sameDesignChange(a, b) {
   return !!a && !!b
     && a.selector === b.selector

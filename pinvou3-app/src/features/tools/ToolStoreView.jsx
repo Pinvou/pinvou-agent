@@ -137,7 +137,7 @@ const TsToolIcon = ({ tool, className = '', imageClassName = 'h-8 w-8', fallback
   );
 };
 
-// message 由调用点覆盖注入（storeCopy.oauthBrowserTimeout），此处不设默认值。
+// The message is overridden by the call site (storeCopy.oauthBrowserTimeout); no default is set here.
 const oauthUiTimeoutResult = (serverName) => ({
   status: 'timeout',
   server_name: serverName,
@@ -1014,8 +1014,8 @@ const withUiTimeout = (promise, timeoutMs, fallbackResult) => {
           setBusyId((current) => releaseBusy(current, id));
         }
       };
-      // 导出为 zip 插件包的共享主干（回收站/已安装两个入口）：桌面端弹原生保存对话框，
-      // 返回保存路径=成功；返回 null=用户取消（静默）；抛错=失败。
+      // Shared trunk for exporting a zip plugin package (used by both the recycle-bin and installed entries): on desktop, opens the native save dialog;
+      // a returned save path = success; null = user canceled (silent); a thrown error = failure.
       const runPluginExport = async (command, id, busyKey, logLabel) => {
         setBusyId(busyKey);
         try {
@@ -1033,8 +1033,8 @@ const withUiTimeout = (promise, timeoutMs, fallbackResult) => {
           setBusyId((current) => releaseBusy(current, busyKey));
         }
       };
-      // 导出为 zip 插件包：桌面端弹原生保存对话框，返回保存路径=成功；
-      // 返回 null=用户取消（静默）；抛错=失败。package_missing 条目目录已不在，禁用导出。
+      // Export as a zip plugin package: on desktop, opens the native save dialog; a returned save path = success;
+      // null = user canceled (silent); a thrown error = failure. A package_missing item's directory no longer exists, so export is disabled.
       const handleExportRecycled = async (item) => {
         if (!canMutateToolStore || !item || item.package_missing || busyRef.current) return;
         return runPluginExport('export_recycled_plugin', item.id, item.id, 'export recycled plugin');
@@ -1301,10 +1301,10 @@ const withUiTimeout = (promise, timeoutMs, fallbackResult) => {
         || !isRestrictedExternalAuthTool(tool)
         || !!tool.installed
       );
-      // 技能卡 = 预置(静态卡) + companion 技能(后端数据合成) + 用户上传。
-      // tsSkillsData 当前只有唯一的 builtin 内置技能(s5 视觉设计,免安装),
-      // 原「非 builtin 预置技能读统一 readiness/配套 MCP 安装态」分支不可达,
-      // 已移除;若产品决策恢复可安装的预置技能,需连同 readiness 字段重新补齐。
+      // Skill cards = presets (static cards) + companion skills (synthesized from backend data) + user uploads.
+      // tsSkillsData currently has a single builtin skill (s5 visual design, no install required),
+      // so the old "non-builtin preset skills read a unified readiness/companion MCP install state" branch is unreachable
+      // and has been removed; if product decisions reintroduce installable preset skills, the readiness fields must be restored along with it.
       const presetSkills = tsSkillsData.map(localizeSkill).map(s => (
         s.builtin ? { ...s, installed: true } : s
       ));
@@ -1529,7 +1529,7 @@ const withUiTimeout = (promise, timeoutMs, fallbackResult) => {
         const name = t ? t.title : backendId;
         const hasConfig = Boolean(t?.configFields?.length);
         const hasPipDeps = !hasConfig; // 无 config 的本地工具可能有 pip deps
-        // 单一字段:t.oauthMcp 工具卡自带 oauthServerName(serverName 兜底从未有生产者)。
+        // Single field: the t.oauthMcp tool card carries its own oauthServerName (the serverName fallback never had a producer).
         const oauthServerName = t?.oauthMcp ? (t?.oauthServerName || null) : null;
         if (t?.oauthMcp && !oauthServerName) {
           setAlert({ visible: true, loading: false, title: storeCopy.oauthConfigError, subtitle: storeCopy.oauthNoServerName(name), isInstall: false, isError: true });
@@ -1913,7 +1913,7 @@ const withUiTimeout = (promise, timeoutMs, fallbackResult) => {
           });
           return;
         }
-        // 复用上方 requestedTool 绑定(同一 backendId,可能已被 companion 包重定向),不再重复查询。
+        // Reuse the requestedTool binding above (same backendId, possibly redirected by the companion package); no repeated lookup.
         const tool = requestedTool;
         // 组合包化的本地能力(pptx)只有 companion 技能卡、无连接器卡,名称回退到技能卡
         const name = tool ? tool.title : ((skillCards.find(x => x.backendId === backendId) || {}).title || backendId);

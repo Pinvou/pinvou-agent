@@ -91,9 +91,9 @@ const prefetchChatPanel = (key) => {
 const reportRightDockSelectionFailure = (error) => {
   console.error('[chat] Right Dock selection failed', error);
 };
-// 设计 AI 状态条的模块级镜像:视图切换会卸载 ChatView,镜像跨卸载保留,
-// 重新进入 artifact 全屏时可以恢复。仅本模块读写(原 window.__PINVOU_DESIGN_AI_STATE__
-// 全局没有模块外读者,收敛为模块内变量)。
+// Module-level mirror of the Design AI state bar: view switches unmount ChatView, and the mirror survives
+// unmounts so re-entering artifact fullscreen can restore it. Read/written only by this module (the old
+// window.__PINVOU_DESIGN_AI_STATE__ global had no readers outside the module, so it is folded into a module variable).
 let designAiStateSnapshot = null;
 // 面板槽位级挂起 fallback:与 LazyCodexAcpView 同款容器,懒 chunk 解析的
 // 微任务窗口内占住面板位置,避免挂起冒泡到应用级边界把整视图闪断成 fallback。

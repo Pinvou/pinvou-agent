@@ -41,8 +41,8 @@ function deriveRunningShellTasks(chatItems) {
 }
 
 // 耗时格式化（formatElapsedMs）已收敛到 shared/format-utils.mjs（与
-// window.PinvouFormatUtils 的 bridge 版本同为唯一实现），不再在此转发；
-// ChatView 直接从 shared/format-utils.mjs 导入。
+// window.PinvouFormatUtils bridge version are both the single implementation), so it is no longer forwarded here;
+// ChatView imports directly from shared/format-utils.mjs.
 
 // 输出 tail：取最后 n 行（空行不计），供指示器浮层展示。
 function tailOutputLines(output, lineCount = 3) {

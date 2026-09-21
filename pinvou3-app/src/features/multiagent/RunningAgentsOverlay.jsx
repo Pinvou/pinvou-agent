@@ -80,8 +80,8 @@ function OverlayAgentRow({ entry, recent, isDark, copy, onOpen }) {
       >
         <span className={`inline-block h-1.5 w-1.5 shrink-0 rounded-full ${dotClass[status.dot]}`} />
         <span className={`min-w-0 flex-1 truncate font-medium ${recent ? 'opacity-70' : ''}`}>
-          {/* 与转录面板同一套角色本地化:内置别名折回 roleCards 文案;自定义角色
-              原样展示,无 role 时回退 agentId。 */}
+          {/* Same role localization as the transcript panel: built-in aliases fold back into roleCards copy; custom roles
+              are shown as-is, falling back to agentId when there is no role. */}
           {(copy.roleCards && copy.roleCards[roleKeyOf(entry.role, entry.agentType)]) || entry.role || entry.agentId}
         </span>
         <span

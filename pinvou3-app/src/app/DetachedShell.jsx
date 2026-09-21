@@ -170,8 +170,8 @@ const DETACHED_VIEWS = {
   outputs: ({ theme, t }) => <LazyKnowledgeView theme={theme} t={t} mode="outputs" />,
 };
 
-// 撕离窗标题栏的视图名:kind 原始 id 映射到与主窗侧栏/顶栏一致的既有 i18n
-// 文案;未知 kind(理论上不出现)回退为原始 id。
+// View name for the detached window title bar: maps each kind's raw id to the existing i18n
+// copy shared with the main window sidebar/title bar; unknown kinds (theoretically impossible) fall back to the raw id.
 const DETACHED_KIND_LABEL_KEYS = {
   session: (t) => t.currentChat,
   'codex-session': (t) => t.sidebarTaskFilterCodeSessions,

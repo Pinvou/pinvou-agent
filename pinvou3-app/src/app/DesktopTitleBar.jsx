@@ -7,7 +7,7 @@ export const TitleBar = ({ t, sidebarOpen = true }) => {
   const hoverBg = 'hover:bg-black/10 dark:hover:bg-white/10';
   // 明暗同形:明态固定 #F0F4F9;暗态视侧栏开合在 #1E1F20 / #131314 间切,
   // 二者均为暗态专属,以 dark: 前缀静态挂载,sidebarOpen 仅决定暗态取哪一组。
-  // 两个分支各自给出完整字面量 class(Tailwind 无法识别运行时插值出的类名)。
+  // Each branch spells out the full literal class string (Tailwind cannot detect class names interpolated at runtime).
   const titleBarBg = sidebarOpen
     ? 'bg-[#F0F4F9] dark:bg-[#1E1F20]'
     : 'bg-[#F0F4F9] dark:bg-[#131314]';

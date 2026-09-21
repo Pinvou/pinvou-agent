@@ -1639,8 +1639,8 @@ const OutputLivePreview = ({ o, onOpen, outPreviewCache, runQueuedPreview, remem
 
 
 
-// Output 卡片 iframe 预览文档头(模块级单实现):统一隐藏滚动条/禁动画;
-// office 文档(白底浅色排版)额外固定白底与文字色,避免暗色主题下渲染异常。
+// Document header for the Output card's iframe preview (single module-level implementation): uniformly hides scrollbars and disables animations;
+// office documents (white background, light typography) additionally pin the background and text color to avoid rendering glitches in dark theme.
 const outputPreviewDoc = (html, office) => '<style>html,body{overflow:hidden!important;'
   + (office ? 'background:#fff!important;margin:0;color:#111!important;' : '')
   + '}*{animation-duration:.001s!important;scrollbar-width:none!important;}*::-webkit-scrollbar{display:none!important;}</style>' + (html || '');

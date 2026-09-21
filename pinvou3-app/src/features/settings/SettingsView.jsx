@@ -102,8 +102,8 @@ const formatMemoryTime = (item, copy) => {
   return copy.memoryTimeDate(date.getMonth() + 1, date.getDate());
 };
 
-// 钥匙串凭据判定(模型表单与搜索源列表共用):存有凭据,或 credential_state
-// 显式标记 configured / env_override。
+// Keychain credential check (shared by the model form and the search-source list): credentials exist, or
+// credential_state is explicitly marked configured / env_override.
 function hasStoredCredential(record) {
   const state = (record && record.credential_state) || ((record && record.has_secret) ? 'configured' : 'missing');
   return !!(record && record.has_secret) || state === 'configured' || state === 'env_override';
@@ -2730,8 +2730,8 @@ function hasStoredCredential(record) {
                   </section>
                   <div className={`px-1 text-[12px] leading-5 text-[#8A8A8E] dark:text-[#98989D]`}>{t.feedbackPrivacy}</div>
                   {feedbackStatus.message && (
-                    // 失败横幅:成功路径直接 toast + 关窗并复位状态,状态机里
-                    // 不存在带 message 的 'submitted' 态,绿色横幅不可达。
+                    // Failure banner: the success path toasts, closes the window, and resets state directly; the state machine
+                    // has no 'submitted' state carrying a message, so the green banner is unreachable.
                     <div className={`rounded-[14px] px-4 py-3 text-[14px] bg-[#FF3B30]/15 text-[#FF3B30]`}>
                       {feedbackStatus.message}
                     </div>

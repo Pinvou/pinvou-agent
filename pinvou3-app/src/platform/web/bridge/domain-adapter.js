@@ -157,22 +157,22 @@
     monitor: domain(["startMonitorPolling", "stopMonitorPolling", "clearMonitorStats"]),
     settings: domain(["setSelectedPet", "saveSettings", "saveSearchSettings"]),
     feedback: domain(["submitFeedback"]),
-    // 厂商版 vLLM 引导是桌面专属面（appUpdate/webAccessAdmin 同理）：
-    // 相关命令不在 web access-policy 白名单内,能力位恒 false,Web 端整域为空桩。
+    // Vendor-edition vLLM bootstrap is a desktop-only surface (same for appUpdate/webAccessAdmin):
+    // the related commands are not in the web access-policy allowlist, the capability bit is always false, and the whole domain is an empty stub on the web.
     vllm: {},
     models: domain(["saveModel", "revealModelApiKey", "deleteModel", "setActiveModel", "loadSessionModel", "switchModel", "testModelConnection", "getImageInputCapability", "testImageInputCapability", "probeLocalServerKind"]),
     interaction: domain(["toggleSuperPerm", "acceptPlan", "discardPlan", "exitPlanToYolo", "setPlanModeNext", "setModeLane", "getCodePermissionPrefs", "confirmCodeYolo", "syncModeState", "planStuckReplan", "planStuckGo", "submitUserInput", "cancelUserInput", "summonPinvou", "inspectPinvou", "resolvePinvouReview", "dismissPinvouReview", "editLastTurn"]),
     rendering: domain(["renderMarkdown"]),
-    // 远程控制(桌面 Web 代理管理)是桌面专属面：Web 端空桩(能力位恒 false,
-    // web_access_* 命令不在白名单内)。
+    // Remote control (desktop web-proxy management) is a desktop-only surface: an empty stub on the web (capability bit
+    // always false, web_access_* commands not in the allowlist).
     remoteControl: {},
     artifacts: domain(["artifactInfo", "readArtifactText", "writeArtifactText", "readArtifactImageB64", "readArtifactThumbnail", "renderArtifactVisual", "openContainingFolder", "revealSessionFolder", "openScheduledTaskFolder", "openArtifactExternal", "downloadArtifact", "listDeliverableIndex", "openUserExternalUrl"]),
     attachments: domain(["addAttachmentByPath", "addPasteImage", "removeAttachment", "pickAndAttach", "uploadDeviceFiles", "resolveConversationAttachment", "openConversationAttachment", "revealConversationAttachment"]),
     files: domain(["pickFiles", "pickFolders", "pickRebindFolder", "pickFeedbackFiles"]),
     personas: domain(["loadPersonas", "getPersonas", "readPersonaBody", "equipPersona", "unequipPersona", "postCardCreatorIntro", "createPersona", "updatePersona", "deletePersona"]),
     memory: domain(["loadMemoryOverview", "saveMemoryProfilePatch", "updateMemoryItem", "deleteMemoryItem", "confirmMemoryCandidate", "ignoreMemoryCandidate", "neverMemoryCandidate", "organizeMemory", "loadOrganizeHistory"]),
-    // 应用内升级是桌面专属面（check/download/install/restart 命令不在 web
-    // access-policy 白名单内,appUpdate 能力位恒 false）,Web 端整域为空桩。
+    // In-app upgrade is a desktop-only surface (the check/download/install/restart commands are not in the web
+    // access-policy allowlist, the appUpdate capability bit is always false): the whole domain is an empty stub on the web.
     updater: {},
     dependencies: domain(["checkDependencies"]),
     computerUse: computerUseStubs

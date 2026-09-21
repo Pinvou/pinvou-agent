@@ -816,8 +816,8 @@ const ToolOutput = ({ item, t }) => {
     // ==========================================
     // UserInputCard — 🤔 AI 想问你几个问题
     // ==========================================
-    // isFreeTextPlaceholderOption / 问题归一化 / 答案组装与代码会话的
-    // NativeUserInputCard 共用 conversation/user-input-shared.js。
+    // isFreeTextPlaceholderOption / question normalization / answer assembly are shared with the code session's
+    // NativeUserInputCard in conversation/user-input-shared.js.
 
     const UserInputCard = ({ item, t }) => {
       // Web 只读会话：呈现为锁定卡并说明去桌面端操作（后端漏斗是权威拦截，

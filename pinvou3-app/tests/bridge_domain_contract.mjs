@@ -51,17 +51,17 @@ export const desktopOnlyBridgeApi = {
   // saveSettingsAndRestart/saveSearchSettingsAndRestart restart the desktop
   // process in place; the web host has no restart channel.
   settings: ['saveSearchSettingsAndRestart'],
-  // 厂商版 vLLM 一键引导是厂商版桌面面：Web 能力位恒 false 且相关命令不在
-  // access-policy 白名单内。
+  // Vendor-edition one-click vLLM bootstrap is a vendor-edition desktop surface: the web capability bit is always
+  // false and the related commands are not in the access-policy allowlist.
   vllm: ['bootstrapLocalVllm', 'declineVllmSetup', 'detectLocalVllmSetup', 'dismissVllmSetup', 'discoverLocalVllm'],
-  // 应用内升级: check/download/install/restart 全部依赖本机包管理器,Web 端
-  // 只有版本号读取(appUpdate 能力位恒 false)。
+  // In-app upgrade: check/download/install/restart all depend on the local package manager; on the web
+  // only the version-number read is available (the appUpdate capability bit is always false).
   updater: ['cancelUpdate', 'checkForUpdate', 'downloadAndInstallUpdate', 'restartApp'],
-  // 远程控制(桌面 Web 代理管理)依赖 web_access_* 管理命令,Web 端不可用
-  // (webAccessAdmin 能力位恒 false)。
+  // Remote control (desktop web-proxy management) depends on the web_access_* admin commands and is unavailable
+  // on the web (the webAccessAdmin capability bit is always false).
   remoteControl: ['getWebRelaySettings', 'refreshRemoteControlQr', 'setWebRelayAddress', 'startRemoteControl', 'stopRemoteControl'],
-  // 一键安装缺失依赖走 pkexec apt 提权,Web 端不可用(dependencyInstall 能力位
-  // 恒 false);复检(check_dependencies)双端共用。
+  // One-click install of missing dependencies elevates via pkexec apt and is unavailable on the web (the dependencyInstall
+  // capability bit is always false); the re-check (check_dependencies) is shared by both hosts.
   dependencies: ['installDependencies'],
 };
 

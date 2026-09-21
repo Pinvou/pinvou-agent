@@ -48,7 +48,7 @@ async function setSelectedPet(id) { return pinvouSharedtauriSettings().setSelect
       if (requestedSessionId !== (state.activeSessionId || null)) return;
       state.effectiveModelConfig = config;
     } catch {
-      // 快速切会话时，旧请求可能晚于新请求返回；禁止旧会话配置覆盖当前遮罩状态。
+      // When switching sessions quickly, an older request may return after the new one; never let the old session's config overwrite the current overlay state.
       if ((state.activeSessionId || null) !== requestedSessionId) return;
       state.effectiveModelConfig = null;
     }

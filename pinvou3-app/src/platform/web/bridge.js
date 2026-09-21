@@ -170,8 +170,8 @@ function pinvouSharedweb() {
     // 复位 effect 挂它 → 即便 activeSessionId 没变(draft→draft)也能重新求值,否则残留的工具欢迎卡
     // 会一直顶掉「你好」欢迎语(该 tool 无 welcomeQueries 时整块空白)。
     draftEpoch: 0,
-    // 桌面切片同形桩：草稿工作目录绑定是桌面专属能力(Web 无系统目录选择通道),
-    // Web 上恒为 null,但 sessions 切片必须与桌面逐键一致(见 bridge_state_domains 契约)。
+    // Same-shape desktop-slice stub: draft workspace directory binding is a desktop-only capability (the web has
+    // no system directory picker channel); always null on the web, but the sessions slice must match desktop key-by-key (see the bridge_state_domains contract).
     draftWorkspacePath: null,
     // 跨页面预填输入框请求。比如侧边栏「产出物」一级入口点击「续写/新项目」：
     // 只把草稿放进 composer，不自动发送给模型。
@@ -257,7 +257,7 @@ function pinvouSharedweb() {
     // 仅驻内存(后端也只驻内存),重启回到未挂载。名字由前端用知识集列表解析。
     mountedCollection: null,
     mountedCollections: [],
-    // 桌面切片同形桩：远程知识库挂载只在桌面可操作,Web 上恒为空数组。
+    // Same-shape desktop-slice stub: remote knowledge-base mounting is operable only on desktop; always an empty array on the web.
     mountedRemoteCollections: [],
     mountedCollectionsRevision: 0,
     // personaPool 只放轻量元信息(loadState),1078 张卡放模块级 personaPoolCache,
@@ -294,7 +294,7 @@ function pinvouSharedweb() {
     depsChecking: false,
     depsInstalling: false,    // 一键安装进行中(pkexec apt)
     depsInstallError: null,   // 安装失败原因(apt stderr 透传/取消/pkexec 不可用)
-    // 桌面切片同形桩：安装进度事件只在桌面一键安装期间产生,Web 上恒为 null。
+    // Same-shape desktop-slice stub: install progress events occur only during a desktop one-click install; always null on the web.
     depsInstallProgress: null,
     // 厂商预装本地大模型一键引导:首屏检测结果 + 引导执行态
     vllmSetup: null,          // {eligible, may_offer_setup, has_packages, engine_state:ready|starting|stopped|failed, ...}
@@ -6633,9 +6633,9 @@ async function removeCollection(collectionId) { return pinvouSharedweb().removeC
   }
 
   // ── 应用内升级 ───────────────────────────────────────────────────
-  // Web 端只有版本号读取是活的：appUpdate 能力在浏览器部署恒为 false，
-  // check/download/install/restart 系列命令不在 access-policy 白名单内，
-  // 对应的桌面升级面只在桌面桥提供。
+  // On the web only the version-number read is live: the appUpdate capability is always false in browser deployments,
+  // the check/download/install/restart command family is not in the access-policy allowlist,
+  // and the corresponding desktop upgrade surface is provided only by the desktop bridge.
   async function loadAppVersion() {
     try {
       state.appVersion = await invoke("get_app_version");
@@ -6644,8 +6644,8 @@ async function removeCollection(collectionId) { return pinvouSharedweb().removeC
 
   // ── 依赖体检 ─────────────────────────────────────────────────────
   // 实时检测各文件解析能力(PDF/Office/OCR/压缩包/邮件)的系统依赖是否齐全,
-  // 设置页展示缺失项。后端 check_dependencies 不走缓存,装完可复检;
-  // 一键安装(install_dependencies)只在桌面桥提供。
+  // the settings page lists the missing items. The backend's check_dependencies bypasses the cache, so it can be re-checked after installs;
+  // one-click install (install_dependencies) is provided only by the desktop bridge.
   async function checkDependencies() { return pinvouSharedweb().checkDependencies(); }
 
   // ── 语音输入（WebView one-shot 录音 → 本地 SenseVoice/FunASR ASR；Linux webview 录音授权见 lib.rs setup）──────────────
@@ -7378,7 +7378,7 @@ function appendVoiceText(base, text) { return pinvouSharedweb().appendVoiceText(
     createPersona,
     updatePersona,
     deletePersona,
-    // 依赖体检（一键安装只在桌面桥提供）
+    // Dependency health check (one-click install is provided only by the desktop bridge)
     checkDependencies,
   };
 
