@@ -5439,6 +5439,26 @@ fn seed_session(store: &SessionStore, id: &str, older_by_seconds: i64) {
         .expect("seed session without eager retention");
 }
 
+/// Parse the durable pin file into an id → timestamp map (the file is a JSON
+/// array of `{id, pinned_at}` entries). Parsing (instead of substring
+/// matching) makes value corruption and dropped entries visible to the tests.
+fn parse_pin_file(file: &std::path::Path) -> std::collections::BTreeMap<String, String> {
+    let entries: Vec<serde_json::Value> =
+        serde_json::from_str(&std::fs::read_to_string(file).expect("read pin file"))
+            .expect("durable pin file must stay valid JSON");
+    entries
+        .into_iter()
+        .map(|entry| {
+            let id = entry["id"].as_str().expect("pin entry id").to_string();
+            let ts = entry["pinned_at"]
+                .as_str()
+                .expect("pin entry timestamp")
+                .to_string();
+            (id, ts)
+        })
+        .collect()
+}
+
 #[test]
 fn pin_persist_keeps_entries_written_after_boot() {
     let (store, _g) = isolated_store();
@@ -5454,13 +5474,20 @@ fn pin_persist_keeps_entries_written_after_boot() {
     )
     .expect("seed concurrent pin file");
     store.set_pinned("headless-c", true);
-    let durable = std::fs::read_to_string(&file).expect("read pin file");
-    for id in ["gui-a", "gui-b", "headless-c"] {
-        assert!(
-            durable.contains(id),
-            "a pin from this process must not revert pins persisted after boot: {durable}"
-        );
-    }
+    // Parse the durable map instead of substring-matching: a save that kept
+    // the keys but corrupted timestamps or dropped entries must go red.
+    let durable = parse_pin_file(&file);
+    assert_eq!(durable.len(), 3, "all three pins must survive: {durable:?}");
+    assert_eq!(
+        durable.get("gui-a").map(String::as_str),
+        Some("2026-09-20T00:00:00Z"),
+        "a pin from this process must not revert pins persisted after boot"
+    );
+    assert_eq!(
+        durable.get("gui-b").map(String::as_str),
+        Some("2026-09-20T00:00:01Z")
+    );
+    assert!(durable.contains_key("headless-c"));
 }
 
 #[test]
@@ -5476,14 +5503,14 @@ fn unpin_persist_removes_only_the_target_id() {
     )
     .expect("seed concurrent pin file");
     store.set_pinned("gui-a", false);
-    let durable = std::fs::read_to_string(&file).expect("read pin file");
-    assert!(
-        !durable.contains("gui-a"),
-        "the unpinned id must leave the durable file: {durable}"
-    );
-    assert!(
-        durable.contains("gui-b"),
-        "the untouched concurrent pin must survive: {durable}"
+    let durable = parse_pin_file(&file);
+    assert_eq!(
+        durable,
+        std::collections::BTreeMap::from([(
+            "gui-b".to_string(),
+            "2026-09-20T00:00:01Z".to_string()
+        )]),
+        "the unpinned id must leave the durable file and the untouched pin must survive"
     );
 }
 
@@ -5507,14 +5534,21 @@ fn retention_purge_keeps_pins_written_by_other_processes() {
     )
     .expect("seed concurrent pin file");
     store.delete("purge-a").expect("delete purged session");
-    let durable = std::fs::read_to_string(&file).expect("read pin file");
-    assert!(
-        !durable.contains("purge-a"),
-        "the purged id must leave the durable pin file: {durable}"
+    let durable = parse_pin_file(&file);
+    assert_eq!(
+        durable.len(),
+        2,
+        "exactly the purged id must leave: {durable:?}"
     );
-    assert!(
-        durable.contains("purge-b") && durable.contains("foreign-x"),
-        "the purge must not rewrite entries it does not own: {durable}"
+    assert!(!durable.contains_key("purge-a"));
+    assert_eq!(
+        durable.get("purge-b").map(String::as_str),
+        Some("2026-09-20T00:00:01Z"),
+        "the purge must not rewrite entries it does not own"
+    );
+    assert_eq!(
+        durable.get("foreign-x").map(String::as_str),
+        Some("2026-09-20T00:00:02Z")
     );
 }
 
@@ -5529,9 +5563,115 @@ fn mode_persist_keeps_entries_written_after_boot() {
     store
         .set_mode_and_persist("headless-c", SerializableMode::Yolo)
         .expect("persist headless mode");
-    let durable = std::fs::read_to_string(&file).expect("read mode file");
+    // Parsed full-map assertion: the motivating regression (a headless Plan
+    // persist flipping a just-GUI-set Plan session back to Yolo) keeps the
+    // KEY and corrupts the VALUE, which a substring check cannot see.
+    let durable: std::collections::HashMap<String, String> =
+        serde_json::from_str(&std::fs::read_to_string(&file).expect("read mode file"))
+            .expect("durable mode file must stay valid JSON");
+    assert_eq!(
+        durable,
+        std::collections::HashMap::from([
+            ("gui-a".to_string(), "plan".to_string()),
+            ("headless-c".to_string(), "yolo".to_string()),
+        ]),
+        "a mode persist from this process must not revert modes persisted after boot"
+    );
+}
+
+#[test]
+fn model_persist_keeps_entries_written_after_boot() {
+    let (store, _g) = isolated_store();
+    let file = paths::sessions_root().join("_session_models.json");
+    // A GUI process set gui-a's model after this process booted; the
+    // headless model pin below must preserve it (value included).
+    std::fs::write(&file, r#"{"gui-a": "gui-model"}"#).expect("seed concurrent model file");
+    store
+        .set_session_model_id("headless-c", Some("headless-model".to_string()))
+        .expect("persist headless model");
+    let durable: std::collections::HashMap<String, String> =
+        serde_json::from_str(&std::fs::read_to_string(&file).expect("read model file"))
+            .expect("durable model file must stay valid JSON");
+    assert_eq!(
+        durable,
+        std::collections::HashMap::from([
+            ("gui-a".to_string(), "gui-model".to_string()),
+            ("headless-c".to_string(), "headless-model".to_string()),
+        ]),
+        "a model persist from this process must not revert entries persisted after boot"
+    );
+}
+
+#[test]
+fn multi_agent_persist_keeps_entries_written_after_boot() {
+    let (store, _g) = isolated_store();
+    let file = paths::sessions_root().join("_multi_agent.json");
+    // A GUI process enabled multi-agent on gui-a after this process booted;
+    // the headless enable below must not revert it.
+    std::fs::write(&file, r#"["gui-a"]"#).expect("seed concurrent multi-agent file");
+    store
+        .set_multi_agent("headless-c", true)
+        .expect("persist headless multi-agent flag");
+    let durable: Vec<String> =
+        serde_json::from_str(&std::fs::read_to_string(&file).expect("read multi-agent file"))
+            .expect("durable multi-agent file must stay valid JSON");
+    assert_eq!(
+        durable.len(),
+        2,
+        "both flags must survive the durable rewrite: {durable:?}"
+    );
+    assert!(durable.contains(&"gui-a".to_string()));
+    assert!(durable.contains(&"headless-c".to_string()));
+}
+
+#[test]
+fn retention_purge_removes_durable_only_pins_of_evicted_sessions() {
+    let (store, _g) = isolated_store();
+    seed_session(&store, "ghost-victim", 10);
+    seed_session(&store, "survivor", 20);
+    // A pin another process persisted after this one booted: the boot-time
+    // pin map never sees it, but the durable purge must still remove it when
+    // its session is evicted — a surviving ghost pin would re-arm the
+    // retention exemption if the id is ever reused.
+    let file = paths::sessions_root().join("_pinned_sessions.json");
+    std::fs::write(
+        &file,
+        r#"[
+  {"id": "ghost-victim", "pinned_at": "2026-09-20T00:00:00Z"},
+  {"id": "survivor", "pinned_at": "2026-09-20T00:00:01Z"}
+]"#,
+    )
+    .expect("seed durable-only pins");
     assert!(
-        durable.contains("gui-a") && durable.contains("headless-c"),
-        "a mode persist from this process must not revert modes persisted after boot: {durable}"
+        !store.is_pinned("ghost-victim"),
+        "precondition: the pin is durable-only, not in the boot map"
+    );
+    store
+        .delete("ghost-victim")
+        .expect("delete evicted session");
+    let durable = parse_pin_file(&file);
+    assert_eq!(
+        durable,
+        std::collections::BTreeMap::from([(
+            "survivor".to_string(),
+            "2026-09-20T00:00:01Z".to_string()
+        )]),
+        "the evicted session's durable-only pin must not survive as a ghost"
+    );
+}
+
+#[test]
+fn pin_mutation_refuses_to_rewrite_a_corrupt_file() {
+    let (store, _g) = isolated_store();
+    let file = paths::sessions_root().join("_pinned_sessions.json");
+    std::fs::write(&file, "{\"ids\": [").expect("seed a corrupt pin file");
+    store.set_pinned("headless-c", true);
+    // The mutation must refuse: rewriting from an empty parse would destroy
+    // every entry the unreadable file still holds and the next sweep would
+    // enforce the narrowed file. The corrupt bytes stay untouched for repair.
+    let durable = std::fs::read_to_string(&file).expect("read pin file");
+    assert_eq!(
+        durable, "{\"ids\": [",
+        "a corrupt pin file must be left for repair, not overwritten from empty"
     );
 }

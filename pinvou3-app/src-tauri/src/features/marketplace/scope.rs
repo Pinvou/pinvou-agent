@@ -18,6 +18,7 @@
 
 use std::path::PathBuf;
 use std::sync::Mutex;
+use std::sync::atomic::{AtomicU8, Ordering};
 
 use crate::core::session_mode::{PackDefaultPolicy, SessionMode};
 use crate::features::marketplace::bundle::{builtin_cli_bundle_ids, skill_owner_package};
@@ -75,6 +76,28 @@ fn with_disabled_bundles_lock<T>(f: impl FnOnce() -> T) -> Result<T, String> {
     attempt_cross_process_lock(f).map_err(|(error, _unrun)| error)
 }
 
+/// Writer variant of [`with_disabled_bundles_lock`] for closures that can
+/// themselves fail (corrupt consent-file refusal, persistence errors): both
+/// failure kinds flatten into the entry point's `Err`, so an `Ok` from a
+/// write entry point means the change landed on disk — lock refusal alone is
+/// not the only way a write can be lost.
+fn with_disabled_bundles_writer<T>(f: impl FnOnce() -> Result<T, String>) -> Result<T, String> {
+    with_disabled_bundles_lock(f).and_then(std::convert::identity)
+}
+
+/// One-shot flags for the degraded read warnings (bit 0: cross-process lock
+/// unavailable; bit 1: corrupt data file defaulted to empty). Gating reads
+/// run on every prompt and tool listing, so an unbounded per-read `eprintln!`
+/// would spam stderr and stall the calling thread on exactly the degraded
+/// machines these warnings describe.
+static DEGRADED_READ_WARNED: AtomicU8 = AtomicU8::new(0);
+
+fn warn_degraded_read_once(bit: u8, message: &str) {
+    if DEGRADED_READ_WARNED.fetch_or(bit, Ordering::Relaxed) & bit == 0 {
+        eprintln!("{message}");
+    }
+}
+
 /// Read variant of [`with_disabled_bundles_lock`]: same two locks, but an
 /// unavailable cross-process lock degrades to in-process-only serialization
 /// instead of failing the read. A read cannot corrupt the file, and gating
@@ -93,9 +116,12 @@ fn with_disabled_bundles_lock_read<T>(f: impl FnOnce() -> T) -> T {
     match attempt_cross_process_lock(f) {
         Ok(value) => value,
         Err((error, f)) => {
-            eprintln!(
-                "[marketplace] {error}; proceeding with in-process locking only \
+            warn_degraded_read_once(
+                1,
+                &format!(
+                    "[marketplace] {error}; proceeding with in-process locking only \
                  (read-only path)"
+                ),
             );
             // The attempt hands the closure back unrun, so the degraded
             // fallback executes it exactly once.
@@ -195,32 +221,80 @@ fn load_disabled_bundles_file_readonly_locked() -> DisabledBundlesFile {
         Ok(c) => c,
         Err(_) => return migrate_from_legacy_files(),
     };
-    let mut file: DisabledBundlesFile = serde_json::from_str(&content).unwrap_or_default();
+    let mut file: DisabledBundlesFile = match serde_json::from_str(&content) {
+        Ok(file) => file,
+        Err(error) => {
+            // Reads must never write (the degraded path would clobber a
+            // lock-holding writer), so the corrupt file cannot be quarantined
+            // here — degrade to the default loudly, once per process.
+            warn_degraded_read_once(
+                2,
+                &format!(
+                    "[marketplace] {} is corrupt ({error}); proceeding with the default \
+                     consent state until a writer quarantines it",
+                    path.display()
+                ),
+            );
+            Default::default()
+        }
+    };
     strip_skill_prefixes(&mut file);
     file
 }
 
 /// Locked read-and-heal implementation for writers: a missing file migrates
 /// the two legacy files (idempotent) and persists the result; a present file
-/// is parsed and defensive `skill:` prefix stripping is saved back. Must run
-/// under [`with_disabled_bundles_lock`].
-fn load_disabled_bundles_file_locked() -> DisabledBundlesFile {
+/// is parsed and defensive `skill:` prefix stripping is saved back. A present
+/// but CORRUPT file refuses with `Err` after quarantining the bytes aside
+/// (sub-second-unique name, so even a same-second second corruption cannot
+/// destroy the first evidence):
+/// rebuilding from the default and saving would wipe every other scope's
+/// recorded denies on this write. The next write after a quarantine rebuilds
+/// from the migration default with the evidence preserved. The in-loader
+/// heal saves are best-effort — the caller's final save is the one that must
+/// succeed, and its failure propagates. Must run under
+/// [`with_disabled_bundles_lock`].
+fn load_disabled_bundles_file_locked() -> Result<DisabledBundlesFile, String> {
     let path = disabled_bundles_path();
     let content = match std::fs::read_to_string(&path) {
         Ok(c) => c,
         Err(_) => {
             let file = migrate_from_legacy_files();
             if !file.scopes.is_empty() || file.initialized.iter().any(|k| !k.is_empty()) {
-                save_disabled_bundles_file(&file);
+                let _ = save_disabled_bundles_file(&file);
             }
-            return file;
+            return Ok(file);
         }
     };
-    let mut file: DisabledBundlesFile = serde_json::from_str(&content).unwrap_or_default();
+    let file: DisabledBundlesFile = match serde_json::from_str(&content) {
+        Ok(file) => file,
+        Err(error) => {
+            // Quarantine via the platform helper: the sub-second-unique name
+            // keeps a same-second second corruption from renaming over the
+            // first capture (rename silently replaces on Unix).
+            let quarantined = match crate::platform::filesystem::quarantine_corrupt_file(&path) {
+                Ok(quarantine) => format!(
+                    "; the corrupt bytes are quarantined at {} and the next write rebuilds \
+                     from defaults",
+                    quarantine.display()
+                ),
+                Err(quarantine_error) => format!(
+                    "; quarantining failed ({quarantine_error}) — repair or remove the file \
+                     before writing"
+                ),
+            };
+            return Err(format!(
+                "[scope] {} is corrupt ({error}); refusing to overwrite the consent state \
+                 from the default{quarantined}",
+                path.display()
+            ));
+        }
+    };
+    let mut file = file;
     if strip_skill_prefixes(&mut file) {
-        save_disabled_bundles_file(&file);
+        let _ = save_disabled_bundles_file(&file);
     }
-    file
+    Ok(file)
 }
 
 /// 防御：剥除所有 scope 禁用集与不可见集里的 `skill:` 前缀（旧前端 bug 窗口期
@@ -399,15 +473,16 @@ fn merge_ids_into_scope(file: &mut DisabledBundlesFile, key: &str, ids: Vec<Stri
     }
 }
 
-/// 写完整文件（原子替换，与旧文件同范式）。
-fn save_disabled_bundles_file(file: &DisabledBundlesFile) {
-    if let Ok(json) = serde_json::to_string(file) {
-        if let Err(error) =
-            deepseek_tui::utils::write_atomic(&disabled_bundles_path(), json.as_bytes())
-        {
-            eprintln!("[scope] write disabled_bundles.json failed: {error}");
-        }
-    }
+/// Writes the whole file (atomic replace, same pattern as the legacy file).
+/// Failures must propagate: a write entry point returning `Ok` means the
+/// change landed on disk — swallowing a disk failure would let the GUI treat
+/// `Ok` as success and hot-refresh from stale state (fail-open), while this
+/// file's write semantics are fail-closed.
+fn save_disabled_bundles_file(file: &DisabledBundlesFile) -> Result<(), String> {
+    let json = serde_json::to_string(file)
+        .map_err(|error| format!("[scope] serialize disabled_bundles.json failed: {error}"))?;
+    deepseek_tui::utils::write_atomic(&disabled_bundles_path(), json.as_bytes())
+        .map_err(|error| format!("[scope] write disabled_bundles.json failed: {error}"))
 }
 
 /// 读某 scope 被禁用的**包 id** 列表（读不到/空 → 空）。
@@ -490,13 +565,13 @@ fn resolve_scope_disabled_ids(file: &DisabledBundlesFile, scope: ConnectorScope)
 /// is refused with `Err` instead of running unserialized (writers from the
 /// GUI and the CLI processes would overwrite each other whole-file).
 pub fn save_disabled_bundles_for(scope: ConnectorScope, ids: &[String]) -> Result<(), String> {
-    with_disabled_bundles_lock(|| {
+    with_disabled_bundles_writer(|| {
         let normalized: Vec<String> = ids.iter().map(|id| to_package_id(id)).collect();
-        let mut file = load_disabled_bundles_file_locked();
+        let mut file = load_disabled_bundles_file_locked()?;
         let key = scope.as_str().to_string();
         file.scopes.insert(key.clone(), normalized);
         file.initialized.insert(key);
-        save_disabled_bundles_file(&file);
+        save_disabled_bundles_file(&file)
     })
 }
 
@@ -511,13 +586,15 @@ pub fn save_disabled_bundles_for(scope: ConnectorScope, ids: &[String]) -> Resul
 /// not re-enter this module's load/save helpers (the in-process mutex is not
 /// reentrant — it would self-deadlock). Fails closed: when the cross-process
 /// lock cannot be established the write is refused with `Err` instead of
-/// running unserialized.
+/// running unserialized, a corrupt consent file is refused too (its bytes are
+/// quarantined first), and a failed disk write propagates — an `Ok` means the
+/// change landed.
 pub fn update_disabled_bundles_for(
     scope: ConnectorScope,
     update: impl FnOnce(&mut Vec<String>),
 ) -> Result<(), String> {
-    with_disabled_bundles_lock(|| {
-        let file = load_disabled_bundles_file_locked();
+    with_disabled_bundles_writer(|| {
+        let file = load_disabled_bundles_file_locked()?;
         let mut ids = resolve_scope_disabled_ids(&file, scope);
         update(&mut ids);
         let normalized: Vec<String> = ids.iter().map(|id| to_package_id(id)).collect();
@@ -525,7 +602,7 @@ pub fn update_disabled_bundles_for(
         let key = scope.as_str().to_string();
         file.scopes.insert(key.clone(), normalized);
         file.initialized.insert(key);
-        save_disabled_bundles_file(&file);
+        save_disabled_bundles_file(&file)
     })
 }
 
@@ -555,12 +632,12 @@ fn resolve_scope_hidden_ids(file: &DisabledBundlesFile, scope: ConnectorScope) -
 /// Fails closed like the other writers: an unavailable cross-process lock
 /// refuses the write with `Err`.
 pub fn save_hidden_bundles_for(scope: ConnectorScope, ids: &[String]) -> Result<(), String> {
-    with_disabled_bundles_lock(|| {
+    with_disabled_bundles_writer(|| {
         let normalized: Vec<String> = ids.iter().map(|id| to_package_id(id)).collect();
-        let mut file = load_disabled_bundles_file_locked();
+        let mut file = load_disabled_bundles_file_locked()?;
         file.hidden_scopes
             .insert(scope.as_str().to_string(), normalized);
-        save_disabled_bundles_file(&file);
+        save_disabled_bundles_file(&file)
     })
 }
 
@@ -601,8 +678,8 @@ pub fn save_disabled_bundles(ids: &[String]) -> Result<(), String> {
 /// opposite of the user's standing default.
 pub fn sync_deny_all_scopes_after_install(raw_id: &str) -> Result<(), String> {
     let package_id = to_package_id(raw_id);
-    with_disabled_bundles_lock(|| {
-        let mut file = load_disabled_bundles_file_locked();
+    with_disabled_bundles_writer(|| {
+        let mut file = load_disabled_bundles_file_locked()?;
         let mut changed = false;
         for mode in SessionMode::ALL {
             if mode.pack_default_policy() != PackDefaultPolicy::DenyAll {
@@ -619,8 +696,9 @@ pub fn sync_deny_all_scopes_after_install(raw_id: &str) -> Result<(), String> {
             }
         }
         if changed {
-            save_disabled_bundles_file(&file);
+            save_disabled_bundles_file(&file)?;
         }
+        Ok(())
     })
 }
 
@@ -632,8 +710,8 @@ pub fn sync_deny_all_scopes_after_install(raw_id: &str) -> Result<(), String> {
 /// `Err`.
 pub fn remove_bundle_from_disabled_scopes(raw_id: &str) -> Result<(), String> {
     let package_id = to_package_id(raw_id);
-    with_disabled_bundles_lock(|| {
-        let mut file = load_disabled_bundles_file_locked();
+    with_disabled_bundles_writer(|| {
+        let mut file = load_disabled_bundles_file_locked()?;
         let mut changed = false;
         for ids in file.scopes.values_mut() {
             let before = ids.len();
@@ -649,8 +727,9 @@ pub fn remove_bundle_from_disabled_scopes(raw_id: &str) -> Result<(), String> {
             changed |= ids.len() != before;
         }
         if changed {
-            save_disabled_bundles_file(&file);
+            save_disabled_bundles_file(&file)?;
         }
+        Ok(())
     })
 }
 
@@ -664,13 +743,13 @@ pub fn project_skills_enabled() -> bool {
 /// Fails closed like the other writers: an unavailable cross-process lock
 /// refuses the write with `Err`.
 pub fn set_project_skills_enabled(enabled: bool) -> Result<(), String> {
-    with_disabled_bundles_lock(|| {
-        let mut file = load_disabled_bundles_file_locked();
+    with_disabled_bundles_writer(|| {
+        let mut file = load_disabled_bundles_file_locked()?;
         if file.project_skills_enabled == enabled {
-            return;
+            return Ok(());
         }
         file.project_skills_enabled = enabled;
-        save_disabled_bundles_file(&file);
+        save_disabled_bundles_file(&file)
     })
 }
 
@@ -797,6 +876,79 @@ mod tests {
                 load_disabled_bundles_for(ConnectorScope::Plain),
                 vec!["weather".to_string()],
                 "the write must survive the double critical section"
+            );
+        });
+    }
+
+    /// A corrupt consent file must never be overwritten from the default: the
+    /// parse failure may hide other scopes' recorded denies, and a
+    /// default-based save would wipe them without evidence. The write is
+    /// refused, the corrupt bytes are quarantined (renamed aside, preserved),
+    /// and the NEXT write rebuilds from the migration default.
+    #[test]
+    fn corrupt_consent_file_refuses_the_write_and_quarantines() {
+        with_temp_home("pinvou3-scope", || {
+            let path = disabled_bundles_path();
+            std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+            let corrupt = r#"{"scopes": {"plain": ["we"#;
+            std::fs::write(&path, corrupt).unwrap();
+
+            let error = save_disabled_bundles_for(ConnectorScope::Plain, &["weather".to_string()])
+                .unwrap_err();
+            assert!(
+                error.contains("corrupt") && error.contains("refusing"),
+                "the refusal must name the corruption: {error}"
+            );
+            // The canonical file is gone (renamed aside) and the evidence is
+            // preserved verbatim under the timestamped quarantine name.
+            assert!(!path.exists(), "the corrupt file must be renamed aside");
+            let mut evidence = std::fs::read_dir(path.parent().unwrap())
+                .unwrap()
+                .flatten()
+                .filter_map(|entry| {
+                    let path = entry.path();
+                    path.to_str()
+                        .is_some_and(|p| p.contains(".json.corrupt-"))
+                        .then_some(path)
+                })
+                .collect::<Vec<_>>();
+            assert_eq!(
+                evidence.len(),
+                1,
+                "exactly one quarantine file must exist: {evidence:?}"
+            );
+            let preserved = std::fs::read_to_string(evidence.pop().unwrap()).unwrap();
+            assert_eq!(preserved, corrupt, "the corrupt bytes must survive");
+
+            // The next write rebuilds from the migration default and succeeds.
+            save_disabled_bundles_for(ConnectorScope::Plain, &["weather".to_string()]).unwrap();
+            assert_eq!(
+                load_disabled_bundles_for(ConnectorScope::Plain),
+                vec!["weather".to_string()],
+                "the store must be writable again after the quarantine"
+            );
+        });
+    }
+
+    /// Fail-closed covers persistence too: a write entry point returning `Ok`
+    /// means the change landed on disk. Replacing the data file with a
+    /// directory makes the atomic replace fail, so the writer must return
+    /// `Err` instead of reporting success from stale state.
+    #[test]
+    fn write_entry_points_propagate_persistence_failures() {
+        with_temp_home("pinvou3-scope", || {
+            let path = disabled_bundles_path();
+            std::fs::create_dir_all(&path).unwrap();
+
+            let error = save_disabled_bundles_for(ConnectorScope::Plain, &["weather".to_string()])
+                .unwrap_err();
+            assert!(
+                error.contains("write disabled_bundles.json failed"),
+                "the error must name the failed write: {error}"
+            );
+            assert!(
+                update_disabled_bundles_for(ConnectorScope::Plain, |_| {}).is_err(),
+                "the RMW must propagate the same persistence failure"
             );
         });
     }

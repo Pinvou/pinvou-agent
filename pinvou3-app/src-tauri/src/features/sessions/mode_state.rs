@@ -293,7 +293,7 @@ impl SessionStore {
             entry.multi_agent = enabled;
             previous
         };
-        if let Err(error) = Self::apply_multi_agent_mutation(&[(id, enabled)], &[]) {
+        if let Err(error) = Self::apply_multi_agent_mutation_locked(&[(id, enabled)], &[]) {
             let mut m = self.mode_states.write();
             if let Some(entry) = m.get_mut(id) {
                 entry.multi_agent = previous;
@@ -324,8 +324,9 @@ impl SessionStore {
     /// Boot-only whole-list rewrite, used after ghost cleanup re-derives the
     /// full id list from the file just read plus the sessions directory.
     /// Production single-flag mutations must use
-    /// [`apply_multi_agent_mutation`] so entries another process added after
-    /// this one booted are preserved instead of reverted by a stale snapshot.
+    /// [`apply_multi_agent_mutation_locked`] so entries another process added
+    /// after this one booted are preserved instead of reverted by a stale
+    /// snapshot.
     pub(crate) fn save_multi_agent_flags_locked(&self) -> Result<()> {
         let file = crate::platform::paths::sessions_root().join("_multi_agent.json");
         let ids = self.multi_agent_session_ids();
@@ -345,7 +346,13 @@ impl SessionStore {
     /// `_multi_agent.json` id list, keeping entries written by another
     /// process after this one booted (same rationale as
     /// [`Self::apply_session_mode_mutation`]).
-    pub(crate) fn apply_multi_agent_mutation(
+    ///
+    /// The `_locked` suffix is the caller contract shared with
+    /// [`Self::save_multi_agent_flags_locked`]: the durable read-modify-write
+    /// must run under the store's `multi_agent_flags_io` mutex, or a
+    /// concurrent save's older snapshot lands last and resurrects removed
+    /// flags.
+    pub(crate) fn apply_multi_agent_mutation_locked(
         upserts: &[(&str, bool)],
         removes: &[&str],
     ) -> Result<()> {

@@ -92,7 +92,7 @@ fn apply_timestamped_id_mutation(
     removes: &[&str],
 ) -> Result<()> {
     let file = crate::platform::paths::sessions_root().join(file_name);
-    let mut entries = load_timestamped_id_map(file_name, ts_key, label).unwrap_or_default();
+    let mut entries = load_timestamped_id_map_for_mutation(file_name, ts_key, label)?;
     let mut changed = false;
     for (id, timestamp) in upserts {
         if entries.get(*id).map(String::as_str) != Some(timestamp.as_str()) {
@@ -181,6 +181,20 @@ pub(crate) fn apply_session_model_mutation(id: &str, model_id: Option<&str>) -> 
     .context("persist per-session model bindings")
 }
 
+/// Batched remove half for `_session_models.json`: retention purges evict N
+/// sessions at once, so the durable file is re-read and rewritten once for
+/// the whole batch instead of once per id (mirroring the batched mode-map
+/// mutation).
+pub(crate) fn remove_session_models(ids: &[&str]) -> Result<()> {
+    mutate_json_map_file::<String, _>(SESSION_MODELS_FILE, |entries| {
+        let mut changed = false;
+        for id in ids {
+            changed |= entries.remove(*id).is_some();
+        }
+        changed
+    })
+}
+
 /// Shared load core for the pinned / hidden sidecars. `None` = nothing to load
 /// (missing / unreadable file or invalid shape, the latter logged with
 /// `label` so the historical per-file diagnostics stay unchanged). Bare string
@@ -199,7 +213,17 @@ fn load_timestamped_id_map(
         Ok(c) => c,
         Err(_) => return None,
     };
-    match serde_json::from_str::<serde_json::Value>(&content) {
+    parse_timestamped_id_map(&content, ts_key, label)
+}
+
+/// Parse half of [`load_timestamped_id_map`], shared with the mutation-path
+/// loader so both sides agree on the accepted shapes.
+fn parse_timestamped_id_map(
+    content: &str,
+    ts_key: &str,
+    label: &str,
+) -> Option<HashMap<String, String>> {
+    match serde_json::from_str::<serde_json::Value>(content) {
         Ok(serde_json::Value::Array(items)) => {
             let mut parsed = HashMap::new();
             for item in items {
@@ -233,6 +257,32 @@ fn load_timestamped_id_map(
             None
         }
     }
+}
+
+/// Mutation-path loader for the pinned / hidden sidecars. Unlike
+/// [`load_timestamped_id_map`] — which degrades a torn/unreadable file to
+/// `None` so retention sweeps can fall back to the boot-time map — a mutation
+/// must distinguish "file absent" (start empty) from "file present but
+/// unreadable/corrupt" (refuse): proceeding from an empty map and saving
+/// would durably destroy every entry the file still holds, and the next sweep
+/// would then enforce the narrowed file.
+fn load_timestamped_id_map_for_mutation(
+    file_name: &str,
+    ts_key: &str,
+    label: &str,
+) -> Result<HashMap<String, String>> {
+    let file = crate::platform::paths::sessions_root().join(file_name);
+    if !file.exists() {
+        return Ok(HashMap::new());
+    }
+    let content =
+        std::fs::read_to_string(&file).with_context(|| format!("read {file_name} for mutation"))?;
+    parse_timestamped_id_map(&content, ts_key, label).ok_or_else(|| {
+        anyhow::anyhow!(
+            "{file_name} is unreadable or corrupt; refusing the id-level mutation to \
+             protect the surviving entries"
+        )
+    })
 }
 
 impl SessionStore {
@@ -324,6 +374,7 @@ impl SessionStore {
 
     pub fn set_pinned(&self, id: &str, pinned: bool) {
         let timestamp = Utc::now().to_rfc3339();
+        let previous = self.pinned_sessions.read().get(id).cloned();
         {
             let mut pins = self.pinned_sessions.write();
             if pinned {
@@ -337,7 +388,7 @@ impl SessionStore {
                 PINNED_SESSIONS_FILE,
                 "pinned_at",
                 "load_pinned_sessions",
-                &[(id, timestamp)],
+                &[(id, timestamp.clone())],
                 &[],
             )
         } else {
@@ -350,6 +401,19 @@ impl SessionStore {
             )
         };
         if let Err(error) = result {
+            // Roll the in-memory cache back to the durable state: the file is
+            // the cross-process truth and a refused/failed persist must not
+            // leave this process's snapshot claiming a state the file does
+            // not hold (same contract as `set_session_model_id`).
+            let mut pins = self.pinned_sessions.write();
+            match previous {
+                Some(previous) => {
+                    pins.insert(id.to_string(), previous);
+                }
+                None => {
+                    pins.remove(id);
+                }
+            }
             eprintln!("[sessions] persist pin state for {id} failed: {error:#}");
         }
     }
@@ -394,6 +458,7 @@ impl SessionStore {
 
     pub fn set_hidden(&self, id: &str, hidden: bool) {
         let timestamp = Utc::now().to_rfc3339();
+        let previous = self.hidden_sessions.read().get(id).cloned();
         {
             let mut hidden_sessions = self.hidden_sessions.write();
             if hidden {
@@ -410,7 +475,7 @@ impl SessionStore {
                 HIDDEN_SESSIONS_FILE,
                 "hidden_at",
                 "load_hidden_sessions",
-                &[(id, timestamp)],
+                &[(id, timestamp.clone())],
                 &[],
             )
         } else {
@@ -423,6 +488,19 @@ impl SessionStore {
             )
         };
         if let Err(error) = result {
+            // Roll the hidden-cache entry back (same durable-truth contract
+            // as `set_pinned`). The pin-clearing side effect above is
+            // intentional and kept: hiding is the user's stated direction,
+            // and a session that failed to hide stays unpinned either way.
+            let mut hidden_sessions = self.hidden_sessions.write();
+            match previous {
+                Some(previous) => {
+                    hidden_sessions.insert(id.to_string(), previous);
+                }
+                None => {
+                    hidden_sessions.remove(id);
+                }
+            }
             eprintln!("[sessions] persist hidden state for {id} failed: {error:#}");
         }
     }

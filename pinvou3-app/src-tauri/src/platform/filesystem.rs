@@ -2242,13 +2242,32 @@ fn assert_private_mode_impl(path: &Path, expected: u32) {
 #[cfg(not(unix))]
 fn assert_private_mode_impl(path: &Path, expected: u32) {
     let _ = (path, expected);
+/// Move a corrupt file aside, preserving its bytes for inspection, under a
+/// unique timestamped name. The sub-second suffix matters: `rename` silently
+/// replaces an existing destination on Unix, so two corruptions landing in
+/// the same wall-clock second (fast retry loops, racing processes) must not
+/// destroy each other's evidence. Returns the quarantine path; the caller
+/// owns the refuse/log semantics.
+pub fn quarantine_corrupt_file(path: &Path) -> io::Result<PathBuf> {
+    let now = chrono::Utc::now();
+    let stem = path
+        .file_name()
+        .and_then(|name| name.to_str())
+        .unwrap_or("file");
+    let quarantine = path.with_file_name(format!(
+        "{stem}.corrupt-{}.{:09}",
+        now.format("%Y%m%dT%H%M%S"),
+        now.timestamp_subsec_nanos(),
+    ));
+    std::fs::rename(path, &quarantine)?;
+    Ok(quarantine)
 }
 
 #[cfg(test)]
 pub(crate) mod tests {
     use std::path::Path;
 
-    use super::{atomic_write, atomic_write_private, is_executable_file};
+    use super::{atomic_write, atomic_write_private, is_executable_file, quarantine_corrupt_file};
     #[cfg(unix)]
     use super::{create_secret_file, open_private_append_file};
     #[cfg(any(
@@ -2994,6 +3013,46 @@ pub(crate) mod tests {
         reader.join().unwrap();
         let final_value = std::fs::read_to_string(&target).unwrap();
         assert!(final_value == old || final_value == new);
+        let _ = std::fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn quarantine_names_stay_unique_within_one_second() {
+        let root = std::env::temp_dir().join(format!(
+            "pinvou3-quarantine-test-{}-{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        std::fs::create_dir_all(&root).unwrap();
+        let first = root.join("state.json");
+        let second = root.join("other.json");
+        std::fs::write(&first, b"corrupt A").unwrap();
+        std::fs::write(&second, b"corrupt B").unwrap();
+        let first_quarantine = quarantine_corrupt_file(&first).unwrap();
+        let second_quarantine = quarantine_corrupt_file(&second).unwrap();
+        assert_ne!(first_quarantine, second_quarantine);
+        assert!(
+            first_quarantine
+                .to_string_lossy()
+                .contains(".json.corrupt-")
+        );
+        assert!(!first.exists(), "the corrupt file must move aside");
+        assert_eq!(
+            std::fs::read(&first_quarantine).unwrap(),
+            b"corrupt A",
+            "the quarantined bytes must be preserved verbatim"
+        );
+        // Same stem again (the realistic same-second retry): the second
+        // capture must land under a fresh name instead of renaming over the
+        // first evidence.
+        std::fs::write(&first, b"corrupt A2").unwrap();
+        let re_quarantine = quarantine_corrupt_file(&first).unwrap();
+        assert_ne!(re_quarantine, first_quarantine);
+        assert_eq!(std::fs::read(&re_quarantine).unwrap(), b"corrupt A2");
+        assert_eq!(std::fs::read(&first_quarantine).unwrap(), b"corrupt A");
         let _ = std::fs::remove_dir_all(root);
     }
 
