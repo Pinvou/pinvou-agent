@@ -425,6 +425,14 @@ pub async fn create_session(
     let roots =
         crate::features::sessions::validate_workspace_roots(workspace_roots.unwrap_or_default())
             .map_err(|e| format!("create_session: invalid workspace_roots: {e:#}"))?;
+    // 没有 workspace_path 时钥匙串/项目归属无处可落:硬校验完再静默丢弃会谎报
+    // 授权范围(评审 #484 round-7 minor)——显式参数错误,让调用方重传。
+    if workspace.is_none() && (!roots.is_empty() || project_id.is_some()) {
+        return Err(
+            "create_session: invalid workspace_roots/project_id: both require workspace_path"
+                .to_string(),
+        );
+    }
     let metadata =
         create_session_record(set_active.unwrap_or(true), &store, &pool, workspace.clone())?;
     if let Some(workspace) = workspace.clone() {
