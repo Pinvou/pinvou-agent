@@ -1340,10 +1340,12 @@ impl EnginePool {
         }
     }
 
-    /// 为独立调用构造该 session 的 bridge。与 EnginePool lazy spawn 共用同一套
-    /// 运行时模型解析（prepare_runtime_model），保证检阅等旁路入口与正式 spawn
-    /// consistent model-routing behavior with the formal spawn. Bypass entry points never represent unattended scheduled turns, so
-    /// they always take the interactive path (`scheduled_unattended = false`).
+    /// Builds a bridge for the session on behalf of a standalone caller. Shares the
+    /// EnginePool lazy-spawn runtime-model resolution (`prepare_runtime_model`) so
+    /// bypass entry points such as review get consistent model-routing behavior with
+    /// the formal spawn. Bypass entries deliberately take the interactive routing
+    /// policy (`scheduled_unattended = false`); the scheduled organizer is the one
+    /// unattended caller and intentionally mirrors the interactive path.
     pub(crate) async fn fresh_bridge_for(&self, session_id: &str) -> Result<Pinvou3Bridge> {
         #[cfg(any(feature = "benchmark-hooks", test))]
         let eval_model = self.eval_model_snapshots.for_session(session_id);

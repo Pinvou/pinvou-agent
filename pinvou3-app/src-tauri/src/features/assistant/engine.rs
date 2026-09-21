@@ -1289,18 +1289,20 @@ impl TurnLifecycle {
         true
     }
 
-    /// 标记「cancel 在 turn 已 submit 但尚未 TurnStarted 时发起」。
+    /// Marks a cancel issued after the turn was submitted but before `TurnStarted` arrived.
     ///
     /// The marker is set only when the turn is active, already `submitted`,
     /// and its `turn_id` is still `None` (`TurnStarted` not yet arrived),
     /// and `turn_epoch == epoch` (still the turn the cancel was issued for),
     /// recording `pending_cancel = Some((epoch, mode, submission_id))`:
-    /// - 必须 `submitted`：未提交的 reservation（消息尚未入队 engine）应由 cancel
-    ///   the unsubmitted-claim terminal path (`emit_unsubmitted_interrupted_terminal_for_epoch`),
-    ///   which immediately emits `chat:done` to invalidate the reservation instead of hanging it as pending — otherwise, while an idle
-    ///   engine still
-    ///   存在时 cancel 不发终态、reservation 仍有效，原 chat future 后续照常提交，
-    ///   前端 busy 在 cancel 后到 TurnStarted 之间无法复位。
+    /// - Must be `submitted`: an unsubmitted reservation (message not yet enqueued
+    ///   to the engine) is handled by the cancel path's unsubmitted-claim terminal
+    ///   (`emit_unsubmitted_interrupted_terminal_for_epoch`), which immediately
+    ///   emits `chat:done` to invalidate the reservation instead of leaving it
+    ///   pending — otherwise, while an idle engine still exists, cancel would not
+    ///   emit a terminal state and the reservation would stay valid; the original
+    ///   chat future would go on submitting as usual and the frontend busy flag
+    ///   could not reset between the cancel and TurnStarted.
     /// - A set `turn_id` means the forwarder already consumed `TurnStarted`:
     ///   the cancel closure dispatches turn-bound under that identity and
     ///   hits exactly this turn's own token, with no replay needed.

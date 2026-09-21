@@ -191,37 +191,36 @@ pub(super) fn run_libreoffice_convert<T>(
     let tmpdir = std::env::temp_dir().join(format!("{tmp_prefix}-{ts}"));
     std::fs::create_dir_all(&tmpdir).map_err(|e| format!("创建临时目录失败: {e}"))?;
 
-    // The historical inline `?` on this argument returned before the cleanup
-    // step and left the empty temp dir behind; that error-path behavior is
-    // preserved here on purpose.
-    let profile_arg = libreoffice_user_installation_arg(&tmpdir.join("profile"))?;
-
-    // soffice 冷启动/遗留锁可能挂死,带 kill 的超时兜底(180s,与 #532 的
-    // 各内联转换点同预算);超时错误走下方统一的失败分支清理临时目录。
-    let out = crate::platform::process::output_with_timeout_and_kill_tree(
-        {
-            let mut command = libreoffice_tool_command();
-            command
-                .arg(profile_arg)
-                .arg("--headless")
-                .arg("--convert-to")
-                .arg(convert_to)
-                .arg("--outdir")
-                .arg(&tmpdir)
-                .arg(path);
-            command
-        },
-        std::time::Duration::from_secs(180),
-    );
-
-    let result = match out {
-        Ok(o) if o.status.success() => consume(&tmpdir),
-        Ok(o) => Err(format!(
-            "{fail_label}: {}",
-            String::from_utf8_lossy(&o.stderr).trim()
-        )),
-        Err(e) => Err(format!("LibreOffice 调用失败: {e}")),
-    };
+    // soffice cold start or a stale lock can hang; bounded by a 180s kill-tree
+    // timeout (same budget as the #532 inline conversion points). The profile
+    // argument is built inside the closure so every error path below still
+    // reaches the cleanup step instead of leaking the temp dir.
+    let result = (|| -> Result<T, String> {
+        let profile_arg = libreoffice_user_installation_arg(&tmpdir.join("profile"))?;
+        let out = crate::platform::process::output_with_timeout_and_kill_tree(
+            {
+                let mut command = libreoffice_tool_command();
+                command
+                    .arg(profile_arg)
+                    .arg("--headless")
+                    .arg("--convert-to")
+                    .arg(convert_to)
+                    .arg("--outdir")
+                    .arg(&tmpdir)
+                    .arg(path);
+                command
+            },
+            std::time::Duration::from_secs(180),
+        );
+        match out {
+            Ok(o) if o.status.success() => consume(&tmpdir),
+            Ok(o) => Err(format!(
+                "{fail_label}: {}",
+                String::from_utf8_lossy(&o.stderr).trim()
+            )),
+            Err(e) => Err(format!("LibreOffice 调用失败: {e}")),
+        }
+    })();
     let _ = std::fs::remove_dir_all(&tmpdir);
     result
 }

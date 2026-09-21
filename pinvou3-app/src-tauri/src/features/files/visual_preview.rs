@@ -91,7 +91,7 @@ fn inline_html_images(html: &str, dir: &Path) -> String {
 
 /// office 文档 → 可视化 HTML（版式/图片还原）。soffice `--convert-to html`,旁置图片
 /// inlined into a self-contained HTML returned to the frontend, which feeds it directly to iframe srcDoc. Reuses the dedicated UserInstallation profile
-/// + temp-dir conventions (see [`super::ingest_deps::run_libreoffice_convert`]).
+/// + temp-dir conventions (see `ingest_deps::run_libreoffice_convert`).
 pub fn libreoffice_to_inline_html(path: &Path) -> Result<String, String> {
     if !system_tools().libreoffice {
         return Err(crate::platform::os::libreoffice_missing_message().into());
@@ -182,7 +182,7 @@ fn render_pdf_pages(
 ) -> Result<Vec<PathBuf>, String> {
     let prefix = dir.join("page");
     // pdftoppm -png -r <dpi> -l <max> <pdf> <prefix> → page-1.png, page-2.png ...
-    // pdftoppm 卡死按超时 kill-tree（120s,与 #532 的各内联转换点同预算）。
+    // A hung pdftoppm is killed via the timeout kill-tree (120s, same budget as the #532 inline conversion points).
     let convert = crate::platform::process::output_with_timeout_and_kill_tree(
         {
             let mut command = pdf_tool_command("pdftoppm");
@@ -226,7 +226,7 @@ fn render_pdf_pages(
     Ok(pages)
 }
 
-/// PDF → list of per-page PNG data URIs (visual preview). Reuses [`render_pdf_pages`]'s
+/// PDF → list of per-page PNG data URIs (visual preview). Reuses the `render_pdf_pages`
 /// pdftoppm invocation boilerplate, but at 110 dpi (clear enough for preview without overly large data URIs). Returns (data_uris, whether truncated at the cap).
 pub fn pdf_to_png_data_uris(path: &Path, max_pages: u32) -> Result<(Vec<String>, bool), String> {
     if !system_tools().pdftoppm {

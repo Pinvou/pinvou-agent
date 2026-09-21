@@ -168,6 +168,7 @@ pub struct PinvouReview {
     /// guard diagnostic log: consumed by neither production code nor the frontend, only by tests asserting guard routing;
     /// builds other than tests do not compile this field.
     #[cfg(test)]
+    #[serde(skip_serializing)]
     pub guard_reasons: Vec<String>,
 }
 

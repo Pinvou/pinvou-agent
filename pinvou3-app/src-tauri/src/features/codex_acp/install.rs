@@ -739,7 +739,7 @@ async fn run_managed_install(
             String::new()
         };
         bail!(
-            "{} 退出: {status}；stderr: {}{}",
+            "{}: {status}；stderr: {}{}",
             stage.failure_subject,
             stderr_tail,
             hint
@@ -790,7 +790,7 @@ pub(super) async fn run_official_install_script(
                 "{} 安装脚本超过 10 分钟仍未完成，请检查网络后重试",
                 backend.display_name()
             ),
-            failure_subject: format!("{} 安装脚本", backend.display_name()),
+            failure_subject: format!("{} 安装脚本退出", backend.display_name()),
             failure_hint: true,
         },
     )
@@ -829,7 +829,7 @@ pub(super) async fn run_npm_global_upgrade(
                 "{} npm 全局升级超过 10 分钟仍未完成，请检查网络后重试",
                 backend.display_name()
             ),
-            failure_subject: format!("npm 全局升级 {}", backend.display_name()),
+            failure_subject: format!("npm 全局升级 {} 退出", backend.display_name()),
             failure_hint: false,
         },
     )
