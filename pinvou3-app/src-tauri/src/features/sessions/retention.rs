@@ -580,9 +580,14 @@ impl SessionStore {
             // name, so the caller may reclaim it.
             Err(error) if super::store::is_not_found_error(&error) => return Ok(false),
             Err(error) if super::store::is_identity_mismatch_error(&error) => return Ok(false),
-            // Permanent corruption (InvalidData: truncated body, a newer
-            // schema_version, malformed receipts) is isolated per record
-            // (round-16 B3): the record can never load, so the caller
+            // Permanent corruption (InvalidData: truncated body, malformed
+            // receipts — or a newer schema_version than this build supports,
+            // which is the DOWNGRADE case: a record written by a newer build
+            // is deliberately reclaimed under the same permanence argument
+            // (round-16 B3; round-20 minor-2 names the trade-off explicitly —
+            // a downgrade loses such transcripts by design, there is no
+            // readable form to preserve) is isolated per record: the record
+            // can never load, so the caller
             // reclaims it — aborting the whole pass on it would wedge
             // convergence across every boot and discard the orphans already
             // classified before it.
@@ -1077,8 +1082,11 @@ impl SessionStore {
 }
 
 /// True when a main→aux binding names a record that can never be used: the
-/// transcript is gone, or the name is a case-variant alias that [`SessionStore::load`]
-/// rejects on identity.
+/// transcript is gone, the name is a case-variant alias that [`SessionStore::load`]
+/// rejects on identity, or the record is permanently unreadable (InvalidData —
+/// round-20 minor-1: a permanently corrupt bound record must not win against a
+/// healthy backlink competitor in the same pass, and `get_or_create`'s ghost
+/// branch already clears this class).
 ///
 /// Transient read faults deliberately return `false`: clearing the binding
 /// there would hand the next boot a mapping-less live transcript, and on a
@@ -1089,6 +1097,7 @@ fn binding_is_unusable(store: &SessionStore, mapped: &str) -> bool {
         Err(error) => {
             super::store::is_not_found_error(&error)
                 || super::store::is_identity_mismatch_error(&error)
+                || super::store::is_invalid_data_error(&error)
         }
     }
 }

@@ -5075,6 +5075,58 @@ fn reconcile_readopts_mismatched_aux_when_mapped_main_is_dead() {
     );
 }
 
+/// PR #433 review round-20 (minor-1): a main bound to a permanently corrupt
+/// aux record must lose the binding to a healthy backlink competitor in the
+/// same pass — keeping it would reclaim the healthy transcript as an
+/// ambiguous duplicate, the strictly worse outcome.
+#[test]
+fn reconcile_strips_corrupt_binding_for_healthy_competitor() {
+    let (store, _g) = isolated_store();
+    let main = store
+        .create_new("/model".into(), None, std::env::temp_dir())
+        .expect("create main");
+    let corrupt = store
+        .get_or_create_aux_session(&main.metadata.id)
+        .expect("create aux to corrupt");
+    let healthy = store
+        .create_aux_session(&main.metadata.id)
+        .expect("create the healthy competitor");
+    // Force the lying state: the mapping names the corrupt record while the
+    // healthy one sits unmapped with its backlink on the same main.
+    store
+        .set_aux_session(&main.metadata.id, Some(corrupt.id.clone()))
+        .expect("plant the corrupt mapping");
+
+    let corrupt_path = store
+        .manager
+        .sessions_dir()
+        .join(format!("{}.json", corrupt.id));
+    let mut record: serde_json::Value = serde_json::from_str(
+        &std::fs::read_to_string(&corrupt_path).expect("read the corrupt-to-be record"),
+    )
+    .expect("parse the record");
+    record["schema_version"] = serde_json::json!(999);
+    std::fs::write(
+        &corrupt_path,
+        serde_json::to_string_pretty(&record).unwrap(),
+    )
+    .expect("rewrite the record with a future schema_version");
+
+    store.reconcile_aux_sessions().expect("reconcile completes");
+    assert!(
+        !corrupt_path.exists(),
+        "the permanently corrupt record must be reclaimed"
+    );
+    store
+        .load(&healthy.id)
+        .expect("the healthy competitor must win the binding, not be reclaimed");
+    assert_eq!(
+        store.aux_session_id(&main.metadata.id).as_deref(),
+        Some(healthy.id.as_str()),
+        "the healthy backlink competitor must be adopted in the same pass"
+    );
+}
+
 /// PR #433 review round-17 (B-A): with the mapped main dead, a TRANSIENT
 /// read fault on the aux record must leave the pair for the next boot —
 /// probing the error as backlink_mismatch = false would classify a live

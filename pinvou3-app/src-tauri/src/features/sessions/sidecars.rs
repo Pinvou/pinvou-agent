@@ -299,6 +299,20 @@ impl SessionStore {
             }
         }
         let mut aux_sessions = self.aux_sessions.write();
+        // Values are unique across the map (round-20 minor-12): two mains must
+        // never resolve to the same aux — a doubled mapping makes one parent's
+        // panel read the other's transcript. The check lives at this single
+        // write API so the invariant cannot depend on caller discipline.
+        if let Some(aux_id) = &aux_id {
+            if aux_sessions
+                .iter()
+                .any(|(key, value)| value == aux_id && key != main_id)
+            {
+                anyhow::bail!(
+                    "Auxiliary session is already bound to another main session: {aux_id}"
+                );
+            }
+        }
         let previous = aux_sessions.get(main_id).cloned();
         match aux_id {
             Some(aux_id) => {

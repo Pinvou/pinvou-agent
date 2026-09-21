@@ -773,6 +773,10 @@ impl SessionStore {
             None,
         );
         session.metadata.title = AUX_SESSION_TITLE.to_string();
+        // `parent_session_id` is upstream's fork-provenance field (rendered as
+        // "| fork of X" by the foundation); this PR deliberately overloads it
+        // as the aux backlink — reconcile treats it as the authoritative
+        // parentage when repairing a missing or mismatched mapping.
         session.metadata.parent_session_id = Some(parent_id.to_string());
         // The per-session model binding lives in the `_session_models.json`
         // sidecar, not in `metadata.model`: same order as `create_new` — write

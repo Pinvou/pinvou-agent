@@ -3,6 +3,7 @@ import { MessageSquare, Quote, RotateCcw, Send, X } from '../../components/icons
 import { RightDockPanel } from '../../components/layout/RightDock.jsx';
 import { bridge } from '../../hooks/useBridge.js';
 import { isImeComposing } from '../../shared/ime-guard.mjs';
+import { constrainChatInput } from '../chat/chat-input-limit.js';
 import { ConversationTimeline } from '../conversation/ConversationTimeline.jsx';
 import {
   buildAuxQuoteBlock,
@@ -413,7 +414,9 @@ export function AuxChatPanel({ sessionId, activationKey, t, theme, onClose, onAc
     // staged quotes as "delivered", and the discard then destroys both the
     // transcript and the recovery material. With the binding nulled (same
     // reset as the rebind effect), every late settle takes the keep-draft
-    // skip; the re-ensure below writes the fresh id back.
+    // skip; the re-ensure below writes the fresh id back, and the
+    // discard-failure path restores the old binding because that session is
+    // still alive then.
     auxIdRef.current = null;
     setAuxId(null);
     // Feedback for the discard+ensure window (the backend turn gate can hold
@@ -447,12 +450,27 @@ export function AuxChatPanel({ sessionId, activationKey, t, theme, onClose, onAc
         }
       } catch (error) {
         console.warn('[pinvou3][aux-chat] restart discard failed', error);
-        // Discard failed: the old aux session is still fully usable, the
-        // binding and snapshot stay as-is, and only a retry hint is shown
-        // (unlike an ensure failure — that is the binding-lost situation that
-        // must be recovered via a new topic).
+        // Discard failed: the old aux session is still fully alive, so the
+        // binding nulled at entry (round-18 B-1) must be restored — otherwise
+        // the panel sits send-dead behind the discardFailed copy that says the
+        // current topic is still usable (round-20 Major-2), and the only
+        // in-panel "retry" (New Topic) would destroy the perfectly alive
+        // session. ensure is idempotent and returns that same session; if the
+        // restore itself fails, surface the binding-lost state instead.
         if (generationRef.current !== generation) return;
         setDiscardFailed(true);
+        auxChat.ensure(sessionId)
+          .then((restoredAuxId) => {
+            if (generationRef.current !== generation) return;
+            auxIdRef.current = restoredAuxId;
+            setAuxId(restoredAuxId);
+            pullSnapshot(restoredAuxId);
+          })
+          .catch((restoreError) => {
+            console.warn('[pinvou3][aux-chat] restore after discard failure failed', restoreError);
+            if (generationRef.current !== generation) return;
+            setEnsureFailed(true);
+          });
         return;
       }
       // The binding may have changed during the discard round trip: never
@@ -494,7 +512,7 @@ export function AuxChatPanel({ sessionId, activationKey, t, theme, onClose, onAc
         setBindingPending(false);
       }
     }
-  }, [auxChat, sessionId, restartArmed, restarting]);
+  }, [auxChat, sessionId, restartArmed, restarting, pullSnapshot]);
 
   const composerDisabled = !auxChat || !auxId || busy || restarting;
 
@@ -611,7 +629,10 @@ export function AuxChatPanel({ sessionId, activationKey, t, theme, onClose, onAc
             value={draft}
             data-testid="aux-chat-input"
             onChange={(event) => {
-              const next = event.target.value;
+              // Same 100k cap as the main composer (chat-input-limit.js):
+              // drafts persist per task in draftByTask, so an unbounded paste
+              // would otherwise live in memory for the SPA's lifetime.
+              const next = constrainChatInput(event.target.value).text;
               setDraft(next);
               // Remember per task: a task switch, a close/reopen or a new
               // topic must not silently drop text the user has not sent.

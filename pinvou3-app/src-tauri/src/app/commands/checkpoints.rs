@@ -266,6 +266,16 @@ fn busy_peer_on_same_execution_root(
         if metadata.id == session_id {
             continue;
         }
+        // Aux side-chat sessions are zero-tool by construction (PR #433): they
+        // can never write files, so the gate's premise — a peer engine leaving
+        // half-written files in the shared execution root — is structurally
+        // false for them. An aux record inherits its parent's workspace, so
+        // its execution root equals the parent's, and without this exclusion a
+        // streaming aux answer would block the main session's diff/rewind/undo
+        // against a hazard that cannot exist.
+        if crate::features::sessions::is_aux_session_id(&metadata.id) {
+            continue;
+        }
         let roots = match store.session_roots(&metadata.id) {
             Ok(roots) => roots,
             // 根解析失败的会话（如目录被删）无从比较执行根，跳过。
@@ -804,6 +814,64 @@ mod tests {
         let hit =
             busy_peer_on_same_execution_root(&store, &alice_id, &project, |id| id == busy_bob)
                 .expect("gate");
+        assert_eq!(hit, Some(bob.metadata.title.clone()));
+    }
+
+    /// 辅助会话（aux-）即使绑定同一执行根且正在流式回答也不拦截（PR #433
+    /// round-20 Major-1）：零工具语义下它不可能往目录写文件，忙碌门的前提对
+    /// 它结构性不成立；而辅助记录继承主会话的 workspace，根解析与主会话相同，
+    /// 不排除就会把主会话的 diff/rewind/undo 全部误锁到辅助回答结束。
+    #[test]
+    fn busy_gate_ignores_busy_aux_peers_on_same_root() {
+        let (store, _g) = isolated_store("aux-peer");
+        let project = std::env::temp_dir().join(format!(
+            "pinvou3-rewind-gate-aux-{}-{}",
+            std::process::id(),
+            crate::platform::paths::tests::unique_suffix()
+        ));
+        std::fs::create_dir_all(&project).expect("project dir");
+        let main = store
+            .create_new("/model".into(), None, project.clone())
+            .expect("create main");
+        let main_id = main.metadata.id.clone();
+        let aux = store
+            .get_or_create_aux_session(&main_id)
+            .expect("create aux");
+
+        // 辅助记录继承主会话的 workspace（真实语义），根解析与主会话一致。
+        let bound = project.clone();
+        let (m, x) = (main_id.clone(), aux.id.clone());
+        store.set_execution_root_resolver(Arc::new(move |id: &str| {
+            if id == m || id == x {
+                Some(bound.clone())
+            } else {
+                None
+            }
+        }));
+
+        // 辅助会话在流式回答（busy 判定为真）→ 不拦截。
+        let busy_aux = aux.id.clone();
+        let none =
+            busy_peer_on_same_execution_root(&store, &main_id, &project, |id| id == busy_aux)
+                .expect("gate");
+        assert_eq!(none, None, "busy aux peer must not block the main session");
+
+        // 对照：同根的普通会话忙碌仍然拦截（aux 排除没有削弱既有语义）。
+        let bob = store
+            .create_new("/model".into(), None, project.clone())
+            .expect("create bob");
+        let bound2 = project.clone();
+        let (m2, b2) = (main_id.clone(), bob.metadata.id.clone());
+        store.set_execution_root_resolver(Arc::new(move |id: &str| {
+            if id == m2 || id == b2 {
+                Some(bound2.clone())
+            } else {
+                None
+            }
+        }));
+        let busy_bob = bob.metadata.id.clone();
+        let hit = busy_peer_on_same_execution_root(&store, &main_id, &project, |id| id == busy_bob)
+            .expect("gate");
         assert_eq!(hit, Some(bob.metadata.title.clone()));
     }
 

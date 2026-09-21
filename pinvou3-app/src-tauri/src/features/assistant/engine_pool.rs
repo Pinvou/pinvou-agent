@@ -276,8 +276,9 @@ pub(crate) fn turn_restrict_tools(
 /// emits its native DSML invoke markup) still "call" the removed tools by
 /// writing the call syntax into the answer as plain text — the user then sees
 /// raw tool-call markup in the aux panel. The per-turn reminder channel (the
-/// same one persona anchors ride, stripped from the stored transcript by the
-/// foundation) tells the model the turn is tool-less up front. The zero-tool
+/// same one persona anchors ride; the reservation's host-side
+/// TranscriptSanitizationRule swaps it for the display copy before the
+/// transcript is persisted) tells the model the turn is tool-less up front. The zero-tool
 /// guarantee itself is unchanged: this only makes the model aware of it.
 pub(crate) const AUX_ZERO_TOOL_REMINDER: &str = "You are answering in an auxiliary Q&A session. This turn has NO tools: the tool list is empty. Do not attempt to call tools or run commands, and never emit tool-call markup or invoke blocks as text. Answer directly in plain text from the conversation and your own knowledge; if an action is truly needed, explain how the user can do it instead.";
 
@@ -2750,11 +2751,12 @@ impl EnginePool {
         // Aux zero-tool reminder for edit resends (round-14 minor-1): this
         // path bypasses send_reserved_user_message, so merge the reminder
         // into the resent message here — otherwise an aux edit-resend can
-        // regress to literal tool-call markup in the answer. The foundation
-        // strips the <system-reminder> block from the stored context the same
-        // way as on the send path. The tool *surface* stays zero via the
-        // spawn config; persona anchors share the pre-existing gap and are
-        // unchanged.
+        // regress to literal tool-call markup in the answer. The block is
+        // stripped from the stored context host-side — the reservation's
+        // TranscriptSanitizationRule swaps the raw prompt for the display
+        // copy before the transcript is persisted, same as on the send path.
+        // The tool *surface* stays zero via the spawn config; persona anchors
+        // share the pre-existing gap and are unchanged.
         if let Some(reminder) = merge_aux_zero_tool_reminder(session_id, None) {
             new_message =
                 format!("<system-reminder>\n{reminder}\n</system-reminder>\n\n{new_message}");

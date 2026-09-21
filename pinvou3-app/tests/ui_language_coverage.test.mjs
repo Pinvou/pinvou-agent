@@ -254,6 +254,16 @@ assert.match(restartBlock, /try \{\s*try \{[\s\S]*?const discardPromise = auxCha
 assert.match(restartBlock, /setEnsureFailed\(true\)/);
 assert.doesNotMatch(restartBlock, /setSendFailed\(true\)/);
 assert.match(auxChatPanel, /copy\.discardFailed/);
+// Discard-failure restores the binding (round-20 Major-2): the round-18 B-1
+// null leaves the panel send-dead while the discardFailed copy says the topic
+// is still usable — the old aux session is alive after a failed discard, so
+// the catch must re-ensure (idempotent → the same session) before returning,
+// with the generation guard on both continuations.
+assert.match(
+  restartBlock,
+  /\} catch \(error\) \{\s*console\.warn\('\[pinvou3\]\[aux-chat\] restart discard failed'[\s\S]{0,900}?setDiscardFailed\(true\);\s*auxChat\.ensure\(sessionId\)\s*\.then\(\(restoredAuxId\) => \{[\s\S]{0,300}?auxIdRef\.current = restoredAuxId;\s*setAuxId\(restoredAuxId\);\s*pullSnapshot\(restoredAuxId\);/,
+  'the discard-failure catch must restore the nulled binding via an idempotent ensure',
+);
 // Generation bump at restart entry (round-11 B3): only the rebind effect
 // increments the generation otherwise, so an ensure still in flight from the
 // current rebind (including its ensureSessionBufferLoaded chain) would resolve
@@ -389,6 +399,9 @@ assert.match(
   'only the store-map consumption runs for a send settling into another task',
 );
 assert.match(auxChatPanel, /const sessionIdRef = useRef\(sessionId\);/);
+// The aux composer caps input like the main one (round-20 minor-7): drafts
+// persist per task, so an unbounded paste would live in memory indefinitely.
+assert.match(auxChatPanel, /constrainChatInput\(event\.target\.value\)\.text/);
 assert.match(auxChatPanel, /setDraft\(\(current\) => \(current\.trim\(\) === text \? '' : current\)\)/);
 assert.doesNotMatch(restartBlock, /setDraft\(''\)/);
 // Conversation quotes ("划词引用"): staged per task through the aux-quote store
