@@ -264,6 +264,10 @@ impl EnginePoolRuntime {
         self.pool.discard_eval_suite_model(suite);
     }
 
+    pub(crate) fn pin_eval_model_selection(&self, model_id: &str) -> Result<EvalModelSelection> {
+        self.pool.pin_eval_model_selection(model_id)
+    }
+
     pub(crate) async fn close_eval_session_result(&self, session_id: &str) -> Result<()> {
         self.pool.delete_eval_session(session_id).await
     }

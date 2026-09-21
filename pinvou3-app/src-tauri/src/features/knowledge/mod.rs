@@ -46,6 +46,7 @@ pub struct ScanState {
     pub running: bool,
     /// idle / scanning / done / cancelled
     pub phase: String,
+    pub roots: Vec<String>,
     pub scanned: u64,
     pub finished_at: i64,
 }
@@ -531,6 +532,7 @@ impl KnowledgeService {
             *st = ScanState {
                 running: true,
                 phase: "scanning".into(),
+                roots: roots.iter().map(|p| p.display().to_string()).collect(),
                 ..Default::default()
             };
         }
@@ -585,9 +587,9 @@ impl KnowledgeService {
         self.scan_state.lock().clone()
     }
 
-    /// 仅测试用：kb_cancel_scan 命令已下线（懒触发扫描无前端取消入口），
-    /// 生产路径不再有调用方；扫描线程内的 cancel 分支保留（语义不变）。
-    #[cfg(test)]
+    /// 请求取消进行中的扫描。GUI 懒触发扫描没有前端取消入口，消费方是
+    /// `knowledge scan cancel` CLI：进程内一次性信号，扫描线程内的 cancel
+    /// 分支据此提前收口（语义不变）。
     pub fn cancel_scan(&self) {
         self.cancel.store(true, Ordering::Relaxed);
     }
@@ -682,6 +684,7 @@ pub struct SearchQueryDto {
     #[serde(default)]
     pub exts: Vec<String>,
     pub mtime_after: Option<i64>,
+    pub mtime_before: Option<i64>,
     pub min_size: Option<u64>,
     pub max_size: Option<u64>,
     #[serde(default)]
@@ -694,6 +697,7 @@ impl From<SearchQueryDto> for SearchQuery {
             text: d.text,
             exts: d.exts,
             mtime_after: d.mtime_after,
+            mtime_before: d.mtime_before,
             min_size: d.min_size,
             max_size: d.max_size,
             limit: d.limit,

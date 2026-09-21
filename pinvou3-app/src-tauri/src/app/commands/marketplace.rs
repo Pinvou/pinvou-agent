@@ -227,9 +227,7 @@ pub async fn install_marketplace_tool(
             }
             // 新装的 companion 技能默认加入 DenyAll scope（当前 code）禁用集
             // （外部能力显式开启，与独立技能安装 install_marketplace_skill_sync 同语义）。
-            crate::features::marketplace::scope::sync_deny_all_scopes_after_install(
-                &sid,
-            )?;
+            crate::features::marketplace::scope::sync_deny_all_scopes_after_install(&sid)?;
         }
         // DenyAll 模式的 scope(如 code)已初始化时,新装的连接器默认仍关闭(显式开启)。
         crate::features::marketplace::sync_deny_all_scopes_after_install(&companion_tool_id)?;
@@ -904,9 +902,7 @@ pub async fn import_skill_md_bytes(
     // spawn_blocking, not on the async worker.
     let installed_id = report.id.clone();
     tokio::task::spawn_blocking(move || {
-        crate::features::marketplace::scope::sync_deny_all_scopes_after_install(
-            &installed_id,
-        )
+        crate::features::marketplace::scope::sync_deny_all_scopes_after_install(&installed_id)
     })
     .await
     .map_err(|e| format!("sync_deny_all join: {e}"))??;

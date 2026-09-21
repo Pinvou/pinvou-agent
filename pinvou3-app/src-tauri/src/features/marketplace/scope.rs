@@ -696,6 +696,34 @@ mod tests {
         });
     }
 
+    /// The lock acquire path must create a missing PINVOU3_HOME before
+    /// opening the lock file: the first scope write into a fresh home would
+    /// otherwise refuse (fail-closed) on every fresh install. Unlike
+    /// `with_temp_home`, the home directory is deliberately NOT pre-created.
+    #[test]
+    fn writer_creates_a_fresh_home_before_taking_the_lock() {
+        let _g = crate::platform::paths::tests::ENV_LOCK
+            .lock()
+            .unwrap_or_else(|p| p.into_inner());
+        let parent =
+            std::env::temp_dir().join(format!("pinvou3-scope-fresh-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&parent);
+        let home = parent.join("fresh-home");
+        assert!(!home.exists(), "precondition: home must not exist yet");
+        let prev = std::env::var("PINVOU3_HOME").ok();
+        // SAFETY: holding platform::paths::tests::ENV_LOCK; env writes serialized in-process.
+        unsafe { std::env::set_var("PINVOU3_HOME", &home) };
+        let saved = save_disabled_bundles_for(ConnectorScope::Plain, &["weather".to_string()]);
+        match prev {
+            // SAFETY: holding platform::paths::tests::ENV_LOCK; env writes serialized in-process.
+            Some(v) => unsafe { std::env::set_var("PINVOU3_HOME", v) },
+            // SAFETY: holding platform::paths::tests::ENV_LOCK; env writes serialized in-process.
+            None => unsafe { std::env::remove_var("PINVOU3_HOME") },
+        }
+        let _ = std::fs::remove_dir_all(&parent);
+        saved.expect("first write into a fresh PINVOU3_HOME must create the home and succeed");
+    }
+
     /// Unavailable = disabled + hidden, deduped; visibility writes must not
     /// pollute the disabled set (the two sets stay orthogonal).
     #[test]

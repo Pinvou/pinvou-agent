@@ -208,6 +208,7 @@ pub struct SearchQuery {
     pub text: Option<String>,
     pub exts: Vec<String>,
     pub mtime_after: Option<i64>,
+    pub mtime_before: Option<i64>,
     pub min_size: Option<u64>,
     pub max_size: Option<u64>,
     pub limit: usize,
@@ -456,6 +457,10 @@ impl Store {
         }
         if let Some(v) = q.mtime_after {
             sql.push_str(" AND f.mtime >= ?");
+            vals.push(Value::Integer(v));
+        }
+        if let Some(v) = q.mtime_before {
+            sql.push_str(" AND f.mtime <= ?");
             vals.push(Value::Integer(v));
         }
         if let Some(v) = q.min_size {

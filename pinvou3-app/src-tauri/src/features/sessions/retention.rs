@@ -259,36 +259,51 @@ impl SessionStore {
         }
         let contains = |candidate: &str| ids.iter().any(|id| id == candidate);
 
-        let removed_multi_agent = {
+        // Purges persist as id-level removals against the durable sidecar
+        // files (not whole-map rewrites of the boot-time maps): a headless
+        // batch sharing a PINVOU3_HOME with the GUI must not revert pins,
+        // modes, or flags the GUI persisted after this process booted.
+        let removed_multi_agent_ids: Vec<String> = {
             let mut modes = self.mode_states.write();
-            let mut removed_multi_agent = false;
+            let mut removed_multi_agent_ids = Vec::new();
             modes.retain(|id, state| {
                 let keep = !contains(id.as_str());
                 if !keep && state.multi_agent {
-                    removed_multi_agent = true;
+                    removed_multi_agent_ids.push(id.clone());
                 }
                 keep
             });
-            removed_multi_agent
+            removed_multi_agent_ids
         };
-        if removed_multi_agent {
+        if !removed_multi_agent_ids.is_empty() {
             // 保留策略清掉的会话必须同步移出 _multi_agent.json：残留的幽灵
             // id 会在重启后复活开关状态，专家池变更联动还会给它重建工作区。
-            if let Err(error) = self.save_multi_agent_flags() {
+            let refs: Vec<&str> = removed_multi_agent_ids.iter().map(String::as_str).collect();
+            if let Err(error) = Self::apply_multi_agent_mutation(&[], &refs) {
                 eprintln!(
                     "[sessions] update _multi_agent.json after retention purge failed: {error:#}"
                 );
             }
         }
 
-        let removed_code_modes = {
+        let removed_code_modes: Vec<String> = {
             let mut modes = self.session_mode_states.write();
-            let before = modes.len();
-            modes.retain(|id, _| !contains(id.as_str()));
-            modes.len() != before
+            let removed: Vec<String> = modes
+                .keys()
+                .filter(|id| contains(id.as_str()))
+                .cloned()
+                .collect();
+            for id in &removed {
+                modes.remove(id);
+            }
+            removed
         };
-        if removed_code_modes {
-            self.save_session_mode_states();
+        if !removed_code_modes.is_empty() {
+            if let Err(error) = Self::apply_session_mode_mutation(&[], &removed_code_modes) {
+                eprintln!(
+                    "[sessions] update _session_mode_states.json after retention purge failed: {error:#}"
+                );
+            }
         }
 
         // Working-directory binding: clear the in-memory cache and best-effort
@@ -303,14 +318,24 @@ impl SessionStore {
             }
         }
 
-        let removed_models = {
+        let removed_models: Vec<String> = {
             let mut models = self.session_models.write();
-            let before = models.len();
-            models.retain(|id, _| !contains(id.as_str()));
-            models.len() != before
+            let removed: Vec<String> = models
+                .keys()
+                .filter(|id| contains(id.as_str()))
+                .cloned()
+                .collect();
+            for id in &removed {
+                models.remove(id);
+            }
+            removed
         };
-        if removed_models {
-            self.save_session_models();
+        for id in &removed_models {
+            if let Err(error) = super::sidecars::apply_session_model_mutation(id, None) {
+                eprintln!(
+                    "[sessions] update _session_models.json after retention purge failed: {error:#}"
+                );
+            }
         }
 
         {
@@ -320,24 +345,46 @@ impl SessionStore {
             }
         }
 
-        let removed_pins = {
+        let removed_pins: Vec<String> = {
             let mut pins = self.pinned_sessions.write();
-            let before = pins.len();
-            pins.retain(|id, _| !contains(id.as_str()));
-            pins.len() != before
+            let removed: Vec<String> = pins
+                .keys()
+                .filter(|id| contains(id.as_str()))
+                .cloned()
+                .collect();
+            for id in &removed {
+                pins.remove(id);
+            }
+            removed
         };
-        if removed_pins {
-            self.save_pinned_sessions();
+        if !removed_pins.is_empty() {
+            let refs: Vec<&str> = removed_pins.iter().map(String::as_str).collect();
+            if let Err(error) = self.purge_pinned_ids(&refs) {
+                eprintln!(
+                    "[sessions] update _pinned_sessions.json after retention purge failed: {error:#}"
+                );
+            }
         }
 
-        let removed_hidden = {
+        let removed_hidden: Vec<String> = {
             let mut hidden = self.hidden_sessions.write();
-            let before = hidden.len();
-            hidden.retain(|id, _| !contains(id.as_str()));
-            hidden.len() != before
+            let removed: Vec<String> = hidden
+                .keys()
+                .filter(|id| contains(id.as_str()))
+                .cloned()
+                .collect();
+            for id in &removed {
+                hidden.remove(id);
+            }
+            removed
         };
-        if removed_hidden {
-            self.save_hidden_sessions();
+        if !removed_hidden.is_empty() {
+            let refs: Vec<&str> = removed_hidden.iter().map(String::as_str).collect();
+            if let Err(error) = self.purge_hidden_ids(&refs) {
+                eprintln!(
+                    "[sessions] update _hidden_sessions.json after retention purge failed: {error:#}"
+                );
+            }
         }
 
         // Keys of process-level turn-state maps (timing/pending_user_input)

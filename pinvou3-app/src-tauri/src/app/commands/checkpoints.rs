@@ -693,6 +693,7 @@ mod tests {
             id: id.into(),
             turn,
             kind,
+            label: String::new(),
             commit: format!("commit-{id}"),
             created_at: 0,
         }
