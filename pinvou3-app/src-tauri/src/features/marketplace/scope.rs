@@ -246,7 +246,8 @@ fn load_disabled_bundles_file_readonly_locked() -> DisabledBundlesFile {
 /// the two legacy files (idempotent) and persists the result; a present file
 /// is parsed and defensive `skill:` prefix stripping is saved back. A present
 /// but CORRUPT file refuses with `Err` after quarantining the bytes aside
-/// (timestamped, so a second corruption never destroys the first evidence):
+/// (sub-second-unique name, so even a same-second second corruption cannot
+/// destroy the first evidence):
 /// rebuilding from the default and saving would wipe every other scope's
 /// recorded denies on this write. The next write after a quarantine rebuilds
 /// from the migration default with the evidence preserved. The in-loader
@@ -268,12 +269,11 @@ fn load_disabled_bundles_file_locked() -> Result<DisabledBundlesFile, String> {
     let file: DisabledBundlesFile = match serde_json::from_str(&content) {
         Ok(file) => file,
         Err(error) => {
-            let quarantine = path.with_extension(format!(
-                "json.corrupt-{}",
-                chrono::Utc::now().format("%Y%m%d%H%M%S")
-            ));
-            let quarantined = match std::fs::rename(&path, &quarantine) {
-                Ok(()) => format!(
+            // Quarantine via the platform helper: the sub-second-unique name
+            // keeps a same-second second corruption from renaming over the
+            // first capture (rename silently replaces on Unix).
+            let quarantined = match crate::platform::filesystem::quarantine_corrupt_file(&path) {
+                Ok(quarantine) => format!(
                     "; the corrupt bytes are quarantined at {} and the next write rebuilds \
                      from defaults",
                     quarantine.display()
