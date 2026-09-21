@@ -7,7 +7,9 @@
 - 裁剪(max_output_chars_per_item)与 include_outputs 差量;
 - 无效 id / sched- / eval_ / 不存在的会话 / 坏文件的显式报错;
 - list_sessions 标题搜索与隔离语义;
-- stdio 契约:initialize / tools/list / tools/call(newline-delimited JSON-RPC 2.0)。
+- stdio 契约:initialize / tools/list / tools/call(newline-delimited JSON-RPC 2.0);
+- 功能开关兜底(内置工具集长期契约 §3.3):依赖功能全部关闭时返回结构化
+  feature_disabled 错误;并集语义、manifest/状态文件缺失或损坏时放行。
 
 运行:python3 -m unittest discover -s scripts/tests -p 'test_*.py'
 """
@@ -16,6 +18,7 @@ from __future__ import annotations
 import importlib.util
 import json
 import os
+import shutil
 import subprocess
 import sys
 import tempfile
@@ -228,6 +231,88 @@ class ListSessionsTests(unittest.TestCase):
         self.assertEqual(head["title"], "修复登录页样式")
 
 
+class FeatureGateTests(unittest.TestCase):
+    """契约 §3.3 功能开关兜底的纯函数直测(并集语义 + 容错放行)。"""
+
+    TOOL_FEATURES = {
+        "mcp_session-reader_read_session": ["session-mention", "long-memory"],
+        "mcp_session-reader_list_sessions": ["session-mention", "long-memory"],
+    }
+
+    def setUp(self):
+        self.tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(self.tmp.cleanup)
+        self.home = Path(self.tmp.name)
+        self.sessions_dir = self.home / "sessions"
+        self.sessions_dir.mkdir()
+        (self.home / "marketplace").mkdir()
+
+    def write_state(self, disabled):
+        (self.home / "marketplace" / "builtin_features.json").write_text(
+            json.dumps({"schema_version": 1, "disabled_features": disabled}),
+            encoding="utf-8",
+        )
+
+    def gate(self, tool="read_session"):
+        return server.feature_gate_error(
+            tool, str(self.sessions_dir), self.TOOL_FEATURES)
+
+    def test_all_features_disabled_returns_feature_disabled(self):
+        self.write_state(["session-mention", "long-memory"])
+        payload = self.gate()
+        self.assertIsNotNone(payload)
+        self.assertFalse(payload["ok"])
+        self.assertEqual(payload["code"], "feature_disabled")
+        self.assertIn("session-mention", payload["error"])
+        self.assertIn("long-memory", payload["error"])
+        self.assertTrue(payload["alternative"])
+
+    def test_partial_disable_allows_call_union_semantics(self):
+        # 多对多并集语义:只关闭部分依赖功能时工具仍可用。
+        self.write_state(["session-mention"])
+        self.assertIsNone(self.gate())
+        self.assertIsNone(self.gate("list_sessions"))
+
+    def test_no_features_disabled_allows_call(self):
+        self.write_state([])
+        self.assertIsNone(self.gate())
+
+    def test_missing_state_file_allows_call(self):
+        # 状态文件缺失 = 全部启用(容错),即使功能已登记也不门控。
+        self.assertIsNone(self.gate())
+
+    def test_corrupt_state_file_allows_call(self):
+        (self.home / "marketplace" / "builtin_features.json").write_text(
+            "{not json", encoding="utf-8")
+        self.assertIsNone(self.gate())
+
+    def test_unregistered_tool_is_not_gated(self):
+        self.write_state(["session-mention", "long-memory"])
+        self.assertIsNone(self.gate("some_other_tool"))
+        self.assertIsNone(server.feature_gate_error(
+            "read_session", str(self.sessions_dir), {}))
+
+    def test_load_tool_features_missing_or_corrupt_manifest(self):
+        self.assertEqual(server.load_tool_features(self.home / "no-such.json"), {})
+        bad = self.home / "bad.json"
+        bad.write_text("{not json", encoding="utf-8")
+        self.assertEqual(server.load_tool_features(bad), {})
+        no_field = self.home / "nofield.json"
+        no_field.write_text(json.dumps({"id": "x"}), encoding="utf-8")
+        self.assertEqual(server.load_tool_features(no_field), {})
+
+    def test_load_tool_features_reads_mapping(self):
+        manifest = self.home / "manifest.json"
+        manifest.write_text(json.dumps({"tool_features": self.TOOL_FEATURES}),
+                            encoding="utf-8")
+        self.assertEqual(server.load_tool_features(manifest), self.TOOL_FEATURES)
+
+    def test_full_tool_name(self):
+        self.assertEqual(
+            server.full_tool_name("read_session"),
+            "mcp_session-reader_read_session")
+
+
 class StdioContractTests(unittest.TestCase):
     """真实拉起 stdio server,验证 initialize/tools/list/tools/call 协议形态。"""
 
@@ -292,6 +377,115 @@ class StdioContractTests(unittest.TestCase):
             error_payload = json.loads(missing["result"]["content"][0]["text"])
             self.assertFalse(error_payload["ok"])
             self.assertTrue(missing["result"]["isError"])
+        finally:
+            proc.kill()
+            proc.communicate()
+
+
+class FeatureGateStdioTests(unittest.TestCase):
+    """契约 §3.3 stdio 层:真实拉起 server,验证 feature_disabled 错误通道。
+
+    server 读的是 __file__ 同目录的 manifest.json,而真实 manifest 的 tool_features
+    字段由并行开发加入;为使本测试自洽,把 server.py 复制到临时目录并配一份带
+    tool_features 的 manifest 一起拉起。sessions 目录经 PINVOU3_HOME 重定位,
+    开关状态写在 <PINVOU3_HOME>/marketplace/builtin_features.json。
+    """
+
+    TOOL_FEATURES = FeatureGateTests.TOOL_FEATURES
+
+    def setUp(self):
+        self.tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(self.tmp.cleanup)
+        self.home = Path(self.tmp.name)
+        sessions_dir = self.home / "sessions"
+        sessions_dir.mkdir()
+        _write_session(sessions_dir, "gate01", [
+            _msg("user", _text("门控问题")),
+            _msg("assistant", _text("门控回答")),
+        ], title="门控会话")
+        (self.home / "marketplace").mkdir()
+        # 拉起用的 server 副本 + 带 tool_features 的 manifest
+        self.server_dir = self.home / "pkg"
+        self.server_dir.mkdir()
+        self.server_copy = self.server_dir / "server.py"
+        shutil.copyfile(SERVER_PATH, self.server_copy)
+        (self.server_dir / "manifest.json").write_text(
+            json.dumps({"id": "session-reader", "tool_features": self.TOOL_FEATURES}),
+            encoding="utf-8",
+        )
+
+    def write_state(self, disabled):
+        (self.home / "marketplace" / "builtin_features.json").write_text(
+            json.dumps({"schema_version": 1, "disabled_features": disabled}),
+            encoding="utf-8",
+        )
+
+    def _rpc(self, proc, method, params=None, req_id=[0]):
+        req_id[0] += 1
+        request = {"jsonrpc": "2.0", "id": req_id[0], "method": method}
+        if params is not None:
+            request["params"] = params
+        proc.stdin.write(json.dumps(request, ensure_ascii=False) + "\n")
+        proc.stdin.flush()
+        line = proc.stdout.readline()
+        self.assertTrue(line, "server 应有响应")
+        return json.loads(line)
+
+    def _start(self):
+        env = dict(os.environ)
+        env["PINVOU3_HOME"] = str(self.home)
+        return subprocess.Popen(
+            [sys.executable, str(self.server_copy)],
+            stdin=subprocess.PIPE,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            text=True,
+            encoding="utf-8",
+            env=env,
+        )
+
+    def _call_read_session(self, proc):
+        return self._rpc(proc, "tools/call", {
+            "name": "read_session",
+            "arguments": {"session_id": "gate01"},
+        })
+
+    def test_all_features_disabled_returns_feature_disabled(self):
+        self.write_state(["session-mention", "long-memory"])
+        proc = self._start()
+        try:
+            call = self._call_read_session(proc)
+            self.assertTrue(call["result"]["isError"])
+            payload = json.loads(call["result"]["content"][0]["text"])
+            self.assertFalse(payload["ok"])
+            self.assertEqual(payload["code"], "feature_disabled")
+            self.assertIn("session-mention", payload["error"])
+            self.assertTrue(payload["alternative"])
+        finally:
+            proc.kill()
+            proc.communicate()
+
+    def test_partial_disable_allows_normal_result(self):
+        # 只关一个功能(并集语义未触发):同一工具正常返回。
+        self.write_state(["session-mention"])
+        proc = self._start()
+        try:
+            call = self._call_read_session(proc)
+            self.assertFalse(call["result"]["isError"])
+            payload = json.loads(call["result"]["content"][0]["text"])
+            self.assertTrue(payload["ok"])
+            self.assertEqual(payload["turns"][0]["userText"], "门控问题")
+        finally:
+            proc.kill()
+            proc.communicate()
+
+    def test_missing_state_file_allows_normal_result(self):
+        proc = self._start()
+        try:
+            call = self._call_read_session(proc)
+            self.assertFalse(call["result"]["isError"])
+            payload = json.loads(call["result"]["content"][0]["text"])
+            self.assertTrue(payload["ok"])
         finally:
             proc.kill()
             proc.communicate()
