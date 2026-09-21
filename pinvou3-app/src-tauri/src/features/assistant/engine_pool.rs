@@ -1305,12 +1305,18 @@ impl EnginePool {
         // lock-taking paths (a wedged CLI process must not freeze the worker).
         let app = self.app.clone();
         let tool_policy = self.tool_policy.clone();
-        let tools = tokio::task::spawn_blocking(move || tool_policy(&app))
-            .await
-            .unwrap_or_else(|error| {
-                eprintln!("[engine_pool] tool policy task failed: {error}");
-                Vec::new()
-            });
+        let tools = match tokio::task::spawn_blocking(move || tool_policy(&app)).await {
+            Ok(tools) => tools,
+            Err(error) => {
+                // Fail closed: broadcasting an empty list would allow every
+                // tool, so keep the sessions' current disallowed sets instead.
+                eprintln!(
+                    "[engine_pool] tool policy task failed, keeping the current \
+                     disallowed sets: {error}"
+                );
+                return Vec::new();
+            }
+        };
         self.set_disallowed_all(tools.clone()).await;
         tools
     }
@@ -1600,16 +1606,22 @@ impl EnginePool {
             .steer_incarnation_seq
             .fetch_add(1, Ordering::Relaxed)
             .saturating_add(1);
-        // The tool policy closure reads the cross-process bundle lock; keep
-        // the potentially blocking read off the async worker (same rationale
-        // as refresh_disallowed_tools).
+        // The tool policy closure AND the per-session shaping both read the
+        // cross-process bundle lock (shaping consults the scope unavailable
+        // sets for non-plain sessions); keep both blocking reads inside the
+        // same off-worker task (same rationale as refresh_disallowed_tools —
+        // a wedged CLI process must not freeze the worker).
         let disallowed_tools = {
             let app = self.app.clone();
             let tool_policy = self.tool_policy.clone();
-            let computed = tokio::task::spawn_blocking(move || tool_policy(&app))
-                .await
-                .map_err(|e| anyhow::anyhow!("tool policy join: {e}"))?;
-            self.bridge.shape_disallowed_tools(session_id, computed)
+            let bridge = self.bridge.clone();
+            let session_id = session_id.to_string();
+            tokio::task::spawn_blocking(move || {
+                let computed = tool_policy(&app);
+                bridge.shape_disallowed_tools(&session_id, computed)
+            })
+            .await
+            .map_err(|e| anyhow::anyhow!("tool policy join: {e}"))?
         };
         let (engine, forwarder) = AppEngine::spawn_for_session(
             self.app.clone(),
@@ -2829,10 +2841,32 @@ impl EnginePool {
         for (sid, engine) in targets {
             // 全局热刷同样按会话整形（代码会话保留 present_artifact 隐藏），
             // 且发送前释放 entries 锁，避免跨 await 持有全局引擎表锁。
+            // The shaping reads the cross-process bundle lock for non-plain
+            // sessions, so it runs off the async worker like the policy
+            // compute above it; on a join failure keep that session's current
+            // disallowed set (fail-closed) instead of broadcasting an empty
+            // "allow everything" list.
+            let bridge = self.bridge.clone();
+            let sid_for_shape = sid.clone();
+            let tools_for_shape = tools.clone();
+            let shaped = match tokio::task::spawn_blocking(move || {
+                bridge.shape_disallowed_tools(&sid_for_shape, tools_for_shape)
+            })
+            .await
+            {
+                Ok(shaped) => shaped,
+                Err(error) => {
+                    eprintln!(
+                        "[engine_pool] set_disallowed_all {sid}: shaping task failed, \
+                         keeping the session's current disallowed set: {error}"
+                    );
+                    continue;
+                }
+            };
             if let Err(e) = engine
                 .handle
                 .send(Op::SetDisallowedTools {
-                    tools: Some(self.bridge.shape_disallowed_tools(&sid, tools.clone())),
+                    tools: Some(shaped),
                 })
                 .await
             {
