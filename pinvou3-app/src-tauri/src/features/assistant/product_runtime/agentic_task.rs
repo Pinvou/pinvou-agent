@@ -292,11 +292,30 @@ pub async fn run_agentic_task(
     // unchanged. A caller-provided session is bound to `workspace` only when
     // the request carries one — an unset workspace keeps the session's own
     // resolution (its private scratch) instead of overriding it.
-    let bound_workspace = request.workspace.clone();
+    //
+    // Normalize ONCE and feed the same string to the run-scoped resolver and
+    // the durable binding below: a raw `--workspace` and its normalized form
+    // are different strings on Windows (`\\?\` verbatim paths), and the
+    // binding-keyed gates compare strings on reopen. Failing the validation
+    // here (directory gone since the caller checked) fails the run loud
+    // before any record is prepared, mirroring the GUI create path.
+    let bound_workspace = match request.workspace.as_ref() {
+        Some(workspace) => Some(
+            validate_user_workspace_path(&workspace.to_string_lossy())
+                .context("validate agent workspace binding")?,
+        ),
+        None => None,
+    };
+    // The resolver owns its copy (it must be 'static); run_turn persists the
+    // same validated string as the durable binding (passed below).
+    // The resolver owns its own clone (it must be 'static); the original
+    // binding is passed to run_turn, which persists the same validated
+    // string as the durable binding.
+    let resolver_workspace = bound_workspace.clone();
     let matched_session = session_id.clone();
     let resolver: ExecutionRootResolver = Arc::new(move |id: &str| {
         (id == matched_session)
-            .then(|| bound_workspace.clone())
+            .then(|| resolver_workspace.clone())
             .flatten()
     });
     let mut pool = pool;
@@ -331,6 +350,7 @@ pub async fn run_agentic_task(
         &store,
         &session_id,
         &request,
+        bound_workspace,
         timeout_secs,
         existing_session,
     )
@@ -374,17 +394,19 @@ pub async fn run_agentic_task(
         // truly zero-message stub is cleanup-eligible regardless of
         // `KEEP_SESSION`; an unloadable record also keeps (deleting on
         // unknown state is the unsafe direction).
-        match store.chat_session_has_messages(&session_id) {
-            Ok(false) => {
+        match never_started_disposition(
+            store.chat_session_has_messages(&session_id).map_err(|_| ()),
+            keep_session,
+        ) {
+            NeverStartedDisposition::CleanupStub => {
                 runtime.schedule_eval_cleanup(&session_id);
                 log_cleanup_delete(&runtime, &session_id).await;
             }
-            Ok(true) if keep_session => runtime.pool.evict(&session_id).await,
-            Ok(true) => {
+            NeverStartedDisposition::KeepInspectable => runtime.pool.evict(&session_id).await,
+            NeverStartedDisposition::LegacyCleanupStarted => {
                 runtime.schedule_eval_cleanup(&session_id);
                 log_cleanup_delete(&runtime, &session_id).await;
             }
-            Err(_) => runtime.pool.evict(&session_id).await,
         }
     } else if keep_session {
         crate::features::assistant::timing::unregister_eval_observation(&session_id);
@@ -425,6 +447,40 @@ fn keep_session_from_env() -> bool {
             "0" | "false" | "no" | "off"
         ),
         Err(_) => true,
+    }
+}
+
+/// Lifecycle decision for a fresh session whose turn never submitted: the
+/// branch order decides between deleting the run's own stub and keeping it,
+/// so it is pinned as a pure disposition instead of living only inline in
+/// the run teardown.
+///
+/// - `Ok(false)` — a truly zero-message stub: cleanup-eligible regardless of
+///   `KEEP_SESSION` (it would litter the shared store with eviction bait).
+/// - `Ok(true)` — the durable record already carries admitted messages (the
+///   engine lazily spawned mid-submit): a started transcript, the only copy,
+///   stays inspectable like any submitted run.
+/// - `Err(_)` — unloadable record: keep (deleting on unknown state is the
+///   unsafe direction).
+///
+/// `keep_session` only splits the started case: with the legacy one-shot
+/// opt-in (`KEEP_SESSION=0|false|no|off`), a started-but-unsubmitted run is
+/// still cleaned up per the old contract.
+enum NeverStartedDisposition {
+    CleanupStub,
+    KeepInspectable,
+    LegacyCleanupStarted,
+}
+
+fn never_started_disposition(
+    has_messages: Result<bool, ()>,
+    keep_session: bool,
+) -> NeverStartedDisposition {
+    match has_messages {
+        Ok(false) => NeverStartedDisposition::CleanupStub,
+        Ok(true) if keep_session => NeverStartedDisposition::KeepInspectable,
+        Ok(true) => NeverStartedDisposition::LegacyCleanupStarted,
+        Err(_) => NeverStartedDisposition::KeepInspectable,
     }
 }
 
@@ -496,6 +552,38 @@ fn validate_attachments(attachments: &[AgenticTaskAttachment]) -> Result<()> {
     Ok(())
 }
 
+/// Stage-time cap enforcement for the attachment staging loop: re-reads the
+/// source's size right before the copy and returns the running total,
+/// refusing sources that grew past the per-file cap after validation or
+/// pushed the aggregate past the total budget. The caps must bind the STAGED
+/// size: the sources are caller-owned and can grow or be swapped between
+/// validation and staging.
+fn ensure_stage_size(path: &std::path::Path, staged_total: u64) -> Result<u64> {
+    let staged_bytes = std::fs::metadata(path)
+        .with_context(|| {
+            format!(
+                "agent_attachment_not_found: attachment {} vanished before staging",
+                path.display()
+            )
+        })?
+        .len();
+    if staged_bytes > MAX_ATTACHMENT_BYTES {
+        anyhow::bail!(
+            "agent_attachment_too_large: attachment {} is {staged_bytes} bytes at \
+             staging time (limit {MAX_ATTACHMENT_BYTES})",
+            path.display()
+        );
+    }
+    let total = staged_total + staged_bytes;
+    if total > MAX_ATTACHMENTS_TOTAL_BYTES {
+        anyhow::bail!(
+            "agent_attachment_too_large: attachments total {total} bytes at \
+             staging time (limit {MAX_ATTACHMENTS_TOTAL_BYTES})"
+        );
+    }
+    Ok(total)
+}
+
 /// Validate a caller-provided model id against the configured model list —
 /// the same `UserPrefs::model_by_id` check the GUI `set_session_model` command
 /// performs before switching a session's model.
@@ -536,11 +624,13 @@ fn ensure_existing_chat_session(store: &SessionStore, session_id: &str) -> Resul
 /// wait, report building) belongs to a session whose transcript exists, while
 /// `false` marks the never-started cases (attachment staging, submit failure,
 /// setup timeout) the caller's lifecycle handling cleans up as stubs.
+#[allow(clippy::too_many_arguments)]
 async fn run_turn(
     runtime: &EnginePoolRuntime,
     store: &SessionStore,
     session_id: &str,
     request: &AgenticTaskRequest,
+    workspace_binding: Option<std::path::PathBuf>,
     timeout_secs: u64,
     existing_session: bool,
 ) -> (bool, Result<AgenticTaskReport>) {
@@ -629,19 +719,11 @@ async fn run_turn(
             // sidecar the reopened session silently falls back to its private
             // scratch while `metadata.workspace` records the task directory.
             // Caller-provided sessions keep their own binding — the run-scoped
-            // resolver above overrides this run only. Failing the run here
-            // mirrors the GUI create path (bind failure rolls back the
-            // session); the stub cleanup then removes the prepared record.
-            if let Some(workspace) = request.workspace.clone() {
-                // The durable binding must store the same normalized path a
-                // GUI-created binding carries: the CLI pre-canonicalizes, but
-                // Windows canonicalize yields a `\\?\` verbatim path, and an
-                // unnormalized binding diverges in the binding-keyed gates
-                // and path comparisons on reopen. Validating here also fails
-                // the run loud when the directory vanished since the caller
-                // checked, mirroring the GUI create path.
-                let binding = validate_user_workspace_path(&workspace.to_string_lossy())
-                    .context("validate agent workspace binding")?;
+            // resolver above overrides this run only. The binding is the same
+            // validated/normalized string the resolver carries (validated
+            // once, above); a bind failure still rolls the session back and
+            // the stub cleanup removes the prepared record.
+            if let Some(binding) = workspace_binding.clone() {
                 store
                     .bind_session_workspace(session_id, binding)
                     .context("persist session workspace binding")?;
@@ -889,6 +971,11 @@ async fn prompt_with_attachments(
         // a caller file and then abort the run on a later failure.
         let mut consumed_sources: Vec<std::path::PathBuf> = Vec::new();
         let batch = (|| -> Result<Vec<IngestResult>> {
+            // Re-stat at staging time: the caps were enforced at validation,
+            // but the sources are caller-owned and can grow or be swapped
+            // between validation and this copy — the enforced cap must be
+            // the staged size, not the validated one.
+            let mut staged_total = 0_u64;
             for attachment in attachments {
                 let basename = attachment
                     .path
@@ -899,6 +986,7 @@ async fn prompt_with_attachments(
                         "agent_attachment_invalid_name: {}",
                         attachment.path.display()
                     ))?;
+                staged_total = ensure_stage_size(&attachment.path, staged_total)?;
                 let relative = stage_file_in_workspace(
                     &attachment.path.to_string_lossy(),
                     &basename,
@@ -991,8 +1079,9 @@ mod tests {
     use super::{
         AgenticTaskAttachment, AgenticTaskMode, AgenticTaskReport, AgenticTaskRequest,
         AgenticToolEvent, DEFAULT_TIMEOUT_SECS, MAX_ATTACHMENT_BYTES, MAX_ATTACHMENTS,
-        MAX_TIMEOUT_SECS, ensure_existing_chat_session, ensure_model_exists, keep_session_from_env,
-        retention_eviction_warning, validate_attachments,
+        MAX_ATTACHMENTS_TOTAL_BYTES, MAX_TIMEOUT_SECS, ensure_existing_chat_session,
+        ensure_model_exists, ensure_stage_size, keep_session_from_env, retention_eviction_warning,
+        validate_attachments,
     };
     use crate::features::sessions::{
         MAX_SESSIONS_PER_KIND, ScheduledRunMode, ScheduledRunProfile, SessionStore,
@@ -1061,6 +1150,41 @@ mod tests {
     /// Sessions persist by default; only the explicit falsy values restore
     /// the legacy one-shot cleanup, and the legacy truthy values still mean
     /// keep.
+    #[test]
+    fn never_started_disposition_branch_order_is_pinned() {
+        use super::{NeverStartedDisposition::*, never_started_disposition};
+        // Zero-message stub: cleanup-eligible regardless of KEEP_SESSION.
+        assert!(matches!(
+            never_started_disposition(Ok(false), true),
+            CleanupStub
+        ));
+        assert!(matches!(
+            never_started_disposition(Ok(false), false),
+            CleanupStub
+        ));
+        // Started transcript (durable record carries admitted messages):
+        // stays inspectable under the default, legacy-cleanup only on the
+        // explicit falsy opt-in.
+        assert!(matches!(
+            never_started_disposition(Ok(true), true),
+            KeepInspectable
+        ));
+        assert!(matches!(
+            never_started_disposition(Ok(true), false),
+            LegacyCleanupStarted
+        ));
+        // Unloadable record: keep — deleting on unknown state is the unsafe
+        // direction, regardless of KEEP_SESSION.
+        assert!(matches!(
+            never_started_disposition(Err(()), true),
+            KeepInspectable
+        ));
+        assert!(matches!(
+            never_started_disposition(Err(()), false),
+            KeepInspectable
+        ));
+    }
+
     #[test]
     fn keep_session_env_defaults_to_keeping() {
         let (_lock, _env) = locked_env(&["PINVOU3_AGENT_TASK_KEEP_SESSION"]);
@@ -1245,6 +1369,43 @@ mod tests {
             error.to_string().contains("attachments total"),
             "the aggregate budget must reject the batch: {error}"
         );
+    }
+
+    #[test]
+    fn ensure_stage_size_binds_the_staged_size_not_the_validated_one() {
+        let workspace = tempfile::tempdir().unwrap();
+        let path = workspace.path().join("grower.bin");
+
+        // Validation-size file passes.
+        std::fs::write(&path, b"tiny").unwrap();
+        assert_eq!(ensure_stage_size(&path, 0).unwrap(), 4);
+
+        // The caller-owned source grows past the per-file cap between
+        // validation and staging: the copy must refuse, not stage it.
+        std::fs::File::create(&path)
+            .unwrap()
+            .set_len(MAX_ATTACHMENT_BYTES + 1)
+            .unwrap();
+        let error = ensure_stage_size(&path, 0).unwrap_err();
+        assert!(
+            error.to_string().contains("at staging time"),
+            "the refusal must name the stage-time re-check: {error}"
+        );
+
+        // A source that is fine on its own still refuses when it pushes the
+        // running total past the aggregate budget.
+        std::fs::write(&path, b"tiny").unwrap();
+        let error = ensure_stage_size(&path, MAX_ATTACHMENTS_TOTAL_BYTES).unwrap_err();
+        assert!(
+            error.to_string().contains("at staging time"),
+            "the aggregate budget must also bind at staging time: {error}"
+        );
+
+        // A vanished source refuses loudly instead of failing deep inside
+        // the copy.
+        std::fs::remove_file(&path).unwrap();
+        let error = ensure_stage_size(&path, 0).unwrap_err();
+        assert!(error.to_string().contains("vanished before staging"));
     }
 
     #[test]
