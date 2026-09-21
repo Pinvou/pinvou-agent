@@ -58,6 +58,7 @@ import {
   sessionMentionTriggerAt,
   filterSessionMentionCandidates,
   dedupeSessionRefs,
+  isSessionMentionEnabled,
 } from './session-mention.js';
 import { ConversationAttachmentBubble } from '../attachments/ConversationAttachmentBubble.jsx';
 import { splitAttachmentLine } from '../attachments/attachment-message.js';
@@ -1012,8 +1013,27 @@ const ToolWelcomeCard = ({ toolId, t, onSend }) => {
         }
       }, [setInputText]);
       // 选中 @ 面板候选:删掉输入框末尾的 @token,引用落入 chip 条(发送时序列化进注入块)。
+      // 功能关闭(§3.3 第 1 层)时不再可添加(@ 面板与拖放入口共用此 add 路径)。
+      // session-mention 功能开关(§3.3 四层级联的判定来源):默认开;非 Tauri 环境
+      // (Web/测试)bridge 无 listBuiltinFeatures,与查询失败一样 fail-open 按启用
+      // 处理(与后端状态文件缺失=全启用同口径)。开关变更经 remote_control:tools_changed
+      // → pinvou:tools-changed 广播(chat-events.js),此处订阅后重新拉取以热更新 UI。
+      const [sessionMentionEnabled, setSessionMentionEnabled] = useState(true);
+      useEffect(() => {
+        let alive = true;
+        const refresh = async () => {
+          if (!bridge.available || !bridge.settings || typeof bridge.settings.listBuiltinFeatures !== 'function') return;
+          try {
+            const features = await bridge.settings.listBuiltinFeatures();
+            if (alive) setSessionMentionEnabled(isSessionMentionEnabled(features));
+          } catch { /* fail-open:保持当前启用态 */ }
+        };
+        refresh();
+        window.addEventListener('pinvou:tools-changed', refresh);
+        return () => { alive = false; window.removeEventListener('pinvou:tools-changed', refresh); };
+      }, []);
       const handleSelectMentionCandidate = useCallback((candidate) => {
-        if (!candidate) return;
+        if (!candidate || !sessionMentionEnabled) return;
         setSessionRefs(current => dedupeSessionRefs([...current, candidate]));
         setMentionDismissedToken(null);
         setInputText((current) => {
@@ -1027,7 +1047,7 @@ const ToolWelcomeCard = ({ toolId, t, onSend }) => {
             composerRef.current.selectionEnd = composerRef.current.value.length;
           }
         });
-      }, [setInputText]);
+      }, [sessionMentionEnabled, setInputText]);
       const handleRemoveMentionRef = useCallback((sessionId) => {
         setSessionRefs(current => current.filter(ref => ref.sessionId !== sessionId));
       }, []);
@@ -1046,7 +1066,8 @@ const ToolWelcomeCard = ({ toolId, t, onSend }) => {
         return Array.from(types).includes(PROJECT_SESSION_DRAG_TYPE);
       };
       const handleComposerSessionDragEnter = (e) => {
-        if (!isSessionRowDrag(e)) return;
+        // 功能关闭(§3.3 第 1 层)时拖放会话同样不落 chip,不出现拖放提示。
+        if (!isSessionRowDrag(e) || !sessionMentionEnabled) return;
         sessionDropDepthRef.current += 1;
         setSessionDropActive(true);
       };
@@ -1617,10 +1638,12 @@ const ToolWelcomeCard = ({ toolId, t, onSend }) => {
       const voiceBusy = isVoiceBusy(voiceInput);
       const hasDraftText = inputText.trim().length > 0;
       const hasReadyAttachment = attachments.some(a => a.status === 'ready');
-      const hasSessionRefs = sessionRefs.length > 0;
+      // 功能关闭时未发送 chips 不再撑起可发送态(发送路径也不会再注入引用块)。
+      const hasSessionRefs = sessionMentionEnabled && sessionRefs.length > 0;
       // 引用对话(Session Mention):输入框末尾的 @token 驱动候选面板;Escape 关闭后
       // 同一 token 内保持关闭(token 变化 = 用户继续输入,面板重新出现)。
-      const mentionTrigger = sessionMentionTriggerAt(inputText);
+      // 功能关闭(§3.3 第 1 层)时 @ 触发不出现会话分组/候选。
+      const mentionTrigger = sessionMentionTriggerAt(inputText, sessionMentionEnabled);
       const mentionMenuOpen = !!mentionTrigger && mentionTrigger.token !== mentionDismissedToken;
       const mentionCandidates = filterSessionMentionCandidates((bs && bs.sessions) || [], {
         query: mentionTrigger ? mentionTrigger.query : '',
@@ -1741,8 +1764,9 @@ const ToolWelcomeCard = ({ toolId, t, onSend }) => {
           conversationVariant="unified"
           onOpenSessionMention={handleOpenMentionSession}
           knownSessionMentionIds={knownSessionMentionIds}
+          sessionMentionDisabled={!sessionMentionEnabled}
         />
-      ), [activeSessionId, busy, handleOpenMentionSession, isMultiAgentReadOnly, knownSessionMentionIds, lastUserId, t, theme]);
+      ), [activeSessionId, busy, handleOpenMentionSession, isMultiAgentReadOnly, knownSessionMentionIds, lastUserId, sessionMentionEnabled, t, theme]);
       const handleTimelineRenderItem = useCallback((item) => {
         // reasoning items are handled by ConversationTimeline's ReasoningItem and must not be handed to
         // the legacy ChatBubble; the latter does not know the type and would return null, silently
@@ -2167,7 +2191,8 @@ const ToolWelcomeCard = ({ toolId, t, onSend }) => {
         const text = constrained.text;
         // 引用 chips 序列化为前置注入块(只有 sessionId+标题+契约,无正文);chips 在
         // 发送被真正接受前保持不动——失败/未派发时文本会恢复,chips 也自然保留。
-        const mentionBlock = buildSessionMentionBlock(sessionRefs);
+        // 功能关闭(§3.3 第 2 层)时停发注入块;历史消息里已有的块不动。
+        const mentionBlock = sessionMentionEnabled ? buildSessionMentionBlock(sessionRefs) : '';
         const outgoingText = mentionBlock ? mentionBlock + text : text;
         // Clear the composer the moment the button is clicked (before the
         // await returns); on failure (reserve conflict etc.) or a notice-only
@@ -2876,6 +2901,8 @@ const ToolWelcomeCard = ({ toolId, t, onSend }) => {
               refs={sessionRefs}
               onRemove={handleRemoveMentionRef}
               copy={t.uiSessionMention}
+              disabled={!sessionMentionEnabled}
+              disabledNotice={t.uiBuiltinFeatures.disabledNotice}
             />
             {imageInputWarning && (
               <div data-testid="image-capability-warning"
@@ -3472,7 +3499,7 @@ const TextareaContextMenu = ({ inputRef, setValue, t }) => {
       ), document.body);
     };
 
-const UserBubble = ({ item, sessionId, editable, t, conversationVariant, onOpenSessionMention = null, knownSessionMentionIds = null }) => {
+const UserBubble = ({ item, sessionId, editable, t, conversationVariant, onOpenSessionMention = null, knownSessionMentionIds = null, sessionMentionDisabled = false }) => {
   // 引用注入块(发送时前置,见 session-mention.js):渲染时剥离成引用卡片 + 正文,
   // 编辑时正文不含注入块、提交时按原引用重建,避免用户误编辑 JSON 契约行。
   const mentionSplit = splitSessionMentionBlock(item.text);
@@ -3544,6 +3571,8 @@ const UserBubble = ({ item, sessionId, editable, t, conversationVariant, onOpenS
               knownSessionIds={knownSessionMentionIds}
               onOpenSession={onOpenSessionMention}
               copy={t.uiSessionMention}
+              disabled={sessionMentionDisabled}
+              disabledNotice={t.uiBuiltinFeatures.disabledNotice}
             />
             {attachmentNames.length > 0 && (
               <div className={`flex max-w-full flex-wrap justify-end gap-1.5 ${bodyText ? 'mb-1.5' : ''}`}>
@@ -3733,7 +3762,7 @@ const UserBubble = ({ item, sessionId, editable, t, conversationVariant, onOpenS
     }
 
     // eslint-disable-next-line sonarjs/cognitive-complexity -- legacy bubble dispatches rendering by message type; split refactor tracked separately
-    const ChatBubble = React.memo(function ChatBubble({ item, sessionId, theme, onPrefill, onSend, editable, onOpenEditor, t, isLatestArtifact, allowScheduledTaskDraft, conversationVariant, showAssistantActions = true, onPlanStuckGo, onOpenSessionMention = null, knownSessionMentionIds = null }) {
+    const ChatBubble = React.memo(function ChatBubble({ item, sessionId, theme, onPrefill, onSend, editable, onOpenEditor, t, isLatestArtifact, allowScheduledTaskDraft, conversationVariant, showAssistantActions = true, onPlanStuckGo, onOpenSessionMention = null, knownSessionMentionIds = null, sessionMentionDisabled = false }) {
       const chatCopy = t.uiChat;
       // 后端持久化的记忆状态值是固定中文数据，仅在 UI 边界映射为当前语言；未识别值原样透传
       const memoryStatusLabels = getMemoryStatusLabels(t);
@@ -3750,7 +3779,7 @@ const UserBubble = ({ item, sessionId, editable, t, conversationVariant, onOpenS
       if (item.type === 'careful_blocked') return <CarefulBlockedCard item={item} t={t} />;
       if (item.type === 'user_input') return <UserInputCard item={item} t={t} />;
       if (item.type === 'user') {
-        return <UserBubble item={item} sessionId={sessionId} editable={editable} t={t} conversationVariant={conversationVariant} onOpenSessionMention={onOpenSessionMention} knownSessionMentionIds={knownSessionMentionIds} />;
+        return <UserBubble item={item} sessionId={sessionId} editable={editable} t={t} conversationVariant={conversationVariant} onOpenSessionMention={onOpenSessionMention} knownSessionMentionIds={knownSessionMentionIds} sessionMentionDisabled={sessionMentionDisabled} />;
       }
 
       if (item.type === 'card_creator_intro') {

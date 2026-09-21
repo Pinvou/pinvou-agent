@@ -13,6 +13,7 @@ import {
   sessionMentionTriggerAt,
   filterSessionMentionCandidates,
   dedupeSessionRefs,
+  isSessionMentionEnabled,
 } from '../src/features/chat/session-mention.js';
 
 const REFS = [
@@ -129,4 +130,47 @@ test('标题路径语义:注入块剥离后只剩正文,纯引用消息不参与
   assert.equal(splitSessionMentionBlock(titled).text, '帮我总结上次的讨论');
   const refsOnly = buildSessionMentionBlock([{ sessionId: 's1', title: 't' }]);
   assert.equal(splitSessionMentionBlock(refsOnly).text.trim(), '');
+});
+
+// ── 功能开关(§3.3 四层级联)─────────────────────────────────────────────
+
+test('功能开关判定:拿不到状态/未注册一律 fail-open 按启用,显式 enabled:false 才关', () => {
+  assert.equal(isSessionMentionEnabled(null), true);
+  assert.equal(isSessionMentionEnabled(), true);
+  assert.equal(isSessionMentionEnabled('not-an-array'), true);
+  assert.equal(isSessionMentionEnabled([]), true);
+  // 注册表里没有 session-mention(旧后端)按启用
+  assert.equal(isSessionMentionEnabled([{ id: 'long-memory', enabled: false }]), true);
+  assert.equal(isSessionMentionEnabled([{ id: 'session-mention', enabled: true }]), true);
+  assert.equal(isSessionMentionEnabled([{ id: 'session-mention', enabled: false }]), false);
+  // 与 long-memory 并存时只看 session-mention 自己的状态
+  assert.equal(isSessionMentionEnabled([
+    { id: 'long-memory', enabled: true },
+    { id: 'session-mention', enabled: false },
+  ]), false);
+});
+
+test('功能关闭时 @ 触发恒不生效(第 1 层),开启/缺省参数行为不变', () => {
+  assert.equal(sessionMentionTriggerAt('@登录', false), null);
+  assert.equal(sessionMentionTriggerAt('@', false), null);
+  assert.deepEqual(sessionMentionTriggerAt('@登录', true), { start: 0, query: '登录', token: '0:登录' });
+  // 缺省第二参数 = 启用(向后兼容既有调用方)
+  assert.deepEqual(sessionMentionTriggerAt('@登录'), { start: 0, query: '登录', token: '0:登录' });
+});
+
+test('级联接线契约:ChatView 四处挂门、注入块按开关停发、降级态文案下发', () => {
+  const chatViewSource = readFileSync(
+    new URL('../src/features/chat/ChatView.jsx', import.meta.url), 'utf8');
+  // 第 1 层:@ 触发带开关门;add 路径(@ 面板与拖放共用)带开关门。
+  assert.match(chatViewSource, /sessionMentionTriggerAt\(inputText, sessionMentionEnabled\)/);
+  assert.match(chatViewSource, /!candidate \|\| !sessionMentionEnabled/);
+  // 第 2 层:注入块停发(关闭时 buildSessionMentionBlock 不参与发送)。
+  assert.match(chatViewSource, /sessionMentionEnabled \? buildSessionMentionBlock\(sessionRefs\) : ''/);
+  // 状态来源:listBuiltinFeatures + tools-changed 热更新,fail-open。
+  assert.match(chatViewSource, /bridge\.settings\.listBuiltinFeatures/);
+  assert.match(chatViewSource, /pinvou:tools-changed/);
+  // 第 4 层:chips 与历史引用卡片接收降级标记与通用降级文案。
+  assert.match(chatViewSource, /disabled=\{!sessionMentionEnabled\}/);
+  assert.match(chatViewSource, /sessionMentionDisabled=\{!sessionMentionEnabled\}/);
+  assert.match(chatViewSource, /t\.uiBuiltinFeatures\.disabledNotice/);
 });

@@ -859,7 +859,7 @@ dictJa.uiArtifacts = {
   diChangesLog:n=>`デザイン変更 ${n} 件`, diEmpty:'空',
 };
 
-dictJa.uiSessionMention = { menuTitle:'セッションを参照', menuEmpty:'一致するセッションがありません', dropHint:'ドロップしてこのセッションを参照', chipRemove:name=>`参照 ${name} を削除`, cardJump:label=>`セッションを開く: ${label}`, cardUnavailable:'セッションは削除されました' };
+dictJa.uiSessionMention = { menuTitle:'セッションを参照', menuEmpty:'一致するセッションがありません', dropHint:'ドロップしてこのセッションを参照', chipRemove:name=>`参照 ${name} を削除`, cardJump:label=>`セッションを開く: ${label}`, cardUnavailable:'セッションは削除されました', cardDisabled:'機能オフ' };
 Object.assign(dictJa.uiAttachments, { uploading:pct=>`アップロード中 ${pct}%`,  deviceUploadEmpty:name=>`${name} は空のため添付できません`, deviceUploadUnavailable:'現在、このデバイスから添付ファイルをアップロードできません', deviceUploadInvalid:name=>`${name} は有効な添付ファイルではありません`, deviceUploadFailed:name=>`${name} をアップロードできませんでした。もう一度お試しください。`, deviceUploadDigestInvalid:'添付ファイルの整合性ダイジェストが無効です。もう一度お試しください', deviceUploadIntegrityMismatch:'添付ファイルの内容が転送中に破損しました。再度アップロードしてください' });
 
 Object.assign(dictJa.uiToolStore, {
