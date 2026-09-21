@@ -185,6 +185,15 @@ pub(crate) fn managed_dependency_install_failure_pending_for_test() -> bool {
     FAIL_NEXT_MANAGED_DEPENDENCY_INSTALL.load(std::sync::atomic::Ordering::SeqCst)
 }
 
+// #581's dedicated `FailNextInstalledWriteGuard` (issue #528: the armed flag
+// must disarm on drop, including panics) is intentionally NOT merged: this
+// branch's generic `arm_failpoint`/`FailpointResetGuard` (round-20 minor 6)
+// already provides exactly that drop-guard semantics for every injection
+// point, and `fail_next_installed_write_for_test` below routes through it.
+// #581's strengthened assertions (`error.contains("installed.json")` — an
+// earlier-stage failure must not pass as the injected rollback path) ARE
+// preserved at the merged call sites.
+
 #[cfg(test)]
 static TEST_TRUSTED_DEPENDENCY_MANIFESTS: std::sync::LazyLock<
     Mutex<std::collections::HashMap<String, ToolManifest>>,
@@ -3657,7 +3666,7 @@ mod tests {
                 }"#,
             );
 
-            let _installed_write_guard = fail_next_installed_write_for_test();
+            let _fail_next_installed_write = fail_next_installed_write_for_test();
             let manager = MarketplaceManager::with_store(MemoryCredentialStore::default());
             let error = manager
                 .install("half-install", &std::collections::HashMap::new())
@@ -3711,12 +3720,19 @@ mod tests {
             )
             .unwrap();
 
-            let _installed_write_guard = fail_next_installed_write_for_test();
+            let _fail_next_installed_write = fail_next_installed_write_for_test();
             let manager = MarketplaceManager::with_store(MemoryCredentialStore::default());
+            let error = manager
+                .install("trusted-lock", &std::collections::HashMap::new())
+                .unwrap_err();
+            // 只认注入的 installed.json 写失败：任何更早环节的失败都说明该测试没有
+            // 走到回滚路径（is_err() 会掩盖真实错误并把注入标志泄漏给后续测试）。
+            // Only the injected installed.json write failure counts: any earlier
+            // failure means the rollback path was never reached (a bare is_err()
+            // masks the real error and leaks the injection flag to later tests).
             assert!(
-                manager
-                    .install("trusted-lock", &std::collections::HashMap::new())
-                    .is_err()
+                error.contains("installed.json"),
+                "install failed before reaching the injected installed.json write failure: {error}"
             );
             assert!(
                 old_environment.is_dir(),
@@ -4294,7 +4310,7 @@ mod tests {
             )
             .unwrap();
             let installed_before = manager_installed_bytes();
-            let _installed_write_guard = fail_next_installed_write_for_test();
+            let _fail_next_installed_write = fail_next_installed_write_for_test();
 
             let errors = manager
                 .repair_installed_python_tools_with_python(&python)

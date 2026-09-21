@@ -192,6 +192,28 @@ pub async fn install_marketplace_tool(
     .await
     .map_err(|e| format!("任务执行失败: {e}"))??;
 
+    // Round-21 MAJOR 2: the consent sync must run IMMEDIATELY after the
+    // install commit, BEFORE the network validation — for initialized scopes
+    // the stored list is the consent store, and a crash during the network
+    // round-trip below would otherwise leave the pack ON in every initialized
+    // scope with zero consent, with nothing at boot to reconcile it. The
+    // crash window is now the ms-wide span between two adjacent fs-backed
+    // operations. Ordering is safe against validation failure: the rollback
+    // uninstall's teardown removes the entries this sync wrote
+    // (`remove_bundle_from_disabled_scopes`), so a failed validation cannot
+    // strand a consent row for a pack that is gone.
+    let consent_tool_id = tool_id.clone();
+    tokio::task::spawn_blocking(move || {
+        crate::features::marketplace::sync_deny_all_scopes_after_install(&consent_tool_id)
+    })
+    .await
+    .map_err(|e| format!("task join failed: {e}"))?
+    .map_err(|e| {
+        format!(
+            "connector '{tool_id}' installed, but persisting its default-off consent state failed: new sessions would enable it by default — turn it off in the tools list; failing the install so no half-consented state remains: {e}"
+        )
+    })?;
+
     let should_validate = {
         let mgr = crate::features::marketplace::MarketplaceManager::new();
         mgr.requires_remote_connection_validation(&tool_id)
@@ -217,14 +239,9 @@ pub async fn install_marketplace_tool(
         let mgr = crate::features::marketplace::MarketplaceManager::new();
         // 联动:装该 MCP 声明的配套技能(引擎+引导整体到位)。
         // skill 是增强,装失败只记日志、不让已成功的 MCP 安装回滚。
-        // DenyAll 模式的 scope(如 code)已初始化时,新装的连接器默认仍关闭(显式开启)。
-        // 工具本体的同步**先行**（评审 R14-minor）：companion 技能是增强，其同步
-        // 失败不得让工具本体停留在零同意的默认开状态；持久化失败 fail-visible
-        // （评审 #455 R13-B3）。
-        crate::features::marketplace::sync_deny_all_scopes_after_install(&companion_tool_id)
-            .map_err(|e| {
-                format!("新装连接器 '{companion_tool_id}' 默认关闭状态落盘失败（新会话将默认开启，请在工具列表手动关闭；配套技能未安装，可稍后重试安装）: {e}")
-            })?;
+        // The tool's own consent sync already ran right after the install
+        // commit (round-21 MAJOR 2, before the network validation); only the
+        // companion loop remains here.
         for sid in mgr.companion_skills(&companion_tool_id) {
             if let Err(e) =
                 crate::features::marketplace::skill_marketplace::SkillMarketplaceManager::new()
