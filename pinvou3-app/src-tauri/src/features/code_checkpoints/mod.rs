@@ -1076,12 +1076,22 @@ mod tests {
             fs::create_dir_all(path.parent().unwrap()).unwrap();
             // Remove-then-write: rewriting a file with same-length content
             // inside one filesystem timestamp tick leaves stat identical
-            // (mtime/ctime/size/ino), so git trusts the index entry and skips
+            // (mtime/ctime/size), so git trusts the index entry and skips
             // re-reading content — `add -A` keeps the stale blob and
             // diff/restore assertions fail intermittently (root cause of the
-            // 2026-09-18 rust-test flake). A fresh inode always mismatches.
+            // 2026-09-18 rust-test flake). A fresh inode mismatches — but
+            // remove-then-write lets ext4/tmpfs recycle the just-freed inode
+            // number (2026-09-21 flake). Write the replacement to a sibling
+            // temp name first (allocated while the old inode still exists, so
+            // it can never be the recycled one), then rename it into place.
+            let tmp = self.0.join(format!(
+                ".pinvou-checkpoint-tmp-{}-{}",
+                std::process::id(),
+                now_nanos()
+            ));
+            fs::write(&tmp, content).unwrap();
             let _ = fs::remove_file(&path);
-            fs::write(path, content).unwrap();
+            fs::rename(&tmp, &path).unwrap();
         }
 
         fn read(&self, relative: &str) -> Option<String> {
