@@ -9,10 +9,32 @@
  *
  * 本模块自包含、无副作用,供 ChatView(发送序列化)与 UserBubble(渲染剥离)
  * 共用,并由 tests/session_mention.test.mjs 直接覆盖。
+ *
+ * 功能开关(《内置工具集长期契约》§3.3 四层级联):本模块承载第 1 层(@ 触发门)
+ * 与第 2 层(注入块停发的判定函数);第 3 层(工具摘除)由后端功能注册表按并集
+ * 语义自动完成——read_session/list_sessions 仅当其全部归属功能被关才从模型可见
+ * 集摘除,前端不要重复实现;第 4 层(存量降级)在 SessionMentionControls 消费
+ * isSessionMentionEnabled 的判定结果。
  */
 
 /** 单条消息最多同时引用的会话数(防止引用块失控)。 */
 export const MAX_SESSION_REFS = 5;
+
+/** 功能注册表里的功能 id(与内置插件 manifest 的 tool_features 声明一致)。 */
+export const SESSION_MENTION_FEATURE_ID = 'session-mention';
+
+/**
+ * session-mention 功能开关判定(§3.3):默认开——状态列表拿不到(非 Tauri 环境、
+ * 查询失败)或未注册该功能时一律按启用处理(fail-open,与后端 settings.json 无
+ * disabled_builtin_features 记录=全启用同口径)。
+ * @param {Array<{id: string, enabled: boolean}> | null | undefined} featureStates
+ *   bridge.settings.listBuiltinFeatures() 的返回
+ */
+export function isSessionMentionEnabled(featureStates) {
+  if (!Array.isArray(featureStates)) return true;
+  const entry = featureStates.find((feature) => feature && feature.id === SESSION_MENTION_FEATURE_ID);
+  return !entry || entry.enabled !== false;
+}
 
 const BLOCK_HEADER = '## Referenced chats';
 const BLOCK_CONTRACT_LINES = [
@@ -80,11 +102,13 @@ const MENTION_TRIGGER_RE = /(?:^|\s)@([^\s@]*)$/;
  * 解析输入框文本末尾的 @ 触发 token。
  * 仅当 @ 位于行首或空白之后时生效;返回 null 表示当前不应弹出引用面板。
  * @param {string} text 输入框当前文本
+ * @param {boolean} enabled 功能开关(§3.3 第 1 层):false 时入口下线,恒不触发
  * @returns {{ start: number, query: string, token: string } | null}
  *   start = @ 在文本中的下标(选中后删除 text.slice(start) 即可去掉触发串);
  *   token = 触发串的稳定标识(供 Escape 关闭后在 token 变化前保持关闭)。
  */
-export function sessionMentionTriggerAt(text) {
+export function sessionMentionTriggerAt(text, enabled = true) {
+  if (!enabled) return null;
   const raw = String(text || '');
   const match = MENTION_TRIGGER_RE.exec(raw);
   if (!match) return null;
