@@ -1048,7 +1048,10 @@ impl SessionStore {
             &[(id.to_string(), SerializableMode::Yolo)],
             &[],
         ) {
-            eprintln!("[sessions] persist accepted yolo mode for {id} failed: {error:#}");
+            // The session id is deliberately kept out of the message: boot
+            // logs persist to disk and must not accumulate raw session
+            // identifiers (CodeQL cleartext-logging gate).
+            eprintln!("[sessions] persist accepted yolo mode failed: {error:#}");
         }
     }
 
