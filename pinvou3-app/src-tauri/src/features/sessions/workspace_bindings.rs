@@ -224,7 +224,7 @@ impl SessionStore {
     }
 
     /// 绑定 + 钥匙串快照(§6):`workspace_roots` 是全量可访问根(空 = 单根
-    /// 语义,底座按 cwd 归一)。落盘前经 [`cwd_first_workspace_roots`] 归一为
+    /// 语义,底座按 cwd 归一)。落盘前经 `cwd_first_workspace_roots` 归一为
     /// cwd 居首去重,落盘序即底座生效序。落盘纪律与
     /// `bind_session_workspace` 相同。
     pub fn bind_session_workspace_with_roots(
