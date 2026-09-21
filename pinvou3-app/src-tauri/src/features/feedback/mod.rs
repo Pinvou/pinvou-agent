@@ -33,6 +33,11 @@ pub struct FeedbackSubmitRequest {
     pub error_summary: Option<String>,
     #[serde(default)]
     pub attachments: Vec<FeedbackAttachmentRequest>,
+    /// Optional on deserialize: base-era payloads (and any caller that predates
+    /// the restored receipt surface) omit it; the headless CLI family supplies
+    /// it explicitly. Required-ness here rejected those payloads before
+    /// validation could run.
+    #[serde(default)]
     pub privacy_notice_version: String,
 }
 
