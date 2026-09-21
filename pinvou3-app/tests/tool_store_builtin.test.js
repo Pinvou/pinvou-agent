@@ -1,7 +1,8 @@
 #!/usr/bin/env node
 /**
  * 内置插件板块源码守卫（《内置工具集长期契约》§3.1/§3.2）：
- * - ToolStoreView：builtin === true 独立成只读区、常规卡片流排除、只读分支不渲染动作列；
+ * - ToolStoreView：builtin === true 从常规卡片流排除；工具栏独立「内置插件」按钮进入
+ *   专属只读子页（仿回收站子页），子页整页只读、带返回；
  * - tool-common：BuiltinPluginCard 无任何动作按钮；TsActionBtn builtin 分支先于 uninstall 回退分支；
  * - composer-tool-menu-logic：builtin !== true 过滤存在（§3.2 配置可见性）。
  * 渲染层三语文案存在性由 ui_language_coverage.test.mjs 锁定。
@@ -23,14 +24,15 @@ assert.match(builtinLogic, /tool\.builtin === true/, 'isBuiltinPlugin 须严格 
 // ToolStoreView：常规商店卡片流排除内置插件（customMcpTools 过滤，含搜索结果）
 assert.match(storeView, /\.filter\(x => !isBuiltinPlugin\(x\) && tsToolsData\.every/, '常规卡片流必须排除内置插件');
 
-// 内置板块：数据来自 toolBackend 的 isBuiltinPlugin 过滤，独立 section 带 builtin 标记
-assert.match(storeView, /toolBackend\r?\n\s*\.filter\(isBuiltinPlugin\)/, '内置板块数据须来自 toolBackend 的 isBuiltinPlugin 过滤');
-assert.match(storeView, /id: 'builtin-plugins'/, '内置板块须使用独立 section id');
-assert.match(storeView, /items: builtinPluginCards, builtin: true/, '内置板块 section 须带 builtin 标记');
-
-// 只读分支：section.builtin 走 BuiltinPluginCard，不渲染动作列、不进详情
-assert.match(storeView, /section\.builtin \? \(/, '内置板块须走只读渲染分支');
-assert.match(storeView, /<BuiltinPluginCard key=\{`list-\$\{tool\.id\}`\} tool=\{tool\} copy=\{builtinCopy\} \/>/, '内置板块只读卡渲染');
+// 独立入口 + 专属子页：按钮进子页、子页带返回、整页只读渲染内置卡列表
+assert.match(storeView, /toolBackend\r?\n\s*\.filter\(isBuiltinPlugin\)/, '内置插件数据须来自 toolBackend 的 isBuiltinPlugin 过滤');
+assert.match(storeView, /data-testid="tool-store-builtin-plugins" onClick=\{\(\) => setShowBuiltinPlugins\(true\)\}/, '工具栏须有内置插件入口按钮');
+assert.match(storeView, /\{showBuiltinPlugins && \(/, '内置插件子页须按 showBuiltinPlugins 渲染');
+assert.match(storeView, /data-testid="builtin-plugins-back" onClick=\{\(\) => setShowBuiltinPlugins\(false\)\}/, '内置插件子页须有返回按钮');
+assert.match(storeView, /data-testid="builtin-plugin-list"/, '内置插件子页须渲染只读列表');
+assert.match(storeView, /<BuiltinPluginCard tool=\{tool\} copy=\{builtinCopy\} \/>/, '内置插件子页只读卡渲染');
+assert.match(storeView, /\{!showRecycleBin && !showBuiltinPlugins && \(/, '主列表须在任一子页打开时让位');
+assert.doesNotMatch(storeView, /id: 'builtin-plugins'/, '内置插件不得再作为主列表 section 出现');
 
 // BuiltinPluginCard 组件体：无 TsActionBtn/PlatformToolAction/uninstall/onAction
 // （契约 §3.1：无卸载、无开关）；渲染只读徽章；无硬编码中文（走 uiBuiltinPlugins）
