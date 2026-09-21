@@ -763,6 +763,13 @@ impl SessionStore {
             .load(parent_id)
             .with_context(|| "load the parent session for aux creation")?;
         let id = format!("aux-{}", generate_session_id());
+        // Note: the copied `metadata.workspace` is record-keeping only — no
+        // production reader resolves an aux session's roots from it
+        // (`SessionStore::session_roots` never reads `metadata.workspace`, and
+        // no workspace-binding sidecar is written for aux), so the aux
+        // execution root always resolves to the private
+        // `sessions/aux-<id>/workspace`. Keep it truthful for debugging, but
+        // do not read it as a binding.
         let mut session = create_saved_session_with_id_and_mode(
             id.clone(),
             &[],

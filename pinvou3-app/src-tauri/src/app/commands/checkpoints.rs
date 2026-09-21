@@ -269,10 +269,12 @@ fn busy_peer_on_same_execution_root(
         // Aux side-chat sessions are zero-tool by construction (PR #433): they
         // can never write files, so the gate's premise — a peer engine leaving
         // half-written files in the shared execution root — is structurally
-        // false for them. An aux record inherits its parent's workspace, so
-        // its execution root equals the parent's, and without this exclusion a
-        // streaming aux answer would block the main session's diff/rewind/undo
-        // against a hazard that cannot exist.
+        // false for them. In production the exclusion is defense-in-depth:
+        // `SessionStore::session_roots` resolves an aux id to its private
+        // `sessions/aux-<id>/workspace` (no codex record, no workspace-binding
+        // sidecar is ever written for aux), so an aux root can never equal
+        // the parent's. The skip keeps the gate correct against any future
+        // resolver change that would surface a shared root for aux records.
         if crate::features::sessions::is_aux_session_id(&metadata.id) {
             continue;
         }
@@ -819,8 +821,11 @@ mod tests {
 
     /// 辅助会话（aux-）即使绑定同一执行根且正在流式回答也不拦截（PR #433
     /// round-20 Major-1）：零工具语义下它不可能往目录写文件，忙碌门的前提对
-    /// 它结构性不成立；而辅助记录继承主会话的 workspace，根解析与主会话相同，
-    /// 不排除就会把主会话的 diff/rewind/undo 全部误锁到辅助回答结束。
+    /// 它结构性不成立。注意（round-22 纠正）：生产环境的根解析器对 aux id 恒
+    /// 返回 None（无 codex 记录、也不写 workspace 绑定 sidecar），辅助根的解析
+    /// 结果永远是私有的 `sessions/aux-<id>/workspace`，与主会话同根的场景在生
+    /// 产中不可达——下面的 resolver 绑定是生产中不可能为 aux 产生的假设配置，
+    /// 本测试钉住的是防御性排除本身，而不是一个真实发生过的误锁。
     #[test]
     fn busy_gate_ignores_busy_aux_peers_on_same_root() {
         let (store, _g) = isolated_store("aux-peer");
@@ -838,7 +843,8 @@ mod tests {
             .get_or_create_aux_session(&main_id)
             .expect("create aux");
 
-        // 辅助记录继承主会话的 workspace（真实语义），根解析与主会话一致。
+        // 防御性配置：生产根解析器对 aux id 恒返回 None（见测试文档注释），
+        // 这里显式让 aux 与主会话同根，只为钉住排除逻辑本身。
         let bound = project.clone();
         let (m, x) = (main_id.clone(), aux.id.clone());
         store.set_execution_root_resolver(Arc::new(move |id: &str| {

@@ -350,13 +350,24 @@ impl SessionStore {
     /// bidirectional cleanup (which also strips the ghost mapping of a dead
     /// main with a surviving aux).
     ///
-    /// Called only on the startup path (same as the sched- side table
-    /// reconciliation): at that point no get-or-create is in flight, so the
-    /// legitimate creation window of "record persisted, mapping not yet" cannot
-    /// overlap with reconciliation — therefore this function **must not** be
-    /// wired into enforce_session_retention_locked (the save inside
-    /// create_aux_session would trigger enforce and misdelete the newborn as an
-    /// orphan).
+    /// Called on the startup path of each store instance (same as the sched-
+    /// side table reconciliation): at that point no get-or-create is in flight
+    /// *in that process*, so the legitimate creation window of "record
+    /// persisted, mapping not yet" cannot overlap with reconciliation —
+    /// therefore this function **must not** be wired into
+    /// enforce_session_retention_locked (the save inside create_aux_session
+    /// would trigger enforce and misdelete the newborn as an orphan).
+    ///
+    /// Cross-process caveat (round-22 minor-3): the exclusivity above is
+    /// per-process, not global. A second process booting a store over the
+    /// same sessions root (e.g. `run_windowless_host`) runs this reconcile
+    /// with no shared `aux_sessions_io` lock, so it can in principle race the
+    /// first process's creation window. The worst outcomes are self-healing
+    /// (a stripped mapping is rebuilt from the backlink on the next boot; a
+    /// reclaimed orphan is recreated empty by the idempotent get-or-create),
+    /// inherited from the sched- side table's posture — but the safety claim
+    /// is probabilistic across processes, not the boot-only exclusivity this
+    /// comment previously asserted.
     pub(crate) fn reconcile_aux_sessions(&self) -> Result<()> {
         // Skip entirely when the sidecar was never successfully read this
         // boot: mapping-based decisions (missing mapping ⇒ rebuild/delete)
