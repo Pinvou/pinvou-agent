@@ -8,7 +8,15 @@
   "mcp_tools": [],
   "command": "",
   "args": [],
-  "config_fields": [],
+  "config_fields": [
+    {
+      "key": "QCC_API_KEY",
+      "label": "企查查 API Key",
+      "required": false,
+      "target": "bearer",
+      "secret": true
+    }
+  ],
   "servers": [
     {
       "name": "qcc-company",

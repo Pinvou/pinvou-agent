@@ -346,6 +346,23 @@ pub(crate) fn create_secret_file(path: &Path) -> io::Result<std::fs::File> {
     Ok(file)
 }
 
+/// `path` 的 POSIX 权限位（低 9 位）；无 POSIX 模式概念的平台返回 `None`
+/// （隐私由用户目录 ACL 表达）。供 feature 层断言敏感文件权限使用：
+/// `cfg(unix)` 留在本层，feature 层保持无条件编译
+/// （architecture-guard: rust_target_cfg_outside_adapter）。
+pub(crate) fn permission_bits(path: &Path) -> io::Result<Option<u32>> {
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt as _;
+        Ok(Some(std::fs::metadata(path)?.permissions().mode() & 0o777))
+    }
+    #[cfg(not(unix))]
+    {
+        let _ = path;
+        Ok(None)
+    }
+}
+
 /// Open a private append-only data file without introducing a world-readable
 /// creation window on Unix. Windows relies on the owning profile directory's
 /// ACL, consistent with the rest of the application data tree.

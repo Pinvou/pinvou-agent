@@ -285,14 +285,24 @@ def main():
 
     qcc = manifests["qcc"]
     assert qcc.get("secret_headers") in (None, [])
-    assert qcc["config_fields"] == []
+    # 可选密钥契约：qcc 明文迁移把历史凭证存放在 Bearer target 下并接线
+    # bearer_token_env_var，manifest 必须声明同一 key 才能被
+    # sync_secret_values 的重启重水化枚举覆盖（缺声明 = 首次重启即 401）。
+    # required=False 保证 OAuth-only 新装不弹必填、空输入照常安装。
+    assert qcc["config_fields"] == [{
+        "key": "QCC_API_KEY",
+        "label": "企查查 API Key",
+        "required": False,
+        "target": "bearer",
+        "secret": True,
+    }]
     assert qcc["servers"] == [{
         "name": "qcc-company",
         "url": "https://agent.qcc.com/mcp/company/stream",
         "scopes": ["mcp:tools"],
         "oauth_resource": "https://agent.qcc.com/mcp/company/stream",
     }]
-    print("✅ qcc: 唯一 qcc-company 远程端点 + OAuth scope/resource 清单契约")
+    print("✅ qcc: 唯一 qcc-company 远程端点 + OAuth scope/resource + 可选 API Key 清单契约")
 
     yuandian = manifests["yuandian-mcp"]
     assert yuandian["mcp_tools"] == [] and not yuandian["command"]

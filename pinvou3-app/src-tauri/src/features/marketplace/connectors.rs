@@ -15,7 +15,8 @@ use super::MarketplaceManager;
 use super::bundle;
 use super::python_dependencies;
 use super::secrets::{
-    is_sensitive_key_name, mcp_secret_env_var, mcp_secret_missing_error, set_remote_secret_header,
+    SecretResolveError, is_sensitive_key_name, mcp_secret_env_var, mcp_secret_missing_error,
+    set_remote_secret_header,
 };
 use super::types::ToolManifest;
 
@@ -36,7 +37,7 @@ pub(super) fn take_pending_pip_install_result_for_test() -> u8 {
     NEXT_PIP_INSTALL_RESULT.swap(0, std::sync::atomic::Ordering::SeqCst)
 }
 
-pub(super) fn mcp_json_lock() -> MutexGuard<'static, ()> {
+pub(crate) fn mcp_json_lock() -> MutexGuard<'static, ()> {
     MCP_JSON_LOCK
         .lock()
         .unwrap_or_else(|poisoned| poisoned.into_inner())
@@ -82,8 +83,8 @@ pub(super) fn load_mcp_json_for_reconcile() -> Result<(PathBuf, serde_json::Valu
         Err(error) => {
             backup_corrupt_mcp_json(&mcp_path, &content);
             Err(format!(
-                "mcp.json is unparseable; the original file was backed up as \
-                 mcp.json.corrupt.<timestamp> and left untouched — fix or remove it and \
+                "mcp.json is unparseable; the original file was backed up next to it \
+                 (mcp.json.corrupt.<unix-time>) and left untouched — fix or remove it and \
                  retry: {error}"
             ))
         }
@@ -300,7 +301,11 @@ impl<S: crate::platform::credential_store::CredentialStore> MarketplaceManager<S
             .collect();
         for field in &manifest.config_fields {
             if field.target == "bearer" {
-                if let Some(val) = user_config.get(&field.key) {
+                // 空串/纯空白输入 = "未提供"，与 try_resolve_secret_placeholder
+                // 的过滤同一语义：弹窗里输入后清空的字段必须走下面的 omitted
+                // 分支（从 store 重推导 / 容忍缺席），而不是被当成"用户给了一个
+                // 凭据"在解析失败时 fail-loud 卡死整个安装。
+                if let Some(val) = user_config.get(&field.key).filter(|v| !v.trim().is_empty()) {
                     if field.secret {
                         self.resolve_secret_placeholder(
                             &manifest.id,
@@ -334,9 +339,24 @@ impl<S: crate::platform::credential_store::CredentialStore> MarketplaceManager<S
                     // field unwritten — installs do so silently (historical behavior
                     // for an omitted optional key), the startup reconcile degrades by
                     // design and the auth failure surfaces through the boot receipt
-                    // and the restore note. A credential-store read failure must not
-                    // degrade into a permanently unwired entry, so it fails the build
-                    // in every mode and the next startup retries the restore.
+                    // and the restore note. For a REQUIRED field a credential-store
+                    // read failure must not degrade into a permanently unwired entry,
+                    // so it fails the build in every mode and the next startup
+                    // retries the restore. An OPTIONAL field tolerates exactly one
+                    // outcome: [`SecretResolveError::UndeterminableMiss`] — the read
+                    // succeeded but returned nothing while the OS keyring is
+                    // unreachable, so absence cannot be proven (the credential may
+                    // sit in the unreachable keyring) and an install must not block
+                    // on a keyring-less host; nothing is baked into the wiring, the
+                    // same treatment a genuinely absent credential gets. Every other
+                    // error is a real store fault (a failed read or a failed write —
+                    // including under the file fallback): like the required arm it
+                    // fails the build so the next startup retries, instead of baking
+                    // a fault into a permanently unwired entry that later startups
+                    // never repair. The classification comes from
+                    // `try_resolve_secret_placeholder` itself — matching on
+                    // `os_keyring_unreachable` here would tolerate fallback-era
+                    // read/write faults too, not just the miss.
                     match self.try_resolve_secret_placeholder(
                         &manifest.id,
                         bundle::keyring_target(bundle::CredentialTarget::Bearer),
@@ -356,7 +376,13 @@ impl<S: crate::platform::credential_store::CredentialStore> MarketplaceManager<S
                             }
                         }
                         Ok(None) => {}
-                        Err(error) => return Err(error),
+                        Err(error) if field.required => return Err(error.to_string()),
+                        Err(SecretResolveError::UndeterminableMiss(_)) => {
+                            // Fallback-active miss: the read cannot prove
+                            // absence, not a store fault. Leave the field
+                            // unwired — the one tolerated outcome.
+                        }
+                        Err(error) => return Err(error.to_string()),
                     }
                 }
             }
@@ -379,7 +405,7 @@ impl<S: crate::platform::credential_store::CredentialStore> MarketplaceManager<S
                 // into an unwired entry.
                 Ok(None) if degrade_unresolved_secrets => continue,
                 Ok(None) => return Err(mcp_secret_missing_error(&manifest.id, &secret.source_key)),
-                Err(error) => return Err(error),
+                Err(error) => return Err(error.to_string()),
             }
             set_remote_secret_header(
                 &mut env_headers,
@@ -419,7 +445,7 @@ impl<S: crate::platform::credential_store::CredentialStore> MarketplaceManager<S
                         }
                         Ok(None) if degrade_unresolved_secrets => continue,
                         Ok(None) => return Err(mcp_secret_missing_error(&manifest.id, k)),
-                        Err(error) => return Err(error),
+                        Err(error) => return Err(error.to_string()),
                     }
                     break;
                 }
@@ -641,7 +667,7 @@ impl<S: crate::platform::credential_store::CredentialStore> MarketplaceManager<S
                             env.insert(field.key.clone(), placeholder);
                         }
                         Ok(None) => {}
-                        Err(error) => return Err(error),
+                        Err(error) => return Err(error.to_string()),
                     }
                 }
             }
@@ -659,7 +685,7 @@ impl<S: crate::platform::credential_store::CredentialStore> MarketplaceManager<S
                 }
                 Ok(None) if degrade_unresolved_secrets => continue,
                 Ok(None) => return Err(mcp_secret_missing_error(&manifest.id, &secret.key)),
-                Err(error) => return Err(error),
+                Err(error) => return Err(error.to_string()),
             }
         }
         for key in manifest.env.keys().filter(|k| is_sensitive_key_name(k)) {
@@ -676,7 +702,7 @@ impl<S: crate::platform::credential_store::CredentialStore> MarketplaceManager<S
                     }
                     Ok(None) if degrade_unresolved_secrets => continue,
                     Ok(None) => return Err(mcp_secret_missing_error(&manifest.id, key)),
-                    Err(error) => return Err(error),
+                    Err(error) => return Err(error.to_string()),
                 }
             }
         }
@@ -887,11 +913,15 @@ pub(super) fn dead_local_entry_target(entry: &serde_json::Value) -> Option<Strin
         .map(str::to_string)
 }
 
-/// Secret source keys of `manifest` (secret_headers, secret bearer config
-/// fields, legacy sensitive manifest.env keys) whose env-var NAME appears
-/// nowhere in a restored remote entry: the restore degraded to an entry
-/// without that wiring because no stored credential resolved. Only names are
-/// reported — never values.
+/// Secret source keys of `manifest` (secret_headers, required secret bearer
+/// config fields, legacy sensitive manifest.env keys) whose env-var NAME
+/// appears nowhere in a restored remote entry: the restore degraded to an
+/// entry without that wiring because no stored credential resolved. Only
+/// names are reported — never values. OPTIONAL (`required: false`) config
+/// fields are excluded: their absence is a legitimate outcome (the qcc shape
+/// is OAuth-first), so "no stored credential" would send an OAuth-only user
+/// hunting for a key they never needed — and under the fallback it would be
+/// a claim we cannot verify either way.
 fn entry_secret_keys_without_wiring(
     manifest: &ToolManifest,
     entry: &serde_json::Value,
@@ -910,7 +940,7 @@ fn entry_secret_keys_without_wiring(
         push(&secret.source_key);
     }
     for field in &manifest.config_fields {
-        if field.target == "bearer" && field.secret {
+        if field.target == "bearer" && field.secret && field.required {
             push(&field.key);
         }
     }
