@@ -174,12 +174,13 @@ pub(crate) fn current_status(service: &KnowledgeService) -> KbModelStatus {
     }
 }
 
-/// 前端查询模型状态（offline，不联网）。
-/// 取消进行中的下载（下次网络数据块或文件校验边界生效）。
+/// 取消进行中的下载（下次网络数据块或文件校验边界生效）。取消只在下载进行中
+/// 有意义：下次下载启动时会复位该标志，一次取消不会毒化进程内后续的下载。
 pub fn kb_model_cancel() {
     CANCEL.store(true, Ordering::Relaxed);
 }
 
+/// 前端查询模型状态（offline，不联网）。
 pub fn kb_model_status(service: tauri::State<'_, KnowledgeService>) -> KbModelStatus {
     current_status(&service)
 }
@@ -258,6 +259,9 @@ pub async fn kb_model_download(
     }
     // 守卫：任何提前 return（含 ?、取消）退出时都复位 DOWNLOADING。
     let guard = DownloadGuard;
+    // 每次下载以干净的取消标志开始：CANCEL 是「停止当前下载」的单次信号，
+    // 不是持久状态——不复位会让一次取消毒化进程内后续的每一次下载。
+    CANCEL.store(false, Ordering::SeqCst);
 
     let parent = dir
         .parent()
