@@ -148,7 +148,11 @@ Backend invariants for root replacement:
   written as explicit move-outs (`None`) so tier-② grouping or a later
   `ensure` cannot immediately overturn the removal; sessions with existing
   entries (explicitly assigned here or elsewhere, already moved out) are
-  untouched — tier-① semantics win (§5).
+  untouched — tier-① semantics win (§5). Narrowing exception: a session
+  under a removed root whose workspace is still covered by the *new* root
+  set is never expelled — the command layer filters the expel enumeration
+  through `workspace_covered_by_roots(path, new_roots)`
+  (`replace_project_roots_and_expel`).
 - The removed-root diff and the expel enumeration are computed by the
   command layer **outside the write lock**; the root replacement and the
   expel writes then land atomically in **one write lock, one
@@ -168,13 +172,20 @@ Two independent views (`projectGrouping.js`):
   trailing *ungrouped* bucket (drag source for moving in, and the landing
   place of explicit move-outs). Temporary sessions never auto-join.
 
-Membership of a session is resolved in two tiers, identically on the
-frontend (`resolveSessionProjectId`) and the backend
-(`ProjectStore::resolve_session_project`):
+Membership of a session is resolved in two tiers on both the frontend
+(`resolveSessionProjectId`) and the backend
+(`ProjectStore::resolve_session_project`), with one divergence on a stale
+tier-① id noted below:
 
 - **Tier ① explicit assignment.** `assignments[session_id] = Some(pid)`
   wins outright. `None` is an **explicit move-out**: the session lands in
   ungrouped and must not be revived by tier-②. No entry means undecided.
+  Edge-case divergence: a **stale** explicit id (the assigned project no
+  longer exists) falls through to tier-② on the frontend (pinned by
+  `project_grouping_logic.test.mjs`), while the backend's
+  `resolve_session_project` returns `None` without retrying tier-② — so a
+  session shown under a project by root matching can still resolve to
+  `no_project` for `align` (§9.7) until it is explicitly re-assigned.
 - **Tier ② root auto-match.** The session's workspace path is matched
   against project roots with component-aware "equal to or nested under"
   semantics on folded identity keys (Windows folds case/separators; POSIX
@@ -220,7 +231,12 @@ key.
 - **Rebind migration** (§7): roots under the rebound prefix are translated
   `from → to`; roots outside the prefix are untouched.
 - **Replacement** happens only through the explicit "align to project"
-  action (§9.7) — permissions only ever grow by user action.
+  action (§9.7): the snapshot is replaced wholesale with the owning
+  project's **full root set at that moment**, so additional roots can
+  shrink as well as grow (roots the project has since removed drop out of
+  the keychain). Alignment deliberately does not follow a grow-only rule;
+  every *other* change to the accessible set only ever grows by user
+  action.
 - **Surfacing:** the workspace keychain chip shows the primary directory
   name plus `+N` for additional roots and pops the root list
   (`WorkspaceKeychainChip.jsx`, `describeKeychain`); empty/single-root
@@ -379,8 +395,10 @@ its owning project's **full root set at that moment**.
 - Shape: primary slot = the session's own `cwd` (no door change, §9.2);
   additional roots = project roots minus `cwd`, order preserved
   (`keychain_for_workspace`).
-- Ownership resolution matches the frontend exactly (§5): explicit
-  assignment first, then tier-② with the smallest-position tiebreak.
+- Ownership resolution follows the same tiers as the frontend (§5) —
+  explicit assignment first, then tier-② with the smallest-position
+  tiebreak — except for the §5 stale-id edge case: an explicit id whose
+  project is gone resolves to `no_project` here, not to a tier-② match.
 - Writes both binding stores (agent record + code-session sidecar / plain
   binding sidecar); an in-flight engine is pushed the new set via
   `Op::SyncSession`, effective next turn.
@@ -448,10 +466,13 @@ projects. Consequences, all locked by tests:
   deletion is the user's explicit statement, and automatic revival would
   overturn it; joining B requires an explicit move (§9.6). Sessions created
   later in that folder have no entry and auto-group as usual.
-- **Auto-member re-adoption.** Explicit move-outs suppress both tier-②
-  grouping and `ensure` materialization, so a recreated folder project only
-  picks up *new* (entry-less) sessions. Root removal expels only
-  entry-less sessions; tier-① entries always win (§4).
+- **Auto-member re-adoption.** Explicit move-outs suppress tier-②
+  grouping, so a recreated folder project only picks up *new*
+  (entry-less) sessions. Move-out tombstones never reach
+  `ensure_folder_roots` (it consults no assignment state) — suppression
+  of materialization is exclusively the §3 exclusion list's job. Root
+  removal expels only entry-less sessions; tier-① entries always win
+  (§4).
 
 ## §10 Verification anchors
 
