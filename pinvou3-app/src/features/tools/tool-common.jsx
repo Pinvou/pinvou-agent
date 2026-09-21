@@ -901,6 +901,8 @@ const tc = (t) => (t && t.uiToolCommon) || dict.zh.uiToolCommon;
     // 安全级别、版本与数据访问范围；无任何操作按钮（无卸载、无开关），只读徽章
     // 复用 PlatformToolAction 的 Web 只读降级样式。文案全部走 uiBuiltinPlugins，
     // 未传 copy 时按 tc 先例回退中文词典；数据访问 scope 未知键原样兜底。
+    // 内置技能（如视觉设计）复用本卡：无工具清单/安全级别/数据访问（纯提示词技能，
+    // 不直接访问数据），用 kindLabel（类型）+ versionText（"内置"）两行声明事实。
     const BuiltinPluginCard = ({ tool, copy }) => {
       const C = copy || dict.zh.uiBuiltinPlugins;
       const Icon = tool.icon || Package;
@@ -922,6 +924,12 @@ const tc = (t) => (t && t.uiToolCommon) || dict.zh.uiToolCommon;
             </div>
             {tool.subtitle && <p className="text-[13px] text-slate-500 dark:text-slate-400 font-medium">{tool.subtitle}</p>}
             {tool.desc && <p className="text-[12px] text-slate-500 dark:text-slate-400 leading-relaxed">{tool.desc}</p>}
+            {tool.kindLabel && (
+              <div className={rowCls}>
+                <span className={labelCls}>{C.kindLabel}</span>
+                <span className="leading-5 text-slate-600 dark:text-slate-300">{tool.kindLabel}</span>
+              </div>
+            )}
             {mcpTools.length > 0 && (
               <div className={rowCls}>
                 <span className={labelCls}>{C.toolsLabel}</span>
@@ -941,10 +949,10 @@ const tc = (t) => (t && t.uiToolCommon) || dict.zh.uiToolCommon;
                 </span>
               </div>
             )}
-            {tool.bundleVersion && (
+            {(tool.bundleVersion || tool.versionText) && (
               <div className={rowCls}>
                 <span className={labelCls}>{C.versionLabel}</span>
-                <span className="leading-5 text-slate-600 dark:text-slate-300">v{tool.bundleVersion}<span className="ml-1.5 text-slate-400 dark:text-slate-500">{C.versionNote}</span></span>
+                <span className="leading-5 text-slate-600 dark:text-slate-300">{tool.bundleVersion ? `v${tool.bundleVersion}` : tool.versionText}<span className="ml-1.5 text-slate-400 dark:text-slate-500">{C.versionNote}</span></span>
               </div>
             )}
             {dataAccess.length > 0 && (

@@ -634,6 +634,7 @@ Object.assign(dictEn.uiToolDetails.tools, {
 // on the card and are not enumerated here.
 dictEn.uiBuiltinPlugins = {
   sectionTitle:'Built-in Plugins',
+  kindLabel:'Type',
   pageIntro:'Plugins shipped with the app and updated together with it. This page only shows what they can do and what data they access — they cannot be uninstalled or turned off here.',
   readonlyBadge:'Built-in · Always on',
   toolsLabel:'Tools',
