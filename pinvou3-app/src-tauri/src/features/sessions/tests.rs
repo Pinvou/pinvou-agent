@@ -4817,16 +4817,34 @@ fn reconcile_aux_sessions_fails_closed_on_transient_load_error() {
         "the record path must be untouched by the aborted reconcile"
     );
 
-    // After the fault clears, the same reconcile rebuilds the mapping from
-    // the backlink — fail-closed does not wedge the recovery path.
+    // After the fault clears, the SAME boot stays fenced (round-23 MAJOR-1):
+    // the aborted pass can have left unclassified records behind, so
+    // get-or-create refuses creation for the rest of the boot — the same-boot
+    // self-heal this test used to assert is exactly the ambiguous-duplicate
+    // window the fence closes.
     std::fs::remove_dir(&record).expect("unblock the record path");
-    // Recreate the record contents the reconcile needs: the simplest honest
-    // way is a fresh aux for the same main, which then reconciles cleanly.
-    let rebuilt = store
+    let error = store
+        .get_or_create_aux_session(&main.metadata.id)
+        .expect_err("creation must stay fenced for the rest of the boot after the aborted pass");
+    assert!(
+        error
+            .to_string()
+            .contains("reconciliation failed this boot"),
+        "unexpected error: {error:#}"
+    );
+
+    // Next boot: the fence is gone with the process and the reconcile is
+    // green again, so the record-free main gets a fresh aux — fail-closed
+    // does not wedge the recovery path.
+    let recovered = reopen_store(&store).expect("reboot after the fault clears");
+    recovered
+        .reconcile_aux_sessions()
+        .expect("the next boot's pass succeeds");
+    let rebuilt = recovered
         .get_or_create_aux_session(&main.metadata.id)
         .expect("rebuild after the fault clears");
     assert_eq!(
-        store.aux_session_id(&main.metadata.id).as_deref(),
+        recovered.aux_session_id(&main.metadata.id).as_deref(),
         Some(rebuilt.id.as_str())
     );
 }
@@ -5023,6 +5041,81 @@ fn reconcile_keeps_aux_when_mapped_main_record_stat_faults() {
     );
 
     std::fs::remove_file(&record).expect("clean up the symlink");
+}
+
+/// PR #433 review round-23 (MAJOR-1): a transient fault aborting the
+/// reconcile pass must fence get-or-create's creation leg for the rest of
+/// the boot. The aborted pass can leave unmapped, backlink-carrying records
+/// behind that the same boot cannot classify; minting a fresh aux under such
+/// a parent feeds the next boot's reconcile an ambiguous duplicate it
+/// reclaims — with the original transcript inside. A mapped-and-loadable
+/// binding stays usable (the fence gates creation only), and the next boot
+/// recovers automatically once the fault clears. The fault is the rebuild
+/// side's persist (a directory occupying the sidecar path — the same
+/// transient-fault stand-in as the detach-abort test above), which aborts
+/// the pass via the rebuild's `?`.
+#[test]
+fn get_or_create_refuses_creation_after_a_failed_reconcile_pass() {
+    let (store, _g) = isolated_store();
+    let main = store
+        .create_new("/model".into(), None, std::env::temp_dir())
+        .expect("create main");
+    let mapped = store
+        .get_or_create_aux_session(&main.metadata.id)
+        .expect("create the mapped aux");
+    // An unmapped, backlink-carrying record: a healthy pass would re-adopt
+    // it here, and its persist fault is what aborts this pass.
+    let second = store
+        .create_new("/model".into(), None, std::env::temp_dir())
+        .expect("create second main");
+    let _orphaned = store
+        .get_or_create_aux_session(&second.metadata.id)
+        .expect("create the record that loses its mapping");
+    store
+        .set_aux_session(&second.metadata.id, None)
+        .expect("leave the record unmapped with its backlink");
+
+    // Make the next sidecar persist fail: a directory where the file belongs.
+    let sidecar = paths::sessions_root().join("_aux_sessions.json");
+    std::fs::remove_file(&sidecar).expect("remove the sidecar file");
+    std::fs::create_dir(&sidecar).expect("block the sidecar path with a directory");
+
+    assert!(
+        store.reconcile_aux_sessions().is_err(),
+        "a rebuild-side persist fault must abort the pass"
+    );
+    // The fence: creation is refused for an unmapped, healthy parent...
+    let third = store
+        .create_new("/model".into(), None, std::env::temp_dir())
+        .expect("create a third main in the same run");
+    let error = store
+        .get_or_create_aux_session(&third.metadata.id)
+        .expect_err("creation must be fenced after the failed pass");
+    assert!(
+        error
+            .to_string()
+            .contains("reconciliation failed this boot"),
+        "unexpected error: {error:#}"
+    );
+    // ...while a mapped-and-loadable binding is still returned.
+    assert_eq!(
+        store
+            .get_or_create_aux_session(&main.metadata.id)
+            .expect("a mapped binding stays usable under the fence")
+            .id,
+        mapped.id,
+    );
+
+    // Next boot: the fault cleared, the fence is gone with the process, and
+    // creation works again.
+    std::fs::remove_dir(&sidecar).expect("unblock the sidecar path");
+    let recovered = reopen_store(&store).expect("reboot after the fault clears");
+    recovered
+        .reconcile_aux_sessions()
+        .expect("the next boot's pass succeeds");
+    recovered
+        .get_or_create_aux_session(&third.metadata.id)
+        .expect("creation recovered on the next boot");
 }
 
 /// PR #433 review round-16 (B2): a lying mapping whose mapped main is DEAD

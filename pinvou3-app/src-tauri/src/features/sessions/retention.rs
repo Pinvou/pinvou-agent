@@ -49,8 +49,13 @@ impl SessionStore {
             .sessions_dir()
             .join(format!("{}.json", session.metadata.id));
         let payload = serde_json::to_vec_pretty(session).context("serialize saved session")?;
+        // Name the record, never the absolute path (round-23 should-fix 4):
+        // the sessions root embeds the host home directory, and this context
+        // rides error chains that surface in the browser (the aux create leg
+        // through get_or_create_aux_session) — the same no-host-paths stance
+        // as persist_aux_sessions.
         deepseek_tui::utils::write_atomic(&path, &payload)
-            .with_context(|| format!("write session {}", path.display()))?;
+            .with_context(|| format!("write session {}", session.metadata.id))?;
         // 会话 JSON 落盘后列表快照即过期(标题/更新时间/新会话都可能变)
         self.invalidate_list_cache();
         Ok(path)
@@ -369,6 +374,22 @@ impl SessionStore {
     /// is probabilistic across processes, not the boot-only exclusivity this
     /// comment previously asserted.
     pub(crate) fn reconcile_aux_sessions(&self) -> Result<()> {
+        let result = self.reconcile_aux_sessions_inner();
+        // A failed pass must fence creation for the rest of this boot
+        // (round-23 MAJOR-1): the abort can leave unmapped, backlink-carrying
+        // records behind that a same-boot get-or-create cannot see, and the
+        // fresh aux it mints under such a parent is reclaimed by the next
+        // boot as an ambiguous duplicate — with the original transcript
+        // inside. The flag is per-process and starts false; the next
+        // successful boot recovers automatically.
+        if result.is_err() {
+            self.aux_reconcile_failed
+                .store(true, std::sync::atomic::Ordering::SeqCst);
+        }
+        result
+    }
+
+    fn reconcile_aux_sessions_inner(&self) -> Result<()> {
         // Skip entirely when the sidecar was never successfully read this
         // boot: mapping-based decisions (missing mapping ⇒ rebuild/delete)
         // would run against an artificially empty map and delete live

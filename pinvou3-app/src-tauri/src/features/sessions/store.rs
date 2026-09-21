@@ -184,7 +184,8 @@ impl SessionStore {
         }
         store.purge_all_scheduled_side_maps();
         // Same as boot_inner: aux orphan reconciliation; a failure does not
-        // block startup.
+        // block startup, but it fences creation for the rest of this boot
+        // (the flag is set inside `reconcile_aux_sessions`, round-23 MAJOR-1).
         if let Err(error) = store.reconcile_aux_sessions() {
             eprintln!("[sessions] startup aux session reconciliation failed: {error:#}");
         }
@@ -230,6 +231,7 @@ impl SessionStore {
             hidden_sessions: Arc::new(RwLock::new(HashMap::new())),
             aux_sessions: Arc::new(RwLock::new(HashMap::new())),
             aux_sessions_loaded: Arc::new(std::sync::atomic::AtomicBool::new(false)),
+            aux_reconcile_failed: Arc::new(std::sync::atomic::AtomicBool::new(false)),
             aux_sessions_io: Arc::new(Mutex::new(())),
             execution_root_resolver: Arc::new(RwLock::new(None)),
             session_workspaces: Arc::new(RwLock::new(HashMap::new())),
@@ -916,6 +918,21 @@ impl SessionStore {
                     return Err(error).with_context(|| "load the session bound to this task");
                 }
             }
+        }
+        // Same fence for a failed startup reconciliation (round-23 MAJOR-1):
+        // a transient fault aborts the reconcile pass mid-repair and boot
+        // continues, so unmapped-but-alive, backlink-carrying aux records may
+        // linger that this boot could not classify. Minting a fresh aux under
+        // such a parent is exactly the ambiguous-duplicate shape the next
+        // boot's reconcile reclaims — with the original transcript inside.
+        // Refuse the creation leg (the panel surfaces ensureFailed); a
+        // mapped-and-loadable binding above is still returned, and the next
+        // successful boot recovers automatically.
+        if self
+            .aux_reconcile_failed
+            .load(std::sync::atomic::Ordering::SeqCst)
+        {
+            bail!("Aux session reconciliation failed this boot; refusing to create");
         }
         self.create_aux_session(parent_id)
     }

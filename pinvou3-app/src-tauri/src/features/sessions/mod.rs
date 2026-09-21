@@ -160,6 +160,16 @@ pub struct SessionStore {
     /// real orphan it would delete. Consumers that write mappings or run the
     /// reconciliation must fail closed / skip when this is false.
     pub(crate) aux_sessions_loaded: Arc<std::sync::atomic::AtomicBool>,
+    /// Whether this boot's aux reconciliation FAILED (round-23 MAJOR-1). A
+    /// transient fault aborts the pass mid-repair while boot continues, so
+    /// unmapped, backlink-carrying aux records may linger that this boot
+    /// could not classify; get_or_create must then refuse the creation leg —
+    /// minting a fresh aux under a parent whose original record is
+    /// unmapped-but-alive feeds the next boot's reconcile an ambiguous
+    /// duplicate it reclaims, losing that transcript. The refusal surfaces as
+    /// ensureFailed; the next successful boot recovers automatically (the
+    /// flag is per-process and starts false).
+    pub(crate) aux_reconcile_failed: Arc<std::sync::atomic::AtomicBool>,
     /// Mutex for aux-session get-or-create: the mapping lookup and creation
     /// must run in one critical section, or two concurrent calls each create a
     /// session and the later write overwrites the mapping, leaving the first

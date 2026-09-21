@@ -366,14 +366,21 @@ impl SessionStore {
         // Absent sidecar = nothing to load, and that is a healthy state (the
         // flag still flips true): only a read failure on an existing file
         // must leave the "not loaded" mark that fails get_or_create and the
-        // startup reconciliation closed.
-        if !file.exists() {
-            self.aux_sessions_loaded
-                .store(true, std::sync::atomic::Ordering::SeqCst);
-            return;
-        }
+        // startup reconciliation closed. NotFound-only (round-23 should-fix
+        // 3): the previous `!file.exists()` pre-probe conflated a transient
+        // stat fault (EACCES under sync/AV clients, EIO) with "absent" and
+        // flipped the loaded flag over a healthy sidecar — the boot then ran
+        // the reconciliation against an artificially empty map and the
+        // rebuild could overwrite it, the exact exists() conflation class
+        // `durable_session_record_is_absent` eradicated elsewhere. One read,
+        // classified by error kind, same taxonomy.
         let content = match std::fs::read_to_string(&file) {
             Ok(c) => c,
+            Err(error) if error.kind() == ErrorKind::NotFound => {
+                self.aux_sessions_loaded
+                    .store(true, std::sync::atomic::Ordering::SeqCst);
+                return;
+            }
             // A silent swallow here chains into real transcript loss: the
             // empty in-memory map makes the next set_aux_session overwrite
             // the sidecar with only the fresh mapping, and the next boot's
