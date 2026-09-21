@@ -33,14 +33,15 @@ for (const language of ['zh', 'en', 'ja']) {
   ]) {
     assert.ok(dict[language][section], `${language}.${section} must exist`);
   }
-  // All 21 uiAuxChat keys are pinned (round-14 minor-3: the list previously
+  // All 22 uiAuxChat keys are pinned (round-14 minor-3: the list previously
   // covered 13, so sendingHint/bindingHint and the six quote* keys could be
   // deleted from every dictionary with the suite green — and quoteChipCount's
-  // absence renders `undefined` at runtime).
+  // absence renders `undefined` at runtime; round-22 Major added discardStuck
+  // for the discard settle-watchdog).
   for (const key of [
     'openLabel', 'panelTitle', 'landingHint', 'emptyState', 'inputPlaceholder',
     'send', 'busyHint', 'bindingHint', 'sendingHint', 'newTopic', 'newTopicConfirm',
-    'sendFailed', 'ensureFailed', 'discardFailed', 'close',
+    'sendFailed', 'ensureFailed', 'discardFailed', 'discardStuck', 'close',
     'quoteAction', 'quoteChipCount', 'quoteRemove',
     'quoteLimitSingle', 'quoteLimitCount', 'quoteLimitTotal',
   ]) {
@@ -299,12 +300,48 @@ assert.match(auxChatPanel, /discardInFlightByTask\.get\(sessionId\)/);
 // run before the arm/confirm branch so an in-flight discard also cannot arm;
 // the refusal un-arms the confirm so a click in this window is never a
 // silent no-op (the rebind's binding hint is the visible in-progress state).
-const duplicateDiscardGuard = restartBlock.indexOf('if (discardInFlightByTask.has(sessionId)) {');
-assert.ok(duplicateDiscardGuard >= 0, 'handleRestart must refuse a second discard while one is in flight');
+// Round-22 Major carve-out: a *stuck* entry (its settle-watchdog fired) no
+// longer refuses — awaiting it forever was the dead end — so the guard reads
+// the entry and checks the stuck set.
+const duplicateDiscardGuard = restartBlock.indexOf('if (registeredDiscard && !discardStuckByTask.has(sessionId)) {');
+assert.ok(duplicateDiscardGuard >= 0, 'handleRestart must refuse a second discard while a healthy one is in flight');
+assert.match(restartBlock, /const registeredDiscard = discardInFlightByTask\.get\(sessionId\);\s*if \(registeredDiscard && !discardStuckByTask\.has\(sessionId\)\) \{/);
 assert.ok(
   duplicateDiscardGuard < restartBlock.indexOf('if (!restartArmed) {'),
   'the duplicate-discard guard must precede the two-step confirm arming',
 );
+// Discard settle-watchdog (round-22 Major): the discard registry was the one
+// in-flight registry with no never-settling recovery — round-16 B1 cleared the
+// send registry at restart entry, but deleting a discard entry would re-open
+// the N1 race, so a discard outliving DISCARD_WATCHDOG_MS (mirroring the web
+// lane's 180 s invoke timeout in web/bootstrap.js) is marked stuck instead:
+// the rebind effect stops awaiting it, the N1 guard above re-arms New Topic,
+// and the panel surfaces the stuck state. The entry stays registered so the
+// orphan's late settle keeps failing the identity checks.
+assert.match(auxChatPanel, /const DISCARD_WATCHDOG_MS = 180_000;/);
+assert.match(auxChatPanel, /const discardStuckByTask = new Set\(\);/);
+assert.match(
+  restartBlock,
+  /discardInFlightByTask\.set\(sessionId, discardPromise\);\s*[\s\S]{0,400}?discardStuckByTask\.delete\(sessionId\);\s*[\s\S]{0,1400}?const watchdog = setTimeout\(\(\) => \{\s*[\s\S]{0,400}?if \(discardInFlightByTask\.get\(sessionId\) !== discardPromise\) return;\s*discardStuckByTask\.add\(sessionId\);\s*[\s\S]{0,400}?if \(generationRef\.current !== generation\) return;\s*setDiscardStuck\(true\);\s*[\s\S]{0,400}?setRestarting\(false\);\s*setBindingPending\(false\);\s*\}, DISCARD_WATCHDOG_MS\);\s*try \{\s*await discardPromise;/,
+  'a settle-watchdog must be armed between the registry set and the discard await, marking stuck and releasing the dead latches',
+);
+// The settle path must cancel the watchdog and clear entry + marker only by
+// promise identity — a re-armed restart's fresh discard owns the slot and any
+// marker then, so the orphaned discard's late settle must not touch either.
+assert.match(
+  restartBlock,
+  /\} finally \{\s*clearTimeout\(watchdog\);[\s\S]{0,600}?const ownsEntry = discardInFlightByTask\.get\(sessionId\) === discardPromise;\s*if \(ownsEntry\) discardInFlightByTask\.delete\(sessionId\);\s*if \(ownsEntry && discardStuckByTask\.delete\(sessionId\)\) setDiscardStuck\(false\);/,
+  'the discard settle path must clear watchdog, entry and stuck marker by promise identity',
+);
+// Stuck-state surfacing and re-arm: the rebind effect must mirror the module
+// marker into state (the watchdog may fire while unmounted) and skip awaiting
+// a stuck entry; the banner renders from the trilingual copy; the confirmed
+// restart clears the banner at entry.
+assert.match(auxChatPanel, /const \[discardStuck, setDiscardStuck\] = useState\(false\);/);
+assert.match(auxChatPanel, /setDiscardStuck\(!!\(sessionId && discardStuckByTask\.has\(sessionId\)\)\);/);
+assert.match(auxChatPanel, /if \(pendingDiscard && !discardStuckByTask\.has\(sessionId\)\) \{\s*pendingDiscard\.then\(ensureAfterDiscard, ensureAfterDiscard\);/);
+assert.match(auxChatPanel, /copy\.discardStuck/);
+assert.match(restartBlock, /setDiscardFailed\(false\);\s*[\s\S]{0,300}?setDiscardStuck\(false\);/);
 // Send-latch release at restart entry (round-12 N2): handleSend releases the
 // latch only when turn_started marks the snapshot busy (round-20 minor-4) or
 // on its own failure path, and a same-task restart does not re-run the rebind
@@ -369,8 +406,8 @@ assert.match(auxChatPanel, /setBindingPending\(!!\(auxChat && sessionId\)\);/);
 assert.match(auxChatPanel, /setBindingPending\(true\);[\s\S]*?const discardPromise = auxChat\.discard\(sessionId\);/);
 assert.equal(
   (auxChatPanel.match(/setBindingPending\(false\);/g) || []).length,
-  3,
-  'bindingPending must clear on ensure success, ensure failure and the restart finally',
+  4,
+  'bindingPending must clear on ensure success, ensure failure, the restart finally and the round-22 settle-watchdog',
 );
 assert.match(auxChatPanel, /bindingPending \? copy\.bindingHint : copy\.emptyState/);
 // In-flight send feedback (round-12 UX): the send window had no visible state
@@ -455,19 +492,22 @@ assert.match(auxChatPanel, /disabled=\{composerDisabled \|\| \(!draft\.trim\(\) 
 // ensureFailed ("double banner") nor clear text typed since.
 assert.match(auxChatPanel, /const sentGeneration = generationRef\.current;/);
 assert.match(auxChatPanel, /if \(generationRef\.current !== sentGeneration\) return;\s*if \(auxIdRef\.current !== sentAuxId\) return;\s*setSendFailed\(true\);/);
-// restarting leak guard: the whole function body has exactly one
-// setRestarting(false), located in the outer finally (whose try opens before
-// the discard await and whose finally closes after the ensure await) — every
-// early-return path resets through it. The reset must be generation-gated
-// (round-8 m2): a stale continuation must not clear a newer restart's latch.
-// The binding-pending hint rides the same gate (round-12 UX): a stale
-// continuation must not clear a newer restart's pending state either.
+// restarting leak guard: the normal flow has exactly one setRestarting(false),
+// located in the outer finally (whose try opens before the discard await and
+// whose finally closes after the ensure await) — every early-return path
+// resets through it. The reset must be generation-gated (round-8 m2): a stale
+// continuation must not clear a newer restart's latch. The binding-pending
+// hint rides the same gate (round-12 UX): a stale continuation must not clear
+// a newer restart's pending state either. The second occurrence is the
+// round-22 settle-watchdog: it releases the dead latch (identity- and
+// generation-gated inside the timer callback) so the re-armed New Topic it
+// grants is not stuck behind a disabled button.
 const restartingClears = restartBlock.match(/setRestarting\(false\)/g) || [];
-assert.equal(restartingClears.length, 1, 'restarting must be cleared at exactly one place in handleRestart');
+assert.equal(restartingClears.length, 2, 'restarting must be cleared only in the outer finally and the settle-watchdog');
 const outerTry = restartBlock.indexOf('try {');
 const discardAwait = restartBlock.indexOf('await discardPromise;');
 const ensureAwait = restartBlock.indexOf('await auxChat.ensure');
-const restartingClearIdx = restartBlock.indexOf('setRestarting(false)');
+const restartingClearIdx = restartBlock.lastIndexOf('setRestarting(false)');
 const finallyClause = restartBlock.lastIndexOf('} finally {', restartingClearIdx);
 assert.ok(
   outerTry >= 0 && outerTry < discardAwait && discardAwait < ensureAwait && ensureAwait < finallyClause,
@@ -542,8 +582,10 @@ assert.match(auxChatPanel, /sendInFlightByTask\.set\(sentTaskId, sendPromise\);/
 assert.match(auxChatPanel, /finally \{[\s\S]{0,700}?if \(sendInFlightByTask\.get\(sentTaskId\) === sendPromise\) \{\s*sendInFlightByTask\.delete\(sentTaskId\);\s*\}/);
 // Double-banner guard (round-9 minor-1): entering the restart flow must
 // clear a stale sendFailed too, or a failed send's "retry" banner renders
-// next to the ensure-failure banner after the binding was cleared.
-assert.match(restartBlock, /setRestarting\(true\);\s*setDiscardFailed\(false\);[\s\S]{0,400}setSendFailed\(false\);/);
+// next to the ensure-failure banner after the binding was cleared. The
+// round-22 discardStuck banner clears on the same entry (the confirmed
+// restart is the recovery it asks for).
+assert.match(restartBlock, /setRestarting\(true\);\s*setDiscardFailed\(false\);[\s\S]{0,300}setDiscardStuck\(false\);[\s\S]{0,500}setSendFailed\(false\);/);
 assert.match(source('features/pet/PetSettingsSection.jsx'), /t\.uiPetSettings/);
 const conversation = source('features/conversation/ConversationTimeline.jsx');
 assert.match(conversation, /conversationCopy\(copy\)/);

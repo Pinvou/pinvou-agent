@@ -367,6 +367,7 @@ export const dictEn = {
           sendFailed:'Failed to send. Please try again.',
           ensureFailed:'Failed to start the auxiliary session. Start a new topic or try again later.',
           discardFailed:'Failed to discard the previous auxiliary chat; the current topic is still usable. Please retry.',
+          discardStuck:'Discarding the previous auxiliary chat has not responded for a long time and may be stuck. Click “New topic” again to retry.',
           close:'Close',
           quoteAction:'Quote to auxiliary chat',
           quoteChipCount:count=>`${count} quoted ${count === 1 ? 'selection' : 'selections'}`,

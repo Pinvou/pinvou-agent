@@ -367,6 +367,7 @@ export const dictZh = {
           sendFailed:'发送失败，请重试。',
           ensureFailed:'辅助会话初始化失败，请重开话题或稍后再试。',
           discardFailed:'丢弃旧辅助会话失败，当前话题仍可继续使用，请重试。',
+          discardStuck:'丢弃旧辅助会话长时间未响应，可能已卡住。可再次点击“重开话题”重试。',
           close:'关闭',
           quoteAction:'引用到辅助对话',
           quoteChipCount:count=>`已引用 ${count} 段对话内容`,

@@ -36,15 +36,36 @@ import {
 
 const RESTART_CONFIRM_MS = 4000;
 
+// Mirrors the web lane's invoke timeout (web/bootstrap.js rejects a pending
+// invoke at 180 s): there a wedged discard settles on its own as a rejection,
+// while the desktop invoke has no transport timeout, so a never-settling
+// discard would otherwise keep its registry entry — and every guard keyed on
+// it — forever. The threat model treats hung invokes as real, so the discard
+// registry gets the same never-settling recovery the send registry got in
+// round-16 B1, just with a different shape (see the watchdog in handleRestart:
+// deleting the entry would re-open the N1 race, so it is marked stuck instead).
+const DISCARD_WATCHDOG_MS = 180_000;
+
 // taskId -> pending discard promise, module-scoped on purpose: the discard it
 // tracks is backend-scoped (the turn gate can hold it for seconds), while the
 // panel unmounts on close and on sched- session switches. A component-level
 // registry would die with the instance and let a remounted panel rebind to
 // the still-mapped aux session the in-flight discard then deletes — the exact
 // M-B hole re-opened through unmount/remount. Entries are removed when the
-// discard settles, so the map holds at most one pending promise per task and
-// only for the discard's lifetime.
+// discard settles (or survive, marked stuck, past the settle-watchdog), so
+// the map holds at most one pending promise per task.
 const discardInFlightByTask = new Map();
+
+// taskId set of registry entries whose settle-watchdog fired (round-22
+// Major), module-scoped with the registry it annotates. A stuck entry stays
+// registered — the orphaned discard can still settle, and its late
+// continuations must keep finding their promise here for the identity checks
+// — but it is no longer awaited by the rebind effect and no longer blocks New
+// Topic: awaiting/refusing forever was the dead end (eternal "preparing"
+// hint, dead composer, N1 guard refusing every restart until an app reload).
+// A task's marker is cleared when the owning discard settles or when a
+// re-armed restart registers a fresh discard for that task.
+const discardStuckByTask = new Set();
 
 // taskId -> pending send promise, module-scoped for the same reason as the
 // discard registry above: the duplicate-send window outlives the component
@@ -82,6 +103,10 @@ export function AuxChatPanel({ sessionId, activationKey, t, theme, onClose, onAc
   const [sendFailed, setSendFailed] = useState(false);
   const [ensureFailed, setEnsureFailed] = useState(false);
   const [discardFailed, setDiscardFailed] = useState(false);
+  // Mirrors the module-scoped discardStuckByTask marker for rendering: the
+  // settle-watchdog fires from a timer (not a render), and a remount must
+  // pick up a marker set while this panel was unmounted.
+  const [discardStuck, setDiscardStuck] = useState(false);
   const [restartArmed, setRestartArmed] = useState(false);
   const [restarting, setRestarting] = useState(false);
   // True while the current binding has no aux session yet (first open, rebind,
@@ -144,6 +169,10 @@ export function AuxChatPanel({ sessionId, activationKey, t, theme, onClose, onAc
     setEnsureFailed(false);
     setDiscardFailed(false);
     setRestartArmed(false);
+    // Mirror the task's stuck marker (the watchdog may have fired while this
+    // panel was unmounted; a switch from another task must not inherit or
+    // keep that task's banner).
+    setDiscardStuck(!!(sessionId && discardStuckByTask.has(sessionId)));
     // Reset restarting on every rebind: the two restart invokes have no
     // transport timeout, so a promise that never settles would otherwise
     // latch the new task's panel disabled forever (the old restart's finally
@@ -167,7 +196,11 @@ export function AuxChatPanel({ sessionId, activationKey, t, theme, onClose, onAc
     // return the doomed aux session, which the discard then deletes behind
     // the panel's back, leaving a dead binding. Await the in-flight promise
     // (errors surface on the restart path) and re-check the generation so a
-    // further rebind during the wait aborts this ensure entirely.
+    // further rebind during the wait aborts this ensure entirely. A stuck
+    // entry (round-22 Major: its settle-watchdog fired, so it may never
+    // settle) is NOT awaited — parking the ensure behind it is exactly the
+    // eternal "preparing" dead end the watchdog exists to break; the stuck
+    // banner and the re-armed New Topic carry the recovery instead.
     const pendingDiscard = discardInFlightByTask.get(sessionId);
     const ensureAfterDiscard = () => {
       if (disposed || generationRef.current !== generation) return;
@@ -189,7 +222,7 @@ export function AuxChatPanel({ sessionId, activationKey, t, theme, onClose, onAc
           setEnsureFailed(true);
         });
     };
-    if (pendingDiscard) {
+    if (pendingDiscard && !discardStuckByTask.has(sessionId)) {
       pendingDiscard.then(ensureAfterDiscard, ensureAfterDiscard);
     } else {
       ensureAfterDiscard();
@@ -429,7 +462,17 @@ export function AuxChatPanel({ sessionId, activationKey, t, theme, onClose, onAc
     // not silently: a remounted panel lost the armed confirm, so un-arm here
     // (the binding hint the rebind shows while the discard is parked is the
     // visible "new topic in preparation" feedback for this window).
-    if (discardInFlightByTask.has(sessionId)) {
+    // Escape hatch (round-22 Major): an entry whose settle-watchdog fired is
+    // stuck — it may never settle, so refusing here forever was the dead end
+    // (N1 guard rejecting every New Topic until an app reload). A stuck entry
+    // stays registered (the orphan can still settle, and its late settle must
+    // keep failing the identity checks below) but no longer blocks this
+    // action; the generation bump at restart entry below makes every
+    // continuation of the orphaned discard inert before the fresh
+    // discard+ensure runs, so the late settle can neither bind nor unbind
+    // anything from this panel.
+    const registeredDiscard = discardInFlightByTask.get(sessionId);
+    if (registeredDiscard && !discardStuckByTask.has(sessionId)) {
       setRestartArmed(false);
       return;
     }
@@ -440,6 +483,10 @@ export function AuxChatPanel({ sessionId, activationKey, t, theme, onClose, onAc
     setRestartArmed(false);
     setRestarting(true);
     setDiscardFailed(false);
+    // The confirmed restart IS the recovery the stuck banner asks for, so the
+    // banner clears when the user acts on it (the module marker is cleared at
+    // the fresh discard's registration below).
+    setDiscardStuck(false);
     // A failed send's banner must not survive into the restart: when the
     // discard succeeds but the ensure rebuild fails, the binding is cleared
     // and the composer disabled — showing "send failed, retry" next to the
@@ -506,12 +553,49 @@ export function AuxChatPanel({ sessionId, activationKey, t, theme, onClose, onAc
         // this discard deletes behind its back.
         const discardPromise = auxChat.discard(sessionId);
         discardInFlightByTask.set(sessionId, discardPromise);
+        // A re-armed restart replaces the stuck entry it escaped: the stale
+        // marker referred to the orphaned discard, not this fresh one —
+        // leaving it would let the N1 guard wave a third restart through
+        // while this healthy discard is still in flight.
+        discardStuckByTask.delete(sessionId);
+        // Settle-watchdog (round-22 Major): the send registry's B1 recovery
+        // (clear the entry at restart entry) cannot apply here — deleting
+        // the entry is the N1 race itself, because the orphaned discard can
+        // still land server-side after a recreate — so a discard that
+        // outlives DISCARD_WATCHDOG_MS is *marked* stuck instead: the rebind
+        // effect stops awaiting it, the N1 guard re-arms New Topic, and the
+        // panel surfaces the stuck state. The entry itself stays until the
+        // discard settles, so a late settle keeps failing the identity
+        // checks, and the re-armed restart's generation bump makes the
+        // orphan's remaining continuations inert.
+        const watchdog = setTimeout(() => {
+          // A re-armed restart may have replaced this entry while the orphan
+          // was still in flight; only mark while this discard still owns it.
+          if (discardInFlightByTask.get(sessionId) !== discardPromise) return;
+          discardStuckByTask.add(sessionId);
+          // A rebind that moved past this restart resets the latches and
+          // re-reads the marker itself; only the live generation surfaces it.
+          if (generationRef.current !== generation) return;
+          setDiscardStuck(true);
+          // Release the dead restart latches, or New Topic stays disabled
+          // behind `restarting` and the re-arm the marker grants is
+          // unreachable (the binding hint would sit there forever too).
+          setRestarting(false);
+          setBindingPending(false);
+        }, DISCARD_WATCHDOG_MS);
         try {
           await discardPromise;
         } finally {
-          if (discardInFlightByTask.get(sessionId) === discardPromise) {
-            discardInFlightByTask.delete(sessionId);
-          }
+          clearTimeout(watchdog);
+          // Entry and stuck marker clear by promise identity only: once a
+          // re-armed restart owns the registry slot, the orphaned discard's
+          // late settle must not touch either — any marker there belongs to
+          // the fresh discard. The banner state follows only when a marker
+          // was actually cleared, so a same-instance rebind that mirrored
+          // the marker does not keep showing it after this discard settled.
+          const ownsEntry = discardInFlightByTask.get(sessionId) === discardPromise;
+          if (ownsEntry) discardInFlightByTask.delete(sessionId);
+          if (ownsEntry && discardStuckByTask.delete(sessionId)) setDiscardStuck(false);
         }
       } catch (error) {
         console.warn('[pinvou3][aux-chat] restart discard failed', error);
@@ -660,6 +744,9 @@ export function AuxChatPanel({ sessionId, activationKey, t, theme, onClose, onAc
         )}
         {discardFailed && (
           <div className="mb-2 text-[11px] text-red-600 dark:text-red-400" role="alert">{copy.discardFailed}</div>
+        )}
+        {discardStuck && (
+          <div data-testid="aux-chat-discard-stuck" className="mb-2 text-[11px] text-red-600 dark:text-red-400" role="alert">{copy.discardStuck}</div>
         )}
         <div className={`rounded-xl border px-3 py-2 ${
           theme === 'dark' ? 'border-white/[0.08] bg-white/[0.03]' : 'border-black/[0.08] bg-white/60'
