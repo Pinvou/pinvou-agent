@@ -15,7 +15,7 @@ use super::MarketplaceManager;
 use super::bundle;
 use super::python_dependencies;
 use super::secrets::{
-    is_sensitive_key_name, mcp_secret_env_var, mcp_secret_missing_error, mcp_secret_reference,
+    SecretResolveError, is_sensitive_key_name, mcp_secret_env_var, mcp_secret_missing_error,
     set_remote_secret_header,
 };
 use super::types::ToolManifest;
@@ -343,15 +343,20 @@ impl<S: crate::platform::credential_store::CredentialStore> MarketplaceManager<S
                     // read failure must not degrade into a permanently unwired entry,
                     // so it fails the build in every mode and the next startup
                     // retries the restore. An OPTIONAL field tolerates exactly one
-                    // failure class: while the file-backed fallback is active every
-                    // read is "undeterminable" (a miss may be a credential sitting in
-                    // the unreachable OS keyring), and an install must not block on a
-                    // keyring-less host — nothing is baked into the wiring, the same
-                    // treatment a genuinely absent credential gets. With the OS
-                    // keyring believed healthy, a store error is a real fault: like
-                    // the required arm it fails the build so the next startup
-                    // retries, instead of baking a transient fault into a permanently
-                    // unwired entry that later startups never repair.
+                    // outcome: [`SecretResolveError::UndeterminableMiss`] — the read
+                    // succeeded but returned nothing while the OS keyring is
+                    // unreachable, so absence cannot be proven (the credential may
+                    // sit in the unreachable keyring) and an install must not block
+                    // on a keyring-less host; nothing is baked into the wiring, the
+                    // same treatment a genuinely absent credential gets. Every other
+                    // error is a real store fault (a failed read or a failed write —
+                    // including under the file fallback): like the required arm it
+                    // fails the build so the next startup retries, instead of baking
+                    // a fault into a permanently unwired entry that later startups
+                    // never repair. The classification comes from
+                    // `try_resolve_secret_placeholder` itself — matching on
+                    // `os_keyring_unreachable` here would tolerate fallback-era
+                    // read/write faults too, not just the miss.
                     match self.try_resolve_secret_placeholder(
                         &manifest.id,
                         bundle::keyring_target(bundle::CredentialTarget::Bearer),
@@ -371,20 +376,13 @@ impl<S: crate::platform::credential_store::CredentialStore> MarketplaceManager<S
                             }
                         }
                         Ok(None) => {}
-                        Err(error) if field.required => return Err(error),
-                        Err(_)
-                            if self.credential_store.os_keyring_unreachable(
-                                &mcp_secret_reference(
-                                    &manifest.id,
-                                    bundle::keyring_target(bundle::CredentialTarget::Bearer),
-                                    &field.key,
-                                ),
-                            ) =>
-                        {
-                            // Fallback active: the read is undeterminable, not
-                            // proof of absence. Leave the field unwired.
+                        Err(error) if field.required => return Err(error.to_string()),
+                        Err(SecretResolveError::UndeterminableMiss(_)) => {
+                            // Fallback-active miss: the read cannot prove
+                            // absence, not a store fault. Leave the field
+                            // unwired — the one tolerated outcome.
                         }
-                        Err(error) => return Err(error),
+                        Err(error) => return Err(error.to_string()),
                     }
                 }
             }
@@ -407,7 +405,7 @@ impl<S: crate::platform::credential_store::CredentialStore> MarketplaceManager<S
                 // into an unwired entry.
                 Ok(None) if degrade_unresolved_secrets => continue,
                 Ok(None) => return Err(mcp_secret_missing_error(&manifest.id, &secret.source_key)),
-                Err(error) => return Err(error),
+                Err(error) => return Err(error.to_string()),
             }
             set_remote_secret_header(
                 &mut env_headers,
@@ -447,7 +445,7 @@ impl<S: crate::platform::credential_store::CredentialStore> MarketplaceManager<S
                         }
                         Ok(None) if degrade_unresolved_secrets => continue,
                         Ok(None) => return Err(mcp_secret_missing_error(&manifest.id, k)),
-                        Err(error) => return Err(error),
+                        Err(error) => return Err(error.to_string()),
                     }
                     break;
                 }
@@ -669,7 +667,7 @@ impl<S: crate::platform::credential_store::CredentialStore> MarketplaceManager<S
                             env.insert(field.key.clone(), placeholder);
                         }
                         Ok(None) => {}
-                        Err(error) => return Err(error),
+                        Err(error) => return Err(error.to_string()),
                     }
                 }
             }
@@ -687,7 +685,7 @@ impl<S: crate::platform::credential_store::CredentialStore> MarketplaceManager<S
                 }
                 Ok(None) if degrade_unresolved_secrets => continue,
                 Ok(None) => return Err(mcp_secret_missing_error(&manifest.id, &secret.key)),
-                Err(error) => return Err(error),
+                Err(error) => return Err(error.to_string()),
             }
         }
         for key in manifest.env.keys().filter(|k| is_sensitive_key_name(k)) {
@@ -704,7 +702,7 @@ impl<S: crate::platform::credential_store::CredentialStore> MarketplaceManager<S
                     }
                     Ok(None) if degrade_unresolved_secrets => continue,
                     Ok(None) => return Err(mcp_secret_missing_error(&manifest.id, key)),
-                    Err(error) => return Err(error),
+                    Err(error) => return Err(error.to_string()),
                 }
             }
         }

@@ -7029,6 +7029,127 @@ mod tests {
         });
     }
 
+    /// A store with the file fallback active whose reads and/or writes fail
+    /// with a REAL fault. `os_keyring_unreachable` is true in both modes, so
+    /// the flag alone can never decide tolerance — only the resolve's own
+    /// classification (`UndeterminableMiss`) may be tolerated, and a fault is
+    /// not a miss. `fail_write_values` targets individual write attempts so a
+    /// fault can be isolated to one key's rebind.
+    struct FallbackActiveFaultStore {
+        inner: MemoryCredentialStore,
+        fail_reads: bool,
+        fail_write_values: &'static [&'static str],
+    }
+
+    impl CredentialStore for FallbackActiveFaultStore {
+        fn get(&self, reference: &CredentialReference) -> Result<Option<String>, CredentialError> {
+            if self.fail_reads {
+                return Err(CredentialError::new(
+                    "fallback store read failed (simulated)",
+                ));
+            }
+            self.inner.get(reference)
+        }
+        fn set(&self, reference: &CredentialReference, value: &str) -> Result<(), CredentialError> {
+            if self.fail_write_values.contains(&value) {
+                return Err(CredentialError::new(
+                    "fallback store write failed (simulated)",
+                ));
+            }
+            self.inner.set(reference, value)
+        }
+        fn delete(&self, reference: &CredentialReference) -> Result<(), CredentialError> {
+            self.inner.delete(reference)
+        }
+        fn os_keyring_unreachable(&self, _reference: &CredentialReference) -> bool {
+            true
+        }
+    }
+
+    /// A read fault under the active file fallback is a real store fault, not
+    /// an undeterminable miss: the read answered with an error, so there is
+    /// no ambiguity to tolerate. The optional field must fail the install
+    /// like the required arm — swallowing it as "absent" would bake a
+    /// permanently unwired entry that later startups never repair (healthy
+    /// entries are never re-examined by the reconcile).
+    #[test]
+    fn optional_bearer_config_field_fails_closed_on_a_fallback_read_fault() {
+        with_temp_home(|| {
+            let manifest = serde_json::json!({
+                "id":"opt-rfail","name":"opt-rfail","description":"d","version":"1","icon":"x","category":"c",
+                "mcp_tools":[],"command":"","args":[],
+                "servers":[{"name":"opt-rfail-remote","url":"https://opt-rfail.example.com/mcp"}],
+                "config_fields":[
+                    {"key":"OPT_RFAIL_API_KEY","label":"k","required":false,"target":"bearer","secret":true}
+                ]
+            });
+            write_tool_manifest(
+                "opt-rfail",
+                &serde_json::to_string_pretty(&manifest).unwrap(),
+            );
+            let manager = MarketplaceManager::with_store(FallbackActiveFaultStore {
+                inner: MemoryCredentialStore::default(),
+                fail_reads: true,
+                fail_write_values: &[],
+            });
+
+            let error = manager
+                .install("opt-rfail", &std::collections::HashMap::new())
+                .unwrap_err();
+            assert!(
+                error.contains("fallback store read failed"),
+                "a real read fault under the fallback must fail the install, not be tolerated as an absent credential: {error}"
+            );
+            assert!(
+                !paths::mcp_config_path().exists(),
+                "no unwired entry may be written by the failed install"
+            );
+        });
+    }
+
+    /// A write fault under the active file fallback (here: the legacy
+    /// plaintext rebind inside the resolve) is a real store fault — the value
+    /// was available, only the persist failed. Tolerating it would silently
+    /// drop the credential and bake a permanently unwired entry instead of
+    /// failing the install for a retry. `ALPHA_TOKEN` resolves and persists
+    /// fine so the env-keys sweep does not fail the install first: only the
+    /// optional config-field arm ever sees this write fault.
+    #[test]
+    fn optional_bearer_config_field_fails_closed_on_a_fallback_write_fault() {
+        with_temp_home(|| {
+            let manifest = serde_json::json!({
+                "id":"opt-wfail","name":"opt-wfail","description":"d","version":"1","icon":"x","category":"c",
+                "mcp_tools":[],"command":"","args":[],
+                "servers":[{"name":"opt-wfail-remote","url":"https://opt-wfail.example.com/mcp"}],
+                "env":{"ALPHA_TOKEN":"alpha-v1","OPT_WFAIL_API_KEY":"legacy-plain"},
+                "config_fields":[
+                    {"key":"OPT_WFAIL_API_KEY","label":"k","required":false,"target":"bearer","secret":true}
+                ]
+            });
+            write_tool_manifest(
+                "opt-wfail",
+                &serde_json::to_string_pretty(&manifest).unwrap(),
+            );
+            let manager = MarketplaceManager::with_store(FallbackActiveFaultStore {
+                inner: MemoryCredentialStore::default(),
+                fail_reads: false,
+                fail_write_values: &["legacy-plain"],
+            });
+
+            let error = manager
+                .install("opt-wfail", &std::collections::HashMap::new())
+                .unwrap_err();
+            assert!(
+                error.contains("fallback store write failed"),
+                "a real write fault under the fallback must fail the install, not silently drop the credential: {error}"
+            );
+            assert!(
+                !paths::mcp_config_path().exists(),
+                "no unwired entry may be written by the failed install"
+            );
+        });
+    }
+
     /// A cleared dialog input arrives as an empty (or whitespace) string, not
     /// an omitted key: it must take the same "not provided" path as no input
     /// at all — re-derive from the store, tolerate absence — instead of
