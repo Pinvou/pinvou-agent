@@ -65,7 +65,7 @@ fn write_timestamped_id_map(
 
 /// Whole-map save of the pinned / hidden sidecars: writes exactly the given
 /// map. Only boot fixtures and tests should reach for this — production
-/// mutation paths must go through [`apply_timestamped_id_mutation`], because
+/// mutation paths must go through [`apply_timestamped_id_mutation_locked`], because
 /// the in-memory maps are boot-time snapshots and a wholesale write would
 /// revert concurrent changes persisted by another process.
 fn save_timestamped_id_map(map: &HashMap<String, String>, file_name: &str, ts_key: &str) {
@@ -84,7 +84,14 @@ fn save_timestamped_id_map(map: &HashMap<String, String>, file_name: &str, ts_ke
 /// and a GUI save would resurrect an id the headless process just evicted.
 /// The file stays the cross-process truth; the in-memory map is only this
 /// process's read cache.
-fn apply_timestamped_id_mutation(
+///
+/// The `_locked` suffix is the caller contract shared with the other sidecar
+/// mutators (see `multi_agent_flags_io`): the durable read-modify-write must
+/// run under the store's per-file io mutex (`pinned_sessions_io` /
+/// `hidden_sessions_io`), or two concurrent mutators' RMWs interleave and
+/// the later write lands over the earlier one's change (a purge erasing a
+/// fresh pin, or a pin resurrecting an evicted id).
+fn apply_timestamped_id_mutation_locked(
     file_name: &str,
     ts_key: &str,
     label: &str,
@@ -113,7 +120,8 @@ impl SessionStore {
     /// Retention-purge half of [`Self::set_pinned`]: drops the given ids from
     /// the durable pin file without rewriting entries it does not own.
     pub(crate) fn purge_pinned_ids(&self, ids: &[&str]) -> Result<()> {
-        apply_timestamped_id_mutation(
+        let _io = self.pinned_sessions_io.lock();
+        apply_timestamped_id_mutation_locked(
             PINNED_SESSIONS_FILE,
             "pinned_at",
             "load_pinned_sessions",
@@ -124,7 +132,8 @@ impl SessionStore {
 
     /// Retention-purge half of [`Self::set_hidden`].
     pub(crate) fn purge_hidden_ids(&self, ids: &[&str]) -> Result<()> {
-        apply_timestamped_id_mutation(
+        let _io = self.hidden_sessions_io.lock();
+        apply_timestamped_id_mutation_locked(
             HIDDEN_SESSIONS_FILE,
             "hidden_at",
             "load_hidden_sessions",
@@ -137,7 +146,7 @@ impl SessionStore {
 /// Read-modify-write a plain `HashMap<String, T>` sidecar file (the
 /// per-session model / mode maps): applies `mutate` to the durable content
 /// and persists only when it reports a change. Like
-/// [`apply_timestamped_id_mutation`], this keeps entries written by other
+/// [`apply_timestamped_id_mutation_locked`], this keeps entries written by other
 /// processes after this one booted instead of reverting them with a stale
 /// whole-map snapshot.
 pub(crate) fn mutate_json_map_file<T, F>(file_name: &str, mutate: F) -> Result<()>
@@ -149,7 +158,19 @@ where
     let mut entries: HashMap<String, T> = if file.exists() {
         let content =
             std::fs::read_to_string(&file).with_context(|| format!("read {file_name}"))?;
-        serde_json::from_str(&content).with_context(|| format!("parse {file_name}"))?
+        serde_json::from_str(&content).map_err(|error| {
+            // Quarantine-then-refuse (same contract as the timestamped-map
+            // mutation loader): this mutation fails, the evidence survives,
+            // and the next mutation starts from "absent" instead of staying
+            // bricked by the corrupt bytes.
+            let note = match crate::platform::filesystem::quarantine_corrupt_file(&file) {
+                Ok(quarantine) => {
+                    format!("; corrupt bytes quarantined at {}", quarantine.display())
+                }
+                Err(quarantine_error) => format!("; quarantining failed ({quarantine_error})"),
+            };
+            anyhow::Error::new(error).context(format!("parse {file_name}{note}"))
+        })?
     } else {
         HashMap::new()
     };
@@ -184,8 +205,11 @@ pub(crate) fn apply_session_model_mutation(id: &str, model_id: Option<&str>) -> 
 /// Batched remove half for `_session_models.json`: retention purges evict N
 /// sessions at once, so the durable file is re-read and rewritten once for
 /// the whole batch instead of once per id (mirroring the batched mode-map
-/// mutation).
-pub(crate) fn remove_session_models(ids: &[&str]) -> Result<()> {
+/// mutation). The `_locked` suffix is the caller contract: the durable RMW
+/// must run under the store's `session_models_io` mutex, or it interleaves
+/// with `set_session_model_id`'s own RMW and the later write lands over the
+/// earlier one's change.
+pub(crate) fn remove_session_models_locked(ids: &[&str]) -> Result<()> {
     mutate_json_map_file::<String, _>(SESSION_MODELS_FILE, |entries| {
         let mut changed = false;
         for id in ids {
@@ -246,6 +270,16 @@ fn parse_timestamped_id_map(
                     _ => {}
                 }
             }
+            if parsed.is_empty() {
+                // A non-empty array that yields zero ids is semantically
+                // corrupt, not "no pins": reading it as empty would refuse
+                // the mutation path's protection and silently widen the
+                // retention eviction set on the sweep path. The empty array
+                // `[]` (a real "no pins" state the save path writes) still
+                // parses to Some(empty).
+                eprintln!("[sessions] {label} failed: array carries no usable ids");
+                return None;
+            }
             Some(parsed)
         }
         Ok(_) => {
@@ -277,12 +311,24 @@ fn load_timestamped_id_map_for_mutation(
     }
     let content =
         std::fs::read_to_string(&file).with_context(|| format!("read {file_name} for mutation"))?;
-    parse_timestamped_id_map(&content, ts_key, label).ok_or_else(|| {
-        anyhow::anyhow!(
-            "{file_name} is unreadable or corrupt; refusing the id-level mutation to \
-             protect the surviving entries"
-        )
-    })
+    parse_timestamped_id_map(&content, ts_key, label)
+        .ok_or_else(|| quarantine_corrupt_sidecar(&file, file_name))
+}
+
+/// Quarantine a corrupt sidecar file aside (platform helper: sub-second-
+/// unique name, bytes preserved verbatim) and return the refusal error. The
+/// current mutation fails, but the next one starts from "absent" instead of
+/// being bricked by the corrupt bytes until someone deletes the file by
+/// hand — the same quarantine-then-rebuild contract as the marketplace
+/// consent file, without silently destroying the evidence.
+fn quarantine_corrupt_sidecar(file: &std::path::Path, label: &str) -> anyhow::Error {
+    let quarantined = crate::platform::filesystem::quarantine_corrupt_file(file)
+        .map(|path| format!("; the corrupt bytes are quarantined at {}", path.display()))
+        .unwrap_or_else(|error| format!("; quarantining failed ({error})"));
+    anyhow::anyhow!(
+        "{label} is unreadable or corrupt; refusing the id-level mutation to \
+         protect the surviving entries{quarantined}"
+    )
 }
 
 impl SessionStore {
@@ -298,6 +344,12 @@ impl SessionStore {
     }
 
     pub fn set_session_model_id(&self, id: &str, model_id: Option<String>) -> Result<()> {
+        // Same io-mutex contract as the pin/hidden sidecars: the cache write
+        // guard serializes this method against itself, but the retention
+        // purge's batch removal RMWs the same file without this method's
+        // cache guard — the file mutex is what keeps the two RMWs from
+        // interleaving.
+        let _io = self.session_models_io.lock();
         let mut models = self.session_models.write();
         let previous = models.get(id).cloned();
         match model_id {
@@ -373,6 +425,11 @@ impl SessionStore {
     }
 
     pub fn set_pinned(&self, id: &str, pinned: bool) {
+        // One critical section for the cache switch, the durable id-level
+        // RMW and the compensated rollback: without the io mutex two
+        // concurrent mutators (or the retention purge) interleave their file
+        // RMWs and the later write lands over the earlier one's change.
+        let _io = self.pinned_sessions_io.lock();
         let timestamp = Utc::now().to_rfc3339();
         let previous = self.pinned_sessions.read().get(id).cloned();
         {
@@ -384,7 +441,7 @@ impl SessionStore {
             }
         }
         let result = if pinned {
-            apply_timestamped_id_mutation(
+            apply_timestamped_id_mutation_locked(
                 PINNED_SESSIONS_FILE,
                 "pinned_at",
                 "load_pinned_sessions",
@@ -392,7 +449,7 @@ impl SessionStore {
                 &[],
             )
         } else {
-            apply_timestamped_id_mutation(
+            apply_timestamped_id_mutation_locked(
                 PINNED_SESSIONS_FILE,
                 "pinned_at",
                 "load_pinned_sessions",
@@ -443,7 +500,9 @@ impl SessionStore {
         let file = crate::platform::paths::sessions_root().join(PINNED_SESSIONS_FILE);
         std::fs::read_to_string(&file)
             .ok()
-            .and_then(|content| parse_pinned_sessions(&content))
+            .and_then(|content| {
+                parse_timestamped_id_map(&content, "pinned_at", "load_pinned_sessions")
+            })
             .map(|pins| pins.into_keys().collect())
             .unwrap_or_else(|| self.pinned_sessions.read().keys().cloned().collect())
     }
@@ -457,6 +516,10 @@ impl SessionStore {
     }
 
     pub fn set_hidden(&self, id: &str, hidden: bool) {
+        // Same single-critical-section contract as `set_pinned` (its own io
+        // mutex; the nested `set_pinned` below takes the pin mutex, never the
+        // reverse, so the ordering is acyclic).
+        let _io = self.hidden_sessions_io.lock();
         let timestamp = Utc::now().to_rfc3339();
         let previous = self.hidden_sessions.read().get(id).cloned();
         {
@@ -471,7 +534,7 @@ impl SessionStore {
             self.set_pinned(id, false);
         }
         let result = if hidden {
-            apply_timestamped_id_mutation(
+            apply_timestamped_id_mutation_locked(
                 HIDDEN_SESSIONS_FILE,
                 "hidden_at",
                 "load_hidden_sessions",
@@ -479,7 +542,7 @@ impl SessionStore {
                 &[],
             )
         } else {
-            apply_timestamped_id_mutation(
+            apply_timestamped_id_mutation_locked(
                 HIDDEN_SESSIONS_FILE,
                 "hidden_at",
                 "load_hidden_sessions",
@@ -517,36 +580,4 @@ impl SessionStore {
             *self.hidden_sessions.write() = hidden_sessions;
         }
     }
-}
-
-/// Parse a `_pinned_sessions.json` payload: an array of bare session ids or
-/// `{id, pinned_at}` objects. `None` on invalid JSON or a non-array payload
-/// (callers keep their boot-time map instead of trusting a torn read).
-fn parse_pinned_sessions(content: &str) -> Option<HashMap<String, String>> {
-    let items = serde_json::from_str::<serde_json::Value>(content)
-        .ok()?
-        .as_array()?
-        .to_vec();
-    let mut pins = HashMap::new();
-    for item in items {
-        match item {
-            serde_json::Value::String(id) => {
-                pins.insert(id, Utc::now().to_rfc3339());
-            }
-            serde_json::Value::Object(mut obj) => {
-                let id = obj
-                    .remove("id")
-                    .and_then(|v| v.as_str().map(str::to_string));
-                let pinned_at = obj
-                    .remove("pinned_at")
-                    .and_then(|v| v.as_str().map(str::to_string))
-                    .unwrap_or_else(|| Utc::now().to_rfc3339());
-                if let Some(id) = id {
-                    pins.insert(id, pinned_at);
-                }
-            }
-            _ => {}
-        }
-    }
-    Some(pins)
 }
