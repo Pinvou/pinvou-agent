@@ -177,7 +177,8 @@ pub(super) fn mcp_secret_store_error(tool_id: &str, key: &str, error: Credential
 /// this leg, a legacy-only manifest's credential is registered by the
 /// installing reconcile and then wiped by the next boot's
 /// `sync_secret_values` clear-and-rebuild — silent 401s from the first
-/// restart.
+/// restart. The registry is keyed by env-var name only, so when both targets
+/// of the same key ever hold values, the later (Bearer) registration wins.
 pub(super) fn manifest_secret_targets(manifest: &ToolManifest) -> Vec<(String, String)> {
     let mut out: Vec<(String, String)> = Vec::new();
     let mut push = |target: &str, key: &str| {

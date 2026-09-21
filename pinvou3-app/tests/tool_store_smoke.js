@@ -154,6 +154,13 @@ function injectSource() {
             const c=!!(state.installed.gongwen||state.skills['government-writing']);
             return Promise.resolve(mk(c,true,null,c?[act('uninstall')]:[act('install')]));
           }
+          if(id==='qcc'){
+            // 与生产 manifest 契约同形（scripts/mcp-server-contract-smoke.py 钉住）：
+            // 后端下发可选 QCC_API_KEY，前端弹窗字段由 overlay 按 key 合并展示。
+            const inst=!!state.installed[id];
+            return Promise.resolve(mk(inst,true,null,inst?[act('uninstall')]:[act('connect',{kind:'oauth'})],
+              bnd({config_fields:[{key:'QCC_API_KEY',label:'企查查 API Key',required:false,target:'bearer',secret:true}]})));
+          }
           if(TOOL_META[id]){
             const inst=!!state.installed[id];
             const oauth=!!OAUTH_SERVERS[id];
@@ -352,8 +359,22 @@ async function visibilityBox(page, cardText, modeLabel, click) {
   }));
 
   const composerChangedBeforeQcc = await page.evaluate(()=>window.__TOOL_STORE_TEST__.composerChanged);
+  // qcc 新旅程（#575）：manifest 声明可选 QCC_API_KEY 后，连接先弹可选配置，
+  // 空提交照常安装并进入 OAuth——与后端 bundle_readiness 下发 config_fields 的
+  // 生产形态一致（mock 见 bundle_readiness 分支的 qcc 条目）。
   await action(page,'企查查','连接','qcc');
-  rec('企查查走 OAuth 且不展示 API Key 输入',await page.evaluate(()=>document.body.innerText.includes('正在连接「企查查」')&&[...document.querySelectorAll('button')].some(b=>(b.textContent||'').trim()==='取消')&&!document.querySelector('input[type="password"]')));
+  rec('企查查连接先展示可选 Key 配置',await page.evaluate(()=>{
+    const input=document.querySelector('input[type="password"]');
+    return !!input&&document.body.innerText.includes('企查查 API Key（可选）');
+  }));
+  await clickExact(page,'连接'); await sleep(260);
+  rec('企查查空提交后走 OAuth 且不再展示 Key 输入',await page.evaluate(()=>{
+    const install=[...window.__TOOL_STORE_TEST__.calls].reverse().find(x=>x.cmd==='install_marketplace_tool'&&x.args.toolId==='qcc');
+    return document.body.innerText.includes('正在连接「企查查」')
+      &&[...document.querySelectorAll('button')].some(b=>(b.textContent||'').trim()==='取消')
+      &&!document.querySelector('input[type="password"]')
+      &&!!install&&!(install.args.config&&install.args.config.QCC_API_KEY);
+  }));
   await clickExact(page,'取消'); await sleep(180);
   rec('企查查取消命令与授权请求使用同一 requestId',await page.evaluate(()=>{
     const calls=window.__TOOL_STORE_TEST__.calls;

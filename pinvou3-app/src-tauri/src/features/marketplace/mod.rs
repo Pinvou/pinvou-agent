@@ -20,7 +20,7 @@ mod secrets;
 mod types;
 mod validation;
 
-pub(crate) use connectors::{mcp_json_unparseable, write_json_pretty};
+pub(crate) use connectors::{mcp_json_lock, mcp_json_unparseable, write_json_pretty};
 
 // PR #302 WIP 拆分的子模块（main 的 Wave 2 没有接这块）—— 需要补 mod 声明。
 pub mod actions;
@@ -85,8 +85,11 @@ pub(super) fn backup_corrupt_json_file(path: &std::path::Path, stem: &str, conte
     }
     let ts = std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
-        .map(|d| d.as_secs())
-        .unwrap_or(0);
+        .map(|d| format!("{}-{:09}", d.as_secs(), d.subsec_nanos()))
+        .unwrap_or_else(|_| "0-000000000".to_string());
+    // 秒级时间戳会让同一秒内出现的第二份不同内容坏文件覆盖第一份备份；纳秒
+    // 后缀保证每次真实落盘都是新名字。幂等仍由上面的全前缀同字节去重保证：
+    // 持续解析失败不会每次启动都翻倍备份。
     let backup = parent.join(format!("{prefix}{ts}"));
     if let Err(e) = std::fs::write(&backup, content) {
         log::warn!(
@@ -1030,6 +1033,9 @@ impl<S: CredentialStore> MarketplaceManager<S> {
         // 回收失败即整体回到卸载前状态（目录由 recycle_package 自回滚，登记以本次
         // 所删为限回写，installed.json / mcp.json 由事务快照恢复），不残留
         // 「显示已安装、实际未供给」的半卸载态。
+        // 不变量：写入器拒绝（坏 mcp.json）必须是闭包内第一个操作——事务快照只
+        // 覆盖 mcp.json / installed.json，bundles.json 镜像与包目录在快照之外，
+        // 拒绝若发生在它们之后，回滚将不完整。调整顺序前先读这条。
         let transaction = MarketplaceStateTransaction::begin(&self.installed_file)?;
         let result = (|| {
             self.remove_from_mcp_json(tool_id)?;
@@ -1240,6 +1246,8 @@ impl<S: CredentialStore> MarketplaceManager<S> {
             .unwrap_or_default();
         let transaction = MarketplaceStateTransaction::begin(&self.installed_file)
             .map_err(DowngradeError::Integrity)?;
+        // 不变量与 uninstall 相同：写入器拒绝必须是闭包内第一个操作，事务快照
+        // 只覆盖 mcp.json / installed.json，之后的其他清理依赖本次提交成功。
         let result = (|| {
             self.remove_from_mcp_json(tool_id)?;
             let mut installed = self.installed_ids();
@@ -1995,7 +2003,10 @@ mod tests {
         CredentialError, CredentialReference, CredentialStore, MemoryCredentialStore,
     };
     use crate::platform::paths::tests::ENV_LOCK;
-    use secrets::{mcp_secret_env_var, mcp_secret_reference, snapshot_secret_values};
+    use secrets::{
+        clear_secret_values_for_test, mcp_secret_env_var, mcp_secret_reference,
+        snapshot_secret_values,
+    };
     use sha2::{Digest, Sha256};
     use std::future::Future;
     use std::io::{Cursor, Write as _};
@@ -6737,7 +6748,13 @@ mod tests {
             );
 
             // The boot runs this right after the reconcile (bridge.rs); it
-            // must re-add what it wipes, not leave the registry empty.
+            // must re-add what it wipes, not leave the registry empty. Clear
+            // explicitly first so the wipe half of the clear-and-rebuild is
+            // actually exercised: without this, sync could re-insert the same
+            // value over a stale entry and stay green even if `values.clear()`
+            // were deleted.
+            clear_secret_values_for_test();
+            assert!(!snapshot_secret_values().contains_key(&env_var));
             manager.sync_secret_values().unwrap();
             assert_eq!(
                 snapshot_secret_values().get(&env_var).map(String::as_str),
@@ -6776,12 +6793,69 @@ mod tests {
                 "the reconcile must register the local legacy secret"
             );
 
+            // 同上：先清空，钉住 sync 的清空-重建两半都必须真实发生。
+            clear_secret_values_for_test();
+            assert!(!snapshot_secret_values().contains_key(&env_var));
             manager.sync_secret_values().unwrap();
             assert_eq!(
                 snapshot_secret_values().get(&env_var).map(String::as_str),
                 Some("legacy-manifest-value"),
                 "the local legacy secret must survive the restart rehydration: {:?}",
                 snapshot_secret_values()
+            );
+        });
+    }
+
+    /// Uninstalling (or permanently downgrading) a tool with sensitive-by-name
+    /// legacy env keys must delete the credential the enumeration now covers —
+    /// before the dual-target enumeration these store entries were orphaned
+    /// forever and a recycle/restore silently kept working with stale auth.
+    /// Covers both targets the writers use, plus the registry entry.
+    #[test]
+    fn uninstall_deletes_legacy_env_credentials() {
+        with_temp_home(|| {
+            let manifest = serde_json::json!({
+                "id":"lg-del","name":"lg-del","description":"d","version":"1","icon":"x","category":"c",
+                "mcp_tools":[],"command":"","args":[],
+                "servers":[{"name":"lg-del-remote","url":"https://lg-del.example.com/mcp"}],
+                "env":{"LEGACY_API_KEY":"legacy-value"}
+            });
+            write_tool_manifest("lg-del", &serde_json::to_string_pretty(&manifest).unwrap());
+            write_installed_ids(&["lg-del".to_string()]);
+            let store = MemoryCredentialStore::default();
+            let manager = MarketplaceManager::with_store(store.clone());
+
+            manager.reconcile_installed_mcp_entries().unwrap();
+            let env_var = mcp_secret_env_var("LEGACY_API_KEY");
+            assert!(
+                store
+                    .get(&mcp_secret_reference("lg-del", "header", "LEGACY_API_KEY"))
+                    .unwrap()
+                    .is_some(),
+                "precondition: the remote legacy channel stores under the Bearer target"
+            );
+            assert!(snapshot_secret_values().contains_key(&env_var));
+
+            manager.uninstall("lg-del").unwrap();
+
+            assert_eq!(
+                store
+                    .get(&mcp_secret_reference("lg-del", "header", "LEGACY_API_KEY"))
+                    .unwrap(),
+                None,
+                "uninstall must delete the previously-orphaned legacy credential"
+            );
+            assert_eq!(
+                store
+                    .get(&mcp_secret_reference("lg-del", "env", "LEGACY_API_KEY"))
+                    .unwrap(),
+                None,
+                "the env-target lookup must be deleted too, not only the stored one"
+            );
+            assert!(
+                !snapshot_secret_values().contains_key(&env_var),
+                "the registry entry must go with the store entry: {:?}",
+                snapshot_secret_values().keys()
             );
         });
     }

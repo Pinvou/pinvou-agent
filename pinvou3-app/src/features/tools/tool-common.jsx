@@ -507,7 +507,7 @@ const tc = (t) => (t && t.uiToolCommon) || dict.zh.uiToolCommon;
       { id: 10, backendId: 'dingtalk', dingtalkCli: true, title: '钉钉', subtitle: '以你本人身份操作钉钉文档/日历/表格/消息', category: 'collab', type: 'CLI + 官方技能', version: 'v1.0.61', latency: '云端', desc: '接入钉钉官方 DingTalk Workspace CLI（dws，Apache-2.0）+ 官方技能：让 AI 以你本人身份读写钉钉文档、查改日历、操作 AI 表格/在线表格、收发群聊消息、处理待办/审批/日志/邮箱等。点「连接」用钉钉 App 扫码授权，全程不填 key。', icon: Navigation, color: 'bg-gradient-to-b from-blue-400 to-indigo-500', installed: false, authRequired: true, configFields: [], welcomeQueries: ['读一下我的钉钉文档', '查我今天的钉钉日程', '在钉钉 AI 表格里查数据', '看看我的钉钉待办'] },
       { id: 11, backendId: null, title: 'TAPD 敏捷研发', subtitle: '缺陷与迭代的自动化追踪', category: 'dev', type: 'Action Skill', version: 'v2.8.0', latency: '<60ms', desc: '研发管理核心工具。允许 AI 查询项目迭代进度、自动拆分需求条目、更新缺陷状态，实现从需求到发布的研发全生命周期数字化。', icon: Layout, color: 'bg-gradient-to-b from-violet-500 to-fuchsia-600', installed: false, authRequired: true },
       { id: 12, backendId: null, title: 'CNB 云原生管线', subtitle: '代码仓库与 CI/CD 调度', category: 'dev', type: 'MCP Server', version: 'v1.0.0', latency: '<40ms', desc: '将云原生开发能力赋予大模型。支持通过自然语言进行代码仓库检索、提交 Issue、审查 PR、触发并监控流水线部署等极客操作。', icon: Code, color: 'bg-gradient-to-b from-orange-400 to-rose-500', installed: false, authRequired: true },
-      { id: 13, backendId: 'qcc', oauthMcp: true, oauthServerName: 'qcc-company', title: '企查查', subtitle: '企业工商数据授权查询', category: 'finance', type: 'Remote MCP', version: 'v1.0.0', latency: '云端', desc: '接入企查查智能体数据平台 qcc-company 远程 MCP。点「连接」后会打开浏览器进行企查查账号 OAuth 授权，全程不填写 API Key。', icon: Building2, color: 'bg-gradient-to-br from-blue-600 to-cyan-500', installed: false, authRequired: true, configFields: [], welcomeQueries: ['查一下华为的工商信息', '腾讯的工商登记信息', '比亚迪有哪些对外投资', '阿里巴巴的股东结构'] },
+      { id: 13, backendId: 'qcc', oauthMcp: true, oauthServerName: 'qcc-company', title: '企查查', subtitle: '企业工商数据授权查询', category: 'finance', type: 'Remote MCP', version: 'v1.0.0', latency: '云端', desc: '接入企查查智能体数据平台 qcc-company 远程 MCP。点「连接」默认通过企查查账号 OAuth 授权；如有企查查 API Key 也可选填，密钥只写入本机系统凭据。', icon: Building2, color: 'bg-gradient-to-br from-blue-600 to-cyan-500', installed: false, authRequired: true, configTitle: '企查查 API Key（可选）', configDescription: 'API Key 只保存在本机系统凭据，不写入 mcp.json。留空则直接使用 OAuth 授权。', configFields: [{ key: 'QCC_API_KEY', label: '企查查 API Key', required: false, target: 'bearer', secret: true, placeholder: '粘贴企查查 API Key（可留空）', helpText: '可选。默认使用 OAuth 授权；如需以 API Key 方式接入再填写。' }], welcomeQueries: ['查一下华为的工商信息', '腾讯的工商登记信息', '比亚迪有哪些对外投资', '阿里巴巴的股东结构'] },
       { id: 20, backendId: 'patsnap-search', mcpServer: true, title: '智慧芽专利&文献', subtitle: '全球专利与论文融合检索，支持公开号详情获取', category: 'docs', type: 'MCP Server', version: 'v1.0.0', latency: '云端', desc: '接入智慧芽远程 MCP，在全球专利数据库和文献库中进行融合检索，支持自然语言、语义搜索、关键词检索和多维过滤，并可按专利公开号或结果 URL 拉取 Markdown 详情。需要填写智慧芽 API Key，密钥只写入本机系统凭据，mcp.json 仅保存环境变量占位符。', icon: Search, color: 'bg-gradient-to-b from-emerald-500 to-cyan-600', installed: false, authRequired: true, configTitle: '填写智慧芽 API Key', configDescription: 'API Key 仅存储在本机系统凭据中，不会明文写入 mcp.json；连接智慧芽服务时通过 Authorization 请求头发送。', configDocUrl: 'https://open.zhihuiya.com/dashboard/api-keys', configDocLabel: '查看 API Key 获取说明', configFields: [{ key: 'PATSNAP_API_KEY', label: '智慧芽 API Key', required: true, target: 'bearer', secret: true, placeholder: '粘贴你的智慧芽 API Key', helpText: '请从智慧芽开放平台或企业管理员提供的 MCP/API 凭证中获取。' }], welcomeQueries: ['检索固态电池电解质相关专利和论文', '查找近五年 CRISPR 递送系统核心专利和文献', '获取公开号 CN109123456A 的专利详情', '分析宁德时代钠离子电池方向专利布局'] },
       { id: 21, backendId: 'canva-mcp', oauthMcp: true, oauthServerName: 'canva_mcp', title: 'Canva 可画', subtitle: '海报、演示文稿、封面与品牌模板设计', category: 'life', type: 'Remote MCP', version: 'v1.0.0', latency: '云端', desc: '接入 Canva 可画远程 MCP。支持通过自然语言生成和编辑海报、演示文稿、小红书封面、品牌模板等设计内容；点「连接」后会打开浏览器进行 Canva 可画账号授权，全程不填写 API Key。设计指令、素材、文件夹和品牌模板相关内容会发送到 Canva 可画远程 MCP 服务。', icon: Palette, color: 'bg-gradient-to-b from-cyan-500 to-pink-500', installed: false, authRequired: true, configFields: [], welcomeQueries: ['帮我生成一张新品发布海报', '做一份三页产品介绍演示文稿', '设计一张小红书封面', '用品牌模板生成活动宣传图'] },
       { id: 14, backendId: 'obsidian', mcpServer: true, title: 'Obsidian 知识库', subtitle: '检索并管理本机 Obsidian 笔记，读写你的个人知识', category: 'docs', type: 'MCP Server', version: 'v1.1.0', latency: '<30ms', desc: '把你本机的 Obsidian 笔记库（vault）接入大模型。支持全文检索、读取、新建、编辑、改名（自动修双链）与删除——让 AI 基于并维护你自己沉淀的知识。自动识别当前打开的库，无需手动配置；笔记不出本机、模型也在本机，知识与算力全链路不出域。', icon: BookOpen, color: 'bg-gradient-to-b from-violet-500 to-purple-700', installed: false, authRequired: false, welcomeQueries: ['帮我搜一下我的笔记', '帮我新建一篇笔记记录今天的想法', '我的知识库有哪些文档？', '总结一下我的笔记'] },
@@ -543,12 +543,21 @@ const tc = (t) => (t && t.uiToolCommon) || dict.zh.uiToolCommon;
 
     // 后端 config_fields（key/required/secret/target 功能事实，bundle_readiness 的
     // bundle 字段）× 本地 overlay（label/placeholder/helpText 展示文案）按 key 合并；
-    // 后端无字段时原样使用 overlay。
+    // 后端无字段时原样使用 overlay。展示文案一律 overlay 胜出：manifest label 是
+    // 单语中文，若后端覆盖 label，en/ja 用户会看到中文 label——overlay 三语覆盖
+    // 因此形同虚设。功能事实（required/target/secret 等）保持后端胜出。
     const mergeConfigFields = (backendFields, overlayFields) => {
       if (!Array.isArray(backendFields) || backendFields.length === 0) return overlayFields;
       const overlayByKey = {};
       (overlayFields || []).forEach((f) => { if (f && f.key) overlayByKey[f.key] = f; });
-      return backendFields.map((f) => ({ ...overlayByKey[f.key], ...f }));
+      return backendFields.map((f) => {
+        const ov = overlayByKey[f.key] || {};
+        const merged = { ...f };
+        for (const k of ['label', 'helpText', 'placeholder']) {
+          if (ov[k] != null) merged[k] = ov[k];
+        }
+        return merged;
+      });
     };
 
     const weatherIconSvg = (code) => {

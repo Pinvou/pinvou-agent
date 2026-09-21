@@ -388,6 +388,10 @@ impl Pinvou3Bundle {
             log::warn!("[pinvou3-app] {note}");
             crate::platform::startup::mark_with_detail("rust", "mcp_builtin_skip", note);
         } else {
+            // 本函数对 mcp.json 的读-改-写绕过 connectors 写入器(不带内建锁),
+            // 与并发安装/卸载的写入器互斥由这把锁补齐;boot 链此处无外层持锁,
+            // 函数体内也无嵌套取锁,直接取即可。
+            let _guard = crate::features::marketplace::mcp_json_lock();
             self.ensure_builtin_mcp_servers()?;
         }
         Ok(reconcile_actions)

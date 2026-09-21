@@ -36,7 +36,7 @@ pub(super) fn take_pending_pip_install_result_for_test() -> u8 {
     NEXT_PIP_INSTALL_RESULT.swap(0, std::sync::atomic::Ordering::SeqCst)
 }
 
-pub(super) fn mcp_json_lock() -> MutexGuard<'static, ()> {
+pub(crate) fn mcp_json_lock() -> MutexGuard<'static, ()> {
     MCP_JSON_LOCK
         .lock()
         .unwrap_or_else(|poisoned| poisoned.into_inner())
@@ -82,8 +82,8 @@ pub(super) fn load_mcp_json_for_reconcile() -> Result<(PathBuf, serde_json::Valu
         Err(error) => {
             backup_corrupt_mcp_json(&mcp_path, &content);
             Err(format!(
-                "mcp.json is unparseable; the original file was backed up as \
-                 mcp.json.corrupt.<timestamp> and left untouched — fix or remove it and \
+                "mcp.json is unparseable; the original file was backed up next to it \
+                 (mcp.json.corrupt.<unix-time>) and left untouched — fix or remove it and \
                  retry: {error}"
             ))
         }
