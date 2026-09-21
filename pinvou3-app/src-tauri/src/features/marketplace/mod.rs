@@ -74,8 +74,9 @@ pub(crate) const ENGINE_OWNED_MCP_SERVER_KEYS: &[&str] = &["pinvou3", "pinvou", 
 /// `fs::write`: a corrupt mcp.json may still hold pre-migration plaintext
 /// credentials (a file that fails to parse is exactly one the plaintext
 /// migration never reached), so the copy is created owner-only 0600 directly
-/// (no umask window) — bare `fs::write` lands 0644 per umask, more exposed
-/// than the live file. The
+/// (no umask window; that bit-level mode is the POSIX expression — Windows
+/// delegates the same privacy to the per-user profile ACL) — bare
+/// `fs::write` lands 0644 per umask, more exposed than the live file. The
 /// copies are never garbage-collected (no reader, no cleaner anywhere) —
 /// removal is a manual decision, which is also why they must stay private.
 pub(super) fn backup_corrupt_json_file(path: &std::path::Path, stem: &str, content: &str) {
@@ -7296,6 +7297,50 @@ mod tests {
                 "the refused install must not touch the registry"
             );
             assert!(!marketplace_transaction_journal().exists());
+        });
+    }
+
+    /// Two distinct corrupt contents minted within the same second must both
+    /// survive: the nanosecond suffix makes every real write a fresh name, and
+    /// idempotence stays with the identical-bytes dedup. A second-granularity
+    /// suffix would overwrite the first copy with the second content — this
+    /// pins the naming contract so that regression cannot return silently.
+    #[test]
+    fn backup_keeps_distinct_corrupt_contents_within_the_same_second() {
+        with_temp_home(|| {
+            let target = paths::mcp_config_path();
+            std::fs::create_dir_all(target.parent().unwrap()).unwrap();
+            let first = r#"{"servers":{"a":1}"#;
+            let second = r#"{"servers": {,"trailing":"comma"}"#;
+            backup_corrupt_json_file(&target, "mcp.json.corrupt", first);
+            backup_corrupt_json_file(&target, "mcp.json.corrupt", second);
+
+            let backups: Vec<(String, Vec<u8>)> = std::fs::read_dir(target.parent().unwrap())
+                .unwrap()
+                .filter_map(|entry| entry.ok())
+                .filter(|entry| {
+                    entry
+                        .file_name()
+                        .to_string_lossy()
+                        .starts_with("mcp.json.corrupt.")
+                })
+                .map(|entry| {
+                    (
+                        entry.file_name().to_string_lossy().into_owned(),
+                        std::fs::read(entry.path()).unwrap(),
+                    )
+                })
+                .collect();
+            assert_eq!(
+                backups.len(),
+                2,
+                "two distinct corrupt contents in one second must mint two backups"
+            );
+            assert!(
+                backups.iter().any(|(_, bytes)| bytes == first.as_bytes())
+                    && backups.iter().any(|(_, bytes)| bytes == second.as_bytes()),
+                "both corrupt contents must survive verbatim"
+            );
         });
     }
 
