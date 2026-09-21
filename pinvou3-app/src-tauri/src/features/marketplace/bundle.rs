@@ -181,9 +181,9 @@ pub struct ConfigFieldSpec {
 }
 
 /// 包形态（内容现算，不落存储）。优先级定死（修复方案 V2）：
-/// servers+skills 均非空 → Bundle > servers 非空 → Mcp > skills 非空 → Skill。
-/// CLI 连接器不经内容推导：由内置常量表（`BUILTIN_CLI_BUNDLES`）在注册表
-/// 直接注册产出。
+/// servers+skills both non-empty → Bundle; servers non-empty → Mcp; skills non-empty → Skill.
+/// CLI connectors are not derived from content: they are produced by registering directly in the
+/// registry from the built-in constant table (`BUILTIN_CLI_BUNDLES`).
 /// 注：旧 `Spanner` 变体已删除——脚本可执行能力并入 skill 包，通过 SKILL.md frontmatter
 /// `tools[]` + `runtime` 段声明，由 skill_marketplace::install 后置 hook 注册。
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -250,11 +250,11 @@ pub struct BundleInfo {
     pub display_description: Option<String>,
 }
 
-/// 单个包 id 的安装态读取（§3.2 真相源反转）：从调用方一次读全量的
-/// BundleStore 记录快照里取 `(installed, degraded)`，缺记录 = 未安装。
-/// `records` 为 `None`（store 读失败）→ `None`，调用方走各自的回退口径。
-/// `list_bundles` 与 `MarketplaceManager::list_tools` 共用同一读法，保证
-/// 就绪卡与工具卡的 installed/degraded 口径一致。
+/// Per-package-id install-state read (§3.2 truth-source inversion): takes `(installed, degraded)` from the
+/// BundleStore record snapshot the caller read in bulk once; a missing record = not installed.
+/// `records` being `None` (store read failure) → `None`, and the caller applies its own fallback policy.
+/// `list_bundles` and `MarketplaceManager::list_tools` share this same read, keeping the
+/// readiness card's and the tool card's installed/degraded semantics consistent.
 pub(crate) fn store_state(
     records: Option<&[store::BundleRecord]>,
     id: &str,
@@ -522,12 +522,12 @@ impl BundleRegistry {
 }
 
 /// 纯函数：由内容推导包形态（修复方案 V2 优先级定死 + V7 空包报错）。
-/// 优先级：mcp+skills 组合 → Bundle > mcp 非空 → Mcp > skills 非空 → Skill；
-/// 全空 → Err（空包 schema 层拦截）。
+/// Priority: mcp+skills combo → Bundle; mcp non-empty → Mcp; skills non-empty → Skill;
+/// all empty → Err (empty packages are rejected at the schema layer).
 ///
-/// 注：CLI 形态不在此推导——CLI 连接器是内置常量表注册的（`BUILTIN_CLI_BUNDLES`，
-/// 由 `BundleRegistry::list_bundles` 直接按表产出），不来自内容推导。旧
-/// `spanners` 参数已删除——脚本可执行能力通过 skill 包的 SKILL.md frontmatter
+/// Note: the CLI kind is not derived here — CLI connectors are registered by the built-in constant table (`BUILTIN_CLI_BUNDLES`,
+/// produced directly from the table by `BundleRegistry::list_bundles`), not derived from content. The old
+/// `spanners` parameter was removed — script executability is declared via the skill package's SKILL.md frontmatter
 /// `tools[]` 段声明，不影响 kind 推导。
 pub fn derive_bundle_kind(
     mcp_servers: &[String],
@@ -565,8 +565,8 @@ fn tool_credentials(tool: &super::ToolManifest) -> Vec<CredentialSpec> {
 }
 
 /// 配置弹窗字段功能事实（V4 下沉；label/placeholder/helpText 属 i18n 展示资产留前端）。
-/// 与 tool_credentials 同口径去重：同一 key 在 config_fields 与 secret_env/
-/// secret_headers 重复声明时只出一个弹窗字段，否则前端会渲染重复输入框。
+/// Deduplicated under the same policy as tool_credentials: when the same key is declared in both config_fields and
+/// secret_env/secret_headers, only one dialog field is emitted, otherwise the frontend would render duplicate inputs.
 fn tool_config_fields(tool: &super::ToolManifest) -> Vec<ConfigFieldSpec> {
     dedup_credential_declarations(tool, |key, target, required, secret| ConfigFieldSpec {
         key,
@@ -576,11 +576,11 @@ fn tool_config_fields(tool: &super::ToolManifest) -> Vec<ConfigFieldSpec> {
     })
 }
 
-/// tool_credentials / tool_config_fields 共用的三来源去重遍历（修复方案一/V4）：
-/// 按声明序 config_fields → secret_env → secret_headers 投影，同一 key 允许在
-/// 多来源重复声明（UI 字段 + 占位符解析双用途），按 `(key, target)` 去重一次、
-/// 先声明者赢。`secret` 标志以 config_fields 的显式声明为准（不被 secret_env/
-/// secret_headers 的隐式 true 覆盖）；后两者本身即敏感声明，secret 恒 true。
+/// Three-source dedup traversal shared by tool_credentials / tool_config_fields (fix plan 1/V4):
+/// projects in declaration order config_fields → secret_env → secret_headers; the same key may be declared
+/// repeatedly across sources (dual use: UI field + placeholder parsing), deduplicated once by `(key, target)`,
+/// first declaration wins. The `secret` flag follows config_fields' explicit declaration (not overridden by the
+/// implicit true of secret_env/secret_headers); the latter two are sensitive declarations themselves, so secret is always true.
 fn dedup_credential_declarations<T>(
     tool: &super::ToolManifest,
     build: impl Fn(String, CredentialTarget, bool, bool) -> T,
@@ -647,9 +647,9 @@ pub fn readiness_for(bundle: &BundleInfo, credential_has: impl Fn(&str) -> bool)
             unreachable!("CLI bundle readiness is dispatched by the command layer")
         }
         BundleKind::Mcp | BundleKind::Bundle | BundleKind::Skill => {
-            // 本地免凭据（无必填凭据）恒 Ready；有必填凭据则查系统凭据。
-            // Mcp / Bundle / Skill 三形态的判定完全一致（组合包不因携带技能
-            // 改变凭据判定），共用同一分支。
+            // Local credential-free (no required credentials) is always Ready; with required credentials, check the system credential store.
+            // The Mcp / Bundle / Skill kinds are judged identically (a combo package does not change its
+            // credential verdict by carrying skills) and share the same branch.
             let missing: Vec<&str> = bundle
                 .credentials
                 .iter()
@@ -740,8 +740,8 @@ mod tests {
         let mcp = |id: &str| id.to_string();
         // V7：空包报错，不默认归 Skill
         assert_eq!(derive_bundle_kind(&[], &[]), Err(InvalidBundle));
-        // V2 优先级：Bundle > Mcp > Skill（CLI 形态由内置常量表注册产出，
-        // 不经内容推导——见 derive_bundle_kind 文档）
+        // V2 priority: Bundle > Mcp > Skill (the CLI kind is produced by the built-in constant table,
+        // not derived from content — see the derive_bundle_kind docs)
         assert_eq!(derive_bundle_kind(&[mcp("a")], &[]), Ok(BundleKind::Mcp));
         assert_eq!(
             derive_bundle_kind(&[mcp("a")], &[mcp("s")]),

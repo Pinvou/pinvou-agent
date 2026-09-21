@@ -141,8 +141,8 @@ pub async fn tmeet_ensure_cli() -> Result<Value, String> {
 /// (Only called internally by the command layer's `bundle_readiness` CLI dispatch; there is no standalone Tauri command anymore.)
 pub async fn tmeet_status() -> Result<Value, String> {
     tokio::task::spawn_blocking(|| {
-        // 没装就别 spawn auth status。过低版本与可用版本同样报告 installed:true,
-        // 升级引导由 ensure_cli 的版本门槛(tmeet_cli_present)负责。
+        // Don't spawn auth status when the CLI isn't installed. Overly old versions report installed:true
+        // just like usable ones; upgrade guidance is handled by ensure_cli's version gate (tmeet_cli_present).
         if tmeet_cli_version().is_none() {
             return Ok::<Value, String>(json!({
                 "ok": false, "connected": false, "installed": false
@@ -303,8 +303,8 @@ fn phase_scan(app: &AppHandle) -> Result<(), String> {
         match child.try_wait() {
             Ok(Some(status)) => {
                 conn.set_pid(ID, None);
-                // 单次 status 等待即可:already 标记由已捕获的输出行判定,
-                // 不再为补 already:true 重复跑第二次 5s 轮询。
+                // A single status wait is enough: the already flag is decided from the captured output lines,
+                // with no second 5s polling run just to fill in already:true.
                 if wait_logged_in(Duration::from_secs(5)) {
                     cc::bundle_store_on_connected(ID);
                     let already = auth_lines_say_already_logged_in(&auth_lines);

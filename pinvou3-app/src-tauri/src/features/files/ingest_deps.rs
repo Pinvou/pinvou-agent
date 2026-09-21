@@ -183,7 +183,7 @@ pub(super) fn run_libreoffice_convert<T>(
     fail_label: &str,
     consume: impl FnOnce(&Path) -> Result<T, String>,
 ) -> Result<T, String> {
-    // 临时目录：每次唯一，避免并发文件名冲突。
+    // Temp dir: unique each time, avoiding concurrent file-name conflicts.
     let ts = std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
         .map(|d| d.as_nanos())

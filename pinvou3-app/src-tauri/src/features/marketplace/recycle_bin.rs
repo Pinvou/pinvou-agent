@@ -407,14 +407,14 @@ pub(crate) fn package_kind(pkg_dir: &Path) -> &'static str {
     }
 }
 
-/// Upload 整包回收的共用核心（三个回收调用点：MCP 卸载、Python 修复降级、
-/// 技能卸载）：展示名取记录的 zip 来源名（非 Upload 回退包 id，见
-/// `store::upload_display_name`）+ `recycle_package` 搬移。
+/// Shared core for recycling whole Upload packages (three recycle call sites: MCP uninstall, Python repair downgrade,
+/// skill uninstall): the display name comes from the record's zip source name (non-Upload falls back to the package id, see
+/// `store::upload_display_name`) plus the `recycle_package` move.
 ///
-/// `kind` 由调用方传入——MCP 两条路径按包目录现算（`package_kind`），技能
-/// 路径钉住 `KIND_SKILL`（记录 id 即技能名，目录形态不参与判定）。失败时
-/// `recycle_package` 已把目录回滚原位；登记的回写（fail loud）或保留
-/// （warn + 跳过 companion 清理）等失败策略由调用方决定，不在本核心内。
+/// `kind` is passed in by the caller — the two MCP paths compute it from the package directory (`package_kind`), while the skill
+/// path pins `KIND_SKILL` (the record id is the skill name; the directory layout plays no part in the decision). On failure,
+/// `recycle_package` has already rolled the directory back in place; failure policies such as writing the registry back (fail loud) or keeping it
+/// (warn + skipping companion cleanup) are up to the caller and out of this core's scope.
 pub(crate) fn recycle_upload_package(
     bin: &RecycleBin,
     id: &str,

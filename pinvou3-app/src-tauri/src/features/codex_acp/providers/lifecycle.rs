@@ -15,7 +15,7 @@ pub struct UninstallPlan {
     pub script_paths: Vec<PathBuf>,
 }
 
-/// 按后端生成卸载计划：brew/npm 包名与官方脚本路径。
+/// Builds the uninstall plan per backend: brew/npm package names and official script paths.
 fn uninstall_plan(backend: AgentBackend) -> UninstallPlan {
     let brew_package = match backend {
         AgentBackend::CodexAcp => Some(("codex", true)),

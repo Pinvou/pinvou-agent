@@ -1,10 +1,10 @@
 //! Connector(连接器)的注册/注销:把工具写进 `mcp.json`(`servers` 表)或从中移除,
 //! 以及装 Python 依赖等"让 connector 跑起来"的前置准备。
 //!
-//! `add_to_mcp_json` 按清单是否含远程 server 分两条内联分支落条目:
-//! 远程(url/headers/oauth)走 `build_remote_server_entry`,本地
-//! (command/args/env)走 `build_local_server_entry`——两条序列化都被启动
-//! 对账复用,保证安装与自愈写出的条目同形。
+//! `add_to_mcp_json` writes entries through two inline branches depending on whether the manifest has a remote server:
+//! remote (url/headers/oauth) goes through `build_remote_server_entry`, local
+//! (command/args/env) through `build_local_server_entry` — both serializations are reused by the
+//! startup reconciliation, so installs and self-healing write entries of the same shape.
 
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
@@ -205,12 +205,12 @@ impl<S: crate::platform::credential_store::CredentialStore> MarketplaceManager<S
 
     /// 把 manifest 注册进 `mcp.json`(`servers` 表)。
     ///
-    /// 按 manifest 是否含远程 server 分两条内联分支:
-    /// - 远程工具路径:遍历 `manifest.servers[]`,写 url/headers/oauth/
-    ///   env_headers/bearer。密钥不落明文,只写 `${ENV}` 占位 + 进程环境变量
-    ///   (底座不展开 headers 字面量),经 `build_remote_server_entry`。
-    /// - 本地工具路径:command/args/env。Python 工具用内置 python(Windows)或
-    ///   系统 python3;敏感字段走 `${ENV}` 占位,非敏感字段原样写入,经
+    /// Depending on whether the manifest has a remote server, entries go through two inline branches:
+    /// - Remote tool path: iterate `manifest.servers[]`, writing url/headers/oauth/
+    ///   env_headers/bearer. Secrets are never written in plaintext, only as `${ENV}` placeholders + process env vars
+    ///   (the base does not expand header literals), via `build_remote_server_entry`.
+    /// - Local tool path: command/args/env. Python tools use the bundled python (Windows) or
+    ///   system python3; sensitive fields go through `${ENV}` placeholders, non-sensitive fields are written verbatim, via
     ///   `build_local_server_entry`。
     pub(super) fn add_to_mcp_json(
         &self,

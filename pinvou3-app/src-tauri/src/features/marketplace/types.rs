@@ -1,4 +1,4 @@
-//! 工具市场的数据类型:manifest 元数据与前端展示模型。
+//! Data types for the tool marketplace: manifest metadata and frontend display models.
 //!
 //! 这里只放类型定义与对应的 serde 默认函数,不含任何业务逻辑。
 

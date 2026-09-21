@@ -502,8 +502,8 @@ command_protocol!(
     "multiagent.rs",
     ["list_subagent_transcripts", "read_subagent_transcript"]
 );
-// 以下四个文件此前未纳入协议快照；追加覆盖（additive），命令清单与源文件
-// 现状一致。
+// The four files below were previously outside the protocol snapshot; this is
+// additive coverage, and the command lists match the current source files.
 command_protocol!(
     acp_providers_protocol,
     "acp_providers.rs",

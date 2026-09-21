@@ -1000,12 +1000,12 @@ pub async fn web_access_cancel_codex_acp(
     web_acp_result(WebAcpOperation::Cancel, result)
 }
 
-/// Web 附件预留的统一编排（ACP prompt 与 chat 两条入口共用）：预留句柄 →
-/// 附件落入会话 workspace（失败即释放预留）→ 执行 `submit` → 提交失败时清理
-/// 暂存副本 → 收尾预留（成功 consume，失败 release）。错误折叠逐字节一致；
-/// 成功路径的收尾失败只记日志、绝不向浏览器报错——否则浏览器会把同一轮
-/// 提交再发一次（never-double-submit 契约）。三条文案参数保留两条入口各自
-/// 的日志与兜底错误原文。
+/// Unified orchestration of Web attachment reservations (ACP prompt and chat entries share it):
+/// reserve handles → stage into the session workspace (release on failure) → run `submit`
+/// → clean up staged copies on submit failure → finalize (consume on success, release on failure).
+/// Error folding is byte-for-byte identical; a success-path finalize failure is only logged,
+/// never reported to the browser — otherwise it would resubmit the turn (never-double-submit
+/// contract). The three message parameters keep each entry's own log and fallback wording.
 #[allow(clippy::too_many_arguments)]
 async fn with_web_attachments<'ctx, T>(
     manager: &'ctx RemoteControlManager,

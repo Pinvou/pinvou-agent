@@ -18,7 +18,7 @@
 //!
 //! manifest 净化（两个导出路径均启用，防御性兜底；回收站导出按包的原安装
 //! 位置 `bundles/<id>` 匹配前缀）：安装期
-//! `connectors::add_to_mcp_json`（本地分支）会把 `server.py` 入口参数改写为
+//! `connectors::add_to_mcp_json` (local branch) rewrites the `server.py` entry argument to
 //! `bundles/<id>/mcp/server.py` 绝对路径 —— 但该改写只发生在写 mcp.json 时，
 //! 盘上 manifest 保持原始相对形式；旧版本/手改/迁移路径落过绝对路径的包，
 //! 导出时把 args 中指向包内 `mcp/` 目录的绝对路径参数还原为相对形式（入口
@@ -195,10 +195,10 @@ fn persist_tempfile(tmp: tempfile::NamedTempFile, dest_zip: &Path) -> Result<(),
 }
 
 /// 递归收集导出条目（相对路径用 '/' 分隔）并累计未压缩总大小：跳过 Python
-/// 运行缓存（`__pycache__/` 子树与 `*.pyc`，与 plugin_import 共用
-/// `is_python_cache_rel_path` 单一判据）。符号链接一律跳过（`symlink_metadata`
-/// 不跟随）：用户手工放进包目录的链接若跟随会把包外文件打进 zip，链接环也无
-/// 深度保护——这是导出 walker 的刻意选择，导入比对与技能指纹 walker 跟随目录。
+/// run cache (`__pycache__/` subtree and `*.pyc`, sharing the single
+/// `is_python_cache_rel_path` predicate with plugin_import). Symlinks are always skipped (`symlink_metadata`
+/// does not follow): a link manually placed into the package directory would pull outside files into the zip if followed, and link loops also have no
+/// depth protection — this is the export walker's deliberate choice; the import-compare and skill-fingerprint walkers follow directories.
 fn collect_export_files(
     root: &Path,
     dir: &Path,

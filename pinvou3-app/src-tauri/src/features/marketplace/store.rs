@@ -578,12 +578,12 @@ pub(crate) fn display_override(record: &BundleRecord, key: &str) -> Option<Strin
         .map(str::to_string)
 }
 
-/// Upload 记录的用户自定义展示名/说明覆盖一次读出（bundles.json extra 的
-/// `display_name`/`display_description`，trim 后非空才生效，见
-/// [`display_override`]）。非 Upload 记录恒 `(None, None)`——预置/内置包不接受
-/// 覆盖，越权写入的 extra 必须被展示层忽略。三个列表组装
-/// （`list_tools` / `list_bundles` / `list_skills`）共用同一读法，避免工具卡、
-/// 就绪卡与技能卡的标题/说明口径分叉。
+/// Reads an Upload record's user-defined display name/description overrides in one pass (bundles.json extra's
+/// `display_name`/`display_description`, effective only when non-empty after trim, see
+/// [`display_override`]). Non-Upload records always get `(None, None)` — preset/built-in packages do not accept
+/// overrides, and extra fields written out of turn must be ignored by the display layer. All three list assemblies
+/// (`list_tools` / `list_bundles` / `list_skills`) share this same read, so the tool card,
+/// readiness card, and skill card titles/descriptions do not diverge.
 pub(crate) fn apply_display_override(
     record: &BundleRecord,
     name: Option<String>,
@@ -598,9 +598,9 @@ pub(crate) fn apply_display_override(
     )
 }
 
-/// Upload 记录携带的原始 zip 展示名（导入时净化捕获的来源标记）；非 Upload
-/// 来源回退 `fallback`（调用方传包 id）。整包回收清单的 display_name 三个
-/// 回收调用点共用同一口径。
+/// The original zip display name carried by an Upload record (a sanitized source marker captured at import); non-Upload
+/// sources fall back to `fallback` (the caller passes the package id). The three recycle call sites of the whole-package
+/// recycle listing share this same display_name policy.
 pub(crate) fn upload_display_name(record: &BundleRecord, fallback: &str) -> String {
     match &record.source {
         BundleSource::Upload(zip) => zip.clone(),

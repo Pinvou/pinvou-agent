@@ -180,7 +180,7 @@ impl SessionStore {
         let cut = turn_prompt_indices[keep_turns as usize];
         let original_revision = transcript_revision(&session.messages)?;
         let removed_messages: Vec<Message> = session.messages.split_off(cut);
-        // 截断后的新 revision（undo 复核条件；同一份数据只算一次）。
+        // New revision after truncation (undo re-check condition; the same data is counted only once).
         let truncated_revision = transcript_revision(&session.messages)?;
 
         // 先备份后落盘：备份失败时磁盘上的 transcript 尚未被修改。sidecar 的

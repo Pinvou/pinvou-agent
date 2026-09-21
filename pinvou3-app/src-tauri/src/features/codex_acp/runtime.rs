@@ -254,28 +254,28 @@ fn npm_codex_package_version(shim_path: &Path) -> Option<String> {
     has_vendor.then(|| version.trim().to_string())
 }
 
-/// `--version` 自检的失败阶段：spawn 与 wait 的 io 错误需要不同的错误文案，
-/// 由调用方按阶段构造。
+/// Failure stage of the `--version` self-check: the io errors from spawn and wait need different error
+/// messages, constructed by the caller per stage.
 #[derive(Debug)]
 pub(super) enum VersionProbeError {
     Spawn(std::io::Error),
     Wait(std::io::Error),
 }
 
-/// 共享 spawn-and-wait 原语的产物。`status` 为 `None` 表示 15 秒超时，
-/// 子进程已被 kill 并 reap。
+/// Outcome of the shared spawn-and-wait primitive. `status` being `None` means the 15-second timeout
+/// fired and the child was killed and reaped.
 pub(super) struct VersionProbeOutcome {
     pub(super) status: Option<std::process::ExitStatus>,
     pub(super) stdout: String,
     pub(super) stderr: String,
 }
 
-/// `--version` 类自检的共享 spawn-and-wait 原语（本模块的 Codex 自检与
-/// install.rs 的通用 CLI 探测共用）：external_command + `--version` +
-/// 15 秒 wait_timeout（Node CLI 冷启动实测约 9 秒，给安全软件首次扫描留足
-/// 时间），超时 kill 并 reap，stdout/stderr 一并读回。stdin/stderr 重定向
-/// 策略由调用方经 `configure` 注入：Codex 自检继承 stdin、捕获 stderr 并把
-/// 它内嵌进错误；通用 CLI 探测把 stdin 置空、丢弃 stderr。
+/// Shared spawn-and-wait primitive for `--version`-style self-checks (used by this module's Codex
+/// self-check and install.rs's generic CLI probe): external_command + `--version` +
+/// a 15-second wait_timeout (Node CLI cold starts measured around 9 seconds, leaving headroom for
+/// first-run security-software scans); on timeout the child is killed and reaped, with stdout/stderr read back. stdin/stderr redirection
+/// policy is injected by the caller via `configure`: the Codex self-check inherits stdin, captures stderr and embeds
+/// it into the error; the generic CLI probe nulls stdin and discards stderr.
 pub(super) fn run_version_probe(
     executable: &Path,
     configure: impl FnOnce(&mut std::process::Command),
@@ -295,8 +295,8 @@ pub(super) fn run_version_probe(
             None
         }
     };
-    // 读取失败按空串处理：调用方各自的空输出分支（探测失败 / 未返回版本号）
-    // 会给出与读取失败等价的结论。
+    // Treat read failures as empty strings: each caller's empty-output branch (probe failed / no version
+    // returned) reaches the same conclusion as a read failure.
     let mut stdout = String::new();
     if let Some(mut pipe) = child.stdout.take() {
         let _ = pipe.read_to_string(&mut stdout);

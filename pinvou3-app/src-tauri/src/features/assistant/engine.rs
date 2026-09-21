@@ -1101,10 +1101,10 @@ impl TurnLifecycle {
     }
 
     /// 测试专用：认领一个未提交 turn 的终态并立即重开闸门，等价于
-    /// `emit_unsubmitted_interrupted_terminal_for_epoch` 去掉 epoch 校验与发
-    /// `chat:done` 的副作用，供跨模块测试（engine_pool 的 cancel 并发测试）驱动
-    /// turn 收尾而无需 AppHandle。不发终态信号——这些测试只关心 lifecycle
-    /// 状态机的轮次切换，不验证 emit。
+    /// `emit_unsubmitted_interrupted_terminal_for_epoch` with the epoch check and the
+    /// `chat:done` side effect removed, letting cross-module tests (engine_pool's cancel
+    /// concurrency tests) drive turn finalization without an AppHandle. No terminal
+    /// signals are emitted — these tests only care about lifecycle turn transitions, not emit verification.
     #[cfg(test)]
     pub(crate) fn finish_unsubmitted_once(&self) -> bool {
         if self.claim_unsubmitted_terminal() {
@@ -1296,9 +1296,9 @@ impl TurnLifecycle {
     /// and `turn_epoch == epoch` (still the turn the cancel was issued for),
     /// recording `pending_cancel = Some((epoch, mode, submission_id))`:
     /// - 必须 `submitted`：未提交的 reservation（消息尚未入队 engine）应由 cancel
-    ///   走未提交认领终态路径（`emit_unsubmitted_interrupted_terminal_for_epoch`）
-    ///   立即发 `chat:done` 使 reservation 失效，而不是挂成 pending——否则空闲
-    ///   engine 仍
+    ///   the unsubmitted-claim terminal path (`emit_unsubmitted_interrupted_terminal_for_epoch`),
+    ///   which immediately emits `chat:done` to invalidate the reservation instead of hanging it as pending — otherwise, while an idle
+    ///   engine still
     ///   存在时 cancel 不发终态、reservation 仍有效，原 chat future 后续照常提交，
     ///   前端 busy 在 cancel 后到 TurnStarted 之间无法复位。
     /// - A set `turn_id` means the forwarder already consumed `TurnStarted`:
@@ -2474,8 +2474,8 @@ mod turn_lifecycle_tests {
         // engine 时，cancel 第二阶段若按「engine 是否存在」分流会错误走 pending
         // 分支。arm_pending_cancel 必须显式要求 submitted——只有消息确实已入队
         // engine、需要防 reset_cancel_token 覆盖时才 arm；未提交 reservation 应由
-        // cancel 走未提交认领终态路径（emit_unsubmitted_interrupted_terminal_for_epoch）
-        // 立即发 chat:done 使其失效，而不是挂成 pending。
+        // cancel goes through the unsubmitted-claim terminal path (emit_unsubmitted_interrupted_terminal_for_epoch)
+        // which immediately emits chat:done to invalidate it, instead of hanging it as pending.
         let lifecycle = Arc::new(TurnLifecycle::default());
 
         // reserve 后 active=true 但 submitted=false → arm 不得置位。

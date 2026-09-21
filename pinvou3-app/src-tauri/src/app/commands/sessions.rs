@@ -769,9 +769,9 @@ fn normalize_pinvou_scene_events(events: serde_json::Value) -> Result<serde_json
     )
 }
 
-/// 会话 sidecar 的统一落盘（scene / steered / persona events / Pinvou reviews
-/// 共用）：建父目录 + 序列化 + `write_atomic`。sidecar 属于 session 持久数据，
-/// 原子写避免进程中断留下半截 JSON（error 文案按 sidecar 统一，不再区分用途）。
+/// Unified session-sidecar persistence (shared by scene / steered / persona events / Pinvou reviews): create the
+/// parent directory + serialize + `write_atomic`. Sidecars are session-persisted data; the atomic write
+/// prevents an interrupted process from leaving half a JSON (error wording unified per sidecar, not per use).
 pub(super) fn write_session_sidecar(
     path: &std::path::Path,
     value: &serde_json::Value,

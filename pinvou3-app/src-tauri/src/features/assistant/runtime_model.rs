@@ -6,8 +6,8 @@ use crate::platform::prefs::SavedModel;
 ///
 /// 凭据只保存在内存中，不参与序列化；`Debug` 固定脱敏，避免 bridge 或测试日志
 /// 意外输出明文。存在时它是本次引擎配置的最终凭据，优先于环境变量和本地凭据库。
-/// Community 默认准备路径固定 passthrough（`credential` 保持 None，见
-/// engine_pool 的 `prepare_runtime_model`）；字段为 enterprise seam 保留。
+/// The Community default preparation path is always passthrough (`credential` stays None; see
+/// engine_pool's `prepare_runtime_model`); the field is reserved for the enterprise seam.
 #[derive(Clone, PartialEq, Eq)]
 pub struct RuntimeModelCredential {
     api_key: String,
@@ -96,8 +96,8 @@ mod tests {
 
     #[test]
     fn revision_change_requires_engine_rebuild() {
-        // EnginePool 的重建判定（PreparedRuntimeState::requires_rebuild_from）
-        // 是整体相等比较：revision 或运行时凭据任一变化即视为需要回收重建。
+        // EnginePool's rebuild decision (PreparedRuntimeState::requires_rebuild_from)
+        // is whole-struct equality: any change to revision or the runtime credential counts as requiring teardown and rebuild.
         let previous = PreparedRuntimeModel {
             model: model(),
             credential: Some(credential("runtime-secret")),

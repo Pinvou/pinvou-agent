@@ -89,9 +89,9 @@ pub(super) async fn create_turn_checkpoint(
     }
 }
 
-/// 「未成活」快照作废（发送前任何早退共用，按 id 精确删除；残留快照会抢占
-/// 重试时同号 turn 的 first-wins 对齐锚——评审 M5）。`chat` 发送失败与
-/// `accept_plan` 各早退分支共用同一实现。
+/// Invalidate "unsent" snapshots (any pre-send early exit; exact delete by id so
+/// leftovers cannot steal the same-numbered turn's first-wins alignment anchor on
+/// retry — review M5). Shared by `chat` send failure and each `accept_plan` early exit.
 pub(super) async fn drop_unsent_turn_checkpoint(
     ledger: Option<std::path::PathBuf>,
     snapshot_id: Option<String>,

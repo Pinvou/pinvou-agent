@@ -12,7 +12,7 @@ use crate::features::sessions::SessionStore;
 use crate::features::shared_knowledge_host::{self, SharedKnowledgeHostStatus, packaged_resources};
 
 const HOST_PROGRESS_EVENT: &str = "shared-knowledge-host-progress";
-/// 本机 host 服务的默认回环端点（register/rebind local owner 共用）。
+/// Default loopback endpoint of the local host service (shared by register/rebind local owner).
 const LOCAL_HOST_ENDPOINT: &str = "127.0.0.1:3210";
 static HOST_LIFECYCLE_LOCK: tokio::sync::Mutex<()> = tokio::sync::Mutex::const_new(());
 

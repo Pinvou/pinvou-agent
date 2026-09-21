@@ -587,9 +587,9 @@ fn model_connection_http_result(status: reqwest::StatusCode) -> ModelConnectionT
     }
 }
 
-/// 传输层错误的共享分类（redact → timeout → tls → dns → refused 的判定梯），
-/// 连接测试与识图探测共用。`detail` 是 redact 后的底层错误串；zh 概要由各
-/// 调用方按 code 生成，不在 Rust 侧做单语言硬编码。
+/// Shared transport-error classification (decision ladder: redact → timeout → tls → dns → refused),
+/// shared by the connection test and the image-input probe. `detail` is the redacted underlying
+/// error string; each caller generates its zh summary from the code — no single-language hardcoding in Rust.
 enum TransportClass {
     Timeout,
     Tls,
@@ -1323,8 +1323,8 @@ pub async fn update_search_settings(search: SearchPrefs) -> Result<UserPrefs, St
     persist_search_settings(search)
 }
 
-/// 保存成功后的统一重启收尾。重启会绕过 RunEvent::Exit，必须先持久化并关闭
-/// browser host、收割子进程；`saved_label` 仅用于保留两条命令各自的日志文案。
+/// Unified post-save restart finalization. Restart bypasses RunEvent::Exit, so persist and close
+/// the browser host and reap child processes first; `saved_label` only keeps each command's own log wording.
 async fn persist_and_restart<S>(
     app: tauri::AppHandle,
     saved_label: &str,
@@ -1338,7 +1338,7 @@ async fn persist_and_restart<S>(
     app.restart();
 }
 
-/// 保存设置后立即重启应用（模型/后端切换后需要重启才能生效）。
+/// Restart the app immediately after saving settings (model/backend switches need a restart to take effect).
 #[tauri::command]
 pub async fn save_settings_and_restart(
     patch: GeneralSettingsPatch,

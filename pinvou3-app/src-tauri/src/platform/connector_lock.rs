@@ -121,7 +121,7 @@ pub fn locked_cli_path(name: &str) -> Option<std::path::PathBuf> {
 }
 
 /// 文件 SHA-256（小写 hex），供存量 CLI 二进制对照 lock 表。
-/// 委托 [`super::hashing::sha256_file`]，避免两份流式摘要实现漂移。
+/// Delegates to [`super::hashing::sha256_file`] so the two streaming digest implementations cannot drift.
 pub fn file_sha256_hex(path: &Path) -> std::io::Result<String> {
     super::hashing::sha256_file(path)
 }

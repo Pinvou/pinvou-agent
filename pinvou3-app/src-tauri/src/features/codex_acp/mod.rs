@@ -886,9 +886,9 @@ impl AcpSession {
         pending_permissions: Vec<CodexAcpPendingPermission>,
         pending_elicitations: Vec<CodexAcpPendingElicitation>,
     ) -> CodexAcpSessionInfo {
-        // 会话级 Provider 覆盖来自会话记录（与 session_info 同源）：在此填充
-        // 使 operation_gate 的 set_model/set_mode/set_config_option 返回值也
-        // 带上 provider，避免前端在配置变更后瞬时显示错误的 Provider。
+        // The session-level Provider override comes from the session record (same source as session_info): filling it in here
+        // makes the operation_gate set_model/set_mode/set_config_option return values
+        // carry provider too, so the frontend does not briefly show a wrong Provider after a config change.
         let provider = agent_store
             .get(self.bridge.pinvou_session_id())
             .acp_config_values
@@ -1863,10 +1863,10 @@ impl AcpPool {
             "homebrew:start",
             format!("agent={}", backend.agent_id().unwrap_or("unknown")),
         );
-        // brew list 探测是阻塞子进程，保留 spawn_blocking；子进程执行骨架
-        // （登记 pid / 取消补检 / 流式输出 / 600 秒超时 / 取消改写）收敛到
-        // install.rs 的 run_brew_install。brew 此前无超时，挂住会永久占住
-        // 安装互斥 guard。
+        // The brew list probe is a blocking subprocess, so keep spawn_blocking; the subprocess execution
+        // skeleton (register pid / cancel recheck / streaming output / 600s timeout / cancel rewrite) is consolidated into
+        // install.rs's run_brew_install. brew previously had no timeout, and a hang would hold the
+        // install mutex guard forever.
         let result = match tokio::task::spawn_blocking(move || {
             brew_install_args(backend, brew_package_installed(backend))
                 .with_context(|| format!("{} 不支持 Homebrew 升级", backend.display_name()))
@@ -3236,7 +3236,7 @@ impl AcpPool {
         }
         let pending_permissions = self.pending_permissions_for(session_id).await;
         let pending_elicitations = self.pending_elicitations_for(session_id).await;
-        // provider 已由 info() 从会话记录填充，这里无需再补。
+        // provider is already filled from the session record by info(); nothing to add here.
         Ok(self.get_or_spawn(session_id).await?.info(
             &self.agents,
             pending_permissions,
@@ -4114,12 +4114,12 @@ async fn apply_config_option(
     Ok(())
 }
 
-/// `session/set_mode` 的共享实现：`AcpSession::set_mode` 与 `apply_saved_mode`
-/// 的 legacy 分支共用。先按 available_modes 确认模式存在，发送
-/// SetSessionModeRequest，成功后写回 current_mode_id。模式状态的两个调用方
-/// 容器不同（AcpSession 的 RwLock / spawn 期的局部 Option），由
-/// `mode_available` / `write_current_mode` 访问器各自持锁或借用，保持短
-/// 作用域、不跨越网络 await。
+/// Shared implementation of `session/set_mode`, used by both `AcpSession::set_mode` and the
+/// legacy branch of `apply_saved_mode`. It first confirms the mode exists in available_modes, sends
+/// SetSessionModeRequest, and writes current_mode_id back on success. The two callers keep mode state in
+/// different containers (AcpSession's RwLock vs. a local Option during spawn), accessed through the
+/// `mode_available` / `write_current_mode` accessors that each hold their own lock or borrow, keeping
+/// scopes short and never holding them across a network await.
 async fn set_session_mode(
     connection: &ConnectionTo<Agent>,
     acp_session_id: &str,
@@ -4142,17 +4142,17 @@ async fn set_session_mode(
     Ok(())
 }
 
-/// 恢复保存的模式（legacy 路径：Agent 未把 mode 暴露为 config option）。
-/// 调用方（restore_config_values）已按 has_config_mode 预检，config option
-/// 分支不可达、不在此处理。
+/// Restores the saved mode (legacy path: the Agent does not expose mode as a config option).
+/// The caller (restore_config_values) has already pre-checked with has_config_mode, so the config option
+/// branch is unreachable and not handled here.
 async fn apply_saved_mode(
     connection: &ConnectionTo<Agent>,
     acp_session_id: &str,
     modes: &mut Option<SessionModeState>,
     mode_id: &str,
 ) -> Result<()> {
-    // 可用性先读进局部值：避免“共享借用（检查）+ 可变借用（写回）”两个闭包
-    // 同时存活。检查在本体内先于请求执行，语义与闭包内读取一致。
+    // Read availability into a local value first: this avoids the “shared borrow (check) + mutable borrow (write-back)”
+    // closures being alive at the same time. The check runs in this body before the request, with the same semantics as reading inside a closure.
     let mode_available = modes.as_ref().is_some_and(|state| {
         state
             .available_modes

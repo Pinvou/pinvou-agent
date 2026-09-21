@@ -22,11 +22,11 @@ use super::ingest_deps::{libreoffice_tool_command, libreoffice_user_installation
 
 // ============== 产物可视化预览助手（commands::render_artifact_visual 复用）==============
 
-/// 图片扩展名 → MIME。用于 data URI 前缀；映射本体与
-/// codex_acp::attachments 共用同一张表，表外扩展名回落 application/octet-stream。
+/// Image extension → MIME. Used for data URI prefixes; the mapping itself is
+/// shared with codex_acp::attachments; extensions outside the table fall back to application/octet-stream.
 fn image_mime(ext: &str) -> &'static str {
-    // image_mime_type 按 Path::extension() 取扩展名，补一个无扩展名前缀使
-    // `ext` 落在扩展名位置（ext 来自 path.extension()，不含分隔符与点）。
+    // image_mime_type takes the extension via Path::extension(); add a no-extension prefix so
+    // `ext` lands in the extension position (ext comes from path.extension(), without separators or dot).
     let probe = Path::new("img").with_extension(ext);
     crate::platform::filesystem::image_mime_type(&probe).unwrap_or("application/octet-stream")
 }
@@ -90,22 +90,22 @@ fn inline_html_images(html: &str, dir: &Path) -> String {
 }
 
 /// office 文档 → 可视化 HTML（版式/图片还原）。soffice `--convert-to html`,旁置图片
-/// 内联成自包含 HTML 返回,前端直接喂 iframe srcDoc。复用独立 UserInstallation profile
-/// + 临时目录约定（见 [`super::ingest_deps::run_libreoffice_convert`]）。
+/// inlined into a self-contained HTML returned to the frontend, which feeds it directly to iframe srcDoc. Reuses the dedicated UserInstallation profile
+/// + temp-dir conventions (see [`super::ingest_deps::run_libreoffice_convert`]).
 pub fn libreoffice_to_inline_html(path: &Path) -> Result<String, String> {
     if !system_tools().libreoffice {
         return Err(crate::platform::os::libreoffice_missing_message().into());
     }
-    // 不写死 `html:HTML`(那是 Writer 专用 filter,套到 Calc/Impress 会无产出)。
-    // 只给 `html` → LibreOffice 按文档类型自动选对应 HTML 导出 filter。
+    // Do not hardcode `html:HTML` (that filter is Writer-specific; applying it to Calc/Impress produces no output).
+    // Pass only `html` → LibreOffice automatically picks the matching HTML export filter by document type.
     super::ingest_deps::run_libreoffice_convert(
         path,
         "html",
         "pinvou3-lo-html",
         "LibreOffice 转换失败",
         |tmpdir| {
-            // 不假设产物叫 `<stem>.html`(filter 不同 / 文件名带特殊字符都可能变)——
-            // 扫临时目录里产出的 .html(优先匹配 stem,否则取首个)。
+            // Do not assume the output is named `<stem>.html` (different filters / special characters in file names can both change it) —
+            // scan the temp dir for the produced .html (prefer a stem match, otherwise take the first one).
             let stem = path.file_stem().and_then(|s| s.to_str()).unwrap_or("");
             let htmls: Vec<PathBuf> = std::fs::read_dir(tmpdir)
                 .map(|rd| {
@@ -141,14 +141,14 @@ pub fn office_to_png_data_uris(path: &Path, max_pages: u32) -> Result<(Vec<Strin
     if !tools.pdftoppm {
         return Err(crate::platform::os::pdf_render_missing_message().into());
     }
-    // office → PDF → PNG 页共用同一个临时目录（PDF 落地后直接原地渲染,避免再开目录）。
+    // office → PDF → PNG pages share one temp dir (render pages in place once the PDF lands, avoiding another directory).
     super::ingest_deps::run_libreoffice_convert(
         path,
         "pdf",
         "pinvou3-office-png",
         "LibreOffice 转 PDF 失败",
         |tmpdir| {
-            // 找产出的 PDF(扫目录,别假设文件名)。
+            // Locate the produced PDF (scan the directory; do not assume a file name).
             let pdf = std::fs::read_dir(tmpdir)
                 .ok()
                 .and_then(|rd| {
@@ -171,9 +171,9 @@ pub fn office_to_png_data_uris(path: &Path, max_pages: u32) -> Result<(Vec<Strin
     )
 }
 
-/// 共享 pdftoppm 渲染核心：把 `pdf` 以 `dpi` 渲染进 `dir`（`page-<n>.png`，
-/// 页数封顶 `max_pages`），返回按文件名排序的页路径。退出/拉起失败的消息串
-/// 是三个调用方共用的历史文案。
+/// Shared pdftoppm rendering core: renders `pdf` into `dir` at `dpi` (`page-<n>.png`,
+/// capped at `max_pages` pages), returning page paths sorted by file name. The exit/spawn-failure message strings
+/// are the historical wording shared by all three callers.
 fn render_pdf_pages(
     pdf: &Path,
     dir: &Path,
@@ -204,7 +204,7 @@ fn render_pdf_pages(
         }
         Err(e) => return Err(format!("pdftoppm 调用失败: {e}")),
     }
-    // 收集生成的 png，按文件名排序保证页序。
+    // Collect the generated pngs, sorted by file name to guarantee page order.
     let mut pages: Vec<PathBuf> = std::fs::read_dir(dir)
         .map(|rd| {
             rd.filter_map(|e| e.ok().map(|e| e.path()))
@@ -222,8 +222,8 @@ fn render_pdf_pages(
     Ok(pages)
 }
 
-/// PDF → 逐页 PNG 的 data URI 列表(可视化预览)。复用 [`render_pdf_pages`] 的
-/// pdftoppm 调用样板,但 110 dpi(预览够清又不至于 data URI 过大)。返回 (data_uris, 是否因上限截断)。
+/// PDF → list of per-page PNG data URIs (visual preview). Reuses [`render_pdf_pages`]'s
+/// pdftoppm invocation boilerplate, but at 110 dpi (clear enough for preview without overly large data URIs). Returns (data_uris, whether truncated at the cap).
 pub fn pdf_to_png_data_uris(path: &Path, max_pages: u32) -> Result<(Vec<String>, bool), String> {
     if !system_tools().pdftoppm {
         return Err(crate::platform::os::pdf_render_missing_message().into());

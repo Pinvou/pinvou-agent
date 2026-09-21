@@ -99,9 +99,9 @@ impl<S: crate::platform::credential_store::CredentialStore> MarketplaceManager<S
             .unwrap_or(false)
     }
 
-    /// manifest 显式要求时校验远程 MCP 连接（握手 + 工具可发现 + 期望工具齐全）；
-    /// 通过返回 `Ok(())`，任何失败返回用户可读的 `Err`。未声明校验的工具直接
-    /// `Ok(())`——安装管线只消费成败，不消费工具清单。
+    /// Validates the remote MCP connection when the manifest explicitly requires it (handshake + tools discoverable + all expected tools present);
+    /// returns `Ok(())` on success and a user-readable `Err` on any failure. Tools that do not declare validation return
+    /// `Ok(())` directly — the install pipeline only consumes success/failure, not the tool list.
     pub async fn validate_remote_connection(&self, tool_id: &str) -> Result<(), String> {
         let manifest = self
             .load_manifest(tool_id)

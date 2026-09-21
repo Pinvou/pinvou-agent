@@ -1162,10 +1162,10 @@ impl Pinvou3Bridge {
         model.api_key.clone()
     }
 
-    /// 解析一条任意 SavedModel 的凭据(视觉兜底模型专用,设计 §9.3):
-    /// 复用 `credential_ref` → 系统凭据库路径,**不存第二份明文密钥**;
-    /// 不回落到全局 `DEEPSEEK_API_KEY` env(那是主模型的覆盖入口)。
-    /// 本地 vLLM/loopback 无鉴权场景返回占位 key(底座要求非空)。
+    /// Resolve credentials for an arbitrary SavedModel (visual fallback model only, design §9.3):
+    /// reuses the `credential_ref` → system credential store path, **never stores a second plaintext key**;
+    /// does not fall back to the global `DEEPSEEK_API_KEY` env (that is the main model's override entry).
+    /// Local vLLM/loopback no-auth scenarios return a placeholder key (the base requires a non-empty value).
     fn api_key_for_saved_model(model: &SavedModel) -> String {
         let local_endpoint =
             model.preset == ModelPreset::LocalVllm || base_url_uses_loopback(&model.base_url);

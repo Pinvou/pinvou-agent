@@ -1028,7 +1028,7 @@ mod tests {
 
     fn mem() -> L1Store {
         let store = Store::open_in_memory().unwrap();
-        L1Store::new(store.conn_arc()) // 单测：纯全文,不接 embedding
+        L1Store::new(store.conn_arc()) // Unit test: plain full-text only, no embedding
     }
 
     #[test]

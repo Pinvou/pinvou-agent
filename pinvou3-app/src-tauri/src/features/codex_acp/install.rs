@@ -229,9 +229,9 @@ pub(super) enum CliVersionProbe {
 }
 
 /// `--version` 探测与登录态探测使用同一 15 秒上限。结果由上层按 Agent 缓存，
-/// 只有首次选择或主动重查时支付进程启动成本。spawn/wait 骨架与 runtime.rs 的
-/// Codex 自检共用 `run_version_probe`；本探测的策略是 stdin 置空、stderr 丢弃，
-/// 结果折叠为三态枚举（Found / TimedOut / Failed）。
+/// the process startup cost is only paid on the first selection or an explicit re-probe. The spawn/wait skeleton shares
+/// `run_version_probe` with runtime.rs's Codex self-check; this probe nulls stdin and discards stderr,
+/// with the result collapsed into a three-state enum (Found / TimedOut / Failed).
 fn command_version_probe(executable: &Path) -> CliVersionProbe {
     let outcome = match run_version_probe(executable, |command| {
         command
@@ -465,7 +465,7 @@ pub(super) fn path_install_source(backend: AgentBackend, path: &Path) -> Option<
     }
 }
 /// installed=false 时的安装动作：探测到过旧 CLI 且来源可识别时优先包管理器
-/// 升级（brew/npm），其余来源或无 CLI 时维持默认安装方式。
+/// upgrade (brew/npm); other sources or a missing CLI keep the default install method.
 pub(super) fn install_action_for(
     install_source: Option<&'static str>,
     npm_available: bool,
@@ -632,33 +632,33 @@ impl Drop for InstallOutputReaders {
     }
 }
 
-/// `run_official_install_script` 与 `run_npm_global_upgrade` 注入
-/// [`run_managed_install`] 的差异项；其余骨架（登记 pid → 取消补检 → 进度 →
-/// 流式输出 → 600 秒超时 → 诊断落盘 → 取消改写 → stderr 尾部 bail）由
-/// `run_managed_install` 统一持有，两路文案逐字节一致。
+/// Differences injected by `run_official_install_script` and `run_npm_global_upgrade` into
+/// [`run_managed_install`]; the rest of the skeleton (register pid → post-spawn cancel recheck → progress →
+/// streaming output → 600s timeout → diagnostics to disk → cancel rewrite → stderr-tail bail) is
+/// owned by `run_managed_install`, keeping both paths byte-identical in wording.
 struct ManagedInstallStage {
-    /// 诊断 stage 前缀（"script" / "npm"），拼成 `<stage>:timeout` / `<stage>:output`。
+    /// Diagnostics stage prefix ("script" / "npm"), composed into `<stage>:timeout` / `<stage>:output`.
     diag_stage: &'static str,
-    /// 进度事件里展示的命令行。
+    /// Command line shown in progress events.
     command_line: String,
-    /// 是否把子进程设为进程组组长（npm 需要；脚本进程不设）。
+    /// Whether to make the child a process-group leader (npm needs it; the script process does not).
     process_group: bool,
     spawn_context: String,
     stdout_context: &'static str,
     stderr_context: &'static str,
     wait_context: &'static str,
     timeout_message: String,
-    /// 失败消息主语（"{display} 安装脚本" / "npm 全局升级 {display}"）。
+    /// Failure message subject (the "{display} 安装脚本" / "npm 全局升级 {display}" message).
     failure_subject: String,
-    /// stderr 无有效内容时是否追加网络排查提示（仅官方脚本路径）。
+    /// Whether to append a network troubleshooting hint when stderr has no usable content (official script path only).
     failure_hint: bool,
 }
 
-/// 受管安装的共享执行骨架。差异只经 [`ManagedInstallStage`] 注入：
-/// InstallChildGuard::register → spawn 后取消补检 → emit_install_progress →
-/// InstallOutputReaders::spawn → 600 秒 tokio 超时（诊断 `<stage>:timeout`）→
-/// finish → 诊断 `<stage>:output`（输出尾部）→ 失败出口的取消改写与
-/// stderr 尾部 bail。
+/// Shared execution skeleton for managed installs. Differences are injected only via [`ManagedInstallStage`]:
+/// InstallChildGuard::register → post-spawn cancel recheck → emit_install_progress →
+/// InstallOutputReaders::spawn → 600s tokio timeout (diagnostics `<stage>:timeout`) →
+/// finish → diagnostics `<stage>:output` (output tail) → cancel rewrite and stderr-tail
+/// bail on the failure exits.
 #[allow(clippy::too_many_arguments)]
 async fn run_managed_install(
     app: &AppHandle,
@@ -670,8 +670,8 @@ async fn run_managed_install(
     stage: ManagedInstallStage,
 ) -> Result<()> {
     if stage.process_group {
-        // 独立进程组：取消时按组杀，npm 派生的 postinstall 脚本不孤儿化。
-        // （平台细节在 process.rs，本层不含目标平台 cfg。）
+        // Separate process group: killed as a group on cancel so npm-spawned postinstall
+        // scripts are not orphaned. (Platform details live in process.rs; this layer has no target-platform cfg.)
         crate::platform::process::tokio_process_group_leader(&mut command);
     }
     command
@@ -748,8 +748,8 @@ async fn run_managed_install(
     Ok(())
 }
 
-/// 执行官方安装脚本（unix: `curl -fsSL <url> | bash`，Windows: `irm <url> | iex`），
-/// 10 分钟超时，输出尾部写入诊断日志。
+/// Runs the official install script (unix: `curl -fsSL <url> | bash`, Windows: `irm <url> | iex`),
+/// 10-minute timeout, with the output tail written to the diagnostics log.
 pub(super) async fn run_official_install_script(
     app: &AppHandle,
     backend: AgentBackend,
@@ -763,7 +763,7 @@ pub(super) async fn run_official_install_script(
     }
     let mut command = crate::platform::process::install_script_command(unix_url, windows_url);
     if backend == AgentBackend::CodexAcp {
-        // OpenAI 官方脚本默认安装 latest；非交互模式避免桌面应用后台等待 PATH 冲突确认。
+        // The official OpenAI script installs latest by default; non-interactive mode avoids the desktop app waiting on a background PATH-conflict prompt.
         command.env("CODEX_NON_INTERACTIVE", "1");
     }
     let command_line = if crate::platform::capabilities::is_windows() {
@@ -836,7 +836,7 @@ pub(super) async fn run_npm_global_upgrade(
     .await
 }
 
-/// brew 幂等提示不算失败：install 报 already installed，upgrade 报 already
+/// brew's idempotent notices do not count as failure: install reports already installed, upgrade reports already
 /// up-to-date。
 fn brew_already_done(stdout: &str, stderr: &str) -> bool {
     ["already installed", "already up-to-date"]
@@ -844,11 +844,11 @@ fn brew_already_done(stdout: &str, stderr: &str) -> bool {
         .any(|marker| stdout.contains(marker) || stderr.contains(marker))
 }
 
-/// Homebrew 安装/升级的执行骨架（与 [`run_managed_install`] 同形）：登记 pid →
-/// spawn 后取消补检 → 进度 → 流式输出 → 600 秒超时（此前 brew 无超时，挂住
-/// 会永久占住安装互斥 guard）→ 诊断落盘 → 幂等提示放行 → 取消改写 →
-/// stderr 尾部 bail。`upgrade_via_homebrew` 保留来源探测等决策逻辑，只委托
-/// 子进程执行。
+/// Execution skeleton for Homebrew install/upgrade (same shape as [`run_managed_install`]): register pid →
+/// post-spawn cancel recheck → progress → streaming output → 600s timeout (brew previously had no timeout, so a
+/// hang would hold the install mutex guard forever) → diagnostics to disk → idempotent notices pass through → cancel rewrite →
+/// stderr-tail bail. `upgrade_via_homebrew` keeps the decision logic such as source detection and only delegates
+/// subprocess execution.
 pub(super) async fn run_brew_install(
     app: &AppHandle,
     backend: AgentBackend,
@@ -860,7 +860,7 @@ pub(super) async fn run_brew_install(
 ) -> Result<()> {
     let mut command = tokio::process::Command::new(platform::brew_bin());
     command.args(args);
-    // 独立进程组：取消时按组杀，brew 派生进程不孤儿化。
+    // Separate process group: killed as a group on cancel so brew-spawned processes are not orphaned.
     crate::platform::process::tokio_process_group_leader(&mut command);
     command
         .stdin(Stdio::null())
@@ -904,7 +904,7 @@ pub(super) async fn run_brew_install(
     if status.success() || brew_already_done(&stdout, &stderr) {
         return Ok(());
     }
-    // 进程被用户取消（taskkill/kill）会以失败状态走到这里：改写为已取消语义。
+    // The process was cancelled by the user (taskkill/kill) and reaches here with a failure status: rewrite to cancelled semantics.
     if install_cancelled.lock().remove(&backend) {
         bail!(
             "{INSTALL_CANCELLED_MARKER}{} 安装已取消",
@@ -1118,12 +1118,12 @@ mod tests {
 
     #[test]
     pub(super) fn install_action_follows_detected_install_source() {
-        // brew 来源一律 brew_upgrade。
+        // brew source always maps to brew_upgrade.
         assert_eq!(
             install_action_for(Some("brew"), false, true),
             "brew_upgrade"
         );
-        // npm 来源且 npm 可执行时 npm_upgrade。
+        // npm source with an executable npm maps to npm_upgrade.
         assert_eq!(install_action_for(Some("npm"), true, true), "npm_upgrade");
         // 官方脚本优先（原设计）：script/未知来源/首次安装（None）即使 npm
         // 可用也走官方脚本；npm 仅作为 npm 来源的升级通道；npm 不可用或脚本
@@ -1484,9 +1484,9 @@ pub(super) fn stale_official_target(target: &Path, resolved_ok: Option<&Path>) -
     !is_working_file || resolved_ok.is_none_or(|path| path != target)
 }
 
-/// 行 → 进度转发的共享策略（安装流式输出的 IO shell 共用）：跳过空行、
-/// 截断后按 80ms 节流发出、流结束补发未发出的尾行。完整输出的累积与读取
-/// 侧的空闲过期/收口由各 IO shell 负责。
+/// Shared line → progress-forwarding policy (used by the IO shells of install streaming output): skip empty lines,
+/// emit truncated lines throttled at 80ms, and flush the pending tail line when the stream ends. Full-output accumulation and
+/// reader-side idle expiry/teardown are each IO shell's own responsibility.
 struct InstallLineProgress {
     app: AppHandle,
     backend: AgentBackend,

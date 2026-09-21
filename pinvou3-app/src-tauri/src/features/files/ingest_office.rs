@@ -73,7 +73,7 @@ fn pdftotext_with_timeout(command: std::process::Command) -> Result<std::process
 /// 用 LibreOffice headless 把文件转成指定 filter 的产物并读回文本。复用于旧
 /// office、WPS 文字、电子表格等 pandoc 吃不下的格式。`convert_to` 是 soffice 的
 /// 输出 filter 串，`out_ext` 是产物扩展名（用来在临时目录里定位输出文件）。
-/// 临时目录 + 独立 profile + 清理由 [`super::ingest_deps::run_libreoffice_convert`] 统一承载。
+/// Temp dir + dedicated profile + cleanup are all handled uniformly by [`super::ingest_deps::run_libreoffice_convert`].
 fn libreoffice_convert_text(
     path: &Path,
     convert_to: &str,
@@ -94,7 +94,7 @@ fn libreoffice_convert_text(
                 .unwrap_or("converted");
             let out_path = tmpdir.join(format!("{stem}.{out_ext}"));
             std::fs::read_to_string(&out_path)
-            // soffice 的 txt/csv 导出会带 UTF-8 BOM，去掉以免污染正文开头。
+            // soffice's txt/csv exports carry a UTF-8 BOM; strip it so it does not pollute the start of the body.
             .map(|s| s.trim_start_matches('\u{feff}').to_string())
             .map_err(|e| format!("LibreOffice 转换后读取失败: {e}"))
         },
@@ -326,7 +326,7 @@ pub(super) fn ingest_presentation(
 }
 
 /// 演示文稿 → PDF（LibreOffice）→ pdftotext 的串联，返回纯文本。
-/// 临时目录 + 独立 profile + 清理由 [`super::ingest_deps::run_libreoffice_convert`] 统一承载。
+/// Temp dir + dedicated profile + cleanup are all handled uniformly by [`super::ingest_deps::run_libreoffice_convert`].
 fn libreoffice_presentation_text(path: &Path) -> Result<String, String> {
     super::ingest_deps::run_libreoffice_convert(
         path,

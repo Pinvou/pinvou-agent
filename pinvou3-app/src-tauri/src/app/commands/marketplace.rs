@@ -197,7 +197,7 @@ pub async fn install_marketplace_tool(
         mgr.requires_remote_connection_validation(&tool_id)
     };
     if should_validate {
-        // 只消费校验成败：失败即回滚已安装的工具并向上报用户可读错误。
+        // Only consumes the validation outcome: on failure, roll back the installed tool and surface a user-readable error.
         if let Err(err) = {
             let mgr = crate::features::marketplace::MarketplaceManager::new();
             mgr.validate_remote_connection(&tool_id).await

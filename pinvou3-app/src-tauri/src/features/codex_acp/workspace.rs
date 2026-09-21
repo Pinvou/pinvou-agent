@@ -964,7 +964,7 @@ fn should_walk(entry: &DirEntry) -> bool {
 }
 
 fn file_kind(path: &Path) -> String {
-    // 图片扩展名集合与 codex_acp::attachments 的唯一 MIME 映射表保持同源。
+    // The image-extension set stays in sync with codex_acp::attachments' canonical MIME mapping table.
     if crate::platform::filesystem::image_mime_type(path).is_some() {
         return "image".to_string();
     }

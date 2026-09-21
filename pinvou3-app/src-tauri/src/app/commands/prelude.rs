@@ -46,8 +46,8 @@ macro_rules! sync_command_passthrough {
 pub(super) use async_command_passthrough;
 pub(super) use sync_command_passthrough;
 
-/// 命令层错误出口的统一脱敏：`context` + redact 后的错误串（凭据/密钥不得
-/// 原样透传给前端）。原 settings.rs 本地函数上移，settings / memory 共用。
+/// Unified redaction at the command-layer error exit: `context` + redacted error string (credentials/keys
+/// must not pass through verbatim to the frontend). Hoisted from the old settings.rs local; shared by settings / memory.
 pub(crate) fn sanitize_command_error(context: &str, err: impl std::fmt::Display) -> String {
     format!(
         "{context}: {}",

@@ -165,8 +165,8 @@ pub struct PinvouReview {
     pub verdict: Option<String>,
     /// 这次审的产出物 path，存进 sidecar 供下次召唤核账匹配同一产出物。
     pub artifact_path: Option<String>,
-    /// guard 诊断日志：生产代码与前端都不消费，仅供测试断言 guard 分流；
-    /// 测试以外的构建不编译该字段。
+    /// guard diagnostic log: consumed by neither production code nor the frontend, only by tests asserting guard routing;
+    /// builds other than tests do not compile this field.
     #[cfg(test)]
     pub guard_reasons: Vec<String>,
 }

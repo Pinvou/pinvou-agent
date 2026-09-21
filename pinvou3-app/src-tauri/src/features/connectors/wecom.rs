@@ -111,8 +111,8 @@ pub async fn wecom_ensure_cli() -> Result<Value, String> {
 pub async fn wecom_status() -> Result<Value, String> {
     tokio::task::spawn_blocking(|| {
         // 没装就别 spawn auth show —— 省掉没装连接器的用户每次白等一次子进程;
-        // 装了则用同一次 --version 判 installed,不重复 spawn。过低版本与可用版本
-        // 同样报告 installed:true,升级引导由 ensure_cli 的版本门槛负责。
+        // when installed, the same --version run decides installed with no extra spawn. Overly old versions
+        // likewise report installed:true; upgrade guidance is handled by ensure_cli's version gate.
         match wecom_cli_version() {
             None => Ok::<Value, String>(json!({
                 "ok": false, "connected": false, "installed": false

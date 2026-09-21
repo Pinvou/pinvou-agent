@@ -57,9 +57,9 @@ fn legacy_spec_for_server_name(server_name: &str) -> Option<&'static LegacyMcpSe
 }
 
 impl<S: crate::platform::credential_store::CredentialStore> MarketplaceManager<S> {
-    /// 迁移历史明文密钥到系统凭据存储。逐条结果只落日志（此前聚合成
-    /// `McpSecretMigrationResult` 返回，但所有调用方都只消费成败、明细从未
-    /// 被读取）；任何一条迁移失败即 Err 中止，由调用方决定回滚/跳过。
+    /// Migrates historical plaintext secrets into the system credential store. Per-entry results only go to the log (previously aggregated into
+    /// a returned `McpSecretMigrationResult`, but every caller only consumed success/failure and the details were never
+    /// read); any single migration failure aborts with Err, leaving rollback/skip to the caller.
     pub fn migrate_mcp_plaintext_secrets(&self) -> Result<(), String> {
         for spec in legacy_mcp_secret_specs() {
             let path = self.servers_dir.join(spec.tool_id).join("manifest.json");

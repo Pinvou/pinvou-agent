@@ -230,9 +230,9 @@ fn same_package_content(
 
 /// 收集包子树（`mcp/`、`skills/`）下已落盘文件的相对路径，排除 Python 运行
 /// 缓存（`__pycache__/` 子树与 `*.pyc`，MCP server 跑过会就地生成，不算内容差异）。
-/// 本 walker 跟随目录遍历、不做符号链接判定（比对目标是本管线自己落盘的目录，
-/// 无包外内容进入面）——与 `package_export::collect_export_files` 的
-/// symlink-skip 口径是各自的刻意选择，共享的只有 [`is_python_cache_rel_path`]。
+/// This walker follows directories and performs no symlink checks (the comparison target is a directory written by this pipeline itself,
+/// with no surface for outside-package content) — the counterpart of `package_export::collect_export_files`'s
+/// symlink-skip policy; both are deliberate choices, and the only thing shared is [`is_python_cache_rel_path`].
 fn collect_landed_disk_files(
     root: &std::path::Path,
     dir: &std::path::Path,
@@ -258,10 +258,10 @@ fn collect_landed_disk_files(
     Ok(())
 }
 
-/// 相对路径（'/' 分隔）是否属于 Python 运行缓存：路径任一层级为 `__pycache__`
-/// 目录，或文件名以 `.pyc` 结尾（大小写不敏感）。包导入比对、包导出打包与
-/// 技能市场指纹三个 walker 共用的单一判据；符号链接/目录遍历策略由各 walker
-/// 自行决定（导出跳过 symlink、导入比对与技能指纹跟随），不属本判据。
+/// Whether a relative path ('/'-separated) belongs to the Python run cache: any path level is a `__pycache__`
+/// directory, or the file name ends with `.pyc` (case-insensitive). The single predicate shared by three walkers —
+/// package import comparison, package export packing, and skill-marketplace fingerprinting; symlink/directory-traversal policy is decided by each walker
+/// on its own (export skips symlinks, import compare and skill fingerprints follow) and is not part of this predicate.
 pub(crate) fn is_python_cache_rel_path(rel: &str) -> bool {
     rel.split('/').any(|c| c == "__pycache__") || rel.to_ascii_lowercase().ends_with(".pyc")
 }
