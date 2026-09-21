@@ -573,9 +573,11 @@ dictZh.uiToolDetails.tmeetSteps = [{key:'runtime',label:'准备运行时',sub:'�
 dictZh.uiToolDetails.showRawErrors = true;
 
 // 工具商店 MCP 连接器卡片三语 overlay(tool-common.jsx tsToolsData;localizeTool 按 backendId 或占位卡 'card'+id 命中)。
-// zh 与源数据逐字一致(zh 界面零变化);configFields 只覆盖 label/helpText/placeholder,由 localizeTool 按 key 深合并。
-// config 弹窗的功能事实(key/required/target/secret)切后端 bundle 源后,展示文案仍以 overlay 为准:
-// label 必须与对应 manifest 的 label 逐字一致,zh 渲染才能与改后端源之前保持零变化。
+// zh 与源数据逐字一致;configFields 只覆盖 label/helpText/placeholder,由 localizeTool/mergeConfigFields 按 key 深合并。
+// 后端 bundle_readiness 只下发功能事实(key/required/target/secret),从不下发展示文案;
+// label/placeholder/helpText 的唯一来源是 overlay/词典,三语必须各自齐备。
+// 注:weather/iwencai/wecom-bot 的 zh label 由泛化的「API Key/Webhook Key」改为与
+// manifest 逐字一致的具体文案——这是用户可见的文案改进(#575 有意为之,非零变化)。
 Object.assign(dictZh.uiToolDetails.tools, {
   weather:{ title:'高德天气', subtitle:'高德地图实时天气与多日预报', desc:'通过高德地图 Web 服务 API 查询全国城市实时天气与未来多日预报。需要填写你自己的高德 Web 服务 API Key，密钥只写入本机系统凭据。', configTitle:'高德天气 Key', configDescription:'Key 只保存在本机凭据，不写入 mcp.json。', configDocLabel:'去创建 Web 服务 Key', configFields:[{key:'AMAP_KEY', label:'高德 Web 服务 API Key', helpText:'请选择「Web 服务」类型。', placeholder:'粘贴高德 Web 服务 Key'}], welcomeQueries:['杭州今天天气','北京这周会下雨吗','上海明天穿什么'] },
   iwencai:{ title:'同花顺问财', subtitle:'A股行情、财务、选股、宏观、新闻', desc:'基于同花顺问财官方 API，提供 12 个金融查询工具。需要填写你自己的问财 API Key，密钥只写入本机系统凭据。', configTitle:'问财 Key', configDescription:'Key 只保存在本机凭据，不写入 mcp.json。', configDocLabel:'打开问财 SkillHub', configFields:[{key:'IWENCAI_API_KEY', label:'问财 API Key', helpText:'进入任一官方 Skill，在「安装方式」中复制。', placeholder:'粘贴 IWENCAI_API_KEY'}], welcomeQueries:['茅台最新股价','今天大盘怎么样','市盈率低于10的银行股','最近降息新闻'] },

@@ -155,11 +155,12 @@ function injectSource() {
             return Promise.resolve(mk(c,true,null,c?[act('uninstall')]:[act('install')]));
           }
           if(id==='qcc'){
-            // 与生产 manifest 契约同形（scripts/mcp-server-contract-smoke.py 钉住）：
-            // 后端下发可选 QCC_API_KEY，前端弹窗字段由 overlay 按 key 合并展示。
+            // 与生产 bundle_readiness 下发同形（scripts/mcp-server-contract-smoke.py
+            // 钉的是 manifest，readiness 只带功能事实、不带 label——见 backend
+            // ConfigFieldSpec）：弹窗展示文案由 overlay 按 key 合并提供。
             const inst=!!state.installed[id];
             return Promise.resolve(mk(inst,true,null,inst?[act('uninstall')]:[act('connect',{kind:'oauth'})],
-              bnd({config_fields:[{key:'QCC_API_KEY',label:'企查查 API Key',required:false,target:'bearer',secret:true}]})));
+              bnd({config_fields:[{key:'QCC_API_KEY',required:false,target:'bearer',secret:true}]})));
           }
           if(TOOL_META[id]){
             const inst=!!state.installed[id];

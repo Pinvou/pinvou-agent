@@ -522,7 +522,16 @@ const tc = (t) => (t && t.uiToolCommon) || dict.zh.uiToolCommon;
       { backendId: 'pptx', title: 'PPT 生成', category: 'docs', desc: '说“做个 PPT / 汇报”，AI 先列大纲让你确认，再按内容自动选主题（9 套）生成可编辑 .pptx——真·图表、自带封面缩略图，全程本地、数据不出机。首次安装会自动下载 python-pptx 依赖（需联网）。', icon: Presentation, welcomeQueries: ['做个 Q2 季度汇报 PPT', '帮我做一份产品介绍 PPT', '做个项目方案演示', '做个公司介绍 PPT'] },
     ];
 
-    // overlay 提供 configFields 时按字段 key 深合并，只覆盖 label/helpText/placeholder，其余源字段保留。
+    // configFields 字段级展示文案白名单：两处合并（localizeTool 的源数据×词典
+    // overlay、mergeConfigFields 的后端功能事实×overlay）共用同一策略——只有这些
+    // key 允许被 overlay 覆盖，其余（key/required/target/secret 等功能事实）一律
+    // 保留源侧。后端 bundle_readiness 只下发功能事实、从不下发展示文案（见
+    // src-tauri marketplace/bundle.rs ConfigFieldSpec），展示文案的唯一来源就是
+    // overlay/词典；白名单是纵深防御：后端未来若加入展示字段，这里保证三语
+    // overlay 仍然赢。
+    const CONFIG_FIELD_DISPLAY_KEYS = ['label', 'helpText', 'placeholder'];
+
+    // overlay 提供 configFields 时按字段 key 深合并，只覆盖白名单内的展示文案，其余源字段保留。
     const localizeTool = (tool, t) => {
       if (!tool) return tool;
       const tools = t?.uiToolDetails?.tools;
@@ -534,7 +543,7 @@ const tc = (t) => (t && t.uiToolCommon) || dict.zh.uiToolCommon;
           const ov = localized.configFields.find((f) => f && f.key === src.key);
           if (!ov) return src;
           const out = { ...src };
-          for (const k of ['label', 'helpText', 'placeholder']) if (ov[k] != null) out[k] = ov[k];
+          for (const k of CONFIG_FIELD_DISPLAY_KEYS) if (ov[k] != null) out[k] = ov[k];
           return out;
         });
       }
@@ -543,9 +552,8 @@ const tc = (t) => (t && t.uiToolCommon) || dict.zh.uiToolCommon;
 
     // 后端 config_fields（key/required/secret/target 功能事实，bundle_readiness 的
     // bundle 字段）× 本地 overlay（label/placeholder/helpText 展示文案）按 key 合并；
-    // 后端无字段时原样使用 overlay。展示文案一律 overlay 胜出：manifest label 是
-    // 单语中文，若后端覆盖 label，en/ja 用户会看到中文 label——overlay 三语覆盖
-    // 因此形同虚设。功能事实（required/target/secret 等）保持后端胜出。
+    // 后端无字段时原样使用 overlay。功能事实（required/target/secret 等）保持后端
+    // 胜出，展示文案按白名单一律 overlay 胜出（纵深防御，见上方白名单注释）。
     const mergeConfigFields = (backendFields, overlayFields) => {
       if (!Array.isArray(backendFields) || backendFields.length === 0) return overlayFields;
       const overlayByKey = {};
@@ -553,7 +561,7 @@ const tc = (t) => (t && t.uiToolCommon) || dict.zh.uiToolCommon;
       return backendFields.map((f) => {
         const ov = overlayByKey[f.key] || {};
         const merged = { ...f };
-        for (const k of ['label', 'helpText', 'placeholder']) {
+        for (const k of CONFIG_FIELD_DISPLAY_KEYS) {
           if (ov[k] != null) merged[k] = ov[k];
         }
         return merged;

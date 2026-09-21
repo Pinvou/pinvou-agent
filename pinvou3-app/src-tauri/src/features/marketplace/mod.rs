@@ -69,6 +69,15 @@ pub(crate) const ENGINE_OWNED_MCP_SERVER_KEYS: &[&str] = &["pinvou3", "pinvou", 
 /// skipping the write when an existing backup already holds identical bytes —
 /// a persistent parse failure must never mint one copy per boot. Shared by
 /// `mcp.json` (reconcile loaders) and `installed.json` (registry recovery).
+///
+/// The backup goes through the platform's private atomic write, not bare
+/// `fs::write`: a corrupt mcp.json may still hold pre-migration plaintext
+/// credentials (a file that fails to parse is exactly one the plaintext
+/// migration never reached), so the copy is created owner-only 0600 directly
+/// (no umask window) — bare `fs::write` lands 0644 per umask, more exposed
+/// than the live file. The
+/// copies are never garbage-collected (no reader, no cleaner anywhere) —
+/// removal is a manual decision, which is also why they must stay private.
 pub(super) fn backup_corrupt_json_file(path: &std::path::Path, stem: &str, content: &str) {
     let Some(parent) = path.parent() else {
         return;
@@ -91,7 +100,7 @@ pub(super) fn backup_corrupt_json_file(path: &std::path::Path, stem: &str, conte
     // 后缀保证每次真实落盘都是新名字。幂等仍由上面的全前缀同字节去重保证：
     // 持续解析失败不会每次启动都翻倍备份。
     let backup = parent.join(format!("{prefix}{ts}"));
-    if let Err(e) = std::fs::write(&backup, content) {
+    if let Err(e) = crate::platform::filesystem::atomic_write_private(&backup, content.as_bytes()) {
         log::warn!(
             "[marketplace] failed to backup corrupt {stem} to {}: {e}",
             backup.display()
@@ -2004,8 +2013,7 @@ mod tests {
     };
     use crate::platform::paths::tests::ENV_LOCK;
     use secrets::{
-        clear_secret_values_for_test, mcp_secret_env_var, mcp_secret_reference,
-        snapshot_secret_values,
+        mcp_secret_env_var, mcp_secret_reference, snapshot_secret_values, store_secret_value,
     };
     use sha2::{Digest, Sha256};
     use std::future::Future;
@@ -6683,6 +6691,45 @@ mod tests {
         });
     }
 
+    /// An OPTIONAL secret config field (the qcc shape) with no stored
+    /// credential is a legitimate outcome, not a degraded restore: the note
+    /// must not send an OAuth-only user hunting for a key they never needed
+    /// — and under the fallback it would be a claim that cannot be verified
+    /// either way.
+    #[test]
+    fn restore_does_not_note_absent_optional_config_field_credentials() {
+        with_temp_home(|| {
+            let manifest = serde_json::json!({
+                "id":"opt-note","name":"opt-note","description":"d","version":"1","icon":"x","category":"c",
+                "mcp_tools":[],"command":"","args":[],
+                "servers":[{"name":"opt-note-remote","url":"https://opt-note.example.com/mcp"}],
+                "config_fields":[
+                    {"key":"OPT_NOTE_API_KEY","label":"k","required":false,"target":"bearer","secret":true}
+                ]
+            });
+            write_tool_manifest(
+                "opt-note",
+                &serde_json::to_string_pretty(&manifest).unwrap(),
+            );
+            write_installed_ids(&["opt-note".to_string()]);
+            let manager = MarketplaceManager::with_store(MemoryCredentialStore::default());
+
+            let actions = manager.reconcile_installed_mcp_entries().unwrap();
+            assert_eq!(
+                actions,
+                vec![
+                    "tool 'opt-note': restored missing remote entry 'opt-note-remote'".to_string()
+                ],
+                "an absent optional credential is not a degraded restore: {actions:?}"
+            );
+            let entry = &read_mcp_json()["servers"]["opt-note-remote"];
+            assert!(
+                entry.get("bearer_token_env_var").is_none(),
+                "the absent optional key leaves no auth wiring: {entry}"
+            );
+        });
+    }
+
     /// Legacy remote manifests (sensitive `manifest.env` key, no secret
     /// channels) must install the env-var NAME wiring the engine resolves at
     /// request time (`bearer_token_env_var`) — not a literal `${...}`
@@ -6750,14 +6797,17 @@ mod tests {
             );
 
             // The boot runs this right after the reconcile (bridge.rs); it
-            // must re-add what it wipes, not leave the registry empty. Clear
-            // explicitly first so the wipe half of the clear-and-rebuild is
-            // actually exercised: without this, sync could re-insert the same
-            // value over a stale entry and stay green even if `values.clear()`
-            // were deleted.
-            clear_secret_values_for_test();
-            assert!(!snapshot_secret_values().contains_key(&env_var));
+            // must re-add what it wipes, not leave the registry empty. Plant a
+            // registry entry no enumeration produces: the wipe half
+            // (`values.clear()`) has to evict it, so a deleted `clear()` can
+            // no longer survive this test as a silent no-op.
+            let stale_canary = "PINVOU3_MCP_SECRET_STALE_RESYNC_CANARY".to_string();
+            store_secret_value(stale_canary.clone(), "stale".to_string());
             manager.sync_secret_values().unwrap();
+            assert!(
+                !snapshot_secret_values().contains_key(&stale_canary),
+                "the wipe half must evict entries the rebuild no longer derives"
+            );
             assert_eq!(
                 snapshot_secret_values().get(&env_var).map(String::as_str),
                 Some("placeholder-in-manifest"),
@@ -6794,9 +6844,6 @@ mod tests {
                 "the reconcile must register the local legacy secret"
             );
 
-            // 同上：先清空，钉住 sync 的清空-重建两半都必须真实发生。
-            clear_secret_values_for_test();
-            assert!(!snapshot_secret_values().contains_key(&env_var));
             manager.sync_secret_values().unwrap();
             assert_eq!(
                 snapshot_secret_values().get(&env_var).map(String::as_str),
@@ -6834,6 +6881,16 @@ mod tests {
                     .is_some(),
                 "precondition: the remote legacy channel stores under the Bearer target"
             );
+            // The remote reconcile never writes the "env" target for this key,
+            // so seed it the way a local-channel writer would: without this,
+            // the env-target deletion assertion below could never fail and
+            // would pin nothing.
+            store
+                .set(
+                    &mcp_secret_reference("lg-del", "env", "LEGACY_API_KEY"),
+                    "legacy-value",
+                )
+                .unwrap();
             assert!(snapshot_secret_values().contains_key(&env_var));
 
             manager.uninstall("lg-del").unwrap();
@@ -6850,7 +6907,7 @@ mod tests {
                     .get(&mcp_secret_reference("lg-del", "env", "LEGACY_API_KEY"))
                     .unwrap(),
                 None,
-                "the env-target lookup must be deleted too, not only the stored one"
+                "the seeded env-target credential must be deleted too, not only the Bearer one"
             );
             assert!(
                 !snapshot_secret_values().contains_key(&env_var),
@@ -6931,6 +6988,81 @@ mod tests {
             assert!(
                 !paths::mcp_config_path().exists(),
                 "no unwired entry may be written by the failed install"
+            );
+        });
+    }
+
+    /// With the OS keyring believed HEALTHY, a store error on an optional
+    /// field is a real fault, not an undeterminable miss: the install keeps
+    /// the required arm's fail-closed discipline instead of baking a
+    /// transiently failing store into a permanently unwired entry (healthy
+    /// entries are never re-examined by the reconcile, so nothing would ever
+    /// repair it). Only the fallback-active classification is tolerated.
+    #[test]
+    fn optional_bearer_config_field_fails_closed_on_a_real_store_error() {
+        with_temp_home(|| {
+            let manifest = serde_json::json!({
+                "id":"opt-err","name":"opt-err","description":"d","version":"1","icon":"x","category":"c",
+                "mcp_tools":[],"command":"","args":[],
+                "servers":[{"name":"opt-err-remote","url":"https://opt-err.example.com/mcp"}],
+                "config_fields":[
+                    {"key":"OPT_ERR_API_KEY","label":"k","required":false,"target":"bearer","secret":true}
+                ]
+            });
+            write_tool_manifest("opt-err", &serde_json::to_string_pretty(&manifest).unwrap());
+            let manager = MarketplaceManager::with_store(FlakyThenHealedStore {
+                inner: MemoryCredentialStore::default(),
+                fail_reads: std::sync::Arc::new(std::sync::atomic::AtomicBool::new(true)),
+            });
+
+            let error = manager
+                .install("opt-err", &std::collections::HashMap::new())
+                .unwrap_err();
+            assert!(
+                error.contains("keyring unavailable"),
+                "the real store fault must fail the install, not be swallowed: {error}"
+            );
+            assert!(
+                !paths::mcp_config_path().exists(),
+                "no unwired entry may be written by the failed install"
+            );
+        });
+    }
+
+    /// A cleared dialog input arrives as an empty (or whitespace) string, not
+    /// an omitted key: it must take the same "not provided" path as no input
+    /// at all — re-derive from the store, tolerate absence — instead of
+    /// failing the install as a missing credential.
+    #[test]
+    fn optional_bearer_config_field_treats_a_cleared_input_as_absent() {
+        with_temp_home(|| {
+            let manifest = serde_json::json!({
+                "id":"opt-empty","name":"opt-empty","description":"d","version":"1","icon":"x","category":"c",
+                "mcp_tools":[],"command":"","args":[],
+                "servers":[{"name":"opt-empty-remote","url":"https://opt-empty.example.com/mcp"}],
+                "config_fields":[
+                    {"key":"OPT_EMPTY_API_KEY","label":"k","required":false,"target":"bearer","secret":true}
+                ]
+            });
+            write_tool_manifest(
+                "opt-empty",
+                &serde_json::to_string_pretty(&manifest).unwrap(),
+            );
+            let manager = MarketplaceManager::with_store(MemoryCredentialStore::default());
+
+            manager
+                .install(
+                    "opt-empty",
+                    &std::iter::once(("OPT_EMPTY_API_KEY".to_string(), "   ".to_string()))
+                        .collect(),
+                )
+                .unwrap();
+
+            let mcp = read_mcp_json();
+            assert_eq!(
+                mcp["servers"]["opt-empty-remote"],
+                serde_json::json!({"url": "https://opt-empty.example.com/mcp"}),
+                "a cleared input must install unwired, exactly like no input"
             );
         });
     }
@@ -7027,6 +7159,16 @@ mod tests {
                 corrupt.as_bytes(),
                 "the backup must hold the original bytes"
             );
+            // Platforms without POSIX modes return None (privacy is
+            // ACL-expressed there) — nothing bit-level to assert.
+            if let Some(mode) =
+                crate::platform::filesystem::permission_bits(&backup.path()).unwrap()
+            {
+                assert_eq!(
+                    mode, 0o600,
+                    "the backup may hold pre-migration plaintext credentials and must stay owner-only"
+                );
+            }
             assert_eq!(
                 manager.installed_ids(),
                 vec!["existing".to_string()],
