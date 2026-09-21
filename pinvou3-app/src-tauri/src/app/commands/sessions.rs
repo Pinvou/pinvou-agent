@@ -446,13 +446,17 @@ pub async fn create_session(
         }
         // 项目通道(§9.3):创建即更新项目记忆主文件夹并写显式归属。后端在同
         // 一命令内写比前端补一发 update_project 更原子(免二次 RPC、免漏写);
-        // 记忆写失败不影响会话创建本身(下次创建会重试),只记日志。
-        super::projects::record_project_choice(
+        // 记忆写失败不影响会话创建本身(下次创建会重试),只记日志。写入成功
+        // 须广播列表变更——store 直写不触发事件,前端 assignments 快照滞留会
+        // 让侧栏按 tier-2 把新会话归进宽项目。
+        if super::projects::record_project_choice(
             &projects,
             &metadata.id,
             project_id.as_deref(),
             Some(&workspace),
-        );
+        ) {
+            super::projects::emit_create_channel_assignment_event(&app);
+        }
     }
     emit_session_event(&app, "session:list_changed", &metadata.id, "created");
     // 多 session 并发:不预热 engine(lazy)。新建的空 session 没有历史,首条 chat

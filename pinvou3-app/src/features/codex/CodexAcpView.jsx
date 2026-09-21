@@ -138,6 +138,7 @@ import { ComposerAttachmentDropOverlay } from '../attachments/ComposerAttachment
 import { HomeModeSwitcher } from '../conversation/HomeModeSwitcher.jsx';
 import { bridge } from '../../hooks/useBridge.js';
 import { describeKeychain, workspaceNoticeTone } from '../projects/workspacePickerState.js';
+import { interpretFolderEnsureOutcomes } from '../projects/folderEnsure.js';
 import { consumePickerRequest } from './picker-request.js';
 import {
   invokeTauri,
@@ -166,6 +167,7 @@ import {
   submitAcpPrompt,
   uploadAcpDeviceAttachment,
   alignAcpSession,
+  ensureFolderProjects,
 } from './acpClient.js';
 import { WorkspaceKeychainChip } from '../projects/WorkspaceKeychainChip.jsx';
 import { resolveSessionProjectId } from '../projects/projectGrouping.js';
@@ -2170,6 +2172,38 @@ export function CodexAcpView({
     }
   }
 
+  // Recents channel (§9.9 folder-channel parity, desktop): a recents pick is
+  // the same explicit folder choice as the picker's browse channel, so it
+  // runs the same ensure (anchor reuse / materialize) and stages the anchored
+  // project id as the draft binding — without it the created session has no
+  // tier-1 assignment and tier-2 nested grouping adopts it into a broader
+  // project whose root covers the folder (e.g. a Desktop-rooted project).
+  async function chooseRecentDraft(path) {
+    if (isWeb) {
+      await chooseProjectDraft(path);
+      return;
+    }
+    let interpreted;
+    try {
+      interpreted = interpretFolderEnsureOutcomes(await ensureFolderProjects([path]));
+    } catch (error) {
+      // IPC-level failure: same promise as the browse channel — the draft
+      // still lands at the picked folder, as a plain one.
+      console.warn('ensure folder project failed', error);
+      beginDraft(path);
+      return;
+    }
+    if (!interpreted.materialized && interpreted.failed) {
+      // A backend refusal (nesting conflict etc.) is not the exclusion list:
+      // landing a plain draft would let tier-2 adopt the session into a
+      // broader project — surface the failure instead.
+      throw new Error(t.uiProjects.opFailed);
+    }
+    // Excluded folders (no outcome) land plain with a null binding.
+    beginDraft(path);
+    setDraftProjectBinding(interpreted.projectId ? { projectId: interpreted.projectId, roots: [path] } : null);
+  }
+
   function updateAttachments(sessionId, update) {
     if (!sessionId) return;
     setAttachmentDrafts(current => {
@@ -3872,10 +3906,7 @@ export function CodexAcpView({
                                 </div>
                                 {recentWorkspaces.map(path => (
                                   <button key={path} type="button" title={path}
-                                    onClick={() => {
-                                      if (isWeb) chooseProjectDraft(path).catch(showError);
-                                      else beginDraft(path);
-                                    }}
+                                    onClick={() => { chooseRecentDraft(path).catch(showError); }}
                                     className="w-full rounded-lg px-3 py-1.5 flex items-center gap-2 text-left hover:bg-black/[0.04] dark:hover:bg-white/[0.06]">
                                     <FolderOpen size={13} className="shrink-0 text-gray-400" />
                                     <span className="truncate text-[11px]">{workspaceName(path, codexCopy.unknownDirectory)}</span>

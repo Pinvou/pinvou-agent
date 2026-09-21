@@ -42,7 +42,11 @@ export function ComposerWorkspaceSelector({ copy, draftWorkspacePath, onPickWork
   function select(path) {
     setOpen(false);
     setPickError('');
-    onSelectWorkspace(path);
+    // The host's recents staging is async (folder-channel ensure runs first);
+    // a backend refusal rejects and must surface here instead of dying as an
+    // unhandled rejection while the menu silently closes.
+    Promise.resolve(onSelectWorkspace(path))
+      .catch(error => setPickError(String((error && error.message) || error || 'error')));
   }
 
   return (

@@ -744,12 +744,18 @@ pub async fn create_codex_acp_session(
     agent_id: Option<String>,
     workspace_roots: Option<Vec<String>>,
     project_id: Option<String>,
+    app: tauri::AppHandle,
     store: State<'_, SessionStore>,
     pool: State<'_, EnginePool>,
     acp_pool: State<'_, AcpPool>,
     projects: State<'_, ProjectStore>,
 ) -> Result<SessionMetadata, String> {
-    create_codex_acp_session_with_workspace_binding(
+    // record_project_choice 写 tier-1 归属发生在内部实现里且失败只记日志;
+    // 创建成功且携带项目归属时广播列表变更(罕见的写失败会让这次广播成为
+    // 一次无害的额外刷新),否则前端 assignments 快照滞留,侧栏按 tier-2 把
+    // 新会话归进宽项目(与 chat 车道 create_session 同一口径)。
+    let expects_assignment = workspace_path.is_some() && project_id.is_some();
+    let metadata = create_codex_acp_session_with_workspace_binding(
         workspace_path.map(PathBuf::from),
         agent_id,
         workspace_roots,
@@ -760,7 +766,11 @@ pub async fn create_codex_acp_session(
         projects,
         None,
     )
-    .await
+    .await?;
+    if expects_assignment {
+        super::projects::emit_create_channel_assignment_event(&app);
+    }
+    Ok(metadata)
 }
 
 /// Internal code-Session creation entry point used by Web workspace grants.

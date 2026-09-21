@@ -270,8 +270,9 @@ session id (session-private), its keychain snapshot is always empty, and it
 never auto-joins a project — it enters one only via explicit assignment
 (the adopt flow, §9.6). It therefore presents no folder for
 auto-materialization (P1 has no aggregation flow at all — §3: only the
-browse channel's explicitly picked folder reaches `ensure`; any future
-aggregation must keep the same exclusion). "Temporary session" is an
+explicitly picked folders of the browse channel and the two lanes' composer
+recents channels reach `ensure`; any future aggregation must keep the same
+exclusion). "Temporary session" is an
 explicit first-class option in the picker (§2), not an error state.
 
 ### §9.2 The project-remembered primary folder
@@ -280,9 +281,10 @@ explicit first-class option in the picker (§2), not an error state.
 `cwd` for the project channel (§9.3).
 
 - Written explicitly: by project-channel session creation (§9.3) and by
-  the manage panel's "set as primary folder" (§4). The **browse channel
-  never writes it** (ruling A, §9.9) — browsing is a physical choice, not a
-  project-memory update.
+  the manage panel's "set as primary folder" (§4). The folder channel
+  (§9.9) also records the picked folder as the materialized/anchored
+  project's remembered primary at creation — the project was just anchored
+  at exactly that folder, so the memory simply reflects the anchor.
 - Must be a roots member; the store rejects foreign paths.
 - Demoted to `None` when a root replacement drops it from roots
   (`demote_stale_primary_root`), so a stale primary folder cannot keep
@@ -425,11 +427,18 @@ projects. Consequences, all locked by tests:
   session" entry starts directly at the project's remembered primary root
   with the full-root keychain (§9.3), no picker detour — with §9.4 grant
   notice parity via toast.
-- **Browse/folder channel.** System folder picker → `ensure` (anchor reuse
-  or materialize; the §3 exclusion list skips) → start at the picked folder
-  `F` with `cwd = F`, `roots = [F]`, **no `projectId`**, and — ruling A —
-  no write to any project's `last_primary_root` (§9.2). The session groups
-  via tier-② anchoring and needs no explicit assignment.
+- **Browse/folder channel.** System folder picker (and the two lanes'
+  composer recents channels, same ruling) → `ensure` (anchor reuse or
+  materialize; the §3 exclusion list skips) → start at the picked folder
+  `F` with `cwd = F`, `roots = [F]`, and `projectId` = the anchored
+  project's id. Creation writes a tier-① explicit assignment to that
+  project **inside the create command** and then broadcasts
+  `projects:list_changed` — without the assignment, tier-② nested grouping
+  would adopt the session into a broader project whose root covers `F`
+  (e.g. a Desktop-rooted project), and without the broadcast the frontend's
+  stale assignments snapshot would still group it there. The decision is:
+  group only on an exact primary-root match, else materialize a new project
+  and belong to it.
 - **Delete-project tombstones.** Deleting a project writes **all** members
   (explicitly assigned + enumerated auto-grouped) as explicit move-outs
   (`None`); sessions themselves are never deleted. The tombstone is
@@ -452,7 +461,11 @@ The invariants above are pinned by:
   (hot view, cold-project hiding, primary-root resolution, notice tone);
 - `pinvou3-app/tests/workspace_picker_wiring.test.mjs` and
   `workspace_entry_batch2_wiring.test.mjs` — §2/§9.4 wiring and
-  no-detour-channel notice parity;
+  no-detour-channel notice parity, plus the §9.9 folder-channel wiring
+  (browse and both recents channels ensure first and stage the anchored
+  project id);
+- `pinvou3-app/tests/folder_ensure_logic.test.mjs` — §9.9 shared
+  `ensure` outcome interpretation (materialized / exclusion / failure);
 - `pinvou3-app/tests/manage_folders_state.test.mjs` — §4/§9.5/§9.9
   (removal decisions, duplicate vs. legal nesting);
 - `pinvou3-app/tests/project_grouping_logic.test.mjs` — §5/§9.9

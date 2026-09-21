@@ -25,28 +25,38 @@ use super::sessions::ensure_chat_session;
 /// 的文件夹会被 position 更小的宽项目收养,违背「同主根才归入、否则新建」
 /// 的决策)。只在会话创建完全落定后调用;写失败只记日志(下次创建重试),
 /// 绝不影响创建结果。chat/codex 两条创建车道共用。
+/// 返回是否有项目数据被写入:写入后调用方须广播 projects:list_changed,
+/// 否则前端 projectsList 快照滞留,侧栏分组仍按旧 assignments 走 tier-2,
+/// 把刚归属的会话显示进宽项目(桌面项目收养子目录会话的回归)。
 pub(crate) fn record_project_choice(
     projects: &ProjectStore,
     session_id: &str,
     project_id: Option<&str>,
     cwd: Option<&Path>,
-) {
-    if let (Some(project_id), Some(cwd)) = (project_id, cwd) {
-        // Log hygiene (CodeQL cleartext-logging, same convention as the
-        // rebind lanes): the error chain can embed the user's absolute path
-        // (the store's "primary root must be one of the project roots"
-        // bail), so only the failure site is logged; the write retries on
-        // the next create.
-        if projects.set_last_primary_root(project_id, cwd).is_err() {
-            eprintln!("[projects] create channel: record last_primary_root failed");
-        }
-        if projects
-            .move_session_to_project(session_id, Some(project_id), None)
-            .is_err()
-        {
-            eprintln!("[projects] create channel: record project assignment failed");
-        }
+) -> bool {
+    let Some((project_id, cwd)) = project_id.zip(cwd) else {
+        return false;
+    };
+    let mut wrote = false;
+    // Log hygiene (CodeQL cleartext-logging, same convention as the
+    // rebind lanes): the error chain can embed the user's absolute path
+    // (the store's "primary root must be one of the project roots"
+    // bail), so only the failure site is logged; the write retries on
+    // the next create.
+    if projects.set_last_primary_root(project_id, cwd).is_err() {
+        eprintln!("[projects] create channel: record last_primary_root failed");
+    } else {
+        wrote = true;
     }
+    if projects
+        .move_session_to_project(session_id, Some(project_id), None)
+        .is_err()
+    {
+        eprintln!("[projects] create channel: record project assignment failed");
+    } else {
+        wrote = true;
+    }
+    wrote
 }
 
 /// Project events are only emitted locally: the projects domain is
@@ -59,6 +69,13 @@ pub(crate) fn record_project_choice(
 /// #463 minor: a previous comment attributed this incorrectly).
 fn emit_project_event(app: &AppHandle, event: &str, action: &str) {
     let _ = app.emit(event, serde_json::json!({ "action": action }));
+}
+
+/// 创建车道(chat/codex)写入 tier-1 归属后的列表刷新广播:store 直写不经过
+/// 命令层,没有这次广播前端的 projectsList.assignments 会一直滞留到下一次
+/// 项目事件,侧栏分组按旧快照把新会话归进 tier-2 命中的宽项目。
+pub(crate) fn emit_create_channel_assignment_event(app: &AppHandle) {
+    emit_project_event(app, "projects:list_changed", "create_channel_assigned");
 }
 
 /// 项目 root 的 wire 形态：路径 + `available`（root 是否仍在磁盘上，供侧栏
@@ -2460,7 +2477,10 @@ mod tests {
             Some(broad.id.clone())
         );
 
-        super::record_project_choice(&store, "s1", Some(&anchored.id), Some(&sub));
+        assert!(
+            super::record_project_choice(&store, "s1", Some(&anchored.id), Some(&sub)),
+            "a successful choice write reports true so the caller broadcasts the list change"
+        );
 
         assert_eq!(
             store
@@ -2476,8 +2496,8 @@ mod tests {
                 .is_some(),
             "the picked root is also recorded as the remembered primary"
         );
-        // No project id = no assignment, no memory write.
-        super::record_project_choice(&store, "s2", None, Some(&sub));
+        // No project id = no assignment, no memory write, no broadcast.
+        assert!(!super::record_project_choice(&store, "s2", None, Some(&sub)));
         assert_eq!(store.assignment_of("s2"), None);
         let _ = std::fs::remove_dir_all(&desktop);
     }

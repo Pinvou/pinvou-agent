@@ -13,6 +13,8 @@ import { formatCompactCount } from '../../shared/format-number.js';
 import { getSyntaxHighlightVersion, subscribeSyntaxHighlight } from '../../shared/syntax-highlighter.js';
 import { renderMarkdown } from '../../shared/markdown-renderer.js';
 import { describeKeychain, workspaceNoticeTone } from '../projects/workspacePickerState.js';
+import { interpretFolderEnsureOutcomes } from '../projects/folderEnsure.js';
+import { createWeakCache } from '../../shared/weak-cache.js';
 import { AppIcon, DEPT_ORDER, deptLabelFor, personaText } from '../personas/persona-shared.jsx';
 import { ComposerModelSelector, ComposerToolMenu } from '../settings/composer-shared.jsx';
 import { ComposerPopover, POPOVER_SURFACE, useOutsidePointerClose } from '../../components/ComposerPopover.jsx';
@@ -1902,6 +1904,40 @@ const ToolWelcomeCard = ({ toolId, t, onSend }) => {
         }
         return true;
       }
+      // Recents channel (§9.9 folder-channel parity): picking a recent
+      // directory is the same explicit folder choice as the picker's browse
+      // channel, so it goes through the same ensure (anchor reuse /
+      // materialize) and stages the anchored project id — without it the
+      // session has no tier-1 assignment and tier-2 nested grouping adopts it
+      // into a broader project whose root covers the folder (e.g. a
+      // Desktop-rooted project), the "group only on an exact primary-root
+      // match" regression.
+      async function handleSelectRecentWorkspace(path) {
+        if (!path) { bridge.sessions.setDraftWorkspace(null); return; }
+        if (bridge.projects && typeof bridge.projects.ensureFolderProjects === 'function') {
+          let interpreted;
+          try {
+            interpreted = interpretFolderEnsureOutcomes(await bridge.projects.ensureFolderProjects([path]));
+          } catch (error) {
+            // IPC-level failure: same promise as the browse channel — the
+            // conversation still starts at the picked folder, as a plain one.
+            console.warn('ensure folder project failed', error);
+            bridge.sessions.setDraftWorkspace(path);
+            return;
+          }
+          if (!interpreted.materialized && interpreted.failed) {
+            // A backend refusal (nesting conflict etc.) is not the exclusion
+            // list: staging a plain folder would let tier-2 adopt it into a
+            // broader project. Surface the failure (selector pickError) and
+            // do not stage.
+            throw new Error(t.uiProjects.opFailed);
+          }
+          // Excluded folders (no outcome) stage plain with projectId null.
+          bridge.sessions.setDraftWorkspace(path, { projectId: interpreted.projectId, workspaceRoots: [path] });
+          return;
+        }
+        bridge.sessions.setDraftWorkspace(path);
+      }
       async function handleModeChipSwitch(target, { isPlan }) {
         if (!bridge.available || !bridge.interaction) return;
         if (target === 'plan' && !isPlan) {
@@ -2876,7 +2912,7 @@ const ToolWelcomeCard = ({ toolId, t, onSend }) => {
                         }
                         return bridge.sessions.pickDraftWorkspace();
                       }}
-                      onSelectWorkspace={path => bridge.sessions.setDraftWorkspace(path)}
+                      onSelectWorkspace={handleSelectRecentWorkspace}
                       // Grant notice parity (§9.4): the recents channel grants
                       // the picked folder directly (single root), the same
                       // notice weight as the in-app picker rows.

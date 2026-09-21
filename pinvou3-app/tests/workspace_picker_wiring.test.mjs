@@ -32,9 +32,11 @@ test('workspace picker wiring contract', () => {
   // (review #484 n5)。
   assert.match(main, /const lane = pickerLane\(\);[\s\S]*?applyWorkspaceTarget\(\{ lane, path: folder/, '浏览车道同步捕获');
   // 浏览通道必须把 ensure 锚定的项目 id 传下去:created.project.id /
-  // covered.project_id,否则 tier-2 嵌套归组会把子目录会话收养进宽项目
-  // (如 Desktop 根的项目)——「同主根才归入、否则新建」的决策回归。
-  assert.match(main, /hit\.status === 'created' \? \(hit\.project && hit\.project\.id\) : hit\.project_id/, 'ensure outcome 提取项目 id');
+  // covered.project_id 的提取收敛在共享 helper(folderEnsure.js),否则
+  // tier-2 嵌套归组会把子目录会话收养进宽项目(如 Desktop 根的项目)——
+  // 「同主根才归入、否则新建」的决策回归。
+  assert.match(main, /interpretFolderEnsureOutcomes\(outcomes\)/, '浏览通道经共享 helper 解释 outcome');
+  assert.match(main, /ensuredProjectId = interpreted\.projectId/, 'ensure outcome 提取项目 id');
   assert.match(main, /applyWorkspaceTarget\(\{ lane, path: folder, projectId: ensuredProjectId, roots: \[folder\] \}\)/, '浏览透传锚定项目 id');
   assert.match(main, /applyWorkspaceTarget[\s\S]{0,300}?let applied = false;/, 'applied 缺省 false');
 
@@ -43,6 +45,18 @@ test('workspace picker wiring contract', () => {
   assert.match(chatView, /onOpenWorkspacePicker\(\{ lane: 'chat', mode:/, 'chat 入口带车道与模式');
   assert.match(bridgeSessions, /function setDraftWorkspace\(path, extras\)/, '草稿携带扩展归属');
   assert.match(bridgeSessions, /invoke\("create_session", \{[\s\S]*?workspaceRoots: payloadRoots,[\s\S]*?projectId: payloadProjectId,/, 'create_session 透传钥匙串与项目');
+
+  // 「最近目录」通道与浏览通道同一决策(§9.9):先 ensure 再带 projectId
+  // 落草稿,否则没有 tier-1 归属的会话会被 tier-2 收养进宽项目;后端明确
+  // 拒绝(failed outcome)不得静默落成普通文件夹。
+  assert.match(chatView, /handleSelectRecentWorkspace[\s\S]*?ensureFolderProjects\(\[path\]\)/, 'chat recents 先 ensure');
+  assert.match(chatView, /setDraftWorkspace\(path, \{ projectId: interpreted\.projectId, workspaceRoots: \[path\] \}\)/, 'chat recents 带锚定项目落草稿');
+  assert.match(chatView, /interpreted\.failed[\s\S]{0,500}?throw new Error/, 'chat recents 拒绝不静默落草稿');
+  assert.match(chatView, /onSelectWorkspace=\{handleSelectRecentWorkspace\}/, 'chat recents 接线');
+  assert.match(codexView, /chooseRecentDraft[\s\S]*?ensureFolderProjects\(\[path\]\)/, 'codex recents 先 ensure');
+  assert.match(codexView, /setDraftProjectBinding\(interpreted\.projectId \? \{ projectId: interpreted\.projectId, roots: \[path\] \} : null\)/, 'codex recents 带锚定项目落草稿');
+  assert.match(codexView, /chooseRecentDraft\(path\)\.catch\(showError\)/, 'codex recents 接线');
+  assert.match(acpClient, /invokeTauri\('ensure_folder_projects'/, 'codex 侧 ensure 包装');
 
   // codex 车道:入口开选择器(Web 维持旧通道),请求经 workspacePickerRequest
   // 落地 beginDraft,物化 createAcpSession 透传(仅桌面)。

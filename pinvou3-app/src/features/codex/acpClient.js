@@ -87,6 +87,18 @@ export function alignAcpSession(sessionId) {
   return Promise.reject(acpClientError('workspace_align_desktop_only'));
 }
 
+// Folder-project ensure (§9.9, desktop-only): anchor reuse / materialization
+// for an explicitly picked folder. The codex lane's recents channel runs it
+// before staging the draft so the session carries the anchored project id —
+// without it tier-2 nested grouping adopts the session into a broader
+// project whose root covers the folder (e.g. a Desktop-rooted one).
+export function ensureFolderProjects(roots) {
+  if (!isWeb) {
+    return invokeTauri('ensure_folder_projects', { roots: roots || [] });
+  }
+  return Promise.reject(acpClientError('folder_ensure_desktop_only'));
+}
+
 export function listAcpWorkspace({ sessionId, relativePath, workspacePath }) {
   if (!isWeb) {
     return invokeTauri('list_codex_workspace', { sessionId, relativePath, workspacePath });

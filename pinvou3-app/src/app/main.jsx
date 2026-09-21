@@ -22,6 +22,7 @@ import { COLOR_SCHEME_STORAGE_KEY, normalizeColorScheme, resolveTheme } from '..
 import { DEFAULT_CHAT_TITLES, dict, createLatestLanguageGate, ensureLanguage, LANG_TO_TAG, initialSystemLanguage, SEARCH_KEY_PROVIDERS, TAG_TO_LANG } from '../shared/i18n.js';
 import { formatSessionDate, localDateKey, formatDateGroupLabel } from '../shared/date-utils.js';
 import { groupSessionsWithProjects, resolveSessionProjectId, needsAddFolderConfirm, WORKSPACE_KIND_BOUND } from '../features/projects/projectGrouping.js';
+import { interpretFolderEnsureOutcomes } from '../features/projects/folderEnsure.js';
 import { ProjectGroupHeader } from '../features/projects/ProjectGroupHeader.jsx';
 import { MoveToProjectDialog } from '../features/projects/MoveToProjectDialog.jsx';
 import { RebindFolderDialog } from '../features/projects/RebindFolderDialog.jsx';
@@ -2070,22 +2071,19 @@ const NAV_PREFETCH = {
           setPickerBusy(true);
           try {
             const outcomes = await bridge.projects.ensureFolderProjects([folder]);
-            const list = Array.isArray(outcomes) ? outcomes : [];
-            materialized = list.some(o => o && (o.status === 'created' || o.status === 'covered'));
+            const interpreted = interpretFolderEnsureOutcomes(outcomes);
+            materialized = interpreted.materialized;
             // The picked folder now owns an anchored project (created or
             // reused): the conversation must be assigned to THAT project, or
             // tier-2 nested grouping adopts it into a broader project whose
             // root covers the folder (e.g. a Desktop-rooted project) — the
             // user picked the subfolder, not its ancestor (review decision:
             // group only on an exact primary-root match, else materialize).
-            const hit = list.find(o => o && (o.status === 'created' || o.status === 'covered'));
-            ensuredProjectId = hit
-              ? (hit.status === 'created' ? (hit.project && hit.project.id) : hit.project_id) || null
-              : null;
+            ensuredProjectId = interpreted.projectId;
             // A failed root is NOT the exclusion list: it gets the failure
             // toast and stops here — the excluded-folder panel is only for
             // the "skipped without an outcome" case (review #484 MINOR).
-            if (!materialized && list.some(o => o && o.status === 'failed')) {
+            if (!materialized && interpreted.failed) {
               setSettingsToast(t.uiProjects.opFailed);
               return;
             }
