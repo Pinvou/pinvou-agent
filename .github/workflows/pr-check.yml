@@ -1363,6 +1363,7 @@ jobs:
             'features::memory::tests::topic_migration_' \
             'connector_introspection_guard_matches_complete_names_only' \
             'features::projects::tests::' \
+            'features::sessions::' \
             'run_with_timeout_reaps_and_stays_bounded' \
             'reap_killed_child_' \
             'features::browser::platform::windows::tests::' \
