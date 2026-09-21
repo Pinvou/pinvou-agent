@@ -74,6 +74,8 @@ struct ProjectsFile {
 const SCHEMA_VERSION: u32 = 1;
 
 /// 删除项目的结果汇报:受影响会话只被解绑(回落隐式分组),永不删除。
+/// `affected_session_ids` 目前无前端消费者(handleDeleteProject 丢弃返回值),
+/// 属协议面预留字段,供后续提示功能使用;在消费方落地前不得据此宣称"前端会提示"。
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 pub struct DeleteProjectReport {
     pub affected_session_ids: Vec<String>,
@@ -460,10 +462,17 @@ fn load_state(path: &Path) -> Result<StoreState> {
     }
     let mut projects = file.projects;
     projects.sort_by(|a, b| (a.position, &a.id).cmp(&(b.position, &b.id)));
+    // The exclusion table's StoreState invariant is "canonical keys,
+    // deduplicated" (writes go through set_never_materialize, which folds and
+    // dedupes); a hand-edited or legacy file can carry duplicates, so re-pin
+    // the invariant at load (review #484 n4).
+    let mut never_materialize_roots = file.never_materialize_roots;
+    let mut seen_keys = std::collections::HashSet::new();
+    never_materialize_roots.retain(|key| seen_keys.insert(key.clone()));
     Ok(StoreState {
         projects,
         assignments: file.assignments,
-        never_materialize_roots: file.never_materialize_roots,
+        never_materialize_roots,
         refuse_writes: false,
     })
 }
@@ -718,7 +727,14 @@ impl ProjectStore {
     /// silently re-adopt those members. `expel_session_ids` enumerates the
     /// command layer's "sessions under removed roots"; entry-less ones are
     /// written as explicit move-outs (None), ones with existing entries are
-    /// untouched (tier-① semantics, matching `expel_unassigned_sessions`).
+    /// untouched (tier-① semantics, matching `delete_project`'s expel path).
+    ///
+    /// Persist FIRST, commit memory only on success (review #484 M3, same
+    /// convention as `rebind_roots`): the previous order mutated the in-memory
+    /// roots before the write, so a failed persist left memory at the new
+    /// roots over a disk still holding the old ones — an in-process retry
+    /// recomputed `removed` against the mutated memory as empty and skipped
+    /// the expulsion permanently.
     pub fn update_project_and_expel(
         &self,
         project_id: &str,
@@ -741,8 +757,9 @@ impl ProjectStore {
         // legal state, and editing the manual project's roots from the manage
         // panel must not be rejected because of it.
         let roots = validate_roots(&roots)?;
+        let mut persisted = state.clone();
         {
-            let project = &mut state.projects[index];
+            let project = &mut persisted.projects[index];
             if let Some(name) = name {
                 project.name = name;
             }
@@ -751,12 +768,13 @@ impl ProjectStore {
             project.updated_at = Utc::now();
         }
         for session_id in expel_session_ids {
-            if !state.assignments.contains_key(session_id) {
-                state.assignments.insert(session_id.clone(), None);
+            if !persisted.assignments.contains_key(session_id) {
+                persisted.assignments.insert(session_id.clone(), None);
             }
         }
-        let updated = state.projects[index].clone();
-        persist_locked(&state, &self.path)?;
+        let updated = persisted.projects[index].clone();
+        persist_locked(&persisted, &self.path)?;
+        *state = persisted;
         Ok(updated)
     }
 
@@ -794,30 +812,18 @@ impl ProjectStore {
         Ok(updated)
     }
 
-    /// 移除根时的成员移出(§4):命令层枚举的「被移除根下的会话」中,无归属
-    /// 条目的写成显式移出(None)——留在未分组,阻止 tier-② 分组或 ensure
-    /// 物化立刻把移除结果翻回来;已有条目的(显式归属本/他项目、已移出)不动,
-    /// tier-① 语义优先。返回新写入的条目数。
-    pub fn expel_unassigned_sessions(&self, session_ids: &[String]) -> Result<usize> {
-        let mut state = self.state.write();
-        let mut changed = 0usize;
-        for session_id in session_ids {
-            if !state.assignments.contains_key(session_id) {
-                state.assignments.insert(session_id.clone(), None);
-                changed += 1;
-            }
-        }
-        if changed > 0 {
-            persist_locked(&state, &self.path)?;
-        }
-        Ok(changed)
-    }
-
     /// 删除项目:会话只被解绑(回落隐式分组),永不删除。全体成员——显式
     /// `Some(pid)` 条目加上命令层枚举的自动归组成员 `expel_session_ids`——一律
     /// 写成显式移出(None):留在未分组,且不会随文件夹的下一次自动物化复活;
     /// 之后在该文件夹新建的会话没有归属条目,照常自动归组。已有条目的 id
     /// (None = 已移出 / Some(其他) = 显式归属他处)不重写,tier-① 语义优先。
+    ///
+    /// Persist FIRST, commit memory only on success (review #484 round-5 M3,
+    /// same convention as `update_project_and_expel`/`rebind_roots`): the
+    /// previous order mutated memory before the write, so a failed persist
+    /// left the project deleted in memory but alive on disk — and an
+    /// in-process retry then failed with "project not found", making the
+    /// deletion unrecoverable without a restart.
     ///
     /// 有意的边界语义(§9.9 跨项目重叠合法化后的交互,由测试锁定):tombstone 是
     /// 全局的——被删项目 A 的 root 若仍被存活项目 B 引用,该 root 下的自动成员
@@ -836,7 +842,6 @@ impl ProjectStore {
         {
             bail!("project not found: {project_id}");
         }
-        state.projects.retain(|project| project.id != project_id);
         let mut affected: Vec<String> = state
             .assignments
             .iter()
@@ -848,10 +853,15 @@ impl ProjectStore {
                 affected.push(session_id.clone());
             }
         }
+        let mut persisted = state.clone();
+        persisted
+            .projects
+            .retain(|project| project.id != project_id);
         for session_id in &affected {
-            state.assignments.insert(session_id.clone(), None);
+            persisted.assignments.insert(session_id.clone(), None);
         }
-        persist_locked(&state, &self.path)?;
+        persist_locked(&persisted, &self.path)?;
+        *state = persisted;
         Ok(DeleteProjectReport {
             affected_session_ids: affected,
         })

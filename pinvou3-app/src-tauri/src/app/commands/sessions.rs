@@ -448,8 +448,15 @@ pub async fn create_session(
         // 前端补一发 update_project 更原子(免二次 RPC、免漏写);记忆写失败
         // 不影响会话创建本身(下次创建会重试),只记日志。
         if let Some(project_id) = project_id {
-            if let Err(error) = projects.set_last_primary_root(&project_id, &workspace) {
-                eprintln!("[sessions] create_session: record last_primary_root failed: {error:#}");
+            // Log hygiene (CodeQL cleartext-logging, same convention as the
+            // rebind lanes): the error chain can embed the user's absolute
+            // path (the store's "primary root must be one of the project
+            // roots" bail), so only the failure site is logged.
+            if projects
+                .set_last_primary_root(&project_id, &workspace)
+                .is_err()
+            {
+                eprintln!("[sessions] create_session: record last_primary_root failed");
             }
         }
     }

@@ -4564,6 +4564,68 @@ fn keychain_roots_round_trip_through_the_plain_binding_store() {
 }
 
 #[test]
+fn bind_persists_keychain_cwd_first_and_deduped() {
+    // Review #484 round-5 M2: the create channel hands over storage-order
+    // roots plus a separate cwd; the persist point must normalize to the
+    // base's `normalize_workspace_roots` shape (cwd first, the rest in
+    // order, duplicates removed) so the stored order matches the effective
+    // order and the chip marks the true primary root.
+    let (store, _g) = isolated_store();
+    let session = store
+        .create_new("model".to_string(), None, std::env::temp_dir())
+        .expect("create session");
+    let id = session.metadata.id.clone();
+    let base = unique_temp_dir("keychain-cwd-first");
+    let a = base.join("a");
+    let b = base.join("b");
+    std::fs::create_dir_all(&a).expect("create a");
+    std::fs::create_dir_all(&b).expect("create b");
+
+    // Storage order [a, b] with cwd = b persists as [b, a].
+    store
+        .bind_session_workspace_with_roots(&id, b.clone(), vec![a.clone(), b.clone()])
+        .expect("bind");
+    assert_eq!(
+        store.session_workspace_roots(&id),
+        vec![b.clone(), a.clone()],
+        "cwd is promoted to the primary slot, remaining roots keep order"
+    );
+
+    // cwd already in slot 0 stays unchanged; duplicate roots collapse.
+    let session2 = store
+        .create_new("model".to_string(), None, std::env::temp_dir())
+        .expect("create session 2");
+    let id2 = session2.metadata.id.clone();
+    store
+        .bind_session_workspace_with_roots(
+            &id2,
+            b.clone(),
+            vec![b.clone(), a.clone(), a.clone(), b.clone()],
+        )
+        .expect("bind 2");
+    assert_eq!(
+        store.session_workspace_roots(&id2),
+        vec![b.clone(), a.clone()],
+        "cwd-first order is stable and duplicates are removed"
+    );
+
+    // Empty stays empty: the documented single-root contract, not [cwd].
+    let session3 = store
+        .create_new("model".to_string(), None, std::env::temp_dir())
+        .expect("create session 3");
+    let id3 = session3.metadata.id.clone();
+    store
+        .bind_session_workspace_with_roots(&id3, b.clone(), Vec::new())
+        .expect("bind 3");
+    assert!(
+        store.session_workspace_roots(&id3).is_empty(),
+        "empty keychain keeps single-root semantics"
+    );
+
+    let _ = std::fs::remove_dir_all(&base);
+}
+
+#[test]
 fn rebind_workspace_bindings_translates_keychain_roots() {
     // Review #484 M3 (plain lane): the keychain snapshot migrates with
     // the binding — roots under the `from` prefix shift onto `to`, roots
@@ -4596,6 +4658,57 @@ fn rebind_workspace_bindings_translates_keychain_roots() {
         snapshot,
         vec![to.clone(), to.join("extra"), elsewhere.clone()],
         "prefix roots shift onto `to`, outside roots stay"
+    );
+
+    let _ = std::fs::remove_dir_all(&from);
+    let _ = std::fs::remove_dir_all(&to);
+    let _ = std::fs::remove_dir_all(&elsewhere);
+}
+
+#[test]
+fn rebind_workspace_bindings_translates_keychain_against_the_prefix_not_the_binding() {
+    // Review #484 B1 regression: the binding sits in a SUBDIRECTORY of `from`,
+    // so its translated path `to/deep` differs from `to`. The keychain snapshot
+    // must still be translated against the rebind prefix (`from` → `to`) —
+    // joining the suffix onto the binding's new path would strand `from` and
+    // `from/x` at `to/deep` / `to/deep/x` and persist the skew.
+    let (store, _g) = isolated_store();
+    let session = store
+        .create_new("model".to_string(), None, std::env::temp_dir())
+        .expect("create session");
+    let id = session.metadata.id.clone();
+    let from = unique_temp_dir("keychain-rebind-deep-from");
+    let deep = from.join("deep");
+    std::fs::create_dir_all(&deep).expect("create from/deep");
+    let to = unique_temp_dir("keychain-rebind-deep-to");
+    std::fs::create_dir_all(&to).expect("create to");
+    let elsewhere = unique_temp_dir("keychain-rebind-deep-elsewhere");
+    std::fs::create_dir_all(&elsewhere).expect("create elsewhere");
+
+    // Keychain payload: the rebound root itself, a SIBLING root under `from`,
+    // and an unrelated root outside the prefix. Bind-time normalization
+    // (review #484 round-5 M2) promotes the session's own cwd to the primary
+    // slot, so the persisted snapshot is [from/deep, from, from/x, elsewhere]
+    // and the rebind translates all four against the `from` prefix.
+    store
+        .bind_session_workspace_with_roots(
+            &id,
+            deep.clone(),
+            vec![from.clone(), from.join("x"), elsewhere.clone()],
+        )
+        .expect("bind");
+
+    let outcome = store.rebind_workspace_bindings(&from, &to).expect("rebind");
+    assert_eq!(
+        outcome.rebound,
+        vec![(id.clone(), to.join("deep"))],
+        "the binding itself moves with its own suffix"
+    );
+    assert_eq!(store.session_workspace_binding(&id), Some(to.join("deep")));
+    assert_eq!(
+        store.session_workspace_roots(&id),
+        vec![to.join("deep"), to.clone(), to.join("x"), elsewhere.clone()],
+        "keychain roots translate against `from` → `to`, not against the binding's new path"
     );
 
     let _ = std::fs::remove_dir_all(&from);

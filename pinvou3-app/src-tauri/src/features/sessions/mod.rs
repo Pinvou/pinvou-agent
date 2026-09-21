@@ -85,6 +85,9 @@ pub(crate) use self::validators::{
 /// Re-export the rebind outcome (public rebind docs link into it; the module
 /// itself stays private).
 pub use self::workspace_bindings::RebindBindingsOutcome;
+/// Re-export the keychain persist-shape normalizer for the codex agent-record
+/// lane (same §6 cwd-first contract as the plain binding sidecar).
+pub(crate) use self::workspace_bindings::cwd_first_workspace_roots;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum SessionKind {

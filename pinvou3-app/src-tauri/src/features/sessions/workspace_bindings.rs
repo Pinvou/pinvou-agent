@@ -121,6 +121,36 @@ fn folded_path_is_same_or_nested(path: &Path, base: &Path) -> bool {
     )
 }
 
+/// Keychain persist shape at creation/bind time (§6; review #484 round-5 M2):
+/// the primary slot is always the session's own cwd. The base's
+/// `normalize_workspace_roots` consumes the set cwd-first, so persisting the
+/// caller's storage order verbatim would diverge the stored order from the
+/// effective one and the workspace chip would mislabel the primary root.
+/// Mirrors `ProjectStore::keychain_for_workspace` and the base normalizer:
+/// cwd promoted to slot 0 verbatim (matching the binding path persisted
+/// beside it), the remaining roots keep their relative order with duplicates
+/// removed under folded identity keys (case/separator spellings of the same
+/// directory collapse). An empty set stays empty — it is the documented
+/// single-root contract, not a one-element keychain.
+pub(crate) fn cwd_first_workspace_roots(cwd: &Path, roots: Vec<PathBuf>) -> Vec<PathBuf> {
+    if roots.is_empty() {
+        return roots;
+    }
+    let mut seen = vec![crate::platform::os::filesystem_path_identity_key(
+        &cwd.to_string_lossy(),
+    )];
+    let mut normalized = vec![cwd.to_path_buf()];
+    for root in roots {
+        let key = crate::platform::os::filesystem_path_identity_key(&root.to_string_lossy());
+        if seen.iter().any(|existing| existing == &key) {
+            continue;
+        }
+        seen.push(key);
+        normalized.push(root);
+    }
+    normalized
+}
+
 /// A future-version format must never be silently parsed as the current version:
 /// refuse to read it and treat it as missing (bind rewrites it in the current
 /// version, which self-heals); all parse errors are logged.
@@ -194,7 +224,9 @@ impl SessionStore {
     }
 
     /// 绑定 + 钥匙串快照(§6):`workspace_roots` 是全量可访问根(空 = 单根
-    /// 语义,底座按 cwd 归一)。落盘纪律与 `bind_session_workspace` 相同。
+    /// 语义,底座按 cwd 归一)。落盘前经 [`cwd_first_workspace_roots`] 归一为
+    /// cwd 居首去重,落盘序即底座生效序。落盘纪律与
+    /// `bind_session_workspace` 相同。
     pub fn bind_session_workspace_with_roots(
         &self,
         id: &str,
@@ -208,8 +240,8 @@ impl SessionStore {
         }
         let sidecar = SessionWorkspaceSidecar {
             version: SESSION_WORKSPACE_SIDECAR_VERSION,
+            workspace_roots: cwd_first_workspace_roots(&path, workspace_roots),
             path,
-            workspace_roots,
             bound_at: Some(now_unix_secs()),
         };
         let file = self.session_workspace_sidecar_path(id);
@@ -599,9 +631,16 @@ impl SessionStore {
                     .unwrap_or_default()
                     .into_iter()
                     .map(|root| {
+                        // The keychain is translated against the rebind prefix
+                        // (`from` → `to`), not against the binding's own new
+                        // path `next` (= `to` + the binding's suffix): a session
+                        // bound at `from/deep` whose keychain holds `from`
+                        // itself or the sibling root `from/x` must land on
+                        // `to` / `to/x`, same convention as the codex lane's
+                        // rebind_workspace_prefix (review #484 B1).
                         match crate::platform::os::path_relative_suffix_under(&root, from) {
-                            Some(suffix) if suffix.as_os_str().is_empty() => next.clone(),
-                            Some(suffix) => next.join(suffix),
+                            Some(suffix) if suffix.as_os_str().is_empty() => to.to_path_buf(),
+                            Some(suffix) => to.join(suffix),
                             None => root,
                         }
                     })

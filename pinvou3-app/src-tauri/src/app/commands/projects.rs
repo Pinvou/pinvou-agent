@@ -232,8 +232,9 @@ pub(crate) fn replace_project_roots_and_expel(
         .map_err(|e| format!("update_project({project_id}): {e:#}"))
 }
 
-/// 删除项目:会话只被解绑(回落自动/隐式分组),永不删除;返回受影响会话
-/// id 供前端提示。
+/// 删除项目:会话只被解绑(回落自动/隐式分组),永不删除。返回受影响会话 id,
+/// 但当前前端直接丢弃返回值(handleDeleteProject 无消费),该字段是协议面预留,
+/// 供后续提示功能使用。
 #[tauri::command]
 pub async fn delete_project(
     project_id: String,
@@ -337,12 +338,14 @@ pub async fn move_session_to_project(
     } else {
         None
     };
-    // Root-accepting writer under the same fence: `add_workspace_root` adds a
-    // directory to a project and the store re-validates overlap, so committing
-    // mid-rebind can both re-add a `from`-prefixed root and bind a session
-    // under `from` after the rebind's candidate snapshot (review #464 round-6
-    // finding 6).
-    let _fence = store.rebind_fence()?;
+    // Root-accepting writer under the SAME fence acquired above (review #464
+    // round-6 finding 6): `add_workspace_root` adds a directory to a project
+    // and the store re-validates overlap, so committing mid-rebind can both
+    // re-add a `from`-prefixed root and bind a session under `from` after the
+    // rebind's candidate snapshot. One acquisition only: the RAII token is not
+    // re-entrant, and a shadowed second `rebind_fence()` here would reject
+    // against the still-held first one, failing the command unconditionally
+    // (review #484 B-followup).
     let outcome = store
         .move_session_to_project(
             &session_id,
@@ -476,8 +479,14 @@ pub async fn align_session_to_project(
                 }
             }
             Err(error) => {
+                // CodeQL cleartext-logging (review #463 round 7, same
+                // convention as the rebind lane below): the error context
+                // embeds the session id (sessions/<id>.json paths), so only
+                // the root cause — which never carries paths or ids — is
+                // logged.
                 eprintln!(
-                    "[projects] align_session_to_project: load session for live push failed: {error:#}"
+                    "[projects] align_session_to_project: load session for live push failed: {}",
+                    error.root_cause()
                 );
             }
         }
@@ -510,20 +519,37 @@ pub(crate) fn align_session_keychain(
     stores: AlignStores<'_>,
     busy: bool,
 ) -> Result<AlignOutcome, String> {
-    let session_roots = stores
-        .sessions
-        .session_roots(session_id)
-        .map_err(|e| format!("align_session_to_project: {e:#}"))?;
-    if !session_roots.bound {
-        return Err(
-            "ALIGN_NO_WORKSPACE: session has no bound workspace (temporary sessions cannot align)"
-                .to_string(),
-        );
-    }
-    let cwd = session_roots.execution;
+    // Bound/cwd resolution (review #484 M1): a project-shaped agent record —
+    // native code OR ACP — carries the authoritative binding, so the agent
+    // lane takes cwd straight from the record. The plain-lane resolver
+    // (lib.rs) only covers native code sessions (`code_project_workspace`)
+    // plus the plain binding sidecar; an ACP project session has mode=Plain
+    // and no sidecar, so routing it through `session_roots` would always read
+    // as unbound and align could never succeed for ACP.
+    let agent_record = stores.agents.get(session_id);
+    let agent_workspace = if agent_record.workspace_kind == CodexWorkspaceKind::Project {
+        agent_record.workspace_path.clone()
+    } else {
+        None
+    };
+    let (agent_bound, cwd) = match agent_workspace {
+        Some(path) => (true, path),
+        None => {
+            let session_roots = stores
+                .sessions
+                .session_roots(session_id)
+                .map_err(|e| format!("align_session_to_project: {e:#}"))?;
+            if !session_roots.bound {
+                return Err(
+                    "ALIGN_NO_WORKSPACE: session has no bound workspace (temporary sessions cannot align)"
+                        .to_string(),
+                );
+            }
+            (false, session_roots.execution)
+        }
+    };
 
     // 当前快照:agent 记录(code/ACP)或纯绑定 sidecar。
-    let agent_bound = stores.agents.get(session_id).workspace_path.is_some();
     let current = if agent_bound {
         stores.agents.session_workspace_roots(session_id)
     } else {
@@ -2156,5 +2182,222 @@ mod tests {
             "断链场景(目录已不在盘上)无需确认"
         );
         std::fs::remove_dir_all(&dir).unwrap();
+    }
+
+    /// The form a binding carries in production: the command layer
+    /// canonicalizes (and strips the Windows verbatim prefix) before
+    /// `bind_session_workspace`. Tests that rely on prefix enumeration must
+    /// bind in the same form, otherwise the folded-key match can miss the
+    /// binding on hosts whose temp root sits behind a symlink (macOS
+    /// /var → /private/var).
+    fn canonical_form(path: &Path) -> PathBuf {
+        crate::platform::os::platform_compat_path(
+            &path.canonicalize().expect("canonicalize").to_string_lossy(),
+        )
+    }
+
+    /// review #484 M1 regression: an ACP project session has mode=Plain and no
+    /// binding sidecar, so the production execution-root resolver (lib.rs:
+    /// `code_project_workspace` + plain sidecar only) reads it as unbound;
+    /// align must take cwd/bound from the agent record.
+    #[test]
+    fn align_applies_for_acp_project_session() {
+        let (sessions, _g) = isolated_home_session_store();
+        let cwd = unique_dir("acp-cwd");
+        let extra = unique_dir("acp-extra");
+        std::fs::create_dir_all(&cwd).unwrap();
+        std::fs::create_dir_all(&extra).unwrap();
+        let agents_dir = unique_dir("acp-agents");
+        std::fs::create_dir_all(&agents_dir).unwrap();
+        let agents = SessionAgentStore::for_test(agents_dir.join("session-agents.json"));
+        let session = sessions
+            .create_new("/model".into(), None, cwd.clone())
+            .expect("create session");
+        let session_id = session.metadata.id;
+        agents
+            .set_acp_workspace(
+                &session_id,
+                crate::features::codex_acp::AgentBackend::CodexAcp,
+                CodexWorkspaceKind::Project,
+                Some(cwd.clone()),
+                vec![cwd.clone()],
+            )
+            .expect("bind acp session");
+        // The M1 premise: through session_roots this session reads as unbound
+        // (no resolver injected here; even the production resolver misses ACP),
+        // so a kernel gated on `session_roots.bound` fails with
+        // ALIGN_NO_WORKSPACE before ever reaching the project lookup.
+        assert!(
+            !sessions.session_roots(&session_id).expect("roots").bound,
+            "ACP project sessions read as unbound through session_roots"
+        );
+        let store = project_store_in(&unique_dir("acp-projects"));
+        store
+            .create_project("p".to_string(), vec![cwd.clone(), extra.clone()])
+            .expect("create project");
+
+        let outcome = align_session_keychain(
+            &session_id,
+            AlignStores {
+                projects: &store,
+                sessions: &sessions,
+                agents: &agents,
+            },
+            false,
+        )
+        .expect("align");
+        assert!(outcome.applied, "agent lane resolves bound/cwd for ACP");
+        assert_eq!(outcome.roots, vec![cwd.clone(), extra.clone()]);
+        assert_eq!(
+            agents.session_workspace_roots(&session_id),
+            outcome.roots,
+            "the agent record carries the aligned snapshot (ACP has no sidecar)"
+        );
+
+        // Idempotent: aligning again is an honest no_change, not a rewrite.
+        let again = align_session_keychain(
+            &session_id,
+            AlignStores {
+                projects: &store,
+                sessions: &sessions,
+                agents: &agents,
+            },
+            false,
+        )
+        .expect("align again");
+        assert!(!again.applied);
+        assert_eq!(again.reason.as_deref(), Some("no_change"));
+        let _ = std::fs::remove_dir_all(&cwd);
+        let _ = std::fs::remove_dir_all(&extra);
+        let _ = std::fs::remove_dir_all(&agents_dir);
+    }
+
+    /// no_project outcome: an unapplied outcome reports the CURRENT snapshot
+    /// and writes nothing.
+    #[test]
+    fn align_reports_no_project_and_keeps_the_current_snapshot() {
+        let (sessions, _g) = isolated_home_session_store();
+        let workspace = unique_dir("unassigned-ws");
+        std::fs::create_dir_all(&workspace).unwrap();
+        let session_id = create_plain_bound_session(&sessions, &workspace, vec![workspace.clone()]);
+        let store = project_store_in(&unique_dir("unassigned-store"));
+        let agents =
+            SessionAgentStore::for_test(unique_dir("unassigned-agents").join("agents.json"));
+
+        let outcome = align_session_keychain(
+            &session_id,
+            AlignStores {
+                projects: &store,
+                sessions: &sessions,
+                agents: &agents,
+            },
+            false,
+        )
+        .expect("align");
+        assert!(!outcome.applied);
+        assert_eq!(outcome.reason.as_deref(), Some("no_project"));
+        assert_eq!(
+            outcome.roots,
+            vec![workspace.clone()],
+            "an unapplied outcome reports the CURRENT snapshot, not a guess"
+        );
+        assert_eq!(
+            sessions.session_workspace_roots(&session_id),
+            vec![workspace.clone()],
+            "nothing was written"
+        );
+        let _ = std::fs::remove_dir_all(&workspace);
+    }
+
+    /// A session with no bound workspace (temporary chat) is rejected with
+    /// the typed marker before any store is touched.
+    #[test]
+    fn align_rejects_session_without_bound_workspace() {
+        let (sessions, _g) = isolated_home_session_store();
+        let session = sessions
+            .create_new("/model".into(), None, std::env::temp_dir())
+            .expect("create session");
+        let store = project_store_in(&unique_dir("nows-store"));
+        let agents = SessionAgentStore::for_test(unique_dir("nows-agents").join("agents.json"));
+        let error = align_session_keychain(
+            &session.metadata.id,
+            AlignStores {
+                projects: &store,
+                sessions: &sessions,
+                agents: &agents,
+            },
+            false,
+        )
+        .expect_err("temporary sessions cannot align");
+        assert!(error.starts_with("ALIGN_NO_WORKSPACE"), "{error}");
+    }
+
+    /// review #484 M3 (command level): persist-first in the store keeps memory
+    /// identical to disk after a failed attempt, so the retry recomputes the
+    /// same removed set and the expulsion is not skipped forever.
+    #[test]
+    fn replace_project_roots_retry_after_persist_failure_still_expels() {
+        let (sessions, _g) = isolated_home_session_store();
+        let root = unique_dir("retry-root");
+        let replacement = unique_dir("retry-replacement");
+        std::fs::create_dir_all(&root).unwrap();
+        std::fs::create_dir_all(&replacement).unwrap();
+        let projects_dir = unique_dir("retry-projects");
+        std::fs::create_dir_all(&projects_dir).unwrap();
+        let store = project_store_in(&projects_dir);
+        let project = store
+            .create_project("p".to_string(), vec![root.clone()])
+            .expect("create project");
+        let agents = SessionAgentStore::for_test(unique_dir("retry-agents").join("agents.json"));
+        let session = sessions
+            .create_new("/model".into(), None, root.clone())
+            .expect("create session");
+        let session_id = session.metadata.id;
+        // Bind in the canonical form the removed-root enumeration matches on.
+        sessions
+            .bind_session_workspace(&session_id, canonical_form(&root))
+            .expect("bind");
+
+        // Occupy the store's final path with a NON-EMPTY directory: the
+        // atomic rename onto it fails on every platform (same idiom as the
+        // store-level rollback tests).
+        let store_path = projects_dir.join("projects.json");
+        std::fs::remove_file(&store_path).expect("remove store file");
+        std::fs::create_dir_all(&store_path).expect("recreate as dir");
+        std::fs::write(store_path.join("obstruction"), b"x").expect("make dir non-empty");
+
+        replace_project_roots_and_expel(
+            &store,
+            &sessions,
+            &agents,
+            &project.id,
+            None,
+            vec![replacement.clone()],
+        )
+        .expect_err("persist failure surfaces as an error");
+        assert_eq!(
+            store.get(&project.id).expect("project").roots.len(),
+            1,
+            "memory rolled back: the old root is still there"
+        );
+        assert_eq!(store.assignment_of(&session_id), None);
+
+        std::fs::remove_dir_all(&store_path).expect("clear obstruction");
+        replace_project_roots_and_expel(
+            &store,
+            &sessions,
+            &agents,
+            &project.id,
+            None,
+            vec![replacement],
+        )
+        .expect("retry persists");
+        assert_eq!(
+            store.assignment_of(&session_id),
+            Some(None),
+            "the retry recomputes removed against the pre-failure roots and expels"
+        );
+        let _ = std::fs::remove_dir_all(&root);
+        let _ = std::fs::remove_dir_all(&projects_dir);
     }
 }

@@ -513,6 +513,17 @@ impl SessionAgentStore {
         if kind == CodexWorkspaceKind::Temporary && workspace_path.is_some() {
             anyhow::bail!("临时会话不能保存项目工作目录");
         }
+        // 钥匙串快照(§6):项目会话存创建时锁定的全量根,落盘前归一为 cwd 居首
+        // 去重(review #484 round-5 M2——底座 normalize_workspace_roots 消费时
+        // cwd 居首,落盘序与生效序必须一致,否则 chip 错标主根);临时会话恒为
+        // 空(§9.1:无绑定工作区),与 bind_code_native_session 的 Temporary
+        // 处理一致(review #484 m3)。
+        let workspace_roots = match (kind, workspace_path.as_deref()) {
+            (CodexWorkspaceKind::Project, Some(cwd)) => {
+                crate::features::sessions::cwd_first_workspace_roots(cwd, workspace_roots)
+            }
+            _ => Vec::new(),
+        };
         {
             let mut records = self.records.write();
             let record = records.entry(session_id.to_string()).or_default();
@@ -526,14 +537,9 @@ impl SessionAgentStore {
             record.backend = backend;
             record.workspace_kind = kind;
             record.workspace_path = workspace_path;
-            // 钥匙串快照(§6):创建时锁定的全量根;重复设置(同一会话再次
-            // 调用)保持最后一次的值,与 workspace_path 同一写入点。临时会话
-            // 恒为空(§9.1:无绑定工作区),与原生通道一致。
-            record.workspace_roots = if kind == CodexWorkspaceKind::Temporary {
-                Vec::new()
-            } else {
-                workspace_roots
-            };
+            // 重复设置(同一会话再次调用)保持最后一次的值,与 workspace_path
+            // 同一写入点。
+            record.workspace_roots = workspace_roots;
             // ACP 会话不是代码模式会话：绑定 ACP 时重置为 plain 模式，
             // 避免 is_code_session() 误判、且 restore 时不会拒绝 ACP 覆盖。
             record.mode = SessionMode::Plain;
@@ -564,6 +570,14 @@ impl SessionAgentStore {
         if kind == CodexWorkspaceKind::Temporary && workspace_path.is_some() {
             anyhow::bail!("临时会话不能保存项目工作目录");
         }
+        // 钥匙串快照(§6):项目会话存全量根,落盘前与 set_acp_workspace 同一
+        // 归一(cwd 居首去重,review #484 round-5 M2);临时会话恒为空(单根)。
+        let workspace_roots = match (kind, workspace_path.as_deref()) {
+            (CodexWorkspaceKind::Project, Some(cwd)) => {
+                crate::features::sessions::cwd_first_workspace_roots(cwd, workspace_roots)
+            }
+            _ => Vec::new(),
+        };
         {
             let mut records = self.records.write();
             let record = records.entry(session_id.to_string()).or_default();
@@ -579,12 +593,7 @@ impl SessionAgentStore {
             record.backend = AgentBackend::Deepseek;
             record.workspace_kind = kind;
             record.workspace_path = workspace_path.clone();
-            // 钥匙串快照(§6):项目会话存全量根;临时会话恒为空(单根)。
-            record.workspace_roots = if kind == CodexWorkspaceKind::Project {
-                workspace_roots
-            } else {
-                Vec::new()
-            };
+            record.workspace_roots = workspace_roots;
             record.mode = SessionMode::Code;
         }
         self.persist()?;
@@ -604,15 +613,22 @@ impl SessionAgentStore {
     /// **有意**不遵循「权限只增」约定——对齐是用户的显式动作,快照被所属项目
     /// 此刻的 roots 整体替换,附加根可能增也可能减(被移除的根从快照消失,底座
     /// 侧的写豁免随之失效);一致性由调用方(命令层)用活动回合围栏与
-    /// SyncSession 推送保证。原生代码会话同时重写权威 sidecar(保留 bound_at);
-    /// ACP 会话没有 sidecar,只写索引。记录不存在或没有绑定工作区(临时会话)
-    /// 时返回 Ok(false),调用方走纯绑定通道处理。
+    /// SyncSession 推送保证。原生代码会话同时重写权威 sidecar(sidecar 的
+    /// bound_at 随之刷新为当前时间——它是元数据,不参与恢复语义,与
+    /// write_code_session_sidecar 的恒重写行为一致);ACP 会话没有 sidecar,
+    /// 只写索引。记录不存在或没有绑定工作区(临时会话)时返回 Ok(false),
+    /// 调用方走纯绑定通道处理。
     pub fn set_session_workspace_roots(
         &self,
         session_id: &str,
         workspace_roots: Vec<PathBuf>,
     ) -> Result<bool> {
-        {
+        // Snapshot the current keychain so a persist failure can roll memory
+        // back to the on-disk state — the same convention as
+        // rebind_workspace_prefix: without the rollback the process believes
+        // the align happened while disk says otherwise, and the next read
+        // would report roots that were never persisted (review #484 M2).
+        let original_roots = {
             let mut records = self.records.write();
             let Some(record) = records.get_mut(session_id) else {
                 return Ok(false);
@@ -622,9 +638,16 @@ impl SessionAgentStore {
             {
                 return Ok(false);
             }
+            let original_roots = record.workspace_roots.clone();
             record.workspace_roots = workspace_roots.clone();
+            original_roots
+        };
+        if let Err(error) = self.persist() {
+            if let Some(record) = self.records.write().get_mut(session_id) {
+                record.workspace_roots = original_roots;
+            }
+            return Err(error);
         }
-        self.persist()?;
         let record = self.get(session_id);
         if record.mode.is_code() {
             write_code_session_sidecar(
@@ -2293,6 +2316,81 @@ mod tests {
     }
 
     #[test]
+    fn set_session_workspace_roots_rolls_back_memory_when_persist_fails() {
+        // review #484 M2: the keychain replacement (align) mutates the
+        // in-memory record before persist(); on failure the memory must be
+        // rolled back to the on-disk snapshot, otherwise the process reports
+        // roots that were never persisted and a retry diff against memory
+        // would misjudge the state. Mirrors
+        // rebind_prefix_rolls_back_memory_when_index_persist_fails.
+        let root = std::env::temp_dir().join(format!(
+            "pinvou3-codex-align-rollback-test-{}",
+            std::process::id()
+        ));
+        let _ = fs::remove_dir_all(&root);
+        fs::create_dir_all(&root).unwrap();
+        let store = SessionAgentStore {
+            path: root.join("session-agents.json"),
+            records: Arc::new(RwLock::new(HashMap::new())),
+        };
+        let workspace = root.join("workspace");
+        let extra = root.join("extra");
+        fs::create_dir_all(&workspace).unwrap();
+        fs::create_dir_all(&extra).unwrap();
+        store
+            .bind_code_native_session(
+                "s1",
+                CodexWorkspaceKind::Project,
+                Some(workspace.clone()),
+                vec![workspace.clone()],
+            )
+            .unwrap();
+
+        // Occupy the index's temp-file path with a directory: persist() fails
+        // deterministically after the in-memory mutation.
+        fs::create_dir_all(store.path.with_extension("json.tmp")).unwrap();
+        let error = store
+            .set_session_workspace_roots("s1", vec![workspace.clone(), extra.clone()])
+            .expect_err("persist failure surfaces as an error");
+        assert!(!error.to_string().is_empty());
+        assert_eq!(
+            store.session_workspace_roots("s1"),
+            vec![workspace.clone()],
+            "memory rolled back to the on-disk keychain"
+        );
+
+        // After clearing the obstacle a retry persists the same replacement.
+        fs::remove_dir_all(store.path.with_extension("json.tmp")).unwrap();
+        assert!(
+            store
+                .set_session_workspace_roots("s1", vec![workspace.clone(), extra.clone()])
+                .expect("retry persists")
+        );
+        assert_eq!(
+            store.session_workspace_roots("s1"),
+            vec![workspace.clone(), extra.clone()]
+        );
+
+        // Ok(false) lanes: unknown session and a temporary (unbound) record
+        // write nothing and never touch the disk.
+        assert!(
+            !store
+                .set_session_workspace_roots("ghost", vec![workspace.clone()])
+                .expect("unknown session")
+        );
+        store
+            .bind_code_native_session("temp", CodexWorkspaceKind::Temporary, None, Vec::new())
+            .unwrap();
+        assert!(
+            !store
+                .set_session_workspace_roots("temp", vec![workspace])
+                .expect("temporary session has no keychain")
+        );
+
+        fs::remove_dir_all(&root).unwrap();
+    }
+
+    #[test]
     fn recovered_acp_record_is_persisted_atomically() {
         let root = std::env::temp_dir().join(format!(
             "pinvou3-codex-recovery-store-test-{}",
@@ -2575,6 +2673,121 @@ mod tests {
         );
         assert!(!store.is_code_session("session-1"));
         assert!(!store.is_code_session("session-2"));
+        fs::remove_dir_all(&root).unwrap();
+    }
+
+    #[test]
+    fn set_acp_workspace_forces_empty_keychain_for_temporary_sessions() {
+        // review #484 m3: a Temporary record must carry an EMPTY keychain
+        // (single-root semantics), matching bind_code_native_session — before
+        // the alignment, a Temporary ACP session bound with a non-empty
+        // workspace_roots payload stored it verbatim, contradicting the
+        // session_workspace_roots contract ("临时会话 = 空").
+        let root = std::env::temp_dir().join(format!(
+            "pinvou3-acp-temporary-keychain-test-{}",
+            std::process::id()
+        ));
+        let _ = fs::remove_dir_all(&root);
+        fs::create_dir_all(&root).unwrap();
+        let store = SessionAgentStore {
+            path: root.join("session-agents.json"),
+            records: Arc::new(RwLock::new(HashMap::new())),
+        };
+        store
+            .set_acp_workspace(
+                "session-1",
+                AgentBackend::CodexAcp,
+                CodexWorkspaceKind::Temporary,
+                None,
+                vec![root.clone()],
+            )
+            .unwrap();
+        assert!(
+            store.session_workspace_roots("session-1").is_empty(),
+            "a temporary ACP session never stores a keychain snapshot"
+        );
+
+        // The Project arm is unchanged: the full creation-time snapshot rides.
+        let workspace = root.join("workspace");
+        fs::create_dir_all(&workspace).unwrap();
+        store
+            .set_acp_workspace(
+                "session-2",
+                AgentBackend::CodexAcp,
+                CodexWorkspaceKind::Project,
+                Some(workspace.clone()),
+                vec![workspace.clone(), root.clone()],
+            )
+            .unwrap();
+        assert_eq!(
+            store.session_workspace_roots("session-2"),
+            vec![workspace, root.clone()]
+        );
+        fs::remove_dir_all(&root).unwrap();
+    }
+
+    #[test]
+    fn project_keychain_persists_cwd_first_and_deduped() {
+        // review #484 round-5 M2: the create channel sends storage-order
+        // roots plus a separate cwd; both agent-lane bind entry points must
+        // persist the base-normalized shape (cwd first, the rest in order,
+        // duplicates removed) so the stored order matches the effective one.
+        let root = std::env::temp_dir().join(format!(
+            "pinvou3-acp-cwd-first-keychain-test-{}",
+            std::process::id()
+        ));
+        let _ = fs::remove_dir_all(&root);
+        let workspace = root.join("workspace");
+        let extra = root.join("extra");
+        fs::create_dir_all(&workspace).unwrap();
+        fs::create_dir_all(&extra).unwrap();
+        let store = SessionAgentStore {
+            path: root.join("session-agents.json"),
+            records: Arc::new(RwLock::new(HashMap::new())),
+        };
+
+        // ACP lane: storage order [extra, workspace] with cwd = workspace.
+        store
+            .set_acp_workspace(
+                "session-acp",
+                AgentBackend::CodexAcp,
+                CodexWorkspaceKind::Project,
+                Some(workspace.clone()),
+                vec![extra.clone(), workspace.clone(), extra.clone()],
+            )
+            .unwrap();
+        assert_eq!(
+            store.session_workspace_roots("session-acp"),
+            vec![workspace.clone(), extra.clone()],
+            "cwd is promoted to the primary slot and duplicates collapse"
+        );
+
+        // Native code lane: cwd already in slot 0 stays unchanged.
+        store
+            .bind_code_native_session(
+                "session-native",
+                CodexWorkspaceKind::Project,
+                Some(workspace.clone()),
+                vec![workspace.clone(), extra.clone()],
+            )
+            .unwrap();
+        assert_eq!(
+            store.session_workspace_roots("session-native"),
+            vec![workspace.clone(), extra.clone()],
+            "an already cwd-first keychain is persisted unchanged"
+        );
+
+        // Empty stays empty (single-root contract), for both lanes.
+        store
+            .set_acp_workspace(
+                "session-empty",
+                AgentBackend::CodexAcp,
+                CodexWorkspaceKind::Project,
+                Some(workspace.clone()),
+                Vec::new(),
+            )
+            .unwrap();
+        assert!(store.session_workspace_roots("session-empty").is_empty());
         fs::remove_dir_all(&root).unwrap();
     }
 

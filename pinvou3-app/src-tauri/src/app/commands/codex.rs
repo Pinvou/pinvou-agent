@@ -894,10 +894,13 @@ fn record_project_primary_root(
     cwd: Option<&Path>,
 ) {
     if let (Some(project_id), Some(cwd)) = (project_id, cwd) {
-        if let Err(error) = projects.set_last_primary_root(project_id, cwd) {
-            eprintln!(
-                "[codex] create_codex_acp_session: record last_primary_root failed: {error:#}"
-            );
+        // Log hygiene (CodeQL cleartext-logging, same convention as the
+        // rebind lanes): the error chain can embed the user's absolute path
+        // (the store's "primary root must be one of the project roots"
+        // bail), so only the failure site is logged; the write retries on
+        // the next create.
+        if projects.set_last_primary_root(project_id, cwd).is_err() {
+            eprintln!("[codex] create_codex_acp_session: record last_primary_root failed");
         }
     }
 }

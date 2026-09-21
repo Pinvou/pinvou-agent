@@ -124,9 +124,17 @@ pub(crate) fn validate_workspace_roots(raw: Vec<String>) -> Result<Vec<PathBuf>,
                     &canonical.to_string_lossy(),
                 ));
             }
-            _ => {
+            Ok(_) => {
+                // Log hygiene (CodeQL cleartext-logging, same convention as
+                // the rebind lanes): the user-supplied absolute path stays out
+                // of the log; the soft warning records only the failure class.
+                eprintln!("[sessions] workspace root is not a directory (kept as-is)");
+                roots.push(path);
+            }
+            Err(error) => {
                 eprintln!(
-                    "[sessions] workspace root not an existing directory (kept as-is): {entry}"
+                    "[sessions] workspace root canonicalize failed (kept as-is): {:?}",
+                    error.kind()
                 );
                 roots.push(path);
             }

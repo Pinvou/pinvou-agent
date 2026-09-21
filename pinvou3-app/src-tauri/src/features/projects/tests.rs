@@ -1229,3 +1229,220 @@ fn resolve_session_project_multi_hit_follows_position_then_id() {
         "explicit assignment beats the position rule"
     );
 }
+
+#[test]
+fn update_project_and_expel_writes_tombstones_and_keeps_existing_entries() {
+    // §4 root-removal semantics: expel ids WITHOUT an assignment entry become
+    // explicit move-outs (None) in the same persist as the roots replacement;
+    // ids with existing entries (explicit Some / already moved out) stay
+    // untouched — tier-① wins over the expulsion enumeration.
+    let temp = tempfile::tempdir().expect("tempdir");
+    let store = store_in(&temp);
+    let project = create(&store, "项目", &[abs("u-old"), abs("u-keep")]);
+    let other = create(&store, "他处", &[abs("u-elsewhere")]);
+    store
+        .move_session_to_project("s-keep", Some(&other.id), None)
+        .expect("assign elsewhere");
+
+    let updated = store
+        .update_project_and_expel(
+            &project.id,
+            Some("改名".to_string()),
+            vec![abs("u-keep")],
+            &[
+                "s-auto".to_string(),
+                "s-keep".to_string(),
+                "s-auto".to_string(), // duplicates in the enumeration are harmless
+            ],
+        )
+        .expect("update and expel");
+    assert_eq!(updated.name, "改名");
+    assert_eq!(updated.roots, vec![display(&abs("u-keep"))]);
+    assert_eq!(
+        store.assignment_of("s-auto"),
+        Some(None),
+        "entry-less expel id becomes a tombstone"
+    );
+    assert_eq!(
+        store.assignment_of("s-keep"),
+        Some(Some(other.id.clone())),
+        "an existing explicit assignment is not rewritten"
+    );
+}
+
+/// review #484 M3: update_project_and_expel persists BEFORE committing the
+/// in-memory state. A persist failure must leave memory identical to disk so
+/// an in-process retry recomputes the same removed set and expels — the
+/// previous commit-first order let the retry see the NEW roots in memory,
+/// compute removed=[], and skip the expulsion forever. Same obstruction idiom
+/// as rebind_roots_rolls_back_memory_when_persist_fails.
+#[test]
+fn update_project_and_expel_rolls_back_memory_when_persist_fails() {
+    let temp = tempfile::tempdir().expect("tempdir");
+    let store = store_in(&temp);
+    let project = create(&store, "搬家", &[abs("e-old")]);
+    let before = store.get(&project.id).unwrap();
+
+    let store_path = temp.path().join("projects.json");
+    std::fs::remove_file(&store_path).expect("remove store file");
+    std::fs::create_dir_all(&store_path).expect("recreate as dir");
+    std::fs::write(store_path.join("obstruction"), b"x").expect("make dir non-empty");
+
+    let error = store
+        .update_project_and_expel(
+            &project.id,
+            Some("新名".to_string()),
+            vec![abs("e-new")],
+            &["s1".to_string()],
+        )
+        .expect_err("persist failure surfaces as an error");
+    assert!(!error.to_string().is_empty());
+    assert_eq!(
+        store.get(&project.id).unwrap(),
+        before,
+        "roots AND name roll back to the on-disk state"
+    );
+    assert_eq!(
+        store.assignment_of("s1"),
+        None,
+        "the expel tombstone is not committed either"
+    );
+
+    std::fs::remove_dir_all(&store_path).expect("clear obstruction");
+    let updated = store
+        .update_project_and_expel(
+            &project.id,
+            Some("新名".to_string()),
+            vec![abs("e-new")],
+            &["s1".to_string()],
+        )
+        .expect("retry persists");
+    assert_eq!(updated.roots, vec![display(&abs("e-new"))]);
+    assert_eq!(store.assignment_of("s1"), Some(None), "the retry expels");
+}
+
+#[test]
+fn delete_project_expel_ids_become_tombstones_and_existing_entries_survive() {
+    // The expel_session_ids path of delete_project (previously untested — all
+    // callers in the suite passed &[]): command-enumerated auto members under
+    // the deleted project's roots are written as explicit move-outs so the
+    // folder's next materialization cannot revive them; ids that already have
+    // an entry (explicit elsewhere / already moved out) are skipped.
+    let temp = tempfile::tempdir().expect("tempdir");
+    let store = store_in(&temp);
+    let project = create(&store, "待删", &[abs("d-x")]);
+    let other = create(&store, "幸存", &[abs("d-y")]);
+    store
+        .move_session_to_project("s-member", Some(&project.id), None)
+        .expect("assign member");
+    store
+        .move_session_to_project("s-elsewhere", Some(&other.id), None)
+        .expect("assign elsewhere");
+    store
+        .move_session_to_project("s-out", None, None)
+        .expect("explicit move out");
+
+    let report = store
+        .delete_project(
+            &project.id,
+            &[
+                "s-auto".to_string(),      // entry-less auto member: tombstone
+                "s-elsewhere".to_string(), // explicit elsewhere: skipped
+                "s-out".to_string(),       // already moved out: skipped
+                "s-member".to_string(),    // already an explicit member: no dup
+            ],
+        )
+        .expect("delete");
+    let mut affected = report.affected_session_ids;
+    affected.sort();
+    assert_eq!(
+        affected,
+        vec!["s-auto".to_string(), "s-member".to_string()],
+        "explicit members plus entry-less expel ids, no duplicates"
+    );
+    assert_eq!(store.assignment_of("s-auto"), Some(None));
+    assert_eq!(store.assignment_of("s-member"), Some(None));
+    assert_eq!(
+        store.assignment_of("s-elsewhere"),
+        Some(Some(other.id.clone())),
+        "explicit assignment to a surviving project is untouched"
+    );
+    assert_eq!(
+        store.assignment_of("s-out"),
+        Some(None),
+        "pre-existing move-out stays (and was not double-reported)"
+    );
+}
+
+/// review #484 round-5 M3: delete_project persists BEFORE committing the
+/// in-memory state. A persist failure must leave memory identical to disk —
+/// the project still listed, no tombstones written — so an in-process retry
+/// succeeds; the previous commit-first order dropped the project from memory
+/// and the retry failed with "project not found". Same obstruction idiom as
+/// update_project_and_expel_rolls_back_memory_when_persist_fails.
+#[test]
+fn delete_project_rolls_back_memory_when_persist_fails() {
+    let temp = tempfile::tempdir().expect("tempdir");
+    let store = store_in(&temp);
+    let project = create(&store, "待删", &[abs("pd-x")]);
+    store
+        .move_session_to_project("s-member", Some(&project.id), None)
+        .expect("assign member");
+
+    let store_path = temp.path().join("projects.json");
+    std::fs::remove_file(&store_path).expect("remove store file");
+    std::fs::create_dir_all(&store_path).expect("recreate as dir");
+    std::fs::write(store_path.join("obstruction"), b"x").expect("make dir non-empty");
+
+    store
+        .delete_project(&project.id, &["s-auto".to_string()])
+        .expect_err("persist failure surfaces as an error");
+    assert!(
+        store.get(&project.id).is_some(),
+        "memory rolls back: the project is still there"
+    );
+    assert_eq!(
+        store.assignment_of("s-member"),
+        Some(Some(project.id.clone())),
+        "explicit membership is untouched"
+    );
+    assert_eq!(
+        store.assignment_of("s-auto"),
+        None,
+        "no expel tombstone is committed"
+    );
+
+    std::fs::remove_dir_all(&store_path).expect("clear obstruction");
+    let report = store
+        .delete_project(&project.id, &["s-auto".to_string()])
+        .expect("retry deletes");
+    assert!(store.get(&project.id).is_none());
+    assert!(
+        report
+            .affected_session_ids
+            .contains(&"s-member".to_string())
+    );
+    assert!(report.affected_session_ids.contains(&"s-auto".to_string()));
+    assert_eq!(store.assignment_of("s-member"), Some(None));
+    assert_eq!(store.assignment_of("s-auto"), Some(None));
+}
+
+#[test]
+fn load_dedupes_never_materialize_roots() {
+    // review #484 n4: StoreState documents the exclusion table as deduplicated
+    // (writes dedupe via set_never_materialize), but a hand-edited file could
+    // carry duplicates; load re-pins the invariant.
+    let temp = tempfile::tempdir().expect("tempdir");
+    let path = temp.path().join("projects.json");
+    std::fs::write(
+        &path,
+        r#"{"schema_version":1,"projects":[],"assignments":{},"never_materialize_roots":["/a","/b","/a","/c","/b"]}"#,
+    )
+    .expect("write file with duplicate keys");
+    let store = ProjectStore::from_paths(path);
+    assert_eq!(
+        store.never_materialize_roots(),
+        vec!["/a".to_string(), "/b".to_string(), "/c".to_string()],
+        "duplicates collapse on load, first occurrence wins, order kept"
+    );
+}
