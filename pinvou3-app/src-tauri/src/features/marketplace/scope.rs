@@ -273,6 +273,8 @@ fn save_disabled_bundles_file(file: &DisabledBundlesFile) -> Result<(), String> 
 /// DenyAll（如 code）返回全部已安装包 id ∪ 全部内置 CLI 包 id ——「默认全关，外部
 /// 能力显式开启」；AllowAll（如 plain）返回落盘列表（缺省空 = 全开）。CLI 包未连接时
 /// 纳入无害（配套技能不在盘上，排除为空操作），且「后才连接」也自动默认关。
+/// 技能枚举失败（权限/瞬时 IO，#531）时按降级处理：全部预置属主包并入默认禁用集
+/// （过度拒绝偏置），只影响未初始化 scope 的现算默认值，已初始化 scope 不受影响。
 pub fn load_disabled_bundles_for(scope: ConnectorScope) -> Vec<String> {
     let file = load_disabled_bundles_file();
     resolve_scope_disabled_ids(&file, scope)
@@ -293,7 +295,23 @@ fn resolve_scope_disabled_ids(file: &DisabledBundlesFile, scope: ConnectorScope)
             // 现算分支：已按当前认领推导包 id，无需再归一。
             let mut ids: Vec<String> = MarketplaceManager::new().installed_ids();
             ids.extend(builtin_cli_bundle_ids().map(str::to_string));
-            for skill_id in SkillMarketplaceManager::new().installed_skill_ids() {
+            let (skill_ids, skill_scan_degraded) =
+                SkillMarketplaceManager::new().installed_skill_ids_strict();
+            if skill_scan_degraded {
+                // 枚举降级（目录权限/瞬时 IO 可能把已装技能误判为未装，#531）：
+                // skill_ids 已不可信，把全部预置技能的属主包按「可能已装」并入
+                // 默认禁用集 —— 未初始化 DenyAll scope 宁可让用户显式开启，也
+                // 不给 consent gate 一个被枚举失败静默缩窄的默认值（过度拒绝
+                // 偏置；属主映射与正常路径同一 `skill_owner_package` 口径）。
+                eprintln!("[scope] DenyAll 默认禁用集计算降级（技能枚举失败），按过度拒绝兜底");
+                for preset_id in SkillMarketplaceManager::preset_skill_ids() {
+                    let pkg = skill_owner_package(&preset_id);
+                    if !ids.iter().any(|id| id == &pkg) {
+                        ids.push(pkg);
+                    }
+                }
+            }
+            for skill_id in skill_ids {
                 let pkg = skill_owner_package(&skill_id);
                 if !ids.iter().any(|id| id == &pkg) {
                     ids.push(pkg);
@@ -458,7 +476,9 @@ pub fn set_project_skills_enabled(enabled: bool) {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::platform::test_support::with_temp_home;
+    use crate::platform::test_support::{
+        make_dir_unreadable_for_test, restore_dir_permissions_for_test, with_temp_home,
+    };
 
     #[test]
     fn bundles_roundtrip_per_scope() {
@@ -648,5 +668,94 @@ mod tests {
 
     fn load_disabled_bundles_for_plain_for_lock_test() -> Vec<String> {
         load_disabled_bundles_for(ConnectorScope::Plain)
+    }
+
+    /// 物理安装预置技能 government-writing（属主认领为 gongwen：gongwen 登记
+    /// 安装态后 `skill_owner_package` 随包认领）。
+    fn install_preset_skill_under_claimed_owner() -> PathBuf {
+        let skill_dir = paths::bundles_root()
+            .join("gongwen")
+            .join("skills")
+            .join("government-writing");
+        std::fs::create_dir_all(&skill_dir).unwrap();
+        std::fs::write(skill_dir.join("SKILL.md"), "# government-writing").unwrap();
+        crate::features::marketplace::store::BundleStore::new()
+            .upsert(
+                crate::features::marketplace::store::BundleRecord::installed_now(
+                    "gongwen".to_string(),
+                    crate::features::marketplace::store::BundleSource::Preset,
+                ),
+            )
+            .unwrap();
+        skill_dir
+    }
+
+    /// 未初始化 DenyAll（code）默认禁用集 = 已装连接器包 ∪ 内置 CLI 包 ∪ 已装
+    /// 技能属主包，干净枚举下精确等于期望列表（降级兜底不得混入，等价断言
+    /// 「正常路径不误报降级」）。
+    #[test]
+    fn denyall_default_clean_scan_exact_list() {
+        with_temp_home("pinvou3-scope-denyall", || {
+            // 空装态：仅内置 CLI 包 id（清单顺序）。
+            let builtin: Vec<String> = builtin_cli_bundle_ids().map(str::to_string).collect();
+            assert_eq!(load_disabled_bundles_for(ConnectorScope::Code), builtin);
+
+            // 物理安装一个预置技能 → 其属主包并入默认禁用集。
+            install_preset_skill_under_claimed_owner();
+            let mut expected = builtin;
+            expected.push("gongwen".to_string());
+            assert_eq!(load_disabled_bundles_for(ConnectorScope::Code), expected);
+        });
+    }
+
+    /// #531：技能目录不可扫（权限）时枚举按降级处理，DenyAll 默认禁用集向过度
+    /// 拒绝偏置 —— 已装技能的属主包不得因枚举失败漏出默认禁用集，未装预置的
+    /// 属主包也兜底并入（用户可显式开启）。宽松展示路径不受影响（保持宽松读）。
+    #[test]
+    fn denyall_default_degraded_scan_biases_to_overdeny() {
+        with_temp_home("pinvou3-scope-denyall-degraded", || {
+            let skill_dir = install_preset_skill_under_claimed_owner();
+
+            // 干净枚举基线：属主包在默认禁用集，未装预置属主包（pptx）不在。
+            let clean = load_disabled_bundles_for(ConnectorScope::Code);
+            assert!(clean.contains(&"gongwen".to_string()));
+            assert!(!clean.contains(&"pptx".to_string()));
+
+            // 技能目录压到不可读 → SKILL.md 探测 EACCES：宽松路径会读成
+            // 「未安装」（fail-open），严格枚举上报降级并偏置为全预置属主兜底。
+            // 平台/环境无法模拟不可读（Windows、root）时跳过断言。
+            if !make_dir_unreadable_for_test(&skill_dir) {
+                return;
+            }
+            let degraded = load_disabled_bundles_for(ConnectorScope::Code);
+            assert!(
+                degraded.contains(&"gongwen".to_string()),
+                "枚举降级时已装技能属主包不得漏出默认禁用集: {degraded:?}"
+            );
+            assert!(
+                degraded.contains(&"pptx".to_string()),
+                "降级应向过度拒绝偏置（未装预置属主包兜底进入）: {degraded:?}"
+            );
+            restore_dir_permissions_for_test(&skill_dir);
+        });
+    }
+
+    /// #531 边界：已初始化 scope 以落盘列表为准，技能枚举降级不得影响其结果
+    /// （过度拒绝兜底只作用于未初始化 scope 的现算默认值）。
+    #[test]
+    fn initialized_scope_ignores_degraded_skill_scan() {
+        with_temp_home("pinvou3-scope-initialized", || {
+            save_disabled_bundles_for(ConnectorScope::Code, &["weather".to_string()]).unwrap();
+            let skill_dir = install_preset_skill_under_claimed_owner();
+            if !make_dir_unreadable_for_test(&skill_dir) {
+                return;
+            }
+            assert_eq!(
+                load_disabled_bundles_for(ConnectorScope::Code),
+                vec!["weather".to_string()],
+                "已初始化 scope 以落盘列表为准，不受现算降级影响"
+            );
+            restore_dir_permissions_for_test(&skill_dir);
+        });
     }
 }

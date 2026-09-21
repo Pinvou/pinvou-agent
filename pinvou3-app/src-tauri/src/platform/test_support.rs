@@ -93,3 +93,45 @@ impl Drop for EnvRestore {
         }
     }
 }
+
+/// 测试用：把目录压到当前用户不可读（Unix chmod 000），模拟「已装目录不可扫」
+/// 的权限降级场景（如 marketplace scope 的 DenyAll 默认集枚举降级）。返回是否
+/// 真正生效：非 Unix 平台无 POSIX 权限位概念，root 不受 000 约束，都返回 false
+/// ——调用方据此跳过依赖 EACCES 语义的断言（语义由非 root Unix 环境覆盖）。
+/// 用 [`restore_dir_permissions_for_test`] 配对恢复，保证临时目录可被清理。
+#[cfg(test)]
+pub(crate) fn make_dir_unreadable_for_test(dir: &std::path::Path) -> bool {
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt as _;
+        if std::fs::set_permissions(dir, std::fs::Permissions::from_mode(0o000)).is_err() {
+            return false;
+        }
+        // root 不受 000 权限约束：探测不到 EACCES 就无法模拟，恢复权限并报告失败。
+        let enforced = std::fs::read_dir(dir).is_err();
+        if !enforced {
+            let _ = std::fs::set_permissions(dir, std::fs::Permissions::from_mode(0o755));
+        }
+        enforced
+    }
+    #[cfg(not(unix))]
+    {
+        let _ = dir;
+        false
+    }
+}
+
+/// [`make_dir_unreadable_for_test`] 的恢复配对：Unix 恢复 0755（测试目录均由
+/// `create_dir_all` 以默认权限创建），其余平台 no-op。
+#[cfg(test)]
+pub(crate) fn restore_dir_permissions_for_test(dir: &std::path::Path) {
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt as _;
+        let _ = std::fs::set_permissions(dir, std::fs::Permissions::from_mode(0o755));
+    }
+    #[cfg(not(unix))]
+    {
+        let _ = dir;
+    }
+}

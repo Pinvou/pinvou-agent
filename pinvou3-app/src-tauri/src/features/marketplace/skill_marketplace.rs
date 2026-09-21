@@ -367,12 +367,69 @@ impl SkillMarketplaceManager {
 
     /// 已安装技能的市场 id（含预置与用户上传）。code scope 未初始化「默认全禁
     /// 已装技能」的兜底集合来源（见 `scope::load_disabled_bundles_for`）。
+    /// 宽松读：单点 IO 失败按「未安装」吞掉，供展示/list 与既有调用方共用；
+    /// DenyAll 默认禁用集计算必须走 [`Self::installed_skill_ids_strict`]。
     pub fn installed_skill_ids(&self) -> Vec<String> {
         self.list_skills()
             .into_iter()
             .filter(|s| s.installed)
             .map(|s| s.id)
             .collect()
+    }
+
+    /// [`Self::installed_skill_ids`] 的严格变体，仅供 scope 的 DenyAll 默认禁用
+    /// 集计算（`resolve_scope_disabled_ids`）使用；display/list 路径保持宽松读。
+    /// 返回 `(ids, degraded)`：`degraded = true` 表示枚举中出现过「可能把已装
+    /// 技能误判为未装」的探测失败（目录权限/瞬时 IO），此时 `ids` 不再是可信
+    /// 全集 —— 调用方必须把默认禁用集向过度拒绝偏置（consent gate 默认值宁可
+    /// 多禁，不允许枚举失败静默缩窄，#531）。与 `MarketplaceManager::installed_ids`
+    /// 读失败响亮上报同一纪律，只是此处无可恢复的真值，只能上报降级。
+    /// id 口径与宽松路径一致（预置市场 id / 上传技能名）。
+    pub(crate) fn installed_skill_ids_strict(&self) -> (Vec<String>, bool) {
+        let mut degraded = false;
+        // 包目录根读失败（非 NotFound）会同时遮蔽认领目录判定与滞留副本扫描。
+        if let Err(e) = std::fs::read_dir(&self.packages_root) {
+            if e.kind() != std::io::ErrorKind::NotFound {
+                log::warn!(
+                    "[skill-marketplace] 扫描 {} 失败（{e}）；DenyAll 默认按降级处理（宁可多禁）",
+                    self.packages_root.display()
+                );
+                degraded = true;
+            }
+        }
+        let mut ids: Vec<String> = Vec::new();
+        for m in preset_manifests() {
+            if probe_installed_by_name(self, m.skill_name, &mut degraded) {
+                ids.push(m.id.to_string());
+            }
+        }
+        // 上传技能：登记读不出就无法枚举（无可恢复真值）→ 降级；目录缺失仍按
+        // 「已卸载」处理（与宽松路径 list_skills 同语义），只有探测失败才降级。
+        match self.bundle_store.records() {
+            Ok(records) => {
+                for record in records {
+                    if !matches!(record.source, super::store::BundleSource::Upload(_)) {
+                        continue;
+                    }
+                    if probe_installed_by_name(self, &record.id, &mut degraded) {
+                        ids.push(record.id.clone());
+                    }
+                }
+            }
+            Err(e) => {
+                log::warn!(
+                    "[skill-marketplace] BundleStore 读取失败，上传技能无法枚举（{e}）；DenyAll 默认按降级处理（宁可多禁）"
+                );
+                degraded = true;
+            }
+        }
+        (ids, degraded)
+    }
+
+    /// 全部预置技能的市场 id（编译期内嵌清单，与磁盘无关）。DenyAll 默认计算在
+    /// 枚举降级时用它把「可能已装」的属主包全部并入禁用集（过度拒绝兜底）。
+    pub(crate) fn preset_skill_ids() -> impl Iterator<Item = String> {
+        preset_manifests().iter().map(|m| m.id.to_string())
     }
 
     fn preset(&self, id: &str) -> Option<&'static SkillManifest> {
@@ -1370,6 +1427,44 @@ impl SkillMarketplaceManager {
             }
         }
     }
+}
+
+/// [`SkillMarketplaceManager::installed_skill_ids_strict`] 专用的单技能安装探测：
+/// 候选目录与 [`SkillMarketplaceManager::find_skill_dir`] 同序（认领目录 → 滞留
+/// 副本 → 旧扁平布局），但逐候选做错误可见的 SKILL.md 探测 —— NotFound 按「未
+/// 安装」继续，其余 IO 错误（权限/瞬时 IO，可能把已装技能误判为未装）响亮记入
+/// `degraded` 且不吞。返回是否探测到已安装。
+fn probe_installed_by_name(
+    manager: &SkillMarketplaceManager,
+    name: &str,
+    degraded: &mut bool,
+) -> bool {
+    let mut candidates = vec![manager.package_skill_dir(name)];
+    if let Ok(rd) = std::fs::read_dir(&manager.packages_root) {
+        for entry in rd.flatten() {
+            let cand = entry.path().join("skills").join(name);
+            if !candidates.contains(&cand) {
+                candidates.push(cand);
+            }
+        }
+    }
+    candidates.push(manager.legacy_skills_dir.join(name));
+    let mut installed = false;
+    for cand in candidates {
+        let md_path = cand.join("SKILL.md");
+        match std::fs::metadata(&md_path) {
+            Ok(md) => installed |= md.is_file(),
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => {}
+            Err(e) => {
+                log::warn!(
+                    "[skill-marketplace] 探测 {} 失败（{e}）；DenyAll 默认按降级处理（宁可多禁）",
+                    md_path.display()
+                );
+                *degraded = true;
+            }
+        }
+    }
+    installed
 }
 
 /// 技能布局迁移报告（启动标记/日志观测用）。
