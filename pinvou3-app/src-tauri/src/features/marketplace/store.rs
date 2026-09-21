@@ -31,6 +31,8 @@ const SCHEMA_VERSION: u32 = 1;
 /// 机读 id / 目录 / frontmatter name 一律不动；见 docs/plugin-package-spec.md）。
 /// 资产种类：厂商 CLI 二进制（版本化外部资产，终态住 `assets/cli/<name>/<version>/`，
 /// 包只引用不拥有 —— §4 规则 2）。后续收编 pip 依赖时新增种类常量。
+/// Producer/consumer is the CLI families stack; no in-tree writer sets this
+/// kind yet (`BundleRecord.assets` stays empty in this tree).
 pub const ASSET_KIND_CLI: &str = "cli";
 
 /// 上传包的用户自定义 UI 展示名/说明在记录 `extra` map 里的 key（只改展示，
