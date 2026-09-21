@@ -1295,8 +1295,25 @@ impl EnginePool {
         self.mcp_config_revision.fetch_add(1, Ordering::AcqRel);
     }
 
-    pub fn compute_disallowed_tools(&self) -> Vec<String> {
-        (self.tool_policy)(&self.app)
+    /// Tool-policy compute for the chat send path. The policy closure reads
+    /// the cross-process bundle lock; keep the potentially blocking read off
+    /// the async worker like every other lock-taking path (a wedged CLI
+    /// process must not freeze the worker). `None` = the compute task died
+    /// (join failure): the caller must keep the session's current disallowed
+    /// set — an empty list would broadcast allow-everything (fail-open).
+    pub async fn compute_disallowed_tools(&self) -> Option<Vec<String>> {
+        let app = self.app.clone();
+        let tool_policy = self.tool_policy.clone();
+        match tokio::task::spawn_blocking(move || tool_policy(&app)).await {
+            Ok(tools) => Some(tools),
+            Err(error) => {
+                eprintln!(
+                    "[engine_pool] tool policy task failed, keeping the current \
+                     disallowed set: {error}"
+                );
+                None
+            }
+        }
     }
 
     pub async fn refresh_disallowed_tools(&self) -> Vec<String> {

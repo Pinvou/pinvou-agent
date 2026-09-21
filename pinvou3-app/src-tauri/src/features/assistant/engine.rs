@@ -1793,15 +1793,27 @@ impl AppEngine {
     /// production builds have no caller, hence the allow.
     #[allow(dead_code)]
     pub async fn spawn_headless(bridge: Pinvou3Bridge) -> Result<Self> {
-        let mut engine_config = bridge.build_engine_config();
-        // The headless engine carries the same hard-deny ruleset as real
-        // sessions (scope gate + safety fallback, see `scope_deny_ruleset`);
-        // a bare `build_engine_config` leaves the empty default execpolicy
-        // engine.
-        engine_config.exec_policy_engine =
-            codewhale_execpolicy::ExecPolicyEngine::with_rulesets(vec![
-                bridge.scope_deny_ruleset(""),
-            ]);
+        // The config build + ruleset consult read the cross-process bundle
+        // lock (scope_deny_ruleset's CLI-binary and skill-script deny rules);
+        // keep them off the async worker like every other lock-taking path,
+        // matching spawn_for_session.
+        let mut engine_config = {
+            let bridge = bridge.clone();
+            tokio::task::spawn_blocking(move || {
+                let mut engine_config = bridge.build_engine_config();
+                // The headless engine carries the same hard-deny ruleset as
+                // real sessions (scope gate + safety fallback, see
+                // `scope_deny_ruleset`); a bare `build_engine_config` leaves
+                // the empty default execpolicy engine.
+                engine_config.exec_policy_engine =
+                    codewhale_execpolicy::ExecPolicyEngine::with_rulesets(vec![
+                        bridge.scope_deny_ruleset(""),
+                    ]);
+                engine_config
+            })
+            .await
+            .map_err(|e| anyhow::anyhow!("headless engine config build join: {e}"))?
+        };
         let scheduled_disallowed_tools = engine_config.disallowed_tools.clone().unwrap_or_default();
         let workspace = engine_config.workspace.clone();
         engine_config.runtime_services.shell_manager =
