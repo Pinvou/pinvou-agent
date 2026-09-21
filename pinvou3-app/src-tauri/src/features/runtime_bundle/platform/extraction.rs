@@ -472,28 +472,21 @@ impl Pinvou3Bundle {
                 .unwrap_or(true);
             if !user_uploaded {
                 // 廉价残留探测:所有清理面都干净时直接返回——uninstall 会无条件重写
-                // installed.json / mcp.json 并访问系统 keyring,不值得每次启动都实例化
-                // MarketplaceManager 跑一遍。探测只读私有布局文件,不实例化管理器;
-                // BundleStore 记录的读取开销与探测同量级,保护判定前置不亏。
+                // installed.json / mcp.json(manifest 声明 secret_targets 时还会清
+                // 系统 keyring),不值得每次启动都实例化 MarketplaceManager 跑一遍。
+                // 探测只读私有布局文件,不实例化管理器;BundleStore 记录的读取开销
+                // 与探测同量级,保护判定前置不亏。
                 if !Self::marketplace_tool_residue_present(tool_id) {
                     return Ok(());
                 }
                 let _ = crate::features::marketplace::MarketplaceManager::new().uninstall(tool_id);
-                let mut disabled = crate::features::marketplace::scope::load_disabled_bundles_for(
-                    crate::features::marketplace::ConnectorScope::Plain,
-                );
-                let before = disabled.len();
-                disabled.retain(|id| id != tool_id);
-                if disabled.len() != before {
-                    crate::features::marketplace::scope::save_disabled_bundles_for(
-                        crate::features::marketplace::ConnectorScope::Plain,
-                        &disabled,
-                    )
-                    .unwrap_or_else(|error| {
-                        eprintln!("[scope] write disabled_bundles.json failed: {error}")
-                    });
-                }
-                // 代码会话的 code scope 同样清理残留。
+                // 禁用/隐藏残留统一走 scope 模块的单临界区 RMW 助手:一次
+                // DISABLED_BUNDLES_FILE_LOCK 内 load→retain→条件 save(#455 收敛范式),
+                // plain + code 所有 scope 的 disabled/hidden 两套集合一并清理。此前
+                // plain 走「load → 内存 retain → 条件 save」两段独立取锁的临界区,
+                // 两段之间并发写方的更新会被旧快照整表覆盖(#522,与 #455 修复的 M-6b
+                // 两段式同型)。uninstall 成功时其内部清理已覆盖本步;回滚(如 mcp.json
+                // 拒重置)会跳过 uninstall 内部清理,本步是唯一清理面,不可省。
                 crate::features::marketplace::scope::remove_bundle_from_disabled_scopes(tool_id);
 
                 let _ = std::fs::remove_dir_all(paths::bundle_mcp_servers_dir().join(tool_id));
@@ -508,10 +501,10 @@ impl Pinvou3Bundle {
     }
 
     /// 探测已下架 marketplace 工具是否还有任何残留清理面:安装目录、installed.json、
-    /// 禁用列表落盘、mcp.json server 条目。全干净 → false(调用方据此跳过
-    /// MarketplaceManager 实例化 + uninstall)。installed.json 与
-    /// disabled_connectors.json 是 marketplace 模块的私有布局,这里按其落盘路径直读做
-    /// contains 级探测——宁可误报(多跑一次幂等清理)也不漏报(残留永驻)。
+    /// 禁用/隐藏列表落盘、mcp.json server 条目。全干净 → false(调用方据此跳过
+    /// MarketplaceManager 实例化 + uninstall)。installed.json 与禁用集落盘是
+    /// marketplace 模块的私有布局,这里按其落盘路径直读做 contains 级探测——宁可
+    /// 误报(多跑一次幂等清理)也不漏报(残留永驻)。
     fn marketplace_tool_residue_present(tool_id: &str) -> bool {
         if paths::bundle_mcp_servers_dir().join(tool_id).exists() {
             return true;
@@ -523,9 +516,15 @@ impl Pinvou3Bundle {
         }
         let home = paths::pinvou3_home();
         // installed.json = ~/.pinvou3/marketplace/installed.json(镜像 MarketplaceManager
-        // 私有 installed_file 布局);disabled_connectors.json 覆盖 plain + 所有 code scope
-        // 的禁用集(镜像 marketplace::disabled_connectors_path 布局)。
-        for probe in ["marketplace/installed.json", "disabled_connectors.json"] {
+        // 私有 installed_file 布局)。禁用/隐藏残留的落盘真相源是 scope 收敛后的单一
+        // disabled_bundles.json(plain + 所有 scope 的 disabled/hidden 集,镜像
+        // marketplace::scope 私有布局);漏掉它会把「仅禁用/隐藏集有残留」的退役工具
+        // 误判干净、跳过清理,陈旧条目继续误隐藏未来同名重装(#522)。旧布局
+        // disabled_connectors.json 不探测:首个 scope 读路径「读到即迁移」把其内容
+        // 并进统一文件,此后它只剩死数据(uninstall 与 scope 写方都不再碰它),探测
+        // 死数据只会对已迁移用户产生永不收敛的误报;同样的残留最晚由统一文件面在
+        // 下一次启动收敛。
+        for probe in ["marketplace/installed.json", "disabled_bundles.json"] {
             let path = home.join(probe);
             if !path.exists() {
                 continue; // 文件不存在 = 该清理面本就干净,不算误报
@@ -542,7 +541,7 @@ impl Pinvou3Bundle {
             }
         }
         // mcp.json 按结构探测:server key 存在即残留;坏 json 保守视为有残留,交给
-        // uninstall 走重建路径。
+        // uninstall 的备份拒改契约(不重建,下次启动重试直至用户修复)。
         if !paths::mcp_config_path().is_file() {
             return false;
         }
@@ -1684,5 +1683,196 @@ mod tests {
         );
 
         let _ = std::fs::remove_dir_all(&tmp);
+    }
+
+    /// #522 回归:禁用/隐藏残留可能只存在于 scope 收敛后的单一 disabled_bundles.json
+    /// (旧 disabled_connectors.json 只读保留、新写入不再产生)。探测漏掉该文件会把
+    /// 「仅禁用/隐藏集有残留」的退役工具误判干净,启动清理被整体跳过,陈旧条目继续
+    /// 误隐藏未来同名重装。
+    #[test]
+    fn residue_probe_covers_disabled_bundles_layout() {
+        crate::platform::test_support::with_temp_home("pinvou3-residue-probe", || {
+            // 前置:所有清理面干净时探测不得误报。
+            assert!(!super::Pinvou3Bundle::marketplace_tool_residue_present(
+                "data_analysis"
+            ));
+            std::fs::write(
+                crate::platform::paths::pinvou3_home().join("disabled_bundles.json"),
+                r#"{"scopes":{"plain":["data_analysis"]},"hidden_scopes":{"code":["data_analysis"]}}"#,
+            )
+            .unwrap();
+            assert!(
+                super::Pinvou3Bundle::marketplace_tool_residue_present("data_analysis"),
+                "残留仅在 disabled_bundles.json 时探测必须报有残留"
+            );
+        });
+    }
+
+    /// 旧布局 disabled_connectors.json 不探测:其内容在首个 scope 读路径「读到即
+    /// 迁移」并进统一 disabled_bundles.json,此后只剩死数据(uninstall 与 scope
+    /// 写方都不再碰它)——探测它只会对已迁移用户产生永不收敛的误报(评审轮 #580:
+    /// 每次启动白跑一遍完整 uninstall)。活残留由统一文件面覆盖。
+    #[test]
+    fn residue_probe_ignores_dead_legacy_disabled_file() {
+        crate::platform::test_support::with_temp_home("pinvou3-residue-legacy", || {
+            // 最老形态:裸数组 = plain scope(旧版真实用户落盘)。
+            std::fs::write(
+                crate::platform::paths::pinvou3_home().join("disabled_connectors.json"),
+                r#"["data_analysis"]"#,
+            )
+            .unwrap();
+            assert!(
+                !super::Pinvou3Bundle::marketplace_tool_residue_present("data_analysis"),
+                "legacy 死数据不得触发探测:其内容已由迁移并进统一文件"
+            );
+        });
+    }
+
+    /// 禁用落盘存在但读失败(权限/损坏)必须保守视为有残留——宁可误报(多跑一次
+    /// 幂等清理)也不漏报。以同名目录制造 read_to_string 的读失败路径。
+    #[test]
+    fn residue_probe_treats_unreadable_disabled_file_as_residue() {
+        crate::platform::test_support::with_temp_home("pinvou3-residue-unreadable", || {
+            std::fs::create_dir_all(
+                crate::platform::paths::pinvou3_home().join("disabled_bundles.json"),
+            )
+            .unwrap();
+            assert!(
+                super::Pinvou3Bundle::marketplace_tool_residue_present("data_analysis"),
+                "禁用落盘存在但读失败时探测必须保守报有残留"
+            );
+        });
+    }
+
+    /// #522 端到端:退役工具的残留只落在 disabled_bundles.json 时,探测必须报有残留
+    /// (否则清理被整体跳过、陈旧禁用条目永驻),且清理把 plain/code 的 disabled 与
+    /// hidden 陈旧条目一并清掉,其它工具的条目与 scope 初始化登记原样保留。
+    #[test]
+    fn cleanup_scrubs_disabled_bundles_only_residue() {
+        crate::platform::test_support::with_temp_home("pinvou3-residue-cleanup", || {
+            std::fs::write(
+                crate::platform::paths::pinvou3_home().join("disabled_bundles.json"),
+                r#"{"scopes":{"plain":["data_analysis"],"code":["weather"]},"hidden_scopes":{"code":["data_analysis"]},"initialized":["plain","code"]}"#,
+            )
+            .unwrap();
+
+            super::Pinvou3Bundle::paths()
+                .cleanup_removed_marketplace_tools()
+                .unwrap();
+
+            let file: serde_json::Value = serde_json::from_str(
+                &std::fs::read_to_string(
+                    crate::platform::paths::pinvou3_home().join("disabled_bundles.json"),
+                )
+                .unwrap(),
+            )
+            .unwrap();
+            assert_eq!(
+                file["scopes"]["plain"],
+                serde_json::json!([]),
+                "plain 禁用集里的退役条目必须被清掉"
+            );
+            assert_eq!(
+                file["scopes"]["code"],
+                serde_json::json!(["weather"]),
+                "其它工具的禁用条目必须原样保留"
+            );
+            assert_eq!(
+                file["hidden_scopes"]["code"],
+                serde_json::json!([]),
+                "code 隐藏集里的退役条目必须被清掉"
+            );
+            let initialized = file["initialized"].as_array().unwrap();
+            assert!(
+                initialized.contains(&serde_json::json!("plain"))
+                    && initialized.contains(&serde_json::json!("code")),
+                "清理不得改动 scope 初始化登记: {initialized:?}"
+            );
+        });
+    }
+
+    /// #522 失败路径:uninstall 因 mcp.json 拒重置而整体回滚(字节保全契约见
+    /// ensure_extracted_preserves_corrupt_mcp_json_bytes)时,其内部 scope 清理随回滚
+    /// 被跳过——禁用/隐藏残留必须仍被外层的单临界区 RMW 调用清掉。若把这步收敛进
+    /// uninstall 成功路径,本用例转红。
+    #[test]
+    fn cleanup_scrubs_disabled_residue_when_uninstall_rolls_back() {
+        crate::platform::test_support::with_temp_home("pinvou3-residue-rollback", || {
+            let home = crate::platform::paths::pinvou3_home();
+            let marketplace_dir = home.join("marketplace");
+            std::fs::create_dir_all(&marketplace_dir).unwrap();
+            std::fs::write(
+                marketplace_dir.join("installed.json"),
+                r#"["data_analysis"]"#,
+            )
+            .unwrap();
+            let disabled = home.join("disabled_bundles.json");
+            std::fs::write(
+                &disabled,
+                r#"{"scopes":{"plain":["data_analysis"]},"hidden_scopes":{"plain":["data_analysis"]}}"#,
+            )
+            .unwrap();
+            let bundle = super::Pinvou3Bundle::paths();
+            std::fs::create_dir_all(bundle.mcp_json.parent().unwrap()).unwrap();
+            let corrupt = r#"{"servers":{"mine":{"command":"x""#;
+            std::fs::write(&bundle.mcp_json, corrupt).unwrap();
+
+            bundle.cleanup_removed_marketplace_tools().unwrap();
+
+            // 卸载回滚:登记与 mcp.json 原样保留(数据保全契约不因清理改变)。
+            let installed: serde_json::Value = serde_json::from_str(
+                &std::fs::read_to_string(marketplace_dir.join("installed.json")).unwrap(),
+            )
+            .unwrap();
+            assert_eq!(
+                installed,
+                serde_json::json!(["data_analysis"]),
+                "回滚后登记必须原样保留"
+            );
+            assert_eq!(
+                std::fs::read(&bundle.mcp_json).unwrap(),
+                corrupt.as_bytes(),
+                "损坏 mcp.json 必须保持字节不变"
+            );
+            // 禁用/隐藏残留仍被外层清理步清掉。
+            let file: serde_json::Value =
+                serde_json::from_str(&std::fs::read_to_string(&disabled).unwrap()).unwrap();
+            assert_eq!(
+                file["scopes"]["plain"],
+                serde_json::json!([]),
+                "卸载回滚后 plain 禁用残留仍必须被清掉"
+            );
+            assert_eq!(
+                file["hidden_scopes"]["plain"],
+                serde_json::json!([]),
+                "卸载回滚后 plain 隐藏残留仍必须被清掉"
+            );
+        });
+    }
+
+    /// #522 结构性回归:退役清理的禁用/隐藏残留必须走 scope 模块的单临界区 RMW
+    /// 助手,extraction.rs 不得再内联「load → 内存 retain → 条件 save」两段独立取锁
+    /// 的落盘写法(两段之间并发写方的更新会被旧快照整表覆盖)。源码钉扎与
+    /// platform::filesystem 的同类测试同一风格;探测词拼接构造,避免测试源码自匹配。
+    #[test]
+    fn disabled_cleanup_has_no_inline_two_phase_scope_writes() {
+        let source = include_str!("extraction.rs");
+        let load = ["load_disabled", "_bundles_for"].concat();
+        let save = ["save_disabled", "_bundles_for"].concat();
+        let helper = ["remove_bundle_from", "_disabled_scopes"].concat();
+        assert_eq!(
+            source.matches(&load).count(),
+            0,
+            "退役清理不得内联 scope 禁用集读取:统一走 scope 模块单临界区 RMW 助手"
+        );
+        assert_eq!(
+            source.matches(&save).count(),
+            0,
+            "退役清理不得内联 scope 禁用集写方:统一走 scope 模块单临界区 RMW 助手"
+        );
+        assert!(
+            source.matches(&helper).count() >= 1,
+            "退役清理必须调用 scope 模块的单临界区 RMW 助手清理所有 scope 残留"
+        );
     }
 }

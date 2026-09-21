@@ -592,6 +592,40 @@ mod tests {
         });
     }
 
+    /// 一次助手调用覆盖**所有** scope 的 disabled + hidden 两套集合:退役工具清理等
+    /// 调用方依赖「单次调用 = 全清理面」,无需逐 scope 手工 load/retain/save
+    /// (#522:逐 scope 两段式各自取锁,会在 load 与 save 之间丢并发更新)。
+    #[test]
+    fn remove_bundle_clears_every_scope_and_hidden_set() {
+        with_temp_home("pinvou3-scope", || {
+            save_disabled_bundles_for(ConnectorScope::Plain, &["weather".to_string()]).unwrap();
+            save_disabled_bundles_for(
+                ConnectorScope::Code,
+                &["weather".to_string(), "pptx".to_string()],
+            )
+            .unwrap();
+            save_hidden_bundles_for(ConnectorScope::Code, &["weather".to_string()]).unwrap();
+
+            remove_bundle_from_disabled_scopes("weather");
+
+            assert!(load_disabled_bundles_for(ConnectorScope::Plain).is_empty());
+            assert_eq!(
+                load_disabled_bundles_for(ConnectorScope::Code),
+                vec!["pptx".to_string()],
+                "同 scope 其它包的条目必须原样保留"
+            );
+            assert!(load_hidden_bundles_for(ConnectorScope::Code).is_empty());
+            // helper 不得动 scope 初始化登记:退役清理依赖该契约保留用户的
+            // 初始化状态(上面三次 save 已把 plain/code 标记为 initialized)。
+            let file = load_disabled_bundles_file();
+            assert!(
+                file.initialized.contains("plain") && file.initialized.contains("code"),
+                "helper 必须保留 scope 初始化登记: {:?}",
+                file.initialized
+            );
+        });
+    }
+
     /// 保存路径统一归一为包 id：剥 `skill:` 前缀 + companion 映射到所属包。
     #[test]
     fn save_normalizes_to_package_id() {
