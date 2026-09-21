@@ -187,6 +187,25 @@ pub use crate::features::sessions::{ExecutionRootResolver, SessionRoots};
 /// sessions prints N identical lines.
 static REMOVED_TOOL_CALL_CAP_WARNED: std::sync::OnceLock<()> = std::sync::OnceLock::new();
 
+/// Warn once per process that the removed `PINVOU3_MAX_TOOL_CALLS` override
+/// is still exported, and report whether THIS call printed the line: the
+/// config builder runs at every engine spawn, so without the gate a batch
+/// spawning N sessions prints N identical lines. The gate is injected so
+/// tests can pin the once-only contract against a fresh gate instead of the
+/// process-global static.
+fn removed_cap_env_warning(gate: &std::sync::OnceLock<()>) -> bool {
+    let present = std::env::var_os("PINVOU3_MAX_TOOL_CALLS").is_some();
+    let warned = present && gate.set(()).is_ok();
+    if warned {
+        eprintln!(
+            "[pinvou3] PINVOU3_MAX_TOOL_CALLS is no longer read: the tool-call \
+             round cap was removed; runaway protection is the foundation's \
+             max_steps and per-turn wall clock."
+        );
+    }
+    warned
+}
+
 #[derive(Clone)]
 pub struct Pinvou3Bridge {
     pub prefs: UserPrefs,
@@ -1834,15 +1853,7 @@ impl Pinvou3Bridge {
             // engine spawn and a batch would otherwise print one identical
             // line per session.
             max_tool_calls: {
-                if std::env::var_os("PINVOU3_MAX_TOOL_CALLS").is_some()
-                    && REMOVED_TOOL_CALL_CAP_WARNED.set(()).is_ok()
-                {
-                    eprintln!(
-                        "[pinvou3] PINVOU3_MAX_TOOL_CALLS is no longer read: the tool-call \
-                         round cap was removed; runaway protection is the foundation's \
-                         max_steps and per-turn wall clock."
-                    );
-                }
+                removed_cap_env_warning(&REMOVED_TOOL_CALL_CAP_WARNED);
                 None
             },
             // [pinvou3-fork] 透传 default(空);kb_search 在 spawn_for_session 按 session 注入
@@ -5691,6 +5702,23 @@ mod tests {
     /// and cancel boundaries. The removed `PINVOU3_MAX_TOOL_CALLS` env knob
     /// must stay dead: setting it must not resurrect a cap in either config
     /// path.
+    #[test]
+    fn removed_cap_warning_fires_once_per_gate() {
+        let gate = std::sync::OnceLock::new();
+        let (_lock, _env) = locked_env(&["PINVOU3_MAX_TOOL_CALLS"]);
+        // SAFETY: ENV_LOCK held; env writes are serialized across tests.
+        unsafe { std::env::remove_var("PINVOU3_MAX_TOOL_CALLS") };
+        assert!(!removed_cap_env_warning(&gate), "no env: nothing to warn");
+        // SAFETY: see above.
+        unsafe { std::env::set_var("PINVOU3_MAX_TOOL_CALLS", "512") };
+        assert!(removed_cap_env_warning(&gate), "first presence warns");
+        assert!(
+            !removed_cap_env_warning(&gate),
+            "second presence must stay silent - one line per process"
+        );
+        assert!(!removed_cap_env_warning(&gate));
+    }
+
     #[test]
     fn engine_config_has_no_tool_call_cap() {
         assert_eq!(

@@ -3508,6 +3508,19 @@ fn recent_work_upsert_and_archive_round_trip() {
     let items = load_recent_work().unwrap();
     assert_eq!(items.len(), 1, "an upsert must not duplicate the entry");
     assert_eq!(items[0].title, "Refactor session store v2");
+    // The requested 200-day TTL must be clamped to the 90-day ceiling: the
+    // durable item's expiry sits within 90 days of now, not 200.
+    let expires =
+        chrono::DateTime::parse_from_rfc3339(&items[0].expires_at).expect("parse expires_at");
+    let horizon = chrono::Duration::days(90);
+    assert!(
+        expires <= chrono::Utc::now() + horizon,
+        "the 200-day request must be clamped to the 90-day ceiling: {expires}"
+    );
+    assert!(
+        expires > chrono::Utc::now() + chrono::Duration::days(89),
+        "the clamp must not collapse the TTL: {expires}"
+    );
 
     assert!(archive_recent_work(&created.id).unwrap());
     let items = load_recent_work().unwrap();

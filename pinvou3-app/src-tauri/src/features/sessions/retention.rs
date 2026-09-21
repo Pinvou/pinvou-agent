@@ -150,6 +150,16 @@ impl SessionStore {
             }
             chat_count += 1;
             if chat_count > MAX_SESSIONS_PER_KIND {
+                // Re-consult the durable pin file immediately before each
+                // delete: a pin landing mid-sweep (the GUI user pinning the
+                // oldest session while a headless batch sweeps) must protect
+                // it — the snapshot taken at sweep start predates it. The
+                // read is a tiny JSON file against an fsync'd record delete,
+                // and it never widens the eviction set (unreadable falls
+                // back to the boot map).
+                if self.durable_pinned_sessions().contains(&metadata.id) {
+                    continue;
+                }
                 let id = metadata.id;
                 let (committed, result) = self.delete_session_record(&id);
                 if committed {
@@ -304,7 +314,8 @@ impl SessionStore {
             removed
         };
         if !removed_code_modes.is_empty() {
-            if let Err(error) = Self::apply_session_mode_mutation(&[], &removed_code_modes) {
+            let _io = self.session_mode_states_io.lock();
+            if let Err(error) = Self::apply_session_mode_mutation_locked(&[], &removed_code_modes) {
                 eprintln!(
                     "[sessions] update _session_mode_states.json after retention purge failed: {error:#}"
                 );
@@ -332,7 +343,10 @@ impl SessionStore {
         // One durable-file RMW for the whole batch instead of one per id
         // (mirroring the batched mode-map mutation above).
         let model_refs: Vec<&str> = ids.iter().map(String::as_str).collect();
-        if let Err(error) = super::sidecars::remove_session_models(&model_refs) {
+        // Same per-file io-mutex contract as the multi-agent purge above: a
+        // concurrent set_session_model_id RMWs the same file.
+        let _models_io = self.session_models_io.lock();
+        if let Err(error) = super::sidecars::remove_session_models_locked(&model_refs) {
             eprintln!(
                 "[sessions] update _session_models.json after retention purge failed: {error:#}"
             );
@@ -355,7 +369,7 @@ impl SessionStore {
         // leaving it behind would let the evicted id survive as a ghost pin
         // that re-arms the retention exemption on id reuse. The mutation
         // removes only ids actually present and refuses a torn file instead
-        // of rewriting it (see apply_timestamped_id_mutation), so the
+        // of rewriting it (see apply_timestamped_id_mutation_locked), so the
         // boot-map fallback that narrows the eviction set stays intact.
         let all_refs: Vec<&str> = ids.iter().map(String::as_str).collect();
         if let Err(error) = self.purge_pinned_ids(&all_refs) {

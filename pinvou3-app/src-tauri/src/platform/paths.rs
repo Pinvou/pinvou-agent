@@ -415,6 +415,7 @@ fn sanitize_memory_runtime_id(raw: &str) -> String {
 }
 
 /// `~/.pinvou3/feedback/` —— 用户主动提交的反馈包、失败待重试内容和提交回执。
+/// Headless caller (the CLI feedback family stack); no in-tree consumer.
 pub fn feedback_root() -> PathBuf {
     pinvou3_home().join("feedback")
 }
