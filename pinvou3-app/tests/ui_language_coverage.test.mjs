@@ -305,11 +305,12 @@ assert.ok(
   duplicateDiscardGuard < restartBlock.indexOf('if (!restartArmed) {'),
   'the duplicate-discard guard must precede the two-step confirm arming',
 );
-// Send-latch release at restart entry (round-12 N2): handleSend's finally only
-// clears sendingRef while the binding is unchanged, and a same-task restart
-// does not re-run the rebind effect that otherwise resets it. A send settling
-// after the restart would therefore latch sendingRef true permanently and every
-// later Enter would silently no-op behind a visually enabled composer.
+// Send-latch release at restart entry (round-12 N2): handleSend releases the
+// latch only when turn_started marks the snapshot busy (round-20 minor-4) or
+// on its own failure path, and a same-task restart does not re-run the rebind
+// effect that otherwise resets it. A send settling after the restart would
+// therefore latch sendingRef true permanently and every later Enter would
+// silently no-op behind a visually enabled composer.
 const sendLatchReset = restartBlock.indexOf('sendingRef.current = false;');
 assert.ok(sendLatchReset >= 0, 'handleRestart must release the in-flight send latch');
 assert.ok(
@@ -345,6 +346,19 @@ assert.ok(
   'the binding must be nulled at restart entry, before the discard await',
 );
 assert.match(restartBlock, /auxIdRef\.current = null;\s*setAuxId\(null\);/);
+// Snapshot clear at restart entry (round-20 minor-5): restart does not re-run
+// the rebind effect, so without this reset the old transcript stayed rendered
+// through the whole discard window — hasContent stayed true, the
+// bindingPending hint (rendered only in the !hasContent branch) was
+// unreachable, and a stale busyHint persisted into the window. The clear must
+// precede the discard await; the discard-failure restore re-pulls the
+// snapshot, so a refused restart gets its transcript back.
+const restartSnapshotClear = restartBlock.indexOf('setSnapshot(normalizeAuxSnapshot(null));');
+assert.ok(
+  restartSnapshotClear > bindingNull
+    && restartSnapshotClear < restartBlock.indexOf('const discardPromise = auxChat.discard(sessionId);'),
+  'handleRestart must clear the snapshot at entry, before the discard await',
+);
 // Binding-pending hint (round-12 UX): "first open / rebind shows a false
 // 'nothing here yet' while ensure is in flight". The pending flag must be
 // raised wherever a binding is being acquired (rebind effect and restart
@@ -361,11 +375,16 @@ assert.equal(
 assert.match(auxChatPanel, /bindingPending \? copy\.bindingHint : copy\.emptyState/);
 // In-flight send feedback (round-12 UX): the send window had no visible state
 // because snapshot-busy only lands with the backend turn_started, so the
-// composer looked idle while the message was already gone.
+// composer looked idle while the message was already gone. Since round-20
+// minor-4 the hint is derived from the task-keyed registry as well, so the
+// cross-switch in-flight window (send on A → switch to B → back to A resets
+// the component flag while A's send is still registered) does not silently
+// no-op Enter behind an idle-looking composer.
 assert.match(auxChatPanel, /const \[sending, setSending\] = useState\(false\);/);
 assert.match(auxChatPanel, /sendingRef\.current = true;\s*setSending\(true\);/);
 assert.match(auxChatPanel, /sendingRef\.current = false;\s*setSending\(false\);/);
-assert.match(auxChatPanel, /\{sending && !busy && \(/);
+assert.match(auxChatPanel, /const sendInFlight = sending \|\| !!\(sessionId && sendInFlightByTask\.has\(sessionId\)\);/);
+assert.match(auxChatPanel, /\{sendInFlight && !busy && \(/);
 // Draft preservation (round-12 UX): text the user typed but never sent must not
 // be wiped by a task switch, a close/reopen or a new-topic confirm — only a
 // successful send clears it.
@@ -406,6 +425,18 @@ assert.match(auxChatPanel, /const sessionIdRef = useRef\(sessionId\);/);
 assert.match(auxChatPanel, /constrainChatInput\(event\.target\.value\)\.text/);
 assert.match(auxChatPanel, /setDraft\(\(current\) => \(current\.trim\(\) === text \? '' : current\)\)/);
 assert.doesNotMatch(restartBlock, /setDraft\(''\)/);
+// Aux timeline scroll (round-20 minor-6): mirror the main conversation's
+// autoScrollRef pattern — a scroll listener derives the follow flag through
+// the shared transition helper (scrolling up parks it, returning near the
+// bottom resumes), a rebind re-arms it at the tail, and content growth snaps
+// only while following. The old unconditional snap on item-count change
+// yanked a scrolled-up reader, and streaming deltas (same count) never stuck
+// to the bottom; depending on the snapshot covers both turns and deltas.
+assert.match(auxChatPanel, /const autoScrollRef = useRef\(true\);/);
+assert.match(auxChatPanel, /transitionConversationScrollState\(\{/);
+assert.match(auxChatPanel, /autoScrollRef\.current = transition\.following;/);
+assert.match(auxChatPanel, /autoScrollRef\.current = true;\s*\}, \[auxId\]\);/);
+assert.match(auxChatPanel, /if \(el && autoScrollRef\.current\) el\.scrollTop = el\.scrollHeight;\s*\}, \[auxId, snapshot\]\);/);
 // Conversation quotes ("划词引用"): staged per task through the aux-quote store
 // (module scope, same ownership as the draft) and appended to the outgoing
 // message as an inline userselect block; a quote-only send is allowed.
@@ -446,10 +477,18 @@ assert.match(restartBlock.slice(finallyClause), /} finally \{[\s\S]*?if \(genera
 // In-flight send latch (round-7 M-A): snapshot-busy lags the dispatch by one
 // event round trip, so without a synchronous latch a double Enter fires a
 // duplicate turn whose rejection surfaces as a bogus "send failed" banner;
-// key-repeat Enter must be ignored outright. The latch must be released on
-// every outcome via finally, or the composer would lock after one failure.
+// key-repeat Enter must be ignored outright. Since round-20 minor-4 the latch
+// is NOT released in the send's finally: that resolve is only the dispatch
+// ack and turn_started still lags it, so releasing there re-opened the
+// duplicate-send window exactly where the latch claims coverage — fresh
+// input died at the backend turn gate as a misleading "send failed, retry"
+// banner. The latch releases when turn_started marks the snapshot busy; the
+// failure path releases it directly (a failed dispatch never reaches
+// turn_started, and a retry must stay possible).
 assert.match(auxChatPanel, /if \(!auxChat \|\| !sentAuxId \|\| \(!text && !quoteBlock\) \|\| busy \|\| restarting \|\| sendingRef\.current\) return;/);
-assert.match(auxChatPanel, /sendingRef\.current = true;[\s\S]*?const sendPromise = auxChat\.send\(sentAuxId, quoteBlock \? text \+ quoteBlock : text\);[\s\S]*?await sendPromise;[\s\S]*?\} finally \{[\s\S]*?if \(auxIdRef\.current === sentAuxId && generationRef\.current === sentGeneration\) \{\s*sendingRef\.current = false;/);
+assert.match(auxChatPanel, /sendingRef\.current = true;\s*setSending\(true\);[\s\S]*?const sendPromise = auxChat\.send\(sentAuxId, quoteBlock \? text \+ quoteBlock : text\);[\s\S]*?await sendPromise;/);
+assert.match(auxChatPanel, /setSendFailed\(true\);[\s\S]{0,600}?sendingRef\.current = false;\s*setSending\(false\);\s*\} finally \{/);
+assert.match(auxChatPanel, /if \(!sending \|\| !busy\) return;\s*sendingRef\.current = false;/);
 assert.match(auxChatPanel, /if \(event\.repeat\) return;/);
 // Rebind resets restarting (round-7 m11): the restart invokes have no
 // transport timeout, so a promise that never settles must not latch the next
@@ -472,12 +511,23 @@ assert.match(rebindBlock, /setRestarting\(false\);/, 'the rebind effect must res
 // auxChat.send invoke (same no-transport-timeout class) must not latch sends
 // across later task rebinds either.
 assert.match(rebindBlock, /sendingRef\.current = false;/, 'the rebind effect must reset the send latch itself');
-// Stale-finally latch guard (round-9 minor-3, tightened in round-14 B2): an
-// old send's late finally must not clear the latch a newer send relies on —
-// a same-id rebind (switch A→B→A; ensure is idempotent) keeps auxIdRef equal
-// to sentAuxId, so the release must be gated on the send's generation as well
-// as the binding.
-assert.match(auxChatPanel, /finally \{[\s\S]{0,1300}if \(auxIdRef\.current === sentAuxId && generationRef\.current === sentGeneration\) \{\s*sendingRef\.current = false;\s*setSending\(false\);\s*\}/);
+// Send-finally scope guard (round-9 minor-3, rescoped in round-20 minor-4):
+// the send's finally now only removes the registry entry — it must NOT touch
+// the latch, because the invoke's resolve is merely the dispatch ack while
+// turn_started still lags one event round trip. The latch release lives in
+// the busy-gated effect (success), the failure path of the same send
+// (round-14 B2: only the exact send on the binding that still owns it), and
+// the rebind/restart resets.
+const sendFinallyStart = auxChatPanel.indexOf('} finally {', auxChatPanel.indexOf('const handleSend'));
+const sendFinallyEnd = auxChatPanel.indexOf('}, [auxChat, draft, quotes, busy, restarting, pullSnapshot, sessionId]);');
+assert.ok(
+  sendFinallyStart >= 0 && sendFinallyEnd > sendFinallyStart,
+  'handleSend finally anchors must resolve (a vacuous slice would pass trivially)',
+);
+const sendFinallyBlock = auxChatPanel.slice(sendFinallyStart, sendFinallyEnd);
+assert.match(sendFinallyBlock, /sendInFlightByTask\.delete\(sentTaskId\);/);
+assert.doesNotMatch(sendFinallyBlock, /sendingRef\.current = false;/);
+assert.doesNotMatch(sendFinallyBlock, /setSending\(false\);/);
 // Task-keyed in-flight send registry (round-15 MAJOR-2): the rebind effect
 // resets sendingRef on every task switch, so without a module-scoped registry
 // a send on task A → switch to B → back to A would pass every guard before
@@ -489,7 +539,7 @@ assert.match(auxChatPanel, /finally \{[\s\S]{0,1300}if \(auxIdRef\.current === s
 assert.match(auxChatPanel, /const sendInFlightByTask = new Map\(\);/);
 assert.match(auxChatPanel, /if \(sendInFlightByTask\.has\(sentTaskId\)\) return;/);
 assert.match(auxChatPanel, /sendInFlightByTask\.set\(sentTaskId, sendPromise\);/);
-assert.match(auxChatPanel, /finally \{[\s\S]{0,400}?if \(sendInFlightByTask\.get\(sentTaskId\) === sendPromise\) \{\s*sendInFlightByTask\.delete\(sentTaskId\);\s*\}/);
+assert.match(auxChatPanel, /finally \{[\s\S]{0,700}?if \(sendInFlightByTask\.get\(sentTaskId\) === sendPromise\) \{\s*sendInFlightByTask\.delete\(sentTaskId\);\s*\}/);
 // Double-banner guard (round-9 minor-1): entering the restart flow must
 // clear a stale sendFailed too, or a failed send's "retry" banner renders
 // next to the ensure-failure banner after the binding was cleared.

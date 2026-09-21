@@ -5,6 +5,7 @@ import { bridge } from '../../hooks/useBridge.js';
 import { isImeComposing } from '../../shared/ime-guard.mjs';
 import { constrainChatInput } from '../chat/chat-input-limit.js';
 import { ConversationTimeline } from '../conversation/ConversationTimeline.jsx';
+import { transitionConversationScrollState } from '../conversation/conversation-scroll.js';
 import {
   buildAuxQuoteBlock,
   dropAuxQuotes,
@@ -99,6 +100,13 @@ export function AuxChatPanel({ sessionId, activationKey, t, theme, onClose, onAc
   // must know which task the panel shows *now* (round-17 M-A).
   const sessionIdRef = useRef(sessionId);
   const scrollRef = useRef(null);
+  // Bottom-follow state, same pattern as the main conversation's
+  // autoScrollRef: true while the reader is at (or returns to) the tail, so
+  // content growth snaps the view only while following and never yanks
+  // someone scrolled up through history (round-20 minor-6).
+  const autoScrollRef = useRef(true);
+  const lastScrollTopRef = useRef(0);
+  const lastScrollHeightRef = useRef(0);
   // Auto-grow anchor: the composer grows with its content like the main
   // conversation composer instead of scrolling inside a one-row-tall box.
   const composerRef = useRef(null);
@@ -229,18 +237,66 @@ export function AuxChatPanel({ sessionId, activationKey, t, theme, onClose, onAc
 
   const busy = auxChatBusy(snapshot);
   const hasContent = auxChatHasContent(snapshot);
+  // The sending hint must also cover the cross-switch in-flight window
+  // (round-20 minor-4): a send on task A → switch to B → back to A resets the
+  // component-level sending flag (rebind effect) while the registry still
+  // holds A's send, so Enter no-ops at the registry guard — without the
+  // registry-derived hint that window looked like a silently dead composer.
+  const sendInFlight = sending || !!(sessionId && sendInFlightByTask.has(sessionId));
   const turns = useMemo(
     () => (auxId ? projectAuxChatTurns(snapshot, auxId) : []),
     [snapshot, auxId],
   );
 
-  // Snap to the bottom when a new turn appears; streaming deltas do not force
-  // scrolling, to avoid interrupting a user reading back through history.
-  const itemCount = snapshot.chatItems.length;
+  // Send-latch release at turn_started, not at the dispatch ack (round-20
+  // minor-4): the invoke resolving only means the backend accepted the
+  // command — turn_started still lags it by one event round trip, so
+  // releasing the latch in the send's finally re-opened the duplicate-send
+  // window exactly where the latch claims coverage (fresh input there dies at
+  // the backend turn gate as a misleading "send failed, retry" banner). Hold
+  // the latch until snapshot-busy proves the backend took the turn; the
+  // failure path releases it directly, and rebind/restart reset it as before.
+  useEffect(() => {
+    if (!sending || !busy) return;
+    sendingRef.current = false;
+    // eslint-disable-next-line react-hooks/set-state-in-effect -- derived release of the in-flight send latch once turn_started marks the snapshot busy
+    setSending(false);
+  }, [sending, busy]);
+
+  // Follow-state tracking, mirroring the main conversation's scroll listener:
+  // scrolling up parks the follow flag, returning near the bottom resumes it.
   useEffect(() => {
     const el = scrollRef.current;
-    if (el) el.scrollTop = el.scrollHeight;
-  }, [auxId, itemCount]);
+    if (!el) return;
+    const onScroll = () => {
+      const transition = transitionConversationScrollState({
+        scrollElement: el,
+        following: autoScrollRef.current,
+        previousScrollTop: lastScrollTopRef.current,
+        previousScrollHeight: lastScrollHeightRef.current,
+      });
+      lastScrollTopRef.current = transition.scrollTop;
+      lastScrollHeightRef.current = transition.scrollHeight;
+      autoScrollRef.current = transition.following;
+    };
+    onScroll();
+    el.addEventListener('scroll', onScroll, { passive: true });
+    return () => el.removeEventListener('scroll', onScroll);
+  }, []);
+
+  // A rebind always opens the (fresh or switched) aux transcript at its tail.
+  useEffect(() => {
+    autoScrollRef.current = true;
+  }, [auxId]);
+
+  // Snap to the tail on any content growth — new turns and streaming deltas
+  // alike (a delta re-pulls the snapshot, so depending on the snapshot covers
+  // both) — but only while following: the old unconditional snap yanked a
+  // scrolled-up reader on every new item (round-20 minor-6).
+  useEffect(() => {
+    const el = scrollRef.current;
+    if (el && autoScrollRef.current) el.scrollTop = el.scrollHeight;
+  }, [auxId, snapshot]);
 
   useEffect(() => {
     if (!restartArmed) return;
@@ -321,23 +377,24 @@ export function AuxChatPanel({ sessionId, activationKey, t, theme, onClose, onAc
       if (generationRef.current !== sentGeneration) return;
       if (auxIdRef.current !== sentAuxId) return;
       setSendFailed(true);
+      // A failed dispatch never reaches turn_started, so the busy-gated latch
+      // release above the timeline would never fire — release the latch here
+      // or the composer stays locked behind the failure banner. The stale
+      // continuations above already returned, so this is the exact send that
+      // set the latch on the binding that still owns it (round-14 B2).
+      sendingRef.current = false;
+      setSending(false);
     } finally {
       // The registry entry is removed by the exact send that registered it,
       // unconditionally — unlike the component latch it must not depend on
       // the binding state, or a send settling after a rebind would leak the
-      // entry and block this task's sends forever.
+      // entry and block this task's sends forever. The latch itself is NOT
+      // released here (round-20 minor-4): this resolve is only the dispatch
+      // ack and turn_started still lags it by one event round trip, so
+      // releasing now would re-open the duplicate-send window exactly where
+      // the latch claims coverage.
       if (sendInFlightByTask.get(sentTaskId) === sendPromise) {
         sendInFlightByTask.delete(sentTaskId);
-      }
-      // The latch may be released only by the exact send that set it: a
-      // same-id rebind (switch away and back) keeps auxIdRef equal to
-      // sentAuxId, so a binding-only gate would let a stale send's late
-      // finally clear the latch a newer send on the rebound task relies on
-      // (round-14 B2). The rebind effect resets the latch on every switch,
-      // so refusing here is safe.
-      if (auxIdRef.current === sentAuxId && generationRef.current === sentGeneration) {
-        sendingRef.current = false;
-        setSending(false);
       }
     }
   }, [auxChat, draft, quotes, busy, restarting, pullSnapshot, sessionId]);
@@ -424,6 +481,14 @@ export function AuxChatPanel({ sessionId, activationKey, t, theme, onClose, onAc
     // composer and timeline would otherwise just sit there with no hint that a
     // new topic is being prepared.
     setBindingPending(true);
+    // Clear the snapshot at entry too (round-20 minor-5), mirroring the rebind
+    // effect: restart otherwise kept the old transcript rendered through the
+    // whole discard window, so hasContent stayed true — and the bindingPending
+    // hint renders only in the !hasContent branch, leaving a stale timeline,
+    // disabled controls and a stale busyHint with no "preparing" feedback.
+    // The discard-failure restore re-pulls the snapshot, so a refused restart
+    // gets its transcript back.
+    setSnapshot(normalizeAuxSnapshot(null));
     // Bump the generation at restart entry: only the rebind effect increments
     // it otherwise, so an ensure issued by the current rebind that is still in
     // flight (including its ensureSessionBufferLoaded chain) would resolve
@@ -584,7 +649,7 @@ export function AuxChatPanel({ sessionId, activationKey, t, theme, onClose, onAc
         {busy && (
           <div data-testid="aux-chat-busy-hint" className="mb-2 text-[11px] text-gray-400" role="status">{copy.busyHint}</div>
         )}
-        {sending && !busy && (
+        {sendInFlight && !busy && (
           <div data-testid="aux-chat-busy-hint" className="mb-2 text-[11px] text-gray-400" role="status">{copy.sendingHint}</div>
         )}
         {sendFailed && (
