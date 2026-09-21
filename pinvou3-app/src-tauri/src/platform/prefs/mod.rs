@@ -716,6 +716,9 @@ pub struct UserPrefs {
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     pub local_thinking_default_migrated: bool,
     pub advanced: AdvancedPrefs,
+    /// 被用户关闭的内置插件功能 id 列表（内置工具集长期契约 §3.3；功能注册表
+    /// 与工具摘除并集语义见 `features::marketplace::builtin`）。缺省空 = 全部启用。
+    pub disabled_builtin_features: Vec<String>,
 }
 
 struct ParsedSettings {
@@ -2544,6 +2547,7 @@ mod tests {
                 max_subagents: Some(2),
                 ..Default::default()
             },
+            disabled_builtin_features: Vec::new(),
         };
         let json = serde_json::to_string(&prefs).unwrap();
         let parsed: UserPrefs = serde_json::from_str(&json).unwrap();
@@ -2561,6 +2565,8 @@ mod tests {
         assert_eq!(prefs.theme, Theme::Genesis);
         assert_eq!(prefs.color_scheme, ColorScheme::System);
         assert_eq!(prefs.language, Language::ZhHans);
+        // 旧 settings.json 无内置功能开关字段 → 缺省空（全部启用），契约 §3.3。
+        assert!(prefs.disabled_builtin_features.is_empty());
         #[cfg(target_os = "linux")]
         {
             assert!(!prefs.notifications.enabled);
