@@ -79,6 +79,14 @@ use crate::core::reaper::{IDLE_EVICT_AFTER_SECS, IdleReaperGuard};
 /// guarantee. An abandoned cascade send leaves the old turn's subagents
 /// alive on the stalled engine until it unsticks (their own step/time
 /// budgets apply) or reclaim shuts it down.
+///
+/// Why 5s: the budget must absorb every ordinary gate-held side effect —
+/// a cascade send is queue wait, not work, and the shell finalize's
+/// legitimate worst case (up to `MAX_KILL_ATTEMPTS` kill-tree retries) can
+/// approach it — while keeping evict/delete responsive. A healthy-but-slow
+/// finalize can therefore spuriously trip the conservative `cleanup_failed`
+/// preset; that is accepted (the flag is diagnostics-only and the detached
+/// run still records the true outcome).
 const TURN_GATE_AWAIT_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(5);
 
 /// Total wait per op for the detached retry that re-delivers the reclaim
@@ -518,32 +526,52 @@ where
     }
 }
 
+/// Outcome of [`bounded_join_while_holding_turn_gate`].
+enum BoundedJoinOutcome {
+    /// The task finished within the budget.
+    Settled,
+    /// The task outlived the budget: the dropped join handle detached it and
+    /// it keeps running in the background.
+    Detached,
+    /// The task panicked: nothing keeps running, so bookkeeping that only
+    /// the task's normal completion performs must be redone by the caller.
+    Panicked(tokio::task::JoinError),
+}
+
 /// Bounds the join of a detached side-effect task while the caller holds the
 /// session turn gate (see [`TURN_GATE_AWAIT_TIMEOUT`], issue #255): a slow
 /// task must not extend the gate hold. On timeout the join handle is
 /// dropped, which detaches the task without aborting it, and the
-/// degradation is logged. Returns whether the task settled in time so the
-/// caller can take extra degradation steps (e.g. preset a conservative
-/// cleanup flag).
+/// degradation is logged. A panicked task is reported as [`BoundedJoinOutcome::Panicked`]
+/// instead of silently counting as settled — a panic means the task will
+/// never complete its own bookkeeping.
 async fn bounded_join_while_holding_turn_gate<T>(
     what: &str,
     task: tokio::task::JoinHandle<T>,
-) -> bool {
+) -> BoundedJoinOutcome {
     match tokio::time::timeout(TURN_GATE_AWAIT_TIMEOUT, task).await {
-        Ok(_) => true,
+        Ok(Ok(_)) => BoundedJoinOutcome::Settled,
+        Ok(Err(join_error)) => {
+            eprintln!(
+                "[engine_pool] {what} task panicked: {join_error}; treating it as not settled"
+            );
+            BoundedJoinOutcome::Panicked(join_error)
+        }
         Err(_) => {
             eprintln!(
                 "[engine_pool] {what} did not settle within {TURN_GATE_AWAIT_TIMEOUT:?} while holding the turn gate; letting it finish in the background"
             );
-            false
+            BoundedJoinOutcome::Detached
         }
     }
 }
 
 /// Static name for the shutdown-op diagnostics. The surrounding reclaim logs
 /// must not carry the session id (CodeQL flags cleartext session ids in
-/// newly added lines); pre-existing logs around the reclaim already provide
-/// that context. Message payloads are avoided on purpose: `Op`'s `Debug`
+/// newly added lines): the reclaimed-terminal path logs the session id, but
+/// the delete/evict paths currently log none, so a failure line on those
+/// paths is attributable only by ordering — a known diagnosability trade.
+/// Message payloads are avoided on purpose: `Op`'s `Debug`
 /// prints message contents, so a future payload variant sent through this
 /// loop would leak them into the log.
 fn shutdown_op_name(op: &Op) -> &'static str {
@@ -1857,12 +1885,27 @@ impl EnginePool {
                 // run can settle. The detached run later records the
                 // authoritative outcome in the flag; nothing re-reads it for
                 // the already-persisted terminal — the flag stays truthful
-                // for post-reclaim diagnostics instead.
+                // for post-reclaim diagnostics instead. Until the detached
+                // run settles, the session's next send can transiently fail
+                // with the scope-still-active bail; a retry succeeds once
+                // the run has closed the scope (rebind and delete reset the
+                // registry instead and are immune). A panicked run would
+                // never settle at all: one fresh detached attempt redoes the
+                // idempotent finalize, and if that fails too the preset flag
+                // keeps the terminal honest while the registry worker keeps
+                // sweeping pending kills.
                 let shell_reclaim_for_finalize = shell_reclaim_for_drain.clone();
                 let finalize =
                     tokio::spawn(async move { shell_reclaim_for_finalize.finalize().await });
-                if !bounded_join_while_holding_turn_gate("shell reclaim finalize", finalize).await {
-                    shell_reclaim_for_drain.mark_cleanup_failed();
+                match bounded_join_while_holding_turn_gate("shell reclaim finalize", finalize).await
+                {
+                    BoundedJoinOutcome::Settled => {}
+                    BoundedJoinOutcome::Detached => shell_reclaim_for_drain.mark_cleanup_failed(),
+                    BoundedJoinOutcome::Panicked(_) => {
+                        shell_reclaim_for_drain.mark_cleanup_failed();
+                        let shell_reclaim_after_panic = shell_reclaim_for_drain.clone();
+                        tokio::spawn(async move { shell_reclaim_after_panic.finalize().await });
+                    }
                 }
                 forwarder.abort();
                 let _ = forwarder.await;
@@ -3184,10 +3227,11 @@ where
 mod scheduled_model_tests {
     const TEST_SUBMISSION: &str = "sub-test";
     use super::{
-        EvalModelSnapshots, ModelIdentity, ModelUpdateRevisions, Op, Pinvou3Bridge,
-        PreparedRuntimeState, REBIND_EVICT_GATE_TIMEOUT, SESSION_MODEL_BINDING_STALE_ERROR,
-        ScheduledUnattendedGuard, SessionShellManagers, SessionTurnLifecycles, SessionTurnLocks,
-        SessionTurnShellTasks, TURN_GATE_AWAIT_TIMEOUT, TranscriptOperation, TurnIdentity,
+        BoundedJoinOutcome, EvalModelSnapshots, ModelIdentity, ModelUpdateRevisions, Op,
+        Pinvou3Bridge, PreparedRuntimeState, REBIND_EVICT_GATE_TIMEOUT,
+        SESSION_MODEL_BINDING_STALE_ERROR, ScheduledUnattendedGuard, SessionShellManagers,
+        SessionTurnLifecycles, SessionTurnLocks, SessionTurnShellTasks, TURN_GATE_AWAIT_TIMEOUT,
+        TranscriptOperation, TurnIdentity, bounded_join_while_holding_turn_gate,
         bounded_shutdown_sends, cancel_turn_with_gates, default_model_for_new_session_from,
         delete_chat_session_with_gate, delete_scheduled_run_with_gate, delete_then_forget,
         dispatch_turn_bound_cancel, entry_is_fresh, evict_if_idle_with_gates, generation_matches,
@@ -4758,6 +4802,27 @@ mod scheduled_model_tests {
         })
         .await
         .expect("turn gate must be re-acquirable after the bound");
+    }
+
+    // issue #255 hardening: a panicked side-effect task must count as "not
+    // settled". A JoinError silently counted as a timely completion would let
+    // the reclaim terminal claim a verified-clean shell state that was never
+    // verified, and — with forwarder.abort() removing the fallback finalizer —
+    // leave finalize_scope's tail (active_scope_id retirement) unexecuted so
+    // every later prepare_turn of the session bails. The forkguard_ prefix
+    // registers it as a fork-guard layer-3 behavior test (fork-policy §3).
+    #[tokio::test]
+    async fn forkguard_bounded_join_reports_panicked_task_as_not_settled() {
+        let panicked = bounded_join_while_holding_turn_gate(
+            "test finalize",
+            tokio::spawn(async { panic!("finalize exploded") }),
+        )
+        .await;
+        assert!(matches!(panicked, BoundedJoinOutcome::Panicked(_)));
+
+        let settled =
+            bounded_join_while_holding_turn_gate("test finalize", tokio::spawn(async {})).await;
+        assert!(matches!(settled, BoundedJoinOutcome::Settled));
     }
 
     // issue #255: the reclaim shutdown sends must give up the turn gate
