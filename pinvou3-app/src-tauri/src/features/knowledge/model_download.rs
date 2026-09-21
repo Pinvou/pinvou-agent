@@ -176,6 +176,10 @@ pub(crate) fn current_status(service: &KnowledgeService) -> KbModelStatus {
 
 /// 取消进行中的下载（下次网络数据块或文件校验边界生效）。取消只在下载进行中
 /// 有意义：下次下载启动时会复位该标志，一次取消不会毒化进程内后续的下载。
+///
+/// Headless caller (the CLI families stack): the base tree had removed the
+/// cancel entry point along with the `kb_model_cancel` command; this pub
+/// surface restores it for the stacked CLI only — no in-tree caller.
 pub fn kb_model_cancel() {
     CANCEL.store(true, Ordering::Relaxed);
 }
@@ -254,14 +258,7 @@ pub async fn kb_model_download(
         load_installed_embedder_unlocked(&service, &pool, configured_dir).await?;
         return Ok(current_status(&service));
     }
-    if DOWNLOADING.swap(true, Ordering::SeqCst) {
-        return Err("模型正在下载中".into());
-    }
-    // 守卫：任何提前 return（含 ?、取消）退出时都复位 DOWNLOADING。
-    let guard = DownloadGuard;
-    // 每次下载以干净的取消标志开始：CANCEL 是「停止当前下载」的单次信号，
-    // 不是持久状态——不复位会让一次取消毒化进程内后续的每一次下载。
-    CANCEL.store(false, Ordering::SeqCst);
+    let guard = begin_download()?;
 
     let parent = dir
         .parent()
@@ -574,6 +571,17 @@ impl Drop for DownloadGuard {
     }
 }
 
+/// 占住进程级下载槽位并以干净的取消标志开始一次下载；槽位已被占时返回
+/// `Err`。CANCEL 是「停止当前下载」的单次信号，不是持久状态——获取槽位
+/// 成功即复位，一次取消不能毒化进程内后续的每一次下载。
+fn begin_download() -> Result<DownloadGuard, String> {
+    if DOWNLOADING.swap(true, Ordering::SeqCst) {
+        return Err("模型正在下载中".into());
+    }
+    CANCEL.store(false, Ordering::SeqCst);
+    Ok(DownloadGuard)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -587,6 +595,28 @@ mod tests {
             std::process::id(),
             NEXT.fetch_add(1, Ordering::Relaxed)
         ))
+    }
+
+    #[test]
+    fn download_start_resets_a_poisoned_cancel_flag() {
+        // 防御：测试可能在任意静态状态下启动，先确保槽位空闲。
+        DOWNLOADING.store(false, Ordering::SeqCst);
+        CANCEL.store(true, Ordering::SeqCst);
+        let guard = begin_download().expect("slot must be free");
+        assert!(
+            !CANCEL.load(Ordering::SeqCst),
+            "a fresh download must start from a clean cancel flag - one cancel \
+             must not poison every later download"
+        );
+        assert!(
+            begin_download().is_err(),
+            "a second claim while downloading must refuse"
+        );
+        drop(guard);
+        assert!(
+            !DOWNLOADING.load(Ordering::SeqCst),
+            "dropping the guard must release the download slot"
+        );
     }
 
     #[test]
