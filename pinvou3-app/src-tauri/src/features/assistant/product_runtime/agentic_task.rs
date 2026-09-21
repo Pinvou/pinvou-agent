@@ -872,12 +872,12 @@ async fn prompt_with_attachments(
     let ledger_root = roots.ledger.clone();
     // `SessionRoots::bound` is the documented MUST for detecting the bound
     // state (`ledger != execution` stops implying binding once other dual-root
-    // shapes appear) — same predicate as the GUI chat command. A caller-
-    // provided session that is NOT bound but runs with an explicit `workspace`
-    // this time is the one dual-root shape the bound check misses: the
-    // run-scoped resolver moves the engine cwd to the workspace while staged
-    // files still live under the session ledger, so relative references would
-    // resolve against the wrong root — force the absolute form there too.
+    // shapes appear) — same predicate as the GUI chat command. The second
+    // disjunct is defense-in-depth for an explicit `--workspace` on a
+    // caller-provided session: today the run-scoped resolver already marks
+    // that session bound (so `roots.bound` covers it), but forcing the
+    // absolute form costs nothing and keeps staged ledger files resolving
+    // correctly if the resolver's bound propagation ever narrows.
     let reference_absolute = roots.bound || (existing_session && request.workspace.is_some());
     let attachments = request.attachments.clone();
     let prompt = request.prompt.clone();
@@ -1218,6 +1218,33 @@ mod tests {
         .collect();
         let error = validate_attachments(&too_many).unwrap_err();
         assert!(error.to_string().contains("agent_attachment_too_many"));
+    }
+
+    #[test]
+    fn validate_attachments_enforces_the_total_budget() {
+        let workspace = tempfile::tempdir().unwrap();
+        // Six files each just under the per-file cap sum past the aggregate
+        // budget (6 × 18 MiB = 108 MiB > 100 MiB): the per-file check alone
+        // allowed 320 MiB of staged attachments, so this branch is the
+        // load-bearing one. Sparse files keep the test instant.
+        let attachments: Vec<_> = (0..6)
+            .map(|i| {
+                let path = workspace.path().join(format!("part-{i}.bin"));
+                std::fs::File::create(&path)
+                    .unwrap()
+                    .set_len(MAX_ATTACHMENT_BYTES - 2 * 1024 * 1024)
+                    .unwrap();
+                AgenticTaskAttachment {
+                    path,
+                    remove_after_ingest: false,
+                }
+            })
+            .collect();
+        let error = validate_attachments(&attachments).unwrap_err();
+        assert!(
+            error.to_string().contains("attachments total"),
+            "the aggregate budget must reject the batch: {error}"
+        );
     }
 
     #[test]
