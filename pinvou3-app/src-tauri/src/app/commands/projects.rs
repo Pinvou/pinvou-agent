@@ -1521,6 +1521,13 @@ mod tests {
         let extra = unique_dir("plain-extra");
         std::fs::create_dir_all(&project_root).unwrap();
         std::fs::create_dir_all(&extra).unwrap();
+        // Feed the fixture in the display (canonical) form the store persists
+        // and the aligned snapshot carries: a raw temp spelling folds to a
+        // different identity key where the temp root sits behind an 8.3 short
+        // name (Windows runners) or a symlinked /var (macOS), so the asserted
+        // spelling would diverge from the written one there.
+        let project_root = canonical_form(&project_root);
+        let extra = canonical_form(&extra);
         let store = project_store_in(&unique_dir("plain-store"));
         store
             .create_project("p".to_string(), vec![project_root.clone(), extra.clone()])
@@ -1577,6 +1584,11 @@ mod tests {
         let extra = unique_dir("agent-extra");
         std::fs::create_dir_all(&cwd).unwrap();
         std::fs::create_dir_all(&extra).unwrap();
+        // Display (canonical) fixture spelling, same convention as the plain
+        // binding test above: the agent record and the aligned snapshot carry
+        // the form the store persists.
+        let cwd = canonical_form(&cwd);
+        let extra = canonical_form(&extra);
         let agents_dir = unique_dir("agent-store");
         std::fs::create_dir_all(&agents_dir).unwrap();
         let agents = SessionAgentStore::for_test(agents_dir.join("session-agents.json"));
@@ -1771,6 +1783,13 @@ mod tests {
         let root_b = unique_dir("expel-b");
         std::fs::create_dir_all(&root_a).unwrap();
         std::fs::create_dir_all(&root_b).unwrap();
+        // Display (canonical) fixture spelling: the removed-root enumeration
+        // is a folded-key prefix match against the stored (canonical) roots,
+        // so a raw temp spelling would not be found under the removed root on
+        // hosts whose temp path folds differently (8.3 short names on Windows
+        // runners, symlinked /var on macOS).
+        let root_a = canonical_form(&root_a);
+        let root_b = canonical_form(&root_b);
         let agents_dir = unique_dir("expel-agents");
         std::fs::create_dir_all(&agents_dir).unwrap();
         let agents = SessionAgentStore::for_test(agents_dir.join("session-agents.json"));
@@ -1798,12 +1817,7 @@ mod tests {
             vec![root_b.clone()],
         )
         .expect("replace roots");
-        assert_eq!(
-            updated.roots,
-            vec![crate::platform::os::platform_compat_path(
-                &root_b.canonicalize().unwrap().to_string_lossy()
-            )]
-        );
+        assert_eq!(updated.roots, vec![root_b.clone()]);
         for id in [&plain_id, "code-under-a"] {
             assert_eq!(
                 store.assignment_of(id),
@@ -1822,12 +1836,7 @@ mod tests {
             vec![root_b.clone()],
         )
         .expect("retry");
-        assert_eq!(
-            again.roots,
-            vec![crate::platform::os::platform_compat_path(
-                &root_b.canonicalize().unwrap().to_string_lossy()
-            )]
-        );
+        assert_eq!(again.roots, vec![root_b.clone()]);
         assert_eq!(store.assignment_of(&plain_id), Some(None));
         let _ = std::fs::remove_dir_all(&root_a);
         let _ = std::fs::remove_dir_all(&root_b);
@@ -1847,6 +1856,13 @@ mod tests {
         let other = root_a.join("other");
         std::fs::create_dir_all(&nested).unwrap();
         std::fs::create_dir_all(&other).unwrap();
+        // Display (canonical) fixture spelling, same convention as the expel
+        // test above: both the removed-root prefix enumeration and the
+        // covered-by-new-roots check match in the folded-key domain, so the
+        // fixture binds the same form the store persists.
+        let root_a = canonical_form(&root_a);
+        let nested = canonical_form(&nested);
+        let other = canonical_form(&other);
         let agents_dir = unique_dir("narrow-agents");
         std::fs::create_dir_all(&agents_dir).unwrap();
         let agents = SessionAgentStore::for_test(agents_dir.join("session-agents.json"));
@@ -2253,6 +2269,11 @@ mod tests {
         let extra = unique_dir("acp-extra");
         std::fs::create_dir_all(&cwd).unwrap();
         std::fs::create_dir_all(&extra).unwrap();
+        // Display (canonical) fixture spelling, same convention as the other
+        // align tests: the aligned snapshot carries the store's persisted
+        // form, not the raw temp spelling.
+        let cwd = canonical_form(&cwd);
+        let extra = canonical_form(&extra);
         let agents_dir = unique_dir("acp-agents");
         std::fs::create_dir_all(&agents_dir).unwrap();
         let agents = SessionAgentStore::for_test(agents_dir.join("session-agents.json"));
@@ -2497,7 +2518,12 @@ mod tests {
             "the picked root is also recorded as the remembered primary"
         );
         // No project id = no assignment, no memory write, no broadcast.
-        assert!(!super::record_project_choice(&store, "s2", None, Some(&sub)));
+        assert!(!super::record_project_choice(
+            &store,
+            "s2",
+            None,
+            Some(&sub)
+        ));
         assert_eq!(store.assignment_of("s2"), None);
         let _ = std::fs::remove_dir_all(&desktop);
     }
