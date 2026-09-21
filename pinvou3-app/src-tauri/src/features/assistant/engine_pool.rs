@@ -1362,14 +1362,22 @@ impl EnginePool {
         for sid in sids {
             let scope = self.bridge.session_policy(&sid).mode();
             let project_workspace = self.project_workspace_for(&sid);
-            let _ = tokio::task::spawn_blocking(move || {
+            let sid_for_log = sid.clone();
+            if let Err(join_error) = tokio::task::spawn_blocking(move || {
                 crate::features::assistant::skill_materialization::rewrite_session_skills(
                     &sid,
                     scope,
                     project_workspace.as_deref(),
                 );
             })
-            .await;
+            .await
+            {
+                // Best-effort refresh: a panicked rewrite leaves the composed
+                // dirs stale until the next materialization, but the join
+                // failure itself must not vanish silently — every other
+                // spawn_blocking join in the engine fails closed or logs.
+                log::warn!("session {sid_for_log} skills rewrite join failed: {join_error}");
+            }
         }
     }
 
