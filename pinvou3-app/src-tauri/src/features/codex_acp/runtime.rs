@@ -273,26 +273,43 @@ pub(super) struct VersionProbeOutcome {
 /// Shared spawn-and-wait primitive for `--version`-style self-checks (used by this module's Codex
 /// self-check and install.rs's generic CLI probe): external_command + `--version` +
 /// a 15-second wait_timeout (Node CLI cold starts measured around 9 seconds, leaving headroom for
-/// first-run security-software scans); on timeout the child is killed and reaped, with stdout/stderr read back. stdin/stderr redirection
+/// first-run security-software scans); on timeout the child is killed and reaped and the captured
+/// pipes are dropped unread. stdin/stderr redirection
 /// policy is injected by the caller via `configure`: the Codex self-check inherits stdin, captures stderr and embeds
 /// it into the error; the generic CLI probe nulls stdin and discards stderr.
 pub(super) fn run_version_probe(
     executable: &Path,
     configure: impl FnOnce(&mut std::process::Command),
 ) -> Result<VersionProbeOutcome, VersionProbeError> {
+    run_version_probe_with_timeout(executable, configure, Duration::from_secs(15))
+}
+
+fn run_version_probe_with_timeout(
+    executable: &Path,
+    configure: impl FnOnce(&mut std::process::Command),
+    timeout: Duration,
+) -> Result<VersionProbeOutcome, VersionProbeError> {
     let mut command = crate::platform::process::external_command(executable);
     command.arg("--version");
     configure(&mut command);
     let mut child = command.spawn().map_err(VersionProbeError::Spawn)?;
     let status = match child
-        .wait_timeout(Duration::from_secs(15))
+        .wait_timeout(timeout)
         .map_err(VersionProbeError::Wait)?
     {
         Some(status) => Some(status),
         None => {
             let _ = child.kill();
             let _ = child.wait();
-            None
+            // Descendants of the child may have inherited the piped write ends and survive the
+            // kill, so reading here would block until the last holder exits and break the
+            // version-probe time budget. Every caller treats `status: None` as a timeout without
+            // looking at the captured output, so the pipes are dropped unread instead.
+            return Ok(VersionProbeOutcome {
+                status: None,
+                stdout: String::new(),
+                stderr: String::new(),
+            });
         }
     };
     // Treat read failures as empty strings: each caller's empty-output branch (probe failed / no version
@@ -448,6 +465,45 @@ mod tests {
             .expect("write fake codex");
         platform::make_executable(&path).expect("chmod fake codex");
         path
+    }
+
+    #[test]
+    fn version_probe_timeout_does_not_wait_for_inherited_pipe_holders() {
+        // A child that leaves a descendant holding the piped stdout/stderr write ends must not turn
+        // the timeout path into an unbounded read: after the kill, `read_to_string` would wait for
+        // the surviving `sleep 10` (~9.5s) instead of returning the timeout outcome at once.
+        if !platform::unix_like() {
+            return;
+        }
+        let root = std::env::temp_dir().join(format!(
+            "pinvou3-version-probe-timeout-test-{}",
+            std::process::id()
+        ));
+        let _ = std::fs::remove_dir_all(&root);
+        std::fs::create_dir_all(&root).expect("create probe test directory");
+        let script = root.join("hanging-probe");
+        std::fs::write(&script, "#!/bin/sh\nsleep 10 &\nexec sleep 60\n")
+            .expect("write probe script");
+        platform::make_executable(&script).expect("chmod probe script");
+
+        let started = std::time::Instant::now();
+        let outcome = run_version_probe_with_timeout(
+            &script,
+            |command| {
+                command.stdout(Stdio::piped()).stderr(Stdio::piped());
+            },
+            Duration::from_millis(500),
+        )
+        .expect("probe wait should not fail");
+        let elapsed = started.elapsed();
+        assert!(outcome.status.is_none(), "probe should report its timeout");
+        assert_eq!(outcome.stdout, "");
+        assert_eq!(outcome.stderr, "");
+        assert!(
+            elapsed < Duration::from_secs(5),
+            "timeout path must not block on write ends held by surviving descendants (took {elapsed:?})"
+        );
+        let _ = std::fs::remove_dir_all(&root);
     }
 
     #[test]
