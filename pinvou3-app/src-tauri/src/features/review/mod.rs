@@ -544,7 +544,8 @@ async fn model_review(
             user_content,
             1600,
         )
-        .await?;
+        .await?
+        .text;
         return parse_model_review(&content).context("parse Pinvou review");
     }
     let mut body = json!({
