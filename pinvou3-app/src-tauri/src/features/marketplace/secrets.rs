@@ -166,6 +166,18 @@ pub(super) fn mcp_secret_store_error(tool_id: &str, key: &str, error: Credential
 /// is deduplicated once. Targets stay aligned with `resolve_secret_placeholder`
 /// at install time (a config_fields "bearer" lands as reference target
 /// "header" there).
+///
+/// Sensitive-by-name legacy `manifest.env` keys (the same
+/// [`is_sensitive_key_name`] heuristic the install and rebuild paths apply in
+/// `connectors.rs`) are enumerated under **both** targets the two writers
+/// store them under — local entries resolve them as "env", the remote legacy
+/// channel persists them under the Bearer target. Enumerating both keeps the
+/// restart rehydration (`sync_secret_values`) on the same reference at least
+/// one of the writers wrote; the wrong-target lookup simply misses. Without
+/// this leg, a legacy-only manifest's credential is registered by the
+/// installing reconcile and then wiped by the next boot's
+/// `sync_secret_values` clear-and-rebuild — silent 401s from the first
+/// restart.
 pub(super) fn manifest_secret_targets(manifest: &ToolManifest) -> Vec<(String, String)> {
     let mut out: Vec<(String, String)> = Vec::new();
     let mut push = |target: &str, key: &str| {
@@ -176,6 +188,15 @@ pub(super) fn manifest_secret_targets(manifest: &ToolManifest) -> Vec<(String, S
     };
     for s in &manifest.secret_env {
         push("env", &s.key);
+    }
+    for key in manifest.env.keys() {
+        if is_sensitive_key_name(key) {
+            push("env", key);
+            push(
+                bundle::keyring_target(bundle::CredentialTarget::Bearer),
+                key,
+            );
+        }
     }
     for s in &manifest.secret_headers {
         push(
@@ -344,6 +365,29 @@ mod tests {
         assert_eq!(targets.len(), 2, "AMAP/QCC each deduplicated once");
         assert!(targets.contains(&("env".to_string(), "AMAP_KEY".to_string())));
         assert!(targets.contains(&("header".to_string(), "QCC_API_KEY".to_string())));
+    }
+
+    #[test]
+    fn manifest_secret_targets_includes_sensitive_legacy_env_keys() {
+        // A legacy-only manifest (plain env keys recognized by name, no
+        // secret channels) must rehydrate under both targets the writers
+        // store them under: local entries resolve them as "env", the remote
+        // legacy channel persists them under the Bearer target.
+        let manifest: ToolManifest = serde_json::from_str(
+            r#"{
+            "id":"t","name":"T","description":"","version":"1","icon":"","category":"",
+            "mcp_tools":[],"command":"","args":[],
+            "env":{"VENDOR_API_KEY":"from-manifest","REGION":"not-a-secret"}
+        }"#,
+        )
+        .unwrap();
+        let targets = manifest_secret_targets(&manifest);
+        assert!(targets.contains(&("env".to_string(), "VENDOR_API_KEY".to_string())));
+        assert!(targets.contains(&("header".to_string(), "VENDOR_API_KEY".to_string())));
+        assert!(
+            !targets.iter().any(|(_, key)| key == "REGION"),
+            "non-sensitive legacy env keys are not secrets: {targets:?}"
+        );
     }
 
     #[test]

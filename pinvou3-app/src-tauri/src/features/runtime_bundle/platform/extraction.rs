@@ -479,15 +479,36 @@ impl Pinvou3Bundle {
                 if !Self::marketplace_tool_residue_present(tool_id) {
                     return Ok(());
                 }
-                let _ = crate::features::marketplace::MarketplaceManager::new().uninstall(tool_id);
+                // 卸载失败(如今最常见的是损坏 mcp.json 拒绝写入器)必须留日志:
+                // 此前 `let _ =` 无声吞掉,损坏窗口内每个启动都静默复发。
+                let uninstall_error = crate::features::marketplace::MarketplaceManager::new()
+                    .uninstall(tool_id)
+                    .err();
                 // 禁用/隐藏残留统一走 scope 模块的单临界区 RMW 助手:一次
                 // DISABLED_BUNDLES_FILE_LOCK 内 load→retain→条件 save(#455 收敛范式),
                 // plain + code 所有 scope 的 disabled/hidden 两套集合一并清理。此前
                 // plain 走「load → 内存 retain → 条件 save」两段独立取锁的临界区,
                 // 两段之间并发写方的更新会被旧快照整表覆盖(#522,与 #455 修复的 M-6b
-                // 两段式同型)。uninstall 成功时其内部清理已覆盖本步;回滚(如 mcp.json
-                // 拒重置)会跳过 uninstall 内部清理,本步是唯一清理面,不可省。
+                // 两段式同型)。uninstall 成功时其内部清理已覆盖本步,这次幂等复扫是
+                // 纵深防御;回滚时本步是唯一清理面,不可省——该残留不在事务快照内,
+                // 留着会让未来同名重装被误隐藏(#522)。
                 crate::features::marketplace::scope::remove_bundle_from_disabled_scopes(tool_id);
+                if let Some(error) = uninstall_error {
+                    // 回滚说明工具仍登记在册:目录删除随之跳过,不销毁在册工具的
+                    // 包目录;登记与目录都是残留探测面,下次启动会重试整套清理。
+                    // 打包版 Windows GUI 无 stderr:timeline 是用户能看到这条
+                    // 推迟的唯一渠道(与 reconcile 失败的上报同一范式)。
+                    log::warn!(
+                        "[cleanup] retired tool '{tool_id}' uninstall deferred: {error}; \
+                         retrying on the next startup"
+                    );
+                    crate::platform::startup::mark_with_detail(
+                        "rust",
+                        "retired_tool_cleanup:deferred",
+                        &error,
+                    );
+                    return Ok(());
+                }
 
                 let _ = std::fs::remove_dir_all(paths::bundle_mcp_servers_dir().join(tool_id));
                 // 按包聚合新布局的退役残留：`migrate_custom_mcp_layout` 会先把旧目录
@@ -540,8 +561,8 @@ impl Pinvou3Bundle {
                 Err(_) => return true,
             }
         }
-        // mcp.json 按结构探测:server key 存在即残留;坏 json 保守视为有残留,交给
-        // uninstall 的备份拒改契约(不重建,下次启动重试直至用户修复)。
+        // mcp.json 按结构探测:server key 存在即残留;坏 json 保守视为有残留——
+        // uninstall 会在写入器处拒绝并整体回滚,清理推迟到文件修复后的下次启动。
         if !paths::mcp_config_path().is_file() {
             return false;
         }
@@ -769,8 +790,10 @@ impl Pinvou3Bundle {
     pub(super) fn ensure_builtin_mcp_servers(&self) -> std::io::Result<()> {
         // mcp.json 只读 + parse 一次,upsert 与 python command 自愈共享(两段语义
         // 不同:前者修内置 server 条目,后者修 marketplace 条目的陈旧 python 路径;
-        // 合并的只是 IO,不是逻辑)。坏 json 由 load 层重建空骨架,保证内置 server
-        // 条目自愈恢复(parse 失败早期返回会让坏 mcp.json 永远修不好)。
+        // 合并的只是 IO,不是逻辑)。本函数的 repair loader 在坏 json 上仍会重建
+        // 空骨架,但唯一的生产调用方已由 `mcp_json_unparseable()` 先行门控(见
+        // run_mcp_startup_maintenance),坏文件根本走不到这里——骨架重建只剩
+        // 测试调用方,门控注释见本函数上方的调用点。
         let mut mcp = self.load_mcp_json_for_repair();
         let present_server = paths::bundle_present_artifact_server();
         // Both paths of load_mcp_json_for_repair return an object skeleton;

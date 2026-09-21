@@ -209,3 +209,32 @@ impl<S: crate::platform::credential_store::CredentialStore> MarketplaceManager<S
         Ok(())
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::legacy_mcp_secret_specs;
+    use crate::features::marketplace::{mcp_catalog, secrets};
+
+    /// Every legacy migration spec's key must be enumerable from the tool's
+    /// embedded manifest. Otherwise `sync_secret_values` wipes the migrated
+    /// credential from the in-process registry on the first restart and the
+    /// migrated bearer wiring silently 401s — the qcc manifest once forgot
+    /// exactly this declaration.
+    #[test]
+    fn embedded_manifests_enumerate_every_legacy_migration_secret() {
+        for spec in legacy_mcp_secret_specs() {
+            let manifest = mcp_catalog::embedded_manifest(spec.tool_id)
+                .unwrap()
+                .unwrap_or_else(|| panic!("embedded manifest for {}", spec.tool_id));
+            let targets = secrets::manifest_secret_targets(&manifest);
+            assert!(
+                targets.contains(&(spec.target.to_string(), spec.key.to_string())),
+                "manifest for '{}' must declare secret {} under target {} so the restart \
+                 rehydration keeps it: {targets:?}",
+                spec.tool_id,
+                spec.key,
+                spec.target,
+            );
+        }
+    }
+}

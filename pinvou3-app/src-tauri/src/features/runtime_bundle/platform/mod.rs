@@ -1813,6 +1813,64 @@ mod tests {
         cleanup(&tmp);
     }
 
+    /// 损坏 mcp.json 下的退役清理:uninstall 在写入器处被拒并整体回滚——登记、
+    /// 包目录、坏文件字节必须全部原样保留,等待文件修复后的下次启动重试,
+    /// 而不是销毁一个仍登记在册的工具的包目录。
+    #[test]
+    fn cleanup_defers_when_uninstall_refuses_a_corrupt_mcp_json() {
+        let _g = ENV_LOCK.lock().unwrap_or_else(|p| p.into_inner());
+        let tmp = tempdir();
+        // SAFETY: holding platform::paths::tests::ENV_LOCK; env writes serialized in-process.
+        unsafe { std::env::set_var("PINVOU3_HOME", &tmp) };
+        let bundle = Pinvou3Bundle::paths();
+        let data_dir = paths::bundle_mcp_servers_dir().join("data_analysis");
+        std::fs::create_dir_all(&data_dir).unwrap();
+        std::fs::write(
+            data_dir.join("manifest.json"),
+            r#"{
+                "id":"data_analysis",
+                "name":"数据分析与可视化",
+                "description":"removed",
+                "version":"1",
+                "icon":"bar-chart-3",
+                "category":"办公",
+                "mcp_tools":["mcp_data_analysis_build_dashboard"],
+                "command":"python",
+                "args":["server.py"]
+            }"#,
+        )
+        .unwrap();
+        let marketplace_dir = paths::pinvou3_home().join("marketplace");
+        std::fs::create_dir_all(&marketplace_dir).unwrap();
+        std::fs::write(
+            marketplace_dir.join("installed.json"),
+            r#"["data_analysis"]"#,
+        )
+        .unwrap();
+        let mcp_path = paths::mcp_config_path();
+        let corrupt = r#"{"servers": {,"trailing":"comma"}"#;
+        std::fs::write(&mcp_path, corrupt).unwrap();
+
+        bundle.cleanup_removed_marketplace_tools().unwrap();
+
+        assert!(
+            data_dir.exists(),
+            "uninstall 被拒后不得删除仍登记在册的工具的包目录"
+        );
+        let installed = std::fs::read_to_string(marketplace_dir.join("installed.json")).unwrap();
+        assert!(
+            installed.contains("data_analysis"),
+            "uninstall 被拒后登记必须原样保留: {installed}"
+        );
+        assert_eq!(
+            std::fs::read(&mcp_path).unwrap(),
+            corrupt.as_bytes(),
+            "坏文件字节必须在被拒的卸载中幸存"
+        );
+
+        cleanup(&tmp);
+    }
+
     /// 旧版 mcp.json 的 present server key 是 `pinvou`(与产品名差一个 3,模型采样必漂成
     /// pinvou3 → `Failed to find MCP server: pinvou3`)。升级时 ensure_builtin_mcp_servers
     /// 必须迁成 `pinvou3`、删干净旧 `pinvou`,且不碰 marketplace 已装条目。

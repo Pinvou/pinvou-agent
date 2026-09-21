@@ -851,6 +851,11 @@ impl<S: CredentialStore> MarketplaceManager<S> {
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner);
         recover_marketplace_transaction()?;
+        // A corrupt mcp.json must fail the install with the actionable refusal
+        // (backup + fix-or-remove guidance, the same message every writer
+        // refuses with) instead of the plaintext migration's bare parse error.
+        // A healthy or absent file passes through untouched.
+        connectors::load_mcp_json_for_reconcile()?;
         self.migrate_mcp_plaintext_secrets()?;
         // 内嵌目录工具的安装只能信任编译进应用的 manifest——磁盘副本可能来自旧
         // 版本或已被修改，不得改写安装期写入 mcp.json 的任何内容（含 command/
@@ -1683,8 +1688,12 @@ impl<S: CredentialStore> MarketplaceManager<S> {
 
     /// Env keys of a dead/malformed local entry that the fresh-install rebuild
     /// cannot reproduce: anything outside the manifest's declarative env,
-    /// secret channels, and config fields — i.e. install-time user input or a
-    /// hand edit. Key names only, never values.
+    /// secret channels, and secret-or-sensitive config fields — i.e.
+    /// install-time user input or a hand edit. The config-field guard mirrors
+    /// the rebuild's degrade branch (`build_local_server_entry` re-derives a
+    /// config field only when it is secret or sensitive by name), so a
+    /// non-secret install-time env value is disclosed as dropped instead of
+    /// being silently assumed reproducible. Key names only, never values.
     fn dropped_local_env_keys(
         manifest: &types::ToolManifest,
         old_entry: &serde_json::Value,
@@ -1697,7 +1706,10 @@ impl<S: CredentialStore> MarketplaceManager<S> {
             manifest
                 .config_fields
                 .iter()
-                .filter(|field| field.target == "env")
+                .filter(|field| {
+                    field.target == "env"
+                        && (field.secret || secrets::is_sensitive_key_name(&field.key))
+                })
                 .map(|field| field.key.clone()),
         );
         let dropped: Vec<&str> = old_env
@@ -1983,7 +1995,7 @@ mod tests {
         CredentialError, CredentialReference, CredentialStore, MemoryCredentialStore,
     };
     use crate::platform::paths::tests::ENV_LOCK;
-    use secrets::{mcp_secret_env_var, mcp_secret_reference};
+    use secrets::{mcp_secret_env_var, mcp_secret_reference, snapshot_secret_values};
     use sha2::{Digest, Sha256};
     use std::future::Future;
     use std::io::{Cursor, Write as _};
@@ -6597,9 +6609,12 @@ mod tests {
         with_temp_home(|| {
             write_local_tool_fixture("env-x", false);
             write_installed_ids(&["env-x".to_string()]);
+            // A nonexistent target under the test home stays nonexistent on
+            // every platform, so dead-target handling is identical on Windows.
+            let dead_command = paths::pinvou3_home().join("x").join("w.py");
             seed_mcp_json(serde_json::json!({
                 "env-x": {
-                    "command": "/x/w.py",
+                    "command": dead_command,
                     "args": [],
                     "env": {"MY_INSTALL_TIME_VAR": "install-input", "KEEP_MANIFEST_VAR": "m"}
                 }
@@ -6690,6 +6705,238 @@ mod tests {
                 entry.get("headers").is_none(),
                 "no literal ${{}} placeholder may be written into headers: {entry}"
             );
+        });
+    }
+
+    /// The restart rehydration (`sync_secret_values`) clears and rebuilds the
+    /// in-process registry from `manifest_secret_targets` alone. A legacy
+    /// remote manifest's credential is stored under the Bearer target, so the
+    /// sensitive-by-name `manifest.env` key must be enumerated there —
+    /// otherwise the wiring installed by the reconcile dies at the first
+    /// restart (entry keeps `bearer_token_env_var`, nothing resolves it:
+    /// silent 401s).
+    #[test]
+    fn legacy_remote_env_key_survives_secret_values_resync() {
+        with_temp_home(|| {
+            let manifest = serde_json::json!({
+                "id":"lg-rs","name":"lg-rs","description":"d","version":"1","icon":"x","category":"c",
+                "mcp_tools":[],"command":"","args":[],
+                "servers":[{"name":"lg-rs-remote","url":"https://lg-rs.example.com/mcp"}],
+                "env":{"VENDOR_API_KEY":"placeholder-in-manifest"}
+            });
+            write_tool_manifest("lg-rs", &serde_json::to_string_pretty(&manifest).unwrap());
+            write_installed_ids(&["lg-rs".to_string()]);
+            let manager = MarketplaceManager::with_store(MemoryCredentialStore::default());
+
+            manager.reconcile_installed_mcp_entries().unwrap();
+            let env_var = mcp_secret_env_var("VENDOR_API_KEY");
+            assert!(
+                snapshot_secret_values().contains_key(&env_var),
+                "the reconcile must register the legacy secret: {:?}",
+                snapshot_secret_values().keys()
+            );
+
+            // The boot runs this right after the reconcile (bridge.rs); it
+            // must re-add what it wipes, not leave the registry empty.
+            manager.sync_secret_values().unwrap();
+            assert_eq!(
+                snapshot_secret_values().get(&env_var).map(String::as_str),
+                Some("placeholder-in-manifest"),
+                "the legacy secret must survive the restart rehydration: {:?}",
+                snapshot_secret_values()
+            );
+        });
+    }
+
+    /// Local legacy-only manifests keep their credential under the "env"
+    /// target; the same rehydration must cover that channel (latent since the
+    /// registry moved out of the process env).
+    #[test]
+    fn legacy_local_env_key_survives_secret_values_resync() {
+        with_temp_home(|| {
+            let manifest = serde_json::json!({
+                "id":"lg-loc","name":"lg-loc","description":"d","version":"1","icon":"x","category":"c",
+                "mcp_tools":[],"command":"python","args":["server.py"],
+                "env":{"LOCAL_API_KEY":"legacy-manifest-value"}
+            });
+            write_tool_manifest("lg-loc", &serde_json::to_string_pretty(&manifest).unwrap());
+            std::fs::write(
+                mcp_catalog::package_mcp_dir("lg-loc").join("server.py"),
+                "print('fixture')\n",
+            )
+            .unwrap();
+            write_installed_ids(&["lg-loc".to_string()]);
+            let manager = MarketplaceManager::with_store(MemoryCredentialStore::default());
+
+            manager.reconcile_installed_mcp_entries().unwrap();
+            let env_var = mcp_secret_env_var("LOCAL_API_KEY");
+            assert_eq!(
+                snapshot_secret_values().get(&env_var).map(String::as_str),
+                Some("legacy-manifest-value"),
+                "the reconcile must register the local legacy secret"
+            );
+
+            manager.sync_secret_values().unwrap();
+            assert_eq!(
+                snapshot_secret_values().get(&env_var).map(String::as_str),
+                Some("legacy-manifest-value"),
+                "the local legacy secret must survive the restart rehydration: {:?}",
+                snapshot_secret_values()
+            );
+        });
+    }
+
+    /// A non-secret install-time env config field is dropped by the startup
+    /// rebuild just like a secret one (the rebuild has no user input), so the
+    /// honesty note must name it too — the note's reproducible set must match
+    /// what the rebuild actually re-derives.
+    #[test]
+    fn rebuild_note_names_dropped_non_secret_config_field() {
+        with_temp_home(|| {
+            let manifest = serde_json::json!({
+                "id":"cf-x","name":"cf-x","description":"d","version":"1","icon":"x","category":"c",
+                "mcp_tools":[],"command":"python","args":["server.py"],
+                "config_fields":[
+                    {"key":"REGION","label":"region","required":false,"target":"env","secret":false}
+                ]
+            });
+            write_tool_manifest("cf-x", &serde_json::to_string_pretty(&manifest).unwrap());
+            std::fs::write(
+                mcp_catalog::package_mcp_dir("cf-x").join("server.py"),
+                "print('fixture')\n",
+            )
+            .unwrap();
+            write_installed_ids(&["cf-x".to_string()]);
+            let dead_command = paths::pinvou3_home().join("x").join("w.py");
+            seed_mcp_json(serde_json::json!({
+                "cf-x": {
+                    "command": dead_command,
+                    "args": [],
+                    "env": {"REGION": "us-east-1"}
+                }
+            }));
+            let manager = MarketplaceManager::with_store(MemoryCredentialStore::default());
+
+            let actions = manager.reconcile_installed_mcp_entries().unwrap();
+            assert_eq!(actions.len(), 1, "{actions:?}");
+            assert!(
+                actions[0].contains("rebuilt mcp.json entry") && actions[0].contains("REGION"),
+                "the rebuild note must disclose the dropped non-secret config field: {actions:?}"
+            );
+            assert!(
+                !actions[0].contains("us-east-1"),
+                "the note must never carry the dropped value: {actions:?}"
+            );
+        });
+    }
+
+    /// A UI install in the corrupt window must fail with the actionable
+    /// refusal (backup + fix-or-remove guidance — the same message every
+    /// writer refuses with) instead of the plaintext migration's bare parse
+    /// error, and must leave mcp.json and installed.json untouched.
+    #[test]
+    fn install_refuses_a_corrupt_mcp_json_with_the_actionable_error() {
+        with_temp_home(|| {
+            write_installed_ids(&["existing".to_string()]);
+            let mcp_path = paths::mcp_config_path();
+            std::fs::create_dir_all(mcp_path.parent().unwrap()).unwrap();
+            let corrupt = r#"{"servers": {,"trailing":"comma"}"#;
+            std::fs::write(&mcp_path, corrupt).unwrap();
+            write_tool_manifest(
+                "corrupt-install",
+                r#"{
+                    "id":"corrupt-install","name":"CI","description":"d","version":"1","icon":"x","category":"c",
+                    "mcp_tools":[],"command":"node","args":["server.js"]
+                }"#,
+            );
+
+            let manager = MarketplaceManager::with_store(MemoryCredentialStore::default());
+            let error = manager
+                .install("corrupt-install", &std::collections::HashMap::new())
+                .unwrap_err();
+            assert!(
+                error.contains("mcp.json is unparseable") && error.contains("fix or remove it"),
+                "install must surface the actionable refusal, not a bare parse error: {error}"
+            );
+            assert_eq!(
+                std::fs::read(&mcp_path).unwrap(),
+                corrupt.as_bytes(),
+                "the refused install must not touch the corrupt file"
+            );
+            let backup = std::fs::read_dir(mcp_path.parent().unwrap())
+                .unwrap()
+                .filter_map(|entry| entry.ok())
+                .find(|entry| {
+                    entry
+                        .file_name()
+                        .to_string_lossy()
+                        .starts_with("mcp.json.corrupt.")
+                })
+                .unwrap_or_else(|| panic!("the refusal must mint a corrupt-file backup"));
+            assert_eq!(
+                std::fs::read(backup.path()).unwrap(),
+                corrupt.as_bytes(),
+                "the backup must hold the original bytes"
+            );
+            assert_eq!(
+                manager.installed_ids(),
+                vec!["existing".to_string()],
+                "the refused install must not touch the registry"
+            );
+            assert!(!marketplace_transaction_journal().exists());
+        });
+    }
+
+    /// The Python-repair downgrade is the third boot writer of the corrupt-file
+    /// guarantee (cleanup and the reconcile's own gate are the other two): on a
+    /// corrupt mcp.json the downgrade's write is refused, the transaction rolls
+    /// back, the note says so, and every byte survives.
+    #[test]
+    fn downgrade_on_a_corrupt_mcp_json_rolls_back_and_preserves_bytes() {
+        with_temp_home(|| {
+            let (python, version) = test_python();
+            write_locked_python_tool("invalid-lock-corrupt", "invalid_lock_fixture", &version);
+            let manager = MarketplaceManager::with_store(MemoryCredentialStore::default());
+            let mut invalid = manager.load_manifest("invalid-lock-corrupt").unwrap();
+            invalid.python_dependencies.as_mut().unwrap().schema_version = 999;
+            MarketplaceManager::<MemoryCredentialStore>::trust_dependency_manifest_for_test(
+                invalid,
+            );
+            write_installed_ids(&["invalid-lock-corrupt".to_string()]);
+            store::BundleStore::new()
+                .upsert(store::BundleRecord::installed_now(
+                    "invalid-lock-corrupt",
+                    store::BundleSource::Preset,
+                ))
+                .unwrap();
+            let mcp_path = paths::mcp_config_path();
+            std::fs::create_dir_all(mcp_path.parent().unwrap()).unwrap();
+            let corrupt = r#"{"servers": {,"trailing":"comma"}"#;
+            std::fs::write(&mcp_path, corrupt).unwrap();
+            let installed_before = manager_installed_bytes();
+
+            let errors = manager
+                .repair_installed_python_tools_with_python(&python)
+                .unwrap();
+            assert!(
+                errors
+                    .iter()
+                    .any(|error| error.contains("downgrade failed and was rolled back")),
+                "the downgrade must report its rollback: {errors:?}"
+            );
+            assert!(
+                errors
+                    .iter()
+                    .any(|error| error.contains("mcp.json is unparseable")),
+                "the rollback must be the corrupt-file refusal, not an unrelated failure: {errors:?}"
+            );
+            assert_eq!(
+                std::fs::read(&mcp_path).unwrap(),
+                corrupt.as_bytes(),
+                "the corrupt file must survive the refused downgrade"
+            );
+            assert_eq!(manager_installed_bytes(), installed_before);
+            assert!(!marketplace_transaction_journal().exists());
         });
     }
 }
