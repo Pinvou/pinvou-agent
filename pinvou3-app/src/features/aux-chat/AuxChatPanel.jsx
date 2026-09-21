@@ -456,21 +456,22 @@ export function AuxChatPanel({ sessionId, activationKey, t, theme, onClose, onAc
         // current topic is still usable (round-20 Major-2), and the only
         // in-panel "retry" (New Topic) would destroy the perfectly alive
         // session. ensure is idempotent and returns that same session; if the
-        // restore itself fails, surface the binding-lost state instead.
+        // restore itself fails, surface the binding-lost state instead. The
+        // restore is awaited so the outer finally cannot release the
+        // restarting latch before the binding is back.
         if (generationRef.current !== generation) return;
         setDiscardFailed(true);
-        auxChat.ensure(sessionId)
-          .then((restoredAuxId) => {
-            if (generationRef.current !== generation) return;
-            auxIdRef.current = restoredAuxId;
-            setAuxId(restoredAuxId);
-            pullSnapshot(restoredAuxId);
-          })
-          .catch((restoreError) => {
-            console.warn('[pinvou3][aux-chat] restore after discard failure failed', restoreError);
-            if (generationRef.current !== generation) return;
-            setEnsureFailed(true);
-          });
+        try {
+          const restoredAuxId = await auxChat.ensure(sessionId);
+          if (generationRef.current !== generation) return;
+          auxIdRef.current = restoredAuxId;
+          setAuxId(restoredAuxId);
+          pullSnapshot(restoredAuxId);
+        } catch (restoreError) {
+          console.warn('[pinvou3][aux-chat] restore after discard failure failed', restoreError);
+          if (generationRef.current !== generation) return;
+          setEnsureFailed(true);
+        }
         return;
       }
       // The binding may have changed during the discard round trip: never
@@ -512,6 +513,10 @@ export function AuxChatPanel({ sessionId, activationKey, t, theme, onClose, onAc
         setBindingPending(false);
       }
     }
+  // pullSnapshot is a real dependency of the discard-failure restore above;
+  // oxlint's memo-dependencies rule misses the reference inside the catch
+  // while eslint exhaustive-deps requires it — keep the dep, exempt oxlint.
+  // oxlint-disable-next-line react/memo-dependencies -- referenced in the discard-failure restore
   }, [auxChat, sessionId, restartArmed, restarting, pullSnapshot]);
 
   const composerDisabled = !auxChat || !auxId || busy || restarting;

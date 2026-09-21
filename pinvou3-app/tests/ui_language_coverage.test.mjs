@@ -258,10 +258,12 @@ assert.match(auxChatPanel, /copy\.discardFailed/);
 // null leaves the panel send-dead while the discardFailed copy says the topic
 // is still usable — the old aux session is alive after a failed discard, so
 // the catch must re-ensure (idempotent → the same session) before returning,
-// with the generation guard on both continuations.
+// with the generation guard on both continuations. The restore is awaited
+// (not a fire-and-forget promise chain) so the restarting latch outlives the
+// rebind and pullSnapshot stays a direct reactive dependency of handleRestart.
 assert.match(
   restartBlock,
-  /\} catch \(error\) \{\s*console\.warn\('\[pinvou3\]\[aux-chat\] restart discard failed'[\s\S]{0,900}?setDiscardFailed\(true\);\s*auxChat\.ensure\(sessionId\)\s*\.then\(\(restoredAuxId\) => \{[\s\S]{0,300}?auxIdRef\.current = restoredAuxId;\s*setAuxId\(restoredAuxId\);\s*pullSnapshot\(restoredAuxId\);/,
+  /\} catch \(error\) \{\s*console\.warn\('\[pinvou3\]\[aux-chat\] restart discard failed'[\s\S]{0,900}?setDiscardFailed\(true\);\s*try \{\s*const restoredAuxId = await auxChat\.ensure\(sessionId\);[\s\S]{0,300}?auxIdRef\.current = restoredAuxId;\s*setAuxId\(restoredAuxId\);\s*pullSnapshot\(restoredAuxId\);/,
   'the discard-failure catch must restore the nulled binding via an idempotent ensure',
 );
 // Generation bump at restart entry (round-11 B3): only the rebind effect
