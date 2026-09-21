@@ -6,7 +6,8 @@ import { EmptyState } from '../../components/EmptyState.jsx';
 import { Spinner } from '../../components/Spinner.jsx';
 import { resolveOAuthInstallOutcome } from './oauth-marketplace-logic.js';
 import { notifyComposerToolsChanged } from './tool-events.js';
-import { localizeTool, mergeConfigFields, TsActionBtn, tsCategories, tsSkillIconByName, tsSkillsData, tsToolsData, tsToolWelcomeData, TOOL_TYPE_GROUPS, getToolTypeGroup, TOOL_BUSINESS_GROUPS, getToolBusinessGroup } from './tool-common.jsx';
+import { localizeTool, mergeConfigFields, TsActionBtn, BuiltinPluginCard, tsCategories, tsSkillIconByName, tsSkillsData, tsToolsData, tsToolWelcomeData, TOOL_TYPE_GROUPS, getToolTypeGroup, TOOL_BUSINESS_GROUPS, getToolBusinessGroup } from './tool-common.jsx';
+import { isBuiltinPlugin } from './builtin-plugin-logic.js';
 import { MAX_SKILL_ZIP_BYTES, pickSkillDrop, fileToBase64 } from './skill-import-logic.js';
 import { invokeTauri, isTauriAvailable, tauriEvents } from '../../platform/tauri/client.js';
 import { can } from '../../shared/platform.js';
@@ -869,6 +870,8 @@ const withUiTimeout = (promise, timeoutMs, fallbackResult) => {
     const ToolStoreView = ({ t, onNewChat }) => {
       const storeCopy = t.uiToolStore;
       const detailCopy = t.uiToolDetails;
+      // 内置插件只读板块文案（契约 §3.1），缺省回退中文词典由 BuiltinPluginCard 兜底。
+      const builtinCopy = t.uiBuiltinPlugins;
       // 数据文件(tool-common.jsx)里技能/分类/精选的中文 label/title/subtitle/desc:
       // 按 localizeTool() 同款 overlay 模式,从 uiToolStore 词条做三语覆盖,数据文件本身不改。
       const storeData = storeCopy.storeData || {};
@@ -1273,7 +1276,9 @@ const withUiTimeout = (promise, timeoutMs, fallbackResult) => {
       // preset（市场预置/手写自定义 MCP 迁移登记）卸载保留目录、不进回收站；
       // source 缺失（旧后端）取 false——宁可少提示「移入回收站」，不说谎。
       const customMcpTools = toolBackend
-        .filter(x => tsToolsData.every(t => t.backendId !== x.id))
+        // 内置插件（builtin === true，契约 §3.1）不进常规商店卡片流——
+        // 由下方 builtinPluginCards 独立成只读板块（visibility: system 语义）。
+        .filter(x => !isBuiltinPlugin(x) && tsToolsData.every(t => t.backendId !== x.id))
         .map(x => {
           const bs = bundleStates[x.id] || null;
           // 卡面标题/说明优先取 readiness bundle 的生效值（后端已应用 extra
@@ -1293,6 +1298,21 @@ const withUiTimeout = (promise, timeoutMs, fallbackResult) => {
           return localizeTool(base, t);
         });
       const tools = [...builtinTools, ...customMcpTools];
+      // 内置插件板块数据（契约 §3.1 只读审计窗口）：builtin === true 的后端条目
+      // 独立成区，不进常规卡片流/搜索/分类筛选（visibility: system 语义）。展示
+      // 事实（工具清单 mcp_tools、安全级别、数据访问范围、bundle 版本）全部来自
+      // list_marketplace_tools 下发；名称/描述走 localizeTool 既有 overlay。
+      const builtinPluginCards = toolBackend
+        .filter(isBuiltinPlugin)
+        .map(x => localizeTool({
+          id: 'builtin-' + x.id, backendId: x.id, builtin: true,
+          title: x.name || x.id, subtitle: '', desc: x.description || '',
+          icon: Package, color: 'bg-gradient-to-b from-slate-400 to-slate-600',
+          securityLevel: x.security_level || null,
+          dataAccess: Array.isArray(x.data_access) ? x.data_access : [],
+          mcpTools: Array.isArray(x.mcp_tools) ? x.mcp_tools : [],
+          bundleVersion: x.bundle_version ? String(x.bundle_version).replace(/^v/i, '') : null,
+        }, t));
       // 按 backendId 取已 localize 的工具卡;兜底分支也走 localizeTool,避免 en/ja 下漏出中文原文。
       const findLocalizedTool = (backendId) =>
         tools.find(x => x.backendId === backendId) || localizeTool(tsToolsData.find(x => x.backendId === backendId), t);
@@ -1430,6 +1450,12 @@ const withUiTimeout = (promise, timeoutMs, fallbackResult) => {
         buckets.forEach((items, key) => { listSections.push({ id: key, label: sectionLabelOf(key), items }); });
         if (upcomingTools.length) {
           listSections.push({ id: 'upcoming', label: typeLabel('upcoming'), items: upcomingTools });
+        }
+        // 内置插件板块置末位（契约 §3.1）：只读审计窗口，不参与分类筛选与搜索
+        // （搜索态 sectioned=false 时本区不出现）。section.builtin 标记驱动渲染层
+        // 走 BuiltinPluginCard 只读分支，不渲染任何动作按钮。
+        if (builtinPluginCards.length) {
+          listSections.push({ id: 'builtin-plugins', label: (builtinCopy || {}).sectionTitle, items: builtinPluginCards, builtin: true });
         }
       }
       // 左侧二级分类快速导航 = 分区列表（含「即将上线」独立栏）。
@@ -2313,7 +2339,7 @@ const withUiTimeout = (promise, timeoutMs, fallbackResult) => {
                       </div>
                   </div>
 
-                  {filteredTools.length > 0 ? (
+                  {filteredTools.length > 0 || (sectioned && builtinPluginCards.length > 0) ? (
                     <div key="tool-store-list-grid" className={sectioned ? 'pb-7 space-y-8' : 'grid grid-cols-1 lg:grid-cols-2 gap-4 pb-7'}>
                       {(sectioned ? listSections : [{ id: 'flat', label: null, items: filteredTools }]).map((section) => (
                         <div key={`section-${section.id}`} id={sectioned ? `store-section-${section.id}` : undefined} className="scroll-mt-24">
@@ -2325,6 +2351,10 @@ const withUiTimeout = (promise, timeoutMs, fallbackResult) => {
                           )}
                           <div className={sectioned ? 'grid grid-cols-1 lg:grid-cols-2 gap-4' : 'contents'}>
                             {section.items.map((tool) => (
+                              // 内置插件板块（契约 §3.1）：只读卡，不渲染动作列、不响应点击进详情。
+                              section.builtin ? (
+                                <BuiltinPluginCard key={`list-${tool.id}`} tool={tool} copy={builtinCopy} />
+                              ) : (
                               // biome-ignore lint/a11y/useKeyWithClickEvents: row click is a shortcut; the keyboard path is covered by the row's real buttons
                               // biome-ignore lint/a11y/noStaticElementInteractions: row click hot zone, not a standalone interactive control
                               <div
@@ -2388,6 +2418,7 @@ const withUiTimeout = (promise, timeoutMs, fallbackResult) => {
                                   })()}
                                 </div>
                               </div>
+                              )
                             ))}
                           </div>
                         </div>

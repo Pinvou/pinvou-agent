@@ -238,6 +238,29 @@ async function toggleWriteGateTests() {
   assert.strictEqual(pkgFailResult.rolledBack, true);
 }
 
+// ── 内置插件（契约 §3.2 配置可见性）：builtin === true 的工具不进菜单 ──
+state = buildComposerToolMenuState({
+  marketplaceTools: [
+    { id: 'session-reader', name: '会话读取', installed: true, builtin: true },
+    { id: 'weather', name: '高德天气', installed: true },
+  ],
+});
+assert.ok(!state.toolRows.find(row => row.id === 'session-reader'), '内置插件应从 composer 菜单过滤');
+assert.ok(state.toolRows.find(row => row.id === 'weather'), '普通工具不受影响');
+assert.strictEqual(state.enabledCount, 2); // weather + builtin visual-design
+
+// builtin 字段缺省（旧后端）按普通工具放行
+state = buildComposerToolMenuState({
+  marketplaceTools: [{ id: 'weather', name: '高德天气', installed: true }],
+});
+assert.strictEqual(state.toolRows.length, 1, '无 builtin 字段的普通工具应放行');
+
+// builtin: false 显式普通插件同样放行
+state = buildComposerToolMenuState({
+  marketplaceTools: [{ id: 'weather', name: '高德天气', installed: true, builtin: false }],
+});
+assert.strictEqual(state.toolRows.length, 1, 'builtin:false 的普通工具应放行');
+
 // eslint-disable-next-line unicorn/prefer-top-level-await -- logic test keeps its sync sections above and runs the async gate section from main()
 toggleWriteGateTests().then(() => {
   console.log('composer_tool_menu_logic: ok');
@@ -245,3 +268,4 @@ toggleWriteGateTests().then(() => {
   console.error(e);
   process.exit(1);
 });
+

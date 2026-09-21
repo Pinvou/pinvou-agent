@@ -30,6 +30,8 @@ for (const language of ['zh', 'en', 'ja']) {
     'uiProjects',
     'uiArtifacts',
     'uiToolDetails',
+    'uiBuiltinPlugins',
+    'uiBuiltinFeatures',
   ]) {
     assert.ok(dict[language][section], `${language}.${section} must exist`);
   }
