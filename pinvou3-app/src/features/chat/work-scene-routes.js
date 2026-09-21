@@ -11,7 +11,7 @@ const DOCUMENT_WRITING_CONTEXT = `Pinvou 公文写作场景路由：
 - 如果需要直出可编辑 Word 文件，必须调用公文写作工具，工具 id/name 使用 gongwen / 公文写作。
 - 交付目标是规范公文内容或 .docx 产物，不要生成网页、海报、PPT 或通用文章。
 - 按党政机关公文习惯组织文种、标题、主送机关、正文层级、落款和日期；缺少关键信息时先给出合理草案并标明可补充项。
-- 若 tool_search 返回 mcp_boot connecting 状态（servers_pending 列出目标服务器），说明 MCP 工具服务仍在启动：这是临时状态，等待数秒重试一次 tool_search，重试仍无结果才按能力不可用处理。
+- 如果 tool_search 没搜到目标工具（gongwen）且结果带 mcp_boot connecting 状态（servers_pending 列出仍在启动的 MCP 服务器），说明工具服务仍在启动、目标工具只是暂不可搜：这是临时状态而不是能力缺失——等待数秒重试 tool_search，仍返回 connecting 就继续等待并再次重试；若多轮重试后仍是 connecting，告知用户工具服务仍在启动、请稍后重试，不要按能力不可用处理；connecting 状态消失后仍搜不到，才按能力不可用处理。
 - 如果 government-writing 技能或 gongwen 工具不可用，不要静默降级为普通回答，应明确提示所需能力不可用。`;
 
 const DOCUMENT_WRITING_AUDIT = `生成完成前执行公文自检：
@@ -41,8 +41,8 @@ const PPT_DESIGN_CONTEXT = `Pinvou PPT 设计场景路由：
 - 必须优先加载并使用 PPT 生成技能，技能 id/name 使用 pptx / PPT 生成。
 - 交付目标是可编辑的 .pptx 文件：先列一版大纲（章节 + 每页要点）给用户确认，确认后产结构化 deck。
 - deck 必须调 PPT 工具生成，工具 id/name 使用 pptx / PPT 生成（mcp_pptx_make_pptx；连接器工具默认延迟加载，不在工具列表时先 tool_search 激活），slides 数组每页一个对象并按版式填正文字段；按 PPT 内容自动选主题并一句话说明理由。
-- 拿到产物路径后必须调用 mcp_pinvou3_present_artifact 上产物卡（内置 MCP 工具，默认延迟加载：工具列表里没有它时先 tool_search 激活；tool_search 也搜不到，才说明产物卡后端不可用，交付文件并明确告知用户），不要只给文件路径文字。
-- 若 tool_search 返回 mcp_boot connecting 状态（servers_pending 列出目标服务器），说明 MCP 工具服务仍在启动：这是临时状态，等待数秒重试一次 tool_search，重试仍无结果才按能力不可用处理。
+- 如果 tool_search 没搜到目标工具（mcp_pptx_make_pptx、mcp_pinvou3_present_artifact）且结果带 mcp_boot connecting 状态（servers_pending 列出仍在启动的 MCP 服务器），说明工具服务仍在启动、目标工具只是暂不可搜：这是临时状态而不是能力缺失——等待数秒重试 tool_search，仍返回 connecting 就继续等待并再次重试；若多轮重试后仍是 connecting，告知用户工具服务仍在启动、请稍后重试，不要按能力不可用处理；connecting 状态消失后仍搜不到，才按能力不可用处理。
+- 拿到产物路径后必须调用 mcp_pinvou3_present_artifact 上产物卡（内置 MCP 工具，默认延迟加载：工具列表里没有它时先 tool_search 激活；tool_search 返回 mcp_boot connecting（MCP 服务仍在启动）就等待数秒重试，connecting 消失后仍搜不到，才说明产物卡后端不可用，交付文件并明确告知用户），不要只给文件路径文字。
 - 全程不要用 HTML 幻灯片代替 .pptx；没点名在线平台时本地生成，不要用飞书/在线文档代替。
 - 如果 pptx 技能或工具不可用，不要静默降级为普通回答或 HTML，应明确提示所需能力不可用。`;
 
