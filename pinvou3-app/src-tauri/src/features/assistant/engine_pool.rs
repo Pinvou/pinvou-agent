@@ -81,12 +81,14 @@ use crate::core::reaper::{IDLE_EVICT_AFTER_SECS, IdleReaperGuard};
 /// budgets apply) or reclaim shuts it down.
 ///
 /// Why 5s: the budget must absorb every ordinary gate-held side effect —
-/// a cascade send is queue wait, not work, and the shell finalize's
-/// legitimate worst case (up to `MAX_KILL_ATTEMPTS` kill-tree retries) can
-/// approach it — while keeping evict/delete responsive. A healthy-but-slow
-/// finalize can therefore spuriously trip the conservative `cleanup_failed`
-/// preset; that is accepted (the flag is diagnostics-only and the detached
-/// run still records the true outcome).
+/// a cascade send is queue wait, not work — while keeping evict/delete
+/// responsive. The shell finalize's legitimate worst case can genuinely
+/// exceed it (one stubborn job can cost ~3.5s between TERM grace, reaper
+/// wait and reader join, and a second ladder queues behind the
+/// per-registry cleanup gate), so a healthy-but-slow finalize can
+/// spuriously trip the conservative `cleanup_failed` preset; that is
+/// accepted (the flag is diagnostics-only and the detached run still
+/// records the true outcome).
 const TURN_GATE_AWAIT_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(5);
 
 /// Total wait per op for the detached retry that re-delivers the reclaim
@@ -96,7 +98,11 @@ const TURN_GATE_AWAIT_TIMEOUT: std::time::Duration = std::time::Duration::from_s
 /// `Shutdown` path; if the engine is still stalled when it expires, the
 /// engine task lingers until process exit (it would leak either way while
 /// stalled — the retry only shrinks the window in the temporary-stall case,
-/// which is the common one).
+/// which is the common one). On a delete/evict that gave up in this state,
+/// the lingering engine's late terminal write can land under the already
+/// removed session directory as orphaned files — harmless residue: session
+/// listing only reads top-level `<id>.json` records, so no ghost session
+/// appears.
 const RECLAIM_SHUTDOWN_RETRY_PATIENCE: std::time::Duration = std::time::Duration::from_secs(60);
 
 /// 空闲回收判定（纯函数，便于单测）：turn 活跃（reserve 占用或终态收口）、
@@ -535,6 +541,10 @@ enum BoundedJoinOutcome {
     Detached,
     /// The task panicked: nothing keeps running, so bookkeeping that only
     /// the task's normal completion performs must be redone by the caller.
+    /// Nothing in the current tree aborts these side-effect tasks (the
+    /// timeout path drops the join handle instead), so a `JoinError` here
+    /// is always a real panic; if a future abort source appears, match on
+    /// [`tokio::task::JoinError::is_cancelled`] before treating it as one.
     Panicked(tokio::task::JoinError),
 }
 
@@ -952,6 +962,9 @@ where
         // pending kills), so the cleanup runs detached and only the join is
         // bounded (issue #255): a slow cleanup must not extend the time the
         // turn gate is held. Dropping the join handle detaches the task.
+        // A panicked result needs no re-finalize here, unlike the reclaim
+        // site: the worker keeps sweeping pending kills and the still-
+        // running forwarder retires the scope.
         let cleanup = tokio::spawn(async move { cancellation.cleanup().await });
         bounded_join_while_holding_turn_gate("shell cleanup", TURN_GATE_AWAIT_TIMEOUT, cleanup)
             .await;
