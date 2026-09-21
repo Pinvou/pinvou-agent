@@ -1086,6 +1086,10 @@ pub fn diff_checkpoint(
         .filter(|change| !secret_path_matches(&change.path))
         .collect();
     let mut patch = filter_secret_paths_from_patch(&raw_patch);
+    // Truncation signals through `patch_truncated` alone: consumers pin the
+    // flag (and the byte cap), not a locale-specific tail appended to the
+    // data — an embedded CJK string here would leak into CLI output and
+    // bypass the trilingual i18n surface.
     let patch_truncated = patch.len() > DIFF_PATCH_LIMIT;
     if patch_truncated {
         let mut end = DIFF_PATCH_LIMIT;
@@ -1093,7 +1097,6 @@ pub fn diff_checkpoint(
             end -= 1;
         }
         patch.truncate(end);
-        patch.push_str("\n\n…差异过大，已截断");
     }
     Ok(CheckpointDiff {
         checkpoint: meta,
@@ -2032,15 +2035,16 @@ mod tests {
             "超过上限的 patch 必须打截断标: len={}",
             diff.patch.len()
         );
-        // 截断语义：正文钳在 DIFF_PATCH_LIMIT，尾部追加截断提示。
+        // 截断语义：正文钳在 DIFF_PATCH_LIMIT，提示只经 `patch_truncated`
+        // 标志传递——数据里不再内嵌任何（单语言的）提示尾注。
         assert!(
-            diff.patch.ends_with("已截断"),
-            "截断必须带提示尾注: {:?}",
-            &diff.patch[diff.patch.len() - 64..]
+            !diff.patch.contains("已截断"),
+            "patch 数据不得内嵌提示尾注: {:?}",
+            &diff.patch[diff.patch.len().saturating_sub(64)..]
         );
         assert!(
-            diff.patch.len() <= DIFF_PATCH_LIMIT + 64,
-            "patch 长度必须被钳制（正文 + 尾注）: len={}",
+            diff.patch.len() <= DIFF_PATCH_LIMIT,
+            "patch 长度必须被钳制在 DIFF_PATCH_LIMIT 内: len={}",
             diff.patch.len()
         );
         assert!(
