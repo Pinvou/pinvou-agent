@@ -23,12 +23,12 @@ const primary = `${button} bg-[#0B57D0] text-white hover:bg-[#0848ad] dark:bg-[#
 const soft = `${button} bg-[#F0F4F9] text-[#0B57D0] hover:bg-[#E1E5EA] dark:bg-[#2A2B2D] dark:text-[#A8C7FA] dark:hover:bg-[#333537]`;
 const quiet = `${button} px-3 text-[#444746] hover:bg-[#F0F4F9] dark:text-[#C4C7C5] dark:hover:bg-[#333537]`;
 
-// 加入/连接成功后的反馈停留时长(两个连接器入口共用同一节奏)。
+// How long the join/connect success feedback stays visible (both connector entry points share the same timing).
 const JOIN_FEEDBACK_SETTLE_MS = 550;
 
-// 后端文档状态 → 队列态(上传收口与轮询共用同一映射):ready→success、
-// failed→index_failed、其余(提交/索引中)→pending_index;duplicate=true
-// 取「同路径已存在」变体(duplicate / duplicate_failed / duplicate_pending)。
+// Backend document status → queue state (one mapping shared by upload finalization and polling): ready→success,
+// failed→index_failed, everything else (submitting/indexing)→pending_index; duplicate=true
+// selects the "same path already exists" variant (duplicate / duplicate_failed / duplicate_pending).
 function classifyUploadedDocument(document, duplicate) {
   const base = document?.status === 'ready' ? 'success'
     : document?.status === 'failed' ? 'index_failed'
@@ -1169,7 +1169,6 @@ function RemoteKnowledgeView({ t }) {
     setShowUploadDialog(true);
   }
 
-   
   async function startUpload() {
     const retryable = item => item.status === 'queued' || item.status === 'failed';
     const pending = item => item.status === 'pending_index' || item.status === 'duplicate_pending';

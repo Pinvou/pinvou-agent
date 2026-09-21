@@ -794,13 +794,13 @@ export function CodexAcpView({
   }, [activeId, branchWorkspacePath]);
   // 会话或草稿工作区变化时加载分支（仅桌面端；非 git 工作区返回 git:false，控件自动隐藏）。
   useEffect(() => {
-     
+    /* eslint-disable react-hooks/set-state-in-effect -- 会话/草稿切换必须同步丢弃上一工作区的菜单、弹窗与分支数据，异步重载前不能显示旧工作区状态 */
     branchContextRef.current = activeId ? `session:${activeId}` : `draft:${branchWorkspacePath || ''}`;
     setBranchMenuOpen(false);
     setPendingBranchSwitch(null);
     setCommitBranchSwitch(null);
     setWorkspaceBranches(null);
-     
+    /* eslint-enable react-hooks/set-state-in-effect */
     loadWorkspaceBranches();
   }, [activeId, branchWorkspacePath, loadWorkspaceBranches]);
   // 打开分支菜单时后台重取：长会话里 Agent 每回合都可能改动文件，关闭期间的
@@ -1087,7 +1087,7 @@ export function CodexAcpView({
     // 可反悔状态消失（回退后发了新轮/记录被消费）时收回弹窗；reloadFailed
     // 重试窗口豁免（弹窗由本地副本驱动，重试只补重载、不再发 undo）。
     if (!rewindUndoAvailable(rewindUndoState)) {
-       
+      // eslint-disable-next-line react-hooks/set-state-in-effect -- one-shot mirror of the undo-state lifecycle; same pattern as the session-switch reset below
       setRewindUndoEntry(current => (current && current.reloadFailed ? current : null));
     }
   }, [rewindUndoState]);
@@ -1142,8 +1142,6 @@ export function CodexAcpView({
   const activeAgentName = activeSession?.agent_name
     || agents?.find(agent => agent.agent_id === activeAgentId)?.agent_name
     || (activeAgentId === 'pinvou' ? '品悟' : activeAgentId === 'claude' ? 'Claude Code' : activeAgentId === 'kimi' ? 'Kimi' : 'Codex');
-  // 账户菜单里的运行来源后缀:只算一次,渲染处判空复用。
-  const activeRuntimeSourceLabel = runtimeSourceLabel(activeStatus, codexCopy);
   const activeAgentIdRef = useRef(activeAgentId);
   activeAgentIdRef.current = activeAgentId;
   const rememberScrollBeforeRightPanelChange = useCallback(() => {
@@ -1184,7 +1182,7 @@ export function CodexAcpView({
     }
   }, [subagentPanel, workspaceDockActivation, workspaceOpen]);
   useEffect(() => {
-     
+    // eslint-disable-next-line react-hooks/set-state-in-effect -- synchronously collapse the subagent panel on session switch; one-shot mirror
     setSubagentPanel(null);
     setRewindTarget(null);
     setRewindError('');
@@ -1213,6 +1211,9 @@ export function CodexAcpView({
   }, [isNativeAgent, rememberScrollBeforeRightPanelChange]);
   const { acceptStatus, refreshStatus } = useAcpAgentStatus(activeAgentIdRef, setStatus);
   const activeStatus = status?.agent_id === activeAgentId ? status : null;
+  // Runtime-source suffix in the account menu: computed once per render; the
+  // JSX call sites null-check and reuse this value.
+  const activeRuntimeSourceLabel = runtimeSourceLabel(activeStatus, codexCopy);
   const activeRuntimeOperation = (activeAgentId && runtimeOperations && runtimeOperations[activeAgentId]) || '';
   const activeRuntimeBusy = Boolean(activeRuntimeOperation);
   const activeRuntimeError = runtimeErrors[activeAgentId] || '';
@@ -1242,11 +1243,11 @@ export function CodexAcpView({
     ? (!activeId || Boolean(activeNativeLane && activeNativeLane.hydrated))
     : (!activeId || (sessionInfoSessionId === activeId && Boolean(sessionInfo)));
   const sessionSyncing = Boolean(activeId && !sessionReady && sessionLoading);
-  // 统一的发送阻塞因子派生:发送按钮禁用态、语音直发守卫(canSendNativeVoiceTask)
-  // 与 send() 守卫三个入口各自读取自己需要的子集,同一谓词只在这里写一次,
-  // 避免三处漂移(语音通道原先漏判 'uploading' 附件正是这种漂移)。
-  // 各入口的附加规则(按钮的 editPreview/空内容禁用、send 的错误文案等)
-  // 仍留在各自通道内。
+  // Unified derivation of the send-blocking factors: the send-button disabled state, the native voice send guard
+  // (canSendNativeVoiceTask), and the send() guard are three entries each reading the subset they need; the predicate
+  // is written only here, avoiding three-way drift (the voice channel originally missing 'uploading' attachments
+  // was exactly such drift).
+  // Additional per-entry rules (the button's editPreview/empty-content disabling, send's error copy, etc.) remain in their own channels.
   const composerSendBlockers = useMemo(() => ({
     busy,
     working: working || activeRuntimeBusy,
@@ -1419,7 +1420,7 @@ export function CodexAcpView({
 
   // 启动时拉一次全局 code 权限偏好（草稿态默认 mode + yolo 确认门）。
   useEffect(() => {
-     
+    // eslint-disable-next-line react-hooks/set-state-in-effect -- fetch global permission prefs once on mount; afterwards refreshed in place by switch/confirm paths
     refreshCodePermPrefs();
     // 仅挂载拉取一次；后续由切换/确认路径就地刷新。
   }, []);
@@ -1633,31 +1634,32 @@ export function CodexAcpView({
     }
   }
   useEffect(() => {
-     
+    // eslint-disable-next-line react-hooks/set-state-in-effect -- synchronously write this agent's Provider view cache on the agent switch edge
     if (activeAgentId) refreshProviders(activeAgentId);
     // activeAgentId 变化时刷新一次即可；切换/回退后由调用方显式刷新。
     // eslint-disable-next-line react-hooks/exhaustive-deps -- refresh only on the agent switch edge; refreshProviders reference changes must not retrigger fetching
   }, [activeAgentId]);
   const activeProvidersView = providersViews[activeAgentId] || null;
-  // 中转激活判定:已有会话(activeId 存在)只认会话快照里显式写入的会话级
-  // 覆盖(sessionControlsInfo.provider),不再回退到全局 currentProviderId——
-  // 否则用户在设置里切换全局 Provider 后,官方登录会话的模型列表会被中转
-  // 规则错误过滤。草稿态(无会话)没有会话快照可读,保留全局回退。
-  // kimi 与 Codex 的中转分支都从这一个 relayProviderId 派生,避免两处表达式漂移。
+  // Relay activation: an explicit session-level override (sessionControlsInfo
+  // .provider) wins; otherwise the agent's current global provider applies.
+  // The Rust side restarts an agent's sessions whenever the global provider
+  // switches, so active sessions without an explicit override do follow the
+  // global provider and must keep the relay filtering. Drafts have no session
+  // snapshot and use the same global fallback. The kimi and codex relay
+  // branches both derive from this single relayProviderId.
   const relayProviderId = (sessionControlsInfo && sessionControlsInfo.provider)
-    || (activeId
-      ? null
-      : (activeProvidersView && activeProvidersView.currentProviderId) || null);
-  // Kimi 中转激活时,模型列表只保留受管 pv-* 条目:writer 按设计保留官方
-  // 登录的模型表,CLI 会一并上报,全列出会让用户误以为还在走官方。
+    || (activeProvidersView && activeProvidersView.currentProviderId)
+    || null;
+  // When the Kimi relay is active, keep only the managed pv-* entries in the model list: the writer keeps
+  // the official login model table by design and the CLI reports it anyway; listing everything would make users think they are still on the official route.
   const kimiRelayActive = activeAgentId === 'kimi' && Boolean(relayProviderId);
   const relayProviderRecord = relayProviderId
     ? (((activeProvidersView && activeProvidersView.providers) || [])
         .find(provider => provider.id === relayProviderId)) || null
     : null;
-  // Codex 中转激活时同理：CLI 的 model/list 会暴露官方内置模型（gpt 系列），
-  // 中转商并不提供它们，用户选中会 404——只保留当前 Provider 的模型
-  // （Codex 的模型选项 id 是模型名，无 pv- 前缀，按名字匹配）。
+  // Same for the Codex relay: the CLI's model/list exposes the official built-in models (gpt series),
+  // which the relay provider does not offer — selecting one 404s. Keep only the current Provider's models
+  // (a Codex model option id is the model name, with no pv- prefix, matched by name).
   const codexRelayModel = activeAgentId === 'codex' && relayProviderRecord && relayProviderRecord.model
     ? relayProviderRecord.model
     : null;
@@ -2240,7 +2242,7 @@ export function CodexAcpView({
   const nativeVoiceAsrBusy = !!(nativeVoiceAsrSetup.installing || nativeVoiceAsrSetup.cancelling);
 
   useEffect(() => {
-     
+    // eslint-disable-next-line react-hooks/set-state-in-effect -- close the install popover when busy state clears; mirrors ChatView pattern
     if (!nativeVoiceAsrBusy) setVoiceAsrPopoverOpen(false);
   }, [nativeVoiceAsrBusy]);
 
@@ -2264,7 +2266,10 @@ export function CodexAcpView({
     if (composerSendBlockers.busy || composerSendBlockers.working
       || composerSendBlockers.workspaceUnavailable || composerSendBlockers.sessionSyncing) return false;
     if (composerSendBlockers.noSendTarget) return false;
-    if (composerSendBlockers.pendingAttachment) return false;
+    // Pending (parsing/uploading) attachments are deliberately NOT gated here:
+    // this hook's gate path has no failure feedback, so blocking here would
+    // report a fake "task sent" success. Fall through to send(), which shows
+    // the inline attachments error and fails the voice task for real.
     if (composerSendBlockers.sessionNotReady) return false;
     if (composerSendBlockers.authMissing) return false;
     return true;
@@ -2483,7 +2488,7 @@ export function CodexAcpView({
     // sessions have no ACP state machine; skip get_acp_agent_status (the
     // backend rejects non-ACP agents).
     if (activeAgentId === 'pinvou') {
-       
+      // eslint-disable-next-line react-hooks/set-state-in-effect -- native sessions have no ACP state machine; synchronously clear the status display
       setStatus(null);
       return;
     }
@@ -2526,7 +2531,7 @@ export function CodexAcpView({
       sessionLoadRequestRef.current += 1;
       if (preserveDraftWorkspaceRef.current) preserveDraftWorkspaceRef.current = false;
       else setDraftWorkspacePath(null);
-       
+      // eslint-disable-next-line react-hooks/set-state-in-effect -- synchronously reset events/pending/session info when returning to draft; one-shot mirror
       setEvents([]);
       setPending([]);
       setPendingElicitations([]);
@@ -2568,7 +2573,7 @@ export function CodexAcpView({
 
   // 切会话/回草稿时关掉记忆弹层（徽标内容按新会话 lane 自动切换）。
   useEffect(() => {
-     
+    // eslint-disable-next-line react-hooks/set-state-in-effect -- synchronously close the memory popover on session switch; one-shot mirror
     setMemoryOpen(false);
   }, [activeId]);
 
@@ -2609,7 +2614,7 @@ export function CodexAcpView({
   useEffect(() => {
     autoScrollRef.current = true;
     lastScrollTopRef.current = 0;
-     
+    // eslint-disable-next-line react-hooks/set-state-in-effect -- synchronously hide the scroll-to-bottom button when a session switch resets the scroll baseline
     setShowScrollBottom(false);
     const frame = window.requestAnimationFrame(() => {
       const element = scroller.current;
