@@ -3225,7 +3225,9 @@ const NAV_PREFETCH = {
             {/* Navigation — shrink-0 keeps it from scrolling; no matter how long the
                 list is, it never squeezes the nav. The nav folds to a single expand row
                 only through the manual collapse button at the bottom of the list; the
-                choice persists and applies in every mode. */}
+                choice persists and applies in every mode. The phone drawer (compact
+                shell) always keeps the full nav so the task list keeps its vertical
+                room (see web-ui.smoke's drawer-height contract). */}
             <div data-testid="sidebar-primary-nav" className={`shrink-0 flex flex-col gap-0.5 mt-1.5 max-sm:gap-0 max-sm:mt-1 ${isSidebarOpen ? 'px-3' : 'px-2 items-center'}`}>
               <NavItem
                 icon={NAV_ICON_NEW_CHAT} label={t.newChat}
@@ -3244,7 +3246,7 @@ const NAV_PREFETCH = {
                   onClick={openSearchOverlay}
                 />
               )}
-              {isSidebarOpen && sidebarNavCollapsed ? (
+              {isSidebarOpen && !isCompactShell && sidebarNavCollapsed ? (
                 <button
                   type="button"
                   data-testid="sidebar-primary-nav-expand"
@@ -3322,7 +3324,7 @@ const NAV_PREFETCH = {
                   onClick={navNavigateHandlers.chat}
                 />
               )}
-              {isSidebarOpen && (
+              {isSidebarOpen && !isCompactShell && (
                 <button
                   type="button"
                   data-testid="sidebar-primary-nav-collapse"
