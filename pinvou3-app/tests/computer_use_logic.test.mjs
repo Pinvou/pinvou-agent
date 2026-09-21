@@ -252,6 +252,11 @@ assert.deepEqual(
   'a masked hold-key renders count and duration',
 );
 assert.deepEqual(
+  formatComputerUseConfirmAction(zhConfirmCopy, structured({ actionName: 'hold_key', chord: null, chordMaskedChars: 2, holdMs: null })),
+  { description: 'english fallback', preview: null, previewTooLong: false },
+  'a masked hold-key without holdMs falls back to the summary instead of rendering "null ms"',
+);
+assert.deepEqual(
   formatComputerUseConfirmAction(zhConfirmCopy, structured({ actionName: 'drag', point: { x: 1, y: 2 }, endPoint: { x: 3, y: 4 } })),
   { description: '从 (1, 2) 拖拽到 (3, 4)', preview: null, previewTooLong: false },
   'a drag renders both endpoints',
@@ -428,7 +433,14 @@ const hadDocument = Object.prototype.hasOwnProperty.call(globalThis, 'document')
 // call bridge.computerUse.* through it, so the mock is how tests fire actions.
 const bridgeMock = { available: true, computerUse: {} };
 globalThis.window = globalThis.window || { TauriBridge: bridgeMock };
-globalThis.document = globalThis.document || { addEventListener() {}, removeEventListener() {} };
+// createPortal validates only container.nodeType, and the hand-rolled
+// renderer never reconciles into the container, so a minimal fake body is
+// enough for the dialogs' document.body portal target.
+globalThis.document = globalThis.document || {
+  addEventListener() {},
+  removeEventListener() {},
+  body: { nodeType: 1 },
+};
 
 // The stub modules must be real files: Vite externalizes bare 'react' before
 // user resolveId hooks run, but resolve.alias rewrites it into app code that
@@ -463,6 +475,13 @@ function walkElements(node, visit) {
     for (const child of node) walkElements(child, visit);
     return;
   }
+  // The consent dialogs portal to document.body (production stacking-order
+  // fix), so the component now returns a react.portal object; unwrap it and
+  // keep walking its children.
+  if (node.$$typeof === REACT_PORTAL) {
+    walkElements(node.children, visit);
+    return;
+  }
   if (node.$$typeof !== REACT_ELEMENT) return;
   visit(node);
   walkElements(node.props && node.props.children, visit);
@@ -475,6 +494,8 @@ function findByTestId(root, testId) {
   });
   return hits[0] || null;
 }
+
+const REACT_PORTAL = Symbol.for('react.portal');
 
 function allText(root) {
   const parts = [];

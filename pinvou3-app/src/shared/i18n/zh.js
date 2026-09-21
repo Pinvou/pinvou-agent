@@ -332,6 +332,7 @@ export const dictZh = {
           settingsToggle:'电脑使用（允许助手查看并操作你的屏幕）',
           settingsHint:'开启后，助手可以截屏并控制鼠标和键盘，存在误操作风险。每次会话首次控制前会再次征求你的同意，高危操作需逐一确认。',
           platformUnsupportedHint:'当前平台没有电脑使用后端，无法开启此功能。',
+          settingsStoppedHint:'电脑使用已停止。关闭后再重新开启，即可恢复助手控制。',
           bannerTitle:'助手正在控制你的电脑',
           bannerNote:'助手可以查看屏幕并操作鼠标和键盘，你可以随时停止。',
           bannerStop:'停止控制',

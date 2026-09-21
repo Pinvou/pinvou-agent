@@ -1,4 +1,5 @@
 import { useEffect, useRef, useState } from 'react';
+import { createPortal } from 'react-dom';
 // (useEffect/useRef below: the consent dialog moves focus to the safe Deny
 // button when it opens — a security-critical prompt must not be silent to
 // screen readers, which the role/aria-modal attributes on the dialog elements
@@ -9,6 +10,14 @@ import { bannerErrorReset, computerUseConsentView, formatComputerUseConfirmActio
 /**
  * Computer-use consent surfaces for the chat view. All visibility derives from
  * computerUseConsentView: with the feature toggle off every surface is hidden.
+ *
+ * The dialogs render through createPortal(document.body): ChatView's root is
+ * `relative z-10`, a stacking context, so a fixed z-[1200] overlay inside it
+ * would still paint UNDER every body-level portal modal (voice intro,
+ * move-to-project, …) — a security-critical prompt hidden behind another
+ * dialog. Portaling puts the dialogs in the root stacking context like every
+ * other overlay in the app (the same trap PR #180 fixed for the workflow
+ * modal).
  */
 
 // Post-completion grace window (ms) for the synchronous single-flight guard in
@@ -211,7 +220,7 @@ export function ComputerUseDialogs({ slice, copy }) {
   // are pending (rare — a confirm arriving before the grant is settled), show
   // the grant first; the confirm request stays pending underneath.
   if (grantRequest) {
-    return (
+    return createPortal(
       <div data-testid="computer-use-grant-dialog" className="fixed inset-0 z-[1200] flex items-center justify-center p-4 bg-black/45">
         <div
           role="dialog"
@@ -247,7 +256,8 @@ export function ComputerUseDialogs({ slice, copy }) {
             </button>
           </div>
         </div>
-      </div>
+      </div>,
+      document.body,
     );
   }
 
@@ -261,7 +271,7 @@ export function ComputerUseDialogs({ slice, copy }) {
   // over-long text).
   const confirmDetails = formatComputerUseConfirmAction(copy, confirmRequest);
 
-  return (
+  return createPortal(
     <div data-testid="computer-use-confirm-dialog" className="fixed inset-0 z-[1200] flex items-center justify-center p-4 bg-black/45">
       <div
         role="dialog"
@@ -323,6 +333,7 @@ export function ComputerUseDialogs({ slice, copy }) {
           </button>
         </div>
       </div>
-    </div>
+    </div>,
+    document.body,
   );
 }

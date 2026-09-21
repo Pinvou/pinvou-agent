@@ -236,7 +236,14 @@ function describeConfirmAction(copy, request) {
       }
       return typeof request.chord === 'string' && request.chord ? applyTemplate(fn('confirmKeyChord'), request.chord) : null;
     case 'hold_key':
-      if (typeof request.chordMaskedChars === 'number' && request.chordMaskedChars) {
+      // holdMs guards both branches: a masked payload without the duration
+      // must fall back to the summary, not render "for null ms" (the
+      // sibling unmasked branch already guarded it).
+      if (
+        typeof request.chordMaskedChars === 'number' &&
+        request.chordMaskedChars &&
+        typeof request.holdMs === 'number'
+      ) {
         return applyTemplate(fn('confirmHoldKeyMasked'), request.chord, request.chordMaskedChars, request.holdMs);
       }
       return typeof request.chord === 'string' && request.chord && typeof request.holdMs === 'number'

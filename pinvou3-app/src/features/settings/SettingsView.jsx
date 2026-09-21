@@ -1600,11 +1600,22 @@ const formatMemoryTime = (item, copy) => {
       // consent dialog's useConsentAction flightRef.
       const flightRef = useRef({ busy: false, settledAt: 0 });
       const unsupported = computerUse.platformSupported === false;
+      // An emergency stop latches `stopped` without touching the toggle: the
+      // switch still reads ON but every consent surface is dead until the
+      // user toggles off and back on (set_enabled's re-enable is the only
+      // resume path). Without this hint the stop state is invisible in
+      // settings — the safety loop's exit must be discoverable.
+      const stopped = !!computerUse.stopped;
       return (
         <IOSSection title={t.uiComputerUse.settingsSection}>
           <IOSRow
             label={t.uiComputerUse.settingsToggle}
-            desc={unsupported ? t.uiComputerUse.platformUnsupportedHint : (actionError || t.uiComputerUse.settingsHint)}
+            desc={
+              unsupported
+                ? t.uiComputerUse.platformUnsupportedHint
+                : (actionError ||
+                  (stopped ? t.uiComputerUse.settingsStoppedHint : t.uiComputerUse.settingsHint))
+            }
           >
             <IOSSwitch
               checked={!!computerUse.enabled}
