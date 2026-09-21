@@ -414,18 +414,21 @@ fn sanitize_memory_runtime_id(raw: &str) -> String {
     }
 }
 
-/// `~/.pinvou3/feedback/` —— 用户主动提交的反馈包、失败待重试内容和提交回执。
+/// `~/.pinvou3/feedback/` — feedback packages the user submits proactively,
+/// failed pending retries, and submission receipts.
 /// Headless caller (the CLI feedback family stack); no in-tree consumer.
 pub fn feedback_root() -> PathBuf {
     pinvou3_home().join("feedback")
 }
 
-/// `~/.pinvou3/feedback/pending/` —— 上传失败或正在准备的反馈包目录。
+/// `~/.pinvou3/feedback/pending/` — feedback packages that failed to upload
+/// or are still being prepared.
 pub fn feedback_pending_dir() -> PathBuf {
     feedback_root().join("pending")
 }
 
-/// `~/.pinvou3/feedback/receipts/` —— 成功提交后保留的轻量回执。
+/// `~/.pinvou3/feedback/receipts/` — lightweight receipts kept after a
+/// successful submission.
 pub fn feedback_receipts_dir() -> PathBuf {
     feedback_root().join("receipts")
 }

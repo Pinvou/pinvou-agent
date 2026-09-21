@@ -67,8 +67,10 @@ static DISABLED_BUNDLES_FILE_LOCK: Mutex<()> = Mutex::new(());
 /// closed like it: an unavailable lock returns `Err` instead of running the
 /// write unserialized, because silently proceeding would reintroduce exactly
 /// the lost-update this lock exists to prevent. The critical section only
-/// reads/writes a file-sized payload (sub-millisecond), so blocking is
-/// preferable to retry loops.
+/// reads/writes a file-sized payload — the DenyAll expansion enumerates the
+/// packages root OUTSIDE the lock (`sample_denyall_expansion` is taken by
+/// every RMW writer before acquiring it) — so blocking is preferable to
+/// retry loops.
 fn with_disabled_bundles_lock<T>(f: impl FnOnce() -> T) -> Result<T, String> {
     let _guard = DISABLED_BUNDLES_FILE_LOCK
         .lock()
