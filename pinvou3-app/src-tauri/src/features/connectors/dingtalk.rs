@@ -35,7 +35,15 @@ fn dws(args: &[&str]) -> std::process::Command {
 }
 
 fn dws_cli_present() -> bool {
-    matches!(cc::run(dws(&["--version"])), Ok((true, _, _)))
+    dws_cli_probe().unwrap_or(false)
+}
+
+/// `--version` 探测三态:`Ok(true)` 已安装可用;`Ok(false)` 已安装但版本探测
+/// 退出非零;`Err(ProbeError)` 探测本身失败,按 Spawn/Timeout/Other 分型。
+/// 状态轮询把失败都折叠成「未连接」;断开登录路径必须按分型与探测结果
+/// 区别对待,见 [`dingtalk_logout`]。
+fn dws_cli_probe() -> Result<bool, cc::ProbeError> {
+    cc::run_probe(dws(&["--version"])).map(|(ok, _, _)| ok)
 }
 
 /// `dws auth status --format json` 的已登录判定。
@@ -378,11 +386,24 @@ pub async fn dingtalk_cancel(app: AppHandle) -> Result<Value, String> {
 }
 
 /// 断开钉钉:`dws auth logout`。未安装时也视为已断开。
+///
+/// 探测的任何非成功结果都不能沿用状态轮询的「按未安装降级」:无论是
+/// 超时/执行异常(CLI 挂死),还是 `--version` 成功执行但退出非零
+/// (CLI 损坏/版本过旧——只证明它没能正常自报版本,不能证明不存在),
+/// `auth logout` 都未曾执行、token 未撤销,返回 `ok:true/installed:false`
+/// 会向用户谎报已断开。只有 [`cc::ProbeError::Spawn`](≈二进制不存在,
+/// 真未安装)保留原降级。裁决统一走 [`cc::logout_probe_verdict`],
+/// 其余按分型转为人类可读文案原样上抛(超时文案自带重试指引)。
 pub async fn dingtalk_logout() -> Result<Value, String> {
     tokio::task::spawn_blocking(|| {
-        if !dws_cli_present() {
+        let not_installed = || {
             cc::bundle_store_on_disconnected(ID);
-            return Ok::<Value, String>(json!({ "ok": true, "installed": false }));
+            Ok::<Value, String>(json!({ "ok": true, "installed": false }))
+        };
+        match cc::logout_probe_verdict("钉钉", dws_cli_probe()) {
+            cc::LogoutProbeVerdict::Installed => {}
+            cc::LogoutProbeVerdict::NotInstalled => return not_installed(),
+            cc::LogoutProbeVerdict::Unconfirmed(message) => return Err(message),
         }
         let (ok, _, _) = cc::run(dws(&["auth", "logout", "--yes"]))?;
         if !ok {

@@ -211,10 +211,13 @@ pub(super) fn ocr_lang_arg() -> String {
         let mut command = ocr_tool_command();
         command.arg("--list-langs");
         add_ocr_tessdata_arg(&mut command);
-        let listed = command
-            .output()
-            .map(|o| String::from_utf8_lossy(&o.stdout).into_owned())
-            .unwrap_or_default();
+        // 探测类短命令，30s 兜底（挂死的 tesseract 不得拖死首次 OCR 调用）。
+        let listed = crate::platform::process::output_with_timeout_and_kill_tree(
+            command,
+            std::time::Duration::from_secs(30),
+        )
+        .map(|o| String::from_utf8_lossy(&o.stdout).into_owned())
+        .unwrap_or_default();
         if listed.lines().any(|l| l.trim() == "chi_sim") {
             "chi_sim+eng".to_string()
         } else {

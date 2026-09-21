@@ -2241,7 +2241,15 @@ impl Pinvou3Bridge {
                 event: HookEvent::ShellEnv,
                 command: format!("bash '{script}'"),
                 condition: None,
-                timeout_secs: 5,
+                // 20s: this script spawns the user's login shell to harvest
+                // the login env. Profiles sourcing nvm/conda/pyenv init
+                // routinely take longer than the previous 5s, and a hook
+                // timeout here silently drops the injected PATH/SDK env for
+                // every exec_shell call (the foundation contract contributes
+                // no vars and only warns). The script bounds the login shell
+                // at 15s where GNU timeout exists; on stock macOS this
+                // per-hook budget is the only bound.
+                timeout_secs: 20,
                 background: false,
                 continue_on_error: false,
                 name: Some("pinvou3-cli-shell-env".into()),
@@ -2250,10 +2258,16 @@ impl Pinvou3Bridge {
             hooks
         };
 
+        // No global default: the foundation replaces every per-hook
+        // timeout_secs with `default_timeout_secs` when it is set
+        // (`HooksConfig::effective_timeout_secs`), which would silently cap
+        // the shell-env hook back to 5s and defeat the budget above. Every
+        // hook here declares its own timeout explicitly; leaving this unset
+        // is behavior-identical to the old Some(5) for all of them (5s == 5s).
         HooksConfig {
             enabled: true,
             hooks,
-            default_timeout_secs: Some(5),
+            default_timeout_secs: None,
             working_dir: None,
             problems: Vec::new(),
         }
@@ -6144,6 +6158,14 @@ mod tests {
         );
         let hooks = engine_executor.config();
         assert!(hooks.enabled, "hook executor 必须启用");
+        // 预算契约（回归锚点）：底座在 default_timeout_secs 有值时会**替换**每个
+        // per-hook timeout（HooksConfig::effective_timeout_secs）。这里一旦被
+        // "恢复全局默认"式改动改回 Some(5)，shell-env 的 20s 预算会被静默钳回
+        // 5s，所有测试仍然全绿。
+        assert!(
+            hooks.default_timeout_secs.is_none(),
+            "default_timeout_secs 必须保持 None，否则会整体覆盖 per-hook 预算"
+        );
         assert!(
             hooks.hooks.iter().any(|hook| {
                 hook.event == HookEvent::ToolCallBefore
@@ -6179,8 +6201,9 @@ mod tests {
                 hook.event == HookEvent::ShellEnv
                     && hook.name.as_deref() == Some("pinvou3-cli-shell-env")
                     && hook.command.contains("shell_env.sh")
+                    && hook.timeout_secs == 20
             }),
-            "Unix PINVOU 必须通过底座现有 shell_env hook 注入 CLI 环境"
+            "Unix PINVOU 必须通过底座现有 shell_env hook 注入 CLI 环境，预算 20s"
         );
         let Op::SendMessage {
             hook_executor: Some(message_executor),

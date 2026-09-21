@@ -30,11 +30,13 @@ pub(super) fn ingest_pdf(
         );
     }
     // pdftotext -layout <path> -  → stdout
-    let out = pdf_tool_command("pdftotext")
-        .arg("-layout")
-        .arg(path)
-        .arg("-")
-        .output();
+    // 带 kill 的超时兜底:损坏/诡异封装的 PDF 可让 demuxer 挂死。
+    let mut command = pdf_tool_command("pdftotext");
+    command.arg("-layout").arg(path).arg("-");
+    let out = crate::platform::process::output_with_timeout_and_kill_tree(
+        command,
+        std::time::Duration::from_secs(60),
+    );
     match out {
         Ok(o) if o.status.success() => {
             let content = String::from_utf8_lossy(&o.stdout).into_owned();
