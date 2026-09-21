@@ -105,4 +105,24 @@ function buildComposerToolMenuState({
   };
 }
 
-export { buildComposerToolMenuState };
+// 治理写代数门：每个控件（包开关 / 项目技能）各自记录写请求代数，begin 发号、
+// 完成时对号。快速连点时较早的写可能较晚才失败（out-of-order completion），
+// 对不上最新代数的完成不得回滚乐观态或提示失败——控件结局只由其最新一次写决定。
+function createToggleWriteGate() {
+  const generations = new Map();
+  return {
+    begin(key) {
+      const generation = (generations.get(key) || 0) + 1;
+      generations.set(key, generation);
+      return generation;
+    },
+    isCurrent(key, generation) {
+      return generations.get(key) === generation;
+    },
+  };
+}
+
+// 项目技能开关在代数门里的键：加前缀与包 id 空间隔离，避免同名包撞键。
+const TOGGLE_WRITE_KEY_PROJECT_SKILLS = '__project_skills__';
+
+export { buildComposerToolMenuState, createToggleWriteGate, TOGGLE_WRITE_KEY_PROJECT_SKILLS };

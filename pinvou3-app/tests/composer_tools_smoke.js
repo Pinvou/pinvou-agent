@@ -37,7 +37,9 @@ const PROFILE = fs.mkdtempSync(path.join(os.tmpdir(), 'pinvou-composer-tools-'))
 
 function injectSource() {
   return `(function(){
-    const state=window.__COMPOSER_TOOLS_TEST__={calls:[],disabled:[]};
+    // holdWrites：把 set_disabled_connectors 挂起为 deferred promise（乱序完成
+    // 回归用）；failWrites：立即拒绝（成功才记录 disabled，模拟后端拒绝不落盘）。
+    const state=window.__COMPOSER_TOOLS_TEST__={calls:[],disabled:[],holdWrites:false,failWrites:false,heldWrites:[]};
     function record(cmd,args){state.calls.push({cmd,args:args||{}});}
     function invoke(cmd,args){
       record(cmd,args);
@@ -62,7 +64,15 @@ function injectSource() {
           {id:'visualizer',title:'数据分析可视化',description:'Chart.js 仪表盘',installed:true,user_uploaded:false},
         ]);
         case 'get_disabled_connectors': return Promise.resolve(state.disabled);
-        case 'set_disabled_connectors': state.disabled=(args&&args.connectorIds)||[]; return Promise.resolve(null);
+        case 'set_disabled_connectors': {
+          const connectorIds=(args&&args.connectorIds)||[];
+          // 挂起/失败都不落盘（成功语义才记录），flush resolve 时才补记录——
+          // 与真实后端一致：拒绝的治理写不改变 disabled_bundles.json。
+          if(state.holdWrites) return new Promise((resolve,reject)=>{state.heldWrites.push({connectorIds,resolve,reject});});
+          if(state.failWrites) return Promise.reject(new Error('mock_governance_write_failed'));
+          state.disabled=connectorIds;
+          return Promise.resolve(null);
+        }
         case 'get_bundle_visibility': return Promise.resolve(state.disabledSkills);
         case 'set_bundle_visibility': state.disabledSkills=(args&&args.skillIds)||[]; return Promise.resolve(null);
         case 'feishu_skills_state': case 'wecom_skills_state': case 'dingtalk_skills_state': case 'tmeet_skills_state': return Promise.resolve({connected:false,enabled:true});
@@ -110,6 +120,61 @@ const sleep = ms => new Promise(r => { setTimeout(r, ms); });
   await sleep(150);
   const disabled = await page.evaluate(() => window.__COMPOSER_TOOLS_TEST__.disabled);
   rec('关闭独立技能调用 set_disabled_connectors(裸 id)', disabled.includes('visualizer') && !disabled.some(id => id.startsWith('skill:')), JSON.stringify(disabled));
+
+  // ── 治理写失败路径 + 乱序完成回归（评审 r2 阻塞项）────────────────────
+  // 此时 visualizer 为关（上一断言已把 id 写回禁用集），mock 真值 disabled=['visualizer']。
+  const readToggleState = () => page.evaluate(() => {
+    const btn = document.querySelector('button[aria-label="visualizer"]');
+    const errorLine = document.querySelector('[data-testid="composer-tool-menu-error"]');
+    return {
+      on: btn ? btn.className.includes('bg-[#34C759]') : null,
+      errorText: errorLine ? errorLine.textContent : '',
+      disabled: [...window.__COMPOSER_TOOLS_TEST__.disabled],
+      writeCallCount: window.__COMPOSER_TOOLS_TEST__.calls.filter(c => c.cmd === 'set_disabled_connectors').length,
+      heldWrites: window.__COMPOSER_TOOLS_TEST__.heldWrites.length,
+    };
+  });
+  const clickVisualizer = () => page.evaluate(() => document.querySelector('button[aria-label="visualizer"]').click());
+
+  // 场景 A（乱序完成）：第一次写被扣住，第二次写先成功，再让第一次写失败——
+  // 过期的旧失败不得覆盖较新成功的状态，也不得弹出失败提示。
+  await page.evaluate(() => { window.__COMPOSER_TOOLS_TEST__.holdWrites = true; });
+  await clickVisualizer(); // 开 → 乐观置位，写 A 挂起（不落盘）
+  await sleep(200);
+  const heldState = await readToggleState();
+  rec('挂起期间乐观置位生效且未落盘', heldState.on === true && heldState.disabled.includes('visualizer') === true && heldState.heldWrites === 1, JSON.stringify(heldState));
+
+  await page.evaluate(() => { window.__COMPOSER_TOOLS_TEST__.holdWrites = false; });
+  await clickVisualizer(); // 关 → 写 B 立即成功并落盘
+  await sleep(300);
+  const newerOkState = await readToggleState();
+  rec('较新的写成功后状态与之一致', newerOkState.on === false && newerOkState.errorText === '' && newerOkState.disabled.includes('visualizer') === true, JSON.stringify(newerOkState));
+
+  await page.evaluate(() => {
+    const state = window.__COMPOSER_TOOLS_TEST__;
+    state.heldWrites.shift().reject(new Error('mock_governance_write_failed'));
+  });
+  await sleep(500);
+  const staleFailState = await readToggleState();
+  rec('迟到的旧失败不回滚新状态、不提示失败（代数门）',
+    staleFailState.on === false && staleFailState.errorText === '' && staleFailState.writeCallCount === newerOkState.writeCallCount,
+    JSON.stringify(staleFailState));
+
+  // 场景 B（当前写失败）：立即拒绝（不落盘）→ 回滚到后端真值并展示失败提示，
+  // 不得停在假成功态；下一次成功的切换清除错误行。
+  await page.evaluate(() => { window.__COMPOSER_TOOLS_TEST__.failWrites = true; });
+  await clickVisualizer(); // 开 → 乐观置位后写失败
+  await sleep(500);
+  const failState = await readToggleState();
+  rec('当前写失败展示错误行且回滚到后端真值',
+    failState.errorText.includes('mock_governance_write_failed') && failState.on === false && failState.disabled.includes('visualizer') === true,
+    JSON.stringify(failState));
+
+  await page.evaluate(() => { window.__COMPOSER_TOOLS_TEST__.failWrites = false; });
+  await clickVisualizer(); // 开 → 成功落盘，错误行随下一次切换尝试清除
+  await sleep(300);
+  const recoveredState = await readToggleState();
+  rec('下一次成功的切换清除错误行', recoveredState.on === true && recoveredState.errorText === '' && recoveredState.disabled.includes('visualizer') === false, JSON.stringify(recoveredState));
 
   rec('页面无未处理 JavaScript 异常', errors.length === 0, errors.slice(0, 2).join(' | '));
 

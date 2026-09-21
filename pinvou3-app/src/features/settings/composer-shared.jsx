@@ -11,7 +11,7 @@ import { Toggle } from '../../components/Toggle.jsx';
 import { bridge, useBridgeState } from '../../hooks/useBridge.js';
 import { visibleUserModels } from '../../shared/model-options.js';
 import { can } from '../../shared/platform.js';
-import { buildComposerToolMenuState } from './composer-tool-menu-logic.js';
+import { buildComposerToolMenuState, createToggleWriteGate, TOGGLE_WRITE_KEY_PROJECT_SKILLS } from './composer-tool-menu-logic.js';
 import { invokeTauri } from '../../platform/tauri/client.js';
 import {
   artifactPreviewExternalUrlFromMessage,
@@ -457,6 +457,10 @@ window.addEventListener('pinvou:chat-round-committed', (event) => {
       // 工具菜单内开关/项目技能的落盘失败提示：后端把治理写失败上抛到命令边界，
       // 这里回滚乐观置位后展示（下一次切换尝试前清除），不得按成功提示。
       const [toggleError, setToggleError] = useState('');
+      // 治理写代数门（见 createToggleWriteGate）：每个控件只让最新一次写的完成
+      // 应用回滚/提示，迟到的旧失败不得覆盖较新完成的乐观态。
+      const writeGateRef = useRef(null);
+      if (writeGateRef.current === null) writeGateRef.current = createToggleWriteGate();
       // CLI 连接器连接/技能状态：key → { on: 是否已连接, enabled: 技能是否启用(未手动停用) }。
       const [connectorStates, setConnectorStates] = useState(initialConnectorStates);
       // 启动时加载已装工具 + 全局持久的禁用列表(持久语义:新窗口/新对话都继承)
@@ -542,12 +546,16 @@ window.addEventListener('pinvou:chat-round-committed', (event) => {
         // 落盘失败时后端已把错误上抛到命令边界：回滚乐观置位与 pending 记录并展示，
         // 不得吞掉后让开关停在假成功态。
         if (bridge.available) {
+          const generation = writeGateRef.current.begin(id);
           invokeTauri('set_disabled_connectors',
             { connectorIds: [...next], scope: toolScope })
             .catch((error) => {
-              // 回滚到后端真值（重读禁用/可见性/项目技能三态），不回放本地
-              // 快照——与并发的后续切换可组合；pending 的未提交「打开」按
-              // 切换前成员资格反演撤销。
+              // 只有该控件最新一次写才有权回滚/提示：连点时较早的写可能在新写
+              // 成功之后才失败（out-of-order completion），对不上最新代数就整体
+              // 跳过，控件结局由最新一次写决定。当前代数失败时回滚到后端真值
+              // （重读禁用/可见性/项目技能三态），不回放本地快照；pending 的
+              // 未提交「打开」按切换前成员资格反演撤销。
+              if (!writeGateRef.current.isCurrent(id, generation)) return;
               refreshToolsMenu(() => true);
               if (wasPending) pending.ids.add(id); else pending.ids.delete(id);
               const copy = t && t.uiToolStore && t.uiToolStore.operationFailedWith;
@@ -565,8 +573,11 @@ window.addEventListener('pinvou:chat-round-committed', (event) => {
         const wasPending = pending.projectSkills;
         pending.projectSkills = next;
         if (bridge.available) {
-          // 落盘失败回滚同 toggleTool：用户治理写不得停在假成功态。
+          // 落盘失败回滚同 toggleTool：用户治理写不得停在假成功态；代数门同样
+          // 只让该控件最新一次写的失败生效。
+          const generation = writeGateRef.current.begin(TOGGLE_WRITE_KEY_PROJECT_SKILLS);
           invokeTauri('set_project_skills_enabled', { enabled: next }).catch((error) => {
+            if (!writeGateRef.current.isCurrent(TOGGLE_WRITE_KEY_PROJECT_SKILLS, generation)) return;
             refreshToolsMenu(() => true);
             pending.projectSkills = wasPending;
             const copy = t && t.uiToolStore && t.uiToolStore.operationFailedWith;

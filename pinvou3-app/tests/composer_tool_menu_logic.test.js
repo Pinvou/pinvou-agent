@@ -10,11 +10,15 @@ const code = fs.readFileSync(logicPath, 'utf8')
   .replace(/\bexport\s+/g, '');
 const ctx = {};
 vm.createContext(ctx);
-vm.runInContext(`${code}\nthis.buildComposerToolMenuState = buildComposerToolMenuState;`, ctx, {
-  filename: logicPath,
-});
+vm.runInContext(
+  `${code}\nthis.buildComposerToolMenuState = buildComposerToolMenuState;`
+  + `\nthis.createToggleWriteGate = createToggleWriteGate;`
+  + `\nthis.TOGGLE_WRITE_KEY_PROJECT_SKILLS = TOGGLE_WRITE_KEY_PROJECT_SKILLS;`,
+  ctx,
+  { filename: logicPath },
+);
 
-const { buildComposerToolMenuState } = ctx;
+const { buildComposerToolMenuState, createToggleWriteGate, TOGGLE_WRITE_KEY_PROJECT_SKILLS } = ctx;
 
 // ── 开关（disabled）与可见性（hidden）正交 ────────────────────────────
 let state = buildComposerToolMenuState({
@@ -171,4 +175,67 @@ state = buildComposerToolMenuState({
 });
 assert.strictEqual(state.allSkillsDisabled, false, '开启 feishu(CLI companion)后不应提示');
 
-console.log('composer_tool_menu_logic: ok');
+// ── 治理写代数门：乱序完成下的回滚判权（out-of-order completion 回归）────
+// 用真实 deferred promise 按乱序驱动：快速连点时较早的写可能较晚才失败，
+// 组件 catch 只允许「仍是该控件最新一次写」的完成回滚/提示（评审 r2 阻塞项）。
+async function toggleWriteGateTests() {
+  const defer = () => {
+    let resolve, reject;
+    const promise = new Promise((res, rej) => { resolve = res; reject = rej; });
+    return { promise, resolve, reject };
+  };
+  // 模拟组件协议：begin 发号 → 写完成 → catch 仅在 isCurrent 时回滚/提示。
+  const simulateToggle = async (gate, key, outcome) => {
+    const generation = gate.begin(key);
+    try {
+      await outcome();
+      return { generation, stale: false, rolledBack: false };
+    } catch (error) {
+      if (!gate.isCurrent(key, generation)) return { generation, stale: true };
+      return { generation, stale: false, rolledBack: true, error };
+    }
+  };
+
+  // 三次交替点击（评审场景）：写 A 被扣住后失败，写 B、C 相继成功且先完成。
+  const gate = createToggleWriteGate();
+  const writeA = defer();
+  const clickA = simulateToggle(gate, 'pkg-a', () => writeA.promise);
+  const clickB = simulateToggle(gate, 'pkg-a', () => Promise.resolve());
+  const clickC = simulateToggle(gate, 'pkg-a', () => Promise.resolve());
+  writeA.reject(new Error('late failure'));
+  const resultA = await clickA;
+  await Promise.all([clickB, clickC]);
+  assert.strictEqual(resultA.stale, true, '迟到的旧失败对不上最新代数，不得回滚/提示');
+
+  // 最新一次写失败仍须回滚/提示（旧写成功不豁免新失败）。
+  const gate2 = createToggleWriteGate();
+  const okWrite = defer();
+  const staleClick = simulateToggle(gate2, 'pkg-a', () => okWrite.promise);
+  const failClick = simulateToggle(gate2, 'pkg-a', () => Promise.reject(new Error('latest fails')));
+  okWrite.resolve();
+  const [staleResult, failResult] = await Promise.all([staleClick, failClick]);
+  assert.strictEqual(staleResult.stale, false, '旧写成功仍是当前代数（成功路径无副作用）');
+  assert.strictEqual(failResult.rolledBack, true, '最新写失败必须回滚/提示');
+
+  // 控件间互不干扰：其他控件发新写不注销本控件在途写的代数。
+  const gate3 = createToggleWriteGate();
+  const pkgWrite = defer();
+  const pkgClick = simulateToggle(gate3, 'pkg-a', () => pkgWrite.promise);
+  const skillsClick = simulateToggle(gate3, TOGGLE_WRITE_KEY_PROJECT_SKILLS, () => Promise.resolve());
+  pkgWrite.resolve();
+  const [pkgResult, skillsResult] = await Promise.all([pkgClick, skillsClick]);
+  assert.strictEqual(pkgResult.stale, false, '项目技能发新写不影响包控件的代数');
+  assert.strictEqual(skillsResult.stale, false);
+  // 失败的包写在其后完成仍被对号（未过期）。
+  const pkgFail = simulateToggle(gate3, 'pkg-a', () => Promise.reject(new Error('pkg fails')));
+  const pkgFailResult = await pkgFail;
+  assert.strictEqual(pkgFailResult.rolledBack, true);
+}
+
+// eslint-disable-next-line unicorn/prefer-top-level-await -- logic test keeps its sync sections above and runs the async gate section from main()
+toggleWriteGateTests().then(() => {
+  console.log('composer_tool_menu_logic: ok');
+}, (e) => {
+  console.error(e);
+  process.exit(1);
+});
