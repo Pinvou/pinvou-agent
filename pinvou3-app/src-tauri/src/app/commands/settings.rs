@@ -1,16 +1,11 @@
+use super::prelude::*;
+
 /// 从 disk 读最新 UserPrefs。
 /// 注意走 disk 而非 engine.bridge.prefs——如果用户手改 settings.json，
 /// `get_settings()` 能立刻拿到，不需要 reload bridge。
 #[tauri::command]
 pub async fn get_settings() -> Result<UserPrefs, String> {
     Ok(refresh_safe_prefs(UserPrefs::load()))
-}
-
-fn sanitize_command_error(context: &str, err: impl std::fmt::Display) -> String {
-    format!(
-        "{context}: {}",
-        crate::platform::credential_store::redact_secret(&err.to_string())
-    )
 }
 
 fn prepare_prefs_for_save(mut prefs: UserPrefs) -> Result<UserPrefs, String> {
@@ -592,63 +587,87 @@ fn model_connection_http_result(status: reqwest::StatusCode) -> ModelConnectionT
     }
 }
 
-fn model_connection_error_result(err: &reqwest::Error) -> ModelConnectionTestResult {
+/// 传输层错误的共享分类（redact → timeout → tls → dns → refused 的判定梯），
+/// 连接测试与识图探测共用。`detail` 是 redact 后的底层错误串；zh 概要由各
+/// 调用方按 code 生成，不在 Rust 侧做单语言硬编码。
+enum TransportClass {
+    Timeout,
+    Tls,
+    Dns,
+    Refused,
+    Network,
+}
+
+fn classify_transport_error(err: &reqwest::Error) -> (TransportClass, String) {
     let raw = crate::platform::credential_store::redact_secret(&err.to_string());
     let raw_lower = raw.to_lowercase();
+    let class = if err.is_timeout() {
+        TransportClass::Timeout
+    } else if raw_lower.contains("certificate")
+        || raw_lower.contains("tls")
+        || raw_lower.contains("ssl")
+    {
+        TransportClass::Tls
+    } else if raw_lower.contains("dns")
+        || raw_lower.contains("lookup")
+        || raw_lower.contains("name or service not known")
+    {
+        TransportClass::Dns
+    } else if raw_lower.contains("connection refused")
+        || raw_lower.contains("os error 10061")
+        || raw_lower.contains("actively refused")
+    {
+        TransportClass::Refused
+    } else {
+        TransportClass::Network
+    };
+    (class, raw)
+}
+
+fn model_connection_error_result(err: &reqwest::Error) -> ModelConnectionTestResult {
+    let (class, raw) = classify_transport_error(err);
     // The detail passes the redacted underlying error through untouched;
     // the zh summary above is resolved by the frontend from the code via
     // connectionMessages (a hardcoded Chinese detail prefix would mix
     // scripts in en/ja interfaces).
     let detail = Some(raw);
-    if err.is_timeout() {
-        return model_connection_result(
+    match class {
+        TransportClass::Timeout => model_connection_result(
             false,
             "timeout",
             "连接超时，请检查网络或本地服务是否启动",
             detail,
             None,
-        );
-    }
-    if raw_lower.contains("certificate") || raw_lower.contains("tls") || raw_lower.contains("ssl") {
-        return model_connection_result(
+        ),
+        TransportClass::Tls => model_connection_result(
             false,
             "tls_error",
             "安全证书校验失败，请检查代理或网络环境",
             detail,
             None,
-        );
-    }
-    if raw_lower.contains("dns")
-        || raw_lower.contains("lookup")
-        || raw_lower.contains("name or service not known")
-    {
-        return model_connection_result(
+        ),
+        TransportClass::Dns => model_connection_result(
             false,
             "dns_failed",
             "无法解析服务地址，请检查网络",
             detail,
             None,
-        );
-    }
-    if raw_lower.contains("connection refused")
-        || raw_lower.contains("os error 10061")
-        || raw_lower.contains("actively refused")
-    {
-        return model_connection_result(
+        ),
+        TransportClass::Refused => model_connection_result(
             false,
             "connection_refused",
             "无法连接到服务，请确认本地模型服务已启动",
             detail,
             None,
-        );
+        ),
+        TransportClass::Network => model_connection_result(
+            false,
+            "network_error",
+            "网络连接失败，请检查网络后重试",
+            detail,
+            None,
+        ),
     }
-    model_connection_result(
-        false,
-        "network_error",
-        "网络连接失败，请检查网络后重试",
-        detail,
-        None,
-    )
 }
 
 /// 测试连接:GET {base_url}/models(OpenAI 兼容标准端点),验 base_url + key 可达。
@@ -1051,27 +1070,13 @@ fn classify_image_capability_http(
 }
 
 fn image_capability_transport_error(err: &reqwest::Error) -> ImageCapabilityTestResult {
-    let raw = crate::platform::credential_store::redact_secret(&err.to_string());
-    let raw_lower = raw.to_lowercase();
-    let summary = if err.is_timeout() {
-        format!("连接超时，请检查网络或服务是否启动: {raw}")
-    } else if raw_lower.contains("certificate")
-        || raw_lower.contains("tls")
-        || raw_lower.contains("ssl")
-    {
-        format!("安全证书校验失败，请检查代理或网络环境: {raw}")
-    } else if raw_lower.contains("dns")
-        || raw_lower.contains("lookup")
-        || raw_lower.contains("name or service not known")
-    {
-        format!("无法解析服务地址，请检查网络: {raw}")
-    } else if raw_lower.contains("connection refused")
-        || raw_lower.contains("os error 10061")
-        || raw_lower.contains("actively refused")
-    {
-        format!("无法连接到服务，请确认服务已启动: {raw}")
-    } else {
-        format!("网络连接失败，请检查网络后重试: {raw}")
+    let (class, raw) = classify_transport_error(err);
+    let summary = match class {
+        TransportClass::Timeout => format!("连接超时，请检查网络或服务是否启动: {raw}"),
+        TransportClass::Tls => format!("安全证书校验失败，请检查代理或网络环境: {raw}"),
+        TransportClass::Dns => format!("无法解析服务地址，请检查网络: {raw}"),
+        TransportClass::Refused => format!("无法连接到服务，请确认服务已启动: {raw}"),
+        TransportClass::Network => format!("网络连接失败，请检查网络后重试: {raw}"),
     };
     image_capability_result("error", false, summary, None)
 }
@@ -1318,18 +1323,28 @@ pub async fn update_search_settings(search: SearchPrefs) -> Result<UserPrefs, St
     persist_search_settings(search)
 }
 
+/// 保存成功后的统一重启收尾。重启会绕过 RunEvent::Exit，必须先持久化并关闭
+/// browser host、收割子进程；`saved_label` 仅用于保留两条命令各自的日志文案。
+async fn persist_and_restart<S>(
+    app: tauri::AppHandle,
+    saved_label: &str,
+    persister: impl FnOnce() -> Result<S, String>,
+) -> Result<(), String> {
+    persister()?;
+    eprintln!("[pinvou3-app] {saved_label} saved, restarting app...");
+    // Restart bypasses RunEvent::Exit, so persist and close the browser host and reap child
+    // processes first.
+    crate::prepare_app_restart(&app).await;
+    app.restart();
+}
+
 /// 保存设置后立即重启应用（模型/后端切换后需要重启才能生效）。
 #[tauri::command]
 pub async fn save_settings_and_restart(
     patch: GeneralSettingsPatch,
     app: tauri::AppHandle,
 ) -> Result<(), String> {
-    persist_general_settings(patch)?;
-    eprintln!("[pinvou3-app] settings saved, restarting app...");
-    // Restart bypasses RunEvent::Exit, so persist and close the browser host and reap child
-    // processes first.
-    crate::prepare_app_restart(&app).await;
-    app.restart();
+    persist_and_restart(app, "settings", move || persist_general_settings(patch)).await
 }
 
 /// 仅保存搜索配置后重启，避免搜索设置覆盖同时发生变化的模型列表。
@@ -1338,14 +1353,11 @@ pub async fn save_search_settings_and_restart(
     search: SearchPrefs,
     app: tauri::AppHandle,
 ) -> Result<(), String> {
-    persist_search_settings(search)?;
-    eprintln!("[pinvou3-app] search settings saved, restarting app...");
-    // Restart bypasses RunEvent::Exit, so persist and close the browser host and reap child
-    // processes first.
-    crate::prepare_app_restart(&app).await;
-    app.restart();
+    persist_and_restart(app, "search settings", move || {
+        persist_search_settings(search)
+    })
+    .await
 }
-use super::prelude::*;
 // 凭据状态迁移(`mark_*` / `clear_plaintext_key`)自 prefs 的密封 trait 提供。
 use crate::platform::prefs::CredentialStateOps;
 

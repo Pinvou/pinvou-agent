@@ -230,6 +230,9 @@ fn same_package_content(
 
 /// 收集包子树（`mcp/`、`skills/`）下已落盘文件的相对路径，排除 Python 运行
 /// 缓存（`__pycache__/` 子树与 `*.pyc`，MCP server 跑过会就地生成，不算内容差异）。
+/// 本 walker 跟随目录遍历、不做符号链接判定（比对目标是本管线自己落盘的目录，
+/// 无包外内容进入面）——与 `package_export::collect_export_files` 的
+/// symlink-skip 口径是各自的刻意选择，共享的只有 [`is_python_cache_rel_path`]。
 fn collect_landed_disk_files(
     root: &std::path::Path,
     dir: &std::path::Path,
@@ -247,13 +250,20 @@ fn collect_landed_disk_files(
             .unwrap_or(&path)
             .to_string_lossy()
             .replace('\\', "/");
-        if rel.split('/').any(|c| c == "__pycache__") || rel.to_ascii_lowercase().ends_with(".pyc")
-        {
+        if is_python_cache_rel_path(&rel) {
             continue;
         }
         out.push(rel);
     }
     Ok(())
+}
+
+/// 相对路径（'/' 分隔）是否属于 Python 运行缓存：路径任一层级为 `__pycache__`
+/// 目录，或文件名以 `.pyc` 结尾（大小写不敏感）。包导入比对、包导出打包与
+/// 技能市场指纹三个 walker 共用的单一判据；符号链接/目录遍历策略由各 walker
+/// 自行决定（导出跳过 symlink、导入比对与技能指纹跟随），不属本判据。
+pub(crate) fn is_python_cache_rel_path(rel: &str) -> bool {
+    rel.split('/').any(|c| c == "__pycache__") || rel.to_ascii_lowercase().ends_with(".pyc")
 }
 
 /// 目录 rename 的 Windows 瞬时占用重试：杀毒/索引器会短暂持有新建目录内
@@ -758,7 +768,7 @@ pub fn import_plugin_package(
         &all_paths,
     )?;
     let (id, mcp_servers, skills) = (det.id.clone(), det.mcp_servers.clone(), det.skills.clone());
-    let kind = crate::features::marketplace::bundle::derive_bundle_kind(&mcp_servers, &skills, &[])
+    let kind = crate::features::marketplace::bundle::derive_bundle_kind(&mcp_servers, &skills)
         .map_err(|_| "插件包不含任何组件（空包）".to_string())?;
 
     // 未声明技能子树拒收（五轮评审）：detect 只登记声明/识别出的技能，而落盘的

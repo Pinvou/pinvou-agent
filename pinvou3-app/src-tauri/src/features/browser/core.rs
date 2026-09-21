@@ -13,26 +13,39 @@ use tauri::Webview;
 use super::platform::{self, state::NativeTabLease};
 
 const CORE_GLOBAL: &str = "__PINVOU_BROWSER_CORE_V1__";
-const ACTION_COMMITTED_FOCUS_RESTORE_FAILED: &str = "browser/action-committed-focus-restore-failed";
+// Commit-boundary error codes live in platform::mod so the JS contract tests
+// and every platform adapter share one declaration; these aliases keep the
+// historical local names.
+const ACTION_COMMITTED_FOCUS_RESTORE_FAILED: &str = platform::ACTION_COMMITTED_FOCUS_RESTORE_FAILED;
 const ACTION_COMMIT_UNKNOWN_FOCUS_RESTORE_FAILED: &str =
-    "browser/action-commit-unknown-focus-restore-failed";
+    platform::ACTION_COMMIT_UNKNOWN_FOCUS_RESTORE_FAILED;
 const ACTION_COMMIT_UNKNOWN_INPUT_INTERRUPTION: &str =
-    "browser/action-commit-unknown-after-input-interruption";
+    platform::ACTION_COMMIT_UNKNOWN_INPUT_INTERRUPTION;
 const ACTION_COMMIT_UNKNOWN_SCRIPT_INTERRUPTION: &str =
     platform::ACTION_COMMIT_UNKNOWN_SCRIPT_INTERRUPTION;
-const ACTION_COMMIT_UNKNOWN_WEBDRIVER: &str = "browser/action-commit-unknown-webdriver";
+const ACTION_COMMIT_UNKNOWN_WEBDRIVER: &str = platform::ACTION_COMMIT_UNKNOWN_WEBDRIVER;
 const ACTION_COMMIT_UNKNOWN_NAVIGATION_DISPATCH: &str =
-    "browser/action-commit-unknown-after-navigation-dispatch";
-const ACTION_COMMIT_UNKNOWN_TAB_CLOSE: &str = "browser/action-commit-unknown-after-tab-close";
-const ACTION_PARTIALLY_COMMITTED: &str = "browser/action-partially-committed";
+    platform::ACTION_COMMIT_UNKNOWN_NAVIGATION_DISPATCH;
+const ACTION_COMMIT_UNKNOWN_TAB_CLOSE: &str = platform::ACTION_COMMIT_UNKNOWN_TAB_CLOSE;
+const ACTION_PARTIALLY_COMMITTED: &str = platform::ACTION_PARTIALLY_COMMITTED;
+
+/// JS prelude shared by every BrowserCore evaluation entry (this module, the
+/// macOS adapter, and the Linux WebDriver execute path): resolve the page
+/// runtime, then fail closed when it is missing or predates the current
+/// contract version. Ends with a newline so callers append their own tail.
+pub(super) fn core_prelude() -> String {
+    format!(
+        "const core = globalThis.{CORE_GLOBAL};\n\
+         if (!core || core.version !== 1) throw new Error('browser/core-runtime-unavailable');\n"
+    )
+}
 
 fn core_call(method: &str, arguments: Value) -> Result<String, String> {
     let encoded = serde_json::to_string(&arguments)
         .map_err(|error| format!("browser/invalid-arguments: {error}"))?;
     Ok(format!(
-        "const core = globalThis.{CORE_GLOBAL};\n\
-         if (!core || core.version !== 1) throw new Error('browser/core-runtime-unavailable');\n\
-         return await core.{method}(...{encoded});"
+        "{}return await core.{method}(...{encoded});",
+        core_prelude()
     ))
 }
 
@@ -356,6 +369,8 @@ async fn fill_one(
     uid: &str,
     value: &str,
 ) -> Result<(), String> {
+    // Named seam: contract tests pin the fill arm's dispatch call shape, and
+    // the wrapper documents that fill goes through the core-element path.
     platform::fill_browser_core_element(webview, authorization, uid, value).await
 }
 
@@ -433,7 +448,14 @@ pub(crate) async fn execute_page_tool(
             let fields = validated_form_fields(arguments)?;
             let total_count = fields.len();
             for (failed_index, field) in fields.into_iter().enumerate() {
-                if let Err(error) = fill_one(webview, authorization, field.uid, field.value).await {
+                if let Err(error) = platform::fill_browser_core_element(
+                    webview,
+                    authorization,
+                    field.uid,
+                    field.value,
+                )
+                .await
+                {
                     if let Some(mut outcome) = committed_platform_outcome("Form field fill", &error)
                     {
                         outcome["structuredContent"]["completedBeforeCurrent"] =

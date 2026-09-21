@@ -1,4 +1,4 @@
-//! 工具市场的数据类型:manifest 元数据、前端展示模型、迁移结果。
+//! 工具市场的数据类型:manifest 元数据与前端展示模型。
 //!
 //! 这里只放类型定义与对应的 serde 默认函数,不含任何业务逻辑。
 
@@ -134,18 +134,6 @@ pub(super) fn default_tool_exportable() -> bool {
 }
 
 // ---------------------------------------------------------------------------
-// mcp.json 明文密钥迁移结果
-// ---------------------------------------------------------------------------
-
-#[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq, Eq)]
-pub struct McpSecretMigrationResult {
-    pub migrated_count: usize,
-    pub skipped_count: usize,
-    pub failed_count: usize,
-    pub messages: Vec<String>,
-}
-
-// ---------------------------------------------------------------------------
 // MarketplaceToolInfo — 前端展示用
 // ---------------------------------------------------------------------------
 
@@ -174,11 +162,4 @@ pub struct MarketplaceToolInfo {
     /// 详情页「导出」按钮，与后端 fail-fast 口径一致（避免按钮必然报错）。
     #[serde(default = "default_tool_exportable")]
     pub exportable: bool,
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct MarketplaceToolValidation {
-    pub tool_id: String,
-    pub connected: bool,
-    pub tools: Vec<String>,
 }

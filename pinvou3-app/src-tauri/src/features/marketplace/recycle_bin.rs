@@ -407,6 +407,24 @@ pub(crate) fn package_kind(pkg_dir: &Path) -> &'static str {
     }
 }
 
+/// Upload 整包回收的共用核心（三个回收调用点：MCP 卸载、Python 修复降级、
+/// 技能卸载）：展示名取记录的 zip 来源名（非 Upload 回退包 id，见
+/// `store::upload_display_name`）+ `recycle_package` 搬移。
+///
+/// `kind` 由调用方传入——MCP 两条路径按包目录现算（`package_kind`），技能
+/// 路径钉住 `KIND_SKILL`（记录 id 即技能名，目录形态不参与判定）。失败时
+/// `recycle_package` 已把目录回滚原位；登记的回写（fail loud）或保留
+/// （warn + 跳过 companion 清理）等失败策略由调用方决定，不在本核心内。
+pub(crate) fn recycle_upload_package(
+    bin: &RecycleBin,
+    id: &str,
+    record: &BundleRecord,
+    kind: &'static str,
+) -> Result<(), String> {
+    let display_name = super::store::upload_display_name(record, id);
+    bin.recycle_package(id, kind, &display_name, record.clone())
+}
+
 // ---------------------------------------------------------------------------
 // 恢复管线
 // ---------------------------------------------------------------------------

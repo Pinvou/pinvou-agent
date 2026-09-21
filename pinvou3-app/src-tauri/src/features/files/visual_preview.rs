@@ -1,7 +1,7 @@
 //! 可视化预览与 OCR：产物图片内联、office/PDF 逐页 PNG、扫描件 OCR 兜底。
 //!
 //! 对外暴露的 pub 面（供 `commands::artifacts` 渲染产物可视化复用）：
-//! [`base64_encode`] / [`image_file_to_data_uri`] / [`libreoffice_to_inline_html`] /
+//! [`image_file_to_data_uri`] / [`libreoffice_to_inline_html`] /
 //! [`office_to_png_data_uris`] / [`pdf_to_png_data_uris`] / [`ocr_image_for_kb`]。
 //!
 //! 对 facade 暴露 [`ingest_image`]（图片元数据登记）与 [`ocr_pdf`]（被
@@ -9,32 +9,26 @@
 
 use std::path::{Path, PathBuf};
 
+use base64::Engine as _;
+
 use super::IngestResult;
 use super::ingest_deps::{
-    add_ocr_tessdata_arg, libreoffice_tool_command, libreoffice_user_installation_arg,
-    ocr_lang_arg, ocr_tool_command, pdf_tool_command, system_tools,
+    add_ocr_tessdata_arg, ocr_lang_arg, ocr_tool_command, pdf_tool_command, system_tools,
 };
+// The LibreOffice primitives are only exercised directly by the cfg(test)
+// conversion tests below; production paths go through run_libreoffice_convert.
+#[cfg(test)]
+use super::ingest_deps::{libreoffice_tool_command, libreoffice_user_installation_arg};
 
 // ============== 产物可视化预览助手（commands::render_artifact_visual 复用）==============
 
-/// base64 标准编码（无换行），内联图片 data URI 用。委托 `base64` crate
-/// （此前是手写的 24 行查表实现；`commands::artifacts` 等外部调用方仍经本包装）。
-pub fn base64_encode(data: &[u8]) -> String {
-    use base64::Engine as _;
-    base64::engine::general_purpose::STANDARD.encode(data)
-}
-
-/// 图片扩展名 → MIME。用于 data URI 前缀。
+/// 图片扩展名 → MIME。用于 data URI 前缀；映射本体与
+/// codex_acp::attachments 共用同一张表，表外扩展名回落 application/octet-stream。
 fn image_mime(ext: &str) -> &'static str {
-    match ext.to_ascii_lowercase().as_str() {
-        "png" => "image/png",
-        "jpg" | "jpeg" => "image/jpeg",
-        "gif" => "image/gif",
-        "webp" => "image/webp",
-        "bmp" => "image/bmp",
-        "svg" => "image/svg+xml",
-        _ => "application/octet-stream",
-    }
+    // image_mime_type 按 Path::extension() 取扩展名，补一个无扩展名前缀使
+    // `ext` 落在扩展名位置（ext 来自 path.extension()，不含分隔符与点）。
+    let probe = Path::new("img").with_extension(ext);
+    crate::platform::filesystem::image_mime_type(&probe).unwrap_or("application/octet-stream")
 }
 
 /// 单个图片文件 → `data:image/...;base64,...`。
@@ -44,7 +38,7 @@ pub fn image_file_to_data_uri(path: &Path) -> Result<String, String> {
     Ok(format!(
         "data:{};base64,{}",
         image_mime(ext),
-        base64_encode(&bytes)
+        base64::engine::general_purpose::STANDARD.encode(bytes)
     ))
 }
 
@@ -96,75 +90,45 @@ fn inline_html_images(html: &str, dir: &Path) -> String {
 }
 
 /// office 文档 → 可视化 HTML（版式/图片还原）。soffice `--convert-to html`,旁置图片
-/// 内联成自包含 HTML 返回,前端直接喂 iframe srcDoc。复用 libreoffice_convert_text 的
-/// 独立 UserInstallation profile + 临时目录约定。
+/// 内联成自包含 HTML 返回,前端直接喂 iframe srcDoc。复用独立 UserInstallation profile
+/// + 临时目录约定（见 [`super::ingest_deps::run_libreoffice_convert`]）。
 pub fn libreoffice_to_inline_html(path: &Path) -> Result<String, String> {
     if !system_tools().libreoffice {
         return Err(crate::platform::os::libreoffice_missing_message().into());
     }
-    let ts = std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
-        .map(|d| d.as_nanos())
-        .unwrap_or(0);
-    let tmpdir = std::env::temp_dir().join(format!("pinvou3-lo-html-{ts}"));
-    std::fs::create_dir_all(&tmpdir).map_err(|e| format!("创建临时目录失败: {e}"))?;
-
-    // soffice 卡死（损坏文档/杀软占用）按超时 kill-tree，预算同
-    // ingest_office 的转换路径（180s）。
-    let out = crate::platform::process::output_with_timeout_and_kill_tree(
-        {
-            let mut command = libreoffice_tool_command();
-            command
-                .arg(libreoffice_user_installation_arg(&tmpdir.join("profile"))?)
-                .arg("--headless")
-                .arg("--convert-to")
-                // 不写死 `html:HTML`(那是 Writer 专用 filter,套到 Calc/Impress 会无产出)。
-                // 只给 `html` → LibreOffice 按文档类型自动选对应 HTML 导出 filter。
-                .arg("html")
-                .arg("--outdir")
-                .arg(&tmpdir)
-                .arg(path);
-            command
+    // 不写死 `html:HTML`(那是 Writer 专用 filter,套到 Calc/Impress 会无产出)。
+    // 只给 `html` → LibreOffice 按文档类型自动选对应 HTML 导出 filter。
+    super::ingest_deps::run_libreoffice_convert(
+        path,
+        "html",
+        "pinvou3-lo-html",
+        "LibreOffice 转换失败",
+        |tmpdir| {
+            // 不假设产物叫 `<stem>.html`(filter 不同 / 文件名带特殊字符都可能变)——
+            // 扫临时目录里产出的 .html(优先匹配 stem,否则取首个)。
+            let stem = path.file_stem().and_then(|s| s.to_str()).unwrap_or("");
+            let htmls: Vec<PathBuf> = std::fs::read_dir(tmpdir)
+                .map(|rd| {
+                    rd.filter_map(|e| e.ok().map(|e| e.path()))
+                        .filter(|p| {
+                            matches!(
+                                p.extension().and_then(|e| e.to_str()),
+                                Some("html") | Some("htm")
+                            )
+                        })
+                        .collect()
+                })
+                .unwrap_or_default();
+            let pick = htmls
+                .iter()
+                .find(|p| p.file_stem().and_then(|s| s.to_str()) == Some(stem))
+                .or_else(|| htmls.first())
+                .ok_or_else(|| "LibreOffice 未产出 HTML".to_string())?;
+            let html =
+                std::fs::read_to_string(pick).map_err(|e| format!("读取转换 HTML 失败: {e}"))?;
+            Ok(inline_html_images(&html, tmpdir))
         },
-        std::time::Duration::from_secs(180),
-    );
-
-    let result = (|| -> Result<String, String> {
-        match out {
-            Ok(o) if o.status.success() => {}
-            Ok(o) => {
-                return Err(format!(
-                    "LibreOffice 转换失败: {}",
-                    String::from_utf8_lossy(&o.stderr).trim()
-                ));
-            }
-            Err(e) => return Err(format!("LibreOffice 调用失败: {e}")),
-        }
-        // 不假设产物叫 `<stem>.html`(filter 不同 / 文件名带特殊字符都可能变)——
-        // 扫临时目录里产出的 .html(优先匹配 stem,否则取首个)。
-        let stem = path.file_stem().and_then(|s| s.to_str()).unwrap_or("");
-        let htmls: Vec<PathBuf> = std::fs::read_dir(&tmpdir)
-            .map(|rd| {
-                rd.filter_map(|e| e.ok().map(|e| e.path()))
-                    .filter(|p| {
-                        matches!(
-                            p.extension().and_then(|e| e.to_str()),
-                            Some("html") | Some("htm")
-                        )
-                    })
-                    .collect()
-            })
-            .unwrap_or_default();
-        let pick = htmls
-            .iter()
-            .find(|p| p.file_stem().and_then(|s| s.to_str()) == Some(stem))
-            .or_else(|| htmls.first())
-            .ok_or_else(|| "LibreOffice 未产出 HTML".to_string())?;
-        let html = std::fs::read_to_string(pick).map_err(|e| format!("读取转换 HTML 失败: {e}"))?;
-        Ok(inline_html_images(&html, &tmpdir))
-    })();
-    let _ = std::fs::remove_dir_all(&tmpdir);
-    result
+    )
 }
 
 /// 演示稿(pptx/ppt/odp)→ 先转 PDF 再逐页转 PNG。Impress 的 HTML 导出会拆成一堆
@@ -177,107 +141,89 @@ pub fn office_to_png_data_uris(path: &Path, max_pages: u32) -> Result<(Vec<Strin
     if !tools.pdftoppm {
         return Err(crate::platform::os::pdf_render_missing_message().into());
     }
-    let ts = std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
-        .map(|d| d.as_nanos())
-        .unwrap_or(0);
-    let tmpdir = std::env::temp_dir().join(format!("pinvou3-office-png-{ts}"));
-    std::fs::create_dir_all(&tmpdir).map_err(|e| format!("创建临时目录失败: {e}"))?;
+    // office → PDF → PNG 页共用同一个临时目录（PDF 落地后直接原地渲染,避免再开目录）。
+    super::ingest_deps::run_libreoffice_convert(
+        path,
+        "pdf",
+        "pinvou3-office-png",
+        "LibreOffice 转 PDF 失败",
+        |tmpdir| {
+            // 找产出的 PDF(扫目录,别假设文件名)。
+            let pdf = std::fs::read_dir(tmpdir)
+                .ok()
+                .and_then(|rd| {
+                    rd.filter_map(|e| e.ok().map(|e| e.path()))
+                        .find(|p| p.extension().and_then(|e| e.to_str()) == Some("pdf"))
+                })
+                .ok_or_else(|| "LibreOffice 未产出 PDF".to_string())?;
 
-    let result = (|| -> Result<(Vec<String>, bool), String> {
-        // 1) office → PDF（soffice 卡死按超时 kill-tree，预算同 ingest_office）。
-        let out = crate::platform::process::output_with_timeout_and_kill_tree(
-            {
-                let mut command = libreoffice_tool_command();
-                command
-                    .arg(libreoffice_user_installation_arg(&tmpdir.join("profile"))?)
-                    .arg("--headless")
-                    .arg("--convert-to")
-                    .arg("pdf")
-                    .arg("--outdir")
-                    .arg(&tmpdir)
-                    .arg(path);
-                command
-            },
-            std::time::Duration::from_secs(180),
-        );
-        match out {
-            Ok(o) if o.status.success() => {}
-            Ok(o) => {
-                return Err(format!(
-                    "LibreOffice 转 PDF 失败: {}",
-                    String::from_utf8_lossy(&o.stderr).trim()
-                ));
+            let pages = render_pdf_pages(&pdf, tmpdir, 110, max_pages)?;
+            if pages.is_empty() {
+                return Err("未产出可渲染幻灯片页".into());
             }
-            Err(e) => return Err(format!("LibreOffice 调用失败: {e}")),
-        }
-        // 找产出的 PDF(扫目录,别假设文件名)。
-        let pdf = std::fs::read_dir(&tmpdir)
-            .ok()
-            .and_then(|rd| {
-                rd.filter_map(|e| e.ok().map(|e| e.path()))
-                    .find(|p| p.extension().and_then(|e| e.to_str()) == Some("pdf"))
-            })
-            .ok_or_else(|| "LibreOffice 未产出 PDF".to_string())?;
-
-        // 2) PDF → PNG 页(直接在同一 tmpdir,避免再开目录)。pdftoppm 卡死按
-        // 超时 kill-tree（同 ocr_pdf 的兜底）。
-        let prefix = tmpdir.join("page");
-        let conv = crate::platform::process::output_with_timeout_and_kill_tree(
-            {
-                let mut command = pdf_tool_command("pdftoppm");
-                command
-                    .arg("-png")
-                    .arg("-r")
-                    .arg("110")
-                    .arg("-l")
-                    .arg(max_pages.to_string())
-                    .arg(&pdf)
-                    .arg(&prefix);
-                command
-            },
-            std::time::Duration::from_secs(120),
-        );
-        match conv {
-            Ok(o) if o.status.success() => {}
-            Ok(o) => {
-                return Err(format!(
-                    "pdftoppm 转图失败: {}",
-                    String::from_utf8_lossy(&o.stderr).trim()
-                ));
+            let truncated = pages.len() as u32 >= max_pages;
+            let mut uris = Vec::with_capacity(pages.len());
+            for p in &pages {
+                uris.push(image_file_to_data_uri(p)?);
             }
-            Err(e) => return Err(format!("pdftoppm 调用失败: {e}")),
-        }
-        let mut pages: Vec<PathBuf> = std::fs::read_dir(&tmpdir)
-            .map(|rd| {
-                rd.filter_map(|e| e.ok().map(|e| e.path()))
-                    .filter(|p| {
-                        p.extension().and_then(|e| e.to_str()) == Some("png")
-                            && p.file_stem()
-                                .and_then(|s| s.to_str())
-                                .map(|s| s.starts_with("page"))
-                                .unwrap_or(false)
-                    })
-                    .collect()
-            })
-            .unwrap_or_default();
-        pages.sort();
-        if pages.is_empty() {
-            return Err("未产出可渲染幻灯片页".into());
-        }
-        let truncated = pages.len() as u32 >= max_pages;
-        let mut uris = Vec::with_capacity(pages.len());
-        for p in &pages {
-            uris.push(image_file_to_data_uri(p)?);
-        }
-        Ok((uris, truncated))
-    })();
-    let _ = std::fs::remove_dir_all(&tmpdir);
-    result
+            Ok((uris, truncated))
+        },
+    )
 }
 
-/// PDF → 逐页 PNG 的 data URI 列表(可视化预览)。复用 ocr_pdf 的 pdftoppm 调用样板,
-/// 但 110 dpi(预览够清又不至于 data URI 过大)。返回 (data_uris, 是否因上限截断)。
+/// 共享 pdftoppm 渲染核心：把 `pdf` 以 `dpi` 渲染进 `dir`（`page-<n>.png`，
+/// 页数封顶 `max_pages`），返回按文件名排序的页路径。退出/拉起失败的消息串
+/// 是三个调用方共用的历史文案。
+fn render_pdf_pages(
+    pdf: &Path,
+    dir: &Path,
+    dpi: u32,
+    max_pages: u32,
+) -> Result<Vec<PathBuf>, String> {
+    let prefix = dir.join("page");
+    // pdftoppm -png -r <dpi> -l <max> <pdf> <prefix> → page-1.png, page-2.png ...
+    // pdftoppm 卡死按超时 kill-tree（120s,与 #532 的各内联转换点同预算）。
+    let convert = crate::platform::process::output_with_timeout_and_kill_tree(
+        pdf_tool_command("pdftoppm")
+            .arg("-png")
+            .arg("-r")
+            .arg(dpi.to_string())
+            .arg("-l")
+            .arg(max_pages.to_string())
+            .arg(pdf)
+            .arg(&prefix),
+        std::time::Duration::from_secs(120),
+    );
+    match convert {
+        Ok(o) if o.status.success() => {}
+        Ok(o) => {
+            return Err(format!(
+                "pdftoppm 转图失败: {}",
+                String::from_utf8_lossy(&o.stderr).trim()
+            ));
+        }
+        Err(e) => return Err(format!("pdftoppm 调用失败: {e}")),
+    }
+    // 收集生成的 png，按文件名排序保证页序。
+    let mut pages: Vec<PathBuf> = std::fs::read_dir(dir)
+        .map(|rd| {
+            rd.filter_map(|e| e.ok().map(|e| e.path()))
+                .filter(|p| {
+                    p.extension().and_then(|e| e.to_str()) == Some("png")
+                        && p.file_stem()
+                            .and_then(|s| s.to_str())
+                            .map(|s| s.starts_with("page"))
+                            .unwrap_or(false)
+                })
+                .collect()
+        })
+        .unwrap_or_default();
+    pages.sort();
+    Ok(pages)
+}
+
+/// PDF → 逐页 PNG 的 data URI 列表(可视化预览)。复用 [`render_pdf_pages`] 的
+/// pdftoppm 调用样板,但 110 dpi(预览够清又不至于 data URI 过大)。返回 (data_uris, 是否因上限截断)。
 pub fn pdf_to_png_data_uris(path: &Path, max_pages: u32) -> Result<(Vec<String>, bool), String> {
     if !system_tools().pdftoppm {
         return Err(crate::platform::os::pdf_render_missing_message().into());
@@ -288,44 +234,9 @@ pub fn pdf_to_png_data_uris(path: &Path, max_pages: u32) -> Result<(Vec<String>,
         .unwrap_or(0);
     let tmpdir = std::env::temp_dir().join(format!("pinvou3-pdfpreview-{ts}"));
     std::fs::create_dir_all(&tmpdir).map_err(|e| format!("创建临时目录失败: {e}"))?;
-    let prefix = tmpdir.join("page");
-
-    // pdftoppm 卡死（损坏 PDF、杀软占用）按超时 kill-tree，同 ocr_pdf 的兜底。
-    let convert = crate::platform::process::output_with_timeout_and_kill_tree(
-        {
-            let mut command = pdf_tool_command("pdftoppm");
-            command
-                .arg("-png")
-                .arg("-r")
-                .arg("110")
-                .arg("-l")
-                .arg(max_pages.to_string())
-                .arg(path)
-                .arg(&prefix);
-            command
-        },
-        std::time::Duration::from_secs(120),
-    );
 
     let result = (|| -> Result<(Vec<String>, bool), String> {
-        match convert {
-            Ok(o) if o.status.success() => {}
-            Ok(o) => {
-                return Err(format!(
-                    "pdftoppm 转图失败: {}",
-                    String::from_utf8_lossy(&o.stderr).trim()
-                ));
-            }
-            Err(e) => return Err(format!("pdftoppm 调用失败: {e}")),
-        }
-        let mut pages: Vec<PathBuf> = std::fs::read_dir(&tmpdir)
-            .map(|rd| {
-                rd.filter_map(|e| e.ok().map(|e| e.path()))
-                    .filter(|p| p.extension().and_then(|e| e.to_str()) == Some("png"))
-                    .collect()
-            })
-            .unwrap_or_default();
-        pages.sort();
+        let pages = render_pdf_pages(path, &tmpdir, 110, max_pages)?;
         if pages.is_empty() {
             return Err("PDF 未产出可渲染页".into());
         }
@@ -434,38 +345,9 @@ pub(super) fn ocr_pdf(
         );
     }
 
-    let prefix = tmpdir.join("page");
-    // pdftoppm -png -r 150 -l <max> <pdf> <prefix> → prefix-1.png, prefix-2.png ...
-    // 与上方 pdftotext 的兜底同类：损坏/诡异封装的 PDF 也能挂死 pdftoppm，
-    // 120s 预算 + kill-tree（页数已封顶 PDF_OCR_MAX_PAGES）。
-    let convert = crate::platform::process::output_with_timeout_and_kill_tree(
-        {
-            let mut command = pdf_tool_command("pdftoppm");
-            command
-                .arg("-png")
-                .arg("-r")
-                .arg("150")
-                .arg("-l")
-                .arg(PDF_OCR_MAX_PAGES.to_string())
-                .arg(path)
-                .arg(&prefix);
-            command
-        },
-        std::time::Duration::from_secs(120),
-    );
-
-    let result = match convert {
-        Ok(o) if o.status.success() => {
-            // 收集生成的 png，按文件名排序保证页序。
-            let mut pages: Vec<PathBuf> = std::fs::read_dir(&tmpdir)
-                .map(|rd| {
-                    rd.filter_map(|e| e.ok().map(|e| e.path()))
-                        .filter(|p| p.extension().and_then(|e| e.to_str()) == Some("png"))
-                        .collect()
-                })
-                .unwrap_or_default();
-            pages.sort();
-
+    let rendered = render_pdf_pages(path, &tmpdir, 150, PDF_OCR_MAX_PAGES);
+    let result = match rendered {
+        Ok(pages) => {
             if pages.is_empty() {
                 IngestResult::warning(
                     "pdf",
@@ -525,23 +407,7 @@ pub(super) fn ocr_pdf(
                 }
             }
         }
-        Ok(o) => IngestResult::warning(
-            "pdf",
-            &basename,
-            result_path,
-            byte_size,
-            format!(
-                "pdftoppm 转图失败: {}",
-                String::from_utf8_lossy(&o.stderr).trim()
-            ),
-        ),
-        Err(e) => IngestResult::warning(
-            "pdf",
-            &basename,
-            result_path,
-            byte_size,
-            format!("pdftoppm 调用失败: {e}"),
-        ),
+        Err(message) => IngestResult::warning("pdf", &basename, result_path, byte_size, message),
     };
 
     let _ = std::fs::remove_dir_all(&tmpdir);

@@ -260,6 +260,9 @@ impl EvalModelSnapshots {
         self.session_models.lock().remove(session_id);
     }
 
+    // Test-only: no benchmark-hooks or production caller consumes a pinned
+    // saved-model selection outside the snapshot-map tests.
+    #[cfg(test)]
     fn discard(&self, selection: &EvalModelSelection) {
         self.saved_models.lock().remove(selection.token());
     }
@@ -1339,9 +1342,17 @@ impl EnginePool {
 
     /// 为独立调用构造该 session 的 bridge。与 EnginePool lazy spawn 共用同一套
     /// 运行时模型解析（prepare_runtime_model），保证检阅等旁路入口与正式 spawn
-    /// 的模型路由行为一致。
+    /// 的模型路由行为一致。旁路入口从不代表无人值守的 scheduled turn，因此
+    /// 固定走 interactive 路径（`scheduled_unattended = false`）。
     pub(crate) async fn fresh_bridge_for(&self, session_id: &str) -> Result<Pinvou3Bridge> {
-        self.fresh_bridge_for_policy(session_id, false).await
+        #[cfg(any(feature = "benchmark-hooks", test))]
+        let eval_model = self.eval_model_snapshots.for_session(session_id);
+        #[cfg(not(any(feature = "benchmark-hooks", test)))]
+        let eval_model = None;
+        let (bridge, prepared, pins_scheduled_model) = self
+            .prepare_runtime_model(session_id, false, eval_model)
+            .await?;
+        Ok(Self::finalize_runtime_bridge(bridge, &prepared, pins_scheduled_model).await)
     }
 
     async fn prepare_runtime_model(
@@ -1478,21 +1489,6 @@ impl EnginePool {
             bridge.probed_context_tokens = max_len;
             bridge.probed_output_tokens = max_output;
         }
-    }
-
-    async fn fresh_bridge_for_policy(
-        &self,
-        session_id: &str,
-        scheduled_unattended: bool,
-    ) -> Result<Pinvou3Bridge> {
-        #[cfg(any(feature = "benchmark-hooks", test))]
-        let eval_model = self.eval_model_snapshots.for_session(session_id);
-        #[cfg(not(any(feature = "benchmark-hooks", test)))]
-        let eval_model = None;
-        let (bridge, prepared, pins_scheduled_model) = self
-            .prepare_runtime_model(session_id, scheduled_unattended, eval_model)
-            .await?;
-        Ok(Self::finalize_runtime_bridge(bridge, &prepared, pins_scheduled_model).await)
     }
 
     /// 取该 session 的 engine,没有就 spawn 一个。spawn 后若该 session 有磁盘历史
@@ -2262,11 +2258,6 @@ impl EnginePool {
             .is_some_and(|lifecycle| lifecycle.is_active())
     }
 
-    /// Whether this session uses Pinvou's native Code execution lane.
-    pub(crate) fn is_code_session(&self, session_id: &str) -> bool {
-        self.bridge.is_code_session(session_id)
-    }
-
     /// Product capability gate for Pinvou's multi-agent mode. This is shared
     /// by command, prompt, engine and roster paths so a hidden control cannot
     /// be bypassed by stale state or a direct IPC call.
@@ -3024,7 +3015,10 @@ fn identity_for_saved_model(bridge: &Pinvou3Bridge, saved: &SavedModel) -> Model
     ModelIdentity::new(effective.provider(), effective.model())
 }
 
-#[cfg(any(feature = "benchmark-hooks", test))]
+// Test-only: the active-model identity shortcut has no benchmark-hooks or
+// production caller; the eval paths resolve identities through
+// `identity_for_saved_model`.
+#[cfg(test)]
 fn identity_for_active_model(bridge: &Pinvou3Bridge, prefs: &UserPrefs) -> ModelIdentity {
     match prefs.active_model() {
         Some(saved) => identity_for_saved_model(bridge, saved),
@@ -3042,7 +3036,9 @@ fn default_model_for_new_session_from(
     }
 }
 
-#[cfg(any(feature = "benchmark-hooks", test))]
+// Test-only snapshot resolution: production eval paths obtain the
+// (SavedModel, identity) pair through the pinned selections instead.
+#[cfg(test)]
 fn resolve_eval_model_selection_from(
     bridge: &Pinvou3Bridge,
     models: &[SavedModel],

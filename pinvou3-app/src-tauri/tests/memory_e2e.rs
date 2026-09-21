@@ -96,7 +96,6 @@ fn setup_memory_fixture(name: &str) -> (EnvGuard, PathBuf) {
     let profile = MemoryProfile {
         version: 1,
         updated_at: "2026-07-06T00:00:00Z".to_string(),
-        revision: 1,
         identity: ProfileIdentity {
             call_name: "林主任".to_string(),
             assistant_alias: "小林".to_string(),
@@ -433,7 +432,6 @@ fn memory_runtime_injects_effective_five_layer_memory_only() {
         topic: "current_work".to_string(),
         text: "正在完善 pinvou 记忆系统的自动写入机制。".to_string(),
         source: "test".to_string(),
-        confidence: 0.91,
         created_at: now.to_rfc3339(),
         updated_at: now.to_rfc3339(),
         last_hit: now.to_rfc3339(),
@@ -446,7 +444,6 @@ fn memory_runtime_injects_effective_five_layer_memory_only() {
         topic: "completed_work".to_string(),
         text: "已修复记忆候选重复弹出的问题。".to_string(),
         source: "test".to_string(),
-        confidence: 0.9,
         created_at: now.to_rfc3339(),
         updated_at: now.to_rfc3339(),
         last_hit: now.to_rfc3339(),

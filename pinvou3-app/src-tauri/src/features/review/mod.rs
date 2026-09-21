@@ -165,8 +165,9 @@ pub struct PinvouReview {
     pub verdict: Option<String>,
     /// 这次审的产出物 path，存进 sidecar 供下次召唤核账匹配同一产出物。
     pub artifact_path: Option<String>,
-    /// guard 诊断日志（无前端消费者），不随 payload 序列化。
-    #[serde(skip_serializing)]
+    /// guard 诊断日志：生产代码与前端都不消费，仅供测试断言 guard 分流；
+    /// 测试以外的构建不编译该字段。
+    #[cfg(test)]
     pub guard_reasons: Vec<String>,
 }
 
@@ -865,12 +866,14 @@ fn apply_guard(raw: ModelReview, locale_tag: &str) -> PinvouReview {
         .first()
         .map(|p| p.id.clone())
         .unwrap_or_default();
+    #[cfg(test)]
     let mut guard_reasons = Vec::new();
     let issues = raw
         .issues
         .into_iter()
         .map(|mut it| {
             if !it.persona.is_empty() && !valid.contains(&it.persona) {
+                #[cfg(test)]
                 guard_reasons.push(format!(
                     "issue persona '{}' not in personas/alternates → {}",
                     it.persona, fallback
@@ -895,6 +898,7 @@ fn apply_guard(raw: ModelReview, locale_tag: &str) -> PinvouReview {
         coverage: raw.coverage,
         verdict: raw.verdict,
         artifact_path: None,
+        #[cfg(test)]
         guard_reasons,
     }
 }

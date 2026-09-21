@@ -197,11 +197,11 @@ pub async fn install_marketplace_tool(
         mgr.requires_remote_connection_validation(&tool_id)
     };
     if should_validate {
-        let validation_result = {
+        // 只消费校验成败：失败即回滚已安装的工具并向上报用户可读错误。
+        if let Err(err) = {
             let mgr = crate::features::marketplace::MarketplaceManager::new();
             mgr.validate_remote_connection(&tool_id).await
-        };
-        if let Err(err) = validation_result {
+        } {
             let rollback_tool_id = tool_id.clone();
             let _ = tokio::task::spawn_blocking(move || {
                 let mgr = crate::features::marketplace::MarketplaceManager::new();
@@ -511,6 +511,13 @@ pub(super) fn uninstall_marketplace_tool_sync(tool_id: &str) -> Result<(), Strin
     // sessions with its scripts outside the execpolicy deny rules. Abort on
     // failure (same discipline as the install path's abort-on-delete-failure):
     // the MCP stays installed, the claim stays stable, and the user can retry.
+    //
+    // Teardown policy twin: this is the **eager pre-uninstall, abort-on-failure**
+    // companion teardown. The post-commit best-effort twin lives in
+    // features/marketplace::cleanup_uninstalled_tool_state (runs after the
+    // uninstall transaction commits and swallows per-skill failures). Keep the
+    // two policies distinct and the cross references intact when touching
+    // either side.
     //
     // Upload 组合包例外（B1）：companion 技能在 bundles.json 无独立登记，此时
     // MCP 未卸、`skill_owner_package` 仍判归本包 —— 走技能物理删除会把用户唯一

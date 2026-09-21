@@ -6,7 +6,7 @@ use crate::platform::credential_store::redact_secret;
 use crate::platform::paths;
 
 use super::MarketplaceManager;
-use super::types::{MarketplaceToolValidation, ToolManifest};
+use super::types::ToolManifest;
 
 /// 把远程 MCP 校验抛出的原始错误归类成用户可读的中文提示。
 /// 先脱敏(redact_secret),再按 auth/network/限流/超时等关键词归类。
@@ -99,19 +99,15 @@ impl<S: crate::platform::credential_store::CredentialStore> MarketplaceManager<S
             .unwrap_or(false)
     }
 
-    pub async fn validate_remote_connection(
-        &self,
-        tool_id: &str,
-    ) -> Result<MarketplaceToolValidation, String> {
+    /// manifest 显式要求时校验远程 MCP 连接（握手 + 工具可发现 + 期望工具齐全）；
+    /// 通过返回 `Ok(())`，任何失败返回用户可读的 `Err`。未声明校验的工具直接
+    /// `Ok(())`——安装管线只消费成败，不消费工具清单。
+    pub async fn validate_remote_connection(&self, tool_id: &str) -> Result<(), String> {
         let manifest = self
             .load_manifest(tool_id)
             .ok_or_else(|| format!("工具 '{tool_id}' 不存在"))?;
         if !self.requires_remote_connection_validation(tool_id) {
-            return Ok(MarketplaceToolValidation {
-                tool_id: tool_id.to_string(),
-                connected: true,
-                tools: Vec::new(),
-            });
+            return Ok(());
         }
 
         let mut pool = McpPool::new(self.validation_mcp_config(&manifest)?);
@@ -149,11 +145,7 @@ impl<S: crate::platform::credential_store::CredentialStore> MarketplaceManager<S
             }
         }
 
-        Ok(MarketplaceToolValidation {
-            tool_id: tool_id.to_string(),
-            connected: true,
-            tools,
-        })
+        Ok(())
     }
 
     fn validation_mcp_config(&self, manifest: &ToolManifest) -> Result<McpConfig, String> {

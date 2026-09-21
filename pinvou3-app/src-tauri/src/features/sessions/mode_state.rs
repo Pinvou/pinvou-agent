@@ -61,15 +61,6 @@ pub struct MountedCollectionsSnapshot {
 /// 单 session 的 mode 状态。前端通过 `get_mode_state` 拉取，
 /// `set_plan_mode_next` / `accept_plan` 等命令修改。
 ///
-/// **品悟 review 是与 Plan/YOLO 正交的独立开关**(`pinvou_review_enabled`):
-/// - Plan + 开 = plan 出炉 EXIT GATE + 任务收口 final review
-/// - Plan + 关 = 现状行为
-/// - YOLO + 开 = 只触发 final review(YOLO 无 plan 期)
-/// - YOLO + 关 = 现状行为
-///
-/// careful hook 跨所有组合默认开启(由 CodeWhale shell.rs 强制 BLOCKED Dangerous 实现,
-/// 不依赖此开关)。设计依据:docs/Pinvou-品悟设计.md §5。
-///
 /// 上游 PhaseDef 只 derive Serialize,所以这里也只单向序列化给前端;
 /// SessionModeState 不需要从前端 deserialize 回来(它通过 set_*_state 命令逐字段写)。
 #[derive(Debug, Clone, Serialize)]
@@ -90,10 +81,6 @@ pub struct SessionModeState {
     /// 仅用于进程内失败回滚，不暴露给前端。
     #[serde(skip)]
     pub(crate) plan_claim_in_flight: Option<String>,
-    /// 品悟 review 质量护栏开关。默认 false(保持现状)。
-    /// 开启后 accept_plan / exit_plan_to_yolo 触发 EXIT GATE。
-    #[serde(default)]
-    pub pinvou_review_enabled: bool,
     /// 该 session 挂载的本地知识集 id(会话级粘连)。`None` = 未挂载。
     /// 挂上后每条 user 消息发送前,用消息文本对该集 `kb_retrieve`,把命中片段
     /// 当附件一样注入(见 `commands::chat`)。与 `active_persona` 一样仅驻内存,
@@ -123,7 +110,6 @@ impl Default for SessionModeState {
             mode: SerializableMode::Yolo,
             pending_plan_id: None,
             plan_claim_in_flight: None,
-            pinvou_review_enabled: false,
             active_persona: None,
             pending_persona_body: None,
             mounted_collection: None,
@@ -164,7 +150,6 @@ mod type_tests {
             mode: SerializableMode::Plan,
             pending_plan_id: Some("plan-1".to_string()),
             plan_claim_in_flight: None,
-            pinvou_review_enabled: false,
             active_persona: None,
             pending_persona_body: None,
             mounted_collection: None,
@@ -177,6 +162,25 @@ mod type_tests {
         assert!(json.contains("\"mode\":\"plan\""));
         assert!(json.contains("\"pending_plan_id\":\"plan-1\""));
         assert!(!json.contains("plan_claim_in_flight"));
+    }
+}
+
+/// Fold a mode state's collections into one effective list: the multi-mount
+/// list is the source of truth; when it is empty, the legacy single-mount
+/// field is promoted into a one-element list (old sessions only carry
+/// `mounted_collection`).
+fn folded_collections(state: &SessionModeState) -> Vec<MountedCollection> {
+    if !state.mounted_collections.is_empty() {
+        state.mounted_collections.clone()
+    } else {
+        state
+            .mounted_collection
+            .map(|collection_id| MountedCollection {
+                collection_id,
+                enabled: true,
+            })
+            .into_iter()
+            .collect()
     }
 }
 
@@ -235,7 +239,7 @@ impl SessionStore {
     }
 
     /// 设置 mode。砍 PlanPhase 后是 Plan/Yolo 唯一 setter(流转命令都调它),
-    /// 只改 mode,保留 pinvou_review_enabled 等其他字段。
+    /// 只改 mode,保留其他字段。
     ///
     /// Per-session persistence (two-lane semantics): every session writes
     /// `_session_mode_states.json` (reopening restores its own last mode);
@@ -306,10 +310,8 @@ impl SessionStore {
             };
         }
         let json = serde_json::to_string_pretty(&ids).context("serialize multi-agent flags")?;
-        let tmp = file.with_extension("json.tmp");
-        std::fs::write(&tmp, json).with_context(|| format!("write {}", tmp.display()))?;
-        std::fs::rename(&tmp, &file)
-            .with_context(|| format!("commit {} -> {}", tmp.display(), file.display()))
+        deepseek_tui::utils::write_atomic(&file, json.as_bytes())
+            .with_context(|| format!("commit {}", file.display()))
     }
 
     pub fn load_multi_agent_flags(&self) {
@@ -576,18 +578,7 @@ impl SessionStore {
         let mut states = self.mode_states.write();
         let mut changed = Vec::new();
         for (session_id, state) in states.iter_mut() {
-            let mut collections = if state.mounted_collections.is_empty() {
-                state
-                    .mounted_collection
-                    .map(|mounted_id| MountedCollection {
-                        collection_id: mounted_id,
-                        enabled: true,
-                    })
-                    .into_iter()
-                    .collect::<Vec<_>>()
-            } else {
-                state.mounted_collections.clone()
-            };
+            let mut collections = folded_collections(state);
             let previous_len = collections.len();
             collections.retain(|collection| collection.collection_id != collection_id);
             if collections.len() == previous_len {
@@ -624,18 +615,7 @@ impl SessionStore {
         let default_mode = self.resolved_default_mode(id);
         let mut states = self.mode_states.write();
         let state = Self::mode_state_entry(&mut states, id, default_mode);
-        let current = if state.mounted_collections.is_empty() {
-            state
-                .mounted_collection
-                .map(|collection_id| MountedCollection {
-                    collection_id,
-                    enabled: true,
-                })
-                .into_iter()
-                .collect()
-        } else {
-            state.mounted_collections.clone()
-        };
+        let current = folded_collections(state);
         let mut normalized = Vec::new();
         for collection in update(current) {
             if collection.collection_id <= 0
@@ -673,18 +653,7 @@ impl SessionStore {
                 collections: Vec::new(),
             };
         };
-        let collections = if !state.mounted_collections.is_empty() {
-            state.mounted_collections.clone()
-        } else {
-            state
-                .mounted_collection
-                .map(|collection_id| MountedCollection {
-                    collection_id,
-                    enabled: true,
-                })
-                .into_iter()
-                .collect()
-        };
+        let collections = folded_collections(state);
         MountedCollectionsSnapshot {
             revision: state.mounted_collections_revision,
             collections,
@@ -764,19 +733,20 @@ impl SessionStore {
         })
     }
 
-    /// Remove one remote collection from every in-memory session.
-    pub fn remove_mounted_remote_collection_from_all(
-        &self,
-        server_id: &str,
-        collection_id: i64,
+    /// Shared core for the "remove from every session" remote-collection flows:
+    /// drops mounts matching `should_remove` from all in-memory sessions and
+    /// returns the changed session ids (sorted) with their post-removal
+    /// collections. Sessions without a match are left untouched.
+    fn remove_mounted_remote_collections_where(
+        states: &mut HashMap<String, SessionModeState>,
+        should_remove: impl Fn(&MountedRemoteCollection) -> bool,
     ) -> Vec<(String, Vec<MountedRemoteCollection>)> {
-        let mut states = self.mode_states.write();
         let mut changed = Vec::new();
         for (session_id, state) in states.iter_mut() {
             let previous_len = state.mounted_remote_collections.len();
-            state.mounted_remote_collections.retain(|collection| {
-                collection.server_id != server_id || collection.collection_id != collection_id
-            });
+            state
+                .mounted_remote_collections
+                .retain(|collection| !should_remove(collection));
             if state.mounted_remote_collections.len() == previous_len {
                 continue;
             }
@@ -786,25 +756,27 @@ impl SessionStore {
         changed
     }
 
+    /// Remove one remote collection from every in-memory session.
+    pub fn remove_mounted_remote_collection_from_all(
+        &self,
+        server_id: &str,
+        collection_id: i64,
+    ) -> Vec<(String, Vec<MountedRemoteCollection>)> {
+        let mut states = self.mode_states.write();
+        Self::remove_mounted_remote_collections_where(&mut states, |collection| {
+            collection.server_id == server_id && collection.collection_id == collection_id
+        })
+    }
+
     /// Remove every mount belonging to a disconnected remote server from all sessions.
     pub fn remove_remote_server_mounts(
         &self,
         server_id: &str,
     ) -> Vec<(String, Vec<MountedRemoteCollection>)> {
         let mut states = self.mode_states.write();
-        let mut changed = Vec::new();
-        for (session_id, state) in states.iter_mut() {
-            let previous_len = state.mounted_remote_collections.len();
-            state
-                .mounted_remote_collections
-                .retain(|collection| collection.server_id != server_id);
-            if state.mounted_remote_collections.len() == previous_len {
-                continue;
-            }
-            changed.push((session_id.clone(), state.mounted_remote_collections.clone()));
-        }
-        changed.sort_by(|left, right| left.0.cmp(&right.0));
-        changed
+        Self::remove_mounted_remote_collections_where(&mut states, |collection| {
+            collection.server_id == server_id
+        })
     }
 
     fn update_mounted_remote_collections<F>(

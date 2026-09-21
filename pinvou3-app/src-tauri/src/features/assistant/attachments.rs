@@ -371,6 +371,74 @@ fn staged_reference(
     }
 }
 
+/// 非图片（文本类）附件的消息段渲染，由消息装配路径
+/// （`build_message_with_attachments_in_dir_with_access`）与原生图片输入路径
+/// （`prepare_native_user_message_in_dir`）共用：header（名称/kind/字节/token）
+/// + 原始路径、按 token 预算分流（小→完整内容 fenced block，大→落盘+预览+工具引导，
+/// 见 `push_large_attachment_section`）、转换失败警告分支。两条调用路径输出逐字节
+/// 一致；`read_only_tools` / `reference_absolute` 只切换引导措辞与落盘引用形式。
+/// `inline_spent` 跨附件累计已内联 token 预算。
+fn push_text_attachment_section(
+    out: &mut String,
+    a: &crate::features::files::file_ingest::IngestResult,
+    workspace: &std::path::Path,
+    attachment_dir: &str,
+    reference_absolute: bool,
+    read_only_tools: bool,
+    inline_spent: &mut u32,
+) {
+    out.push_str(&format!(
+        "### {} ({}, {} bytes",
+        a.basename, a.kind, a.byte_size
+    ));
+    if a.token_estimate > 0 {
+        out.push_str(&format!(", ~{} tokens", a.token_estimate));
+    }
+    out.push_str(")\n");
+    // 真实路径 —— AI 如果一定要用 read 也能找到对的位置，
+    // 同时避免 AI 凭想象编造 workspace/<timestamp>-... 这种伪路径
+    out.push_str(&format!("原始路径: `{}`\n", a.path));
+    if let Some(md) = &a.markdown {
+        let fits = a.token_estimate <= ATTACH_INLINE_MAX_TOKENS
+            && inline_spent.saturating_add(a.token_estimate) <= ATTACH_TOTAL_BUDGET_TOKENS;
+        if fits {
+            *inline_spent = inline_spent.saturating_add(a.token_estimate);
+            if read_only_tools {
+                out.push_str(
+                    "**以下代码块是文件完整内容,可直接使用,不需要再调 `read` 或 `file_search` 重新读取。**\
+                     当前会话只有只读工具;不要请求 write、edit、bash 或代码执行动作。\n",
+                );
+            } else {
+                out.push_str(
+                    "**以下代码块是文件完整内容,可直接使用,不需要再调 `read` 或 `file_search` 重新读取。**\
+                     如需保存修改版本,用 `write` 写到 \
+                     PINVOU3_WORKSPACE 下;单个文件过大时拆分为多个有明确用途的文件。\n",
+                );
+            }
+            out.push_str("```\n");
+            out.push_str(md);
+            if !md.ends_with('\n') {
+                out.push('\n');
+            }
+            out.push_str("```\n");
+        } else {
+            push_large_attachment_section(
+                out,
+                a,
+                md,
+                workspace,
+                attachment_dir,
+                attachment_dir != "attachments",
+                reference_absolute,
+                read_only_tools,
+            );
+        }
+    } else if let Some(warning) = &a.warning {
+        out.push_str(&format!("⚠️ {warning}\n"));
+    }
+    out.push('\n');
+}
+
 /// 按指定 workspace 相对目录拼接 user 文本 + 附件 markdown。
 /// 图片拷进 workspace 后引导 LLM 调 image_analyze 读图(Qwen3.6 有视觉能力);
 /// 文本类附件按 token 预算分流:小→全量内联,大→落盘+路径+预览(见常量注释)。
@@ -394,18 +462,18 @@ fn build_message_with_attachments_in_dir_with_access(
     out.push_str("---\n用户附上了以下文件:\n\n");
     let mut inline_spent: u32 = 0;
     for a in &attachments {
-        out.push_str(&format!(
-            "### {} ({}, {} bytes",
-            a.basename, a.kind, a.byte_size
-        ));
-        if a.token_estimate > 0 {
-            out.push_str(&format!(", ~{} tokens", a.token_estimate));
-        }
-        out.push_str(")\n");
-        // 真实路径 —— AI 如果一定要用 read 也能找到对的位置，
-        // 同时避免 AI 凭想象编造 workspace/<timestamp>-... 这种伪路径
-        out.push_str(&format!("原始路径: `{}`\n", a.path));
         if a.kind == "image" {
+            out.push_str(&format!(
+                "### {} ({}, {} bytes",
+                a.basename, a.kind, a.byte_size
+            ));
+            if a.token_estimate > 0 {
+                out.push_str(&format!(", ~{} tokens", a.token_estimate));
+            }
+            out.push_str(")\n");
+            // 真实路径 —— AI 如果一定要用 read 也能找到对的位置，
+            // 同时避免 AI 凭想象编造 workspace/<timestamp>-... 这种伪路径
+            out.push_str(&format!("原始路径: `{}`\n", a.path));
             // 把图拷进 workspace,硬约束引导 LLM 调 image_analyze 读图。
             // 关键:不能说"你有视觉能力"——那会让模型以为可直接描述而凭空幻觉
             // (实测同一张图,不调工具时编造内容,调工具才得真相)。改成"你现在
@@ -434,45 +502,17 @@ fn build_message_with_attachments_in_dir_with_access(
                     );
                 }
             }
-        } else if let Some(md) = &a.markdown {
-            let fits = a.token_estimate <= ATTACH_INLINE_MAX_TOKENS
-                && inline_spent.saturating_add(a.token_estimate) <= ATTACH_TOTAL_BUDGET_TOKENS;
-            if fits {
-                inline_spent = inline_spent.saturating_add(a.token_estimate);
-                if read_only_tools {
-                    out.push_str(
-                        "**以下代码块是文件完整内容,可直接使用,不需要再调 `read` 或 `file_search` 重新读取。**\
-                         当前会话只有只读工具;不要请求 write、edit、bash 或代码执行动作。\n",
-                    );
-                } else {
-                    out.push_str(
-                        "**以下代码块是文件完整内容,可直接使用,不需要再调 `read` 或 `file_search` 重新读取。**\
-                         如需保存修改版本,用 `write` 写到 \
-                         PINVOU3_WORKSPACE 下;单个文件过大时拆分为多个有明确用途的文件。\n",
-                    );
-                }
-                out.push_str("```\n");
-                out.push_str(md);
-                if !md.ends_with('\n') {
-                    out.push('\n');
-                }
-                out.push_str("```\n");
-            } else {
-                push_large_attachment_section(
-                    &mut out,
-                    a,
-                    md,
-                    workspace,
-                    attachment_dir,
-                    attachment_dir != "attachments",
-                    reference_absolute,
-                    read_only_tools,
-                );
-            }
-        } else if let Some(warning) = &a.warning {
-            out.push_str(&format!("⚠️ {warning}\n"));
+        } else {
+            push_text_attachment_section(
+                &mut out,
+                a,
+                workspace,
+                attachment_dir,
+                reference_absolute,
+                read_only_tools,
+                &mut inline_spent,
+            );
         }
-        out.push('\n');
     }
     out.push_str("---\n");
     out
@@ -576,49 +616,16 @@ pub(crate) fn prepare_native_user_message_in_dir(
             segment.push_str(&format!("[Attached image: {}]\n\n", abs.display()));
             continue;
         }
-        segment.push_str(&format!(
-            "### {} ({}, {} bytes",
-            a.basename, a.kind, a.byte_size
-        ));
-        if a.token_estimate > 0 {
-            segment.push_str(&format!(", ~{} tokens", a.token_estimate));
-        }
-        segment.push_str(")\n");
-        // 真实路径 —— AI 如果一定要用 read 也能找到对的位置（与文本路径同行为）
-        segment.push_str(&format!("原始路径: `{}`\n", a.path));
-        if let Some(md) = &a.markdown {
-            let fits = a.token_estimate <= ATTACH_INLINE_MAX_TOKENS
-                && inline_spent.saturating_add(a.token_estimate) <= ATTACH_TOTAL_BUDGET_TOKENS;
-            if fits {
-                inline_spent = inline_spent.saturating_add(a.token_estimate);
-                segment.push_str(
-                    "**以下代码块是文件完整内容,可直接使用,不需要再调 `read` 或 `file_search` 重新读取。**\
-                     如需保存修改版本,用 `write` 写到 \
-                     PINVOU3_WORKSPACE 下;单个文件过大时拆分为多个有明确用途的文件。\n",
-                );
-                segment.push_str("```\n");
-                segment.push_str(md);
-                if !md.ends_with('\n') {
-                    segment.push('\n');
-                }
-                segment.push_str("```\n");
-            } else {
-                push_large_attachment_section(
-                    &mut segment,
-                    a,
-                    md,
-                    workspace,
-                    attachment_dir,
-                    attachment_dir != "attachments",
-                    // Native 分支图片/文件都暂存到执行根,落盘根与引擎 cwd 一致,相对引用。
-                    false,
-                    false,
-                );
-            }
-        } else if let Some(warning) = &a.warning {
-            segment.push_str(&format!("⚠️ {warning}\n"));
-        }
-        segment.push('\n');
+        push_text_attachment_section(
+            &mut segment,
+            a,
+            workspace,
+            attachment_dir,
+            // Native 分支图片/文件都暂存到执行根,落盘根与引擎 cwd 一致,相对引用。
+            false,
+            false,
+            &mut inline_spent,
+        );
     }
     if !attachments.is_empty() {
         segment.push_str("---\n");

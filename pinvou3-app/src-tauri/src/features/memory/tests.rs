@@ -33,12 +33,8 @@ use super::types::*;
 // 重新暴露 super::* 上的 pub 面（MemoryProfile / ProfileIdentity / ... ）
 use super::*;
 
-#[allow(unused_imports)]
-use super::util::{
-    looks_completed_work_status, looks_recent_work_status, looks_sensitive, looks_task_like,
-};
+use super::util::{looks_sensitive, looks_task_like};
 
-#[allow(unused_imports)]
 use super::util::{
     file_lifecycle_lock, is_transient_windows_lock, json_lines_are_valid,
     promote_recovery_candidate, read_text_recovering, read_text_recovering_unlocked_with,
@@ -401,7 +397,6 @@ fn preference_and_work_context_topic_updates_commit_before_old_cleanup() {
         MemoryTextPatch {
             topic: Some("workflow_preference".to_string()),
             text: Some("new preference".to_string()),
-            ttl_days: None,
         },
     )
     .unwrap()
@@ -411,7 +406,6 @@ fn preference_and_work_context_topic_updates_commit_before_old_cleanup() {
         MemoryTextPatch {
             topic: Some("project_context".to_string()),
             text: Some("new context".to_string()),
-            ttl_days: None,
         },
     )
     .unwrap()
@@ -507,7 +501,6 @@ fn topic_migration_preference_pending_cleanup_stays_available_and_hides_stale_id
         MemoryTextPatch {
             topic: Some("workflow_preference".to_string()),
             text: Some("new preference".to_string()),
-            ttl_days: None,
         },
     )
     .unwrap()
@@ -575,7 +568,6 @@ fn topic_migration_work_context_pending_cleanup_stays_available_and_hides_stale_
         MemoryTextPatch {
             topic: Some("project_context".to_string()),
             text: Some("new context".to_string()),
-            ttl_days: None,
         },
     )
     .unwrap()
@@ -849,7 +841,8 @@ fn missing_profile_recovers_latest_valid_interrupted_write() {
     let recovered = load_profile().unwrap();
     assert_eq!(recovered.identity.call_name, "升级用户");
     assert_eq!(recovered.identity.assistant_alias, "小品");
-    assert_eq!(recovered.revision, 7);
+    // The candidate still carries the legacy "revision" key that old profile
+    // files wrote; the field is gone and serde must tolerate (ignore) it.
     assert!(path.is_file());
     assert!(!valid_candidate.exists());
     assert!(fs::read_to_string(&path).unwrap().contains("升级用户"));
@@ -878,7 +871,6 @@ fn authoritative_writes_commit_when_derived_runtime_source_is_unavailable() {
         MemoryTextPatch {
             text: Some("Use detailed answers".to_string()),
             topic: None,
-            ttl_days: None,
         },
     )
     .unwrap()
@@ -1325,7 +1317,6 @@ fn scenario_current_focus_merges_related_updates() {
         &first.content,
         &first.source,
         Some(21),
-        0.9,
     )
     .unwrap();
     let second = upsert_timed_memory_unlocked(
@@ -1334,7 +1325,6 @@ fn scenario_current_focus_merges_related_updates() {
         &second.content,
         &second.source,
         Some(21),
-        0.9,
     )
     .unwrap();
 
@@ -1356,7 +1346,6 @@ fn scenario_existing_current_focus_duplicates_are_deduped_on_load() {
         text: "推进公司人力资源手册更新，重点调整章节结构，计划新增数据合规、灵活用工等章节。"
             .to_string(),
         source: "test".to_string(),
-        confidence: 0.9,
         created_at: (now - Duration::days(1)).to_rfc3339(),
         updated_at: (now - Duration::days(1)).to_rfc3339(),
         last_hit: (now - Duration::days(1)).to_rfc3339(),
@@ -1369,7 +1358,6 @@ fn scenario_existing_current_focus_duplicates_are_deduped_on_load() {
         topic: "current_work".to_string(),
         text: "推进公司人力资源手册更新，后续计划细化章节结构和页面设计。".to_string(),
         source: "test".to_string(),
-        confidence: 0.9,
         created_at: now.to_rfc3339(),
         updated_at: now.to_rfc3339(),
         last_hit: now.to_rfc3339(),
@@ -1410,7 +1398,6 @@ fn memory_jsonl_writes_are_bounded() {
                 topic: "current_work".to_string(),
                 text: marker.to_string().repeat(8),
                 source: "test".to_string(),
-                confidence: 0.9,
                 created_at: ts.clone(),
                 updated_at: ts.clone(),
                 last_hit: ts,
@@ -2178,7 +2165,6 @@ async fn organize_memory_merges_duplicates_and_deletes_stale_focus() {
         topic: "current_work".to_string(),
         text: "推进去年年会策划方案".to_string(),
         source: "test".to_string(),
-        confidence: 0.9,
         created_at: (now - Duration::days(40)).to_rfc3339(),
         updated_at: (now - Duration::days(40)).to_rfc3339(),
         last_hit: (now - Duration::days(40)).to_rfc3339(),
@@ -2582,7 +2568,6 @@ fn compact_timed_memory_store_dedupes_and_enforces_capacity() {
         topic: "current_work".to_string(),
         text: text.to_string(),
         source: "test".to_string(),
-        confidence: 0.9,
         created_at: (now - Duration::hours(hours_ago)).to_rfc3339(),
         updated_at: (now - Duration::hours(hours_ago)).to_rfc3339(),
         last_hit: (now - Duration::hours(hours_ago)).to_rfc3339(),
@@ -2714,7 +2699,6 @@ async fn organize_overlapping_actions_count_each_item_once() {
         topic: "current_work".to_string(),
         text: "推进新版控制台的迁移方案".to_string(),
         source: "test".to_string(),
-        confidence: 0.9,
         created_at: hit.clone(),
         updated_at: hit.clone(),
         last_hit: hit.clone(),
@@ -2727,7 +2711,6 @@ async fn organize_overlapping_actions_count_each_item_once() {
         topic: "meeting_notes".to_string(),
         text: "季度评审定在每月第二周".to_string(),
         source: "test".to_string(),
-        confidence: 0.9,
         created_at: hit.clone(),
         updated_at: hit.clone(),
         last_hit: hit.clone(),
@@ -2806,7 +2789,6 @@ async fn organize_chained_overlapping_merge_keeps_absorbed_content() {
         topic: topic.to_string(),
         text: text.to_string(),
         source: "test".to_string(),
-        confidence: 0.9,
         created_at: hit.clone(),
         updated_at: hit.clone(),
         last_hit: hit.clone(),
@@ -2897,7 +2879,6 @@ async fn organize_update_skips_item_archived_during_the_llm_call() {
         topic: "current_work".to_string(),
         text: "推进新版控制台的迁移方案".to_string(),
         source: "test".to_string(),
-        confidence: 0.9,
         created_at: hit.clone(),
         updated_at: hit.clone(),
         last_hit: hit.clone(),
@@ -3014,7 +2995,6 @@ async fn organize_skips_targets_edited_during_the_llm_call() {
         topic: "current_work".to_string(),
         text: "推进新版控制台的迁移方案".to_string(),
         source: "test".to_string(),
-        confidence: 0.9,
         created_at: hit.clone(),
         updated_at: hit.clone(),
         last_hit: hit.clone(),
@@ -3059,7 +3039,6 @@ async fn organize_skips_targets_edited_during_the_llm_call() {
     let edit_patch = |text: &str| MemoryTextPatch {
         topic: None,
         text: Some(text.to_string()),
-        ttl_days: None,
     };
     let hook_edit = id_edit.clone();
     let hook_source = id_source.clone();
@@ -3321,7 +3300,6 @@ async fn organize_update_never_revives_expired_archived_timed_items() {
         topic: "current_work".to_string(),
         text: "推进已结束的旧项目".to_string(),
         source: "test".to_string(),
-        confidence: 0.9,
         created_at: archived_hit.clone(),
         updated_at: archived_hit.clone(),
         last_hit: archived_hit.clone(),

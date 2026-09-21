@@ -46,6 +46,15 @@ macro_rules! sync_command_passthrough {
 pub(super) use async_command_passthrough;
 pub(super) use sync_command_passthrough;
 
+/// 命令层错误出口的统一脱敏：`context` + redact 后的错误串（凭据/密钥不得
+/// 原样透传给前端）。原 settings.rs 本地函数上移，settings / memory 共用。
+pub(crate) fn sanitize_command_error(context: &str, err: impl std::fmt::Display) -> String {
+    format!(
+        "{context}: {}",
+        crate::platform::credential_store::redact_secret(&err.to_string())
+    )
+}
+
 /// 解析当前会话 id：优先入参，否则取 store.active_id()。
 ///
 /// 收敛原本散落在 workflows/interaction/memory/chat 共 14 处的

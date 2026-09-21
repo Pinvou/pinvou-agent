@@ -112,7 +112,7 @@ impl KnowledgeService {
         let store = Store::open(db_path)?;
         let last_scan_finished_at = store.last_scan_finished_at().unwrap_or(0);
         let conn = store.conn_arc();
-        let l1 = l1::L1Store::new(conn.clone(), None);
+        let l1 = l1::L1Store::new(conn.clone());
         let imports = import_jobs::ImportJobStore::new(conn);
         let interrupted = imports.recover_interrupted()?;
         if let Some(job) = &interrupted {

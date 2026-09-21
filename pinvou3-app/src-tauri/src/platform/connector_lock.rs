@@ -6,11 +6,9 @@
 //! 低层能力进全局 platform」的边界从这里供数；`connectors::platform` 的 `lock_json` /
 //! `executable_name` 保留为委托，既有调用方零改动。
 
-use std::io::Read;
 use std::path::Path;
 
 use serde::Deserialize;
-use sha2::{Digest, Sha256};
 
 #[cfg(all(target_os = "linux", target_arch = "aarch64"))]
 const LOCK_JSON: &str =
@@ -123,18 +121,9 @@ pub fn locked_cli_path(name: &str) -> Option<std::path::PathBuf> {
 }
 
 /// 文件 SHA-256（小写 hex），供存量 CLI 二进制对照 lock 表。
+/// 委托 [`super::hashing::sha256_file`]，避免两份流式摘要实现漂移。
 pub fn file_sha256_hex(path: &Path) -> std::io::Result<String> {
-    let mut file = std::fs::File::open(path)?;
-    let mut digest = Sha256::new();
-    let mut buffer = [0_u8; 64 * 1024];
-    loop {
-        let read = file.read(&mut buffer)?;
-        if read == 0 {
-            break;
-        }
-        digest.update(&buffer[..read]);
-    }
-    Ok(super::encoding::hex_lower(&digest.finalize()))
+    super::hashing::sha256_file(path)
 }
 
 #[cfg(test)]

@@ -7,7 +7,7 @@
 //! 本模块是 facade:把原本 2600+ 行的 god-module 按职责拆成子模块,
 //! 对外 pub 面通过 `pub use` 保持不变。
 //!
-//! - `types`      — manifest/info/迁移结果等数据类型
+//! - `types`      — manifest/info 等数据类型
 //! - `secrets`    — 密钥/凭证助手 + MarketplaceManager 的 secret 读写方法
 //! - `validation` — 远程 MCP 连接校验
 //! - `migration`  — mcp.json 旧版明文密钥迁移
@@ -432,8 +432,8 @@ fn tool_source_contract(source: &store::BundleSource) -> &'static str {
 
 // 对外 pub 面保持不变:类型从 types 子模块 re-export。
 pub use types::{
-    ConfigField, MarketplaceToolInfo, MarketplaceToolValidation, McpSecretMigrationResult,
-    RemoteOAuthConfig, RemoteServer, SecretEnv, SecretHeader, ToolManifest,
+    ConfigField, MarketplaceToolInfo, RemoteOAuthConfig, RemoteServer, SecretEnv, SecretHeader,
+    ToolManifest,
 };
 
 // PR #302 拆分后,这些函数已搬到 scope.rs;为保持 mod.rs 兼容面,在此 re-export。
@@ -766,27 +766,35 @@ impl<S: CredentialStore> MarketplaceManager<S> {
         }
     }
 
-    /// 前端列表：所有可用工具 + 安装状态。上传包若有用户自定义展示名/说明覆盖
-    /// （bundles.json extra，仅 Upload 来源生效），name/description 用覆盖值——
-    /// 与 `BundleRegistry::list`（bundle_readiness）同一口径，避免卡片与
-    /// composer 菜单两处标题不一致。`source` 按 bundles.json 记录的实际
-    /// BundleSource 填充（M4：前端据此区分「上传包卸载进回收站」与
-    /// 「预置/自定义卸载保留目录」）。
+    /// 前端列表：所有可用工具 + 安装状态。`installed` 与 `BundleRegistry::list`
+    /// （bundle_readiness）同一真相源口径：bundles.json 记录优先（缺记录 =
+    /// 未安装），store 读失败回退 installed.json 推导（degraded 信息随之丢失）
+    /// ——此前只读 installed.json，与就绪卡在「store 已卸载登记 / store 损坏」
+    /// 两种状态下口径分叉（工具卡显示已装、就绪卡显示未装）。上传包若有用户
+    /// 自定义展示名/说明覆盖（bundles.json extra，仅 Upload 来源生效），
+    /// name/description 用覆盖值——与 `BundleRegistry::list` 同一读法
+    /// （`store::apply_display_override`），避免卡片与 composer 菜单两处标题
+    /// 不一致。`source` 按 bundles.json 记录的实际 BundleSource 填充（M4：前端
+    /// 据此区分「上传包卸载进回收站」与「预置/自定义卸载保留目录」）。
     pub fn list_tools(&self) -> Vec<MarketplaceToolInfo> {
         let installed = self.installed_ids();
-        // 一次读全量记录，同时供展示覆盖（仅 Upload 记录生效）与 source 填充，
-        // 避免逐工具取锁+整文件解析的 N+1。读失败（如损坏 JSON）warn 后降级：
-        // 展示覆盖按「无覆盖」（口径同 bundle.rs 的 store 读回退），source 按
-        // 「无记录 = builtin」（宁可少提示「移入回收站」，不说谎）。
-        let records: Vec<store::BundleRecord> = match store::BundleStore::new().records() {
-            Ok(records) => records,
+        // 一次读全量记录，同时供安装态、展示覆盖（仅 Upload 记录生效）与 source
+        // 填充，避免逐工具取锁+整文件解析的 N+1。读失败（如损坏 JSON）warn 后
+        // 降级：安装态回退 installed.json 推导（与 bundle.rs 同口径），展示覆盖
+        // 按「无覆盖」，source 按「无记录 = builtin」（宁可少提示「移入回收站」，
+        // 不说谎）。
+        let store_records: Option<Vec<store::BundleRecord>> = match store::BundleStore::new()
+            .records()
+        {
+            Ok(records) => Some(records),
             Err(e) => {
                 log::warn!(
-                    "[marketplace] BundleStore 读取失败，list_tools 不应用展示覆盖、source 按 builtin: {e}"
+                    "[marketplace] BundleStore 读取失败，list_tools installed 回退 installed.json、不应用展示覆盖、source 按 builtin: {e}"
                 );
-                Vec::new()
+                None
             }
         };
+        let records = store_records.as_deref().unwrap_or(&[]);
         let upload_by_id: std::collections::HashMap<&str, &store::BundleRecord> = records
             .iter()
             .filter(|r| matches!(r.source, store::BundleSource::Upload(_)))
@@ -799,14 +807,17 @@ impl<S: CredentialStore> MarketplaceManager<S> {
         self.available_tools()
             .into_iter()
             .map(|m| {
+                // 安装态真相源反转（§3.2）：store 记录优先，读失败回退
+                // installed.json（store_state 的 None 分支约定）。
+                let (installed_flag, _) = bundle::store_state(store_records.as_deref(), &m.id)
+                    .unwrap_or_else(|| (installed.contains(&m.id), None));
                 let (name, description) = match upload_by_id.get(m.id.as_str()) {
                     Some(record) => {
-                        let name = store::display_override(record, store::EXTRA_DISPLAY_NAME)
-                            .unwrap_or(m.name.clone());
-                        let description =
-                            store::display_override(record, store::EXTRA_DISPLAY_DESCRIPTION)
-                                .unwrap_or(m.description.clone());
-                        (name, description)
+                        let (name, description) = store::apply_display_override(record, None, None);
+                        (
+                            name.unwrap_or_else(|| m.name.clone()),
+                            description.unwrap_or_else(|| m.description.clone()),
+                        )
                     }
                     None => (m.name, m.description),
                 };
@@ -818,7 +829,7 @@ impl<S: CredentialStore> MarketplaceManager<S> {
                     // 预置目录包不可导出（zip 无法重新导入，与 export_installed_plugin
                     // 的 fail-fast 同口径）；迁移登记的手写自定义 MCP / 上传包可导出。
                     exportable: !mcp_catalog::spec_for(&m.id).is_some(),
-                    installed: installed.contains(&m.id),
+                    installed: installed_flag,
                     id: m.id,
                     name,
                     description,
@@ -858,6 +869,7 @@ impl<S: CredentialStore> MarketplaceManager<S> {
         tool_id: &str,
         user_config: &std::collections::HashMap<String, String>,
         source: store::BundleSource,
+        // test seam: only install_with_python (cfg(test)) passes Some
         python_override: Option<&str>,
     ) -> Result<(), String> {
         let _transaction_guard = MARKETPLACE_TRANSACTION_LOCK
@@ -1080,16 +1092,12 @@ impl<S: CredentialStore> MarketplaceManager<S> {
             let can_redeliver = mcp_catalog::spec_for(tool_id).is_some();
             if let Some(record) = upload_record {
                 if pkg_dir.exists() {
-                    let display_name = match &record.source {
-                        store::BundleSource::Upload(zip) => zip.clone(),
-                        _ => tool_id.to_string(),
-                    };
                     let kind = recycle_bin::package_kind(&pkg_dir);
-                    if let Err(e) = recycle_bin::RecycleBin::new().recycle_package(
+                    if let Err(e) = recycle_bin::recycle_upload_package(
+                        &recycle_bin::RecycleBin::new(),
                         tool_id,
+                        &record,
                         kind,
-                        &display_name,
-                        record.clone(),
                     ) {
                         // preflight 已过仍失败 = 极端 IO 异常（rename/清单写；目录已
                         // 由 recycle_package 回滚原位）。登记仅以本次所删为限回写；
@@ -1223,6 +1231,14 @@ impl<S: CredentialStore> MarketplaceManager<S> {
     /// `preserve_companion_skills`：跳过 companion 技能物理删除 —— 修复降级路径
     /// 上 Upload 整包回收失败（技能目录仍在盘上）时由调用方置位：宁可留下残留
     /// 技能卡，不把用户唯一副本的 skills 部分物理删除。
+    ///
+    /// Teardown policy twin: this is the **post-commit best-effort** companion
+    /// cleanup (runs only after the uninstall transaction commits; failures are
+    /// swallowed). The eager pre-uninstall, abort-on-failure twin lives in
+    /// `app/commands/marketplace.rs::uninstall_marketplace_tool_sync` (runs
+    /// before any supply-side teardown so a failed companion delete aborts the
+    /// whole uninstall). Keep the two policies distinct and the cross
+    /// references intact when touching either side.
     fn cleanup_uninstalled_tool_state(
         &self,
         tool_id: &str,
@@ -1277,18 +1293,13 @@ impl<S: CredentialStore> MarketplaceManager<S> {
                     if matches!(record.source, store::BundleSource::Upload(_)) {
                         let pkg_dir = paths::bundles_root().join(tool_id);
                         if pkg_dir.exists() {
-                            let display_name = match &record.source {
-                                store::BundleSource::Upload(zip) => zip.clone(),
-                                _ => tool_id.to_string(),
-                            };
-                            if let Err(recycle_error) = recycle_bin::RecycleBin::new()
-                                .recycle_package(
-                                    tool_id,
-                                    recycle_bin::package_kind(&pkg_dir),
-                                    &display_name,
-                                    record.clone(),
-                                )
-                            {
+                            let kind = recycle_bin::package_kind(&pkg_dir);
+                            if let Err(recycle_error) = recycle_bin::recycle_upload_package(
+                                &recycle_bin::RecycleBin::new(),
+                                tool_id,
+                                &record,
+                                kind,
+                            ) {
                                 log::warn!(
                                     "[marketplace] 修复降级回收 Upload 包失败（{tool_id}），跳过 companion 物理清理以保留唯一副本: {recycle_error}"
                                 );
@@ -5372,8 +5383,11 @@ mod tests {
             config.insert("PATSNAP_API_KEY".to_string(), "valid-token".to_string());
 
             mgr.install("patsnap-mock", &config).unwrap();
-            let validation = mgr
-                .validate_remote_connection("patsnap-mock")
+            // Ok(()) 即已验证：握手成功、工具非空，且 manifest 期望工具
+            // （patsnap_search / patsnap_fetch）全部被发现——缺任一都会 Err。
+            // 旧返回值携带 tools 明细，现改由 mock 收到的 methods 观测真实
+            // 发生了 tools/list。
+            mgr.validate_remote_connection("patsnap-mock")
                 .await
                 .unwrap();
 
@@ -5399,8 +5413,6 @@ mod tests {
                 secrets::resolve_registered_secret("PINVOU3_MCP_SECRET_PATSNAP_API_KEY").as_deref(),
                 Some("valid-token")
             );
-            assert!(validation.tools.contains(&"patsnap_search".to_string()));
-            assert!(validation.tools.contains(&"patsnap_fetch".to_string()));
             let seen = mock.seen_methods.lock().unwrap().clone();
             assert!(seen.contains(&"initialize".to_string()));
             assert!(seen.contains(&"tools/list".to_string()));
@@ -5462,9 +5474,8 @@ mod tests {
             let store = MemoryCredentialStore::default();
             let mgr = MarketplaceManager::with_store(store.clone());
 
-            let result = mgr.migrate_mcp_plaintext_secrets().unwrap();
+            mgr.migrate_mcp_plaintext_secrets().unwrap();
 
-            assert_eq!(result.migrated_count, 1);
             let stored = store
                 .get(&mcp_secret_reference("weather", "env", "AMAP_KEY"))
                 .unwrap();
@@ -5476,6 +5487,12 @@ mod tests {
             )
             .unwrap();
             assert!(!content.contains(&secret));
+            // 迁移观测（旧 McpSecretMigrationResult 计数断言的替代）：AMAP_KEY 键
+            // 从 env 整体移除、无关键值保留，恰好一次迁移落盘。
+            assert!(
+                !content.contains("AMAP_KEY"),
+                "迁移应把 env 里的 AMAP_KEY 键整体移除: {content}"
+            );
             assert!(content.contains("SAFE_VALUE"));
         });
     }
@@ -5503,15 +5520,19 @@ mod tests {
             let store = MemoryCredentialStore::default();
             let mgr = MarketplaceManager::with_store(store.clone());
 
-            let result = mgr.migrate_mcp_plaintext_secrets().unwrap();
+            mgr.migrate_mcp_plaintext_secrets().unwrap();
 
-            assert_eq!(result.migrated_count, 1);
             let stored = store
                 .get(&mcp_secret_reference("qcc", "header", "QCC_API_KEY"))
                 .unwrap();
             assert_eq!(stored.as_deref(), Some(secret.as_str()));
             let content = std::fs::read_to_string(&mcp_path).unwrap();
             assert!(!content.contains(&secret));
+            // 迁移观测：明文 Authorization 头被整体移除并改写为 env-var 接线。
+            assert!(
+                !content.contains("Authorization"),
+                "迁移应移除明文 Authorization 头: {content}"
+            );
             assert!(
                 content.contains("\"bearer_token_env_var\": \"PINVOU3_MCP_SECRET_QCC_API_KEY\"")
             );
@@ -5548,9 +5569,10 @@ mod tests {
                 .unwrap();
             let mgr = MarketplaceManager::with_store(store.clone());
 
-            let result = mgr.migrate_mcp_plaintext_secrets().unwrap();
+            mgr.migrate_mcp_plaintext_secrets().unwrap();
 
-            assert_eq!(result.skipped_count, 1);
+            // 跳过观测：既有凭据保持原值未被覆盖，文件明文清理并改写为
+            // env-var 接线（清明文但不清存储，即「跳过覆盖」分支）。
             let stored = store
                 .get(&mcp_secret_reference("qcc", "header", "QCC_API_KEY"))
                 .unwrap();
@@ -5558,6 +5580,10 @@ mod tests {
             let content = std::fs::read_to_string(&mcp_path).unwrap();
             assert!(!content.contains(&old_secret));
             assert!(!content.contains(&kept_secret));
+            assert!(
+                !content.contains("Authorization"),
+                "跳过覆盖也应清理明文头: {content}"
+            );
             assert!(
                 content.contains("\"bearer_token_env_var\": \"PINVOU3_MCP_SECRET_QCC_API_KEY\"")
             );

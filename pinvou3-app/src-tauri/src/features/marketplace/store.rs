@@ -578,6 +578,36 @@ pub(crate) fn display_override(record: &BundleRecord, key: &str) -> Option<Strin
         .map(str::to_string)
 }
 
+/// Upload 记录的用户自定义展示名/说明覆盖一次读出（bundles.json extra 的
+/// `display_name`/`display_description`，trim 后非空才生效，见
+/// [`display_override`]）。非 Upload 记录恒 `(None, None)`——预置/内置包不接受
+/// 覆盖，越权写入的 extra 必须被展示层忽略。三个列表组装
+/// （`list_tools` / `list_bundles` / `list_skills`）共用同一读法，避免工具卡、
+/// 就绪卡与技能卡的标题/说明口径分叉。
+pub(crate) fn apply_display_override(
+    record: &BundleRecord,
+    name: Option<String>,
+    description: Option<String>,
+) -> (Option<String>, Option<String>) {
+    if !matches!(record.source, BundleSource::Upload(_)) {
+        return (name, description);
+    }
+    (
+        display_override(record, EXTRA_DISPLAY_NAME).or(name),
+        display_override(record, EXTRA_DISPLAY_DESCRIPTION).or(description),
+    )
+}
+
+/// Upload 记录携带的原始 zip 展示名（导入时净化捕获的来源标记）；非 Upload
+/// 来源回退 `fallback`（调用方传包 id）。整包回收清单的 display_name 三个
+/// 回收调用点共用同一口径。
+pub(crate) fn upload_display_name(record: &BundleRecord, fallback: &str) -> String {
+    match &record.source {
+        BundleSource::Upload(zip) => zip.clone(),
+        _ => fallback.to_string(),
+    }
+}
+
 /// 内层读：与取锁包装分离，已持锁的 import/upsert 直接调用，避免 Mutex 重入。
 fn load_locked(path: &Path) -> Result<BundlesFile, String> {
     match std::fs::read_to_string(path) {

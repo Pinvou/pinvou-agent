@@ -796,6 +796,16 @@ fn terminal_message(value: &Value, endpoint_id: &str) -> Option<RelayTerminal> {
     }
 }
 
+/// Whether an inbound relay message is terminal for the given endpoint
+/// (revoked / replaced / endpoint-not-found): the boolean view of
+/// [`terminal_message`]. The live connection loop needs the terminal kind;
+/// the persistence-driven replay (`manager::persistence::pending_revocation_ack`)
+/// only consumes the terminal/not-terminal bit, so both call sites share this
+/// one predicate and their test suites jointly pin it.
+pub(crate) fn terminal_relay_message(value: &Value, endpoint_id: &str) -> bool {
+    terminal_message(value, endpoint_id).is_some()
+}
+
 fn registration_acknowledges_endpoint(value: &Value, endpoint_id: &str) -> bool {
     value.get("type").and_then(Value::as_str) == Some("desktop_endpoint_registered")
         && value.get("endpoint_id").and_then(Value::as_str) == Some(endpoint_id)

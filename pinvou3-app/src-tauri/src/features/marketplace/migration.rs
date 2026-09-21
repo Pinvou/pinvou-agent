@@ -9,7 +9,6 @@ use super::secrets::{
     mcp_secret_env_var, mcp_secret_placeholder, mcp_secret_reference, mcp_secret_store_error,
     store_secret_value,
 };
-use super::types::McpSecretMigrationResult;
 
 /// 内置的"已知有明文密钥的工具"清单(迁移目标)。
 #[derive(Debug, Clone, Copy)]
@@ -58,26 +57,27 @@ fn legacy_spec_for_server_name(server_name: &str) -> Option<&'static LegacyMcpSe
 }
 
 impl<S: crate::platform::credential_store::CredentialStore> MarketplaceManager<S> {
-    pub fn migrate_mcp_plaintext_secrets(&self) -> Result<McpSecretMigrationResult, String> {
-        let mut result = McpSecretMigrationResult::default();
+    /// 迁移历史明文密钥到系统凭据存储。逐条结果只落日志（此前聚合成
+    /// `McpSecretMigrationResult` 返回，但所有调用方都只消费成败、明细从未
+    /// 被读取）；任何一条迁移失败即 Err 中止，由调用方决定回滚/跳过。
+    pub fn migrate_mcp_plaintext_secrets(&self) -> Result<(), String> {
         for spec in legacy_mcp_secret_specs() {
             let path = self.servers_dir.join(spec.tool_id).join("manifest.json");
             if path.is_file() {
-                self.migrate_manifest_file(&path, spec, &mut result)?;
+                self.migrate_manifest_file(&path, spec)?;
             }
         }
         let mcp_path = paths::mcp_config_path();
         if mcp_path.is_file() {
-            self.migrate_mcp_json_file(&mcp_path, &mut result)?;
+            self.migrate_mcp_json_file(&mcp_path)?;
         }
-        Ok(result)
+        Ok(())
     }
 
     fn migrate_manifest_file(
         &self,
         path: &std::path::Path,
         spec: &LegacyMcpSecretSpec,
-        result: &mut McpSecretMigrationResult,
     ) -> Result<(), String> {
         let content = std::fs::read_to_string(path)
             .map_err(|e| format!("读取 {} 失败: {e}", path.display()))?;
@@ -93,7 +93,7 @@ impl<S: crate::platform::credential_store::CredentialStore> MarketplaceManager<S
             return Ok(());
         };
 
-        self.store_migrated_secret(spec, &value, result)?;
+        self.store_migrated_secret(spec, &value)?;
         if let Some(env) = json.get_mut("env").and_then(|env| env.as_object_mut()) {
             env.remove(spec.key);
             if env.is_empty() {
@@ -104,11 +104,7 @@ impl<S: crate::platform::credential_store::CredentialStore> MarketplaceManager<S
         Ok(())
     }
 
-    fn migrate_mcp_json_file(
-        &self,
-        path: &std::path::Path,
-        result: &mut McpSecretMigrationResult,
-    ) -> Result<(), String> {
+    fn migrate_mcp_json_file(&self, path: &std::path::Path) -> Result<(), String> {
         let content = std::fs::read_to_string(path)
             .map_err(|e| format!("读取 {} 失败: {e}", path.display()))?;
         let mut json: serde_json::Value = serde_json::from_str(&content)
@@ -132,7 +128,7 @@ impl<S: crate::platform::credential_store::CredentialStore> MarketplaceManager<S
                     .filter(|v| !v.trim().is_empty())
                     .map(ToOwned::to_owned)
                 {
-                    self.store_migrated_secret(spec, &value, result)?;
+                    self.store_migrated_secret(spec, &value)?;
                     env.insert(
                         spec.key.to_string(),
                         serde_json::Value::String(mcp_secret_placeholder(spec.key)),
@@ -151,7 +147,7 @@ impl<S: crate::platform::credential_store::CredentialStore> MarketplaceManager<S
                     .map(ToOwned::to_owned)
                 {
                     if let Some(secret) = auth.strip_prefix("Bearer ").filter(|v| !v.is_empty()) {
-                        self.store_migrated_secret(spec, secret, result)?;
+                        self.store_migrated_secret(spec, secret)?;
                         // `headers` 是字面量,不会展开 `${ENV}`。迁移到
                         // 底座的 Bearer 环境变量字段,避免“已迁移但实际鉴权失败”。
                         headers.remove("Authorization");
@@ -172,36 +168,29 @@ impl<S: crate::platform::credential_store::CredentialStore> MarketplaceManager<S
         Ok(())
     }
 
-    fn store_migrated_secret(
-        &self,
-        spec: &LegacyMcpSecretSpec,
-        value: &str,
-        result: &mut McpSecretMigrationResult,
-    ) -> Result<(), String> {
+    fn store_migrated_secret(&self, spec: &LegacyMcpSecretSpec, value: &str) -> Result<(), String> {
         let reference = mcp_secret_reference(spec.tool_id, spec.target, spec.key);
         let env_value = match self.credential_store.get(&reference) {
             Ok(Some(existing)) if !existing.trim().is_empty() => {
-                result.skipped_count += 1;
-                result.messages.push(format!(
-                    "MCP 工具 '{}' 的密钥 {} 已存在，已跳过覆盖并清理旧明文",
-                    spec.tool_id, spec.key
-                ));
+                log::info!(
+                    "[marketplace] MCP 工具 '{}' 的密钥 {} 已存在，已跳过覆盖并清理旧明文",
+                    spec.tool_id,
+                    spec.key
+                );
                 existing
             }
             Ok(_) => {
-                self.credential_store.set(&reference, value).map_err(|e| {
-                    result.failed_count += 1;
-                    mcp_secret_store_error(spec.tool_id, spec.key, e)
-                })?;
-                result.migrated_count += 1;
-                result.messages.push(format!(
-                    "MCP 工具 '{}' 的密钥 {} 已迁移到系统凭据存储",
-                    spec.tool_id, spec.key
-                ));
+                self.credential_store
+                    .set(&reference, value)
+                    .map_err(|e| mcp_secret_store_error(spec.tool_id, spec.key, e))?;
+                log::info!(
+                    "[marketplace] MCP 工具 '{}' 的密钥 {} 已迁移到系统凭据存储",
+                    spec.tool_id,
+                    spec.key
+                );
                 value.to_string()
             }
             Err(e) => {
-                result.failed_count += 1;
                 return Err(mcp_secret_store_error(spec.tool_id, spec.key, e));
             }
         };

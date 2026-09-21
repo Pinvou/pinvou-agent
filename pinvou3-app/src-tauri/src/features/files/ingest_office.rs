@@ -12,10 +12,7 @@ use std::path::Path;
 
 use super::IngestResult;
 use super::estimate_tokens;
-use super::ingest_deps::{
-    libreoffice_tool_command, libreoffice_user_installation_arg, pandoc_tool_command,
-    pdf_tool_command, system_tools,
-};
+use super::ingest_deps::{pandoc_tool_command, pdf_tool_command, system_tools};
 
 const MAX_FORMULAS_PER_SHEET: usize = 2_048;
 
@@ -76,6 +73,7 @@ fn pdftotext_with_timeout(command: std::process::Command) -> Result<std::process
 /// 用 LibreOffice headless 把文件转成指定 filter 的产物并读回文本。复用于旧
 /// office、WPS 文字、电子表格等 pandoc 吃不下的格式。`convert_to` 是 soffice 的
 /// 输出 filter 串，`out_ext` 是产物扩展名（用来在临时目录里定位输出文件）。
+/// 临时目录 + 独立 profile + 清理由 [`super::ingest_deps::run_libreoffice_convert`] 统一承载。
 fn libreoffice_convert_text(
     path: &Path,
     convert_to: &str,
@@ -84,52 +82,23 @@ fn libreoffice_convert_text(
     if !system_tools().libreoffice {
         return Err(crate::platform::os::libreoffice_missing_message().into());
     }
-    // 临时目录：每次唯一，避免并发文件名冲突。
-    let ts = std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
-        .map(|d| d.as_nanos())
-        .unwrap_or(0);
-    let tmpdir = std::env::temp_dir().join(format!("pinvou3-libreoffice-{ts}"));
-    std::fs::create_dir_all(&tmpdir).map_err(|e| format!("创建临时目录失败: {e}"))?;
-
-    // 独立 UserInstallation profile：LibreOffice 同一 profile 不能并发(会 lock)，
-    // 用户一次拖多个 office 文件时前端会并发 ingest_file，必须各用各的 profile。
-    let mut command = libreoffice_tool_command();
-    command
-        .arg(libreoffice_user_installation_arg(&tmpdir.join("profile"))?)
-        .arg("--headless")
-        .arg("--convert-to")
-        .arg(convert_to)
-        .arg("--outdir")
-        .arg(&tmpdir)
-        .arg(path);
-    // soffice 冷启动/遗留锁可能挂死,带 kill 的超时兜底;超时错误走下方
-    // 统一的失败分支清理临时目录。
-    let out = crate::platform::process::output_with_timeout_and_kill_tree(
-        command,
-        std::time::Duration::from_secs(180),
-    );
-
-    let result = match out {
-        Ok(o) if o.status.success() => {
+    super::ingest_deps::run_libreoffice_convert(
+        path,
+        convert_to,
+        "pinvou3-libreoffice",
+        "LibreOffice 转换失败",
+        |tmpdir| {
             let stem = path
                 .file_stem()
                 .and_then(|s| s.to_str())
                 .unwrap_or("converted");
             let out_path = tmpdir.join(format!("{stem}.{out_ext}"));
             std::fs::read_to_string(&out_path)
-                // soffice 的 txt/csv 导出会带 UTF-8 BOM，去掉以免污染正文开头。
-                .map(|s| s.trim_start_matches('\u{feff}').to_string())
-                .map_err(|e| format!("LibreOffice 转换后读取失败: {e}"))
-        }
-        Ok(o) => Err(format!(
-            "LibreOffice 转换失败: {}",
-            String::from_utf8_lossy(&o.stderr).trim()
-        )),
-        Err(e) => Err(format!("LibreOffice 调用失败: {e}")),
-    };
-    let _ = std::fs::remove_dir_all(&tmpdir);
-    result
+            // soffice 的 txt/csv 导出会带 UTF-8 BOM，去掉以免污染正文开头。
+            .map(|s| s.trim_start_matches('\u{feff}').to_string())
+            .map_err(|e| format!("LibreOffice 转换后读取失败: {e}"))
+        },
+    )
 }
 
 /// 文字类文档（.doc/.rtf + WPS .wps）：pandoc 吃不下，用 LibreOffice 转纯文本。
@@ -357,30 +326,14 @@ pub(super) fn ingest_presentation(
 }
 
 /// 演示文稿 → PDF（LibreOffice）→ pdftotext 的串联，返回纯文本。
+/// 临时目录 + 独立 profile + 清理由 [`super::ingest_deps::run_libreoffice_convert`] 统一承载。
 fn libreoffice_presentation_text(path: &Path) -> Result<String, String> {
-    let ts = std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
-        .map(|d| d.as_nanos())
-        .unwrap_or(0);
-    let tmpdir = std::env::temp_dir().join(format!("pinvou3-pptpdf-{ts}"));
-    std::fs::create_dir_all(&tmpdir).map_err(|e| format!("创建临时目录失败: {e}"))?;
-
-    let mut convert_cmd = libreoffice_tool_command();
-    convert_cmd
-        .arg(libreoffice_user_installation_arg(&tmpdir.join("profile"))?)
-        .arg("--headless")
-        .arg("--convert-to")
-        .arg("pdf")
-        .arg("--outdir")
-        .arg(&tmpdir)
-        .arg(path);
-    let convert = crate::platform::process::output_with_timeout_and_kill_tree(
-        convert_cmd,
-        std::time::Duration::from_secs(180),
-    );
-
-    let result = match convert {
-        Ok(o) if o.status.success() => {
+    super::ingest_deps::run_libreoffice_convert(
+        path,
+        "pdf",
+        "pinvou3-pptpdf",
+        "LibreOffice 转 PDF 失败",
+        |tmpdir| {
             let stem = path
                 .file_stem()
                 .and_then(|s| s.to_str())
@@ -400,15 +353,8 @@ fn libreoffice_presentation_text(path: &Path) -> Result<String, String> {
                         ))
                     }
                 })
-        }
-        Ok(o) => Err(format!(
-            "LibreOffice 转 PDF 失败: {}",
-            String::from_utf8_lossy(&o.stderr).trim()
-        )),
-        Err(e) => Err(format!("LibreOffice 调用失败: {e}")),
-    };
-    let _ = std::fs::remove_dir_all(&tmpdir);
-    result
+        },
+    )
 }
 
 #[cfg(test)]

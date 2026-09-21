@@ -1,4 +1,3 @@
-use anyhow::Result;
 use std::fmt;
 
 use crate::platform::prefs::SavedModel;
@@ -7,19 +6,11 @@ use crate::platform::prefs::SavedModel;
 ///
 /// 凭据只保存在内存中，不参与序列化；`Debug` 固定脱敏，避免 bridge 或测试日志
 /// 意外输出明文。存在时它是本次引擎配置的最终凭据，优先于环境变量和本地凭据库。
+/// Community 默认准备路径固定 passthrough（`credential` 保持 None，见
+/// engine_pool 的 `prepare_runtime_model`）；字段为 enterprise seam 保留。
 #[derive(Clone, PartialEq, Eq)]
 pub struct RuntimeModelCredential {
     api_key: String,
-}
-
-impl RuntimeModelCredential {
-    pub fn api_key(api_key: impl Into<String>) -> Result<Self> {
-        let api_key = api_key.into();
-        if api_key.trim().is_empty() {
-            anyhow::bail!("runtime model API key must not be empty");
-        }
-        Ok(Self { api_key })
-    }
 }
 
 impl fmt::Debug for RuntimeModelCredential {
@@ -46,13 +37,6 @@ impl PreparedRuntimeModel {
             credential: None,
             revision: None,
         }
-    }
-
-    /// 判断当前准备结果是否要求替换已有引擎。
-    ///
-    /// 比较覆盖模型路由、运行时凭据和显式 revision；调用方无需读取或记录密钥。
-    pub fn requires_rebuild_from(&self, previous: &Self) -> bool {
-        self != previous
     }
 }
 
@@ -86,6 +70,12 @@ mod tests {
         }
     }
 
+    fn credential(api_key: &str) -> RuntimeModelCredential {
+        RuntimeModelCredential {
+            api_key: api_key.to_string(),
+        }
+    }
+
     /// Community 默认准备路径不依赖任何私有服务：unchanged 原样保留模型，
     /// 不携带运行时凭据或显式 revision。
     #[test]
@@ -99,42 +89,34 @@ mod tests {
 
     #[test]
     fn runtime_credential_debug_output_is_redacted() {
-        let credential =
-            RuntimeModelCredential::api_key("runtime-secret").expect("runtime credential");
-        let rendered = format!("{credential:?}");
+        let rendered = format!("{:?}", credential("runtime-secret"));
         assert!(rendered.contains("[REDACTED]"));
         assert!(!rendered.contains("runtime-secret"));
-        assert!(RuntimeModelCredential::api_key("  ").is_err());
     }
 
     #[test]
     fn revision_change_requires_engine_rebuild() {
+        // EnginePool 的重建判定（PreparedRuntimeState::requires_rebuild_from）
+        // 是整体相等比较：revision 或运行时凭据任一变化即视为需要回收重建。
         let previous = PreparedRuntimeModel {
             model: model(),
-            credential: Some(
-                RuntimeModelCredential::api_key("runtime-secret").expect("runtime credential"),
-            ),
+            credential: Some(credential("runtime-secret")),
             revision: Some("revision-1".to_string()),
         };
         let unchanged = previous.clone();
         let rotated = PreparedRuntimeModel {
             model: model(),
-            credential: Some(
-                RuntimeModelCredential::api_key("runtime-secret").expect("runtime credential"),
-            ),
+            credential: Some(credential("runtime-secret")),
             revision: Some("revision-2".to_string()),
         };
         let rotated_credential = PreparedRuntimeModel {
             model: model(),
-            credential: Some(
-                RuntimeModelCredential::api_key("runtime-secret-2")
-                    .expect("rotated runtime credential"),
-            ),
+            credential: Some(credential("runtime-secret-2")),
             revision: Some("revision-1".to_string()),
         };
 
-        assert!(!unchanged.requires_rebuild_from(&previous));
-        assert!(rotated.requires_rebuild_from(&previous));
-        assert!(rotated_credential.requires_rebuild_from(&previous));
+        assert!(unchanged == previous);
+        assert!(rotated != previous);
+        assert!(rotated_credential != previous);
     }
 }

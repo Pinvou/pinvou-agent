@@ -218,7 +218,7 @@ pub fn preview_workspace_file(root: &Path, relative_path: &str) -> Result<Worksp
         let bytes = fs::read(&path).with_context(|| format!("读取图片失败: {}", path.display()))?;
         // 扩展名→MIME 统一走 attachments 的共享映射表；表外扩展名沿用
         // 原行为回退 image/png。
-        let mime = super::attachments::image_mime_type(&path).unwrap_or("image/png");
+        let mime = crate::platform::filesystem::image_mime_type(&path).unwrap_or("image/png");
         return Ok(WorkspacePreview {
             name,
             relative_path: relative,
@@ -964,17 +964,15 @@ fn should_walk(entry: &DirEntry) -> bool {
 }
 
 fn file_kind(path: &Path) -> String {
+    // 图片扩展名集合与 codex_acp::attachments 的唯一 MIME 映射表保持同源。
+    if crate::platform::filesystem::image_mime_type(path).is_some() {
+        return "image".to_string();
+    }
     let extension = path
         .extension()
         .and_then(|value| value.to_str())
         .unwrap_or_default()
         .to_ascii_lowercase();
-    if matches!(
-        extension.as_str(),
-        "png" | "jpg" | "jpeg" | "gif" | "webp" | "bmp" | "svg"
-    ) {
-        return "image".to_string();
-    }
     if matches!(
         extension.as_str(),
         "md" | "markdown"

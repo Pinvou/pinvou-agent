@@ -5,7 +5,7 @@ use tokio::io::AsyncWriteExt;
 
 use super::file_ingest::{self, IngestResult, MAX_FILE_BYTES};
 
-pub const MAX_ATTACHMENT_CHUNK_BYTES: usize = 256 * 1024;
+pub(crate) const MAX_ATTACHMENT_CHUNK_BYTES: usize = 256 * 1024;
 const STALE_ATTACHMENT_AGE: Duration = Duration::from_secs(24 * 60 * 60);
 const CONVERSATION_ATTACHMENT_REFS_FILE: &str = "conversation-attachments.json";
 static CONVERSATION_ATTACHMENT_REFS_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
@@ -232,7 +232,7 @@ async fn remove_dir_if_present(path: &Path) -> Result<(), String> {
 }
 
 fn sweep_stale_upload_root(root: &Path, now: SystemTime) -> usize {
-    super::platform::stale_attachment_cleanup::sweep_stale_upload_root(
+    super::platform::stale_attachment_cleanup::platform::sweep(
         root,
         now,
         STALE_ATTACHMENT_AGE,
@@ -441,7 +441,7 @@ fn ingest_managed_file(path: &Path) -> Result<IngestResult, String> {
 /// When the client provides a whole-file SHA-256 on the committing chunk the
 /// assembled staging file is re-hashed before the rename, so corrupted bytes
 /// from the transport never reach the ingest pipeline.
-pub async fn append_chunk(
+pub(crate) async fn append_chunk(
     workspace: &Path,
     upload_id: &str,
     filename: &str,
@@ -545,14 +545,14 @@ pub async fn append_chunk(
 
 /// Clean up bytes from a failed append without touching a previously completed
 /// attachment that happens to use the same client-provided upload ID.
-pub async fn abort_staging_upload(workspace: &Path, upload_id: &str) -> Result<(), String> {
+pub(crate) async fn abort_staging_upload(workspace: &Path, upload_id: &str) -> Result<(), String> {
     let upload_id = validate_upload_id(upload_id)?;
     remove_dir_if_present(&upload_staging_dir(workspace, upload_id)).await
 }
 
 /// Cancel an incomplete upload. The completed directory is also removed to
 /// cover the small race where commit finished before the UI observed success.
-pub async fn cancel_upload(workspace: &Path, upload_id: &str) -> Result<(), String> {
+pub(crate) async fn cancel_upload(workspace: &Path, upload_id: &str) -> Result<(), String> {
     let upload_id = validate_upload_id(upload_id)?;
     remove_dir_if_present(&upload_staging_dir(workspace, upload_id)).await?;
     remove_dir_if_present(&upload_completed_dir(workspace, upload_id)).await

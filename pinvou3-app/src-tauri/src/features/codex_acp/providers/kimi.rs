@@ -72,6 +72,10 @@ impl AgentConfigWriter for KimiConfigWriter {
         );
         if let Some(key) = target.api_key.as_deref() {
             entry.insert("api_key".into(), Value::String(key.into()));
+        } else {
+            // api_key 为 None（编辑生效中 Provider 删除 key）时删除受管旧值，
+            // 否则旧 key 残留并继续发给新 base_url（与 claude.rs 写入口径一致）。
+            entry.remove("api_key");
         }
         providers_table.insert(target.provider_id.clone(), Value::Table(entry));
 
@@ -344,6 +348,26 @@ mod tests {
         assert_eq!(
             config["models"]["pv-aaaaaaaaaaaa-main"]["provider"],
             "pv-aaaaaaaaaaaa".into()
+        );
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn apply_without_key_removes_stale_api_key() {
+        let dir = writer_test_dir("kimi-writer-test");
+        let writer = KimiConfigWriter::new(&dir);
+        writer.apply(&target("pv-aaaaaaaaaaaa")).unwrap();
+        // 编辑生效中 Provider 删除 key（api_key=None）：受管 api_key 必须
+        // 清除，否则旧 key 残留并继续发给新 base_url（与 claude.rs 同一高危）。
+        let mut no_key = target("pv-aaaaaaaaaaaa");
+        no_key.api_key = None;
+        no_key.base_url = "https://api.example.com/v2".into();
+        writer.apply(&no_key).unwrap();
+        let raw = fs::read_to_string(dir.join("config.toml")).unwrap();
+        let config: Value = toml::from_str(&raw).unwrap();
+        assert!(
+            config["providers"]["pv-aaaaaaaaaaaa"].get("api_key").is_none(),
+            "删除 key 后 api_key 不应残留"
         );
         let _ = fs::remove_dir_all(&dir);
     }

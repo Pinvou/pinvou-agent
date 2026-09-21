@@ -129,6 +129,28 @@ mod libc {
     }
 }
 
+/// Extension-based image MIME lookup shared by every feature that embeds or
+/// previews image files (codex_acp attachments, workspace file classification,
+/// files/visual_preview artifact previews). Returns `None` for extensions
+/// outside the table so callers decide their own fallback or rejection.
+pub(crate) fn image_mime_type(path: &Path) -> Option<&'static str> {
+    match path
+        .extension()
+        .and_then(|value| value.to_str())
+        .unwrap_or_default()
+        .to_ascii_lowercase()
+        .as_str()
+    {
+        "png" => Some("image/png"),
+        "jpg" | "jpeg" => Some("image/jpeg"),
+        "gif" => Some("image/gif"),
+        "webp" => Some("image/webp"),
+        "svg" => Some("image/svg+xml"),
+        "bmp" => Some("image/bmp"),
+        _ => None,
+    }
+}
+
 /// Return whether a path is a regular file the current platform can execute.
 /// Unix discovery must not advertise a chmod 0644 placeholder as a usable
 /// runtime; Windows execution permission is represented by ACLs/file type and

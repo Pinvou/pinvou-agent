@@ -1,9 +1,10 @@
 //! Connector(连接器)的注册/注销:把工具写进 `mcp.json`(`servers` 表)或从中移除,
 //! 以及装 Python 依赖等"让 connector 跑起来"的前置准备。
 //!
-//! 原 god-method `add_to_mcp_json`(198 行)在此拆为 remote/local 两条路径:
-//! facade `add_to_mcp_json` 负责加载 mcp.json + 取出 `servers` map,再按 manifest
-//! 是否含远程 server 委托给 `add_remote_to_mcp_json` / `add_local_to_mcp_json`。
+//! `add_to_mcp_json` 按清单是否含远程 server 分两条内联分支落条目:
+//! 远程(url/headers/oauth)走 `build_remote_server_entry`,本地
+//! (command/args/env)走 `build_local_server_entry`——两条序列化都被启动
+//! 对账复用,保证安装与自愈写出的条目同形。
 
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
@@ -204,9 +205,13 @@ impl<S: crate::platform::credential_store::CredentialStore> MarketplaceManager<S
 
     /// 把 manifest 注册进 `mcp.json`(`servers` 表)。
     ///
-    /// facade:加载 mcp.json → 取 `servers` map → 按 manifest 是否含远程 server
-    /// 委托给 `add_remote_to_mcp_json`(远程:url/headers/oauth)或
-    /// `add_local_to_mcp_json`(本地:command/args/env)→ 落盘。
+    /// 按 manifest 是否含远程 server 分两条内联分支:
+    /// - 远程工具路径:遍历 `manifest.servers[]`,写 url/headers/oauth/
+    ///   env_headers/bearer。密钥不落明文,只写 `${ENV}` 占位 + 进程环境变量
+    ///   (底座不展开 headers 字面量),经 `build_remote_server_entry`。
+    /// - 本地工具路径:command/args/env。Python 工具用内置 python(Windows)或
+    ///   系统 python3;敏感字段走 `${ENV}` 占位,非敏感字段原样写入,经
+    ///   `build_local_server_entry`。
     pub(super) fn add_to_mcp_json(
         &self,
         manifest: &ToolManifest,
@@ -228,38 +233,28 @@ impl<S: crate::platform::credential_store::CredentialStore> MarketplaceManager<S
             .ok_or("mcp.json 格式错误")?;
 
         if !manifest.servers.is_empty() {
-            self.add_remote_to_mcp_json(manifest, user_config, servers)?;
+            for server in &manifest.servers {
+                let entry = self.build_remote_server_entry(manifest, server, user_config, false)?;
+                servers.insert(server.name.clone(), entry);
+            }
         } else {
-            self.add_local_to_mcp_json(
+            let entry = self.build_local_server_entry(
                 manifest,
                 user_config,
                 server_dir,
                 python_environment,
-                servers,
+                false,
             )?;
+            servers.insert(manifest.id.clone(), entry);
         }
 
         write_json_pretty(&mcp_path, &mcp)
     }
 
-    /// 远程工具路径:遍历 manifest.servers[],写 url/headers/oauth/env_headers/bearer。
-    /// 密钥不落明文,只写 `${ENV}` 占位 + 进程环境变量(底座不展开 headers 字面量)。
-    fn add_remote_to_mcp_json(
-        &self,
-        manifest: &ToolManifest,
-        user_config: &HashMap<String, String>,
-        servers: &mut serde_json::Map<String, serde_json::Value>,
-    ) -> Result<(), String> {
-        for server in &manifest.servers {
-            let entry = self.build_remote_server_entry(manifest, server, user_config, false)?;
-            servers.insert(server.name.clone(), entry);
-        }
-        Ok(())
-    }
-
     /// Build the fresh-install mcp.json entry for one remote server (url/headers/oauth).
-    /// Extracted from `add_remote_to_mcp_json` so the startup reconciliation
-    /// (`reconcile_remote_mcp_entries`) reuses the exact same serialization as a UI
+    /// Shared by the install writer (`add_to_mcp_json` remote branch) and the
+    /// startup reconciliation
+    /// (`reconcile_remote_mcp_entries`), which reuses the exact same serialization as a UI
     /// install instead of maintaining a second writer. One deliberate addition over
     /// the pre-extraction install writer: the `field.secret` bearer fallback below
     /// also re-derives wiring from the credential store when `user_config` omits
@@ -495,7 +490,7 @@ impl<S: crate::platform::credential_store::CredentialStore> MarketplaceManager<S
 
     /// The command a local mcp.json entry launches: the bare python family resolves to
     /// the current runtime, anything else is the manifest value verbatim. Shared by the
-    /// install writer (`add_local_to_mcp_json`) and the startup rebuild validator so
+    /// install writer (`add_to_mcp_json` local branch) and the startup rebuild validator so
     /// both judge the same launch target.
     pub(super) fn local_server_command(manifest: &ToolManifest) -> String {
         if manifest.command == "python" || manifest.command == "python3" {
@@ -577,29 +572,10 @@ impl<S: crate::platform::credential_store::CredentialStore> MarketplaceManager<S
         write_json_pretty(&mcp_path, &mcp)
     }
 
-    /// Local tool layout: command/args/env. Python tools use the bundled python (Windows)
-    /// or the system python3; sensitive fields go through `${ENV}` placeholders, non-sensitive ones verbatim.
-    fn add_local_to_mcp_json(
-        &self,
-        manifest: &ToolManifest,
-        user_config: &HashMap<String, String>,
-        server_dir: &std::path::Path,
-        python_environment: Option<&python_dependencies::InstalledPythonEnvironment>,
-        servers: &mut serde_json::Map<String, serde_json::Value>,
-    ) -> Result<(), String> {
-        let entry = self.build_local_server_entry(
-            manifest,
-            user_config,
-            server_dir,
-            python_environment,
-            false,
-        )?;
-        servers.insert(manifest.id.clone(), entry);
-        Ok(())
-    }
-
     /// Build the fresh-install mcp.json entry for one local tool (command/args/env).
-    /// Extracted from `add_local_to_mcp_json` so the startup rebuild can merge the
+    /// The install writer (`add_to_mcp_json` local branch) and the startup rebuild
+    /// (`write_rebuilt_local_entry`) share this serialization. Extracted so the
+    /// startup rebuild can merge the
     /// preserved user fields in memory and land them in the same single atomic write
     /// as a fresh install (`write_rebuilt_local_entry`) instead of a
     /// rebuild-then-reapply write pair.

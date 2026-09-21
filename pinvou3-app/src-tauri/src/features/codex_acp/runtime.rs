@@ -214,15 +214,6 @@ pub fn version_at_least(version: &str, minimum: &str) -> bool {
     compare_versions(version, minimum).is_ge()
 }
 
-/// Detects a codex on the system PATH or in the official install directory
-/// whose version is below MIN_CODEX_VERSION; consumed by install-source
-/// resolution to tell "not installed" apart from "installed but too old".
-pub fn system_codex_incompatible(system_codex: Option<PathBuf>) -> bool {
-    system_codex
-        .and_then(|path| probe_codex(path, CodexRuntimeSource::System))
-        .is_some_and(|resolved| !runtime_version_is_compatible(&resolved.version))
-}
-
 fn compare_versions(left: &str, right: &str) -> std::cmp::Ordering {
     parse_version(left).cmp(&parse_version(right))
 }
@@ -263,43 +254,86 @@ fn npm_codex_package_version(shim_path: &Path) -> Option<String> {
     has_vendor.then(|| version.trim().to_string())
 }
 
-fn codex_version_result(path: &Path) -> Result<String> {
-    let mut command = crate::platform::process::external_command(path);
-    command
-        .arg("--version")
-        .stdout(Stdio::piped())
-        .stderr(Stdio::piped());
-    let mut child = command
-        .spawn()
-        .with_context(|| format!("启动 Codex 自检失败: {}", path.display()))?;
+/// `--version` 自检的失败阶段：spawn 与 wait 的 io 错误需要不同的错误文案，
+/// 由调用方按阶段构造。
+#[derive(Debug)]
+pub(super) enum VersionProbeError {
+    Spawn(std::io::Error),
+    Wait(std::io::Error),
+}
+
+/// 共享 spawn-and-wait 原语的产物。`status` 为 `None` 表示 15 秒超时，
+/// 子进程已被 kill 并 reap。
+pub(super) struct VersionProbeOutcome {
+    pub(super) status: Option<std::process::ExitStatus>,
+    pub(super) stdout: String,
+    pub(super) stderr: String,
+}
+
+/// `--version` 类自检的共享 spawn-and-wait 原语（本模块的 Codex 自检与
+/// install.rs 的通用 CLI 探测共用）：external_command + `--version` +
+/// 15 秒 wait_timeout（Node CLI 冷启动实测约 9 秒，给安全软件首次扫描留足
+/// 时间），超时 kill 并 reap，stdout/stderr 一并读回。stdin/stderr 重定向
+/// 策略由调用方经 `configure` 注入：Codex 自检继承 stdin、捕获 stderr 并把
+/// 它内嵌进错误；通用 CLI 探测把 stdin 置空、丢弃 stderr。
+pub(super) fn run_version_probe(
+    executable: &Path,
+    configure: impl FnOnce(&mut std::process::Command),
+) -> Result<VersionProbeOutcome, VersionProbeError> {
+    let mut command = crate::platform::process::external_command(executable);
+    command.arg("--version");
+    configure(&mut command);
+    let mut child = command.spawn().map_err(VersionProbeError::Spawn)?;
     let status = match child
-        // Node 版 CLI 冷启动实测约 9 秒；给安全软件首次扫描留足时间，
-        // 避免把已经安装的 Codex 误判为不可用。
         .wait_timeout(Duration::from_secs(15))
-        .context("等待 Codex 自检进程失败")?
+        .map_err(VersionProbeError::Wait)?
     {
-        Some(status) => status,
+        Some(status) => Some(status),
         None => {
             let _ = child.kill();
             let _ = child.wait();
-            bail!("Codex 自检超过 15 秒");
+            None
         }
     };
+    // 读取失败按空串处理：调用方各自的空输出分支（探测失败 / 未返回版本号）
+    // 会给出与读取失败等价的结论。
+    let mut stdout = String::new();
+    if let Some(mut pipe) = child.stdout.take() {
+        let _ = pipe.read_to_string(&mut stdout);
+    }
     let mut stderr = String::new();
     if let Some(mut pipe) = child.stderr.take() {
         let _ = pipe.read_to_string(&mut stderr);
     }
+    Ok(VersionProbeOutcome {
+        status,
+        stdout,
+        stderr,
+    })
+}
+
+fn codex_version_result(path: &Path) -> Result<String> {
+    let outcome = match run_version_probe(path, |command| {
+        command.stdout(Stdio::piped()).stderr(Stdio::piped());
+    }) {
+        Ok(outcome) => outcome,
+        Err(VersionProbeError::Spawn(error)) => {
+            return Err(error).context(format!("启动 Codex 自检失败: {}", path.display()));
+        }
+        Err(VersionProbeError::Wait(error)) => {
+            return Err(error).context("等待 Codex 自检进程失败");
+        }
+    };
+    let Some(status) = outcome.status else {
+        bail!("Codex 自检超过 15 秒");
+    };
     if !status.success() {
-        bail!("Codex 自检进程退出: {status}; stderr={}", stderr.trim());
+        bail!(
+            "Codex 自检进程退出: {status}; stderr={}",
+            outcome.stderr.trim()
+        );
     }
-    let mut stdout = String::new();
-    child
-        .stdout
-        .take()
-        .context("读取 Codex 自检标准输出失败")?
-        .read_to_string(&mut stdout)
-        .context("解析 Codex 自检标准输出失败")?;
-    parse_codex_version_output(&stdout).context("Codex 自检未返回版本号")
+    parse_codex_version_output(&outcome.stdout).context("Codex 自检未返回版本号")
 }
 
 /// 从 `codex --version` 标准输出提取版本号。
@@ -422,14 +456,15 @@ mod tests {
             return;
         }
         let outdated = fake_codex("0.100.0");
-        let resolved = probe_codex_runtime(Some(outdated.clone()), None).resolved;
+        let candidates = probe_codex_runtime(Some(outdated.clone()), None);
         assert!(
-            resolved
+            candidates
+                .resolved
                 .as_ref()
                 .is_none_or(|resolved| resolved.source != CodexRuntimeSource::System),
             "低版本系统 codex 不应作为 System 来源入选"
         );
-        assert!(system_codex_incompatible(Some(outdated.clone())));
+        assert!(candidates.system_codex_incompatible);
         let _ = std::fs::remove_dir_all(outdated.parent().expect("fake codex parent"));
     }
 
@@ -439,12 +474,12 @@ mod tests {
             return;
         }
         let current = fake_codex(MIN_CODEX_VERSION);
-        let resolved = probe_codex_runtime(Some(current.clone()), None).resolved;
+        let candidates = probe_codex_runtime(Some(current.clone()), None);
         assert_eq!(
-            resolved.map(|resolved| resolved.source),
+            candidates.resolved.map(|resolved| resolved.source),
             Some(CodexRuntimeSource::System)
         );
-        assert!(!system_codex_incompatible(Some(current.clone())));
+        assert!(!candidates.system_codex_incompatible);
         let _ = std::fs::remove_dir_all(current.parent().expect("fake codex parent"));
     }
 
