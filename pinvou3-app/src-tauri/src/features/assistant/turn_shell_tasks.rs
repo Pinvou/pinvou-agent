@@ -124,16 +124,17 @@ struct RegistryInner {
     state: Mutex<RegistryState>,
     cleanup_notify: Notify,
     worker_started: AtomicBool,
-    /// Serializes `cleanup_scope_with_retries` runs per registry. Cleanup
-    /// callers no longer meet on the session turn gate (issue #255 detached
-    /// them to keep the gate responsive), so two overlapping runs — e.g. a
-    /// detached cleanup still racing a wedged kill sweep when the user
-    /// presses stop again — would drive `cleanup_scope_once` in parallel,
-    /// double-count `PendingKill.attempts` toward `MAX_KILL_ATTEMPTS` and
-    /// permanently stop the retry loop while a job may still be alive. The
-    /// gate is only ever taken inside detached/background tasks, never
-    /// while the turn gate is held, so waiting here cannot re-block the
-    /// session pipeline.
+    /// Serializes every cleanup pass per registry — the detached kill-retry
+    /// ladders (`cleanup_scope_with_retries`) and the background worker sweep
+    /// alike. Cleanup callers no longer meet on the session turn gate (issue
+    /// #255 detached them to keep the gate responsive), so two overlapping
+    /// passes — e.g. a detached cleanup still racing a wedged kill sweep when
+    /// the user presses stop again — would drive `cleanup_scope_once` in
+    /// parallel, double-count `PendingKill.attempts` toward
+    /// `MAX_KILL_ATTEMPTS` and permanently stop the retry loop while a job
+    /// may still be alive. The gate is only ever taken inside
+    /// detached/background tasks, never while the turn gate is held, so
+    /// waiting here cannot re-block the session pipeline.
     cleanup_gate: tokio::sync::Mutex<()>,
 }
 
@@ -1003,17 +1004,28 @@ async fn cleanup_worker_loop(inner: Weak<RegistryInner>) {
         let Some(strong) = inner.upgrade() else {
             break;
         };
-        let registry = TurnShellTaskRegistry { inner: strong };
-        let scopes = registry.scopes_needing_background_cleanup();
-        for scope_id in scopes {
-            if let Err(error) = registry.cleanup_scope_once(scope_id).await {
-                log::error!(
-                    "[pinvou3][chat] background shell cleanup failed scope={scope_id}: {error:#}"
-                );
-            }
-        }
-        registry.retire_settled_scopes();
+        cleanup_worker_tick(&TurnShellTaskRegistry { inner: strong }).await;
     }
+}
+
+/// One background-sweep pass over every scope that still needs cleanup.
+/// Split out of [`cleanup_worker_loop`] so the gate contract below is
+/// behavior-testable without waiting on the poll interval.
+async fn cleanup_worker_tick(registry: &TurnShellTaskRegistry) {
+    let scopes = registry.scopes_needing_background_cleanup();
+    for scope_id in scopes {
+        // Same one-pass-at-a-time contract as `cleanup_scope_with_retries`:
+        // the sweep must not run concurrently with a detached kill ladder
+        // and double-count `PendingKill.attempts` toward `MAX_KILL_ATTEMPTS`
+        // (see the `cleanup_gate` doc on `RegistryInner`).
+        let _cleanup_pass = registry.inner.cleanup_gate.lock().await;
+        if let Err(error) = registry.cleanup_scope_once(scope_id).await {
+            log::error!(
+                "[pinvou3][chat] background shell cleanup failed scope={scope_id}: {error:#}"
+            );
+        }
+    }
+    registry.retire_settled_scopes();
 }
 
 fn remove_scope_locked(state: &mut RegistryState, scope_id: ScopeId) {
