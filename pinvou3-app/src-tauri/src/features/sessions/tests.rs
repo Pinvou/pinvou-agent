@@ -5709,6 +5709,98 @@ fn pin_mutation_refuses_to_rewrite_a_corrupt_file() {
 }
 
 #[test]
+fn retention_rechecks_a_pin_that_lands_mid_sweep() {
+    let (store, _g) = isolated_store();
+    let now = Utc::now();
+    // Seed exactly the cap via save() (no sweep can fire at or under it),
+    // oldest first.
+    let mut ids = Vec::new();
+    for index in 0..MAX_SESSIONS_PER_KIND {
+        let mut session = create_saved_session_with_id_and_mode(
+            format!("midpin-{index}"),
+            &[],
+            "/chat-model",
+            &std::env::temp_dir(),
+            0,
+            None,
+            None,
+        );
+        session.metadata.updated_at = now - chrono::Duration::seconds(1000 - index as i64);
+        store.save(&session).expect("seed session");
+        ids.push(session.metadata.id.clone());
+    }
+    // Four candidates past the cap, written DIRECTLY to the store directory
+    // (a save() at 51+ would sweep per save and delete the candidates before
+    // the single-sweep window this test pins). updated_at puts them OLDEST,
+    // first in the sweep's iteration.
+    let mut victims = Vec::new();
+    for index in 0..4 {
+        let mut session = create_saved_session_with_id_and_mode(
+            format!("midpin-victim-{index}"),
+            &[],
+            "/chat-model",
+            &std::env::temp_dir(),
+            0,
+            None,
+            None,
+        );
+        session.metadata.updated_at = now - chrono::Duration::seconds(2000 - index as i64);
+        let record = serde_json::to_vec(&session).expect("serialize candidate");
+        std::fs::write(
+            crate::platform::paths::sessions_root().join(format!("{}.json", session.metadata.id)),
+            record,
+        )
+        .expect("write candidate record");
+        victims.push(session.metadata.id.clone());
+    }
+    store.invalidate_list_cache();
+
+    // On the sweep's FIRST deletion, a pin for victims[2] lands in the
+    // durable file (the GUI user pinned it mid-sweep). The sweep deletes the
+    // four candidates oldest-first, so the re-check must protect victims[2];
+    // the pre-recheck code deleted it and the side-map purge then erased the
+    // fresh pin with it.
+    let pinned_mid_sweep = victims[2].clone();
+    let armed = Arc::new(std::sync::atomic::AtomicBool::new(false));
+    let hook_armed = armed.clone();
+    store.register_session_deleted_hook(Arc::new(move |deleted: &str| {
+        let _ = deleted;
+        if !hook_armed.swap(true, std::sync::atomic::Ordering::SeqCst) {
+            let pin_file = crate::platform::paths::sessions_root().join("_pinned_sessions.json");
+            let payload = serde_json::json!([
+                { "id": pinned_mid_sweep, "pinned_at": "2026-09-21T00:00:00+00:00" }
+            ]);
+            std::fs::write(&pin_file, payload.to_string())
+                .expect("write the mid-sweep pin from the hook");
+        }
+    }));
+
+    store
+        .enforce_session_retention_locked()
+        .expect("sweep must succeed");
+
+    assert!(
+        store.load(&victims[0]).is_err(),
+        "the first candidate is still evicted"
+    );
+    assert!(
+        store.load(&victims[1]).is_err(),
+        "the second candidate (deleted before the pin landed) stays evicted"
+    );
+    assert!(
+        store.load(&victims[2]).is_ok(),
+        "a pin landing mid-sweep must protect its session from the running sweep"
+    );
+    assert!(
+        store.load(&victims[3]).is_err(),
+        "later unpinned candidates keep getting evicted"
+    );
+    // The protected session's fresh pin survives the side-map purge too.
+    let pins = store.durable_pinned_sessions();
+    assert!(pins.contains(&victims[2]));
+}
+
+#[test]
 fn pin_mutation_refuses_a_semantically_corrupt_zero_id_file() {
     // Both file handles resolve INSIDE the env guard: sessions_root() reads
     // PINVOU3_HOME, and a path taken before isolated_store() points at the

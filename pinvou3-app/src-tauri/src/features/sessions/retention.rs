@@ -150,6 +150,16 @@ impl SessionStore {
             }
             chat_count += 1;
             if chat_count > MAX_SESSIONS_PER_KIND {
+                // Re-consult the durable pin file immediately before each
+                // delete: a pin landing mid-sweep (the GUI user pinning the
+                // oldest session while a headless batch sweeps) must protect
+                // it — the snapshot taken at sweep start predates it. The
+                // read is a tiny JSON file against an fsync'd record delete,
+                // and it never widens the eviction set (unreadable falls
+                // back to the boot map).
+                if self.durable_pinned_sessions().contains(&metadata.id) {
+                    continue;
+                }
                 let id = metadata.id;
                 let (committed, result) = self.delete_session_record(&id);
                 if committed {
