@@ -165,6 +165,25 @@ pub fn stage_file_in_workspace(
     stage_file_in_workspace_with_copier(src, basename, workspace, attachment_dir, std::io::copy)
 }
 
+/// Bounded copier for staged attachments: caps the STAGED bytes even when a
+/// caller-owned source grows while the copy streams — the pre-copy re-stat in
+/// the staging loop cannot close that window. Mirrors the eval pipeline's
+/// `take(MAX + 1)` + over-check in headless staging.
+pub(crate) fn copy_bounded(
+    source: &mut std::fs::File,
+    destination: &mut std::fs::File,
+    max_bytes: u64,
+) -> std::io::Result<u64> {
+    use std::io::Read;
+    let copied = std::io::copy(&mut source.take(max_bytes + 1), destination)?;
+    if copied > max_bytes {
+        return Err(std::io::Error::other(
+            "attachment grew past the per-file cap during staging",
+        ));
+    }
+    Ok(copied)
+}
+
 pub(crate) fn stage_image_in_workspace(
     src: &str,
     basename: &str,
