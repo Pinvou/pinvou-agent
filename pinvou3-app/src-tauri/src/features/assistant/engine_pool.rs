@@ -544,12 +544,16 @@ enum BoundedJoinOutcome {
 /// dropped, which detaches the task without aborting it, and the
 /// degradation is logged. A panicked task is reported as [`BoundedJoinOutcome::Panicked`]
 /// instead of silently counting as settled — a panic means the task will
-/// never complete its own bookkeeping.
+/// never complete its own bookkeeping. The budget is a parameter so the
+/// `Detached` outcome stays reachable from behavior tests without waiting
+/// on the real 5s clock; production callers always pass
+/// [`TURN_GATE_AWAIT_TIMEOUT`].
 async fn bounded_join_while_holding_turn_gate<T>(
     what: &str,
+    budget: std::time::Duration,
     task: tokio::task::JoinHandle<T>,
 ) -> BoundedJoinOutcome {
-    match tokio::time::timeout(TURN_GATE_AWAIT_TIMEOUT, task).await {
+    match tokio::time::timeout(budget, task).await {
         Ok(Ok(_)) => BoundedJoinOutcome::Settled,
         Ok(Err(join_error)) => {
             eprintln!(
@@ -559,7 +563,7 @@ async fn bounded_join_while_holding_turn_gate<T>(
         }
         Err(_) => {
             eprintln!(
-                "[engine_pool] {what} did not settle within {TURN_GATE_AWAIT_TIMEOUT:?} while holding the turn gate; letting it finish in the background"
+                "[engine_pool] {what} did not settle within {budget:?} while holding the turn gate; letting it finish in the background"
             );
             BoundedJoinOutcome::Detached
         }
@@ -949,7 +953,8 @@ where
         // bounded (issue #255): a slow cleanup must not extend the time the
         // turn gate is held. Dropping the join handle detaches the task.
         let cleanup = tokio::spawn(async move { cancellation.cleanup().await });
-        bounded_join_while_holding_turn_gate("shell cleanup", cleanup).await;
+        bounded_join_while_holding_turn_gate("shell cleanup", TURN_GATE_AWAIT_TIMEOUT, cleanup)
+            .await;
     }
     (target, claimed_unsubmitted)
 }
@@ -1897,7 +1902,12 @@ impl EnginePool {
                 let shell_reclaim_for_finalize = shell_reclaim_for_drain.clone();
                 let finalize =
                     tokio::spawn(async move { shell_reclaim_for_finalize.finalize().await });
-                match bounded_join_while_holding_turn_gate("shell reclaim finalize", finalize).await
+                match bounded_join_while_holding_turn_gate(
+                    "shell reclaim finalize",
+                    TURN_GATE_AWAIT_TIMEOUT,
+                    finalize,
+                )
+                .await
                 {
                     BoundedJoinOutcome::Settled => {}
                     BoundedJoinOutcome::Detached => shell_reclaim_for_drain.mark_cleanup_failed(),
@@ -4815,13 +4825,18 @@ mod scheduled_model_tests {
     async fn forkguard_bounded_join_reports_panicked_task_as_not_settled() {
         let panicked = bounded_join_while_holding_turn_gate(
             "test finalize",
+            TURN_GATE_AWAIT_TIMEOUT,
             tokio::spawn(async { panic!("finalize exploded") }),
         )
         .await;
         assert!(matches!(panicked, BoundedJoinOutcome::Panicked(_)));
 
-        let settled =
-            bounded_join_while_holding_turn_gate("test finalize", tokio::spawn(async {})).await;
+        let settled = bounded_join_while_holding_turn_gate(
+            "test finalize",
+            TURN_GATE_AWAIT_TIMEOUT,
+            tokio::spawn(async {}),
+        )
+        .await;
         assert!(matches!(settled, BoundedJoinOutcome::Settled));
     }
 
