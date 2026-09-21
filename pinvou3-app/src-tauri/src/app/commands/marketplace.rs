@@ -6,7 +6,16 @@
 pub fn list_marketplace_tools()
 -> Result<Vec<crate::features::marketplace::MarketplaceToolInfo>, String> {
     let mgr = crate::features::marketplace::MarketplaceManager::new();
-    let tools = mgr.list_tools();
+    let mut tools = mgr.list_tools();
+    // 内置插件的 bundle_version 在命令层补齐（随应用发布的 bundle 版本）：
+    // marketplace 反向依赖 runtime_bundle 会构成 feature 循环（架构守卫
+    // rust_cyclic_feature_dependencies 基线为 0），app → features 方向合法。
+    for tool in &mut tools {
+        if tool.builtin {
+            tool.bundle_version =
+                Some(crate::features::runtime_bundle::platform::BUNDLE_VERSION.to_string());
+        }
+    }
     Ok(tools)
 }
 
@@ -483,6 +492,13 @@ pub async fn uninstall_marketplace_tool(
 }
 
 pub(super) fn uninstall_marketplace_tool_sync(tool_id: &str) -> Result<(), String> {
+    // 内置插件不可卸载（契约 §3.3）：命令层早失败，错误面向用户；manager 层
+    // `MarketplaceManager::uninstall` 另有同语义 guard（纵深防御）。
+    if crate::features::marketplace::builtin::is_builtin_tool(tool_id) {
+        return Err(format!(
+            "builtin plugin '{tool_id}' is part of the application and cannot be uninstalled"
+        ));
+    }
     let mgr = crate::features::marketplace::MarketplaceManager::new();
     // Resolve companion ownership before any OAuth, skill, or MCP state is mutated.
     let companions = mgr.companion_skills(tool_id);

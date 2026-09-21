@@ -18,6 +18,7 @@ pub(crate) mod assistant_response;
 pub(crate) mod attachments;
 pub(crate) mod behavior_telemetry;
 pub(crate) mod browser;
+pub(crate) mod builtin;
 pub(crate) mod chat;
 pub(crate) mod checkpoints;
 pub(crate) mod codex;

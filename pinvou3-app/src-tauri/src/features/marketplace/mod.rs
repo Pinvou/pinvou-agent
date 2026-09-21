@@ -24,6 +24,7 @@ pub(crate) use connectors::{mcp_json_lock, mcp_json_unparseable, write_json_pret
 
 // PR #302 WIP 拆分的子模块（main 的 Wave 2 没有接这块）—— 需要补 mod 声明。
 pub mod actions;
+pub mod builtin;
 pub mod bundle;
 pub mod mcp_catalog;
 pub mod package_export;
@@ -461,6 +462,8 @@ pub async fn apply_disabled_connectors_for(
     scope: ConnectorScope,
     connector_ids: Vec<String>,
 ) -> Result<(), String> {
+    // 内置插件不可停用（契约 §3.3 纵深防御）：写入即报错，不静默过滤。
+    builtin::reject_builtin_ids(&connector_ids)?;
     tokio::task::spawn_blocking(move || save_disabled_bundles_for(scope, &connector_ids))
         .await
         .map_err(|error| format!("apply_disabled_connectors_for join: {error}"))??;
@@ -549,6 +552,13 @@ fn native_unavailable_tool_names_for(scope: ConnectorScope) -> Vec<String> {
 pub fn unavailable_tool_names_for(scope: ConnectorScope) -> Vec<String> {
     let mut names = MarketplaceManager::new().model_tool_names(&unavailable_bundles_for(scope));
     names.extend(native_unavailable_tool_names_for(scope));
+    // 内置插件功能开关（契约 §3.3）：被关功能按并集语义摘除的工具与 scope 正交，
+    // 全局并入（去重），各 scope 的引擎门控一致生效。
+    for name in builtin::feature_disabled_tool_names() {
+        if !names.iter().any(|n| n == &name) {
+            names.push(name);
+        }
+    }
     names
 }
 
@@ -835,6 +845,26 @@ impl<S: CredentialStore> MarketplaceManager<S> {
                     // 的 fail-fast 同口径）；迁移登记的手写自定义 MCP / 上传包可导出。
                     exportable: !mcp_catalog::spec_for(&m.id).is_some(),
                     installed: installed_flag,
+                    // 内置语义（契约 §3.1）的 security_level/data_access 只在内置
+                    // 插件上透传：普通插件保持空值，序列化省略，前端契约干净。
+                    // mcp_tools 全量透传（内置板块展示工具清单用）。bundle_version
+                    // 标记内置插件随应用发布的 bundle 版本（前端展示/比对用）。
+                    security_level: if m.builtin && !m.security_level.is_empty() {
+                        Some(m.security_level.clone())
+                    } else {
+                        None
+                    },
+                    data_access: if m.builtin {
+                        m.data_access.clone()
+                    } else {
+                        Vec::new()
+                    },
+                    mcp_tools: m.mcp_tools.clone(),
+                    // bundle_version 由命令层（commands::marketplace::list_marketplace_tools）
+                    // 补齐：marketplace 反向依赖 runtime_bundle 会构成 feature 循环
+                    // （架构守卫 rust_cyclic_feature_dependencies 基线为 0）。
+                    bundle_version: None,
+                    builtin: m.builtin,
                     id: m.id,
                     name,
                     description,
@@ -1021,6 +1051,13 @@ impl<S: CredentialStore> MarketplaceManager<S> {
     /// 卸载工具：从 installed.json + mcp.json 中移除，包目录按来源处置
     /// （Upload 整包进回收站 / 可重释放预置物理删除 / 其余保留）。
     pub fn uninstall(&self, tool_id: &str) -> Result<(), String> {
+        // 内置插件不可卸载（内置工具集长期契约 §3.3 服务端纵深防御）：即便前端
+        // 不下发 uninstall 动作，命令/IPC 直达也必须在此被拒。
+        if builtin::is_builtin_tool(tool_id) {
+            return Err(format!(
+                "builtin plugin '{tool_id}' is part of the application and cannot be uninstalled"
+            ));
+        }
         // 并发守护（M2）由事务锁承担：卸载全程持 MARKETPLACE_TRANSACTION_LOCK，
         // 同 id 并发卸载时后到者等先到者卸完再重读登记，看到的是「已回收」终态，
         // 回收失败回滚不会把先删的记录复活成幽灵 installed；顺带串行化跨 id 的

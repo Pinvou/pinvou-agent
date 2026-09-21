@@ -134,7 +134,11 @@ pub fn actions_for(bundle: &BundleInfo, readiness: Readiness) -> Vec<BundleActio
                 if bundle.user_uploaded {
                     out.push(action(ACTION_EDIT_DISPLAY, None));
                 }
-                out.push(action(ACTION_UNINSTALL, None));
+                // 内置插件（契约 §3.3）不可卸载：不下发 uninstall 动作；服务端
+                // `MarketplaceManager::uninstall` 另有纵深防御 guard。
+                if !super::builtin::is_builtin_tool(&bundle.id) {
+                    out.push(action(ACTION_UNINSTALL, None));
+                }
             }
         }
     }
@@ -204,6 +208,20 @@ mod tests {
         let mut b = bundle(BundleKind::Bundle);
         b.installed = true;
         assert_eq!(ids(&actions_for(&b, Readiness::Ready)), ["uninstall"]);
+    }
+
+    /// 内置插件（契约 §3.3）：已装也不下发 uninstall（enable_in 开关保留——
+    /// 功能粒度开关走 builtin feature registry，不走包开关）。
+    #[test]
+    fn installed_builtin_plugin_gets_no_uninstall() {
+        let mut b = bundle(BundleKind::Mcp);
+        b.id = "session-reader".into();
+        b.installed = true;
+        let actions = actions_for(&b, Readiness::Ready);
+        assert!(
+            actions.iter().all(|a| a.id != ACTION_UNINSTALL),
+            "内置插件不得下发 uninstall: {actions:?}"
+        );
     }
 
     #[test]
