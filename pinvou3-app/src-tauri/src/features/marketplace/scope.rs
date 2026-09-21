@@ -989,6 +989,13 @@ pub fn save_disabled_bundles_for(scope: ConnectorScope, ids: &[String]) -> Resul
 /// 不决定 on/off。
 pub fn load_hidden_bundles_for(scope: ConnectorScope) -> Vec<String> {
     let file = load_disabled_bundles_file();
+    resolve_scope_hidden_ids(&file, scope)
+}
+
+/// 已加载文件 → 某 scope 的有效不可见包 id 列表（读时归一，与开关集同口径；
+/// 无默认兜底，显式写入才隐藏）。
+/// 供 `load_hidden_bundles_for` 与 `unavailable_bundles_for` 的单快照合并读共用。
+fn resolve_scope_hidden_ids(file: &DisabledBundlesFile, scope: ConnectorScope) -> Vec<String> {
     normalize_stored_pkg_ids(
         &file
             .hidden_scopes
@@ -1012,10 +1019,14 @@ pub fn save_hidden_bundles_for(scope: ConnectorScope, ids: &[String]) -> Result<
 }
 
 /// 该 scope 对底座「不可用」的包 id 并集 = 开关关（disabled）+ 不可见（hidden）。
-/// 物化/工具白名单按此并集排除，两套门控对模型都是「调不到」。
+/// 物化/工具白名单按此并集排除，两套门控对模型都是「调不到」。单次持锁读出
+/// 两套集合（同一文件快照）：每次并集解析只取一次锁、只解析一次文件，也不会
+/// 混读两个时刻的 disabled/hidden（同一次刷新内多次调用之间的跨调用快照窗口
+/// 仍在，由各调用方自行取舍）。
 pub fn unavailable_bundles_for(scope: ConnectorScope) -> Vec<String> {
-    let mut ids = load_disabled_bundles_for(scope);
-    for id in load_hidden_bundles_for(scope) {
+    let file = load_disabled_bundles_file();
+    let mut ids = resolve_scope_disabled_ids(&file, scope);
+    for id in resolve_scope_hidden_ids(&file, scope) {
         if !ids.iter().any(|x| x == &id) {
             ids.push(id);
         }
@@ -1864,6 +1875,28 @@ mod tests {
                 vec!["pptx".to_string()],
                 "the user's explicit off is refused by the batch enable"
             );
+        });
+    }
+
+    /// DenyAll（未初始化）scope 的不可用并集 = 开关集默认兜底（已装包 ∪ 内置 CLI
+    /// 包）∪ 显式 hidden：hidden 不参与默认策略，但并集仍须包含它，且与默认集
+    /// 相交时按并集去重（feishu 既是内置 CLI 包又是显式 hidden，只出现一次）。
+    /// 合并读与两套集合各自的读入口同口径。
+    #[test]
+    fn unavailable_includes_hidden_in_uninitialized_deny_all_scope() {
+        with_temp_home("pinvou3-scope", || {
+            save_hidden_bundles_for(
+                ConnectorScope::Code,
+                &["weather".to_string(), "feishu".to_string()],
+            )
+            .unwrap();
+
+            // Code 未初始化：开关集走 DenyAll 兜底；hidden 只追加上显式条目。
+            let mut expected = load_disabled_bundles_for(ConnectorScope::Code);
+            if !expected.iter().any(|id| id == "weather") {
+                expected.push("weather".to_string());
+            }
+            assert_eq!(unavailable_bundles_for(ConnectorScope::Code), expected);
         });
     }
 
