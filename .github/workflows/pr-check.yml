@@ -746,6 +746,7 @@ jobs:
       # 1.0.7 headers+lib into /usr/local so pkg-config resolves the prefix; idempotent,
       # no runner-image drift. See scripts/ci-libpipewire-build.sh for the full rationale.
       - name: Build PipeWire 1.0.7 dev prefix (jammy SPA headers too old)
+        if: ${{ env.RUN_HEAVY_RUST_CHECKS == 'true' }}
         run: bash scripts/ci-libpipewire-build.sh
 
       # Clippy hard gate (no continue-on-error): lint config lives in the
@@ -1430,7 +1431,8 @@ jobs:
             github.event_name == 'pull_request' &&
             github.event.pull_request.draft == false &&
             (
-              needs.changes.outputs.rust_full == 'true' ||
+            needs.changes.outputs.rust_full == 'true' ||
+              needs.changes.outputs.cli_rust == 'true' ||
               (
                 needs.changes.outputs.rust_code == 'true' &&
                 contains(github.event.pull_request.labels.*.name, 'ci:full-rust')

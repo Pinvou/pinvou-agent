@@ -16,7 +16,8 @@
 # path, so the prefix wins without touching the system install.
 #
 # Idempotent: skips when pkg-config already resolves the pinned version.
-# CI-only; never runs outside pr-check.
+# CI-only: the pr-check rust-lint/rust-test/cli-test legs and the two Linux
+# deb jobs in release-packages.yml.
 set -euo pipefail
 
 PW_VERSION=1.0.7
