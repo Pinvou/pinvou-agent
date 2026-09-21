@@ -55,8 +55,9 @@ pub async fn set_bundle_visibility(
 ) -> Result<(), String> {
     let scope = parse_connector_scope(scope.as_deref())?;
     let ids = bundle_ids.clone();
-    // 可见性写与开关写同一 #515 登记口径：整集写保持 fire-and-forget，写失败
-    // 在 save 内降级为日志（调用方可见失败形态待 #515 重work 时一并裁决）。
+    // 可见性写与开关写同走 round-19 MAJOR 1 恢复的 fail-loud 契约：save 失败
+    // 经 `??` 原样上抛（前端回滚开关并告警），不再降级为日志。跨进程 RMW 与
+    // 过期快照问题仍归 #515 重work 所有（调用方可见失败形态不变）。
     tokio::task::spawn_blocking(move || {
         crate::features::marketplace::save_hidden_bundles_for(scope, &ids)
     })
@@ -91,6 +92,13 @@ pub struct EnablePackagesOutcome {
     /// when the expansion snapshotted, or an unknown id. Everything else in
     /// the batch may still have applied; the caller must not present the
     /// opt-in of these ids as done.
+    ///
+    /// State-space caveat (round-20 minor 2): only the uninitialized
+    /// (expansion) arm can detect these. In an **initialized** scope an
+    /// unknown id is treated as already-on and is NOT reported — both lists
+    /// come back empty and `enabled` reads true while the id matched nothing.
+    /// Fail-closed in effect (an uninstalled pack is off by default anyway);
+    /// do not cite an empty `not_applied` as coverage evidence there.
     pub not_applied: Vec<String>,
 }
 
@@ -99,7 +107,10 @@ pub struct EnablePackagesOutcome {
 // mapping lives in this single conversion so the two structs cannot drift:
 // `enabled` is honest about coverage — a refused batch or any id that matched
 // nothing (not_applied) means the batch did not fully apply, so it is not
-// reported as a plain success; the caller surfaces blocked/not_applied.
+// reported as a plain success; the caller surfaces blocked/not_applied. The
+// initialized-arm caveat on `not_applied` applies here unchanged: an empty
+// `not_applied` from an initialized scope is "no signal", not "coverage
+// proven".
 impl From<crate::features::marketplace::scope::EnablePackagesOutcome> for EnablePackagesOutcome {
     fn from(value: crate::features::marketplace::scope::EnablePackagesOutcome) -> Self {
         let blocked = value.blocked;

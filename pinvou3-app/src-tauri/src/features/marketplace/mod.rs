@@ -148,7 +148,7 @@ impl Drop for FailpointResetGuard {
 }
 
 #[cfg(test)]
-fn arm_failpoint(flag: &'static std::sync::atomic::AtomicBool) -> FailpointResetGuard {
+pub(crate) fn arm_failpoint(flag: &'static std::sync::atomic::AtomicBool) -> FailpointResetGuard {
     flag.store(true, std::sync::atomic::Ordering::SeqCst);
     FailpointResetGuard(flag)
 }
@@ -1730,10 +1730,17 @@ impl<S: CredentialStore> MarketplaceManager<S> {
             return Ok(actions);
         }
         // Resolve manifests first so key ownership across tools is known before any
-        // write decision (see `key_owners` below).
+        // write decision (see `key_owners` below). Writer-variant registry read
+        // (round-20 MAJOR A): this fn holds MARKETPLACE_TRANSACTION_LOCK, so the
+        // corrupt branch runs the full quarantine + rebuild + persist recovery and
+        // an unreadable file propagates as Err — the boot caller surfaces it as the
+        // `mcp_reconcile:failed` marker (extraction.rs) instead of reconcile
+        // silently working off an empty set (`installed_ids()` collapses Err to
+        // empty: the exact "everything looks unclaimed" hazard the doctrine
+        // comment on `write_installed` names).
         let mut manifests = Vec::new();
         let mut seen_ids = std::collections::HashSet::new();
-        for tool_id in self.installed_ids() {
+        for tool_id in self.try_installed_ids_for_writer()? {
             if ENGINE_OWNED_MCP_SERVER_KEYS.contains(&tool_id.as_str()) {
                 // Say why instead of skipping silently: a tool whose id collides
                 // with an engine-owned key would otherwise look installed-but-
@@ -4497,6 +4504,98 @@ mod tests {
         });
     }
 
+    /// Round-20 MAJOR A regression: reconcile reads the registry through
+    /// `try_installed_ids_for_writer` — it holds MARKETPLACE_TRANSACTION_LOCK,
+    /// so a corrupt installed.json is fully recovered (quarantine + rebuild +
+    /// **persist**) as part of the reconcile transaction and reconcile works
+    /// off the rebuilt set. The previous `installed_ids()` read collapsed the
+    /// parse error to an empty set: reconcile silently no-oped and the
+    /// repaired registry was never persisted by this path (unbounded
+    /// deferral until some other writer ran).
+    #[test]
+    fn reconcile_recovers_corrupt_registry_and_uses_it() {
+        with_temp_home(|| {
+            write_tool_manifest(
+                "weather",
+                r#"{
+                    "id":"weather","name":"Weather","description":"d","version":"1","icon":"x","category":"c",
+                    "mcp_tools":["get_weather"],"command":"python","args":["server.py"]
+                }"#,
+            );
+            let mcp_path = crate::platform::paths::mcp_config_path();
+            std::fs::create_dir_all(mcp_path.parent().unwrap()).unwrap();
+            // The weather entry's KEY participates in the corrupt-recovery
+            // rebuild (the registry is rebuilt from mcp.json server keys),
+            // while the entry itself is unusable (no command) so reconcile
+            // must rebuild it — observable proof it worked off the rebuilt
+            // set (an Err→empty collapse yields zero manifests, zero
+            // actions, and an untouched entry).
+            std::fs::write(&mcp_path, r#"{"servers":{"weather":{"enabled":true}}}"#).unwrap();
+            let installed_path = crate::platform::paths::pinvou3_home()
+                .join("marketplace")
+                .join("installed.json");
+            std::fs::create_dir_all(installed_path.parent().unwrap()).unwrap();
+            std::fs::write(&installed_path, "[\"weather\"").unwrap();
+
+            let manager = MarketplaceManager::new();
+            let actions = manager.reconcile_installed_mcp_entries().unwrap();
+            assert!(
+                actions
+                    .iter()
+                    .any(|a| a.contains("weather") && a.contains("rebuilt")),
+                "reconcile must act on the rebuilt registry: {actions:?}"
+            );
+            // The recovery is persisted by the reconcile transaction itself,
+            // not left to whichever writer happens to run later.
+            let repaired = std::fs::read_to_string(&installed_path).unwrap();
+            assert_eq!(
+                serde_json::from_str::<Vec<String>>(&repaired).unwrap(),
+                vec!["weather".to_string()],
+                "the corrupt registry must be repaired on disk, not just in memory"
+            );
+        });
+    }
+
+    /// Round-20 MAJOR A, unreadable arm: with an installed.json that exists
+    /// but cannot be read, reconcile must return Err — the boot caller
+    /// surfaces it as the `mcp_reconcile:failed` startup marker
+    /// (extraction.rs) — instead of silently no-oping on the Err→empty
+    /// collapse of `installed_ids()`.
+    #[cfg(unix)]
+    #[test]
+    fn reconcile_fails_visible_on_unreadable_registry() {
+        use std::os::unix::fs::PermissionsExt;
+        with_temp_home(|| {
+            let mcp_path = crate::platform::paths::mcp_config_path();
+            std::fs::create_dir_all(mcp_path.parent().unwrap()).unwrap();
+            std::fs::write(&mcp_path, r#"{"servers":{}}"#).unwrap();
+            let installed_path = crate::platform::paths::pinvou3_home()
+                .join("marketplace")
+                .join("installed.json");
+            std::fs::create_dir_all(installed_path.parent().unwrap()).unwrap();
+            std::fs::write(&installed_path, "[\"weather\"]").unwrap();
+            std::fs::set_permissions(&installed_path, std::fs::Permissions::from_mode(0o000))
+                .unwrap();
+            // Root probe (mode bits are no-ops for root): if the file is
+            // still readable, the unreadable branch never runs — skip loudly.
+            if std::fs::read(&installed_path).is_ok() {
+                std::fs::set_permissions(&installed_path, std::fs::Permissions::from_mode(0o644))
+                    .unwrap();
+                eprintln!(
+                    "ROOT-SKIP[reconcile_fails_visible_on_unreadable_registry]: running as root - the unreadable-file fixture stays readable; NOT exercised"
+                );
+                return;
+            }
+            let err = MarketplaceManager::new()
+                .reconcile_installed_mcp_entries()
+                .unwrap_err();
+            assert!(
+                err.contains("installed.json"),
+                "the failure must name the unreadable registry: {err}"
+            );
+        });
+    }
+
     /// Round-11 m2: a non-UTF-8 installed.json IS corrupt (not "unreadable"):
     /// the raw-byte salvage routes it into quarantine + rebuild, and the
     /// quarantine copy preserves the exact original bytes.
@@ -4596,7 +4695,7 @@ mod tests {
             // The user's own disable is explicit (default marker cleared by the
             // enable above; composer writes carry no default markers) and the
             // next enable is refused with the id surfaced.
-            save_disabled_bundles_for(ConnectorScope::Plain, &["weather".to_string()]);
+            save_disabled_bundles_for(ConnectorScope::Plain, &["weather".to_string()]).unwrap();
             let blocked = crate::features::marketplace::scope::enable_packages_in_scope(
                 ConnectorScope::Plain,
                 &["weather".to_string()],
@@ -5339,20 +5438,20 @@ mod tests {
                     .contains(&"ima_openapi".to_string())
             );
             // Opting plain in (empty disable list) admits the tool...
-            save_disabled_bundles_for(ConnectorScope::Plain, &[]);
+            save_disabled_bundles_for(ConnectorScope::Plain, &[]).unwrap();
             assert!(
                 !unavailable_tool_names_for(ConnectorScope::Plain)
                     .contains(&"ima_openapi".to_string())
             );
             // ...and disabling the package in plain gates it in that scope only.
-            save_disabled_bundles_for(ConnectorScope::Plain, &["ima-skills".to_string()]);
+            save_disabled_bundles_for(ConnectorScope::Plain, &["ima-skills".to_string()]).unwrap();
             assert!(
                 unavailable_tool_names_for(ConnectorScope::Plain)
                     .contains(&"ima_openapi".to_string())
             );
             // Explicitly initializing code with an empty disable list (the
             // user turned the package on there) re-admits the tool.
-            save_disabled_bundles_for(ConnectorScope::Code, &[]);
+            save_disabled_bundles_for(ConnectorScope::Code, &[]).unwrap();
             assert!(
                 !unavailable_tool_names_for(ConnectorScope::Code)
                     .contains(&"ima_openapi".to_string())
@@ -5369,18 +5468,18 @@ mod tests {
             // Opt plain in first (DenyAll default), then the store's
             // per-scope visibility toggle gates the native tool through the
             // same `unavailable_bundles_for` union.
-            save_disabled_bundles_for(ConnectorScope::Plain, &[]);
+            save_disabled_bundles_for(ConnectorScope::Plain, &[]).unwrap();
             assert!(
                 !unavailable_tool_names_for(ConnectorScope::Plain)
                     .contains(&"ima_openapi".to_string())
             );
-            save_hidden_bundles_for(ConnectorScope::Plain, &["ima-skills".to_string()]);
+            save_hidden_bundles_for(ConnectorScope::Plain, &["ima-skills".to_string()]).unwrap();
             assert!(
                 unavailable_tool_names_for(ConnectorScope::Plain)
                     .contains(&"ima_openapi".to_string())
             );
             // Restoring visibility re-admits the tool in that scope.
-            save_hidden_bundles_for(ConnectorScope::Plain, &[]);
+            save_hidden_bundles_for(ConnectorScope::Plain, &[]).unwrap();
             assert!(
                 !unavailable_tool_names_for(ConnectorScope::Plain)
                     .contains(&"ima_openapi".to_string())
@@ -5632,7 +5731,7 @@ mod tests {
             // actually transitioned (round-12 self-review): `wecom` was already
             // stored off with the marker the materialization wrote, so it stays
             // liftable instead of turning into an explicit opt-out.
-            save_disabled_bundles_for(ConnectorScope::Plain, &["wecom".to_string()]);
+            save_disabled_bundles_for(ConnectorScope::Plain, &["wecom".to_string()]).unwrap();
             let blocked = crate::features::marketplace::scope::enable_packages_in_scope(
                 ConnectorScope::Plain,
                 &["wecom".to_string()],
@@ -5650,8 +5749,8 @@ mod tests {
             // live composer write path (whole-list): taking wecom on removes
             // its marker with the entry, and writing it back off enters it
             // without one — a user verdict, unlike the install default above.
-            save_disabled_bundles_for(ConnectorScope::Plain, &[]);
-            save_disabled_bundles_for(ConnectorScope::Plain, &["wecom".to_string()]);
+            save_disabled_bundles_for(ConnectorScope::Plain, &[]).unwrap();
+            save_disabled_bundles_for(ConnectorScope::Plain, &["wecom".to_string()]).unwrap();
             let blocked = crate::features::marketplace::scope::enable_packages_in_scope(
                 ConnectorScope::Plain,
                 &["wecom".to_string(), "dingtalk".to_string()],
@@ -5671,7 +5770,7 @@ mod tests {
 
             // Hidden set cleanup rides along with enabling a hidden pack that is
             // not explicitly stored-off (dingtalk above).
-            save_hidden_bundles_for(ConnectorScope::Plain, &["dingtalk".to_string()]);
+            save_hidden_bundles_for(ConnectorScope::Plain, &["dingtalk".to_string()]).unwrap();
             let blocked = crate::features::marketplace::scope::enable_packages_in_scope(
                 ConnectorScope::Plain,
                 &["dingtalk".to_string()],

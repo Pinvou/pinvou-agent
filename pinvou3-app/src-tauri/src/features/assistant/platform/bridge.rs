@@ -3451,7 +3451,7 @@ mod tests {
         use crate::features::marketplace::{ConnectorScope, save_hidden_bundles_for};
         // 只写隐藏集、不碰开关集：旧口径（只读开关集）下快照会报 enabled=true
         // 且工具留在目录里，本测试对两条通道都钉住并集口径。
-        save_hidden_bundles_for(ConnectorScope::Plain, &["weather".into()]);
+        save_hidden_bundles_for(ConnectorScope::Plain, &["weather".into()]).unwrap();
 
         let Op::SendMessage { content, .. } = bridge
             .build_send_message_op(

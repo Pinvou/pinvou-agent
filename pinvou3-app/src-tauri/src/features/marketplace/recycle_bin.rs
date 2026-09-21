@@ -932,7 +932,8 @@ mod tests {
         crate::features::marketplace::scope::save_disabled_bundles_for(
             crate::features::marketplace::ConnectorScope::Plain,
             &["my-skill-rr".to_string()],
-        );
+        )
+        .unwrap();
         assert!(
             crate::features::marketplace::scope::load_disabled_bundles_for(
                 crate::features::marketplace::ConnectorScope::Plain
@@ -1187,7 +1188,8 @@ mod tests {
             crate::features::marketplace::scope::save_disabled_bundles_for(
                 crate::features::marketplace::ConnectorScope::Plain,
                 &[],
-            );
+            )
+            .unwrap();
 
             // Read-only home: the gate's save must fail. Root probe first (mode
             // bits are no-ops for root) — loud skip per round-11 m12.
@@ -1877,7 +1879,8 @@ mod tests {
             crate::features::marketplace::scope::save_disabled_bundles_for(
                 crate::features::marketplace::ConnectorScope::Plain,
                 &[],
-            );
+            )
+            .unwrap();
             let content = std::fs::read_to_string(&path).unwrap();
             assert!(
                 content.contains("plain_defaults_migrated"),
@@ -1939,8 +1942,12 @@ mod tests {
             .recycle_package("compensated", KIND_SKILL, "compensated.zip", record)
             .unwrap();
 
-        // Inject the save failure at exactly take_back's manifest persist.
-        FAIL_NEXT_RECYCLE_SAVE.store(true, std::sync::atomic::Ordering::SeqCst);
+        // Inject the save failure at exactly take_back's manifest persist
+        // (round-20 minor 6: via the shared arm_failpoint guard — a bare
+        // store(true) leaks the failpoint into an unrelated test's next
+        // recycle save when this test fails before consuming it, which
+        // falsifies the "all injection points share this guard" claim).
+        let _fail = crate::features::marketplace::arm_failpoint(&FAIL_NEXT_RECYCLE_SAVE);
         let err = restore_plugin("compensated").unwrap_err();
         assert!(
             err.contains("整体回滚"),

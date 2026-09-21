@@ -589,10 +589,11 @@ pub async fn install_marketplace_skill(
     tokio::task::spawn_blocking(move || install_marketplace_skill_sync(&install_skill_id))
         .await
         .map_err(|e| format!("任务执行失败: {e}"))??;
-    // 安装影响两个 scope 的启用集：重写在线会话的组合目录（下一轮 prompt 生效）。
-    // DenyAll scope（含 plain）已初始化时新装技能默认仍关闭（sync 进各 scope 禁用集，
-    // 见 install_marketplace_skill_sync）；未初始化 scope 按 DenyAll 现算兜底，同样默认关。
-    pool.refresh_live_sessions_skills().await;
+    // 安装影响两个 scope 的启用集：DenyAll scope（含 plain）已初始化时新装技能
+    // 默认仍关闭（sync 进各 scope 禁用集，见 install_marketplace_skill_sync）；
+    // 未初始化 scope 按 DenyAll 现算兜底，同样默认关。组合目录重写由下面的
+    // hot_refresh 统一收尾（round-20 minor 4：此前在其前面重复手写了一次
+    // refresh_live_sessions_skills，效果幂等但白做一遍）。
     // The native-tool ownership gate (NATIVE_PACKAGE_TOOLS) reads install
     // state: without this refresh a package owning a native tool (ima) stays
     // denied in live engines until respawn.
@@ -909,10 +910,11 @@ pub async fn import_skill_md_bytes(
             )
         },
     )?;
-    pool.refresh_live_sessions_skills().await;
     // An imported id can collide with a package owning a native tool
     // (NATIVE_PACKAGE_TOOLS keys on package ids), so the deny snapshot must
     // follow the same install postcondition as the marketplace paths.
+    // 组合目录重写由 hot_refresh 统一收尾（round-20 minor 4：去掉此前重复
+    // 手写的 refresh_live_sessions_skills）。
     hot_refresh(&pool, true).await;
     Ok(report.id)
 }

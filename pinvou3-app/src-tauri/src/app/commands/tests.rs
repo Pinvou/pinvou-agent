@@ -654,7 +654,8 @@ fn mcp_uninstall_removes_companion_skills_from_package_dir() {
         crate::features::marketplace::save_hidden_bundles_for(
             scope,
             &["government-writing".to_string()],
-        );
+        )
+        .unwrap();
         assert_eq!(
             crate::features::marketplace::load_disabled_bundles_for(scope),
             vec!["gongwen".to_string()]

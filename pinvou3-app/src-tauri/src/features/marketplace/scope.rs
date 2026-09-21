@@ -13,9 +13,9 @@
 //! 文件标记；读时迁移把 plain 初始化为已持久化列表并落盘标记。首次读入即把两
 //! 份旧文件迁移进本文件
 //! migrates the two legacy files into this file on read (migrate-on-read):
-//! 旧连接器 id 原样进包 id（连接器 id 即包 id）；旧技能 id 经 `bundle::skill_owner_package`
-//! 映射到所属包（companion → MCP/CLI 包，独立技能 → 自身）；`skill:` 前缀跨文件借道
-//! 残留统一剥除并清出连接器文件。迁移幂等，失败回退默认值（安全兜底）。
+//! 旧连接器 id 原样进包 id（连接器 id 即包 id）；旧技能 id 经 `to_package_id`
+//! （R17-MAJOR1 起为门控口径 `skill_gating_owner`，含物理布局兜底）映射到所属包；
+//! `skill:` 前缀残留统一剥除。迁移幂等，失败回退默认值（安全兜底）。
 //!
 // architecture-guard: allow-target-cfg -- the unix regression tests in this file (the round-13 B3 install-sync persist failure and the round-14 #2 freeze memo) need unreadable (0o555 directory / 0o000 file) fixtures; test-only inline cfg(unix)+PermissionsExt (same exemption precedent as mod.rs / package_export.rs, review #455); a real open() probe guards against running as root, Windows is covered by link checks.
 //!
@@ -129,10 +129,11 @@ static PENDING_CORRUPT_RECOVERY: Mutex<Option<(PathBuf, DisabledBundlesFile)>> =
 /// already refuses for itself.
 static UNREADABLE_ORIGINAL: Mutex<Option<PathBuf>> = Mutex::new(None);
 
-/// Clears the verdict memos. Test-only: with_temp_home reuses a pid-keyed temp
-/// directory, so the previous case's memo would be matched by path and bleed
-/// into the next one; production paths never need to clear (the file is the
-/// truth; the memo only briefly carries the verdict after a write failure).
+/// Clears the verdict memos. Test-only hygiene: the statics are process-global
+/// and keyed by home path, so a memo left behind by an aborted earlier case
+/// (or by a harness that recreates the same path) must not bleed into the
+/// next one; production never clears (the file is the truth; a memo only
+/// briefly carries state after a write failure).
 #[cfg(test)]
 pub(crate) fn clear_unpersisted_verdict_for_test() {
     *UNPERSISTED_VERDICT
@@ -141,6 +142,23 @@ pub(crate) fn clear_unpersisted_verdict_for_test() {
     *PENDING_CORRUPT_RECOVERY
         .lock()
         .unwrap_or_else(|poisoned| poisoned.into_inner()) = None;
+    *UNREADABLE_ORIGINAL
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner()) = None;
+}
+
+/// Test-only write-failure injection for `try_save_disabled_bundles_file`
+/// (round-20 MAJOR B): fires after the rename-aside decision point, so the
+/// restore-on-write-failure path is drivable on an otherwise writable home.
+/// Same drop-guard convention as the mod.rs/recycle_bin failpoints: an
+/// unconsumed injection auto-clears instead of leaking into unrelated tests.
+#[cfg(test)]
+static FAIL_NEXT_DISABLED_BUNDLES_WRITE: std::sync::atomic::AtomicBool =
+    std::sync::atomic::AtomicBool::new(false);
+
+#[cfg(test)]
+pub(crate) fn fail_next_disabled_bundles_write_for_test() -> super::FailpointResetGuard {
+    super::arm_failpoint(&FAIL_NEXT_DISABLED_BUNDLES_WRITE)
 }
 
 /// 读完整文件（取文件锁）。可能触发「读到即迁移」的读路径必须走本入口与持锁写方
@@ -210,6 +228,42 @@ fn load_disabled_bundles_file_locked() -> DisabledBundlesFile {
                 }
             }
             let home = paths::pinvou3_home();
+            // Round-20 MAJOR B, crash-window evidence: a `.corrupt.*` sibling
+            // proves a converged-era store EXISTED and was lost without a
+            // successful overwrite (the rename-aside crash window in
+            // `try_save_disabled_bundles_file`, or a wiped live file with a
+            // surviving quarantine copy). Its stranded verdict is unknowable
+            // (the bytes were unreadable even before the rename), so recover
+            // fail-closed — set only the migration marker, initialize no
+            // scope, freeze; the DenyAll fallback keeps every previously
+            // opted-out pack off. Without this arm the wide signal below
+            // judges "upgraded" and initializes plain EMPTY: every opt-out
+            // back ON. This is deliberately narrower than the registered
+            // R10-m3 deletion case (live file deleted, NO sibling): the
+            // sibling distinguishes "store existed and was lost mid-recovery"
+            // from the never-had-a-store 0.8.6–0.9.2 cohort that the
+            // registered case must keep protecting, so the legacy migration
+            // is skipped here entirely — legacy files are pre-convergence
+            // remnants when the unified store demonstrably existed.
+            if corrupt_sidecar_evidence_exists(&home) {
+                eprintln!(
+                    "[marketplace] disabled_bundles.json is gone but a .corrupt.* copy proves a lost store; recovering fail-closed (all scopes fall back to DenyAll), freeze persisted"
+                );
+                let recovered = DisabledBundlesFile {
+                    plain_defaults_migrated: true,
+                    ..DisabledBundlesFile::default()
+                };
+                if let Err(freeze_error) = try_save_disabled_bundles_file(&recovered) {
+                    eprintln!(
+                        "[scope] CRITICAL: failed to persist the lost-store recovery verdict: {freeze_error}; holding the in-process verdict until restart"
+                    );
+                    *UNPERSISTED_VERDICT
+                        .lock()
+                        .unwrap_or_else(|poisoned| poisoned.into_inner()) =
+                        Some((home, recovered.clone()));
+                }
+                return recovered;
+            }
             let legacy_existed = home.join("disabled_connectors.json").exists()
                 || home.join("disabled_skills.json").exists();
             // Wide upgrade signal (review #455 R8-3 narrowing): none of the
@@ -575,6 +629,17 @@ fn try_save_disabled_bundles_file(file: &DisabledBundlesFile) -> Result<(), Stri
     // the original aside first (needs only directory write permission, so it
     // works even where the file is unreadable) — the bytes survive either way;
     // a failed rename refuses the write instead of destroying them.
+    //
+    // Round-20 MAJOR B: the marker stays armed until the write itself
+    // succeeds (it is cleared by the successful-persist tail below). The
+    // previous form cleared it right after the rename, so a failed write (or
+    // a crash between the two adjacent ops) left NO live file, NO marker, and
+    // the bytes only in the sidecar — the next read took the NotFound branch,
+    // the wide signal judged "upgraded", and plain initialized empty: every
+    // opted-out pack back ON (fail-open) inside the very machinery that was
+    // built to prevent the loss. On a write failure the sidecar is renamed
+    // back, restoring "unreadable original in place, marker armed" exactly.
+    let mut renamed_aside: Option<PathBuf> = None;
     {
         let degraded = UNREADABLE_ORIGINAL
             .lock()
@@ -594,27 +659,53 @@ fn try_save_disabled_bundles_file(file: &DisabledBundlesFile) -> Result<(), Stri
                     sidecar.display()
                 )
             })?;
-            *UNREADABLE_ORIGINAL
-                .lock()
-                .unwrap_or_else(|poisoned| poisoned.into_inner()) = None;
+            renamed_aside = Some(sidecar.clone());
             eprintln!(
                 "[marketplace] unreadable disabled_bundles.json preserved as {} before overwrite",
                 sidecar.display()
             );
         }
     }
-    if let Some(parent) = path.parent() {
-        std::fs::create_dir_all(parent).map_err(|error| {
-            format!("create parent dir for disabled_bundles.json failed: {error}")
-        })?;
+    let write_result = (|| {
+        #[cfg(test)]
+        if FAIL_NEXT_DISABLED_BUNDLES_WRITE.swap(false, std::sync::atomic::Ordering::SeqCst) {
+            return Err(
+                "injected disabled_bundles.json write failure (test failpoint)".to_string(),
+            );
+        }
+        if let Some(parent) = path.parent() {
+            std::fs::create_dir_all(parent).map_err(|error| {
+                format!("create parent dir for disabled_bundles.json failed: {error}")
+            })?;
+        }
+        let json = serde_json::to_string(file)
+            .map_err(|error| format!("serialize disabled_bundles.json failed: {error}"))?;
+        deepseek_tui::utils::write_atomic(&path, json.as_bytes())
+            .map_err(|error| format!("write disabled_bundles.json failed: {error}"))
+    })();
+    if let Err(error) = write_result {
+        if let Some(sidecar) = renamed_aside.as_ref() {
+            // Restore the unreadable original: the store must not sit absent
+            // with only a sidecar while the marker claims otherwise. If even
+            // the rename-back fails, UNREADABLE_ORIGINAL stays armed (never
+            // cleared mid-flight) and the NotFound read's `.corrupt.*`
+            // sibling evidence keeps the verdict fail-closed (round-20
+            // MAJOR B).
+            match std::fs::rename(sidecar, &path) {
+                Ok(()) => eprintln!(
+                    "[marketplace] disabled_bundles.json write failed ({error}); the unreadable original was restored from {}",
+                    sidecar.display()
+                ),
+                Err(restore_error) => eprintln!(
+                    "[marketplace] disabled_bundles.json write failed ({error}) and restoring the unreadable original from {} failed too: {restore_error}; the corrupt-copy evidence keeps the next read fail-closed",
+                    sidecar.display()
+                ),
+            }
+        }
+        return Err(error);
     }
-    let json = serde_json::to_string(file)
-        .map_err(|error| format!("serialize disabled_bundles.json failed: {error}"))?;
-    deepseek_tui::utils::write_atomic(&path, json.as_bytes())
-        .map_err(|error| format!("write disabled_bundles.json failed: {error}"))?;
     // Successful persist = the file is valid JSON again: both "write-failed"
     // memos are now stale (R9-M1).
-    let home = paths::pinvou3_home();
     for memo in [&UNPERSISTED_VERDICT, &PENDING_CORRUPT_RECOVERY] {
         let mut slot = memo.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
         if let Some((memo_home, _)) = slot.as_ref() {
@@ -629,6 +720,25 @@ fn try_save_disabled_bundles_file(file: &DisabledBundlesFile) -> Result<(), Stri
         .lock()
         .unwrap_or_else(|poisoned| poisoned.into_inner()) = None;
     Ok(())
+}
+
+/// Whether any `disabled_bundles.json.corrupt.*` sibling exists in the home:
+/// both quarantine copies (`quarantine_corrupt_state_file`) and the
+/// rename-aside preservation (`try_save_disabled_bundles_file`) share the
+/// naming pattern, and either proves the converged-era store existed
+/// (round-20 MAJOR B).
+fn corrupt_sidecar_evidence_exists(home: &std::path::Path) -> bool {
+    const EVIDENCE_PREFIX: &str = "disabled_bundles.json.corrupt.";
+    std::fs::read_dir(home)
+        .map(|entries| {
+            entries.flatten().any(|entry| {
+                entry
+                    .file_name()
+                    .to_str()
+                    .is_some_and(|name| name.starts_with(EVIDENCE_PREFIX))
+            })
+        })
+        .unwrap_or(false)
 }
 
 /// 读某 scope 被禁用的**包 id** 列表（读不到/空 → 空）。
@@ -684,6 +794,12 @@ fn resolve_scope_disabled_ids(file: &DisabledBundlesFile, scope: ConnectorScope)
                         .into_iter()
                         .map(|manifest| manifest.id)
                         .collect();
+                    // 两条记录臂刻意用认领口径（`skill_owner_package`）：它们的
+                    // 输入是登记表自己认领的技能 id——有认领时与门控口径一致，
+                    // 独立登记的技能没有可兜底的物理嵌套布局。只有下面的 disk
+                    // leg 走 `skill_gating_owner`：它枚举的正是**无认领**的物理
+                    // 目录，必须与物化层的目录扫描同一口径（round-20 minor 3：
+                    // 与记录臂的口径差异在此显式标注，非遗漏）。
                     for info in SkillMarketplaceManager::new().list_skills() {
                         let pkg = skill_owner_package(&info.id);
                         if !catalog.iter().any(|id| id == &pkg) {
@@ -694,6 +810,7 @@ fn resolve_scope_disabled_ids(file: &DisabledBundlesFile, scope: ConnectorScope)
                 }
             };
             ids.extend(builtin_cli_bundle_ids().map(str::to_string));
+            // 同上（round-20 minor 3）：登记表臂用认领口径，disk leg 用门控口径。
             for skill_id in SkillMarketplaceManager::new().installed_skill_ids() {
                 let pkg = skill_owner_package(&skill_id);
                 if !ids.iter().any(|id| id == &pkg) {
@@ -862,7 +979,9 @@ pub fn load_disabled_bundles() -> Vec<String> {
 /// 写失败降级为日志（调用方无法处理治理写失败）。
 #[cfg(test)]
 pub fn save_disabled_bundles(ids: &[String]) {
-    save_disabled_bundles_for(ConnectorScope::Plain, ids);
+    // The documented best-effort contract (round-20 minor 5: the Result must
+    // be consumed explicitly now that the writer is fail-loud).
+    let _ = save_disabled_bundles_for(ConnectorScope::Plain, ids);
 }
 
 /// After a pack is installed/connected, sync every initialized scope: when
@@ -989,6 +1108,13 @@ pub struct EnablePackagesOutcome {
     /// Requested ids that matched no entry (absent from the DenyAll
     /// expansion): nothing was applied for them — likely a concurrent install
     /// that had not committed yet, or an unknown id.
+    ///
+    /// Report-honesty caveat (round-16 m2, restated round-20 minor 2): only
+    /// the uninitialized (expansion) arm can detect these — an **initialized**
+    /// scope has no equivalent signal, so an unknown id there is treated as
+    /// already-on and stays unreported (`not_applied` empty, `blocked`
+    /// empty): fail-closed in effect, but callers must not read an empty
+    /// `not_applied` as "coverage proven" in that state.
     pub not_applied: Vec<String>,
 }
 
@@ -997,6 +1123,11 @@ pub fn enable_packages_in_scope(
     raw_ids: &[String],
 ) -> Result<EnablePackagesOutcome, String> {
     let mut ids: Vec<String> = raw_ids.iter().map(|id| to_package_id(id)).collect();
+    // Sort-then-dedup (round-20 minor 1): bare `dedup` removes consecutive
+    // duplicates only, so e.g. ["a","b","a"] leaked a duplicate into the
+    // blocked/not_applied reporting; sorting also makes the reported order
+    // deterministic.
+    ids.sort();
     ids.dedup();
     if ids.is_empty() {
         return Ok(EnablePackagesOutcome::default());
@@ -1325,15 +1456,138 @@ mod tests {
         });
     }
 
+    /// Round-20 MAJOR B: rename-aside succeeded but the write failed — the
+    /// unreadable original must be renamed BACK (store in place, marker still
+    /// armed) instead of leaving no live file and no memo. The previous form
+    /// cleared the marker right after the rename, so the next read took the
+    /// NotFound branch, the wide signal judged "upgraded", and plain
+    /// initialized empty: every opted-out pack back ON, inside the very
+    /// machinery built to prevent the loss.
+    #[cfg(unix)]
+    #[test]
+    fn failed_write_after_rename_aside_restores_original() {
+        use std::os::unix::fs::PermissionsExt;
+        with_temp_home("pinvou3-scope", || {
+            let path = disabled_bundles_path();
+            let original = b"unrecoverable-user-optouts{{{".to_vec();
+            std::fs::write(&path, &original).unwrap();
+            std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o000)).unwrap();
+            // Root probe (mode bits are no-ops for root): if the file is still
+            // readable, the unreadable-read branch never runs — skip loudly.
+            if std::fs::read(&path).is_ok() {
+                std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o644)).unwrap();
+                eprintln!(
+                    "ROOT-SKIP[failed_write_after_rename_aside_restores_original]: running as root - the unreadable-file fixture stays readable; NOT exercised"
+                );
+                return;
+            }
+            // A read of the unreadable file arms the marker (fail-closed
+            // recovery in memory) — the same state a real episode holds when
+            // the next persist runs.
+            let _ = load_disabled_bundles_file();
+
+            let _fail = fail_next_disabled_bundles_write_for_test();
+            let result = save_disabled_bundles_for(ConnectorScope::Plain, &[]);
+            assert!(
+                result.is_err(),
+                "the injected write failure must surface: {result:?}"
+            );
+
+            // The unreadable original is back in place, byte-identical, and
+            // no sidecar remains.
+            assert!(path.exists(), "the store must not sit absent");
+            let parent = path.parent().unwrap();
+            let sidecars: Vec<std::path::PathBuf> = std::fs::read_dir(parent)
+                .unwrap()
+                .flatten()
+                .map(|e| e.path())
+                .filter(|p| {
+                    p.file_name()
+                        .and_then(|n| n.to_str())
+                        .map(|n| n.contains(".corrupt."))
+                        .unwrap_or(false)
+                })
+                .collect();
+            assert!(
+                sidecars.is_empty(),
+                "the sidecar was renamed back: {sidecars:?}"
+            );
+            // The marker survived the failed write: the next successful save
+            // again renames the original aside before overwriting, and the
+            // bytes stay recoverable.
+            let result = save_disabled_bundles_for(ConnectorScope::Plain, &[]);
+            assert!(
+                result.is_ok(),
+                "a writable home lets the retry succeed: {result:?}"
+            );
+            let sidecars: Vec<std::path::PathBuf> = std::fs::read_dir(parent)
+                .unwrap()
+                .flatten()
+                .map(|e| e.path())
+                .filter(|p| {
+                    p.file_name()
+                        .and_then(|n| n.to_str())
+                        .map(|n| n.contains(".corrupt."))
+                        .unwrap_or(false)
+                })
+                .collect();
+            assert_eq!(
+                sidecars.len(),
+                1,
+                "the retry preserved the original: {sidecars:?}"
+            );
+            std::fs::set_permissions(&sidecars[0], std::fs::Permissions::from_mode(0o644)).unwrap();
+            assert_eq!(
+                std::fs::read(&sidecars[0]).unwrap(),
+                original,
+                "the preserved copy must carry the original bytes"
+            );
+        });
+    }
+
+    /// Round-20 MAJOR B, crash-window arm: the live store is gone but a
+    /// `.corrupt.*` sibling proves it existed — the NotFound read must
+    /// recover fail-closed (no scope initialized, freeze persisted) instead
+    /// of letting the wide upgrade signal (installed.json ∪ non-empty
+    /// sessions/) initialize plain empty: every opt-out back ON.
+    #[test]
+    fn not_found_read_with_corrupt_sidecar_fails_closed() {
+        with_temp_home("pinvou3-scope", || {
+            let home = paths::pinvou3_home();
+            // Both wide-signal legs present: without the sibling-evidence arm
+            // this home judges "upgraded" and initializes plain empty.
+            let installed = home.join("marketplace").join("installed.json");
+            std::fs::create_dir_all(installed.parent().unwrap()).unwrap();
+            std::fs::write(&installed, "[\"weather\"]").unwrap();
+            std::fs::create_dir_all(home.join("sessions").join("default")).unwrap();
+            std::fs::write(home.join("sessions").join("default").join("t.json"), "{}").unwrap();
+            std::fs::write(home.join("disabled_bundles.json.corrupt.123"), b"lost").unwrap();
+
+            let file = load_disabled_bundles_file();
+            assert!(
+                file.plain_defaults_migrated,
+                "the lost-store recovery is frozen: {file:?}"
+            );
+            assert!(
+                !file.initialized.contains("plain"),
+                "plain must NOT initialize — DenyAll fallback keeps the stranded opt-outs off: {file:?}"
+            );
+            // The freeze persisted: a second read is stable (no re-evaluation).
+            let again = load_disabled_bundles_file();
+            assert_eq!(again.initialized, file.initialized);
+            assert!(again.plain_defaults_migrated);
+        });
+    }
+
     #[test]
     fn bundles_roundtrip_per_scope() {
         with_temp_home("pinvou3-scope", || {
             // DenyAll: an uninitialized plain scope reads as the on-the-fly
             // expansion, so pin an explicitly initialized empty baseline first.
-            save_disabled_bundles_for(ConnectorScope::Plain, &[]);
+            save_disabled_bundles_for(ConnectorScope::Plain, &[]).unwrap();
             assert!(load_disabled_bundles_for(ConnectorScope::Plain).is_empty());
-            save_disabled_bundles_for(ConnectorScope::Plain, &["weather".to_string()]);
-            save_disabled_bundles_for(ConnectorScope::Code, &["feishu".to_string()]);
+            save_disabled_bundles_for(ConnectorScope::Plain, &["weather".to_string()]).unwrap();
+            save_disabled_bundles_for(ConnectorScope::Code, &["feishu".to_string()]).unwrap();
             assert_eq!(
                 load_disabled_bundles_for(ConnectorScope::Plain),
                 vec!["weather".to_string()]
@@ -1355,16 +1609,17 @@ mod tests {
             // on-the-fly expansion, so pin an explicitly initialized empty
             // baseline first (same shape as
             // `hidden_bundles_are_orthogonal_to_disabled`).
-            save_disabled_bundles_for(ConnectorScope::Plain, &[]);
+            save_disabled_bundles_for(ConnectorScope::Plain, &[]).unwrap();
             assert!(load_disabled_bundles_for(ConnectorScope::Plain).is_empty());
             assert!(load_hidden_bundles_for(ConnectorScope::Plain).is_empty());
 
             // Disable weather, hide weather + pptx (weather appears in both sets).
-            save_disabled_bundles_for(ConnectorScope::Plain, &["weather".to_string()]);
+            save_disabled_bundles_for(ConnectorScope::Plain, &["weather".to_string()]).unwrap();
             save_hidden_bundles_for(
                 ConnectorScope::Plain,
                 &["weather".to_string(), "pptx".to_string()],
-            );
+            )
+            .unwrap();
 
             // Visibility writes do not pollute the disabled set.
             assert_eq!(
@@ -1442,7 +1697,8 @@ mod tests {
             save_disabled_bundles_for(
                 ConnectorScope::Plain,
                 &["pptx".to_string(), "weather".to_string()],
-            );
+            )
+            .unwrap();
             let file = load_disabled_bundles_file();
             assert!(
                 file.default_off_scopes
@@ -1489,7 +1745,7 @@ mod tests {
                 r#"{"scopes":{"plain":["pptx"]},"default_off_scopes":{"plain":["pptx"]},"initialized":["plain"],"plain_defaults_migrated":true}"#,
             )
             .unwrap();
-            remove_bundle_from_disabled_scopes("pptx");
+            remove_bundle_from_disabled_scopes("pptx").unwrap();
             let file = load_disabled_bundles_file();
             assert!(
                 file.default_off_scopes
@@ -1518,7 +1774,7 @@ mod tests {
             .unwrap();
             // Taking pptx back on removes the stored entry, and the
             // install-default marker goes with it.
-            save_disabled_bundles_for(ConnectorScope::Plain, &[]);
+            save_disabled_bundles_for(ConnectorScope::Plain, &[]).unwrap();
             let file = load_disabled_bundles_file();
             assert!(
                 file.default_off_scopes
@@ -1529,7 +1785,7 @@ mod tests {
             );
             // Switching it off again enters it as the user's own verdict; no
             // marker may be re-armed for an entry this write transitioned.
-            save_disabled_bundles_for(ConnectorScope::Plain, &["pptx".to_string()]);
+            save_disabled_bundles_for(ConnectorScope::Plain, &["pptx".to_string()]).unwrap();
             let file = load_disabled_bundles_file();
             assert!(
                 file.default_off_scopes
@@ -1554,7 +1810,7 @@ mod tests {
         with_temp_home("pinvou3-scope", || {
             save_disabled_bundles_for(ConnectorScope::Plain, &["weather".to_string()]).unwrap();
             save_hidden_bundles_for(ConnectorScope::Plain, &["weather".to_string()]).unwrap();
-            remove_bundle_from_disabled_scopes("weather");
+            remove_bundle_from_disabled_scopes("weather").unwrap();
             assert!(load_disabled_bundles_for(ConnectorScope::Plain).is_empty());
             assert!(load_hidden_bundles_for(ConnectorScope::Plain).is_empty());
         });
@@ -1569,7 +1825,8 @@ mod tests {
             save_disabled_bundles_for(
                 ConnectorScope::Plain,
                 &["skill:government-writing".to_string()],
-            );
+            )
+            .unwrap();
             assert_eq!(
                 load_disabled_bundles_for(ConnectorScope::Plain),
                 vec!["government-writing".to_string()]
@@ -1590,7 +1847,8 @@ mod tests {
                     "skill:visualizer".to_string(),
                     "government-writing".to_string(),
                 ],
-            );
+            )
+            .unwrap();
             // government-writing 是内嵌 gongwen manifest 的 companion 技能 → gongwen 包。
             assert_eq!(
                 load_disabled_bundles_for(ConnectorScope::Plain),
@@ -1718,7 +1976,7 @@ mod tests {
             // on and the whole list is written back (feishu removed).
             let mut composer_list = expansion.clone();
             composer_list.retain(|id| id != "feishu");
-            save_disabled_bundles_for(ConnectorScope::Plain, &composer_list);
+            save_disabled_bundles_for(ConnectorScope::Plain, &composer_list).unwrap();
 
             let file = load_disabled_bundles_file();
             assert!(
@@ -1918,7 +2176,7 @@ mod tests {
             // file. The composer write always transitions (uninitialized →
             // initialized), unlike the install-sync — a no-op for
             // uninitialized scopes, so it would never persist here.
-            save_disabled_bundles_for(ConnectorScope::Plain, &[]);
+            save_disabled_bundles_for(ConnectorScope::Plain, &[]).unwrap();
             assert!(
                 disabled_bundles_path().exists(),
                 "the memo-carried verdict must reach disk on the next save: {:?}",

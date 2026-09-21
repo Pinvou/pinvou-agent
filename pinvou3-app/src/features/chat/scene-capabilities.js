@@ -21,11 +21,13 @@ function isInstalled(items, id) {
 // explicitly move the scene packs out of it (the user-initiated scene action
 // is itself the opt-in, review #455 R5-B3); otherwise the model receives no
 // tools, the scene silently degrades, and the UI lies about being enabled.
-// The pre-read only feeds the UI enabled flag; the write path goes through
-// enable_marketplace_packages, the backend's single-critical-section RMW
-// (review #455 R7-M3) — a whole-list read-modify-write across IPC is not lock
-// protected, and a concurrent composer toggle's write would be overwritten by
-// a stale snapshot.
+// The pre-read is load-bearing on two legs: besides the UI enabled flag, it
+// decides WHETHER the enable invocation runs at all (a pack already outside
+// the disabled set skips it), so a stale read skips a needed enable — the
+// write itself still goes through enable_marketplace_packages, the backend's
+// single-critical-section RMW (review #455 R7-M3) — a whole-list
+// read-modify-write across IPC is not lock protected, and a concurrent
+// composer toggle's write would be overwritten by a stale snapshot.
 async function listDisabledConnectors(invoke) {
   const disabled = await invoke('get_disabled_connectors', { scope: 'plain' });
   return new Set(Array.isArray(disabled) ? disabled.map((id) => String(id || '').trim()) : []);

@@ -149,9 +149,10 @@ fn collect_source_skills(
 /// 禁用集的技能**目录名**（execpolicy 硬拦截与物化排除共用口径）。
 ///
 /// scope 收敛后：单一禁用集是**包 id**（`disabled_bundles.json`），companion 联动
-/// 不再借道 `companion_skills` 跨查询——包模型（`bundle::skill_owner_package`）按
-/// 条件认领把 companion 技能归属到其 MCP/CLI 包（所属包已装才归包，否则归技能
-/// 自身；与迁移层同口径，见 skill_marketplace），禁用包即排除其全部技能目录。
+/// 不再借道 `companion_skills` 跨查询——禁用/隐藏集条目在写入与读时都经
+/// `to_package_id` 归一（R17-MAJOR1 起为门控口径 `bundle::skill_gating_owner`：
+/// 条件认领加物理布局兜底，未声明的嵌套技能归到物理所属包，否则会以零同意进入
+/// 所有 scope 且无行可关），禁用包即排除其全部技能目录。
 /// 因此这里枚举所有技能来源目录，凡属主包在禁用集内的目录名纳入排除集。
 pub(crate) fn disabled_skill_names_for(scope: ConnectorScope) -> HashSet<String> {
     // 不可用集 = 开关关(disabled) + 不可见(hidden)：两套门控对物化/execpolicy 都是排除。
