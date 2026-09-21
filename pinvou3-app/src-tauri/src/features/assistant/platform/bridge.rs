@@ -178,6 +178,11 @@ fn official_deepseek_model_name(model: &str) -> String {
 /// 此处 re-export 保持既有调用路径不变。
 pub use crate::features::sessions::{ExecutionRootResolver, SessionRoots};
 
+/// One-shot gate for the removed-`PINVOU3_MAX_TOOL_CALLS` warning: the config
+/// builder runs at every engine spawn, so without it a batch spawning N
+/// sessions prints N identical lines.
+static REMOVED_TOOL_CALL_CAP_WARNED: std::sync::OnceLock<()> = std::sync::OnceLock::new();
+
 #[derive(Clone)]
 pub struct Pinvou3Bridge {
     pub prefs: UserPrefs,
@@ -1819,9 +1824,14 @@ impl Pinvou3Bridge {
             // stays with the foundation's own max_steps, per-turn wall clock,
             // bounded retries, and cancel boundaries — the host adds no
             // per-call-count gate of its own. Harnesses that still export the
-            // old override get told it is dead instead of silently ignored.
+            // old override get told it is dead instead of silently ignored —
+            // once per process, since this config builder runs at every
+            // engine spawn and a batch would otherwise print one identical
+            // line per session.
             max_tool_calls: {
-                if std::env::var_os("PINVOU3_MAX_TOOL_CALLS").is_some() {
+                if std::env::var_os("PINVOU3_MAX_TOOL_CALLS").is_some()
+                    && REMOVED_TOOL_CALL_CAP_WARNED.set(()).is_ok()
+                {
                     eprintln!(
                         "[pinvou3] PINVOU3_MAX_TOOL_CALLS is no longer read: the tool-call \
                          round cap was removed; runaway protection is the foundation's \
