@@ -939,6 +939,10 @@ const withUiTimeout = (promise, timeoutMs, fallbackResult) => {
       // 回收站：用户上传的插件卸载后进入回收站，可恢复或彻底删除
       // （list 为只读命令，Web 端可看列表；恢复/删除挂 toolStoreMutations 能力门）。
       const [showRecycleBin, setShowRecycleBin] = useState(false);
+      // 内置插件独立子页（契约 §3.1）：工具栏「内置插件」按钮进入，整页只读展示，
+      // 数据直接用 builtinPluginCards（list_marketplace_tools 已在主列表加载时取回，
+      // 无需再次请求）。
+      const [showBuiltinPlugins, setShowBuiltinPlugins] = useState(false);
       const [recycledPlugins, setRecycledPlugins] = useState([]);
       // 加载态：进入子页到首包返回之间不得闪「回收站是空的」空态；recycledLoaded
       // 标记首次加载完成（成功或失败都算，失败由 alert 提示），加载中渲染 spinner。
@@ -1450,12 +1454,6 @@ const withUiTimeout = (promise, timeoutMs, fallbackResult) => {
         buckets.forEach((items, key) => { listSections.push({ id: key, label: sectionLabelOf(key), items }); });
         if (upcomingTools.length) {
           listSections.push({ id: 'upcoming', label: typeLabel('upcoming'), items: upcomingTools });
-        }
-        // 内置插件板块置末位（契约 §3.1）：只读审计窗口，不参与分类筛选与搜索
-        // （搜索态 sectioned=false 时本区不出现）。section.builtin 标记驱动渲染层
-        // 走 BuiltinPluginCard 只读分支，不渲染任何动作按钮。
-        if (builtinPluginCards.length) {
-          listSections.push({ id: 'builtin-plugins', label: (builtinCopy || {}).sectionTitle, items: builtinPluginCards, builtin: true });
         }
       }
       // 左侧二级分类快速导航 = 分区列表（含「即将上线」独立栏）。
@@ -2210,7 +2208,41 @@ const withUiTimeout = (promise, timeoutMs, fallbackResult) => {
             </main>
           </div>
           )}
-          {!showRecycleBin && (
+          {/* 内置插件子页（契约 §3.1 透明性/审计窗口）：整页只读，展示工具清单、
+              安全级别、版本（随应用升级）与数据访问范围；无卸载、无开关。
+              结构与回收站子页同款：返回按钮回主列表。 */}
+          {showBuiltinPlugins && (
+          <div className="flex-1 flex flex-col bg-white dark:bg-[#131314] text-slate-900 dark:text-white transition-colors duration-300 font-sans overflow-y-auto custom-scrollbar p-4 sm:p-6 lg:p-10">
+
+            <header className="z-30 bg-white/80 dark:bg-[#131314]/80 backdrop-blur-2xl transition-colors">
+              <div className="max-w-[1400px] mx-auto border-b border-slate-200/50 pb-6 dark:border-white/10">
+                <div className="flex items-center gap-3">
+                  <button type="button" data-testid="builtin-plugins-back" onClick={() => setShowBuiltinPlugins(false)} title={storeCopy.back} aria-label={storeCopy.back}
+                    className="w-9 h-9 rounded-full bg-slate-100 dark:bg-white/10 hover:bg-slate-200 dark:hover:bg-white/20 flex items-center justify-center text-slate-600 dark:text-slate-300 transition-colors shrink-0">
+                    <ChevronLeft size={20} />
+                  </button>
+                  <h1 className="shrink-0 text-[26px] font-normal tracking-tight">{(builtinCopy || {}).sectionTitle}</h1>
+                </div>
+                {(builtinCopy || {}).pageIntro && (
+                  <p className="mt-3 text-[13px] text-slate-500 dark:text-slate-400 leading-relaxed">{builtinCopy.pageIntro}</p>
+                )}
+              </div>
+            </header>
+
+            <main className="flex-1">
+              <div className="max-w-[1400px] mx-auto pt-5 pb-8">
+                <ul data-testid="builtin-plugin-list" className="flex flex-col">
+                  {builtinPluginCards.map((tool) => (
+                    <li key={tool.id}>
+                      <BuiltinPluginCard tool={tool} copy={builtinCopy} />
+                    </li>
+                  ))}
+                </ul>
+              </div>
+            </main>
+          </div>
+          )}
+          {!showRecycleBin && !showBuiltinPlugins && (
           <div className="flex-1 flex flex-col bg-white dark:bg-[#131314] text-slate-900 dark:text-white transition-colors duration-300 font-sans overflow-y-auto custom-scrollbar p-4 sm:p-6 lg:p-10">
 
             {/* Header */}
@@ -2330,6 +2362,14 @@ const withUiTimeout = (promise, timeoutMs, fallbackResult) => {
                             <Trash2 size={14} className="mr-1.5 opacity-70" />
                             <span>{storeCopy.recycleBin}</span>
                           </button>
+                          {/* 内置插件入口（契约 §3.1）：独立子页只读展示，不进常规卡片流 */}
+                          {builtinPluginCards.length > 0 && (
+                            <button type="button" data-testid="tool-store-builtin-plugins" onClick={() => setShowBuiltinPlugins(true)} title={(builtinCopy || {}).sectionTitle}
+                              className="h-9 whitespace-nowrap shrink-0 inline-flex items-center rounded-full px-3.5 text-[13px] font-semibold transition-colors bg-[#F2F2F7] text-[#000] hover:bg-slate-200 dark:bg-[#2C2C2E] dark:text-[#fff] dark:hover:bg-[#3A3A3C]">
+                              <Package size={14} className="mr-1.5 opacity-70" />
+                              <span>{(builtinCopy || {}).sectionTitle}</span>
+                            </button>
+                          )}
                           <span className="shrink-0 hidden sm:flex items-center gap-1.5 text-[12px] text-slate-400 dark:text-slate-500 pl-1">
                             {storeCopy.guide.dragHintShort}
                             <button type="button" onClick={() => setShowGuide(true)} aria-label={storeCopy.guide.title} title={storeCopy.guide.title}
@@ -2339,7 +2379,7 @@ const withUiTimeout = (promise, timeoutMs, fallbackResult) => {
                       </div>
                   </div>
 
-                  {filteredTools.length > 0 || (sectioned && builtinPluginCards.length > 0) ? (
+                  {filteredTools.length > 0 ? (
                     <div key="tool-store-list-grid" className={sectioned ? 'pb-7 space-y-8' : 'grid grid-cols-1 lg:grid-cols-2 gap-4 pb-7'}>
                       {(sectioned ? listSections : [{ id: 'flat', label: null, items: filteredTools }]).map((section) => (
                         <div key={`section-${section.id}`} id={sectioned ? `store-section-${section.id}` : undefined} className="scroll-mt-24">
@@ -2351,10 +2391,6 @@ const withUiTimeout = (promise, timeoutMs, fallbackResult) => {
                           )}
                           <div className={sectioned ? 'grid grid-cols-1 lg:grid-cols-2 gap-4' : 'contents'}>
                             {section.items.map((tool) => (
-                              // 内置插件板块（契约 §3.1）：只读卡，不渲染动作列、不响应点击进详情。
-                              section.builtin ? (
-                                <BuiltinPluginCard key={`list-${tool.id}`} tool={tool} copy={builtinCopy} />
-                              ) : (
                               // biome-ignore lint/a11y/useKeyWithClickEvents: row click is a shortcut; the keyboard path is covered by the row's real buttons
                               // biome-ignore lint/a11y/noStaticElementInteractions: row click hot zone, not a standalone interactive control
                               <div
@@ -2418,7 +2454,6 @@ const withUiTimeout = (promise, timeoutMs, fallbackResult) => {
                                   })()}
                                 </div>
                               </div>
-                              )
                             ))}
                           </div>
                         </div>
