@@ -1162,7 +1162,13 @@ fn begin_rebind_rejects_concurrent_rebind_and_releases_on_drop() {
 fn resolve_session_project_multi_hit_follows_position_then_id() {
     let temp = tempfile::tempdir().expect("tempdir");
     let workspace = abs("overlap-ws");
-    let root = workspace.to_string_lossy().to_string();
+    // The store hands pure functions stored display forms; the fixture must
+    // spell roots the same way. A raw temp spelling folds to a different
+    // identity key than the ancestor-resolved display form on hosts whose
+    // temp path carries an 8.3 short-name segment (GitHub Windows runners:
+    // RUNNER~1) or a symlinked /var (macOS), so the tier-2 lookup misses and
+    // resolve returns None there while passing on Linux.
+    let root = display(&workspace).to_string_lossy().to_string();
     let now = "2026-09-01T00:00:00Z";
     let project = |id: &str, position: i64| {
         serde_json::json!({
