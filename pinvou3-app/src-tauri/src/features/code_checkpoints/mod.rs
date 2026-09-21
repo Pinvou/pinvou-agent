@@ -148,14 +148,14 @@ pub struct CheckpointMeta {
     /// 第几个用户 turn（1-based）；计数失败时为 None，前端按顺序兜底对齐。
     pub turn: Option<u32>,
     pub kind: CheckpointKind,
-    /// 展示标签（用户消息摘要或「回滚前自动快照」）。
+    /// 展示标签。序列化恒带该键（当前新建条目写入空串）；反序列化对
+    /// `serde(default)` 兼容——main 时代的索引没有 `label` 键，缺了它会让
+    /// 整份索引解析失败并被 quarantine 分支清空，升级即丢历史。
+    #[serde(default)]
     pub label: String,
     /// 影子仓库中的 commit sha（orphan commit，互不为父子）。
     pub commit: String,
     pub created_at: i64,
-    // 注：旧版 index.json 里的 `label` 字段（截断的展示标签，从未有读者）已被
-    // 移除；CheckpointMeta 反序列化不 deny_unknown_fields，旧索引里的残留键被
-    // serde 忽略，无需迁移。
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -710,6 +710,11 @@ pub fn create_checkpoint(
     execution_root: &Path,
     turn: Option<u32>,
     kind: CheckpointKind,
+    // The parameter stays so existing callers need no coordinated change.
+    // The label is part of the persisted `CheckpointMeta` again (the stacked
+    // CLI reads it); new entries record an empty string until a caller
+    // resumes populating it — see the struct field comment.
+    _label: &str,
 ) -> Result<CheckpointMeta> {
     create_checkpoint_preserving(ledger_root, execution_root, turn, kind, &[])
 }
@@ -1260,16 +1265,74 @@ pub fn drop_checkpoint(ledger_root: &Path, checkpoint_id: &str) -> Result<bool> 
 /// （`app/commands/checkpoints.rs`）共用：无 git 的环境里相关用例跳过而非报错。
 #[cfg(test)]
 pub(crate) fn git_available() -> bool {
-    crate::platform::process::HiddenCommand::new("git")
+    let available = crate::platform::process::HiddenCommand::new("git")
         .arg("--version")
         .output()
         .map(|output| output.status.success())
-        .unwrap_or(false)
+        .unwrap_or(false);
+    // A silent skip would let security/parity regressions pass a git-less CI
+    // lane invisibly; say so when the coverage is skipped.
+    if !available {
+        eprintln!("[checkpoints] skipping git-dependent test coverage: git is unavailable");
+    }
+    available
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// Upgrade regression: index entries written before `CheckpointMeta.label`
+    /// was restored carry no `label` key. The field must deserialize with its
+    /// default instead of failing the whole index parse — a failed parse hits
+    /// the quarantine branch, which rebuilds from an empty index and leaves
+    /// every shadow-repo snapshot unlistable (user-visible history loss on
+    /// upgrade). Pure JSON: no git fixture needed.
+    #[test]
+    fn main_era_index_without_label_key_still_loads() {
+        let dir = TestDir::new("label-upgrade");
+        let path = index_path(dir.path());
+        fs::create_dir_all(path.parent().unwrap()).unwrap();
+        fs::write(
+            &path,
+            r#"{
+  "version": 1,
+  "entries": [
+    {"id": "c1-1758000000000000000", "turn": 1, "kind": "turn",
+     "commit": "0123456789abcdef0123456789abcdef01234567", "createdAt": 1758000000},
+    {"id": "c2-1758000000000000001", "turn": 2, "kind": "preRestore",
+     "label": "legacy value", "commit": "fedcba9876543210fedcba9876543210fedcba98",
+     "createdAt": 1758000060}
+  ]
+}"#,
+        )
+        .unwrap();
+        let index = load_index(dir.path()).expect("a main-era index must deserialize");
+        assert_eq!(index.entries.len(), 2, "both entries must survive the load");
+        assert_eq!(
+            index.entries[0].label, "",
+            "a missing label defaults to empty"
+        );
+        assert_eq!(
+            index.entries[1].label, "legacy value",
+            "a present label must still be read"
+        );
+        // No quarantine file may appear next to the index.
+        let corrupt: Vec<_> = fs::read_dir(path.parent().unwrap())
+            .unwrap()
+            .flatten()
+            .filter_map(|entry| {
+                let p = entry.path();
+                p.to_str()
+                    .is_some_and(|s| s.contains(".corrupt-"))
+                    .then_some(p)
+            })
+            .collect();
+        assert!(
+            corrupt.is_empty(),
+            "the index must not be quarantined: {corrupt:?}"
+        );
+    }
 
     struct TestDir(PathBuf);
 
