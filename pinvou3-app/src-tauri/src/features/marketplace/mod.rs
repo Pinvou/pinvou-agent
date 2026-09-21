@@ -6741,10 +6741,12 @@ mod tests {
 
             manager.reconcile_installed_mcp_entries().unwrap();
             let env_var = mcp_secret_env_var("VENDOR_API_KEY");
+            // The assert messages below deliberately carry no registry dump:
+            // formatting secret-registry contents into the failure log is
+            // exactly the cleartext-logging pattern CodeQL flags (high).
             assert!(
                 snapshot_secret_values().contains_key(&env_var),
-                "the reconcile must register the legacy secret: {:?}",
-                snapshot_secret_values().keys()
+                "the reconcile must register the legacy secret"
             );
 
             // The boot runs this right after the reconcile (bridge.rs); it
@@ -6759,8 +6761,7 @@ mod tests {
             assert_eq!(
                 snapshot_secret_values().get(&env_var).map(String::as_str),
                 Some("placeholder-in-manifest"),
-                "the legacy secret must survive the restart rehydration: {:?}",
-                snapshot_secret_values()
+                "the legacy secret must survive the restart rehydration"
             );
         });
     }
@@ -6800,8 +6801,7 @@ mod tests {
             assert_eq!(
                 snapshot_secret_values().get(&env_var).map(String::as_str),
                 Some("legacy-manifest-value"),
-                "the local legacy secret must survive the restart rehydration: {:?}",
-                snapshot_secret_values()
+                "the local legacy secret must survive the restart rehydration"
             );
         });
     }
@@ -6854,8 +6854,7 @@ mod tests {
             );
             assert!(
                 !snapshot_secret_values().contains_key(&env_var),
-                "the registry entry must go with the store entry: {:?}",
-                snapshot_secret_values().keys()
+                "the registry entry must go with the store entry"
             );
         });
     }

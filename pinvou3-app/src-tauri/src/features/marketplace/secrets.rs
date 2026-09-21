@@ -387,7 +387,7 @@ mod tests {
         assert!(targets.contains(&("header".to_string(), "VENDOR_API_KEY".to_string())));
         assert!(
             !targets.iter().any(|(_, key)| key == "REGION"),
-            "non-sensitive legacy env keys are not secrets: {targets:?}"
+            "non-sensitive legacy env keys are not secrets"
         );
     }
 

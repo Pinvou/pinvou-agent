@@ -230,7 +230,7 @@ mod tests {
             assert!(
                 targets.contains(&(spec.target.to_string(), spec.key.to_string())),
                 "manifest for '{}' must declare secret {} under target {} so the restart \
-                 rehydration keeps it: {targets:?}",
+                 rehydration keeps it",
                 spec.tool_id,
                 spec.key,
                 spec.target,
