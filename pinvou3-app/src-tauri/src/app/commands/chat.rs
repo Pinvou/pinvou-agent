@@ -248,38 +248,42 @@ pub(crate) async fn chat_with_reservation(
         .filter(|collection| collection.enabled)
         .collect::<Vec<_>>();
     if !mounted_collection_ids.is_empty() || !mounted_remote_collections.is_empty() {
-        let disallowed = pool.compute_disallowed_tools();
-        let kb_search_hidden = disallowed
-            .iter()
-            .any(|t| t.eq_ignore_ascii_case("kb_search"));
-        pool.set_disallowed_all(disallowed).await;
-        if !kb_search_hidden {
-            let mut collection_names = app
-                .try_state::<KnowledgeService>()
-                .map(|kb| {
-                    mounted_collection_ids
-                        .iter()
-                        .filter_map(|collection_id| {
-                            kb.l1().collection_name(*collection_id).ok().flatten()
-                        })
-                        .collect::<Vec<_>>()
-                })
-                .unwrap_or_default();
-            if let Some(remote) =
-                app.try_state::<crate::features::remote_knowledge::RemoteKnowledgeService>()
-            {
-                collection_names.extend(mounted_remote_collections.iter().map(|collection| {
-                    let server = remote
-                        .connection(&collection.server_id)
-                        .map(|connection| connection.name)
-                        .unwrap_or_else(|_| collection.server_id.clone());
-                    format!("{server} / #{}", collection.collection_id)
-                }));
+        // None = the off-worker compute died; keep the sessions' current
+        // disallowed sets (fail-closed) and skip the RAG injection rather
+        // than prompt the model to call a tool whose availability is unknown.
+        if let Some(disallowed) = pool.compute_disallowed_tools().await {
+            let kb_search_hidden = disallowed
+                .iter()
+                .any(|t| t.eq_ignore_ascii_case("kb_search"));
+            pool.set_disallowed_all(disallowed).await;
+            if !kb_search_hidden {
+                let mut collection_names = app
+                    .try_state::<KnowledgeService>()
+                    .map(|kb| {
+                        mounted_collection_ids
+                            .iter()
+                            .filter_map(|collection_id| {
+                                kb.l1().collection_name(*collection_id).ok().flatten()
+                            })
+                            .collect::<Vec<_>>()
+                    })
+                    .unwrap_or_default();
+                if let Some(remote) =
+                    app.try_state::<crate::features::remote_knowledge::RemoteKnowledgeService>()
+                {
+                    collection_names.extend(mounted_remote_collections.iter().map(|collection| {
+                        let server = remote
+                            .connection(&collection.server_id)
+                            .map(|connection| connection.name)
+                            .unwrap_or_else(|_| collection.server_id.clone());
+                        format!("{server} / #{}", collection.collection_id)
+                    }));
+                }
+                full = format!(
+                    "{}\n\n---\n\n{full}",
+                    build_kb_agentic_guide(&collection_names)
+                );
             }
-            full = format!(
-                "{}\n\n---\n\n{full}",
-                build_kb_agentic_guide(&collection_names)
-            );
         }
     }
     // 取该 session 的 mode 状态（mode + 多智能体开关）。
