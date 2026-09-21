@@ -21,14 +21,17 @@ export function WorkspaceKeychainChip({ copy, primary, additionalCount, roots, c
   const list = Array.isArray(roots) ? roots : [];
 
   return (
-    <div className="relative min-w-0">
+    // Inline-level root (review #484 M2): a block root would split the host's
+    // single-line header row into multiple lines.
+    <div className="relative inline-flex min-w-0 align-middle">
       <button
         type="button"
         ref={triggerRef}
         data-testid="workspace-keychain-chip"
-        disabled={busy}
+        // Busy gates only the align action below; reading the root list must
+        // stay available mid-turn (review #484 n2).
         onClick={() => setOpen(value => !value)}
-        className="h-7 max-w-[200px] rounded-lg px-2 inline-flex items-center gap-1.5 text-[11px] text-gray-500 dark:text-gray-400 hover:bg-black/[0.05] dark:hover:bg-white/[0.07] disabled:opacity-60"
+        className="h-7 max-w-[200px] rounded-lg px-2 inline-flex items-center gap-1.5 text-[11px] text-gray-500 dark:text-gray-400 hover:bg-black/[0.05] dark:hover:bg-white/[0.07]"
         title={primary || ''}
       >
         <FolderOpen size={13} className="shrink-0" />

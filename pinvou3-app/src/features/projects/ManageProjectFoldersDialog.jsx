@@ -11,6 +11,7 @@ import { isImeComposing } from '../../shared/ime-guard.mjs';
 import { useDialogFocusRestore } from '../../hooks/useDialogFocusRestore.js';
 import { useDialogFocusTrap } from '../../hooks/useDialogFocusTrap.js';
 import { manageFolderRows } from './manageFoldersState.js';
+import { workspaceNoticeTone } from './workspacePickerState.js';
 
 const ManageProjectFoldersDialog = ({
   open,
@@ -69,6 +70,10 @@ const ManageProjectFoldersDialog = ({
         e.preventDefault();
         if (renamingRef.current !== null) { setRenaming(null); return; }
         if (pendingRemoveRef.current) { setPendingRemove(null); return; }
+        // Busy gate parity with the backdrop path (busyRef interception):
+        // closing mid-operation would destroy the in-place retry context the
+        // panel deliberately preserves (review #484 m3).
+        if (busyRef.current) return;
         onCloseRef.current();
       }
     };
@@ -148,8 +153,9 @@ const ManageProjectFoldersDialog = ({
           <button
             type="button"
             title={t.cpCancel}
+            disabled={busy}
             onClick={onClose}
-            className="w-8 h-8 shrink-0 rounded-full flex items-center justify-center text-[#5F6368] hover:bg-[#D3D7DB] dark:text-[#C4C7C5] dark:hover:bg-[#444746]"
+            className="w-8 h-8 shrink-0 rounded-full flex items-center justify-center text-[#5F6368] hover:bg-[#D3D7DB] dark:text-[#C4C7C5] dark:hover:bg-[#444746] disabled:opacity-50"
           >
             <X size={16} />
           </button>
@@ -246,7 +252,7 @@ const ManageProjectFoldersDialog = ({
             <span className="min-w-0 flex-1">
               <span className="block truncate">{copy.addAction}</span>
               <span className="block truncate text-[11px] text-[#8A8F94] dark:text-[#9AA0A6]">
-                {mode === 'yolo' ? copy.addNoticeVisibility : copy.addNoticeRestricted}
+                {workspaceNoticeTone(mode) === 'restricted' ? copy.addNoticeRestricted : copy.addNoticeVisibility}
               </span>
             </span>
           </button>

@@ -1821,7 +1821,10 @@ const NAV_PREFETCH = {
         .filter(root => !!(root && typeof root === 'object' ? root.available !== false : root))
         .map(root => String(typeof root === 'object' ? root.path : root));
       const projectGroupHeaderProps = (group) => ({
-        onNewSession: bridge.projects ? () => handleProjectNewSession(group.projectId) : undefined,
+        // Tag-only projects (no roots left) have no directory to bind: the
+        // "new session" entry must not render for them — the handler would
+        // silently no-op on a missing primary root (review #484 M3).
+        onNewSession: bridge.projects && pickerProjectRoots(group).length > 0 ? () => handleProjectNewSession(group.projectId) : undefined,
         onManage: bridge.projects ? () => setManageFoldersId(group.projectId) : undefined,
         onRename: bridge.projects ? (name) => handleRenameProject(group.projectId, name) : undefined,
         onDelete: bridge.projects ? () => handleDeleteProject(group.projectId) : undefined,
@@ -1862,7 +1865,7 @@ const NAV_PREFETCH = {
       // root (written by the picker / manage panel), keychain = all of the
       // project's roots at that moment. The lane follows the current page
       // (code page → codex draft, anything else → chat draft).
-      const handleProjectNewSession = (projectId) => {
+      const handleProjectNewSession = async (projectId) => {
         const project = ((sidebarProjectsData && sidebarProjectsData.projects) || [])
           .find(entry => entry.id === projectId);
         if (!project) return;
@@ -1871,10 +1874,8 @@ const NAV_PREFETCH = {
         const roots = pickerProjectRoots(project);
         // Grant-notice parity: this channel grants the project's whole root set
         // without a picker detour, so the mode-aware notice must still surface
-        // at grant time (§9.4) — but only when the draft actually staged: on
-        // an active session the staging is a silent no-op and a toast would
-        // claim access the session does not have.
-        if (applyWorkspaceTarget({
+        // at grant time (§9.4) — but only when the draft actually staged.
+        if (await applyWorkspaceTarget({
           lane: currentView === 'codex' ? 'codex' : 'chat',
           path: primary,
           projectId: project.id,
@@ -1988,14 +1989,30 @@ const NAV_PREFETCH = {
         assignments: projectsListAssignments || {},
       }), [projectsListEntries, projectsListAssignments, boundWorkspaceItems]);
       const closeWorkspacePicker = () => { setWorkspacePicker(null); setPickerExcluded(null); };
-      // Returns whether the chat-lane draft actually staged (the codex lane's
-      // request object always lands); callers surface grant notices only on a
-      // real staging.
-      const applyWorkspaceTarget = ({ lane, path, projectId, roots }) => {
-        let applied = true;
+      // Returns whether the draft actually staged (the codex lane's request
+      // object always lands); callers surface grant notices only on a real
+      // staging. Async: the chat lane may need to enter a fresh draft first.
+      const applyWorkspaceTarget = async ({ lane, path, projectId, roots }) => {
+        // Default false: a missing bridge surface means nothing was staged, so
+        // callers must not claim the grant happened (review #484 n5).
+        let applied = false;
         if (lane === 'codex') {
           setPickerCodexRequest({ epoch: Date.now(), path: path || null, projectId: projectId || null, roots: roots || [] });
+          applied = true;
         } else if (bridge.sessions && bridge.sessions.setDraftWorkspace) {
+          // The bridge stages a draft workspace only in draft state — with an
+          // active session the call is a documented silent no-op, so the
+          // project row "+" used to dead-end without any feedback on the most
+          // common path (review #484 round-5 M2). Enter a fresh chat draft
+          // first (the same path as handleNewChat), then stage; the
+          // navigation makes the new draft visible instead of silently
+          // discarding the click.
+          if (bridge.activeSessionId && bridge.sessions.createNewSession) {
+            setCodeModeOn(false);
+            await bridge.sessions.createNewSession();
+            setActiveChat(null);
+            setCurrentView('chat');
+          }
           applied = bridge.sessions.setDraftWorkspace(path || null, { projectId: projectId || null, workspaceRoots: roots || [] }) !== false;
         }
         closeWorkspacePicker();
@@ -2026,6 +2043,10 @@ const NAV_PREFETCH = {
       // last_primary_root memory; the session groups via tier-2 anchoring.
       const handlePickerBrowse = async () => {
         if (!bridge.files || !bridge.files.pickFolders || pickerBusy) return;
+        // Capture the lane synchronously: the system folder dialog can outlive
+        // the picker (closed meanwhile), and reading pickerLane() after the
+        // await would mistarget the chat lane (review #484 m1).
+        const lane = pickerLane();
         const picked = await bridge.files.pickFolders()
           .catch((error) => { console.warn('pick workspace folder failed', error); return null; });
         if (!picked) return;
@@ -2071,7 +2092,7 @@ const NAV_PREFETCH = {
           setPickerExcluded(folder);
           return;
         }
-        applyWorkspaceTarget({ lane: pickerLane(), path: folder, projectId: null, roots: [folder] });
+        applyWorkspaceTarget({ lane, path: folder, projectId: null, roots: [folder] });
       };
 
       const sidebarFolderGroups = useMemo(() => (sidebarCodeListActive
@@ -3399,7 +3420,7 @@ const NAV_PREFETCH = {
           <WorkspacePickerDialog
             open
             rows={workspacePickerRows}
-            mode={workspacePicker ? workspacePicker.mode : null}
+            mode={workspacePicker.mode}
             language={language}
             busy={pickerBusy}
             webOnly={!can('desktopChrome') || !bridge.projects}
@@ -4059,6 +4080,7 @@ const NAV_PREFETCH = {
                 onOpenSettingsSection={openSettingsSection}
                 onOpenWorkspacePicker={({ mode }) => { setPickerExcluded(null); setWorkspacePicker({ lane: 'codex', mode }); }}
                 workspacePickerRequest={pickerCodexRequest}
+                onWorkspacePickerRequestConsumed={() => setPickerCodexRequest(null)}
                 onLaneModeChange={setCodexLaneMode}
                 bs={bs}
                 onGotoModelSettings={() => openSettingsSection('model')}

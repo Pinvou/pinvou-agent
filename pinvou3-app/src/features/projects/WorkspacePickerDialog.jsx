@@ -43,10 +43,15 @@ const WorkspacePickerDialog = ({
   const excludedFolderRef = useRef(excludedFolder);
   const onDismissExcludedRef = useRef(onDismissExcluded);
   const backdropPressRef = useRef(false);
+  // busyRef mirrors the ManageProjectFoldersDialog pattern: Escape/backdrop/X
+  // read it inside listeners and handlers so a mid-operation close is
+  // intercepted (the async ensure/materialize retry context survives).
+  const busyRef = useRef(busy);
   useEffect(() => {
     onCloseRef.current = onClose;
     excludedFolderRef.current = excludedFolder || null;
     onDismissExcludedRef.current = onDismissExcluded;
+    busyRef.current = busy;
   });
 
   // Shared modal recipe (review #484 M5): the Tab trap and the focus
@@ -69,6 +74,10 @@ const WorkspacePickerDialog = ({
           if (onDismissExcludedRef.current) onDismissExcludedRef.current();
           return;
         }
+        // Busy gate parity with the backdrop path: closing mid-operation
+        // would destroy the in-flight ensure/materialize retry context
+        // (review #484 round-5 M3).
+        if (busyRef.current) return;
         onCloseRef.current();
       }
     };
@@ -195,11 +204,11 @@ const WorkspacePickerDialog = ({
       role="presentation"
       className="fixed inset-0 z-[200] flex items-center justify-center p-4"
       style={{ background: 'rgba(0,0,0,.34)', backdropFilter: 'blur(14px) saturate(140%)', WebkitBackdropFilter: 'blur(14px) saturate(140%)' }}
-      onMouseDown={(e) => { backdropPressRef.current = e.target === e.currentTarget; }}
+      onMouseDown={(e) => { backdropPressRef.current = e.target === e.currentTarget && !busyRef.current; }}
       onMouseUp={(e) => {
         // Two-phase close (MoveToProjectDialog idiom): a press that started
         // on the backdrop AND ended there closes — a drag-select that begins
-        // inside the panel must not.
+        // inside the panel must not. Busy presses never arm the close.
         if (backdropPressRef.current && e.target === e.currentTarget) onCloseRef.current();
         backdropPressRef.current = false;
       }}
@@ -219,8 +228,9 @@ const WorkspacePickerDialog = ({
           <button
             type="button"
             title={t.cpCancel}
+            disabled={busy}
             onClick={onClose}
-            className="w-8 h-8 shrink-0 rounded-full flex items-center justify-center text-[#5F6368] hover:bg-[#D3D7DB] dark:text-[#C4C7C5] dark:hover:bg-[#444746]"
+            className="w-8 h-8 shrink-0 rounded-full flex items-center justify-center text-[#5F6368] hover:bg-[#D3D7DB] dark:text-[#C4C7C5] dark:hover:bg-[#444746] disabled:opacity-50"
           >
             <X size={16} />
           </button>
@@ -229,8 +239,10 @@ const WorkspacePickerDialog = ({
             field must stay mounted while a query filters the body down —
             otherwise typing past the threshold unmounts the input with the
             query still set, leaving a filtered list with no way to clear it
-            and dropping focus to body (review #484 M5). */}
-        {!webOnly && (Array.isArray(rows) ? rows.length : 0) > 6 && (
+            and dropping focus to body (review #484 M5). Hidden while the
+            excluded-folder panel replaces the list: a query cannot act on it
+            (review #484 m4). */}
+        {!excludedFolder && !webOnly && (Array.isArray(rows) ? rows.length : 0) > 6 && (
           <div className="px-4 pb-2">
             <div className="flex h-9 items-center gap-2 rounded-full px-3 bg-[#EAECEF] dark:bg-[#303134]">
               <Search size={14} className="shrink-0 text-[#5F6368] dark:text-[#9AA0A6]" />

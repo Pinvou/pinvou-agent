@@ -138,6 +138,7 @@ import { ComposerAttachmentDropOverlay } from '../attachments/ComposerAttachment
 import { HomeModeSwitcher } from '../conversation/HomeModeSwitcher.jsx';
 import { bridge } from '../../hooks/useBridge.js';
 import { describeKeychain, workspaceNoticeTone } from '../projects/workspacePickerState.js';
+import { consumePickerRequest } from './picker-request.js';
 import {
   invokeTauri,
   listenTauri,
@@ -675,6 +676,9 @@ export function CodexAcpView({
   // onOpenWorkspacePicker opens the picker (held by the host, main.jsx).
   onOpenWorkspacePicker,
   workspacePickerRequest = null,
+  // Consumption acknowledgement (review #484 M1): the host clears the request
+  // once the view has applied it, so a remount can never replay a stale one.
+  onWorkspacePickerRequestConsumed,
   // Toast channel for the align action's result feedback (§9.7).
   onNotify,
   // The host (main.jsx) mirrors the lane's effective mode so sidebar surfaces
@@ -2041,6 +2045,14 @@ export function CodexAcpView({
     setDraftWorkspaceHandle(current => (
       current === requestedWorkspaceHandle ? null : current
     ));
+    // The staged project binding is consumed by this creation too: clear it
+    // unless a re-pick during the await replaced it (same conditional-clear
+    // idiom as the handle above) — otherwise the stale binding would ride the
+    // next temporary creation and the payload would claim roots the session
+    // was never granted (review #484 round-5 M4).
+    setDraftProjectBinding(current => (
+      current === requestedProjectBinding ? null : current
+    ));
     await refreshSessions();
     // Persist native controls before the first load. If persistence fails after the
     // backend session exists, still activate and load it before surfacing the error;
@@ -2125,13 +2137,17 @@ export function CodexAcpView({
   // effect depends on epoch, so re-delivering the same choice still applies.
   const pickerRequestEpochRef = useRef(0);
   useEffect(() => {
-    if (!workspacePickerRequest || workspacePickerRequest.epoch === pickerRequestEpochRef.current) return;
-    pickerRequestEpochRef.current = workspacePickerRequest.epoch;
-    const { path, projectId, roots } = workspacePickerRequest;
+    const request = consumePickerRequest(workspacePickerRequest, pickerRequestEpochRef.current);
+    if (!request) return;
+    pickerRequestEpochRef.current = request.epoch;
+    const { path, projectId, roots } = request;
     // beginDraft first (it clears the old staged binding internally), then set
     // the target values — the later write wins within the same batch.
     beginDraft(path || null, { clearComposer: false });
     setDraftProjectBinding(projectId ? { projectId, roots: roots || [] } : null);
+    // Acknowledge consumption: the host clears the request object, so a later
+    // remount (this ref resets to 0) cannot replay it (review #484 M1).
+    if (onWorkspacePickerRequestConsumed) onWorkspacePickerRequestConsumed();
     // eslint-disable-next-line react-hooks/exhaustive-deps -- beginDraft is a stable local function; the effect is driven by the request epoch only
   }, [workspacePickerRequest]);
 
@@ -2598,7 +2614,13 @@ export function CodexAcpView({
       activeIdRef.current = null;
       sessionLoadRequestRef.current += 1;
       if (preserveDraftWorkspaceRef.current) preserveDraftWorkspaceRef.current = false;
-      else setDraftWorkspacePath(null);
+      else {
+        setDraftWorkspacePath(null);
+        // The binding travels with the staged path: resetting the draft but
+        // keeping it would let a stale project binding leak into the next
+        // temporary creation's payload (review #484 round-5 M4).
+        setDraftProjectBinding(null);
+      }
       // eslint-disable-next-line react-hooks/set-state-in-effect -- synchronously reset events/pending/session info when returning to draft; one-shot mirror
       setEvents([]);
       setPending([]);
@@ -3368,9 +3390,9 @@ export function CodexAcpView({
   }
 
   // Align to project (§9.7): the session keychain is replaced by the owning
-  // project's full root set at that moment; a busy rejection maps to copy by
-  // marker; on success the session list refreshes (the chip's roots update
-  // with the list).
+  // project's full root set at that moment; typed rejections map to copy by
+  // marker and any other failure gets the generic toast; on success the
+  // session list refreshes (the chip's roots update with the list).
   async function alignKeychainToProject() {
     if (!activeId) return;
     try {
@@ -3384,11 +3406,20 @@ export function CodexAcpView({
         // Nothing failed and nothing was written (the binding store had no
         // readable record) — surfacing it beats silence either way.
         onNotify(t.uiKeychain.alignWriteSkipped);
+      } else if (outcome && outcome.reason === 'no_project' && onNotify) {
+        onNotify(t.uiKeychain.alignNoProject);
+      } else if (onNotify) {
+        // Any other non-applied outcome is unexpected; surface it instead of
+        // failing silently (chat lane parity, review #484 m2).
+        onNotify(t.uiKeychain.alignFailed);
       }
     } catch (error) {
       const message = String((error && error.message) || error || '');
-      if (message.startsWith('ALIGN_BUSY') && onNotify) {
-        onNotify(t.uiKeychain.alignBusy);
+      // Typed markers map to copy (ALIGN_BUSY/ALIGN_NO_WORKSPACE are thrown
+      // as-is by acpClient); unexpected failures get the generic toast
+      // (chat lane parity, review #484 m2).
+      if (onNotify) {
+        onNotify(message.startsWith('ALIGN_BUSY') ? t.uiKeychain.alignBusy : t.uiKeychain.alignFailed);
       } else {
         showError(error);
       }
@@ -3403,13 +3434,14 @@ export function CodexAcpView({
           <div className="w-8 h-8 rounded-xl bg-black/[0.04] dark:bg-white/[0.08] flex items-center justify-center"><AcpAgentLogo agentId={activeAgentId} className="h-5 w-5" title={activeAgentName} /></div>
           <div className="min-w-0 flex-1">
             <div className="text-[14px] font-semibold">{activeSession.title || 'Codex'}</div>
-            <div className={`text-[10px] truncate ${activeSession && !activeSession.workspace_available ? 'text-red-500' : 'text-gray-400'}`}
+            <div className={`text-[10px] ${activeSession.workspace_kind === 'project' && activeSession.workspace_available !== false ? '' : 'truncate'} ${activeSession && !activeSession.workspace_available ? 'text-red-500' : 'text-gray-400'}`}
               title={activeSession && activeSession.workspace_path}>
               {activeAgentName + ' · '}
               {/* Keychain chip (§6): project sessions show the primary
                   directory + N and offer "align to project" (§9.7); temporary
                   sessions / unavailable directories keep the original text
-                  line. */}
+                  line. No truncate on the chip branch: its overflow:hidden
+                  would clip the chip's pop-up panel (review #484 M2). */}
               {activeSession.workspace_kind === 'project' && activeSession.workspace_available !== false ? (
                 <WorkspaceKeychainChip
                   copy={t.uiKeychain}

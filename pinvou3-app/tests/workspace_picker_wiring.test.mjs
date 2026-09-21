@@ -27,6 +27,11 @@ test('workspace picker wiring contract', () => {
   // 浏览通道:ensure 物化/锚定复用先行,排除列表(无 outcome)走如实告知分支。
   assert.match(main, /ensureFolderProjects\(\[folder\]\)/, '浏览通道先 ensure');
   assert.match(main, /setPickerExcluded\(folder\)/, '排除列表分支');
+  // 浏览通道在 await 系统目录选择器前同步捕获车道,防止选择器中途关闭错投
+  // chat 车道(review #484 m1);setDraftWorkspace 缺失时不得谎报 applied
+  // (review #484 n5)。
+  assert.match(main, /const lane = pickerLane\(\);[\s\S]*?applyWorkspaceTarget\(\{ lane, path: folder/, '浏览车道同步捕获');
+  assert.match(main, /applyWorkspaceTarget[\s\S]{0,300}?let applied = false;/, 'applied 缺省 false');
 
   // chat 车道:草稿选择经 bridge setDraftWorkspace 带项目归属与钥匙串;
   // 物化 create_session 透传 workspaceRoots/projectId。
@@ -37,7 +42,7 @@ test('workspace picker wiring contract', () => {
   // codex 车道:入口开选择器(Web 维持旧通道),请求经 workspacePickerRequest
   // 落地 beginDraft,物化 createAcpSession 透传(仅桌面)。
   assert.match(codexView, /isWeb \|\| !onOpenWorkspacePicker[\s\S]{0,80}onOpenWorkspacePicker\(\{ lane: 'codex', mode:/, 'codex 入口');
-  assert.match(codexView, /workspacePickerRequest\.epoch/, '请求按 epoch 消费');
+  assert.match(codexView, /consumePickerRequest\(workspacePickerRequest,/, '请求按 epoch 消费');
   assert.match(acpClient, /invokeTauri\('create_codex_acp_session', \{[\s\S]*?workspaceRoots:[\s\S]*?projectId:/, 'ACP 创建透传');
   assert.match(acpClient, /web_access_create_codex_acp_session', \{\s*workspaceHandle[\s\S]*?\}\)/, 'Web 通道不带钥匙串(单根授权目录)');
 
@@ -52,6 +57,31 @@ test('workspace picker wiring contract', () => {
   // 区分"无项目"与"无匹配";排除列表面板 Escape 先退回列表。
   assert.ok(dialog.includes('copy.noMatch'), '搜索无匹配提示');
   assert.match(dialog, /excludedFolderRef[\s\S]*?onDismissExcludedRef/, '排除面板 Escape 只关面板');
+  // 排除面板打开时搜索框不渲染(查询对面板无效,review #484 m4)。
+  assert.match(dialog, /\{!excludedFolder && !webOnly &&/, '排除面板打开时隐藏搜索框');
+});
+
+test('picker/manage dialogs: every close path is busy-gated (round-5 M3)', () => {
+  const picker = read('src', 'features', 'projects', 'WorkspacePickerDialog.jsx');
+  const manage = read('src', 'features', 'projects', 'ManageProjectFoldersDialog.jsx');
+
+  // Picker:Escape / 背板 / X 三条关闭路径统一挂 busy 门控(busyRef 模式,
+  // 与管理文件夹面板一致)——中途关闭会丢掉 in-flight ensure/物化的重试上下文。
+  assert.match(picker, /busyRef\.current = busy;/, 'picker 同步 busyRef');
+  assert.match(picker, /if \(busyRef\.current\) return;[\s\S]{0,80}?onCloseRef\.current\(\)/, 'picker Escape 受 busy 门控');
+  assert.match(picker, /backdropPressRef\.current = e\.target === e\.currentTarget && !busyRef\.current/, 'picker 背板 busy 时不武装关闭');
+  assert.match(picker, /title=\{t\.cpCancel\}[\s\S]{0,120}?disabled=\{busy\}[\s\S]{0,120}?onClick=\{onClose\}/, 'picker X 按钮 busy 禁用');
+  // Manage panel:背板与 Escape 已门控(m3),补齐 X 按钮同一口径。
+  assert.match(manage, /title=\{t\.cpCancel\}[\s\S]{0,120}?disabled=\{busy\}[\s\S]{0,120}?onClick=\{onClose\}/, 'manage X 按钮 busy 禁用');
+});
+
+test('picker liveness reads the full session list, not the sidebar-filtered one (round-5 M5)', () => {
+  const main = read('src', 'app', 'main.jsx');
+  // sidebarCodeTasks 在侧栏非项目形态(sidebarCodeListActive=false)时恒为 [],
+  // 以其计算 picker 活跃度会把纯 chat 车道使用的 folder 项目 30 天冷隐藏。
+  // boundWorkspaceItems 必须改用未按侧栏样式过滤的全量会话列表。
+  assert.match(main, /const boundWorkspaceItems = useMemo\(\(\) => \[[\s\S]{0,400}?allSidebarTasks/, 'picker 活跃度用全量会话列表');
+  assert.doesNotMatch(main, /const boundWorkspaceItems = useMemo[\s\S]{0,300}?sidebarCodeTasks/, '不得再用侧栏样式过滤的列表');
 });
 
 test('workspace picker i18n keys exist in all three languages', () => {
