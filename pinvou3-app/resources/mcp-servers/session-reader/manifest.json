@@ -19,5 +19,21 @@
   "tool_table_entries": [
     "| 引用会话读取 | `mcp_session-reader_read_session` 按 turn 分页读会话历史(最新在前,cursor 翻页,include_outputs 控制工具细节) / `mcp_session-reader_list_sessions` 按标题搜索会话(只读本地会话文件,纯本地无网络) |"
   ],
-  "pip_dependencies": []
+  "pip_dependencies": [],
+  "builtin": true,
+  "visibility": "system",
+  "security_level": "L0",
+  "data_access": [
+    "sessions.read"
+  ],
+  "tool_features": {
+    "mcp_session-reader_read_session": [
+      "session-mention",
+      "long-memory"
+    ],
+    "mcp_session-reader_list_sessions": [
+      "session-mention",
+      "long-memory"
+    ]
+  }
 }

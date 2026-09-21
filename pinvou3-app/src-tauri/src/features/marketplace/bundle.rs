@@ -866,6 +866,11 @@ mod tests {
             python_dependencies: None,
             servers: vec![],
             companion_skills: vec![],
+            builtin: false,
+            visibility: String::new(),
+            security_level: String::new(),
+            data_access: vec![],
+            tool_features: Default::default(),
         };
         let creds = tool_credentials(&tool);
         assert_eq!(creds.len(), 2);
@@ -931,6 +936,11 @@ mod tests {
             python_dependencies: None,
             servers: vec![],
             companion_skills: vec![],
+            builtin: false,
+            visibility: String::new(),
+            security_level: String::new(),
+            data_access: vec![],
+            tool_features: Default::default(),
         };
         let fields = tool_config_fields(&tool);
         let creds = tool_credentials(&tool);

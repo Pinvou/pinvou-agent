@@ -1542,6 +1542,8 @@ pub fn run() {
             commands::marketplace::start_marketplace_tool_oauth_login,
             commands::marketplace::cancel_marketplace_tool_oauth_login,
             commands::marketplace::uninstall_marketplace_tool,
+            commands::builtin::list_builtin_features,
+            commands::builtin::set_builtin_feature_enabled,
             commands::artifacts::detect_obsidian,
             commands::knowledge::kb_start_scan,
             commands::knowledge::kb_scan_status,
