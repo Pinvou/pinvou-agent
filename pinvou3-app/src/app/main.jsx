@@ -2038,9 +2038,12 @@ const NAV_PREFETCH = {
       };
       // Browse channel (§9.9 folder channel): system folder picker → ensure
       // (anchor reuse / materialize; the exclusion list skips) → start at the
-      // picked folder with cwd = F, roots = [F]. No projectId: browsing is an
-      // explicit physical choice and does not update any project's
-      // last_primary_root memory; the session groups via tier-2 anchoring.
+      // picked folder with cwd = F, roots = [F], projectId = the anchored
+      // project's id. The assignment is required: without it, tier-2 nested
+      // grouping adopts the session into a broader project whose root covers
+      // F (e.g. a Desktop-rooted project), but the user picked F itself —
+      // the decision is "group only on an exact primary-root match, else
+      // materialize a new project and belong to it".
       const handlePickerBrowse = async () => {
         if (!bridge.files || !bridge.files.pickFolders || pickerBusy) return;
         // Capture the lane synchronously: the system folder dialog can outlive
@@ -2061,6 +2064,7 @@ const NAV_PREFETCH = {
         // exclusion status stays unverified.
         let ensured = false;
         let errored = false;
+        let ensuredProjectId = null;
         if (bridge.projects && bridge.projects.ensureFolderProjects) {
           ensured = true;
           setPickerBusy(true);
@@ -2068,6 +2072,16 @@ const NAV_PREFETCH = {
             const outcomes = await bridge.projects.ensureFolderProjects([folder]);
             const list = Array.isArray(outcomes) ? outcomes : [];
             materialized = list.some(o => o && (o.status === 'created' || o.status === 'covered'));
+            // The picked folder now owns an anchored project (created or
+            // reused): the conversation must be assigned to THAT project, or
+            // tier-2 nested grouping adopts it into a broader project whose
+            // root covers the folder (e.g. a Desktop-rooted project) — the
+            // user picked the subfolder, not its ancestor (review decision:
+            // group only on an exact primary-root match, else materialize).
+            const hit = list.find(o => o && (o.status === 'created' || o.status === 'covered'));
+            ensuredProjectId = hit
+              ? (hit.status === 'created' ? (hit.project && hit.project.id) : hit.project_id) || null
+              : null;
             // A failed root is NOT the exclusion list: it gets the failure
             // toast and stops here — the excluded-folder panel is only for
             // the "skipped without an outcome" case (review #484 MINOR).
@@ -2092,7 +2106,7 @@ const NAV_PREFETCH = {
           setPickerExcluded(folder);
           return;
         }
-        applyWorkspaceTarget({ lane, path: folder, projectId: null, roots: [folder] });
+        applyWorkspaceTarget({ lane, path: folder, projectId: ensuredProjectId, roots: [folder] });
       };
 
       const sidebarFolderGroups = useMemo(() => (sidebarCodeListActive

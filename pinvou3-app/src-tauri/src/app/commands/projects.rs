@@ -20,6 +20,35 @@ use crate::features::sessions::SessionStore;
 
 use super::sessions::ensure_chat_session;
 
+/// 项目通道记忆(§9.2/§9.3):把创建时选定的根记为项目记忆主文件夹,并把会话
+/// 显式归属到所选项目(tier-1,压过 tier-2 嵌套归组——否则嵌套在宽项目根下
+/// 的文件夹会被 position 更小的宽项目收养,违背「同主根才归入、否则新建」
+/// 的决策)。只在会话创建完全落定后调用;写失败只记日志(下次创建重试),
+/// 绝不影响创建结果。chat/codex 两条创建车道共用。
+pub(crate) fn record_project_choice(
+    projects: &ProjectStore,
+    session_id: &str,
+    project_id: Option<&str>,
+    cwd: Option<&Path>,
+) {
+    if let (Some(project_id), Some(cwd)) = (project_id, cwd) {
+        // Log hygiene (CodeQL cleartext-logging, same convention as the
+        // rebind lanes): the error chain can embed the user's absolute path
+        // (the store's "primary root must be one of the project roots"
+        // bail), so only the failure site is logged; the write retries on
+        // the next create.
+        if projects.set_last_primary_root(project_id, cwd).is_err() {
+            eprintln!("[projects] create channel: record last_primary_root failed");
+        }
+        if projects
+            .move_session_to_project(session_id, Some(project_id), None)
+            .is_err()
+        {
+            eprintln!("[projects] create channel: record project assignment failed");
+        }
+    }
+}
+
 /// Project events are only emitted locally: the projects domain is
 /// desktop-only per the bridge contract and is not forwarded until
 /// remote-control officially supports project lists (review #447 finding 11:
@@ -2399,5 +2428,57 @@ mod tests {
         );
         let _ = std::fs::remove_dir_all(&root);
         let _ = std::fs::remove_dir_all(&projects_dir);
+    }
+
+    /// The create channel's project id is a tier-1 explicit assignment: a
+    /// folder nested under a broader project's root must land in its own
+    /// anchored project, not in the broader one that tier-2 nested grouping
+    /// would pick by position (the "Desktop project adopts its subfolders"
+    /// regression).
+    #[test]
+    fn record_project_choice_assigns_the_picked_project_over_nested_grouping() {
+        let store = project_store_in(&unique_dir("choice-store"));
+        let desktop = unique_dir("Desktop");
+        let sub = desktop.join("sub");
+        std::fs::create_dir_all(&sub).expect("mkdir nested");
+        let broad = store
+            .create_project("Desktop".into(), vec![desktop.clone()])
+            .expect("broad project");
+        let anchored = store
+            .create_project("sub".into(), vec![sub.clone()])
+            .expect("anchored project");
+        assert!(
+            broad.position < anchored.position,
+            "the broader project is older, so tier-2 would win without the assignment"
+        );
+        // Precondition: without an assignment, tier-2 nested grouping adopts
+        // the nested folder into the broader project.
+        assert_eq!(
+            store
+                .resolve_session_project("s-unassigned", &sub)
+                .map(|project| project.id),
+            Some(broad.id.clone())
+        );
+
+        super::record_project_choice(&store, "s1", Some(&anchored.id), Some(&sub));
+
+        assert_eq!(
+            store
+                .resolve_session_project("s1", &sub)
+                .map(|project| project.id),
+            Some(anchored.id.clone()),
+            "the tier-1 assignment beats the broader nested match"
+        );
+        assert!(
+            store
+                .get(&anchored.id)
+                .and_then(|project| project.last_primary_root)
+                .is_some(),
+            "the picked root is also recorded as the remembered primary"
+        );
+        // No project id = no assignment, no memory write.
+        super::record_project_choice(&store, "s2", None, Some(&sub));
+        assert_eq!(store.assignment_of("s2"), None);
+        let _ = std::fs::remove_dir_all(&desktop);
     }
 }

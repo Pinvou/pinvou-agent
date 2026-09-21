@@ -31,6 +31,11 @@ test('workspace picker wiring contract', () => {
   // chat 车道(review #484 m1);setDraftWorkspace 缺失时不得谎报 applied
   // (review #484 n5)。
   assert.match(main, /const lane = pickerLane\(\);[\s\S]*?applyWorkspaceTarget\(\{ lane, path: folder/, '浏览车道同步捕获');
+  // 浏览通道必须把 ensure 锚定的项目 id 传下去:created.project.id /
+  // covered.project_id,否则 tier-2 嵌套归组会把子目录会话收养进宽项目
+  // (如 Desktop 根的项目)——「同主根才归入、否则新建」的决策回归。
+  assert.match(main, /hit\.status === 'created' \? \(hit\.project && hit\.project\.id\) : hit\.project_id/, 'ensure outcome 提取项目 id');
+  assert.match(main, /applyWorkspaceTarget\(\{ lane, path: folder, projectId: ensuredProjectId, roots: \[folder\] \}\)/, '浏览透传锚定项目 id');
   assert.match(main, /applyWorkspaceTarget[\s\S]{0,300}?let applied = false;/, 'applied 缺省 false');
 
   // chat 车道:草稿选择经 bridge setDraftWorkspace 带项目归属与钥匙串;

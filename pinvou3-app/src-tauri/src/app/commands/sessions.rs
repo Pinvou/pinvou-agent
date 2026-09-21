@@ -444,21 +444,15 @@ pub async fn create_session(
                 ),
             });
         }
-        // 项目通道(§9.3):创建即更新项目记忆主文件夹。后端在同一命令内写比
-        // 前端补一发 update_project 更原子(免二次 RPC、免漏写);记忆写失败
-        // 不影响会话创建本身(下次创建会重试),只记日志。
-        if let Some(project_id) = project_id {
-            // Log hygiene (CodeQL cleartext-logging, same convention as the
-            // rebind lanes): the error chain can embed the user's absolute
-            // path (the store's "primary root must be one of the project
-            // roots" bail), so only the failure site is logged.
-            if projects
-                .set_last_primary_root(&project_id, &workspace)
-                .is_err()
-            {
-                eprintln!("[sessions] create_session: record last_primary_root failed");
-            }
-        }
+        // 项目通道(§9.3):创建即更新项目记忆主文件夹并写显式归属。后端在同
+        // 一命令内写比前端补一发 update_project 更原子(免二次 RPC、免漏写);
+        // 记忆写失败不影响会话创建本身(下次创建会重试),只记日志。
+        super::projects::record_project_choice(
+            &projects,
+            &metadata.id,
+            project_id.as_deref(),
+            Some(&workspace),
+        );
     }
     emit_session_event(&app, "session:list_changed", &metadata.id, "created");
     // 多 session 并发:不预热 engine(lazy)。新建的空 session 没有历史,首条 chat
