@@ -1306,7 +1306,7 @@ const withUiTimeout = (promise, timeoutMs, fallbackResult) => {
       // 独立成区，不进常规卡片流/搜索/分类筛选（visibility: system 语义）。展示
       // 事实（工具清单 mcp_tools、安全级别、数据访问范围、bundle 版本）全部来自
       // list_marketplace_tools 下发；名称/描述走 localizeTool 既有 overlay。
-      const builtinPluginCards = toolBackend
+      const builtinMcpCards = toolBackend
         .filter(isBuiltinPlugin)
         .map(x => localizeTool({
           id: 'builtin-' + x.id, backendId: x.id, builtin: true,
@@ -1317,6 +1317,18 @@ const withUiTimeout = (promise, timeoutMs, fallbackResult) => {
           mcpTools: Array.isArray(x.mcp_tools) ? x.mcp_tools : [],
           bundleVersion: x.bundle_version ? String(x.bundle_version).replace(/^v/i, '') : null,
         }, t));
+      // 内置技能（如视觉设计，tsSkillsData 中 builtin === true 的唯一条目）同归
+      // 内置插件子页：商店里的功能卡保留（那是它的功能入口），本页是透明性窗口。
+      // 技能是纯提示词能力，无工具清单/安全级别/数据访问——用类型与版本两行声明；
+      // backendId 取 's5' 使 localizeTool 命中 uiToolDetails.tools.s5 三语 overlay。
+      const builtinSkillCards = tsSkillsData
+        .filter(x => x.builtin === true)
+        .map(x => localizeTool({
+          ...x, id: 'builtin-skill-' + x.id, backendId: 's5',
+          kindLabel: (storeCopy.typeGroups || {})[String(x.type).toLowerCase()] || x.type,
+          versionText: x.version || null,
+        }, t));
+      const builtinPluginCards = [...builtinMcpCards, ...builtinSkillCards];
       // 按 backendId 取已 localize 的工具卡;兜底分支也走 localizeTool,避免 en/ja 下漏出中文原文。
       const findLocalizedTool = (backendId) =>
         tools.find(x => x.backendId === backendId) || localizeTool(tsToolsData.find(x => x.backendId === backendId), t);

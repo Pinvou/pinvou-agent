@@ -34,6 +34,11 @@ assert.match(storeView, /<BuiltinPluginCard tool=\{tool\} copy=\{builtinCopy\} \
 assert.match(storeView, /\{!showRecycleBin && !showBuiltinPlugins && \(/, '主列表须在任一子页打开时让位');
 assert.doesNotMatch(storeView, /id: 'builtin-plugins'/, '内置插件不得再作为主列表 section 出现');
 
+// 内置技能（视觉设计）同归子页：tsSkillsData 中 builtin === true 的条目并入
+// builtinPluginCards（商店功能卡保留，子页是透明性窗口）；卡片带类型与版本两行
+assert.match(storeView, /tsSkillsData\r?\n\s*\.filter\(x => x\.builtin === true\)/, '内置技能须并入内置插件子页');
+assert.match(storeView, /kindLabel: \(storeCopy\.typeGroups \|\| \{\}\)\[/, '内置技能卡须带本地化类型行');
+
 // BuiltinPluginCard 组件体：无 TsActionBtn/PlatformToolAction/uninstall/onAction
 // （契约 §3.1：无卸载、无开关）；渲染只读徽章；无硬编码中文（走 uiBuiltinPlugins）
 const cardStart = toolCommon.indexOf('const BuiltinPluginCard');
