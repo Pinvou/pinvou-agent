@@ -273,8 +273,13 @@ fn save_disabled_bundles_file(file: &DisabledBundlesFile) -> Result<(), String> 
 /// DenyAll（如 code）返回全部已安装包 id ∪ 全部内置 CLI 包 id ——「默认全关，外部
 /// 能力显式开启」；AllowAll（如 plain）返回落盘列表（缺省空 = 全开）。CLI 包未连接时
 /// 纳入无害（配套技能不在盘上，排除为空操作），且「后才连接」也自动默认关。
-/// 技能枚举失败（权限/瞬时 IO，#531）时按降级处理：全部预置属主包并入默认禁用集
-/// （过度拒绝偏置），只影响未初始化 scope 的现算默认值，已初始化 scope 不受影响。
+///
+/// When skill enumeration fails (permissions / transient IO, #531) the freshly
+/// computed default degrades toward over-denial: owner packages of all preset
+/// skills and of all store-known upload records are blanket-unioned into the
+/// deny set (a superset of anything the failed enumeration could have named).
+/// Only the computed default of an uninitialized scope is affected; initialized
+/// scopes keep their persisted list.
 pub fn load_disabled_bundles_for(scope: ConnectorScope) -> Vec<String> {
     let file = load_disabled_bundles_file();
     resolve_scope_disabled_ids(&file, scope)
@@ -295,17 +300,30 @@ fn resolve_scope_disabled_ids(file: &DisabledBundlesFile, scope: ConnectorScope)
             // 现算分支：已按当前认领推导包 id，无需再归一。
             let mut ids: Vec<String> = MarketplaceManager::new().installed_ids();
             ids.extend(builtin_cli_bundle_ids().map(str::to_string));
-            let (skill_ids, skill_scan_degraded) =
-                SkillMarketplaceManager::new().installed_skill_ids_strict();
+            let skill_market = SkillMarketplaceManager::new();
+            let (skill_ids, skill_scan_degraded) = skill_market.installed_skill_ids_strict();
             if skill_scan_degraded {
-                // 枚举降级（目录权限/瞬时 IO 可能把已装技能误判为未装，#531）：
-                // skill_ids 已不可信，把全部预置技能的属主包按「可能已装」并入
-                // 默认禁用集 —— 未初始化 DenyAll scope 宁可让用户显式开启，也
-                // 不给 consent gate 一个被枚举失败静默缩窄的默认值（过度拒绝
-                // 偏置；属主映射与正常路径同一 `skill_owner_package` 口径）。
-                eprintln!("[scope] DenyAll 默认禁用集计算降级（技能枚举失败），按过度拒绝兜底");
-                for preset_id in SkillMarketplaceManager::preset_skill_ids() {
-                    let pkg = skill_owner_package(&preset_id);
+                // Enumeration degraded (#531): a failed probe can masquerade an
+                // installed skill as absent, so the default deny set must not
+                // shrink because of it. Blanket-union the owner packages of
+                // every preset skill (compile-time manifests) and of every
+                // known upload record — an uninitialized DenyAll scope would
+                // rather have the user enable a package explicitly than hand
+                // the consent gate a default silently narrowed by an
+                // enumeration failure. Owner mapping is the same
+                // `skill_owner_package` path as the normal loop below.
+                // Accepted residual: with an unreadable bundle store the upload
+                // population itself is unknowable (the lenient upload read
+                // yields nothing to union); with an unreadable packages root,
+                // straggler-copy-only skills of neither kind can be seen.
+                eprintln!(
+                    "[scope] DenyAll default deny list degraded (skill enumeration failed); biasing to over-deny"
+                );
+                let mut blanket: Vec<String> =
+                    SkillMarketplaceManager::preset_skill_ids().collect();
+                blanket.extend(skill_market.uploaded_skill_ids());
+                for skill_id in blanket {
+                    let pkg = skill_owner_package(&skill_id);
                     if !ids.iter().any(|id| id == &pkg) {
                         ids.push(pkg);
                     }
@@ -476,9 +494,7 @@ pub fn set_project_skills_enabled(enabled: bool) {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::platform::test_support::{
-        make_dir_unreadable_for_test, restore_dir_permissions_for_test, with_temp_home,
-    };
+    use crate::platform::test_support::{make_dir_unreadable_for_test, with_temp_home};
 
     #[test]
     fn bundles_roundtrip_per_scope() {
@@ -670,8 +686,9 @@ mod tests {
         load_disabled_bundles_for(ConnectorScope::Plain)
     }
 
-    /// 物理安装预置技能 government-writing（属主认领为 gongwen：gongwen 登记
-    /// 安装态后 `skill_owner_package` 随包认领）。
+    /// Physically install the preset skill government-writing (its owner is
+    /// claimed as gongwen: once the gongwen record is registered as installed,
+    /// `skill_owner_package` follows the package claim).
     fn install_preset_skill_under_claimed_owner() -> PathBuf {
         let skill_dir = paths::bundles_root()
             .join("gongwen")
@@ -690,17 +707,38 @@ mod tests {
         skill_dir
     }
 
-    /// 未初始化 DenyAll（code）默认禁用集 = 已装连接器包 ∪ 内置 CLI 包 ∪ 已装
-    /// 技能属主包，干净枚举下精确等于期望列表（降级兜底不得混入，等价断言
-    /// 「正常路径不误报降级」）。
+    /// Physically install an upload skill `<name>` (bundle store record with an
+    /// Upload source + `bundles/<name>/skills/<name>/SKILL.md`). Upload owner
+    /// packages self-map, so `<name>` itself is the package id in the deny set.
+    fn install_upload_skill(name: &str) -> PathBuf {
+        let skill_dir = paths::bundles_root().join(name).join("skills").join(name);
+        std::fs::create_dir_all(&skill_dir).unwrap();
+        std::fs::write(skill_dir.join("SKILL.md"), format!("# {name}")).unwrap();
+        crate::features::marketplace::store::BundleStore::new()
+            .upsert(
+                crate::features::marketplace::store::BundleRecord::installed_now(
+                    name.to_string(),
+                    crate::features::marketplace::store::BundleSource::Upload(name.to_string()),
+                ),
+            )
+            .unwrap();
+        skill_dir
+    }
+
+    /// Uninitialized DenyAll (code) default deny set = installed connector
+    /// packages ∪ builtin CLI packages ∪ installed skill owner packages; under
+    /// a clean scan it must equal the expected list exactly (no degraded
+    /// blanket may leak in — equivalently asserts "the normal path never
+    /// misreports degradation").
     #[test]
     fn denyall_default_clean_scan_exact_list() {
         with_temp_home("pinvou3-scope-denyall", || {
-            // 空装态：仅内置 CLI 包 id（清单顺序）。
+            // Empty install state: only builtin CLI package ids (manifest order).
             let builtin: Vec<String> = builtin_cli_bundle_ids().map(str::to_string).collect();
             assert_eq!(load_disabled_bundles_for(ConnectorScope::Code), builtin);
 
-            // 物理安装一个预置技能 → 其属主包并入默认禁用集。
+            // Physically install one preset skill → its owner package joins the
+            // default deny set.
             install_preset_skill_under_claimed_owner();
             let mut expected = builtin;
             expected.push("gongwen".to_string());
@@ -708,54 +746,156 @@ mod tests {
         });
     }
 
-    /// #531：技能目录不可扫（权限）时枚举按降级处理，DenyAll 默认禁用集向过度
-    /// 拒绝偏置 —— 已装技能的属主包不得因枚举失败漏出默认禁用集，未装预置的
-    /// 属主包也兜底并入（用户可显式开启）。宽松展示路径不受影响（保持宽松读）。
+    /// #531: with an unscannable skill directory (permissions) the enumeration
+    /// degrades and the DenyAll default biases toward over-denial — an
+    /// installed skill's owner package must not drop out of the default deny
+    /// set, and not-installed preset owners join as conservative fallback (the
+    /// user can enable them explicitly). Lenient display paths are unaffected.
     #[test]
     fn denyall_default_degraded_scan_biases_to_overdeny() {
         with_temp_home("pinvou3-scope-denyall-degraded", || {
             let skill_dir = install_preset_skill_under_claimed_owner();
 
-            // 干净枚举基线：属主包在默认禁用集，未装预置属主包（pptx）不在。
+            // Clean baseline: the claimed owner package is denied by default,
+            // the not-installed preset owner (pptx) is not.
             let clean = load_disabled_bundles_for(ConnectorScope::Code);
             assert!(clean.contains(&"gongwen".to_string()));
             assert!(!clean.contains(&"pptx".to_string()));
 
-            // 技能目录压到不可读 → SKILL.md 探测 EACCES：宽松路径会读成
-            // 「未安装」（fail-open），严格枚举上报降级并偏置为全预置属主兜底。
-            // 平台/环境无法模拟不可读（Windows、root）时跳过断言。
-            if !make_dir_unreadable_for_test(&skill_dir) {
+            // Make the skill dir unreadable → the SKILL.md probe hits EACCES:
+            // the lenient path would read "not installed" (fail-open), the
+            // strict enumeration reports degradation and biases to over-deny.
+            // Skip the assertions when the platform/environment cannot simulate
+            // unreadable dirs (Windows, root).
+            let Some(_unreadable) = make_dir_unreadable_for_test(&skill_dir) else {
                 return;
-            }
+            };
             let degraded = load_disabled_bundles_for(ConnectorScope::Code);
             assert!(
                 degraded.contains(&"gongwen".to_string()),
-                "枚举降级时已装技能属主包不得漏出默认禁用集: {degraded:?}"
+                "degraded enumeration must keep the installed skill's owner package denied: {degraded:?}"
             );
             assert!(
                 degraded.contains(&"pptx".to_string()),
-                "降级应向过度拒绝偏置（未装预置属主包兜底进入）: {degraded:?}"
+                "degradation must bias to over-deny (not-installed preset owner joins): {degraded:?}"
             );
-            restore_dir_permissions_for_test(&skill_dir);
         });
     }
 
-    /// #531 边界：已初始化 scope 以落盘列表为准，技能枚举降级不得影响其结果
-    /// （过度拒绝兜底只作用于未初始化 scope 的现算默认值）。
+    /// #531 for the upload half: an installed upload skill with an unscannable
+    /// directory must not drop out of the default deny set either. The probe
+    /// failure degrades the enumeration, the degraded blanket union carries the
+    /// upload's own owner package (store readable), and the preset owners (pptx)
+    /// join as conservative fallback.
+    #[test]
+    fn denyall_default_degraded_upload_scan_biases_to_overdeny() {
+        with_temp_home("pinvou3-scope-upload-degraded", || {
+            let skill_dir = install_upload_skill("my-weather");
+
+            // Clean baseline: the upload's self-mapped owner package is denied.
+            let clean = load_disabled_bundles_for(ConnectorScope::Code);
+            assert!(
+                clean.contains(&"my-weather".to_string()),
+                "installed upload owner package must be denied by default: {clean:?}"
+            );
+
+            let Some(_unreadable) = make_dir_unreadable_for_test(&skill_dir) else {
+                return;
+            };
+            let degraded = load_disabled_bundles_for(ConnectorScope::Code);
+            assert!(
+                degraded.contains(&"my-weather".to_string()),
+                "degraded enumeration must keep the installed upload owner package denied: {degraded:?}"
+            );
+            assert!(
+                degraded.contains(&"pptx".to_string()),
+                "degradation must bias to over-deny (not-installed preset owner joins): {degraded:?}"
+            );
+        });
+    }
+
+    /// A corrupt bundle store (fail-loud read) makes the upload population
+    /// unknowable: the enumeration must degrade into the preset-owner blanket
+    /// union (pptx joins) instead of silently passing as an empty install set.
+    #[test]
+    fn denyall_default_corrupt_store_biases_to_overdeny() {
+        with_temp_home("pinvou3-scope-store-corrupt", || {
+            install_upload_skill("my-weather");
+            let store_file = paths::pinvou3_home()
+                .join("marketplace")
+                .join("bundles.json");
+            std::fs::write(&store_file, "{not json").unwrap();
+
+            let degraded = load_disabled_bundles_for(ConnectorScope::Code);
+            assert!(
+                degraded.contains(&"pptx".to_string()),
+                "corrupt store must degrade into the preset-owner blanket union: {degraded:?}"
+            );
+        });
+    }
+
+    /// An unscannable packages root blinds both the claimed-dir context and the
+    /// straggler scan: the enumeration must degrade, and the preset-owner
+    /// blanket union must keep the installed preset's owner (gongwen) denied
+    /// alongside the not-installed preset owners (pptx).
+    #[test]
+    fn denyall_default_packages_root_failure_biases_to_overdeny() {
+        with_temp_home("pinvou3-scope-root-degraded", || {
+            install_preset_skill_under_claimed_owner();
+            let bundles_root = paths::bundles_root();
+
+            let Some(_unreadable) = make_dir_unreadable_for_test(&bundles_root) else {
+                return;
+            };
+            let degraded = load_disabled_bundles_for(ConnectorScope::Code);
+            assert!(
+                degraded.contains(&"gongwen".to_string()),
+                "root-scan failure must keep the installed preset owner denied: {degraded:?}"
+            );
+            assert!(
+                degraded.contains(&"pptx".to_string()),
+                "root-scan failure must degrade into the blanket union: {degraded:?}"
+            );
+        });
+    }
+
+    /// A stray regular file in the packages root must not read as degradation:
+    /// ENOTDIR on a joined candidate structurally answers "not there" (same
+    /// family as NotFound), so the clean exact list holds without the degraded
+    /// blanket.
+    #[test]
+    fn denyall_default_tolerates_stray_file_without_degradation() {
+        with_temp_home("pinvou3-scope-stray-file", || {
+            install_preset_skill_under_claimed_owner();
+            let stray = paths::bundles_root().join("stray-file.txt");
+            std::fs::write(&stray, "not a package").unwrap();
+
+            let mut expected: Vec<String> = builtin_cli_bundle_ids().map(str::to_string).collect();
+            expected.push("gongwen".to_string());
+            assert_eq!(
+                load_disabled_bundles_for(ConnectorScope::Code),
+                expected,
+                "stray file must not flip the default into degraded over-deny"
+            );
+        });
+    }
+
+    /// #531 boundary: an initialized scope sticks to its persisted list; skill
+    /// enumeration degradation must not affect it (the over-denial fallback
+    /// only applies to the freshly computed default of an uninitialized scope).
     #[test]
     fn initialized_scope_ignores_degraded_skill_scan() {
         with_temp_home("pinvou3-scope-initialized", || {
             save_disabled_bundles_for(ConnectorScope::Code, &["weather".to_string()]).unwrap();
             let skill_dir = install_preset_skill_under_claimed_owner();
-            if !make_dir_unreadable_for_test(&skill_dir) {
+            let Some(_unreadable) = make_dir_unreadable_for_test(&skill_dir) else {
                 return;
-            }
+            };
             assert_eq!(
                 load_disabled_bundles_for(ConnectorScope::Code),
                 vec!["weather".to_string()],
-                "已初始化 scope 以落盘列表为准，不受现算降级影响"
+                "an initialized scope sticks to its persisted list, unaffected by degradation"
             );
-            restore_dir_permissions_for_test(&skill_dir);
         });
     }
 }

@@ -365,10 +365,13 @@ impl SkillMarketplaceManager {
         }
     }
 
-    /// 已安装技能的市场 id（含预置与用户上传）。code scope 未初始化「默认全禁
-    /// 已装技能」的兜底集合来源（见 `scope::load_disabled_bundles_for`）。
-    /// 宽松读：单点 IO 失败按「未安装」吞掉，供展示/list 与既有调用方共用；
-    /// DenyAll 默认禁用集计算必须走 [`Self::installed_skill_ids_strict`]。
+    /// Market ids of installed skills (presets and user uploads). Source of the
+    /// "deny all installed skills by default" fallback set for an uninitialized
+    /// code scope (see `scope::load_disabled_bundles_for`).
+    ///
+    /// Lenient read: a per-entry IO failure counts as "not installed" and is
+    /// swallowed — fine for display/list paths, fail-open for a consent gate.
+    /// The DenyAll default computation must use `installed_skill_ids_strict`.
     pub fn installed_skill_ids(&self) -> Vec<String> {
         self.list_skills()
             .into_iter()
@@ -377,21 +380,36 @@ impl SkillMarketplaceManager {
             .collect()
     }
 
-    /// [`Self::installed_skill_ids`] 的严格变体，仅供 scope 的 DenyAll 默认禁用
-    /// 集计算（`resolve_scope_disabled_ids`）使用；display/list 路径保持宽松读。
-    /// 返回 `(ids, degraded)`：`degraded = true` 表示枚举中出现过「可能把已装
-    /// 技能误判为未装」的探测失败（目录权限/瞬时 IO），此时 `ids` 不再是可信
-    /// 全集 —— 调用方必须把默认禁用集向过度拒绝偏置（consent gate 默认值宁可
-    /// 多禁，不允许枚举失败静默缩窄，#531）。与 `MarketplaceManager::installed_ids`
-    /// 读失败响亮上报同一纪律，只是此处无可恢复的真值，只能上报降级。
-    /// id 口径与宽松路径一致（预置市场 id / 上传技能名）。
+    /// Strict variant of `installed_skill_ids`, used only by the DenyAll default
+    /// deny-list computation (`resolve_scope_disabled_ids`); display/list paths
+    /// keep the lenient read. Returns `(ids, degraded)`:
+    ///
+    /// - `degraded = false`: `ids` is the trusted full set, with the same id
+    ///   vocabulary as the lenient path (preset market ids / upload skill names).
+    /// - `degraded = true`: some probe could not distinguish "installed" from
+    ///   "absent" (permissions / transient IO, #531), so `ids` may be missing
+    ///   installed skills. The caller must then blanket over-deny — see
+    ///   `scope::resolve_scope_disabled_ids`, which unions the owner packages
+    ///   of all preset skills and all store-known upload records (a superset of
+    ///   everything this enumeration can name).
+    ///
+    /// Accepted residuals, logged loudly when hit: with an unreadable bundle
+    /// store the upload population itself is unknowable, and a *missing* store
+    /// file reads as "no uploads" (a fresh install is indistinguishable from an
+    /// empty registry). A packages root that is structurally not a directory
+    /// (NotFound / ENOTDIR family) answers "no skills on disk" without
+    /// degrading.
     pub(crate) fn installed_skill_ids_strict(&self) -> (Vec<String>, bool) {
         let mut degraded = false;
-        // 包目录根读失败（非 NotFound）会同时遮蔽认领目录判定与滞留副本扫描。
+        // A packages-root read failure (non-structural) blinds both the
+        // claimed-dir context checks and the straggler-copy scan.
         if let Err(e) = std::fs::read_dir(&self.packages_root) {
-            if e.kind() != std::io::ErrorKind::NotFound {
+            if !matches!(
+                e.kind(),
+                std::io::ErrorKind::NotFound | std::io::ErrorKind::NotADirectory
+            ) {
                 log::warn!(
-                    "[skill-marketplace] 扫描 {} 失败（{e}）；DenyAll 默认按降级处理（宁可多禁）",
+                    "[skill-marketplace] failed to scan {} ({e}); DenyAll default degrades (over-deny)",
                     self.packages_root.display()
                 );
                 degraded = true;
@@ -403,8 +421,10 @@ impl SkillMarketplaceManager {
                 ids.push(m.id.to_string());
             }
         }
-        // 上传技能：登记读不出就无法枚举（无可恢复真值）→ 降级；目录缺失仍按
-        // 「已卸载」处理（与宽松路径 list_skills 同语义），只有探测失败才降级。
+        // Uploads: an unreadable store makes the population unknowable (no
+        // recoverable truth) → degrade. A missing skill dir still reads as
+        // "uninstalled" (same semantics as the lenient path); only a failed
+        // probe degrades.
         match self.bundle_store.records() {
             Ok(records) => {
                 for record in records {
@@ -418,7 +438,7 @@ impl SkillMarketplaceManager {
             }
             Err(e) => {
                 log::warn!(
-                    "[skill-marketplace] BundleStore 读取失败，上传技能无法枚举（{e}）；DenyAll 默认按降级处理（宁可多禁）"
+                    "[skill-marketplace] failed to read the bundle store; upload skills unenumerable ({e}); DenyAll default degrades (over-deny)"
                 );
                 degraded = true;
             }
@@ -426,10 +446,27 @@ impl SkillMarketplaceManager {
         (ids, degraded)
     }
 
-    /// 全部预置技能的市场 id（编译期内嵌清单，与磁盘无关）。DenyAll 默认计算在
-    /// 枚举降级时用它把「可能已装」的属主包全部并入禁用集（过度拒绝兜底）。
+    /// Market ids of all preset skills (compile-time embedded manifests, disk
+    /// independent). The DenyAll default computation blanket-unions their owner
+    /// packages into the deny set when enumeration degrades (over-denial
+    /// fallback).
     pub(crate) fn preset_skill_ids() -> impl Iterator<Item = String> {
         preset_manifests().iter().map(|m| m.id.to_string())
+    }
+
+    /// Market ids of user-uploaded skills, read leniently from the bundle store
+    /// (a failing store yields an empty list). Used only by the DenyAll default
+    /// computation's degraded blanket union in `resolve_scope_disabled_ids`, to
+    /// keep possibly-installed upload owner packages denied when per-skill
+    /// probes are blinded (e.g. by an unreadable packages root).
+    pub(crate) fn uploaded_skill_ids(&self) -> Vec<String> {
+        self.bundle_store
+            .records()
+            .unwrap_or_default()
+            .into_iter()
+            .filter(|record| matches!(record.source, super::store::BundleSource::Upload(_)))
+            .map(|record| record.id)
+            .collect()
     }
 
     fn preset(&self, id: &str) -> Option<&'static SkillManifest> {
@@ -1429,23 +1466,63 @@ impl SkillMarketplaceManager {
     }
 }
 
-/// [`SkillMarketplaceManager::installed_skill_ids_strict`] 专用的单技能安装探测：
-/// 候选目录与 [`SkillMarketplaceManager::find_skill_dir`] 同序（认领目录 → 滞留
-/// 副本 → 旧扁平布局），但逐候选做错误可见的 SKILL.md 探测 —— NotFound 按「未
-/// 安装」继续，其余 IO 错误（权限/瞬时 IO，可能把已装技能误判为未装）响亮记入
-/// `degraded` 且不吞。返回是否探测到已安装。
+/// Per-skill installation probe for
+/// `SkillMarketplaceManager::installed_skill_ids_strict`: candidate dirs in the
+/// same order as `find_skill_dir` (claimed dir → straggler copies → legacy flat
+/// layout), each probed with an error-visible SKILL.md check.
+///
+/// - `NotFound` / `NotADirectory` continue as "not installed": both structurally
+///   answer "no skill dir here" (a stray file in the packages root makes joined
+///   candidates ENOTDIR and must not read as degradation on a healthy system).
+/// - Any other IO error (permissions / transient IO) may hide an installed
+///   skill: it is logged loudly and recorded in `degraded`, so the caller can
+///   bias its default toward over-denial instead of trusting a shrunk list.
+///
+/// Unlike `find_skill_dir` (first existing dir wins), acceptance ORs SKILL.md
+/// across all candidates — a deliberately stricter "installed" verdict for a
+/// consent-gate default. Returns whether the skill is installed.
 fn probe_installed_by_name(
     manager: &SkillMarketplaceManager,
     name: &str,
     degraded: &mut bool,
 ) -> bool {
     let mut candidates = vec![manager.package_skill_dir(name)];
-    if let Ok(rd) = std::fs::read_dir(&manager.packages_root) {
-        for entry in rd.flatten() {
-            let cand = entry.path().join("skills").join(name);
-            if !candidates.contains(&cand) {
-                candidates.push(cand);
+    match std::fs::read_dir(&manager.packages_root) {
+        Ok(rd) => {
+            for entry in rd {
+                // A mid-listing error can hide straggler copies; swallowing it
+                // would read as "absent", so it must degrade instead.
+                let entry = match entry {
+                    Ok(entry) => entry,
+                    Err(e) => {
+                        log::warn!(
+                            "[skill-marketplace] failed to list entries under {} ({e}); DenyAll default degrades (over-deny)",
+                            manager.packages_root.display()
+                        );
+                        *degraded = true;
+                        continue;
+                    }
+                };
+                let cand = entry.path().join("skills").join(name);
+                if !candidates.contains(&cand) {
+                    candidates.push(cand);
+                }
             }
+        }
+        // Structural absence (or not-a-directory) of the packages root answers
+        // "no straggler copies"; the caller's preamble flags every other
+        // root-read failure.
+        Err(e)
+            if matches!(
+                e.kind(),
+                std::io::ErrorKind::NotFound | std::io::ErrorKind::NotADirectory
+            ) => {}
+        Err(e) => {
+            log::warn!(
+                "[skill-marketplace] failed to scan {} ({e}); DenyAll default degrades (over-deny)",
+                manager.packages_root.display()
+            );
+            *degraded = true;
         }
     }
     candidates.push(manager.legacy_skills_dir.join(name));
@@ -1454,10 +1531,15 @@ fn probe_installed_by_name(
         let md_path = cand.join("SKILL.md");
         match std::fs::metadata(&md_path) {
             Ok(md) => installed |= md.is_file(),
-            Err(e) if e.kind() == std::io::ErrorKind::NotFound => {}
+            // ENOTDIR joins NotFound as structural absence (see fn doc).
+            Err(e)
+                if matches!(
+                    e.kind(),
+                    std::io::ErrorKind::NotFound | std::io::ErrorKind::NotADirectory
+                ) => {}
             Err(e) => {
                 log::warn!(
-                    "[skill-marketplace] 探测 {} 失败（{e}）；DenyAll 默认按降级处理（宁可多禁）",
+                    "[skill-marketplace] failed to probe {} ({e}); DenyAll default degrades (over-deny)",
                     md_path.display()
                 );
                 *degraded = true;
