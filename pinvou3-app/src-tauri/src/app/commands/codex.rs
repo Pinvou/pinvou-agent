@@ -18,7 +18,7 @@ use crate::features::codex_acp::workspace::{
 use crate::features::codex_acp::{
     AcpAgentDescriptor, AcpEventEnvelope, AcpPool, AgentBackend, CodexAcpPendingElicitation,
     CodexAcpPendingPermission, CodexAcpSessionInfo, CodexAcpStatus, CodexAcpWorkspaceInfo,
-    CodexWorkspaceKind, validate_codex_project_workspace,
+    CodexWorkspaceKind, SessionAgentStore, validate_codex_project_workspace,
 };
 use crate::features::projects::ProjectStore;
 use crate::features::sessions::{SessionKind, SessionStore};
@@ -31,9 +31,12 @@ pub struct CodexAcpSessionListItem {
     pub pinned_at: Option<String>,
     #[serde(flatten)]
     pub workspace: CodexAcpWorkspaceInfo,
-    /// 钥匙串快照(§6):从绑定 store 投影(store 是权威,metadata 里那份
-    /// 只有 fork 原生快照流才写)。空 = 单根语义(仅 cwd)。Web 投影会把它
-    /// 降级为末级目录名,与 workspace.workspace_path 同一套主机路径纪律。
+    /// 钥匙串快照(§6):从 codex-acp 权威存储投影(session-agents 记录,原生
+    /// 代码会话与 ACP 会话分别经 `bind_code_native_session` / `set_acp_workspace`
+    /// 写入;普通 SessionStore 的 workspace-binding.json sidecar 作兜底,与
+    /// lib.rs 注入引擎的 resolver 同一取数顺序)。metadata 里那份只有 fork
+    /// 原生快照流才写。空 = 单根语义(仅 cwd)。Web 投影会把它降级为末级目录名,
+    /// 与 workspace.workspace_path 同一套主机路径纪律。
     #[serde(skip_serializing_if = "Vec::is_empty")]
     pub workspace_roots: Vec<String>,
     pub agent_id: String,
@@ -636,7 +639,7 @@ pub async fn list_codex_acp_sessions(
             let workspace = acp_pool
                 .workspace_info(&metadata.id)
                 .map_err(|error| format!("读取代码会话 {} 工作目录失败: {error:#}", metadata.id))?;
-            let workspace_roots = project_keychain_roots(&store, &metadata.id);
+            let workspace_roots = project_keychain_roots(acp_pool.agents(), &store, &metadata.id);
             Ok(CodexAcpSessionListItem {
                 pinned: store.is_pinned(&metadata.id),
                 pinned_at: store.pinned_at(&metadata.id),
@@ -650,12 +653,27 @@ pub async fn list_codex_acp_sessions(
         .collect()
 }
 
-/// 钥匙串投影(§6):绑定 store 是权威,列表项按 store 的快照投影。
+/// 钥匙串投影(§6):codex-acp 权威存储优先(session-agents 记录,原生代码
+/// 会话与 ACP 会话都经 `bind_code_native_session` / `set_acp_workspace` 写入),
+/// 普通 SessionStore 的 workspace-binding.json sidecar 兜底——与 lib.rs 注入
+/// 引擎的 workspace_roots resolver 同一取数顺序,保证列表投影与引擎实际生效
+/// 的钥匙串一致(评审 #484 round-7 M1:此前只读普通 store,真实代码会话的
+/// workspace_roots 恒为空,前端钥匙串 chip 与 Web 脱敏全是死代码)。
+/// 空 = 单根语义(临时会话/无快照 → 空 vec,调用方按 cwd 归一)。
 /// 单独成函数,让 store→列表项的接线可被变异测试钉住(评审 #484 round-4
 /// minor 5:手工构造 roots 的 Web 脱敏测试测不出「投影被清空」这类回归)。
-fn project_keychain_roots(store: &SessionStore, session_id: &str) -> Vec<String> {
-    store
-        .session_workspace_roots(session_id)
+fn project_keychain_roots(
+    agents: &SessionAgentStore,
+    store: &SessionStore,
+    session_id: &str,
+) -> Vec<String> {
+    let roots = agents.session_workspace_roots(session_id);
+    let roots = if roots.is_empty() {
+        store.session_workspace_roots(session_id)
+    } else {
+        roots
+    };
+    roots
         .iter()
         .map(|path| path.display().to_string())
         .collect()
@@ -720,7 +738,7 @@ pub async fn list_codex_acp_sessions_for_web(
             let workspace = acp_pool
                 .workspace_info(&metadata.id)
                 .map_err(|error| format!("读取代码会话 {} 工作目录失败: {error:#}", metadata.id))?;
-            let workspace_roots = project_keychain_roots(&store, &metadata.id);
+            let workspace_roots = project_keychain_roots(acp_pool.agents(), &store, &metadata.id);
             Ok(CodexAcpSessionListItem {
                 pinned: store.is_pinned(&metadata.id),
                 pinned_at: store.pinned_at(&metadata.id),
@@ -804,6 +822,17 @@ pub(crate) async fn create_codex_acp_session_with_workspace_binding(
             .map_err(|error| {
                 format!("create_codex_acp_session: invalid workspace_roots: {error:#}")
             })?;
+    // 临时会话(未提供 workspace_path)没有绑定工作区,钥匙串快照在 store 层
+    // 会被强制清空(§9.1 单根语义)。携带非空 roots 是调用方契约错误——前端
+    // 只在项目通道把 roots 与 path 一起下发——显式拒绝而不是静默丢弃
+    // (评审 #484 round-7 minor;报错风格对齐 sessions::create_session 的
+    // workspace_path/workspace_roots 校验)。
+    if project_workspace.is_none() && !keychain.is_empty() {
+        return Err(
+            "create_codex_acp_session: invalid workspace_roots: workspace_roots 必须随 workspace_path 一起提供(临时会话没有钥匙串快照)"
+                .to_string(),
+        );
+    }
     verify_workspace_binding(project_workspace.as_deref(), workspace_verifier)?;
     if !backend.is_acp() {
         let metadata = create_code_native_session(
@@ -1111,11 +1140,14 @@ mod tests {
     }
 
     #[test]
-    fn code_list_projects_the_keychain_from_the_binding_store() {
-        // 变异锁定(评审 #484 round-4 minor 5):Web 脱敏测试用的是手工构造
-        // 的 roots,若 store→列表项的投影被清空(直接 mutate 成 Vec::new()),
-        // 那条测试依然全绿。这里用真实绑定 store 钉住投影接线:绑定的会话
-        // 投影出完整钥匙串,未绑定的会话投影为空。
+    fn code_list_projects_the_keychain_from_the_codex_acp_store() {
+        // 变异锁定(评审 #484 round-4 minor 5 / round-7 M1):Web 脱敏测试用的是
+        // 手工构造的 roots,若 store→列表项的投影被清空(直接 mutate 成
+        // Vec::new())或退回只读普通 SessionStore 的 workspace-binding.json,
+        // 那条测试依然全绿。这里走真实代码会话写入路径钉住投影接线:钥匙串
+        // 快照只写进 codex-acp 权威存储(set_acp_workspace / bind_code_native_session,
+        // 与 create_codex_acp_session_with_workspace_binding 同源),普通
+        // SessionStore 里没有这份数据——投影若读错 store,断言立刻红。
         let tmp = std::env::temp_dir().join(format!(
             "pinvou3-codex-keychain-projection-{}",
             std::time::SystemTime::now()
@@ -1123,35 +1155,84 @@ mod tests {
                 .map(|d| d.as_nanos())
                 .unwrap_or(0)
         ));
+        std::fs::create_dir_all(&tmp).expect("create test root");
         let store = SessionStore::boot_with_scheduled_root(tmp.join("scheduled"))
             .expect("boot session store");
-        let session = store
-            .create_new("model".to_string(), None, std::env::temp_dir())
-            .expect("create session");
-        let id = session.metadata.id.clone();
+        let agents = SessionAgentStore::for_test(tmp.join("session-agents.json"));
         let primary = tmp.join("primary");
         let extra = tmp.join("extra");
         std::fs::create_dir_all(&primary).expect("create primary");
         std::fs::create_dir_all(&extra).expect("create extra");
+        let keychain = vec![primary.clone(), extra.clone()];
+        let new_session = |title: &str| {
+            store
+                .create_new(title.to_string(), None, std::env::temp_dir())
+                .expect("create session")
+                .metadata
+                .id
+        };
+        let assert_keychain = |id: &str| {
+            let projected = project_keychain_roots(&agents, &store, id);
+            assert_eq!(
+                projected.len(),
+                2,
+                "the list item must project the codex-acp store's keychain"
+            );
+            assert!(
+                projected.iter().any(|root| root.ends_with("extra")),
+                "{projected:?}"
+            );
+        };
 
+        // 无记录(纯 chat 会话)= 空。
+        let plain = new_session("plain");
         assert!(
-            project_keychain_roots(&store, &id).is_empty(),
-            "unbound = empty"
+            project_keychain_roots(&agents, &store, &plain).is_empty(),
+            "no record = empty"
         );
 
+        // ACP 车道:生产写入路径 set_acp_workspace。
+        let acp = new_session("acp");
+        agents
+            .set_acp_workspace(
+                &acp,
+                AgentBackend::CodexAcp,
+                CodexWorkspaceKind::Project,
+                Some(primary.clone()),
+                keychain.clone(),
+            )
+            .expect("bind ACP workspace");
+        assert_keychain(&acp);
+
+        // 原生代码车道:生产写入路径 bind_code_native_session(快照同时落
+        // 权威 sidecar,投影经同一条记录读取)。
+        let native = new_session("native");
+        agents
+            .bind_code_native_session(
+                &native,
+                CodexWorkspaceKind::Project,
+                Some(primary.clone()),
+                keychain.clone(),
+            )
+            .expect("bind native code session");
+        assert_keychain(&native);
+
+        // 临时会话:写路径强制空快照(§9.1),投影为空。
+        let temporary = new_session("temporary");
+        agents
+            .bind_code_native_session(&temporary, CodexWorkspaceKind::Temporary, None, Vec::new())
+            .expect("bind temporary native code session");
+        assert!(
+            project_keychain_roots(&agents, &store, &temporary).is_empty(),
+            "temporary session = empty"
+        );
+
+        // 兜底顺序与 lib.rs 引擎 resolver 一致:agents 记录为空时回落到普通
+        // SessionStore 的 workspace-binding sidecar。
         store
-            .bind_session_workspace_with_roots(&id, primary.clone(), vec![primary, extra.clone()])
-            .expect("bind with keychain");
-        let projected = project_keychain_roots(&store, &id);
-        assert_eq!(
-            projected.len(),
-            2,
-            "the list item must project the store's keychain"
-        );
-        assert!(
-            projected.iter().any(|root| root.ends_with("extra")),
-            "{projected:?}"
-        );
+            .bind_session_workspace_with_roots(&plain, primary.clone(), keychain.clone())
+            .expect("bind plain session via sidecar");
+        assert_keychain(&plain);
 
         let _ = std::fs::remove_dir_all(&tmp);
     }
