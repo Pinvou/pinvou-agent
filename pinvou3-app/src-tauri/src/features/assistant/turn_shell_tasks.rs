@@ -124,6 +124,17 @@ struct RegistryInner {
     state: Mutex<RegistryState>,
     cleanup_notify: Notify,
     worker_started: AtomicBool,
+    /// Serializes `cleanup_scope_with_retries` runs per registry. Cleanup
+    /// callers no longer meet on the session turn gate (issue #255 detached
+    /// them to keep the gate responsive), so two overlapping runs — e.g. a
+    /// detached cleanup still racing a wedged kill sweep when the user
+    /// presses stop again — would drive `cleanup_scope_once` in parallel,
+    /// double-count `PendingKill.attempts` toward `MAX_KILL_ATTEMPTS` and
+    /// permanently stop the retry loop while a job may still be alive. The
+    /// gate is only ever taken inside detached/background tasks, never
+    /// while the turn gate is held, so waiting here cannot re-block the
+    /// session pipeline.
+    cleanup_gate: tokio::sync::Mutex<()>,
 }
 
 /// Session-scoped supervisor for root-turn shell ownership.
@@ -321,6 +332,7 @@ impl TurnShellTaskRegistry {
                 state: Mutex::new(RegistryState::default()),
                 cleanup_notify: Notify::new(),
                 worker_started: AtomicBool::new(false),
+                cleanup_gate: tokio::sync::Mutex::new(()),
             }),
         }
     }
@@ -564,6 +576,11 @@ impl TurnShellTaskRegistry {
         &self,
         scope_id: ScopeId,
     ) -> Result<ShellCleanupReport> {
+        // One kill-retry ladder at a time per registry: concurrent ladders
+        // would both bump `PendingKill.attempts` toward `MAX_KILL_ATTEMPTS`
+        // and could exhaust the retries while a job is still dying (see the
+        // `cleanup_gate` doc on `RegistryInner`).
+        let _cleanup_ladder = self.inner.cleanup_gate.lock().await;
         let mut report = ShellCleanupReport::default();
         let mut last_worker_error = None;
         for retry_index in 0..=CLEANUP_RETRY_DELAYS.len() {
