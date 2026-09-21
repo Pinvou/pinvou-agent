@@ -199,14 +199,18 @@ pub(super) fn run_libreoffice_convert<T>(
     // soffice 冷启动/遗留锁可能挂死,带 kill 的超时兜底(180s,与 #532 的
     // 各内联转换点同预算);超时错误走下方统一的失败分支清理临时目录。
     let out = crate::platform::process::output_with_timeout_and_kill_tree(
-        libreoffice_tool_command()
-            .arg(profile_arg)
-            .arg("--headless")
-            .arg("--convert-to")
-            .arg(convert_to)
-            .arg("--outdir")
-            .arg(&tmpdir)
-            .arg(path),
+        {
+            let mut command = libreoffice_tool_command();
+            command
+                .arg(profile_arg)
+                .arg("--headless")
+                .arg("--convert-to")
+                .arg(convert_to)
+                .arg("--outdir")
+                .arg(&tmpdir)
+                .arg(path);
+            command
+        },
         std::time::Duration::from_secs(180),
     );
 

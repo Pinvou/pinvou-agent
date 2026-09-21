@@ -184,14 +184,18 @@ fn render_pdf_pages(
     // pdftoppm -png -r <dpi> -l <max> <pdf> <prefix> → page-1.png, page-2.png ...
     // pdftoppm 卡死按超时 kill-tree（120s,与 #532 的各内联转换点同预算）。
     let convert = crate::platform::process::output_with_timeout_and_kill_tree(
-        pdf_tool_command("pdftoppm")
-            .arg("-png")
-            .arg("-r")
-            .arg(dpi.to_string())
-            .arg("-l")
-            .arg(max_pages.to_string())
-            .arg(pdf)
-            .arg(&prefix),
+        {
+            let mut command = pdf_tool_command("pdftoppm");
+            command
+                .arg("-png")
+                .arg("-r")
+                .arg(dpi.to_string())
+                .arg("-l")
+                .arg(max_pages.to_string())
+                .arg(pdf)
+                .arg(&prefix);
+            command
+        },
         std::time::Duration::from_secs(120),
     );
     match convert {

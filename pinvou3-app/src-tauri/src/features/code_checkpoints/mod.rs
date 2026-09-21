@@ -1296,14 +1296,7 @@ mod tests {
         let ledger = TestDir::new("young-lock-ledger");
         let exec = TestDir::new("young-lock-exec");
         exec.write("a.rs", "v1\n");
-        create_checkpoint(
-            ledger.path(),
-            exec.path(),
-            Some(1),
-            CheckpointKind::Turn,
-            "t1",
-        )
-        .unwrap();
+        create_checkpoint(ledger.path(), exec.path(), Some(1), CheckpointKind::Turn).unwrap();
 
         let repo = repo_dir(ledger.path());
         let lock = repo.join("index.lock");
@@ -1329,14 +1322,8 @@ mod tests {
         let ledger = TestDir::new("ref-lock-ledger");
         let exec = TestDir::new("ref-lock-exec");
         exec.write("a.rs", "v1\n");
-        let checkpoint = create_checkpoint(
-            ledger.path(),
-            exec.path(),
-            Some(1),
-            CheckpointKind::Turn,
-            "t1",
-        )
-        .unwrap();
+        let checkpoint =
+            create_checkpoint(ledger.path(), exec.path(), Some(1), CheckpointKind::Turn).unwrap();
 
         let repo = repo_dir(ledger.path());
         let ref_name = format!("refs/checkpoints/{}", checkpoint.id);
