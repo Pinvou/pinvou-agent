@@ -582,6 +582,14 @@ mod tests {
                 "同 scope 其它包的条目必须原样保留"
             );
             assert!(load_hidden_bundles_for(ConnectorScope::Code).is_empty());
+            // helper 不得动 scope 初始化登记:退役清理依赖该契约保留用户的
+            // 初始化状态(上面三次 save 已把 plain/code 标记为 initialized)。
+            let file = load_disabled_bundles_file();
+            assert!(
+                file.initialized.contains("plain") && file.initialized.contains("code"),
+                "helper 必须保留 scope 初始化登记: {:?}",
+                file.initialized
+            );
         });
     }
 
