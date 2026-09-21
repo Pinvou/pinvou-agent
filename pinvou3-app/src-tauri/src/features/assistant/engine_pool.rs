@@ -4737,11 +4737,14 @@ mod scheduled_model_tests {
     // cascade closure models a wedged engine (ops channel full, never
     // drained): `cancel_turn_with_gates` must return after the bound and
     // release the gate so evict / delete / send can proceed. On unbounded
-    // code this test hangs (reverse-verified red on main). The wait is the
-    // real 5s TURN_GATE_AWAIT_TIMEOUT — deliberate: enabling tokio's
-    // test-util for a paused clock would change the tokio feature set and
-    // invalidate the whole CI test cache for one test. The forkguard_ prefix
-    // registers it as a fork-guard layer-3 behavior test (fork-policy §3).
+    // code the cancel never settles; the 2× outer wrapper turns that
+    // regression into a fast red instead of a hung test binary (the
+    // bound-removal regression itself was reverse-verified red on main by
+    // the original hanging form). The wait is the real 5s
+    // TURN_GATE_AWAIT_TIMEOUT — deliberate: enabling tokio's test-util for
+    // a paused clock would change the tokio feature set and invalidate the
+    // whole CI test cache for one test. The forkguard_ prefix registers it
+    // as a fork-guard layer-3 behavior test (fork-policy §3).
     #[tokio::test]
     async fn forkguard_cancel_holds_turn_lock_boundedly() {
         let locks = SessionTurnLocks::default();
@@ -4799,7 +4802,14 @@ mod scheduled_model_tests {
         .expect("phase two must reach the primary cascade send");
         // The cascade is parked on the wedged engine: cancel must come back
         // via TURN_GATE_AWAIT_TIMEOUT (≈5s real time), not via the closure.
-        let (target, claimed) = cancel_task.await.expect("cancel task joins");
+        // The 2× wrapper keeps an unbounded regression a fast red (with a
+        // diagnostic) instead of a hung test binary.
+        let (target, claimed) = tokio::time::timeout(2 * TURN_GATE_AWAIT_TIMEOUT, cancel_task)
+            .await
+            .expect(
+                "cancel must settle within twice the gate bound; an unbounded regression would hang here",
+            )
+            .expect("cancel task joins");
         assert!(cancel_started.elapsed() >= TURN_GATE_AWAIT_TIMEOUT);
         assert_eq!(target, Some(1));
         assert!(!claimed);
@@ -4855,14 +4865,20 @@ mod scheduled_model_tests {
         let (tx, mut rx) = tokio::sync::mpsc::channel::<Op>(1);
         tx.send(Op::Shutdown).await.expect("wedged slot filled");
         let started = std::time::Instant::now();
-        let delivered = bounded_shutdown_sends(
-            |op| {
-                let tx = tx.clone();
-                async move { tx.send(op).await.map_err(anyhow::Error::from) }
-            },
-            super::EnginePool::shutdown_cancel_cascade_ops(),
+        let delivered = tokio::time::timeout(
+            2 * TURN_GATE_AWAIT_TIMEOUT,
+            bounded_shutdown_sends(
+                |op| {
+                    let tx = tx.clone();
+                    async move { tx.send(op).await.map_err(anyhow::Error::from) }
+                },
+                super::EnginePool::shutdown_cancel_cascade_ops(),
+            ),
         )
-        .await;
+        .await
+        .expect(
+            "bounded sends must settle within twice the gate bound; an unbounded regression would hang here",
+        );
         assert_eq!(delivered, 0);
         assert!(started.elapsed() >= TURN_GATE_AWAIT_TIMEOUT);
         // Drain the filler so capacity frees: the detached retry must now
@@ -4879,9 +4895,22 @@ mod scheduled_model_tests {
                 .collect(),
             TURN_GATE_AWAIT_TIMEOUT,
         ));
-        assert!(matches!(rx.recv().await, Some(Op::CancelSubAgents)));
-        assert!(matches!(rx.recv().await, Some(Op::Shutdown)));
-        retry.await.expect("retry task joins");
+        assert!(matches!(
+            tokio::time::timeout(2 * TURN_GATE_AWAIT_TIMEOUT, rx.recv())
+                .await
+                .expect("retry CancelSubAgents must arrive within twice the gate bound"),
+            Some(Op::CancelSubAgents)
+        ));
+        assert!(matches!(
+            tokio::time::timeout(2 * TURN_GATE_AWAIT_TIMEOUT, rx.recv())
+                .await
+                .expect("retry Shutdown must arrive within twice the gate bound"),
+            Some(Op::Shutdown)
+        ));
+        tokio::time::timeout(2 * TURN_GATE_AWAIT_TIMEOUT, retry)
+            .await
+            .expect("retry must join within twice the gate bound; a detached-retry regression would hang here")
+            .expect("retry task joins");
     }
 
     // The detached retry must itself be bounded: on a permanently wedged
@@ -4907,9 +4936,31 @@ mod scheduled_model_tests {
                 .collect(),
             patience,
         ));
-        retry.await.expect("retry task joins");
+        tokio::time::timeout(2 * TURN_GATE_AWAIT_TIMEOUT, retry)
+            .await
+            .expect("retry must join within twice the gate bound; an unbounded-patience regression would hang here")
+            .expect("retry task joins");
         assert!(started.elapsed() >= patience);
         assert!(started.elapsed() < TURN_GATE_AWAIT_TIMEOUT);
+    }
+
+    // The Detached arm must be distinguishable too: a task that outlives
+    // the (parameterized) budget is detached — it keeps running while the
+    // caller stops waiting — and must not be counted as settled or
+    // panicked. A synthetic 50ms budget keeps this off the real 5s clock.
+    // The forkguard_ prefix registers it as a fork-guard layer-3 behavior
+    // test (fork-policy §3).
+    #[tokio::test]
+    async fn forkguard_bounded_join_detaches_task_that_outlives_budget() {
+        let detached = bounded_join_while_holding_turn_gate(
+            "test finalize",
+            std::time::Duration::from_millis(50),
+            tokio::spawn(async {
+                tokio::time::sleep(std::time::Duration::from_secs(1)).await;
+            }),
+        )
+        .await;
+        assert!(matches!(detached, BoundedJoinOutcome::Detached));
     }
 
     #[tokio::test]

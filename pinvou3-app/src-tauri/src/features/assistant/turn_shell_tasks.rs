@@ -1236,6 +1236,82 @@ mod tests {
         );
     }
 
+    // issue #255 hardening: the background sweep must take the same
+    // per-registry cleanup gate as the kill-retry ladders — an ungated sweep
+    // can run concurrently with a detached ladder and double-count
+    // `PendingKill.attempts` toward `MAX_KILL_ATTEMPTS`, permanently
+    // stopping retries while a job is still dying. The forkguard_ prefix
+    // registers it as a fork-guard layer-3 behavior test (fork-policy §3).
+    #[tokio::test]
+    async fn forkguard_background_cleanup_sweep_takes_cleanup_gate() {
+        let registry = TurnShellTaskRegistry::new(new_shared_shell_manager(std::env::temp_dir()));
+        let scope_id = 7u64;
+        registry.inner.state.lock().scopes.insert(
+            scope_id,
+            TurnShellScope {
+                id: scope_id,
+                turn_id: None,
+                baseline_task_ids: HashSet::new(),
+                registered_task_ids: HashSet::new(),
+                live_agent_ids: HashSet::new(),
+                pending_kills: HashMap::new(),
+                cancel_requested: true,
+                root_terminal: false,
+                allow_unowned_fallback: false,
+                cleanup_settled: false,
+                cleanup_error: None,
+                cleanup_error_attempts: 0,
+            },
+        );
+        assert_eq!(
+            registry.scopes_needing_background_cleanup(),
+            vec![scope_id],
+            "the sweep must actually see this scope; otherwise the test is vacuous"
+        );
+
+        // Hold the gate the way a detached kill ladder would.
+        let gate = registry.inner.cleanup_gate.lock().await;
+        let tick_registry = registry.clone();
+        let tick = tokio::spawn(async move { cleanup_worker_tick(&tick_registry).await });
+        // While the gate is held the sweep must stay parked on it: give the
+        // executor every chance to (wrongly) run the pass.
+        let ran_ungated = tokio::time::timeout(std::time::Duration::from_millis(150), async {
+            loop {
+                tokio::task::yield_now().await;
+                if registry
+                    .inner
+                    .state
+                    .lock()
+                    .scopes
+                    .get(&scope_id)
+                    .map_or(true, |scope| scope.cleanup_settled)
+                {
+                    break;
+                }
+            }
+        })
+        .await;
+        assert!(
+            ran_ungated.is_err(),
+            "background sweep ran its cleanup pass despite the held cleanup gate"
+        );
+        drop(gate);
+        tokio::time::timeout(std::time::Duration::from_secs(2), tick)
+            .await
+            .expect("sweep tick must complete once the gate is released")
+            .expect("tick task joins");
+        assert!(
+            registry
+                .inner
+                .state
+                .lock()
+                .scopes
+                .get(&scope_id)
+                .map_or(true, |scope| scope.cleanup_settled),
+            "sweep must settle the scope once the gate is released"
+        );
+    }
+
     #[tokio::test]
     async fn reliable_child_lineage_is_not_overwritten_by_the_current_turn() {
         let registry = TurnShellTaskRegistry::new(new_shared_shell_manager(std::env::temp_dir()));
