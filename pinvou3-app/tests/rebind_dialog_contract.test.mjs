@@ -163,3 +163,29 @@ test('the folder-picker window is re-entry guarded', () => {
     'the guard must release on pick, empty pick AND failure',
   );
 });
+
+test('the strong-confirm flag and the stay-open gate survive refactors', () => {
+  // Review #463 round-14 should-fix 4: the two highest-risk dialog gates.
+  // The confirm button must forward the strong-confirmation state exactly —
+  // onConfirm(true) would silently bypass the old-root-exists warning on
+  // every later attempt.
+  assert.match(
+    DIALOG,
+    /onClick=\{\(\) => onConfirm\(!{0,2}warnExisting\)\}/,
+    'the confirm button must forward the strong-confirm flag, not a constant',
+  );
+  assert.doesNotMatch(
+    DIALOG,
+    /onClick=\{\(\) => onConfirm\(true\)\}/,
+    'the strong confirm must never degrade to an unconditional true',
+  );
+  // The dialog must stay open whenever the report still carries work — failed
+  // sessions OR post-busy sessions whose runtime the idle gate refused.
+  // Dropping `postBusy > 0` closes the only retry entry while an old-cwd
+  // runtime stays resident (round-8 MAJOR-2).
+  assert.match(
+    MAIN,
+    /if \(failed > 0 \|\| postBusy > 0\) \{/,
+    'the stay-open gate must cover the post-busy state, not just failures',
+  );
+});

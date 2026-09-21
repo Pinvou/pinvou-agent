@@ -314,23 +314,19 @@ pub(super) fn read_code_session_sidecar(
     match serde_json::from_slice::<CodeSessionSidecar>(&payload) {
         Ok(sidecar) => {
             // 未来高版本格式不能静默按 v1 解析：拒读并按缺失处理，交由恢复/回填
-            // 路径用当前版本重写。
+            // 路径用当前版本重写。日志卫生(review #463 round-14 should-fix 5):
+            // 路径含会话 id,与 sessions 侧同规则——只记版本号,不记路径。
             if sidecar.version > CODE_SESSION_SIDECAR_VERSION {
                 eprintln!(
-                    "[pinvou3-app] 原生代码会话 sidecar 版本 {} 高于当前支持的 {}，按缺失处理（{}）",
-                    sidecar.version,
-                    CODE_SESSION_SIDECAR_VERSION,
-                    path.display()
+                    "[pinvou3-app] 原生代码会话 sidecar 版本 {} 高于当前支持的 {}，按缺失处理",
+                    sidecar.version, CODE_SESSION_SIDECAR_VERSION,
                 );
                 return None;
             }
             Some(sidecar)
         }
         Err(error) => {
-            eprintln!(
-                "[pinvou3-app] 解析原生代码会话 sidecar 失败（{}）: {error:#}",
-                path.display()
-            );
+            eprintln!("[pinvou3-app] 解析原生代码会话 sidecar 失败: {error:#}");
             None
         }
     }

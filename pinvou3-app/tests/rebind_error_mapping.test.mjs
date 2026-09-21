@@ -43,7 +43,7 @@ test("old-root-exists escalates instead of rendering an error", () => {
     "REBIND_OLD_ROOT_EXISTS: the original folder still exists",
     dictEn,
   );
-  assert.deepEqual(classified, { kind: "old-root-exists" });
+  assert.deepEqual(classified, { kind: "old-root-exists", reboundIds: [] });
 });
 
 test("the busy marker yields its session ids as data", () => {
@@ -54,7 +54,7 @@ test("the busy marker yields its session ids as data", () => {
 
 test("the busy marker without ids does not fabricate one", () => {
   const classified = classifyRebindError(`${REBIND_SESSIONS_BUSY}:`, dictEn);
-  assert.deepEqual(classified, { kind: "sessions-busy", busySessionIds: [] });
+  assert.deepEqual(classified, { kind: "sessions-busy", busySessionIds: [], reboundIds: [] });
 });
 
 test("every copy marker resolves to trilingual uiProjects copy", () => {
@@ -120,5 +120,37 @@ test("an unmapped backend error stays verbatim for diagnostics", () => {
   assert.deepEqual(classified, {
     kind: "raw",
     message: "Error: rebind_workspace_root: boom",
+    reboundIds: [],
   });
+});
+
+test("a roots-commit failure yields its moved ids as carryover data", () => {
+  // Review #463 round-14 should-fix 1: the session lanes are already durable
+  // when the roots commit fails, so the backend appends this run's moved ids
+  // for the dialog to feed back as the post-busy carryover. The suffix is
+  // data: it classifies normally and never reaches the rendered copy.
+  const classified = classifyRebindError(
+    "REBIND_ROOTS_CONFLICT: overlap\nrebound-session-ids:a1,b2",
+    dictEn,
+  );
+  assert.equal(classified.kind, "copy");
+  assert.equal(classified.message, dictEn.uiProjects.rebindRootsConflict);
+  assert.deepEqual(classified.reboundIds, ["a1", "b2"]);
+  // A raw error carrying the suffix shows the prose without the data line.
+  const raw = classifyRebindError(
+    "rebind_workspace_root: boom\nrebound-session-ids:c3",
+    dictEn,
+  );
+  assert.deepEqual(raw, {
+    kind: "raw",
+    message: "rebind_workspace_root: boom",
+    reboundIds: ["c3"],
+  });
+  // An empty suffix list stays empty (no fabricated id).
+  const empty = classifyRebindError(
+    "REBIND_ROOTS_PERSIST: io\nrebound-session-ids:",
+    dictEn,
+  );
+  assert.equal(empty.kind, "copy");
+  assert.deepEqual(empty.reboundIds, []);
 });

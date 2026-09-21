@@ -4637,6 +4637,152 @@ fn rebind_preserves_corrupt_legacy_workspaces_file() {
     let _ = std::fs::remove_dir_all(&to);
 }
 
+/// Round-14 M1 (review #463): a legacy table repaired out-of-band can carry
+/// entries represented nowhere else (no sidecar, not in the cache — boot does
+/// not bulk-load table lines). The sync must build the merged view on the
+/// PARSED table so those entries survive the rewrite; a table-only entry
+/// under `from` must additionally join the plan candidate set — preserving
+/// it at `from` would let the next boot migration resurrect the vanished
+/// directory.
+#[test]
+fn rebind_preserves_and_translates_repaired_legacy_table_entries() {
+    let (store, _g) = isolated_store();
+    let from = unique_temp_dir("rebind-repaired-from");
+    std::fs::create_dir_all(&from).expect("create from");
+    let to = unique_temp_dir("rebind-repaired-to");
+    std::fs::create_dir_all(&to).expect("create to");
+    let elsewhere = unique_temp_dir("rebind-repaired-elsewhere");
+    std::fs::create_dir_all(&elsewhere).expect("create elsewhere");
+
+    // Session A: bound the ordinary way (sidecar + cache), the run's plan.
+    let session_a = store
+        .create_new("/model".into(), None, std::env::temp_dir())
+        .expect("create A");
+    store
+        .bind_session_workspace(&session_a.metadata.id, from.clone())
+        .expect("bind A");
+    // Sessions B and C: records exist, but their bindings live ONLY as
+    // legacy-table lines — the out-of-band repair shape (written after any
+    // boot migration, so no sidecar and no cache entry is ever derived).
+    let session_b = store
+        .create_new("/model".into(), None, std::env::temp_dir())
+        .expect("create B");
+    let session_c = store
+        .create_new("/model".into(), None, std::env::temp_dir())
+        .expect("create C");
+    let legacy = store
+        .manager
+        .sessions_dir()
+        .join("_session_workspaces.json");
+    std::fs::write(
+        &legacy,
+        serde_json::to_vec(&serde_json::json!({
+            session_b.metadata.id.clone(): from.display().to_string(),
+            session_c.metadata.id.clone(): elsewhere.display().to_string()
+        }))
+        .expect("serialize repaired table"),
+    )
+    .expect("write repaired legacy table");
+
+    let outcome = store
+        .rebind_workspace_bindings(&from, &to)
+        .expect("rebind with a repaired table");
+    assert!(outcome.failed_session_ids.is_empty());
+    // B (table-only, under `from`) joined the candidate set and moved.
+    assert!(
+        outcome
+            .rebound
+            .iter()
+            .any(|(id, _)| id == &session_b.metadata.id),
+        "a table-only entry under `from` must join the rebind plan",
+    );
+    assert_eq!(
+        store
+            .session_workspace_binding(&session_b.metadata.id)
+            .as_deref(),
+        Some(to.as_path()),
+        "the translated table-only entry must land as a sidecar",
+    );
+    // The rewritten table keeps every repaired line: A and B translated,
+    // C (outside cache ∪ plan) preserved verbatim at its unrelated path.
+    let on_disk: std::collections::HashMap<String, PathBuf> =
+        serde_json::from_str(&std::fs::read_to_string(&legacy).expect("read legacy table"))
+            .expect("rewritten table parses");
+    assert_eq!(
+        on_disk.get(&session_a.metadata.id).map(PathBuf::as_path),
+        Some(to.as_path()),
+    );
+    assert_eq!(
+        on_disk.get(&session_b.metadata.id).map(PathBuf::as_path),
+        Some(to.as_path()),
+        "the table-only `from` entry must be translated, not left to resurrect",
+    );
+    assert_eq!(
+        on_disk.get(&session_c.metadata.id).map(PathBuf::as_path),
+        Some(elsewhere.as_path()),
+        "a repaired entry outside cache ∪ plan must survive the rewrite",
+    );
+
+    let _ = std::fs::remove_dir_all(&from);
+    let _ = std::fs::remove_dir_all(&to);
+    let _ = std::fs::remove_dir_all(&elsewhere);
+}
+
+/// Round-14 M2 (review #463): a session deleted between the plan scan and
+/// the apply pass (the codex lane runs in between, and session deletion is
+/// not fenced by begin_rebind) must not have its directory and sidecar
+/// recreated — apply re-checks the owner and routes the vanished id to the
+/// failure list instead of reporting a dead id as rebound.
+#[test]
+fn apply_rebind_workspace_bindings_skips_owner_deleted_after_plan() {
+    let (store, _g) = isolated_store();
+    let from = unique_temp_dir("rebind-apply-ghost-from");
+    std::fs::create_dir_all(&from).expect("create from");
+    let to = unique_temp_dir("rebind-apply-ghost-to");
+    std::fs::create_dir_all(&to).expect("create to");
+
+    let session = store
+        .create_new("/model".into(), None, std::env::temp_dir())
+        .expect("create");
+    store
+        .bind_session_workspace(&session.metadata.id, from.clone())
+        .expect("bind");
+
+    let plan = store
+        .plan_rebind_workspace_bindings(&from, &to)
+        .expect("plan");
+    store
+        .delete(&session.metadata.id)
+        .expect("delete between plan and apply");
+    let outcome = store.apply_rebind_workspace_bindings(plan);
+    assert!(outcome.rebound.is_empty(), "a dead owner must not move");
+    assert!(
+        outcome
+            .failed_session_ids
+            .iter()
+            .any(|id| id == &session.metadata.id),
+        "the vanished owner lands in the failure list",
+    );
+    assert!(
+        !store
+            .manager
+            .sessions_dir()
+            .join(&session.metadata.id)
+            .exists(),
+        "apply must not recreate the deleted session directory",
+    );
+    assert!(
+        !store
+            .session_workspaces
+            .read()
+            .contains_key(&session.metadata.id),
+        "apply must not re-insert the dead id into the cache",
+    );
+
+    let _ = std::fs::remove_dir_all(&from);
+    let _ = std::fs::remove_dir_all(&to);
+}
+
 /// Round-6 finding 4: an unreadable legacy table (invalid UTF-8 — `read_to_string`
 /// fails before the JSON pass can) is not "absent", and a rebind must not treat it
 /// as syncable: with an empty merged view the old code would delete a file this

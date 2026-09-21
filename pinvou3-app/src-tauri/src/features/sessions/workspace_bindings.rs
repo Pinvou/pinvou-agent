@@ -158,19 +158,17 @@ fn read_workspace_sidecar(path: &Path) -> Option<SessionWorkspaceSidecar> {
     match serde_json::from_slice::<SessionWorkspaceSidecar>(&payload) {
         Ok(sidecar) if sidecar.version <= SESSION_WORKSPACE_SIDECAR_VERSION => Some(sidecar),
         Ok(sidecar) => {
+            // Same log-hygiene rule as the io arm above (review #463 round-14
+            // should-fix 5): the path embeds sessions/<id>/, so it stays out
+            // of the log; the version number carries the diagnostic.
             eprintln!(
-                "[sessions] workspace binding sidecar version {} above supported {} ({}), ignored",
-                sidecar.version,
-                SESSION_WORKSPACE_SIDECAR_VERSION,
-                path.display()
+                "[sessions] workspace binding sidecar version {} above supported {}, ignored",
+                sidecar.version, SESSION_WORKSPACE_SIDECAR_VERSION,
             );
             None
         }
         Err(error) => {
-            eprintln!(
-                "[sessions] parse workspace binding sidecar failed ({}): {error}",
-                path.display()
-            );
+            eprintln!("[sessions] parse workspace binding sidecar failed: {error}");
             None
         }
     }
@@ -496,7 +494,25 @@ impl SessionStore {
         // written yet: the plan is what the legacy-table rewrite must publish
         // BEFORE the sidecars move, and an invalid id is rejected here instead
         // of half-way through the write phase.
-        let candidates: Vec<(String, PathBuf)> = self.workspace_bindings_under(from);
+        let mut candidates: Vec<(String, PathBuf)> = self.workspace_bindings_under(from);
+        // A binding that exists only as a legacy-table line (no sidecar, not in
+        // the cache — e.g. a table repaired out-of-band) is invisible to that
+        // scan: preserving the line in the synced table while leaving it at
+        // `from` would let the next boot migration resurrect the vanished
+        // directory (review #463 round-14 M1). Feed parsed-table entries
+        // through the same gates (id validated, owner exists, from-prefix)
+        // into the candidate set; an unreadable or unparseable table feeds
+        // nothing and is handled by the sync's Corrupt gate below.
+        for (id, path) in self.legacy_session_workspaces_table() {
+            if candidates.iter().any(|(sid, _)| *sid == id)
+                || validate_session_id(&id).is_err()
+                || !self.workspace_binding_owner_exists(&id)
+                || !folded_path_is_same_or_nested(&path, from)
+            {
+                continue;
+            }
+            candidates.push((id, path));
+        }
         let mut plan = RebindBindingsPlan::default();
         for (id, path) in candidates {
             // Shared containment + suffix cut (round-8 review should-fix 9):
@@ -587,6 +603,17 @@ impl SessionStore {
             return outcome;
         }
         for (id, next, sidecar_path) in plan.entries {
+            // Owner re-check (review #463 round-14 M2): the session may have
+            // been deleted between the plan scan and this apply (the codex
+            // lane runs in between and session deletion is not fenced by
+            // begin_rebind). Recreating its directory and sidecar here would
+            // resurrect a dead id — and the metadata loop's absent-record
+            // classifier would then read the artifacts apply itself created
+            // and report the ghost as Rebound. Route it to the failure list.
+            if !self.workspace_binding_owner_exists(&id) {
+                outcome.failed_session_ids.push(id);
+                continue;
+            }
             // In-memory legacy-table entries may have no session directory
             // (never written as a sidecar); atomic_write does not create
             // parent directories, so create it first (same as
@@ -652,13 +679,29 @@ impl SessionStore {
         Ok(self.apply_rebind_workspace_bindings(plan))
     }
 
+    /// Best-effort read of the legacy global table: an absent, unreadable, or
+    /// unparseable file yields an empty map (the callers that need to
+    /// distinguish those states — the sync's Corrupt gate — re-read the file
+    /// themselves). Used to feed table-only bindings into the rebind plan.
+    fn legacy_session_workspaces_table(&self) -> HashMap<String, PathBuf> {
+        let legacy = self
+            .manager
+            .sessions_dir()
+            .join(LEGACY_SESSION_WORKSPACES_FILE);
+        let Ok(content) = std::fs::read_to_string(&legacy) else {
+            return HashMap::new();
+        };
+        serde_json::from_str(&content).unwrap_or_default()
+    }
+
     /// Legacy-table sync of the rebind (phase 2, run inside
     /// [`Self::plan_rebind_workspace_bindings`] so it lands before any lane
     /// mutates). #445 round-2 removed the generic persistence (no other call
     /// surface); all that remains here: if the table is on disk, atomically
-    /// rewrite it wholesale with the merged view (the in-memory table ∪ this
-    /// run's translations) — and if the merged view is empty, delete the file
-    /// (no entries left to resurrect).
+    /// rewrite it wholesale with the merged view (the on-disk table ∪ the
+    /// in-memory cache ∪ this run's translations, translations winning) — and
+    /// if the merged view is empty, delete the file (no entries left to
+    /// resurrect).
     ///
     /// The parse is re-attempted PER RUN (review #463 round-13 M2): the gate
     /// must describe the file NOW, not the boot — a table the user repaired
@@ -698,36 +741,41 @@ impl SessionStore {
                 };
             }
         };
-        if let Err(error) = serde_json::from_str::<HashMap<String, PathBuf>>(&content) {
-            eprintln!("[sessions] parse legacy session workspaces failed: {error}");
-            return if plan.is_empty() {
-                Ok(())
-            } else {
-                Err(LegacyTableSyncFailure::Corrupt)
-            };
-        }
-        // Merged view = the live table ∪ this run's translations. The cache
-        // entries for those sessions are not applied until phase 3, so writing
-        // the bare cache here would publish the pre-rebind paths — the exact
-        // resurrection this rewrite exists to prevent.
+        let parsed: HashMap<String, PathBuf> = match serde_json::from_str(&content) {
+            Ok(parsed) => parsed,
+            Err(error) => {
+                eprintln!("[sessions] parse legacy session workspaces failed: {error}");
+                return if plan.is_empty() {
+                    Ok(())
+                } else {
+                    Err(LegacyTableSyncFailure::Corrupt)
+                };
+            }
+        };
+        // Merged view = the on-disk table ∪ the live cache ∪ this run's
+        // translations, translations winning (review #463 round-14 M1): the
+        // parsed table is the base, so entries represented nowhere else — a
+        // table repaired out-of-band between boot and this run — survive the
+        // rewrite. A cache-∪-plan-only view would silently destroy them, and
+        // legacy-only entries have no sidecar to fall back on.
         let translations: HashMap<&str, &Path> = plan
             .iter()
             .map(|(id, next, _)| (id.as_str(), next.as_path()))
             .collect();
         let bindings = self.session_workspaces.read();
-        let mut merged: HashMap<String, PathBuf> = bindings
-            .iter()
-            .map(|(id, path)| match translations.get(id.as_str()) {
-                Some(next) => (id.clone(), (*next).to_path_buf()),
-                None => (id.clone(), path.clone()),
-            })
-            .collect();
-        // A candidate absent from the live table (an unsynced legacy-memory
-        // entry, or a sidecar-scanned session this process has not cached yet)
-        // is part of the translated set too: publishing it keeps the table and
-        // the sidecars in one domain.
+        let mut merged: HashMap<String, PathBuf> = parsed;
+        for (id, path) in bindings.iter() {
+            // The cache entries for those sessions are not applied until
+            // phase 3, so writing the bare cache value here would publish the
+            // pre-rebind path — the exact resurrection this rewrite exists to
+            // prevent.
+            match translations.get(id.as_str()) {
+                Some(next) => merged.insert(id.clone(), (*next).to_path_buf()),
+                None => merged.insert(id.clone(), path.clone()),
+            };
+        }
         for (id, next, _) in plan {
-            merged.entry(id.clone()).or_insert_with(|| next.clone());
+            merged.insert(id.clone(), next.clone());
         }
         drop(bindings);
         if merged.is_empty() {

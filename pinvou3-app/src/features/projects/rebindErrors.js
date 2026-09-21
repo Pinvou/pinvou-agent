@@ -53,14 +53,33 @@ const REBIND_MARKER_MESSAGE_KEYS = {
   [REBIND_LEGACY_TABLE_CORRUPT]: 'rebindLegacyTableCorrupt',
 };
 
+// Suffix the backend appends to a roots-commit failure (review #463 round-14
+// should-fix 1): the session lanes are already durable at `to` when the roots
+// commit fails, but an Err carries no report, so the moved ids ride the error
+// string — the dialog feeds them back as the post-busy carryover, and without
+// them a refused eviction on the retry would be dropped and the dialog would
+// close "up to date" with an old-cwd runtime still resident. The suffix is
+// data, not copy: strip it from anything user-visible.
+const REBOUND_IDS_SUFFIX = '\nrebound-session-ids:';
+
+function splitReboundIdsSuffix(message) {
+  const at = message.indexOf(REBOUND_IDS_SUFFIX);
+  if (at < 0) return { message, reboundIds: [] };
+  const ids = message.slice(at + REBOUND_IDS_SUFFIX.length).trim();
+  return {
+    message: message.slice(0, at),
+    reboundIds: ids ? ids.split(/,\s*/) : [],
+  };
+}
+
 // `null` when the failure carries no marker (an unmapped backend error, which
 /// the dialog shows verbatim); otherwise the dialog state to apply.
 function classifyRebindError(error, t) {
-  const message = String(error);
+  const { message, reboundIds } = splitReboundIdsSuffix(String(error));
   if (message.startsWith(REBIND_OLD_ROOT_EXISTS)) {
     // Not an error state: the dialog switches to the strong warning and the
     // user confirms again.
-    return { kind: 'old-root-exists' };
+    return { kind: 'old-root-exists', reboundIds };
   }
   if (message.startsWith(REBIND_SESSIONS_BUSY)) {
     const ids = message
@@ -70,15 +89,16 @@ function classifyRebindError(error, t) {
     return {
       kind: 'sessions-busy',
       busySessionIds: ids ? ids.split(/,\s*/) : [],
+      reboundIds,
     };
   }
   const marker = Object.keys(REBIND_MARKER_MESSAGE_KEYS).find((prefix) =>
     message.startsWith(prefix),
   );
   if (marker) {
-    return { kind: 'copy', message: t.uiProjects[REBIND_MARKER_MESSAGE_KEYS[marker]] };
+    return { kind: 'copy', message: t.uiProjects[REBIND_MARKER_MESSAGE_KEYS[marker]], reboundIds };
   }
-  return { kind: 'raw', message };
+  return { kind: 'raw', message, reboundIds };
 }
 
 export {

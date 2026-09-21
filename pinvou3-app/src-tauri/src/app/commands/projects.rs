@@ -44,12 +44,15 @@ fn emit_project_event(app: &AppHandle, event: &str, action: &str) {
     let _ = app.emit(event, serde_json::json!({ "action": action }));
 }
 
-/// 项目 root 的 wire 形态（仅路径）。曾带有 `available`（root 是否仍在磁盘上，
-/// 供"文件夹不可用·重新绑定"渲染），但该 UI 从未落地、前端也从未读取该字段，
-/// 连带省去列表路径的逐个 is_dir() stat。
+/// 项目 root 的 wire 形态:路径 + 可用性(root 是否仍在磁盘上)。`available`
+/// 驱动侧栏"文件夹不可用·重新绑定"徽章:main.jsx 的 unavailableRoots 过滤
+/// 只认这个字段,缺失时 undefined 会把每个健康 root 都判成不可用、徽章常显
+/// (review #463 round-14 R3;main #566 删字段时该徽章 UI 尚未合入,其"前端
+/// 从未读取该字段"的删除依据自 rebind 落地起已不成立)。
 #[derive(Debug, Clone, Serialize)]
 pub struct ProjectRootStatus {
     pub path: PathBuf,
+    pub available: bool,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -70,7 +73,10 @@ impl ProjectListItem {
             roots: project
                 .roots
                 .iter()
-                .map(|path| ProjectRootStatus { path: path.clone() })
+                .map(|path| ProjectRootStatus {
+                    path: path.clone(),
+                    available: path.is_dir(),
+                })
                 .collect(),
             position: project.position,
             // created_at/updated_at 只留在持久化的 Project 结构上（排期/审计均
@@ -841,11 +847,25 @@ pub async fn rebind_workspace_root(
                 &from,
                 &to_display,
             );
-            return Err(match error {
+            let marker = match error {
                 RebindRootsError::Overlap(context) => format!("REBIND_ROOTS_CONFLICT: {context:#}"),
                 RebindRootsError::Persist(context) => format!("REBIND_ROOTS_PERSIST: {context:#}"),
                 RebindRootsError::Other(context) => format!("rebind_workspace_root: {context:#}"),
-            });
+            };
+            // Carryover honesty (review #463 round-14 should-fix 1): the
+            // session lanes are already durable at `to` when the roots commit
+            // fails, but an Err carries no report — so the dialog's
+            // post-busy carryover stays empty, and on the retry a refused
+            // eviction of an already-rebound session is dropped
+            // (touched_this_run == false ∧ carryover empty), closing the
+            // dialog "up to date" while an old-cwd runtime stays resident.
+            // Append this run's moved ids; the dialog feeds them back and
+            // the backend honors only the intersection with its own retry
+            // population, so the suffix can never widen the eviction set.
+            return Err(format!(
+                "{marker}\nrebound-session-ids:{}",
+                rebound_session_ids.join(",")
+            ));
         }
     };
 
@@ -1021,7 +1041,19 @@ fn admit_rebind_retry_candidate(
         return;
     }
     let needs_metadata_sync = match sessions.load(&session_id) {
-        Ok(session) => session.metadata.workspace != path,
+        // Folded identity-key compare (review #463 round-14 should-fix 2):
+        // a case/separator spelling drift (Windows) between the metadata and
+        // the binding is the same directory — a raw != would read a healthy
+        // to-lane session as needing sync, causing a spurious set_workspace
+        // rewrite plus a false "rebound" report entry and event.
+        Ok(session) => {
+            crate::platform::os::filesystem_path_identity_key(
+                &session.metadata.workspace.to_string_lossy(),
+            )
+            .trim_end_matches('/')
+                != crate::platform::os::filesystem_path_identity_key(&path.to_string_lossy())
+                    .trim_end_matches('/')
+        }
         Err(_) => true,
     };
     if needs_metadata_sync {
@@ -1266,6 +1298,34 @@ mod tests {
         let object = value.as_object().expect("response serializes as an object");
         assert!(object.contains_key("projects"));
         assert!(object.contains_key("assignments"));
+    }
+
+    /// 线缆形状锁(review #463 round-14 R3):侧栏的 unavailableRoots 过滤
+    /// (main.jsx)只认 `available` 字段——它从 wire 上消失时 undefined 会
+    /// 把每个健康 root 都判成不可用,"文件夹不可用·重新绑定"徽章常显。
+    /// 锁死字段存在性与 is_dir 语义(在=available,不在=不可用)。
+    #[test]
+    fn project_root_status_wire_carries_available() {
+        let unique = format!("pinvou3-root-status-{}", std::process::id());
+        let existing = std::env::temp_dir().join(&unique);
+        std::fs::create_dir_all(&existing).expect("create existing root");
+        let missing = std::env::temp_dir().join(format!("{unique}-missing"));
+        let project = Project {
+            id: "p1".to_string(),
+            name: "P1".to_string(),
+            roots: vec![existing.clone(), missing],
+            position: 0,
+            created_at: chrono::Utc::now(),
+            updated_at: chrono::Utc::now(),
+        };
+        let item = ProjectListItem::from_project(&project, 0);
+        let value = serde_json::to_value(&item).expect("serialize ProjectListItem");
+        let roots = value["roots"].as_array().expect("roots serialize as array");
+        assert_eq!(roots.len(), 2);
+        assert_eq!(roots[0]["available"], serde_json::json!(true));
+        assert_eq!(roots[1]["available"], serde_json::json!(false));
+
+        let _ = std::fs::remove_dir_all(&existing);
     }
 
     #[test]
