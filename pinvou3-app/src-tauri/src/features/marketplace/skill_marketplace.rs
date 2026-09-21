@@ -265,6 +265,27 @@ impl SkillMarketplaceManager {
     /// 前端列表:预置技能(带 installed 状态) + 用户上传的技能（BundleStore 里
     /// `source=Upload` 的记录——`.installed-from` 标记已退役，登记即来源）。
     pub fn list_skills(&self) -> Vec<MarketplaceSkillInfo> {
+        self.list_skills_inner(true)
+    }
+
+    /// Ids of the installed skills without the display-only work: the update
+    /// check hashes every installed preset skill's directory, which is wasted
+    /// inside the scope consent-file critical section — `update_disabled_bundles_for`
+    /// expands the DenyAll fallback while holding the cross-process flock, and
+    /// every gating read queues behind it. Callers that consume only ids use
+    /// this cheap enumeration; the badge check stays in [`Self::list_skills`].
+    pub fn installed_skill_ids_cheap(&self) -> Vec<String> {
+        self.list_skills_inner(false)
+            .into_iter()
+            .filter(|s| s.installed)
+            .map(|s| s.id)
+            .collect()
+    }
+
+    /// `update_checks = false` skips the per-preset directory fingerprint
+    /// (display-only) and the SKILL.md frontmatter parse (display-only); the
+    /// installed/id surfaces are identical.
+    fn list_skills_inner(&self, update_checks: bool) -> Vec<MarketplaceSkillInfo> {
         let presets = preset_manifests();
         let mut out: Vec<MarketplaceSkillInfo> = presets
             .iter()
@@ -277,7 +298,11 @@ impl SkillMarketplaceManager {
                 color: m.color.to_string(),
                 installed: self.is_installed(m.skill_name),
                 user_uploaded: false,
-                update_available: self.preset_update_available(m),
+                update_available: if update_checks {
+                    self.preset_update_available(m)
+                } else {
+                    false
+                },
                 display_name: None,
                 display_description: None,
             })
@@ -315,9 +340,14 @@ impl SkillMarketplaceManager {
                         // 空 subtitle 让前端回退三语 localized 文案(上传技能无自有副标题)
                         subtitle: String::new(),
                         // 解析 SKILL.md frontmatter description 展示;缺失则空
-                        description: display_description.clone().unwrap_or_else(|| {
-                            read_skill_description(&dir.join("SKILL.md")).unwrap_or_default()
-                        }),
+                        // (cheap 模式只消费 id,跳过这次展示用的 frontmatter 解析)
+                        description: if update_checks {
+                            display_description.clone().unwrap_or_else(|| {
+                                read_skill_description(&dir.join("SKILL.md")).unwrap_or_default()
+                            })
+                        } else {
+                            String::new()
+                        },
                         icon: "Package".to_string(),
                         color: "bg-gradient-to-b from-slate-400 to-slate-600".to_string(),
                         installed: true,
@@ -382,27 +412,7 @@ impl SkillMarketplaceManager {
     /// swallowed — fine for display/list paths, fail-open for a consent gate.
     /// The DenyAll default computation must use `installed_skill_ids_strict`.
     pub fn installed_skill_ids(&self) -> Vec<String> {
-        let mut out: Vec<String> = preset_manifests()
-            .iter()
-            .filter(|m| self.is_installed(m.skill_name))
-            .map(|m| m.id.to_string())
-            .collect();
-        match self.bundle_store.records() {
-            Ok(records) => {
-                for record in records {
-                    if !matches!(record.source, super::store::BundleSource::Upload(_)) {
-                        continue;
-                    }
-                    if self.is_installed(&record.id) {
-                        out.push(record.id);
-                    }
-                }
-            }
-            Err(e) => log::warn!(
-                "[skill-marketplace] failed to read BundleStore; installed_skill_ids falls back to bundled skills only: {e}"
-            ),
-        }
-        out
+        self.installed_skill_ids_cheap()
     }
 
     /// Strict variant of `installed_skill_ids`, used only by the DenyAll default
@@ -2610,6 +2620,25 @@ mod tests {
             "visualizer/scripts/validate_visualizer_html.py"
         )));
         assert!(!is_python_cache_path(std::path::Path::new("pua/SKILL.md")));
+    }
+
+    #[test]
+    fn cheap_installed_ids_match_the_listed_installed_ids() {
+        // The cheap enumeration must not miss or add skills relative to the
+        // full list: the DenyAll expansion inside the consent-file critical
+        // section runs on it, and a divergence would deny a different set
+        // than the marketplace UI shows.
+        with_temp_home("skill-cheap-ids", || {
+            let manager = SkillMarketplaceManager::new();
+            let listed: Vec<String> = manager
+                .list_skills()
+                .into_iter()
+                .filter(|s| s.installed)
+                .map(|s| s.id)
+                .collect();
+            let cheap = manager.installed_skill_ids_cheap();
+            assert_eq!(listed, cheap, "cheap enumeration must match list_skills");
+        });
     }
 
     #[test]
