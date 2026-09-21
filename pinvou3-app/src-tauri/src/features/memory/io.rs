@@ -1090,7 +1090,8 @@ pub fn delete_timed_memory(kind: &str, id: &str) -> io::Result<bool> {
     delete_timed_memory_unlocked(kind, id)
 }
 
-/// Caller must hold [`write_lock`] (see [`update_timed_memory_unlocked`]).
+/// Caller must hold [`write_lock`]: archives every matching non-archived
+/// timed-memory item in place (status → "archived").
 pub(super) fn archive_timed_memory_unlocked(kind: &str, id: &str) -> io::Result<bool> {
     let kind = normalize_timed_memory_kind(kind);
     let id = clean_id(id);
@@ -1111,6 +1112,7 @@ pub(super) fn archive_timed_memory_unlocked(kind: &str, id: &str) -> io::Result<
     Ok(changed)
 }
 
+/// Caller must hold [`write_lock`] (see [`update_timed_memory_unlocked`]).
 pub(super) fn delete_timed_memory_unlocked(kind: &str, id: &str) -> io::Result<bool> {
     let kind = normalize_timed_memory_kind(kind);
     let id = clean_id(id);
