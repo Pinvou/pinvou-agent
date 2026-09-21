@@ -10,13 +10,22 @@ const CHIP_CLS =
   'h-7 max-w-[220px] rounded-lg pl-2 pr-1 inline-flex items-center gap-1.5 text-[12px] ' +
   'bg-[#E8F0FE] text-[#1967D2] dark:bg-[#1F3A5F] dark:text-[#A8C7FA]';
 
-/** 输入框上方的引用 chip 条(可逐个移除)。 */
-export function SessionMentionChips({ refs, onRemove, copy }) {
+// 功能关闭(§3.3 第 4 层存量降级)的 chip 配色:灰化但保留可删除。
+const CHIP_DISABLED_CLS =
+  'h-7 max-w-[220px] rounded-lg pl-2 pr-1 inline-flex items-center gap-1.5 text-[12px] ' +
+  'bg-black/[0.04] text-[#9AA0A6] dark:bg-white/[0.06] dark:text-[#80868B]';
+
+/** 输入框上方的引用 chip 条(可逐个移除);功能关闭时整体降级灰化(disabledNotice 悬停提示)。 */
+export function SessionMentionChips({ refs, onRemove, copy, disabled = false, disabledNotice = '' }) {
   if (!refs || refs.length === 0) return null;
   return (
     <div data-testid="session-mention-chips" className="flex flex-wrap gap-1.5 mb-2 px-2">
       {refs.map((ref) => (
-        <span key={ref.sessionId} className={CHIP_CLS} title={ref.title}>
+        <span
+          key={ref.sessionId}
+          className={disabled ? CHIP_DISABLED_CLS : CHIP_CLS}
+          title={disabled ? disabledNotice : ref.title}
+        >
           <MessageSquare size={13} className="shrink-0" />
           <span className="min-w-0 truncate">{ref.title || ref.sessionId}</span>
           <button
@@ -75,13 +84,15 @@ export function SessionMentionMenu({ candidates, selectedIndex, onSelect, onHove
 /**
  * 已发送消息里的引用卡片(点击跳转目标会话)。
  * knownSessionIds 提供存活判定:被引用会话已删除时卡片降级为失效态(不可点)。
+ * disabled(功能已关闭,§3.3 第 4 层存量降级)时全部卡片不可点、显示功能关闭
+ * 短标签(copy.cardDisabled),悬停给出 disabledNotice 完整说明;历史注入块不动。
  */
-export function SessionMentionCards({ refs, knownSessionIds, onOpenSession, copy }) {
+export function SessionMentionCards({ refs, knownSessionIds, onOpenSession, copy, disabled = false, disabledNotice = '' }) {
   if (!refs || refs.length === 0) return null;
   return (
     <div data-testid="session-mention-cards" className="flex max-w-full flex-wrap justify-end gap-1.5 mb-1.5">
       {refs.map((ref, index) => {
-        const known = !knownSessionIds || knownSessionIds.has(ref.sessionId);
+        const known = !disabled && (!knownSessionIds || knownSessionIds.has(ref.sessionId));
         const label = ref.title || ref.sessionId;
         const base =
           'max-w-[240px] rounded-xl px-3 py-1.5 inline-flex items-center gap-1.5 text-[12px] border ';
@@ -93,7 +104,9 @@ export function SessionMentionCards({ refs, knownSessionIds, onOpenSession, copy
           <>
             <MessageSquare size={13} className="shrink-0" />
             <span className="min-w-0 truncate">{label}</span>
-            {!known && <span className="shrink-0 text-[11px]">{copy.cardUnavailable}</span>}
+            {disabled
+              ? <span className="shrink-0 text-[11px]">{copy.cardDisabled}</span>
+              : (!known && <span className="shrink-0 text-[11px]">{copy.cardUnavailable}</span>)}
           </>
         );
         return known && onOpenSession ? (
@@ -112,8 +125,9 @@ export function SessionMentionCards({ refs, knownSessionIds, onOpenSession, copy
           <span
             key={ref.sessionId + '-' + index}
             data-testid={'session-mention-card-' + ref.sessionId}
-            title={known ? label : copy.cardUnavailable}
-            // 存活但无导航回调(非主时间线场景)保持正常配色仅不可点,失效灰只留给已删除会话。
+            title={disabled ? disabledNotice : (known ? label : copy.cardUnavailable)}
+            // 存活但无导航回调(非主时间线场景)保持正常配色仅不可点,失效灰只留给已删除会话
+            // 与功能关闭两种降级态。
             className={base + (known ? active : dead)}
           >
             {inner}
