@@ -1194,7 +1194,7 @@ mod tests {
             .unwrap();
             save_hidden_bundles_for(ConnectorScope::Code, &["weather".to_string()]).unwrap();
 
-            remove_bundle_from_disabled_scopes("weather");
+            remove_bundle_from_disabled_scopes("weather").unwrap();
 
             assert!(load_disabled_bundles_for(ConnectorScope::Plain).is_empty());
             assert_eq!(
