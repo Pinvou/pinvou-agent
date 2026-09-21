@@ -278,8 +278,13 @@ impl SessionStore {
         if !removed_multi_agent_ids.is_empty() {
             // 保留策略清掉的会话必须同步移出 _multi_agent.json：残留的幽灵
             // id 会在重启后复活开关状态，专家池变更联动还会给它重建工作区。
+            // Same critical-section contract as `set_multi_agent`: the
+            // in-process `multi_agent_flags_io` mutex must serialize the
+            // durable read-modify-write, or a concurrent save's older
+            // snapshot lands last and resurrects the removed flag.
             let refs: Vec<&str> = removed_multi_agent_ids.iter().map(String::as_str).collect();
-            if let Err(error) = Self::apply_multi_agent_mutation(&[], &refs) {
+            let _io = self.multi_agent_flags_io.lock();
+            if let Err(error) = Self::apply_multi_agent_mutation_locked(&[], &refs) {
                 eprintln!(
                     "[sessions] update _multi_agent.json after retention purge failed: {error:#}"
                 );
@@ -318,24 +323,19 @@ impl SessionStore {
             }
         }
 
-        let removed_models: Vec<String> = {
+        {
+            // In-memory cache only: the durable batch removal below is a
+            // single read-modify-write for the whole eviction set.
             let mut models = self.session_models.write();
-            let removed: Vec<String> = models
-                .keys()
-                .filter(|id| contains(id.as_str()))
-                .cloned()
-                .collect();
-            for id in &removed {
-                models.remove(id);
-            }
-            removed
-        };
-        for id in &removed_models {
-            if let Err(error) = super::sidecars::apply_session_model_mutation(id, None) {
-                eprintln!(
-                    "[sessions] update _session_models.json after retention purge failed: {error:#}"
-                );
-            }
+            models.retain(|id, _| !contains(id.as_str()));
+        }
+        // One durable-file RMW for the whole batch instead of one per id
+        // (mirroring the batched mode-map mutation above).
+        let model_refs: Vec<&str> = ids.iter().map(String::as_str).collect();
+        if let Err(error) = super::sidecars::remove_session_models(&model_refs) {
+            eprintln!(
+                "[sessions] update _session_models.json after retention purge failed: {error:#}"
+            );
         }
 
         {
@@ -345,46 +345,35 @@ impl SessionStore {
             }
         }
 
-        let removed_pins: Vec<String> = {
+        {
             let mut pins = self.pinned_sessions.write();
-            let removed: Vec<String> = pins
-                .keys()
-                .filter(|id| contains(id.as_str()))
-                .cloned()
-                .collect();
-            for id in &removed {
-                pins.remove(id);
-            }
-            removed
-        };
-        if !removed_pins.is_empty() {
-            let refs: Vec<&str> = removed_pins.iter().map(String::as_str).collect();
-            if let Err(error) = self.purge_pinned_ids(&refs) {
-                eprintln!(
-                    "[sessions] update _pinned_sessions.json after retention purge failed: {error:#}"
-                );
-            }
+            pins.retain(|id, _| !contains(id.as_str()));
+        }
+        // Purge pins against the DURABLE file with the full eviction set, not
+        // just the ids this process's boot-time map knows: a pin another
+        // process persisted after boot is invisible to the in-memory map, and
+        // leaving it behind would let the evicted id survive as a ghost pin
+        // that re-arms the retention exemption on id reuse. The mutation
+        // removes only ids actually present and refuses a torn file instead
+        // of rewriting it (see apply_timestamped_id_mutation), so the
+        // boot-map fallback that narrows the eviction set stays intact.
+        let all_refs: Vec<&str> = ids.iter().map(String::as_str).collect();
+        if let Err(error) = self.purge_pinned_ids(&all_refs) {
+            eprintln!(
+                "[sessions] update _pinned_sessions.json after retention purge failed: {error:#}"
+            );
         }
 
-        let removed_hidden: Vec<String> = {
+        {
             let mut hidden = self.hidden_sessions.write();
-            let removed: Vec<String> = hidden
-                .keys()
-                .filter(|id| contains(id.as_str()))
-                .cloned()
-                .collect();
-            for id in &removed {
-                hidden.remove(id);
-            }
-            removed
-        };
-        if !removed_hidden.is_empty() {
-            let refs: Vec<&str> = removed_hidden.iter().map(String::as_str).collect();
-            if let Err(error) = self.purge_hidden_ids(&refs) {
-                eprintln!(
-                    "[sessions] update _hidden_sessions.json after retention purge failed: {error:#}"
-                );
-            }
+            hidden.retain(|id, _| !contains(id.as_str()));
+        }
+        // Same durable-file reasoning as the pin purge above: a hidden entry
+        // written by another process after boot must not survive eviction.
+        if let Err(error) = self.purge_hidden_ids(&all_refs) {
+            eprintln!(
+                "[sessions] update _hidden_sessions.json after retention purge failed: {error:#}"
+            );
         }
 
         // Keys of process-level turn-state maps (timing/pending_user_input)
