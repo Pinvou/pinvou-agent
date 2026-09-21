@@ -141,6 +141,27 @@ pub(crate) fn managed_dependency_install_failure_pending_for_test() -> bool {
     FAIL_NEXT_MANAGED_DEPENDENCY_INSTALL.load(std::sync::atomic::Ordering::SeqCst)
 }
 
+/// Arms `FAIL_NEXT_INSTALLED_WRITE` for the calling test and always disarms it on
+/// drop — including panics. The flag is process-global and its only consumer is
+/// `save_installed`, so a test that fails before reaching that call (or panics
+/// while armed) would otherwise leak the injected failure into the next install
+/// running in the same process (issue #528).
+#[cfg(test)]
+struct FailNextInstalledWriteGuard;
+
+#[cfg(test)]
+impl Drop for FailNextInstalledWriteGuard {
+    fn drop(&mut self) {
+        FAIL_NEXT_INSTALLED_WRITE.store(false, std::sync::atomic::Ordering::SeqCst);
+    }
+}
+
+#[cfg(test)]
+fn fail_next_installed_write_for_test() -> FailNextInstalledWriteGuard {
+    FAIL_NEXT_INSTALLED_WRITE.store(true, std::sync::atomic::Ordering::SeqCst);
+    FailNextInstalledWriteGuard
+}
+
 #[cfg(test)]
 static TEST_TRUSTED_DEPENDENCY_MANIFESTS: std::sync::LazyLock<
     Mutex<std::collections::HashMap<String, ToolManifest>>,
@@ -3368,7 +3389,7 @@ mod tests {
                 }"#,
             );
 
-            FAIL_NEXT_INSTALLED_WRITE.store(true, std::sync::atomic::Ordering::SeqCst);
+            let _fail_next_installed_write = fail_next_installed_write_for_test();
             let manager = MarketplaceManager::with_store(MemoryCredentialStore::default());
             let error = manager
                 .install("half-install", &std::collections::HashMap::new())
@@ -3422,12 +3443,19 @@ mod tests {
             )
             .unwrap();
 
-            FAIL_NEXT_INSTALLED_WRITE.store(true, std::sync::atomic::Ordering::SeqCst);
+            let _fail_next_installed_write = fail_next_installed_write_for_test();
             let manager = MarketplaceManager::with_store(MemoryCredentialStore::default());
+            let error = manager
+                .install("trusted-lock", &std::collections::HashMap::new())
+                .unwrap_err();
+            // 只认注入的 installed.json 写失败：任何更早环节的失败都说明该测试没有
+            // 走到回滚路径（is_err() 会掩盖真实错误并把注入标志泄漏给后续测试）。
+            // Only the injected installed.json write failure counts: any earlier
+            // failure means the rollback path was never reached (a bare is_err()
+            // masks the real error and leaks the injection flag to later tests).
             assert!(
-                manager
-                    .install("trusted-lock", &std::collections::HashMap::new())
-                    .is_err()
+                error.contains("installed.json"),
+                "install failed before reaching the injected installed.json write failure: {error}"
             );
             assert!(
                 old_environment.is_dir(),
@@ -4005,7 +4033,7 @@ mod tests {
             )
             .unwrap();
             let installed_before = manager_installed_bytes();
-            FAIL_NEXT_INSTALLED_WRITE.store(true, std::sync::atomic::Ordering::SeqCst);
+            let _fail_next_installed_write = fail_next_installed_write_for_test();
 
             let errors = manager
                 .repair_installed_python_tools_with_python(&python)
