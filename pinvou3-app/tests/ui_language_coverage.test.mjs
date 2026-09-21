@@ -3,6 +3,14 @@ import { readFileSync } from 'node:fs';
 import { dict } from './helpers/i18n-all.js'; // full three-language dict: browser entry lazy-loads via i18n.js, tests use the aggregate shim
 
 const source = relative => readFileSync(new URL(`../src/${relative}`, import.meta.url), 'utf8');
+// Shape pins must not match text inside `//` comment lines: a guard commented
+// out in the source would otherwise still satisfy every anchor (round-23
+// should-fix 2, live-verified — commenting out the send-registry delete left
+// this suite green). Block comments are kept: they cannot hide a code line.
+const stripLineComments = text => text
+  .split('\n')
+  .filter(line => !line.trimStart().startsWith('//'))
+  .join('\n');
 
 for (const language of ['zh', 'en', 'ja']) {
   for (const section of [
@@ -235,7 +243,7 @@ assert.match(chat, /data-testid="aux-chat-open"/);
 // while another dock panel occludes the aux panel.
 assert.match(chat, /onActiveChange=\{setAuxChatDockActive\}/);
 assert.match(chat, /auxChatPanel && auxChatDockActive/);
-const auxChatPanel = source('features/aux-chat/AuxChatPanel.jsx');
+const auxChatPanel = stripLineComments(source('features/aux-chat/AuxChatPanel.jsx'));
 assert.match(auxChatPanel, /const copy = t\.uiAuxChat/);
 assert.match(auxChatPanel, /copy=\{conversationCopy\}/);
 // Restart-topic staged guards: discard and ensure are wrapped in separate
@@ -322,8 +330,18 @@ assert.match(auxChatPanel, /const DISCARD_WATCHDOG_MS = 180_000;/);
 assert.match(auxChatPanel, /const discardStuckByTask = new Set\(\);/);
 assert.match(
   restartBlock,
-  /discardInFlightByTask\.set\(sessionId, discardPromise\);\s*[\s\S]{0,400}?discardStuckByTask\.delete\(sessionId\);\s*[\s\S]{0,1400}?const watchdog = setTimeout\(\(\) => \{\s*[\s\S]{0,400}?if \(discardInFlightByTask\.get\(sessionId\) !== discardPromise\) return;\s*discardStuckByTask\.add\(sessionId\);\s*[\s\S]{0,400}?if \(generationRef\.current !== generation\) return;\s*setDiscardStuck\(true\);\s*[\s\S]{0,400}?setRestarting\(false\);\s*setBindingPending\(false\);\s*\}, DISCARD_WATCHDOG_MS\);\s*try \{\s*await discardPromise;/,
+  /discardInFlightByTask\.set\(sessionId, discardPromise\);\s*[\s\S]{0,400}?discardStuckByTask\.delete\(sessionId\);\s*[\s\S]{0,1400}?const watchdog = setTimeout\(\(\) => \{\s*[\s\S]{0,400}?if \(discardInFlightByTask\.get\(sessionId\) !== discardPromise\) return;\s*discardStuckByTask\.add\(sessionId\);\s*[\s\S]{0,400}?if \(sessionIdRef\.current !== sessionId\) return;\s*setDiscardStuck\(true\);\s*[\s\S]{0,400}?setRestarting\(false\);\s*setBindingPending\(false\);\s*\}, DISCARD_WATCHDOG_MS\);\s*try \{\s*await discardPromise;/,
   'a settle-watchdog must be armed between the registry set and the discard await, marking stuck and releasing the dead latches',
+);
+// The watchdog must gate on the live task mirror, not the generation (round-23
+// MAJOR-3): an A→B→A round-trip re-awaits the still-pending discard under a
+// fresh generation, and a generation gate would suppress the banner and leave
+// that rebind's bindingPending uncleared — the eternal "preparing" state the
+// watchdog exists to break.
+assert.match(
+  restartBlock,
+  /discardStuckByTask\.add\(sessionId\);[\s\S]{0,400}?if \(sessionIdRef\.current !== sessionId\) return;\s*setDiscardStuck\(true\);/,
+  'the watchdog must surface the stuck banner while the panel shows this task, keyed on sessionIdRef',
 );
 // The settle path must cancel the watchdog and clear entry + marker only by
 // promise identity — a re-armed restart's fresh discard owns the slot and any
@@ -339,9 +357,25 @@ assert.match(
 // restart clears the banner at entry.
 assert.match(auxChatPanel, /const \[discardStuck, setDiscardStuck\] = useState\(false\);/);
 assert.match(auxChatPanel, /setDiscardStuck\(!!\(sessionId && discardStuckByTask\.has\(sessionId\)\)\);/);
-assert.match(auxChatPanel, /if \(pendingDiscard && !discardStuckByTask\.has\(sessionId\)\) \{\s*pendingDiscard\.then\(ensureAfterDiscard, ensureAfterDiscard\);/);
 assert.match(auxChatPanel, /copy\.discardStuck/);
 assert.match(restartBlock, /setDiscardFailed\(false\);\s*[\s\S]{0,300}?setDiscardStuck\(false\);/);
+// Stuck suppression (round-23 MAJOR-2): while a task's marker stands, the
+// orphaned discard command can still execute server-side against the current
+// mapping — the rebind effect must neither await nor ENSURE past it (binding
+// would put a live transcript in front of the orphan), and handleSend must
+// refuse while stuck (a message sent now could be destroyed with the session
+// it lands in). The stuck branch drops the "preparing" hint instead of
+// keeping it: the banner is the state the panel shows.
+assert.match(
+  auxChatPanel,
+  /if \(discardStuckByTask\.has\(sessionId\)\) \{\s*setBindingPending\(false\);\s*\} else if \(pendingDiscard\) \{\s*pendingDiscard\.then\(ensureAfterDiscard, ensureAfterDiscard\);\s*\} else \{\s*ensureAfterDiscard\(\);\s*\}/,
+  'the rebind effect must skip ensure while a discard is stuck, clearing the preparing hint',
+);
+assert.match(
+  auxChatPanel,
+  /if \(sendInFlightByTask\.has\(sentTaskId\)\) return;\s*[\s\S]{0,200}?if \(discardStuckByTask\.has\(sentTaskId\)\) return;/,
+  'handleSend must refuse while the task\'s discard is stuck',
+);
 // Send-latch release at restart entry (round-12 N2): handleSend releases the
 // latch only when turn_started marks the snapshot busy (round-20 minor-4) or
 // on its own failure path, and a same-task restart does not re-run the rebind
@@ -406,8 +440,8 @@ assert.match(auxChatPanel, /setBindingPending\(!!\(auxChat && sessionId\)\);/);
 assert.match(auxChatPanel, /setBindingPending\(true\);[\s\S]*?const discardPromise = auxChat\.discard\(sessionId\);/);
 assert.equal(
   (auxChatPanel.match(/setBindingPending\(false\);/g) || []).length,
-  4,
-  'bindingPending must clear on ensure success, ensure failure, the restart finally and the round-22 settle-watchdog',
+  5,
+  'bindingPending must clear on ensure success, ensure failure, the stuck skip, the restart finally and the round-22 settle-watchdog',
 );
 assert.match(auxChatPanel, /bindingPending \? copy\.bindingHint : copy\.emptyState/);
 // In-flight send feedback (round-12 UX): the send window had no visible state
@@ -441,13 +475,24 @@ assert.match(
 // in round-17 M-A: the success path consumes whenever the send settled into a
 // live transcript — same binding (the composer shows this task) OR the panel
 // moved to another task (A's aux is alive on its own binding). Only the
-// same-task fresh-aux restart case skips, keeping the draft as recovery. The
-// skip must be the restart-only conjunction, and consumption must follow it
-// with no generation guard.
+// restart case skips, keeping the draft as recovery — keyed since round-23
+// MAJOR-4 on the restart epoch captured at dispatch, NOT on binding equality
+// alone: a same-task rebind's transient null binding is not a restart, and
+// the delivery there reached the still-live transcript the rebind re-ensures.
 assert.match(
   auxChatPanel,
-  /const sendPromise = auxChat\.send\(sentAuxId, quoteBlock \? text \+ quoteBlock : text\);[\s\S]{0,200}?await sendPromise;\s*\n[\s\S]{0,1200}?const sameBinding = auxIdRef\.current === sentAuxId;\s*const onSameTask = sessionIdRef\.current === sentTaskId;\s*if \(!sameBinding && onSameTask\) return;\s*if \(sentTaskId\) \{/,
-  'consumption must follow the restart-only skip directly, gated on binding and live task identity',
+  /const sendPromise = auxChat\.send\(sentAuxId, quoteBlock \? text \+ quoteBlock : text\);[\s\S]{0,700}?await sendPromise;\s*\n[\s\S]{0,1200}?const sameBinding = auxIdRef\.current === sentAuxId;\s*const onSameTask = sessionIdRef\.current === sentTaskId;\s*if \(!sameBinding && onSameTask\s*&& \(restartEpochByTask\.get\(sentTaskId\) \|\| 0\) !== sentEpoch\) return;\s*if \(sentTaskId\) \{/,
+  'consumption must follow the restart-only skip directly, gated on binding, live task identity and the restart epoch',
+);
+// The epoch must be captured at dispatch and bumped at restart entry before
+// the binding null (round-23 MAJOR-4), module-scoped so it survives rebinds
+// and remounts.
+assert.match(auxChatPanel, /const restartEpochByTask = new Map\(\);/);
+assert.match(auxChatPanel, /const sentEpoch = restartEpochByTask\.get\(sentTaskId\) \|\| 0;/);
+assert.match(
+  restartBlock,
+  /generationRef\.current \+= 1;\s*const generation = generationRef\.current;[\s\S]{0,400}?restartEpochByTask\.set\(sessionId, \(restartEpochByTask\.get\(sessionId\) \|\| 0\) \+ 1\);[\s\S]{0,400}?try \{/,
+  'the restart epoch must be bumped in the restart-entry block, before the discard is issued',
 );
 // The UI-touching part (visible draft clear, snapshot pull) stays
 // binding-gated after the store-map consumption.
@@ -580,6 +625,24 @@ assert.match(auxChatPanel, /const sendInFlightByTask = new Map\(\);/);
 assert.match(auxChatPanel, /if \(sendInFlightByTask\.has\(sentTaskId\)\) return;/);
 assert.match(auxChatPanel, /sendInFlightByTask\.set\(sentTaskId, sendPromise\);/);
 assert.match(auxChatPanel, /finally \{[\s\S]{0,700}?if \(sendInFlightByTask\.get\(sentTaskId\) === sendPromise\) \{\s*sendInFlightByTask\.delete\(sentTaskId\);\s*\}/);
+// Send-latch failsafe (round-23 should-fix 1): the busy-gated release only
+// fires if a render observes busy=true — turn_started and the turn-terminal
+// events coalescing into one render batch (fast-failing turns, relay bursts)
+// never do, and the latch and the registry entry would stick with no
+// recovery. A dispatch outliving SEND_WATCHDOG_MS (the web lane's invoke
+// timeout, same bound as the discard watchdog) releases both, gated on
+// registry-entry identity so a settled or replaced send is never touched.
+assert.match(auxChatPanel, /const SEND_WATCHDOG_MS = 180_000;/);
+assert.match(
+  auxChatPanel,
+  /const sendWatchdog = setTimeout\(\(\) => \{\s*if \(sendInFlightByTask\.get\(sentTaskId\) !== sendPromise\) return;\s*sendingRef\.current = false;\s*setSending\(false\);\s*sendInFlightByTask\.delete\(sentTaskId\);\s*\}, SEND_WATCHDOG_MS\);/,
+  'the send watchdog must release the latch and the registry entry by promise identity',
+);
+assert.match(
+  auxChatPanel,
+  /\} finally \{\s*clearTimeout\(sendWatchdog\);/,
+  'the send watchdog must be cancelled when the send settles',
+);
 // Double-banner guard (round-9 minor-1): entering the restart flow must
 // clear a stale sendFailed too, or a failed send's "retry" banner renders
 // next to the ensure-failure banner after the binding was cleared. The

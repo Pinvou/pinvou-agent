@@ -46,6 +46,11 @@ const RESTART_CONFIRM_MS = 4000;
 // deleting the entry would re-open the N1 race, so it is marked stuck instead).
 const DISCARD_WATCHDOG_MS = 180_000;
 
+// Same bound for the send registry's failsafe (round-23 should-fix 1): a
+// turn_started that never becomes observable must not latch the composer and
+// the send registry forever either.
+const SEND_WATCHDOG_MS = 180_000;
+
 // taskId -> pending discard promise, module-scoped on purpose: the discard it
 // tracks is backend-scoped (the turn gate can hold it for seconds), while the
 // panel unmounts on close and on sched- session switches. A component-level
@@ -65,6 +70,12 @@ const discardInFlightByTask = new Map();
 // hint, dead composer, N1 guard refusing every restart until an app reload).
 // A task's marker is cleared when the owning discard settles or when a
 // re-armed restart registers a fresh discard for that task.
+// Disposition while the marker stands (round-23 MAJOR-2): the panel neither
+// re-binds (the rebind effect skips ensure) nor sends — the orphaned discard
+// COMMAND can still execute server-side, where it deletes whatever aux
+// session is mapped for this task at execution time, so nothing new may be
+// put in front of it. The re-armed New Topic is the recovery: it re-issues a
+// fresh discard, awaits it, and only then re-ensures.
 const discardStuckByTask = new Set();
 
 // taskId -> pending send promise, module-scoped for the same reason as the
@@ -77,6 +88,20 @@ const discardStuckByTask = new Set();
 // tasks and ensure is idempotent — and entries are removed by the exact send
 // that registered them once it settles.
 const sendInFlightByTask = new Map();
+
+// taskId -> restart epoch, module-scoped with the registries above: a send
+// dispatched before a restart must know, at ack time, whether a restart for
+// this task was initiated since the dispatch — the keep-draft skip in
+// handleSend is the restart case only (the delivery was destroyed with the
+// discarded transcript, so the text stays as recovery material), while a
+// same-task rebind re-ensures the SAME live aux session and an ack landing
+// inside its null-binding window must consume the draft (the delivery reached
+// a live transcript; keeping it restores already-delivered text for a
+// duplicate send, round-23 MAJOR-4). handleRestart bumps the epoch in its
+// synchronous entry block, before the discard is issued, so every ack
+// ordering inside and after the restart window reads "restarted"; the count
+// survives rebinds, closes and remounts that a component-level flag could not.
+const restartEpochByTask = new Map();
 
 // taskId -> unsent composer draft, module-scoped for the same reason as the
 // discard registry above: a draft belongs to the task, not to this instance,
@@ -198,9 +223,12 @@ export function AuxChatPanel({ sessionId, activationKey, t, theme, onClose, onAc
     // (errors surface on the restart path) and re-check the generation so a
     // further rebind during the wait aborts this ensure entirely. A stuck
     // entry (round-22 Major: its settle-watchdog fired, so it may never
-    // settle) is NOT awaited — parking the ensure behind it is exactly the
-    // eternal "preparing" dead end the watchdog exists to break; the stuck
-    // banner and the re-armed New Topic carry the recovery instead.
+    // settle) is neither awaited nor ensured at all (round-23 MAJOR-2): the
+    // orphaned discard command can still execute server-side against the
+    // current mapping, so binding or sending now would put a live transcript
+    // in front of it. The panel stays unbound behind the stuck banner; the
+    // re-armed New Topic is the recovery (fresh discard, awaited, before its
+    // ensure).
     const pendingDiscard = discardInFlightByTask.get(sessionId);
     const ensureAfterDiscard = () => {
       if (disposed || generationRef.current !== generation) return;
@@ -222,7 +250,12 @@ export function AuxChatPanel({ sessionId, activationKey, t, theme, onClose, onAc
           setEnsureFailed(true);
         });
     };
-    if (pendingDiscard && !discardStuckByTask.has(sessionId)) {
+    if (discardStuckByTask.has(sessionId)) {
+      // Stuck: skip ensure and drop the "preparing" hint — the stuck banner
+      // (mirrored above) is the state the panel shows, and the composer stays
+      // disabled behind the null binding until New Topic recovers.
+      setBindingPending(false);
+    } else if (pendingDiscard) {
       pendingDiscard.then(ensureAfterDiscard, ensureAfterDiscard);
     } else {
       ensureAfterDiscard();
@@ -365,17 +398,43 @@ export function AuxChatPanel({ sessionId, activationKey, t, theme, onClose, onAc
     // ensureFailed, nor a draft clear that would eat text typed since.
     const sentGeneration = generationRef.current;
     const sentTaskId = sessionId;
+    // The restart boundary for the keep-draft skip below: "a restart was
+    // initiated for this task since this dispatch", not binding equality
+    // (round-23 MAJOR-4).
+    const sentEpoch = restartEpochByTask.get(sentTaskId) || 0;
     if (!auxChat || !sentAuxId || (!text && !quoteBlock) || busy || restarting || sendingRef.current) return;
     // The registry is the guard that survives rebinds: the rebind effect
     // resets sendingRef on every task switch, so a switch away and back while
     // this send is still in flight would otherwise re-open the duplicate-send
     // window (turn_started lags the dispatch by one event round trip).
     if (sendInFlightByTask.has(sentTaskId)) return;
+    // A stuck discard for this task may still execute server-side (round-23
+    // MAJOR-2): it deletes whatever aux session is mapped at execution time,
+    // so a message sent now could be destroyed with the session it landed in.
+    // The stuck banner is the visible state; the re-armed New Topic (fresh
+    // awaited discard) is the recovery.
+    if (discardStuckByTask.has(sentTaskId)) return;
     sendingRef.current = true;
     setSending(true);
     setSendFailed(false);
     const sendPromise = auxChat.send(sentAuxId, quoteBlock ? text + quoteBlock : text);
     sendInFlightByTask.set(sentTaskId, sendPromise);
+    // Send-latch failsafe (round-23 should-fix 1), the send-side twin of the
+    // discard watchdog: the busy-gated latch release above the timeline only
+    // fires if a render observes busy=true — when turn_started and the
+    // turn-terminal events coalesce into one render batch (fast-failing
+    // turns, relay event bursts), busy is never true and the latch and this
+    // registry entry would stick with no recovery path. Past the bound (the
+    // web lane's invoke timeout, same as the discard watchdog), release both:
+    // a still-running turn makes the next dispatch surface the backend's
+    // honest busy rejection, a finished one just un-deads the composer; New
+    // Topic remains the recovery for the never-settling invoke itself.
+    const sendWatchdog = setTimeout(() => {
+      if (sendInFlightByTask.get(sentTaskId) !== sendPromise) return;
+      sendingRef.current = false;
+      setSending(false);
+      sendInFlightByTask.delete(sentTaskId);
+    }, SEND_WATCHDOG_MS);
     try {
       await sendPromise;
       // Same binding (aux ids are 1:1 with tasks and ensure is idempotent):
@@ -390,7 +449,19 @@ export function AuxChatPanel({ sessionId, activationKey, t, theme, onClose, onAc
       // UI-touching part stays binding-gated.
       const sameBinding = auxIdRef.current === sentAuxId;
       const onSameTask = sessionIdRef.current === sentTaskId;
-      if (!sameBinding && onSameTask) return;
+      // The keep-draft skip is the restart case only, keyed on the restart
+      // epoch captured at dispatch — binding equality alone cannot tell the
+      // restart window (transcript destroyed, the draft stays as recovery
+      // material) from a same-task rebind's transient null binding: inside
+      // the rebind window the delivery has landed in the still-live transcript
+      // the rebind re-ensures, and skipping here kept a draft the rebind's
+      // restore re-filled into the composer for a duplicate send (round-23
+      // MAJOR-4). The epoch is bumped in the synchronous restart-entry block
+      // before the discard is issued, so every ack ordering inside and after
+      // the restart window reads "restarted", and the count survives rebinds
+      // and remounts.
+      if (!sameBinding && onSameTask
+        && (restartEpochByTask.get(sentTaskId) || 0) !== sentEpoch) return;
       if (sentTaskId) {
         // Consume only what was actually sent: text typed after this send
         // started belongs to the next message, and quotes staged from the
@@ -418,6 +489,7 @@ export function AuxChatPanel({ sessionId, activationKey, t, theme, onClose, onAc
       sendingRef.current = false;
       setSending(false);
     } finally {
+      clearTimeout(sendWatchdog);
       // The registry entry is removed by the exact send that registered it,
       // unconditionally — unlike the component latch it must not depend on
       // the binding state, or a send settling after a rebind would leak the
@@ -467,10 +539,16 @@ export function AuxChatPanel({ sessionId, activationKey, t, theme, onClose, onAc
     // (N1 guard rejecting every New Topic until an app reload). A stuck entry
     // stays registered (the orphan can still settle, and its late settle must
     // keep failing the identity checks below) but no longer blocks this
-    // action; the generation bump at restart entry below makes every
-    // continuation of the orphaned discard inert before the fresh
-    // discard+ensure runs, so the late settle can neither bind nor unbind
-    // anything from this panel.
+    // action. Round-23 MAJOR-2 corrected the old "the generation bump makes
+    // every continuation of the orphaned discard inert" claim: that holds for
+    // its JS continuations only. The orphaned discard COMMAND can still
+    // execute server-side, where `discard_aux_session` reads the current
+    // mapping at execution time — the stuck suppression (no rebind ensure, no
+    // sends while the marker stands) is what keeps that window empty of new
+    // transcripts, and the fresh discard here is awaited before the ensure
+    // recreates. Documented residual: under the web relay's non-FIFO premise
+    // the orphan can still execute after this recreate, destroying the fresh
+    // session's transcript up to that point — unremovable frontend-side.
     const registeredDiscard = discardInFlightByTask.get(sessionId);
     if (registeredDiscard && !discardStuckByTask.has(sessionId)) {
       setRestartArmed(false);
@@ -544,6 +622,11 @@ export function AuxChatPanel({ sessionId, activationKey, t, theme, onClose, onAc
     // generation here makes every such stale continuation inert.
     generationRef.current += 1;
     const generation = generationRef.current;
+    // Restart epoch (round-23 MAJOR-4): bumped in the synchronous restart-
+    // entry block, before the discard is issued, so every ack continuation —
+    // which can only run once this block yields — reads "restarted". Module-
+    // scoped with the registries so the signal survives rebinds and remounts.
+    restartEpochByTask.set(sessionId, (restartEpochByTask.get(sessionId) || 0) + 1);
     try {
       try {
         // Register the in-flight discard by task id: while its backend turn
@@ -566,16 +649,23 @@ export function AuxChatPanel({ sessionId, activationKey, t, theme, onClose, onAc
         // effect stops awaiting it, the N1 guard re-arms New Topic, and the
         // panel surfaces the stuck state. The entry itself stays until the
         // discard settles, so a late settle keeps failing the identity
-        // checks, and the re-armed restart's generation bump makes the
-        // orphan's remaining continuations inert.
+        // checks; its server-side execution cannot be recalled — the stuck
+        // suppression is what empties that window of new transcripts
+        // (round-23 MAJOR-2).
         const watchdog = setTimeout(() => {
           // A re-armed restart may have replaced this entry while the orphan
           // was still in flight; only mark while this discard still owns it.
           if (discardInFlightByTask.get(sessionId) !== discardPromise) return;
           discardStuckByTask.add(sessionId);
-          // A rebind that moved past this restart resets the latches and
-          // re-reads the marker itself; only the live generation surfaces it.
-          if (generationRef.current !== generation) return;
+          // Surface the stuck state on the panel still showing this task,
+          // keyed on the live task mirror — NOT on the generation (round-23
+          // MAJOR-3): an A→B→A round-trip re-awaits the still-pending discard
+          // under a fresh generation, and a generation gate here would
+          // suppress the banner and leave that rebind's bindingPending
+          // uncleared — the eternal "preparing" state the watchdog exists to
+          // break. A panel showing another task picks the marker up through
+          // the rebind effect's mirror instead.
+          if (sessionIdRef.current !== sessionId) return;
           setDiscardStuck(true);
           // Release the dead restart latches, or New Topic stays disabled
           // behind `restarting` and the re-arm the marker grants is
