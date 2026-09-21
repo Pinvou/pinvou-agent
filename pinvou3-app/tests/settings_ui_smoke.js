@@ -1403,13 +1403,16 @@ async function modalWidth(page, headingText) {
   // 视觉模型候选不做 disabled 过滤:disabled 可能是历史探测误判残留
   // (如 kimi-for-coding 曾因探测链路 400 被回填),应由选择时的识图探测
   // 验证(supported 才可选),而不是提前隐藏。
-  // mock 修改后必须走 TauriBridge.loadModels() 刷新 bridge state,React 才会
-  // 以新 savedModels 重渲染弹窗的视觉候选。
+  // models.loadModels left the facade with the dead-surface cleanup; mock 修改后
+  // re-selecting the current active model chains the same loadModels refresh so
+  // React re-renders the dialog's vision candidates from the new savedModels.
   const toggleVision = async () => { await page.click('[data-testid="vision-model-toggle"]'); await sleep(150); };
+  const refreshModels = () => page.evaluate(() => window.TauriBridge.models
+    .setActiveModel(window.__SETTINGS_TEST__.activeModelId()));
   await page.evaluate(() => {
     window.__SETTINGS_TEST__.setModelImageCapability('local-qwen', 'disabled');
-    return window.TauriBridge.models.loadModels();
   });
+  await refreshModels();
   await toggleVision(); // 关闭再打开,按新候选渲染
   await toggleVision();
   const visionWithDisabled = await page.evaluate(() => {
@@ -1418,8 +1421,8 @@ async function modalWidth(page, headingText) {
   });
   await page.evaluate(() => {
     window.__SETTINGS_TEST__.setModelImageCapability('local-qwen', 'auto');
-    return window.TauriBridge.models.loadModels();
   });
+  await refreshModels();
   await toggleVision(); await toggleVision();
   const visionAfterRestore = await page.evaluate(() => {
     const root = document.querySelector('[data-testid="model-form-dialog"]');
@@ -1667,11 +1670,12 @@ async function modalWidth(page, headingText) {
   // and unpinned tiers echo the catalog annotation (this model is annotated
   // false → "image input not supported"). In the production path
   // "auto" 由 Rust serde 迁移为 pinvou 后前端才收到,此处直灌 auto 只测前端
-  // 防御层(serde 迁移另有 settings 单测覆盖);mock 改档后必须 loadModels()
-  // 刷新 bridge state,React 才会以新 savedModels 渲染(同 ⑦.img.2b)。
+  // 防御层(serde 迁移另有 settings 单测覆盖);mock 改档后 re-selecting the
+  // active model chains the loadModels refresh (same as ⑦.img.2b).
   await page.evaluate(() => window.__SETTINGS_TEST__.setModelImageCapability(
     window.__SETTINGS_TEST__.models().find(model => model.model === 'deepseek-v4-pro').id, 'auto'));
-  await page.evaluate(() => window.TauriBridge.models.loadModels());
+  await page.evaluate(() => window.TauriBridge.models
+    .setActiveModel(window.__SETTINGS_TEST__.activeModelId()));
   await sleep(200);
   const echoLegacyAuto = await echoOverride();
   rec('⑦.img.12c legacy auto tier leftover does not render the retired detect-on-save tier and echoes the catalog annotation',
