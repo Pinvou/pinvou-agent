@@ -27,9 +27,15 @@ const REBIND_ROOTS_PERSIST = 'REBIND_ROOTS_PERSIST';
 // (review #463 round-10 T13, restored by round-11 B2).
 const REBIND_RUNTIME_STARTING = 'REBIND_RUNTIME_STARTING';
 // The legacy global table could not be synced, so the run aborted before any
-// session moved (review #463 round-12 B1): nothing was mutated, and the copy
-// must say so — "retry" is literally all the user needs to do.
+// lane mutated (review #463 round-12 B1, made literally true by round-13 M1's
+// upfront precheck): nothing was moved, and the copy must say so — "retry"
+// is literally all the user needs to do.
 const REBIND_LEGACY_TABLE_UNWRITABLE = 'REBIND_LEGACY_TABLE_UNWRITABLE';
+// The legacy global table is on disk but this run's parse attempt failed
+// (review #463 round-13 M2), so the run aborted before anything moved.
+// Distinct from the writability marker: "make the folder writable" cannot
+// fix a corrupt table — the user must repair or remove the file.
+const REBIND_LEGACY_TABLE_CORRUPT = 'REBIND_LEGACY_TABLE_CORRUPT';
 
 // Markers that resolve to a single trilingual `uiProjects` key. Busy and
 // old-root-exists are handled separately below: the former carries a
@@ -44,6 +50,7 @@ const REBIND_MARKER_MESSAGE_KEYS = {
   [REBIND_ROOTS_PERSIST]: 'rebindRootsPersist',
   [REBIND_RUNTIME_STARTING]: 'rebindRuntimeStarting',
   [REBIND_LEGACY_TABLE_UNWRITABLE]: 'rebindLegacyTableUnsynced',
+  [REBIND_LEGACY_TABLE_CORRUPT]: 'rebindLegacyTableCorrupt',
 };
 
 // `null` when the failure carries no marker (an unmapped backend error, which

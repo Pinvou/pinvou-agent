@@ -243,6 +243,15 @@ impl Drop for PromptAdmissionGuard<'_> {
     }
 }
 
+/// The shared "runtime must not be disturbed" flag set (review #463
+/// round-13): a prompt in flight, a config sync, or a resolved-but-not-yet-
+/// admitted prompt (`prompt_pending`) all count. Single source for the
+/// turn-active probe, the rebind busy fence and the rebind eviction
+/// predicate — the three had drifted into four hand-encoded copies.
+fn rebind_busy_flags(busy: bool, configuring: bool, prompt_pending: bool) -> bool {
+    busy || configuring || prompt_pending
+}
+
 /// Rebind eviction recheck predicate (pure function, unit-testable; review
 /// #463 eviction-tail TOCTOU + round-8 M1): a prompt or config in flight, a
 /// runtime whose sender has resolved it but not yet admitted the turn, or
@@ -256,14 +265,9 @@ fn rebind_evictable(
     prompt_pending: bool,
     idle_for: Duration,
 ) -> bool {
-    !busy && !configuring && !prompt_pending && idle_for >= REBIND_EVICT_IDLE_EPSILON
+    !rebind_busy_flags(busy, configuring, prompt_pending) && idle_for >= REBIND_EVICT_IDLE_EPSILON
 }
 
-/// Result of the rebind eviction take: distinguishes "no resident runtime"
-/// (trivially idle — nothing to reclaim, eviction counts as done) from
-/// "busy" (in-flight prompt/config sync — the caller must not evict and
-/// reports the session as post-busy). `take_session_if_still_idle`'s bare
-/// `Option` cannot express that difference.
 /// Bound on the rebind path's waits for the pool's `sessions` lock (review #463
 /// round-10 T13, restored by round-11 B2). `get_or_spawn` holds that lock
 /// across the WHOLE cold spawn — including the ACP ready handshake — so an
@@ -274,6 +278,11 @@ fn rebind_evictable(
 /// converges once the spawn settles.
 const REBIND_ACP_LOCK_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(2);
 
+/// Result of the rebind eviction take: distinguishes "no resident runtime"
+/// (trivially idle — nothing to reclaim, eviction counts as done) from
+/// "busy" (in-flight prompt/config sync — the caller must not evict and
+/// reports the session as post-busy). `take_session_if_still_idle`'s bare
+/// `Option` cannot express that difference.
 enum RebindEvictTake<T> {
     Reclaimed(T),
     Busy,
@@ -1283,14 +1292,16 @@ impl AcpPool {
             .await
             .get(session_id)
             .is_some_and(|runtime| {
-                runtime.busy.load(std::sync::atomic::Ordering::Acquire)
-                    || runtime
+                rebind_busy_flags(
+                    runtime.busy.load(std::sync::atomic::Ordering::Acquire),
+                    runtime
                         .configuring
-                        .load(std::sync::atomic::Ordering::Acquire)
-                    || runtime
+                        .load(std::sync::atomic::Ordering::Acquire),
+                    runtime
                         .prompt_pending
                         .load(std::sync::atomic::Ordering::Acquire)
-                        > 0
+                        > 0,
+                )
             })
     }
 
@@ -1304,20 +1315,23 @@ impl AcpPool {
     /// per-session bound would multiply the same stall by the number of
     /// affected sessions.
     ///
-    /// Stricter than [`Self::is_turn_active`] in one respect: a prompt that
-    /// has been admitted but not yet started (`prompt_pending`) also counts,
-    /// which closes the pre-admission window the eviction already guards
-    /// against being killed.
+    /// The busy predicate is the shared [`rebind_busy_flags`] (round-13): like
+    /// [`Self::is_turn_active`] and the rebind eviction it counts a prompt
+    /// that has been resolved but not yet admitted (`prompt_pending`), which
+    /// closes the pre-admission window the eviction already guards against
+    /// being killed.
     pub async fn rebind_blocking_sessions(&self, session_ids: &[String]) -> Option<Vec<String>> {
         rebind_blocking_from_sessions(&self.sessions, session_ids, |runtime| {
-            runtime.busy.load(std::sync::atomic::Ordering::Acquire)
-                || runtime
+            rebind_busy_flags(
+                runtime.busy.load(std::sync::atomic::Ordering::Acquire),
+                runtime
                     .configuring
-                    .load(std::sync::atomic::Ordering::Acquire)
-                || runtime
+                    .load(std::sync::atomic::Ordering::Acquire),
+                runtime
                     .prompt_pending
                     .load(std::sync::atomic::Ordering::Acquire)
-                    > 0
+                    > 0,
+            )
         })
         .await
     }
@@ -4656,6 +4670,16 @@ mod tests {
                 self.last_activity.lock().elapsed(),
             )
         }
+
+        /// Same busy-flag probe as the fence closures in
+        /// AcpPool::is_turn_active / AcpPool::rebind_blocking_sessions.
+        fn blocking(&self) -> bool {
+            rebind_busy_flags(
+                self.busy.load(Ordering::Acquire),
+                self.configuring.load(Ordering::Acquire),
+                self.prompt_pending.load(Ordering::Acquire) > 0,
+            )
+        }
     }
 
     #[test]
@@ -4817,11 +4841,7 @@ mod tests {
             "idle-session".to_string(),
             FakeRebindEntry::idle(),
         )]));
-        let fence = |entry: &FakeRebindEntry| {
-            entry.busy.load(Ordering::Acquire)
-                || entry.configuring.load(Ordering::Acquire)
-                || entry.prompt_pending.load(Ordering::Acquire) > 0
-        };
+        let fence = |entry: &FakeRebindEntry| entry.blocking();
         let held = sessions.lock().await;
         let decided =
             rebind_blocking_from_sessions(&sessions, &["idle-session".to_string()], &fence).await;
@@ -4850,11 +4870,7 @@ mod tests {
                 "idle-session".to_string(),
                 "absent-session".to_string(),
             ],
-            |entry| {
-                entry.busy.load(Ordering::Acquire)
-                    || entry.configuring.load(Ordering::Acquire)
-                    || entry.prompt_pending.load(Ordering::Acquire) > 0
-            },
+            FakeRebindEntry::blocking,
         )
         .await;
         assert_eq!(

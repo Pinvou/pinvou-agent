@@ -42,33 +42,41 @@ assert.equal(typeof factory, 'function', 'artifact-tracker feature must register
 // way rebind_dialog_contract.test.mjs pins main.jsx wiring. The web host is a
 // parallel implementation with its own save sites and listener — the rebind
 // events are forwarded to WebUI clients, so its transform must exist too
-// (round-C Major 1).
-const sessionsSource = read('platform/tauri/bridge/sessions.js');
+// (round-C Major 1). Since round-13 the stamp semantics live ONCE in the
+// shared base (the block was byte-duplicated between the two listeners and
+// the round-D chain fix had to land twice); both listeners delegate.
+const sharedSource = read('shared/bridge-shared-helpers.js');
 assert.match(
-  sessionsSource,
-  /payload\.action === "workspace_rebound" && payload\.id && payload\.from && payload\.to/,
-  'the session:list_changed listener must require the rebind geometry',
+  sharedSource,
+  /payload\.action !== "workspace_rebound" \|\| !payload\.id \|\| !payload\.from \|\| !payload\.to/,
+  'the shared stamp must require the rebind geometry',
 );
 assert.match(
-  sessionsSource,
-  /last\.to === payload\.from|else if \(existing\)/,
+  sharedSource,
+  /else if \(existing\)/,
   'chained and non-contiguous rebinds must APPEND so every buffer vintage resolves',
 );
 assert.match(
-  sessionsSource,
+  sharedSource,
   /last\.from === payload\.from && last\.to === payload\.to/,
   'an identical retry must refresh the window without resetting the chain',
 );
 assert.match(
-  sessionsSource,
+  sharedSource,
   /chain: \[\{ from: payload\.from, to: payload\.to \}\]/,
   'the mark must carry the timestamp and the segment chain',
+);
+const sessionsSource = read('platform/tauri/bridge/sessions.js');
+assert.match(
+  sessionsSource,
+  /applyWorkspaceReboundMark\(payload\)/,
+  'the session:list_changed listener must stamp the mark via the shared helper',
 );
 const webSource = read('platform/web/bridge.js');
 assert.match(
   webSource,
-  /payload\.action === "workspace_rebound" && payload\.id && payload\.from && payload\.to/,
-  'the web listener must stamp the mark from the forwarded payload',
+  /applyWorkspaceReboundMark\(payload\)/,
+  'the web listener must stamp the mark via the shared helper',
 );
 assert.match(
   webSource,
@@ -296,6 +304,48 @@ const MARK = { at: Date.now(), chain: [{ from: '/old/root', to: '/new/root' }] }
       '/c/root/report.html',
     ],
     'each vintage resolves onto the final target through the ordered chain',
+  );
+}
+
+// 9. Expanding case mappings (round-13): U+0130 "İ" lowercases to "i" +
+//    U+0307 — two code units for one — so slicing the ORIGINAL path at the
+//    LOWERCASED prefix's length eats a character of the saved suffix. The
+//    match must be located in the original string; the fold is for the
+//    comparison only. Without the fix this saved "/moved/İstanbul" + "a.txt"
+//    (the separator eaten).
+{
+  const state = {
+    reboundSessionIds: {
+      s9: {
+        at: Date.now(),
+        chain: [{ from: '/data/İstanbul', to: '/moved/İstanbul' }],
+      },
+    },
+  };
+  const { tracker } = makeTracker(state, []);
+  assert.deepEqual(
+    tracker.rebaseArtifactPathsForRebind('s9', [
+      '/data/İstanbul/a.txt',
+      '/data/İstanbul/sub/deep/b.png',
+    ]),
+    [
+      '/moved/İstanbul/a.txt',
+      '/moved/İstanbul/sub/deep/b.png',
+    ],
+    'an expanding case mapping in the matched prefix must not eat the suffix',
+  );
+  // The exact-match arm (path IS the root) and the non-matching arm still
+  // behave: equality rebases, a sibling prefix does not.
+  assert.deepEqual(
+    tracker.rebaseArtifactPathsForRebind('s9', [
+      '/data/İstanbul',
+      '/data/İstanbulx/sibling.md',
+    ]),
+    [
+      '/moved/İstanbul',
+      '/data/İstanbulx/sibling.md',
+    ],
+    'equality rebases; a sibling prefix stays untouched',
   );
 }
 

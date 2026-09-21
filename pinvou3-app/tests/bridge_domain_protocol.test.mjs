@@ -184,7 +184,13 @@ const expectedProtocolHashes = {
   // get_session_workspace_binding query + bound-draft staged mode application
   // (set_plan_mode_next / exit_plan_to_yolo) at materialization.
   // Recomputed for the shared-helper dedup (see batch note above).
-  sessions: '4013129d4ae2e0c8ffb637cae78d034948dab6fbf7ba86378a3ecb2713745a6c',
+  // Recomputed again for review #463 round-13: the workspace_rebound
+  // mark-stamp block moved verbatim into the shared
+  // applyWorkspaceReboundMark (it was byte-duplicated with the web lane),
+  // so the session:list_changed listener body shrinks to the delegation —
+  // no new invoke or listen entries (the extractor scans raw source, so
+  // body/comment text is part of the digest).
+  sessions: 'af869efe2446b3025f7dff7d009f788dacd7a7e204f6cb7d83535620a48c4d10',
   // Recomputed for the shared-helper dedup (see batch note above).
   settings: 'a5c68eadcad49dd2f3e58157d0262209610696fb0e37f0b8e6888a97199729b5',
   // Recomputed for the audit dead-code cleanup: the never-emitted

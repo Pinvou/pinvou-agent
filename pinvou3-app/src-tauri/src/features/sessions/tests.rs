@@ -4527,9 +4527,13 @@ fn rebind_workspace_bindings_covers_memory_only_legacy_entries() {
     let _ = std::fs::remove_dir_all(&to);
 }
 
-/// Corrupt-legacy preservation (review #464 round-4 minor 4 / round-3 minor 6):
-/// a `_session_workspaces.json` whose boot parse failed must survive a rebind —
-/// the degraded-path rewrite may only touch a file this process parsed.
+/// Corrupt-legacy preservation (review #464 round-4 minor 4 / round-3 minor 6)
+/// with the round-13 M2 semantics: the sync re-attempts the parse PER RUN (no
+/// boot-time kill-switch), an empty-plan run proceeds past the inert
+/// unparseable table, and only a non-empty plan aborts — with the dedicated
+/// CORRUPT marker, because the writability remedy cannot fix this cause. In
+/// every arm the file this run never parsed must survive verbatim, and a
+/// table repaired out-of-band converges without an app restart.
 #[test]
 fn rebind_preserves_corrupt_legacy_workspaces_file() {
     let (store, _g) = isolated_store();
@@ -4539,35 +4543,94 @@ fn rebind_preserves_corrupt_legacy_workspaces_file() {
         .join("_session_workspaces.json");
     std::fs::write(&legacy, b"{ not valid json").expect("write corrupt legacy file");
 
-    // Boot migration fails to parse: file kept, preservation flag set.
+    // Boot migration fails to parse: file kept.
     store.migrate_legacy_session_workspaces();
     assert!(
         legacy.is_file(),
         "boot migration must keep the corrupt file"
     );
 
-    // A rebind with an empty in-memory table must not delete the file.
     let from = unique_temp_dir("rebind-corrupt-from");
     std::fs::create_dir_all(&from).expect("create from");
     let to = unique_temp_dir("rebind-corrupt-to");
     std::fs::create_dir_all(&to).expect("create to");
-    // Round-12 B1: a table this process never parsed aborts the rebind
-    // outright — the degraded continue would have published fresh sidecars
-    // under a table whose contents are unknown, and the next boot could
-    // resurrect old paths over them after a success report.
-    let error = store
+
+    // Empty plan (review #463 round-13 M2): the run moves nothing, so the
+    // inert unparseable table is no reason to refuse — and it must survive
+    // verbatim either way.
+    let outcome = store
         .rebind_workspace_bindings(&from, &to)
-        .expect_err("an unparsed table aborts the rebind");
-    assert!(
-        error
-            .to_string()
-            .starts_with("REBIND_LEGACY_TABLE_UNWRITABLE"),
-        "typed marker follows the stable-prefix convention: {error}"
-    );
+        .expect("an empty-plan run proceeds past a corrupt table");
+    assert!(outcome.rebound.is_empty() && outcome.failed_session_ids.is_empty());
     assert_eq!(
         std::fs::read(&legacy).expect("legacy file must survive rebind"),
         b"{ not valid json",
         "corrupt-but-repairable legacy file must be preserved verbatim",
+    );
+
+    // A non-empty plan cannot publish its translations into a table this run
+    // never parsed: the run aborts BEFORE anything moves, with the
+    // corrupt-cause marker.
+    let session = store
+        .create_new("/model".into(), None, std::env::temp_dir())
+        .expect("create");
+    store
+        .bind_session_workspace(&session.metadata.id, from.clone())
+        .expect("bind");
+    let error = store
+        .rebind_workspace_bindings(&from, &to)
+        .expect_err("a corrupt table aborts a run that would move bindings");
+    assert!(
+        error.to_string().starts_with("REBIND_LEGACY_TABLE_CORRUPT"),
+        "the corrupt cause carries its own typed marker: {error}"
+    );
+    assert_eq!(
+        store
+            .session_workspace_binding(&session.metadata.id)
+            .as_deref(),
+        Some(from.as_path()),
+        "the abort left the binding at `from` — nothing moved",
+    );
+    assert_eq!(
+        std::fs::read(&legacy).expect("legacy file must survive rebind"),
+        b"{ not valid json",
+        "the abort must not overwrite the repairable table",
+    );
+
+    // Out-of-band repair WITHOUT an app restart (review #463 round-13 M2):
+    // the per-run re-parse sees the fixed table and the very next run
+    // converges — the boot-time flag used to kill every rebind until restart.
+    std::fs::write(
+        &legacy,
+        serde_json::to_vec(&serde_json::json!({
+            session.metadata.id.clone(): from.display().to_string()
+        }))
+        .expect("serialize repaired table"),
+    )
+    .expect("repair legacy table out-of-band");
+    let converged = store
+        .rebind_workspace_bindings(&from, &to)
+        .expect("a repaired table converges without a restart");
+    assert!(
+        converged
+            .rebound
+            .iter()
+            .any(|(id, _)| id == &session.metadata.id),
+        "the retry moves the session after the repair",
+    );
+    assert_eq!(
+        store
+            .session_workspace_binding(&session.metadata.id)
+            .as_deref(),
+        Some(to.as_path()),
+    );
+    let on_disk: std::collections::HashMap<String, PathBuf> =
+        serde_json::from_str(&std::fs::read_to_string(&legacy).expect("read legacy table"))
+            .expect("repaired table parses");
+    assert_eq!(
+        on_disk.get(&session.metadata.id).map(PathBuf::as_path),
+        Some(to.as_path()),
+        "the sync published the translation into the repaired table",
     );
 
     let _ = std::fs::remove_dir_all(&from);
@@ -4576,9 +4639,11 @@ fn rebind_preserves_corrupt_legacy_workspaces_file() {
 
 /// Round-6 finding 4: an unreadable legacy table (invalid UTF-8 — `read_to_string`
 /// fails before the JSON pass can) is not "absent", and a rebind must not treat it
-/// as syncable: with an empty cache the old code would delete a file this process
-/// never parsed, closing the "repair it and retry" door. The preservation flag has
-/// to be set in that arm too, mirroring the JSON-parse arm.
+/// as syncable: with an empty merged view the old code would delete a file this
+/// process never parsed, closing the "repair it and retry" door. The per-run
+/// re-parse (review #463 round-13 M2) treats the read failure exactly like the
+/// JSON-parse failure: empty plan proceeds and preserves, non-empty plan aborts
+/// with the CORRUPT marker.
 #[test]
 fn unreadable_legacy_workspaces_file_is_preserved_across_rebind() {
     let (store, _g) = isolated_store();
@@ -4600,14 +4665,37 @@ fn unreadable_legacy_workspaces_file_is_preserved_across_rebind() {
     std::fs::create_dir_all(&from).expect("create from");
     let to = unique_temp_dir("rebind-unreadable-to");
     std::fs::create_dir_all(&to).expect("create to");
+
+    // Empty plan: proceeds past the inert table, file preserved verbatim.
+    store
+        .rebind_workspace_bindings(&from, &to)
+        .expect("an empty-plan run proceeds past an unreadable table");
+    assert_eq!(
+        std::fs::read(&legacy).expect("legacy file must survive rebind"),
+        bytes,
+        "a never-parsed legacy file must be preserved verbatim, not deleted",
+    );
+
+    // Non-empty plan: aborts with the corrupt-cause marker before moving.
+    let session = store
+        .create_new("/model".into(), None, std::env::temp_dir())
+        .expect("create");
+    store
+        .bind_session_workspace(&session.metadata.id, from.clone())
+        .expect("bind");
     let error = store
         .rebind_workspace_bindings(&from, &to)
-        .expect_err("an unreadable table aborts the rebind");
+        .expect_err("an unreadable table aborts a run that would move bindings");
     assert!(
-        error
-            .to_string()
-            .starts_with("REBIND_LEGACY_TABLE_UNWRITABLE"),
-        "typed marker follows the stable-prefix convention: {error}"
+        error.to_string().starts_with("REBIND_LEGACY_TABLE_CORRUPT"),
+        "the unreadable cause is the corrupt marker, not the writability one: {error}"
+    );
+    assert_eq!(
+        store
+            .session_workspace_binding(&session.metadata.id)
+            .as_deref(),
+        Some(from.as_path()),
+        "the abort left the binding at `from` — nothing moved",
     );
     assert_eq!(
         std::fs::read(&legacy).expect("legacy file must survive rebind"),
@@ -4644,12 +4732,13 @@ fn running_with_unenforced_permissions() -> bool {
     writable
 }
 
-/// Round-5 blocker 1: a legacy-table sync failure must surface in the
-/// outcome — a silent "success" would let the next boot migration re-bind the
-/// old paths over the fresh sidecars. Sessions-dir is made read-only so the
-/// atomic rewrite fails deterministically (POSIX permissions; cfg(unix)-gated
-/// under the file-top allow-target-cfg exception — PermissionsExt does not
-/// exist on Windows, a runtime skip would not compile there).
+/// Round-5 blocker 1, carried through round-12 B1's abort design: a
+/// legacy-table sync failure aborts the run in the planning half — a silent
+/// "success" would let the next boot migration re-bind the old paths over the
+/// fresh sidecars. Sessions-dir is made read-only so the atomic rewrite fails
+/// deterministically (POSIX permissions; cfg(unix)-gated under the file-top
+/// allow-target-cfg exception — PermissionsExt does not exist on Windows, a
+/// runtime skip would not compile there).
 #[cfg(unix)]
 #[test]
 fn rebind_reports_legacy_table_sync_failure() {
@@ -4726,13 +4815,12 @@ fn rebind_reports_legacy_table_sync_failure() {
     let _ = std::fs::remove_dir_all(&to);
 }
 
-/// Round-6 blocking 1: the round-5 fix only listed *this run's* rewritten
-/// sessions as failed. On a retry nothing matches `from` any more (both stores
-/// already hold `to`), so the rewrite log is empty while the stale legacy table
-/// — and therefore the next boot's silent resurrection — is still there; the
-/// report claimed full success. The failure list must be driven by the
-/// surviving table's divergent entries instead. Same read-only-dir technique
-/// as the round-5 regression: `cfg(unix)`-gated under the file-top
+/// Retry convergence of the abort design (round-12 B1): with the table
+/// unwritable, run 1 aborts before anything moves — there is no surviving
+/// divergent state to report, and the retry once the write becomes possible
+/// is a FULL redo: the sidecar still sits at `from`, so the writable rerun
+/// moves it and reports it rebound. Same read-only-dir technique as the
+/// round-5 regression: `cfg(unix)`-gated under the file-top
 /// allow-target-cfg exception (`PermissionsExt` does not exist on Windows).
 #[cfg(unix)]
 #[test]
@@ -4800,6 +4888,99 @@ fn rebind_retry_with_stale_legacy_table_still_reports_failure() {
             .iter()
             .any(|(id, _)| id == &session.metadata.id),
         "a writable rerun redoes the whole run and reports the rebound session",
+    );
+    let _ = std::fs::remove_dir_all(&from);
+    let _ = std::fs::remove_dir_all(&to);
+}
+
+/// Round-13 M1: the legacy-table precheck lives in the PLANNING half
+/// (`plan_rebind_workspace_bindings`), which the command layer runs BEFORE
+/// the codex lane mutates — so a sync failure leaves every lane's on-disk
+/// state untouched: the table verbatim, the sidecar at `from`, the cache at
+/// `from`. The codex half of the ordering is the call sequence in
+/// `rebind_workspace_root` (plan → codex lane → apply), source-pinned by
+/// tests/rebind_legacy_precheck.test.mjs. Same read-only-dir technique as
+/// the round-5 regression (cfg(unix), see the file-top exception).
+#[cfg(unix)]
+#[test]
+fn rebind_legacy_precheck_failure_leaves_every_lane_untouched() {
+    if running_with_unenforced_permissions() {
+        eprintln!("skipping: permission bits not enforced for this user (root?)");
+        return;
+    }
+    let (store, _g) = isolated_store();
+    let from = unique_temp_dir("rebind-precheck-from");
+    std::fs::create_dir_all(&from).expect("create from");
+    let to = unique_temp_dir("rebind-precheck-to");
+    std::fs::create_dir_all(&to).expect("create to");
+    let session = store
+        .create_new("/model".into(), None, std::env::temp_dir())
+        .expect("create");
+    store
+        .bind_session_workspace(&session.metadata.id, from.clone())
+        .expect("bind");
+    let legacy = store
+        .manager
+        .sessions_dir()
+        .join("_session_workspaces.json");
+    let table_bytes = serde_json::to_vec(&serde_json::json!({
+        session.metadata.id.clone(): from.display().to_string()
+    }))
+    .expect("serialize legacy table");
+    std::fs::write(&legacy, &table_bytes).expect("seed legacy file");
+
+    use std::os::unix::fs::PermissionsExt;
+    let sessions_dir = store.manager.sessions_dir();
+    let original = std::fs::metadata(&sessions_dir)
+        .expect("meta")
+        .permissions();
+    std::fs::set_permissions(&sessions_dir, std::fs::Permissions::from_mode(0o555))
+        .expect("read-only sessions dir");
+    // The planning half is exactly what the command layer awaits before the
+    // codex lane runs: its failure is the M1 abort.
+    let error = store
+        .plan_rebind_workspace_bindings(&from, &to)
+        .expect_err("the precheck aborts on the unwritable table");
+    std::fs::set_permissions(&sessions_dir, original).expect("restore permissions");
+    assert!(
+        error
+            .to_string()
+            .starts_with("REBIND_LEGACY_TABLE_UNWRITABLE"),
+        "typed marker follows the stable-prefix convention: {error}"
+    );
+    // Both lanes untouched: the table is byte-identical, the sidecar and the
+    // cache still resolve `from` — "nothing was moved" is literally true.
+    assert_eq!(
+        std::fs::read(&legacy).expect("table survives"),
+        table_bytes,
+        "the failed sync must leave the table verbatim",
+    );
+    assert_eq!(
+        store
+            .session_workspace_binding(&session.metadata.id)
+            .as_deref(),
+        Some(from.as_path()),
+        "the abort left the binding at `from`",
+    );
+
+    // The retry redoes the whole run through the split pair: plan (sync
+    // succeeds now), then the sidecar pass.
+    let plan = store
+        .plan_rebind_workspace_bindings(&from, &to)
+        .expect("precheck passes once writable");
+    let outcome = store.apply_rebind_workspace_bindings(plan);
+    assert!(
+        outcome
+            .rebound
+            .iter()
+            .any(|(id, _)| id == &session.metadata.id),
+        "the retried run moves the session",
+    );
+    assert_eq!(
+        store
+            .session_workspace_binding(&session.metadata.id)
+            .as_deref(),
+        Some(to.as_path()),
     );
     let _ = std::fs::remove_dir_all(&from);
     let _ = std::fs::remove_dir_all(&to);

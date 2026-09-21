@@ -4101,6 +4101,7 @@ function recordPinvouReview(review) { return pinvouSharedweb().recordPinvouRevie
 
   // 整卡跳过:Boss 看了不处理这次检阅 → 直接关窗(sidecar entry 留着、无 resolution,无害)。
 function dismissPinvouReview() { return pinvouSharedweb().dismissPinvouReview(); }
+function applyWorkspaceReboundMark(payload) { return pinvouSharedweb().applyWorkspaceReboundMark(payload); }
   // 把当前 session 的审查时间线(含勾选写回的 resolution)重新落盘。返回 promise 供 await。
 function persistPinvouReviews() { return pinvouSharedweb().persistPinvouReviews(); }
 
@@ -4124,27 +4125,10 @@ function persistPinvouReviews() { return pinvouSharedweb().persistPinvouReviews(
     // artifact saves of THIS host cannot durably revert the backend lane's
     // rebase while a resident web-client buffer holds stale paths. Segment
     // chain with append-on-chain / refresh-on-identical-retry semantics,
-    // memory-only and never pruned — same contract as the tauri listener.
-    if (payload.action === "workspace_rebound" && payload.id && payload.from && payload.to) {
-      state.reboundSessionIds = state.reboundSessionIds || {};
-      const existing = state.reboundSessionIds[payload.id];
-      const last = existing && existing.chain && existing.chain[existing.chain.length - 1];
-      if (existing && last && last.from === payload.from && last.to === payload.to) {
-        // Identical retry of the last segment: refresh the view-heal window
-        // only; the chain must survive for older vintages.
-        existing.at = Date.now();
-      } else if (existing) {
-        // Chained or non-contiguous: append (round-E minor — replacing would
-        // drop vintages a still-buffered session may resolve).
-        existing.chain.push({ from: payload.from, to: payload.to });
-        existing.at = Date.now();
-      } else {
-        state.reboundSessionIds[payload.id] = {
-          at: Date.now(),
-          chain: [{ from: payload.from, to: payload.to }],
-        };
-      }
-    }
+    // memory-only and never pruned — the shared applyWorkspaceReboundMark
+    // owns the stamp (round-13 — previously byte-duplicated with the tauri
+    // listener).
+    applyWorkspaceReboundMark(payload);
     refreshHistoryList().catch(function (error) {
       console.error("[sessions] session:list_changed refresh failed", error);
     });
