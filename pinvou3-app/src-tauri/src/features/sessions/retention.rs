@@ -537,7 +537,16 @@ impl SessionStore {
                 deleted_ids.push(id.clone());
             }
             if let Err(error) = result {
-                if error.kind() != ErrorKind::NotFound && delete_error.is_none() {
+                // NotFound: the record was already gone (benign). InvalidInput:
+                // a charset-invalid id the validated delete API can never
+                // address — the file stays quarantined on disk, invisible to
+                // every store entry point. That must not fail the pass, and
+                // the upstream message embeds the raw id, so it must not enter
+                // the boot-log-reachable chain either (round-20 minor-8).
+                if error.kind() != ErrorKind::NotFound
+                    && error.kind() != ErrorKind::InvalidInput
+                    && delete_error.is_none()
+                {
                     delete_error =
                         Some(anyhow::anyhow!(error).context("delete the orphan aux record"));
                 }
@@ -580,6 +589,22 @@ impl SessionStore {
             // name, so the caller may reclaim it.
             Err(error) if super::store::is_not_found_error(&error) => return Ok(false),
             Err(error) if super::store::is_identity_mismatch_error(&error) => return Ok(false),
+            // A charset-invalid id (a record written by a foreign or older
+            // build under a name upstream's validated_session_id rejects) is
+            // unusable in the same sense as the InvalidData class below — no
+            // store API can ever address it — and must additionally never
+            // propagate: upstream's InvalidInput message embeds the raw id,
+            // which would otherwise ride the returned chain into the boot
+            // eprintln and wedge the whole pass. Isolate it per record,
+            // mirroring the B3 posture; the validated delete API cannot
+            // address it either, so the orphan sweep below quarantines the
+            // file in place instead of reclaiming it.
+            Err(error) if super::store::is_invalid_input_error(&error) => {
+                eprintln!(
+                    "[sessions] quarantine aux record with an unaddressable id during reconciliation"
+                );
+                return Ok(false);
+            }
             // Permanent corruption (InvalidData: truncated body, malformed
             // receipts — or a newer schema_version than this build supports,
             // which is the DOWNGRADE case: a record written by a newer build

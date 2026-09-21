@@ -813,7 +813,20 @@ impl SessionStore {
         // the parent in the window before the mapping lands, leaving a
         // dead-parent/live-aux orphan. Re-check inside the caller's lock and
         // roll back instead of publishing the mapping. (Round-10 minor-1.)
-        if self.load(parent_id).is_err() {
+        // NotFound-only (round-20 minor-9, the taxonomy used everywhere else
+        // in this module): only a genuinely evicted parent rolls the create
+        // back. A transient load fault is not an eviction — rolling back
+        // there would destroy a healthy, already-mapped aux record and
+        // misreport the cause, so it propagates as an error instead.
+        let parent_evicted = match self.load(parent_id) {
+            Ok(_) => false,
+            Err(error) if is_not_found_error(&error) => true,
+            Err(error) => {
+                return Err(error)
+                    .with_context(|| "re-check the parent session after aux creation");
+            }
+        };
+        if parent_evicted {
             // A failed unpublish must not be silent: the mapping of a rejected
             // create would survive on disk and re-point the next boot at a
             // record that was rolled back (round-12 P3).
@@ -1180,5 +1193,20 @@ pub(super) fn is_invalid_data_error(error: &anyhow::Error) -> bool {
         cause
             .downcast_ref::<std::io::Error>()
             .is_some_and(|e| e.kind() == ErrorKind::InvalidData)
+    })
+}
+
+/// True when `error` carries an `io::Error` of kind `InvalidInput` anywhere in
+/// its chain — the "the id itself is unaddressable" case: upstream
+/// `validated_session_id` rejects the charset, so no store API (load, save,
+/// delete) can ever address the record. Like `InvalidData` this class can
+/// never heal, so a maintenance pass isolates the record instead of aborting
+/// on it; unlike `InvalidData` the record cannot even be deleted through the
+/// validated API, so isolation means quarantining the file in place.
+pub(super) fn is_invalid_input_error(error: &anyhow::Error) -> bool {
+    error.chain().any(|cause| {
+        cause
+            .downcast_ref::<std::io::Error>()
+            .is_some_and(|e| e.kind() == ErrorKind::InvalidInput)
     })
 }

@@ -5276,6 +5276,89 @@ fn reconcile_reclaims_aux_record_with_invalid_backlink() {
     );
 }
 
+/// PR #433 review round-20 (minor-8): a foreign-written aux record whose id
+/// fails the charset validation can never be addressed by any store API. The
+/// boot reconcile must isolate it per record (the B3 posture): quarantine the
+/// file in place, keep the pass converging for the healthy siblings, and
+/// never let the raw id ride an error chain into the boot eprintln.
+#[test]
+fn reconcile_quarantines_charset_invalid_aux_record() {
+    let (store, _g) = isolated_store();
+    let main = store
+        .create_new("/model".into(), None, std::env::temp_dir())
+        .expect("create main");
+    let healthy = store
+        .get_or_create_aux_session(&main.metadata.id)
+        .expect("create healthy aux");
+    let main_b = store
+        .create_new("/model".into(), None, std::env::temp_dir())
+        .expect("create main B");
+    let foreign = store
+        .get_or_create_aux_session(&main_b.metadata.id)
+        .expect("create aux to rewrite as foreign");
+    // Both records start unmapped so the rebuild path visits them.
+    store
+        .set_aux_session(&main.metadata.id, None)
+        .expect("clear mapping A");
+    store
+        .set_aux_session(&main_b.metadata.id, None)
+        .expect("clear mapping B");
+
+    // Rewrite the second record as a foreign build would have written it: an
+    // id whose charset upstream's validated_session_id rejects. The record
+    // still lists (the metadata prefix parses) but every load fails with
+    // InvalidInput, and the validated delete API cannot address it either.
+    let foreign_id = "aux-foreign id!!";
+    let original_path = store
+        .manager
+        .sessions_dir()
+        .join(format!("{}.json", foreign.id));
+    let mut record: serde_json::Value = serde_json::from_str(
+        &std::fs::read_to_string(&original_path).expect("read the foreign-to-be record"),
+    )
+    .expect("parse the record");
+    record["metadata"]["id"] = serde_json::json!(foreign_id);
+    let foreign_path = store
+        .manager
+        .sessions_dir()
+        .join(format!("{foreign_id}.json"));
+    std::fs::write(
+        &foreign_path,
+        serde_json::to_string_pretty(&record).unwrap(),
+    )
+    .expect("write the foreign record under its own name");
+    std::fs::remove_file(&original_path).expect("remove the original record file");
+    store.invalidate_list_cache();
+    let load_error = store
+        .load(foreign_id)
+        .expect_err("a charset-invalid id must fail to load");
+    assert!(
+        super::store::is_invalid_input_error(&load_error),
+        "fixture must produce the InvalidInput (unaddressable id) class: {load_error:#}"
+    );
+
+    store
+        .reconcile_aux_sessions()
+        .expect("a charset-invalid record must not wedge the pass");
+    // Convergent across boots: the quarantined file stays put and the pass
+    // keeps succeeding instead of retry-failing on every startup.
+    store
+        .reconcile_aux_sessions()
+        .expect("the quarantine must converge, not wedge a later boot");
+    assert!(
+        foreign_path.exists(),
+        "the undeletable record is quarantined in place, not wedged and not silently lost"
+    );
+    store
+        .load(&healthy.id)
+        .expect("the healthy record must not be sacrificed to the wedge");
+    assert_eq!(
+        store.aux_session_id(&main.metadata.id).as_deref(),
+        Some(healthy.id.as_str()),
+        "the healthy record's backlink rebuild must still run in the same pass"
+    );
+}
+
 /// Same NotFound-only discipline on the rebuild side (round-15 MAJOR-1, site
 /// 2): an unmapped aux record whose parent cannot be stat'ed must not be
 /// reclaimed as an orphan — a transient fault counts as "unknown", and
@@ -5533,6 +5616,89 @@ fn create_aux_session_rolls_back_when_parent_is_evicted_mid_create() {
         MAX_SESSIONS_PER_KIND,
         "only the evicted parent may leave the chat list"
     );
+}
+
+/// PR #433 review round-20 (minor-9): the evicted-parent recheck must treat
+/// only NotFound as eviction. A transient fault on that load must propagate
+/// as an error — not roll back a healthy, already-mapped aux record while
+/// misreporting the cause as an eviction.
+#[test]
+fn create_aux_session_propagates_transient_parent_recheck_error() {
+    let (store, _g) = isolated_store();
+    let now = Utc::now();
+    let main_id = "recheck-fault-parent";
+    // Same seeding as the eviction rollback test: MAX+1 chats with the parent
+    // oldest, so the aux save's retention sweep evicts the parent mid-create.
+    let mut oldest = create_saved_session_with_id_and_mode(
+        main_id.to_string(),
+        &[],
+        "/retention-model",
+        &std::env::temp_dir(),
+        0,
+        None,
+        None,
+    );
+    oldest.metadata.updated_at = now - chrono::Duration::seconds(MAX_SESSIONS_PER_KIND as i64 + 1);
+    store
+        .save_session_atomic(&oldest)
+        .expect("seed eviction-line parent");
+    for index in 0..MAX_SESSIONS_PER_KIND {
+        let mut session = create_saved_session_with_id_and_mode(
+            format!("recheck-fault-peer-{index}"),
+            &[],
+            "/retention-model",
+            &std::env::temp_dir(),
+            0,
+            None,
+            None,
+        );
+        session.metadata.updated_at = now - chrono::Duration::seconds(index as i64);
+        store
+            .save_session_atomic(&session)
+            .expect("seed peer session");
+    }
+    assert!(
+        store.load(main_id).is_ok(),
+        "the parent must be alive before the create starts"
+    );
+
+    // When the sweep evicts the parent, block its record path with a
+    // directory: the recheck load then fails with a non-NotFound class — a
+    // stand-in for a transient IO fault in the recheck window.
+    let sessions_dir = store.manager.sessions_dir().to_path_buf();
+    let blocked = Arc::new(std::sync::atomic::AtomicBool::new(false));
+    let blocked_in_hook = Arc::clone(&blocked);
+    store.register_session_deleted_hook(Arc::new(move |session_id| {
+        if session_id == main_id && !blocked_in_hook.swap(true, std::sync::atomic::Ordering::SeqCst)
+        {
+            std::fs::create_dir(sessions_dir.join(format!("{session_id}.json")))
+                .expect("block the parent record path with a directory");
+        }
+    }));
+
+    let error = store
+        .create_aux_session(main_id)
+        .expect_err("a transient recheck fault must fail the create");
+    let message = format!("{error:#}");
+    assert!(
+        !message.contains("was evicted while creating its aux session"),
+        "a transient fault must not be misreported as an eviction: {message}"
+    );
+    assert!(
+        message.contains("re-check the parent session after aux creation"),
+        "the propagated error must name the failing step: {message}"
+    );
+    // No spurious rollback: the mapping and the newborn record survive — they
+    // are valid state the next get-or-create will reuse.
+    let aux_id = store
+        .aux_session_id(main_id)
+        .expect("the mapping of a transiently-faulted create must not be rolled back");
+    store
+        .load(&aux_id)
+        .expect("the newborn aux record must survive a transient recheck fault");
+
+    std::fs::remove_dir(store.manager.sessions_dir().join(format!("{main_id}.json")))
+        .expect("unblock the parent record path");
 }
 
 /// Orphan-aux reconciliation (repair first, delete only if that fails):
