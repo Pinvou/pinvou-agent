@@ -3817,11 +3817,13 @@ mod scheduled_model_tests {
         assert!(entry_is_fresh(false, 7, 7));
         assert!(!entry_is_fresh(false, 7, 8), "mcp 配置修订递增必须触发重建");
         assert!(!entry_is_fresh(true, 7, 7), "模型变更路径保持原有判定");
-        // 唯一鉴别组合：XNOR 型变异（fresh = 模型未变 ⇔ 修订未变）能穿过上面
-        // 三条断言，只有这条能抓住它（模型与修订双变更时不得误判 fresh）。
+        // The uniquely discriminating combination: an XNOR-shaped mutant
+        // (fresh = model unchanged ⇔ revision unchanged) slips past the three
+        // asserts above; only this one catches it (a model and revision double
+        // change must not be misjudged as fresh).
         assert!(
             !entry_is_fresh(true, 7, 8),
-            "模型变更与修订递增同时命中必须判陈旧"
+            "model change plus revision bump together must be judged stale"
         );
     }
 

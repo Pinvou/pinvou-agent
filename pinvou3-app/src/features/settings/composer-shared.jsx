@@ -454,11 +454,14 @@ window.addEventListener('pinvou:chat-round-committed', (event) => {
       const [hidden, setHidden] = useState(() => new Set()); // 被不可见的包 id(可见性预过滤，按 scope 持久)
       const [projectSkillsEnabled, setProjectSkillsEnabled] = useState(false); // 项目级 skills(仅 code scope 生效)
       const [projectSkillsHelp, setProjectSkillsHelp] = useState(false); // 项目技能帮助弹窗(功能说明+扫描目录)
-      // 工具菜单内开关/项目技能的落盘失败提示：后端把治理写失败上抛到命令边界，
-      // 这里回滚乐观置位后展示（下一次切换尝试前清除），不得按成功提示。
+      // Persistence-failure line for the tool-menu toggles/project-skills: the
+      // backend propagates governance-write failures to the command boundary;
+      // roll back the optimistic state here and show it (cleared before the next
+      // toggle attempt), never report it as success.
       const [toggleError, setToggleError] = useState('');
-      // 治理写代数门（见 createToggleWriteGate）：每个控件只让最新一次写的完成
-      // 应用回滚/提示，迟到的旧失败不得覆盖较新完成的乐观态。
+      // Governance write generation gate (see createToggleWriteGate): per control,
+      // only the latest write's completion may apply rollback/error reporting; a
+      // late stale failure must not overwrite a newer completion's optimistic state.
       const writeGateRef = useRef(null);
       if (writeGateRef.current === null) writeGateRef.current = createToggleWriteGate();
       // CLI 连接器连接/技能状态：key → { on: 是否已连接, enabled: 技能是否启用(未手动停用) }。
@@ -543,18 +546,23 @@ window.addEventListener('pinvou:chat-round-committed', (event) => {
         const wasPending = pending.ids.has(id);
         if (enabled) pending.ids.delete(id); else pending.ids.add(id);
         // 按 scope 持久:落盘 + 广播给所有在跑引擎,关一次该 scope 所有新对话/新窗口都继承。
-        // 落盘失败时后端已把错误上抛到命令边界：回滚乐观置位与 pending 记录并展示，
-        // 不得吞掉后让开关停在假成功态。
+        // If persistence fails the backend has already propagated the error to the
+        // command boundary: roll back the optimistic set and the pending record and
+        // show the failure; do not swallow it and leave the switch in a false-success
+        // state.
         if (bridge.available) {
           const generation = writeGateRef.current.begin(id);
           invokeTauri('set_disabled_connectors',
             { connectorIds: [...next], scope: toolScope })
             .catch((error) => {
-              // 只有该控件最新一次写才有权回滚/提示：连点时较早的写可能在新写
-              // 成功之后才失败（out-of-order completion），对不上最新代数就整体
-              // 跳过，控件结局由最新一次写决定。当前代数失败时回滚到后端真值
-              // （重读禁用/可见性/项目技能三态），不回放本地快照；pending 的
-              // 未提交「打开」按切换前成员资格反演撤销。
+              // Only the control's latest write may roll back or report: with rapid
+              // toggles an earlier write can fail after a newer write succeeded
+              // (out-of-order completion); on a generation mismatch skip entirely —
+              // the control's outcome belongs to its latest write. A current-
+              // generation failure rolls back to backend truth (re-read the
+              // disabled/visibility/project-skills tri-state) instead of replaying
+              // the local snapshot; the pending uncommitted "on" is inverted by
+              // pre-toggle membership.
               if (!writeGateRef.current.isCurrent(id, generation)) return;
               refreshToolsMenu(() => true);
               if (wasPending) pending.ids.add(id); else pending.ids.delete(id);
@@ -573,8 +581,9 @@ window.addEventListener('pinvou:chat-round-committed', (event) => {
         const wasPending = pending.projectSkills;
         pending.projectSkills = next;
         if (bridge.available) {
-          // 落盘失败回滚同 toggleTool：用户治理写不得停在假成功态；代数门同样
-          // 只让该控件最新一次写的失败生效。
+          // Rollback on persistence failure mirrors toggleTool: a user governance
+          // write must not stay in a false-success state; the generation gate
+          // likewise lets only the control's latest write failure apply.
           const generation = writeGateRef.current.begin(TOGGLE_WRITE_KEY_PROJECT_SKILLS);
           invokeTauri('set_project_skills_enabled', { enabled: next }).catch((error) => {
             if (!writeGateRef.current.isCurrent(TOGGLE_WRITE_KEY_PROJECT_SKILLS, generation)) return;

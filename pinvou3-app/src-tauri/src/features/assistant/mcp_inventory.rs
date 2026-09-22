@@ -87,12 +87,13 @@ mod tests {
         assert!(render_inventory(&tools, &["weather".into()]).contains(r#""enabled":false"#));
     }
 
-    /// 渲染层钉子：传入 unavailable 并集（开关关 ∪ 不可见）的条目必须报
-    /// enabled=false——只被「不可见」隐藏、开关仍开的包也不例外，否则快照与
-    /// 会话侧物化/白名单自相矛盾。turn_reminder 的「并集来源」（scope →
-    /// `unavailable_bundles_for`）由 bridge 级
-    /// `hidden_bundle_gates_snapshot_and_tool_allowlist_alike` 端到端钉住，
-    /// 本测试只钉渲染判定本身。
+    /// Render-layer pin: an entry passed in the unavailable union (toggle off ∪
+    /// hidden) must report enabled=false — a package hidden by visibility alone
+    /// with its toggle still on is no exception, otherwise the snapshot
+    /// contradicts the session-side materialization/allowlist. The union source
+    /// of turn_reminder (scope → `unavailable_bundles_for`) is pinned end-to-end
+    /// by the bridge-level `hidden_bundle_gates_snapshot_and_tool_allowlist_alike`;
+    /// this test pins only the render decision itself.
     #[test]
     fn union_unavailable_entry_reports_disabled() {
         let tools = [tool("pptx", "PPT 生成", true)];

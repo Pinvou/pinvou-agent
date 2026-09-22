@@ -175,16 +175,19 @@ state = buildComposerToolMenuState({
 });
 assert.strictEqual(state.allSkillsDisabled, false, '开启 feishu(CLI companion)后不应提示');
 
-// ── 治理写代数门：乱序完成下的回滚判权（out-of-order completion 回归）────
-// 用真实 deferred promise 按乱序驱动：快速连点时较早的写可能较晚才失败，
-// 组件 catch 只允许「仍是该控件最新一次写」的完成回滚/提示（评审 r2 阻塞项）。
+// ── Governance write generation gate: rollback authority under out-of-order
+// completion (regression) ──────────────────────────────────────────────
+// Driven out of order with real deferred promises: with rapid toggles an
+// earlier write can fail later, and the component catch may roll back/report
+// only when it is still the control's latest write (review round-2 blocker).
 async function toggleWriteGateTests() {
   const defer = () => {
     let resolve, reject;
     const promise = new Promise((res, rej) => { resolve = res; reject = rej; });
     return { promise, resolve, reject };
   };
-  // 模拟组件协议：begin 发号 → 写完成 → catch 仅在 isCurrent 时回滚/提示。
+  // Simulates the component protocol: begin issues a generation → the write
+  // completes → the catch rolls back/reports only when isCurrent.
   const simulateToggle = async (gate, key, outcome) => {
     const generation = gate.begin(key);
     try {
@@ -196,7 +199,8 @@ async function toggleWriteGateTests() {
     }
   };
 
-  // 三次交替点击（评审场景）：写 A 被扣住后失败，写 B、C 相继成功且先完成。
+  // Three alternating clicks (review scenario): write A is held and then fails,
+  // writes B and C succeed and complete first.
   const gate = createToggleWriteGate();
   const writeA = defer();
   const clickA = simulateToggle(gate, 'pkg-a', () => writeA.promise);
@@ -205,28 +209,30 @@ async function toggleWriteGateTests() {
   writeA.reject(new Error('late failure'));
   const resultA = await clickA;
   await Promise.all([clickB, clickC]);
-  assert.strictEqual(resultA.stale, true, '迟到的旧失败对不上最新代数，不得回滚/提示');
+  assert.strictEqual(resultA.stale, true, 'a late stale failure does not match the latest generation and must not roll back or report');
 
-  // 最新一次写失败仍须回滚/提示（旧写成功不豁免新失败）。
+  // The latest write failing must still roll back/report (an older success does
+  // not exempt a newer failure).
   const gate2 = createToggleWriteGate();
   const okWrite = defer();
   const staleClick = simulateToggle(gate2, 'pkg-a', () => okWrite.promise);
   const failClick = simulateToggle(gate2, 'pkg-a', () => Promise.reject(new Error('latest fails')));
   okWrite.resolve();
   const [staleResult, failResult] = await Promise.all([staleClick, failClick]);
-  assert.strictEqual(staleResult.stale, false, '旧写成功仍是当前代数（成功路径无副作用）');
-  assert.strictEqual(failResult.rolledBack, true, '最新写失败必须回滚/提示');
+  assert.strictEqual(staleResult.stale, false, 'the older write completing successfully is still current generation (success path has no side effects)');
+  assert.strictEqual(failResult.rolledBack, true, 'the latest write failing must roll back and report');
 
-  // 控件间互不干扰：其他控件发新写不注销本控件在途写的代数。
+  // Controls are independent: another control issuing a newer write does not
+  // invalidate this control's in-flight write generation.
   const gate3 = createToggleWriteGate();
   const pkgWrite = defer();
   const pkgClick = simulateToggle(gate3, 'pkg-a', () => pkgWrite.promise);
   const skillsClick = simulateToggle(gate3, TOGGLE_WRITE_KEY_PROJECT_SKILLS, () => Promise.resolve());
   pkgWrite.resolve();
   const [pkgResult, skillsResult] = await Promise.all([pkgClick, skillsClick]);
-  assert.strictEqual(pkgResult.stale, false, '项目技能发新写不影响包控件的代数');
+  assert.strictEqual(pkgResult.stale, false, 'a project-skills write does not invalidate the package control generation');
   assert.strictEqual(skillsResult.stale, false);
-  // 失败的包写在其后完成仍被对号（未过期）。
+  // A failed package write completing afterwards is still matched (not stale).
   const pkgFail = simulateToggle(gate3, 'pkg-a', () => Promise.reject(new Error('pkg fails')));
   const pkgFailResult = await pkgFail;
   assert.strictEqual(pkgFailResult.rolledBack, true);

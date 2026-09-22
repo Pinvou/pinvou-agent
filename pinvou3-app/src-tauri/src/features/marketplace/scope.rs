@@ -257,12 +257,15 @@ fn merge_ids_into_scope(file: &mut DisabledBundlesFile, key: &str, ids: Vec<Stri
     }
 }
 
-/// 写完整文件（原子替换，与旧文件同范式）。写失败上抛：开关/可见性是用户治理
-/// 状态，「静默丢写」会让调用方在半应用状态上继续走（前端按成功提示）。内部
-/// best-effort 调用方自行降级为日志：读路径迁移、卸载清理（残留方向
-/// fail-closed）、DenyAll 安装同步。注意 DenyAll 同步的降级是同意门 fail-open
-/// （写失败 = 新装包在已初始化 DenyAll scope 默认可用），是已知的过渡让步，
-/// 不是无害降级。
+/// Writes the full file (atomic replace, same pattern as the legacy writer).
+/// Write failures propagate: toggles/visibility are user governance state, and
+/// a silently lost write would let callers continue on a half-applied state
+/// (the frontend reports success). Internal best-effort callers degrade to
+/// logging themselves: read-path migration, uninstall cleanup (residue direction
+/// fail-closed), and DenyAll install sync. Note that the DenyAll sync degradation
+/// is consent-gate fail-open (a write failure = a newly installed package becomes
+/// available by default in an initialized DenyAll scope) — a known transitional
+/// concession, not a harmless degradation.
 fn save_disabled_bundles_file(file: &DisabledBundlesFile) -> Result<(), String> {
     let json = serde_json::to_string(file)
         .map_err(|error| format!("serialize disabled_bundles.json failed: {error}"))?;
@@ -490,8 +493,10 @@ pub fn project_skills_enabled() -> bool {
     load_disabled_bundles_file().project_skills_enabled
 }
 
-/// 写项目级 skills 开关。落盘后由调用方重写在线会话组合目录。写失败原样上抛
-/// （用户治理状态不得静默丢写，与开关/可见性写同一原则）。
+/// Writes the project-level skills toggle. After persisting, the caller rewrites
+/// the online session composed catalogs. Write failures propagate unchanged
+/// (user governance state must not be silently lost — same principle as the
+/// toggle/visibility writes).
 pub fn set_project_skills_enabled(enabled: bool) -> Result<(), String> {
     let _guard = DISABLED_BUNDLES_FILE_LOCK
         .lock()

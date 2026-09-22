@@ -105,9 +105,12 @@ function buildComposerToolMenuState({
   };
 }
 
-// 治理写代数门：每个控件（包开关 / 项目技能）各自记录写请求代数，begin 发号、
-// 完成时对号。快速连点时较早的写可能较晚才失败（out-of-order completion），
-// 对不上最新代数的完成不得回滚乐观态或提示失败——控件结局只由其最新一次写决定。
+// Governance write generation gate: each control (package toggle / project
+// skills) tracks its own write-request generation — begin() issues one, the
+// completion checks it in. With rapid toggles an earlier write can fail later
+// (out-of-order completion); a completion whose generation no longer matches
+// must not roll back the optimistic state or report a failure — the control's
+// outcome is decided solely by its latest write.
 function createToggleWriteGate() {
   const generations = new Map();
   return {
@@ -122,7 +125,8 @@ function createToggleWriteGate() {
   };
 }
 
-// 项目技能开关在代数门里的键：加前缀与包 id 空间隔离，避免同名包撞键。
+// Key for the project-skills toggle inside the gate: namespaced to stay disjoint
+// from the package-id space so an identically named package cannot collide with it.
 const TOGGLE_WRITE_KEY_PROJECT_SKILLS = '__project_skills__';
 
 export { buildComposerToolMenuState, createToggleWriteGate, TOGGLE_WRITE_KEY_PROJECT_SKILLS };
