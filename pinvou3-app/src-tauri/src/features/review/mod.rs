@@ -575,8 +575,8 @@ async fn model_review(
     .send()
     .await
     .context("post chat/completions")?
-        .error_for_status()
-        .context("chat/completions status")?;
+    .error_for_status()
+    .context("chat/completions status")?;
     let value: Value = resp.json().await.context("parse chat/completions json")?;
     let content = value
         .get("choices")

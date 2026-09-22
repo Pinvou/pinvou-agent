@@ -640,8 +640,8 @@ pub(super) async fn send_memory_llm_request(
     .send()
     .await
     .with_context(|| format!("post memory {label} chat/completions"))?
-        .error_for_status()
-        .with_context(|| format!("memory {label} chat/completions status"))?;
+    .error_for_status()
+    .with_context(|| format!("memory {label} chat/completions status"))?;
     let value: Value = resp
         .json()
         .await

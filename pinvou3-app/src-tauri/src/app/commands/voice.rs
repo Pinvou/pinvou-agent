@@ -1031,8 +1031,8 @@ async fn call_voice_postprocess_model(
     .send()
     .await
     .context("post voice postprocess chat/completions")?
-        .error_for_status()
-        .context("voice postprocess chat/completions status")?;
+    .error_for_status()
+    .context("voice postprocess chat/completions status")?;
     let value: Value = resp
         .json()
         .await
