@@ -961,6 +961,26 @@ pub fn anthropic_messages_text(v: &Value) -> Option<String> {
     (!text.is_empty()).then_some(text)
 }
 
+/// Extracts the top-level `stop_reason` from a Messages response:
+/// `max_tokens` means the output was truncated (the counterpart of OpenAI
+/// chat/completions' `finish_reason == "length"`); other values include
+/// `end_turn` / `stop_sequence`. A missing field (some gateways strip it)
+/// yields `None`, and callers treat that as "unknown, never truncated".
+pub fn anthropic_messages_stop_reason(v: &Value) -> Option<String> {
+    v.get("stop_reason")
+        .and_then(Value::as_str)
+        .map(str::to_string)
+}
+
+/// Parsed result of a Messages-protocol direct call: the text plus the
+/// top-level `stop_reason`, so callers (voice long-draft editing) can block
+/// a truncated half-edited draft before it is written back.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct AnthropicCompletion {
+    pub text: String,
+    pub stop_reason: Option<String>,
+}
+
 /// Anthropic Messages 协议直连：x-api-key + anthropic-version 鉴权（官方端点不接受
 /// Bearer），`system` 是独立字段而非 messages 首条。Messages API 没有
 /// `response_format`，JSON 约束靠 prompt 措辞 + 调用方解析兜底（与既有 chat/completions
@@ -973,7 +993,7 @@ pub async fn post_anthropic_messages(
     system: &str,
     user: &str,
     max_tokens: u32,
-) -> Result<String> {
+) -> Result<AnthropicCompletion> {
     let body = serde_json::json!({
         "model": model,
         "max_tokens": max_tokens,
@@ -995,7 +1015,12 @@ pub async fn post_anthropic_messages(
         .error_for_status()
         .context("anthropic messages status")?;
     let value: Value = resp.json().await.context("parse anthropic messages json")?;
-    anthropic_messages_text(&value).context("no text block in anthropic messages response")
+    let text =
+        anthropic_messages_text(&value).context("no text block in anthropic messages response")?;
+    Ok(AnthropicCompletion {
+        text,
+        stop_reason: anthropic_messages_stop_reason(&value),
+    })
 }
 
 /// Test-only: minimal model-list mock server. Returns a configurable status
@@ -2347,6 +2372,82 @@ mod tests {
             mock.hits_for("/models"),
             0,
             "a /v1-shaped configured root has a single candidate, no fallback path"
+        );
+    }
+
+    /// Messages direct-call parsing: the text and the top-level stop_reason
+    /// are surfaced together. `max_tokens` drives the voice long-draft
+    /// "truncated, refuse writeback" decision; a missing field (some
+    /// gateways strip it) must parse as None rather than failing the whole
+    /// response.
+    #[tokio::test]
+    async fn post_anthropic_messages_surfaces_stop_reason() {
+        let client = reqwest::Client::new();
+        // 多 text 块拼接 + stop_reason == "max_tokens"（截断）。
+        let truncated = models_mock::spawn(&[(
+            "/v1/messages",
+            200,
+            r#"{"id":"msg_1","type":"message","role":"assistant","model":"claude-x","content":[{"type":"text","text":"{\"a\":"},{"type":"text","text":"1}"}],"stop_reason":"max_tokens"}"#.into(),
+        )]);
+        let completion = post_anthropic_messages(
+            &client,
+            &truncated.base_url,
+            "key",
+            "claude-x",
+            "sys",
+            "user",
+            64,
+        )
+        .await
+        .expect("mock messages response should parse");
+        assert_eq!(completion.text, "{\"a\":1}");
+        assert_eq!(
+            completion.stop_reason.as_deref(),
+            Some("max_tokens"),
+            "stop_reason=max_tokens must be surfaced so callers can reject truncated output"
+        );
+
+        // 正常结束：stop_reason == "end_turn" 也原样带出，调用方与 max_tokens 区分。
+        let complete = models_mock::spawn(&[(
+            "/v1/messages",
+            200,
+            r#"{"id":"msg_2","type":"message","role":"assistant","content":[{"type":"text","text":"done"}],"stop_reason":"end_turn"}"#.into(),
+        )]);
+        let completion = post_anthropic_messages(
+            &client,
+            &complete.base_url,
+            "key",
+            "claude-x",
+            "sys",
+            "user",
+            64,
+        )
+        .await
+        .expect("mock messages response should parse");
+        assert_eq!(completion.text, "done");
+        assert_eq!(completion.stop_reason.as_deref(), Some("end_turn"));
+
+        // 旧网关裁掉 stop_reason 字段：解析不受影响，stop_reason 为 None。
+        let missing = models_mock::spawn(&[(
+            "/v1/messages",
+            200,
+            r#"{"id":"msg_3","type":"message","role":"assistant","content":[{"type":"text","text":"legacy"}]}"#.into(),
+        )]);
+        let completion = post_anthropic_messages(
+            &client,
+            &missing.base_url,
+            "key",
+            "claude-x",
+            "sys",
+            "user",
+            64,
+        )
+        .await
+        .expect("a response without stop_reason must still parse");
+        assert_eq!(completion.text, "legacy");
+        assert!(
+            completion.stop_reason.is_none(),
+            "absent stop_reason stays None (unknown, never treated as truncated)"
         );
     }
 }
