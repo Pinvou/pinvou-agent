@@ -255,7 +255,10 @@ impl SessionStore {
         self.set_mode_in_memory(id, mode.clone());
         if let Err(error) = Self::apply_session_mode_mutation_locked(&[(id.to_string(), mode)], &[])
         {
-            eprintln!("[sessions] persist mode for {id} failed: {error:#}");
+            // The session id is deliberately kept out of the message, matching
+            // persist_accepted_yolo_mode below: boot logs persist to disk and
+            // the CodeQL cleartext-logging gate flags ids on stderr.
+            eprintln!("[sessions] persist mode failed: {error:#}");
         }
         Ok(())
     }
@@ -344,7 +347,7 @@ impl SessionStore {
             };
         }
         let json = serde_json::to_string_pretty(&ids).context("serialize multi-agent flags")?;
-        crate::platform::filesystem::atomic_write(&file, json.as_bytes())
+        crate::platform::filesystem::atomic_write_private(&file, json.as_bytes())
             .context("persist _multi_agent.json failed")
     }
 
@@ -411,7 +414,7 @@ impl SessionStore {
             };
         }
         let json = serde_json::to_string_pretty(&ids).context("serialize multi-agent flags")?;
-        crate::platform::filesystem::atomic_write(&file, json.as_bytes())
+        crate::platform::filesystem::atomic_write_private(&file, json.as_bytes())
             .context("persist _multi_agent.json failed")
     }
 
