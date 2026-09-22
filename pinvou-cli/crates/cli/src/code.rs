@@ -3466,6 +3466,61 @@ fn git_output(root: &Path, arguments: &[&str]) -> Result<String, CliError> {
     Ok(String::from_utf8_lossy(&output.stdout).into_owned())
 }
 
+/// Bounded capture for the tracked-diff lane: `Command::output()` would
+/// buffer a modified multi-gigabyte file whole just so the caller can
+/// truncate it right after. Both streams are read through `take(cap + 1)` —
+/// stderr too, because a hostile repo hook could write arbitrarily much
+/// while the stdout side drains — and the second reader runs on a thread so
+/// the two pipes cannot deadlock. The boolean reports that the cut actually
+/// happened, so the caller's truncation marker stays exact even when the
+/// lossy decode lands just under the caller's own length check.
+fn git_output_capped(
+    root: &Path,
+    arguments: &[&str],
+    cap: u64,
+) -> Result<(String, bool), CliError> {
+    let mut child = git_command(root, arguments)
+        .stdout(std::process::Stdio::piped())
+        .stderr(std::process::Stdio::piped())
+        .spawn()
+        .map_err(|error| {
+            CliError::failed(format!(
+                "code workspace: git {}: {error}",
+                arguments.join(" ")
+            ))
+        })?;
+    let mut stdout_pipe = child.stdout.take().expect("git stdout is piped");
+    let mut stderr_pipe = child.stderr.take().expect("git stderr is piped");
+    let stderr_thread = std::thread::spawn(move || {
+        let mut bytes = Vec::new();
+        let _ = (&mut stderr_pipe).take(cap + 1).read_to_end(&mut bytes);
+        bytes
+    });
+    let mut stdout_bytes = Vec::new();
+    let _ = (&mut stdout_pipe).take(cap + 1).read_to_end(&mut stdout_bytes);
+    let stderr_bytes = stderr_thread.join().unwrap_or_default();
+    let status = child.wait().map_err(|error| {
+        CliError::failed(format!(
+            "code workspace: git {}: {error}",
+            arguments.join(" ")
+        ))
+    })?;
+    if !status.success() {
+        return Err(CliError::failed(format!(
+            "code workspace: git {} failed: {}",
+            arguments.join(" "),
+            pinvou3_lib::platform::credential_store::redact_secret(
+                String::from_utf8_lossy(&stderr_bytes).trim(),
+            )
+        )));
+    }
+    let truncated = stdout_bytes.len() as u64 > cap;
+    if truncated {
+        stdout_bytes.truncate(cap as usize);
+    }
+    Ok((String::from_utf8_lossy(&stdout_bytes).into_owned(), truncated))
+}
+
 fn git_root(root: &Path) -> Option<PathBuf> {
     let output = git_command(root, &["rev-parse", "--show-toplevel"])
         .output()
@@ -3808,12 +3863,17 @@ fn workspace_diff_one(
             "code workspace diff: path escapes the workspace",
         ));
     }
+    let mut captured_over_cap = false;
     let mut text = if git_root(&root).is_some_and(|git_root| git_root == root) {
-        let unstaged = git_output(
+        // Capped like the untracked lane below: a modified multi-gigabyte
+        // file must not buffer whole just to be truncated at DIFF_LIMIT.
+        const GIT_READ_CAP: u64 = DIFF_LIMIT as u64 + 1024;
+        let (unstaged, unstaged_cut) = git_output_capped(
             &root,
             &["diff", "--no-ext-diff", "--no-color", "--", &relative],
+            GIT_READ_CAP,
         )?;
-        let staged = git_output(
+        let (staged, staged_cut) = git_output_capped(
             &root,
             &[
                 "diff",
@@ -3823,7 +3883,9 @@ fn workspace_diff_one(
                 "--",
                 &relative,
             ],
+            GIT_READ_CAP,
         )?;
+        captured_over_cap = unstaged_cut || staged_cut;
         let mut combined = String::new();
         if !staged.trim().is_empty() {
             combined.push_str("# staged\n");
@@ -3864,7 +3926,10 @@ fn workspace_diff_one(
     } else {
         "file was deleted; a non-git workspace cannot recover the pre-delete content".to_owned()
     };
-    let truncated = text.len() > DIFF_LIMIT;
+    // A captured_over_cap cut means the take() hit the read cap even if the
+    // lossy decode shrank the payload under DIFF_LIMIT — the marker must
+    // still fire, so the flag joins the length check.
+    let truncated = captured_over_cap || text.len() > DIFF_LIMIT;
     if truncated {
         truncate_utf8(&mut text, DIFF_LIMIT);
         text.push_str("\n\n...diff truncated");

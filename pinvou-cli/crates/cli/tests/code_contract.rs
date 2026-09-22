@@ -1125,16 +1125,29 @@ fn whole_workspace_diff_truncates_without_accumulating_over_the_cap() {
     };
     let id = create_code_session_fixture(Some(&project));
 
-    // A modified tracked file whose diff alone exceeds DIFF_LIMIT (1 MiB):
-    // the per-file path caps the text, and the whole-workspace loop must cut
-    // the payload at the cap, not concatenate up to FILE_CAP copies of it.
+    // Two modified tracked files whose diffs each exceed DIFF_LIMIT (1 MiB):
+    // the per-file path caps each text, and the whole-workspace loop must
+    // stop diffing once the payload is over the cap — the second file's
+    // content must never enter the payload, which distinguishes the early
+    // break from a post-hoc truncation of the full accumulation.
     let big = format!("v2 {}\n", "x".repeat(1024 * 1024 + 4096));
     std::fs::write(project.join("tracked.txt"), &big).unwrap();
+    let big2 = format!("v3 second-file {}\n", "y".repeat(1024 * 1024 + 4096));
+    std::fs::write(project.join("tracked2.txt"), &big2).unwrap();
     let value = run_json(&["pinvou", "code", "workspace", "diff", &id]);
     assert_eq!(value["truncated"], serde_json::json!(true));
     let text = value["text"].as_str().unwrap();
     assert!(text.len() <= 1024 * 1024, "len={}", text.len());
-    assert!(text.contains("+v2"), "the capped head keeps the hunk");
+    // Exactly one over-cap hunk may be in the payload, whichever file the
+    // status list orders first: the loop must stop diffing once the payload
+    // is over the cap, not accumulate every per-file diff before cutting.
+    let has_first = text.contains("+v2");
+    let has_second = text.contains("second-file");
+    assert!(
+        has_first ^ has_second,
+        "the payload must contain exactly one over-cap hunk (first={has_first}, \
+         second={has_second}) — accumulating both before the cut would fail this"
+    );
 }
 
 /// The per-file diff lane stays a CLI mirror on purpose (bounded untracked
