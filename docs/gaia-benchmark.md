@@ -84,7 +84,7 @@ pinvou benchmark run gaia --split validation --level 1
 ```
 
 - 不设题目级墙钟超时：官方 GAIA 协议未定义运行时长上限（据本仓库现状转述，非引用官方规程原文），运行由引擎自身边界收束（每轮 200 步模型步数上限、每轮 3,600 秒墙钟、取消机制；其中步数上限可经 settings.json 的 `advanced.max_steps` 调大，3,600 秒墙钟在该路径为固定默认值，暂无配置入口)。注意该边界只覆盖 turn 本身：harness 侧的 `prepare`/`resolve_output`/`close` 阶段没有各自的截止时间，若这些本地阶段挂死，`pinvou benchmark run gaia` 会一直等待直到操作者手动终止（旧的 600 秒题目级 deadline 恰好覆盖过这类失败）。
-- 与旧版本运行记录不可比：本版本同时移除了题目级 600 秒墙钟与 eval 构建的每轮 8 次工具调用护栏（及 GAIA prompt 中对应的提示句），本版本之前产生的跑分记录与新版本不可直接比较。运行清单（`RunManifest`）因此记录 `harness_deadline_secs`（GAIA 为显式 `null` = 无 harness 墙钟；smoke 为 60 秒上界），使有界/无界两种模式在清单层面机器可区分；同时把清单 `schema_version` 提升到 2 作为时代区分器。注意：本版本之前的旧清单（schema 1）中该键整个缺失，与显式 `null` 含义不同——缺失代表"本版本之前写入，真实模式已不可追溯"。旧清单的分数仍可读取与评分（`benchmark score`/`report`），但不可续跑：`benchmark resume` 会以 `resume_manifest_mismatch` 拒绝，避免把两种 deadline 语义的题目混进同一 run 计分。迁移方式是在变更单侧重跑评测。
+- 与旧版本运行记录不可比：本版本同时移除了题目级 600 秒墙钟与 eval 构建的每轮 8 次工具调用护栏（及 GAIA prompt 中对应的提示句），本版本之前产生的跑分记录与新版本不可直接比较。运行清单（`RunManifest`）因此记录 `harness_deadline_secs`（GAIA 为显式 `null` = 无 harness 墙钟；smoke 为 60 秒上界），使有界/无界两种模式在清单层面机器可区分；同时把清单 `schema_version` 提升到 2 作为时代区分器。注意：本版本之前的旧清单（schema 1）中该键整个缺失，与显式 `null` 含义不同——缺失代表"本版本之前写入，真实模式已不可追溯"。旧清单的分数仍可读取与评分（`benchmark score`/`report`），但不可续跑：`benchmark resume` 会以 `resume_manifest_mismatch` 拒绝，避免把两种 deadline 语义的题目混进同一 run 计分。迁移方式是在变更的某一侧重跑评测。
 - 代理使用 `pinvou-gaia-public-web/v1` 工具策略，可访问公开 web 资源。
 - Office/PDF 附件在 host 侧预解析；XLSX 会同时提供工作表值以及有界的填充色、公式和合并
   区域注释。评测附件提示只声明 profile 实际允许的只读能力。
@@ -118,7 +118,11 @@ pinvou benchmark score gaia --run-id <run-id>
 - 评分器从持久化的私有预测中解析候选答案，与参考答案比对。
 - `score.json` 附加记录 `manifest_schema_version` 与 `harness_deadline_secs`（无界
   run 显式写 `null`）：schema 1 早于 deadline 模式记录，legacy 有界 run 的分数产物
-  因此无法冒充现行无界 run；不同 deadline 模式的分数不可比较。
+  因此无法冒充现行无界 run；不同 deadline 模式的分数不可比较。`score.json` 落盘为
+  「写入或逐字节校验」语义：重跑 `benchmark score` 时若已存在内容不一致的产物
+  （例如由本次变更之前的版本写入、缺少时代戳的 `score.json`），命令以
+  `gaia_score_artifact_conflict` 失败且不改动旧产物；需要现行时代的产物时，先把旧
+  文件移走再重新评分。
 - 未完成 run 的 score 只返回 `unofficial_partial` 诊断，不发布固定的
   `score.json` / `report.md`；resume 完成后再次 score 才发布最终产物，避免 partial
   结果占用固定文件并阻塞最终评分。

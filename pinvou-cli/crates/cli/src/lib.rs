@@ -2123,6 +2123,12 @@ mod tests {
         assert_eq!(score["official_dataset_compatible"], true);
         assert_eq!(score["agent_evaluation_eligible"], true);
         assert_eq!(score["manifest_schema_version"], 2);
+        assert!(
+            score
+                .as_object()
+                .unwrap()
+                .contains_key("harness_deadline_secs")
+        );
         assert_eq!(score["harness_deadline_secs"], serde_json::json!(null));
         assert_eq!(
             score["diagnostics"]["integration_stability"]["status"],
@@ -2180,6 +2186,12 @@ mod tests {
         )
         .unwrap();
         assert_eq!(score["manifest_schema_version"], 2);
+        assert!(
+            score
+                .as_object()
+                .unwrap()
+                .contains_key("harness_deadline_secs")
+        );
         assert_eq!(score["harness_deadline_secs"], 300);
 
         let legacy = RunManifest::new(
@@ -2208,7 +2220,74 @@ mod tests {
         // its score artifact must stay era-marked and deadline-unrecoverable
         // instead of masquerading as a current unbounded run.
         assert_eq!(score["manifest_schema_version"], 1);
+        // Indexing a missing key also yields `Null`; pin the key's presence
+        // so the era stamp cannot silently disappear from the artifact.
+        assert!(
+            score
+                .as_object()
+                .unwrap()
+                .contains_key("manifest_schema_version")
+        );
+        assert!(
+            score
+                .as_object()
+                .unwrap()
+                .contains_key("harness_deadline_secs")
+        );
         assert_eq!(score["harness_deadline_secs"], serde_json::json!(null));
+
+        std::fs::remove_dir_all(base).unwrap();
+    }
+
+    #[test]
+    fn gaia_score_rejects_rescoring_an_artifact_from_another_era() {
+        use adapter_gaia::GaiaAdapter;
+        use benchmark_core::{
+            BenchmarkAdapter, ModelIdentity, OfficialScoreReport, RunManifest, Split, ToolPolicyId,
+        };
+
+        let base = temp_base("gaia-score-era-conflict");
+        let adapter = GaiaAdapter::new();
+        let manifest = RunManifest::new(
+            "gaia-score-era-conflict",
+            adapter.descriptor(),
+            Split::new(GAIA_SPLIT),
+            ModelIdentity::new("fixture", "model").unwrap(),
+            ToolPolicyId::new("pinvou-gaia-public-web/v1"),
+            1,
+        )
+        .unwrap();
+        let store = RunStore::create(&base, &manifest).unwrap();
+        let report = OfficialScoreReport::compatible(3, 3, GAIA_SPLIT, "1");
+        publish_gaia_score_artifacts(&store, "gaia-score-era-conflict", &report).unwrap();
+        let path = store.run_dir().join("score.json");
+        let current = std::fs::read(&path).unwrap();
+
+        // What a build before the era stamp wrote: the same artifact minus
+        // the two era keys. Re-scoring that run must fail closed instead of
+        // silently overwriting a foreign-era artifact — the conflict is the
+        // era boundary made visible — and leave the old bytes untouched.
+        let mut legacy = serde_json::from_slice::<serde_json::Value>(&current).unwrap();
+        legacy
+            .as_object_mut()
+            .unwrap()
+            .remove("manifest_schema_version");
+        legacy
+            .as_object_mut()
+            .unwrap()
+            .remove("harness_deadline_secs");
+        let legacy_bytes = serde_json::to_vec_pretty(&legacy).unwrap();
+        std::fs::write(&path, &legacy_bytes).unwrap();
+        let error = publish_gaia_score_artifacts(&store, "gaia-score-era-conflict", &report)
+            .expect_err("a pre-stamp artifact must not be silently overwritten");
+        assert_eq!(error.to_string(), "gaia_score_artifact_conflict");
+        assert_eq!(std::fs::read(&path).unwrap(), legacy_bytes);
+
+        // The conflict is about content drift, not existence: republishing
+        // the current era's own bytes stays idempotent.
+        std::fs::write(&path, &current).unwrap();
+        publish_gaia_score_artifacts(&store, "gaia-score-era-conflict", &report).unwrap();
+        assert_eq!(std::fs::read(&path).unwrap(), current);
 
         std::fs::remove_dir_all(base).unwrap();
     }
