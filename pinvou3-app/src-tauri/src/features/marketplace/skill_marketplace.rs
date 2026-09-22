@@ -35,7 +35,12 @@ use crate::platform::paths;
 static MARKETPLACE_DIR: Dir<'static> =
     include_dir!("$CARGO_MANIFEST_DIR/resources/common/skill-marketplace");
 
-/// 单个 skill 子树未压缩大小上限(防御性,预置/上传都适用)。
+/// Uncompressed size cap for a single skill subtree (defensive; applies to
+/// both bundled and uploaded skills). Only the test scaffolding
+/// (`import_package_named`) uses it — the unified plugin-package size gate
+/// for the production upload channel lives in
+/// `plugin_import::MAX_PLUGIN_SIZE_BYTES`.
+#[cfg(test)]
 const MAX_SKILL_SIZE_BYTES: u64 = 5 * 1024 * 1024;
 
 /// 安装来源标记文件名。卸载时校验它存在,避免误删内置/手放的 skill。

@@ -226,7 +226,6 @@ pub struct SearchQuery {
 #[serde(rename_all = "camelCase")]
 pub struct Stats {
     pub total_files: u64,
-    pub total_bytes: u64,
 }
 
 /// 按扩展名的文件计数（文件管理「按类型浏览」用）。
@@ -505,16 +504,12 @@ impl Store {
     /// 前端只消费 totalFiles。
     pub fn stats(&self) -> rusqlite::Result<Stats> {
         let guard = self.read.lock();
-        let (total_files, total_bytes) = guard.query_row(
-            "SELECT COUNT(*), COALESCE(SUM(size),0) \
-             FROM files WHERE status='indexed' AND is_dir=0",
+        let total_files = guard.query_row(
+            "SELECT COUNT(*) FROM files WHERE status='indexed' AND is_dir=0",
             [],
-            |r| Ok((r.get::<_, i64>(0)? as u64, r.get::<_, i64>(1)? as u64)),
+            |r| Ok(r.get::<_, i64>(0)? as u64),
         )?;
-        Ok(Stats {
-            total_files,
-            total_bytes,
-        })
+        Ok(Stats { total_files })
     }
 
     /// 按扩展名分组计数（非目录、已索引），降序。

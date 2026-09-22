@@ -453,14 +453,16 @@ fn merge_ids_into_scope(file: &mut DisabledBundlesFile, key: &str, ids: Vec<Stri
     }
 }
 
-/// Writes the whole file (atomic replace, same pattern as the legacy writer).
-/// Write failures propagate: toggles/visibility are user governance state, and
+/// Writes the full file (atomic replace, same pattern as the legacy writer).
+/// Failures must propagate — a write entry point returning `Ok` means the
+/// change landed on disk: toggles/visibility are user governance state, and
 /// a silently lost write would let callers continue on a half-applied state
 /// (the frontend reports success). Internal best-effort callers degrade to
-/// logging themselves: the read-path migration heal and the legacy
-/// `skill:`-prefix strip heal. Every governance writer — including uninstall
-/// cleanup and the DenyAll install sync — propagates the failure instead, so
-/// a lost write can never surface as success.
+/// logging themselves: read-path migration, uninstall cleanup (residue
+/// direction fail-closed), and DenyAll install sync. Note that the DenyAll
+/// sync degradation is consent-gate fail-open (a write failure = a newly
+/// installed package becomes available by default in an initialized DenyAll
+/// scope) — a known transitional concession, not a harmless degradation.
 fn save_disabled_bundles_file(file: &DisabledBundlesFile) -> Result<(), String> {
     let json = serde_json::to_string(file)
         .map_err(|error| format!("[scope] serialize disabled_bundles.json failed: {error}"))?;
@@ -777,13 +779,11 @@ pub fn project_skills_enabled() -> bool {
     load_disabled_bundles_file().project_skills_enabled
 }
 
-/// Writes the project-level skills toggle. After persisting, the caller rewrites
-/// the online session composed catalogs. Write failures propagate unchanged
-/// (user governance state must not be silently lost — same principle as the
-/// toggle/visibility writes).
-///
-/// Fails closed like the other writers: an unavailable cross-process lock
-/// refuses the write with `Err`.
+/// Writes the project-level skills toggle. After persisting, the caller
+/// rewrites the online session composed catalogs. Write failures propagate
+/// unchanged (user governance state must not be silently lost — same
+/// principle as the toggle/visibility writes), and the cross-process writer
+/// wrapper fails closed: an unavailable lock refuses the write with `Err`.
 pub fn set_project_skills_enabled(enabled: bool) -> Result<(), String> {
     with_disabled_bundles_writer(|| {
         let mut file = load_disabled_bundles_file_locked()?;

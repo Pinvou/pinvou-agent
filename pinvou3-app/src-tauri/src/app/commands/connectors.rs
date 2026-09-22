@@ -107,7 +107,7 @@ pub async fn set_project_skills_enabled(
     // session composed catalogs, hot-refresh the load_skill hidden check and the
     // execpolicy rule set (project-level skills rejoin the deny/allow sets), and
     // broadcast the tool change (other windows/instances refresh their toggle
-    // state from it). A write failure was propagated by the `??` above, so this
+    // state from it). A write failure is propagated by the `??` above, so this
     // never broadcasts success for state that did not persist.
     refresh_tools_and_broadcast(&app, pool.inner()).await;
     Ok(())
