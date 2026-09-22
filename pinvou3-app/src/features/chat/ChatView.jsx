@@ -1012,12 +1012,17 @@ const ToolWelcomeCard = ({ toolId, t, onSend }) => {
           setPersonalWorkbenchTemplateId(null);
         }
       }, [setInputText]);
-      // 选中 @ 面板候选:删掉输入框末尾的 @token,引用落入 chip 条(发送时序列化进注入块)。
-      // 功能关闭(§3.3 第 1 层)时不再可添加(@ 面板与拖放入口共用此 add 路径)。
-      // session-mention 功能开关(§3.3 四层级联的判定来源):默认开;非 Tauri 环境
-      // (Web/测试)bridge 无 listBuiltinFeatures,与查询失败一样 fail-open 按启用
-      // 处理(与后端状态文件缺失=全启用同口径)。开关变更经 remote_control:tools_changed
-      // → pinvou:tools-changed 广播(chat-events.js),此处订阅后重新拉取以热更新 UI。
+      // Picking an @ panel candidate: drop the trailing @token from the composer;
+      // the reference lands in the chip strip (serialized into the injection block
+      // on send). When the feature is off (docs/builtin-toolset-contract.md §3.3
+      // layer 1) nothing can be added (the @ panel and drag-drop share this add path).
+      // session-mention feature switch (the judgement source for the §3.3
+      // four-layer cascade): on by default; outside Tauri (Web/tests) the bridge
+      // has no listBuiltinFeatures and, exactly like a query failure, we fail
+      // open as enabled (same semantics as the backend: a missing state file
+      // means all enabled). Switch changes are broadcast via
+      // remote_control:tools_changed → pinvou:tools-changed (chat-events.js);
+      // this subscription refetches to hot-update the UI.
       const [sessionMentionEnabled, setSessionMentionEnabled] = useState(true);
       useEffect(() => {
         let alive = true;
@@ -1026,7 +1031,7 @@ const ToolWelcomeCard = ({ toolId, t, onSend }) => {
           try {
             const features = await bridge.settings.listBuiltinFeatures();
             if (alive) setSessionMentionEnabled(isSessionMentionEnabled(features));
-          } catch { /* fail-open:保持当前启用态 */ }
+          } catch { /* fail-open: keep the current enabled state */ }
         };
         refresh();
         window.addEventListener('pinvou:tools-changed', refresh);
@@ -1051,22 +1056,24 @@ const ToolWelcomeCard = ({ toolId, t, onSend }) => {
       const handleRemoveMentionRef = useCallback((sessionId) => {
         setSessionRefs(current => current.filter(ref => ref.sessionId !== sessionId));
       }, []);
-      // 已发送消息里的引用卡片跳转:复用主框架传入的会话切换(带视图路由)。
+      // Reference-card navigation in sent messages: reuse the session switch handed down by the main frame (with view routing).
       const handleOpenMentionSession = useCallback((sessionId) => {
         if (onSwitchSession) onSwitchSession(sessionId);
       }, [onSwitchSession]);
-      // 侧栏会话行(「移动到项目」拖动手势,#462 的 application/x-pinvou-session
-      // payload)拖进输入区 = 引用该会话,复用与 @ 面板同一 add 路径;附件拖放只认
-      // Files(attachment-drop-controller hasFiles),会话拖动无 Files,两者不冲突。
+      // Dragging a sidebar session row (the "move to project" drag gesture, the
+      // application/x-pinvou-session payload from #462) into the composer area =
+      // referencing that session, reusing the same add path as the @ panel;
+      // attachment drop only accepts Files (attachment-drop-controller hasFiles)
+      // and a session drag carries no Files, so the two never conflict.
       const sessionDropDepthRef = useRef(0);
       const [sessionDropActive, setSessionDropActive] = useState(false);
       const isSessionRowDrag = (e) => {
         const types = (e.dataTransfer && e.dataTransfer.types) || [];
-        // eslint-disable-next-line unicorn/prefer-spread -- Safari 14 的 dataTransfer.types 是 DOMStringList(不可迭代,只能 Array.from);Chromium 新冻结数组同样兼容
+        // eslint-disable-next-line unicorn/prefer-spread -- Safari 14's dataTransfer.types is a DOMStringList (not iterable; Array.from only); Chromium's new frozen array works the same way
         return Array.from(types).includes(PROJECT_SESSION_DRAG_TYPE);
       };
       const handleComposerSessionDragEnter = (e) => {
-        // 功能关闭(§3.3 第 1 层)时拖放会话同样不落 chip,不出现拖放提示。
+        // When the feature is off (§3.3 layer 1), a dropped session does not land as a chip and no drop hint appears.
         if (!isSessionRowDrag(e) || !sessionMentionEnabled) return;
         sessionDropDepthRef.current += 1;
         setSessionDropActive(true);
@@ -1078,7 +1085,7 @@ const ToolWelcomeCard = ({ toolId, t, onSend }) => {
       };
       const handleComposerSessionDragOver = (e) => {
         if (!isSessionRowDrag(e)) return;
-        e.preventDefault(); // 允许 drop
+        e.preventDefault(); // allow the drop
       };
       const handleComposerSessionDrop = (e) => {
         if (!isSessionRowDrag(e)) return;
@@ -1626,10 +1633,14 @@ const ToolWelcomeCard = ({ toolId, t, onSend }) => {
           ? bridge.chat.getComposerDraft()
           : ((bs && bs.composerDraft) || '');
         setInputText(restored);
-        // 引用 chips 是会话级草稿的一部分:切会话/新建草稿时一并重置,
-        // 避免把 A 会话里选的引用带进 B 会话(引用块语义绑定发送时的上下文)。
+        // Mention chips are part of the per-session draft: reset them together
+        // on session switch / new draft so references picked in session A never
+        // leak into session B (the injection block binds to the send context).
+        // The mention menu keyboard selection resets on the same scope change.
         setSessionRefs([]);
         setMentionDismissedToken(null);
+        // eslint-disable-next-line react-hooks/set-state-in-effect -- deliberate per-session draft reset: this effect already restores the composer text and clears mention chips/dismissal on session switch; the menu selection must reset in the same batch, not drift out of sync via render-time derivation
+        setMentionSelection({ token: null, index: 0 });
       // eslint-disable-next-line react-hooks/exhaustive-deps -- deps reviewed manually: restore only on session and draft epoch; adding bs would reread the draft on every backend snapshot change, overwriting in-progress input
       }, [activeSessionId, draftEpoch, setInputText]);
       const voiceInput = (bs && bs.voiceInput) || { status: 'idle' };
@@ -1638,11 +1649,13 @@ const ToolWelcomeCard = ({ toolId, t, onSend }) => {
       const voiceBusy = isVoiceBusy(voiceInput);
       const hasDraftText = inputText.trim().length > 0;
       const hasReadyAttachment = attachments.some(a => a.status === 'ready');
-      // 功能关闭时未发送 chips 不再撑起可发送态(发送路径也不会再注入引用块)。
+      // With the feature off, unsent chips no longer make the composer sendable (the send path stops injecting the block too).
       const hasSessionRefs = sessionMentionEnabled && sessionRefs.length > 0;
-      // 引用对话(Session Mention):输入框末尾的 @token 驱动候选面板;Escape 关闭后
-      // 同一 token 内保持关闭(token 变化 = 用户继续输入,面板重新出现)。
-      // 功能关闭(§3.3 第 1 层)时 @ 触发不出现会话分组/候选。
+      // Session mention: a trailing @token in the composer drives the candidate
+      // panel; after Escape the panel stays closed for the same token (a token
+      // change = the user kept typing, so the panel reappears).
+      // When the feature is off (§3.3 layer 1) the @ trigger yields no
+      // session group / candidates.
       const mentionTrigger = sessionMentionTriggerAt(inputText, sessionMentionEnabled);
       const mentionMenuOpen = !!mentionTrigger && mentionTrigger.token !== mentionDismissedToken;
       const mentionCandidates = filterSessionMentionCandidates((bs && bs.sessions) || [], {
@@ -1650,13 +1663,13 @@ const ToolWelcomeCard = ({ toolId, t, onSend }) => {
         excludeIds: [activeSessionId, ...sessionRefs.map(ref => ref.sessionId)].filter(Boolean),
         limit: 8,
       });
-      // 键盘高亮:token 变化(新触发/继续输入)时归零,纯派生无 effect。
+      // Keyboard highlight: resets to 0 when the token changes (new trigger / kept typing); purely derived, no effect.
       const mentionIndex = mentionSelection.token === (mentionTrigger && mentionTrigger.token)
         ? Math.min(mentionSelection.index, Math.max(0, mentionCandidates.length - 1))
         : 0;
       const knownSessionMentionIds = useMemo(
         () => new Set(((bs && bs.sessions) || []).map(session => session.id)),
-        // eslint-disable-next-line react-hooks/exhaustive-deps -- 只依赖快照里的会话列表切片(引用稳定),与其他 bs 字段无关
+        // eslint-disable-next-line react-hooks/exhaustive-deps -- depends only on the session-list slice of the snapshot (stable reference), not on other bs fields
         [bs && bs.sessions],
       );
       const firstTurnPending = !activeSessionId && chatItems.some(item => (
@@ -2189,9 +2202,12 @@ const ToolWelcomeCard = ({ toolId, t, onSend }) => {
           return;
         }
         const text = constrained.text;
-        // 引用 chips 序列化为前置注入块(只有 sessionId+标题+契约,无正文);chips 在
-        // 发送被真正接受前保持不动——失败/未派发时文本会恢复,chips 也自然保留。
-        // 功能关闭(§3.3 第 2 层)时停发注入块;历史消息里已有的块不动。
+        // Mention chips serialize into a prepended injection block (sessionId +
+        // title + contract only, no contents). Chips survive until the send is
+        // truly accepted — on failure / non-dispatch the text is restored and
+        // the chips naturally stay. When the feature is off
+        // (docs/builtin-toolset-contract.md §3.3 layer 2) the block is not sent;
+        // blocks already present in history are untouched.
         const mentionBlock = sessionMentionEnabled ? buildSessionMentionBlock(sessionRefs) : '';
         const outgoingText = mentionBlock ? mentionBlock + text : text;
         // Clear the composer the moment the button is clicked (before the
@@ -2209,7 +2225,9 @@ const ToolWelcomeCard = ({ toolId, t, onSend }) => {
         setInputText('');
         try {
           const accepted = await sendChatMessage(outgoingText);
-          if (accepted && mentionBlock) setSessionRefs([]);
+          // Clear chips once the send is accepted, even when the feature gate
+          // suppressed the block (stale chips from before the toggle must not linger).
+          if (accepted) setSessionRefs([]);
           if (!accepted) {
             if (inputTextRef.current === '') setInputText(text);
             else if (text) bridge.chat.prefillComposer(text, true);
@@ -2326,6 +2344,10 @@ const ToolWelcomeCard = ({ toolId, t, onSend }) => {
           }
         }
         if (mentionMenuOpen) {
+          // IME composition (a CJK IME candidate window uses ArrowUp/ArrowDown/
+          // Escape/Tab itself): those keys belong to the IME, so bail out before
+          // any preventDefault — Enter is already covered by isPlainEnter.
+          if (isImeComposing(e)) return;
           if (e.key === 'ArrowDown' || e.key === 'ArrowUp') {
             e.preventDefault();
             const count = mentionCandidates.length;
@@ -2737,7 +2759,7 @@ const ToolWelcomeCard = ({ toolId, t, onSend }) => {
             <ComputerUseDialogs slice={computerUseSlice} copy={computerUseCopy} />
           )}
           {/* Floating Input Area */}
-          {/* biome-ignore lint/a11y/noStaticElementInteractions: 会话行拖放热区(drop zone);键盘等价路径是输入框 @ 引用面板 */}
+          {/* biome-ignore lint/a11y/noStaticElementInteractions: session-row drag-drop hot zone; the keyboard-equivalent path is the composer @ mention panel */}
           <div
             ref={composerWrapRef}
             data-testid="chat-composer-wrap"
@@ -2799,12 +2821,15 @@ const ToolWelcomeCard = ({ toolId, t, onSend }) => {
                         className="flex-1 min-w-0 resize-none rounded-lg border border-black/10 bg-white/80 px-2 py-1 outline-none focus:border-blue-500 dark:border-white/15 dark:bg-white/5"
                       />
                     ) : (
-                      // 排队 chip 只显示正文:引用注入块(发送时拼在队首)不占用一行,
-                      // 纯引用消息回退显示被引用会话标题(数据,非 UI 文案)。
+                      // A queued chip shows only the body: the mention injection
+                      // block (prepended at send) takes no line; a refs-only
+                      // message falls back to the referenced session titles
+                      // (data, not UI copy). Refs pass the shared choke point so
+                      // dirty history cannot flood the chip.
                       <span className="flex-1 min-w-0 truncate">{(() => {
                         const split = splitSessionMentionBlock(q.displayText);
                         const body = split.text.trim();
-                        return body || split.refs.map(ref => ref.title || ref.sessionId).join(', ') || q.displayText;
+                        return body || dedupeSessionRefs(split.refs).map(ref => ref.title || ref.sessionId).join(', ') || q.displayText;
                       })()}</span>
                     )}
                     {queuedEdit && queuedEdit.id === q.id ? (
@@ -3168,7 +3193,7 @@ const ToolWelcomeCard = ({ toolId, t, onSend }) => {
                           <StopCircle size={20} />
                         </button>
                       )}
-                      {(!busy || hasDraftText || hasReadyAttachment) && (
+                      {(!busy || hasDraftText || hasReadyAttachment || hasSessionRefs) && (
                         <button type="button" onClick={handleSend} disabled={!ready}
                           aria-label={busy ? t.queueMsg : t.sendMsg}
                           title={busy ? (can('interruptSend') ? t.queueMsgTip : t.queueMsg) : t.sendMsg}
@@ -3500,9 +3525,14 @@ const TextareaContextMenu = ({ inputRef, setValue, t }) => {
     };
 
 const UserBubble = ({ item, sessionId, editable, t, conversationVariant, onOpenSessionMention = null, knownSessionMentionIds = null, sessionMentionDisabled = false }) => {
-  // 引用注入块(发送时前置,见 session-mention.js):渲染时剥离成引用卡片 + 正文,
-  // 编辑时正文不含注入块、提交时按原引用重建,避免用户误编辑 JSON 契约行。
+  // The mention injection block (prepended at send, see session-mention.js) is
+  // stripped into reference cards + body at render time; the editor holds the
+  // body without the block and commit rebuilds it from the original refs, so
+  // users cannot accidentally edit the JSON contract line. Parsed refs pass
+  // the shared choke point — dirty history (e.g. thousands of refs) must not
+  // blow up the cards UI or the edit-resend rebuild.
   const mentionSplit = splitSessionMentionBlock(item.text);
+  const mentionRefs = dedupeSessionRefs(mentionSplit.refs);
       const unified = conversationVariant === 'unified';
       const deliveryState = item.deliveryState || '';
       const sceneDisplay = pinvouSceneDisplay(item.pinvouScene, t.uiChat.sceneModes);
@@ -3510,10 +3540,14 @@ const UserBubble = ({ item, sessionId, editable, t, conversationVariant, onOpenS
       const [editing, setEditing] = useState(false);
       const [val, setVal] = useState(mentionSplit.text);
       const [copied, copyToClipboard] = useCopyFlash(1200);
-      function commit() { const tx = val.trim(); setEditing(false); if (tx && bridge.available) bridge.interaction.editLastTurn(mentionSplit.refs.length ? buildSessionMentionBlock(mentionSplit.refs) + tx : tx); }
+      // Edit-resend keeps layer 2 of the feature gate: with the feature off
+      // only the body is resent — the injection block is never re-injected.
+      function commit() { const tx = val.trim(); setEditing(false); if (tx && bridge.available) bridge.interaction.editLastTurn(!sessionMentionDisabled && mentionRefs.length ? buildSessionMentionBlock(mentionRefs) + tx : tx); }
       function copyText() {
-        // 复制给用户的正文:剥离引用注入块(机器契约,不是人写的内容);
-        // useCopyFlash 是上游统一的复制反馈 hook(#539 系列),替换原手写 setCopied。
+        // Copy the body for the user: strip the mention injection block (a
+        // machine contract, not human-written content); useCopyFlash is the
+        // upstream-unified copy feedback hook (#539 series), replacing the
+        // original hand-rolled setCopied.
         copyToClipboard('user-bubble', mentionSplit.text || '');
       }
       function retryDelivery() {
@@ -3567,7 +3601,7 @@ const UserBubble = ({ item, sessionId, editable, t, conversationVariant, onOpenS
         <div className="flex justify-end group min-w-0 max-w-full">
           <div className="flex flex-col items-end max-w-[85%] min-w-0 max-w-full">
             <SessionMentionCards
-              refs={mentionSplit.refs}
+              refs={mentionRefs}
               knownSessionIds={knownSessionMentionIds}
               onOpenSession={onOpenSessionMention}
               copy={t.uiSessionMention}

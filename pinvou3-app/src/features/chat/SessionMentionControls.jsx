@@ -1,21 +1,23 @@
 import { MessageSquare, X } from '../../components/icons.jsx';
 
 /**
- * 引用对话(Session Mention)的输入框 chip 条与 @ 面板列表。
- * 视觉对齐 AttachmentChips / BackgroundTasksIndicator 的既有 pill 语言;
- * 全部文案经 props.copy 注入(i18n 三语键见 shared/i18n 的 uiSessionMention)。
+ * Session mention (referenced chats): the composer chip strip and the @ panel
+ * candidate list. Visually aligned with the existing pill language of
+ * AttachmentChips / BackgroundTasksIndicator; all copy is injected via
+ * props.copy (trilingual i18n keys live under uiSessionMention in shared/i18n).
  */
 
 const CHIP_CLS =
   'h-7 max-w-[220px] rounded-lg pl-2 pr-1 inline-flex items-center gap-1.5 text-[12px] ' +
   'bg-[#E8F0FE] text-[#1967D2] dark:bg-[#1F3A5F] dark:text-[#A8C7FA]';
 
-// 功能关闭(§3.3 第 4 层存量降级)的 chip 配色:灰化但保留可删除。
+// Chip colors for the feature-off state (docs/builtin-toolset-contract.md §3.3
+// layer 4 degradation of existing entry points): greyed out but still removable.
 const CHIP_DISABLED_CLS =
   'h-7 max-w-[220px] rounded-lg pl-2 pr-1 inline-flex items-center gap-1.5 text-[12px] ' +
   'bg-black/[0.04] text-[#9AA0A6] dark:bg-white/[0.06] dark:text-[#80868B]';
 
-/** 输入框上方的引用 chip 条(可逐个移除);功能关闭时整体降级灰化(disabledNotice 悬停提示)。 */
+/** Mention chip strip above the composer (removable one by one); with the feature off the whole strip degrades to grey (disabledNotice on hover). */
 export function SessionMentionChips({ refs, onRemove, copy, disabled = false, disabledNotice = '' }) {
   if (!refs || refs.length === 0) return null;
   return (
@@ -44,7 +46,7 @@ export function SessionMentionChips({ refs, onRemove, copy, disabled = false, di
   );
 }
 
-/** @ 面板的会话候选列表(键盘选中项由 selectedIndex 驱动,回车/点击选择)。 */
+/** Session candidate list of the @ panel (the keyboard selection is driven by selectedIndex; Enter/click picks). */
 export function SessionMentionMenu({ candidates, selectedIndex, onSelect, onHover, copy }) {
   return (
     <div data-testid="session-mention-menu" role="listbox" aria-label={copy.menuTitle}>
@@ -82,10 +84,12 @@ export function SessionMentionMenu({ candidates, selectedIndex, onSelect, onHove
 }
 
 /**
- * 已发送消息里的引用卡片(点击跳转目标会话)。
- * knownSessionIds 提供存活判定:被引用会话已删除时卡片降级为失效态(不可点)。
- * disabled(功能已关闭,§3.3 第 4 层存量降级)时全部卡片不可点、显示功能关闭
- * 短标签(copy.cardDisabled),悬停给出 disabledNotice 完整说明;历史注入块不动。
+ * Reference cards inside sent messages (click to jump to the target session).
+ * knownSessionIds provides the liveness check: when the referenced session was
+ * deleted the card degrades to an unavailable state (not clickable).
+ * With disabled (feature off, §3.3 layer 4 degradation) every card is
+ * unclickable and shows the short feature-off label (copy.cardDisabled), with
+ * the full disabledNotice on hover; historical injection blocks are untouched.
  */
 export function SessionMentionCards({ refs, knownSessionIds, onOpenSession, copy, disabled = false, disabledNotice = '' }) {
   if (!refs || refs.length === 0) return null;
@@ -126,8 +130,9 @@ export function SessionMentionCards({ refs, knownSessionIds, onOpenSession, copy
             key={ref.sessionId + '-' + index}
             data-testid={'session-mention-card-' + ref.sessionId}
             title={disabled ? disabledNotice : (known ? label : copy.cardUnavailable)}
-            // 存活但无导航回调(非主时间线场景)保持正常配色仅不可点,失效灰只留给已删除会话
-            // 与功能关闭两种降级态。
+            // Alive but without a navigation callback (non-main-timeline
+            // contexts): keep the normal colors, only unclickable — the dead
+            // grey is reserved for deleted sessions and the feature-off state.
             className={base + (known ? active : dead)}
           >
             {inner}

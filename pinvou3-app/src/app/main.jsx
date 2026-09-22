@@ -2987,7 +2987,7 @@ const NAV_PREFETCH = {
         onGotoSettings: () => openSettingsSection('general'),
         onGotoModelSettings: () => openSettingsSection('model'),
         onGotoTools: () => navigateFromScheduledRun('toolStore'),
-        // 引用卡片跳转(「引用对话」):复用侧栏同款的会话切换(带视图路由与浏览器过渡)。
+        // Reference-card navigation (session mention): reuse the sidebar's session switch (with view routing and browser transition).
         onSwitchSession: handleSwitchSession,
         browserDockOpen: browserPaneOpen,
         onOpenBrowserDock: openBrowserDock,
