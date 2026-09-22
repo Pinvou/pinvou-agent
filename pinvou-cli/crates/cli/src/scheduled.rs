@@ -1265,16 +1265,13 @@ impl TaskStore {
                 ))
             })?;
             ensure_supported_schema(&run, 1, "run record")?;
-            // Same honest-refusal rule as definitions: a non-object run file
-            // (hand-edited store) must not render as a phantom record — the
-            // field defaults would list it as a live run with exit 0.
-            if !run.is_object() {
-                return Err(CliError::failed(format!(
-                    "scheduled_storage_unavailable: {} is valid JSON but not an object (run \
-                     record); fix or remove the file manually",
-                    path.display()
-                )));
-            }
+            // Same honest-refusal rule as definitions, extended to the same
+            // type-checked required fields: `AutomationRunRecord` deserializes
+            // id/automation_id/scheduled_for/status/created_at without
+            // defaults, so the GUI's typed reader rejects the whole record —
+            // a valid-JSON object missing them (or carrying a non-string one)
+            // must not render as a phantom run with empty fields and exit 0.
+            require_object_run_record(&run, &path)?;
             runs.push(run);
         }
         runs.sort_by(|a, b| record_time(b, "created_at").cmp(&record_time(a, "created_at")));
@@ -1374,6 +1371,38 @@ fn ensure_supported_schema(
 /// GUI's typed `AutomationRecord` (serde fails the whole store there):
 /// a def missing one of its required fields must not render as a phantom
 /// task either.
+/// The run-record twin of [`require_object_definition`]: type-checks the
+/// fields `AutomationRunRecord` deserializes without defaults, so a
+/// valid-JSON-but-wrong-shaped run file fails honestly instead of
+/// rendering as a phantom run with empty fields.
+fn require_object_run_record(
+    run: &serde_json::Value,
+    path: &std::path::Path,
+) -> Result<(), CliError> {
+    let malformed = || {
+        CliError::failed(format!(
+            "scheduled_storage_unavailable: {} is not a well-formed run record; fix or remove \
+             the file manually",
+            path.display()
+        ))
+    };
+    if !run.is_object() {
+        return Err(malformed());
+    }
+    for field in [
+        "id",
+        "automation_id",
+        "scheduled_for",
+        "status",
+        "created_at",
+    ] {
+        if run.get(field).map(serde_json::Value::is_string) != Some(true) {
+            return Err(malformed());
+        }
+    }
+    Ok(())
+}
+
 fn require_object_definition(id: &str, def: &serde_json::Value) -> Result<(), CliError> {
     let malformed = || {
         CliError::failed(format!(
