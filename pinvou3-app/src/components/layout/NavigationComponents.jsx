@@ -10,14 +10,14 @@ import { PROJECT_SESSION_DRAG_TYPE } from '../../features/projects/projectGroupi
     // notify (including background streaming tokens); when the props are
     // reference stable (see NAV_ICON_*/NAV_PREFETCH/navNavigateHandlers in
     // main.jsx) the whole nav item can skip the re-render.
-    const NavItem = memo(function NavItem({ icon, label, active, unread = false, isSidebarOpen = true, onClick, dragKind, dragging, onPickUp, nativeButton = false, t, onPointerEnter, onFocus }) {
+    const NavItem = memo(function NavItem({ icon, label, active, unread = false, isSidebarOpen = true, onClick, dragKind, dragging, onPickUp, t, onPointerEnter, onFocus }) {
       const drag = useLongPressDrag(dragKind, onPickUp);
       const dragProps = dragKind ? drag.handlers : {};
       const clickH = dragKind ? drag.guardClick(onClick) : onClick;
-      const Root = nativeButton ? 'button' : 'div';
       return (
-        <Root
-          {...(nativeButton ? { type: 'button', 'aria-label': label } : {})}
+        // biome-ignore lint/a11y/noStaticElementInteractions: main sidebar nav item; activation is pointer-only by design and the collapsed rail shares this markup (behavior unchanged from main)
+        // biome-ignore lint/a11y/useKeyWithClickEvents: same nav item; no keyboard activation is wired on any host
+        <div
           onClick={clickH}
           onPointerEnter={onPointerEnter}
           onFocus={onFocus}
@@ -39,75 +39,16 @@ import { PROJECT_SESSION_DRAG_TYPE } from '../../features/projects/projectGroupi
             )}
           </div>
           {isSidebarOpen && <span className="whitespace-nowrap">{label}</span>}
-        </Root>
+        </div>
       );
     });
 
-    const ArchiveConfirmDialog = ({ theme, t, onCancel, onConfirm }) => {
-      const isDark = theme === 'dark';
-      useEffect(() => {
-        const onKey = (e) => {
-          if (e.key === 'Escape') onCancel();
-        };
-        window.addEventListener('keydown', onKey);
-        return () => window.removeEventListener('keydown', onKey);
-      }, [onCancel]);
-      return (
-        // Backdrop click-to-close; keyboard path: Escape (effect listener below) and the real "Cancel" button inside the dialog.
-        // biome-ignore lint/a11y/noStaticElementInteractions: backdrop click-to-close layer; the keyboard path is handled by the Escape listener and the cancel button
-        <div
-          role="presentation"
-          className="fixed inset-0 z-[200] flex items-center justify-center p-4"
-          style={{
-            background: 'rgba(0,0,0,.34)',
-            backdropFilter: 'blur(14px) saturate(140%)',
-            WebkitBackdropFilter: 'blur(14px) saturate(140%)',
-            fontFamily: '-apple-system, BlinkMacSystemFont, "SF Pro Text", "PingFang SC", "Microsoft YaHei", sans-serif'
-          }}
-          onClick={onCancel}
-        >
-          {/* biome-ignore lint/a11y/useKeyWithClickEvents: dialog body only stops bubbling to avoid accidentally triggering backdrop close; not an interactive control itself */}
-          <div
-            role="dialog"
-            aria-modal="true"
-            aria-labelledby="archive-confirm-title"
-            className="w-[320px] max-w-[calc(100vw-48px)] overflow-hidden rounded-[16px] shadow-2xl bg-[rgba(250,250,250,.96)] dark:bg-[rgba(44,44,46,.96)] text-[#000] dark:text-[#F2F2F7]"
-            style={{
-              // isDark dynamic-value: 保留 (boxShadow)
-              boxShadow: isDark ? '0 24px 60px rgba(0,0,0,.55)' : '0 24px 60px rgba(0,0,0,.22)'
-            }}
-            onClick={e => e.stopPropagation()}
-          >
-            <div className="px-6 pt-6 pb-5 text-center">
-              <div id="archive-confirm-title" className="text-[20px] font-semibold leading-[26px]">{t.archiveConfirmTitle}</div>
-              <div className="mt-2.5 text-[15px] leading-[22px] text-[rgba(60,60,67,.72)] dark:text-[rgba(235,235,245,.72)]">
-                <div>{t.archiveConfirmMessage}</div>
-                {t.archiveConfirmDetail && <div className="mt-1">{t.archiveConfirmDetail}</div>}
-              </div>
-            </div>
-            <div className="h-px bg-[rgba(60,60,67,.24)] dark:bg-[rgba(84,84,88,.65)]" />
-            <div className="grid grid-cols-2">
-              <button
-                type="button"
-                onClick={onCancel}
-                className="h-[50px] text-[17px] active:opacity-70 text-[#007AFF] dark:text-[#0A84FF]"
-              >
-                {t.cpCancel}
-              </button>
-              <button
-                type="button"
-                onClick={onConfirm}
-                className="h-[50px] text-[17px] font-semibold active:opacity-70 text-[#007AFF] dark:text-[#0A84FF] border-l border-l-[rgba(60,60,67,.24)] dark:border-l-[rgba(84,84,88,.65)]"
-              >
-                {t.archiveConfirmAction}
-              </button>
-            </div>
-          </div>
-        </div>
-      );
-    };
-
-    const ArchivedDeleteConfirmDialog = ({ theme, t, onCancel, onConfirm }) => {
+    // Shared iOS-style confirm dialog: backdrop + Escape handling + panel +
+    // 2-button footer. ArchiveConfirmDialog and ArchivedDeleteConfirmDialog
+    // differ only in copy and the confirm-action tint; the destructive
+    // variant is the newer semantics and wins for the shared role/aria
+    // attributes (role=alertdialog).
+    const ConfirmDialogShell = ({ theme, t, labelledById, title, message, detail, actionLabel, destructive = false, onCancel, onConfirm }) => {
       const isDark = theme === 'dark';
       useEffect(() => {
         const onKey = (e) => {
@@ -134,7 +75,7 @@ import { PROJECT_SESSION_DRAG_TYPE } from '../../features/projects/projectGroupi
           <div
             role="alertdialog"
             aria-modal="true"
-            aria-labelledby="archived-delete-confirm-title"
+            aria-labelledby={labelledById}
             className="w-[320px] max-w-[calc(100vw-48px)] overflow-hidden rounded-[16px] shadow-2xl bg-[rgba(250,250,250,.96)] dark:bg-[rgba(44,44,46,.96)] text-[#000] dark:text-[#F2F2F7]"
             style={{
               // isDark dynamic-value: 保留 (boxShadow)
@@ -143,9 +84,10 @@ import { PROJECT_SESSION_DRAG_TYPE } from '../../features/projects/projectGroupi
             onClick={e => e.stopPropagation()}
           >
             <div className="px-6 pt-6 pb-5 text-center">
-              <div id="archived-delete-confirm-title" className="text-[20px] font-semibold leading-[26px]">{t.archivedDeleteTitle}</div>
+              <div id={labelledById} className="text-[20px] font-semibold leading-[26px]">{title}</div>
               <div className="mt-2.5 text-[15px] leading-[22px] text-[rgba(60,60,67,.72)] dark:text-[rgba(235,235,245,.72)]">
-                {t.archivedDeleteMessage}
+                <div>{message}</div>
+                {detail && <div className="mt-1">{detail}</div>}
               </div>
             </div>
             <div className="h-px bg-[rgba(60,60,67,.24)] dark:bg-[rgba(84,84,88,.65)]" />
@@ -160,15 +102,43 @@ import { PROJECT_SESSION_DRAG_TYPE } from '../../features/projects/projectGroupi
               <button
                 type="button"
                 onClick={onConfirm}
-                className="h-[50px] text-[17px] font-semibold active:opacity-70 text-[#FF3B30] border-l border-l-[rgba(60,60,67,.24)] dark:border-l-[rgba(84,84,88,.65)]"
+                className={`h-[50px] text-[17px] font-semibold active:opacity-70 ${destructive ? 'text-[#FF3B30]' : 'text-[#007AFF] dark:text-[#0A84FF]'} border-l border-l-[rgba(60,60,67,.24)] dark:border-l-[rgba(84,84,88,.65)]`}
               >
-                {t.archivedDeleteAction}
+                {actionLabel}
               </button>
             </div>
           </div>
         </div>
       );
     };
+
+    const ArchiveConfirmDialog = ({ theme, t, onCancel, onConfirm }) => (
+      <ConfirmDialogShell
+        theme={theme}
+        t={t}
+        labelledById="archive-confirm-title"
+        title={t.archiveConfirmTitle}
+        message={t.archiveConfirmMessage}
+        detail={t.archiveConfirmDetail}
+        actionLabel={t.archiveConfirmAction}
+        onCancel={onCancel}
+        onConfirm={onConfirm}
+      />
+    );
+
+    const ArchivedDeleteConfirmDialog = ({ theme, t, onCancel, onConfirm }) => (
+      <ConfirmDialogShell
+        theme={theme}
+        t={t}
+        labelledById="archived-delete-confirm-title"
+        title={t.archivedDeleteTitle}
+        message={t.archivedDeleteMessage}
+        actionLabel={t.archivedDeleteAction}
+        destructive
+        onCancel={onCancel}
+        onConfirm={onConfirm}
+      />
+    );
 
     const ArchiveToast = ({ t, onClose, onView }) => {
       return (
@@ -361,12 +331,6 @@ import { PROJECT_SESSION_DRAG_TYPE } from '../../features/projects/projectGroupi
           {/* 等待选择时模型不在生成：橙点替代灰点，避免两个徽标叠加 */}
           {chat.working && !chat.waitingInput && <span className="shrink-0 mr-1 inline-block w-2 h-2 rounded-full bg-current opacity-70 animate-pulse" title={t.riGenerating}></span>}
           {chat.waitingInput && <span className="shrink-0 mr-1 inline-block w-2 h-2 rounded-full bg-[#F9AB00] opacity-90 animate-pulse" title={t.riAwaitingInput}></span>}
-          {chat.skill && <span className="text-[11px] shrink-0 opacity-70 mr-1" title={chat.skill}>🧭</span>}
-          {chat.unread && (
-            <span role="img" data-testid="scheduled-run-sidebar-unread" aria-label={t.uiScheduled.unread}
-              className="mr-1 h-2 w-2 shrink-0 rounded-full group-hover:hidden"
-              style={{ background: '#0B57D0' }} />
-          )}
           </button>
           {confirming ? (
             <div className="mr-4 flex items-center gap-0.5 shrink-0">

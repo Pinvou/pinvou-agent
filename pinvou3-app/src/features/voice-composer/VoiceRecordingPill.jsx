@@ -7,7 +7,6 @@ import {
 
 // 状态判定集从 voice-ui-policy 派生:可见集同 isVoiceActive;busy(确认键
 // 禁用)额外含 requesting_permission——许可请求期同样没有可确认的录音。
-const PILL_ACTIVE_STATUSES = VOICE_ACTIVE_STATUSES;
 const PILL_BUSY_STATUSES = ['requesting_permission', ...VOICE_BUSY_STATUSES];
 
 const WAVE_BARS = [
@@ -40,7 +39,7 @@ function VoiceWaveform({ muted = false }) {
 }
 
 function VoiceRecordingPill({ status, mode, message, copy, closing = false, onCancel, onConfirm }) {
-  const active = closing || PILL_ACTIVE_STATUSES.includes(status);
+  const active = closing || VOICE_ACTIVE_STATUSES.includes(status);
   if (!active) return null;
   const busy = PILL_BUSY_STATUSES.includes(status);
   const recording = status === 'recording';

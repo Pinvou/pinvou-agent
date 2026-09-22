@@ -6,28 +6,11 @@
 // 由视图层调 rewind_to_turn 编排（恢复代码 + 截断对话 + engine 回收重注水）。
 // 无 Turn 快照的边界是「仅回退对话」变体（conversationOnly），文案明示代码不回退。
 
-import { useEffect, useRef } from 'react';
-import { createPortal } from 'react-dom';
 import { RotateCcw } from '../../components/icons.jsx';
-import { useDialogFocusRestore } from '../../hooks/useDialogFocusRestore.js';
+import { ModalDialogShell } from './ModalDialogShell.jsx';
 import { summarizeCheckpointChanges } from './checkpoints.js';
 
 const FILE_LIST_LIMIT = 8;
-
-// Escape to close (disabled while busy). Shared by the two confirm dialogs, the shared YoloConfirmCard,
-// and CodexAcpView's branch-switch dialog.
-export function useDialogEscapeKey(busy, onCancel) {
-  useEffect(() => {
-    const onKey = (event) => {
-      if (event.key === 'Escape' && !busy) {
-        event.preventDefault();
-        onCancel();
-      }
-    };
-    window.addEventListener('keydown', onKey);
-    return () => window.removeEventListener('keydown', onKey);
-  }, [busy, onCancel]);
-}
 
 function ChangeSummary({ summary, copy }) {
   if (!summary.total) {
@@ -126,45 +109,34 @@ export function RewindUndoChip({ state, disabled, copy, onOpen }) {
   );
 }
 
-// Shared shell for the two rewind dialogs (confirm / undo-confirm), following
-// the BranchDialogShell precedent in CodexAcpView: portal to <body> (same as
-// the shared YoloConfirmCard — avoids the composer container's backdrop-blur
-// becoming the containing block for fixed descendants), focus capture/restore,
-// Escape to close (disabled while busy), and a backdrop button disabled along
-// with busy so an in-flight rewind cannot be dismissed by clicking away. The
-// identical error line and cancel/confirm footer live here too; testids derive
-// from `testid` (…-title / …-cancel / …-ok) so both dialogs keep their
-// existing hooks.
+// Shared shell for the two rewind dialogs (confirm / undo-confirm), built on
+// the shared ModalDialogShell (portal to <body>, focus capture/restore,
+// Escape to close disabled while busy, backdrop button disabled along with
+// busy so an in-flight rewind cannot be dismissed by clicking away). The
+// identical title line, error line and cancel/confirm footer live here too;
+// testids derive from `testid` (…-title / …-cancel / …-ok) so both dialogs
+// keep their existing hooks.
 function RewindDialogShell({
   testid, isDark, busy, title, error, okLabel, copy, onCancel, onConfirm, children,
 }) {
-  const dialogRef = useRef(null);
-  useDialogFocusRestore(dialogRef);
-  useDialogEscapeKey(busy, onCancel);
-  return createPortal(
-    <div data-testid={testid} className="fixed inset-0 z-50 flex items-center justify-center p-4">
-      <button
-        type="button"
-        aria-label={copy.rewindCancel}
-        className="absolute inset-0 cursor-default bg-black/30 backdrop-blur-[2px]"
-        disabled={busy}
-        onClick={onCancel}
-      />
-      <div
-        ref={dialogRef}
-        role="dialog"
-        aria-modal="true"
-        aria-labelledby={`${testid}-title`}
-        tabIndex={-1}
-        className={`relative w-full max-w-[440px] rounded-2xl border p-4 shadow-xl backdrop-blur-xl outline-none ${
-          isDark ? 'border-white/10 bg-[#202124]/95' : 'border-black/[0.08] bg-white/95'
-        }`}
-      >
+  return (
+    <ModalDialogShell
+      testid={testid}
+      zIndexClass="z-50"
+      backdropLabel={copy.rewindCancel}
+      backdropClass="absolute inset-0 cursor-default bg-black/30 backdrop-blur-[2px]"
+      panelClass={`relative w-full max-w-[440px] rounded-2xl border p-4 shadow-xl backdrop-blur-xl outline-none ${
+        isDark ? 'border-white/10 bg-[#202124]/95' : 'border-black/[0.08] bg-white/95'
+      }`}
+      busy={busy}
+      labelledBy={`${testid}-title`}
+      title={(
         <div id={`${testid}-title`} className={`text-[14px] font-semibold ${isDark ? 'text-[#E3E3E3]' : 'text-[#1F1F1F]'}`}>
           {title}
         </div>
-        {children}
-        {error && <div className="mt-3 text-[12px] leading-5 text-red-500">{error}</div>}
+      )}
+      error={error}
+      footer={(
         <div className="mt-4 flex items-center justify-end gap-2">
           <button
             type="button"
@@ -181,9 +153,11 @@ function RewindDialogShell({
             onClick={onConfirm}
           >{okLabel}</button>
         </div>
-      </div>
-    </div>,
-    document.body,
+      )}
+      onCancel={onCancel}
+    >
+      {children}
+    </ModalDialogShell>
   );
 }
 

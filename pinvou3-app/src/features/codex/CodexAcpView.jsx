@@ -1,9 +1,8 @@
 import { Fragment, useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react';
-import { createPortal } from 'react-dom';
 import { isImeComposing } from '../../shared/ime-guard.mjs';
 import {
   Brain, Check, ChevronDown, FileText, FolderOpen, GitBranch, Monitor, Paperclip,
-  Plus, RefreshCw, Send, Sparkles, StopCircle, Upload, User,
+  RefreshCw, Send, Sparkles, StopCircle, Upload, User,
 } from '../../components/icons.jsx';
 import { AcpAgentLogo } from './AcpAgentLogo.jsx';
 import { CodexWorkspacePanel } from './CodexWorkspacePanel.jsx';
@@ -17,7 +16,6 @@ import {
 import {
   classifyAcpServiceFailure,
   isAcpAuthenticationFailure,
-  runtimeOperationFor,
 } from './runtimeNoticeState.js';
 import {
   AgentServiceFailureNotice,
@@ -80,9 +78,8 @@ import {
   RewindConfirmDialog,
   RewindUndoChip,
   RewindUndoConfirmDialog,
-  useDialogEscapeKey,
 } from './RewindChip.jsx';
-import { useDialogFocusRestore } from '../../hooks/useDialogFocusRestore.js';
+import { ModalDialogShell } from './ModalDialogShell.jsx';
 import {
   ConversationMarkdown,
   ConversationStatusBadge,
@@ -122,12 +119,12 @@ import {
   restoreConversationScrollPosition,
 } from '../conversation/conversation-model.js';
 import { QuestionChoiceCard } from '../conversation/QuestionChoiceCard.jsx';
+import { buildUserInputAnswers, normalizeUserInputQuestions } from '../../shared/user-input-shared.js';
 import {
   PlanLayer,
   ToolCard,
   cardBoxCls,
   cardBtnCls,
-  isFreeTextPlaceholderOption,
 } from '../tools/tool-renderers.jsx';
 import { YoloConfirmCard } from '../../shared/yolo-confirm-card.jsx';
 import { notifyChatRoundCommitted } from '../tools/tool-events.js';
@@ -269,30 +266,20 @@ function WorkspacePanelToggle({ testId, active, changeCount, onToggle, copy }) {
 // not hide the dialog into the background. Mounted only while the dialog is
 // open (conditional rendering at the call site).
 function BranchDialogShell({ copy, busy, testid, labelledBy, initialFocusRef, onCancel, children }) {
-  const dialogRef = useRef(null);
-  useDialogFocusRestore(dialogRef, initialFocusRef);
-  useDialogEscapeKey(busy, onCancel);
-  return createPortal(
-    <div data-testid={testid} className="fixed inset-0 z-[120] flex items-center justify-center p-4">
-      <button
-        type="button"
-        aria-label={copy.branchSwitchCancel}
-        className="absolute inset-0 cursor-default bg-black/45 backdrop-blur-[14px] animate-in fade-in duration-200"
-        disabled={busy}
-        onClick={onCancel}
-      />
-      <div
-        ref={dialogRef}
-        role="dialog"
-        aria-modal="true"
-        aria-labelledby={labelledBy}
-        tabIndex={-1}
-        className="relative w-[min(400px,calc(100vw-24px))] rounded-[24px] p-6 bg-white text-[#1F1F1F] outline-none dark:bg-[#1E1F20] dark:text-[#E8EAED]"
-      >
-        {children}
-      </div>
-    </div>,
-    document.body,
+  return (
+    <ModalDialogShell
+      testid={testid}
+      zIndexClass="z-[120]"
+      backdropLabel={copy.branchSwitchCancel}
+      backdropClass="absolute inset-0 cursor-default bg-black/45 backdrop-blur-[14px] animate-in fade-in duration-200"
+      panelClass="relative w-[min(400px,calc(100vw-24px))] rounded-[24px] p-6 bg-white text-[#1F1F1F] outline-none dark:bg-[#1E1F20] dark:text-[#E8EAED]"
+      busy={busy}
+      initialFocusRef={initialFocusRef}
+      labelledBy={labelledBy}
+      onCancel={onCancel}
+    >
+      {children}
+    </ModalDialogShell>
   );
 }
 
@@ -352,7 +339,6 @@ function CodexComposerConfigSelect({
   title,
   unsetLabel,
   testId,
-  footerAction,
 }) {
   const [open, setOpen] = useState(false);
   const triggerRef = useRef(null);
@@ -420,19 +406,6 @@ function CodexComposerConfigSelect({
             </button>
           );
         })}
-        {footerAction && (
-          <>
-            <div className="my-1 mx-2 h-px bg-black/5 dark:bg-white/10" />
-            <button
-              type="button"
-              onClick={() => { setOpen(false); footerAction.onClick(); }}
-              className="group flex w-full items-center gap-2.5 rounded-xl px-3 py-2.5 text-left text-[13px] text-gray-700 transition-colors hover:bg-[#007AFF] hover:text-white dark:text-gray-200"
-            >
-              <Plus size={15} className="shrink-0 text-gray-400 group-hover:text-white/90" />
-              <span className="min-w-0 truncate">{footerAction.label}</span>
-            </button>
-          </>
-        )}
       </ComposerPopover>
     </div>
   );
@@ -551,35 +524,11 @@ const NATIVE_CHAT_EVENTS = [
 ];
 
 function NativeUserInputCard({ item, responding, onSubmitAnswers, onCancelInput, copy, conversationCopy }) {
-  const questions = (item.questions || []).map((question, index) => {
-    const allowOther = question.allow_free_text !== false;
-    return {
-      id: question.id || `question-${index + 1}`,
-      header: question.header || `Q${index + 1}`,
-      question: question.question || '',
-      options: (question.options || [])
-        .filter(option => !allowOther || !isFreeTextPlaceholderOption(option))
-        .map(option => ({
-          value: option.label,
-          label: option.label,
-          description: option.description || '',
-        })),
-      allowOther,
-      multiSelect: Boolean(question.multi_select),
-      required: !question.multi_select,
-    };
-  });
+  const questions = normalizeUserInputQuestions(item.questions);
   const actionable = !item.resolved;
 
   function submit(groups) {
-    const answers = groups.flatMap(group => group.answers.map(answer => ({
-      id: group.questionId,
-      label: answer.other ? (conversationCopy && conversationCopy.otherAnswer) || answer.label : answer.label,
-      value: String(answer.value),
-      // 保留 other 标记：QuestionChoiceCard 还原历史答案时据此把“其他”与预设选项区分开，
-      // 避免“其他值 == 预设 value”被误判为预设（评审 P2）。
-      other: answer.other,
-    })));
+    const answers = buildUserInputAnswers(groups, conversationCopy && conversationCopy.otherAnswer);
     onSubmitAnswers(item.toolCallId, answers);
   }
 
@@ -592,6 +541,7 @@ function NativeUserInputCard({ item, responding, onSubmitAnswers, onCancelInput,
       submitting={responding}
       submitLabel={copy.submit}
       cancelLabel={copy.cancel}
+      otherPlaceholder={conversationCopy && conversationCopy.otherAnswer}
       otherAnswerLabel={conversationCopy && conversationCopy.otherAnswer}
       inputPlaceholder={conversationCopy && conversationCopy.inputPlaceholder}
       statusText={actionable
@@ -1261,7 +1211,10 @@ export function CodexAcpView({
   }, [isNativeAgent, rememberScrollBeforeRightPanelChange]);
   const { acceptStatus, refreshStatus } = useAcpAgentStatus(activeAgentIdRef, setStatus);
   const activeStatus = status?.agent_id === activeAgentId ? status : null;
-  const activeRuntimeOperation = runtimeOperationFor(runtimeOperations, activeAgentId);
+  // Runtime-source suffix in the account menu: computed once per render; the
+  // JSX call sites null-check and reuse this value.
+  const activeRuntimeSourceLabel = runtimeSourceLabel(activeStatus, codexCopy);
+  const activeRuntimeOperation = (activeAgentId && runtimeOperations && runtimeOperations[activeAgentId]) || '';
   const activeRuntimeBusy = Boolean(activeRuntimeOperation);
   const activeRuntimeError = runtimeErrors[activeAgentId] || '';
   const serviceFailure = useMemo(() => {
@@ -1279,12 +1232,34 @@ export function CodexAcpView({
       && activeSession.workspace_available === false,
   );
   const attachmentKey = activeId || DRAFT_ATTACHMENT_KEY;
-  const attachments = attachmentDrafts[attachmentKey] || [];
+  // Stable identity across renders keeps composerSendBlockers' useMemo deps
+  // from churning in the no-draft state.
+  const attachments = useMemo(
+    () => attachmentDrafts[attachmentKey] || [],
+    [attachmentDrafts, attachmentKey],
+  );
   const workspaceReferences = workspaceReferenceDrafts[attachmentKey] || [];
   const sessionReady = isNativeAgent
     ? (!activeId || Boolean(activeNativeLane && activeNativeLane.hydrated))
     : (!activeId || (sessionInfoSessionId === activeId && Boolean(sessionInfo)));
   const sessionSyncing = Boolean(activeId && !sessionReady && sessionLoading);
+  // Unified derivation of the send-blocking factors: the send-button disabled state, the native voice send guard
+  // (canSendNativeVoiceTask), and the send() guard are three entries each reading the subset they need; the predicate
+  // is written only here, avoiding three-way drift (the voice channel originally missing 'uploading' attachments
+  // was exactly such drift).
+  // Additional per-entry rules (the button's editPreview/empty-content disabling, send's error copy, etc.) remain in their own channels.
+  const composerSendBlockers = useMemo(() => ({
+    busy,
+    working: working || activeRuntimeBusy,
+    configApplying: Boolean(configApplying),
+    sessionNotReady: Boolean(activeId && !sessionReady),
+    sessionSyncing,
+    noSendTarget: !activeId && !draftWorkspacePath,
+    workspaceUnavailable,
+    pendingAttachment: attachments.some(isPendingAcpAttachment),
+    authMissing: !isNativeAgent && (!activeStatus || !activeStatus.authenticated),
+    setupMissing: !isNativeAgent && (!activeStatus || !activeStatus.installed || !activeStatus.authenticated),
+  }), [activeId, activeRuntimeBusy, activeStatus, attachments, busy, configApplying, draftWorkspacePath, isNativeAgent, sessionReady, sessionSyncing, working, workspaceUnavailable]);
   const deviceFileUploadAvailable = can('deviceFileUpload');
   const runtimeManagementAvailable = [
     'install_acp_agent',
@@ -1665,23 +1640,26 @@ export function CodexAcpView({
     // eslint-disable-next-line react-hooks/exhaustive-deps -- refresh only on the agent switch edge; refreshProviders reference changes must not retrigger fetching
   }, [activeAgentId]);
   const activeProvidersView = providersViews[activeAgentId] || null;
-  // Kimi 中转激活时（会话覆盖 > 全局当前 Provider），模型列表只保留受管
-  // pv-* 条目：writer 按设计保留官方登录的模型表，CLI 会一并上报，全列出
-  // 会让用户误以为还在走官方。
-  const kimiRelayActive = activeAgentId === 'kimi' && Boolean(
-    (sessionControlsInfo && sessionControlsInfo.provider)
-    || (activeProvidersView && activeProvidersView.currentProviderId)
-  );
-  // Codex 中转激活时同理：CLI 的 model/list 会暴露官方内置模型（gpt 系列），
-  // 中转商并不提供它们，用户选中会 404——只保留当前 Provider 的模型
-  // （Codex 的模型选项 id 是模型名，无 pv- 前缀，按名字匹配）。
+  // Relay activation: an explicit session-level override (sessionControlsInfo
+  // .provider) wins; otherwise the agent's current global provider applies.
+  // The Rust side restarts an agent's sessions whenever the global provider
+  // switches, so active sessions without an explicit override do follow the
+  // global provider and must keep the relay filtering. Drafts have no session
+  // snapshot and use the same global fallback. The kimi and codex relay
+  // branches both derive from this single relayProviderId.
   const relayProviderId = (sessionControlsInfo && sessionControlsInfo.provider)
     || (activeProvidersView && activeProvidersView.currentProviderId)
     || null;
+  // When the Kimi relay is active, keep only the managed pv-* entries in the model list: the writer keeps
+  // the official login model table by design and the CLI reports it anyway; listing everything would make users think they are still on the official route.
+  const kimiRelayActive = activeAgentId === 'kimi' && Boolean(relayProviderId);
   const relayProviderRecord = relayProviderId
     ? (((activeProvidersView && activeProvidersView.providers) || [])
         .find(provider => provider.id === relayProviderId)) || null
     : null;
+  // Same for the Codex relay: the CLI's model/list exposes the official built-in models (gpt series),
+  // which the relay provider does not offer — selecting one 404s. Keep only the current Provider's models
+  // (a Codex model option id is the model name, with no pv- prefix, matched by name).
   const codexRelayModel = activeAgentId === 'codex' && relayProviderRecord && relayProviderRecord.model
     ? relayProviderRecord.model
     : null;
@@ -2285,11 +2263,15 @@ export function CodexAcpView({
 
   function canSendNativeVoiceTask(outgoing) {
     if (!String(outgoing || '').trim()) return false;
-    if (busy || working || activeRuntimeBusy || workspaceUnavailable || sessionSyncing) return false;
-    if (!activeId && !draftWorkspacePath) return false;
-    if (attachments.some(attachment => attachment.status === 'parsing')) return false;
-    if (activeId && !sessionReady) return false;
-    if (!isNativeAgent && !activeStatus?.authenticated) return false;
+    if (composerSendBlockers.busy || composerSendBlockers.working
+      || composerSendBlockers.workspaceUnavailable || composerSendBlockers.sessionSyncing) return false;
+    if (composerSendBlockers.noSendTarget) return false;
+    // Pending (parsing/uploading) attachments are deliberately NOT gated here:
+    // this hook's gate path has no failure feedback, so blocking here would
+    // report a fake "task sent" success. Fall through to send(), which shows
+    // the inline attachments error and fails the voice task for real.
+    if (composerSendBlockers.sessionNotReady) return false;
+    if (composerSendBlockers.authMissing) return false;
     return true;
   }
 
@@ -2846,17 +2828,17 @@ export function CodexAcpView({
     const draftAgentAtSend = draftAgentId;
     const draftConfigAtSend = draftConfigSelections[draftAgentAtSend];
     if ((!message && !readyAttachments.length && !workspaceReferences.length)
-      || busy || working || activeRuntimeBusy || configApplying) return false;
-    if (!isNativeAgent && !activeStatus?.authenticated) {
+      || composerSendBlockers.busy || composerSendBlockers.working || composerSendBlockers.configApplying) return false;
+    if (composerSendBlockers.authMissing) {
       setError(codexCopy.loginRequiredBeforeSend);
       return false;
     }
-    if (attachments.some(attachment => ['parsing', 'uploading'].includes(attachment.status))) {
+    if (composerSendBlockers.pendingAttachment) {
       setError(codexCopy.attachmentsParsing);
       return false;
     }
-    if (workspaceUnavailable) return false;
-    if (activeId && !sessionReady) return false;
+    if (composerSendBlockers.workspaceUnavailable) return false;
+    if (composerSendBlockers.sessionNotReady) return false;
     if (isNativeAgent) {
       return sendNative(message, readyAttachments);
     }
@@ -3949,7 +3931,7 @@ export function CodexAcpView({
                                   : activeStatus?.authenticated
                                     ? codexCopy.accountAuthorized
                                     : codexCopy.accountNotAuthorized}
-                                {runtimeSourceLabel(activeStatus, codexCopy) ? ` · ${runtimeSourceLabel(activeStatus, codexCopy)}` : ''}
+                                {activeRuntimeSourceLabel ? ` · ${activeRuntimeSourceLabel}` : ''}
                               </div>
                             </div>
                           </div>
@@ -4091,7 +4073,7 @@ export function CodexAcpView({
                     {/* While a voice rewrite preview is open, disable the primary send: sending is
                         funneled into the preview card (apply and send), so buttons based on draft
                         cannot send the raw text or double-send during the preview. */}
-                    <button type="button" onClick={() => send()} disabled={!!nativeVoice.editPreview || !sessionReady || (!draft.trim() && attachments.every(attachment => attachment.status !== 'ready') && !workspaceReferences.length) || working || activeRuntimeBusy || Boolean(configApplying) || (!isNativeAgent && (!activeStatus || !activeStatus.installed || !activeStatus.authenticated))}
+                    <button type="button" onClick={() => send()} disabled={!!nativeVoice.editPreview || composerSendBlockers.sessionNotReady || (!draft.trim() && attachments.every(attachment => attachment.status !== 'ready') && !workspaceReferences.length) || composerSendBlockers.working || composerSendBlockers.configApplying || composerSendBlockers.setupMissing}
                       className="w-9 h-9 rounded-full flex items-center justify-center bg-[#007AFF] text-white shadow-sm hover:bg-[#006EE6] disabled:bg-black/[0.06] dark:disabled:bg-white/10 disabled:text-gray-400 disabled:shadow-none">
                       <Send size={16} />
                     </button>

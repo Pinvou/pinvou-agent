@@ -359,7 +359,7 @@ assert.match(webBridge, /web_access_abort_attachment_upload/,
   'cancelled or failed uploads must release the desktop buffer');
 assert.match(webBridge, /web_access_discard_attachment/,
   'removed or late-cancelled attachments must release their opaque desktop handle');
-assert.match(remoteControlCommands, /stage_uploaded_attachments\(attachments, &session_id, &?store\)/,
+assert.match(remoteControlCommands, /stage_uploaded_attachments\(attachments, session_id, &?store\)/,
   'uploaded attachments must be staged into the Session workspace before the engine sees their paths');
 // Agent 安装命令行/输出可能含内部镜像源或主机路径，Web status 投影必须清除。
 assert.match(remoteControlCommands,
@@ -574,14 +574,14 @@ assert.match(bootstrap, /markStateReady\(\)/);
 assert.match(bootstrap, /if \(!this\.frontendReady \|\| !this\.stateReady\)/);
 assert.match(bootstrap, /if \(!this\.frontendReady \|\| !this\.stateReady\)/);
 const main = readSource(path.join(root, 'src', 'app', 'main.jsx'), 'utf8');
-const webSearchRestartBody = webBridge.slice(
-  webBridge.indexOf('async function saveSearchSettingsAndRestart'),
-  webBridge.indexOf('async function submitFeedback'),
-);
-assert.match(webSearchRestartBody, /unsupported by the Web host/,
-  'Web settings bridge must report desktop restart as unsupported');
-assert.doesNotMatch(webSearchRestartBody, /invoke\("restart_app"/,
+// The desktop-only saveSearchSettingsAndRestart wrapper (and its
+// "unsupported by the Web host" stub) was removed from the web bridge as dead
+// surface; the surviving invariant is that the web host never invokes the
+// native-only restart command at all.
+assert.doesNotMatch(webBridge, /invoke\("restart_app"/,
   'Web settings bridge must not invoke the native-only restart command');
+assert.doesNotMatch(webBridge, /async function saveSearchSettingsAndRestart/,
+  'the desktop-only restart wrapper must stay off the web bridge');
 assert.match(main, /const saved = isWeb[\s\S]{0,180}saveSearchSettings\(search\)[\s\S]{0,180}saveSearchSettingsAndRestart\(search\)/,
   'the shared UI must save without requesting a desktop restart in WebUI');
 assert.match(webBridge, /state\.settings = await invoke\(IS_WEB \? "web_access_update_settings" : "update_settings"/,
@@ -591,9 +591,19 @@ assert.match(webBridge, /web_access_update_settings", \{ patch: \{ (?:search: se
 assert.match(remoteControlCommands, /web_access_update_settings\([\s\S]{0,120}patch: super::settings::WebSettingsPatch,[\s\S]{0,80}\) -> Result<UserPrefs, String>/,
   'the bounded Web settings command must return canonical preferences');
 assert.match(bootstrap, /pinvou:web-capabilities/);
-assert.ok((main.match(/\{can\('webAccessAdmin'\) && <button[\s\S]{0,220}handleOpenWebAccess/g) || []).length >= 2,
+// The collapsed/expanded footer buttons were consolidated into one shared
+// renderer: one definition plus exactly one call per sidebar layout. A layout
+// that stops calling the renderer, or a second inline copy of the buttons,
+// changes the count.
+assert.ok((main.match(/renderFooterButtons\(/g) || []).length === 2,
+  'footer buttons must stay consolidated: one shared renderer called from both sidebar layouts');
+assert.match(main, /\{!isSidebarOpen && renderFooterButtons\(true\)\}/,
+  'the collapsed sidebar layout must render the shared footer buttons');
+assert.match(main, /\{\s*renderFooterButtons\(false\)\s*\}/,
+  'the expanded sidebar layout must render the shared footer buttons');
+assert.match(main, /const renderFooterButtons = \(collapsed\) => \{[\s\S]{0,900}\{can\('webAccessAdmin'\) && <button[\s\S]{0,220}handleOpenWebAccess/,
   'desktop Web-access controls must stay hidden inside WebUI in both sidebar layouts');
-assert.ok((main.match(/\{can\('pet'\) && <button[\s\S]{0,220}handleSetPetEnabled/g) || []).length >= 2,
+assert.match(main, /const renderFooterButtons = \(collapsed\) => \{[\s\S]{0,1200}\{can\('pet'\) && <button[\s\S]{0,220}handleSetPetEnabled/,
   'desktop pet controls must stay hidden inside WebUI in both sidebar layouts');
 assert.doesNotMatch(webBridge, /registerWebAccessDesktopProxy|web_access:rpc_request/,
   'the browser-only bridge must not own the desktop RPC proxy');
@@ -825,7 +835,10 @@ assert.doesNotMatch(settingsView, /getWebRelaySettings/);
 assert.match(main, /title=\{t\.uiRemote\.title\}/);
 assert.match(main, /const isWebAccessConnected = !!\(bs && bs\.webAccess && bs\.webAccess\.web_client_connected\);/,
   'desktop indicator must reflect an actual browser connection, not a persistent access link');
-assert.equal((main.match(/isWebAccessConnected && <span/g) || []).length, 2,
+// The collapsed/expanded footer consolidation shares one indicator render:
+// the indicator must live inside the shared renderer (distance-bounded match),
+// so neither layout can silently lose it.
+assert.match(main, /const renderFooterButtons = \(collapsed\) => \{[\s\S]{0,900}isWebAccessConnected && <span/,
   'expanded and collapsed navigation must use the actual connection indicator');
 assert.doesNotMatch(main, /bs\.webAccess\.active && <span/,
   'an enabled access link must not be presented as a connected phone');
