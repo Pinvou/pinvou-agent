@@ -35,9 +35,11 @@ use crate::platform::paths;
 static MARKETPLACE_DIR: Dir<'static> =
     include_dir!("$CARGO_MANIFEST_DIR/resources/common/skill-marketplace");
 
-/// 单个 skill 子树未压缩大小上限(防御性,预置/上传都适用)。
-/// 仅测试脚手架（`import_package_named`）在用——生产上传通道的统一插件包
-/// 大小闸在 `plugin_import::MAX_PLUGIN_SIZE_BYTES`。
+/// Uncompressed size cap for a single skill subtree (defensive; applies to
+/// both bundled and uploaded skills). Only the test scaffolding
+/// (`import_package_named`) uses it — the unified plugin-package size gate
+/// for the production upload channel lives in
+/// `plugin_import::MAX_PLUGIN_SIZE_BYTES`.
 #[cfg(test)]
 const MAX_SKILL_SIZE_BYTES: u64 = 5 * 1024 * 1024;
 
@@ -295,10 +297,13 @@ impl SkillMarketplaceManager {
                     if !dir.join("SKILL.md").is_file() {
                         continue;
                     }
-                    // 用户自定义展示覆盖（bundles.json extra）优先；空/缺 key 回退
-                    // 现状（title=上传文件名去扩展名 → 记录 id、description=SKILL.md
-                    // frontmatter）。记录已过滤为 Upload 来源，覆盖读法与其余两个
-                    // 列表（list_tools / list_bundles）共用 `apply_display_override`。
+                    // User-defined display overrides (bundles.json extra) win;
+                    // an empty/missing key falls back to the current behavior
+                    // (title = uploaded filename without extension → record id,
+                    // description = SKILL.md frontmatter). Records are already
+                    // filtered to the Upload source, and this override lookup
+                    // shares `apply_display_override` with the other two lists
+                    // (list_tools / list_bundles).
                     let (display_name, display_description) =
                         super::store::apply_display_override(&record, None, None);
                     out.push(MarketplaceSkillInfo {
@@ -394,7 +399,7 @@ impl SkillMarketplaceManager {
                 }
             }
             Err(e) => log::warn!(
-                "[skill-marketplace] BundleStore 读取失败，installed_skill_ids 仅含预置技能: {e}"
+                "[skill-marketplace] failed to read BundleStore; installed_skill_ids falls back to bundled skills only: {e}"
             ),
         }
         out
@@ -862,10 +867,13 @@ impl SkillMarketplaceManager {
                 let owner = super::bundle::skill_owner_package(&dir_name);
                 let pkg_dir = self.packages_root.join(skill_id);
                 if owner == skill_id && pkg_dir.is_dir() {
-                    // 独立上传技能包：整个 bundles/<id>/ 搬入回收站（技能内容是
-                    // 用户唯一副本），跳过下方 remove_dir_all。kind 钉住 KIND_SKILL
-                    // （记录 id 即技能名，不做目录形态推导）；与 MCP 两条回收路径
-                    // 共用 recycle_upload_package 核心。
+                    // Standalone uploaded skill package: move the whole
+                    // bundles/<id>/ into the recycle bin (the skill content is
+                    // the user's only copy) and skip the remove_dir_all below.
+                    // kind is pinned to KIND_SKILL (the record id is the skill
+                    // name; no directory-shape inference); it shares the
+                    // recycle_upload_package core with the two MCP recycle
+                    // paths.
                     if let Err(e) = self.bundle_store.remove(skill_id) {
                         log::warn!(
                             "[skill-marketplace] bundles.json 镜像删除失败（uninstall {skill_id}）: {e}"
@@ -1675,11 +1683,14 @@ impl std::ops::Deref for LockedSkillManager {
     }
 }
 
-/// 收集嵌入资源子树的 `(相对路径, 内容)` 列表,供更新检测比对。
-/// 口径与 [`extract_embedded_subdir`] 一致:strip `source_dir` 前缀、跳过 SOURCE.md、
-/// 跳过 `__pycache__`/`*.pyc`(与包导入比对/包导出共用的
-/// `plugin_import::is_python_cache_rel_path` 判据)——否则构建期混入的 pyc 会让
-/// 内嵌指纹永远 ≠ 落盘指纹，`update_available` 幽灵常亮（G6）。
+/// Collect the `(relative path, contents)` list of the embedded resource
+/// subtree for update detection.
+/// Same rules as [`extract_embedded_subdir`]: strip the `source_dir` prefix,
+/// skip SOURCE.md, and skip `__pycache__`/`*.pyc` (the shared
+/// `plugin_import::is_python_cache_rel_path` predicate used by package import
+/// comparison and package export) — otherwise pyc files mixed in at build
+/// time would make the embedded fingerprint permanently differ from the
+/// on-disk fingerprint, keeping `update_available` stuck on (G6).
 fn collect_embedded_files(dir: &Dir<'_>, source_dir: &str, out: &mut Vec<(String, Vec<u8>)>) {
     let prefix = format!("{source_dir}/");
     for file in dir.files() {
@@ -1798,9 +1809,11 @@ fn fingerprint_of(files: &mut [(String, Vec<u8>)]) -> String {
     crate::platform::encoding::hex_lower(&digest.finalize())
 }
 
-/// 相对 include_dir 根的路径是否属于 Python 编译缓存(`__pycache__/` 子树内
-/// 或任意层级的 `.pyc`,大小写不敏感)。纯函数便于单测。判定与包导入比对/包
-/// 导出共用 `plugin_import::is_python_cache_rel_path` 单一判据。
+/// Whether a path relative to the include_dir root is Python compilation
+/// cache (inside a `__pycache__/` subtree or a `.pyc` at any level, case
+/// insensitive). Pure function for easy unit testing; the predicate is the
+/// single `plugin_import::is_python_cache_rel_path` rule shared with package
+/// import comparison and package export.
 fn is_python_cache_path(rel: &std::path::Path) -> bool {
     super::plugin_import::is_python_cache_rel_path(&rel.to_string_lossy())
 }

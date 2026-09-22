@@ -298,7 +298,7 @@ function injectSource() {
         case 'find_resumable_run': return Promise.resolve(null);
         case 'check_dependencies': return Promise.resolve(dependencyCheckResponse.slice());
         case 'install_dependencies': return Promise.resolve(null);
-        // 社区版行为：后端不接收在线反馈，提交以 failed_validation 收场（见 ⑰）。
+        // Community edition: the backend does not accept online feedback; the submit ends with failed_validation (see ⑰).
         case 'submit_feedback': return Promise.resolve({ status: 'failed_validation', message: '反馈提交失败，请稍后重试。' });
         case 'list_marketplace_tools': return Promise.resolve([]);
         case 'get_mode_state': return Promise.resolve({ mode: 'yolo', plan_phase: 'none' });
@@ -622,8 +622,10 @@ async function modalWidth(page, headingText) {
     };
   });
   const afterDownloadCalls = await callCount(page, 'download_update');
-  // 下载进度不再走 update:progress 前端事件（监听已删除），下载态只断言按钮进入
-  // 「取消下载」、描述进入「正在下载更新」文案，不断言具体百分比。
+  // Download progress no longer rides the update:progress frontend event (the
+  // listener was deleted); the downloading state only asserts the button
+  // entering "取消下载" and the description entering "正在下载更新" copy,
+  // without asserting a specific percentage.
   rec('①b 设置页下载按钮进入下载态后可取消',
     beforeDownloadCalls === 0
     && afterDownloadCalls === 1
@@ -1403,9 +1405,10 @@ async function modalWidth(page, headingText) {
   // 视觉模型候选不做 disabled 过滤:disabled 可能是历史探测误判残留
   // (如 kimi-for-coding 曾因探测链路 400 被回填),应由选择时的识图探测
   // 验证(supported 才可选),而不是提前隐藏。
-  // models.loadModels left the facade with the dead-surface cleanup; mock 修改后
-  // re-selecting the current active model chains the same loadModels refresh so
-  // React re-renders the dialog's vision candidates from the new savedModels.
+  // models.loadModels left the facade with the dead-surface cleanup; after the
+  // mock change, re-selecting the current active model chains the same
+  // loadModels refresh so React re-renders the dialog's vision candidates from
+  // the new savedModels.
   const toggleVision = async () => { await page.click('[data-testid="vision-model-toggle"]'); await sleep(150); };
   const refreshModels = () => page.evaluate(() => window.TauriBridge.models
     .setActiveModel(window.__SETTINGS_TEST__.activeModelId()));
@@ -1668,10 +1671,12 @@ async function modalWidth(page, headingText) {
   // Legacy detect-on-save (auto) tier leftover: the reopened form
   // must not render the retired detect-on-save tier,
   // and unpinned tiers echo the catalog annotation (this model is annotated
-  // false → "image input not supported"). In the production path
-  // "auto" 由 Rust serde 迁移为 pinvou 后前端才收到,此处直灌 auto 只测前端
-  // 防御层(serde 迁移另有 settings 单测覆盖);mock 改档后 re-selecting the
-  // active model chains the loadModels refresh (same as ⑦.img.2b).
+  // false → "image input not supported"). In the production path "auto"
+  // only reaches the frontend after Rust migrates it to pinvou via serde;
+  // feeding "auto" directly here exercises the frontend's defensive layer
+  // (the serde migration has its own settings unit tests). After the mock
+  // changes the tier, re-selecting the active model chains the loadModels
+  // refresh (same as ⑦.img.2b).
   await page.evaluate(() => window.__SETTINGS_TEST__.setModelImageCapability(
     window.__SETTINGS_TEST__.models().find(model => model.model === 'deepseek-v4-pro').id, 'auto'));
   await page.evaluate(() => window.TauriBridge.models
@@ -1989,9 +1994,11 @@ async function modalWidth(page, headingText) {
     failureBanner: document.body.innerText.includes('反馈提交失败，请稍后重试。'),
     dialogStillOpen: !!document.querySelector('[data-feedback-dialog="true"]'),
   }));
-  rec('⑰ 提交反馈失败走应用内红色横幅，不弹系统 alert（社区版行为）', feedbackTyped === '反馈弹窗测试' && feedbackSubmit.nativeAlertCalls === 0 && feedbackSubmit.submitCalls === 1 && feedbackSubmit.failureBanner && feedbackSubmit.dialogStillOpen, JSON.stringify({ feedbackTyped, ...feedbackSubmit }));
+  rec('⑰ failed feedback submit shows the in-app red banner instead of a system alert (community edition behavior)', feedbackTyped === '反馈弹窗测试' && feedbackSubmit.nativeAlertCalls === 0 && feedbackSubmit.submitCalls === 1 && feedbackSubmit.failureBanner && feedbackSubmit.dialogStillOpen, JSON.stringify({ feedbackTyped, ...feedbackSubmit }));
   await sleep(200);
-  // 失败路径不自动关窗：先经应用内确认层把带草稿的弹窗关掉（不提交），⑰.5 再重新打开。
+  // The failure path must not auto-close the dialog: first close the
+  // draft-carrying dialog through the in-app confirm layer (without
+  // submitting), then reopen it in ⑰.5.
   await page.evaluate(() => {
     const modal = document.querySelector('[data-feedback-dialog="true"]');
     const button = modal && [...modal.querySelectorAll('button')].find(node => (node.textContent || '').trim() === '取消');

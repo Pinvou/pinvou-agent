@@ -197,10 +197,12 @@ test('web ensureSession：尾部 await 期间再进草稿 → 物化中止不漂
 
 // ── archiveSession：失败回滚不劫持新草稿 ──────────────────────────
 
-// 构造 scheduled run 场景：先 loadScheduledTasks 登记任务（merge 前提），
-// 再经 loadScheduledTaskRecentRuns 把 sched-run-1 写进 recentRuns（scheduled
-// 分支的前提；loadScheduledTaskRuns 已从 flat facade 退役，两条路径在
-// recentRuns 上的合并结果一致），最后走 load_session 快速路径激活。
+// Build the scheduled-run scenario: register the task via loadScheduledTasks
+// first (a prerequisite of the merge), then write sched-run-1 into recentRuns
+// via loadScheduledTaskRecentRuns (a prerequisite of the scheduled branch;
+// loadScheduledTaskRuns was retired from the flat facade, and the two paths
+// merge identically into recentRuns), and finally activate through the
+// load_session fast path.
 async function primeScheduledRun(rt, sessionId) {
   const tasks = rt.defer('list_scheduled_tasks');
   const loadingTasks = rt.flat.loadScheduledTasks();

@@ -778,12 +778,12 @@ pub(super) fn write_session_sidecar(
 ) -> Result<(), String> {
     if let Some(parent) = path.parent() {
         std::fs::create_dir_all(parent)
-            .map_err(|error| format!("创建 session sidecar 目录失败: {error}"))?;
+            .map_err(|error| format!("failed to create session sidecar directory: {error}"))?;
     }
     let payload = serde_json::to_vec(value)
-        .map_err(|error| format!("序列化 session sidecar 失败: {error}"))?;
+        .map_err(|error| format!("failed to serialize session sidecar: {error}"))?;
     deepseek_tui::utils::write_atomic(path, &payload)
-        .map_err(|error| format!("写 session sidecar 失败: {error:#}"))
+        .map_err(|error| format!("failed to write session sidecar: {error:#}"))
 }
 
 /// 保存用户消息专业场景标签。sidecar 独立于 messages，但属于 session 持久数据，

@@ -172,10 +172,11 @@ pub(super) fn libreoffice_user_installation_arg(profile_dir: &Path) -> Result<St
 /// `--headless --convert-to <convert_to> --outdir <dir> <path>`, hands `dir`
 /// to `consume` for output discovery/read, then removes the dir.
 ///
-/// `fail_label` preserves each caller's historical exit-failure prefix
-/// ("LibreOffice 转换失败" / "LibreOffice 转 PDF 失败"); the spawn-failure
-/// message is shared. Tool availability is NOT checked here — callers keep
-/// their own pre-checks (some combine several tools in one message).
+/// `fail_label` preserves each caller's historical exit-failure prefix (the
+/// localized LibreOffice failure wording each call site shipped before the
+/// unification); the spawn-failure message is shared. Tool availability is
+/// NOT checked here — callers keep their own pre-checks (some combine several
+/// tools in one message).
 pub(super) fn run_libreoffice_convert<T>(
     path: &Path,
     convert_to: &str,
@@ -189,7 +190,7 @@ pub(super) fn run_libreoffice_convert<T>(
         .map(|d| d.as_nanos())
         .unwrap_or(0);
     let tmpdir = std::env::temp_dir().join(format!("{tmp_prefix}-{ts}"));
-    std::fs::create_dir_all(&tmpdir).map_err(|e| format!("创建临时目录失败: {e}"))?;
+    std::fs::create_dir_all(&tmpdir).map_err(|e| format!("failed to create temp dir: {e}"))?;
 
     // soffice cold start or a stale lock can hang; bounded by a 180s kill-tree
     // timeout (same budget as the #532 inline conversion points). The profile
@@ -218,7 +219,7 @@ pub(super) fn run_libreoffice_convert<T>(
                 "{fail_label}: {}",
                 String::from_utf8_lossy(&o.stderr).trim()
             )),
-            Err(e) => Err(format!("LibreOffice 调用失败: {e}")),
+            Err(e) => Err(format!("LibreOffice invocation failed: {e}")),
         }
     })();
     let _ = std::fs::remove_dir_all(&tmpdir);

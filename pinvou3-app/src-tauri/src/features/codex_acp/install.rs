@@ -648,7 +648,7 @@ struct ManagedInstallStage {
     stderr_context: &'static str,
     wait_context: &'static str,
     timeout_message: String,
-    /// Failure message subject (the "{display} 安装脚本" / "npm 全局升级 {display}" message).
+    /// Failure message subject (the "{display} install script exited" / "npm global upgrade of {display} exited" message).
     failure_subject: String,
     /// Whether to append a network troubleshooting hint when stderr has no usable content (official script path only).
     failure_hint: bool,
@@ -724,22 +724,24 @@ async fn run_managed_install(
             );
         }
         let stderr_tail = output_tail(&stderr, 4);
-        // stderr 无有效内容（空或仅系统噪音如「重试」）时给出可操作提示：
-        // 官方脚本依赖 releases.openai.com / GitHub，下载失败多为网络原因。
-        // 手动安装指引按 Agent 各自包名/脚本生成（不能一律指向 codex）。
+        // When stderr has no usable content (empty or only system noise like
+        // "retry"), give an actionable hint: the official script depends on
+        // releases.openai.com / GitHub, so download failures are mostly
+        // network-related. The manual-install guidance is generated per agent
+        // package name/script (it must not point at codex unconditionally).
         let hint = if stage.failure_hint
             && (stderr_tail.trim().is_empty() || stderr_tail.trim().chars().count() < 8)
         {
             let npm_pkg = npm_package(backend).unwrap_or("");
             let (unix_url, windows_url) = official_script_urls(backend);
             format!(
-                "；请检查网络连接后重试。也可手动安装：npm install -g {npm_pkg}，或运行官方安装脚本（macOS/Linux: curl -fsSL {unix_url} | sh；Windows: irm {windows_url} | iex）"
+                "; check the network connection and retry. You can also install manually: npm install -g {npm_pkg}, or run the official install script (macOS/Linux: curl -fsSL {unix_url} | sh; Windows: irm {windows_url} | iex)"
             )
         } else {
             String::new()
         };
         bail!(
-            "{}: {status}；stderr: {}{}",
+            "{}: {status}; stderr: {}{}",
             stage.failure_subject,
             stderr_tail,
             hint
@@ -782,22 +784,23 @@ pub(super) async fn run_official_install_script(
             diag_stage: "script",
             command_line,
             process_group: false,
-            spawn_context: format!("启动 {} 安装脚本失败", backend.display_name()),
-            stdout_context: "读取安装脚本标准输出失败",
-            stderr_context: "读取安装脚本错误输出失败",
-            wait_context: "等待安装脚本进程失败",
+            spawn_context: format!("failed to spawn {} install script", backend.display_name()),
+            stdout_context: "failed to read install script stdout",
+            stderr_context: "failed to read install script stderr",
+            wait_context: "failed to wait for install script process",
             timeout_message: format!(
-                "{} 安装脚本超过 10 分钟仍未完成，请检查网络后重试",
+                "{} install script did not finish within 10 minutes; check the network and retry",
                 backend.display_name()
             ),
-            failure_subject: format!("{} 安装脚本退出", backend.display_name()),
+            failure_subject: format!("{} install script exited", backend.display_name()),
             failure_hint: true,
         },
     )
     .await
 }
-/// 执行 `npm install -g <pkg>@latest` 全局升级（Windows 上 npm.cmd 经 cmd 启动），
-/// 10 分钟超时，输出尾部写入诊断日志。
+/// Runs `npm install -g <pkg>@latest` as a global upgrade (npm.cmd via cmd on
+/// Windows), 10-minute timeout, with the output tail written to the
+/// diagnostics log.
 pub(super) async fn run_npm_global_upgrade(
     app: &AppHandle,
     backend: AgentBackend,
@@ -821,15 +824,15 @@ pub(super) async fn run_npm_global_upgrade(
             diag_stage: "npm",
             command_line: format!("npm install -g {}", npm_package(backend).unwrap_or("")),
             process_group: true,
-            spawn_context: "启动 npm 全局升级失败".to_string(),
-            stdout_context: "读取 npm 标准输出失败",
-            stderr_context: "读取 npm 错误输出失败",
-            wait_context: "等待 npm 全局升级进程失败",
+            spawn_context: "failed to spawn npm global upgrade".to_string(),
+            stdout_context: "failed to read npm stdout",
+            stderr_context: "failed to read npm stderr",
+            wait_context: "failed to wait for npm global upgrade process",
             timeout_message: format!(
-                "{} npm 全局升级超过 10 分钟仍未完成，请检查网络后重试",
+                "{} npm global upgrade did not finish within 10 minutes; check the network and retry",
                 backend.display_name()
             ),
-            failure_subject: format!("npm 全局升级 {} 退出", backend.display_name()),
+            failure_subject: format!("npm global upgrade of {} exited", backend.display_name()),
             failure_hint: false,
         },
     )
@@ -837,7 +840,7 @@ pub(super) async fn run_npm_global_upgrade(
 }
 
 /// brew's idempotent notices do not count as failure: install reports already installed, upgrade reports already
-/// up-to-date。
+/// up-to-date.
 fn brew_already_done(stdout: &str, stderr: &str) -> bool {
     ["already installed", "already up-to-date"]
         .iter()
@@ -866,20 +869,28 @@ pub(super) async fn run_brew_install(
         .stdin(Stdio::null())
         .stdout(Stdio::piped())
         .stderr(Stdio::piped());
-    let mut child = command.spawn().context("启动 Homebrew 失败")?;
-    // spawn 后登记 pid 供取消命令杀进程树；guard 在本函数任意出口注销。
+    let mut child = command.spawn().context("failed to spawn Homebrew")?;
+    // Register the pid after spawn so the cancel command can kill the process
+    // tree; the guard deregisters on every exit path of this function.
     let _child_guard = InstallChildGuard::register(install_children, backend, child.id());
-    // 取消可能发生在 spawn 与登记之间：登记后立即补检一次。
+    // Cancellation can land between spawn and registration: recheck right
+    // after registering.
     if install_cancelled.lock().contains(&backend) {
         let _ = child.kill().await;
     }
     emit_install_progress(app, backend, "command", command_description);
-    let stdout = child.stdout.take().context("读取 Homebrew 标准输出失败")?;
-    let stderr = child.stderr.take().context("读取 Homebrew 错误输出失败")?;
+    let stdout = child
+        .stdout
+        .take()
+        .context("failed to read Homebrew stdout")?;
+    let stderr = child
+        .stderr
+        .take()
+        .context("failed to read Homebrew stderr")?;
     let output_readers = InstallOutputReaders::spawn(app, backend, stdout, stderr);
     const TIMEOUT: Duration = Duration::from_secs(600);
     let status = match tokio::time::timeout(TIMEOUT, child.wait()).await {
-        Ok(result) => result.context("等待 Homebrew 进程失败")?,
+        Ok(result) => result.context("failed to wait for Homebrew process")?,
         Err(_) => {
             diagnostics::write(
                 operation_id,
@@ -888,7 +899,7 @@ pub(super) async fn run_brew_install(
             );
             let _ = child.kill().await;
             let _ = child.wait().await;
-            bail!("Homebrew 安装超过 10 分钟仍未完成，请稍后重试");
+            bail!("Homebrew install did not finish within 10 minutes; please retry");
         }
     };
     let (stdout, stderr) = output_readers.finish().await;
@@ -912,7 +923,7 @@ pub(super) async fn run_brew_install(
         );
     }
     bail!(
-        "{command_description} 失败 (exit {}): {}",
+        "{command_description} failed (exit {}): {}",
         status.code().unwrap_or(-1),
         output_tail(&stderr, 4)
     );

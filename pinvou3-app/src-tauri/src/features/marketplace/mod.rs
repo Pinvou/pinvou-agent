@@ -789,7 +789,7 @@ impl<S: CredentialStore> MarketplaceManager<S> {
             Ok(records) => Some(records),
             Err(e) => {
                 log::warn!(
-                    "[marketplace] BundleStore 读取失败，list_tools installed 回退 installed.json、不应用展示覆盖、source 按 builtin: {e}"
+                    "[marketplace] failed to read BundleStore; list_tools installed falls back to installed.json, no display overrides, source as builtin: {e}"
                 );
                 None
             }
@@ -5553,7 +5553,7 @@ mod tests {
             // is removed from env wholesale, the keyless value is kept, and exactly one migration is persisted.
             assert!(
                 !content.contains("AMAP_KEY"),
-                "迁移应把 env 里的 AMAP_KEY 键整体移除: {content}"
+                "migration should remove the AMAP_KEY key from env wholesale: {content}"
             );
             assert!(content.contains("SAFE_VALUE"));
         });
@@ -5593,7 +5593,7 @@ mod tests {
             // Migration observation: the plaintext Authorization header is removed wholesale and rewritten to env-var wiring.
             assert!(
                 !content.contains("Authorization"),
-                "迁移应移除明文 Authorization 头: {content}"
+                "migration should remove the plaintext Authorization header: {content}"
             );
             assert!(
                 content.contains("\"bearer_token_env_var\": \"PINVOU3_MCP_SECRET_QCC_API_KEY\"")
@@ -5644,7 +5644,7 @@ mod tests {
             assert!(!content.contains(&kept_secret));
             assert!(
                 !content.contains("Authorization"),
-                "跳过覆盖也应清理明文头: {content}"
+                "skip-override migration should also clean the plaintext header: {content}"
             );
             assert!(
                 content.contains("\"bearer_token_env_var\": \"PINVOU3_MCP_SECRET_QCC_API_KEY\"")

@@ -110,7 +110,7 @@ test('a cancelled download resets progress without reporting an error', async ()
   assert.ok(runtime.invokeCalls.some(call => call.command === 'cancel_download'),
     'cancelling must interrupt the backend download loop');
 
-  downloadGate.reject(new Error('已取消下载'));
+  downloadGate.reject(new Error('Download cancelled'));
   const installed = await pending;
   assert.equal(installed, false);
   assert.equal(runtime.state.updateProgress, 0, 'a cancelled download must reset progress');

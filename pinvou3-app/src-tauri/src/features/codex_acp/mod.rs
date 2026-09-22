@@ -1868,8 +1868,12 @@ impl AcpPool {
         // install.rs's run_brew_install. brew previously had no timeout, and a hang would hold the
         // install mutex guard forever.
         let result = match tokio::task::spawn_blocking(move || {
-            brew_install_args(backend, brew_package_installed(backend))
-                .with_context(|| format!("{} 不支持 Homebrew 升级", backend.display_name()))
+            brew_install_args(backend, brew_package_installed(backend)).with_context(|| {
+                format!(
+                    "{} does not support Homebrew upgrade",
+                    backend.display_name()
+                )
+            })
         })
         .await
         {
@@ -1886,7 +1890,7 @@ impl AcpPool {
                 .await
             }
             Ok(Err(error)) => Err(error),
-            Err(join_error) => Err(join_error).context("等待 Homebrew 安装任务失败"),
+            Err(join_error) => Err(join_error).context("failed to join Homebrew install task"),
         };
         drop(install_guard);
         match result {

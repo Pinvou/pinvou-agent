@@ -335,22 +335,25 @@ fn codex_version_result(path: &Path) -> Result<String> {
     }) {
         Ok(outcome) => outcome,
         Err(VersionProbeError::Spawn(error)) => {
-            return Err(error).context(format!("启动 Codex 自检失败: {}", path.display()));
+            return Err(error).context(format!(
+                "failed to spawn Codex self-check: {}",
+                path.display()
+            ));
         }
         Err(VersionProbeError::Wait(error)) => {
-            return Err(error).context("等待 Codex 自检进程失败");
+            return Err(error).context("failed to wait for Codex self-check process");
         }
     };
     let Some(status) = outcome.status else {
-        bail!("Codex 自检超过 15 秒");
+        bail!("Codex self-check timed out after 15 seconds");
     };
     if !status.success() {
         bail!(
-            "Codex 自检进程退出: {status}; stderr={}",
+            "Codex self-check process exited: {status}; stderr={}",
             outcome.stderr.trim()
         );
     }
-    parse_codex_version_output(&outcome.stdout).context("Codex 自检未返回版本号")
+    parse_codex_version_output(&outcome.stdout).context("Codex self-check returned no version")
 }
 
 /// 从 `codex --version` 标准输出提取版本号。
