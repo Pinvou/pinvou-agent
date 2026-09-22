@@ -48,6 +48,11 @@ const NATIVE_PAGE_ID_SEQUENCE_LIMIT: u64 = 1_u64 << NATIVE_PAGE_ID_SEQUENCE_BITS
 const NATIVE_PAGE_ID_INCARNATION_LIMIT: u64 = 1_u64 << (53 - NATIVE_PAGE_ID_SEQUENCE_BITS);
 const ACTION_COMMIT_UNKNOWN_TAB_NAVIGATION: &str =
     "browser/action-commit-unknown-after-tab-navigation";
+// Aliases of the shared commit-boundary error codes (platform/mod.rs); the
+// JS contract tests and browser-wrapper.mjs match these strings literally.
+const ACTION_COMMIT_UNKNOWN_TAB_CLOSE: &str = super::ACTION_COMMIT_UNKNOWN_TAB_CLOSE;
+const ACTION_COMMIT_UNKNOWN_NAVIGATION_DISPATCH: &str =
+    super::ACTION_COMMIT_UNKNOWN_NAVIGATION_DISPATCH;
 static NATIVE_PAGE_ID_INCARNATION: LazyLock<u64> =
     LazyLock::new(|| rand::random::<u64>() % NATIVE_PAGE_ID_INCARNATION_LIMIT);
 static NEXT_NATIVE_PAGE_SEQUENCE: AtomicU64 = AtomicU64::new(0);
@@ -1988,7 +1993,7 @@ impl<P: PlatformWebviewConfig> DesktopBrowserSurface<P> {
                         .close()
                         .map_err(|error| {
                             format!(
-                                "browser/action-commit-unknown-after-tab-close: native tab-close response is uncertain: {error}"
+                                "{ACTION_COMMIT_UNKNOWN_TAB_CLOSE}: native tab-close response is uncertain: {error}"
                             )
                         })?;
                 }
@@ -2013,7 +2018,7 @@ impl<P: PlatformWebviewConfig> DesktopBrowserSurface<P> {
             if let Some(webview) = app.get_webview(&entry.label) {
                 webview.close().map_err(|error| {
                     format!(
-                        "browser/action-commit-unknown-after-tab-close: native tab-close response is uncertain: {error}"
+                        "{ACTION_COMMIT_UNKNOWN_TAB_CLOSE}: native tab-close response is uncertain: {error}"
                     )
                 })?;
             }
@@ -2418,7 +2423,7 @@ impl<P: PlatformWebviewConfig> DesktopBrowserSurface<P> {
             entry.begin_external_navigation(cross_document);
             webview.navigate(target_url).map_err(|error| {
                 format!(
-                    "browser/action-commit-unknown-after-navigation-dispatch: URL navigation acknowledgement was inconclusive: {error}"
+                    "{ACTION_COMMIT_UNKNOWN_NAVIGATION_DISPATCH}: URL navigation acknowledgement was inconclusive: {error}"
                 )
             })
         })?;
@@ -2455,7 +2460,7 @@ impl<P: PlatformWebviewConfig> DesktopBrowserSurface<P> {
                 })
                 .map_err(|error| {
                 format!(
-                    "browser/action-commit-unknown-after-navigation-dispatch: history navigation acknowledgement was inconclusive: {error}"
+                    "{ACTION_COMMIT_UNKNOWN_NAVIGATION_DISPATCH}: history navigation acknowledgement was inconclusive: {error}"
                 )
                 })
         })?;
@@ -2488,7 +2493,7 @@ impl<P: PlatformWebviewConfig> DesktopBrowserSurface<P> {
             entry.begin_external_navigation(true);
             webview.reload().map_err(|error| {
                 format!(
-                    "browser/action-commit-unknown-after-navigation-dispatch: reload acknowledgement was inconclusive: {error}"
+                    "{ACTION_COMMIT_UNKNOWN_NAVIGATION_DISPATCH}: reload acknowledgement was inconclusive: {error}"
                 )
             })
         })?;
@@ -4058,28 +4063,16 @@ fn has_internal_marker_for_token(url: &str, expected_tab_token: &str) -> bool {
 }
 
 fn has_reserved_marker_shape(url: &str) -> bool {
-    const PREFIXES: [&str; 6] = [
-        "about:blank#pinvou-session-",
-        "about:blank#pinvou-tab-",
-        "about:blank%23pinvou-session-",
-        "about:blank%23pinvou-tab-",
-        "about:blank#pinvou-webdriver-bind-",
-        "about:blank%23pinvou-webdriver-bind-",
-    ];
-    PREFIXES.iter().any(|prefix| url.starts_with(prefix))
+    super::HOST_BLANK_MARKER_RESERVED_PREFIXES
+        .iter()
+        .any(|prefix| url.starts_with(prefix))
 }
 
 fn internal_marker_token(url: &str) -> Option<&str> {
     // WKWebView/NSURL serializes the fragment delimiter in opaque `about:` URLs as `%23`.
     // Keep this compatibility at the host-owned marker seam: arbitrary about URLs, suffixes,
     // queries, and markers belonging to another tab must remain untrusted.
-    const PREFIXES: [&str; 4] = [
-        "about:blank#pinvou-session-",
-        "about:blank#pinvou-tab-",
-        "about:blank%23pinvou-session-",
-        "about:blank%23pinvou-tab-",
-    ];
-    PREFIXES
+    super::HOST_BLANK_MARKER_TOKEN_PREFIXES
         .iter()
         .find_map(|prefix| url.strip_prefix(prefix))
         .filter(|token| is_valid_token(token))

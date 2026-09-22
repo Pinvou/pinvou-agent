@@ -34,7 +34,7 @@ test('picker participates in the browser-surface suspend protocol', () => {
   );
   assert.match(
     MAIN,
-    /moveToProjectSession && browserOverlayPublicationReady && \(\r?\n/,    'picker render is not gated on browserOverlayPublicationReady',
+    /moveToProjectSession && browserOverlayPublicationReady && \(\n/,    'picker render is not gated on browserOverlayPublicationReady',
   );
 });
 

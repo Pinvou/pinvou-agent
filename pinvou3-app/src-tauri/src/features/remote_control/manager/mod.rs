@@ -2023,6 +2023,29 @@ impl RemoteControlManager {
         }
     }
 
+    /// Terminal-settle epilogue shared by the admission/rejection/persist-failure
+    /// branches of `handle_rpc_request`: record the completion in the RPC cache
+    /// and append the request to the journal order before pruning. Must be
+    /// called while `Inner` is locked (the caller's `inner.lock()` guard);
+    /// the cache insert, order push, and prune are kept one unit so no branch
+    /// can forget the ordering bookkeeping that keeps replays exact.
+    fn settle_complete(
+        inner: &mut Inner,
+        request_id: &str,
+        fingerprint: String,
+        completion: RpcCompletion,
+    ) {
+        inner.rpc_cache.insert(
+            request_id.to_string(),
+            RpcCacheEntry::Complete {
+                fingerprint,
+                completion,
+            },
+        );
+        inner.rpc_order.push_back(request_id.to_string());
+        prune_rpc_cache(inner);
+    }
+
     fn handle_rpc_request(&self, value: &Value) {
         let request_id = value
             .get("client_request_id")
@@ -2172,15 +2195,12 @@ impl RemoteControlManager {
                     if let Some(tombstone) = inner.rpc_ledger.get(&request_id).cloned() {
                         if tombstone.fingerprint != fingerprint || tombstone.acknowledged {
                             let completion = tombstone_completion(&tombstone, &fingerprint);
-                            inner.rpc_cache.insert(
-                                request_id.clone(),
-                                RpcCacheEntry::Complete {
-                                    fingerprint: tombstone.fingerprint,
-                                    completion: completion.clone(),
-                                },
+                            Self::settle_complete(
+                                &mut inner,
+                                &request_id,
+                                tombstone.fingerprint,
+                                completion.clone(),
                             );
-                            inner.rpc_order.push_back(request_id.clone());
-                            prune_rpc_cache(&mut inner);
                             RpcRequestAction::Respond(
                                 sender,
                                 rpc_response(&endpoint_id, &lease_id, &request_id, &completion),
@@ -2197,15 +2217,12 @@ impl RemoteControlManager {
                                 in_flight_count,
                             );
                             if let Some(completion) = rejection {
-                                inner.rpc_cache.insert(
-                                    request_id.clone(),
-                                    RpcCacheEntry::Complete {
-                                        fingerprint: fingerprint.clone(),
-                                        completion: completion.clone(),
-                                    },
+                                Self::settle_complete(
+                                    &mut inner,
+                                    &request_id,
+                                    fingerprint.clone(),
+                                    completion.clone(),
                                 );
-                                inner.rpc_order.push_back(request_id.clone());
-                                prune_rpc_cache(&mut inner);
                                 RpcRequestAction::Respond(
                                     sender,
                                     rpc_response(&endpoint_id, &lease_id, &request_id, &completion),
@@ -2247,15 +2264,12 @@ impl RemoteControlManager {
                             in_flight_count,
                         ) {
                             Ok(NewRpcAdmission::Rejected(completion)) => {
-                                inner.rpc_cache.insert(
-                                    request_id.clone(),
-                                    RpcCacheEntry::Complete {
-                                        fingerprint: fingerprint.clone(),
-                                        completion: completion.clone(),
-                                    },
+                                Self::settle_complete(
+                                    &mut inner,
+                                    &request_id,
+                                    fingerprint.clone(),
+                                    completion.clone(),
                                 );
-                                inner.rpc_order.push_back(request_id.clone());
-                                prune_rpc_cache(&mut inner);
                                 RpcRequestAction::Respond(
                                     sender,
                                     rpc_response(&endpoint_id, &lease_id, &request_id, &completion),
@@ -2267,15 +2281,12 @@ impl RemoteControlManager {
                                         "rpc_ledger_unavailable",
                                         format!("cannot durably accept Web RPC: {error}"),
                                     );
-                                    inner.rpc_cache.insert(
-                                        request_id.clone(),
-                                        RpcCacheEntry::Complete {
-                                            fingerprint: fingerprint.clone(),
-                                            completion: completion.clone(),
-                                        },
+                                    Self::settle_complete(
+                                        &mut inner,
+                                        &request_id,
+                                        fingerprint.clone(),
+                                        completion.clone(),
                                     );
-                                    inner.rpc_order.push_back(request_id.clone());
-                                    prune_rpc_cache(&mut inner);
                                     RpcRequestAction::Respond(
                                         sender,
                                         rpc_response(
@@ -2318,15 +2329,12 @@ impl RemoteControlManager {
                                     "rpc_ledger_unavailable",
                                     format!("cannot durably accept Web RPC: {error}"),
                                 );
-                                inner.rpc_cache.insert(
-                                    request_id.clone(),
-                                    RpcCacheEntry::Complete {
-                                        fingerprint: fingerprint.clone(),
-                                        completion: completion.clone(),
-                                    },
+                                Self::settle_complete(
+                                    &mut inner,
+                                    &request_id,
+                                    fingerprint.clone(),
+                                    completion.clone(),
                                 );
-                                inner.rpc_order.push_back(request_id.clone());
-                                prune_rpc_cache(&mut inner);
                                 RpcRequestAction::Respond(
                                     sender,
                                     rpc_response(&endpoint_id, &lease_id, &request_id, &completion),
@@ -3645,7 +3653,9 @@ mod tests {
     #[test]
     fn native_active_session_fallbacks_are_not_valid_web_scopes() {
         for command in [
-            "cancel_codex_acp",
+            // `cancel_codex_acp` is not listed here: it is desktop-only and
+            // absent from the Web access policy, so it never reaches the scope
+            // table (the table no longer carries a dead entry for it).
             "cancel_generation",
             "compact_now",
             "edit_last_turn",

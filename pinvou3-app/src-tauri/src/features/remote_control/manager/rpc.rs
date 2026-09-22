@@ -409,7 +409,10 @@ pub(super) fn web_session_scope(command: &str) -> Option<WebSessionScope> {
         | "update_work_context_memory" => Required("sessionId"),
 
         "accept_plan"
-        | "cancel_codex_acp"
+        // `cancel_codex_acp` (desktop-only) is deliberately absent: the Web
+        // access policy's command set never contains it (the browser uses
+        // `web_access_cancel_codex_acp`), so the RPC admission gate rejects the
+        // bare command before this scope table is consulted.
         | "cancel_shell_task"
         | "discard_aux_session"
         | "discard_plan"

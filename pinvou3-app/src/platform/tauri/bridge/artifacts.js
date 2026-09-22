@@ -37,9 +37,6 @@ function pinvouSharedtauriArtifacts() {
 function openContainingFolder(path) { return pinvouSharedtauriArtifacts().openContainingFolder(path); }
 function revealSessionFolder(sessionId) { return pinvouSharedtauriArtifacts().revealSessionFolder(sessionId); }
 function openScheduledTaskFolder(automationId) { return pinvouSharedtauriArtifacts().openScheduledTaskFolder(automationId); }
-  function openInSystem(path) { return invoke("open_in_system", { path }).catch(function (e) { addSystemItem(bt("openFailed") + e); }); }
-  // 仅放白名单 URL (metaso.cn / open.bochaai.com),后端 open_external_url 强制校验。
-  function openExternalUrl(url) { return invoke("open_external_url", { url }).catch(function (e) { addSystemItem(bt("openFailed") + e); }); }
   // ACP 消息/产物预览里由用户亲自点击的 HTTP(S) 外链；后端与工具白名单入口分开校验。
   function openUserExternalUrl(url) { return invoke("open_user_external_url", { url }).catch(function (e) { addSystemItem(bt("openFailed") + e); }); }
 function deliverableCategory(path) { return pinvouSharedtauriArtifacts().deliverableCategory(path); }
@@ -90,9 +87,7 @@ function currentMemoryArtifacts() { return pinvouSharedtauriArtifacts().currentM
     const cmd = (ext === "html" || ext === "htm") ? "open_artifact_window" : "open_in_system";
     return invoke(cmd, { path, sessionId: sessionId || null }).catch(function (e) { addSystemItem(bt("openFailed") + e); });
   }
-  function downloadArtifact(path, sessionId) {
-    return openArtifactExternal(path, sessionId);
-  }
+  const downloadArtifact = openArtifactExternal;
 
   // ── 附件 ────────────────────────────────────────────────────────
   async function addAttachmentByPath(path) {
@@ -199,15 +194,6 @@ function conversationAttachmentArgs(reference) { return pinvouSharedtauriArtifac
     state.attachments = state.attachments.filter(function (a) { return a.id !== id; });
     notify();
   }
-  function clearAttachments() {
-    state.attachments.forEach(function (attachment) {
-      attachment.cancelled = true;
-      if (attachment.status === "ready" && attachment.result) {
-        discardManagedAttachment(attachment.result);
-      }
-    });
-    state.attachments = [];
-  }
   // 打开系统文件选择器并摄入为附件
 async function pickAndAttach() { return pinvouSharedtauriArtifacts().pickAndAttach(); }
   // 文件选择按钮在桌面仍走原生路径；HTML5 拖放拿不到路径时通过同一域方法
@@ -252,16 +238,13 @@ async function pickAndAttach() { return pinvouSharedtauriArtifacts().pickAndAtta
       openContainingFolder,
       revealSessionFolder,
       openScheduledTaskFolder,
-      openInSystem,
       openArtifactExternal,
       downloadArtifact,
       listDeliverableIndex,
-      openExternalUrl,
       openUserExternalUrl,
       addAttachmentByPath,
       addPasteImage,
       removeAttachment,
-      clearAttachments,
       pickAndAttach,
       uploadDeviceFiles,
       adoptManagedAttachments,

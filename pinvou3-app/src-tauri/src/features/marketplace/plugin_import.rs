@@ -230,6 +230,9 @@ fn same_package_content(
 
 /// 收集包子树（`mcp/`、`skills/`）下已落盘文件的相对路径，排除 Python 运行
 /// 缓存（`__pycache__/` 子树与 `*.pyc`，MCP server 跑过会就地生成，不算内容差异）。
+/// This walker follows directories and performs no symlink checks (the comparison target is a directory written by this pipeline itself,
+/// with no surface for outside-package content) — the counterpart of `package_export::collect_export_files`'s
+/// symlink-skip policy; both are deliberate choices, and the only thing shared is [`is_python_cache_rel_path`].
 fn collect_landed_disk_files(
     root: &std::path::Path,
     dir: &std::path::Path,
@@ -247,13 +250,20 @@ fn collect_landed_disk_files(
             .unwrap_or(&path)
             .to_string_lossy()
             .replace('\\', "/");
-        if rel.split('/').any(|c| c == "__pycache__") || rel.to_ascii_lowercase().ends_with(".pyc")
-        {
+        if is_python_cache_rel_path(&rel) {
             continue;
         }
         out.push(rel);
     }
     Ok(())
+}
+
+/// Whether a relative path ('/'-separated) belongs to the Python run cache: any path level is a `__pycache__`
+/// directory, or the file name ends with `.pyc` (case-insensitive). The single predicate shared by three walkers —
+/// package import comparison, package export packing, and skill-marketplace fingerprinting; symlink/directory-traversal policy is decided by each walker
+/// on its own (export skips symlinks, import compare and skill fingerprints follow) and is not part of this predicate.
+pub(crate) fn is_python_cache_rel_path(rel: &str) -> bool {
+    rel.split('/').any(|c| c == "__pycache__") || rel.to_ascii_lowercase().ends_with(".pyc")
 }
 
 /// 目录 rename 的 Windows 瞬时占用重试：杀毒/索引器会短暂持有新建目录内
@@ -758,7 +768,7 @@ pub fn import_plugin_package(
         &all_paths,
     )?;
     let (id, mcp_servers, skills) = (det.id.clone(), det.mcp_servers.clone(), det.skills.clone());
-    let kind = crate::features::marketplace::bundle::derive_bundle_kind(&mcp_servers, &skills, &[])
+    let kind = crate::features::marketplace::bundle::derive_bundle_kind(&mcp_servers, &skills)
         .map_err(|_| "插件包不含任何组件（空包）".to_string())?;
 
     // 未声明技能子树拒收（五轮评审）：detect 只登记声明/识别出的技能，而落盘的

@@ -35,7 +35,12 @@ use crate::platform::paths;
 static MARKETPLACE_DIR: Dir<'static> =
     include_dir!("$CARGO_MANIFEST_DIR/resources/common/skill-marketplace");
 
-/// 单个 skill 子树未压缩大小上限(防御性,预置/上传都适用)。
+/// Uncompressed size cap for a single skill subtree (defensive; applies to
+/// both bundled and uploaded skills). Only the test scaffolding
+/// (`import_package_named`) uses it — the unified plugin-package size gate
+/// for the production upload channel lives in
+/// `plugin_import::MAX_PLUGIN_SIZE_BYTES`.
+#[cfg(test)]
 const MAX_SKILL_SIZE_BYTES: u64 = 5 * 1024 * 1024;
 
 /// 安装来源标记文件名。卸载时校验它存在,避免误删内置/手放的 skill。
@@ -292,15 +297,15 @@ impl SkillMarketplaceManager {
                     if !dir.join("SKILL.md").is_file() {
                         continue;
                     }
-                    // 用户自定义展示覆盖（bundles.json extra）优先；空/缺 key 回退
-                    // 现状（title=上传文件名去扩展名 → 记录 id、description=SKILL.md
-                    // frontmatter）。
-                    let display_name =
-                        super::store::display_override(&record, super::store::EXTRA_DISPLAY_NAME);
-                    let display_description = super::store::display_override(
-                        &record,
-                        super::store::EXTRA_DISPLAY_DESCRIPTION,
-                    );
+                    // User-defined display overrides (bundles.json extra) win;
+                    // an empty/missing key falls back to the current behavior
+                    // (title = uploaded filename without extension → record id,
+                    // description = SKILL.md frontmatter). Records are already
+                    // filtered to the Upload source, and this override lookup
+                    // shares `apply_display_override` with the other two lists
+                    // (list_tools / list_bundles).
+                    let (display_name, display_description) =
+                        super::store::apply_display_override(&record, None, None);
                     out.push(MarketplaceSkillInfo {
                         id: record.id.clone(),
                         title: display_name
@@ -367,17 +372,37 @@ impl SkillMarketplaceManager {
 
     /// Market ids of installed skills (presets and user uploads). Source of the
     /// "deny all installed skills by default" fallback set for an uninitialized
-    /// code scope (see `scope::load_disabled_bundles_for`).
+    /// code scope (see `scope::load_disabled_bundles_for`), plus the display/list
+    /// paths.
     ///
+    /// Deliberately does not go through `list_skills`: that assembly path computes
+    /// a directory-tree SHA-256 fingerprint per installed preset skill
+    /// (`preset_update_available`); these paths only care about install state.
     /// Lenient read: a per-entry IO failure counts as "not installed" and is
     /// swallowed — fine for display/list paths, fail-open for a consent gate.
     /// The DenyAll default computation must use `installed_skill_ids_strict`.
     pub fn installed_skill_ids(&self) -> Vec<String> {
-        self.list_skills()
-            .into_iter()
-            .filter(|s| s.installed)
-            .map(|s| s.id)
-            .collect()
+        let mut out: Vec<String> = preset_manifests()
+            .iter()
+            .filter(|m| self.is_installed(m.skill_name))
+            .map(|m| m.id.to_string())
+            .collect();
+        match self.bundle_store.records() {
+            Ok(records) => {
+                for record in records {
+                    if !matches!(record.source, super::store::BundleSource::Upload(_)) {
+                        continue;
+                    }
+                    if self.is_installed(&record.id) {
+                        out.push(record.id);
+                    }
+                }
+            }
+            Err(e) => log::warn!(
+                "[skill-marketplace] failed to read BundleStore; installed_skill_ids falls back to bundled skills only: {e}"
+            ),
+        }
+        out
     }
 
     /// Strict variant of `installed_skill_ids`, used only by the DenyAll default
@@ -842,22 +867,23 @@ impl SkillMarketplaceManager {
                 let owner = super::bundle::skill_owner_package(&dir_name);
                 let pkg_dir = self.packages_root.join(skill_id);
                 if owner == skill_id && pkg_dir.is_dir() {
-                    // 独立上传技能包：整个 bundles/<id>/ 搬入回收站（技能内容是
-                    // 用户唯一副本），跳过下方 remove_dir_all。
-                    let display_name = match &record.source {
-                        super::store::BundleSource::Upload(zip) => zip.clone(),
-                        _ => skill_id.to_string(),
-                    };
+                    // Standalone uploaded skill package: move the whole
+                    // bundles/<id>/ into the recycle bin (the skill content is
+                    // the user's only copy) and skip the remove_dir_all below.
+                    // kind is pinned to KIND_SKILL (the record id is the skill
+                    // name; no directory-shape inference); it shares the
+                    // recycle_upload_package core with the two MCP recycle
+                    // paths.
                     if let Err(e) = self.bundle_store.remove(skill_id) {
                         log::warn!(
                             "[skill-marketplace] bundles.json 镜像删除失败（uninstall {skill_id}）: {e}"
                         );
                     }
-                    if let Err(e) = self.recycle_bin.recycle_package(
+                    if let Err(e) = super::recycle_bin::recycle_upload_package(
+                        &self.recycle_bin,
                         skill_id,
+                        &record,
                         super::recycle_bin::KIND_SKILL,
-                        &display_name,
-                        record.clone(),
                     ) {
                         // 回收失败（目录已回滚原位）：登记回写保持一致，卸载 fail loud。
                         if let Err(re) = self.bundle_store.upsert(record) {
@@ -1657,10 +1683,14 @@ impl std::ops::Deref for LockedSkillManager {
     }
 }
 
-/// 收集嵌入资源子树的 `(相对路径, 内容)` 列表,供更新检测比对。
-/// 口径与 [`extract_embedded_subdir`] 一致:strip `source_dir` 前缀、跳过 SOURCE.md、
-/// 跳过 `__pycache__`/`*.pyc`——否则构建期混入的 pyc 会让内嵌指纹永远 ≠ 落盘
-/// 指纹，`update_available` 幽灵常亮（G6）。
+/// Collect the `(relative path, contents)` list of the embedded resource
+/// subtree for update detection.
+/// Same rules as [`extract_embedded_subdir`]: strip the `source_dir` prefix,
+/// skip SOURCE.md, and skip `__pycache__`/`*.pyc` (the shared
+/// `plugin_import::is_python_cache_rel_path` predicate used by package import
+/// comparison and package export) — otherwise pyc files mixed in at build
+/// time would make the embedded fingerprint permanently differ from the
+/// on-disk fingerprint, keeping `update_available` stuck on (G6).
 fn collect_embedded_files(dir: &Dir<'_>, source_dir: &str, out: &mut Vec<(String, Vec<u8>)>) {
     let prefix = format!("{source_dir}/");
     for file in dir.files() {
@@ -1669,7 +1699,7 @@ fn collect_embedded_files(dir: &Dir<'_>, source_dir: &str, out: &mut Vec<(String
         if Path::new(rel).file_name().and_then(|s| s.to_str()) == Some("SOURCE.md") {
             continue;
         }
-        if is_python_cache_path(Path::new(rel)) {
+        if super::plugin_import::is_python_cache_rel_path(rel) {
             continue;
         }
         out.push((rel.to_string(), file.contents().to_vec()));
@@ -1779,13 +1809,13 @@ fn fingerprint_of(files: &mut [(String, Vec<u8>)]) -> String {
     crate::platform::encoding::hex_lower(&digest.finalize())
 }
 
-/// 相对 include_dir 根的路径是否属于 Python 编译缓存(`__pycache__/` 子树内
-/// 或任意层级的 `.pyc`,大小写不敏感)。纯函数便于单测。
+/// Whether a path relative to the include_dir root is Python compilation
+/// cache (inside a `__pycache__/` subtree or a `.pyc` at any level, case
+/// insensitive). Pure function for easy unit testing; the predicate is the
+/// single `plugin_import::is_python_cache_rel_path` rule shared with package
+/// import comparison and package export.
 fn is_python_cache_path(rel: &std::path::Path) -> bool {
-    rel.components().any(|c| c.as_os_str() == "__pycache__")
-        || rel
-            .extension()
-            .is_some_and(|ext| ext.eq_ignore_ascii_case("pyc"))
+    super::plugin_import::is_python_cache_rel_path(&rel.to_string_lossy())
 }
 
 fn read_skill_name(md_path: &Path) -> Option<String> {
@@ -1847,7 +1877,7 @@ fn read_skill_description(md_path: &Path) -> Option<String> {
 /// 一致由本镜像 + `skill_description_mirrors_engine_flat_parser` 测试钉住
 /// ——该测试锁定的是语义清单而非引擎本身，CodeWhale 侧改动 `parse_skill`
 /// 时须人工对照同步这里。改这里前先对照引擎实现。
-pub(crate) fn read_skill_description_from_str(content: &str) -> Option<String> {
+fn read_skill_description_from_str(content: &str) -> Option<String> {
     if !content.trim_start().starts_with("---") {
         return None;
     }

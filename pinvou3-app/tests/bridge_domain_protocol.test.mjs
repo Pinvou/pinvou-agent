@@ -122,8 +122,12 @@ const expectedProtocolHashes = {
   multiAgent: 'a6d045e87f7f5f3537fdeadb262d54622edd6dcafa2c0253f0b44e7de439315d',
   // Recomputed for the shared-helper dedup (see batch note above).
   orchestration: '341efb3b1e4a4036269559294c33b76a744bcde7c3903b9ba3525711d6182f6f',
-  // Recomputed for the shared-helper dedup (see batch note above).
-  artifacts: '852935f8094d353fef871d1db804c7a4ed5fbefeaf9cb6af9f0c3932f850e259',
+  // Recomputed for the dead-code cleanup: the caller-less openInSystem /
+  // openExternalUrl wrappers (open_in_system / open_external_url invokes) were
+  // removed; artifact external-open traffic goes through openArtifactExternal
+  // (open_artifact_window / open_in_system) and the whitelisted
+  // openUserExternalUrl, so the runtime command surface is unchanged.
+  artifacts: 'bbf04dfb8e171cdd7db46fcd5f1cf095a885f978c6b26ed96f9891da7fb95822',
   // Recomputed for #308 follow-ups: prefillComposer(text, append) recovery
   // entry + comment translations touching `invoke(` mentions (the extractor
   // scans raw source, so comment wording is part of the digest). Recomputed
@@ -215,13 +219,18 @@ const expectedProtocolHashes = {
   // (set_plan_mode_next / exit_plan_to_yolo) at materialization.
   // Recomputed for the shared-helper dedup (see batch note above).
   sessions: 'bd3a774950c3be99938f4bdc403ceef47cdf598952d47b0655c7371887764702',
-  // Recomputed for the shared-helper dedup (see batch note above).
-  settings: 'a5c68eadcad49dd2f3e58157d0262209610696fb0e37f0b8e6888a97199729b5',
-  // Recomputed for the audit dead-code cleanup: the never-emitted
+  // Recomputed for the dead-code cleanup: the dead saveSettingsAndRestart
+  // wrapper (save_settings_and_restart invoke) was removed — no production
+  // caller; the plain saveSettings + restart_app path stays the update route.
+  settings: '6ec54b363e711927cb1ac65fbb9c468fa8255c89ad49e7c1e695acca131fcb3a',
+  // Recomputed for the dead-code cleanup: the never-emitted
   // remote_control:status / remote_control:session_created listeners were
-  // removed (update:progress stays — pinned by tests/updater_progress_state).
-  // Recomputed for the shared-helper dedup (see batch note above).
-  updater: '30a3762ee45f378d476efec934dc4be50522a02a5b9a97111191496510d4d7d4',
+  // removed, and the update:progress listener plus its coalescing timer
+  // machinery were deleted with it (the backend download loop no longer has a
+  // frontend progress consumer; completion still flips updateProgress to 100
+  // in downloadAndInstallUpdate). tests/updater_progress_state.test.mjs was
+  // removed along with the machinery it pinned.
+  updater: 'e5d3ffaed0548bca3a40ee4c8138a59f9a2add9474477d924d4ecd7b8efd73e6',
   // Recomputed for the comment-only English translation of the voice bridge
   // (PR-added Chinese comments inside the postprocess_voice_text invoke
   // span are part of the hashed source; no invoke/listen surface changed).
@@ -251,7 +260,7 @@ for (const [domain, files] of Object.entries(protocolSources)) {
 // relocated out of the per-lane files, so the domain hashes above no longer
 // cover that text. Hash the shared file's surface with the same extractor to
 // pin payload edits inside the shared base the same way the lane files are.
-const expectedSharedBaseHash = '4e63e15a4ec6b41f2f38a667d9e94d9761c230ab927e91d0c5ae49f3c4abedb4';
+const expectedSharedBaseHash = '0f3ace8d7d7d0021a4cbaac894a228185e4af2e9e8bf09d2d9bfe50a9b5d41a1';
 const sharedBaseSource = fs.readFileSync(path.join(root, 'src', 'shared', 'bridge-shared-helpers.js'), 'utf8');
 const sharedBaseSignatures = [
   ...extractCalls(sharedBaseSource, 'invoke').map(call => `shared/bridge-shared-helpers.js:invoke:${call}`),

@@ -10,7 +10,7 @@
 //! - `_hidden_sessions.json` — collapsed conversation id list with timestamps.
 //! - `_aux_sessions.json` — main session_id -> aux (`aux-` prefixed) session_id.
 //!
-//! Mode / pinvou_review / plan-phase remain in-memory only by design.
+//! Mode / plan-phase remain in-memory only by design.
 
 use std::collections::HashMap;
 use std::io::ErrorKind;
@@ -49,7 +49,7 @@ fn save_timestamped_id_map(map: &HashMap<String, String>, file_name: &str, ts_ke
             .cmp(&b.get("id").and_then(|v| v.as_str()))
     });
     if let Ok(json) = serde_json::to_string_pretty(&out) {
-        let _ = std::fs::write(file, json);
+        let _ = deepseek_tui::utils::write_atomic(&file, json.as_bytes());
     }
 }
 

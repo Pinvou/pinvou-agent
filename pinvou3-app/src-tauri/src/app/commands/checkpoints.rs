@@ -34,7 +34,6 @@ pub(super) async fn create_turn_checkpoint(
     session_id: &str,
     ledger: std::path::PathBuf,
     execution: std::path::PathBuf,
-    label: String,
     caller: &str,
 ) -> Option<String> {
     let store_count = store.clone();
@@ -58,7 +57,6 @@ pub(super) async fn create_turn_checkpoint(
             &execution,
             turn_number,
             checkpoints::CheckpointKind::Turn,
-            &label,
         )
         .map(Some)
     })
@@ -88,6 +86,31 @@ pub(super) async fn create_turn_checkpoint(
             log::warn!("[pinvou3][{caller}] checkpoint task failed sid={session_id}: {error}");
             None
         }
+    }
+}
+
+/// Invalidate "unsent" snapshots (any pre-send early exit; exact delete by id so
+/// leftovers cannot steal the same-numbered turn's first-wins alignment anchor on
+/// retry — review M5). Shared by `chat` send failure and each `accept_plan` early exit.
+pub(super) async fn drop_unsent_turn_checkpoint(
+    ledger: Option<std::path::PathBuf>,
+    snapshot_id: Option<String>,
+    session_id: &str,
+    caller: &str,
+) {
+    if let (Some(ledger), Some(snapshot_id)) = (ledger, snapshot_id) {
+        let sid = session_id.to_string();
+        let caller = caller.to_string();
+        let _ = tauri::async_runtime::spawn_blocking(move || {
+            if let Err(error) =
+                crate::features::code_checkpoints::drop_checkpoint(&ledger, &snapshot_id)
+            {
+                log::warn!(
+                    "[pinvou3][{caller}] drop unsent-turn checkpoint failed sid={sid}: {error:#}"
+                );
+            }
+        })
+        .await;
     }
 }
 
@@ -949,15 +972,12 @@ mod tests {
 
         // 旧分支：turn 1/2/3 各打一个 Turn 快照（模拟会话进行到第 3 轮）。
         std::fs::write(exec.join("a.txt"), "0\n").expect("write");
-        checkpoints::create_checkpoint(&ledger, &exec, Some(1), CheckpointKind::Turn, "t1")
-            .expect("c1");
+        checkpoints::create_checkpoint(&ledger, &exec, Some(1), CheckpointKind::Turn).expect("c1");
         std::fs::write(exec.join("a.txt"), "1\n").expect("write");
-        let old_t2 =
-            checkpoints::create_checkpoint(&ledger, &exec, Some(2), CheckpointKind::Turn, "t2")
-                .expect("c2");
+        let old_t2 = checkpoints::create_checkpoint(&ledger, &exec, Some(2), CheckpointKind::Turn)
+            .expect("c2");
         std::fs::write(exec.join("a.txt"), "2\n").expect("write");
-        checkpoints::create_checkpoint(&ledger, &exec, Some(3), CheckpointKind::Turn, "t3")
-            .expect("c3");
+        checkpoints::create_checkpoint(&ledger, &exec, Some(3), CheckpointKind::Turn).expect("c3");
 
         // 回退到第 1 轮（编排层在 restore + 截断成功后调用的正是本函数）。
         invalidate_abandoned_turn_checkpoints(&ledger, 1);
@@ -972,9 +992,8 @@ mod tests {
 
         // 重新创作：新分支的 turn 2 打新快照。若旧 t2 未作废，find 会先命中它。
         std::fs::write(exec.join("a.txt"), "new-branch\n").expect("write");
-        let new_t2 =
-            checkpoints::create_checkpoint(&ledger, &exec, Some(2), CheckpointKind::Turn, "t2-new")
-                .expect("c2 new");
+        let new_t2 = checkpoints::create_checkpoint(&ledger, &exec, Some(2), CheckpointKind::Turn)
+            .expect("c2 new");
         assert_ne!(old_t2.id, new_t2.id);
         let plan = resolve_rewind_plan(
             checkpoints::list_checkpoints(&ledger).expect("list"),
@@ -1133,14 +1152,9 @@ mod tests {
         std::fs::create_dir_all(&ledger).expect("ledger dir");
         std::fs::write(exec.join("code.txt"), "v2\n").expect("write v2");
         // 镜像 rewind_to_turn 步骤 1：恢复代码前强制的 PreRestore（内容 = rewind 前 v2）。
-        let pre_restore = checkpoints::create_checkpoint(
-            &ledger,
-            &exec,
-            None,
-            CheckpointKind::PreRestore,
-            "回滚点",
-        )
-        .expect("pre-restore checkpoint");
+        let pre_restore =
+            checkpoints::create_checkpoint(&ledger, &exec, None, CheckpointKind::PreRestore)
+                .expect("pre-restore checkpoint");
         // 镜像步骤 2：截断对话，记录绑定本次回退的 PreRestore。
         store
             .truncate_to_user_turn(&id, 1, Some(pre_restore.id.clone()))
@@ -1206,14 +1220,8 @@ mod tests {
         std::fs::create_dir_all(&ledger).expect("ledger dir");
         std::fs::write(exec.join("code.txt"), "user-work\n").expect("write");
         // 一次更早的完整回退留下的 PreRestore（与本次降级回退无关）。
-        checkpoints::create_checkpoint(
-            &ledger,
-            &exec,
-            None,
-            CheckpointKind::PreRestore,
-            "无关回滚点",
-        )
-        .expect("unrelated pre-restore");
+        checkpoints::create_checkpoint(&ledger, &exec, None, CheckpointKind::PreRestore)
+            .expect("unrelated pre-restore");
         std::fs::write(exec.join("code.txt"), "user-work-new\n").expect("write new");
 
         // 降级记录（rewound_code_session 以 None 绑定截断）：undo 状态可用但
@@ -1266,27 +1274,17 @@ mod tests {
         let exec = roots.execution.clone();
         std::fs::create_dir_all(&ledger).expect("ledger dir");
         std::fs::write(exec.join("code.txt"), "v2\n").expect("write v2");
-        let bound = checkpoints::create_checkpoint(
-            &ledger,
-            &exec,
-            None,
-            CheckpointKind::PreRestore,
-            "回滚点",
-        )
-        .expect("bound pre-restore");
+        let bound =
+            checkpoints::create_checkpoint(&ledger, &exec, None, CheckpointKind::PreRestore)
+                .expect("bound pre-restore");
         store
             .truncate_to_user_turn(&id, 1, Some(bound.id.clone()))
             .expect("rewind to turn 1");
         // 模拟 undo 步骤 1 已成功、步骤 2 失败：restore 内部新打的更晚 PreRestore。
         std::fs::write(exec.join("code.txt"), "v1\n").expect("write v1");
-        let poisoned = checkpoints::create_checkpoint(
-            &ledger,
-            &exec,
-            None,
-            CheckpointKind::PreRestore,
-            "undo 步骤 1 的副作用快照",
-        )
-        .expect("poisoning pre-restore");
+        let poisoned =
+            checkpoints::create_checkpoint(&ledger, &exec, None, CheckpointKind::PreRestore)
+                .expect("poisoning pre-restore");
         assert_ne!(bound.id, poisoned.id);
 
         // 重试 undo：候选仍是绑定的回滚点，不是更晚的那条。

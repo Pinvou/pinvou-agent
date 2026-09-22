@@ -214,15 +214,6 @@ pub fn version_at_least(version: &str, minimum: &str) -> bool {
     compare_versions(version, minimum).is_ge()
 }
 
-/// Detects a codex on the system PATH or in the official install directory
-/// whose version is below MIN_CODEX_VERSION; consumed by install-source
-/// resolution to tell "not installed" apart from "installed but too old".
-pub fn system_codex_incompatible(system_codex: Option<PathBuf>) -> bool {
-    system_codex
-        .and_then(|path| probe_codex(path, CodexRuntimeSource::System))
-        .is_some_and(|resolved| !runtime_version_is_compatible(&resolved.version))
-}
-
 fn compare_versions(left: &str, right: &str) -> std::cmp::Ordering {
     parse_version(left).cmp(&parse_version(right))
 }
@@ -263,43 +254,109 @@ fn npm_codex_package_version(shim_path: &Path) -> Option<String> {
     has_vendor.then(|| version.trim().to_string())
 }
 
-fn codex_version_result(path: &Path) -> Result<String> {
-    let mut command = crate::platform::process::external_command(path);
-    command
-        .arg("--version")
-        .stdout(Stdio::piped())
-        .stderr(Stdio::piped());
-    let mut child = command
-        .spawn()
-        .with_context(|| format!("启动 Codex 自检失败: {}", path.display()))?;
-    let status = match child
-        // Node 版 CLI 冷启动实测约 9 秒；给安全软件首次扫描留足时间，
-        // 避免把已经安装的 Codex 误判为不可用。
-        .wait_timeout(Duration::from_secs(15))
-        .context("等待 Codex 自检进程失败")?
-    {
-        Some(status) => status,
-        None => {
+/// Failure stage of the `--version` self-check: the io errors from spawn and wait need different error
+/// messages, constructed by the caller per stage.
+#[derive(Debug)]
+pub(super) enum VersionProbeError {
+    Spawn(std::io::Error),
+    Wait(std::io::Error),
+}
+
+/// Outcome of the shared spawn-and-wait primitive. `status` being `None` means the 15-second timeout
+/// fired and the child was killed and reaped.
+pub(super) struct VersionProbeOutcome {
+    pub(super) status: Option<std::process::ExitStatus>,
+    pub(super) stdout: String,
+    pub(super) stderr: String,
+}
+
+/// Shared spawn-and-wait primitive for `--version`-style self-checks (used by this module's Codex
+/// self-check and install.rs's generic CLI probe): external_command + `--version` +
+/// a 15-second wait_timeout (Node CLI cold starts measured around 9 seconds, leaving headroom for
+/// first-run security-software scans); on timeout the child is killed and reaped and the captured
+/// pipes are dropped unread. stdin/stderr redirection
+/// policy is injected by the caller via `configure`: the Codex self-check inherits stdin, captures stderr and embeds
+/// it into the error; the generic CLI probe nulls stdin and discards stderr.
+pub(super) fn run_version_probe(
+    executable: &Path,
+    configure: impl FnOnce(&mut std::process::Command),
+) -> Result<VersionProbeOutcome, VersionProbeError> {
+    run_version_probe_with_timeout(executable, configure, Duration::from_secs(15))
+}
+
+fn run_version_probe_with_timeout(
+    executable: &Path,
+    configure: impl FnOnce(&mut std::process::Command),
+    timeout: Duration,
+) -> Result<VersionProbeOutcome, VersionProbeError> {
+    let mut command = crate::platform::process::external_command(executable);
+    command.arg("--version");
+    configure(&mut command);
+    let mut child = command.spawn().map_err(VersionProbeError::Spawn)?;
+    let status = match child.wait_timeout(timeout) {
+        Ok(Some(status)) => Some(status),
+        Ok(None) => {
             let _ = child.kill();
             let _ = child.wait();
-            bail!("Codex 自检超过 15 秒");
+            // Descendants of the child may have inherited the piped write ends and survive the
+            // kill, so reading here would block until the last holder exits and break the
+            // version-probe time budget. Every caller treats `status: None` as a timeout without
+            // looking at the captured output, so the pipes are dropped unread instead.
+            return Ok(VersionProbeOutcome {
+                status: None,
+                stdout: String::new(),
+                stderr: String::new(),
+            });
+        }
+        Err(error) => {
+            // Rare non-timeout wait failure: still reap the child instead of leaving a zombie behind.
+            let _ = child.kill();
+            let _ = child.wait();
+            return Err(VersionProbeError::Wait(error));
         }
     };
+    // Treat read failures as empty strings: each caller's empty-output branch (probe failed / no version
+    // returned) reaches the same conclusion as a read failure.
+    let mut stdout = String::new();
+    if let Some(mut pipe) = child.stdout.take() {
+        let _ = pipe.read_to_string(&mut stdout);
+    }
     let mut stderr = String::new();
     if let Some(mut pipe) = child.stderr.take() {
         let _ = pipe.read_to_string(&mut stderr);
     }
+    Ok(VersionProbeOutcome {
+        status,
+        stdout,
+        stderr,
+    })
+}
+
+fn codex_version_result(path: &Path) -> Result<String> {
+    let outcome = match run_version_probe(path, |command| {
+        command.stdout(Stdio::piped()).stderr(Stdio::piped());
+    }) {
+        Ok(outcome) => outcome,
+        Err(VersionProbeError::Spawn(error)) => {
+            return Err(error).context(format!(
+                "failed to spawn Codex self-check: {}",
+                path.display()
+            ));
+        }
+        Err(VersionProbeError::Wait(error)) => {
+            return Err(error).context("failed to wait for Codex self-check process");
+        }
+    };
+    let Some(status) = outcome.status else {
+        bail!("Codex self-check timed out after 15 seconds");
+    };
     if !status.success() {
-        bail!("Codex 自检进程退出: {status}; stderr={}", stderr.trim());
+        bail!(
+            "Codex self-check process exited: {status}; stderr={}",
+            outcome.stderr.trim()
+        );
     }
-    let mut stdout = String::new();
-    child
-        .stdout
-        .take()
-        .context("读取 Codex 自检标准输出失败")?
-        .read_to_string(&mut stdout)
-        .context("解析 Codex 自检标准输出失败")?;
-    parse_codex_version_output(&stdout).context("Codex 自检未返回版本号")
+    parse_codex_version_output(&outcome.stdout).context("Codex self-check returned no version")
 }
 
 /// 从 `codex --version` 标准输出提取版本号。
@@ -417,19 +474,59 @@ mod tests {
     }
 
     #[test]
+    fn version_probe_timeout_does_not_wait_for_inherited_pipe_holders() {
+        // A child that leaves a descendant holding the piped stdout/stderr write ends must not turn
+        // the timeout path into an unbounded read: after the kill, `read_to_string` would wait for
+        // the surviving `sleep 10` (~9.5s) instead of returning the timeout outcome at once.
+        if !platform::unix_like() {
+            return;
+        }
+        let root = std::env::temp_dir().join(format!(
+            "pinvou3-version-probe-timeout-test-{}",
+            std::process::id()
+        ));
+        let _ = std::fs::remove_dir_all(&root);
+        std::fs::create_dir_all(&root).expect("create probe test directory");
+        let script = root.join("hanging-probe");
+        std::fs::write(&script, "#!/bin/sh\nsleep 10 &\nexec sleep 60\n")
+            .expect("write probe script");
+        platform::make_executable(&script).expect("chmod probe script");
+
+        let started = std::time::Instant::now();
+        let outcome = run_version_probe_with_timeout(
+            &script,
+            |command| {
+                command.stdout(Stdio::piped()).stderr(Stdio::piped());
+            },
+            Duration::from_millis(500),
+        )
+        .expect("probe wait should not fail");
+        let elapsed = started.elapsed();
+        assert!(outcome.status.is_none(), "probe should report its timeout");
+        assert_eq!(outcome.stdout, "");
+        assert_eq!(outcome.stderr, "");
+        assert!(
+            elapsed < Duration::from_secs(5),
+            "timeout path must not block on write ends held by surviving descendants (took {elapsed:?})"
+        );
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    #[test]
     fn system_codex_below_min_version_is_rejected() {
         if !platform::unix_like() {
             return;
         }
         let outdated = fake_codex("0.100.0");
-        let resolved = probe_codex_runtime(Some(outdated.clone()), None).resolved;
+        let candidates = probe_codex_runtime(Some(outdated.clone()), None);
         assert!(
-            resolved
+            candidates
+                .resolved
                 .as_ref()
                 .is_none_or(|resolved| resolved.source != CodexRuntimeSource::System),
             "低版本系统 codex 不应作为 System 来源入选"
         );
-        assert!(system_codex_incompatible(Some(outdated.clone())));
+        assert!(candidates.system_codex_incompatible);
         let _ = std::fs::remove_dir_all(outdated.parent().expect("fake codex parent"));
     }
 
@@ -439,12 +536,12 @@ mod tests {
             return;
         }
         let current = fake_codex(MIN_CODEX_VERSION);
-        let resolved = probe_codex_runtime(Some(current.clone()), None).resolved;
+        let candidates = probe_codex_runtime(Some(current.clone()), None);
         assert_eq!(
-            resolved.map(|resolved| resolved.source),
+            candidates.resolved.map(|resolved| resolved.source),
             Some(CodexRuntimeSource::System)
         );
-        assert!(!system_codex_incompatible(Some(current.clone())));
+        assert!(!candidates.system_codex_incompatible);
         let _ = std::fs::remove_dir_all(current.parent().expect("fake codex parent"));
     }
 

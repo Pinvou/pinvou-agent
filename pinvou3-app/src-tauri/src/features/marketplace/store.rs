@@ -578,6 +578,36 @@ pub(crate) fn display_override(record: &BundleRecord, key: &str) -> Option<Strin
         .map(str::to_string)
 }
 
+/// Reads an Upload record's user-defined display name/description overrides in one pass (bundles.json extra's
+/// `display_name`/`display_description`, effective only when non-empty after trim, see
+/// [`display_override`]). Non-Upload records always get `(None, None)` — preset/built-in packages do not accept
+/// overrides, and extra fields written out of turn must be ignored by the display layer. All three list assemblies
+/// (`list_tools` / `list_bundles` / `list_skills`) share this same read, so the tool card,
+/// readiness card, and skill card titles/descriptions do not diverge.
+pub(crate) fn apply_display_override(
+    record: &BundleRecord,
+    name: Option<String>,
+    description: Option<String>,
+) -> (Option<String>, Option<String>) {
+    if !matches!(record.source, BundleSource::Upload(_)) {
+        return (name, description);
+    }
+    (
+        display_override(record, EXTRA_DISPLAY_NAME).or(name),
+        display_override(record, EXTRA_DISPLAY_DESCRIPTION).or(description),
+    )
+}
+
+/// The original zip display name carried by an Upload record (a sanitized source marker captured at import); non-Upload
+/// sources fall back to `fallback` (the caller passes the package id). The three recycle call sites of the whole-package
+/// recycle listing share this same display_name policy.
+pub(crate) fn upload_display_name(record: &BundleRecord, fallback: &str) -> String {
+    match &record.source {
+        BundleSource::Upload(zip) => zip.clone(),
+        _ => fallback.to_string(),
+    }
+}
+
 /// 内层读：与取锁包装分离，已持锁的 import/upsert 直接调用，避免 Mutex 重入。
 fn load_locked(path: &Path) -> Result<BundlesFile, String> {
     match std::fs::read_to_string(path) {

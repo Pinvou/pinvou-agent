@@ -42,10 +42,6 @@ function nextId(lane) {
   return lane.seq;
 }
 
-function timeStr() {
-  return new Date().toTimeString().slice(0, 5);
-}
-
 // ── Plan 审批（语义镜像 bridge chat-events.js 的 plan_snapshot/plan_ready）─────
 // plan 类工具：hydrate 时不还原工具卡，改在本条 assistant 消息末尾还原只读方案卡
 // （对齐 bridge rerenderFromMessages 的 PLAN_TOOLS 处理）。
@@ -119,7 +115,7 @@ export function composeNativePlanMarkdown(snapshots) {
 
 /// 渲染层往 lane 追加系统提示项（accept/discard 失败等），对齐 bridge addSystemItem。
 export function appendNativeSystemItem(lane, text) {
-  lane.items.push({ id: nextId(lane), type: 'system', text: String(text || ''), time: timeStr() });
+  lane.items.push({ id: nextId(lane), type: 'system', text: String(text || '') });
 }
 
 /// Index where the current turn starts (right after the last user item).
@@ -194,7 +190,7 @@ function upsertNativeModelServiceNotice(lane, payload, terminal, options, termin
     target.userError = userError;
     if (hideForTimeline) target.legacyConversationOnly = true;
   } else {
-    target = { id: nextId(lane), type: 'system', text: notice, time: timeStr(), userError };
+    target = { id: nextId(lane), type: 'system', text: notice, userError };
     if (hideForTimeline) target.legacyConversationOnly = true;
     lane.items.push(target);
   }
@@ -294,7 +290,7 @@ function finalizeReasoning(lane) {
 /// removeLocalUserMessage 回滚。返回临时 item id。
 export function appendLocalUserMessage(lane, text) {
   const id = nextId(lane);
-  lane.items.push({ id, type: 'user', text: String(text || ''), time: timeStr(), localEchoTs: Date.now() });
+  lane.items.push({ id, type: 'user', text: String(text || ''), localEchoTs: Date.now() });
   recordTurnStarted(lane);
   lane.busy = true;
   lane.thinking = { active: true, startedAt: Date.now(), phase: 'thinking', toolName: null };
@@ -344,7 +340,7 @@ export function applyNativeChatEvent(lane, name, payload, options = {}) {
           delete lastUser.localEchoTs;
           return changed;
         }
-      lane.items.push({ id: nextId(lane), type: 'user', text: content, time: timeStr() });
+      lane.items.push({ id: nextId(lane), type: 'user', text: content });
       recordTurnStarted(lane);
       lane.busy = true;
       lane.thinking = { active: true, startedAt: Date.now(), phase: 'thinking', toolName: null };
@@ -407,7 +403,6 @@ export function applyNativeChatEvent(lane, name, payload, options = {}) {
           id: lane.streamId,
           type: 'assistant',
           text: lane.streamText,
-          time: timeStr(),
           streaming: true,
         });
       }
@@ -472,7 +467,7 @@ export function applyNativeChatEvent(lane, name, payload, options = {}) {
       // Careful 拦截：metadata.safety_level==='dangerous' 且 blocked → 拦截提示卡。
       const md = p.metadata;
       if (md && md.safety_level === 'dangerous' && md.blocked) {
-        lane.items.push({ id: nextId(lane), type: 'careful_blocked', args: meta && meta.args, metadata: md, time: timeStr() });
+        lane.items.push({ id: nextId(lane), type: 'careful_blocked', args: meta && meta.args, metadata: md });
       }
       return true;
     }
@@ -507,7 +502,6 @@ export function applyNativeChatEvent(lane, name, payload, options = {}) {
         questions,
         resolved: false,
         cardState: 'active',
-        time: timeStr(),
       });
       return true;
     }
@@ -530,7 +524,7 @@ export function applyNativeChatEvent(lane, name, payload, options = {}) {
         if (item && item.type === 'system' && item.text === notice) { duplicate = true; break; }
       }
       if (duplicate) return false;
-      lane.items.push({ id: nextId(lane), type: 'system', text: notice, time: timeStr() });
+      lane.items.push({ id: nextId(lane), type: 'system', text: notice });
       return true;
     }
     case 'chat:shell_task_status': {
@@ -566,7 +560,6 @@ export function applyNativeChatEvent(lane, name, payload, options = {}) {
         type: 'system',
         compactPhase: phase,
         text: String(p.message || ''),
-        time: timeStr(),
       });
       return true;
     }
@@ -581,7 +574,6 @@ export function applyNativeChatEvent(lane, name, payload, options = {}) {
         reason: String(p.reason || ''),
         risk: String(p.risk || ''),
         agentId: String(p.agent_id || ''),
-        time: timeStr(),
       });
       return true;
     }
@@ -629,7 +621,6 @@ export function applyNativeChatEvent(lane, name, payload, options = {}) {
         cardState: planId ? 'active' : 'frozen',
         resolved: !planId,
         statusKey: planId ? '' : 'historical',
-        time: timeStr(),
       });
       return true;
     }
@@ -679,7 +670,7 @@ export function applyNativeChatEvent(lane, name, payload, options = {}) {
         if (existing) {
           if (timelineTakesOver) existing.legacyConversationOnly = true;
         } else {
-          const item = { id: nextId(lane), type: 'system', text: notice, time: timeStr() };
+          const item = { id: nextId(lane), type: 'system', text: notice };
           if (timelineTakesOver) item.legacyConversationOnly = true;
           lane.items.push(item);
         }
@@ -780,7 +771,7 @@ export function hydrateNativeLane(lane, saved, timelineEvents = []) {
     if (role === 'user') {
       if (isInternalUserMessage(blocks)) continue; // 内部运行时信封/交接：保留在模型上下文，不上屏
       const text = messageText(blocks);
-      if (text) lane.items.push({ id: nextId(lane), type: 'user', text, time: '' });
+      if (text) lane.items.push({ id: nextId(lane), type: 'user', text });
       for (const block of blocks) {
         if (!block || block.type !== 'tool_result') continue;
         const item = [...lane.items].reverse().find(candidate => (
@@ -801,7 +792,7 @@ export function hydrateNativeLane(lane, saved, timelineEvents = []) {
     let sawPlanTool = false;
     const flushText = () => {
       if (!textBuf) return;
-      lane.items.push({ id: nextId(lane), type: 'assistant', text: textBuf, time: '', streaming: false });
+      lane.items.push({ id: nextId(lane), type: 'assistant', text: textBuf, streaming: false });
       textBuf = '';
     };
     for (const block of blocks) {
@@ -837,7 +828,6 @@ export function hydrateNativeLane(lane, saved, timelineEvents = []) {
               restoredAnswers: result.is_error
                 ? null
                 : parseNativeUserAnswers(result.content, questions),
-              time: '',
             });
           }
           continue;
@@ -879,7 +869,6 @@ export function hydrateNativeLane(lane, saved, timelineEvents = []) {
         cardState: 'frozen',
         resolved: true,
         statusKey: 'historical',
-        time: '',
       });
     }
   }

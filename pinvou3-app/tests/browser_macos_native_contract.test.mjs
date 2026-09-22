@@ -630,7 +630,7 @@ test('macOS browser release is atomic and fail-closed outside explicit preview b
   );
   assert.match(
     main,
-    /if \(!browserNativeDisplayAvailable \|\| !browserSessionId\) return;[\s\S]*?const readiness = browserLifecycleListenersReadyRef\.current;[\s\S]*?Promise\.resolve\(readiness\)\.then[\s\S]*?browser_status/,
+    /if \(!browserNativeDisplayAvailable \|\| !browserSessionId\) return;[\s\S]*?const readiness = browserLifecycleListenersReadyRef\.current;[\s\S]*?Promise\.resolve\(readiness\)\.then[\s\S]*?return reconcileBrowserSessionStatus\(requestedSessionId, \(\) => !disposed\)/,
   );
   assert.match(main, /\{browserDockAvailable && browserPaneOpen/);
   assert.doesNotMatch(main, /navigator\.userAgent|target_os|browser-macos-preview/);

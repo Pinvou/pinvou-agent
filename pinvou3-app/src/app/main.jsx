@@ -94,12 +94,6 @@ function scheduledRunIcon(run, activeTheme) {
     </span>
   );
 }
-// Static regression anchor: (<NavItem icon={<Clock size={18} />} label={t.scheduledPlans} unread={!!(bs && ((bs.scheduledTasks || []).some(task => task.hasUnreadRuns) || (bs.scheduledTaskRecentRuns || []).some(run => run && run.unread)))} />)
-const PREVIEW_SCHEDULED_RUN_SHORTCUTS = [
-  { id: 'preview-run-1', automationId: 'preview-daily-brief', taskNameKey: 'previewTaskDailyBrief', sessionId: 'preview-session-1', status: 'completed', scheduledFor: '2026-07-14T08:00:00+08:00', unread: true },
-  { id: 'preview-run-4', automationId: 'preview-follow-up', taskNameKey: 'previewTaskFollowUp', sessionId: 'preview-session-4', status: 'running', scheduledFor: '2026-07-14T09:00:00+08:00', unread: false },
-  { id: 'preview-run-6', automationId: 'preview-weekly-report', taskNameKey: 'previewTaskSalesWeekly', sessionId: 'preview-session-6', status: 'completed', scheduledFor: '2026-07-10T16:00:00+08:00', unread: false },
-];
 import { PinvouSummonCard } from '../features/tools/tool-renderers.jsx';
 import { SearchOverlay } from '../features/search/SearchOverlay.jsx';
 import { UpdateNoticeButton } from '../features/updater/UpdateNoticeButton.jsx';
@@ -147,9 +141,6 @@ const APP_BRIDGE_STATE_DOMAINS = [
 function emitPetEvent(ev, name, payload) {
   if (!ev) return Promise.resolve(false);
   try {
-    if (typeof ev.emitTo === 'function') {
-      return Promise.resolve(ev.emitTo('pet', name, payload));
-    }
     if (typeof ev.emit === 'function') {
       return Promise.resolve(ev.emit(name, payload));
     }
@@ -421,7 +412,6 @@ const NAV_PREFETCH = {
       const browserDockActivationKey = `${browserSessionId || ''}:${browserPaneState.activation}`;
       const browserActive = browserNativeDisplayAvailable
         && !!(browserSessionId && browserSessions[browserSessionId]);
-      const browserViewSessionId = browserSessionId;
       const browserPaneAllowed = currentView === 'chat'
         || (currentView === 'scheduled' && !!(bs && bs.scheduledRunContext));
       const browserWorkspaceStarting = browserOpenState.status === 'starting';
@@ -627,6 +617,48 @@ const NAV_PREFETCH = {
         browserPaneAllowed,
         browserSessionId,
       ]);
+      // Shared browser_status reconciliation: snapshot/advance the per-session
+      // epochs, query the backend, and apply the guarded state updates (drop
+      // the dead session, or mark it live and restore its pane). Callers keep
+      // their own liveness gate (isActive) and error-handling nuance.
+      const reconcileBrowserSessionStatus = useCallback((sessionId, isActive) => {
+        const eventEpoch = browserLifecycleEventEpochRef.current.snapshot(sessionId);
+        const requestEpoch = browserLifecycleStatusRequestEpochRef.current.advance(
+          sessionId,
+        );
+        return invokeTauri('browser_status', { sessionId }).then((st) => {
+          if (
+            (isActive && !isActive())
+            || browserSessionIdRef.current !== sessionId
+            || !browserLifecycleEventEpochRef.current.isCurrent(
+              sessionId,
+              eventEpoch,
+            )
+            || !browserLifecycleStatusRequestEpochRef.current.isCurrent(
+              sessionId,
+              requestEpoch,
+            )
+            || !st
+            || st.sessionId !== sessionId
+          ) return null;
+          if (!st.running && !st.restoreError) {
+            setBrowserSessions((current) => {
+              const next = { ...current };
+              delete next[sessionId];
+              return next;
+            });
+            setBrowserPaneStates((current) => (
+              removeBrowserPaneState(current, sessionId)
+            ));
+            return null;
+          }
+          setBrowserSessions((current) => ({ ...current, [sessionId]: true }));
+          // Expand a restored workspace on first discovery. Preserve any explicit
+          // collapse or artifact selection made for this session in this window.
+          setBrowserPaneStates((current) => restoreBrowserPane(current, sessionId));
+          return st;
+        });
+      }, []);
       useEffect(() => {
         if (!browserNativeDisplayAvailable) {
           browserLifecycleListenersReadyRef.current = null;
@@ -712,39 +744,7 @@ const NAV_PREFETCH = {
             const reconcileCurrentSession = () => {
               const requestedSessionId = browserSessionIdRef.current;
               if (!requestedSessionId) return;
-              const eventEpoch = browserLifecycleEventEpochRef.current.snapshot(requestedSessionId);
-              const requestEpoch = browserLifecycleStatusRequestEpochRef.current.advance(
-                requestedSessionId,
-              );
-              invokeTauri('browser_status', { sessionId: requestedSessionId }).then((st) => {
-                if (
-                  disposed
-                  || browserSessionIdRef.current !== requestedSessionId
-                  || !browserLifecycleEventEpochRef.current.isCurrent(
-                    requestedSessionId,
-                    eventEpoch,
-                  )
-                  || !browserLifecycleStatusRequestEpochRef.current.isCurrent(
-                    requestedSessionId,
-                    requestEpoch,
-                  )
-                  || !st
-                  || st.sessionId !== requestedSessionId
-                ) return;
-                if (!st.running && !st.restoreError) {
-                  setBrowserSessions((current) => {
-                    const next = { ...current };
-                    delete next[requestedSessionId];
-                    return next;
-                  });
-                  setBrowserPaneStates((current) => (
-                    removeBrowserPaneState(current, requestedSessionId)
-                  ));
-                  return;
-                }
-                setBrowserSessions((current) => ({ ...current, [requestedSessionId]: true }));
-                setBrowserPaneStates((current) => restoreBrowserPane(current, requestedSessionId));
-              }).catch((error) => {
+              reconcileBrowserSessionStatus(requestedSessionId, () => !disposed).catch((error) => {
                 console.error('[browser] lifecycle reconciliation failed', error);
               });
             };
@@ -767,7 +767,7 @@ const NAV_PREFETCH = {
             if (unlisten) unlisten();
           });
         };
-      }, [browserNativeDisplayAvailable]);
+      }, [browserNativeDisplayAvailable, reconcileBrowserSessionStatus]);
       useEffect(() => {
         const syncVisibility = () => setBrowserDocumentHidden(document.visibilityState === 'hidden');
         const handlePageHide = () => setBrowserDocumentHidden(true);
@@ -794,51 +794,12 @@ const NAV_PREFETCH = {
             || browserLifecycleListenersReadyRef.current !== readiness
             || browserSessionIdRef.current !== requestedSessionId
           ) return null;
-          const eventEpoch = browserLifecycleEventEpochRef.current.snapshot(requestedSessionId);
-          const requestEpoch = browserLifecycleStatusRequestEpochRef.current.advance(
-            requestedSessionId,
-          );
-          return invokeTauri('browser_status', { sessionId: requestedSessionId }).then((st) => ({
-            eventEpoch,
-            requestEpoch,
-            st,
-          }));
-        }).then((snapshot) => {
-          const st = snapshot?.st;
-          if (
-            disposed
-            || !st
-            || browserSessionIdRef.current !== requestedSessionId
-            || !browserLifecycleEventEpochRef.current.isCurrent(
-              requestedSessionId,
-              snapshot.eventEpoch,
-            )
-            || !browserLifecycleStatusRequestEpochRef.current.isCurrent(
-              requestedSessionId,
-              snapshot.requestEpoch,
-            )
-            || st.sessionId !== requestedSessionId
-          ) return;
-          if (!st.running && !st.restoreError) {
-            setBrowserSessions((current) => {
-              const next = { ...current };
-              delete next[requestedSessionId];
-              return next;
-            });
-            setBrowserPaneStates((current) => (
-              removeBrowserPaneState(current, requestedSessionId)
-            ));
-            return;
-          }
-          setBrowserSessions((current) => ({ ...current, [requestedSessionId]: true }));
-          // Expand a restored workspace on first discovery. Preserve any explicit
-          // collapse or artifact selection made for this session in this window.
-          setBrowserPaneStates((current) => restoreBrowserPane(current, requestedSessionId));
+          return reconcileBrowserSessionStatus(requestedSessionId, () => !disposed);
         }).catch((error) => {
           if (!disposed) console.error('[browser] initial lifecycle hydration failed', error);
         });
         return () => { disposed = true; };
-      }, [browserNativeDisplayAvailable, browserSessionId]);
+      }, [browserNativeDisplayAvailable, browserSessionId, reconcileBrowserSessionStatus]);
       // Compact layouts keep the fullscreen browser view; desktop uses the chat dock.
       useEffect(() => {
         if (!browserActive && currentView === 'browser') {
@@ -1381,6 +1342,20 @@ const NAV_PREFETCH = {
         return (t.uiScheduled.runStatus[value] || value || t.uiScheduled.unknown);
       }, [t]);
 
+      // Title/subtitle derivation for scheduled run entries: sidebar entries (scheduledRunItems) and chat entry
+      // decoration (decorateScheduledRunChat) share one rule to avoid drift between the two copies.
+      // Without a chat, derive from the run DTO's sessionTitle; with a chat, use the chat title.
+      const scheduledRunDisplayFields = useCallback((run, chat) => {
+        const rawTitle = chat ? chat.title : (run.sessionTitle || '');
+        const title = (!rawTitle || isDefaultChatTitle(rawTitle))
+          ? (run.taskName || t.scheduledPlans)
+          : rawTitle;
+        return {
+          title,
+          subtitle: `${scheduledRunLabel(run.status)} · ${formatSessionDate(run.scheduledFor || run.createdAt, language)}`,
+        };
+      }, [t, language, scheduledRunLabel]);
+
       // App re-renders in full on every bridge notify (including local UI
       // state changes unrelated to the sidebar). Every O(sessions) derivation
       // below is a useMemo over the real data slices: bridge subscription
@@ -1455,12 +1430,9 @@ const NAV_PREFETCH = {
         .filter(chat => chat.pinned)
         .sort((a, b) => String(b.pinnedAt || b.updatedAt).localeCompare(String(a.pinnedAt || a.updatedAt))), [chatHistory]);
       const bridgeScheduledTaskRecentRuns = bs && bs.scheduledTaskRecentRuns;
-      // bridge.available is deliberately not a dependency: the flag is assigned
-      // once when the bridge script installs window.TauriBridge and never
-      // reassigned, so the preview branch below cannot go stale afterwards.
       const scheduledRunShortcuts = useMemo(() => (bridgeScheduledTaskRecentRuns && bridgeScheduledTaskRecentRuns.length)
         ? bridgeScheduledTaskRecentRuns
-        : (bridge.available ? [] : PREVIEW_SCHEDULED_RUN_SHORTCUTS.map(run => ({ ...run, taskName: t[run.taskNameKey] || run.taskNameKey }))), [bridgeScheduledTaskRecentRuns, t]);
+        : [], [bridgeScheduledTaskRecentRuns]);
       const scheduledRunSessionIds = useMemo(() => new Set(
         scheduledRunShortcuts
           .map(run => run && run.sessionId)
@@ -1481,43 +1453,33 @@ const NAV_PREFETCH = {
         .map(run => {
           // 定时运行会话不进 bs.sessions(list_sessions 隔离 sched-*),标题/置顶
           // 状态由后端 run DTO 直接携带。
-          const rawTitle = run.sessionTitle || '';
-          const title = (!rawTitle || isDefaultChatTitle(rawTitle))
-            ? (run.taskName || t.scheduledPlans)
-            : rawTitle;
           return {
             id: run.sessionId,
-            title,
+            ...scheduledRunDisplayFields(run),
             updatedAt: run.createdAt || run.scheduledFor || '',
             pinned: !!run.pinned,
             pinnedAt: run.pinnedAt || '',
             working: run.status === 'running' || run.status === 'queued',
-            subtitle: `${scheduledRunLabel(run.status)} · ${formatSessionDate(run.scheduledFor || run.createdAt, language)}`,
             date: '',
             leadingIcon: scheduledRunIcon(run, activeTheme),
             testId: 'scheduled-run-sidebar-item',
             menuTestId: 'scheduled-run-sidebar-menu',
             scheduledRun: run,
           };
-        }), [scheduledRunShortcuts, scheduledRunLabel, t, language, activeTheme]);
+        }), [scheduledRunShortcuts, scheduledRunDisplayFields, activeTheme]);
       const scheduledRunHistory = useMemo(() => scheduledRunItems.filter(chat => !chat.pinned), [scheduledRunItems]);
       const pinnedHistory = useMemo(() => [...pinnedChatHistory, ...scheduledRunItems.filter(chat => chat.pinned)]
         .sort((a, b) => String(b.pinnedAt || b.updatedAt).localeCompare(String(a.pinnedAt || a.updatedAt))), [pinnedChatHistory, scheduledRunItems]);
 
       const decorateScheduledRunChat = useCallback((chat, run) => {
         if (!run) return chat;
-        const title = (!chat.title || isDefaultChatTitle(chat.title))
-          ? (run.taskName || t.scheduledPlans)
-          : chat.title;
-        return Object.assign({}, chat, {
-          title,
-          subtitle: `${scheduledRunLabel(run.status)} · ${formatSessionDate(run.scheduledFor || run.createdAt, language)}`,
+        return Object.assign({}, chat, scheduledRunDisplayFields(run, chat), {
           leadingIcon: scheduledRunIcon(run, activeTheme),
           testId: 'scheduled-run-sidebar-item',
           menuTestId: 'scheduled-run-sidebar-menu',
           scheduledRun: run,
         });
-      }, [t, language, activeTheme, scheduledRunLabel]);
+      }, [activeTheme, scheduledRunDisplayFields]);
 
       const [justInstalledTool, setJustInstalledTool] = useState(null);
       const [taskListFilter, setTaskListFilter] = useState('all');
@@ -1947,8 +1909,8 @@ const NAV_PREFETCH = {
         });
       }, [t, closeMobileSidebar, runBrowserUiTransition, setCurrentView]);
 
-      // Stable useCallback: the sidebar "new chat" NavItems memo depends on
-      // its identity (wrapped in handleNavNewChat).
+      // Stable useCallback: the sidebar "new chat" NavItem memo depends on
+      // this identity.
       const handleNewChat = useCallback((installedToolId, forceMode) => {
         // 类型守卫:installedToolId 必须是字符串 toolId。侧边栏按钮 onClick={() => handleNewChat()}
         // 本不传参,但若哪天有调用点写成 onClick={handleNewChat},React 会把事件对象当首参塞进来——
@@ -2100,7 +2062,10 @@ const NAV_PREFETCH = {
           disposed = true;
           unlisteners.forEach((fn) => { try { fn(); } catch { /* listener teardown failure is ignorable */ } });
         };
-      }, [handleSwitchSession, runBrowserUiTransition, setCurrentView]);
+        // Register once on mount: the body reads only refs (currentViewRef /
+        // activeChatRef) and the module-level emitPetEvent, so the listener
+        // never needs reattachment.
+      }, []);
 
       // 用户从侧栏切进一个已经完成的会话时，也立即收掉对应完成气泡。
       // 运行中的卡不会被 markSessionViewed 删除；等它完成时，上面的
@@ -2914,10 +2879,7 @@ const NAV_PREFETCH = {
       const navNavigateHandlers = useMemo(() => ({
         scheduled: () => navigateFromScheduledRun('scheduled'),
         outputs: () => navigateFromScheduledRun('outputs'),
-        monitor: () => navigateFromScheduledRun('monitor', () => {
-          const liveBridge = window.TauriBridge || bridge;
-          if (liveBridge?.monitor && typeof liveBridge.monitor.startMonitorPolling === 'function') liveBridge.monitor.startMonitorPolling();
-        }),
+        monitor: () => navigateFromScheduledRun('monitor'),
         toolStore: () => navigateFromScheduledRun('toolStore'),
         cardpool: () => navigateFromScheduledRun('cardpool', () => setPoolMyOnly(false)),
         knowledge: () => navigateFromScheduledRun('knowledge'),
@@ -2931,7 +2893,6 @@ const NAV_PREFETCH = {
         knowledge: (geom) => beginTearOff('knowledge', undefined, t.knowledge, geom),
       }), [t, beginTearOff]);
       const openSearchOverlay = useCallback(() => setSearchOverlayOpen(true), []);
-      const handleNavNewChat = useCallback(() => { handleNewChat(); }, [handleNewChat]);
       const apiKeyGateOpen = shouldShowApiKeyGate(bs, currentView, bridge.available);
       const vllmSetupModalOpen = !!(
         can('localModelSetup')
@@ -2977,8 +2938,8 @@ const NAV_PREFETCH = {
           && !browserSurfaceSuspended;
       useLayoutEffect(() => {
         browserSurfaceTransitionContextRef.current = {
-          sessionId: browserViewSessionId,
-          hasWorkspace: browserActive && !!browserViewSessionId,
+          sessionId: browserSessionId,
+          hasWorkspace: browserActive && !!browserSessionId,
           visible: browserNativeSurfaceVisible,
           compact: isCompactShell,
           scheduledRunChat: !!(bs && bs.scheduledRunContext),
@@ -2986,7 +2947,7 @@ const NAV_PREFETCH = {
       }, [
         browserActive,
         browserNativeSurfaceVisible,
-        browserViewSessionId,
+        browserSessionId,
         bs,
         isCompactShell,
       ]);
@@ -3036,6 +2997,46 @@ const NAV_PREFETCH = {
         </div>
       );
 
+      // Sidebar footer buttons (remote access / pet / settings): the collapsed and expanded variants
+      // differ only in size (w-10/w-9) and dark-mode idle text color; one shared helper derives both to avoid copy drift;
+      // the settings gear always goes through openSettingsSection (records the return view + general section).
+      const renderFooterButtons = (collapsed) => {
+        const sizeCls = collapsed ? 'w-10 h-10' : 'w-9 h-9';
+        const idleColorCls = activeTheme === 'dark'
+          ? (collapsed ? 'text-[#E3E3E3]' : 'text-[#C4C7C5]')
+          : 'text-[#444746]';
+        const hoverCls = activeTheme === 'dark' ? 'hover:bg-[#333537]' : 'hover:bg-[#E1E5EA]';
+        const petEnabled = !!(bs && bs.settings && bs.settings.pet && bs.settings.pet.enabled);
+        return (
+          <>
+            {can('webAccessAdmin') && <button type="button"
+              onClick={handleOpenWebAccess}
+              title={t.uiRemote.title}
+              className={`relative ${sizeCls} shrink-0 rounded-full flex items-center justify-center transition-colors ${idleColorCls} ${hoverCls}`}
+            >
+              <Smartphone size={18} />
+              {isWebAccessConnected && <span className="absolute top-1 right-1 w-2 h-2 rounded-full bg-[#34A853]" />}
+            </button>}
+            {can('pet') && <button type="button"
+              onClick={() => handleSetPetEnabled(!petEnabled)}
+              title={petEnabled ? t.uiPet.hide : t.uiMainApp.petSummon}
+              className={`relative ${sizeCls} shrink-0 rounded-full flex items-center justify-center transition-colors ${petEnabled ? 'text-[#34A853]' : idleColorCls} ${hoverCls}`}
+            >
+              <PetPawIcon />
+            </button>}
+            <button type="button"
+              data-testid="nav-settings"
+              onClick={() => openSettingsSection('general')}
+              title={t.settings}
+              className={`relative ${sizeCls} shrink-0 rounded-full flex items-center justify-center transition-colors ${idleColorCls} ${hoverCls}`}
+            >
+              <Settings size={18} />
+              {hasUpdate && <span className="absolute top-1 right-1 w-2 h-2 rounded-full bg-[#EA4335]" />}
+            </button>
+          </>
+        );
+      };
+
       return (
         <div data-testid="app-root" data-current-view={currentView} data-platform={isWeb ? 'web' : 'desktop'}
           className={`flex flex-col h-screen font-sans overflow-hidden antialiased transition-colors duration-300 ${activeTheme === 'dark' ? 'bg-[#131314] text-[#E3E3E3]' : 'bg-white text-[#1F1F1F]'}`}
@@ -3075,7 +3076,6 @@ const NAV_PREFETCH = {
 
           {archiveToast && createPortal(
             <ArchiveToast
-              theme={activeTheme}
               t={t}
               onClose={() => setArchiveToast(false)}
               onView={() => {
@@ -3233,7 +3233,7 @@ const NAV_PREFETCH = {
                 icon={NAV_ICON_NEW_CHAT} label={t.newChat}
                 theme={activeTheme}
                 isSidebarOpen={isSidebarOpen}
-                onClick={handleNavNewChat}
+                onClick={handleNewChat}
               />
               {/* On the compact shell search is only reachable from the nav, so it must
                   stay pinned even when collapsed */}
@@ -3262,7 +3262,7 @@ const NAV_PREFETCH = {
               <NavItem
                 icon={NAV_ICON_SCHEDULED} label={t.scheduledPlans}
                 active={currentView === 'scheduled'}
-                unread={!!(bs && ((bs.scheduledTasks || []).some(task => task.hasUnreadRuns) || (bs.scheduledTaskRecentRuns || []).some(run => run && run.unread)))}
+                unread={scheduledUnread}
                 theme={activeTheme}
                 t={t}
                 isSidebarOpen={isSidebarOpen}
@@ -3577,60 +3577,10 @@ const NAV_PREFETCH = {
             {/* Footer Profile */}
             <div className={`p-3 mt-auto ${isSidebarOpen ? 'space-y-2' : 'flex flex-col items-center gap-3 pb-6'}`}>
               <div className={`${isSidebarOpen ? 'flex items-center justify-between gap-2' : 'flex flex-col items-center gap-3'}`}>
-                {!isSidebarOpen && (
-                  <>
-                    {can('webAccessAdmin') && <button type="button"
-                      onClick={handleOpenWebAccess}
-                      title={t.uiRemote.title}
-                      className={`relative w-10 h-10 shrink-0 rounded-full flex items-center justify-center transition-colors ${activeTheme === 'dark' ? 'text-[#E3E3E3] hover:bg-[#333537]' : 'text-[#444746] hover:bg-[#E1E5EA]'}`}
-                    >
-                      <Smartphone size={18} />
-                      {isWebAccessConnected && <span className="absolute top-1 right-1 w-2 h-2 rounded-full bg-[#34A853]" />}
-                    </button>}
-                    {can('pet') && <button type="button"
-                      onClick={() => handleSetPetEnabled(!(bs && bs.settings && bs.settings.pet && bs.settings.pet.enabled))}
-                      title={(bs && bs.settings && bs.settings.pet && bs.settings.pet.enabled) ? t.uiPet.hide : t.uiMainApp.petSummon}
-                      className={`relative w-10 h-10 shrink-0 rounded-full flex items-center justify-center transition-colors ${(bs && bs.settings && bs.settings.pet && bs.settings.pet.enabled) ? 'text-[#34A853]' : (activeTheme === 'dark' ? 'text-[#E3E3E3]' : 'text-[#444746]')} ${activeTheme === 'dark' ? 'hover:bg-[#333537]' : 'hover:bg-[#E1E5EA]'}`}
-                    >
-                      <PetPawIcon />
-                    </button>}
-                    <button type="button"
-                      data-testid="nav-settings"
-                      onClick={() => openSettingsSection('general')}
-                      title={t.settings}
-                      className={`relative w-10 h-10 shrink-0 rounded-full flex items-center justify-center transition-colors ${activeTheme === 'dark' ? 'text-[#E3E3E3] hover:bg-[#333537]' : 'text-[#444746] hover:bg-[#E1E5EA]'}`}
-                    >
-                      <Settings size={18} />
-                      {hasUpdate && <span className="absolute top-1 right-1 w-2 h-2 rounded-full bg-[#EA4335]" />}
-                    </button>
-                  </>
-                )}
+                {!isSidebarOpen && renderFooterButtons(true)}
                 {isSidebarOpen && (
                   <div className="flex items-center gap-1">
-                    {can('webAccessAdmin') && <button type="button"
-                      onClick={handleOpenWebAccess}
-                      title={t.uiRemote.title}
-                      className={`relative w-9 h-9 shrink-0 rounded-full flex items-center justify-center transition-colors ${activeTheme === 'dark' ? 'text-[#C4C7C5] hover:bg-[#333537]' : 'text-[#444746] hover:bg-[#E1E5EA]'}`}
-                    >
-                      <Smartphone size={18} />
-                      {isWebAccessConnected && <span className="absolute top-1 right-1 w-2 h-2 rounded-full bg-[#34A853]" />}
-                    </button>}
-                    {can('pet') && <button type="button"
-                      onClick={() => handleSetPetEnabled(!(bs && bs.settings && bs.settings.pet && bs.settings.pet.enabled))}
-                      title={(bs && bs.settings && bs.settings.pet && bs.settings.pet.enabled) ? t.uiPet.hide : t.uiMainApp.petSummon}
-                      className={`relative w-9 h-9 shrink-0 rounded-full flex items-center justify-center transition-colors ${(bs && bs.settings && bs.settings.pet && bs.settings.pet.enabled) ? 'text-[#34A853]' : (activeTheme === 'dark' ? 'text-[#C4C7C5]' : 'text-[#444746]')} ${activeTheme === 'dark' ? 'hover:bg-[#333537]' : 'hover:bg-[#E1E5EA]'}`}
-                    >
-                      <PetPawIcon />
-                    </button>}
-                    <button type="button"
-                      data-testid="nav-settings"
-                      onClick={() => navigateFromScheduledRun('settings')}
-                      title={t.settings}
-                      className={`relative w-9 h-9 shrink-0 rounded-full flex items-center justify-center transition-colors ${activeTheme === 'dark' ? 'text-[#C4C7C5] hover:bg-[#333537]' : 'text-[#444746] hover:bg-[#E1E5EA]'}`}
-                    >
-                      <Settings size={18} />
-                      {hasUpdate && <span className="absolute top-1 right-1 w-2 h-2 rounded-full bg-[#EA4335]" />}
-                    </button>
+                    {renderFooterButtons(false)}
                   </div>
                 )}
               </div>
@@ -3717,10 +3667,10 @@ const NAV_PREFETCH = {
             )}
             {isCompactShell && browserActive && currentView === 'browser' && (
               <BrowserView
-                key={browserViewSessionId}
+                key={browserSessionId}
                 theme={activeTheme}
                 t={t}
-                sessionId={browserViewSessionId}
+                sessionId={browserSessionId}
                 nativeSurfaceSuspended={compactBrowserSurfaceSuspended}
               />
             )}
@@ -3997,10 +3947,10 @@ const NAV_PREFETCH = {
                 <div className="min-h-0 flex-1">
                   {browserActive ? (
                     <BrowserView
-                      key={browserViewSessionId}
+                      key={browserSessionId}
                       theme={activeTheme}
                       t={t}
-                      sessionId={browserViewSessionId}
+                      sessionId={browserSessionId}
                       nativeSurfaceSuspended={browserSurfaceSuspended}
                       ownershipSlot={browserOwnershipSlot}
                     />
@@ -4052,10 +4002,7 @@ const NAV_PREFETCH = {
                 active: currentView === 'cardpool', onClick: () => mobileNavigate('cardpool', () => setPoolMyOnly(false)) },
               { key: 'monitor', label: t.monitor, icon: <BarChart2 size={18} />,
                 active: currentView === 'monitor',
-                onClick: () => mobileNavigate('monitor', () => {
-                  const liveBridge = window.TauriBridge || bridge;
-                  if (liveBridge?.monitor && typeof liveBridge.monitor.startMonitorPolling === 'function') liveBridge.monitor.startMonitorPolling();
-                }) },
+                onClick: () => mobileNavigate('monitor') },
               { key: 'more', label: t.mobileMore, icon: <MoreHorizontal size={18} />,
                 active: mobileMoreActive, dot: hasUpdate || scheduledUnread,
                 onClick: () => setMobileMoreOpen(true) },
@@ -4087,8 +4034,9 @@ const NAV_PREFETCH = {
             bs={bs}
             t={t}
             onShowChangelog={() => {
-              setSettingsInitialSection('update');
-              setCurrentView('settings');
+              // Same settings entry path as the sidebar gear (openSettingsSection records the
+              // return view and lets navigateFromScheduledRun own the view transition).
+              openSettingsSection('update');
               setSettingsUpdateFocusTick(v => v + 1);
             }}
           />

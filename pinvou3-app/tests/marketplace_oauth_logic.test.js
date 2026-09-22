@@ -22,7 +22,7 @@ function assertNoYuandian(value) {
   assert.doesNotMatch(JSON.stringify(value), /元典|华宇元典/);
 }
 
-assert.match(toolStoreView, /const oauthServerNameForTool = \(tool\) => tool\?\.oauthServerName \|\| tool\?\.serverName \|\| null;/);
+assert.match(toolStoreView, /oauthServerName = t\?\.oauthMcp \? \(t\?\.oauthServerName \|\| null\) : null;/);
 assert.match(toolStoreView, /server_name: oauthServerName/);
 assert.match(toolStoreView, /oauthUiTimeoutResult\(oauthServerName\)/);
 assert.doesNotMatch(toolStoreView, /oauthUiTimeoutResult\('yuandian_mcp'\)/);

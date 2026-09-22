@@ -22,10 +22,9 @@ function pinvouSharedtauriMonitor() {
     let monitorIntervalId = null;
     let monitorPollInFlight = false;
     let gpuUtilHistory = [];
-    // 0 = no real max_model_len received yet from get_backend_status or the
-    // monitor snapshot; write state.tokens.max back only for real values
-    // (both assignment sites are truthiness-guarded).
-    let maxModelLen = state.tokens.max || 0;
+    // state.tokens.max is written back only for real max_model_len values from
+    // get_backend_status or the monitor snapshot (both assignment sites are
+    // truthiness-guarded).
     const MONITOR_BASELINE_KEY = "pinvou3.monitorStatsBaseline.self";
     let monitorBaseline = null;
     try {
@@ -33,9 +32,20 @@ function pinvouSharedtauriMonitor() {
       if (storedBaseline) monitorBaseline = JSON.parse(storedBaseline);
     } catch { monitorBaseline = null; }
   // ── Monitor ──────────────────────────────────────────────────────
+  // The shared format-utils script is loaded statically; the inline fallbacks
+  // are verbatim copies of its bodies so the monitor never falls back to raw
+  // numbers when the shared script is missing.
   const PinvouFU = window.PinvouFormatUtils || {};
-  const fmtMiB = PinvouFU.fmtMiB || function (mib) { return mib == null ? "—" : String(mib); };
-  const fmtKiB = PinvouFU.fmtKiB || function (kib) { return kib == null ? "—" : String(kib); };
+  const fmtMiB = PinvouFU.fmtMiB || function (mib) {
+    if (mib == null) return "—";
+    return mib >= 1024 ? (mib / 1024).toFixed(1) + " GB" : mib + " MB";
+  };
+  const fmtKiB = PinvouFU.fmtKiB || function (kib) {
+    if (kib == null) return "—";
+    if (kib >= 1024 * 1024) return (kib / 1024 / 1024).toFixed(1) + " GB";
+    if (kib >= 1024) return (kib / 1024).toFixed(0) + " MB";
+    return kib + " KB";
+  };
   const fmtDuration = PinvouFU.fmtDuration || function (secs) { return secs == null ? "—" : String(secs); };
   const fmtTok = PinvouFU.fmtTok || function (n) { return n == null ? "—" : String(n); };
 
@@ -230,8 +240,7 @@ function adjustCounters(sp, v) { return pinvouSharedtauriMonitor().adjustCounter
         updatedAt: snap.generated_at_ms ? new Date(snap.generated_at_ms).toLocaleTimeString() : "—",
       };
       if (snap.vllm && snap.vllm.max_model_len) {
-        maxModelLen = snap.vllm.max_model_len;
-        state.tokens.max = maxModelLen;
+        state.tokens.max = snap.vllm.max_model_len;
       }
       // Display-equivalent snapshots neither overwrite state.monitor nor
       // notify (must send on the first frame or after an errored round).
@@ -259,8 +268,7 @@ function stopMonitorPolling() { return pinvouSharedtauriMonitor().stopMonitorPol
       state.backendOnline = !!s.vllm_online;
       // 修 token 分母时机 bug：不再依赖用户打开监控页才拿到真实 max_model_len
       if (s.max_model_len) {
-        maxModelLen = s.max_model_len;
-        state.tokens.max = maxModelLen;
+        state.tokens.max = s.max_model_len;
       }
     } catch {
       state.backendOnline = false;

@@ -3,6 +3,7 @@ import assert from 'node:assert/strict';
 import fs from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
+import { VOICE_PILL_EXIT_MS } from '../src/features/voice-composer/useVoicePillPresence.js';
 import { dictZh } from '../src/shared/i18n/zh.js';
 import { dictEn } from '../src/shared/i18n/en.js';
 import { dictJa } from '../src/shared/i18n/ja.js';
@@ -14,7 +15,6 @@ const read = (...parts) => fs.readFileSync(path.join(appRoot, ...parts), 'utf8')
 const pillSource = read('src', 'features', 'voice-composer', 'VoiceRecordingPill.jsx');
 const controlsSource = read('src', 'features', 'voice-composer', 'VoiceComposerControls.jsx');
 const popoverSource = read('src', 'features', 'voice-composer', 'VoiceAsrPopover.jsx');
-const hookSource = read('src', 'features', 'voice-composer', 'useVoicePillPresence.js');
 const baseCss = read('src', 'styles', 'base.css');
 
 // The stop hint names both modifier spellings (macOS Option, elsewhere Alt)
@@ -44,7 +44,7 @@ assert.match(baseCss, /@media \(prefers-reduced-motion: reduce\)[\s\S]*voice-pop
 
 // Exit timing contract: the unmount delay must cover the exit animation
 // (0.14s) so the fade completes before the pill leaves the tree.
-const exitMs = Number(hookSource.match(/VOICE_PILL_EXIT_MS = (\d+)/)?.[1]);
+const exitMs = VOICE_PILL_EXIT_MS;
 const exitAnimMs = Number(baseCss.match(/\.voice-pop-out \{ animation: voicePopOut 0\.(\d\d)s/)?.[1]) * 10;
 assert.ok(exitAnimMs > 0, 'exit animation duration must be parseable');
 assert.ok(exitMs >= exitAnimMs, `unmount delay ${exitMs}ms must cover the ${exitAnimMs}ms exit animation`);
