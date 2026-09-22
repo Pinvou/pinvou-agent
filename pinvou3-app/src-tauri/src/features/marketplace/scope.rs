@@ -66,11 +66,12 @@ static DISABLED_BUNDLES_FILE_LOCK: Mutex<()> = Mutex::new(());
 /// and the same fd-lock crate as remote_control's process lock, and fails
 /// closed like it: an unavailable lock returns `Err` instead of running the
 /// write unserialized, because silently proceeding would reintroduce exactly
-/// the lost-update this lock exists to prevent. The critical section only
-/// reads/writes a file-sized payload — the DenyAll expansion enumerates the
-/// packages root OUTSIDE the lock (`sample_denyall_expansion` is taken by
-/// every RMW writer before acquiring it) — so blocking is preferable to
-/// retry loops.
+/// the lost-update this lock exists to prevent. RMW writers do expand the
+/// DenyAll fallback INSIDE the critical section (`resolve_scope_disabled_ids`
+/// → `installed_skill_ids_cheap`), but that expansion is an ids-only packages
+/// root enumeration (`list_skills`-style per-skill fingerprinting is display
+/// only and never runs under the lock — see `skill_marketplace`), so the
+/// critical section stays short and blocking is preferable to retry loops.
 fn with_disabled_bundles_lock<T>(f: impl FnOnce() -> T) -> Result<T, String> {
     let _guard = DISABLED_BUNDLES_FILE_LOCK
         .lock()
