@@ -775,11 +775,10 @@ fn is_plain_filename(value: &str) -> bool {
 }
 
 fn quarantine_unparsable_journal(journal_path: &Path) {
-    let Some(name) = journal_path.file_name().and_then(|value| value.to_str()) else {
-        return;
-    };
-    let quarantined = journal_path.with_file_name(format!("{name}.corrupt-{}", std::process::id()));
-    if let Err(error) = fs::rename(journal_path, quarantined) {
+    // Shared platform primitive: the nanosecond-unique name preserves earlier
+    // evidence even when two corruptions land within the same second or after
+    // a pid was recycled (a bare `{name}.corrupt-{pid}` would rename-over it).
+    if let Err(error) = crate::platform::filesystem::quarantine_corrupt_file(journal_path) {
         // Rename can fail if the file is momentarily locked (e.g. Windows);
         // the journal then stays in place and is skipped again on the next
         // read without blocking the load.
