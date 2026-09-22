@@ -12,7 +12,7 @@ static DRAG_ACTIVE: AtomicBool = AtomicBool::new(false);
 
 /// 全局鼠标状态(坐标 + 左键按下)。三平台轮询封装。
 /// - Linux: X11 XQueryPointer(root 窗口坐标 = 真·全局虚拟桌面坐标)
-/// - macOS: CoreGraphics 同步读全局光标 + 左键(见 macos_mouse 模块)
+/// - macOS: CoreGraphics synchronous read of the global cursor + left button (see the macos_mouse module)
 /// - Windows: GetCursorPos + GetAsyncKeyState 同步读
 pub struct GlobalMouse {
     pub x: i32,
@@ -156,10 +156,13 @@ mod macos_mouse {
     use super::GlobalMouse;
     use crate::platform::cursor;
 
-    /// 同步读全局鼠标位置 + 左键按下态(CoreGraphics extern 声明与坐标读取均共享自
-    /// platform::cursor,与 computer_use 后端同一份,避免重复 extern 漂移)。
-    /// 任意线程可调,免授权。读坐标失败(罕见,如 window server 异常)返回零值快照,
-    /// 轮询循环下一轮重试,不会崩溃。
+    /// Reads the global mouse position + left-button state synchronously (the
+    /// CoreGraphics extern declarations and coordinate reads are shared from
+    /// platform::cursor — the same copy the computer-use backend uses, so
+    /// duplicate externs cannot drift). Callable on any thread, no
+    /// authorization required. A failed position read (rare, e.g. a broken
+    /// window server) returns a zeroed snapshot; the polling loop retries on
+    /// the next tick instead of crashing.
     pub(super) fn poll() -> GlobalMouse {
         let (x, y) = cursor::cursor_position().unwrap_or((0, 0));
         GlobalMouse {
