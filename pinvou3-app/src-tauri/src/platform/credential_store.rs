@@ -169,6 +169,9 @@ pub enum CredentialState {
     Missing,
     Configured,
     EnvOverride,
+    /// No producer or consumer in this tree yet — reserved for the CLI
+    /// credential stack so the wire value stays stable from day one; the
+    /// frontend treats it as "not configured" via its boolean fallbacks.
     NeedsMigration,
     Unavailable,
 }
