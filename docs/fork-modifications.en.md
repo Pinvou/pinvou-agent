@@ -49,7 +49,7 @@
 | Rollback | Public immutable tag `pinvou-v0.9.5-r13` at `f853f8f1566c57e6be40d5439a222a932aa79ef5`; the local branch `backup/pre-v0.9.12-sync` at the same SHA is only a convenience ref |
 | History | 37 DCO-signed-off commits above upstream in four long-lived topics (T1–T4) plus two append topics (T5 session archive export, T6 swarm rate-limit governor) and one merged-into-maintenance topic (T7 compaction checkpoint role compatibility); all 22 post-r1 commits landed via squash-merged PRs through the five required gates |
 | Drift | 182 files, `+14373/-1614` (net +12,759); r1 was 94 files `+5022/-944`, old r13 was 110 files `+10895/-1195` |
-| Guard | 100 distinct CodeWhale `forkguard_*` behavior names (registered floor 57, six of them pinned behind the `benchmark-eval-controls` gate) plus parent fingerprints/tests; consumer PRs #396 (execpolicy), #408 (turn-bound cancel), #444 (swarm), #468 (computer-use), #472 (one-click export) depend on this batch |
+| Guard | 133 distinct CodeWhale `forkguard_*` behavior names (registered floor 64, six of them pinned behind the `benchmark-eval-controls` gate) plus parent fingerprints/tests; consumer PRs #396 (execpolicy), #408 (turn-bound cancel), #444 (swarm), #468 (computer-use), #472 (one-click export) depend on this batch |
 
 ### Turn-bound cancel: the host dispatches stops by turn identity (parent-side adaptation, this PR)
 

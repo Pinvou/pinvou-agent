@@ -1343,12 +1343,16 @@ jobs:
         shell: pwsh
         run: python scripts/ci-windows-imports-diagnose.py "$env:PINVOU3_TEST_EXE"
 
-      # These tests are cfg(windows) and compile out of the Linux jobs. Assert
+      # Parent application jobs do not execute a dependency crate's lib tests;
+      # this Windows leg explicitly runs the CodeWhale shell regressions. Assert
       # that every filter still matches so a rename cannot become a silent pass.
       - name: CodeWhale Windows PowerShell regressions
         shell: bash
         run: |
           set -euo pipefail
+          # The tested fallback chooses pwsh.exe only when SHELL is absent.
+          # Make that runner assumption explicit and deterministic.
+          unset SHELL
           cd CodeWhale
           for filter in forkguard_powershell forkguard_windows_shell_text; do
             log="/tmp/codewhale_windows_${filter}.log"
