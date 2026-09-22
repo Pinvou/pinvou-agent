@@ -362,7 +362,7 @@ impl SessionStore {
             };
         }
         let json = serde_json::to_string_pretty(&ids).context("serialize multi-agent flags")?;
-        crate::platform::filesystem::atomic_write_private(&file, json.as_bytes())
+        crate::platform::filesystem::atomic_write(&file, json.as_bytes())
             .context("persist _multi_agent.json failed")
     }
 
@@ -429,7 +429,7 @@ impl SessionStore {
             };
         }
         let json = serde_json::to_string_pretty(&ids).context("serialize multi-agent flags")?;
-        crate::platform::filesystem::atomic_write_private(&file, json.as_bytes())
+        crate::platform::filesystem::atomic_write(&file, json.as_bytes())
             .context("persist _multi_agent.json failed")
     }
 
