@@ -5801,6 +5801,77 @@ fn retention_rechecks_a_pin_that_lands_mid_sweep() {
 }
 
 #[test]
+fn retention_purge_removes_durable_mode_entries_written_after_boot() {
+    let (store, _g) = isolated_store();
+    let now = Utc::now();
+    // Seed exactly the cap via save() (no sweep can fire at or under it).
+    let mut ids = Vec::new();
+    for index in 0..MAX_SESSIONS_PER_KIND {
+        let mut session = create_saved_session_with_id_and_mode(
+            format!("modeghost-{index}"),
+            &[],
+            "/chat-model",
+            &std::env::temp_dir(),
+            0,
+            None,
+            None,
+        );
+        session.metadata.updated_at = now - chrono::Duration::seconds(1000 - index as i64);
+        store.save(&session).expect("seed session");
+        ids.push(session.metadata.id.clone());
+    }
+    // One oldest candidate written DIRECTLY to the store directory (51st
+    // record, so the next sweep takes exactly it).
+    let mut session = create_saved_session_with_id_and_mode(
+        "modeghost-victim".to_string(),
+        &[],
+        "/chat-model",
+        &std::env::temp_dir(),
+        0,
+        None,
+        None,
+    );
+    session.metadata.updated_at = now - chrono::Duration::seconds(2000);
+    let record = serde_json::to_vec(&session).expect("serialize candidate");
+    std::fs::write(
+        crate::platform::paths::sessions_root().join("modeghost-victim.json"),
+        record,
+    )
+    .expect("write candidate record");
+    // A mode entry another process persisted after this store booted: the
+    // in-memory map has never seen it, so a purge keyed on the map would
+    // leave it behind — and the mode sidecar has no boot-time ghost cleanup,
+    // so the ghost would survive forever and re-arm on id reuse.
+    let mode_file = crate::platform::paths::sessions_root().join("_session_mode_states.json");
+    let payload = serde_json::json!({ "modeghost-victim": "plan" });
+    std::fs::write(&mode_file, payload.to_string()).expect("write ghost mode entry");
+
+    store.invalidate_list_cache();
+    store
+        .enforce_session_retention_locked()
+        .expect("sweep must succeed");
+    assert!(
+        store.load(&"modeghost-victim".to_string()).is_err(),
+        "the victim session itself must be evicted"
+    );
+
+    // An empty post-purge map deletes the file entirely (NotFound = clean).
+    let ghost_gone = match std::fs::read_to_string(&mode_file) {
+        Ok(durable) => {
+            let parsed: std::collections::HashMap<String, String> =
+                serde_json::from_str(&durable).expect("valid JSON mode map");
+            !parsed.contains_key("modeghost-victim")
+        }
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => true,
+        Err(error) => panic!("read mode file failed: {error}"),
+    };
+    assert!(
+        ghost_gone,
+        "the durable mode entry of an evicted session must not survive the purge"
+    );
+}
+
+#[test]
 fn pin_mutation_refuses_a_semantically_corrupt_zero_id_file() {
     // Both file handles resolve INSIDE the env guard: sessions_root() reads
     // PINVOU3_HOME, and a path taken before isolated_store() points at the
