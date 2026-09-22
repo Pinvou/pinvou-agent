@@ -133,7 +133,7 @@ const codexEn = {
   agentStallCancelHint:'The agent is still unresponsive, so Stop was requested automatically. Waiting for it to settle.',
   agentStallSettledHint:'The agent stopped responding for too long, so this turn was settled as interrupted. You can send again or continue.',
   agentCancelTimeoutHint:'Stop was not acknowledged by the agent, so this turn was settled as interrupted.',
-  agentStderrHint:'Raw error text from the agent adapter (also recorded in the session log).',
+  agentStderrHint:'Redacted error text from the agent adapter (also recorded in the session log).',
   agentStderrNoDetailHint:'The agent adapter reported a problem; raw details remain available only in the desktop session log.',
   agentRestarted:agent=>`${agent} session restarted`,
   agentStallRestartHint:'The same session stopped responding repeatedly, so your next message will continue in a fresh agent session; whether the earlier conversation comes along depends on that agent\'s resume support, and we will tell you which one happened after the switch.',

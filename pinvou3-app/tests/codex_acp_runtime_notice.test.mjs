@@ -248,7 +248,7 @@ assert.equal(stderrNotice?.kind, 'agent_stderr');
 assert.equal(stderrNotice?.detail, 'cancel floor elapsed without the SDK yielding');
 assert.equal(
   latestAgentRuntimeNotice([
-    envelope(1, 'runtime_notice', { kind: 'agent_stall', quietSeconds: 200 }),
+    envelope(1, 'runtime_notice', { kind: 'agent_stall' }),
     envelope(2, 'runtime_notice', { kind: 'not_a_known_kind' }),
   ])?.kind,
   'agent_stall',

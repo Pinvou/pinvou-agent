@@ -178,7 +178,7 @@ fn project_acp_event_data_for_web(event_type: &str, value: Value) -> Value {
         // `detail` 是适配器 stderr 原文（现场就含绝对路径，理论上还可能带网关
         // 响应体或凭据），按本函数的既定边界留在本机——本地卡片与
         // `codex-acp.log` 都能看到，Relay 不放行外来文本。
-        "runtime_notice" => project_allowed_fields(value, &["kind", "quietSeconds"]),
+        "runtime_notice" => project_allowed_fields(value, &["kind"]),
         // runtime_ready is a signal; the Web client fetches the authoritative
         // session info separately and does not need adapter capabilities here.
         "runtime_ready" => Value::Object(serde_json::Map::new()),
@@ -1930,7 +1930,10 @@ mod tests {
         });
         let projected = project_acp_event_for_web(&notice).event.data;
         assert_eq!(projected["kind"], json!("agent_stderr"));
-        assert_eq!(projected["quietSeconds"], json!(200));
+        assert!(
+            projected.get("quietSeconds").is_none(),
+            "unused runtime fields must not cross the Relay: {projected}"
+        );
         assert!(
             projected.get("detail").is_none(),
             "适配器 stderr 原文不得跨 Relay: {projected}"

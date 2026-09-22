@@ -771,12 +771,47 @@ pub struct CodexAcpPendingElicitation {
 struct PendingPermission {
     view: CodexAcpPendingPermission,
     option_ids: Vec<String>,
+    activity: stall::ActivityClock,
     response_tx: oneshot::Sender<RequestPermissionResponse>,
 }
 
 struct PendingElicitation {
     view: CodexAcpPendingElicitation,
+    activity: stall::ActivityClock,
     response_tx: oneshot::Sender<CreateElicitationResponse>,
+}
+
+async fn take_pending_permission(
+    pending: &Mutex<HashMap<String, PendingPermission>>,
+    key: String,
+    option_id: &str,
+) -> Result<PendingPermission> {
+    let mut pending = pending.lock().await;
+    let request = pending.remove(&key).context(
+        "permission request expired, was already answered, or belongs to another session",
+    )?;
+    if !request
+        .option_ids
+        .iter()
+        .any(|candidate| candidate == option_id)
+    {
+        pending.insert(key, request);
+        bail!("permission option does not belong to this request");
+    }
+    stall::mark_activity(&request.activity);
+    Ok(request)
+}
+
+async fn take_pending_elicitation(
+    pending: &Mutex<HashMap<String, PendingElicitation>>,
+    key: &str,
+) -> Result<PendingElicitation> {
+    let mut pending = pending.lock().await;
+    let request = pending.remove(key).context(
+        "elicitation request expired, was already answered, or belongs to another session",
+    )?;
+    stall::mark_activity(&request.activity);
+    Ok(request)
 }
 
 struct AcpSession {
@@ -925,6 +960,7 @@ impl AcpSession {
         ticker.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
         let mut noticed = false;
         let mut cancel_sent_at: Option<Instant> = None;
+        let mut previous_quiet: Option<Duration> = None;
         let mut settled = false;
         loop {
             tokio::select! {
@@ -935,13 +971,18 @@ impl AcpSession {
                         continue;
                     }
                     let quiet = stall::quiet_for(&self.activity);
+                    if stall::activity_resumed(previous_quiet, quiet) {
+                        noticed = false;
+                        cancel_sent_at = None;
+                    }
+                    previous_quiet = Some(quiet);
                     match stall::stall_step(quiet, noticed, cancel_sent_at.map(|at| at.elapsed())) {
                         stall::StallStep::Idle => {}
                         stall::StallStep::Notice => {
                             noticed = true;
                             self.bridge.emit(
                                 "runtime_notice",
-                                json!({ "kind": "agent_stall", "quietSeconds": quiet.as_secs() }),
+                                json!({ "kind": "agent_stall" }),
                             );
                         }
                         stall::StallStep::Cancel => {
@@ -3604,18 +3645,12 @@ impl AcpPool {
         option_id: &str,
     ) -> Result<()> {
         let key = permission_key(session_id, tool_call_id);
-        let mut pending = self.pending_permissions.lock().await;
-        let request = pending
-            .remove(&key)
-            .context("权限请求已过期、已回复或不属于当前会话")?;
-        if !request
-            .option_ids
-            .iter()
-            .any(|candidate| candidate == option_id)
-        {
-            pending.insert(key, request);
-            bail!("权限选项不属于该请求");
-        }
+        // The helper returns an owned request, so the pending-map lock is
+        // necessarily released before this path can acquire `sessions`.
+        // Restart takes those locks in the opposite order while clearing old
+        // cards; keeping the map guard here would deadlock the whole pool.
+        let request =
+            take_pending_permission(self.pending_permissions.as_ref(), key, option_id).await?;
         let response = RequestPermissionResponse::new(RequestPermissionOutcome::Selected(
             SelectedPermissionOutcome::new(option_id.to_string()),
         ));
@@ -3655,12 +3690,7 @@ impl AcpPool {
             _ => bail!("不支持的输入请求操作: {action}"),
         };
         let key = elicitation_key(session_id, elicitation_id);
-        let request = self
-            .pending_elicitations
-            .lock()
-            .await
-            .remove(&key)
-            .context("输入请求已过期、已回复或不属于当前会话")?;
+        let request = take_pending_elicitation(self.pending_elicitations.as_ref(), &key).await?;
         request
             .response_tx
             .send(response)
@@ -3702,6 +3732,7 @@ impl AcpPool {
         let mut cancelled = Vec::new();
         for key in keys {
             if let Some(request) = pending.remove(&key) {
+                stall::mark_activity(&request.activity);
                 cancelled.push(request.view.tool_call_id.clone());
                 let _ = request.response_tx.send(RequestPermissionResponse::new(
                     RequestPermissionOutcome::Cancelled,
@@ -3747,6 +3778,7 @@ impl AcpPool {
         let mut cancelled = Vec::new();
         for key in keys {
             if let Some(request) = pending.remove(&key) {
+                stall::mark_activity(&request.activity);
                 cancelled.push(request.view.elicitation_id.clone());
                 let _ = request
                     .response_tx
@@ -4038,6 +4070,7 @@ impl AcpPool {
                             PendingPermission {
                                 view,
                                 option_ids,
+                                activity: bridge_for_permission.activity(),
                                 response_tx,
                             },
                         );
@@ -4076,10 +4109,14 @@ impl AcpPool {
                             request: request_value.clone(),
                         };
                         let (response_tx, response_rx) = oneshot::channel();
-                        pending_for_elicitation
-                            .lock()
-                            .await
-                            .insert(key.clone(), PendingElicitation { view, response_tx });
+                        pending_for_elicitation.lock().await.insert(
+                            key.clone(),
+                            PendingElicitation {
+                                view,
+                                activity: bridge_for_elicitation.activity(),
+                                response_tx,
+                            },
+                        );
                         bridge_for_elicitation.emit(
                             "elicitation_requested",
                             json!({
@@ -5479,6 +5516,67 @@ mod tests {
             prepare.contains(&format!("CLAUDE_ACP_VERSION=\"{CLAUDE_ACP_VERSION}\"")),
             "prepare-codex-bridge-runtime.sh 必须钉同一个适配器版本"
         );
+
+        let lock = std::fs::read_to_string(concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/../scripts/codex-bridge-runtime/package-lock.json"
+        ))
+        .expect("read the bridge runtime lockfile");
+        let lock = serde_json::from_str::<Value>(&lock).expect("parse the bridge lockfile");
+        let claude_sdk_pinned =
+            lock["packages"]["node_modules/@anthropic-ai/claude-agent-sdk"]["version"]
+                .as_str()
+                .expect("claude-agent-sdk lock pin");
+        assert!(
+            prepare.contains(&format!("CLAUDE_SDK_VERSION=\"{claude_sdk_pinned}\"")),
+            "prepare-codex-bridge-runtime.sh must match the locked Claude SDK version"
+        );
+    }
+
+    #[tokio::test]
+    async fn forkguard_permission_take_releases_lock_and_resets_activity() {
+        let pending = Mutex::new(HashMap::new());
+        let activity = stall::new_activity_clock();
+        *activity.lock() = Instant::now() - stall::STALL_CANCEL_AFTER;
+        let key = permission_key("session-1", "tool-1");
+        let (response_tx, _response_rx) = oneshot::channel();
+        pending.lock().await.insert(
+            key.clone(),
+            PendingPermission {
+                view: CodexAcpPendingPermission {
+                    session_id: "session-1".to_string(),
+                    tool_call_id: "tool-1".to_string(),
+                    request: Value::Null,
+                },
+                option_ids: vec!["allow".to_string()],
+                activity: activity.clone(),
+                response_tx,
+            },
+        );
+
+        assert!(
+            take_pending_permission(&pending, key.clone(), "deny")
+                .await
+                .is_err(),
+            "an unknown option must be rejected"
+        );
+        assert!(
+            pending.lock().await.contains_key(&key),
+            "a rejected option must leave the request pending"
+        );
+
+        let request = take_pending_permission(&pending, key, "allow")
+            .await
+            .expect("the declared option should remove the request");
+        assert!(
+            pending.try_lock().is_ok(),
+            "the helper must return without retaining the pending-map lock"
+        );
+        assert!(
+            stall::quiet_for(&activity) < stall::STALL_NOTICE_AFTER,
+            "removing a user decision must reset the stall clock immediately"
+        );
+        drop(request);
     }
 
     /// 迟到的收口不得关闭别人的回合。

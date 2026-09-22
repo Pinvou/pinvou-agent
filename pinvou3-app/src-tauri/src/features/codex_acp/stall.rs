@@ -70,6 +70,12 @@ pub(super) fn quiet_for(clock: &ActivityClock) -> Duration {
     clock.lock().elapsed()
 }
 
+/// Returns true when the monotonic quiet duration moved backwards, which can
+/// only happen after the shared activity clock was refreshed.
+pub(super) fn activity_resumed(previous: Option<Duration>, current: Duration) -> bool {
+    previous.is_some_and(|previous| current < previous)
+}
+
 /// 一轮巡检应执行的动作。
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(super) enum StallStep {
@@ -242,6 +248,24 @@ mod tests {
             stall_step(STALL_CANCEL_AFTER * 2, false, None),
             StallStep::Cancel,
             "即使远超阈值，也必须先发取消再收口"
+        );
+    }
+
+    #[test]
+    fn forkguard_new_activity_restarts_the_cancel_ladder() {
+        assert!(!activity_resumed(None, Duration::from_secs(1)));
+        assert!(!activity_resumed(
+            Some(Duration::from_secs(1)),
+            Duration::from_secs(2)
+        ));
+        assert!(activity_resumed(
+            Some(STALL_CANCEL_AFTER),
+            Duration::from_millis(10)
+        ));
+        assert_eq!(
+            stall_step(STALL_CANCEL_AFTER, true, None),
+            StallStep::Cancel,
+            "a fresh silence period must request cancellation before settlement"
         );
     }
 
