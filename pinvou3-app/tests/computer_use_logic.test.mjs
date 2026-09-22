@@ -503,7 +503,7 @@ const REACT_ELEMENT = Symbol.for('react.element');
 // would keep every UI assertion here green while re-opening the stacking
 // regression the portal fix closed.
 let portalsUnwrapped = 0;
-let lastPortalContainer = null;
+let lastPortalContainer;
 
 function walkElements(node, visit) {
   if (node == null || typeof node !== 'object') return;
