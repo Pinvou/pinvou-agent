@@ -1092,9 +1092,11 @@ jobs:
         run: |
           sudo apt-get update
           # Package list audited per-package on 2026-09-15: gtk/soup/x11 are installed
-          # transitively via webkit-dev (the X11/XTest/XInput headers the computer_use
-          # input stack compiles against are in that transitive set); librsvg2-dev is not
-          # needed for the build; libssl-dev (openssl-sys is not vendored)
+          # transitively via webkit-dev — that transitive set is what covers the pure-Rust
+          # x11/xkbcommon/xcb crates the computer_use capture stack builds against
+          # (libxkbcommon-dev via libgtk-3-dev, libxcb1-dev via libx11-dev; enigo's X11
+          # input path is pure-Rust x11rb and needs no C XTest/XInput headers); librsvg2-dev
+          # is not needed for the build; libssl-dev (openssl-sys is not vendored)
           # and appindicator (tray) must be kept.
           # pipewire/drm/gbm/egl are the computer_use capture-backends headers the
           # webkit-dev chain does not pull in.
@@ -1414,11 +1416,16 @@ jobs:
   macos-rust-check:
     name: macos-rust-check
     needs: changes
-    # Native macOS compile coverage for ready high-risk/explicit PRs and main;
-    # same gate as windows-rust-test. Type errors in platform-specific code (e.g.
-    # computer_use/platform/macos.rs) are only caught by a native cargo check; the Linux
-    # leg (ubuntu) never compiles the macOS target. The Merge Queue does not repeat this
-    # leg; the Linux rust-test verifies the combined tree; check does not link, so no
+    # Native macOS compile coverage plus computer_use test execution for ready
+    # high-risk/explicit PRs and main; same gate as windows-rust-test. Type
+    # errors in platform-specific code (e.g. computer_use/platform/macos.rs)
+    # are only caught by a native cargo check; the Linux leg (ubuntu) never
+    # compiles the macOS target. Round-17: this leg also RUNS the
+    # computer_use unit tests — macOS-only tests previously executed on no CI
+    # leg at all (check does not run tests; the Windows leg runs Windows
+    # filters; the Linux leg runs Linux tests), leaving macOS runtime behavior
+    # author-machine-only. The Merge Queue does not repeat this leg; the Linux
+    # rust-test verifies the combined tree; check does not link, so no
     # signing/packaging/frontend artifacts are needed (same as windows-rust-test: verified
     # empirically on macOS in 2026-08 that cargo check --all-targets does not depend on
     # node_modules, hence no node/npm install).
@@ -1499,6 +1506,19 @@ jobs:
         run: >-
           cargo check --manifest-path pinvou3-app/src-tauri/Cargo.toml
           --all-targets --features dev-tools --locked
+
+      # Round-17: execute the computer_use unit tests on this leg — macOS-only
+      # tests (macos.rs, screen_capture_kit.rs) ran on no CI leg before. The
+      # 0-match guard keeps a test rename from silently skipping the suite.
+      - name: macOS computer_use unit tests
+        run: |
+          set -euo pipefail
+          cd pinvou3-app/src-tauri
+          cargo test --lib --features benchmark-hooks --locked computer_use -- --test-threads=1 2>&1 | tee /tmp/macos_computer_use.log
+          grep -qE 'running [1-9][0-9]* tests?' /tmp/macos_computer_use.log || {
+            echo "FAIL: the computer_use filter matched 0 tests (silent no-op guard)" >&2
+            exit 1
+          }
 
   windows-codex-runtime-test:
     name: windows-codex-runtime-test

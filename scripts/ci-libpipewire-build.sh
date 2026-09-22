@@ -50,9 +50,14 @@ cd "$work/pipewire-$PW_VERSION"
 # ships 0.61.2), no further system dev packages required. setup/build run as
 # the job user (a root-owned build dir would break ninja and the cleanup
 # trap); only the install into /usr/local and ldconfig need sudo.
+# NOTE: bumping PW_VERSION invalidates the system-deps inputs, NOT the
+# Swatinem/sccache caches — system-header changes do not re-run build scripts,
+# so a version bump must also bump the rust cache keys (rust-lint-v2,
+# windows-rust-test, macos-rust-check) or stale libspa-sys bindgen output can
+# be served from a restored target/ cache.
 meson setup build --prefix=/usr/local -Dlibdir=lib \
   -Dtests=disabled -Ddocs=disabled -Dman=disabled -Dexamples=disabled \
-  -Dpipewire-alsa=disabled -Dpipewire-jack=disabled -Dsession-managers=[] \
+  -Dpipewire-alsa=disabled -Dpipewire-jack=disabled '-Dsession-managers=[]' \
   -Dsystemd=disabled -Ddbus=disabled -Dgstreamer=disabled -Dbluez5=disabled \
   -Dvulkan=disabled -Dalsa=disabled -Djack=disabled -Davahi=disabled \
   -Decho-cancel-webrtc=disabled -Dgsettings=disabled -Dsndfile=disabled \

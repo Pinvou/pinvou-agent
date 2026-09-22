@@ -661,6 +661,13 @@ class CiGatePolicyTests(unittest.TestCase):
         regression = windows_rust_test.split(
             "- name: Windows 原子替换状态机回归", maxsplit=1
         )[1]
+        # Cut at the next job boundary: the round-17 macos-rust-check leg
+        # legitimately runs `cargo test` (computer_use unit tests) and sits
+        # between the regression step and the previous extraction boundary —
+        # this assertion only guards the Windows regression against
+        # re-invoking cargo, which would re-link the exe and lose the
+        # embedded Common-Controls manifest.
+        regression = regression.split("\n  macos-rust-check:", maxsplit=1)[0]
         self.assertIn('"$test_exe" "$filter" --test-threads=1', regression)
         self.assertNotIn("cargo test", regression)
         self.assertIn(
