@@ -1238,7 +1238,11 @@ jobs:
       - name: Cargo cache
         uses: Swatinem/rust-cache@v2
         with:
-          workspaces: pinvou3-app/src-tauri
+          # This job compiles the CodeWhale Windows-only regression target as
+          # well as the application workspace. Cache both target directories.
+          workspaces: |
+            pinvou3-app/src-tauri
+            CodeWhale
           shared-key: windows-rust-test
           save-if: ${{ github.ref == 'refs/heads/main' }}
 
@@ -1338,6 +1342,22 @@ jobs:
         continue-on-error: true
         shell: pwsh
         run: python scripts/ci-windows-imports-diagnose.py "$env:PINVOU3_TEST_EXE"
+
+      # These tests are cfg(windows) and compile out of the Linux jobs. Assert
+      # that every filter still matches so a rename cannot become a silent pass.
+      - name: CodeWhale Windows PowerShell regressions
+        shell: bash
+        run: |
+          set -euo pipefail
+          cd CodeWhale
+          for filter in forkguard_powershell forkguard_windows_shell_text; do
+            log="/tmp/codewhale_windows_${filter}.log"
+            cargo test -p codewhale-tui --lib --locked "$filter" -- --test-threads=1 2>&1 | tee "$log"
+            grep -qE 'running [1-9][0-9]* tests?' "$log" || {
+              echo "FAIL: CodeWhale filter '$filter' matched zero tests" >&2
+              exit 1
+            }
+          done
 
       - name: Windows 原子替换状态机回归
         shell: bash

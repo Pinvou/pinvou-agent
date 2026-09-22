@@ -124,7 +124,7 @@
 | `2ab5e64b5` | T7 修复 | 压缩交接保持工具轮边界：chat wire 角色合法性校验（压缩轮保持合法 assistant/tool 序列）、重压缩保真实用户边界、压缩轮跨恢复保留、生成式压缩摘要识别、restored 拓扑合并限域，7 条 forkguard 互钉（#62） |
 | `ce783728c` | T2 修复 | computer-use 插件：zoom 后按裁剪区在父尺度重绑 raster 帧偏移（子栅格坐标不再错配全图）、ssh 下元素状态宿主侧记忆与 `state_wrong_computer` 校验、recording 与 switch_display/left_mouse_down 在 ssh 显式 fail-closed 并给出可操作原因、zoom 在 ssh 可用（远端裁剪源注入+宿主侧几何重绑）（#57） |
 | `7fc36e587` | T6 重构 | DynamicGate 重建于 tokio `Semaphore`（取消授权重派、陈旧等待者跳过不漏槽、缩容低于在途后续再准入），抽取 `is_governor_reported_rate_limit` 谓词并以 forkguard 钉 QuotaExhausted 不进治理窗，删除按成功/限流比例缩门的 ratio 启发式（治理窗缩容只认绝对阈值）、清理失实注释与死分支（#55，#43 评审收尾） |
-| `c4e6caf94` | T2 修复 | Windows PowerShell 执行策略兼容：所有 dispatcher 构造的 PowerShell 调用统一携带进程级 `-ExecutionPolicy Bypass`，10 条行为回归迁入 `forkguard_` 前缀；`-EncodedCommand` 内联重跑当前仅引擎同步内部分支可达、尚无生产调用方，组策略/AppLocker 场景待重试门接入前台执行车道后覆盖（与插件 `.ps1` 车道同类的后续改动）（#66） |
+| `c4e6caf94` | T2 修复 | Windows PowerShell 执行策略兼容：所有 dispatcher 构造的 PowerShell 调用统一携带进程级 `-ExecutionPolicy Bypass`，10 条行为回归迁入 `forkguard_` 前缀；`-EncodedCommand` 内联重跑当前仅引擎同步内部分支可达、尚无生产调用方，组策略/AppLocker 场景待重试门接入前台执行车道后覆盖（与插件 `.ps1` 车道同类的后续改动）。父仓 Windows Rust 门禁执行两个 PowerShell 回归过滤器并拒绝零匹配，`fork-guard` 以 15 条源码/行为指纹固定该主题（#66） |
 | `8e5988119` | CI 同步 | CNB 镜像在 `CNB_GIT_TOKEN` 未配置的仓库探针跳过而非红检（#64） |
 | `6f780290f` | T1/T2/T3 修复 | agent/search/vision 工具面与运行时对齐，MCP boot 失败/恢复简报区分处理，直呼兜底话术并入 `HANDLE_READ_ACTIVATION_HINT` 共享常量（#67），fork-guard 两条指纹随之更新 |
 
