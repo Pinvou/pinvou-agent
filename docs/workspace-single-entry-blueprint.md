@@ -30,8 +30,9 @@ lane):
   anti-materialization exclusion list (§3).
 - A manage-folders panel gives full control over a project's folder
   territory (§4).
-- Sidebar grouping is split into a physical folder view and a logical
-  project view with a two-tier membership rule (§5).
+- The sidebar is one merged grouping (§5): project groups, physical
+  folder groups, and a trailing temporary group, with a two-tier
+  membership rule.
 - Every bound session locks a **keychain snapshot** — the full set of
   accessible roots — at creation time (§6).
 - The per-channel rulings (§9.1–§9.9) define how each entry point grants
@@ -164,13 +165,25 @@ Backend invariants for root replacement:
 
 ## §5 Sidebar grouping and membership resolution
 
-Two independent views (`projectGrouping.js`):
+One merged view — `groupSessionsWithProjects` in `projectGrouping.js`
+produces every group in a single pass, the sidebar consumes the list
+once and renders it in one loop (there is no separate physical folder
+view):
 
-- **Folder view (physical layer):** group by workspace directory —
-  byte-identical to the pre-project sidebar; projects never affect it.
-- **Project view (logical layer):** named projects as groups plus a
-  trailing *ungrouped* bucket (drag source for moving in, and the landing
-  place of explicit move-outs). Temporary sessions never auto-join.
+- **Project groups** render first, ordered by `(position, id)`, empty
+  ones included. Membership follows the two-tier rule below.
+- **Folder groups** are the tier-③ physical bucket: sessions no project
+  claimed group by workspace directory, recency-ordered — explicit
+  move-outs land here, not in a separate *ungrouped* bucket. The bucket
+  is not fenced: when a project's roots later cover a folder-resident
+  session (or a folder project materializes over it), tier-② claims the
+  session on the next pass and the folder group loses the member.
+- **Temporary group** trails last: sessions without a project
+  workspace. Temporary sessions never auto-join a project — they enter
+  one only through explicit assignment (the adopt flow). The only
+  "ungrouped" surface is the move-to-project dialog's entry, which
+  writes the explicit `None` assignment; the session then sits in its
+  folder or temporary group.
 
 Membership of a session is resolved in two tiers on both the frontend
 (`resolveSessionProjectId`) and the backend
@@ -419,7 +432,11 @@ The web host has exactly **one authorized root directory** (a
 host-authorized `workspace_` handle), so the whole multi-root machinery is
 absent there:
 
-- The picker renders only the "temporary session" option (`webOnly`).
+- The web mounts **no picker**: both creation entries bypass it (the chat
+  lane gates the selector by `desktopChrome`, the codex lane goes straight
+  to the project draft), so web effectively gets direct temporary
+  sessions. The `webOnly` temporary-session-only form in the picker dialog
+  is defensive code for a future web surface.
 - No keychain snapshot, no project memory writes: web sessions are
   temporary/single-root only; `align to project` rejects as desktop-only.
 - The projects domain is absent from the web bridge, and project events are
