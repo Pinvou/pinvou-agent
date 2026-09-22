@@ -103,9 +103,12 @@ pub async fn set_project_skills_enabled(
     })
     .await
     .map_err(|e| format!("set_project_skills_enabled join: {e}"))??;
-    // 开关影响 code 会话组合目录：重写在线会话组合目录 + 热刷 load_skill 隐藏
-    // 判定 + execpolicy 规则集（项目级 skills 重新纳入 deny/allow 集合），并广播
-    // 工具变更（其它窗口/实例借此刷新开关状态）。
+    // The toggle affects code-session composed catalogs: rewrite the online
+    // session composed catalogs, hot-refresh the load_skill hidden check and the
+    // execpolicy rule set (project-level skills rejoin the deny/allow sets), and
+    // broadcast the tool change (other windows/instances refresh their toggle
+    // state from it). A write failure is propagated by the `??` above, so this
+    // never broadcasts success for state that did not persist.
     refresh_tools_and_broadcast(&app, pool.inner()).await;
     Ok(())
 }

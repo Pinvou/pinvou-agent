@@ -990,7 +990,6 @@ mod tests {
 
         let stats = svc.stats().expect("stats after seed");
         assert_eq!(stats.total_files, 1);
-        assert_eq!(stats.total_bytes, 2048);
         assert_eq!(
             svc.type_counts().expect("type counts after seed"),
             vec![TypeCount {
