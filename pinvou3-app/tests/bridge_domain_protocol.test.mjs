@@ -216,7 +216,7 @@ const expectedProtocolHashes = {
   // Recomputed for the dead-code cleanup: the dead saveSettingsAndRestart
   // wrapper (save_settings_and_restart invoke) was removed — no production
   // caller; the plain saveSettings + restart_app path stays the update route.
-  settings: 'a248a030cc970774dc4d05d5032623742726dc3a5fae14ce547bc7fa3aabc90c',
+  settings: '6ec54b363e711927cb1ac65fbb9c468fa8255c89ad49e7c1e695acca131fcb3a',
   // Recomputed for the dead-code cleanup: the never-emitted
   // remote_control:status / remote_control:session_created listeners were
   // removed, and the update:progress listener plus its coalescing timer
@@ -254,7 +254,7 @@ for (const [domain, files] of Object.entries(protocolSources)) {
 // relocated out of the per-lane files, so the domain hashes above no longer
 // cover that text. Hash the shared file's surface with the same extractor to
 // pin payload edits inside the shared base the same way the lane files are.
-const expectedSharedBaseHash = '4e63e15a4ec6b41f2f38a667d9e94d9761c230ab927e91d0c5ae49f3c4abedb4';
+const expectedSharedBaseHash = '0f3ace8d7d7d0021a4cbaac894a228185e4af2e9e8bf09d2d9bfe50a9b5d41a1';
 const sharedBaseSource = fs.readFileSync(path.join(root, 'src', 'shared', 'bridge-shared-helpers.js'), 'utf8');
 const sharedBaseSignatures = [
   ...extractCalls(sharedBaseSource, 'invoke').map(call => `shared/bridge-shared-helpers.js:invoke:${call}`),

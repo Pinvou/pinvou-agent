@@ -10,7 +10,7 @@ import { QuestionChoiceCard } from '../conversation/QuestionChoiceCard.jsx';
 import {
   buildUserInputAnswers,
   normalizeUserInputQuestions,
-} from '../conversation/user-input-shared.js';
+} from '../../shared/user-input-shared.js';
 import { useShellTaskCancel } from '../chat/shell-task-cancel.js';
 import { extractComputerUseScreenshotPath } from '../computer-use/computer-use-logic.js';
 import { AcShieldCheck, AcSparkles, DiffView, GrepView, ListDirView, OutputError, OutputPre, ReceiptBlock, ShellTextView, ShellView, StockQuoteCard, TODO_TOOLS, TodoView, WeatherCard, isQuietTool, isReceipt, isStockQuoteTool, isWeatherTool, looksDiff, toolSummary, tryParseJson, tryTailJson, unwrapMcpTextEnvelope } from './tool-common.jsx';
@@ -817,7 +817,7 @@ const ToolOutput = ({ item, t }) => {
     // UserInputCard — 🤔 AI 想问你几个问题
     // ==========================================
     // isFreeTextPlaceholderOption / question normalization / answer assembly are shared with the code session's
-    // NativeUserInputCard in conversation/user-input-shared.js.
+    // NativeUserInputCard in shared/user-input-shared.js.
 
     const UserInputCard = ({ item, t }) => {
       // Web 只读会话：呈现为锁定卡并说明去桌面端操作（后端漏斗是权威拦截，

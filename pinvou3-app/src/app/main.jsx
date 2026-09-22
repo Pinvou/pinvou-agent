@@ -4034,12 +4034,9 @@ const NAV_PREFETCH = {
             bs={bs}
             t={t}
             onShowChangelog={() => {
-              // Same settings entry path as the sidebar gear: record the
-              // return view and let navigateFromScheduledRun own the view
-              // transition (exit-scheduled-run-chat included).
-              if (currentView !== 'settings') settingsReturnViewRef.current = currentView;
-              setSettingsInitialSection('update');
-              navigateFromScheduledRun('settings');
+              // Same settings entry path as the sidebar gear (openSettingsSection records the
+              // return view and lets navigateFromScheduledRun own the view transition).
+              openSettingsSection('update');
               setSettingsUpdateFocusTick(v => v + 1);
             }}
           />

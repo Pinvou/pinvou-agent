@@ -1044,10 +1044,14 @@ import memoryOrganizeImage from '../../assets/scheduled/memory-organize.jpg';
         }
         if (editor.repeat === 'hourly') {
           const interval = editor.interval === 1 ? scheduledCopy.repeatOptions.hourly : scheduledCopy.everyHours(editor.interval);
-          // Day restriction shares the weekly branch's wording: join the selected days as "Mon、Tue" and append after the interval.
+          // Day restriction shares the weekly branch's wording: the all-workday set folds to the
+          // localized "workdays" label (mirroring Rust humanize_rrule), other sets join as "Mon、Tue".
           const days = normalizeScheduleDays(editor.days);
+          const isWorkdaySet = days.join(',') === 'MO,TU,WE,TH,FR';
           const dayLabel = days.length
-            ? days.map(day => scheduledCopy.weekdays[WEEKDAY_CODES.indexOf(day)][1]).join('、')
+            ? (isWorkdaySet
+              ? scheduledCopy.repeatOptions.workdays
+              : days.map(day => scheduledCopy.weekdays[WEEKDAY_CODES.indexOf(day)][1]).join('、'))
             : '';
           const label = dayLabel ? `${dayLabel} ${interval}` : interval;
           return editor.hasTimeAnchor ? `${label} · ${scheduledCopy.startsAt(editor.time)}` : label;

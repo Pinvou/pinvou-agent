@@ -343,7 +343,7 @@ function pinvouSharedtauriMain() {
     depsInstallError: null,   // 安装失败原因(stderr 透传/取消/包管理器不可用)
     depsInstallProgress: null, // 安装进度 {package,current,total,detail}(后端 deps:install_progress 事件)
     // 厂商预装本地大模型一键引导:首屏检测结果 + 引导执行态
-    vllmSetup: null,          // {eligible, may_offer_setup, has_packages, engine_state:ready|starting|stopped|failed, ...}
+    vllmSetup: null,          // {eligible, may_offer_setup, has_packages, engine_state:'stopped' in community (sole enum variant; vendor builds may extend), ...}
     vllmBootstrapping: false, // 引导进行中(pkexec + 拉起 + 轮询就绪)
     vllmSetupPhase: null,     // phase: 'authorizing'|'waiting'|'ready' (set locally to 'authorizing' when the flow starts; defensive vendor-edition UI field — the community backend never emits phase events)
     vllmSetupAttempt: 0,      // probe count during the waiting phase (defensive: vendor-edition UI field; the community-edition backend never emits phase events)

@@ -41,19 +41,7 @@ function pinvouSharedtauriSettings() {
 async function loadSettings() { return pinvouSharedtauriSettings().loadSettings(); }
 async function loadSelectedPet() { return pinvouSharedtauriSettings().loadSelectedPet(); }
 async function setSelectedPet(id) { return pinvouSharedtauriSettings().setSelectedPet(id); }
-  async function loadEffectiveModelConfig(sessionId) {
-    const requestedSessionId = arguments.length ? (sessionId || null) : (state.activeSessionId || null);
-    try {
-      const config = await invoke("get_effective_model_config", { sessionId: requestedSessionId });
-      if (requestedSessionId !== (state.activeSessionId || null)) return;
-      state.effectiveModelConfig = config;
-    } catch {
-      // When switching sessions quickly, an older request may return after the new one; never let the old session's config overwrite the current overlay state.
-      if ((state.activeSessionId || null) !== requestedSessionId) return;
-      state.effectiveModelConfig = null;
-    }
-    notify();
-  }
+async function loadEffectiveModelConfig(...args) { return pinvouSharedtauriSettings().loadEffectiveModelConfig.apply(null, args); }
   let settingsWriteQueue = Promise.resolve();
 function enqueueSettingsWrite(write) { return pinvouSharedtauriSettings().enqueueSettingsWrite(write); }
   async function saveSettings(patch) {

@@ -2450,7 +2450,7 @@ function hasStoredCredential(record) {
                 {hasInstallableMissing && (
                   <IOSRow label={usesBundledDependencyInstaller ? settingsCopy.installMissing : t.depGoInstall}>
                     <button type="button"
-                      onClick={() => bridge.available && bridge.dependencies.installDependencies()}
+                      onClick={() => bridge.available && bridge.dependencies.installDependencies?.()}
                       disabled={!bridge.available || busy}
                       className="h-9 px-4 rounded-full bg-[#007AFF] text-white text-[14px] font-semibold disabled:opacity-50"
                     >{installing ? (progressText || t.depInstalling) : t.depInstallBtn}</button>

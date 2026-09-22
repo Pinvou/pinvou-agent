@@ -1963,7 +1963,7 @@ const withUiTimeout = (promise, timeoutMs, fallbackResult) => {
           // 上传插件卸载后进回收站（预置插件直接卸载），提示文案据此区分。
           setAlert({ visible: true, loading: false, title: tool && tool.userUploaded ? storeCopy.movedToRecycleBinQuoted(name) : storeCopy.uninstalledQuoted(name), isInstall: false, isError: false });
           if (selectedTool && selectedTool.backendId === backendId) {
-            setSelectedTool(prev => ({ ...prev, installed: false, authStatus: 'not_installed', authMessage: '' }));
+            setSelectedTool(prev => ({ ...prev, installed: false, authStatus: 'not_installed' }));
           }
           notifyComposerToolsChanged();
         } catch (e) {

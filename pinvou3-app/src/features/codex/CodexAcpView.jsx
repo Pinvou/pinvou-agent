@@ -119,7 +119,7 @@ import {
   restoreConversationScrollPosition,
 } from '../conversation/conversation-model.js';
 import { QuestionChoiceCard } from '../conversation/QuestionChoiceCard.jsx';
-import { buildUserInputAnswers, normalizeUserInputQuestions } from '../conversation/user-input-shared.js';
+import { buildUserInputAnswers, normalizeUserInputQuestions } from '../../shared/user-input-shared.js';
 import {
   PlanLayer,
   ToolCard,

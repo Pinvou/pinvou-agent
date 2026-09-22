@@ -297,7 +297,7 @@ function pinvouSharedweb() {
     // Same-shape desktop-slice stub: install progress events occur only during a desktop one-click install; always null on the web.
     depsInstallProgress: null,
     // 厂商预装本地大模型一键引导:首屏检测结果 + 引导执行态
-    vllmSetup: null,          // {eligible, may_offer_setup, has_packages, engine_state:ready|starting|stopped|failed, ...}
+    vllmSetup: null,          // {eligible, may_offer_setup, has_packages, engine_state:'stopped' in community (sole enum variant; vendor builds may extend), ...}
     vllmBootstrapping: false, // 引导进行中(pkexec + 拉起 + 轮询就绪)
     vllmSetupPhase: null,     // 阶段:'authorizing'|'waiting'|'ready'(引导开始时本地置 'authorizing')
     vllmSetupAttempt: 0,      // waiting 阶段第几次探测(后端报)
@@ -5310,19 +5310,7 @@ function stopMonitorPolling() { return pinvouSharedweb().stopMonitorPolling(); }
 async function loadSettings() { return pinvouSharedweb().loadSettings(); }
 async function loadSelectedPet() { return pinvouSharedweb().loadSelectedPet(); }
 async function setSelectedPet(id) { return pinvouSharedweb().setSelectedPet(id); }
-  async function loadEffectiveModelConfig(sessionId) {
-    const requestedSessionId = arguments.length ? (sessionId || null) : (state.activeSessionId || null);
-    try {
-      const config = await invoke("get_effective_model_config", { sessionId: requestedSessionId });
-      // 快速切会话时，旧请求可能晚于新请求返回；禁止旧会话配置覆盖当前遮罩状态。
-      if ((state.activeSessionId || null) !== requestedSessionId) return;
-      state.effectiveModelConfig = config;
-    } catch {
-      if ((state.activeSessionId || null) !== requestedSessionId) return;
-      state.effectiveModelConfig = null;
-    }
-    notify();
-  }
+async function loadEffectiveModelConfig(...args) { return pinvouSharedweb().loadEffectiveModelConfig.apply(null, args); }
   let settingsWriteQueue = Promise.resolve();
 function enqueueSettingsWrite(write) { return pinvouSharedweb().enqueueSettingsWrite(write); }
   async function saveSettings(patch) {

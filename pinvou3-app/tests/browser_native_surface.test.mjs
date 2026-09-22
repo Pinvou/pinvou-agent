@@ -649,7 +649,9 @@ test('Linux WebDriver safely rebinds with a host marker without injecting remote
     linuxAutomation.indexOf('pub(super) async fn wait_until_ready'),
   );
   assert.match(marker, /BINDING_MARKER_PREFIX/);
-  assert.match(linuxAutomation, /BINDING_MARKER_PREFIX: &str = "about:blank#pinvou-webdriver-bind-"/);
+  // The literal value is owned by the shared platform constant; the local name is an alias of it.
+  assert.match(nativePlatform, /HOST_BLANK_MARKER_WEBDRIVER_BIND_PREFIX: &str =\n\s*"about:blank#pinvou-webdriver-bind-";/);
+  assert.match(linuxAutomation, /BINDING_MARKER_PREFIX: &str = super::HOST_BLANK_MARKER_WEBDRIVER_BIND_PREFIX;/);
   assert.match(
     linuxAutomation,
     /dispatch_guarded_binding_navigation\(\s*webview,\s*&label,\s*authorization,\s*None,\s*move \|webview\|[\s\S]{0,700}webview\.navigate\(marker_url\)/,

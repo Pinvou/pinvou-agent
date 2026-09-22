@@ -429,7 +429,7 @@ try {
   const conversationScroll = readFileSync(path.join(root, 'src', 'features', 'conversation', 'conversation-scroll.js'), 'utf8');
   const questionChoiceCard = readFileSync(path.join(root, 'src', 'features', 'conversation', 'QuestionChoiceCard.jsx'), 'utf8');
   const toolRenderers = readFileSync(path.join(root, 'src', 'features', 'tools', 'tool-renderers.jsx'), 'utf8');
-  const userInputShared = readFileSync(path.join(root, 'src', 'features', 'conversation', 'user-input-shared.js'), 'utf8');
+  const userInputShared = readFileSync(path.join(root, 'src', 'shared', 'user-input-shared.js'), 'utf8');
   // The busy block must clear userError in lockstep with error (R2 L1):
   // when a turn re-runs, a leftover userError card would show the previous
   // turn's "has stopped" wording while the turn claims to be running.
