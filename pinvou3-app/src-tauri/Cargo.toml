@@ -61,6 +61,9 @@ cc = "1"
 # paused clock (#[tokio::test(start_paused = true)]) instead of sleeping the
 # real 2s REBIND_EVICT_GATE_TIMEOUT.
 tokio = { version = "1.49", features = ["test-util"] }
+# computer_use retention test ages a crash-orphaned atomic-write temp past
+# the sweep threshold; pinned to the version already in the lock graph (tar).
+filetime = "0.2.29"
 
 [dependencies]
 pinvou-knowledge = { path = "../../pinvou-knowledge", default-features = false, features = ["client", "discovery"] }
@@ -130,7 +133,7 @@ rustls = { version = "0.23", default-features = false, features = ["aws-lc-rs"] 
 
 # Updater 用：sha256 校验；产物卡封面读 .pptx 里的 thumbnail。
 # 0.11 与 CodeWhale 子模块对齐。digest 的 Output 不实现 LowerHex,统一用 hex_lower 编码
-# (见 src/platform/encoding.rs)。
+# (see src/platform/encoding.rs). computer_use's screenshot audit is content-addressed (SHA-256) and shares this crate.
 sha2 = "0.11"
 # 8.x 与 calamine 传递引入的 zip 8.6.0 收敛为单一版本（消除旧 zip 2.x + 连带传递依赖）。
 # 仅 deflate（读 .pptx / 写技能 zip 包），关默认 feature 去掉 bzip2/lzma/zstd 等。
@@ -190,6 +193,14 @@ base64 = "0.22"
 tempfile = "3"
 age = { version = "=0.12.1", default-features = false }
 
+# Computer Use capability foundation (features/computer_use): screen capture via
+# xcap (0.9.8, reusing its re-exported image 0.25 for PNG encoding/scaling, no direct
+# image dependency anymore), input injection via enigo 0.6 (Result-only,
+# Windows/macOS/X11). Both APIs are fully synchronous with unsafe FFI inside; always
+# construct/use/drop them on computer_use's dedicated worker thread.
+xcap = "0.9.8"
+enigo = "0.6"
+
 # keyring 不再直接依赖 —— 凭证走底座 codewhale-secrets(它内部按平台引 keyring)。
 # macOS 桌伴窗口策略补丁(pet_window.rs):
 # - NSWindowCollectionBehavior 跨 Space/全屏保持可见(TAO 只设 level,没设 collectionBehavior)
@@ -238,9 +249,36 @@ objc2-speech = { version = "0.3", default-features = false, features = [
     "objc2-avf-audio",
     "objc2-core-media",
 ] }
+# Computer Use accessibility tree (features/computer_use): macOS ApplicationServices
+# (AXUIElement / HIServices). Version aligned with the objc2 0.6 family.
+objc2-application-services = "0.3"
+# Computer Use capture-permission preflight (features/computer_use): CGPreflight/CGRequestScreenCaptureAccess.
+# Already in the lockfile (0.3.2, an objc2-family transitive dependency); here it is only
+# promoted to a direct dependency, adding no new crate.
+objc2-core-graphics = "0.3"
+# Computer Use screen capture (features/computer_use): ScreenCaptureKit static screenshots
+# (SCScreenshotManager::captureImageInRect, macOS 15.2+). CGWindowListCreateImage
+# (xcap's macOS path) is obsoleted in the macOS 15 SDK and triggers the periodic
+# screen-recording re-confirmation on Sequoia+; below macOS 15.2 xcap's CGWindowList path
+# is still the fallback (see platform/screen_capture_kit.rs). Version aligned with the objc2 0.6 family.
+# Computer Use screen capture (features/computer_use): types such as CGRect/CGSize/CFRetained
+# come from objc2-core-foundation (the coordinate arguments of SCK calls and the CFData smart pointer). Already in the
+# lockfile (objc2-family transitive dependencies); here they are only promoted to direct dependencies, adding no new crates.
+objc2-core-foundation = "0.3"
+objc2-screen-capture-kit = { version = "0.3", default-features = false, features = [
+    "std",
+    "SCScreenshotManager",
+    "block2",
+    "objc2-core-foundation",
+    "objc2-core-graphics",
+] }
 
 [target.'cfg(windows)'.dependencies]
-windows-sys = { version = "0.61", features = ["Wdk_Storage_FileSystem", "Win32_Foundation", "Win32_Globalization", "Win32_Storage_FileSystem", "Win32_System_IO", "Win32_System_Performance", "Win32_System_Registry", "Win32_System_SystemInformation", "Win32_System_Threading", "Win32_UI_Input_KeyboardAndMouse", "Win32_UI_WindowsAndMessaging"] }
+# Win32_Graphics_Gdi: the in-repo monitor capture (computer_use) BitBlts the
+# desktop DC directly — xcap 0.9.8's capture_monitor leaks one GDI bitmap per
+# call (DeleteObject runs while the bitmap is still selected into the memory
+# DC) and its selection is never restored.
+windows-sys = { version = "0.61", features = ["Wdk_Storage_FileSystem", "Win32_Foundation", "Win32_Globalization", "Win32_Graphics_Gdi", "Win32_Storage_FileSystem", "Win32_System_IO", "Win32_System_Performance", "Win32_System_Registry", "Win32_System_SystemInformation", "Win32_System_Threading", "Win32_UI_Input_KeyboardAndMouse", "Win32_UI_WindowsAndMessaging"] }
 webview2-com = "0.38.2"
 # Native Outlook .msg parsing (ingest_email.rs; same gating the retired
 # os::msg_native_supported() predicate provided). Windows-only compile:
@@ -250,6 +288,8 @@ msg_parser = "0.3.0"
 # windows-core——不必拉入完整 windows crate。windows-core 已由 webview2-com 传递引入,
 # 此处显式声明只为把 app 直接依赖收敛到更轻的 windows-core(windows::core::* 即其 re-export)。
 windows-core = "0.61"
+# Computer Use accessibility tree (features/computer_use): Windows UI Automation.
+uiautomation = "0.25"
 
 # Process liveness probe using kill(pid, 0) semantics; see process_alive in
 # platform/os/posix.rs. Browser watch uses it to guard stale port-file deletion.
@@ -259,6 +299,16 @@ libc = "0.2"
 # Linux webview(webkit2gtk)默认拒绝 getUserMedia → 语音输入点麦克风被拒。
 # 连 permission-request 信号放行 UserMedia(麦克风)请求。版本对齐 wry 0.55 用的 2.0.x。
 [target.'cfg(target_os = "linux")'.dependencies]
+# Wayland same-session screen capture (features/computer_use/platform/wayland_capture, a
+# Linux-only module): the ScreenCast stream of the portal RemoteDesktop session takes frames
+# by connecting straight to PipeWire via the OpenPipeWireRemote fd. The version matches
+# xcap's transitive dependency. Lives in the Linux target section — macOS/Windows do not
+# compile this module. Linux builds need the PipeWire system headers: libspa-sys's build
+# script probes them via system-deps, so libpipewire-0.3-dev (plus libdrm-dev/libgbm-dev/
+# libegl-dev) must be installed or the build fails outright; the pr-check Linux jobs install
+# these in their apt steps.
+pipewire = "0.10"
+
 # Tauri 的 show/set_focus 是两条独立主循环消息；隐藏启动窗口在 release 下可能
 # 尚未完成 map 就执行 present。直接在 GTK 主线程原子 show/deiconify/present。
 gtk = "0.18"
@@ -274,6 +324,11 @@ x11 = { version = "2.21", features = ["xlib"] }
 # This is already a transitive WebKit dependency; declaring it directly keeps
 # the platform driver on the public typed API instead of reaching into FFI.
 javascriptcore = { package = "javascriptcore-rs", version = "1.1" }
+# Computer Use accessibility tree (features/computer_use): Linux AT-SPI (D-Bus).
+atspi = "0.30"
+# Computer Use Wayland input injection (features/computer_use): xdg-desktop-portal
+# RemoteDesktop (D-Bus). The feature set matches atspi, sharing the same zbus compilation.
+zbus = { version = "5.5", default-features = false, features = ["async-io"] }
 # Tauri's unstable Wry plugin API lets the browser feature pre-register its
 # dedicated WebKit context with automation enabled. Keep this exact version
 # aligned with Tauri's resolved runtime so the unstable runtime API cannot drift.

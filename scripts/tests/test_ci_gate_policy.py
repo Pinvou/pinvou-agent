@@ -661,6 +661,13 @@ class CiGatePolicyTests(unittest.TestCase):
         regression = windows_rust_test.split(
             "- name: Windows 原子替换状态机回归", maxsplit=1
         )[1]
+        # Cut at the next job boundary: the round-17 macos-rust-check leg
+        # legitimately runs `cargo test` (computer_use unit tests) and sits
+        # between the regression step and the previous extraction boundary —
+        # this assertion only guards the Windows regression against
+        # re-invoking cargo, which would re-link the exe and lose the
+        # embedded Common-Controls manifest.
+        regression = regression.split("\n  macos-rust-check:", maxsplit=1)[0]
         self.assertIn('"$test_exe" "$filter" --test-threads=1', regression)
         self.assertNotIn("cargo test", regression)
         self.assertIn(
@@ -675,6 +682,22 @@ class CiGatePolicyTests(unittest.TestCase):
         self.assertIn("- windows-rust-test", required_gate)
         self.assertIn("WINDOWS_RUST_RESULT", required_gate)
         self.assertIn('"windows-rust-test:$WINDOWS_RUST_RESULT"', required_gate)
+
+    def test_macos_rust_check_is_wired_into_required_gate(self):
+        # Review finding: the new native macOS leg must satisfy the same
+        # three-wiring rule as windows-rust-test (needs entry, env backfill,
+        # summary-loop entry) -- otherwise removing the job keeps CI green
+        # while the gate silently degrades.
+        job_body = self.pr_workflow.split("\n  macos-rust-check:", maxsplit=1)[1]
+        job = re.split(r"\n  [a-zA-Z]", job_body, maxsplit=1)[0]
+        self.assertIn("needs: changes", job)
+        self.assertIn("MACOS_RUST_CHECK_RESULT", self.pr_workflow)
+        required_gate = self.pr_workflow.split(
+            "\n  required-gate:", maxsplit=1
+        )[1]
+        self.assertIn("- macos-rust-check", required_gate)
+        self.assertIn("MACOS_RUST_CHECK_RESULT", required_gate)
+        self.assertIn('"macos-rust-check:$MACOS_RUST_CHECK_RESULT"', required_gate)
 
     def test_windows_browser_wrapper_lifecycle_runs_in_required_native_job(self):
         changes = self.pr_workflow.split("\n  changes:", maxsplit=1)[1].split(

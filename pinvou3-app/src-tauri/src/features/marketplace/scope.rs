@@ -257,9 +257,15 @@ fn merge_ids_into_scope(file: &mut DisabledBundlesFile, key: &str, ids: Vec<Stri
     }
 }
 
-/// 写完整文件（原子替换，与旧文件同范式）。写失败上抛：开关/可见性是用户治理
-/// 状态，「静默丢写」会让调用方在半应用状态上继续走（前端按成功提示）。内部
-/// best-effort 调用方（读路径迁移、卸载清理、默认策略同步）自行降级为日志。
+/// Writes the full file (atomic replace, same pattern as the legacy writer).
+/// Write failures propagate: toggles/visibility are user governance state, and
+/// a silently lost write would let callers continue on a half-applied state
+/// (the frontend reports success). Internal best-effort callers degrade to
+/// logging themselves: read-path migration, uninstall cleanup (residue direction
+/// fail-closed), and DenyAll install sync. Note that the DenyAll sync degradation
+/// is consent-gate fail-open (a write failure = a newly installed package becomes
+/// available by default in an initialized DenyAll scope) — a known transitional
+/// concession, not a harmless degradation.
 fn save_disabled_bundles_file(file: &DisabledBundlesFile) -> Result<(), String> {
     let json = serde_json::to_string(file)
         .map_err(|error| format!("serialize disabled_bundles.json failed: {error}"))?;
@@ -487,19 +493,20 @@ pub fn project_skills_enabled() -> bool {
     load_disabled_bundles_file().project_skills_enabled
 }
 
-/// 写项目级 skills 开关。落盘后由调用方重写在线会话组合目录。
-pub fn set_project_skills_enabled(enabled: bool) {
+/// Writes the project-level skills toggle. After persisting, the caller rewrites
+/// the online session composed catalogs. Write failures propagate unchanged
+/// (user governance state must not be silently lost — same principle as the
+/// toggle/visibility writes).
+pub fn set_project_skills_enabled(enabled: bool) -> Result<(), String> {
     let _guard = DISABLED_BUNDLES_FILE_LOCK
         .lock()
         .unwrap_or_else(|poisoned| poisoned.into_inner());
     let mut file = load_disabled_bundles_file_locked();
     if file.project_skills_enabled == enabled {
-        return;
+        return Ok(());
     }
     file.project_skills_enabled = enabled;
-    if let Err(error) = save_disabled_bundles_file(&file) {
-        eprintln!("[scope] write disabled_bundles.json failed: {error}");
-    }
+    save_disabled_bundles_file(&file)
 }
 
 #[cfg(test)]
@@ -713,9 +720,9 @@ mod tests {
     fn project_skills_roundtrip() {
         with_temp_home("pinvou3-scope", || {
             assert!(!project_skills_enabled(), "项目技能默认关");
-            set_project_skills_enabled(true);
+            set_project_skills_enabled(true).unwrap();
             assert!(project_skills_enabled());
-            set_project_skills_enabled(false);
+            set_project_skills_enabled(false).unwrap();
             assert!(!project_skills_enabled());
         });
     }

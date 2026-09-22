@@ -567,8 +567,9 @@ pub(super) fn assistant_suggests_delivery_complete(user: &str, assistant: &str) 
 /// `label` ("review" / "organize") only feeds the error-context strings. A
 /// `finish_reason: "length"` response is reported as truncation instead of
 /// surfacing downstream as a confusing JSON parse error. The Anthropic branch
-/// cannot do this: `post_anthropic_messages` does not expose stop_reason, so a
-/// truncated response there still fails as a parse error.
+/// keeps its pre-fix behavior (a truncated response still fails as a parse
+/// error) and only logs stop_reason, now that post_anthropic_messages exposes
+/// it — making it an error here would change memory outcomes, out of scope.
 pub(super) async fn send_memory_llm_request(
     bridge: &(impl MemoryReviewModel + ?Sized),
     label: &str,
@@ -604,7 +605,7 @@ pub(super) async fn send_memory_llm_request(
     // The official Anthropic endpoint uses a native Messages protocol direct
     // call (x-api-key auth, standalone system field, no response_format).
     if preset == ModelPreset::Anthropic {
-        return crate::core::model_endpoint::post_anthropic_messages(
+        let completion = crate::core::model_endpoint::post_anthropic_messages(
             &client,
             &base_url,
             &bridge.memory_api_key(),
@@ -613,7 +614,14 @@ pub(super) async fn send_memory_llm_request(
             user_content,
             max_tokens,
         )
-        .await;
+        .await?;
+        if completion.stop_reason.as_deref() == Some("max_tokens") {
+            log::debug!(
+                "[memory {label}] anthropic response truncated (stop_reason=max_tokens); \
+                 kept as-is, it will surface through the JSON parse path"
+            );
+        }
+        return Ok(completion.text);
     }
     let mut body = json!({
         "model": model_name,

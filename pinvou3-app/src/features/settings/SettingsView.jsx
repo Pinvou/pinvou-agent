@@ -4,7 +4,7 @@ import { Toggle } from '../../components/Toggle.jsx';
 import { VllmSetupProgress } from '../../components/VllmSetupProgress.jsx';
 import PetSettingsSection from '../pet/PetSettingsSection.jsx';
 import { DEFAULT_PET_ID } from '../pet/pet-registry.js';
-import { bridge, isLocalModel } from '../../hooks/useBridge.js';
+import { bridge, isLocalModel, useBridgeState } from '../../hooks/useBridge.js';
 import { can, isWeb } from '../../shared/platform.js';
 import qwenIcon from '../../brand-icons/qwen.svg';
 import {
@@ -1570,6 +1570,83 @@ const formatMemoryTime = (item, copy) => {
         onCancel={() => setMemoryDeleteConfirm(null)}
       />
     );
+    // Post-completion grace window (ms) for the settings toggle's synchronous
+    // single-flight guard: it swallows the trailing click of a double-click,
+    // whose second press can land before React commits the disabled state.
+    // Mirrors DOUBLE_CLICK_GUARD_MS in features/computer-use/ComputerUseConsent.jsx.
+    const COMPUTER_USE_TOGGLE_GUARD_MS = 200;
+    /**
+     * Computer-use settings row as a self-contained component so the failed
+     * write can surface an inline error (the old code did `catch(() => {})`,
+     * so a failed enable looked like the switch bouncing back with no
+     * explanation). Also consumes the status projection's platform_supported:
+     * on a platform without a backend the toggle is disabled instead of
+     * letting users enable something that cannot work.
+     *
+     * Lives at module scope (stable component identity across parent
+     * renders). The switch disables itself while a write is in flight so
+     * rapid clicks cannot interleave contradictory set_enabled calls
+     * (matching the consent dialog's single-flight standard).
+     */
+    const ComputerUseSettingSection = ({ t }) => {
+      const slice = useBridgeState(['computerUse']);
+      const computerUse = (slice && slice.computerUse) || {};
+      const [actionError, setActionError] = useState('');
+      const [pending, setPending] = useState(false);
+      // Synchronous single-flight (review finding): the disabled attribute
+      // only updates one render after the click, so a double-click could fire
+      // two concurrent set_enabled calls. This ref is checked inside the
+      // event handler, before React commits anything — same pattern as the
+      // consent dialog's useConsentAction flightRef.
+      const flightRef = useRef({ busy: false, settledAt: 0 });
+      const unsupported = computerUse.platformSupported === false;
+      // An emergency stop latches `stopped` without touching the toggle: the
+      // switch still reads ON but every consent surface is dead until the
+      // user toggles off and back on (set_enabled's re-enable is the only
+      // resume path). Without this hint the stop state is invisible in
+      // settings — the safety loop's exit must be discoverable.
+      const stopped = !!computerUse.stopped;
+      return (
+        <IOSSection title={t.uiComputerUse.settingsSection}>
+          <IOSRow
+            label={t.uiComputerUse.settingsToggle}
+            desc={
+              unsupported
+                ? t.uiComputerUse.platformUnsupportedHint
+                : (actionError ||
+                  (stopped ? t.uiComputerUse.settingsStoppedHint : t.uiComputerUse.settingsHint))
+            }
+          >
+            <IOSSwitch
+              checked={!!computerUse.enabled}
+              disabled={unsupported || pending}
+              onChange={(value) => {
+                const flight = flightRef.current;
+                if (flight.busy || Date.now() - flight.settledAt < COMPUTER_USE_TOGGLE_GUARD_MS) return;
+                if (!bridge.available || !bridge.computerUse) return;
+                flight.busy = true;
+                setActionError('');
+                setPending(true);
+                bridge.computerUse.setEnabled(value)
+                  .then(() => {
+                    // Only a success arms the cooldown guard: a failure
+                    // leaves the switch immediately clickable to retry (the
+                    // consent dialog states this rule explicitly; match it).
+                    flight.settledAt = Date.now();
+                  })
+                  .catch((error) => {
+                    setActionError(t.uiComputerUse.actionFailed(String(error && error.message ? error.message : error)));
+                  })
+                  .finally(() => {
+                    flight.busy = false;
+                    setPending(false);
+                  });
+              }}
+            />
+          </IOSRow>
+        </IOSSection>
+      );
+    };
 
     // eslint-disable-next-line sonarjs/cognitive-complexity -- settings page aggregates many form branches; splitting needs a dedicated design; tracked via this suppression for now
     const SettingsView = ({ activeTheme, colorScheme, onColorSchemeChange, language, setLanguage, superPerm, setSuperPerm, taskCompletedNotif, setTaskCompletedNotif, searchProvider, setSearchProvider, enabledSearchProviders, onAddSearchProvider, onDeleteSearchProvider, setSearchApiKey, savedModels, activeModelId, onSaveModel, onDeleteModel, onSetActiveModel, onSaveSearchConfig, onConfirmSearchConfig, onMemoryEnabledChange, onPetEnabledChange, bs, t, sidebarDateGrouping = true, onSidebarDateGroupingChange, updateFocusTick, onCloseSettings, initialSection = 'general' }) => {
@@ -1585,6 +1662,7 @@ const formatMemoryTime = (item, copy) => {
       const [modelTab, setModelTab] = useState(initialSection === 'providers' ? 'acp' : 'models');
       const canUsePet = can('pet');
       const canUseSuperPermission = can('superPermission');
+      const canUseComputerUse = can('computerUse');
       const canUpdateApp = can('appUpdate');
       const canInstallDependencies = can('dependencyInstall');
       const canConfigureDesktopNotifications = can('desktopNotifications');
@@ -1641,6 +1719,16 @@ const formatMemoryTime = (item, copy) => {
           setActiveSection(initialSection);
         }
       }, [initialSection]);
+      // Cold-start status read: until a session exists nothing else polls
+      // computer-use status, so the platform_supported grey-out would never
+      // learn the platform is unsupported. One session-less refreshStatus on
+      // mount fills enabled/platform_supported; with a session active it
+      // degenerates to the ordinary status read.
+      useEffect(() => {
+        if (!canUseComputerUse || !bridge.available || !bridge.computerUse) return;
+        bridge.computerUse.refreshStatus(bs && bs.activeSessionId).catch(() => {});
+        // eslint-disable-next-line react-hooks/exhaustive-deps -- mount-only: the read is idempotent and must not refire on every bs change
+      }, []);
       useEffect(() => {
         if (!feedbackNotice) return;
         const timer = window.setTimeout(() => setFeedbackNotice(''), 2600);
@@ -2382,6 +2470,7 @@ const formatMemoryTime = (item, copy) => {
                 </IOSRow>
               </IOSSection>
             )}
+            {canUseComputerUse && <ComputerUseSettingSection t={t} />}
             <div id="settings-dependencies">
               <IOSSection
                 title={t.depCheckTitle}
