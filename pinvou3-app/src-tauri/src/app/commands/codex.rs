@@ -704,6 +704,13 @@ fn redact_session_metadata_for_web_in_place(metadata: &mut SessionMetadata) {
     metadata.workspace = std::path::PathBuf::from(redact_workspace_path_for_web(
         &metadata.workspace.to_string_lossy(),
     ));
+    // The foundation's attached-roots field (workspace_roots gitlink) is
+    // host-absolute paths too: degrade each root at the same choke point, or
+    // the web boundary leaks the host directory structure through the field
+    // the redaction predated (review #484 round-8 m12).
+    for root in metadata.workspace_roots.iter_mut() {
+        *root = std::path::PathBuf::from(redact_workspace_path_for_web(&root.to_string_lossy()));
+    }
 }
 
 fn redact_codex_session_list_item_for_web(item: &mut CodexAcpSessionListItem) {
