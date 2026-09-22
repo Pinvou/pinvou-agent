@@ -1675,11 +1675,10 @@ impl AppEngine {
         // above is driven directly by that boolean), so dispatch on roster
         // presence instead of re-asserting the same invariant twice between
         // the bool and the Option.
-        // The config build reads the cross-process bundle lock twice per
+        // The config build consults the scope unavailable sets twice per
         // session (scope_deny_ruleset's CLI-binary and skill-script deny
-        // rules both consult the scope unavailable sets); keep it off the
-        // async worker like every other lock-taking path — a wedged CLI
-        // process must not freeze the spawn.
+        // rules) — blocking disk I/O via the marketplace readers; keep it
+        // off the async worker like every other blocking path.
         let mut engine_config = {
             let bridge = bridge.clone();
             let session_id = session_id.to_string();
@@ -1793,9 +1792,9 @@ impl AppEngine {
     /// production builds have no caller, hence the allow.
     #[allow(dead_code)]
     pub async fn spawn_headless(bridge: Pinvou3Bridge) -> Result<Self> {
-        // The config build + ruleset consult read the cross-process bundle
-        // lock (scope_deny_ruleset's CLI-binary and skill-script deny rules);
-        // keep them off the async worker like every other lock-taking path,
+        // The config build + ruleset consult are blocking disk I/O via the
+        // marketplace readers (scope_deny_ruleset's CLI-binary and
+        // skill-script deny rules); keep them off the async worker,
         // matching spawn_for_session.
         let mut engine_config = {
             let bridge = bridge.clone();

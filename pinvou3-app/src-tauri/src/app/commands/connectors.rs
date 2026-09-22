@@ -39,9 +39,9 @@ pub async fn set_disabled_connectors(
 #[tauri::command]
 pub async fn get_disabled_connectors(scope: Option<String>) -> Result<Vec<String>, String> {
     let scope = parse_connector_scope(scope.as_deref())?;
-    // The read takes the cross-process bundle lock, which can block on the
-    // desktop/CLI two-process pair; keep it off the async worker like the
-    // neighboring writers.
+    // The read does blocking disk I/O (installed-registry read plus a
+    // possible DenyAll fallback expansion scan); keep it off the async
+    // worker like the neighboring writers.
     tokio::task::spawn_blocking(move || {
         crate::features::marketplace::load_disabled_bundles_for(scope)
     })
@@ -74,7 +74,7 @@ pub async fn set_bundle_visibility(
 #[tauri::command]
 pub async fn get_bundle_visibility(scope: Option<String>) -> Result<Vec<String>, String> {
     let scope = parse_connector_scope(scope.as_deref())?;
-    // Same cross-process bundle lock as the writers; stay off the worker.
+    // Blocking disk read; stay off the worker.
     tokio::task::spawn_blocking(move || {
         crate::features::marketplace::load_hidden_bundles_for(scope)
     })
@@ -113,7 +113,7 @@ pub async fn set_project_skills_enabled(
 /// 项目级 skills 开关状态（默认关）。
 #[tauri::command]
 pub async fn get_project_skills_enabled() -> Result<bool, String> {
-    // Same cross-process bundle lock as the writers; stay off the worker.
+    // Blocking disk read; stay off the worker.
     tokio::task::spawn_blocking(crate::features::marketplace::scope::project_skills_enabled)
         .await
         .map_err(|e| format!("get_project_skills_enabled join: {e}"))

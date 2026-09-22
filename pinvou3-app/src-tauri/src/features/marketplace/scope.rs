@@ -18,7 +18,7 @@
 
 use std::path::PathBuf;
 use std::sync::Mutex;
-use std::sync::atomic::{AtomicU8, Ordering};
+use std::sync::atomic::{AtomicBool, Ordering};
 
 use crate::core::session_mode::{PackDefaultPolicy, SessionMode};
 use crate::features::marketplace::bundle::{builtin_cli_bundle_ids, skill_owner_package};
@@ -75,7 +75,7 @@ fn with_disabled_bundles_lock<T>(f: impl FnOnce() -> T) -> Result<T, String> {
     let _guard = DISABLED_BUNDLES_FILE_LOCK
         .lock()
         .unwrap_or_else(|poisoned| poisoned.into_inner());
-    attempt_cross_process_lock(f).map_err(|(error, _unrun)| error)
+    attempt_cross_process_lock(f)
 }
 
 /// Writer variant of [`with_disabled_bundles_lock`] for closures that can
@@ -87,56 +87,38 @@ fn with_disabled_bundles_writer<T>(f: impl FnOnce() -> Result<T, String>) -> Res
     with_disabled_bundles_lock(f).and_then(std::convert::identity)
 }
 
-/// One-shot flags for the degraded read warnings (bit 0: cross-process lock
-/// unavailable; bit 1: corrupt data file defaulted to empty). Gating reads
-/// run on every prompt and tool listing, so an unbounded per-read `eprintln!`
-/// would spam stderr and stall the calling thread on exactly the degraded
-/// machines these warnings describe.
-static DEGRADED_READ_WARNED: AtomicU8 = AtomicU8::new(0);
+/// One-shot flag for the corrupt-read warning. Gating reads run on every
+/// prompt and tool listing, so an unbounded per-read `eprintln!` would spam
+/// stderr and stall the calling thread on exactly the degraded machines this
+/// warning describes.
+static CORRUPT_READ_WARNED: AtomicBool = AtomicBool::new(false);
 
-fn warn_degraded_read_once(bit: u8, message: &str) {
-    if DEGRADED_READ_WARNED.fetch_or(bit, Ordering::Relaxed) & bit == 0 {
+fn warn_corrupt_read_once(message: &str) {
+    if !CORRUPT_READ_WARNED.swap(true, Ordering::Relaxed) {
         eprintln!("{message}");
     }
 }
 
-/// Read variant of [`with_disabled_bundles_lock`]: same two locks, but an
-/// unavailable cross-process lock degrades to in-process-only serialization
-/// instead of failing the read. A read cannot corrupt the file, and gating
-/// reads run on every prompt/tool listing — refusing them would break the
-/// GUI on exactly the degraded machines the lock failure describes. Writers
-/// must not use this wrapper: they refuse (see `with_disabled_bundles_lock`).
-/// The closure handed to this wrapper must be persistence-free: on the
-/// degraded path it runs without the cross-process lock, so any save it
-/// performed could clobber a concurrent lock-holding writer's consent state
-/// (exactly the lost update the flock exists to prevent). The read entry
-/// point therefore pairs with [`load_disabled_bundles_file_readonly_locked`].
+/// Read section of the consent file: in-process serialization only. Reads are
+/// persistence-free (they pair with
+/// [`load_disabled_bundles_file_readonly_locked`]) and writers replace the
+/// whole file atomically, so a reader always observes one complete version —
+/// either the pre-write or the post-write file — without any cross-process
+/// coordination. That is deliberate: gating reads run on every prompt, tool
+/// listing and the per-turn send path, and the writers' flock blocks without
+/// a timeout, so taking it here would let a stalled foreign process freeze
+/// every turn submission. Writers must not use this wrapper: they refuse
+/// without the flock (see `with_disabled_bundles_lock`).
 fn with_disabled_bundles_lock_read<T>(f: impl FnOnce() -> T) -> T {
     let _guard = DISABLED_BUNDLES_FILE_LOCK
         .lock()
         .unwrap_or_else(|poisoned| poisoned.into_inner());
-    match attempt_cross_process_lock(f) {
-        Ok(value) => value,
-        Err((error, f)) => {
-            warn_degraded_read_once(
-                1,
-                &format!(
-                    "[marketplace] {error}; proceeding with in-process locking only \
-                 (read-only path)"
-                ),
-            );
-            // The attempt hands the closure back unrun, so the degraded
-            // fallback executes it exactly once.
-            f()
-        }
-    }
+    f()
 }
 
-/// Lock-acquisition half shared by both wrappers; the caller must already
-/// hold [`DISABLED_BUNDLES_FILE_LOCK`]. `f()` runs exactly once on `Ok` and
-/// never on `Err` — on refusal the closure is handed back unrun so the
-/// degraded read path can still execute it.
-fn attempt_cross_process_lock<T, F: FnOnce() -> T>(f: F) -> Result<T, (String, F)> {
+/// Lock-acquisition half of the writer path; the caller must already hold
+/// [`DISABLED_BUNDLES_FILE_LOCK`].
+fn attempt_cross_process_lock<T>(f: impl FnOnce() -> T) -> Result<T, String> {
     let lock_path = paths::pinvou3_home().join("disabled_bundles.lock");
     // The first write into a fresh PINVOU3_HOME happens before any other
     // writer has created the directory: create the parent first, otherwise
@@ -145,12 +127,9 @@ fn attempt_cross_process_lock<T, F: FnOnce() -> T>(f: F) -> Result<T, (String, F
     // nothing sensitive, so private-permission hardening is not pursued.
     if let Some(parent) = lock_path.parent() {
         if let Err(error) = std::fs::create_dir_all(parent) {
-            return Err((
-                format!(
-                    "[marketplace] create {}: {error}; cross-process lock unavailable",
-                    parent.display()
-                ),
-                f,
+            return Err(format!(
+                "[marketplace] create {}: {error}; cross-process lock unavailable",
+                parent.display()
             ));
         }
     }
@@ -163,13 +142,10 @@ fn attempt_cross_process_lock<T, F: FnOnce() -> T>(f: F) -> Result<T, (String, F
     {
         Ok(file) => file,
         Err(error) => {
-            return Err((
-                format!(
-                    "[marketplace] open cross-process lock {}: {error}; cross-process \
-                     lock unavailable",
-                    lock_path.display()
-                ),
-                f,
+            return Err(format!(
+                "[marketplace] open cross-process lock {}: {error}; cross-process \
+                 lock unavailable",
+                lock_path.display()
             ));
         }
     };
@@ -187,13 +163,10 @@ fn attempt_cross_process_lock<T, F: FnOnce() -> T>(f: F) -> Result<T, (String, F
                 if error.kind() == std::io::ErrorKind::Interrupted {
                     continue;
                 }
-                return Err((
-                    format!(
-                        "[marketplace] acquire cross-process lock {}: {error}; \
-                         cross-process lock unavailable",
-                        lock_path.display()
-                    ),
-                    f,
+                return Err(format!(
+                    "[marketplace] acquire cross-process lock {}: {error}; \
+                     cross-process lock unavailable",
+                    lock_path.display()
                 ));
             }
         }
@@ -201,20 +174,20 @@ fn attempt_cross_process_lock<T, F: FnOnce() -> T>(f: F) -> Result<T, (String, F
     Ok(f())
 }
 
-/// Reads the whole file under both locks. The read path that can trigger
-/// "load-then-migrate" must serialize with lock-holding writers through this
-/// entry point (same race shape as the old two-file #287 bug), and on the
-/// degraded path it must not persist anything — see
-/// [`load_disabled_bundles_file_readonly_locked`].
+/// Reads the whole file under the in-process read section. Reads never
+/// persist anything — a missing file's legacy merge and `skill:` prefix
+/// stripping stay in memory — see
+/// [`load_disabled_bundles_file_readonly_locked`]. Writers use
+/// [`load_disabled_bundles_file_locked`] under the fail-closed flock.
 pub(crate) fn load_disabled_bundles_file() -> DisabledBundlesFile {
     with_disabled_bundles_lock_read(load_disabled_bundles_file_readonly_locked)
 }
 
-/// Locked read implementation used by the degraded path: memory-only. A
-/// missing file merges the two legacy files in memory without saving the
-/// migration (a concurrent lock-holding writer owns the canonical file); a
-/// present file is parsed and `skill:` prefix residuals are stripped in
-/// memory only (fresh writers never produce them anymore). Writers must use
+/// Locked read implementation: memory-only. A missing file merges the two
+/// legacy files in memory without saving the migration (the canonical file
+/// belongs to the lock-holding writers); a present file is parsed and
+/// `skill:` prefix residuals are stripped in memory only (fresh writers never
+/// produce them anymore). Writers must use
 /// [`load_disabled_bundles_file_locked`], which persists migration and
 /// normalization while holding the cross-process lock.
 fn load_disabled_bundles_file_readonly_locked() -> DisabledBundlesFile {
@@ -226,17 +199,14 @@ fn load_disabled_bundles_file_readonly_locked() -> DisabledBundlesFile {
     let mut file: DisabledBundlesFile = match serde_json::from_str(&content) {
         Ok(file) => file,
         Err(error) => {
-            // Reads must never write (the degraded path would clobber a
-            // lock-holding writer), so the corrupt file cannot be quarantined
-            // here — degrade to the default loudly, once per process.
-            warn_degraded_read_once(
-                2,
-                &format!(
-                    "[marketplace] {} is corrupt ({error}); proceeding with the default \
+            // Reads must never write, so the corrupt file cannot be
+            // quarantined here — degrade to the default loudly, once per
+            // process.
+            warn_corrupt_read_once(&format!(
+                "[marketplace] {} is corrupt ({error}); proceeding with the default \
                      consent state until a writer quarantines it",
-                    path.display()
-                ),
-            );
+                path.display()
+            ));
             Default::default()
         }
     };
@@ -701,10 +671,10 @@ pub fn save_hidden_bundles_for(scope: ConnectorScope, ids: &[String]) -> Result<
 }
 
 /// 该 scope 对底座「不可用」的包 id 并集 = 开关关（disabled）+ 不可见（hidden）。
-/// 物化/工具白名单按此并集排除，两套门控对模型都是「调不到」。单次持锁读出
-/// 两套集合（同一文件快照）：每次并集解析只取一次锁、只解析一次文件，也不会
-/// 混读两个时刻的 disabled/hidden（同一次刷新内多次调用之间的跨调用快照窗口
-/// 仍在，由各调用方自行取舍）。
+/// 物化/工具白名单按此并集排除，两套门控对模型都是「调不到」。单次读出两套集合
+/// （同一文件快照）：每次并集解析只读一次文件、只解析一次，也不会混读两个时刻的
+/// disabled/hidden（同一次刷新内多次调用之间的跨调用快照窗口仍在，由各调用方自行
+/// 取舍）。
 pub fn unavailable_bundles_for(scope: ConnectorScope) -> Vec<String> {
     let file = load_disabled_bundles_file();
     let mut ids = resolve_scope_disabled_ids(&file, scope);
@@ -1107,14 +1077,13 @@ mod tests {
         let _ = std::fs::remove_file(&base);
     }
 
-    /// The degraded read must be persistence-free: when the cross-process
-    /// lock is unavailable (here: the lock path is a directory, so opening
-    /// it fails) the read still returns the effective view — legacy entries
-    /// merged in memory — but must not save the migration or any
-    /// normalization, because it would run without the flock and could
-    /// clobber a concurrent lock-holding writer's consent state.
+    /// Reads are persistence-free: the legacy migration merge happens in
+    /// memory only, so a read over the legacy two-file layout must surface
+    /// the entries while leaving the canonical file uncreated — the canonical
+    /// file belongs to the lock-holding writers, and a reader writing it
+    /// could clobber a concurrent writer's consent state.
     #[test]
-    fn degraded_read_never_persists_the_migration() {
+    fn read_never_persists_the_legacy_migration() {
         with_temp_home("pinvou3-scope", || {
             // Seed the legacy two-file layout so an in-memory migration has
             // something to merge (the canonical file stays absent).
@@ -1123,18 +1092,15 @@ mod tests {
                 serde_json::to_string(&vec!["weather".to_string()]).unwrap(),
             )
             .unwrap();
-            // Make the cross-process lock unopenable: a directory where the
-            // lock file should be.
-            std::fs::create_dir(paths::pinvou3_home().join("disabled_bundles.lock")).unwrap();
 
             let loaded = load_disabled_bundles_for(ConnectorScope::Plain);
             assert!(
                 loaded.contains(&"weather".to_string()),
-                "the degraded read must still surface the legacy entries"
+                "the read must still surface the legacy entries"
             );
             assert!(
                 !disabled_bundles_path().exists(),
-                "the degraded read must not persist the migrated canonical file"
+                "the read must not persist the migrated canonical file"
             );
         });
     }
@@ -1426,40 +1392,53 @@ mod tests {
         });
     }
 
-    /// 读路径的「读到即迁移落盘」必须取 `DISABLED_BUNDLES_FILE_LOCK` 与持锁写方
-    /// 串行：持锁期间并发 load（磁盘为旧连接器文件、必然触发迁移落盘）不得先行落盘。
+    /// Reads must never take the writers' cross-process flock: the flock
+    /// blocks without a timeout, and gating reads run on every prompt, tool
+    /// listing and the per-turn send path, so a stalled foreign writer must
+    /// not freeze them. Discriminator: while a stand-in process lock is HELD
+    /// (and never released during the wait), a concurrent read must complete
+    /// and persist nothing. Red against any design where the read path
+    /// flocks (the reader would block until the guard drops).
     #[test]
-    fn read_path_stays_persistence_free_and_serialized() {
-        with_temp_home("pinvou3-scope", || {
+    fn read_path_never_waits_on_the_cross_process_lock() {
+        with_temp_home("pinvou3-scope-read-flock", || {
             let legacy = r#"["weather"]"#;
             let conn = paths::pinvou3_home().join("disabled_connectors.json");
             std::fs::create_dir_all(conn.parent().unwrap()).unwrap();
             std::fs::write(&conn, legacy).unwrap();
-            let guard = DISABLED_BUNDLES_FILE_LOCK
-                .lock()
-                .unwrap_or_else(|p| p.into_inner());
-            let reader = std::thread::spawn(load_disabled_bundles_for_plain_for_lock_test);
-            std::thread::sleep(std::time::Duration::from_millis(200));
-            // While the lock is held the read must not write the migration.
-            assert!(
-                !disabled_bundles_path().exists(),
-                "the read path must not persist the migration while the lock is held"
+            let lock_path = paths::pinvou3_home().join("disabled_bundles.lock");
+            let stand_in = std::fs::OpenOptions::new()
+                .read(true)
+                .write(true)
+                .create(true)
+                .truncate(false)
+                .open(&lock_path)
+                .unwrap();
+            let mut rw = fd_lock::RwLock::new(stand_in);
+            let guard = rw.write().expect("hold the stand-in process lock");
+            let (tx, rx) = std::sync::mpsc::channel::<Vec<String>>();
+            let reader = std::thread::spawn(move || {
+                let loaded = load_disabled_bundles_for(ConnectorScope::Plain);
+                let _ = tx.send(loaded);
+            });
+            // The read must complete while the flock is still held; if the
+            // read path ever takes the writers' flock, this times out.
+            let loaded = rx
+                .recv_timeout(std::time::Duration::from_secs(5))
+                .expect("the read must complete while the foreign flock is still held");
+            assert_eq!(
+                loaded,
+                vec!["weather".to_string()],
+                "the lock-free read must surface the legacy merge"
             );
-            drop(guard);
-            assert_eq!(reader.join().unwrap(), vec!["weather".to_string()]);
-            // The read is persistence-free even after the lock releases: a
-            // degraded (lock-less) read runs the same closure, so it must not
-            // save anything a lock-holding writer could clobber. Only writers
-            // materialize the canonical file.
+            // Still held: nothing may have been persisted.
             assert!(
                 !disabled_bundles_path().exists(),
                 "the read path must never persist the migrated canonical file"
             );
+            drop(guard);
+            reader.join().unwrap();
         });
-    }
-
-    fn load_disabled_bundles_for_plain_for_lock_test() -> Vec<String> {
-        load_disabled_bundles_for(ConnectorScope::Plain)
     }
 
     /// Physically install the preset skill government-writing (its owner is
