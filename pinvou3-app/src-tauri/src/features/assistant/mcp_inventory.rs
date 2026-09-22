@@ -28,6 +28,12 @@ pub(crate) fn turn_reminder(scope: ConnectorScope) -> String {
     // （unavailable_tool_names_for）都按这个并集排除（scope.rs）。
     // 只读开关集会让「已装但被隐藏」的包在快照里报 enabled=true，而会话实际
     // 调不到——模型被两个互相矛盾的真相源同时喂养（PPT 场景实测）。
+    // TODO(builtin feature switches): this snapshot consumes only the
+    // package-level unavailable set and is blind to feature-level removal
+    // (`builtin::feature_disabled_tool_names`, docs/builtin-toolset-contract.md
+    // §3.3) — a builtin plugin whose features are all switched off still
+    // reports enabled=true here. Before the feature-switch UI lands, the
+    // snapshot must take feature-level removal into account.
     let unavailable = crate::features::marketplace::unavailable_bundles_for(scope);
     render_inventory(&tools, &unavailable)
 }

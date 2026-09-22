@@ -462,7 +462,9 @@ pub async fn apply_disabled_connectors_for(
     scope: ConnectorScope,
     connector_ids: Vec<String>,
 ) -> Result<(), String> {
-    // 内置插件不可停用（契约 §3.3 纵深防御）：写入即报错，不静默过滤。
+    // Builtin plugins cannot be disabled (docs/builtin-toolset-contract.md
+    // §3.3 defense in depth): the write fails loudly instead of silently
+    // filtering the id out.
     builtin::reject_builtin_ids(&connector_ids)?;
     tokio::task::spawn_blocking(move || save_disabled_bundles_for(scope, &connector_ids))
         .await
@@ -502,9 +504,11 @@ pub fn install_mcp_secret_resolver() {
     }));
 }
 
-/// 默认安装的预置 MCP 工具（外围能力的模型工具以插件中心插件形态存在：
-/// 默认安装保证「引用对话」等能力开箱可用；用户可在工具商店卸载/重装，
-/// 卸载留有记录即尊重，不会重复装）。
+/// Default-installed preset MCP tools: peripheral capabilities ship as
+/// plugins so features like session mention work out of the box. Builtin
+/// plugins cannot be uninstalled or disabled — the attempt is rejected
+/// server-side (docs/builtin-toolset-contract.md §3.3) — so a missing
+/// BundleStore record only ever means "not seeded yet".
 pub const DEFAULT_INSTALLED_MCP_TOOLS: &[&str] = &["session-reader"];
 
 /// 当前(plain)会话侧不可用包/native 工具 → 模型可见工具全名(喂给引擎
@@ -552,8 +556,9 @@ fn native_unavailable_tool_names_for(scope: ConnectorScope) -> Vec<String> {
 pub fn unavailable_tool_names_for(scope: ConnectorScope) -> Vec<String> {
     let mut names = MarketplaceManager::new().model_tool_names(&unavailable_bundles_for(scope));
     names.extend(native_unavailable_tool_names_for(scope));
-    // 内置插件功能开关（契约 §3.3）：被关功能按并集语义摘除的工具与 scope 正交，
-    // 全局并入（去重），各 scope 的引擎门控一致生效。
+    // Builtin feature switches (docs/builtin-toolset-contract.md §3.3): tools
+    // removed by the union semantics are scope-agnostic, so they merge into
+    // every scope's engine gate (deduped).
     for name in builtin::feature_disabled_tool_names() {
         if !names.iter().any(|n| n == &name) {
             names.push(name);
@@ -845,10 +850,13 @@ impl<S: CredentialStore> MarketplaceManager<S> {
                     // 的 fail-fast 同口径）；迁移登记的手写自定义 MCP / 上传包可导出。
                     exportable: !mcp_catalog::spec_for(&m.id).is_some(),
                     installed: installed_flag,
-                    // 内置语义（契约 §3.1）的 security_level/data_access 只在内置
-                    // 插件上透传：普通插件保持空值，序列化省略，前端契约干净。
-                    // mcp_tools 全量透传（内置板块展示工具清单用）。bundle_version
-                    // 标记内置插件随应用发布的 bundle 版本（前端展示/比对用）。
+                    // Builtin semantics (docs/builtin-toolset-contract.md
+                    // §3.1) pass through only on builtin plugins: normal
+                    // plugins keep empty values which serialize away, keeping
+                    // the frontend contract clean. mcp_tools passes through
+                    // in full (the builtin section lists a plugin's tools);
+                    // visibility mirrors security_level; bundle_version marks
+                    // the bundle version a builtin plugin ships with.
                     security_level: if m.builtin && !m.security_level.is_empty() {
                         Some(m.security_level.clone())
                     } else {
@@ -860,9 +868,18 @@ impl<S: CredentialStore> MarketplaceManager<S> {
                         Vec::new()
                     },
                     mcp_tools: m.mcp_tools.clone(),
-                    // bundle_version 由命令层（commands::marketplace::list_marketplace_tools）
-                    // 补齐：marketplace 反向依赖 runtime_bundle 会构成 feature 循环
-                    // （架构守卫 rust_cyclic_feature_dependencies 基线为 0）。
+                    // visibility passthrough mirrors security_level: filled
+                    // only for builtin plugins, omitted otherwise.
+                    visibility: if m.builtin && !m.visibility.is_empty() {
+                        Some(m.visibility.clone())
+                    } else {
+                        None
+                    },
+                    // bundle_version is filled at the command layer
+                    // (commands::marketplace::list_marketplace_tools): a
+                    // marketplace -> runtime_bundle dependency would be a
+                    // feature cycle (architecture guard
+                    // rust_cyclic_feature_dependencies baseline is 0).
                     bundle_version: None,
                     builtin: m.builtin,
                     id: m.id,
@@ -875,13 +892,14 @@ impl<S: CredentialStore> MarketplaceManager<S> {
             .collect()
     }
 
-    /// 安装工具：写 installed.json + 更新 mcp.json
-    /// `user_config` 是前端传入的用户配置（如 API Key），对应 config_fields
-    /// 启动种子：默认安装的预置 MCP 工具在 BundleStore 无记录时走标准 install
-    /// 管线装上（新装/升级到首个包含该工具的版本都会在此拿到）；已有记录
-    /// （已装/已卸/任何来源）一律尊重。失败只落日志，不阻塞启动。
-    /// MarketplaceManager 的方法（不是自由函数）：与 ensure_extracted 共用同一
-    /// 管理器实例，避免种子里的 install 用另一套凭据存储重复跑明文迁移。
+    /// Boot seed: default-installed preset MCP tools go through the standard
+    /// install pipeline when the BundleStore has no record for them (fresh
+    /// installs and upgrades to the first version carrying the tool both land
+    /// here); any existing record (installed / uninstalled / any source) is
+    /// respected. Failures only log and never block startup.
+    /// A MarketplaceManager method (not a free function): shares one manager
+    /// instance with ensure_extracted so a seed install does not rerun the
+    /// plaintext secret migration against a second credential store.
     pub fn ensure_default_installed_mcp_tools(&self) {
         let store = store::BundleStore::new();
         for id in DEFAULT_INSTALLED_MCP_TOOLS {
@@ -899,6 +917,8 @@ impl<S: CredentialStore> MarketplaceManager<S> {
         }
     }
 
+    /// 安装工具：写 installed.json + 更新 mcp.json
+    /// `user_config` 是前端传入的用户配置（如 API Key），对应 config_fields
     pub fn install(
         &self,
         tool_id: &str,
@@ -1051,8 +1071,9 @@ impl<S: CredentialStore> MarketplaceManager<S> {
     /// 卸载工具：从 installed.json + mcp.json 中移除，包目录按来源处置
     /// （Upload 整包进回收站 / 可重释放预置物理删除 / 其余保留）。
     pub fn uninstall(&self, tool_id: &str) -> Result<(), String> {
-        // 内置插件不可卸载（内置工具集长期契约 §3.3 服务端纵深防御）：即便前端
-        // 不下发 uninstall 动作，命令/IPC 直达也必须在此被拒。
+        // Builtin plugins cannot be uninstalled (docs/builtin-toolset-contract.md
+        // §3.3 server-side defense in depth): even if the frontend never
+        // offers the action, a direct command/IPC call must be rejected here.
         if builtin::is_builtin_tool(tool_id) {
             return Err(format!(
                 "builtin plugin '{tool_id}' is part of the application and cannot be uninstalled"
@@ -3863,16 +3884,19 @@ mod tests {
             recycle_bin::RecycleBin::new()
                 .take_back("upload-lock")
                 .unwrap();
-            // 商店路径（Preset）重装未受信依赖：Windows 上 PR #547 起 fail-closed
-            // 显式报错（「绝不执行」的另一种满足——根本没走到 downloader）；其余
-            // 平台维持 warn-skip，install 成功但同样不得触达 downloader。
+            // Store (Preset) reinstall of untrusted dependencies: since
+            // PR #547 Windows fails closed with an explicit error (the
+            // "never execute" contract holds by never reaching the
+            // downloader); other platforms keep warn-skip, the install
+            // succeeds but likewise never reaches the downloader.
             let reinstall = manager.install_with_python(
                 "upload-lock",
                 &std::collections::HashMap::new(),
                 &python,
             );
-            // 运行时判定（capabilities::is_windows）：测试里不用 cfg(target_os)
-            // （架构守卫 rust_target_cfg_outside_adapter 基线为 0）。
+            // Runtime check (capabilities::is_windows): tests must not use
+            // cfg(target_os) (architecture guard
+            // rust_target_cfg_outside_adapter baseline is 0).
             if crate::platform::capabilities::is_windows() {
                 assert!(
                     reinstall
@@ -3907,8 +3931,9 @@ mod tests {
             recycle_bin::RecycleBin::new()
                 .take_back("upload-pip")
                 .unwrap();
-            // 同 upload-lock 分支：Windows 商店路径对未受信 pip 声明 fail-closed
-            // （PR #547），其余平台 install 成功但 pip 绝不执行。
+            // Same branch as upload-lock: the Windows store path fails closed
+            // on untrusted pip declarations (PR #547); other platforms install
+            // successfully but pip is never executed.
             let reinstall = manager.install("upload-pip", &std::collections::HashMap::new());
             if crate::platform::capabilities::is_windows() {
                 assert!(
@@ -4933,8 +4958,9 @@ mod tests {
         });
     }
 
-    /// 默认安装种子:无记录 → 装上并登记 preset+installed;已有记录(含已卸载)
-    /// → 尊重现状不重复装。种子失败路径(记录读取失败)只落日志不 panic。
+    /// Boot seed: no record → install and register as preset+installed; an
+    /// existing record (including uninstalled) → respected, never reinstalled.
+    /// The seed's failure paths (record read failure) only log, never panic.
     #[test]
     fn ensure_default_installed_mcp_tools_seeds_only_missing_records() {
         with_temp_home(|| {
@@ -4942,27 +4968,32 @@ mod tests {
             for id in DEFAULT_INSTALLED_MCP_TOOLS {
                 assert!(
                     store::BundleStore::new().get(id).unwrap().is_none(),
-                    "种子前不应有 {id} 记录"
+                    "no record for {id} expected before seeding"
                 );
             }
             MarketplaceManager::new().ensure_default_installed_mcp_tools();
             let store = store::BundleStore::new();
             for id in DEFAULT_INSTALLED_MCP_TOOLS {
-                let record = store.get(id).unwrap().expect("种子后应有记录");
-                assert!(record.installed, "{id} 应为已安装");
+                let record = store
+                    .get(id)
+                    .unwrap()
+                    .expect("record expected after seeding");
+                assert!(record.installed, "{id} should be installed");
                 assert_eq!(record.source, store::BundleSource::Preset);
-                // 标准 install 管线的落盘面:mcp.json 条目 + 包目录释放。
+                // The standard install pipeline's footprint: an mcp.json entry
+                // plus the released package directory.
                 let mcp =
                     std::fs::read_to_string(crate::platform::paths::mcp_config_path()).unwrap();
-                assert!(mcp.contains(id), "mcp.json 应注册 {id}");
+                assert!(mcp.contains(id), "mcp.json should register {id}");
                 assert!(
                     crate::features::marketplace::mcp_catalog::package_mcp_dir(id)
                         .join("server.py")
                         .is_file(),
-                    "{id} 的 server.py 应释放到包目录"
+                    "{id}'s server.py should be released into the package dir"
                 );
             }
-            // 用户卸载(记录保留 installed=false)后再跑种子:尊重卸载,不重装。
+            // Rerun the seed after the user uninstalls (record kept with
+            // installed=false): the uninstall is respected, no reinstall.
             let store = store::BundleStore::new();
             for id in DEFAULT_INSTALLED_MCP_TOOLS {
                 let mut record = store.get(id).unwrap().unwrap();
@@ -4973,7 +5004,7 @@ mod tests {
             for id in DEFAULT_INSTALLED_MCP_TOOLS {
                 assert!(
                     !store.get(id).unwrap().unwrap().installed,
-                    "已卸载的 {id} 不应被种子重装"
+                    "uninstalled {id} must not be reinstalled by the seed"
                 );
             }
         });

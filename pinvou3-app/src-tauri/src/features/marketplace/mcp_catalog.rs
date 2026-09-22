@@ -98,9 +98,10 @@ pub const MCP_PACKAGES: &[McpPackageSpec] = &[
         manifest_json: include_str!("../../../../resources/mcp-servers/tencent-docs/manifest.json"),
         files: &[],
     },
-    // 会话读取（本地 stdio，只读分页读取本机其他会话历史；「引用对话」能力的
-    // 模型侧查询工具。纯本地无网络、无凭据；默认安装，见
-    // marketplace::ensure_default_installed_mcp_tools）。
+    // Session reader (local stdio, read-only paginated access to other local
+    // sessions' history; the model-side query tool behind session mention.
+    // Purely local: no network, no credentials; installed by default, see
+    // marketplace::ensure_default_installed_mcp_tools).
     McpPackageSpec {
         id: "session-reader",
         manifest_json: include_str!(
@@ -270,7 +271,7 @@ mod tests {
                 assert!(!content.is_empty(), "{} 的 {name} 为空", spec.id);
             }
         }
-        // 已知 12 个内置包
+        // 12 known embedded packages
         assert_eq!(MCP_PACKAGES.len(), 12);
     }
 }

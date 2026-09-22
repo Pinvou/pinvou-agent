@@ -134,8 +134,9 @@ pub fn actions_for(bundle: &BundleInfo, readiness: Readiness) -> Vec<BundleActio
                 if bundle.user_uploaded {
                     out.push(action(ACTION_EDIT_DISPLAY, None));
                 }
-                // 内置插件（契约 §3.3）不可卸载：不下发 uninstall 动作；服务端
-                // `MarketplaceManager::uninstall` 另有纵深防御 guard。
+                // Builtin plugins (docs/builtin-toolset-contract.md §3.3)
+                // cannot be uninstalled: never offer the uninstall action;
+                // `MarketplaceManager::uninstall` guards server-side anyway.
                 if !super::builtin::is_builtin_tool(&bundle.id) {
                     out.push(action(ACTION_UNINSTALL, None));
                 }
@@ -210,8 +211,10 @@ mod tests {
         assert_eq!(ids(&actions_for(&b, Readiness::Ready)), ["uninstall"]);
     }
 
-    /// 内置插件（契约 §3.3）：已装也不下发 uninstall（enable_in 开关保留——
-    /// 功能粒度开关走 builtin feature registry，不走包开关）。
+    /// Builtin plugin (docs/builtin-toolset-contract.md §3.3): installed but
+    /// no uninstall action is offered (the enable_in toggle stays — the
+    /// feature-granularity switch goes through the builtin feature registry,
+    /// not the package toggle).
     #[test]
     fn installed_builtin_plugin_gets_no_uninstall() {
         let mut b = bundle(BundleKind::Mcp);
@@ -220,7 +223,7 @@ mod tests {
         let actions = actions_for(&b, Readiness::Ready);
         assert!(
             actions.iter().all(|a| a.id != ACTION_UNINSTALL),
-            "内置插件不得下发 uninstall: {actions:?}"
+            "builtin plugins must never get the uninstall action: {actions:?}"
         );
     }
 

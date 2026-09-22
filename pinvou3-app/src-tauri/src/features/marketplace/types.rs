@@ -40,22 +40,30 @@ pub struct ToolManifest {
     /// 配套技能 id:装该 MCP 时一并装、卸时一并删(让"一个能力"=引擎+引导整体装卸)。
     #[serde(default)]
     pub companion_skills: Vec<String>,
-    // --- 内置工具集长期契约 §3.1:内置语义字段(全部可选,缺省即普通插件) ---
-    /// 内置插件标记:true = 随应用发布、不可卸载/不可停用(服务端纵深防御,
-    /// 见 `super::builtin`)。
+    // --- docs/builtin-toolset-contract.md §3.1: builtin semantics fields
+    // (all optional; absent means a normal plugin) ---
+    /// Builtin plugin marker: true = ships with the application, cannot be
+    /// uninstalled/disabled (server-side defense in depth, see
+    /// `super::builtin`).
     #[serde(default)]
     pub builtin: bool,
-    /// 展示可见性:"normal"(缺省)| 内置插件为 "system"(前端据此归入系统板块)。
+    /// Display visibility: "normal" (default) | "system" for builtin plugins
+    /// (the frontend groups these into a system section). Only the embedded
+    /// catalog may declare "system"; the import pipeline rejects uploaded
+    /// manifests claiming it (docs/builtin-toolset-contract.md §3.1).
     #[serde(default)]
     pub visibility: String,
-    /// 数据安全等级:"L0" | "L1" | "L2"(语义由前端本地化展示)。
+    /// Data security level: "L0" | "L1" | "L2" (semantics localized by the
+    /// frontend).
     #[serde(default)]
     pub security_level: String,
-    /// 数据访问语义 scope 键(如 "sessions.read";前端负责本地化)。
+    /// Data-access semantic scope keys (e.g. "sessions.read"; the frontend
+    /// localizes them).
     #[serde(default)]
     pub data_access: Vec<String>,
-    /// 工具全名 → 功能 id 数组(多对多归属;功能开关按并集语义摘除工具,
-    /// 见 `super::builtin::feature_disabled_tool_names`)。
+    /// Full tool name -> feature id array (many-to-many; feature switches
+    /// remove tools by union semantics, see
+    /// `super::builtin::feature_disabled_tool_names`).
     #[serde(default)]
     pub tool_features: std::collections::HashMap<String, Vec<String>>,
 }
@@ -180,34 +188,45 @@ pub struct MarketplaceToolInfo {
     /// 详情页「导出」按钮，与后端 fail-fast 口径一致（避免按钮必然报错）。
     #[serde(default = "default_tool_exportable")]
     pub exportable: bool,
-    // --- 内置工具集长期契约 §3.1:内置语义透传(仅内置插件非空,空值省略) ---
-    /// 内置插件标记(来自 manifest `builtin`)。
+    // --- docs/builtin-toolset-contract.md §3.1: builtin semantics
+    // passthrough (non-empty only for builtin plugins; empty values are
+    // omitted from serialization) ---
+    /// Builtin plugin marker (from the manifest's `builtin`).
     #[serde(default)]
     pub builtin: bool,
-    /// 数据安全等级(仅内置插件填,如 "L0";前端本地化展示)。
+    /// Data security level (filled only for builtin plugins, e.g. "L0";
+    /// localized by the frontend).
     #[serde(default)]
     #[serde(skip_serializing_if = "Option::is_none")]
     pub security_level: Option<String>,
-    /// 数据访问语义 scope 键(仅内置插件填;前端本地化展示)。
+    /// Data-access semantic scope keys (filled only for builtin plugins; the
+    /// frontend localizes them).
     #[serde(default)]
     #[serde(skip_serializing_if = "Vec::is_empty")]
     pub data_access: Vec<String>,
-    /// 该插件提供的 MCP 工具全名清单(前端详情展示用)。
+    /// Full names of the MCP tools this plugin provides (frontend detail view).
     #[serde(default)]
     #[serde(skip_serializing_if = "Vec::is_empty")]
     pub mcp_tools: Vec<String>,
-    /// 内置插件随应用发布的 bundle 版本(仅内置插件填 Some,其余省略)。
+    /// Bundle version a builtin plugin ships with (Some only for builtin
+    /// plugins; omitted otherwise).
     #[serde(default)]
     #[serde(skip_serializing_if = "Option::is_none")]
     pub bundle_version: Option<String>,
+    /// Display visibility passthrough from the manifest (`Some` only for
+    /// builtin plugins, e.g. "system"; omitted for normal plugins).
+    #[serde(default)]
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub visibility: Option<String>,
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
 
-    /// 旧 manifest（无内置语义字段）可解析：全部缺省 = 普通插件（契约 §3.1
-    /// 「全部可选、缺省即普通插件」）。
+    /// A legacy manifest (without the builtin semantics fields) parses with
+    /// all defaults = normal plugin (docs/builtin-toolset-contract.md §3.1
+    /// "all optional, absent means normal plugin").
     #[test]
     fn legacy_manifest_without_builtin_fields_parses_as_normal() {
         let json = r#"{
@@ -222,14 +241,15 @@ mod tests {
         assert!(manifest.tool_features.is_empty());
     }
 
-    /// 内置 manifest（session-reader 内嵌快照）的 5 个契约字段解析正确，
-    /// tool_features 的键与 mcp_tools 全名完全一致（共享契约硬约束）。
+    /// The builtin manifest (session-reader embedded snapshot) parses its 5
+    /// contract fields correctly, and the tool_features keys match the
+    /// mcp_tools full names exactly (a shared-contract hard constraint).
     #[test]
     fn session_reader_manifest_carries_builtin_contract_fields() {
         let manifest =
             crate::features::marketplace::mcp_catalog::embedded_manifest("session-reader")
                 .unwrap()
-                .expect("session-reader 在内嵌目录中");
+                .expect("session-reader is in the embedded catalog");
         assert!(manifest.builtin);
         assert_eq!(manifest.visibility, "system");
         assert_eq!(manifest.security_level, "L0");
@@ -239,7 +259,7 @@ mod tests {
             let features = manifest
                 .tool_features
                 .get(tool)
-                .unwrap_or_else(|| panic!("tool_features 缺 {tool} 的归属"));
+                .unwrap_or_else(|| panic!("tool_features is missing an entry for {tool}"));
             assert_eq!(
                 features,
                 &["session-mention".to_string(), "long-memory".to_string()]
@@ -247,8 +267,10 @@ mod tests {
         }
     }
 
-    /// MarketplaceToolInfo 前端契约：内置插件带 security_level/data_access/
-    /// mcp_tools/bundle_version；普通插件这些字段序列化时省略（契约干净）。
+    /// MarketplaceToolInfo frontend contract: builtin plugins carry
+    /// security_level/data_access/mcp_tools/bundle_version/visibility; for
+    /// normal plugins these fields are omitted from serialization (clean
+    /// contract).
     #[test]
     fn tool_info_omits_builtin_fields_for_normal_plugins() {
         let normal = MarketplaceToolInfo {
@@ -265,6 +287,7 @@ mod tests {
             data_access: vec![],
             mcp_tools: vec![],
             bundle_version: None,
+            visibility: None,
         };
         let json = serde_json::to_value(&normal).unwrap();
         assert_eq!(json["builtin"], false);
@@ -273,8 +296,12 @@ mod tests {
             "data_access",
             "mcp_tools",
             "bundle_version",
+            "visibility",
         ] {
-            assert!(json.get(key).is_none(), "空值字段 {key} 应省略: {json}");
+            assert!(
+                json.get(key).is_none(),
+                "empty-value field {key} should be omitted: {json}"
+            );
         }
 
         let builtin = MarketplaceToolInfo {
@@ -284,6 +311,7 @@ mod tests {
             data_access: vec!["sessions.read".into()],
             mcp_tools: vec!["mcp_session-reader_read_session".into()],
             bundle_version: Some("0.32-test".into()),
+            visibility: Some("system".into()),
             ..normal
         };
         let json = serde_json::to_value(&builtin).unwrap();
@@ -291,5 +319,6 @@ mod tests {
         assert_eq!(json["security_level"], "L0");
         assert_eq!(json["data_access"], serde_json::json!(["sessions.read"]));
         assert_eq!(json["bundle_version"], "0.32-test");
+        assert_eq!(json["visibility"], "system");
     }
 }
