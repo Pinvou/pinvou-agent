@@ -1074,25 +1074,23 @@ fn index_resume_rearms_a_job_stranded_by_a_dead_process() {
     };
     assert_eq!(state["jobId"], serde_json::json!(job_id));
     assert_eq!(state["resumable"], serde_json::json!(false));
+    // The phase vocabulary is exactly what the CLI derives from the app's
+    // flag-based job state: running | interrupted | cancelled | done |
+    // done_with_errors | idle. After a resume the job is either actively
+    // running or already finished.
     assert!(
-        state["phase"] == serde_json::json!("preparing")
-            || state["phase"] == serde_json::json!("running")
-            || state["phase"] == serde_json::json!("parsing")
+        state["phase"] == serde_json::json!("running")
             || state["phase"] == serde_json::json!("done")
             || state["phase"] == serde_json::json!("done_with_errors"),
-        "expected the active progression after resume"
+        "expected the active progression after resume, got {:?}",
+        state["phase"]
     );
     // The resume child may exit (stranding the import thread again) before
-    // it re-claims the item, so `total` can transiently read 0 during the
-    // parsing phase; the deterministic resume contract is the re-armed state
-    // above (same job id, not resumable). Upstream maps DB `running` to the
-    // DTO `parsing` phase with `running: true`, so preparing/running/parsing
-    // all guarantee the flag; only the finished phases legitimately read
-    // false.
-    if !matches!(
-        state["phase"].as_str(),
-        Some("done") | Some("done_with_errors")
-    ) {
+    // it re-claims the item, so `total` can transiently read 0 mid-run; the
+    // deterministic resume contract is the re-armed state above (same job
+    // id, not resumable). The derived `running` phase guarantees the flag;
+    // only the finished phases legitimately read false.
+    if state["phase"] == serde_json::json!("running") {
         assert_eq!(state["running"], serde_json::json!(true));
     }
     if state["phase"] == serde_json::json!("done") {

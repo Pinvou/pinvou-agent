@@ -42,6 +42,11 @@ pub struct ImportJobState {
     pub job_id: Option<String>,
     pub running: bool,
     pub resumable: bool,
+    /// The job was explicitly cancelled. Without this flag a cancelled job
+    /// is indistinguishable from a finished one (running=false with a
+    /// job_id), which made the CLI's phase derivation report `done` right
+    /// after a successful cancel.
+    pub cancelled: bool,
     pub collection_id: i64,
     /// 已处理文件数（成功、跳过和失败）。
     pub done: u64,
@@ -444,6 +449,7 @@ impl ImportJobStore {
             job_id: Some(id),
             running: matches!(phase.as_str(), "preparing" | "running"),
             resumable: phase == "interrupted",
+            cancelled: phase == "cancelled",
             collection_id,
             done: (completed + skipped + failed) as u64,
             total: total as u64,
