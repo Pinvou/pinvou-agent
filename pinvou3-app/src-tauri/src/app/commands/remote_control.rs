@@ -1005,7 +1005,7 @@ pub async fn web_access_cancel_codex_acp(
 /// → clean up staged copies on submit failure → finalize (consume on success, release on failure).
 /// Error folding is byte-for-byte identical; a success-path finalize failure is only logged,
 /// never reported to the browser — otherwise it would resubmit the turn (never-double-submit
-/// contract). The three message parameters keep each entry's own log and fallback wording.
+/// contract). The two message parameters keep each entry's own log wording.
 #[allow(clippy::too_many_arguments)]
 async fn with_web_attachments<'ctx, T>(
     manager: &'ctx RemoteControlManager,
@@ -1014,7 +1014,6 @@ async fn with_web_attachments<'ctx, T>(
     store: &'ctx SessionStore,
     stage_release_label: &str,
     finalize_accepted_label: &str,
-    submit_failed_fallback: &str,
     submit: impl FnOnce(
         Vec<crate::features::files::file_ingest::IngestResult>,
     ) -> std::pin::Pin<
@@ -1037,30 +1036,31 @@ async fn with_web_attachments<'ctx, T>(
                 return Err(error);
             }
         };
-    let result = submit(attachments).await;
-    if result.is_err() {
-        cleanup_staged_attachment_sources(&staged_sources);
-    }
-    let consume = result.is_ok();
-    if let Err(error) = manager.finish_web_attachment_reservation(
-        &attachment_reservation,
-        attachment_handles,
-        consume,
-    ) {
-        if consume {
-            eprintln!("[web-access] {finalize_accepted_label}: {error}");
-        } else {
-            return Err(format!(
-                "{}; additionally failed to release attachments: {error}",
-                result
-                    .as_ref()
-                    .err()
-                    .cloned()
-                    .unwrap_or_else(|| submit_failed_fallback.to_string())
-            ));
+    match submit(attachments).await {
+        Ok(value) => {
+            if let Err(error) = manager.finish_web_attachment_reservation(
+                &attachment_reservation,
+                attachment_handles,
+                true,
+            ) {
+                eprintln!("[web-access] {finalize_accepted_label}: {error}");
+            }
+            Ok(value)
+        }
+        Err(submit_error) => {
+            cleanup_staged_attachment_sources(&staged_sources);
+            if let Err(error) = manager.finish_web_attachment_reservation(
+                &attachment_reservation,
+                attachment_handles,
+                false,
+            ) {
+                return Err(format!(
+                    "{submit_error}; additionally failed to release attachments: {error}"
+                ));
+            }
+            Err(submit_error)
         }
     }
-    result
 }
 
 /// Web-safe ACP prompt entry point. Browser and host-picked attachments are
@@ -1095,7 +1095,6 @@ pub async fn web_access_codex_acp_prompt(
             &store,
             "ACP attachment reservation",
             "finalize accepted ACP attachments failed",
-            "ACP prompt submission failed",
             |attachments| {
                 Box::pin(super::codex::codex_acp_prompt_with_attachments(
                     session_id.clone(),
@@ -1378,7 +1377,6 @@ async fn web_access_chat_for_session(
         store,
         "staged attachment reservation",
         "finalize accepted attachment reservation failed",
-        "chat submission failed",
         |attachments| {
             Box::pin(super::chat::chat_with_reservation(
                 message.clone(),

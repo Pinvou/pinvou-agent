@@ -25,10 +25,7 @@ use super::ingest_deps::{libreoffice_tool_command, libreoffice_user_installation
 /// Image extension → MIME. Used for data URI prefixes; the mapping itself is
 /// shared with codex_acp::attachments; extensions outside the table fall back to application/octet-stream.
 fn image_mime(ext: &str) -> &'static str {
-    // image_mime_type takes the extension via Path::extension(); add a no-extension prefix so
-    // `ext` lands in the extension position (ext comes from path.extension(), without separators or dot).
-    let probe = Path::new("img").with_extension(ext);
-    crate::platform::filesystem::image_mime_type(&probe).unwrap_or("application/octet-stream")
+    crate::platform::filesystem::image_mime_type_for_ext(ext).unwrap_or("application/octet-stream")
 }
 
 /// 单个图片文件 → `data:image/...;base64,...`。

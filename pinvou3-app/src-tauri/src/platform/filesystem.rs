@@ -134,13 +134,17 @@ mod libc {
 /// files/visual_preview artifact previews). Returns `None` for extensions
 /// outside the table so callers decide their own fallback or rejection.
 pub(crate) fn image_mime_type(path: &Path) -> Option<&'static str> {
-    match path
-        .extension()
-        .and_then(|value| value.to_str())
-        .unwrap_or_default()
-        .to_ascii_lowercase()
-        .as_str()
-    {
+    image_mime_type_for_ext(
+        path.extension()
+            .and_then(|value| value.to_str())
+            .unwrap_or_default(),
+    )
+}
+
+/// [`image_mime_type`] twin for callers holding a bare extension (no separators,
+/// no dot — e.g. `path.extension()` output) instead of a full path.
+pub(crate) fn image_mime_type_for_ext(ext: &str) -> Option<&'static str> {
+    match ext.to_ascii_lowercase().as_str() {
         "png" => Some("image/png"),
         "jpg" | "jpeg" => Some("image/jpeg"),
         "gif" => Some("image/gif"),

@@ -35,7 +35,8 @@ const REQUEST_TIMEOUT: Duration = Duration::from_secs(20);
 const DRIVER_START_RETRY_INTERVAL: Duration = Duration::from_millis(50);
 const DRIVER_SESSION_ATTEMPT_TIMEOUT: Duration = Duration::from_secs(2);
 const HOST_BOOTSTRAP_SETTLE_TIMEOUT: Duration = Duration::from_secs(5);
-const BINDING_MARKER_PREFIX: &str = "about:blank#pinvou-webdriver-bind-";
+// Alias of the shared constant so this file's many call sites keep the short name.
+const BINDING_MARKER_PREFIX: &str = super::HOST_BLANK_MARKER_WEBDRIVER_BIND_PREFIX;
 const PROCESS_SHUTDOWN_ERROR: &str = "browser/process-shutting-down";
 
 static INSPECTOR_PORT: OnceLock<u16> = OnceLock::new();

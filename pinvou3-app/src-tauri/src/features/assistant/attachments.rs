@@ -387,17 +387,7 @@ fn push_text_attachment_section(
     read_only_tools: bool,
     inline_spent: &mut u32,
 ) {
-    out.push_str(&format!(
-        "### {} ({}, {} bytes",
-        a.basename, a.kind, a.byte_size
-    ));
-    if a.token_estimate > 0 {
-        out.push_str(&format!(", ~{} tokens", a.token_estimate));
-    }
-    out.push_str(")\n");
-    // Real path — if the AI must use read it can still find the right location,
-    // while also preventing the AI from hallucinating pseudo paths like workspace/<timestamp>-...
-    out.push_str(&format!("原始路径: `{}`\n", a.path));
+    push_attachment_header(out, a);
     if let Some(md) = &a.markdown {
         let fits = a.token_estimate <= ATTACH_INLINE_MAX_TOKENS
             && inline_spent.saturating_add(a.token_estimate) <= ATTACH_TOTAL_BUDGET_TOKENS;
@@ -439,6 +429,22 @@ fn push_text_attachment_section(
     out.push('\n');
 }
 
+/// Shared attachment-section header (used by the text paths and the image branch alike):
+/// `### {basename} ({kind}, {bytes} bytes[, ~N tokens])` followed by the original-path line.
+fn push_attachment_header(out: &mut String, a: &crate::features::files::file_ingest::IngestResult) {
+    out.push_str(&format!(
+        "### {} ({}, {} bytes",
+        a.basename, a.kind, a.byte_size
+    ));
+    if a.token_estimate > 0 {
+        out.push_str(&format!(", ~{} tokens", a.token_estimate));
+    }
+    out.push_str(")\n");
+    // Real path — if the AI must use read it can still find the right location,
+    // while also preventing the AI from hallucinating pseudo paths like workspace/<timestamp>-...
+    out.push_str(&format!("原始路径: `{}`\n", a.path));
+}
+
 /// 按指定 workspace 相对目录拼接 user 文本 + 附件 markdown。
 /// 图片拷进 workspace 后引导 LLM 调 image_analyze 读图(Qwen3.6 有视觉能力);
 /// 文本类附件按 token 预算分流:小→全量内联,大→落盘+路径+预览(见常量注释)。
@@ -463,17 +469,7 @@ fn build_message_with_attachments_in_dir_with_access(
     let mut inline_spent: u32 = 0;
     for a in &attachments {
         if a.kind == "image" {
-            out.push_str(&format!(
-                "### {} ({}, {} bytes",
-                a.basename, a.kind, a.byte_size
-            ));
-            if a.token_estimate > 0 {
-                out.push_str(&format!(", ~{} tokens", a.token_estimate));
-            }
-            out.push_str(")\n");
-            // Real path — if the AI must use read it can still find the right location,
-            // while also preventing the AI from hallucinating pseudo paths like workspace/<timestamp>-...
-            out.push_str(&format!("原始路径: `{}`\n", a.path));
+            push_attachment_header(&mut out, a);
             // 把图拷进 workspace,硬约束引导 LLM 调 image_analyze 读图。
             // 关键:不能说"你有视觉能力"——那会让模型以为可直接描述而凭空幻觉
             // (实测同一张图,不调工具时编造内容,调工具才得真相)。改成"你现在
