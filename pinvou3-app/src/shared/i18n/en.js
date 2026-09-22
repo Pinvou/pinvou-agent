@@ -127,6 +127,18 @@ const codexEn = {
   accountRecoveryHint:'This account may be expired or out of quota. Switch accounts to continue; existing sessions and messages are preserved.',
   serviceRecoveryHint:'Check the service again. If the issue continues, retry later or switch accounts.',
   errorDetails:'View error details', dismissNotice:'Dismiss',
+  agentUnresponsive:agent=>`${agent} has stopped responding`,
+  agentStderr:agent=>`${agent} reported a problem`,
+  agentStallHint:'No new events in this turn yet. You can keep waiting, or press Stop to settle it.',
+  agentStallCancelHint:'The agent is still unresponsive, so Stop was requested automatically. Waiting for it to settle.',
+  agentStallSettledHint:'The agent stopped responding for too long, so this turn was settled as interrupted. You can send again or continue.',
+  agentCancelTimeoutHint:'Stop was not acknowledged by the agent, so this turn was settled as interrupted.',
+  agentStderrHint:'Raw error text from the agent adapter (also recorded in the session log).',
+  agentStderrNoDetailHint:'The agent adapter reported a problem; raw details remain available only in the desktop session log.',
+  agentRestarted:agent=>`${agent} session restarted`,
+  agentStallRestartHint:'The same session stopped responding repeatedly, so your next message will continue in a fresh agent session; whether the earlier conversation comes along depends on that agent\'s resume support, and we will tell you which one happened after the switch.',
+  agentRestartHint:'The previous agent session stopped responding repeatedly, so a fresh one took over; the conversation history is kept, and any unfinished turn needs to be sent again.',
+  agentRestartFreshHint:'The previous agent session stopped responding repeatedly, so a fresh one took over. This agent could not restore the earlier conversation, so please restate the context you need; any unfinished turn needs to be sent again.',
   runtimeSources:{ system:'System CLI', override:'Custom CLI', bundled:'Bundled bridge', legacy_bundled:'Bundled Codex' },
 };
 

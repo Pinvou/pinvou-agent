@@ -278,3 +278,66 @@ export function AgentServiceFailureNotice({
     </div>
   );
 }
+
+// Agent 侧运行时提示（非模型服务故障）：适配器把异常写在 stderr（例如
+// 「cancel floor … wedged」），或回合看门狗判定 Agent 长时间无响应并兜底
+// 收口。两者都需要用户知情，且都可以直接继续对话，因此用中性提示而不是
+// 红色故障卡。
+export function AgentRuntimeNotice({
+  notice,
+  agentName,
+  onDismiss,
+  copy,
+}) {
+  if (!notice) return null;
+  const fromAdapter = notice.kind === 'agent_stderr';
+  const restarted = notice.kind === 'agent_session_restarted'
+    || notice.kind === 'agent_session_restarted_fresh';
+  const title = fromAdapter
+    ? copy.agentStderr(agentName)
+    : restarted
+      ? copy.agentRestarted(agentName)
+      : copy.agentUnresponsive(agentName);
+  const description = fromAdapter
+    ? (notice.detail ? copy.agentStderrHint : copy.agentStderrNoDetailHint)
+    : restarted
+      ? (notice.kind === 'agent_session_restarted_fresh'
+        ? copy.agentRestartFreshHint
+        : copy.agentRestartHint)
+        : notice.kind === 'cancel_timeout'
+          ? copy.agentCancelTimeoutHint
+          : notice.kind === 'agent_stall_cancel'
+            ? copy.agentStallCancelHint
+            : notice.kind === 'agent_stall_restart'
+              ? copy.agentStallRestartHint
+              : notice.kind === 'agent_stall_settled'
+                ? copy.agentStallSettledHint
+                : copy.agentStallHint;
+  return (
+    <div
+      data-testid="acp-agent-runtime-notice"
+      className="rounded-2xl border border-amber-500/25 bg-amber-500/[0.07] p-4"
+    >
+      <div className="flex items-start gap-3">
+        <AlertTriangle size={19} className="mt-0.5 shrink-0 text-amber-500" />
+        <div className="min-w-0 flex-1">
+          <div className="text-[13px] font-semibold text-amber-700 dark:text-amber-300">{title}</div>
+          <div className="mt-1 text-[12px] leading-5 text-gray-500 dark:text-gray-400">{description}</div>
+          {notice.detail && (
+            <details className="mt-2">
+              <summary className="cursor-pointer text-[11px] text-gray-400">{copy.errorDetails}</summary>
+              <div className="mt-1 break-words text-[11px] text-amber-600 dark:text-amber-300">{notice.detail}</div>
+            </details>
+          )}
+        </div>
+        <button
+          type="button"
+          onClick={onDismiss}
+          className="shrink-0 rounded-xl border border-amber-500/25 px-3 py-1.5 text-[12px] font-medium text-amber-700 dark:text-amber-300"
+        >
+          {copy.dismissNotice}
+        </button>
+      </div>
+    </div>
+  );
+}

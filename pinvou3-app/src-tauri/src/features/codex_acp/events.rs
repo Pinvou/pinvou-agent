@@ -174,6 +174,11 @@ fn project_acp_event_data_for_web(event_type: &str, value: Value) -> Value {
         "turn_started" | "turn_completed" => {
             project_allowed_fields(value, &["status", "error", "message", "recoveryReason"])
         }
+        // 回合看门狗/适配器自述的运行时提示：只投影宿主自己的协议字段。
+        // `detail` 是适配器 stderr 原文（现场就含绝对路径，理论上还可能带网关
+        // 响应体或凭据），按本函数的既定边界留在本机——本地卡片与
+        // `codex-acp.log` 都能看到，Relay 不放行外来文本。
+        "runtime_notice" => project_allowed_fields(value, &["kind", "quietSeconds"]),
         // runtime_ready is a signal; the Web client fetches the authoritative
         // session info separately and does not need adapter capabilities here.
         "runtime_ready" => Value::Object(serde_json::Map::new()),
@@ -686,6 +691,9 @@ pub struct EventBridge {
     web_delivery: OrderedWebDelivery,
     tools: Arc<Mutex<HashMap<String, ToolCall>>>,
     timeline_writer: Arc<Mutex<TimelineWriter>>,
+    /// Agent 侧活动时钟（见 [`super::stall`]）：入站通知、权限/询问请求与
+    /// prompt 响应会推进它，回合静默看门狗据此判断 Agent 是否还在动。
+    activity: super::stall::ActivityClock,
 }
 
 #[derive(Clone)]
@@ -754,11 +762,51 @@ impl EventBridge {
             web_delivery: OrderedWebDelivery::new(last_seq),
             tools: Arc::new(Mutex::new(HashMap::new())),
             timeline_writer,
+            activity: super::stall::new_activity_clock(),
         }
     }
 
     pub fn pinvou_session_id(&self) -> &str {
         &self.pinvou_session_id
+    }
+
+    /// 会话活动时钟句柄（与 [`super::stall::ActivityClock`] 共享同一个计数器）。
+    pub fn activity(&self) -> super::stall::ActivityClock {
+        self.activity.clone()
+    }
+
+    /// 当前回合 id（回合收口方用于认领，见 [`EventBridge::finish_turn_once`]）。
+    pub fn current_turn_id(&self) -> Option<String> {
+        self.current_turn.read().clone()
+    }
+
+    /// 记录一次 Agent 侧活动（入站通知、权限/询问请求、prompt 响应）。
+    pub fn note_agent_activity(&self) {
+        super::stall::mark_activity(&self.activity);
+    }
+
+    /// 幂等收口：只在该回合仍被本 bridge 认领时发出 `turn_completed`。
+    ///
+    /// prompt 响应返回与看门狗本地收口是两条独立路径，晚到的一方必须让位，
+    /// 否则同一回合会写出第二个 `turn_completed`（前端会多渲染一次结束态）。
+    pub fn finish_turn_once(
+        &self,
+        turn_id: &str,
+        status: &str,
+        error: Option<&str>,
+        recovery_reason: Option<&str>,
+    ) -> bool {
+        if !super::stall::claim_current_turn(&self.current_turn, turn_id) {
+            return false;
+        }
+        let mut data = json!({ "status": status, "error": error });
+        if let Some(reason) = recovery_reason {
+            if let Value::Object(map) = &mut data {
+                map.insert("recoveryReason".to_string(), json!(reason));
+            }
+        }
+        self.emit_with_turn(Some(turn_id.to_string()), "turn_completed", data);
+        true
     }
 
     pub fn begin_turn(&self, content: &str, attachments: &[CodexDisplayAttachment]) -> String {
@@ -781,18 +829,6 @@ impl EventBridge {
         turn_id
     }
 
-    pub fn finish_turn(&self, turn_id: &str, status: &str, error: Option<&str>) {
-        self.emit_with_turn(
-            Some(turn_id.to_string()),
-            "turn_completed",
-            json!({ "status": status, "error": error }),
-        );
-        let mut current = self.current_turn.write();
-        if current.as_deref() == Some(turn_id) {
-            *current = None;
-        }
-    }
-
     /// 把 timeline 中只开始、未结束的旧回合收口为已中断。
     ///
     /// ACP prompt future 和当前 turn 只存在于宿主进程内；应用被直接关闭后，Agent
@@ -800,7 +836,7 @@ impl EventBridge {
     /// 会让前端永久停在“处理中”，而恢复后的 session/cancel 也没有旧 turn 可取消。
     ///
     /// 本方法只处理当前 timeline 已存在的孤儿回合。正常的同进程活跃回合仍由
-    /// `prompt()` 返回后调用 `finish_turn()` 收口。
+    /// `prompt()` 返回后调用 `finish_turn_once()` 收口。
     pub fn interrupt_orphaned_turns(&self, reason: &str) -> usize {
         // Orphan detection must pair turn_started/turn_completed events that
         // can live arbitrarily far apart, so this scan is inherently over the
@@ -834,6 +870,8 @@ impl EventBridge {
     }
 
     pub fn handle(&self, notification: SessionNotification) {
+        // Agent 每推送一条会话更新都算「还活着」，供回合静默看门狗使用。
+        self.note_agent_activity();
         let meta = serde_json::to_value(notification.meta).unwrap_or(Value::Null);
         match notification.update {
             SessionUpdate::UserMessageChunk(chunk) => {
@@ -1876,6 +1914,30 @@ mod tests {
             project_acp_event_for_web(&future).event.data,
             json!({"webProjection": {"omitted": true}}),
             "new adapter events require an explicit Web projection before exposing data"
+        );
+    }
+
+    /// `runtime_notice` 只把宿主自己的协议字段放行到 Web/Relay：
+    /// `detail` 是适配器 stderr 原文（现场含绝对路径），按本模块既定边界留在本机。
+    #[test]
+    fn forkguard_runtime_notice_web_projection_keeps_only_host_fields() {
+        let mut notice = event(3, Some("turn-1"), "runtime_notice");
+        notice.event.data = json!({
+            "kind": "agent_stderr",
+            "agent": "claude",
+            "quietSeconds": 200,
+            "detail": "File C:\\Users\\l28756\\Temp\\x.ps1: cancel floor elapsed without the SDK yielding",
+        });
+        let projected = project_acp_event_for_web(&notice).event.data;
+        assert_eq!(projected["kind"], json!("agent_stderr"));
+        assert_eq!(projected["quietSeconds"], json!(200));
+        assert!(
+            projected.get("detail").is_none(),
+            "适配器 stderr 原文不得跨 Relay: {projected}"
+        );
+        assert!(
+            projected.get("agent").is_none(),
+            "Web 端标题取自当前 Agent 名，不需要载荷里的 agent 字段"
         );
     }
 

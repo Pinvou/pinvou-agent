@@ -47,3 +47,50 @@ export function classifyAcpServiceFailure(envelope) {
     key: `${envelope.seq || ''}:${envelope.timestamp || ''}:${detail}`,
   };
 }
+
+// Agent 侧运行时提示：适配器自己的报错原文，以及宿主回合看门狗的兜底动作。
+// 它们不是「模型服务故障」，要表达的是「知情 + 可以继续」，因此单独一层。
+const AGENT_RUNTIME_NOTICE_KINDS = new Set([
+  'agent_stderr',
+  'agent_stall',
+  'agent_stall_cancel',
+  'agent_stall_settled',
+  'agent_stall_restart',
+  'agent_session_restarted',
+  'agent_session_restarted_fresh',
+  'cancel_timeout',
+]);
+
+/**
+ * 最近一条 Agent 侧运行时提示。
+ *
+ * 过期规则按「会话是否已经证明恢复正常」而不是「用户是否又发了消息」：
+ * 提示本身就可能是在新消息的处理路径里产生的（重复卡死触发的会话重启），
+ * 用更新的 `turn_started` 去清会把它立刻抹掉。因此在提示之后出现一个
+ * **Completed** 的回合才算恢复，其余（含中断收口本身）都保留提示，
+ * 用户也可以手动关掉。
+ */
+export function latestAgentRuntimeNotice(events) {
+  if (!Array.isArray(events)) return null;
+  let notice = null;
+  for (const envelope of events) {
+    const type = envelope?.event?.type;
+    if (type === 'runtime_notice') {
+      const kind = String(envelope?.event?.data?.kind || '');
+      if (AGENT_RUNTIME_NOTICE_KINDS.has(kind)) notice = envelope;
+      continue;
+    }
+    const completed = type === 'turn_completed'
+      && String(envelope?.event?.data?.status || '') === 'Completed';
+    if (completed && notice && Number(envelope.seq || 0) > Number(notice.seq || 0)) {
+      notice = null;
+    }
+  }
+  if (!notice) return null;
+  const data = notice.event.data || {};
+  return {
+    kind: String(data.kind || ''),
+    detail: String(data.detail || ''),
+    key: `${notice.seq || ''}:${notice.timestamp || ''}`,
+  };
+}

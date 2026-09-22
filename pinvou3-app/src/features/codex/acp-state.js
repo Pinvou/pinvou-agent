@@ -7,7 +7,7 @@ import {
 /// fallback) is displayed: an agent CLI's raw output may carry gateway
 /// custom bodies or credentials; errors the gate did not take over get no
 /// friendly card but must still never reach the screen with secrets.
-function redactDisplayError(error, language) {
+export function redactDisplayError(error, language) {
   if (!error) return error || null;
   const helper = typeof globalThis !== 'undefined' && globalThis.PinvouModelServiceErrors;
   if (!helper || typeof helper.redactTechnicalDetail !== 'function') return error;

@@ -18,6 +18,7 @@ mod platform;
 mod providers;
 pub(crate) mod reader_window;
 mod runtime;
+mod stall;
 mod store;
 pub(crate) mod workspace;
 
@@ -54,7 +55,7 @@ use agent_client_protocol::schema::v1::{
     CancelNotification, ClientCapabilities, ContentBlock, CreateElicitationRequest,
     CreateElicitationResponse, ElicitationAcceptAction, ElicitationAction, ElicitationCapabilities,
     ElicitationContentValue, ElicitationFormCapabilities, Implementation, InitializeRequest,
-    LoadSessionRequest, NewSessionRequest, PromptCapabilities, PromptRequest,
+    LoadSessionRequest, NewSessionRequest, PromptCapabilities, PromptRequest, PromptResponse,
     RequestPermissionOutcome, RequestPermissionRequest, RequestPermissionResponse,
     SelectedPermissionOutcome, SessionConfigKind, SessionConfigOption, SessionConfigSelectOptions,
     SessionModeState, SessionNotification, SetSessionConfigOptionRequest, SetSessionModeRequest,
@@ -84,7 +85,7 @@ use crate::features::sessions::SessionStore;
 use crate::core::reaper::{
     IDLE_EVICT_AFTER_SECS, IdleReaperGuard, should_reap_idle, take_session_if_still_idle,
 };
-use attachments::{CodexDisplayAttachment, prepare_codex_prompt};
+use attachments::prepare_codex_prompt;
 use deepseek_tui::session_manager::SessionMetadata;
 pub(crate) use events::project_acp_value_for_web;
 pub use events::{
@@ -107,10 +108,20 @@ pub use store::{
     AgentBackend, CodexWorkspaceKind, SessionAgentStore, validate_codex_project_workspace,
 };
 
+/// Managed-runtime directory schema retained for compatibility with installs
+/// created before the bundled bridge moved past 1.1.5. This is not the
+/// bundled adapter version and must not be written to `acp-state.json`.
 pub const CODEX_ACP_VERSION: &str = "1.1.5";
 pub const CODEX_ACP_SESSION_MODEL: &str = "Codex (ACP)";
 const CODEX_ACP_PACKAGE: &str = "@agentclientprotocol/codex-acp";
-pub const CLAUDE_ACP_VERSION: &str = "0.62.0";
+/// Bundled codex-acp adapter pin. Kept separate from the legacy managed
+/// runtime directory schema above so session diagnostics report the truth.
+const CODEX_ACP_ADAPTER_VERSION: &str = "1.6.2";
+/// 随包 claude-agent-acp 的版本。必须与
+/// `scripts/codex-bridge-runtime/package.json`（及其锁文件）里的 pin 一致：
+/// 这个值会写进会话的 `acp-state.json` 作为声明的适配器版本，
+/// `forkguard_declared_adapter_versions_match_the_bridge_pin` 钉住一致性。
+pub const CLAUDE_ACP_VERSION: &str = "0.79.0";
 const CLAUDE_ACP_PACKAGE: &str = "@agentclientprotocol/claude-agent-acp";
 const CLAUDE_ACP_SESSION_MODEL: &str = "Claude Code (ACP)";
 const KIMI_ACP_PACKAGE: &str = "kimi acp";
@@ -246,6 +257,34 @@ fn rebind_evictable(
     idle_for: Duration,
 ) -> bool {
     !busy && !configuring && !prompt_pending && idle_for >= REBIND_EVICT_IDLE_EPSILON
+}
+
+/// Complete a claimed turn in the shared order: timing, then admission gate.
+///
+/// The claim itself is performed by the caller because it also emits the
+/// timeline event. A losing path must not close timing or release `busy`: a
+/// newer turn may already own both session-level slots.
+fn finalize_claimed_turn(busy: &AtomicBool, claimed: bool, close_timing: impl FnOnce()) -> bool {
+    if !claimed {
+        return false;
+    }
+    close_timing();
+    busy.store(false, Ordering::Release);
+    true
+}
+
+/// A delayed stop fallback may act only on the exact turn and runtime that
+/// were active when Stop was pressed. The sessions lock is held by the caller
+/// while evaluating and acting on this result, so replacement cannot race the
+/// session-level timing close.
+fn cancel_settle_matches<T>(
+    registered: Option<&Arc<T>>,
+    expected_runtime: &Arc<T>,
+    current_turn_id: Option<&str>,
+    expected_turn_id: &str,
+) -> bool {
+    registered.is_some_and(|runtime| Arc::ptr_eq(runtime, expected_runtime))
+        && current_turn_id == Some(expected_turn_id)
 }
 
 /// Result of the rebind eviction take: distinguishes "no resident runtime"
@@ -762,6 +801,23 @@ struct AcpSession {
     /// 最近一次请求/响应时刻（空闲回收巡检用）。任何直接到达该会话的请求
     /// （发消息、改配置、状态查询复用）与 prompt 响应返回都会刷新。
     last_activity: parking_lot::Mutex<Instant>,
+    /// Agent 侧活动时钟（与 event bridge 共享）：回合静默看门狗据此判断
+    /// 「Agent 是否还在动」，与上面的空闲回收时钟刻意分开。
+    activity: stall::ActivityClock,
+    /// 会话级待决权限/询问表（与池共享同一个 map）：用户正在被询问时，
+    /// 静默属于人的思考时间，看门狗不得据此判定 Agent 卡死。
+    pending_permissions: Arc<Mutex<HashMap<String, PendingPermission>>>,
+    pending_elicitations: Arc<Mutex<HashMap<String, PendingElicitation>>>,
+    /// 本会话的 stall 收口历史：窗口内反复卡死才升级为重启运行时。
+    stall_settles: parking_lot::Mutex<stall::StallSettleTracker>,
+    /// 上一次 stall 收口判定「该换会话了」；由 `get_or_spawn` 在下一次会话
+    /// 访问时执行 evict + 重新 spawn（会话上下文经 session/load 恢复）。
+    restart_requested: AtomicBool,
+    /// 本次 spawn 是否成功恢复了既有 ACP 会话（见 `spawn_session`）。
+    resumed_session: bool,
+    /// 正在等待停止宽限期的回合。只按同一 turn 去重；前一回合的轮询不能
+    /// 阻止后一回合安装自己的兜底任务。
+    cancel_settle_turns: parking_lot::Mutex<HashSet<String>>,
 }
 
 impl AcpSession {
@@ -787,23 +843,12 @@ impl AcpSession {
         .await
     }
 
-    async fn prompt(
-        self: Arc<Self>,
-        content: String,
-        blocks: Vec<ContentBlock>,
-        attachments: Vec<CodexDisplayAttachment>,
-    ) -> bool {
-        let turn_id = self.bridge.begin_turn(&content, &attachments);
+    async fn prompt(self: Arc<Self>, turn_id: String, blocks: Vec<ContentBlock>) -> bool {
         let kimi_diagnostic_cursor = match self.kimi_session_id.as_deref() {
             Some(session_id) => Some(kimi_diagnostic_cursor(session_id).await),
             None => None,
         };
-        let result = self
-            .connection
-            .send_request(PromptRequest::new(self.acp_session_id.clone(), blocks))
-            .block_task()
-            .await;
-        self.busy.store(false, Ordering::Release);
+        let result = self.await_prompt_with_stall_guard(&turn_id, blocks).await;
         // 响应返回也算一次活动：长时间流式输出的 turn 结束后重新计空闲。
         self.note_activity();
         match result {
@@ -815,12 +860,7 @@ impl AcpSession {
                     Some(cursor) => kimi_failure_after(&cursor).await,
                     None => None,
                 } {
-                    crate::features::assistant::timing::finish_turn(
-                        &self.bridge_session_id(),
-                        "Failed",
-                        Some(&error),
-                    );
-                    self.bridge.finish_turn(&turn_id, "Failed", Some(&error));
+                    self.settle_turn_once(&turn_id, "Failed", Some(&error), None);
                     return false;
                 }
                 let status = match response.stop_reason {
@@ -830,26 +870,130 @@ impl AcpSession {
                     StopReason::Refusal => "Refused",
                     _ => "Completed",
                 };
-                crate::features::assistant::timing::finish_turn(
-                    &self.bridge_session_id(),
-                    status,
-                    None,
-                );
-                self.bridge.finish_turn(&turn_id, status, None);
+                // 看门狗可能已把该回合本地收口（Agent 长时间无响应）：此时不再
+                // 补发，timing 与 busy 也由赢得认领的那一方负责。
+                self.settle_turn_once(&turn_id, status, None, None);
                 false
             }
             Err(error) => {
                 let message = format!("ACP Agent: {error}");
-                let upgrade_required = codex_upgrade_required(&message);
-                crate::features::assistant::timing::finish_turn(
-                    &self.bridge_session_id(),
-                    "Failed",
-                    Some(&message),
-                );
-                self.bridge.finish_turn(&turn_id, "Failed", Some(&message));
-                upgrade_required
+                let claimed = self.settle_turn_once(&turn_id, "Failed", Some(&message), None);
+                claimed && codex_upgrade_required(&message)
             }
         }
+    }
+
+    /// 在 timeline 赢得回合认领后，同源关闭 timing 并最后放开 busy。
+    ///
+    /// 任何输掉认领的迟到路径都不能触碰 timing 或 busy：用户可能已经开启了
+    /// 新回合，而这两个槽都是 session 级的。所有响应、看门狗和停止兜底都必须
+    /// 走这一顺序，避免开放准入后才认领旧回合的永久转圈竞态。
+    fn settle_turn_once(
+        &self,
+        turn_id: &str,
+        status: &str,
+        error: Option<&str>,
+        recovery_reason: Option<&str>,
+    ) -> bool {
+        let claimed = self
+            .bridge
+            .finish_turn_once(turn_id, status, error, recovery_reason);
+        let session_id = self.bridge_session_id();
+        finalize_claimed_turn(&self.busy, claimed, || {
+            crate::features::assistant::timing::finish_turn(&session_id, status, error);
+        })
+    }
+
+    /// 等待 `session/prompt` 响应，并兜底「Agent 不回响应」。
+    ///
+    /// 宿主只认这条响应来结束回合；上游适配器在「后台任务通知自启回合 +
+    /// 宿主 prompt 被 `absorbed_mid_turn` 吸收」时会漏掉它（见
+    /// `agentclientprotocol/claude-agent-acp#896` 等），届时界面会永久停在
+    /// 「处理中」，只有重启应用才会被孤儿回合收口。这里按静默分级兜底：
+    /// 超阈值先提示、再请求取消、宽限期后本地收口；SDK 请求本身始终继续等待
+    /// （丢弃它会让 ACP 请求被取消，反而制造 "response never received" 噪音）。
+    async fn await_prompt_with_stall_guard(
+        &self,
+        turn_id: &str,
+        blocks: Vec<ContentBlock>,
+    ) -> std::result::Result<PromptResponse, agent_client_protocol::Error> {
+        let request = self
+            .connection
+            .send_request(PromptRequest::new(self.acp_session_id.clone(), blocks));
+        let mut request = std::pin::pin!(request.block_task());
+        let mut ticker = tokio::time::interval(stall::STALL_TICK);
+        ticker.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
+        let mut noticed = false;
+        let mut cancel_sent_at: Option<Instant> = None;
+        let mut settled = false;
+        loop {
+            tokio::select! {
+                result = &mut request => return result,
+                _ = ticker.tick() => {
+                    if settled || self.awaiting_user_decision().await {
+                        // 已本地收口，或用户正在被询问（静默是人的时间）。
+                        continue;
+                    }
+                    let quiet = stall::quiet_for(&self.activity);
+                    match stall::stall_step(quiet, noticed, cancel_sent_at.map(|at| at.elapsed())) {
+                        stall::StallStep::Idle => {}
+                        stall::StallStep::Notice => {
+                            noticed = true;
+                            self.bridge.emit(
+                                "runtime_notice",
+                                json!({ "kind": "agent_stall", "quietSeconds": quiet.as_secs() }),
+                            );
+                        }
+                        stall::StallStep::Cancel => {
+                            cancel_sent_at = Some(Instant::now());
+                            self.cancel();
+                            self.bridge.emit("runtime_notice", json!({ "kind": "agent_stall_cancel" }));
+                        }
+                        stall::StallStep::Settle => {
+                            settled = true;
+                            let claimed = self.settle_turn_once(
+                                turn_id,
+                                "Interrupted",
+                                None,
+                                Some("agent_stall_timeout"),
+                            );
+                            if claimed {
+                                // 同一会话反复卡死才升级为重启（见
+                                // StallSettleTracker）。输掉认领说明停止兜底或响应
+                                // 已经收口，不能累计一次虚假的 stall，也不能清掉
+                                // 新回合的 busy。
+                                let restart = self.stall_settles.lock().record(Instant::now());
+                                if restart {
+                                    self.restart_requested.store(true, Ordering::Release);
+                                }
+                                let kind = if restart { "agent_stall_restart" } else { "agent_stall_settled" };
+                                self.bridge.emit("runtime_notice", json!({ "kind": kind }));
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    /// 是否有等待用户决定的权限/询问卡片。等待期间没有 Agent 事件属于正常：
+    /// 那是人在读卡片，不是 Agent 卡死。
+    async fn awaiting_user_decision(&self) -> bool {
+        let session_id = self.bridge.pinvou_session_id();
+        if self
+            .pending_permissions
+            .lock()
+            .await
+            .values()
+            .any(|pending| pending.view.session_id == session_id)
+        {
+            return true;
+        }
+        self.pending_elicitations
+            .lock()
+            .await
+            .values()
+            .any(|pending| pending.view.session_id == session_id)
     }
 
     fn bridge_session_id(&self) -> String {
@@ -2982,14 +3126,19 @@ impl AcpPool {
                 .touch_activity(session_id)
                 .context("更新 ACP 会话最近活跃时间失败")
         })?;
+        // Register the exact turn before yielding or exposing the admitted
+        // request to Stop. `busy == true` therefore always has a turn id that
+        // the cancel fallback can bind to instead of guessing at fire time.
+        let turn_id = runtime
+            .bridge
+            .begin_turn(&content, &prepared.display_attachments);
+        // prompt 发出即从这一刻起算静默：看门狗只认 Agent 侧的后续活动。
+        stall::mark_activity(&runtime.activity);
         drop(_admission);
         let pool = self.clone();
         let session_id = session_id.to_string();
         tokio::spawn(async move {
-            if runtime
-                .prompt(content, prepared.blocks, prepared.display_attachments)
-                .await
-            {
+            if runtime.prompt(turn_id, prepared.blocks).await {
                 pool.handle_outdated_codex_runtime(&session_id).await;
             }
         });
@@ -3042,7 +3191,27 @@ impl AcpPool {
         match self.sessions.lock().await.get(session_id).cloned() {
             Some(runtime) => {
                 if runtime.busy.load(Ordering::Acquire) {
+                    let turn_id = runtime.bridge.current_turn_id();
                     runtime.cancel();
+                    // 停止不能无限期依赖 Agent 应答：上游在丢弃/吸收 prompt 时
+                    // 可能永不回应，用户会以为停止按钮失灵（现场见到连点四次、
+                    // 约 30 秒后才被适配器自己的 cancel floor 收口）。
+                    if let Some(turn_id) = turn_id {
+                        self.schedule_cancel_settle(
+                            session_id.to_string(),
+                            runtime.clone(),
+                            turn_id,
+                        );
+                    } else {
+                        // send_message registers the turn synchronously before
+                        // yielding, so this is an invariant violation. Never
+                        // guess later: doing so could close a different turn.
+                        diagnostics::write(
+                            &diagnostics::operation_id("cancel-settle"),
+                            "session:cancel_without_turn_id",
+                            format!("session_id={session_id}"),
+                        );
+                    }
                 } else {
                     // session 已恢复但当前进程没有活跃 prompt 时，session/cancel 无法
                     // 命中旧进程的 turn。直接收口持久化孤儿回合，让停止操作可恢复且幂等。
@@ -3058,6 +3227,66 @@ impl AcpPool {
                     .interrupt_orphaned_turns("cancel_without_runtime");
             }
         }
+    }
+
+    /// 用户停止后的兜底收口：宽限期内 Agent 没有给出响应就本地收口。
+    fn schedule_cancel_settle(
+        &self,
+        session_id: String,
+        runtime: Arc<AcpSession>,
+        turn_id: String,
+    ) {
+        // 连点停止只按同一回合去重。若该回合先结束并马上开启新回合，新回合
+        // 仍可安装自己的兜底，而旧任务只能观察、绝不能收口它。
+        if !runtime.cancel_settle_turns.lock().insert(turn_id.clone()) {
+            return;
+        }
+        let sessions = self.sessions.clone();
+        tokio::spawn(async move {
+            let deadline = Instant::now() + stall::CANCEL_SETTLE_GRACE;
+            while Instant::now() < deadline {
+                if !runtime.busy.load(Ordering::Acquire)
+                    || runtime.bridge.current_turn_id().as_deref() != Some(turn_id.as_str())
+                {
+                    break;
+                }
+                tokio::time::sleep(Duration::from_secs(2)).await;
+            }
+            let settled = {
+                // Keep the registry locked across the claim/timing/busy
+                // sequence. A restart or eviction cannot replace the runtime
+                // between the pointer check and the session-level timing close.
+                let registered = sessions.lock().await;
+                let matches = cancel_settle_matches(
+                    registered.get(&session_id),
+                    &runtime,
+                    runtime.bridge.current_turn_id().as_deref(),
+                    &turn_id,
+                );
+                matches
+                    && runtime.busy.load(Ordering::Acquire)
+                    && runtime.settle_turn_once(
+                        &turn_id,
+                        "Interrupted",
+                        None,
+                        Some("cancel_timeout"),
+                    )
+            };
+            if settled {
+                runtime
+                    .bridge
+                    .emit("runtime_notice", json!({ "kind": "cancel_timeout" }));
+                diagnostics::write(
+                    &diagnostics::operation_id("cancel-settle"),
+                    "session:cancel_timeout",
+                    format!(
+                        "session_id={session_id} grace_secs={}",
+                        stall::CANCEL_SETTLE_GRACE.as_secs()
+                    ),
+                );
+            }
+            runtime.cancel_settle_turns.lock().remove(&turn_id);
+        });
     }
 
     pub async fn evict(&self, session_id: &str) {
@@ -3545,17 +3774,47 @@ impl AcpPool {
             "session:resolve_start",
             format!("session_id={session_id}"),
         );
+        let mut restarted_after_stall = false;
         let mut sessions = self.sessions.lock().await;
-        if let Some(runtime) = sessions.get(session_id) {
+        if let Some(runtime) = sessions.get(session_id).cloned() {
+            if !runtime.restart_requested.load(Ordering::Acquire) {
+                diagnostics::write(
+                    &operation_id,
+                    "session:reused",
+                    format!("session_id={session_id}"),
+                );
+                // 复用即活动：前端对可见会话的状态轮询会持续刷新空闲时钟，
+                // 这正好与「active 会话不回收」的保守语义一致。
+                runtime.note_activity();
+                return Ok(runtime);
+            }
+            // 同一会话在窗口内反复 stall：采纳上游「可能需要新会话」的建议，
+            // 丢弃这个运行时，让下面的 spawn_session 重新拉起（会话上下文由
+            // session/load 恢复，只丢掉在飞的那次工作）。首次 stall 不走到这里，
+            // 因为无法从外部区分「query 卡死」与「Agent 在等长时后台任务」。
+            //
+            // sessions 锁必须一直持有到 replacement 插入完成。若在 shutdown
+            // 期间留下空洞，并发 get_or_spawn 会各自拉起子进程，后 insert 的
+            // 运行时覆盖先 insert 的运行时并泄漏它的进程/事件泵。
+            sessions.remove(session_id);
+            // 与 evict/restart_agent_sessions 相同，先回答旧运行时留下的权限/
+            // 询问卡片；否则共享 pending map 会让新运行时的看门狗永久误判为
+            // 用户仍在思考，从而跳过所有 stall 检查。
+            self.cancel_pending_permissions_with_bridge(session_id, Some(&runtime.bridge))
+                .await;
+            self.cancel_pending_elicitations_with_bridge(session_id, Some(&runtime.bridge))
+                .await;
+            runtime.shutdown().await;
             diagnostics::write(
                 &operation_id,
-                "session:reused",
+                "session:restart_after_stall",
                 format!("session_id={session_id}"),
             );
-            // 复用即活动：前端对可见会话的状态轮询会持续刷新空闲时钟，
-            // 这正好与「active 会话不回收」的保守语义一致。
-            runtime.note_activity();
-            return Ok(runtime.clone());
+            // 旧运行时的 bridge 可能仍有在飞的 flush；新 bridge 构造时会重读
+            // timeline 尾部并据此继续分配 seq，编号保持单调。重启通知延后到新
+            // 运行时建好后由它发出（见下面 insert 之后），这样也能区分「真的
+            // 恢复了旧会话」与「只能新建会话」。
+            restarted_after_stall = true;
         }
         // 与 spawn_session 一致走 self.backend()，让辅助索引缺失的会话在
         // acp_record 处得到明确报错，而不是误导性的「当前会话不是 ACP 会话」。
@@ -3603,6 +3862,18 @@ impl AcpPool {
             }
         };
         sessions.insert(session_id.to_string(), runtime.clone());
+        if restarted_after_stall {
+            // 只有真的恢复了旧会话才承诺「历史保留」：适配器不支持 load_session
+            // 或 load 失败时 spawn_session 会静默新建会话，此时必须如实告知用户。
+            let kind = if runtime.resumed_session {
+                "agent_session_restarted"
+            } else {
+                "agent_session_restarted_fresh"
+            };
+            runtime
+                .bridge
+                .emit("runtime_notice", json!({ "kind": kind }));
+        }
         diagnostics::write(
             &operation_id,
             "session:ready",
@@ -3623,7 +3894,12 @@ impl AcpPool {
                 let mut command = self.adapter_command(&adapter)?;
                 self.configure_codex_path(&mut command)?;
                 self.configure_codex_provider_env(&mut command, pinvou_session_id)?;
-                (command, adapter, CODEX_ACP_PACKAGE, CODEX_ACP_VERSION)
+                (
+                    command,
+                    adapter,
+                    CODEX_ACP_PACKAGE,
+                    CODEX_ACP_ADAPTER_VERSION,
+                )
             }
             AgentBackend::ClaudeAcp => {
                 let adapter = self
@@ -3658,14 +3934,18 @@ impl AcpPool {
             .with_context(|| format!("启动 {} 失败", backend.display_name()))?;
         let stdin = child.stdin.take().context("ACP stdin 不可用")?;
         let stdout = child.stdout.take().context("ACP stdout 不可用")?;
+        let event_bridge = EventBridge::new(self.app.clone(), pinvou_session_id.to_string());
         let stderr_tail = Arc::new(parking_lot::Mutex::new(VecDeque::<String>::new()));
         if let Some(stderr) = child.stderr.take() {
             let sid = pinvou_session_id.to_string();
             let operation_id = operation_id.to_string();
             let stderr_tail = stderr_tail.clone();
             let agent_id = backend.agent_id().unwrap_or("acp");
+            let notice_bridge = event_bridge.clone();
             tokio::spawn(async move {
                 let mut lines = BufReader::new(stderr).lines();
+                let mut last_notice: Option<Instant> = None;
+                let mut last_notice_line: Option<String> = None;
                 while let Ok(Some(line)) = lines.next_line().await {
                     {
                         let mut tail = stderr_tail.lock();
@@ -3679,11 +3959,36 @@ impl AcpPool {
                         "session:bridge_stderr",
                         format!("agent={agent_id} session_id={sid} stderr={line}"),
                     );
+                    // 适配器把真正的异常写进 stderr（例如「cancel floor … wedged」），
+                    // 只落盘不够：用户看不到，只能对着永久转圈的界面猜。闸门
+                    // （措辞命中 + 限频 + 内容去重）抽在 stall.rs 里做单测。
+                    let now = Instant::now();
+                    let detail = line
+                        .chars()
+                        .take(stall::STDERR_NOTICE_MAX_CHARS)
+                        .collect::<String>();
+                    if stall::stderr_notice_due(
+                        now,
+                        last_notice,
+                        last_notice_line.as_deref(),
+                        &line,
+                        &detail,
+                    ) {
+                        last_notice = Some(now);
+                        last_notice_line = Some(detail.clone());
+                        notice_bridge.emit(
+                            "runtime_notice",
+                            json!({
+                                "kind": "agent_stderr",
+                                "agent": agent_id,
+                                "detail": detail,
+                            }),
+                        );
+                    }
                 }
             });
         }
 
-        let event_bridge = EventBridge::new(self.app.clone(), pinvou_session_id.to_string());
         let replay_suppressed = Arc::new(AtomicBool::new(false));
         let (ready_tx, ready_rx) = oneshot::channel();
         let (shutdown_tx, shutdown_rx) = oneshot::channel();
@@ -3743,10 +4048,17 @@ impl AcpPool {
                                 "request": request_value,
                             }),
                         );
+                        // 权限请求是 Agent 侧活动：看门狗据此外推静默窗口。
+                        bridge_for_permission.note_agent_activity();
                         let response = response_rx.await.unwrap_or_else(|_| {
                             RequestPermissionResponse::new(RequestPermissionOutcome::Cancelled)
                         });
                         pending_for_permission.lock().await.remove(&key);
+                        // Exclude the entire human think-time interval from
+                        // the stall clock. Without this reset, answering an
+                        // old card can immediately cancel healthy follow-up
+                        // work using the time spent waiting for the user.
+                        bridge_for_permission.note_agent_activity();
                         responder.respond(response)
                     },
                     agent_client_protocol::on_receive_request!(),
@@ -3775,6 +4087,7 @@ impl AcpPool {
                                 "request": request_value,
                             }),
                         );
+                        bridge_for_elicitation.note_agent_activity();
                         let (response, cancelled_by_agent) = tokio::select! {
                             response = response_rx => (
                                 response.unwrap_or_else(|_| {
@@ -3788,6 +4101,7 @@ impl AcpPool {
                             ),
                         };
                         pending_for_elicitation.lock().await.remove(&key);
+                        bridge_for_elicitation.note_agent_activity();
                         if cancelled_by_agent {
                             bridge_for_elicitation.emit(
                                 "elicitation_resolved",
@@ -3873,7 +4187,9 @@ impl AcpPool {
         } else {
             self.config_defaults.get(backend)
         };
-        let (acp_session_id, mut mode_state, mut config_options) =
+        // `resumed_session` 记录这次 spawn 是「恢复」还是「新建」：重启兜底要如实
+        // 告诉用户历史是否被带过来（load_session 缺失或 load 失败都会静默新建）。
+        let (acp_session_id, mut mode_state, mut config_options, resumed_session) =
             if initialized.agent_capabilities.load_session {
                 if let Some(saved_id) = saved.acp_session_id.clone() {
                     replay_suppressed.store(true, Ordering::Release);
@@ -3887,20 +4203,27 @@ impl AcpPool {
                             saved_id,
                             response.modes,
                             response.config_options.unwrap_or_default(),
+                            true,
                         ),
                         Err(error) => {
                             eprintln!(
                                 "[pinvou3-app] {} ACP 恢复会话失败，改建新会话: {error}",
                                 backend.display_name()
                             );
-                            new_acp_session(&connection, &workspace, backend).await?
+                            let (id, modes, options) =
+                                new_acp_session(&connection, &workspace, backend).await?;
+                            (id, modes, options, false)
                         }
                     }
                 } else {
-                    new_acp_session(&connection, &workspace, backend).await?
+                    let (id, modes, options) =
+                        new_acp_session(&connection, &workspace, backend).await?;
+                    (id, modes, options, false)
                 }
             } else {
-                new_acp_session(&connection, &workspace, backend).await?
+                let (id, modes, options) =
+                    new_acp_session(&connection, &workspace, backend).await?;
+                (id, modes, options, false)
             };
         restore_config_values(
             &connection,
@@ -3954,11 +4277,21 @@ impl AcpPool {
             }),
         );
 
+        let activity = event_bridge.activity();
+        let pending_permissions = self.pending_permissions.clone();
+        let pending_elicitations = self.pending_elicitations.clone();
         Ok(AcpSession {
             connection,
             kimi_session_id: (backend == AgentBackend::KimiAcp).then(|| acp_session_id.clone()),
             acp_session_id,
             bridge: event_bridge,
+            activity,
+            pending_permissions,
+            pending_elicitations,
+            stall_settles: parking_lot::Mutex::new(stall::StallSettleTracker::new()),
+            restart_requested: AtomicBool::new(false),
+            resumed_session,
+            cancel_settle_turns: parking_lot::Mutex::new(HashSet::new()),
             busy: AtomicBool::new(false),
             configuring: AtomicBool::new(false),
             prompt_pending: AtomicUsize::new(0),
@@ -5099,5 +5432,130 @@ mod tests {
         assert!(!stale_official_target(&root.join("absent"), None));
 
         std::fs::remove_dir_all(&root).unwrap();
+    }
+
+    /// 声明的适配器版本必须与随包 pin 一致。
+    ///
+    /// `CLAUDE_ACP_VERSION` 会被写进会话的 `acp-state.json`（`adapter.version`）
+    /// 当作「本会话用的适配器版本」：它一旦落后于 bridge 的 pin，记录出来的
+    /// 版本就是假的（本轮修过一次：常量停在 0.62.0，而随包已经是 0.70.0→0.79.0）。
+    #[test]
+    fn forkguard_declared_adapter_versions_match_the_bridge_pin() {
+        let manifest = std::fs::read_to_string(concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/../scripts/codex-bridge-runtime/package.json"
+        ))
+        .expect("read the bridge runtime manifest");
+        let manifest =
+            serde_json::from_str::<Value>(&manifest).expect("parse the bridge runtime manifest");
+        let dependencies = &manifest["dependencies"];
+        let codex_pinned = dependencies[CODEX_ACP_PACKAGE]
+            .as_str()
+            .expect("codex-acp pin");
+        let claude_pinned = dependencies[CLAUDE_ACP_PACKAGE]
+            .as_str()
+            .expect("claude-agent-acp pin");
+        assert_eq!(
+            codex_pinned, CODEX_ACP_ADAPTER_VERSION,
+            "CODEX_ACP_ADAPTER_VERSION 必须等于随包 codex-acp 的 pin"
+        );
+        assert_eq!(
+            claude_pinned, CLAUDE_ACP_VERSION,
+            "CLAUDE_ACP_VERSION 必须等于随包 claude-agent-acp 的 pin"
+        );
+
+        let prepare = std::fs::read_to_string(concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/../scripts/prepare-codex-bridge-runtime.sh"
+        ))
+        .expect("read the bridge runtime script");
+        assert!(
+            prepare.contains(&format!(
+                "CODEX_ACP_VERSION=\"{CODEX_ACP_ADAPTER_VERSION}\""
+            )),
+            "prepare-codex-bridge-runtime.sh 必须钉同一个 Codex 适配器版本"
+        );
+        assert!(
+            prepare.contains(&format!("CLAUDE_ACP_VERSION=\"{CLAUDE_ACP_VERSION}\"")),
+            "prepare-codex-bridge-runtime.sh 必须钉同一个适配器版本"
+        );
+    }
+
+    /// 迟到的收口不得关闭别人的回合。
+    ///
+    /// 看门狗/停止兜底本地收口后 `busy` 立刻放开，用户可以马上开新回合；此时
+    /// 被丢弃的 prompt future 才失败返回，若它无条件关 timing，关掉的是用户
+    /// 刚开的那条记录（timing 每会话只留一条、`finish_turn_internal` 取队尾）：
+    /// `has_active_turn` 变假会让同工作区的分支切换守卫失效，`assistant_done`
+    /// 也会带上前一回合的状态。
+    #[test]
+    fn forkguard_late_close_does_not_finish_the_next_timing_turn() {
+        crate::platform::test_support::with_temp_home("acp-late-close-test", || {
+            let session_id = "acp-late-close-test";
+            let busy = AtomicBool::new(true);
+            crate::features::assistant::timing::start_turn(session_id);
+            assert!(!finalize_claimed_turn(&busy, false, || {
+                crate::features::assistant::timing::finish_turn(
+                    session_id,
+                    "Failed",
+                    Some("ACP Agent: x"),
+                );
+            }));
+            assert!(
+                busy.load(Ordering::Acquire),
+                "没认领到旧回合的一方不得放开新回合的 busy"
+            );
+            assert!(
+                crate::features::assistant::timing::has_queued_active_turn(session_id),
+                "没认领到回合的一方不得关掉 timing"
+            );
+            assert!(finalize_claimed_turn(&busy, true, || {
+                assert!(
+                    busy.load(Ordering::Acquire),
+                    "收口顺序必须是 claim -> timing -> busy"
+                );
+                crate::features::assistant::timing::finish_turn(
+                    session_id,
+                    "Failed",
+                    Some("ACP Agent: x"),
+                );
+            }));
+            assert!(!busy.load(Ordering::Acquire));
+            assert!(
+                !crate::features::assistant::timing::has_queued_active_turn(session_id),
+                "认领到本回合的一方负责收口"
+            );
+            crate::features::assistant::timing::clear_session(session_id);
+        });
+    }
+
+    #[test]
+    fn forkguard_cancel_settle_is_bound_to_runtime_and_turn() {
+        let runtime_a = Arc::new(());
+        let runtime_b = Arc::new(());
+        assert!(cancel_settle_matches(
+            Some(&runtime_a),
+            &runtime_a,
+            Some("turn-a"),
+            "turn-a",
+        ));
+        assert!(!cancel_settle_matches(
+            Some(&runtime_a),
+            &runtime_a,
+            Some("turn-b"),
+            "turn-a",
+        ));
+        assert!(!cancel_settle_matches(
+            Some(&runtime_b),
+            &runtime_a,
+            Some("turn-a"),
+            "turn-a",
+        ));
+        assert!(!cancel_settle_matches::<()>(
+            None,
+            &runtime_a,
+            Some("turn-a"),
+            "turn-a",
+        ));
     }
 }
