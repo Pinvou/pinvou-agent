@@ -12,7 +12,7 @@ static DRAG_ACTIVE: AtomicBool = AtomicBool::new(false);
 
 /// 全局鼠标状态(坐标 + 左键按下)。三平台轮询封装。
 /// - Linux: X11 XQueryPointer(root 窗口坐标 = 真·全局虚拟桌面坐标)
-/// - macOS: NSEvent 全局监听线程写的原子快照(见 macos_mouse 模块)
+/// - macOS: CoreGraphics synchronous read of the global cursor + left button (see the macos_mouse module)
 /// - Windows: GetCursorPos + GetAsyncKeyState 同步读
 pub struct GlobalMouse {
     pub x: i32,
@@ -154,76 +154,21 @@ fn poll_global_mouse(_dev: &()) -> GlobalMouse {
 #[cfg(target_os = "macos")]
 mod macos_mouse {
     use super::GlobalMouse;
+    use crate::platform::cursor;
 
-    #[repr(C)]
-    #[derive(Default, Clone, Copy)]
-    struct CGPoint {
-        x: f64,
-        y: f64,
-    }
-
-    /// CGEventSourceStateID:kCGEventSourceStateHIDSystemState = 1。
-    /// 取 HID 硬件状态(而非本 app 会话状态),确保拖拽时光标按下态不被 app 捕获掩盖。
-    const HID_SYSTEM_STATE: i32 = 1;
-    /// CGMouseButton:kCGMouseButtonLeft = 0。
-    const MOUSE_BUTTON_LEFT: u32 = 0;
-
-    #[link(name = "CoreGraphics", kind = "framework")]
-    unsafe extern "C" {
-        fn CGEventCreate(source: *mut std::ffi::c_void) -> *mut std::ffi::c_void;
-        fn CGEventGetLocation(event: *mut std::ffi::c_void) -> CGPoint;
-        // CGEventSourceButtonState 第一参数是 CGEventSourceStateID(int32 枚举值,如
-        // kCGEventSourceStateHIDSystemState = 1),**不是** CGEventSourceRef 指针。
-        // 此前误声明为 *mut c_void 并先 CGEventSourceCreate 再传入,arm64 ABI 下
-        // 堆指针低 32 位被当作 stateID 读取(非法枚举值),导致恒返回 false →
-        // macOS 撕离拖拽 100% 失效。直接传整数枚举值即可,无需分配 source 对象。
-        fn CGEventSourceButtonState(state_id: i32, button: u32) -> bool;
-    }
-
-    #[link(name = "CoreFoundation", kind = "framework")]
-    unsafe extern "C" {
-        fn CFRelease(cf: *mut std::ffi::c_void);
-    }
-
-    /// 同步读全局鼠标位置 + 左键按下态。任意线程可调,免授权。任一 CG 调用失败(罕见,
-    /// 如 window server 异常)返回零值快照,轮询循环下一轮重试,不会崩溃。
+    /// Reads the global mouse position + left-button state synchronously (the
+    /// CoreGraphics extern declarations and coordinate reads are shared from
+    /// platform::cursor — the same copy the computer-use backend uses, so
+    /// duplicate externs cannot drift). Callable on any thread, no
+    /// authorization required. A failed position read (rare, e.g. a broken
+    /// window server) returns a zeroed snapshot; the polling loop retries on
+    /// the next tick instead of crashing.
     pub(super) fn poll() -> GlobalMouse {
-        // SAFETY: CGEventCreate accepts NULL for source (default event
-        // source); the returned event is null-checked and CGEventGetLocation
-        // only reads its internal coordinates; CFRelease releases a
-        // successfully created object exactly once; the first parameter of
-        // CGEventSourceButtonState is an int32 enum value
-        // (HID_SYSTEM_STATE), not a pointer. All three are callable on any
-        // thread without authorization.
-        unsafe {
-            let event = CGEventCreate(core::ptr::null_mut());
-            if event.is_null() {
-                return GlobalMouse {
-                    x: 0,
-                    y: 0,
-                    left_down: false,
-                };
-            }
-            let loc = CGEventGetLocation(event);
-            CFRelease(event);
-
-            // CGEventCreate 返回的位置反映当前光标;按键态直接从 HID 源读。
-            // CGEventSourceButtonState 吃 CGEventSourceStateID(int32 枚举值),
-            // 无需 CGEventSourceCreate 分配/释放 source 对象。
-            let left_down = CGEventSourceButtonState(HID_SYSTEM_STATE, MOUSE_BUTTON_LEFT);
-            GlobalMouse {
-                x: if loc.x.is_finite() {
-                    loc.x.round() as i32
-                } else {
-                    0
-                },
-                y: if loc.y.is_finite() {
-                    loc.y.round() as i32
-                } else {
-                    0
-                },
-                left_down,
-            }
+        let (x, y) = cursor::cursor_position().unwrap_or((0, 0));
+        GlobalMouse {
+            x,
+            y,
+            left_down: cursor::left_button_down(),
         }
     }
 }

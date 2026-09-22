@@ -16,6 +16,60 @@
       : shellCleanupFailed.zh;
   }
 
+  // Backend error strings the desktop computer-use commands surface verbatim
+  // (platform/tauri/bridge/computer_use.js localizeKnownError). Exact
+  // equality first; unrecognized messages then fall through to the
+  // marker-based table below, and a miss there returns null so the bridge
+  // passes the original error through untouched.
+  const computerUseKnownErrors = {
+    "computer use has no backend on this operating system": {
+      zh: "当前平台没有电脑使用后端，无法开启此功能。",
+      en: "Computer use is not available on this platform: there is no computer-use backend for this operating system.",
+      ja: "このプラットフォームにはコンピュータ操作のバックエンドがないため、この機能は利用できません。",
+    },
+    "computer use is disabled; enable it in settings before granting control": {
+      zh: "电脑使用已在设置中停用，请先开启再授予控制。",
+      en: "Computer use is disabled in settings; enable it before granting control.",
+      ja: "コンピュータ操作は設定で無効になっています。制御を許可する前に設定で有効にしてください。",
+    },
+    "computer use is stopped; resume it before granting control": {
+      zh: "电脑使用已停止，请先恢复（关闭后再开启）再授予控制。",
+      en: "Computer use is stopped; turn it off and back on before granting control.",
+      ja: "コンピュータ操作は停止中です。オフにして再度オンにしてから制御を許可してください。",
+    },
+  };
+
+  // The expired-confirmation errors embed the confirm_id
+  // ("confirmation request no longer exists (unknown or expired): cu-…"),
+  // so exact equality cannot match them; these match on a stable marker
+  // phrase instead (pinned by tests on both sides of the bridge).
+  const computerUseKnownErrorMarkers = [
+    {
+      marker: "unknown or expired",
+      zh: "该确认请求已过期或不存在；请重新发起操作，确认弹窗会再次出现。",
+      en: "This confirmation request no longer exists (unknown or expired); retry the action to raise a fresh confirmation.",
+      ja: "この確認リクエストは存在しないか有効期限が切れています。操作を再試行すると新しい確認が表示されます。",
+    },
+  ];
+
+  function computerUseKnownErrorText(message, language) {
+    const known = computerUseKnownErrors[String(message || "")];
+    if (known) {
+      return language === "en" ? known.en
+        : language === "ja" ? known.ja
+        : known.zh;
+    }
+    const text = String(message || "").toLowerCase();
+    for (const entry of computerUseKnownErrorMarkers) {
+      if (text.includes(entry.marker)) {
+        return language === "en" ? entry.en
+          : language === "ja" ? entry.ja
+          : entry.zh;
+      }
+    }
+    return null;
+  }
+
   // Runtime-owned user-role turns may arrive with their trailing turn metadata
   // flattened into the same text block. Keep that transport detail out of UI projections.
   function inputProvenanceFromText(value) {
@@ -85,6 +139,7 @@
     isInternalRuntimeUserMessage,
     isInternalUserMessageProvenance,
     userMessageInputProvenance,
+    computerUseKnownErrorText,
     // Error texts the gate missed (gateway/proxy custom bodies, raw
     // provider messages) do not become model-service notices but still get
     // displayed as bare strings / red text. Redact unconditionally in

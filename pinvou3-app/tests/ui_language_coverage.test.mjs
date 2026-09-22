@@ -21,6 +21,7 @@ for (const language of ['zh', 'en', 'ja']) {
     'uiPet',
     'uiWebConnection',
     'uiConversation',
+    'uiComputerUse',
     'uiHomeMode',
     'uiAttachments',
     'uiCodex',
@@ -161,6 +162,34 @@ for (const language of ['zh', 'en', 'ja']) {
       `${language} dictionary misses zh keys (renders undefined): ${missing.slice(0, 10).join(', ')}`,
     );
   }
+}
+
+// uiComputerUse (round-17): type parity across languages — a template
+// flattened to a string in any language makes describeConfirmAction's
+// function guard fall back to the raw English summary while the generic
+// leaf walk above stays green. Also pin that the consent surface and the
+// settings section actually consume the namespace.
+{
+  const typedLeafKeys = (obj, prefix = '') => {
+    const out = [];
+    for (const key of Object.keys(obj)) {
+      const value = obj[key];
+      const path = prefix ? `${prefix}.${key}` : key;
+      if (value && typeof value === 'object' && !Array.isArray(value)) out.push(...typedLeafKeys(value, path));
+      else out.push([path, typeof value]);
+    }
+    return out;
+  };
+  const zhTypes = new Map(typedLeafKeys(dict.zh.uiComputerUse));
+  assert.ok(zhTypes.size >= 37, `uiComputerUse leaf count looks wrong: ${zhTypes.size}`);
+  for (const language of ['en', 'ja']) {
+    const types = new Map(typedLeafKeys(dict[language].uiComputerUse));
+    for (const [key, type] of zhTypes) {
+      assert.equal(types.get(key), type, `${language}.uiComputerUse.${key} must be a ${type} like zh`);
+    }
+  }
+  assert.match(source('features/chat/ChatView.jsx'), /t\.uiComputerUse/);
+  assert.match(source('features/settings/SettingsView.jsx'), /uiComputerUse/);
 }
 
 const main = source('app/main.jsx');

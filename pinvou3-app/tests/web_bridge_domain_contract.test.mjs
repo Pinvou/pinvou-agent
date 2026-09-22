@@ -97,6 +97,17 @@ for (const [domain, methods] of Object.entries(expectedApi)) {
   assert.deepEqual(Object.keys(api[domain]).sort(), [...methods].sort(), `${domain} Web API surface changed`); // eslint-disable-line unicorn/require-array-sort-compare -- lexicographic order of string arrays matches assertion expectations
 }
 assert.equal(api.getState, undefined, 'Web flat compatibility facade must stay private');
+// The computerUse domain must reject on web (review finding: the surface
+// equality lock alone would not catch a stub turning into a no-op resolver).
+// Every stub is pinned individually: a single-method pin used to leave the
+// other eight swappable to fake resolvers (phantom consent state on web).
+for (const method of Object.keys(api.computerUse)) {
+  await assert.rejects(
+    api.computerUse[method](),
+    /not supported on the web client/,
+    `web computerUse.${method} stub must reject, never fake success`,
+  );
+}
 assert.equal(api.sendMessage, undefined, 'Web flat command facade must stay private');
 
 snapshotReads = 0;
