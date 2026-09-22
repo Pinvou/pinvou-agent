@@ -61,6 +61,9 @@ cc = "1"
 # paused clock (#[tokio::test(start_paused = true)]) instead of sleeping the
 # real 2s REBIND_EVICT_GATE_TIMEOUT.
 tokio = { version = "1.49", features = ["test-util"] }
+# computer_use retention test ages a crash-orphaned atomic-write temp past
+# the sweep threshold; pinned to the version already in the lock graph (tar).
+filetime = "0.2.29"
 
 [dependencies]
 pinvou-knowledge = { path = "../../pinvou-knowledge", default-features = false, features = ["client", "discovery"] }
@@ -271,7 +274,11 @@ objc2-screen-capture-kit = { version = "0.3", default-features = false, features
 ] }
 
 [target.'cfg(windows)'.dependencies]
-windows-sys = { version = "0.61", features = ["Wdk_Storage_FileSystem", "Win32_Foundation", "Win32_Globalization", "Win32_Storage_FileSystem", "Win32_System_IO", "Win32_System_Performance", "Win32_System_Registry", "Win32_System_SystemInformation", "Win32_System_Threading", "Win32_UI_Input_KeyboardAndMouse", "Win32_UI_WindowsAndMessaging"] }
+# Win32_Graphics_Gdi: the in-repo monitor capture (computer_use) BitBlts the
+# desktop DC directly — xcap 0.9.8's capture_monitor leaks one GDI bitmap per
+# call (DeleteObject runs while the bitmap is still selected into the memory
+# DC) and its selection is never restored.
+windows-sys = { version = "0.61", features = ["Wdk_Storage_FileSystem", "Win32_Foundation", "Win32_Globalization", "Win32_Graphics_Gdi", "Win32_Storage_FileSystem", "Win32_System_IO", "Win32_System_Performance", "Win32_System_Registry", "Win32_System_SystemInformation", "Win32_System_Threading", "Win32_UI_Input_KeyboardAndMouse", "Win32_UI_WindowsAndMessaging"] }
 webview2-com = "0.38.2"
 # Native Outlook .msg parsing (ingest_email.rs; same gating the retired
 # os::msg_native_supported() predicate provided). Windows-only compile:

@@ -1,5 +1,7 @@
-//! Windows backend: xcap (GDI BitBlt) screen capture + enigo (SendInput) input injection
-//! + uiautomation (UI Automation) accessibility tree.
+//! Windows backend: in-repo GDI BitBlt screen capture (see
+//! `capture_monitor_physical` for why xcap's monitor path is not used) +
+//! enigo (SendInput) input injection + uiautomation (UI Automation)
+//! accessibility tree.
 //!
 //! Coordinate contract: the process is made Per-Monitor-V2 DPI aware via tao (the thread DPI
 //! awareness is read and checked at `new()` time, see the `capabilities` notes), so capture
@@ -57,13 +59,18 @@ use std::time::Duration;
 use enigo::{Button, Direction, Enigo, Keyboard, Mouse, Settings};
 use uiautomation::UIAutomation;
 use uiautomation::types::{ControlType, Point, TreeScope, UIProperty};
+use windows_sys::Win32::Graphics::Gdi::{
+    BI_RGB, BITMAPINFO, BITMAPINFOHEADER, BitBlt, CreateCompatibleBitmap, CreateCompatibleDC,
+    DIB_RGB_COLORS, DeleteDC, DeleteObject, GetDIBits, GetWindowDC, HBITMAP, HDC, HGDIOBJ,
+    ReleaseDC, SRCCOPY, SelectObject,
+};
 use windows_sys::Win32::UI::Input::KeyboardAndMouse::{
     GetKeyboardLayout, HKL, INPUT, INPUT_0, INPUT_MOUSE, MOUSEEVENTF_ABSOLUTE, MOUSEEVENTF_MOVE,
     MOUSEEVENTF_VIRTUALDESK, MOUSEINPUT, SendInput, VkKeyScanExW,
 };
 use windows_sys::Win32::UI::WindowsAndMessaging::{
-    GetForegroundWindow, GetSystemMetrics, GetWindowThreadProcessId, SM_CXVIRTUALSCREEN,
-    SM_CYVIRTUALSCREEN, SM_XVIRTUALSCREEN, SM_YVIRTUALSCREEN,
+    GetDesktopWindow, GetForegroundWindow, GetSystemMetrics, GetWindowThreadProcessId,
+    SM_CXVIRTUALSCREEN, SM_CYVIRTUALSCREEN, SM_XVIRTUALSCREEN, SM_YVIRTUALSCREEN,
 };
 use xcap::Monitor;
 
@@ -262,13 +269,131 @@ fn check_injection(context: &str, requested: u32, sent: u32) -> Result<(), Compu
     }
     Err(ComputerUseError::unavailable(format!(
         "{context}: SendInput injected {sent}/{requested} events — the input was likely blocked \
-         by UIPI because the target window is elevated (run as administrator); \
+         by UIPI because the target window is elevated (run as administrator), or because the \
+         secure desktop (lock screen / UAC prompt) is active; \
          run Pinvou elevated or use an unelevated target window"
     )))
 }
 
 fn map_xcap_err(context: &str, err: xcap::XCapError) -> ComputerUseError {
     ComputerUseError::failed(format!("{context}: {err}"))
+}
+
+/// BitBlts one monitor's pixels into an RGBA buffer, replicating xcap 0.9.8's
+/// `capture_monitor` with two correctness fixes. xcap 0.9.8 (still the newest
+/// release upstream) discards `SelectObject`'s previous-object return and lets
+/// its cleanup guards drop LIFO, so `DeleteObject` runs while the bitmap is
+/// still selected into the memory DC — where it fails silently — leaking one
+/// GDI bitmap handle per screenshot until the ~10,000-handle per-process cap
+/// makes captures fail process-wide. It also calls `GetDIBits` while the
+/// bitmap is still selected into the passed DC, which its documentation
+/// explicitly requires against. This version stores and restores the previous
+/// object (deselecting before `GetDIBits`), so every object is deletable at
+/// cleanup time and nothing leaks.
+fn capture_monitor_physical(
+    x: i32,
+    y: i32,
+    width: u32,
+    height: u32,
+) -> Result<Vec<u8>, ComputerUseError> {
+    let Ok(width) = i32::try_from(width) else {
+        return Err(ComputerUseError::failed(format!(
+            "screen capture: monitor width {width} does not fit i32"
+        )));
+    };
+    let Ok(height) = i32::try_from(height) else {
+        return Err(ComputerUseError::failed(format!(
+            "screen capture: monitor height {height} does not fit i32"
+        )));
+    };
+    if width <= 0 || height <= 0 {
+        return Err(ComputerUseError::failed(format!(
+            "screen capture: degenerate monitor size {width}x{height}"
+        )));
+    }
+    // SAFETY: each DC and GDI object below is released before returning, in
+    // reverse acquisition order; the bitmap is deselected before both
+    // `GetDIBits` and `DeleteObject`.
+    unsafe {
+        let hwnd = GetDesktopWindow();
+        let hdc_window = GetWindowDC(hwnd);
+        if hdc_window.is_null() {
+            return Err(ComputerUseError::unavailable(
+                "screen capture: cannot obtain the desktop window DC",
+            ));
+        }
+        let mut mem_dc: HDC = std::ptr::null_mut();
+        let mut bitmap: HBITMAP = std::ptr::null_mut();
+        let grabbed: Result<Vec<u8>, ComputerUseError> = (|| {
+            mem_dc = CreateCompatibleDC(hdc_window);
+            if mem_dc.is_null() {
+                return Err(ComputerUseError::unavailable(
+                    "screen capture: cannot create a compatible memory DC",
+                ));
+            }
+            bitmap = CreateCompatibleBitmap(hdc_window, width, height);
+            if bitmap.is_null() {
+                return Err(ComputerUseError::unavailable(
+                    "screen capture: cannot create the capture bitmap",
+                ));
+            }
+            let previous = SelectObject(mem_dc, bitmap as HGDIOBJ);
+            let blit = BitBlt(mem_dc, 0, 0, width, height, hdc_window, x, y, SRCCOPY);
+            // Deselect before GetDIBits (MSDN requirement) — this also makes
+            // the DeleteObject below succeed, closing the upstream leak.
+            SelectObject(mem_dc, previous);
+            if blit == 0 {
+                return Err(ComputerUseError::unavailable(
+                    "screen capture: BitBlt failed (secure desktop or display sleep?)",
+                ));
+            }
+            let mut info = BITMAPINFO::default();
+            info.bmiHeader = BITMAPINFOHEADER {
+                biSize: std::mem::size_of::<BITMAPINFOHEADER>() as u32,
+                biWidth: width,
+                // Negative height: top-down rows (no bottom-up flip to undo).
+                biHeight: -height,
+                biPlanes: 1,
+                biBitCount: 32,
+                biCompression: BI_RGB,
+                ..Default::default()
+            };
+            let len = (width as usize) * (height as usize) * 4;
+            let mut buffer = vec![0u8; len];
+            let lines = GetDIBits(
+                mem_dc,
+                bitmap,
+                0,
+                height as u32,
+                buffer.as_mut_ptr().cast(),
+                &mut info,
+                DIB_RGB_COLORS,
+            );
+            if lines == 0 {
+                return Err(ComputerUseError::unavailable(
+                    "screen capture: GetDIBits returned no scan lines",
+                ));
+            }
+            // GetDIBits (BI_RGB, 32bpp) yields B,G,R,x per pixel: swizzle to
+            // RGBA in place (xcap's bgra_to_rgba equivalent).
+            for pixel in buffer.chunks_exact_mut(4) {
+                pixel.swap(0, 2);
+                pixel[3] = 255;
+            }
+            Ok(buffer)
+        })();
+        // Cleanup in reverse acquisition order, tolerating partial
+        // acquisition; failures here are non-fatal (the grab result carries
+        // the real error).
+        if !bitmap.is_null() {
+            DeleteObject(bitmap as HGDIOBJ);
+        }
+        if !mem_dc.is_null() {
+            DeleteDC(mem_dc);
+        }
+        ReleaseDC(hwnd, hdc_window);
+        grabbed
+    }
 }
 
 fn map_input_err(context: &str, err: enigo::InputError) -> ComputerUseError {
@@ -280,7 +405,8 @@ fn map_input_err(context: &str, err: enigo::InputError) -> ComputerUseError {
         if msg.contains("UIPI") {
             return ComputerUseError::unavailable(format!(
                 "{context}: input was blocked by UIPI — the target window is likely elevated \
-                 (run as administrator); run Pinvou elevated or use an unelevated target window"
+                 (run as administrator), or the secure desktop (lock screen / UAC prompt) is \
+                 active; run Pinvou elevated or use an unelevated target window"
             ));
         }
     }
@@ -877,18 +1003,20 @@ impl ComputerUseBackend for WindowsComputerUseBackend {
         let origin_y = monitor
             .y()
             .map_err(|err| map_xcap_err("monitor origin", err))?;
-        let image = monitor
-            .capture_image()
-            .map_err(|err| map_xcap_err("screen capture", err))?;
-        let width = image.width();
-        let height = image.height();
-        let mut rgba = image.into_raw();
-        // xcap's GDI path does not fix up alpha on Win8+ (it can be 0 throughout, making the
-        // downstream PNG fully transparent); the single pass also sets alpha opaque and
-        // detects all-black frames (secure desktop/protected content).
+        let width = monitor
+            .width()
+            .map_err(|err| map_xcap_err("monitor size", err))?;
+        let height = monitor
+            .height()
+            .map_err(|err| map_xcap_err("monitor size", err))?;
+        // In-repo GDI grab (see `capture_monitor_physical`): xcap 0.9.8's
+        // monitor path leaks one GDI bitmap handle per screenshot.
+        let mut rgba = capture_monitor_physical(origin_x, origin_y, width, height)?;
+        // The alpha channel is already opaque (set during the BGRx→RGBA
+        // swizzle); this pass additionally detects all-black frames (secure
+        // desktop / protected content / genuinely black screens).
         let mut all_black = true;
         for pixel in rgba.chunks_exact_mut(4) {
-            pixel[3] = 255;
             if all_black && (pixel[0] != 0 || pixel[1] != 0 || pixel[2] != 0) {
                 all_black = false;
             }
@@ -896,7 +1024,9 @@ impl ComputerUseBackend for WindowsComputerUseBackend {
         if all_black {
             return Err(ComputerUseError::unavailable(
                 "captured frame is entirely black — likely the secure desktop (lock screen or \
-                 UAC prompt) or capture-protected content; capture will resume on the normal desktop",
+                 UAC prompt) or capture-protected content; an entirely black fullscreen app or \
+                 a powered-off display can look the same, so verify with a follow-up capture \
+                 after any display change",
             ));
         }
         Ok(Capture {
@@ -1376,5 +1506,47 @@ mod tests {
         assert_eq!(normalize_abs_axis(100, 0, 1), 0);
         assert_eq!(normalize_abs_axis(100, 0, 0), 0);
         assert_eq!(normalize_abs_axis(100, 0, -5), 0);
+    }
+
+    /// Round-17 pin for the in-repo GDI grab (`capture_monitor_physical`,
+    /// the xcap bitmap-leak replacement): a real capture must return exactly
+    /// monitor-sized RGBA with opaque alpha. Environment-lenient by
+    /// design — service sessions without a desktop DC report an explicit
+    /// skip instead of failing the suite.
+    #[test]
+    fn monitor_capture_returns_monitor_sized_opaque_rgba() {
+        let Ok(monitors) = Monitor::all() else {
+            eprintln!("skip: monitor enumeration unavailable on this session");
+            return;
+        };
+        let Some(monitor) = monitors.first() else {
+            eprintln!("skip: no monitors on this session");
+            return;
+        };
+        let (Ok(x), Ok(y), Ok(width), Ok(height)) =
+            (monitor.x(), monitor.y(), monitor.width(), monitor.height())
+        else {
+            eprintln!("skip: monitor geometry unavailable on this session");
+            return;
+        };
+        assert!(
+            width > 0 && height > 0,
+            "degenerate monitor {width}x{height}"
+        );
+        let Ok(rgba) = capture_monitor_physical(x, y, width, height) else {
+            eprintln!("skip: desktop DC capture unavailable on this session");
+            return;
+        };
+        assert_eq!(
+            rgba.len(),
+            (width as usize) * (height as usize) * 4,
+            "capture must be monitor-sized RGBA"
+        );
+        for (i, pixel) in rgba.chunks_exact(4).enumerate() {
+            assert_eq!(pixel[3], 255, "alpha must be opaque at pixel {i}");
+            if i > 4096 {
+                break;
+            }
+        }
     }
 }
