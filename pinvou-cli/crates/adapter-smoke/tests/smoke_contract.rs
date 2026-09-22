@@ -187,7 +187,7 @@ fn descriptor_records_the_per_case_deadline_upper_bound() {
         .iter()
         .map(|case| case.timeout())
         .max()
-        .unwrap();
+        .expect("the smoke suite declares cases");
     assert!(
         max_case <= Duration::from_secs(60),
         "smoke case timeout {max_case:?} exceeds the manifest-recorded 60s bound"
