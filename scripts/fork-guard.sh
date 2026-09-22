@@ -60,6 +60,21 @@ bold "── 第 1 层：七主题与父仓适配指纹 ──"
 # 格式：主题|说明|文件（相对父仓根）|grep -F 固定串
 fingerprints=(
   "T2|Unix shell guidance preservation test|CodeWhale/crates/tui/src/tools/shell/guidance.rs|fn shell_guidance_preserves_unix_shell_contracts"
+  "T2|Windows PowerShell policy bypass flags|CodeWhale/crates/tui/src/shell_dispatcher.rs|fn powershell_build_command_includes_no_profile_and_command_flags"
+  "T2|Windows PowerShell encoded fallback builder|CodeWhale/crates/tui/src/shell_dispatcher.rs|fn forkguard_powershell_encoded_fallback_avoids_the_script_file"
+  "T2|Windows PowerShell encoded form off-limit payload|CodeWhale/crates/tui/src/shell_dispatcher.rs|fn forkguard_powershell_encoded_fallback_skips_a_payload_past_the_command_line_limit"
+  "T2|Windows PowerShell encoded form non-PowerShell shells|CodeWhale/crates/tui/src/shell_dispatcher.rs|fn forkguard_powershell_encoded_fallback_is_none_for_other_shells"
+  "T2|Windows execution-policy retry wiring|CodeWhale/crates/tui/src/tools/shell.rs|fn retry_powershell_without_script_file"
+  "T2|Windows execution-policy retry gate helper|CodeWhale/crates/tui/src/tools/shell.rs|fn powershell_refusal_needs_inline_retry"
+  "T2|Windows execution-policy refusal ownership|CodeWhale/crates/tui/src/tools/shell.rs|fn powershell_temp_script"
+  "T2|Windows execution-policy retry startup failure|CodeWhale/crates/tui/src/tools/shell.rs|fn keep_first_result_after_a_failed_retry"
+  "T2|Windows execution-policy rejection predicate|CodeWhale/crates/tui/src/tools/shell/tests.rs|fn forkguard_powershell_execution_policy_rejection_is_locale_independent"
+  "T2|Windows execution-policy retry gate|CodeWhale/crates/tui/src/tools/shell/tests.rs|fn forkguard_powershell_inline_retry_only_for_a_failed_file_refusal"
+  "T2|Windows execution-policy retry glue|CodeWhale/crates/tui/src/tools/shell/tests.rs|fn forkguard_powershell_inline_retry_runs_the_command_and_notes_the_fallback"
+  "T2|Windows execution-policy retry keeps first evidence|CodeWhale/crates/tui/src/tools/shell/tests.rs|fn forkguard_powershell_retry_keeps_the_first_result_when_it_cannot_start"
+  "T2|Windows shell UTF-8 prefix family rule|CodeWhale/crates/tui/src/sandbox/mod.rs|fn forkguard_windows_shell_text_matches_the_shell_family"
+  "T2|Windows PowerShell encoded form end-to-end|CodeWhale/crates/tui/src/tools/shell/tests.rs|fn forkguard_powershell_encoded_spec_runs_a_non_ascii_payload"
+  "T2|Windows PowerShell temp-script form end-to-end|CodeWhale/crates/tui/src/tools/shell/tests.rs|fn forkguard_powershell_temp_script_form_runs_a_non_ascii_payload"
   "T1|宿主 facade 公开 Automation        |CodeWhale/crates/tui/src/lib.rs|pub mod automation_manager;"
   "T1|宿主显式 route limits              |CodeWhale/crates/tui/src/route_runtime.rs|pub fn resolve_runtime_route_with_limits("
   "T1|只读 worker ledger                |CodeWhale/crates/tui/src/tools/subagent/mod.rs|pub fn read_persisted_agent_worker_records("
@@ -246,10 +261,10 @@ for fp in "${fingerprints[@]}"; do
 done
 
 forkguard_count="$(grep -Rho --include='*.rs' 'forkguard_[A-Za-z0-9_]*' "$CODEWHALE/crates" 2>/dev/null | sort -u | wc -l | tr -d ' ')"
-if [[ "$forkguard_count" -ge 57 ]]; then
-  green "  ✓ CodeWhale 至少保留 57 条独立 forkguard 行为名（实际 ${forkguard_count}）"
+if [[ "$forkguard_count" -ge 64 ]]; then
+  green "  ✓ CodeWhale 至少保留 64 条独立 forkguard 行为名（实际 ${forkguard_count}）"
 else
-  red "  ✗ CodeWhale forkguard 行为名仅 ${forkguard_count:-0}，登记下限为 57"
+  red "  ✗ CodeWhale forkguard 行为名仅 ${forkguard_count:-0}，登记下限为 64"
   fail=1
 fi
 
