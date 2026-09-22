@@ -45,8 +45,25 @@ test("non-array payloads degrade to the exclusion shape", () => {
   }
 });
 
-test("a malformed created outcome without a project id is not materialized", () => {
+test("a malformed created outcome without a project id counts as failed, not materialized", () => {
+  // round-8 m14: the tier-① assignment rides the project id; a created
+  // outcome without one must surface as a failure (failure toast), never as
+  // a materialized-no-project proceed that silently skips the assignment.
   const interpreted = interpretFolderEnsureOutcomes([{ status: "created", project: {} }]);
-  assert.equal(interpreted.materialized, true);
+  assert.equal(interpreted.materialized, false);
   assert.equal(interpreted.projectId, null);
+  assert.equal(interpreted.failed, true);
+});
+
+test("covered without a project id counts as failed too", () => {
+  const interpreted = interpretFolderEnsureOutcomes([{ status: "covered" }]);
+  assert.equal(interpreted.materialized, false);
+  assert.equal(interpreted.failed, true);
+});
+
+test("an all-unknown outcome list is a failure, not the exclusion list", () => {
+  // round-8 m14: only the truly-empty list may claim the exclusion reading.
+  const interpreted = interpretFolderEnsureOutcomes([{ status: "wat" }]);
+  assert.equal(interpreted.materialized, false);
+  assert.equal(interpreted.failed, true);
 });
