@@ -5,12 +5,13 @@ REPO="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 PINVOU_CODEWHALE_PATH="CodeWhale"
 PINVOU_CODEWHALE_URL="https://github.com/Pinvou/CodeWhale.git"
 PINVOU_CODEWHALE_BRANCH="pinvou3-clean"
-PINVOU_CODEWHALE_TAG="pinvou-v0.9.12-r1"
+PINVOU_CODEWHALE_TAG="pinvou-v0.9.12-r3"
 # 过渡期豁免（fork-policy.md 第 0 节）：两次 rN 收口之间，父仓 gitlink 可沿受保护
 # 维护分支领先不可变 tag 前进。TRANSITION_BASELINE 非空即启用过渡期断言：
 # tag 必须钉在其收口 commit，gitlink 必须等于公开维护分支头（上方已断言）且领先 tag。
 # rN 收口时：把 TAG 更新为新 tag、删除 TRANSITION_BASELINE，恢复三方相等断言。
-TRANSITION_BASELINE="1fafee7e26b60a59457a43bce50c63aa2ad9dbaf"
+TRANSITION_BASELINE=""
+# r3 已收口（2026-09-23，tag pinvou-v0.9.12-r3 切在 ba2a07768f）：三方相等断言生效，过渡期豁免未启用。
 MAX_ATTEMPTS=3
 
 if [[ $# -ne 0 ]]; then
