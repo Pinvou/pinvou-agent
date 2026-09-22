@@ -156,11 +156,22 @@ jobs:
             libwebkit2gtk-4.1-dev \
             libssl-dev \
             libayatana-appindicator3-dev \
+            libpipewire-0.3-dev libdrm-dev libgbm-dev libegl-dev \
             build-essential pkg-config cmake lld
           # Reduce footprint at the source: orphan dependencies, apt cache packages, and index lists do not stay on the build disk.
           sudo apt-get autoremove -y --purge
           sudo apt-get clean
           sudo rm -rf /var/lib/apt/lists/*
+
+      # pipewire-rs 0.10 (computer_use Wayland capture, direct + via xcap) needs
+      # SPA static inline helpers that ubuntu-22.04's libpipewire 0.3.48 headers
+      # lack (libspa-sys bindgens against system headers at build time). Build
+      # the upstream 1.0.7 headers+lib into /usr/local so pkg-config resolves
+      # the prefix; idempotent, no runner-image drift. Mirrors the pr-check
+      # rust legs — the release build compiles the identical crate graph.
+      # See scripts/ci-libpipewire-build.sh for the full rationale.
+      - name: Build PipeWire 1.0.7 dev prefix (jammy SPA headers too old)
+        run: bash scripts/ci-libpipewire-build.sh
 
       - name: Node.js
         uses: actions/setup-node@v7
@@ -279,11 +290,22 @@ jobs:
             libwebkit2gtk-4.1-dev \
             libssl-dev \
             libayatana-appindicator3-dev \
+            libpipewire-0.3-dev libdrm-dev libgbm-dev libegl-dev \
             build-essential pkg-config cmake lld
           # Reduce footprint at the source: orphan dependencies, apt cache packages, and index lists do not stay on the build disk.
           sudo apt-get autoremove -y --purge
           sudo apt-get clean
           sudo rm -rf /var/lib/apt/lists/*
+
+      # pipewire-rs 0.10 (computer_use Wayland capture, direct + via xcap) needs
+      # SPA static inline helpers that ubuntu-22.04's libpipewire 0.3.48 headers
+      # lack (libspa-sys bindgens against system headers at build time). Build
+      # the upstream 1.0.7 headers+lib into /usr/local so pkg-config resolves
+      # the prefix; idempotent, no runner-image drift. Mirrors the pr-check
+      # rust legs — the release build compiles the identical crate graph.
+      # See scripts/ci-libpipewire-build.sh for the full rationale.
+      - name: Build PipeWire 1.0.7 dev prefix (jammy SPA headers too old)
+        run: bash scripts/ci-libpipewire-build.sh
 
       - name: Node.js
         uses: actions/setup-node@v7
