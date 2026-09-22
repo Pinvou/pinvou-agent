@@ -1,13 +1,13 @@
 # Pinvou 对 CodeWhale 底座的 fork 维护策略
 
-> 最后更新：2026-09-22（r2 已收口：不可变 tag `pinvou-v0.9.12-r2` 切在 `6f780290f`；父仓 gitlink 暂指其上的 T8 提交 `8b132a182`/`9322fc5f6`/`df5df5f24`/`0576deb2c`/`4767c2816`（上游 #65 分支头，随 #65 合入成为维护分支头），领先 r2 tag 5 个提交）
+> 最后更新：2026-09-23（r2 已收口：不可变 tag `pinvou-v0.9.12-r2` 切在 `6f780290f`；上游 #65 实际经 squash 合入为 `c5fadb86d`，原 T8 波五个 SHA 不再单独公开可达；父仓 gitlink 现钉在维护分支 `pinvou3-clean` 头 `7f04c907d`，领先 r2 tag 6 个提交）
 > 配套：`docs/fork-modifications.md`、`scripts/fork-guard.sh`、`docs/底座升级验收清单.md`
 > English: [`docs/fork-policy.en.md`](fork-policy.en.md)
 
 ## 0. 当前基线
 
 - 上游：`Hmbown/CodeWhale` tag `v0.9.12`，commit `dcd4c200f72f0c1ffd60d8e7f6850313db879fc5`。
-- 当前 fork 基线：`Pinvou/CodeWhale:pinvou3-clean`，head `6f780290f1c35e8a3c5dff86b4f76da142744b0c`（= 不可变 tag `pinvou-v0.9.12-r2`），共 39 个带 DCO sign-off 的提交；不可变 tag `pinvou-v0.9.12-r1` 钉在 r1 收口 `1fafee7e26b60a59457a43bce50c63aa2ad9dbaf`（15 个提交），其后 24 个提交为 2026-09-10/11 backlog 批次、2026-09-17 批次、2026-09-18 批次、2026-09-20 批次与 2026-09-21 批次（#64/#67）经 PR squash 合入。其上另有 T8 提交 `8b132a182`、`9322fc5f6`、`df5df5f24`、`0576deb2c` 与 `4767c2816`（roster 宿主 profiles 呈现、`profile_query` 发现通道、评审钉点补测、host roster id 去重修复与 `load` 构造的同键去重对齐，已 rebase 到 r2 收口 `6f780290f` 之上，当前为上游 #65 分支头），随父仓蜂群二期 PR 经上游 CodeWhale #65 合入（合入后 head 共 44 个提交、领先 r2 tag 5 个）。
+- 当前 fork 基线：`Pinvou/CodeWhale:pinvou3-clean`，head `6f780290f1c35e8a3c5dff86b4f76da142744b0c`（= 不可变 tag `pinvou-v0.9.12-r2`），共 39 个带 DCO sign-off 的提交；不可变 tag `pinvou-v0.9.12-r1` 钉在 r1 收口 `1fafee7e26b60a59457a43bce50c63aa2ad9dbaf`（15 个提交），其后 24 个提交为 2026-09-10/11 backlog 批次、2026-09-17 批次、2026-09-18 批次、2026-09-20 批次与 2026-09-21 批次（#64/#67）经 PR squash 合入。其上另有 5 个合入：`d349f2537`（#63 有界超时修复）、`c5fadb86d`（#65 squash 合入：T8 主题——roster 宿主 profiles 呈现、`profile_query` 发现通道、评审钉点补测、host roster id 去重修复与 `load` 构造的同键去重对齐，即原波次 SHA `8b132a182`/`9322fc5f6`/`df5df5f24`/`0576deb2c`/`4767c2816` 的内容合集）、`594860ce9`（#68）、`37c658da7`（#69）、`7a7f65e8f`（#71）与 `7f04c907d`（#70 上下文来源标签相对仓库根化）。#65 原计划保持提交落位以保全波次 SHA 可达性，实际经 squash 合入，父仓 gitlink 已于 2026-09-23 重钉到维护分支头（head 共 45 个提交、领先 r2 tag 6 个）。
 - 升级前公开回退点是不可变 tag `pinvou-v0.9.5-r13`，head `f853f8f1566c57e6be40d5439a222a932aa79ef5`；同 SHA 的本地 branch `backup/pre-v0.9.12-sync` 只作便利引用。
 - r1 已成为可消费的受保护基线；rN 收口时父仓 gitlink、维护分支和不可变 tag 指向同一 commit。
 - 过渡期豁免（2026-09-11 起）：两次 rN 收口之间，父仓 gitlink 可沿 `pinvou3-clean` 领先不可变 tag 前进；期间 `scripts/verify-public-submodule.sh` 断言 gitlink 等于公开维护分支头、不可变 tag 仍钉在其收口 commit，rN 收口时在合并头切新不可变 tag 并恢复三方相等。
