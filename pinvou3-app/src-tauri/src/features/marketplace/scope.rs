@@ -540,8 +540,7 @@ fn expand_denyall_sample(sample: &DenyAllExpansionSample) -> Vec<String> {
         eprintln!(
             "[scope] DenyAll default deny list degraded (skill enumeration failed); biasing to over-deny"
         );
-        let mut blanket: Vec<String> =
-            SkillMarketplaceManager::preset_skill_ids().collect();
+        let mut blanket: Vec<String> = SkillMarketplaceManager::preset_skill_ids().collect();
         blanket.extend(sample.uploaded_skill_ids.iter().cloned());
         for skill_id in blanket {
             let pkg = skill_owner_package(&skill_id);
