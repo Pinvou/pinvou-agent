@@ -322,6 +322,9 @@ pub fn upsert_recent_work(patch: RecentWorkPatch) -> io::Result<RecentWorkItem> 
     upsert_recent_work_unlocked(patch)
 }
 
+/// Caller must hold [`write_lock`]: the unlocked RMW shares the critical
+/// section contract of the sibling `*_unlocked` helpers, and an uncalled
+/// caller would race a concurrent write into a lost update.
 pub(super) fn upsert_recent_work_unlocked(patch: RecentWorkPatch) -> io::Result<RecentWorkItem> {
     let now = Utc::now();
     let now_s = now.to_rfc3339();
