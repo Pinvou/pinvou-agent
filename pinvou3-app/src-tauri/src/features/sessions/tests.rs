@@ -44,6 +44,28 @@ fn isolated_store() -> (SessionStore, std::sync::MutexGuard<'static, ()>) {
     (store, guard)
 }
 
+/// A store whose aux sidecar has NOT been loaded this boot: `from_paths`
+/// leaves `aux_sessions_loaded` false and only boot's `load_aux_sessions`
+/// sets it, so this is the exact "sidecar read failed this boot" posture the
+/// write-API refusal exists for (round-25 should-fix 24-1b).
+fn unloaded_store() -> (SessionStore, std::sync::MutexGuard<'static, ()>) {
+    let guard = ENV_LOCK.lock().unwrap_or_else(|p| p.into_inner());
+    let tmp = std::env::temp_dir().join(format!(
+        "pinvou3-sessions-test-{}-{}",
+        std::process::id(),
+        paths::tests::unique_suffix()
+    ));
+    // SAFETY: platform::paths::tests::ENV_LOCK held; env writes are serialized.
+    unsafe { std::env::set_var("PINVOU3_HOME", &tmp) };
+    let store = SessionStore::from_paths(
+        paths::sessions_root(),
+        paths::scheduled_run_profiles_path(),
+        tmp.join("scheduled"),
+    )
+    .expect("open the unloaded store");
+    (store, guard)
+}
+
 fn record_session_deletions(store: &SessionStore) -> Arc<std::sync::Mutex<Vec<String>>> {
     let seen = Arc::new(std::sync::Mutex::new(Vec::new()));
     let recorder = Arc::clone(&seen);
@@ -5792,6 +5814,104 @@ fn create_aux_session_propagates_transient_parent_recheck_error() {
 
     std::fs::remove_dir(store.manager.sessions_dir().join(format!("{main_id}.json")))
         .expect("unblock the parent record path");
+}
+
+/// PR #433 review round-25 (should-fix 24-1a): the unique-value seal at the
+/// single write API is the invariant "two mains must never resolve to the
+/// same aux" rests on (the reconcile's ownership pick depends on it), so it
+/// must not be deletable with the suite green.
+#[test]
+fn set_aux_session_rejects_a_value_already_owned_by_another_main() {
+    let (store, _g) = isolated_store();
+    store
+        .set_aux_session("seal-main-1", Some("aux-seal-1".to_string()))
+        .expect("bind the first main");
+    let error = store
+        .set_aux_session("seal-main-2", Some("aux-seal-1".to_string()))
+        .expect_err("a value owned by another main must be rejected");
+    assert!(
+        error.to_string().contains("already bound to another main"),
+        "unexpected error: {error:#}"
+    );
+    // The refused write must not disturb either mapping.
+    assert_eq!(
+        store.aux_session_id("seal-main-1").as_deref(),
+        Some("aux-seal-1"),
+        "the owning mapping must survive the refused repoint"
+    );
+    assert!(
+        store.aux_session_id("seal-main-2").is_none(),
+        "the refused main must stay unmapped"
+    );
+    // Re-writing the same main's own value stays legal (the idempotent
+    // ensure path depends on it).
+    store
+        .set_aux_session("seal-main-1", Some("aux-seal-1".to_string()))
+        .expect("re-pointing a main at its own aux is not a duplicate");
+}
+
+/// PR #433 review round-25 (should-fix 24-1b): the loaded-flag write refusal
+/// keeps a boot whose sidecar read failed from persisting an artificially
+/// empty map over every existing binding. Pinned at the single write API.
+#[test]
+fn set_aux_session_refuses_writes_while_the_sidecar_is_unloaded() {
+    let (store, _g) = unloaded_store();
+    let error = store
+        .set_aux_session("unloaded-main", Some("aux-unloaded-1".to_string()))
+        .expect_err("writes must be refused while the sidecar is unloaded");
+    assert!(
+        error.to_string().contains("not loaded this boot"),
+        "unexpected error: {error:#}"
+    );
+    assert!(
+        store.aux_session_id("unloaded-main").is_none(),
+        "the refused write must not land in the in-memory map"
+    );
+    assert!(
+        !paths::sessions_root().join("_aux_sessions.json").exists(),
+        "the refused write must not persist a sidecar"
+    );
+}
+
+/// PR #433 review round-25 (should-fix 24-1c): when the mapping persist fails
+/// after the aux record is durable, the create must roll the newborn record
+/// back — an escaped newborn would be resurrected by the next boot's backlink
+/// rebuild. The sibling parent-eviction rollback is pinned end-to-end; this
+/// is the mapping-persist leg of the same policy. The fault is the same
+/// cross-platform stand-in as the reconcile tests: a directory occupying the
+/// sidecar path.
+#[test]
+fn create_aux_session_rolls_back_the_record_when_the_mapping_persist_fails() {
+    let (store, _g) = isolated_store();
+    let main = store
+        .create_new("/model".into(), None, std::env::temp_dir())
+        .expect("create main");
+
+    let sidecar = paths::sessions_root().join("_aux_sessions.json");
+    std::fs::create_dir(&sidecar).expect("block the sidecar path with a directory");
+
+    let error = store
+        .create_aux_session(&main.metadata.id)
+        .expect_err("a mapping persist failure must fail the create");
+    let message = format!("{error:#}");
+    assert!(
+        message.contains("persist aux session bindings"),
+        "the failure must name the mapping persist, got: {message}"
+    );
+    assert!(
+        store.aux_session_id(&main.metadata.id).is_none(),
+        "the rolled-back create must not keep the in-memory mapping"
+    );
+    let leftover_aux: Vec<String> = std::fs::read_dir(store.manager.sessions_dir())
+        .expect("read sessions dir")
+        .filter_map(|entry| entry.ok())
+        .map(|entry| entry.file_name().to_string_lossy().into_owned())
+        .filter(|name| name.starts_with("aux-"))
+        .collect();
+    assert!(
+        leftover_aux.is_empty(),
+        "the newborn aux record must be rolled back, not left as an orphan: {leftover_aux:?}"
+    );
 }
 
 /// Orphan-aux reconciliation (repair first, delete only if that fails):
