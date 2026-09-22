@@ -412,50 +412,47 @@ pub async fn run_agentic_task(
         // engine lazily spawns on submit and can durably admit the user
         // message before the fault surfaces (a submit error, or the setup
         // timeout landing right after admission). The classification reads
-        // the durable record, not the submit flag: a zero-message stub is
-        // cleanup-eligible regardless of `KEEP_SESSION` (it would otherwise
-        // litter the shared store — and the GUI history — one eviction per
-        // failing batch), while a stub that already carries admitted
-        // messages is a started transcript and the only copy — it stays
-        // inspectable unless the caller explicitly restored the legacy
-        // one-shot contract. An unloadable record also keeps: deleting on
-        // unknown state is the unsafe direction.
-        //
-        // The zero-message arm carries the same adoption exception as the
-        // `Err`-outcome branch below: a GUI rename before the first message
-        // is ownership too, so a stub is only litter while it still wears
-        // the eval factory title. An unloadable record is not proven
-        // factory-titled and keeps for the same unknown-state reason.
-        match store.chat_session_has_messages(&session_id) {
-            Ok(false) => {
-                let factory_titled = store
-                    .load(&session_id)
-                    .map(|record| record.metadata.title == EVAL_SESSION_FACTORY_TITLE)
-                    .unwrap_or(false);
-                if factory_titled {
-                    runtime.schedule_eval_cleanup(&session_id);
-                    let _ = runtime.close_eval_session_result(&session_id).await;
-                } else {
-                    runtime.pool.evict(&session_id).await;
-                }
-            }
-            Ok(true) if !keep_session => {
-                runtime.schedule_eval_cleanup(&session_id);
-                let _ = runtime.close_eval_session_result(&session_id).await;
-            }
-            _ => runtime.pool.evict(&session_id).await,
-        }
-    } else if outcome.is_err() {
+        // the durable record, not the submit flag, and shares one decision
+        // with the errored-after-submit arm: a zero-message stub is
+        // cleanup-eligible while it still wears the factory title (it would
+        // otherwise litter the shared store — and the GUI history — one
+        // eviction per failing batch), while a stub that already carries
+        // admitted messages is a started transcript and the only copy — it
+        // stays inspectable under the default keep contract. A rename is
+        // ownership on every path, and an unloadable record keeps: deleting
+        // on unknown state is the unsafe direction.
+        let has_messages = store.chat_session_has_messages(&session_id).map_err(|_| ());
         let factory_titled = store
             .load(&session_id)
             .map(|record| record.metadata.title == EVAL_SESSION_FACTORY_TITLE)
             .unwrap_or(false);
-        if factory_titled {
-            crate::features::assistant::timing::unregister_eval_observation(&session_id);
+        if failed_run_cleanup_decision(has_messages, factory_titled, keep_session)
+            == FailedRunDisposition::Cleanup
+        {
             runtime.schedule_eval_cleanup(&session_id);
-            let _ = runtime.close_eval_session_result(&session_id).await;
+            log_cleanup_delete(&runtime, &session_id).await;
         } else {
-            crate::features::assistant::timing::unregister_eval_observation(&session_id);
+            runtime.pool.evict(&session_id).await;
+        }
+    } else if outcome.is_err() {
+        crate::features::assistant::timing::unregister_eval_observation(&session_id);
+        // The same durable-record classification as the never-submitted arm:
+        // a started transcript is the only copy of the failed attempt and
+        // stays inspectable under the default keep contract, while a
+        // zero-message factory-titled stub is eviction bait. The title check
+        // is the adoption exception, and it holds on every path: a GUI rename
+        // before the failure is ownership, and survives even the legacy
+        // one-shot opt-in.
+        let has_messages = store.chat_session_has_messages(&session_id).map_err(|_| ());
+        let factory_titled = store
+            .load(&session_id)
+            .map(|record| record.metadata.title == EVAL_SESSION_FACTORY_TITLE)
+            .unwrap_or(false);
+        if failed_run_cleanup_decision(has_messages, factory_titled, keep_session)
+            == FailedRunDisposition::Cleanup
+        {
+            runtime.schedule_eval_cleanup(&session_id);
+            log_cleanup_delete(&runtime, &session_id).await;
         }
     } else if !keep_session {
         crate::features::assistant::timing::unregister_eval_observation(&session_id);
@@ -486,9 +483,6 @@ pub async fn run_agentic_task(
     } else if keep_session {
         crate::features::assistant::timing::unregister_eval_observation(&session_id);
         runtime.pool.evict(&session_id).await;
-    } else {
-        runtime.schedule_eval_cleanup(&session_id);
-        log_cleanup_delete(&runtime, &session_id).await;
     }
     // Disarm before reporting: the prepare-time save happened before any setup
     // fault could surface, so the evictions are real regardless of the final
@@ -561,6 +555,52 @@ fn never_started_disposition(
         Ok(true) if keep_session => NeverStartedDisposition::KeepInspectable,
         Ok(true) => NeverStartedDisposition::LegacyCleanupStarted,
         Err(_) => NeverStartedDisposition::KeepInspectable,
+    }
+}
+
+/// Lifecycle decision shared by BOTH failure teardown paths (the turn never
+/// submitted, and the turn errored after submit): whether the run's fresh
+/// session is deleted or kept. Pinned as a pure function because the branch
+/// order is the contract.
+///
+/// - `Ok(true)` — a started transcript is the only copy of the failed
+///   attempt: it stays inspectable under the default keep contract; the
+///   legacy one-shot opt-in (`KEEP_SESSION=0|false|no|off`) restores cleanup,
+///   but only for a session that still wears the eval factory title.
+/// - `Ok(false)` — a zero-message stub is eviction bait: cleanup-eligible
+///   regardless of `KEEP_SESSION` while factory-titled.
+/// - `factory_titled == false` — a rename is ownership (the adoption
+///   exception) and keeps on every path; an unloadable record is not proven
+///   factory-titled for the same reason.
+/// - `Err(_)` — unknown state: keep, because deleting on unknown state is
+///   the unsafe direction.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+enum FailedRunDisposition {
+    Cleanup,
+    Keep,
+}
+
+fn failed_run_cleanup_decision(
+    has_messages: Result<bool, ()>,
+    factory_titled: bool,
+    keep_session: bool,
+) -> FailedRunDisposition {
+    match has_messages {
+        Ok(true) => {
+            if keep_session || !factory_titled {
+                FailedRunDisposition::Keep
+            } else {
+                FailedRunDisposition::Cleanup
+            }
+        }
+        Ok(false) => {
+            if factory_titled {
+                FailedRunDisposition::Cleanup
+            } else {
+                FailedRunDisposition::Keep
+            }
+        }
+        Err(_) => FailedRunDisposition::Keep,
     }
 }
 
@@ -1270,6 +1310,71 @@ mod tests {
         assert!(matches!(
             never_started_disposition(Err(()), false),
             KeepInspectable
+        ));
+    }
+
+    /// The shared failure-teardown decision, pinned over its full matrix:
+    /// started transcripts keep under the default and only clean up under
+    /// the legacy opt-in when still factory-titled; zero-message stubs clean
+    /// up while factory-titled; a rename (not factory-titled) and an
+    /// unloadable record keep on every path.
+    #[test]
+    fn failed_run_cleanup_decision_matrix_is_pinned() {
+        use super::{FailedRunDisposition::*, failed_run_cleanup_decision};
+        // Started transcript: the only copy of a failed attempt keeps under
+        // the default keep contract.
+        assert!(matches!(
+            failed_run_cleanup_decision(Ok(true), true, true),
+            Keep
+        ));
+        // ...and under the legacy one-shot opt-in it cleans up, while a
+        // renamed (adopted) session survives.
+        assert!(matches!(
+            failed_run_cleanup_decision(Ok(true), true, false),
+            Cleanup
+        ));
+        assert!(
+            matches!(failed_run_cleanup_decision(Ok(true), false, false), Keep),
+            "a rename is ownership on every path"
+        );
+        assert!(matches!(
+            failed_run_cleanup_decision(Ok(true), false, true),
+            Keep
+        ));
+        // Zero-message stub: eviction bait while factory-titled, regardless
+        // of KEEP_SESSION; adopted once renamed.
+        assert!(matches!(
+            failed_run_cleanup_decision(Ok(false), true, true),
+            Cleanup
+        ));
+        assert!(matches!(
+            failed_run_cleanup_decision(Ok(false), true, false),
+            Cleanup
+        ));
+        assert!(matches!(
+            failed_run_cleanup_decision(Ok(false), false, true),
+            Keep
+        ));
+        assert!(matches!(
+            failed_run_cleanup_decision(Ok(false), false, false),
+            Keep
+        ));
+        // Unloadable record: deleting on unknown state is unsafe.
+        assert!(matches!(
+            failed_run_cleanup_decision(Err(()), true, true),
+            Keep
+        ));
+        assert!(matches!(
+            failed_run_cleanup_decision(Err(()), true, false),
+            Keep
+        ));
+        assert!(matches!(
+            failed_run_cleanup_decision(Err(()), false, true),
+            Keep
+        ));
+        assert!(matches!(
+            failed_run_cleanup_decision(Err(()), false, false),
+            Keep
         ));
     }
 
