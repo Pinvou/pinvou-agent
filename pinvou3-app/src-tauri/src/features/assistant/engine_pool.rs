@@ -2167,7 +2167,14 @@ impl EnginePool {
         &self,
         session_id: &str,
         model_selection: Option<&EvalModelSelection>,
+        workspace: Option<&std::path::Path>,
     ) -> Result<()> {
+        // The caller's task directory (when provided) lands in the session's
+        // `metadata.workspace` so the GUI list/detail shows the directory the
+        // session actually works in; the durable binding sidecar is written
+        // separately by the caller.
+        let metadata_workspace =
+            workspace.map(std::path::Path::to_path_buf);
         match model_selection {
             None => {
                 let (model, model_id) = self.default_model_for_new_session();
@@ -2175,7 +2182,9 @@ impl EnginePool {
                     session_id.to_string(),
                     model,
                     model_id,
-                    self.bridge.workspace.clone(),
+                    metadata_workspace
+                        .clone()
+                        .unwrap_or_else(|| self.bridge.workspace.clone()),
                 )?;
                 self.get_or_spawn(session_id).await?;
             }
@@ -2186,7 +2195,8 @@ impl EnginePool {
                     session_id.to_string(),
                     selection.wire_model().to_string(),
                     selection.model_id().map(str::to_string),
-                    self.bridge.workspace.clone(),
+                    metadata_workspace
+                        .unwrap_or_else(|| self.bridge.workspace.clone()),
                 );
                 if let Err(error) = prepare_result {
                     self.eval_model_snapshots.forget_session(session_id);
