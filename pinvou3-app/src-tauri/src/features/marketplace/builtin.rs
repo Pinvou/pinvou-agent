@@ -1,20 +1,29 @@
-//! 内置插件框架（内置工具集长期契约 §3.1/§3.3）。
+//! Builtin plugin framework (docs/builtin-toolset-contract.md §3.1/§3.3).
 //!
-//! 内置插件（manifest `builtin: true`）随应用发布：**不可卸载、不可停用**（服务端
-//! 纵深防御——前端不下发动作只是体验层，命令/IPC 直达必须在后端被拒），数据安全
-//! 等级与数据访问 scope 经 `MarketplaceToolInfo` 透传给前端本地化展示。
+//! Builtin plugins (manifest `builtin: true`) ship with the application:
+//! **no uninstall, no disable** (server-side defense in depth — the frontend
+//! simply not offering the action is only a UX layer; direct command/IPC
+//! calls must be rejected in the backend). The data security level and the
+//! data-access scopes pass through `MarketplaceToolInfo` for the frontend to
+//! localize.
 //!
-//! 功能级开关（§3.3）：内置插件的工具按 `tool_features`（工具全名 → 功能 id 数组）
-//! 归属到可独立开关的功能（如 session-reader 的 read_session/list_sessions 同时服务
-//! 「引用对话 session-mention」与「超长记忆 long-memory」）。开关状态持久化在
-//! `settings.json` 的 `UserPrefs::disabled_builtin_features`，并同步写
-//! `~/.pinvou3/marketplace/builtin_features.json`（`{"schema_version":1,
-//! "disabled_features":[...]}`，原子写；文件缺失 = 全部启用）供 MCP server 进程读取。
-//! 工具摘除取**并集语义**：某工具仅当其 `tool_features` 列出的功能**全部**被关闭时
-//! 才从注册表摘除（见 [`feature_disabled_tool_names`]，并入
-//! `super::unavailable_tool_names_for`）；`tool_features` 未列出的工具不受功能开关影响。
+//! Feature-level switches (§3.3): a builtin plugin's tools belong to
+//! independently switchable features via `tool_features` (full tool name ->
+//! feature id array) — e.g. session-reader's read_session/list_sessions serve
+//! both "session mention" (session-mention) and "long memory" (long-memory).
+//! Switch state persists in `settings.json` as
+//! `UserPrefs::disabled_builtin_features` and is mirrored to
+//! `~/.pinvou3/marketplace/builtin_features.json` (`{"schema_version":1,
+//! "disabled_features":[...]}`, atomic write; a missing file means all
+//! enabled) for MCP server processes to read.
+//! Tool removal follows **union semantics**: a tool is removed from the
+//! registry only when **all** features listed in its `tool_features` entry
+//! are switched off (see [`feature_disabled_tool_names`], merged into
+//! `super::unavailable_tool_names_for`); tools not listed in `tool_features`
+//! are unaffected by feature switches.
 
 use std::collections::{BTreeMap, BTreeSet};
+use std::sync::Mutex;
 
 use serde::Serialize;
 
@@ -22,31 +31,45 @@ use super::mcp_catalog;
 use crate::platform::paths;
 use crate::platform::prefs::UserPrefs;
 
-/// 功能开关状态文件（MCP server 进程侧读取；缺失 = 全部启用）。
+/// Feature-switch state file (read by MCP server processes; missing = all
+/// enabled).
 const BUILTIN_FEATURES_STATE_FILE: &str = "builtin_features.json";
 
-/// 内置判定：优先编译期内嵌 catalog（只读快照，不信任用户目录同名 manifest），
-/// 回读已释放的 `bundles/<id>/mcp/manifest.json`（自定义/上传包路径）；解析失败按
-/// 非内置处理（宁可放行普通插件的卸载，不误锁）。
+/// Process-wide serialization for feature toggles: the prefs commit and the
+/// state-file write are two stores without a shared transaction, so
+/// concurrent toggles could interleave and persist a state file that
+/// disagrees with prefs. The mutex spans validation → prefs commit → state
+/// write (poisoning is recovered — a panicked toggle must not deadlock later
+/// ones).
+static FEATURE_TOGGLE_LOCK: Mutex<()> = Mutex::new(());
+
+/// Builtin determination trusts only the compile-time embedded catalog
+/// (`mcp_catalog::embedded_manifest`, a read-only snapshot shipped by the
+/// publisher). The released `bundles/<id>/mcp/manifest.json` is user-writable
+/// and must never confer builtin status (trust boundary, see
+/// docs/builtin-toolset-contract.md §3.1); ids missing from the catalog or
+/// failing to parse are treated as non-builtin — better to allow uninstalling
+/// a normal plugin than to lock one by mistake.
 pub fn is_builtin_tool(id: &str) -> bool {
-    if let Ok(Some(manifest)) = mcp_catalog::embedded_manifest(id) {
-        return manifest.builtin;
-    }
-    let path = mcp_catalog::package_mcp_dir(id).join("manifest.json");
-    std::fs::read_to_string(path)
+    mcp_catalog::embedded_manifest(id)
         .ok()
-        .and_then(|content| serde_json::from_str::<super::types::ToolManifest>(&content).ok())
+        .flatten()
         .map(|manifest| manifest.builtin)
         .unwrap_or(false)
 }
 
-/// 写入禁用/隐藏列表前的内置校验（契约 §3.3：内置插件不可停用/不可隐藏）。
-/// 含内置 id 即整个写入报错（不是静默过滤——静默过滤会让前端以为开关已生效）。
+/// Guard before writing disable/hide lists (docs/builtin-toolset-contract.md
+/// §3.3: builtin plugins can be neither disabled nor hidden). Any builtin id
+/// fails the whole write — no silent filtering, which would make the frontend
+/// believe a toggle took effect. Ids are normalized with the same
+/// `to_package_id` rule the persistence layer applies (strip the `skill:`
+/// prefix, map companion skills to their owner package) so that e.g.
+/// `skill:session-reader` cannot slip past the check.
 pub fn reject_builtin_ids(ids: &[String]) -> Result<(), String> {
-    let builtin: Vec<&str> = ids
+    let builtin: Vec<String> = ids
         .iter()
+        .map(|id| super::scope::to_package_id(id))
         .filter(|id| is_builtin_tool(id))
-        .map(String::as_str)
         .collect();
     if builtin.is_empty() {
         return Ok(());
@@ -57,32 +80,36 @@ pub fn reject_builtin_ids(ids: &[String]) -> Result<(), String> {
     ))
 }
 
-/// 功能注册表条目：一个可开关的内置功能及其来源。
+/// Feature registry entry: one switchable builtin feature and its origins.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 pub struct BuiltinFeature {
-    /// 功能 id（如 "session-mention"）。
+    /// Feature id (e.g. "session-mention").
     pub id: String,
-    /// 声明该功能的内置插件 id（去重、字典序）。
+    /// Ids of the builtin plugins declaring this feature (deduped, sorted).
     pub plugins: Vec<String>,
-    /// 归属该功能的工具全名（去重、字典序）。
+    /// Full names of the tools belonging to this feature (deduped, sorted).
     pub tools: Vec<String>,
-    /// 当前开关状态（不在 `disabled_builtin_features` 即启用）。
+    /// Current switch state (absent from `disabled_builtin_features` =
+    /// enabled).
     pub enabled: bool,
 }
 
-/// 扫描内嵌 catalog 中所有内置 manifest 的 `tool_features`（功能 id → 工具/插件），
-/// 聚合成功能注册表（按功能 id 字典序）；enabled 由
-/// `UserPrefs::disabled_builtin_features` 判定。catalog manifest 解析失败跳过该包
-/// （与 `available_tools` 同口径，不让一个坏包拖垮整个注册表）。
+/// Scans `tool_features` of every builtin manifest in the embedded catalog
+/// (feature id -> tools/plugins) and aggregates the feature registry (sorted
+/// by feature id); enabled is decided by `UserPrefs::disabled_builtin_features`.
+/// A catalog manifest that fails to parse is skipped (same policy as
+/// `available_tools` — one bad package must not break the whole registry).
 pub fn feature_registry() -> Vec<BuiltinFeature> {
     let disabled = disabled_feature_ids();
     feature_registry_with_disabled(&disabled)
 }
 
-/// 注册表聚合的纯函数部分（禁用集由调用方给），供 `feature_registry` 与持锁写方
-/// （状态落盘后现算返回）共用同一口径。
+/// The pure part of registry aggregation (the disabled set is supplied by the
+/// caller), shared by `feature_registry` and the lock-holding writer (which
+/// recomputes it after the state lands) so both use one policy.
 fn feature_registry_with_disabled(disabled: &BTreeSet<String>) -> Vec<BuiltinFeature> {
-    // 功能 id → (插件 id 集, 工具全名集)；BTree* 保证输出确定性。
+    // feature id -> (plugin id set, full tool name set); BTree* keeps the
+    // output deterministic.
     let mut by_feature: BTreeMap<String, (BTreeSet<String>, BTreeSet<String>)> = BTreeMap::new();
     for manifest in embedded_builtin_manifests() {
         for (tool, features) in &manifest.tool_features {
@@ -104,14 +131,18 @@ fn feature_registry_with_disabled(disabled: &BTreeSet<String>) -> Vec<BuiltinFea
         .collect()
 }
 
-/// 内嵌 catalog 中所有 `builtin: true` 的 manifest（解析失败跳过）。
+/// All `builtin: true` manifests in the embedded catalog (parse failures are
+/// skipped).
 fn embedded_builtin_manifests() -> Vec<super::types::ToolManifest> {
     mcp_catalog::MCP_PACKAGES
         .iter()
         .filter_map(|spec| {
             serde_json::from_str::<super::types::ToolManifest>(spec.manifest_json)
                 .map_err(|e| {
-                    eprintln!("[builtin] 内嵌 manifest 解析失败（{}）: {e}", spec.id);
+                    eprintln!(
+                        "[builtin] embedded manifest parse failed ({}): {e}",
+                        spec.id
+                    );
                     e
                 })
                 .ok()
@@ -120,7 +151,7 @@ fn embedded_builtin_manifests() -> Vec<super::types::ToolManifest> {
         .collect()
 }
 
-/// 当前被关闭的功能 id 集（settings.json；读不到 = 全部启用）。
+/// Currently disabled feature ids (settings.json; unreadable = all enabled).
 fn disabled_feature_ids() -> BTreeSet<String> {
     UserPrefs::load()
         .disabled_builtin_features
@@ -128,10 +159,17 @@ fn disabled_feature_ids() -> BTreeSet<String> {
         .collect()
 }
 
-/// 功能开关（契约 §3.3）：写 `UserPrefs::disabled_builtin_features`（字段级事务），
-/// 随后原子写状态文件供 MCP server 读取，返回落盘后的最新注册表。
-/// 未知功能 id 报错（前端笔误直接失败，不静默落盘）。
+/// Feature switch (docs/builtin-toolset-contract.md §3.3): writes
+/// `UserPrefs::disabled_builtin_features` (field-level transaction), then
+/// atomically writes the state file for MCP servers, and returns the fresh
+/// registry after persistence. Unknown feature ids are rejected (a frontend
+/// typo fails loudly instead of silently landing).
+/// The whole operation is serialized under `FEATURE_TOGGLE_LOCK` (see its
+/// comment).
 pub fn set_feature_enabled(id: &str, enabled: bool) -> Result<Vec<BuiltinFeature>, String> {
+    let _guard = FEATURE_TOGGLE_LOCK
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner());
     let known: BTreeSet<String> = feature_registry_with_disabled(&BTreeSet::new())
         .into_iter()
         .map(|feature| feature.id)
@@ -151,13 +189,35 @@ pub fn set_feature_enabled(id: &str, enabled: bool) -> Result<Vec<BuiltinFeature
         Ok(())
     })?;
     let disabled: BTreeSet<String> = prefs.disabled_builtin_features.into_iter().collect();
-    write_feature_state_file(&disabled)?;
+    // The state file is a read-side copy for MCP server processes; the prefs
+    // (which the engine path reads) are authoritative. A failed write must
+    // neither fail the toggle nor skip the caller's hot refresh, so it
+    // degrades to a warning; the next boot replay or toggle rewrites it.
+    if let Err(error) = write_feature_state_file(&disabled) {
+        eprintln!(
+            "[builtin] write builtin feature state failed (prefs remain authoritative): {error}"
+        );
+    }
     Ok(feature_registry_with_disabled(&disabled))
 }
 
-/// 原子写 `~/.pinvou3/marketplace/builtin_features.json`（tmp + rename，
-/// `platform::filesystem::atomic_write`）。全启用时也写空数组（状态文件始终反映
-/// 最新开关态，避免 MCP server 读到过期名单）。
+/// Boot-time replay: rewrite the MCP-server-facing state file from
+/// `UserPrefs::disabled_builtin_features` (the authoritative store) so a
+/// crash between the prefs commit and the state write cannot strand a stale
+/// list. If prefs themselves are unreadable they load as defaults, which the
+/// engine path also sees — replaying simply aligns the file with that same
+/// reality. Best-effort: failures only log (a missing state file already
+/// means "all enabled" for readers, and the next toggle rewrites it).
+pub fn replay_feature_state_from_prefs() {
+    if let Err(error) = write_feature_state_file(&disabled_feature_ids()) {
+        eprintln!("[builtin] replay builtin feature state failed: {error}");
+    }
+}
+
+/// Atomically writes `~/.pinvou3/marketplace/builtin_features.json` (tmp +
+/// rename, `platform::filesystem::atomic_write`). An empty array is written
+/// when everything is enabled too (the state file always reflects the latest
+/// switch state, so MCP servers never read a stale list).
 fn write_feature_state_file(disabled: &BTreeSet<String>) -> Result<(), String> {
     let dir = paths::pinvou3_home().join("marketplace");
     std::fs::create_dir_all(&dir).map_err(|e| format!("create marketplace dir failed: {e}"))?;
@@ -171,11 +231,14 @@ fn write_feature_state_file(disabled: &BTreeSet<String>) -> Result<(), String> {
         .map_err(|e| format!("write builtin feature state failed: {e}"))
 }
 
-/// 功能开关应摘除的模型可见工具全名（喂给引擎 disallowed_tools）。
+/// Full model-visible tool names that feature switches should remove (fed to
+/// the engine's disallowed_tools).
 ///
-/// 并集语义：某工具仅当其 `tool_features` 列出的功能**全部**被关闭时才摘除
-/// （一个功能还开着，工具就还在）；`tool_features` 为空/未列出的工具不受影响。
-/// 输出小写（引擎 `command_denies_tool` 按小写精确匹配，同 `model_tool_names`）。
+/// Union semantics: a tool is removed only when **all** features listed in
+/// its `tool_features` entry are off (while one feature is still on, the tool
+/// stays); tools with an empty/absent `tool_features` entry are unaffected.
+/// The output is lowercased (the engine's `command_denies_tool` matches
+/// lowercase exactly, same as `model_tool_names`).
 pub fn feature_disabled_tool_names() -> Vec<String> {
     let disabled = disabled_feature_ids();
     if disabled.is_empty() {
@@ -196,9 +259,10 @@ pub fn feature_disabled_tool_names() -> Vec<String> {
 mod tests {
     use super::*;
 
-    /// 把 PINVOU3_HOME 指到干净临时目录跑闭包，跑完恢复并清理。
-    /// 借 `platform::paths::tests::ENV_LOCK` 与 prefs/store 等 mutate
-    /// PINVOU3_HOME 的测试串行（同一环境变量，必须同一把锁）。
+    /// Runs the closure with PINVOU3_HOME pointing at a clean temp directory,
+    /// then restores and cleans up. Shares `platform::paths::tests::ENV_LOCK`
+    /// with prefs/store tests that mutate PINVOU3_HOME (same environment
+    /// variable, so the same lock must serialize them).
     fn with_temp_home<F: FnOnce()>(f: F) {
         let _g = crate::platform::paths::tests::ENV_LOCK
             .lock()
@@ -226,15 +290,17 @@ mod tests {
     #[test]
     fn session_reader_is_builtin_via_embedded_manifest() {
         assert!(is_builtin_tool("session-reader"));
-        // 内嵌目录里的普通预置包不是内置插件。
+        // A normal preset package in the embedded catalog is not builtin.
         assert!(!is_builtin_tool("weather"));
-        // 未知 id（盘上也没有）按非内置。
+        // An unknown id (absent from disk too) counts as non-builtin.
         assert!(!is_builtin_tool("no-such-tool"));
     }
 
-    /// 内嵌目录缺失时回读已释放的 bundles/<id>/mcp/manifest.json。
+    /// Trust boundary: a released on-disk manifest claiming `builtin: true` is
+    /// NOT honored — builtin status comes only from the embedded catalog, and
+    /// the upload pipeline rejects packages claiming it (see plugin_import).
     #[test]
-    fn released_manifest_marks_custom_bundle_builtin() {
+    fn released_manifest_builtin_claim_is_not_trusted() {
         with_temp_home(|| {
             let mcp_dir = mcp_catalog::package_mcp_dir("custom-builtin");
             std::fs::create_dir_all(&mcp_dir).unwrap();
@@ -243,7 +309,10 @@ mod tests {
                 r#"{"id":"custom-builtin","name":"c","description":"d","version":"1","icon":"x","category":"c","mcp_tools":[],"command":"python","args":[],"builtin":true}"#,
             )
             .unwrap();
-            assert!(is_builtin_tool("custom-builtin"));
+            assert!(
+                !is_builtin_tool("custom-builtin"),
+                "an on-disk manifest must never confer builtin status"
+            );
         });
     }
 
@@ -252,18 +321,38 @@ mod tests {
         assert!(reject_builtin_ids(&["weather".to_string()]).is_ok());
         let err =
             reject_builtin_ids(&["weather".to_string(), "session-reader".to_string()]).unwrap_err();
-        assert!(err.contains("session-reader"), "错误应点名内置 id: {err}");
-        assert!(!err.contains("weather"), "普通插件不应被点名: {err}");
+        assert!(
+            err.contains("session-reader"),
+            "the builtin id should be named: {err}"
+        );
+        assert!(
+            !err.contains("weather"),
+            "a normal plugin must not be named: {err}"
+        );
     }
 
-    /// 功能注册表：session-reader 的 tool_features 聚合出 session-mention /
-    /// long-memory，插件与工具归属正确，缺省全部启用。
+    /// Ids are judged after the same `to_package_id` normalization the
+    /// persistence layer applies, so a `skill:`-prefixed alias of a builtin
+    /// package cannot slip past the guard.
+    #[test]
+    fn reject_builtin_ids_normalizes_before_judging() {
+        let err = reject_builtin_ids(&["skill:session-reader".to_string()]).unwrap_err();
+        assert!(
+            err.contains("session-reader"),
+            "the normalized builtin id should be named: {err}"
+        );
+        assert!(reject_builtin_ids(&["skill:weather".to_string()]).is_ok());
+    }
+
+    /// Feature registry: session-reader's tool_features aggregate into
+    /// session-mention / long-memory with correct plugin and tool ownership;
+    /// everything is enabled by default.
     #[test]
     fn registry_aggregates_session_reader_features() {
         with_temp_home(|| {
             let registry = feature_registry();
             let ids: Vec<&str> = registry.iter().map(|f| f.id.as_str()).collect();
-            assert_eq!(ids, ["long-memory", "session-mention"], "字典序输出");
+            assert_eq!(ids, ["long-memory", "session-mention"], "sorted output");
             for feature in &registry {
                 assert_eq!(feature.plugins, ["session-reader".to_string()]);
                 assert_eq!(
@@ -273,26 +362,28 @@ mod tests {
                         "mcp_session-reader_read_session".to_string()
                     ]
                 );
-                assert!(feature.enabled, "缺省（无状态）全部启用");
+                assert!(feature.enabled, "default (no state) is all enabled");
             }
         });
     }
 
-    /// 并集语义：两个功能只关一个 → 工具不摘除；全关 → 两个工具都摘除。
+    /// Union semantics: disabling only one of two features removes nothing;
+    /// disabling both removes both tools.
     #[test]
     fn union_semantics_gate_tool_removal() {
         with_temp_home(|| {
-            // 全部启用：无摘除。
+            // All enabled: nothing removed.
             assert!(feature_disabled_tool_names().is_empty());
 
-            // 只关 session-mention（long-memory 还开着）：read_session 不摘除。
+            // Only session-mention off (long-memory still on): read_session
+            // is not removed.
             set_feature_enabled("session-mention", false).unwrap();
             assert!(
                 feature_disabled_tool_names().is_empty(),
-                "long-memory 仍启用，两个工具都不应摘除"
+                "long-memory is still enabled, so neither tool may be removed"
             );
 
-            // 两个都关：read_session / list_sessions 都摘除。
+            // Both off: read_session / list_sessions are removed.
             set_feature_enabled("long-memory", false).unwrap();
             assert_eq!(
                 feature_disabled_tool_names(),
@@ -302,13 +393,14 @@ mod tests {
                 ]
             );
 
-            // 重新打开一个：摘除解除。
+            // Re-enable one: the removal lifts.
             set_feature_enabled("long-memory", true).unwrap();
             assert!(feature_disabled_tool_names().is_empty());
         });
     }
 
-    /// 不在任何 tool_features 里的工具不受功能开关影响（weather 全关场景下仍在）。
+    /// Tools not listed in any tool_features entry are unaffected by feature
+    /// switches (weather stays with everything switched off).
     #[test]
     fn tools_outside_tool_features_are_unaffected() {
         with_temp_home(|| {
@@ -317,13 +409,14 @@ mod tests {
             let removed = feature_disabled_tool_names();
             assert!(
                 !removed.iter().any(|n| n.contains("weather")),
-                "未列入 tool_features 的工具不得被功能开关摘除: {removed:?}"
+                "tools outside tool_features must not be removed by feature switches: {removed:?}"
             );
         });
     }
 
-    /// 开关持久化：settings.json 的 disabled_builtin_features 与状态文件
-    /// builtin_features.json（schema_version + disabled_features）内容正确。
+    /// Switch persistence: settings.json's disabled_builtin_features and the
+    /// state file builtin_features.json (schema_version + disabled_features)
+    /// carry the correct content.
     #[test]
     fn set_feature_enabled_persists_prefs_and_state_file() {
         with_temp_home(|| {
@@ -333,19 +426,20 @@ mod tests {
             let long_memory = registry.iter().find(|f| f.id == "long-memory").unwrap();
             assert!(long_memory.enabled);
 
-            // settings.json 持久化。
+            // settings.json persistence.
             let prefs = UserPrefs::load();
             assert_eq!(
                 prefs.disabled_builtin_features,
                 ["session-mention".to_string()]
             );
 
-            // 状态文件（MCP server 读取面）。
+            // The state file (the MCP-server-facing read side).
             let state_path = paths::pinvou3_home()
                 .join("marketplace")
                 .join(BUILTIN_FEATURES_STATE_FILE);
             let state: serde_json::Value = serde_json::from_str(
-                &std::fs::read_to_string(&state_path).expect("状态文件应已原子写入"),
+                &std::fs::read_to_string(&state_path)
+                    .expect("the state file should have been written atomically"),
             )
             .unwrap();
             assert_eq!(state["schema_version"], 1);
@@ -354,12 +448,55 @@ mod tests {
                 serde_json::json!(["session-mention"])
             );
 
-            // 重新打开：prefs 清空、状态文件写空数组（不残留过期名单）。
+            // Re-enable: prefs cleared, the state file holds an empty array
+            // (no stale list left behind).
             set_feature_enabled("session-mention", true).unwrap();
             assert!(UserPrefs::load().disabled_builtin_features.is_empty());
             let state: serde_json::Value =
                 serde_json::from_str(&std::fs::read_to_string(&state_path).unwrap()).unwrap();
             assert_eq!(state["disabled_features"], serde_json::json!([]));
+        });
+    }
+
+    /// A failing state-file write degrades to a warning: the toggle still
+    /// succeeds and prefs (the authoritative store) reflect it.
+    #[test]
+    fn state_file_write_failure_does_not_fail_toggle() {
+        with_temp_home(|| {
+            // Block state-file creation: `marketplace` exists as a file.
+            std::fs::write(paths::pinvou3_home().join("marketplace"), b"x").unwrap();
+            let registry = set_feature_enabled("session-mention", false).unwrap();
+            assert!(
+                !registry
+                    .iter()
+                    .find(|f| f.id == "session-mention")
+                    .unwrap()
+                    .enabled
+            );
+            assert_eq!(
+                UserPrefs::load().disabled_builtin_features,
+                ["session-mention".to_string()]
+            );
+        });
+    }
+
+    /// Boot replay rewrites the state file from prefs: a state file stranded
+    /// by a crash window (prefs committed, state write lost) is healed.
+    #[test]
+    fn replay_feature_state_heals_stale_state_file() {
+        with_temp_home(|| {
+            set_feature_enabled("session-mention", false).unwrap();
+            let state_path = paths::pinvou3_home()
+                .join("marketplace")
+                .join(BUILTIN_FEATURES_STATE_FILE);
+            std::fs::remove_file(&state_path).unwrap();
+            replay_feature_state_from_prefs();
+            let state: serde_json::Value =
+                serde_json::from_str(&std::fs::read_to_string(&state_path).unwrap()).unwrap();
+            assert_eq!(
+                state["disabled_features"],
+                serde_json::json!(["session-mention"])
+            );
         });
     }
 
@@ -369,16 +506,18 @@ mod tests {
             let err = set_feature_enabled("no-such-feature", false).unwrap_err();
             assert!(
                 err.contains("no-such-feature") && err.contains("session-mention"),
-                "错误应回显未知 id 并列出已知功能: {err}"
+                "the error should echo the unknown id and list known features: {err}"
             );
-            // 未知 id 不得落盘。
+            // Unknown ids must not be persisted.
             assert!(UserPrefs::load().disabled_builtin_features.is_empty());
         });
     }
 
-    /// 服务端纵深防御（契约 §3.3）：manager 层卸载内置插件被拒（guard 在拆任何
-    /// 状态之前，无需临时 HOME）。普通插件不被内置 guard 误拦已由
-    /// `session_reader_is_builtin_via_embedded_manifest` 的负例覆盖。
+    /// Server-side defense in depth (docs/builtin-toolset-contract.md §3.3):
+    /// the manager layer rejects uninstalling a builtin plugin (the guard
+    /// runs before any state is touched, so no temp HOME is needed). That a
+    /// normal plugin is not caught by the builtin guard is covered by the
+    /// negative cases of `session_reader_is_builtin_via_embedded_manifest`.
     #[test]
     fn manager_uninstall_rejects_builtin() {
         let err = crate::features::marketplace::MarketplaceManager::new()
@@ -386,11 +525,12 @@ mod tests {
             .unwrap_err();
         assert!(
             err.contains("cannot be uninstalled"),
-            "错误应含不可卸载语义: {err}"
+            "the error should carry the not-uninstallable semantics: {err}"
         );
     }
 
-    /// 连接器停用写入路径拒绝内置 id（报错而非静默过滤）。
+    /// The connector-disable write path rejects builtin ids (loud error, not
+    /// silent filtering).
     #[tokio::test]
     async fn apply_disabled_connectors_rejects_builtin() {
         let err = crate::features::marketplace::apply_disabled_connectors_for(
@@ -399,10 +539,14 @@ mod tests {
         )
         .await
         .unwrap_err();
-        assert!(err.contains("session-reader"), "错误应点名内置 id: {err}");
+        assert!(
+            err.contains("session-reader"),
+            "the builtin id should be named: {err}"
+        );
     }
 
-    /// 功能摘除名单并入引擎门控聚合（unavailable_tool_names_for）。
+    /// The feature-removal list merges into the engine-gate aggregation
+    /// (unavailable_tool_names_for).
     #[test]
     fn feature_removal_flows_into_unavailable_tool_names() {
         with_temp_home(|| {
