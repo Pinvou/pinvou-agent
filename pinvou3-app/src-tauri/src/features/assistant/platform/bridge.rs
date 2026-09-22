@@ -2810,7 +2810,6 @@ impl Pinvou3Bridge {
             probed_output_tokens: None,
             probed_local_kind: None,
             execution_root_resolver: None,
-            workspace_roots_resolver: None,
             code_session_predicate: None,
             external_acp_session_predicate: None,
             workspace_roots_resolver: None,

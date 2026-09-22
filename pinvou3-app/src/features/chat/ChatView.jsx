@@ -2943,6 +2943,7 @@ const ToolWelcomeCard = ({ toolId, t, onSend }) => {
                         if (outcome && outcome.applied) onNotify && onNotify(t.uiKeychain.alignDone);
                         else if (outcome && outcome.reason === 'no_change') onNotify && onNotify(t.uiKeychain.alignNoChange);
                         else if (outcome && outcome.reason === 'write_skipped') onNotify && onNotify(t.uiKeychain.alignWriteSkipped);
+                        else if (outcome && outcome.reason === 'no_project') onNotify && onNotify(t.uiKeychain.alignNoProject);
                         // Any other non-applied outcome is unexpected; surface it
                         // instead of failing silently (codex lane parity).
                         else if (onNotify) onNotify(t.uiKeychain.alignFailed);

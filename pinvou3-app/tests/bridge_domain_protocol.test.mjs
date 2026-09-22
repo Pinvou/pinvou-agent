@@ -185,8 +185,8 @@ const expectedProtocolHashes = {
   // also carries the keychain snapshot (workspaceRoots) and project ownership
   // (projectId) captured from the draft, and the draft staging gains
   // draftWorkspaceRoots/draftProjectId (bridge/sessions.js).
-  sessions: '178db14f63cb1f74aa03be81d3d19642b4981f626a0894da7b25a0b39ae3da4c',
-  settings: 'a44929caff59641eb059f28885f1674d4e277412526d31c1d3ddfd75e44d0496',
+  sessions: '2e6d8899b5fee3e6cf74a3a048ec2f48d6fa57872b6f0e59b1690fb0e6a645fa',
+  settings: 'a5c68eadcad49dd2f3e58157d0262209610696fb0e37f0b8e6888a97199729b5',
   // Recomputed for the audit dead-code cleanup: the never-emitted
   // remote_control:status / remote_control:session_created listeners were
   // removed (update:progress stays — pinned by tests/updater_progress_state).
