@@ -10,6 +10,14 @@
 // must reach back to an absolute anchor ('/' or '<drive>:/') so a relative
 // mention cannot trick the renderer into loading an arbitrary file.
 const SCREENSHOT_DIR_MARKER = '/attachments/computer_use/';
+// Case-insensitive matchers run over the ORIGINAL string: a lowercased copy
+// changes indices for locale-sensitive characters (Turkish 'İ'.toLowerCase()
+// is two code units), which silently mis-sliced — and lost — the card for
+// that whole class of users.
+const MARKER_RE = /\/attachments\/computer_use\//gi;
+const MARKER_CONTAIN_RE = /\/attachments\/computer_use\//i;
+const PNG_TAIL_RE = /\.png/gi;
+const SAVED_LINE_RE = /^screenshot saved: (.+)$/gim;
 const LEFT_STOP = /[\s"'`<>|]/;
 const RIGHT_STOP = /["'`<>|\n\r]/;
 
@@ -38,18 +46,51 @@ function screenshotSpanAtMarker(normalized, markerIndex) {
   let end = tail;
   while (end < normalized.length && !RIGHT_STOP.test(normalized[end])) end += 1;
   const basename = normalized.slice(tail, end);
-  // Take the LAST ".png" occurrence: trailing prose after the path is allowed
-  // (RIGHT_STOP doesn't stop at whitespace, so "shot 2.png done" is normal),
-  // but the basename itself ending in ".png.png" must not be truncated at the
-  // first occurrence.
-  const pngIndex = basename.toLowerCase().lastIndexOf('.png');
+  // Take the LAST ".png" occurrence (case-insensitive, matched on the
+  // original basename — see the locale note on MARKER_RE): trailing prose
+  // after the path is allowed (RIGHT_STOP doesn't stop at whitespace, so
+  // "shot 2.png done" is normal), but the basename itself ending in
+  // ".png.png" must not be truncated at the first occurrence.
+  let pngIndex = -1;
+  PNG_TAIL_RE.lastIndex = 0;
+  for (let m = PNG_TAIL_RE.exec(basename); m; m = PNG_TAIL_RE.exec(basename)) {
+    pngIndex = m.index;
+  }
   if (pngIndex < 0) return null;
   // A '..' segment cannot appear inside the real attachments dir: reject the
-  // mention outright instead of letting a model-injected path escape the
-  // screenshot directory via traversal (the renderer only inline-displays
-  // local files, but staying inside the workspace keeps the card honest).
+  // mention outright instead of letting an injected path walk out via
+  // traversal. (The renderer only inline-displays local files; the head
+  // before the marker is shape-checked here but not workspace-membership
+  // checked — that closure needs the backend to emit a structured path, so
+  // the card binds to the "screenshot saved:" emission first, see
+  // `extractComputerUseScreenshotPath`.)
   if (/(^|\/)\.\.($|\/)/.test(basename)) return null;
   return { start, end: tail + pngIndex + 4 };
+}
+
+// A path on the backend's own "screenshot saved: <abs path>" line
+// (tool.rs `shot_result_text`) is the authoritative emission for a real
+// capture: prefer it over the generic last-marker scan so planted marker
+// text elsewhere in a result (an a11y name, a blocked-action label) cannot
+// steer the card away from the screenshot the backend actually wrote.
+function savedLinePathIsValid(path) {
+  const normalized = path.replaceAll('\\', '/'); // safari14-ok: replaceAll ships since Safari 13.1
+  const markerMatch = MARKER_CONTAIN_RE.exec(normalized);
+  if (!markerMatch) return false;
+  if (!(normalized.startsWith('/') || /^[A-Za-z]:\//.test(normalized))) return false;
+  if (!/\.png$/i.test(path)) return false;
+  const basename = normalized.slice(markerMatch.index + SCREENSHOT_DIR_MARKER.length);
+  return !/(^|\/)\.\.($|\/)/.test(basename);
+}
+
+function lastSavedLinePath(text) {
+  SAVED_LINE_RE.lastIndex = 0;
+  let best = null;
+  for (let match = SAVED_LINE_RE.exec(text); match; match = SAVED_LINE_RE.exec(text)) {
+    const candidate = match[1].trim();
+    if (savedLinePathIsValid(candidate)) best = candidate;
+  }
+  return best;
 }
 
 function toolOutputText(output) {
@@ -93,15 +134,13 @@ export function extractComputerUseScreenshotPath(output) {
   }
   if (!text) return null;
   const normalized = text.replaceAll('\\', '/'); // safari14-ok: replaceAll ships since Safari 13.1
-  const searchable = normalized.toLowerCase();
+  const saved = lastSavedLinePath(text);
+  if (saved) return saved;
   let best = null;
-  let searchFrom = 0;
-  for (;;) {
-    const markerIndex = searchable.indexOf(SCREENSHOT_DIR_MARKER, searchFrom);
-    if (markerIndex === -1) break;
-    const span = screenshotSpanAtMarker(normalized, markerIndex);
+  MARKER_RE.lastIndex = 0;
+  for (let match = MARKER_RE.exec(normalized); match; match = MARKER_RE.exec(normalized)) {
+    const span = screenshotSpanAtMarker(normalized, match.index);
     if (span) best = span;
-    searchFrom = markerIndex + SCREENSHOT_DIR_MARKER.length;
   }
   return best ? text.slice(best.start, best.end) : null;
 }

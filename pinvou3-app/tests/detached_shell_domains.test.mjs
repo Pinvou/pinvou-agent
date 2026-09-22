@@ -1,10 +1,14 @@
 import assert from 'node:assert/strict';
 import { readFileSync } from 'node:fs';
 
-// Static contract: the detached chat window must subscribe to every bridge
-// state domain its embedded ChatView consumes. Missing `computerUse` here
-// made the consent banner and grant/confirm dialogs unrenderable in detached
-// windows while the agent controlled the machine (PR #468 round-10 M1).
+// Static contract: the detached chat window's bridge domain list must be a
+// subset of the app's registered domains, and must include `computerUse` —
+// the consent-carrying domain. Scope note: this pins the computerUse slice
+// (the PR #468 round-10 M1 fix — missing here made the consent banner and
+// grant/confirm dialogs unrenderable in detached windows while the agent
+// controlled the machine); it does not derive the full list from ChatView's
+// usages, so other ChatView-consumed domains still rely on the subset check
+// against main.
 
 const source = (relative) =>
   readFileSync(new URL(`../src/${relative}`, import.meta.url), 'utf8');

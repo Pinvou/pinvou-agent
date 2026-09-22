@@ -1,5 +1,5 @@
 import assert from 'node:assert/strict';
-import { mkdtempSync, rmSync, writeFileSync } from 'node:fs';
+import { mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -63,6 +63,35 @@ assert.equal(
   extractComputerUseScreenshotPath('first /ws/attachments/computer_use/a.png then /ws/attachments/computer_use/b.png'),
   '/ws/attachments/computer_use/b.png',
   'a multi-step result resolves to the newest (last) screenshot',
+);
+// The backend's own "screenshot saved:" line is the authoritative emission:
+// it wins over the generic last-marker scan, so planted marker text later in
+// the same result (an a11y name, a blocked-action label) cannot steer the
+// card away from the screenshot the backend actually wrote.
+assert.equal(
+  extractComputerUseScreenshotPath(
+    'screenshot saved: /ws/attachments/computer_use/real.png\n'
+    + 'see /ws/attachments/computer_use/planted.png for details',
+  ),
+  '/ws/attachments/computer_use/real.png',
+  'the backend saved-line emission must outrank a planted later mention',
+);
+// A saved line that fails validation (relative head) falls back to the
+// generic scan instead of losing the card entirely.
+assert.equal(
+  extractComputerUseScreenshotPath(
+    'screenshot saved: src/attachments/computer_use/relative.png',
+  ),
+  null,
+  'a relative saved line is rejected outright (no absolute anchor)',
+);
+// Locale-sensitive characters: 'İ'.toLowerCase() is TWO code units, so
+// index math on a lowercased copy used to mis-slice — and silently lose —
+// the card. Matchers now run over the original string.
+assert.equal(
+  extractComputerUseScreenshotPath('/Users/İsmail/.pinvou3/sessions/s1/attachments/computer_use/shot.PNG'),
+  '/Users/İsmail/.pinvou3/sessions/s1/attachments/computer_use/shot.PNG',
+  'a path containing İ and an uppercase .PNG suffix must still extract',
 );
 // Envelope with NO text blocks: an envelope that parses must never fall back
 // to searching the raw JSON — its escaped backslashes (\\) normalize into
@@ -469,6 +498,13 @@ const vite = await createServer({
 
 const REACT_ELEMENT = Symbol.for('react.element');
 
+// Round-17 portal pin: the walker adapts to portals, so it must also PROVE
+// it saw one — otherwise reverting createPortal back to inline rendering
+// would keep every UI assertion here green while re-opening the stacking
+// regression the portal fix closed.
+let portalsUnwrapped = 0;
+let lastPortalContainer = null;
+
 function walkElements(node, visit) {
   if (node == null || typeof node !== 'object') return;
   if (Array.isArray(node)) {
@@ -479,6 +515,8 @@ function walkElements(node, visit) {
   // fix), so the component now returns a react.portal object; unwrap it and
   // keep walking its children.
   if (node.$$typeof === REACT_PORTAL) {
+    portalsUnwrapped += 1;
+    lastPortalContainer = node.containerInfo ?? node.container;
     walkElements(node.children, visit);
     return;
   }
@@ -575,8 +613,19 @@ try {
   // and approval must never depend on reveal state — the preview scrolls
   // instead of gating.
   runtime.reset();
+  portalsUnwrapped = 0;
+  lastPortalContainer = null;
   tree = render(confirmSlice('cu-1', 'Hello 三'));
   const inlinePre = findByTestId(tree, 'computer-use-confirm-full-text');
+  // Portal pin (see portalsUnwrapped above): the dialog must genuinely
+  // render AS a portal into document.body, not inline — the walker adapts
+  // to portals, so this proves the adaptation still has something to adapt
+  // to (findByTestId above is what drives the walk).
+  assert.ok(portalsUnwrapped > 0, 'the dialog render must produce a react.portal');
+  // React stores the portal target as containerInfo (the walker records
+  // containerInfo, falling back to container across runtimes).
+  assert.equal(lastPortalContainer, globalThis.document.body,
+    'the portal container must be document.body');
   assert.ok(inlinePre, 'a short preview must render the full text inline');
   assert.ok(allText(inlinePre).includes('Hello 三'), 'the inline text must be the full preview');
   assert.equal(findByTestId(tree, 'computer-use-confirm-show-full'), null,
@@ -697,6 +746,29 @@ try {
   // Hiding re-arms the gate without touching errors.
   assert.deepEqual(bannerErrorReset(true, false), { resetError: false, wasShown: false });
   assert.deepEqual(bannerErrorReset(false, false), { resetError: false, wasShown: false });
+}
+
+// ── Portal source pin (round-17 M5): the stacking-order fix must be pinned
+// at the source level too — the walker above ADAPTS to portals, so reverting
+// createPortal back to inline rendering would keep every UI assertion here
+// green. Same pattern as knowledge_visual_contract.test.mjs. ──
+{
+  const consentSource = readFileSync(
+    new URL('../src/features/computer-use/ComputerUseConsent.jsx', import.meta.url),
+    'utf8',
+  );
+  assert.match(consentSource, /import \{ createPortal \} from 'react-dom';/);
+  // Both dialogs (grant + confirm) must portal to document.body — pinned on
+  // the actual `return createPortal(` call sites so comment mentions don't
+  // satisfy the count.
+  assert.equal(consentSource.match(/return createPortal\(/g)?.length, 2,
+    'both dialogs must render through createPortal');
+  assert.equal(consentSource.match(/document\.body,/g)?.length, 2,
+    'both portals must target document.body');
+  // z-[1210]: strictly above every app overlay including the voice intro's
+  // z-[1200] portal — a security prompt must never lose a same-z DOM-order
+  // race (round-17 nit, bumped from z-[1200]).
+  assert.match(consentSource, /fixed inset-0 z-\[1210\]/);
 }
 
 console.log('computer use consent dialog UI tests passed');

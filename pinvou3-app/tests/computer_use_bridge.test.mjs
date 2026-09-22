@@ -356,7 +356,7 @@ function emit(harness, event, payload) {
   emit(harness, 'computer_use:confirm_required', {
     session_id: 's1', confirm_id: 'cu-1', action: 'left click', element: 'Buy now',
   });
-  await assert.rejects(harness.feature.confirm('cu-1'), /unknown or expired/i);
+  await assert.rejects(harness.feature.confirm('cu-1'), /已过期或不存在/);
   assert.equal(harness.published().at(-1).confirmRequest, null, 'the expired modal must close instead of dead-ending');
   // Pending cleared: switching away and back must not resurface it.
   harness.state.activeSessionId = 's2';
@@ -376,7 +376,7 @@ function emit(harness, event, payload) {
   emit(harness, 'computer_use:confirm_required', {
     session_id: 's1', confirm_id: 'cu-1', action: 'left click', element: 'Buy now',
   });
-  await assert.rejects(harness.feature.deny('cu-1'), /unknown or expired/i);
+  await assert.rejects(harness.feature.deny('cu-1'), /已过期或不存在/);
   assert.equal(harness.published().at(-1).confirmRequest, null, 'the expired modal must close after deny too');
   // An expiry is not a user decision: an immediate retry re-opens the dialog
   // like any genuinely new request.
@@ -569,7 +569,7 @@ function emit(harness, event, payload) {
   emit(harness, 'computer_use:confirm_required', {
     session_id: 's1', confirm_id: 'cu-2', action: 'left click', element: 'Checkout',
   });
-  await assert.rejects(harness.feature.confirm('cu-1'), /unknown or expired/i);
+  await assert.rejects(harness.feature.confirm('cu-1'), /已过期或不存在/);
   const survivor = harness.published().at(-1).confirmRequest;
   assert.ok(survivor && String(survivor.confirmId) === 'cu-2',
     `the expired cleanup must not wipe the newer cu-2 dialog: ${JSON.stringify(survivor)}`);
@@ -594,7 +594,7 @@ function emit(harness, event, payload) {
   emit(harness, 'computer_use:confirm_required', {
     session_id: 's1', confirm_id: 'cu-1', action: 'left click', element: 'Buy now',
   });
-  await assert.rejects(harness.feature.confirm('cu-1'), /unknown or expired/i);
+  await assert.rejects(harness.feature.confirm('cu-1'), /已过期或不存在/);
   assert.equal(harness.published().at(-1).confirmRequest, null,
     'the matching expired dialog must still close');
   harness.state.activeSessionId = 's2';
@@ -619,7 +619,7 @@ function emit(harness, event, payload) {
   emit(harness, 'computer_use:confirm_required', {
     session_id: 's1', confirm_id: 'cu-2', action: 'left click', element: 'Checkout',
   });
-  await assert.rejects(harness.feature.deny('cu-1'), /unknown or expired/i);
+  await assert.rejects(harness.feature.deny('cu-1'), /已过期或不存在/);
   const survivor = harness.published().at(-1).confirmRequest;
   assert.ok(survivor && String(survivor.confirmId) === 'cu-2',
     `the expired deny cleanup must not wipe the newer cu-2 dialog: ${JSON.stringify(survivor)}`);
@@ -631,7 +631,7 @@ function emit(harness, event, payload) {
   assert.ok(resurfaced && String(resurfaced.confirmId) === 'cu-2',
     `the newer request must resurface from the pending map: ${JSON.stringify(resurfaced)}`);
   // And the matching request still clears when denied with an expiry.
-  await assert.rejects(harness.feature.deny('cu-2'), /unknown or expired/i);
+  await assert.rejects(harness.feature.deny('cu-2'), /已过期或不存在/);
   assert.equal(harness.published().at(-1).confirmRequest, null,
     'the matching expired dialog must still close after deny');
 }
@@ -881,6 +881,36 @@ function emit(harness, event, payload) {
   other.state.settings = { language: 'zh-Hans' };
   await assert.rejects(other.feature.setEnabled(true), /no backend on this operating system/,
     'an unrecognized error string must pass through untouched');
+}
+
+// ── 32b. round-17: the consent action paths localize too ──
+// The disabled/stopped grant refusals reach the dialog while it is on screen
+// (another window stopped the feature mid-decision), and the expired pair is
+// matched by its stable marker phrase because it embeds the confirm_id.
+{
+  const grantDenied = createHarness({
+    initialState: { enabled: false },
+    failInvoke: (command) => command === 'computer_use_grant',
+    failMessage: 'computer use is disabled; enable it in settings before granting control',
+  });
+  grantDenied.state.settings = { language: 'zh-Hans' };
+  await assert.rejects(
+    grantDenied.feature.grant('s1'),
+    /已在设置中停用/,
+    'the disabled refusal must surface as trilingual copy on the grant path',
+  );
+
+  const expired = createHarness({
+    initialState: { enabled: true },
+    failInvoke: (command) => command === 'computer_use_confirm',
+    failMessage: 'confirmation request no longer exists (unknown or expired): cu-1',
+  });
+  expired.state.settings = { language: 'ja' };
+  await assert.rejects(
+    expired.feature.confirm('cu-1'),
+    /有効期限が切れています/,
+    'the expired-confirmation error must localize via its stable marker',
+  );
 }
 
 console.log('computer use bridge behavior tests passed');

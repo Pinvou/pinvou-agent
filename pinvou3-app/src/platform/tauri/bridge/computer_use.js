@@ -229,7 +229,14 @@
 
     async function grant(sessionId) {
       const sid = sessionId || state.activeSessionId;
-      await invoke("computer_use_grant", { sessionId: sid });
+      try {
+        await invoke("computer_use_grant", { sessionId: sid });
+      } catch (error) {
+        // The disabled/stopped refusals reach the dialog while it is still on
+        // screen (another window stopped the feature mid-decision) — map them
+        // onto the trilingual copy the way the settings toggle does.
+        throw localizeKnownError(error);
+      }
       const pending = pendingEntry(sid);
       if (pending) pending.grant = false;
       publish(sid, { granted: true, stopped: false, grantRequest: null });
@@ -237,7 +244,11 @@
 
     async function revoke(sessionId) {
       const sid = sessionId || state.activeSessionId;
-      await invoke("computer_use_revoke", { sessionId: sid });
+      try {
+        await invoke("computer_use_revoke", { sessionId: sid });
+      } catch (error) {
+        throw localizeKnownError(error);
+      }
       // Backend revoke wipes the session's grant AND its pending confirmations
       // AND tokens, so a same-session confirm dialog must collapse too — it
       // would otherwise linger as a dead modal after the explicit revoke.
@@ -258,7 +269,7 @@
         await invoke("computer_use_stop");
       } catch (error) {
         await refreshStatus(sid);
-        throw error;
+        throw localizeKnownError(error);
       }
       // Backend stop_all is global: every grant/confirm/token is gone, so the
       // pending map must be dropped too or a later re-enable republished
@@ -298,10 +309,13 @@
     }
 
     // Backend TTL: a confirmation older than its five-minute window is
-    // rejected as "unknown or expired". Both buttons then keep failing with
-    // no way out of the full-screen modal, so the caller cleans up locally
-    // and rethrows — the modal closes and the failure still surfaces through
-    // the UI's actionError.
+    // rejected as "unknown or expired". Both buttons would then keep failing
+    // with no way out of the full-screen modal, so the caller cleans up
+    // locally and rethrows. The modal closes without rendering the error —
+    // the component unmounts as soon as the request clears, so there is no
+    // surface left for the message; that is accepted (the dead-end dialog
+    // escapes, the model is told its confirm_id died, and a retry raises a
+    // fresh dialog), but this comment is the honest description of it.
     function isExpiredConfirmError(error) {
       return /unknown or expired/i.test(String((error && error.message) || error));
     }
@@ -331,12 +345,14 @@
       try {
         await invoke("computer_use_confirm", { confirmId });
       } catch (error) {
-        if (!isExpiredConfirmError(error)) throw error;
+        if (!isExpiredConfirmError(error)) throw localizeKnownError(error);
         // Expired: the backend already dropped the request, so closing
         // locally is the only way out of the dead-end modal. Targeted clear
         // (same rule as below): a newer replacement request must survive.
+        // The rethrown error is still localized for any caller surface that
+        // can render it, even though the dialog itself is gone.
         clearConfirmIfCurrent(confirmId, sid);
-        throw error;
+        throw localizeKnownError(error);
       }
       // Clear only the dialog that was confirmed: a new request landing
       // during the IPC round-trip keeps its own dialog and pending entry
@@ -356,11 +372,11 @@
       try {
         await invoke("computer_use_deny", { confirmId });
       } catch (error) {
-        if (!isExpiredConfirmError(error)) throw error;
+        if (!isExpiredConfirmError(error)) throw localizeKnownError(error);
         // Same targeted clear as the success path below: the expiry cleanup
         // must not close a newer replacement request's dialog.
         clearConfirmIfCurrent(confirmId, sid);
-        throw error;
+        throw localizeKnownError(error);
       }
       // Same targeted clear as confirm(): only the denied dialog goes away.
       clearConfirmIfCurrent(confirmId, sid);

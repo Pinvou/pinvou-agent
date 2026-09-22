@@ -2213,10 +2213,12 @@
       // prefs (not the update_settings patch); at cold start with no session yet, the
       // persisted value lands first (a session-less computer_use_get_status read fills
       // the rest of the slice from the settings page's mount refresh).
-      // Note: this mirror is written only once at load — the runtime toggle goes through
-      // the Tauri bridge's computer_use dedicated command and this slice is never written
-      // back (by design the two representations align only at cold start). The state.computerUse
-      // slice only exists on the Tauri host, so this is a no-op on web.
+      // Note: this mirror runs on every settings reload (loadSettings is
+      // re-invoked after model save/delete/switch too) — it stays idempotent
+      // because the persisted value always matches the last accepted
+      // computer_use_set_enabled, and the runtime toggle's optimistic flip is
+      // reverted by the bridge on failure. The state.computerUse slice only
+      // exists on the Tauri host, so this is a no-op on web.
       const persistedEnabled = !!(state.settings && state.settings.computer_use && state.settings.computer_use.enabled);
       if (state.computerUse && state.computerUse.enabled !== persistedEnabled) {
         state.computerUse = Object.assign({}, state.computerUse, { enabled: persistedEnabled });

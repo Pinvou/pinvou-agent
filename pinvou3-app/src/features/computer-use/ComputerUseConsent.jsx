@@ -12,7 +12,7 @@ import { bannerErrorReset, computerUseConsentView, formatComputerUseConfirmActio
  * computerUseConsentView: with the feature toggle off every surface is hidden.
  *
  * The dialogs render through createPortal(document.body): ChatView's root is
- * `relative z-10`, a stacking context, so a fixed z-[1200] overlay inside it
+ * `relative z-10`, a stacking context, so a fixed z-[1210] overlay inside it
  * would still paint UNDER every body-level portal modal (voice intro,
  * move-to-project, …) — a security-critical prompt hidden behind another
  * dialog. Portaling puts the dialogs in the root stacking context like every
@@ -166,7 +166,11 @@ export function ComputerUseDialogs({ slice, copy }) {
   // unreachable to keyboard focus, so Tab cycles inside the dialog.
   const handleDialogKeyDown = (event) => {
     if (event.key === 'Escape') {
+      // stopPropagation: the security prompt's Escape must be exclusive — a
+      // document-level Escape on a co-open overlay (e.g. the voice intro)
+      // used to dismiss BOTH surfaces off a single keystroke.
       event.preventDefault();
+      event.stopPropagation();
       denyCurrentRequest();
       return;
     }
@@ -221,7 +225,7 @@ export function ComputerUseDialogs({ slice, copy }) {
   // the grant first; the confirm request stays pending underneath.
   if (grantRequest) {
     return createPortal(
-      <div data-testid="computer-use-grant-dialog" className="fixed inset-0 z-[1200] flex items-center justify-center p-4 bg-black/45">
+      <div data-testid="computer-use-grant-dialog" className="fixed inset-0 z-[1210] flex items-center justify-center p-4 bg-black/45">
         <div
           role="dialog"
           aria-modal="true"
@@ -272,7 +276,7 @@ export function ComputerUseDialogs({ slice, copy }) {
   const confirmDetails = formatComputerUseConfirmAction(copy, confirmRequest);
 
   return createPortal(
-    <div data-testid="computer-use-confirm-dialog" className="fixed inset-0 z-[1200] flex items-center justify-center p-4 bg-black/45">
+    <div data-testid="computer-use-confirm-dialog" className="fixed inset-0 z-[1210] flex items-center justify-center p-4 bg-black/45">
       <div
         role="dialog"
         aria-modal="true"

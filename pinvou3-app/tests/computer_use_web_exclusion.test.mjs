@@ -58,6 +58,15 @@ test('computer_use stays desktop-exclusive: web policy and web bridge must not l
       `${event} must never reach the web client`,
     );
   }
+  // Whole-file pin: no computer_use command OR event may appear anywhere in
+  // the policy — the per-name loops above only cover the names known today,
+  // so a future event added straight into the policy's allowed_events would
+  // otherwise pass both loops.
+  assert.equal(
+    read('src', 'platform', 'web', 'access-policy.json').includes('computer_use'),
+    false,
+    'the web access policy must not mention computer_use anywhere (commands or events)',
+  );
 });
 
 test('computer_use exclusion list is self-maintaining: every desktop bridge invoke is pinned', () => {
