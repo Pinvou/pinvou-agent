@@ -66,12 +66,11 @@ static DISABLED_BUNDLES_FILE_LOCK: Mutex<()> = Mutex::new(());
 /// and the same fd-lock crate as remote_control's process lock, and fails
 /// closed like it: an unavailable lock returns `Err` instead of running the
 /// write unserialized, because silently proceeding would reintroduce exactly
-/// the lost-update this lock exists to prevent. RMW writers do expand the
-/// DenyAll fallback INSIDE the critical section (`resolve_scope_disabled_ids`
-/// → `installed_skill_ids_cheap`), but that expansion is an ids-only packages
-/// root enumeration (`list_skills`-style per-skill fingerprinting is display
-/// only and never runs under the lock — see `skill_marketplace`), so the
-/// critical section stays short and blocking is preferable to retry loops.
+/// the lost-update this lock exists to prevent. The critical section only
+/// reads/writes a file-sized payload — the DenyAll expansion enumerates the
+/// packages root OUTSIDE the lock (`sample_denyall_expansion` is taken by
+/// every RMW writer before acquiring it, see `update_disabled_bundles_for`)
+/// — so blocking is preferable to retry loops.
 fn with_disabled_bundles_lock<T>(f: impl FnOnce() -> T) -> Result<T, String> {
     let _guard = DISABLED_BUNDLES_FILE_LOCK
         .lock()
@@ -506,9 +505,91 @@ pub fn load_disabled_bundles_for(scope: ConnectorScope) -> Vec<String> {
     resolve_scope_disabled_ids(&file, scope)
 }
 
+/// DenyAll 兜底展开所需的安装态环境采样。采样要读 bundle store 并对技能包根做
+/// `installed_skill_ids_strict` 的逐技能探测（#584 的 overdeny 口径），属于文件系
+/// 统扫描——必须在进入 consent 文件临界区**之前**完成采样，让 flock 只覆盖
+/// 文件大小的读写，而不是文件系统遍历。
+///
+/// Environment facts feeding the DenyAll default expansion. Sampling reads
+/// the bundle store and probes the skill packages root per skill (the #584
+/// strict/overdeny enumeration), i.e. it is a filesystem scan: it must be
+/// captured BEFORE entering the consent-file critical section so the flock
+/// covers only a file-sized read/write, never the scan.
+struct DenyAllExpansionSample {
+    installed_ids: Vec<String>,
+    skill_ids: Vec<String>,
+    uploaded_skill_ids: Vec<String>,
+    skill_scan_degraded: bool,
+}
+
+/// Sample the install-state environment once per resolution. Callers outside
+/// a critical section sample freshly; the RMW writer samples before taking
+/// the flock (see `update_disabled_bundles_for`).
+fn sample_denyall_expansion() -> DenyAllExpansionSample {
+    let skill_market = SkillMarketplaceManager::new();
+    let (skill_ids, skill_scan_degraded) = skill_market.installed_skill_ids_strict();
+    DenyAllExpansionSample {
+        installed_ids: MarketplaceManager::new().installed_ids(),
+        skill_ids,
+        uploaded_skill_ids: skill_market.uploaded_skill_ids(),
+        skill_scan_degraded,
+    }
+}
+
+/// 已采样环境 → DenyAll 默认禁用集：已装包 ∪ 内置 CLI 包 ∪ 已装技能属主包；
+/// 严格枚举降级时按 #531/#584 口径并集全部预置/上传属主（向过度拒绝偏置）。
+/// 纯函数：只消费采样，绝不再触盘。
+/// Pure expansion over an existing sample: it must never touch the
+/// filesystem again, which is what keeps the critical section scan-free.
+fn expand_denyall_sample(sample: &DenyAllExpansionSample) -> Vec<String> {
+    // 现算分支：已按当前认领推导包 id，无需再归一。
+    let mut ids: Vec<String> = sample.installed_ids.clone();
+    ids.extend(builtin_cli_bundle_ids().map(str::to_string));
+    if sample.skill_scan_degraded {
+        // Enumeration degraded (#531): a failed probe can masquerade an
+        // installed skill as absent, so the default deny set must not
+        // shrink because of it. Blanket-union the owner packages of
+        // every preset skill (compile-time manifests) and of every
+        // known upload record — an uninitialized DenyAll scope would
+        // rather have the user enable a package explicitly than hand
+        // the consent gate a default silently narrowed by an
+        // enumeration failure. Owner mapping is the same
+        // `skill_owner_package` path as the normal loop below.
+        // Accepted residual: with an unreadable bundle store the upload
+        // population itself is unknowable (the lenient upload read
+        // yields nothing to union); with an unreadable packages root,
+        // straggler-copy-only skills of neither kind can be seen.
+        eprintln!(
+            "[scope] DenyAll default deny list degraded (skill enumeration failed); biasing to over-deny"
+        );
+        let mut blanket: Vec<String> =
+            SkillMarketplaceManager::preset_skill_ids().collect();
+        blanket.extend(sample.uploaded_skill_ids.iter().cloned());
+        for skill_id in blanket {
+            let pkg = skill_owner_package(&skill_id);
+            if !ids.iter().any(|id| id == &pkg) {
+                ids.push(pkg);
+            }
+        }
+    }
+    for skill_id in &sample.skill_ids {
+        let pkg = skill_owner_package(skill_id);
+        if !ids.iter().any(|id| id == &pkg) {
+            ids.push(pkg);
+        }
+    }
+    ids
+}
+
 /// 已加载文件 → 某 scope 的有效禁用包 id 列表（含 DenyAll 默认兜底）。供
-/// `load_disabled_bundles_for` 与持锁写方（单临界区 RMW）共用，口径一致。
-fn resolve_scope_disabled_ids(file: &DisabledBundlesFile, scope: ConnectorScope) -> Vec<String> {
+/// `load_disabled_bundles_for`、`unavailable_bundles_for` 与 RMW 写方共用，
+/// 口径一致；RMW 写方传入临界区**之前**采样的环境（见
+/// [`update_disabled_bundles_for`]），本入口在锁外现采样。
+fn resolve_scope_disabled_ids_with_sample(
+    file: &DisabledBundlesFile,
+    scope: ConnectorScope,
+    sample: &DenyAllExpansionSample,
+) -> Vec<String> {
     let key = scope.as_str();
     if file.initialized.contains(key) {
         return normalize_stored_pkg_ids(&file.scopes.get(key).cloned().unwrap_or_default());
@@ -517,48 +598,16 @@ fn resolve_scope_disabled_ids(file: &DisabledBundlesFile, scope: ConnectorScope)
         PackDefaultPolicy::AllowAll => {
             normalize_stored_pkg_ids(&file.scopes.get(key).cloned().unwrap_or_default())
         }
-        PackDefaultPolicy::DenyAll => {
-            // 现算分支：已按当前认领推导包 id，无需再归一。
-            let mut ids: Vec<String> = MarketplaceManager::new().installed_ids();
-            ids.extend(builtin_cli_bundle_ids().map(str::to_string));
-            let skill_market = SkillMarketplaceManager::new();
-            let (skill_ids, skill_scan_degraded) = skill_market.installed_skill_ids_strict();
-            if skill_scan_degraded {
-                // Enumeration degraded (#531): a failed probe can masquerade an
-                // installed skill as absent, so the default deny set must not
-                // shrink because of it. Blanket-union the owner packages of
-                // every preset skill (compile-time manifests) and of every
-                // known upload record — an uninitialized DenyAll scope would
-                // rather have the user enable a package explicitly than hand
-                // the consent gate a default silently narrowed by an
-                // enumeration failure. Owner mapping is the same
-                // `skill_owner_package` path as the normal loop below.
-                // Accepted residual: with an unreadable bundle store the upload
-                // population itself is unknowable (the lenient upload read
-                // yields nothing to union); with an unreadable packages root,
-                // straggler-copy-only skills of neither kind can be seen.
-                eprintln!(
-                    "[scope] DenyAll default deny list degraded (skill enumeration failed); biasing to over-deny"
-                );
-                let mut blanket: Vec<String> =
-                    SkillMarketplaceManager::preset_skill_ids().collect();
-                blanket.extend(skill_market.uploaded_skill_ids());
-                for skill_id in blanket {
-                    let pkg = skill_owner_package(&skill_id);
-                    if !ids.iter().any(|id| id == &pkg) {
-                        ids.push(pkg);
-                    }
-                }
-            }
-            for skill_id in skill_ids {
-                let pkg = skill_owner_package(&skill_id);
-                if !ids.iter().any(|id| id == &pkg) {
-                    ids.push(pkg);
-                }
-            }
-            ids
-        }
+        PackDefaultPolicy::DenyAll => expand_denyall_sample(sample),
     }
+}
+
+/// Same as [`resolve_scope_disabled_ids_with_sample`] with a freshly taken
+/// sample; for lock-free read paths only — the RMW writer must sample before
+/// its critical section instead of calling this inside it.
+fn resolve_scope_disabled_ids(file: &DisabledBundlesFile, scope: ConnectorScope) -> Vec<String> {
+    let sample = sample_denyall_expansion();
+    resolve_scope_disabled_ids_with_sample(file, scope, &sample)
 }
 
 /// 写某 scope 被禁用的包 id 列表（写入即标记该 scope 已初始化）。入参统一归一为包
@@ -596,9 +645,16 @@ pub fn update_disabled_bundles_for(
     scope: ConnectorScope,
     update: impl FnOnce(&mut Vec<String>),
 ) -> Result<(), String> {
+    // Hoisted out of the critical section on purpose: the DenyAll expansion
+    // probes the skill packages root per skill (#584 overdeny enumeration),
+    // and enumerating inside the flock would hold the GUI/CLI serialization
+    // point for a filesystem scan. The sample freezes the environment the
+    // write-back persists; the discriminating regression is
+    // `update_rmw_samples_denyall_expansion_outside_the_critical_section`.
+    let sample = sample_denyall_expansion();
     with_disabled_bundles_writer(|| {
         let file = load_disabled_bundles_file_locked()?;
-        let mut ids = resolve_scope_disabled_ids(&file, scope);
+        let mut ids = resolve_scope_disabled_ids_with_sample(&file, scope, &sample);
         update(&mut ids);
         let normalized: Vec<String> = ids.iter().map(|id| to_package_id(id)).collect();
         let mut file = file;
@@ -1165,6 +1221,67 @@ mod tests {
                 load_disabled_bundles_for(ConnectorScope::Plain),
                 vec!["weather".to_string()],
                 "the blocked write must land intact after the lock is released"
+            );
+        });
+    }
+
+    /// The RMW must SAMPLE the DenyAll fallback expansion before entering the
+    /// cross-process critical section: the strict enumeration behind the
+    /// sample probes the skill packages root per skill (#584), and running it
+    /// inside the flock would hold the GUI/CLI serialization point for a
+    /// filesystem scan. Discriminator: while a writer is provably blocked on
+    /// the flock, degrade the packages root. Sampling precedes the lock
+    /// attempt in program order, so by the time the writer blocks it has
+    /// already sampled the clean state — the write-back must therefore freeze
+    /// the CLEAN expansion (no degraded blanket: the not-installed preset
+    /// owner must stay absent) even though the root is unreadable by the time
+    /// the critical section actually runs. If the enumeration ever moves back
+    /// inside the critical section, it observes the degraded root and this
+    /// test turns red.
+    #[test]
+    fn update_rmw_samples_denyall_expansion_outside_the_critical_section() {
+        with_temp_home("pinvou3-scope-rmw-hoist", || {
+            install_preset_skill_under_claimed_owner();
+            let lock_path = paths::pinvou3_home().join("disabled_bundles.lock");
+            let stand_in = std::fs::OpenOptions::new()
+                .read(true)
+                .write(true)
+                .create(true)
+                .truncate(false)
+                .open(&lock_path)
+                .unwrap();
+            let mut rw = fd_lock::RwLock::new(stand_in);
+            let guard = rw.write().expect("hold the stand-in process lock");
+            let (tx, rx) = std::sync::mpsc::channel::<()>();
+            let writer = std::thread::spawn(move || {
+                update_disabled_bundles_for(ConnectorScope::Code, |_ids| {}).unwrap();
+                tx.send(()).expect("signal writer completion");
+            });
+            assert!(
+                rx.recv_timeout(std::time::Duration::from_millis(500))
+                    .is_err(),
+                "the writer must be blocked on the flock before the root is degraded"
+            );
+            // The writer has already sampled (sampling strictly precedes the
+            // lock attempt), so degrading the root now must not reach the
+            // critical section's expansion.
+            let bundles_root = paths::bundles_root();
+            let unreadable = make_dir_unreadable_for_test(&bundles_root);
+            drop(guard);
+            rx.recv_timeout(std::time::Duration::from_secs(5))
+                .expect("the writer completes once the flock is released");
+            writer.join().unwrap();
+            drop(unreadable);
+            let persisted = load_disabled_bundles_for(ConnectorScope::Code);
+            assert!(
+                persisted.contains(&"gongwen".to_string()),
+                "the installed preset owner must be in the frozen deny set: {persisted:?}"
+            );
+            assert!(
+                !persisted.contains(&"pptx".to_string()),
+                "the critical section must not re-enumerate a degraded packages \
+                 root: the write-back must freeze the expansion sampled before \
+                 the flock, not the degraded blanket union: {persisted:?}"
             );
         });
     }
