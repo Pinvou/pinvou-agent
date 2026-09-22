@@ -3,7 +3,19 @@
 
 use serde::Serialize;
 
+use crate::features::marketplace::store::MAX_DISPLAY_NAME_CHARS;
 use crate::features::marketplace::{ConnectorScope, MarketplaceManager, MarketplaceToolInfo};
+
+/// 清单展示名与上传展示名校验共用同一上限：清单每轮进 `<system-reminder>`
+/// 信封，超长的第三方清单名按内容字符如实截断，不得按原样膨胀每轮上下文。
+fn bounded_inventory_name(value: &str) -> String {
+    let stripped = crate::features::personas::strip_invisible_chars(value);
+    let mut out: String = stripped.chars().take(MAX_DISPLAY_NAME_CHARS).collect();
+    if stripped.chars().count() > MAX_DISPLAY_NAME_CHARS {
+        out.push('…');
+    }
+    out
+}
 
 #[derive(Serialize)]
 struct InventoryEntry<'a> {
@@ -41,7 +53,7 @@ fn render_inventory(tools: &[MarketplaceToolInfo], unavailable: &[String]) -> St
             id: &tool.id,
             // 先剥后序列化：不可见字符一旦进了 JSON 字符串，就只能在模型
             // 面前以转义或字面形式出现，剥除必须在 serde 之前完成。
-            name: crate::features::personas::strip_invisible_chars(&tool.name),
+            name: bounded_inventory_name(&tool.name),
             enabled: !unavailable.contains(&tool.id),
         })
         .collect();
@@ -90,6 +102,26 @@ mod tests {
         assert!(render_inventory(&tools, &["weather".into()]).contains(r#""enabled":false"#));
         assert!(render_inventory(&tools, &[]).contains(r#""enabled":true"#));
         assert!(render_inventory(&tools, &["weather".into()]).contains(r#""enabled":false"#));
+    }
+
+    /// 第三方清单名不经过上传展示名的写入校验（只有 Upload 来源在落盘时
+    /// 校验），渲染出口必须按内容字符限长并如实标注：超长清单名不得按原样
+    /// 膨胀每轮信封。
+    #[test]
+    fn manifest_display_names_are_bounded_at_the_inventory_exit() {
+        let tools = [tool("huge", &"长".repeat(100), true)];
+        let reminder = render_inventory(&tools, &[]);
+        assert!(
+            reminder.contains(&format!(
+                "\"name\":\"{}…\"",
+                "长".repeat(MAX_DISPLAY_NAME_CHARS)
+            )),
+            "超长清单名必须按内容字符截断并标注省略号"
+        );
+        assert!(
+            !reminder.contains(&"长".repeat(MAX_DISPLAY_NAME_CHARS + 1)),
+            "截断后不得残留超长原文"
+        );
     }
 
     /// Render-layer pin: an entry passed in the unavailable union (toggle off ∪
