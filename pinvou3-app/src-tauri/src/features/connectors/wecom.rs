@@ -107,25 +107,22 @@ pub async fn wecom_ensure_cli() -> Result<Value, String> {
 }
 
 /// 查询当前企微连接状态:`wecom-cli auth show --status`。
-/// Installed but below [`WECOM_MIN_VERSION`] reports `upgrade_required:true` (same three-state shape as tmeet).
 /// (Only called internally by the command layer's `bundle_readiness` CLI dispatch; there is no standalone Tauri command anymore.)
 pub async fn wecom_status() -> Result<Value, String> {
     tokio::task::spawn_blocking(|| {
         // 没装就别 spawn auth show —— 省掉没装连接器的用户每次白等一次子进程;
-        // 装了则同一次 --version 判 installed 与 upgrade_required 两态,不重复 spawn。
+        // when installed, the same --version run decides installed with no extra spawn. Overly old versions
+        // likewise report installed:true; upgrade guidance is handled by ensure_cli's version gate.
         match wecom_cli_version() {
             None => Ok::<Value, String>(json!({
-                "ok": false, "connected": false, "installed": false, "upgrade_required": false
-            })),
-            Some(v) if v < WECOM_MIN_VERSION => Ok::<Value, String>(json!({
-                "ok": false, "connected": false, "installed": true, "upgrade_required": true
+                "ok": false, "connected": false, "installed": false
             })),
             Some(_) => {
                 let (ok, so, se) = cc::run(wecom(&["auth", "show", "--status"]))?;
                 let connected = ok && (status_is_authorized(&so) || status_is_authorized(&se));
                 // 只回布尔:--status 单行输出虽不含身份信息,保持最小回传面
                 Ok::<Value, String>(json!({
-                    "ok": ok, "connected": connected, "installed": true, "upgrade_required": false
+                    "ok": ok, "connected": connected, "installed": true
                 }))
             }
         }
@@ -310,10 +307,9 @@ pub async fn wecom_cancel(app: AppHandle) -> Result<Value, String> {
 
 /// wecom-cli 凭证目录(扫码后落盘在此)。
 fn wecom_config_dir() -> std::path::PathBuf {
-    let home = std::env::var("USERPROFILE")
-        .or_else(|_| std::env::var("HOME"))
-        .unwrap_or_default();
-    std::path::Path::new(&home).join(".config").join("wecom")
+    crate::platform::os::user_home_dir()
+        .join(".config")
+        .join("wecom")
 }
 
 /// 断开企微:删凭证目录 `~/.config/wecom`(飞书是 `auth logout`,企微无 logout 子命令)。

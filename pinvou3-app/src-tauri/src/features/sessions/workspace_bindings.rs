@@ -384,6 +384,10 @@ impl SessionStore {
         matched
     }
 
+    /// Test-only singular rebind (the production path is the plural
+    /// [`Self::rebind_workspace_bindings`] directory scan; the remaining
+    /// callers are test code pinning the sidecar/cache rewrite contract).
+    ///
     /// Rebinds a plain-chat working-directory binding onto `next` (review #463
     /// round-8 B1): the sidecar is the durable binding and survives restart,
     /// while the in-memory cache is what resolution reads for the rest of this
@@ -407,6 +411,7 @@ impl SessionStore {
             || self.session_workspace_sidecar_path(id).exists()
     }
 
+    #[cfg(test)]
     pub(crate) fn rebind_workspace_binding(&self, id: &str, next: PathBuf) -> bool {
         if validate_session_id(id).is_err() {
             return false;

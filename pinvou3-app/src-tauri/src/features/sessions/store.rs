@@ -17,7 +17,6 @@ use std::sync::atomic::{AtomicU64, Ordering};
 
 use anyhow::{Context, Result, bail};
 use chrono::Utc;
-use deepseek_tui::artifacts::{ArtifactKind, ArtifactRecord};
 use deepseek_tui::models::Message;
 use deepseek_tui::session_manager::{
     SavedSession, SessionManager, SessionMetadata, create_saved_session_with_id_and_mode,
@@ -112,11 +111,7 @@ impl SessionStore {
     }
 
     fn boot_inner(recover_interrupted_tools: bool) -> Result<Self> {
-        Self::boot_inner_with(
-            paths::scheduled_tasks_root(),
-            recover_interrupted_tools,
-            false,
-        )
+        Self::boot_inner_with(paths::scheduled_tasks_root(), recover_interrupted_tools)
     }
 
     /// Test-only boot over an isolated root; production boot paths are
@@ -130,8 +125,14 @@ impl SessionStore {
         )
     }
 
+    /// Test-only boot over an isolated scheduled root (all callers are
+    /// `cfg(test)`). Mirrors [`Self::boot_for_process_startup`] by converging
+    /// the legacy binding table explicitly after the shared boot sequence.
+    #[cfg(test)]
     pub(crate) fn boot_with_scheduled_root(scheduled_root: PathBuf) -> Result<Self> {
-        Self::boot_inner_with(scheduled_root, false, true)
+        let store = Self::boot_inner_with(scheduled_root, false)?;
+        store.migrate_legacy_session_workspaces();
+        Ok(store)
     }
 
     /// Shared boot sequence: open the store over the ordinary sessions root
@@ -139,18 +140,14 @@ impl SessionStore {
     /// optionally after repairing interrupted tool histories — enforce
     /// retention and purge scheduled side maps.
     ///
-    /// `migrate_legacy` converges the intermediate legacy global binding table
-    /// before any consumer reads a binding: this is the "next boot" half of
-    /// the rebind crash-window contract (the legacy table is rewritten before
-    /// the sidecars move, so a boot heals forward — review #464 round-6
-    /// finding 5). Only boot paths that may run before the startup migration
-    /// in [`Self::boot_for_process_startup`] set it; plain [`Self::boot`]
-    /// must not repeat the migration.
-    fn boot_inner_with(
-        scheduled_root: PathBuf,
-        recover_interrupted_tools: bool,
-        migrate_legacy: bool,
-    ) -> Result<Self> {
+    /// The legacy binding-table migration is NOT part of this sequence: it is
+    /// the "next boot" half of the rebind crash-window contract (the legacy
+    /// table is rewritten before the sidecars move, so a boot heals forward —
+    /// review #464 round-6 finding 5) and is owned by the explicit boot
+    /// callers ([`Self::boot_for_process_startup`], and the test-only
+    /// [`Self::boot_with_scheduled_root`]). Plain [`Self::boot`] must not
+    /// repeat the migration.
+    fn boot_inner_with(scheduled_root: PathBuf, recover_interrupted_tools: bool) -> Result<Self> {
         let store = Self::from_paths(
             paths::sessions_root(),
             paths::scheduled_run_profiles_path(),
@@ -165,9 +162,6 @@ impl SessionStore {
         store.load_pinned_sessions();
         store.load_hidden_sessions();
         store.load_session_mode_states();
-        if migrate_legacy {
-            store.migrate_legacy_session_workspaces();
-        }
         {
             let _mutation = store.scheduled_mutation.lock();
             if recover_interrupted_tools {
@@ -348,9 +342,6 @@ impl SessionStore {
     /// for the store's own create/recovery paths.
     pub(crate) fn save(&self, session: &SavedSession) -> Result<PathBuf> {
         let _mutation = self.scheduled_mutation.lock();
-        if self.is_scheduled_session(&session.metadata.id)? {
-            return self.persist_then_reconcile(session, "committed save");
-        }
         self.persist_then_reconcile(session, "session save")
     }
 
@@ -752,27 +743,14 @@ impl SessionStore {
             .load_session_snapshot(id)
             .with_context(|| format!("load_session({id}) for artifact update"))?;
         let session_id = session.metadata.id.clone();
-        let now = Utc::now();
         session.artifacts = paths
             .into_iter()
             .enumerate()
             .map(|(idx, p)| {
-                let path = PathBuf::from(&p);
-                let byte_size = std::fs::metadata(&path).map(|m| m.len()).unwrap_or(0);
-                ArtifactRecord {
-                    id: format!("p3art_{session_id}_{idx}"),
-                    kind: ArtifactKind::ToolOutput,
-                    session_id: session_id.clone(),
-                    tool_call_id: format!("p3_{idx}"),
-                    tool_name: "write_file".into(),
-                    created_at: now,
-                    byte_size,
-                    preview: String::new(),
-                    storage_path: path,
-                }
+                super::retention::fabricated_tool_output_record(&session_id, idx, PathBuf::from(&p))
             })
             .collect();
-        session.metadata.updated_at = now;
+        session.metadata.updated_at = Utc::now();
         self.persist_then_reconcile(&session, "artifact update")?;
         Ok(())
     }

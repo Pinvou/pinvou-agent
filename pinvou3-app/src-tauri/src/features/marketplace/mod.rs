@@ -7,7 +7,7 @@
 //! 本模块是 facade:把原本 2600+ 行的 god-module 按职责拆成子模块,
 //! 对外 pub 面通过 `pub use` 保持不变。
 //!
-//! - `types`      — manifest/info/迁移结果等数据类型
+//! - `types`      — data types such as manifest/info
 //! - `secrets`    — 密钥/凭证助手 + MarketplaceManager 的 secret 读写方法
 //! - `validation` — 远程 MCP 连接校验
 //! - `migration`  — mcp.json 旧版明文密钥迁移
@@ -432,8 +432,8 @@ fn tool_source_contract(source: &store::BundleSource) -> &'static str {
 
 // 对外 pub 面保持不变:类型从 types 子模块 re-export。
 pub use types::{
-    ConfigField, MarketplaceToolInfo, MarketplaceToolValidation, McpSecretMigrationResult,
-    RemoteOAuthConfig, RemoteServer, SecretEnv, SecretHeader, ToolManifest,
+    ConfigField, MarketplaceToolInfo, RemoteOAuthConfig, RemoteServer, SecretEnv, SecretHeader,
+    ToolManifest,
 };
 
 // PR #302 拆分后,这些函数已搬到 scope.rs;为保持 mod.rs 兼容面,在此 re-export。
@@ -766,27 +766,35 @@ impl<S: CredentialStore> MarketplaceManager<S> {
         }
     }
 
-    /// 前端列表：所有可用工具 + 安装状态。上传包若有用户自定义展示名/说明覆盖
-    /// （bundles.json extra，仅 Upload 来源生效），name/description 用覆盖值——
-    /// 与 `BundleRegistry::list`（bundle_readiness）同一口径，避免卡片与
-    /// composer 菜单两处标题不一致。`source` 按 bundles.json 记录的实际
-    /// BundleSource 填充（M4：前端据此区分「上传包卸载进回收站」与
-    /// 「预置/自定义卸载保留目录」）。
+    /// Frontend list: all available tools + install state. `installed` follows the same truth-source policy as `BundleRegistry::list`
+    /// (bundle_readiness): bundles.json records win (a missing record =
+    /// not installed), falling back to installed.json derivation when the store read fails (degraded info is lost with it)
+    /// — previously only installed.json was read, diverging from the readiness card in the two states
+    /// "store has an uninstalled record / store corrupted" (the tool card showed installed while the readiness card showed not installed). If an uploaded package has user
+    /// display name/description overrides (bundles.json extra, only effective for Upload-source records),
+    /// name/description use the overridden values — the same read as `BundleRegistry::list`
+    /// (`store::apply_display_override`), so card titles and composer menu titles
+    /// do not diverge. `source` is filled from the actual BundleSource of the bundles.json record (M4: the frontend
+    /// uses it to distinguish "uploaded package uninstalls into the recycle bin" from "preset/custom uninstall keeps the directory").
     pub fn list_tools(&self) -> Vec<MarketplaceToolInfo> {
         let installed = self.installed_ids();
-        // 一次读全量记录，同时供展示覆盖（仅 Upload 记录生效）与 source 填充，
-        // 避免逐工具取锁+整文件解析的 N+1。读失败（如损坏 JSON）warn 后降级：
-        // 展示覆盖按「无覆盖」（口径同 bundle.rs 的 store 读回退），source 按
-        // 「无记录 = builtin」（宁可少提示「移入回收站」，不说谎）。
-        let records: Vec<store::BundleRecord> = match store::BundleStore::new().records() {
-            Ok(records) => records,
+        // Read all records in one pass, serving install state, display overrides (only Upload records take effect), and source
+        // filling at once, avoiding the N+1 of per-tool locking + whole-file parsing. On read failure (e.g. corrupt JSON), warn and
+        // degrade: install state falls back to installed.json derivation (same policy as bundle.rs), display overrides
+        // treated as "no override", source as "no record = builtin" (better to under-report "moved to the recycle bin"
+        // than to lie).
+        let store_records: Option<Vec<store::BundleRecord>> = match store::BundleStore::new()
+            .records()
+        {
+            Ok(records) => Some(records),
             Err(e) => {
                 log::warn!(
-                    "[marketplace] BundleStore 读取失败，list_tools 不应用展示覆盖、source 按 builtin: {e}"
+                    "[marketplace] failed to read BundleStore; list_tools installed falls back to installed.json, no display overrides, source as builtin: {e}"
                 );
-                Vec::new()
+                None
             }
         };
+        let records = store_records.as_deref().unwrap_or(&[]);
         let upload_by_id: std::collections::HashMap<&str, &store::BundleRecord> = records
             .iter()
             .filter(|r| matches!(r.source, store::BundleSource::Upload(_)))
@@ -799,14 +807,17 @@ impl<S: CredentialStore> MarketplaceManager<S> {
         self.available_tools()
             .into_iter()
             .map(|m| {
+                // Install-state truth-source inversion (§3.2): store records win; on read failure fall back to
+                // installed.json (the None-branch convention of store_state).
+                let (installed_flag, _) = bundle::store_state(store_records.as_deref(), &m.id)
+                    .unwrap_or_else(|| (installed.contains(&m.id), None));
                 let (name, description) = match upload_by_id.get(m.id.as_str()) {
                     Some(record) => {
-                        let name = store::display_override(record, store::EXTRA_DISPLAY_NAME)
-                            .unwrap_or(m.name.clone());
-                        let description =
-                            store::display_override(record, store::EXTRA_DISPLAY_DESCRIPTION)
-                                .unwrap_or(m.description.clone());
-                        (name, description)
+                        let (name, description) = store::apply_display_override(record, None, None);
+                        (
+                            name.unwrap_or_else(|| m.name.clone()),
+                            description.unwrap_or_else(|| m.description.clone()),
+                        )
                     }
                     None => (m.name, m.description),
                 };
@@ -818,7 +829,7 @@ impl<S: CredentialStore> MarketplaceManager<S> {
                     // 预置目录包不可导出（zip 无法重新导入，与 export_installed_plugin
                     // 的 fail-fast 同口径）；迁移登记的手写自定义 MCP / 上传包可导出。
                     exportable: !mcp_catalog::spec_for(&m.id).is_some(),
-                    installed: installed.contains(&m.id),
+                    installed: installed_flag,
                     id: m.id,
                     name,
                     description,
@@ -858,6 +869,7 @@ impl<S: CredentialStore> MarketplaceManager<S> {
         tool_id: &str,
         user_config: &std::collections::HashMap<String, String>,
         source: store::BundleSource,
+        // test seam: only install_with_python (cfg(test)) passes Some
         python_override: Option<&str>,
     ) -> Result<(), String> {
         let _transaction_guard = MARKETPLACE_TRANSACTION_LOCK
@@ -1080,16 +1092,12 @@ impl<S: CredentialStore> MarketplaceManager<S> {
             let can_redeliver = mcp_catalog::spec_for(tool_id).is_some();
             if let Some(record) = upload_record {
                 if pkg_dir.exists() {
-                    let display_name = match &record.source {
-                        store::BundleSource::Upload(zip) => zip.clone(),
-                        _ => tool_id.to_string(),
-                    };
                     let kind = recycle_bin::package_kind(&pkg_dir);
-                    if let Err(e) = recycle_bin::RecycleBin::new().recycle_package(
+                    if let Err(e) = recycle_bin::recycle_upload_package(
+                        &recycle_bin::RecycleBin::new(),
                         tool_id,
+                        &record,
                         kind,
-                        &display_name,
-                        record.clone(),
                     ) {
                         // preflight 已过仍失败 = 极端 IO 异常（rename/清单写；目录已
                         // 由 recycle_package 回滚原位）。登记仅以本次所删为限回写；
@@ -1223,6 +1231,14 @@ impl<S: CredentialStore> MarketplaceManager<S> {
     /// `preserve_companion_skills`：跳过 companion 技能物理删除 —— 修复降级路径
     /// 上 Upload 整包回收失败（技能目录仍在盘上）时由调用方置位：宁可留下残留
     /// 技能卡，不把用户唯一副本的 skills 部分物理删除。
+    ///
+    /// Teardown policy twin: this is the **post-commit best-effort** companion
+    /// cleanup (runs only after the uninstall transaction commits; failures are
+    /// swallowed). The eager pre-uninstall, abort-on-failure twin lives in
+    /// `app/commands/marketplace.rs::uninstall_marketplace_tool_sync` (runs
+    /// before any supply-side teardown so a failed companion delete aborts the
+    /// whole uninstall). Keep the two policies distinct and the cross
+    /// references intact when touching either side.
     fn cleanup_uninstalled_tool_state(
         &self,
         tool_id: &str,
@@ -1277,18 +1293,13 @@ impl<S: CredentialStore> MarketplaceManager<S> {
                     if matches!(record.source, store::BundleSource::Upload(_)) {
                         let pkg_dir = paths::bundles_root().join(tool_id);
                         if pkg_dir.exists() {
-                            let display_name = match &record.source {
-                                store::BundleSource::Upload(zip) => zip.clone(),
-                                _ => tool_id.to_string(),
-                            };
-                            if let Err(recycle_error) = recycle_bin::RecycleBin::new()
-                                .recycle_package(
-                                    tool_id,
-                                    recycle_bin::package_kind(&pkg_dir),
-                                    &display_name,
-                                    record.clone(),
-                                )
-                            {
+                            let kind = recycle_bin::package_kind(&pkg_dir);
+                            if let Err(recycle_error) = recycle_bin::recycle_upload_package(
+                                &recycle_bin::RecycleBin::new(),
+                                tool_id,
+                                &record,
+                                kind,
+                            ) {
                                 log::warn!(
                                     "[marketplace] 修复降级回收 Upload 包失败（{tool_id}），跳过 companion 物理清理以保留唯一副本: {recycle_error}"
                                 );
@@ -4321,6 +4332,68 @@ mod tests {
         });
     }
 
+    /// §3.2 contract pin: `list_tools.installed` shares the readiness card's
+    /// store-first source of truth — the BundleStore record wins, a missing
+    /// record means not-installed (standalone installed.json writes don't
+    /// count), and a store read failure falls back to the installed.json
+    /// derivation. Same four phases as bundle.rs's
+    /// `installed_reads_bundle_store_with_legacy_fallback`.
+    #[test]
+    fn list_tools_installed_reads_bundle_store_first() {
+        with_temp_home(|| {
+            write_tool_manifest(
+                "store-truth",
+                r#"{
+                    "id":"store-truth","name":"ManifestName","description":"manifest d","version":"1","icon":"x","category":"c",
+                    "mcp_tools":[],"command":"python","args":["server.py"]
+                }"#,
+            );
+            // Stale installed.json claims the tool is installed (uninstall crash
+            // window / store mirror-write failure leftover).
+            let installed_path = crate::platform::paths::pinvou3_home()
+                .join("marketplace")
+                .join("installed.json");
+            std::fs::create_dir_all(installed_path.parent().unwrap()).unwrap();
+            std::fs::write(&installed_path, r#"["store-truth"]"#).unwrap();
+            let installed = || {
+                MarketplaceManager::new()
+                    .list_tools()
+                    .iter()
+                    .find(|t| t.id == "store-truth")
+                    .unwrap()
+                    .installed
+            };
+
+            // 1) No store record -> not installed (store-wins; installed.json is ignored)
+            assert!(
+                !installed(),
+                "missing store record must read as not installed"
+            );
+
+            // 2) Store record -> installed
+            let store = store::BundleStore::new();
+            store
+                .upsert(store::BundleRecord::installed_now(
+                    "store-truth",
+                    store::BundleSource::Upload("pkg.zip".to_string()),
+                ))
+                .unwrap();
+            assert!(installed(), "store record must read as installed");
+
+            // 3) Store record removed -> not installed
+            store.remove("store-truth").unwrap();
+            assert!(!installed());
+
+            // 4) Corrupt store -> fall back to the installed.json derivation (which
+            // claims installed)
+            std::fs::write(store.file_path(), "corrupt{{{").unwrap();
+            assert!(
+                installed(),
+                "store read failure must fall back to the installed.json derivation"
+            );
+        });
+    }
+
     #[test]
     fn model_tool_names_prefix_dedup_and_lowercase() {
         with_temp_home(|| {
@@ -5372,8 +5445,11 @@ mod tests {
             config.insert("PATSNAP_API_KEY".to_string(), "valid-token".to_string());
 
             mgr.install("patsnap-mock", &config).unwrap();
-            let validation = mgr
-                .validate_remote_connection("patsnap-mock")
+            // Ok(()) means validated: the handshake succeeded, tools were non-empty, and every tool the manifest
+            // expects (patsnap_search / patsnap_fetch) was discovered — missing any one yields Err.
+            // The old return value carried the tool details; now the real tools/list call is observed
+            // via the methods the mock received.
+            mgr.validate_remote_connection("patsnap-mock")
                 .await
                 .unwrap();
 
@@ -5399,8 +5475,6 @@ mod tests {
                 secrets::resolve_registered_secret("PINVOU3_MCP_SECRET_PATSNAP_API_KEY").as_deref(),
                 Some("valid-token")
             );
-            assert!(validation.tools.contains(&"patsnap_search".to_string()));
-            assert!(validation.tools.contains(&"patsnap_fetch".to_string()));
             let seen = mock.seen_methods.lock().unwrap().clone();
             assert!(seen.contains(&"initialize".to_string()));
             assert!(seen.contains(&"tools/list".to_string()));
@@ -5462,9 +5536,8 @@ mod tests {
             let store = MemoryCredentialStore::default();
             let mgr = MarketplaceManager::with_store(store.clone());
 
-            let result = mgr.migrate_mcp_plaintext_secrets().unwrap();
+            mgr.migrate_mcp_plaintext_secrets().unwrap();
 
-            assert_eq!(result.migrated_count, 1);
             let stored = store
                 .get(&mcp_secret_reference("weather", "env", "AMAP_KEY"))
                 .unwrap();
@@ -5476,6 +5549,12 @@ mod tests {
             )
             .unwrap();
             assert!(!content.contains(&secret));
+            // Migration observation (replacement for the old McpSecretMigrationResult count assertions): the AMAP_KEY key
+            // is removed from env wholesale, the keyless value is kept, and exactly one migration is persisted.
+            assert!(
+                !content.contains("AMAP_KEY"),
+                "migration should remove the AMAP_KEY key from env wholesale: {content}"
+            );
             assert!(content.contains("SAFE_VALUE"));
         });
     }
@@ -5503,15 +5582,19 @@ mod tests {
             let store = MemoryCredentialStore::default();
             let mgr = MarketplaceManager::with_store(store.clone());
 
-            let result = mgr.migrate_mcp_plaintext_secrets().unwrap();
+            mgr.migrate_mcp_plaintext_secrets().unwrap();
 
-            assert_eq!(result.migrated_count, 1);
             let stored = store
                 .get(&mcp_secret_reference("qcc", "header", "QCC_API_KEY"))
                 .unwrap();
             assert_eq!(stored.as_deref(), Some(secret.as_str()));
             let content = std::fs::read_to_string(&mcp_path).unwrap();
             assert!(!content.contains(&secret));
+            // Migration observation: the plaintext Authorization header is removed wholesale and rewritten to env-var wiring.
+            assert!(
+                !content.contains("Authorization"),
+                "migration should remove the plaintext Authorization header: {content}"
+            );
             assert!(
                 content.contains("\"bearer_token_env_var\": \"PINVOU3_MCP_SECRET_QCC_API_KEY\"")
             );
@@ -5548,9 +5631,10 @@ mod tests {
                 .unwrap();
             let mgr = MarketplaceManager::with_store(store.clone());
 
-            let result = mgr.migrate_mcp_plaintext_secrets().unwrap();
+            mgr.migrate_mcp_plaintext_secrets().unwrap();
 
-            assert_eq!(result.skipped_count, 1);
+            // Skip observation: the existing credential keeps its original value, the file plaintext is cleaned up and rewritten to
+            // env-var wiring (file plaintext cleared but the store not touched, i.e. the "skip override" branch).
             let stored = store
                 .get(&mcp_secret_reference("qcc", "header", "QCC_API_KEY"))
                 .unwrap();
@@ -5558,6 +5642,10 @@ mod tests {
             let content = std::fs::read_to_string(&mcp_path).unwrap();
             assert!(!content.contains(&old_secret));
             assert!(!content.contains(&kept_secret));
+            assert!(
+                !content.contains("Authorization"),
+                "skip-override migration should also clean the plaintext header: {content}"
+            );
             assert!(
                 content.contains("\"bearer_token_env_var\": \"PINVOU3_MCP_SECRET_QCC_API_KEY\"")
             );

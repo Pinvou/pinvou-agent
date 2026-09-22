@@ -275,7 +275,6 @@
   root.PinvouAuthoritySyncDiagnostics = Object.freeze({
     record,
     flush,
-    connectionSnapshot,
     pendingCount: function () { return queue.length; },
   });
   // 恢复的队列在页面加载时立即补投一次。

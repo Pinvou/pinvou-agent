@@ -41,6 +41,31 @@ use std::path::PathBuf;
 static SCHEDULED_RUNTIME_DELETE_FAULTS: LazyLock<parking_lot::Mutex<HashMap<String, ErrorKind>>> =
     LazyLock::new(|| parking_lot::Mutex::new(HashMap::new()));
 
+/// Shared fabrication for tool-output artifact records appended by the
+/// transcript writers in [`super::store`] and this module: same
+/// `p3art_<session>_<index>` / `p3_<index>` id scheme, same `"write_file"`
+/// tool name, byte size probed best-effort from disk.
+pub(super) fn fabricated_tool_output_record(
+    id: &str,
+    index: usize,
+    path: PathBuf,
+) -> ArtifactRecord {
+    let byte_size = std::fs::metadata(&path)
+        .map(|metadata| metadata.len())
+        .unwrap_or(0);
+    ArtifactRecord {
+        id: format!("p3art_{id}_{index}"),
+        kind: ArtifactKind::ToolOutput,
+        session_id: id.to_string(),
+        tool_call_id: format!("p3_{index}"),
+        tool_name: "write_file".to_string(),
+        created_at: Utc::now(),
+        byte_size,
+        preview: String::new(),
+        storage_path: path,
+    }
+}
+
 impl SessionStore {
     pub(crate) fn save_session_atomic(&self, session: &SavedSession) -> Result<PathBuf> {
         validate_session_id(&session.metadata.id)?;
@@ -703,23 +728,11 @@ impl SessionStore {
         {
             return Ok(());
         }
-        let now = Utc::now();
         let index = session.artifacts.len();
-        let byte_size = std::fs::metadata(&path)
-            .map(|metadata| metadata.len())
-            .unwrap_or(0);
-        session.artifacts.push(ArtifactRecord {
-            id: format!("p3art_{id}_{index}"),
-            kind: ArtifactKind::ToolOutput,
-            session_id: id.to_string(),
-            tool_call_id: format!("p3_{index}"),
-            tool_name: "write_file".to_string(),
-            created_at: now,
-            byte_size,
-            preview: String::new(),
-            storage_path: path,
-        });
-        session.metadata.updated_at = now;
+        session
+            .artifacts
+            .push(fabricated_tool_output_record(id, index, path));
+        session.metadata.updated_at = Utc::now();
         self.persist_then_reconcile_with(
             &session,
             || format!("persist scheduled artifact for {id}"),

@@ -116,7 +116,6 @@ function mergeRebindCarryoverIds(previousIds, reboundIds) {
 
 export {
   REBIND_MARKER_MESSAGE_KEYS,
-  REBIND_OLD_ROOT_EXISTS,
   REBIND_SESSIONS_BUSY,
   classifyRebindError,
   mergeRebindCarryoverIds,

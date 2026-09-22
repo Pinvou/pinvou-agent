@@ -1,12 +1,11 @@
 use serde::Serialize;
 
+/// The Community edition neither detects nor starts a local vLLM engine, so the state is always [`Stopped`];
+/// the other historical states (Ready/Starting/Failed) had no construction sites and were removed.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
 #[serde(rename_all = "lowercase")]
 pub enum LocalVllmEngineState {
-    Ready,
-    Starting,
     Stopped,
-    Failed,
 }
 
 #[derive(Debug, Clone, Serialize)]

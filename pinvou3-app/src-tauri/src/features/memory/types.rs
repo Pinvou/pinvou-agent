@@ -65,8 +65,6 @@ pub struct MemoryProfile {
     #[serde(default)]
     pub updated_at: String,
     #[serde(default)]
-    pub revision: u64,
-    #[serde(default)]
     pub identity: ProfileIdentity,
     #[serde(default)]
     pub conventions: ProfileConventions,
@@ -148,8 +146,6 @@ pub struct TimedMemoryItem {
     pub text: String,
     #[serde(default, skip_serializing_if = "String::is_empty")]
     pub source: String,
-    #[serde(default)]
-    pub confidence: f32,
     pub created_at: String,
     pub updated_at: String,
     pub last_hit: String,
@@ -158,14 +154,16 @@ pub struct TimedMemoryItem {
     pub status: String,
 }
 
+/// Text-only edit patch for stored memory items. `topic` is the remote-API
+/// surface (commands accept a topic retarget); text is the only field every
+/// store can update. TTL is deliberately absent: expiry is owned by the io
+/// layer's upsert/expiry paths, not by text edits.
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
 pub struct MemoryTextPatch {
     #[serde(default)]
     pub topic: Option<String>,
     #[serde(default)]
     pub text: Option<String>,
-    #[serde(default)]
-    pub ttl_days: Option<i64>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
@@ -435,20 +433,14 @@ pub(super) fn normalize_timed_memory_kind(kind: &str) -> String {
     }
 }
 
-pub(super) fn normalize_timed_memory_topic(kind: &str, topic: &str) -> String {
-    let topic = clean_id(&clean_text(topic, 40));
+pub(super) fn normalize_timed_memory_topic(kind: &str, _topic: &str) -> String {
+    // The topic input is not consumed: every kind folds onto its single
+    // canonical bucket regardless of the value (the former match arms were
+    // self-echoes whose default equaled every listed alternative).
     if kind == "recent_activity" {
-        match topic.as_str() {
-            "completed_work" | "delivery" | "delivered" | "recent_activity" => {
-                "completed_work".to_string()
-            }
-            _ => "completed_work".to_string(),
-        }
+        "completed_work".to_string()
     } else {
-        match topic.as_str() {
-            "current_work" | "current_focus" | "recent_work" => "current_work".to_string(),
-            _ => "current_work".to_string(),
-        }
+        "current_work".to_string()
     }
 }
 

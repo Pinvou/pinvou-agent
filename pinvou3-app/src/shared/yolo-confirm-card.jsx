@@ -21,15 +21,16 @@ function cardBtnCls(variant) {
 // copy = { title, body, hint, ok, cancel } (the i18n keys differ per side; the caller maps them).
 export function YoloConfirmCard({ theme, copy, error, busy, onConfirm, onCancel }) {
   const isDark = theme === 'dark';
-  const dialogRef = useRef(null);
+  const dialogRef = useRef(/** @type {HTMLDivElement|null} */(null));
   // Grab focus once on mount (keyboard accessibility) and restore the previous
   // focus element on unmount (the trigger element may have been rebuilt with
   // the timeline, hence the isConnected guard). The focus effect has no
   // dependency array entry: the parent's inline onCancel gets a new identity
   // every render, so any parent re-render while open would yank focus from the
-  // button back to the container (mirrors useDialogFocusRestore in
-  // features/codex/RewindChip.jsx; the shared layer must not depend back on
-  // features, so keep both sides in sync when changing either).
+  // button back to the container (an intentional no-args subset of the
+  // useDialogFocusRestore hook in src/hooks/useDialogFocusRestore.js; the
+  // shared layer must not depend on src/hooks, so keep both sides in sync
+  // when changing either).
   useEffect(() => {
     const previous = document.activeElement;
     dialogRef.current?.focus();

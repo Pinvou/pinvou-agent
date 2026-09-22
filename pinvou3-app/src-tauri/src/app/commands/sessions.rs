@@ -769,6 +769,23 @@ fn normalize_pinvou_scene_events(events: serde_json::Value) -> Result<serde_json
     )
 }
 
+/// Unified session-sidecar persistence (shared by scene / steered / persona events / Pinvou reviews): create the
+/// parent directory + serialize + `write_atomic`. Sidecars are session-persisted data; the atomic write
+/// prevents an interrupted process from leaving half a JSON (error wording unified per sidecar, not per use).
+pub(super) fn write_session_sidecar(
+    path: &std::path::Path,
+    value: &serde_json::Value,
+) -> Result<(), String> {
+    if let Some(parent) = path.parent() {
+        std::fs::create_dir_all(parent)
+            .map_err(|error| format!("failed to create session sidecar directory: {error}"))?;
+    }
+    let payload = serde_json::to_vec(value)
+        .map_err(|error| format!("failed to serialize session sidecar: {error}"))?;
+    deepseek_tui::utils::write_atomic(path, &payload)
+        .map_err(|error| format!("failed to write session sidecar: {error:#}"))
+}
+
 /// 保存用户消息专业场景标签。sidecar 独立于 messages，但属于 session 持久数据，
 /// 因此通过后端共享给桌面端和 WebUI，而不是只留在某个宿主的 localStorage。
 #[tauri::command]
@@ -780,14 +797,7 @@ pub async fn save_session_pinvou_scene_events(
     ensure_chat_session(&store, &session_id, "save_session_pinvou_scene_events")?;
     let normalized = normalize_pinvou_scene_events(events)?;
     let path = crate::platform::paths::session_pinvou_scene_events(&session_id);
-    if let Some(parent) = path.parent() {
-        std::fs::create_dir_all(parent)
-            .map_err(|error| format!("创建 scene sidecar 目录失败: {error}"))?;
-    }
-    let payload = serde_json::to_vec(&normalized)
-        .map_err(|error| format!("序列化 scene sidecar 失败: {error}"))?;
-    deepseek_tui::utils::write_atomic(&path, &payload)
-        .map_err(|error| format!("写 scene sidecar 失败: {error:#}"))
+    write_session_sidecar(&path, &normalized)
 }
 
 /// 读取用户消息专业场景标签。旧版本或损坏 sidecar 按空数组处理，不影响会话正文。
@@ -838,14 +848,7 @@ pub async fn save_session_steered_messages(
     ensure_chat_session(&store, &session_id, "save_session_steered_messages")?;
     let normalized = normalize_steered_messages(events)?;
     let path = crate::platform::paths::session_steered_messages(&session_id);
-    if let Some(parent) = path.parent() {
-        std::fs::create_dir_all(parent)
-            .map_err(|error| format!("创建 steered sidecar 目录失败: {error}"))?;
-    }
-    let payload = serde_json::to_vec(&normalized)
-        .map_err(|error| format!("序列化 steered sidecar 失败: {error}"))?;
-    deepseek_tui::utils::write_atomic(&path, &payload)
-        .map_err(|error| format!("写 steered sidecar 失败: {error:#}"))
+    write_session_sidecar(&path, &normalized)
 }
 
 /// 读取 mid-turn steer 消息的位置标记。旧版本或损坏 sidecar 按空数组处理。
