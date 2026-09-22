@@ -1074,23 +1074,35 @@ fn collections_update(
     )))
 }
 
+/// The collection existence gate the destructive/recovering commands run
+/// BEFORE the recovering open: boot recovery flips every preparing/running
+/// job to interrupted — including one a live desktop-app process is still
+/// importing — so a mistyped id must fail without ever running it (the same
+/// rule `index cancel/resume/retry` implement on their latest-job read).
+fn ensure_collection_exists(
+    service: &KnowledgeService,
+    id: i64,
+    operation: &str,
+) -> Result<(), CliError> {
+    match service.l1().collection_name(id) {
+        Ok(Some(_)) => Ok(()),
+        Ok(None) => Err(CliError::failed(format!(
+            "knowledge {operation}: collection {id} not found"
+        ))),
+        Err(error) => Err(feature_error(operation, error)),
+    }
+}
+
 /// GUI `kb_collection_delete`: cancel a running import for the collection,
 /// delete it, then clear every session mount.
 fn collections_delete(id: i64, output: OutputMode) -> Result<CliOutcome, CliError> {
+    // The existence check runs on a plain open first — recovery must not
+    // fire for a mistyped id — and again on the mutating open, so a
+    // collection deleted in between fails honestly instead of reporting a
+    // silent no-op as "deleted".
+    ensure_collection_exists(&open_service()?, id, "collections delete")?;
     let service = open_service_recovering()?;
-    // `delete_collection` is plain DELETEs and succeeds for unknown ids
-    // (0 rows affected); like `update`/`add-sources`, an existence check
-    // turns the silent no-op into an honest error instead of a false
-    // "deleted collection 999".
-    match service.l1().collection_name(id) {
-        Ok(Some(_)) => {}
-        Ok(None) => {
-            return Err(CliError::failed(format!(
-                "knowledge collections delete: collection {id} not found"
-            )));
-        }
-        Err(error) => return Err(feature_error("collections delete", error)),
-    }
+    ensure_collection_exists(&service, id, "collections delete")?;
     service
         .cancel_index_for_collection(id)
         .map_err(|error| feature_error("collections delete", error))?;
@@ -1149,21 +1161,10 @@ fn collections_add_sources(
     paths: Vec<PathBuf>,
     output: OutputMode,
 ) -> Result<CliOutcome, CliError> {
-    let service = open_service_recovering()?;
-    match service.l1().collection_name(id) {
-        Ok(Some(_)) => {}
-        Ok(None) => {
-            return Err(CliError::failed(format!(
-                "knowledge collections add-sources: collection {id} not found"
-            )));
-        }
-        Err(error) => return Err(feature_error("collections add-sources", error)),
-    }
-    // Pre-flight the paths like `files ingest` does: `start_index` expands
-    // roots on a background thread this one-shot process kills at exit, so
-    // a nonexistent path (or a FIFO, which upstream's `is_file()` expansion
-    // silently skips) would otherwise exit 0 with the sources never
-    // enqueued and never reported.
+    // Validate everything a mistyped invocation could get wrong BEFORE the
+    // recovering open (see ensure_collection_exists): the path pre-flight is
+    // pure filesystem, the existence check runs on a plain open, and the
+    // re-check on the mutating open closes the disappear-in-between window.
     for path in &paths {
         let Ok(meta) = std::fs::metadata(path) else {
             return Err(CliError::failed(format!(
@@ -1179,6 +1180,9 @@ fn collections_add_sources(
             )));
         }
     }
+    ensure_collection_exists(&open_service()?, id, "collections add-sources")?;
+    let service = open_service_recovering()?;
+    ensure_collection_exists(&service, id, "collections add-sources")?;
     // `start_index` falls back to `index_status()` when the job create or
     // the follow-up state read fails; the reported job must then not be
     // passed off as the fresh import.
