@@ -43,11 +43,11 @@
 |---|---|
 | 上游基线 | tag `v0.9.12`，commit `dcd4c200f72f0c1ffd60d8e7f6850313db879fc5` |
 | 维护分支 | `pinvou3-clean` = `6f780290f1c35e8a3c5dff86b4f76da142744b0c`（r1 基线 `1fafee7e2` 之上 24 个 squash 合入：#41/#47/#49、2026-09-10/11 遗留 PR 清理批次 #31/#37/#38/#39/#43/#48/#50/#51/#52/#53、2026-09-17 批次 #56/#58/#59/#60/#61、2026-09-18 批次 #55/#57/#62、2026-09-20 批次 #66 与 2026-09-21 批次 #64/#67）；其上另有 T8 提交 `8b132a182`（roster 宿主 profiles 呈现）、`9322fc5f6`（roster `profile_query` 发现通道）、`df5df5f24`（T8 评审钉点补测）、`0576deb2c`（host roster id 按 `get()` 解析键确定性去重）与 `4767c2816`（`load` 构造对同键变体应用同方向去重，名册列表与 spawn 解析一致），已 rebase 到 r2 收口 `6f780290f` 之上，随父仓蜂群二期 PR 一并走 PR 合入维护分支 |
-| 发布状态 | r2 已收口（2026-09-21）：不可变 tag `pinvou-v0.9.12-r2` 切在合并头 `6f780290f`，维护分支与 tag 相等；父仓 gitlink 暂沿 #65 分支指向其上的 T8 提交（领先 tag 4 个提交，fork-policy 第 0 节过渡期豁免），随上游 #65 合入后恢复 gitlink=分支头=tag 三方相等。r1 tag `pinvou-v0.9.12-r1` 仍钉在其收口 `1fafee7e2`（15 个提交）作为回退点 |
+| 发布状态 | r2 已收口（2026-09-21）：不可变 tag `pinvou-v0.9.12-r2` 切在合并头 `6f780290f`，维护分支与 tag 相等；父仓 gitlink 暂沿 #65 分支指向其上的 T8 提交（领先 tag 5 个提交，fork-policy 第 0 节过渡期豁免），随上游 #65 合入后恢复 gitlink=分支头=tag 三方相等。r1 tag `pinvou-v0.9.12-r1` 仍钉在其收口 `1fafee7e2`（15 个提交）作为回退点 |
 | 升级前回退点 | 公开不可变 tag `pinvou-v0.9.5-r13` → `f853f8f1566c57e6be40d5439a222a932aa79ef5`；同 SHA 的本地 `backup/pre-v0.9.12-sync` 仅作便利引用 |
 | 历史组织 | 上游之上 44 个带 DCO sign-off 的提交，归属 4 个长期主题（T1–T4）+ 3 个追加减量主题（T5 会话归档导出、T6 蜂群限流治理、T8 roster 宿主 profiles 呈现，即 Pinvou/CodeWhale#65 提交主题里的 T7，按 #365 先例在父仓登记时重编号）+ 1 个已合入维护分支的主题（T7 压缩检查点角色兼容）；r2 之前 24 个登记提交全部经 PR squash 合入并过五项必需门禁。在途例外：T8 的 5 个提交（Pinvou/CodeWhale#65，已 rebase 到 r2 收口之上）必须经 PR 保持提交落位合入（不 squash）——父仓 gitlink 与公开可达性校验按精确 head 钉定，squash 会同时破坏钉定 SHA 与登记的提交序列 |
 | drift | `192 files, +20021/-2685`，净增 17336 行（实测于 `4767c2816` vs 上游 `dcd4c200f`）；r2 为 `190 files, +19135/-2628`，r1 为 `94 files, +5022/-944`，旧 r13 为 `110 files, +10895/-1195` |
-| 守护 | 134 条独立 CodeWhale `forkguard_*` 行为名（guard 下限 64）+ 父仓指纹与行为测试 |
+| 守护 | 134 条独立 CodeWhale `forkguard_*` 行为名（guard 下限 64，其中 6 条钉在 `benchmark-eval-controls` 门后）+ 父仓指纹与行为测试 |
 | 父仓适配 | v0.9.12 EngineConfig、Agent/Plan 模式、逐轮 reasoning/安全、ExtraTools、owner 事件隔离、Automation v3/v4 数据兼容、rusqlite 0.40.2、Shell 任务来源对账；消费方 PR #396（execpolicy）、#408（轮次取消）、#444（蜂群）、#468（computer-use）、#472（一键导出）依赖本批底座能力 |
 
 ### 轮次绑定取消：宿主 stop 按轮身份分派（父仓适配，本 PR）
