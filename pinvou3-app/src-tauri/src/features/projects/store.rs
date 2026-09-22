@@ -1139,18 +1139,77 @@ impl ProjectStore {
                     )
                 })?;
             }
-            // Persist FIRST, commit the in-memory candidate only on success
-            // (round-8 review M2, mirroring the codex lane): committing
-            // before the write let a persist failure leave memory at `to`
-            // over a disk still holding `from` — an in-process retry then
-            // found no `from`-roots and reported success while the persisted
-            // file stayed unmigrated.
-            let mut persisted = state.clone();
-            persisted.projects = candidate;
-            persist_locked(&persisted, &self.path)?;
-            state.projects = persisted.projects;
         }
+        // The exclusion table moves with its directories too (review #484
+        // round-8 m5): a moved never-materialize folder must keep suppressing
+        // the NEW path, or the next ensure re-materializes the ghost the user
+        // excluded — minted by the very command that repairs broken links.
+        let translated_exclusions =
+            Self::translate_never_materialize_candidates(&state.never_materialize_roots, from, to);
+        if affected_projects.is_empty() && translated_exclusions.is_none() {
+            return Ok(affected_projects);
+        }
+        // Persist FIRST, commit the in-memory candidate only on success
+        // (round-8 review M2, mirroring the codex lane): committing
+        // before the write let a persist failure leave memory at `to`
+        // over a disk still holding `from` — an in-process retry then
+        // found no `from`-roots and reported success while the persisted
+        // file stayed unmigrated.
+        let mut persisted = state.clone();
+        if !affected_projects.is_empty() {
+            persisted.projects = candidate;
+        }
+        if let Some(exclusions) = translated_exclusions {
+            persisted.never_materialize_roots = exclusions;
+        }
+        persist_locked(&persisted, &self.path)?;
+        state.projects = persisted.projects;
+        state.never_materialize_roots = persisted.never_materialize_roots;
         Ok(affected_projects)
+    }
+
+    /// Pure translation of the exclusion table for a rebind (review #484
+    /// round-8 m5): the table stores folded identity keys rather than display
+    /// paths, so containment and the cut both run in the key domain — keys
+    /// equal to or nested under `from`'s key move onto `to`'s key. `None` =
+    /// nothing matched, no rewrite needed.
+    fn translate_never_materialize_candidates(
+        keys: &[String],
+        from: &Path,
+        to: &Path,
+    ) -> Option<Vec<String>> {
+        let from_key = identity_key_of_display(&root_display(from));
+        let to_key = identity_key_of_display(&root_display(to));
+        let from_key = from_key.trim_end_matches('/');
+        let to_key = to_key.trim_end_matches('/');
+        let mut changed = false;
+        let translated = keys
+            .iter()
+            .map(|key| {
+                let trimmed = key.trim_end_matches('/');
+                // Same folded-prefix boundary as
+                // `path_identity_is_same_or_nested`: a trailing separator is
+                // noise, and the remainder must start with one so `/a/bc`
+                // never counts as nested in `/a/b`.
+                let suffix = if trimmed == from_key {
+                    Some("")
+                } else if trimmed.starts_with(from_key)
+                    && trimmed[from_key.len()..].starts_with('/')
+                {
+                    Some(&trimmed[from_key.len()..])
+                } else {
+                    None
+                };
+                match suffix {
+                    None => key.clone(),
+                    Some(suffix) => {
+                        changed = true;
+                        format!("{to_key}{suffix}")
+                    }
+                }
+            })
+            .collect::<Vec<_>>();
+        if changed { Some(translated) } else { None }
     }
 
     /// 会话删除钩子:摘除其归属条目(含显式移出的 None 条目)。返回是否

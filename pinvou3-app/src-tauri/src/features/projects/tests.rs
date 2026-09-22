@@ -1427,6 +1427,49 @@ fn delete_project_rolls_back_memory_when_persist_fails() {
     assert_eq!(store.assignment_of("s-auto"), Some(None));
 }
 
+/// review #484 round-8 m5: the never-materialize exclusion table moves with
+/// its directories. A rebind used to translate project roots and the
+/// remembered primary only, so a moved excluded folder re-materialized under
+/// the NEW path on the next ensure — the ghost the user excluded came back,
+/// minted by the very command that repairs broken links.
+#[test]
+fn rebind_roots_translates_never_materialize_roots() {
+    let temp = tempfile::tempdir().expect("tempdir");
+    let store = store_in(&temp);
+    let from = abs("rbx-excl-from");
+    let to = temp.path().join("rbx-excl-moved");
+    let nested = display(&from).join("keep-out");
+    store
+        .set_never_materialize(&nested, true)
+        .expect("exclude nested folder");
+    std::fs::create_dir_all(&to).expect("create to dir");
+
+    let project = create(&store, "搬家排除", std::slice::from_ref(&from));
+    let affected = store.rebind_roots(&from, &to).expect("rebind");
+    assert_eq!(affected, vec![project.id.clone()]);
+
+    assert_eq!(
+        store.never_materialize_roots(),
+        vec![display(&to).join("keep-out").to_string_lossy().to_string()],
+        "the exclusion key must translate onto the new path"
+    );
+
+    // And the translated key still gates: ensure at the new path skips
+    // silently instead of materializing the excluded folder's project.
+    let outcomes = store
+        .ensure_folder_roots(std::slice::from_ref(&to.join("keep-out")))
+        .expect("ensure at the new path");
+    assert!(
+        outcomes.is_empty(),
+        "the moved exclusion must still suppress ensure, got {outcomes:?}"
+    );
+    assert_eq!(
+        store.list().len(),
+        1,
+        "no project materialized for the excluded folder; the rebind project remains"
+    );
+}
+
 #[test]
 fn load_dedupes_never_materialize_roots() {
     // review #484 n4: StoreState documents the exclusion table as deduplicated
