@@ -3923,8 +3923,8 @@ export function CodexAcpView({
     folder recorded (§6 stage-gate), so the notice says so. */}
                                 <div className="px-3 pb-1 text-[10px] text-gray-400">
                                   {workspaceNoticeTone(laneNoticeMode) === 'restricted'
-                                    ? (!isNativeAgent ? t.uiWorkspacePicker.noticeRestrictedRecorded(1) : t.uiWorkspacePicker.noticeRestricted(1))
-                                    : (!isNativeAgent ? t.uiWorkspacePicker.noticeVisibilityRecorded(1) : t.uiWorkspacePicker.noticeVisibility(1))}
+                                    ? (isNativeAgent ? t.uiWorkspacePicker.noticeRestricted(1) : t.uiWorkspacePicker.noticeRestrictedRecorded(1))
+                                    : (isNativeAgent ? t.uiWorkspacePicker.noticeVisibility(1) : t.uiWorkspacePicker.noticeVisibilityRecorded(1))}
                                 </div>
                                 {recentWorkspaces.map(path => (
                                   <button key={path} type="button" title={path}
