@@ -696,7 +696,6 @@ pub(crate) fn spawn_event_forwarder(
                             messages,
                             system_prompt,
                             model,
-                            workspace,
                             mode: profile.execution_mode(),
                             token_accounting: ScheduledTokenAccounting::PreservePersisted,
                         };

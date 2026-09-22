@@ -126,32 +126,28 @@ const tc = (t) => (t && t.uiToolCommon) || dict.zh.uiToolCommon;
       return item.name === 'File' && ['read', 'list', 'search_name', 'search_content'].includes(item.args?.action);
     };
 
+    // Tier-A read-file summary format shared by read/read_file and File(action=read).
+    const readFileSummary = (args, t) => {
+      const base = pathBasename(args.path, { collapseTrailing: true, fallback: args.path });
+      if (args.start_line || args.max_lines) {
+        const s = Number(args.start_line) || 1;
+        const max = Number(args.max_lines);
+        return base + ' · ' + t.tsLine + ' ' + s + (max ? '-' + (s + max - 1) : '+');
+      }
+      return base;
+    };
+
     // A 档摘要：只从结构化 args 提“动作对象”（文件名/命令/模式），稳且免费，不 parse output。
     // eslint-disable-next-line sonarjs/cognitive-complexity -- per-tool switch summary mapping; splitting by tool has low payoff; legacy view; tracked separately
     const toolSummary = (name, args, t) => {
       if (!args || typeof args !== 'object') return '';
       switch (name) {
         case 'read':
-        case 'read_file': {
-          const base = pathBasename(args.path, { collapseTrailing: true, fallback: args.path });
-          if (args.start_line || args.max_lines) {
-            const s = Number(args.start_line) || 1;
-            const max = Number(args.max_lines);
-            return base + ' · ' + t.tsLine + ' ' + s + (max ? '-' + (s + max - 1) : '+');
-          }
-          return base;
-        }
+        case 'read_file':
+          return readFileSummary(args, t);
         case 'File': {
           const action = args.action;
-          if (action === 'read') {
-            const base = pathBasename(args.path, { collapseTrailing: true, fallback: args.path });
-            if (args.start_line || args.max_lines) {
-              const s = Number(args.start_line) || 1;
-              const max = Number(args.max_lines);
-              return base + ' · ' + t.tsLine + ' ' + s + (max ? '-' + (s + max - 1) : '+');
-            }
-            return base;
-          }
+          if (action === 'read') return readFileSummary(args, t);
           if (action === 'list') return pathBasename(args.path || '.', { collapseTrailing: true, fallback: args.path || '.' }) || '.';
           if (action === 'search_content') return args.pattern ? '"' + args.pattern + '"' : '';
           if (action === 'search_name') return args.query ? '"' + args.query + '"' : '';
@@ -231,6 +227,16 @@ const tc = (t) => (t && t.uiToolCommon) || dict.zh.uiToolCommon;
 
     // ── 每工具定制结果视图（仿 Claude Code）：解析失败一律 fallback 纯文本，永不崩 ──
     const tryParseJson = (text) => { try { return JSON.parse(text); } catch { return null; } };
+    // MCP text envelope unwrap (shared by weather/stock card output preprocessing): when output is
+    // the { content: [{ type: 'text', text }] } structure, take the inner text; otherwise return it as-is.
+    const unwrapMcpTextEnvelope = (out) => {
+      const envelope = tryParseJson(out);
+      if (envelope && Array.isArray(envelope.content)) {
+        const txt = envelope.content.find(c => c.type === 'text');
+        if (txt && txt.text) return txt.text;
+      }
+      return out;
+    };
     // checklist/plan 输出是「摘要行\n{json}」，切首个换行后 parse
     const tryTailJson = (text) => {
       if (typeof text !== 'string') return null;
@@ -818,15 +824,16 @@ const tc = (t) => (t && t.uiToolCommon) || dict.zh.uiToolCommon;
           <div className="flex items-center gap-2">
             {list.map((a) => {
               const s = specs[a.id];
+              // The backend's actions always have enabled = true (the wire field is kept, but the frontend no longer
+              // renders a disabled branch); the reason text is kept as the button tooltip.
               return (
                 <button type="button"
                   key={a.id}
                   {...actionAttrs}
                   {...(s.testid ? { 'data-testid': s.testid } : {})}
-                  disabled={!a.enabled}
                   title={a.reason || undefined}
-                  onClick={(e) => { e.stopPropagation(); if (a.enabled) s.run(a); }}
-                  className={`${s.cls} ${a.enabled ? '' : 'opacity-50 cursor-not-allowed'}`}
+                  onClick={(e) => { e.stopPropagation(); s.run(a); }}
+                  className={s.cls}
                 >
                   {s.label}
                 </button>
@@ -888,4 +895,4 @@ const tc = (t) => (t && t.uiToolCommon) || dict.zh.uiToolCommon;
       );
     };
 
-export { AcShieldCheck, AcSparkles, ArtifactCard, isQuietTool, toolSummary, isReceipt, ReceiptBlock, tryParseJson, tryTailJson, looksDiff, TODO_TOOLS, OutputPre, OutputError, ListDirView, GrepView, DiffView, ShellView, ShellTextView, TodoView, tsToolsData, tsToolWelcomeData, localizeTool, mergeConfigFields, WeatherCard, isWeatherTool, isStockQuoteTool, StockQuoteCard, tsSkillsData, tsSkillIconByName, tsCategories, TOOL_TYPE_GROUPS, getToolTypeGroup, TOOL_BUSINESS_GROUPS, getToolBusinessGroup, TsActionBtn };
+export { AcShieldCheck, AcSparkles, ArtifactCard, isQuietTool, toolSummary, isReceipt, ReceiptBlock, tryParseJson, tryTailJson, unwrapMcpTextEnvelope, looksDiff, TODO_TOOLS, OutputPre, OutputError, ListDirView, GrepView, DiffView, ShellView, ShellTextView, TodoView, tsToolsData, tsToolWelcomeData, localizeTool, mergeConfigFields, WeatherCard, isWeatherTool, isStockQuoteTool, StockQuoteCard, tsSkillsData, tsSkillIconByName, tsCategories, TOOL_TYPE_GROUPS, getToolTypeGroup, TOOL_BUSINESS_GROUPS, getToolBusinessGroup, TsActionBtn };

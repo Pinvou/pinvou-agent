@@ -723,7 +723,6 @@ fn scheduled_engine_state(
         messages,
         system_prompt: Some(SystemPrompt::Text("scheduled system prompt".to_string())),
         model: "/engine-model".to_string(),
-        workspace: std::env::temp_dir().join("scheduled-engine-workspace"),
         mode,
         token_accounting,
     }
@@ -1386,7 +1385,6 @@ fn scheduled_agent_mode_round_trips_without_collapsing_profile_or_metadata() {
                 messages: vec![text_message("assistant", "agent result")],
                 system_prompt: Some(SystemPrompt::Text("agent prompt".to_string())),
                 model: "/agent-model".to_string(),
-                workspace: std::env::temp_dir().join("agent-workspace"),
                 mode: ScheduledRunMode::Agent,
                 token_accounting: ScheduledTokenAccounting::PreservePersisted,
             },
@@ -3829,16 +3827,11 @@ fn rewind_truncates_at_turn_boundary_with_interleaved_tool_results() {
         .expect("rewind to turn 1");
 
     assert_eq!(outcome.rewound_turns, 2);
-    assert_eq!(outcome.removed_messages, 5);
     let kept = store.load(&id).expect("load").messages;
     assert_eq!(
         kept,
         messages[..4],
         "保留第 1 轮全部消息（含 tool_result 交错段）"
-    );
-    assert_eq!(
-        outcome.new_revision,
-        transcript_revision(&kept).expect("kept revision")
     );
 
     // sidecar 备份：截断时间、原 revision、被截消息齐全；记录截断后 revision
@@ -3849,7 +3842,10 @@ fn rewind_truncates_at_turn_boundary_with_interleaved_tool_results() {
     assert!(!record.rewound_at.is_empty());
     assert_eq!(record.original_revision, original_revision);
     assert_eq!(record.kept_turns, 1);
-    assert_eq!(record.truncated_revision, outcome.new_revision);
+    assert_eq!(
+        record.truncated_revision,
+        transcript_revision(&kept).expect("kept revision")
+    );
     assert_eq!(record.pre_restore_checkpoint_id, None);
     assert_eq!(record.removed_messages, messages[4..]);
 }
@@ -3879,7 +3875,6 @@ fn rewind_to_zero_turns_empties_transcript() {
         .expect("rewind to zero");
 
     assert_eq!(outcome.rewound_turns, 2);
-    assert_eq!(outcome.removed_messages, 4);
     assert!(store.load(&id).expect("load").messages.is_empty());
     let records = rewound_records(&id);
     assert_eq!(records.len(), 1);

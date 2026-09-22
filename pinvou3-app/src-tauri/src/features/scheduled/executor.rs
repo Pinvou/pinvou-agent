@@ -61,14 +61,14 @@ pub(crate) trait ScheduledConversationRuntime: Send + Sync {
 pub(crate) struct EngineScheduledRuntime {
     store: SessionStore,
     pool: EnginePool,
-    model_id_resolver: Option<ModelIdResolver>,
+    model_id_resolver: ModelIdResolver,
 }
 
 impl EngineScheduledRuntime {
     pub(crate) fn new(
         store: SessionStore,
         pool: EnginePool,
-        model_id_resolver: Option<ModelIdResolver>,
+        model_id_resolver: ModelIdResolver,
     ) -> Self {
         Self {
             store,
@@ -92,9 +92,7 @@ impl ScheduledConversationRuntime for EngineScheduledRuntime {
     }
 
     fn model_id_for_automation(&self, automation_id: &str, model: &str) -> Option<String> {
-        self.model_id_resolver
-            .as_ref()
-            .and_then(|resolver| resolver(automation_id, model))
+        (self.model_id_resolver)(automation_id, model)
     }
 
     fn create_session(&self, mut profile: ScheduledRunProfile) -> Result<String> {
@@ -184,7 +182,7 @@ impl ScheduledChatExecutor {
         let executor = Self::new(Arc::new(EngineScheduledRuntime::new(
             store,
             pool,
-            Some(model_id_resolver),
+            model_id_resolver,
         )));
         match kind_resolver {
             Some(resolver) => executor.with_kind_resolver(resolver),

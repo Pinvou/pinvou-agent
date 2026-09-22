@@ -515,8 +515,8 @@ test('旧独立入口退役：多智能体经会话级开关 + 每轮注入委�
   );
   assert.match(
     sessionsSource,
-    /with_extension\("json\.tmp"\)[\s\S]{0,300}fs::rename/,
-    '开关清单必须 tmp+rename 原子替换，进程中途退出不得留半个 JSON',
+    /deepseek_tui::utils::write_atomic\(&file, json\.as_bytes\(\)/,
+    '开关清单必须原子替换落盘（write_atomic：tmp+rename+fsync），进程中途退出不得留半个 JSON',
   );
   assert.match(
     sessionsSource,

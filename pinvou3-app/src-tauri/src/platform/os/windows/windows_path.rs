@@ -265,7 +265,9 @@ fn prepend_connector_path_entries(cmd: &mut Command, dirs: impl IntoIterator<Ite
     }
 }
 
-fn same_path(left: &Path, right: &Path) -> bool {
+/// Canonical Windows path equality (trailing separators ignored, ASCII
+/// case-insensitive); shared with windows_system's PATH dedup.
+pub(crate) fn same_path(left: &Path, right: &Path) -> bool {
     left.to_string_lossy()
         .trim_end_matches(['\\', '/'])
         .eq_ignore_ascii_case(right.to_string_lossy().trim_end_matches(['\\', '/']))

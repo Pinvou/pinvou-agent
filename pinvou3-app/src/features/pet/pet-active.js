@@ -36,7 +36,8 @@ export async function loadActivePet(requestedId, {
       state.requestSequence += 1;
       state.pendingId = null;
     }
-    if (state.pendingId === null && typeof onActivationFailed === 'function') {
+    // pendingId was just set to null in the branch above, so no re-check is needed here (the original condition was always true).
+    if (typeof onActivationFailed === 'function') {
       onActivationFailed(false);
     }
     return state.activePet;

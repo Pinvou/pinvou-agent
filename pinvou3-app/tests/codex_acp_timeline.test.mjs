@@ -753,7 +753,8 @@ try {
     && runtimeNotices.includes('status.login_code')
     && runtimeNotices.includes('status.login_input_required')
     && !runtimeNotices.includes("status.agent_id === 'claude'")
-    && codexView.includes('if (!isNativeAgent && !activeStatus?.authenticated)')
+    && codexView.includes('authMissing: !isNativeAgent && (!activeStatus || !activeStatus.authenticated)')
+    && codexView.includes('composerSendBlockers.authMissing')
     && codexView.includes('isAcpAuthenticationFailure(latest)'),
   'the code page must host browser/device-code login, block unauthenticated prompts, and refresh after token expiry');
   assert.ok(codexView.includes('codexCopy.temporarySession'), 'temporary sessions must remain an explicit choice');
@@ -982,8 +983,8 @@ try {
   'Codex must show the shared composer timer only while the active turn is running');
   assert.ok(codexView.includes('data-testid="acp-session-loading"')
     && codexView.includes('const [sessionLoading, setSessionLoading] = useState(false)')
-    && codexView.includes('disabled={!!nativeVoice.editPreview || !sessionReady')
-    && codexView.includes('if (activeId && !sessionReady) return false;')
+    && codexView.includes('disabled={!!nativeVoice.editPreview || composerSendBlockers.sessionNotReady')
+    && codexView.includes('if (composerSendBlockers.sessionNotReady) return false;')
     && !codexView.includes('setError(codexCopy.sessionSyncing)')
     && !codexView.includes('throw new Error(codexCopy.sessionSyncing)'),
   'ACP session restoration must show a loading state and suppress sending without reporting a red error');
@@ -1058,11 +1059,12 @@ try {
   assert.ok(codexView.includes('useComposerVoiceInput({')
     && codexView.includes('function canSendNativeVoiceTask(outgoing)')
     && codexView.includes("if (!String(outgoing || '').trim()) return false;")
-    && codexView.includes('busy || working || activeRuntimeBusy || workspaceUnavailable || sessionSyncing')
-    && codexView.includes('if (!activeId && !draftWorkspacePath) return false;')
-    && codexView.includes("attachments.some(attachment => attachment.status === 'parsing')")
+    && codexView.includes('composerSendBlockers.busy || composerSendBlockers.working')
+    && codexView.includes('composerSendBlockers.workspaceUnavailable || composerSendBlockers.sessionSyncing')
+    && codexView.includes('if (composerSendBlockers.noSendTarget) return false;')
+    && !/pendingAttachment/.test((codexView.match(/function canSendNativeVoiceTask\(outgoing\) \{[\s\S]*?\n {2}\}/) || [''])[0])
     && codexView.includes('sendTask: async outgoing => send(outgoing)'),
-  'Codex voice task mode must go through the shared hook, code-lane risk gate, and real send result before reporting success');
+  'Codex voice task mode must go through the shared hook, code-lane risk gate, and real send result before reporting success; pending attachments must reach send() so the failure is reported instead of faking success');
   // plain（非 native）车道仍走自绘 CodexComposerConfigSelect 配置组，不随 native 车道
   // 迁移到共享组件；共享 config select 保留 ACP testid 契约。
   assert.ok(codexView.includes('data-testid="codex-composer-configs"')

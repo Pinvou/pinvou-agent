@@ -132,18 +132,14 @@ pub fn read_artifact_chunk(
 ) -> Result<ArtifactChunk, String> {
     let session_id = require_explicit_session_id(session_id)?;
     let resolved = resolve_session_artifact_path(store, session_id, path)?;
-    read_resolved_file_chunk_with_limit(&resolved, offset, limit)
+    read_resolved_file_chunk(&resolved, offset, limit)
 }
 
+/// Read a bounded chunk from an already-resolved absolute path. Callers must
+/// pass a path that cleared the host-root / session-scope resolution
+/// (`resolve_session_artifact_path`, `resolve_conversation_attachment_path`);
+/// this function performs no authorization of its own.
 pub(crate) fn read_resolved_file_chunk(
-    resolved: &Path,
-    offset: u64,
-    limit: Option<usize>,
-) -> Result<ArtifactChunk, String> {
-    read_resolved_file_chunk_with_limit(resolved, offset, limit)
-}
-
-fn read_resolved_file_chunk_with_limit(
     resolved: &Path,
     offset: u64,
     limit: Option<usize>,

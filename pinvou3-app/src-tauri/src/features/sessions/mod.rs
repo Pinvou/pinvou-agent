@@ -80,7 +80,8 @@ pub use self::transcript::transcript_revision;
 /// Re-export the crate-visible session-id validator (used by commands). It is
 /// `pub(crate)` so it stays out of the crate's public API surface.
 pub(crate) use self::validators::{
-    validate_session_id, validate_user_workspace_path, validate_workspace_roots,
+    validate_scheduled_task_id, validate_session_id, validate_user_workspace_path,
+    validate_workspace_roots,
 };
 /// Re-export the rebind outcome (public rebind docs link into it; the module
 /// itself stays private).

@@ -165,6 +165,67 @@ pub(super) fn libreoffice_user_installation_arg(profile_dir: &Path) -> Result<St
     ))
 }
 
+/// Shared LibreOffice headless convert runner: creates a unique temp dir
+/// (every call gets its own, avoiding concurrent file-name conflicts), gives
+/// the run its own UserInstallation profile (one soffice profile cannot serve
+/// concurrent runs — it locks), runs
+/// `--headless --convert-to <convert_to> --outdir <dir> <path>`, hands `dir`
+/// to `consume` for output discovery/read, then removes the dir.
+///
+/// `fail_label` preserves each caller's historical exit-failure prefix (the
+/// localized LibreOffice failure wording each call site shipped before the
+/// unification); the spawn-failure message is shared. Tool availability is
+/// NOT checked here — callers keep their own pre-checks (some combine several
+/// tools in one message).
+pub(super) fn run_libreoffice_convert<T>(
+    path: &Path,
+    convert_to: &str,
+    tmp_prefix: &str,
+    fail_label: &str,
+    consume: impl FnOnce(&Path) -> Result<T, String>,
+) -> Result<T, String> {
+    // Temp dir: unique each time, avoiding concurrent file-name conflicts.
+    let ts = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_nanos())
+        .unwrap_or(0);
+    let tmpdir = std::env::temp_dir().join(format!("{tmp_prefix}-{ts}"));
+    std::fs::create_dir_all(&tmpdir).map_err(|e| format!("failed to create temp dir: {e}"))?;
+
+    // soffice cold start or a stale lock can hang; bounded by a 180s kill-tree
+    // timeout (same budget as the #532 inline conversion points). The profile
+    // argument is built inside the closure so every error path below still
+    // reaches the cleanup step instead of leaking the temp dir.
+    let result = (|| -> Result<T, String> {
+        let profile_arg = libreoffice_user_installation_arg(&tmpdir.join("profile"))?;
+        let out = crate::platform::process::output_with_timeout_and_kill_tree(
+            {
+                let mut command = libreoffice_tool_command();
+                command
+                    .arg(profile_arg)
+                    .arg("--headless")
+                    .arg("--convert-to")
+                    .arg(convert_to)
+                    .arg("--outdir")
+                    .arg(&tmpdir)
+                    .arg(path);
+                command
+            },
+            std::time::Duration::from_secs(180),
+        );
+        match out {
+            Ok(o) if o.status.success() => consume(&tmpdir),
+            Ok(o) => Err(format!(
+                "{fail_label}: {}",
+                String::from_utf8_lossy(&o.stderr).trim()
+            )),
+            Err(e) => Err(format!("LibreOffice invocation failed: {e}")),
+        }
+    })();
+    let _ = std::fs::remove_dir_all(&tmpdir);
+    result
+}
+
 pub(super) fn add_ocr_tessdata_arg(command: &mut Command) {
     if let Some(tessdata_dir) = crate::platform::os::ocr_tessdata_dir() {
         command.arg("--tessdata-dir").arg(tessdata_dir);
