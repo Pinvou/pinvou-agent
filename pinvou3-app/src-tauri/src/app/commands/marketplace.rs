@@ -906,9 +906,10 @@ pub async fn import_skill_md_bytes(
     })
     .await
     .map_err(|e| format!("sync_deny_all join: {e}"))??;
-    pool.refresh_live_sessions_skills().await;
-    // 导入包的 CLI/技能脚本纳入 deny 规则集（M-6：import 路径热刷）。
-    pool.refresh_permission_rulesets().await;
+    // An imported id can collide with a package owning a native tool
+    // (NATIVE_PACKAGE_TOOLS keys on package ids), so the deny snapshot must
+    // follow the same install postcondition as the marketplace paths.
+    hot_refresh(&pool, true).await;
     Ok(report.id)
 }
 
