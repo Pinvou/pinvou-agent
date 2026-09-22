@@ -17,6 +17,11 @@ use serde::{Deserialize, Serialize};
 
 pub const PRODUCT_SCORE_VERSION: &str = "pinvou-product-score/v1";
 
+/// Upper bound of every per-case deadline in [`smoke_cases`]. The adapter's
+/// descriptor records it so the harness-deadline mode is machine-readable,
+/// and the runner enforces each case's own (never larger) deadline.
+pub const SMOKE_HARNESS_DEADLINE_SECS: u64 = 60;
+
 /// Canonical id of the smoke tool policy: the headless read-only-web face
 /// (the same six tools as the GAIA public-web policy), deliberately not
 /// named "product" — the real product surface is
@@ -88,7 +93,7 @@ pub fn smoke_cases() -> Vec<SmokeCase> {
         SmokeCase {
             id: "plep_smoke_weather",
             prompt: "广州今天天气怎么样",
-            timeout: Duration::from_secs(60),
+            timeout: Duration::from_secs(SMOKE_HARNESS_DEADLINE_SECS),
             tool_expectation: ToolExpectation::Required,
         },
         SmokeCase {
@@ -100,7 +105,7 @@ pub fn smoke_cases() -> Vec<SmokeCase> {
         SmokeCase {
             id: "plep_smoke_poem",
             prompt: "帮我写一首关于春天的诗",
-            timeout: Duration::from_secs(60),
+            timeout: Duration::from_secs(SMOKE_HARNESS_DEADLINE_SECS),
             tool_expectation: ToolExpectation::Forbidden,
         },
         SmokeCase {
@@ -182,7 +187,7 @@ impl SmokeAdapter {
             )
             // Per-case deadlines are 30/60s; the manifest records the upper
             // bound so the harness-deadline mode is machine-readable.
-            .with_harness_deadline_secs(Some(60)),
+            .with_harness_deadline_secs(Some(SMOKE_HARNESS_DEADLINE_SECS)),
         }
     }
 }
