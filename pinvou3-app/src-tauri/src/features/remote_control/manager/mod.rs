@@ -2756,7 +2756,7 @@ mod tests {
         acknowledge_pending_revocation_at, load_config_from, load_pending_revocations_from,
         queue_pending_revocation_at,
     };
-    use super::rpc::{WebSessionScope, web_session_scope};
+    use super::rpc::{WebSessionScope, web_scope_admits_absent_session, web_session_scope};
     use super::*;
 
     const TEST_ENDPOINT_ID: &str = "ep_test";
@@ -3706,6 +3706,23 @@ mod tests {
             web_session_scope("get_effective_model_config"),
             Some(WebSessionScope::Optional("sessionId"))
         );
+    }
+
+    #[test]
+    fn discard_aux_session_admits_an_absent_main_session() {
+        // Round-24 minor-10: desktop `discard_aux_session` is idempotent on an
+        // unmapped main id (a deleted main leaves no mapping and the command
+        // returns Ok(())), so the central validator must skip its
+        // `store.load` admission for it — the Web lane otherwise fails with
+        // `web_session_unavailable` exactly where desktop succeeds. Only the
+        // discard leg: the create leg needs the parent record, and every
+        // other command acts on the session itself.
+        assert!(web_scope_admits_absent_session("discard_aux_session"));
+        assert!(!web_scope_admits_absent_session(
+            "get_or_create_aux_session"
+        ));
+        assert!(!web_scope_admits_absent_session("web_access_chat"));
+        assert!(!web_scope_admits_absent_session("delete_session"));
     }
 
     #[test]
