@@ -204,6 +204,11 @@ async fn snapshot_for_model_config(
             request = request.bearer_auth(key);
         }
     }
+    let request = crate::core::model_endpoint::with_opencode_session_header(
+        request,
+        upstream,
+        "model-probe",
+    );
     let should_probe_models =
         target_kind == "local" || api_key.map(str::trim).is_some_and(|key| !key.is_empty());
     let models_resp = if should_probe_models {

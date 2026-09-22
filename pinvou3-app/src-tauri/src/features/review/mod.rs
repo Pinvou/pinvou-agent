@@ -566,13 +566,15 @@ async fn model_review(
         "response_format": { "type": "json_object" }
     });
     apply_review_reasoning_controls(&mut body, preset, &provider, &base_url, &model_name);
-    let resp = client
-        .post(url)
-        .bearer_auth(bridge.api_key())
-        .json(&body)
-        .send()
-        .await
-        .context("post chat/completions")?
+    let resp = crate::core::model_endpoint::with_opencode_session_header(
+        client.post(url).bearer_auth(bridge.api_key()),
+        &base_url,
+        "model-review",
+    )
+    .json(&body)
+    .send()
+    .await
+    .context("post chat/completions")?
         .error_for_status()
         .context("chat/completions status")?;
     let value: Value = resp.json().await.context("parse chat/completions json")?;
