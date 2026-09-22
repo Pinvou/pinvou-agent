@@ -1,5 +1,6 @@
 #!/usr/bin/env node
-// builtin-plugin-logic 纯函数直测（《内置工具集长期契约》§3.1/§3.2 共享判定）。
+// Direct unit tests for the builtin-plugin-logic pure functions
+// (docs/builtin-toolset-contract.md §3.1/§3.2 shared judgement).
 const assert = require('assert');
 const fs = require('fs');
 const path = require('path');
@@ -17,20 +18,26 @@ vm.runInContext(`${code}\nthis.isBuiltinPlugin = isBuiltinPlugin; this.builtinTo
 
 const { isBuiltinPlugin, builtinToolShortName } = ctx;
 
-// ── isBuiltinPlugin：严格 === true，缺省/假值按普通插件放行 ──
+// ── isBuiltinPlugin: strict === true or visibility "system"; missing/falsy
+// fields pass through as regular plugins ──
 assert.strictEqual(isBuiltinPlugin({ builtin: true }), true);
 assert.strictEqual(isBuiltinPlugin({ builtin: false }), false);
-assert.strictEqual(isBuiltinPlugin({}), false, 'builtin 字段缺省（旧后端）应按普通插件放行');
+assert.strictEqual(isBuiltinPlugin({}), false, 'missing builtin field (old backend) passes as a regular plugin');
 assert.strictEqual(isBuiltinPlugin(null), false);
-assert.strictEqual(isBuiltinPlugin(), false, '无入参按普通插件放行');
-assert.strictEqual(isBuiltinPlugin({ builtin: 1 }), false, '真值非 true 不算内置（契约字段为 boolean）');
+assert.strictEqual(isBuiltinPlugin(), false, 'no argument passes as a regular plugin');
+assert.strictEqual(isBuiltinPlugin({ builtin: 1 }), false, 'truthy non-true is not builtin (the contract field is boolean)');
+assert.strictEqual(isBuiltinPlugin({ visibility: 'system' }), true, 'visibility: "system" (manifest-declared) counts as builtin');
+assert.strictEqual(isBuiltinPlugin({ visibility: 'public' }), false, 'other visibility values pass as regular plugins');
+assert.strictEqual(isBuiltinPlugin({ builtin: false, visibility: 'system' }), true, 'visibility: "system" wins over builtin: false');
+assert.strictEqual(isBuiltinPlugin({ visibility: 'System' }), false, 'visibility matching is case-sensitive ("system" only)');
 
-// ── builtinToolShortName：剥 mcp_<pluginId>_ 前缀，不匹配原样兜底 ──
+// ── builtinToolShortName: strips the mcp_<pluginId>_ prefix, falls back to the
+// original name when the prefix does not match ──
 assert.strictEqual(builtinToolShortName('mcp_session-reader_read_session', 'session-reader'), 'read_session');
 assert.strictEqual(builtinToolShortName('mcp_session-reader_list_sessions', 'session-reader'), 'list_sessions');
-assert.strictEqual(builtinToolShortName('mcp_weather_get_weather', 'session-reader'), 'mcp_weather_get_weather', '前缀不匹配原样返回');
-assert.strictEqual(builtinToolShortName('read_session', 'session-reader'), 'read_session', '无前缀原样返回');
-assert.strictEqual(builtinToolShortName('mcp_session-reader_read_session', ''), 'mcp_session-reader_read_session', '无 pluginId 不剥前缀');
+assert.strictEqual(builtinToolShortName('mcp_weather_get_weather', 'session-reader'), 'mcp_weather_get_weather', 'non-matching prefix returns the name as-is');
+assert.strictEqual(builtinToolShortName('read_session', 'session-reader'), 'read_session', 'no prefix returns the name as-is');
+assert.strictEqual(builtinToolShortName('mcp_session-reader_read_session', ''), 'mcp_session-reader_read_session', 'no pluginId means no stripping');
 assert.strictEqual(builtinToolShortName('', 'session-reader'), '');
 
 console.log('builtin_plugin_logic: ok');

@@ -1,11 +1,13 @@
-// 内置插件共享判定（《内置工具集长期契约》§3.1/§3.2）：list_marketplace_tools
-// 条目的 builtin === true 才视为内置插件；字段缺省（旧后端/普通插件）一律按
-// 普通插件放行（undefined !== true 自然通过）。
-const isBuiltinPlugin = (tool) => !!tool && tool.builtin === true;
+// Shared builtin-plugin judgement (docs/builtin-toolset-contract.md §3.1/§3.2):
+// a list_marketplace_tools entry counts as builtin when builtin === true, or
+// when the manifest declares visibility: "system" (the backend fills that field
+// only for builtin plugins). Missing fields (old backend / regular plugins)
+// pass through as regular plugins (undefined !== true / !== 'system').
+const isBuiltinPlugin = (tool) => !!tool && (tool.builtin === true || tool.visibility === 'system');
 
-// 工具全名 → 展示短名：剥 `mcp_<pluginId>_` 前缀（如
-// mcp_session-reader_read_session → read_session）；前缀不匹配时原样返回，
-// 全名始终由卡片 title/hover 展示。
+// Full tool name → display short name: strip the `mcp_<pluginId>_` prefix (e.g.
+// mcp_session-reader_read_session → read_session); names without the prefix are
+// returned as-is, and the card title/hover always shows the full name.
 const builtinToolShortName = (fullName, pluginId) => {
   const name = String(fullName || '');
   const prefix = `mcp_${pluginId}_`;

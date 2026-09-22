@@ -629,9 +629,10 @@ Object.assign(dictJa.uiToolDetails.tools, {
   gongwen:{ title:'公文書作成', subtitle:'党政機関の公文書を GB/T 9704 準拠の .docx で直接出力', latency:'ローカル', desc:'「通知を書いて / 意見を起草して」と言うと、AI が文種の構造と定型表現に沿って内容を作成し、レンダラーが党政機関公文書の国家標準フォーマット（方正小標宋のタイトル、仿宋_GB2312 の本文、標準余白、赤いヘッダーと赤い区切り線）を適用して .docx を出力します。すべてローカル処理でデータは端末の外に出ません。「党政機関公文書作成」スキルと併用すると最も効果的です。初回インストール時に python-docx 依存関係を自動ダウンロードします（ネットワーク必須）。', welcomeQueries:['管理弁法の公布に関する通知を起草','ある業務の強化に関する実施意見を作成','会議通知を作成','状況報告を作成'] },
 });
 
-// 内蔵プラグインの読み取り専用セクション（内蔵ツールセット長期契約 §3.1）：
-// セクション名/読み取り専用バッジ/監査フィールドラベル/セキュリティレベル説明/
-// データアクセス scope 文案。未知の dataAccess scope キーはカード側でそのまま表示。
+// Read-only builtin plugins section (docs/builtin-toolset-contract.md §3.1):
+// section title / read-only badge / audit field labels / security level
+// descriptions / data-access scope copy. Unknown dataAccess scope keys fall
+// back to rendering the raw key on the card and are not listed here.
 dictJa.uiBuiltinPlugins = {
   sectionTitle:'内蔵プラグイン',
   kindLabel:'タイプ',
@@ -646,8 +647,9 @@ dictJa.uiBuiltinPlugins = {
   dataAccess:{ 'sessions.read':'この端末のセッションストレージ（読み取り専用）' },
 };
 
-// 内蔵機能の縮退表示の共通文案（契約 §3.3 フック）：今後の各機能設定ページで
-// 「機能オフ」時の既存入り口の縮退表示に再利用。
+// Shared copy for builtin-feature degradation (docs/builtin-toolset-contract.md
+// §3.3 hook): reused by future per-feature settings pages for the "feature
+// disabled" degradation of existing entry points.
 dictJa.uiBuiltinFeatures = { disabledNotice:'この内蔵機能はオフになっています。関連する入口と機能は無効です。' };
 
 Object.assign(dictJa.uiCodexWorkspace, { showRawErrors:false, operationFailed:'ワークスペースの操作に失敗しました。再試行してください' });

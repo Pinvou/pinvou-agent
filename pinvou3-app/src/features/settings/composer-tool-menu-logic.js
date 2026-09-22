@@ -1,3 +1,5 @@
+import { isBuiltinPlugin } from '../tools/builtin-plugin-logic.js';
+
 const DEFAULT_BUILTIN_SKILLS = [
   {
     id: 'visual-design',
@@ -40,11 +42,13 @@ function buildComposerToolMenuState({
     }));
 
   const toolRows = installedTools
-    // 《内置工具集长期契约》§3.2 配置可见性：内置插件（builtin === true，如
-    // session-reader）从输入框工具列表隐藏；执行可见性（对话时间线 ToolCard 的
-    // 工具调用展示）不受影响。字段缺省（旧后端/普通插件）时 undefined !== true
-    // 自然放行；调用方 refreshToolsMenu 直接透传 list_marketplace_tools 结果。
-    .filter(tool => tool && !hidden.has(tool.id) && tool.builtin !== true)
+    // docs/builtin-toolset-contract.md §3.2 configuration visibility: builtin
+    // plugins (e.g. session-reader) are hidden from the composer tool list via
+    // the shared isBuiltinPlugin judgement; execution visibility (ToolCard
+    // rendering in the chat timeline) is unaffected. Missing fields (old
+    // backend / regular plugins) pass through; the caller refreshToolsMenu
+    // forwards the raw list_marketplace_tools result.
+    .filter(tool => tool && !hidden.has(tool.id) && !isBuiltinPlugin(tool))
     .map(tool => ({
       id: tool.id,
       kind: 'tool',

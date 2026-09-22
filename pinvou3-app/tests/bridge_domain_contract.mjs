@@ -50,10 +50,13 @@ export const desktopOnlyBridgeApi = {
   // The queued chip's zap-send goes through the foundation EnginePool and needs
   // the Tauri command channel; web has no such backend.
   chat: ['interruptAndSendQueued'],
+  // Builtin feature toggles (list_builtin_features / set_builtin_feature_enabled)
+  // are desktop Rust command channels with no web backend. list_builtin_features
+  // is consumed by ChatView (the session-mention feature gate, PR #586);
+  // set_builtin_feature_enabled is the contract hook for future per-feature
+  // settings pages — no consumer yet.
   // saveSettingsAndRestart/saveSearchSettingsAndRestart restart the desktop
   // process in place; the web host has no restart channel.
-  // 内置功能开关（list_builtin_features / set_builtin_feature_enabled）是
-  // 桌面 Rust 命令通道，Web 端无对应后端（契约挂接点，本期无消费方）。
   settings: ['saveSearchSettingsAndRestart', 'listBuiltinFeatures', 'setBuiltinFeatureEnabled'],
   // Vendor-edition one-click vLLM bootstrap is a vendor-edition desktop surface: the web capability bit is always
   // false and the related commands are not in the access-policy allowlist.

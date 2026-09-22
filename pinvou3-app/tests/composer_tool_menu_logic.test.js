@@ -5,11 +5,20 @@ const path = require('path');
 const vm = require('vm');
 
 const logicPath = path.join(__dirname, '..', 'src', 'features', 'settings', 'composer-tool-menu-logic.js');
+// The logic module imports the shared isBuiltinPlugin predicate; load that
+// module the same way and inject it into the vm context after stripping the
+// import/export statements (the harness evaluates classic scripts).
+const builtinLogicPath = path.join(__dirname, '..', 'src', 'features', 'tools', 'builtin-plugin-logic.js');
+const builtinCode = fs.readFileSync(builtinLogicPath, 'utf8')
+  .replace(/\bexport\s+\{[^}]+\};?/g, '')
+  .replace(/\bexport\s+/g, '');
 const code = fs.readFileSync(logicPath, 'utf8')
+  .replace(/^\s*import\s+[^;]+;?\s*$/gm, '')
   .replace(/\bexport\s+\{[^}]+\};?/g, '')
   .replace(/\bexport\s+/g, '');
 const ctx = {};
 vm.createContext(ctx);
+vm.runInContext(`${builtinCode}\nthis.isBuiltinPlugin = isBuiltinPlugin;`, ctx, { filename: builtinLogicPath });
 vm.runInContext(
   `${code}\nthis.buildComposerToolMenuState = buildComposerToolMenuState;`
   + `\nthis.createToggleWriteGate = createToggleWriteGate;`
@@ -238,7 +247,9 @@ async function toggleWriteGateTests() {
   assert.strictEqual(pkgFailResult.rolledBack, true);
 }
 
-// ── 内置插件（契约 §3.2 配置可见性）：builtin === true 的工具不进菜单 ──
+// ── Builtin plugins (docs/builtin-toolset-contract.md §3.2 configuration
+// visibility): tools matching the shared isBuiltinPlugin judgement stay out ──
+
 state = buildComposerToolMenuState({
   marketplaceTools: [
     { id: 'session-reader', name: '会话读取', installed: true, builtin: true },
@@ -248,6 +259,13 @@ state = buildComposerToolMenuState({
 assert.ok(!state.toolRows.find(row => row.id === 'session-reader'), '内置插件应从 composer 菜单过滤');
 assert.ok(state.toolRows.find(row => row.id === 'weather'), '普通工具不受影响');
 assert.strictEqual(state.enabledCount, 2); // weather + builtin visual-design
+
+// visibility: "system" (manifest-declared, backend-filled for builtin plugins)
+// is excluded by the same shared judgement
+state = buildComposerToolMenuState({
+  marketplaceTools: [{ id: 'session-reader', name: '会话读取', installed: true, visibility: 'system' }],
+});
+assert.strictEqual(state.toolRows.length, 0, 'visibility:system 的工具应同样被过滤');
 
 // builtin 字段缺省（旧后端）按普通工具放行
 state = buildComposerToolMenuState({

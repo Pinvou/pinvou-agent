@@ -217,9 +217,14 @@ const expectedProtocolHashes = {
   // Recomputed for the dead-code cleanup (the dead saveSettingsAndRestart
   // wrapper was removed) and for the built-in feature toggles hook: settings.js
   // gains the list_builtin_features / set_builtin_feature_enabled invoke
-  // wrappers (contract hook for future feature settings pages; no consumer yet).
-  settings: '203759c7b74e87674ef7698c69bc6b35508a7d183d937df6f5d0c20aea465969',
-  // remote_control:status / remote_control:session_created listeners were
+  // wrappers (list_builtin_features is consumed by ChatView's session-mention
+  // gate, PR #586; the setter is the contract hook for future feature settings
+  // pages). Recomputed again for the review fix: set_builtin_feature_enabled
+  // now sends `{ featureId: id, enabled }` — the Rust command's parameter is
+  // `feature_id` (app/commands/builtin.rs) and Tauri v2 maps camelCase JS keys
+  // to snake_case.
+  settings: '257314bba1911acb1bba42c2b4ff71aaebf95b67ebcb49a29ff73f925eeb94c1',
+  // Recomputed for the dead-code cleanup: the never-emitted  // remote_control:status / remote_control:session_created listeners were
   // removed, and the update:progress listener plus its coalescing timer
   // machinery were deleted with it (the backend download loop no longer has a
   // frontend progress consumer; completion still flips updateProgress to 100

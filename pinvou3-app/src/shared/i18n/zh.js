@@ -635,8 +635,10 @@ Object.assign(dictZh.uiToolDetails.tools, {
   gongwen:{ title:'公文写作', subtitle:'党政机关公文直出 GB/T 9704 合规 .docx', latency:'本地', desc:'说“写个通知 / 起草意见”，AI 按文种结构与固定话术写好内容，渲染器套党政机关公文国标格式（方正小标宋标题、仿宋_GB2312 正文、国标页边距、红头与红色分隔线）直出 .docx，全程本地、数据不出机。配合「党政机关公文写作」技能效果最佳。首次安装自动下载 python-docx 依赖（需联网）。', welcomeQueries:['起草一份关于印发管理办法的通知','写一份加强某项工作的实施意见','拟一份会议通知','写一份情况报告'] },
 });
 
-// 内置插件只读板块（《内置工具集长期契约》§3.1）：板块标题/只读徽章/审计字段标签/
-// 安全级别说明/数据访问 scope 文案。dataAccess 未知 scope 键由卡片原样兜底，不在此列举。
+// Read-only builtin plugins section (docs/builtin-toolset-contract.md §3.1):
+// section title / read-only badge / audit field labels / security level
+// descriptions / data-access scope copy. Unknown dataAccess scope keys fall
+// back to rendering the raw key on the card and are not listed here.
 dictZh.uiBuiltinPlugins = {
   sectionTitle:'内置插件',
   kindLabel:'类型',
@@ -648,10 +650,12 @@ dictZh.uiBuiltinPlugins = {
   versionNote:'随应用升级',
   dataAccessLabel:'数据访问范围',
   levels:{ L0:'只读：不修改任何状态，内容标注为不可信', L1:'写入：会产生用户可见的副作用（如发消息、建任务）', L2:'破坏性：删除/覆盖等不可逆操作，需显式授权' },
-  dataAccess:{ 'sessions.read':'本会话存储（只读）' },
+  dataAccess:{ 'sessions.read':'本机会话存储（只读）' },
 };
 
-// 内置功能降级通用文案（契约 §3.3 挂接点）：供后续各功能设置页「功能已关闭」存量降级复用。
+// Shared copy for builtin-feature degradation (docs/builtin-toolset-contract.md
+// §3.3 hook): reused by future per-feature settings pages for the "feature
+// disabled" degradation of existing entry points.
 dictZh.uiBuiltinFeatures = { disabledNotice:'该内置功能已关闭，相关入口与能力已停用。' };
 
 Object.assign(dictZh.uiCodexWorkspace, { showRawErrors:true, operationFailed:'工作区操作失败，请重试' });

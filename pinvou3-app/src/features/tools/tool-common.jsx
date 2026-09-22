@@ -897,12 +897,17 @@ const tc = (t) => (t && t.uiToolCommon) || dict.zh.uiToolCommon;
     };
 
 
-    // 内置插件只读卡（《内置工具集长期契约》§3.1 透明性/审计窗口）：展示工具清单、
-    // 安全级别、版本与数据访问范围；无任何操作按钮（无卸载、无开关），只读徽章
-    // 复用 PlatformToolAction 的 Web 只读降级样式。文案全部走 uiBuiltinPlugins，
-    // 未传 copy 时按 tc 先例回退中文词典；数据访问 scope 未知键原样兜底。
-    // 内置技能（如视觉设计）复用本卡：无工具清单/安全级别/数据访问（纯提示词技能，
-    // 不直接访问数据），用 kindLabel（类型）+ versionText（"内置"）两行声明事实。
+    // Read-only builtin plugin card (docs/builtin-toolset-contract.md §3.1
+    // transparency/audit window): shows the tool list, security level, version
+    // and data access scopes; no action buttons at all (no uninstall, no
+    // toggle). The read-only badge reuses PlatformToolAction's Web read-only
+    // degraded styling. All copy goes through uiBuiltinPlugins, falling back to
+    // the zh dictionary per the tc precedent when copy is not passed; unknown
+    // data-access scope keys render as-is.
+    // Builtin skills (e.g. visual design) reuse this card: no tool list /
+    // security level / data access (a pure prompt skill does not touch data
+    // directly) — they declare facts with a kindLabel (type) row and a
+    // versionText ("Built-in") row.
     const BuiltinPluginCard = ({ tool, copy }) => {
       const C = copy || dict.zh.uiBuiltinPlugins;
       const Icon = tool.icon || Package;
