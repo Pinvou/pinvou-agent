@@ -988,11 +988,6 @@ export function CodexAcpView({
   useEffect(() => {
     if (onLaneModeChange) onLaneModeChange(composerModeValue || null);
   }, [composerModeValue, onLaneModeChange]);
-  // Same mirror for the root-delivery state (§6 stage-gate): a third-party
-  // ACP agent only ever receives the primary root on the wire.
-  useEffect(() => {
-    if (onLaneDeliveryChange) onLaneDeliveryChange(!isNativeAgent);
-  }, [isNativeAgent, onLaneDeliveryChange]);
   function composerConfigOptionValue(option) {
     if (sessionControlsInfo) return option.currentValue || '';
     const staged = draftConfigSelection && draftConfigSelection.configs
@@ -1085,6 +1080,12 @@ export function CodexAcpView({
   const laneNoticeMode = isNativeAgent
     ? (nativeDraftControls.mode || composerModeValue || null)
     : (composerModeValue || nativeDraftControls.mode || null);
+  // Same mirror for the root-delivery state (§6 stage-gate): a third-party
+  // ACP agent only ever receives the primary root on the wire. Lives below
+  // isNativeAgent's declaration — the lint gate rejects use-before-declaration.
+  useEffect(() => {
+    if (onLaneDeliveryChange) onLaneDeliveryChange(!isNativeAgent);
+  }, [isNativeAgent, onLaneDeliveryChange]);
   // First-send session creation persists draft controls before activation. Keep the
   // staged values associated with that exact session until its authoritative load
   // completes so the selector never falls back to a different global model in between.
