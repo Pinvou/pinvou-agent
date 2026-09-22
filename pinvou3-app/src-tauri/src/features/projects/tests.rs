@@ -1448,9 +1448,14 @@ fn rebind_roots_translates_never_materialize_roots() {
     let affected = store.rebind_roots(&from, &to).expect("rebind");
     assert_eq!(affected, vec![project.id.clone()]);
 
+    // The table exposes folded identity keys, not display paths (Windows
+    // folds case/separators): build the expectation through the same
+    // platform folding, or the assertion only holds on POSIX.
     assert_eq!(
         store.never_materialize_roots(),
-        vec![display(&to).join("keep-out").to_string_lossy().to_string()],
+        vec![crate::platform::os::filesystem_path_identity_key(
+            &display(&to).join("keep-out").to_string_lossy(),
+        )],
         "the exclusion key must translate onto the new path"
     );
 
