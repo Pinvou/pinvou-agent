@@ -6,8 +6,8 @@ REPO="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 CODEWHALE="$REPO/CodeWhale"
 APP="$REPO/pinvou3-app/src-tauri"
 EXPECTED_UPSTREAM="dcd4c200f72f0c1ffd60d8e7f6850313db879fc5"
-EXPECTED_HEAD="28956fdeb5ce1a71d6624a38a85c7909160298ed"
-EXPECTED_COMMITS=78
+EXPECTED_HEAD="bbc90540ab57a27f4209e54e0008bde7768536e2"
+EXPECTED_COMMITS=80
 # 过渡期锚点：不可变 r1 tag 的收口 commit。层 0 断言它是当前 head 的祖先，
 # 即 gitlink 沿主题分支领先 tag 而非另起分叉；#54 合入后随登记回收重钉到维护分支头。
 R1_CLOSURE="1fafee7e26b60a59457a43bce50c63aa2ad9dbaf"
