@@ -709,6 +709,12 @@ async fn run_turn(
                 .prepare(&SessionSpec {
                     session_id: session_id.to_owned(),
                     model_selection,
+                    // A `--workspace` run records the task directory in the
+                    // session metadata too, so the GUI list/detail shows the
+                    // directory the session actually works in (the durable
+                    // binding below is the authoritative copy; this is the
+                    // display half, matching GUI-created bound sessions).
+                    workspace: workspace_binding.clone(),
                 })
                 .await
                 .context("prepare agentic session")?;
