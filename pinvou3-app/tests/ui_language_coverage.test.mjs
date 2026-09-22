@@ -76,6 +76,8 @@ for (const language of ['zh', 'en', 'ja']) {
     // uiBuiltinFeatures lands with #586's switch UI (its only key was an
     // orphan before that).
     'uiAuxChat',
+    'uiBuiltinFeatures',
+    'uiSessionMention',
   ]) {
     assert.ok(dict[language][section], `${language}.${section} must exist`);
   }
