@@ -1240,16 +1240,19 @@ export function CodexAcpView({
     rememberScrollBeforeRightPanelChange();
     setAuxChatPanel(null);
   }, [rememberScrollBeforeRightPanelChange]);
-  // When the mount condition (auxChatPanel && activeSession && isNativeAgent,
-  // see the panel mount point below) goes away, the panel unmounts outright,
+  // When the mount condition (auxChatPanel && activeSession && isNativeAgent
+  // && bridge.available && bridge.auxChat, see the panel mount point below)
+  // goes away, the panel unmounts outright,
   // and RightDockPanel's onActiveChange has no unmount cleanup, so the
   // highlight would linger; reset it synchronously here when the mount
   // condition drops, and once the session is back the panel re-mounts and
   // reports its real visibility again. isNativeAgent is part of the condition:
   // switching to an external-ACP agent must unmount the panel, not leave it
-  // rebound to a session the side chat must not answer on.
+  // rebound to a session the side chat must not answer on. The bridge
+  // conjuncts keep the gate identical to the entry button and the sessionId
+  // prop (round-25 minor consistency note).
   useEffect(() => {
-    if (auxChatPanel && activeSession && isNativeAgent) return;
+    if (auxChatPanel && activeSession && isNativeAgent && bridge.available && bridge.auxChat) return;
     // eslint-disable-next-line react-hooks/set-state-in-effect -- synchronously reset dock highlight when the panel unmounts; one-shot mirror, same pattern as the subagent reset below
     setAuxChatDockActive(false);
   }, [auxChatPanel, activeSession, isNativeAgent]);
@@ -4363,7 +4366,7 @@ export function CodexAcpView({
             onClose={closeSubagentPanel}
           />
         )}
-        {auxChatPanel && activeSession && isNativeAgent && (
+        {auxChatPanel && activeSession && isNativeAgent && bridge.available && bridge.auxChat && (
           <ViewErrorBoundary t={t} variant="panel">
             <AuxChatPanel
               sessionId={activeSession.id}

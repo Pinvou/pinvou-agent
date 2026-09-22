@@ -67,14 +67,19 @@ test('closing the aux chat panel restores the dock panel recorded at open', () =
   // still falls back to 'browser' — deliberate divergence: when the aux panel
   // was opened with the dock closed, falling back to the dock's default pane
   // beats leaving the dock with no selection.
-  const openBlock = chatView.slice(
-    chatView.indexOf('const openAuxChatPanel'),
-    chatView.indexOf('const closeAuxChatPanel'),
+  // Anchor-resolution guards (the vacuous-slice class ui_language_coverage
+  // fixed for its own slices): a renamed anchor would make indexOf return -1
+  // and the pair-slice run to near-EOF, letting these assertions pass on
+  // handleRestart-style copies elsewhere in the file.
+  const openStart = chatView.indexOf('const openAuxChatPanel');
+  const closeStart = chatView.indexOf('const closeAuxChatPanel');
+  const closeEnd = chatView.indexOf('const handlePreviewArtifact');
+  assert.ok(
+    openStart >= 0 && closeStart > openStart && closeEnd > closeStart,
+    'open/close block anchors must resolve (a vacuous slice would pass on unrelated copies)',
   );
-  const closeBlock = chatView.slice(
-    chatView.indexOf('const closeAuxChatPanel'),
-    chatView.indexOf('const handlePreviewArtifact'),
-  );
+  const openBlock = chatView.slice(openStart, closeStart);
+  const closeBlock = chatView.slice(closeStart, closeEnd);
   assert.match(openBlock, /restorePanelId: current[\s\S]*?current\.restorePanelId[\s\S]*?rightDockActivePanelId/);
   assert.match(closeBlock, /const restorePanelId = auxChatPanel\?\.restorePanelId \|\| null/);
   assert.match(closeBlock, /\[restorePanelId \|\| 'browser', activeSessionId\]/);

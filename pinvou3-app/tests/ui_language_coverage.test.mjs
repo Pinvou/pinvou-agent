@@ -19,6 +19,17 @@ const stripComments = text => text
   .map(line => line.replace(/\/\/.*$/, ''))
   .join('\n');
 
+// The aux-critical pins in these files run against comment-stripped source
+// (round-25 should-fix 24-3b): the entry-parity pins on ChatView, the
+// native-agent gates on CodexAcpView and the quote pins on
+// ConversationTimeline are load-bearing guards, and `//`-commenting any of
+// their lines used to pass the suite — the same historical bug class the
+// round-23/24 strip fixes closed for AuxChatPanel, one file over.
+const auxChatPanel = stripComments(source('features/aux-chat/AuxChatPanel.jsx'));
+const chat = stripComments(source('features/chat/ChatView.jsx'));
+const conversation = stripComments(source('features/conversation/ConversationTimeline.jsx'));
+const codex = stripComments(source('features/codex/CodexAcpView.jsx'));
+
 for (const language of ['zh', 'en', 'ja']) {
   for (const section of [
     'uiRemote',
@@ -229,7 +240,6 @@ assert.match(settings, /const settingsCopy = t\.uiSettingsDetail/);
 assert.match(settings, /settingsCopy\.addSearch/);
 assert.match(settings, /settingsCopy\.deleteModelTitle/);
 assert.doesNotMatch(settings, />添加搜索源</);
-const chat = source('features/chat/ChatView.jsx');
 assert.match(chat, /const chatCopy = t\.uiChat/);
 assert.match(chat, /chatCopy\.asrDownloadTitle/);
 assert.match(chat, /chatCopy\.memoryMeta/);
@@ -250,7 +260,6 @@ assert.match(chat, /data-testid="aux-chat-open"/);
 // while another dock panel occludes the aux panel.
 assert.match(chat, /onActiveChange=\{setAuxChatDockActive\}/);
 assert.match(chat, /auxChatPanel && auxChatDockActive/);
-const auxChatPanel = stripComments(source('features/aux-chat/AuxChatPanel.jsx'));
 assert.match(auxChatPanel, /const copy = t\.uiAuxChat/);
 assert.match(auxChatPanel, /copy=\{conversationCopy\}/);
 // Restart-topic staged guards: discard and ensure are wrapped in separate
@@ -266,7 +275,7 @@ assert.match(auxChatPanel, /copy=\{conversationCopy\}/);
 const restartBlock = auxChatPanel.slice(
   auxChatPanel.indexOf('const handleRestart'),
 );
-assert.match(restartBlock, /try \{\s*try \{[\s\S]*?const discardPromise = auxChat\.discard\(sessionId\);[\s\S]*?await discardPromise;[\s\S]*?\} catch[\s\S]*?setDiscardFailed\(true\);[\s\S]*?generationRef\.current !== generation\) return;\s*try \{\s*const nextAuxId = await auxChat\.ensure\(sessionId\)/);
+assert.match(restartBlock, /try \{\s*try \{[\s\S]*?const discardPromise = auxChat\.discard\(sessionId\);[\s\S]*?await discardPromise;[\s\S]*?\} catch[\s\S]*?setDiscardFailed\(true\);[\s\S]*?generationRef\.current !== generation\) return;\s*try \{\s*const nextAuxId = await withSettleBound\(auxChat\.ensure\(sessionId\)\)/);
 assert.match(restartBlock, /setEnsureFailed\(true\)/);
 assert.doesNotMatch(restartBlock, /setSendFailed\(true\)/);
 assert.match(auxChatPanel, /copy\.discardFailed/);
@@ -279,7 +288,7 @@ assert.match(auxChatPanel, /copy\.discardFailed/);
 // rebind and pullSnapshot stays a direct reactive dependency of handleRestart.
 assert.match(
   restartBlock,
-  /\} catch \(error\) \{\s*console\.warn\('\[pinvou3\]\[aux-chat\] restart discard failed'[\s\S]{0,900}?setDiscardFailed\(true\);\s*try \{\s*const restoredAuxId = await auxChat\.ensure\(sessionId\);[\s\S]{0,300}?auxIdRef\.current = restoredAuxId;\s*setAuxId\(restoredAuxId\);\s*pullSnapshot\(restoredAuxId\);/,
+  /\} catch \(error\) \{\s*console\.warn\('\[pinvou3\]\[aux-chat\] restart discard failed'[\s\S]{0,900}?setDiscardFailed\(true\);\s*try \{\s*const restoredAuxId = await withSettleBound\(auxChat\.ensure\(sessionId\)\);[\s\S]{0,300}?auxIdRef\.current = restoredAuxId;\s*setAuxId\(restoredAuxId\);\s*pullSnapshot\(restoredAuxId\);/,
   'the discard-failure catch must restore the nulled binding via an idempotent ensure',
 );
 // Generation bump at restart entry (round-11 B3): only the rebind effect
@@ -355,8 +364,8 @@ assert.match(
 // marker then, so the orphaned discard's late settle must not touch either.
 assert.match(
   restartBlock,
-  /\} finally \{\s*clearTimeout\(watchdog\);[\s\S]{0,600}?const ownsEntry = discardInFlightByTask\.get\(sessionId\) === discardPromise;\s*if \(ownsEntry\) discardInFlightByTask\.delete\(sessionId\);\s*if \(\s*ownsEntry\s*&& discardStuckByTask\.delete\(sessionId\)\s*&& sessionIdRef\.current === sessionId\s*\) setDiscardStuck\(false\);/,
-  'the discard settle path must clear watchdog, entry and stuck marker by promise identity, the banner clear gated on the displayed task (round-24 minor-7: A\'s late settle must not erase B\'s banner)',
+  /\} finally \{\s*clearTimeout\(watchdog\);[\s\S]{0,600}?const ownsEntry = discardInFlightByTask\.get\(sessionId\) === discardPromise;\s*if \(ownsEntry\) discardInFlightByTask\.delete\(sessionId\);\s*if \(ownsEntry && discardStuckByTask\.delete\(sessionId\)\) \{[\s\S]{0,400}?notifyTaskListeners\(discardStuckListenersByTask, sessionId\);/,
+  'the discard settle path must clear watchdog, entry and stuck marker by promise identity and notify the removal to whichever instance is mounted',
 );
 // Stuck-state surfacing and re-arm: the rebind effect must mirror the module
 // marker into state (the watchdog may fire while unmounted) and skip awaiting
@@ -375,7 +384,7 @@ assert.match(restartBlock, /setDiscardFailed\(false\);\s*[\s\S]{0,300}?setDiscar
 // keeping it: the banner is the state the panel shows.
 assert.match(
   auxChatPanel,
-  /if \(discardStuckByTask\.has\(sessionId\)\) \{\s*setBindingPending\(false\);\s*\} else if \(pendingDiscard\) \{\s*pendingDiscard\.then\(ensureAfterDiscard, ensureAfterDiscard\);\s*\} else \{\s*ensureAfterDiscard\(\);\s*\}/,
+  /if \(discardStuckByTask\.has\(sessionId\)\) \{\s*setBindingPending\(false\);\s*\} else if \(pendingDiscard\) \{\s*pendingDiscard\.then\(ensureAfterDiscard, \(error\) => \{[\s\S]{0,400}?setDiscardFailed\(true\);\s*ensureAfterDiscard\(\);\s*\}\);\s*\} else \{\s*ensureAfterDiscard\(\);\s*\}/,
   'the rebind effect must skip ensure while a discard is stuck, clearing the preparing hint',
 );
 assert.match(
@@ -403,12 +412,15 @@ assert.ok(
 // panel because the fresh aux binds under the same task key. Deleting the
 // entry at restart entry is safe because the stale send's finally only
 // removes the entry it registered (promise identity).
-const sendRegistryReset = restartBlock.indexOf('sendInFlightByTask.delete(sessionId);');
-assert.ok(sendRegistryReset >= 0, 'handleRestart must clear the task\'s send registry entry');
+assert.doesNotMatch(
+  restartBlock,
+  /sendInFlightByTask\.delete\(sessionId\);/,
+  'the send registry entry must be KEPT through the restart (round-25 MAJOR-24-3): the round-23 SEND_WATCHDOG_MS owns the never-settling recovery the round-16 B1 clear served, and a pending ack surviving the restart is what lets the failed-discard restore classify the staged draft',
+);
+const survivalClear = restartBlock.indexOf('restartDiscardFailedByTask.delete(sessionId);');
 assert.ok(
-  sendRegistryReset > sendLatchReset
-    && sendRegistryReset < restartBlock.indexOf('const discardPromise = auxChat.discard(sessionId);'),
-  'the registry entry must be cleared at restart entry, before the discard await',
+  survivalClear >= 0,
+  'restart entry must clear the stale failed-restart survival marker before issuing the fresh discard',
 );
 // Binding null at restart entry (round-18 B-1): a send settling inside the
 // discard window must read as the restart case (keep-draft skip). With the
@@ -419,7 +431,7 @@ assert.ok(
 const bindingNull = restartBlock.indexOf('auxIdRef.current = null;');
 assert.ok(bindingNull >= 0, 'handleRestart must null the binding at entry');
 assert.ok(
-  bindingNull > sendRegistryReset
+  bindingNull > survivalClear
     && bindingNull < restartBlock.indexOf('const discardPromise = auxChat.discard(sessionId);'),
   'the binding must be nulled at restart entry, before the discard await',
 );
@@ -447,8 +459,8 @@ assert.match(auxChatPanel, /setBindingPending\(!!\(auxChat && sessionId\)\);/);
 assert.match(auxChatPanel, /setBindingPending\(true\);[\s\S]*?const discardPromise = auxChat\.discard\(sessionId\);/);
 assert.equal(
   (auxChatPanel.match(/setBindingPending\(false\);/g) || []).length,
-  5,
-  'bindingPending must clear on ensure success, ensure failure, the stuck skip, the restart finally and the round-22 settle-watchdog',
+  6,
+  'bindingPending must clear on ensure success, ensure failure, the stuck skip, the restart finally, the round-22 settle-watchdog and the round-25 stuck-notify listener',
 );
 assert.match(auxChatPanel, /bindingPending \? copy\.bindingHint : copy\.emptyState/);
 // In-flight send feedback (round-12 UX): the send window had no visible state
@@ -476,7 +488,13 @@ assert.match(auxChatPanel, /if \(sessionId\) draftByTask\.set\(sessionId, next\)
 // the send was in flight survive for the next message.
 assert.match(
   auxChatPanel,
-  /if \(sentTaskId\) \{[\s\S]{0,600}?draftByTask\.delete\(sentTaskId\);[\s\S]{0,300}?dropAuxQuotes\(sentTaskId, quotes\);\s*\}/,
+  /if \(sentTaskId\) \{\s*consumeSentDraft\(sentTaskId, text\);\s*dropAuxQuotes\(sentTaskId, quotes\);\s*\}/,
+  'the ack consumes the delivered draft through the notifying helper (round-25 MAJOR-24-2)',
+);
+assert.match(
+  auxChatPanel,
+  /const consumeSentDraft = \(taskId, text\) => \{\s*const storedDraft = draftByTask\.get\(taskId\);\s*if \(storedDraft !== undefined && storedDraft\.trim\(\) !== text\) return;\s*deleteDraftAndNotify\(taskId\);\s*\};/,
+  'the consuming helper eats only the stored draft that still equals the sent text and broadcasts the deletion',
 );
 // Same-binding consumption regardless of generation (round-14 B3), widened
 // in round-17 M-A: the success path consumes whenever the send settled into a
@@ -488,7 +506,7 @@ assert.match(
 // the delivery there reached the still-live transcript the rebind re-ensures.
 assert.match(
   auxChatPanel,
-  /const sendPromise = auxChat\.send\(sentAuxId, quoteBlock \? text \+ quoteBlock : text\);[\s\S]{0,700}?await sendPromise;\s*\n[\s\S]{0,1200}?const sameBinding = auxIdRef\.current === sentAuxId;\s*const onSameTask = sessionIdRef\.current === sentTaskId;\s*if \(!sameBinding && onSameTask\s*&& \(restartEpochByTask\.get\(sentTaskId\) \|\| 0\) !== sentEpoch\) return;\s*if \(sentTaskId\) \{/,
+  /const sendPromise = auxChat\.send\(sentAuxId, quoteBlock \? text \+ quoteBlock : text\);[\s\S]{0,700}?await sendPromise;\s*\n[\s\S]{0,1600}?const sameBinding = auxIdRef\.current === sentAuxId;\s*const onSameTask = sessionIdRef\.current === sentTaskId;\s*if \(restartKeptDraft\(sentTaskId, sentEpoch\)\) return;\s*if \(sentTaskId\) \{/,
   'consumption must follow the restart-only skip directly, gated on binding, live task identity and the restart epoch',
 );
 // The epoch must be captured at dispatch and bumped at restart entry before
@@ -511,14 +529,15 @@ assert.match(
 // snapshot pull stays binding-gated after it.
 assert.match(
   auxChatPanel,
-  /dropAuxQuotes\(sentTaskId, quotes\);\s*\}\s*if \(!onSameTask\) return;\s*setDraft\(\(current\) => \(current\.trim\(\) === text \? '' : current\)\);\s*if \(sameBinding\) pullSnapshot\(auxIdRef\.current\);/,
+  /dropAuxQuotes\(sentTaskId, quotes\);\s*\}\s*if \(!onSameTask\) return;\s*setDraft\(\(current\) => clearedIfSent\(current, text\)\);\s*if \(sameBinding\) pullSnapshot\(auxIdRef\.current\);/,
   'the composer clear must be task-gated (round-24 Major), only the snapshot pull binding-gated',
 );
 assert.match(auxChatPanel, /const sessionIdRef = useRef\(sessionId\);/);
 // The aux composer caps input like the main one (round-20 minor-7): drafts
 // persist per task, so an unbounded paste would live in memory indefinitely.
 assert.match(auxChatPanel, /constrainChatInput\(event\.target\.value\)\.text/);
-assert.match(auxChatPanel, /setDraft\(\(current\) => \(current\.trim\(\) === text \? '' : current\)\)/);
+assert.match(auxChatPanel, /setDraft\(\(current\) => clearedIfSent\(current, text\)\)/);
+assert.match(auxChatPanel, /const clearedIfSent = \(current, text\) => \(current\.trim\(\) === text \? '' : current\);/);
 assert.doesNotMatch(restartBlock, /setDraft\(''\)/);
 // Aux timeline scroll (round-20 minor-6): mirror the main conversation's
 // autoScrollRef pattern — a scroll listener derives the follow flag through
@@ -537,7 +556,7 @@ assert.match(auxChatPanel, /if \(el && autoScrollRef\.current\) el\.scrollTop = 
 // message as an inline userselect block; a quote-only send is allowed.
 assert.match(auxChatPanel, /const quoteBlock = buildAuxQuoteBlock\(quotes\);/);
 assert.match(auxChatPanel, /const sendPromise = auxChat\.send\(sentAuxId, quoteBlock \? text \+ quoteBlock : text\);/);
-assert.match(auxChatPanel, /\(!text && !quoteBlock\)/);
+assert.match(auxChatPanel, /!hasSendContent\(text, quoteBlock\)/);
 assert.match(auxChatPanel, /subscribeAuxQuotes\(sessionId/);
 assert.match(auxChatPanel, /data-testid="aux-quote-chips"/);
 assert.match(auxChatPanel, /data-testid="aux-quote-remove"/);
@@ -556,7 +575,7 @@ assert.match(auxChatPanel, /disabled=\{composerDisabled \|\| \(!draft\.trim\(\) 
 assert.match(auxChatPanel, /const sentTaskId = sessionId;/);
 assert.match(
   auxChatPanel,
-  /if \(sendInFlightByTask\.get\(sentTaskId\) !== sendPromise\) return;\s*if \(sessionIdRef\.current !== sentTaskId\s*\|\| \(restartEpochByTask\.get\(sentTaskId\) \|\| 0\) !== sentEpoch\) return;\s*setSendFailed\(true\);/,
+  /if \(sendInFlightByTask\.get\(sentTaskId\) !== sendPromise\s*\|\| \(restartEpochByTask\.get\(sentTaskId\) \|\| 0\) !== sentEpoch\s*\|\| sessionIdRef\.current !== sentTaskId\) return;\s*setSendFailed\(true\);/,
   'the failure banner must be gated on registry identity (round-24 minor-9), the displayed task and the restart epoch (round-24 minor-8)',
 );
 // The latch release on the failure path stays scoped to the binding that
@@ -577,7 +596,7 @@ const restartingClears = restartBlock.match(/setRestarting\(false\)/g) || [];
 assert.equal(restartingClears.length, 2, 'restarting must be cleared only in the outer finally and the settle-watchdog');
 const outerTry = restartBlock.indexOf('try {');
 const discardAwait = restartBlock.indexOf('await discardPromise;');
-const ensureAwait = restartBlock.indexOf('await auxChat.ensure');
+const ensureAwait = restartBlock.indexOf('await withSettleBound(auxChat.ensure');
 const restartingClearIdx = restartBlock.lastIndexOf('setRestarting(false)');
 const finallyClause = restartBlock.lastIndexOf('} finally {', restartingClearIdx);
 assert.ok(
@@ -596,7 +615,7 @@ assert.match(restartBlock.slice(finallyClause), /} finally \{[\s\S]*?if \(genera
 // banner. The latch releases when turn_started marks the snapshot busy; the
 // failure path releases it directly (a failed dispatch never reaches
 // turn_started, and a retry must stay possible).
-assert.match(auxChatPanel, /if \(!auxChat \|\| !sentAuxId \|\| \(!text && !quoteBlock\) \|\| busy \|\| restarting \|\| sendingRef\.current\) return;/);
+assert.match(auxChatPanel, /if \(!auxChat \|\| !sentAuxId \|\| !hasSendContent\(text, quoteBlock\) \|\| busy \|\| restarting \|\| sendingRef\.current\) return;/);
 assert.match(auxChatPanel, /sendingRef\.current = true;\s*setSending\(true\);[\s\S]*?const sendPromise = auxChat\.send\(sentAuxId, quoteBlock \? text \+ quoteBlock : text\);[\s\S]*?await sendPromise;/);
 assert.match(auxChatPanel, /if \(!sending \|\| !busy\) return;\s*sendingRef\.current = false;/);
 assert.match(auxChatPanel, /if \(event\.repeat\) return;/);
@@ -635,7 +654,7 @@ assert.ok(
   'handleSend finally anchors must resolve (a vacuous slice would pass trivially)',
 );
 const sendFinallyBlock = auxChatPanel.slice(sendFinallyStart, sendFinallyEnd);
-assert.match(sendFinallyBlock, /sendInFlightByTask\.delete\(sentTaskId\);/);
+assert.match(sendFinallyBlock, /removeSendIfOwner\(sentTaskId, sendPromise\);/);
 assert.doesNotMatch(sendFinallyBlock, /sendingRef\.current = false;/);
 assert.doesNotMatch(sendFinallyBlock, /setSending\(false\);/);
 // Task-keyed in-flight send registry (round-15 MAJOR-2): the rebind effect
@@ -649,7 +668,8 @@ assert.doesNotMatch(sendFinallyBlock, /setSending\(false\);/);
 assert.match(auxChatPanel, /const sendInFlightByTask = new Map\(\);/);
 assert.match(auxChatPanel, /if \(sendInFlightByTask\.has\(sentTaskId\)\) return;/);
 assert.match(auxChatPanel, /sendInFlightByTask\.set\(sentTaskId, sendPromise\);/);
-assert.match(auxChatPanel, /finally \{[\s\S]{0,700}?if \(sendInFlightByTask\.get\(sentTaskId\) === sendPromise\) \{\s*sendInFlightByTask\.delete\(sentTaskId\);\s*\}/);
+assert.match(auxChatPanel, /finally \{[\s\S]{0,700}?removeSendIfOwner\(sentTaskId, sendPromise\);/);
+assert.match(auxChatPanel, /const removeSendIfOwner = \(taskId, sendPromise\) => \{\s*if \(sendInFlightByTask\.get\(taskId\) === sendPromise\) sendInFlightByTask\.delete\(taskId\);\s*\};/);
 // Send-latch failsafe (round-23 should-fix 1): the busy-gated release only
 // fires if a render observes busy=true — turn_started and the turn-terminal
 // events coalescing into one render batch (fast-failing turns, relay bursts)
@@ -660,8 +680,12 @@ assert.match(auxChatPanel, /finally \{[\s\S]{0,700}?if \(sendInFlightByTask\.get
 assert.match(auxChatPanel, /const SEND_WATCHDOG_MS = 180_000;/);
 assert.match(
   auxChatPanel,
-  /const sendWatchdog = setTimeout\(\(\) => \{\s*if \(sendInFlightByTask\.get\(sentTaskId\) !== sendPromise\) return;\s*sendingRef\.current = false;\s*setSending\(false\);\s*sendInFlightByTask\.delete\(sentTaskId\);\s*\}, SEND_WATCHDOG_MS\);/,
-  'the send watchdog must release the latch and the registry entry by promise identity',
+  /const armSendWatchdog = \(taskId, sendPromise, onFailsafe\) => setTimeout\(\(\) => \{\s*if \(sendInFlightByTask\.get\(taskId\) !== sendPromise\) return;\s*sendInFlightByTask\.delete\(taskId\);\s*onFailsafe\(\);\s*\}, SEND_WATCHDOG_MS\);/,
+  'the send watchdog must release the registry entry by promise identity and hand the latch release to the owner',
+);
+assert.match(
+  auxChatPanel,
+  /const sendWatchdog = armSendWatchdog\(sentTaskId, sendPromise, \(\) => \{\s*sendingRef\.current = false;\s*setSending\(false\);\s*\}\);/,
 );
 assert.match(
   auxChatPanel,
@@ -674,8 +698,84 @@ assert.match(
 // round-22 discardStuck banner clears on the same entry (the confirmed
 // restart is the recovery it asks for).
 assert.match(restartBlock, /setRestarting\(true\);\s*setDiscardFailed\(false\);[\s\S]{0,300}setDiscardStuck\(false\);[\s\S]{0,500}setSendFailed\(false\);/);
+// Round-25 (fresh re-review): the ack-consumption boundary must consult only
+// module state, and transitions that run on a dead instance must reach the
+// mounted one.
+// MAJOR-24-1: the epoch is module-scoped and consulted unconditionally — the
+// per-instance sameBinding/onSameTask refs freeze on close/reopen and a
+// frozen auxIdRef used to short-circuit the skip, deleting a restart's
+// preserved recovery draft.
+assert.match(
+  auxChatPanel,
+  /const restartKeptDraft = \(taskId, sentEpoch\) => \{\s*if \(\(restartEpochByTask\.get\(taskId\) \|\| 0\) === sentEpoch\) return false;\s*return !restartDiscardFailedByTask\.delete\(taskId\);\s*\};/,
+  'the keep-draft decision must consult module state only (epoch first, single-shot failed-restart survival marker falling through)',
+);
+assert.match(
+  auxChatPanel,
+  /const onSameTask = sessionIdRef\.current === sentTaskId;\s*if \(restartKeptDraft\(sentTaskId, sentEpoch\)\) return;/,
+  'the ack must call the module-state keep-draft decision unconditionally (round-25 MAJOR-24-1)',
+);
+// MAJOR-24-3: the survival marker is set by the failed-discard restore
+// (generation-gated), and the restore consumes the delivered draft itself
+// when no ack is pending — precisely, only while the stored draft still
+// equals the recorded sent text.
+assert.match(
+  restartBlock,
+  /pullSnapshot\(restoredAuxId\);[\s\S]{0,300}?restartDiscardFailedByTask\.add\(sessionId\);\s*consumeDeliveredDraftAfterFailedRestart\(sessionId\);/,
+  'the failed-discard restore must mark survival and run the delivered-draft fixup',
+);
+assert.match(
+  auxChatPanel,
+  /const consumeDeliveredDraftAfterFailedRestart = \(sessionId\) => \{\s*if \(sendInFlightByTask\.has\(sessionId\)\) return;\s*const sentText = sentTextByTask\.get\(sessionId\);\s*const storedDraft = draftByTask\.get\(sessionId\);\s*if \(sentText !== undefined && storedDraft !== undefined\s*&& storedDraft\.trim\(\) === sentText\.trim\(\)\) \{\s*deleteDraftAndNotify\(sessionId\);\s*\}/,
+  'the fixup consumes the delivered draft precisely (stored still equals the recorded sent text) only when no ack is pending',
+);
+// The sent text is recorded at dispatch (for the restore fixup) and cleared
+// on failure (a failed dispatch delivered nothing).
+assert.match(auxChatPanel, /sendInFlightByTask\.set\(sentTaskId, sendPromise\);\s*[\s\S]{0,400}?sentTextByTask\.set\(sentTaskId, text\);/);
+assert.match(auxChatPanel, /console\.warn\('\[pinvou3\]\[aux-chat\] send failed', error\);\s*[\s\S]{0,300}?sentTextByTask\.delete\(sentTaskId\);/);
+// MAJOR-24-2: the ack's store-map consumption notifies the mounted panel, and
+// the panel follows draft-store deletions (the composer was restored from the
+// consumed entry).
+assert.match(
+  auxChatPanel,
+  /const deleteDraftAndNotify = \(taskId\) => \{\s*draftByTask\.delete\(taskId\);\s*notifyTaskListeners\(draftDeleteListenersByTask, taskId\);\s*\};/,
+  'a store-map deletion must notify the mounted panel (the ack may settle on a dead instance)',
+);
+assert.match(
+  auxChatPanel,
+  /subscribeTaskListeners\(draftDeleteListenersByTask, sessionId, \(\) => \{\s*if \(sessionIdRef\.current !== sessionId\) return;\s*[\s\S]{0,200}?setDraft\(''\);/,
+  'the panel must follow draft-store deletions with a live-task gate',
+);
+// Should-fix-24-2: stuck-marker transitions notify the mounted panel — the
+// watchdog can fire, or a pending discard settle, behind a close/reopen.
+assert.match(auxChatPanel, /discardStuckByTask\.add\(sessionId\);\s*[\s\S]{0,400}?notifyTaskListeners\(discardStuckListenersByTask, sessionId\);/);
+assert.match(
+  auxChatPanel,
+  /discardStuckByTask\.delete\(sessionId\)\) \{\s*[\s\S]{0,400}?notifyTaskListeners\(discardStuckListenersByTask, sessionId\);/,
+  'the settle path must notify the marker removal so whichever instance is mounted re-mirrors it with the live-task gate',
+);
+assert.match(
+  auxChatPanel,
+  /subscribeTaskListeners\(discardStuckListenersByTask, sessionId, \(\) => \{\s*if \(sessionIdRef\.current !== sessionId\) return;\s*const stuck = discardStuckByTask\.has\(sessionId\);\s*[\s\S]{0,300}?setDiscardStuck\(stuck\);\s*if \(stuck\) \{\s*setRestarting\(false\);\s*setBindingPending\(false\);/,
+  'the stuck-notify listener must re-mirror the marker and apply the watchdog latch releases',
+);
+// Round-25 minor: both restart-stage ensures carry the same settle bound as
+// the registries; a hung ensure must not latch restarting forever.
+assert.match(auxChatPanel, /const ENSURE_WATCHDOG_MS = 180_000;/);
+assert.equal(
+  (auxChatPanel.match(/await withSettleBound\(auxChat\.ensure\(sessionId\)\)/g) || []).length,
+  2,
+  'both restart-stage ensures (failed-discard restore and recreate) must be settle-bound',
+);
+// Round-25 minor: a discard rejection awaited across a task round trip must
+// surface discardFailed on the rebind instead of silently re-binding the old
+// transcript (the restart catch is generation-gated and can no longer see it).
+assert.match(
+  auxChatPanel,
+  /pendingDiscard\.then\(ensureAfterDiscard, \(error\) => \{[\s\S]{0,400}?setDiscardFailed\(true\);\s*ensureAfterDiscard\(\);\s*\}\);/,
+  'the rebind must surface an awaited-discard rejection instead of silently keeping the old transcript',
+);
 assert.match(source('features/pet/PetSettingsSection.jsx'), /t\.uiPetSettings/);
-const conversation = source('features/conversation/ConversationTimeline.jsx');
 assert.match(conversation, /conversationCopy\(copy\)/);
 assert.doesNotMatch(conversation, />等待授权</);
 // Aux quote chips ("划词引用") in the user bubble: the aux projection strips
@@ -687,7 +787,6 @@ assert.match(conversation, /const userQuotes = Array\.isArray\(turn\.userQuotes\
 assert.match(conversation, /turn\.userText \|\| userAttachments\.length \|\| userQuotes\.length/);
 assert.match(conversation, /userQuotes\.map\(\(quote, index\)/);
 assert.match(conversation, /data-testid="conversation-user-quote"/);
-const codex = source('features/codex/CodexAcpView.jsx');
 assert.match(codex, /const codexCopy = t\.uiCodex/);
 assert.match(codex, /copy=\{t\.uiConversation\}/);
 assert.match(codex, /copy=\{t\.uiCodexWorkspace\}/);
@@ -703,7 +802,11 @@ assert.match(codex, /\{activeSession && isNativeAgent && bridge\.available && br
 // sessionId suppresses the popover entirely) and the panel mount (switching
 // to an external-ACP agent must unmount the open panel, not rebind it).
 assert.match(codex, /sessionId=\{activeSession && isNativeAgent && bridge\.available && bridge\.auxChat \? activeSession\.id : null\}/);
-assert.match(codex, /\{auxChatPanel && activeSession && isNativeAgent && \(/);
+assert.match(codex, /\{auxChatPanel && activeSession && isNativeAgent && bridge\.available && bridge\.auxChat && \(/);
+// The dock-highlight reset effect must gate on the SAME condition (round-25
+// minor consistency note): a gate drift would leave the highlight latched
+// when the panel unmounts through the bridge conjuncts.
+assert.match(codex, /if \(auxChatPanel && activeSession && isNativeAgent && bridge\.available && bridge\.auxChat\) return;/);
 assert.match(codex, /<AuxChatPanel/);
 const workspace = source('features/codex/CodexWorkspacePanel.jsx');
 assert.match(workspace, /\{copy\.title\}/);

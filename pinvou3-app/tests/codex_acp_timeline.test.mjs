@@ -953,7 +953,7 @@ try {
     codexView.indexOf('const closeAuxChatPanel'),
   );
   assert.ok(codexView.includes("import { AuxChatPanel } from '../aux-chat/AuxChatPanel.jsx';")
-    && codexView.includes('{auxChatPanel && activeSession && isNativeAgent && (')
+    && codexView.includes('{auxChatPanel && activeSession && isNativeAgent && bridge.available && bridge.auxChat && (')
     && !codexView.includes('{auxChatPanel && activeSession && (')
     && codexView.includes('activeSession && isNativeAgent && bridge.available && bridge.auxChat ? activeSession.id : null')
     && codexView.includes('activationKey={auxChatPanel.openTick}')

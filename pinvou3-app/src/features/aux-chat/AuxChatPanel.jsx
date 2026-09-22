@@ -51,6 +51,23 @@ const DISCARD_WATCHDOG_MS = 180_000;
 // the send registry forever either.
 const SEND_WATCHDOG_MS = 180_000;
 
+// Same bound for the two restart-stage ensures (round-25 minor): a hung
+// ensure would otherwise latch restarting/bindingPending on the current task
+// forever — a rebind or unmount recovers, but New Topic (the only in-panel
+// recovery) is disabled while restarting. A timed-out ensure surfaces as the
+// ensure-failure state (whose copy points at New Topic, re-enabled by the
+// outer finally); the late resolution stays inert behind the generation
+// checks.
+const ENSURE_WATCHDOG_MS = 180_000;
+
+const withSettleBound = (promise) => new Promise((resolve, reject) => {
+  const timer = setTimeout(() => reject(new Error('ensure settle bound exceeded')), ENSURE_WATCHDOG_MS);
+  promise.then(
+    (value) => { clearTimeout(timer); resolve(value); },
+    (error) => { clearTimeout(timer); reject(error); },
+  );
+});
+
 // taskId -> pending discard promise, module-scoped on purpose: the discard it
 // tracks is backend-scoped (the turn gate can hold it for seconds), while the
 // panel unmounts on close and on sched- session switches. A component-level
@@ -102,6 +119,119 @@ const sendInFlightByTask = new Map();
 // ordering inside and after the restart window reads "restarted"; the count
 // survives rebinds, closes and remounts that a component-level flag could not.
 const restartEpochByTask = new Map();
+
+// taskId -> the exact text captured at the last dispatch, module-scoped with
+// the registries: the failed-discard restore fixup (round-25 MAJOR-24-3)
+// needs the sent text to consume the delivered draft precisely, and the
+// restore can run after the ack has already settled — when the text is not
+// otherwise available. Overwritten by the next dispatch on the same task;
+// joins the registered per-task map sweep.
+const sentTextByTask = new Map();
+
+// taskId set marking that the task's LATEST restart failed its discard and
+// restored the SAME live aux session (round-25 MAJOR-24-3): the keep-draft
+// premise "the delivery was destroyed with the discarded transcript" is then
+// false, and an ack settling under this marker must fall through to normal
+// consumption. Set when the failed-discard restore re-binds, cleared at
+// restart entry (a fresh discard destroys the transcript unless it fails
+// again) and single-shot when an ack consumes under it.
+const restartDiscardFailedByTask = new Set();
+
+// taskId -> listener sets for the two module-state transitions a mounted
+// panel must follow but that can originate on a DEAD instance (the panel was
+// closed and remounted while the transition ran — round-25 MAJOR-24-2 and
+// should-fix-24-2): draft-store deletions (an ack consuming the entry the
+// mounted composer was restored from) and stuck-marker changes (a watchdog
+// firing, or a pending discard settling, behind the remount). Listeners are
+// registered while mounted and removed by the effect cleanup, so a dead
+// instance never holds one; each listener re-checks the live task mirror
+// before touching state.
+const draftDeleteListenersByTask = new Map();
+const discardStuckListenersByTask = new Map();
+
+const notifyTaskListeners = (listenersByTask, taskId) => {
+  const listeners = listenersByTask.get(taskId);
+  // Iterating the Set directly is deliberate: a listener unsubscribing
+  // mid-notify (effect cleanup) is skipped for the remaining visits, which
+  // is exactly the semantics an unmounted instance needs.
+  if (listeners) for (const listener of listeners) listener();
+};
+
+const subscribeTaskListeners = (listenersByTask, taskId, listener) => {
+  let listeners = listenersByTask.get(taskId);
+  if (!listeners) {
+    listeners = new Set();
+    listenersByTask.set(taskId, listeners);
+  }
+  listeners.add(listener);
+  return () => {
+    listeners.delete(listener);
+    if (listeners.size === 0) listenersByTask.delete(taskId);
+  };
+};
+
+const deleteDraftAndNotify = (taskId) => {
+  draftByTask.delete(taskId);
+  notifyTaskListeners(draftDeleteListenersByTask, taskId);
+};
+
+// The keep-draft decision of a send ack, module state only (round-25
+// MAJOR-24-1): "a restart was initiated for this task since the dispatch".
+// The single-shot survival marker (round-25 MAJOR-24-3) falls an ack through
+// when the restart's discard failed and the same live transcript was
+// restored — there the delivery survived and the draft must consume.
+const restartKeptDraft = (taskId, sentEpoch) => {
+  if ((restartEpochByTask.get(taskId) || 0) === sentEpoch) return false;
+  return !restartDiscardFailedByTask.delete(taskId);
+};
+
+// Consume what the delivered send owned: the stored draft only when it still
+// equals the sent text (typing since belongs to the next message), with the
+// deletion broadcast to any mounted panel (round-25 MAJOR-24-2).
+const consumeSentDraft = (taskId, text) => {
+  const storedDraft = draftByTask.get(taskId);
+  if (storedDraft !== undefined && storedDraft.trim() !== text) return;
+  deleteDraftAndNotify(taskId);
+};
+
+// A quote-only send is valid — the excerpts alone are the question — so the
+// dispatch needs either text or a captured quote block.
+const hasSendContent = (text, quoteBlock) => Boolean(text || quoteBlock);
+
+// The visible composer clear only eats text that still equals the delivered
+// message; anything typed since the dispatch belongs to the next one.
+const clearedIfSent = (current, text) => (current.trim() === text ? '' : current);
+
+// The failed-discard restore fixup (round-25 MAJOR-24-3): with no ack
+// pending there is no later classification, so the delivered draft is
+// consumed here — precisely, only while the stored draft still equals the
+// recorded sent text (typing between the dispatch and the restart entry
+// belongs to the next message). Quotes staged mid-flight were never
+// captured by the send and stay; a hung ack's captured quotes remain until
+// its watchdog releases (same 180 s bound residual class as the stuck
+// machinery).
+const consumeDeliveredDraftAfterFailedRestart = (sessionId) => {
+  if (sendInFlightByTask.has(sessionId)) return;
+  const sentText = sentTextByTask.get(sessionId);
+  const storedDraft = draftByTask.get(sessionId);
+  if (sentText !== undefined && storedDraft !== undefined
+    && storedDraft.trim() === sentText.trim()) {
+    deleteDraftAndNotify(sessionId);
+  }
+};
+
+// Registry ownership helpers: a send's entry may only be removed by the
+// exact send that registered it (promise identity) — a stale settle must not
+// resurrect or double-clear anything (round-15 MAJOR-2, round-24 minor-9).
+const removeSendIfOwner = (taskId, sendPromise) => {
+  if (sendInFlightByTask.get(taskId) === sendPromise) sendInFlightByTask.delete(taskId);
+};
+
+const armSendWatchdog = (taskId, sendPromise, onFailsafe) => setTimeout(() => {
+  if (sendInFlightByTask.get(taskId) !== sendPromise) return;
+  sendInFlightByTask.delete(taskId);
+  onFailsafe();
+}, SEND_WATCHDOG_MS);
 
 // taskId -> unsent composer draft, module-scoped for the same reason as the
 // discard registry above: a draft belongs to the task, not to this instance,
@@ -220,8 +350,9 @@ export function AuxChatPanel({ sessionId, activationKey, t, theme, onClose, onAc
     // the old mapping is still live — an ensure issued now would idempotently
     // return the doomed aux session, which the discard then deletes behind
     // the panel's back, leaving a dead binding. Await the in-flight promise
-    // (errors surface on the restart path) and re-check the generation so a
-    // further rebind during the wait aborts this ensure entirely. A stuck
+    // (rejections surface below and on the restart path) and re-check the
+    // generation so a further rebind during the wait aborts this ensure
+    // entirely. A stuck
     // entry (round-22 Major: its settle-watchdog fired, so it may never
     // settle) is neither awaited nor ensured at all (round-23 MAJOR-2): the
     // orphaned discard command can still execute server-side against the
@@ -256,7 +387,18 @@ export function AuxChatPanel({ sessionId, activationKey, t, theme, onClose, onAc
       // disabled behind the null binding until New Topic recovers.
       setBindingPending(false);
     } else if (pendingDiscard) {
-      pendingDiscard.then(ensureAfterDiscard, ensureAfterDiscard);
+      pendingDiscard.then(ensureAfterDiscard, (error) => {
+        // The awaited discard was issued by a restart that may have run on
+        // another instance whose catch is generation-gated — after a task
+        // round trip that catch returns silently (round-25 minor), and this
+        // rebind would then re-bind the SURVIVING old transcript with no
+        // word that the requested new topic failed. Surface discardFailed
+        // here too: the copy (current topic still usable, New Topic can be
+        // retried) is exactly the state this rejection leaves behind.
+        console.warn('[pinvou3][aux-chat] awaited discard failed on rebind', error);
+        if (!disposed && generationRef.current === generation) setDiscardFailed(true);
+        ensureAfterDiscard();
+      });
     } else {
       ensureAfterDiscard();
     }
@@ -284,6 +426,43 @@ export function AuxChatPanel({ sessionId, activationKey, t, theme, onClose, onAc
     setQuotes(getAuxQuotes(sessionId));
     return subscribeAuxQuotes(sessionId, (next) => {
       setQuotes(next.map((quote) => ({ text: quote.text })));
+    });
+  }, [sessionId]);
+
+  // Follow draft-store deletions made by another instance (a send ack that
+  // settled on a dead instance after close/reopen — round-25 MAJOR-24-2):
+  // the composer was restored from the entry the ack consumed, so without
+  // this mirror it keeps a delivered message staged for a duplicate send.
+  // The delete only fires when the stored draft still equals the sent text,
+  // and typing since would have re-populated the store before the ack's
+  // delete check, so the clear never eats newer text (the composer mirrors
+  // the store through onChange on the instance that owns it).
+  useEffect(() => {
+    if (!sessionId) return;
+    return subscribeTaskListeners(draftDeleteListenersByTask, sessionId, () => {
+      if (sessionIdRef.current !== sessionId) return;
+      setDraft('');
+    });
+  }, [sessionId]);
+
+  // Re-mirror the task's stuck marker on module-state transitions (round-25
+  // should-fix-24-2): the settle-watchdog can fire, or a pending discard can
+  // settle, while this panel was closed and remounted — the transition then
+  // runs on the dead instance (whose state writes are lost) and the
+  // remounted panel would sit in the eternal "preparing" state with no
+  // banner until a task switch. Transitions notify this listener, which
+  // re-mirrors the marker and, on stuck, applies the watchdog's latch
+  // releases the dead instance could no longer deliver.
+  useEffect(() => {
+    if (!sessionId) return;
+    return subscribeTaskListeners(discardStuckListenersByTask, sessionId, () => {
+      if (sessionIdRef.current !== sessionId) return;
+      const stuck = discardStuckByTask.has(sessionId);
+      setDiscardStuck(stuck);
+      if (stuck) {
+        setRestarting(false);
+        setBindingPending(false);
+      }
     });
   }, [sessionId]);
 
@@ -401,7 +580,7 @@ export function AuxChatPanel({ sessionId, activationKey, t, theme, onClose, onAc
     // initiated for this task since this dispatch", not binding equality
     // (round-23 MAJOR-4).
     const sentEpoch = restartEpochByTask.get(sentTaskId) || 0;
-    if (!auxChat || !sentAuxId || (!text && !quoteBlock) || busy || restarting || sendingRef.current) return;
+    if (!auxChat || !sentAuxId || !hasSendContent(text, quoteBlock) || busy || restarting || sendingRef.current) return;
     // The registry is the guard that survives rebinds: the rebind effect
     // resets sendingRef on every task switch, so a switch away and back while
     // this send is still in flight would otherwise re-open the duplicate-send
@@ -418,6 +597,12 @@ export function AuxChatPanel({ sessionId, activationKey, t, theme, onClose, onAc
     setSendFailed(false);
     const sendPromise = auxChat.send(sentAuxId, quoteBlock ? text + quoteBlock : text);
     sendInFlightByTask.set(sentTaskId, sendPromise);
+    // Record the exact sent text for the failed-discard restore fixup
+    // (round-25 MAJOR-24-3): the restore can run after this ack already
+    // settled, so the delivered text must be recoverable without the closure.
+    // Overwritten by the next dispatch; a failed send clears it below (a
+    // failed dispatch delivered nothing).
+    sentTextByTask.set(sentTaskId, text);
     // Send-latch failsafe (round-23 should-fix 1), the send-side twin of the
     // discard watchdog: the busy-gated latch release above the timeline only
     // fires if a render observes busy=true — when turn_started and the
@@ -428,12 +613,10 @@ export function AuxChatPanel({ sessionId, activationKey, t, theme, onClose, onAc
     // a still-running turn makes the next dispatch surface the backend's
     // honest busy rejection, a finished one just un-deads the composer; New
     // Topic remains the recovery for the never-settling invoke itself.
-    const sendWatchdog = setTimeout(() => {
-      if (sendInFlightByTask.get(sentTaskId) !== sendPromise) return;
+    const sendWatchdog = armSendWatchdog(sentTaskId, sendPromise, () => {
       sendingRef.current = false;
       setSending(false);
-      sendInFlightByTask.delete(sentTaskId);
-    }, SEND_WATCHDOG_MS);
+    });
     try {
       await sendPromise;
       // Same binding (aux ids are 1:1 with tasks and ensure is idempotent):
@@ -448,27 +631,22 @@ export function AuxChatPanel({ sessionId, activationKey, t, theme, onClose, onAc
       const sameBinding = auxIdRef.current === sentAuxId;
       const onSameTask = sessionIdRef.current === sentTaskId;
       // The keep-draft skip is the restart case only, keyed on the restart
-      // epoch captured at dispatch — binding equality alone cannot tell the
-      // restart window (transcript destroyed, the draft stays as recovery
-      // material) from a same-task rebind's transient null binding: inside
-      // the rebind window the delivery has landed in the still-live transcript
-      // the rebind re-ensures, and skipping here kept a draft the rebind's
-      // restore re-filled into the composer for a duplicate send (round-23
-      // MAJOR-4). The epoch is bumped in the synchronous restart-entry block
-      // before the discard is issued, so every ack ordering inside and after
-      // the restart window reads "restarted", and the count survives rebinds
-      // and remounts.
-      if (!sameBinding && onSameTask
-        && (restartEpochByTask.get(sentTaskId) || 0) !== sentEpoch) return;
+      // epoch captured at dispatch — and consulted UNCONDITIONALLY via the
+      // module-state helper (round-25 MAJOR-24-1): the epoch is module-
+      // scoped exactly because it must survive rebinds, closes and remounts,
+      // while sameBinding/onSameTask read per-instance refs that a
+      // close/reopen freezes at their last values — a frozen
+      // auxIdRef.current === sentAuxId read as sameBinding true on the dead
+      // instance and short-circuited this skip, so the ack deleted the draft
+      // a restart had deliberately preserved as recovery material. Binding
+      // equality stays meaningful only for the visible half below.
+      if (restartKeptDraft(sentTaskId, sentEpoch)) return;
       if (sentTaskId) {
         // Consume only what was actually sent: text typed after this send
         // started belongs to the next message, and quotes staged from the
         // main view during the in-flight window survive the success
         // callback (they were not part of the captured quote block).
-        const storedDraft = draftByTask.get(sentTaskId);
-        if (storedDraft === undefined || storedDraft.trim() === text) {
-          draftByTask.delete(sentTaskId);
-        }
+        consumeSentDraft(sentTaskId, text);
         dropAuxQuotes(sentTaskId, quotes);
       }
       // The visible composer clear is task-gated, not binding-gated (round-24
@@ -482,27 +660,30 @@ export function AuxChatPanel({ sessionId, activationKey, t, theme, onClose, onAc
       // mid-ensure: the functional check never touches text typed since, and
       // a panel showing another task keeps its own draft untouched.
       if (!onSameTask) return;
-      setDraft((current) => (current.trim() === text ? '' : current));
+      setDraft((current) => clearedIfSent(current, text));
       // The snapshot pull needs a live binding; inside the rebind window the
       // ensure resolution pulls the fresh snapshot instead.
       if (sameBinding) pullSnapshot(auxIdRef.current);
     } catch (error) {
       console.warn('[pinvou3][aux-chat] send failed', error);
+      // A failed dispatch delivered nothing — the failed-discard restore
+      // fixup must not treat this text as delivered (round-25 MAJOR-24-3).
+      sentTextByTask.delete(sentTaskId);
       // Superseded outcomes must not manage newer state (round-24 minor-9):
       // a rejection settling after the watchdog fired (or a restart entry)
       // released this entry means either a newer send owns the latch — a
       // stale release would re-open the duplicate-send window — or the
       // outcome is long-stale; both stay silent, mirroring the identity
       // checks the watchdog and the finally already apply.
-      if (sendInFlightByTask.get(sentTaskId) !== sendPromise) return;
       // A plain rebind round trip (A→B→A, no restart) must still surface the
       // failure banner: the dispatch genuinely rejected and the panel is back
       // on this task — the old generation gate silenced that banner too
       // (round-24 minor-8). The restart case stays silent: the restart-entry
       // flow owns the panel state and keeps the draft as recovery material
       // (a "retry send" banner would contradict the restart's own copy).
-      if (sessionIdRef.current !== sentTaskId
-        || (restartEpochByTask.get(sentTaskId) || 0) !== sentEpoch) return;
+      if (sendInFlightByTask.get(sentTaskId) !== sendPromise
+        || (restartEpochByTask.get(sentTaskId) || 0) !== sentEpoch
+        || sessionIdRef.current !== sentTaskId) return;
       setSendFailed(true);
       // A failed dispatch never reaches turn_started, so the busy-gated latch
       // release above the timeline would never fire — release the latch here
@@ -525,9 +706,7 @@ export function AuxChatPanel({ sessionId, activationKey, t, theme, onClose, onAc
       // ack and turn_started still lags it by one event round trip, so
       // releasing now would re-open the duplicate-send window exactly where
       // the latch claims coverage.
-      if (sendInFlightByTask.get(sentTaskId) === sendPromise) {
-        sendInFlightByTask.delete(sentTaskId);
-      }
+      removeSendIfOwner(sentTaskId, sendPromise);
     }
   }, [auxChat, draft, quotes, busy, restarting, pullSnapshot, sessionId]);
 
@@ -608,15 +787,19 @@ export function AuxChatPanel({ sessionId, activationKey, t, theme, onClose, onAc
     // Enter would silently no-op behind a visually enabled composer.
     sendingRef.current = false;
     setSending(false);
-    // The module-scoped send registry needs the same recovery (round-16 B1):
-    // a never-settling invoke leaves its entry behind forever, and since the
-    // registry outlives rebinds by design, every later Enter on this task
-    // would silently no-op at the guard — and New Topic itself would not
-    // help, because the fresh aux session binds under the same task key.
-    // Deleting the entry here is safe: the late send's finally removes only
-    // the entry it registered (promise identity), so a stale settle cannot
-    // resurrect or double-clear anything.
-    sendInFlightByTask.delete(sessionId);
+    // The module-scoped send registry entry is deliberately KEPT through the
+    // restart now (round-25 MAJOR-24-3, reshaping the round-16 B1 clear):
+    // the round-23 SEND_WATCHDOG_MS failsafe provides the never-settling
+    // recovery the entry-delete served, and a pending ack surviving the
+    // restart is what lets the failed-discard restore classify the staged
+    // draft — deleting the entry here orphaned exactly that classification.
+    // While the entry stands, new sends on this task wait at the registry
+    // guard with the sending hint visible; the entry leaves through the
+    // send's own identity-checked finally or the watchdog, nothing else.
+    // The failed-restart marker, however, is cleared: this fresh discard
+    // destroys the transcript unless it fails again (re-set in the restore
+    // below), so a stale survival must not leak into the new restart window.
+    restartDiscardFailedByTask.delete(sessionId);
     // Null the binding at restart entry (round-18 B-1): a send settling inside
     // the discard window must read as the restart case — otherwise its
     // success continuation still sees the old aux id, consumes the draft and
@@ -668,6 +851,9 @@ export function AuxChatPanel({ sessionId, activationKey, t, theme, onClose, onAc
         // leaving it would let the N1 guard wave a third restart through
         // while this healthy discard is still in flight.
         discardStuckByTask.delete(sessionId);
+        // A remounted panel may still mirror the stale marker this re-arm
+        // replaces (round-25 should-fix-24-2); notify it alongside.
+        notifyTaskListeners(discardStuckListenersByTask, sessionId);
         // Settle-watchdog (round-22 Major): the send registry's B1 recovery
         // (clear the entry at restart entry) cannot apply here — deleting
         // the entry is the N1 race itself, because the orphaned discard can
@@ -684,6 +870,12 @@ export function AuxChatPanel({ sessionId, activationKey, t, theme, onClose, onAc
           // was still in flight; only mark while this discard still owns it.
           if (discardInFlightByTask.get(sessionId) !== discardPromise) return;
           discardStuckByTask.add(sessionId);
+          // The marker may have been added while the panel was closed and
+          // remounted (the watchdog then fires on the dead instance —
+          // round-25 should-fix-24-2): notify whichever instance is mounted
+          // now so the banner and the latch releases are not lost; the
+          // listener re-checks the live task mirror.
+          notifyTaskListeners(discardStuckListenersByTask, sessionId);
           // Surface the stuck state on the panel still showing this task,
           // keyed on the live task mirror — NOT on the generation (round-23
           // MAJOR-3): an A→B→A round-trip re-awaits the still-pending discard
@@ -716,11 +908,14 @@ export function AuxChatPanel({ sessionId, activationKey, t, theme, onClose, onAc
           // rebind effect re-mirrors the marker in both directions.
           const ownsEntry = discardInFlightByTask.get(sessionId) === discardPromise;
           if (ownsEntry) discardInFlightByTask.delete(sessionId);
-          if (
-            ownsEntry
-            && discardStuckByTask.delete(sessionId)
-            && sessionIdRef.current === sessionId
-          ) setDiscardStuck(false);
+          if (ownsEntry && discardStuckByTask.delete(sessionId)) {
+            // Mirror the removal onto whichever instance is mounted now —
+            // the settle can run on a dead instance after close/reopen
+            // (round-25 should-fix-24-2). The listener re-checks the live
+            // task mirror before touching state, which covers this
+            // instance's own banner clear too.
+            notifyTaskListeners(discardStuckListenersByTask, sessionId);
+          }
         }
       } catch (error) {
         console.warn('[pinvou3][aux-chat] restart discard failed', error);
@@ -736,11 +931,20 @@ export function AuxChatPanel({ sessionId, activationKey, t, theme, onClose, onAc
         if (generationRef.current !== generation) return;
         setDiscardFailed(true);
         try {
-          const restoredAuxId = await auxChat.ensure(sessionId);
+          const restoredAuxId = await withSettleBound(auxChat.ensure(sessionId));
           if (generationRef.current !== generation) return;
           auxIdRef.current = restoredAuxId;
           setAuxId(restoredAuxId);
           pullSnapshot(restoredAuxId);
+          // The discard failed, so this restore re-bound the SAME live
+          // transcript the pre-restart send was delivered into — the
+          // keep-draft premise ("the delivery was destroyed") no longer
+          // holds for an ack settling under the restart's changed epoch
+          // (round-25 MAJOR-24-3). The single-shot marker falls that ack
+          // through to normal consumption; with no ack pending, the
+          // delivered draft is consumed right here instead.
+          restartDiscardFailedByTask.add(sessionId);
+          consumeDeliveredDraftAfterFailedRestart(sessionId);
         } catch (restoreError) {
           console.warn('[pinvou3][aux-chat] restore after discard failure failed', restoreError);
           if (generationRef.current !== generation) return;
@@ -754,7 +958,7 @@ export function AuxChatPanel({ sessionId, activationKey, t, theme, onClose, onAc
       // refuses to bind it, but the record already landed on disk).
       if (generationRef.current !== generation) return;
       try {
-        const nextAuxId = await auxChat.ensure(sessionId);
+        const nextAuxId = await withSettleBound(auxChat.ensure(sessionId));
         if (generationRef.current !== generation) return;
         auxIdRef.current = nextAuxId;
         setAuxId(nextAuxId);
