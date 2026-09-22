@@ -101,9 +101,23 @@ function classifyRebindError(error, t) {
   return { kind: 'raw', message, reboundIds };
 }
 
+// Merge a roots-commit failure's moved ids into the post-busy carryover
+// (review #463 round-15 Major 1): UNION + dedupe with the previous list —
+// replacing would drop a still-busy carryover session from a prior run, and a
+// converged to-lane session can never re-enter rebound_session_ids (the
+// backend routes it to retry_evict_candidates only), so the final retry would
+// close the dialog "up to date" while its old-cwd runtime stays resident and
+// its next turn resurrects the vanished folder. The backend honors only the
+// intersection with its own retry population, so the union cannot widen the
+// eviction set.
+function mergeRebindCarryoverIds(previousIds, reboundIds) {
+  return [...new Set([...(previousIds || []), ...(reboundIds || [])])];
+}
+
 export {
   REBIND_MARKER_MESSAGE_KEYS,
   REBIND_OLD_ROOT_EXISTS,
   REBIND_SESSIONS_BUSY,
   classifyRebindError,
+  mergeRebindCarryoverIds,
 };

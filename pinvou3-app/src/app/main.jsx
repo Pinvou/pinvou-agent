@@ -25,7 +25,7 @@ import { groupSessionsWithProjects, resolveSessionProjectId, needsAddFolderConfi
 import { ProjectGroupHeader } from '../features/projects/ProjectGroupHeader.jsx';
 import { MoveToProjectDialog } from '../features/projects/MoveToProjectDialog.jsx';
 import { RebindFolderDialog } from '../features/projects/RebindFolderDialog.jsx';
-import { classifyRebindError } from '../features/projects/rebindErrors.js';
+import { classifyRebindError, mergeRebindCarryoverIds } from '../features/projects/rebindErrors.js';
 import { runSessionBatch } from '../shared/session-management.js';
 import { filterSessionsByTab, groupSessionsByLocalDate, sessionListComparator } from '../shared/session-list-pipeline.js';
 import { can, isWeb } from '../shared/platform.js';
@@ -2617,19 +2617,33 @@ const NAV_PREFETCH = {
           // of an already-rebound session is dropped (untouched this run,
           // carryover empty) and the dialog closes "up to date" with an
           // old-cwd runtime still resident.
+          // The suffix ids UNION with the previous carryover (review #463
+          // round-15 Major 1): replacing would drop a still-busy carryover
+          // session from a prior run — it can never re-enter
+          // rebound_session_ids (a converged to-lane session routes to
+          // retry_evict_candidates only), so the next retry would close the
+          // dialog "up to date" while its old-cwd runtime stays resident.
+          // The backend honors only the intersection with its own retry
+          // population, so the union cannot widen the eviction set.
           const carryoverPartial = (classified.reboundIds && classified.reboundIds.length > 0)
-            ? (prev) => ({
+            ? (prev) => {
                 // Full partial shape (the dialog reads failedIds.length
                 // unconditionally): the moved sessions are conservatively
                 // reported as post-busy — their runtime reclaim never ran on
                 // the error path, so "retry when idle" is the honest state.
-                rebound: 0,
-                failed: 0,
-                failedIds: [],
-                ...prev.partial,
-                postBusy: classified.reboundIds.length,
-                postBusyIds: classified.reboundIds,
-              })
+                const mergedIds = mergeRebindCarryoverIds(
+                  prev.partial && prev.partial.postBusyIds,
+                  classified.reboundIds,
+                );
+                return {
+                  rebound: 0,
+                  failed: 0,
+                  failedIds: [],
+                  ...prev.partial,
+                  postBusy: mergedIds.length,
+                  postBusyIds: mergedIds,
+                };
+              }
             : null;
           if (classified.kind === 'old-root-exists') {
             setRebindDraft(prev => prev && { ...prev, warnExisting: true, error: null });

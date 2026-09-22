@@ -3297,10 +3297,18 @@ impl AcpPool {
         let RebindEvictTake::Reclaimed(runtime) = taken else {
             // A session without a resident runtime (NoRuntime) has no pending
             // permission/elicitation to answer either, so only the Busy arm
-            // skips cleanup.
+            // skips cleanup. The lock-free `_with_bridge(_, None)` variants
+            // (review #463 round-15 SF-A): the map-lookup variants take an
+            // UNBOUNDED `sessions.lock()` — with a cold spawn holding that
+            // lock across its ready timeout, one NoRuntime candidate would
+            // stall the reclaim tail (and the process-wide rebind gate behind
+            // it) far past the documented ceiling; the session was absent at
+            // take time, so the lookup could only resolve None anyway.
             if matches!(taken, RebindEvictTake::NoRuntime) {
-                self.cancel_pending_permissions(session_id).await;
-                self.cancel_pending_elicitations(session_id).await;
+                self.cancel_pending_permissions_with_bridge(session_id, None)
+                    .await;
+                self.cancel_pending_elicitations_with_bridge(session_id, None)
+                    .await;
             }
             return matches!(taken, RebindEvictTake::NoRuntime);
         };

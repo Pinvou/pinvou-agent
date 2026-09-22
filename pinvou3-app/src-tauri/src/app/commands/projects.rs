@@ -44,11 +44,13 @@ fn emit_project_event(app: &AppHandle, event: &str, action: &str) {
     let _ = app.emit(event, serde_json::json!({ "action": action }));
 }
 
-/// 项目 root 的 wire 形态:路径 + 可用性(root 是否仍在磁盘上)。`available`
-/// 驱动侧栏"文件夹不可用·重新绑定"徽章:main.jsx 的 unavailableRoots 过滤
-/// 只认这个字段,缺失时 undefined 会把每个健康 root 都判成不可用、徽章常显
-/// (review #463 round-14 R3;main #566 删字段时该徽章 UI 尚未合入,其"前端
-/// 从未读取该字段"的删除依据自 rebind 落地起已不成立)。
+/// Wire shape of a project root: path + availability (whether the root is
+/// still on disk). `available` drives the sidebar's "Folder unavailable ·
+/// Rebind" badge — main.jsx's unavailableRoots filter reads exactly this
+/// field, and without it every healthy root classifies as unavailable and
+/// the badge renders unconditionally (review #463 round-14 R3; main #566
+/// removed the field before this PR's badge UI landed, and its "the
+/// frontend never reads it" rationale stopped being true at that point).
 #[derive(Debug, Clone, Serialize)]
 pub struct ProjectRootStatus {
     pub path: PathBuf,
@@ -640,6 +642,19 @@ pub async fn rebind_workspace_root(
     // reported as failed (hence also eviction candidates), and a rerun
     // converges them via the same on-disk scan.
     plain_lane_fence_rescan(&sessions, &from, &mut final_stale);
+    // Codex twin of the plain-lane rescan (review #463 round-15 disclosure
+    // gap): the lane's post-pass fence is a point-in-time read, so a codex
+    // session created+bound under `from` between that fence and this rescan
+    // was in no guard at all — the run would report success while a full
+    // binding still sits under `from` (no badge once `from` vanishes, no
+    // repair entry). The scan is owner-gated (round-15 SF-B), so deleted
+    // sessions cannot surface as failures here either. The residual window
+    // after this rescan matches the plain lane's disclosed one.
+    for (session_id, _) in acp_pool.agents().sessions_under_workspace(&from) {
+        if !final_stale.contains(&session_id) {
+            final_stale.push(session_id);
+        }
+    }
     // Stranded-index repair (review #463 round-10 Major 1): a divergence
     // repair whose persist failed leaves index@intermediate-target while the
     // sidecar sits on the run's real target, and that record matches NEITHER
@@ -666,11 +681,35 @@ pub async fn rebind_workspace_root(
         |session_id| acp_pool.agents().code_project_workspace(session_id),
         |session_id| acp_pool.agents().code_sidecar_workspace(session_id),
     );
+    let mut repaired_targets_folded: Vec<(String, PathBuf)> = Vec::new();
     if !stranded.is_empty() {
-        acp_pool
+        let repaired_ids = acp_pool
             .agents()
             .repair_stranded_index_records(&stranded)
             .map_err(|e| format!("rebind_workspace_root: {e:#}"))?;
+        // SF-C (review #463 round-15): the repair re-keys the index onto the
+        // sidecar's target, but the metadata loop computes its set_workspace
+        // targets from the scan-time snapshot — and the repaired session was
+        // admitted as a pure eviction candidate (metadata == surfaced path),
+        // so without this fold its metadata would stay divergent forever and
+        // the dialog's retry could never converge it (the repaired record
+        // matches neither prefix scan). Move the repaired ids into the
+        // metadata sync set with the sidecar's target verbatim — it predates
+        // this run's from→to geometry, so rebind_target_path cannot map it.
+        repaired_targets_folded = repaired_ids
+            .into_iter()
+            .filter_map(|repaired_id| {
+                stranded
+                    .iter()
+                    .find(|(sid, _)| *sid == repaired_id)
+                    .map(|(_, target)| (repaired_id, target.clone()))
+            })
+            .collect();
+        fold_repaired_index_targets(
+            &mut affected,
+            &mut retry_evict_candidates,
+            &repaired_targets_folded,
+        );
     }
     // Code-lane rebound set: only these consume workspace baselines, so the
     // recapture below is gated to them (#464 unify).
@@ -684,7 +723,12 @@ pub async fn rebind_workspace_root(
     for (session_id, bound_path) in
         metadata_rebind_targets(&affected, &prefix_outcome.affected, &plain_rebind.rebound).iter()
     {
-        let Some(new_path) = SessionAgentStore::rebind_target_path(bound_path, &from, &to_display)
+        // A session whose index the stranded repair just re-keyed carries the
+        // sidecar's target verbatim (SF-C): that path predates this run's
+        // from→to geometry, so the from/to translation cannot map it.
+        let repaired_target = repaired_index_target(&repaired_targets_folded, session_id);
+        let Some(new_path) = repaired_target
+            .or_else(|| SessionAgentStore::rebind_target_path(bound_path, &from, &to_display))
         else {
             continue;
         };
@@ -1323,6 +1367,33 @@ fn metadata_rebind_targets(
     targets
 }
 
+/// The repaired (sidecar-target) path for a session the stranded-index
+/// repair re-keyed this run, if any (review #463 round-15 SF-C).
+fn repaired_index_target(repaired: &[(String, PathBuf)], session_id: &str) -> Option<PathBuf> {
+    repaired
+        .iter()
+        .find(|(sid, _)| sid == session_id)
+        .map(|(_, target)| target.clone())
+}
+
+/// Fold the stranded-index repair's re-keyed targets into the metadata sync
+/// set (review #463 round-15 SF-C): repaired ids leave the eviction-only
+/// retry candidates (their metadata matched the surfaced path at scan time,
+/// which is exactly why the loop must still sync them onto the repaired
+/// index's target) and join `affected` with the sidecar's target verbatim.
+fn fold_repaired_index_targets(
+    affected: &mut Vec<(String, PathBuf)>,
+    retry_evict_candidates: &mut Vec<String>,
+    repaired: &[(String, PathBuf)],
+) {
+    for (repaired_id, target) in repaired {
+        retry_evict_candidates.retain(|sid| sid != repaired_id);
+        if !affected.iter().any(|(sid, _)| sid == repaired_id) {
+            affected.push((repaired_id.clone(), target.clone()));
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1341,10 +1412,11 @@ mod tests {
         assert!(object.contains_key("assignments"));
     }
 
-    /// 线缆形状锁(review #463 round-14 R3):侧栏的 unavailableRoots 过滤
-    /// (main.jsx)只认 `available` 字段——它从 wire 上消失时 undefined 会
-    /// 把每个健康 root 都判成不可用,"文件夹不可用·重新绑定"徽章常显。
-    /// 锁死字段存在性与 is_dir 语义(在=available,不在=不可用)。
+    /// Wire-shape lock (review #463 round-14 R3): the sidebar's
+    /// unavailableRoots filter (main.jsx) reads exactly the `available`
+    /// field — without it, undefined classifies every healthy root as
+    /// unavailable and the badge renders unconditionally. Pins the field's
+    /// presence and its is_dir semantics.
     #[test]
     fn project_root_status_wire_carries_available() {
         let unique = format!("pinvou3-root-status-{}", std::process::id());
@@ -1527,6 +1599,69 @@ mod tests {
             vec![("s".to_string(), PathBuf::from("/vault/beta"))],
             "a real disagreement is still re-keyed onto the surfaced path"
         );
+    }
+
+    /// Round-15 SF-D second half: the detector's call site must pass the
+    /// SIDECAR accessor — swapping it for code_project_workspace is verbatim
+    /// the round-14 R1 bug, and every detector test injects hand-written
+    /// closures, so only a wiring probe sees the swap.
+    #[test]
+    fn stranded_detection_is_wired_to_the_sidecar_accessor() {
+        let src = include_str!("projects.rs");
+        let start = src
+            .find("detect_stranded_index_records(&codex_to_lane_hits")
+            .expect("the detector call site must exist");
+        let window = &src[start..(start + 800).min(src.len())];
+        assert!(
+            window.contains("code_sidecar_workspace"),
+            "the detector must compare the index against the sidecar (R1)"
+        );
+    }
+
+    #[test]
+    fn repaired_index_targets_join_the_metadata_sync_set() {
+        // review #463 round-15 SF-C: the repaired session was admitted as an
+        // eviction-only candidate (metadata == surfaced path at scan time);
+        // the fold must move it into `affected` with the sidecar's target
+        // verbatim and out of retry_evict_candidates, or its metadata stays
+        // divergent forever and no retry converges it. The metadata loop
+        // reads the repaired target verbatim — rebind_target_path cannot map
+        // a path from an earlier run's geometry.
+        let mut affected = vec![];
+        let mut retry_evict = vec!["s1".to_string(), "other".to_string()];
+        let repaired = vec![("s1".to_string(), PathBuf::from("/vault/gamma"))];
+        fold_repaired_index_targets(&mut affected, &mut retry_evict, &repaired);
+        assert_eq!(
+            affected,
+            vec![("s1".to_string(), PathBuf::from("/vault/gamma"))],
+            "the repaired session joins the metadata sync set with the sidecar target"
+        );
+        assert_eq!(
+            retry_evict,
+            vec!["other".to_string()],
+            "the repaired session leaves the eviction-only candidates"
+        );
+        assert_eq!(
+            repaired_index_target(&repaired, "s1"),
+            Some(PathBuf::from("/vault/gamma")),
+        );
+        assert_eq!(repaired_index_target(&repaired, "other"), None);
+        // rebind_target_path cannot express the repaired target: it is under
+        // neither this run's `from` nor its `to` — the verbatim override in
+        // the loop is load-bearing, not a nicety.
+        assert_eq!(
+            SessionAgentStore::rebind_target_path(
+                &PathBuf::from("/vault/gamma"),
+                Path::new("/gone"),
+                Path::new("/vault/beta"),
+            ),
+            None,
+        );
+        // Already-affected sessions are not double-entered.
+        let mut affected = vec![("s1".to_string(), PathBuf::from("/vault/beta"))];
+        let mut retry_evict = vec![];
+        fold_repaired_index_targets(&mut affected, &mut retry_evict, &repaired);
+        assert_eq!(affected.len(), 1, "no double entry for an affected id");
     }
 
     #[test]
