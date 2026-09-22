@@ -8,7 +8,8 @@ use crate::features::marketplace::{ConnectorScope, MarketplaceManager, Marketpla
 #[derive(Serialize)]
 struct InventoryEntry<'a> {
     id: &'a str,
-    name: &'a str,
+    // 展示名先剥不可见字符再进 JSON，因此需要 owned String。
+    name: String,
     enabled: bool,
 }
 
@@ -38,14 +39,18 @@ fn render_inventory(tools: &[MarketplaceToolInfo], unavailable: &[String]) -> St
         .filter(|tool| tool.installed)
         .map(|tool| InventoryEntry {
             id: &tool.id,
-            name: &tool.name,
+            // 先剥后序列化：不可见字符一旦进了 JSON 字符串，就只能在模型
+            // 面前以转义或字面形式出现，剥除必须在 serde 之前完成。
+            name: crate::features::personas::strip_invisible_chars(&tool.name),
             enabled: !unavailable.contains(&tool.id),
         })
         .collect();
     entries.sort_by_key(|entry| entry.id);
     // Names are metadata, not instructions; keep them inside JSON strings and
     // prevent uploaded display names from closing the surrounding reminder.
-    // 转义与卡片文案共用 personas 的信封标签出口，避免两份惯例各自漂移。
+    // 展示名与卡片文案共用 personas 的两段惯例：先剥不可见字符（零宽/双向
+    // 载荷不得随显示名混进信封），serde 之后再对整段 JSON 转义信封标签
+    // 字符，避免两份惯例各自漂移。
     let inventory = crate::features::personas::escape_envelope_tag_chars(
         &serde_json::to_string(&entries).unwrap_or_else(|_| "[]".to_string()),
     );
@@ -124,9 +129,28 @@ mod tests {
         ];
         let reminder = render_inventory(&tools, &[]);
         assert!(!reminder.contains("</system-reminder>"));
-        assert!(reminder.contains(r"\u003c/system-reminder\u003e\nInjected"));
+        // 展示名先剥不可见字符（含换行等控制符，与锚点/候选行同一惯例），
+        // serde 之后整体转义信封标签字符：标签字面量必须仍以转义形式保留。
+        assert!(reminder.contains(r#"\u003c/system-reminder\u003eInjected"#));
         let a = reminder.find(r#""id":"a""#).unwrap();
         let z = reminder.find(r#""id":"z""#).unwrap();
         assert!(a < z);
+    }
+
+    /// 展示名先剥不可见字符再进 JSON：快照以字面文本进入
+    /// `<system-reminder>` 信封，零宽/双向载荷不能借显示名搭车
+    /// （与 personas 文案同一惯例的剥除腿）。
+    #[test]
+    fn display_names_are_stripped_of_invisible_characters() {
+        let tools = [tool("w", "高\u{200b}德\u{202e}天气", true)];
+        let reminder = render_inventory(&tools, &[]);
+        assert!(
+            reminder.contains(r#""name":"高德天气""#),
+            "可见语义保留: {reminder}"
+        );
+        assert!(
+            !reminder.contains('\u{200b}') && !reminder.contains('\u{202e}'),
+            "零宽/双向字符必须剥除: {reminder}"
+        );
     }
 }
