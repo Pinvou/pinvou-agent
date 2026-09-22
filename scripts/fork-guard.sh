@@ -1,13 +1,13 @@
 #!/usr/bin/env bash
-# CodeWhale v0.9.12 clean re-fork guard: 78 commits, eight maintained themes (r2 closed on main without this topic; this PR keeps the transition layering).
+# CodeWhale v0.9.12 clean re-fork guard: 84 commits, eight maintained themes (r2 closed on main without this topic; this PR keeps the transition layering).
 set -uo pipefail
 
 REPO="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 CODEWHALE="$REPO/CodeWhale"
 APP="$REPO/pinvou3-app/src-tauri"
 EXPECTED_UPSTREAM="dcd4c200f72f0c1ffd60d8e7f6850313db879fc5"
-EXPECTED_HEAD="bbc90540ab57a27f4209e54e0008bde7768536e2"
-EXPECTED_COMMITS=80
+EXPECTED_HEAD="9f5f4d34af2cb982723181ea344364abef211b0b"
+EXPECTED_COMMITS=84
 # 过渡期锚点：不可变 r1 tag 的收口 commit。层 0 断言它是当前 head 的祖先，
 # 即 gitlink 沿主题分支领先 tag 而非另起分叉；#54 合入后随登记回收重钉到维护分支头。
 R1_CLOSURE="1fafee7e26b60a59457a43bce50c63aa2ad9dbaf"
@@ -25,7 +25,7 @@ bold()  { printf '\033[1m%s\033[0m\n' "$*"; }
 
 fail=0
 
-bold "── 第 0 层：v0.9.12 clean re-fork 拓扑（r1 tag 之后 63 个登记提交；r2 已收口但不含本主题，本 PR 继续过渡期叠层）──"
+bold "── 第 0 层：v0.9.12 clean re-fork 拓扑（r1 tag 之后 69 个登记提交；r2 已收口但不含本主题，本 PR 继续过渡期叠层）──"
 actual_head="$(git -C "$CODEWHALE" rev-parse HEAD 2>/dev/null || true)"
 if [[ "$actual_head" == "$EXPECTED_HEAD" ]]; then
   green "  ✓ CodeWhale gitlink 指向登记 head ${EXPECTED_HEAD}（过渡期：gitlink 领先 r1 tag，见 fork-policy 第 0 节豁免）"
@@ -103,6 +103,8 @@ fingerprints=(
   "T1|指令发现仅主根回归                             |CodeWhale/crates/tui/src/project_context.rs|forkguard_workspace_roots_instruction_discovery_takes_only_the_primary_root"
   "T1|线程记录 roots 持久化与旧载荷缺省回归            |CodeWhale/crates/tui/src/runtime_threads/tests.rs|forkguard_workspace_roots_thread_record_persists_and_legacy_defaults_empty"
   "T1|turn_meta 附加根披露回归                        |CodeWhale/crates/tui/src/core/engine/tests.rs|forkguard_workspace_roots_turn_meta_lists_attached_roots"
+  "T1|只读 Scout shell 不信任附加根程序回归          |CodeWhale/crates/tui/src/tools/shell/tests.rs|fn forkguard_workspace_roots_readonly_shell_distrusts_attached_root_programs"
+  "T1|只读 Scout shell 操作数/工作目录跨根回归       |CodeWhale/crates/tui/src/tools/shell/tests.rs|fn forkguard_workspace_roots_readonly_shell_operands_span_attached_roots"
 
   "T1|GLM-5.3 强制思考改写禁用 payload    |CodeWhale/crates/tui/src/client/chat.rs|fn apply_zai_forced_thinking_effort"
   "T1|BigModel host 纳入第一方 Chat 路由  |CodeWhale/crates/config/src/provider.rs|is_exact_https_route(base_url, \"open.bigmodel.cn\", \"api/paas/v4\")"
