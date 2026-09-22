@@ -1406,12 +1406,15 @@ const ToolWelcomeCard = ({ toolId, t, onSend }) => {
       const auxChatPanelRequestRef = useRef(0);
       // eslint-disable-next-line react-hooks/set-state-in-effect -- synchronously close the sub-agent panel on session switch
       useEffect(() => { setSubagentPanel(null); }, [activeSessionId]);
-      // When the mount condition drops (sched- session / no active session),
-      // the panel unmounts outright and RightDockPanel's onActiveChange has no
-      // unmount cleanup, so the highlight would linger; reset it here and let
-      // the re-mounted panel report its real visibility again.
+      // When the mount condition drops (sched- session / no active session /
+      // bridge or auxChat domain unavailable), the panel unmounts outright and
+      // RightDockPanel's onActiveChange has no unmount cleanup, so the
+      // highlight would linger; reset it here and let the re-mounted panel
+      // report its real visibility again. The conjuncts mirror the entry
+      // button and the mount gate exactly (round-26 minor M4).
       useEffect(() => {
-        if (auxChatPanel && activeSessionId && !activeSessionId.startsWith('sched-')) return;
+        if (auxChatPanel && activeSessionId && !activeSessionId.startsWith('sched-')
+          && bridge.available && bridge.auxChat) return;
         // eslint-disable-next-line react-hooks/set-state-in-effect -- synchronously reset dock highlight when the panel unmounts; one-shot mirror, same pattern as CodexAcpView
         setAuxChatDockActive(false);
       }, [auxChatPanel, activeSessionId]);
@@ -1565,17 +1568,36 @@ const ToolWelcomeCard = ({ toolId, t, onSend }) => {
         }
       }, [activeSessionId, browserDockOpen, onRightDockPanelSelectionChange, rememberScrollBeforeSubagentPanelChange, rightDockActivePanelId]);
       const closeAuxChatPanel = useCallback(() => {
-        auxChatPanelRequestRef.current += 1;
-        rememberScrollBeforeSubagentPanelChange();
+        const requestId = auxChatPanelRequestRef.current + 1;
+        auxChatPanelRequestRef.current = requestId;
+        const requestedSessionId = activeSessionId;
         const restorePanelId = auxChatPanel?.restorePanelId || null;
-        setAuxChatPanel(null);
+        // Publish with the same currency guard as closeSubagentPanel
+        // (round-26 minor M5): the dock restore below is async, so a rapid
+        // close→open could settle out of order — the stale close's restore
+        // would land after the open's publication and leave the dock on the
+        // restore panel with the aux panel mounted but occluded. The
+        // requestId/session currency check makes the stale publication inert.
+        const publishClose = ({ isCurrent = () => true } = {}) => {
+          if (!isSubagentPanelPublicationCurrent({
+            transitionCurrent: isCurrent(),
+            requestId,
+            currentRequestId: auxChatPanelRequestRef.current,
+            sessionId: requestedSessionId,
+            currentSessionId: activeSessionIdRef.current,
+          })) return false;
+          rememberScrollBeforeSubagentPanelChange();
+          setAuxChatPanel(null);
+          return true;
+        };
         if (browserDockOpen && onRightDockPanelSelectionChange) {
-          void invokeObservedPanelSelection(
+          return invokeObservedPanelSelection(
             onRightDockPanelSelectionChange,
-            [restorePanelId || 'browser', activeSessionId],
+            [restorePanelId || 'browser', requestedSessionId, publishClose],
             reportRightDockSelectionFailure,
           );
         }
+        return publishClose();
       }, [activeSessionId, auxChatPanel, browserDockOpen, onRightDockPanelSelectionChange, rememberScrollBeforeSubagentPanelChange]);
       const handlePreviewArtifact = useCallback((artifact) => {
         setActiveArtifactPath(artifact && artifact.path ? artifact.path : null);
@@ -3192,8 +3214,12 @@ const ToolWelcomeCard = ({ toolId, t, onSend }) => {
           {/* sched- run sessions have no aux chat (the entry button is hidden
               too): switching to sched- unmounts the panel with the mount
               condition, and switching back to a normal session re-mounts it
-              and re-runs ensure automatically. */}
-          {auxChatPanel && activeSessionId && !activeSessionId.startsWith('sched-') && (
+              and re-runs ensure automatically. The bridge conjuncts match the
+              entry button exactly (round-26 minor M4): on the web lane the
+              auxChat domain is an absent stub, so the panel must stay
+              unreachable there even if state somehow lingers. */}
+          {auxChatPanel && activeSessionId && !activeSessionId.startsWith('sched-')
+            && bridge.available && bridge.auxChat && (
             <ViewErrorBoundary t={t} variant="panel">
             <PanelSuspense>
             <LazyAuxChatPanel

@@ -11,8 +11,12 @@ const source = relative => readFileSync(new URL(`../src/${relative}`, import.met
 // that same delete: wrapping it in `/* … */`, and hiding it as a trailing
 // `//` comment behind live code. Block-comment contents are blanked with
 // newlines preserved (a multi-line comment cannot fuse its neighbours into
-// an anchor match) and `//` comment tails are dropped per line;
-// over-stripping can only fail a pin loudly, never satisfy one.
+// an anchor match) and `//` comment tails are dropped per line. For POSITIVE
+// pins over-stripping can only fail loudly, never satisfy one; the same does
+// NOT hold for negative pins (round-26 minor M9): stripping inside a future
+// string or template literal containing `/*` could silently satisfy a
+// doesNotMatch anchor, so every negative pin below runs against the RAW
+// text (a pattern absent in the raw text is absent in the strip too).
 const stripComments = text => text
   .replace(/\/\*[\s\S]*?\*\//g, comment => comment.replace(/[^\n]/g, ''))
   .split('\n')
@@ -29,6 +33,11 @@ const auxChatPanel = stripComments(source('features/aux-chat/AuxChatPanel.jsx'))
 const chat = stripComments(source('features/chat/ChatView.jsx'));
 const conversation = stripComments(source('features/conversation/ConversationTimeline.jsx'));
 const codex = stripComments(source('features/codex/CodexAcpView.jsx'));
+// Raw twins for the negative pins (round-26 minor M9, see the stripComments
+// header): doesNotMatch anchors must see comments and string contents too.
+const auxChatPanelRaw = source('features/aux-chat/AuxChatPanel.jsx');
+const chatRaw = source('features/chat/ChatView.jsx');
+const conversationRaw = source('features/conversation/ConversationTimeline.jsx');
 
 for (const language of ['zh', 'en', 'ja']) {
   for (const section of [
@@ -276,19 +285,34 @@ assert.match(chat, /chatCopy\.sceneModes/);
 assert.match(chat, /chatViewCopy\.placeholderSceneAdjust/);
 assert.match(chat, /chatViewCopy\.placeholderSceneDataViz/);
 assert.match(chat, /chatViewCopy\.placeholderScenePoster/);
-assert.doesNotMatch(chat, /designGeneralPlaceholder/);
-assert.doesNotMatch(chat, /label:\s*'个人工作台'/);
-assert.doesNotMatch(chat, /label:\s*'公文写作'/);
-assert.doesNotMatch(chat, /label:\s*'数据可视化'/);
-assert.doesNotMatch(chat, /`取消\$\{scene\.label\}`/);
-assert.doesNotMatch(chat, /:\s*'描述你想生成或调整的内容'/);
-assert.doesNotMatch(chat, />下载语音识别模型</);
+assert.doesNotMatch(chatRaw, /designGeneralPlaceholder/);
+assert.doesNotMatch(chatRaw, /label:\s*'个人工作台'/);
+assert.doesNotMatch(chatRaw, /label:\s*'公文写作'/);
+assert.doesNotMatch(chatRaw, /label:\s*'数据可视化'/);
+assert.doesNotMatch(chatRaw, /`取消\$\{scene\.label\}`/);
+assert.doesNotMatch(chatRaw, /:\s*'描述你想生成或调整的内容'/);
+assert.doesNotMatch(chatRaw, />下载语音识别模型</);
 assert.match(chat, /data-testid="aux-chat-open"/);
 // Work-mode entry parity with code mode (round-9 minor-2): the entry pill
 // reflects the panel's real dock visibility via onActiveChange — no highlight
 // while another dock panel occludes the aux panel.
 assert.match(chat, /onActiveChange=\{setAuxChatDockActive\}/);
 assert.match(chat, /auxChatPanel && auxChatDockActive/);
+// Round-26 minor M4: ChatView's panel mount gate and dock-highlight reset
+// must carry the same four conjuncts as the entry button (sched- exclusion,
+// active session, bridge.available, bridge.auxChat) — CodexAcpView was
+// aligned in round-25, ChatView lagged at two, leaving the gates without a
+// test net even though they currently fail closed.
+assert.match(
+  chat,
+  /\{auxChatPanel && activeSessionId && !activeSessionId\.startsWith\('sched-'\)\s*&& bridge\.available && bridge\.auxChat && \(/,
+  'the ChatView aux panel mount gate must include the bridge conjuncts (round-26 minor M4)',
+);
+assert.match(
+  chat,
+  /if \(auxChatPanel && activeSessionId && !activeSessionId\.startsWith\('sched-'\)\s*&& bridge\.available && bridge\.auxChat\) return;/,
+  'the ChatView aux dock-highlight reset must mirror the mount conjuncts (round-26 minor M4)',
+);
 assert.match(auxChatPanel, /const copy = t\.uiAuxChat/);
 assert.match(auxChatPanel, /copy=\{conversationCopy\}/);
 // Restart-topic staged guards: discard and ensure are wrapped in separate
@@ -304,9 +328,13 @@ assert.match(auxChatPanel, /copy=\{conversationCopy\}/);
 const restartBlock = auxChatPanel.slice(
   auxChatPanel.indexOf('const handleRestart'),
 );
+// Raw twin for the negative pins below (round-26 minor M9).
+const restartBlockRaw = auxChatPanelRaw.slice(
+  auxChatPanelRaw.indexOf('const handleRestart'),
+);
 assert.match(restartBlock, /try \{\s*try \{[\s\S]*?const discardPromise = auxChat\.discard\(sessionId\);[\s\S]*?await discardPromise;[\s\S]*?\} catch[\s\S]*?setDiscardFailed\(true\);[\s\S]*?generationRef\.current !== generation\) return;\s*try \{\s*const nextAuxId = await withSettleBound\(auxChat\.ensure\(sessionId\)\)/);
 assert.match(restartBlock, /setEnsureFailed\(true\)/);
-assert.doesNotMatch(restartBlock, /setSendFailed\(true\)/);
+assert.doesNotMatch(restartBlockRaw, /setSendFailed\(true\)/);
 assert.match(auxChatPanel, /copy\.discardFailed/);
 // Discard-failure restores the binding (round-20 Major-2): the round-18 B-1
 // null leaves the panel send-dead while the discardFailed copy says the topic
@@ -340,7 +368,7 @@ assert.ok(
 // close / sched- switches, and an instance-level registry would die with the
 // unmount and re-open the exact hole through remount.
 assert.match(auxChatPanel, /const discardInFlightByTask = new Map\(\);/);
-assert.doesNotMatch(auxChatPanel, /discardInFlightRef/);
+assert.doesNotMatch(auxChatPanelRaw, /discardInFlightRef/);
 assert.match(restartBlock, /discardInFlightByTask\.set\(sessionId, discardPromise\)/);
 assert.match(restartBlock, /discardInFlightByTask\.delete\(sessionId\)/);
 assert.match(auxChatPanel, /discardInFlightByTask\.get\(sessionId\)/);
@@ -442,7 +470,7 @@ assert.ok(
 // entry at restart entry is safe because the stale send's finally only
 // removes the entry it registered (promise identity).
 assert.doesNotMatch(
-  restartBlock,
+  restartBlockRaw,
   /sendInFlightByTask\.delete\(sessionId\);/,
   'the send registry entry must be KEPT through the restart (round-25 MAJOR-24-3): the round-23 SEND_WATCHDOG_MS owns the never-settling recovery the round-16 B1 clear served, and a pending ack surviving the restart is what lets the failed-discard restore classify the staged draft',
 );
@@ -450,6 +478,17 @@ const survivalClear = restartBlock.indexOf('restartDiscardFailedByTask.delete(se
 assert.ok(
   survivalClear >= 0,
   'restart entry must clear the stale failed-restart survival marker before issuing the fresh discard',
+);
+// Round-26 MAJOR-2: the kept-ack gate is cleared at restart entry alongside
+// the survival marker — a kept-ack classification from an earlier restart
+// window must not gate this window's failed-discard restore fixup, or
+// recovery material whose delivery an earlier discard destroyed would be
+// consumed by a restore that never contained it.
+const keptAckClear = restartBlock.indexOf('restartWindowKeptAckByTask.delete(sessionId);');
+assert.ok(
+  keptAckClear > survivalClear
+    && keptAckClear < restartBlock.indexOf('const discardPromise = auxChat.discard(sessionId);'),
+  'restart entry must clear the stale kept-ack gate before issuing the fresh discard',
 );
 // Binding null at restart entry (round-18 B-1): a send settling inside the
 // discard window must read as the restart case (keep-draft skip). With the
@@ -535,7 +574,7 @@ assert.match(
 // the delivery there reached the still-live transcript the rebind re-ensures.
 assert.match(
   auxChatPanel,
-  /const sendPromise = auxChat\.send\(sentAuxId, quoteBlock \? text \+ quoteBlock : text\);[\s\S]{0,700}?await sendPromise;\s*\n[\s\S]{0,1600}?const sameBinding = auxIdRef\.current === sentAuxId;\s*const onSameTask = sessionIdRef\.current === sentTaskId;\s*if \(restartKeptDraft\(sentTaskId, sentEpoch\)\) return;\s*if \(sentTaskId\) \{/,
+  /const sendPromise = auxChat\.send\(sentAuxId, quoteBlock \? text \+ quoteBlock : text\);[\s\S]{0,700}?await sendPromise;\s*\n[\s\S]{0,1600}?const sameBinding = auxIdRef\.current === sentAuxId;\s*const onSameTask = sessionIdRef\.current === sentTaskId;\s*if \(restartKeptDraft\(sentTaskId, sentEpoch\)\) \{\s*restartWindowKeptAckByTask\.add\(sentTaskId\);\s*return;\s*\}\s*if \(sentTaskId\) \{/,
   'consumption must follow the restart-only skip directly, gated on binding, live task identity and the restart epoch',
 );
 // The epoch must be captured at dispatch and bumped at restart entry before
@@ -567,7 +606,7 @@ assert.match(auxChatPanel, /const sessionIdRef = useRef\(sessionId\);/);
 assert.match(auxChatPanel, /constrainChatInput\(event\.target\.value\)\.text/);
 assert.match(auxChatPanel, /setDraft\(\(current\) => clearedIfSent\(current, text\)\)/);
 assert.match(auxChatPanel, /const clearedIfSent = \(current, text\) => \(current\.trim\(\) === text \? '' : current\);/);
-assert.doesNotMatch(restartBlock, /setDraft\(''\)/);
+assert.doesNotMatch(restartBlockRaw, /setDraft\(''\)/);
 // Aux timeline scroll (round-20 minor-6): mirror the main conversation's
 // autoScrollRef pattern — a scroll listener derives the follow flag through
 // the shared transition helper (scrolling up parks it, returning near the
@@ -683,9 +722,14 @@ assert.ok(
   'handleSend finally anchors must resolve (a vacuous slice would pass trivially)',
 );
 const sendFinallyBlock = auxChatPanel.slice(sendFinallyStart, sendFinallyEnd);
+// Raw twin for the negative pins below (round-26 minor M9).
+const sendFinallyBlockRaw = auxChatPanelRaw.slice(
+  auxChatPanelRaw.indexOf('} finally {', auxChatPanelRaw.indexOf('const handleSend')),
+  auxChatPanelRaw.indexOf('}, [auxChat, draft, quotes, busy, restarting, pullSnapshot, sessionId]);'),
+);
 assert.match(sendFinallyBlock, /removeSendIfOwner\(sentTaskId, sendPromise\);/);
-assert.doesNotMatch(sendFinallyBlock, /sendingRef\.current = false;/);
-assert.doesNotMatch(sendFinallyBlock, /setSending\(false\);/);
+assert.doesNotMatch(sendFinallyBlockRaw, /sendingRef\.current = false;/);
+assert.doesNotMatch(sendFinallyBlockRaw, /setSending\(false\);/);
 // Task-keyed in-flight send registry (round-15 MAJOR-2): the rebind effect
 // resets sendingRef on every task switch, so without a module-scoped registry
 // a send on task A → switch to B → back to A would pass every guard before
@@ -741,8 +785,8 @@ assert.match(
 );
 assert.match(
   auxChatPanel,
-  /const onSameTask = sessionIdRef\.current === sentTaskId;\s*if \(restartKeptDraft\(sentTaskId, sentEpoch\)\) return;/,
-  'the ack must call the module-state keep-draft decision unconditionally (round-25 MAJOR-24-1)',
+  /const onSameTask = sessionIdRef\.current === sentTaskId;\s*if \(restartKeptDraft\(sentTaskId, sentEpoch\)\) \{\s*restartWindowKeptAckByTask\.add\(sentTaskId\);\s*return;\s*\}/,
+  'the ack must call the module-state keep-draft decision unconditionally (round-25 MAJOR-24-1) and mark the window that kept a delivered ack (round-26 MAJOR-2)',
 );
 // MAJOR-24-3: the survival marker is set by the failed-discard restore
 // (generation-gated), and the restore consumes the delivered draft itself
@@ -755,13 +799,36 @@ assert.match(
 );
 assert.match(
   auxChatPanel,
-  /const consumeDeliveredDraftAfterFailedRestart = \(sessionId\) => \{\s*if \(sendInFlightByTask\.has\(sessionId\)\) return;\s*const sentText = sentTextByTask\.get\(sessionId\);\s*const storedDraft = draftByTask\.get\(sessionId\);\s*if \(sentText !== undefined && storedDraft !== undefined\s*&& storedDraft\.trim\(\) === sentText\.trim\(\)\) \{\s*deleteDraftAndNotify\(sessionId\);\s*\}/,
-  'the fixup consumes the delivered draft precisely (stored still equals the recorded sent text) only when no ack is pending',
+  /const consumeDeliveredDraftAfterFailedRestart = \(sessionId\) => \{\s*if \(sendInFlightByTask\.has\(sessionId\)\) return;\s*if \(!restartWindowKeptAckByTask\.delete\(sessionId\)\) return;\s*const sentQuotes = sentQuotesByTask\.get\(sessionId\);\s*if \(sentQuotes\) dropAuxQuotes\(sessionId, sentQuotes\);\s*const sentText = sentTextByTask\.get\(sessionId\);\s*const storedDraft = draftByTask\.get\(sessionId\);\s*if \(sentText !== undefined && storedDraft !== undefined\s*&& storedDraft\.trim\(\) === sentText\.trim\(\)\) \{\s*deleteDraftAndNotify\(sessionId\);\s*\}/,
+  'the fixup consumes the delivered draft precisely (stored still equals the recorded sent text) only when no ack is pending AND this restart window kept a delivered ack (round-26 MAJOR-2), and drops exactly the delivered send\'s captured quotes (round-26 minor M2)',
 );
 // The sent text is recorded at dispatch (for the restore fixup) and cleared
 // on failure (a failed dispatch delivered nothing).
-assert.match(auxChatPanel, /sendInFlightByTask\.set\(sentTaskId, sendPromise\);\s*[\s\S]{0,400}?sentTextByTask\.set\(sentTaskId, text\);/);
+assert.match(auxChatPanel, /sendInFlightByTask\.set\(sentTaskId, sendPromise\);\s*[\s\S]{0,900}?sentTextByTask\.set\(sentTaskId, text\);\s*sentQuotesByTask\.set\(sentTaskId, quotes\);/);
 assert.match(auxChatPanel, /console\.warn\('\[pinvou3\]\[aux-chat\] send failed', error\);\s*[\s\S]{0,300}?sentTextByTask\.delete\(sentTaskId\);/);
+// Round-26 minor M1: the failure-path delete runs before the registry-
+// identity gate, so a stale rejection (watchdog released the entry, a newer
+// send already recorded its own text) must not erase the newer send's
+// record — only delete while the entry still records THIS send's text.
+assert.match(
+  auxChatPanel,
+  /if \(sentTextByTask\.get\(sentTaskId\) === text\) sentTextByTask\.delete\(sentTaskId\);/,
+  'a stale send rejection must not delete a newer send\'s recorded text (round-26 minor M1)',
+);
+// Round-26 minor M2 twin guard: the quote capture clears by reference
+// identity — a newer send captured a fresh array.
+assert.match(
+  auxChatPanel,
+  /if \(sentQuotesByTask\.get\(sentTaskId\) === quotes\) sentQuotesByTask\.delete\(sentTaskId\);/,
+  'a stale send rejection must not delete a newer send\'s quote capture (round-26 minor M2)',
+);
+// Round-26 MAJOR-2: the kept-ack gate is module-scoped state alongside the
+// other registries.
+assert.match(
+  auxChatPanel,
+  /const restartWindowKeptAckByTask = new Set\(\);/,
+  'the kept-ack gate must be module-scoped so it survives rebinds and remounts',
+);
 // MAJOR-24-2: the ack's store-map consumption notifies the mounted panel, and
 // the panel follows draft-store deletions (the composer was restored from the
 // consumed entry).
@@ -806,7 +873,7 @@ assert.match(
 );
 assert.match(source('features/pet/PetSettingsSection.jsx'), /t\.uiPetSettings/);
 assert.match(conversation, /conversationCopy\(copy\)/);
-assert.doesNotMatch(conversation, />等待授权</);
+assert.doesNotMatch(conversationRaw, />等待授权</);
 // Aux quote chips ("划词引用") in the user bubble: the aux projection strips
 // the inline userselect block from userText and hands the excerpts over as
 // userQuotes, so this render branch is the only place the quoted content is

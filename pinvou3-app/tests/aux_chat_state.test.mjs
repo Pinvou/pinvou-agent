@@ -168,3 +168,23 @@ test('auxSnapshotsEqual 捕捉流式原地修改与 busy/排队变化', () => {
     queued: [{ id: 9 }],
   })), false);
 });
+
+test('auxSnapshotsEqual 捕捉仅键集合不同的快照(增量写入的 html)', () => {
+  // The streaming bridge writes `text` and `html` incrementally (round-26
+  // minor M10): two pulls can differ ONLY in key set. auxItemsEqual's
+  // key-count guard is the single line that catches this — deleting it kept
+  // the whole suite green while the panel froze on the first frame, so the
+  // case is pinned explicitly here.
+  const textOnly = normalizeAuxSnapshot({
+    chatItems: [{ id: 1, type: 'assistant', text: '流式' }],
+    busy: true,
+    queued: [],
+  });
+  const withHtml = normalizeAuxSnapshot({
+    chatItems: [{ id: 1, type: 'assistant', text: '流式', html: '<p>流式</p>' }],
+    busy: true,
+    queued: [],
+  });
+  assert.equal(auxSnapshotsEqual(textOnly, withHtml), false);
+  assert.equal(auxSnapshotsEqual(withHtml, textOnly), false);
+});

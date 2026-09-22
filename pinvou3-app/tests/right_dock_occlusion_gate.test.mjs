@@ -82,7 +82,16 @@ test('closing the aux chat panel restores the dock panel recorded at open', () =
   const closeBlock = chatView.slice(closeStart, closeEnd);
   assert.match(openBlock, /restorePanelId: current[\s\S]*?current\.restorePanelId[\s\S]*?rightDockActivePanelId/);
   assert.match(closeBlock, /const restorePanelId = auxChatPanel\?\.restorePanelId \|\| null/);
-  assert.match(closeBlock, /\[restorePanelId \|\| 'browser', activeSessionId\]/);
+  assert.match(closeBlock, /\[restorePanelId \|\| 'browser', requestedSessionId, publishClose\]/);
+  // Round-26 minor M5: the close publishes through the same currency guard as
+  // closeSubagentPanel — a rapid close→open must invalidate the stale close's
+  // dock restore, or it settles out of order and leaves the dock on the
+  // restore panel with the aux panel mounted but occluded.
+  assert.match(
+    closeBlock,
+    /const requestId = auxChatPanelRequestRef\.current \+ 1;\s*auxChatPanelRequestRef\.current = requestId;[\s\S]*?isSubagentPanelPublicationCurrent\(\{[\s\S]*?currentRequestId: auxChatPanelRequestRef\.current,[\s\S]*?sessionId: requestedSessionId,[\s\S]*?currentSessionId: activeSessionIdRef\.current/,
+    'closeAuxChatPanel must gate its publication on request/session currency (round-26 minor M5)',
+  );
 });
 
 test('a newer subagent open invalidates a delayed close across same-session ABA', () => {

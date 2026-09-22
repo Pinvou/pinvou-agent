@@ -128,6 +128,17 @@ const restartEpochByTask = new Map();
 // joins the registered per-task map sweep.
 const sentTextByTask = new Map();
 
+// taskId -> the quote capture (array reference) of the last dispatch, the
+// quote twin of sentTextByTask (round-26 minor M2): an ack landing
+// epoch-skipped inside the discard window deliberately skips dropAuxQuotes
+// (the quotes stay staged as recovery material while the discard's outcome
+// is unknown), so the failed-discard restore fixup — the point where the
+// delivery is finally known to have survived — must drop exactly that
+// capture, or the delivered send's excerpts attach again to the next
+// message. Same lifecycle as the sent text: overwritten by the next
+// dispatch, cleared on failure by capture identity.
+const sentQuotesByTask = new Map();
+
 // taskId set marking that the task's LATEST restart failed its discard and
 // restored the SAME live aux session (round-25 MAJOR-24-3): the keep-draft
 // premise "the delivery was destroyed with the discarded transcript" is then
@@ -136,6 +147,18 @@ const sentTextByTask = new Map();
 // restart entry (a fresh discard destroys the transcript unless it fails
 // again) and single-shot when an ack consumes under it.
 const restartDiscardFailedByTask = new Set();
+
+// taskId set: an ack settled inside this task's CURRENT restart window and
+// was classified keep-draft (round-26 MAJOR-2). The failed-discard restore
+// fixup may consume the staged draft only under this marker — without it the
+// fixup matched ANY stored draft trim-equal to the last sent text, so a draft
+// the user re-typed verbatim after the ack consumed the original (an ordinary
+// re-ask), or recovery material a successful restart deliberately kept, was
+// silently deleted by a later failed-discard restore whose window never
+// contained that delivery. Set by the epoch-skipped keep path of the send
+// ack, cleared at restart entry (a fresh window reclassifies from scratch)
+// and consumed single-shot by the fixup.
+const restartWindowKeptAckByTask = new Set();
 
 // taskId -> listener sets for the two module-state transitions a mounted
 // panel must follow but that can originate on a DEAD instance (the panel was
@@ -204,14 +227,24 @@ const clearedIfSent = (current, text) => (current.trim() === text ? '' : current
 
 // The failed-discard restore fixup (round-25 MAJOR-24-3): with no ack
 // pending there is no later classification, so the delivered draft is
-// consumed here — precisely, only while the stored draft still equals the
-// recorded sent text (typing between the dispatch and the restart entry
-// belongs to the next message). Quotes staged mid-flight were never
-// captured by the send and stay; a hung ack's captured quotes remain until
-// its watchdog releases (same 180 s bound residual class as the stuck
-// machinery).
+// consumed here — precisely, only when an ack settled inside THIS restart
+// window and was classified keep-draft (the round-26 MAJOR-2 gate: a draft
+// re-typed after the original was consumed, or recovery material an earlier
+// successful restart kept, carries no such marker and must survive), and
+// only while the stored draft still equals the recorded sent text (typing
+// between the dispatch and the restart entry belongs to the next message).
+// Quotes staged mid-flight were never captured by the send and stay; a hung
+// ack's captured quotes remain until its watchdog releases (same 180 s bound
+// residual class as the stuck machinery).
 const consumeDeliveredDraftAfterFailedRestart = (sessionId) => {
   if (sendInFlightByTask.has(sessionId)) return;
+  if (!restartWindowKeptAckByTask.delete(sessionId)) return;
+  // The kept ack's delivery survived in this restored transcript, so its
+  // captured quotes were delivered with it — drop exactly that capture
+  // (round-26 minor M2); excerpts staged from the main view during the
+  // in-flight window were never part of it and stay.
+  const sentQuotes = sentQuotesByTask.get(sessionId);
+  if (sentQuotes) dropAuxQuotes(sessionId, sentQuotes);
   const sentText = sentTextByTask.get(sessionId);
   const storedDraft = draftByTask.get(sessionId);
   if (sentText !== undefined && storedDraft !== undefined
@@ -601,8 +634,13 @@ export function AuxChatPanel({ sessionId, activationKey, t, theme, onClose, onAc
     // (round-25 MAJOR-24-3): the restore can run after this ack already
     // settled, so the delivered text must be recoverable without the closure.
     // Overwritten by the next dispatch; a failed send clears it below (a
-    // failed dispatch delivered nothing).
+    // failed dispatch delivered nothing). The captured quotes ride alongside
+    // (round-26 minor M2): the epoch-skipped ack path deliberately keeps them
+    // staged while the discard outcome is unknown, so the restore fixup needs
+    // the capture identity to drop them when the delivery is known to have
+    // survived.
     sentTextByTask.set(sentTaskId, text);
+    sentQuotesByTask.set(sentTaskId, quotes);
     // Send-latch failsafe (round-23 should-fix 1), the send-side twin of the
     // discard watchdog: the busy-gated latch release above the timeline only
     // fires if a render observes busy=true — when turn_started and the
@@ -640,7 +678,14 @@ export function AuxChatPanel({ sessionId, activationKey, t, theme, onClose, onAc
       // instance and short-circuited this skip, so the ack deleted the draft
       // a restart had deliberately preserved as recovery material. Binding
       // equality stays meaningful only for the visible half below.
-      if (restartKeptDraft(sentTaskId, sentEpoch)) return;
+      if (restartKeptDraft(sentTaskId, sentEpoch)) {
+        // This restart window kept a delivered ack — mark it so the
+        // failed-discard restore fixup can tell "draft staged by the
+        // delivered send this window" apart from "text the user re-typed
+        // after the ack consumed the original" (round-26 MAJOR-2).
+        restartWindowKeptAckByTask.add(sentTaskId);
+        return;
+      }
       if (sentTaskId) {
         // Consume only what was actually sent: text typed after this send
         // started belongs to the next message, and quotes staged from the
@@ -668,7 +713,15 @@ export function AuxChatPanel({ sessionId, activationKey, t, theme, onClose, onAc
       console.warn('[pinvou3][aux-chat] send failed', error);
       // A failed dispatch delivered nothing — the failed-discard restore
       // fixup must not treat this text as delivered (round-25 MAJOR-24-3).
-      sentTextByTask.delete(sentTaskId);
+      // Only delete while the entry still records THIS send's text
+      // (round-26 minor M1): a rejection settling after the watchdog (or a
+      // restart entry) released the registry entry may race a newer send
+      // that already recorded its own text — an unconditional delete would
+      // erase the newer send's record and skip its fixup classification.
+      if (sentTextByTask.get(sentTaskId) === text) sentTextByTask.delete(sentTaskId);
+      // Same ownership for the quote capture (round-26 minor M2): reference
+      // identity — a newer send captured a fresh array.
+      if (sentQuotesByTask.get(sentTaskId) === quotes) sentQuotesByTask.delete(sentTaskId);
       // Superseded outcomes must not manage newer state (round-24 minor-9):
       // a rejection settling after the watchdog fired (or a restart entry)
       // released this entry means either a newer send owns the latch — a
@@ -800,6 +853,11 @@ export function AuxChatPanel({ sessionId, activationKey, t, theme, onClose, onAc
     // destroys the transcript unless it fails again (re-set in the restore
     // below), so a stale survival must not leak into the new restart window.
     restartDiscardFailedByTask.delete(sessionId);
+    // The kept-ack gate is cleared with it (round-26 MAJOR-2): a kept-ack
+    // classification from an earlier restart window must not leak into this
+    // one, or the new window's failed-discard restore would consume recovery
+    // material whose delivery the earlier discard already destroyed.
+    restartWindowKeptAckByTask.delete(sessionId);
     // Null the binding at restart entry (round-18 B-1): a send settling inside
     // the discard window must read as the restart case — otherwise its
     // success continuation still sees the old aux id, consumes the draft and
