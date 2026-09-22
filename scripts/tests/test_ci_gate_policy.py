@@ -34,13 +34,47 @@ def _without_yaml_comments(block):
 
 
 def _is_covered_by_trigger(entry, trigger_paths):
-    """entry 被 trigger path 覆盖:完全相同,或 trigger 是其上层 `/**` 目录 glob。"""
-    for trigger in trigger_paths:
-        if entry == trigger:
-            return True
-        if trigger.endswith("/**") and entry.startswith(trigger[:-2]):
-            return True
-    return False
+    """entry 被 trigger path 覆盖:完全相同,或 trigger 是其上层 `/**` 目录 glob。
+
+    与 dorny/paths-filter 的 some-with-excludes 语义对齐:至少一条正向
+    pattern 命中,且没有任何 `!` 排除条目命中(排除优先于命中)。忽略
+    排除条目会让路由锁在 filter 组新增排除时仍虚报覆盖(fail-open)。
+    """
+
+    def _matches(pattern):
+        return entry == pattern or (
+            pattern.endswith("/**") and entry.startswith(pattern[:-2])
+        )
+
+    if not any(_matches(p) for p in trigger_paths if not p.startswith("!")):
+        return False
+    excludes = [p[1:] for p in trigger_paths if p.startswith("!")]
+    return not any(_matches(p) for p in excludes)
+
+
+def _extract_contract_read_targets(contract_test):
+    """从 multiagent_plan_normalize.test.mjs 源码派生全部 src-tauri 读取目标。
+
+    `read('src-tauri', ...)` 产出单文件目标,`path.join(here, '..', 'src-tauri',
+    ...)` 产出 readdirSync 整目录拼接的 `/**` 目标。单引号与双引号形式都被
+    接受:此前正则只匹配单引号,双引号的 `read("src-tauri", ...)` 会整体绕过
+    路由锁(fail-open,经变异验证)。
+    """
+    targets = []
+    for args in re.findall(
+        r"read\(['\"]src-tauri['\"],\s*([^)]*)\)", contract_test
+    ):
+        parts = re.findall(r"['\"]([^'\"]*)['\"]", args)
+        if not parts:
+            raise AssertionError(f"无法解析的契约测试 read 目标: {args}")
+        targets.append("pinvou3-app/src-tauri/" + "/".join(parts))
+    for args in re.findall(
+        r"path\.join\(here, ['\"]\.\.['\"], ['\"]src-tauri['\"],\s*([^)]*)\)",
+        contract_test,
+    ):
+        parts = re.findall(r"['\"]([^'\"]*)['\"]", args)
+        targets.append("pinvou3-app/src-tauri/" + "/".join(parts) + "/**")
+    return targets
 
 
 def _matches_paths_filter(path, patterns):
@@ -212,9 +246,10 @@ class CiGatePolicyTests(unittest.TestCase):
     def test_cross_language_contract_reads_fully_routed(self):
         # 上面的静态清单会随 .mjs 演进漂移:这里从
         # multiagent_plan_normalize.test.mjs 本身派生它读取的全部 src-tauri
-        # 目标(单文件 read(...) 与 readdirSync 整目录拼接),逐一断言 frontend
-        # filter 覆盖。给契约测试新增 Rust read 而不路由、或把已路由文件挪走,
-        # 都会在这里失败(本套件在 fast-gate 每个 PR 必跑)。
+        # 目标(单文件 read(...) 与 readdirSync 整目录拼接,单/双引号形式
+        # 均归一化匹配),逐一断言 frontend filter 覆盖。给契约测试新增
+        # Rust read 而不路由、或把已路由文件挪走,都会在这里失败(本套件
+        # 在 fast-gate 每个 PR 必跑)。
         changes = _without_yaml_comments(
             self.pr_workflow.split("\n  changes:", maxsplit=1)[1].split(
                 "\n  fast-gate:", maxsplit=1
@@ -229,16 +264,7 @@ class CiGatePolicyTests(unittest.TestCase):
             ROOT / "pinvou3-app/tests/multiagent_plan_normalize.test.mjs"
         ).read_text(encoding="utf-8")
 
-        targets = []
-        for args in re.findall(r"read\('src-tauri',\s*([^)]*)\)", contract_test):
-            parts = re.findall(r"'([^']*)'", args)
-            self.assertTrue(parts, f"无法解析的契约测试 read 目标: {args}")
-            targets.append("pinvou3-app/src-tauri/" + "/".join(parts))
-        for args in re.findall(
-            r"path\.join\(here, '\.\.', 'src-tauri',\s*([^)]*)\)", contract_test
-        ):
-            parts = re.findall(r"'([^']*)'", args)
-            targets.append("pinvou3-app/src-tauri/" + "/".join(parts) + "/**")
+        targets = _extract_contract_read_targets(contract_test)
 
         self.assertTrue(
             targets,
@@ -250,6 +276,83 @@ class CiGatePolicyTests(unittest.TestCase):
                 f"跨语言契约测试读取的 {target} 未被 frontend filter 覆盖,"
                 "Rust-only 改动会静默跳过该 node 门禁",
             )
+
+    def test_contract_target_derivation_covers_double_quoted_reads(self):
+        # 回归锁:派生正则此前只匹配单引号形式,双引号的
+        # `read("src-tauri", ...)` 会整体绕过上面的路由锁(经变异验证)。
+        # 对派生函数喂最小 fixture:双引号的单文件与整目录目标都必须被
+        # 解析出来,且不被缺少该条目的 frontend filter 覆盖——即未来出现
+        # 未路由的双引号读取时,路由锁必定失败而不是静默通过。
+        fixture = (
+            "const direct = read(\"src-tauri\", \"src\", \"features\", "
+            "\"future_feature\", \"mod.rs\");\n"
+            "const dir = path.join(here, \"..\", \"src-tauri\", \"src\", "
+            "\"features\", \"future_module\");\n"
+        )
+        targets = _extract_contract_read_targets(fixture)
+        self.assertIn(
+            "pinvou3-app/src-tauri/src/features/future_feature/mod.rs",
+            targets,
+            "双引号 read 目标必须被派生出来(单引号正则 fail-open 回归)",
+        )
+        self.assertIn(
+            "pinvou3-app/src-tauri/src/features/future_module/**",
+            targets,
+            "双引号 path.join 整目录目标必须被派生出来",
+        )
+        unrouted_filter = ["pinvou3-app/src-tauri/src/lib.rs"]
+        for target in targets:
+            self.assertFalse(
+                _is_covered_by_trigger(target, unrouted_filter),
+                f"未路由的双引号读取 {target} 不应被无关 filter 覆盖",
+            )
+
+    def test_trigger_coverage_respects_exclusions(self):
+        # dorny/paths-filter(some-with-excludes)的语义是"至少一条正向
+        # pattern 命中且没有任何 `!` 排除条目命中"。此前
+        # _is_covered_by_trigger 忽略排除条目:frontend 组若新增排除,
+        # 路由锁会虚报覆盖而 CI 实际不触发该门禁。
+        positive = ["pinvou3-app/src-tauri/src/features/**"]
+        self.assertTrue(
+            _is_covered_by_trigger(
+                "pinvou3-app/src-tauri/src/features/assistant/engine.rs",
+                positive,
+            )
+        )
+        with_exclude = positive + [
+            "!pinvou3-app/src-tauri/src/features/assistant/**"
+        ]
+        self.assertFalse(
+            _is_covered_by_trigger(
+                "pinvou3-app/src-tauri/src/features/assistant/engine.rs",
+                with_exclude,
+            ),
+            "正向命中但被 `!` 排除条目命中的路径不得视为覆盖",
+        )
+        # 排除只作用于其命中范围,同组其余路径仍被覆盖。
+        self.assertTrue(
+            _is_covered_by_trigger(
+                "pinvou3-app/src-tauri/src/features/sessions/mode_state.rs",
+                with_exclude,
+            )
+        )
+        # 精确条目形式的排除同样生效。
+        exact_exclude = [
+            "pinvou3-app/src-tauri/src/lib.rs",
+            "!pinvou3-app/src-tauri/src/lib.rs",
+        ]
+        self.assertFalse(
+            _is_covered_by_trigger(
+                "pinvou3-app/src-tauri/src/lib.rs", exact_exclude
+            )
+        )
+        # 只有排除条目、没有任何正向 pattern 时不得视为覆盖。
+        self.assertFalse(
+            _is_covered_by_trigger(
+                "pinvou3-app/src-tauri/src/lib.rs",
+                ["!pinvou3-app/src-tauri/src/lib.rs"],
+            )
+        )
 
     def test_merge_queue_uses_real_path_filtering_and_product_gates(self):
         changes = self.pr_workflow.split(
