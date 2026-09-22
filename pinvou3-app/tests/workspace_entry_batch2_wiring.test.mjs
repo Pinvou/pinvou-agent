@@ -143,7 +143,8 @@ test('composer recents grant notice parity (§9.4)', () => {
   // external agents read their cached controls (composerModeValue) first.
   assert.match(codexView, /const laneNoticeMode = isNativeAgent[\s\S]{0,200}?nativeDraftControls\.mode \|\| composerModeValue[\s\S]{0,200}?composerModeValue \|\| nativeDraftControls\.mode/, 'codex recents notice follows the draft agent mode');
   assert.match(codexView, /workspaceNoticeTone\(laneNoticeMode\) === 'restricted'/, 'codex recents notice tone reads the agent-aware mode');
-  assert.match(codexView, /!isNativeAgent \? t\.uiWorkspacePicker\.noticeRestrictedRecorded\(1\) : t\.uiWorkspacePicker\.noticeRestricted\(1\)/, 'codex recents single-root notice is delivery-aware');
+  // 正向条件(unicorn/no-negated-condition):native 分支在前,recorded 变体随后。
+  assert.match(codexView, /isNativeAgent \? t\.uiWorkspacePicker\.noticeRestricted\(1\) : t\.uiWorkspacePicker\.noticeRestrictedRecorded\(1\)/, 'codex recents single-root notice is delivery-aware');
 });
 
 test('keychain/manage i18n keys exist in all three languages', () => {
