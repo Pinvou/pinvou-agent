@@ -1813,9 +1813,14 @@ impl AppEngine {
 
     /// 发用户消息给 Engine。Engine 内部自管 session，多轮自然累积。
     ///
-    /// `mode` + `phase` 由 commands::chat 从 SessionStore 取当前 session 的
-    /// mode_state，注入 Op::SendMessage。底座按 mode 自动切工具白名单 + sandbox。
-    /// M1 弱模型加固:bridge 按 phase 在 user content 前 prepend `<system-reminder>`。
+    /// 仅测试专用入口（生产发送走 `send_reserved_user_message`，其快照/
+    /// 候选来自 `prepare_delegation_turn` 的同源捕获）。
+    ///
+    /// `mode` 由调用方从 SessionStore 取当前 session 的 mode_state，注入
+    /// Op::SendMessage。底座按 mode 自动切工具白名单 + sandbox。
+    /// M1 弱模型加固:bridge 按 mode 在多智能体轮的 user content 前
+    /// prepend `<system-reminder>` 信封。
+    #[cfg(test)]
     pub async fn send_user_message(
         &self,
         content: String,
@@ -1824,9 +1829,13 @@ impl AppEngine {
         restrict_tools: bool,
     ) -> Result<()> {
         let expert_snapshot = self.multi_agent_enabled.then(ExpertRosterSnapshot::capture);
-        // 候选行必须与快照同源（同一次 capture 产出），与
-        // commands::multiagent::prepare_delegation_turn 的计算保持一致；
-        // 带快照却传空候选会让该轮静默退化为名册兜底提示。
+        // 候选行必须与快照同源（同一次 capture 产出），对齐
+        // commands::multiagent::prepare_delegation_turn 的计算；
+        // 带快照却传空候选会让该轮静默退化为名册兜底提示。注意：这里的
+        // 匹配输入是 `content` 本身——生产路径用 `MatchSource` 把「匹配看
+        // 原文、发送看组装稿」钉成编译期约束，本测试入口没有那层类型
+        // 保护，调用方必须传用户原文，传组装稿会复现「注入文本抬升无关
+        // 专家卡得分」的旧缺陷。
         let expert_candidates = expert_snapshot
             .as_ref()
             .map(|snapshot| snapshot.available_role_lines(&content))
