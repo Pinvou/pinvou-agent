@@ -730,17 +730,23 @@ where
 /// 级联取消不会误杀新轮刚启动的子智能体（reviewer 点 4：spawn 异步发送
 /// 失去相对下一轮 SendMessage 的入队顺序保证）。
 ///
-/// 每次调用以 [`TURN_GATE_AWAIT_TIMEOUT`] 为上界（issue #255）：engine run
-/// loop 停滞（ops 通道满且不排空）时不得把 turn gate 永久占住，否则
-/// evict/delete/send 全部排队等同一把锁，会话管道整体僵死。超时放弃本次
-/// 入队——代价只是停滞引擎上的旧轮子代理存活到引擎解除停滞或被回收（子代理
-/// 自身步数/时限预算兜底）。迟到级联取消不会误杀经 gate 提交的新轮：被丢弃的
-/// send 因 tokio mpsc send 的取消安全语义保证未入队（已获取的 permit 随
-/// future drop 归还），且所有持锁发送方与下一轮 `SendMessage` 串行于同一把
-/// turn gate、phase-1 的 `try_send` 由 lifecycle state 锁内 epoch 校验 +
-/// FIFO 覆盖——顺序保证不依赖「通道保持满」。保证范围是 app 在 gate 内提交的
-/// 轮次；引擎自治轮（空闲子代理收尾、目标续跑）不经 gate 启动、由 forwarder
-/// 在 `TurnStarted` 时才认领，属此保证之外的既有窗口。
+/// Every call is bounded by [`TURN_GATE_AWAIT_TIMEOUT`] (issue #255): a
+/// stalled engine run loop (ops channel full and never draining) must not
+/// hold the turn gate forever, or evict/delete/send all queue on the same
+/// lock and the session pipeline wedges as a whole. On timeout this enqueue
+/// is abandoned — the only cost is that the old turn's subagents on the
+/// stalled engine stay alive until the engine unstalls or is reclaimed (the
+/// subagents' own step/time budgets bound them). A late cascade cancel cannot
+/// kill a new gate-submitted turn's subagents: the dropped send is guaranteed
+/// never enqueued by tokio mpsc send's cancel-safety (the acquired permit is
+/// returned when the future is dropped), and every gate-held sender plus the
+/// next turn's `SendMessage` are serialized on the same turn gate, while
+/// phase-1's `try_send` is covered by the in-lock epoch check under the
+/// lifecycle state lock + FIFO — the ordering guarantee does not rely on "the
+/// channel staying full". The guarantee covers turns the app submits under
+/// the gate; engine-autonomous turns (idle-subagent finishing, goal
+/// continuation) start without the gate and are adopted by the forwarder only
+/// at `TurnStarted`, a pre-existing window outside this guarantee.
 ///
 /// **级联取消送达守护**（reviewer 点 9 + G1 补发收敛）：phase 1 的 best-effort
 /// `try_send` 在 ops 通道满（容量 32）时可能失败且被静默忽略，`CancelSubAgents`
@@ -1962,13 +1968,16 @@ impl EnginePool {
         // 通道，FIFO 保证取消先于关闭被处理；否则删除/换模型回收后，会话派生的
         // 裸子智能体会以孤儿任务继续跑到自己的步数/时限上限。已知限制：取消是
         // abort 不 join，子智能体已启动的独立 shell 子进程仍可能残留。
-        // send 以 [`TURN_GATE_AWAIT_TIMEOUT`] 为上界（issue #255）：reclaim 在
-        // turn gate 内执行，卡死的 engine 不得把 gate 永久占住——entry 无论如何
-        // 都会被移除，超时只是不在 gate 内继续等待投递。未送达的 op 转入
-        // [`retry_shutdown_sends`] 的 detached 重试：engine 自持有 tx_op 克隆、
-        // entry 摘除不会关闭其 ops 通道，不补投 `Shutdown` 的话 run loop 只能
-        // 存活到进程退出；重试不持 gate，引擎解卡后按原 FIFO 顺序补投，让
-        // engine 走正常 Shutdown 路径退出。
+        // Each send is bounded by [`TURN_GATE_AWAIT_TIMEOUT`] (issue #255):
+        // reclaim runs under the turn gate, and a wedged engine must not hold
+        // the gate forever — the entry is removed either way, and the timeout
+        // only stops waiting for delivery under the gate. Undelivered ops move
+        // to the detached [`retry_shutdown_sends`] retry: the engine holds a
+        // tx_op clone of its own and removing the entry does not close its ops
+        // channel, so without re-delivering `Shutdown` the run loop could only
+        // stay alive until process exit; the retry holds no gate and
+        // re-delivers in the original FIFO order once the engine unstalls,
+        // letting the engine exit through the normal Shutdown path.
         let shutdown_ops = Self::shutdown_cancel_cascade_ops();
         let shutdown_total = shutdown_ops.len();
         let delivered = bounded_shutdown_sends(|op| engine.handle.send(op), shutdown_ops).await;
@@ -1992,9 +2001,11 @@ impl EnginePool {
     async fn evict_locked(&self, session_id: &str) {
         let runtime_lock = self.runtime_model_locks.for_session(session_id).await;
         let _runtime = runtime_lock.lock().await;
-        // 先取出 entry 再 match：match scrutinee 的临时 guard 会存活到整个
-        // match 结束，若在分支内 reclaim，池级 entries 锁将横跨回收全程
-        // （上界后最坏 ~15s），跨会话阻塞 handle_for / get_or_spawn 的取锁。
+        // Take the entry out of the map before matching: a temporary guard in
+        // the match scrutinee would live until the whole match ends, and
+        // reclaiming inside an arm would then hold the pool-wide entries lock
+        // across the entire reclaim (worst ~15s after bounding), blocking
+        // other sessions' handle_for / get_or_spawn on that lock.
         let entry = self.entries.lock().await.remove(session_id);
         match entry {
             Some(entry) => {
