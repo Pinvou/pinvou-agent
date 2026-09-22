@@ -34,11 +34,11 @@ _Avoid_: 工位、子任务
 _Avoid_: 子代理聊天、抽屉
 
 **角色（Role）**：
-可被派活的一种身份，规定职责与人设。底座内置角色与专家池中可执行的内置卡、用户自创卡都是角色；专家池只负责身份、人设与头像，不参与调度实现。多智能体每轮在本地按当前任务做泛化词抑制的轻量关键词匹配（基于专家卡轻量摘要），给出最多 8 条候选行，仅作提示，候选之外的专家经底座 `agent action=roster` 名册发现（含宿主呈现的 prompt-only profiles；专家按 id 字典序排序、单次至多 48 条，截断如实标注，被截断的用 `profile_query` 关键词过滤继续发现，见「角色名册」）；父模型据此选择 `profile`，完整专家正文仅注入实际被派中的子智能体。2026-09-17 蜂群二期：候选自 20 条下调至 8 条，用户自创卡不再无条件入选，专家发现以 roster 查询为准。
+可被派活的一种身份，规定职责与人设。底座内置角色与专家池中可执行的内置卡、用户自创卡都是角色；专家池只负责身份、人设与头像，不参与调度实现。多智能体每轮在本地按当前任务做泛化词抑制的轻量关键词匹配（基于专家卡轻量摘要），给出最多 8 条候选行，仅作提示，候选之外的专家经底座 `agent action=roster` 名册发现（含宿主呈现的 prompt-only profiles；专家按 id 字典序排序，ASCII 大小写不敏感、单次至多 48 条，截断如实标注，被截断的用 `profile_query` 关键词过滤继续发现，见「角色名册」）；父模型据此选择 `profile`，完整专家正文仅注入实际被派中的子智能体。2026-09-17 蜂群二期：候选自 20 条下调至 8 条，用户自创卡不再无条件入选，专家发现以 roster 查询为准。
 _Avoid_: Agent
 
 **角色名册（Roster）**：
-供模型按名字派工的角色集合。Pinvou 的内置卡与用户自建专家卡是全局唯一持久化源，App 将可执行专家转换成 CodeWhale 原生 `fleet.profiles` 并随 Engine 配置提供；不再为每个会话复制整份 `exp-*.toml`。CodeWhale 的个人目录与项目 `.codewhale/agents/` 仍按原生优先级参与加载，同名 profile 允许覆盖 Pinvou 全局配置。升级时只清理 Pinvou 自有 session ledger 内的旧投影；项目或个人目录中的同名文件不自动删除，因为无法可靠证明它仍由 Pinvou 独占所有权。2026-09-17 蜂群二期起，底座 `agent action=roster` 除内置成员外还列出宿主呈现的 prompt-only profiles（fork 主题 T8；专家按 id 字典序排序、单次至多 48 条，截断如实标注），模型可经 `profile=<member_id>` 直接选用。
+供模型按名字派工的角色集合。Pinvou 的内置卡与用户自建专家卡是全局唯一持久化源，App 将可执行专家转换成 CodeWhale 原生 `fleet.profiles` 并随 Engine 配置提供；不再为每个会话复制整份 `exp-*.toml`。CodeWhale 的个人目录与项目 `.codewhale/agents/` 仍按原生优先级参与加载，同名 profile 允许覆盖 Pinvou 全局配置。升级时只清理 Pinvou 自有 session ledger 内的旧投影；项目或个人目录中的同名文件不自动删除，因为无法可靠证明它仍由 Pinvou 独占所有权。2026-09-17 蜂群二期起，底座 `agent action=roster` 除内置成员外还列出宿主呈现的 prompt-only profiles（fork 主题 T8；专家按 id 字典序排序，ASCII 大小写不敏感、单次至多 48 条，截断如实标注），模型可经 `profile=<member_id>` 直接选用。
 _Avoid_: 团队、卡池
 
 **CodeWhale 执行根与状态根（Execution Root / Subagent State Root）**：
