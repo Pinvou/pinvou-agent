@@ -426,9 +426,12 @@ pub async fn run_agentic_task(
 /// Best-effort cleanup delete: a failed delete must not mask the run's own
 /// outcome, but silently stranding the session in the shared store hides the
 /// failure from the operator — log it instead of discarding the result.
+/// The session id stays out of the message (boot logs persist to disk and
+/// the CodeQL cleartext-logging gate flags ids on stderr); the error context
+/// from the store already names the failing write.
 async fn log_cleanup_delete(runtime: &EnginePoolRuntime, session_id: &str) {
     if let Err(error) = runtime.close_eval_session_result(session_id).await {
-        eprintln!("[agent-task] cleanup delete for session {session_id} failed: {error:#}");
+        eprintln!("[agent-task] cleanup delete failed: {error:#}");
     }
 }
 

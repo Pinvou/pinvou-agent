@@ -59,7 +59,7 @@ fn write_timestamped_id_map(
     });
     let json =
         serde_json::to_string_pretty(&out).context(format!("serialize {file_name} failed"))?;
-    crate::platform::filesystem::atomic_write(file, json.as_bytes())
+    crate::platform::filesystem::atomic_write_private(file, json.as_bytes())
         .with_context(|| format!("persist {file_name} failed"))
 }
 
@@ -188,7 +188,7 @@ where
     }
     let json =
         serde_json::to_string_pretty(&entries).context(format!("serialize {file_name} failed"))?;
-    crate::platform::filesystem::atomic_write(&file, json.as_bytes())
+    crate::platform::filesystem::atomic_write_private(&file, json.as_bytes())
         .with_context(|| format!("persist {file_name} failed"))
 }
 
