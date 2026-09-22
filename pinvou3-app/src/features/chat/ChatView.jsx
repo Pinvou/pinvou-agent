@@ -2593,8 +2593,10 @@ const ToolWelcomeCard = ({ toolId, t, onSend }) => {
                     renderToolItem={handleTimelineRenderToolItem}
                     onOpenExternal={openChatExternalUrl}
                   />
-                {/* 划词引用:主对话时间线内选中文字 → 暂存为该任务的辅助对话
-                    引用并打开辅助面板。可用条件与顶栏入口一致(sched- 会话无辅助对话)。 */}
+                {/* Selection quotes: select text in the main conversation
+                    timeline → stage it as a quote of this task's aux chat and
+                    open the panel. Availability matches the header entry
+                    (sched- sessions have no aux chat). */}
                 <AuxQuoteSelection
                   containerRef={conversationContentRef}
                   sessionId={

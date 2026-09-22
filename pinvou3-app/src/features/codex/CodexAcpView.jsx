@@ -3595,10 +3595,14 @@ export function CodexAcpView({
                 onOpen={(state) => { setRewindUndoError(''); setRewindUndoEntry({ ...state, reloadFailed: false }); }}
               />
             )}
-            {/* 划词引用：代码车道时间线内选中文字 → 暂存为该会话的辅助对话
-                引用并打开辅助面板。可用条件与顶栏辅助对话入口一致：外部 ACP
-                会话不出引用浮层（辅助对话由品悟内部引擎作答，见入口注释；
-                round-18 边界此前只落在入口按钮上，划词与面板挂载曾被绕过）。 */}
+            {/* Selection quotes: select text in the code-lane conversation
+                timeline → stage it as a quote of this session's aux chat and
+                open the panel. Availability matches the header aux-chat
+                entry: external ACP sessions get no quote popover (the aux
+                chat answers on Pinvou's internal engine, see the entry
+                comment; the round-18 boundary previously landed on the entry
+                button only, and the quote selection and panel mount could
+                bypass it). */}
             <AuxQuoteSelection
               containerRef={conversationContentRef}
               sessionId={activeSession && isNativeAgent && bridge.available && bridge.auxChat ? activeSession.id : null}

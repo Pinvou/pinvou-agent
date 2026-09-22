@@ -391,12 +391,11 @@ export function AuxChatPanel({ sessionId, activationKey, t, theme, onClose, onAc
     // are a question about "what does this mean".
     const quoteBlock = buildAuxQuoteBlock(quotes);
     const sentAuxId = auxIdRef.current;
-    // Two independent staleness boundaries: the generation is the restart
-    // boundary and the auxId is the rebind boundary. A restart on the same
-    // task re-binds to a *new* aux, so a send issued before it must surface
-    // nothing at all — neither the contradictory "retry send" banner next to
-    // ensureFailed, nor a draft clear that would eat text typed since.
-    const sentGeneration = generationRef.current;
+    // Staleness boundary for both outcomes: the task id plus the restart
+    // epoch (captured below). A restart on the same task re-binds to a *new*
+    // aux, so a send issued before it must surface nothing at all — neither
+    // the contradictory "retry send" banner next to the restart's own state,
+    // nor a draft clear that would eat recovery material.
     const sentTaskId = sessionId;
     // The restart boundary for the keep-draft skip below: "a restart was
     // initiated for this task since this dispatch", not binding equality
@@ -445,8 +444,7 @@ export function AuxChatPanel({ sessionId, activationKey, t, theme, onClose, onAc
       // Anything else means the panel moved to another task while this send
       // settled into A's *live* transcript — the store maps must still be
       // consumed, or returning to A restores already-delivered text and
-      // staged quotes for a duplicate send (round-17 M-A). Only the
-      // UI-touching part stays binding-gated.
+      // staged quotes for a duplicate send (round-17 M-A).
       const sameBinding = auxIdRef.current === sentAuxId;
       const onSameTask = sessionIdRef.current === sentTaskId;
       // The keep-draft skip is the restart case only, keyed on the restart
@@ -473,21 +471,50 @@ export function AuxChatPanel({ sessionId, activationKey, t, theme, onClose, onAc
         }
         dropAuxQuotes(sentTaskId, quotes);
       }
-      if (!sameBinding) return;
+      // The visible composer clear is task-gated, not binding-gated (round-24
+      // Major): a send ack settling inside the same-task rebind's ensure
+      // window reads auxIdRef null → sameBinding false, while the rebind's
+      // restore has just re-filled the composer from draftByTask — the old
+      // binding gate skipped the only composer clear there and left
+      // already-delivered text staged for a duplicate Enter. On the same task
+      // and past the restart skip above, clearing a composer that still
+      // equals the sent text is safe whether the binding is live or
+      // mid-ensure: the functional check never touches text typed since, and
+      // a panel showing another task keeps its own draft untouched.
+      if (!onSameTask) return;
       setDraft((current) => (current.trim() === text ? '' : current));
-      pullSnapshot(auxIdRef.current);
+      // The snapshot pull needs a live binding; inside the rebind window the
+      // ensure resolution pulls the fresh snapshot instead.
+      if (sameBinding) pullSnapshot(auxIdRef.current);
     } catch (error) {
       console.warn('[pinvou3][aux-chat] send failed', error);
-      if (generationRef.current !== sentGeneration) return;
-      if (auxIdRef.current !== sentAuxId) return;
+      // Superseded outcomes must not manage newer state (round-24 minor-9):
+      // a rejection settling after the watchdog fired (or a restart entry)
+      // released this entry means either a newer send owns the latch — a
+      // stale release would re-open the duplicate-send window — or the
+      // outcome is long-stale; both stay silent, mirroring the identity
+      // checks the watchdog and the finally already apply.
+      if (sendInFlightByTask.get(sentTaskId) !== sendPromise) return;
+      // A plain rebind round trip (A→B→A, no restart) must still surface the
+      // failure banner: the dispatch genuinely rejected and the panel is back
+      // on this task — the old generation gate silenced that banner too
+      // (round-24 minor-8). The restart case stays silent: the restart-entry
+      // flow owns the panel state and keeps the draft as recovery material
+      // (a "retry send" banner would contradict the restart's own copy).
+      if (sessionIdRef.current !== sentTaskId
+        || (restartEpochByTask.get(sentTaskId) || 0) !== sentEpoch) return;
       setSendFailed(true);
       // A failed dispatch never reaches turn_started, so the busy-gated latch
       // release above the timeline would never fire — release the latch here
-      // or the composer stays locked behind the failure banner. The stale
-      // continuations above already returned, so this is the exact send that
-      // set the latch on the binding that still owns it (round-14 B2).
-      sendingRef.current = false;
-      setSending(false);
+      // or the composer stays locked behind the failure banner. The gates
+      // above plus this binding check mean this is the exact send that set
+      // the latch on the binding that still owns it (round-14 B2); inside the
+      // rebind window the rebind effect already reset the latch, so skipping
+      // the release there is a no-op.
+      if (auxIdRef.current === sentAuxId) {
+        sendingRef.current = false;
+        setSending(false);
+      }
     } finally {
       clearTimeout(sendWatchdog);
       // The registry entry is removed by the exact send that registered it,
@@ -681,11 +708,19 @@ export function AuxChatPanel({ sessionId, activationKey, t, theme, onClose, onAc
           // re-armed restart owns the registry slot, the orphaned discard's
           // late settle must not touch either — any marker there belongs to
           // the fresh discard. The banner state follows only when a marker
-          // was actually cleared, so a same-instance rebind that mirrored
-          // the marker does not keep showing it after this discard settled.
+          // was actually cleared AND this panel still shows the task (the
+          // settle twin of the watchdog's sessionIdRef gate, round-24
+          // minor-7): with two stuck discards (A and B), A's late settle
+          // deletes A's marker while the panel shows B — an ungated clear
+          // would hide a stuck state the module marker still records. The
+          // rebind effect re-mirrors the marker in both directions.
           const ownsEntry = discardInFlightByTask.get(sessionId) === discardPromise;
           if (ownsEntry) discardInFlightByTask.delete(sessionId);
-          if (ownsEntry && discardStuckByTask.delete(sessionId)) setDiscardStuck(false);
+          if (
+            ownsEntry
+            && discardStuckByTask.delete(sessionId)
+            && sessionIdRef.current === sessionId
+          ) setDiscardStuck(false);
         }
       } catch (error) {
         console.warn('[pinvou3][aux-chat] restart discard failed', error);

@@ -3561,9 +3561,18 @@ function rebuiltQueuedMetaPayload(item, userText) { return pinvouSharedweb().reb
     }
     // Command parity with doSendFor: Web goes through web_access_chat (the
     // attachment-handle channel), desktop goes through chat.
-    return IS_WEB
+    const dispatched = IS_WEB
       ? invoke("web_access_chat", { message, attachmentHandles: [], sessionId: sid, restrictTools: true })
       : invoke("chat", { message, attachments: [], sessionId: sid, restrictTools: true });
+    // Same lost-race translation as the main send path: the buffer check
+    // above only knows busy once turn_started lands in the buffer, so a
+    // concurrent-turn rejection can still slip through — surface the
+    // localized copy, not the raw untranslated error (round-24 minor-10).
+    return dispatched.catch(function (err) {
+      const errorText = String(err && err.message ? err.message : err || "");
+      if (errorText.includes("session_turn_in_progress")) throw new Error(bt("turnAlreadyInProgress"));
+      throw err;
+    });
   }
   // Synchronous snapshot: when not loaded (no buffer) returns an empty
   // structure — never throws and never triggers a load. Items are shallow-

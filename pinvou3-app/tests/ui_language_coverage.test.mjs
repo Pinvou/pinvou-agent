@@ -3,13 +3,20 @@ import { readFileSync } from 'node:fs';
 import { dict } from './helpers/i18n-all.js'; // full three-language dict: browser entry lazy-loads via i18n.js, tests use the aggregate shim
 
 const source = relative => readFileSync(new URL(`../src/${relative}`, import.meta.url), 'utf8');
-// Shape pins must not match text inside `//` comment lines: a guard commented
-// out in the source would otherwise still satisfy every anchor (round-23
-// should-fix 2, live-verified — commenting out the send-registry delete left
-// this suite green). Block comments are kept: they cannot hide a code line.
-const stripLineComments = text => text
+// Shape pins must not match text inside comments: a guard commented out in
+// the source would otherwise still satisfy every anchor. Round-23 should-fix
+// 2 dropped full-line `//` comments (live-verified — commenting out the
+// send-registry delete left this suite green); round-24 minor-1 closes the
+// two remaining holes at this single strip point, both live-verified against
+// that same delete: wrapping it in `/* … */`, and hiding it as a trailing
+// `//` comment behind live code. Block-comment contents are blanked with
+// newlines preserved (a multi-line comment cannot fuse its neighbours into
+// an anchor match) and `//` comment tails are dropped per line;
+// over-stripping can only fail a pin loudly, never satisfy one.
+const stripComments = text => text
+  .replace(/\/\*[\s\S]*?\*\//g, comment => comment.replace(/[^\n]/g, ''))
   .split('\n')
-  .filter(line => !line.trimStart().startsWith('//'))
+  .map(line => line.replace(/\/\/.*$/, ''))
   .join('\n');
 
 for (const language of ['zh', 'en', 'ja']) {
@@ -243,7 +250,7 @@ assert.match(chat, /data-testid="aux-chat-open"/);
 // while another dock panel occludes the aux panel.
 assert.match(chat, /onActiveChange=\{setAuxChatDockActive\}/);
 assert.match(chat, /auxChatPanel && auxChatDockActive/);
-const auxChatPanel = stripLineComments(source('features/aux-chat/AuxChatPanel.jsx'));
+const auxChatPanel = stripComments(source('features/aux-chat/AuxChatPanel.jsx'));
 assert.match(auxChatPanel, /const copy = t\.uiAuxChat/);
 assert.match(auxChatPanel, /copy=\{conversationCopy\}/);
 // Restart-topic staged guards: discard and ensure are wrapped in separate
@@ -348,8 +355,8 @@ assert.match(
 // marker then, so the orphaned discard's late settle must not touch either.
 assert.match(
   restartBlock,
-  /\} finally \{\s*clearTimeout\(watchdog\);[\s\S]{0,600}?const ownsEntry = discardInFlightByTask\.get\(sessionId\) === discardPromise;\s*if \(ownsEntry\) discardInFlightByTask\.delete\(sessionId\);\s*if \(ownsEntry && discardStuckByTask\.delete\(sessionId\)\) setDiscardStuck\(false\);/,
-  'the discard settle path must clear watchdog, entry and stuck marker by promise identity',
+  /\} finally \{\s*clearTimeout\(watchdog\);[\s\S]{0,600}?const ownsEntry = discardInFlightByTask\.get\(sessionId\) === discardPromise;\s*if \(ownsEntry\) discardInFlightByTask\.delete\(sessionId\);\s*if \(\s*ownsEntry\s*&& discardStuckByTask\.delete\(sessionId\)\s*&& sessionIdRef\.current === sessionId\s*\) setDiscardStuck\(false\);/,
+  'the discard settle path must clear watchdog, entry and stuck marker by promise identity, the banner clear gated on the displayed task (round-24 minor-7: A\'s late settle must not erase B\'s banner)',
 );
 // Stuck-state surfacing and re-arm: the rebind effect must mirror the module
 // marker into state (the watchdog may fire while unmounted) and skip awaiting
@@ -496,10 +503,16 @@ assert.match(
 );
 // The UI-touching part (visible draft clear, snapshot pull) stays
 // binding-gated after the store-map consumption.
+// The visible composer clear is task-gated, not binding-gated (round-24
+// Major): a send ack settling inside the same-task rebind's ensure window
+// reads a null binding, and the rebind's restore has just re-filled the
+// composer from draftByTask — a binding gate there skipped the only composer
+// clear and left delivered text staged for a duplicate Enter. Only the
+// snapshot pull stays binding-gated after it.
 assert.match(
   auxChatPanel,
-  /dropAuxQuotes\(sentTaskId, quotes\);\s*\}\s*if \(!sameBinding\) return;\s*setDraft\(\(current\) =>/,
-  'only the store-map consumption runs for a send settling into another task',
+  /dropAuxQuotes\(sentTaskId, quotes\);\s*\}\s*if \(!onSameTask\) return;\s*setDraft\(\(current\) => \(current\.trim\(\) === text \? '' : current\)\);\s*if \(sameBinding\) pullSnapshot\(auxIdRef\.current\);/,
+  'the composer clear must be task-gated (round-24 Major), only the snapshot pull binding-gated',
 );
 assert.match(auxChatPanel, /const sessionIdRef = useRef\(sessionId\);/);
 // The aux composer caps input like the main one (round-20 minor-7): drafts
@@ -534,9 +547,22 @@ assert.match(auxChatPanel, /data-testid="aux-quote-remove"/);
 assert.match(auxChatPanel, /disabled=\{composerDisabled \|\| \(!draft\.trim\(\) && quotes\.length === 0\)\}/);
 // Stale send outcomes (round-12 UX): a restart on the same task re-binds to a
 // new aux, so a send issued before it must neither re-latch sendFailed next to
-// ensureFailed ("double banner") nor clear text typed since.
-assert.match(auxChatPanel, /const sentGeneration = generationRef\.current;/);
-assert.match(auxChatPanel, /if \(generationRef\.current !== sentGeneration\) return;\s*if \(auxIdRef\.current !== sentAuxId\) return;\s*setSendFailed\(true\);/);
+// ensureFailed ("double banner") nor clear text typed since. Since round-24
+// (minors 8-9) the failure banner is gated on registry identity, the displayed
+// task and the restart epoch — NOT on the generation: the generation gate also
+// silenced a genuine failure surfacing on the A→B→A round trip, and the
+// un-guarded path let a late rejection after the watchdog fired release a
+// newer send's latch.
+assert.match(auxChatPanel, /const sentTaskId = sessionId;/);
+assert.match(
+  auxChatPanel,
+  /if \(sendInFlightByTask\.get\(sentTaskId\) !== sendPromise\) return;\s*if \(sessionIdRef\.current !== sentTaskId\s*\|\| \(restartEpochByTask\.get\(sentTaskId\) \|\| 0\) !== sentEpoch\) return;\s*setSendFailed\(true\);/,
+  'the failure banner must be gated on registry identity (round-24 minor-9), the displayed task and the restart epoch (round-24 minor-8)',
+);
+// The latch release on the failure path stays scoped to the binding that
+// still owns it (round-14 B2): inside the rebind window the rebind effect
+// already reset the latch, so the release is skipped there.
+assert.match(auxChatPanel, /setSendFailed\(true\);[\s\S]{0,600}?if \(auxIdRef\.current === sentAuxId\) \{\s*sendingRef\.current = false;\s*setSending\(false\);\s*\}\s*\} finally \{/);
 // restarting leak guard: the normal flow has exactly one setRestarting(false),
 // located in the outer finally (whose try opens before the discard await and
 // whose finally closes after the ensure await) — every early-return path
@@ -572,7 +598,6 @@ assert.match(restartBlock.slice(finallyClause), /} finally \{[\s\S]*?if \(genera
 // turn_started, and a retry must stay possible).
 assert.match(auxChatPanel, /if \(!auxChat \|\| !sentAuxId \|\| \(!text && !quoteBlock\) \|\| busy \|\| restarting \|\| sendingRef\.current\) return;/);
 assert.match(auxChatPanel, /sendingRef\.current = true;\s*setSending\(true\);[\s\S]*?const sendPromise = auxChat\.send\(sentAuxId, quoteBlock \? text \+ quoteBlock : text\);[\s\S]*?await sendPromise;/);
-assert.match(auxChatPanel, /setSendFailed\(true\);[\s\S]{0,600}?sendingRef\.current = false;\s*setSending\(false\);\s*\} finally \{/);
 assert.match(auxChatPanel, /if \(!sending \|\| !busy\) return;\s*sendingRef\.current = false;/);
 assert.match(auxChatPanel, /if \(event\.repeat\) return;/);
 // Rebind resets restarting (round-7 m11): the restart invokes have no
