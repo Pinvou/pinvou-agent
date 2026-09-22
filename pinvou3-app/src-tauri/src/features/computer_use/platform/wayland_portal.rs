@@ -113,6 +113,11 @@ const CLOSE_TIMEOUT: Duration = Duration::from_secs(1);
 /// session bus is very generous; a hung portal service must not suspend backend construction
 /// indefinitely (unbounded property queries would pin the worker).
 const PROBE_TIMEOUT: Duration = Duration::from_secs(5);
+/// Cooldown after the user dismisses the system authorization dialog: without it every
+/// retried action/screenshot re-popped the dialog and a retrying agent could stack several
+/// near-identical prompts in a row (round-17 minor). Lapses on its own; a successful
+/// establishment clears it early.
+const AUTH_CANCEL_COOLDOWN: Duration = Duration::from_secs(60);
 
 /// evdev button codes (portal spec: Linux evdev button codes).
 const EVDEV_BTN_LEFT: i32 = 0x110;
@@ -256,6 +261,14 @@ fn response_error(code: u32) -> ComputerUseError {
             "the system authorization flow ended unexpectedly (portal response code {code})"
         )),
     }
+}
+
+/// Whether a portal failure was the user's own cancel (response code 1):
+/// the only failure kind that latches the re-prompt cooldown. Matched on the
+/// stable marker text produced by [`response_error`] in this same file —
+/// pinned by `response_error_cancel_marker_is_stable` below.
+fn is_user_cancel(error: &ComputerUseError) -> bool {
+    error.to_string().contains("response code 1")
 }
 
 /// Extract a u32 from a Value (OwnedValue derefs to Value, so call sites get auto-deref for free).
@@ -543,6 +556,10 @@ struct PortalInner {
     /// recycling) and is recycled/rebuilt by the next `ensure_started` — closing before
     /// releasing would make the forced release of a stuck drag key impossible to deliver.
     poisoned: bool,
+    /// When the user last dismissed the system authorization dialog (response code 1):
+    /// latches [`AUTH_CANCEL_COOLDOWN`] so a cancelling user gets one prompt per decision
+    /// rather than one per retried action/screenshot.
+    user_cancelled_at: Option<Instant>,
 }
 
 impl PortalInner {
@@ -558,6 +575,7 @@ impl PortalInner {
             request_counter: 0,
             session_counter: 0,
             poisoned: false,
+            user_cancelled_at: None,
         })
     }
 
@@ -726,6 +744,36 @@ impl PortalInner {
     /// without devices/no stream) must close the created session object before returning
     /// (see [`PortalInner::abandon`]).
     async fn ensure_started(&mut self) -> Result<(), ComputerUseError> {
+        // A user-dismissed dialog latches a short cooldown: the user said no
+        // once, and a retrying agent must not stack fresh prompts on every
+        // retried action or screenshot (round-17 minor). The cooldown lapses
+        // on its own; a successful establishment clears it early.
+        if let Some(at) = self.user_cancelled_at {
+            if at.elapsed() < AUTH_CANCEL_COOLDOWN {
+                return Err(ComputerUseError::unavailable(
+                    "the portal authorization dialog was dismissed; computer use waits about a \
+                     minute before asking the system again",
+                ));
+            }
+            self.user_cancelled_at = None;
+        }
+        match self.establish().await {
+            Ok(()) => {
+                self.user_cancelled_at = None;
+                Ok(())
+            }
+            Err(error) => {
+                if is_user_cancel(&error) {
+                    self.user_cancelled_at = Some(Instant::now());
+                }
+                Err(error)
+            }
+        }
+    }
+
+    /// The establishment body proper (poisoned-session recycling, the four
+    /// portal phases, the capture hand-off).
+    async fn establish(&mut self) -> Result<(), ComputerUseError> {
         // Poisoned-session recycling: the close deferred after the previous action's failure
         // is made up here (bounded best-effort) before the full establishment flow — never
         // coexist with the leftover session, and never pop a second authorization dialog.
@@ -1107,6 +1155,16 @@ impl PortalInner {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// [`is_user_cancel`] latches the re-prompt cooldown off the error's
+    /// marker text; this pins that the marker stays stable and that other
+    /// portal codes never latch it.
+    #[test]
+    fn response_error_cancel_marker_is_stable() {
+        assert!(is_user_cancel(&response_error(1)));
+        assert!(!is_user_cancel(&response_error(2)));
+        assert!(!is_user_cancel(&response_error(0)));
+    }
 
     #[test]
     fn keysym_covers_named_keys() {

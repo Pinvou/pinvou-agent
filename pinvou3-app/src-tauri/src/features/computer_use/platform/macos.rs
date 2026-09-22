@@ -1453,7 +1453,12 @@ impl ComputerUseBackend for MacosComputerUseBackend {
                     screening relies on the AX tree — \
                     windows that expose no accessibility data (some Electron/web-contents \
                     windows) report no element at the target point, so consequential targets \
-                    inside them cannot be recognized and are NOT confirmation-screened"
+                    inside them cannot be recognized and are NOT confirmation-screened; \
+                    while the screen is locked or the screensaver runs, queued input still \
+                    reaches the login session and captures show the login screen — stop the \
+                    feature before stepping away; on macOS versions without ScreenCaptureKit \
+                    support the fallback capture is point-sized (1x on Retina), lower image \
+                    fidelity but exact coordinates"
                 .to_string(),
         }
     }

@@ -1129,6 +1129,13 @@ impl LinuxComputerUseBackend {
                 return None;
             }
         };
+        // A healthy portal capture clears the degraded note: previously a
+        // single transient failure (e.g. one missed first-frame budget under
+        // compositor load) left the capability notes describing the
+        // fallback/refusal regime for the rest of the session even after
+        // full-aligned captures resumed (round-17 minor).
+        self.wayland_portal_capture_error = None;
+        self.wayland_portal_capture_degraded = false;
         // Input coordinates = stream-local pixels (mutter semantics; the
         // origin is handled inside the compositor/portal layer). KDE's input
         // unit is stream-local logical pixels while its buffer is physical
@@ -1451,10 +1458,15 @@ impl ComputerUseBackend for LinuxComputerUseBackend {
             // surface per call. On X11 some RandR layouts — notably a
             // monitor at a negative origin — cannot be captured at all, so
             // the model must expect a named per-call error instead of
-            // assuming every capture succeeds.
+            // assuming every capture succeeds. And an unredirected fullscreen
+            // GL window (compositor bypass, routine on NVIDIA) can capture as
+            // black or frozen WITHOUT an error — the silent-wrong case is the
+            // dangerous one, so it is disclosed rather than promised away.
             let capture_caveat = "; the screenshot capability is declared without probing \
                  and capture errors surface per call (some X11 RandR layouts, e.g. a \
-                 negative-origin monitor, cannot be captured)";
+                 negative-origin monitor, cannot be captured); a fullscreen unredirected \
+                 GL window may capture as black or a frozen frame with NO error — \
+                 re-capture and verify before acting on its content";
             Capabilities {
                 screenshot: true,
                 input: self.input.is_some(),

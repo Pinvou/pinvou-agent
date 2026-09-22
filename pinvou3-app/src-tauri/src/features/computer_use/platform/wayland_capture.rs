@@ -43,7 +43,7 @@ use pipewire::{
         pod::{self, Pod, serialize::PodSerializer},
         utils::{Direction, Fraction, Rectangle, SpaTypes},
     },
-    stream::{StreamFlags, StreamRc},
+    stream::{StreamFlags, StreamRc, StreamState},
 };
 
 use super::super::types::ComputerUseError;
@@ -79,7 +79,31 @@ struct SharedCapture {
     negotiated: Option<(u32, u32)>,
     /// Latest stream state/error (for diagnostics).
     last_state: Option<String>,
+    /// The stream is dead (Error / Unconnected state, or the PipeWire thread
+    /// exited): the cached frame — if any — is frozen picture, so
+    /// `latest_frame` must fail fast instead of serving it. Terminal for
+    /// this capture object; recovery is the caller's rebuild/fallback.
+    dead: bool,
     stopped: bool,
+}
+
+/// React to a PipeWire stream state transition: record the diagnostic and,
+/// for a dead stream (Error / Unconnected), mark the capture dead and drop
+/// the cached frame. Round-17 finding: a stream that died after its first
+/// frame (compositor-side "Stop sharing", a mutter recycle) was never
+/// detected on the capture path — `latest_frame` served the frozen frame
+/// forever with no error, so the disclosed xcap fallback ("engages when the
+/// live stream is dead") never engaged. Pure function over the shared
+/// state, easy to unit test.
+fn handle_stream_state(shared: &mut SharedCapture, new: StreamState) {
+    shared.last_state = Some(format!("stream state {new:?}"));
+    match new {
+        StreamState::Error(_) | StreamState::Unconnected => {
+            shared.dead = true;
+            shared.frame = None;
+        }
+        StreamState::Connecting | StreamState::Paused | StreamState::Streaming => {}
+    }
 }
 
 /// PipeWire capture receiver: owns the dedicated thread and the shared frame buffer.
@@ -103,6 +127,11 @@ impl PwCapture {
                 if let Err(error) = run_pw_loop(node_id, fd, &worker_shared, control_rx) {
                     if let Ok(mut shared) = worker_shared.lock() {
                         shared.last_state = Some(format!("pipewire thread exited: {error}"));
+                        // The thread is gone — no further frames will ever
+                        // arrive, so the cached frame is frozen picture:
+                        // mark the capture dead (round-17 dead-stream fix).
+                        shared.dead = true;
+                        shared.frame = None;
                     }
                 }
             })
@@ -137,6 +166,21 @@ impl PwCapture {
                 .shared
                 .lock()
                 .unwrap_or_else(|error| error.into_inner());
+            // A dead stream must fail fast instead of waiting out the
+            // first-frame budget: its cached frame was dropped by the state
+            // handler, and serving any older picture would silently freeze
+            // what the model acts on. The caller's capture dispatch treats
+            // the error as "live stream unusable" and engages the xcap
+            // fallback / session rebuild.
+            if shared.dead {
+                let state = shared
+                    .last_state
+                    .clone()
+                    .unwrap_or_else(|| "no state reported".to_string());
+                return Err(ComputerUseError::unavailable(format!(
+                    "the screencast stream is dead ({state})"
+                )));
+            }
             if let Some(frame) = shared.frame.as_ref() {
                 let fresh_enough = not_before.map_or(true, |mark| frame.received_at >= mark);
                 if fresh_enough {
@@ -232,7 +276,7 @@ fn run_pw_loop(
         .add_local_listener_with_user_data(listener_shared)
         .state_changed(|_, shared, _old, new| {
             if let Ok(mut shared) = shared.lock() {
-                shared.last_state = Some(format!("stream state {new:?}"));
+                handle_stream_state(&mut shared, new);
             }
         })
         .param_changed(|_, shared, id, param| {
@@ -501,5 +545,75 @@ mod tests {
         // trailing row and emitting a broken image.
         let raw = vec![0u8; 8]; // 1 complete row, 2 declared.
         assert!(convert_frame(&raw, 8, 1, 2).is_none());
+    }
+
+    fn frame_now() -> PortalFrame {
+        PortalFrame {
+            rgba: vec![0u8; 16],
+            width: 2,
+            height: 2,
+            received_at: Instant::now(),
+        }
+    }
+
+    fn capture_with(shared: Arc<Mutex<SharedCapture>>) -> PwCapture {
+        let (control, _control_rx) = channel::channel::<bool>();
+        PwCapture {
+            shared,
+            control,
+            worker: None,
+        }
+    }
+
+    /// Round-17 dead-stream pin: an Error state after frames were flowing
+    /// must drop the cached frame and make `latest_frame` fail fast — a
+    /// compositor-side "Stop sharing" (or a mutter recycle) used to leave
+    /// the last frame frozen on screen forever, with no error and no
+    /// fallback, so the model acted on stale pixels.
+    #[test]
+    fn stream_error_drops_the_cached_frame_and_latest_frame_fails_fast() {
+        let shared = Arc::new(Mutex::new(SharedCapture {
+            frame: Some(frame_now()),
+            frames_received: 7,
+            ..SharedCapture::default()
+        }));
+        handle_stream_state(
+            &mut shared.lock().unwrap(),
+            StreamState::Error("peer closed the connection".to_string()),
+        );
+        let state = shared.lock().unwrap();
+        assert!(state.dead, "the error state must mark the capture dead");
+        assert!(state.frame.is_none(), "the cached frame must be dropped");
+        drop(state);
+
+        let error = capture_with(Arc::clone(&shared))
+            .latest_frame(None)
+            .err()
+            .expect("a dead stream must not serve a frame");
+        assert!(
+            error.to_string().contains("dead"),
+            "unexpected error: {error}"
+        );
+    }
+
+    /// Unconnected is the other dead state; benign states (Paused between
+    /// damage events, Streaming) must keep the cached frame — a static
+    /// screen legitimately stops pushing frames, and the existing frame IS
+    /// the current picture there.
+    #[test]
+    fn unconnected_kills_but_paused_and_streaming_keep_the_frame() {
+        let shared = Arc::new(Mutex::new(SharedCapture {
+            frame: Some(frame_now()),
+            ..SharedCapture::default()
+        }));
+        handle_stream_state(&mut shared.lock().unwrap(), StreamState::Paused);
+        assert!(!shared.lock().unwrap().dead);
+        assert!(shared.lock().unwrap().frame.is_some());
+        handle_stream_state(&mut shared.lock().unwrap(), StreamState::Streaming);
+        assert!(shared.lock().unwrap().frame.is_some());
+        handle_stream_state(&mut shared.lock().unwrap(), StreamState::Unconnected);
+        let state = shared.lock().unwrap();
+        assert!(state.dead);
+        assert!(state.frame.is_none());
     }
 }
