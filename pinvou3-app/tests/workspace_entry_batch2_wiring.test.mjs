@@ -27,12 +27,16 @@ test('project-row new-session channel wiring (F4)', () => {
   // (activeSessionId 非空直接 return false),项目行「+」曾经点击无任何反馈。
   // 修法:applyWorkspaceTarget 的 chat 分支先进草稿(与 handleNewChat 同路
   // 径),再 stage;视图导航到 chat 让新草稿可见,applied=false 维持不 toast。
+  // Round-8 B1:活动会话必须读订阅快照(bs.activeSessionId)——公开桥对象
+  // 不暴露 activeSessionId,旧写法 bridge.activeSessionId 恒为 undefined,
+  // 守卫从未生效(死代码),旧正则钉住的正是那个死模式。
   assert.match(main, /const applyWorkspaceTarget = async/, 'applyWorkspaceTarget 异步化(进草稿需 await)');
   assert.match(
     main,
-    /bridge\.activeSessionId && bridge\.sessions\.createNewSession[\s\S]{0,200}?await bridge\.sessions\.createNewSession\(\);[\s\S]{0,200}?setCurrentView\('chat'\);[\s\S]{0,300}?setDraftWorkspace\(/,
-    'chat 车道:有活动会话时先进草稿再 stage,并导航到 chat',
+    /bs && bs\.activeSessionId && bridge\.sessions\.createNewSession[\s\S]{0,200}?await bridge\.sessions\.createNewSession\(\);[\s\S]{0,200}?setCurrentView\('chat'\);[\s\S]{0,300}?setDraftWorkspace\(/,
+    'chat 车道:有活动会话时先进草稿再 stage,并导航到 chat(活动会话读订阅快照)',
   );
+  assert.doesNotMatch(main, /bridge\.activeSessionId && bridge\.sessions\.createNewSession/, '公开桥对象没有 activeSessionId,不得回归到恒假的死守卫');
   assert.match(main, /const handleProjectNewSession = async[\s\S]*?await applyWorkspaceTarget/, '项目行回调等待真实 stage 结果再 toast');
   // codex 车道(beginDraft 请求)行为不变:同步落地,不经 createNewSession。
   assert.match(main, /lane === 'codex'[\s\S]{0,200}?setPickerCodexRequest\(\{ epoch/, 'codex 车道仍走 picker 请求');

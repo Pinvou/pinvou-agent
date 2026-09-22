@@ -2026,8 +2026,11 @@ const NAV_PREFETCH = {
           // common path (review #484 round-5 M2). Enter a fresh chat draft
           // first (the same path as handleNewChat), then stage; the
           // navigation makes the new draft visible instead of silently
-          // discarding the click.
-          if (bridge.activeSessionId && bridge.sessions.createNewSession) {
+          // discarding the click. The active-session read must go through the
+          // subscribed snapshot: the public bridge object exposes no
+          // activeSessionId getter, so bridge.activeSessionId is always
+          // undefined and the guard below never fired (review #484 round-8 B1).
+          if (bs && bs.activeSessionId && bridge.sessions.createNewSession) {
             setCodeModeOn(false);
             await bridge.sessions.createNewSession();
             setActiveChat(null);
