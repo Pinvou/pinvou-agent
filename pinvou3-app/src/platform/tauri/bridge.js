@@ -1183,9 +1183,11 @@ function isScheduledRunSession(sid) { return pinvouSharedtauriMain().isScheduled
         // 命名；hideInternalEnvelope=true 同时剥离 turn_meta/system-reminder 元数据
         // 块，避免 XML 痕迹进 sidebar 标题。
         let titleText = firstUser ? userMessageDisplayText(firstUser.content || [], true) : "";
-        // 「引用对话」注入块(消息开头的 ## Referenced chats 契约)不是用户正文,不参与
-        // 自动标题;契约解析单一来源在 features/chat/session-mention.js(经 window 全局
-        // 发布,bridge 经典脚本不反向 import features)。
+        // The session-mention injection block (the ## Referenced chats contract
+        // at the head of a message) is not user body text and never feeds
+        // auto-titling; the single source of the contract parsing is
+        // features/chat/session-mention.js (published via the window global —
+        // classic-script bridges do not import features back).
         const splitMention = window.__PINVOU_SESSION_MENTION__ && window.__PINVOU_SESSION_MENTION__.splitSessionMentionBlock;
         if (splitMention) titleText = splitMention(titleText).text.trim();
         if (titleText) {
