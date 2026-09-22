@@ -1604,5 +1604,5 @@ fn ensure_folder_roots_rolls_back_memory_when_persist_fails() {
         panic!("retry must re-create from rolled-back memory, got {outcomes:?}");
     };
     assert_eq!(store.list().len(), 2);
-    assert!(store.list().iter().any(|entry| &entry.id == project.id));
+    assert!(store.list().iter().any(|entry| entry.id == project.id));
 }
