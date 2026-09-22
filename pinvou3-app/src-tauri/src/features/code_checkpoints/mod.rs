@@ -499,6 +499,71 @@ fn git_ok(repo: &Path, work_tree: &Path, arguments: &[&str]) -> Result<String> {
     Ok(String::from_utf8_lossy(&output.stdout).into_owned())
 }
 
+/// Same bounded `git` invocation as [`git_ok`], but the command's stdout is
+/// redirected to a temp file via `diff --output` and only the first `cap`
+/// bytes (plus one probe byte) are read back into memory — a huge diff costs
+/// disk in the git child, never RSS in this process. Returns the output
+/// clamped to a `\n` boundary (a `diff --git` section header is therefore
+/// either fully present or fully absent, which the secret-path filter
+/// downstream relies on to drop a section wholesale) and whether the full
+/// output exceeded `cap`.
+fn git_diff_capped(
+    repo: &Path,
+    work_tree: &Path,
+    arguments: &[&str],
+    cap: usize,
+) -> Result<(String, bool)> {
+    let nanos = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map(|d| d.as_nanos())
+        .unwrap_or(0);
+    let output_path = std::env::temp_dir().join(format!(
+        "pinvou3-checkpoint-diff-{}-{nanos}",
+        std::process::id()
+    ));
+    let _cleanup = TempDiffFile(&output_path);
+    use std::io::Read as _;
+    let mut arguments: Vec<String> = arguments
+        .iter()
+        .map(|argument| (*argument).to_string())
+        .collect();
+    arguments.push(format!("--output={}", output_path.display()));
+    let arguments: Vec<&str> = arguments.iter().map(String::as_str).collect();
+    let output = git(repo, work_tree, &arguments)?;
+    if !output.status.success() {
+        bail!(
+            "git {} 失败: {}",
+            arguments.join(" "),
+            String::from_utf8_lossy(&output.stderr).trim()
+        );
+    }
+    let file_len = fs::metadata(&output_path)?.len();
+    let truncated = file_len > cap as u64;
+    let mut file = fs::File::open(&output_path)?;
+    let mut buf = Vec::new();
+    if truncated {
+        (&mut file).take(cap as u64 + 1).read_to_end(&mut buf)?;
+        let mut end = buf.len().min(cap);
+        while end > 0 && buf[end - 1] != b'\n' {
+            end -= 1;
+        }
+        buf.truncate(end);
+    } else {
+        file.read_to_end(&mut buf)?;
+    }
+    Ok((String::from_utf8_lossy(&buf).into_owned(), truncated))
+}
+
+/// Best-effort removal of the `--output` spill file; the diff preview must
+/// not leave a full-diff copy behind in the shared temp directory.
+struct TempDiffFile<'a>(&'a Path);
+
+impl Drop for TempDiffFile<'_> {
+    fn drop(&mut self) {
+        let _ = fs::remove_file(self.0);
+    }
+}
+
 /// 迁移/恢复共用的敏感文件 pathspec 全集：字面模式（无通配符，如 .env、
 /// id_rsa）在 git pathspec 里只命中仓库根部，自动派生 `**/` 前缀版本覆盖任意
 /// 深度；含通配符的模式（*.pem 等）本身跨 `/` 匹配，无需派生。gitignore 语义
@@ -1061,7 +1126,7 @@ pub fn diff_checkpoint(
             &meta.commit,
         ],
     )?;
-    let raw_patch = git_ok(
+    let (raw_patch, patch_truncated) = git_diff_capped(
         &repo,
         &execution_root,
         // 与 --raw 同开 -M + quotepath：changes 清单标 renamed 时 patch
@@ -1076,11 +1141,13 @@ pub fn diff_checkpoint(
             "--no-ext-diff",
             &meta.commit,
         ],
+        DIFF_PATCH_LIMIT,
     )?;
     // legacy 快照（迁移前打的）tree 里可能仍含秘密原文：清单与 patch 都剔除
     // 命中敏感模式的条目，预览既不带原文上屏，也不谎称「回滚将删除 .env」
     // （restore 实际保留工作区现有同名文件）。过滤恒大小写不敏感，与
-    // exclude/purge 三层同向。
+    // exclude/purge 三层同向。raw_patch 已在行边界截齐，段头要么完整参与
+    // 过滤判定、要么整体不出现——截断不可能残留半个秘密路径段头。
     let changes: Vec<CheckpointChange> = parse_raw_status(&raw_status)
         .into_iter()
         .filter(|change| !secret_path_matches(&change.path))
@@ -1089,11 +1156,16 @@ pub fn diff_checkpoint(
     // Truncation signals through `patch_truncated` alone: consumers pin the
     // flag (and the byte cap), not a locale-specific tail appended to the
     // data — an embedded CJK string here would leak into CLI output and
-    // bypass the trilingual i18n surface.
-    let patch_truncated = patch.len() > DIFF_PATCH_LIMIT;
-    if patch_truncated {
+    // bypass the trilingual i18n surface. The flag reports the raw `git diff`
+    // output exceeding the cap (the filter only removes content, so a capped
+    // read implies the caller is not seeing the full diff). The clamp is a
+    // belt-and-braces for `from_utf8_lossy` expansion (one invalid byte
+    // becomes three replacement bytes): it can only move the end backwards
+    // to the previous line boundary, so a section header stays whole.
+    if patch.len() > DIFF_PATCH_LIMIT {
+        let bytes = patch.as_bytes();
         let mut end = DIFF_PATCH_LIMIT;
-        while !patch.is_char_boundary(end) {
+        while end > 0 && bytes[end - 1] != b'\n' {
             end -= 1;
         }
         patch.truncate(end);
@@ -2046,6 +2118,14 @@ mod tests {
             diff.patch.len() <= DIFF_PATCH_LIMIT,
             "patch 长度必须被钳制在 DIFF_PATCH_LIMIT 内: len={}",
             diff.patch.len()
+        );
+        // 截断发生在行边界（`--output` 落盘后按行截齐读回）：秘密路径过滤
+        // 依赖完整的 `diff --git` 段头整段删除，半截段头既可能让该段漏删，
+        // 也会把残片带进消费方输出。
+        assert!(
+            diff.patch.ends_with('\n') || diff.patch.is_empty(),
+            "截断后的 patch 必须止于完整行: {:?}",
+            &diff.patch[diff.patch.len().saturating_sub(64)..]
         );
         assert!(
             diff.patch.contains("big.txt"),
