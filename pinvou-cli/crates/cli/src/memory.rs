@@ -1256,7 +1256,8 @@ fn pending(
                 return Err(CliError::failed(format!(
                     "memory pending confirm({id}): the candidate is confirmed, but its content \
                      is profile-shaped preference text that is deliberately not materialized; \
-                     nothing was written to the target store"
+                     the target store was not written (a concurrent removal could also have \
+                     cleared a just-written item)"
                 )));
             }
             (
