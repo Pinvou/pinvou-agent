@@ -1,20 +1,29 @@
 #!/usr/bin/env python3
-"""session-reader(会话读取,工具商店预置市场包)server.py 的纯逻辑与 stdio 协议契约测试。
+"""Pure-logic and stdio protocol contract tests for the session-reader (preset marketplace package) server.py.
 
-覆盖「引用对话(Session Mention)」P2 验收点:
-- read_session 分页(最新在前、cursor 翻页连续无重复无遗漏);
-- 进行中的轮次(尾部无 assistant 消息)不返回;
-- 裁剪(max_output_chars_per_item)与 include_outputs 差量;
-- 无效 id / sched- / eval_ / 不存在的会话 / 坏文件的显式报错;
-- list_sessions 标题搜索与隔离语义;
-- stdio 契约:initialize / tools/list / tools/call(newline-delimited JSON-RPC 2.0);
-- 功能开关兜底(内置工具集长期契约 §3.3):依赖功能全部关闭时返回结构化
-  feature_disabled 错误;并集语义、manifest/状态文件缺失或损坏时放行。
+Covers the session-mention P2 acceptance points:
+- read_session pagination (newest first; cursor paging is contiguous without
+  duplicates or gaps);
+- in-flight turns (a trailing turn with no assistant message) are not returned;
+- clipping (max_output_chars_per_item) and the include_outputs delta;
+- explicit errors for invalid ids / sched- / eval_ / aux- / missing sessions /
+  corrupt files;
+- list_sessions title search and isolation semantics;
+- stdio contract: initialize / ping / tools/list / tools/call
+  (newline-delimited JSON-RPC 2.0);
+- aggregate response budget (truncated: true stays pageable) and per-turn
+  item cap;
+- containment (symlink escape rejected), file-size ceiling, and sanitized
+  error messages (no absolute paths);
+- feature-switch fallback (docs/builtin-toolset-contract.md §3.3): a
+  structured feature_disabled error when all dependent features are off;
+  union semantics; missing/corrupt manifest or state file allows the call.
 
-运行:python3 -m unittest discover -s scripts/tests -p 'test_*.py'
+Run: python3 -m unittest discover -s scripts/tests -p 'test_*.py'
 """
 from __future__ import annotations
 
+import builtins
 import importlib.util
 import json
 import os
@@ -77,7 +86,7 @@ def _write_session(directory, session_id, messages, title="demo", **metadata):
 
 
 def _three_turn_messages():
-    """三个完整 turn + 一个进行中 turn(用户已发、模型未答)。"""
+    """Three complete turns + one in-flight turn (user sent, model has not answered)."""
     return [
         _msg("user", _text("第一问")),
         _msg("assistant", _text("第一答"), _tool_use("exec_shell", "ls"), _text("答完一")),
@@ -191,6 +200,110 @@ class ReadSessionTests(unittest.TestCase):
         self.assertIsNone(payload)
         self.assertIn("unreadable", error)
 
+    def test_aux_prefix_sessions_are_rejected_case_insensitive(self):
+        # Isolation prefixes (sched-/eval_/aux-) are rejected
+        # case-insensitively in the read path (contract §4.3/§5).
+        for bad in ["aux-chat1", "AUX-chat1", "SCHED-x", "EVAL_x"]:
+            payload, error = server.read_session_history(self.dir, bad)
+            self.assertIsNone(payload, bad)
+            self.assertIn("not readable", error, bad)
+
+    def test_symlink_escape_is_rejected(self):
+        # A symlink inside the sessions directory pointing outside must not be
+        # followed: the resolved path leaves the store and reads as not found.
+        outside = Path(self.tmp.name).parent / f"outside-{os.getpid()}.json"
+        outside.write_text(json.dumps({"metadata": {"title": "secret"}, "messages": []}),
+                           encoding="utf-8")
+        self.addCleanup(outside.unlink, True)
+        link = Path(self.dir) / "escape1.json"
+        try:
+            os.symlink(outside, link)
+        except (OSError, NotImplementedError) as exc:
+            self.skipTest(f"symlinks unavailable on this platform: {exc}")
+        payload, error = server.read_session_history(self.dir, "escape1")
+        self.assertIsNone(payload)
+        self.assertIn("not found", error)
+
+    def test_oversize_session_file_is_rejected(self):
+        _write_session(self.dir, "bigone", [
+            _msg("user", _text("q")),
+            _msg("assistant", _text("a")),
+        ])
+        old_limit = server.MAX_SESSION_FILE_BYTES
+        server.MAX_SESSION_FILE_BYTES = 16  # shrink the cap instead of writing 64 MiB
+        try:
+            payload, error = server.read_session_history(self.dir, "bigone")
+        finally:
+            server.MAX_SESSION_FILE_BYTES = old_limit
+        self.assertIsNone(payload)
+        self.assertIn("too large", error)
+
+    def test_error_messages_do_not_leak_absolute_paths(self):
+        # OSError text embeds the absolute path; the tool response must not.
+        # (Reliably raising OSError from a real file is platform-dependent —
+        # chmod is a no-op on Windows — so inject the failure instead.)
+        _write_session(self.dir, "locked1", [
+            _msg("user", _text("q")),
+            _msg("assistant", _text("a")),
+        ])
+        real_open = builtins.open
+
+        def boom(*args, **kwargs):
+            raise OSError("[Errno 13] Permission denied: '%s'"
+                          % os.path.join(self.dir, "locked1.json"))
+
+        builtins.open = boom
+        try:
+            payload, error = server.read_session_history(self.dir, "locked1")
+        finally:
+            builtins.open = real_open
+        self.assertIsNone(payload)
+        self.assertIn("unreadable", error)
+        self.assertNotIn(self.dir, error)
+
+    def test_response_budget_truncates_page_but_stays_pageable(self):
+        # With a tiny aggregate budget the page stops filling after the first
+        # (always-included) turn, reports truncated: true, and nextCursor
+        # still walks through the remaining turns without gaps.
+        old_budget = server.MAX_RESPONSE_BYTES
+        server.MAX_RESPONSE_BYTES = 1
+        try:
+            first = self.read(turn_limit=10)
+            self.assertTrue(first["truncated"])
+            self.assertEqual(len(first["turns"]), 1)
+            self.assertEqual(first["turns"][0]["userText"], "第三问")
+            self.assertTrue(first["hasMore"])
+            second = self.read(turn_limit=10, cursor=first["nextCursor"])
+            self.assertEqual([t["userText"] for t in second["turns"]], ["第二问"])
+            self.assertTrue(second["truncated"])
+            third = self.read(turn_limit=10, cursor=second["nextCursor"])
+            self.assertEqual([t["userText"] for t in third["turns"]], ["第一问"])
+            self.assertFalse(third["truncated"])
+            self.assertFalse(third["hasMore"])
+            self.assertIsNone(third["nextCursor"])
+        finally:
+            server.MAX_RESPONSE_BYTES = old_budget
+
+    def test_normal_page_is_not_marked_truncated(self):
+        payload = self.read(turn_limit=10)
+        self.assertFalse(payload["truncated"])
+
+    def test_per_turn_item_cap_marks_turn(self):
+        _write_session(self.dir, "manyitems", [
+            _msg("user", _text("q")),
+            _msg("assistant", _text("a1"), _text("a2"), _text("a3")),
+        ])
+        old_cap = server.MAX_ITEMS_PER_TURN
+        server.MAX_ITEMS_PER_TURN = 1
+        try:
+            payload, error = server.read_session_history(self.dir, "manyitems")
+        finally:
+            server.MAX_ITEMS_PER_TURN = old_cap
+        self.assertIsNone(error)
+        turn = payload["turns"][0]
+        self.assertEqual(len(turn["items"]), 1)
+        self.assertTrue(turn["itemsTruncated"])
+
 
 class ListSessionsTests(unittest.TestCase):
     def setUp(self):
@@ -210,7 +323,7 @@ class ListSessionsTests(unittest.TestCase):
         payload, error = server.list_sessions(self.dir)
         self.assertIsNone(error)
         ids = [entry["sessionId"] for entry in payload["sessions"]]
-        self.assertEqual(ids, ["bbb222", "aaa111"])  # 新→旧
+        self.assertEqual(ids, ["bbb222", "aaa111"])  # newest first
         self.assertEqual(payload["total"], 2)
 
     def test_query_filters_by_title_case_insensitive(self):
@@ -230,9 +343,44 @@ class ListSessionsTests(unittest.TestCase):
         self.assertIsNotNone(head)
         self.assertEqual(head["title"], "修复登录页样式")
 
+    def test_list_excludes_aux_sessions_case_insensitive(self):
+        # aux- side-chats join the sched-/eval_ isolation set, case-insensitive.
+        _write_session(self.dir, "aux-side1", [], title="辅助会话",
+                       updated_at="2026-09-15T00:00:00Z")
+        _write_session(self.dir, "AUX-side2", [], title="辅助会话2",
+                       updated_at="2026-09-16T00:00:00Z")
+        payload, error = server.list_sessions(self.dir)
+        self.assertIsNone(error)
+        ids = [entry["sessionId"] for entry in payload["sessions"]]
+        self.assertEqual(ids, ["bbb222", "aaa111"])
+        self.assertEqual(payload["total"], 2)
+
+    def test_list_skips_symlink_escape(self):
+        outside = Path(self.tmp.name).parent / f"outside-list-{os.getpid()}.json"
+        outside.write_text(json.dumps({"metadata": {"title": "secret"}, "messages": []}),
+                           encoding="utf-8")
+        self.addCleanup(outside.unlink, True)
+        try:
+            os.symlink(outside, Path(self.dir) / "escape2.json")
+        except (OSError, NotImplementedError) as exc:
+            self.skipTest(f"symlinks unavailable on this platform: {exc}")
+        payload, error = server.list_sessions(self.dir)
+        self.assertIsNone(error)
+        ids = [entry["sessionId"] for entry in payload["sessions"]]
+        self.assertNotIn("escape2", ids)
+        self.assertEqual(payload["total"], 2)
+
+    def test_list_unreadable_dir_error_is_sanitized(self):
+        missing = os.path.join(self.dir, "no-such-dir")
+        payload, error = server.list_sessions(missing)
+        self.assertIsNone(payload)
+        self.assertIn("not readable", error)
+        # The raw OSError embeds the absolute path; the response must not.
+        self.assertNotIn(missing, error)
+
 
 class FeatureGateTests(unittest.TestCase):
-    """契约 §3.3 功能开关兜底的纯函数直测(并集语义 + 容错放行)。"""
+    """Direct pure-function tests of the contract §3.3 feature-switch fallback (union semantics + tolerant pass-through)."""
 
     TOOL_FEATURES = {
         "mcp_session-reader_read_session": ["session-mention", "long-memory"],
@@ -268,7 +416,8 @@ class FeatureGateTests(unittest.TestCase):
         self.assertTrue(payload["alternative"])
 
     def test_partial_disable_allows_call_union_semantics(self):
-        # 多对多并集语义:只关闭部分依赖功能时工具仍可用。
+        # Many-to-many union semantics: disabling only some of the dependent
+        # features keeps the tool callable.
         self.write_state(["session-mention"])
         self.assertIsNone(self.gate())
         self.assertIsNone(self.gate("list_sessions"))
@@ -278,7 +427,8 @@ class FeatureGateTests(unittest.TestCase):
         self.assertIsNone(self.gate())
 
     def test_missing_state_file_allows_call(self):
-        # 状态文件缺失 = 全部启用(容错),即使功能已登记也不门控。
+        # Missing state file = all enabled (tolerant); even a registered
+        # feature does not gate.
         self.assertIsNone(self.gate())
 
     def test_corrupt_state_file_allows_call(self):
@@ -314,7 +464,7 @@ class FeatureGateTests(unittest.TestCase):
 
 
 class StdioContractTests(unittest.TestCase):
-    """真实拉起 stdio server,验证 initialize/tools/list/tools/call 协议形态。"""
+    """Spawns the real stdio server and verifies the initialize/tools/list/tools/call protocol shapes."""
 
     def setUp(self):
         self.tmp = tempfile.TemporaryDirectory()
@@ -333,7 +483,7 @@ class StdioContractTests(unittest.TestCase):
         proc.stdin.write(json.dumps(request, ensure_ascii=False) + "\n")
         proc.stdin.flush()
         line = proc.stdout.readline()
-        self.assertTrue(line, "server 应有响应")
+        self.assertTrue(line, "server should have responded")
         return json.loads(line)
 
     def test_stdio_roundtrip(self):
@@ -381,14 +531,61 @@ class StdioContractTests(unittest.TestCase):
             proc.kill()
             proc.communicate()
 
+    def _spawn(self):
+        return subprocess.Popen(
+            [sys.executable, str(SERVER_PATH), "--sessions-dir", self.dir],
+            stdin=subprocess.PIPE,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            text=True,
+            encoding="utf-8",
+        )
+
+    def test_ping_returns_empty_result(self):
+        # MCP keepalive convention: ping answers with an empty result object.
+        proc = self._spawn()
+        try:
+            response = self._rpc(proc, "ping")
+            self.assertEqual(response["result"], {})
+        finally:
+            proc.kill()
+            proc.communicate()
+
+    def test_unknown_tool_reports_invalid_params(self):
+        # The method is tools/call; an unknown tool NAME is a bad parameter
+        # (-32602), not an unknown method (-32601).
+        proc = self._spawn()
+        try:
+            response = self._rpc(proc, "tools/call", {
+                "name": "no_such_tool", "arguments": {}})
+            self.assertEqual(response["error"]["code"], -32602)
+        finally:
+            proc.kill()
+            proc.communicate()
+
+    def test_non_utf8_bytes_on_stdin_do_not_kill_server(self):
+        # A single non-UTF-8 byte must be skipped (tolerant decode), and the
+        # next valid request still gets an answer.
+        proc = self._spawn()
+        try:
+            proc.stdin.buffer.write(b"\xff\xfe not json\n")
+            proc.stdin.buffer.flush()
+            response = self._rpc(proc, "ping")
+            self.assertEqual(response["result"], {})
+        finally:
+            proc.kill()
+            proc.communicate()
+
 
 class FeatureGateStdioTests(unittest.TestCase):
-    """契约 §3.3 stdio 层:真实拉起 server,验证 feature_disabled 错误通道。
+    """Contract §3.3 at the stdio layer: spawns the real server and verifies the feature_disabled error channel.
 
-    server 读的是 __file__ 同目录的 manifest.json,而真实 manifest 的 tool_features
-    字段由并行开发加入;为使本测试自洽,把 server.py 复制到临时目录并配一份带
-    tool_features 的 manifest 一起拉起。sessions 目录经 PINVOU3_HOME 重定位,
-    开关状态写在 <PINVOU3_HOME>/marketplace/builtin_features.json。
+    The server reads manifest.json next to its __file__, and the real
+    manifest's tool_features field was added by parallel development; to keep
+    this test self-contained, server.py is copied into a temp directory
+    alongside a manifest carrying tool_features. The sessions directory is
+    relocated via PINVOU3_HOME, and the switch state is written to
+    <PINVOU3_HOME>/marketplace/builtin_features.json.
     """
 
     TOOL_FEATURES = FeatureGateTests.TOOL_FEATURES
@@ -404,7 +601,7 @@ class FeatureGateStdioTests(unittest.TestCase):
             _msg("assistant", _text("门控回答")),
         ], title="门控会话")
         (self.home / "marketplace").mkdir()
-        # 拉起用的 server 副本 + 带 tool_features 的 manifest
+        # Server copy to spawn + a manifest carrying tool_features
         self.server_dir = self.home / "pkg"
         self.server_dir.mkdir()
         self.server_copy = self.server_dir / "server.py"
@@ -466,7 +663,8 @@ class FeatureGateStdioTests(unittest.TestCase):
             proc.communicate()
 
     def test_partial_disable_allows_normal_result(self):
-        # 只关一个功能(并集语义未触发):同一工具正常返回。
+        # Only one feature off (union semantics not triggered): the same tool
+        # answers normally.
         self.write_state(["session-mention"])
         proc = self._start()
         try:
