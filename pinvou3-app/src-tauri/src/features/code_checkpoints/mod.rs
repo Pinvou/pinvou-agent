@@ -743,13 +743,19 @@ fn load_index(ledger_root: &Path) -> Result<CheckpointIndex> {
                 // printing it would route the session id into stderr (same
                 // cleartext-logging surface as the sidecar persist logs);
                 // the ledger root in context already identifies the write.
-                Ok(quarantine) if quarantine.file_name().is_some() => eprintln!(
-                    "[checkpoints] checkpoint 索引损坏，隔离为 {} 后从空索引重建: {parse_error:#}",
-                    quarantine.file_name().unwrap().to_string_lossy()
-                ),
-                Ok(_) => eprintln!(
-                    "[checkpoints] checkpoint 索引损坏，已隔离并从空索引重建: {parse_error:#}"
-                ),
+                Ok(quarantine) => {
+                    match quarantine
+                        .file_name()
+                        .map(|name| name.to_string_lossy().into_owned())
+                    {
+                        Some(name) => eprintln!(
+                            "[checkpoints] checkpoint 索引损坏，隔离为 {name} 后从空索引重建: {parse_error:#}"
+                        ),
+                        None => eprintln!(
+                            "[checkpoints] checkpoint 索引损坏，已隔离并从空索引重建: {parse_error:#}"
+                        ),
+                    }
+                }
                 Err(error) => eprintln!("[checkpoints] 隔离损坏索引失败: {error:#}"),
             }
             Ok(CheckpointIndex {

@@ -1675,7 +1675,12 @@ mod tests {
         // exactly the change that must turn this red and force a revisit of
         // the "safe to persist under /logs" contract.
         let event = serde_json::to_value(&report.tool_events[0]).unwrap();
-        let event_keys: Vec<&str> = event.as_object().unwrap().keys().map(String::as_str).collect();
+        let event_keys: Vec<&str> = event
+            .as_object()
+            .unwrap()
+            .keys()
+            .map(String::as_str)
+            .collect();
         assert_eq!(
             event_keys.len(),
             2,
