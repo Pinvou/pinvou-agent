@@ -870,7 +870,8 @@ const withUiTimeout = (promise, timeoutMs, fallbackResult) => {
     const ToolStoreView = ({ t, onNewChat }) => {
       const storeCopy = t.uiToolStore;
       const detailCopy = t.uiToolDetails;
-      // 内置插件只读板块文案（契约 §3.1），缺省回退中文词典由 BuiltinPluginCard 兜底。
+      // Copy for the read-only builtin plugins page (docs/builtin-toolset-contract.md §3.1);
+      // BuiltinPluginCard falls back to the zh dictionary when copy is missing.
       const builtinCopy = t.uiBuiltinPlugins;
       // 数据文件(tool-common.jsx)里技能/分类/精选的中文 label/title/subtitle/desc:
       // 按 localizeTool() 同款 overlay 模式,从 uiToolStore 词条做三语覆盖,数据文件本身不改。
@@ -939,9 +940,10 @@ const withUiTimeout = (promise, timeoutMs, fallbackResult) => {
       // 回收站：用户上传的插件卸载后进入回收站，可恢复或彻底删除
       // （list 为只读命令，Web 端可看列表；恢复/删除挂 toolStoreMutations 能力门）。
       const [showRecycleBin, setShowRecycleBin] = useState(false);
-      // 内置插件独立子页（契约 §3.1）：工具栏「内置插件」按钮进入，整页只读展示，
-      // 数据直接用 builtinPluginCards（list_marketplace_tools 已在主列表加载时取回，
-      // 无需再次请求）。
+      // Dedicated builtin-plugins subpage (docs/builtin-toolset-contract.md §3.1):
+      // entered from the toolbar "Builtin Plugins" button, rendered fully read-only;
+      // it reuses builtinPluginCards (list_marketplace_tools is already fetched when
+      // the main list loads — no extra request needed).
       const [showBuiltinPlugins, setShowBuiltinPlugins] = useState(false);
       const [recycledPlugins, setRecycledPlugins] = useState([]);
       // 加载态：进入子页到首包返回之间不得闪「回收站是空的」空态；recycledLoaded
@@ -1280,8 +1282,10 @@ const withUiTimeout = (promise, timeoutMs, fallbackResult) => {
       // preset（市场预置/手写自定义 MCP 迁移登记）卸载保留目录、不进回收站；
       // source 缺失（旧后端）取 false——宁可少提示「移入回收站」，不说谎。
       const customMcpTools = toolBackend
-        // 内置插件（builtin === true，契约 §3.1）不进常规商店卡片流——
-        // 由下方 builtinPluginCards 独立成只读板块（visibility: system 语义）。
+        // Builtin plugins (docs/builtin-toolset-contract.md §3.1, via the shared
+        // isBuiltinPlugin judgement) stay out of the regular store card flow —
+        // builtinPluginCards below renders them as a separate read-only section
+        // (visibility: system semantics).
         .filter(x => !isBuiltinPlugin(x) && tsToolsData.every(t => t.backendId !== x.id))
         .map(x => {
           const bs = bundleStates[x.id] || null;
@@ -1302,10 +1306,13 @@ const withUiTimeout = (promise, timeoutMs, fallbackResult) => {
           return localizeTool(base, t);
         });
       const tools = [...builtinTools, ...customMcpTools];
-      // 内置插件板块数据（契约 §3.1 只读审计窗口）：builtin === true 的后端条目
-      // 独立成区，不进常规卡片流/搜索/分类筛选（visibility: system 语义）。展示
-      // 事实（工具清单 mcp_tools、安全级别、数据访问范围、bundle 版本）全部来自
-      // list_marketplace_tools 下发；名称/描述走 localizeTool 既有 overlay。
+      // Builtin plugins section data (docs/builtin-toolset-contract.md §3.1 read-only
+      // audit window): entries matching the shared isBuiltinPlugin judgement form a
+      // separate section, excluded from the regular card flow / search / category
+      // filters (visibility: system semantics). The displayed facts (mcp_tools tool
+      // list, security level, data access scopes, bundle version) all come from
+      // list_marketplace_tools; name/description go through the existing
+      // localizeTool overlay.
       const builtinMcpCards = toolBackend
         .filter(isBuiltinPlugin)
         .map(x => localizeTool({
@@ -1317,17 +1324,24 @@ const withUiTimeout = (promise, timeoutMs, fallbackResult) => {
           mcpTools: Array.isArray(x.mcp_tools) ? x.mcp_tools : [],
           bundleVersion: x.bundle_version ? String(x.bundle_version).replace(/^v/i, '') : null,
         }, t));
-      // 内置技能（如视觉设计，tsSkillsData 中 builtin === true 的唯一条目）同归
-      // 内置插件子页：商店里的功能卡保留（那是它的功能入口），本页是透明性窗口。
-      // 技能是纯提示词能力，无工具清单/安全级别/数据访问——用类型与版本两行声明；
-      // backendId 取 's5' 使 localizeTool 命中 uiToolDetails.tools.s5 三语 overlay。
+      // Builtin skills (visual design is the only builtin === true entry in
+      // tsSkillsData) also live on the builtin-plugins page: the store keeps its
+      // feature card (that is its entry point); this page is the transparency
+      // window. A skill is a pure prompt capability — no tool list / security
+      // level / data access — so it declares facts with a kind row and a version
+      // row. Copy goes through the same overlay as the store skill cards
+      // (localizeSkill → uiToolStore.storeData.skills, keyed by id 's5'), so
+      // en/ja render the localized title/subtitle/desc/version.
       const builtinSkillCards = tsSkillsData
         .filter(x => x.builtin === true)
-        .map(x => localizeTool({
-          ...x, id: 'builtin-skill-' + x.id, backendId: 's5',
-          kindLabel: (storeCopy.typeGroups || {})[String(x.type).toLowerCase()] || x.type,
-          versionText: x.version || null,
-        }, t));
+        .map(x => {
+          const s = localizeSkill(x);
+          return {
+            ...s, id: 'builtin-skill-' + x.id,
+            kindLabel: (storeCopy.typeGroups || {})[String(s.type).toLowerCase()] || s.type,
+            versionText: s.version || null,
+          };
+        });
       const builtinPluginCards = [...builtinMcpCards, ...builtinSkillCards];
       // 按 backendId 取已 localize 的工具卡;兜底分支也走 localizeTool,避免 en/ja 下漏出中文原文。
       const findLocalizedTool = (backendId) =>
@@ -2220,9 +2234,11 @@ const withUiTimeout = (promise, timeoutMs, fallbackResult) => {
             </main>
           </div>
           )}
-          {/* 内置插件子页（契约 §3.1 透明性/审计窗口）：整页只读，展示工具清单、
-              安全级别、版本（随应用升级）与数据访问范围；无卸载、无开关。
-              结构与回收站子页同款：返回按钮回主列表。 */}
+          {/* Builtin plugins subpage (docs/builtin-toolset-contract.md §3.1
+              transparency/audit window): fully read-only; shows the tool list,
+              security level, version (upgraded with the app) and data access
+              scopes; no uninstall, no toggles. Same structure as the recycle-bin
+              subpage: the back button returns to the main list. */}
           {showBuiltinPlugins && (
           <div className="flex-1 flex flex-col bg-white dark:bg-[#131314] text-slate-900 dark:text-white transition-colors duration-300 font-sans overflow-y-auto custom-scrollbar p-4 sm:p-6 lg:p-10">
 
@@ -2374,7 +2390,8 @@ const withUiTimeout = (promise, timeoutMs, fallbackResult) => {
                             <Trash2 size={14} className="mr-1.5 opacity-70" />
                             <span>{storeCopy.recycleBin}</span>
                           </button>
-                          {/* 内置插件入口（契约 §3.1）：独立子页只读展示，不进常规卡片流 */}
+                          {/* Builtin plugins entry (docs/builtin-toolset-contract.md §3.1):
+                              a dedicated read-only subpage, kept out of the regular card flow */}
                           {builtinPluginCards.length > 0 && (
                             <button type="button" data-testid="tool-store-builtin-plugins" onClick={() => setShowBuiltinPlugins(true)} title={(builtinCopy || {}).sectionTitle}
                               className="h-9 whitespace-nowrap shrink-0 inline-flex items-center rounded-full px-3.5 text-[13px] font-semibold transition-colors bg-[#F2F2F7] text-[#000] hover:bg-slate-200 dark:bg-[#2C2C2E] dark:text-[#fff] dark:hover:bg-[#3A3A3C]">

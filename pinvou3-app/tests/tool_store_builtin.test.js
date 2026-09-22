@@ -1,11 +1,17 @@
 #!/usr/bin/env node
 /**
- * 内置插件板块源码守卫（《内置工具集长期契约》§3.1/§3.2）：
- * - ToolStoreView：builtin === true 从常规卡片流排除；工具栏独立「内置插件」按钮进入
- *   专属只读子页（仿回收站子页），子页整页只读、带返回；
- * - tool-common：BuiltinPluginCard 无任何动作按钮；TsActionBtn builtin 分支先于 uninstall 回退分支；
- * - composer-tool-menu-logic：builtin !== true 过滤存在（§3.2 配置可见性）。
- * 渲染层三语文案存在性由 ui_language_coverage.test.mjs 锁定。
+ * Source guard for the builtin plugins section
+ * (docs/builtin-toolset-contract.md §3.1/§3.2):
+ * - ToolStoreView: entries matching the shared isBuiltinPlugin judgement are
+ *   excluded from the regular card flow; a dedicated "Builtin Plugins" toolbar
+ *   button opens a read-only subpage (mirroring the recycle-bin subpage) with a
+ *   back button;
+ * - tool-common: BuiltinPluginCard renders no action buttons; the TsActionBtn
+ *   builtin branch comes before the uninstall fallback branch;
+ * - composer-tool-menu-logic: the isBuiltinPlugin filter is present (§3.2
+ *   configuration visibility).
+ * Trilingual copy existence on the render layer is pinned by
+ * ui_language_coverage.test.mjs.
  */
 const assert = require('assert');
 const fs = require('fs');
@@ -18,48 +24,62 @@ const toolCommon = read('features/tools/tool-common.jsx');
 const composerLogic = read('features/settings/composer-tool-menu-logic.js');
 const builtinLogic = read('features/tools/builtin-plugin-logic.js');
 
-// 共享判定：严格 builtin === true（缺省/真值非 true 按普通插件放行）
-assert.match(builtinLogic, /tool\.builtin === true/, 'isBuiltinPlugin 须严格 === true');
+// Shared judgement: strict builtin === true or manifest visibility "system"
+// (missing fields / truthy non-true values pass through as regular plugins)
+assert.match(builtinLogic, /tool\.builtin === true/, 'isBuiltinPlugin must keep the strict === true check');
+assert.match(builtinLogic, /tool\.visibility === 'system'/, 'isBuiltinPlugin must accept visibility: "system"');
 
-// ToolStoreView：常规商店卡片流排除内置插件（customMcpTools 过滤，含搜索结果）
-assert.match(storeView, /\.filter\(x => !isBuiltinPlugin\(x\) && tsToolsData\.every/, '常规卡片流必须排除内置插件');
+// ToolStoreView: builtin plugins are excluded from the regular store card flow
+// (customMcpTools filter, including search results)
+assert.match(storeView, /\.filter\(x => !isBuiltinPlugin\(x\) && tsToolsData\.every/, 'the regular card flow must exclude builtin plugins');
 
-// 独立入口 + 专属子页：按钮进子页、子页带返回、整页只读渲染内置卡列表
-assert.match(storeView, /toolBackend\r?\n\s*\.filter\(isBuiltinPlugin\)/, '内置插件数据须来自 toolBackend 的 isBuiltinPlugin 过滤');
-assert.match(storeView, /data-testid="tool-store-builtin-plugins" onClick=\{\(\) => setShowBuiltinPlugins\(true\)\}/, '工具栏须有内置插件入口按钮');
-assert.match(storeView, /\{showBuiltinPlugins && \(/, '内置插件子页须按 showBuiltinPlugins 渲染');
-assert.match(storeView, /data-testid="builtin-plugins-back" onClick=\{\(\) => setShowBuiltinPlugins\(false\)\}/, '内置插件子页须有返回按钮');
-assert.match(storeView, /data-testid="builtin-plugin-list"/, '内置插件子页须渲染只读列表');
-assert.match(storeView, /<BuiltinPluginCard tool=\{tool\} copy=\{builtinCopy\} \/>/, '内置插件子页只读卡渲染');
-assert.match(storeView, /\{!showRecycleBin && !showBuiltinPlugins && \(/, '主列表须在任一子页打开时让位');
-assert.doesNotMatch(storeView, /id: 'builtin-plugins'/, '内置插件不得再作为主列表 section 出现');
+// Dedicated entry + subpage: button opens the subpage, the subpage has a back
+// button, and the whole page renders the read-only builtin card list
+assert.match(storeView, /toolBackend\r?\n\s*\.filter\(isBuiltinPlugin\)/, 'builtin plugin data must come from toolBackend filtered by isBuiltinPlugin');
+assert.match(storeView, /data-testid="tool-store-builtin-plugins" onClick=\{\(\) => setShowBuiltinPlugins\(true\)\}/, 'the toolbar must have a builtin plugins entry button');
+assert.match(storeView, /\{showBuiltinPlugins && \(/, 'the builtin plugins subpage must render on showBuiltinPlugins');
+assert.match(storeView, /data-testid="builtin-plugins-back" onClick=\{\(\) => setShowBuiltinPlugins\(false\)\}/, 'the builtin plugins subpage must have a back button');
+assert.match(storeView, /data-testid="builtin-plugin-list"/, 'the builtin plugins subpage must render the read-only list');
+assert.match(storeView, /<BuiltinPluginCard tool=\{tool\} copy=\{builtinCopy\} \/>/, 'the builtin plugins subpage renders read-only cards');
+assert.match(storeView, /\{!showRecycleBin && !showBuiltinPlugins && \(/, 'the main list must yield while either subpage is open');
+assert.doesNotMatch(storeView, /id: 'builtin-plugins'/, 'builtin plugins must not reappear as a main-list section');
 
-// 内置技能（视觉设计）同归子页：tsSkillsData 中 builtin === true 的条目并入
-// builtinPluginCards（商店功能卡保留，子页是透明性窗口）；卡片带类型与版本两行
-assert.match(storeView, /tsSkillsData\r?\n\s*\.filter\(x => x\.builtin === true\)/, '内置技能须并入内置插件子页');
-assert.match(storeView, /kindLabel: \(storeCopy\.typeGroups \|\| \{\}\)\[/, '内置技能卡须带本地化类型行');
+// Builtin skills (visual design) join the same subpage: builtin === true
+// entries of tsSkillsData merge into builtinPluginCards (the store keeps the
+// feature card; the subpage is the transparency window). The card carries
+// kind and version rows, and its copy goes through the same overlay as the
+// store skill cards (localizeSkill → uiToolStore.storeData.skills) so en/ja
+// render localized text.
+assert.match(storeView, /tsSkillsData\r?\n\s*\.filter\(x => x\.builtin === true\)/, 'builtin skills must merge into the builtin plugins subpage');
+assert.match(storeView, /kindLabel: \(storeCopy\.typeGroups \|\| \{\}\)\[/, 'builtin skill cards must carry a localized kind row');
+assert.match(storeView, /localizeSkill\(x\)/, 'builtin skill cards must use the storeData.skills overlay');
 
-// BuiltinPluginCard 组件体：无 TsActionBtn/PlatformToolAction/uninstall/onAction
-// （契约 §3.1：无卸载、无开关）；渲染只读徽章；无硬编码中文（走 uiBuiltinPlugins）
+// BuiltinPluginCard body: no TsActionBtn/PlatformToolAction/uninstall/onAction
+// (docs/builtin-toolset-contract.md §3.1: no uninstall, no toggle); renders the
+// read-only badge; no hardcoded Chinese (copy comes from uiBuiltinPlugins)
 const cardStart = toolCommon.indexOf('const BuiltinPluginCard');
-assert.ok(cardStart > 0, 'BuiltinPluginCard 组件须存在');
+assert.ok(cardStart > 0, 'the BuiltinPluginCard component must exist');
 const cardBody = toolCommon.slice(cardStart, toolCommon.indexOf('export {', cardStart));
-assert.doesNotMatch(cardBody, /TsActionBtn|PlatformToolAction|uninstall|onAction|handleAction/, '内置卡不得渲染任何动作按钮');
-assert.match(cardBody, /\{C\.readonlyBadge\}/, '内置卡须渲染只读徽章');
-assert.doesNotMatch(cardBody, /[一-鿿]/, '内置卡组件体不得出现硬编码中文');
+assert.doesNotMatch(cardBody, /TsActionBtn|PlatformToolAction|uninstall|onAction|handleAction/, 'the builtin card must not render any action button');
+assert.match(cardBody, /\{C\.readonlyBadge\}/, 'the builtin card must render the read-only badge');
+assert.doesNotMatch(cardBody, /[一-鿿]/, 'the builtin card body must not contain hardcoded Chinese');
 
-// TsActionBtn：builtin 只读徽章分支必须先于无 actions 的 uninstall 回退分支
-// （即便内置卡误入 TsActionBtn，uninstall 也不可达）
+// TsActionBtn: the builtin read-only badge branch must come before the
+// no-actions uninstall fallback branch (even if a builtin card ever reaches
+// TsActionBtn, uninstall stays unreachable)
 const builtinBranch = toolCommon.indexOf('if (tool.builtin)');
 const uninstallFallback = toolCommon.indexOf('无 actions 时的旧分支');
-assert.ok(builtinBranch > 0, 'TsActionBtn 须有 builtin 只读分支');
-assert.ok(uninstallFallback > builtinBranch, 'builtin 分支必须先于 uninstall 回退分支');
+assert.ok(builtinBranch > 0, 'TsActionBtn must have a builtin read-only branch');
+assert.ok(uninstallFallback > builtinBranch, 'the builtin branch must come before the uninstall fallback branch');
 
-// composer 输入框菜单：内置插件过滤（§3.2 配置可见性）
-assert.match(composerLogic, /tool\.builtin !== true/, 'composer 菜单须过滤 builtin 工具');
+// Composer input menu: builtin plugin filtering (§3.2 configuration
+// visibility) via the shared judgement imported from builtin-plugin-logic.js
+assert.match(composerLogic, /import \{ isBuiltinPlugin \} from '\.\.\/tools\/builtin-plugin-logic\.js'/, 'composer logic must import the shared isBuiltinPlugin judgement');
+assert.match(composerLogic, /!isBuiltinPlugin\(tool\)/, 'the composer menu must filter builtin tools');
 
-// 时间线 ToolCard 执行可见性不受影响：tool-renderers.jsx 不得引入 builtin 过滤
+// Timeline ToolCard execution visibility is unaffected: tool-renderers.jsx
+// must not introduce builtin filtering
 const toolRenderers = read('features/tools/tool-renderers.jsx');
-assert.doesNotMatch(toolRenderers, /isBuiltinPlugin|\.builtin\b/, '时间线 ToolCard 不得按 builtin 过滤（执行可见性）');
+assert.doesNotMatch(toolRenderers, /isBuiltinPlugin|\.builtin\b/, 'timeline ToolCards must not filter by builtin (execution visibility)');
 
-console.log('tool_store_builtin_smoke: ok');
+console.log('tool_store_builtin: ok');
