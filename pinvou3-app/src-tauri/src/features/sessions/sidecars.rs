@@ -472,7 +472,9 @@ impl SessionStore {
                     pins.remove(id);
                 }
             }
-            eprintln!("[sessions] persist pin state for {id} failed: {error:#}");
+            // Session ids stay out of the log line: the failing sidecar
+            // file, named in the error context, identifies the write.
+            eprintln!("[sessions] persist pin state failed: {error:#}");
         }
     }
 
@@ -565,7 +567,7 @@ impl SessionStore {
                     hidden_sessions.remove(id);
                 }
             }
-            eprintln!("[sessions] persist hidden state for {id} failed: {error:#}");
+            eprintln!("[sessions] persist hidden state failed: {error:#}");
         }
     }
 
