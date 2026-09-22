@@ -1907,6 +1907,18 @@ fn extract_login_url(agent: &str, output: &str) -> Option<String> {
         .last()
 }
 
+/// Exact-value strip of the authorization code this process wrote to the
+/// child's stdin, applied to the captured transcript before the heuristic
+/// redaction pass: a short, non-secret-shaped code the vendor CLI echoed
+/// back would survive `redact_secret` alone. The value is trimmed the same
+/// way the stdin write trims it, so the echoed copy matches byte for byte.
+fn strip_login_code<'a>(combined: &'a str, code: Option<&str>) -> std::borrow::Cow<'a, str> {
+    match code {
+        Some(value) if !value.trim().is_empty() => combined.replace(value.trim(), "[REDACTED]").into(),
+        _ => combined.into(),
+    }
+}
+
 /// Mirrors `login::extract_device_code`: `user_code=` in the URL, or the
 /// "enter code:"/"user code:" prompt, validated like `valid_device_code`.
 fn extract_device_code(output: &str, login_url: Option<&str>) -> Option<String> {
@@ -2090,10 +2102,7 @@ fn login(
     // Exact-value strip of the authorization code this process wrote to the
     // child's stdin before the heuristic pass: a short, non-secret-shaped
     // code the vendor CLI echoed back would survive `redact_secret` alone.
-    let combined = match code.as_deref() {
-        Some(value) => combined.replace(value.trim(), "[REDACTED]"),
-        None => combined,
-    };
+    let combined = strip_login_code(&combined, code.as_deref());
     if timed_out {
         // The buffered transcript would die with this error otherwise, and
         // its login link is exactly what the user needs to finish the flow.
@@ -4425,6 +4434,28 @@ fn respond(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn strip_login_code_removes_the_exact_value_before_the_heuristic() {
+        // A short, non-secret-shaped code survives `redact_secret`'s
+        // heuristic; the exact-value strip must take it out of the echoed
+        // transcript everywhere it appears, including punctuation-wrapped.
+        let transcript = "auth code 'SRCRT-123' received\nok SRCRT-123\n";
+        assert_eq!(
+            strip_login_code(transcript, Some(" SRCRT-123 ")),
+            "auth code '[REDACTED]' received\nok [REDACTED]\n",
+            "the value is trimmed like the stdin write before matching"
+        );
+        // No code flow: the transcript is untouched.
+        assert_eq!(
+            strip_login_code(transcript, None),
+            transcript,
+            "a flow without --code must not rewrite the transcript"
+        );
+        // Degenerate empty code: the strip must not shred the transcript
+        // (replace on "" would interleave [REDACTED] between every char).
+        assert_eq!(strip_login_code(transcript, Some("   ")), transcript);
+    }
 
     #[test]
     fn codex_version_gate_extracts_the_digit_token_like_the_gui() {
