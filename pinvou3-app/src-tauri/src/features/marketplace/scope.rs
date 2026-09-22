@@ -71,6 +71,14 @@ static DISABLED_BUNDLES_FILE_LOCK: Mutex<()> = Mutex::new(());
 /// packages root OUTSIDE the lock (`sample_denyall_expansion` is taken by
 /// every RMW writer before acquiring it, see `update_disabled_bundles_for`)
 /// — so blocking is preferable to retry loops.
+///
+/// Accepted residuals, matching remote_control's process lock: the lock file
+/// holds nothing and is never written, but if it is deleted or replaced
+/// while held (backup tooling rolling back `~/.pinvou3`), a later acquirer
+/// gets a fresh inode and the two locks no longer exclude each other —
+/// recovery is removing the stragglers, not integrity. `flock` excludes
+/// same-host processes only; on NFS/SMB mounts the serialization degrades to
+/// best-effort, like every other local-state guarantee in the home.
 fn with_disabled_bundles_lock<T>(f: impl FnOnce() -> T) -> Result<T, String> {
     let _guard = DISABLED_BUNDLES_FILE_LOCK
         .lock()
