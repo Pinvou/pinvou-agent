@@ -285,11 +285,18 @@ impl SessionStore {
         // would resurrect the switch state after restart, and the
         // workspace-rebuild linkage would act on it.
         let multi_agent_refs: Vec<&str> = ids.iter().map(String::as_str).collect();
-        let _io = self.multi_agent_flags_io.lock();
-        if let Err(error) = Self::apply_multi_agent_mutation_locked(&[], &multi_agent_refs) {
-            eprintln!(
-                "[sessions] update _multi_agent.json after retention purge failed: {error:#}"
-            );
+        // Each io guard is scoped to its own mutation: the purge hooks at the
+        // end of this function must fire with every store-side lock released
+        // (the store.rs contract on notify_session_purged) — a future hook
+        // that touches any sidecar writer would otherwise self-deadlock on
+        // the non-reentrant in-process mutexes.
+        {
+            let _io = self.multi_agent_flags_io.lock();
+            if let Err(error) = Self::apply_multi_agent_mutation_locked(&[], &multi_agent_refs) {
+                eprintln!(
+                    "[sessions] update _multi_agent.json after retention purge failed: {error:#}"
+                );
+            }
         }
 
         {
@@ -304,11 +311,13 @@ impl SessionStore {
         // would otherwise survive its session's eviction forever and re-arm
         // on id reuse: a recycled `agentic_{pid}_{counter}` id would reopen
         // in the ghost mode instead of the default.
-        let _modes_io = self.session_mode_states_io.lock();
-        if let Err(error) = Self::apply_session_mode_mutation_locked(&[], ids) {
-            eprintln!(
-                "[sessions] update _session_mode_states.json after retention purge failed: {error:#}"
-            );
+        {
+            let _modes_io = self.session_mode_states_io.lock();
+            if let Err(error) = Self::apply_session_mode_mutation_locked(&[], ids) {
+                eprintln!(
+                    "[sessions] update _session_mode_states.json after retention purge failed: {error:#}"
+                );
+            }
         }
 
         // Working-directory binding: clear the in-memory cache and best-effort
@@ -333,12 +342,15 @@ impl SessionStore {
         // (mirroring the batched mode-map mutation above).
         let model_refs: Vec<&str> = ids.iter().map(String::as_str).collect();
         // Same per-file io-mutex contract as the multi-agent purge above: a
-        // concurrent set_session_model_id RMWs the same file.
-        let _models_io = self.session_models_io.lock();
-        if let Err(error) = super::sidecars::remove_session_models_locked(&model_refs) {
-            eprintln!(
-                "[sessions] update _session_models.json after retention purge failed: {error:#}"
-            );
+        // concurrent set_session_model_id RMWs the same file. Scoped to this
+        // mutation — see the io-guard note at the top of this function.
+        {
+            let _models_io = self.session_models_io.lock();
+            if let Err(error) = super::sidecars::remove_session_models_locked(&model_refs) {
+                eprintln!(
+                    "[sessions] update _session_models.json after retention purge failed: {error:#}"
+                );
+            }
         }
 
         {
