@@ -9,7 +9,7 @@
 //! - `_pinned_sessions.json` — pinned conversation id list with timestamps.
 //! - `_hidden_sessions.json` — collapsed conversation id list with timestamps.
 //!
-//! Mode / pinvou_review / plan-phase remain in-memory only by design.
+//! Mode / plan-phase remain in-memory only by design.
 
 use std::collections::HashMap;
 use std::io::ErrorKind;
