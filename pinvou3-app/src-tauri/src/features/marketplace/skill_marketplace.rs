@@ -2625,20 +2625,40 @@ mod tests {
     #[test]
     fn cheap_installed_ids_match_the_listed_installed_ids() {
         // The cheap enumeration must not miss or add skills relative to the
-        // full list: the DenyAll expansion inside the consent-file critical
-        // section runs on it, and a divergence would deny a different set
-        // than the marketplace UI shows.
-        with_temp_home("skill-cheap-ids", || {
-            let manager = SkillMarketplaceManager::new();
-            let listed: Vec<String> = manager
-                .list_skills()
-                .into_iter()
-                .filter(|s| s.installed)
-                .map(|s| s.id)
-                .collect();
-            let cheap = manager.installed_skill_ids_cheap();
-            assert_eq!(listed, cheap, "cheap enumeration must match list_skills");
-        });
+        // full list: the DenyAll fallback expansion runs on it, and a
+        // divergence would deny a different set than the marketplace UI
+        // shows. A real installed upload skill is part of the fixture — in
+        // an empty home both sides are empty and a missed skill (the
+        // regression this test exists for) is structurally unobservable.
+        let tmp = fresh_dir("skill-cheap-ids");
+        let zip_path = tmp.join("pkg.zip");
+        {
+            use std::io::Write;
+            let f = std::fs::File::create(&zip_path).unwrap();
+            let mut zw = zip::ZipWriter::new(f);
+            let opts = zip::write::SimpleFileOptions::default();
+            zw.start_file("cheap-fixture/SKILL.md", opts).unwrap();
+            zw.write_all(b"---\nname: cheap-fixture\ndescription: d\n---\n# hi")
+                .unwrap();
+            zw.finish().unwrap();
+        }
+        let manager = SkillMarketplaceManager::with_roots(tmp.clone());
+        manager.import_package(zip_path.to_str().unwrap()).unwrap();
+
+        let mut listed: Vec<String> = manager
+            .list_skills()
+            .into_iter()
+            .filter(|s| s.installed)
+            .map(|s| s.id)
+            .collect();
+        let mut cheap = manager.installed_skill_ids_cheap();
+        assert!(
+            !cheap.is_empty(),
+            "the fixture must install at least one skill for the comparison to bite"
+        );
+        listed.sort();
+        cheap.sort();
+        assert_eq!(listed, cheap, "cheap enumeration must match list_skills");
     }
 
     #[test]

@@ -1667,7 +1667,21 @@ mod tests {
         let json = serde_json::to_string(&report).unwrap();
         assert!(json.contains("\"name\":\"Bash\""));
         assert!(json.contains("\"completed_after_deadline\":true"));
-        assert!(!json.contains("secret"));
+        // The no-payload contract is structural: a tool event serializes to
+        // exactly the name/failed pair. The old `!json.contains("secret")`
+        // assertion was vacuous — the fixture had no channel through which a
+        // secret could reach the output, so it could never fail. Growing the
+        // event struct a payload-bearing field (arguments, results) is
+        // exactly the change that must turn this red and force a revisit of
+        // the "safe to persist under /logs" contract.
+        let event = serde_json::to_value(&report.tool_events[0]).unwrap();
+        let event_keys: Vec<&str> = event.as_object().unwrap().keys().map(String::as_str).collect();
+        assert_eq!(
+            event_keys.len(),
+            2,
+            "tool events must carry no payload-bearing fields: {event_keys:?}"
+        );
+        assert!(event_keys.contains(&"name") && event_keys.contains(&"failed"));
         let parsed: AgenticTaskReport = serde_json::from_str(&json).unwrap();
         assert_eq!(parsed, report);
     }
