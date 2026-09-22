@@ -293,12 +293,9 @@ fn run_version_probe_with_timeout(
     command.arg("--version");
     configure(&mut command);
     let mut child = command.spawn().map_err(VersionProbeError::Spawn)?;
-    let status = match child
-        .wait_timeout(timeout)
-        .map_err(VersionProbeError::Wait)?
-    {
-        Some(status) => Some(status),
-        None => {
+    let status = match child.wait_timeout(timeout) {
+        Ok(Some(status)) => Some(status),
+        Ok(None) => {
             let _ = child.kill();
             let _ = child.wait();
             // Descendants of the child may have inherited the piped write ends and survive the
@@ -310,6 +307,12 @@ fn run_version_probe_with_timeout(
                 stdout: String::new(),
                 stderr: String::new(),
             });
+        }
+        Err(error) => {
+            // Rare non-timeout wait failure: still reap the child instead of leaving a zombie behind.
+            let _ = child.kill();
+            let _ = child.wait();
+            return Err(VersionProbeError::Wait(error));
         }
     };
     // Treat read failures as empty strings: each caller's empty-output branch (probe failed / no version
