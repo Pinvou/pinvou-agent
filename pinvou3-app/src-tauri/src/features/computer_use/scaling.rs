@@ -136,11 +136,23 @@ impl ScaleMap {
     /// unique per monitor (unlike device pixels, whose rects overlap when
     /// monitor scales differ), so per-monitor input rects are disjoint and
     /// this containment test is exact: the point is on this map's monitor
-    /// or it is not.
+    /// or it is not. The edge product is snapped to the nearest integer when
+    /// within floating-point epsilon of one: `dev_w * input_scale_x` is
+    /// mathematically exact but f64-rounds to e.g. 625.0000000000001, and a
+    /// bare `ceil` admitted one input pixel past the half-open edge on
+    /// fractional scales (a boundary-adjacent cursor report could then land
+    /// on the wrong monitor — round-17 nit).
     pub fn contains_input_point(&self, x: i32, y: i32) -> bool {
         let (fx, fy) = (f64::from(x), f64::from(y));
-        let max_x = (f64::from(self.origin_x) + f64::from(self.dev_w) * self.input_scale_x).ceil();
-        let max_y = (f64::from(self.origin_y) + f64::from(self.dev_h) * self.input_scale_y).ceil();
+        let snap = |edge: f64| -> f64 {
+            if (edge - edge.round()).abs() < 1e-6 {
+                edge.round()
+            } else {
+                edge.ceil()
+            }
+        };
+        let max_x = snap(f64::from(self.origin_x) + f64::from(self.dev_w) * self.input_scale_x);
+        let max_y = snap(f64::from(self.origin_y) + f64::from(self.dev_h) * self.input_scale_y);
         f64::from(self.origin_x) <= fx && fx < max_x && f64::from(self.origin_y) <= fy && fy < max_y
     }
 

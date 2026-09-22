@@ -635,12 +635,12 @@ fn capture_and_store(parts: &Parts, workspace: &Path) -> Result<ShotOutcome, Com
     state.shot_seq += 1;
     let seq = state.shot_seq;
     let stamp = chrono::Local::now().format("%Y%m%d-%H%M%S");
-    let file_name = format!("{stamp}-{seq:04}.png");
+    let file_name = format!("{stamp}-{seq:04}-{}.png", session_tag(&parts.session_id));
     let abs_path = dir.join(&file_name);
     directory
         .atomic_write_private_file(std::ffi::OsStr::new(&file_name), &scaled.png)
         .map_err(|error| ComputerUseError::failed(format!("cannot write screenshot: {error}")))?;
-    prune_old_screenshots(&dir, MAX_RETAINED_SCREENSHOTS);
+    prune_old_screenshots(&dir, MAX_RETAINED_SCREENSHOTS, &file_name);
     let map = scaled.map;
     state.last_map = Some(map.clone());
     drop(state);
@@ -688,19 +688,47 @@ fn with_image_metadata(result: ToolResult, shot: &ShotOutcome) -> ToolResult {
 }
 
 /// Keeps only the newest `keep` PNGs in the screenshot directory (filenames
-/// sort chronologically: `%Y%m%d-%H%M%S`-{seq} — the stamp is fixed-width,
-/// the per-session sequence zero-padded). Best-effort: any error (vanished
-/// directory, unreadable entry, failed unlink) is ignored — retention must
-/// never fail the action that just captured.
-fn prune_old_screenshots(dir: &Path, keep: usize) {
+/// sort chronologically: `%Y%m%d-%H%M%S`-{seq}-{tag} — the stamp is
+/// fixed-width, the per-session sequence zero-padded, the session tag
+/// disambiguates sessions sharing one explicit workspace). `just_written` is
+/// excluded from deletion: a backwards local-clock step (DST fall-back, NTP
+/// correction, VM snapshot resume) used to make the fresh capture sort
+/// oldest, so it was unlinked moments after the model was told its path —
+/// every capture during the backwards window was destroyed the same way.
+/// Also sweeps crash-orphaned `.pinvou-private-write-*.tmp` files older than
+/// [`TMP_SWEEP_AGE`]: a crash mid-write strands a complete screen image in a
+/// temp file that retention never reclaimed. Best-effort: any error
+/// (vanished directory, unreadable entry, failed unlink) is ignored —
+/// retention must never fail the action that just captured.
+fn prune_old_screenshots(dir: &Path, keep: usize, just_written: &str) {
     let Ok(entries) = std::fs::read_dir(dir) else {
         return;
     };
-    let mut names: Vec<String> = entries
-        .flatten()
-        .filter(|entry| entry.path().extension().is_some_and(|ext| ext == "png"))
-        .filter_map(|entry| entry.file_name().into_string().ok())
-        .collect();
+    let now = std::time::SystemTime::now();
+    let mut names: Vec<String> = Vec::new();
+    for entry in entries.flatten() {
+        let Ok(name) = entry.file_name().into_string() else {
+            continue;
+        };
+        // Crash-orphaned atomic-write temps hold complete screen PNGs; once
+        // old enough not to be a live write, sweep them too.
+        if name.starts_with(".pinvou-private-write-") && name.ends_with(".tmp") {
+            if let Ok(age) = now.duration_since(
+                entry
+                    .metadata()
+                    .and_then(|meta| meta.modified())
+                    .unwrap_or(std::time::SystemTime::now()),
+            ) {
+                if age >= TMP_SWEEP_AGE {
+                    let _ = std::fs::remove_file(entry.path());
+                }
+            }
+            continue;
+        }
+        if entry.path().extension().is_some_and(|ext| ext == "png") && name != just_written {
+            names.push(name);
+        }
+    }
     if names.len() <= keep {
         return;
     }
@@ -709,6 +737,25 @@ fn prune_old_screenshots(dir: &Path, keep: usize) {
     for name in names.iter().take(excess) {
         let _ = std::fs::remove_file(dir.join(name));
     }
+}
+
+/// Age at which a crash-orphaned atomic-write temp file in the screenshot
+/// directory becomes sweepable (a live write holds its temp for far less).
+const TMP_SWEEP_AGE: std::time::Duration = std::time::Duration::from_secs(10 * 60);
+
+/// A filesystem-safe 8-hex tag of the session id, mixed into screenshot
+/// filenames: two sessions sharing one explicit workspace used to collide on
+/// the same-second, same-sequence name (the second rename silently replaced
+/// the first session's screenshot, whose audit record then pointed at the
+/// wrong pixels).
+fn session_tag(session_id: &str) -> String {
+    use sha2::Digest;
+    let digest = sha2::Sha256::digest(session_id.as_bytes());
+    let mut tag = String::with_capacity(8);
+    for byte in &digest[..4] {
+        let _ = std::fmt::Write::write_fmt(&mut tag, format_args!("{byte:02x}"));
+    }
+    tag
 }
 
 fn backend_error_text(error: &ComputerUseError) -> String {
@@ -1014,19 +1061,37 @@ fn full_type_preview(action: &ComputerUseAction, secure_type_target: bool) -> Op
 /// changing what the user sees). Hashes the action's Debug rendering — every
 /// parameter participates, nothing user-visible changes. In-process only
 /// (tokens are memory-bound with a 5-minute TTL), so hash stability across
-/// builds does not matter — but the hash must be **unpredictable to the
-/// model**: the adversary who could profit from a binding collision is the
-/// code-executing model itself, so a fixed-key `DefaultHasher` (offline
-/// birthday-collidable at ~2^32 work) would let it get a benign text
-/// approved and spend the token on colliding malicious text. Truncated
-/// SHA-256 keeps the same in-process semantics with no offline collision
-/// shortcut.
+/// builds does not matter — but the digest must be **keyed**: any
+/// *deterministic* 64-bit hash (the fixed-key `DefaultHasher` this scheme
+/// replaced as much as an unkeyed truncated SHA-256 an earlier revision of
+/// this comment wrongly called collision-free) has a ~2^32 birthday surface
+/// an offline attacker can walk. The random per-process key takes the digest
+/// out of offline reach entirely: the model never sees a binding value, so
+/// it has no oracle to forge against, and reading the key would require the
+/// same process-memory access the approval tokens themselves already rely
+/// on staying private.
 fn action_binding(action: &ComputerUseAction) -> u64 {
     use sha2::Digest;
-    let digest = sha2::Sha256::digest(format!("{action:?}").as_bytes());
+    let mut hasher = sha2::Sha256::new();
+    hasher.update(binding_key());
+    hasher.update(format!("{action:?}").as_bytes());
+    let digest = hasher.finalize();
     let mut prefix = [0u8; 8];
     prefix.copy_from_slice(&digest[..8]);
     u64::from_be_bytes(prefix)
+}
+
+/// The random per-process key for [`action_binding`] (see that function's
+/// doc for why the digest must be keyed).
+fn binding_key() -> &'static [u8; 32] {
+    static KEY: std::sync::OnceLock<[u8; 32]> = std::sync::OnceLock::new();
+    KEY.get_or_init(|| {
+        let mut key = [0u8; 32];
+        for word in key.chunks_exact_mut(8) {
+            word.copy_from_slice(&rand::random::<u64>().to_le_bytes());
+        }
+        key
+    })
 }
 
 /// Structured i18n source for the consent dialog, serialized into the
@@ -2262,6 +2327,7 @@ fn rejection_name(rejection: GuardRejection) -> &'static str {
         GuardRejection::Disabled => "disabled",
         GuardRejection::Stopped => "stopped",
         GuardRejection::GrantRequired => "grant-required",
+        GuardRejection::ConfirmationPending => "confirmation-pending",
         GuardRejection::InputBusy => "input-busy",
     }
 }

@@ -62,8 +62,10 @@ pub const PINVOU3_ALLOWED_TOOLS: &[&str] = &[
     "ima_openapi",
     // Computer use stays in the allowlist unconditionally; while the feature
     // toggle is off the engine disallow list hides it and the consent guard
-    // rejects every call.
-    "computer_use",
+    // rejects every call. Referenced through the feature's canonical const
+    // (not a literal) so a rename cannot silently strip the tool from every
+    // model catalog with all suites green.
+    crate::features::computer_use::TOOL_NAME,
     "mcp_*",
     "list_mcp_resources",
     "list_mcp_resource_templates",

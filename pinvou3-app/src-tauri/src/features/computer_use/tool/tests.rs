@@ -962,7 +962,11 @@ async fn t3_denylist_blocks_click_until_user_confirms() {
         .unwrap_or_default()
         .to_string();
 
-    // A forged/replayed confirm_id is always rejected.
+    // While the dialog is unanswered, no input action is accepted from the
+    // session — not even a retry carrying an id: the dialog's own approve
+    // control is an ordinary clickable element whose label screens Clear,
+    // so letting the retry through would let the model approve itself by
+    // clicking it (round-17 self-approval finding).
     let forged = fixture
         .tool
         .execute(
@@ -972,13 +976,26 @@ async fn t3_denylist_blocks_click_until_user_confirms() {
         .await;
     let forged_text = forged.ok().map(|r| r.content).unwrap_or_default();
     assert!(
-        forged_text.contains("invalid, expired, or was already used"),
+        forged_text.contains("waiting for the user's confirmation"),
         "{forged_text}"
     );
 
     // After the user confirms (a future computer_use_confirm command mints
-    // the token), the retry succeeds.
+    // the token), the retry succeeds — and a forged/replayed id is rejected
+    // at the spend as before.
     fixture.shared.mint_confirmation(&confirm_id);
+    let forged_after = fixture
+        .tool
+        .execute(
+            json!({"action": "left_click", "x": 5, "y": 5, "confirm_id": "cu-forged"}),
+            &context(&fixture.workspace),
+        )
+        .await;
+    let forged_after_text = forged_after.ok().map(|r| r.content).unwrap_or_default();
+    assert!(
+        forged_after_text.contains("invalid, expired, or was already used"),
+        "{forged_after_text}"
+    );
     let confirmed = fixture
         .tool
         .execute(
@@ -992,6 +1009,64 @@ async fn t3_denylist_blocks_click_until_user_confirms() {
     };
     assert!(confirmed.success, "{}", confirmed.content);
     assert_eq!(fixture.mock.lock().clicked.len(), 1);
+}
+
+/// Round-17 self-approval pin, tool-level: with the confirmation dialog
+/// unanswered, an input action whose screened target is Clear (the dialog's
+/// own approve control, e.g. "Allow this once") is still rejected at the
+/// gate — the model cannot mint the approval by clicking the dialog.
+#[tokio::test]
+async fn no_input_executes_while_a_confirmation_dialog_pends() {
+    let (fixture, _restore) = fixture();
+    fixture.shared.grant_session("s-test");
+    fixture.mock.lock().element = Some(ElementInfo {
+        screening_name: None,
+        role: "button".to_string(),
+        name: "Pay now".to_string(),
+        x: 0,
+        y: 0,
+        width: 10,
+        height: 10,
+        secure: false,
+    });
+    let blocked = fixture
+        .tool
+        .execute(
+            json!({"action": "left_click", "x": 5, "y": 5}),
+            &context(&fixture.workspace),
+        )
+        .await;
+    let blocked_text = blocked.ok().map(|r| r.content).unwrap_or_default();
+    assert!(blocked_text.contains("NOT executed"), "{blocked_text}");
+
+    // The dialog is up. A click on a benign-screened control (the approve
+    // button the dialog itself renders) must not reach the backend.
+    fixture.mock.lock().element = Some(ElementInfo {
+        screening_name: None,
+        role: "button".to_string(),
+        name: "Allow this once".to_string(),
+        x: 40,
+        y: 40,
+        width: 30,
+        height: 12,
+        secure: false,
+    });
+    let attempt = fixture
+        .tool
+        .execute(
+            json!({"action": "left_click", "x": 50, "y": 45}),
+            &context(&fixture.workspace),
+        )
+        .await;
+    let attempt_text = attempt.ok().map(|r| r.content).unwrap_or_default();
+    assert!(
+        attempt_text.contains("waiting for the user's confirmation"),
+        "{attempt_text}"
+    );
+    assert!(
+        fixture.mock.lock().clicked.is_empty(),
+        "the approve click must not execute"
+    );
 }
 
 #[tokio::test]
@@ -1102,8 +1177,18 @@ async fn mouse_down_up_composition_is_t3_screened() {
             .execute(json!({"action": action}), &context(&fixture.workspace))
             .await;
         let text = result.ok().map(|r| r.content).unwrap_or_default();
-        assert!(text.contains("NOT executed"), "{action}: {text}");
-        assert!(text.contains("confirm_id"), "{action}: {text}");
+        if action == "left_mouse_down" {
+            assert!(text.contains("NOT executed"), "{action}: {text}");
+            assert!(text.contains("confirm_id"), "{action}: {text}");
+        } else {
+            // The unanswered dialog from the down blocks every further input
+            // action from the session: the up is refused at the gate, so the
+            // model cannot click its way past its own dialog.
+            assert!(
+                text.contains("waiting for the user's confirmation"),
+                "{action}: {text}"
+            );
+        }
     }
     assert!(
         !fixture
@@ -1200,7 +1285,9 @@ async fn focus_on_password_with_cursor_elsewhere_requires_confirmation() {
     assert!(fixture.mock.lock().typed.is_empty(), "must not type");
 
     // key chords are screened by focus too: a consequential control with
-    // focus requires confirmation.
+    // focus requires confirmation. (The typing leg above left its dialog
+    // unanswered; the user's Deny is what lets the next leg proceed.)
+    assert!(fixture.shared.deny_newest_pending_for_tests("s-test"));
     fixture.mock.lock().focused = Some(ElementInfo {
         screening_name: None,
         role: "button".to_string(),
@@ -1353,6 +1440,9 @@ async fn drag_drop_target_is_screened() {
     );
 
     // Reverse: the start hits the denylist (benign drop) — blocked as well.
+    // (Deny the earlier leg's dialog first: an unanswered dialog rejects all
+    // input from the session.)
+    assert!(fixture.shared.deny_newest_pending_for_tests("s-test"));
     fixture.mock.lock().background = vec![ElementInfo {
         screening_name: None,
         role: "button".to_string(),
@@ -2153,7 +2243,9 @@ async fn retina_input_space_cursor_screens_inside_and_reports_exact_coords() {
     );
 
     // The cursor (150,40) is outside the captured monitor's input rect: no
-    // screening, executes, zero confirmations.
+    // screening, executes, zero confirmations. (Deny the blocked down's
+    // dialog first — an unanswered dialog rejects all input.)
+    assert!(fixture.shared.deny_newest_pending_for_tests("s-test"));
     fixture.mock.lock().cursor = (150, 40);
     let executed = fixture
         .tool
@@ -2484,6 +2576,12 @@ async fn trimmed_denylist_affirmatives_execute_and_consequences_confirm() {
         let text = result.ok().map(|r| r.content).unwrap_or_default();
         assert!(text.contains("NOT executed"), "{name}: {text}");
         assert!(text.contains("confirm_id"), "{name}: {text}");
+        // Deny so the next consequence word can raise its own fresh dialog:
+        // an unanswered dialog rejects all input from the session.
+        assert!(
+            fixture.shared.deny_newest_pending_for_tests("s-test"),
+            "{name}: expected an answerable dialog"
+        );
     }
     assert_eq!(
         fixture.mock.lock().clicked.len(),
@@ -3949,7 +4047,7 @@ fn screenshot_retention_prunes_oldest_files() {
     }
     // Non-screenshot files in the same directory are never touched.
     std::fs::write(dir.path().join("notes.txt"), b"x").expect("write");
-    super::prune_old_screenshots(dir.path(), 2);
+    super::prune_old_screenshots(dir.path(), 2, "20260921-000000-0005.png");
     let mut remaining: Vec<String> = std::fs::read_dir(dir.path())
         .expect("read dir")
         .map(|entry| {
@@ -3969,6 +4067,64 @@ fn screenshot_retention_prunes_oldest_files() {
             "notes.txt".to_string(),
         ]
     );
+}
+
+/// Round-17 pin: the just-written screenshot is never a prune victim — a
+/// backwards local-clock step (DST fall-back, NTP correction, VM snapshot
+/// resume) used to make the fresh capture sort oldest, so it was unlinked
+/// moments after the model was told its path.
+#[test]
+fn prune_never_deletes_the_just_written_screenshot() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    for i in 0..3 {
+        std::fs::write(
+            dir.path().join(format!("20260921-010000-000{i}.png")),
+            b"png",
+        )
+        .expect("write");
+    }
+    // The fresh capture's name sorts BEFORE every retained file (the clock
+    // stepped backwards between those writes).
+    let fresh = "20260921-000000-0000.png";
+    std::fs::write(dir.path().join(fresh), b"png").expect("write");
+    super::prune_old_screenshots(dir.path(), 3, fresh);
+    assert!(
+        dir.path().join(fresh).exists(),
+        "the just-written capture must survive the prune"
+    );
+    // Retention semantics with the protection: the newest capture floats
+    // ABOVE the retained set, so a backwards-clock window grows the
+    // directory by one file per capture instead of destroying the fresh
+    // shots (the next prune re-tightens the older set once the clock is
+    // sane again).
+    let remaining = std::fs::read_dir(dir.path())
+        .expect("read dir")
+        .filter_map(|entry| entry.ok())
+        .filter(|entry| entry.path().extension().is_some_and(|ext| ext == "png"))
+        .count();
+    assert_eq!(
+        remaining, 4,
+        "nothing is deleted: 3 retained + the protected fresh file"
+    );
+}
+
+/// Round-17 pin: crash-orphaned atomic-write temp files (complete screen
+/// PNGs, potential passwords on screen) older than the sweep age are
+/// reclaimed; fresh temps and everything else are left alone.
+#[test]
+fn prune_sweeps_stale_atomic_write_temps() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    let stale = dir.path().join(".pinvou-private-write-123.tmp");
+    let fresh = dir.path().join(".pinvou-private-write-456.tmp");
+    std::fs::write(&stale, b"png").expect("write");
+    std::fs::write(&fresh, b"png").expect("write");
+    // Age the "stale" temp past the sweep age (set both times: stale far
+    // back, fresh just now).
+    let old = std::time::SystemTime::now() - std::time::Duration::from_secs(3600);
+    filetime::set_file_mtime(&stale, filetime::FileTime::from_system_time(old)).expect("set mtime");
+    super::prune_old_screenshots(dir.path(), 100, "x.png");
+    assert!(!stale.exists(), "the stale temp must be swept");
+    assert!(fresh.exists(), "a fresh temp must not be swept");
 }
 
 /// The cross-session physical input lock: while session A holds the lock,
