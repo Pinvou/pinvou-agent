@@ -1298,10 +1298,9 @@ impl EnginePool {
         self.mcp_config_revision.fetch_add(1, Ordering::AcqRel);
     }
 
-    /// Tool-policy compute for the chat send path. The policy closure reads
-    /// the cross-process bundle lock; keep the potentially blocking read off
-    /// the async worker like every other lock-taking path (a wedged CLI
-    /// process must not freeze the worker). `None` = the compute task died
+    /// Tool-policy compute for the chat send path. The policy closure does
+    /// blocking disk I/O via the marketplace readers; keep it off the async
+    /// worker. `None` = the compute task died
     /// (join failure): the caller must keep the session's current disallowed
     /// set — an empty list would broadcast allow-everything (fail-open).
     pub async fn compute_disallowed_tools(&self) -> Option<Vec<String>> {
@@ -1320,9 +1319,8 @@ impl EnginePool {
     }
 
     pub async fn refresh_disallowed_tools(&self) -> Vec<String> {
-        // The policy closure reads the cross-process bundle lock; keep the
-        // potentially blocking read off the async worker like the other
-        // lock-taking paths (a wedged CLI process must not freeze the worker).
+        // The policy closure does blocking disk I/O via the marketplace
+        // readers; keep it off the async worker.
         let app = self.app.clone();
         let tool_policy = self.tool_policy.clone();
         let tools = match tokio::task::spawn_blocking(move || tool_policy(&app)).await {
@@ -1634,11 +1632,11 @@ impl EnginePool {
             .steer_incarnation_seq
             .fetch_add(1, Ordering::Relaxed)
             .saturating_add(1);
-        // The tool policy closure AND the per-session shaping both read the
-        // cross-process bundle lock (shaping consults the scope unavailable
-        // sets for non-plain sessions); keep both blocking reads inside the
-        // same off-worker task (same rationale as refresh_disallowed_tools —
-        // a wedged CLI process must not freeze the worker).
+        // The tool policy closure AND the per-session shaping both do
+        // blocking disk I/O via the marketplace readers (shaping consults
+        // the scope unavailable sets for non-plain sessions); keep both
+        // inside the same off-worker task (same rationale as
+        // refresh_disallowed_tools).
         let disallowed_tools = {
             let app = self.app.clone();
             let tool_policy = self.tool_policy.clone();
@@ -2172,7 +2170,13 @@ impl EnginePool {
         &self,
         session_id: &str,
         model_selection: Option<&EvalModelSelection>,
+        workspace: Option<&std::path::Path>,
     ) -> Result<()> {
+        // The caller's task directory (when provided) lands in the session's
+        // `metadata.workspace` so the GUI list/detail shows the directory the
+        // session actually works in; the durable binding sidecar is written
+        // separately by the caller.
+        let metadata_workspace = workspace.map(std::path::Path::to_path_buf);
         match model_selection {
             None => {
                 let (model, model_id) = self.default_model_for_new_session();
@@ -2180,7 +2184,9 @@ impl EnginePool {
                     session_id.to_string(),
                     model,
                     model_id,
-                    self.bridge.workspace.clone(),
+                    metadata_workspace
+                        .clone()
+                        .unwrap_or_else(|| self.bridge.workspace.clone()),
                 )?;
                 self.get_or_spawn(session_id).await?;
             }
@@ -2191,7 +2197,7 @@ impl EnginePool {
                     session_id.to_string(),
                     selection.wire_model().to_string(),
                     selection.model_id().map(str::to_string),
-                    self.bridge.workspace.clone(),
+                    metadata_workspace.unwrap_or_else(|| self.bridge.workspace.clone()),
                 );
                 if let Err(error) = prepare_result {
                     self.eval_model_snapshots.forget_session(session_id);

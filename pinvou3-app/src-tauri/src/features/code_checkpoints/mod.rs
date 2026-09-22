@@ -148,9 +148,10 @@ pub struct CheckpointMeta {
     /// 第几个用户 turn（1-based）；计数失败时为 None，前端按顺序兜底对齐。
     pub turn: Option<u32>,
     pub kind: CheckpointKind,
-    /// 展示标签。序列化恒带该键（当前新建条目写入空串）；反序列化对
-    /// `serde(default)` 兼容——main 时代的索引没有 `label` 键，缺了它会让
-    /// 整份索引解析失败并被 quarantine 分支清空，升级即丢历史。
+    /// 展示标签。序列化恒带该键，写入端经 `normalize_checkpoint_label` 归一
+    /// （去首尾空白 + 80 字符截断）；反序列化对 `serde(default)` 兼容——
+    /// main 时代的索引没有 `label` 键，缺了它会让整份索引解析失败并被
+    /// quarantine 分支清空，升级即丢历史。
     #[serde(default)]
     pub label: String,
     /// 影子仓库中的 commit sha（orphan commit，互不为父子）。
@@ -522,6 +523,18 @@ fn git_diff_capped(
         std::process::id()
     ));
     let _cleanup = TempDiffFile(&output_path);
+    // Create the spill file ourselves with private permissions: the git
+    // child writes the UNFILTERED diff here (the secret-path filter only
+    // runs after the read-back), and a child-created file would land
+    // world-readable in a shared temp directory. `git diff --output`
+    // truncates an existing file and keeps its mode, so pre-creating with
+    // 0600 (a no-op constraint on Windows' per-user temp ACLs) is enough.
+    crate::platform::filesystem::create_secret_file(&output_path).with_context(|| {
+        format!(
+            "create private checkpoint diff spill file {}",
+            output_path.display()
+        )
+    })?;
     use std::io::Read as _;
     let mut arguments: Vec<String> = arguments
         .iter()
@@ -726,10 +739,23 @@ fn load_index(ledger_root: &Path) -> Result<CheckpointIndex> {
             // 首次取证）。代价：影子仓库里的历史快照失去索引（不可列不可用，
             // 对象随 gc 回收），此后快照能力恢复。
             match crate::platform::filesystem::quarantine_corrupt_file(&path) {
-                Ok(quarantine) => eprintln!(
-                    "[checkpoints] checkpoint 索引损坏，隔离为 {} 后从空索引重建: {parse_error:#}",
-                    quarantine.display()
-                ),
+                // The quarantine path lives inside the session directory, so
+                // printing it would route the session id into stderr (same
+                // cleartext-logging surface as the sidecar persist logs);
+                // the ledger root in context already identifies the write.
+                Ok(quarantine) => {
+                    match quarantine
+                        .file_name()
+                        .map(|name| name.to_string_lossy().into_owned())
+                    {
+                        Some(name) => eprintln!(
+                            "[checkpoints] checkpoint 索引损坏，隔离为 {name} 后从空索引重建: {parse_error:#}"
+                        ),
+                        None => eprintln!(
+                            "[checkpoints] checkpoint 索引损坏，已隔离并从空索引重建: {parse_error:#}"
+                        ),
+                    }
+                }
                 Err(error) => eprintln!("[checkpoints] 隔离损坏索引失败: {error:#}"),
             }
             Ok(CheckpointIndex {
@@ -772,13 +798,15 @@ pub fn create_checkpoint(
     execution_root: &Path,
     turn: Option<u32>,
     kind: CheckpointKind,
-    // The parameter stays so existing callers need no coordinated change.
-    // The label is part of the persisted `CheckpointMeta` again (the stacked
-    // CLI reads it); new entries record an empty string until a caller
-    // resumes populating it — see the struct field comment.
-    _label: &str,
+    label: &str,
 ) -> Result<CheckpointMeta> {
-    create_checkpoint_preserving(ledger_root, execution_root, turn, kind, &[])
+    create_checkpoint_preserving(ledger_root, execution_root, turn, kind, label, &[])
+}
+
+/// 展示标签落盘前的归一：去首尾空白并截断到 80 字符（按字符不按字节，CJK
+/// 标签不会被腰斩成半个字符）。空标签原样落盘。
+fn normalize_checkpoint_label(label: &str) -> String {
+    label.trim().chars().take(80).collect()
 }
 
 /// `create_checkpoint` 的保留变体：LRU/存储压力淘汰跳过 `preserve` 中的条目。
@@ -790,6 +818,7 @@ fn create_checkpoint_preserving(
     execution_root: &Path,
     turn: Option<u32>,
     kind: CheckpointKind,
+    label: &str,
     preserve: &[&str],
 ) -> Result<CheckpointMeta> {
     let execution_root = canonical_execution_root(execution_root)?;
@@ -821,7 +850,7 @@ fn create_checkpoint_preserving(
         id: format!("c{}-{}", index.entries.len() + 1, now_nanos()),
         turn,
         kind,
-        label: String::new(),
+        label: normalize_checkpoint_label(label),
         commit,
         created_at: now_seconds(),
     };
@@ -1015,9 +1044,12 @@ fn secret_path_matches(path: &str) -> bool {
     })
 }
 
-/// diff --git 段头是否指向敏感文件。常规按空白切 token、剥 a//b/ 前缀与引号；
-/// 含空格/tab 的路径（git C-quoting 输出 `diff --git "a/x y" "b/x y"`）按引号
-/// 段解析；仍解析不了时由 ---/+++ 行兜底（见 filter_secret_paths_from_patch）。
+/// diff --git 段头是否指向敏感文件。C-quoted 形式（路径含引号/tab/非 ASCII 时
+/// git 输出 `diff --git "a/x" "b/x"`）按引号段提取 a/ 与 b/ 路径；未加引号形式
+/// 的路径可含空格（纯空格不触发 C-quoting），按最后一个 ` b/` 出现位置切分两个
+/// 路径（与 git 消费者同法；即使误切，方向也偏保守——多剔除而非漏剔除）；
+/// 二进制文件的 diff 段没有 ---/+++ 行，段头解析是它们唯一的判定途径，token
+/// 扫描只作最后兜底。
 fn diff_section_is_secret(header: &str) -> bool {
     if let Some(rest) = header.strip_prefix("diff --git \"") {
         // C-quoted 形式：按引号段提取 a/ 与 b/ 路径（路径可含空格）。
@@ -1033,6 +1065,15 @@ fn diff_section_is_secret(header: &str) -> bool {
             .and_then(|s| s.split('"').next())
         {
             if secret_path_matches(path) {
+                return true;
+            }
+        }
+    }
+    if let Some(rest) = header.strip_prefix("diff --git a/") {
+        if let Some(split) = rest.rfind(" b/") {
+            let old_path = &rest[..split];
+            let new_path = &rest[split + " b/".len()..];
+            if secret_path_matches(old_path) || secret_path_matches(new_path) {
                 return true;
             }
         }
@@ -1065,8 +1106,8 @@ fn marker_line_is_secret(line: &str) -> bool {
 
 /// 从 unified diff 文本剔除命中敏感文件模式的整段文件 diff：迁移前打的旧
 /// 快照 tree 里可能仍有秘密原文（purge 只清 index），预览不得把原文带进 UI。
-/// 按段缓冲后判定（header 或 ---/+++ 行任一命中即整段剔除）——含空格路径
-/// 无法从段头 token 解析，必须看到 ---/+++ 行才能判定（评审 M1）。
+/// 按段缓冲后判定（段头或 ---/+++ 行任一命中即整段剔除；二进制段没有
+/// marker 行，全靠段头解析）。
 fn filter_secret_paths_from_patch(patch: &str) -> String {
     let mut out = String::with_capacity(patch.len());
     let mut section: Vec<&str> = Vec::new();
@@ -1158,7 +1199,10 @@ pub fn diff_checkpoint(
     // read implies the caller is not seeing the full diff). The clamp is a
     // belt-and-braces for `from_utf8_lossy` expansion (one invalid byte
     // becomes three replacement bytes): it can only move the end backwards
-    // to the previous line boundary, so a section header stays whole.
+    // to the previous line boundary, so a section header stays whole — and
+    // when it does fire, content was dropped without the raw read ever
+    // crossing the cap, so the flag must flip too.
+    let mut patch_truncated = patch_truncated;
     if patch.len() > DIFF_PATCH_LIMIT {
         let bytes = patch.as_bytes();
         let mut end = DIFF_PATCH_LIMIT;
@@ -1166,6 +1210,7 @@ pub fn diff_checkpoint(
             end -= 1;
         }
         patch.truncate(end);
+        patch_truncated = true;
     }
     Ok(CheckpointDiff {
         checkpoint: meta,
@@ -1874,6 +1919,35 @@ mod tests {
             !diff.patch.contains("SECRET") && !diff.patch.contains(".env"),
             "含空格的秘密段不得进入 patch: {:?}",
             diff.patch
+        );
+    }
+
+    /// 二进制文件的 diff 段没有 ---/+++ marker 行，段头解析是唯一判定途径；
+    /// 而纯空格路径不触发 git 的 C-quoting（`diff --git a/my key.pem b/my
+    /// key.pem` 原样输出），段头必须按最后一个 ` b/` 切出两个完整路径才能
+    /// 命中 `*.pem` 这类模式——逐空白 token 会把 `key.pem` 与前缀拆散而漏判，
+    /// 秘密路径就会随 Binary 行泄入 patch。
+    #[test]
+    fn binary_secret_section_with_spaced_path_is_dropped() {
+        let patch = concat!(
+            "diff --git a/ok.txt b/ok.txt\n",
+            "index 1111111..2222222 100644\n",
+            "--- a/ok.txt\n",
+            "+++ b/ok.txt\n",
+            "@@ -1 +1 @@\n",
+            "-a\n",
+            "+b\n",
+            "diff --git a/my key.pem b/my key.pem\n",
+            "Binary files a/my key.pem and b/my key.pem differ\n",
+        );
+        let filtered = filter_secret_paths_from_patch(patch);
+        assert!(
+            filtered.contains("diff --git a/ok.txt b/ok.txt"),
+            "the non-secret section must survive: {filtered:?}"
+        );
+        assert!(
+            !filtered.contains("key.pem"),
+            "the binary secret section must be dropped wholesale: {filtered:?}"
         );
     }
 

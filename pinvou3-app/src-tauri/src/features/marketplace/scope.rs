@@ -18,7 +18,7 @@
 
 use std::path::PathBuf;
 use std::sync::Mutex;
-use std::sync::atomic::{AtomicU8, Ordering};
+use std::sync::atomic::{AtomicBool, Ordering};
 
 use crate::core::session_mode::{PackDefaultPolicy, SessionMode};
 use crate::features::marketplace::bundle::{builtin_cli_bundle_ids, skill_owner_package};
@@ -66,17 +66,24 @@ static DISABLED_BUNDLES_FILE_LOCK: Mutex<()> = Mutex::new(());
 /// and the same fd-lock crate as remote_control's process lock, and fails
 /// closed like it: an unavailable lock returns `Err` instead of running the
 /// write unserialized, because silently proceeding would reintroduce exactly
-/// the lost-update this lock exists to prevent. RMW writers do expand the
-/// DenyAll fallback INSIDE the critical section (`resolve_scope_disabled_ids`
-/// → `installed_skill_ids_cheap`), but that expansion is an ids-only packages
-/// root enumeration (`list_skills`-style per-skill fingerprinting is display
-/// only and never runs under the lock — see `skill_marketplace`), so the
-/// critical section stays short and blocking is preferable to retry loops.
+/// the lost-update this lock exists to prevent. The critical section only
+/// reads/writes a file-sized payload — the DenyAll expansion enumerates the
+/// packages root OUTSIDE the lock (`sample_denyall_expansion` is taken by
+/// every RMW writer before acquiring it, see `update_disabled_bundles_for`)
+/// — so blocking is preferable to retry loops.
+///
+/// Accepted residuals, matching remote_control's process lock: the lock file
+/// holds nothing and is never written, but if it is deleted or replaced
+/// while held (backup tooling rolling back `~/.pinvou3`), a later acquirer
+/// gets a fresh inode and the two locks no longer exclude each other —
+/// recovery is removing the stragglers, not integrity. `flock` excludes
+/// same-host processes only; on NFS/SMB mounts the serialization degrades to
+/// best-effort, like every other local-state guarantee in the home.
 fn with_disabled_bundles_lock<T>(f: impl FnOnce() -> T) -> Result<T, String> {
     let _guard = DISABLED_BUNDLES_FILE_LOCK
         .lock()
         .unwrap_or_else(|poisoned| poisoned.into_inner());
-    attempt_cross_process_lock(f).map_err(|(error, _unrun)| error)
+    attempt_cross_process_lock(f)
 }
 
 /// Writer variant of [`with_disabled_bundles_lock`] for closures that can
@@ -88,56 +95,38 @@ fn with_disabled_bundles_writer<T>(f: impl FnOnce() -> Result<T, String>) -> Res
     with_disabled_bundles_lock(f).and_then(std::convert::identity)
 }
 
-/// One-shot flags for the degraded read warnings (bit 0: cross-process lock
-/// unavailable; bit 1: corrupt data file defaulted to empty). Gating reads
-/// run on every prompt and tool listing, so an unbounded per-read `eprintln!`
-/// would spam stderr and stall the calling thread on exactly the degraded
-/// machines these warnings describe.
-static DEGRADED_READ_WARNED: AtomicU8 = AtomicU8::new(0);
+/// One-shot flag for the corrupt-read warning. Gating reads run on every
+/// prompt and tool listing, so an unbounded per-read `eprintln!` would spam
+/// stderr and stall the calling thread on exactly the degraded machines this
+/// warning describes.
+static CORRUPT_READ_WARNED: AtomicBool = AtomicBool::new(false);
 
-fn warn_degraded_read_once(bit: u8, message: &str) {
-    if DEGRADED_READ_WARNED.fetch_or(bit, Ordering::Relaxed) & bit == 0 {
+fn warn_corrupt_read_once(message: &str) {
+    if !CORRUPT_READ_WARNED.swap(true, Ordering::Relaxed) {
         eprintln!("{message}");
     }
 }
 
-/// Read variant of [`with_disabled_bundles_lock`]: same two locks, but an
-/// unavailable cross-process lock degrades to in-process-only serialization
-/// instead of failing the read. A read cannot corrupt the file, and gating
-/// reads run on every prompt/tool listing — refusing them would break the
-/// GUI on exactly the degraded machines the lock failure describes. Writers
-/// must not use this wrapper: they refuse (see `with_disabled_bundles_lock`).
-/// The closure handed to this wrapper must be persistence-free: on the
-/// degraded path it runs without the cross-process lock, so any save it
-/// performed could clobber a concurrent lock-holding writer's consent state
-/// (exactly the lost update the flock exists to prevent). The read entry
-/// point therefore pairs with [`load_disabled_bundles_file_readonly_locked`].
+/// Read section of the consent file: in-process serialization only. Reads are
+/// persistence-free (they pair with
+/// [`load_disabled_bundles_file_readonly_locked`]) and writers replace the
+/// whole file atomically, so a reader always observes one complete version —
+/// either the pre-write or the post-write file — without any cross-process
+/// coordination. That is deliberate: gating reads run on every prompt, tool
+/// listing and the per-turn send path, and the writers' flock blocks without
+/// a timeout, so taking it here would let a stalled foreign process freeze
+/// every turn submission. Writers must not use this wrapper: they refuse
+/// without the flock (see `with_disabled_bundles_lock`).
 fn with_disabled_bundles_lock_read<T>(f: impl FnOnce() -> T) -> T {
     let _guard = DISABLED_BUNDLES_FILE_LOCK
         .lock()
         .unwrap_or_else(|poisoned| poisoned.into_inner());
-    match attempt_cross_process_lock(f) {
-        Ok(value) => value,
-        Err((error, f)) => {
-            warn_degraded_read_once(
-                1,
-                &format!(
-                    "[marketplace] {error}; proceeding with in-process locking only \
-                 (read-only path)"
-                ),
-            );
-            // The attempt hands the closure back unrun, so the degraded
-            // fallback executes it exactly once.
-            f()
-        }
-    }
+    f()
 }
 
-/// Lock-acquisition half shared by both wrappers; the caller must already
-/// hold [`DISABLED_BUNDLES_FILE_LOCK`]. `f()` runs exactly once on `Ok` and
-/// never on `Err` — on refusal the closure is handed back unrun so the
-/// degraded read path can still execute it.
-fn attempt_cross_process_lock<T, F: FnOnce() -> T>(f: F) -> Result<T, (String, F)> {
+/// Lock-acquisition half of the writer path; the caller must already hold
+/// [`DISABLED_BUNDLES_FILE_LOCK`].
+fn attempt_cross_process_lock<T>(f: impl FnOnce() -> T) -> Result<T, String> {
     let lock_path = paths::pinvou3_home().join("disabled_bundles.lock");
     // The first write into a fresh PINVOU3_HOME happens before any other
     // writer has created the directory: create the parent first, otherwise
@@ -146,12 +135,9 @@ fn attempt_cross_process_lock<T, F: FnOnce() -> T>(f: F) -> Result<T, (String, F
     // nothing sensitive, so private-permission hardening is not pursued.
     if let Some(parent) = lock_path.parent() {
         if let Err(error) = std::fs::create_dir_all(parent) {
-            return Err((
-                format!(
-                    "[marketplace] create {}: {error}; cross-process lock unavailable",
-                    parent.display()
-                ),
-                f,
+            return Err(format!(
+                "[marketplace] create {}: {error}; cross-process lock unavailable",
+                parent.display()
             ));
         }
     }
@@ -164,13 +150,10 @@ fn attempt_cross_process_lock<T, F: FnOnce() -> T>(f: F) -> Result<T, (String, F
     {
         Ok(file) => file,
         Err(error) => {
-            return Err((
-                format!(
-                    "[marketplace] open cross-process lock {}: {error}; cross-process \
-                     lock unavailable",
-                    lock_path.display()
-                ),
-                f,
+            return Err(format!(
+                "[marketplace] open cross-process lock {}: {error}; cross-process \
+                 lock unavailable",
+                lock_path.display()
             ));
         }
     };
@@ -188,13 +171,10 @@ fn attempt_cross_process_lock<T, F: FnOnce() -> T>(f: F) -> Result<T, (String, F
                 if error.kind() == std::io::ErrorKind::Interrupted {
                     continue;
                 }
-                return Err((
-                    format!(
-                        "[marketplace] acquire cross-process lock {}: {error}; \
-                         cross-process lock unavailable",
-                        lock_path.display()
-                    ),
-                    f,
+                return Err(format!(
+                    "[marketplace] acquire cross-process lock {}: {error}; \
+                     cross-process lock unavailable",
+                    lock_path.display()
                 ));
             }
         }
@@ -202,20 +182,20 @@ fn attempt_cross_process_lock<T, F: FnOnce() -> T>(f: F) -> Result<T, (String, F
     Ok(f())
 }
 
-/// Reads the whole file under both locks. The read path that can trigger
-/// "load-then-migrate" must serialize with lock-holding writers through this
-/// entry point (same race shape as the old two-file #287 bug), and on the
-/// degraded path it must not persist anything — see
-/// [`load_disabled_bundles_file_readonly_locked`].
+/// Reads the whole file under the in-process read section. Reads never
+/// persist anything — a missing file's legacy merge and `skill:` prefix
+/// stripping stay in memory — see
+/// [`load_disabled_bundles_file_readonly_locked`]. Writers use
+/// [`load_disabled_bundles_file_locked`] under the fail-closed flock.
 pub(crate) fn load_disabled_bundles_file() -> DisabledBundlesFile {
     with_disabled_bundles_lock_read(load_disabled_bundles_file_readonly_locked)
 }
 
-/// Locked read implementation used by the degraded path: memory-only. A
-/// missing file merges the two legacy files in memory without saving the
-/// migration (a concurrent lock-holding writer owns the canonical file); a
-/// present file is parsed and `skill:` prefix residuals are stripped in
-/// memory only (fresh writers never produce them anymore). Writers must use
+/// Locked read implementation: memory-only. A missing file merges the two
+/// legacy files in memory without saving the migration (the canonical file
+/// belongs to the lock-holding writers); a present file is parsed and
+/// `skill:` prefix residuals are stripped in memory only (fresh writers never
+/// produce them anymore). Writers must use
 /// [`load_disabled_bundles_file_locked`], which persists migration and
 /// normalization while holding the cross-process lock.
 fn load_disabled_bundles_file_readonly_locked() -> DisabledBundlesFile {
@@ -227,17 +207,14 @@ fn load_disabled_bundles_file_readonly_locked() -> DisabledBundlesFile {
     let mut file: DisabledBundlesFile = match serde_json::from_str(&content) {
         Ok(file) => file,
         Err(error) => {
-            // Reads must never write (the degraded path would clobber a
-            // lock-holding writer), so the corrupt file cannot be quarantined
-            // here — degrade to the default loudly, once per process.
-            warn_degraded_read_once(
-                2,
-                &format!(
-                    "[marketplace] {} is corrupt ({error}); proceeding with the default \
+            // Reads must never write, so the corrupt file cannot be
+            // quarantined here — degrade to the default loudly, once per
+            // process.
+            warn_corrupt_read_once(&format!(
+                "[marketplace] {} is corrupt ({error}); proceeding with the default \
                      consent state until a writer quarantines it",
-                    path.display()
-                ),
-            );
+                path.display()
+            ));
             Default::default()
         }
     };
@@ -506,9 +483,90 @@ pub fn load_disabled_bundles_for(scope: ConnectorScope) -> Vec<String> {
     resolve_scope_disabled_ids(&file, scope)
 }
 
+/// DenyAll 兜底展开所需的安装态环境采样。采样要读 bundle store 并对技能包根做
+/// `installed_skill_ids_strict` 的逐技能探测（#584 的 overdeny 口径），属于文件系
+/// 统扫描——必须在进入 consent 文件临界区**之前**完成采样，让 flock 只覆盖
+/// 文件大小的读写，而不是文件系统遍历。
+///
+/// Environment facts feeding the DenyAll default expansion. Sampling reads
+/// the bundle store and probes the skill packages root per skill (the #584
+/// strict/overdeny enumeration), i.e. it is a filesystem scan: it must be
+/// captured BEFORE entering the consent-file critical section so the flock
+/// covers only a file-sized read/write, never the scan.
+struct DenyAllExpansionSample {
+    installed_ids: Vec<String>,
+    skill_ids: Vec<String>,
+    uploaded_skill_ids: Vec<String>,
+    skill_scan_degraded: bool,
+}
+
+/// Sample the install-state environment once per resolution. Callers outside
+/// a critical section sample freshly; the RMW writer samples before taking
+/// the flock (see `update_disabled_bundles_for`).
+fn sample_denyall_expansion() -> DenyAllExpansionSample {
+    let skill_market = SkillMarketplaceManager::new();
+    let (skill_ids, skill_scan_degraded) = skill_market.installed_skill_ids_strict();
+    DenyAllExpansionSample {
+        installed_ids: MarketplaceManager::new().installed_ids(),
+        skill_ids,
+        uploaded_skill_ids: skill_market.uploaded_skill_ids(),
+        skill_scan_degraded,
+    }
+}
+
+/// 已采样环境 → DenyAll 默认禁用集：已装包 ∪ 内置 CLI 包 ∪ 已装技能属主包；
+/// 严格枚举降级时按 #531/#584 口径并集全部预置/上传属主（向过度拒绝偏置）。
+/// 纯函数：只消费采样，绝不再触盘。
+/// Pure expansion over an existing sample: it must never touch the
+/// filesystem again, which is what keeps the critical section scan-free.
+fn expand_denyall_sample(sample: &DenyAllExpansionSample) -> Vec<String> {
+    // 现算分支：已按当前认领推导包 id，无需再归一。
+    let mut ids: Vec<String> = sample.installed_ids.clone();
+    ids.extend(builtin_cli_bundle_ids().map(str::to_string));
+    if sample.skill_scan_degraded {
+        // Enumeration degraded (#531): a failed probe can masquerade an
+        // installed skill as absent, so the default deny set must not
+        // shrink because of it. Blanket-union the owner packages of
+        // every preset skill (compile-time manifests) and of every
+        // known upload record — an uninitialized DenyAll scope would
+        // rather have the user enable a package explicitly than hand
+        // the consent gate a default silently narrowed by an
+        // enumeration failure. Owner mapping is the same
+        // `skill_owner_package` path as the normal loop below.
+        // Accepted residual: with an unreadable bundle store the upload
+        // population itself is unknowable (the lenient upload read
+        // yields nothing to union); with an unreadable packages root,
+        // straggler-copy-only skills of neither kind can be seen.
+        eprintln!(
+            "[scope] DenyAll default deny list degraded (skill enumeration failed); biasing to over-deny"
+        );
+        let mut blanket: Vec<String> = SkillMarketplaceManager::preset_skill_ids().collect();
+        blanket.extend(sample.uploaded_skill_ids.iter().cloned());
+        for skill_id in blanket {
+            let pkg = skill_owner_package(&skill_id);
+            if !ids.iter().any(|id| id == &pkg) {
+                ids.push(pkg);
+            }
+        }
+    }
+    for skill_id in &sample.skill_ids {
+        let pkg = skill_owner_package(skill_id);
+        if !ids.iter().any(|id| id == &pkg) {
+            ids.push(pkg);
+        }
+    }
+    ids
+}
+
 /// 已加载文件 → 某 scope 的有效禁用包 id 列表（含 DenyAll 默认兜底）。供
-/// `load_disabled_bundles_for` 与持锁写方（单临界区 RMW）共用，口径一致。
-fn resolve_scope_disabled_ids(file: &DisabledBundlesFile, scope: ConnectorScope) -> Vec<String> {
+/// `load_disabled_bundles_for`、`unavailable_bundles_for` 与 RMW 写方共用，
+/// 口径一致；RMW 写方传入临界区**之前**采样的环境（见
+/// [`update_disabled_bundles_for`]），本入口在锁外现采样。
+fn resolve_scope_disabled_ids_with_sample(
+    file: &DisabledBundlesFile,
+    scope: ConnectorScope,
+    sample: &DenyAllExpansionSample,
+) -> Vec<String> {
     let key = scope.as_str();
     if file.initialized.contains(key) {
         return normalize_stored_pkg_ids(&file.scopes.get(key).cloned().unwrap_or_default());
@@ -517,48 +575,16 @@ fn resolve_scope_disabled_ids(file: &DisabledBundlesFile, scope: ConnectorScope)
         PackDefaultPolicy::AllowAll => {
             normalize_stored_pkg_ids(&file.scopes.get(key).cloned().unwrap_or_default())
         }
-        PackDefaultPolicy::DenyAll => {
-            // 现算分支：已按当前认领推导包 id，无需再归一。
-            let mut ids: Vec<String> = MarketplaceManager::new().installed_ids();
-            ids.extend(builtin_cli_bundle_ids().map(str::to_string));
-            let skill_market = SkillMarketplaceManager::new();
-            let (skill_ids, skill_scan_degraded) = skill_market.installed_skill_ids_strict();
-            if skill_scan_degraded {
-                // Enumeration degraded (#531): a failed probe can masquerade an
-                // installed skill as absent, so the default deny set must not
-                // shrink because of it. Blanket-union the owner packages of
-                // every preset skill (compile-time manifests) and of every
-                // known upload record — an uninitialized DenyAll scope would
-                // rather have the user enable a package explicitly than hand
-                // the consent gate a default silently narrowed by an
-                // enumeration failure. Owner mapping is the same
-                // `skill_owner_package` path as the normal loop below.
-                // Accepted residual: with an unreadable bundle store the upload
-                // population itself is unknowable (the lenient upload read
-                // yields nothing to union); with an unreadable packages root,
-                // straggler-copy-only skills of neither kind can be seen.
-                eprintln!(
-                    "[scope] DenyAll default deny list degraded (skill enumeration failed); biasing to over-deny"
-                );
-                let mut blanket: Vec<String> =
-                    SkillMarketplaceManager::preset_skill_ids().collect();
-                blanket.extend(skill_market.uploaded_skill_ids());
-                for skill_id in blanket {
-                    let pkg = skill_owner_package(&skill_id);
-                    if !ids.iter().any(|id| id == &pkg) {
-                        ids.push(pkg);
-                    }
-                }
-            }
-            for skill_id in skill_ids {
-                let pkg = skill_owner_package(&skill_id);
-                if !ids.iter().any(|id| id == &pkg) {
-                    ids.push(pkg);
-                }
-            }
-            ids
-        }
+        PackDefaultPolicy::DenyAll => expand_denyall_sample(sample),
     }
+}
+
+/// Same as [`resolve_scope_disabled_ids_with_sample`] with a freshly taken
+/// sample; for lock-free read paths only — the RMW writer must sample before
+/// its critical section instead of calling this inside it.
+fn resolve_scope_disabled_ids(file: &DisabledBundlesFile, scope: ConnectorScope) -> Vec<String> {
+    let sample = sample_denyall_expansion();
+    resolve_scope_disabled_ids_with_sample(file, scope, &sample)
 }
 
 /// 写某 scope 被禁用的包 id 列表（写入即标记该 scope 已初始化）。入参统一归一为包
@@ -596,9 +622,16 @@ pub fn update_disabled_bundles_for(
     scope: ConnectorScope,
     update: impl FnOnce(&mut Vec<String>),
 ) -> Result<(), String> {
+    // Hoisted out of the critical section on purpose: the DenyAll expansion
+    // probes the skill packages root per skill (#584 overdeny enumeration),
+    // and enumerating inside the flock would hold the GUI/CLI serialization
+    // point for a filesystem scan. The sample freezes the environment the
+    // write-back persists; the discriminating regression is
+    // `update_rmw_samples_denyall_expansion_outside_the_critical_section`.
+    let sample = sample_denyall_expansion();
     with_disabled_bundles_writer(|| {
         let file = load_disabled_bundles_file_locked()?;
-        let mut ids = resolve_scope_disabled_ids(&file, scope);
+        let mut ids = resolve_scope_disabled_ids_with_sample(&file, scope, &sample);
         update(&mut ids);
         let normalized: Vec<String> = ids.iter().map(|id| to_package_id(id)).collect();
         let mut file = file;
@@ -645,10 +678,10 @@ pub fn save_hidden_bundles_for(scope: ConnectorScope, ids: &[String]) -> Result<
 }
 
 /// 该 scope 对底座「不可用」的包 id 并集 = 开关关（disabled）+ 不可见（hidden）。
-/// 物化/工具白名单按此并集排除，两套门控对模型都是「调不到」。单次持锁读出
-/// 两套集合（同一文件快照）：每次并集解析只取一次锁、只解析一次文件，也不会
-/// 混读两个时刻的 disabled/hidden（同一次刷新内多次调用之间的跨调用快照窗口
-/// 仍在，由各调用方自行取舍）。
+/// 物化/工具白名单按此并集排除，两套门控对模型都是「调不到」。单次读出两套集合
+/// （同一文件快照）：每次并集解析只读一次文件、只解析一次，也不会混读两个时刻的
+/// disabled/hidden（同一次刷新内多次调用之间的跨调用快照窗口仍在，由各调用方自行
+/// 取舍）。
 pub fn unavailable_bundles_for(scope: ConnectorScope) -> Vec<String> {
     let file = load_disabled_bundles_file();
     let mut ids = resolve_scope_disabled_ids(&file, scope);
@@ -1051,14 +1084,13 @@ mod tests {
         let _ = std::fs::remove_file(&base);
     }
 
-    /// The degraded read must be persistence-free: when the cross-process
-    /// lock is unavailable (here: the lock path is a directory, so opening
-    /// it fails) the read still returns the effective view — legacy entries
-    /// merged in memory — but must not save the migration or any
-    /// normalization, because it would run without the flock and could
-    /// clobber a concurrent lock-holding writer's consent state.
+    /// Reads are persistence-free: the legacy migration merge happens in
+    /// memory only, so a read over the legacy two-file layout must surface
+    /// the entries while leaving the canonical file uncreated — the canonical
+    /// file belongs to the lock-holding writers, and a reader writing it
+    /// could clobber a concurrent writer's consent state.
     #[test]
-    fn degraded_read_never_persists_the_migration() {
+    fn read_never_persists_the_legacy_migration() {
         with_temp_home("pinvou3-scope", || {
             // Seed the legacy two-file layout so an in-memory migration has
             // something to merge (the canonical file stays absent).
@@ -1067,18 +1099,15 @@ mod tests {
                 serde_json::to_string(&vec!["weather".to_string()]).unwrap(),
             )
             .unwrap();
-            // Make the cross-process lock unopenable: a directory where the
-            // lock file should be.
-            std::fs::create_dir(paths::pinvou3_home().join("disabled_bundles.lock")).unwrap();
 
             let loaded = load_disabled_bundles_for(ConnectorScope::Plain);
             assert!(
                 loaded.contains(&"weather".to_string()),
-                "the degraded read must still surface the legacy entries"
+                "the read must still surface the legacy entries"
             );
             assert!(
                 !disabled_bundles_path().exists(),
-                "the degraded read must not persist the migrated canonical file"
+                "the read must not persist the migrated canonical file"
             );
         });
     }
@@ -1165,6 +1194,67 @@ mod tests {
                 load_disabled_bundles_for(ConnectorScope::Plain),
                 vec!["weather".to_string()],
                 "the blocked write must land intact after the lock is released"
+            );
+        });
+    }
+
+    /// The RMW must SAMPLE the DenyAll fallback expansion before entering the
+    /// cross-process critical section: the strict enumeration behind the
+    /// sample probes the skill packages root per skill (#584), and running it
+    /// inside the flock would hold the GUI/CLI serialization point for a
+    /// filesystem scan. Discriminator: while a writer is provably blocked on
+    /// the flock, degrade the packages root. Sampling precedes the lock
+    /// attempt in program order, so by the time the writer blocks it has
+    /// already sampled the clean state — the write-back must therefore freeze
+    /// the CLEAN expansion (no degraded blanket: the not-installed preset
+    /// owner must stay absent) even though the root is unreadable by the time
+    /// the critical section actually runs. If the enumeration ever moves back
+    /// inside the critical section, it observes the degraded root and this
+    /// test turns red.
+    #[test]
+    fn update_rmw_samples_denyall_expansion_outside_the_critical_section() {
+        with_temp_home("pinvou3-scope-rmw-hoist", || {
+            install_preset_skill_under_claimed_owner();
+            let lock_path = paths::pinvou3_home().join("disabled_bundles.lock");
+            let stand_in = std::fs::OpenOptions::new()
+                .read(true)
+                .write(true)
+                .create(true)
+                .truncate(false)
+                .open(&lock_path)
+                .unwrap();
+            let mut rw = fd_lock::RwLock::new(stand_in);
+            let guard = rw.write().expect("hold the stand-in process lock");
+            let (tx, rx) = std::sync::mpsc::channel::<()>();
+            let writer = std::thread::spawn(move || {
+                update_disabled_bundles_for(ConnectorScope::Code, |_ids| {}).unwrap();
+                tx.send(()).expect("signal writer completion");
+            });
+            assert!(
+                rx.recv_timeout(std::time::Duration::from_millis(500))
+                    .is_err(),
+                "the writer must be blocked on the flock before the root is degraded"
+            );
+            // The writer has already sampled (sampling strictly precedes the
+            // lock attempt), so degrading the root now must not reach the
+            // critical section's expansion.
+            let bundles_root = paths::bundles_root();
+            let unreadable = make_dir_unreadable_for_test(&bundles_root);
+            drop(guard);
+            rx.recv_timeout(std::time::Duration::from_secs(5))
+                .expect("the writer completes once the flock is released");
+            writer.join().unwrap();
+            drop(unreadable);
+            let persisted = load_disabled_bundles_for(ConnectorScope::Code);
+            assert!(
+                persisted.contains(&"gongwen".to_string()),
+                "the installed preset owner must be in the frozen deny set: {persisted:?}"
+            );
+            assert!(
+                !persisted.contains(&"pptx".to_string()),
+                "the critical section must not re-enumerate a degraded packages \
+                 root: the write-back must freeze the expansion sampled before \
+                 the flock, not the degraded blanket union: {persisted:?}"
             );
         });
     }
@@ -1309,40 +1399,53 @@ mod tests {
         });
     }
 
-    /// 读路径的「读到即迁移落盘」必须取 `DISABLED_BUNDLES_FILE_LOCK` 与持锁写方
-    /// 串行：持锁期间并发 load（磁盘为旧连接器文件、必然触发迁移落盘）不得先行落盘。
+    /// Reads must never take the writers' cross-process flock: the flock
+    /// blocks without a timeout, and gating reads run on every prompt, tool
+    /// listing and the per-turn send path, so a stalled foreign writer must
+    /// not freeze them. Discriminator: while a stand-in process lock is HELD
+    /// (and never released during the wait), a concurrent read must complete
+    /// and persist nothing. Red against any design where the read path
+    /// flocks (the reader would block until the guard drops).
     #[test]
-    fn read_path_stays_persistence_free_and_serialized() {
-        with_temp_home("pinvou3-scope", || {
+    fn read_path_never_waits_on_the_cross_process_lock() {
+        with_temp_home("pinvou3-scope-read-flock", || {
             let legacy = r#"["weather"]"#;
             let conn = paths::pinvou3_home().join("disabled_connectors.json");
             std::fs::create_dir_all(conn.parent().unwrap()).unwrap();
             std::fs::write(&conn, legacy).unwrap();
-            let guard = DISABLED_BUNDLES_FILE_LOCK
-                .lock()
-                .unwrap_or_else(|p| p.into_inner());
-            let reader = std::thread::spawn(load_disabled_bundles_for_plain_for_lock_test);
-            std::thread::sleep(std::time::Duration::from_millis(200));
-            // While the lock is held the read must not write the migration.
-            assert!(
-                !disabled_bundles_path().exists(),
-                "the read path must not persist the migration while the lock is held"
+            let lock_path = paths::pinvou3_home().join("disabled_bundles.lock");
+            let stand_in = std::fs::OpenOptions::new()
+                .read(true)
+                .write(true)
+                .create(true)
+                .truncate(false)
+                .open(&lock_path)
+                .unwrap();
+            let mut rw = fd_lock::RwLock::new(stand_in);
+            let guard = rw.write().expect("hold the stand-in process lock");
+            let (tx, rx) = std::sync::mpsc::channel::<Vec<String>>();
+            let reader = std::thread::spawn(move || {
+                let loaded = load_disabled_bundles_for(ConnectorScope::Plain);
+                let _ = tx.send(loaded);
+            });
+            // The read must complete while the flock is still held; if the
+            // read path ever takes the writers' flock, this times out.
+            let loaded = rx
+                .recv_timeout(std::time::Duration::from_secs(5))
+                .expect("the read must complete while the foreign flock is still held");
+            assert_eq!(
+                loaded,
+                vec!["weather".to_string()],
+                "the lock-free read must surface the legacy merge"
             );
-            drop(guard);
-            assert_eq!(reader.join().unwrap(), vec!["weather".to_string()]);
-            // The read is persistence-free even after the lock releases: a
-            // degraded (lock-less) read runs the same closure, so it must not
-            // save anything a lock-holding writer could clobber. Only writers
-            // materialize the canonical file.
+            // Still held: nothing may have been persisted.
             assert!(
                 !disabled_bundles_path().exists(),
                 "the read path must never persist the migrated canonical file"
             );
+            drop(guard);
+            reader.join().unwrap();
         });
-    }
-
-    fn load_disabled_bundles_for_plain_for_lock_test() -> Vec<String> {
-        load_disabled_bundles_for(ConnectorScope::Plain)
     }
 
     /// Physically install the preset skill government-writing (its owner is

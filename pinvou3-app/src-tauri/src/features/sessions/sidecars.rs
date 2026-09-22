@@ -59,7 +59,7 @@ fn write_timestamped_id_map(
     });
     let json =
         serde_json::to_string_pretty(&out).context(format!("serialize {file_name} failed"))?;
-    crate::platform::filesystem::atomic_write(file, json.as_bytes())
+    crate::platform::filesystem::atomic_write_private(file, json.as_bytes())
         .with_context(|| format!("persist {file_name} failed"))
 }
 
@@ -188,7 +188,7 @@ where
     }
     let json =
         serde_json::to_string_pretty(&entries).context(format!("serialize {file_name} failed"))?;
-    crate::platform::filesystem::atomic_write(&file, json.as_bytes())
+    crate::platform::filesystem::atomic_write_private(&file, json.as_bytes())
         .with_context(|| format!("persist {file_name} failed"))
 }
 
@@ -472,7 +472,9 @@ impl SessionStore {
                     pins.remove(id);
                 }
             }
-            eprintln!("[sessions] persist pin state for {id} failed: {error:#}");
+            // Session ids stay out of the log line: the failing sidecar
+            // file, named in the error context, identifies the write.
+            eprintln!("[sessions] persist pin state failed: {error:#}");
         }
     }
 
@@ -565,7 +567,7 @@ impl SessionStore {
                     hidden_sessions.remove(id);
                 }
             }
-            eprintln!("[sessions] persist hidden state for {id} failed: {error:#}");
+            eprintln!("[sessions] persist hidden state failed: {error:#}");
         }
     }
 

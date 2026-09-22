@@ -320,6 +320,9 @@ impl ProductRuntimePort for EnginePoolPort {
             .prepare(&SessionSpec {
                 session_id: session_id.to_owned(),
                 model_selection: Some(self.suite_model.derive_case_selection()?),
+                // Eval-suite lanes use the pool's default workspace: these
+                // sessions are scratch records, not workspace-bound runs.
+                workspace: None,
             })
             .await
     }

@@ -202,6 +202,13 @@ pub struct FileHit {
     pub mtime: i64,
 }
 
+/// Upper bound on a single search's row LIMIT. The GUI pages at a few dozen
+/// hits; the headless callers now share this entry point, and an unclamped
+/// `usize` limit would both invite a full-table materialization and — at
+/// `usize::MAX` — wrap to `-1` in the `i64` conversion, which SQLite reads
+/// as "no limit at all".
+pub(crate) const SEARCH_LIMIT_CAP: usize = 1000;
+
 /// 秒搜查询条件。`text` 为名/路径子串；其余为结构化过滤。
 #[derive(Debug, Clone, Default)]
 pub struct SearchQuery {
@@ -247,9 +254,10 @@ impl Store {
     /// wait instead of failing with "database is locked". A failed probe read
     /// must NOT fold into version 0 — the stale branch below deletes the
     /// database, and since v3 it holds non-rebuildable data. When no trusted
-    /// version can be read, the error must surface as-is and let the caller
-    /// decide whether to retry: failing the open outright always beats a
-    /// wrong deletion.
+    /// version can be read, the error must surface as-is: failing the open
+    /// outright always beats a wrong deletion. (The GUI boot path surfaces
+    /// the error and continues without the knowledge service until restart;
+    /// headless callers can simply retry the open.)
     ///
     /// A store written by a newer binary is never deleted by a downgrade:
     /// the open refuses with a clear error and leaves every file intact.
@@ -421,7 +429,11 @@ impl Store {
 
     /// 秒搜：text 走 FTS5(≥3 字符) 或 LIKE 兜底(1-2 字符)，叠加结构化过滤。
     pub fn search(&self, q: &SearchQuery) -> rusqlite::Result<Vec<FileHit>> {
-        let limit = if q.limit == 0 { 200 } else { q.limit } as i64;
+        let limit = if q.limit == 0 {
+            200
+        } else {
+            q.limit.min(SEARCH_LIMIT_CAP)
+        } as i64;
         let mut sql = String::new();
         let mut vals: Vec<Value> = Vec::new();
 
