@@ -619,8 +619,10 @@ pub struct UserPrefs {
     pub voice_shortcut_enabled: bool,
     pub computer_use: ComputerUsePrefs,
     pub advanced: AdvancedPrefs,
-    /// 被用户关闭的内置插件功能 id 列表（内置工具集长期契约 §3.3；功能注册表
-    /// 与工具摘除并集语义见 `features::marketplace::builtin`）。缺省空 = 全部启用。
+    /// Ids of builtin-plugin features the user has turned off
+    /// (docs/builtin-toolset-contract.md §3.3; the feature registry and the
+    /// union removal semantics live in `features::marketplace::builtin`).
+    /// Empty by default = everything enabled.
     pub disabled_builtin_features: Vec<String>,
 }
 
@@ -2056,7 +2058,8 @@ mod tests {
         assert_eq!(prefs.theme, Theme::Genesis);
         assert_eq!(prefs.color_scheme, ColorScheme::System);
         assert_eq!(prefs.language, Language::ZhHans);
-        // 旧 settings.json 无内置功能开关字段 → 缺省空（全部启用），契约 §3.3。
+        // Legacy settings.json without the builtin-feature field → defaults
+        // to empty (all enabled), docs/builtin-toolset-contract.md §3.3.
         assert!(prefs.disabled_builtin_features.is_empty());
         #[cfg(target_os = "linux")]
         {
