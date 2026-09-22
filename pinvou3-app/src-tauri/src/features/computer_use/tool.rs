@@ -690,11 +690,15 @@ fn with_image_metadata(result: ToolResult, shot: &ShotOutcome) -> ToolResult {
 /// Keeps only the newest `keep` PNGs in the screenshot directory (filenames
 /// sort chronologically: `%Y%m%d-%H%M%S`-{seq}-{tag} — the stamp is
 /// fixed-width, the per-session sequence zero-padded, the session tag
-/// disambiguates sessions sharing one explicit workspace). `just_written` is
-/// excluded from deletion: a backwards local-clock step (DST fall-back, NTP
-/// correction, VM snapshot resume) used to make the fresh capture sort
-/// oldest, so it was unlinked moments after the model was told its path —
-/// every capture during the backwards window was destroyed the same way.
+/// disambiguates sessions sharing one explicit workspace). The directory
+/// never holds more than `keep` PNGs afterwards. `just_written` always
+/// survives and counts toward that cap (at most `keep - 1` older files stay
+/// beside it): a backwards local-clock step (DST fall-back, NTP correction,
+/// VM snapshot resume) used to make the fresh capture sort oldest, so it was
+/// unlinked moments after the model was told its path — every capture during
+/// the backwards window was destroyed the same way. Leaving the fresh file
+/// outside the budget would instead have let every such capture push the
+/// directory one file over the promised maximum.
 /// Also sweeps crash-orphaned `.pinvou-private-write-*.tmp` files older than
 /// [`TMP_SWEEP_AGE`]: a crash mid-write strands a complete screen image in a
 /// temp file that retention never reclaimed. Best-effort: any error
@@ -705,6 +709,7 @@ fn prune_old_screenshots(dir: &Path, keep: usize, just_written: &str) {
         return;
     };
     let now = std::time::SystemTime::now();
+    let mut fresh_present = false;
     let mut names: Vec<String> = Vec::new();
     for entry in entries.flatten() {
         let Ok(name) = entry.file_name().into_string() else {
@@ -725,15 +730,24 @@ fn prune_old_screenshots(dir: &Path, keep: usize, just_written: &str) {
             }
             continue;
         }
-        if entry.path().extension().is_some_and(|ext| ext == "png") && name != just_written {
-            names.push(name);
+        if entry.path().extension().is_some_and(|ext| ext == "png") {
+            if name == just_written {
+                fresh_present = true;
+            } else {
+                names.push(name);
+            }
         }
     }
-    if names.len() <= keep {
+    let budget = if fresh_present {
+        keep.saturating_sub(1)
+    } else {
+        keep
+    };
+    if names.len() <= budget {
         return;
     }
     names.sort();
-    let excess = names.len() - keep;
+    let excess = names.len() - budget;
     for name in names.iter().take(excess) {
         let _ = std::fs::remove_file(dir.join(name));
     }

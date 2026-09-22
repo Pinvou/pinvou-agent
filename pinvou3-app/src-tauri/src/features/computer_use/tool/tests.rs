@@ -4072,7 +4072,10 @@ fn screenshot_retention_prunes_oldest_files() {
 /// Round-17 pin: the just-written screenshot is never a prune victim — a
 /// backwards local-clock step (DST fall-back, NTP correction, VM snapshot
 /// resume) used to make the fresh capture sort oldest, so it was unlinked
-/// moments after the model was told its path.
+/// moments after the model was told its path. The protection does not lift
+/// the retention cap: the fresh capture counts toward `keep`, so the oldest
+/// pre-existing file is evicted instead and the directory stays within the
+/// promised maximum (an earlier version kept `keep + 1` files here).
 #[test]
 fn prune_never_deletes_the_just_written_screenshot() {
     let dir = tempfile::tempdir().expect("tempdir");
@@ -4092,19 +4095,60 @@ fn prune_never_deletes_the_just_written_screenshot() {
         dir.path().join(fresh).exists(),
         "the just-written capture must survive the prune"
     );
-    // Retention semantics with the protection: the newest capture floats
-    // ABOVE the retained set, so a backwards-clock window grows the
-    // directory by one file per capture instead of destroying the fresh
-    // shots (the next prune re-tightens the older set once the clock is
-    // sane again).
-    let remaining = std::fs::read_dir(dir.path())
+    let mut remaining: Vec<String> = std::fs::read_dir(dir.path())
+        .expect("read dir")
+        .map(|entry| {
+            entry
+                .expect("entry")
+                .file_name()
+                .into_string()
+                .expect("utf8")
+        })
+        .filter(|name| name.ends_with(".png"))
+        .collect();
+    remaining.sort();
+    assert_eq!(
+        remaining,
+        vec![
+            "20260921-000000-0000.png".to_string(),
+            "20260921-010000-0001.png".to_string(),
+            "20260921-010000-0002.png".to_string(),
+        ],
+        "the fresh capture counts toward the cap: exactly 3 PNGs stay"
+    );
+}
+
+/// Retention honors the production cap exactly: with the directory already
+/// over [`MAX_RETAINED_SCREENSHOTS`], one more capture leaves exactly the
+/// constant's worth of PNGs — the fresh one plus the newest others (an
+/// earlier version protected the fresh file on top of the full budget and
+/// let the directory reach 101 files against the promised 100).
+#[test]
+fn retention_holds_the_production_cap_with_the_fresh_file_counted() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    let keep = super::MAX_RETAINED_SCREENSHOTS;
+    for i in 0..keep + 5 {
+        std::fs::write(
+            dir.path().join(format!("20260921-010000-{i:04}.png")),
+            b"png",
+        )
+        .expect("write");
+    }
+    let fresh = "20260921-000000-0000.png";
+    std::fs::write(dir.path().join(fresh), b"png").expect("write");
+    super::prune_old_screenshots(dir.path(), keep, fresh);
+    let pngs = std::fs::read_dir(dir.path())
         .expect("read dir")
         .filter_map(|entry| entry.ok())
         .filter(|entry| entry.path().extension().is_some_and(|ext| ext == "png"))
         .count();
     assert_eq!(
-        remaining, 4,
-        "nothing is deleted: 3 retained + the protected fresh file"
+        pngs, keep,
+        "the total retained count must honor the cap, fresh file included"
+    );
+    assert!(
+        dir.path().join(fresh).exists(),
+        "the fresh capture must still survive the cap-enforcing prune"
     );
 }
 
