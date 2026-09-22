@@ -1446,3 +1446,120 @@ fn load_dedupes_never_materialize_roots() {
         "duplicates collapse on load, first occurrence wins, order kept"
     );
 }
+
+/// review #484 round-8 M1: set_never_materialize persists BEFORE committing
+/// the in-memory state. Its idempotent early-return reads that same memory,
+/// so a commit-first persist failure would make every in-process retry
+/// return `Ok` over a disk still missing the entry — the exclusion existed
+/// only in memory and silently vanished on restart. Same obstruction idiom
+/// as update_project_and_expel_rolls_back_memory_when_persist_fails.
+#[test]
+fn set_never_materialize_rolls_back_memory_when_persist_fails() {
+    let temp = tempfile::tempdir().expect("tempdir");
+    let store = store_in(&temp);
+    let folder = abs("nm-fail-folder");
+    // 一次成功落盘,让 store 文件存在(阻塞手段要把最终路径换成目录)。
+    create(&store, "占位", &[abs("nm-fail-anchor")]);
+
+    let store_path = temp.path().join("projects.json");
+    std::fs::remove_file(&store_path).expect("remove store file");
+    std::fs::create_dir_all(&store_path).expect("recreate as dir");
+    std::fs::write(store_path.join("obstruction"), b"x").expect("make dir non-empty");
+
+    store
+        .set_never_materialize(&folder, true)
+        .expect_err("persist failure surfaces as an error");
+    assert!(
+        store.never_materialize_roots().is_empty(),
+        "memory must roll back to the on-disk (empty) exclusion table"
+    );
+
+    // The retry must actually write, not false-succeed through the
+    // idempotent early-return over advanced memory.
+    std::fs::remove_dir_all(&store_path).expect("clear obstruction");
+    let registered = store
+        .set_never_materialize(&folder, true)
+        .expect("retry persists");
+    assert_eq!(registered.len(), 1);
+    assert_eq!(store.never_materialize_roots(), registered);
+}
+
+/// review #484 round-8 M1: set_last_primary_root persists BEFORE committing
+/// the in-memory state; the idempotent early-return reads the same memory, so
+/// a commit-first persist failure let the retry return the remembered root
+/// from memory without ever writing it — lost on restart. Same obstruction
+/// idiom as update_project_and_expel_rolls_back_memory_when_persist_fails.
+#[test]
+fn set_last_primary_root_rolls_back_memory_when_persist_fails() {
+    let temp = tempfile::tempdir().expect("tempdir");
+    let store = store_in(&temp);
+    let root = abs("primary-fail-root");
+    let project = create(&store, "记忆", std::slice::from_ref(&root));
+
+    let store_path = temp.path().join("projects.json");
+    std::fs::remove_file(&store_path).expect("remove store file");
+    std::fs::create_dir_all(&store_path).expect("recreate as dir");
+    std::fs::write(store_path.join("obstruction"), b"x").expect("make dir non-empty");
+
+    store
+        .set_last_primary_root(&project.id, &root)
+        .expect_err("persist failure surfaces as an error");
+    assert_eq!(
+        store.get(&project.id).unwrap().last_primary_root,
+        None,
+        "memory must roll back: no remembered primary in memory either"
+    );
+
+    std::fs::remove_dir_all(&store_path).expect("clear obstruction");
+    let updated = store
+        .set_last_primary_root(&project.id, &root)
+        .expect("retry persists");
+    assert_eq!(updated.last_primary_root, Some(display(&root)));
+    assert_eq!(
+        store.get(&project.id).unwrap().last_primary_root,
+        Some(display(&root))
+    );
+}
+
+/// review #484 round-8 M1: ensure_folder_roots persists BEFORE committing
+/// the batch. The previous order pushed created projects into live memory
+/// before the write, so a failed persist let the retry hit the
+/// anchored-reuse branch and report `Covered` for a project that existed
+/// only in memory — a session's tier-① assignment then pointed at a project
+/// id that vanished on restart, blocking tier-② re-adoption. Same
+/// obstruction idiom as update_project_and_expel_rolls_back_memory_when_persist_fails.
+#[test]
+fn ensure_folder_roots_rolls_back_memory_when_persist_fails() {
+    let temp = tempfile::tempdir().expect("tempdir");
+    let store = store_in(&temp);
+    let folder = abs("ensure-fail-folder");
+    // 一次成功落盘,让 store 文件存在(阻塞手段要把最终路径换成目录)。
+    create(&store, "占位", &[abs("ensure-fail-anchor")]);
+
+    let store_path = temp.path().join("projects.json");
+    std::fs::remove_file(&store_path).expect("remove store file");
+    std::fs::create_dir_all(&store_path).expect("recreate as dir");
+    std::fs::write(store_path.join("obstruction"), b"x").expect("make dir non-empty");
+
+    store
+        .ensure_folder_roots(std::slice::from_ref(&folder))
+        .expect_err("persist failure surfaces as an error");
+    assert_eq!(
+        store.list().len(),
+        1,
+        "memory must roll back: only the pre-existing anchor project remains"
+    );
+
+    // The retry re-materializes from the on-disk state and converges:
+    // it must report Created again — a Covered here would mean the previous
+    // batch leaked into memory (the defect this test pins).
+    std::fs::remove_dir_all(&store_path).expect("clear obstruction");
+    let outcomes = store
+        .ensure_folder_roots(std::slice::from_ref(&folder))
+        .expect("retry persists");
+    let super::EnsureFolderOutcome::Created { project } = &outcomes[0] else {
+        panic!("retry must re-create from rolled-back memory, got {outcomes:?}");
+    };
+    assert_eq!(store.list().len(), 2);
+    assert!(store.list().iter().any(|entry| &entry.id == project.id));
+}

@@ -618,6 +618,12 @@ impl ProjectStore {
     /// 显式反物化(§3):`never = true` 把该文件夹(canonical 键)加入排除表,
     /// 之后 ensure 跳过它;`false` 撤销。幂等;返回更新后的表。只影响未来的自动
     /// 物化,既有项目与会话归属不受影响。
+    ///
+    /// Persist FIRST, commit memory only on success (review #484 round-8 M1,
+    /// same convention as `update_project_and_expel`): the idempotent
+    /// early-return reads the same memory a commit-first order would have
+    /// advanced, so a failed persist used to make every in-process retry
+    /// return `Ok` over a disk still missing the entry.
     pub fn set_never_materialize(&self, root: &Path, never: bool) -> Result<Vec<String>> {
         if !root.is_absolute() {
             bail!(
@@ -631,12 +637,16 @@ impl ProjectStore {
         if never == contains {
             return Ok(state.never_materialize_roots.clone());
         }
+        let mut persisted = state.clone();
         if never {
-            state.never_materialize_roots.push(key);
+            persisted.never_materialize_roots.push(key);
         } else {
-            state.never_materialize_roots.retain(|entry| entry != &key);
+            persisted
+                .never_materialize_roots
+                .retain(|entry| entry != &key);
         }
-        persist_locked(&state, &self.path)?;
+        persist_locked(&persisted, &self.path)?;
+        *state = persisted;
         Ok(state.never_materialize_roots.clone())
     }
 
@@ -780,6 +790,12 @@ impl ProjectStore {
 
     /// 记录项目记住的主文件夹(§9.2):只接受 roots 成员(折叠键比较),外来
     /// 路径一律拒绝——主文件夹必须是项目势力范围内的目录。返回更新后的项目。
+    ///
+    /// Persist FIRST, commit memory only on success (review #484 round-8 M1,
+    /// same convention as `update_project_and_expel`): the idempotent
+    /// early-return reads the same memory a commit-first order would have
+    /// advanced, so a failed persist used to make every in-process retry
+    /// return the in-memory value without ever writing it.
     pub fn set_last_primary_root(&self, project_id: &str, root: &Path) -> Result<Project> {
         let mut state = self.state.write();
         let Some(index) = state
@@ -801,14 +817,18 @@ impl ProjectStore {
                 root.display()
             );
         }
-        let project = &mut state.projects[index];
-        if project.last_primary_root.as_deref() == Some(display.as_path()) {
-            return Ok(project.clone());
+        if state.projects[index].last_primary_root.as_deref() == Some(display.as_path()) {
+            return Ok(state.projects[index].clone());
         }
-        project.last_primary_root = Some(display);
-        project.updated_at = Utc::now();
-        let updated = project.clone();
-        persist_locked(&state, &self.path)?;
+        let mut persisted = state.clone();
+        {
+            let project = &mut persisted.projects[index];
+            project.last_primary_root = Some(display);
+            project.updated_at = Utc::now();
+        }
+        let updated = persisted.projects[index].clone();
+        persist_locked(&persisted, &self.path)?;
+        *state = persisted;
         Ok(updated)
     }
 
@@ -1155,8 +1175,17 @@ impl ProjectStore {
     /// 一次落盘。分组规则不变——新项目的 roots 让既有 tier-② 根匹配自然收编
     /// 该文件夹下的会话,而显式移出条目(删除项目时写入)仍然压制,重建的项目
     /// 只会接收之后新建的会话。
+    ///
+    /// Persist FIRST, commit memory only on success (review #484 round-8 M1,
+    /// same convention as `update_project_and_expel`): the batch builds on a
+    /// clone and the previous order pushed created projects into live memory
+    /// before the write, so a failed persist let the next ensure hit the
+    /// anchored-reuse branch and report `Covered` forever — a session's tier-①
+    /// assignment then pointed at a project id that vanished on restart,
+    /// blocking tier-② re-adoption.
     pub fn ensure_folder_roots(&self, roots: &[PathBuf]) -> Result<Vec<EnsureFolderOutcome>> {
         let mut state = self.state.write();
+        let mut persisted = state.clone();
         let mut outcomes = Vec::with_capacity(roots.len());
         let mut seen_keys: Vec<String> = Vec::with_capacity(roots.len());
         let mut created_any = false;
@@ -1175,14 +1204,14 @@ impl ProjectStore {
             seen_keys.push(key.clone());
             // 排除表(§3):用户已显式声明「此文件夹不建项目」——静默跳过
             // (与输入去重同形);tombstone 不会被复活。
-            if state.never_materialize_roots.contains(&key) {
+            if persisted.never_materialize_roots.contains(&key) {
                 continue;
             }
             // 锚定复用(§9.9):仅当已存在**锚定在该文件夹**的物化项目
             // (origin=folder 且 roots 恰含此路径)时复用;被其它项目当作附加/
             // 主根引用不算 covered——浏览通道始终以所选文件夹为家,重叠合法,
             // 于是会新建一个同名项目。
-            let anchored = state.projects.iter().find(|project| {
+            let anchored = persisted.projects.iter().find(|project| {
                 project.origin.as_deref() == Some("folder")
                     && project
                         .roots
@@ -1200,12 +1229,12 @@ impl ProjectStore {
                 .map(|name| name.to_string_lossy().into_owned())
                 .filter(|name| !name.is_empty())
                 .unwrap_or_else(|| display.to_string_lossy().into_owned());
-            // 同批内先前创建的文件夹项目已在 state.projects 中;相同根由
+            // 同批内先前创建的文件夹项目已在 persisted.projects 中;相同根由
             // seen_keys 去重;锚定按精确路径判定,嵌套输入各自物化。
             match validate_roots(std::slice::from_ref(root)) {
                 Ok(displays) => {
                     let now = Utc::now();
-                    let position = state
+                    let position = persisted
                         .projects
                         .iter()
                         .map(|project| project.position)
@@ -1222,8 +1251,8 @@ impl ProjectStore {
                         origin: Some("folder".to_string()),
                         last_primary_root: None,
                     };
-                    state.projects.push(project.clone());
-                    state
+                    persisted.projects.push(project.clone());
+                    persisted
                         .projects
                         .sort_by(|a, b| (a.position, &a.id).cmp(&(b.position, &b.id)));
                     created_any = true;
@@ -1235,7 +1264,8 @@ impl ProjectStore {
             }
         }
         if created_any {
-            persist_locked(&state, &self.path)?;
+            persist_locked(&persisted, &self.path)?;
+            *state = persisted;
         }
         Ok(outcomes)
     }
