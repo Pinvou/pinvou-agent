@@ -109,7 +109,9 @@ R11-B2）记录 `scopes` 中由**安装默认**写入（非用户显式关闭）
 （`marketplace/scope.rs`）：
 
 - 两者都从模型的可调用供给/执行面排除，按并集 `unavailable = disabled ∪ hidden`
-  现算（`unavailable_bundles_for`；物化侧同口径，见 `skill_materialization.rs`）；
+  现算（`unavailable_bundles_for`；物化侧同口径，见 `skill_materialization.rs`；
+  turn 快照 enabled 口径见 `mcp_inventory.rs`，工具白名单通道
+  `unavailable_tool_names_for` 同口径）；
   已安装但禁用的市场 MCP 包会例外地向原生 Engine 会话公开 id、名称与 enabled
   元数据，但不公开其工具 schema，也不恢复工具调用能力（见
   `marketplace-unification.md` §5.4）；

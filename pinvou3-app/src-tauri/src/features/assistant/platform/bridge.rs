@@ -3446,11 +3446,17 @@ mod tests {
         assert!(content.contains("市场 MCP 应用（当前会话模式）: []"));
     }
 
-    /// PPT 场景回归（隐藏集口径）：开关全开、仅「不可见」隐藏的包必须同时被
-    /// 两个通道排除——turn 快照报 enabled=false，工具全名进 disallowed 口径。
-    /// 快照（mcp_inventory::turn_reminder）与工具白名单
-    /// （unavailable_tool_names_for）都吃 unavailable = disabled ∪ hidden 并集，
-    /// 模型不会再被两个互相矛盾的真相源喂养。
+    /// PPT scenario regression (hidden-set semantics): a package hidden by
+    /// visibility alone, with every toggle on, must be excluded by both channels
+    /// — the turn snapshot reports enabled=false and the full tool names enter
+    /// the disallowed set. Both the snapshot (mcp_inventory::turn_reminder) and
+    /// the tool allowlist (unavailable_tool_names_for) consume the
+    /// unavailable = disabled ∪ hidden union, so the model is never fed two
+    /// contradictory sources of truth. Note: the snapshot leg is end-to-end via
+    /// build_send_message_op; the allowlist leg is a mapping-level assertion on
+    /// `unavailable_tool_names_for`, with the engine assembly points
+    /// (build_engine_config / shape_disallowed_tools) bound to the same source at
+    /// compile time by the renamed accessor — no runtime test.
     #[test]
     fn hidden_bundle_gates_snapshot_and_tool_allowlist_alike() {
         let (_lock, _env) = locked_env(&["PINVOU3_HOME"]);

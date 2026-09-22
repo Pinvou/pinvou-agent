@@ -909,9 +909,32 @@ pub fn run() {
                     }
                 };
             startup::mark("engine_pool:start");
-            let tool_factory: crate::features::assistant::engine_pool::EngineToolFactory =
-                std::sync::Arc::new(|app, session_id| {
-                    vec![
+            // Computer Use consent state: a global singleton. The
+            // EngineToolFactory injects it into every per-session
+            // ComputerUseTool, and the Tauri commands
+            // (app::commands::computer_use) reach the same instance through
+            // the .manage()'d State. settings.json's computer_use.enabled is
+            // the single source of truth for the toggle; it is replayed into
+            // the AtomicBool at startup (the computer_use_set_enabled command
+            // owns the later persist-to-disk → flip-flag flow).
+            let computer_use_shared =
+                std::sync::Arc::new(features::computer_use::ComputerUseShared::new());
+            // Replay the persisted toggle through the same platform gate the
+            // set_enabled command enforces: on an OS without a backend a
+            // stale `enabled: true` in settings.json must not flip the
+            // in-memory flag (it would keep the tool model-visible while
+            // every call dies at the capability check).
+            computer_use_shared.set_enabled(
+                crate::platform::prefs::UserPrefs::load().computer_use.enabled
+                    && features::computer_use::backend_supported(),
+            );
+            app.manage(computer_use_shared.clone());
+            let tool_factory: crate::features::assistant::engine_pool::EngineToolFactory = {
+                let computer_use_shared = computer_use_shared.clone();
+                std::sync::Arc::new(move |app, session_id| {
+                    let mut tools: Vec<
+                        std::sync::Arc<dyn deepseek_tui::tools::spec::ToolSpec>,
+                    > = vec![
                         std::sync::Arc::new(knowledge::KbSearchTool::new(
                             app.clone(),
                             session_id.to_string(),
@@ -920,10 +943,30 @@ pub fn run() {
                             app.clone(),
                             session_id.to_string(),
                         )),
-                    ]
-                });
-            let tool_policy: crate::features::assistant::engine_pool::ToolPolicy =
-                std::sync::Arc::new(|app| {
+                    ];
+                    // ComputerUseTool is constructed unconditionally: the
+                    // settings toggle governs visibility through the
+                    // disallowed list in tool_policy below, not through
+                    // construction. This keeps both toggle directions
+                    // immediate on already-running engines — a tool instance
+                    // held by an engine spawned while disabled becomes
+                    // reachable on the next turn after enabling, with no
+                    // engine rebuild needed. Defense in depth while
+                    // disabled: the schema hides the tool (disallow list)
+                    // and the consent guard rejects every call.
+                    tools.push(std::sync::Arc::new(
+                        features::computer_use::ComputerUseTool::new(
+                            app.clone(),
+                            session_id.to_string(),
+                            computer_use_shared.clone(),
+                        ),
+                    ));
+                    tools
+                })
+            };
+            let tool_policy: crate::features::assistant::engine_pool::ToolPolicy = {
+                let computer_use_shared = computer_use_shared.clone();
+                std::sync::Arc::new(move |app| {
                     let mut tools = crate::features::marketplace::unavailable_tool_names();
                     // 语义与单一真相源见 KnowledgeService::kb_tools_usable:
                     // 只看有没有内容,不看模型在位状态(可见性随模型波动会让
@@ -940,8 +983,23 @@ pub fn run() {
                         tools.push("kb_search".to_string());
                         tools.push("kb_open_source".to_string());
                     }
+                    // Dynamic visibility for computer_use: the guard hook
+                    // appends the tool to the disallow list while the master
+                    // switch is off (single source of truth in guard.rs, unit
+                    // tested there). The disallowed list is the only
+                    // toggle→engine channel; this closure re-evaluates
+                    // whenever refresh_disallowed_tools runs.
+                    // computer_use_set_enabled flips the flag and refreshes
+                    // immediately (see app/commands/computer_use.rs), so both
+                    // toggle directions take effect on every live engine on
+                    // the next turn — construction is unconditional on the
+                    // factory side. Other refresh triggers (connector /
+                    // marketplace / knowledge changes) recompute against the
+                    // same current flag state.
+                    computer_use_shared.add_to_disallow_list_when_disabled(&mut tools);
                     tools
-                });
+                })
+            };
             match EnginePool::new_with_dependencies(
                 handle.clone(),
                 store_for_engine.clone(),
@@ -1196,6 +1254,14 @@ pub fn run() {
             commands::startup::report_frontend_startup,
             commands::diagnostics::record_authority_sync_diagnostics,
             commands::startup::reveal_startup_window,
+            commands::computer_use::computer_use_get_status,
+            commands::computer_use::computer_use_grant,
+            commands::computer_use::computer_use_revoke,
+            commands::computer_use::computer_use_stop,
+            commands::computer_use::computer_use_deny,
+            commands::computer_use::computer_use_confirm,
+            commands::computer_use::computer_use_set_enabled,
+            commands::computer_use::computer_use_request_permissions,
             commands::connectors::refresh_connector_auth_gates,
             commands::connectors::feishu_ensure_cli,
             commands::connectors::feishu_connect_begin,

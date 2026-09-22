@@ -615,6 +615,12 @@ fn merge_ids_into_scope(file: &mut DisabledBundlesFile, key: &str, ids: Vec<Stri
 /// does not create parent directories, and a failed write would silently
 /// unfreeze the "fresh vs upgraded" verdict and fail open on the next read
 /// (review #455).
+///
+/// Best-effort entry point: failures are logged, not propagated. Governance
+/// callers (toggles, visibility, install sync, freeze) use
+/// [`try_save_disabled_bundles_file`] instead — a silently lost write would
+/// let them continue on a half-applied state while the frontend reports
+/// success (#571).
 fn save_disabled_bundles_file(file: &DisabledBundlesFile) {
     if let Err(error) = try_save_disabled_bundles_file(file) {
         eprintln!("[scope] {error}");
@@ -1408,17 +1414,20 @@ pub fn project_skills_enabled() -> bool {
     load_disabled_bundles_file().project_skills_enabled
 }
 
-/// 写项目级 skills 开关。落盘后由调用方重写在线会话组合目录。
-pub fn set_project_skills_enabled(enabled: bool) {
+/// Writes the project-level skills toggle. After persisting, the caller rewrites
+/// the online session composed catalogs. Write failures propagate unchanged
+/// (user governance state must not be silently lost — same principle as the
+/// toggle/visibility writes).
+pub fn set_project_skills_enabled(enabled: bool) -> Result<(), String> {
     let _guard = DISABLED_BUNDLES_FILE_LOCK
         .lock()
         .unwrap_or_else(|poisoned| poisoned.into_inner());
     let mut file = load_disabled_bundles_file_locked();
     if file.project_skills_enabled == enabled {
-        return;
+        return Ok(());
     }
     file.project_skills_enabled = enabled;
-    save_disabled_bundles_file(&file);
+    try_save_disabled_bundles_file(&file)
 }
 
 #[cfg(test)]
@@ -1912,6 +1921,40 @@ mod tests {
         });
     }
 
+    /// 一次助手调用覆盖**所有** scope 的 disabled + hidden 两套集合:退役工具清理等
+    /// 调用方依赖「单次调用 = 全清理面」,无需逐 scope 手工 load/retain/save
+    /// (#522:逐 scope 两段式各自取锁,会在 load 与 save 之间丢并发更新)。
+    #[test]
+    fn remove_bundle_clears_every_scope_and_hidden_set() {
+        with_temp_home("pinvou3-scope", || {
+            save_disabled_bundles_for(ConnectorScope::Plain, &["weather".to_string()]).unwrap();
+            save_disabled_bundles_for(
+                ConnectorScope::Code,
+                &["weather".to_string(), "pptx".to_string()],
+            )
+            .unwrap();
+            save_hidden_bundles_for(ConnectorScope::Code, &["weather".to_string()]).unwrap();
+
+            remove_bundle_from_disabled_scopes("weather").unwrap();
+
+            assert!(load_disabled_bundles_for(ConnectorScope::Plain).is_empty());
+            assert_eq!(
+                load_disabled_bundles_for(ConnectorScope::Code),
+                vec!["pptx".to_string()],
+                "同 scope 其它包的条目必须原样保留"
+            );
+            assert!(load_hidden_bundles_for(ConnectorScope::Code).is_empty());
+            // helper 不得动 scope 初始化登记:退役清理依赖该契约保留用户的
+            // 初始化状态(上面三次 save 已把 plain/code 标记为 initialized)。
+            let file = load_disabled_bundles_file();
+            assert!(
+                file.initialized.contains("plain") && file.initialized.contains("code"),
+                "helper 必须保留 scope 初始化登记: {:?}",
+                file.initialized
+            );
+        });
+    }
+
     /// 保存路径统一归一为包 id：剥 `skill:` 前缀 + companion 映射到所属包。
     #[test]
     fn save_normalizes_to_package_id() {
@@ -2008,9 +2051,9 @@ mod tests {
     fn project_skills_roundtrip() {
         with_temp_home("pinvou3-scope", || {
             assert!(!project_skills_enabled(), "项目技能默认关");
-            set_project_skills_enabled(true);
+            set_project_skills_enabled(true).unwrap();
             assert!(project_skills_enabled());
-            set_project_skills_enabled(false);
+            set_project_skills_enabled(false).unwrap();
             assert!(!project_skills_enabled());
         });
     }

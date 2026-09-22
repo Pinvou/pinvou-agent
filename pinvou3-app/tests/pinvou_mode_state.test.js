@@ -46,7 +46,10 @@ ${workSceneCode}
 this.shouldUseDocumentWritingScene = shouldUseDocumentWritingScene;
 this.shouldUseDataVisualizationScene = shouldUseDataVisualizationScene;
 this.shouldUsePersonalWorkbenchScene = shouldUsePersonalWorkbenchScene;
-this.shouldUsePptDesignScene = shouldUsePptDesignScene;`, ctx, {
+this.shouldUsePptDesignScene = shouldUsePptDesignScene;
+this.createDocumentWritingMessageMeta = createDocumentWritingMessageMeta;
+this.createDataVisualizationMessageMeta = createDataVisualizationMessageMeta;
+this.createPptDesignMessageMeta = createPptDesignMessageMeta;`, ctx, {
   filename: logicPath,
 });
 
@@ -66,6 +69,9 @@ const {
   shouldUseDataVisualizationScene,
   shouldUsePersonalWorkbenchScene,
   shouldUsePptDesignScene,
+  createDocumentWritingMessageMeta,
+  createDataVisualizationMessageMeta,
+  createPptDesignMessageMeta,
 } = ctx;
 
 const plain = (value) => JSON.parse(JSON.stringify(value));
@@ -244,5 +250,17 @@ assert.strictEqual(legacyDraft.subtab, 'general');
 
 memoryStorage.values[PINVOU_MODE_STORAGE_KEY] = '{bad json';
 assert.strictEqual(loadPinvouModeState(memoryStorage).mode, 'work');
+
+// The mcp_boot retry contract is model-facing route copy (#588): both
+// MCP-mandating routes must carry it in their payload, while the
+// local-skill-only data-visualization route must stay free of it.
+const documentMeta = createDocumentWritingMessageMeta('写一份通知');
+const pptMeta = createPptDesignMessageMeta('做一份介绍 PPT');
+const dataMeta = createDataVisualizationMessageMeta('画一张图表');
+for (const meta of [documentMeta, pptMeta]) {
+  assert.match(meta.pinvouPayloadText, /mcp_boot connecting/);
+  assert.match(meta.pinvouPayloadText, /servers_pending/);
+}
+assert.doesNotMatch(dataMeta.pinvouPayloadText, /mcp_boot/);
 
 console.log('pinvou_mode_state: ok');

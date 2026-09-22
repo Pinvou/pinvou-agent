@@ -1174,14 +1174,23 @@ mod tests {
         fn write(&self, relative: &str, content: &str) {
             let path = self.0.join(relative);
             fs::create_dir_all(path.parent().unwrap()).unwrap();
-            // Remove-then-write: rewriting a file with same-length content
-            // inside one filesystem timestamp tick leaves stat identical
-            // (mtime/ctime/size/ino), so git trusts the index entry and skips
-            // re-reading content — `add -A` keeps the stale blob and
-            // diff/restore assertions fail intermittently (root cause of the
-            // 2026-09-18 rust-test flake). A fresh inode always mismatches.
-            let _ = fs::remove_file(&path);
-            fs::write(path, content).unwrap();
+            // Write-then-rename over the target: the staging file is created
+            // while the target still exists, so its inode differs from the
+            // target's — and thus from the stat entry git cached at the
+            // previous `add`, provided each path is written at most once
+            // between index refreshes (every test here does). Rewriting in
+            // place or via remove-then-write is not safe: ext4 hands the
+            // just-freed inode right back, so a same-length rewrite landing
+            // inside one timestamp tick can match the cached entry exactly
+            // (same ino/mtime/size) and git trusts it without re-reading —
+            // `add -A` keeps the stale blob and diff/restore assertions fail
+            // intermittently (2026-09-18 flake, recurred on Linux in #576's
+            // CI).
+            let mut staging = path.clone().into_os_string();
+            staging.push(format!(".pinvou3-new-{}", now_nanos()));
+            let staging = PathBuf::from(staging);
+            fs::write(&staging, content).unwrap();
+            fs::rename(&staging, &path).unwrap();
         }
 
         fn read(&self, relative: &str) -> Option<String> {

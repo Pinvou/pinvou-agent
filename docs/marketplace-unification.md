@@ -189,11 +189,15 @@ The latest snapshot supersedes previous snapshots, including an empty list after
 all MCP applications have been uninstalled. The interpretation rules live in the
 static session prompt, while each turn repeats only the compact JSON snapshot.
 Plan turns receive the same snapshot so users can inspect installation and
-mode-scoped toggle state while planning.
+mode-scoped availability state while planning.
 
 A disabled application exists, but its tools cannot be invoked. The assistant should
-explain that it is not enabled and direct the user to the chat tool menu. An enabled
-flag only reports the toggle; authentication, connectivity, and other tool policies
+explain that it is not enabled and direct the user to the chat tool menu for the
+toggle, or to the plugin center's visibility management when the application does not
+appear in the menu (hidden applications are filtered out of the menu). The enabled
+flag reports the availability union — a package is excluded when either its toggle is
+off or it is hidden (`unavailable = disabled ∪ hidden`, matching the session-side
+gate) — not the toggle alone; authentication, connectivity, and other tool policies
 still determine whether a tool is callable. Empty tool-search or MCP-resource results
 are not proof that an application is uninstalled. Existing tool gates continue to
 enforce tool-invocation restrictions; the toggle makes no broader claim about MCP

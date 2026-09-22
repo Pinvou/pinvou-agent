@@ -761,7 +761,7 @@ mod tests {
             assert_eq!(src, &bundle.join("visualizer"));
 
             // 开启后：项目技能入集 + 同名覆盖（.agents 优先级高于 .claude）
-            set_project_skills_enabled(true);
+            set_project_skills_enabled(true).unwrap();
             let enabled = enabled_skills_for(ConnectorScope::Code, Some(&project));
             assert!(enabled.iter().any(|(n, _)| n == "project-skill"));
             let (_, src) = enabled.iter().find(|(n, _)| n == "visualizer").unwrap();
@@ -793,7 +793,7 @@ mod tests {
                 enabled.iter().any(|(n, _)| n == "project-skill"),
                 "绑定目录的普通会话同样参与项目技能扫描（开关开启时）"
             );
-            set_project_skills_enabled(false);
+            set_project_skills_enabled(false).unwrap();
             let enabled = enabled_skills_for(ConnectorScope::Plain, Some(&project));
             assert!(!enabled.iter().any(|(n, _)| n == "project-skill"));
             let _ = std::fs::remove_dir_all(&project);
