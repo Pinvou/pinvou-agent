@@ -358,8 +358,9 @@ pub fn equip_body_injection(card: &PersonaCard) -> String {
 const ANCHOR_NAME_CHAR_LIMIT: usize = 80;
 
 /// 剥掉控制符与肉眼不可见的格式字符（零宽空格/连接符、双向覆写与隔离、
-/// 阿拉伯字母标记、软连字符、BOM、变体选择符、Unicode 标签字符、注解
-/// 字符、渲染为空白单元的占位字符），并把行/段分隔符（U+2028/U+2029）
+/// 阿拉伯字母标记与数字号/经节尾类格式符、叙利亚文缩写符、软连字符、
+/// BOM、变体选择符、Unicode 标签字符、注解字符、音乐格式控制符、渲染为
+/// 空白单元的占位字符），并把行/段分隔符（U+2028/U+2029）
 /// 折叠成空格。卡片名/描述/知识集名是用户自建文案，会插进
 /// `<system-reminder>` 信封（每轮锚点、知识集引导）或候选行（专家短
 /// 摘要）：这类字符模型不可见、可被用来夹带隐形指令（或把信封标签拆成
@@ -385,19 +386,27 @@ fn is_unseen(c: char) -> bool {
         || matches!(
             c,
             '\u{00AD}'                    // 软连字符
+                | '\u{0600}'..='\u{0605}' // 阿拉伯数字号等格式符
                 | '\u{061C}'              // 阿拉伯字母标记（双向）
+                | '\u{06DD}'              // 阿拉伯古兰经节尾符
+                | '\u{070F}'              // 叙利亚文缩写符
+                | '\u{0890}'..='\u{0891}' // 阿拉伯镑/皮阿斯特上标格式符
+                | '\u{08E2}'              // 阿拉伯禁用节尾标记
                 | '\u{115F}' | '\u{1160}' // 朝鲜文填充符（空占位）
                 | '\u{180E}'              // 蒙古文元音分隔符（已废弃格式字符）
                 | '\u{200B}'..='\u{200F}' // 零宽空格/连接符与方向标记
                 | '\u{202A}'..='\u{202E}' // 双向覆写
                 | '\u{2060}'..='\u{2064}' // 不可见分隔/加号
+                | '\u{2065}'              // 永久保留码位（隐形）
                 | '\u{2066}'..='\u{2069}' // 双向隔离（LRI/RLI/FSI/PDI）
                 | '\u{206A}'..='\u{206F}' // 已废弃格式字符（禁用双向控制）
                 | '\u{2800}'              // 盲文空白图案（渲染为空白单元）
                 | '\u{3164}'              // 朝鲜文填充字母（空占位）
                 | '\u{FE00}'..='\u{FE0F}' // 变体选择符（不可见装饰）
                 | '\u{FEFF}'              // BOM/零宽不间断空格
+                | '\u{FFA0}'              // 半角朝鲜文填充符（空占位）
                 | '\u{FFF9}'..='\u{FFFB}' // 纵向注解（不可见）
+                | '\u{1D173}'..='\u{1D17A}' // 音乐格式控制符
                 | '\u{E0000}'..='\u{E007F}' // Unicode 标签字符（隐形 ASCII 通道）
                 | '\u{E0100}'..='\u{E01EF}' // 变体选择符增补
         )
@@ -405,27 +414,40 @@ fn is_unseen(c: char) -> bool {
 
 /// 把信封标签字符（`<`/`>`）转义成 `\u003c`/`\u003e`。这是不可信文案
 /// （卡片名/摘要、市场 MCP 应用清单等）进入 `<system-reminder>` 信封的
-/// 统一出口（锚点、候选行与 assistant 域 `mcp_inventory` 共用）：转义是
-/// 逐字符替换，后续的不可见字符剥除、空白折叠或截断都无法重组出原始标签；
-/// 删除式剥除则会被拆在中间的标签残片绕过。
+/// 统一出口（锚点、候选行、知识集引导与 assistant 域 `mcp_inventory`
+/// 共用）：转义是逐字符替换，安排在剥除/折叠/限长之后的最后一步，之后
+/// 没有任何处理能再合成原始标签；删除式剥除则会被拆在中间的标签残片
+/// 绕过。内容文案用 [`bounded_envelope_text`] 组合剥除/转义并限长。
 pub fn escape_envelope_tag_chars(value: &str) -> String {
     value.replace('<', "\\u003c").replace('>', "\\u003e")
 }
 
+/// 信封文案的统一限长出口：先按**用户内容字符数**截断原文，再剥不可见
+/// 字符，最后转义信封标签字符并按需追加 `…`。截断按内容字符计数是如实
+/// 标注——转义会把 1 个字符膨胀成 6 个，若转义后计数，短而密集的 `<`
+/// 会被误标 `…`、还截出 `\u00` 残片；转义放在最后一步，后续没有任何
+/// 处理能再合成原始 `<`/`>`；最坏输出 ≤ 每 1 个内容字符 6 个字符 +
+/// 1 个省略号，信封尺寸保持有界。
+pub(crate) fn bounded_envelope_text(value: &str, limit: usize) -> String {
+    let truncated = value.chars().count() > limit;
+    let mut out = escape_envelope_tag_chars(&strip_invisible_chars(
+        &value.chars().take(limit).collect::<String>(),
+    ));
+    if truncated {
+        out.push('…');
+    }
+    out
+}
+
 /// **每 turn**注入的轻锚点(短,放 `<system-reminder>`,防小模型长对话脱戏)。
-/// 名字是用户自建文案：不可见字符先剥（见 [`strip_invisible_chars`]），
-/// 信封标签按市场 MCP 应用清单注入（assistant 域 `mcp_inventory`）的同一
-/// 惯例转义而非删除——提前闭合 `<system-reminder>` 等于在宿主最高信任
-/// 信道里伪造宿主提醒。名字超限截断并如实标注。
+/// 名字是用户自建文案：按 [`bounded_envelope_text`] 的同一惯例处理——
+/// 先按内容字符数限长，再剥不可见字符、转义信封标签（转义而非删除，
+/// 提前闭合 `<system-reminder>` 等于在宿主最高信任信道里伪造宿主提醒）。
 pub fn equip_anchor(card: &PersonaCard) -> String {
-    let escaped = escape_envelope_tag_chars(&strip_invisible_chars(&card.name));
-    let truncated = escaped.chars().count() > ANCHOR_NAME_CHAR_LIMIT;
-    let name: String = escaped.chars().take(ANCHOR_NAME_CHAR_LIMIT).collect();
+    let name = bounded_envelope_text(&card.name, ANCHOR_NAME_CHAR_LIMIT);
     format!(
-        "你仍戴着【{name}{ellipsis}】专家面具——保持这位专家的身份、专业判断与沟通风格,\
+        "你仍戴着【{name}】专家面具——保持这位专家的身份、专业判断与沟通风格,\
          不要因话题转移而脱离角色。完整人设你已在加持时收到,按那个角色行事。",
-        name = name,
-        ellipsis = if truncated { "…" } else { "" },
     )
 }
 
@@ -700,14 +722,34 @@ mod tests {
         }
     }
 
-    /// 标签字符、变体选择符、Unicode 标签字符、注解字符与渲染为空白的
-    /// 占位字符同样不可见：全部剥除，正文语义保留。
+    /// 标签字符、变体选择符、Unicode 标签字符、注解字符、阿拉伯数字号/
+    /// 节尾类格式符、叙利亚文缩写符、音乐格式控制符与渲染为空白的占位
+    /// 字符同样不可见：全部剥除，正文语义保留。
     #[test]
     fn strip_invisible_chars_covers_format_tag_and_blank_placeholder_chars() {
         let sanitized = strip_invisible_chars(
-            "a\u{200b}b\u{e0041}c\u{fe0f}d\u{fff9}e\u{180e}f\u{206a}g\u{e0100}h\u{3164}i\u{2800}j\u{115f}k",
+            "a\u{200b}b\u{e0041}c\u{fe0f}d\u{fff9}e\u{180e}f\u{206a}g\u{e0100}h\u{3164}i\u{2800}j\u{115f}k\
+             \u{600}l\u{605}m\u{6dd}n\u{70f}o\u{890}p\u{891}q\u{8e2}r\u{2065}s\u{ffa0}t\u{1d173}u\u{1d17a}v",
         );
-        assert_eq!(sanitized, "abcdefghijk");
+        assert_eq!(sanitized, "abcdefghijklmnopqrstuv");
+    }
+
+    /// 限长按用户内容字符计数（先截断原文，后转义）：短而密集的 `<` 转义
+    /// 后膨胀 6 倍也不得被截出 `\u00` 残片或误标 `…`；超过上限的原文按
+    /// 内容字符截断后再整体转义，`…` 如实标注。
+    #[test]
+    fn bounded_envelope_text_caps_content_chars_and_never_splits_escapes() {
+        // 20 个 `<` → 转义后 120 字符：旧的「转义后限长」会在第 80 字符处
+        // 截出残片并误标 …。
+        assert_eq!(
+            bounded_envelope_text(&"<".repeat(20), ANCHOR_NAME_CHAR_LIMIT),
+            "\\u003c".repeat(20),
+        );
+        // 100 个 `<` → 截到 80 个内容字符，再整体转义。
+        assert_eq!(
+            bounded_envelope_text(&"<".repeat(100), ANCHOR_NAME_CHAR_LIMIT),
+            format!("{}…", "\\u003c".repeat(80)),
+        );
     }
 
     /// 行/段分隔符（U+2028/U+2029）不是控制符，但锚点是单行插值点：
