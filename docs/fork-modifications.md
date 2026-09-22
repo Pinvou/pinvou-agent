@@ -39,7 +39,7 @@
 | 升级前回退点 | 公开不可变 tag `pinvou-v0.9.5-r13` → `f853f8f1566c57e6be40d5439a222a932aa79ef5`；同 SHA 的本地 `backup/pre-v0.9.12-sync` 仅作便利引用 |
 | 历史组织 | 上游之上 73 个带 DCO sign-off 的提交（其中 37 个为 workspace_roots 主题、现居 fork 分支 `pinvou3/workspace-roots-v12`，待 CodeWhale #54 squash 合入），归属 4 个长期主题（T1–T4）+ 2 个追加减量主题（T5 会话归档导出、T6 蜂群限流治理）+ 1 个已合入维护分支的主题（T7 压缩检查点角色兼容）+ 1 个过渡期在册主题（workspace_roots，见下节）；r1 之后 58 个提交全部经 PR 审查，合入维护分支者均过五项必需门禁 |
 | drift | `190 files, +19135/-2628`，净增 16507 行（维护分支对上游，实测于 r2 收口 `6f780290f`）；过渡期另加本主题 `57 files, +4397/-268`（r2 收口 `6f780290f` → `bbc90540a`，主题分支已 rebase 到 r2 之上）；r1 为 `94 files, +5022/-944`，旧 r13 为 `110 files, +10895/-1195` |
-| 守护 | 106 条独立 CodeWhale `forkguard_*` 行为名（登记下限 96，其中 6 条钉在 `benchmark-eval-controls` 门控面、10 条为 #66 随维护分支在底座新增的 PowerShell 相关行为名、6 条为本主题新增的 `forkguard_workspace_roots_*`，其余为 T1–T7 存量）+ 父仓指纹与行为测试（workspace_roots 指纹锚点已随本 PR 注册进 `scripts/fork-guard.sh`） |
+| 守护 | CodeWhale `forkguard_*` 独立行为名实测 **139**（于登记的 gitlink `bbc90540a`，即 `scripts/fork-guard.sh` 实际执行的计数）：r2 收口基线 133 + 本主题新增 6 条 `forkguard_workspace_roots_*`；其中 6 条钉在 `benchmark-eval-controls` 门控面，9 条为 #66 随维护分支在底座新增的 PowerShell 相关行为名，其余为 T1–T7 等存量。登记下限 96 + 父仓指纹与行为测试（workspace_roots 指纹锚点已随本 PR 注册进 `scripts/fork-guard.sh`） |
 | 父仓适配 | v0.9.12 EngineConfig、Agent/Plan 模式、逐轮 reasoning/安全、ExtraTools、owner 事件隔离、Automation v3/v4 数据兼容、rusqlite 0.40.2、Shell 任务来源对账；消费方 PR #396（execpolicy）、#408（轮次取消）、#444（蜂群）、#468（computer-use）、#472（一键导出）依赖本批底座能力 |
 
 ### 多根工作区 workspace_roots + 指令 source 相对化（CodeWhale PR #54 head `bbc90540a`，已 rebase 到 r2 收口 `6f780290f` 之上）
