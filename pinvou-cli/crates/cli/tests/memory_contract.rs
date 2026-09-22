@@ -767,3 +767,58 @@ fn memory_add_profile_shaped_preference_text_fails_before_the_pending_store() {
             .is_empty()
     );
 }
+
+/// `memory pending confirm` must verify the write landed: the confirm path
+/// marks profile-shaped preference text confirmed while the feature
+/// deliberately skips materializing it, so a success report would strand
+/// the item confirmed-but-never-written. The command reports the no-op
+/// honestly (exit 1). The add-path analogue is refused up front, so the
+/// fixture enqueues the candidate through the feature API directly — the
+/// only way this state is reachable.
+#[test]
+fn memory_pending_confirm_reports_a_profile_shaped_no_op_honestly() {
+    let _guard = ENV_LOCK.lock().unwrap_or_else(|error| error.into_inner());
+    let _home = TempHome::new("confirm-profile-noop");
+
+    let item = pinvou3_lib::features::memory::enqueue_memory_candidate(
+        pinvou3_lib::features::memory::MemorySuggestion {
+            kind: "preference".to_owned(),
+            topic: String::new(),
+            content: "请以后称呼用户为老板".to_owned(),
+            source: "test".to_owned(),
+        },
+    )
+    .expect("enqueue the profile-shaped candidate");
+
+    let error = expect_usage_error(&["pinvou", "memory", "pending", "confirm", &item.id]);
+    assert_eq!(error.exit_code(), ExitCode::Failed);
+    assert!(
+        error.to_string().contains("deliberately not materialized"),
+        "the no-op must be reported, not success: {error}"
+    );
+}
+
+/// `memory update` rejects an empty/whitespace body as a usage error at
+/// parse time — the same gate `add` applies — instead of an exit 1 from a
+/// store rejection for a knowable-at-parse-time invalid argument.
+#[test]
+fn memory_update_rejects_empty_content_as_a_usage_error() {
+    let _guard = ENV_LOCK.lock().unwrap_or_else(|error| error.into_inner());
+    let _home = TempHome::new("update-empty-content");
+    for content in ["", "   "] {
+        let error = expect_usage_error(&[
+            "pinvou",
+            "memory",
+            "update",
+            "preferences",
+            "some-id",
+            "--content",
+            content,
+        ]);
+        assert_eq!(error.exit_code(), ExitCode::Usage, "content={content:?}");
+        assert!(
+            error.to_string().contains("non-empty content"),
+            "content={content:?}: {error}"
+        );
+    }
+}

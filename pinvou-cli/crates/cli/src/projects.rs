@@ -4,11 +4,14 @@
 //! Every operation calls the same `pinvou3_lib::features::projects` store
 //! methods the GUI commands call (`list`, `create_project`,
 //! `update_project`, `delete_project`, `move_session_to_project`,
-//! `assignments_snapshot`, `assigned_session_ids`); list JSON mirrors the
-//! GUI `ProjectListItem` DTO field names (`id`, `name`, `roots` with
-//! per-root `path`/`available`, `position`, `created_at`, `updated_at`,
-//! `assigned_session_count`) plus the full `assignments` map the GUI list
-//! response carries. Pure storage only: no Tauri host, no engine.
+//! `assignments_snapshot`, `assigned_session_ids`). The list JSON is a
+//! CLI-shaped superset of the GUI wire DTO: the GUI's `ProjectListItem`
+//! deliberately omits per-root `available` and the `created_at`/`updated_at`
+//! timestamps from the wire, while the CLI renders them (`id`, `name`,
+//! `roots` with per-root `path`, `position`, `created_at`, `updated_at`,
+//! `assigned_session_count`) plus the full `assignments` map. Additive only:
+//! every GUI field name is preserved. Pure storage: no Tauri host, no
+//! engine.
 //!
 //! Headless deviations, disclosed:
 //! - `move` always passes `add_workspace_root = None`: folding the session's

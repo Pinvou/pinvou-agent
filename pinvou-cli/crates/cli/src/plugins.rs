@@ -641,12 +641,12 @@ fn tools_install(
         match SkillMarketplaceManager::new().install(&sid) {
             Ok(()) => {
                 if let Err(error) = skill_scope::sync_deny_all_scopes_after_skill_install(&sid) {
-                    eprintln!("[plugins] companion skill '{sid}' scope sync failed: {error}");
+                    note!("[plugins] companion skill '{sid}' scope sync failed: {error}");
                 }
                 companion_note.push(sid);
             }
             Err(error) => {
-                eprintln!("[plugins] companion skill '{sid}' install failed: {error}");
+                note!("[plugins] companion skill '{sid}' install failed: {error}");
             }
         }
     }

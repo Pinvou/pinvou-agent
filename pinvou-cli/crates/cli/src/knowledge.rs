@@ -1074,23 +1074,35 @@ fn collections_update(
     )))
 }
 
+/// The collection existence gate the destructive/recovering commands run
+/// BEFORE the recovering open: boot recovery flips every preparing/running
+/// job to interrupted — including one a live desktop-app process is still
+/// importing — so a mistyped id must fail without ever running it (the same
+/// rule `index cancel/resume/retry` implement on their latest-job read).
+fn ensure_collection_exists(
+    service: &KnowledgeService,
+    id: i64,
+    operation: &str,
+) -> Result<(), CliError> {
+    match service.l1().collection_name(id) {
+        Ok(Some(_)) => Ok(()),
+        Ok(None) => Err(CliError::failed(format!(
+            "knowledge {operation}: collection {id} not found"
+        ))),
+        Err(error) => Err(feature_error(operation, error)),
+    }
+}
+
 /// GUI `kb_collection_delete`: cancel a running import for the collection,
 /// delete it, then clear every session mount.
 fn collections_delete(id: i64, output: OutputMode) -> Result<CliOutcome, CliError> {
+    // The existence check runs on a plain open first — recovery must not
+    // fire for a mistyped id — and again on the mutating open, so a
+    // collection deleted in between fails honestly instead of reporting a
+    // silent no-op as "deleted".
+    ensure_collection_exists(&open_service()?, id, "collections delete")?;
     let service = open_service_recovering()?;
-    // `delete_collection` is plain DELETEs and succeeds for unknown ids
-    // (0 rows affected); like `update`/`add-sources`, an existence check
-    // turns the silent no-op into an honest error instead of a false
-    // "deleted collection 999".
-    match service.l1().collection_name(id) {
-        Ok(Some(_)) => {}
-        Ok(None) => {
-            return Err(CliError::failed(format!(
-                "knowledge collections delete: collection {id} not found"
-            )));
-        }
-        Err(error) => return Err(feature_error("collections delete", error)),
-    }
+    ensure_collection_exists(&service, id, "collections delete")?;
     service
         .cancel_index_for_collection(id)
         .map_err(|error| feature_error("collections delete", error))?;
@@ -1111,7 +1123,7 @@ fn collections_delete(id: i64, output: OutputMode) -> Result<CliOutcome, CliErro
     let (unmounted, mount_sweep_error) = match open_store() {
         Ok(store) => (store.remove_mounted_collection_from_all(id), None),
         Err(error) => {
-            eprintln!(
+            note!(
                 "warning: knowledge collections delete: could not sweep session mounts \
                  for the deleted collection; stale mounts may remain in a running \
                  desktop app session"
@@ -1149,21 +1161,10 @@ fn collections_add_sources(
     paths: Vec<PathBuf>,
     output: OutputMode,
 ) -> Result<CliOutcome, CliError> {
-    let service = open_service_recovering()?;
-    match service.l1().collection_name(id) {
-        Ok(Some(_)) => {}
-        Ok(None) => {
-            return Err(CliError::failed(format!(
-                "knowledge collections add-sources: collection {id} not found"
-            )));
-        }
-        Err(error) => return Err(feature_error("collections add-sources", error)),
-    }
-    // Pre-flight the paths like `files ingest` does: `start_index` expands
-    // roots on a background thread this one-shot process kills at exit, so
-    // a nonexistent path (or a FIFO, which upstream's `is_file()` expansion
-    // silently skips) would otherwise exit 0 with the sources never
-    // enqueued and never reported.
+    // Validate everything a mistyped invocation could get wrong BEFORE the
+    // recovering open (see ensure_collection_exists): the path pre-flight is
+    // pure filesystem, the existence check runs on a plain open, and the
+    // re-check on the mutating open closes the disappear-in-between window.
     for path in &paths {
         let Ok(meta) = std::fs::metadata(path) else {
             return Err(CliError::failed(format!(
@@ -1179,6 +1180,9 @@ fn collections_add_sources(
             )));
         }
     }
+    ensure_collection_exists(&open_service()?, id, "collections add-sources")?;
+    let service = open_service_recovering()?;
+    ensure_collection_exists(&service, id, "collections add-sources")?;
     // `start_index` falls back to `index_status()` when the job create or
     // the follow-up state read fails; the reported job must then not be
     // passed off as the fresh import.
@@ -1456,14 +1460,19 @@ fn index_out(header: &str, state: IndexState, output: OutputMode) -> Result<CliO
     Ok(success(render(output, human, &value)))
 }
 
-/// The app's job state no longer carries a phase string; derive the CLI's
-/// display phase from the surviving flags so the command's output contract
-/// (human and JSON) stays stable across the app's state redesign.
+/// The app's job state carries no phase string; derive the CLI's display
+/// phase from the surviving flags so the command's output contract (human
+/// and JSON) stays stable across the app's state redesign. `cancelled` is
+/// part of that contract: without it a cancelled job (running=false with a
+/// job_id) is indistinguishable from a finished one, and a client polling
+/// until `done` would treat a cancelled import as completed.
 fn display_phase(state: &IndexState) -> String {
     if state.running {
         "running".into()
     } else if state.resumable {
         "interrupted".into()
+    } else if state.cancelled {
+        "cancelled".into()
     } else if state.job_id.is_some() {
         if state.failed > 0 {
             "done_with_errors".into()
@@ -1472,6 +1481,60 @@ fn display_phase(state: &IndexState) -> String {
         }
     } else {
         "idle".into()
+    }
+}
+
+#[cfg(test)]
+mod phase_tests {
+    use super::{IndexState, display_phase};
+
+    fn state(
+        running: bool,
+        resumable: bool,
+        cancelled: bool,
+        job_id: Option<&str>,
+        failed: u64,
+    ) -> IndexState {
+        IndexState {
+            job_id: job_id.map(str::to_owned),
+            running,
+            resumable,
+            cancelled,
+            collection_id: 1,
+            done: 2,
+            total: 3,
+            failed,
+            current_path: None,
+            current_chunks_done: 0,
+            current_chunks_total: 0,
+            failed_files: Vec::new(),
+        }
+    }
+
+    #[test]
+    fn display_phase_covers_every_state_vocabulary() {
+        assert_eq!(
+            display_phase(&state(true, false, false, Some("j"), 0)),
+            "running"
+        );
+        assert_eq!(
+            display_phase(&state(false, true, false, Some("j"), 1)),
+            "interrupted"
+        );
+        assert_eq!(
+            display_phase(&state(false, false, true, Some("j"), 1)),
+            "cancelled",
+            "a cancelled job must not masquerade as done (or done_with_errors)"
+        );
+        assert_eq!(
+            display_phase(&state(false, false, false, Some("j"), 2)),
+            "done_with_errors"
+        );
+        assert_eq!(
+            display_phase(&state(false, false, false, Some("j"), 0)),
+            "done"
+        );
+        assert_eq!(display_phase(&state(false, false, false, None, 0)), "idle");
     }
 }
 

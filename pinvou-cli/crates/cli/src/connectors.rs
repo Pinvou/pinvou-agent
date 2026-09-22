@@ -650,24 +650,19 @@ fn run_cli_bounded(
             )));
         }
     };
-    // The child exited, but a descendant that inherited the pipes can keep
-    // them open forever — the deadline above only bounds the direct child.
-    // Bound the drain too: if EOF does not arrive within the grace period,
-    // kill the process group again to force the pipes closed instead of
-    // hanging the CLI.
+    // The child exited, but a descendant that inherited the write end can
+    // keep EOF away forever — the deadline above only bounds the direct
+    // child. Bound the drain like `code`/`voice`: give the pipes a short
+    // grace to deliver EOF, then proceed with the bytes that arrived. A
+    // straggler is deliberately left alone — the child is already reaped
+    // here, so killing its process group would race a reused pid (the
+    // timeout branch above is the only place a group kill is safe).
     const DRAIN_GRACE: std::time::Duration = std::time::Duration::from_secs(5);
-    let drain =
-        |rx: std::sync::mpsc::Receiver<String>, child: &mut std::process::Child| -> String {
-            match rx.recv_timeout(DRAIN_GRACE) {
-                Ok(text) => text,
-                Err(_) => {
-                    crate::support::kill_process_tree(child);
-                    rx.recv_timeout(DRAIN_GRACE).unwrap_or_default()
-                }
-            }
-        };
-    let stdout = drain(stdout_rx, &mut child);
-    let stderr = drain(stderr_rx, &mut child);
+    let drain = |rx: std::sync::mpsc::Receiver<String>| -> String {
+        rx.recv_timeout(DRAIN_GRACE).unwrap_or_default()
+    };
+    let stdout = drain(stdout_rx);
+    let stderr = drain(stderr_rx);
     Ok((status.success(), stdout, stderr))
 }
 
@@ -757,10 +752,11 @@ fn probe_cli_version(spec: &VendorSpec) -> Option<(Option<(u64, u64, u64)>, Stri
 }
 
 /// Installation gate per connector, mirroring `*_cli_present` plus the
-/// wecom/tmeet minimum-version replacement gate:
+/// wecom/tmeet minimum-version replacement gate (status / ensure-cli / the
+/// connect-time presence checks; `logout` judges through `logout_probe`
+/// instead, whose not-installed claim must survive the stricter verdict):
 /// - feishu/dingtalk count any working `--version` (an unparseable version
-///   line must not turn an installed CLI into a reinstall loop or, worse,
-///   make `logout` skip the real logout and claim success);
+///   line must not turn an installed CLI into a reinstall loop);
 /// - wecom/tmeet also require the minimum version (older or unparseable
 ///   installs must be replaced, not used).
 enum VersionGate {
@@ -782,6 +778,54 @@ fn version_gate(spec: &VendorSpec) -> VersionGate {
 
 fn cli_installed(spec: &VendorSpec) -> bool {
     matches!(version_gate(spec), VersionGate::Usable { .. })
+}
+
+/// Logout gate for the dingtalk/tmeet arm, mirror of the GUI's
+/// `logout_probe_verdict` (`connector_cli.rs`): only a CLI that cannot be
+/// resolved at all may claim "not installed" and skip the real logout; a CLI
+/// that exists but answers `--version` with a failure or an unparseable
+/// version (tmeet, whose install gate is version-based) leaves the token
+/// state UNCONFIRMED. Skipping `auth logout` in that state would report a
+/// clean logout while the vendor token stays on disk — the exact hazard the
+/// GUI folded into its verdict function.
+enum LogoutGate {
+    NotInstalled,
+    Unconfirmed(String),
+    Installed,
+}
+
+fn logout_probe(spec: &VendorSpec, deadline: Instant) -> LogoutGate {
+    if resolve_vendor_cli(spec).is_none() {
+        return LogoutGate::NotInstalled;
+    }
+    let (ok, stdout, stderr) = match run_cli_bounded(spec, &["--version"], deadline) {
+        Ok(result) => result,
+        Err(error) => {
+            return LogoutGate::Unconfirmed(format!(
+                "{} CLI is installed but the version probe failed ({error}); the login state is \
+                 unconfirmed, so the stored connection was not changed",
+                spec.display_name
+            ));
+        }
+    };
+    if !ok {
+        return LogoutGate::Unconfirmed(format!(
+            "{} CLI is installed but `--version` failed; the login state is unconfirmed, so the \
+             stored connection was not changed",
+            spec.display_name
+        ));
+    }
+    // tmeet additionally requires a parseable version (its GUI probe folds
+    // an unparseable version into the same Unconfirmed verdict); dingtalk is
+    // version-ungated presence.
+    if spec.id == "tmeet" && cli_semver(spec, &stdout, &stderr).is_none() {
+        return LogoutGate::Unconfirmed(format!(
+            "{} CLI is installed but its version could not be parsed; the login state is \
+             unconfirmed, so the stored connection was not changed",
+            spec.display_name
+        ));
+    }
+    LogoutGate::Installed
 }
 
 /// Runs the connector's status subcommand and returns `(exit_ok, stdout,
@@ -1216,36 +1260,37 @@ fn logout(kind: ConnectorKind, yes: bool, output: OutputMode) -> Result<CliOutco
         }
         // Mirror `dingtalk_logout` / `tmeet_logout`: already logged out when
         // the CLI is not installed; otherwise `auth logout [--yes]` must
-        // succeed before the store mirror is updated.
+        // succeed before the store mirror is updated. The gate judges
+        // through `logout_probe` (GUI `logout_probe_verdict` parity): a CLI
+        // that exists but fails its version probe leaves the login state
+        // unconfirmed, and the error surfaces without touching the store —
+        // claiming `installed:false` there would skip the real logout while
+        // the vendor token stays on disk.
         _ => {
             let args: &[&str] = if spec.id == "dingtalk" {
                 &["auth", "logout", "--yes"]
             } else {
                 &["auth", "logout"]
             };
-            // Gate on CLI PRESENCE, not the min-version gate: an installed
-            // but below-minimum CLI still holds vendor credentials on disk,
-            // so the real logout must run for it (the GUI runs `auth logout`
-            // whenever the version merely parses — `tmeet_logout` gates on
-            // `tmeet_cli_version().is_none()`, tmeet.rs:398-412, and
-            // dingtalk's `dws_cli_present` is version-ungated).
-            // `VersionGate::Missing` (probe failed, or for tmeet no parseable
-            // version) is exactly their not-installed case; the min-version
-            // gate itself stays in status / ensure-cli unchanged.
-            let installed = !matches!(version_gate(spec), VersionGate::Missing);
-            if !installed {
-                bundle_store_on_disconnected(spec.id);
-                json!({ "ok": true, "id": spec.id, "installed": false })
-            } else {
-                let (ok, _, _) = run_cli_bounded(spec, args, logout_deadline)?;
-                if !ok {
-                    return Err(CliError::failed(format!(
-                        "{} CLI logout failed",
-                        spec.display_name
-                    )));
+            match logout_probe(spec, logout_deadline) {
+                LogoutGate::Unconfirmed(note) => {
+                    return Err(CliError::failed(format!("connectors logout: {note}")));
                 }
-                bundle_store_on_disconnected(spec.id);
-                json!({ "ok": true, "id": spec.id, "installed": true })
+                LogoutGate::NotInstalled => {
+                    bundle_store_on_disconnected(spec.id);
+                    json!({ "ok": true, "id": spec.id, "installed": false })
+                }
+                LogoutGate::Installed => {
+                    let (ok, _, _) = run_cli_bounded(spec, args, logout_deadline)?;
+                    if !ok {
+                        return Err(CliError::failed(format!(
+                            "{} CLI logout failed",
+                            spec.display_name
+                        )));
+                    }
+                    bundle_store_on_disconnected(spec.id);
+                    json!({ "ok": true, "id": spec.id, "installed": true })
+                }
             }
         }
     };
@@ -1789,7 +1834,7 @@ fn connect(kind: ConnectorKind, timeout: u64, output: OutputMode) -> Result<CliO
                     CliError::failed("feishu auth login did not return a device code")
                 })?;
             notes.push(format!("authorize-url: {url}"));
-            eprintln!("lark-cli authorize-url: {url}");
+            note!("lark-cli authorize-url: {url}");
             loop {
                 if Instant::now() >= deadline {
                     return Err(CliError::failed(format!(
@@ -2034,7 +2079,7 @@ fn spawn_and_capture_url(
                 // it immediately (stderr keeps `--output json` stdout
                 // single-line) and record it for the final summary and any
                 // later error.
-                eprintln!("{} login link: {found}", spec.cli_bin);
+                note!("{} login link: {found}", spec.cli_bin);
                 notes.push(format!("login link: {found}"));
                 let carries_code = found.contains("user_code=");
                 url = Some(found);
@@ -2047,7 +2092,7 @@ fn spawn_and_capture_url(
                 }
             }
             Ok(LoginStreamEvent::Code(code)) => {
-                eprintln!("{} user code: {code}", spec.cli_bin);
+                note!("{} user code: {code}", spec.cli_bin);
                 notes.push(format!("user code: {code}"));
                 user_code = Some(code);
             }
@@ -2119,7 +2164,7 @@ fn announce_wecom_qr(qr: &Path, notes: &mut Vec<String>) -> bool {
     if !qr.is_file() {
         return false;
     }
-    eprintln!(
+    note!(
         "wecom scan-qr-file: {} (scan this PNG to authorize in one step)",
         qr.display()
     );

@@ -1265,16 +1265,13 @@ impl TaskStore {
                 ))
             })?;
             ensure_supported_schema(&run, 1, "run record")?;
-            // Same honest-refusal rule as definitions: a non-object run file
-            // (hand-edited store) must not render as a phantom record — the
-            // field defaults would list it as a live run with exit 0.
-            if !run.is_object() {
-                return Err(CliError::failed(format!(
-                    "scheduled_storage_unavailable: {} is valid JSON but not an object (run \
-                     record); fix or remove the file manually",
-                    path.display()
-                )));
-            }
+            // Same honest-refusal rule as definitions, extended to the same
+            // type-checked required fields: `AutomationRunRecord` deserializes
+            // id/automation_id/scheduled_for/status/created_at without
+            // defaults, so the GUI's typed reader rejects the whole record —
+            // a valid-JSON object missing them (or carrying a non-string one)
+            // must not render as a phantom run with empty fields and exit 0.
+            require_object_run_record(&run, &path)?;
             runs.push(run);
         }
         runs.sort_by(|a, b| record_time(b, "created_at").cmp(&record_time(a, "created_at")));
@@ -1374,6 +1371,38 @@ fn ensure_supported_schema(
 /// GUI's typed `AutomationRecord` (serde fails the whole store there):
 /// a def missing one of its required fields must not render as a phantom
 /// task either.
+/// The run-record twin of [`require_object_definition`]: type-checks the
+/// fields `AutomationRunRecord` deserializes without defaults, so a
+/// valid-JSON-but-wrong-shaped run file fails honestly instead of
+/// rendering as a phantom run with empty fields.
+fn require_object_run_record(
+    run: &serde_json::Value,
+    path: &std::path::Path,
+) -> Result<(), CliError> {
+    let malformed = || {
+        CliError::failed(format!(
+            "scheduled_storage_unavailable: {} is not a well-formed run record; fix or remove \
+             the file manually",
+            path.display()
+        ))
+    };
+    if !run.is_object() {
+        return Err(malformed());
+    }
+    for field in [
+        "id",
+        "automation_id",
+        "scheduled_for",
+        "status",
+        "created_at",
+    ] {
+        if run.get(field).map(serde_json::Value::is_string) != Some(true) {
+            return Err(malformed());
+        }
+    }
+    Ok(())
+}
+
 fn require_object_definition(id: &str, def: &serde_json::Value) -> Result<(), CliError> {
     let malformed = || {
         CliError::failed(format!(
@@ -1565,7 +1594,7 @@ fn quarantine_unreadable(path: &Path) {
         std::fs::copy(path, &target).and_then(|_| std::fs::remove_file(path).map(|_| ()))
     });
     if moved.is_ok() {
-        eprintln!(
+        note!(
             "pinvou: warning: quarantined malformed registry {} to {}",
             path.display(),
             target.display()
@@ -2629,7 +2658,7 @@ fn delete(id: &str, yes: bool, output: OutputMode) -> Result<CliOutcome, CliErro
             // runs are gone AND leave it in the history archive, so the next
             // delete would overwrite the only history snapshot with an empty
             // run list.
-            eprintln!(
+            note!(
                 "pinvou: warning: scheduled task {id} was deleted, but its run directory \
                  could not be removed: {error}; the history archive snapshot is kept"
             );
@@ -2657,7 +2686,7 @@ fn delete(id: &str, yes: bool, output: OutputMode) -> Result<CliOutcome, CliErro
                 .unwrap_or(0)
                 > 1
         {
-            eprintln!(
+            note!(
                 "pinvou: warning: scheduled task {id} was deleted, but a sidecar registry has \
                  a newer schema; its stale entry is left for the desktop app to clean up"
             );
@@ -3022,7 +3051,7 @@ fn open_sessions_for_enrichment() -> Option<SessionStore> {
     match open_sessions() {
         Ok(store) => Some(store),
         Err(error) => {
-            eprintln!(
+            note!(
                 "pinvou: warning: could not open the sessions store to enrich this response: \
                  {error}"
             );

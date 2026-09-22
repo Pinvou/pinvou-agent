@@ -1256,7 +1256,8 @@ fn pending(
                 return Err(CliError::failed(format!(
                     "memory pending confirm({id}): the candidate is confirmed, but its content \
                      is profile-shaped preference text that is deliberately not materialized; \
-                     nothing was written to the target store"
+                     the target store was not written (a concurrent removal could also have \
+                     cleared a just-written item)"
                 )));
             }
             (
@@ -1370,7 +1371,7 @@ fn refresh_snapshot_document_after_organize() {
     // load_memory_source does, so a deferred or partial refresh is explained.
     append_warning_lines_to_stderr(&warnings);
     if !sources.values().all(available) {
-        eprintln!(
+        note!(
             "[memory] snapshot_refresh_deferred snapshot: memory sources unavailable; \
 snapshot refresh deferred after organize"
         );
@@ -1390,7 +1391,7 @@ snapshot refresh deferred after organize"
         // passes None the same way when no session is open).
         None,
     ) {
-        eprintln!("[memory] snapshot_refresh_failed snapshot: write memory snapshot: {error}");
+        note!("[memory] snapshot_refresh_failed snapshot: write memory snapshot: {error}");
     }
 }
 
@@ -1398,7 +1399,7 @@ snapshot refresh deferred after organize"
 /// (the post-organize refresh reports through stderr only).
 fn append_warning_lines_to_stderr(warnings: &[serde_json::Value]) {
     for warning in warnings {
-        eprintln!(
+        note!(
             "[memory] {} {}: {}",
             warning["code"].as_str().unwrap_or(""),
             warning["source"].as_str().unwrap_or(""),

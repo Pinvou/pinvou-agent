@@ -292,6 +292,41 @@ fn sessions_list_on_empty_store_returns_empty_output() {
     assert_eq!(outcome.stdout, r#"{"sessions":[]}"#);
 }
 
+/// Stored titles are verbatim and legitimately contain control characters
+/// (the GUI's attachment marker embeds "\n\n"): the human TSV row must
+/// collapse them so the row stays one line per session, while JSON keeps
+/// the real title.
+#[test]
+fn sessions_list_collapses_control_characters_in_human_titles() {
+    let _env_guard = ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+    let home = HomeGuard::new("list-control-chars");
+    let id = create_session_fixture();
+    let raw_title = "line1\nline2\tcol\x07end";
+    run_json(&["pinvou", "sessions", "rename", &id, raw_title]);
+
+    let human = run(&["pinvou", "sessions", "list"]).expect("human list must succeed");
+    assert_eq!(human.exit_code, ExitCode::Success);
+    // The row is one line: the title's embedded newline must not split it.
+    assert_eq!(human.stdout.lines().count(), 1);
+    assert!(
+        !human.stdout.contains('\x07'),
+        "the bell control character must be collapsed: {:?}",
+        human.stdout
+    );
+    assert!(
+        human.stdout.contains("line1 line2 col end"),
+        "control characters collapse to spaces: {:?}",
+        human.stdout
+    );
+    assert!(
+        home.sessions_root().join(format!("{id}.json")).is_file(),
+        "the collapse is a rendering choice; the stored title is untouched"
+    );
+
+    let listed = run_json(&["pinvou", "--output", "json", "sessions", "list"]);
+    assert_eq!(listed["sessions"][0]["title"], serde_json::json!(raw_title));
+}
+
 #[test]
 fn sessions_metadata_round_trip_updates_list_and_state() {
     let _env_guard = ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());

@@ -1125,16 +1125,29 @@ fn whole_workspace_diff_truncates_without_accumulating_over_the_cap() {
     };
     let id = create_code_session_fixture(Some(&project));
 
-    // A modified tracked file whose diff alone exceeds DIFF_LIMIT (1 MiB):
-    // the per-file path caps the text, and the whole-workspace loop must cut
-    // the payload at the cap, not concatenate up to FILE_CAP copies of it.
+    // Two modified tracked files whose diffs each exceed DIFF_LIMIT (1 MiB):
+    // the per-file path caps each text, and the whole-workspace loop must
+    // stop diffing once the payload is over the cap — the second file's
+    // content must never enter the payload, which distinguishes the early
+    // break from a post-hoc truncation of the full accumulation.
     let big = format!("v2 {}\n", "x".repeat(1024 * 1024 + 4096));
     std::fs::write(project.join("tracked.txt"), &big).unwrap();
+    let big2 = format!("v3 second-file {}\n", "y".repeat(1024 * 1024 + 4096));
+    std::fs::write(project.join("tracked2.txt"), &big2).unwrap();
     let value = run_json(&["pinvou", "code", "workspace", "diff", &id]);
     assert_eq!(value["truncated"], serde_json::json!(true));
     let text = value["text"].as_str().unwrap();
     assert!(text.len() <= 1024 * 1024, "len={}", text.len());
-    assert!(text.contains("+v2"), "the capped head keeps the hunk");
+    // Exactly one over-cap hunk may be in the payload, whichever file the
+    // status list orders first: the loop must stop diffing once the payload
+    // is over the cap, not accumulate every per-file diff before cutting.
+    let has_first = text.contains("+v2");
+    let has_second = text.contains("second-file");
+    assert!(
+        has_first ^ has_second,
+        "the payload must contain exactly one over-cap hunk (first={has_first}, \
+         second={has_second}) — accumulating both before the cut would fail this"
+    );
 }
 
 /// The per-file diff lane stays a CLI mirror on purpose (bounded untracked
@@ -2074,4 +2087,72 @@ fn version_probe_failure_is_reported_and_fails_the_gate() {
     assert_eq!(value["version_probe_failed"], true);
     assert_eq!(value["version_supported"], false);
     assert_eq!(value["installed"], false);
+}
+
+/// The claude login writes the authorization code to the child's stdin only
+/// after the drain readers exist: a child that floods its own stdout before
+/// (or while) consuming stdin must not deadlock the flow. The fake answers
+/// `auth login` (the claude argv), reads a stdin line, emits far more than
+/// the OS pipe buffer, then exits — with the old write-before-drains order
+/// the child's stdout blocks with no reader and the flow hangs until the
+/// 600 s deadline, so the watchdog assertion below is exactly the
+/// regression tripwire.
+#[test]
+#[cfg(unix)]
+fn claude_login_completes_when_the_child_floods_stdout_around_stdin() {
+    let _env_guard = ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+    let _home = HomeGuard::new("claude-login-stdin-flood");
+    let bin = std::env::temp_dir().join(format!(
+        "pinvou-cli-code-fake-claude-stdin-flood-{}-{}",
+        std::process::id(),
+        std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_nanos()
+    ));
+    std::fs::create_dir_all(&bin).unwrap();
+    use std::os::unix::fs::PermissionsExt as _;
+    let script = bin.join("claude");
+    std::fs::write(
+        &script,
+        "#!/bin/sh\nif [ \"$1\" = \"--version\" ]; then echo \"2.1.163 (Claude Code)\"; exit 0; fi\nif [ \"$1\" = \"auth\" ] && [ \"$2\" = \"login\" ]; then\n  read -r line\n  awk 'BEGIN{for(i=0;i<20000;i++) printf \"%s\", \"012345678901234567890123456789\"}'\n  echo\n  echo \"flood done\"\n  exit 0\nfi\nexit 1\n",
+    )
+    .unwrap();
+    std::fs::set_permissions(&script, std::fs::Permissions::from_mode(0o755)).unwrap();
+    let _bin = ScratchDir(bin);
+    let _claude_path = EnvVarGuard::capture("PINVOU3_CLAUDE_CLI_PATH");
+    unsafe { std::env::set_var("PINVOU3_CLAUDE_CLI_PATH", &script) };
+
+    // The claude flow consumes `--code` (written to stdin post-drain); the
+    // post-login auth probe fails against the fake, which is fine — any
+    // terminal outcome proves the child exited instead of deadlocking.
+    let (tx, rx) = std::sync::mpsc::channel();
+    std::thread::spawn(move || {
+        let result = parse_args([
+            "pinvou",
+            "code",
+            "login",
+            "claude",
+            "--code",
+            "SRCRT-LOGIN-CODE-42",
+        ])
+        .and_then(|parsed| pinvou_cli::execute(parsed));
+        let _ = tx.send(result);
+    });
+    let result = rx
+        .recv_timeout(std::time::Duration::from_secs(90))
+        .expect("claude login must complete well under the 600 s deadline — a hang here is                  the write-before-drains deadlock regression");
+    // The flooded transcript must not carry the raw code anywhere a harness
+    // could re-read (the JSON outcome is the script-visible part).
+    match result {
+        Ok(outcome) => assert!(
+            !outcome.stdout.contains("SRCRT-LOGIN-CODE-42"),
+            "the authorization code must not surface in the report: {}",
+            outcome.stdout
+        ),
+        Err(error) => assert!(
+            !error.to_string().contains("SRCRT-LOGIN-CODE-42"),
+            "the authorization code must not surface in the error: {error}"
+        ),
+    }
 }

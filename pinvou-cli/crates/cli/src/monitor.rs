@@ -80,12 +80,10 @@ fn status(output: OutputMode) -> Result<CliOutcome, CliError> {
             "max_model_len": null,
             "status": null,
             "health_status": "unavailable",
-            "provider": null,
             "model": null,
             "configured_model": null,
             "upstream": null,
             "target_kind": null,
-            "diagnostic": null,
         });
         return Ok(success(render(
             output,

@@ -9,10 +9,29 @@
 //! Exit codes: 0 success, 1 host failure, 2 usage error. JSON output is a
 //! single serde_json line.
 
-use std::io::Read as _;
+use std::io::{Read as _, Write as _};
 use std::path::{Path, PathBuf};
 
-use crate::{CliError, ExitCode};
+use crate::{CliError, CliOutcome, ExitCode};
+
+/// Writes the run's report to `out` and returns the process exit code.
+///
+/// Rust ignores SIGPIPE, so a closed pipe (`pinvou ... | head`) turns the
+/// write into an error instead of a signal: BrokenPipe exits 0 — the
+/// conventional pipe-closed handling — instead of panicking with 101. Any
+/// other write failure notes on stderr and exits 1. Extracted from `main`
+/// (a bin crate the integration tests never execute) so the contract is
+/// unit-pinned.
+pub fn emit_report<W: std::io::Write>(mut out: W, outcome: &CliOutcome) -> i32 {
+    match writeln!(out, "{}", outcome.stdout) {
+        Ok(()) => outcome.exit_code.as_i32(),
+        Err(error) if error.kind() == std::io::ErrorKind::BrokenPipe => 0,
+        Err(error) => {
+            let _ = writeln!(std::io::stderr(), "pinvou: cannot write output: {error}");
+            1
+        }
+    }
+}
 
 pub const TOP_LEVEL_USAGE: &str = "usage: pinvou benchmark <command> | pinvou agent run | \
      pinvou sessions|models|settings|memory|knowledge|scheduled|plugins|connectors|personas|\
@@ -323,5 +342,64 @@ pub fn render(output: crate::OutputMode, human: String, value: &serde_json::Valu
         crate::OutputMode::Json => serde_json::to_string(value).unwrap_or_else(|error| {
             format!("{{\"error\":\"json serialization failed: {error}\"}}")
         }),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::emit_report;
+    use crate::{CliOutcome, ExitCode};
+    use std::io::{self, Write};
+
+    /// A writer that always fails with the given error kind, standing in for
+    /// a closed pipe or an otherwise failed stdout.
+    struct FailingWriter(io::ErrorKind);
+    impl Write for FailingWriter {
+        fn write(&mut self, _buf: &[u8]) -> io::Result<usize> {
+            Err(io::Error::new(self.0, "injected"))
+        }
+        fn flush(&mut self) -> io::Result<()> {
+            Ok(())
+        }
+    }
+
+    fn outcome(exit_code: ExitCode) -> CliOutcome {
+        CliOutcome {
+            exit_code,
+            stdout: "report".to_owned(),
+        }
+    }
+
+    #[test]
+    fn emit_report_writes_the_report_and_honors_the_outcome_code() {
+        let mut sink = Vec::new();
+        let code = emit_report(&mut sink, &outcome(ExitCode::Success));
+        assert_eq!(code, 0);
+        assert_eq!(String::from_utf8(sink).unwrap(), "report\n");
+        let mut sink = Vec::new();
+        let code = emit_report(&mut sink, &outcome(ExitCode::Failed));
+        assert_eq!(code, 1);
+        assert_eq!(String::from_utf8(sink).unwrap(), "report\n");
+    }
+
+    #[test]
+    fn emit_report_treats_a_broken_pipe_as_a_quiet_zero() {
+        let code = emit_report(
+            FailingWriter(io::ErrorKind::BrokenPipe),
+            &outcome(ExitCode::Failed),
+        );
+        assert_eq!(
+            code, 0,
+            "a closed pipe (`| head`) is the conventional quiet exit, not a failure"
+        );
+    }
+
+    #[test]
+    fn emit_report_surfaces_other_write_failures_as_exit_one() {
+        let code = emit_report(
+            FailingWriter(io::ErrorKind::PermissionDenied),
+            &outcome(ExitCode::Success),
+        );
+        assert_eq!(code, 1);
     }
 }

@@ -12,6 +12,20 @@ use benchmark_core::{
     TaskOutcome, TaskStatus, publish_markdown_report, publish_score_json,
 };
 
+/// Streamed stderr notes must never take the CLI down: Rust ignores SIGPIPE,
+/// so a closed stderr (`pinvou ... 2>&1 | head`) turns every `eprintln!`
+/// into a panic (exit 101) that also loses the report. A note is
+/// best-effort — a failed write is dropped and the run carries on. Every
+/// streamed stderr write in library code goes through this macro; the
+/// closed-pipe contract is enforced here, not by review at each call site.
+#[macro_export]
+macro_rules! note {
+    ($($arg:tt)*) => {{
+        use std::io::Write as _;
+        let _ = writeln!(std::io::stderr(), $($arg)*);
+    }};
+}
+
 mod agent_task;
 mod artifacts;
 mod code;
@@ -28,7 +42,7 @@ mod plugins;
 mod projects;
 mod scheduled;
 mod sessions;
-mod support;
+pub mod support;
 mod voice;
 
 pub use agent_task::AgentCommand;

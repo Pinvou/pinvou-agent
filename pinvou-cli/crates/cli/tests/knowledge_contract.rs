@@ -904,6 +904,37 @@ fn index_resume_and_retry_reject_unknown_ids_without_recovery() {
         );
     }
 
+    // The collection commands gate the same way: a mistyped id must fail on
+    // a plain open before the recovering open runs. `delete` refuses the
+    // unknown id; `add-sources` refuses it (the source path is valid, so the
+    // id gate is what rejects). Both share the stranded-state poll below as
+    // the proof that no recovery ran.
+    for arguments in [
+        vec![
+            "pinvou",
+            "knowledge",
+            "collections",
+            "delete",
+            "999",
+            "--yes",
+        ],
+        vec![
+            "pinvou",
+            "knowledge",
+            "collections",
+            "add-sources",
+            "999",
+            source.to_str().unwrap(),
+        ],
+    ] {
+        let error = execute_error(&arguments);
+        assert_eq!(error.exit_code(), ExitCode::Failed, "{arguments:?}");
+        assert!(
+            error.to_string().contains("collection 999 not found"),
+            "{arguments:?}: the unknown id must be named"
+        );
+    }
+
     // The stranded job must still read `running` (or already be done): only
     // boot recovery would have wedged it into interrupted/resumable, so the
     // state is the proof that no recovery ran. A fresh child reads the same
@@ -966,6 +997,67 @@ fn index_resume_and_retry_reject_unknown_ids_without_recovery() {
         text.contains("nothing was signalled"),
         "a finished-job cancel must report nothing was signalled"
     );
+}
+
+/// `add-sources` pre-flights every source path before any store mutation: a
+/// FIFO would hang a blocking open (upstream's expansion silently skips
+/// non-regular files), and a nonexistent path would silently enqueue
+/// nothing. Both must be an honest exit 1 that names the path — and no
+/// import job may start.
+#[test]
+#[cfg(unix)]
+fn add_sources_preflights_the_source_paths() {
+    let _env_guard = ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+    let home = TempHome::new("add-sources-preflight");
+    let created = run_json(&[
+        "pinvou",
+        "knowledge",
+        "collections",
+        "create",
+        "--name",
+        "preflight",
+    ]);
+    let id = created["id"].as_i64().expect("created collection id");
+
+    let fifo = home.path().join("preflight.fifo");
+    let status = std::process::Command::new("mkfifo")
+        .arg(&fifo)
+        .status()
+        .expect("run mkfifo");
+    assert!(status.success(), "mkfifo failed");
+    let error = execute_error(&[
+        "pinvou",
+        "knowledge",
+        "collections",
+        "add-sources",
+        &id.to_string(),
+        fifo.to_str().unwrap(),
+    ]);
+    assert_eq!(error.exit_code(), ExitCode::Failed);
+    assert!(
+        error.to_string().contains("not a regular file"),
+        "the FIFO path must be named as the rejection cause: {error}"
+    );
+
+    let missing = home.path().join("missing.md");
+    let error = execute_error(&[
+        "pinvou",
+        "knowledge",
+        "collections",
+        "add-sources",
+        &id.to_string(),
+        missing.to_str().unwrap(),
+    ]);
+    assert_eq!(error.exit_code(), ExitCode::Failed);
+    assert!(
+        error.to_string().contains("does not exist"),
+        "the missing path must be named as the rejection cause: {error}"
+    );
+
+    // The pre-flight rejects run before the recovering open, so no import
+    // job may exist afterwards.
+    let state = run_json(&["pinvou", "knowledge", "index", "status", "--output", "json"]);
+    assert_eq!(state["jobId"], serde_json::Value::Null);
 }
 
 /// `index failed` for an unknown job must not leak the raw rusqlite driver
@@ -1074,25 +1166,23 @@ fn index_resume_rearms_a_job_stranded_by_a_dead_process() {
     };
     assert_eq!(state["jobId"], serde_json::json!(job_id));
     assert_eq!(state["resumable"], serde_json::json!(false));
+    // The phase vocabulary is exactly what the CLI derives from the app's
+    // flag-based job state: running | interrupted | cancelled | done |
+    // done_with_errors | idle. After a resume the job is either actively
+    // running or already finished.
     assert!(
-        state["phase"] == serde_json::json!("preparing")
-            || state["phase"] == serde_json::json!("running")
-            || state["phase"] == serde_json::json!("parsing")
+        state["phase"] == serde_json::json!("running")
             || state["phase"] == serde_json::json!("done")
             || state["phase"] == serde_json::json!("done_with_errors"),
-        "expected the active progression after resume"
+        "expected the active progression after resume, got {:?}",
+        state["phase"]
     );
     // The resume child may exit (stranding the import thread again) before
-    // it re-claims the item, so `total` can transiently read 0 during the
-    // parsing phase; the deterministic resume contract is the re-armed state
-    // above (same job id, not resumable). Upstream maps DB `running` to the
-    // DTO `parsing` phase with `running: true`, so preparing/running/parsing
-    // all guarantee the flag; only the finished phases legitimately read
-    // false.
-    if !matches!(
-        state["phase"].as_str(),
-        Some("done") | Some("done_with_errors")
-    ) {
+    // it re-claims the item, so `total` can transiently read 0 mid-run; the
+    // deterministic resume contract is the re-armed state above (same job
+    // id, not resumable). The derived `running` phase guarantees the flag;
+    // only the finished phases legitimately read false.
+    if state["phase"] == serde_json::json!("running") {
         assert_eq!(state["running"], serde_json::json!(true));
     }
     if state["phase"] == serde_json::json!("done") {

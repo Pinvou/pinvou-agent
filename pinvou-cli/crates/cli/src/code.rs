@@ -1907,6 +1907,20 @@ fn extract_login_url(agent: &str, output: &str) -> Option<String> {
         .last()
 }
 
+/// Exact-value strip of the authorization code this process wrote to the
+/// child's stdin, applied to the captured transcript before the heuristic
+/// redaction pass: a short, non-secret-shaped code the vendor CLI echoed
+/// back would survive `redact_secret` alone. The value is trimmed the same
+/// way the stdin write trims it, so the echoed copy matches byte for byte.
+fn strip_login_code<'a>(combined: &'a str, code: Option<&str>) -> std::borrow::Cow<'a, str> {
+    match code {
+        Some(value) if !value.trim().is_empty() => {
+            combined.replace(value.trim(), "[REDACTED]").into()
+        }
+        _ => combined.into(),
+    }
+}
+
 /// Mirrors `login::extract_device_code`: `user_code=` in the URL, or the
 /// "enter code:"/"user code:" prompt, validated like `valid_device_code`.
 fn extract_device_code(output: &str, login_url: Option<&str>) -> Option<String> {
@@ -2090,23 +2104,20 @@ fn login(
     // Exact-value strip of the authorization code this process wrote to the
     // child's stdin before the heuristic pass: a short, non-secret-shaped
     // code the vendor CLI echoed back would survive `redact_secret` alone.
-    let combined = match code.as_deref() {
-        Some(value) => combined.replace(value.trim(), "[REDACTED]"),
-        None => combined,
-    };
+    let combined = strip_login_code(&combined, code.as_deref());
     if timed_out {
         // The buffered transcript would die with this error otherwise, and
         // its login link is exactly what the user needs to finish the flow.
         let login_url = extract_login_url(agent, &combined);
         if let Some(url) = &login_url {
-            eprintln!("login link: {url}");
+            note!("login link: {url}");
         }
         // Unlike the unconditionally-printed single-line link above, the
         // multi-line transcript dump below is human-gated: `--output json`
         // keeps stderr free of it.
         let echoed = pinvou3_lib::platform::credential_store::redact_secret(&combined);
         if output == OutputMode::Human && !echoed.trim().is_empty() {
-            eprintln!("{echoed}");
+            note!("{echoed}");
         }
         let link_hint = match &login_url {
             Some(url) => format!("; last login link: {url}"),
@@ -2123,7 +2134,7 @@ fn login(
     // json` stdout stays a single serde_json line.
     let echoed = pinvou3_lib::platform::credential_store::redact_secret(&combined);
     if output == OutputMode::Human && !echoed.trim().is_empty() {
-        eprintln!("{echoed}");
+        note!("{echoed}");
     }
     let login_url = extract_login_url(agent, &combined);
     let device_code = extract_device_code(&combined, login_url.as_deref());
@@ -2579,7 +2590,7 @@ fn providers_export(
                     path.display()
                 ))
             })?;
-            eprintln!("{PLAINTEXT_WARNING}");
+            note!("{PLAINTEXT_WARNING}");
             let value = serde_json::json!({
                 "agent": agent,
                 "output": path.display().to_string(),
@@ -2598,7 +2609,7 @@ fn providers_export(
         }
         None => {
             // Same warning the GUI shows on export; stdout stays pipeable.
-            eprintln!("{PLAINTEXT_WARNING}");
+            note!("{PLAINTEXT_WARNING}");
             let value = serde_json::json!({
                 "agent": agent,
                 "content": content,
@@ -3466,6 +3477,66 @@ fn git_output(root: &Path, arguments: &[&str]) -> Result<String, CliError> {
     Ok(String::from_utf8_lossy(&output.stdout).into_owned())
 }
 
+/// Bounded capture for the tracked-diff lane: `Command::output()` would
+/// buffer a modified multi-gigabyte file whole just so the caller can
+/// truncate it right after. Both streams are read through `take(cap + 1)` —
+/// stderr too, because a hostile repo hook could write arbitrarily much
+/// while the stdout side drains — and the second reader runs on a thread so
+/// the two pipes cannot deadlock. The boolean reports that the cut actually
+/// happened, so the caller's truncation marker stays exact even when the
+/// lossy decode lands just under the caller's own length check.
+fn git_output_capped(
+    root: &Path,
+    arguments: &[&str],
+    cap: u64,
+) -> Result<(String, bool), CliError> {
+    let mut child = git_command(root, arguments)
+        .stdout(std::process::Stdio::piped())
+        .stderr(std::process::Stdio::piped())
+        .spawn()
+        .map_err(|error| {
+            CliError::failed(format!(
+                "code workspace: git {}: {error}",
+                arguments.join(" ")
+            ))
+        })?;
+    let mut stdout_pipe = child.stdout.take().expect("git stdout is piped");
+    let mut stderr_pipe = child.stderr.take().expect("git stderr is piped");
+    let stderr_thread = std::thread::spawn(move || {
+        let mut bytes = Vec::new();
+        let _ = (&mut stderr_pipe).take(cap + 1).read_to_end(&mut bytes);
+        bytes
+    });
+    let mut stdout_bytes = Vec::new();
+    let _ = (&mut stdout_pipe)
+        .take(cap + 1)
+        .read_to_end(&mut stdout_bytes);
+    let stderr_bytes = stderr_thread.join().unwrap_or_default();
+    let status = child.wait().map_err(|error| {
+        CliError::failed(format!(
+            "code workspace: git {}: {error}",
+            arguments.join(" ")
+        ))
+    })?;
+    if !status.success() {
+        return Err(CliError::failed(format!(
+            "code workspace: git {} failed: {}",
+            arguments.join(" "),
+            pinvou3_lib::platform::credential_store::redact_secret(
+                String::from_utf8_lossy(&stderr_bytes).trim(),
+            )
+        )));
+    }
+    let truncated = stdout_bytes.len() as u64 > cap;
+    if truncated {
+        stdout_bytes.truncate(cap as usize);
+    }
+    Ok((
+        String::from_utf8_lossy(&stdout_bytes).into_owned(),
+        truncated,
+    ))
+}
+
 fn git_root(root: &Path) -> Option<PathBuf> {
     let output = git_command(root, &["rev-parse", "--show-toplevel"])
         .output()
@@ -3808,12 +3879,17 @@ fn workspace_diff_one(
             "code workspace diff: path escapes the workspace",
         ));
     }
+    let mut captured_over_cap = false;
     let mut text = if git_root(&root).is_some_and(|git_root| git_root == root) {
-        let unstaged = git_output(
+        // Capped like the untracked lane below: a modified multi-gigabyte
+        // file must not buffer whole just to be truncated at DIFF_LIMIT.
+        const GIT_READ_CAP: u64 = DIFF_LIMIT as u64 + 1024;
+        let (unstaged, unstaged_cut) = git_output_capped(
             &root,
             &["diff", "--no-ext-diff", "--no-color", "--", &relative],
+            GIT_READ_CAP,
         )?;
-        let staged = git_output(
+        let (staged, staged_cut) = git_output_capped(
             &root,
             &[
                 "diff",
@@ -3823,7 +3899,9 @@ fn workspace_diff_one(
                 "--",
                 &relative,
             ],
+            GIT_READ_CAP,
         )?;
+        captured_over_cap = unstaged_cut || staged_cut;
         let mut combined = String::new();
         if !staged.trim().is_empty() {
             combined.push_str("# staged\n");
@@ -3864,7 +3942,10 @@ fn workspace_diff_one(
     } else {
         "file was deleted; a non-git workspace cannot recover the pre-delete content".to_owned()
     };
-    let truncated = text.len() > DIFF_LIMIT;
+    // A captured_over_cap cut means the take() hit the read cap even if the
+    // lossy decode shrank the payload under DIFF_LIMIT — the marker must
+    // still fire, so the flag joins the length check.
+    let truncated = captured_over_cap || text.len() > DIFF_LIMIT;
     if truncated {
         truncate_utf8(&mut text, DIFF_LIMIT);
         text.push_str("\n\n...diff truncated");
@@ -4139,16 +4220,14 @@ fn checkpoints_rewind(
                     record.kept_turns,
                     cutoff,
                 ) {
-                    eprintln!(
+                    note!(
                         "[pinvou-cli] stale checkpoint reconciliation failed (cleanup only): {error:#}"
                     );
                 }
             }
         }
         Err(error) => {
-            eprintln!(
-                "[pinvou-cli] reading rewind backups failed (reconciliation skipped): {error:#}"
-            );
+            note!("[pinvou-cli] reading rewind backups failed (reconciliation skipped): {error:#}");
         }
     }
 
@@ -4186,7 +4265,7 @@ fn checkpoints_rewind(
         })?;
     // 3) Invalidate the abandoned branch snapshots (best-effort, same as GUI).
     if let Err(error) = checkpoints::invalidate_turn_checkpoints_after(&ledger, keep_turns) {
-        eprintln!(
+        note!(
             "[pinvou-cli] invalidating abandoned checkpoints failed (rewind already applied): {error:#}"
         );
     }
@@ -4360,6 +4439,28 @@ fn respond(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn strip_login_code_removes_the_exact_value_before_the_heuristic() {
+        // A short, non-secret-shaped code survives `redact_secret`'s
+        // heuristic; the exact-value strip must take it out of the echoed
+        // transcript everywhere it appears, including punctuation-wrapped.
+        let transcript = "auth code 'SRCRT-123' received\nok SRCRT-123\n";
+        assert_eq!(
+            strip_login_code(transcript, Some(" SRCRT-123 ")),
+            "auth code '[REDACTED]' received\nok [REDACTED]\n",
+            "the value is trimmed like the stdin write before matching"
+        );
+        // No code flow: the transcript is untouched.
+        assert_eq!(
+            strip_login_code(transcript, None),
+            transcript,
+            "a flow without --code must not rewrite the transcript"
+        );
+        // Degenerate empty code: the strip must not shred the transcript
+        // (replace on "" would interleave [REDACTED] between every char).
+        assert_eq!(strip_login_code(transcript, Some("   ")), transcript);
+    }
 
     #[test]
     fn codex_version_gate_extracts_the_digit_token_like_the_gui() {

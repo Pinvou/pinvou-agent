@@ -226,7 +226,7 @@ fn deliverable_index() -> Vec<DeliverableRow> {
             .unwrap_or_default()
             > MAX_LIST_SCAN_BYTES
         {
-            eprintln!(
+            note!(
                 "[artifacts] list skips {} (larger than the {MAX_LIST_SCAN_BYTES}-byte scan cap)",
                 file.display()
             );

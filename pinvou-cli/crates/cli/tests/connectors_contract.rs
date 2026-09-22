@@ -1074,6 +1074,75 @@ fn logout_success_leg_spawns_auth_logout_once_and_flags_the_store_disconnected()
 
 #[test]
 #[cfg(unix)]
+fn logout_with_a_failing_version_probe_errors_without_touching_the_store() {
+    use pinvou3_lib::features::marketplace::store::{BundleRecord, BundleSource, BundleStore};
+
+    let _env = ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+    let _home = HomeGuard::new("logout-broken-probe");
+    let bin = std::env::temp_dir().join(format!(
+        "pinvou-cli-connectors-fake-bin-{}-{}",
+        std::process::id(),
+        SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap()
+            .as_nanos()
+    ));
+    std::fs::create_dir_all(&bin).unwrap();
+    use std::os::unix::fs::PermissionsExt as _;
+    let args_file = bin.join("seen-args.txt");
+    // A CLI that resolves but whose every invocation exits non-zero (npm
+    // shim with node removed, transient hang-then-fail): the login state is
+    // UNCONFIRMED. Logout must error without running `auth logout` and
+    // without flipping the store — reporting `installed:false` here would
+    // skip the real logout while the vendor token stays on disk (GUI
+    // `logout_probe_verdict` parity).
+    let script = format!(
+        "#!/bin/sh\nprintf '%s\\n' \"$@\" >> {}\nexit 1\n",
+        args_file.display()
+    );
+    let fake = bin.join("dws");
+    std::fs::write(&fake, script).unwrap();
+    std::fs::set_permissions(&fake, std::fs::Permissions::from_mode(0o755)).unwrap();
+    let _path = VendorCliGuard::new_at(bin.clone());
+
+    let store = BundleStore::new();
+    store
+        .upsert(BundleRecord::installed_now(
+            "dingtalk",
+            BundleSource::Builtin,
+        ))
+        .expect("seed the bundle store record");
+
+    let error = run(&["pinvou", "connectors", "logout", "dingtalk", "--yes"])
+        .expect_err("a failing version probe must not report a clean logout");
+    let message = error.to_string();
+    assert!(
+        message.contains("unconfirmed"),
+        "the error must say the login state is unconfirmed: {message}"
+    );
+
+    let record = store
+        .get("dingtalk")
+        .expect("store read must succeed")
+        .expect("seeded record must be kept");
+    assert_eq!(
+        record.degraded.as_deref(),
+        None,
+        "the store record must stay connected when the probe is unconfirmed"
+    );
+    // Only the `--version` probe may have run; the real `auth logout` must
+    // be untouched so the token survives for a retry.
+    let seen = std::fs::read_to_string(&args_file).unwrap();
+    assert_eq!(
+        seen.lines().collect::<Vec<_>>(),
+        vec!["--version"],
+        "no auth logout may run when the probe is unconfirmed"
+    );
+    let _ = std::fs::remove_dir_all(&bin);
+}
+
+#[test]
+#[cfg(unix)]
 fn status_finds_a_gui_installed_npm_prefix_cli() {
     use std::os::unix::fs::PermissionsExt as _;
     let _env = ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());

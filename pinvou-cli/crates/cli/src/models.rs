@@ -923,7 +923,7 @@ fn remove(id: &str, yes: bool, output: OutputMode) -> Result<CliOutcome, CliErro
     .map_err(prefs_error)?;
     if let Some(reference) = reference_to_delete {
         if let Err(error) = SystemCredentialStore::new().delete(&reference) {
-            eprintln!(
+            note!(
                 "pinvou: warning: model {id} removed, but its keyring secret could not be \
                  deleted: {}",
                 error.user_message()
@@ -1808,6 +1808,20 @@ fn search_set(
     let secret = resolve_secret(api_key_env, false)?;
     let stored = if clear { None } else { secret };
     let stored_reference = stored.as_ref().map(|_| provider.credential_reference());
+    // Gate the clear-path keyring deletion on the provider actually holding
+    // a credential reference: a never-configured provider has no keyring
+    // entry, and deleting anyway errors on most keyrings — a spurious
+    // warning for a no-op (the same gate `models remove` applies to its
+    // credential_ref).
+    let reference_to_delete = if clear {
+        UserPrefs::load()
+            .search
+            .credentials
+            .get(&provider)
+            .and_then(|credential| credential.credential_ref.clone())
+    } else {
+        None
+    };
     // Replacing an existing key OVERWRITES it in the keyring, so the
     // rollback below must restore the previous value — deleting would
     // destroy the old secret while prefs still references it (strictly
@@ -1875,12 +1889,14 @@ fn search_set(
         // is already cleared, so a keyring deletion failure warns and
         // succeeds like `models remove`, instead of reporting a failure
         // whose only remedy (rerun) has nothing left to do.
-        if let Err(error) = SystemCredentialStore::new().delete(&provider.credential_reference()) {
-            eprintln!(
-                "pinvou: warning: credential cleared from settings, but the keyring entry \
-                 could not be deleted: {}",
-                error.user_message()
-            );
+        if let Some(reference) = reference_to_delete {
+            if let Err(error) = SystemCredentialStore::new().delete(&reference) {
+                note!(
+                    "pinvou: warning: credential cleared from settings, but the keyring entry \
+                     could not be deleted: {}",
+                    error.user_message()
+                );
+            }
         }
     }
     let action = if clear {
