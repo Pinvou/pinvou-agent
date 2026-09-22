@@ -418,9 +418,20 @@ impl EnginePoolRuntime {
     /// 删除本次评测的临时会话（释放引擎资源且不污染用户历史）
     pub(crate) async fn close(&self, session_id: &str) {
         if let Err(error) = self.pool.delete_chat_session(session_id).await {
-            eprintln!("[eval] failed to delete temporary session {session_id}: {error:#}");
+            note_stderr(&format!(
+                "[eval] failed to delete temporary session {session_id}: {error:#}"
+            ));
         }
     }
+}
+
+/// Best-effort note on stderr: Rust ignores SIGPIPE, so a closed stderr
+/// (the headless CLI's `2>&1 | head`) turns a plain `eprintln!` into a
+/// panic (exit 101) that also loses the run report these diagnostics
+/// accompany. A failed note is dropped and the run carries on.
+pub(crate) fn note_stderr(message: &str) {
+    use std::io::Write as _;
+    let _ = writeln!(std::io::stderr(), "{message}");
 }
 
 #[cfg(test)]

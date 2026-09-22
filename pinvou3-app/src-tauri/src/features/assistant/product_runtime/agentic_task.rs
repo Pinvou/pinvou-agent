@@ -345,10 +345,10 @@ pub async fn run_agentic_task(
         // arm and disarm would do it). Its record was never reported (and may
         // be empty) — say so instead of silently adopting a dead receiver.
         drop(stale);
-        eprintln!(
+        super::note_stderr(
             "[pinvou agent run] warning: replaced a stale retention-eviction \
              observer; any eviction record the previous run left unreported \
-             was discarded"
+             was discarded",
         );
     }
     let (submitted, outcome) = run_turn(
@@ -490,7 +490,7 @@ pub async fn run_agentic_task(
     // its own session up afterwards.
     store.take_retention_eviction_observer();
     if let Some(warning) = retention_eviction_warning(&evictions.lock()) {
-        eprintln!("{warning}");
+        super::note_stderr(&warning);
     }
     outcome
 }
@@ -499,13 +499,13 @@ pub async fn run_agentic_task(
 /// outcome, but silently stranding the session in the shared store hides the
 /// failure from the operator — log it instead of discarding the result.
 /// The session id stays out of the message (boot logs persist to disk and
-/// the CodeQL cleartext-logging gate flags ids on stderr): the store's own
-/// error chain names the session (`delete_session({id})`), so only the root
-/// cause (the underlying io/serialization error) is printed — the full
-/// `{error:#}` chain would carry the id right back into the log.
+/// the CodeQL cleartext-logging gate flags ids on stderr); the error context
+/// from the store already names the failing write.
 async fn log_cleanup_delete(runtime: &EnginePoolRuntime, session_id: &str) {
     if let Err(error) = runtime.close_eval_session_result(session_id).await {
-        eprintln!("[agent-task] cleanup delete failed: {}", error.root_cause());
+        super::note_stderr(&format!(
+            "[agent-task] cleanup delete for session {session_id} failed: {error:#}"
+        ));
     }
 }
 
@@ -798,15 +798,6 @@ async fn run_turn(
     // a hang in either phase must still produce a timeout report, never an
     // unbounded wait.
     let deadline = Instant::now() + Duration::from_secs(timeout_secs);
-    // Round-12 review: the Plan flip below persists BEFORE the turn
-    // exists. If the setup then fails (attachment staging, submit), the
-    // turn never started, so a caller-provided session must keep its
-    // pre-run mode — the restore happens on the setup-error arm. The
-    // timeout arm deliberately never restores: at the deadline edge the
-    // submit may already have landed, so the pre-run mode is no longer
-    // known to be the truth. Fresh sessions need no restore (the stub
-    // cleanup deletes the whole record, mode sidecar included).
-    let mut plan_restore: Option<SerializableMode> = None;
     let setup = async {
         if existing_session {
             // Continue the caller's chat session: never re-create it (session
@@ -830,13 +821,9 @@ async fn run_turn(
             // fatal like the fresh branch; an existing session is never
             // cleaned up, so the caller's record stays untouched.
             if matches!(request.mode, Some(AgenticTaskMode::Plan)) {
-                let previous = store.mode_state(session_id).mode;
                 store
                     .set_mode_and_persist(session_id, SerializableMode::Plan)
                     .context("persist session mode")?;
-                if previous != SerializableMode::Plan {
-                    plan_restore = Some(previous);
-                }
             }
             crate::features::assistant::timing::register_eval_observation(session_id);
         } else {
@@ -895,43 +882,31 @@ async fn run_turn(
             .await
             .context("submit agentic turn")
     };
-    // Bound separately: a match scrutinee temporary would keep the future
-    // (and its mutable borrow of `plan_restore`) alive into the arms.
-    let setup_result =
-        tokio::time::timeout(deadline.saturating_duration_since(Instant::now()), setup).await;
-    let handle = match setup_result {
-        Ok(submitted) => match submitted {
-            Ok(handle) => handle,
-            Err(error) => {
-                if let Some(previous) = plan_restore.take() {
-                    if let Err(restore_error) = store.set_mode_and_persist(session_id, previous) {
-                        eprintln!(
-                            "[pinvou agent run] warning: failed to restore the \
-                                 pre-run session mode after the setup failure: {restore_error:#}"
-                        );
-                    }
-                }
-                return (false, Err(error));
+    let handle =
+        match tokio::time::timeout(deadline.saturating_duration_since(Instant::now()), setup).await
+        {
+            Ok(submitted) => match submitted {
+                Ok(handle) => handle,
+                Err(error) => return (false, Err(error)),
+            },
+            Err(_elapsed) => {
+                return (
+                    false,
+                    Ok(AgenticTaskReport {
+                        session_id: session_id.to_owned(),
+                        status: "timeout".to_string(),
+                        timed_out: true,
+                        completed_after_deadline: false,
+                        assistant_text: String::new(),
+                        tool_events: Vec::new(),
+                        usage: None,
+                        error: Some(
+                            "agentic session setup did not finish within the timeout".to_string(),
+                        ),
+                    }),
+                );
             }
-        },
-        Err(_elapsed) => {
-            return (
-                false,
-                Ok(AgenticTaskReport {
-                    session_id: session_id.to_owned(),
-                    status: "timeout".to_string(),
-                    timed_out: true,
-                    completed_after_deadline: false,
-                    assistant_text: String::new(),
-                    tool_events: Vec::new(),
-                    usage: None,
-                    error: Some(
-                        "agentic session setup did not finish within the timeout".to_string(),
-                    ),
-                }),
-            );
-        }
-    };
+        };
     drop(suite_guard);
 
     let mut timed_out = false;
@@ -948,10 +923,10 @@ async fn run_turn(
             break;
         }
         if heartbeat.elapsed() >= Duration::from_secs(HEARTBEAT_SECS) {
-            eprintln!(
+            super::note_stderr(&format!(
                 "[pinvou agent run] turn still active, {}s elapsed",
                 started.elapsed().as_secs()
-            );
+            ));
             heartbeat = Instant::now();
         }
         tokio::time::sleep(Duration::from_millis(100)).await;
@@ -1169,10 +1144,10 @@ async fn prompt_with_attachments(
         }
         for source in &consumed_sources {
             if let Err(error) = std::fs::remove_file(source) {
-                eprintln!(
+                super::note_stderr(&format!(
                     "[pinvou agent run] remove_after_ingest could not delete {}: {error}",
                     source.display()
-                );
+                ));
             }
         }
         Ok(batch?)
@@ -1260,8 +1235,74 @@ mod tests {
     use crate::features::sessions::{
         MAX_SESSIONS_PER_KIND, ScheduledRunMode, ScheduledRunProfile, SessionStore,
     };
-    use crate::platform::test_support::locked_env;
+    use crate::platform::paths::tests::ENV_LOCK;
+    use std::ffi::OsString;
     use std::path::PathBuf;
+
+    /// RAII restore for the process-level env vars a test mutates: original
+    /// values are captured as `OsString` (non-Unicode values survive) and
+    /// rewritten on drop, which runs on both normal return and panic unwind.
+    /// Like bridge.rs's guard, this holds no lock itself — borrow
+    /// [`ENV_LOCK`] first, via [`locked_env`].
+    struct EnvGuard {
+        vars: Vec<(&'static str, Option<OsString>)>,
+    }
+
+    impl EnvGuard {
+        fn new(vars: &[&'static str]) -> Self {
+            Self {
+                vars: vars
+                    .iter()
+                    .map(|&name| (name, std::env::var_os(name)))
+                    .collect(),
+            }
+        }
+    }
+
+    impl Drop for EnvGuard {
+        fn drop(&mut self) {
+            for (name, value) in &self.vars {
+                // SAFETY: the paired lock guard held ENV_LOCK for this
+                // guard's whole life; env writes stay serialized across tests.
+                unsafe {
+                    if let Some(value) = value {
+                        std::env::set_var(name, value);
+                    } else {
+                        std::env::remove_var(name);
+                    }
+                }
+            }
+        }
+    }
+
+    /// Acquire the crate-wide [`ENV_LOCK`] plus an [`EnvGuard`] restoring
+    /// `vars` on scope exit (normal or panic):
+    /// `let (_lock, _env) = locked_env(&["PINVOU3_HOME"]);`
+    /// Never call this while already holding ENV_LOCK (not reentrant).
+    fn locked_env(vars: &[&'static str]) -> (std::sync::MutexGuard<'static, ()>, EnvGuard) {
+        let lock = ENV_LOCK.lock().unwrap_or_else(|p| p.into_inner());
+        (lock, EnvGuard::new(vars))
+    }
+
+    /// RAII cleanup for a test scratch directory under `std::env::temp_dir()`:
+    /// removed best-effort on drop (normal return or panic unwind). Removal
+    /// failures are ignored on purpose — a leaked temp dir must never fail a
+    /// test, and an OS that still holds the directory open simply skips it.
+    struct TempDirGuard {
+        path: PathBuf,
+    }
+
+    impl TempDirGuard {
+        fn new(path: PathBuf) -> Self {
+            Self { path }
+        }
+    }
+
+    impl Drop for TempDirGuard {
+        fn drop(&mut self) {
+            let _ = std::fs::remove_dir_all(&self.path);
+        }
+    }
 
     fn default_request(prompt: &str) -> AgenticTaskRequest {
         AgenticTaskRequest {
@@ -1808,10 +1849,7 @@ mod tests {
             "a save below the cap must not be reported as an eviction"
         );
         store.take_retention_eviction_observer();
-        // `_env` restores the captured PINVOU3_HOME on return or panic; the
-        // scratch home itself is removed here so repeated runs don't litter
-        // the shared temp dir.
-        let _ = std::fs::remove_dir_all(&tmp);
+        // `_env` restores the captured PINVOU3_HOME on return or panic.
     }
 
     /// The runner's warning decision is a pure function of the recorded

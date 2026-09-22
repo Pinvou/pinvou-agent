@@ -2099,14 +2099,14 @@ fn login(
         // its login link is exactly what the user needs to finish the flow.
         let login_url = extract_login_url(agent, &combined);
         if let Some(url) = &login_url {
-            eprintln!("login link: {url}");
+            note!("login link: {url}");
         }
         // Unlike the unconditionally-printed single-line link above, the
         // multi-line transcript dump below is human-gated: `--output json`
         // keeps stderr free of it.
         let echoed = pinvou3_lib::platform::credential_store::redact_secret(&combined);
         if output == OutputMode::Human && !echoed.trim().is_empty() {
-            eprintln!("{echoed}");
+            note!("{echoed}");
         }
         let link_hint = match &login_url {
             Some(url) => format!("; last login link: {url}"),
@@ -2123,7 +2123,7 @@ fn login(
     // json` stdout stays a single serde_json line.
     let echoed = pinvou3_lib::platform::credential_store::redact_secret(&combined);
     if output == OutputMode::Human && !echoed.trim().is_empty() {
-        eprintln!("{echoed}");
+        note!("{echoed}");
     }
     let login_url = extract_login_url(agent, &combined);
     let device_code = extract_device_code(&combined, login_url.as_deref());
@@ -2579,7 +2579,7 @@ fn providers_export(
                     path.display()
                 ))
             })?;
-            eprintln!("{PLAINTEXT_WARNING}");
+            note!("{PLAINTEXT_WARNING}");
             let value = serde_json::json!({
                 "agent": agent,
                 "output": path.display().to_string(),
@@ -2598,7 +2598,7 @@ fn providers_export(
         }
         None => {
             // Same warning the GUI shows on export; stdout stays pipeable.
-            eprintln!("{PLAINTEXT_WARNING}");
+            note!("{PLAINTEXT_WARNING}");
             let value = serde_json::json!({
                 "agent": agent,
                 "content": content,
@@ -4204,14 +4204,14 @@ fn checkpoints_rewind(
                     record.kept_turns,
                     cutoff,
                 ) {
-                    eprintln!(
+                    note!(
                         "[pinvou-cli] stale checkpoint reconciliation failed (cleanup only): {error:#}"
                     );
                 }
             }
         }
         Err(error) => {
-            eprintln!(
+            note!(
                 "[pinvou-cli] reading rewind backups failed (reconciliation skipped): {error:#}"
             );
         }
@@ -4251,7 +4251,7 @@ fn checkpoints_rewind(
         })?;
     // 3) Invalidate the abandoned branch snapshots (best-effort, same as GUI).
     if let Err(error) = checkpoints::invalidate_turn_checkpoints_after(&ledger, keep_turns) {
-        eprintln!(
+        note!(
             "[pinvou-cli] invalidating abandoned checkpoints failed (rewind already applied): {error:#}"
         );
     }

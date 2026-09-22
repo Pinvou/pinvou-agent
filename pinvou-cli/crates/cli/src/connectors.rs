@@ -1834,7 +1834,7 @@ fn connect(kind: ConnectorKind, timeout: u64, output: OutputMode) -> Result<CliO
                     CliError::failed("feishu auth login did not return a device code")
                 })?;
             notes.push(format!("authorize-url: {url}"));
-            eprintln!("lark-cli authorize-url: {url}");
+            note!("lark-cli authorize-url: {url}");
             loop {
                 if Instant::now() >= deadline {
                     return Err(CliError::failed(format!(
@@ -2079,7 +2079,7 @@ fn spawn_and_capture_url(
                 // it immediately (stderr keeps `--output json` stdout
                 // single-line) and record it for the final summary and any
                 // later error.
-                eprintln!("{} login link: {found}", spec.cli_bin);
+                note!("{} login link: {found}", spec.cli_bin);
                 notes.push(format!("login link: {found}"));
                 let carries_code = found.contains("user_code=");
                 url = Some(found);
@@ -2092,7 +2092,7 @@ fn spawn_and_capture_url(
                 }
             }
             Ok(LoginStreamEvent::Code(code)) => {
-                eprintln!("{} user code: {code}", spec.cli_bin);
+                note!("{} user code: {code}", spec.cli_bin);
                 notes.push(format!("user code: {code}"));
                 user_code = Some(code);
             }
@@ -2164,7 +2164,7 @@ fn announce_wecom_qr(qr: &Path, notes: &mut Vec<String>) -> bool {
     if !qr.is_file() {
         return false;
     }
-    eprintln!(
+    note!(
         "wecom scan-qr-file: {} (scan this PNG to authorize in one step)",
         qr.display()
     );
