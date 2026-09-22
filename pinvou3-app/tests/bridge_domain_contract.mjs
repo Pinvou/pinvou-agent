@@ -54,6 +54,11 @@ export const desktopOnlyBridgeApi = {
   // In a web relay session that is the remote desktop, not the browser user's
   // machine — pasting must stay on the browser's own clipboardData there.
   attachments: ['addPasteImageFromClipboard'],
+  // Builtin feature toggles (list_builtin_features / set_builtin_feature_enabled)
+  // are desktop Rust command channels with no web backend. list_builtin_features
+  // is consumed by ChatView (the session-mention feature gate, PR #586);
+  // set_builtin_feature_enabled is the contract hook for future per-feature
+  // settings pages — no consumer yet.
   // saveSettingsAndRestart/saveSearchSettingsAndRestart restart the desktop
   // process in place; the web host has no restart channel.
   settings: ['saveSearchSettingsAndRestart', 'listBuiltinFeatures', 'setBuiltinFeatureEnabled'],
