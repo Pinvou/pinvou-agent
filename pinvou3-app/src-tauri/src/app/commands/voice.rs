@@ -1014,16 +1014,19 @@ async fn call_voice_postprocess_model(
         "stream": false
     });
     apply_voice_reasoning_controls(&mut body, preset, &bridge.provider(), &base_url, model_name);
-    let resp = client
-        .post(format!(
+    let resp = crate::core::model_endpoint::with_opencode_session_header(
+        client.post(format!(
             "{}/chat/completions",
             base_url.trim_end_matches('/')
-        ))
-        .bearer_auth(bridge.api_key())
-        .json(&body)
-        .send()
-        .await
-        .context("post voice postprocess chat/completions")?
+        )),
+        &base_url,
+        "voice-postprocess",
+    )
+    .bearer_auth(bridge.api_key())
+    .json(&body)
+    .send()
+    .await
+    .context("post voice postprocess chat/completions")?
         .error_for_status()
         .context("voice postprocess chat/completions status")?;
     let value: Value = resp

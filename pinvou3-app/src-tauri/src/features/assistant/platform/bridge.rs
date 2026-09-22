@@ -34,7 +34,8 @@ use self::bundle::{
 };
 use self::prefs::{ModelPreset, SavedModel, UserPrefs};
 use crate::core::always_thinking::{AlwaysThinkingSpec, always_thinking_spec};
-use crate::core::model_endpoint::LocalServerKind;
+use crate::core::model_endpoint::{LocalServerKind, is_opencode_gateway_base_url};
+use crate::core::model_endpoint::opencode_session_id_for;
 use crate::core::session_mode::SessionMode;
 use crate::features::assistant::expert_roster::ExpertRosterSnapshot;
 use crate::features::assistant::image_capability::{
@@ -107,26 +108,11 @@ fn is_official_deepseek_base_url(base_url: &str) -> bool {
     matches!(normalized.as_str(), "https://api.deepseek.com")
 }
 
-/// OpenCode Go/Zen 网关（opencode.ai/zen/...）自 2026-09 起强制要求
-/// `x-opencode-session` 会话亲和头，缺失即 400。底座的自动注入只覆盖内建
-/// OpencodeGo/OpencodeZen provider；用户以 OpenAI 兼容自定义端点接入时
-/// `provider()` 解析为 openai/vllm，不会触发，因此桥接层按 base_url 补齐。
-fn is_opencode_gateway_base_url(base_url: &str) -> bool {
-    reqwest::Url::parse(base_url.trim())
-        .ok()
-        .is_some_and(|url| {
-            url.host_str()
-                .is_some_and(|host| host.eq_ignore_ascii_case("opencode.ai"))
-                && url.path().starts_with("/zen")
-        })
-}
-
-/// 进程级稳定的 OpenCode 会话 ID，与底座内建 provider 的 OnceLock 语义一致
-/// （"one stable ID per conversation"，见 CodeWhale crates/tui/src/client.rs）。
-fn opencode_session_id() -> &'static str {
-    static ID: std::sync::OnceLock<String> = std::sync::OnceLock::new();
-    ID.get_or_init(|| uuid::Uuid::new_v4().to_string())
-}
+/// Conversation key for engine configs that carry no session identity
+/// (global bridge clones, preview/headless builds). Session-bound bridges
+/// mint per-session IDs via `session_affinity_key` instead; see
+/// `core::model_endpoint::opencode_session_id_for`.
+const ENGINE_DEFAULT_CONVERSATION_KEY: &str = "engine-default";
 
 pub(crate) fn base_url_uses_loopback(base_url: &str) -> bool {
     reqwest::Url::parse(base_url)
@@ -206,6 +192,13 @@ pub struct Pinvou3Bridge {
     /// 本 engine 绑定的 session 锁定模型(per-session 不同模型)。None = 用 prefs 全局
     /// active。EnginePool spawn 时按该 session 的 model_id 注入。
     pub session_model: Option<SavedModel>,
+    /// Conversation identity for the OpenCode gateway session-affinity header
+    /// (`x-opencode-session`, one stable ID per conversation). Set by
+    /// `EnginePool::prepare_runtime_model` to the session id so a session
+    /// keeps one header value across engine respawns; `None` = non-session
+    /// bridge clone, falls back to a shared default conversation key in
+    /// `build_dt_config`.
+    pub session_affinity_key: Option<String>,
     /// `max_model_len` (context window) probed from the local vLLM
     /// `/v1/models` endpoint. Injected at
     /// EnginePool spawn by `resolve_served_model` (the matched entry's own
@@ -253,6 +246,7 @@ impl std::fmt::Debug for Pinvou3Bridge {
             .field("bundle", &self.bundle)
             .field("workspace", &self.workspace)
             .field("session_model", &self.session_model)
+            .field("session_affinity_key", &self.session_affinity_key)
             .field("probed_context_tokens", &self.probed_context_tokens)
             .field("probed_output_tokens", &self.probed_output_tokens)
             .field("probed_local_kind", &self.probed_local_kind)
@@ -376,6 +370,7 @@ impl Pinvou3Bridge {
             bundle,
             workspace: paths::user_home_dir(),
             session_model: None,
+            session_affinity_key: None,
             probed_context_tokens: None,
             probed_output_tokens: None,
             probed_local_kind: None,
@@ -2188,8 +2183,14 @@ impl Pinvou3Bridge {
         if is_opencode_gateway_base_url(&base_url) {
             cfg.http_headers
                 .get_or_insert_with(HashMap::new)
-                .entry("x-opencode-session".to_string())
-                .or_insert_with(|| opencode_session_id().to_string());
+                .insert(
+                    "x-opencode-session".to_string(),
+                    opencode_session_id_for(
+                        self.session_affinity_key
+                            .as_deref()
+                            .unwrap_or(ENGINE_DEFAULT_CONVERSATION_KEY),
+                    ),
+                );
         }
         cfg.default_text_model = Some(model);
         // 本地模型（vLLM / 探测出的 Ollama）默认关 thinking（防 SSE timeout）；其余默认 high。
@@ -2795,6 +2796,7 @@ impl Pinvou3Bridge {
             bundle: Pinvou3Bundle::paths(),
             workspace: std::env::temp_dir(),
             session_model,
+            session_affinity_key: None,
             probed_context_tokens: None,
             probed_output_tokens: None,
             probed_local_kind: None,
@@ -6612,10 +6614,12 @@ mod tests {
         );
     }
 
-    /// OpenCode Go/Zen 网关自 2026-09 起强制 `x-opencode-session`，缺失即 400。
-    /// 自定义 OpenAI 兼容端点指向该网关时桥接层必须补进程级稳定 ID（底座的
-    /// 自动注入只覆盖内建 OpencodeGo/OpencodeZen，见 `build_dt_config`）；
-    /// 非网关地址不得注入。
+    /// OpenCode Go gateway (/zen/go/v1) enforces `x-opencode-session` with
+    /// HTTP 400 since 2026-09 (plain Zen ignores it today; the /zen prefix
+    /// match is future-proofing). Custom OpenAI-compatible endpoints resolve
+    /// to provider `openai`, so the bridge must supply the header itself,
+    /// keyed per conversation (`session_affinity_key`): one stable ID per
+    /// conversation, distinct across sessions, never on non-gateway routes.
     #[test]
     fn opencode_gateway_base_url_carries_stable_session_header() {
         let (_lock, _env) = locked_env(&[
@@ -6624,6 +6628,14 @@ mod tests {
             "DEEPSEEK_BASE_URL",
             "DEEPSEEK_API_KEY",
         ]);
+        // locked_env snapshots but does not clear; drop any ambient overrides
+        // so the exclusion asserts below cannot be skewed by env pollution.
+        // SAFETY: ENV_LOCK held for the whole test; writes are serialized.
+        unsafe { std::env::remove_var("DEEPSEEK_MODEL") };
+        unsafe { std::env::remove_var("DEEPSEEK_PROVIDER") };
+        unsafe { std::env::remove_var("DEEPSEEK_BASE_URL") };
+        unsafe { std::env::remove_var("DEEPSEEK_API_KEY") };
+
         let mut bridge = fixture_bridge();
         set_active_model(
             &mut bridge,
@@ -6652,10 +6664,12 @@ mod tests {
             .expect("header must persist across config rebuilds");
         assert_eq!(
             first, second,
-            "session id must be stable within the process"
+            "session id must be stable across config rebuilds"
         );
 
-        // Zen 原生端点(与 Go 端点同为 opencode.ai/zen 前缀)也必须注入。
+        // Zen-native endpoint shares the /zen prefix and must be covered too;
+        // both fixtures have no session key, so they share the default
+        // conversation and therefore the same ID.
         let mut zen = fixture_bridge();
         set_active_model(
             &mut zen,
@@ -6664,13 +6678,65 @@ mod tests {
             "https://opencode.ai/zen/v1",
             "sk-xxx",
         );
-        assert!(
-            zen.build_dt_config()
+        let zen_header = zen
+            .build_dt_config()
+            .http_headers
+            .as_ref()
+            .and_then(|headers| headers.get("x-opencode-session"))
+            .cloned()
+            .expect("Zen-native gateway route must carry x-opencode-session");
+        assert_eq!(
+            first, zen_header,
+            "default-conversation bridges must share one stable ID"
+        );
+
+        // Per-conversation semantics: session-keyed bridges keep one ID
+        // across (simulated) respawns and differ across sessions.
+        let gateway = "https://opencode.ai/zen/go/v1";
+        let mut keyed_a = fixture_bridge();
+        keyed_a.session_affinity_key = Some("session-a".to_string());
+        set_active_model(&mut keyed_a, ModelPreset::OpenaiCompatible, "m", gateway, "sk-xxx");
+        let a = keyed_a
+            .build_dt_config()
+            .http_headers
+            .as_ref()
+            .and_then(|headers| headers.get("x-opencode-session"))
+            .cloned()
+            .expect("session-keyed gateway route must carry the header");
+        assert_ne!(a, first, "session IDs must not collide with the default conversation");
+        let mut keyed_a_respawn = fixture_bridge();
+        keyed_a_respawn.session_affinity_key = Some("session-a".to_string());
+        set_active_model(
+            &mut keyed_a_respawn,
+            ModelPreset::OpenaiCompatible,
+            "m",
+            gateway,
+            "sk-xxx",
+        );
+        assert_eq!(
+            keyed_a_respawn
+                .build_dt_config()
                 .http_headers
                 .as_ref()
                 .and_then(|headers| headers.get("x-opencode-session"))
-                .is_some(),
-            "Zen-native gateway route must carry x-opencode-session"
+                .cloned()
+                .expect("respawned bridge must carry the header"),
+            a,
+            "one stable ID per conversation: respawn must reuse the session ID"
+        );
+        let mut keyed_b = fixture_bridge();
+        keyed_b.session_affinity_key = Some("session-b".to_string());
+        set_active_model(&mut keyed_b, ModelPreset::OpenaiCompatible, "m", gateway, "sk-xxx");
+        assert_ne!(
+            keyed_b
+                .build_dt_config()
+                .http_headers
+                .as_ref()
+                .and_then(|headers| headers.get("x-opencode-session"))
+                .cloned()
+                .expect("second session must carry the header"),
+            a,
+            "distinct conversations must get distinct IDs"
         );
 
         let mut other = fixture_bridge();
@@ -6689,6 +6755,70 @@ mod tests {
                 .and_then(|headers| headers.get("x-opencode-session"))
                 .is_none(),
             "non-OpenCode routes must not carry the header"
+        );
+    }
+
+    /// Gateway matcher edges: uppercase hosts (URL parsing lowercases them),
+    /// FQDN trailing dots, and www subdomains match; non-gateway hosts and
+    /// paths that merely start with "/zen" (e.g. /zenith) do not.
+    #[test]
+    fn opencode_gateway_matcher_edges() {
+        assert!(crate::core::model_endpoint::is_opencode_gateway_base_url(
+            "https://OpenCode.AI/zen/v1"
+        ));
+        assert!(crate::core::model_endpoint::is_opencode_gateway_base_url(
+            "https://opencode.ai./zen/go/v1"
+        ));
+        assert!(crate::core::model_endpoint::is_opencode_gateway_base_url(
+            "https://www.opencode.ai/zen/v1"
+        ));
+        assert!(!crate::core::model_endpoint::is_opencode_gateway_base_url(
+            "https://opencode.ai/zenith/v1"
+        ));
+        assert!(!crate::core::model_endpoint::is_opencode_gateway_base_url(
+            "https://evil.example.com/zen/v1"
+        ));
+        assert!(!crate::core::model_endpoint::is_opencode_gateway_base_url(
+            "not a url"
+        ));
+    }
+
+    /// The auxiliary-request helper attaches the conversation-keyed header on
+    /// gateway routes and is a no-op elsewhere.
+    #[test]
+    fn aux_requests_carry_gateway_header_only_on_gateway_routes() {
+        let gateway = "https://opencode.ai/zen/v1";
+        let client = reqwest::Client::new();
+        let attach = |base_url: &str, key: &str| {
+            crate::core::model_endpoint::with_opencode_session_header(
+                client.post(format!("{base_url}/chat/completions")),
+                base_url,
+                key,
+            )
+        };
+        let request = attach(gateway, "memory-review")
+            .build()
+            .expect("request builds");
+        assert_eq!(
+            request.headers().get("x-opencode-session"),
+            Some(
+                &crate::core::model_endpoint::opencode_session_id_for("memory-review")
+                    .parse()
+                    .expect("valid header value")
+            ),
+            "gateway aux request must carry the conversation-keyed header"
+        );
+        let request = attach("https://api.openai.com/v1", "memory-review")
+            .build()
+            .expect("request builds");
+        assert!(
+            request.headers().get("x-opencode-session").is_none(),
+            "non-gateway aux request must stay clean"
+        );
+        assert_ne!(
+            crate::core::model_endpoint::opencode_session_id_for("memory-review"),
+            crate::core::model_endpoint::opencode_session_id_for("voice-postprocess"),
+            "distinct conversation keys must mint distinct IDs"
         );
     }
 

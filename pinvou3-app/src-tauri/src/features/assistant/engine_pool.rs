@@ -1365,6 +1365,11 @@ impl EnginePool {
     ) -> Result<(Pinvou3Bridge, PreparedRuntimeModel, bool)> {
         let mut bridge = self.bridge.clone();
         bridge.prefs = UserPrefs::load();
+        // One OpenCode gateway session-affinity ID per conversation: key the
+        // x-opencode-session header by session id so engine respawns of the
+        // same session keep a single stable value
+        // (core::model_endpoint::opencode_session_id_for).
+        bridge.session_affinity_key = Some(session_id.to_string());
         let scheduled_profile = self.store.scheduled_profile(session_id);
         // 与命令层 chat.rs 的 is_scheduled 同口径(scheduled_profile 存在即算):
         // scheduled 会话图片固定走 image_analyze 硬规则,即使带 interactive

@@ -631,13 +631,15 @@ pub(super) async fn send_memory_llm_request(
         "response_format": { "type": "json_object" }
     });
     apply_memory_review_reasoning_controls(&mut body, preset, &provider, &base_url, &model_name);
-    let resp = client
-        .post(url)
-        .bearer_auth(bridge.memory_api_key())
-        .json(&body)
-        .send()
-        .await
-        .with_context(|| format!("post memory {label} chat/completions"))?
+    let resp = crate::core::model_endpoint::with_opencode_session_header(
+        client.post(url).bearer_auth(bridge.memory_api_key()),
+        &base_url,
+        "memory-review",
+    )
+    .json(&body)
+    .send()
+    .await
+    .with_context(|| format!("post memory {label} chat/completions"))?
         .error_for_status()
         .with_context(|| format!("memory {label} chat/completions status"))?;
     let value: Value = resp
