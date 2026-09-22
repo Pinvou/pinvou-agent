@@ -2095,9 +2095,18 @@ impl Pinvou3Bridge {
         let mut cfg = self.build_engine_config_for_session_roots(session_id, roots);
         // 契约走系统级 instructions（spawn 一次、compaction 存活、不进子智能体提示）；
         // 每轮动态内容只有候选行，随发送链进 <system-reminder> 信封。
+        // 插入位置承重：底座把全部 sources 按声明序拼成一个 Permissions
+        // fragment 后做 head-first 100 KiB 硬钳制（`INSTRUCTIONS_FILE_MAX_BYTES`，
+        // prompts.rs 渲染 + fragment.rs `with_max_bytes`），超限内容从尾部丢弃。
+        // 契约只有约 1.8 KiB 的产品签发文本、必须永远随行；会吸收截断的应是
+        // 数量与体积都无上界的文件型来源（AGENTS.md 链 / 用户 instructions /
+        // memory runtime prompt）。因此紧跟 `pinvou3:instructions` 插入、
+        // 先于一切文件源——追加到末尾的话，AGENTS.md 链一长契约就被静默裁掉。
         if swarm {
-            cfg.instructions
-                .push(crate::features::assistant::swarm::swarm_instruction_source());
+            cfg.instructions.insert(
+                1,
+                crate::features::assistant::swarm::swarm_instruction_source(),
+            );
         }
         // 主会话是总协调者：直属子智能体处于 depth=1，复杂任务可再派生
         // depth=2；第二层不能继续。主会话侧的正数深度覆盖由专用 hook 拦截；
@@ -8162,6 +8171,41 @@ mod tests {
                 InstructionSource::Inline { content, .. } if content == crate::features::assistant::swarm::SWARM_CONTRACT
             ),
             "契约内容必须与产品签发文本逐字一致"
+        );
+        // 位置承重（回归钉死）：底座把全部 instruction sources 拼进一个
+        // Permissions fragment 后按 head-first 100 KiB 钳制，尾部直接丢弃。
+        // 契约必须紧跟 pinvou3:instructions、先于一切文件型来源（AGENTS.md
+        // 链 / 用户 instructions / memory runtime prompt）——文件源数量无上界，
+        // 才是吸收截断的一方；契约一旦退到文件源之后就会被静默裁掉。
+        assert!(
+            matches!(
+                &cfg.instructions[0],
+                InstructionSource::Inline { name, .. } if name == "pinvou3:instructions"
+            ),
+            "instruction 首项必须是 pinvou3:instructions，契约紧随其后：{:?}",
+            cfg.instructions
+        );
+        let swarm_pos = cfg
+            .instructions
+            .iter()
+            .position(|source| {
+                matches!(
+                    source,
+                    InstructionSource::Inline { name, .. } if name == "pinvou3:swarm"
+                )
+            })
+            .expect("swarm 配置必须携带 pinvou3:swarm（上文已断言恰一份）");
+        assert_eq!(
+            swarm_pos, 1,
+            "契约必须是第二项（紧跟 pinvou3:instructions），不得退到文件源之后：{:?}",
+            cfg.instructions
+        );
+        assert!(
+            cfg.instructions.iter().enumerate().all(|(idx, source)| {
+                !matches!(source, InstructionSource::File(_)) || idx > swarm_pos
+            }),
+            "契约必须先于所有文件型 instruction 源（head-first 钳制下尾部被丢弃）：{:?}",
+            cfg.instructions
         );
         assert!(
             !ordinary.instructions.iter().any(|source| {
