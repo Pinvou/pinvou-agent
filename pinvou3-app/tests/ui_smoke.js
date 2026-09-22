@@ -1512,7 +1512,8 @@ async function expand(page) {
   await page.evaluate(() => document.querySelector('button[aria-label="取消"]')?.click());
 
   // End of the codex block: opening a code session from the chat manager page enters
-  // code mode (sidebar style, collapsed nav, and New chat behavior all follow the mode).
+  // code mode (sidebar style and New chat behavior follow the mode; the primary-nav
+  // collapse does not — it is a global manual toggle now).
   // Later cases rely on the standard sidebar and chat view, so exit code mode explicitly
   // to avoid polluting downstream assertions.
   // The exit path must not open any existing normal session (case ③ relies on the first
@@ -1520,6 +1521,13 @@ async function expand(page) {
   // pre-opening would route the second entry through the cache path): click 「新对话」
   // into the code draft page first, then switch back to work mode via the
   // HomeModeSwitcher — without touching any existing session.
+  // Inside code mode the primary nav must stay expanded: the auto-collapse is
+  // gone, folding is only reachable through the manual toggle.
+  const codeModeNavNotCollapsed = await page.evaluate(() =>
+    !document.querySelector('[data-testid="sidebar-primary-nav-expand"]')
+      && [...document.querySelectorAll('span')]
+        .some(node => (node.textContent || '').trim() === '定时任务' && node.getBoundingClientRect().left < 330));
+  rec('①a-6a code 模式下主导航不再自动收缩', codeModeNavNotCollapsed, String(codeModeNavNotCollapsed));
   await clickText(page, '新对话'); await sleep(500);
   await page.evaluate(() => document.querySelector('[data-testid="home-mode-work"]')?.click());
   await sleep(700);
@@ -1527,6 +1535,36 @@ async function expand(page) {
     document.querySelector('[data-testid="app-root"]')?.getAttribute('data-current-view') === 'chat'
       && !document.querySelector('[data-testid="sidebar-primary-nav-expand"]'));
   rec('①a-6 HomeModeSwitcher 切回工作模式退出 code 模式', exitedCodeMode, String(exitedCodeMode));
+
+  // The primary-nav collapse is a global manual toggle: in any mode, 收起导航
+  // folds the nav to a single expand row and 展开导航 restores it; the choice
+  // persists to localStorage and no mode switch resets it. freshStorageAbsent
+  // first proves nothing wrote the key automatically; the case ends expanded so
+  // later cases keep the default state.
+  const navManualToggle = await page.evaluate(async () => {
+    const settle = () => new Promise(resolve => { setTimeout(resolve, 150); });
+    const expandRow = () => document.querySelector('[data-testid="sidebar-primary-nav-expand"]');
+    const collapseRow = () => document.querySelector('[data-testid="sidebar-primary-nav-collapse"]');
+    const scheduledNavVisible = () => [...document.querySelectorAll('span')]
+      .some(node => (node.textContent || '').trim() === '定时任务' && node.getBoundingClientRect().left < 330);
+    const result = { freshStorageAbsent: localStorage.getItem('pinvou_sidebar_nav_collapsed') === null };
+    collapseRow()?.click();
+    await settle();
+    result.collapsedRowShown = !!expandRow();
+    result.collapsedRowGone = !collapseRow();
+    result.navItemsHidden = !scheduledNavVisible();
+    result.storedCollapsed = localStorage.getItem('pinvou_sidebar_nav_collapsed') === '1';
+    expandRow()?.click();
+    await settle();
+    result.expandedBack = !expandRow() && !!collapseRow() && scheduledNavVisible();
+    result.storedExpanded = localStorage.getItem('pinvou_sidebar_nav_collapsed') === '0';
+    return result;
+  });
+  rec('①a-6b 主导航收缩为全局手动开关且持久化',
+    navManualToggle.freshStorageAbsent && navManualToggle.collapsedRowShown && navManualToggle.collapsedRowGone
+      && navManualToggle.navItemsHidden && navManualToggle.storedCollapsed
+      && navManualToggle.expandedBack && navManualToggle.storedExpanded,
+    JSON.stringify(navManualToggle));
 
   // 全部/代码胶囊:三态默认(未选择时 storage 为空且普通模式按「全部」渲染)、
   // 点击即持久化并切换列表形态;一键折叠按钮聚合当前可见分组的真实状态,

@@ -27,6 +27,8 @@ name: PR Check
 #   欠账由清理 PR(#35 及后续)消化后逐个升 deny。
 # - windows-rust-test: Native Windows coverage runs for ready high-risk paths or
 #   ci:full-rust. Merge Queue does not repeat it; main retains cumulative coverage.
+# - macos-rust-check: Native macOS compile check (check does not link, no signing/packaging)
+#   mirrors windows-rust-test gating; the Linux leg cannot expose platform-specific type errors.
 # - windows-codex-runtime-test:Relevant PRs exercise the browser-wrapper lifecycle,
 #   prepare Node + ACP Bridge, and verify packaged resources on native Windows.
 # - Benchmarks stay outside product PR/MQ gates and run manually in an isolated environment.
@@ -170,6 +172,7 @@ jobs:
               - '**/Cargo.toml'
               - '**/Cargo.lock'
               - '**/build.rs'
+              - 'scripts/ci-libpipewire-build.sh'
               - 'CodeWhale'
               - '.gitmodules'
               - '.github/workflows/pr-check.yml'
@@ -730,11 +733,21 @@ jobs:
             libwebkit2gtk-4.1-dev \
             libssl-dev \
             libayatana-appindicator3-dev \
+            libpipewire-0.3-dev libdrm-dev libgbm-dev libegl-dev \
             build-essential pkg-config cmake
           # Reduce footprint at the source: orphan dependencies, apt cache packages, and index lists do not stay on the build disk.
           sudo apt-get autoremove -y --purge
           sudo apt-get clean
           sudo rm -rf /var/lib/apt/lists/*
+
+      # pipewire-rs 0.10 (computer_use Wayland capture, direct + via xcap) needs SPA
+      # static inline helpers that ubuntu-22.04's libpipewire 0.3.48 headers lack
+      # (libspa-sys bindgens against system headers at build time). Build the upstream
+      # 1.0.7 headers+lib into /usr/local so pkg-config resolves the prefix; idempotent,
+      # no runner-image drift. See scripts/ci-libpipewire-build.sh for the full rationale.
+      - name: Build PipeWire 1.0.7 dev prefix (jammy SPA headers too old)
+        if: ${{ env.RUN_HEAVY_RUST_CHECKS == 'true' }}
+        run: bash scripts/ci-libpipewire-build.sh
 
       # Clippy hard gate (no continue-on-error): lint config lives in the
       # Cargo.toml [lints] table, never CLI -W/-D (avoids divergence from
@@ -913,6 +926,7 @@ jobs:
             libwebkit2gtk-4.1-dev \
             libssl-dev \
             libayatana-appindicator3-dev \
+            libpipewire-0.3-dev libdrm-dev libgbm-dev libegl-dev \
             build-essential pkg-config cmake lld \
             time
           # Reduce footprint at the source: orphan dependencies, apt cache packages, and index lists do not stay on the build disk.
@@ -920,6 +934,13 @@ jobs:
           sudo apt-get clean
           sudo rm -rf /var/lib/apt/lists/*
 
+      # pipewire-rs 0.10 (computer_use Wayland capture, direct + via xcap) needs SPA
+      # static inline helpers that ubuntu-22.04's libpipewire 0.3.48 headers lack
+      # (libspa-sys bindgens against system headers at build time). Build the upstream
+      # 1.0.7 headers+lib into /usr/local so pkg-config resolves the prefix; idempotent,
+      # no runner-image drift. See scripts/ci-libpipewire-build.sh for the full rationale.
+      - name: Build PipeWire 1.0.7 dev prefix (jammy SPA headers too old)
+        run: bash scripts/ci-libpipewire-build.sh
       - name: Rust toolchain
         uses: dtolnay/rust-toolchain@stable
 
@@ -1071,19 +1092,33 @@ jobs:
         run: |
           sudo apt-get update
           # Package list audited per-package on 2026-09-15: gtk/soup/x11 are installed
-          # transitively via webkit-dev; librsvg2-dev is not needed for the build; libssl-dev (openssl-sys is not vendored)
+          # transitively via webkit-dev — that transitive set is what covers the pure-Rust
+          # x11/xkbcommon/xcb crates the computer_use capture stack builds against
+          # (libxkbcommon-dev via libgtk-3-dev, libxcb1-dev via libx11-dev; enigo's X11
+          # input path is pure-Rust x11rb and needs no C XTest/XInput headers); librsvg2-dev
+          # is not needed for the build; libssl-dev (openssl-sys is not vendored)
           # and appindicator (tray) must be kept.
+          # pipewire/drm/gbm/egl are the computer_use capture-backends headers the
+          # webkit-dev chain does not pull in.
           sudo apt-get install -y --no-install-recommends \
             libwebkit2gtk-4.1-dev \
             libssl-dev \
             libayatana-appindicator3-dev \
             build-essential pkg-config cmake \
-            time
+            time \
+            libpipewire-0.3-dev libdrm-dev libgbm-dev libegl-dev
           # Reduce footprint at the source: orphan dependencies, apt cache packages, and index lists do not stay on the build disk.
           sudo apt-get autoremove -y --purge
           sudo apt-get clean
           sudo rm -rf /var/lib/apt/lists/*
 
+      # pipewire-rs 0.10 (computer_use Wayland capture, direct + via xcap) needs SPA
+      # static inline helpers that ubuntu-22.04's libpipewire 0.3.48 headers lack
+      # (libspa-sys bindgens against system headers at build time). Build the upstream
+      # 1.0.7 headers+lib into /usr/local so pkg-config resolves the prefix; idempotent,
+      # no runner-image drift. See scripts/ci-libpipewire-build.sh for the full rationale.
+      - name: Build PipeWire 1.0.7 dev prefix (jammy SPA headers too old)
+        run: bash scripts/ci-libpipewire-build.sh
 
       # rustfmt is required by the `cargo fmt --check` step below (minimal
       # profile otherwise).
@@ -1238,7 +1273,11 @@ jobs:
       - name: Cargo cache
         uses: Swatinem/rust-cache@v2
         with:
-          workspaces: pinvou3-app/src-tauri
+          # This job compiles the CodeWhale Windows-only regression target as
+          # well as the application workspace. Cache both target directories.
+          workspaces: |
+            pinvou3-app/src-tauri
+            CodeWhale
           shared-key: windows-rust-test
           save-if: ${{ github.ref == 'refs/heads/main' }}
 
@@ -1339,6 +1378,26 @@ jobs:
         shell: pwsh
         run: python scripts/ci-windows-imports-diagnose.py "$env:PINVOU3_TEST_EXE"
 
+      # Parent application jobs do not execute a dependency crate's lib tests;
+      # this Windows leg explicitly runs the CodeWhale shell regressions. Assert
+      # that every filter still matches so a rename cannot become a silent pass.
+      - name: CodeWhale Windows PowerShell regressions
+        shell: bash
+        run: |
+          set -euo pipefail
+          # The tested fallback chooses pwsh.exe only when SHELL is absent.
+          # Make that runner assumption explicit and deterministic.
+          unset SHELL
+          cd CodeWhale
+          for filter in forkguard_powershell forkguard_windows_shell_text; do
+            log="/tmp/codewhale_windows_${filter}.log"
+            cargo test -p codewhale-tui --lib --locked "$filter" -- --test-threads=1 2>&1 | tee "$log"
+            grep -qE 'running [1-9][0-9]* tests?' "$log" || {
+              echo "FAIL: CodeWhale filter '$filter' matched zero tests" >&2
+              exit 1
+            }
+          done
+
       - name: Windows 原子替换状态机回归
         shell: bash
         run: |
@@ -1370,13 +1429,121 @@ jobs:
             'features::monitor::platform::windows_cpu::tests::' \
             'features::monitor::platform::windows_memory::tests::' \
             'features::monitor::platform::windows_gpu::tests::' \
-            'features::remote_control::platform::windows::tests::'; do
+            'features::remote_control::platform::windows::tests::' \
+            'features::computer_use::platform::windows::tests::'; do
             "$test_exe" "$filter" --test-threads=1 2>&1 | tee /tmp/windows_regression.log
             grep -qE 'running [1-9][0-9]* tests?' /tmp/windows_regression.log || {
               echo "FAIL: 回归过滤器 '$filter' 匹配 0 个测试(疑似测试改名导致静默空跑)" >&2
               exit 1
             }
           done
+
+  macos-rust-check:
+    name: macos-rust-check
+    needs: changes
+    # Native macOS compile coverage plus computer_use test execution for ready
+    # high-risk/explicit PRs and main; same gate as windows-rust-test. Type
+    # errors in platform-specific code (e.g. computer_use/platform/macos.rs)
+    # are only caught by a native cargo check; the Linux leg (ubuntu) never
+    # compiles the macOS target. Round-17: this leg also RUNS the
+    # computer_use unit tests — macOS-only tests previously executed on no CI
+    # leg at all (check does not run tests; the Windows leg runs Windows
+    # filters; the Linux leg runs Linux tests), leaving macOS runtime behavior
+    # author-machine-only. The Merge Queue does not repeat this leg; the Linux
+    # rust-test verifies the combined tree; check does not link, so no
+    # signing/packaging/frontend artifacts are needed (same as windows-rust-test: verified
+    # empirically on macOS in 2026-08 that cargo check --all-targets does not depend on
+    # node_modules, hence no node/npm install).
+    if: >-
+      ${{
+        !cancelled() &&
+        (
+          github.event_name == 'push' ||
+          (
+            github.event_name == 'pull_request' &&
+            github.event.pull_request.draft == false &&
+            (
+            needs.changes.outputs.rust_full == 'true' ||
+              needs.changes.outputs.cli_rust == 'true' ||
+              (
+                needs.changes.outputs.rust_code == 'true' &&
+                contains(github.event.pull_request.labels.*.name, 'ci:full-rust')
+              )
+            )
+          )
+        )
+      }}
+    runs-on: macos-15
+    # A cold check build is slow (macOS runners slower still); same cap as windows-rust-test
+    # (180: the 90-minute cap was once killed at the link phase on the Windows leg, see
+    # that job), so a hang does not burn runner minutes for long.
+    timeout-minutes: 180
+    env:
+      # Same as mac-build: inject the sh stack wrapper per platform (the rustc/LLVM stack
+      # overflow from codewhale-tui's O2 build has actually been triggered on macOS, see
+      # the rustc-stack-wrapper header comment).
+      # Must use the ${{ github.workspace }} absolute path so Cargo does not double-join
+      # the per-process cwd when resolving it.
+      RUSTC_WRAPPER: ${{ github.workspace }}/pinvou3-app/src-tauri/scripts/rustc-stack-wrapper
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v7
+        with:
+          submodules: false
+
+      - name: Init CodeWhale submodule
+        run: git submodule update --init --recursive -- CodeWhale
+
+      - name: Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
+
+      # Same as rust-test/windows-rust-test: set the toolchain pinned by
+      # src-tauri/rust-toolchain.toml as default, so cargo invoked from the repo root via
+      # --manifest-path uses the same pinned version as locally (the file is the single
+      # source of truth; the version number is not re-hardcoded in the workflow).
+      - name: Align rust-toolchain.toml pinned toolchain
+        working-directory: pinvou3-app/src-tauri
+        run: rustup default "$(rustup show active-toolchain | awk '{print $1}')"
+
+      # bge-m3 is a gitignored large asset (559MB); a clean CI checkout does not have it.
+      # Same as mac-build and the Linux rust-test: create empty placeholder files to pass
+      # tauri-build's resource validation.
+      - name: bge-m3 placeholder (satisfies tauri-build resource check)
+        run: |
+          d=pinvou3-app/src-tauri/resources/bge-m3
+          mkdir -p "$d"
+          for f in config.json model.onnx tokenizer.json tokenizer_config.json special_tokens_map.json; do
+            : > "$d/$f"
+          done
+
+      - name: Cargo cache
+        uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: pinvou3-app/src-tauri
+          # Separate key: macOS artifacts are not interchangeable with Linux/Windows; do not
+          # share with the sibling legs.
+          shared-key: macos-rust-check
+          # Save only on main (the sole source of warm cache); the PR side is read-only and
+          # does not eat the 10GB quota.
+          save-if: ${{ github.ref == 'refs/heads/main' }}
+
+      - name: macOS Rust all-targets check
+        run: >-
+          cargo check --manifest-path pinvou3-app/src-tauri/Cargo.toml
+          --all-targets --features dev-tools --locked
+
+      # Round-17: execute the computer_use unit tests on this leg — macOS-only
+      # tests (macos.rs, screen_capture_kit.rs) ran on no CI leg before. The
+      # 0-match guard keeps a test rename from silently skipping the suite.
+      - name: macOS computer_use unit tests
+        run: |
+          set -euo pipefail
+          cd pinvou3-app/src-tauri
+          cargo test --lib --features benchmark-hooks --locked computer_use -- --test-threads=1 2>&1 | tee /tmp/macos_computer_use.log
+          grep -qE 'running [1-9][0-9]* tests?' /tmp/macos_computer_use.log || {
+            echo "FAIL: the computer_use filter matched 0 tests (silent no-op guard)" >&2
+            exit 1
+          }
 
   windows-codex-runtime-test:
     name: windows-codex-runtime-test
@@ -1450,6 +1617,7 @@ jobs:
       - rust-test
       - cli-test
       - windows-rust-test
+      - macos-rust-check
       - macos-codex-runtime-test
       - windows-codex-runtime-test
     if: ${{ always() && ((github.event_name == 'pull_request' && github.event.action != 'closed') || github.event_name == 'merge_group') }}
@@ -1477,6 +1645,7 @@ jobs:
           RUST_RESULT: ${{ needs.rust-test.result }}
           CLI_TEST_RESULT: ${{ needs.cli-test.result }}
           WINDOWS_RUST_RESULT: ${{ needs.windows-rust-test.result }}
+          MACOS_RUST_CHECK_RESULT: ${{ needs.macos-rust-check.result }}
           MACOS_CODEX_RESULT: ${{ needs.macos-codex-runtime-test.result }}
           WINDOWS_CODEX_RESULT: ${{ needs.windows-codex-runtime-test.result }}
         run: |
@@ -1502,6 +1671,7 @@ jobs:
             "rust-test:$RUST_RESULT" \
             "cli-test:$CLI_TEST_RESULT" \
             "windows-rust-test:$WINDOWS_RUST_RESULT" \
+            "macos-rust-check:$MACOS_RUST_CHECK_RESULT" \
             "macos-codex-runtime-test:$MACOS_CODEX_RESULT" \
             "windows-codex-runtime-test:$WINDOWS_CODEX_RESULT"; do
             name="${item%%:*}"

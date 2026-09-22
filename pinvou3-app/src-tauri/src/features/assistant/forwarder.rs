@@ -157,6 +157,13 @@ fn record_mcp_session_boot(
         ..
     } = event
     else {
+        // Unreachable from the only production call site (the arm
+        // pre-matches the variant); surface future mis-wiring loudly in
+        // debug builds instead of silently dropping the receipt.
+        debug_assert!(
+            false,
+            "record_mcp_session_boot called with a non-McpSessionBoot event"
+        );
         return;
     };
     // Same enabled-only denominator the persisted summary uses.

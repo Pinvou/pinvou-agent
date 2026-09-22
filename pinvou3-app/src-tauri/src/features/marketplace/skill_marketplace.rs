@@ -365,13 +365,107 @@ impl SkillMarketplaceManager {
         }
     }
 
-    /// 已安装技能的市场 id（含预置与用户上传）。code scope 未初始化「默认全禁
-    /// 已装技能」的兜底集合来源（见 `scope::load_disabled_bundles_for`）。
+    /// Market ids of installed skills (presets and user uploads). Source of the
+    /// "deny all installed skills by default" fallback set for an uninitialized
+    /// code scope (see `scope::load_disabled_bundles_for`).
+    ///
+    /// Lenient read: a per-entry IO failure counts as "not installed" and is
+    /// swallowed — fine for display/list paths, fail-open for a consent gate.
+    /// The DenyAll default computation must use `installed_skill_ids_strict`.
     pub fn installed_skill_ids(&self) -> Vec<String> {
         self.list_skills()
             .into_iter()
             .filter(|s| s.installed)
             .map(|s| s.id)
+            .collect()
+    }
+
+    /// Strict variant of `installed_skill_ids`, used only by the DenyAll default
+    /// deny-list computation (`resolve_scope_disabled_ids`); display/list paths
+    /// keep the lenient read. Returns `(ids, degraded)`:
+    ///
+    /// - `degraded = false`: `ids` is the trusted full set, with the same id
+    ///   vocabulary as the lenient path (preset market ids / upload skill names).
+    /// - `degraded = true`: some probe could not distinguish "installed" from
+    ///   "absent" (permissions / transient IO, #531), so `ids` may be missing
+    ///   installed skills. The caller must then blanket over-deny — see
+    ///   `scope::resolve_scope_disabled_ids`, which unions the owner packages
+    ///   of all preset skills and all store-known upload records (a superset of
+    ///   everything this enumeration can name).
+    ///
+    /// Accepted residuals, logged loudly when hit: with an unreadable bundle
+    /// store the upload population itself is unknowable, and a *missing* store
+    /// file reads as "no uploads" (a fresh install is indistinguishable from an
+    /// empty registry). A packages root that is structurally not a directory
+    /// (NotFound / ENOTDIR family) answers "no skills on disk" without
+    /// degrading.
+    pub(crate) fn installed_skill_ids_strict(&self) -> (Vec<String>, bool) {
+        let mut degraded = false;
+        // A packages-root read failure (non-structural) blinds both the
+        // claimed-dir context checks and the straggler-copy scan.
+        if let Err(e) = std::fs::read_dir(&self.packages_root) {
+            if !matches!(
+                e.kind(),
+                std::io::ErrorKind::NotFound | std::io::ErrorKind::NotADirectory
+            ) {
+                log::warn!(
+                    "[skill-marketplace] failed to scan {} ({e}); DenyAll default degrades (over-deny)",
+                    self.packages_root.display()
+                );
+                degraded = true;
+            }
+        }
+        let mut ids: Vec<String> = Vec::new();
+        for m in preset_manifests() {
+            if probe_installed_by_name(self, m.skill_name, &mut degraded) {
+                ids.push(m.id.to_string());
+            }
+        }
+        // Uploads: an unreadable store makes the population unknowable (no
+        // recoverable truth) → degrade. A missing skill dir still reads as
+        // "uninstalled" (same semantics as the lenient path); only a failed
+        // probe degrades.
+        match self.bundle_store.records() {
+            Ok(records) => {
+                for record in records {
+                    if !matches!(record.source, super::store::BundleSource::Upload(_)) {
+                        continue;
+                    }
+                    if probe_installed_by_name(self, &record.id, &mut degraded) {
+                        ids.push(record.id.clone());
+                    }
+                }
+            }
+            Err(e) => {
+                log::warn!(
+                    "[skill-marketplace] failed to read the bundle store; upload skills unenumerable ({e}); DenyAll default degrades (over-deny)"
+                );
+                degraded = true;
+            }
+        }
+        (ids, degraded)
+    }
+
+    /// Market ids of all preset skills (compile-time embedded manifests, disk
+    /// independent). The DenyAll default computation blanket-unions their owner
+    /// packages into the deny set when enumeration degrades (over-denial
+    /// fallback).
+    pub(crate) fn preset_skill_ids() -> impl Iterator<Item = String> {
+        preset_manifests().iter().map(|m| m.id.to_string())
+    }
+
+    /// Market ids of user-uploaded skills, read leniently from the bundle store
+    /// (a failing store yields an empty list). Used only by the DenyAll default
+    /// computation's degraded blanket union in `resolve_scope_disabled_ids`, to
+    /// keep possibly-installed upload owner packages denied when per-skill
+    /// probes are blinded (e.g. by an unreadable packages root).
+    pub(crate) fn uploaded_skill_ids(&self) -> Vec<String> {
+        self.bundle_store
+            .records()
+            .unwrap_or_default()
+            .into_iter()
+            .filter(|record| matches!(record.source, super::store::BundleSource::Upload(_)))
+            .map(|record| record.id)
             .collect()
     }
 
@@ -1370,6 +1464,89 @@ impl SkillMarketplaceManager {
             }
         }
     }
+}
+
+/// Per-skill installation probe for
+/// `SkillMarketplaceManager::installed_skill_ids_strict`: candidate dirs in the
+/// same order as `find_skill_dir` (claimed dir → straggler copies → legacy flat
+/// layout), each probed with an error-visible SKILL.md check.
+///
+/// - `NotFound` / `NotADirectory` continue as "not installed": both structurally
+///   answer "no skill dir here" (a stray file in the packages root makes joined
+///   candidates ENOTDIR and must not read as degradation on a healthy system).
+/// - Any other IO error (permissions / transient IO) may hide an installed
+///   skill: it is logged loudly and recorded in `degraded`, so the caller can
+///   bias its default toward over-denial instead of trusting a shrunk list.
+///
+/// Unlike `find_skill_dir` (first existing dir wins), acceptance ORs SKILL.md
+/// across all candidates — a deliberately stricter "installed" verdict for a
+/// consent-gate default. Returns whether the skill is installed.
+fn probe_installed_by_name(
+    manager: &SkillMarketplaceManager,
+    name: &str,
+    degraded: &mut bool,
+) -> bool {
+    let mut candidates = vec![manager.package_skill_dir(name)];
+    match std::fs::read_dir(&manager.packages_root) {
+        Ok(rd) => {
+            for entry in rd {
+                // A mid-listing error can hide straggler copies; swallowing it
+                // would read as "absent", so it must degrade instead.
+                let entry = match entry {
+                    Ok(entry) => entry,
+                    Err(e) => {
+                        log::warn!(
+                            "[skill-marketplace] failed to list entries under {} ({e}); DenyAll default degrades (over-deny)",
+                            manager.packages_root.display()
+                        );
+                        *degraded = true;
+                        continue;
+                    }
+                };
+                let cand = entry.path().join("skills").join(name);
+                if !candidates.contains(&cand) {
+                    candidates.push(cand);
+                }
+            }
+        }
+        // Structural absence (or not-a-directory) of the packages root answers
+        // "no straggler copies"; the caller's preamble flags every other
+        // root-read failure.
+        Err(e)
+            if matches!(
+                e.kind(),
+                std::io::ErrorKind::NotFound | std::io::ErrorKind::NotADirectory
+            ) => {}
+        Err(e) => {
+            log::warn!(
+                "[skill-marketplace] failed to scan {} ({e}); DenyAll default degrades (over-deny)",
+                manager.packages_root.display()
+            );
+            *degraded = true;
+        }
+    }
+    candidates.push(manager.legacy_skills_dir.join(name));
+    let mut installed = false;
+    for cand in candidates {
+        let md_path = cand.join("SKILL.md");
+        match std::fs::metadata(&md_path) {
+            Ok(md) => installed |= md.is_file(),
+            // ENOTDIR joins NotFound as structural absence (see fn doc).
+            Err(e)
+                if matches!(
+                    e.kind(),
+                    std::io::ErrorKind::NotFound | std::io::ErrorKind::NotADirectory
+                ) => {}
+            Err(e) => {
+                log::warn!(
+                    "[skill-marketplace] failed to probe {} ({e}); DenyAll default degrades (over-deny)",
+                    md_path.display()
+                );
+                *degraded = true;
+            }
+        }
+    }
+    installed
 }
 
 /// 技能布局迁移报告（启动标记/日志观测用）。

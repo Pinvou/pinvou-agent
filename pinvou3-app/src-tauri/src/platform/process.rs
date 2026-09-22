@@ -138,6 +138,15 @@ pub(crate) fn external_tokio_command(executable: &Path) -> tokio::process::Comma
 }
 
 /// Capture a subprocess without pipe deadlocks and enforce a wall-clock timeout.
+///
+/// Bounded-wait contract (issue #536): every wait on the way to the
+/// returned `Output` is bounded, including the buffer handoff on the
+/// success path. When the child itself exited within the deadline but a
+/// daemonized descendant still holds the pipe write-ends, the returned
+/// stdout/stderr can be empty or partial — the handoff is abandoned after
+/// a small grace instead of blocking until the descendant closes the
+/// pipes. Callers must treat empty output with a successful status like
+/// any other unparseable result; it is never reported as a hang.
 pub(crate) fn output_with_timeout(command: Command, timeout: Duration) -> Result<Output, String> {
     output_with_timeout_inner(command, timeout, false)
 }
@@ -146,6 +155,8 @@ pub(crate) fn output_with_timeout(command: Command, timeout: Duration) -> Result
 /// on timeout. Use this for helpers that can launch privileged descendants: killing
 /// only the wrapper can otherwise leave the real operation running with inherited
 /// stdout/stderr pipes after the caller has reported a timeout.
+///
+/// The bounded-wait contract of [`output_with_timeout`] applies here too.
 pub(crate) fn output_with_timeout_and_kill_tree(
     mut command: Command,
     timeout: Duration,
@@ -176,17 +187,30 @@ fn output_with_timeout_inner(
         .stderr
         .take()
         .ok_or_else(|| format!("{program}: no stderr pipe"))?;
-    let stdout_reader = std::thread::spawn(move || {
+    let (stdout_tx, stdout_rx) = std::sync::mpsc::channel();
+    let (stderr_tx, stderr_rx) = std::sync::mpsc::channel();
+    // Readers deliver their buffers over a channel and are never joined:
+    // a descendant that inherited the pipe write-ends (a daemonizing
+    // child) keeps `read_to_end` from ever seeing EOF, so a join after the
+    // child's own successful exit blocked the caller forever — the same
+    // root cause class the timeout paths bound via `REAP_GRACE` (issue
+    // #536). Dropping the `JoinHandle`s detaches the readers; each exits
+    // whenever the pipes finally close and its `send` then fails into the
+    // ignored result. The handoff below abandons a reader that has not
+    // delivered within the grace, so a child that exits on time can still
+    // report empty/partial output when a pipe-holding descendant outlives
+    // it (see the bounded-wait contract on [`output_with_timeout`]).
+    std::thread::spawn(move || {
         use std::io::Read;
         let mut buffer = Vec::new();
         let _ = stdout.read_to_end(&mut buffer);
-        buffer
+        let _ = stdout_tx.send(buffer);
     });
-    let stderr_reader = std::thread::spawn(move || {
+    std::thread::spawn(move || {
         use std::io::Read;
         let mut buffer = Vec::new();
         let _ = stderr.read_to_end(&mut buffer);
-        buffer
+        let _ = stderr_tx.send(buffer);
     });
 
     let started = Instant::now();
@@ -216,15 +240,13 @@ fn output_with_timeout_inner(
                     )),
                     Reap::Failed(error) => Some(format!("reaping the child failed: {error}")),
                 };
-                // Never block the timeout path by joining pipe readers: a
-                // privileged descendant may be outside the caller's signal
-                // permission even after its wrapper is gone, and a grandchild
-                // that survived the kill (plain variant) can hold the pipes
-                // open — either way, joining would block this call forever
-                // past the very deadline the caller asked for. Output is
-                // lost on timeout — acceptable, the caller only gets Err.
-                drop(stdout_reader);
-                drop(stderr_reader);
+                // The readers are detached channels, so neither a
+                // privileged descendant outside the caller's signal
+                // permission nor a grandchild that survived the kill (plain
+                // variant) holding the pipes open can block this call past
+                // the very deadline the caller asked for (issue #536).
+                // Output is lost on timeout — acceptable, the caller only
+                // gets Err.
                 let termination_note = if kill_tree_on_timeout {
                     "subprocess tree termination requested"
                 } else {
@@ -250,10 +272,11 @@ fn output_with_timeout_inner(
                     None
                 };
                 let _ = child.kill();
-                // Reap promptly but never block on it, and never join the
-                // readers: the child may refuse to die, and a surviving
-                // descendant can hold the pipes open past the caller's
-                // deadline. Output is dropped on this path; kill/reap
+                // Reap promptly but never block on it; the readers are
+                // detached channels, so a child that refuses to die or a
+                // surviving descendant holding the pipes open cannot block
+                // this path past the caller's deadline either (issue
+                // #536). Output is dropped on this path; kill/reap
                 // failures are folded into the reported error.
                 let reap_note = match reap_killed_child(&mut child, REAP_GRACE) {
                     Reap::Reaped => None,
@@ -264,8 +287,6 @@ fn output_with_timeout_inner(
                         Some(format!("reaping the child failed: {reap_error}"))
                     }
                 };
-                drop(stdout_reader);
-                drop(stderr_reader);
                 let reap_suffix = match (kill_note, reap_note) {
                     (Some(a), Some(b)) => format!("; {a}; {b}"),
                     (Some(a), None) => format!("; {a}"),
@@ -277,11 +298,36 @@ fn output_with_timeout_inner(
         }
     };
 
+    // The child exited within the deadline, but its pipes may still be
+    // held by a daemonized descendant: bound the buffer handoff instead of
+    // joining the readers (issue #536).
+    let (stdout, stderr) = bounded_pipe_output(&stdout_rx, &stderr_rx);
     Ok(Output {
         status,
-        stdout: stdout_reader.join().unwrap_or_default(),
-        stderr: stderr_reader.join().unwrap_or_default(),
+        stdout,
+        stderr,
     })
+}
+
+/// Collect both pipe buffers with the handoff bounded in total by
+/// [`REAP_GRACE`] (issue #536). A reader thread finishes only at pipe EOF,
+/// and a descendant that inherited the write-ends can postpone that EOF
+/// for its whole lifetime, so once the grace expires whatever the reader
+/// collected but has not handed over is abandoned: the stream is reported
+/// as an empty buffer and the reader is left detached to finish on its
+/// own. A disconnected channel (reader thread panicked) also yields the
+/// empty default, matching the previous `join().unwrap_or_default()`.
+fn bounded_pipe_output(
+    stdout: &std::sync::mpsc::Receiver<Vec<u8>>,
+    stderr: &std::sync::mpsc::Receiver<Vec<u8>>,
+) -> (Vec<u8>, Vec<u8>) {
+    let deadline = Instant::now() + REAP_GRACE;
+    let receive = |receiver: &std::sync::mpsc::Receiver<Vec<u8>>| {
+        receiver
+            .recv_timeout(deadline.saturating_duration_since(Instant::now()))
+            .unwrap_or_default()
+    };
+    (receive(stdout), receive(stderr))
 }
 
 /// How long to keep reaping a child after a termination request. A
@@ -425,6 +471,14 @@ pub(crate) fn kill_process_tree(pid: u32) -> std::io::Result<()> {
         const WINDOWS_TASKKILL_TIMEOUT: Duration = Duration::from_secs(2);
         let mut taskkill = external_command(Path::new("taskkill"))
             .args(["/PID", &pid.to_string(), "/T", "/F"])
+            // The helper reads nothing and no one consumes its output:
+            // wire all three standard streams to null so its output cannot
+            // leak into the app's own stdio (a plain spawn would inherit
+            // them), matching this module's non-interactive stdin-null
+            // convention.
+            .stdin(Stdio::null())
+            .stdout(Stdio::null())
+            .stderr(Stdio::null())
             .spawn()?;
         if taskkill
             .wait_timeout(WINDOWS_TASKKILL_TIMEOUT)
@@ -738,6 +792,65 @@ mod tests {
                 // SAFETY: libc::kill is a direct kill(2) wrapper; no memory
                 // is touched.
                 let _ = unsafe { libc::kill(pid, libc::SIGKILL) };
+            }
+        }
+        let _ = std::fs::remove_dir_all(&work);
+    }
+
+    /// Regression for issue #536: the success path joined the reader
+    /// threads after the child's own exit, so a daemonized descendant that
+    /// inherited the pipe write-ends kept the caller blocked for the
+    /// descendant's whole lifetime even though the child exited within the
+    /// deadline. Here `sh` exits immediately while its backgrounded
+    /// `sleep 30` keeps holding stdout/stderr: the call must return with
+    /// the deadline honored (bounded handoff grace), not wait out the
+    /// sleeper, and the abandoned handoff is reported as empty output.
+    #[cfg(unix)]
+    #[test]
+    fn ok_path_does_not_wait_for_a_descendant_holding_the_pipes() {
+        if Command::new("sleep").arg("0").status().is_err() {
+            eprintln!("skipping: no `sleep` binary on this platform");
+            return;
+        }
+        let work = std::env::temp_dir().join(format!(
+            "pinvou3-ok-path-pipes-{}-{}",
+            std::process::id(),
+            crate::platform::paths::tests::unique_suffix()
+        ));
+        std::fs::create_dir_all(&work).expect("create test work dir");
+        let sleep_pid_file = work.join("sleep-pid");
+        let mut command = Command::new("sh");
+        command.args([
+            "-c",
+            // Background first so `$!` is the sleeper; the echo targets a
+            // file so the captured stdout stays clean.
+            &format!("sleep 30 & echo $! > {}; exit 0", sleep_pid_file.display()),
+        ]);
+        let started = Instant::now();
+
+        let output = output_with_timeout(command, Duration::from_secs(15));
+
+        let elapsed = started.elapsed();
+        // The grandchild keeps the pipes open for 30s; before the fix the
+        // success-path join blocked for that whole time.
+        assert!(
+            elapsed < Duration::from_secs(10),
+            "the success path must not block on pipe-holding descendants (took {elapsed:?})"
+        );
+        let output = output.expect("the child exited within the deadline");
+        assert!(output.status.success(), "sh must exit cleanly");
+        // The handoff grace expired before the grandchild closed the
+        // pipes, so the child's own (empty) output is not observable.
+        assert!(output.stdout.is_empty());
+        assert!(output.stderr.is_empty());
+
+        // Cleanup: kill the stray sleeper so it holds nothing (and no
+        // detached reader lingers) for the rest of its 30s. Killing it
+        // closes the pipes, which lets the detached readers finish.
+        if let Ok(text) = std::fs::read_to_string(&sleep_pid_file) {
+            if let Ok(pid) = text.trim().parse::<u32>() {
+                // SAFETY: libc::kill is a direct kill(2) wrapper; no memory is touched.
+                let _ = unsafe { libc::kill(pid as i32, libc::SIGKILL) };
             }
         }
         let _ = std::fs::remove_dir_all(&work);

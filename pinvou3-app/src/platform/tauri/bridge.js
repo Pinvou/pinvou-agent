@@ -241,6 +241,24 @@ function pinvouSharedtauriMain() {
     activeModelId: null,
     currentSessionModelId: null, // 当前 active session 显式绑定的模型;null=跟随全局默认
     superPermEnabled: false,
+    // Computer use (screenshot + keyboard/mouse control) authorization state. enabled is
+    // the global switch (off by default);
+    // granted/stopped/sessionId/grantRequest/confirmRequest describe the current active
+    // session's authorization and pending requests, maintained by bridge/computer_use.js.
+    computerUse: {
+      enabled: false,
+      granted: false,
+      stopped: false,
+      // Whether this OS has a computer_use backend at all (from
+      // computer_use_get_status.platform_supported); lets settings disable the
+      // toggle instead of letting users enable something that cannot work.
+      // Defaults false (fail closed): on an unsupported OS the toggle must
+      // not render enabled until the first get_status corrects the slice.
+      platformSupported: false,
+      sessionId: null,
+      grantRequest: null,
+      confirmRequest: null,
+    },
     modeState: { mode: "yolo" },
     // Per-lane (work/code) global default modes (null = the lane was never
     // explicitly chosen; defaults code→plan, work→yolo). Source of truth for
@@ -1424,6 +1442,7 @@ function planCardHydrationKey(item) { return pinvouSharedtauriMain().planCardHyd
     models: ["activeModelId", "currentSessionModelId", "effectiveModelConfig", "savedModels"],
     vllm: ["vllmBootstrapDone", "vllmBootstrapError", "vllmBootstrapping", "vllmSetup", "vllmSetupAttempt", "vllmSetupDismissed", "vllmSetupPhase"],
     interaction: ["pinvouModal", "pinvouReviews", "pinvouSummoning", "superPermEnabled"],
+    computerUse: ["computerUse"],
     personas: ["activePersona", "personaEvents", "personaPool"],
     memory: ["memory"],
     remoteControl: ["webAccess"],
@@ -2264,6 +2283,7 @@ function composePlanMarkdown(snapshots) { return pinvouSharedtauriMain().compose
   const multiAgentFeature = installBridgeFeature("multiagent", { state, notify, invoke, listen });
   const listMultiAgentSubagents = multiAgentFeature.listSubagentTranscripts;
   const readMultiAgentSubagent = multiAgentFeature.readSubagentTranscript;
+  const computerUseFeature = installBridgeFeature("computer_use", { state, notify, invoke, listen });
   async function pickFiles() {
     if (!dialogOpen) return [];
     const selected = await dialogOpen({ multiple: true });
@@ -2581,6 +2601,17 @@ function composePlanMarkdown(snapshots) { return pinvouSharedtauriMain().compose
     multiAgent: {
       listSubagentTranscripts: listMultiAgentSubagents,
       readSubagentTranscript: readMultiAgentSubagent,
+    },
+    computerUse: {
+      getStatus: computerUseFeature.getStatus,
+      refreshStatus: computerUseFeature.refreshStatus,
+      grant: computerUseFeature.grant,
+      revoke: computerUseFeature.revoke,
+      stop: computerUseFeature.stop,
+      confirm: computerUseFeature.confirm,
+      deny: computerUseFeature.deny,
+      setEnabled: computerUseFeature.setEnabled,
+      requestPermissions: computerUseFeature.requestPermissions,
     },
     files: {
       pickFiles,

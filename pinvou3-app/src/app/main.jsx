@@ -141,7 +141,7 @@ let appFirstRenderMarked = false;
 const APP_BRIDGE_STATE_DOMAINS = [
   'platform', 'sessions', 'chat', 'voice', 'knowledge', 'scheduled', 'monitor',
   'settings', 'models', 'vllm', 'interaction', 'personas',
-  'memory', 'remoteControl', 'updater', 'dependencies', 'projects',
+  'memory', 'remoteControl', 'updater', 'dependencies', 'projects', 'computerUse',
 ];
 
 function emitPetEvent(ev, name, payload) {
@@ -1550,9 +1550,24 @@ const NAV_PREFETCH = {
       }, []);
       // Folder group expand state: all expanded by default; once toggled, remember the choice
       const [folderGroupOpen, setFolderGroupOpen] = useState({});
-      // In code style the primary nav collapses to a single expand row by default;
-      // expanding is remembered for the session (reset when code mode exits)
-      const [codeNavExpanded, setCodeNavExpanded] = useState(false);
+      // Primary-nav collapse is a global manual toggle, shared by every mode: nothing
+      // auto-collapses it and no mode switch resets it; the choice persists per window
+      // like the 全部/代码 style pill above.
+      const [sidebarNavCollapsed, setSidebarNavCollapsed] = useState(() => {
+        try {
+          return localStorage.getItem('pinvou_sidebar_nav_collapsed') === '1';
+        } catch {
+          return false;
+        }
+      });
+      const setSidebarNavCollapsedPersisted = useCallback((next) => {
+        setSidebarNavCollapsed(next);
+        try {
+          localStorage.setItem('pinvou_sidebar_nav_collapsed', next ? '1' : '0');
+        } catch {
+          // When the WebView disables storage, still allow toggling for this window.
+        }
+      }, []);
       // Code mode is a mode, not a page: after entering, navigating to output/monitor
       // pages keeps code mode — the sidebar stays code-styled and New chat still creates
       // code sessions; only explicitly switching back to work, or opening a normal
@@ -1560,14 +1575,7 @@ const NAV_PREFETCH = {
       const [codeModeOn, setCodeModeOn] = useState(false);
       // 任务列表的展示形态由 全部/代码 胶囊决定;未显式选择(null)时普通模式
       // 默认「全部」标准列表、code 模式默认 code 样式(沿用既有默认)。
-      // codeStyleActive 仍用于主导航折叠等 code 模式专属行为。
       const sidebarCodeListActive = sidebarCodeStyle === null ? codeModeOn : sidebarCodeStyle === 'code';
-      const codeStyleActive = codeModeOn && sidebarCodeListActive;
-      // Exiting code mode resets the primary-nav collapse bar, so the next entry starts
-      // from the default collapsed form.
-      useEffect(() => {
-        if (!codeModeOn) setCodeNavExpanded(false);
-      }, [codeModeOn]);
       // code 形态下「代码会话」筛选等同「全部」、「定时任务」恒为空(菜单已隐藏这两项);
       // 进入 code 形态时若仍挂着这两个筛选,复位为「全部」,避免列表莫名变空。
       // 用 layout effect 在首帧绘制前完成复位,避免闪现一帧空的「暂无任务」列表。
@@ -3215,9 +3223,11 @@ const NAV_PREFETCH = {
             </div>
 
             {/* Navigation — shrink-0 keeps it from scrolling; no matter how long the
-                list is, it never squeezes the nav. In code style it collapses to a single
-                expand row by default; the remaining nav items can be collapsed again at
-                the bottom after expanding. */}
+                list is, it never squeezes the nav. The nav folds to a single expand row
+                only through the manual collapse button at the bottom of the list; the
+                choice persists and applies in every mode. The phone drawer (compact
+                shell) always keeps the full nav so the task list keeps its vertical
+                room (see web-ui.smoke's drawer-height contract). */}
             <div data-testid="sidebar-primary-nav" className={`shrink-0 flex flex-col gap-0.5 mt-1.5 max-sm:gap-0 max-sm:mt-1 ${isSidebarOpen ? 'px-3' : 'px-2 items-center'}`}>
               <NavItem
                 icon={NAV_ICON_NEW_CHAT} label={t.newChat}
@@ -3236,11 +3246,11 @@ const NAV_PREFETCH = {
                   onClick={openSearchOverlay}
                 />
               )}
-              {codeStyleActive && isSidebarOpen && !codeNavExpanded ? (
+              {isSidebarOpen && !isCompactShell && sidebarNavCollapsed ? (
                 <button
                   type="button"
                   data-testid="sidebar-primary-nav-expand"
-                  onClick={() => setCodeNavExpanded(true)}
+                  onClick={() => setSidebarNavCollapsedPersisted(false)}
                   title={t.sidebarNavExpand}
                   className={`w-full h-8 px-4 flex items-center justify-between rounded-full text-[13px] font-semibold transition-colors ${activeTheme === 'dark' ? 'text-[#9AA0A6] hover:bg-[#282A2C]' : 'text-[#8A8F94] hover:bg-[#E1E5EA]'}`}
                 >
@@ -3314,10 +3324,11 @@ const NAV_PREFETCH = {
                   onClick={navNavigateHandlers.chat}
                 />
               )}
-              {codeStyleActive && isSidebarOpen && codeNavExpanded && (
+              {isSidebarOpen && !isCompactShell && (
                 <button
                   type="button"
-                  onClick={() => setCodeNavExpanded(false)}
+                  data-testid="sidebar-primary-nav-collapse"
+                  onClick={() => setSidebarNavCollapsedPersisted(true)}
                   title={t.sidebarNavCollapse}
                   className={`w-full h-7 px-4 flex items-center justify-between rounded-full text-[12px] transition-colors ${activeTheme === 'dark' ? 'text-[#9AA0A6] hover:bg-[#282A2C]' : 'text-[#8A8F94] hover:bg-[#E1E5EA]'}`}
                 >
