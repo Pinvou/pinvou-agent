@@ -515,8 +515,8 @@ test('旧独立入口退役：多智能体经会话级开关 + 每轮注入委�
   );
   assert.match(
     sessionsSource,
-    /fn save_multi_agent_flags_locked[\s\S]{0,800}atomic_write\(&file,/,
-    '开关清单落盘必须走共享 atomic_write 助手，进程中途退出不得留半个 JSON',
+    /fn save_multi_agent_flags_locked[\s\S]{0,800}atomic_write_private\(&file,/,
+    '开关清单落盘必须走私有 atomic_write_private 助手，进程中途退出不得留半个 JSON',
   );
   const filesystemSource = read('src-tauri', 'src', 'platform', 'filesystem.rs');
   assert.match(
