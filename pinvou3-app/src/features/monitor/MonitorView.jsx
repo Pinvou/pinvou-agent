@@ -417,10 +417,6 @@ const MONITOR_CLOCK_LOCALE = { zh: 'zh-CN', en: 'en-US', ja: 'ja-JP' };
                       <MonitorSegmentedBar label={t.runningMemory} used={ramUsedGiB} total={ramTotal} percentage={ramPct} color={monitorColors.blue} />
                       <MonitorSegmentedBar label={t.temporaryMemory} used={swapUsed} total={swapTotal} percentage={swapPct} color={monitorColors.green} />
                     </div>
-                    <div className="mt-8 rounded-2xl bg-white/55 dark:bg-[#2C2C2E] border border-black/[0.045] dark:border-white/[0.055] px-4 py-3 flex justify-between items-center text-[12px] font-semibold shadow-[0_8px_22px_rgba(15,23,42,0.05)] dark:shadow-[0_16px_34px_rgba(0,0,0,0.34)]">
-                      <span className="text-black/45 dark:text-white/45">{t.memoryPressure}</span>
-                      <span className="inline-flex items-center gap-1.5 text-black dark:text-white"><span className="w-1.5 h-1.5 rounded-full bg-[#34C759] dark:bg-[#30D158]" />{t.normal}</span>
-                    </div>
                   </div>
                 </MonitorCard>
 
@@ -558,9 +554,6 @@ const MONITOR_CLOCK_LOCALE = { zh: 'zh-CN', en: 'en-US', ja: 'ja-JP' };
 
     };
 
-    // ==========================================
-    // Settings View (Material 3 Style)
-    // ==========================================
     // 统一排版原语：卡片 / 行(label 左 + 控件右) / 纵向输入字段 / 分段选择 / 改动操作条
 
 export { MonitorView };

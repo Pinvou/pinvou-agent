@@ -50,22 +50,19 @@ pub(super) async fn evaluate_json(
                     None::<&webkit2gtk::gio::Cancellable>,
                     move |result| {
                         let result = result
-                            .map_err(|error| {
-                                format!("WebKitGTK JavaScript evaluation failed: {error}")
-                            })
+                            .map_err(|error| format!("browser/webkit-javascript-failed: {error}"))
                             .and_then(|value| {
                                 use javascriptcore::ValueExt;
                                 value
                                     .to_json(0)
                                     .map(|json| json.to_string())
                                     .ok_or_else(|| {
-                                        "WebKitGTK JavaScript result cannot be serialized as JSON"
-                                            .to_string()
+                                        "browser/webkit-javascript-result-not-json".to_string()
                                     })
                             })
                             .and_then(|json| {
                                 serde_json::from_str(&json).map_err(|error| {
-                                    format!("Failed to parse WebKitGTK JavaScript result: {error}")
+                                    format!("browser/webkit-javascript-json-invalid: {error}")
                                 })
                             });
                         if let Some(sender) = callback_sender.lock().take() {
@@ -96,12 +93,14 @@ pub(super) async fn evaluate_json(
 
     let commit_unknown_prefix = matches!(mode, BrowserCoreEvaluationMode::MayMutate)
         .then_some(ACTION_COMMIT_UNKNOWN_SCRIPT_INTERRUPTION);
+    // Machine-readable error codes, matching the macOS BrowserCore adapter
+    // style; prose timeout text is not part of any contract.
     dispatch_state
         .wait(
             rx,
             EVALUATION_TIMEOUT,
-            "WebKitGTK JavaScript evaluation timed out",
-            "WebKitGTK JavaScript callback closed",
+            "browser/webkit-javascript-timeout",
+            "browser/webkit-javascript-callback-closed",
             commit_unknown_prefix,
         )
         .await

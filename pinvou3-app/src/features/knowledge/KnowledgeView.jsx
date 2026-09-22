@@ -3,7 +3,7 @@ import { createPortal } from 'react-dom';
 import { AlertTriangle, AppWindow, Archive, BookOpen, Check, ChevronDown, Database, Download, Edit2, ExternalLink, FileText, FolderOpen, GridIcon, IconList, ImageIcon, Package, Plus, PresentationIcon, RefreshCw, TableIcon, Trash2 } from '../../components/icons.jsx';
 import { IosSearchField, IosSegmentedControl } from '../../components/IosControls.jsx';
 import { bridge, useBridgeState } from '../../hooks/useBridge.js';
-import { OFFICE_HTML_STYLE } from '../artifacts/ArtifactsPanel.jsx';
+import { OFFICE_HTML_STYLE } from '../../shared/artifact-utils.js';
 import { FilePreviewModal } from '../artifacts/FilePreviewModal.jsx';
 import { RemoteKnowledgeView } from '../remote-knowledge/RemoteKnowledgeView.jsx';
 import { invokeTauri } from '../../platform/tauri/client.js';
@@ -334,8 +334,6 @@ const OutputLivePreview = ({ o, onOpen, outPreviewCache, runQueuedPreview, remem
       // eslint-disable-next-line react-hooks/exhaustive-deps -- dependency list manually reviewed: this effect only needs the listed deps; completing it would cause duplicate requests or polling loops
         }, [cacheKey, visible, o.path, o.category, ext, outputSessionId, runQueuedPreview, rememberOutPreview]);
 
-        const htmlPreviewDoc = (html) => '<style>html,body{overflow:hidden!important;}*{animation-duration:.001s!important;scrollbar-width:none!important;}*::-webkit-scrollbar{display:none!important;}</style>' + (html || '');
-        const officePreviewDoc = (html) => '<style>html,body{background:#fff!important;margin:0;color:#111!important;overflow:hidden!important;}*{animation-duration:.001s!important;scrollbar-width:none!important;}*::-webkit-scrollbar{display:none!important;}</style>' + (html || '');
         const shell = (children) => (
           // biome-ignore lint/a11y/noStaticElementInteractions: conditional role=button + onKeyDown are below; static analysis cannot see the dynamic role
           <div ref={boxRef} onClick={onOpen} role={onOpen ? 'button' : undefined} tabIndex={onOpen ? 0 : undefined}
@@ -356,7 +354,7 @@ const OutputLivePreview = ({ o, onOpen, outPreviewCache, runQueuedPreview, remem
         if (pv.kind === 'html') return shell(
           <>
             {!frameReady && <div className="absolute inset-0 bg-[#15171a]"></div>}
-            <iframe title={o.name} sandbox="allow-same-origin" scrolling="no" srcDoc={htmlPreviewDoc(pv.html)} onLoad={() => setTimeout(() => setFrameReady(true), 80)}
+            <iframe title={o.name} sandbox="allow-same-origin" scrolling="no" srcDoc={outputPreviewDoc(pv.html)} onLoad={() => setTimeout(() => setFrameReady(true), 80)}
               className={`absolute inset-0 w-[200%] h-[200%] origin-top-left scale-50 bg-[#15171a] pointer-events-none border-0 transition-opacity duration-300 ${frameReady ? 'opacity-100' : 'opacity-0'}`}
               style={{ colorScheme: 'dark' }} />
           </>
@@ -364,7 +362,7 @@ const OutputLivePreview = ({ o, onOpen, outPreviewCache, runQueuedPreview, remem
         if (pv.kind === 'officeHtml') return shell(
           <>
             {!frameReady && <div className="absolute inset-0 bg-white"></div>}
-            <iframe title={o.name} sandbox="allow-same-origin" scrolling="no" srcDoc={officePreviewDoc(pv.html)} onLoad={() => setTimeout(() => setFrameReady(true), 80)}
+            <iframe title={o.name} sandbox="allow-same-origin" scrolling="no" srcDoc={outputPreviewDoc(pv.html, true)} onLoad={() => setTimeout(() => setFrameReady(true), 80)}
               className={`absolute inset-0 w-[200%] h-[200%] origin-top-left scale-50 bg-white pointer-events-none border-0 transition-opacity duration-300 ${frameReady ? 'opacity-100' : 'opacity-0'}`}
               style={{ colorScheme: 'light' }} />
           </>
@@ -1261,7 +1259,7 @@ const OutputLivePreview = ({ o, onOpen, outPreviewCache, runQueuedPreview, remem
             )}
             {outputPreview && <FilePreviewModal path={outputPreview.path} sessionId={outputPreview.sessionId} t={t} onClose={() => setOutputPreview(null)} />}
 
-            {sub === 'remote' && <RemoteKnowledgeView t={t} embedded />}
+            {sub === 'remote' && <RemoteKnowledgeView t={t} />}
 
             {/* ============ 知识库 · embedding 模型未安装/加载中/加载失败 → gate ============ */}
             {sub === 'kb' && !modelUsable && (
@@ -1640,11 +1638,11 @@ const OutputLivePreview = ({ o, onOpen, outPreviewCache, runQueuedPreview, remem
     };
 
 
-    // ==========================================
-    // Monitor View (Material 3 Style)
-    // ==========================================
-    // 长按确认清除按钮（hold-to-confirm，防误触）：按住 850ms 进度填满才执行，
-    // 松手 / 移开 / 失焦即取消；执行时图标转一圈、变绿「已清除」，900ms 后复位。
-    // 鼠标 / 触摸 / 键盘(空格·回车)均支持。数字归零动画由父级 onClear 负责。
+
+// Document header for the Output card's iframe preview (single module-level implementation): uniformly hides scrollbars and disables animations;
+// office documents (white background, light typography) additionally pin the background and text color to avoid rendering glitches in dark theme.
+const outputPreviewDoc = (html, office) => '<style>html,body{overflow:hidden!important;'
+  + (office ? 'background:#fff!important;margin:0;color:#111!important;' : '')
+  + '}*{animation-duration:.001s!important;scrollbar-width:none!important;}*::-webkit-scrollbar{display:none!important;}</style>' + (html || '');
 
 export { KnowledgeView };

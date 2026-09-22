@@ -182,7 +182,6 @@ function patchItemById(id, patch) { return pinvouSharedtauriInteraction().patchI
     }
     return { item, message };
   }
-function markResolved(id, statusLabel) { return pinvouSharedtauriInteraction().markResolved(id, statusLabel); }
 
   // ── Per-session UI 路由 ─────────────────────────────────────────
   // 卡片动作链路有多个 await 边界,用户可能中途切 session。所有 UI 写入(chatItem 增改、
@@ -531,7 +530,6 @@ async function compactNow() { return pinvouSharedtauriInteraction().compactNow()
       syncModeState,
       patchItemById,
       pushUserEcho,
-      markResolved,
       runOnSession,
       addSystemItemFor,
       patchItemByIdFor,

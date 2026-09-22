@@ -105,4 +105,28 @@ function buildComposerToolMenuState({
   };
 }
 
-export { buildComposerToolMenuState };
+// Governance write generation gate: each control (package toggle / project
+// skills) tracks its own write-request generation — begin() issues one, the
+// completion checks it in. With rapid toggles an earlier write can fail later
+// (out-of-order completion); a completion whose generation no longer matches
+// must not roll back the optimistic state or report a failure — the control's
+// outcome is decided solely by its latest write.
+function createToggleWriteGate() {
+  const generations = new Map();
+  return {
+    begin(key) {
+      const generation = (generations.get(key) || 0) + 1;
+      generations.set(key, generation);
+      return generation;
+    },
+    isCurrent(key, generation) {
+      return generations.get(key) === generation;
+    },
+  };
+}
+
+// Key for the project-skills toggle inside the gate: namespaced to stay disjoint
+// from the package-id space so an identically named package cannot collide with it.
+const TOGGLE_WRITE_KEY_PROJECT_SKILLS = '__project_skills__';
+
+export { buildComposerToolMenuState, createToggleWriteGate, TOGGLE_WRITE_KEY_PROJECT_SKILLS };

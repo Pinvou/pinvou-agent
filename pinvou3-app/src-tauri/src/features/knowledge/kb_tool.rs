@@ -755,7 +755,7 @@ mod tests {
     #[test]
     fn kb_open_source_simulates_search_then_open_for_xlsx() {
         let store = Store::open_in_memory().unwrap();
-        let l1 = L1Store::new(store.conn_arc(), None);
+        let l1 = L1Store::new(store.conn_arc());
         let mounted = l1.create_collection("散热报告", None, None).unwrap();
         let other = l1.create_collection("其他资料", None, None).unwrap();
         let fixture = Path::new(env!("CARGO_MANIFEST_DIR")).join("test-fixtures/multi_sheet.xlsx");

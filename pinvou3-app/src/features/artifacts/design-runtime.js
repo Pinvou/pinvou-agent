@@ -85,16 +85,6 @@ function buildDesignRuntimeScript() {
       return tag;
     }
 
-    function breadcrumbs(element) {
-      const items = [];
-      let current = element;
-      while (current && current.nodeType === 1 && current !== document.documentElement && items.length < 8) {
-        items.unshift(selectorPart(current));
-        current = current.parentElement;
-      }
-      return items;
-    }
-
     function elementId(element) {
       if (!element || !element.setAttribute) return '';
       let id = element.getAttribute(DATA_ID);
@@ -341,7 +331,6 @@ function buildDesignRuntimeScript() {
         label: elementLabel(element),
         tagName: element.tagName.toLowerCase(),
         className: element.className && typeof element.className === 'string' ? element.className : '',
-        breadcrumbs: breadcrumbs(element),
         // eslint-disable-next-line unicorn/prefer-dom-node-text-content -- innerText takes the rendered text (<br>/block line breaks); textContent is only the fallback for detached nodes
         text: String(element.innerText || element.textContent || '').trim().slice(0, 240),
         rect: {

@@ -298,7 +298,8 @@ function injectSource() {
         case 'find_resumable_run': return Promise.resolve(null);
         case 'check_dependencies': return Promise.resolve(dependencyCheckResponse.slice());
         case 'install_dependencies': return Promise.resolve(null);
-        case 'submit_feedback': return Promise.resolve({ status: 'submitted', message: '反馈已提交，感谢你的帮助。' });
+        // Community edition: the backend does not accept online feedback; the submit ends with failed_validation (see ⑰).
+        case 'submit_feedback': return Promise.resolve({ status: 'failed_validation', message: '反馈提交失败，请稍后重试。' });
         case 'list_marketplace_tools': return Promise.resolve([]);
         case 'get_mode_state': return Promise.resolve({ mode: 'yolo', plan_phase: 'none' });
         case 'get_active_persona': return Promise.resolve(null);
@@ -610,7 +611,6 @@ async function modalWidth(page, headingText) {
   await sleep(500);
   const beforeDownloadCalls = await callCount(page, 'download_update');
   await page.click('#settings-version-update [data-settings-update-action="true"]');
-  await page.evaluate(() => window.__SETTINGS_TEST__.emit('update:progress', { downloaded: 37, total: 100 }));
   await sleep(500);
   const updateDownloadState = await page.evaluate(() => {
     const root = document.querySelector('#settings-version-update');
@@ -622,50 +622,17 @@ async function modalWidth(page, headingText) {
     };
   });
   const afterDownloadCalls = await callCount(page, 'download_update');
-  rec('①b 设置页下载按钮进入下载态后可取消并显示进度',
+  // Download progress no longer rides the update:progress frontend event (the
+  // listener was deleted); the downloading state only asserts the button
+  // entering "取消下载" and the description entering "正在下载更新" copy,
+  // without asserting a specific percentage.
+  rec('①b 设置页下载按钮进入下载态后可取消',
     beforeDownloadCalls === 0
     && afterDownloadCalls === 1
     && !updateDownloadState.disabled
     && updateDownloadState.text.includes('取消下载')
-    && updateDownloadState.desc.includes('正在下载更新 37%'),
+    && updateDownloadState.desc.includes('正在下载更新'),
     JSON.stringify(updateDownloadState));
-  await page.evaluate(() => {
-    let downloaded = 37000;
-    window.__SETTINGS_TEST__.progressFloodHandledCount = 0;
-    const timer = window.setInterval(() => {
-      downloaded = Math.min(downloaded + 16, 99000);
-      void window.__SETTINGS_TEST__.emit('update:progress', { downloaded, total: 100000 }).then(() => {
-        window.__SETTINGS_TEST__.progressFloodHandledCount += 1;
-      });
-    }, 0);
-    window.__SETTINGS_TEST__.stopProgressFlood = () => window.clearInterval(timer);
-  });
-  await page.waitForFunction(() => window.__SETTINGS_TEST__.progressFloodHandledCount >= 50, { timeout: 5000 });
-  await page.waitForFunction(() => {
-    const root = document.querySelector('#settings-version-update');
-    return root && !root.innerText.includes('37%');
-  }, { timeout: 5000 });
-  const floodBeforeNavigation = await page.evaluate(() => ({
-    handled: window.__SETTINGS_TEST__.progressFloodHandledCount,
-    description: document.querySelector('#settings-version-update')?.innerText || '',
-  }));
-  const navigationStartedAt = Date.now();
-  let floodAfterNavigation;
-  try {
-    await page.click('[data-testid="settings-section-model"]');
-    await page.waitForFunction(() =>
-      (document.querySelector('[data-testid="settings-content"] h1')?.textContent || '').trim() === '模型',
-    { timeout: 2000 });
-    floodAfterNavigation = await page.evaluate(() => window.__SETTINGS_TEST__.progressFloodHandledCount);
-  } finally {
-    await page.evaluate(() => window.__SETTINGS_TEST__.stopProgressFlood());
-  }
-  rec('Update progress bursts do not block settings navigation',
-    floodBeforeNavigation.handled >= 50
-    && !floodBeforeNavigation.description.includes('37%')
-    && floodAfterNavigation > floodBeforeNavigation.handled
-    && Date.now() - navigationStartedAt < 2000,
-    `handled=${floodBeforeNavigation.handled}->${floodAfterNavigation}, latency=${Date.now() - navigationStartedAt}ms`);
   await page.click('[data-testid="settings-section-update"]');
   await page.waitForFunction(() => !!document.querySelector('#settings-version-update'));
   await page.click('#settings-version-update [data-settings-update-action="true"]');
@@ -1438,13 +1405,17 @@ async function modalWidth(page, headingText) {
   // 视觉模型候选不做 disabled 过滤:disabled 可能是历史探测误判残留
   // (如 kimi-for-coding 曾因探测链路 400 被回填),应由选择时的识图探测
   // 验证(supported 才可选),而不是提前隐藏。
-  // mock 修改后必须走 TauriBridge.loadModels() 刷新 bridge state,React 才会
-  // 以新 savedModels 重渲染弹窗的视觉候选。
+  // models.loadModels left the facade with the dead-surface cleanup; after the
+  // mock change, re-selecting the current active model chains the same
+  // loadModels refresh so React re-renders the dialog's vision candidates from
+  // the new savedModels.
   const toggleVision = async () => { await page.click('[data-testid="vision-model-toggle"]'); await sleep(150); };
+  const refreshModels = () => page.evaluate(() => window.TauriBridge.models
+    .setActiveModel(window.__SETTINGS_TEST__.activeModelId()));
   await page.evaluate(() => {
     window.__SETTINGS_TEST__.setModelImageCapability('local-qwen', 'disabled');
-    return window.TauriBridge.models.loadModels();
   });
+  await refreshModels();
   await toggleVision(); // 关闭再打开,按新候选渲染
   await toggleVision();
   const visionWithDisabled = await page.evaluate(() => {
@@ -1453,8 +1424,8 @@ async function modalWidth(page, headingText) {
   });
   await page.evaluate(() => {
     window.__SETTINGS_TEST__.setModelImageCapability('local-qwen', 'auto');
-    return window.TauriBridge.models.loadModels();
   });
+  await refreshModels();
   await toggleVision(); await toggleVision();
   const visionAfterRestore = await page.evaluate(() => {
     const root = document.querySelector('[data-testid="model-form-dialog"]');
@@ -1700,13 +1671,16 @@ async function modalWidth(page, headingText) {
   // Legacy detect-on-save (auto) tier leftover: the reopened form
   // must not render the retired detect-on-save tier,
   // and unpinned tiers echo the catalog annotation (this model is annotated
-  // false → "image input not supported"). In the production path
-  // "auto" 由 Rust serde 迁移为 pinvou 后前端才收到,此处直灌 auto 只测前端
-  // 防御层(serde 迁移另有 settings 单测覆盖);mock 改档后必须 loadModels()
-  // 刷新 bridge state,React 才会以新 savedModels 渲染(同 ⑦.img.2b)。
+  // false → "image input not supported"). In the production path "auto"
+  // only reaches the frontend after Rust migrates it to pinvou via serde;
+  // feeding "auto" directly here exercises the frontend's defensive layer
+  // (the serde migration has its own settings unit tests). After the mock
+  // changes the tier, re-selecting the active model chains the loadModels
+  // refresh (same as ⑦.img.2b).
   await page.evaluate(() => window.__SETTINGS_TEST__.setModelImageCapability(
     window.__SETTINGS_TEST__.models().find(model => model.model === 'deepseek-v4-pro').id, 'auto'));
-  await page.evaluate(() => window.TauriBridge.models.loadModels());
+  await page.evaluate(() => window.TauriBridge.models
+    .setActiveModel(window.__SETTINGS_TEST__.activeModelId()));
   await sleep(200);
   const echoLegacyAuto = await echoOverride();
   rec('⑦.img.12c legacy auto tier leftover does not render the retired detect-on-save tier and echoes the catalog annotation',
@@ -2017,11 +1991,22 @@ async function modalWidth(page, headingText) {
   const feedbackSubmit = await page.evaluate(() => ({
     nativeAlertCalls: window.__SETTINGS_TEST__.calls.filter(call => call.cmd === 'window_alert').length,
     submitCalls: window.__SETTINGS_TEST__.calls.filter(call => call.cmd === 'submit_feedback').length,
-    toast: document.body.innerText.includes('反馈已提交，感谢你的帮助。'),
-    dialogClosed: !document.querySelector('[data-feedback-dialog="true"]'),
+    failureBanner: document.body.innerText.includes('反馈提交失败，请稍后重试。'),
+    dialogStillOpen: !!document.querySelector('[data-feedback-dialog="true"]'),
   }));
-  rec('⑰ 提交反馈成功使用应用内 toast，不弹系统 alert', feedbackTyped === '反馈弹窗测试' && feedbackSubmit.nativeAlertCalls === 0 && feedbackSubmit.submitCalls === 1 && feedbackSubmit.toast && feedbackSubmit.dialogClosed, JSON.stringify({ feedbackTyped, ...feedbackSubmit }));
+  rec('⑰ failed feedback submit shows the in-app red banner instead of a system alert (community edition behavior)', feedbackTyped === '反馈弹窗测试' && feedbackSubmit.nativeAlertCalls === 0 && feedbackSubmit.submitCalls === 1 && feedbackSubmit.failureBanner && feedbackSubmit.dialogStillOpen, JSON.stringify({ feedbackTyped, ...feedbackSubmit }));
   await sleep(200);
+  // The failure path must not auto-close the dialog: first close the
+  // draft-carrying dialog through the in-app confirm layer (without
+  // submitting), then reopen it in ⑰.5.
+  await page.evaluate(() => {
+    const modal = document.querySelector('[data-feedback-dialog="true"]');
+    const button = modal && [...modal.querySelectorAll('button')].find(node => (node.textContent || '').trim() === '取消');
+    if (button) button.click();
+  });
+  await page.waitForFunction(() => !!document.querySelector('[data-testid="feedback-close-confirm"]'));
+  await page.click('[data-testid="feedback-close-confirm-ok"]');
+  await page.waitForFunction(() => !document.querySelector('[data-testid="feedback-close-confirm"]') && !document.querySelector('[data-feedback-dialog="true"]'));
 
   // ⑰.5 dirty-draft close: goes through the in-app confirm layer (no native
   // confirm in Tauri WebView2); cancel keeps the draft and the panel, confirm

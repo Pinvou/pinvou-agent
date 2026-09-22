@@ -463,63 +463,20 @@ async function createNewSession() { return pinvouSharedtauriSessions().createNew
 
   // ── Draft-state working directory selection (plain chat, mirroring the code
   // mode draft selector) ────────────────────────────────────────────────
-  // The recents list shares key and semantics with src/shared/workspace-recents.js:
-  // this file is a <script src> classic script and cannot import that ES module,
-  // so what follows is a verbatim mirror of it. Any change to one side must be
-  // mirrored on the other (tests/chat_draft_workspace_logic.test.mjs locks the
-  // bridge-side behavior, tests/workspace_recents_logic.test.mjs the shared module).
-  const DRAFT_WORKSPACE_RECENTS_KEY = "pinvou_codex_recent_workspaces";
-  function rememberDraftWorkspaceRecent(path) {
-    let list;
-    try {
-      const value = JSON.parse(localStorage.getItem(DRAFT_WORKSPACE_RECENTS_KEY) || "[]");
-      list = Array.isArray(value) ? value.filter(function (item) { return typeof item === "string"; }).slice(0, 6) : [];
-    } catch {
-      list = [];
-    }
-    const next = [path, ...list.filter(function (item) { return item !== path; })].slice(0, 6);
-    try {
-      localStorage.setItem(DRAFT_WORKSPACE_RECENTS_KEY, JSON.stringify(next));
-    } catch {
-      // When localStorage is unavailable, skip recording just this one entry;
-      // the directory selection itself is unaffected.
-    }
-  }
-
+  // The recents list shares key and semantics with src/shared/workspace-recents.js.
+  // This file is a <script src> classic script and cannot import that ES module,
+  // so the codec lives in the shared bridge payload
+  // (src/shared/bridge-shared-helpers.js, loaded before both bridges); tests/
+  // chat_draft_workspace_logic.test.mjs locks the bridge-side behavior,
+  // tests/workspace_recents_logic.test.mjs the shared module.
+  function rememberDraftWorkspaceRecent(path) { return pinvouSharedtauriSessions().rememberDraftWorkspaceRecent(path); }
   // Recents-list cleanup policy after create_session fails: prune only when the
   // backend explicitly rejected the path (invalid workspace_path — the directory
   // is stale or deleted); transient errors must not remove valid entries. Prune
   // by the boundWorkspace captured at materialization, not the live
   // draftWorkspacePath — if the user re-picks X2 while X1's creation is in
   // flight, X1 is the one that fails and the valid X2 must survive.
-  function maybePruneFailedWorkspaceRecent(boundWorkspace, error) {
-    if (!boundWorkspace) return;
-    if (!/invalid workspace_path/.test(String((error && error.message) || error || ''))) return;
-    forgetDraftWorkspaceRecent(boundWorkspace);
-  }
-
-  // Remove a single directory from the recents list (mirror of
-  // workspace-recents.js forgetWorkspace): called from the ensureSession failure
-  // path when materialization fails (directory deleted/renamed) so a bad entry
-  // no longer lingers forever. The shared module and this classic script cannot
-  // import each other; keep both sides in sync.
-  function forgetDraftWorkspaceRecent(path) {
-    let list;
-    try {
-      const value = JSON.parse(localStorage.getItem(DRAFT_WORKSPACE_RECENTS_KEY) || "[]");
-      list = Array.isArray(value) ? value.filter(function (item) { return typeof item === "string"; }) : [];
-    } catch {
-      list = [];
-    }
-    const next = list.filter(function (item) { return item !== path; });
-    try {
-      localStorage.setItem(DRAFT_WORKSPACE_RECENTS_KEY, JSON.stringify(next));
-    } catch {
-      // When localStorage is unavailable, skip recording just this one entry;
-      // the directory selection itself is unaffected.
-    }
-  }
-
+  function maybePruneFailedWorkspaceRecent(boundWorkspace, error) { return pinvouSharedtauriSessions().maybePruneFailedWorkspaceRecent(boundWorkspace, error); }
   // Effective in draft state only; path = null means back to the default
   // (session-private directory).
   function setDraftWorkspace(path) {

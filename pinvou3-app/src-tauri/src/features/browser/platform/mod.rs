@@ -95,6 +95,52 @@ where
 
 pub(crate) const ACTION_COMMIT_UNKNOWN_SCRIPT_INTERRUPTION: &str =
     "browser/action-commit-unknown-after-script-interruption";
+// Commit-boundary error codes shared by core.rs and the platform adapters.
+// The JS contract tests and browser-wrapper.mjs match these strings literally;
+// never reword them locally.
+pub(crate) const ACTION_COMMIT_UNKNOWN_WEBDRIVER: &str = "browser/action-commit-unknown-webdriver";
+pub(crate) const ACTION_COMMITTED_FOCUS_RESTORE_FAILED: &str =
+    "browser/action-committed-focus-restore-failed";
+pub(crate) const ACTION_COMMIT_UNKNOWN_FOCUS_RESTORE_FAILED: &str =
+    "browser/action-commit-unknown-focus-restore-failed";
+pub(crate) const ACTION_COMMIT_UNKNOWN_INPUT_INTERRUPTION: &str =
+    "browser/action-commit-unknown-after-input-interruption";
+pub(crate) const ACTION_PARTIALLY_COMMITTED: &str = "browser/action-partially-committed";
+pub(crate) const ACTION_COMMIT_UNKNOWN_NAVIGATION_DISPATCH: &str =
+    "browser/action-commit-unknown-after-navigation-dispatch";
+pub(crate) const ACTION_COMMIT_UNKNOWN_TAB_CLOSE: &str =
+    "browser/action-commit-unknown-after-tab-close";
+
+/// Host-owned internal about:blank fragment markers, shared by host.rs and
+/// linux_automation.rs. Rust writes the plain `#` form; WebKit serializes the
+/// fragment delimiter in opaque `about:` URLs as `%23`, so both spellings are
+/// recognized. These prefixes are reserved and never user-visible content.
+pub(crate) const HOST_BLANK_MARKER_SESSION_PREFIX: &str = "about:blank#pinvou-session-";
+pub(crate) const HOST_BLANK_MARKER_TAB_PREFIX: &str = "about:blank#pinvou-tab-";
+pub(crate) const HOST_BLANK_MARKER_WEBDRIVER_BIND_PREFIX: &str =
+    "about:blank#pinvou-webdriver-bind-";
+pub(crate) const HOST_BLANK_MARKER_SESSION_PREFIX_ENCODED: &str = "about:blank%23pinvou-session-";
+pub(crate) const HOST_BLANK_MARKER_TAB_PREFIX_ENCODED: &str = "about:blank%23pinvou-tab-";
+pub(crate) const HOST_BLANK_MARKER_WEBDRIVER_BIND_PREFIX_ENCODED: &str =
+    "about:blank%23pinvou-webdriver-bind-";
+/// Every reserved marker spelling; used to detect reserved (never user-visible)
+/// blank URLs regardless of which WebView serialization produced them.
+pub(crate) const HOST_BLANK_MARKER_RESERVED_PREFIXES: [&str; 6] = [
+    HOST_BLANK_MARKER_SESSION_PREFIX,
+    HOST_BLANK_MARKER_TAB_PREFIX,
+    HOST_BLANK_MARKER_SESSION_PREFIX_ENCODED,
+    HOST_BLANK_MARKER_TAB_PREFIX_ENCODED,
+    HOST_BLANK_MARKER_WEBDRIVER_BIND_PREFIX,
+    HOST_BLANK_MARKER_WEBDRIVER_BIND_PREFIX_ENCODED,
+];
+/// The session/tab bootstrap markers in both spellings; host-owned token
+/// extraction strips exactly these.
+pub(crate) const HOST_BLANK_MARKER_TOKEN_PREFIXES: [&str; 4] = [
+    HOST_BLANK_MARKER_SESSION_PREFIX,
+    HOST_BLANK_MARKER_TAB_PREFIX,
+    HOST_BLANK_MARKER_SESSION_PREFIX_ENCODED,
+    HOST_BLANK_MARKER_TAB_PREFIX_ENCODED,
+];
 
 const ASYNC_DISPATCH_PENDING: u8 = 0;
 const ASYNC_DISPATCH_RUNNING: u8 = 1;

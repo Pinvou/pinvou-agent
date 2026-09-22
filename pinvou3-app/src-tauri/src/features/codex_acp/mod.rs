@@ -27,13 +27,13 @@ use install::{
     brew_install_args, brew_package_installed, bundled_adapter_candidates,
     claude_version_supported, clear_install_progress, codex_path_for_adapter,
     codex_upgrade_required, codex_version_changed, command_version_output, detect_install_source,
-    emit_install_progress, fill_install_progress, find_in_path, install_action_for,
-    installed_node_version, kill_install_process_tree, kimi_version_supported,
-    move_official_binaries_aside, node_major_version, npm_executable, npm_package,
-    official_script_supported, official_script_urls, parse_install_action, path_install_source,
-    resolve_adapter_from, resolve_claude_adapter_from, resolve_claude_cli, resolve_codex_cli,
-    resolve_kimi_path, run_npm_global_upgrade, run_official_install_script, script_url_reachable,
-    stale_official_target, stream_std_lines,
+    fill_install_progress, find_in_path, install_action_for, installed_node_version,
+    kill_install_process_tree, kimi_version_supported, move_official_binaries_aside,
+    node_major_version, npm_executable, npm_package, official_script_supported,
+    official_script_urls, parse_install_action, path_install_source, resolve_adapter_from,
+    resolve_claude_adapter_from, resolve_claude_cli, resolve_codex_cli, resolve_kimi_path,
+    run_brew_install, run_npm_global_upgrade, run_official_install_script, script_url_reachable,
+    stale_official_target,
 };
 use introspect::{kimi_diagnostic_cursor, kimi_failure_after};
 use login::{
@@ -42,7 +42,7 @@ use login::{
 };
 
 use std::collections::{BTreeMap, HashMap, HashSet, VecDeque};
-use std::io::{BufRead, Read};
+use std::io::Read;
 use std::path::{Path, PathBuf};
 use std::process::Stdio;
 use std::sync::Arc;
@@ -81,7 +81,9 @@ use crate::features::sessions::SessionStore;
 // 池无上限、内存随会话数线性涨。空闲超过阈值且无在跑 turn / 配置同步 /
 // 非 active 会话时回收。回收只是回到 lazy spawn 语义（下次 get_or_spawn
 // 重新起进程），30 分钟取偏保守值：宁可少回收也不误杀刚要被使用的会话。
-use crate::core::reaper::{IDLE_EVICT_AFTER_SECS, IdleReaperGuard, take_session_if_still_idle};
+use crate::core::reaper::{
+    IDLE_EVICT_AFTER_SECS, IdleReaperGuard, should_reap_idle, take_session_if_still_idle,
+};
 use attachments::{CodexDisplayAttachment, prepare_codex_prompt};
 use deepseek_tui::session_manager::SessionMetadata;
 pub(crate) use events::project_acp_value_for_web;
@@ -131,19 +133,6 @@ const KIMI_INSTALL_SCRIPT_WINDOWS: &str = "https://code.kimi.com/kimi-code/insta
 // 池无上限、内存随会话数线性涨。空闲超过阈值且无在跑 turn / 配置同步 /
 // 非 active 会话时回收。回收只是回到 lazy spawn 语义（下次 get_or_spawn
 // 重新起进程），30 分钟取偏保守值：宁可少回收也不误杀刚要被使用的会话。
-
-/// 空闲回收判定（纯函数，便于单测）：busy（prompt 在途，含等待权限/问询的
-/// turn）、configuring（配置同步中）与当前 active 会话一律不回收。判定本体
-/// 与 EnginePool 侧共用 `core::reaper::should_reap_idle`，这里保留 ACP 的
-/// 参数语义命名。
-fn should_reap_idle_session(
-    busy: bool,
-    configuring: bool,
-    is_active_session: bool,
-    idle_for: Duration,
-) -> bool {
-    crate::core::reaper::should_reap_idle(busy, configuring, is_active_session, idle_for)
-}
 
 /// codex_acp 测试共用的临时目录夹具（attachments / workspace 的 tests 模块
 /// 复用）：`create_dir_all` 建目录，Drop 时 `remove_dir_all` 清理；目录名按
@@ -777,27 +766,25 @@ struct AcpSession {
 
 impl AcpSession {
     async fn set_mode(&self, mode_id: &str) -> Result<()> {
-        let supported = self.modes.read().as_ref().is_some_and(|modes| {
-            modes
-                .available_modes
-                .iter()
-                .any(|mode| mode.id.to_string() == mode_id)
-        });
-        if !supported {
-            bail!("ACP Agent 未上报会话模式: {mode_id}");
-        }
-        self.connection
-            .send_request(SetSessionModeRequest::new(
-                self.acp_session_id.clone(),
-                mode_id.to_string(),
-            ))
-            .block_task()
-            .await
-            .context("ACP session/set_mode 失败")?;
-        if let Some(modes) = self.modes.write().as_mut() {
-            modes.current_mode_id = mode_id.to_string().into();
-        }
-        Ok(())
+        set_session_mode(
+            &self.connection,
+            &self.acp_session_id,
+            mode_id,
+            || {
+                self.modes.read().as_ref().is_some_and(|modes| {
+                    modes
+                        .available_modes
+                        .iter()
+                        .any(|mode| mode.id.to_string() == mode_id)
+                })
+            },
+            |current| {
+                if let Some(modes) = self.modes.write().as_mut() {
+                    modes.current_mode_id = current.into();
+                }
+            },
+        )
+        .await
     }
 
     async fn prompt(
@@ -895,17 +882,25 @@ impl AcpSession {
 
     fn info(
         &self,
+        agent_store: &SessionAgentStore,
         pending_permissions: Vec<CodexAcpPendingPermission>,
         pending_elicitations: Vec<CodexAcpPendingElicitation>,
     ) -> CodexAcpSessionInfo {
+        // The session-level Provider override comes from the session record (same source as session_info): filling it in here
+        // makes the operation_gate set_model/set_mode/set_config_option return values
+        // carry provider too, so the frontend does not briefly show a wrong Provider after a config change.
+        let provider = agent_store
+            .get(self.bridge.pinvou_session_id())
+            .acp_config_values
+            .get("provider")
+            .cloned();
         CodexAcpSessionInfo {
             session_id: self.acp_session_id.clone(),
             current_model_id: self.current_model.read().clone(),
             models: self.models.clone(),
             modes: self.modes.read().clone(),
             config_options: self.config_options.read().clone(),
-            // 会话级 Provider 覆盖由 session_info() 从会话记录补齐
-            provider: None,
+            provider,
             pending_permissions,
             pending_elicitations,
         }
@@ -1477,7 +1472,6 @@ impl AcpPool {
                     "none"
                 } else {
                     install_action_for(
-                        backend,
                         kimi.as_ref().and_then(|cli| cli.install_source),
                         npm_executable().is_some(),
                         official_script_supported(backend),
@@ -1562,7 +1556,6 @@ impl AcpPool {
                     // 过旧 CLI 按安装来源分派 brew/npm 升级；无 CLI、脚本来源或
                     // 来源未知时统一运行官方安装脚本。
                     install_action_for(
-                        backend,
                         probe.as_ref().and_then(|probe| probe.codex_install_source),
                         npm_executable().is_some(),
                         official_script_supported(backend),
@@ -1574,7 +1567,6 @@ impl AcpPool {
                     "none"
                 } else {
                     install_action_for(
-                        backend,
                         claude.as_ref().and_then(|cli| cli.install_source),
                         npm_executable().is_some(),
                         official_script_supported(backend),
@@ -1871,94 +1863,37 @@ impl AcpPool {
             "homebrew:start",
             format!("agent={}", backend.agent_id().unwrap_or("unknown")),
         );
-        // brew install/upgrade 是阻塞式子进程，放到 spawn_blocking 避免卡住 async runtime。
-        let install_children = self.install_children.clone();
-        let install_cancelled = self.install_cancelled.clone();
-        let app = self.app.clone();
-        let result = tokio::task::spawn_blocking(move || {
-            let run_brew = |args: &[&str], command: &str| -> Result<std::process::Output> {
-                let mut brew_command = std::process::Command::new(platform::brew_bin());
-                brew_command
-                    .args(args)
-                    .stdin(Stdio::null())
-                    .stdout(Stdio::piped())
-                    .stderr(Stdio::piped());
-                // 独立进程组：取消时按组杀，brew 派生进程不孤儿化。
-                crate::platform::process::std_process_group_leader(&mut brew_command);
-                let mut child = brew_command.spawn().context("启动 Homebrew 失败")?;
-                // 登记 pid 供取消命令杀进程树；guard 在 run_brew 出口注销。
-                let _child_guard =
-                    InstallChildGuard::register(&install_children, backend, Some(child.id()));
-                // 取消可能发生在 spawn 与登记之间：登记后立即补检一次。
-                if install_cancelled.lock().contains(&backend) {
-                    let _ = child.kill();
-                }
-                emit_install_progress(&app, backend, "command", command);
-                // 逐行转发输出为进度事件；完整输出经 mpsc 回收，保留给尾部诊断。
-                let stdout = child.stdout.take().context("读取 Homebrew 标准输出失败")?;
-                let stderr = child.stderr.take().context("读取 Homebrew 错误输出失败")?;
-                let (stdout_tx, stdout_rx) = std::sync::mpsc::channel();
-                let (stderr_tx, stderr_rx) = std::sync::mpsc::channel();
-                let app_stdout = app.clone();
-                let app_stderr = app.clone();
-                let stdout_thread = std::thread::spawn(move || {
-                    stream_std_lines(stdout, "stdout", stdout_tx, app_stdout, backend)
-                });
-                let stderr_thread = std::thread::spawn(move || {
-                    stream_std_lines(stderr, "stderr", stderr_tx, app_stderr, backend)
-                });
-                let status = child.wait().context("等待 Homebrew 进程失败")?;
-                let _ = stdout_thread.join();
-                let _ = stderr_thread.join();
-                let mut stdout = String::new();
-                for line in stdout_rx {
-                    stdout.push_str(&line);
-                    stdout.push('\n');
-                }
-                let mut stderr = String::new();
-                for line in stderr_rx {
-                    stderr.push_str(&line);
-                    stderr.push('\n');
-                }
-                Ok(std::process::Output {
-                    status,
-                    stdout: stdout.into_bytes(),
-                    stderr: stderr.into_bytes(),
-                })
-            };
-            // 幂等提示不算错误：install 报 already installed，upgrade 报 already up-to-date。
-            let already_done = |output: &std::process::Output| {
-                ["already installed", "already up-to-date"]
-                    .iter()
-                    .any(|marker| {
-                        String::from_utf8_lossy(&output.stdout).contains(marker)
-                            || String::from_utf8_lossy(&output.stderr).contains(marker)
-                    })
-            };
-            let (command, args) = brew_install_args(backend, brew_package_installed(backend))
-                .with_context(|| format!("{} 不支持 Homebrew 升级", backend.display_name()))?;
-            let output = run_brew(&args, command)?;
-            if output.status.success() || already_done(&output) {
-                return Ok(());
-            }
-            // 进程被用户取消（taskkill/kill）会以失败状态走到这里：改写为已取消语义。
-            if install_cancelled.lock().remove(&backend) {
-                bail!(
-                    "{INSTALL_CANCELLED_MARKER}{} 安装已取消",
+        // The brew list probe is a blocking subprocess, so keep spawn_blocking; the subprocess execution
+        // skeleton (register pid / cancel recheck / streaming output / 600s timeout / cancel rewrite) is
+        // install.rs's run_managed_install, which run_brew_install shares with the script/npm channels.
+        // brew previously had no timeout, and a hang would hold the install mutex guard forever.
+        let result = match tokio::task::spawn_blocking(move || {
+            brew_install_args(backend, brew_package_installed(backend)).with_context(|| {
+                format!(
+                    "{} does not support Homebrew upgrade",
                     backend.display_name()
-                );
-            }
-            let stderr = String::from_utf8_lossy(&output.stderr);
-            let tail: Vec<&str> = stderr.lines().rev().take(4).collect();
-            bail!(
-                "{command} 失败 (exit {}): {}",
-                output.status.code().unwrap_or(-1),
-                tail.into_iter().rev().collect::<Vec<_>>().join(" / ")
-            );
+                )
+            })
         })
-        .await;
+        .await
+        {
+            Ok(Ok((command, args))) => {
+                run_brew_install(
+                    &self.app,
+                    backend,
+                    &operation_id,
+                    &self.install_children,
+                    &self.install_cancelled,
+                    &args,
+                    command,
+                )
+                .await
+            }
+            Ok(Err(error)) => Err(error),
+            Err(join_error) => Err(join_error).context("failed to join Homebrew install task"),
+        };
         drop(install_guard);
-        match result.context("等待 Homebrew 安装任务失败")? {
+        match result {
             Ok(()) => {
                 self.refresh_agent_cli_probe(backend).await;
                 diagnostics::write(&operation_id, "homebrew:complete", "result=success");
@@ -3153,7 +3088,7 @@ impl AcpPool {
     async fn evict_if_idle(&self, session_id: &str) -> bool {
         let active_id = self.session_store.active_id();
         let Some(runtime) = take_session_if_still_idle(&self.sessions, session_id, |runtime| {
-            should_reap_idle_session(
+            should_reap_idle(
                 runtime.busy.load(Ordering::Acquire),
                 runtime.configuring.load(Ordering::Acquire),
                 active_id.as_deref() == Some(session_id),
@@ -3266,7 +3201,7 @@ impl AcpPool {
             sessions
                 .iter()
                 .filter(|(sid, runtime)| {
-                    should_reap_idle_session(
+                    should_reap_idle(
                         runtime.busy.load(Ordering::Acquire),
                         runtime.configuring.load(Ordering::Acquire),
                         active_id.as_deref() == Some(sid.as_str()),
@@ -3305,17 +3240,12 @@ impl AcpPool {
         }
         let pending_permissions = self.pending_permissions_for(session_id).await;
         let pending_elicitations = self.pending_elicitations_for(session_id).await;
-        let mut info = self
-            .get_or_spawn(session_id)
-            .await?
-            .info(pending_permissions, pending_elicitations);
-        info.provider = self
-            .agents
-            .get(session_id)
-            .acp_config_values
-            .get("provider")
-            .cloned();
-        Ok(info)
+        // provider is already filled from the session record by info(); nothing to add here.
+        Ok(self.get_or_spawn(session_id).await?.info(
+            &self.agents,
+            pending_permissions,
+            pending_elicitations,
+        ))
     }
 
     /// 一次性模型探针：切换/删除 Provider（或恢复官方）后，草稿态会话本不连接
@@ -4188,27 +4118,20 @@ async fn apply_config_option(
     Ok(())
 }
 
-async fn apply_saved_mode(
+/// Shared implementation of `session/set_mode`, used by both `AcpSession::set_mode` and the
+/// legacy branch of `apply_saved_mode`. It first confirms the mode exists in available_modes, sends
+/// SetSessionModeRequest, and writes current_mode_id back on success. The two callers keep mode state in
+/// different containers (AcpSession's RwLock vs. a local Option during spawn), accessed through the
+/// `mode_available` / `write_current_mode` accessors that each hold their own lock or borrow, keeping
+/// scopes short and never holding them across a network await.
+async fn set_session_mode(
     connection: &ConnectionTo<Agent>,
     acp_session_id: &str,
-    modes: &mut Option<SessionModeState>,
-    config_options: &mut Vec<SessionConfigOption>,
     mode_id: &str,
+    mode_available: impl FnOnce() -> bool,
+    write_current_mode: impl FnOnce(String),
 ) -> Result<()> {
-    if config_options
-        .iter()
-        .any(|option| option.id.to_string() == "mode")
-    {
-        return apply_config_option(connection, acp_session_id, config_options, "mode", mode_id)
-            .await;
-    }
-    let supported = modes.as_ref().is_some_and(|state| {
-        state
-            .available_modes
-            .iter()
-            .any(|mode| mode.id.to_string() == mode_id)
-    });
-    if !supported {
+    if !mode_available() {
         bail!("ACP Agent 未上报会话模式: {mode_id}");
     }
     connection
@@ -4219,10 +4142,39 @@ async fn apply_saved_mode(
         .block_task()
         .await
         .context("ACP session/set_mode 失败")?;
-    if let Some(state) = modes.as_mut() {
-        state.current_mode_id = mode_id.to_string().into();
-    }
+    write_current_mode(mode_id.to_string());
     Ok(())
+}
+
+/// Restores the saved mode (legacy path: the Agent does not expose mode as a config option).
+/// The caller (restore_config_values) has already pre-checked with has_config_mode, so the config option
+/// branch is unreachable and not handled here.
+async fn apply_saved_mode(
+    connection: &ConnectionTo<Agent>,
+    acp_session_id: &str,
+    modes: &mut Option<SessionModeState>,
+    mode_id: &str,
+) -> Result<()> {
+    // Read availability into a local value first: this avoids the “shared borrow (check) + mutable borrow (write-back)”
+    // closures being alive at the same time. The check runs in this body before the request, with the same semantics as reading inside a closure.
+    let mode_available = modes.as_ref().is_some_and(|state| {
+        state
+            .available_modes
+            .iter()
+            .any(|mode| mode.id.to_string() == mode_id)
+    });
+    set_session_mode(
+        connection,
+        acp_session_id,
+        mode_id,
+        || mode_available,
+        |current| {
+            if let Some(state) = modes.as_mut() {
+                state.current_mode_id = current.into();
+            }
+        },
+    )
+    .await
 }
 
 async fn restore_config_values(
@@ -4294,9 +4246,7 @@ async fn restore_config_values(
                 .as_ref()
                 .is_some_and(|state| state.current_mode_id.to_string() != mode_id.as_str())
         {
-            if let Err(error) =
-                apply_saved_mode(connection, acp_session_id, modes, config_options, mode_id).await
-            {
+            if let Err(error) = apply_saved_mode(connection, acp_session_id, modes, mode_id).await {
                 eprintln!(
                     "[pinvou3-app] skipped {} saved ACP mode {}: {error:#}",
                     backend.display_name(),
@@ -4429,21 +4379,21 @@ mod tests {
     fn idle_reap_keeps_busy_configuring_and_active_sessions() {
         let idle = Duration::from_secs(IDLE_EVICT_AFTER_SECS);
         // 空闲且非 active → 回收。
-        assert!(should_reap_idle_session(false, false, false, idle));
-        assert!(should_reap_idle_session(
+        assert!(should_reap_idle(false, false, false, idle));
+        assert!(should_reap_idle(
             false,
             false,
             false,
             idle + Duration::from_secs(1)
         ));
         // 在途 prompt（含等待权限/问询的 turn）绝不回收。
-        assert!(!should_reap_idle_session(true, false, false, idle));
+        assert!(!should_reap_idle(true, false, false, idle));
         // 配置同步中不回收（回收会打断在途 set_model/set_config/set_mode）。
-        assert!(!should_reap_idle_session(false, true, false, idle));
+        assert!(!should_reap_idle(false, true, false, idle));
         // 当前 active 会话不回收（保守：前端可能正在看）。
-        assert!(!should_reap_idle_session(false, false, true, idle));
+        assert!(!should_reap_idle(false, false, true, idle));
         // 未到空闲阈值不回收。
-        assert!(!should_reap_idle_session(
+        assert!(!should_reap_idle(
             false,
             false,
             false,
@@ -4471,7 +4421,7 @@ mod tests {
 
         /// 与 AcpPool::evict_if_idle 相同的复核闭包（非 active 会话口径）。
         fn still_idle(&self) -> bool {
-            should_reap_idle_session(
+            should_reap_idle(
                 self.busy.load(Ordering::Acquire),
                 self.configuring.load(Ordering::Acquire),
                 false,

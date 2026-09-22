@@ -26,19 +26,15 @@ use tauri::Webview;
 
 use super::state::{NativeTabLease, WorkspaceControl};
 use super::{
-    ACTION_COMMIT_UNKNOWN_SCRIPT_INTERRUPTION, AsyncDispatchState, BrowserCoreEvaluationMode,
+    ACTION_COMMIT_UNKNOWN_FOCUS_RESTORE_FAILED, ACTION_COMMIT_UNKNOWN_INPUT_INTERRUPTION,
+    ACTION_COMMIT_UNKNOWN_SCRIPT_INTERRUPTION, ACTION_COMMITTED_FOCUS_RESTORE_FAILED,
+    ACTION_PARTIALLY_COMMITTED, AsyncDispatchState, BrowserCoreEvaluationMode,
 };
 
 const EVALUATION_TIMEOUT: Duration = Duration::from_secs(15);
 const BIND_TIMEOUT: Duration = Duration::from_secs(5);
 const BIND_RETRY_INTERVAL: Duration = Duration::from_millis(25);
 const CORE_GLOBAL: &str = "__PINVOU_BROWSER_CORE_V1__";
-const ACTION_COMMITTED_FOCUS_RESTORE_FAILED: &str = "browser/action-committed-focus-restore-failed";
-const ACTION_COMMIT_UNKNOWN_FOCUS_RESTORE_FAILED: &str =
-    "browser/action-commit-unknown-focus-restore-failed";
-const ACTION_COMMIT_UNKNOWN_INPUT_INTERRUPTION: &str =
-    "browser/action-commit-unknown-after-input-interruption";
-const ACTION_PARTIALLY_COMMITTED: &str = "browser/action-partially-committed";
 
 struct WebviewBinding {
     tab_token: String,
@@ -375,9 +371,8 @@ async fn resolve_element_point(webview: &Webview, uid: &str) -> Result<(f64, f64
     let value = evaluate_json(
         webview,
         format!(
-            "const core = globalThis.{CORE_GLOBAL};\n\
-             if (!core || core.version !== 1) throw new Error('browser/core-runtime-unavailable');\n\
-             return await core.point({uid});"
+            "{}return await core.point({uid});",
+            super::super::core::core_prelude()
         ),
         BrowserCoreEvaluationMode::ReadOnly,
         None,

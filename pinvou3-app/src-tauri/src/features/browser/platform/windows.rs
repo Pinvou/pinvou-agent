@@ -20,7 +20,8 @@ impl PlatformWebviewConfig for WindowsWebviewConfig {
     const ACTIVATION_READY: bool = true;
 
     fn capabilities(&self) -> NativeSurfaceCapabilities {
-        NativeSurfaceCapabilities::new(true, true, true)
+        let enabled = crate::platform::capabilities::browser_product_enabled();
+        NativeSurfaceCapabilities::new(enabled, enabled, enabled)
     }
 
     fn requires_reset(&self, automation_port: Option<u16>, _data_directory: &Path) -> bool {

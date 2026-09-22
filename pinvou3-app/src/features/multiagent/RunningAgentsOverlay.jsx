@@ -13,6 +13,7 @@ import {
 } from './overlay-model.mjs';
 import { useSubagentLedgerPoll } from './useSubagentLedgerPoll.js';
 import { dispatchOpenSubagent } from './subagent-panel-event.mjs';
+import { roleKeyOf } from './subagent-conversation.mjs';
 
 /**
  * Swarm running overlay (top-right, ADR-0006 swarm rework): shown while the
@@ -79,7 +80,9 @@ function OverlayAgentRow({ entry, recent, isDark, copy, onOpen }) {
       >
         <span className={`inline-block h-1.5 w-1.5 shrink-0 rounded-full ${dotClass[status.dot]}`} />
         <span className={`min-w-0 flex-1 truncate font-medium ${recent ? 'opacity-70' : ''}`}>
-          {entry.role || entry.agentId}
+          {/* Same role localization as the transcript panel: built-in aliases fold back into roleCards copy; custom roles
+              are shown as-is, falling back to agentId when there is no role. */}
+          {(copy.roleCards && copy.roleCards[roleKeyOf(entry.role, entry.agentType)]) || entry.role || entry.agentId}
         </span>
         <span
           className={recent

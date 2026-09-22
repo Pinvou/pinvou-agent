@@ -132,26 +132,6 @@ pub(super) fn prepare_codex_prompt(
     })
 }
 
-/// 扩展名 → 图片 MIME 的唯一映射表：附件内嵌与工作区图片预览共用，取两处
-/// 原有表格的超集。返回 None 表示表外扩展名，由调用方决定回退或拒绝。
-pub(super) fn image_mime_type(path: &Path) -> Option<&'static str> {
-    match path
-        .extension()
-        .and_then(|value| value.to_str())
-        .unwrap_or_default()
-        .to_ascii_lowercase()
-        .as_str()
-    {
-        "png" => Some("image/png"),
-        "jpg" | "jpeg" => Some("image/jpeg"),
-        "gif" => Some("image/gif"),
-        "webp" => Some("image/webp"),
-        "svg" => Some("image/svg+xml"),
-        "bmp" => Some("image/bmp"),
-        _ => None,
-    }
-}
-
 /// Codex 图片附件仅接受栅格格式：svg/bmp 虽在共享 MIME 表内（工作区预览用），
 /// 附件内嵌保持既有行为显式拒绝；其余表外扩展名同样拒绝。
 fn codex_image_mime_type(path: &Path) -> Result<&'static str> {
@@ -160,7 +140,7 @@ fn codex_image_mime_type(path: &Path) -> Result<&'static str> {
         .and_then(|value| value.to_str())
         .unwrap_or_default()
         .to_ascii_lowercase();
-    image_mime_type(path)
+    crate::platform::filesystem::image_mime_type(path)
         .filter(|mime| *mime != "image/svg+xml" && *mime != "image/bmp")
         .ok_or_else(|| anyhow!("Codex 不支持该图片格式: .{extension}"))
 }

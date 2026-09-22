@@ -200,7 +200,6 @@ pub struct FileHit {
     pub ext: Option<String>,
     pub size: u64,
     pub mtime: i64,
-    pub is_dir: bool,
 }
 
 /// 秒搜查询条件。`text` 为名/路径子串；其余为结构化过滤。
@@ -433,7 +432,7 @@ impl Store {
         // value directly, avoiding a repeated unwrap.
         if let Some(t) = text.filter(|t| t.chars().count() >= 3) {
             sql.push_str(
-                "SELECT f.path, f.name, f.ext, f.size, f.mtime, f.is_dir \
+                "SELECT f.path, f.name, f.ext, f.size, f.mtime \
                  FROM files_fts JOIN files f ON f.id = files_fts.rowid \
                  WHERE f.status='indexed' AND f.is_dir=0 AND files_fts MATCH ?",
             );
@@ -441,7 +440,7 @@ impl Store {
             let t = t.replace('"', "\"\"");
             vals.push(Value::Text(format!("\"{t}\"")));
         } else {
-            sql.push_str("SELECT f.path, f.name, f.ext, f.size, f.mtime, f.is_dir FROM files f WHERE f.status='indexed' AND f.is_dir=0");
+            sql.push_str("SELECT f.path, f.name, f.ext, f.size, f.mtime FROM files f WHERE f.status='indexed' AND f.is_dir=0");
             if let Some(t) = text {
                 sql.push_str(" AND (f.name LIKE ? OR f.path LIKE ?)");
                 let like = format!("%{}%", escape_like(t));
@@ -485,7 +484,6 @@ impl Store {
                 ext: row.get(2)?,
                 size: row.get::<_, i64>(3)? as u64,
                 mtime: row.get(4)?,
-                is_dir: row.get::<_, i64>(5)? != 0,
             })
         })?;
         rows.collect()
@@ -832,7 +830,6 @@ mod tests {
                 ..Default::default()
             })
             .unwrap();
-        assert!(hits.iter().all(|h| !h.is_dir), "search(FTS) 不应返回目录");
         assert_eq!(hits.len(), 1);
         assert_eq!(hits[0].name, "项目文档.pdf");
         // 无 text 全量路径：同样排除目录
@@ -842,7 +839,6 @@ mod tests {
                 ..Default::default()
             })
             .unwrap();
-        assert!(all.iter().all(|h| !h.is_dir), "search(全量) 不应返回目录");
         assert_eq!(all.len(), 1);
     }
 

@@ -37,7 +37,11 @@ const PROFILE = fs.mkdtempSync(path.join(os.tmpdir(), 'pinvou-composer-tools-'))
 
 function injectSource() {
   return `(function(){
-    const state=window.__COMPOSER_TOOLS_TEST__={calls:[],disabled:[]};
+    // holdWrites: holds set_disabled_connectors as a deferred promise (for the
+    // out-of-order completion regression); failWrites: rejects immediately
+    // (disabled is recorded on success only, simulating a backend rejection
+    // that does not persist).
+    const state=window.__COMPOSER_TOOLS_TEST__={calls:[],disabled:[],holdWrites:false,failWrites:false,heldWrites:[]};
     function record(cmd,args){state.calls.push({cmd,args:args||{}});}
     function invoke(cmd,args){
       record(cmd,args);
@@ -62,7 +66,16 @@ function injectSource() {
           {id:'visualizer',title:'数据分析可视化',description:'Chart.js 仪表盘',installed:true,user_uploaded:false},
         ]);
         case 'get_disabled_connectors': return Promise.resolve(state.disabled);
-        case 'set_disabled_connectors': state.disabled=(args&&args.connectorIds)||[]; return Promise.resolve(null);
+        case 'set_disabled_connectors': {
+          const connectorIds=(args&&args.connectorIds)||[];
+          // Held/failed writes do not persist (only success records); the flush
+          // resolve records afterwards — matching the real backend: a rejected
+          // governance write does not change disabled_bundles.json.
+          if(state.holdWrites) return new Promise((resolve,reject)=>{state.heldWrites.push({connectorIds,resolve,reject});});
+          if(state.failWrites) return Promise.reject(new Error('mock_governance_write_failed'));
+          state.disabled=connectorIds;
+          return Promise.resolve(null);
+        }
         case 'get_bundle_visibility': return Promise.resolve(state.disabledSkills);
         case 'set_bundle_visibility': state.disabledSkills=(args&&args.skillIds)||[]; return Promise.resolve(null);
         case 'feishu_skills_state': case 'wecom_skills_state': case 'dingtalk_skills_state': case 'tmeet_skills_state': return Promise.resolve({connected:false,enabled:true});
@@ -110,6 +123,66 @@ const sleep = ms => new Promise(r => { setTimeout(r, ms); });
   await sleep(150);
   const disabled = await page.evaluate(() => window.__COMPOSER_TOOLS_TEST__.disabled);
   rec('关闭独立技能调用 set_disabled_connectors(裸 id)', disabled.includes('visualizer') && !disabled.some(id => id.startsWith('skill:')), JSON.stringify(disabled));
+
+  // ── Governance write failure path + out-of-order completion regression
+  // (review round-2 blocker) ────────────────────────────────────────────
+  // visualizer is off here (the assertion above wrote the id back into the
+  // disabled set); the mock truth is disabled=['visualizer'].
+  const readToggleState = () => page.evaluate(() => {
+    const btn = document.querySelector('button[aria-label="visualizer"]');
+    const errorLine = document.querySelector('[data-testid="composer-tool-menu-error"]');
+    return {
+      on: btn ? btn.className.includes('bg-[#34C759]') : null,
+      errorText: errorLine ? errorLine.textContent : '',
+      disabled: [...window.__COMPOSER_TOOLS_TEST__.disabled],
+      writeCallCount: window.__COMPOSER_TOOLS_TEST__.calls.filter(c => c.cmd === 'set_disabled_connectors').length,
+      heldWrites: window.__COMPOSER_TOOLS_TEST__.heldWrites.length,
+    };
+  });
+  const clickVisualizer = () => page.evaluate(() => document.querySelector('button[aria-label="visualizer"]').click());
+
+  // Scenario A (out-of-order completion): the first write is held, the second
+  // write succeeds first, then the first write fails — the stale older failure
+  // must not overwrite the newer successful state nor surface a failure line.
+  await page.evaluate(() => { window.__COMPOSER_TOOLS_TEST__.holdWrites = true; });
+  await clickVisualizer(); // on → optimistic set, write A held (not persisted)
+  await sleep(200);
+  const heldState = await readToggleState();
+  rec('held write keeps the optimistic set with nothing persisted', heldState.on === true && heldState.disabled.includes('visualizer') === true && heldState.heldWrites === 1, JSON.stringify(heldState));
+
+  await page.evaluate(() => { window.__COMPOSER_TOOLS_TEST__.holdWrites = false; });
+  await clickVisualizer(); // off → write B succeeds and persists immediately
+  await sleep(300);
+  const newerOkState = await readToggleState();
+  rec('state matches the newer write once it succeeds', newerOkState.on === false && newerOkState.errorText === '' && newerOkState.disabled.includes('visualizer') === true, JSON.stringify(newerOkState));
+
+  await page.evaluate(() => {
+    const state = window.__COMPOSER_TOOLS_TEST__;
+    state.heldWrites.shift().reject(new Error('mock_governance_write_failed'));
+  });
+  await sleep(500);
+  const staleFailState = await readToggleState();
+  rec('stale late failure neither rolls back the newer state nor reports a failure (generation gate)',
+    staleFailState.on === false && staleFailState.errorText === '' && staleFailState.writeCallCount === newerOkState.writeCallCount,
+    JSON.stringify(staleFailState));
+
+  // Scenario B (current-write failure): immediate rejection (nothing
+  // persisted) → roll back to backend truth and show the failure line, never
+  // staying in a false-success state; the next successful toggle clears the
+  // error line.
+  await page.evaluate(() => { window.__COMPOSER_TOOLS_TEST__.failWrites = true; });
+  await clickVisualizer(); // on → optimistic set, then the write fails
+  await sleep(500);
+  const failState = await readToggleState();
+  rec('current-write failure shows the error line and rolls back to backend truth',
+    failState.errorText.includes('mock_governance_write_failed') && failState.on === false && failState.disabled.includes('visualizer') === true,
+    JSON.stringify(failState));
+
+  await page.evaluate(() => { window.__COMPOSER_TOOLS_TEST__.failWrites = false; });
+  await clickVisualizer(); // on → persists successfully; the error line clears on the next toggle attempt
+  await sleep(300);
+  const recoveredState = await readToggleState();
+  rec('the next successful toggle clears the error line', recoveredState.on === true && recoveredState.errorText === '' && recoveredState.disabled.includes('visualizer') === false, JSON.stringify(recoveredState));
 
   rec('页面无未处理 JavaScript 异常', errors.length === 0, errors.slice(0, 2).join(' | '));
 

@@ -165,11 +165,15 @@ pub(crate) fn base_url_uses_local_or_private(base_url: &str) -> bool {
 }
 
 fn official_deepseek_model_name(model: &str) -> String {
+    // Case-canonicalization of the two canonical DeepSeek names: the wire
+    // model is matched ASCII-case-insensitively and mapped to its lowercase
+    // canonical form; any other name passes through verbatim.
     let model = wire_model_for_provider(ApiProvider::Deepseek, model);
-    match model.to_ascii_lowercase().as_str() {
-        "deepseek-v4-pro" => "deepseek-v4-pro".to_string(),
-        "deepseek-v4-flash" => "deepseek-v4-flash".to_string(),
-        _ => model,
+    let lowered = model.to_ascii_lowercase();
+    if lowered == "deepseek-v4-pro" || lowered == "deepseek-v4-flash" {
+        lowered
+    } else {
+        model
     }
 }
 
@@ -1142,25 +1146,9 @@ impl Pinvou3Bridge {
             }
         }
         if let Some(m) = self.effective_model() {
-            let store = shared_credential_store();
-            if let Some(reference) = &m.credential_ref {
-                match store.get(reference) {
-                    Ok(Some(key)) if !key.trim().is_empty() => return key,
-                    Ok(_) => {}
-                    Err(err) => {
-                        eprintln!(
-                            "[pinvou3-app] credential read failed for model {}: {}",
-                            m.id,
-                            err.user_message()
-                        );
-                    }
-                }
-            }
             // 本地 vLLM 不需鉴权:用户留空 key 兜底 local-no-auth(底座要求非空)。
-            if m.preset == ModelPreset::LocalVllm && self.provider() == "vllm" {
-                return LOCAL_VLLM_API_KEY.to_string();
-            }
-            return m.api_key.clone();
+            let local_endpoint = m.preset == ModelPreset::LocalVllm && self.provider() == "vllm";
+            return Self::credential_for_model(m, local_endpoint, "model");
         }
         match (
             self.prefs.advanced.model_preset.unwrap_or_default(),
@@ -1171,11 +1159,18 @@ impl Pinvou3Bridge {
         }
     }
 
-    /// 解析一条任意 SavedModel 的凭据(视觉兜底模型专用,设计 §9.3):
-    /// 复用 `credential_ref` → 系统凭据库路径,**不存第二份明文密钥**;
-    /// 不回落到全局 `DEEPSEEK_API_KEY` env(那是主模型的覆盖入口)。
-    /// 本地 vLLM/loopback 无鉴权场景返回占位 key(底座要求非空)。
-    fn api_key_for_saved_model(model: &SavedModel) -> String {
+    /// Shared credential resolution for the main model (`api_key`) and the
+    /// vision fallback model (`api_key_for_saved_model`): `credential_ref` →
+    /// system credential store first (no second plaintext copy), then the
+    /// caller's local-endpoint predicate (unauthenticated local endpoints get
+    /// the placeholder key; the base requires a non-empty value), then the
+    /// plaintext key stored on the SavedModel. `credential_context` only
+    /// labels the failure log ("model" / "vision model").
+    fn credential_for_model(
+        model: &SavedModel,
+        local_endpoint: bool,
+        credential_context: &str,
+    ) -> String {
         if let Some(reference) = &model.credential_ref {
             let store = shared_credential_store();
             match store.get(reference) {
@@ -1183,17 +1178,27 @@ impl Pinvou3Bridge {
                 Ok(_) => {}
                 Err(err) => {
                     eprintln!(
-                        "[pinvou3-app] credential read failed for vision model {}: {}",
+                        "[pinvou3-app] credential read failed for {credential_context} {}: {}",
                         model.id,
                         err.user_message()
                     );
                 }
             }
         }
-        if model.preset == ModelPreset::LocalVllm || base_url_uses_loopback(&model.base_url) {
+        if local_endpoint {
             return LOCAL_VLLM_API_KEY.to_string();
         }
         model.api_key.clone()
+    }
+
+    /// Resolve credentials for an arbitrary SavedModel (visual fallback model only, design §9.3):
+    /// reuses the `credential_ref` → system credential store path, **never stores a second plaintext key**;
+    /// does not fall back to the global `DEEPSEEK_API_KEY` env (that is the main model's override entry).
+    /// Local vLLM/loopback no-auth scenarios return a placeholder key (the base requires a non-empty value).
+    fn api_key_for_saved_model(model: &SavedModel) -> String {
+        let local_endpoint =
+            model.preset == ModelPreset::LocalVllm || base_url_uses_loopback(&model.base_url);
+        Self::credential_for_model(model, local_endpoint, "vision model")
     }
 
     /// 视觉工具(`image_analyze`)配置解析(设计 §9.3,阶段 E)。规则:
@@ -2331,6 +2336,17 @@ impl Pinvou3Bridge {
         model: &str,
     ) -> Result<deepseek_tui::route_runtime::ResolvedRuntimeRoute> {
         let config = self.build_dt_config();
+        self.resolve_runtime_route_from_config(config, model)
+    }
+
+    /// Shared tail of the runtime-route resolvers: derive the provider from
+    /// the already-built `DtConfig` and resolve the route, applying the
+    /// probed route limits when available.
+    fn resolve_runtime_route_from_config(
+        &self,
+        config: DtConfig,
+        model: &str,
+    ) -> Result<deepseek_tui::route_runtime::ResolvedRuntimeRoute> {
         let provider = config.api_provider();
         let route = if let Some(limits) = self.route_limits_for_model(model) {
             deepseek_tui::route_runtime::resolve_runtime_route_with_limits(
@@ -2355,18 +2371,7 @@ impl Pinvou3Bridge {
         snapshot: &ExpertRosterSnapshot,
     ) -> Result<deepseek_tui::route_runtime::ResolvedRuntimeRoute> {
         let config = self.build_multi_agent_dt_config(snapshot);
-        let provider = config.api_provider();
-        let route = if let Some(limits) = self.route_limits_for_model(model) {
-            deepseek_tui::route_runtime::resolve_runtime_route_with_limits(
-                &config,
-                provider,
-                Some(model),
-                limits,
-            )
-        } else {
-            deepseek_tui::route_runtime::resolve_runtime_route(&config, provider, Some(model))
-        };
-        route.map_err(anyhow::Error::msg)
+        self.resolve_runtime_route_from_config(config, model)
     }
 
     pub fn compaction_config_for_model(
@@ -3347,6 +3352,19 @@ mod tests {
         let installed = dir.path().join("marketplace/installed.json");
         std::fs::create_dir_all(installed.parent().unwrap()).unwrap();
         std::fs::write(&installed, r#"["weather","qcc"]"#).unwrap();
+        // §3.2: bundles.json is the installed-truth source; register both
+        // packages there too (the first-boot import does this for real users).
+        let store = crate::features::marketplace::store::BundleStore::new();
+        for id in ["weather", "qcc"] {
+            store
+                .upsert(
+                    crate::features::marketplace::store::BundleRecord::installed_now(
+                        id,
+                        crate::features::marketplace::store::BundleSource::Preset,
+                    ),
+                )
+                .unwrap();
+        }
         let mut bridge = fixture_bridge();
         bridge.set_code_session_predicate(Arc::new(|sid| sid == "code"));
         assert!(
@@ -3421,9 +3439,12 @@ mod tests {
                 .iter()
                 .all(|entry| entry["enabled"] == true)
         );
-        std::fs::write(&installed, r#"["qcc"]"#).unwrap();
+        // §3.2: the store is the installed-truth source — mutating the store
+        // moves the inventory; rewriting installed.json alone no longer does.
+        let store = crate::features::marketplace::store::BundleStore::new();
+        store.remove("weather").unwrap();
         assert_eq!(inventory("plain").as_array().unwrap().len(), 1);
-        std::fs::write(&installed, "[]").unwrap();
+        store.remove("qcc").unwrap();
         assert!(inventory("plain").as_array().unwrap().is_empty());
         let Op::SendMessage { content, .. } = bridge
             .build_send_message_op(
@@ -3440,11 +3461,17 @@ mod tests {
         assert!(content.contains("市场 MCP 应用（当前会话模式）: []"));
     }
 
-    /// PPT 场景回归（隐藏集口径）：开关全开、仅「不可见」隐藏的包必须同时被
-    /// 两个通道排除——turn 快照报 enabled=false，工具全名进 disallowed 口径。
-    /// 快照（mcp_inventory::turn_reminder）与工具白名单
-    /// （unavailable_tool_names_for）都吃 unavailable = disabled ∪ hidden 并集，
-    /// 模型不会再被两个互相矛盾的真相源喂养。
+    /// PPT scenario regression (hidden-set semantics): a package hidden by
+    /// visibility alone, with every toggle on, must be excluded by both channels
+    /// — the turn snapshot reports enabled=false and the full tool names enter
+    /// the disallowed set. Both the snapshot (mcp_inventory::turn_reminder) and
+    /// the tool allowlist (unavailable_tool_names_for) consume the
+    /// unavailable = disabled ∪ hidden union, so the model is never fed two
+    /// contradictory sources of truth. Note: the snapshot leg is end-to-end via
+    /// build_send_message_op; the allowlist leg is a mapping-level assertion on
+    /// `unavailable_tool_names_for`, with the engine assembly points
+    /// (build_engine_config / shape_disallowed_tools) bound to the same source at
+    /// compile time by the renamed accessor — no runtime test.
     #[test]
     fn hidden_bundle_gates_snapshot_and_tool_allowlist_alike() {
         let (_lock, _env) = locked_env(&["PINVOU3_HOME"]);
@@ -3454,6 +3481,17 @@ mod tests {
         let installed = dir.path().join("marketplace/installed.json");
         std::fs::create_dir_all(installed.parent().unwrap()).unwrap();
         std::fs::write(&installed, r#"["weather"]"#).unwrap();
+        // §3.2: bundles.json is the installed-truth source; register the
+        // package there too (the first-boot import does this for real users).
+        let store = crate::features::marketplace::store::BundleStore::new();
+        store
+            .upsert(
+                crate::features::marketplace::store::BundleRecord::installed_now(
+                    "weather",
+                    crate::features::marketplace::store::BundleSource::Preset,
+                ),
+            )
+            .unwrap();
         let mut bridge = fixture_bridge();
         bridge.set_code_session_predicate(Arc::new(|sid| sid == "code"));
         use crate::features::marketplace::{ConnectorScope, save_hidden_bundles_for};

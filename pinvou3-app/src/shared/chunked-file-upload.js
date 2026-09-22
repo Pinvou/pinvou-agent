@@ -154,8 +154,6 @@
   root.PinvouChunkedFileUpload = Object.freeze({
     CHUNK_BYTES,
     MAX_FILE_BYTES,
-    bytesToBase64,
-    cancelledError,
     uploadFile,
     uploadId,
   });

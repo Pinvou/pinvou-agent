@@ -41,17 +41,7 @@ function pinvouSharedtauriSettings() {
 async function loadSettings() { return pinvouSharedtauriSettings().loadSettings(); }
 async function loadSelectedPet() { return pinvouSharedtauriSettings().loadSelectedPet(); }
 async function setSelectedPet(id) { return pinvouSharedtauriSettings().setSelectedPet(id); }
-  async function loadEffectiveModelConfig(sessionId) {
-    const requestedSessionId = arguments.length ? (sessionId || null) : (state.activeSessionId || null);
-    try {
-      const config = await invoke("get_effective_model_config", { sessionId: requestedSessionId });
-      if (requestedSessionId !== (state.activeSessionId || null)) return;
-      state.effectiveModelConfig = config;
-    } catch {
-      state.effectiveModelConfig = null;
-    }
-    notify();
-  }
+async function loadEffectiveModelConfig(...args) { return pinvouSharedtauriSettings().loadEffectiveModelConfig.apply(null, args); }
   let settingsWriteQueue = Promise.resolve();
 function enqueueSettingsWrite(write) { return pinvouSharedtauriSettings().enqueueSettingsWrite(write); }
   async function saveSettings(patch) {
@@ -63,17 +53,6 @@ function enqueueSettingsWrite(write) { return pinvouSharedtauriSettings().enqueu
         return true;
       } catch (e) {
         console.warn("save settings failed", e);
-        return false;
-      }
-    });
-  }
-  async function saveSettingsAndRestart(patch) {
-    return enqueueSettingsWrite(async function () {
-      try {
-        await invoke("save_settings_and_restart", { patch });
-        return true;
-      } catch (e) {
-        console.warn("save settings and restart failed", e);
         return false;
       }
     });
@@ -259,7 +238,6 @@ async function testImageInputCapability(model, baseUrl, apiKey, modelId) { retur
       setSelectedPet,
       loadEffectiveModelConfig,
       saveSettings,
-      saveSettingsAndRestart,
       saveSearchSettings,
       saveSearchSettingsAndRestart,
       submitFeedback,

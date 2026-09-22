@@ -19,7 +19,6 @@ export function resolveOAuthInstallOutcome(toolName, loginResult, authStatus, co
       selectedToolPatch: {
         installed: true,
         authStatus: 'connected',
-        authMessage: authStatus?.message || '',
       },
       alert: {
         visible: true,
@@ -48,8 +47,6 @@ export function resolveOAuthInstallOutcome(toolName, loginResult, authStatus, co
     authState: {
       ...authStatus,
       installed: true,
-      mcp_configured: authStatus?.mcp_configured ?? true,
-      oauth_required: true,
       oauth_token_present: false,
       status,
       message,
@@ -57,7 +54,6 @@ export function resolveOAuthInstallOutcome(toolName, loginResult, authStatus, co
     selectedToolPatch: {
       installed: false,
       authStatus: status,
-      authMessage: message,
     },
     alert: {
       visible: true,

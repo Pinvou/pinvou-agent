@@ -92,7 +92,6 @@ pub struct ScheduledEngineState {
     pub messages: Vec<deepseek_tui::models::Message>,
     pub system_prompt: Option<SystemPrompt>,
     pub model: String,
-    pub workspace: PathBuf,
     pub mode: ScheduledRunMode,
     pub token_accounting: ScheduledTokenAccounting,
 }
@@ -113,13 +112,4 @@ pub(crate) struct ScheduledProfileRegistry {
     pub(crate) schema_version: u32,
     #[serde(default)]
     pub(crate) sessions: HashMap<String, ScheduledRunProfile>,
-}
-
-impl Default for ScheduledProfileRegistry {
-    fn default() -> Self {
-        Self {
-            schema_version: SCHEDULED_PROFILE_SCHEMA_VERSION,
-            sessions: HashMap::new(),
-        }
-    }
 }

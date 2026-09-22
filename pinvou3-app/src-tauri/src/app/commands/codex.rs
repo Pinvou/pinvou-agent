@@ -71,14 +71,13 @@ fn rollback_created_code_session(session_id: &str, store: &SessionStore, acp_poo
 
 #[tauri::command]
 pub async fn list_acp_agents(
-    acp_pool: State<'_, AcpPool>,
+    _acp_pool: State<'_, AcpPool>,
 ) -> Result<Vec<AcpAgentDescriptor>, String> {
-    list_acp_agents_for_pool(&acp_pool).await
+    list_acp_agents_for_pool().await
 }
 
-pub(crate) async fn list_acp_agents_for_pool(
-    _acp_pool: &AcpPool,
-) -> Result<Vec<AcpAgentDescriptor>, String> {
+/// The agent catalog is static; the pool handle is no longer consulted.
+pub(crate) async fn list_acp_agents_for_pool() -> Result<Vec<AcpAgentDescriptor>, String> {
     Ok(AcpPool::agent_catalog())
 }
 

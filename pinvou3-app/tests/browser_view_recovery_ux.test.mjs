@@ -219,9 +219,10 @@ test('app lifecycle discovery awaits listener registration and polls after regis
     /browserLifecycleListenersReadyRef\.current = readiness;[\s\S]*?Promise\.resolve\(readiness\)\.then/,
   );
   assert.match(appMain, /listenerRegistrationFailed[\s\S]*?window\.setInterval\(reconcileCurrentSession, 2000\)/);
+  // The drop logic lives in the shared reconcileBrowserSessionStatus helper.
   assert.match(
     appMain,
-    /if \(!st\.running && !st\.restoreError\) \{[\s\S]*?delete next\[requestedSessionId\][\s\S]*?removeBrowserPaneState\(current, requestedSessionId\)/,
+    /const reconcileBrowserSessionStatus = useCallback\(\(sessionId, isActive\) => \{[\s\S]*?if \(!st\.running && !st\.restoreError\) \{[\s\S]*?delete next\[sessionId\];[\s\S]*?removeBrowserPaneState\(current, sessionId\)/,
   );
   assert.match(appMain, /failed to register browser:activated listener/);
   assert.match(appMain, /failed to register browser:stopped listener/);
@@ -229,9 +230,10 @@ test('app lifecycle discovery awaits listener registration and polls after regis
     appMain.indexOf('// Query the session after a WebView reload or chat switch.'),
     appMain.indexOf('// Compact layouts keep the fullscreen browser view'),
   );
+  // Initial hydration reuses the shared helper after listener readiness.
   assert.match(
     initialHydration,
-    /if \(!st\.running && !st\.restoreError\) \{[\s\S]*?delete next\[requestedSessionId\][\s\S]*?removeBrowserPaneState\(current, requestedSessionId\)/,
+    /return reconcileBrowserSessionStatus\(requestedSessionId, \(\) => !disposed\)/,
   );
 });
 
@@ -444,9 +446,11 @@ test('app lifecycle snapshots cannot resurrect state after activated or stopped 
     appMain,
     /browserLifecycleEventEpochRef\.current\.isCurrent\([\s\S]*?eventEpoch[\s\S]*?browserLifecycleStatusRequestEpochRef\.current\.isCurrent\([\s\S]*?requestEpoch/,
   );
+  // The helper captures both epochs up front and revalidates both before
+  // applying any snapshot to state (snapshots can never resurrect state).
   assert.match(
     appMain,
-    /browserLifecycleEventEpochRef\.current\.isCurrent\([\s\S]*?snapshot\.eventEpoch[\s\S]*?browserLifecycleStatusRequestEpochRef\.current\.isCurrent\([\s\S]*?snapshot\.requestEpoch/,
+    /const eventEpoch = browserLifecycleEventEpochRef\.current\.snapshot\(sessionId\);[\s\S]*?const requestEpoch = browserLifecycleStatusRequestEpochRef\.current\.advance\([\s\S]*?browserLifecycleEventEpochRef\.current\.isCurrent\([\s\S]*?eventEpoch,[\s\S]*?browserLifecycleStatusRequestEpochRef\.current\.isCurrent\([\s\S]*?requestEpoch,/,
   );
 });
 

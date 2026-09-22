@@ -82,10 +82,6 @@ pub struct RewoundTurnsRecord {
 pub struct TruncateToTurnOutcome {
     /// 被截掉的用户 turn 数（= 截断前 turn 数 - N）。
     pub rewound_turns: u32,
-    /// 被截掉的消息条数。
-    pub removed_messages: usize,
-    /// 截断后的新 transcript revision。
-    pub new_revision: String,
     /// 持久化的 system_prompt 是否含 compaction 摘要残留（截断不触碰
     /// system_prompt；前端据此提示「回退到的位置之前发生过上下文压缩」）。
     pub had_compaction: bool,
@@ -184,18 +180,17 @@ impl SessionStore {
         let cut = turn_prompt_indices[keep_turns as usize];
         let original_revision = transcript_revision(&session.messages)?;
         let removed_messages: Vec<Message> = session.messages.split_off(cut);
-        // 截断后的新 revision（undo 复核条件 + 返回值；同一份数据只算一次）。
+        // New revision after truncation (undo re-check condition; the same data is counted only once).
         let truncated_revision = transcript_revision(&session.messages)?;
 
         // 先备份后落盘：备份失败时磁盘上的 transcript 尚未被修改。sidecar 的
         // read-modify-write 经 REWIND_BACKUP_LOCK 与 purge/restore 串行（评审 M8）。
-        let removed_count = removed_messages.len();
         let record = RewoundTurnsRecord {
             rewound_at: Utc::now().to_rfc3339(),
             original_revision,
             kept_turns: keep_turns,
             pre_restore_checkpoint_id,
-            truncated_revision: truncated_revision.clone(),
+            truncated_revision,
             removed_messages,
         };
         {
@@ -219,8 +214,6 @@ impl SessionStore {
         self.persist_then_reconcile(&session, "turn rewind truncation")?;
         Ok(TruncateToTurnOutcome {
             rewound_turns: total_turns - keep_turns,
-            removed_messages: removed_count,
-            new_revision: truncated_revision,
             had_compaction,
         })
     }

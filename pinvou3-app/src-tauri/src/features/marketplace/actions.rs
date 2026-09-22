@@ -45,8 +45,9 @@ enum ActionFlow {
     CliConnect,
 }
 
-/// 一个可下发动作。`reason` 是动作附带的用户可读提示：`enabled=false` 时为
-/// 不可用原因（前端置灰 + 提示），`repair` 动作透传 degraded 详情。
+/// 一个可下发动作。`reason` 是动作附带的用户可读提示（`repair` 动作透传 degraded 详情）。
+/// `enabled` 当前恒为 `true`（前端不再渲染置灰分支）；字段保留给未来"下发不可用动作 +
+/// 原因"的场景，新增生产者前不要依赖 `enabled=false` 的前端行为。
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 pub struct BundleAction {
     pub id: String,

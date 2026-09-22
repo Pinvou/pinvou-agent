@@ -6,20 +6,12 @@
 //! shape, remove the exact file without following links, then remove the now
 //! empty upload directory.
 
-use std::path::Path;
 use std::time::{Duration, SystemTime};
+// `Path` appears only in the cfg(test) link helpers below.
+#[cfg(test)]
+use std::path::Path;
 
 type NameValidator = fn(&str) -> bool;
-
-pub(in crate::features::files) fn sweep_stale_upload_root(
-    root: &Path,
-    now: SystemTime,
-    stale_age: Duration,
-    valid_upload_id: NameValidator,
-    valid_filename: NameValidator,
-) -> usize {
-    platform::sweep(root, now, stale_age, valid_upload_id, valid_filename)
-}
 
 #[cfg(test)]
 pub(in crate::features::files) fn create_test_directory_link(target: &Path, link: &Path) {
@@ -52,7 +44,7 @@ where
 }
 
 #[cfg(unix)]
-mod platform {
+pub(in crate::features::files) mod platform {
     use super::{NameValidator, device_numbers_match, is_stale};
     use std::ffi::{CStr, CString};
     use std::fs::File;
@@ -73,7 +65,7 @@ mod platform {
         std::fs::remove_file(link).unwrap();
     }
 
-    pub(super) fn sweep(
+    pub(in crate::features::files) fn sweep(
         root: &Path,
         now: SystemTime,
         stale_age: Duration,
@@ -393,7 +385,7 @@ mod tests {
 }
 
 #[cfg(windows)]
-mod platform {
+pub(in crate::features::files) mod platform {
     use super::{NameValidator, is_stale};
     use std::fs::{File, OpenOptions};
     use std::io;
@@ -434,7 +426,7 @@ mod platform {
         _component_handles: Vec<File>,
     }
 
-    pub(super) fn sweep(
+    pub(in crate::features::files) fn sweep(
         root: &Path,
         now: SystemTime,
         stale_age: Duration,
@@ -594,7 +586,7 @@ mod platform {
 }
 
 #[cfg(not(any(unix, windows)))]
-mod platform {
+pub(in crate::features::files) mod platform {
     use super::NameValidator;
     use std::path::Path;
     use std::time::{Duration, SystemTime};
@@ -607,7 +599,7 @@ mod platform {
     #[cfg(test)]
     pub(super) fn remove_test_directory_link(_link: &Path) {}
 
-    pub(super) fn sweep(
+    pub(in crate::features::files) fn sweep(
         _root: &Path,
         _now: SystemTime,
         _stale_age: Duration,

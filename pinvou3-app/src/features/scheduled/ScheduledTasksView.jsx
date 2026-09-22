@@ -41,38 +41,35 @@ import memoryOrganizeImage from '../../assets/scheduled/memory-organize.jpg';
  * @property {string} empty - Empty list placeholder copy.
  */
 
+    // Fallback RRULE for the create/edit form (workdays at 8:00); shared by taskForm and the create-form reset.
+    const DEFAULT_TASK_RRULE = 'FREQ=WEEKLY;BYDAY=MO,TU,WE,TH,FR;BYHOUR=8;BYMINUTE=0';
+
     // 点模板即激活（开箱即用）：工作间由任务自动分配，不再需要选目录或先暂停。
+    // Display copy (name/description/prompt) is covered in three languages by
+    // scheduledCopy.templateMap (see visibleSuggestions); only the structural fields needed for creation live here.
     const SCHEDULED_TASK_TEMPLATES = [
       {
-        id: 'daily-brief', name: '每日早报', schedule: '每天 8:00',
-        description: '汇总重要新闻、行业动态和已连接办公系统中的公司公告',
+        id: 'daily-brief',
         rrule: 'FREQ=WEEKLY;BYDAY=MO,TU,WE,TH,FR,SA,SU;BYHOUR=8;BYMINUTE=0',
-        prompt: '整理过去 24 小时的重要新闻和行业动态，注明来源和链接；已连接飞书或企微时，补充公司公告。不要扫描用户目录，结果保存到任务工作间。',
         paused: false,
         icon: Newspaper, color: '#0A84FF', image: dailyBriefImage
       },
       {
-        id: 'follow-up-monitor', name: '事项督办', schedule: '工作日 9:00',
-        description: '整理逾期与临期事项，突出风险和建议下一步',
+        id: 'follow-up-monitor',
         rrule: 'FREQ=WEEKLY;BYDAY=MO,TU,WE,TH,FR;BYHOUR=9;BYMINUTE=0',
-        prompt: '汇总已连接飞书或企微中的逾期、今日到期和未来 3 个工作日临期事项，按优先级给出风险与下一步。仅查询整理，不发送、审批或修改；不要扫描用户目录。',
         paused: false,
         icon: ClipboardCheck, color: '#34C759', image: followUpMonitorImage
       },
       {
-        id: 'weekly-review', name: '工作周报', schedule: '星期五 16:00',
-        description: '根据本周办公记录生成结构清晰的工作周报',
+        id: 'weekly-review',
         rrule: 'FREQ=WEEKLY;BYDAY=FR;BYHOUR=16;BYMINUTE=0',
-        prompt: '根据已连接飞书或企微中的本周日程、待办和办公消息生成工作周报，包含进展、遗留、风险和下周计划。不要扫描用户目录或自动发送。',
         paused: false,
         icon: FileChartLine, color: '#AF52DE', image: weeklyReviewImage
       },
       {
         // kind: threaded through createScheduledTask at create time only; edit flows never resend.
-        id: 'memory-organize', name: '记忆整理', schedule: '工作日 9:30',
-        description: '定期整理长期记忆：合并重复、清理过时、修正表述',
+        id: 'memory-organize',
         rrule: 'FREQ=WEEKLY;BYDAY=MO,TU,WE,TH,FR;BYHOUR=9;BYMINUTE=30',
-        prompt: '定期整理我的长期记忆：合并重复条目，删除过时或失效的内容，修正含糊表述，让记忆保持简洁准确。此任务自动运行，无需打开对话；仅整理记忆，不发送消息，不做其他修改。',
         paused: false,
         kind: 'memory_organize',
         icon: Database, color: '#F9AB00', image: memoryOrganizeImage
@@ -80,14 +77,13 @@ import memoryOrganizeImage from '../../assets/scheduled/memory-organize.jpg';
     ];
 
     const PREVIEW_SCHEDULED_TASKS = [
+      // Display copy (name/scheduleLabel/prompt) is covered in three languages by
+      // scheduledCopy.previewTasks; model: null means the preview "auto select" (rendering falls back to scheduledCopy.autoModel).
       {
         id: "preview-daily-brief",
         templateId: "daily-brief",
-        name: "每日早报",
         status: "active",
-        scheduleLabel: "每天 08:00",
         rrule: "FREQ=WEEKLY;BYDAY=MO,TU,WE,TH,FR,SA,SU;BYHOUR=8;BYMINUTE=0",
-        prompt: "整理过去 24 小时的重要新闻和行业动态，注明来源和链接；补充公司公告和重点风险。",
         model: "DeepSeek",
         nextRunOffsetMs: 1000 * 60 * 42,
         lastRunAt: "2026-07-14T08:00:00+08:00",
@@ -96,11 +92,8 @@ import memoryOrganizeImage from '../../assets/scheduled/memory-organize.jpg';
       },
       {
         id: "preview-follow-up",
-        name: "事项督办",
         status: "active",
-        scheduleLabel: "工作日 09:00",
         rrule: "FREQ=WEEKLY;BYDAY=MO,TU,WE,TH,FR;BYHOUR=9;BYMINUTE=0",
-        prompt: "整理逾期与临期事项，突出风险、负责人和建议下一步。",
         model: "GPT-4o",
         nextRunOffsetMs: 1000 * 60 * 60 * 3 + 1000 * 60 * 12,
         lastRunAt: "2026-07-14T09:00:00+08:00",
@@ -109,12 +102,9 @@ import memoryOrganizeImage from '../../assets/scheduled/memory-organize.jpg';
       },
       {
         id: "preview-weekly-report",
-        name: "销售线索周报",
         status: "paused",
-        scheduleLabel: "星期五 16:00",
         rrule: "FREQ=WEEKLY;BYDAY=FR;BYHOUR=16;BYMINUTE=0",
-        prompt: "汇总本周线索新增、跟进状态、转化风险和下周重点客户。",
-        model: "自动选择",
+        model: null,
         nextRunOffsetMs: 1000 * 60 * 60 * 24 * 3,
         lastRunAt: "2026-07-10T16:00:00+08:00",
         hasUnreadRuns: false,
@@ -137,13 +127,9 @@ import memoryOrganizeImage from '../../assets/scheduled/memory-organize.jpg';
       ],
     };
 
-    const WEEKDAY_OPTIONS = ['MO', 'TU', 'WE', 'TH', 'FR', 'SA', 'SU']
-      .map(value => ({ value, label: value, shortLabel: value }));
-    const WEEKDAY_CODES = WEEKDAY_OPTIONS.map(option => option.value);
-    const HOURLY_INTERVAL_OPTIONS = Array.from({ length: 24 }, (_, index) => ({
-      value: index + 1,
-      label: String(index + 1),
-    }));
+    // Bare code arrays: display labels are rebuilt per current language by the component (see weekdayOptions/hourlyIntervalOptions).
+    const WEEKDAY_CODES = ['MO', 'TU', 'WE', 'TH', 'FR', 'SA', 'SU'];
+    const HOURLY_INTERVAL_OPTIONS = Array.from({ length: 24 }, (_, index) => index + 1);
     const normalizeScheduleDays = (value) => {
       const requested = new Set(
         (Array.isArray(value) ? value : String(value || '').split(','))
@@ -519,14 +505,14 @@ import memoryOrganizeImage from '../../assets/scheduled/memory-organize.jpg';
       const modelManageAction = can('modelManagement') && onGotoModelSettings
         ? { label: t.manageModels, onClick: onGotoModelSettings }
         : undefined;
-      const weekdayOptions = WEEKDAY_OPTIONS.map((option, index) => ({
-        ...option,
+      const weekdayOptions = WEEKDAY_CODES.map((value, index) => ({
+        value,
         label: scheduledCopy.weekdays[index][0],
         shortLabel: scheduledCopy.weekdays[index][1],
       }));
-      const hourlyIntervalOptions = HOURLY_INTERVAL_OPTIONS.map(option => ({
-        ...option,
-        label: scheduledCopy.hourCount(option.value),
+      const hourlyIntervalOptions = HOURLY_INTERVAL_OPTIONS.map(value => ({
+        value,
+        label: scheduledCopy.hourCount(value),
       }));
       const canOpenTaskFolder = can('externalSystemOpen');
       const [taskFilter, setTaskFilter] = useState('all');
@@ -540,7 +526,7 @@ import memoryOrganizeImage from '../../assets/scheduled/memory-organize.jpg';
         ? [...PREVIEW_SCHEDULED_TASKS, ...previewCreatedTasks].map(task => ({
           ...task,
           ...scheduledCopy.previewTasks[task.id],
-          model: task.model === '自动选择' ? scheduledCopy.autoModel : task.model,
+          model: task.model || scheduledCopy.autoModel,
           status: previewTaskStatus[task.id] || task.status,
           nextRunAt: task.nextRunAt || new Date(clockNow + (task.nextRunOffsetMs || 1000 * 60 * 60)).toISOString(),
         }))
@@ -683,7 +669,7 @@ import memoryOrganizeImage from '../../assets/scheduled/memory-organize.jpg';
           id: task.id,
           name: task.name || '',
           prompt: task.prompt || '',
-          rrule: task.rrule || 'FREQ=WEEKLY;BYDAY=MO,TU,WE,TH,FR;BYHOUR=8;BYMINUTE=0',
+          rrule: task.rrule || DEFAULT_TASK_RRULE,
           model: task.model || (activeModel && activeModel.model) || '',
           modelId: modelIdForTask(task),
         };
@@ -855,7 +841,7 @@ import memoryOrganizeImage from '../../assets/scheduled/memory-organize.jpg';
         setCreateForm({
           name: '',
           prompt: '',
-          rrule: 'FREQ=WEEKLY;BYDAY=MO,TU,WE,TH,FR;BYHOUR=8;BYMINUTE=0',
+          rrule: DEFAULT_TASK_RRULE,
         });
       }
 
@@ -1025,6 +1011,7 @@ import memoryOrganizeImage from '../../assets/scheduled/memory-organize.jpg';
             day: 'MO',
             interval: 1,
             time: once ? once.time : '',
+            date: once ? once.date : '',
             hasTimeAnchor: true,
           };
         }
@@ -1049,13 +1036,25 @@ import memoryOrganizeImage from '../../assets/scheduled/memory-organize.jpg';
       function scheduleRepeatLabel(editor) {
         if (!editor) return '';
         if (editor.repeat === 'once') {
-          return editor.time
-            ? `${scheduledCopy.repeatOptions.once} · ${editor.time}`
-            : scheduledCopy.repeatOptions.once;
+          if (!editor.time) return scheduledCopy.repeatOptions.once;
+          // Mirrors the Rust humanize wording: date + time (scheduledCopy.date carries a trailing space).
+          const [, month, day] = String(editor.date || '').split('-');
+          const dateLabel = month && day ? scheduledCopy.date(Number(month), Number(day)) : '';
+          return `${scheduledCopy.repeatOptions.once} · ${dateLabel}${editor.time}`;
         }
         if (editor.repeat === 'hourly') {
           const interval = editor.interval === 1 ? scheduledCopy.repeatOptions.hourly : scheduledCopy.everyHours(editor.interval);
-          return editor.hasTimeAnchor ? `${interval} · ${scheduledCopy.startsAt(editor.time)}` : interval;
+          // Day restriction shares the weekly branch's wording: the all-workday set folds to the
+          // localized "workdays" label (mirroring Rust humanize_rrule), other sets join as "Mon、Tue".
+          const days = normalizeScheduleDays(editor.days);
+          const isWorkdaySet = days.join(',') === 'MO,TU,WE,TH,FR';
+          const dayLabel = days.length
+            ? (isWorkdaySet
+              ? scheduledCopy.repeatOptions.workdays
+              : days.map(day => scheduledCopy.weekdays[WEEKDAY_CODES.indexOf(day)][1]).join('、'))
+            : '';
+          const label = dayLabel ? `${dayLabel} ${interval}` : interval;
+          return editor.hasTimeAnchor ? `${label} · ${scheduledCopy.startsAt(editor.time)}` : label;
         }
         return scheduledCopy.repeatOptions[editor.repeat] || scheduledCopy.repeatOptions.custom;
       }
@@ -1096,10 +1095,14 @@ import memoryOrganizeImage from '../../assets/scheduled/memory-organize.jpg';
         }
         if (editor.repeat === 'hourly') {
           const interval = previousEditor.repeat === 'hourly' ? editor.interval : 1;
+          // BYDAY rule (full week or a subset of days) aligns with the Rust humanize "Mon、Tue every N hours";
+          // omitted when no day is selected (pure hourly), which reads the same as every day.
+          const days = normalizeScheduleDays(editor.days);
+          const byday = days.length ? `;BYDAY=${days.join(',')}` : '';
           const anchor = previousEditor.hasTimeAnchor
             ? `;BYHOUR=${Number(hour || 0)};BYMINUTE=${Number(minute || 0)}`
             : '';
-          return `FREQ=HOURLY;INTERVAL=${Math.max(1, interval || 1)}${anchor}`;
+          return `FREQ=HOURLY;INTERVAL=${Math.max(1, interval || 1)}${byday}${anchor}`;
         }
         if (key === 'repeat' && editor.repeat === 'weekly') {
           const previousDays = normalizeScheduleDays(previousEditor.days);
@@ -1541,12 +1544,14 @@ import memoryOrganizeImage from '../../assets/scheduled/memory-organize.jpg';
                   <span className={`font-medium ${bodyText}`}>{scheduledCopy.runNow}</span>
                   <ChevronRight className={`h-4 w-4 shrink-0 text-[#3C3C43]/30 dark:text-[#EBEBF5]/30`} />
                 </button>
+                {canOpenTaskFolder && (
                 <button type="button" data-testid="scheduled-open-folder"
                   onClick={() => bridge && bridge.artifacts.openScheduledTaskFolder && bridge.artifacts.openScheduledTaskFolder(selected.id)}
                   className={`flex min-h-12 w-full items-center justify-between gap-3 px-4 py-3 text-left text-[15px] transition-colors ${pressedRow}`}>
                   <span className={`font-medium ${bodyText}`}>{scheduledCopy.openFolder}</span>
                   <ChevronRight className={`h-4 w-4 shrink-0 text-[#3C3C43]/30 dark:text-[#EBEBF5]/30`} />
                 </button>
+                )}
               </div>
 
               <section>

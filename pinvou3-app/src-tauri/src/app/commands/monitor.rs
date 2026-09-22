@@ -262,9 +262,7 @@ pub struct BackendStatus {
 }
 
 #[tauri::command]
-pub async fn get_backend_status(
-    _monitor: State<'_, MonitorState>,
-) -> Result<BackendStatus, String> {
+pub async fn get_backend_status() -> Result<BackendStatus, String> {
     // Lightweight: 只 probe 当前 active model,不跑 nvidia-smi / RAM 采样。
     let vllm = crate::features::monitor::active_model_snapshot().await;
     let vllm_online = vllm.as_ref().is_some_and(|v| {

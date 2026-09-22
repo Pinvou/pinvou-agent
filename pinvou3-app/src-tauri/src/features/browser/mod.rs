@@ -236,22 +236,6 @@ enum HostedBrowserOperation {
 }
 
 impl HostedBrowserOperation {
-    const fn as_str(self) -> &'static str {
-        match self {
-            Self::Prepare => "prepare",
-            Self::CreateTab => "create_tab",
-            Self::ActivateTab => "activate_tab",
-            Self::CloseTab => "close_tab",
-            Self::RollbackCreatedTab => "rollback_created_tab",
-            Self::AssertHostLease => "assert_host_lease",
-            Self::BeginAgentOperation => "begin_agent_operation",
-            Self::RefreshAgentOperation => "refresh_agent_operation",
-            Self::RefreshAgentInput => "refresh_agent_input",
-            Self::EndAgentOperation => "end_agent_operation",
-            Self::CoreTool => "core_tool",
-        }
-    }
-
     /// Control-plane requests must never queue behind a different session's
     /// slow prepare/CDP/BrowserCore operation. They touch only the in-memory
     /// lease state and are serviced by a dedicated lightweight scanner.
@@ -2084,6 +2068,12 @@ impl BrowserManager {
                 matching_hosted_cancellation_for_compensation(&journal.compensation)?;
             if journal.phase == HostedPreparePhase::Committed && !cancellation_wins {
                 if let Some(request) = hosted_request {
+                    // Deliberately not same_prepare_generation: this is only the
+                    // caller-epoch half of the identity. The two session fields
+                    // are checked separately above (request against this task at
+                    // function entry, journal compensation against this task
+                    // before the phase check), so only request_id/idempotency_key
+                    // and the caller epoch decide "identical generation" here.
                     let same_request = journal.compensation.request_id == request.request_id
                         && journal.compensation.idempotency_key == request.idempotency_key
                         && journal.compensation.caller_pid == request.caller_pid
@@ -5621,10 +5611,7 @@ fn valid_host_request_id(value: &str) -> bool {
 }
 
 fn valid_wrapper_instance_nonce(value: &str) -> bool {
-    value.len() == 32
-        && value
-            .bytes()
-            .all(|byte| byte.is_ascii_hexdigit() && !byte.is_ascii_uppercase())
+    is_fixed_len_lowercase_hex(value, 32)
 }
 
 fn validate_hosted_caller_identity(
@@ -5689,9 +5676,6 @@ fn validate_hosted_request(
         path,
         "json",
     )?;
-    if request.operation.as_str().is_empty() {
-        return Err("Browser host operation is invalid".to_string());
-    }
     validate_hosted_caller_identity(request.caller_pid, &request.wrapper_instance_nonce)?;
     let now_ms = hosted_protocol_now_ms()?;
     validate_hosted_request_freshness_at(request, now_ms)?;
@@ -6301,6 +6285,96 @@ fn remove_hosted_prepare_journal_for_session(session_id: &str) -> Result<(), Str
     remove_hosted_prepare_journal(&path)
 }
 
+/// Prepare generation identity shared by the request, compensation and
+/// cancellation records: the six fields that must match for two artifacts to
+/// describe the same Prepare generation.
+trait PrepareGenerationIdentity {
+    fn prepare_request_id(&self) -> &str;
+    fn prepare_idempotency_key(&self) -> &str;
+    fn prepare_session_id(&self) -> &str;
+    fn prepare_session_token(&self) -> &str;
+    fn prepare_caller_pid(&self) -> u32;
+    fn prepare_wrapper_instance_nonce(&self) -> &str;
+}
+
+impl PrepareGenerationIdentity for HostedBrowserRequest {
+    fn prepare_request_id(&self) -> &str {
+        &self.request_id
+    }
+    fn prepare_idempotency_key(&self) -> &str {
+        &self.idempotency_key
+    }
+    fn prepare_session_id(&self) -> &str {
+        &self.session_id
+    }
+    fn prepare_session_token(&self) -> &str {
+        &self.session_token
+    }
+    fn prepare_caller_pid(&self) -> u32 {
+        self.caller_pid
+    }
+    fn prepare_wrapper_instance_nonce(&self) -> &str {
+        &self.wrapper_instance_nonce
+    }
+}
+
+impl PrepareGenerationIdentity for HostedBrowserCancellation {
+    fn prepare_request_id(&self) -> &str {
+        &self.request_id
+    }
+    fn prepare_idempotency_key(&self) -> &str {
+        &self.idempotency_key
+    }
+    fn prepare_session_id(&self) -> &str {
+        &self.session_id
+    }
+    fn prepare_session_token(&self) -> &str {
+        &self.session_token
+    }
+    fn prepare_caller_pid(&self) -> u32 {
+        self.caller_pid
+    }
+    fn prepare_wrapper_instance_nonce(&self) -> &str {
+        &self.wrapper_instance_nonce
+    }
+}
+
+impl PrepareGenerationIdentity for HostedPrepareCompensation {
+    fn prepare_request_id(&self) -> &str {
+        &self.request_id
+    }
+    fn prepare_idempotency_key(&self) -> &str {
+        &self.idempotency_key
+    }
+    fn prepare_session_id(&self) -> &str {
+        &self.session_id
+    }
+    fn prepare_session_token(&self) -> &str {
+        &self.session_token
+    }
+    fn prepare_caller_pid(&self) -> u32 {
+        self.caller_pid
+    }
+    fn prepare_wrapper_instance_nonce(&self) -> &str {
+        &self.wrapper_instance_nonce
+    }
+}
+
+/// True when both artifacts carry the same Prepare generation identity. The
+/// six fields are always compared as a group so a future identity field cannot
+/// be missed at one comparison site.
+fn same_prepare_generation<A: PrepareGenerationIdentity, B: PrepareGenerationIdentity>(
+    a: &A,
+    b: &B,
+) -> bool {
+    a.prepare_request_id() == b.prepare_request_id()
+        && a.prepare_idempotency_key() == b.prepare_idempotency_key()
+        && a.prepare_session_id() == b.prepare_session_id()
+        && a.prepare_session_token() == b.prepare_session_token()
+        && a.prepare_caller_pid() == b.prepare_caller_pid()
+        && a.prepare_wrapper_instance_nonce() == b.prepare_wrapper_instance_nonce()
+}
+
 fn remove_matching_hosted_prepare_journal(
     cancellation: &HostedBrowserCancellation,
 ) -> Result<(), String> {
@@ -6329,13 +6403,7 @@ fn classify_hosted_prepare_journal_for_cancellation(
         return Ok(HostedPrepareJournalMatch::Absent);
     };
     let compensation = &journal.compensation;
-    if compensation.request_id != cancellation.request_id
-        || compensation.idempotency_key != cancellation.idempotency_key
-        || compensation.session_id != cancellation.session_id
-        || compensation.session_token != cancellation.session_token
-        || compensation.caller_pid != cancellation.caller_pid
-        || compensation.wrapper_instance_nonce != cancellation.wrapper_instance_nonce
-    {
+    if !same_prepare_generation(compensation, cancellation) {
         // A distinct newer Prepare atomically supersedes the old per-session
         // WAL. Its generation must remain untouched, while the validated late
         // cancellation is an idempotent no-op that can still be acknowledged.
@@ -6366,13 +6434,7 @@ fn matching_hosted_cancellation_for_compensation(
     let cancellation: HostedBrowserCancellation = serde_json::from_str(&raw)
         .map_err(|error| format!("Prepare cancellation record has an invalid format: {error}"))?;
     validate_hosted_cancellation(&cancellation, &cancellation_path)?;
-    if cancellation.request_id != compensation.request_id
-        || cancellation.idempotency_key != compensation.idempotency_key
-        || cancellation.session_id != compensation.session_id
-        || cancellation.session_token != compensation.session_token
-        || cancellation.caller_pid != compensation.caller_pid
-        || cancellation.wrapper_instance_nonce != compensation.wrapper_instance_nonce
-    {
+    if !same_prepare_generation(&cancellation, compensation) {
         return Err("Prepare cancellation record does not match persisted generation".to_string());
     }
     Ok(true)
@@ -6386,32 +6448,16 @@ fn remove_matching_hosted_prepare_journal_for_request(
         return Ok(());
     };
     let compensation = &journal.compensation;
-    if compensation.request_id != request.request_id
-        || compensation.idempotency_key != request.idempotency_key
-        || compensation.session_id != request.session_id
-        || compensation.session_token != request.session_token
-        || compensation.caller_pid != request.caller_pid
-        || compensation.wrapper_instance_nonce != request.wrapper_instance_nonce
-    {
+    if !same_prepare_generation(compensation, request) {
         return Err("Refusing to delete another request's Prepare journal".to_string());
     }
     remove_hosted_prepare_journal(&path)
 }
 
-fn validate_hosted_prepare_journal(
-    journal: &HostedPrepareJournal,
-    path: &Path,
-) -> Result<(), String> {
-    let compensation = &journal.compensation;
-    if journal.protocol_version != 3
-        || journal.kind != "host_prepare_journal"
-        || compensation.protocol_version != journal.protocol_version
-        || compensation.kind != "host_prepare_compensation"
-        || journal.requested_at == 0
-        || journal.updated_at == 0
-    {
-        return Err("Browser Prepare journal protocol is invalid".to_string());
-    }
+/// Compensation identity validation shared by the journal and standalone
+/// compensation validators: caller epoch plus session identity checked against
+/// the synthetic request path derived from the compensation itself.
+fn validate_compensation_identity(compensation: &HostedPrepareCompensation) -> Result<(), String> {
     validate_hosted_caller_identity(
         compensation.caller_pid,
         &compensation.wrapper_instance_nonce,
@@ -6428,7 +6474,24 @@ fn validate_hosted_prepare_journal(
         &compensation.idempotency_key,
         &synthetic_request_path,
         "json",
-    )?;
+    )
+}
+
+fn validate_hosted_prepare_journal(
+    journal: &HostedPrepareJournal,
+    path: &Path,
+) -> Result<(), String> {
+    let compensation = &journal.compensation;
+    if journal.protocol_version != 3
+        || journal.kind != "host_prepare_journal"
+        || compensation.protocol_version != journal.protocol_version
+        || compensation.kind != "host_prepare_compensation"
+        || journal.requested_at == 0
+        || journal.updated_at == 0
+    {
+        return Err("Browser Prepare journal protocol is invalid".to_string());
+    }
+    validate_compensation_identity(compensation)?;
     if path != hosted_prepare_journal_path_for(&compensation.session_token) {
         return Err("Browser Prepare journal path does not match session identity".to_string());
     }
@@ -6477,23 +6540,7 @@ fn validate_hosted_prepare_compensation(
     if compensation.protocol_version != 3 || compensation.kind != "host_prepare_compensation" {
         return Err("Browser Prepare compensation protocol is invalid".to_string());
     }
-    validate_hosted_caller_identity(
-        compensation.caller_pid,
-        &compensation.wrapper_instance_nonce,
-    )?;
-    let synthetic_request_path = paths::browser_host_requests_dir().join(format!(
-        "{}-{}.json",
-        compensation.session_token, compensation.request_id
-    ));
-    validate_hosted_identity(
-        compensation.protocol_version,
-        &compensation.session_id,
-        &compensation.session_token,
-        &compensation.request_id,
-        &compensation.idempotency_key,
-        &synthetic_request_path,
-        "json",
-    )?;
+    validate_compensation_identity(compensation)?;
     match compensation.rollback_kind.as_str() {
         "none" if compensation.revision.is_none() => Ok(()),
         "prepared_session" | "restored_session"
@@ -6703,12 +6750,7 @@ fn validate_hosted_cancellation(
     if let Some(compensation) = cancellation.prepare_compensation.as_ref() {
         validate_hosted_prepare_compensation(compensation, false)?;
         if compensation.protocol_version != cancellation.protocol_version
-            || compensation.request_id != cancellation.request_id
-            || compensation.idempotency_key != cancellation.idempotency_key
-            || compensation.session_id != cancellation.session_id
-            || compensation.session_token != cancellation.session_token
-            || compensation.caller_pid != cancellation.caller_pid
-            || compensation.wrapper_instance_nonce != cancellation.wrapper_instance_nonce
+            || !same_prepare_generation(compensation, cancellation)
         {
             return Err(
                 "Browser host cancellation record has mismatched Prepare compensation identity"
@@ -6837,46 +6879,51 @@ fn remove_hosted_request_artifacts_for_session(session_id: &str) -> Result<(), S
     }
 }
 
-fn native_lease_from_request(request: &HostedBrowserRequest) -> Result<NativeTabLease, String> {
+/// Shared NativeTabLease construction for the two request wrappers. `context`
+/// carries each wrapper's error prefix ("lease" / "mutation lease") and
+/// `token_field` names the required authorization field so every message stays
+/// byte-identical to the pre-extraction texts.
+fn build_hosted_tab_lease(
+    session_id: String,
+    token: Option<String>,
+    target_id: Option<String>,
+    revision: Option<u64>,
+    capability: Option<String>,
+    token_field: &str,
+    context: &str,
+) -> Result<NativeTabLease, String> {
     NativeTabLease::from_assertion(
+        session_id,
+        token.ok_or_else(|| format!("Browser host {context} is missing {token_field}"))?,
+        target_id.ok_or_else(|| format!("Browser host {context} is missing target_id"))?,
+        revision.ok_or_else(|| format!("Browser host {context} is missing revision"))?,
+        capability.ok_or_else(|| format!("Browser host {context} is missing capability token"))?,
+    )
+}
+
+fn native_lease_from_request(request: &HostedBrowserRequest) -> Result<NativeTabLease, String> {
+    build_hosted_tab_lease(
         request.session_id.clone(),
-        request
-            .tab_token
-            .clone()
-            .ok_or_else(|| "Browser host lease is missing tab_token".to_string())?,
-        request
-            .target_id
-            .clone()
-            .ok_or_else(|| "Browser host lease is missing target_id".to_string())?,
-        request
-            .revision
-            .ok_or_else(|| "Browser host lease is missing revision".to_string())?,
-        request
-            .lease
-            .clone()
-            .ok_or_else(|| "Browser host lease is missing capability token".to_string())?,
+        request.tab_token.clone(),
+        request.target_id.clone(),
+        request.revision,
+        request.lease.clone(),
+        "tab_token",
+        "lease",
     )
 }
 
 fn native_mutation_lease_from_request(
     request: &HostedBrowserRequest,
 ) -> Result<NativeTabLease, String> {
-    NativeTabLease::from_assertion(
+    build_hosted_tab_lease(
         request.session_id.clone(),
-        request.authorization_tab_token.clone().ok_or_else(|| {
-            "Browser host mutation lease is missing authorization_tab_token".to_string()
-        })?,
-        request
-            .target_id
-            .clone()
-            .ok_or_else(|| "Browser host mutation lease is missing target_id".to_string())?,
-        request
-            .revision
-            .ok_or_else(|| "Browser host mutation lease is missing revision".to_string())?,
-        request
-            .lease
-            .clone()
-            .ok_or_else(|| "Browser host mutation lease is missing capability token".to_string())?,
+        request.authorization_tab_token.clone(),
+        request.target_id.clone(),
+        request.revision,
+        request.lease.clone(),
+        "authorization_tab_token",
+        "mutation lease",
     )
 }
 

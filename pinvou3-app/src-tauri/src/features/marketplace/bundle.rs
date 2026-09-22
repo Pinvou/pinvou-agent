@@ -181,7 +181,9 @@ pub struct ConfigFieldSpec {
 }
 
 /// 包形态（内容现算，不落存储）。优先级定死（修复方案 V2）：
-/// cli 非空 → Cli > servers+skills 均非空 → Bundle > servers 非空 → Mcp > skills 非空 → Skill。
+/// servers+skills both non-empty → Bundle; servers non-empty → Mcp; skills non-empty → Skill.
+/// CLI connectors are not derived from content: they are produced by registering directly in the
+/// registry from the built-in constant table (`BUILTIN_CLI_BUNDLES`).
 /// 注：旧 `Spanner` 变体已删除——脚本可执行能力并入 skill 包，通过 SKILL.md frontmatter
 /// `tools[]` + `runtime` 段声明，由 skill_marketplace::install 后置 hook 注册。
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -248,6 +250,24 @@ pub struct BundleInfo {
     pub display_description: Option<String>,
 }
 
+/// Per-package-id install-state read (§3.2 truth-source inversion): takes `(installed, degraded)` from the
+/// BundleStore record snapshot the caller read in bulk once; a missing record = not installed.
+/// `records` being `None` (store read failure) → `None`, and the caller applies its own fallback policy.
+/// `list_bundles` and `MarketplaceManager::list_tools` share this same read, keeping the
+/// readiness card's and the tool card's installed/degraded semantics consistent.
+pub(crate) fn store_state(
+    records: Option<&[store::BundleRecord]>,
+    id: &str,
+) -> Option<(bool, Option<String>)> {
+    records.map(|records| {
+        records
+            .iter()
+            .find(|r| r.id == id)
+            .map(|r| (r.installed, r.degraded.clone()))
+            .unwrap_or((false, None))
+    })
+}
+
 /// 注册表：从现有源汇总包清单。只读；安装/门禁/投影迁移见后续步骤。
 pub struct BundleRegistry {
     mcp_manager: MarketplaceManager,
@@ -291,20 +311,11 @@ impl BundleRegistry {
                 None
             }
         };
-        // 返回 Some((installed, degraded))；store 不可用 → None（调用方走回退值）。
-        let store_state = |id: &str| -> Option<(bool, Option<String>)> {
-            store_records.as_ref().map(|records| {
-                records
-                    .iter()
-                    .find(|r| r.id == id)
-                    .map(|r| (r.installed, r.degraded.clone()))
-                    .unwrap_or((false, None))
-            })
-        };
+        let store_records = store_records.as_deref();
 
         // 1) MCP 源（含组合包；凭据项从 manifest config_fields/secret_env 收敛）
         for tool in self.mcp_manager.available_tools() {
-            let (installed, degraded) = store_state(&tool.id)
+            let (installed, degraded) = store_state(store_records, &tool.id)
                 .unwrap_or_else(|| (installed_mcp_ids.contains(&tool.id), None));
             // 修复方案 V5：companion 认领是「随包」语义——包本体已装才认领技能；
             // 存量已单装技能的包未装时，技能保留独立纯技能包形态（不强制认领，
@@ -319,16 +330,16 @@ impl BundleRegistry {
             let config_fields = tool_config_fields(&tool);
             // 上传来源的包：用户自定义展示名/说明（bundles.json extra）覆盖
             // manifest 的 name/description；空/缺 key 回退 manifest 现状。
-            let upload_record = store_records.as_ref().and_then(|records| {
+            let upload_record = store_records.and_then(|records| {
                 records
                     .iter()
                     .find(|r| r.id == tool.id)
                     .filter(|r| matches!(r.source, store::BundleSource::Upload(_)))
             });
-            let display_name =
-                upload_record.and_then(|r| store::display_override(r, store::EXTRA_DISPLAY_NAME));
-            let display_description = upload_record
-                .and_then(|r| store::display_override(r, store::EXTRA_DISPLAY_DESCRIPTION));
+            let (display_name, display_description) = match upload_record {
+                Some(record) => store::apply_display_override(record, None, None),
+                None => (None, None),
+            };
             out.push(BundleInfo {
                 id: tool.id.clone(),
                 name: display_name.clone().unwrap_or_else(|| tool.name.clone()),
@@ -368,7 +379,8 @@ impl BundleRegistry {
             if out.iter().any(|b| b.id == skill.id) {
                 continue;
             }
-            let (installed, degraded) = store_state(&skill.id).unwrap_or((skill.installed, None));
+            let (installed, degraded) =
+                store_state(store_records, &skill.id).unwrap_or((skill.installed, None));
             out.push(BundleInfo {
                 id: skill.id.clone(),
                 name: skill.title.clone(),
@@ -392,7 +404,8 @@ impl BundleRegistry {
             if !skill.user_uploaded {
                 continue;
             }
-            let (installed, degraded) = store_state(&skill.id).unwrap_or((true, None));
+            let (installed, degraded) =
+                store_state(store_records, &skill.id).unwrap_or((true, None));
             // name/description 已在 list_skills 应用 extra 展示覆盖；覆盖原值透传
             // 给前端编辑弹窗预填。
             out.push(BundleInfo {
@@ -419,7 +432,7 @@ impl BundleRegistry {
         //    （`cli_bundle_skill_dirs` / `cli_bundle_of_skill` 取数），不再经
         //    BundleInfo 透出。
         for (id, name, bin, _, desc) in BUILTIN_CLI_BUNDLES {
-            let (installed, degraded) = store_state(id).unwrap_or((false, None));
+            let (installed, degraded) = store_state(store_records, id).unwrap_or((false, None));
             // version 功能事实：lock 表钉住版本（tmeet 走 npm 无 lock 条目 → 空，
             // 前端 overlay 保留自报版本展示）
             let version = crate::platform::connector_lock::artifact_pin(bin)
@@ -449,7 +462,7 @@ impl BundleRegistry {
         // 注意区分「store 不可读」与「记录不存在」（再查别名 id）：
         // 通用 store_state 对缺记录也返回 Some((false, None))，直接 .or_else 会让
         // ima-skills 兜底永不触发（三轮评审死代码）。
-        let (ima_installed, ima_degraded) = match &store_records {
+        let (ima_installed, ima_degraded) = match store_records {
             Some(records) => ["ima", "ima-skills"]
                 .iter()
                 .find_map(|id| records.iter().find(|r| r.id == *id))
@@ -509,19 +522,18 @@ impl BundleRegistry {
 }
 
 /// 纯函数：由内容推导包形态（修复方案 V2 优先级定死 + V7 空包报错）。
-/// 优先级：cli 非空 → Cli > mcp+skills 组合 → Bundle > mcp 非空 → Mcp
-/// > skills 非空 → Skill；全空 → Err（空包 schema 层拦截）。
+/// Priority: mcp+skills combo → Bundle; mcp non-empty → Mcp; skills non-empty → Skill;
+/// all empty → Err (empty packages are rejected at the schema layer).
 ///
-/// 注：旧 spanners 参数已删除——脚本可执行能力通过 skill 包的 SKILL.md frontmatter
+/// Note: the CLI kind is not derived here — CLI connectors are registered by the built-in constant table (`BUILTIN_CLI_BUNDLES`,
+/// produced directly from the table by `BundleRegistry::list_bundles`), not derived from content. The old
+/// `spanners` parameter was removed — script executability is declared via the skill package's SKILL.md frontmatter
 /// `tools[]` 段声明，不影响 kind 推导。
 pub fn derive_bundle_kind(
     mcp_servers: &[String],
     skills: &[String],
-    cli: &[String],
 ) -> Result<BundleKind, InvalidBundle> {
-    if !cli.is_empty() {
-        Ok(BundleKind::Cli)
-    } else if !mcp_servers.is_empty() && !skills.is_empty() {
+    if !mcp_servers.is_empty() && !skills.is_empty() {
         Ok(BundleKind::Bundle)
     } else if !mcp_servers.is_empty() {
         Ok(BundleKind::Mcp)
@@ -544,82 +556,76 @@ fn parse_credential_target(target: &str) -> CredentialTarget {
 
 /// 从 MCP ToolManifest 收敛凭据声明（修复方案一）：config_fields → credentials，
 /// secret_env/secret_headers 按 target 映射（env/bearer），required 语义保留。
-/// `pub(crate)`：存储层 `store::legacy_mcp_records` 复用同一推导取凭据 key。
-pub(crate) fn tool_credentials(tool: &super::ToolManifest) -> Vec<CredentialSpec> {
-    let mut out: Vec<CredentialSpec> = Vec::new();
-    // 同一 key 允许在 config_fields 与 secret_env/secret_headers 重复声明（UI 字段 +
-    // 占位符解析双用途），此处按 (key,target) 去重一次，与 secrets 层口径对齐。
-    let push =
-        |out: &mut Vec<CredentialSpec>, key: String, target: CredentialTarget, required: bool| {
-            if !out.iter().any(|c| c.key == key && c.target == target) {
-                out.push(CredentialSpec {
-                    key,
-                    target,
-                    required,
-                });
-            }
-        };
-    for f in &tool.config_fields {
-        let target = parse_credential_target(&f.target);
-        push(&mut out, f.key.clone(), target, f.required);
-    }
-    for s in &tool.secret_env {
-        push(&mut out, s.key.clone(), CredentialTarget::Env, s.required);
-    }
-    for s in &tool.secret_headers {
-        push(
-            &mut out,
-            s.source_key.clone(),
-            CredentialTarget::Bearer,
-            s.required,
-        );
-    }
-    out
+fn tool_credentials(tool: &super::ToolManifest) -> Vec<CredentialSpec> {
+    dedup_credential_declarations(tool, |key, target, required, _| CredentialSpec {
+        key,
+        target,
+        required,
+    })
 }
 
 /// 配置弹窗字段功能事实（V4 下沉；label/placeholder/helpText 属 i18n 展示资产留前端）。
+/// Deduplicated under the same policy as tool_credentials: when the same key is declared in both config_fields and
+/// secret_env/secret_headers, only one dialog field is emitted, otherwise the frontend would render duplicate inputs.
 fn tool_config_fields(tool: &super::ToolManifest) -> Vec<ConfigFieldSpec> {
-    let mut out: Vec<ConfigFieldSpec> = Vec::new();
-    // 与 tool_credentials 同口径按 (key,target) 去重：同一 key 在 config_fields 与
-    // secret_env/secret_headers 重复声明时只出一个弹窗字段，否则前端会渲染重复输入框。
-    let push = |out: &mut Vec<ConfigFieldSpec>,
+    dedup_credential_declarations(tool, |key, target, required, secret| ConfigFieldSpec {
+        key,
+        required,
+        target,
+        secret,
+    })
+}
+
+/// Three-source dedup traversal shared by tool_credentials / tool_config_fields (fix plan 1/V4):
+/// projects in declaration order config_fields → secret_env → secret_headers; the same key may be declared
+/// repeatedly across sources (dual use: UI field + placeholder parsing), deduplicated once by `(key, target)`,
+/// first declaration wins. The `secret` flag follows config_fields' explicit declaration (not overridden by the
+/// implicit true of secret_env/secret_headers); the latter two are sensitive declarations themselves, so secret is always true.
+fn dedup_credential_declarations<T>(
+    tool: &super::ToolManifest,
+    build: impl Fn(String, CredentialTarget, bool, bool) -> T,
+) -> Vec<T> {
+    let mut out: Vec<T> = Vec::new();
+    let mut seen: Vec<(String, CredentialTarget)> = Vec::new();
+    let push = |seen: &mut Vec<(String, CredentialTarget)>,
+                out: &mut Vec<T>,
                 key: String,
-                required: bool,
                 target: CredentialTarget,
+                required: bool,
                 secret: bool| {
-        if !out.iter().any(|f| f.key == key && f.target == target) {
-            out.push(ConfigFieldSpec {
-                key,
-                required,
-                target,
-                secret,
-            });
+        if seen.iter().any(|(k, t)| *k == key && *t == target) {
+            return;
         }
+        seen.push((key.clone(), target));
+        out.push(build(key, target, required, secret));
     };
     for f in &tool.config_fields {
         push(
+            &mut seen,
             &mut out,
             f.key.clone(),
-            f.required,
             parse_credential_target(&f.target),
+            f.required,
             f.secret,
         );
     }
     for s in &tool.secret_env {
         push(
+            &mut seen,
             &mut out,
             s.key.clone(),
-            s.required,
             CredentialTarget::Env,
+            s.required,
             true,
         );
     }
     for s in &tool.secret_headers {
         push(
+            &mut seen,
             &mut out,
             s.source_key.clone(),
-            s.required,
             CredentialTarget::Bearer,
+            s.required,
             true,
         );
     }
@@ -640,21 +646,10 @@ pub fn readiness_for(bundle: &BundleInfo, credential_has: impl Fn(&str) -> bool)
         BundleKind::Cli => {
             unreachable!("CLI bundle readiness is dispatched by the command layer")
         }
-        BundleKind::Mcp | BundleKind::Bundle => {
-            // 本地免凭据（无必填凭据）恒 Ready；有必填凭据则查系统凭据
-            let missing: Vec<&str> = bundle
-                .credentials
-                .iter()
-                .filter(|c| c.required && !credential_has(&c.key))
-                .map(|c| c.key.as_str())
-                .collect();
-            if missing.is_empty() {
-                Readiness::Ready
-            } else {
-                Readiness::NotReady("missing_credentials")
-            }
-        }
-        BundleKind::Skill => {
+        BundleKind::Mcp | BundleKind::Bundle | BundleKind::Skill => {
+            // Local credential-free (no required credentials) is always Ready; with required credentials, check the system credential store.
+            // The Mcp / Bundle / Skill kinds are judged identically (a combo package does not change its
+            // credential verdict by carrying skills) and share the same branch.
             let missing: Vec<&str> = bundle
                 .credentials
                 .iter()
@@ -744,29 +739,15 @@ mod tests {
     fn derives_bundle_kind_by_content() {
         let mcp = |id: &str| id.to_string();
         // V7：空包报错，不默认归 Skill
-        assert_eq!(derive_bundle_kind(&[], &[], &[]), Err(InvalidBundle));
-        // V2 优先级：cli 恒赢 > Bundle > Mcp > Skill
+        assert_eq!(derive_bundle_kind(&[], &[]), Err(InvalidBundle));
+        // V2 priority: Bundle > Mcp > Skill (the CLI kind is produced by the built-in constant table,
+        // not derived from content — see the derive_bundle_kind docs)
+        assert_eq!(derive_bundle_kind(&[mcp("a")], &[]), Ok(BundleKind::Mcp));
         assert_eq!(
-            derive_bundle_kind(&[mcp("a")], &[], &[]),
-            Ok(BundleKind::Mcp)
-        );
-        assert_eq!(
-            derive_bundle_kind(&[mcp("a")], &[mcp("s")], &[]),
+            derive_bundle_kind(&[mcp("a")], &[mcp("s")]),
             Ok(BundleKind::Bundle)
         );
-        assert_eq!(
-            derive_bundle_kind(&[], &[mcp("s")], &[]),
-            Ok(BundleKind::Skill)
-        );
-        assert_eq!(
-            derive_bundle_kind(&[], &[], &[mcp("feishu")]),
-            Ok(BundleKind::Cli)
-        );
-        // 即使有 servers+skills，cli 非空仍归 Cli
-        assert_eq!(
-            derive_bundle_kind(&[mcp("a")], &[mcp("s")], &[mcp("feishu")]),
-            Ok(BundleKind::Cli)
-        );
+        assert_eq!(derive_bundle_kind(&[], &[mcp("s")]), Ok(BundleKind::Skill));
     }
 
     #[test]

@@ -17,8 +17,10 @@ test('every direct Tauri restart passes through the unified cleanup funnel', () 
   const updater = source(path.join('features', 'updater', 'mod.rs'));
   const combined = `${settings}\n${updater}`;
 
-  assert.equal((combined.match(/app\.restart\(\);/g) || []).length, 3);
-  assert.equal((combined.match(/crate::prepare_app_restart\(&app\)\.await;/g) || []).length, 3);
+  // settings.rs persists through the shared persist_and_restart helper, so
+  // the two settings restarts collapse into one funnel call site (+ updater).
+  assert.equal((combined.match(/app\.restart\(\);/g) || []).length, 2);
+  assert.equal((combined.match(/crate::prepare_app_restart\(&app\)\.await;/g) || []).length, 2);
   assert.doesNotMatch(combined, /crate::harvest_child_processes\(&app\)\.await;[\s\S]{0,80}app\.restart\(\);/);
 });
 

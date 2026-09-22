@@ -275,7 +275,7 @@ function subagentRoleForType(agentType) {
 
 // role 字段的规范化 roleKey:内置别名折回内置角色卡,其余(自定义名/exp-*)
 // 按原样保留;没有 role 时按 agent_type 推导。行内卡与面板共用同一份判定。
-function roleKeyOf(role, agentType) {
+export function roleKeyOf(role, agentType) {
   const rawRole = String(role || '').trim();
   return rawRole
     ? (SUBAGENT_TYPE_ALIASES.has(rawRole.toLowerCase()) ? subagentRoleForType(rawRole) : rawRole)

@@ -407,6 +407,24 @@ pub(crate) fn package_kind(pkg_dir: &Path) -> &'static str {
     }
 }
 
+/// Shared core for recycling whole Upload packages (three recycle call sites: MCP uninstall, Python repair downgrade,
+/// skill uninstall): the display name comes from the record's zip source name (non-Upload falls back to the package id, see
+/// `store::upload_display_name`) plus the `recycle_package` move.
+///
+/// `kind` is passed in by the caller — the two MCP paths compute it from the package directory (`package_kind`), while the skill
+/// path pins `KIND_SKILL` (the record id is the skill name; the directory layout plays no part in the decision). On failure,
+/// `recycle_package` has already rolled the directory back in place; failure policies such as writing the registry back (fail loud) or keeping it
+/// (warn + skipping companion cleanup) are up to the caller and out of this core's scope.
+pub(crate) fn recycle_upload_package(
+    bin: &RecycleBin,
+    id: &str,
+    record: &BundleRecord,
+    kind: &'static str,
+) -> Result<(), String> {
+    let display_name = super::store::upload_display_name(record, id);
+    bin.recycle_package(id, kind, &display_name, record.clone())
+}
+
 // ---------------------------------------------------------------------------
 // 恢复管线
 // ---------------------------------------------------------------------------

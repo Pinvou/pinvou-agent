@@ -44,7 +44,7 @@ export function HomeModeSwitcher({
   copy = EMPTY_COPY,
 }) {
   const visibleModes = HOME_MODE_OPTIONS
-    .filter(option => option.enabled !== false && (option.key !== 'code' || codeSupported))
+    .filter(option => option.key !== 'code' || codeSupported)
     .map(option => ({ ...option, label: copy[option.labelKey] }));
   const activeMode = visibleModes.some(option => option.key === mode) ? mode : 'work';
   const visibleCodeAgents = normalizeCodeAgents(

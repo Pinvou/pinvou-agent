@@ -82,27 +82,26 @@ const MODEL_CATALOG_SECTIONS = {
   official_api: '官方 API',
   custom: '自定义兼容接口',
 };
-function presetOptionsI18n(t) {
-  return [
-    { key: 'local_vllm', label: t.modelPresetLocalVllm },
-    { key: 'deepseek', label: t.modelPresetDeepseek },
-    { key: 'kimi', label: t.modelPresetKimi },
-    { key: 'openai_compatible', label: t.modelPresetOpenaiCompatible },
-    { key: 'qwen', label: t.modelPresetQwen },
-    { key: 'doubao', label: t.modelPresetDoubao },
-    { key: 'minimax', label: t.modelPresetMinimax },
-    { key: 'glm', label: t.modelPresetGlm },
-    { key: 'mimo', label: t.modelPresetMimo },
-    { key: 'openai', label: t.modelPresetOpenai },
-    { key: 'anthropic', label: t.modelPresetAnthropic },
-    { key: 'gemini', label: t.modelPresetGemini },
-    { key: 'xai', label: t.modelPresetXai },
-  ];
-}
+// preset key → i18n label key: direct lookup instead of materializing the
+// preset option list just to read one label.
+const PRESET_LABEL_KEY = {
+  local_vllm: 'modelPresetLocalVllm',
+  deepseek: 'modelPresetDeepseek',
+  kimi: 'modelPresetKimi',
+  openai_compatible: 'modelPresetOpenaiCompatible',
+  qwen: 'modelPresetQwen',
+  doubao: 'modelPresetDoubao',
+  minimax: 'modelPresetMinimax',
+  glm: 'modelPresetGlm',
+  mimo: 'modelPresetMimo',
+  openai: 'modelPresetOpenai',
+  anthropic: 'modelPresetAnthropic',
+  gemini: 'modelPresetGemini',
+  xai: 'modelPresetXai',
+};
 function presetProviderLabel(preset, t) {
-  const m = {};
-  presetOptionsI18n(t).forEach(o => { m[o.key] = o.label; });
-  return m[preset] || preset;
+  const key = PRESET_LABEL_KEY[preset];
+  return (key && t[key]) || preset;
 }
 
 const BRAND_ICON_BY_PRESET = {
@@ -1480,7 +1479,7 @@ function reasoningEffortDisplayForTiers(effort, tiers) {
 
 // Only symbols consumed by other modules stay exported (main.jsx / SettingsView /
 // composer-shared / CodexAcpView / ScheduledTasksView; local-server-tiers.jsx consumes the
-// reasoning-tier helpers). isPresetModel, localUserNamed, presetOptionsI18n,
+// reasoning-tier helpers). isPresetModel, localUserNamed,
 // defaultReasoningEffortForModel and localProbeTiersForKind are internal-only; the
 // vm-based catalog test strips this block and reads the top-level declarations, so it
 // does not depend on the export surface.

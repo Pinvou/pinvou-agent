@@ -124,6 +124,18 @@ struct RegistryInner {
     state: Mutex<RegistryState>,
     cleanup_notify: Notify,
     worker_started: AtomicBool,
+    /// Serializes every cleanup pass per registry — the detached kill-retry
+    /// ladders (`cleanup_scope_with_retries`) and the background worker sweep
+    /// alike. Cleanup callers no longer meet on the session turn gate (issue
+    /// #255 detached them to keep the gate responsive), so two overlapping
+    /// passes — e.g. a detached cleanup still racing a wedged kill sweep when
+    /// the user presses stop again — would drive `cleanup_scope_once` in
+    /// parallel, double-count `PendingKill.attempts` toward
+    /// `MAX_KILL_ATTEMPTS` and permanently stop the retry loop while a job
+    /// may still be alive. The gate is only ever taken inside
+    /// detached/background tasks, never while the turn gate is held, so
+    /// waiting here cannot re-block the session pipeline.
+    cleanup_gate: tokio::sync::Mutex<()>,
 }
 
 /// Session-scoped supervisor for root-turn shell ownership.
@@ -219,6 +231,14 @@ impl ShellReclaim {
                     log::error!(
                         "[engine_pool] shell cleanup remained incomplete before reclaim scope={scope_id}: {error}"
                     );
+                } else {
+                    // Record the authoritative outcome after a timed-out
+                    // caller has preset the flag conservatively (see the
+                    // reclaim caller in engine_pool). The reclaimed terminal
+                    // itself was already emitted with the conservative value;
+                    // this keeps the flag truthful for post-reclaim
+                    // diagnostics.
+                    self.cleanup_failed.store(false, Ordering::Release);
                 }
             }
             Err(error) => {
@@ -228,6 +248,14 @@ impl ShellReclaim {
                 );
             }
         }
+    }
+
+    /// Conservative preset for a caller that stopped awaiting [`Self::finalize`]
+    /// on its gate-budget timeout: the reclaimed terminal must not claim an
+    /// unverified clean shell state. A detached finalize overwrites the flag
+    /// with the authoritative outcome when it settles.
+    pub(crate) fn mark_cleanup_failed(&self) {
+        self.cleanup_failed.store(true, Ordering::Release);
     }
 
     pub(crate) fn cleanup_failed(&self) -> bool {
@@ -305,6 +333,7 @@ impl TurnShellTaskRegistry {
                 state: Mutex::new(RegistryState::default()),
                 cleanup_notify: Notify::new(),
                 worker_started: AtomicBool::new(false),
+                cleanup_gate: tokio::sync::Mutex::new(()),
             }),
         }
     }
@@ -548,6 +577,11 @@ impl TurnShellTaskRegistry {
         &self,
         scope_id: ScopeId,
     ) -> Result<ShellCleanupReport> {
+        // One kill-retry ladder at a time per registry: concurrent ladders
+        // would both bump `PendingKill.attempts` toward `MAX_KILL_ATTEMPTS`
+        // and could exhaust the retries while a job is still dying (see the
+        // `cleanup_gate` doc on `RegistryInner`).
+        let _cleanup_ladder = self.inner.cleanup_gate.lock().await;
         let mut report = ShellCleanupReport::default();
         let mut last_worker_error = None;
         for retry_index in 0..=CLEANUP_RETRY_DELAYS.len() {
@@ -970,17 +1004,28 @@ async fn cleanup_worker_loop(inner: Weak<RegistryInner>) {
         let Some(strong) = inner.upgrade() else {
             break;
         };
-        let registry = TurnShellTaskRegistry { inner: strong };
-        let scopes = registry.scopes_needing_background_cleanup();
-        for scope_id in scopes {
-            if let Err(error) = registry.cleanup_scope_once(scope_id).await {
-                log::error!(
-                    "[pinvou3][chat] background shell cleanup failed scope={scope_id}: {error:#}"
-                );
-            }
-        }
-        registry.retire_settled_scopes();
+        cleanup_worker_tick(&TurnShellTaskRegistry { inner: strong }).await;
     }
+}
+
+/// One background-sweep pass over every scope that still needs cleanup.
+/// Split out of [`cleanup_worker_loop`] so the gate contract below is
+/// behavior-testable without waiting on the poll interval.
+async fn cleanup_worker_tick(registry: &TurnShellTaskRegistry) {
+    let scopes = registry.scopes_needing_background_cleanup();
+    for scope_id in scopes {
+        // Same one-pass-at-a-time contract as `cleanup_scope_with_retries`:
+        // the sweep must not run concurrently with a detached kill ladder
+        // and double-count `PendingKill.attempts` toward `MAX_KILL_ATTEMPTS`
+        // (see the `cleanup_gate` doc on `RegistryInner`).
+        let _cleanup_pass = registry.inner.cleanup_gate.lock().await;
+        if let Err(error) = registry.cleanup_scope_once(scope_id).await {
+            log::error!(
+                "[pinvou3][chat] background shell cleanup failed scope={scope_id}: {error:#}"
+            );
+        }
+    }
+    registry.retire_settled_scopes();
 }
 
 fn remove_scope_locked(state: &mut RegistryState, scope_id: ScopeId) {
@@ -1154,6 +1199,117 @@ mod tests {
         let state = registry.inner.state.lock();
         assert_eq!(state.active_scope_id, None);
         assert!(!state.scopes.contains_key(&scope_id));
+    }
+
+    // issue #255, reclaim-finalize degradation: the engine_pool caller
+    // presets cleanup_failed conservatively when its gate-budget join times
+    // out and leaves the finalize running detached. When the detached run
+    // settles clean it must clear the preset (the flag stays truthful for
+    // later diagnostics), and the active scope must be retired so a slow
+    // finalize can never wedge the session's shell scope. The forkguard_
+    // prefix registers it as a fork-guard layer-3 behavior test
+    // (fork-policy §3).
+    #[tokio::test]
+    async fn forkguard_reclaim_cleanup_failed_preset_clears_on_success() {
+        let tasks = SessionTurnShellTasks::default();
+        let registry = tasks.for_session(
+            "session-reclaim-preset",
+            new_shared_shell_manager(std::env::temp_dir()),
+        );
+        registry.prepare_turn().await.expect("active scope");
+        let reclaim = tasks.begin_reclaim("session-reclaim-preset");
+        // The reclaim must have captured the active scope; otherwise
+        // finalize would early-return and this test would pass vacuously.
+        assert!(reclaim.registry.is_some() && reclaim.scope_id.is_some());
+
+        reclaim.mark_cleanup_failed();
+        assert!(reclaim.cleanup_failed());
+        reclaim.finalize().await;
+        assert!(
+            !reclaim.cleanup_failed(),
+            "a clean detached finalize must clear the conservative preset"
+        );
+        assert_eq!(
+            registry.active_scope_id(),
+            None,
+            "finalize must retire the active scope"
+        );
+    }
+
+    // issue #255 hardening: the background sweep must take the same
+    // per-registry cleanup gate as the kill-retry ladders — an ungated sweep
+    // can run concurrently with a detached ladder and double-count
+    // `PendingKill.attempts` toward `MAX_KILL_ATTEMPTS`, permanently
+    // stopping retries while a job is still dying. The forkguard_ prefix
+    // registers it as a fork-guard layer-3 behavior test (fork-policy §3).
+    #[tokio::test]
+    async fn forkguard_background_cleanup_sweep_takes_cleanup_gate() {
+        let registry = TurnShellTaskRegistry::new(new_shared_shell_manager(std::env::temp_dir()));
+        let scope_id = 7u64;
+        registry.inner.state.lock().scopes.insert(
+            scope_id,
+            TurnShellScope {
+                id: scope_id,
+                turn_id: None,
+                baseline_task_ids: HashSet::new(),
+                registered_task_ids: HashSet::new(),
+                live_agent_ids: HashSet::new(),
+                pending_kills: HashMap::new(),
+                cancel_requested: true,
+                root_terminal: false,
+                allow_unowned_fallback: false,
+                cleanup_settled: false,
+                cleanup_error: None,
+                cleanup_error_attempts: 0,
+            },
+        );
+        assert_eq!(
+            registry.scopes_needing_background_cleanup(),
+            vec![scope_id],
+            "the sweep must actually see this scope; otherwise the test is vacuous"
+        );
+
+        // Hold the gate the way a detached kill ladder would.
+        let gate = registry.inner.cleanup_gate.lock().await;
+        let tick_registry = registry.clone();
+        let tick = tokio::spawn(async move { cleanup_worker_tick(&tick_registry).await });
+        // While the gate is held the sweep must stay parked on it: give the
+        // executor every chance to (wrongly) run the pass.
+        let ran_ungated = tokio::time::timeout(std::time::Duration::from_millis(150), async {
+            loop {
+                tokio::task::yield_now().await;
+                if registry
+                    .inner
+                    .state
+                    .lock()
+                    .scopes
+                    .get(&scope_id)
+                    .map_or(true, |scope| scope.cleanup_settled)
+                {
+                    break;
+                }
+            }
+        })
+        .await;
+        assert!(
+            ran_ungated.is_err(),
+            "background sweep ran its cleanup pass despite the held cleanup gate"
+        );
+        drop(gate);
+        tokio::time::timeout(std::time::Duration::from_secs(2), tick)
+            .await
+            .expect("sweep tick must complete once the gate is released")
+            .expect("tick task joins");
+        assert!(
+            registry
+                .inner
+                .state
+                .lock()
+                .scopes
+                .get(&scope_id)
+                .map_or(true, |scope| scope.cleanup_settled),
+            "sweep must settle the scope once the gate is released"
+        );
     }
 
     #[tokio::test]

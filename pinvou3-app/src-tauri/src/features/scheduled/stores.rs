@@ -693,10 +693,6 @@ impl VersionedJsonStore<ScheduledHistoryArchiveRegistry> {
         }
         Ok(())
     }
-
-    pub(crate) fn remove_task(&self, automation_id: &str) -> Result<()> {
-        self.remove(automation_id)
-    }
 }
 
 pub(crate) struct RemovedArchivedRun {

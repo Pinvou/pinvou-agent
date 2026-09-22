@@ -1,5 +1,6 @@
 //! codex / claude / gemini(即 kimi) CLI 的安装、升级与版本/来源探测。
 
+use super::runtime::run_version_probe;
 use super::*;
 
 /// 安装进度事件名(前端 composer 用它刷新「正在安装 X…」)。
@@ -228,39 +229,26 @@ pub(super) enum CliVersionProbe {
 }
 
 /// `--version` 探测与登录态探测使用同一 15 秒上限。结果由上层按 Agent 缓存，
-/// 只有首次选择或主动重查时支付进程启动成本。
+/// the process startup cost is only paid on the first selection or an explicit re-probe. The spawn/wait skeleton shares
+/// `run_version_probe` with runtime.rs's Codex self-check; this probe nulls stdin and discards stderr,
+/// with the result collapsed into a three-state enum (Found / TimedOut / Failed).
 fn command_version_probe(executable: &Path) -> CliVersionProbe {
-    let mut command = crate::platform::process::external_command(executable);
-    command
-        .arg("--version")
-        .stdin(std::process::Stdio::null())
-        .stdout(std::process::Stdio::piped())
-        .stderr(std::process::Stdio::null());
-    let Ok(mut child) = command.spawn() else {
-        return CliVersionProbe::Failed;
+    let outcome = match run_version_probe(executable, |command| {
+        command
+            .stdin(std::process::Stdio::null())
+            .stdout(std::process::Stdio::piped())
+            .stderr(std::process::Stdio::null());
+    }) {
+        Ok(outcome) => outcome,
+        Err(_) => return CliVersionProbe::Failed,
     };
-    match child.wait_timeout(Duration::from_secs(15)) {
-        Ok(Some(status)) if status.success() => {}
-        Ok(Some(_)) => return CliVersionProbe::Failed,
-        Ok(None) => {
-            let _ = child.kill();
-            let _ = child.wait();
-            return CliVersionProbe::TimedOut;
-        }
-        Err(_) => {
-            let _ = child.kill();
-            let _ = child.wait();
-            return CliVersionProbe::Failed;
-        }
-    }
-    let mut version = String::new();
-    let Some(mut stdout) = child.stdout.take() else {
-        return CliVersionProbe::Failed;
+    let Some(status) = outcome.status else {
+        return CliVersionProbe::TimedOut;
     };
-    if stdout.read_to_string(&mut version).is_err() {
+    if !status.success() {
         return CliVersionProbe::Failed;
     }
-    let version = version.trim();
+    let version = outcome.stdout.trim();
     if version.is_empty() {
         CliVersionProbe::Failed
     } else {
@@ -477,9 +465,8 @@ pub(super) fn path_install_source(backend: AgentBackend, path: &Path) -> Option<
     }
 }
 /// installed=false 时的安装动作：探测到过旧 CLI 且来源可识别时优先包管理器
-/// 升级（brew/npm），其余来源或无 CLI 时维持各 Agent 的默认安装方式。
+/// upgrade (brew/npm); other sources or a missing CLI keep the default install method.
 pub(super) fn install_action_for(
-    _backend: AgentBackend,
     install_source: Option<&'static str>,
     npm_available: bool,
     official_script_supported: bool,
@@ -645,8 +632,156 @@ impl Drop for InstallOutputReaders {
     }
 }
 
-/// 执行官方安装脚本（unix: `curl -fsSL <url> | bash`，Windows: `irm <url> | iex`），
-/// 10 分钟超时，输出尾部写入诊断日志。
+/// Differences injected by `run_official_install_script`, `run_npm_global_upgrade` and
+/// `run_brew_install` into [`run_managed_install`]; the rest of the skeleton (register pid → post-spawn
+/// cancel recheck → progress → streaming output → 600s timeout → diagnostics to disk → idempotent
+/// early success → cancel rewrite → failure bail) is owned by `run_managed_install`.
+struct ManagedInstallStage {
+    /// Diagnostics stage prefix ("script" / "npm" / "homebrew"), composed into `<stage>:timeout` / `<stage>:output`.
+    diag_stage: &'static str,
+    /// Command line shown in progress events.
+    command_line: String,
+    /// Whether to make the child a process-group leader (npm and brew need it; the script process does not).
+    process_group: bool,
+    spawn_context: String,
+    stdout_context: &'static str,
+    stderr_context: &'static str,
+    wait_context: &'static str,
+    timeout_message: String,
+    /// Failure message subject (the "{display} install script exited" / "npm global upgrade of {display} exited" message).
+    failure_subject: String,
+    /// Whether to append a network troubleshooting hint when stderr has no usable content (official script path only).
+    failure_hint: bool,
+    /// Output markers that count as success despite a non-zero exit (brew's idempotent already-installed /
+    /// already-up-to-date notices); `None` for channels without such notices.
+    idempotent_ok: Option<fn(&str, &str) -> bool>,
+    /// Composes the final failure message from (exit status, stderr tail, network hint, subject).
+    failure_detail: fn(&std::process::ExitStatus, &str, &str, &str) -> String,
+}
+
+/// Official-script / npm failure shape: `"{subject}: {status}; stderr: {tail}{hint}"`.
+fn managed_install_failure(
+    status: &std::process::ExitStatus,
+    tail: &str,
+    hint: &str,
+    subject: &str,
+) -> String {
+    format!("{subject}: {status}; stderr: {tail}{hint}")
+}
+
+/// brew failure shape: `"{subject} failed (exit {code}): {tail}"`.
+fn brew_install_failure(
+    status: &std::process::ExitStatus,
+    tail: &str,
+    _hint: &str,
+    subject: &str,
+) -> String {
+    format!(
+        "{subject} failed (exit {}): {tail}",
+        status.code().unwrap_or(-1)
+    )
+}
+
+/// Shared execution skeleton for managed installs. Differences are injected only via [`ManagedInstallStage`]:
+/// InstallChildGuard::register → post-spawn cancel recheck → emit_install_progress →
+/// InstallOutputReaders::spawn → 600s tokio timeout (diagnostics `<stage>:timeout`) →
+/// finish → diagnostics `<stage>:output` (output tail) → idempotent early success →
+/// cancel rewrite and the [`ManagedInstallStage::failure_detail`] bail on the failure exits.
+#[allow(clippy::too_many_arguments)]
+async fn run_managed_install(
+    app: &AppHandle,
+    backend: AgentBackend,
+    operation_id: &str,
+    install_children: &Arc<parking_lot::Mutex<HashMap<AgentBackend, u32>>>,
+    install_cancelled: &Arc<parking_lot::Mutex<HashSet<AgentBackend>>>,
+    mut command: tokio::process::Command,
+    stage: ManagedInstallStage,
+) -> Result<()> {
+    if stage.process_group {
+        // Separate process group: killed as a group on cancel so npm-spawned postinstall
+        // scripts are not orphaned. (Platform details live in process.rs; this layer has no target-platform cfg.)
+        crate::platform::process::tokio_process_group_leader(&mut command);
+    }
+    command
+        .stdin(Stdio::null())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped());
+    let mut child = command
+        .spawn()
+        .with_context(|| stage.spawn_context.clone())?;
+    // spawn 后登记 pid 供取消命令杀进程树；guard 在本函数任意出口注销。
+    let _child_guard = InstallChildGuard::register(install_children, backend, child.id());
+    // 取消可能发生在 spawn 与登记之间：登记后立即补检一次。
+    if install_cancelled.lock().contains(&backend) {
+        let _ = child.kill().await;
+    }
+    emit_install_progress(app, backend, "command", &stage.command_line);
+    let stdout = child.stdout.take().context(stage.stdout_context)?;
+    let stderr = child.stderr.take().context(stage.stderr_context)?;
+    let output_readers = InstallOutputReaders::spawn(app, backend, stdout, stderr);
+    const TIMEOUT: Duration = Duration::from_secs(600);
+    let status = match tokio::time::timeout(TIMEOUT, child.wait()).await {
+        Ok(result) => result.context(stage.wait_context)?,
+        Err(_) => {
+            diagnostics::write(
+                operation_id,
+                &format!("{}:timeout", stage.diag_stage),
+                format!("timeout_seconds={}", TIMEOUT.as_secs()),
+            );
+            let _ = child.kill().await;
+            let _ = child.wait().await;
+            bail!("{}", stage.timeout_message);
+        }
+    };
+    let (stdout, stderr) = output_readers.finish().await;
+    diagnostics::write(
+        operation_id,
+        &format!("{}:output", stage.diag_stage),
+        format!(
+            "status={status} stdout_tail={} stderr_tail={}",
+            output_tail(&stdout, 20),
+            output_tail(&stderr, 20)
+        ),
+    );
+    if status.success()
+        || stage
+            .idempotent_ok
+            .is_some_and(|is_done| is_done(&stdout, &stderr))
+    {
+        return Ok(());
+    }
+    // The process was cancelled by the user (taskkill/kill) and reaches here with a failure status: rewrite to cancelled semantics.
+    if install_cancelled.lock().remove(&backend) {
+        bail!(
+            "{INSTALL_CANCELLED_MARKER}{} 安装已取消",
+            backend.display_name()
+        );
+    }
+    let stderr_tail = output_tail(&stderr, 4);
+    // When stderr has no usable content (empty or only system noise like
+    // "retry"), give an actionable hint: the official script depends on
+    // releases.openai.com / GitHub, so download failures are mostly
+    // network-related. The manual-install guidance is generated per agent
+    // package name/script (it must not point at codex unconditionally).
+    let hint = if stage.failure_hint
+        && (stderr_tail.trim().is_empty() || stderr_tail.trim().chars().count() < 8)
+    {
+        let npm_pkg = npm_package(backend).unwrap_or("");
+        let (unix_url, windows_url) = official_script_urls(backend);
+        format!(
+            "; check the network connection and retry. You can also install manually: npm install -g {npm_pkg}, or run the official install script (macOS/Linux: curl -fsSL {unix_url} | sh; Windows: irm {windows_url} | iex)"
+        )
+    } else {
+        String::new()
+    };
+    bail!(
+        "{}",
+        (stage.failure_detail)(&status, &stderr_tail, &hint, &stage.failure_subject)
+    );
+}
+
+/// Runs the official install script (unix: `curl -fsSL <url> | bash`, Windows: `irm <url> | iex`),
+/// 10-minute timeout, with the output tail written to the diagnostics log.
 pub(super) async fn run_official_install_script(
     app: &AppHandle,
     backend: AgentBackend,
@@ -660,90 +795,44 @@ pub(super) async fn run_official_install_script(
     }
     let mut command = crate::platform::process::install_script_command(unix_url, windows_url);
     if backend == AgentBackend::CodexAcp {
-        // OpenAI 官方脚本默认安装 latest；非交互模式避免桌面应用后台等待 PATH 冲突确认。
+        // The official OpenAI script installs latest by default; non-interactive mode avoids the desktop app waiting on a background PATH-conflict prompt.
         command.env("CODEX_NON_INTERACTIVE", "1");
-    }
-    command
-        .stdin(Stdio::null())
-        .stdout(Stdio::piped())
-        .stderr(Stdio::piped());
-    let mut child = command
-        .spawn()
-        .with_context(|| format!("启动 {} 安装脚本失败", backend.display_name()))?;
-    // spawn 后登记 pid 供取消命令杀进程树；guard 在本函数任意出口注销。
-    let _child_guard = InstallChildGuard::register(install_children, backend, child.id());
-    // 取消可能发生在 spawn 与登记之间：登记后立即补检一次。
-    if install_cancelled.lock().contains(&backend) {
-        let _ = child.kill().await;
     }
     let command_line = if crate::platform::capabilities::is_windows() {
         format!("irm {windows_url} | iex")
     } else {
         format!("curl -fsSL {unix_url} | bash")
     };
-    emit_install_progress(app, backend, "command", &command_line);
-    let stdout = child.stdout.take().context("读取安装脚本标准输出失败")?;
-    let stderr = child.stderr.take().context("读取安装脚本错误输出失败")?;
-    let output_readers = InstallOutputReaders::spawn(app, backend, stdout, stderr);
-    const TIMEOUT: Duration = Duration::from_secs(600);
-    let status = match tokio::time::timeout(TIMEOUT, child.wait()).await {
-        Ok(result) => result.context("等待安装脚本进程失败")?,
-        Err(_) => {
-            diagnostics::write(
-                operation_id,
-                "script:timeout",
-                format!("timeout_seconds={}", TIMEOUT.as_secs()),
-            );
-            let _ = child.kill().await;
-            let _ = child.wait().await;
-            bail!(
-                "{} 安装脚本超过 10 分钟仍未完成，请检查网络后重试",
-                backend.display_name()
-            );
-        }
-    };
-    let (stdout, stderr) = output_readers.finish().await;
-    diagnostics::write(
+    run_managed_install(
+        app,
+        backend,
         operation_id,
-        "script:output",
-        format!(
-            "status={status} stdout_tail={} stderr_tail={}",
-            output_tail(&stdout, 20),
-            output_tail(&stderr, 20)
-        ),
-    );
-    if !status.success() {
-        // 进程被用户取消（taskkill/kill）会以失败状态走到这里：改写为已取消语义。
-        if install_cancelled.lock().remove(&backend) {
-            bail!(
-                "{INSTALL_CANCELLED_MARKER}{} 安装已取消",
+        install_children,
+        install_cancelled,
+        command,
+        ManagedInstallStage {
+            diag_stage: "script",
+            command_line,
+            process_group: false,
+            spawn_context: format!("failed to spawn {} install script", backend.display_name()),
+            stdout_context: "failed to read install script stdout",
+            stderr_context: "failed to read install script stderr",
+            wait_context: "failed to wait for install script process",
+            timeout_message: format!(
+                "{} install script did not finish within 10 minutes; check the network and retry",
                 backend.display_name()
-            );
-        }
-        let stderr_tail = output_tail(&stderr, 4);
-        // stderr 无有效内容（空或仅系统噪音如「重试」）时给出可操作提示：
-        // 官方脚本依赖 releases.openai.com / GitHub，下载失败多为网络原因。
-        // 手动安装指引按 Agent 各自包名/脚本生成（不能一律指向 codex）。
-        let hint = if stderr_tail.trim().is_empty() || stderr_tail.trim().chars().count() < 8 {
-            let npm_pkg = npm_package(backend).unwrap_or("");
-            let (unix_url, windows_url) = official_script_urls(backend);
-            &format!(
-                "；请检查网络连接后重试。也可手动安装：npm install -g {npm_pkg}，或运行官方安装脚本（macOS/Linux: curl -fsSL {unix_url} | sh；Windows: irm {windows_url} | iex）"
-            )
-        } else {
-            ""
-        };
-        bail!(
-            "{} 安装脚本退出: {status}；stderr: {}{}",
-            backend.display_name(),
-            stderr_tail,
-            hint
-        );
-    }
-    Ok(())
+            ),
+            failure_subject: format!("{} install script exited", backend.display_name()),
+            failure_hint: true,
+            idempotent_ok: None,
+            failure_detail: managed_install_failure,
+        },
+    )
+    .await
 }
-/// 执行 `npm install -g <pkg>@latest` 全局升级（Windows 上 npm.cmd 经 cmd 启动），
-/// 10 分钟超时，输出尾部写入诊断日志。
+/// Runs `npm install -g <pkg>@latest` as a global upgrade (npm.cmd via cmd on
+/// Windows), 10-minute timeout, with the output tail written to the
+/// diagnostics log.
 pub(super) async fn run_npm_global_upgrade(
     app: &AppHandle,
     backend: AgentBackend,
@@ -756,71 +845,84 @@ pub(super) async fn run_npm_global_upgrade(
     let npm = npm_executable().context("未检测到 npm，无法通过 npm 全局升级")?;
     let mut command = crate::platform::process::external_tokio_command(&npm);
     command.args(&args);
-    // 独立进程组：取消时按组杀，npm 派生的 postinstall 脚本不孤儿化。
-    // （平台细节在 process.rs，本层不含目标平台 cfg。）
-    crate::platform::process::tokio_process_group_leader(&mut command);
-    command
-        .stdin(Stdio::null())
-        .stdout(Stdio::piped())
-        .stderr(Stdio::piped());
-    let mut child = command.spawn().context("启动 npm 全局升级失败")?;
-    // spawn 后登记 pid 供取消命令杀进程树；guard 在本函数任意出口注销。
-    let _child_guard = InstallChildGuard::register(install_children, backend, child.id());
-    // 取消可能发生在 spawn 与登记之间：登记后立即补检一次。
-    if install_cancelled.lock().contains(&backend) {
-        let _ = child.kill().await;
-    }
-    emit_install_progress(
+    run_managed_install(
         app,
         backend,
-        "command",
-        &format!("npm install -g {}", npm_package(backend).unwrap_or("")),
-    );
-    let stdout = child.stdout.take().context("读取 npm 标准输出失败")?;
-    let stderr = child.stderr.take().context("读取 npm 错误输出失败")?;
-    let output_readers = InstallOutputReaders::spawn(app, backend, stdout, stderr);
-    const TIMEOUT: Duration = Duration::from_secs(600);
-    let status = match tokio::time::timeout(TIMEOUT, child.wait()).await {
-        Ok(result) => result.context("等待 npm 全局升级进程失败")?,
-        Err(_) => {
-            diagnostics::write(
-                operation_id,
-                "npm:timeout",
-                format!("timeout_seconds={}", TIMEOUT.as_secs()),
-            );
-            let _ = child.kill().await;
-            let _ = child.wait().await;
-            bail!(
-                "{} npm 全局升级超过 10 分钟仍未完成，请检查网络后重试",
-                backend.display_name()
-            );
-        }
-    };
-    let (stdout, stderr) = output_readers.finish().await;
-    diagnostics::write(
         operation_id,
-        "npm:output",
-        format!(
-            "status={status} stdout_tail={} stderr_tail={}",
-            output_tail(&stdout, 20),
-            output_tail(&stderr, 20)
-        ),
-    );
-    if !status.success() {
-        // 进程被用户取消（taskkill/kill）会以失败状态走到这里：改写为已取消语义。
-        if install_cancelled.lock().remove(&backend) {
-            bail!(
-                "{INSTALL_CANCELLED_MARKER}{} 安装已取消",
+        install_children,
+        install_cancelled,
+        command,
+        ManagedInstallStage {
+            diag_stage: "npm",
+            command_line: format!("npm install -g {}", npm_package(backend).unwrap_or("")),
+            process_group: true,
+            spawn_context: "failed to spawn npm global upgrade".to_string(),
+            stdout_context: "failed to read npm stdout",
+            stderr_context: "failed to read npm stderr",
+            wait_context: "failed to wait for npm global upgrade process",
+            timeout_message: format!(
+                "{} npm global upgrade did not finish within 10 minutes; check the network and retry",
                 backend.display_name()
-            );
-        }
-        bail!(
-            "npm 全局升级 {} 退出: {status}；stderr: {}",
-            backend.display_name(),
-            output_tail(&stderr, 4)
-        );
-    }
-    Ok(())
+            ),
+            failure_subject: format!("npm global upgrade of {} exited", backend.display_name()),
+            failure_hint: false,
+            idempotent_ok: None,
+            failure_detail: managed_install_failure,
+        },
+    )
+    .await
+}
+
+/// brew's idempotent notices do not count as failure: install reports already installed, upgrade reports already
+/// up-to-date.
+fn brew_already_done(stdout: &str, stderr: &str) -> bool {
+    ["already installed", "already up-to-date"]
+        .iter()
+        .any(|marker| stdout.contains(marker) || stderr.contains(marker))
+}
+
+/// Homebrew install/upgrade: builds the brew command and delegates execution to the shared
+/// [`run_managed_install`] skeleton (600s timeout — brew previously had none, so a hang would hold the
+/// install mutex guard forever — idempotent already-installed/up-to-date pass-through via
+/// [`brew_already_done`], cancel rewrite, and the `"{description} 失败 (exit N)"` failure shape via
+/// [`brew_install_failure`]). `upgrade_via_homebrew` keeps the decision logic such as source detection
+/// and only delegates subprocess execution.
+pub(super) async fn run_brew_install(
+    app: &AppHandle,
+    backend: AgentBackend,
+    operation_id: &str,
+    install_children: &Arc<parking_lot::Mutex<HashMap<AgentBackend, u32>>>,
+    install_cancelled: &Arc<parking_lot::Mutex<HashSet<AgentBackend>>>,
+    args: &[&str],
+    command_description: &str,
+) -> Result<()> {
+    let mut command = tokio::process::Command::new(platform::brew_bin());
+    command.args(args);
+    run_managed_install(
+        app,
+        backend,
+        operation_id,
+        install_children,
+        install_cancelled,
+        command,
+        ManagedInstallStage {
+            diag_stage: "homebrew",
+            command_line: command_description.to_string(),
+            // Separate process group: killed as a group on cancel so brew-spawned processes are not orphaned.
+            process_group: true,
+            spawn_context: "failed to spawn Homebrew".to_string(),
+            stdout_context: "failed to read Homebrew stdout",
+            stderr_context: "failed to read Homebrew stderr",
+            wait_context: "failed to wait for Homebrew process",
+            timeout_message: "Homebrew install did not finish within 10 minutes; please retry"
+                .to_string(),
+            failure_subject: command_description.to_string(),
+            failure_hint: false,
+            idempotent_ok: Some(brew_already_done),
+            failure_detail: brew_install_failure,
+        },
+    )
+    .await
 }
 pub(super) fn output_tail(output: &str, max_lines: usize) -> String {
     let lines: Vec<&str> = output.lines().collect();
@@ -1023,56 +1125,32 @@ mod tests {
 
     #[test]
     pub(super) fn install_action_follows_detected_install_source() {
-        // brew 来源一律 brew_upgrade（三 Agent 相同）。
-        for backend in [
-            AgentBackend::CodexAcp,
-            AgentBackend::ClaudeAcp,
-            AgentBackend::KimiAcp,
-        ] {
-            assert_eq!(
-                install_action_for(backend, Some("brew"), false, true),
-                "brew_upgrade"
-            );
-            // npm 来源且 npm 可执行时 npm_upgrade。
-            assert_eq!(
-                install_action_for(backend, Some("npm"), true, true),
-                "npm_upgrade"
-            );
-        }
+        // brew source always maps to brew_upgrade.
+        assert_eq!(
+            install_action_for(Some("brew"), false, true),
+            "brew_upgrade"
+        );
+        // npm source with an executable npm maps to npm_upgrade.
+        assert_eq!(install_action_for(Some("npm"), true, true), "npm_upgrade");
         // 官方脚本优先（原设计）：script/未知来源/首次安装（None）即使 npm
         // 可用也走官方脚本；npm 仅作为 npm 来源的升级通道；npm 不可用或脚本
         // 不支持时依次回退脚本/手动。
-        for backend in [
-            AgentBackend::CodexAcp,
-            AgentBackend::ClaudeAcp,
-            AgentBackend::KimiAcp,
-        ] {
-            assert_eq!(
-                install_action_for(backend, Some("script"), true, true),
-                "official_script"
-            );
-            assert_eq!(
-                install_action_for(backend, None, true, true),
-                "official_script"
-            );
-            assert_eq!(
-                install_action_for(backend, Some("npm"), true, true),
-                "npm_upgrade"
-            );
-            assert_eq!(
-                install_action_for(backend, Some("script"), false, true),
-                "official_script"
-            );
-            assert_eq!(
-                install_action_for(backend, None, false, true),
-                "official_script"
-            );
-            assert_eq!(
-                install_action_for(backend, Some("npm"), false, true),
-                "official_script"
-            );
-            assert_eq!(install_action_for(backend, None, false, false), "manual");
-        }
+        assert_eq!(
+            install_action_for(Some("script"), true, true),
+            "official_script"
+        );
+        assert_eq!(install_action_for(None, true, true), "official_script");
+        assert_eq!(install_action_for(Some("npm"), true, true), "npm_upgrade");
+        assert_eq!(
+            install_action_for(Some("script"), false, true),
+            "official_script"
+        );
+        assert_eq!(install_action_for(None, false, true), "official_script");
+        assert_eq!(
+            install_action_for(Some("npm"), false, true),
+            "official_script"
+        );
+        assert_eq!(install_action_for(None, false, false), "manual");
     }
 
     #[test]
@@ -1413,6 +1491,45 @@ pub(super) fn stale_official_target(target: &Path, resolved_ok: Option<&Path>) -
     !is_working_file || resolved_ok.is_none_or(|path| path != target)
 }
 
+/// Shared line → progress-forwarding policy (used by the IO shells of install streaming output): skip empty lines,
+/// emit truncated lines throttled at 80ms, and flush the pending tail line when the stream ends. Full-output accumulation and
+/// reader-side idle expiry/teardown are each IO shell's own responsibility.
+struct InstallLineProgress {
+    app: AppHandle,
+    backend: AgentBackend,
+    kind: &'static str,
+    pending: Option<String>,
+    last_emit: Instant,
+}
+
+impl InstallLineProgress {
+    fn new(app: &AppHandle, backend: AgentBackend, kind: &'static str) -> Self {
+        Self {
+            app: app.clone(),
+            backend,
+            kind,
+            pending: None,
+            last_emit: Instant::now(),
+        }
+    }
+
+    fn push(&mut self, trimmed: &str) {
+        self.pending = Some(truncate_install_line(trimmed));
+        if self.last_emit.elapsed() >= Duration::from_millis(80) {
+            if let Some(pending_line) = self.pending.take() {
+                emit_install_progress(&self.app, self.backend, self.kind, &pending_line);
+            }
+            self.last_emit = Instant::now();
+        }
+    }
+
+    fn flush(&mut self) {
+        if let Some(pending_line) = self.pending.take() {
+            emit_install_progress(&self.app, self.backend, self.kind, &pending_line);
+        }
+    }
+}
+
 pub(super) async fn stream_install_lines<R: AsyncRead + Unpin>(
     app: &AppHandle,
     backend: AgentBackend,
@@ -1424,8 +1541,7 @@ pub(super) async fn stream_install_lines<R: AsyncRead + Unpin>(
     let mut reader = BufReader::new(reader);
     let mut line = String::new();
     let mut output = String::new();
-    let mut pending: Option<String> = None;
-    let mut last_emit = Instant::now();
+    let mut progress = InstallLineProgress::new(app, backend, kind);
     let mut post_exit_idle_started: Option<Instant> = None;
     loop {
         line.clear();
@@ -1439,13 +1555,7 @@ pub(super) async fn stream_install_lines<R: AsyncRead + Unpin>(
                 post_exit_idle_started = child_finished.load(Ordering::Acquire).then(Instant::now);
                 output.push_str(&trimmed);
                 output.push('\n');
-                pending = Some(truncate_install_line(&trimmed));
-                if last_emit.elapsed() >= Duration::from_millis(80) {
-                    if let Some(pending_line) = pending.take() {
-                        emit_install_progress(app, backend, kind, &pending_line);
-                    }
-                    last_emit = Instant::now();
-                }
+                progress.push(&trimmed);
             }
             Ok(Err(_)) => break,
             // 主安装进程仍在运行时，静默下载可以远超 30 秒，不能提前关闭管道，
@@ -1466,9 +1576,7 @@ pub(super) async fn stream_install_lines<R: AsyncRead + Unpin>(
             }
         }
     }
-    if let Some(pending_line) = pending.take() {
-        emit_install_progress(app, backend, kind, &pending_line);
-    }
+    progress.flush();
     output
 }
 
@@ -1478,43 +1586,6 @@ fn install_output_idle_expired(
     idle_timeout: Duration,
 ) -> bool {
     child_finished && idle >= idle_timeout
-}
-
-pub(super) fn stream_std_lines<R: std::io::Read + Send + 'static>(
-    reader: R,
-    kind: &'static str,
-    tx: std::sync::mpsc::Sender<String>,
-    app: AppHandle,
-    backend: AgentBackend,
-) {
-    let mut reader = std::io::BufReader::new(reader);
-    let mut line = String::new();
-    let mut pending: Option<String> = None;
-    let mut last_emit = Instant::now();
-    loop {
-        line.clear();
-        match reader.read_line(&mut line) {
-            Ok(0) => break,
-            Ok(_) => {
-                let trimmed = line.trim_end().to_string();
-                if trimmed.is_empty() {
-                    continue;
-                }
-                let _ = tx.send(trimmed.clone());
-                pending = Some(truncate_install_line(&trimmed));
-                if last_emit.elapsed() >= Duration::from_millis(80) {
-                    if let Some(pending_line) = pending.take() {
-                        emit_install_progress(&app, backend, kind, &pending_line);
-                    }
-                    last_emit = Instant::now();
-                }
-            }
-            Err(_) => break,
-        }
-    }
-    if let Some(pending_line) = pending.take() {
-        emit_install_progress(&app, backend, kind, &pending_line);
-    }
 }
 
 pub(super) fn truncate_install_line(line: &str) -> String {

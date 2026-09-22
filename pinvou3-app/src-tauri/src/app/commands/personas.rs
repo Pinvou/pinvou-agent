@@ -1,3 +1,5 @@
+use super::prelude::*;
+
 #[tauri::command]
 pub async fn list_personas() -> Result<Vec<crate::features::personas::PersonaSummary>, String> {
     Ok(crate::features::personas::all_summaries())
@@ -163,11 +165,7 @@ pub async fn save_session_persona_events(
     events: serde_json::Value,
 ) -> Result<(), String> {
     let path = crate::platform::paths::session_persona_events(&session_id);
-    if let Some(parent) = path.parent() {
-        std::fs::create_dir_all(parent).map_err(|e| format!("建 session 目录失败: {e}"))?;
-    }
-    let json = serde_json::to_string(&events).map_err(|e| format!("序列化失败: {e}"))?;
-    std::fs::write(&path, json).map_err(|e| format!("写卡牌事件失败: {e}"))
+    super::sessions::write_session_sidecar(&path, &events)
 }
 
 /// 读某 session 的卡牌事件时间线(无则返回空数组)。
@@ -250,12 +248,8 @@ pub async fn save_session_pinvou_reviews(
     reviews: serde_json::Value,
 ) -> Result<(), String> {
     let path = crate::platform::paths::session_pinvou_reviews(&session_id);
-    if let Some(parent) = path.parent() {
-        std::fs::create_dir_all(parent).map_err(|e| format!("建 session 目录失败: {e}"))?;
-    }
     let merged = preserve_resolutions(&path, reviews);
-    let json = serde_json::to_string(&merged).map_err(|e| format!("序列化失败: {e}"))?;
-    std::fs::write(&path, json).map_err(|e| format!("写 Pinvou 审查失败: {e}"))
+    super::sessions::write_session_sidecar(&path, &merged)
 }
 
 /// 读某 session 的 Pinvou 审查时间线（无则返回空数组）。
@@ -392,4 +386,3 @@ mod tests {
         let _ = std::fs::remove_dir_all(root);
     }
 }
-use super::prelude::*;

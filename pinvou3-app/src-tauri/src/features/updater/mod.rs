@@ -101,8 +101,10 @@ pub async fn check_for_update() -> Result<UpdateInfo, String> {
     platform::check_for_update_info(&client, current).await
 }
 
-/// 下载更新包到 `~/.pinvou3/updates/`，流式写盘 + 校验，进度走
-/// `update:progress` 事件。
+/// Downloads the update package to `~/.pinvou3/updates/` with streaming
+/// writes and verification. No download-progress event is emitted to the
+/// frontend (the community download surface is a documented stub;
+/// `update:progress` has no consumer).
 pub async fn download_update(info: UpdateInfo, app: AppHandle) -> Result<(), String> {
     platform::download_update_package(&info, app, &DOWNLOAD_CANCEL, DOWNLOAD_STALL_TIMEOUT).await
 }

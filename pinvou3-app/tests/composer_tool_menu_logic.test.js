@@ -10,11 +10,15 @@ const code = fs.readFileSync(logicPath, 'utf8')
   .replace(/\bexport\s+/g, '');
 const ctx = {};
 vm.createContext(ctx);
-vm.runInContext(`${code}\nthis.buildComposerToolMenuState = buildComposerToolMenuState;`, ctx, {
-  filename: logicPath,
-});
+vm.runInContext(
+  `${code}\nthis.buildComposerToolMenuState = buildComposerToolMenuState;`
+  + `\nthis.createToggleWriteGate = createToggleWriteGate;`
+  + `\nthis.TOGGLE_WRITE_KEY_PROJECT_SKILLS = TOGGLE_WRITE_KEY_PROJECT_SKILLS;`,
+  ctx,
+  { filename: logicPath },
+);
 
-const { buildComposerToolMenuState } = ctx;
+const { buildComposerToolMenuState, createToggleWriteGate, TOGGLE_WRITE_KEY_PROJECT_SKILLS } = ctx;
 
 // ── 开关（disabled）与可见性（hidden）正交 ────────────────────────────
 let state = buildComposerToolMenuState({
@@ -171,4 +175,73 @@ state = buildComposerToolMenuState({
 });
 assert.strictEqual(state.allSkillsDisabled, false, '开启 feishu(CLI companion)后不应提示');
 
-console.log('composer_tool_menu_logic: ok');
+// ── Governance write generation gate: rollback authority under out-of-order
+// completion (regression) ──────────────────────────────────────────────
+// Driven out of order with real deferred promises: with rapid toggles an
+// earlier write can fail later, and the component catch may roll back/report
+// only when it is still the control's latest write (review round-2 blocker).
+async function toggleWriteGateTests() {
+  const defer = () => {
+    let resolve, reject;
+    const promise = new Promise((res, rej) => { resolve = res; reject = rej; });
+    return { promise, resolve, reject };
+  };
+  // Simulates the component protocol: begin issues a generation → the write
+  // completes → the catch rolls back/reports only when isCurrent.
+  const simulateToggle = async (gate, key, outcome) => {
+    const generation = gate.begin(key);
+    try {
+      await outcome();
+      return { generation, stale: false, rolledBack: false };
+    } catch (error) {
+      if (!gate.isCurrent(key, generation)) return { generation, stale: true };
+      return { generation, stale: false, rolledBack: true, error };
+    }
+  };
+
+  // Three alternating clicks (review scenario): write A is held and then fails,
+  // writes B and C succeed and complete first.
+  const gate = createToggleWriteGate();
+  const writeA = defer();
+  const clickA = simulateToggle(gate, 'pkg-a', () => writeA.promise);
+  const clickB = simulateToggle(gate, 'pkg-a', () => Promise.resolve());
+  const clickC = simulateToggle(gate, 'pkg-a', () => Promise.resolve());
+  writeA.reject(new Error('late failure'));
+  const resultA = await clickA;
+  await Promise.all([clickB, clickC]);
+  assert.strictEqual(resultA.stale, true, 'a late stale failure does not match the latest generation and must not roll back or report');
+
+  // The latest write failing must still roll back/report (an older success does
+  // not exempt a newer failure).
+  const gate2 = createToggleWriteGate();
+  const okWrite = defer();
+  const staleClick = simulateToggle(gate2, 'pkg-a', () => okWrite.promise);
+  const failClick = simulateToggle(gate2, 'pkg-a', () => Promise.reject(new Error('latest fails')));
+  okWrite.resolve();
+  const [staleResult, failResult] = await Promise.all([staleClick, failClick]);
+  assert.strictEqual(staleResult.stale, false, 'the older write completing successfully is still current generation (success path has no side effects)');
+  assert.strictEqual(failResult.rolledBack, true, 'the latest write failing must roll back and report');
+
+  // Controls are independent: another control issuing a newer write does not
+  // invalidate this control's in-flight write generation.
+  const gate3 = createToggleWriteGate();
+  const pkgWrite = defer();
+  const pkgClick = simulateToggle(gate3, 'pkg-a', () => pkgWrite.promise);
+  const skillsClick = simulateToggle(gate3, TOGGLE_WRITE_KEY_PROJECT_SKILLS, () => Promise.resolve());
+  pkgWrite.resolve();
+  const [pkgResult, skillsResult] = await Promise.all([pkgClick, skillsClick]);
+  assert.strictEqual(pkgResult.stale, false, 'a project-skills write does not invalidate the package control generation');
+  assert.strictEqual(skillsResult.stale, false);
+  // A failed package write completing afterwards is still matched (not stale).
+  const pkgFail = simulateToggle(gate3, 'pkg-a', () => Promise.reject(new Error('pkg fails')));
+  const pkgFailResult = await pkgFail;
+  assert.strictEqual(pkgFailResult.rolledBack, true);
+}
+
+// eslint-disable-next-line unicorn/prefer-top-level-await -- logic test keeps its sync sections above and runs the async gate section from main()
+toggleWriteGateTests().then(() => {
+  console.log('composer_tool_menu_logic: ok');
+}, (e) => {
+  console.error(e);
+  process.exit(1);
+});

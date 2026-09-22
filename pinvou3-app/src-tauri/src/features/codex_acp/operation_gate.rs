@@ -173,6 +173,7 @@ impl AcpPool {
         }
         self.remember_config_choice(session_id, config_id, value_id);
         let info = runtime.info(
+            &self.agents,
             self.pending_permissions_for(session_id).await,
             self.pending_elicitations_for(session_id).await,
         );

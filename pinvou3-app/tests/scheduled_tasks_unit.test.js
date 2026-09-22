@@ -37,8 +37,28 @@ const bridgeSharedHelpers = fs.readFileSync(
   path.join(__dirname, '..', 'src', 'shared', 'bridge-shared-helpers.js'),
   'utf8'
 );
+// Test glue evaluated between the feature files and bridge.js: wrap every
+// feature factory so its exported surface is captured verbatim. The dead-code
+// cleanup removed some feature methods (readScheduledTask, loadScheduledTaskRuns,
+// interruptAndSend, ...) from the assembled flat facade; the tests that exercise
+// those paths call them through the captured feature surface instead — same
+// function objects, same closures, identical behavior.
+const captureFeatureSurfaceGlue = `
+;(function () {
+  const registry = window.__PINVOU_TAURI_BRIDGE_FEATURES__;
+  const captured = window.__PINVOU_TEST_FEATURE_SURFACE__ = {};
+  Object.keys(registry).forEach(function (name) {
+    const factory = registry[name];
+    registry[name] = function (context) {
+      const feature = factory(context);
+      captured[name] = feature;
+      return feature;
+    };
+  });
+})();`;
 const tauriBridge = [bridgeSharedHelpers, bridgeMessages,
     ...tauriBridgeFeatureNames.map(name => fs.readFileSync(path.join(__dirname, '..', 'src', 'platform', 'tauri', 'bridge', `${name}.js`), 'utf8')),
+    captureFeatureSurfaceGlue,
     fs.readFileSync(path.join(__dirname, '..', 'src', 'platform', 'tauri', 'bridge.js'), 'utf8'),
   ].join('\n');
 const webBridge = [
@@ -59,6 +79,16 @@ const scheduledTemplateSource = indexHtml.slice(
   indexHtml.indexOf('const SCHEDULED_TASK_TEMPLATES'),
   indexHtml.indexOf('const ScheduledTasksView')
 );
+// Template copy (name/schedule/description/prompt) now lives only in the
+// tri-lingual scheduledCopy.templateMap overlay; the component carries just
+// ids/rrules/icons. Template-content assertions therefore target the overlay
+// values from the zh dictionary.
+const zhScheduledDict = fs.readFileSync(path.join(__dirname, '..', 'src', 'shared', 'i18n', 'zh.js'), 'utf8');
+const zhScheduledTemplateMap = zhScheduledDict.slice(
+  zhScheduledDict.indexOf('templateMap:{'),
+  zhScheduledDict.indexOf('previewTasks:{')
+);
+const scheduledTemplateContentSource = `${scheduledTemplateSource}\n${zhScheduledTemplateMap}`;
 const scheduledViewSource = indexHtml.slice(
   indexHtml.indexOf('const ScheduledTasksView'),
   indexHtml.indexOf('export { ScheduledTasksView }')
@@ -231,7 +261,8 @@ assert.ok(
 );
 assert.ok(
   indexHtml.includes('data-testid="scheduled-nav-unread"') &&
-    /unread=\{!!\(bs && \(\(bs\.scheduledTasks \|\| \[\]\)\.some\(task => task\.hasUnreadRuns\) \|\| \(bs\.scheduledTaskRecentRuns \|\| \[\]\)\.some\(run => run && run\.unread\)\)\)\}/.test(indexHtml),
+    /const scheduledUnread = !!\(bs && \(\(bs\.scheduledTasks \|\| \[\]\)\.some\(task => task\.hasUnreadRuns\)\s+\|\|\s+\(bs\.scheduledTaskRecentRuns \|\| \[\]\)\.some\(run => run && run\.unread\)\)\);/.test(indexHtml) &&
+    /unread=\{scheduledUnread\}/.test(indexHtml),
   'the Scheduled sidebar item should aggregate unread completed runs across tasks, including retained runs of deleted tasks'
 );
 assert.ok(
@@ -344,6 +375,11 @@ assert.ok(
     /scheduleEditor\.repeat === 'hourly'[\s\S]{0,500}data-testid="scheduled-live-interval-row"/.test(scheduledViewSource) &&
     /onChange=\{value => editSchedule\('interval', value\)\}/.test(scheduledViewSource),
   'hourly schedules should expose a themed 1-24 hour interval selector'
+);
+assert.ok(
+  /const byday = days\.length \? `;BYDAY=\$\{days\.join\(','\)\}` : '';/.test(scheduledViewSource) &&
+    /FREQ=HOURLY;INTERVAL=\$\{Math\.max\(1, interval \|\| 1\)\}\$\{byday\}\$\{anchor\}/.test(scheduledViewSource),
+  'hourly schedule edits must carry inherited BYDAY restrictions into the rule instead of silently dropping them; the Rust scheduler honors BYDAY when triggering hourly tasks'
 );
 assert.ok(
   /SCHEDULED_TASK_WRITABLE_FIELDS\s*=\s*\["name", "prompt", "rrule", "model", "modelId", "paused"\]/.test(tauriBridge) &&
@@ -558,27 +594,27 @@ assert.strictEqual((scheduledTemplateSource.match(/autoApprove/g) || []).length,
 assert.strictEqual((scheduledTemplateSource.match(/paused:\s*false/g) || []).length, 4, 'templates activate immediately: no workspace prerequisite remains');
 assert.strictEqual((scheduledTemplateSource.match(/workspace|cwds/g) || []).length, 0, 'templates must not carry a workspace concept');
 assert.ok(
-  /name: '每日早报'/.test(scheduledTemplateSource) &&
-    /name: '事项督办'/.test(scheduledTemplateSource) &&
-    /name: '工作周报'/.test(scheduledTemplateSource) &&
-    /name: '记忆整理'/.test(scheduledTemplateSource),
+  /name:\s*'每日早报'/.test(scheduledTemplateContentSource) &&
+    /name:\s*'事项督办'/.test(scheduledTemplateContentSource) &&
+    /name:\s*'工作周报'/.test(scheduledTemplateContentSource) &&
+    /name:\s*'记忆整理'/.test(scheduledTemplateContentSource),
   'the suggestion area should use the office-oriented task names plus the memory organizer'
 );
 assert.ok(
-  (scheduledTemplateSource.match(/不要扫描用户目录/g) || []).length === 3 &&
-    /仅查询整理，不发送、审批或修改/.test(scheduledTemplateSource) &&
-    /不要扫描用户目录或自动发送/.test(scheduledTemplateSource),
+  (scheduledTemplateContentSource.match(/不要扫描用户目录/g) || []).length === 3 &&
+    /仅查询整理，不发送、审批或修改/.test(scheduledTemplateContentSource) &&
+    /不要扫描用户目录或自动发送/.test(scheduledTemplateContentSource),
   'office templates should be source-driven, read-only, and independent of user directories'
 );
 assert.ok(
-  (scheduledTemplateSource.match(/description:\s*'/g) || []).length === 4 &&
+  (scheduledTemplateContentSource.match(/description:\s*'/g) || []).length === 4 &&
     /\{template\.description\}/.test(indexHtml) &&
     !/>\{template\.prompt\}<\/span>/.test(indexHtml),
   'suggestion cards should show concise descriptions instead of full execution prompts'
 );
 assert.ok(
-  /name: '每日早报'[\s\S]{0,500}重要新闻和行业动态[\s\S]{0,180}公司公告/.test(scheduledTemplateSource) &&
-    !/name: '每日早报'[\s\S]{0,500}今日会议|name: '每日早报'[\s\S]{0,500}补充今日[^。']*待办/.test(scheduledTemplateSource),
+  /name:\s*'每日早报'[\s\S]{0,500}重要新闻和行业动态[\s\S]{0,180}公司公告/.test(scheduledTemplateContentSource) &&
+    !/name:\s*'每日早报'[\s\S]{0,500}今日会议|name:\s*'每日早报'[\s\S]{0,500}补充今日[^。']*待办/.test(scheduledTemplateContentSource),
   'the daily brief should own information awareness while action items remain in supervision'
 );
 assert.ok(
@@ -591,8 +627,8 @@ assert.ok(
   'removed legacy templates must not return'
 );
 assert.ok(
-  !/选定[^']*(项目|目录)/.test(scheduledTemplateSource) &&
-    /待办|未完成/.test(scheduledTemplateSource) && /风险/.test(scheduledTemplateSource),
+  !/选定[^']*(项目|目录)/.test(scheduledTemplateContentSource) &&
+    /待办|未完成/.test(scheduledTemplateContentSource) && /风险/.test(scheduledTemplateContentSource),
   'template prompts should not reference a selected project directory'
 );
 assert.ok(
@@ -837,6 +873,7 @@ function createBridgeHarness(sharedStorage, runtimeOptions) {
   );
 
   const rawBridge = window.TauriBridge;
+  const featureSurface = window.__PINVOU_TEST_FEATURE_SURFACE__ || {};
   const bridge = bridgeKind === "web" ? {
     sessions: {
       switchToSession: function (id) { return rawBridge.switchToSession(id); },
@@ -861,7 +898,28 @@ function createBridgeHarness(sharedStorage, runtimeOptions) {
       get: function () { return rawBridge.getState(); },
       getMany: function () { return rawBridge.getState(); },
     },
-  } : rawBridge;
+  } : {
+    // Flat facade plus the feature methods that are no longer assembled onto
+    // it (dead-code cleanup) but are still exercised by these tests through
+    // the captured feature surface — same implementations the facade used to
+    // forward to.
+    ...rawBridge,
+    chat: {
+      ...rawBridge.chat,
+      interruptAndSend: function (sid, text, displayText, attachments, meta, restrictTools) {
+        return featureSurface.chat.interruptAndSend(sid, text, displayText, attachments, meta, restrictTools);
+      },
+    },
+    scheduled: {
+      ...rawBridge.scheduled,
+      readScheduledTask: function (id) { return featureSurface.scheduled.readScheduledTask(id); },
+      loadScheduledTaskRuns: function (id, limit) { return featureSurface.scheduled.loadScheduledTaskRuns(id, limit); },
+    },
+    attachments: {
+      ...rawBridge.attachments,
+      addAttachmentByPath: function (path) { return featureSurface.artifacts.addAttachmentByPath(path); },
+    },
+  };
 
   return {
     bridge,

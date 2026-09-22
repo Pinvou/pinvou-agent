@@ -476,11 +476,14 @@ fn merge_ids_into_scope(file: &mut DisabledBundlesFile, key: &str, ids: Vec<Stri
     }
 }
 
-/// Writes the whole file (atomic replace, same pattern as the legacy file).
-/// Failures must propagate: a write entry point returning `Ok` means the
-/// change landed on disk — swallowing a disk failure would let the GUI treat
-/// `Ok` as success and hot-refresh from stale state (fail-open), while this
-/// file's write semantics are fail-closed.
+/// Writes the whole file (atomic replace, same pattern as the legacy writer).
+/// Write failures propagate: toggles/visibility are user governance state, and
+/// a silently lost write would let callers continue on a half-applied state
+/// (the frontend reports success). Internal best-effort callers degrade to
+/// logging themselves: the read-path migration heal and the legacy
+/// `skill:`-prefix strip heal. Every governance writer — including uninstall
+/// cleanup and the DenyAll install sync — propagates the failure instead, so
+/// a lost write can never surface as success.
 fn save_disabled_bundles_file(file: &DisabledBundlesFile) -> Result<(), String> {
     let json = serde_json::to_string(file)
         .map_err(|error| format!("[scope] serialize disabled_bundles.json failed: {error}"))?;
@@ -741,7 +744,10 @@ pub fn project_skills_enabled() -> bool {
     load_disabled_bundles_file().project_skills_enabled
 }
 
-/// 写项目级 skills 开关。落盘后由调用方重写在线会话组合目录。
+/// Writes the project-level skills toggle. After persisting, the caller rewrites
+/// the online session composed catalogs. Write failures propagate unchanged
+/// (user governance state must not be silently lost — same principle as the
+/// toggle/visibility writes).
 ///
 /// Fails closed like the other writers: an unavailable cross-process lock
 /// refuses the write with `Err`.

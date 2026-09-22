@@ -15,9 +15,8 @@ pub struct UninstallPlan {
     pub script_paths: Vec<PathBuf>,
 }
 
-/// 按安装来源生成卸载计划。`install_source` 为 status 探测结果
-/// （"brew" / "npm" / "script" / None）。
-pub fn uninstall_plan(backend: AgentBackend, install_source: Option<&str>) -> UninstallPlan {
+/// Builds the uninstall plan per backend: brew/npm package names and official script paths.
+fn uninstall_plan(backend: AgentBackend) -> UninstallPlan {
     let brew_package = match backend {
         AgentBackend::CodexAcp => Some(("codex", true)),
         AgentBackend::ClaudeAcp => Some(("claude-code", true)),
@@ -30,7 +29,6 @@ pub fn uninstall_plan(backend: AgentBackend, install_source: Option<&str>) -> Un
         AgentBackend::KimiAcp => Some("@moonshot-ai/kimi-code"),
         AgentBackend::Deepseek => None,
     };
-    let _ = install_source;
     UninstallPlan {
         brew_package,
         npm_package,
@@ -78,7 +76,7 @@ fn brew_uninstall_args(plan: &UninstallPlan) -> Option<(String, Vec<String>)> {
     Some(("brew".to_string(), args))
 }
 
-pub fn npm_uninstall_args(plan: &UninstallPlan) -> Option<(String, Vec<String>)> {
+fn npm_uninstall_args(plan: &UninstallPlan) -> Option<(String, Vec<String>)> {
     let package = plan.npm_package?;
     // Windows 上 npm 是 npm.cmd：必须用解析后的完整路径（裸名 "npm" 会被当成
     // 原生可执行文件直接 CreateProcess，报 program not found）。
@@ -95,7 +93,7 @@ pub fn npm_uninstall_args(plan: &UninstallPlan) -> Option<(String, Vec<String>)>
 
 /// 按来源选择卸载动作：brew / npm / script 路径清理。
 pub fn uninstall_command(backend: AgentBackend, install_source: Option<&str>) -> UninstallCommand {
-    let plan = uninstall_plan(backend, install_source);
+    let plan = uninstall_plan(backend);
     match install_source {
         Some("brew") => brew_uninstall_args(&plan)
             .map(UninstallCommand::Spawn)

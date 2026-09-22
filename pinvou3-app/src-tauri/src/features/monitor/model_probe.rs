@@ -21,7 +21,6 @@ pub struct VllmSnapshot {
     pub model: Option<String>,
     /// 用户 settings 中配置的模型名（与 `model` 可能不同）。
     pub configured_model: Option<String>,
-    pub upstream: String,
     /// 后端类型(前端监控卡显示标签 + 决定 vLLM 指标是否适用 + 小窗口告警是否触发):
     /// `local` 本地推理引擎(环回/私有 IP,自托管 vLLM,有 Prometheus 指标)/
     /// `remote` 云端 API(公网,无 /metrics)/ `invalid` 配置异常(base_url 解析失败)。
@@ -64,7 +63,6 @@ impl VllmSnapshot {
         status: VllmStatus,
         model: Option<String>,
         configured_model: Option<String>,
-        upstream: &str,
         target_kind: &str,
         metrics_applicable: bool,
         health_status: &str,
@@ -73,7 +71,6 @@ impl VllmSnapshot {
             status,
             model,
             configured_model,
-            upstream: upstream.to_string(),
             target_kind: target_kind.to_string(),
             metrics_applicable,
             health_status: health_status.to_string(),
@@ -224,7 +221,6 @@ async fn snapshot_for_model_config(
                 VllmStatus::Offline,
                 configured_model.clone(),
                 configured_model,
-                upstream,
                 target_kind,
                 metrics_applicable,
                 "auth_failed",
@@ -236,7 +232,6 @@ async fn snapshot_for_model_config(
                     VllmStatus::Offline,
                     configured_model.clone(),
                     configured_model,
-                    upstream,
                     target_kind,
                     metrics_applicable,
                     "offline",
@@ -250,7 +245,6 @@ async fn snapshot_for_model_config(
                     VllmStatus::Offline,
                     configured_model.clone(),
                     configured_model,
-                    upstream,
                     target_kind,
                     metrics_applicable,
                     "offline",
@@ -263,7 +257,6 @@ async fn snapshot_for_model_config(
                 VllmStatus::Offline,
                 None,
                 configured_model,
-                upstream,
                 target_kind,
                 metrics_applicable,
                 "offline",
@@ -370,7 +363,6 @@ async fn snapshot_for_model_config(
             served_model
         },
         configured_model,
-        upstream,
         target_kind,
         metrics_applicable,
         health_status,

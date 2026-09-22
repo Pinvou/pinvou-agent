@@ -456,12 +456,6 @@ impl SurfaceEntry {
     pub(super) fn cancel_active_navigation(&self) {
         self.user_navigation.lock().cancel_active();
     }
-
-    pub(super) fn current_request_id_for_blocked_target(&self, target_url: &str) -> Option<String> {
-        self.user_navigation
-            .lock()
-            .current_request_id_for_blocked_target(target_url)
-    }
 }
 
 /// Authoritative host bijection between tabToken and WebView label.
@@ -827,6 +821,9 @@ impl WorkspaceControl {
     /// Only explicit UI handback may pass true.
     // The mutation closure is `|_| Ok(())`, so the Err branch of
     // issue_agent_lease_with cannot be reached here.
+    // Test-only: production callers must use issue_agent_lease_with with a real
+    // activation mutation (or begin_agent_operation for staged surfaces).
+    #[cfg(test)]
     #[allow(clippy::expect_used)]
     pub(super) fn issue_agent_lease_if_allowed(
         &self,
@@ -1057,6 +1054,9 @@ impl WorkspaceControl {
     /// A popup callback obtains Agent authorization only within an unfinished
     /// dispatch whose control and lease remain identical. It returns an opaque
     /// lease from Rust memory that is never exposed to the page or React.
+    // Test-only: production code revalidates retained popup holders through
+    // authorize_retained_agent_operation instead.
+    #[cfg(test)]
     pub(super) fn active_agent_operation(&self) -> Option<NativeTabLease> {
         let mut state = self.state.lock();
         state.clear_expired_authorization(Instant::now());
@@ -1730,7 +1730,10 @@ mod tests {
             .expires_at = Instant::now();
 
         assert_eq!(
-            entry.current_request_id_for_blocked_target("https://example.com/old"),
+            entry
+                .user_navigation
+                .lock()
+                .current_request_id_for_blocked_target("https://example.com/old"),
             None
         );
         assert!(!entry.navigation_admission_busy());
@@ -2088,11 +2091,16 @@ mod tests {
             .observe_requested_target("https://example.com/main");
 
         assert_eq!(
-            entry.current_request_id_for_blocked_target("custom://child"),
+            entry
+                .user_navigation
+                .lock()
+                .current_request_id_for_blocked_target("custom://child"),
             None
         );
         assert_eq!(
             entry
+                .user_navigation
+                .lock()
                 .current_request_id_for_blocked_target("https://example.com/main")
                 .as_deref(),
             Some("request-main")

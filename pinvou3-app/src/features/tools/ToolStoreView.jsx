@@ -105,10 +105,7 @@ const THIRD_PARTY_TOOL_LOGOS = {
   obsidian: 'assets/tool-icons/obsidian.ico',
   'yuandian-mcp': 'assets/tool-icons/wb-yuandian-mcp.svg',
   3: 'assets/tool-icons/wb-qq-mail.png',
-  4: 'assets/tool-icons/wb-ima-mcp.png',
   5: 'assets/tool-icons/wb-lexiang.png',
-  6: 'assets/tool-icons/wb-tencent-docs.png',
-  8: 'assets/tool-icons/wecom-user.png',
   11: 'assets/tool-icons/wb-tapd.png',
   12: 'assets/tool-icons/wb-cnb-api.svg',
 };
@@ -140,13 +137,11 @@ const TsToolIcon = ({ tool, className = '', imageClassName = 'h-8 w-8', fallback
   );
 };
 
+// The message is overridden by the call site (storeCopy.oauthBrowserTimeout); no default is set here.
 const oauthUiTimeoutResult = (serverName) => ({
   status: 'timeout',
-  message: '',
   server_name: serverName,
 });
-
-const oauthServerNameForTool = (tool) => tool?.oauthServerName || tool?.serverName || null;
 
 const withUiTimeout = (promise, timeoutMs, fallbackResult) => {
   let timeoutId = null;
@@ -846,12 +841,11 @@ const withUiTimeout = (promise, timeoutMs, fallbackResult) => {
     };
 
     // Inline double-confirm dialog skeleton (shared by the preset skill update confirm and the trash permanent-delete
-    // confirm): backdrop click-to-close + content stopPropagation + two side-by-side buttons. confirmTone 'blue'|'rose'
-    // picks each site's confirm key color; confirmTestId is only needed by the trash permanent-delete confirm (test pin).
+    // confirm): backdrop (shared ModalBackdrop: click-to-close) + content stopPropagation + two side-by-side buttons.
+    // confirmTone 'blue'|'rose' picks each site's confirm key color; confirmTestId is only needed by the trash
+    // permanent-delete confirm (test pin).
     const SheetRowConfirm = ({ title, desc, cancelLabel, confirmLabel, confirmTone = 'blue', confirmTestId, onConfirm, onCancel }) => (
-      // biome-ignore lint/a11y/useKeyWithClickEvents: backdrop click-to-close layer; the keyboard path is covered by the dialog's cancel/confirm buttons
-      // biome-ignore lint/a11y/noStaticElementInteractions: backdrop click-to-close layer, non-interactive container
-      <div className="fixed inset-0 z-[200] flex items-center justify-center bg-black/40 backdrop-blur-sm" onClick={onCancel}>
+      <ModalBackdrop onClose={onCancel}>
         {/* biome-ignore lint/a11y/useKeyWithClickEvents: click-propagation stop layer; keyboard events need no bubbling here */}
         {/* biome-ignore lint/a11y/noStaticElementInteractions: click-propagation stop layer, non-interactive container */}
         <div className="w-[300px] rounded-[20px] overflow-hidden shadow-2xl bg-white/95 backdrop-blur-xl dark:bg-[#2C2C2E]" onClick={e => e.stopPropagation()}>
@@ -868,7 +862,7 @@ const withUiTimeout = (promise, timeoutMs, fallbackResult) => {
             </button>
           </div>
         </div>
-      </div>
+      </ModalBackdrop>
     );
 
     /* eslint-disable sonarjs/cognitive-complexity -- tool store main view (list/detail/install/OAuth flows);legacy view; tracked separately */
@@ -1020,13 +1014,12 @@ const withUiTimeout = (promise, timeoutMs, fallbackResult) => {
           setBusyId((current) => releaseBusy(current, id));
         }
       };
-      // 导出为 zip 插件包：桌面端弹原生保存对话框，返回保存路径=成功；
-      // 返回 null=用户取消（静默）；抛错=失败。package_missing 条目目录已不在，禁用导出。
-      const handleExportRecycled = async (item) => {
-        if (!canMutateToolStore || !item || item.package_missing || busyRef.current) return;
-        setBusyId(item.id);
+      // Shared trunk for exporting a zip plugin package (used by both the recycle-bin and installed entries): on desktop, opens the native save dialog;
+      // a returned save path = success; null = user canceled (silent); a thrown error = failure.
+      const runPluginExport = async (command, id, busyKey, logLabel) => {
+        setBusyId(busyKey);
         try {
-          const savedPath = await invokeTauri('export_recycled_plugin', { id: item.id });
+          const savedPath = await invokeTauri(command, { id });
           if (savedPath) {
             // 标题只放文件名(完整路径在 280px 弹窗里装不下);路径降级为副标题,
             // 由 TsAlert 的 break-all 保证长路径断行不溢出。
@@ -1034,11 +1027,17 @@ const withUiTimeout = (promise, timeoutMs, fallbackResult) => {
             setAlert({ visible: true, loading: false, title: storeCopy.recycleExported(fileName), subtitle: String(savedPath), isInstall: false, isError: false });
           }
         } catch (e) {
-          console.error('export recycled plugin failed:', e);
+          console.error(`${logLabel} failed:`, e);
           setAlert({ visible: true, loading: false, title: storeCopy.operationFailedWith(String(e)), isInstall: false, isError: true });
         } finally {
-          setBusyId((current) => releaseBusy(current, item.id));
+          setBusyId((current) => releaseBusy(current, busyKey));
         }
+      };
+      // Export as a zip plugin package: on desktop, opens the native save dialog; a returned save path = success;
+      // null = user canceled (silent); a thrown error = failure. A package_missing item's directory no longer exists, so export is disabled.
+      const handleExportRecycled = async (item) => {
+        if (!canMutateToolStore || !item || item.package_missing || busyRef.current) return;
+        return runPluginExport('export_recycled_plugin', item.id, item.id, 'export recycled plugin');
       };
       // 已安装卡片「导出」：companion 技能卡先经 skillToMcp 映射为所属包 id（与可见性
       // 写入同口径，包 id 才是后端注册表主键）；提示复用回收站导出的同款模式
@@ -1046,19 +1045,7 @@ const withUiTimeout = (promise, timeoutMs, fallbackResult) => {
       const handleExportInstalled = async (tool) => {
         if (!canMutateToolStore || !tool || !tool.installed || tool.builtin || !tool.backendId || busyRef.current) return;
         const pkgId = skillToMcp[tool.backendId] || tool.backendId;
-        setBusyId(tool.backendId);
-        try {
-          const savedPath = await invokeTauri('export_installed_plugin', { id: pkgId });
-          if (savedPath) {
-            const fileName = pathBasename(savedPath, { fallback: String(savedPath) });
-            setAlert({ visible: true, loading: false, title: storeCopy.recycleExported(fileName), subtitle: String(savedPath), isInstall: false, isError: false });
-          }
-        } catch (e) {
-          console.error('export installed plugin failed:', e);
-          setAlert({ visible: true, loading: false, title: storeCopy.operationFailedWith(String(e)), isInstall: false, isError: true });
-        } finally {
-          setBusyId((current) => releaseBusy(current, tool.backendId));
-        }
+        return runPluginExport('export_installed_plugin', pkgId, tool.backendId, 'export installed plugin');
       };
       const [visibilityLoaded, setVisibilityLoaded] = useState(false);
       const loadHiddenByMode = () => {
@@ -1269,9 +1256,6 @@ const withUiTimeout = (promise, timeoutMs, fallbackResult) => {
             ? authState?.status === 'connected'
             : (t.backendId ? (bs ? bs.installed : (toolStates[t.backendId] || false)) : false),
           authStatus: authState?.status || 'not_installed',
-          authMessage: authState?.message || '',
-          mcpConfigured: !!authState?.mcp_configured,
-          oauthTokenPresent: !!authState?.oauth_token_present,
           // OAuth MCP 暂不下发 actions（后端 ready 未纳入 token 态），走 TsActionBtn
           // 旧分支；其余包动作驱动渲染。
           actions: t.oauthMcp ? undefined : actionsOf(bs),
@@ -1317,40 +1301,13 @@ const withUiTimeout = (promise, timeoutMs, fallbackResult) => {
         || !isRestrictedExternalAuthTool(tool)
         || !!tool.installed
       );
-      // 技能卡 = 预置(静态卡合并安装状态) + companion 技能(后端数据合成) + 用户上传
-      const presetSkills = tsSkillsData.map(localizeSkill).map(s => {
-        if (s.builtin) return { ...s, installed: true };
-        // 有配套 MCP 的技能(公文=gongwen,manifest companion_skills 声明)→ 跟随该 MCP 工具态;
-        // 否则读统一 readiness(store 真相源),缺失回退技能后端。
-        // 可更新态始终读技能后端(内容与嵌入资源比对),与安装态来源无关。
-        const be = skillBackend.find(x => x.id === s.backendId);
-        const updateAvailable = !!(be && be.update_available);
-        const mcpId = skillToMcp[s.backendId] || null;
-        if (mcpId) {
-          const mcpBs = bundleStates[mcpId];
-          const mcpInstalled = mcpBs ? mcpBs.installed : !!toolStates[mcpId];
-          // 安装态：MCP 或技能任一已装即显示已装（G3：独立安装的 companion
-          // 技能可见可管）。动作与安装态同源拆分：MCP 已装、或两者皆未装（安装
-          // 入口始终路由到所属 MCP 包）走包级 readiness——配置字段（配置/连接
-          // 按钮）只有包级 readiness 知道；仅技能独立已装（G3 混合态）改走技能级
-          // readiness 给出卸载入口，与 handleAction 的技能级卸载分流一致。
-          const skillBs = s.backendId ? bundleStates[s.backendId] : null;
-          const skillInstalled = skillBs ? skillBs.installed : (be ? be.installed : false);
-          return {
-            ...s,
-            installed: mcpInstalled || skillInstalled,
-            updateAvailable,
-            actions: (!mcpInstalled && skillInstalled) ? actionsOf(skillBs) : actionsOf(mcpBs),
-          };
-        }
-        const bs = s.backendId ? bundleStates[s.backendId] : null;
-        return {
-          ...s,
-          installed: bs ? bs.installed : (be ? be.installed : false),
-          updateAvailable,
-          actions: actionsOf(bs),
-        };
-      });
+      // Skill cards = presets (static cards) + companion skills (synthesized from backend data) + user uploads.
+      // tsSkillsData currently has a single builtin skill (s5 visual design, no install required),
+      // so the old "non-builtin preset skills read a unified readiness/companion MCP install state" branch is unreachable
+      // and has been removed; if product decisions reintroduce installable preset skills, the readiness fields must be restored along with it.
+      const presetSkills = tsSkillsData.map(localizeSkill).map(s => (
+        s.builtin ? { ...s, installed: true } : s
+      ));
       // 后端技能卡合成(统一路径):预置技能中无静态卡的(公文/PPT/可视化等)由
       // list_marketplace_skills 数据合成——真实预置技能取代前端空壳卡,
       // 展示文案走 i18n overlay(localizeSkill),精选位图片/版式走 tsSkillFeaturedAssets,
@@ -1541,7 +1498,6 @@ const withUiTimeout = (promise, timeoutMs, fallbackResult) => {
               {
                 installed: true,
                 mcp_configured: true,
-                oauth_required: true,
                 oauth_token_present: false,
                 status: 'config_installed_auth_pending',
               },
@@ -1573,7 +1529,8 @@ const withUiTimeout = (promise, timeoutMs, fallbackResult) => {
         const name = t ? t.title : backendId;
         const hasConfig = Boolean(t?.configFields?.length);
         const hasPipDeps = !hasConfig; // 无 config 的本地工具可能有 pip deps
-        const oauthServerName = t?.oauthMcp ? oauthServerNameForTool(t) : null;
+        // Single field: the t.oauthMcp tool card carries its own oauthServerName (the serverName fallback never had a producer).
+        const oauthServerName = t?.oauthMcp ? (t?.oauthServerName || null) : null;
         if (t?.oauthMcp && !oauthServerName) {
           setAlert({ visible: true, loading: false, title: storeCopy.oauthConfigError, subtitle: storeCopy.oauthNoServerName(name), isInstall: false, isError: true });
           return;
@@ -1600,7 +1557,6 @@ const withUiTimeout = (promise, timeoutMs, fallbackResult) => {
               [backendId]: {
                 installed: true,
                 mcp_configured: true,
-                oauth_required: true,
                 oauth_token_present: false,
                 status: 'auth_in_progress',
                 message: storeCopy.waitingBrowserAuth,
@@ -1957,7 +1913,8 @@ const withUiTimeout = (promise, timeoutMs, fallbackResult) => {
           });
           return;
         }
-        const tool = findLocalizedTool(backendId);
+        // Reuse the requestedTool binding above (same backendId, possibly redirected by the companion package); no repeated lookup.
+        const tool = requestedTool;
         // 组合包化的本地能力(pptx)只有 companion 技能卡、无连接器卡,名称回退到技能卡
         const name = tool ? tool.title : ((skillCards.find(x => x.backendId === backendId) || {}).title || backendId);
 
@@ -1997,7 +1954,6 @@ const withUiTimeout = (promise, timeoutMs, fallbackResult) => {
               [backendId]: {
                 installed: false,
                 mcp_configured: false,
-                oauth_required: true,
                 oauth_token_present: false,
                 status: 'not_installed',
                 message: storeCopy.notConnectedYet(name),
@@ -2007,7 +1963,7 @@ const withUiTimeout = (promise, timeoutMs, fallbackResult) => {
           // 上传插件卸载后进回收站（预置插件直接卸载），提示文案据此区分。
           setAlert({ visible: true, loading: false, title: tool && tool.userUploaded ? storeCopy.movedToRecycleBinQuoted(name) : storeCopy.uninstalledQuoted(name), isInstall: false, isError: false });
           if (selectedTool && selectedTool.backendId === backendId) {
-            setSelectedTool(prev => ({ ...prev, installed: false, authStatus: 'not_installed', authMessage: '' }));
+            setSelectedTool(prev => ({ ...prev, installed: false, authStatus: 'not_installed' }));
           }
           notifyComposerToolsChanged();
         } catch (e) {

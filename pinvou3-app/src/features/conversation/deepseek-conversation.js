@@ -126,10 +126,6 @@ function timelineUsage(usage) {
   return {
     inputTokens: Number(usage.input_tokens || 0),
     outputTokens: Number(usage.output_tokens || 0),
-    cacheHitTokens: Number(usage.cache_hit_tokens || 0),
-    cacheMissTokens: Number(usage.cache_miss_tokens || 0),
-    cacheWriteTokens: Number(usage.cache_write_tokens || 0),
-    reasoningTokens: Number(usage.reasoning_tokens || 0),
   };
 }
 
@@ -169,6 +165,8 @@ export function timelineDisplayError(error, options = {}) {
 /**
  * timing_events.jsonl 是 DeepSeek 回合生命周期的事实源。这里把
  * user_start / assistant_done 配成只读 Turn 元数据，不改写消息历史。
+ * Exported for tests (deepseek_conversation_timeline.test.mjs) — no runtime
+ * consumer outside this module.
  */
 export function pairDeepSeekTimeline(events = [], options = {}) {
   const ordered = [...events]

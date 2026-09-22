@@ -484,7 +484,7 @@ mod tests {
     fn setup() -> (ImportJobStore, L1Store, i64) {
         let store = Store::open_in_memory().unwrap();
         let conn = store.conn_arc();
-        let l1 = L1Store::new(conn.clone(), None);
+        let l1 = L1Store::new(conn.clone());
         let collection_id = l1.create_collection("测试", None, None).unwrap();
         (ImportJobStore::new(conn), l1, collection_id)
     }

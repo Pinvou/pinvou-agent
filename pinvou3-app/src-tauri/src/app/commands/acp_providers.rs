@@ -74,8 +74,8 @@ pub async fn delete_acp_provider(
     provider_id: String,
     acp_pool: State<'_, AcpPool>,
 ) -> Result<CodexAcpStatus, String> {
-    let pool = acp_pool.inner().clone();
-    pool.delete_acp_provider(&agent, &provider_id)
+    acp_pool
+        .delete_acp_provider(&agent, &provider_id)
         .await
         .map_err(|error| format!("删除 Provider 失败: {error:#}"))
 }
@@ -86,8 +86,8 @@ pub async fn switch_acp_provider(
     provider_id: String,
     acp_pool: State<'_, AcpPool>,
 ) -> Result<CodexAcpStatus, String> {
-    let pool = acp_pool.inner().clone();
-    pool.switch_acp_provider(&agent, &provider_id)
+    acp_pool
+        .switch_acp_provider(&agent, &provider_id)
         .await
         .map_err(|error| format!("切换 Provider 失败: {error:#}"))
 }
@@ -97,8 +97,8 @@ pub async fn switch_acp_provider_official(
     agent: String,
     acp_pool: State<'_, AcpPool>,
 ) -> Result<CodexAcpStatus, String> {
-    let pool = acp_pool.inner().clone();
-    pool.switch_acp_provider_official(&agent)
+    acp_pool
+        .switch_acp_provider_official(&agent)
         .await
         .map_err(|error| format!("恢复官方登录失败: {error:#}"))
 }
@@ -109,8 +109,8 @@ pub async fn uninstall_acp_agent(
     cleanup: Option<bool>,
     acp_pool: State<'_, AcpPool>,
 ) -> Result<CodexAcpStatus, String> {
-    let pool = acp_pool.inner().clone();
-    pool.uninstall_acp_agent(&agent, cleanup.unwrap_or(false))
+    acp_pool
+        .uninstall_acp_agent(&agent, cleanup.unwrap_or(false))
         .await
         .map_err(|error| format!("卸载 ACP Agent 失败: {error:#}"))
 }
@@ -121,8 +121,8 @@ pub async fn cancel_acp_agent_install(
     agent: String,
     acp_pool: State<'_, AcpPool>,
 ) -> Result<CodexAcpStatus, String> {
-    let pool = acp_pool.inner().clone();
-    pool.cancel_agent_install(&agent)
+    acp_pool
+        .cancel_agent_install(&agent)
         .await
         .map_err(|error| format!("取消安装失败: {error:#}"))
 }
@@ -146,8 +146,8 @@ pub async fn logout_acp_agent(
     agent: String,
     acp_pool: State<'_, AcpPool>,
 ) -> Result<CodexAcpStatus, String> {
-    let pool = acp_pool.inner().clone();
-    pool.logout_acp_agent(&agent)
+    acp_pool
+        .logout_acp_agent(&agent)
         .await
         .map_err(|error| format!("登出失败: {error:#}"))
 }
@@ -178,8 +178,8 @@ pub async fn probe_acp_agent_models(
     agent: String,
     acp_pool: State<'_, AcpPool>,
 ) -> Result<CodexAcpSessionInfo, String> {
-    let pool = acp_pool.inner().clone();
-    pool.probe_agent_model_options(&agent)
+    acp_pool
+        .probe_agent_model_options(&agent)
         .await
         .map_err(|error| format!("模型探针失败: {error:#}"))
 }
@@ -191,8 +191,8 @@ pub async fn set_codex_acp_session_provider(
     provider_id: Option<String>,
     acp_pool: State<'_, AcpPool>,
 ) -> Result<CodexAcpSessionInfo, String> {
-    let pool = acp_pool.inner().clone();
-    pool.set_acp_session_provider(&session_id, provider_id)
+    acp_pool
+        .set_acp_session_provider(&session_id, provider_id)
         .await
         .map_err(|error| format!("设置会话 Provider 失败: {error:#}"))
 }

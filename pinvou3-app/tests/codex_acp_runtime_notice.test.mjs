@@ -10,7 +10,6 @@ const {
   runtimeInstallInProgress,
   runtimeLoginInProgress,
   runtimeNoticeMode,
-  runtimeOperationFor,
 } = stateModule;
 
 const ready = {
@@ -68,28 +67,25 @@ assert.equal(runtimeNoticeMode({ ...ready, error: 'failed' }), 'error');
 assert.equal(runtimeNoticeMode(ready), 'ready');
 
 const installingClaude = { claude: 'install' };
-assert.equal(runtimeOperationFor(installingClaude, 'claude'), 'install');
-assert.equal(runtimeOperationFor(installingClaude, 'codex'), '');
-assert.equal(runtimeOperationFor(installingClaude, 'kimi'), '');
 assert.equal(
-  runtimeInstallInProgress(ready, runtimeOperationFor(installingClaude, 'claude')),
+  runtimeInstallInProgress(ready, installingClaude.claude || ''),
   true,
   'Claude installation must only mark Claude as installing',
 );
 assert.equal(
-  runtimeInstallInProgress(ready, runtimeOperationFor(installingClaude, 'codex')),
+  runtimeInstallInProgress(ready, installingClaude.codex || ''),
   false,
   'Claude installation must not mark Codex as installing',
 );
 
 const loggingInClaude = { claude: 'login' };
 assert.equal(
-  runtimeLoginInProgress(ready, runtimeOperationFor(loggingInClaude, 'claude')),
+  runtimeLoginInProgress(ready, loggingInClaude.claude || ''),
   true,
   'Claude login must only mark Claude as logging in',
 );
 assert.equal(
-  runtimeLoginInProgress(ready, runtimeOperationFor(loggingInClaude, 'codex')),
+  runtimeLoginInProgress(ready, loggingInClaude.codex || ''),
   false,
   'Claude login must not mark Codex as logging in',
 );

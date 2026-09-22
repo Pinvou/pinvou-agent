@@ -22,7 +22,8 @@ import {
 //   new key probed serially, ~12s worst case); debounceMs=0 matches the original session popover, firing inline in the effect;
 // - trimInputs: the form entry trims before probing (as the original did; the dependency array still holds the raw inputs,
 //   so whitespace-only changes still reschedule the probe); the session popover entry passes saved values and needs no trim.
-export function useLocalServerKindProbe({ enabled, baseUrl, apiKey = '', modelId = null, debounceMs = 0, trimInputs = false }) {
+// In-file only: consumed by the tier hook users below; not part of the module surface.
+function useLocalServerKindProbe({ enabled, baseUrl, apiKey = '', modelId = null, debounceMs = 0, trimInputs = false }) {
   const [probedKind, setProbedKind] = useState(null);
   const [probePending, setProbePending] = useState(false);
   const probeSupported = bridge.available && !!bridge.models && typeof bridge.models.probeLocalServerKind === 'function';

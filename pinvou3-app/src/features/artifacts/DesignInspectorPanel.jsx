@@ -536,7 +536,7 @@ const DesignInspectorPanel = ({ t, selectedElement, changes = EMPTY_CHANGES, onA
                 {pxField(L.diLineHeight, 'lineHeight')}
                 {pxField(L.diLetterSpacing, 'letterSpacing')}
                 {textField(L.diBgImage, 'backgroundImage')}
-                {textField(L.diBgSize, 'backgroundSize', { placeholder: 'cover / contain' })}
+                {textField(L.diBgSize, 'backgroundSize', { placeholder: L.diBgSizePlaceholder })}
                 {textField(L.diBgPosition, 'backgroundPosition')}
                 {selectField(L.diRepeat, 'backgroundRepeat', [
                   { value: 'repeat', label: L.diRepeat },

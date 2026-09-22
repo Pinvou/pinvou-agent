@@ -137,6 +137,6 @@ const tauriMonitorSource = read('src', 'platform', 'tauri', 'bridge', 'monitor.j
 assert.ok(tauriBridgeSource.includes('tokens: { input: 0, max: 0 }'), 'tauri bridge initializes max=0 (unknown window)');
 assert.ok(webSource.includes('tokens: { input: 0, max: 0 }'), 'web bridge initializes max=0 (unknown window)');
 assert.ok(!webSource.includes('let maxModelLen = 32768'), 'web monitor must not fall back to a fake 32K window');
-assert.ok(tauriMonitorSource.includes('state.tokens.max || 0'), 'tauri monitor must not fall back to a fake 32K window');
+assert.ok(tauriMonitorSource.includes('state.tokens.max = snap.vllm.max_model_len;'), 'tauri monitor must not fall back to a fake 32K window');
 
 console.log('chat_usage_context_window.test.mjs: OK');

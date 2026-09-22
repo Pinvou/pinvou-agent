@@ -91,6 +91,31 @@ pub(super) async fn create_turn_checkpoint(
     }
 }
 
+/// Invalidate "unsent" snapshots (any pre-send early exit; exact delete by id so
+/// leftovers cannot steal the same-numbered turn's first-wins alignment anchor on
+/// retry — review M5). Shared by `chat` send failure and each `accept_plan` early exit.
+pub(super) async fn drop_unsent_turn_checkpoint(
+    ledger: Option<std::path::PathBuf>,
+    snapshot_id: Option<String>,
+    session_id: &str,
+    caller: &str,
+) {
+    if let (Some(ledger), Some(snapshot_id)) = (ledger, snapshot_id) {
+        let sid = session_id.to_string();
+        let caller = caller.to_string();
+        let _ = tauri::async_runtime::spawn_blocking(move || {
+            if let Err(error) =
+                crate::features::code_checkpoints::drop_checkpoint(&ledger, &snapshot_id)
+            {
+                log::warn!(
+                    "[pinvou3][{caller}] drop unsent-turn checkpoint failed sid={sid}: {error:#}"
+                );
+            }
+        })
+        .await;
+    }
+}
+
 #[tauri::command]
 pub async fn list_checkpoints(
     session_id: String,

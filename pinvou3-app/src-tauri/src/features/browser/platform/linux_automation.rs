@@ -26,6 +26,7 @@ use tauri_runtime_wry::{
     Context, EventLoopIterationContext, Message, Plugin, PluginBuilder, WebContext, WebContextStore,
 };
 
+use super::ACTION_COMMIT_UNKNOWN_WEBDRIVER;
 use super::state::{NativeTabLease, UserNavigationState, WorkspaceControl};
 
 const DRIVER_BIN_ENV: &str = "PINVOU3_WEBKIT_WEBDRIVER_BIN";
@@ -34,8 +35,8 @@ const REQUEST_TIMEOUT: Duration = Duration::from_secs(20);
 const DRIVER_START_RETRY_INTERVAL: Duration = Duration::from_millis(50);
 const DRIVER_SESSION_ATTEMPT_TIMEOUT: Duration = Duration::from_secs(2);
 const HOST_BOOTSTRAP_SETTLE_TIMEOUT: Duration = Duration::from_secs(5);
-const BINDING_MARKER_PREFIX: &str = "about:blank#pinvou-webdriver-bind-";
-const ACTION_COMMIT_UNKNOWN_WEBDRIVER: &str = "browser/action-commit-unknown-webdriver";
+// Alias of the shared constant so this file's many call sites keep the short name.
+const BINDING_MARKER_PREFIX: &str = super::HOST_BLANK_MARKER_WEBDRIVER_BIND_PREFIX;
 const PROCESS_SHUTDOWN_ERROR: &str = "browser/process-shutting-down";
 
 static INSPECTOR_PORT: OnceLock<u16> = OnceLock::new();
@@ -479,13 +480,7 @@ pub(super) fn unregister_webview_binding(label: &str) {
 }
 
 fn is_exact_host_bootstrap_url(url: &str, tab_token: &str) -> bool {
-    const INTERNAL_BLANK_MARKER_PREFIXES: [&str; 4] = [
-        "about:blank#pinvou-session-",
-        "about:blank#pinvou-tab-",
-        "about:blank%23pinvou-session-",
-        "about:blank%23pinvou-tab-",
-    ];
-    INTERNAL_BLANK_MARKER_PREFIXES
+    super::HOST_BLANK_MARKER_TOKEN_PREFIXES
         .iter()
         .any(|prefix| url.strip_prefix(prefix) == Some(tab_token))
 }
@@ -1800,13 +1795,20 @@ impl WebDriverRuntime {
         session: &DriverSession,
         uid: &str,
     ) -> Result<String, String> {
+        // WebDriver execute passes the uid via arguments[0], so the script body
+        // stays non-interpolated and shares the BrowserCore prelude (including
+        // the runtime version gate) used by the async evaluation paths.
+        let script = format!(
+            "{}return core.element(arguments[0]);",
+            super::super::core::core_prelude()
+        );
         let value = self
             .request_in_session_locked(
                 session,
                 Method::POST,
                 "execute/sync",
                 Some(json!({
-                    "script": "const core = window.__PINVOU_BROWSER_CORE_V1__; if (!core) throw new Error('browser/core-runtime-unavailable'); return core.element(arguments[0]);",
+                    "script": script,
                     "args": [uid],
                 })),
             )

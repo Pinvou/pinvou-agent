@@ -28,8 +28,8 @@ use super::types::{
     normalize_work_context_topic,
 };
 use super::util::{
-    clean_id, clean_text, looks_completed_work_status, looks_recent_work_status, looks_sensitive,
-    looks_sensitive_or_task_like, looks_task_like,
+    clean_id, clean_text, contains_memory_block_marker, looks_completed_work_status,
+    looks_sensitive, validate_memory_content,
 };
 
 const LLM_REVIEW_TIMEOUT: StdDuration = StdDuration::from_secs(75);
@@ -422,7 +422,7 @@ const REMEMBER_REQUEST_PHRASES_ASCII: [&str; 4] = [
 /// Wider status/context words that only suggest the turn may contain memorable
 /// content: they trigger a per-turn review but carry no relaxed write
 /// consequences.
-const REVIEW_STATUS_HINT_PHRASES_CJK: [&str; 31] = [
+const REVIEW_STATUS_HINT_PHRASES_CJK: [&str; 27] = [
     "以后",
     "之后",
     "叫我",
@@ -442,16 +442,12 @@ const REVIEW_STATUS_HINT_PHRASES_CJK: [&str; 31] = [
     "经常",
     "负责",
     "参与",
-    "最近在",
     "最近",
     "这周",
-    "这周在",
     "本周",
-    "本周在",
     "目前在",
     "主要在",
     "正在",
-    "最近主要",
     "后面还",
     "继续",
 ];
@@ -788,7 +784,6 @@ pub(super) fn apply_llm_memory_review(
                 &suggestion.content,
                 &suggestion.source,
                 decision.ttl_days,
-                decision.confidence,
             ) {
                 Ok(item) => outcome.events.push(MemoryWriteEvent {
                     kind: item.kind,
@@ -856,8 +851,23 @@ pub(super) fn sanitize_llm_memory_item(
         _ => "preference".to_string(),
     };
     let mut topic = clean_text(&raw.topic, 40);
-    let mut content = super::util::clean_candidate_sentence(&raw.content, 180);
+    // Per-store cap shared with the io write path (and the organize validator),
+    // matched by the pre-normalization kind: a candidate that passes here is
+    // stored verbatim instead of being silently truncated on write.
+    let content_cap = match kind.as_str() {
+        "preference" => io::PREFERENCE_TEXT_MAX_CHARS,
+        "work_context" => io::WORK_CONTEXT_TEXT_MAX_CHARS,
+        _ => io::TIMED_TEXT_MAX_CHARS,
+    };
+    let mut content = super::util::clean_candidate_sentence(&raw.content, content_cap);
     if content.is_empty() || looks_sensitive(&content) {
+        return None;
+    }
+    // Memory-block markers are the render layer's structural boundary (the
+    // <pinvou_user_memory> block in render.rs): content carrying one could forge
+    // or prematurely close that boundary inside the runtime memory block — same
+    // drop policy as the organize validator.
+    if contains_memory_block_marker(&content) {
         return None;
     }
     if raw_kind == "recent_work" {
@@ -895,18 +905,18 @@ pub(super) fn sanitize_llm_memory_item(
             return None;
         }
     } else if matches!(kind.as_str(), "current_focus" | "recent_activity") {
-        if looks_task_like(&content) && !looks_recent_work_status(&content) {
+        if !validate_memory_content(&kind, &content) {
             return None;
         }
         topic = normalize_timed_memory_topic(&kind, &topic);
     } else if kind == "work_context" {
-        if content.chars().count() < 8 {
+        if !validate_memory_content(&kind, &content) {
             return None;
         }
         topic = normalize_work_context_topic(&topic);
     } else {
         kind = "preference".to_string();
-        if looks_sensitive_or_task_like(&content) || content.chars().count() < 6 {
+        if !validate_memory_content(&kind, &content) {
             return None;
         }
         topic = normalize_preference_topic(&topic);
@@ -1026,13 +1036,10 @@ fn memory_review_reasoning_dialect(
                 ReasoningDialect::None
             }
         }
-        ModelPreset::OpenaiCompatible
-        | ModelPreset::LocalVllm
-        | ModelPreset::Deepseek
-        | ModelPreset::Openai
-        | ModelPreset::Anthropic
-        | ModelPreset::Gemini
-        | ModelPreset::Xai => {
+        // LocalVllm / Deepseek never reach this fallback (both presets are
+        // intercepted by the preceding `provider`/`preset` ifs), so the
+        // remaining presets share the URL-sniff fallback below.
+        _ => {
             // 先取共享的 URL sniff 结果;若 URL 无法识别厂商,回退到 model 名匹配
             // (保留原 memory 的 model.contains 回退,覆盖自定义 OpenAI 兼容端点)。
             let d = reasoning_dialect_from_base_url(base_url, model);

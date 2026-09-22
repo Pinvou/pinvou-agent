@@ -1925,13 +1925,13 @@ function persistPinvouReviews() { return pinvouSharedtauriChat().persistPinvouRe
           if (!observed && isBusyFor(sid)) {
             // 25s fallback timeout with the session still busy: the cancel
             // unwind is unfinished and doSendFor would reliably hit
-            // session_turn_in_progress. bridge.chat.interruptAndSend is a
-            // public API (remote control / other hosts) whose callers may not
-            // handle rejections — fail explicitly without sending; the caller
-            // restore the message (the UI's zap/chip paths all have recovery
-            // catches). Never silently drop a message. If the session is no
-            // longer busy (the listener missed the event but the turn
-            // actually ended), proceed with the send.
+            // session_turn_in_progress. interruptAndSend is internal to the
+            // bridge now (only the queued-chip zap path calls it); the caller
+            // restores the message (the UI's zap/chip paths all have recovery
+            // catches) — fail explicitly without sending. Never silently drop
+            // a message. If the session is no longer busy (the listener
+            // missed the event but the turn actually ended), proceed with
+            // the send.
             throw new Error(
               "interrupt-and-send: cancel did not reach terminal within 25s and session is still busy; message not sent"
             );

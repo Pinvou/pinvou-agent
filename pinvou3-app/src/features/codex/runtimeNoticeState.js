@@ -7,11 +7,6 @@ export function runtimeNoticeMode(status, latestUpgradeDeferred = false) {
   return 'ready';
 }
 
-export function runtimeOperationFor(operations, agentId) {
-  if (!agentId || !operations) return '';
-  return operations[agentId] || '';
-}
-
 export function runtimeInstallInProgress(status, operation = '') {
   return Boolean(status?.installing || operation === 'install');
 }

@@ -1000,6 +1000,69 @@ pub async fn web_access_cancel_codex_acp(
     web_acp_result(WebAcpOperation::Cancel, result)
 }
 
+/// Unified orchestration of Web attachment reservations (ACP prompt and chat entries share it):
+/// reserve handles → stage into the session workspace (release on failure) → run `submit`
+/// → clean up staged copies on submit failure → finalize (consume on success, release on failure).
+/// Error folding is byte-for-byte identical; a success-path finalize failure is only logged,
+/// never reported to the browser — otherwise it would resubmit the turn (never-double-submit
+/// contract). The two message parameters keep each entry's own log wording.
+#[allow(clippy::too_many_arguments)]
+async fn with_web_attachments<'ctx, T>(
+    manager: &'ctx RemoteControlManager,
+    attachment_handles: &[String],
+    session_id: &'ctx str,
+    store: &'ctx SessionStore,
+    stage_release_label: &str,
+    finalize_accepted_label: &str,
+    submit: impl FnOnce(
+        Vec<crate::features::files::file_ingest::IngestResult>,
+    ) -> std::pin::Pin<
+        Box<dyn std::future::Future<Output = Result<T, String>> + Send + 'ctx>,
+    >,
+) -> Result<T, String> {
+    let (attachment_reservation, attachments) =
+        manager.reserve_web_attachments(attachment_handles)?;
+    let (attachments, staged_sources) =
+        match stage_uploaded_attachments(attachments, session_id, store) {
+            Ok(staged) => staged,
+            Err(error) => {
+                if let Err(release_error) = manager.finish_web_attachment_reservation(
+                    &attachment_reservation,
+                    attachment_handles,
+                    false,
+                ) {
+                    eprintln!("[web-access] release {stage_release_label} failed: {release_error}");
+                }
+                return Err(error);
+            }
+        };
+    match submit(attachments).await {
+        Ok(value) => {
+            if let Err(error) = manager.finish_web_attachment_reservation(
+                &attachment_reservation,
+                attachment_handles,
+                true,
+            ) {
+                eprintln!("[web-access] {finalize_accepted_label}: {error}");
+            }
+            Ok(value)
+        }
+        Err(submit_error) => {
+            cleanup_staged_attachment_sources(&staged_sources);
+            if let Err(error) = manager.finish_web_attachment_reservation(
+                &attachment_reservation,
+                attachment_handles,
+                false,
+            ) {
+                return Err(format!(
+                    "{submit_error}; additionally failed to release attachments: {error}"
+                ));
+            }
+            Err(submit_error)
+        }
+    }
+}
+
 /// Web-safe ACP prompt entry point. Browser and host-picked attachments are
 /// represented only by one-shot opaque handles; native paths and parsed
 /// contents never cross Relay. The underlying ACP command remains the single
@@ -1025,59 +1088,25 @@ pub async fn web_access_codex_acp_prompt(
         }
 
         let attachment_handles = attachment_handles.unwrap_or_default();
-        let (attachment_reservation, attachments) =
-            manager.reserve_web_attachments(&attachment_handles)?;
-        let (attachments, staged_sources) = match stage_uploaded_attachments(
-            attachments,
+        with_web_attachments(
+            &manager,
+            &attachment_handles,
             &session_id,
             &store,
-        ) {
-            Ok(staged) => staged,
-            Err(error) => {
-                if let Err(release_error) = manager.finish_web_attachment_reservation(
-                    &attachment_reservation,
-                    &attachment_handles,
-                    false,
-                ) {
-                    eprintln!(
-                        "[web-access] release ACP attachment reservation failed: {release_error}"
-                    );
-                }
-                return Err(error);
-            }
-        };
-        let result = super::codex::codex_acp_prompt_with_attachments(
-            session_id,
-            message,
-            attachments,
-            workspace_references.unwrap_or_default(),
-            &store,
-            &acp_pool,
+            "ACP attachment reservation",
+            "finalize accepted ACP attachments failed",
+            |attachments| {
+                Box::pin(super::codex::codex_acp_prompt_with_attachments(
+                    session_id.clone(),
+                    message.clone(),
+                    attachments,
+                    workspace_references.clone().unwrap_or_default(),
+                    &store,
+                    &acp_pool,
+                ))
+            },
         )
-        .await;
-        if result.is_err() {
-            cleanup_staged_attachment_sources(&staged_sources);
-        }
-        let consume = result.is_ok();
-        if let Err(error) = manager.finish_web_attachment_reservation(
-            &attachment_reservation,
-            &attachment_handles,
-            consume,
-        ) {
-            if consume {
-                eprintln!("[web-access] finalize accepted ACP attachments failed: {error}");
-            } else {
-                return Err(format!(
-                    "{}; additionally failed to release attachments: {error}",
-                    result
-                        .as_ref()
-                        .err()
-                        .cloned()
-                        .unwrap_or_else(|| "ACP prompt submission failed".to_string())
-                ));
-            }
-        }
-        result
+        .await
     }
     .await;
     web_acp_result(WebAcpOperation::Prompt, outcome)
@@ -1300,9 +1329,9 @@ pub async fn web_access_list_codex_acp_sessions(
 
 #[tauri::command]
 pub async fn web_access_list_acp_agents(
-    acp_pool: State<'_, AcpPool>,
+    _acp_pool: State<'_, AcpPool>,
 ) -> Result<Vec<crate::features::codex_acp::AcpAgentDescriptor>, String> {
-    let outcome = super::codex::list_acp_agents_for_pool(&acp_pool).await;
+    let outcome = super::codex::list_acp_agents_for_pool().await;
     web_acp_result(WebAcpOperation::ListAgents, outcome)
 }
 
@@ -1341,60 +1370,27 @@ async fn web_access_chat_for_session(
         .reserve_turn(&session_id)
         .map_err(|error| format!("reserve Web chat turn: {error:#}"))?;
     let attachment_handles = attachment_handles.unwrap_or_default();
-    let (attachment_reservation, attachments) =
-        manager.reserve_web_attachments(&attachment_handles)?;
-    let (attachments, staged_sources) =
-        match stage_uploaded_attachments(attachments, &session_id, store) {
-            Ok(staged) => staged,
-            Err(error) => {
-                if let Err(release_error) = manager.finish_web_attachment_reservation(
-                    &attachment_reservation,
-                    &attachment_handles,
-                    false,
-                ) {
-                    eprintln!(
-                        "[web-access] release staged attachment reservation failed: {release_error}"
-                    );
-                }
-                return Err(error);
-            }
-        };
-    let result = super::chat::chat_with_reservation(
-        message,
-        Some(attachments),
-        session_id,
-        restrict_tools,
-        turn_reservation,
-        pool,
-        store,
-        app,
-    )
-    .await;
-    if result.is_err() {
-        cleanup_staged_attachment_sources(&staged_sources);
-    }
-    let consume = result.is_ok();
-    if let Err(error) = manager.finish_web_attachment_reservation(
-        &attachment_reservation,
+    with_web_attachments(
+        manager,
         &attachment_handles,
-        consume,
-    ) {
-        if consume {
-            // The engine already accepted the turn. Never report a false
-            // failure that could cause the browser to submit it again.
-            eprintln!("[web-access] finalize accepted attachment reservation failed: {error}");
-        } else {
-            return Err(format!(
-                "{}; additionally failed to release attachments: {error}",
-                result
-                    .as_ref()
-                    .err()
-                    .cloned()
-                    .unwrap_or_else(|| "chat submission failed".to_string())
-            ));
-        }
-    }
-    result
+        &session_id,
+        store,
+        "staged attachment reservation",
+        "finalize accepted attachment reservation failed",
+        |attachments| {
+            Box::pin(super::chat::chat_with_reservation(
+                message.clone(),
+                Some(attachments),
+                session_id.clone(),
+                restrict_tools,
+                turn_reservation,
+                pool,
+                store,
+                app,
+            ))
+        },
+    )
+    .await
 }
 
 /// Web 端只能续写未开启多智能体模式的会话。Web 界面没有专家卡/只读面板，

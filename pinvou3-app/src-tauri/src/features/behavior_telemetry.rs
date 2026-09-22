@@ -16,10 +16,21 @@ const STATE_VERSION: u8 = 1;
 const EVENT_QUEUE_CAPACITY: usize = 512;
 const EVENT_FLUSH_MAX: usize = 50;
 const EVENT_FLUSH_DEBOUNCE: Duration = Duration::from_millis(1500);
+/// Per-request budget shared by both telemetry endpoints (previously the
+/// client-level timeout of the hand-built client).
+const EVENT_SEND_TIMEOUT: Duration = Duration::from_secs(12);
 
 #[derive(Clone)]
 pub struct BehaviorTelemetry {
-    client: reqwest::Client,
+    /// Process-wide shared probe pool from
+    /// [`crate::core::model_endpoint::shared_probe_client_with_timeout`],
+    /// requested with `None` (no client-level timeout) so this caller cannot
+    /// seed the shared `Some(_)` singleton with a different timeout — the 12s
+    /// budget is applied per request at the send sites, mirroring monitor's
+    /// per-request pattern. `None` = client build failed: the core helper
+    /// caches the failure and provides no panicking `Client::new()` fallback,
+    /// so the send sites report a client-unavailable error instead.
+    client: Option<&'static reqwest::Client>,
     runtime: Arc<RuntimeConfig>,
     state: Arc<Mutex<Option<PersistedState>>>,
     credential_gate: Arc<Mutex<()>>,
@@ -253,11 +264,7 @@ impl BehaviorTelemetry {
         let runtime = Arc::new(RuntimeConfig::from_env());
         let enabled = runtime.enabled;
         let telemetry = Self {
-            client: reqwest::Client::builder()
-                .connect_timeout(Duration::from_secs(5))
-                .timeout(Duration::from_secs(12))
-                .build()
-                .unwrap_or_else(|_| reqwest::Client::new()),
+            client: crate::core::model_endpoint::shared_probe_client_with_timeout(None),
             runtime,
             state: Arc::new(Mutex::new(load_state().ok().flatten())),
             credential_gate: Arc::new(Mutex::new(())),
@@ -331,9 +338,10 @@ impl BehaviorTelemetry {
             "device_id": credentials.device_id,
             "events": events,
         });
-        let response = self
-            .client
+        let client = self.client.context("telemetry http client unavailable")?;
+        let response = client
             .post(&credentials.behavior_events_url)
+            .timeout(EVENT_SEND_TIMEOUT)
             .bearer_auth(&credentials.device_token)
             .json(&body)
             .send()
@@ -378,12 +386,13 @@ impl BehaviorTelemetry {
             "platform": self.runtime.platform,
             "arch": self.runtime.arch,
         });
-        let response = self
-            .client
+        let client = self.client.context("telemetry http client unavailable")?;
+        let response = client
             .post(format!(
                 "{}/v1/register",
                 state.telemetry_base_url.trim_end_matches('/')
             ))
+            .timeout(EVENT_SEND_TIMEOUT)
             .json(&body)
             .send()
             .await

@@ -208,10 +208,6 @@ const ArtifactTileIcon = ({ name, tileCls = 'w-9 h-9 rounded-[10px]', glyphCls =
         }
       }
 
-      const handlePreviewFrameLoad = (frame) => {
-        injectDesignRuntime(frame);
-      };
-
       // Exit-edit-mode boundary: destroy the iframe runtime and reset the
       // AI-adjustment state and the selected element (the main session's
       // generation is not cancelled — AI file edits may continue, just
@@ -436,6 +432,7 @@ const ArtifactTileIcon = ({ name, tileCls = 'w-9 h-9 rounded-[10px]', glyphCls =
             if (!cancelled) setExternalUpdateBlocked(ok ? false : 'modified');
             return;
           }
+          if (cancelled) return;
           if (sel) await preview(sel);
         })();
         return () => { cancelled = true; };
@@ -608,7 +605,7 @@ const ArtifactTileIcon = ({ name, tileCls = 'w-9 h-9 rounded-[10px]', glyphCls =
             <ScaledHtmlPreview
               html={pv.text || ''}
               title={(sel && sel.path) || t.apTabPreview}
-              onFrameLoad={handlePreviewFrameLoad}
+              onFrameLoad={injectDesignRuntime}
               onOpenExternal={(url) => bridge.artifacts.openUserExternalUrl(url)}
               zoomMode={showDesignWorkbench ? htmlZoomMode : 'auto-width'}
               customScale={htmlCustomScale}
@@ -937,4 +934,3 @@ export { ArtifactsPanel };
 
 // Re-export for the pre-existing KnowledgeView import path; KnowledgeView should
 // import from shared/artifact-utils.js directly when that file changes next.
-export { OFFICE_HTML_STYLE } from '../../shared/artifact-utils.js';
