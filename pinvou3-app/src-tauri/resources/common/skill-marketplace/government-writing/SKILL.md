@@ -17,8 +17,8 @@ metadata:
 3. **填正文** —— 按模板骨架 + 层级序号体系撰写。
 4. **套话术** —— 主送/承启/结尾/落款/公开方式用固定话术库。
 5. **自检** —— 过"立账核账"清单逐项打勾。
-6. **出件** —— 按**公文字段契约**（见下方）调 `mcp_gongwen_make_gongwen` 渲染合规 .docx → 拿到 path **必须再 `mcp_pinvou3_present_artifact(path, title)`** 上产物卡（内置 MCP 工具默认延迟加载：工具列表里没有它时先 `tool_search` 激活；`tool_search` 也搜不到，才算产物卡后端本轮不可用——直接交付并在回复里说明产物卡不可用）。
-   - **依赖检查**：本技能靠『公文写作』MCP 出件。`mcp_gongwen_make_gongwen` 默认延迟加载——工具列表里没有它时先 `tool_search` 激活；`tool_search` 也搜不到才算不存在/不可用，**别硬拼纯文本冒充成品**——提示用户去插件中心·连接器页安装『公文写作』引擎，装好再出件。
+6. **出件** —— 按**公文字段契约**（见下方）调 `mcp_gongwen_make_gongwen` 渲染合规 .docx → 拿到 path **必须再 `mcp_pinvou3_present_artifact(path, title)`** 上产物卡（内置 MCP 工具默认延迟加载：工具列表里没有它时先 `tool_search` 激活；`tool_search` 返回 `mcp_boot` connecting（MCP 服务仍在启动）就等待数秒重试，connecting 消失后仍搜不到，才算产物卡后端本轮不可用——直接交付并在回复里说明产物卡不可用）。
+   - **依赖检查**：本技能靠『公文写作』MCP 出件。`mcp_gongwen_make_gongwen` 默认延迟加载——工具列表里没有它时先 `tool_search` 激活；`tool_search` 返回 `mcp_boot` connecting（MCP 服务仍在启动）就等待数秒重试，connecting 消失后仍搜不到才算不存在/不可用，**别硬拼纯文本冒充成品**——提示用户去插件中心·连接器页安装『公文写作』引擎，装好再出件。
    - `make_gongwen` 出件前自带立账核账：若返回 `ok:false` 且 `blocked_by_validate`，说明有 error 级硬伤（正文为空 / 缺主送 / 缺成文日期等），**按 `issues` 补全字段后重调**，绝不跳过、绝不拿空壳去 present。
    - .docx 是**二进制成品**：要改内容就改字段重调 `make_gongwen`，**绝不用 `read`/`edit` 去读写 .docx**（读不出文本是正常的）。
    - **不要自己拼 markdown 当公文成品**——内容你写进字段，套版交给渲染器。

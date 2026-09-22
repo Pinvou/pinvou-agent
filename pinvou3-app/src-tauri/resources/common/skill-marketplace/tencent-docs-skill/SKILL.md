@@ -127,7 +127,7 @@ tencent-docs/
 
 ## 🔧 调用方式
 
-在 Pinvou 中四个服务以 MCP 工具形式提供，模型直接调用（无需命令行）。注意：这些工具默认延迟加载——当前工具列表里没有时，先 `tool_search` 按名激活；`tool_search` 也搜不到，说明对应连接器本轮不可用，向用户说明即可，不要虚构工具名：
+在 Pinvou 中四个服务以 MCP 工具形式提供，模型直接调用（无需命令行）。注意：这些工具默认延迟加载——当前工具列表里没有时，先 `tool_search` 按名激活；`tool_search` 返回 `mcp_boot` connecting（MCP 服务仍在启动）就等待数秒重试，connecting 消失后仍搜不到，说明对应连接器本轮不可用，向用户说明即可，不要虚构工具名：
 
 | 服务 | 工具名前缀 | 用途 |
 |------|-----------|------|
@@ -198,7 +198,7 @@ tencent-docs/
 ### 排查步骤
 
 1. **匹配错误码**：先查上方错误码表，按对应方案处理
-2. **确认工具可用**：按品类核对对应前缀的工具（`mcp_tencent-docs_*` 通用 / `mcp_tdoc-slide_*` PPT / `mcp_tdoc-doc_*` Word / `mcp_tdoc-sheet_*` Excel）；这些工具默认延迟加载，工具列表里没有时先 `tool_search` 激活，`tool_search` 也搜不到才判定连接器不可用
+2. **确认工具可用**：按品类核对对应前缀的工具（`mcp_tencent-docs_*` 通用 / `mcp_tdoc-slide_*` PPT / `mcp_tdoc-doc_*` Word / `mcp_tdoc-sheet_*` Excel）；这些工具默认延迟加载，工具列表里没有时先 `tool_search` 激活，返回 `mcp_boot` connecting（MCP 服务仍在启动）就等待数秒重试，connecting 消失后仍搜不到才判定连接器不可用
 3. **确认授权状态**：如有鉴权相关错误，按 `references/auth.md` 的指引提示用户在 Pinvou 插件中心更新 Token
 4. **查阅品类参考文档**：根据场景路由表找到对应参考文档，确认工具调用规范和参数约束
 
