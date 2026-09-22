@@ -16,8 +16,11 @@ import {
 import {
   classifyAcpServiceFailure,
   isAcpAuthenticationFailure,
+  latestAgentRuntimeNotice,
+  runtimeOperationFor,
 } from './runtimeNoticeState.js';
 import {
+  AgentRuntimeNotice,
   AgentServiceFailureNotice,
   RuntimeNotice,
   runtimeSourceLabel,
@@ -42,6 +45,7 @@ import {
   mergeAcpTimelineSnapshot,
   updateAcpAttachmentDraft,
   projectAcpTimeline,
+  redactDisplayError,
   resolveAcpSessionControls,
 } from './acp-state.js';
 import {
@@ -777,6 +781,7 @@ export function CodexAcpView({
     await checkoutWorkspaceBranch(branch, 'carry');
   }
   const [dismissedFailureKey, setDismissedFailureKey] = useState('');
+  const [dismissedNoticeKey, setDismissedNoticeKey] = useState('');
   const [draftWorkspacePath, setDraftWorkspacePath] = useState(null);
   // 会话内用 sessionId 解析工作区；草稿态（会话未创建）直接扫描已选目录。
   const branchWorkspacePath = activeId ? null : draftWorkspacePath;
@@ -1231,6 +1236,18 @@ export function CodexAcpView({
   const visibleServiceFailure = serviceFailure?.key === dismissedFailureKey
     ? null
     : serviceFailure;
+  // 提示里可能带适配器 stderr 原文：与回合错误一致，展示前无条件脱敏。
+  const runtimeNotice = useMemo(() => {
+    const notice = latestAgentRuntimeNotice(events);
+    if (!notice) return null;
+    return {
+      ...notice,
+      detail: redactDisplayError(notice.detail, acpModelServiceLanguage) || '',
+    };
+  }, [events, acpModelServiceLanguage]);
+  const visibleRuntimeNotice = runtimeNotice?.key === dismissedNoticeKey
+    ? null
+    : runtimeNotice;
   const workspaceUnavailable = Boolean(
     activeSession
       && activeSession.workspace_kind === 'project'
@@ -3456,6 +3473,12 @@ export function CodexAcpView({
                     providerCopy={t.uiAcpProviders}
                   />
                 )}
+                <AgentRuntimeNotice
+                  notice={visibleRuntimeNotice}
+                  agentName={activeAgentName}
+                  onDismiss={() => setDismissedNoticeKey(runtimeNotice?.key || '')}
+                  copy={codexCopy}
+                />
               </>
             )}
             {!visibleTurns.length && (

@@ -7,6 +7,7 @@ const stateModule = await import(`data:text/javascript;base64,${Buffer.from(stat
 const {
   classifyAcpServiceFailure,
   isAcpAuthenticationFailure,
+  latestAgentRuntimeNotice,
   runtimeInstallInProgress,
   runtimeLoginInProgress,
   runtimeNoticeMode,
@@ -225,5 +226,104 @@ assert.doesNotMatch(
   'unrelated work must not render the active Agent as logging in',
 );
 assert.doesNotMatch(notices, /managed_download|managedDownload|downloadManaged/);
+
+// Agent 侧运行时提示：适配器 stderr 与回合看门狗的兜底动作都必须能浮到界面，
+// 并在后续回合成功完成后自动过期。
+const envelope = (seq, type, data) => ({ seq, timestamp: `t${seq}`, event: { type, data } });
+assert.equal(latestAgentRuntimeNotice([]), null, 'no events means no notice');
+assert.equal(
+  latestAgentRuntimeNotice([envelope(1, 'turn_started', {})]),
+  null,
+  'a plain turn start is not a notice',
+);
+const stderrNotice = latestAgentRuntimeNotice([
+  envelope(1, 'turn_started', {}),
+  envelope(2, 'runtime_notice', {
+    kind: 'agent_stderr',
+    agent: 'claude',
+    detail: 'cancel floor elapsed without the SDK yielding',
+  }),
+]);
+assert.equal(stderrNotice?.kind, 'agent_stderr');
+assert.equal(stderrNotice?.detail, 'cancel floor elapsed without the SDK yielding');
+assert.equal(
+  latestAgentRuntimeNotice([
+    envelope(1, 'runtime_notice', { kind: 'agent_stall', quietSeconds: 200 }),
+    envelope(2, 'runtime_notice', { kind: 'not_a_known_kind' }),
+  ])?.kind,
+  'agent_stall',
+  'unknown notice kinds must not surface',
+);
+assert.equal(
+  latestAgentRuntimeNotice([
+    envelope(1, 'runtime_notice', { kind: 'agent_stall_settled' }),
+    envelope(2, 'turn_started', {}),
+  ])?.kind,
+  'agent_stall_settled',
+  'a newer user turn must not hide the notice that was produced for it (the restart notice is emitted on the next message)',
+);
+assert.equal(
+  latestAgentRuntimeNotice([
+    envelope(1, 'runtime_notice', { kind: 'agent_stall_settled' }),
+    envelope(2, 'turn_completed', { status: 'Interrupted' }),
+  ])?.kind,
+  'agent_stall_settled',
+  'the notice survives its own interrupted completion so the ending stays explained',
+);
+assert.equal(
+  latestAgentRuntimeNotice([
+    envelope(1, 'runtime_notice', { kind: 'cancel_timeout' }),
+    envelope(2, 'turn_started', {}),
+    envelope(3, 'turn_completed', { status: 'Completed' }),
+  ]),
+  null,
+  'a completed turn afterwards means the session recovered, so the notice expires',
+);
+assert.equal(
+  latestAgentRuntimeNotice([
+    envelope(1, 'turn_started', {}),
+    envelope(2, 'runtime_notice', { kind: 'cancel_timeout' }),
+    envelope(3, 'turn_completed', { status: 'Interrupted' }),
+  ])?.kind,
+  'cancel_timeout',
+  'the notice survives its own turn completion so the ending stays explained',
+);
+assert.match(
+  notices,
+  /data-testid="acp-agent-runtime-notice"/,
+  'the ACP notices module must render the agent runtime notice',
+);
+assert.match(
+  view,
+  /latestAgentRuntimeNotice\(events\)/,
+  'the ACP view must derive the notice from the event stream',
+);
+for (const kind of ['agent_stall_restart', 'agent_session_restarted', 'agent_session_restarted_fresh']) {
+  assert.equal(
+    latestAgentRuntimeNotice([envelope(1, 'runtime_notice', { kind })])?.kind,
+    kind,
+    `${kind} must surface (repeated-stall escalation and the restart itself)`,
+  );
+}
+assert.match(
+  view,
+  /redactDisplayError\(notice\.detail/,
+  'the notice detail is adapter stderr text and must be redacted like turn errors',
+);
+assert.match(
+  notices,
+  /copy\.agentRestartHint/,
+  'the restarted-session notice must use its own hint copy',
+);
+assert.match(
+  notices,
+  /notice\.detail \? copy\.agentStderrHint : copy\.agentStderrNoDetailHint/,
+  'Web notices without projected stderr detail must not promise raw adapter text',
+);
+assert.match(
+  notices,
+  /notice\.kind === 'agent_stall_cancel'[\s\S]*copy\.agentStallCancelHint/,
+  'an automatic cancel must not tell the user to press Stop again',
+);
 
 console.log('✓ ACP runtime notice state matrix passed');
