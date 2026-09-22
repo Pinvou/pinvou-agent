@@ -627,9 +627,29 @@ impl BackendInner {
         kind: BackendRequestKind,
         control: bool,
     ) -> Result<BackendReply, ComputerUseError> {
-        let tx = self.ensure_sender()?;
         let (reply_tx, reply_rx) = channel::<BackendResult>();
         let cancelled = Arc::new(AtomicBool::new(false));
+        let tx = if control {
+            self.ensure_sender()?
+        } else {
+            // Register the cancel flag BEFORE ensure_sender: the lazy start
+            // runs the whole backend factory while this request is already
+            // "live", so a stop landing inside the startup window must find
+            // the flag in the registry and latch it — the worker's
+            // dequeue-skip then rejects the request once the startup
+            // completes. Registering only after the start left that window
+            // uncovered by both cancel mechanisms (round-17 finding): the
+            // Pending fast path skipped the sweep and nothing was registered
+            // to sweep, so the injection landed after the stop returned.
+            self.register_cancel(Arc::clone(&cancelled));
+            match self.ensure_sender() {
+                Ok(tx) => tx,
+                Err(error) => {
+                    self.unregister_cancel(&cancelled);
+                    return Err(error);
+                }
+            }
+        };
         if control {
             // A control request (emergency mouse-up, OS-grant close, revoke
             // cleanup) exists to stop or clean up after in-flight work, so
@@ -664,9 +684,6 @@ impl BackendInner {
                 ComputerUseError::unavailable("computer use backend thread died")
             })?;
         } else {
-            // Register before the send so a control request racing this one
-            // already sees the flag (dequeue-skip + between-event checks).
-            self.register_cancel(Arc::clone(&cancelled));
             tx.send(BackendRequest {
                 kind,
                 reply: reply_tx,
@@ -985,6 +1002,15 @@ impl BackendHandle {
     fn is_never_started(&self) -> bool {
         matches!(&*self.inner.state.lock(), WorkerState::Pending(_))
     }
+
+    /// Sets the cancel flag of every registered action request without any
+    /// backend contact (worker-free: it never sends a control request, so it
+    /// can never trigger a lazy start). Used by [`emergency_cleanup`] so a
+    /// request queued behind a still-running lazy start is latched *before*
+    /// the Pending fast-path check skips the control-request sweep.
+    fn cancel_all_registered_flags(&self) {
+        drop(self.inner.cancel_live_requests());
+    }
 }
 
 /// Session → backend-handle registry. Registered when a tool is constructed, unregistered on
@@ -1104,15 +1130,25 @@ impl BackendRegistry {
     }
 }
 
-/// Emergency cleanup for one handle, in the fixed order: unpress the
-/// physical left button first, then close the persistent OS-level grant.
-/// Runs on detached threads (see [`BackendRegistry::emergency_release`]);
-/// errors are only logged with the existing `eprintln!` convention.
+/// Emergency cleanup for one handle, in the fixed order: cancel every
+/// registered action request, then unpress the physical left button, then
+/// close the persistent OS-level grant. Runs on detached threads (see
+/// [`BackendRegistry::emergency_release`]); errors are only logged with the
+/// existing `eprintln!` convention.
 ///
-/// Pending-state fast path: a handle whose backend was never started is
-/// skipped entirely. Nothing was ever injected (no button can be held) and
-/// no OS grant exists, so running the cleanup would only make
-/// `ensure_sender` lazily construct the full platform backend
+/// The flag sweep comes first and is worker-free (it only flips the
+/// registered `AtomicBool`s, never touching the backend): a request whose
+/// lazy start is still running has its flag registered already
+/// (`request_inner` registers before `ensure_sender`), and the worker's
+/// dequeue-skip then rejects it once the startup completes. Round-17
+/// finding: with the sweep only reachable through the control request, a
+/// stop landing inside the first request's startup window escaped both
+/// cancel mechanisms and the injection landed after the stop returned.
+///
+/// Pending-state fast path: a handle whose backend was never started skips
+/// the mouse-up/grant-close part entirely. Nothing was ever injected (no
+/// button can be held) and no OS grant exists, so running the cleanup would
+/// only make `ensure_sender` lazily construct the full platform backend
 /// (xcap/enigo/portal, possibly OS permission work) just to issue three
 /// no-op mouse-ups — each holding the state mutex for up to
 /// BACKEND_CALL_TIMEOUT while the construction runs. The check lives at
@@ -1121,12 +1157,11 @@ impl BackendRegistry {
 /// path. Both directions of the inherent race are safe: if a request starts
 /// the backend concurrently, the handle is no longer Pending by the time
 /// this reads it and the cleanup runs; if the cleanup wins the read, the
-/// request is still queued and must re-check the consent guard before it
-/// engages the backend (tool.rs `run` re-checks the stop flag right before
-/// the first backend call of every action class), so a stop that latched the
-/// flag before the queued request runs rejects it instead of starting the
-/// backend after the stop returned.
+/// request is still queued with its flag latched by the sweep above and is
+/// rejected at dequeue (and the tool layer's pre-backend re-check rejects
+/// any later action outright).
 fn emergency_cleanup(handle: BackendHandle) {
+    handle.cancel_all_registered_flags();
     if handle.is_never_started() {
         return;
     }
@@ -1563,6 +1598,58 @@ mod tests {
         );
         handle.inner.in_flight.store(false, Ordering::SeqCst);
         assert!(handle.capabilities().is_ok(), "flag must be released");
+    }
+
+    /// Round-17 pin: a stop landing while the FIRST request's lazy start is
+    /// still running must reject that request. The action request registers
+    /// its cancel flag before `ensure_sender`, and the cleanup's flag sweep
+    /// runs before the Pending fast path — so once the startup completes,
+    /// the worker's dequeue-skip rejects the request instead of executing
+    /// it after the stop returned (previously that window was covered by
+    /// neither mechanism).
+    #[test]
+    fn stop_during_the_first_lazy_start_cancels_the_queued_request() {
+        let (release_tx, release_rx) = channel::<()>();
+        let factory_runs = Arc::new(AtomicUsize::new(0));
+        let factory_runs_writer = Arc::clone(&factory_runs);
+        let handle = Arc::new(BackendHandle::lazy(move || {
+            factory_runs_writer.fetch_add(1, Ordering::SeqCst);
+            // Hold the startup open until the test has raced the stop in.
+            let _ = release_rx.recv();
+            Ok(Box::new(MockBackend { clicks: 0, ups: 0 }) as Box<dyn ComputerUseBackend>)
+        }));
+        let requester_handle = Arc::clone(&handle);
+        let requester = std::thread::spawn(move || requester_handle.capabilities());
+
+        // Wait until the factory (the lazy start) is actually running, then
+        // race the stop in: latch the registered flag first (worker-free —
+        // `cancel_all_registered_flags` never touches the state mutex, which
+        // `ensure_sender` holds for the whole startup), then release the
+        // startup. Asserting `is_never_started` here would deadlock on that
+        // same state mutex — in production `emergency_cleanup` runs on a
+        // detached thread, where the block is benign.
+        while factory_runs.load(Ordering::SeqCst) == 0 {
+            std::thread::sleep(std::time::Duration::from_millis(1));
+        }
+        handle.cancel_all_registered_flags();
+        release_tx.send(()).expect("factory released");
+
+        // The startup completes; the queued request must be rejected at
+        // dequeue, not executed.
+        let error = requester
+            .join()
+            .expect("requester thread alive")
+            .err()
+            .expect("the stop must cancel the request queued during startup");
+        assert!(
+            error.to_string().contains("cancelled"),
+            "unexpected error: {error}"
+        );
+        assert_eq!(
+            factory_runs.load(Ordering::SeqCst),
+            1,
+            "the factory ran exactly once"
+        );
     }
 
     /// Shared probe state for the control-lane tests: records emergency

@@ -174,6 +174,13 @@ pub enum GuardRejection {
     Stopped,
     /// An input-class action lacks a valid session grant.
     GrantRequired,
+    /// The session's confirmation dialog is unanswered. Every input action
+    /// from the session is rejected while a pending confirmation exists:
+    /// otherwise the model could click the dialog's own approve control — an
+    /// ordinary clickable element whose label screens Clear — and mint the
+    /// approval itself (round-17 self-approval finding). Observing stays
+    /// allowed; deny/stop/disable/expiry all clear the pending and unblock.
+    ConfirmationPending,
     /// The cross-session physical input lock is held by another session and
     /// the bounded wait timed out (see
     /// [`PHYSICAL_INPUT_LOCK_TIMEOUT`]).
@@ -194,6 +201,10 @@ impl GuardRejection {
             }
             Self::GrantRequired => {
                 "the user has not granted control of mouse and keyboard for this session. Ask the user to grant control (the app shows a grant prompt) before retrying."
+                    .to_string()
+            }
+            Self::ConfirmationPending => {
+                "a previous action is waiting for the user's confirmation in the app. No further input actions are accepted from this session until the dialog is answered (approved, denied, or stopped); wait for the user, or stop if the request is abandoned."
                     .to_string()
             }
             Self::InputBusy => {
@@ -495,16 +506,39 @@ impl ComputerUseShared {
         }
     }
 
-    /// Gate for input-class actions: switch on, not stopped, and the session
+    /// Gate for input-class actions: switch on, not stopped, the session
     /// holds a grant (grant lifetime: see the note at the top of this
-    /// module). [`Self::verify_input_action`] must be checked once more
-    /// before injection.
+    /// module), and no confirmation dialog for this session is unanswered
+    /// (an unanswered dialog must not be clickable by the model itself — the
+    /// approve control is an ordinary clickable element, so letting input
+    /// through while a pending exists would let the session approve its own
+    /// consequential action). [`Self::verify_input_action`] must be checked
+    /// once more before injection.
     pub fn begin_input_action(&self, session_id: &str) -> Result<(), GuardRejection> {
         self.check_readonly()?;
         if !self.sessions.lock().contains(session_id) {
             return Err(GuardRejection::GrantRequired);
         }
+        if self.has_outstanding_pending(session_id) {
+            return Err(GuardRejection::ConfirmationPending);
+        }
         Ok(())
+    }
+
+    /// Whether `session_id` has an unanswered (unexpired) pending
+    /// confirmation. Expired pendings are swept under the same lock so a
+    /// TTL'd-out dialog cannot block input until some other path happens to
+    /// clear it.
+    fn has_outstanding_pending(&self, session_id: &str) -> bool {
+        let mut consent = self.consent.lock();
+        let now = Instant::now();
+        consent
+            .pending
+            .retain(|_, entry| now.duration_since(entry.created_at) <= CONFIRM_TTL);
+        consent
+            .pending
+            .values()
+            .any(|entry| entry.session_id == session_id)
     }
 
     /// Read-only re-check: whether the grant is still valid (switch, stop
@@ -656,6 +690,27 @@ impl ComputerUseShared {
         consent.approved_tokens.remove(confirm_id).is_some()
     }
 
+    /// Test helper: deny the session's newest outstanding pending (what a
+    /// user clicking Deny on the dialog does), so a test can proceed past an
+    /// intercepted action to its next leg.
+    #[cfg(test)]
+    pub(crate) fn deny_newest_pending_for_tests(&self, session_id: &str) -> bool {
+        let mut consent = self.consent.lock();
+        let now = Instant::now();
+        consent
+            .pending
+            .retain(|_, entry| now.duration_since(entry.created_at) <= CONFIRM_TTL);
+        let Some(id) = consent
+            .pending
+            .iter()
+            .find(|(_, entry)| entry.session_id == session_id)
+            .map(|(id, _)| id.clone())
+        else {
+            return false;
+        };
+        consent.pending.remove(&id).is_some()
+    }
+
     /// Mints an approval token. Callable only by the `computer_use_confirm`
     /// Tauri command — the model must never be able to mint one via a tool
     /// call. Mints only for a pending that exists and is unexpired, returning
@@ -741,12 +796,15 @@ impl ComputerUseShared {
         // Defense in depth (mirrors the mint side): a token minted while
         // enabled must not be spendable after a stop/disable landed — the
         // spend path still dies at verify_input_action, but consuming the
-        // user's approval there would be the wrong direction.
+        // user's approval there would be the wrong direction. The check now
+        // lives under the consent lock (the mint side always did), so a
+        // disable landing between the check and the spend cannot consume the
+        // approval.
+        let now = Instant::now();
+        let mut consent = self.consent.lock();
         if !self.is_enabled() || self.is_stopped() {
             return ConfirmationCheck::Unknown;
         }
-        let now = Instant::now();
-        let mut consent = self.consent.lock();
         let Some(token) = consent.approved_tokens.get(confirm_id) else {
             return ConfirmationCheck::Unknown;
         };
@@ -1613,6 +1671,125 @@ mod tests {
             shared
                 .new_pending_confirmation("s1", "left click", "Buy now", 0)
                 .is_none()
+        );
+    }
+
+    /// While a confirmation dialog is unanswered, every input action from
+    /// the session is rejected: the dialog's own approve control is an
+    /// ordinary clickable element whose label screens Clear, so letting
+    /// input through would let the model mint the approval itself by
+    /// clicking it (round-17 self-approval finding). Observing is not an
+    /// input action and stays allowed; every decision path (deny, mint,
+    /// stop, expiry) unblocks.
+    #[test]
+    fn input_is_rejected_while_a_confirmation_pends_and_unblocked_by_every_decision() {
+        let shared = enabled_shared();
+        shared.grant_session("s1");
+        assert!(shared.begin_input_action("s1").is_ok());
+
+        let id = new_pending(&shared, "s1", "left click");
+        assert_eq!(
+            shared.begin_input_action("s1"),
+            Err(GuardRejection::ConfirmationPending),
+            "an unanswered dialog must not be clickable by the model"
+        );
+        assert!(
+            GuardRejection::ConfirmationPending
+                .message()
+                .contains("waiting for the user's confirmation"),
+            "the message must tell the model to wait for the decision"
+        );
+        // Observing is unaffected: only input-class actions are gated.
+        assert_eq!(shared.check_readonly(), Ok(()));
+
+        // Deny clears the pending: the retry path (which re-raises a fresh
+        // dialog) works again.
+        assert!(shared.deny_confirmation(&id));
+        assert!(shared.begin_input_action("s1").is_ok());
+
+        // Approve path: mint consumes the pending, so the confirmed retry
+        // with the confirm_id goes through.
+        let id = new_pending(&shared, "s1", "left click");
+        assert_eq!(
+            shared.begin_input_action("s1"),
+            Err(GuardRejection::ConfirmationPending)
+        );
+        assert!(shared.mint_confirmation(&id));
+        assert!(shared.begin_input_action("s1").is_ok());
+        assert_eq!(
+            take(&shared, &id, "s1", "left click"),
+            ConfirmationCheck::Granted
+        );
+
+        // A stop sweeps the pending and unblocks.
+        let _id = new_pending(&shared, "s1", "left click");
+        assert_eq!(
+            shared.begin_input_action("s1"),
+            Err(GuardRejection::ConfirmationPending)
+        );
+        shared.stop_all();
+        assert_eq!(
+            shared.begin_input_action("s1"),
+            Err(GuardRejection::Stopped),
+            "the latched stop gates before the (cleared) pending would"
+        );
+        // stop_all also revoked the grant alongside the pending; re-enabling
+        // resets the latch, and a fresh grant unblocks input.
+        shared.set_enabled(true);
+        assert_eq!(
+            shared.begin_input_action("s1"),
+            Err(GuardRejection::GrantRequired),
+            "stop_all revoked the grant with the pending"
+        );
+        assert_eq!(shared.grant_session("s1"), GrantOutcome::Granted);
+        assert!(
+            shared.begin_input_action("s1").is_ok(),
+            "stop swept the pending; re-grant unblocks input"
+        );
+    }
+
+    /// A pending left to expire must not block input until some unrelated
+    /// path sweeps it: the block check itself removes TTL'd-out pendings.
+    #[test]
+    fn expired_pendings_stop_blocking_input() {
+        let shared = enabled_shared();
+        shared.grant_session("s1");
+        let id = new_pending(&shared, "s1", "left click");
+        assert_eq!(
+            shared.begin_input_action("s1"),
+            Err(GuardRejection::ConfirmationPending)
+        );
+        force_pending_expired(&shared, &id);
+        assert!(
+            shared.begin_input_action("s1").is_ok(),
+            "an expired dialog must not block input"
+        );
+        assert!(
+            shared.pending_confirmation(&id).is_none(),
+            "the expiry sweep must have removed the pending"
+        );
+    }
+
+    /// Test helper: age a pending past [`CONFIRM_TTL`] (Instant cannot be
+    /// faked without an injection point, so tests shift the timestamp).
+    fn force_pending_expired(shared: &ComputerUseShared, id: &str) {
+        let mut consent = shared.consent.lock();
+        if let Some(entry) = consent.pending.get_mut(id) {
+            entry.created_at = Instant::now() - CONFIRM_TTL - Duration::from_secs(1);
+        }
+    }
+
+    /// A pending for another session never blocks this session's input.
+    #[test]
+    fn another_sessions_pending_does_not_block_input() {
+        let shared = enabled_shared();
+        shared.grant_session("s1");
+        shared.grant_session("s2");
+        let _id = new_pending(&shared, "s2", "left click");
+        assert!(shared.begin_input_action("s1").is_ok());
+        assert_eq!(
+            shared.begin_input_action("s2"),
+            Err(GuardRejection::ConfirmationPending)
         );
     }
 
