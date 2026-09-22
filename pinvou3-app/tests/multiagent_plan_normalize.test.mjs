@@ -443,7 +443,7 @@ test('旧独立入口退役：多智能体经会话级开关 + 每轮注入委�
   );
   assert.match(
     poolSource,
-    /let spawned_at_ms = Self::now_epoch_ms\(\);[\s\S]{0,3200}spawned_at_ms,/,
+    /let spawned_at_ms = Self::now_epoch_ms\(\);[\s\S]{0,3600}spawned_at_ms,/,
     'the engine must record its epoch timestamp for transcript zombie-worker screening (computed once at spawn; the steer-id generation comes from the process-monotonic incarnation sequence, zhuowp re-review P1-2)',
   );
   assert.match(
@@ -515,8 +515,14 @@ test('旧独立入口退役：多智能体经会话级开关 + 每轮注入委�
   );
   assert.match(
     sessionsSource,
-    /deepseek_tui::utils::write_atomic\(&file, json\.as_bytes\(\)/,
-    '开关清单必须原子替换落盘（write_atomic：tmp+rename+fsync），进程中途退出不得留半个 JSON',
+    /fn save_multi_agent_flags_locked[\s\S]{0,800}atomic_write\(&file,/,
+    '开关清单落盘必须走共享 atomic_write 助手，进程中途退出不得留半个 JSON',
+  );
+  const filesystemSource = read('src-tauri', 'src', 'platform', 'filesystem.rs');
+  assert.match(
+    filesystemSource,
+    /create_new\(true\)[\s\S]{0,600}replace_file_atomically\(/,
+    '原子写助手必须先写 staging 临时文件再原子换名，任何时刻落盘的都是完整内容',
   );
   assert.match(
     sessionsSource,

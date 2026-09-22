@@ -315,8 +315,9 @@ pub fn update_user_persona(mut card: PersonaCard) -> Result<PersonaSummary, Stri
 }
 
 /// 删除用户卡(只能删 user- 前缀的自制卡)。
-/// Headless caller (the CLI families stack); in-tree callers use
-/// [`delete_user_persona_with`]. No in-tree consumer of this wrapper.
+/// Headless caller (the CLI families stack); in-tree callers go through the
+/// crate-private `_with` variant that runs cross-feature cleanup after the
+/// delete.
 pub fn delete_user_persona(id: &str) -> Result<(), String> {
     delete_user_persona_with(id, || ())
 }

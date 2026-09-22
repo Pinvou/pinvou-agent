@@ -273,53 +273,42 @@ impl SessionStore {
         // files (not whole-map rewrites of the boot-time maps): a headless
         // batch sharing a PINVOU3_HOME with the GUI must not revert pins,
         // modes, or flags the GUI persisted after this process booted.
-        let removed_multi_agent_ids: Vec<String> = {
+        {
             let mut modes = self.mode_states.write();
-            let mut removed_multi_agent_ids = Vec::new();
-            modes.retain(|id, state| {
-                let keep = !contains(id.as_str());
-                if !keep && state.multi_agent {
-                    removed_multi_agent_ids.push(id.clone());
-                }
-                keep
-            });
-            removed_multi_agent_ids
-        };
-        if !removed_multi_agent_ids.is_empty() {
-            // 保留策略清掉的会话必须同步移出 _multi_agent.json：残留的幽灵
-            // id 会在重启后复活开关状态，专家池变更联动还会给它重建工作区。
-            // Same critical-section contract as `set_multi_agent`: the
-            // in-process `multi_agent_flags_io` mutex must serialize the
-            // durable read-modify-write, or a concurrent save's older
-            // snapshot lands last and resurrects the removed flag.
-            let refs: Vec<&str> = removed_multi_agent_ids.iter().map(String::as_str).collect();
-            let _io = self.multi_agent_flags_io.lock();
-            if let Err(error) = Self::apply_multi_agent_mutation_locked(&[], &refs) {
-                eprintln!(
-                    "[sessions] update _multi_agent.json after retention purge failed: {error:#}"
-                );
-            }
+            modes.retain(|id, _| !contains(id.as_str()));
+        }
+        // Purge flags against the DURABLE file with the full eviction set,
+        // same reasoning as the pin purge below: a flag another process
+        // persisted after boot is invisible to the in-memory map. The
+        // mutation no-ops (no disk write) when nothing actually changes, so
+        // the unconditional call costs only a file read. A surviving ghost id
+        // would resurrect the switch state after restart, and the
+        // workspace-rebuild linkage would act on it.
+        let multi_agent_refs: Vec<&str> = ids.iter().map(String::as_str).collect();
+        let _io = self.multi_agent_flags_io.lock();
+        if let Err(error) = Self::apply_multi_agent_mutation_locked(&[], &multi_agent_refs) {
+            eprintln!(
+                "[sessions] update _multi_agent.json after retention purge failed: {error:#}"
+            );
         }
 
-        let removed_code_modes: Vec<String> = {
+        {
             let mut modes = self.session_mode_states.write();
-            let removed: Vec<String> = modes
-                .keys()
-                .filter(|id| contains(id.as_str()))
-                .cloned()
-                .collect();
-            for id in &removed {
-                modes.remove(id);
-            }
-            removed
-        };
-        if !removed_code_modes.is_empty() {
-            let _io = self.session_mode_states_io.lock();
-            if let Err(error) = Self::apply_session_mode_mutation_locked(&[], &removed_code_modes) {
-                eprintln!(
-                    "[sessions] update _session_mode_states.json after retention purge failed: {error:#}"
-                );
-            }
+            modes.retain(|id, _| !contains(id.as_str()));
+        }
+        // Purge modes against the DURABLE file with the full eviction set —
+        // NOT just the ids this process's boot-time map knows. Unlike the
+        // multi-agent flags, the mode sidecar has no boot-time ghost cleanup
+        // (`load_session_mode_states` merges every durable entry
+        // unconditionally), so a mode another process persisted after boot
+        // would otherwise survive its session's eviction forever and re-arm
+        // on id reuse: a recycled `agentic_{pid}_{counter}` id would reopen
+        // in the ghost mode instead of the default.
+        let _modes_io = self.session_mode_states_io.lock();
+        if let Err(error) = Self::apply_session_mode_mutation_locked(&[], ids) {
+            eprintln!(
+                "[sessions] update _session_mode_states.json after retention purge failed: {error:#}"
+            );
         }
 
         // Working-directory binding: clear the in-memory cache and best-effort
