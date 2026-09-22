@@ -409,12 +409,27 @@ fn list(archived: bool, limit: Option<usize>, output: OutputMode) -> Result<CliO
                 if row.archived { "archived" } else { "-" },
                 row.kind,
                 row.updated_at,
-                row.title,
+                // Titles are stored verbatim and legitimately contain newlines
+                // (the GUI's attachment marker embeds "\n\n"), which would
+                // garble the tab-separated row; control characters collapse to
+                // spaces in the human column only — JSON keeps the real
+                // title.
+                collapse_control_characters(&row.title),
             )
         })
         .collect::<Vec<_>>()
         .join("\n");
     Ok(success(render(output, human, &value)))
+}
+
+/// Replaces C0 control characters (newlines, tabs, ESC, …) with spaces so a
+/// stored title cannot break the column structure of the human `sessions
+/// list` rows. JSON output carries the title untouched.
+fn collapse_control_characters(title: &str) -> String {
+    title
+        .chars()
+        .map(|ch| if ch.is_control() { ' ' } else { ch })
+        .collect()
 }
 
 /// Full transcript text of one message, concatenated over its text blocks;
