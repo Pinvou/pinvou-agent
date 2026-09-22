@@ -3261,6 +3261,46 @@ fn ghost_ids_are_reconciled_away_on_load() {
     );
 }
 
+/// 蜂群开关物化 mode 条目时必须用解析出的默认 mode，不得 `or_default()`：
+/// 从未切换过 mode 的 code 会话默认是 Plan 只读，开一次开关不能把它静默
+/// 翻成 Yolo 自动批准（既覆盖 set_multi_agent，也覆盖启动恢复路径）。
+#[test]
+fn multi_agent_toggle_materializes_resolved_default_mode_not_yolo() {
+    let (store, _guard) = isolated_store();
+    let id = store
+        .create_new("m".into(), None, std::env::temp_dir())
+        .expect("create")
+        .metadata
+        .id
+        .clone();
+    let first_predicate_id = id.clone();
+    store.set_code_session_predicate(std::sync::Arc::new(move |candidate: &str| {
+        candidate == first_predicate_id
+    }));
+
+    store.set_multi_agent(&id, true).expect("persist flag");
+    assert!(store.mode_state(&id).multi_agent, "开关本身必须生效");
+    assert_eq!(
+        store.mode_state(&id).mode,
+        SerializableMode::Plan,
+        "code 会话开蜂群不得把默认 mode 翻成 Yolo"
+    );
+
+    // 启动恢复路径：新 store 从 sidecar 恢复开关，同样不得物化 Yolo。
+    let reloaded = SessionStore::boot_with_scheduled_root(paths::scheduled_tasks_root())
+        .expect("reboot store");
+    let second_predicate_id = id.clone();
+    reloaded.set_code_session_predicate(std::sync::Arc::new(move |candidate: &str| {
+        candidate == second_predicate_id
+    }));
+    assert!(reloaded.mode_state(&id).multi_agent, "开关恢复");
+    assert_eq!(
+        reloaded.mode_state(&id).mode,
+        SerializableMode::Plan,
+        "启动恢复同样不得把 code 会话翻成 Yolo"
+    );
+}
+
 /// 并发「开启/关闭」交错后，落盘结果必须收敛到最终内存状态——保存的
 /// 快照与写盘在同一临界区内，旧快照不可能覆盖新快照。
 #[test]
