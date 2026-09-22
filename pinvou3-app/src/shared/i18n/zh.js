@@ -132,7 +132,7 @@ const codexZh = {
   agentStallCancelHint:'Agent 持续没有响应，已自动请求停止；正在等待它收尾。',
   agentStallSettledHint:'Agent 长时间没有响应，此回合已按中断收尾；可以重新发送或继续对话。',
   agentCancelTimeoutHint:'「停止」没有得到 Agent 回应，此回合已按中断收尾。',
-  agentStderrHint:'来自 Agent 适配器的报错原文（会话日志里也有记录）。',
+  agentStderrHint:'来自 Agent 适配器的脱敏报错文本（会话日志里也有记录）。',
   agentStderrNoDetailHint:'Agent 适配器报告了异常；详细原文仅保留在桌面会话日志中。',
   agentRestarted:agent=>`${agent} 会话已重启`,
   agentStallRestartHint:'同一会话在短时间内反复无响应，下一条消息会换一个全新的 Agent 会话继续；能否带上前面的对话取决于该 Agent 的恢复能力，切换后我们会再告知一次。',

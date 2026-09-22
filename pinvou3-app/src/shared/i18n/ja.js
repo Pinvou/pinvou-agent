@@ -133,7 +133,7 @@ const codexJa = {
   agentStallCancelHint:'Agent が応答しない状態が続いたため、自動的に停止を要求しました。終了を待っています。',
   agentStallSettledHint:'Agent が長時間応答しなかったため、このターンは中断として切り上げました。再送信するか、そのまま続けられます。',
   agentCancelTimeoutHint:'「停止」に Agent から応答がなかったため、このターンは中断として切り上げました。',
-  agentStderrHint:'Agent アダプターからのエラー原文です（セッションログにも記録されます）。',
+  agentStderrHint:'Agent アダプターからの秘匿化済みエラーテキストです（セッションログにも記録されます）。',
   agentStderrNoDetailHint:'Agent アダプターが問題を報告しました。エラー原文はデスクトップのセッションログにのみ保存されています。',
   agentRestarted:agent=>`${agent} のセッションを再起動しました`,
   agentStallRestartHint:'同じセッションが短時間に繰り返し応答しなくなったため、次のメッセージは新しい Agent セッションで続行します。以前の会話を引き継げるかはその Agent の復元機能によります。切り替え後にどちらになったかをお知らせします。',
