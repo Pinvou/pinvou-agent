@@ -34,8 +34,8 @@ use self::bundle::{
 };
 use self::prefs::{ModelPreset, SavedModel, UserPrefs};
 use crate::core::always_thinking::{AlwaysThinkingSpec, always_thinking_spec};
-use crate::core::model_endpoint::{LocalServerKind, is_opencode_gateway_base_url};
 use crate::core::model_endpoint::opencode_session_id_for;
+use crate::core::model_endpoint::{LocalServerKind, is_opencode_gateway_base_url};
 use crate::core::session_mode::SessionMode;
 use crate::features::assistant::expert_roster::ExpertRosterSnapshot;
 use crate::features::assistant::image_capability::{
@@ -2181,16 +2181,14 @@ impl Pinvou3Bridge {
             reasoning_stream_style,
         );
         if is_opencode_gateway_base_url(&base_url) {
-            cfg.http_headers
-                .get_or_insert_with(HashMap::new)
-                .insert(
-                    "x-opencode-session".to_string(),
-                    opencode_session_id_for(
-                        self.session_affinity_key
-                            .as_deref()
-                            .unwrap_or(ENGINE_DEFAULT_CONVERSATION_KEY),
-                    ),
-                );
+            cfg.http_headers.get_or_insert_with(HashMap::new).insert(
+                "x-opencode-session".to_string(),
+                opencode_session_id_for(
+                    self.session_affinity_key
+                        .as_deref()
+                        .unwrap_or(ENGINE_DEFAULT_CONVERSATION_KEY),
+                ),
+            );
         }
         cfg.default_text_model = Some(model);
         // 本地模型（vLLM / 探测出的 Ollama）默认关 thinking（防 SSE timeout）；其余默认 high。
@@ -6695,7 +6693,13 @@ mod tests {
         let gateway = "https://opencode.ai/zen/go/v1";
         let mut keyed_a = fixture_bridge();
         keyed_a.session_affinity_key = Some("session-a".to_string());
-        set_active_model(&mut keyed_a, ModelPreset::OpenaiCompatible, "m", gateway, "sk-xxx");
+        set_active_model(
+            &mut keyed_a,
+            ModelPreset::OpenaiCompatible,
+            "m",
+            gateway,
+            "sk-xxx",
+        );
         let a = keyed_a
             .build_dt_config()
             .http_headers
@@ -6703,7 +6707,10 @@ mod tests {
             .and_then(|headers| headers.get("x-opencode-session"))
             .cloned()
             .expect("session-keyed gateway route must carry the header");
-        assert_ne!(a, first, "session IDs must not collide with the default conversation");
+        assert_ne!(
+            a, first,
+            "session IDs must not collide with the default conversation"
+        );
         let mut keyed_a_respawn = fixture_bridge();
         keyed_a_respawn.session_affinity_key = Some("session-a".to_string());
         set_active_model(
@@ -6726,7 +6733,13 @@ mod tests {
         );
         let mut keyed_b = fixture_bridge();
         keyed_b.session_affinity_key = Some("session-b".to_string());
-        set_active_model(&mut keyed_b, ModelPreset::OpenaiCompatible, "m", gateway, "sk-xxx");
+        set_active_model(
+            &mut keyed_b,
+            ModelPreset::OpenaiCompatible,
+            "m",
+            gateway,
+            "sk-xxx",
+        );
         assert_ne!(
             keyed_b
                 .build_dt_config()
