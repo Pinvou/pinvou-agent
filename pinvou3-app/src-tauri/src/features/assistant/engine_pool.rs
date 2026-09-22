@@ -1295,10 +1295,9 @@ impl EnginePool {
         self.mcp_config_revision.fetch_add(1, Ordering::AcqRel);
     }
 
-    /// Tool-policy compute for the chat send path. The policy closure reads
-    /// the cross-process bundle lock; keep the potentially blocking read off
-    /// the async worker like every other lock-taking path (a wedged CLI
-    /// process must not freeze the worker). `None` = the compute task died
+    /// Tool-policy compute for the chat send path. The policy closure does
+    /// blocking disk I/O via the marketplace readers; keep it off the async
+    /// worker. `None` = the compute task died
     /// (join failure): the caller must keep the session's current disallowed
     /// set — an empty list would broadcast allow-everything (fail-open).
     pub async fn compute_disallowed_tools(&self) -> Option<Vec<String>> {
@@ -1317,9 +1316,8 @@ impl EnginePool {
     }
 
     pub async fn refresh_disallowed_tools(&self) -> Vec<String> {
-        // The policy closure reads the cross-process bundle lock; keep the
-        // potentially blocking read off the async worker like the other
-        // lock-taking paths (a wedged CLI process must not freeze the worker).
+        // The policy closure does blocking disk I/O via the marketplace
+        // readers; keep it off the async worker.
         let app = self.app.clone();
         let tool_policy = self.tool_policy.clone();
         let tools = match tokio::task::spawn_blocking(move || tool_policy(&app)).await {
@@ -1631,11 +1629,11 @@ impl EnginePool {
             .steer_incarnation_seq
             .fetch_add(1, Ordering::Relaxed)
             .saturating_add(1);
-        // The tool policy closure AND the per-session shaping both read the
-        // cross-process bundle lock (shaping consults the scope unavailable
-        // sets for non-plain sessions); keep both blocking reads inside the
-        // same off-worker task (same rationale as refresh_disallowed_tools —
-        // a wedged CLI process must not freeze the worker).
+        // The tool policy closure AND the per-session shaping both do
+        // blocking disk I/O via the marketplace readers (shaping consults
+        // the scope unavailable sets for non-plain sessions); keep both
+        // inside the same off-worker task (same rationale as
+        // refresh_disallowed_tools).
         let disallowed_tools = {
             let app = self.app.clone();
             let tool_policy = self.tool_policy.clone();
