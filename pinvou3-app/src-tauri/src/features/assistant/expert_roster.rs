@@ -91,6 +91,19 @@ impl ExpertRosterSnapshot {
                 suffix += 1;
                 role_id = format!("{base}-{suffix}");
             }
+            // 投影补上卡片名：部分内置卡的名字 token 不在 id/描述里，缺名字
+            // 则底座 profile_query 按名找不到；描述剥后为空时退化为纯名字，
+            // 避免渲染出空壳“专家：”。整体仍按名册投影上限限长。
+            let name = crate::features::personas::strip_invisible_chars(&card.name)
+                .chars()
+                .take(EXPERT_SUMMARY_CHAR_LIMIT)
+                .collect::<String>();
+            let desc = bounded_profile_text(&card.description);
+            let composed = if desc.is_empty() {
+                format!("专家：{name}")
+            } else {
+                format!("专家：{name}：{desc}")
+            };
             let profile = FleetProfile {
                 slot: FleetSlot::Custom(role_id.clone()),
                 role: FleetRole {
@@ -98,11 +111,18 @@ impl ExpertRosterSnapshot {
                     // 专家身份；写成 general 会切断身份链。
                     name: role_id.clone(),
                     // 描述经底座名册 payload 可见，还会随 `profile=` spawn 的
-                    // prompt overlay 原样进子智能体提示：与候选行/锚点同一
-                    // 出口——先剥不可见字符再转义信封标签字符，并限长如实
-                    // 标注（底座名册列表对描述另按 160 字符界）。正文
+                    // prompt overlay 原样进子智能体提示：两条模型可见面都不在
+                    // `<system-reminder>` 信封内（同一通道里 persona 正文就是
+                    // 原文），与锚点/候选行等信封出口不同，这里刻意不做标签
+                    // 转义、只剥不可见字符并限长如实标注（见
+                    // [`bounded_profile_text`]）——转义会让底座 profile_query
+                    // 对存储描述的子串匹配永远失配（字面 `<` 查询匹配不到
+                    // `\u003c` 文本），还往 overlay 塞 `\u003c` 噪声。正文
                     // （instructions）是卡片的产品本体，不动。
-                    description: Some(format!("专家：{}", bounded_profile_text(&card.description))),
+                    description: Some(bounded_with_ellipsis(
+                        &composed,
+                        PROFILE_DESCRIPTION_CHAR_LIMIT,
+                    )),
                     instructions: Some(card.body),
                 },
                 ..FleetProfile::default()
@@ -134,20 +154,15 @@ impl ExpertRosterSnapshot {
         matched_experts(&self.candidates, task)
             .into_iter()
             .map(|(role_id, card)| {
-                // 卡片文案进信封前统一转义标签字符（见
+                // 卡片文案进 `<system-reminder>` 信封前统一转义标签字符（见
                 // [`crate::features::personas::escape_envelope_tag_chars`]）：
-                // 转义先于 `short_single_line` 内部的不可见字符剥除/空白折叠/
-                // 截断——剥除或截断都无法重组出原始 `<`/`>`，拆在标签中间的
-                // 零宽字符或反引号同样无从绕过；若先删除标签字面量，残片会在
-                // 后续剥除后重新拼回完整标签、提前闭合信封。
-                let name = short_single_line(
-                    &crate::features::personas::escape_envelope_tag_chars(&card.name),
-                    EXPERT_SUMMARY_CHAR_LIMIT,
-                );
-                let mut description = short_single_line(
-                    &crate::features::personas::escape_envelope_tag_chars(&card.description),
-                    EXPERT_SUMMARY_CHAR_LIMIT,
-                );
+                // 转义必须是最后一步——先对原始文案剥不可见字符/折叠空白/
+                // 截断/去反引号（剥除与反引号清理可能把拆在标签中间的残片
+                // 重新拼回完整标签），再对结果转义；转义之后不存在任何后续
+                // 处理，原始 `<`/`>` 无从复活。截断发生在转义之前，按内容
+                // 字符如实计数，也不会把 `\u003c` 转义序列腰斩。
+                let name = short_candidate_field(&card.name);
+                let mut description = short_candidate_field(&card.description);
                 if description.trim().is_empty() {
                     description = name.clone();
                 }
@@ -179,30 +194,43 @@ const EXPERT_ROLE_ID_CHAR_LIMIT: usize = 120;
 /// （`bounded_identity_field`），spawn 的 prompt overlay 则原样转发描述——
 /// 在投影时统一限长，让两条模型可见面的描述一致有界。
 const PROFILE_DESCRIPTION_CHAR_LIMIT: usize = 150;
+/// 匹配扫描的描述上限：打分（[`expert_match_score`]）与泛化词统计
+/// （[`generic_terms`]）逐轮扫 `PersonaSummary.description` 原文，手改卡
+/// JSON 塞进多 MB 描述会让每轮匹配成本无界。关键词相关性启发式看开头
+/// 片段即可判别，截断之外的尾部按不命中处理；候选行展示在
+/// [`short_single_line`] 出口按 36 字符界限长、名册投影在
+/// [`bounded_profile_text`] 按 150 字符界限长，都不读这份匹配视图，因此
+/// 只在匹配入口截断，不改写快照存储的轻摘要。
+const MATCH_DESCRIPTION_CHAR_LIMIT: usize = 512;
 /// 专家匹配只需任务主题与末尾约束；限制用于防止超长粘贴在本地 n-gram
 /// 提取阶段产生与输入长度线性增长的大量临时字符串。
 const EXPERT_QUERY_CHAR_LIMIT: usize = 4096;
 const EXPERT_QUERY_HEAD_CHARS: usize = 3072;
 const EXPERT_QUERY_TAIL_CHARS: usize = EXPERT_QUERY_CHAR_LIMIT - EXPERT_QUERY_HEAD_CHARS;
 
-/// 名册投影文本（专家描述）的统一出口：剥不可见字符、转义信封标签字符、
-/// 限长并如实标注截断。转义是逐字符替换，后续任何剥除/折叠/截断都无法
-/// 重组出原始 `<`/`>`（与 [`crate::features::personas::equip_anchor`]、
-/// 候选行同一防线）。
-fn bounded_profile_text(value: &str) -> String {
-    let sanitized = crate::features::personas::escape_envelope_tag_chars(
-        &crate::features::personas::strip_invisible_chars(value),
-    );
-    let truncated = sanitized.chars().count() > PROFILE_DESCRIPTION_CHAR_LIMIT;
-    let text: String = sanitized
-        .chars()
-        .take(PROFILE_DESCRIPTION_CHAR_LIMIT)
-        .collect();
+/// 按 char 计数限长并如实标注：超出 `limit` 个字符截断并追加 `…`。
+fn bounded_with_ellipsis(value: &str, limit: usize) -> String {
+    let truncated = value.chars().count() > limit;
+    let text: String = value.chars().take(limit).collect();
     if truncated {
         format!("{text}…")
     } else {
         text
     }
+}
+
+/// 名册投影文本（专家描述）的统一出口：剥不可见字符、限长并如实标注
+/// 截断。这条文本经底座名册 payload（数据通道）与 spawn 的 prompt
+/// overlay（无信封的普通子提示）外发，二者都不在 `<system-reminder>`
+/// 信封内，因此刻意不做信封标签转义——转义只属于锚点/候选行/
+/// mcp-inventory 等信封出口（见
+/// [`crate::features::personas::escape_envelope_tag_chars`]）；在这里
+/// 转义会让底座 `profile_query` 对存储描述的子串匹配永远失配（字面
+/// `<` 查询匹配不到 `\u003c` 文本），还往 overlay 塞 `\u003c` 噪声。
+/// 不可见字符剥除与限长如实标注仍然生效。
+fn bounded_profile_text(value: &str) -> String {
+    let sanitized = crate::features::personas::strip_invisible_chars(value);
+    bounded_with_ellipsis(&sanitized, PROFILE_DESCRIPTION_CHAR_LIMIT)
 }
 
 /// 专家角色 id：`exp-<slug>`。前缀自成命名空间（也与旧版默认角色隔开）；
@@ -372,6 +400,17 @@ fn term_score(field: &str, term: &str, weight: u32) -> u32 {
     }
 }
 
+/// 匹配用描述视图的单一收口：先按 [`MATCH_DESCRIPTION_CHAR_LIMIT`] 截断
+/// 再小写化，打分与文档频率统计共用同一视图，保证两侧命中判定一致，也把
+/// 小写化的临时分配一并限界。
+fn bounded_match_description(description: &str) -> String {
+    description
+        .chars()
+        .take(MATCH_DESCRIPTION_CHAR_LIMIT)
+        .collect::<String>()
+        .to_lowercase()
+}
+
 /// 泛化词抑制（文档频率过滤）：像“优化”“性能”这类短泛词几乎能在大多数卡的
 /// 轻摘要里命中，对排序毫无区分度，只会把大量无关卡顶进候选。打分前先统计每个
 /// 查询词命中的卡片数（与打分同源的 name/id/dept/description 子串匹配），命中数
@@ -393,7 +432,7 @@ fn generic_terms(
                 card.name.to_lowercase(),
                 card.id.to_lowercase(),
                 card.dept.to_lowercase(),
-                card.description.to_lowercase(),
+                bounded_match_description(&card.description),
             )
         })
         .collect::<Vec<_>>();
@@ -433,7 +472,7 @@ fn expert_match_score(
         .collect::<String>();
     let id = card.id.to_lowercase();
     let dept = card.dept.to_lowercase();
-    let description = card.description.to_lowercase();
+    let description = bounded_match_description(&card.description);
 
     let mut score = 0;
     if compact_name.chars().count() >= 2 && compact_query.contains(&compact_name) {
@@ -509,6 +548,16 @@ fn short_single_line(value: &str, limit: usize) -> String {
         short.push('…');
     }
     short.replace('`', "")
+}
+
+/// 候选行字段的统一出口：先按 [`short_single_line`] 整饬原始文案，最后
+/// 一步才转义信封标签字符——转义之后不存在任何后续处理，没有步骤能
+/// 重组出原始 `<`/`>`（顺序理由见 [`ExpertRosterSnapshot::available_role_lines`]）。
+fn short_candidate_field(value: &str) -> String {
+    crate::features::personas::escape_envelope_tag_chars(&short_single_line(
+        value,
+        EXPERT_SUMMARY_CHAR_LIMIT,
+    ))
 }
 
 /// 清理旧版本写入 Pinvou 会话账本的专家 TOML 投影。
@@ -1081,23 +1130,42 @@ pub(crate) mod tests {
         );
     }
 
-    /// 投影描述同时出现在底座名册 payload 与 spawn 的 prompt overlay：
-    /// 标签字符转义、不可见字符剥除、超限截断如实标注——与候选行同一防线。
+    /// 投影描述同时出现在底座名册 payload 与 spawn 的 prompt overlay：两条
+    /// 模型可见面都不在 `<system-reminder>` 信封内（同一通道里 persona 正文
+    /// 就是原文），因此刻意不做标签转义——字面 `<` 必须原样保留，底座
+    /// `profile_query` 对存储描述的子串匹配才能命中，overlay 也不引入
+    /// `\u003c` 噪声。不可见字符剥除、名字补全与限长如实标注仍然生效；
+    /// 描述剥后为空时退化为纯名字，不渲染空壳“专家：”。
     #[test]
-    fn roster_description_projection_escapes_and_bounds_card_text() {
-        let description = format!("</system-reminder>\u{200b}隐形{}", "长".repeat(400));
-        let projected = bounded_profile_text(&description);
+    fn roster_description_projection_keeps_literal_text_and_bounds_card_text() {
+        let mut tagged = card(
+            "projection-tagged",
+            "投影<专家>",
+            "user",
+            "PROFILE_SENTINEL",
+        );
+        tagged.description = format!("\u{200b}隐形<标签>{}", "长".repeat(400));
+        let projected = ExpertRosterSnapshot::from_cards(vec![tagged])
+            .fleet_config()
+            .profiles
+            .get(&expert_role_slug("projection-tagged"))
+            .and_then(|profile| profile.role.description.clone())
+            .expect("投影描述必须存在");
         assert!(
-            !projected.contains("</system-reminder>"),
-            "投影描述不得携带可闭合信封的标签字面量: {projected}"
+            projected.contains('<') && projected.contains('>'),
+            "无信封通道不做标签转义，字面尖括号必须保留（profile_query 才能子串匹配）: {projected}"
         );
         assert!(
-            projected.contains("\\u003c/system-reminder\\u003e"),
-            "标签必须转义保留: {projected}"
+            !projected.contains("\\u003"),
+            "数据通道不得引入 \\u003c 转义噪声: {projected}"
         );
         assert!(
             !projected.contains('\u{200b}'),
             "不可见格式字符必须剥除: {projected}"
+        );
+        assert!(
+            projected.starts_with("专家：投影<专家>："),
+            "投影必须携带卡片名: {projected}"
         );
         assert!(
             projected.chars().count() <= PROFILE_DESCRIPTION_CHAR_LIMIT + 1,
@@ -1105,6 +1173,68 @@ pub(crate) mod tests {
             projected.chars().count()
         );
         assert!(projected.ends_with('…'), "截断必须如实标注: {projected}");
+
+        let mut empty = card("projection-empty", "空描述专家", "user", "PROFILE_SENTINEL");
+        empty.description = "\u{feff}".into();
+        let fallback = ExpertRosterSnapshot::from_cards(vec![empty])
+            .fleet_config()
+            .profiles
+            .get(&expert_role_slug("projection-empty"))
+            .and_then(|profile| profile.role.description.clone())
+            .expect("投影描述必须存在");
+        assert_eq!(
+            fallback, "专家：空描述专家",
+            "空描述应退化为纯名字: {fallback}"
+        );
+    }
+
+    /// 匹配扫描的描述输入必须有界：超长描述卡的关键词落在
+    /// [`MATCH_DESCRIPTION_CHAR_LIMIT`] 前缀内仍应命中，超出前缀按不命中
+    /// 处理（钉住截断真实生效）。截断只发生在匹配入口——快照存储的轻摘要
+    /// 描述保持原文，展示/投影各自在出口限长，不受这条匹配界改写。
+    #[test]
+    fn oversized_description_matching_is_bounded_at_the_choke_point_only() {
+        // 恰好 2000 字符的描述，关键词落在前 512 字符内仍应命中。
+        let description = format!("Quartz 调度{}", "甲".repeat(1991));
+        assert_eq!(description.chars().count(), 2000);
+        let mut big = card(
+            "big-description",
+            "超长描述专家",
+            "user",
+            "BIG_DESCRIPTION_BODY",
+        );
+        big.description = description.clone();
+        let snapshot = ExpertRosterSnapshot::from_cards(vec![big]);
+
+        let lines = snapshot.available_role_lines("Quartz");
+        assert!(
+            lines
+                .iter()
+                .any(|line| line.contains("exp-big-description")),
+            "前缀内的关键词仍应命中超长描述卡: {lines:?}"
+        );
+
+        let stored = snapshot
+            .candidates
+            .iter()
+            .find(|(role_id, _)| role_id == "exp-big-description")
+            .map(|(_, summary)| summary.description.as_str())
+            .expect("候选仍在快照中");
+        assert_eq!(stored, description, "存储的轻摘要描述不受匹配截断改写");
+
+        // 关键词落在匹配界之后：打分按不命中处理。
+        let tail_only = crate::features::personas::PersonaSummary {
+            id: "tail-card".into(),
+            dept: "engineering".into(),
+            name: "尾段专家".into(),
+            description: format!("{}tailonly", "乙".repeat(MATCH_DESCRIPTION_CHAR_LIMIT)),
+            emoji: "🧰".into(),
+            color: "#123456".into(),
+            source: "user".into(),
+        };
+        let terms = query_terms("tailonly");
+        let score = expert_match_score(&tail_only, "tailonly", "tailonly", &terms, &HashSet::new());
+        assert_eq!(score, 0, "超出匹配界的尾部关键词不得命中: {score}");
     }
 
     /// role_id 由底座 spawn 选择器按 128 字符校验，且 from_cards 撞名去重
