@@ -200,8 +200,10 @@ pub async fn install_marketplace_tool(
     // crash window is now the ms-wide span between two adjacent fs-backed
     // operations. Ordering is safe against validation failure: the rollback
     // uninstall's teardown removes the entries this sync wrote
-    // (`remove_bundle_from_disabled_scopes`), so a failed validation cannot
-    // strand a consent row for a pack that is gone.
+    // (`remove_bundle_from_disabled_scopes`). That teardown degrades persist
+    // failures to `log::warn`, so a rollback-time persist failure can still
+    // strand a consent row for a pack that is gone — stale-deny, i.e. the
+    // fail-closed direction (review #455 round-22 minor 2).
     let consent_tool_id = tool_id.clone();
     tokio::task::spawn_blocking(move || {
         crate::features::marketplace::sync_deny_all_scopes_after_install(&consent_tool_id)
@@ -209,8 +211,11 @@ pub async fn install_marketplace_tool(
     .await
     .map_err(|e| format!("task join failed: {e}"))?
     .map_err(|e| {
+        // Honest sibling wording (skill path :640-645): no rollback runs on
+        // this arm — the pack stays installed with zero consent rows, so the
+        // message must say exactly that (review #455 round-22 MAJOR 1).
         format!(
-            "connector '{tool_id}' installed, but persisting its default-off consent state failed: new sessions would enable it by default — turn it off in the tools list; failing the install so no half-consented state remains: {e}"
+            "connector '{tool_id}' installed, but persisting its default-off consent state failed: new sessions will enable it by default — turn it off in the tools list: {e}"
         )
     })?;
 
@@ -225,11 +230,26 @@ pub async fn install_marketplace_tool(
         };
         if let Err(err) = validation_result {
             let rollback_tool_id = tool_id.clone();
-            let _ = tokio::task::spawn_blocking(move || {
+            let rollback_result = tokio::task::spawn_blocking(move || {
                 let mgr = crate::features::marketplace::MarketplaceManager::new();
                 mgr.uninstall(&rollback_tool_id)
             })
             .await;
+            // Best-effort compensation: surface a rollback failure instead of
+            // discarding it — the validation error remains the one returned.
+            match &rollback_result {
+                Err(e) => {
+                    log::warn!(
+                        "[marketplace] rollback uninstall join failed after validation error: {e}"
+                    )
+                }
+                Ok(Err(e)) => {
+                    log::warn!(
+                        "[marketplace] rollback uninstall failed after validation error: {e}"
+                    )
+                }
+                Ok(Ok(())) => {}
+            }
             return Err(err);
         }
     }
