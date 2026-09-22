@@ -1914,7 +1914,9 @@ fn extract_login_url(agent: &str, output: &str) -> Option<String> {
 /// way the stdin write trims it, so the echoed copy matches byte for byte.
 fn strip_login_code<'a>(combined: &'a str, code: Option<&str>) -> std::borrow::Cow<'a, str> {
     match code {
-        Some(value) if !value.trim().is_empty() => combined.replace(value.trim(), "[REDACTED]").into(),
+        Some(value) if !value.trim().is_empty() => {
+            combined.replace(value.trim(), "[REDACTED]").into()
+        }
         _ => combined.into(),
     }
 }
@@ -3506,7 +3508,9 @@ fn git_output_capped(
         bytes
     });
     let mut stdout_bytes = Vec::new();
-    let _ = (&mut stdout_pipe).take(cap + 1).read_to_end(&mut stdout_bytes);
+    let _ = (&mut stdout_pipe)
+        .take(cap + 1)
+        .read_to_end(&mut stdout_bytes);
     let stderr_bytes = stderr_thread.join().unwrap_or_default();
     let status = child.wait().map_err(|error| {
         CliError::failed(format!(
@@ -3527,7 +3531,10 @@ fn git_output_capped(
     if truncated {
         stdout_bytes.truncate(cap as usize);
     }
-    Ok((String::from_utf8_lossy(&stdout_bytes).into_owned(), truncated))
+    Ok((
+        String::from_utf8_lossy(&stdout_bytes).into_owned(),
+        truncated,
+    ))
 }
 
 fn git_root(root: &Path) -> Option<PathBuf> {
@@ -4220,9 +4227,7 @@ fn checkpoints_rewind(
             }
         }
         Err(error) => {
-            note!(
-                "[pinvou-cli] reading rewind backups failed (reconciliation skipped): {error:#}"
-            );
+            note!("[pinvou-cli] reading rewind backups failed (reconciliation skipped): {error:#}");
         }
     }
 

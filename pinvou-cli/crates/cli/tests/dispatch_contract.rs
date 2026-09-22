@@ -106,6 +106,38 @@ fn output_flag_still_applies_to_families() {
     assert_eq!(parsed.output(), OutputMode::Json);
 }
 
+/// A repeated identical mode is legal (scripts append `--output json`
+/// unconditionally), but two conflicting global modes are a usage error —
+/// the silent last-one-wins would make an appended flag flip a
+/// human-formatted script's output without any signal.
+#[test]
+fn conflicting_global_output_modes_are_a_usage_error() {
+    let error = parse_args([
+        "pinvou",
+        "--output",
+        "human",
+        "--output",
+        "json",
+        "benchmark",
+        "list",
+    ])
+    .expect_err("conflicting --output modes must be rejected");
+    assert_eq!(error.exit_code(), ExitCode::Usage);
+    assert!(error.to_string().contains("conflicting"), "{error}");
+    // Identical repeats stay legal.
+    let parsed = parse_args([
+        "pinvou",
+        "--output",
+        "json",
+        "--output",
+        "json",
+        "benchmark",
+        "list",
+    ])
+    .expect("identical --output repeats parse");
+    assert_eq!(parsed.output(), OutputMode::Json);
+}
+
 #[test]
 fn version_is_a_usable_subcommand_with_json_output() {
     let parsed = parse_args(["pinvou", "--version"]).expect("--version parses");

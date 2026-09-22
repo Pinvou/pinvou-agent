@@ -2129,7 +2129,12 @@ fn claude_login_completes_when_the_child_floods_stdout_around_stdin() {
     let (tx, rx) = std::sync::mpsc::channel();
     std::thread::spawn(move || {
         let result = parse_args([
-            "pinvou", "code", "login", "claude", "--code", "SRCRT-LOGIN-CODE-42",
+            "pinvou",
+            "code",
+            "login",
+            "claude",
+            "--code",
+            "SRCRT-LOGIN-CODE-42",
         ])
         .and_then(|parsed| pinvou_cli::execute(parsed));
         let _ = tx.send(result);

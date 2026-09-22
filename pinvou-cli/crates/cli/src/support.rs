@@ -384,7 +384,10 @@ mod tests {
 
     #[test]
     fn emit_report_treats_a_broken_pipe_as_a_quiet_zero() {
-        let code = emit_report(FailingWriter(io::ErrorKind::BrokenPipe), &outcome(ExitCode::Failed));
+        let code = emit_report(
+            FailingWriter(io::ErrorKind::BrokenPipe),
+            &outcome(ExitCode::Failed),
+        );
         assert_eq!(
             code, 0,
             "a closed pipe (`| head`) is the conventional quiet exit, not a failure"

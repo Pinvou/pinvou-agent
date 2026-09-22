@@ -1107,7 +1107,10 @@ fn logout_with_a_failing_version_probe_errors_without_touching_the_store() {
 
     let store = BundleStore::new();
     store
-        .upsert(BundleRecord::installed_now("dingtalk", BundleSource::Builtin))
+        .upsert(BundleRecord::installed_now(
+            "dingtalk",
+            BundleSource::Builtin,
+        ))
         .expect("seed the bundle store record");
 
     let error = run(&["pinvou", "connectors", "logout", "dingtalk", "--yes"])

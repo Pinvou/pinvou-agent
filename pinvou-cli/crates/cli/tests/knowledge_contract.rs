@@ -910,7 +910,14 @@ fn index_resume_and_retry_reject_unknown_ids_without_recovery() {
     // id gate is what rejects). Both share the stranded-state poll below as
     // the proof that no recovery ran.
     for arguments in [
-        vec!["pinvou", "knowledge", "collections", "delete", "999", "--yes"],
+        vec![
+            "pinvou",
+            "knowledge",
+            "collections",
+            "delete",
+            "999",
+            "--yes",
+        ],
         vec![
             "pinvou",
             "knowledge",

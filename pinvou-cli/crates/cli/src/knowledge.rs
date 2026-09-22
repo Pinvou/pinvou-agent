@@ -1486,9 +1486,15 @@ fn display_phase(state: &IndexState) -> String {
 
 #[cfg(test)]
 mod phase_tests {
-    use super::{display_phase, IndexState};
+    use super::{IndexState, display_phase};
 
-    fn state(running: bool, resumable: bool, cancelled: bool, job_id: Option<&str>, failed: u64) -> IndexState {
+    fn state(
+        running: bool,
+        resumable: bool,
+        cancelled: bool,
+        job_id: Option<&str>,
+        failed: u64,
+    ) -> IndexState {
         IndexState {
             job_id: job_id.map(str::to_owned),
             running,
@@ -1507,15 +1513,27 @@ mod phase_tests {
 
     #[test]
     fn display_phase_covers_every_state_vocabulary() {
-        assert_eq!(display_phase(&state(true, false, false, Some("j"), 0)), "running");
-        assert_eq!(display_phase(&state(false, true, false, Some("j"), 1)), "interrupted");
+        assert_eq!(
+            display_phase(&state(true, false, false, Some("j"), 0)),
+            "running"
+        );
+        assert_eq!(
+            display_phase(&state(false, true, false, Some("j"), 1)),
+            "interrupted"
+        );
         assert_eq!(
             display_phase(&state(false, false, true, Some("j"), 1)),
             "cancelled",
             "a cancelled job must not masquerade as done (or done_with_errors)"
         );
-        assert_eq!(display_phase(&state(false, false, false, Some("j"), 2)), "done_with_errors");
-        assert_eq!(display_phase(&state(false, false, false, Some("j"), 0)), "done");
+        assert_eq!(
+            display_phase(&state(false, false, false, Some("j"), 2)),
+            "done_with_errors"
+        );
+        assert_eq!(
+            display_phase(&state(false, false, false, Some("j"), 0)),
+            "done"
+        );
         assert_eq!(display_phase(&state(false, false, false, None, 0)), "idle");
     }
 }
