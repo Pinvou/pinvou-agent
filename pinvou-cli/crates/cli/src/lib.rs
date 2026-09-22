@@ -42,7 +42,7 @@ mod plugins;
 mod projects;
 mod scheduled;
 mod sessions;
-mod support;
+pub mod support;
 mod voice;
 
 pub use agent_task::AgentCommand;

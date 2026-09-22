@@ -1,3 +1,5 @@
+use std::io::Write;
+
 fn main() {
     // `std::env::args` panics on non-Unicode argv (a raw-bytes path from a
     // tool would exit 101 with a backtrace); lossy-convert instead so the
