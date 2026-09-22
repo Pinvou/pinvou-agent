@@ -1813,14 +1813,15 @@ impl AppEngine {
 
     /// 发用户消息给 Engine。Engine 内部自管 session，多轮自然累积。
     ///
-    /// 仅测试专用入口（生产发送走 `send_reserved_user_message`，其快照/
-    /// 候选来自 `prepare_delegation_turn` 的同源捕获）。
+    /// 仅测试入口（lib 单元测试与 `tests/` 集成 harness；生产发送走
+    /// `send_reserved_user_message`，其快照/候选来自
+    /// `prepare_delegation_turn` 的同源捕获）。不加 `#[cfg(test)]`：
+    /// 集成测试以外部 crate 视角链接本库，看不到 cfg(test) 条目。
     ///
     /// `mode` 由调用方从 SessionStore 取当前 session 的 mode_state，注入
     /// Op::SendMessage。底座按 mode 自动切工具白名单 + sandbox。
     /// M1 弱模型加固:bridge 按 mode 在多智能体轮的 user content 前
     /// prepend `<system-reminder>` 信封。
-    #[cfg(test)]
     pub async fn send_user_message(
         &self,
         content: String,
