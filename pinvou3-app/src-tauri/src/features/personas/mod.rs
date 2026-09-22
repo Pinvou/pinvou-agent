@@ -421,7 +421,9 @@ fn is_unseen(c: char) -> bool {
                 | '\u{13430}'..='\u{1343F}' // 圣书字格式控制符（不可见）
                 | '\u{1BCA0}'..='\u{1BCA3}' // 速记格式控制符（不可见）
                 | '\u{E0000}'..='\u{E007F}' // Unicode 标签字符（隐形 ASCII 通道）
+                | '\u{E0080}'..='\u{E00FF}' // 标签块与 VS 增补块之间的未分配保留（默认不可见）
                 | '\u{E0100}'..='\u{E01EF}' // 变体选择符增补
+                | '\u{E01F0}'..='\u{E0FFF}' // VS 增补之后的未分配保留（默认不可见）
         )
 }
 
@@ -782,6 +784,10 @@ mod tests {
              \u{13430}j\u{1343f}k\u{1bca0}l\u{1bca3}m\u{fff0}n\u{fff8}o",
         );
         assert_eq!(sanitized_supplement, "abcdefghijklmno");
+        // 未分配的默认不可见保留区（标签块与 VS 增补块的间隙及之后）同样
+        // 剥除，未来该区获得指派时不会静默放行新的隐形通道。
+        let sanitized_reserve = strip_invisible_chars("a\u{e0080}b\u{e00ff}c\u{e01f0}d\u{e0fff}e");
+        assert_eq!(sanitized_reserve, "abcde");
     }
 
     /// 限长按用户内容字符计数（先截断原文，后转义）：短而密集的 `<` 转义
