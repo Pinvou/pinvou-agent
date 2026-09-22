@@ -6,12 +6,16 @@
 // container (canAlign=false means read-only, no action).
 // The interaction shape follows ComposerWorkspaceSelector (small bottom-bar
 // button + pop-up menu).
+// deliveryLimited: the codex lane's third-party ACP sessions sit behind the
+// §6 stage-gate — additional roots are recorded but only the primary is
+// delivered — so the panel header and the align description say so instead
+// of promising access.
 import { useRef, useState } from 'react';
 import { ChevronDown, FolderOpen, RefreshCw } from '../../components/icons.jsx';
 import { useOutsidePointerClose } from '../../components/ComposerPopover.jsx';
 import { workspaceName } from '../../shared/workspace-recents.js';
 
-export function WorkspaceKeychainChip({ copy, primary, additionalCount, roots, canAlign, busy, onAlign }) {
+export function WorkspaceKeychainChip({ copy, primary, additionalCount, roots, canAlign, busy, deliveryLimited, onAlign }) {
   const [open, setOpen] = useState(false);
   const triggerRef = useRef(null);
   const panelRef = useRef(null);
@@ -44,7 +48,9 @@ export function WorkspaceKeychainChip({ copy, primary, additionalCount, roots, c
       {open && (
         <div ref={panelRef} className="absolute z-40 bottom-9 left-0 w-[300px] max-w-[calc(100vw-32px)] rounded-2xl border border-black/[0.08] dark:border-white/10 bg-white/95 dark:bg-[#202124]/95 backdrop-blur-xl shadow-xl p-2">
           <div className="px-3 pb-1 text-[10px] uppercase tracking-wider text-gray-400">
-            {copy.accessibleFolders(list.length)}
+            {deliveryLimited
+              ? copy.accessibleFoldersRecorded(list.length)
+              : copy.accessibleFolders(list.length)}
           </div>
           {list.map(path => (
             <div key={path} title={path}
@@ -63,7 +69,9 @@ export function WorkspaceKeychainChip({ copy, primary, additionalCount, roots, c
               <RefreshCw size={15} className="text-blue-500 shrink-0" />
               <span>
                 <span className="block text-[12px] font-semibold">{copy.alignAction}</span>
-                <span className="block text-[10px] text-gray-400 mt-0.5">{copy.alignActionDesc}</span>
+                <span className="block text-[10px] text-gray-400 mt-0.5">
+                  {deliveryLimited ? copy.alignActionDescRecorded : copy.alignActionDesc}
+                </span>
               </span>
             </button>
           )}

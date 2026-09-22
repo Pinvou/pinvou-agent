@@ -22,7 +22,8 @@ test('project-row new-session channel wiring (F4)', () => {
   // 侧栏接线:桌面守门 + 纯标签项目(无根)不渲染死入口(review #484 M3)。
   assert.match(main, /onNewSession: bridge\.projects && pickerProjectRoots\(group\)\.length > 0 \? \(\) => handleProjectNewSession\(group\.projectId\) : undefined/, '侧栏接线(桌面守门+无根门控)');
   // 授权告知同重量(§9.4):不经选择器的直达通道也要在授权一刻给出分模式告知。
-  assert.match(main, /handleProjectNewSession[\s\S]*?setSettingsToast\(workspaceGrantNotice\(activeLaneMode\(\), roots\.length\)\)/, '项目行新对话的授权告知');
+  // Round-8 M5:codex 车道 + 第三方 ACP 时改用 recorded-only 文案(§6 stage-gate)。
+  assert.match(main, /handleProjectNewSession[\s\S]*?setSettingsToast\(workspaceGrantNotice\(\s*activeLaneMode\(\),\s*roots\.length,\s*currentView === 'codex' && codexLaneDeliveryLimited,?\s*\)\)/, '项目行新对话的授权告知');
   // Round-5 M2:chat 车道有活动会话时,桥层 setDraftWorkspace 是静默 no-op
   // (activeSessionId 非空直接 return false),项目行「+」曾经点击无任何反馈。
   // 修法:applyWorkspaceTarget 的 chat 分支先进草稿(与 handleNewChat 同路
@@ -136,10 +137,13 @@ test('composer recents grant notice parity (§9.4)', () => {
   assert.match(chatView, /grantNotice=\{workspaceNoticeTone\(/, 'chat recents notice is mode-aware');
   assert.match(selector, /\{grantNotice && \(/, 'selector renders the notice');
   // Codex lane: the recents section of the draft workspace menu carries the
-  // same notice, keyed off the lane mode (native draft staging first, then
-  // the reported effective mode).
-  assert.match(codexView, /workspaceNoticeTone\(nativeDraftControls\.mode \|\| composerModeValue \|\| null\)/, 'codex recents notice follows the lane mode');
-  assert.match(codexView, /noticeRestricted\(1\)[\s\S]{0,120}?noticeVisibility\(1\)/, 'codex recents single-root notice');
+  // same notice, keyed off the lane mode — agent-aware since round-8 (the
+  // native selector's staged mode must not under-report a third-party ACP
+  // draft, review #484 round-8 m4): native reads nativeDraftControls first,
+  // external agents read their cached controls (composerModeValue) first.
+  assert.match(codexView, /const laneNoticeMode = isNativeAgent[\s\S]{0,200}?nativeDraftControls\.mode \|\| composerModeValue[\s\S]{0,200}?composerModeValue \|\| nativeDraftControls\.mode/, 'codex recents notice follows the draft agent mode');
+  assert.match(codexView, /workspaceNoticeTone\(laneNoticeMode\) === 'restricted'/, 'codex recents notice tone reads the agent-aware mode');
+  assert.match(codexView, /!isNativeAgent \? t\.uiWorkspacePicker\.noticeRestrictedRecorded\(1\) : t\.uiWorkspacePicker\.noticeRestricted\(1\)/, 'codex recents single-root notice is delivery-aware');
 });
 
 test('keychain/manage i18n keys exist in all three languages', () => {

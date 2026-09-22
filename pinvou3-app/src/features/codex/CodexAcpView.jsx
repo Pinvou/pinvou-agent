@@ -687,6 +687,10 @@ export function CodexAcpView({
   // opened while the codex lane is active (manage-folders panel) show the
   // same mode-aware copy as the lane itself.
   onLaneModeChange,
+  // The host mirrors whether the lane's current agent receives only the
+  // primary root (third-party ACP, §6 stage-gate), so host-side grant
+  // notices (sidebar project-row "+") use the recorded-only copy too.
+  onLaneDeliveryChange,
 }) {
   const codexCopy = t.uiCodex;
   const [agents, setAgents] = useState(null); // null=加载中，[] 才允许回退当前 Agent。
@@ -984,6 +988,11 @@ export function CodexAcpView({
   useEffect(() => {
     if (onLaneModeChange) onLaneModeChange(composerModeValue || null);
   }, [composerModeValue, onLaneModeChange]);
+  // Same mirror for the root-delivery state (§6 stage-gate): a third-party
+  // ACP agent only ever receives the primary root on the wire.
+  useEffect(() => {
+    if (onLaneDeliveryChange) onLaneDeliveryChange(!isNativeAgent);
+  }, [isNativeAgent, onLaneDeliveryChange]);
   function composerConfigOptionValue(option) {
     if (sessionControlsInfo) return option.currentValue || '';
     const staged = draftConfigSelection && draftConfigSelection.configs
@@ -1068,6 +1077,14 @@ export function CodexAcpView({
     multiAgentAvailable: false,
   });
   const [nativeDraftControls, setNativeDraftControls] = useState({});
+  // Grant-notice/picker mode source, agent-aware (review #484 round-8 m4):
+  // the native selector's staged mode only describes the native agent — a
+  // YOLO touched there followed by switching the draft to a third-party ACP
+  // agent must not under-report that agent's notice. ACP drafts read their
+  // own cached controls through composerModeValue instead.
+  const laneNoticeMode = isNativeAgent
+    ? (nativeDraftControls.mode || composerModeValue || null)
+    : (composerModeValue || nativeDraftControls.mode || null);
   // First-send session creation persists draft controls before activation. Keep the
   // staged values associated with that exact session until its authoritative load
   // completes so the selector never falls back to a different global model in between.
@@ -3486,6 +3503,10 @@ export function CodexAcpView({
                   roots={activeKeychain && activeKeychain.primary
                     ? activeKeychain.roots
                     : [activeSession.workspace_path]}
+                  // Third-party ACP sessions sit behind the §6 stage-gate:
+                  // additional roots are recorded, only the primary is
+                  // delivered — the chip copy must not promise access.
+                  deliveryLimited={!isNativeAgent}
                   canAlign={!isWeb && !!resolveSessionProjectId(
                     { id: activeId, workspaceKind: 'project', workspacePath: activeSession.workspace_path },
                     (bs && bs.projectsList && bs.projectsList.projects) || [],
@@ -3881,7 +3902,7 @@ export function CodexAcpView({
                       </button>
                       {workspaceMenuOpen && (
                         <div ref={workspaceMenuPanelRef} className="absolute z-40 bottom-9 left-0 w-[280px] max-w-[calc(100vw-32px)] rounded-2xl border border-black/[0.08] dark:border-white/10 bg-white/95 dark:bg-[#202124]/95 backdrop-blur-xl shadow-xl p-2">
-                            <button type="button" onClick={() => (isWeb || !onOpenWorkspacePicker) ? chooseProjectDraft().catch(showError) : onOpenWorkspacePicker({ lane: 'codex', mode: nativeDraftControls.mode })}
+                            <button type="button" onClick={() => (isWeb || !onOpenWorkspacePicker) ? chooseProjectDraft().catch(showError) : onOpenWorkspacePicker({ lane: 'codex', mode: laneNoticeMode, deliveryLimited: !isNativeAgent })}
                               className="w-full rounded-xl px-3 py-2.5 flex items-center gap-3 text-left hover:bg-black/[0.04] dark:hover:bg-white/[0.06]">
                               <FolderOpen size={16} className="text-blue-500 shrink-0" />
                               <span><span className="block text-[12px] font-semibold">{codexCopy.chooseProject}</span><span className="block text-[10px] text-gray-400 mt-0.5">{codexCopy.chooseProjectDesc}</span></span>
@@ -3898,11 +3919,12 @@ export function CodexAcpView({
     ComposerWorkspaceSelector): a recents pick grants the folder directly
     (single root), so the mode-aware notice sits on the recents section. The
     mode mirrors the picker entry above (native draft staging first, then the
-    lane's reported effective mode). */}
+    lane's reported effective mode). A third-party ACP draft only gets the
+    folder recorded (§6 stage-gate), so the notice says so. */}
                                 <div className="px-3 pb-1 text-[10px] text-gray-400">
-                                  {workspaceNoticeTone(nativeDraftControls.mode || composerModeValue || null) === 'restricted'
-                                    ? t.uiWorkspacePicker.noticeRestricted(1)
-                                    : t.uiWorkspacePicker.noticeVisibility(1)}
+                                  {workspaceNoticeTone(laneNoticeMode) === 'restricted'
+                                    ? (!isNativeAgent ? t.uiWorkspacePicker.noticeRestrictedRecorded(1) : t.uiWorkspacePicker.noticeRestricted(1))
+                                    : (!isNativeAgent ? t.uiWorkspacePicker.noticeVisibilityRecorded(1) : t.uiWorkspacePicker.noticeVisibility(1))}
                                 </div>
                                 {recentWorkspaces.map(path => (
                                   <button key={path} type="button" title={path}

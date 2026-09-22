@@ -67,10 +67,13 @@ test('workspace picker wiring contract', () => {
 
   // 对话框纯展示:不含 invoke/直读 Tauri 全局。
   assert.doesNotMatch(dialog, /__TAURI__|invoke\(/, '选择器组件不碰 Tauri 全局');
-  // 分模式告知经共享纯函数(§9.4)。
-  assert.match(dialog, /workspaceNoticeTone\(mode\)/, '告知走共享判定');
-  // 每个授权入口同等告知:单根行与浏览入口也带 noticeRestricted(1)。
-  assert.ok((dialog.match(/noticeRestricted\(1\)/g) || []).length >= 2, '单根行与浏览入口都要带单数授权告知');
+  // 分模式告知经共享纯函数(§9.4)。Round-8 M5:判定收敛进 rowNotice 一个
+  // 出口——mode 挑授权/可见语气,deliveryLimited(§6 stage-gate)挑
+  // 访问/仅记录文案;单根行与浏览入口都走 rowNotice(1)。
+  assert.match(dialog, /workspaceNoticeTone\(mode\) === 'restricted'/, '告知走共享判定');
+  assert.match(dialog, /deliveryLimited \? copy\.noticeRestrictedRecorded\(count\) : copy\.noticeRestricted\(count\)/, '受限语气带仅记录变体(§6 stage-gate)');
+  assert.match(dialog, /deliveryLimited \? copy\.noticeVisibilityRecorded\(count\) : copy\.noticeVisibility\(count\)/, '可见语气带仅记录变体');
+  assert.ok((dialog.match(/rowNotice\(1\)/g) || []).length >= 2, '单根行与浏览入口都要带单数授权告知');
   // 残留状态不跨打开泄漏:宿主条件挂载(开关状态随卸载复位)。
   assert.match(main, /\{workspacePicker && \(/, '选择器条件挂载');
   // 区分"无项目"与"无匹配";排除列表面板 Escape 先退回列表。

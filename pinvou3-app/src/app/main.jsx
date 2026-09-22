@@ -1893,7 +1893,11 @@ const NAV_PREFETCH = {
           projectId: project.id,
           roots,
         })) {
-          setSettingsToast(workspaceGrantNotice(activeLaneMode(), roots.length));
+          setSettingsToast(workspaceGrantNotice(
+            activeLaneMode(),
+            roots.length,
+            currentView === 'codex' && codexLaneDeliveryLimited,
+          ));
         }
       };
 
@@ -2001,8 +2005,12 @@ const NAV_PREFETCH = {
       const [pickerCodexRequest, setPickerCodexRequest] = useState(null);
       // The codex lane's effective mode is reported up by CodexAcpView so
       // sidebar surfaces opened while the code page is active show the codex
-      // lane's mode-aware copy rather than the chat lane's.
+      // lane's mode-aware copy rather than the chat lane's. The delivery
+      // flag mirrors the §6 stage-gate the same way: a third-party ACP agent
+      // only receives the primary root, so codex-lane grant notices use the
+      // recorded-only copy.
       const [codexLaneMode, setCodexLaneMode] = useState(null);
+      const [codexLaneDeliveryLimited, setCodexLaneDeliveryLimited] = useState(false);
       const workspacePickerRows = useMemo(() => computePickerRows({
         projects: projectsListEntries || [],
         items: boundWorkspaceItems,
@@ -2045,10 +2053,17 @@ const NAV_PREFETCH = {
         ? codexLaneMode
         : ((bs && bs.modeState && bs.modeState.mode) || null));
       // Same-weight grant notice for every entry that grants folder access
-      // without the picker's expansion panel (§9.4).
-      const workspaceGrantNotice = (mode, count) => (workspaceNoticeTone(mode) === 'restricted'
-        ? t.uiWorkspacePicker.noticeRestricted(count)
-        : t.uiWorkspacePicker.noticeVisibility(count));
+      // without the picker's expansion panel (§9.4). Codex-lane channels for
+      // a third-party ACP agent say "recorded" instead: the §6 stage-gate
+      // delivers only the primary root until the session/new follow-up lands.
+      const workspaceGrantNotice = (mode, count, deliveryLimited = false) => (
+        workspaceNoticeTone(mode) === 'restricted'
+          ? (deliveryLimited
+            ? t.uiWorkspacePicker.noticeRestrictedRecorded(count)
+            : t.uiWorkspacePicker.noticeRestricted(count))
+          : (deliveryLimited
+            ? t.uiWorkspacePicker.noticeVisibilityRecorded(count)
+            : t.uiWorkspacePicker.noticeVisibility(count)));
       const pickerLane = () => (workspacePicker ? workspacePicker.lane : 'chat');
       // Project channel (§9.3): cwd = the picked root, keychain = the project's
       // full root set at that moment; the backend writes last_primary_root
@@ -3474,6 +3489,7 @@ const NAV_PREFETCH = {
             busy={pickerBusy}
             webOnly={!can('desktopChrome') || !bridge.projects}
             excludedFolder={pickerExcluded}
+            deliveryLimited={!!workspacePicker.deliveryLimited}
             t={t}
             onClose={closeWorkspacePicker}
             onSelectProject={handlePickerSelectProject}
@@ -4127,10 +4143,11 @@ const NAV_PREFETCH = {
                 onSessionsChange={setCodexSessions}
                 onSwitchHomeMode={handleSwitchHomeMode}
                 onOpenSettingsSection={openSettingsSection}
-                onOpenWorkspacePicker={({ mode }) => { setPickerExcluded(null); setWorkspacePicker({ lane: 'codex', mode }); }}
+                onOpenWorkspacePicker={({ mode, deliveryLimited }) => { setPickerExcluded(null); setWorkspacePicker({ lane: 'codex', mode, deliveryLimited }); }}
                 workspacePickerRequest={pickerCodexRequest}
                 onWorkspacePickerRequestConsumed={() => setPickerCodexRequest(null)}
                 onLaneModeChange={setCodexLaneMode}
+                onLaneDeliveryChange={setCodexLaneDeliveryLimited}
                 bs={bs}
                 onGotoModelSettings={() => openSettingsSection('model')}
                 onGotoSettings={() => openSettingsSection('general')}

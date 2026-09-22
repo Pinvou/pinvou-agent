@@ -24,6 +24,10 @@ const WorkspacePickerDialog = ({
   busy,
   webOnly,
   excludedFolder,
+  // Codex lane + third-party ACP agent: the stage-gate (§6) delivers only the
+  // primary root on the wire, so every grant notice says "recorded" instead
+  // of promising access to the additional roots.
+  deliveryLimited,
   t,
   onClose,
   onSelectProject,
@@ -88,6 +92,12 @@ const WorkspacePickerDialog = ({
   if (!open || typeof document === 'undefined') return null;
 
   const copy = t.uiWorkspacePicker;
+  // One notice shape for all three grant surfaces (single-root row,
+  // expansion panel, browse row): mode picks grant vs visibility tone,
+  // deliveryLimited picks access vs recorded-only wording (§6 stage-gate).
+  const rowNotice = count => (workspaceNoticeTone(mode) === 'restricted'
+    ? (deliveryLimited ? copy.noticeRestrictedRecorded(count) : copy.noticeRestricted(count))
+    : (deliveryLimited ? copy.noticeVisibilityRecorded(count) : copy.noticeVisibility(count)));
   const rowCls = 'w-full px-3.5 py-2.5 flex items-center gap-2.5 text-left text-[14px] rounded-2xl transition-colors text-[#1F1F1F] hover:bg-[#F1F3F4] dark:text-[#E3E3E3] dark:hover:bg-[#303134]';
 
   const filtered = (() => {
@@ -147,9 +157,7 @@ const WorkspacePickerDialog = ({
                 the row itself; multi-root rows show it in the panel. */}
             {!multi && (
               <span className="block truncate text-[11px] text-[#8A8F94] dark:text-[#9AA0A6]">
-                {workspaceNoticeTone(mode) === 'restricted'
-                  ? copy.noticeRestricted(1)
-                  : copy.noticeVisibility(1)}
+                {rowNotice(1)}
               </span>
             )}
           </span>
@@ -169,9 +177,7 @@ const WorkspacePickerDialog = ({
             <div className="mb-2 flex items-start gap-1.5 text-[12px] text-[#5F6368] dark:text-[#C4C7C5]">
               <AlertTriangle size={13} className="shrink-0 mt-0.5" />
               <span>
-                {workspaceNoticeTone(mode) === 'restricted'
-                  ? copy.noticeRestricted(roots.length)
-                  : copy.noticeVisibility(roots.length)}
+                {rowNotice(roots.length)}
               </span>
             </div>
             {roots.map(root => (
@@ -319,9 +325,7 @@ const WorkspacePickerDialog = ({
                       picked folder (exactly one root), same notice weight as
                       the project rows. */}
                   <span className="block truncate text-[11px] text-[#8A8F94] dark:text-[#9AA0A6]">
-                    {workspaceNoticeTone(mode) === 'restricted'
-                      ? copy.noticeRestricted(1)
-                      : copy.noticeVisibility(1)}
+                    {rowNotice(1)}
                   </span>
                 </span>
               </button>
