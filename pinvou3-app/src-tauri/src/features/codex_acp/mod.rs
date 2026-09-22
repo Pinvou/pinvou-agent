@@ -1864,9 +1864,9 @@ impl AcpPool {
             format!("agent={}", backend.agent_id().unwrap_or("unknown")),
         );
         // The brew list probe is a blocking subprocess, so keep spawn_blocking; the subprocess execution
-        // skeleton (register pid / cancel recheck / streaming output / 600s timeout / cancel rewrite) is consolidated into
-        // install.rs's run_brew_install. brew previously had no timeout, and a hang would hold the
-        // install mutex guard forever.
+        // skeleton (register pid / cancel recheck / streaming output / 600s timeout / cancel rewrite) is
+        // install.rs's run_managed_install, which run_brew_install shares with the script/npm channels.
+        // brew previously had no timeout, and a hang would hold the install mutex guard forever.
         let result = match tokio::task::spawn_blocking(move || {
             brew_install_args(backend, brew_package_installed(backend)).with_context(|| {
                 format!(

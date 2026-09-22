@@ -632,16 +632,16 @@ impl Drop for InstallOutputReaders {
     }
 }
 
-/// Differences injected by `run_official_install_script` and `run_npm_global_upgrade` into
-/// [`run_managed_install`]; the rest of the skeleton (register pid → post-spawn cancel recheck → progress →
-/// streaming output → 600s timeout → diagnostics to disk → cancel rewrite → stderr-tail bail) is
-/// owned by `run_managed_install`, keeping both paths byte-identical in wording.
+/// Differences injected by `run_official_install_script`, `run_npm_global_upgrade` and
+/// `run_brew_install` into [`run_managed_install`]; the rest of the skeleton (register pid → post-spawn
+/// cancel recheck → progress → streaming output → 600s timeout → diagnostics to disk → idempotent
+/// early success → cancel rewrite → failure bail) is owned by `run_managed_install`.
 struct ManagedInstallStage {
-    /// Diagnostics stage prefix ("script" / "npm"), composed into `<stage>:timeout` / `<stage>:output`.
+    /// Diagnostics stage prefix ("script" / "npm" / "homebrew"), composed into `<stage>:timeout` / `<stage>:output`.
     diag_stage: &'static str,
     /// Command line shown in progress events.
     command_line: String,
-    /// Whether to make the child a process-group leader (npm needs it; the script process does not).
+    /// Whether to make the child a process-group leader (npm and brew need it; the script process does not).
     process_group: bool,
     spawn_context: String,
     stdout_context: &'static str,
@@ -652,13 +652,41 @@ struct ManagedInstallStage {
     failure_subject: String,
     /// Whether to append a network troubleshooting hint when stderr has no usable content (official script path only).
     failure_hint: bool,
+    /// Output markers that count as success despite a non-zero exit (brew's idempotent already-installed /
+    /// already-up-to-date notices); `None` for channels without such notices.
+    idempotent_ok: Option<fn(&str, &str) -> bool>,
+    /// Composes the final failure message from (exit status, stderr tail, network hint, subject).
+    failure_detail: fn(&std::process::ExitStatus, &str, &str, &str) -> String,
+}
+
+/// Official-script / npm failure shape: `"{subject}: {status}; stderr: {tail}{hint}"`.
+fn managed_install_failure(
+    status: &std::process::ExitStatus,
+    tail: &str,
+    hint: &str,
+    subject: &str,
+) -> String {
+    format!("{subject}: {status}; stderr: {tail}{hint}")
+}
+
+/// brew failure shape: `"{subject} failed (exit {code}): {tail}"`.
+fn brew_install_failure(
+    status: &std::process::ExitStatus,
+    tail: &str,
+    _hint: &str,
+    subject: &str,
+) -> String {
+    format!(
+        "{subject} failed (exit {}): {tail}",
+        status.code().unwrap_or(-1)
+    )
 }
 
 /// Shared execution skeleton for managed installs. Differences are injected only via [`ManagedInstallStage`]:
 /// InstallChildGuard::register → post-spawn cancel recheck → emit_install_progress →
 /// InstallOutputReaders::spawn → 600s tokio timeout (diagnostics `<stage>:timeout`) →
-/// finish → diagnostics `<stage>:output` (output tail) → cancel rewrite and stderr-tail
-/// bail on the failure exits.
+/// finish → diagnostics `<stage>:output` (output tail) → idempotent early success →
+/// cancel rewrite and the [`ManagedInstallStage::failure_detail`] bail on the failure exits.
 #[allow(clippy::too_many_arguments)]
 async fn run_managed_install(
     app: &AppHandle,
@@ -715,39 +743,41 @@ async fn run_managed_install(
             output_tail(&stderr, 20)
         ),
     );
-    if !status.success() {
-        // 进程被用户取消（taskkill/kill）会以失败状态走到这里：改写为已取消语义。
-        if install_cancelled.lock().remove(&backend) {
-            bail!(
-                "{INSTALL_CANCELLED_MARKER}{} 安装已取消",
-                backend.display_name()
-            );
-        }
-        let stderr_tail = output_tail(&stderr, 4);
-        // When stderr has no usable content (empty or only system noise like
-        // "retry"), give an actionable hint: the official script depends on
-        // releases.openai.com / GitHub, so download failures are mostly
-        // network-related. The manual-install guidance is generated per agent
-        // package name/script (it must not point at codex unconditionally).
-        let hint = if stage.failure_hint
-            && (stderr_tail.trim().is_empty() || stderr_tail.trim().chars().count() < 8)
-        {
-            let npm_pkg = npm_package(backend).unwrap_or("");
-            let (unix_url, windows_url) = official_script_urls(backend);
-            format!(
-                "; check the network connection and retry. You can also install manually: npm install -g {npm_pkg}, or run the official install script (macOS/Linux: curl -fsSL {unix_url} | sh; Windows: irm {windows_url} | iex)"
-            )
-        } else {
-            String::new()
-        };
+    if status.success()
+        || stage
+            .idempotent_ok
+            .is_some_and(|is_done| is_done(&stdout, &stderr))
+    {
+        return Ok(());
+    }
+    // The process was cancelled by the user (taskkill/kill) and reaches here with a failure status: rewrite to cancelled semantics.
+    if install_cancelled.lock().remove(&backend) {
         bail!(
-            "{}: {status}; stderr: {}{}",
-            stage.failure_subject,
-            stderr_tail,
-            hint
+            "{INSTALL_CANCELLED_MARKER}{} 安装已取消",
+            backend.display_name()
         );
     }
-    Ok(())
+    let stderr_tail = output_tail(&stderr, 4);
+    // When stderr has no usable content (empty or only system noise like
+    // "retry"), give an actionable hint: the official script depends on
+    // releases.openai.com / GitHub, so download failures are mostly
+    // network-related. The manual-install guidance is generated per agent
+    // package name/script (it must not point at codex unconditionally).
+    let hint = if stage.failure_hint
+        && (stderr_tail.trim().is_empty() || stderr_tail.trim().chars().count() < 8)
+    {
+        let npm_pkg = npm_package(backend).unwrap_or("");
+        let (unix_url, windows_url) = official_script_urls(backend);
+        format!(
+            "; check the network connection and retry. You can also install manually: npm install -g {npm_pkg}, or run the official install script (macOS/Linux: curl -fsSL {unix_url} | sh; Windows: irm {windows_url} | iex)"
+        )
+    } else {
+        String::new()
+    };
+    bail!(
+        "{}",
+        (stage.failure_detail)(&status, &stderr_tail, &hint, &stage.failure_subject)
+    );
 }
 
 /// Runs the official install script (unix: `curl -fsSL <url> | bash`, Windows: `irm <url> | iex`),
@@ -794,6 +824,8 @@ pub(super) async fn run_official_install_script(
             ),
             failure_subject: format!("{} install script exited", backend.display_name()),
             failure_hint: true,
+            idempotent_ok: None,
+            failure_detail: managed_install_failure,
         },
     )
     .await
@@ -834,6 +866,8 @@ pub(super) async fn run_npm_global_upgrade(
             ),
             failure_subject: format!("npm global upgrade of {} exited", backend.display_name()),
             failure_hint: false,
+            idempotent_ok: None,
+            failure_detail: managed_install_failure,
         },
     )
     .await
@@ -847,11 +881,12 @@ fn brew_already_done(stdout: &str, stderr: &str) -> bool {
         .any(|marker| stdout.contains(marker) || stderr.contains(marker))
 }
 
-/// Execution skeleton for Homebrew install/upgrade (same shape as [`run_managed_install`]): register pid →
-/// post-spawn cancel recheck → progress → streaming output → 600s timeout (brew previously had no timeout, so a
-/// hang would hold the install mutex guard forever) → diagnostics to disk → idempotent notices pass through → cancel rewrite →
-/// stderr-tail bail. `upgrade_via_homebrew` keeps the decision logic such as source detection and only delegates
-/// subprocess execution.
+/// Homebrew install/upgrade: builds the brew command and delegates execution to the shared
+/// [`run_managed_install`] skeleton (600s timeout — brew previously had none, so a hang would hold the
+/// install mutex guard forever — idempotent already-installed/up-to-date pass-through via
+/// [`brew_already_done`], cancel rewrite, and the `"{description} 失败 (exit N)"` failure shape via
+/// [`brew_install_failure`]). `upgrade_via_homebrew` keeps the decision logic such as source detection
+/// and only delegates subprocess execution.
 pub(super) async fn run_brew_install(
     app: &AppHandle,
     backend: AgentBackend,
@@ -863,70 +898,31 @@ pub(super) async fn run_brew_install(
 ) -> Result<()> {
     let mut command = tokio::process::Command::new(platform::brew_bin());
     command.args(args);
-    // Separate process group: killed as a group on cancel so brew-spawned processes are not orphaned.
-    crate::platform::process::tokio_process_group_leader(&mut command);
-    command
-        .stdin(Stdio::null())
-        .stdout(Stdio::piped())
-        .stderr(Stdio::piped());
-    let mut child = command.spawn().context("failed to spawn Homebrew")?;
-    // Register the pid after spawn so the cancel command can kill the process
-    // tree; the guard deregisters on every exit path of this function.
-    let _child_guard = InstallChildGuard::register(install_children, backend, child.id());
-    // Cancellation can land between spawn and registration: recheck right
-    // after registering.
-    if install_cancelled.lock().contains(&backend) {
-        let _ = child.kill().await;
-    }
-    emit_install_progress(app, backend, "command", command_description);
-    let stdout = child
-        .stdout
-        .take()
-        .context("failed to read Homebrew stdout")?;
-    let stderr = child
-        .stderr
-        .take()
-        .context("failed to read Homebrew stderr")?;
-    let output_readers = InstallOutputReaders::spawn(app, backend, stdout, stderr);
-    const TIMEOUT: Duration = Duration::from_secs(600);
-    let status = match tokio::time::timeout(TIMEOUT, child.wait()).await {
-        Ok(result) => result.context("failed to wait for Homebrew process")?,
-        Err(_) => {
-            diagnostics::write(
-                operation_id,
-                "homebrew:timeout",
-                format!("timeout_seconds={}", TIMEOUT.as_secs()),
-            );
-            let _ = child.kill().await;
-            let _ = child.wait().await;
-            bail!("Homebrew install did not finish within 10 minutes; please retry");
-        }
-    };
-    let (stdout, stderr) = output_readers.finish().await;
-    diagnostics::write(
+    run_managed_install(
+        app,
+        backend,
         operation_id,
-        "homebrew:output",
-        format!(
-            "status={status} stdout_tail={} stderr_tail={}",
-            output_tail(&stdout, 20),
-            output_tail(&stderr, 20)
-        ),
-    );
-    if status.success() || brew_already_done(&stdout, &stderr) {
-        return Ok(());
-    }
-    // The process was cancelled by the user (taskkill/kill) and reaches here with a failure status: rewrite to cancelled semantics.
-    if install_cancelled.lock().remove(&backend) {
-        bail!(
-            "{INSTALL_CANCELLED_MARKER}{} 安装已取消",
-            backend.display_name()
-        );
-    }
-    bail!(
-        "{command_description} failed (exit {}): {}",
-        status.code().unwrap_or(-1),
-        output_tail(&stderr, 4)
-    );
+        install_children,
+        install_cancelled,
+        command,
+        ManagedInstallStage {
+            diag_stage: "homebrew",
+            command_line: command_description.to_string(),
+            // Separate process group: killed as a group on cancel so brew-spawned processes are not orphaned.
+            process_group: true,
+            spawn_context: "failed to spawn Homebrew".to_string(),
+            stdout_context: "failed to read Homebrew stdout",
+            stderr_context: "failed to read Homebrew stderr",
+            wait_context: "failed to wait for Homebrew process",
+            timeout_message: "Homebrew install did not finish within 10 minutes; please retry"
+                .to_string(),
+            failure_subject: command_description.to_string(),
+            failure_hint: false,
+            idempotent_ok: Some(brew_already_done),
+            failure_detail: brew_install_failure,
+        },
+    )
+    .await
 }
 pub(super) fn output_tail(output: &str, max_lines: usize) -> String {
     let lines: Vec<&str> = output.lines().collect();
