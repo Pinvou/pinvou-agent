@@ -5851,7 +5851,7 @@ fn retention_purge_removes_durable_mode_entries_written_after_boot() {
         .enforce_session_retention_locked()
         .expect("sweep must succeed");
     assert!(
-        store.load(&"modeghost-victim".to_string()).is_err(),
+        store.load("modeghost-victim").is_err(),
         "the victim session itself must be evicted"
     );
 
