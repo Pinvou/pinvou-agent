@@ -721,19 +721,16 @@ fn load_index(ledger_root: &Path) -> Result<CheckpointIndex> {
         Err(parse_error) => {
             // 损坏的 index 不得让该会话的 checkpoint 功能永久失效（临时会话的
             // 账本就在 agent 可见的工作目录内，agent 的工具可能写坏它）：隔离
-            // 保留现场（带时间戳，二次损坏不覆盖首次取证）后从空索引重建——与
-            // sidecar `_rewound_turns.json` 的损坏处理同款。代价：影子仓库里的
-            // 历史快照失去索引（不可列不可用，对象随 gc 回收），此后快照能力恢复。
-            let quarantine = path.with_extension(format!(
-                "json.corrupt-{}",
-                chrono::Utc::now().format("%Y%m%d%H%M%S")
-            ));
-            eprintln!(
-                "[checkpoints] checkpoint 索引损坏，隔离为 {} 后从空索引重建: {parse_error:#}",
-                quarantine.display()
-            );
-            if let Err(error) = fs::rename(&path, &quarantine) {
-                eprintln!("[checkpoints] 隔离损坏索引失败: {error:#}");
+            // 保留现场后从空索引重建——与 sidecar 的损坏处理同款，共用
+            // platform 的纳秒唯一名原语（秒级后缀在同一秒内的二次损坏会覆盖
+            // 首次取证）。代价：影子仓库里的历史快照失去索引（不可列不可用，
+            // 对象随 gc 回收），此后快照能力恢复。
+            match crate::platform::filesystem::quarantine_corrupt_file(&path) {
+                Ok(quarantine) => eprintln!(
+                    "[checkpoints] checkpoint 索引损坏，隔离为 {} 后从空索引重建: {parse_error:#}",
+                    quarantine.display()
+                ),
+                Err(error) => eprintln!("[checkpoints] 隔离损坏索引失败: {error:#}"),
             }
             Ok(CheckpointIndex {
                 version: 1,
