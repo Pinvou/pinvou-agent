@@ -317,9 +317,11 @@ test('Host Core cancellation writes a durable tombstone for an in-flight native 
     const stem = `${SESSION_TOKEN}-${host.state.lastCoreRequestId}`;
     const tombstonePath = join(root, 'host-requests', `${stem}.cancelled`);
     const requestPath = join(root, 'host-requests', `${stem}.json`);
+    // Tombstone publication and request-file removal are independent effects
+    // with no ordering guarantee between them, so wait for both before asserting.
     await waitUntil(
-      () => existsSync(tombstonePath),
-      'the wrapper did not publish a cancellation tombstone',
+      () => existsSync(tombstonePath) && !existsSync(requestPath),
+      'the wrapper did not publish a cancellation tombstone and remove the unclaimed request',
     );
     assert.equal(existsSync(requestPath), false, 'an unclaimed request should be removed');
     const tombstone = JSON.parse(readFileSync(tombstonePath, 'utf8'));

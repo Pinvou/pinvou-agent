@@ -48,7 +48,13 @@ The job shell is `bash`; three steps opt into `pwsh`. In order:
 8. Run `python scripts/ci-windows-imports-diagnose.py` on `PINVOU3_TEST_EXE`
    — a non-blocking PE import-table diagnostic (`continue-on-error`), after
    step 7 so the embedded manifest exempts SxS DLLs such as `comctl32`.
-9. Regression loop: run the patched binary directly — re-invoking
+9. Run the CodeWhale PowerShell regression filters
+   (`forkguard_powershell` and `forkguard_windows_shell_text`) from the
+   dependency crate itself. The parent application jobs do not execute a
+   dependency crate's lib tests. The step unsets `SHELL` so the Windows
+   fallback to `pwsh.exe` is deterministic, and each filter must match at
+   least one test so a rename cannot silently pass.
+10. Regression loop: run the patched application binary directly — re-invoking
    `cargo test` could relink and drop the embedded manifest — once per filter
    with `--test-threads=1`; each filter must match at least one test
    (`running [1-9][0-9]* tests?`) so a renamed test fails loudly:
@@ -72,11 +78,16 @@ The job shell is `bash`; three steps opt into `pwsh`. In order:
 
 ## Cache
 
-`Swatinem/rust-cache@v2` scopes to `pinvou3-app/src-tauri` under shared key
-`windows-rust-test`; `save-if` is restricted to `refs/heads/main`, so
-pull-request runs reuse but never rewrite the warm snapshot, within the
-repository-wide 10GB budget. `pinvou-cli` has no cache: lockfile changes
-miss the restore key and compile fully cold. Node/npm setup is absent —
+`Swatinem/rust-cache@v2` stores `pinvou3-app/src-tauri` and `CodeWhale` in one
+entry under shared key `windows-rust-test`. CodeWhale is a path dependency,
+not an application-workspace member, so its required lib tests need their own
+target directory; including that directory in the existing entry is the
+minimum cache shape for this coverage, not a second cache. The first `main`
+run after this change may compile CodeWhale cold and is expected to add about
+0.8–2GB compressed. Restore-key fallback then reuses the entry across lockfile
+changes, while `save-if` remains restricted to `refs/heads/main`, so pull
+requests never rewrite it and usage stays within the repository-wide 10GB
+budget. `pinvou-cli` has no separate cache. Node/npm setup is absent —
 under the debug profile tauri's `generate_context!` uses `devUrl`, `dist/`
 is never packaged, and `build.rs` only depends on `tauri-build`/`cc` —
 saving 3-5 minutes per run.
@@ -89,10 +100,10 @@ cancelled mid-build after PR #478 added the full `pinvou-cli` workspace
 compile. `timeout-minutes` is now 180, with headroom for two cold workspaces.
 
 On failure, read the import-diagnostic output (step 8) and the failing filter
-name (step 9); cache restore misses stay visible rollback signals. Do not
+name (steps 9–10); cache restore misses stay visible rollback signals. Do not
 recover time by removing a regression filter, skipping the manifest or import
-contract, changing failures to warnings, or enabling an additional large
-target cache.
+contract, changing failures to warnings, or adding another independent large
+target cache beyond the single two-workspace entry documented above.
 
 Source of truth: the `windows-rust-test` job in
 `.github/workflows/pr-check.yml`; on any mismatch the workflow wins.

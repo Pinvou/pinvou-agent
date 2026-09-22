@@ -12,8 +12,8 @@ description: 本地直出可编辑 PowerPoint（.pptx）：用户要做 PPT / �
 1. **先列一版大纲**（章节 + 每页要点）给用户确认/修改
 2. 确认后产结构化 deck：封面 / 目录 / 章节 / 要点 / 双栏 / KPI / 图表 / 表格 / 配图 / 结尾
 3. **按 PPT 内容自动选一套主题**（business-blue / tech-dark / gov-red / creative-purple / fresh-green / warm-orange / navy-gold / minimal-mono / midnight），并一句话说明理由，用户可改
-4. 调 `mcp_pptx_make_pptx` 生成 .pptx（连接器工具默认延迟加载：工具列表里没有它时先 `tool_search` 激活；`tool_search` 也搜不到，说明『PPT 生成』连接器未安装——按下方「严格禁止」处理，不要硬拼成品）
-5. 拿到 path 后**必须再调 `mcp_pinvou3_present_artifact(path, title)`** 上产物卡（内置 MCP 工具默认延迟加载：工具列表里没有它时先 `tool_search` 激活；`tool_search` 也搜不到，才算产物卡后端本轮不可用——直接交付并在回复里说明产物卡不可用）
+4. 调 `mcp_pptx_make_pptx` 生成 .pptx（连接器工具默认延迟加载：工具列表里没有它时先 `tool_search` 激活；`tool_search` 返回 `mcp_boot` connecting（MCP 服务仍在启动）就等待数秒重试，connecting 消失后仍搜不到，才说明『PPT 生成』连接器未安装——按下方「严格禁止」处理，不要硬拼成品）
+5. 拿到 path 后**必须再调 `mcp_pinvou3_present_artifact(path, title)`** 上产物卡（内置 MCP 工具默认延迟加载：工具列表里没有它时先 `tool_search` 激活；`tool_search` 返回 `mcp_boot` connecting（MCP 服务仍在启动）就等待数秒重试，connecting 消失后仍搜不到，才算产物卡后端本轮不可用——直接交付并在回复里说明产物卡不可用）
 
 ## 严格禁止
 

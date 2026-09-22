@@ -273,7 +273,10 @@ fn download_verified(artifact: &Artifact, destination: &Path) -> Result<(), Stri
     }
     let client = reqwest::blocking::Client::builder()
         .connect_timeout(Duration::from_secs(15))
-        .timeout(Duration::from_secs(180))
+        // 15 分钟总量:归档上限 128 MiB,180s 只够 ~730 KB/s 的链路,慢网
+        // 用户每次都恰好死在半途且无断点续传;15 分钟覆盖到 ~150 KB/s,
+        // 同时仍保证卡死连接最终会失败而不是挂住安装流程。
+        .timeout(crate::platform::download::ARTIFACT_DOWNLOAD_TOTAL_TIMEOUT)
         .redirect(reqwest::redirect::Policy::custom(|attempt| {
             if attempt.previous().len() >= 10 || attempt.url().scheme() != "https" {
                 attempt.stop()

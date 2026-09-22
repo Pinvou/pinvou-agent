@@ -251,6 +251,10 @@ pub struct SystemCredentialStore {
     /// `os_keyring_unreachable`: under fallback, a `get` miss may be a
     /// credential sitting in the unreachable OS keyring, so it must be
     /// classified as a store failure rather than an absent credential.
+    /// Write-once per store instance and sticky for its lifetime — a healed
+    /// keyring is re-probed when the next process constructs a fresh store
+    /// (a process can hold several instances, e.g. one per feature, each
+    /// probing independently).
     fallback_services: Arc<Mutex<HashMap<String, ()>>>,
 }
 
@@ -304,9 +308,12 @@ impl SystemCredentialStore {
                     service,
                     started_at.elapsed().as_millis()
                 );
-                if let Ok(mut fallback) = self.fallback_services.lock() {
-                    fallback.remove(service);
-                }
+                // No `fallback_services.remove` here: a backend is probed and
+                // cached exactly once per store instance, so the flag can
+                // never be set when this arm runs. The flag is deliberately
+                // sticky for the instance's lifetime — a healed OS keyring is
+                // picked up on the next process start, when a fresh store
+                // re-probes.
                 Secrets::new(Arc::new(store))
             }
             Err(err) => {
@@ -317,9 +324,10 @@ impl SystemCredentialStore {
                     err
                 );
                 log::warn!("OS keyring 不可用({err}),改用文件回退凭证存储");
-                if let Ok(mut fallback) = self.fallback_services.lock() {
-                    fallback.insert(service.to_string(), ());
-                }
+                self.fallback_services
+                    .lock()
+                    .unwrap_or_else(|poisoned| poisoned.into_inner())
+                    .insert(service.to_string(), ());
                 Secrets::file_backed()
             }
         };
