@@ -303,11 +303,15 @@ impl SessionStore {
         // never resolve to the same aux — a doubled mapping makes one parent's
         // panel read the other's transcript. The check lives at this single
         // write API so the invariant cannot depend on caller discipline.
+        // Case-insensitive on both ends (round-26 minor M11): identity tests
+        // in this module treat `AUX-…` as the same aux id (is_aux_session_id
+        // is case-insensitive because case-insensitive filesystems resolve
+        // the alias to the same record), so a case-variant duplicate is the
+        // same collision the seal exists to prevent.
         if let Some(aux_id) = &aux_id {
-            if aux_sessions
-                .iter()
-                .any(|(key, value)| value == aux_id && key != main_id)
-            {
+            if aux_sessions.iter().any(|(key, value)| {
+                value.eq_ignore_ascii_case(aux_id) && !key.eq_ignore_ascii_case(main_id)
+            }) {
                 anyhow::bail!(
                     "Auxiliary session is already bound to another main session: {aux_id}"
                 );

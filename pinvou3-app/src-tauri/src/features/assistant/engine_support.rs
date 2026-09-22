@@ -24,6 +24,9 @@ pub(super) fn maybe_notify_task_completed(
     if status != TurnOutcomeStatus::Completed || error.is_some() {
         return;
     }
+    if !task_completion_notify_in_scope(session_id) {
+        return;
+    }
     if !crate::platform::notifications::task_completion_enabled() {
         return;
     }
@@ -41,6 +44,16 @@ pub(super) fn maybe_notify_task_completed(
     if should_notify {
         crate::platform::notifications::notify_task_completed(app);
     }
+}
+
+/// Whether a finished turn of this session may raise the global "task
+/// completed" desktop notification. Aux side-chat turns are excluded
+/// (round-26 minor M3): the notification names no session, so an aux reply
+/// finishing while its main task still runs would pop an indistinguishable
+/// "completed" for a task that never finished — the same global-side-effect
+/// class as the round-15 memory-review exclusion (forwarder.rs).
+fn task_completion_notify_in_scope(session_id: &str) -> bool {
+    !crate::features::sessions::is_aux_session_id(session_id)
 }
 
 pub(super) fn persist_successful_tool_artifact(
@@ -285,4 +298,16 @@ pub(super) fn scheduled_tool_should_auto_approve(
     approval_force_prompt: bool,
 ) -> bool {
     profile.is_none_or(|profile| profile.auto_approve && !approval_force_prompt)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::task_completion_notify_in_scope;
+
+    #[test]
+    fn task_completion_notification_excludes_aux_sessions() {
+        assert!(!task_completion_notify_in_scope("aux-0123456789abcdef"));
+        assert!(task_completion_notify_in_scope("0123456789abcdef"));
+        assert!(task_completion_notify_in_scope("sched-daily-report"));
+    }
 }

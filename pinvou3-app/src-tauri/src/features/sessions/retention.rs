@@ -92,10 +92,23 @@ impl SessionStore {
             .context("list sessions for retention")?
             .as_ref()
             .clone();
-        let mut chat_count = 0usize;
-        let mut deleted_ids = Vec::new();
-        let mut delete_error = None;
-        for metadata in sessions {
+        // Liveness protection (round-26 MAJOR-1): an aux turn refreshes only
+        // the aux record's `updated_at` — the main record is never touched by
+        // aux activity, so ordering victims by the main record alone would let
+        // a user's own aux send evict the very main session whose side chat is
+        // in active use (the aux turn's save triggers this sweep). Aux records
+        // ride the same snapshot, so order eviction candidates by
+        // max(main.updated_at, aux.updated_at): activity on either half of the
+        // pair keeps the pair alive, restoring the pre-aux invariant
+        // "in use ⇒ not evicted".
+        let aux_freshness: std::collections::HashMap<&str, chrono::DateTime<chrono::Utc>> =
+            sessions
+                .iter()
+                .filter(|metadata| super::validators::is_aux_session_id(&metadata.id))
+                .map(|metadata| (metadata.id.as_str(), metadata.updated_at))
+                .collect();
+        let mut candidates: Vec<&SessionMetadata> = sessions
+            .iter()
             // Scheduled sessions own additional records outside sessions/.
             // Generic chat cleanup must not delete only the transcript and
             // strand the other half of their history.
@@ -103,14 +116,30 @@ impl SessionStore {
             // main session's cascade/discard (same precedent as sched-): it is
             // never an eviction candidate and does not consume the retention
             // budget of visible sessions.
-            if super::validators::is_sched_session_id(&metadata.id)
-                || super::validators::is_aux_session_id(&metadata.id)
-            {
-                continue;
-            }
+            .filter(|metadata| {
+                !super::validators::is_sched_session_id(&metadata.id)
+                    && !super::validators::is_aux_session_id(&metadata.id)
+            })
+            .collect();
+        // Stable sort: pairs without aux activity keep the snapshot's
+        // main-`updated_at` descending order, so behavior is unchanged where
+        // no aux session exists.
+        candidates.sort_by_key(|metadata| {
+            std::cmp::Reverse(
+                self.aux_session_id(&metadata.id)
+                    .and_then(|aux_id| aux_freshness.get(aux_id.as_str()).copied())
+                    .map_or(metadata.updated_at, |aux_at| {
+                        std::cmp::max(metadata.updated_at, aux_at)
+                    }),
+            )
+        });
+        let mut chat_count = 0usize;
+        let mut deleted_ids = Vec::new();
+        let mut delete_error = None;
+        for metadata in candidates {
             chat_count += 1;
             if chat_count > MAX_SESSIONS_PER_KIND {
-                let id = metadata.id;
+                let id = metadata.id.clone();
                 // Evicting a main session cascade-evicts its aux session:
                 // resolve the mapping first (purge_session_side_maps removes it
                 // once the main record commits), then let the aux record and

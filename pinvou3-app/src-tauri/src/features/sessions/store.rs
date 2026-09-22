@@ -39,6 +39,10 @@ use crate::platform::prefs::UserPrefs;
 static POST_RECORD_DELETE_FAULTS: LazyLock<Mutex<HashMap<String, ErrorKind>>> =
     LazyLock::new(|| Mutex::new(HashMap::new()));
 
+#[cfg(test)]
+static PRE_RECORD_DELETE_FAULTS: LazyLock<Mutex<HashMap<String, ErrorKind>>> =
+    LazyLock::new(|| Mutex::new(HashMap::new()));
+
 /// Cap on the number of ordinary chat sessions retained on disk before the
 /// oldest is evicted by [`super::retention::SessionStore::enforce_session_retention_locked`].
 pub(crate) const MAX_SESSIONS_PER_KIND: usize = 50;
@@ -512,6 +516,13 @@ impl SessionStore {
 
     fn invoke_session_manager_delete(&self, id: &str) -> std::io::Result<()> {
         #[cfg(test)]
+        if let Some(kind) = PRE_RECORD_DELETE_FAULTS.lock().remove(id) {
+            return Err(std::io::Error::new(
+                kind,
+                "injected failure before durable session deletion",
+            ));
+        }
+        #[cfg(test)]
         if let Some(kind) = POST_RECORD_DELETE_FAULTS.lock().remove(id) {
             validate_session_id(id).map_err(|error| {
                 std::io::Error::new(std::io::ErrorKind::InvalidInput, error.to_string())
@@ -523,6 +534,13 @@ impl SessionStore {
             ));
         }
         self.manager.delete_session(id)
+    }
+
+    #[cfg(test)]
+    pub(crate) fn inject_pre_record_delete_fault(&self, id: &str, kind: ErrorKind) -> Result<()> {
+        validate_session_id(id)?;
+        PRE_RECORD_DELETE_FAULTS.lock().insert(id.to_string(), kind);
+        Ok(())
     }
 
     #[cfg(test)]
@@ -752,9 +770,19 @@ impl SessionStore {
         if super::validators::is_sched_session_id(parent_id) {
             bail!("Scheduled-run session '{parent_id}' cannot own an aux session");
         }
-        let parent = self
-            .load(parent_id)
-            .with_context(|| "load the parent session for aux creation")?;
+        let parent = match self.load(parent_id) {
+            Ok(parent) => parent,
+            // A genuinely missing parent (deleted, or evicted between the
+            // panel's last action and this ensure) is a different failure
+            // class than a transient read fault: name it so the panel's
+            // ensureFailed is recognizable instead of a generic load error.
+            Err(error) if is_not_found_error(&error) => {
+                bail!("the parent session no longer exists (deleted or evicted)")
+            }
+            Err(error) => {
+                return Err(error).with_context(|| "load the parent session for aux creation");
+            }
+        };
         let id = format!("aux-{}", generate_session_id());
         // Note: the copied `metadata.workspace` is record-keeping only — no
         // production reader resolves an aux session's roots from it

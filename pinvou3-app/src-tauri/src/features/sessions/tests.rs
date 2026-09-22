@@ -4424,6 +4424,53 @@ fn delete_main_session_cascades_to_aux_session() {
     assert!(!sidecar.exists(), "最后一条映射摘掉后 sidecar 应被删除");
 }
 
+/// A failed aux cascade delete aborts the whole delete (round-26 minor
+/// M11): when the aux record's deletion fails before anything commits, the
+/// `?` at the cascade leg must surface the error and leave BOTH records and
+/// the mapping on disk — a half-deleted pair (main gone, aux alive and
+/// orphaned behind a live mapping) would only be reclaimable at the next
+/// boot, and the caller would wrongly believe the pair is gone.
+#[test]
+fn delete_aborts_and_preserves_the_pair_when_the_aux_cascade_fails() {
+    let (store, _g) = isolated_store();
+    let deletions = record_session_deletions(&store);
+    let main = store
+        .create_new("/model".into(), None, std::env::temp_dir())
+        .expect("create main");
+    let aux = store
+        .create_aux_session(&main.metadata.id)
+        .expect("create aux session");
+    store
+        .inject_pre_record_delete_fault(&aux.id, ErrorKind::PermissionDenied)
+        .expect("fail the aux record deletion before it commits");
+
+    let error = store
+        .delete(&main.metadata.id)
+        .expect_err("the cascade failure must abort the main delete");
+
+    assert!(
+        format!("{error:#}").contains("delete aux session"),
+        "the error must name the cascade leg: {error:#}"
+    );
+    assert!(
+        store.load(&main.metadata.id).is_ok(),
+        "级联失败时主会话必须保留"
+    );
+    assert!(store.load(&aux.id).is_ok(), "级联失败时辅助会话必须保留");
+    assert_eq!(
+        store.aux_session_id(&main.metadata.id).as_deref(),
+        Some(aux.id.as_str()),
+        "级联失败后 主→辅 映射必须保留"
+    );
+    assert!(
+        deletions
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+            .is_empty(),
+        "a pre-commit failure must not publish deletion hooks"
+    );
+}
+
 /// Deleting an aux session alone: clears the mapping entry; the main
 /// session is unaffected.
 #[test]
@@ -5563,6 +5610,16 @@ fn retention_evicts_main_session_together_with_its_aux() {
         .save_session_atomic(&oldest)
         .expect("seed oldest main");
     let aux = store.create_aux_session(main_id).expect("create aux");
+    // Backdate the aux record: since round-26 MAJOR-1 eviction order counts
+    // aux activity as liveness of the pair (max of both updated_at), a fresh
+    // aux would protect its main from the sweep — this test pins the cascade
+    // of a pair that is stale on BOTH sides.
+    let mut aux_record = store.load(&aux.id).expect("load aux record");
+    aux_record.metadata.updated_at =
+        now - chrono::Duration::seconds(MAX_SESSIONS_PER_KIND as i64 + 2);
+    store
+        .save_session_atomic(&aux_record)
+        .expect("backdate the aux record");
     for index in 0..MAX_SESSIONS_PER_KIND {
         let mut session = create_saved_session_with_id_and_mode(
             format!("retention-aux-peer-{index}"),
@@ -5642,6 +5699,100 @@ fn aux_sessions_do_not_consume_chat_retention_budget() {
             Some(aux_id.as_str())
         );
     }
+}
+
+/// Aux activity must count as liveness of the main session (round-26
+/// MAJOR-1): an aux turn refreshes only the aux record's `updated_at`, so a
+/// retention sweep ordered by the main record alone would let the user's own
+/// aux send evict the main session whose side chat is actively in use (and
+/// cascade-delete that live aux conversation). Eviction order must use
+/// max(main.updated_at, aux.updated_at), restoring "in use ⇒ not evicted".
+#[test]
+fn retention_aux_activity_protects_main_session_from_eviction() {
+    let (store, _g) = isolated_store();
+    let deletions = record_session_deletions(&store);
+    let now = Utc::now();
+    let main_id = "retention-liveness-main";
+    // The oldest main session owns the freshest aux conversation: without
+    // liveness protection it is the first eviction victim.
+    let mut oldest = create_saved_session_with_id_and_mode(
+        main_id.to_string(),
+        &[],
+        "/retention-model",
+        &std::env::temp_dir(),
+        0,
+        None,
+        None,
+    );
+    oldest.metadata.updated_at = now - chrono::Duration::seconds(MAX_SESSIONS_PER_KIND as i64 + 1);
+    store
+        .save_session_atomic(&oldest)
+        .expect("seed oldest main");
+    let aux = store.create_aux_session(main_id).expect("create aux");
+    // An aux turn's transcript save refreshes only the aux record — exactly
+    // what `update_messages` does in production.
+    store
+        .update_messages(&aux.id, Vec::new())
+        .expect("aux turn save refreshes only the aux record");
+    let aux_updated_at = store.load(&aux.id).expect("load aux").metadata.updated_at;
+    assert!(
+        aux_updated_at > oldest.metadata.updated_at,
+        "辅助会话活动不得回写主会话记录"
+    );
+    // The peers fill the remaining budget; peer 0 is the freshest, peer
+    // MAX-1 the stalest — the victim once the oldest main is protected.
+    let mut stalest_peer = String::new();
+    for index in 0..MAX_SESSIONS_PER_KIND {
+        let peer_id = format!("retention-liveness-peer-{index}");
+        if index == MAX_SESSIONS_PER_KIND - 1 {
+            stalest_peer = peer_id.clone();
+        }
+        let mut session = create_saved_session_with_id_and_mode(
+            peer_id,
+            &[],
+            "/retention-model",
+            &std::env::temp_dir(),
+            0,
+            None,
+            None,
+        );
+        session.metadata.updated_at = now - chrono::Duration::seconds(index as i64);
+        store
+            .save_session_atomic(&session)
+            .expect("seed peer session");
+    }
+
+    store
+        .enforce_session_retention_locked()
+        .expect("enforce retention");
+
+    assert!(
+        store.load(main_id).is_ok(),
+        "辅助会话活动中的主会话不得被淘汰"
+    );
+    assert!(
+        store.load(&aux.id).is_ok(),
+        "活动中的辅助会话不得被连带淘汰"
+    );
+    assert_eq!(
+        store.aux_session_id(main_id).as_deref(),
+        Some(aux.id.as_str()),
+        "受保护会话的 主→辅 映射必须保留"
+    );
+    assert!(
+        store.load(&stalest_peer).is_err(),
+        "预算必须落在真正最久未使用的会话上"
+    );
+    let seen = deletions
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner());
+    assert!(seen.iter().any(|id| id == &stalest_peer));
+    assert!(!seen.iter().any(|id| id == main_id));
+    assert!(!seen.iter().any(|id| id == &aux.id));
+    assert_eq!(
+        store.list().expect("chat list").len(),
+        MAX_SESSIONS_PER_KIND
+    );
 }
 
 /// Eviction racing aux creation (round-10 minor-1, actually pinned in round
@@ -5843,6 +5994,18 @@ fn set_aux_session_rejects_a_value_already_owned_by_another_main() {
     store
         .set_aux_session("seal-main-1", Some("aux-seal-1".to_string()))
         .expect("re-pointing a main at its own aux is not a duplicate");
+    // Round-26 minor M11: the seal compares case-insensitively, matching
+    // is_aux_session_id — on case-insensitive filesystems an `AUX-…` alias
+    // resolves to the same record, so a case-variant duplicate is the same
+    // collision.
+    let error = store
+        .set_aux_session("seal-main-3", Some("AUX-SEAL-1".to_string()))
+        .expect_err("a case-variant duplicate must be rejected");
+    assert!(
+        error.to_string().contains("already bound to another main"),
+        "unexpected error: {error:#}"
+    );
+    assert!(store.aux_session_id("seal-main-3").is_none());
 }
 
 /// PR #433 review round-25 (should-fix 24-1b): the loaded-flag write refusal
