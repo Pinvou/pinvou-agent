@@ -3826,9 +3826,26 @@ mod tests {
             recycle_bin::RecycleBin::new()
                 .take_back("upload-lock")
                 .unwrap();
-            manager
-                .install_with_python("upload-lock", &std::collections::HashMap::new(), &python)
-                .unwrap();
+            // 商店路径（Preset）重装未受信依赖：Windows 上 PR #547 起 fail-closed
+            // 显式报错（「绝不执行」的另一种满足——根本没走到 downloader）；其余
+            // 平台维持 warn-skip，install 成功但同样不得触达 downloader。
+            let reinstall = manager.install_with_python(
+                "upload-lock",
+                &std::collections::HashMap::new(),
+                &python,
+            );
+            // 运行时判定（capabilities::is_windows）：测试里不用 cfg(target_os)
+            // （架构守卫 rust_target_cfg_outside_adapter 基线为 0）。
+            if crate::platform::capabilities::is_windows() {
+                assert!(
+                    reinstall
+                        .unwrap_err()
+                        .contains("未经过 Windows 可验证依赖锁"),
+                    "Windows 商店路径未受信依赖应 fail-closed"
+                );
+            } else {
+                reinstall.unwrap();
+            }
             assert!(
                 python_dependencies::take_pending_download_failure_for_test(),
                 "untrusted wheel lock must never reach the downloader"
@@ -3853,9 +3870,19 @@ mod tests {
             recycle_bin::RecycleBin::new()
                 .take_back("upload-pip")
                 .unwrap();
-            manager
-                .install("upload-pip", &std::collections::HashMap::new())
-                .unwrap();
+            // 同 upload-lock 分支：Windows 商店路径对未受信 pip 声明 fail-closed
+            // （PR #547），其余平台 install 成功但 pip 绝不执行。
+            let reinstall = manager.install("upload-pip", &std::collections::HashMap::new());
+            if crate::platform::capabilities::is_windows() {
+                assert!(
+                    reinstall
+                        .unwrap_err()
+                        .contains("未经过 Windows 可验证依赖锁"),
+                    "Windows 商店路径未受信依赖应 fail-closed"
+                );
+            } else {
+                reinstall.unwrap();
+            }
             assert_eq!(
                 connectors::take_pending_pip_install_result_for_test(),
                 1,
