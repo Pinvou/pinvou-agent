@@ -1281,9 +1281,17 @@ mod tests {
             );
             // The writer has already sampled (sampling strictly precedes the
             // lock attempt), so degrading the root now must not reach the
-            // critical section's expansion.
+            // critical section's expansion. Windows and privileged-root
+            // environments cannot degrade the directory — the test's
+            // discriminating premise (a degraded root) is absent there, so
+            // announce the skip instead of passing vacuously.
             let bundles_root = paths::bundles_root();
-            let unreadable = make_dir_unreadable_for_test(&bundles_root);
+            let Some(unreadable) = make_dir_unreadable_for_test(&bundles_root) else {
+                drop(guard);
+                writer.join().unwrap();
+                eprintln!("skipping: cannot degrade the bundles root on this platform/user");
+                return;
+            };
             drop(guard);
             rx.recv_timeout(std::time::Duration::from_secs(5))
                 .expect("the writer completes once the flock is released");
