@@ -117,6 +117,16 @@ fn folded_path_is_same_or_nested(path: &Path, base: &Path) -> bool {
     )
 }
 
+/// Folded-key equality (same fold as [`folded_path_is_same_or_nested`], minus
+/// the nesting): the legacy table and the live cache may hold the same
+/// directory in two spellings (a case-only rename or separator variants on
+/// Windows), and a lexical `==` would misreport them as diverged (review
+/// #464 follow-up nit).
+fn folded_path_is_same(left: &Path, right: &Path) -> bool {
+    crate::platform::os::filesystem_path_identity_key(&left.to_string_lossy())
+        == crate::platform::os::filesystem_path_identity_key(&right.to_string_lossy())
+}
+
 /// A future-version format must never be silently parsed as the current version:
 /// refuse to read it and treat it as missing (bind rewrites it in the current
 /// version, which self-heals); all parse errors are logged.
@@ -145,8 +155,9 @@ fn read_workspace_sidecar(path: &Path) -> Option<SessionWorkspaceSidecar> {
 
 /// Cache backfill for [`SessionStore::session_workspace_binding`]
 /// (insert-conditional, review #463 F4): the sidecar was read OUTSIDE the
-/// cache lock, so a concurrent `rebind_workspace_binding` may have moved the
-/// binding (sidecar first, then cache) while the read was in flight. Blindly
+/// cache lock, so a concurrent `rebind_workspace_bindings` (the batch's
+/// phase-3 write) may have moved the binding (sidecar first, then cache)
+/// while the read was in flight. Blindly
 /// inserting the read result afterwards would resurrect the OLD path in the
 /// cache — and the cache wins resolution until restart, silently undoing the
 /// rebind for this process. Under the write lock, an entry that appeared
@@ -306,9 +317,12 @@ impl SessionStore {
             // No sessions directory yet is normal (no session ever created).
             Err(error) if error.kind() == ErrorKind::NotFound => return matched,
             Err(error) => {
+                // Log hygiene (round-9 review minor 5): only the error kind is
+                // logged — the io message and the absolute sessions root stay
+                // out of the log, matching this file's path-free convention.
                 eprintln!(
-                    "[sessions] sessions root unreadable during rebind workspace-binding scan: {} ({error})",
-                    sessions_dir.display()
+                    "[sessions] sessions root unreadable during rebind workspace-binding scan: {}",
+                    error.kind()
                 );
                 return matched;
             }
@@ -349,6 +363,14 @@ impl SessionStore {
     /// while the in-memory cache is what resolution reads for the rest of this
     /// run — a stale cache entry would keep the old directory in use even
     /// after the sidecar moved. `bound_at` is metadata only and is preserved.
+    ///
+    /// Test-only (round-9 review minor 8): production moved to the batch
+    /// [`Self::rebind_workspace_bindings`], and keeping this singular variant
+    /// compiled into production under `dead_code = allow` would let it drift
+    /// from the batch's phase-3 write closure unnoticed. The remaining test
+    /// callers use it as a single-entry convenience — it duplicates the
+    /// batch's phase-3 write rather than delegating to it, so a phase-3
+    /// change must be mirrored here by hand.
     ///
     /// Returns whether the durable sidecar is fresh. `false` means the old
     /// path is still on disk, so a restart would resurrect it; the cache is
@@ -623,7 +645,7 @@ impl SessionStore {
                     .get(id.as_str())
                     .copied()
                     .or_else(|| live.get(id).map(|current| current.as_path()));
-                if target.is_some_and(|current| current == path) {
+                if target.is_some_and(|current| folded_path_is_same(current, path)) {
                     return false;
                 }
                 sessions_dir.join(format!("{id}.json")).is_file()
@@ -791,13 +813,25 @@ impl SessionStore {
                 continue;
             }
             if let Err(error) = self.bind_session_workspace(&id, path.clone()) {
-                // Log hygiene (round-8 should-fix): the unmigrated id reaches
-                // the in-memory table, not the log; the failure list of a
-                // subsequent rebind is the disclosure channel.
-                eprintln!(
-                    "[sessions] migrate workspace binding failed: {}",
-                    error.root_cause()
-                );
+                // Log hygiene (round-8 should-fix + round-9 minor 4): the
+                // unmigrated id reaches the in-memory table, not the log. The
+                // invalid-id arm must not log `error.root_cause()` —
+                // validate_session_id's bail echoes the rejected id, and
+                // session ids are treated as sensitive in logs — so it gets a
+                // stable, non-embedding message; every other failure logs the
+                // root cause, which never carries paths or ids — except the
+                // record-missing bail ("session record {id} does not exist"),
+                // whose root cause DOES echo the id; the ghost-record check
+                // above makes that arm near-unreachable (only a record deleted
+                // between the check and the bind reaches it).
+                if validate_session_id(&id).is_err() {
+                    eprintln!("[sessions] migrate workspace binding skipped an invalid session id");
+                } else {
+                    eprintln!(
+                        "[sessions] migrate workspace binding failed: {}",
+                        error.root_cause()
+                    );
+                }
                 unmigrated.insert(id, path);
             }
         }

@@ -643,6 +643,16 @@ fn plan_rebind_roots_previews_without_mutating() {
     let error = store
         .plan_rebind_roots(&from, &occupied)
         .expect_err("overlap rejected in the pre-flight");
+    // Typed like `rebind_roots` (round-9 review minor 10): only a genuine
+    // overlap is classified Overlap — a bare anyhow error would launder every
+    // future infrastructure failure into the conflict marker (the M3 shape).
+    assert!(
+        matches!(
+            error,
+            crate::features::projects::RebindRootsError::Overlap(_)
+        ),
+        "overlap rejected as Overlap, got: {error}"
+    );
     assert!(error.to_string().contains("overlap"));
     assert_eq!(store.get(&project.id).unwrap(), before);
 
