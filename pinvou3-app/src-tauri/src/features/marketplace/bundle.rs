@@ -645,10 +645,16 @@ pub fn readiness_for(bundle: &BundleInfo, credential_has: impl Fn(&str) -> bool)
         // dispatch; headless callers (pinvou-cli has no command layer) get
         // the conservative installed-based verdict instead of a panic.
         BundleKind::Cli => {
-            if bundle.installed {
-                Readiness::Ready
-            } else {
+            if !bundle.installed {
                 Readiness::NotReady("cli_not_installed")
+            } else if bundle.degraded.is_some() {
+                // A degraded CLI record is the logged-out / assets-mismatch
+                // state; the desktop answers `not_connected` for it via the
+                // live status probe, and the registry-visible state answers
+                // the same reason headlessly (no live probe needed).
+                Readiness::NotReady("not_connected")
+            } else {
+                Readiness::Ready
             }
         }
         BundleKind::Mcp | BundleKind::Bundle | BundleKind::Skill => {
@@ -661,10 +667,15 @@ pub fn readiness_for(bundle: &BundleInfo, credential_has: impl Fn(&str) -> bool)
                 .filter(|c| c.required && !credential_has(&c.key))
                 .map(|c| c.key.as_str())
                 .collect();
-            if missing.is_empty() {
-                Readiness::Ready
-            } else {
+            if !missing.is_empty() {
                 Readiness::NotReady("missing_credentials")
+            } else if bundle.kind == BundleKind::Skill && bundle.degraded.is_some() {
+                // Mirror of the desktop's ima companion-skill requirement: a
+                // degraded skill record means the companion skill/resources
+                // are incomplete even though the credentials are present.
+                Readiness::NotReady("skill_not_installed")
+            } else {
+                Readiness::Ready
             }
         }
     }
@@ -799,7 +810,7 @@ mod tests {
             required: false,
         }];
         assert_eq!(
-            readiness_for(&b(BundleKind::Skill, opt), |_| false),
+            readiness_for(&b(BundleKind::Skill, opt.clone()), |_| false),
             Readiness::Ready
         );
         // Headless fallback (pinvou-cli has no command layer to inject the
@@ -814,6 +825,27 @@ mod tests {
         assert_eq!(
             readiness_for(&uninstalled_cli, |_| false),
             Readiness::NotReady("cli_not_installed")
+        );
+        // A degraded CLI record is the logged-out / assets-mismatch state;
+        // headless answers the desktop's `not_connected` reason for it.
+        let mut degraded_cli = b(BundleKind::Cli, vec![]);
+        degraded_cli.degraded = Some("assets mismatch".into());
+        assert_eq!(
+            readiness_for(&degraded_cli, |_| false),
+            Readiness::NotReady("not_connected")
+        );
+        // Skill arm mirrors the desktop's ima companion-skill requirement:
+        // credentials present but the skill record degraded is
+        // skill_not_installed, not Ready.
+        assert_eq!(
+            readiness_for(&b(BundleKind::Skill, opt.clone()), |_| false),
+            Readiness::Ready
+        );
+        let mut degraded_skill = b(BundleKind::Skill, opt);
+        degraded_skill.degraded = Some("companion skill missing".into());
+        assert_eq!(
+            readiness_for(&degraded_skill, |_| true),
+            Readiness::NotReady("skill_not_installed")
         );
     }
 
