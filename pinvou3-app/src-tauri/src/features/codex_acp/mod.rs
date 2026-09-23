@@ -287,6 +287,13 @@ fn cancel_settle_matches<T>(
         && current_turn_id == Some(expected_turn_id)
 }
 
+/// The stall ladder belongs to one exact turn. Once another closer removes or
+/// replaces that turn, the abandoned prompt future may keep awaiting its ACP
+/// response but must never emit another notice or cancellation request.
+fn stall_guard_owns_turn(current_turn_id: Option<&str>, expected_turn_id: &str) -> bool {
+    current_turn_id == Some(expected_turn_id)
+}
+
 /// Result of the rebind eviction take: distinguishes "no resident runtime"
 /// (trivially idle — nothing to reclaim, eviction counts as done) from
 /// "busy" (in-flight prompt/config sync — the caller must not evict and
@@ -787,16 +794,16 @@ async fn take_pending_permission(
     option_id: &str,
 ) -> Result<PendingPermission> {
     let mut pending = pending.lock().await;
-    let request = pending.remove(&key).context(
-        "permission request expired, was already answered, or belongs to another session",
-    )?;
+    let request = pending
+        .remove(&key)
+        .context("权限请求已过期、已被回复，或属于其他会话")?;
     if !request
         .option_ids
         .iter()
         .any(|candidate| candidate == option_id)
     {
         pending.insert(key, request);
-        bail!("permission option does not belong to this request");
+        bail!("权限选项不属于该请求");
     }
     stall::mark_activity(&request.activity);
     Ok(request)
@@ -807,9 +814,9 @@ async fn take_pending_elicitation(
     key: &str,
 ) -> Result<PendingElicitation> {
     let mut pending = pending.lock().await;
-    let request = pending.remove(key).context(
-        "elicitation request expired, was already answered, or belongs to another session",
-    )?;
+    let request = pending
+        .remove(key)
+        .context("问询请求已过期、已被回复，或属于其他会话")?;
     stall::mark_activity(&request.activity);
     Ok(request)
 }
@@ -965,9 +972,31 @@ impl AcpSession {
         loop {
             tokio::select! {
                 result = &mut request => return result,
-                _ = ticker.tick() => {
-                    if settled || self.awaiting_user_decision().await {
-                        // 已本地收口，或用户正在被询问（静默是人的时间）。
+                _ = ticker.tick(), if !settled => {
+                    if !stall_guard_owns_turn(
+                        self.bridge.current_turn_id().as_deref(),
+                        turn_id,
+                    ) {
+                        // Stop's delayed fallback or another closer already
+                        // settled this exact turn. Keep awaiting the ACP
+                        // response, but permanently disable this future's
+                        // notice/cancel ladder so it cannot act on stale state.
+                        settled = true;
+                        continue;
+                    }
+                    if self.awaiting_user_decision().await {
+                        // The user is answering a permission or elicitation
+                        // card, so silence belongs to the human, not the agent.
+                        continue;
+                    }
+                    if !stall_guard_owns_turn(
+                        self.bridge.current_turn_id().as_deref(),
+                        turn_id,
+                    ) {
+                        // The card lookup above awaits two shared maps. Recheck
+                        // ownership after that yield before emitting any side
+                        // effect for the turn.
+                        settled = true;
                         continue;
                     }
                     let quiet = stall::quiet_for(&self.activity);
@@ -5655,5 +5684,18 @@ mod tests {
             Some("turn-a"),
             "turn-a",
         ));
+    }
+
+    #[test]
+    fn forkguard_stall_ladder_stops_after_turn_ownership_changes() {
+        assert!(stall_guard_owns_turn(Some("turn-a"), "turn-a"));
+        assert!(
+            !stall_guard_owns_turn(None, "turn-a"),
+            "a turn settled by the Stop fallback no longer owns the ladder"
+        );
+        assert!(
+            !stall_guard_owns_turn(Some("turn-b"), "turn-a"),
+            "an abandoned prompt future must not act on the next turn"
+        );
     }
 }
