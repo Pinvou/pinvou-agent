@@ -2,16 +2,7 @@ import {
   countsAsFailedOperation,
   presentConversationItems,
 } from './conversation-model.js';
-const SHELL_TOOLS = new Set([
-  'bash',
-  'exec_shell',
-  'exec_shell_wait',
-  'exec_wait',
-  'task_shell_start',
-  'task_shell_wait',
-  'shell',
-  'Bash',
-]);
+import { SHELL_TOOL_NAMES as SHELL_TOOLS } from '../../shared/shell-tools.mjs';
 
 export function conversationItemsForMode(chatItems = []) {
   const items = Array.isArray(chatItems) ? chatItems : [];
@@ -394,10 +385,6 @@ export function projectDeepSeekConversation({
   }
 
   return {
-    thread: {
-      id: sessionId,
-      turns,
-    },
     turns,
   };
 }

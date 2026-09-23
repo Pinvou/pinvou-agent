@@ -6,6 +6,7 @@ import { _ARTIFACT_FMT, _artifactKind } from '../../shared/artifact-utils.js';
 import { can, isWeb } from '../../shared/platform.js';
 import { pathBasename } from '../../shared/path-utils.js';
 import { parseUnifiedDiff, diffStats } from './unified-diff-parser.js';
+import { isShellExecutionTool } from '../../shared/shell-tools.mjs';
 import { dict } from '../../shared/i18n.js';
 
 // 调用方尚未下发 t 时回退中文词典（与现状一致），接入 t 后自动多语。
@@ -181,12 +182,16 @@ const tc = (t) => (t && t.uiToolCommon) || dict.zh.uiToolCommon;
           return args.pattern ? '"' + args.pattern + '"' : '';
         case 'file_search':
           return args.query ? '"' + args.query + '"' : '';
-        case 'bash':
-        case 'exec_shell':
-        case 'task_shell_start':
-        case 'shell':
-        case 'Bash':
-          return typeof args.command === 'string' ? args.command.replaceAll(/\s+/g, ' ').trim() : '';
+        default:
+          break;
+      }
+      // Shell tools (including the wait-style names) share the command-line
+      // summary; keeping the check on the shared set prevents the case list
+      // from drifting again when a new shell tool name is added.
+      if (isShellExecutionTool(name)) {
+        return typeof args.command === 'string' ? args.command.replaceAll(/\s+/g, ' ').trim() : '';
+      }
+      switch (name) {
         case 'checklist_update':
         case 'todo_update':
           return args.status === 'completed' ? t.tsDone

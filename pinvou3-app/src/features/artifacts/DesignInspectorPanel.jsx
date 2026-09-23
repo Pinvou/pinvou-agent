@@ -285,17 +285,6 @@ const DesignInspectorPanel = ({ t, selectedElement, changes = EMPTY_CHANGES, onA
     return (
     <div className="relative col-span-2 flex min-w-0 items-center justify-between gap-3">
       <span className={`${labelCls} whitespace-nowrap`}>{label}</span>
-      <input
-        data-testid={testId}
-        type="text"
-        value={current}
-        onInput={(e) => applyColorValue(property, fallback, e.currentTarget.value)}
-        onChange={(e) => applyColorValue(property, fallback, e.target.value)}
-        className="sr-only"
-        tabIndex={-1}
-        aria-hidden="true"
-        readOnly={false}
-      />
       <button
         type="button"
         data-testid={testId ? `${testId}-button` : undefined}

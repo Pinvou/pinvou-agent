@@ -951,14 +951,6 @@ const NAV_PREFETCH = {
           window.removeEventListener('click', guard.handleClick, true);
         };
       }, []);
-      useEffect(() => {
-        const liveBridge = window.TauriBridge || bridge;
-        if (!liveBridge?.monitor || typeof liveBridge.monitor.startMonitorPolling !== 'function') return;
-        if (currentView === 'monitor') {
-          liveBridge.monitor.startMonitorPolling();
-          return () => { if (typeof liveBridge.monitor.stopMonitorPolling === 'function') liveBridge.monitor.stopMonitorPolling(); };
-        }
-      }, [currentView]);
       // 工具商店/卡片用 Tailwind dark: 变体(darkMode:'class'),全局挂 <html>.dark 让其随 app 主题切换
       useEffect(() => { document.documentElement.classList.toggle('dark', activeTheme === 'dark'); }, [activeTheme]);
       // 厂商预装本地大模型首屏检测:仅启动一次,检测「预装但未启用」本地大模型环境(后端短路保证普通机零开销)。
@@ -4030,7 +4022,6 @@ const NAV_PREFETCH = {
           )}
 
           <UpdateNoticeButton
-            theme={activeTheme}
             bs={bs}
             t={t}
             onShowChangelog={() => {

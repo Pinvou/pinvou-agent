@@ -2041,16 +2041,20 @@ export function CodexAcpView({
       // The composer moves to the new draft. Browser attachment handles are
       // one-shot resources, so retaining a second owner on the old session
       // would let a consumed handle reappear when the user switches back.
-      setAttachmentDrafts(current => {
-        const next = { ...current, [DRAFT_ATTACHMENT_KEY]: current[activeId] || [] };
-        delete next[activeId];
-        return next;
-      });
-      setWorkspaceReferenceDrafts(current => {
-        const next = { ...current, [DRAFT_ATTACHMENT_KEY]: current[activeId] || [] };
-        delete next[activeId];
-        return next;
-      });
+      setAttachmentDrafts(current => transferAcpDraftItems(
+        current,
+        activeId,
+        DRAFT_ATTACHMENT_KEY,
+        current[activeId] || [],
+        attachment => attachment.id,
+      ));
+      setWorkspaceReferenceDrafts(current => transferAcpDraftItems(
+        current,
+        activeId,
+        DRAFT_ATTACHMENT_KEY,
+        current[activeId] || [],
+        reference => reference,
+      ));
     }
     setEvents([]);
     setPending([]);
@@ -2557,17 +2561,8 @@ export function CodexAcpView({
 
   useEffect(() => {
     if (!activeStatus?.login_in_progress) return;
-    let cancelled = false;
-    let timer = null;
-    const poll = async () => {
-      await refreshStatus(activeAgentId).catch(() => {});
-      if (!cancelled) timer = window.setTimeout(poll, 750);
-    };
-    timer = window.setTimeout(poll, 750);
-    return () => {
-      cancelled = true;
-      if (timer !== null) window.clearTimeout(timer);
-    };
+    const stopPolling = startSerialStatusPolling(() => refreshStatus(activeAgentId), 750, 750);
+    return () => { void stopPolling(); };
     // eslint-disable-next-line react-hooks/exhaustive-deps -- poll only on the login-in-progress edge; refreshStatus reference changes must not restart the poll chain
   }, [activeAgentId, activeStatus?.login_in_progress]);
 
@@ -3130,7 +3125,7 @@ export function CodexAcpView({
         <ConversationMarkdown
           text={item.legacyItem.text}
           streaming={item.status === 'in_progress'}
-          onOpenExternal={(url) => invoke('open_user_external_url', { url }).catch(showError)}
+          onOpenExternal={(url) => openAcpExternalUrl(url).catch(showError)}
           onOpenResource={isWeb ? undefined : openWorkspaceResource}
         />
       );

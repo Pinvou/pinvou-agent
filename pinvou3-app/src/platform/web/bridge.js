@@ -23,7 +23,7 @@ function pinvouSharedweb() {
     : function (command, args) { return invoke(command, args); };
   const { listen } = TAURI.event;
   const dialogOpen = TAURI.dialog?.open;
-  const PLATFORM = window.PinvouPlatform || { kind: "desktop", capabilities: {} };
+  const PLATFORM = window.PinvouPlatform;
   const IS_WEB = PLATFORM.kind === "web" || PLATFORM.isWeb === true;
   function hasCapability(name) {
     if (IS_WEB && typeof PLATFORM.can === "function") return PLATFORM.can(name) === true;
@@ -35,7 +35,6 @@ function pinvouSharedweb() {
   }
   const WEB_CAPABILITIES_WAIT_TIMEOUT_MS = 10_000;
   function webInvokeCapabilitiesReady() {
-    if (!IS_WEB) return true;
     if (typeof PLATFORM.areInvokeCapabilitiesReady === "function") {
       return PLATFORM.areInvokeCapabilitiesReady() === true;
     }
@@ -441,7 +440,7 @@ function pinvouSharedweb() {
       replanRequested: "📋 Asking the AI to re-plan…",
       openFailed: "⚠️ Open failed: ", pasteImageFailed: "⚠️ Paste image failed: ",
       filePickUnavailable: "⚠️ File picker unavailable", filePickFailed: "⚠️ File selection failed: ",
-      equipNoSession: "⚠️ Open or create a chat before equipping an expert", equipFailed: "⚠️ Equip failed: ",
+equipFailed: "⚠️ Equip failed: ",
       shellOutputOmitted: kind => `[Earlier ${kind} output omitted]`, shellUnknownExit: "unknown",
       shellTaskFinished: code => `[Task finished, exit code: ${code}]`,
       sessionChunkInvalid: "The desktop app returned an invalid session chunk",
@@ -463,21 +462,12 @@ function pinvouSharedweb() {
       targetSessionSyncing: "The target session is still syncing a turn completed elsewhere",
       sessionIdMissing: "The desktop app returned no new session ID",
       turnSyncRetry: "⚠️ This session is still syncing a turn completed elsewhere. Please try again shortly",
-      pinvouNeedSession: "Start a chat first, then summon Pinvou for review.",
+      summonNeedsSession: "Start a conversation first, then summon Pinvou to review.",
       remoteDoneUnsynced: "⚠️ The chat finished on the desktop, but the authoritative record is not synced yet. Retry after reconnecting.",
-      unknownReason: "unknown reason",
-      materialsAdded: (count, names) => "✅ Added " + count + " materials to run materials: " + names.join(", "),
       pickFolderTitle: "Choose a working directory",
       kbPickFolderTitle: "Choose a folder to import into the knowledge base",
       rebindPickFolderTitle: "Choose the folder to rebind this project to",
-      gateApproveFailed: "⚠️ Approval failed: ",
-      gateRejectFailed: "⚠️ Rejection failed: ",
-      roleRetried: (roleId, result) => "🔄 Rerunning " + roleId + ": " + result,
-      roleRetryFailed: "⚠️ Rerun failed: ",
-      metricNotApplicable: "N/A", metricUnavailable: "Not available",
-      targetKindRemote: "Remote model",
-      targetKindLocal: "Local model",
-      targetKindInvalid: "Invalid configuration",
+metricUnavailable: "Not available",
       betaTag: " (Beta)",
       memoryWriteFailed: "Failed to write memory: ",
       memoryIgnoreFailed: "Failed to ignore memory: ",
@@ -506,7 +496,6 @@ function pinvouSharedweb() {
       newChatFallbackTitle: "New chat",
       echoOtherPrefix: "(Other) ",
       mountCollectionFailed: "Failed to mount knowledge collection: ",
-      depsNotInstallable: "The missing items cannot be installed automatically. Install the offline components per the dependency notes, then re-check.",
       voicePermissionDenied: "Microphone access was denied. Allow this app to use the microphone in system settings, then try again.",
       voiceNoDevice: "No available microphone detected. Check that the recording device is enabled and not in use.",
       voiceDeviceTimeout: "Microphone detection timed out; no recording device found. Check the device connection and the system microphone settings, then try again.",
@@ -571,7 +560,7 @@ function pinvouSharedweb() {
       replanRequested: "📋 AI にプランを出し直させています…",
       openFailed: "⚠️ 開けませんでした: ", pasteImageFailed: "⚠️ 画像の貼り付けに失敗: ",
       filePickUnavailable: "⚠️ ファイル選択を利用できません", filePickFailed: "⚠️ ファイル選択に失敗: ",
-      equipNoSession: "⚠️ エキスパートを装備する前にチャットを開くか新規作成してください", equipFailed: "⚠️ 装備に失敗: ",
+equipFailed: "⚠️ 装備に失敗: ",
       shellOutputOmitted: kind => `[途中の${kind === "stderr" ? "標準エラー" : "標準出力"}を省略]`, shellUnknownExit: "不明",
       shellTaskFinished: code => `[タスク終了、終了コード: ${code}]`,
       sessionChunkInvalid: "デスクトップ側が無効なセッションチャンクを返しました",
@@ -593,21 +582,12 @@ function pinvouSharedweb() {
       targetSessionSyncing: "対象のセッションは別端末で完了したターンをまだ同期中です",
       sessionIdMissing: "デスクトップ側が新しいセッション ID を返しませんでした",
       turnSyncRetry: "⚠️ このセッションは別端末で完了したターンをまだ同期中です。しばらくしてから再試行してください",
-      pinvouNeedSession: "先にチャットを開始してから Pinvou レビューを呼び出してください。",
+      summonNeedsSession: "先に会話を始めてから Pinvou レビューを召喚してください。",
       remoteDoneUnsynced: "⚠️ チャットはデスクトップ側で完了しましたが、正式な記録がまだ同期されていません。接続回復後に再試行できます。",
-      unknownReason: "不明な原因",
-      materialsAdded: (count, names) => "✅ 素材を " + count + " 件、配套材料に追加しました：" + names.join("、"),
       pickFolderTitle: "作業ディレクトリを選択",
       kbPickFolderTitle: "知識ベースにインポートするフォルダーを選択",
       rebindPickFolderTitle: "このプロジェクトの再バインド先フォルダーを選択",
-      gateApproveFailed: "⚠️ 承認に失敗: ",
-      gateRejectFailed: "⚠️ 差し戻しに失敗: ",
-      roleRetried: (roleId, result) => "🔄 再実行 " + roleId + ": " + result,
-      roleRetryFailed: "⚠️ 再実行に失敗: ",
-      metricNotApplicable: "対象外", metricUnavailable: "未提供",
-      targetKindRemote: "リモートモデル",
-      targetKindLocal: "ローカルモデル",
-      targetKindInvalid: "構成エラー",
+metricUnavailable: "未提供",
       betaTag: " (ベータ版)",
       memoryWriteFailed: "メモリの書き込みに失敗：",
       memoryIgnoreFailed: "メモリの無視に失敗：",
@@ -636,7 +616,6 @@ function pinvouSharedweb() {
       newChatFallbackTitle: "新しいチャット",
       echoOtherPrefix: "(その他) ",
       mountCollectionFailed: "ナレッジセットのマウントに失敗: ",
-      depsNotInstallable: "不足項目はワンクリックでインストールできません。依存関係の案内に従ってオフラインコンポーネントをインストールし、再検出してください。",
       voicePermissionDenied: "マイクへのアクセスが拒否されました。システム設定でこのアプリのマイク使用を許可してから再試行してください。",
       voiceNoDevice: "利用可能なマイクが検出されませんでした。録音デバイスが有効か、他で使用されていないか確認してください。",
       voiceDeviceTimeout: "マイク検出がタイムアウトし、録音デバイスが見つかりませんでした。デバイスの接続とシステムのマイク設定を確認して再試行してください。",
@@ -701,7 +680,7 @@ function pinvouSharedweb() {
       replanRequested: "📋 让 AI 重出方案…",
       openFailed: "⚠️ 打开失败: ", pasteImageFailed: "⚠️ 粘贴图片失败: ",
       filePickUnavailable: "⚠️ 文件选择不可用", filePickFailed: "⚠️ 选择文件失败: ",
-      equipNoSession: "⚠️ 请先打开或新建一个对话再加持专家", equipFailed: "⚠️ 加持失败: ",
+equipFailed: "⚠️ 加持失败: ",
       shellOutputOmitted: kind => `[中间${kind === "stderr" ? "错误" : "标准"}输出已省略]`, shellUnknownExit: "未知",
       shellTaskFinished: code => `[任务已结束，退出码: ${code}]`,
       sessionChunkInvalid: "桌面端返回了无效的会话分块",
@@ -723,21 +702,12 @@ function pinvouSharedweb() {
       targetSessionSyncing: "目标会话仍在同步另一端完成的回合",
       sessionIdMissing: "桌面端未返回新会话 ID",
       turnSyncRetry: "⚠️ 该会话仍在同步另一端完成的回合，请稍后重试",
-      pinvouNeedSession: "先开始一个对话,再召唤 Pinvou 检阅。",
+      summonNeedsSession: "先开始一个对话,再召唤 Pinvou 检阅。",
       remoteDoneUnsynced: "⚠️ 对话已在桌面端完成，但权威记录暂未同步；恢复连接后可重试。",
-      unknownReason: "未知原因",
-      materialsAdded: (count, names) => "✅ 已添加 " + count + " 个素材到配套材料：" + names.join("、"),
       pickFolderTitle: "选择工作目录",
       kbPickFolderTitle: "选择要导入知识库的文件夹",
       rebindPickFolderTitle: "选择重绑定项目的新文件夹",
-      gateApproveFailed: "⚠️ 通过失败: ",
-      gateRejectFailed: "⚠️ 打回失败: ",
-      roleRetried: (roleId, result) => "🔄 重跑 " + roleId + ": " + result,
-      roleRetryFailed: "⚠️ 重跑失败: ",
-      metricNotApplicable: "不适用", metricUnavailable: "未提供",
-      targetKindRemote: "远端模型",
-      targetKindLocal: "本地模型",
-      targetKindInvalid: "配置异常",
+metricUnavailable: "未提供",
       betaTag: " (内测版)",
       memoryWriteFailed: "记忆写入失败：",
       memoryIgnoreFailed: "忽略记忆失败：",
@@ -766,7 +736,6 @@ function pinvouSharedweb() {
       newChatFallbackTitle: "新对话",
       echoOtherPrefix: "(其他) ",
       mountCollectionFailed: "挂载知识集失败: ",
-      depsNotInstallable: "当前缺失项无法一键安装，请按依赖说明安装离线组件后重新检测。",
       voicePermissionDenied: "麦克风权限被拒绝，请在系统设置中允许本应用访问麦克风后重试。",
       voiceNoDevice: "未检测到可用麦克风，请检查录音设备是否启用或被占用。",
       voiceDeviceTimeout: "麦克风检测超时，未发现可用录音设备。请检查设备连接和系统麦克风设置后重试。",
@@ -936,7 +905,7 @@ function pinvouSceneForMessagePos(pos) { return pinvouSharedweb().pinvouSceneFor
       planSnapshot: { plan: null, todos: null },
       modeState: { mode: "yolo" },
       thinking: { active: false, phase: "thinking", toolName: "", startedAt: 0 },
-      tokens: { input: 0, max: 0 },
+      tokens: { input: 0, max: state.tokens.max },
       activePersona: null, // 卡片池: 该 session 加持的专家面具(挂件用)
       mountedCollection: null, // 知识库: 该 session 挂载的知识集 id 或 null
       mountedCollections: [], // 多知识库挂载项 [{ collectionId, enabled }]
@@ -1254,15 +1223,10 @@ function rollbackScheduledOpenActivation(snapshot) { return pinvouSharedweb().ro
   // eslint-disable-next-line sonarjs/cognitive-complexity -- legacy bridge; refactor tracked separately
   async function loadSessionForClient(sid, setActive, diagnostics) {
     diagnostics = diagnostics || {};
-    diagnostics.transport_kind = IS_WEB ? "web_chunked_rpc" : "desktop_invoke";
+    diagnostics.transport_kind = "web_chunked_rpc";
     diagnostics.started_at_ms = Date.now();
     diagnostics.chunk_count = 0;
     diagnostics.bytes_received = 0;
-    if (!IS_WEB) {
-      const localSaved = await invoke("load_session", { id: sid, setActive: !!setActive });
-      diagnostics.elapsed_ms = Date.now() - diagnostics.started_at_ms;
-      return localSaved;
-    }
     // New WebUI can run against an older desktop. The cancel command is the
     // capability boundary for client-selected/persisted leases: older
     // desktops keep their server-generated download id protocol and must not
@@ -2151,14 +2115,14 @@ function timeStr() { return pinvouSharedweb().timeStr(); }
         do {
           refreshHistoryQueued = false;
           try {
-            state.sessions = await invoke(IS_WEB ? "web_access_list_sessions" : "list_sessions");
+            state.sessions = await invoke("web_access_list_sessions");
           } catch (e) {
             console.warn("list_sessions failed", e);
             state.sessions = [];
           }
           try {
             state.archivedSessions = await invoke(
-              IS_WEB ? "web_access_list_archived_sessions" : "list_archived_sessions",
+              "web_access_list_archived_sessions",
             );
           } catch {
             state.archivedSessions = state.archivedSessions || [];
@@ -2222,7 +2186,7 @@ async function createNewSession() { return pinvouSharedweb().createNewSession();
     const p = (async function () {
       // 多 session 并发:不预热 engine。新建空 session 的 buffer 由 switchActiveTo({fresh}) 起。
       try {
-        const meta = await invoke(IS_WEB ? "web_access_create_session" : "create_session");
+        const meta = await invoke("web_access_create_session");
         // create_session 等待期间用户可能已发送/清空输入，迁移当下的最新值。
         const composerDraft = state.composerDraft || "";
         // create_session 等待期间用户可能已退出草稿（切到既有会话或再进草稿）：
@@ -2519,7 +2483,7 @@ function interruptedDisplayRange(item) { return pinvouSharedwebN158313().interru
     let turnTimeline;
     try {
       const primary = await Promise.all([
-        loadSessionForClient(id, !IS_WEB),
+        loadSessionForClient(id, false),
         invoke("get_session_persona_events", { sessionId: id }).catch(function () { return []; }),
         invoke("get_session_pinvou_reviews", { sessionId: id }).catch(function () { return []; }),
         invoke("get_session_timeline", { sessionId: id }).catch(function () { return []; }),
@@ -2756,13 +2720,12 @@ async function exitScheduledRunChat() { return pinvouSharedweb().exitScheduledRu
 function applyDeletedSession(id) { return pinvouSharedweb().applyDeletedSession(id); }
 
   async function deleteSession(id) {
-    invalidateScheduledRecentRunsForSession(id);
     try {
       // 后端按 SessionKind 分发:定时运行会话在 delete_session 里联动删除
       // 该次 Session、Run 与底座 Task,任务定义与共享工作间保留。
       await invoke("delete_session", { id });
-      applyDeletedSession(id);
-      return true;
+      // 复用远端事件与本地操作的统一清理路径，并保留批量操作所需的结果语义。
+      return applyDeletedSession(id);
     } catch (e) {
       addSystemItem(bt("deleteFailed") + e);
       return false;
@@ -3158,12 +3121,11 @@ function scheduleShellPoll(sid, immediate) { return pinvouSharedweb().scheduleSh
 
 
   async function cancelShellTask(sessionId, taskId) {
-    const sid = sessionId || state.activeSessionId;
-    if (!sid || !taskId) return;
+    if (!sessionId || !taskId) throw new Error("Missing shell task identity");
     try {
-      await invoke("cancel_shell_task", { sessionId: sid, taskId });
+      await invoke("cancel_shell_task", { sessionId, taskId });
     } finally {
-      scheduleShellPoll(sid, true);
+      scheduleShellPoll(sessionId, true);
     }
   }
 
@@ -3375,17 +3337,15 @@ function rebuiltQueuedMetaPayload(item, userText) { return pinvouSharedweb().reb
     });
     notify();
     emitPetEvent();
-    const chatCommand = IS_WEB ? "web_access_chat" : "chat";
-    const chatArgs = IS_WEB
-      ? {
-          message: text,
-          attachmentHandles: (attachmentsPayload || []).map(function (attachment) {
-            return attachment && attachment.handle;
-          }).filter(Boolean),
-          sessionId: sid,
-          restrictTools: !!restrictTools,
-        }
-      : { message: text, attachments: attachmentsPayload, sessionId: sid, restrictTools: !!restrictTools };
+    const chatCommand = "web_access_chat";
+    const chatArgs = {
+      message: text,
+      attachmentHandles: (attachmentsPayload || []).map(function (attachment) {
+        return attachment && attachment.handle;
+      }).filter(Boolean),
+      sessionId: sid,
+      restrictTools: !!restrictTools,
+    };
     return invoke(chatCommand, chatArgs)
       .then(function () {
         // 新一轮已被后端受理：会话中未提交的「打开」（pending enable）自此进入
@@ -4006,7 +3966,7 @@ function prefillComposer(text, append) { return pinvouSharedweb().prefillCompose
   // 纯召唤、不替 Boss 决策。
   // 审查卡进 chatItems(当前会话可见);跨会话持久化(进 messages/独立存储)是后续增强。
   async function summonPinvou(focus, mode) {
-    if (!state.activeSessionId) { addSystemItem(bt("pinvouNeedSession")); return; }
+    if (!state.activeSessionId) { addSystemItem(bt("summonNeedsSession")); return; }
     if (state.pinvouSummoning) return;
     state.pinvouSummoning = true;
     const sid = state.activeSessionId; // 召唤发起时的 session;await 返回后校验,防跨 session 串(召唤慢+切走)
@@ -5136,10 +5096,8 @@ function adjustCounters(sp, v) { return pinvouSharedweb().adjustCounters(sp, v);
   // monitor page is open. Numeric values jitter naturally (cpu/gpu
   // percentages etc.), so comparisons allow a 0.5 tolerance (prefer one
   // extra notify over ever getting stuck); counters are mostly strings after
-  // toFixed/round and compare exactly. updatedAt is a poll-tick marker (never
-  // rendered, only a sampling trigger) and must be excluded, otherwise every
-  // second counts as "changed"; the page clock is driven by MonitorView's
-  // local 1s timer and does not depend on it.
+  // toFixed/round and compare exactly. The page clock is driven by
+  // MonitorView's local 1s timer and does not depend on any poll-tick marker.
   function monitorFmtEqual(prev, next) {
     if (prev === next) return true;
     if (!prev || !next) return false;
@@ -5153,7 +5111,6 @@ function adjustCounters(sp, v) { return pinvouSharedweb().adjustCounters(sp, v);
     if (keys.length !== Object.keys(prev).length) return false;
     for (let i = 0; i < keys.length; i++) {
       const key = keys[i];
-      if (key === "updatedAt") continue;
       const a = prev[key];
       const b = next[key];
       if (a && b && typeof a === "object" && typeof b === "object") {
@@ -5261,7 +5218,6 @@ function adjustCounters(sp, v) { return pinvouSharedweb().adjustCounters(sp, v);
         } : null,
         appVersion: snap.app ? snap.app.pinvou3_version + bt("betaTag") : "—",
         uptime: snap.app ? fmtDuration(snap.app.session_uptime_secs) : "—",
-        updatedAt: snap.generated_at_ms ? new Date(snap.generated_at_ms).toLocaleTimeString() : "—",
       };
       if (snap.vllm && snap.vllm.max_model_len) {
         state.tokens.max = snap.vllm.max_model_len;
@@ -5316,7 +5272,7 @@ function enqueueSettingsWrite(write) { return pinvouSharedweb().enqueueSettingsW
   async function saveSettings(patch) {
     return enqueueSettingsWrite(async function () {
       try {
-        state.settings = await invoke(IS_WEB ? "web_access_update_settings" : "update_settings", { patch });
+        state.settings = await invoke("web_access_update_settings", { patch });
         await loadEffectiveModelConfig();
         notify();
         return true;
@@ -5369,6 +5325,7 @@ async function revealModelApiKey(id) { return pinvouSharedweb().revealModelApiKe
   async function setActiveModel(id) {
     await invoke("set_active_model", { id });
     await loadModels();
+    await loadSettings();
     await loadEffectiveModelConfig();
   }
   // 读某会话当前绑定的模型 id(切会话时刷新 chip)。
@@ -6164,7 +6121,7 @@ function currentMemoryArtifacts() { return pinvouSharedweb().currentMemoryArtifa
   }
 
   async function downloadArtifactRaw(path, sessionId) {
-    if (!IS_WEB || !hasCapability("artifactDownload")) {
+    if (!hasCapability("artifactDownload")) {
       throw new Error(bt("downloadNotEnabled"));
     }
     const resolvedSessionId = sessionId || state.activeSessionId || null;
@@ -6236,9 +6193,6 @@ function currentMemoryArtifacts() { return pinvouSharedweb().currentMemoryArtifa
   // ── 附件 ────────────────────────────────────────────────────────
 function conversationAttachmentArgs(reference) { return pinvouSharedweb().conversationAttachmentArgs(reference); }
   function resolveConversationAttachment(reference) {
-    if (!IS_WEB) {
-      return invoke("resolve_conversation_attachment", conversationAttachmentArgs(reference));
-    }
     return Promise.reject(new Error(bt("attachPathUnavailable")));
   }
   async function downloadConversationAttachment(reference) {
@@ -6301,10 +6255,6 @@ function conversationAttachmentArgs(reference) { return pinvouSharedweb().conver
   }
   async function openConversationAttachment(reference) {
     try {
-      if (!IS_WEB) {
-        await invoke("open_conversation_attachment", conversationAttachmentArgs(reference));
-        return true;
-      }
       return await downloadConversationAttachment(reference);
     } catch (e) {
       addSystemItem(bt("openFailed") + e);
@@ -6327,7 +6277,7 @@ function conversationAttachmentArgs(reference) { return pinvouSharedweb().conver
     const att = { id, basename: basename(path), status: "parsing", result: null, error: null };
     state.attachments.push(att); notify();
     try {
-      const result = await invoke(IS_WEB ? "web_access_ingest_file" : "ingest_file", { path });
+      const result = await invoke("web_access_ingest_file", { path });
       att.status = "ready"; att.result = result;
     } catch (e) { att.status = "error"; att.error = String(e); }
     notify();
@@ -7148,7 +7098,7 @@ function appendVoiceText(base, text) { return pinvouSharedweb().appendVoiceText(
   }
 
   function armWebInitRetry() {
-    if (!IS_WEB || webInitRetryArmed) return;
+    if (webInitRetryArmed) return;
     webInitRetryArmed = true;
     webInitRetryHandler = function (event) {
       const status = event && event.detail && event.detail.status;
