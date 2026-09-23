@@ -100,8 +100,8 @@ test('memory delete routes through the in-app confirm dialog', () => {
 });
 
 test('feedback close routes through the in-app confirm layer', () => {
-  assert.match(SETTINGS_VIEW, /data-testid="feedback-close-confirm"/, 'feedback close confirm layer must exist');
-  assert.match(SETTINGS_VIEW, /data-testid="feedback-close-confirm-ok"/, 'feedback close confirm button must carry a testid');
+  assert.match(SETTINGS_VIEW, /testid="feedback-close-confirm"/, 'feedback close confirm layer must exist');
+  assert.match(SETTINGS_VIEW, /confirmTestId="feedback-close-confirm-ok"/, 'feedback close confirm button must carry a testid');
 
   // A first close with a dirty draft opens the in-app confirm layer instead of relying on the native confirm
   const closeFeedback = sliceSource(
@@ -121,14 +121,14 @@ test('feedback close routes through the in-app confirm layer', () => {
   );
   assert.match(
     SETTINGS_VIEW,
-    /"feedback-close-confirm" className="fixed inset-0 z-\[110\]/,
-    'the confirm layer must sit above the feedback panel (z-[100])',
+    /<SheetConfirmDialog\s+testid="feedback-close-confirm"/,
+    'the confirm layer must be the shared SheetConfirmDialog (renders at z-[110], above the feedback panel z-[100])',
   );
 
   // The OK button must route back into closeFeedback to truly close
   assert.match(
     SETTINGS_VIEW,
-    /onClick=\{\(\) => \{ setFeedbackCloseConfirm\(false\); closeFeedback\(\); \}\}/,
+    /onConfirm=\{\(\) => \{ setFeedbackCloseConfirm\(false\); closeFeedback\(\); \}\}/,
     'the confirm button must route back into closeFeedback to truly close',
   );
 });
