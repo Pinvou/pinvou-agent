@@ -131,10 +131,21 @@ fn migration_keeps_id(id: &str) -> bool {
 /// 认领（`skill_owner_package`）随安装态时变：条目可能在 companion MCP 未装时
 /// 按独立技能 id 落库，MCP 后装则认领翻转到包 id——只在写时归一会让用户的
 /// 「关/隐藏」在认领翻转后静默失效（F4）；读时归一让门控跟随技能本体。
+///
+/// Self-heal (docs/builtin-toolset-contract.md §3.1): builtin plugins can
+/// never be disabled/hidden and every writer rejects builtin ids, so a stored
+/// entry normalizing to a builtin package is always poisoned state (a legacy
+/// bug window, a hand-edited file). Drop it at read time — keeping it would
+/// feed the id back to the frontend's full-list writes, which
+/// `reject_builtin_ids` then fails wholesale, bricking every toggle of the
+/// scope with no UI recovery.
 fn normalize_stored_pkg_ids(ids: &[String]) -> Vec<String> {
     let mut out: Vec<String> = Vec::with_capacity(ids.len());
     for id in ids {
         let pkg = to_package_id(id);
+        if crate::features::marketplace::builtin::is_builtin_tool(&pkg) {
+            continue;
+        }
         if !out.iter().any(|x| x == &pkg) {
             out.push(pkg);
         }
@@ -779,6 +790,93 @@ mod tests {
             assert_eq!(
                 load_disabled_bundles_for(ConnectorScope::Plain),
                 vec!["weather".to_string()]
+            );
+        });
+    }
+
+    /// Same builtin-skip migration for the legacy `{scopes, initialized}`
+    /// object shape (the bare-array branch is covered above).
+    #[test]
+    fn legacy_migration_scopes_object_skips_builtin_ids() {
+        with_temp_home("pinvou3-scope", || {
+            let conn = paths::pinvou3_home().join("disabled_connectors.json");
+            std::fs::create_dir_all(conn.parent().unwrap()).unwrap();
+            std::fs::write(
+                &conn,
+                r#"{"scopes":{"plain":["session-reader","weather"],"code":["skill:session-reader"]},"initialized":["plain","code"]}"#,
+            )
+            .unwrap();
+            assert_eq!(
+                load_disabled_bundles_for(ConnectorScope::Plain),
+                vec!["weather".to_string()],
+                "the builtin id must be dropped from the migrated plain scope"
+            );
+            // The code scope contained only the poisoned entry: after the
+            // skip nothing is migrated for it, and as an initialized scope it
+            // reads back empty (its persisted list wins over the default).
+            assert_eq!(
+                load_disabled_bundles_for(ConnectorScope::Code),
+                Vec::<String>::new(),
+                "an initialized scope whose only entry was poisoned migrates to empty"
+            );
+        });
+    }
+
+    /// Same builtin-skip migration for the oldest legacy shape
+    /// `{plain, code, code_initialized}`.
+    #[test]
+    fn legacy_migration_dual_scope_object_skips_builtin_ids() {
+        with_temp_home("pinvou3-scope", || {
+            let conn = paths::pinvou3_home().join("disabled_connectors.json");
+            std::fs::create_dir_all(conn.parent().unwrap()).unwrap();
+            std::fs::write(
+                &conn,
+                r#"{"plain":["session-reader","weather"],"code_initialized":true}"#,
+            )
+            .unwrap();
+            assert_eq!(
+                load_disabled_bundles_for(ConnectorScope::Plain),
+                vec!["weather".to_string()],
+                "the builtin id must be dropped from the migrated plain scope"
+            );
+        });
+    }
+
+    /// Live read path self-heal: a builtin id that already landed in
+    /// `disabled_bundles.json` (legacy bug window / hand edit) is dropped at
+    /// read/normalize time, so the frontend's next full-list write no longer
+    /// trips `reject_builtin_ids` — the poisoned entry cannot brick every
+    /// toggle of the scope.
+    #[test]
+    fn live_read_path_drops_poisoned_builtin_ids() {
+        with_temp_home("pinvou3-scope", || {
+            let path = paths::pinvou3_home().join("disabled_bundles.json");
+            std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+            std::fs::write(
+                &path,
+                r#"{"scopes":{"plain":["session-reader","weather"]},"hidden_scopes":{"plain":["session-reader","pptx"]},"initialized":["plain"]}"#,
+            )
+            .unwrap();
+            assert_eq!(
+                load_disabled_bundles_for(ConnectorScope::Plain),
+                vec!["weather".to_string()],
+                "the poisoned builtin id must be dropped from the disabled set"
+            );
+            assert_eq!(
+                load_hidden_bundles_for(ConnectorScope::Plain),
+                vec!["pptx".to_string()],
+                "the poisoned builtin id must be dropped from the hidden set"
+            );
+            // Recovery: the cleaned list the frontend now holds passes the
+            // builtin guard on the next full-list write.
+            save_disabled_bundles_for(
+                ConnectorScope::Plain,
+                &["weather".to_string(), "pptx".to_string()],
+            )
+            .unwrap();
+            assert_eq!(
+                load_disabled_bundles_for(ConnectorScope::Plain),
+                vec!["weather".to_string(), "pptx".to_string()]
             );
         });
     }
