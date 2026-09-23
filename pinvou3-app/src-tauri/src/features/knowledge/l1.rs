@@ -304,7 +304,13 @@ impl L1Store {
         limit: usize,
     ) -> rusqlite::Result<Vec<Document>> {
         let c = self.conn.lock();
-        let lim = if limit == 0 { 500 } else { limit } as i64;
+        // 与 Store::search 同口径钳制上限:裸 `as i64` 会把 usize::MAX 回绕成
+        // -1(SQLite 视为无限制),前端传来的任意大 limit 会把整表物化进内存。
+        let lim = if limit == 0 {
+            500
+        } else {
+            limit.min(crate::features::knowledge::store::SEARCH_LIMIT_CAP)
+        } as i64;
         let sql = if collection_id > 0 {
             "SELECT d.id,d.collection_id,c.name,d.path,d.name,d.ext,d.size,d.mtime,d.parse_status,d.n_chunks \
              FROM documents d JOIN collections c ON c.id=d.collection_id \
