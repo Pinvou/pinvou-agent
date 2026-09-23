@@ -685,6 +685,12 @@ impl ProjectStore {
         Ok(project)
     }
 
+    /// 更新名称/roots。生产路径的 roots 变更走 `update_project_and_expel`
+    /// 的 persist-first 线,此方法实际只承担改名。
+    ///
+    /// 落盘失败时内存态已前进而磁盘滞后(persist 在锁内最后执行,失败向上
+    /// 抛,不回滚内存)——同 create_project 的 commit-first 已知语义:重试
+    /// 按目标态幂等收敛,由下一次成功写盘自愈(评审 #484 round-9 N4)。
     pub fn update_project(
         &self,
         project_id: &str,
@@ -894,6 +900,10 @@ impl ProjectStore {
     ///   与归属一并落盘,避免半提交。
     /// - `project_id = None`:写显式移出条目,阻止自动归组把会话"复活"回
     ///   原项目。
+    ///
+    /// 落盘失败时内存态(归属与顺带加入的 root)已前进而磁盘滞后——同
+    /// create_project 的 commit-first 已知语义:重试按目标态幂等收敛,由
+    /// 下一次成功写盘自愈(评审 #484 round-9 N4)。
     pub fn move_session_to_project(
         &self,
         session_id: &str,

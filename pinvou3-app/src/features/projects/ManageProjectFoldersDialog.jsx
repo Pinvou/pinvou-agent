@@ -18,6 +18,7 @@ const ManageProjectFoldersDialog = ({
   project,
   neverRoots,
   mode,
+  deliveryLimited,
   busy,
   t,
   onClose,
@@ -252,7 +253,9 @@ const ManageProjectFoldersDialog = ({
             <span className="min-w-0 flex-1">
               <span className="block truncate">{copy.addAction}</span>
               <span className="block truncate text-[11px] text-[#8A8F94] dark:text-[#9AA0A6]">
-                {workspaceNoticeTone(mode) === 'restricted' ? copy.addNoticeRestricted : copy.addNoticeVisibility}
+                {workspaceNoticeTone(mode) === 'restricted'
+                  ? (deliveryLimited ? copy.addNoticeRestrictedRecorded : copy.addNoticeRestricted)
+                  : (deliveryLimited ? copy.addNoticeVisibilityRecorded : copy.addNoticeVisibility)}
               </span>
             </span>
           </button>

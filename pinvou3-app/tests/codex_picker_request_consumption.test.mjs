@@ -89,12 +89,34 @@ test('consumePickerRequest: same epoch is not consumed twice, null never lands',
   assert.equal(consumePickerRequest(undefined, 0), null);
 });
 
+test('picker request: a constant-epoch host breaks the channel (round-9 N5d)', () => {
+  // The host mints the epoch with Date.now(); this model demonstrates why
+  // that is load-bearing: a regression to a constant epoch makes the second
+  // same-mount pick die silently in the view's dedup (the counter-based
+  // makeHost above would keep every other test green).
+  const host = {
+    request: null,
+    applyWorkspaceTarget(payload) { this.request = { epoch: 1, ...payload }; },
+    onConsumed() { this.request = null; },
+    prop() { return this.request; },
+  };
+  const mount = mountView(host);
+  host.applyWorkspaceTarget({ path: '/work/x', projectId: null, roots: ['/work/x'] });
+  mount.effect();
+  assert.equal(mount.drafts.length, 1);
+  host.applyWorkspaceTarget({ path: '/work/y', projectId: null, roots: ['/work/y'] });
+  mount.effect();
+  assert.equal(mount.drafts.length, 1, '常量 epoch:第二次选择被去重吞掉——channel 已死');
+});
+
 test('picker request consumption wiring (M1, source scan)', () => {
   const main = read('src', 'app', 'main.jsx');
   const codexView = read('src', 'features', 'codex', 'CodexAcpView.jsx');
 
   // 宿主:消费回执清空 pickerCodexRequest。
   assert.match(main, /onWorkspacePickerRequestConsumed=\{\(\) => setPickerCodexRequest\(null\)\}/, '宿主接消费回执');
+  // 宿主 epoch 必须每次新铸(round-9 N5d,见上面的行为反例)。
+  assert.match(main, /setPickerCodexRequest\(\{ epoch: Date\.now\(\)/, '宿主 epoch 经 Date.now() 新铸');
   // 视图:epoch 去重走共享纯函数,消费后必须回执宿主。
   assert.match(codexView, /consumePickerRequest\(workspacePickerRequest, pickerRequestEpochRef\.current\)/, '视图经纯函数判定');
   assert.match(codexView, /if \(onWorkspacePickerRequestConsumed\) onWorkspacePickerRequestConsumed\(\)/, '视图消费后回执');

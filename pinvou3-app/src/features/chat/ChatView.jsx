@@ -2989,7 +2989,11 @@ const ToolWelcomeCard = ({ toolId, t, onSend }) => {
                     const align = async () => {
                       try {
                         const outcome = await bridge.projects.alignSessionToProject(activeSessionId);
-                        if (outcome && outcome.applied) onNotify && onNotify(t.uiKeychain.alignDone);
+                        // live_push_failed: the stores are written but the
+                        // live engine kept the previous (possibly wider) root
+                        // set — over-grant must not be silent (review #484
+                        // round-9 N2).
+                        if (outcome && outcome.applied) onNotify && onNotify(outcome.live_push_failed ? t.uiKeychain.alignPushDeferred : t.uiKeychain.alignDone);
                         else if (outcome && outcome.reason === 'no_change') onNotify && onNotify(t.uiKeychain.alignNoChange);
                         else if (outcome && outcome.reason === 'write_skipped') onNotify && onNotify(t.uiKeychain.alignWriteSkipped);
                         else if (outcome && outcome.reason === 'no_project') onNotify && onNotify(t.uiKeychain.alignNoProject);

@@ -95,9 +95,13 @@ const WorkspacePickerDialog = ({
   // One notice shape for all three grant surfaces (single-root row,
   // expansion panel, browse row): mode picks grant vs visibility tone,
   // deliveryLimited picks access vs recorded-only wording (§6 stage-gate).
+  // The recorded variant only applies to 2+ roots: with a single root that
+  // root is the cwd/primary and IS delivered even to a third-party ACP
+  // agent, so "recorded, only the primary takes effect" would be false at
+  // n=1 (review #484 round-9 N3).
   const rowNotice = count => (workspaceNoticeTone(mode) === 'restricted'
-    ? (deliveryLimited ? copy.noticeRestrictedRecorded(count) : copy.noticeRestricted(count))
-    : (deliveryLimited ? copy.noticeVisibilityRecorded(count) : copy.noticeVisibility(count)));
+    ? (deliveryLimited && count > 1 ? copy.noticeRestrictedRecorded(count) : copy.noticeRestricted(count))
+    : (deliveryLimited && count > 1 ? copy.noticeVisibilityRecorded(count) : copy.noticeVisibility(count)));
   const rowCls = 'w-full px-3.5 py-2.5 flex items-center gap-2.5 text-left text-[14px] rounded-2xl transition-colors text-[#1F1F1F] hover:bg-[#F1F3F4] dark:text-[#E3E3E3] dark:hover:bg-[#303134]';
 
   const filtered = (() => {

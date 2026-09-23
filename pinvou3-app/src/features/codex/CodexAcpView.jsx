@@ -3433,7 +3433,9 @@ export function CodexAcpView({
       const outcome = await alignAcpSession(activeId);
       if (outcome && outcome.applied) {
         await refreshSessions().catch(() => {});
-        if (onNotify) onNotify(t.uiKeychain.alignDone);
+        // live_push_failed: written, but the live engine kept the previous
+        // (possibly wider) root set — surface it (review #484 round-9 N2).
+        if (onNotify) onNotify(outcome.live_push_failed ? t.uiKeychain.alignPushDeferred : t.uiKeychain.alignDone);
       } else if (outcome && outcome.reason === 'no_change' && onNotify) {
         onNotify(t.uiKeychain.alignNoChange);
       } else if (outcome && outcome.reason === 'write_skipped' && onNotify) {
@@ -3902,12 +3904,13 @@ export function CodexAcpView({
     ComposerWorkspaceSelector): a recents pick grants the folder directly
     (single root), so the mode-aware notice sits on the recents section. The
     mode mirrors the picker entry above (native draft staging first, then the
-    lane's reported effective mode). A third-party ACP draft only gets the
-    folder recorded (§6 stage-gate), so the notice says so. */}
+    lane's reported effective mode). No recorded variant here: a single root
+    is the cwd/primary and is delivered to a third-party ACP agent too, so
+    "recorded only" would be false at n=1 (review #484 round-9 N3). */}
                                 <div className="px-3 pb-1 text-[10px] text-gray-400">
                                   {workspaceNoticeTone(laneNoticeMode) === 'restricted'
-                                    ? (isNativeAgent ? t.uiWorkspacePicker.noticeRestricted(1) : t.uiWorkspacePicker.noticeRestrictedRecorded(1))
-                                    : (isNativeAgent ? t.uiWorkspacePicker.noticeVisibility(1) : t.uiWorkspacePicker.noticeVisibilityRecorded(1))}
+                                    ? t.uiWorkspacePicker.noticeRestricted(1)
+                                    : t.uiWorkspacePicker.noticeVisibility(1)}
                                 </div>
                                 {recentWorkspaces.map(path => (
                                   <button key={path} type="button" title={path}

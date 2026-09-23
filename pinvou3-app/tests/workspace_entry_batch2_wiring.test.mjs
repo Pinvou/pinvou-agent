@@ -38,6 +38,10 @@ test('project-row new-session channel wiring (F4)', () => {
     'chat 车道:有活动会话时先进草稿再 stage,并导航到 chat(活动会话读订阅快照)',
   );
   assert.doesNotMatch(main, /bridge\.activeSessionId && bridge\.sessions\.createNewSession/, '公开桥对象没有 activeSessionId,不得回归到恒假的死守卫');
+  // Round-9 N5a:setActiveChat(null) 承重——删掉它 bs.activeSessionId 保持
+  // 旧值,后续 setDraftWorkspace 在有活动会话时静默 no-op(round-5 M2 的
+  // 死端会换一行代码复活),且没有任何测试会红。
+  assert.match(main, /await bridge\.sessions\.createNewSession\(\);[\s\S]{0,120}?setActiveChat\(null\);[\s\S]{0,120}?setCurrentView\('chat'\)/, '进草稿后清空活动会话选择再 stage');
   assert.match(main, /const handleProjectNewSession = async[\s\S]*?await applyWorkspaceTarget/, '项目行回调等待真实 stage 结果再 toast');
   // codex 车道(beginDraft 请求)行为不变:同步落地,不经 createNewSession。
   assert.match(main, /lane === 'codex'[\s\S]{0,200}?setPickerCodexRequest\(\{ epoch/, 'codex 车道仍走 picker 请求');
@@ -61,6 +65,11 @@ test('keychain chip + align wiring (F5)', () => {
     assert.match(src, /alignNoChange/, 'no_change 文案');
     assert.match(src, /alignFailed/, '兜底失败文案');
   }
+  // Round-9 N2:双 store 已写但存活引擎推送失败(live_push_failed)在两条
+  // 车道都有专属告知——缩窄对齐时引擎保留的是更宽的旧根集,over-grant
+  // 方向不得静默。
+  assert.match(chatView, /outcome\.live_push_failed \? t\.uiKeychain\.alignPushDeferred : t\.uiKeychain\.alignDone/, 'chat 车道推送失败显性化');
+  assert.match(codexView, /outcome\.live_push_failed \? t\.uiKeychain\.alignPushDeferred : t\.uiKeychain\.alignDone/, 'codex 车道推送失败显性化');
   // codex 车道的意外 outcome 不得静默(对齐 chat 车道)。
   assert.match(codexView, /outcome\.reason === 'no_change' && onNotify[\s\S]*?else if \(onNotify\)[\s\S]*?onNotify\(t\.uiKeychain\.alignFailed\)/, 'codex 意外 outcome 兜底告知');
   // chip 根为 inline-flex(块级根会拆断单行头),且 busy 只门控对齐按钮,
@@ -80,6 +89,9 @@ test('keychain chip + align wiring (F5)', () => {
   assert.match(chatView, /else if \(onNotify\) onNotify\(t\.uiKeychain\.alignFailed\)/, 'chat align fallback exit is not silent');
   const main = read('src', 'app', 'main.jsx');
   assert.match(main, /onNotify: setSettingsToast/, 'host passes onNotify via chatViewBaseProps');
+  // Round-9 N3:chip 头部的"已记录(仅主目录生效)"只在 2+ 根时启用——
+  // 单根即主根、对第三方 ACP 同样送达。
+  assert.match(chip, /deliveryLimited && list\.length > 1[\s\S]{0,80}?copy\.accessibleFoldersRecorded\(list\.length\)/, 'chip 头部 recorded 变体计数门控');
   assert.match(main, /onNotify=\{setSettingsToast\}/, 'host passes onNotify to CodexAcpView');
   // codex 车道每 render 只算一次 describeKeychain(memo)。
   assert.match(codexView, /useMemo\(\s*\(\) => \(activeSession \? describeKeychain/, 'codex chip 派生 memo 化');
@@ -125,6 +137,13 @@ test('manage-folders panel wiring (F6)', () => {
   // 判定而非就地三元(review #484 n1)。
   assert.match(dialog, /if \(busyRef\.current\) return;[\s\S]{0,80}?onCloseRef\.current\(\)/, 'Escape 受 busy 门控');
   assert.match(dialog, /workspaceNoticeTone\(mode\)/, '面板告知走共享判定');
+  // Round-9 N1:添加文件夹是第六个带授权告知的面板,同样按车道送达能力挑
+  // 文案——宿主把 codex 车道 stage-gate 镜像传进面板,对话框按 tone 选
+  // recorded 变体(此处无计数门控:加入的文件夹恒为附加根,录而不达总是
+  // 成立)。
+  assert.match(main, /deliveryLimited=\{currentView === 'codex' && codexLaneDeliveryLimited\}/, '宿主把 codex 送达限制传给面板');
+  assert.match(dialog, /deliveryLimited \? copy\.addNoticeRestrictedRecorded : copy\.addNoticeRestricted/, '受限语气带仅记录变体');
+  assert.match(dialog, /deliveryLimited \? copy\.addNoticeVisibilityRecorded : copy\.addNoticeVisibility/, '可见语气带仅记录变体');
 });
 
 test('composer recents grant notice parity (§9.4)', () => {
@@ -143,8 +162,10 @@ test('composer recents grant notice parity (§9.4)', () => {
   // external agents read their cached controls (composerModeValue) first.
   assert.match(codexView, /const laneNoticeMode = isNativeAgent[\s\S]{0,200}?nativeDraftControls\.mode \|\| composerModeValue[\s\S]{0,200}?composerModeValue \|\| nativeDraftControls\.mode/, 'codex recents notice follows the draft agent mode');
   assert.match(codexView, /workspaceNoticeTone\(laneNoticeMode\) === 'restricted'/, 'codex recents notice tone reads the agent-aware mode');
-  // 正向条件(unicorn/no-negated-condition):native 分支在前,recorded 变体随后。
-  assert.match(codexView, /isNativeAgent \? t\.uiWorkspacePicker\.noticeRestricted\(1\) : t\.uiWorkspacePicker\.noticeRestrictedRecorded\(1\)/, 'codex recents single-root notice is delivery-aware');
+  // 正向条件(unicorn/no-negated-condition)。Round-9 N3:recents 恒为单根
+  // 授权,单根即 cwd/主根、对第三方 ACP 同样送达——不掺 recorded 变体。
+  assert.match(codexView, /\? t\.uiWorkspacePicker\.noticeRestricted\(1\)\s*: t\.uiWorkspacePicker\.noticeVisibility\(1\)/, 'codex recents single-root notice uses the plain delivered copy');
+  assert.ok(!codexView.includes('noticeRestrictedRecorded(1)'), 'codex recents never claims recorded-only at n=1');
 });
 
 test('keychain/manage i18n keys exist in all three languages', () => {
@@ -152,7 +173,7 @@ test('keychain/manage i18n keys exist in all three languages', () => {
     const source = read('src', 'shared', 'i18n', `${lang}.js`);
     assert.match(source, /uiKeychain: \{/, `${lang} 缺 uiKeychain 段`);
     assert.match(source, /uiManageFolders: \{/, `${lang} 缺 uiManageFolders 段`);
-    for (const key of ['manageFolders:', 'newSessionHere:', 'alignAction:', 'alignBusy:', 'removeConfirmBody:', 'addDuplicate:', 'revokeExclusion:']) {
+    for (const key of ['manageFolders:', 'newSessionHere:', 'alignAction:', 'alignBusy:', 'alignPushDeferred:', 'removeConfirmBody:', 'addDuplicate:', 'revokeExclusion:', 'addNoticeRestrictedRecorded:', 'addNoticeVisibilityRecorded:']) {
       assert.ok(source.includes(key), `${lang} 缺键 ${key}`);
     }
   }
@@ -207,9 +228,12 @@ test('session workspace i18n keys exist in all three languages', () => {
   for (const lang of ['zh', 'en', 'ja']) {
     const source = read('src', 'shared', 'i18n', `${lang}.js`);
     assert.match(source, /riViewWorkspace:/, `${lang} 缺 riViewWorkspace`);
-    assert.match(source, /uiSessionWorkspace = \{/, `${lang} 缺 uiSessionWorkspace 段`);
+    // Slice the section first: a file-global `includes('title:')` survives
+    // deleting the key from uiSessionWorkspace (review #484 round-9 N5c).
+    const section = source.match(/uiSessionWorkspace = \{[\s\S]*?\}/);
+    assert.ok(section, `${lang} 缺 uiSessionWorkspace 段`);
     for (const key of ['title', 'scope', 'primary', 'unknownFolder', 'unbound']) {
-      assert.ok(source.includes(`${key}:`), `${lang} 缺键 uiSessionWorkspace.${key}`);
+      assert.ok(section[0].includes(`${key}:`), `${lang} 缺键 uiSessionWorkspace.${key}`);
     }
   }
 });

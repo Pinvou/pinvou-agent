@@ -1101,7 +1101,11 @@ mod tests {
             "message_count": 0,
             "total_tokens": 0,
             "model": "test-model",
-            "workspace": workspace
+            "workspace": workspace,
+            // Round-9 N5b: the fixture must carry attached roots — without
+            // them the workspace_roots redaction loop iterates zero times and
+            // deleting the loop keeps this test green.
+            "workspace_roots": [workspace, "/Users/asto/Documents/secret-extra"]
         }))
         .expect("valid SessionMetadata fixture")
     }
@@ -1112,6 +1116,12 @@ mod tests {
         let metadata = redact_session_metadata_for_web(metadata_with_workspace(PRIVATE_WORKSPACE));
         let metadata_json = serde_json::to_value(&metadata).expect("serialize projected metadata");
         assert_eq!(metadata_json["workspace"], "secret-project");
+        // The metadata keychain leg: every attached root degrades to its last
+        // directory name too (this assertion is red if the loop is deleted).
+        assert_eq!(
+            metadata_json["workspace_roots"],
+            serde_json::json!(["secret-project", "secret-extra"])
+        );
         assert!(!metadata_json.to_string().contains(PRIVATE_WORKSPACE));
 
         let mut item = CodexAcpSessionListItem {

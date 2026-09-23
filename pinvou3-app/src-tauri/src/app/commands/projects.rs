@@ -458,6 +458,18 @@ pub struct AlignOutcome {
     pub applied: bool,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub reason: Option<String>,
+    /// 双 store 已写入但存活引擎推送(SyncSession 或其前置的会话加载)失败:
+    /// 引擎本 incarnation 保持旧根集——对齐缩窄钥匙串时是更宽集合,属于
+    /// over-grant 方向,必须透出而非静默(评审 #484 round-9 N2)。下一次
+    /// spawn/resume 会从绑定 store 回填同一份快照收敛。
+    #[serde(default, skip_serializing_if = "align_push_not_failed")]
+    pub live_push_failed: bool,
+}
+
+/// `skip_serializing_if` 需要 `&bool` 谓词(`std::ops::Not::not` 按值取参,
+/// 签名不匹配)。
+fn align_push_not_failed(live_push_failed: &bool) -> bool {
+    !*live_push_failed
 }
 
 /// 对齐到项目(§6/§9.7 显式动作):把会话的钥匙串快照替换为它所属项目
@@ -492,7 +504,7 @@ pub async fn align_session_to_project(
     let busy = acp_pool.is_turn_active(&session_id).await
         || engines.is_turn_active(&session_id)
         || engines.is_scheduled_turn_running(&session_id);
-    let outcome = align_session_keychain(
+    let mut outcome = align_session_keychain(
         &session_id,
         AlignStores {
             projects: &store,
@@ -511,7 +523,9 @@ pub async fn align_session_to_project(
     }
 
     // 把新根集推给存活引擎(下个回合生效);推送失败不阻断——下一次
-    // spawn/resume 会从绑定 store 回填同一份快照。
+    // spawn/resume 会从绑定 store 回填同一份快照。但失败必须随 outcome
+    // 透出(live_push_failed):缩窄对齐时存活引擎保留的是更宽的旧根集,
+    // over-grant 方向不得静默(评审 #484 round-9 N2)。
     if let Some(engine) = engines.handle_for(&session_id).await {
         match sessions.load(&session_id) {
             Ok(saved) => {
@@ -522,6 +536,7 @@ pub async fn align_session_to_project(
                     eprintln!(
                         "[projects] align_session_to_project: push roots to live engine failed: {error:#}"
                     );
+                    outcome.live_push_failed = true;
                 }
             }
             Err(error) => {
@@ -534,6 +549,7 @@ pub async fn align_session_to_project(
                     "[projects] align_session_to_project: load session for live push failed: {}",
                     error.root_cause()
                 );
+                outcome.live_push_failed = true;
             }
         }
     }
@@ -619,6 +635,7 @@ pub(crate) fn align_session_keychain(
             roots: current,
             applied: false,
             reason: Some("no_project".to_string()),
+            live_push_failed: false,
         });
     };
     let next = ProjectStore::keychain_for_workspace(&cwd, &project.roots);
@@ -629,6 +646,7 @@ pub(crate) fn align_session_keychain(
             roots: next,
             applied: false,
             reason: Some("no_change".to_string()),
+            live_push_failed: false,
         });
     }
 
@@ -658,6 +676,7 @@ pub(crate) fn align_session_keychain(
             roots: current,
             applied: false,
             reason: Some("write_skipped".to_string()),
+            live_push_failed: false,
         });
     }
     Ok(AlignOutcome {
@@ -665,6 +684,7 @@ pub(crate) fn align_session_keychain(
         roots: next,
         applied: true,
         reason: None,
+        live_push_failed: false,
     })
 }
 
@@ -1691,7 +1711,9 @@ mod tests {
     }
 
     /// AlignOutcome wire shape: reason only appears when applied=false
-    /// (skip_serializing_if); no reason key when applied.
+    /// (skip_serializing_if); no reason key when applied. live_push_failed
+    /// rides the same honesty contract (review #484 round-9 N2): absent when
+    /// false, present and true when the live-engine push failed.
     #[test]
     fn align_outcome_wire_shape_is_stable() {
         let applied = serde_json::to_value(AlignOutcome {
@@ -1699,6 +1721,7 @@ mod tests {
             roots: vec![PathBuf::from("/a")],
             applied: true,
             reason: None,
+            live_push_failed: false,
         })
         .expect("serialize");
         let object = applied.as_object().expect("object");
@@ -1709,11 +1732,25 @@ mod tests {
             !object.contains_key("reason"),
             "reason only appears on failure"
         );
+        assert!(
+            !object.contains_key("live_push_failed"),
+            "live_push_failed only appears when the push actually failed"
+        );
+        let push_failed = serde_json::to_value(AlignOutcome {
+            session_id: "s1".to_string(),
+            roots: vec![PathBuf::from("/a")],
+            applied: true,
+            reason: None,
+            live_push_failed: true,
+        })
+        .expect("serialize");
+        assert_eq!(push_failed["live_push_failed"], true);
         let skipped = serde_json::to_value(AlignOutcome {
             session_id: "s1".to_string(),
             roots: Vec::new(),
             applied: false,
             reason: Some("no_change".to_string()),
+            live_push_failed: false,
         })
         .expect("serialize");
         assert_eq!(skipped["reason"], "no_change");

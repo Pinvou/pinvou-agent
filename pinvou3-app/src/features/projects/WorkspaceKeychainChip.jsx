@@ -8,8 +8,9 @@
 // button + pop-up menu).
 // deliveryLimited: the codex lane's third-party ACP sessions sit behind the
 // §6 stage-gate — additional roots are recorded but only the primary is
-// delivered — so the panel header and the align description say so instead
-// of promising access.
+// delivered — so the panel header (only with 2+ roots; a single root is the
+// primary and is delivered, review #484 round-9 N3) and the align
+// description say so instead of promising access.
 import { useRef, useState } from 'react';
 import { ChevronDown, FolderOpen, RefreshCw } from '../../components/icons.jsx';
 import { useOutsidePointerClose } from '../../components/ComposerPopover.jsx';
@@ -48,7 +49,10 @@ export function WorkspaceKeychainChip({ copy, primary, additionalCount, roots, c
       {open && (
         <div ref={panelRef} className="absolute z-40 bottom-9 left-0 w-[300px] max-w-[calc(100vw-32px)] rounded-2xl border border-black/[0.08] dark:border-white/10 bg-white/95 dark:bg-[#202124]/95 backdrop-blur-xl shadow-xl p-2">
           <div className="px-3 pb-1 text-[10px] uppercase tracking-wider text-gray-400">
-            {deliveryLimited
+            {/* Recorded wording needs 2+ roots: a single root is the primary
+                and is delivered even to a third-party ACP agent (review #484
+                round-9 N3). */}
+            {deliveryLimited && list.length > 1
               ? copy.accessibleFoldersRecorded(list.length)
               : copy.accessibleFolders(list.length)}
           </div>

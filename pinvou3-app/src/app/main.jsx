@@ -2018,12 +2018,15 @@ const NAV_PREFETCH = {
       // without the picker's expansion panel (§9.4). Codex-lane channels for
       // a third-party ACP agent say "recorded" instead: the §6 stage-gate
       // delivers only the primary root until the session/new follow-up lands.
+      // Recorded wording is gated on count > 1: a single root is the
+      // cwd/primary and is delivered on the wire, so the recorded copy would
+      // be false at n=1 (review #484 round-9 N3).
       const workspaceGrantNotice = (mode, count, deliveryLimited = false) => (
         workspaceNoticeTone(mode) === 'restricted'
-          ? (deliveryLimited
+          ? (deliveryLimited && count > 1
             ? t.uiWorkspacePicker.noticeRestrictedRecorded(count)
             : t.uiWorkspacePicker.noticeRestricted(count))
-          : (deliveryLimited
+          : (deliveryLimited && count > 1
             ? t.uiWorkspacePicker.noticeVisibilityRecorded(count)
             : t.uiWorkspacePicker.noticeVisibility(count)));
       const pickerLane = () => (workspacePicker ? workspacePicker.lane : 'chat');
@@ -3451,6 +3454,11 @@ const NAV_PREFETCH = {
               project={manageFoldersProject}
               neverRoots={(sidebarProjectsData && sidebarProjectsData.neverMaterializeRoots) || []}
               mode={activeLaneMode()}
+              // Same §6 stage-gate mirror as the picker: on the codex lane a
+              // third-party ACP agent only receives the primary root, so an
+              // added folder is recorded-not-delivered and the notice must
+              // say so (review #484 round-9 N1).
+              deliveryLimited={currentView === 'codex' && codexLaneDeliveryLimited}
               busy={projectOpsBusy}
               t={t}
               onClose={closeManageFolders}
