@@ -608,7 +608,7 @@ dictJa.uiToolDetails.tmeetSteps = [{key:'runtime',label:'ランタイムを準�
 dictJa.uiToolDetails.showRawErrors = false;
 
 Object.assign(dictJa.uiToolDetails.tools, {
-  'session-reader':{ title:'セッション読み取り', subtitle:'この端末の他セッション履歴への読み取り専用アクセス', latency:'ローカル', desc:'AI がこの端末の他の Pinvou セッション履歴をページング付きの読み取り専用で参照できます：入力欄で @ セッションを引用すると、AI が必要に応じて内容を取得します（デフォルトでインストール。ローカルのセッションファイルのみを読み、ネットワーク接続もアップロードもありません）。アンインストールすると、引用したセッションを読めなくなります。', welcomeQueries:['引用したセッションを要約して','前回のセッションはどこまで進んだ？'] },
+  'session-reader':{ title:'セッション読み取り', subtitle:'この端末の他セッション履歴への読み取り専用アクセス', latency:'ローカル', desc:'AI がこの端末の他の Pinvou セッション履歴をページング付きの読み取り専用で参照できます：入力欄で @ セッションを参照すると、AI が必要に応じて内容を取得します（デフォルトでインストール。ローカルのセッションファイルのみを読み、ネットワーク接続もアップロードもありません）。アンインストールすると、参照したセッションを読めなくなります。', welcomeQueries:['参照したセッションを要約して','前回のセッションはどこまで進んだ？'] },
   weather:{ title:'Amap 天気', subtitle:'Amap 地図のリアルタイム天気と多日予報', desc:'Amap Web サービス API で全国の都市のリアルタイム天気と今後数日の予報を照会します。自分の Amap Web サービス API Key を入力する必要があります。キーはこの端末のシステム認証情報にのみ保存されます。', configTitle:'Amap 天気 Key', configDescription:'Key はこの端末の認証情報にのみ保存され、mcp.json には書き込まれません。', configDocLabel:'Web サービス Key を作成', configFields:[{key:'AMAP_KEY', label:'API Key', helpText:'「Web サービス」タイプを選択してください。', placeholder:'Amap Web サービス Key を貼り付け'}], welcomeQueries:['杭州の今日の天気','北京は今週雨が降る？','上海の明日の服装'] },
   iwencai:{ title:'iWenCai（問財）', subtitle:'A 株相場、財務、銘柄スクリーニング、マクロ、ニュース', desc:'同花順問財（iWenCai）公式 API をベースに 12 の金融照会ツールを提供します。自分の問財 API Key を入力する必要があります。キーはこの端末のシステム認証情報にのみ保存されます。', configTitle:'問財 Key', configDescription:'Key はこの端末の認証情報にのみ保存され、mcp.json には書き込まれません。', configDocLabel:'問財 SkillHub を開く', configFields:[{key:'IWENCAI_API_KEY', label:'API Key', helpText:'公式 Skill の「インストール方法」からコピーしてください。', placeholder:'IWENCAI_API_KEY を貼り付け'}], welcomeQueries:['茅台の最新株価','今日の市況は？','PER 10 倍未満の銀行株','最近の利下げニュース'] },
   card3:{ title:'QQ メール API', subtitle:'スマートなメール送受信とスレッド要約', desc:'メールの送受信、検索、整理のための標準インターフェースを提供します。大規模モデルと組み合わせて、自然言語でのメール閲覧、長いスレッドの要約、フォルダーの自動アーカイブ管理が可能です。' },
@@ -859,6 +859,7 @@ dictJa.uiArtifacts = {
   diChangesLog:n=>`デザイン変更 ${n} 件`, diEmpty:'空',
 };
 
+dictJa.uiSessionMention = { menuTitle:'セッションを参照', menuEmpty:'一致するセッションがありません', dropHint:'ドロップしてこのセッションを参照', chipRemove:name=>`参照 ${name} を削除`, cardJump:label=>`セッションを開く: ${label}`, cardUnavailable:'セッションは削除されました', cardDisabled:'機能オフ' };
 Object.assign(dictJa.uiAttachments, { uploading:pct=>`アップロード中 ${pct}%`,  deviceUploadEmpty:name=>`${name} は空のため添付できません`, deviceUploadUnavailable:'現在、このデバイスから添付ファイルをアップロードできません', deviceUploadInvalid:name=>`${name} は有効な添付ファイルではありません`, deviceUploadFailed:name=>`${name} をアップロードできませんでした。もう一度お試しください。`, deviceUploadDigestInvalid:'添付ファイルの整合性ダイジェストが無効です。もう一度お試しください', deviceUploadIntegrityMismatch:'添付ファイルの内容が転送中に破損しました。再度アップロードしてください' });
 
 Object.assign(dictJa.uiToolStore, {

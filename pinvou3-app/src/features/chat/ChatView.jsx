@@ -50,6 +50,16 @@ import { AttachmentChips } from '../attachments/AttachmentChips.jsx';
 import { collectClipboardImages, readPasteImageAsBytes } from '../attachments/paste-image.js';
 import { formatAttachmentLimitError } from '../attachments/attachment-limit-errors.js';
 import { ComposerAttachmentDropOverlay } from '../attachments/ComposerAttachmentDropOverlay.jsx';
+import { SessionMentionChips, SessionMentionMenu, SessionMentionCards } from './SessionMentionControls.jsx';
+import { PROJECT_SESSION_DRAG_TYPE } from '../projects/projectGrouping.js';
+import {
+  buildSessionMentionBlock,
+  splitSessionMentionBlock,
+  sessionMentionTriggerAt,
+  filterSessionMentionCandidates,
+  dedupeSessionRefs,
+  isSessionMentionEnabled,
+} from './session-mention.js';
 import { ConversationAttachmentBubble } from '../attachments/ConversationAttachmentBubble.jsx';
 import { splitAttachmentLine } from '../attachments/attachment-message.js';
 import { CHAT_INPUT_MAX_LENGTH, constrainChatInput } from './chat-input-limit.js';
@@ -189,6 +199,13 @@ const COMPUTER_USE_ENABLED = can('computerUse');
 // Shift+Enter still inserts a newline; Enter during IME composition confirms the candidate text
 // and must not also trigger submit — otherwise one Enter both commits and sends. Matches PetWindow.
 const isPlainEnter = (e) => e.key === 'Enter' && !e.shiftKey && !isImeComposing(e);
+
+// Pending mention chips per draft scope (session id, or draft epoch for the
+// not-yet-materialized draft session). Module-level, in-memory only — the
+// same lifetime as the bridge's composer working set (both survive view
+// unmount/remount, neither survives an app restart).
+const sessionMentionDrafts = new Map();
+const MENTION_DRAFT_CACHE_LIMIT = 200;
 
 // Unified scene table after the design lane was merged into work: a scene
 // only expresses "the professional context of this message" and is
@@ -628,7 +645,7 @@ const ToolWelcomeCard = ({ toolId, t, onSend }) => {
     };
 
     // eslint-disable-next-line sonarjs/cognitive-complexity -- legacy main view: session/mode/artifact/browser state is highly cohesive; split refactor tracked separately
-    const ChatView = ({ theme, t, bs, prefill, prefillAppend = false, focusComposerTick = 0, onPrefillConsumed, onOpenEditor, justInstalledTool, setJustInstalledTool, onGotoSettings, onGotoModelSettings, onGotoTools, onBackScheduledRun, codeModeAvailable = false, onSwitchHomeMode, browserDockAvailable = false, browserDockOpen = false, rightDockActivePanelId = null, onRightDockPanelSelectionChange, onOpenBrowserDock }) => {
+    const ChatView = ({ theme, t, bs, prefill, prefillAppend = false, focusComposerTick = 0, onPrefillConsumed, onOpenEditor, justInstalledTool, setJustInstalledTool, onGotoSettings, onGotoModelSettings, onGotoTools, onBackScheduledRun, codeModeAvailable = false, onSwitchHomeMode, browserDockAvailable = false, browserDockOpen = false, rightDockActivePanelId = null, onRightDockPanelSelectionChange, onOpenBrowserDock, onSwitchSession = null }) => {
       const chatCopy = t.uiChat;
       const chatViewCopy = t.uiChatView;
       const sceneCopy = chatCopy.sceneModes;
@@ -1002,6 +1019,77 @@ const ToolWelcomeCard = ({ toolId, t, onSend }) => {
           setPersonalWorkbenchTemplateId(null);
         }
       }, [setInputText]);
+      // Picking an @ panel candidate: drop the trailing @token from the composer;
+      // the reference lands in the chip strip (serialized into the injection block
+      // on send). When the feature is off (docs/builtin-toolset-contract.md §3.3
+      // layer 1) nothing can be added (the @ panel and drag-drop share this add path).
+      // session-mention feature switch (the judgement source for the §3.3
+      // four-layer cascade): on by default; the registry read is exposed on
+      // both lanes (the web bridge proxies list_builtin_features to the same
+      // desktop host), so a host-side switch-off reaches browser clients too.
+      // Only a query failure fails open as enabled (same semantics as the
+      // backend: a missing state file means all enabled). Switch changes are
+      // broadcast via remote_control:tools_changed → pinvou:tools-changed
+      // (chat-events.js); this subscription refetches to hot-update the UI.
+      const [sessionMentionEnabled, setSessionMentionEnabled] = useState(true);
+      useEffect(() => {
+        let alive = true;
+        const refresh = async () => {
+          if (!bridge.available || !bridge.settings || typeof bridge.settings.listBuiltinFeatures !== 'function') return;
+          try {
+            const features = await bridge.settings.listBuiltinFeatures();
+            if (alive) setSessionMentionEnabled(isSessionMentionEnabled(features));
+          } catch { /* fail-open: keep the current enabled state */ }
+        };
+        refresh();
+        window.addEventListener('pinvou:tools-changed', refresh);
+        return () => { alive = false; window.removeEventListener('pinvou:tools-changed', refresh); };
+      }, []);
+      const handleRemoveMentionRef = useCallback((sessionId) => {
+        setSessionRefs(current => current.filter(ref => ref.sessionId !== sessionId));
+      }, []);
+      // Reference-card navigation in sent messages: reuse the session switch handed down by the main frame (with view routing).
+      const handleOpenMentionSession = useCallback((sessionId) => {
+        if (onSwitchSession) onSwitchSession(sessionId);
+      }, [onSwitchSession]);
+      // Dragging a sidebar session row (the "move to project" drag gesture, the
+      // application/x-pinvou-session payload from #462) into the composer area =
+      // referencing that session, reusing the same add path as the @ panel;
+      // attachment drop only accepts Files (attachment-drop-controller hasFiles)
+      // and a session drag carries no Files, so the two never conflict.
+      const sessionDropDepthRef = useRef(0);
+      const [sessionDropActive, setSessionDropActive] = useState(false);
+      const isSessionRowDrag = (e) => {
+        const types = (e.dataTransfer && e.dataTransfer.types) || [];
+        // eslint-disable-next-line unicorn/prefer-spread -- Safari 14's dataTransfer.types is a DOMStringList (not iterable; Array.from only); Chromium's new frozen array works the same way
+        return Array.from(types).includes(PROJECT_SESSION_DRAG_TYPE);
+      };
+      const handleComposerSessionDragEnter = (e) => {
+        // When the feature is off (§3.3 layer 1), a dropped session does not land as a chip and no drop hint appears.
+        if (!isSessionRowDrag(e) || !sessionMentionEnabled) return;
+        sessionDropDepthRef.current += 1;
+        setSessionDropActive(true);
+      };
+      const handleComposerSessionDragLeave = (e) => {
+        if (!isSessionRowDrag(e)) return;
+        sessionDropDepthRef.current = Math.max(0, sessionDropDepthRef.current - 1);
+        if (sessionDropDepthRef.current === 0) setSessionDropActive(false);
+      };
+      const handleComposerSessionDragOver = (e) => {
+        if (!isSessionRowDrag(e)) return;
+        e.preventDefault(); // allow the drop
+      };
+      const handleComposerSessionDrop = (e) => {
+        if (!isSessionRowDrag(e)) return;
+        e.preventDefault();
+        sessionDropDepthRef.current = 0;
+        setSessionDropActive(false);
+        const sessionId = e.dataTransfer.getData(PROJECT_SESSION_DRAG_TYPE);
+        if (!sessionId || sessionId === activeSessionId) return;
+        if (sessionRefs.some(ref => ref.sessionId === sessionId)) return;
+        const title = ((((bs && bs.sessions) || []).find(s => s.id === sessionId)) || {}).title || '';
+        handleSelectMentionCandidate({ sessionId, title });
+      };
       const handleDesignElementSelected = useCallback((element) => {
         setSelectedDesignElement(element || null);
       }, []);
@@ -1526,34 +1614,127 @@ const ToolWelcomeCard = ({ toolId, t, onSend }) => {
         return () => window.removeEventListener('pinvou:present-artifact', onPresentArtifact);
       }, [activeSessionId, showArtifactsPreview]);
       const draftEpoch = bs ? bs.draftEpoch : 0;
+      const [sessionRefs, setSessionRefs] = useState([]);
+      const [mentionDismissedToken, setMentionDismissedToken] = useState(null);
+      const [mentionSelection, setMentionSelection] = useState({ token: null, index: 0 });
+      // Latest committed chips for the draft-stash cleanup below (the cleanup
+      // runs before the switch-time restore commits, so it must read a ref).
+      const sessionRefsRef = useRef([]);
+      const mentionDraftKeyRef = useRef(null);
+      useEffect(() => {
+        sessionRefsRef.current = sessionRefs;
+      }, [sessionRefs]);
       // 切换 session / 新建草稿会话时读取各自 working set 里的未发送内容。
       // 从设置、工具商店等页面返回时 ChatView 会重新挂载，初始 state 也从
       // 同一份内存草稿恢复。
+      /* eslint-disable react-hooks/set-state-in-effect -- deliberate per-session draft restore: this effect restores the composer text and resets mention chips/dismissal/selection on session switch in one batch, not drifting out of sync via render-time derivation */
       useEffect(() => {
         const restored = bridge.available && bridge.chat && bridge.chat.getComposerDraft
           ? bridge.chat.getComposerDraft()
           : ((bs && bs.composerDraft) || '');
         setInputText(restored);
+        // Mention chips are part of the per-session draft (same in-memory,
+        // per-session lifetime as the composer working set): restore the refs
+        // picked in this scope; the effect cleanup stashes the outgoing
+        // scope's refs (and the unmounted scope's), so switching away and
+        // back never silently wipes them, while refs picked in session A
+        // still never leak into session B (the injection block binds to the
+        // send context). The menu dismissal/keyboard selection reset on the
+        // same scope change.
+        const key = activeSessionId ? `session:${activeSessionId}` : `draft:${draftEpoch}`;
+        mentionDraftKeyRef.current = key;
+        setSessionRefs(dedupeSessionRefs(sessionMentionDrafts.get(key) || []));
+        setMentionDismissedToken(null);
+        setMentionSelection({ token: null, index: 0 });
+        return () => {
+          const refs = sessionRefsRef.current;
+          if (refs.length) {
+            if (sessionMentionDrafts.size >= MENTION_DRAFT_CACHE_LIMIT) {
+              // Bounded cache: evict the oldest scope (Map insertion order).
+              sessionMentionDrafts.delete(sessionMentionDrafts.keys().next().value);
+            }
+            sessionMentionDrafts.set(key, refs);
+          } else {
+            sessionMentionDrafts.delete(key);
+          }
+        };
+      /* eslint-enable react-hooks/set-state-in-effect */
       // eslint-disable-next-line react-hooks/exhaustive-deps -- deps reviewed manually: restore only on session and draft epoch; adding bs would reread the draft on every backend snapshot change, overwriting in-progress input
       }, [activeSessionId, draftEpoch, setInputText]);
+      const handleSelectMentionCandidate = useCallback((candidate) => {
+        if (!candidate || !sessionMentionEnabled) return;
+        // A rejected pick (duplicate, isolated prefix, or over the cap) stays
+        // a no-op: the typed @query is only consumed when the chip lands.
+        if (dedupeSessionRefs([...sessionRefs, candidate]).length <= sessionRefs.length) return;
+        setSessionRefs(current => dedupeSessionRefs([...current, candidate]));
+        setMentionDismissedToken(null);
+        setInputText((current) => {
+          const trigger = sessionMentionTriggerAt(current);
+          return trigger ? current.slice(0, trigger.start) : current;
+        });
+        window.requestAnimationFrame(() => {
+          if (composerRef.current) {
+            composerRef.current.focus();
+            composerRef.current.selectionStart = composerRef.current.value.length;
+            composerRef.current.selectionEnd = composerRef.current.value.length;
+          }
+        });
+      }, [sessionMentionEnabled, sessionRefs, setInputText]);
       const voiceInput = (bs && bs.voiceInput) || { status: 'idle' };
       const voiceMode = normalizeVoiceMode(voiceInput.mode);
       const voiceActive = isVoiceActive(voiceInput);
       const voiceBusy = isVoiceBusy(voiceInput);
       const hasDraftText = inputText.trim().length > 0;
       const hasReadyAttachment = attachments.some(a => a.status === 'ready');
+      // With the feature off, unsent chips no longer make the composer sendable (the send path stops injecting the block too).
+      const hasSessionRefs = sessionMentionEnabled && sessionRefs.length > 0;
+      // Session mention: a trailing @token in the composer drives the candidate
+      // panel; after Escape the panel stays closed for the same token (a token
+      // change = the user kept typing, so the panel reappears).
+      // When the feature is off (§3.3 layer 1) the @ trigger yields no
+      // session group / candidates.
+      const mentionTrigger = sessionMentionTriggerAt(inputText, sessionMentionEnabled);
+      const mentionMenuOpen = !!mentionTrigger && mentionTrigger.token !== mentionDismissedToken;
+      const mentionCandidates = filterSessionMentionCandidates((bs && bs.sessions) || [], {
+        query: mentionTrigger ? mentionTrigger.query : '',
+        excludeIds: [activeSessionId, ...sessionRefs.map(ref => ref.sessionId)].filter(Boolean),
+        limit: 8,
+      });
+      // Keyboard highlight: resets to 0 when the token changes (new trigger / kept typing); purely derived, no effect.
+      const mentionIndex = mentionSelection.token === (mentionTrigger && mentionTrigger.token)
+        ? Math.min(mentionSelection.index, Math.max(0, mentionCandidates.length - 1))
+        : 0;
+      const knownSessionMentionIds = useMemo(
+        // Archived sessions are still alive and openable (the card jumps to
+        // them and un-archives on switch), so they count as known; only a
+        // truly deleted session renders the unavailable state.
+        () => new Set(
+          [...((bs && bs.sessions) || []), ...((bs && bs.archivedSessions) || [])]
+            .map(session => session.id),
+        ),
+        // eslint-disable-next-line react-hooks/exhaustive-deps -- depends only on the session-list slices of the snapshot (stable references), not on other bs fields
+        [bs && bs.sessions, bs && bs.archivedSessions],
+      );
       const firstTurnPending = !activeSessionId && chatItems.some(item => (
         item && item.type === 'user' && !!item.deliveryState
       ));
       const canSend = !isMultiAgentReadOnly
         && !firstTurnPending
-        && (hasDraftText || hasReadyAttachment);
+        && (hasDraftText || hasReadyAttachment || hasSessionRefs);
       const sceneCapabilityPreparing = sceneCapabilityStatus && sceneCapabilityStatus.kind === 'preparing';
       // eslint-disable-next-line sonarjs/cognitive-complexity -- scene-capability preflight and send orchestration are cohesive in a single callback; split refactor tracked separately
       const sendChatMessage = useCallback(async (text) => {
         if (!bridge.available) return false;
         const outgoing = String(text || '').trim();
-        const matchedPersonalWorkbenchDraft = findPersonalWorkbenchTemplateDraft(outgoing);
+        // The mention injection block is a machine contract, not user body
+        // text: scene template auto-detection (a startsWith match) and the
+        // scene meta embedding run on the stripped body. The block itself is
+        // re-prepended onto pinvouPayloadText below, so a scene send keeps
+        // the read_session contract at the head of the model payload instead
+        // of sandwiching it inside the scene boilerplate.
+        const mentionSplit = splitSessionMentionBlock(outgoing);
+        const sceneBody = mentionSplit.text.trim();
+        const matchedPersonalWorkbenchDraft = findPersonalWorkbenchTemplateDraft(sceneBody);
         const templateId = personalWorkbenchTemplateIdRef.current
           || (matchedPersonalWorkbenchDraft && matchedPersonalWorkbenchDraft.template
             ? matchedPersonalWorkbenchDraft.template.id
@@ -1561,12 +1742,18 @@ const ToolWelcomeCard = ({ toolId, t, onSend }) => {
         const visibleOutgoing = outgoing;
         let meta;
         if (visibleOutgoing || hasReadyAttachment) {
-          const scenePrompt = outgoing || t.uiChatScenes.attachmentPrompt;
+          const scenePrompt = sceneBody || t.uiChatScenes.attachmentPrompt;
           if (visualPosterSceneActive) meta = createVisualPosterMessageMeta(scenePrompt);
           else if (documentWritingSceneActive) meta = createDocumentWritingMessageMeta(scenePrompt);
           else if (personalWorkbenchSceneActive) meta = createPersonalWorkbenchMessageMeta(scenePrompt, templateId);
           else if (dataVisualizationSceneActive) meta = createDataVisualizationMessageMeta(scenePrompt);
           else if (pptDesignSceneActive) meta = createPptDesignMessageMeta(scenePrompt);
+          if (meta && meta.pinvouPayloadText && mentionSplit.refs.length) {
+            meta = {
+              ...meta,
+              pinvouPayloadText: buildSessionMentionBlock(mentionSplit.refs) + meta.pinvouPayloadText,
+            };
+          }
         }
         const requirements = requiredCapabilitiesForMeta(meta);
         if (requirements) {
@@ -1645,8 +1832,11 @@ const ToolWelcomeCard = ({ toolId, t, onSend }) => {
           t={t}
           editable={!busy && !isMultiAgentReadOnly && item.id === lastUserId}
           conversationVariant="unified"
+          onOpenSessionMention={handleOpenMentionSession}
+          knownSessionMentionIds={knownSessionMentionIds}
+          sessionMentionDisabled={!sessionMentionEnabled}
         />
-      ), [activeSessionId, busy, isMultiAgentReadOnly, lastUserId, t, theme]);
+      ), [activeSessionId, busy, handleOpenMentionSession, isMultiAgentReadOnly, knownSessionMentionIds, lastUserId, sessionMentionEnabled, t, theme]);
       const handleTimelineRenderItem = useCallback((item) => {
         // reasoning items are handled by ConversationTimeline's ReasoningItem and must not be handed to
         // the legacy ChatBubble; the latter does not know the type and would return null, silently
@@ -1694,9 +1884,18 @@ const ToolWelcomeCard = ({ toolId, t, onSend }) => {
         const scopedText = selectedDesignElement
           ? chatViewCopy.designAdjustSelected(elementLabel || chatViewCopy.designElementFallback, raw)
           : raw;
-        sendChatMessage(scopedText);
+        // Same mention semantics as handleSend: picked refs serialize into the
+        // prepended injection block (suppressed when the feature is off) and
+        // the chips are consumed once the send is accepted — otherwise refs
+        // picked before a design submit would go out unreferenced yet stay
+        // armed for the next plain composer send.
+        const mentionBlock = sessionMentionEnabled ? buildSessionMentionBlock(sessionRefs) : '';
+        const outgoingText = mentionBlock ? mentionBlock + scopedText : scopedText;
+        void Promise.resolve(sendChatMessage(outgoingText)).then((accepted) => {
+          if (accepted) setSessionRefs([]);
+        });
       // eslint-disable-next-line react-hooks/exhaustive-deps -- deps reviewed manually: chatViewCopy only participates in copy concatenation; adding it would just rebuild the callback frequently
-      }, [selectedDesignElement, sendChatMessage]);
+      }, [selectedDesignElement, sendChatMessage, sessionMentionEnabled, sessionRefs]);
       const primaryVoiceDisabled = !bridge.available || voiceBusy;
       const voiceAsrSetup = (bs && bs.voiceAsrSetup) || { open: false };
       const voiceAsrSetupPublicationReady = useRightDockOcclusion(
@@ -2069,6 +2268,14 @@ const ToolWelcomeCard = ({ toolId, t, onSend }) => {
           return;
         }
         const text = constrained.text;
+        // Mention chips serialize into a prepended injection block (sessionId +
+        // title + contract only, no contents). Chips survive until the send is
+        // truly accepted — on failure / non-dispatch the text is restored and
+        // the chips naturally stay. When the feature is off
+        // (docs/builtin-toolset-contract.md §3.3 layer 2) the block is not sent;
+        // blocks already present in history are untouched.
+        const mentionBlock = sessionMentionEnabled ? buildSessionMentionBlock(sessionRefs) : '';
+        const outgoingText = mentionBlock ? mentionBlock + text : text;
         // Clear the composer the moment the button is clicked (before the
         // await returns); on failure (reserve conflict etc.) or a notice-only
         // not-dispatched resolution (attachments still parsing, remote-turn
@@ -2083,7 +2290,10 @@ const ToolWelcomeCard = ({ toolId, t, onSend }) => {
         // interrupt typing.
         setInputText('');
         try {
-          const accepted = await sendChatMessage(text);
+          const accepted = await sendChatMessage(outgoingText);
+          // Clear chips once the send is accepted, even when the feature gate
+          // suppressed the block (stale chips from before the toggle must not linger).
+          if (accepted) setSessionRefs([]);
           if (!accepted) {
             if (inputTextRef.current === '') setInputText(text);
             else if (text) bridge.chat.prefillComposer(text, true);
@@ -2168,13 +2378,20 @@ const ToolWelcomeCard = ({ toolId, t, onSend }) => {
         const editSessionId = activeSessionId;
         if (!editSessionId) return;
         const nextText = String(queuedEdit.text || '').trim();
-        if (!nextText && !(item.attachments || []).length) {
+        const mentionRefs = Array.isArray(queuedEdit.mentionRefs) ? queuedEdit.mentionRefs : [];
+        if (!nextText && !mentionRefs.length && !(item.attachments || []).length) {
           flashQueuedNotice(editSessionId, { queuedId: item.id, text: t.queuedEmpty });
           return;
         }
         if (!bridge.chat || typeof bridge.chat.editQueued !== 'function') return;
+        // Rebuild the injection block from the refs parsed when the edit
+        // started (same edit-resend gate as UserBubble.commit: with the
+        // feature off only the body is saved, the block is never re-injected).
+        const outgoing = sessionMentionEnabled && mentionRefs.length
+          ? buildSessionMentionBlock(mentionRefs) + nextText
+          : nextText;
         const completed = await runQueuedAction(item.id, () => (
-          bridge.chat.editQueued(editSessionId, item.id, nextText)
+          bridge.chat.editQueued(editSessionId, item.id, outgoing)
         ));
         if (completed) {
           setQueuedEdits(current => {
@@ -2196,6 +2413,34 @@ const ToolWelcomeCard = ({ toolId, t, onSend }) => {
           if (isPlainEnter(e)) {
             e.preventDefault();
             chatVoice.applyVoiceEditPreview({ send: e.ctrlKey || e.metaKey });
+            return;
+          }
+        }
+        if (mentionMenuOpen) {
+          // IME composition (a CJK IME candidate window uses ArrowUp/ArrowDown/
+          // Escape/Tab itself): those keys belong to the IME, so bail out before
+          // any preventDefault — Enter is already covered by isPlainEnter.
+          if (isImeComposing(e)) return;
+          if (e.key === 'ArrowDown' || e.key === 'ArrowUp') {
+            e.preventDefault();
+            const count = mentionCandidates.length;
+            if (count > 0) {
+              const delta = e.key === 'ArrowDown' ? 1 : -1;
+              setMentionSelection({
+                token: mentionTrigger.token,
+                index: (mentionIndex + delta + count) % count,
+              });
+            }
+            return;
+          }
+          if (e.key === 'Escape') {
+            e.preventDefault();
+            setMentionDismissedToken(mentionTrigger.token);
+            return;
+          }
+          if ((isPlainEnter(e) || e.key === 'Tab') && mentionCandidates.length > 0) {
+            e.preventDefault();
+            handleSelectMentionCandidate(mentionCandidates[mentionIndex] || mentionCandidates[0]);
             return;
           }
         }
@@ -2262,8 +2507,13 @@ const ToolWelcomeCard = ({ toolId, t, onSend }) => {
             setInputText(constrained.text);
             return false;
           }
+          // Same mention semantics as handleSend: picked refs serialize into
+          // the prepended injection block (suppressed when the feature is off)
+          // — a voice send must not drop refs the user explicitly picked.
+          const mentionBlock = sessionMentionEnabled ? buildSessionMentionBlock(sessionRefs) : '';
+          const outgoingText = mentionBlock ? mentionBlock + constrained.text : constrained.text;
           try {
-            return await sendChatMessage(constrained.text);
+            return await sendChatMessage(outgoingText);
           } catch (error) {
             console.warn('[voice-input] task send failed after writeback', error);
             return false;
@@ -2273,6 +2523,9 @@ const ToolWelcomeCard = ({ toolId, t, onSend }) => {
           // The user may have typed new content during the await send window; clear only when
           // the draft was not modified.
           setInputText(prev => (prev === sentText ? '' : prev));
+          // The voice send consumed the mention chips (sendTask assembled the
+          // block from them), so they clear on acceptance like in handleSend.
+          setSessionRefs([]);
           personalWorkbenchTemplateIdRef.current = null;
           setPersonalWorkbenchTemplateId(null);
         },
@@ -2587,9 +2840,14 @@ const ToolWelcomeCard = ({ toolId, t, onSend }) => {
             <ComputerUseDialogs slice={computerUseSlice} copy={computerUseCopy} />
           )}
           {/* Floating Input Area */}
+          {/* biome-ignore lint/a11y/noStaticElementInteractions: session-row drag-drop hot zone; the keyboard-equivalent path is the composer @ mention panel */}
           <div
             ref={composerWrapRef}
             data-testid="chat-composer-wrap"
+            onDragEnter={handleComposerSessionDragEnter}
+            onDragLeave={handleComposerSessionDragLeave}
+            onDragOver={handleComposerSessionDragOver}
+            onDrop={handleComposerSessionDrop}
             className={`absolute ${isWeb ? 'bottom-2 sm:bottom-8' : 'bottom-8'} inset-x-0 z-20`}
             style={responsiveGutterStyle}
           >
@@ -2644,7 +2902,16 @@ const ToolWelcomeCard = ({ toolId, t, onSend }) => {
                         className="flex-1 min-w-0 resize-none rounded-lg border border-black/10 bg-white/80 px-2 py-1 outline-none focus:border-blue-500 dark:border-white/15 dark:bg-white/5"
                       />
                     ) : (
-                      <span className="flex-1 min-w-0 truncate">{q.displayText}</span>
+                      // A queued chip shows only the body: the mention injection
+                      // block (prepended at send) takes no line; a refs-only
+                      // message falls back to the referenced session titles
+                      // (data, not UI copy). Refs pass the shared choke point so
+                      // dirty history cannot flood the chip.
+                      <span className="flex-1 min-w-0 truncate">{(() => {
+                        const split = splitSessionMentionBlock(q.displayText);
+                        const body = split.text.trim();
+                        return body || dedupeSessionRefs(split.refs).map(ref => ref.title || ref.sessionId).join(', ') || q.displayText;
+                      })()}</span>
                     )}
                     {queuedEdit && queuedEdit.id === q.id ? (
                       <>
@@ -2681,9 +2948,16 @@ const ToolWelcomeCard = ({ toolId, t, onSend }) => {
                             delete next[activeSessionId];
                             return next;
                           });
+                          // Same editing contract as the UserBubble editor: the
+                          // textarea holds only the body; the mention injection
+                          // block is parsed out into refs and rebuilt on save,
+                          // so editing never exposes (or silently drops) the
+                          // JSON contract line.
+                          const split = splitSessionMentionBlock(q.text);
+                          const body = split.text;
                           setQueuedEdits(current => ({
                             ...current,
-                            [activeSessionId]: { id: q.id, text: String(q.text || ''), initial: String(q.text || '') },
+                            [activeSessionId]: { id: q.id, text: body, initial: body, mentionRefs: dedupeSessionRefs(split.refs) },
                           }));
                         }}
                           data-testid={`queued-message-edit-action-${q.id}`}
@@ -2729,6 +3003,19 @@ const ToolWelcomeCard = ({ toolId, t, onSend }) => {
               removeLabel={t.uiAttachments.remove}
               formatError={formatAttachmentError}
               className="mb-2 px-2"
+            />
+            {sessionDropActive && (
+              <div data-testid="session-mention-drop-hint"
+                className="mb-2 px-3 py-2 rounded-2xl text-[12px] leading-5 bg-[#E8F0FE] text-[#1967D2] dark:bg-[#1F3A5F] dark:text-[#A8C7FA]">
+                {t.uiSessionMention.dropHint}
+              </div>
+            )}
+            <SessionMentionChips
+              refs={sessionRefs}
+              onRemove={handleRemoveMentionRef}
+              copy={t.uiSessionMention}
+              disabled={!sessionMentionEnabled}
+              disabledNotice={t.uiBuiltinFeatures.disabledNotice}
             />
             {imageInputWarning && (
               <div data-testid="image-capability-warning"
@@ -2879,6 +3166,24 @@ const ToolWelcomeCard = ({ toolId, t, onSend }) => {
                 onApplyAndSend={() => chatVoice.applyVoiceEditPreview({ send: true })}
                 onCancel={chatVoice.cancelVoiceEditPreview}
               />
+              <div className="relative">
+                <ComposerPopover
+                  open={mentionMenuOpen}
+                  onClose={() => setMentionDismissedToken(mentionTrigger ? mentionTrigger.token : null)}
+                  triggerRef={composerRef}
+                  compact={composerCompact}
+                  desktopClassName={`absolute bottom-full left-0 mb-2 z-50 w-[320px] max-w-[calc(100vw-24px)] max-h-[320px] overflow-y-auto ${POPOVER_SURFACE}`}
+                >
+                  <SessionMentionMenu
+                    candidates={mentionCandidates}
+                    selectedIndex={mentionIndex}
+                    onSelect={handleSelectMentionCandidate}
+                    onHover={(index) => setMentionSelection({ token: mentionTrigger && mentionTrigger.token, index })}
+                    copy={t.uiSessionMention}
+                  />
+                </ComposerPopover>
+              </div>
+              {/* biome-ignore lint/a11y/useAriaPropsSupportedByRole: the composer carries the @-mention listbox popup semantics (aria-haspopup/expanded/activedescendant), same contract as the ScheduledTasksView read-only input */}
               <textarea
                 ref={composerRef}
                 data-testid="chat-composer-input"
@@ -2889,6 +3194,13 @@ const ToolWelcomeCard = ({ toolId, t, onSend }) => {
                 maxLength={CHAT_INPUT_MAX_LENGTH}
                 placeholder={composerPlaceholder}
                 rows={1}
+                aria-haspopup="listbox"
+                aria-expanded={mentionMenuOpen}
+                aria-activedescendant={
+                  mentionMenuOpen && mentionCandidates.length > 0
+                    ? `session-mention-option-${mentionCandidates[mentionIndex].sessionId}`
+                    : undefined
+                }
                 className="w-full bg-transparent resize-none outline-none text-gray-800 dark:text-gray-100 text-[16px] leading-relaxed min-h-[48px] overflow-y-auto hide-scrollbar placeholder:text-gray-400 dark:placeholder:text-gray-500"
               />
               <TextareaContextMenu inputRef={composerRef} setValue={setInputText} t={t} />
@@ -2977,7 +3289,7 @@ const ToolWelcomeCard = ({ toolId, t, onSend }) => {
                           <StopCircle size={20} />
                         </button>
                       )}
-                      {(!busy || hasDraftText || hasReadyAttachment) && (
+                      {(!busy || hasDraftText || hasReadyAttachment || hasSessionRefs) && (
                         <button type="button" onClick={handleSend} disabled={!ready}
                           aria-label={busy ? t.queueMsg : t.sendMsg}
                           title={busy ? (can('interruptSend') ? t.queueMsgTip : t.queueMsg) : t.sendMsg}
@@ -3308,17 +3620,31 @@ const TextareaContextMenu = ({ inputRef, setValue, t }) => {
       ), document.body);
     };
 
-const UserBubble = ({ item, sessionId, editable, t, conversationVariant }) => {
+const UserBubble = ({ item, sessionId, editable, t, conversationVariant, onOpenSessionMention = null, knownSessionMentionIds = null, sessionMentionDisabled = false }) => {
+  // The mention injection block (prepended at send, see session-mention.js) is
+  // stripped into reference cards + body at render time; the editor holds the
+  // body without the block and commit rebuilds it from the original refs, so
+  // users cannot accidentally edit the JSON contract line. Parsed refs pass
+  // the shared choke point — dirty history (e.g. thousands of refs) must not
+  // blow up the cards UI or the edit-resend rebuild.
+  const mentionSplit = splitSessionMentionBlock(item.text);
+  const mentionRefs = dedupeSessionRefs(mentionSplit.refs);
       const unified = conversationVariant === 'unified';
       const deliveryState = item.deliveryState || '';
       const sceneDisplay = pinvouSceneDisplay(item.pinvouScene, t.uiChat.sceneModes);
       const SceneIcon = sceneDisplay && sceneDisplay.Icon;
       const [editing, setEditing] = useState(false);
-      const [val, setVal] = useState(item.text);
+      const [val, setVal] = useState(mentionSplit.text);
       const [copied, copyToClipboard] = useCopyFlash(1200);
-      function commit() { const tx = val.trim(); setEditing(false); if (tx && bridge.available) bridge.interaction.editLastTurn(tx); }
+      // Edit-resend keeps layer 2 of the feature gate: with the feature off
+      // only the body is resent — the injection block is never re-injected.
+      function commit() { const tx = val.trim(); setEditing(false); if (tx && bridge.available) bridge.interaction.editLastTurn(!sessionMentionDisabled && mentionRefs.length ? buildSessionMentionBlock(mentionRefs) + tx : tx); }
       function copyText() {
-        copyToClipboard('user-bubble', item.text || '');
+        // Copy the body for the user: strip the mention injection block (a
+        // machine contract, not human-written content); useCopyFlash is the
+        // upstream-unified copy feedback hook (#539 series), replacing the
+        // original hand-rolled setCopied.
+        copyToClipboard('user-bubble', mentionSplit.text || '');
       }
       function retryDelivery() {
         if (!item.clientMessageId || !bridge.available || !bridge.chat.retryFirstTurn) return;
@@ -3331,14 +3657,14 @@ const UserBubble = ({ item, sessionId, editable, t, conversationVariant }) => {
               {/* biome-ignore lint/a11y/noAutofocus: focus the editor immediately on entering message-edit mode; focus is the edit intent */}
               <textarea autoFocus value={val} onChange={e => setVal(e.target.value)}
                 rows={Math.min(6, Math.max(1, val.split('\n').length))}
-                onKeyDown={e => { if (isPlainEnter(e)) { e.preventDefault(); commit(); } else if (e.key === 'Escape') { setEditing(false); setVal(item.text); } }}
+                onKeyDown={e => { if (isPlainEnter(e)) { e.preventDefault(); commit(); } else if (e.key === 'Escape') { setEditing(false); setVal(mentionSplit.text); } }}
                 className={`w-full min-w-0 max-w-full break-words [overflow-wrap:anywhere] rounded-[16px] px-4 py-2 text-[15px] outline-none ${
                   unified
                     ? 'bg-[#E9EEF6] text-[#1F1F1F] dark:bg-[#2A2B2E] dark:text-[#E3E3E3]'
                     : 'bg-[#D3E3FD] text-[#1F1F1F] dark:bg-[#004A77] dark:text-[#E3E3E3]'
                 }`} />
               <div className="flex gap-2 justify-end mt-1">
-                <button type="button" className={cardBtnCls()} onClick={() => { setEditing(false); setVal(item.text); }}>{t.cpCancel}</button>
+                <button type="button" className={cardBtnCls()} onClick={() => { setEditing(false); setVal(mentionSplit.text); }}>{t.cpCancel}</button>
                 <button type="button" className={cardBtnCls('primary')} onClick={commit}>{t.resend}</button>
               </div>
             </div>
@@ -3366,10 +3692,18 @@ const UserBubble = ({ item, sessionId, editable, t, conversationVariant }) => {
       }
       const actBtn = 'text-[#9AA0A6] hover:text-[#444746] hover:bg-black/[0.06] dark:text-[#8E8E8E] dark:hover:text-[#E3E3E3] dark:hover:bg-white/10';
       // 附件行拆出正文,附件以独立小气泡显示在正文气泡上方(纯附件消息只显示附件气泡)
-      const { text: bodyText, attachments: attachmentNames } = splitAttachmentLine(item.text);
+      const { text: bodyText, attachments: attachmentNames } = splitAttachmentLine(mentionSplit.text);
       return (
         <div className="flex justify-end group min-w-0 max-w-full">
           <div className="flex flex-col items-end max-w-[85%] min-w-0 max-w-full">
+            <SessionMentionCards
+              refs={mentionRefs}
+              knownSessionIds={knownSessionMentionIds}
+              onOpenSession={onOpenSessionMention}
+              copy={t.uiSessionMention}
+              disabled={sessionMentionDisabled}
+              disabledNotice={t.uiBuiltinFeatures.disabledNotice}
+            />
             {attachmentNames.length > 0 && (
               <div className={`flex max-w-full flex-wrap justify-end gap-1.5 ${bodyText ? 'mb-1.5' : ''}`}>
                 {attachmentNames.map((name, index) => {
@@ -3445,7 +3779,7 @@ const UserBubble = ({ item, sessionId, editable, t, conversationVariant }) => {
                 {copied ? <Check size={14} className="text-[#34C759]" /> : <Copy size={14} />}
               </button>
               {editable && !deliveryState && (
-                <button type="button" title={t.editResend} onClick={() => { setVal(item.text); setEditing(true); }}
+                <button type="button" title={t.editResend} onClick={() => { setVal(mentionSplit.text); setEditing(true); }}
                   className={`w-7 h-7 rounded-lg flex items-center justify-center transition-colors ${actBtn}`}>
                   <Edit2 size={14} />
                 </button>
@@ -3558,7 +3892,7 @@ const UserBubble = ({ item, sessionId, editable, t, conversationVariant }) => {
     }
 
     // eslint-disable-next-line sonarjs/cognitive-complexity -- legacy bubble dispatches rendering by message type; split refactor tracked separately
-    const ChatBubble = React.memo(function ChatBubble({ item, sessionId, theme, onPrefill, onSend, editable, onOpenEditor, t, isLatestArtifact, allowScheduledTaskDraft, conversationVariant, showAssistantActions = true, onPlanStuckGo }) {
+    const ChatBubble = React.memo(function ChatBubble({ item, sessionId, theme, onPrefill, onSend, editable, onOpenEditor, t, isLatestArtifact, allowScheduledTaskDraft, conversationVariant, showAssistantActions = true, onPlanStuckGo, onOpenSessionMention = null, knownSessionMentionIds = null, sessionMentionDisabled = false }) {
       const chatCopy = t.uiChat;
       // 后端持久化的记忆状态值是固定中文数据，仅在 UI 边界映射为当前语言；未识别值原样透传
       const memoryStatusLabels = getMemoryStatusLabels(t);
@@ -3575,7 +3909,7 @@ const UserBubble = ({ item, sessionId, editable, t, conversationVariant }) => {
       if (item.type === 'careful_blocked') return <CarefulBlockedCard item={item} t={t} />;
       if (item.type === 'user_input') return <UserInputCard item={item} t={t} />;
       if (item.type === 'user') {
-        return <UserBubble item={item} sessionId={sessionId} editable={editable} t={t} conversationVariant={conversationVariant} />;
+        return <UserBubble item={item} sessionId={sessionId} editable={editable} t={t} conversationVariant={conversationVariant} onOpenSessionMention={onOpenSessionMention} knownSessionMentionIds={knownSessionMentionIds} sessionMentionDisabled={sessionMentionDisabled} />;
       }
 
       if (item.type === 'card_creator_intro') {

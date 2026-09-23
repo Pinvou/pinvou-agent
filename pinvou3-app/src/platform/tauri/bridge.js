@@ -1182,7 +1182,14 @@ function isScheduledRunSession(sid) { return pinvouSharedtauriMain().isScheduled
         // 自动标题复用展示层过滤（与 web 侧一致）：内部信封/子智能体交接不参与
         // 命名；hideInternalEnvelope=true 同时剥离 turn_meta/system-reminder 元数据
         // 块，避免 XML 痕迹进 sidebar 标题。
-        const titleText = firstUser ? userMessageDisplayText(firstUser.content || [], true) : "";
+        let titleText = firstUser ? userMessageDisplayText(firstUser.content || [], true) : "";
+        // The session-mention injection block (the ## Referenced chats contract
+        // at the head of a message) is not user body text and never feeds
+        // auto-titling; the single source of the contract parsing is
+        // features/chat/session-mention.js (published via the window global —
+        // classic-script bridges do not import features back).
+        const splitMention = window.__PINVOU_SESSION_MENTION__ && window.__PINVOU_SESSION_MENTION__.splitSessionMentionBlock;
+        if (splitMention) titleText = splitMention(titleText).text.trim();
         if (titleText) {
           const newTitle = titleText.slice(0, 20);
           await invoke("rename_session", { id: sid, title: newTitle });
