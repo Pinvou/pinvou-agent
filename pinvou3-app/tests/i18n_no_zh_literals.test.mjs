@@ -9,6 +9,11 @@ import { fileURLToPath } from 'node:url';
 // 整行注释（以 // 或 * 开头，去前导空白后）直接跳过。
 const files = [
   'src/features/tools/ToolStoreView.jsx',
+  // Session mention UI (PR #586): all copy comes from uiSessionMention in
+  // shared/i18n (zh/en/ja); the injection contract in session-mention.js is
+  // deliberately English model-context protocol, not UI copy.
+  'src/features/chat/SessionMentionControls.jsx',
+  'src/features/chat/session-mention.js',
 ];
 // 用 fileURLToPath 而非 new URL(...).pathname：后者在 Windows 上会得到 '/D:/...',
 // 再经 path.resolve 会拼成 'D:\D:\...' 双盘符路径导致 ENOENT。
