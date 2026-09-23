@@ -6,7 +6,7 @@
 //! engine forwarder 在 TurnStarted / 首个 MessageDelta / ToolCallStarted /
 //! TurnComplete 四处调用;读出由 facade `sample_all` 经 `MonitorState` 触发。
 
-use std::collections::{HashMap, HashSet};
+use std::collections::HashMap;
 use std::time::Instant;
 
 use parking_lot::Mutex;
@@ -61,10 +61,6 @@ struct TurnTiming {
 pub struct SelfMetrics {
     perf: Mutex<SelfPerfInner>,
     inflight: Mutex<HashMap<String, TurnTiming>>,
-    /// 已完成过至少一轮的 session。每 session 首个完成轮 = 带底座 cache warmup 的**冷轮**
-    /// (warmup 同步跑完整段冷 prefill,TurnStarted→首token 窗口吃满冷启),TTFT/TPS 不代表
-    /// 稳态,故跳过(tokens 照记)。warmup 恰好只在 session 首轮跑,此集合精确识别那一轮。
-    warmed_sessions: Mutex<HashSet<String>>,
 }
 
 impl SelfMetrics {
@@ -114,9 +110,6 @@ impl SelfMetrics {
         cache_miss: Option<u32>,
     ) {
         let timing = self.inflight.lock().remove(session_id);
-        // 返回值（是否该 session 首个完成轮）仅调试日志曾使用；insert 本身就是
-        // 「标记 warmed」的语义，不能省。
-        let _is_first_turn = self.warmed_sessions.lock().insert(session_id.to_string());
         let mut p = self.perf.lock();
         p.gen_tokens_total += output_tokens as u64;
         p.prompt_tokens_total += input_tokens as u64;
@@ -149,19 +142,17 @@ impl SelfMetrics {
         }
     }
 
-    /// Turn aborted（停止/会话回收，未走到 TurnComplete）：移除 inflight 打点条目，
-    /// 避免该 session 的 TurnTiming 永久驻留。不写 perf 累计、不标 warmed（中断轮非完成轮）。
+    /// Turn aborted (stopped / session reclaimed, never reached TurnComplete):
+    /// remove the inflight entry so the session's TurnTiming cannot linger.
+    /// No perf accumulation happens for an aborted turn.
     pub fn on_turn_aborted(&self, session_id: &str) {
         self.inflight.lock().remove(session_id);
     }
 
-    /// 会话删除：清掉该 session 的全部打点残留（inflight + warmed_sessions）。
-    /// `warmed_sessions` 在每轮 TurnComplete 时按 session_id 插入但从不随会话回收，
-    /// 已完成并删除的会话会让条目永久驻留 → 随会话删除缓慢增长的泄漏，此处兜底。
-    /// 幂等（remove / HashSet::remove）。
+    /// Session deleted: clear the session's leftover inflight entry.
+    /// Idempotent (HashMap::remove).
     pub fn drop_session(&self, session_id: &str) {
         self.inflight.lock().remove(session_id);
-        self.warmed_sessions.lock().remove(session_id);
     }
 
     pub fn snapshot(&self) -> SelfPerfSnapshot {
@@ -178,14 +169,12 @@ impl SelfMetrics {
         }
     }
 
-    /// 仅测试用：inflight / warmed 条目数（生产快照不再携带 debug 面，原
-    /// `debug_snapshot`/`SelfMetricsDebugSnapshot`/`last_event` 链路已删）。
+    /// Test-only: number of inflight entries (the production snapshot carries
+    /// no debug surface; the old `debug_snapshot`/`SelfMetricsDebugSnapshot`/
+    /// `last_event` chain is gone).
     #[cfg(test)]
-    fn debug_counts(&self) -> (usize, usize) {
-        (
-            self.inflight.lock().len(),
-            self.warmed_sessions.lock().len(),
-        )
+    fn debug_counts(&self) -> usize {
+        self.inflight.lock().len()
     }
 }
 
@@ -194,14 +183,13 @@ mod tests {
     use super::*;
 
     #[test]
-    fn self_metrics_aborted_turn_clears_inflight_without_marking_warmed() {
+    fn self_metrics_aborted_turn_clears_inflight() {
         let m = SelfMetrics::default();
         m.on_turn_started("s1");
         m.on_first_delta("s1");
         m.on_turn_aborted("s1");
-        let (inflight, warmed) = m.debug_counts();
+        let inflight = m.debug_counts();
         assert_eq!(inflight, 0);
-        assert_eq!(warmed, 0);
         // 中断轮不污染 perf 累计：不写 tokens、不计 TTFT/TPS。
         let s = m.snapshot();
         assert_eq!(s.gen_tokens_total, 0);
@@ -210,24 +198,21 @@ mod tests {
     }
 
     #[test]
-    fn self_metrics_drop_session_clears_warmed_and_inflight() {
+    fn self_metrics_drop_session_clears_inflight() {
         let m = SelfMetrics::default();
-        // s1 正常完成 → 标记 warmed；s2 inflight 打点未收尾。
+        // s1 正常完成收尾；s2 inflight 打点未收尾。
         m.on_turn_started("s1");
         m.on_first_delta("s1");
         m.on_turn_complete("s1", 10, 5, None, None);
         m.on_turn_started("s2");
-        let (inflight, warmed) = m.debug_counts();
+        let inflight = m.debug_counts();
         assert_eq!(inflight, 1);
-        assert_eq!(warmed, 1);
-        // 删除 s1：warmed 应清空。删除 s2：inflight 应清空。
-        m.drop_session("s1");
+        // 删除 s2：inflight 应清空。
         m.drop_session("s2");
-        let (inflight, warmed) = m.debug_counts();
+        let inflight = m.debug_counts();
         assert_eq!(inflight, 0);
-        assert_eq!(warmed, 0);
         // drop_session 幂等：再删一次无副作用。
-        m.drop_session("s1");
+        m.drop_session("s2");
     }
 
     #[test]

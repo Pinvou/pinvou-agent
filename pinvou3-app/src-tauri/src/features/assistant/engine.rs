@@ -1811,24 +1811,29 @@ impl AppEngine {
         })
     }
 
-    /// 发用户消息给 Engine。Engine 内部自管 session，多轮自然累积。
+    /// Turn submission for headless harnesses (L1 integration harness, live
+    /// tests). Mirrors the production path: reserve the turn slot first, then
+    /// submit through [`Self::send_reserved_user_message`], the same shape as
+    /// `EnginePool::send_user_message`. Production session turns call the
+    /// reservation API through `EnginePool` instead; the reservation types are
+    /// `pub(crate)`, so the integration-test process goes through this wrapper.
+    /// No `#[cfg(test)]`: integration tests link this library as an external
+    /// crate and cannot see `cfg(test)` items.
     ///
-    /// 仅测试入口（lib 单元测试与 `tests/` 集成 harness；生产发送走
-    /// `send_reserved_user_message`，其快照/候选来自
-    /// `prepare_delegation_turn` 的同源捕获）。不加 `#[cfg(test)]`：
-    /// 集成测试以外部 crate 视角链接本库，看不到 cfg(test) 条目。
-    ///
-    /// `mode` 由调用方从 SessionStore 取当前 session 的 mode_state，注入
-    /// Op::SendMessage。底座按 mode 自动切工具白名单 + sandbox。
-    /// M1 弱模型加固:bridge 按 mode 在多智能体轮的 user content 前
-    /// prepend `<system-reminder>` 信封。
-    pub async fn send_user_message(
+    /// `mode` is supplied by the caller from the session's mode_state in the
+    /// SessionStore and injected into `Op::SendMessage`; the base switches the
+    /// tool allowlist + sandbox by mode, and the bridge prepends the
+    /// multi-agent `<system-reminder>` envelope to the user content (M1
+    /// weak-model hardening).
+    #[allow(dead_code)] // headless harnesses are the only callers; no production caller
+    pub async fn send_headless_user_message(
         &self,
         content: String,
         mode: AppMode,
         persona_reminder: Option<String>,
         restrict_tools: bool,
     ) -> Result<()> {
+        let reservation = self.turn_lifecycle.reserve()?;
         let expert_snapshot = self.multi_agent_enabled.then(ExpertRosterSnapshot::capture);
         // 候选行必须与快照同源（同一次 capture 产出），对齐
         // commands::multiagent::prepare_delegation_turn 的计算；
@@ -1841,15 +1846,17 @@ impl AppEngine {
             .as_ref()
             .map(|snapshot| snapshot.available_role_lines(&content))
             .unwrap_or_default();
-        let op = self.build_interactive_send_message_op(
+        self.send_reserved_user_message(
             content,
             mode,
             persona_reminder,
             restrict_tools,
             expert_snapshot,
             expert_candidates,
-        )?;
-        self.send_turn_op(op).await
+            reservation,
+        )
+        .await
+    }
     }
 
     #[allow(clippy::too_many_arguments)]
@@ -3928,14 +3935,14 @@ mod live_tests {
 
         // 跑两轮:首轮 = 冷/warmup(A 跳过 TTFT/TPS),二轮 = 暖(记)。
         engine
-            .send_user_message(
+            .send_headless_user_message(
                 prompts[0].to_string(),
                 SerializableMode::Yolo.to_app_mode(),
                 None,
                 false,
             )
             .await
-            .expect("send_user_message #1");
+            .expect("send_headless_user_message #1");
 
         let mut rx = engine.handle.rx_event.write().await;
         let mut turns_done = 0usize;
@@ -3974,14 +3981,14 @@ mod live_tests {
                     turns_done += 1;
                     if turns_done == 1 {
                         engine
-                            .send_user_message(
+                            .send_headless_user_message(
                                 prompts[1].to_string(),
                                 SerializableMode::Yolo.to_app_mode(),
                                 None,
                                 false,
                             )
                             .await
-                            .expect("send_user_message #2");
+                            .expect("send_headless_user_message #2");
                     } else {
                         break;
                     }

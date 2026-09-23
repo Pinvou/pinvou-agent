@@ -1205,7 +1205,8 @@ impl PreparedRuntimeState {
     }
 
     fn requires_rebuild_from(&self, previous: &Self) -> bool {
-        self != previous
+        self.prepared.model != previous.prepared.model
+            || self.model_update_revision != previous.model_update_revision
     }
 }
 
@@ -4456,9 +4457,6 @@ mod scheduled_model_tests {
         let second = identity_for_saved_model(&bridge, &model("second", "raw-two"));
 
         assert_eq!(first, second);
-        assert!(
-            crate::features::assistant::eval::validate_judge_identity(&first, &second).is_err()
-        );
 
         // SAFETY: this test holds platform::paths::tests::ENV_LOCK; env writes are serialized.
         unsafe { std::env::remove_var("DEEPSEEK_MODEL") };

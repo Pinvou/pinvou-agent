@@ -390,11 +390,6 @@ pub async fn set_pet_enabled(enabled: bool, app: AppHandle) -> Result<(), String
     Ok(())
 }
 
-/// 前端初始化取缩放。
-pub async fn get_pet_scale() -> Result<f64, String> {
-    Ok(load_state().scale)
-}
-
 fn window_edge_anchor(
     win: &tauri::WebviewWindow,
     vertical_alignment: PetVerticalAlignment,

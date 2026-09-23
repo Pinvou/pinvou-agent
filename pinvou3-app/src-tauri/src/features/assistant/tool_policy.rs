@@ -108,7 +108,10 @@ pub fn allowed_tool_names() -> Vec<String> {
         .collect()
 }
 
+/// Test-only allowlist check. Production gating resolves policies through
+/// `resolve_eval_policy`; this helper is kept for allowlist contract tests.
 #[must_use]
+#[cfg(test)]
 pub fn is_pinvou3_allowed(name: &str) -> bool {
     let name = name.to_ascii_lowercase();
     PINVOU3_ALLOWED_TOOLS.iter().any(|rule| {
