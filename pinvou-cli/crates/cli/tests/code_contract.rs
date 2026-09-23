@@ -1197,6 +1197,49 @@ fn whole_workspace_diff_drains_a_diff_exceeding_the_cap_by_more_than_a_pipe() {
     );
 }
 
+/// The per-file diff lane composes the staged and unstaged sections for one
+/// file ("# staged" first, then "# unstaged") — the composition branch is
+/// distinct from the unstaged-only and untracked cases pinned above and was
+/// historically untested.
+#[test]
+fn per_file_diff_composes_staged_and_unstaged_sections() {
+    let _env_guard = ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+    let _home = HomeGuard::new("diff-staged");
+    let Some(project) = init_git_repo("diff-staged") else {
+        return; // git unavailable in the environment
+    };
+    let id = create_code_session_fixture(Some(&project));
+
+    // Stage one version, then modify the file further: the per-file diff
+    // must render both sections against the committed baseline.
+    std::fs::write(project.join("tracked.txt"), "v2 staged\n").unwrap();
+    let devnull = if cfg!(windows) { "NUL" } else { "/dev/null" };
+    let git = |args: &[&str]| {
+        std::process::Command::new("git")
+            .current_dir(&project)
+            .args(args)
+            .env("GIT_CONFIG_NOSYSTEM", "1")
+            .env("GIT_CONFIG_GLOBAL", devnull)
+            .output()
+            .map(|output| output.status.success())
+            .unwrap_or(false)
+    };
+    assert!(git(&["add", "tracked.txt"]), "git add must succeed");
+    std::fs::write(project.join("tracked.txt"), "v2 staged\nv3 unstaged\n").unwrap();
+
+    let value = run_json(&["pinvoy", "code", "workspace", "diff", &id, "tracked.txt"]);
+    assert_eq!(value["truncated"], serde_json::json!(false));
+    let text = value["text"].as_str().unwrap();
+    let staged_at = text.find("# staged").expect("staged section header");
+    let unstaged_at = text.find("# unstaged").expect("unstaged section header");
+    assert!(
+        staged_at < unstaged_at,
+        "the staged section must come before the unstaged section"
+    );
+    assert!(text.contains("+v2 staged"), "staged hunk: {text}");
+    assert!(text.contains("+v3 unstaged"), "unstaged hunk: {text}");
+}
+
 /// The per-file diff lane stays a CLI mirror on purpose (bounded untracked
 /// reads, English section copy, whole-workspace composition are CLI-specific),
 /// so its output is differentially pinned against the app module on the same
