@@ -20,17 +20,28 @@ const POPOVER_ESTIMATED_WIDTH = 168;
 export function AuxQuoteSelection({ containerRef, sessionId, copy, onQuote }) {
   const [popover, setPopover] = useState(null);
   const hideTimerRef = useRef(null);
+  // The mouseup/keyup evaluation is deferred by one macrotask; without
+  // tracking that timer, the mouseup that clicked the quote button schedules
+  // an evaluation which runs AFTER handleQuote's hide/error state and
+  // resurrects the popover over a successful quote (or overwrites the
+  // over-limit error before its window, round-28 minor N8).
+  const evaluateTimerRef = useRef(null);
 
   const hidePopover = useCallback(() => {
     if (hideTimerRef.current) {
       clearTimeout(hideTimerRef.current);
       hideTimerRef.current = null;
     }
+    if (evaluateTimerRef.current) {
+      clearTimeout(evaluateTimerRef.current);
+      evaluateTimerRef.current = null;
+    }
     setPopover((current) => (current ? null : current));
   }, []);
 
   useEffect(() => () => {
     if (hideTimerRef.current) clearTimeout(hideTimerRef.current);
+    if (evaluateTimerRef.current) clearTimeout(evaluateTimerRef.current);
   }, []);
 
   // Evaluate the live selection against the timeline container. Everything
@@ -87,7 +98,12 @@ export function AuxQuoteSelection({ containerRef, sessionId, copy, onQuote }) {
       // setTimeout, not rAF: the WebView suspends animation frames while its
       // window is hidden, and a selection made headlessly (automation) would
       // never surface the action; a macrotask fires in every visibility state.
-      setTimeout(evaluateSelection, 0);
+      // The timer is tracked so hidePopover can cancel a pending evaluation
+      // that would resurrect the popover (round-28 minor N8).
+      evaluateTimerRef.current = setTimeout(() => {
+        evaluateTimerRef.current = null;
+        evaluateSelection();
+      }, 0);
     };
     const onKeyUp = () => {
       // No key whitelist: a whitelist misses selection-changing keys outside
@@ -95,7 +111,10 @@ export function AuxQuoteSelection({ containerRef, sessionId, copy, onQuote }) {
       // keyboard path to select a whole assistant reply. Evaluating on every
       // keyup mirrors the unconditional mouseup handler and is cheap: a
       // collapsed selection just hides (or no-ops) the popover.
-      setTimeout(evaluateSelection, 0);
+      evaluateTimerRef.current = setTimeout(() => {
+        evaluateTimerRef.current = null;
+        evaluateSelection();
+      }, 0);
     };
     document.addEventListener('mouseup', onMouseUp);
     document.addEventListener('keyup', onKeyUp);

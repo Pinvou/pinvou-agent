@@ -441,7 +441,7 @@ assert.match(restartBlock, /setDiscardFailed\(false\);\s*[\s\S]{0,300}?setDiscar
 // keeping it: the banner is the state the panel shows.
 assert.match(
   auxChatPanel,
-  /if \(discardStuckByTask\.has\(sessionId\)\) \{\s*setBindingPending\(false\);\s*\} else if \(pendingDiscard\) \{\s*pendingDiscard\.then\(ensureAfterDiscard, \(error\) => \{[\s\S]{0,400}?setDiscardFailed\(true\);\s*ensureAfterDiscard\(\);\s*\}\);\s*\} else \{\s*ensureAfterDiscard\(\);\s*\}/,
+  /if \(discardStuckByTask\.has\(sessionId\)\) \{\s*setBindingPending\(false\);\s*\} else if \(pendingDiscard\) \{\s*pendingDiscard\.then\(ensureAfterDiscard, \(error\) => \{/,
   'the rebind effect must skip ensure while a discard is stuck, clearing the preparing hint',
 );
 assert.match(
@@ -619,6 +619,15 @@ assert.match(auxChatPanel, /transitionConversationScrollState\(\{/);
 assert.match(auxChatPanel, /autoScrollRef\.current = transition\.following;/);
 assert.match(auxChatPanel, /autoScrollRef\.current = true;\s*\}, \[auxId\]\);/);
 assert.match(auxChatPanel, /if \(el && autoScrollRef\.current\) el\.scrollTop = el\.scrollHeight;\s*\}, \[auxId, snapshot\]\);/);
+// Round-28 B2: the scroll-follow listener must re-attach when the dock portal
+// exists. Keyed on [] it ran before the portal children were committed on the
+// panel's first open (scrollRef null), and never attached for the instance's
+// life — auto-follow could never park.
+assert.match(
+  auxChatPanel,
+  /el\.addEventListener\('scroll', onScroll, \{ passive: true \}\);\s*return \(\) => el\.removeEventListener\('scroll', onScroll\);\s*\}, \[auxId\]\);/,
+  'the scroll-follow listener must be keyed on auxId so it attaches once the dock portal exists (round-28 B2)',
+);
 // Conversation quotes ("划词引用"): staged per task through the aux-quote store
 // (module scope, same ownership as the draft) and appended to the outgoing
 // message as an inline userselect block; a quote-only send is allowed.
@@ -868,8 +877,8 @@ assert.equal(
 // transcript (the restart catch is generation-gated and can no longer see it).
 assert.match(
   auxChatPanel,
-  /pendingDiscard\.then\(ensureAfterDiscard, \(error\) => \{[\s\S]{0,400}?setDiscardFailed\(true\);\s*ensureAfterDiscard\(\);\s*\}\);/,
-  'the rebind must surface an awaited-discard rejection instead of silently keeping the old transcript',
+  /pendingDiscard\.then\(ensureAfterDiscard, \(error\) => \{[\s\S]{0,400}?setDiscardFailed\(true\);\s*restartDiscardFailedByTask\.add\(sessionId\);[\s\S]{0,400}?consumeDeliveredDraftAfterFailedRestart\(sessionId\);/,
+  'the rebind must surface an awaited-discard rejection AND carry the failed-restart bookkeeping (round-28 B1: marker + restore fixup, parity with the restart catch)',
 );
 assert.match(source('features/pet/PetSettingsSection.jsx'), /t\.uiPetSettings/);
 assert.match(conversation, /conversationCopy\(copy\)/);

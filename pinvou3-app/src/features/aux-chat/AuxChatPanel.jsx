@@ -234,8 +234,11 @@ const clearedIfSent = (current, text) => (current.trim() === text ? '' : current
 // only while the stored draft still equals the recorded sent text (typing
 // between the dispatch and the restart entry belongs to the next message).
 // Quotes staged mid-flight were never captured by the send and stay; a hung
-// ack's captured quotes remain until its watchdog releases (same 180 s bound
-// residual class as the stuck machinery).
+// ack's captured quotes stay staged indefinitely — its 180 s watchdog
+// releases the registry entry and the latch, not the sentQuotesByTask/
+// sentTextByTask records, which only an ack continuation identity-deletes
+// (round-28 minor N1: the earlier "bounded by the watchdog" phrasing was
+// wrong).
 const consumeDeliveredDraftAfterFailedRestart = (sessionId) => {
   if (sendInFlightByTask.has(sessionId)) return;
   if (!restartWindowKeptAckByTask.delete(sessionId)) return;
@@ -395,8 +398,11 @@ export function AuxChatPanel({ sessionId, activationKey, t, theme, onClose, onAc
     // ensure).
     const pendingDiscard = discardInFlightByTask.get(sessionId);
     const ensureAfterDiscard = () => {
-      if (disposed || generationRef.current !== generation) return;
-      auxChat.ensure(sessionId)
+      if (disposed || generationRef.current !== generation) return Promise.resolve();
+      // The chain is returned so the awaited-discard rejection arm can run
+      // its post-restore fixup after the binding settles (round-28 B1); the
+      // fire-and-forget callers ignore it.
+      return auxChat.ensure(sessionId)
         .then((nextAuxId) => {
           if (disposed || generationRef.current !== generation) return;
           setBindingPending(false);
@@ -430,7 +436,25 @@ export function AuxChatPanel({ sessionId, activationKey, t, theme, onClose, onAc
         // retried) is exactly the state this rejection leaves behind.
         console.warn('[pinvou3][aux-chat] awaited discard failed on rebind', error);
         if (!disposed && generationRef.current === generation) setDiscardFailed(true);
-        ensureAfterDiscard();
+        // Bookkeeping parity with the restart's own discard-failure catch
+        // (round-28 B1, the round-27 Major α): the transcript SURVIVED this
+        // failed discard, so the keep-draft premise no longer holds for an
+        // ack settling under this window, and a kept ack's delivered draft
+        // must be consumed by the restore fixup — omitting either here
+        // re-opened the duplicate-send class through the rebind arm. The
+        // marker is task-level state, so it is added even when this
+        // instance's generation went stale (a newer restart clears it at
+        // entry; a later restart clears it at entry); the fixup is chained
+        // behind this arm's ensure and generation-gated like the bind.
+        restartDiscardFailedByTask.add(sessionId);
+        Promise.resolve(ensureAfterDiscard()).then(
+          () => {
+            if (!disposed && generationRef.current === generation) {
+              consumeDeliveredDraftAfterFailedRestart(sessionId);
+            }
+          },
+          () => {},
+        );
       });
     } else {
       ensureAfterDiscard();
@@ -560,7 +584,13 @@ export function AuxChatPanel({ sessionId, activationKey, t, theme, onClose, onAc
     onScroll();
     el.addEventListener('scroll', onScroll, { passive: true });
     return () => el.removeEventListener('scroll', onScroll);
-  }, []);
+    // Keyed on auxId, not []: the dock portal children appear only after the
+    // panel's mount dispatch re-renders the host, so the very first commit
+    // still has scrollRef null and a mount-once effect would never attach
+    // (round-28 B2). auxId is set only after ensure resolves, when the
+    // element exists, and re-running on rebind just re-attaches idempotently
+    // while refreshing the scroll-origin refs.
+  }, [auxId]);
 
   // A rebind always opens the (fresh or switched) aux transcript at its tail.
   useEffect(() => {
