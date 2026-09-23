@@ -217,6 +217,10 @@ pub async fn install_marketplace_tool(
         let mgr = crate::features::marketplace::MarketplaceManager::new();
         // 联动:装该 MCP 声明的配套技能(引擎+引导整体到位)。
         // skill 是增强,装失败只记日志、不让已成功的 MCP 安装回滚。
+        // round-12 review:同步失败也只收集不中止——`?` 级联会跳过其余
+        // companion 的安装和末尾的包级 DenyAll 同步,留下「包装上了但
+        // consent 禁用集没跟上」的 fail-open 半态;收集齐再统一上抛。
+        let mut sync_errors: Vec<String> = Vec::new();
         for sid in mgr.companion_skills(&companion_tool_id) {
             if let Err(e) =
                 crate::features::marketplace::skill_marketplace::SkillMarketplaceManager::new()
@@ -227,11 +231,23 @@ pub async fn install_marketplace_tool(
             }
             // 新装的 companion 技能默认加入 DenyAll scope（当前 code）禁用集
             // （外部能力显式开启，与独立技能安装 install_marketplace_skill_sync 同语义）。
-            crate::features::marketplace::scope::sync_deny_all_scopes_after_install(&sid)?;
+            if let Err(e) =
+                crate::features::marketplace::scope::sync_deny_all_scopes_after_install(&sid)
+            {
+                sync_errors.push(format!("配套技能 '{sid}' 同步禁用集失败: {e}"));
+            }
         }
         // DenyAll 模式的 scope(如 code)已初始化时,新装的连接器默认仍关闭(显式开启)。
-        crate::features::marketplace::sync_deny_all_scopes_after_install(&companion_tool_id)?;
-        Ok::<(), String>(())
+        if let Err(e) =
+            crate::features::marketplace::sync_deny_all_scopes_after_install(&companion_tool_id)
+        {
+            sync_errors.push(format!("包 '{}' 同步禁用集失败: {e}", companion_tool_id));
+        }
+        if sync_errors.is_empty() {
+            Ok(())
+        } else {
+            Err::<(), String>(sync_errors.join("; "))
+        }
     })
     .await
     .map_err(|e| format!("任务执行失败: {e}"))??;
