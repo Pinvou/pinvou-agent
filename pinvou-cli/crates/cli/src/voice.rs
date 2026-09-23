@@ -305,15 +305,32 @@ fn model_path() -> PathBuf {
 /// Availability probe, mirroring the app's `model_file_verified`: the
 /// expected byte size AND the pinned sha256. A size-matching corrupted or
 /// tampered model is rejected here instead of being served as a transcript
-/// oracle forever; a one-shot CLI pays the hash on every run (the app
-/// caches by mtime) rather than trusting install-time verification alone.
+/// oracle forever. The verdict is memoized on (size, mtime) — the app caches
+/// by mtime the same way — so one transcribe hashes the 182–254 MiB model
+/// once instead of at every gate (availability probe, native lane,
+/// external-CLI lane all ask).
 fn model_available() -> bool {
     let spec = model_spec();
     let path = model_path();
-    std::fs::metadata(&path)
-        .map(|meta| meta.len() == spec.expected_size)
-        .unwrap_or(false)
-        && file_is_sha256(&path, spec.sha256)
+    let Ok(meta) = std::fs::metadata(&path) else {
+        return false;
+    };
+    type CacheKey = (u64, Option<std::time::SystemTime>);
+    static CACHE: std::sync::OnceLock<std::sync::Mutex<Option<(CacheKey, bool)>>> =
+        std::sync::OnceLock::new();
+    let mut entry = CACHE
+        .get_or_init(|| std::sync::Mutex::new(None))
+        .lock()
+        .expect("model availability cache lock");
+    let key: CacheKey = (meta.len(), meta.modified().ok());
+    if let Some((cached_key, available)) = entry.as_ref() {
+        if *cached_key == key {
+            return *available;
+        }
+    }
+    let available = meta.len() == spec.expected_size && file_is_sha256(&path, spec.sha256);
+    *entry = Some((key, available));
+    available
 }
 
 /// Bounded waits so a wedged ffmpeg cannot hang the one-shot CLI: a
@@ -688,6 +705,14 @@ fn download_to(url: &str, dest: &Path, expected_sha256: &str) -> Result<(), CliE
 /// MiB; the cap exists so a hostile mirror cannot balloon the disk).
 const MAX_DOWNLOAD_BYTES: u64 = 512 * 1024 * 1024;
 
+/// The native lane feeds a missing-ffmpeg installation the raw wav (GUI
+/// parity), so only non-wav inputs make an ffmpeg-only gap fatal.
+fn ffmpeg_missing_is_fatal_for(extension: Option<&str>) -> bool {
+    !extension
+        .map(|ext| ext.eq_ignore_ascii_case("wav"))
+        .unwrap_or(false)
+}
+
 // ─────────────────────────── transcribe ────────────────────────────────────
 
 /// Mirror of the GUI's decoded-audio cap (`recording_too_long`).
@@ -724,12 +749,22 @@ fn transcribe(path: &Path, output: OutputMode) -> Result<CliOutcome, CliError> {
     {
         // The native lane itself falls back to the raw wav when ffmpeg is
         // missing (GUI parity), so ffmpeg-only gaps are a distinct, fixable
-        // condition from a missing engine/model install.
+        // condition from a missing engine/model install. A .wav input needs
+        // no conversion at all — the GUI feeds it straight to the engine —
+        // so for .wav the hard gate downgrades to a warning and the raw-wav
+        // lane runs; other extensions keep the hard error (the engine
+        // cannot decode them without ffmpeg).
         if engine && model && !ffmpeg {
-            return Err(CliError::failed(
-                "ffmpeg_missing: ffmpeg is required for local speech recognition; \
-                 install it manually or run pinvou voice asr-install",
-            ));
+            if ffmpeg_missing_is_fatal_for(path.extension().and_then(|ext| ext.to_str())) {
+                return Err(CliError::failed(
+                    "ffmpeg_missing: ffmpeg is required for local speech recognition; \
+                     install it manually or run pinvou voice asr-install",
+                ));
+            }
+            crate::note!(
+                "voice transcribe: ffmpeg is missing; feeding the raw wav to the engine \
+                 (install ffmpeg or run `pinvou voice asr-install` for non-wav audio)"
+            );
         }
         return Err(CliError::failed(
             "asr_engine_missing: local speech recognition is not installed \
@@ -1609,10 +1644,13 @@ fn postprocess(
 }
 
 /// Blocking mirror of `call_voice_postprocess_model`. The GUI uses the async
-/// reqwest client; the CLI has no async runtime of its own inside this
-/// closure, so the blocking client is used against the same endpoints with
-/// the same body (system+user messages, temperature 0, max_tokens, and the
-/// per-provider thinking controls for the common vendors).
+/// reqwest client; this function runs inside the windowless host's tokio
+/// worker, where the blocking client would panic (debug builds enforce
+/// "cannot be built within an async runtime"), so the request inputs are
+/// resolved into owned data first and the HTTP exchange itself runs on a
+/// dedicated OS thread with no runtime context. Same endpoints, same body
+/// (system+user messages, temperature 0, max_tokens, and the per-provider
+/// thinking controls for the common vendors).
 #[allow(clippy::too_many_arguments)]
 fn call_postprocess_model(
     bridge: &pinvou3_lib::features::assistant::platform::bridge::Pinvou3Bridge,
@@ -1622,21 +1660,55 @@ fn call_postprocess_model(
     model_name: &str,
     timeout: Duration,
 ) -> Result<(String, bool), CliError> {
-    let client = reqwest::blocking::Client::builder()
-        .timeout(timeout)
-        .build()
-        .map_err(|error| CliError::failed(format!("voice postprocess: client: {error}")))?;
     let base_url = bridge.base_url();
+    let api_key = bridge.api_key();
+    let provider = bridge.provider();
+    let preset = bridge
+        .effective_model_owned()
+        .map(|model| model.preset)
+        .unwrap_or_else(|| bridge.prefs.advanced.model_preset.unwrap_or_default());
     let system = if retry {
         postprocess_retry_prompt(mode)
     } else {
         postprocess_prompt(mode)
     };
     let user = postprocess_user_content(raw_text);
-    let preset = bridge
-        .effective_model_owned()
-        .map(|model| model.preset)
-        .unwrap_or_else(|| bridge.prefs.advanced.model_preset.unwrap_or_default());
+    let model_name = model_name.to_owned();
+
+    let (tx, rx) = std::sync::mpsc::channel();
+    std::thread::spawn(move || {
+        let _ = tx.send(postprocess_http_exchange(
+            base_url, api_key, provider, preset, system, user, model_name, mode, retry, timeout,
+        ));
+    });
+    // The client's total timeout bounds the thread, so a recv past the
+    // timeout plus slack means the thread itself is wedged — fail honestly
+    // instead of parking the host's worker forever.
+    match rx.recv_timeout(timeout + Duration::from_secs(10)) {
+        Ok(result) => result,
+        Err(_) => Err(CliError::failed(
+            "model endpoint request failed: postprocess exchange timed out",
+        )),
+    }
+}
+
+#[allow(clippy::too_many_arguments)]
+fn postprocess_http_exchange(
+    base_url: String,
+    api_key: String,
+    provider: String,
+    preset: pinvou3_lib::platform::prefs::ModelPreset,
+    system: &'static str,
+    user: String,
+    model_name: String,
+    mode: PostprocessMode,
+    retry: bool,
+    timeout: Duration,
+) -> Result<(String, bool), CliError> {
+    let client = reqwest::blocking::Client::builder()
+        .timeout(timeout)
+        .build()
+        .map_err(|error| CliError::failed(format!("voice postprocess: client: {error}")))?;
 
     if preset == pinvou3_lib::platform::prefs::ModelPreset::Anthropic {
         // Mirror of core::model_endpoint::post_anthropic_messages.
@@ -1646,7 +1718,6 @@ fn call_postprocess_model(
         } else {
             format!("{trimmed}/v1/messages")
         };
-        let api_key = bridge.api_key();
         let mut request = client
             .post(url)
             .header("anthropic-version", "2023-06-01")
@@ -1700,13 +1771,13 @@ fn call_postprocess_model(
         "max_tokens": postprocess_max_tokens(mode, retry),
         "stream": false
     });
-    apply_postprocess_reasoning_controls(&mut body, preset, bridge.provider().as_str(), model_name);
+    apply_postprocess_reasoning_controls(&mut body, preset, provider.as_str(), &model_name);
     let value: serde_json::Value = client
         .post(format!(
             "{}/chat/completions",
             base_url.trim_end_matches('/')
         ))
-        .bearer_auth(bridge.api_key())
+        .bearer_auth(api_key)
         .json(&body)
         .send()
         .and_then(|response| response.error_for_status())
@@ -1950,5 +2021,20 @@ mod review_fix_tests {
             "the failed spawn must not leak the normalized staging file"
         );
         std::fs::remove_dir_all(&dir).unwrap();
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::ffmpeg_missing_is_fatal_for;
+
+    #[test]
+    fn ffmpeg_missing_is_fatal_except_for_wav_inputs() {
+        assert!(ffmpeg_missing_is_fatal_for(Some("mp3")));
+        assert!(ffmpeg_missing_is_fatal_for(Some("m4a")));
+        assert!(!ffmpeg_missing_is_fatal_for(Some("wav")));
+        assert!(!ffmpeg_missing_is_fatal_for(Some("WAV")));
+        assert!(!ffmpeg_missing_is_fatal_for(Some("Wav")));
+        assert!(ffmpeg_missing_is_fatal_for(None));
     }
 }

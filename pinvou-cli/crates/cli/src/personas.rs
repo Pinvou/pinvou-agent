@@ -510,8 +510,19 @@ fn clear_equipped_sidecars(persona_id: &str) -> Result<(Vec<String>, Vec<String>
     let sessions_dir = sandbox_home()?.join("sessions");
     let entries = match std::fs::read_dir(&sessions_dir) {
         Ok(entries) => entries,
-        // No sessions directory yet: nothing can be equipped anywhere.
-        Err(_) => return Ok((Vec::new(), Vec::new())),
+        // No sessions directory yet: nothing can be equipped anywhere. Any
+        // other listing failure (permissions, ...) must surface as a sweep
+        // error — a silent empty result would report success while ghost
+        // sidecars survive.
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
+            return Ok((Vec::new(), Vec::new()));
+        }
+        Err(error) => {
+            return Err(CliError::failed(format!(
+                "personas delete: cannot list {}: {error}",
+                sessions_dir.display()
+            )));
+        }
     };
     let mut cleared = Vec::new();
     let mut sweep_errors = Vec::new();
@@ -740,9 +751,17 @@ fn unequip(session_id: &str, output: OutputMode) -> Result<CliOutcome, CliError>
 /// persisted sidecar is the source of truth across CLI invocations; the
 /// in-memory store stays as the fallback for state set in this process.
 fn active(session_id: &str, output: OutputMode) -> Result<CliOutcome, CliError> {
-    // Reject ids that cannot name a session directory before any path use.
+    // Same gates as equip/unequip: reject ids that cannot name a session
+    // directory before any path use, and fail an unknown but well-formed id
+    // instead of answering "none" for a typo (the commit that added the
+    // unequip gate claimed equip/active parity — this restores it).
     equip_state_path(session_id)?;
     let store = open_store()?;
+    store.load(session_id).map_err(|error| {
+        CliError::failed(format!(
+            "personas active: session {session_id} does not exist ({error})"
+        ))
+    })?;
     let summary = equipped_persona_id(session_id)
         .or_else(|| store.active_persona_id(session_id))
         .and_then(|persona_id| get(&persona_id).map(|card| card.summary()));

@@ -56,14 +56,32 @@ pub fn sandbox_home() -> Result<PathBuf, CliError> {
 
 /// Reads a UTF-8 text file with a byte cap so `--*-file` arguments cannot
 /// load an unbounded source (a multi-GB log, a character device like
-/// /dev/zero) into memory before the family's own truncation runs. The read
-/// itself is bounded (`Read::take`), so the failure is a clean CLI error
-/// rather than an OOM or a hang.
+/// /dev/zero) into memory before the family's own truncation runs, and
+/// non-regular files (a FIFO's open/read would block before any cap could
+/// act) are refused up front. The read itself is bounded (`Read::take`), so
+/// the failure is a clean CLI error rather than an OOM or a hang.
 pub fn read_text_file_capped(
     path: &Path,
     max_bytes: usize,
     action: &str,
 ) -> Result<String, CliError> {
+    // Regular files only, checked through metadata BEFORE the open: a FIFO's
+    // open blocks until a writer appears and its read blocks until bytes
+    // arrive, so neither the cap nor any downstream deadline could act. The
+    // metadata probe follows symlinks, so a link to a regular file still
+    // reads.
+    let Ok(meta) = std::fs::metadata(path) else {
+        return Err(CliError::failed(format!(
+            "{action}: {} does not exist",
+            path.display()
+        )));
+    };
+    if !meta.is_file() {
+        return Err(CliError::failed(format!(
+            "{action}: {} is not a regular file",
+            path.display()
+        )));
+    }
     let file = std::fs::File::open(path).map_err(|error| {
         CliError::failed(format!("{action}: cannot read {}: {error}", path.display()))
     })?;
@@ -81,6 +99,16 @@ pub fn read_text_file_capped(
     }
     String::from_utf8(bytes)
         .map_err(|_| CliError::failed(format!("{action}: {} is not valid UTF-8", path.display())))
+}
+
+/// Replaces C0 control characters (newlines, tabs, ESC, …) with spaces so a
+/// vendor- or user-controlled string cannot break the column structure of a
+/// human tab-separated row. JSON output carries the original untouched.
+pub fn collapse_control_characters(value: &str) -> String {
+    value
+        .chars()
+        .map(|ch| if ch.is_control() { ' ' } else { ch })
+        .collect()
 }
 
 /// Mirrors `features::sessions::validate_session_id` (crate-private in the

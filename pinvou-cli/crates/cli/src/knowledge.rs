@@ -81,11 +81,14 @@
 //!   `model cancel` calls the real `kb_model_cancel` (process-local by
 //!   nature).
 //!
-//! One-shot semantics: scan and import jobs run on in-process background
-//! threads. The CLI prints the start state and exits; import jobs are
-//! DB-persisted and come back as interrupted/resumable (`index resume`),
-//! while an in-flight scan is incremental and simply re-runs on the next
-//! `scan start`. Every CLI invocation constructs the service fresh; read-only
+//! One-shot semantics: import jobs run on in-process background threads.
+//! The CLI prints the start state and exits; jobs are
+//! DB-persisted and come back as interrupted/resumable (`index resume`).
+//! `scan start` is the exception: it waits for the scan to finish inside
+//! the invocation (a fire-and-forget scan would be killed by process exit
+//! before doing any work) and pre-flights the root, because a root that
+//! walks to nothing would make the incremental sweep delete the whole
+//! index as "stale". Every CLI invocation constructs the service fresh; read-only
 //! commands open it WITHOUT the GUI's startup recovery, so inspecting the
 //! store cannot degrade an import a live desktop-app process is still
 //! running. The remaining recovery openers are the commands that act on the
@@ -760,22 +763,47 @@ pub fn execute(command: KnowledgeCommand, output: OutputMode) -> Result<CliOutco
 // ───────────────────────── scan ─────────────────────────
 
 /// GUI `kb_start_scan`: starts a background incremental scan (in-process
-/// thread) and returns immediately; `--root` omitted defaults to the user
-/// home like the GUI.
+/// thread) and waits for it to finish inside this invocation; `--root`
+/// omitted defaults to the user home like the GUI.
 fn scan_start(root: Option<PathBuf>, output: OutputMode) -> Result<CliOutcome, CliError> {
+    // The root is pre-flighted BEFORE the scan starts: downstream, a root
+    // that yields nothing (a typo'd path, a directory that vanished) makes
+    // the incremental sweep classify EVERY indexed file as stale and delete
+    // it — a silent whole-index wipe reported as `done`. A missing root is
+    // refused here instead, mirroring the add-sources path pre-flight.
+    let root = root.unwrap_or_else(pinvou3_lib::platform::paths::user_home_dir);
+    match std::fs::metadata(&root) {
+        Ok(meta) if meta.is_dir() => {}
+        Ok(_) => {
+            return Err(CliError::failed(format!(
+                "knowledge scan start: root {} is not a directory",
+                root.display()
+            )));
+        }
+        Err(error) => {
+            return Err(CliError::failed(format!(
+                "knowledge scan start: root {} does not exist: {error}",
+                root.display()
+            )));
+        }
+    }
     // Scan never touches the import-job store, so like the other pure L1
     // CRUD lanes it must not run the boot recovery: that would flip a job a
     // live desktop process is still importing to interrupted.
     let service = open_service()?;
-    let roots = vec![root.unwrap_or_else(pinvou3_lib::platform::paths::user_home_dir)];
-    let state = service.start_scan(roots);
-    // Same process-local disclosure as `scan cancel`: the scan thread dies
-    // with this process, so the printed progress is the whole story.
-    scan_out(
-        "scan started (process-local: progress is only live inside this invocation)",
-        state,
-        output,
-    )
+    let roots = vec![root];
+    service.start_scan(roots);
+    // The scan runs on a service thread; a one-shot process that returned
+    // immediately would kill it before it did any work (a root that walks
+    // to nothing must still reach the sweep to be safe), so the invocation
+    // waits for the scan to finish and reports the final state.
+    loop {
+        let state = service.status();
+        if !state.running {
+            return scan_out("scan completed (process-local)", state, output);
+        }
+        std::thread::sleep(std::time::Duration::from_millis(50));
+    }
 }
 
 fn scan_status(output: OutputMode) -> Result<CliOutcome, CliError> {
@@ -840,10 +868,7 @@ fn stats(output: OutputMode) -> Result<CliOutcome, CliError> {
     let stats = service
         .stats()
         .map_err(|error| feature_error("stats", error))?;
-    let human = format!(
-        "total_files: {}\ntotal_bytes: {}",
-        stats.total_files, stats.total_bytes
-    );
+    let human = format!("total_files: {}", stats.total_files);
     Ok(success(render(
         output,
         human,
@@ -933,8 +958,10 @@ fn search(
 
 /// Parses a UTC `YYYY-MM-DD` date into UNIX seconds for the search DTO's
 /// `mtimeAfter`/`mtimeBefore` (the GUI frontend sends epoch seconds directly;
-/// the CLI has no chrono dependency, so the civil-days conversion is
-/// inlined). Invalid shapes are usage errors, like bad ids.
+/// the civil-days conversion is inlined deliberately — chrono IS a
+/// dependency, but this arithmetic must keep matching the foundation's
+/// day-boundary computation exactly, the same rationale as the scheduled
+/// family's copy). Invalid shapes are usage errors, like bad ids.
 fn parse_date_epoch(value: &str, flag: &str) -> Result<i64, CliError> {
     let invalid = || {
         CliError::usage(format!(
@@ -1222,6 +1249,10 @@ fn collections_add_sources(
 
 /// GUI `kb_documents`: `limit` omitted maps to the GUI's 0 = default page of
 /// 500 (`L1Store::list_documents`).
+/// Page-size cap for `documents list`: matches the store's own search cap
+/// order of magnitude and keeps the i64 cast below safe.
+const DOCUMENTS_LIMIT_CAP: usize = 1000;
+
 fn documents(
     collection_id: i64,
     limit: Option<usize>,
@@ -1230,7 +1261,10 @@ fn documents(
     let service = open_service()?;
     let documents = service
         .l1()
-        .list_documents(collection_id, limit.unwrap_or(0))
+        // Clamp the page size: the caller's usize is cast to i64 downstream,
+        // so usize::MAX would wrap to SQLite's LIMIT -1 (unlimited) and
+        // materialize the whole documents table.
+        .list_documents(collection_id, limit.unwrap_or(0).min(DOCUMENTS_LIMIT_CAP))
         .map_err(|error| feature_error("documents", error))?;
     let human = if documents.is_empty() {
         format!("no documents in collection {collection_id}")

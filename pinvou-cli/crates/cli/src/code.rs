@@ -1823,7 +1823,9 @@ fn agents_list(output: OutputMode) -> Result<CliOutcome, CliError> {
                 } else {
                     "not-installed"
                 },
-                probe.version.as_deref().unwrap_or("-"),
+                crate::support::collapse_control_characters(
+                    probe.version.as_deref().unwrap_or("-"),
+                ),
                 if probe.authenticated {
                     "authenticated"
                 } else {
@@ -1855,7 +1857,7 @@ fn agents_status(agent: &str, output: OutputMode) -> Result<CliOutcome, CliError
         } else {
             "no"
         },
-        probe.version.as_deref().unwrap_or("-"),
+        crate::support::collapse_control_characters(probe.version.as_deref().unwrap_or("-")),
         probe.min_version,
         if probe.authenticated { "yes" } else { "no" },
         probe
@@ -2055,19 +2057,27 @@ fn login(
     std::thread::spawn(move || {
         let _ = err_tx.send(drain_stream(stderr));
     });
-    // The stdin write happens only after the drains are running: the code is
-    // up to the GUI's 4096-char max, which can exceed the OS pipe buffer, so
-    // a child that fills its own stdout before reading stdin would otherwise
-    // deadlock the write before the deadline loop below ever starts.
+    // The stdin write runs on its own thread so it can never park the
+    // deadline loop below: the code is up to the GUI's 4096-char max, which
+    // exceeds the 4 KiB Windows pipe buffer, so a child that never reads
+    // stdin would block the write indefinitely. The thread is deliberately
+    // not joined — if the write is still parked when the deadline (or the
+    // child's own exit) closes the pipe, the write fails with EPIPE and the
+    // thread exits on its own. Closing stdin here also makes non-code flows
+    // fail fast instead of waiting on a pipe that never fills.
     {
         use std::io::Write;
-        let mut stdin = child.stdin.take();
-        if let (Some(code), Some(stdin)) = (code.as_deref(), stdin.as_mut()) {
-            let _ = writeln!(stdin, "{}", code.trim());
-            let _ = stdin.flush();
-        }
-        // Close stdin for non-code flows so CLI login prompts on the terminal
-        // fail fast instead of blocking on a pipe that never fills.
+        let stdin = child.stdin.take();
+        let code = code.as_deref().map(str::to_owned);
+        std::thread::spawn(move || {
+            let Some(mut stdin) = stdin else {
+                return;
+            };
+            if let Some(code) = code {
+                let _ = writeln!(stdin, "{}", code.trim());
+                let _ = stdin.flush();
+            }
+        });
     }
     let deadline = Duration::from_secs(if agent == "kimi" { 1800 } else { 600 });
     let started = Instant::now();
@@ -2370,6 +2380,21 @@ fn providers_save(
     output: OutputMode,
 ) -> Result<CliOutcome, CliError> {
     require_provider_agent(agent)?;
+    // Mirror the lib store's statically reachable validation in English
+    // before any secret resolution (--api-key-stdin blocks on stdin): the
+    // store's own messages for these two rules are Chinese, the same
+    // translation-boundary rule as the marketplace importer.
+    if wire_api == Some("kimi") && agent != "kimi" {
+        return Err(CliError::failed(
+            "the kimi wire protocol only applies to the kimi agent",
+        ));
+    }
+    if provider_id.is_none() && agent == "claude" && model_slots.is_empty() {
+        return Err(CliError::failed(
+            "code providers add: claude requires --model-slot SLOT=MODEL for every Claude \
+             model slot (a missing slot falls back to official traffic)",
+        ));
+    }
     let manager = open_providers()?;
     // Update must refuse an unknown provider before any secret resolution:
     // `--api-key-stdin` blocks on stdin, and piping a key into a typo'd
@@ -2781,7 +2806,7 @@ fn code_sessions_list(output: OutputMode) -> Result<CliOutcome, CliError> {
                 item["agent_id"].as_str().unwrap_or("-"),
                 item["workspace_kind"].as_str().unwrap_or("-"),
                 metadata.updated_at.to_rfc3339(),
-                metadata.title,
+                crate::support::collapse_control_characters(&metadata.title),
                 item["workspace_path"].as_str().unwrap_or("-"),
             )
         })
@@ -3479,12 +3504,16 @@ fn git_output(root: &Path, arguments: &[&str]) -> Result<String, CliError> {
 
 /// Bounded capture for the tracked-diff lane: `Command::output()` would
 /// buffer a modified multi-gigabyte file whole just so the caller can
-/// truncate it right after. Both streams are read through `take(cap + 1)` —
-/// stderr too, because a hostile repo hook could write arbitrarily much
-/// while the stdout side drains — and the second reader runs on a thread so
-/// the two pipes cannot deadlock. The boolean reports that the cut actually
-/// happened, so the caller's truncation marker stays exact even when the
-/// lossy decode lands just under the caller's own length check.
+/// truncate it right after. Both streams keep the first `cap + 1` bytes and
+/// then keep draining to EOF — stderr too, because a hostile repo hook could
+/// write arbitrarily much while the stdout side drains — and the second
+/// reader runs on a thread so the two pipes cannot deadlock. Draining past
+/// the cap is load-bearing: a reader that stopped at the cap would leave git
+/// blocked on a full pipe forever whenever the payload exceeds the cap by
+/// more than one pipe buffer, parking the `join()`/`wait()` below (this lane
+/// has no deadline). The boolean reports that the cut actually happened, so
+/// the caller's truncation marker stays exact even when the lossy decode
+/// lands just under the caller's own length check.
 fn git_output_capped(
     root: &Path,
     arguments: &[&str],
@@ -3500,18 +3529,11 @@ fn git_output_capped(
                 arguments.join(" ")
             ))
         })?;
-    let mut stdout_pipe = child.stdout.take().expect("git stdout is piped");
-    let mut stderr_pipe = child.stderr.take().expect("git stderr is piped");
-    let stderr_thread = std::thread::spawn(move || {
-        let mut bytes = Vec::new();
-        let _ = (&mut stderr_pipe).take(cap + 1).read_to_end(&mut bytes);
-        bytes
-    });
-    let mut stdout_bytes = Vec::new();
-    let _ = (&mut stdout_pipe)
-        .take(cap + 1)
-        .read_to_end(&mut stdout_bytes);
-    let stderr_bytes = stderr_thread.join().unwrap_or_default();
+    let stdout_pipe = child.stdout.take().expect("git stdout is piped");
+    let stderr_pipe = child.stderr.take().expect("git stderr is piped");
+    let stderr_thread = std::thread::spawn(move || read_capped_to_eof(stderr_pipe, cap));
+    let (stdout_bytes, stdout_total) = read_capped_to_eof(stdout_pipe, cap);
+    let (stderr_bytes, _) = stderr_thread.join().unwrap_or_default();
     let status = child.wait().map_err(|error| {
         CliError::failed(format!(
             "code workspace: git {}: {error}",
@@ -3527,7 +3549,8 @@ fn git_output_capped(
             )
         )));
     }
-    let truncated = stdout_bytes.len() as u64 > cap;
+    let truncated = stdout_total > cap;
+    let mut stdout_bytes = stdout_bytes;
     if truncated {
         stdout_bytes.truncate(cap as usize);
     }
@@ -3535,6 +3558,30 @@ fn git_output_capped(
         String::from_utf8_lossy(&stdout_bytes).into_owned(),
         truncated,
     ))
+}
+
+/// Keeps the first `cap + 1` bytes of a stream and discards the rest while
+/// still reading to EOF, reporting the total bytes seen. The discard loop is
+/// what lets a writer that outproduces the cap finish instead of blocking on
+/// a full pipe.
+fn read_capped_to_eof(mut pipe: impl std::io::Read, cap: u64) -> (Vec<u8>, u64) {
+    let mut kept = Vec::new();
+    let mut total: u64 = 0;
+    let mut chunk = [0u8; 64 * 1024];
+    loop {
+        match pipe.read(&mut chunk) {
+            Ok(0) => break,
+            Ok(n) => {
+                total += n as u64;
+                if (kept.len() as u64) <= cap {
+                    let remaining = (cap + 1 - kept.len() as u64) as usize;
+                    kept.extend_from_slice(&chunk[..n.min(remaining)]);
+                }
+            }
+            Err(_) => break,
+        }
+    }
+    (kept, total)
 }
 
 fn git_root(root: &Path) -> Option<PathBuf> {

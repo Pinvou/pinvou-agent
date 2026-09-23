@@ -101,16 +101,14 @@ fn status(output: OutputMode) -> Result<CliOutcome, CliError> {
         "health_status": snapshot.health_status,
         "model": snapshot.model,
         "configured_model": snapshot.configured_model,
-        "upstream": snapshot.upstream,
         "target_kind": snapshot.target_kind,
     });
     let human = format!(
-        "Online: {online}\nHealth: {}\nStatus: {}\nModel: {}\nConfigured: {}\nEndpoint: {}\nTarget: {}\nContextWindow: {}\nChecked: {now_ms}",
+        "Online: {online}\nHealth: {}\nStatus: {}\nModel: {}\nConfigured: {}\nTarget: {}\nContextWindow: {}\nChecked: {now_ms}",
         snapshot.health_status,
         status_label(snapshot.status),
         snapshot.model.as_deref().unwrap_or("-"),
         snapshot.configured_model.as_deref().unwrap_or("-"),
-        snapshot.upstream,
         snapshot.target_kind,
         snapshot
             .max_model_len

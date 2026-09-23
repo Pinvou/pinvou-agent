@@ -1158,6 +1158,41 @@ fn set_enabled(
             spec.id
         ))
     })?;
+    // Verify the switch actually landed by reading back the raw on-disk
+    // mirror (`disabled_bundles.json` — the same file the execpolicy CLI
+    // hard-block and skill materialization read): a dropped write would
+    // otherwise flip a connector the user explicitly toggled while the
+    // command still reports success. The disable direction must record the
+    // package in at least one persisted scope list (uninitialized DenyAll
+    // scopes deny by policy and store no entry); the enable direction must
+    // remove it from every list.
+    let mirror_path = pinvou3_home().join("disabled_bundles.json");
+    let mirror: Value = std::fs::read_to_string(&mirror_path)
+        .ok()
+        .and_then(|text| serde_json::from_str(&text).ok())
+        .unwrap_or_else(|| json!({}));
+    let recorded_in = |key: &str| -> bool {
+        mirror[key]
+            .as_object()
+            .map(|scopes| {
+                scopes.values().any(|ids| {
+                    ids.as_array()
+                        .map(|ids| ids.iter().any(|id| id == spec.id))
+                        .unwrap_or(false)
+                })
+            })
+            .unwrap_or(false)
+    };
+    let recorded = recorded_in("scopes") || recorded_in("hidden_scopes");
+    if recorded == enabled {
+        return Err(CliError::failed(format!(
+            "connectors {}: the disabled-bundles mirror did not persist the switch \
+             ({} still lists the connector as {}); retry the command",
+            spec.id,
+            mirror_path.display(),
+            if enabled { "disabled" } else { "enabled" },
+        )));
+    }
     let connected = cli_connected(spec).unwrap_or(false);
     let skills_should_show = connected && !is_disabled(kind);
     let action = if enabled { "enabled" } else { "disabled" };
@@ -1730,16 +1765,35 @@ fn download_https(url: &str, destination: &Path) -> Result<(), CliError> {
 
 /// Extract one archive member by exact file name using the system `tar`
 /// (bsdtar also reads zip, matching the GUI's tar.gz/zip split).
+/// The tar lanes are bounded like every other vendor spawn: process group,
+/// deadline, tree-kill, and a capped listing. (The archive is sha256-pinned
+/// against the reviewed lock table before this runs, so these bounds are
+/// belt-and-braces — but an unbounded, deadline-free spawn is exactly the
+/// drift the vendor-spawn consolidation exists to prevent.)
+const TAR_TIMEOUT: Duration = Duration::from_secs(120);
+const TAR_LIST_CAP: u64 = 8 * 1024 * 1024;
+
 fn extract_member(archive: &Path, member: &str, target: &Path) -> Result<(), CliError> {
-    let list = Command::new("tar")
-        .arg("-tf")
+    let mut list = Command::new("tar");
+    list.arg("-tf")
         .arg(archive)
-        .output()
+        .stdin(Stdio::null())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::null());
+    crate::support::set_process_group(&mut list);
+    let mut child = list
+        .spawn()
         .map_err(|error| CliError::failed(format!("cannot list archive with tar: {error}")))?;
-    if !list.status.success() {
-        return Err(CliError::failed("cannot read connector archive"));
-    }
-    let listing = String::from_utf8_lossy(&list.stdout);
+    let listing = {
+        use std::io::Read as _;
+        let mut stdout = child.stdout.take().expect("tar stdout is piped");
+        let mut bytes = Vec::new();
+        // Read at most the cap; a longer listing means the cap is hit and the
+        // bounded wait below tree-kills the blocked writer.
+        let _ = (&mut stdout).take(TAR_LIST_CAP).read_to_end(&mut bytes);
+        String::from_utf8_lossy(&bytes).into_owned()
+    };
+    wait_or_kill(&mut child, "listing the connector archive")?;
     let entry = listing
         .lines()
         .find(|entry| {
@@ -1750,20 +1804,39 @@ fn extract_member(archive: &Path, member: &str, target: &Path) -> Result<(), Cli
         })
         .map(str::trim)
         .ok_or_else(|| CliError::failed(format!("connector archive does not contain {member}")))?;
-    let status = Command::new("tar")
+    let mut extract = Command::new("tar");
+    extract
         .arg("-xf")
         .arg(archive)
         .arg("-C")
         .arg(target)
         .arg(entry)
-        .status()
+        .stdin(Stdio::null())
+        .stdout(Stdio::null())
+        .stderr(Stdio::null());
+    crate::support::set_process_group(&mut extract);
+    let mut child = extract
+        .spawn()
         .map_err(|error| CliError::failed(format!("cannot extract archive with tar: {error}")))?;
-    if !status.success() {
-        return Err(CliError::failed(format!(
-            "cannot extract {member} from the connector archive"
-        )));
-    }
+    wait_or_kill(&mut child, "extracting the connector archive")?;
     Ok(())
+}
+
+/// Bounded wait for a spawned child: on expiry the process group is killed
+/// (the child is verifiably still alive, so no reaped-pid hazard) and the
+/// caller gets an error naming the phase.
+fn wait_or_kill(child: &mut std::process::Child, phase: &str) -> Result<(), CliError> {
+    match child.wait_timeout(TAR_TIMEOUT) {
+        Ok(Some(status)) if status.success() => Ok(()),
+        Ok(Some(_)) => Err(CliError::failed(format!("cannot run tar: {phase} failed"))),
+        Ok(None) => {
+            crate::support::kill_process_tree(child);
+            Err(CliError::failed(format!(
+                "cannot run tar: timed out {phase}"
+            )))
+        }
+        Err(error) => Err(CliError::failed(format!("cannot run tar: {error}"))),
+    }
 }
 
 // ─────────────────────────────── connect ───────────────────────────────
@@ -1869,6 +1942,14 @@ fn connect(kind: ConnectorKind, timeout: u64, output: OutputMode) -> Result<CliO
             std::fs::create_dir_all(&qr_dir).map_err(|error| {
                 CliError::failed(format!("cannot create the scan QR temp dir: {error}"))
             })?;
+            // The QR encodes a one-scan login grant (credential-equivalent),
+            // so the directory is tightened to owner-only before the vendor
+            // CLI writes the image into it.
+            #[cfg(unix)]
+            {
+                use std::os::unix::fs::PermissionsExt as _;
+                let _ = std::fs::set_permissions(&qr_dir, std::fs::Permissions::from_mode(0o700));
+            }
             // The vendor CLI writes the relative `qr.png` next to its cwd; the
             // GUI redirects it into a temp dir the same way (`wecom.rs` sets
             // `current_dir`), so the user's working directory stays clean.

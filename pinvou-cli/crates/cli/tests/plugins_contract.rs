@@ -1429,3 +1429,30 @@ fn plugins_reject_a_flag_looking_id() {
         .expect_err("a flag-looking id must be a usage error");
     assert_eq!(error.exit_code(), ExitCode::Usage);
 }
+
+/// Execution-level readiness against a seeded store record: a degraded CLI
+/// record (logged-out / assets mismatch) must answer the desktop's
+/// `not_connected` reason instead of Ready — the registry-only zero state
+/// cannot exercise this arm because no record is installed.
+#[test]
+fn readiness_reports_a_degraded_cli_record_as_not_connected() {
+    let _env_guard = ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+    let home = SandboxHome::new("readiness-degraded");
+    let marketplace = home.path().join("marketplace");
+    std::fs::create_dir_all(&marketplace).unwrap();
+    std::fs::write(
+        marketplace.join("bundles.json"),
+        r#"{"schema_version":1,"records":[{"id":"feishu","source":"builtin","installed":true,"installed_at":"2026-09-23T00:00:00Z","degraded":"logged out"}]}"#,
+    )
+    .unwrap();
+
+    let value = run_json(&["pinvoy", "plugins", "readiness"]);
+    let rows = value["bundles"].as_array().expect("bundles array");
+    let feishu = rows
+        .iter()
+        .find(|row| row["bundle_id"] == "feishu")
+        .expect("feishu row");
+    assert_eq!(feishu["installed"], serde_json::json!(true));
+    assert_eq!(feishu["ready"], serde_json::json!(false));
+    assert_eq!(feishu["reason"], serde_json::json!("not_connected"));
+}
