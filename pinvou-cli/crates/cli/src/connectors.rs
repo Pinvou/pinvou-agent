@@ -1158,6 +1158,41 @@ fn set_enabled(
             spec.id
         ))
     })?;
+    // Verify the switch actually landed by reading back the raw on-disk
+    // mirror (`disabled_bundles.json` — the same file the execpolicy CLI
+    // hard-block and skill materialization read): a dropped write would
+    // otherwise flip a connector the user explicitly toggled while the
+    // command still reports success. The disable direction must record the
+    // package in at least one persisted scope list (uninitialized DenyAll
+    // scopes deny by policy and store no entry); the enable direction must
+    // remove it from every list.
+    let mirror_path = pinvou3_home().join("disabled_bundles.json");
+    let mirror: Value = std::fs::read_to_string(&mirror_path)
+        .ok()
+        .and_then(|text| serde_json::from_str(&text).ok())
+        .unwrap_or_else(|| json!({}));
+    let recorded_in = |key: &str| -> bool {
+        mirror[key]
+            .as_object()
+            .map(|scopes| {
+                scopes.values().any(|ids| {
+                    ids.as_array()
+                        .map(|ids| ids.iter().any(|id| id == spec.id))
+                        .unwrap_or(false)
+                })
+            })
+            .unwrap_or(false)
+    };
+    let recorded = recorded_in("scopes") || recorded_in("hidden_scopes");
+    if recorded == enabled {
+        return Err(CliError::failed(format!(
+            "connectors {}: the disabled-bundles mirror did not persist the switch \
+             ({} still lists the connector as {}); retry the command",
+            spec.id,
+            mirror_path.display(),
+            if enabled { "disabled" } else { "enabled" },
+        )));
+    }
     let connected = cli_connected(spec).unwrap_or(false);
     let skills_should_show = connected && !is_disabled(kind);
     let action = if enabled { "enabled" } else { "disabled" };
