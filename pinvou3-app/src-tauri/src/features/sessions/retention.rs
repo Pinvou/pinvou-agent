@@ -76,7 +76,8 @@ impl SessionStore {
         let payload = serde_json::to_vec_pretty(session).context("serialize saved session")?;
         deepseek_tui::utils::write_atomic(&path, &payload)
             .with_context(|| format!("write session {}", path.display()))?;
-        // 会话 JSON 落盘后列表快照即过期(标题/更新时间/新会话都可能变)
+        // Once the session JSON hits disk the list snapshot is stale (title /
+        // updated_at / new session may all have changed)
         self.invalidate_list_cache();
         Ok(path)
     }
@@ -114,8 +115,10 @@ impl SessionStore {
             }
         }
         if !deleted_ids.is_empty() {
-            // 保留策略删掉的会话使列表快照过期;部分失败(JSON 已删、Err 提前
-            // 冒泡)同样过期——不能只认 Ok 分支,否则幽灵条目驻留到下一次任意写。
+            // Sessions deleted by the retention policy stale the list snapshot;
+            // partial failures (JSON already removed, Err bubbling early)
+            // stale it just the same — we must not honor only the Ok branch,
+            // otherwise a ghost entry lingers until the next arbitrary write.
             self.invalidate_list_cache();
         }
         self.purge_session_side_maps(&deleted_ids);
@@ -219,8 +222,10 @@ impl SessionStore {
             removed_multi_agent
         };
         if removed_multi_agent {
-            // 保留策略清掉的会话必须同步移出 _multi_agent.json：残留的幽灵
-            // id 会在重启后复活开关状态，专家池变更联动还会给它重建工作区。
+            // Sessions purged by the retention policy must also be removed from
+            // _multi_agent.json: a leftover ghost id would resurrect the flag
+            // state after a restart, and an expert-pool change would even
+            // rebuild a workspace for it.
             if let Err(error) = self.save_multi_agent_flags() {
                 eprintln!(
                     "[sessions] update _multi_agent.json after retention purge failed: {error:#}"
@@ -297,7 +302,8 @@ impl SessionStore {
         for id in ids {
             self.notify_session_purged(id);
         }
-        // 回退备份 sidecar 同样随会话清理（best-effort，见其实现注释）。
+        // Rewind-backup sidecars are cleaned up with the session as well
+        // (best-effort; see the implementation comment there).
         Self::purge_rewound_turns_backups(ids);
     }
 
@@ -550,8 +556,10 @@ impl SessionStore {
         }
 
         let _mutation = self.scheduled_mutation.lock();
-        // 每次运行创建独立对话；同一 automation 的所有对话共享任务工作间。
-        // workspace 只由稳定 task_id(automation_id)派生，不接受调用方路径。
+        // Each run creates its own conversation; all conversations of the same
+        // automation share the task workspace.
+        // workspace is derived only from the stable task_id (automation_id);
+        // a caller-supplied path is never accepted.
         profile.workspace = self.scheduled_workspace_for_task(&profile.task_id)?;
         std::fs::create_dir_all(&profile.workspace).with_context(|| {
             format!(
@@ -579,9 +587,11 @@ impl SessionStore {
             .insert(id.clone(), profile.clone());
         if let Err(err) = self.save_scheduled_profiles() {
             self.scheduled_profiles.write().remove(&id);
-            // 回滚删除本身也是一次落盘变更:失效列表缓存,防止并发读者恰在
-            // save 失效与回滚删除之间重扫到 sched-*.json 并以当时的代数回填,
-            // 让已被回滚的幽灵会话滞留在缓存里。
+            // The rollback delete is itself an on-disk change: invalidate the
+            // list cache so a concurrent reader cannot rescan sched-*.json
+            // right between the save invalidation and the rollback delete and
+            // backfill with the generation of that moment, stranding the
+            // rolled-back ghost session in the cache.
             self.invalidate_list_cache();
             let (_, rollback_result) = self.delete_session_record(&id);
             if let Err(rollback_error) = rollback_result {
