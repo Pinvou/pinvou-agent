@@ -2875,8 +2875,9 @@ impl EnginePool {
         for (sid, engine) in targets {
             // 全局热刷同样按会话整形（代码会话保留 present_artifact 隐藏），
             // 且发送前释放 entries 锁，避免跨 await 持有全局引擎表锁。
-            // The shaping reads the cross-process bundle lock for non-plain
-            // sessions, so it runs off the async worker like the policy
+            // The shaping reads consent state from disk for non-plain
+            // sessions (lock-free since the read path left the bundle
+            // flock), so it runs off the async worker like the policy
             // compute above it; on a join failure keep that session's current
             // disallowed set (fail-closed) instead of broadcasting an empty
             // "allow everything" list.
@@ -2926,9 +2927,10 @@ impl EnginePool {
             .map(|(sid, entry)| (sid.clone(), entry.engine.clone()))
             .collect::<Vec<_>>();
         for (sid, engine) in targets {
-            // scope_deny_ruleset reads the cross-process bundle lock (twice
-            // per session); keep the potentially blocking read off the async
-            // worker like the other lock-taking paths.
+            // scope_deny_ruleset reads consent state from disk (twice per
+            // session; the read path no longer waits on the bundle flock);
+            // keep the potentially blocking read off the async worker like
+            // the other disk-reading paths.
             let ruleset = {
                 let bridge = self.bridge.clone();
                 let sid_for_task = sid.clone();
@@ -3156,9 +3158,11 @@ fn default_model_for_new_session_from(
     }
 }
 
-// Test-only snapshot resolution: production eval paths obtain the
-// (SavedModel, identity) pair through the pinned selections instead.
-#[cfg(test)]
+// Snapshot resolution. Under `test` this backs the session-continuation
+// tests; under `benchmark-hooks` it backs the production eval pin path in
+// `pin_eval_model_selection` — that gate must match the caller's, or a plain
+// `--features benchmark-hooks` build (no test cfg) fails to compile.
+#[cfg(any(feature = "benchmark-hooks", test))]
 fn resolve_eval_model_selection_from(
     bridge: &Pinvou3Bridge,
     models: &[SavedModel],

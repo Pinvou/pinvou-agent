@@ -34,7 +34,6 @@
 //! `clean -fd` 删除快照后新建的文件；恢复前先自动打一个「回滚点」快照，回滚可反悔。
 
 use std::fs;
-use std::io::Write;
 use std::path::{Path, PathBuf};
 use std::time::{SystemTime, UNIX_EPOCH};
 
@@ -773,15 +772,10 @@ fn save_index(ledger_root: &Path, index: &CheckpointIndex) -> Result<()> {
             .with_context(|| format!("创建 checkpoint 目录失败: {}", parent.display()))?;
     }
     let payload = serde_json::to_vec_pretty(index).context("序列化 checkpoint 索引失败")?;
-    let temporary = path.with_extension("json.tmp");
-    {
-        let mut file = fs::File::create(&temporary)
-            .with_context(|| format!("创建 checkpoint 索引失败: {}", temporary.display()))?;
-        file.write_all(&payload)
-            .with_context(|| format!("写入 checkpoint 索引失败: {}", temporary.display()))?;
-        file.sync_all().ok();
-    }
-    fs::rename(&temporary, &path)
+    // 索引与转录同目录且 label 字段携带用户消息前缀,必须与转录同权(0600):
+    // 走私有原子写,umask 默认 0644 会把每轮输入的前缀暴露给同机其他用户。
+    // 原子替换保住既有语义:任意时刻落盘的都是完整索引(损坏走 quarantine)。
+    crate::platform::filesystem::atomic_write_private(&path, &payload)
         .with_context(|| format!("保存 checkpoint 索引失败: {}", path.display()))?;
     Ok(())
 }
@@ -1448,6 +1442,55 @@ mod tests {
         assert!(
             corrupt.is_empty(),
             "the index must not be quarantined: {corrupt:?}"
+        );
+    }
+
+    /// Round-12 review: the label chain has no end-to-end pin — nothing
+    /// asserted that a caller-supplied label actually reaches the ledger
+    /// through normalize. The expected value is computed inline (trim +
+    /// first 80 chars) instead of via `normalize_checkpoint_label`, so a
+    /// silently dropped or un-normalized label both go red.
+    #[test]
+    fn checkpoint_label_lands_in_the_ledger_normalized() {
+        if !git_available() {
+            return;
+        }
+        let ledger = TestDir::new("label-e2e-ledger");
+        let exec = TestDir::new("label-e2e-exec");
+        exec.write("a.txt", "v1\n");
+        let raw = format!("  {} tail", "深".repeat(100));
+        create_checkpoint(
+            ledger.path(),
+            exec.path(),
+            Some(1),
+            CheckpointKind::Turn,
+            &raw,
+        )
+        .expect("checkpoint");
+        let listed = list_checkpoints(ledger.path()).expect("list");
+        assert_eq!(listed.len(), 1);
+        let expected: String = raw.trim().chars().take(80).collect();
+        assert_eq!(
+            listed[0].label, expected,
+            "label must be trimmed and capped at 80 chars"
+        );
+        assert_eq!(listed[0].label.chars().count(), 80);
+        assert!(
+            listed[0].label.ends_with('深'),
+            "CJK must not be split mid-character"
+        );
+    }
+
+    #[test]
+    fn normalize_checkpoint_label_trims_and_caps_by_chars() {
+        assert_eq!(normalize_checkpoint_label("  x  "), "x");
+        assert_eq!(normalize_checkpoint_label(""), "");
+        let cjk: String = "深".repeat(120);
+        let normalized = normalize_checkpoint_label(&cjk);
+        assert_eq!(normalized.chars().count(), 80);
+        assert!(
+            normalized.ends_with('深'),
+            "truncation must not split a character"
         );
     }
 

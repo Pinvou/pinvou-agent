@@ -453,11 +453,16 @@ fn merge_ids_into_scope(file: &mut DisabledBundlesFile, key: &str, ids: Vec<Stri
     }
 }
 
-/// Writes the whole file (atomic replace, same pattern as the legacy file).
-/// Failures must propagate: a write entry point returning `Ok` means the
-/// change landed on disk — swallowing a disk failure would let the GUI treat
-/// `Ok` as success and hot-refresh from stale state (fail-open), while this
-/// file's write semantics are fail-closed.
+/// Writes the full file (atomic replace, same pattern as the legacy writer).
+/// Failures must propagate — a write entry point returning `Ok` means the
+/// change landed on disk: toggles/visibility are user governance state, and
+/// a silently lost write would let callers continue on a half-applied state
+/// (the frontend reports success). Internal best-effort callers degrade to
+/// logging themselves: read-path migration, uninstall cleanup (residue
+/// direction fail-closed), and DenyAll install sync. Note that the DenyAll
+/// sync degradation is consent-gate fail-open (a write failure = a newly
+/// installed package becomes available by default in an initialized DenyAll
+/// scope) — a known transitional concession, not a harmless degradation.
 fn save_disabled_bundles_file(file: &DisabledBundlesFile) -> Result<(), String> {
     let json = serde_json::to_string(file)
         .map_err(|error| format!("[scope] serialize disabled_bundles.json failed: {error}"))?;
@@ -492,11 +497,19 @@ pub fn load_disabled_bundles_for(scope: ConnectorScope) -> Vec<String> {
 /// the bundle store and probes the skill packages root per skill (the #584
 /// strict/overdeny enumeration), i.e. it is a filesystem scan: it must be
 /// captured BEFORE entering the consent-file critical section so the flock
-/// covers only a file-sized read/write, never the scan.
+/// covers only a file-sized read/write, never the scan. Owner packages are
+/// resolved as part of the sample for the same reason — the resolution
+/// walks the bundle store per skill (`skill_owner_package`), so doing it at
+/// expansion time would put a scan back inside the lock.
 struct DenyAllExpansionSample {
     installed_ids: Vec<String>,
-    skill_ids: Vec<String>,
-    uploaded_skill_ids: Vec<String>,
+    /// Owner packages of the sampled installed skills, resolved off-lock so
+    /// the expansion is a pure set union.
+    skill_owner_packages: Vec<String>,
+    /// Degradation blanket (#531): owner packages of every preset skill and
+    /// every known upload record, likewise resolved off-lock. Empty unless
+    /// `skill_scan_degraded` is set.
+    blanket_owner_packages: Vec<String>,
     skill_scan_degraded: bool,
 }
 
@@ -506,19 +519,38 @@ struct DenyAllExpansionSample {
 fn sample_denyall_expansion() -> DenyAllExpansionSample {
     let skill_market = SkillMarketplaceManager::new();
     let (skill_ids, skill_scan_degraded) = skill_market.installed_skill_ids_strict();
+    let mut skill_owner_packages = Vec::new();
+    for skill_id in &skill_ids {
+        let pkg = skill_owner_package(skill_id);
+        if !skill_owner_packages.contains(&pkg) {
+            skill_owner_packages.push(pkg);
+        }
+    }
+    let mut blanket_owner_packages = Vec::new();
+    if skill_scan_degraded {
+        let mut blanket: Vec<String> = SkillMarketplaceManager::preset_skill_ids().collect();
+        blanket.extend(skill_market.uploaded_skill_ids().iter().cloned());
+        for skill_id in blanket {
+            let pkg = skill_owner_package(&skill_id);
+            if !blanket_owner_packages.contains(&pkg) {
+                blanket_owner_packages.push(pkg);
+            }
+        }
+    }
     DenyAllExpansionSample {
         installed_ids: MarketplaceManager::new().installed_ids(),
-        skill_ids,
-        uploaded_skill_ids: skill_market.uploaded_skill_ids(),
+        skill_owner_packages,
+        blanket_owner_packages,
         skill_scan_degraded,
     }
 }
 
-/// 已采样环境 → DenyAll 默认禁用集：已装包 ∪ 内置 CLI 包 ∪ 已装技能属主包；
+/// 已采样环境 → DenyAll 默认禁用集：已装包 ∪ 内置 CLI 包 ∪ 已采样技能属主包；
 /// 严格枚举降级时按 #531/#584 口径并集全部预置/上传属主（向过度拒绝偏置）。
-/// 纯函数：只消费采样，绝不再触盘。
-/// Pure expansion over an existing sample: it must never touch the
-/// filesystem again, which is what keeps the critical section scan-free.
+/// 纯函数：只消费采样（属主包已在采样期锁外解析），绝不再触盘。
+/// Pure expansion over an existing sample: every owner package was already
+/// resolved off-lock at sampling time, so this must never touch the
+/// filesystem again — which is what keeps the critical section scan-free.
 fn expand_denyall_sample(sample: &DenyAllExpansionSample) -> Vec<String> {
     // 现算分支：已按当前认领推导包 id，无需再归一。
     let mut ids: Vec<String> = sample.installed_ids.clone();
@@ -531,8 +563,8 @@ fn expand_denyall_sample(sample: &DenyAllExpansionSample) -> Vec<String> {
         // known upload record — an uninitialized DenyAll scope would
         // rather have the user enable a package explicitly than hand
         // the consent gate a default silently narrowed by an
-        // enumeration failure. Owner mapping is the same
-        // `skill_owner_package` path as the normal loop below.
+        // enumeration failure. The owners were resolved off-lock at
+        // sampling time.
         // Accepted residual: with an unreadable bundle store the upload
         // population itself is unknowable (the lenient upload read
         // yields nothing to union); with an unreadable packages root,
@@ -540,19 +572,15 @@ fn expand_denyall_sample(sample: &DenyAllExpansionSample) -> Vec<String> {
         eprintln!(
             "[scope] DenyAll default deny list degraded (skill enumeration failed); biasing to over-deny"
         );
-        let mut blanket: Vec<String> = SkillMarketplaceManager::preset_skill_ids().collect();
-        blanket.extend(sample.uploaded_skill_ids.iter().cloned());
-        for skill_id in blanket {
-            let pkg = skill_owner_package(&skill_id);
-            if !ids.iter().any(|id| id == &pkg) {
-                ids.push(pkg);
+        for pkg in &sample.blanket_owner_packages {
+            if !ids.iter().any(|id| id == pkg) {
+                ids.push(pkg.clone());
             }
         }
     }
-    for skill_id in &sample.skill_ids {
-        let pkg = skill_owner_package(skill_id);
-        if !ids.iter().any(|id| id == &pkg) {
-            ids.push(pkg);
+    for pkg in &sample.skill_owner_packages {
+        if !ids.iter().any(|id| id == pkg) {
+            ids.push(pkg.clone());
         }
     }
     ids
@@ -628,8 +656,23 @@ pub fn update_disabled_bundles_for(
     // point for a filesystem scan. The sample freezes the environment the
     // write-back persists; the discriminating regression is
     // `update_rmw_samples_denyall_expansion_outside_the_critical_section`.
-    let sample = sample_denyall_expansion();
+    let mut sample = sample_denyall_expansion();
     with_disabled_bundles_writer(|| {
+        // Union in a fresh installed-package read while holding the lock:
+        // installed.json is a file-sized read, so it keeps the scan-free
+        // contract while closing the sample-to-freeze window for a package
+        // another process installed after sampling (its install-time
+        // DenyAll sync is a no-op on an uninitialized scope, so this freeze
+        // is the last chance to include it). Union-only: a transiently
+        // unreadable store can only leave the sampled set unchanged, never
+        // narrow it. Residual, documented: a skill installed in the same
+        // window is still missed — rescanning the packages root inside the
+        // lock is exactly what the hoist above exists to avoid.
+        for id in MarketplaceManager::new().installed_ids() {
+            if !sample.installed_ids.iter().any(|known| known == &id) {
+                sample.installed_ids.push(id);
+            }
+        }
         let file = load_disabled_bundles_file_locked()?;
         let mut ids = resolve_scope_disabled_ids_with_sample(&file, scope, &sample);
         update(&mut ids);
@@ -774,10 +817,11 @@ pub fn project_skills_enabled() -> bool {
     load_disabled_bundles_file().project_skills_enabled
 }
 
-/// 写项目级 skills 开关。落盘后由调用方重写在线会话组合目录。
-///
-/// Fails closed like the other writers: an unavailable cross-process lock
-/// refuses the write with `Err`.
+/// Writes the project-level skills toggle. After persisting, the caller
+/// rewrites the online session composed catalogs. Write failures propagate
+/// unchanged (user governance state must not be silently lost — same
+/// principle as the toggle/visibility writes), and the cross-process writer
+/// wrapper fails closed: an unavailable lock refuses the write with `Err`.
 pub fn set_project_skills_enabled(enabled: bool) -> Result<(), String> {
     with_disabled_bundles_writer(|| {
         let mut file = load_disabled_bundles_file_locked()?;

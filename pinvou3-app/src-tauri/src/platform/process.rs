@@ -59,7 +59,7 @@ pub(crate) fn strip_all_git_env(command: &mut Command) {
 /// Once `GIT_CONFIG_COUNT` is removed, the `GIT_CONFIG_KEY_n`/
 /// `GIT_CONFIG_VALUE_n` numbered pairs become ineffective, so the numbered
 /// keys need no enumeration.
-const GIT_OVERRIDE_KEYS: [&str; 20] = [
+const GIT_OVERRIDE_KEYS: [&str; 22] = [
     "GIT_DIR",
     "GIT_WORK_TREE",
     "GIT_INDEX_FILE",
@@ -72,6 +72,13 @@ const GIT_OVERRIDE_KEYS: [&str; 20] = [
     "GIT_NAMESPACE",
     "GIT_CEILING_DIRECTORIES",
     "GIT_DISCOVERY_ACROSS_FILESYSTEM",
+    // GIT_TEMPLATE_DIR would seed a fresh `git init` of the shadow repo with
+    // hook-carrying templates (pre-auto-gc runs under `gc --auto`); without
+    // GIT_LITERAL_PATHSPECS=1 stripped, the `:(icase)` magic prefix in the
+    // secret pathspecs could be matched literally and silently no-op the
+    // purge.
+    "GIT_TEMPLATE_DIR",
+    "GIT_LITERAL_PATHSPECS",
     "GIT_CONFIG",
     "GIT_CONFIG_GLOBAL",
     "GIT_CONFIG_SYSTEM",
