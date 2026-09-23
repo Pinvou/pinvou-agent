@@ -11,7 +11,6 @@ use std::io::Read;
 use std::path::{Path, PathBuf};
 
 use serde::{Deserialize, Serialize};
-use serde_json::Value;
 
 use super::{
     ActiveEndpoint, PendingRevocation, PendingRevocationLedger, RpcLedger, WebAccessConfig,
@@ -438,15 +437,6 @@ pub(super) fn eligible_pending_revocations(
         })
         .cloned()
         .collect()
-}
-
-/// Terminal-message predicate for the pending-revocation replay. The live
-/// relay loop and this replay previously kept two hand-parallel classifiers;
-/// both now consume the single shared helper
-/// `relay_client::terminal_relay_message` (revoked / replaced /
-/// endpoint-not-found), so the replay cannot drift from the live semantics.
-pub(super) fn pending_revocation_ack(value: &Value, endpoint_id: &str) -> bool {
-    crate::features::remote_control::relay_client::terminal_relay_message(value, endpoint_id)
 }
 
 pub(super) fn load_or_initialize_rpc_ledger(endpoint_id: &str) -> Result<RpcLedger, String> {
