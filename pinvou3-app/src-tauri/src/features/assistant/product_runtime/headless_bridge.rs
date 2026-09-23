@@ -664,9 +664,9 @@ impl ProductHeadlessBackend {
 /// the two headless pipelines cannot drift apart.
 pub(crate) const MAX_STAGED_ATTACHMENTS: usize = 16;
 /// Per-attachment size cap in bytes (20 MiB).
-/// Same cap the staging copier (`copy_file_with_limit`) enforces: tied to
-/// `file_ingest::MAX_FILE_BYTES` at compile time so the request validator
-/// and the copier cannot drift apart.
+/// Same cap the staging copier (`copy_bounded` at the shared call sites)
+/// enforces: tied to `file_ingest::MAX_FILE_BYTES` at compile time so the
+/// request validator and the copier cannot drift apart.
 pub(crate) const MAX_STAGED_ATTACHMENT_BYTES: u64 =
     crate::features::files::file_ingest::MAX_FILE_BYTES;
 /// Aggregate size cap across one attachment batch (100 MiB).

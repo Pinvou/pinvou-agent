@@ -45,6 +45,42 @@ use std::path::PathBuf;
 static SCHEDULED_RUNTIME_DELETE_FAULTS: LazyLock<parking_lot::Mutex<HashMap<String, ErrorKind>>> =
     LazyLock::new(|| parking_lot::Mutex::new(HashMap::new()));
 
+/// Eviction record the store hands the headless retention observer: the
+/// newest window of evicted session ids plus the total eviction count. The
+/// ids are windowed because a long-lived process that never arms an observer
+/// must not grow the record without bound; the total is what the runner's
+/// warning reports, so trimming the window never under-reports real data
+/// loss.
+#[cfg(feature = "benchmark-hooks")]
+#[derive(Default)]
+pub(crate) struct RetentionEvictionRecord {
+    pub(crate) ids: Vec<String>,
+    pub(crate) total: usize,
+}
+
+#[cfg(feature = "benchmark-hooks")]
+impl RetentionEvictionRecord {
+    /// Record one sweep's deletions.
+    fn record(&mut self, evicted: &[String]) {
+        self.total += evicted.len();
+        self.extend_ids(evicted.iter().cloned());
+    }
+
+    /// Merge a buffered record into an installed one (flush-on-arm). The
+    /// totals add — merging must not lose evictions the buffer trimmed away.
+    fn merge(&mut self, other: RetentionEvictionRecord) {
+        self.total += other.total;
+        self.extend_ids(other.ids.into_iter());
+    }
+
+    fn extend_ids(&mut self, add: impl Iterator<Item = String>) {
+        const RETENTION_EVICTION_IDS_WINDOW: usize = 256;
+        self.ids.extend(add);
+        let overflow = self.ids.len().saturating_sub(RETENTION_EVICTION_IDS_WINDOW);
+        self.ids.drain(0..overflow);
+    }
+}
+
 /// Shared fabrication for tool-output artifact records appended by the
 /// transcript writers in [`super::store`] and this module: same
 /// `p3art_<session>_<index>` / `p3_<index>` id scheme, same `"write_file"`
@@ -92,8 +128,8 @@ impl SessionStore {
     #[cfg(feature = "benchmark-hooks")]
     pub(crate) fn set_retention_eviction_observer(
         &self,
-        observer: Option<Arc<Mutex<Vec<String>>>>,
-    ) -> Option<Arc<Mutex<Vec<String>>>> {
+        observer: Option<Arc<Mutex<RetentionEvictionRecord>>>,
+    ) -> Option<Arc<Mutex<RetentionEvictionRecord>>> {
         let previous = std::mem::replace(&mut *self.retention_eviction_observer.lock(), observer);
         // Flush evictions recorded before the observer existed: the headless
         // host boots its store (and runs the boot-time retention sweep)
@@ -102,16 +138,17 @@ impl SessionStore {
         // warning would under-report real data loss. A disarm request
         // (None) installs nothing and keeps the buffer for the next arm.
         if let Some(installed) = self.retention_eviction_observer.lock().clone() {
-            installed
-                .lock()
-                .extend(self.pending_retention_evictions.lock().drain(..));
+            let pending = std::mem::take(&mut *self.pending_retention_evictions.lock());
+            installed.lock().merge(pending);
         }
         previous
     }
 
     /// Disarm and hand back the installed observer, if any.
     #[cfg(feature = "benchmark-hooks")]
-    pub(crate) fn take_retention_eviction_observer(&self) -> Option<Arc<Mutex<Vec<String>>>> {
+    pub(crate) fn take_retention_eviction_observer(
+        &self,
+    ) -> Option<Arc<Mutex<RetentionEvictionRecord>>> {
         self.retention_eviction_observer.lock().take()
     }
 
@@ -127,20 +164,14 @@ impl SessionStore {
             return;
         }
         if let Some(observer) = self.retention_eviction_observer.lock().clone() {
-            observer.lock().extend(evicted.iter().cloned());
+            observer.lock().record(evicted);
         } else {
             // No observer yet (the GUI never installs one; the headless run
             // arms it only after the store booted): buffer so the boot-time
-            // sweep's deletions surface once the runner arms. Capped because
-            // a long-lived process that never arms must not grow it without
-            // bound — only the newest window matters for a warning.
-            const PENDING_RETENTION_EVICTIONS_CAP: usize = 256;
-            let mut pending = self.pending_retention_evictions.lock();
-            pending.extend(evicted.iter().cloned());
-            let overflow = pending
-                .len()
-                .saturating_sub(PENDING_RETENTION_EVICTIONS_CAP);
-            pending.drain(0..overflow);
+            // sweep's deletions surface once the runner arms. The record
+            // windows its ids but keeps the total, so even a buffer that
+            // outlives the process still reports the true count on flush.
+            self.pending_retention_evictions.lock().record(evicted);
         }
     }
 

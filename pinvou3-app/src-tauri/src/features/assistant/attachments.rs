@@ -119,33 +119,6 @@ fn staged_target_is_safe(
             .is_ok_and(|resolved| resolved.starts_with(canonical_workspace))
 }
 
-/// Copy a staged source with the byte cap enforced on the copy path itself,
-/// not only on a prior `metadata.len()` check. The caller may have validated
-/// the size, but the source file can be swapped between that check and this
-/// copy (TOCTOU), so the read goes through `Read::take(limit + 1)`: a
-/// replaced source that exceeds the cap fails the copy, and
-/// `stage_file_in_workspace_with_copier` removes the half-written destination
-/// on the error, instead of the oversized content landing in the workspace.
-/// The limit mirrors `features::files::file_ingest::MAX_FILE_BYTES`, the same
-/// 20 MiB per-file cap enforced by ingest and by `validate_attachments`.
-fn copy_file_with_limit(
-    source: &mut std::fs::File,
-    destination: &mut std::fs::File,
-) -> std::io::Result<u64> {
-    use std::io::Read as _;
-
-    let limit = crate::features::files::file_ingest::MAX_FILE_BYTES;
-    let mut limited = source.take(limit + 1);
-    let copied = std::io::copy(&mut limited, destination)?;
-    if copied > limit {
-        return Err(std::io::Error::new(
-            std::io::ErrorKind::InvalidData,
-            format!("attachment source exceeds the {limit}-byte staging limit"),
-        ));
-    }
-    Ok(copied)
-}
-
 pub(crate) fn stage_file_in_workspace_with_copier<F>(
     src: &str,
     basename: &str,
@@ -169,9 +142,14 @@ where
     if !staged_target_is_safe(&destination, &path, &canonical_workspace) {
         return None;
     }
-    if copier(&mut source, &mut destination).is_err() {
+    if let Err(error) = copier(&mut source, &mut destination) {
         drop(destination);
         let _ = std::fs::remove_file(&path);
+        // The Option contract degrades every consumer to a generic failure
+        // (the GUI silently drops the attachment, headless reports a staging
+        // error); log the cause so a refused cap or an IO fault — both
+        // indistinguishable from "no file" downstream — stays diagnosable.
+        eprintln!("[pinvou3-app] staging {basename} failed: {error}");
         return None;
     }
     if !staged_target_is_safe(&destination, &path, &canonical_workspace) {
@@ -183,6 +161,16 @@ where
 /// Stages an attachment into a workspace subdirectory under a controlled file
 /// name; shared by the GUI attachment commands and the headless eval
 /// attachment staging path.
+///
+/// The byte cap is enforced on the copy path itself, not only on a prior
+/// `metadata.len()` check: the caller may have validated the size, but the
+/// source can be swapped between that check and this copy (TOCTOU). The
+/// copier bounds the read with `Read::take(limit + 1)` via `copy_bounded` —
+/// a replaced source over the cap fails the copy, and the half-written
+/// destination is removed, instead of oversized content landing in the
+/// workspace. The limit mirrors `features::files::file_ingest::MAX_FILE_BYTES`,
+/// the same 20 MiB per-file cap enforced by ingest and by
+/// `validate_attachments`.
 pub fn stage_file_in_workspace(
     src: &str,
     basename: &str,
@@ -194,7 +182,13 @@ pub fn stage_file_in_workspace(
         basename,
         workspace,
         attachment_dir,
-        copy_file_with_limit,
+        |source, destination| {
+            copy_bounded(
+                source,
+                destination,
+                crate::features::files::file_ingest::MAX_FILE_BYTES,
+            )
+        },
     )
 }
 
@@ -735,7 +729,7 @@ mod read_only_prompt_tests {
 
 #[cfg(test)]
 mod staged_copy_limit_tests {
-    use super::{copy_file_with_limit, stage_file_in_workspace};
+    use super::{copy_bounded, stage_file_in_workspace};
     use crate::features::files::file_ingest::MAX_FILE_BYTES;
 
     /// Write a sparse file of exactly `len` bytes without touching every byte.
@@ -807,9 +801,12 @@ mod staged_copy_limit_tests {
         let mut source = std::fs::File::open(&source_path).unwrap();
         let mut destination = std::fs::File::create(&destination_path).unwrap();
 
-        let error = copy_file_with_limit(&mut source, &mut destination).unwrap_err();
+        let error = copy_bounded(&mut source, &mut destination, MAX_FILE_BYTES).unwrap_err();
 
-        assert_eq!(error.kind(), std::io::ErrorKind::InvalidData);
+        assert!(
+            error.to_string().contains("per-file cap"),
+            "the copier must name the cap: {error}"
+        );
         // The half-copied destination holds exactly `limit + 1` bytes — the
         // take(max + 1) pattern reads one byte past the cap to detect overflow.
         assert_eq!(

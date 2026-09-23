@@ -1160,12 +1160,15 @@ pub fn run() {
                     eprintln!("[pinvou3-app] knowledge service ready");
                 }
                 Err(e) => {
-                    // A refused (too-new) store is a deterministic state, not a
-                    // transient fault: surface it on the startup timeline, not
-                    // just stderr.
+                    // The knowledge service stays unavailable until restart
+                    // (the state is never managed on failure) — whether the
+                    // store was refused as too-new or the open failed
+                    // transiently. Record the cause on the startup timeline,
+                    // not just stderr; the stage name must not promise a
+                    // retry that never happens.
                     crate::platform::startup::mark_with_detail(
                         "rust",
-                        "knowledge_service:deferred",
+                        "knowledge_service:unavailable",
                         &format!("{e:#}"),
                     );
                     eprintln!("[pinvou3-app] knowledge service init failed: {e:#}");
