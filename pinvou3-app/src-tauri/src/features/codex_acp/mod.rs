@@ -3638,7 +3638,7 @@ impl AcpPool {
                     .context("未检测到 Kimi Code CLI；请先安装 Kimi，并确保 kimi 在 PATH 中")?;
                 let mut command = crate::platform::process::external_tokio_command(&executable);
                 command.arg("acp");
-                (command, executable, "kimi acp", "native")
+                (command, executable, KIMI_ACP_PACKAGE, "native")
             }
             AgentBackend::Deepseek => bail!("当前会话不是 ACP 会话"),
         };

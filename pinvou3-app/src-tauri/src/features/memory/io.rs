@@ -1409,6 +1409,13 @@ pub fn never_pending_memory(
     let Some(item) = items.iter_mut().find(|item| item.id == id) else {
         return Ok(None);
     };
+    // Mirror of ignore_pending_memory's decided short-circuit: a confirmed
+    // candidate carries the user's decision and must not be demoted or pushed
+    // into the never list (which would block future re-confirmation of the
+    // same content).
+    if item.status == PENDING_STATUS_CONFIRMED {
+        return Ok(None);
+    }
     let now = Utc::now().to_rfc3339();
     item.status = PENDING_STATUS_IGNORED.to_string();
     item.updated_at = now.clone();

@@ -269,8 +269,9 @@ pub async fn unequip_persona(
     app: AppHandle,
     store: State<'_, SessionStore>,
 ) -> Result<(), String> {
-    store.set_active_persona(&session_id, None);
-    store.set_pending_persona_body(&session_id, None);
+    // Single atomic publish (same contract as equip): a torn two-step clear lets an
+    // in-flight take_pending_turn_injections + failed-send restore resurrect the body.
+    store.set_persona(&session_id, None, None);
     super::sessions::emit_session_event(&app, "session:persona_changed", &session_id, "unequipped");
     Ok(())
 }

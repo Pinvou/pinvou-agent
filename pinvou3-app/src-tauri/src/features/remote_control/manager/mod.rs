@@ -35,24 +35,23 @@ use persistence::{
     acknowledge_pending_revocation, acquire_process_lock, apply_runtime_relay_override,
     atomic_write_private_json, eligible_pending_revocations, fresh_config, load_config,
     load_or_initialize_rpc_ledger, load_pending_revocations, load_relay_settings, new_stream_epoch,
-    normalize_relay_address, pairing_info, pending_revocation_ack, pending_revocation_key,
-    persist_config, persist_rpc_ledger, process_lock_path, public_url, queue_pending_revocation,
+    normalize_relay_address, pairing_info, pending_revocation_key, persist_config,
+    persist_rpc_ledger, process_lock_path, public_url, queue_pending_revocation,
     relay_settings_path, remote_public_base_url, remote_relay_ws_url, remove_config,
     remove_rpc_ledger, validate_config,
 };
 
 // RPC admission, response shaping, scope validation, and the stream/event
 // protocol message builders live in `rpc`. The facade dispatches against the
-// enums (`RpcRequestAction`, `RpcReadyAction`, `EventSource`, ...) and calls
+// enums (`RpcRequestAction`, `EventSource`, ...) and calls
 // the pure helpers, so the whole surface is imported by name.
 use rpc::{
-    EventSource, NewRpcAdmission, ReplayMessageContext, RpcReadyAction, RpcRequestAction,
-    bounded_rpc_completion, enqueue_stream_reset, event_message, prepare_bridge_generation,
-    prepare_new_rpc_admission, prune_rpc_cache, request_conflict_completion,
-    rpc_admission_rejection, rpc_error_completion, rpc_fingerprint, rpc_in_flight_expired,
-    rpc_response, snapshot_message, stream_reset_message, subscription_filtered_replay_messages,
-    tombstone_completion, try_enqueue_message_batch, validate_bridge_generation,
-    validate_rpc_command, validate_web_rpc_scope,
+    EventSource, NewRpcAdmission, ReplayMessageContext, RpcRequestAction, bounded_rpc_completion,
+    enqueue_stream_reset, event_message, prepare_bridge_generation, prepare_new_rpc_admission,
+    prune_rpc_cache, request_conflict_completion, rpc_admission_rejection, rpc_error_completion,
+    rpc_fingerprint, rpc_in_flight_expired, rpc_response, snapshot_message, stream_reset_message,
+    subscription_filtered_replay_messages, tombstone_completion, try_enqueue_message_batch,
+    validate_bridge_generation, validate_rpc_command, validate_web_rpc_scope,
 };
 
 // The transfer buffer helpers mutate `Inner` through borrowed guards. They are
@@ -1001,7 +1000,12 @@ impl RemoteControlManager {
                 while let Some(inbound) = receiver.recv().await {
                     if let RelayInbound::Message(text) = inbound {
                         match serde_json::from_str::<Value>(&text) {
-                            Ok(value) if pending_revocation_ack(&value, &pending.endpoint_id) => {
+                            Ok(value)
+                                if relay_client::terminal_relay_message(
+                                    &value,
+                                    &pending.endpoint_id,
+                                ) =>
+                            {
                                 acknowledged = true;
                                 break;
                             }
@@ -1578,17 +1582,19 @@ impl RemoteControlManager {
         let mut first_error = None;
         for action in actions {
             match action {
-                RpcReadyAction::Dispatch(dispatch) => {
+                RpcRequestAction::Dispatch(dispatch) => {
                     if let Err(error) = self.emit_rpc_dispatch(dispatch) {
                         first_error.get_or_insert(error);
                     }
                 }
-                RpcReadyAction::Respond(sender, response) => {
+                RpcRequestAction::Respond(sender, response) => {
                     if sender.try_send(RelayOutbound::Message(response)).is_err() {
                         first_error
                             .get_or_insert_with(|| "Web access relay task has stopped".to_string());
                     }
                 }
+                // `prepare_bridge_generation` never emits the None variant.
+                RpcRequestAction::None => {}
             }
         }
         // The browser may reconnect and subscribe before a restarted desktop
@@ -3489,7 +3495,7 @@ mod tests {
         assert_eq!(first.len(), 1);
         assert!(matches!(
             &first[0],
-            RpcReadyAction::Dispatch(dispatch)
+            RpcRequestAction::Dispatch(dispatch)
                 if dispatch.request_id == "queued"
                     && dispatch.command == "chat"
                     && dispatch.bridge_generation == "generation-new"
@@ -4112,25 +4118,25 @@ mod tests {
 
     #[test]
     fn only_explicit_terminal_relay_messages_acknowledge_a_revocation() {
-        assert!(pending_revocation_ack(
+        assert!(relay_client::terminal_relay_message(
             &json!({
                 "type": "desktop_endpoint_revoked",
                 "endpoint_id": "ep_retired"
             }),
             "ep_retired"
         ));
-        assert!(pending_revocation_ack(
+        assert!(relay_client::terminal_relay_message(
             &json!({
                 "type": "desktop_endpoint_replaced",
                 "endpoint_id": "ep_retired"
             }),
             "ep_retired"
         ));
-        assert!(pending_revocation_ack(
+        assert!(relay_client::terminal_relay_message(
             &json!({ "type": "error", "code": "endpoint_not_found" }),
             "ep_retired"
         ));
-        assert!(!pending_revocation_ack(
+        assert!(!relay_client::terminal_relay_message(
             &json!({
                 "type": "desktop_endpoint_revoked",
                 "endpoint_id": "ep_other"

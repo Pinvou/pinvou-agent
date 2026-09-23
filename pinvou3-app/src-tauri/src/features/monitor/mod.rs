@@ -23,7 +23,7 @@ mod self_metrics;
 // re-export 子模块 pub 面，保持 `crate::features::monitor::Foo` 调用路径不变。
 pub use model_probe::{
     VllmSnapshot, VllmStatus, active_model_snapshot, adopts_probed_facts, probe_vllm_model_info,
-    resolve_served_model, vllm_base_url, vllm_configured_model, vllm_snapshot,
+    resolve_served_model,
 };
 pub use self_metrics::{SelfMetrics, SelfPerfSnapshot};
 
@@ -109,26 +109,11 @@ impl MonitorState {
     }
 }
 
-pub async fn sample_all(
-    state: &MonitorState,
-    vllm_upstream: &str,
-    configured_model: Option<String>,
-) -> MonitorSnapshot {
-    sample_all_with_cpu(
-        state,
-        vllm_upstream,
-        configured_model,
-        platform::cpu_snapshot(),
-    )
-    .await
+pub async fn sample_all(state: &MonitorState) -> MonitorSnapshot {
+    sample_all_with_cpu(state, platform::cpu_snapshot()).await
 }
 
-async fn sample_all_with_cpu(
-    state: &MonitorState,
-    vllm_upstream: &str,
-    configured_model: Option<String>,
-    cpu: Option<CpuSnapshot>,
-) -> MonitorSnapshot {
+async fn sample_all_with_cpu(state: &MonitorState, cpu: Option<CpuSnapshot>) -> MonitorSnapshot {
     let now_ms = SystemTime::now()
         .duration_since(UNIX_EPOCH)
         .map(|d| d.as_millis() as u64)
@@ -141,10 +126,13 @@ async fn sample_all_with_cpu(
     // 拿到的是新采样而非缓存旧值。
     let gpu_task = tokio::task::spawn_blocking(gpu_snapshot);
     let ram = platform::ram_snapshot();
-    let vllm = match active_model_snapshot().await {
-        Some(snapshot) => Some(snapshot),
-        None => vllm_snapshot(vllm_upstream, configured_model).await,
-    };
+    // Active-model snapshot only. The old fallback re-probed the active URL
+    // with the hardcoded LocalVllm preset, which mislabeled a key-less cloud
+    // endpoint as a verified *local* model (target_kind="local") while
+    // get_backend_status — the authoritative source for the chat live-dot —
+    // reported it unavailable. All model monitoring derives from the active
+    // user model now, so both surfaces agree.
+    let vllm = active_model_snapshot().await;
     MonitorSnapshot {
         generated_at_ms: now_ms,
         gpu: gpu_task.await.unwrap_or(None),
@@ -256,7 +244,7 @@ mod tests {
         unsafe { std::env::set_var("PINVOU3_HOME", &temp_home) };
 
         let state = MonitorState::new();
-        let snapshot = sample_all_with_cpu(&state, "not-a-url", None, None).await;
+        let snapshot = sample_all_with_cpu(&state, None).await;
         assert!(snapshot.generated_at_ms > 0);
         assert!(snapshot.cpu.is_none());
         assert_eq!(snapshot.self_perf.gen_tokens_total, 0);
