@@ -57,7 +57,7 @@ pub async fn set_bundle_visibility(
 ) -> Result<(), String> {
     let scope = parse_connector_scope(scope.as_deref())?;
     // Builtin plugins cannot be hidden (docs/builtin-toolset-contract.md
-    // §3.3 defense in depth): the write fails loudly instead of silently
+    // §3.1 defense in depth): the write fails loudly instead of silently
     // filtering the id out.
     crate::features::marketplace::builtin::reject_builtin_ids(&bundle_ids)?;
     let ids = bundle_ids.clone();
