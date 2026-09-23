@@ -1478,6 +1478,16 @@ fn probe_local(
     api_key_env: Option<&str>,
     output: OutputMode,
 ) -> Result<CliOutcome, CliError> {
+    // Usage validation precedes env resolution: a non-loopback --url is a
+    // usage error (exit 2) even when the --api-key-env override is also
+    // broken, so scripts keying on the exit-code contract see usage first.
+    if let Some(url) = url {
+        if !is_loopback_url(url)? {
+            return Err(CliError::usage(
+                "probe-local refuses non-loopback urls; pass a 127.0.0.1, ::1 or localhost endpoint",
+            ));
+        }
+    }
     let explicit_key = match api_key_env {
         Some(var) => {
             let value = std::env::var(var).map_err(|_| {
@@ -1500,11 +1510,6 @@ fn probe_local(
     };
     let (target, bearer) = match url {
         Some(url) => {
-            if !is_loopback_url(url)? {
-                return Err(CliError::usage(
-                    "probe-local refuses non-loopback urls; pass a 127.0.0.1, ::1 or localhost endpoint",
-                ));
-            }
             // An authenticated local endpoint 401s every signature probe and
             // misclassifies as generic without this (the GUI form key lane).
             (url.to_owned(), explicit_key)

@@ -916,6 +916,24 @@ fn probe_local_refuses_non_loopback_urls_with_usage_error() {
         message.contains("not a valid url"),
         "a malformed probe-local url must be reported as invalid"
     );
+
+    // Usage validation precedes env resolution: a broken --api-key-env must
+    // not downgrade the non-loopback refusal from usage (2) to failed (1).
+    let (message, code) = run_err(&[
+        "pinvoy",
+        "models",
+        "probe-local",
+        "--url",
+        "https://api.deepseek.com/v1",
+        "--api-key-env",
+        "PINVOU_CLI_TEST_DEFINITELY_MISSING_KEY",
+    ]);
+    assert_eq!(
+        code,
+        ExitCode::Usage,
+        "the loopback refusal must win over the env failure"
+    );
+    assert!(message.contains("loopback"), "message: {message}");
 }
 
 #[test]
