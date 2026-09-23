@@ -42,6 +42,21 @@ pub(crate) fn with_temp_home(prefix: &str, f: impl FnOnce()) {
     let _ = std::fs::remove_dir_all(&dir);
 }
 
+/// 取 crate 唯一 env 锁并一步完成一组 env 的快照（原各文件私有的
+/// `locked_env` 配对形式的单一实现）：
+/// `let (_lock, _env) = locked_env(&["PINVOU3_HOME"]);`
+/// 不可重入——已持 ENV_LOCK 时不得再调。guard 在作用域退出（含 panic 路径）
+/// 释放锁并恢复 env。
+#[cfg(test)]
+pub(crate) fn locked_env(
+    vars: &[&'static str],
+) -> (std::sync::MutexGuard<'static, ()>, EnvRestore) {
+    let lock = crate::platform::paths::tests::ENV_LOCK
+        .lock()
+        .unwrap_or_else(|p| p.into_inner());
+    (lock, EnvRestore::capture(vars))
+}
+
 /// RAII 快照/恢复一组环境变量：`capture` 记录现值，`Drop`（含 panic 路径）
 /// 逐一恢复。调用方测试必须先持有 `platform::paths::tests::ENV_LOCK` 再
 /// capture，保证 env 写全程在锁内串行。

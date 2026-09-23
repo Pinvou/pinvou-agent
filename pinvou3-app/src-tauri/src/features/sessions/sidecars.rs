@@ -324,7 +324,7 @@ fn load_timestamped_id_map_for_mutation(
 /// consent file, without silently destroying the evidence.
 fn quarantine_corrupt_sidecar(file: &std::path::Path, label: &str) -> anyhow::Error {
     let quarantined = crate::platform::filesystem::quarantine_corrupt_file(file)
-        .map(|path| format!("; the corrupt bytes are quarantined at {}", path.display()))
+        .map(|path| format!("; corrupt bytes quarantined at {}", path.display()))
         .unwrap_or_else(|error| format!("; quarantining failed ({error})"));
     anyhow::anyhow!(
         "{label} is unreadable or corrupt; refusing the id-level mutation to \
@@ -390,7 +390,7 @@ impl SessionStore {
         }
         let payload =
             serde_json::to_vec_pretty(models).context("serialize per-session model bindings")?;
-        deepseek_tui::utils::write_atomic(&file, &payload)
+        crate::platform::filesystem::atomic_write_private(&file, &payload)
             .with_context(|| format!("persist per-session model bindings to {}", file.display()))
     }
 
