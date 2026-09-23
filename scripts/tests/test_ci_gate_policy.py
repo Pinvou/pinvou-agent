@@ -113,7 +113,7 @@ class CiGatePolicyTests(unittest.TestCase):
         self.assertNotIn("LOCAL_SECURITY_HEAD", verifier)
         self.assertIn('[[ "$tag_target" != "$gitlink" ]]', verifier)
         self.assertIn('PINVOU_CODEWHALE_BRANCH="pinvou3-clean"', verifier)
-        self.assertIn('PINVOU_CODEWHALE_TAG="pinvou-v0.9.12-r1"', verifier)
+        self.assertIn('PINVOU_CODEWHALE_TAG="pinvou-v0.9.12-r3"', verifier)
         self.assertIn('[[ "$branch_target" != "$gitlink" ]]', verifier)
         self.assertIn('[[ "$branch_target" != "$tag_target" ]]', verifier)
         self.assertIn("unknown argument", verifier)
