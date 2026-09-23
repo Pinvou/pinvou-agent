@@ -5,9 +5,6 @@
 > memory, messaging between sessions, creating scheduled tasks, etc.).
 > Required reading before adding a tool; local designs that conflict with this contract
 > yield to it; new patterns proven in practice must be written back into this document.
->
-> Related: `.luzeyang/超长记忆模式-实施方案.md` §0 (origin of the architecture
-> principles), `.luzeyang/引用对话session-mention-实施方案.md` (first toolset member).
 
 ---
 
@@ -151,8 +148,7 @@ a plugin-center plugin, carried mainly over MCP (mirroring the Codex desktop app
   abandoned branches are explicitly marked, consistently across all read tools.
 - **Write-semantics decision template**: when writing a message into a running session,
   the design must declare queue (wait for the current turn) vs steer (inject into the
-  current turn) — refer to the existing semantics in
-  `.luzeyang/mid-turn-injection-实施规划.md`; do not reinvent.
+  current turn); do not reinvent.
 - **Idempotency**: the engine may retry tool calls; L1/L2 tools must define an
   idempotency key or be naturally idempotent.
 
@@ -174,8 +170,11 @@ a plugin-center plugin, carried mainly over MCP (mirroring the Codex desktop app
    / idempotency, item by item against §4–§6.
 3. **Tests**: extend the family's existing test file; content-reading tools must carry
    injection red-team cases.
-4. **Registration**: into the single registry (code-mode reserved); BUNDLE_VERSION is
-   bumped per the existing flow.
+4. **Registration**: the tool is declared in its hosting marketplace package's
+   manifest (`mcp_tools`, plus `tool_features` when it serves a switchable feature) and
+   ships through the package's normal marketplace flow; there is no separate
+   registration step or version bump — the displayed bundle version simply rides the
+   app release (BUNDLE_VERSION, see §3.1).
 5. **Documentation**: the storage-format source of truth is cited in comments; new
    patterns are written back into this contract.
 6. **Boundary**: zero foundation changes is a hard constraint; if CodeWhale must be
