@@ -363,7 +363,24 @@ impl SessionStore {
         self.persist_then_reconcile(session, "session save")
     }
 
+    /// Deleting races with the read-modify-write persist paths
+    /// (`set_title`/`update_messages`/`save`): without the same
+    /// `scheduled_mutation` guard, a persist that loaded its snapshot before
+    /// the delete would rename a stale transcript back over the deletion and
+    /// resurrect the session (sidecar entries already purged). Take the same
+    /// guard the persist paths hold so the load→persist pair cannot straddle
+    /// a delete. Cross-process delete races remain unguarded (no flock here,
+    /// consistent with the other sidecar writers).
     pub fn delete(&self, id: &str) -> Result<()> {
+        let _mutation = self.scheduled_mutation.lock();
+        self.delete_locked(id)
+    }
+
+    /// Locking contract of [`Self::delete`]: the caller holds
+    /// `scheduled_mutation`. The internal create-rollback paths call the
+    /// public [`Self::delete`], which acquires the guard — neither rollback
+    /// site runs while a persist's guard is still held.
+    fn delete_locked(&self, id: &str) -> Result<()> {
         if self.is_scheduled_session(id)? {
             bail!("Scheduled-run sessions are deleted through their automation");
         }
