@@ -454,10 +454,8 @@ mod session_mention_title_tests {
         let _g = crate::platform::paths::tests::ENV_LOCK
             .lock()
             .unwrap_or_else(|poisoned| poisoned.into_inner());
-        let root = std::env::temp_dir().join(format!(
-            "pinvou3-mention-title-test-{}",
-            std::process::id()
-        ));
+        let root =
+            std::env::temp_dir().join(format!("pinvou3-mention-title-test-{}", std::process::id()));
         let previous = std::env::var("PINVOU3_HOME").ok();
         let _ = std::fs::remove_dir_all(&root);
         // SAFETY: platform::paths::tests::ENV_LOCK is held; env writes are
@@ -475,9 +473,8 @@ mod session_mention_title_tests {
 
         // First send carries references + body: the title derives from the body.
         let block = mention_block(r#"[{"sessionId":"abc123","title":"销量 PPT"}]"#);
-        let title_source =
-            strip_session_mention_block(format!("{block}用引用会话里的配色方案做 PPT").trim())
-                .trim();
+        let outgoing = format!("{block}用引用会话里的配色方案做 PPT");
+        let title_source = strip_session_mention_block(outgoing.trim()).trim();
         apply_default_session_title(&store, &id, title_source).expect("auto title");
         assert_eq!(
             store.load(&id).expect("reload").metadata.title,
