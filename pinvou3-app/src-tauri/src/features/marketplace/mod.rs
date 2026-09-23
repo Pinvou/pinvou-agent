@@ -3932,7 +3932,7 @@ mod tests {
                     reinstall
                         .unwrap_err()
                         .contains("未经过 Windows 可验证依赖锁"),
-                    "Windows 商店路径未受信依赖应 fail-closed"
+                    "the Windows store path must fail closed on untrusted dependencies"
                 );
             } else {
                 reinstall.unwrap();
@@ -3970,7 +3970,7 @@ mod tests {
                     reinstall
                         .unwrap_err()
                         .contains("未经过 Windows 可验证依赖锁"),
-                    "Windows 商店路径未受信依赖应 fail-closed"
+                    "the Windows store path must fail closed on untrusted dependencies"
                 );
             } else {
                 reinstall.unwrap();
