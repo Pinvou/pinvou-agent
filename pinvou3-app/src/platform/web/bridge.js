@@ -5658,6 +5658,14 @@ function stopMonitorPolling() { return pinvouSharedweb().stopMonitorPolling(); }
   // ── Settings ─────────────────────────────────────────────────────
 
 async function loadSettings() { return pinvouSharedweb().loadSettings(); }
+  // Builtin feature switches (docs/builtin-toolset-contract.md §3.3): the web
+  // client proxies to the same desktop host, so the registry read is exposed
+  // here too (access-policy allowlists list_builtin_features; the write side
+  // stays desktop-only). Without it the session-mention gate would be stuck
+  // fail-open in the browser while the host already removed read_session.
+  async function listBuiltinFeatures() {
+    return invoke("list_builtin_features");
+  }
 async function loadSelectedPet() { return pinvouSharedweb().loadSelectedPet(); }
 async function setSelectedPet(id) { return pinvouSharedweb().setSelectedPet(id); }
 async function loadEffectiveModelConfig(...args) { return pinvouSharedweb().loadEffectiveModelConfig.apply(null, args); }
@@ -7876,6 +7884,7 @@ function appendVoiceText(base, text) { return pinvouSharedweb().appendVoiceText(
     stopMonitorPolling,
     clearMonitorStats,
     setSelectedPet,
+    listBuiltinFeatures,
     saveSettings,
     saveSearchSettings,
     submitFeedback,
