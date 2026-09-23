@@ -381,6 +381,72 @@ fn session_workspace_binding_survives_reload() {
     let _ = std::fs::remove_dir_all(&bound_dir);
 }
 
+/// Round-12 review: the binding sidecars carry the user's workspace absolute
+/// paths, so every production write path must land 0600 like the transcript
+/// beside them (89f621e42's stated intent). Covers all three: the first
+/// bind, the rebind phase-3 sidecar rewrite, and the legacy-table rewrite
+/// (seeded 0644 the way an old build wrote it — the rewrite must replace the
+/// file, not keep its loose mode).
+#[cfg(unix)]
+#[test]
+fn workspace_binding_writes_are_private() {
+    use std::os::unix::fs::PermissionsExt;
+    let (store, _g) = isolated_store();
+    let s = store
+        .create_new("/model".into(), None, std::env::temp_dir())
+        .expect("create");
+    let from = unique_temp_dir("binding-private-from");
+    std::fs::create_dir_all(&from).expect("create bound dir");
+    store
+        .bind_session_workspace(&s.metadata.id, from.clone())
+        .expect("bind");
+
+    let sessions_dir = store.manager.sessions_dir();
+    let sidecar = sessions_dir
+        .join(&s.metadata.id)
+        .join("workspace-binding.json");
+    let mode = std::fs::metadata(&sidecar)
+        .expect("binding sidecar exists")
+        .permissions()
+        .mode();
+    assert_eq!(mode & 0o777, 0o600, "binding sidecar must be 0600");
+
+    // Seed the legacy table the way a pre-sidecar build left it (umask
+    // 0644), so the rebind's legacy-table rewrite fires and must land
+    // private too.
+    let legacy = sessions_dir.join("_session_workspaces.json");
+    std::fs::write(
+        &legacy,
+        serde_json::to_vec(&serde_json::json!({
+            s.metadata.id.clone(): from.display().to_string()
+        }))
+        .expect("serialize legacy table"),
+    )
+    .expect("seed legacy table");
+
+    let to = unique_temp_dir("binding-private-to");
+    std::fs::create_dir_all(&to).expect("create target dir");
+    let outcome = store.rebind_workspace_bindings(&from, &to).expect("rebind");
+    assert!(
+        !outcome.legacy_sync_failed,
+        "the legacy-table rewrite must succeed for the mode check to be meaningful"
+    );
+
+    let mode = std::fs::metadata(&sidecar)
+        .expect("rewritten sidecar exists")
+        .permissions()
+        .mode();
+    assert_eq!(mode & 0o777, 0o600, "rewritten sidecar must stay 0600");
+    let mode = std::fs::metadata(&legacy)
+        .expect("rewritten legacy table exists")
+        .permissions()
+        .mode();
+    assert_eq!(mode & 0o777, 0o600, "rewritten legacy table must be 0600");
+
+    let _ = std::fs::remove_dir_all(&from);
+    let _ = std::fs::remove_dir_all(&to);
+}
+
 /// Directory rebind candidate scan for the plain-chat lane (review #463
 /// round-8 B1): a chat bound through `create_session` carries only the
 /// workspace-binding sidecar, so the codex index/sidecar scan is structurally
