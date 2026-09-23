@@ -62,6 +62,7 @@
     "kb_start_scan",
     "kb_stats",
     "kb_type_counts",
+    "list_builtin_features",
     "list_deliverable_index",
     "list_marketplace_skills",
     "list_marketplace_tools",
