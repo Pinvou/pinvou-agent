@@ -39,7 +39,9 @@ use tauri::State;
 pub use store::{FileHit, Stats, TypeCount};
 use store::{SearchQuery, Store};
 
-/// 后台扫描进度（回前端轮询）。前端只读 running/phase/scanned/finishedAt。
+/// Background scan progress (polled by the frontend). The frontend reads
+/// running/phase/scanned/finishedAt; `roots` (added with the headless
+/// surface) reports the scanned roots and is ignored by the GUI today.
 #[derive(Debug, Clone, Serialize, Default)]
 #[serde(rename_all = "camelCase")]
 pub struct ScanState {
@@ -587,9 +589,10 @@ impl KnowledgeService {
         self.scan_state.lock().clone()
     }
 
-    /// 请求取消进行中的扫描。GUI 懒触发扫描没有前端取消入口，消费方是
-    /// `knowledge scan cancel` CLI：进程内一次性信号，扫描线程内的 cancel
-    /// 分支据此提前收口（语义不变）。
+    /// Request cancellation of an in-progress scan. The GUI's lazy scan has
+    /// no frontend cancel entry; the consumer is the `knowledge scan cancel`
+    /// CLI. In-process one-shot signal — the scan thread's cancel branch
+    /// wraps up early on it (semantics unchanged).
     pub fn cancel_scan(&self) {
         self.cancel.store(true, Ordering::Relaxed);
     }

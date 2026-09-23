@@ -304,8 +304,10 @@ impl L1Store {
         limit: usize,
     ) -> rusqlite::Result<Vec<Document>> {
         let c = self.conn.lock();
-        // 与 Store::search 同口径钳制上限:裸 `as i64` 会把 usize::MAX 回绕成
-        // -1(SQLite 视为无限制),前端传来的任意大 limit 会把整表物化进内存。
+        // Clamp the limit with the same policy as Store::search: a raw
+        // `as i64` wraps usize::MAX to -1 (SQLite reads it as unbounded),
+        // materializing the whole documents table for an arbitrary caller
+        // limit.
         let lim = if limit == 0 {
             500
         } else {
@@ -372,6 +374,10 @@ impl L1Store {
 
     /// 分页读取某份已解析文档的 chunk 快照。这里只查数据库，不重新打开原始 Office/PDF
     /// 文件；二进制解析已经在建索引时由 `file_ingest` 完成。
+    /// The `limit` is clamped at the SQL boundary like every other
+    /// SQL-facing limit: a raw cast would wrap usize::MAX to -1, which
+    /// SQLite reads as unbounded (today's only caller passes a small cap;
+    /// the clamp guards future callers).
     pub fn document_chunk_window(
         &self,
         collection_id: i64,
@@ -380,6 +386,7 @@ impl L1Store {
         limit: usize,
     ) -> rusqlite::Result<Vec<(i64, String)>> {
         let c = self.conn.lock();
+        let limit = limit.min(crate::features::knowledge::store::SEARCH_LIMIT_CAP);
         let mut stmt = c.prepare(
             "SELECT k.ord,k.text FROM chunks k JOIN documents d ON d.id=k.document_id \
              WHERE k.document_id=?1 AND k.collection_id=?2 AND d.collection_id=?2 \
@@ -761,6 +768,10 @@ impl L1Store {
         q: &str,
         lim: usize,
     ) -> rusqlite::Result<Vec<ChunkHit>> {
+        // Clamp before the `lim * 2` doubling below can overflow and before
+        // the SQL cast: usize::MAX would wrap to -1 (unbounded) in SQLite,
+        // and the doubling would panic in debug on huge inputs.
+        let lim = lim.min(crate::features::knowledge::store::SEARCH_LIMIT_CAP / 2);
         let c = self.conn.lock();
         let map = |r: &rusqlite::Row<'_>| -> rusqlite::Result<ChunkHit> {
             Ok(ChunkHit {

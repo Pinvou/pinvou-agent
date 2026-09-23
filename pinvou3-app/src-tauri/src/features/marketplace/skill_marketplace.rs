@@ -268,12 +268,14 @@ impl SkillMarketplaceManager {
         self.list_skills_inner(true)
     }
 
-    /// Ids of the installed skills without the display-only work: the update
-    /// check hashes every installed preset skill's directory, which is wasted
-    /// inside the scope consent-file critical section — `update_disabled_bundles_for`
-    /// expands the DenyAll fallback while holding the cross-process flock, and
-    /// every gating read queues behind it. Callers that consume only ids use
-    /// this cheap enumeration; the badge check stays in [`Self::list_skills`].
+    /// Ids of the installed skills without the display-only work (the update
+    /// check in [`Self::list_skills`] fingerprints every installed preset
+    /// skill's directory). The DenyAll expansion inside
+    /// `update_disabled_bundles_for` samples its strict enumeration OFF the
+    /// consent-file lock (see `sample_denyall_expansion`); this cheap
+    /// variant serves the callers that consume only ids — the native-tool
+    /// gate and the cheap-vs-listed equality test. The badge check stays in
+    /// [`Self::list_skills`].
     pub fn installed_skill_ids_cheap(&self) -> Vec<String> {
         self.list_skills_inner(false)
             .into_iter()
@@ -415,9 +417,11 @@ impl SkillMarketplaceManager {
         self.installed_skill_ids_cheap()
     }
 
-    /// Strict variant of `installed_skill_ids`, used only by the DenyAll default
-    /// deny-list computation (`resolve_scope_disabled_ids`); display/list paths
-    /// keep the lenient read. Returns `(ids, degraded)`:
+    /// Strict variant of `installed_skill_ids`, used by the DenyAll default
+    /// deny-list computation — `resolve_scope_disabled_ids` and the
+    /// `update_disabled_bundles_for` RMW's off-lock sampling
+    /// (`sample_denyall_expansion`); display/list paths keep the lenient
+    /// read. Returns `(ids, degraded)`:
     ///
     /// - `degraded = false`: `ids` is the trusted full set, with the same id
     ///   vocabulary as the lenient path (preset market ids / upload skill names).

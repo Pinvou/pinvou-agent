@@ -611,7 +611,13 @@ mod tests {
             // empty store re-initialized over it" — the delete-and-recreate
             // regression this test exists to catch.
             store
-                .upsert_many(&[rec("/tmp/docs/annual.pdf", "annual.pdf", Some("pdf"), 2048, 0)])
+                .upsert_many(&[rec(
+                    "/tmp/docs/annual.pdf",
+                    "annual.pdf",
+                    Some("pdf"),
+                    2048,
+                    0,
+                )])
                 .expect("seed one file record");
         }
         let restore = |mode: u32| {
@@ -633,7 +639,10 @@ mod tests {
         restore(0o644);
         let reopened = Store::open(&db).expect("the store must survive a failed probe");
         assert_eq!(
-            reopened.stats().expect("stats after the failed probe").total_files,
+            reopened
+                .stats()
+                .expect("stats after the failed probe")
+                .total_files,
             1,
             "the seeded record must still be there — a delete-and-recreate over the \
              probe failure would come back empty"
@@ -667,7 +676,13 @@ mod tests {
             // Seed so the survival assert can detect delete-and-recreate
             // (same rationale as the unix twin).
             store
-                .upsert_many(&[rec("/tmp/docs/annual.pdf", "annual.pdf", Some("pdf"), 2048, 0)])
+                .upsert_many(&[rec(
+                    "/tmp/docs/annual.pdf",
+                    "annual.pdf",
+                    Some("pdf"),
+                    2048,
+                    0,
+                )])
                 .expect("seed one file record");
         }
         // Hold the store exclusively: any subsequent open (the probe's) fails.
@@ -688,7 +703,10 @@ mod tests {
         let reopened =
             Store::open(&db).expect("the store must reopen after the blocking handle is released");
         assert_eq!(
-            reopened.stats().expect("stats after the failed probe").total_files,
+            reopened
+                .stats()
+                .expect("stats after the failed probe")
+                .total_files,
             1,
             "the seeded record must survive — a delete-and-recreate would come back empty"
         );

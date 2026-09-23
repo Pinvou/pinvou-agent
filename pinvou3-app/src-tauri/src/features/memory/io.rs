@@ -309,6 +309,11 @@ pub fn load_recent_work() -> io::Result<Vec<RecentWorkItem>> {
     Ok(out)
 }
 
+/// Save the profile as a full replacement of `profile.json` (unlike
+/// [`update_profile`], which is a read-modify-write patch). A headless
+/// caller that loaded its snapshot before a GUI identity update and saves
+/// afterwards silently reverts the newer write — the last-writer-wins
+/// cross-process shape disclosed for every restored memory surface.
 pub fn save_profile(profile: &MemoryProfile) -> io::Result<()> {
     let _guard = write_lock().lock();
     let mut normalized = profile.clone();

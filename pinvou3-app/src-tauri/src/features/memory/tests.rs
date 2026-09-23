@@ -15,9 +15,9 @@ use crate::platform::prefs::ModelPreset;
 use super::io::{
     commit_topic_migration_unlocked_with, compact_timed_memory_store_unlocked, current_focus_path,
     enqueue_memory_candidate, is_delivery_tool, load_preferences, load_profile,
-    pending_item_from_suggestion,
-    recent_activity_path, reconcile_topic_migration_journals_unlocked,
-    summarize_tool_start, topic_migration_journal_path, upsert_timed_memory_unlocked, write_lock,
+    pending_item_from_suggestion, recent_activity_path,
+    reconcile_topic_migration_journals_unlocked, summarize_tool_start,
+    topic_migration_journal_path, upsert_timed_memory_unlocked, write_lock,
     write_never_memory_unlocked, write_pending_memory_unlocked, write_recent_work_unlocked,
     write_timed_memory_file,
 };
@@ -3572,8 +3572,12 @@ fn archive_recent_work_archives_the_id_in_both_timed_stores() {
     };
     {
         let _guard = write_lock().lock();
-        write_timed_memory_file(&current_focus_path(), &[item("current_focus")], "current_focus")
-            .unwrap();
+        write_timed_memory_file(
+            &current_focus_path(),
+            &[item("current_focus")],
+            "current_focus",
+        )
+        .unwrap();
         write_timed_memory_file(
             &recent_activity_path(),
             &[item("recent_activity")],
