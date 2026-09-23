@@ -200,6 +200,13 @@ const COMPUTER_USE_ENABLED = can('computerUse');
 // and must not also trigger submit — otherwise one Enter both commits and sends. Matches PetWindow.
 const isPlainEnter = (e) => e.key === 'Enter' && !e.shiftKey && !isImeComposing(e);
 
+// Pending mention chips per draft scope (session id, or draft epoch for the
+// not-yet-materialized draft session). Module-level, in-memory only — the
+// same lifetime as the bridge's composer working set (both survive view
+// unmount/remount, neither survives an app restart).
+const sessionMentionDrafts = new Map();
+const MENTION_DRAFT_CACHE_LIMIT = 200;
+
 // Unified scene table after the design lane was merged into work: a scene
 // only expresses "the professional context of this message" and is
 // lane-independent; scene cards render below the empty-state greeting
@@ -1037,22 +1044,6 @@ const ToolWelcomeCard = ({ toolId, t, onSend }) => {
         window.addEventListener('pinvou:tools-changed', refresh);
         return () => { alive = false; window.removeEventListener('pinvou:tools-changed', refresh); };
       }, []);
-      const handleSelectMentionCandidate = useCallback((candidate) => {
-        if (!candidate || !sessionMentionEnabled) return;
-        setSessionRefs(current => dedupeSessionRefs([...current, candidate]));
-        setMentionDismissedToken(null);
-        setInputText((current) => {
-          const trigger = sessionMentionTriggerAt(current);
-          return trigger ? current.slice(0, trigger.start) : current;
-        });
-        window.requestAnimationFrame(() => {
-          if (composerRef.current) {
-            composerRef.current.focus();
-            composerRef.current.selectionStart = composerRef.current.value.length;
-            composerRef.current.selectionEnd = composerRef.current.value.length;
-          }
-        });
-      }, [sessionMentionEnabled, setInputText]);
       const handleRemoveMentionRef = useCallback((sessionId) => {
         setSessionRefs(current => current.filter(ref => ref.sessionId !== sessionId));
       }, []);
@@ -1625,24 +1616,69 @@ const ToolWelcomeCard = ({ toolId, t, onSend }) => {
       const [sessionRefs, setSessionRefs] = useState([]);
       const [mentionDismissedToken, setMentionDismissedToken] = useState(null);
       const [mentionSelection, setMentionSelection] = useState({ token: null, index: 0 });
+      // Latest committed chips for the draft-stash cleanup below (the cleanup
+      // runs before the switch-time restore commits, so it must read a ref).
+      const sessionRefsRef = useRef([]);
+      const mentionDraftKeyRef = useRef(null);
+      useEffect(() => {
+        sessionRefsRef.current = sessionRefs;
+      }, [sessionRefs]);
       // 切换 session / 新建草稿会话时读取各自 working set 里的未发送内容。
       // 从设置、工具商店等页面返回时 ChatView 会重新挂载，初始 state 也从
       // 同一份内存草稿恢复。
+      /* eslint-disable react-hooks/set-state-in-effect -- deliberate per-session draft restore: this effect restores the composer text and resets mention chips/dismissal/selection on session switch in one batch, not drifting out of sync via render-time derivation */
       useEffect(() => {
         const restored = bridge.available && bridge.chat && bridge.chat.getComposerDraft
           ? bridge.chat.getComposerDraft()
           : ((bs && bs.composerDraft) || '');
         setInputText(restored);
-        // Mention chips are part of the per-session draft: reset them together
-        // on session switch / new draft so references picked in session A never
-        // leak into session B (the injection block binds to the send context).
-        // The mention menu keyboard selection resets on the same scope change.
-        setSessionRefs([]);
+        // Mention chips are part of the per-session draft (same in-memory,
+        // per-session lifetime as the composer working set): restore the refs
+        // picked in this scope; the effect cleanup stashes the outgoing
+        // scope's refs (and the unmounted scope's), so switching away and
+        // back never silently wipes them, while refs picked in session A
+        // still never leak into session B (the injection block binds to the
+        // send context). The menu dismissal/keyboard selection reset on the
+        // same scope change.
+        const key = activeSessionId ? `session:${activeSessionId}` : `draft:${draftEpoch}`;
+        mentionDraftKeyRef.current = key;
+        setSessionRefs(dedupeSessionRefs(sessionMentionDrafts.get(key) || []));
         setMentionDismissedToken(null);
-        // eslint-disable-next-line react-hooks/set-state-in-effect -- deliberate per-session draft reset: this effect already restores the composer text and clears mention chips/dismissal on session switch; the menu selection must reset in the same batch, not drift out of sync via render-time derivation
         setMentionSelection({ token: null, index: 0 });
+        return () => {
+          const refs = sessionRefsRef.current;
+          if (refs.length) {
+            if (sessionMentionDrafts.size >= MENTION_DRAFT_CACHE_LIMIT) {
+              // Bounded cache: evict the oldest scope (Map insertion order).
+              sessionMentionDrafts.delete(sessionMentionDrafts.keys().next().value);
+            }
+            sessionMentionDrafts.set(key, refs);
+          } else {
+            sessionMentionDrafts.delete(key);
+          }
+        };
+      /* eslint-enable react-hooks/set-state-in-effect */
       // eslint-disable-next-line react-hooks/exhaustive-deps -- deps reviewed manually: restore only on session and draft epoch; adding bs would reread the draft on every backend snapshot change, overwriting in-progress input
       }, [activeSessionId, draftEpoch, setInputText]);
+      const handleSelectMentionCandidate = useCallback((candidate) => {
+        if (!candidate || !sessionMentionEnabled) return;
+        // A rejected pick (duplicate, isolated prefix, or over the cap) stays
+        // a no-op: the typed @query is only consumed when the chip lands.
+        if (dedupeSessionRefs([...sessionRefs, candidate]).length <= sessionRefs.length) return;
+        setSessionRefs(current => dedupeSessionRefs([...current, candidate]));
+        setMentionDismissedToken(null);
+        setInputText((current) => {
+          const trigger = sessionMentionTriggerAt(current);
+          return trigger ? current.slice(0, trigger.start) : current;
+        });
+        window.requestAnimationFrame(() => {
+          if (composerRef.current) {
+            composerRef.current.focus();
+            composerRef.current.selectionStart = composerRef.current.value.length;
+            composerRef.current.selectionEnd = composerRef.current.value.length;
+          }
+        });
+      }, [sessionMentionEnabled, sessionRefs, setInputText]);
       const voiceInput = (bs && bs.voiceInput) || { status: 'idle' };
       const voiceMode = normalizeVoiceMode(voiceInput.mode);
       const voiceActive = isVoiceActive(voiceInput);
