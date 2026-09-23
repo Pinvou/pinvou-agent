@@ -569,7 +569,7 @@ async fn model_review(
     let resp = crate::core::model_endpoint::with_opencode_session_header(
         client.post(url).bearer_auth(bridge.api_key()),
         &base_url,
-        "model-review",
+        bridge.opencode_conversation_key("model-review"),
     )
     .json(&body)
     .send()

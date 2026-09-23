@@ -337,7 +337,10 @@ pub fn is_opencode_gateway_base_url(base_url: &str) -> bool {
 /// foundation's builtin injection is process-global; this app keys IDs by
 /// conversation instead: engine spawns key on the session id (stable across
 /// respawns because `EnginePool::prepare_runtime_model` reuses the same
-/// session key), auxiliary gateway callers key on their feature label.
+/// session key), auxiliary gateway callers key on the session id when they
+/// hold a session-bound bridge and on their feature label otherwise. The map
+/// lives for the process lifetime — these are client-generated ephemeral
+/// IDs, so an app restart re-keys every conversation.
 pub fn opencode_session_id_for(conversation_key: &str) -> String {
     static SESSION_IDS: std::sync::OnceLock<
         std::sync::Mutex<std::collections::HashMap<String, String>>,

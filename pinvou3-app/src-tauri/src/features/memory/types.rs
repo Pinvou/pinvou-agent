@@ -27,6 +27,14 @@ pub trait MemoryReviewModel {
     /// "restart later" locale switch (see memory_output_language_directive for
     /// reachability).
     fn memory_locale_tag(&self) -> String;
+
+    /// OpenCode gateway conversation key for the session-affinity header:
+    /// session-bound bridges share the conversation's session ID (matching
+    /// the official client, where auxiliary calls use the conversation's
+    /// session ID); the default falls back to the caller's feature label.
+    fn memory_opencode_conversation_key(&self, feature_label: &str) -> String {
+        feature_label.to_string()
+    }
 }
 
 pub const PROFILE_VERSION: u32 = 1;

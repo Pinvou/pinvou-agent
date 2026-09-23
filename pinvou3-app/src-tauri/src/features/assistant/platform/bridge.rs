@@ -295,6 +295,10 @@ impl crate::features::memory::MemoryReviewModel for Pinvou3Bridge {
     fn memory_locale_tag(&self) -> String {
         self.locale_tag().to_string()
     }
+
+    fn memory_opencode_conversation_key(&self, feature_label: &str) -> String {
+        self.opencode_conversation_key(feature_label).to_string()
+    }
 }
 
 impl Pinvou3Bridge {
@@ -2194,6 +2198,17 @@ impl Pinvou3Bridge {
         // 本地模型（vLLM / 探测出的 Ollama）默认关 thinking（防 SSE timeout）；其余默认 high。
         cfg.reasoning_effort = self.request_reasoning_effort();
         cfg
+    }
+
+    /// Conversation key for the OpenCode gateway session-affinity header on
+    /// auxiliary (hand-rolled) requests: the session id when this bridge is
+    /// session-bound — matching the official client, where auxiliary calls
+    /// share the conversation's session ID — otherwise the caller's feature
+    /// label (connection tests and probes have no conversation).
+    pub(crate) fn opencode_conversation_key<'a>(&'a self, feature_label: &'a str) -> &'a str {
+        self.session_affinity_key
+            .as_deref()
+            .unwrap_or(feature_label)
     }
 
     /// 为开启多智能体的 Engine/turn 注入 Pinvou 专家池对应的原生
@@ -6785,6 +6800,12 @@ mod tests {
         assert!(crate::core::model_endpoint::is_opencode_gateway_base_url(
             "https://www.opencode.ai/zen/v1"
         ));
+        assert!(crate::core::model_endpoint::is_opencode_gateway_base_url(
+            "https://opencode.ai/zen"
+        ));
+        assert!(!crate::core::model_endpoint::is_opencode_gateway_base_url(
+            "https://opencode.ai/v1"
+        ));
         assert!(!crate::core::model_endpoint::is_opencode_gateway_base_url(
             "https://opencode.ai/zenith/v1"
         ));
@@ -6832,6 +6853,24 @@ mod tests {
             crate::core::model_endpoint::opencode_session_id_for("memory-review"),
             crate::core::model_endpoint::opencode_session_id_for("voice-postprocess"),
             "distinct conversation keys must mint distinct IDs"
+        );
+    }
+
+    /// Auxiliary callers key the gateway header on the session id when the
+    /// bridge is session-bound, falling back to their feature label otherwise.
+    #[test]
+    fn aux_conversation_key_prefers_session_id_over_feature_label() {
+        let mut bridge = fixture_bridge();
+        assert_eq!(
+            bridge.opencode_conversation_key("voice-postprocess"),
+            "voice-postprocess",
+            "unbound bridges keep the feature label"
+        );
+        bridge.session_affinity_key = Some("session-a".to_string());
+        assert_eq!(
+            bridge.opencode_conversation_key("voice-postprocess"),
+            "session-a",
+            "session-bound bridges share the conversation's session ID"
         );
     }
 

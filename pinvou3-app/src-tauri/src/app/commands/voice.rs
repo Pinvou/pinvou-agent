@@ -1020,7 +1020,7 @@ async fn call_voice_postprocess_model(
             base_url.trim_end_matches('/')
         )),
         &base_url,
-        "voice-postprocess",
+        bridge.opencode_conversation_key("voice-postprocess"),
     )
     .bearer_auth(bridge.api_key())
     .json(&body)
