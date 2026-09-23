@@ -203,7 +203,7 @@ impl SessionStore {
         }
         let payload =
             serde_json::to_vec_pretty(&sidecar).context("serialize session workspace binding")?;
-        crate::platform::filesystem::atomic_write(&file, &payload)
+        crate::platform::filesystem::atomic_write_private(&file, &payload)
             .with_context(|| format!("persist session workspace binding to {}", file.display()))?;
         self.session_workspaces
             .write()
@@ -387,7 +387,7 @@ impl SessionStore {
                 return false;
             }
         }
-        if let Err(error) = crate::platform::filesystem::atomic_write(&file, &payload) {
+        if let Err(error) = crate::platform::filesystem::atomic_write_private(&file, &payload) {
             // Same CodeQL constraint: log the kind, never the path-bearing
             // io message. The session reaches the user through the report's
             // failed list instead.
@@ -516,8 +516,8 @@ impl SessionStore {
         // MAJOR 4).
         for (id, next, sidecar_path) in plan {
             // In-memory legacy-table entries may have no session directory
-            // (never written as a sidecar); atomic_write does not create
-            // parent directories, so create it first (same as
+            // (never written as a sidecar); atomic_write_private does not
+            // create parent directories, so create it first (same as
             // bind_session_workspace).
             let write = (|| -> Result<()> {
                 if let Some(parent) = sidecar_path.parent() {
@@ -535,14 +535,13 @@ impl SessionStore {
                 };
                 let payload = serde_json::to_vec_pretty(&updated)
                     .context("serialize session workspace binding")?;
-                crate::platform::filesystem::atomic_write(&sidecar_path, &payload).with_context(
-                    || {
+                crate::platform::filesystem::atomic_write_private(&sidecar_path, &payload)
+                    .with_context(|| {
                         format!(
                             "rebind session workspace binding {}",
                             sidecar_path.display()
                         )
-                    },
-                )
+                    })
             })();
             if let Err(error) = write {
                 // Log hygiene (round-7 should-fix): the failure list in the
@@ -716,16 +715,18 @@ impl SessionStore {
             };
         }
         match serde_json::to_vec_pretty(&merged) {
-            Ok(payload) => match crate::platform::filesystem::atomic_write(&legacy, &payload) {
-                Ok(()) => true,
-                Err(error) => {
-                    eprintln!(
-                        "[sessions] rewrite legacy session workspaces failed: {}",
-                        error.kind()
-                    );
-                    false
+            Ok(payload) => {
+                match crate::platform::filesystem::atomic_write_private(&legacy, &payload) {
+                    Ok(()) => true,
+                    Err(error) => {
+                        eprintln!(
+                            "[sessions] rewrite legacy session workspaces failed: {}",
+                            error.kind()
+                        );
+                        false
+                    }
                 }
-            },
+            }
             Err(error) => {
                 eprintln!("[sessions] serialize legacy session workspaces failed: {error}");
                 false
