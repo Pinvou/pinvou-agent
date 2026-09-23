@@ -634,7 +634,7 @@ pub(super) async fn send_memory_llm_request(
     let resp = crate::core::model_endpoint::with_opencode_session_header(
         client.post(url).bearer_auth(bridge.memory_api_key()),
         &base_url,
-        "memory-review",
+        &bridge.memory_opencode_conversation_key("memory-review"),
     )
     .json(&body)
     .send()
