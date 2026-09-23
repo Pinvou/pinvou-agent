@@ -2123,9 +2123,18 @@ const ToolWelcomeCard = ({ toolId, t, onSend }) => {
         const scopedText = selectedDesignElement
           ? chatViewCopy.designAdjustSelected(elementLabel || chatViewCopy.designElementFallback, raw)
           : raw;
-        sendChatMessage(scopedText);
+        // Same mention semantics as handleSend: picked refs serialize into the
+        // prepended injection block (suppressed when the feature is off) and
+        // the chips are consumed once the send is accepted — otherwise refs
+        // picked before a design submit would go out unreferenced yet stay
+        // armed for the next plain composer send.
+        const mentionBlock = sessionMentionEnabled ? buildSessionMentionBlock(sessionRefs) : '';
+        const outgoingText = mentionBlock ? mentionBlock + scopedText : scopedText;
+        void Promise.resolve(sendChatMessage(outgoingText)).then((accepted) => {
+          if (accepted) setSessionRefs([]);
+        });
       // eslint-disable-next-line react-hooks/exhaustive-deps -- deps reviewed manually: chatViewCopy only participates in copy concatenation; adding it would just rebuild the callback frequently
-      }, [selectedDesignElement, sendChatMessage]);
+      }, [selectedDesignElement, sendChatMessage, sessionMentionEnabled, sessionRefs]);
       const primaryVoiceDisabled = !bridge.available || voiceBusy;
       const voiceAsrSetup = (bs && bs.voiceAsrSetup) || { open: false };
       const voiceAsrSetupPublicationReady = useRightDockOcclusion(
@@ -2765,8 +2774,13 @@ const ToolWelcomeCard = ({ toolId, t, onSend }) => {
             restored: false,
           };
           setInputText('');
+          // Same mention semantics as handleSend: picked refs serialize into
+          // the prepended injection block (suppressed when the feature is off)
+          // — a voice send must not drop refs the user explicitly picked.
+          const mentionBlock = sessionMentionEnabled ? buildSessionMentionBlock(sessionRefs) : '';
+          const outgoingText = mentionBlock ? mentionBlock + constrained.text : constrained.text;
           try {
-            const result = await sendChatMessage(constrained.text, { ...context, draftOwner: owner });
+            const result = await sendChatMessage(outgoingText, { ...context, draftOwner: owner });
             if (result === true) {
               // The composer was cleared before the await, so deliverVoiceTask's
               // draftUntouched check can never fire onTaskAccepted; its one
