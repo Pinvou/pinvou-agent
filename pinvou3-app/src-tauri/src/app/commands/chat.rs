@@ -98,7 +98,13 @@ pub(crate) async fn chat_with_reservation(
             .map(|attachment| attachment.basename.clone())
             .unwrap_or_default()
     } else {
-        message.trim().to_string()
+        // A leading session-mention injection block (## Referenced chats
+        // contract + JSON metadata, see session-mention.js) is machine
+        // context, not user body text: strip it before auto-titling so a
+        // refs-only first send does not name the session after the contract.
+        super::sessions::strip_session_mention_block(message.trim())
+            .trim()
+            .to_string()
     };
     if let Err(error) = super::sessions::apply_default_session_title(store, &sid, &title_source) {
         log::warn!("[pinvou3][chat] auto title failed for {sid}: {error}");
