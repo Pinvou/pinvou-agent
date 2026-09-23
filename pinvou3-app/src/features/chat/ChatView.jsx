@@ -1827,9 +1827,18 @@ const ToolWelcomeCard = ({ toolId, t, onSend }) => {
         const scopedText = selectedDesignElement
           ? chatViewCopy.designAdjustSelected(elementLabel || chatViewCopy.designElementFallback, raw)
           : raw;
-        sendChatMessage(scopedText);
+        // Same mention semantics as handleSend: picked refs serialize into the
+        // prepended injection block (suppressed when the feature is off) and
+        // the chips are consumed once the send is accepted — otherwise refs
+        // picked before a design submit would go out unreferenced yet stay
+        // armed for the next plain composer send.
+        const mentionBlock = sessionMentionEnabled ? buildSessionMentionBlock(sessionRefs) : '';
+        const outgoingText = mentionBlock ? mentionBlock + scopedText : scopedText;
+        void Promise.resolve(sendChatMessage(outgoingText)).then((accepted) => {
+          if (accepted) setSessionRefs([]);
+        });
       // eslint-disable-next-line react-hooks/exhaustive-deps -- deps reviewed manually: chatViewCopy only participates in copy concatenation; adding it would just rebuild the callback frequently
-      }, [selectedDesignElement, sendChatMessage]);
+      }, [selectedDesignElement, sendChatMessage, sessionMentionEnabled, sessionRefs]);
       const primaryVoiceDisabled = !bridge.available || voiceBusy;
       const voiceAsrSetup = (bs && bs.voiceAsrSetup) || { open: false };
       const voiceAsrSetupPublicationReady = useRightDockOcclusion(
@@ -2434,8 +2443,13 @@ const ToolWelcomeCard = ({ toolId, t, onSend }) => {
             setInputText(constrained.text);
             return false;
           }
+          // Same mention semantics as handleSend: picked refs serialize into
+          // the prepended injection block (suppressed when the feature is off)
+          // — a voice send must not drop refs the user explicitly picked.
+          const mentionBlock = sessionMentionEnabled ? buildSessionMentionBlock(sessionRefs) : '';
+          const outgoingText = mentionBlock ? mentionBlock + constrained.text : constrained.text;
           try {
-            return await sendChatMessage(constrained.text);
+            return await sendChatMessage(outgoingText);
           } catch (error) {
             console.warn('[voice-input] task send failed after writeback', error);
             return false;
@@ -2445,6 +2459,9 @@ const ToolWelcomeCard = ({ toolId, t, onSend }) => {
           // The user may have typed new content during the await send window; clear only when
           // the draft was not modified.
           setInputText(prev => (prev === sentText ? '' : prev));
+          // The voice send consumed the mention chips (sendTask assembled the
+          // block from them), so they clear on acceptance like in handleSend.
+          setSessionRefs([]);
           personalWorkbenchTemplateIdRef.current = null;
           setPersonalWorkbenchTemplateId(null);
         },
