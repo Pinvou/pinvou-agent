@@ -45,6 +45,21 @@ function pinvouSharedtauriChat() {
   // activeSessionId 变化后主动读取目标 working set 的草稿。
 function setComposerDraft(value) { return pinvouSharedtauriChat().setComposerDraft(value); }
 
+  // Composer restores (steer-failure, session-switch mid-send, materialize
+  // abort) hand text back to the user: the session-mention injection block is
+  // a machine contract and the chips were consumed by the send attempt, so
+  // the block is stripped on restore instead of leaking raw JSON into the
+  // input. The contract parser is shared via the window global published by
+  // features/chat/session-mention.js (classic-script bridges do not import
+  // features back — same pattern as the auto-title strip in bridge.js).
+  function stripMentionBlockForComposerRestore(text) {
+    const raw = String(text || "");
+    const splitMention = window.__PINVOU_SESSION_MENTION__ && window.__PINVOU_SESSION_MENTION__.splitSessionMentionBlock;
+    if (!splitMention) return raw;
+    const split = splitMention(raw);
+    return split.refs.length ? split.text.trim() : raw;
+  }
+
   // Single observable, session-scoped path for restoring dropped/failed steer
   // text (self-review P0 + re-review #1) and send text abandoned by a session
   // switch mid-send (issue #406). A bare setComposerDraft is invisible
@@ -59,7 +74,7 @@ function setComposerDraft(value) { return pinvouSharedtauriChat().setComposerDra
   // active draft. Must be called outside runSyncOnSession(sid): inside it,
   // state.activeSessionId is temporarily sid even for background sessions.
   function restoreSteerText(sid, text) {
-    const value = String(text || "");
+    const value = stripMentionBlockForComposerRestore(text);
     if (!sid || !value) return;
     if (sid === state.activeSessionId) {
       const current = String(state.composerDraft || "");
@@ -660,8 +675,16 @@ function pinvouSharedtauriChatN31666() {
         // Recover in the created session or the original draft epoch, never in
         // the unrelated active composer; "restored" stops the caller from doing
         // it a second time, including when recovery stays in a background buffer.
-        restoreTaskDraft(text, draftOwner);
-        return "restored";
+        // The mention injection block never re-enters any composer or buffer
+        // (the chips were consumed by the send attempt) — restore the stripped
+        // body. A refs-only message strips to "": nothing is restorable, so
+        // resolve false and let the caller's non-dispatch recovery keep the
+        // chips armed instead of claiming "restored" (round-8 M1).
+        const restoredBody = stripMentionBlockForComposerRestore(text);
+        const restored = restoredBody
+          ? restoreTaskDraft(restoredBody, draftOwner)
+          : false;
+        return restored ? "restored" : false;
       }
     }
     const sid = state.activeSessionId;

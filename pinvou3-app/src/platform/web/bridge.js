@@ -3925,10 +3925,17 @@ function pinvouSharedwebN247496() {
       // the next message during the await.
       if (!materialized || state.activeSessionId !== materialized) {
         if (materialized) draftOwner.createdSessionId = materialized;
-        restoreTaskDraft(text, draftOwner);
         // Scoped recovery owns the restore; the caller must not append again
         // even when the text is retained in a background buffer or draft epoch.
-        return "restored";
+        // The mention injection block never re-enters any composer or buffer —
+        // restore the stripped body; a refs-only message strips to "" (nothing
+        // restorable), so resolve false and keep the caller's chips armed
+        // (round-8 M1).
+        const restoredBody = stripMentionBlockForComposerRestore(text);
+        const restored = restoredBody
+          ? restoreTaskDraft(restoredBody, draftOwner)
+          : false;
+        return restored ? "restored" : false;
       }
     }
     const sid = state.activeSessionId;
@@ -4048,6 +4055,18 @@ function setComposerDraft(value) { return pinvouSharedweb().setComposerDraft(val
   // failure recovery passes append=true for separator-joined appending
   // (re-review #4 parity).
 function prefillComposer(text, append) { return pinvouSharedweb().prefillComposer(text, append); }
+  // Composer restores (steer-failure, session-switch mid-send, materialize
+  // abort) hand text back to the user: the session-mention injection block is
+  // a machine contract and the chips were consumed by the send attempt, so
+  // the block is stripped on restore instead of leaking raw JSON into the
+  // input (same window-global parser as the auto-title strip below).
+  function stripMentionBlockForComposerRestore(text) {
+    const raw = String(text || "");
+    const splitMention = window.__PINVOU_SESSION_MENTION__ && window.__PINVOU_SESSION_MENTION__.splitSessionMentionBlock;
+    if (!splitMention) return raw;
+    const split = splitMention(raw);
+    return split.refs.length ? split.text.trim() : raw;
+  }
   // Session-scoped composer text restore for sends abandoned by a session
   // switch mid-send (issue #406; mirrors the tauri bridge's restoreSteerText).
   // A bare setComposerDraft is invisible (the composer is React-local state
@@ -4058,7 +4077,7 @@ function prefillComposer(text, append) { return pinvouSharedweb().prefillCompose
   // targets the active working set and would leak background text into the
   // active draft.
   function restoreComposerText(sid, text) {
-    const value = String(text || "");
+    const value = stripMentionBlockForComposerRestore(text);
     if (!sid || !value) return;
     if (sid === state.activeSessionId) {
       const current = String(state.composerDraft || "");
