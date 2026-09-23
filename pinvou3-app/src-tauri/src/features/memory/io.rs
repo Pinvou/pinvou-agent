@@ -408,8 +408,13 @@ pub fn archive_recent_work(id: &str) -> io::Result<bool> {
         write_recent_work_unlocked(&items)?;
     }
     if !changed {
-        changed = archive_timed_memory_unlocked("current_focus", &id)?
-            || archive_timed_memory_unlocked("recent_activity", &id)?;
+        // Consult BOTH timed stores: an id can live in each, and a find in
+        // one must not short-circuit the other's archive (the recent-work
+        // loop above archives all matches, so the contract is "archive it
+        // everywhere it appears").
+        let archived_focus = archive_timed_memory_unlocked("current_focus", &id)?;
+        let archived_activity = archive_timed_memory_unlocked("recent_activity", &id)?;
+        changed = archived_focus || archived_activity;
     }
     Ok(changed)
 }
