@@ -1,12 +1,12 @@
 # Pinvou CodeWhale Fork Policy
 
-> Updated: 2026-09-21. r2 closure complete: the immutable tag `pinvou-v0.9.12-r2` is cut at `6f780290f`, with the parent gitlink, the maintenance branch and the tag all pointing at the same commit.
+> Updated: 2026-09-23. r3 closure complete: the immutable tag `pinvou-v0.9.12-r3` is cut at `61cb769be`, with the parent gitlink, the maintenance branch and the tag all pointing at the same commit.
 > Canonical Chinese policy: [`docs/fork-policy.md`](fork-policy.md). This English page is a condensed summary; the Chinese version is the complete, authoritative process.
 
 ## Baseline
 
 - Upstream: `Hmbown/CodeWhale` `v0.9.12` at `dcd4c200f72f0c1ffd60d8e7f6850313db879fc5`.
-- Current fork baseline: `Pinvou/CodeWhale:pinvou3-clean` at head `6f780290f1c35e8a3c5dff86b4f76da142744b0c` (= the immutable tag `pinvou-v0.9.12-r2`), with thirty-nine DCO-signed-off commits; the immutable tag `pinvou-v0.9.12-r1` stays pinned at the r1 closure `1fafee7e26b60a59457a43bce50c63aa2ad9dbaf` (fifteen commits formed through CodeWhale PR #44 and fast-follow PR #46), followed by twenty-four squash-merged PRs: thirteen from the 2026-09-10/11 backlog batch, five from the 2026-09-17 batch (#56/#58/#59/#60/#61), three from the 2026-09-18 batch (#55/#57/#62), one from the 2026-09-20 batch (#66), and two from the 2026-09-21 batch (#64/#67).
+- Current fork baseline: `Pinvou/CodeWhale:pinvou3-clean` at head `61cb769be5b33abc64f64da4272f5b39a8b6c1fd` (= the immutable tag `pinvou-v0.9.12-r3`), with forty-nine DCO-signed-off commits; the immutable tag `pinvou-v0.9.12-r1` stays pinned at the r1 closure `1fafee7e26b60a59457a43bce50c63aa2ad9dbaf` (fifteen commits formed through CodeWhale PR #44 and fast-follow PR #46), followed by thirty-four squash-merged PRs: thirteen from the 2026-09-10/11 backlog batch, five from the 2026-09-17 batch (#56/#58/#59/#60/#61), three from the 2026-09-18 batch (#55/#57/#62), one from the 2026-09-20 batch (#66), two from the 2026-09-21 batch (#64/#67), and nine from the 2026-09-22/23 batch (#63/#65/#68/#69/#70/#71/#72/#73/#76, plus windows-compile fix #77).
 - The public pre-upgrade rollback point is immutable tag `pinvou-v0.9.5-r13` at `f853f8f1566c57e6be40d5439a222a932aa79ef5`; local `backup/pre-v0.9.12-sync` at the same SHA is only a convenience ref.
 - r1 is the protected consumable baseline. At each rN closure the parent gitlink, maintenance branch, and immutable tag resolve to the same commit.
 - Transition exemption (from 2026-09-11): between two rN closures the parent gitlink may advance along `pinvou3-clean` ahead of the immutable tag. During the transition `scripts/verify-public-submodule.sh` asserts gitlink equals the public maintenance-branch head and the immutable tag stays pinned at its closure commit; the next rN closure cuts a fresh immutable tag at the merged head and restores three-way equality.
