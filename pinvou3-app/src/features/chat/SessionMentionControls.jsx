@@ -1,3 +1,4 @@
+import { useEffect, useRef } from 'react';
 import { MessageSquare, X } from '../../components/icons.jsx';
 
 /**
@@ -23,10 +24,17 @@ export function SessionMentionChips({ refs, onRemove, copy, disabled = false, di
   return (
     <div data-testid="session-mention-chips" className="flex flex-wrap gap-1.5 mb-2 px-2">
       {refs.map((ref) => (
+        // biome-ignore lint/a11y/useAriaPropsSupportedByRole: the chip is a labelled pill (not a widget role); aria-disabled communicates the feature-off state to assistive tech
         <span
           key={ref.sessionId}
           className={disabled ? CHIP_DISABLED_CLS : CHIP_CLS}
           title={disabled ? disabledNotice : ref.title}
+          // The feature-off reason must not be color/tooltip-only: make the
+          // chip focusable so the disabled notice is reachable by keyboard,
+          // and expose it to assistive tech via aria-disabled + label.
+          tabIndex={disabled ? 0 : undefined}
+          aria-disabled={disabled || undefined}
+          aria-label={disabled ? `${ref.title || ref.sessionId} — ${disabledNotice}` : undefined}
         >
           <MessageSquare size={13} className="shrink-0" />
           <span className="min-w-0 truncate">{ref.title || ref.sessionId}</span>
@@ -48,6 +56,12 @@ export function SessionMentionChips({ refs, onRemove, copy, disabled = false, di
 
 /** Session candidate list of the @ panel (the keyboard selection is driven by selectedIndex; Enter/click picks). */
 export function SessionMentionMenu({ candidates, selectedIndex, onSelect, onHover, copy }) {
+  const selectedOptionRef = useRef(null);
+  // Keep the keyboard-highlighted option visible while ArrowUp/ArrowDown move
+  // the selection inside the scrollable list.
+  useEffect(() => {
+    if (selectedOptionRef.current) selectedOptionRef.current.scrollIntoView({ block: 'nearest' });
+  }, [selectedIndex]);
   return (
     <div data-testid="session-mention-menu" role="listbox" aria-label={copy.menuTitle}>
       <div className="px-3 py-2 text-[12px] font-medium text-[#85888D] dark:text-[#9AA0A6]">
@@ -61,8 +75,10 @@ export function SessionMentionMenu({ candidates, selectedIndex, onSelect, onHove
         candidates.map((candidate, index) => (
           <button
             key={candidate.sessionId}
+            ref={index === selectedIndex ? selectedOptionRef : null}
             type="button"
             role="option"
+            id={'session-mention-option-' + candidate.sessionId}
             aria-selected={index === selectedIndex}
             data-testid={'session-mention-option-' + candidate.sessionId}
             onMouseEnter={() => onHover(index)}
@@ -130,6 +146,10 @@ export function SessionMentionCards({ refs, knownSessionIds, onOpenSession, copy
             key={ref.sessionId + '-' + index}
             data-testid={'session-mention-card-' + ref.sessionId}
             title={disabled ? disabledNotice : (known ? label : copy.cardUnavailable)}
+            // Focusable in the feature-off state so the disabled reason is
+            // not tooltip-only on a non-focusable element.
+            tabIndex={disabled ? 0 : undefined}
+            aria-disabled={disabled || undefined}
             // Alive but without a navigation callback (non-main-timeline
             // contexts): keep the normal colors, only unclickable — the dead
             // grey is reserved for deleted sessions and the feature-off state.
