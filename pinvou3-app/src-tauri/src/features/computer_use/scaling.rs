@@ -104,8 +104,7 @@ impl ScaleMap {
     }
 
     /// Screenshot-to-device-pixel scale ratio on the x axis (shown to the model in result
-    /// text). Screenshot scaling is uniform, so this matches [`Self::factor_y`] up to
-    /// rounding; compare both when a non-uniform ratio would mislead.
+    /// text). Screenshot scaling is uniform, so a single ratio covers both axes.
     pub fn factor(&self) -> f64 {
         self.factor_x()
     }
@@ -113,10 +112,6 @@ impl ScaleMap {
     /// Screenshot-to-device scale ratio per axis (`shot_w/dev_w` and `shot_h/dev_h`).
     pub fn factor_x(&self) -> f64 {
         f64::from(self.shot_w) / f64::from(self.dev_w)
-    }
-
-    pub fn factor_y(&self) -> f64 {
-        f64::from(self.shot_h) / f64::from(self.dev_h)
     }
 
     /// Screenshot coordinates → global input injection coordinates (what is sent to the

@@ -1201,6 +1201,7 @@ impl ConfirmActionDetails {
                 });
                 details.end_point = Some(ConfirmPoint { x: end.0, y: end.1 });
             }
+            // T3 gate excludes hover/scroll/observe, so these arms are currently unreachable.
             ComputerUseAction::MouseMove { x, y } | ComputerUseAction::ElementAtPoint { x, y } => {
                 details.point = Some(ConfirmPoint { x: *x, y: *y });
             }
@@ -1353,12 +1354,6 @@ fn request_confirmation(
     )
 }
 
-/// Whether the action attaches a screenshot (the single source of truth is
-/// [`ComputerUseAction::attaches_screenshot`]).
-fn attaches_screenshot(action: &ComputerUseAction) -> bool {
-    action.attaches_screenshot()
-}
-
 fn consent_label(action: &ComputerUseAction, confirmed: bool) -> String {
     match action.class() {
         ActionClass::Observe => "observe".to_string(),
@@ -1415,7 +1410,7 @@ fn run(parts: Parts, parsed: ParsedCall, workspace: PathBuf) -> ToolResult {
         // (review finding; the mint side refuses stopped/disabled as a second
         // line of defense).
         if action.class() == ActionClass::Input {
-            if let Err(rejection) = parts.shared.verify_input_action(&parts.session_id) {
+            if let Err(rejection) = parts.shared.begin_input_action(&parts.session_id) {
                 return Err(rejection.message());
             }
         }
@@ -1515,7 +1510,7 @@ fn run(parts: Parts, parsed: ParsedCall, workspace: PathBuf) -> ToolResult {
                             // now off (the mint-side refusal stays as the
                             // backstop for the race window that remains).
                             if let Err(rejection) =
-                                parts.shared.verify_input_action(&parts.session_id)
+                                parts.shared.begin_input_action(&parts.session_id)
                             {
                                 return Err(rejection.message());
                             }
@@ -1562,7 +1557,7 @@ fn run(parts: Parts, parsed: ParsedCall, workspace: PathBuf) -> ToolResult {
         // discarded when the gate rejects.
         match action.class() {
             ActionClass::Input => {
-                if let Err(rejection) = parts.shared.verify_input_action(&parts.session_id) {
+                if let Err(rejection) = parts.shared.begin_input_action(&parts.session_id) {
                     return Err(rejection.message());
                 }
             }
@@ -1617,7 +1612,7 @@ fn run(parts: Parts, parsed: ParsedCall, workspace: PathBuf) -> ToolResult {
             .map_err(|e| backend_error_text(&e))?;
 
         // Follow-up screenshot.
-        if attaches_screenshot(&action) {
+        if action.attaches_screenshot() {
             match &action {
                 ComputerUseAction::Screenshot => {}
                 ComputerUseAction::Wait { ms } => {
@@ -1833,6 +1828,7 @@ fn action_summary(action: &ComputerUseAction) -> String {
         } => {
             format!("hold {} for {ms}ms", summarize_chord(keys, chord))
         }
+        // T3 gate excludes hover/scroll/observe, so these arms are currently unreachable.
         ComputerUseAction::Scroll {
             direction,
             amount,
@@ -1840,6 +1836,7 @@ fn action_summary(action: &ComputerUseAction) -> String {
         } => format!("scroll {} x{amount} at {at:?}", direction.as_str()),
         ComputerUseAction::MouseDown { button } => format!("{} mouse down", button.as_str()),
         ComputerUseAction::MouseUp { button } => format!("{} mouse up", button.as_str()),
+        // T3 gate excludes hover/scroll/observe, so these arms are currently unreachable.
         ComputerUseAction::MouseMove { x, y } => format!("mouse_move to ({x}, {y})"),
         other => other.name().to_string(),
     }
@@ -1863,7 +1860,7 @@ fn execute_action(
     // that gap cancels only the finished move and this gate is stale by
     // then. Observe actions never touch hardware and skip this.
     if action.class() == ActionClass::Input {
-        if let Err(rejection) = parts.shared.verify_input_action(&parts.session_id) {
+        if let Err(rejection) = parts.shared.begin_input_action(&parts.session_id) {
             return Err(ComputerUseError::failed(rejection.message()));
         }
     }
@@ -1984,7 +1981,7 @@ fn execute_action(
                 // and the scroll request below would not inherit a stop that
                 // landed in between (its cancel flag registers only now).
                 // Re-verify so a post-stop scroll cannot inject.
-                if let Err(rejection) = parts.shared.verify_input_action(&parts.session_id) {
+                if let Err(rejection) = parts.shared.begin_input_action(&parts.session_id) {
                     return Err(ComputerUseError::failed(rejection.message()));
                 }
             }
@@ -2013,7 +2010,7 @@ fn execute_action(
                 // landed in between (its cancel flag registers only now).
                 // Re-verify so a post-stop click cannot land after the
                 // stop's emergency releases.
-                if let Err(rejection) = parts.shared.verify_input_action(&parts.session_id) {
+                if let Err(rejection) = parts.shared.begin_input_action(&parts.session_id) {
                     return Err(ComputerUseError::failed(rejection.message()));
                 }
             }

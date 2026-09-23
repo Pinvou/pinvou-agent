@@ -6,8 +6,6 @@
 //! 低层能力进全局 platform」的边界从这里供数；`connectors::platform` 的 `lock_json` /
 //! `executable_name` 保留为委托，既有调用方零改动。
 
-use std::path::Path;
-
 use serde::Deserialize;
 
 #[cfg(all(target_os = "linux", target_arch = "aarch64"))]
@@ -118,12 +116,6 @@ fn load_pins() -> Option<Vec<(String, ConnectorArtifactPin)>> {
 pub fn locked_cli_path(name: &str) -> Option<std::path::PathBuf> {
     let pin = artifact_pin(name)?;
     Some(super::paths::assets_cli_dir(name, &pin.version).join(executable_name(name)))
-}
-
-/// 文件 SHA-256（小写 hex），供存量 CLI 二进制对照 lock 表。
-/// Delegates to `hashing::sha256_file` so the two streaming digest implementations cannot drift.
-pub fn file_sha256_hex(path: &Path) -> std::io::Result<String> {
-    super::hashing::sha256_file(path)
 }
 
 #[cfg(test)]

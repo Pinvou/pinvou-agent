@@ -14,6 +14,36 @@ use super::super::types::ScrollDirection;
 /// clamp at all — both go through this now.
 pub(crate) const MAX_SCROLL_CLICKS: u32 = 100;
 
+use super::super::types::ComputerUseError;
+
+/// Merge the interpolated-move and button-release results of `drag`. The
+/// release always runs, but `Result::and` kept only the first error: when the
+/// release failed too, callers never learned that the mouse button may still
+/// be pressed. Single-failure cases keep the ORIGINAL error kind: a release
+/// blocked by TCC/UIPI is `unavailable` — the "run elevated/regrant
+/// permission" classification upstreams rely on must survive the
+/// stranded-button annotation (this was a per-platform copy that had drifted:
+/// macOS re-wrapped everything as `failed`, Linux omitted the stranded-button
+/// note in the release-only branch).
+pub(crate) fn combine_drag_errors(
+    move_result: Result<(), ComputerUseError>,
+    release_result: Result<(), ComputerUseError>,
+) -> Result<(), ComputerUseError> {
+    match (move_result, release_result) {
+        (Ok(()), Ok(())) => Ok(()),
+        // Only the path move failed and the release succeeded: report the
+        // move error unchanged.
+        (Err(move_error), Ok(())) => Err(move_error),
+        (Ok(()), Err(release)) => {
+            Err(release.same_kind(format!("{release}; the mouse button may still be pressed")))
+        }
+        (Err(move_error), Err(release)) => Err(move_error.same_kind(format!(
+            "drag move failed ({move_error}); its release also failed ({release}); \
+             the mouse button may still be pressed"
+        ))),
+    }
+}
+
 /// Scroll direction → enigo (axis, signed clicks). enigo convention:
 /// Vertical positive is down / negative up, Horizontal positive is right /
 /// negative left.
