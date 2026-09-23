@@ -55,7 +55,7 @@ Agent，开始后不能切换 Agent 或工作目录（原生会话同样生效�
 
 | Agent | 最低版本 | 版本输出示例 | 依据 |
 |---|---|---|---|
-| Codex | 0.144.6 | `codex-cli 0.146.0` | `codex-acp` 1.1.5 的依赖下界 |
+| Codex | 0.144.6 | `codex-cli 0.146.0` | 现有运行时兼容门禁（来自旧 Bridge 的依赖下界；随 Bridge 升级另行校准） |
 | Claude Code | 2.0.0 | `2.1.163 (Claude Code)` | `claude-agent-sdk` 要求 |
 | Kimi | 0.9.0 | `0.31.1`（裸 semver） | `kimi acp` 引入版本；旧 Python 版 kimi-cli 已废弃，版本解析失败一律视为不合规 |
 

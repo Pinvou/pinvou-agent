@@ -4100,7 +4100,7 @@ export function CodexAcpView({
                   )}
                 </div>
                 {busy ? (
-                  <button type="button" onClick={cancel} className="w-9 h-9 rounded-full flex items-center justify-center bg-red-500/10 text-red-500 hover:bg-red-500/15"><StopCircle size={18} /></button>
+                  <button type="button" onClick={cancel} aria-label={codexCopy.stop} title={codexCopy.stop} className="w-9 h-9 rounded-full flex items-center justify-center bg-red-500/10 text-red-500 hover:bg-red-500/15"><StopCircle size={18} /></button>
                 ) : (
                   <>
                     <VoiceComposerButton

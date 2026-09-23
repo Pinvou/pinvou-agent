@@ -270,6 +270,16 @@ assert.equal(
   'agent_stall_settled',
   'the notice survives its own interrupted completion so the ending stays explained',
 );
+for (const kind of ['agent_stall', 'agent_stall_cancel']) {
+  assert.equal(
+    latestAgentRuntimeNotice([
+      envelope(1, 'runtime_notice', { kind }),
+      envelope(2, 'turn_completed', { status: 'Interrupted' }),
+    ]),
+    null,
+    `${kind} describes a running turn and must clear when that turn ends`,
+  );
+}
 assert.equal(
   latestAgentRuntimeNotice([
     envelope(1, 'runtime_notice', { kind: 'cancel_timeout' }),

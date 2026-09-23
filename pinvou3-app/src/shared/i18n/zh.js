@@ -31,7 +31,7 @@ const conversationZh = {
 
 const codexZh = {
   unknownDirectory:'未知目录', temporaryWorkspace:'临时工作区', projectMissing:'原项目目录已不存在',
-  applyingConfig:'配置应用中…', workspace:'工作区', workspaceTitle:'查看 Agent 工作区文件和更改',
+  applyingConfig:'配置应用中…', stop:'停止', workspace:'工作区', workspaceTitle:'查看 Agent 工作区文件和更改',
   branches:'分支', branchTooltip:'查看和切换 Git 分支',
   branchSwitchDirtyConfirm:(branch, count)=>`当前工作区有 ${count} 个未提交的更改，请选择如何切换到「${branch}」：`,
   branchSwitchCancel:'取消',
@@ -132,7 +132,7 @@ const codexZh = {
   agentStallCancelHint:'Agent 持续没有响应，已自动请求停止；正在等待它收尾。',
   agentStallSettledHint:'Agent 长时间没有响应，此回合已按中断收尾；可以重新发送或继续对话。',
   agentCancelTimeoutHint:'「停止」没有得到 Agent 回应，此回合已按中断收尾。',
-  agentStderrHint:'来自 Agent 适配器的脱敏报错文本（会话日志里也有记录）。',
+  agentStderrHint:'已脱敏展示 Agent 适配器的报错；原文仅记录在会话日志中。',
   agentStderrNoDetailHint:'Agent 适配器报告了异常；详细原文仅保留在桌面会话日志中。',
   agentRestarted:agent=>`${agent} 会话已重启`,
   agentStallRestartHint:'同一会话在短时间内反复无响应，下一条消息会换一个全新的 Agent 会话继续；能否带上前面的对话取决于该 Agent 的恢复能力，切换后我们会再告知一次。',

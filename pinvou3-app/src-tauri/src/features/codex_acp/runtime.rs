@@ -6,8 +6,12 @@ use std::time::Duration;
 use anyhow::{Context, Result, bail};
 use wait_timeout::ChildExt;
 
-/// codex-acp 1.1.5 官方依赖的最低 Codex CLI 版本。
-/// 所有运行时来源都必须满足，显式覆盖路径也不能绕过兼容性门禁。
+/// Compatibility floor retained from the legacy codex-acp bridge.
+///
+/// Every runtime source, including an explicit override, must satisfy this
+/// gate. Recalibrating it for the bundled 1.6.2 bridge requires a separate
+/// compatibility change so an existing installation is not rejected here
+/// without its own evidence and migration path.
 pub const MIN_CODEX_VERSION: &str = "0.144.6";
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize)]

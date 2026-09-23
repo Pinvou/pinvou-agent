@@ -691,8 +691,9 @@ pub struct EventBridge {
     web_delivery: OrderedWebDelivery,
     tools: Arc<Mutex<HashMap<String, ToolCall>>>,
     timeline_writer: Arc<Mutex<TimelineWriter>>,
-    /// Agent 侧活动时钟（见 [`super::stall`]）：入站通知、权限/询问请求与
-    /// prompt 响应会推进它，回合静默看门狗据此判断 Agent 是否还在动。
+    /// Agent-side activity clock (see [`super::stall`]). Inbound notifications
+    /// and permission/elicitation requests advance it; a prompt response exits
+    /// the stall loop instead of advancing this clock.
     activity: super::stall::ActivityClock,
 }
 
@@ -780,7 +781,7 @@ impl EventBridge {
         self.current_turn.read().clone()
     }
 
-    /// 记录一次 Agent 侧活动（入站通知、权限/询问请求、prompt 响应）。
+    /// Record inbound Agent activity (notifications or permission/elicitation requests).
     pub fn note_agent_activity(&self) {
         super::stall::mark_activity(&self.activity);
     }
