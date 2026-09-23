@@ -2371,13 +2371,20 @@ const ToolWelcomeCard = ({ toolId, t, onSend }) => {
         const editSessionId = activeSessionId;
         if (!editSessionId) return;
         const nextText = String(queuedEdit.text || '').trim();
-        if (!nextText && !(item.attachments || []).length) {
+        const mentionRefs = Array.isArray(queuedEdit.mentionRefs) ? queuedEdit.mentionRefs : [];
+        if (!nextText && !mentionRefs.length && !(item.attachments || []).length) {
           flashQueuedNotice(editSessionId, { queuedId: item.id, text: t.queuedEmpty });
           return;
         }
         if (!bridge.chat || typeof bridge.chat.editQueued !== 'function') return;
+        // Rebuild the injection block from the refs parsed when the edit
+        // started (same edit-resend gate as UserBubble.commit: with the
+        // feature off only the body is saved, the block is never re-injected).
+        const outgoing = sessionMentionEnabled && mentionRefs.length
+          ? buildSessionMentionBlock(mentionRefs) + nextText
+          : nextText;
         const completed = await runQueuedAction(item.id, () => (
-          bridge.chat.editQueued(editSessionId, item.id, nextText)
+          bridge.chat.editQueued(editSessionId, item.id, outgoing)
         ));
         if (completed) {
           setQueuedEdits(current => {
@@ -2934,9 +2941,16 @@ const ToolWelcomeCard = ({ toolId, t, onSend }) => {
                             delete next[activeSessionId];
                             return next;
                           });
+                          // Same editing contract as the UserBubble editor: the
+                          // textarea holds only the body; the mention injection
+                          // block is parsed out into refs and rebuilt on save,
+                          // so editing never exposes (or silently drops) the
+                          // JSON contract line.
+                          const split = splitSessionMentionBlock(q.text);
+                          const body = split.text;
                           setQueuedEdits(current => ({
                             ...current,
-                            [activeSessionId]: { id: q.id, text: String(q.text || ''), initial: String(q.text || '') },
+                            [activeSessionId]: { id: q.id, text: body, initial: body, mentionRefs: dedupeSessionRefs(split.refs) },
                           }));
                         }}
                           data-testid={`queued-message-edit-action-${q.id}`}

@@ -807,8 +807,8 @@ test('开关 UI 挂在模型列表下方，经 interaction 桥调后端', () => 
   const chatBridgeSource2 = read('src', 'platform', 'tauri', 'bridge', 'chat.js');
   assert.match(
     chatBridgeSource2,
-    /prefillComposer\(text,\s*true\);\s*(?:\/\/[^\n]*\n\s*)*return "restored";/,
-    '物化中止时输入必须回填输入框，不得静默丢字（复核 P1；恢复类 prefill 带 append=true，返回 "restored" 阻止调用方二次恢复造成重复——issue #406）',
+    /prefillComposer\(stripMentionBlockForComposerRestore\(text\),\s*true\);\s*(?:\/\/[^\n]*\n\s*)*return "restored";/,
+    '物化中止时输入必须回填输入框，不得静默丢字（复核 P1；恢复类 prefill 带 append=true 且剥离会话引用注入块——前端 chips 已随发送消费，返回 "restored" 阻止调用方二次恢复造成重复——issue #406）',
   );
   const personasBridgeSource = read('src', 'platform', 'tauri', 'bridge', 'personas.js');
   assert.doesNotMatch(
