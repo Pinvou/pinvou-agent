@@ -43,6 +43,21 @@ function pinvouSharedtauriChat() {
 function getComposerDraft() { return pinvouSharedtauriChat().getComposerDraft(); }
 function setComposerDraft(value) { return pinvouSharedtauriChat().setComposerDraft(value); }
 
+  // Composer restores (steer-failure, session-switch mid-send, materialize
+  // abort) hand text back to the user: the session-mention injection block is
+  // a machine contract and the chips were consumed by the send attempt, so
+  // the block is stripped on restore instead of leaking raw JSON into the
+  // input. The contract parser is shared via the window global published by
+  // features/chat/session-mention.js (classic-script bridges do not import
+  // features back — same pattern as the auto-title strip in bridge.js).
+  function stripMentionBlockForComposerRestore(text) {
+    const raw = String(text || "");
+    const splitMention = window.__PINVOU_SESSION_MENTION__ && window.__PINVOU_SESSION_MENTION__.splitSessionMentionBlock;
+    if (!splitMention) return raw;
+    const split = splitMention(raw);
+    return split.refs.length ? split.text.trim() : raw;
+  }
+
   // Single observable, session-scoped path for restoring dropped/failed steer
   // text (self-review P0 + re-review #1) and send text abandoned by a session
   // switch mid-send (issue #406). A bare setComposerDraft is invisible
@@ -57,7 +72,7 @@ function setComposerDraft(value) { return pinvouSharedtauriChat().setComposerDra
   // active draft. Must be called outside runSyncOnSession(sid): inside it,
   // state.activeSessionId is temporarily sid even for background sessions.
   function restoreSteerText(sid, text) {
-    const value = String(text || "");
+    const value = stripMentionBlockForComposerRestore(text);
     if (!sid || !value) return;
     if (sid === state.activeSessionId) {
       const current = String(state.composerDraft || "");
@@ -581,9 +596,11 @@ function pinvouSharedtauriChatN31666() {
       if (!materialized) {
         // 物化中止（如草稿态多智能体开关落盘失败 / await 期间切走）：把输入放回
         // 输入框，不静默丢字；错误提示由 ensureSession 内如实给出（复核 P1）。
+        // The mention injection block never re-enters the composer (the chips
+        // were consumed by the send attempt), only the body is restored.
         // append=true: failure-recovery semantics — the user may have started
         // the next message during the await; replacing would clobber it.
-        prefillComposer(text, true);
+        prefillComposer(stripMentionBlockForComposerRestore(text), true);
         // The prefill IS the restore; "restored" stops the caller from doing
         // it a second time (the prefill lands asynchronously and would then
         // append a duplicate).
