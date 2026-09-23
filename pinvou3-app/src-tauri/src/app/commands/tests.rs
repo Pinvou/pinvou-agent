@@ -1228,8 +1228,18 @@ fn resolve_artifact_path_relative_joins_active_workspace() {
     let _g = crate::platform::paths::tests::ENV_LOCK
         .lock()
         .unwrap_or_else(|p| p.into_inner());
+    // Round-12 review: this used a fixed `/tmp/pinvou3-resolve-test`, which
+    // collides across parallel test binaries and leaked the env value after
+    // the test. Unique dir + restore-on-drop like the other env tests.
+    let home = std::env::temp_dir().join(format!(
+        "pinvou3-resolve-test-{}-{}",
+        std::process::id(),
+        crate::platform::paths::tests::unique_suffix()
+    ));
+    std::fs::create_dir_all(&home).expect("create temp home");
+    let _env = crate::platform::test_support::EnvRestore::capture(&["PINVOU3_HOME"]);
     // SAFETY: holding platform::paths::tests::ENV_LOCK; env writes serialized in-process.
-    unsafe { std::env::set_var("PINVOU3_HOME", "/tmp/pinvou3-resolve-test") };
+    unsafe { std::env::set_var("PINVOU3_HOME", &home) };
     let store = SessionStore::boot().expect("boot");
 
     // 无 active session 且无显式 session → 相对路径原样返回(行为同旧版)
@@ -1268,6 +1278,8 @@ fn resolve_artifact_path_relative_joins_active_workspace() {
         resolve_artifact_path(&absolute, Some("sess-owner"), &store).expect("absolute artifact"),
         absolute
     );
+
+    let _ = std::fs::remove_dir_all(&home);
 }
 
 #[test]
