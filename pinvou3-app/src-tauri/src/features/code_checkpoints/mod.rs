@@ -730,32 +730,23 @@ fn load_index(ledger_root: &Path) -> Result<CheckpointIndex> {
     };
     match serde_json::from_slice(&bytes) {
         Ok(index) => Ok(index),
-        Err(parse_error) => {
+        Err(_parse_error) => {
             // 损坏的 index 不得让该会话的 checkpoint 功能永久失效（临时会话的
             // 账本就在 agent 可见的工作目录内，agent 的工具可能写坏它）：隔离
             // 保留现场后从空索引重建——与 sidecar 的损坏处理同款，共用
             // platform 的纳秒唯一名原语（秒级后缀在同一秒内的二次损坏会覆盖
-            // 首次取证）。代价：影子仓库里的历史快照失去索引（不可列不可用，
-            // 对象随 gc 回收），此后快照能力恢复。
+            // 首次取证）。代价：影子仓库里的历史快照失去索引（不可列不可用；
+            // 注意其 refs/checkpoints/* 引用并不被本路径清扫，对象因仍可达
+            // 不会被 gc 回收，属已披露的预存在限制），此后快照能力恢复。
+            // Neither the quarantine path (it lives inside the session
+            // directory) nor the serde message (it can quote the corrupt
+            // bytes) may reach stderr — same cleartext-logging surface as the
+            // sidecar persist logs. The ledger root in context already
+            // identifies the write, and the evidence stays in the quarantined
+            // file for inspection.
             match crate::platform::filesystem::quarantine_corrupt_file(&path) {
-                // The quarantine path lives inside the session directory, so
-                // printing it would route the session id into stderr (same
-                // cleartext-logging surface as the sidecar persist logs);
-                // the ledger root in context already identifies the write.
-                Ok(quarantine) => {
-                    match quarantine
-                        .file_name()
-                        .map(|name| name.to_string_lossy().into_owned())
-                    {
-                        Some(name) => eprintln!(
-                            "[checkpoints] checkpoint 索引损坏，隔离为 {name} 后从空索引重建: {parse_error:#}"
-                        ),
-                        None => eprintln!(
-                            "[checkpoints] checkpoint 索引损坏，已隔离并从空索引重建: {parse_error:#}"
-                        ),
-                    }
-                }
-                Err(error) => eprintln!("[checkpoints] 隔离损坏索引失败: {error:#}"),
+                Ok(_) => eprintln!("[checkpoints] checkpoint 索引损坏，已隔离并从空索引重建"),
+                Err(_) => eprintln!("[checkpoints] 隔离损坏索引失败（现场未保留），从空索引重建"),
             }
             Ok(CheckpointIndex {
                 version: 1,
@@ -772,9 +763,12 @@ fn save_index(ledger_root: &Path, index: &CheckpointIndex) -> Result<()> {
             .with_context(|| format!("创建 checkpoint 目录失败: {}", parent.display()))?;
     }
     let payload = serde_json::to_vec_pretty(index).context("序列化 checkpoint 索引失败")?;
-    // 索引与转录同目录且 label 字段携带用户消息前缀,必须与转录同权(0600):
-    // 走私有原子写,umask 默认 0644 会把每轮输入的前缀暴露给同机其他用户。
-    // 原子替换保住既有语义:任意时刻落盘的都是完整索引(损坏走 quarantine)。
+    // The index lives next to the transcripts and its `label` field carries
+    // user-message prefixes, so it must match the transcripts' privacy
+    // (0600): private atomic write — a umask-default 0644 would expose every
+    // turn's input prefix to other local users. Atomic replace keeps the
+    // existing semantics: whatever lands on disk is always a complete index
+    // (corruption goes through quarantine).
     crate::platform::filesystem::atomic_write_private(&path, &payload)
         .with_context(|| format!("保存 checkpoint 索引失败: {}", path.display()))?;
     Ok(())
@@ -797,8 +791,9 @@ pub fn create_checkpoint(
     create_checkpoint_preserving(ledger_root, execution_root, turn, kind, label, &[])
 }
 
-/// 展示标签落盘前的归一：去首尾空白并截断到 80 字符（按字符不按字节，CJK
-/// 标签不会被腰斩成半个字符）。空标签原样落盘。
+/// Display-label normalization before persisting: trims and caps at 80
+/// characters (by chars, never bytes — a CJK label is never split mid
+/// character). An empty label persists as-is.
 fn normalize_checkpoint_label(label: &str) -> String {
     label.trim().chars().take(80).collect()
 }
@@ -1038,12 +1033,15 @@ fn secret_path_matches(path: &str) -> bool {
     })
 }
 
-/// diff --git 段头是否指向敏感文件。C-quoted 形式（路径含引号/tab/非 ASCII 时
-/// git 输出 `diff --git "a/x" "b/x"`）按引号段提取 a/ 与 b/ 路径；未加引号形式
-/// 的路径可含空格（纯空格不触发 C-quoting），按最后一个 ` b/` 出现位置切分两个
-/// 路径（与 git 消费者同法；即使误切，方向也偏保守——多剔除而非漏剔除）；
-/// 二进制文件的 diff 段没有 ---/+++ 行，段头解析是它们唯一的判定途径，token
-/// 扫描只作最后兜底。
+/// Whether a `diff --git` section header points at a secret file. For the
+/// C-quoted form (git emits `diff --git "a/x" "b/x"` when the path contains
+/// quotes/tabs/non-ASCII) the a/ and b/ paths are extracted by quoted
+/// segment; unquoted paths may contain spaces (plain spaces do not trigger
+/// C-quoting), so both paths are split at the LAST ` b/` occurrence (same
+/// trick git consumers use). A mis-split errs conservative — over-removing
+/// rather than leaking — except for exotic quoted-binary shapes, disclosed.
+/// Binary-file sections have no ---/+++ lines, so the header parse is their
+/// only predicate; the token scan is the final fallback.
 fn diff_section_is_secret(header: &str) -> bool {
     if let Some(rest) = header.strip_prefix("diff --git \"") {
         // C-quoted 形式：按引号段提取 a/ 与 b/ 路径（路径可含空格）。
@@ -1083,9 +1081,11 @@ fn diff_section_is_secret(header: &str) -> bool {
         .any(|token| secret_path_matches(token))
 }
 
-/// `--- a/<path>` / `+++ b/<path>` 行的路径判定（整行剩余部分即路径，容忍空格；
-/// 删除文件的 marker 行尾部带 tab 填充，先剥掉；路径含 tab/引号时 git 用
-/// C-quoting 输出 `--- "a/x"`，剥掉外层引号再判定；/dev/null 如实不命中）。
+/// Path predicate for `--- a/<path>` / `+++ b/<path>` marker lines (the
+/// rest of the line IS the path, spaces tolerated; a deleted file's marker
+/// line carries a trailing tab pad, stripped first; when the path contains
+/// tabs/quotes git C-quotes it as `--- "a/x"` — strip the outer quotes
+/// before matching; /dev/null honestly never matches).
 fn marker_line_is_secret(line: &str) -> bool {
     let path = line
         .strip_prefix("--- a/")
@@ -1098,10 +1098,12 @@ fn marker_line_is_secret(line: &str) -> bool {
     }
 }
 
-/// 从 unified diff 文本剔除命中敏感文件模式的整段文件 diff：迁移前打的旧
-/// 快照 tree 里可能仍有秘密原文（purge 只清 index），预览不得把原文带进 UI。
-/// 按段缓冲后判定（段头或 ---/+++ 行任一命中即整段剔除；二进制段没有
-/// marker 行，全靠段头解析）。
+/// Drops every whole per-file diff section whose path matches a secret
+/// pattern from a unified-diff text: old snapshots taken before a purge may
+/// still carry secret plaintext in their trees (the purge only clears the
+/// index), and the preview must not carry the plaintext into the UI.
+/// Sections are buffered then judged (a header OR marker-line match drops
+/// the whole section; binary sections rely purely on the header parse).
 fn filter_secret_paths_from_patch(patch: &str) -> String {
     let mut out = String::with_capacity(patch.len());
     let mut section: Vec<&str> = Vec::new();
@@ -1235,6 +1237,7 @@ pub fn restore_checkpoint(
         &execution_root,
         None,
         CheckpointKind::PreRestore,
+        &format!("回滚到 {} 前的自动快照", meta.id),
         &[&meta.id],
     )
     .context("回滚前自动快照失败，已中止回滚")?;
@@ -1564,7 +1567,14 @@ mod tests {
         exec.write("id_rsa.pub", "PUBLIC\n");
         exec.write("SERVER.KEY", "SECRET=4\n");
         exec.write("src/a.rs", "a\n");
-        create_checkpoint(ledger.path(), exec.path(), Some(1), CheckpointKind::Turn).unwrap();
+        create_checkpoint(
+            ledger.path(),
+            exec.path(),
+            Some(1),
+            CheckpointKind::Turn,
+            "t1",
+        )
+        .unwrap();
 
         let repo = repo_dir(ledger.path());
         let tracked = git_ok(&repo, exec.path(), &["ls-files"]).unwrap();
@@ -1641,7 +1651,14 @@ mod tests {
         let ledger = TestDir::new("young-lock-ledger");
         let exec = TestDir::new("young-lock-exec");
         exec.write("a.rs", "v1\n");
-        create_checkpoint(ledger.path(), exec.path(), Some(1), CheckpointKind::Turn).unwrap();
+        create_checkpoint(
+            ledger.path(),
+            exec.path(),
+            Some(1),
+            CheckpointKind::Turn,
+            "t1",
+        )
+        .unwrap();
 
         let repo = repo_dir(ledger.path());
         let lock = repo.join("index.lock");
@@ -1667,8 +1684,14 @@ mod tests {
         let ledger = TestDir::new("ref-lock-ledger");
         let exec = TestDir::new("ref-lock-exec");
         exec.write("a.rs", "v1\n");
-        let checkpoint =
-            create_checkpoint(ledger.path(), exec.path(), Some(1), CheckpointKind::Turn).unwrap();
+        let checkpoint = create_checkpoint(
+            ledger.path(),
+            exec.path(),
+            Some(1),
+            CheckpointKind::Turn,
+            "t1",
+        )
+        .unwrap();
 
         let repo = repo_dir(ledger.path());
         let ref_name = format!("refs/checkpoints/{}", checkpoint.id);
@@ -1701,8 +1724,14 @@ mod tests {
         let ledger = TestDir::new("quotepath-ledger");
         let exec = TestDir::new("quotepath-exec");
         exec.write("文档/需求.md", "v1\n");
-        let first =
-            create_checkpoint(ledger.path(), exec.path(), Some(1), CheckpointKind::Turn).unwrap();
+        let first = create_checkpoint(
+            ledger.path(),
+            exec.path(),
+            Some(1),
+            CheckpointKind::Turn,
+            "t1",
+        )
+        .unwrap();
         exec.write("文档/需求.md", "v2\n");
         exec.write("新建文件.rs", "fn main() {}\n");
 
@@ -1736,13 +1765,26 @@ mod tests {
         let exec = TestDir::new("icase-exec");
         exec.write("ok.txt", "v1\n");
         exec.write(".ENV", "SECRET=before\n");
-        let first =
-            create_checkpoint(ledger.path(), exec.path(), Some(1), CheckpointKind::Turn).unwrap();
+        let first = create_checkpoint(
+            ledger.path(),
+            exec.path(),
+            Some(1),
+            CheckpointKind::Turn,
+            "t1",
+        )
+        .unwrap();
 
         // turn 1 同时改了普通文件和大写秘密文件。
         exec.write("ok.txt", "v2\n");
         exec.write(".ENV", "SECRET=after\n");
-        create_checkpoint(ledger.path(), exec.path(), Some(2), CheckpointKind::Turn).unwrap();
+        create_checkpoint(
+            ledger.path(),
+            exec.path(),
+            Some(2),
+            CheckpointKind::Turn,
+            "t2",
+        )
+        .unwrap();
 
         // 大写秘密从未进快照（exclude 的字符类模式恒大小写不敏感）。
         let repo = repo_dir(ledger.path());
@@ -2005,8 +2047,14 @@ mod tests {
         let ledger = TestDir::new("preserve-ledger");
         let exec = TestDir::new("preserve-exec");
         exec.write("a.txt", "0\n");
-        let target =
-            create_checkpoint(ledger.path(), exec.path(), Some(1), CheckpointKind::Turn).unwrap();
+        let target = create_checkpoint(
+            ledger.path(),
+            exec.path(),
+            Some(1),
+            CheckpointKind::Turn,
+            "t1",
+        )
+        .unwrap();
         // 恰好打满 LRU 上限（target 是最老条目但尚未被淘汰）；restore 的
         // PreRestore 是第 MAX+1 条，溢出淘汰的第一顺位就是 target。
         for turn in 2..=MAX_CHECKPOINTS {
@@ -2016,6 +2064,7 @@ mod tests {
                 exec.path(),
                 Some(turn as u32),
                 CheckpointKind::Turn,
+                "t",
             )
             .unwrap();
         }
@@ -2059,7 +2108,14 @@ mod tests {
         assert!(quarantined);
         assert!(!index_path(ledger.path()).exists());
         // 快照能力恢复。
-        create_checkpoint(ledger.path(), exec.path(), Some(1), CheckpointKind::Turn).unwrap();
+        create_checkpoint(
+            ledger.path(),
+            exec.path(),
+            Some(1),
+            CheckpointKind::Turn,
+            "t1",
+        )
+        .unwrap();
         assert_eq!(list_checkpoints(ledger.path()).unwrap().len(), 1);
     }
 
@@ -2073,8 +2129,14 @@ mod tests {
         let ledger = TestDir::new("gitlink-ledger");
         let exec = TestDir::new("gitlink-exec");
         exec.write("ok.txt", "v1\n");
-        let first =
-            create_checkpoint(ledger.path(), exec.path(), Some(1), CheckpointKind::Turn).unwrap();
+        let first = create_checkpoint(
+            ledger.path(),
+            exec.path(),
+            Some(1),
+            CheckpointKind::Turn,
+            "t1",
+        )
+        .unwrap();
         // turn 1：在执行根内 clone 出一个嵌套仓库（git 以 gitlink 记录；
         // 需要真实 .git 子目录 + commit——--git-dir 指向目录本身只会产生普通文件，
         // unborn HEAD 的空仓库也不会进 index）。
@@ -2258,10 +2320,22 @@ mod tests {
         let ledger = TestDir::new("drop-ledger");
         let exec = TestDir::new("drop-exec");
         exec.write("a.txt", "0\n");
-        let kept =
-            create_checkpoint(ledger.path(), exec.path(), Some(1), CheckpointKind::Turn).unwrap();
-        let unsent =
-            create_checkpoint(ledger.path(), exec.path(), None, CheckpointKind::Turn).unwrap();
+        let kept = create_checkpoint(
+            ledger.path(),
+            exec.path(),
+            Some(1),
+            CheckpointKind::Turn,
+            "t1",
+        )
+        .unwrap();
+        let unsent = create_checkpoint(
+            ledger.path(),
+            exec.path(),
+            None,
+            CheckpointKind::Turn,
+            "unsent",
+        )
+        .unwrap();
 
         assert!(drop_checkpoint(ledger.path(), &unsent.id).unwrap());
         let listed = list_checkpoints(ledger.path()).unwrap();
@@ -2301,7 +2375,8 @@ mod tests {
         let ledger = TestDir::new("missing-ledger");
         let missing = TestDir::new("missing-exec");
         let ghost = missing.path().join("ghost");
-        let result = create_checkpoint(ledger.path(), &ghost, Some(1), CheckpointKind::Turn);
+        let result =
+            create_checkpoint(ledger.path(), &ghost, Some(1), CheckpointKind::Turn, "test");
         assert!(result.is_err());
         assert!(list_checkpoints(ledger.path()).unwrap().is_empty());
     }
@@ -2316,8 +2391,14 @@ mod tests {
         exec.write("src/main.rs", "fn main() {}\n");
         exec.write("README.md", "v1\n");
 
-        let first =
-            create_checkpoint(ledger.path(), exec.path(), Some(1), CheckpointKind::Turn).unwrap();
+        let first = create_checkpoint(
+            ledger.path(),
+            exec.path(),
+            Some(1),
+            CheckpointKind::Turn,
+            "第一轮消息",
+        )
+        .unwrap();
         assert_eq!(first.turn, Some(1));
 
         // turn 1 的改动：修改既有文件、新建文件、子目录文件。
@@ -2325,8 +2406,14 @@ mod tests {
         exec.write("src/new.rs", "pub fn added() {}\n");
         std::fs::remove_file(exec.path().join("README.md")).unwrap();
 
-        let second =
-            create_checkpoint(ledger.path(), exec.path(), Some(2), CheckpointKind::Turn).unwrap();
+        let second = create_checkpoint(
+            ledger.path(),
+            exec.path(),
+            Some(2),
+            CheckpointKind::Turn,
+            "第二轮消息",
+        )
+        .unwrap();
 
         let listed = list_checkpoints(ledger.path()).unwrap();
         assert_eq!(listed.len(), 2);
@@ -2384,11 +2471,23 @@ mod tests {
         let ledger = TestDir::new("empty-ledger");
         let exec = TestDir::new("empty-exec");
         exec.write("a.txt", "a\n");
-        let first =
-            create_checkpoint(ledger.path(), exec.path(), Some(1), CheckpointKind::Turn).unwrap();
+        let first = create_checkpoint(
+            ledger.path(),
+            exec.path(),
+            Some(1),
+            CheckpointKind::Turn,
+            "t1",
+        )
+        .unwrap();
         // 无变更的 turn：复用同一 commit，但 meta 仍登记（turn 对齐不漂移）。
-        let second =
-            create_checkpoint(ledger.path(), exec.path(), Some(2), CheckpointKind::Turn).unwrap();
+        let second = create_checkpoint(
+            ledger.path(),
+            exec.path(),
+            Some(2),
+            CheckpointKind::Turn,
+            "t2",
+        )
+        .unwrap();
         assert_eq!(first.commit, second.commit);
         assert_ne!(first.id, second.id);
         assert_eq!(list_checkpoints(ledger.path()).unwrap().len(), 2);
@@ -2409,6 +2508,7 @@ mod tests {
                 exec.path(),
                 Some(turn as u32),
                 CheckpointKind::Turn,
+                "t",
             )
             .unwrap();
         }
@@ -2441,7 +2541,7 @@ mod tests {
         let ledger = root.path().join("ledger-nested");
         fs::create_dir_all(&ledger).unwrap();
         root.write("code.txt", "v1\n");
-        create_checkpoint(&ledger, root.path(), Some(1), CheckpointKind::Turn).unwrap();
+        create_checkpoint(&ledger, root.path(), Some(1), CheckpointKind::Turn, "t1").unwrap();
         root.write("code.txt", "v2\n");
         let undo = restore_checkpoint(
             &ledger,
@@ -2468,8 +2568,14 @@ mod tests {
         exec.write("node_modules/pkg/index.js", "dep\n");
         // fs_is_case_insensitive 的探针文件：并发同根会话的 add -A 不得卷入。
         exec.write(".Pinvou-Icase-Probe-1234", "");
-        let first =
-            create_checkpoint(ledger.path(), exec.path(), Some(1), CheckpointKind::Turn).unwrap();
+        let first = create_checkpoint(
+            ledger.path(),
+            exec.path(),
+            Some(1),
+            CheckpointKind::Turn,
+            "t",
+        )
+        .unwrap();
         let repo = repo_dir(ledger.path());
         let tracked = git_ok(&repo, exec.path(), &["ls-files"]).unwrap();
         assert!(
@@ -2480,8 +2586,14 @@ mod tests {
         );
         // node_modules 内的变化不产生新 commit（被 exclude，不进入快照）。
         exec.write("node_modules/pkg/index.js", "dep2\n");
-        let second =
-            create_checkpoint(ledger.path(), exec.path(), Some(2), CheckpointKind::Turn).unwrap();
+        let second = create_checkpoint(
+            ledger.path(),
+            exec.path(),
+            Some(2),
+            CheckpointKind::Turn,
+            "t",
+        )
+        .unwrap();
         assert_eq!(first.commit, second.commit);
         // restore 不删除 turn 中新建的 ignored 文件（已知限制，protect node_modules）。
         exec.write("node_modules/pkg/new.js", "new dep\n");
@@ -2499,16 +2611,40 @@ mod tests {
         let ledger = TestDir::new("inval-ledger");
         let exec = TestDir::new("inval-exec");
         exec.write("a.txt", "0\n");
-        let t1 =
-            create_checkpoint(ledger.path(), exec.path(), Some(1), CheckpointKind::Turn).unwrap();
+        let t1 = create_checkpoint(
+            ledger.path(),
+            exec.path(),
+            Some(1),
+            CheckpointKind::Turn,
+            "t1",
+        )
+        .unwrap();
         exec.write("a.txt", "1\n");
-        let t2 =
-            create_checkpoint(ledger.path(), exec.path(), Some(2), CheckpointKind::Turn).unwrap();
+        let t2 = create_checkpoint(
+            ledger.path(),
+            exec.path(),
+            Some(2),
+            CheckpointKind::Turn,
+            "t2",
+        )
+        .unwrap();
         exec.write("a.txt", "2\n");
-        let t3 =
-            create_checkpoint(ledger.path(), exec.path(), Some(3), CheckpointKind::Turn).unwrap();
-        let pre = create_checkpoint(ledger.path(), exec.path(), None, CheckpointKind::PreRestore)
-            .unwrap();
+        let t3 = create_checkpoint(
+            ledger.path(),
+            exec.path(),
+            Some(3),
+            CheckpointKind::Turn,
+            "t3",
+        )
+        .unwrap();
+        let pre = create_checkpoint(
+            ledger.path(),
+            exec.path(),
+            None,
+            CheckpointKind::PreRestore,
+            "回滚点",
+        )
+        .unwrap();
 
         // 回退到第 1 轮：turn 2/3 的 Turn 快照作废，turn 1 与 PreRestore 保留。
         let removed = invalidate_turn_checkpoints_after(ledger.path(), 1).unwrap();
@@ -2563,19 +2699,37 @@ mod tests {
         let ledger = TestDir::new("stale-ledger");
         let exec = TestDir::new("stale-exec");
         exec.write("a.txt", "0\n");
-        let t1 =
-            create_checkpoint(ledger.path(), exec.path(), Some(1), CheckpointKind::Turn).unwrap();
+        let t1 = create_checkpoint(
+            ledger.path(),
+            exec.path(),
+            Some(1),
+            CheckpointKind::Turn,
+            "t1",
+        )
+        .unwrap();
         exec.write("a.txt", "1\n");
-        let old_t2 =
-            create_checkpoint(ledger.path(), exec.path(), Some(2), CheckpointKind::Turn).unwrap();
+        let old_t2 = create_checkpoint(
+            ledger.path(),
+            exec.path(),
+            Some(2),
+            CheckpointKind::Turn,
+            "old t2",
+        )
+        .unwrap();
         // 截断时刻。created_at 是秒级：睡过一秒边界，保证与前后快照可区分。
         std::thread::sleep(std::time::Duration::from_millis(1100));
         let cutoff = now_seconds();
         std::thread::sleep(std::time::Duration::from_millis(1100));
         // 回退后的新分支同号快照（创建于截断之后）。
         exec.write("a.txt", "1-new\n");
-        let new_t2 =
-            create_checkpoint(ledger.path(), exec.path(), Some(2), CheckpointKind::Turn).unwrap();
+        let new_t2 = create_checkpoint(
+            ledger.path(),
+            exec.path(),
+            Some(2),
+            CheckpointKind::Turn,
+            "new t2",
+        )
+        .unwrap();
 
         let removed = invalidate_stale_turn_checkpoints(ledger.path(), 1, cutoff).unwrap();
         assert_eq!(removed, 1);
@@ -2609,7 +2763,14 @@ mod tests {
         let ledger = TestDir::new("env-ledger");
         let exec = TestDir::new("env-exec");
         exec.write("a.txt", "0\n");
-        create_checkpoint(ledger.path(), exec.path(), Some(1), CheckpointKind::Turn).unwrap();
+        create_checkpoint(
+            ledger.path(),
+            exec.path(),
+            Some(1),
+            CheckpointKind::Turn,
+            "t1",
+        )
+        .unwrap();
         let repo = repo_dir(ledger.path());
 
         // Assert the strip contract directly via `Command::get_envs` without

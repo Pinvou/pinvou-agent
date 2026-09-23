@@ -6008,6 +6008,57 @@ fn literal_empty_array_pin_file_is_refused_as_corrupt() {
 }
 
 #[test]
+fn durable_mode_entry_reflects_the_durable_state_not_the_fallback() {
+    let (store, _g) = isolated_store();
+    // No durable entry: `mode_state` still resolves a default, but the
+    // restore capture must see absence — the resolved fallback is
+    // process-relative (a headless process cannot see the GUI's code-session
+    // predicate) and pinning it would freeze a borrowed value.
+    assert_eq!(store.durable_mode_entry("restore-a"), None);
+    assert_ne!(store.mode_state("restore-a").mode, SerializableMode::Plan);
+    store
+        .set_mode_and_persist("restore-a", SerializableMode::Plan)
+        .expect("persist plan");
+    assert_eq!(
+        store.durable_mode_entry("restore-a"),
+        Some(SerializableMode::Plan)
+    );
+}
+
+#[test]
+fn clear_mode_and_persist_restores_entry_absence() {
+    let (store, _g) = isolated_store();
+    let file = paths::sessions_root().join("_session_mode_states.json");
+    store
+        .set_mode_and_persist("restore-b", SerializableMode::Plan)
+        .expect("persist plan");
+    assert!(file.exists(), "the plan persist created the sidecar");
+    store
+        .clear_mode_and_persist("restore-b")
+        .expect("clear the mode entry");
+    assert_eq!(
+        store.durable_mode_entry("restore-b"),
+        None,
+        "the durable entry the failed run added must be gone"
+    );
+    assert!(
+        !file.exists(),
+        "the sidecar goes away with its last entry instead of keeping a shell map"
+    );
+    // The in-memory caches follow: mode_state falls back to the resolved
+    // default again instead of serving the failed run's Plan.
+    assert_ne!(store.mode_state("restore-b").mode, SerializableMode::Plan);
+    // And the sidecar keeps working for other sessions afterwards.
+    store
+        .set_mode_and_persist("restore-c", SerializableMode::Yolo)
+        .expect("persist another mode after the clear");
+    assert_eq!(
+        store.durable_mode_entry("restore-c"),
+        Some(SerializableMode::Yolo)
+    );
+}
+
+#[test]
 fn set_mode_and_persist_fails_loud_on_a_corrupt_mode_file() {
     let (store, _g) = isolated_store();
     let file = paths::sessions_root().join("_session_mode_states.json");
@@ -6042,4 +6093,53 @@ fn set_mode_and_persist_fails_loud_on_a_corrupt_mode_file() {
     // The interactive GUI keeps the lenient path: in-memory switched, the
     // persist failure logged, Ok returned.
     assert!(store.set_mode("headless-d", SerializableMode::Yolo).is_ok());
+}
+
+/// `SessionStore::delete` runs under `scheduled_mutation` (the round-12
+/// serialization fix): without the guard, a persist that loaded its snapshot
+/// before the delete commits would rename the stale transcript back over the
+/// deletion, resurrecting a session whose sidecar entries were already
+/// purged. The deleted-hook fires inside the delete's guard window, so a
+/// same-thread `try_lock` on the guard from the hook observing the lock as
+/// held is the structural pin: reverting `delete` to an unguarded
+/// `delete_locked` call makes the probe see the lock free and the test red.
+#[test]
+fn delete_holds_the_scheduled_mutation_guard() {
+    let (store, _g) = isolated_store();
+    let session = store
+        .create_new("/model".into(), None, std::env::temp_dir())
+        .expect("create chat");
+    let id = session.metadata.id.clone();
+    store
+        .update_messages(&id, vec![user_text("first")])
+        .expect("seed one message");
+
+    let probe_store = store.clone();
+    let observed = std::sync::Arc::new(std::sync::Mutex::new(None));
+    let observed_guard_held = observed.clone();
+    let hook_id = id.clone();
+    store.register_session_deleted_hook(std::sync::Arc::new(move |deleted_id: &str| {
+        if deleted_id != hook_id {
+            return;
+        }
+        // Same thread as the delete: a free lock would be observable here,
+        // an held one (the current, fixed behavior) not.
+        let held = probe_store.scheduled_mutation.try_lock().is_none();
+        *observed_guard_held.lock().unwrap() = Some(held);
+    }));
+
+    store.delete(&id).expect("delete the session");
+    let held = observed
+        .lock()
+        .unwrap()
+        .expect("the hook must have run for the deleted id");
+    assert!(
+        held,
+        "delete must serialize against the transcript writers by holding \
+         scheduled_mutation across the record removal"
+    );
+    assert!(
+        store.load(&id).is_err(),
+        "the deleted session must stay deleted"
+    );
 }

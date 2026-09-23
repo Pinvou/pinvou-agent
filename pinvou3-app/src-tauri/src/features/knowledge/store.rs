@@ -606,6 +606,19 @@ mod tests {
         {
             let store = Store::open(&db).expect("create store");
             assert_eq!(store.stats().unwrap().total_files, 0);
+            // Seed one document so the survival assert below can tell
+            // "original store survived" apart from "deleted and a fresh
+            // empty store re-initialized over it" — the delete-and-recreate
+            // regression this test exists to catch.
+            store
+                .upsert_many(&[rec(
+                    "/tmp/docs/annual.pdf",
+                    "annual.pdf",
+                    Some("pdf"),
+                    2048,
+                    0,
+                )])
+                .expect("seed one file record");
         }
         let restore = |mode: u32| {
             let mut perm = std::fs::metadata(&db).unwrap().permissions();
@@ -624,9 +637,15 @@ mod tests {
             "an unreadable store must fail loud instead of probing version 0"
         );
         restore(0o644);
-        assert!(
-            Store::open(&db).is_ok(),
-            "the store must survive a failed probe untouched"
+        let reopened = Store::open(&db).expect("the store must survive a failed probe");
+        assert_eq!(
+            reopened
+                .stats()
+                .expect("stats after the failed probe")
+                .total_files,
+            1,
+            "the seeded record must still be there — a delete-and-recreate over the \
+             probe failure would come back empty"
         );
         let _ = std::fs::remove_dir_all(&tmp);
     }
@@ -654,6 +673,17 @@ mod tests {
         {
             let store = Store::open(&db).expect("create store");
             assert_eq!(store.stats().unwrap().total_files, 0);
+            // Seed so the survival assert can detect delete-and-recreate
+            // (same rationale as the unix twin).
+            store
+                .upsert_many(&[rec(
+                    "/tmp/docs/annual.pdf",
+                    "annual.pdf",
+                    Some("pdf"),
+                    2048,
+                    0,
+                )])
+                .expect("seed one file record");
         }
         // Hold the store exclusively: any subsequent open (the probe's) fails.
         let held = std::fs::OpenOptions::new()
@@ -670,9 +700,15 @@ mod tests {
             db.exists(),
             "the store file must survive a failed probe untouched"
         );
-        assert!(
-            Store::open(&db).is_ok(),
-            "the store must reopen after the blocking handle is released"
+        let reopened =
+            Store::open(&db).expect("the store must reopen after the blocking handle is released");
+        assert_eq!(
+            reopened
+                .stats()
+                .expect("stats after the failed probe")
+                .total_files,
+            1,
+            "the seeded record must survive — a delete-and-recreate would come back empty"
         );
         let _ = std::fs::remove_dir_all(&tmp);
     }

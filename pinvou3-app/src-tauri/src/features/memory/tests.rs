@@ -15,8 +15,9 @@ use crate::platform::prefs::ModelPreset;
 use super::io::{
     commit_topic_migration_unlocked_with, compact_timed_memory_store_unlocked, current_focus_path,
     enqueue_memory_candidate, is_delivery_tool, load_preferences, load_profile,
-    pending_item_from_suggestion, reconcile_topic_migration_journals_unlocked,
-    summarize_tool_start, topic_migration_journal_path, upsert_timed_memory_unlocked, write_lock,
+    pending_item_from_suggestion, recent_activity_path,
+    reconcile_topic_migration_journals_unlocked, summarize_tool_start,
+    topic_migration_journal_path, upsert_timed_memory_unlocked, write_lock,
     write_never_memory_unlocked, write_pending_memory_unlocked, write_recent_work_unlocked,
     write_timed_memory_file,
 };
@@ -3546,4 +3547,58 @@ fn recent_work_upsert_and_archive_round_trip() {
     })
     .unwrap_err();
     assert_eq!(error.kind(), io::ErrorKind::InvalidInput);
+}
+
+/// `archive_recent_work` must consult BOTH timed stores: an id can exist in
+/// `current_focus` and `recent_activity` at the same time (ids are
+/// caller/LLM-supplied strings), and a find in one must not short-circuit
+/// the other's archive — the recent-work loop archives every match, so the
+/// timed fallback must not be first-wins.
+#[test]
+fn archive_recent_work_archives_the_id_in_both_timed_stores() {
+    let _home = IsolatedPinvouHome::new("archive-both-timed-stores");
+
+    let item = |kind: &str| super::types::TimedMemoryItem {
+        id: "shared-id".to_string(),
+        kind: kind.to_string(),
+        topic: "topic".to_string(),
+        text: "text".to_string(),
+        source: String::new(),
+        created_at: Utc::now().to_rfc3339(),
+        updated_at: Utc::now().to_rfc3339(),
+        last_hit: Utc::now().to_rfc3339(),
+        ttl_days: 21,
+        status: "active".to_string(),
+    };
+    {
+        let _guard = write_lock().lock();
+        write_timed_memory_file(
+            &current_focus_path(),
+            &[item("current_focus")],
+            "current_focus",
+        )
+        .unwrap();
+        write_timed_memory_file(
+            &recent_activity_path(),
+            &[item("recent_activity")],
+            "recent_activity",
+        )
+        .unwrap();
+    }
+
+    assert!(
+        archive_recent_work("shared-id").unwrap(),
+        "archiving an id present in both timed stores reports a change"
+    );
+    assert_eq!(
+        load_current_focus().unwrap()[0].status,
+        "archived",
+        "the current_focus copy must be archived"
+    );
+    assert_eq!(
+        load_recent_activity().unwrap()[0].status,
+        "archived",
+        "the recent_activity copy must be archived too, not skipped because the \
+         focus store already matched"
+    );
 }

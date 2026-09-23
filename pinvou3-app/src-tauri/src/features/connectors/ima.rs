@@ -364,15 +364,25 @@ fn rollback_secret<S: CredentialStore>(
 pub async fn ima_logout() -> Result<Value, String> {
     tokio::task::spawn_blocking(|| {
         let store = SystemCredentialStore::new();
+        // The credentials are the logout's primary intent: attempt both
+        // deletes, then check. Everything below is best-effort residue
+        // cleanup, so a refused consent-scope write must not surface as a
+        // failure of a logout the credentials already completed (the
+        // leftover deny entry is the fail-closed direction and only hides an
+        // uninstalled skill).
         let client_result = store.delete(&client_id_ref());
         let api_key_result = store.delete(&api_key_ref());
+        client_result.map_err(|e| e.user_message())?;
+        api_key_result.map_err(|e| e.user_message())?;
         let _ = SkillMarketplaceManager::new().uninstall(IMA_SKILL_ID);
         // 已卸载技能从各 scope 禁用集清除残留；在线会话组合目录由命令层
         // （connectors::ima_logout）重写。引用 marketplace::scope 避免
         // connectors → assistant 依赖环。
-        crate::features::marketplace::scope::remove_bundle_from_disabled_scopes(IMA_SKILL_ID)?;
-        client_result.map_err(|e| e.user_message())?;
-        api_key_result.map_err(|e| e.user_message())?;
+        if let Err(error) =
+            crate::features::marketplace::scope::remove_bundle_from_disabled_scopes(IMA_SKILL_ID)
+        {
+            eprintln!("[ima] logout scope residue cleanup failed: {error}");
+        }
         Ok::<Value, String>(json!({ "ok": true, "connected": false }))
     })
     .await

@@ -309,6 +309,11 @@ pub fn load_recent_work() -> io::Result<Vec<RecentWorkItem>> {
     Ok(out)
 }
 
+/// Save the profile as a full replacement of `profile.json` (unlike
+/// [`update_profile`], which is a read-modify-write patch). A headless
+/// caller that loaded its snapshot before a GUI identity update and saves
+/// afterwards silently reverts the newer write — the last-writer-wins
+/// cross-process shape disclosed for every restored memory surface.
 pub fn save_profile(profile: &MemoryProfile) -> io::Result<()> {
     let _guard = write_lock().lock();
     let mut normalized = profile.clone();
@@ -408,8 +413,13 @@ pub fn archive_recent_work(id: &str) -> io::Result<bool> {
         write_recent_work_unlocked(&items)?;
     }
     if !changed {
-        changed = archive_timed_memory_unlocked("current_focus", &id)?
-            || archive_timed_memory_unlocked("recent_activity", &id)?;
+        // Consult BOTH timed stores: an id can live in each, and a find in
+        // one must not short-circuit the other's archive (the recent-work
+        // loop above archives all matches, so the contract is "archive it
+        // everywhere it appears").
+        let archived_focus = archive_timed_memory_unlocked("current_focus", &id)?;
+        let archived_activity = archive_timed_memory_unlocked("recent_activity", &id)?;
+        changed = archived_focus || archived_activity;
     }
     Ok(changed)
 }
@@ -1774,10 +1784,10 @@ pub(super) fn delete_preference_unlocked(id: &str) -> io::Result<bool> {
 }
 
 pub(super) fn load_preferences() -> io::Result<Vec<PreferenceFile>> {
-    list_preferences_with_cleanup().map(|result| result.value)
+    load_preferences_with_cleanup().map(|result| result.value)
 }
 
-pub fn list_preferences_with_cleanup() -> io::Result<TopicRead<Vec<PreferenceFile>>> {
+fn load_preferences_with_cleanup() -> io::Result<TopicRead<Vec<PreferenceFile>>> {
     let _lifecycle = file_lifecycle_lock().lock();
     load_preferences_with_cleanup_unlocked()
 }

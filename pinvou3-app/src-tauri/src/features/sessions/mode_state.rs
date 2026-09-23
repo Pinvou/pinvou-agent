@@ -187,6 +187,17 @@ fn folded_collections(state: &SessionModeState) -> Vec<MountedCollection> {
 // ── SessionStore 行为 impl ──
 
 impl SessionStore {
+    /// The session's entry in the durable `_session_mode_states.json` read
+    /// cache, if any. This — not [`Self::mode_state`]'s resolved fallback —
+    /// is what a failed run's mode restore must put back: the fallback is
+    /// process-relative (a headless process installs no code-session
+    /// predicate, so it resolves Yolo for a code session whose GUI default
+    /// is Plan), and durably pinning that misresolution is exactly the
+    /// unsafe reopen divergence the Plan persist exists to prevent.
+    pub fn durable_mode_entry(&self, id: &str) -> Option<SerializableMode> {
+        self.session_mode_states.read().get(id).cloned()
+    }
+
     pub fn mode_state(&self, id: &str) -> SessionModeState {
         self.mode_states
             .read()
@@ -291,6 +302,27 @@ impl SessionStore {
         self.set_mode_in_memory(id, mode.clone());
         Self::apply_session_mode_mutation_locked(&[(id.to_string(), mode)], &[])
             .context("persist session mode states")
+    }
+
+    /// Removes the session's durable mode entry and resets the in-memory
+    /// caches to the resolved default. The restore half of a Plan persist
+    /// whose run never started on a session that had no durable entry:
+    /// re-persisting a resolved default would freeze a value the session
+    /// was only borrowing (and in a headless process that resolution can
+    /// not even see the GUI's code-session default), so restoring the
+    /// pre-run state means removing the entry the failed run added.
+    pub fn clear_mode_and_persist(&self, id: &str) -> Result<()> {
+        let _io = self.session_mode_states_io.lock();
+        Self::apply_session_mode_mutation_locked(&[], &[id.to_string()])
+            .context("persist session mode states")?;
+        let default = self.resolved_default_mode(id);
+        if let Some(entry) = self.mode_states.write().get_mut(id) {
+            entry.mode = default.clone();
+            entry.pending_plan_id = None;
+            entry.plan_claim_in_flight = None;
+        }
+        self.session_mode_states.write().remove(id);
+        Ok(())
     }
 
     pub fn set_multi_agent(&self, id: &str, enabled: bool) -> Result<()> {

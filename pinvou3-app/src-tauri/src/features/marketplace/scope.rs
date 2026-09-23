@@ -457,12 +457,11 @@ fn merge_ids_into_scope(file: &mut DisabledBundlesFile, key: &str, ids: Vec<Stri
 /// Failures must propagate — a write entry point returning `Ok` means the
 /// change landed on disk: toggles/visibility are user governance state, and
 /// a silently lost write would let callers continue on a half-applied state
-/// (the frontend reports success). Internal best-effort callers degrade to
-/// logging themselves: read-path migration, uninstall cleanup (residue
-/// direction fail-closed), and DenyAll install sync. Note that the DenyAll
-/// sync degradation is consent-gate fail-open (a write failure = a newly
-/// installed package becomes available by default in an initialized DenyAll
-/// scope) — a known transitional concession, not a harmless degradation.
+/// (the frontend reports success). Every DenyAll install-sync call site now
+/// propagates its errors too (single-package imports, staged imports, the
+/// connector skill gates, ima connect); the remaining lenient readers are
+/// the read-path migration and uninstall residue cleanup, which degrade to
+/// logging (the residue direction is fail-closed).
 fn save_disabled_bundles_file(file: &DisabledBundlesFile) -> Result<(), String> {
     let json = serde_json::to_string(file)
         .map_err(|error| format!("[scope] serialize disabled_bundles.json failed: {error}"))?;
@@ -1281,9 +1280,17 @@ mod tests {
             );
             // The writer has already sampled (sampling strictly precedes the
             // lock attempt), so degrading the root now must not reach the
-            // critical section's expansion.
+            // critical section's expansion. Windows and privileged-root
+            // environments cannot degrade the directory — the test's
+            // discriminating premise (a degraded root) is absent there, so
+            // announce the skip instead of passing vacuously.
             let bundles_root = paths::bundles_root();
-            let unreadable = make_dir_unreadable_for_test(&bundles_root);
+            let Some(unreadable) = make_dir_unreadable_for_test(&bundles_root) else {
+                drop(guard);
+                writer.join().unwrap();
+                eprintln!("skipping: cannot degrade the bundles root on this platform/user");
+                return;
+            };
             drop(guard);
             rx.recv_timeout(std::time::Duration::from_secs(5))
                 .expect("the writer completes once the flock is released");
