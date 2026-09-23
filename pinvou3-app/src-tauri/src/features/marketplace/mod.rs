@@ -841,6 +841,17 @@ impl<S: CredentialStore> MarketplaceManager<S> {
                     }
                     None => (m.name, m.description),
                 };
+                // Builtin-ness — and every field gated on it — trusts only the
+                // embedded catalog (trust boundary, docs/builtin-toolset-contract.md
+                // §3.1), never the on-disk manifest: `available_tools` lets a
+                // user-writable `bundles/<id>/mcp/manifest.json` overwrite the
+                // embedded one, and pre-PR imports / recycle-bin restores /
+                // disk tampering can leave a manifest claiming `builtin: true`.
+                // The frontend removes `builtin === true || visibility ===
+                // 'system'` entries from the store flow and pins them on the
+                // read-only page, so honoring a poisoned claim would strip a
+                // normal plugin of every management action.
+                let is_builtin = builtin::is_builtin_tool(&m.id);
                 MarketplaceToolInfo {
                     source: source_by_id
                         .get(m.id.as_str())
@@ -857,12 +868,12 @@ impl<S: CredentialStore> MarketplaceManager<S> {
                     // in full (the builtin section lists a plugin's tools);
                     // visibility mirrors security_level; bundle_version marks
                     // the bundle version a builtin plugin ships with.
-                    security_level: if m.builtin && !m.security_level.is_empty() {
+                    security_level: if is_builtin && !m.security_level.is_empty() {
                         Some(m.security_level.clone())
                     } else {
                         None
                     },
-                    data_access: if m.builtin {
+                    data_access: if is_builtin {
                         m.data_access.clone()
                     } else {
                         Vec::new()
@@ -870,7 +881,7 @@ impl<S: CredentialStore> MarketplaceManager<S> {
                     mcp_tools: m.mcp_tools.clone(),
                     // visibility passthrough mirrors security_level: filled
                     // only for builtin plugins, omitted otherwise.
-                    visibility: if m.builtin && !m.visibility.is_empty() {
+                    visibility: if is_builtin && !m.visibility.is_empty() {
                         Some(m.visibility.clone())
                     } else {
                         None
@@ -881,7 +892,7 @@ impl<S: CredentialStore> MarketplaceManager<S> {
                     // feature cycle (architecture guard
                     // rust_cyclic_feature_dependencies baseline is 0).
                     bundle_version: None,
-                    builtin: m.builtin,
+                    builtin: is_builtin,
                     id: m.id,
                     name,
                     description,
@@ -4445,6 +4456,46 @@ mod tests {
             let tools = MarketplaceManager::new().list_tools();
             let t = tools.iter().find(|t| t.id == "up-corrupt").unwrap();
             assert_eq!(t.name, "ManifestName", "store 读失败应降级为 manifest 值");
+        });
+    }
+
+    /// Trust boundary (docs/builtin-toolset-contract.md §3.1): a bundle on
+    /// disk whose manifest claims `builtin: true` / `visibility: "system"`
+    /// but is NOT in the embedded catalog must surface as a normal plugin in
+    /// list_tools — builtin presentation is derived from the embedded catalog
+    /// only, or a poisoned manifest (pre-PR import, recycle-bin restore, disk
+    /// tampering) would pin the entry on the read-only page with no actions.
+    #[test]
+    fn list_tools_derives_builtin_from_embedded_catalog_only() {
+        with_temp_home(|| {
+            write_tool_manifest(
+                "fake-builtin",
+                r#"{
+                    "id":"fake-builtin","name":"Fake","description":"d","version":"1","icon":"x","category":"c",
+                    "mcp_tools":[],"command":"python","args":["server.py"],
+                    "builtin":true,"visibility":"system","security_level":"L0","data_access":["sessions.read"]
+                }"#,
+            );
+            let tools = MarketplaceManager::new().list_tools();
+            let fake = tools.iter().find(|t| t.id == "fake-builtin").unwrap();
+            assert!(
+                !fake.builtin,
+                "an on-disk builtin claim must never pass through"
+            );
+            assert_eq!(fake.visibility, None, "visibility claim must be gated");
+            assert_eq!(
+                fake.security_level, None,
+                "security_level must be gated on catalog builtin-ness"
+            );
+            assert!(
+                fake.data_access.is_empty(),
+                "data_access must be gated on catalog builtin-ness"
+            );
+            // Positive control: the catalog-declared builtin still surfaces
+            // with its embedded claims.
+            let reader = tools.iter().find(|t| t.id == "session-reader").unwrap();
+            assert!(reader.builtin, "embedded catalog builtin must pass through");
+            assert_eq!(reader.visibility.as_deref(), Some("system"));
         });
     }
 
