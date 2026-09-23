@@ -275,6 +275,12 @@ pub struct SessionStore {
     /// else — the GUI never installs one and the sweep pays nothing.
     #[cfg(feature = "benchmark-hooks")]
     retention_eviction_observer: Arc<Mutex<Option<Arc<Mutex<Vec<String>>>>>>,
+    /// Evictions recorded before any observer was installed (the headless
+    /// host boots — and sweeps — before the runner arms). Flushed into the
+    /// observer when one is installed; capped, since a process that never
+    /// arms must not grow it without bound. Gated like the observer.
+    #[cfg(feature = "benchmark-hooks")]
+    pending_retention_evictions: Arc<Mutex<Vec<String>>>,
 }
 
 /// 原生代码会话(品悟 Engine)的执行根解析器:绑定了项目目录的原生代码会话

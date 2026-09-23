@@ -1907,7 +1907,7 @@ fn normalize_recent_work(item: &mut RecentWorkItem) {
     item.source = clean_text(&item.source, 40);
 }
 
-fn normalize_work_context(item: &mut WorkContextFile) {
+pub(super) fn normalize_work_context(item: &mut WorkContextFile) {
     item.id = clean_id(&item.id);
     item.kind = "work_context".to_string();
     item.topic = normalize_work_context_topic(&item.topic);

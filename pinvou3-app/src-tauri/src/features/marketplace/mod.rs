@@ -4738,7 +4738,8 @@ mod tests {
                     "tmeet".to_string(),
                 ]
             );
-            // 读到即迁移：迁移结果落盘到单一真相源 `disabled_bundles.json`（旧文件不回写）。
+            // 读路径只在内存中迁移;落盘由持锁写方完成(scope 的
+            // writer_materializes_the_legacy_migration 测试钉住这一契约)。
             let file = crate::features::marketplace::scope::load_disabled_bundles_file();
             assert_eq!(
                 file.scopes.get("plain"),
@@ -4749,7 +4750,8 @@ mod tests {
     }
 
     /// 旧双 scope 对象 `{plain, code, code_initialized}` 迁移为 scopes map:
-    /// 迁移前后行为一致(code_initialized=true → 以落盘为准;false → 默认全禁)。
+    /// 迁移前后行为一致(code_initialized=true → 以内存迁移视图为准;false →
+    /// 默认全禁;落盘由持锁写方完成)。
     #[test]
     fn disabled_connectors_legacy_object_migrates_to_scopes_map() {
         with_temp_home(|| {

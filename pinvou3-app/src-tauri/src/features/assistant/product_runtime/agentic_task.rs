@@ -245,12 +245,12 @@ pub fn run_agentic_task_headless(request: AgenticTaskRequest) -> Result<AgenticT
 /// (request validation, model pin, session prepare, submit) propagate as `Err`
 /// instead — the CLI surfaces those as exit 1 without a report.
 ///
-/// Persisting counts against the shared 50-session retention cap: when a
-/// fresh run's prepare-time save evicts chat sessions at the cap (pinned
-/// sessions are exempt from retention), the store's real eviction events
-/// drive a stderr warning, so a batch harness pointed at the desktop's
-/// default `PINVOU3_HOME` is not silent about the data loss — even when the
-/// run errors after the save.
+/// Persisting counts against the shared 50-session retention cap: when the
+/// run's prepare-time save — or the host's boot-time store sweep — evicts
+/// non-pinned sessions at the cap (pinned sessions are exempt from
+/// retention), the store's real eviction events drive a stderr warning, so
+/// a batch harness pointed at the desktop's default `PINVOU3_HOME` is not
+/// silent about the data loss — even when the run errors after the save.
 ///
 /// The execution root resolver must be registered before the pool enters an
 /// `Arc` (the bridge setter needs `&mut self`), which is why this function
@@ -348,7 +348,11 @@ pub async fn run_agentic_task(
     // that errors after the save (attachment staging, submit) must still
     // surface the eviction, and a run that fails before saving evicts nothing
     // and stays silent — a count sampled around the run cannot see mid-run
-    // forwarder evictions, and the store's own deletions can.
+    // forwarder evictions, and the store's own deletions can. The receiver
+    // also collects the boot-time sweep (the host boots the store before
+    // this arming point): arming flushes the store's pre-observer buffer, so
+    // a store already over the cap at process start warns too instead of
+    // deleting the oldest unpinned GUI session silently.
     let evictions = Arc::new(Mutex::new(Vec::new()));
     if let Some(stale) = store.set_retention_eviction_observer(Some(evictions.clone())) {
         // Single-flight normally guarantees the slot is empty here; a stale
@@ -565,7 +569,7 @@ fn retention_eviction_warning(evicted: &[String]) -> Option<String> {
              on a separate budget this never touches). Point PINVOU3_HOME at a \
              sandbox or prune the session store (PINVOU3_AGENT_TASK_KEEP_\
              SESSION=0 only removes this run's session afterwards; the \
-             save-time eviction still happens).",
+             eviction at the cap still happens).",
             evicted.len()
         )
     })

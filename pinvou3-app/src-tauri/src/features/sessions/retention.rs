@@ -94,7 +94,19 @@ impl SessionStore {
         &self,
         observer: Option<Arc<Mutex<Vec<String>>>>,
     ) -> Option<Arc<Mutex<Vec<String>>>> {
-        std::mem::replace(&mut self.retention_eviction_observer.lock(), observer)
+        let previous = std::mem::replace(&mut *self.retention_eviction_observer.lock(), observer);
+        // Flush evictions recorded before the observer existed: the headless
+        // host boots its store (and runs the boot-time retention sweep)
+        // before `run_agentic_task` arms the observer, so without this the
+        // boot sweep's deletions would be silently dropped and the run's
+        // warning would under-report real data loss. A disarm request
+        // (None) installs nothing and keeps the buffer for the next arm.
+        if let Some(installed) = self.retention_eviction_observer.lock().clone() {
+            installed
+                .lock()
+                .extend(self.pending_retention_evictions.lock().drain(..));
+        }
+        previous
     }
 
     /// Disarm and hand back the installed observer, if any.
@@ -116,6 +128,19 @@ impl SessionStore {
         }
         if let Some(observer) = self.retention_eviction_observer.lock().clone() {
             observer.lock().extend(evicted.iter().cloned());
+        } else {
+            // No observer yet (the GUI never installs one; the headless run
+            // arms it only after the store booted): buffer so the boot-time
+            // sweep's deletions surface once the runner arms. Capped because
+            // a long-lived process that never arms must not grow it without
+            // bound — only the newest window matters for a warning.
+            const PENDING_RETENTION_EVICTIONS_CAP: usize = 256;
+            let mut pending = self.pending_retention_evictions.lock();
+            pending.extend(evicted.iter().cloned());
+            let overflow = pending
+                .len()
+                .saturating_sub(PENDING_RETENTION_EVICTIONS_CAP);
+            pending.drain(0..overflow);
         }
     }
 

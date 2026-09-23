@@ -1159,7 +1159,17 @@ pub fn run() {
                     app.handle().manage(svc);
                     eprintln!("[pinvou3-app] knowledge service ready");
                 }
-                Err(e) => eprintln!("[pinvou3-app] knowledge service init failed: {e:#}"),
+                Err(e) => {
+                    // A refused (too-new) store is a deterministic state, not a
+                    // transient fault: surface it on the startup timeline, not
+                    // just stderr.
+                    crate::platform::startup::mark_with_detail(
+                        "rust",
+                        "knowledge_service:deferred",
+                        &format!("{e:#}"),
+                    );
+                    eprintln!("[pinvou3-app] knowledge service init failed: {e:#}");
+                }
             }
             startup::mark("knowledge_service:done");
 

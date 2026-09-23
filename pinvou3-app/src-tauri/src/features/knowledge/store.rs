@@ -269,7 +269,8 @@ pub struct Store {
 
 impl Store {
     /// 打开（或新建）磁盘库，建表。父目录会自动创建。
-    /// schema 版本不符 → 删库重建（L0 是可重建缓存，重扫即恢复；顺带回收旧版撑大的体积）。
+    /// 仅 v0–v2 的旧库（纯可重建 L0 缓存）才走删库重建；v3 原地迁移，高于
+    /// 本版本的库拒绝打开、绝不删除（见下）。
     ///
     /// All three connections (probe / write / read-only) carry busy_timeout:
     /// the desktop app and the headless CLI are a supported two-process pair,

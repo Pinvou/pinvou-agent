@@ -61,7 +61,7 @@ const SCHEMA_VERSION: u32 = 1;
 /// 移动归属的结果:前端据此提示"已加入项目(并添加了文件夹 xx)"。
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 pub struct MoveSessionOutcome {
-    /// 目标项目 id;显式移出(None)时同样为 None。
+    /// Target project id; also `None` for an explicit removal.
     pub project_id: Option<String>,
     /// 本次顺带加入目标项目的文件夹(canonicalized);未新增为 None。
     pub added_root: Option<PathBuf>,
