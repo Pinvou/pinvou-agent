@@ -518,7 +518,8 @@ fn display_chat_message(
     // `name · name` format, this preserves every legal filename exactly.
     // Serializing a Vec<&str> to a JSON array cannot fail (no map keys, no
     // non-string types).
-    let names = serde_json::to_string(&names).unwrap_or_else(|_| "[]".to_string());
+    let names =
+        serde_json::to_string(&names).expect("attachment basenames are always JSON strings");
     if message.trim().is_empty() {
         format!("📎 {names}")
     } else {

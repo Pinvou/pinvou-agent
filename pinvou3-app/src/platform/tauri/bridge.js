@@ -763,23 +763,19 @@ function loadPinvouSceneEventsForSession(sid) { return pinvouSharedtauriMain().l
   async function syncPinvouSceneEventsForSession(sid) {
     const cached = loadPinvouSceneEventsForSession(sid);
     if (!sid) return cached;
-    try {
-      const remote = normalizePinvouSceneEvents(
-        await invoke("get_session_pinvou_scene_events", { sessionId: sid })
-      );
-      if (remote.length) {
-        try {
-          window.localStorage.setItem(pinvouSceneStorageKey(sid), JSON.stringify(remote));
-        } catch { /* fall back to the remote data when the localStorage write fails */ }
-        return remote;
-      }
-      if (cached.length) {
-        await invoke("save_session_pinvou_scene_events", { sessionId: sid, events: cached });
-      }
-      return cached;
-    } catch {
-      return cached;
+    const remote = normalizePinvouSceneEvents(
+      await invoke("get_session_pinvou_scene_events", { sessionId: sid })
+    );
+    if (remote.length) {
+      try {
+        window.localStorage.setItem(pinvouSceneStorageKey(sid), JSON.stringify(remote));
+      } catch { /* fall back to the remote data when the localStorage write fails */ }
+      return remote;
     }
+    if (cached.length) {
+      await invoke("save_session_pinvou_scene_events", { sessionId: sid, events: cached });
+    }
+    return cached;
   }
 function recordPinvouSceneForMessage(sid, pos, scene) { return pinvouSharedtauriMain().recordPinvouSceneForMessage(sid, pos, scene); }
 function pinvouSceneForMessagePos(pos) { return pinvouSharedtauriMain().pinvouSceneForMessagePos(pos); }
@@ -832,23 +828,19 @@ function pinvouSceneForMessagePos(pos) { return pinvouSharedtauriMain().pinvouSc
   async function syncSteeredMessagesForSession(sid) {
     const cached = loadSteeredMessagesForSession(sid);
     if (!sid) return cached;
-    try {
-      const remote = normalizeSteeredMessages(
-        await invoke("get_session_steered_messages", { sessionId: sid })
-      );
-      if (remote.length) {
-        try {
-          window.localStorage.setItem(steeredMessagesStorageKey(sid), JSON.stringify(remote));
-        } catch { /* fall back to the remote data when the localStorage write fails */ }
-        return remote;
-      }
-      if (cached.length) {
-        await invoke("save_session_steered_messages", { sessionId: sid, events: cached });
-      }
-      return cached;
-    } catch {
-      return cached;
+    const remote = normalizeSteeredMessages(
+      await invoke("get_session_steered_messages", { sessionId: sid })
+    );
+    if (remote.length) {
+      try {
+        window.localStorage.setItem(steeredMessagesStorageKey(sid), JSON.stringify(remote));
+      } catch { /* fall back to the remote data when the localStorage write fails */ }
+      return remote;
     }
+    if (cached.length) {
+      await invoke("save_session_steered_messages", { sessionId: sid, events: cached });
+    }
+    return cached;
   }
   // 合并写入一批 {pos, text}（同 pos 后写覆盖），并同步当前内存态（活动
   // session 写 state，后台 session 写其 buffer）。返回归一化后的完整列表。

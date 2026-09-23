@@ -170,8 +170,8 @@ pub(super) fn publish_kb_mount_change_with_remote(
         "revision": snapshot.revision,
     });
     if let Some(remote_collections) = remote_collections {
-        payload["remote_collections"] =
-            serde_json::to_value(remote_collections).unwrap_or(serde_json::Value::Null);
+        payload["remote_collections"] = serde_json::to_value(remote_collections)
+            .expect("mounted remote collections are always JSON-serializable");
     }
     if let Err(error) = app.emit("remote_control:kb_mount_changed", payload.clone()) {
         // The invoking client still receives the authoritative snapshot (including revision), and
