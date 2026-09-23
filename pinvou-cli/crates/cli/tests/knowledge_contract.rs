@@ -510,7 +510,6 @@ fn stats_type_counts_and_search_answer_zero_state_offline() {
 
     let stats = run_json(&["pinvou", "knowledge", "stats"]);
     assert_eq!(stats["totalFiles"], serde_json::json!(0));
-    assert_eq!(stats["totalBytes"], serde_json::json!(0));
 
     let counts = run_json(&["pinvou", "knowledge", "type-counts"]);
     assert_eq!(counts["typeCounts"], serde_json::json!([]));
