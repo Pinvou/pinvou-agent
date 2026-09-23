@@ -1024,12 +1024,13 @@ const ToolWelcomeCard = ({ toolId, t, onSend }) => {
       // on send). When the feature is off (docs/builtin-toolset-contract.md §3.3
       // layer 1) nothing can be added (the @ panel and drag-drop share this add path).
       // session-mention feature switch (the judgement source for the §3.3
-      // four-layer cascade): on by default; outside Tauri (Web/tests) the bridge
-      // has no listBuiltinFeatures and, exactly like a query failure, we fail
-      // open as enabled (same semantics as the backend: a missing state file
-      // means all enabled). Switch changes are broadcast via
-      // remote_control:tools_changed → pinvou:tools-changed (chat-events.js);
-      // this subscription refetches to hot-update the UI.
+      // four-layer cascade): on by default; the registry read is exposed on
+      // both lanes (the web bridge proxies list_builtin_features to the same
+      // desktop host), so a host-side switch-off reaches browser clients too.
+      // Only a query failure fails open as enabled (same semantics as the
+      // backend: a missing state file means all enabled). Switch changes are
+      // broadcast via remote_control:tools_changed → pinvou:tools-changed
+      // (chat-events.js); this subscription refetches to hot-update the UI.
       const [sessionMentionEnabled, setSessionMentionEnabled] = useState(true);
       useEffect(() => {
         let alive = true;
