@@ -29,6 +29,9 @@ assert.ok(
 
 const releaseScript = read("scripts/release-macos.sh");
 const verifyScript = read("scripts/run-mac-verify.sh");
+const pickerSource = read("pinvou3-app/src/platform/web/host-file-picker.js");
+assert.doesNotMatch(pickerSource, /\.replaceChildren\(/,
+  "host picker must remain compatible with Safari 14.0");
 for (const [name, source] of [
   ["release-macos.sh", releaseScript],
   ["run-mac-verify.sh", verifyScript],

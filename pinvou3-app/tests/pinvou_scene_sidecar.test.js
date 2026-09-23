@@ -254,6 +254,10 @@ function rec(name, pass, detail = '') {
       /\}, \[activeSessionId, dataVisualizationSceneActive, documentWritingSceneActive, hasReadyAttachment, personalWorkbenchSceneActive, pptDesignSceneActive, t, visualPosterSceneActive\]\);/.test(chatViewSource),
     'ChatView sendChatMessage contract');
 
+  rec('scene sidecar 损坏时不得由前端静默回退为空数组',
+    !/syncPinvouSceneEventsForSession[\s\S]*catch \{[\s\S]*return cached;/.test(tauriBridgeSource),
+    'durable sidecar errors must remain observable');
+
   rec('scene sidecar 通过 session 后端在 Tauri/Web 间共享并保留本地迁移缓存',
     /get_session_pinvou_scene_events/.test(tauriBridgeSource) &&
       /save_session_pinvou_scene_events/.test(tauriBridgeSource) &&

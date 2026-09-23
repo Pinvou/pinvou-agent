@@ -52,6 +52,22 @@ fn disabled_bundles_path() -> PathBuf {
     paths::pinvou3_home().join("disabled_bundles.json")
 }
 
+fn fail_closed_defaults() -> DisabledBundlesFile {
+    let mut ids = MarketplaceManager::new().installed_ids();
+    ids.extend(builtin_cli_bundle_ids().map(str::to_string));
+    ids.extend(SkillMarketplaceManager::preset_skill_ids().map(|id| skill_owner_package(&id)));
+    ids.extend(SkillMarketplaceManager::new().uploaded_skill_ids());
+    ids.sort();
+    ids.dedup();
+
+    let mut file = DisabledBundlesFile::default();
+    for mode in [SessionMode::Plain, SessionMode::Code] {
+        file.initialized.insert(mode.as_str().to_string());
+        file.scopes.insert(mode.as_str().to_string(), ids.clone());
+    }
+    file
+}
+
 /// `disabled_bundles.json` 读-改-写的进程内串行化。
 static DISABLED_BUNDLES_FILE_LOCK: Mutex<()> = Mutex::new(());
 
@@ -70,7 +86,7 @@ fn load_disabled_bundles_file_locked() -> DisabledBundlesFile {
     let path = disabled_bundles_path();
     let content = match std::fs::read_to_string(&path) {
         Ok(c) => c,
-        Err(_) => {
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
             let file = migrate_from_legacy_files();
             if !file.scopes.is_empty() || file.initialized.iter().any(|k| !k.is_empty()) {
                 if let Err(error) = save_disabled_bundles_file(&file) {
@@ -79,8 +95,22 @@ fn load_disabled_bundles_file_locked() -> DisabledBundlesFile {
             }
             return file;
         }
+        Err(error) => {
+            eprintln!(
+                "[scope] read disabled_bundles.json failed; using fail-closed defaults: {error}"
+            );
+            return fail_closed_defaults();
+        }
     };
-    let mut file: DisabledBundlesFile = serde_json::from_str(&content).unwrap_or_default();
+    let mut file: DisabledBundlesFile = match serde_json::from_str(&content) {
+        Ok(file) => file,
+        Err(error) => {
+            eprintln!(
+                "[scope] parse disabled_bundles.json failed; using fail-closed defaults: {error}"
+            );
+            return fail_closed_defaults();
+        }
+    };
     if strip_skill_prefixes(&mut file) {
         if let Err(error) = save_disabled_bundles_file(&file) {
             eprintln!("[scope] write disabled_bundles.json failed: {error}");
