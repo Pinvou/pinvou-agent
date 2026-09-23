@@ -88,14 +88,14 @@ def _write_session(directory, session_id, messages, title="demo", **metadata):
 def _three_turn_messages():
     """Three complete turns + one in-flight turn (user sent, model has not answered)."""
     return [
-        _msg("user", _text("第一问")),
-        _msg("assistant", _text("第一答"), _tool_use("exec_shell", "ls"), _text("答完一")),
+        _msg("user", _text("first question")),
+        _msg("assistant", _text("first answer"), _tool_use("exec_shell", "ls"), _text("first answer done")),
         _msg("user", _tool_result("file list")),
-        _msg("user", _text("第二问")),
-        _msg("assistant", _text("第二答")),
-        _msg("user", _text("第三问")),
-        _msg("assistant", _text("第三答")),
-        _msg("user", _text("进行中的问题")),
+        _msg("user", _text("second question")),
+        _msg("assistant", _text("second answer")),
+        _msg("user", _text("third question")),
+        _msg("assistant", _text("third answer")),
+        _msg("user", _text("in-flight question")),
     ]
 
 
@@ -104,7 +104,7 @@ class ReadSessionTests(unittest.TestCase):
         self.tmp = tempfile.TemporaryDirectory()
         self.addCleanup(self.tmp.cleanup)
         self.dir = self.tmp.name
-        _write_session(self.dir, "abc123", _three_turn_messages(), title="引用源会话")
+        _write_session(self.dir, "abc123", _three_turn_messages(), title="referenced session")
 
     def read(self, session_id="abc123", **kwargs):
         payload, error = server.read_session_history(self.dir, session_id, **kwargs)
@@ -113,10 +113,10 @@ class ReadSessionTests(unittest.TestCase):
 
     def test_newest_first_and_in_progress_turn_excluded(self):
         payload = self.read(turn_limit=10)
-        self.assertEqual(payload["title"], "引用源会话")
+        self.assertEqual(payload["title"], "referenced session")
         self.assertEqual(payload["totalTurns"], 3)
         texts = [turn["userText"] for turn in payload["turns"]]
-        self.assertEqual(texts, ["第三问", "第二问", "第一问"])
+        self.assertEqual(texts, ["third question", "second question", "first question"])
         self.assertEqual([turn["turnIndex"] for turn in payload["turns"]], [2, 1, 0])
         self.assertFalse(payload["hasMore"])
         self.assertIsNone(payload["nextCursor"])
@@ -125,9 +125,9 @@ class ReadSessionTests(unittest.TestCase):
     def test_pagination_is_contiguous_without_gaps_or_duplicates(self):
         first = self.read(turn_limit=2)
         self.assertTrue(first["hasMore"])
-        self.assertEqual([t["userText"] for t in first["turns"]], ["第三问", "第二问"])
+        self.assertEqual([t["userText"] for t in first["turns"]], ["third question", "second question"])
         second = self.read(turn_limit=2, cursor=first["nextCursor"])
-        self.assertEqual([t["userText"] for t in second["turns"]], ["第一问"])
+        self.assertEqual([t["userText"] for t in second["turns"]], ["first question"])
         self.assertFalse(second["hasMore"])
         self.assertIsNone(second["nextCursor"])
 
@@ -175,7 +175,7 @@ class ReadSessionTests(unittest.TestCase):
     def test_system_role_blocks_become_notes(self):
         _write_session(self.dir, "compact", [
             _msg("user", _text("q")),
-            _msg("system", _text("压缩摘要")),
+            _msg("system", _text("compaction summary")),
             _msg("assistant", _text("a")),
         ])
         payload, error = server.read_session_history(self.dir, "compact")
@@ -184,10 +184,19 @@ class ReadSessionTests(unittest.TestCase):
         self.assertEqual(note["role"], "system")
 
     def test_rejected_session_ids(self):
-        for bad in ["", "../etc", "a/b", "sched-xyz", "eval_secret", "with space"]:
+        for bad in ["", "../etc", "a/b", "sched-xyz", "eval_secret", "with space",
+                    "A" * 300, "abc\n"]:
             payload, error = server.read_session_history(self.dir, bad)
             self.assertIsNone(payload, bad)
             self.assertIsNotNone(error, bad)
+
+    def test_session_id_length_cap_boundary(self):
+        # The Rust validator enforces charset only; the Python side adds a
+        # length cap so filesystem probes cannot raise ENAMETOOLONG, and
+        # anchors with \Z so a trailing newline never passes.
+        self.assertIsNone(server.validate_session_id("A" * 128))
+        self.assertIsNotNone(server.validate_session_id("A" * 129))
+        self.assertIsNotNone(server.validate_session_id("abc\n"))
 
     def test_missing_session_reports_explicit_error(self):
         payload, error = server.read_session_history(self.dir, "nosuchid")
@@ -271,18 +280,115 @@ class ReadSessionTests(unittest.TestCase):
             first = self.read(turn_limit=10)
             self.assertTrue(first["truncated"])
             self.assertEqual(len(first["turns"]), 1)
-            self.assertEqual(first["turns"][0]["userText"], "第三问")
+            self.assertEqual(first["turns"][0]["userText"], "third question")
             self.assertTrue(first["hasMore"])
             second = self.read(turn_limit=10, cursor=first["nextCursor"])
-            self.assertEqual([t["userText"] for t in second["turns"]], ["第二问"])
+            self.assertEqual([t["userText"] for t in second["turns"]], ["second question"])
             self.assertTrue(second["truncated"])
             third = self.read(turn_limit=10, cursor=second["nextCursor"])
-            self.assertEqual([t["userText"] for t in third["turns"]], ["第一问"])
-            self.assertFalse(third["truncated"])
+            self.assertEqual([t["userText"] for t in third["turns"]], ["first question"])
+            # The last page's single turn also exceeded the degenerate budget
+            # and was shrunk — truncated stays honest even when hasMore is
+            # already false.
+            self.assertTrue(third["truncated"])
             self.assertFalse(third["hasMore"])
             self.assertIsNone(third["nextCursor"])
         finally:
             server.MAX_RESPONSE_BYTES = old_budget
+
+    def test_single_oversized_turn_is_shrunk_to_budget(self):
+        # One turn of 200 assistant blocks at the per-item ceiling reaches
+        # ~4 MB: the first-turn-always-included rule must not bypass the
+        # aggregate budget — the turn is shrunk to fit instead.
+        _write_session(self.dir, "hugeturn", [
+            _msg("user", _text("q")),
+            _msg("assistant", *[_text("x" * 20000) for _ in range(200)]),
+        ])
+        payload, error = server.read_session_history(
+            self.dir, "hugeturn", turn_limit=5, max_output_chars_per_item=20000)
+        self.assertIsNone(error)
+        turns_blob = json.dumps(payload["turns"], ensure_ascii=False).encode("utf-8")
+        self.assertLessEqual(
+            len(turns_blob), server.MAX_RESPONSE_BYTES,
+            "the shaped turns must respect the aggregate response budget")
+        self.assertTrue(payload["truncated"])
+        self.assertTrue(payload["turns"][0].get("itemsTruncated"))
+        # The only turn was included: paging is complete, no cursor.
+        self.assertFalse(payload["hasMore"])
+        self.assertIsNone(payload["nextCursor"])
+
+    def test_oversized_first_turn_keeps_paging_gap_free(self):
+        # Two oversized turns: page 1 carries the shrunk newest turn with
+        # truncated: true and a strictly advancing cursor; page 2 carries the
+        # remaining turn (also shrunk) and terminates — no infinite loop.
+        big_blocks = [_text("x" * 20000) for _ in range(200)]
+        _write_session(self.dir, "twobig", [
+            _msg("user", _text("first")),
+            _msg("assistant", *big_blocks),
+            _msg("user", _text("second")),
+            _msg("assistant", *big_blocks),
+        ])
+        kwargs = {"turn_limit": 5, "max_output_chars_per_item": 20000}
+        first, error = server.read_session_history(self.dir, "twobig", **kwargs)
+        self.assertIsNone(error)
+        self.assertEqual([t["userText"] for t in first["turns"]], ["second"])
+        self.assertTrue(first["truncated"])
+        self.assertTrue(first["hasMore"])
+        self.assertLessEqual(
+            len(json.dumps(first["turns"], ensure_ascii=False).encode("utf-8")),
+            server.MAX_RESPONSE_BYTES)
+        second, error = server.read_session_history(
+            self.dir, "twobig", cursor=first["nextCursor"], **kwargs)
+        self.assertIsNone(error)
+        self.assertEqual([t["userText"] for t in second["turns"]], ["first"])
+        self.assertTrue(second["truncated"])
+        self.assertFalse(second["hasMore"])
+        self.assertIsNone(second["nextCursor"])
+        # Gap-free: the two pages cover both turns exactly once.
+        self.assertNotEqual(
+            first["turns"][0]["turnIndex"], second["turns"][0]["turnIndex"])
+
+    def test_is_file_oserror_is_sanitized(self):
+        # Path.is_file() can raise (e.g. ENAMETOOLONG); the response must be
+        # the same sanitized error as the stat/open failures — the raw OSError
+        # embeds the absolute host path and must never leak.
+        _write_session(self.dir, "locked2", [
+            _msg("user", _text("q")),
+            _msg("assistant", _text("a")),
+        ])
+        real_is_file = Path.is_file
+
+        def boom(_self):
+            raise OSError("[Errno 36] File name too long: '%s'"
+                          % os.path.join(self.dir, "locked2.json"))
+
+        Path.is_file = boom
+        try:
+            payload, error = server.read_session_history(self.dir, "locked2")
+        finally:
+            Path.is_file = real_is_file
+        self.assertIsNone(payload)
+        self.assertIn("unreadable", error)
+        self.assertNotIn(self.dir, error)
+
+    def test_deeply_nested_json_reports_unreadable(self):
+        # RecursionError from pathologically nested JSON must honor the
+        # sanitized `unreadable` contract, not escape as a raw -32603.
+        # (Depth 50000 reliably trips the parser's recursion guard.)
+        (Path(self.dir) / "nested1.json").write_text(
+            "[" * 50000 + "]" * 50000, encoding="utf-8")
+        payload, error = server.read_session_history(self.dir, "nested1")
+        self.assertIsNone(payload)
+        self.assertIn("unreadable", error)
+
+    def test_strict_bool_arg_parsing(self):
+        # bool("false") would be True; the strict parser must not be fooled.
+        self.assertFalse(server._parse_bool_arg("false"))
+        self.assertTrue(server._parse_bool_arg("true"))
+        self.assertTrue(server._parse_bool_arg(True))
+        self.assertFalse(server._parse_bool_arg(False))
+        self.assertFalse(server._parse_bool_arg(1))
+        self.assertFalse(server._parse_bool_arg(None))
 
     def test_normal_page_is_not_marked_truncated(self):
         payload = self.read(turn_limit=10)
@@ -310,13 +416,13 @@ class ListSessionsTests(unittest.TestCase):
         self.tmp = tempfile.TemporaryDirectory()
         self.addCleanup(self.tmp.cleanup)
         self.dir = self.tmp.name
-        _write_session(self.dir, "aaa111", [], title="修复登录页样式",
+        _write_session(self.dir, "aaa111", [], title="fix login page styles",
                        updated_at="2026-09-10T00:00:00Z")
-        _write_session(self.dir, "bbb222", [], title="销量PPT制作",
+        _write_session(self.dir, "bbb222", [], title="sales PPT deck",
                        updated_at="2026-09-12T00:00:00Z")
-        _write_session(self.dir, "sched-task1", [], title="定时任务",
+        _write_session(self.dir, "sched-task1", [], title="scheduled task",
                        updated_at="2026-09-13T00:00:00Z")
-        _write_session(self.dir, "eval_gaia1", [], title="评测",
+        _write_session(self.dir, "eval_gaia1", [], title="benchmark eval",
                        updated_at="2026-09-14T00:00:00Z")
 
     def test_list_excludes_scheduled_and_eval_sessions(self):
@@ -341,13 +447,24 @@ class ListSessionsTests(unittest.TestCase):
         path = Path(self.dir) / "aaa111.json"
         head = server._extract_metadata_head(str(path))
         self.assertIsNotNone(head)
-        self.assertEqual(head["title"], "修复登录页样式")
+        self.assertEqual(head["title"], "fix login page styles")
+
+    def test_corrupt_message_count_does_not_kill_listing(self):
+        # A corrupt app-written message_count must coerce to 0 for that entry,
+        # not raise ValueError and kill the whole listing.
+        _write_session(self.dir, "ccc333", [], title="corrupt count",
+                       updated_at="2026-09-11T00:00:00Z", message_count="lots")
+        payload, error = server.list_sessions(self.dir)
+        self.assertIsNone(error)
+        entry = next(e for e in payload["sessions"] if e["sessionId"] == "ccc333")
+        self.assertEqual(entry["messageCount"], 0)
+        self.assertEqual(payload["total"], 3)
 
     def test_list_excludes_aux_sessions_case_insensitive(self):
         # aux- side-chats join the sched-/eval_ isolation set, case-insensitive.
-        _write_session(self.dir, "aux-side1", [], title="辅助会话",
+        _write_session(self.dir, "aux-side1", [], title="side chat",
                        updated_at="2026-09-15T00:00:00Z")
-        _write_session(self.dir, "AUX-side2", [], title="辅助会话2",
+        _write_session(self.dir, "AUX-side2", [], title="side chat 2",
                        updated_at="2026-09-16T00:00:00Z")
         payload, error = server.list_sessions(self.dir)
         self.assertIsNone(error)
@@ -471,9 +588,9 @@ class StdioContractTests(unittest.TestCase):
         self.addCleanup(self.tmp.cleanup)
         self.dir = self.tmp.name
         _write_session(self.dir, "stdio01", [
-            _msg("user", _text("你好")),
-            _msg("assistant", _text("你好!")),
-        ], title="协议会话")
+            _msg("user", _text("hello")),
+            _msg("assistant", _text("hello!")),
+        ], title="protocol session")
 
     def _rpc(self, proc, method, params=None, req_id=[0]):
         req_id[0] += 1
@@ -517,7 +634,7 @@ class StdioContractTests(unittest.TestCase):
             self.assertEqual(content["type"], "text")
             payload = json.loads(content["text"])
             self.assertTrue(payload["ok"])
-            self.assertEqual(payload["turns"][0]["userText"], "你好")
+            self.assertEqual(payload["turns"][0]["userText"], "hello")
             self.assertFalse(call["result"]["isError"])
 
             missing = self._rpc(proc, "tools/call", {
@@ -576,6 +693,57 @@ class StdioContractTests(unittest.TestCase):
             proc.kill()
             proc.communicate()
 
+    def test_oversized_session_id_is_rejected_without_path_leak(self):
+        # A legal-charset id past the length cap must be rejected by
+        # validation (never reaching the filesystem probes), and the response
+        # must contain no filesystem path.
+        proc = self._spawn()
+        try:
+            request = {"jsonrpc": "2.0", "id": 42, "method": "tools/call",
+                       "params": {"name": "read_session",
+                                  "arguments": {"session_id": "A" * 300}}}
+            proc.stdin.write(json.dumps(request) + "\n")
+            proc.stdin.flush()
+            line = proc.stdout.readline()
+            self.assertTrue(line, "server should have responded")
+            self.assertNotIn(self.dir, line)
+            response = json.loads(line)
+            payload = json.loads(response["result"]["content"][0]["text"])
+            self.assertFalse(payload["ok"])
+            self.assertIn("invalid session_id", payload["error"])
+        finally:
+            proc.kill()
+            proc.communicate()
+
+    def test_catch_all_never_leaks_exception_text(self):
+        # The -32603 catch-all must not interpolate the raw exception: its
+        # message can embed absolute host paths. Only the exception type name
+        # is reported.
+        import io
+        import unittest.mock as mock
+
+        secret_path = os.path.join(self.dir, "secret-user-path")
+
+        class FakeStdin:
+            buffer = [b'{"jsonrpc":"2.0","id":7,"method":"ping"}\n']
+
+        def boom(*_args):
+            raise OSError("blew up at %s" % secret_path)
+
+        out = io.StringIO()
+        with mock.patch.object(server, "_handle", side_effect=boom), \
+                mock.patch("sys.stdin", FakeStdin()), \
+                mock.patch("sys.stdout", out):
+            server.main()
+        line = out.getvalue().strip()
+        self.assertTrue(line, "the catch-all should have answered the request")
+        response = json.loads(line)
+        self.assertEqual(response["id"], 7)
+        self.assertEqual(response["error"]["code"], -32603)
+        self.assertIn("OSError", response["error"]["message"])
+        self.assertNotIn(secret_path, line)
+        self.assertNotIn(self.dir, line)
+
 
 class FeatureGateStdioTests(unittest.TestCase):
     """Contract §3.3 at the stdio layer: spawns the real server and verifies the feature_disabled error channel.
@@ -597,9 +765,9 @@ class FeatureGateStdioTests(unittest.TestCase):
         sessions_dir = self.home / "sessions"
         sessions_dir.mkdir()
         _write_session(sessions_dir, "gate01", [
-            _msg("user", _text("门控问题")),
-            _msg("assistant", _text("门控回答")),
-        ], title="门控会话")
+            _msg("user", _text("gated question")),
+            _msg("assistant", _text("gated answer")),
+        ], title="gated session")
         (self.home / "marketplace").mkdir()
         # Server copy to spawn + a manifest carrying tool_features
         self.server_dir = self.home / "pkg"
@@ -625,7 +793,7 @@ class FeatureGateStdioTests(unittest.TestCase):
         proc.stdin.write(json.dumps(request, ensure_ascii=False) + "\n")
         proc.stdin.flush()
         line = proc.stdout.readline()
-        self.assertTrue(line, "server 应有响应")
+        self.assertTrue(line, "server should have responded")
         return json.loads(line)
 
     def _start(self):
@@ -672,7 +840,7 @@ class FeatureGateStdioTests(unittest.TestCase):
             self.assertFalse(call["result"]["isError"])
             payload = json.loads(call["result"]["content"][0]["text"])
             self.assertTrue(payload["ok"])
-            self.assertEqual(payload["turns"][0]["userText"], "门控问题")
+            self.assertEqual(payload["turns"][0]["userText"], "gated question")
         finally:
             proc.kill()
             proc.communicate()
