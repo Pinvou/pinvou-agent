@@ -737,29 +737,15 @@ fn load_index(ledger_root: &Path) -> Result<CheckpointIndex> {
             // platform 的纳秒唯一名原语（秒级后缀在同一秒内的二次损坏会覆盖
             // 首次取证）。代价：影子仓库里的历史快照失去索引（不可列不可用，
             // 对象随 gc 回收），此后快照能力恢复。
+            // Neither the quarantine path (it lives inside the session
+            // directory) nor the serde message (it can quote the corrupt
+            // bytes) may reach stderr — same cleartext-logging surface as the
+            // sidecar persist logs. The ledger root in context already
+            // identifies the write, and the evidence stays in the quarantined
+            // file for inspection.
             match crate::platform::filesystem::quarantine_corrupt_file(&path) {
-                // The quarantine path lives inside the session directory, so
-                // printing it would route the session id into stderr (same
-                // cleartext-logging surface as the sidecar persist logs);
-                // the ledger root in context already identifies the write.
-                Ok(quarantine) => {
-                    match quarantine
-                        .file_name()
-                        .map(|name| name.to_string_lossy().into_owned())
-                    {
-                        // The serde message can quote corrupted bytes that
-                        // themselves carry the session id; keep the log to the
-                        // path-free quarantine name (evidence is preserved in
-                        // the quarantined file).
-                        Some(name) => eprintln!(
-                            "[checkpoints] checkpoint 索引损坏，隔离为 {name} 后从空索引重建"
-                        ),
-                        None => {
-                            eprintln!("[checkpoints] checkpoint 索引损坏，已隔离并从空索引重建")
-                        }
-                    }
-                }
-                Err(error) => eprintln!("[checkpoints] 隔离损坏索引失败: {error:#}"),
+                Ok(_) => eprintln!("[checkpoints] checkpoint 索引损坏，已隔离并从空索引重建"),
+                Err(_) => eprintln!("[checkpoints] 隔离损坏索引失败（现场未保留），从空索引重建"),
             }
             Ok(CheckpointIndex {
                 version: 1,
