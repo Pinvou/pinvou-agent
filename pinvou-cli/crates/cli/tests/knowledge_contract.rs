@@ -1204,7 +1204,6 @@ fn index_resume_rearms_a_job_stranded_by_a_dead_process() {
     let _ = std::fs::remove_dir_all(&root);
 }
 
-
 /// `scan start` waits for the scan to finish inside the invocation (a
 /// fire-and-forget scan would be killed by process exit before doing any
 /// work), so the returned state is already terminal and the completion
