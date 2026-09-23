@@ -1150,6 +1150,53 @@ fn whole_workspace_diff_truncates_without_accumulating_over_the_cap() {
     );
 }
 
+/// The capped reader must keep draining past the cap: a diff that exceeds
+/// the cap by MORE than one pipe buffer used to park git on a full pipe
+/// forever (the reader had stopped, the stderr thread never saw EOF, and the
+/// lane has no deadline). The sibling test's overhang is ~4 KiB — under the
+/// pipe buffer — so it cannot distinguish draining from stopping; this one
+/// overhangs by 512 KiB and fails fast on a watchdog instead of hanging CI.
+#[test]
+fn whole_workspace_diff_drains_a_diff_exceeding_the_cap_by_more_than_a_pipe() {
+    let _env_guard = ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+    let _home = HomeGuard::new("diff-cap-overhang");
+    let Some(project) = init_git_repo("diff-cap-overhang") else {
+        return; // git unavailable in the environment
+    };
+    let id = create_code_session_fixture(Some(&project));
+    let big = format!("v2 {}\n", "x".repeat(1024 * 1024 + 512 * 1024));
+    std::fs::write(project.join("tracked.txt"), &big).unwrap();
+
+    let (tx, rx) = std::sync::mpsc::channel();
+    std::thread::spawn(move || {
+        let result = parse_args([
+            "pinvou",
+            "code",
+            "workspace",
+            "diff",
+            &id,
+            "tracked.txt",
+            "--output",
+            "json",
+        ])
+        .and_then(|parsed| pinvou_cli::execute(parsed));
+        let _ = tx.send(result);
+    });
+    let result = rx
+        .recv_timeout(std::time::Duration::from_secs(90))
+        .expect("the diff must finish — a hang here means the capped reader \
+                 stopped draining past the cap and parked git on a full pipe");
+    let outcome = result.expect("over-cap diff executes");
+    let value: serde_json::Value =
+        serde_json::from_str(&outcome.stdout).expect("single-line json");
+    assert_eq!(value["truncated"], serde_json::json!(true));
+    // The body is cut at DIFF_LIMIT; the section header rides on top.
+    assert!(
+        value["text"].as_str().unwrap().len() <= 1024 * 1024 + 4096,
+        "the capped body must stay at the cap plus framing"
+    );
+}
+
 /// The per-file diff lane stays a CLI mirror on purpose (bounded untracked
 /// reads, English section copy, whole-workspace composition are CLI-specific),
 /// so its output is differentially pinned against the app module on the same
@@ -2089,14 +2136,17 @@ fn version_probe_failure_is_reported_and_fails_the_gate() {
     assert_eq!(value["installed"], false);
 }
 
-/// The claude login writes the authorization code to the child's stdin only
-/// after the drain readers exist: a child that floods its own stdout before
-/// (or while) consuming stdin must not deadlock the flow. The fake answers
-/// `auth login` (the claude argv), reads a stdin line, emits far more than
-/// the OS pipe buffer, then exits — with the old write-before-drains order
-/// the child's stdout blocks with no reader and the flow hangs until the
-/// 600 s deadline, so the watchdog assertion below is exactly the
-/// regression tripwire.
+/// The claude login must survive a child that floods its own stdout around
+/// consuming stdin: the code write runs on its own thread and the drains own
+/// the pipes from the start, so no stdin/stdout interleaving can park the
+/// flow past the deadline. The fake answers `auth login` (the claude argv),
+/// reads a stdin line, emits far more than the OS pipe buffer, then exits —
+/// the watchdog assertion below trips if any stdin/stdout coordination
+/// regresses into a hang. (It cannot discriminate the historical
+/// write-before-drains ordering on unix — a ≤4097-byte write always fits the
+/// pipe buffer — which is why that ordering was eliminated structurally: the
+/// write is detached, so even a blocked write cannot stall the deadline
+/// loop, and the loop kills the child.)
 #[test]
 #[cfg(unix)]
 fn claude_login_completes_when_the_child_floods_stdout_around_stdin() {
@@ -2141,7 +2191,7 @@ fn claude_login_completes_when_the_child_floods_stdout_around_stdin() {
     });
     let result = rx
         .recv_timeout(std::time::Duration::from_secs(90))
-        .expect("claude login must complete well under the 600 s deadline — a hang here is                  the write-before-drains deadlock regression");
+        .expect("claude login must complete well under the 600 s deadline — a hang here is an stdin/stdout coordination regression");
     // The flooded transcript must not carry the raw code anywhere a harness
     // could re-read (the JSON outcome is the script-visible part).
     match result {
