@@ -513,7 +513,7 @@ mod tests {
         });
     }
 
-    /// Server-side defense in depth (docs/builtin-toolset-contract.md §3.3):
+    /// Server-side defense in depth (docs/builtin-toolset-contract.md §3.1):
     /// the manager layer rejects uninstalling a builtin plugin (the guard
     /// runs before any state is touched, so no temp HOME is needed). That a
     /// normal plugin is not caught by the builtin guard is covered by the
@@ -526,6 +526,17 @@ mod tests {
         assert!(
             err.contains("cannot be uninstalled"),
             "the error should carry the not-uninstallable semantics: {err}"
+        );
+        // The guard normalizes ids like the disable/hide guards: a
+        // `skill:`-prefixed alias of a builtin package must be rejected with
+        // the same semantics, not fall through to a generic not-installed
+        // error.
+        let err = crate::features::marketplace::MarketplaceManager::new()
+            .uninstall("skill:session-reader")
+            .unwrap_err();
+        assert!(
+            err.contains("cannot be uninstalled"),
+            "the skill:-prefixed alias must hit the same guard: {err}"
         );
     }
 

@@ -494,10 +494,13 @@ pub async fn uninstall_marketplace_tool(
 
 pub(super) fn uninstall_marketplace_tool_sync(tool_id: &str) -> Result<(), String> {
     // Builtin plugins cannot be uninstalled (docs/builtin-toolset-contract.md
-    // §3.3): fail fast at the command layer with a user-facing error; the
+    // §3.1): fail fast at the command layer with a user-facing error; the
     // manager layer `MarketplaceManager::uninstall` carries the same guard
-    // (defense in depth).
-    if crate::features::marketplace::builtin::is_builtin_tool(tool_id) {
+    // (defense in depth). Ids are normalized with `to_package_id` first, so a
+    // `skill:`-prefixed alias of a builtin package is judged by its package.
+    if crate::features::marketplace::builtin::is_builtin_tool(
+        &crate::features::marketplace::scope::to_package_id(tool_id),
+    ) {
         return Err(format!(
             "builtin plugin '{tool_id}' is part of the application and cannot be uninstalled"
         ));

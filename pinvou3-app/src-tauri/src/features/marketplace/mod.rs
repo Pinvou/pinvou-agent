@@ -906,8 +906,12 @@ impl<S: CredentialStore> MarketplaceManager<S> {
     /// Boot seed: default-installed preset MCP tools go through the standard
     /// install pipeline when the BundleStore has no record for them (fresh
     /// installs and upgrades to the first version carrying the tool both land
-    /// here); any existing record (installed / uninstalled / any source) is
-    /// respected. Failures only log and never block startup.
+    /// here). An existing record is respected — with one exception: an
+    /// installed=false record with source=Preset is unreachable today
+    /// (uninstalling a builtin is rejected, so that state could only come
+    /// from before the guard existed) and would pin the builtin off with no
+    /// UI path back, so it is reseeded to installed=true through the same
+    /// pipeline. Failures only log and never block startup.
     /// A MarketplaceManager method (not a free function): shares one manager
     /// instance with ensure_extracted so a seed install does not rerun the
     /// plaintext secret migration against a second credential store.
@@ -915,7 +919,18 @@ impl<S: CredentialStore> MarketplaceManager<S> {
         let store = store::BundleStore::new();
         for id in DEFAULT_INSTALLED_MCP_TOOLS {
             match store.get(id) {
-                Ok(Some(_)) => {}
+                Ok(Some(record)) => {
+                    let stale_uninstalled_preset =
+                        !record.installed && matches!(record.source, store::BundleSource::Preset);
+                    if stale_uninstalled_preset {
+                        log::warn!(
+                            "[marketplace] reseeding '{id}': installed=false preset record is unreachable since builtin uninstall is rejected"
+                        );
+                        if let Err(e) = self.install(id, &std::collections::HashMap::new()) {
+                            log::warn!("[marketplace] 默认安装 '{id}' 失败(不阻塞启动): {e}");
+                        }
+                    }
+                }
                 Ok(None) => {
                     if let Err(e) = self.install(id, &std::collections::HashMap::new()) {
                         log::warn!("[marketplace] 默认安装 '{id}' 失败(不阻塞启动): {e}");
@@ -1083,9 +1098,13 @@ impl<S: CredentialStore> MarketplaceManager<S> {
     /// （Upload 整包进回收站 / 可重释放预置物理删除 / 其余保留）。
     pub fn uninstall(&self, tool_id: &str) -> Result<(), String> {
         // Builtin plugins cannot be uninstalled (docs/builtin-toolset-contract.md
-        // §3.3 server-side defense in depth): even if the frontend never
+        // §3.1 server-side defense in depth): even if the frontend never
         // offers the action, a direct command/IPC call must be rejected here.
-        if builtin::is_builtin_tool(tool_id) {
+        // Ids are normalized with the same `to_package_id` rule the
+        // persistence layer applies, so a `skill:`-prefixed alias of a
+        // builtin package cannot slip past the guard into a generic
+        // not-installed error.
+        if builtin::is_builtin_tool(&scope::to_package_id(tool_id)) {
             return Err(format!(
                 "builtin plugin '{tool_id}' is part of the application and cannot be uninstalled"
             ));
@@ -5010,7 +5029,10 @@ mod tests {
     }
 
     /// Boot seed: no record → install and register as preset+installed; an
-    /// existing record (including uninstalled) → respected, never reinstalled.
+    /// existing installed record → respected, never reinstalled. A stale
+    /// installed=false record with source=Preset (only reachable from before
+    /// the builtin uninstall guard existed) is reseeded — otherwise the
+    /// builtin would stay off with no UI path back.
     /// The seed's failure paths (record read failure) only log, never panic.
     #[test]
     fn ensure_default_installed_mcp_tools_seeds_only_missing_records() {
@@ -5043,8 +5065,10 @@ mod tests {
                     "{id}'s server.py should be released into the package dir"
                 );
             }
-            // Rerun the seed after the user uninstalls (record kept with
-            // installed=false): the uninstall is respected, no reinstall.
+            // Rerun the seed with a stale installed=false Preset record (the
+            // pre-guard leftover): the seed must reseed it to installed=true —
+            // builtin uninstall is rejected today, so respecting the record
+            // would brick the builtin off with no UI recovery.
             let store = store::BundleStore::new();
             for id in DEFAULT_INSTALLED_MCP_TOOLS {
                 let mut record = store.get(id).unwrap().unwrap();
@@ -5054,8 +5078,26 @@ mod tests {
             MarketplaceManager::new().ensure_default_installed_mcp_tools();
             for id in DEFAULT_INSTALLED_MCP_TOOLS {
                 assert!(
+                    store.get(id).unwrap().unwrap().installed,
+                    "stale installed=false preset record for {id} must be reseeded"
+                );
+            }
+            // An installed=false record with a non-Preset source is respected
+            // (not a state the builtin guard is responsible for). `upsert`
+            // (not `upsert_preserving`, which deliberately keeps the existing
+            // source) flips the source for this setup.
+            let store = store::BundleStore::new();
+            for id in DEFAULT_INSTALLED_MCP_TOOLS {
+                let mut record = store.get(id).unwrap().unwrap();
+                record.installed = false;
+                record.source = store::BundleSource::Upload("x.zip".to_string());
+                store.upsert(record).unwrap();
+            }
+            MarketplaceManager::new().ensure_default_installed_mcp_tools();
+            for id in DEFAULT_INSTALLED_MCP_TOOLS {
+                assert!(
                     !store.get(id).unwrap().unwrap().installed,
-                    "uninstalled {id} must not be reinstalled by the seed"
+                    "installed=false with a non-Preset source must be respected for {id}"
                 );
             }
         });
