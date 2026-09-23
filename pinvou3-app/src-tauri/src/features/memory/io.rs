@@ -1774,10 +1774,10 @@ pub(super) fn delete_preference_unlocked(id: &str) -> io::Result<bool> {
 }
 
 pub(super) fn load_preferences() -> io::Result<Vec<PreferenceFile>> {
-    list_preferences_with_cleanup().map(|result| result.value)
+    load_preferences_with_cleanup().map(|result| result.value)
 }
 
-pub fn list_preferences_with_cleanup() -> io::Result<TopicRead<Vec<PreferenceFile>>> {
+fn load_preferences_with_cleanup() -> io::Result<TopicRead<Vec<PreferenceFile>>> {
     let _lifecycle = file_lifecycle_lock().lock();
     load_preferences_with_cleanup_unlocked()
 }

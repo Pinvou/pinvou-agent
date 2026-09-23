@@ -2203,6 +2203,27 @@ fn reserved_target_is_unchanged_impl(_file: &File, path: &Path) -> bool {
     std::fs::symlink_metadata(path).is_ok_and(|metadata| metadata.file_type().is_file())
 }
 
+/// Move a corrupt file aside, preserving its bytes for inspection, under a
+/// unique timestamped name. The sub-second suffix matters: `rename` silently
+/// replaces an existing destination on Unix, so two corruptions landing in
+/// the same wall-clock second (fast retry loops, racing processes) must not
+/// destroy each other's evidence. Returns the quarantine path; the caller
+/// owns the refuse/log semantics.
+pub fn quarantine_corrupt_file(path: &Path) -> io::Result<PathBuf> {
+    let now = chrono::Utc::now();
+    let stem = path
+        .file_name()
+        .and_then(|name| name.to_str())
+        .unwrap_or("file");
+    let quarantine = path.with_file_name(format!(
+        "{stem}.corrupt-{}.{:09}",
+        now.format("%Y%m%dT%H%M%S"),
+        now.timestamp_subsec_nanos(),
+    ));
+    std::fs::rename(path, &quarantine)?;
+    Ok(quarantine)
+}
+
 /// Test helper (round-10 review m12): assert the file mode is 0600. The tool layer's CI
 /// tests check the screenshot capture_and_store wrote through this — the target cfg stays
 /// in this adapter layer (architecture guard rule). Windows has no POSIX mode bits, always
@@ -2242,25 +2263,6 @@ fn assert_private_mode_impl(path: &Path, expected: u32) {
 #[cfg(not(unix))]
 fn assert_private_mode_impl(path: &Path, expected: u32) {
     let _ = (path, expected);
-/// Move a corrupt file aside, preserving its bytes for inspection, under a
-/// unique timestamped name. The sub-second suffix matters: `rename` silently
-/// replaces an existing destination on Unix, so two corruptions landing in
-/// the same wall-clock second (fast retry loops, racing processes) must not
-/// destroy each other's evidence. Returns the quarantine path; the caller
-/// owns the refuse/log semantics.
-pub fn quarantine_corrupt_file(path: &Path) -> io::Result<PathBuf> {
-    let now = chrono::Utc::now();
-    let stem = path
-        .file_name()
-        .and_then(|name| name.to_str())
-        .unwrap_or("file");
-    let quarantine = path.with_file_name(format!(
-        "{stem}.corrupt-{}.{:09}",
-        now.format("%Y%m%dT%H%M%S"),
-        now.timestamp_subsec_nanos(),
-    ));
-    std::fs::rename(path, &quarantine)?;
-    Ok(quarantine)
 }
 
 #[cfg(test)]
