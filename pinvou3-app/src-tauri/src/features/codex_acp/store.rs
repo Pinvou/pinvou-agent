@@ -309,9 +309,13 @@ fn rewrite_code_session_sidecar_preserving_bound_at(
     match persist_code_session_sidecar(&path, &sidecar) {
         Ok(()) => true,
         Err(error) => {
+            // Rebind path: the module's rebind log-hygiene rule applies (the
+            // error chain embeds sessions/<id>/ paths), so log the root cause
+            // only — never the path or the session id — matching the rebind
+            // rewrite loop below. The bind-path writer above is exempt.
             eprintln!(
-                "[pinvou3-app] 写入原生代码会话 sidecar 失败（{}）: {error:#}",
-                path.display()
+                "[pinvou3-app] rebind retry rewrite of the native code session sidecar failed: {}",
+                error.root_cause()
             );
             false
         }
@@ -1347,9 +1351,15 @@ mod tests {
             std::process::id()
         ));
         std::fs::create_dir_all(&dir).unwrap();
+        // The sidecar root derives as <store_path parent>/sessions, so pass
+        // the conventional session-agents.json path INSIDE the nonce'd dir —
+        // passing the dir itself would write into the shared, non-nonce'd
+        // $TMPDIR/sessions/ (litter plus a cross-process flake window) and
+        // the cleanup below would remove only the empty nonce'd dir.
+        let store_path = dir.join("session-agents.json");
 
         persist_code_session_sidecar(
-            &code_session_sidecar_path(&dir, "s1"),
+            &code_session_sidecar_path(&store_path, "s1"),
             &CodeSessionSidecar {
                 version: CODE_SESSION_SIDECAR_VERSION,
                 workspace_kind: CodexWorkspaceKind::Project,
@@ -1359,11 +1369,11 @@ mod tests {
         )
         .unwrap();
         assert!(rewrite_code_session_sidecar_preserving_bound_at(
-            &dir,
+            &store_path,
             "s1",
             PathBuf::from("/new/root")
         ));
-        let sidecar = read_code_session_sidecar(&dir, "s1").unwrap();
+        let sidecar = read_code_session_sidecar(&store_path, "s1").unwrap();
         assert_eq!(
             sidecar.workspace_path.as_deref(),
             Some(std::path::Path::new("/new/root"))
@@ -1377,12 +1387,14 @@ mod tests {
         // No prior sidecar: the timestamp stays unknown instead of being
         // fabricated with now.
         assert!(rewrite_code_session_sidecar_preserving_bound_at(
-            &dir,
+            &store_path,
             "s2",
             PathBuf::from("/new/root")
         ));
         assert_eq!(
-            read_code_session_sidecar(&dir, "s2").unwrap().bound_at,
+            read_code_session_sidecar(&store_path, "s2")
+                .unwrap()
+                .bound_at,
             None
         );
 

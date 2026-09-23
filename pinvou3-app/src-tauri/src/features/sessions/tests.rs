@@ -473,9 +473,11 @@ fn rebound_plain_chat_bindings_are_scanned_and_rewritten() {
 /// only because the command entry normalizes `from` through
 /// `rebind_source_display` (deepest-existing-ancestor resolution) before any
 /// lane sees it. Pin that contract: a binding stored in the canonical
-/// spelling (as bind-time canonicalization writes it) is invisible to the raw
-/// alias, matches once `from` is normalized, and the suffix cut lands exactly
-/// on the nested component. cfg(unix)-gated under the file-top
+/// spelling (as the command entry's `validate_user_workspace_path`
+/// canonicalization writes it — `bind_session_workspace` itself stores the
+/// caller's path verbatim) is invisible to the raw alias, matches once `from`
+/// is normalized, and the suffix cut lands exactly on the nested component.
+/// cfg(unix)-gated under the file-top
 /// allow-target-cfg exception: std::os::unix::fs::symlink does not exist on
 /// Windows.
 #[cfg(unix)]
@@ -491,8 +493,15 @@ fn rebind_workspace_bindings_via_symlink_alias_needs_normalized_from() {
     let session = store
         .create_new("/model".into(), None, std::env::temp_dir())
         .expect("create");
-    // Bind-time canonicalization stores the resolved spelling.
-    let bound = real.join("proj").join("nested");
+    // The command entry canonicalizes through `validate_user_workspace_path`
+    // before binding (`bind_session_workspace` stores its argument verbatim),
+    // and the rebind folds `from` in that canonical domain — so the test must
+    // bind the canonical spelling too. On macOS the temp root itself sits
+    // behind the /var → /private/var alias; without this canonicalize the
+    // stored binding and the normalized `from` land in different domains and
+    // the lexical fold matches nothing.
+    let bound = std::fs::canonicalize(real.join("proj").join("nested"))
+        .expect("canonicalize the bound path into the domain `from` normalizes into");
     store
         .bind_session_workspace(&session.metadata.id, bound.clone())
         .expect("bind");

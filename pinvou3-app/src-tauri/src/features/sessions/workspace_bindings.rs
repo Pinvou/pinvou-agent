@@ -819,7 +819,11 @@ impl SessionStore {
                 // validate_session_id's bail echoes the rejected id, and
                 // session ids are treated as sensitive in logs — so it gets a
                 // stable, non-embedding message; every other failure logs the
-                // root cause, which never carries paths or ids.
+                // root cause, which never carries paths or ids — except the
+                // record-missing bail ("session record {id} does not exist"),
+                // whose root cause DOES echo the id; the ghost-record check
+                // above makes that arm near-unreachable (only a record deleted
+                // between the check and the bind reaches it).
                 if validate_session_id(&id).is_err() {
                     eprintln!("[sessions] migrate workspace binding skipped an invalid session id");
                 } else {

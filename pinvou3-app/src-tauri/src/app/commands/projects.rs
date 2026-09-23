@@ -502,7 +502,13 @@ pub async fn rebind_workspace_root(
     // ran — with a stale baseline forever (degraded workspace-change
     // classification). Candidates whose metadata still needs sync reach the
     // metadata loop and are recaptured there; already-synced ones never
-    // enter the loop, so they are recaptured right after it.
+    // enter the loop, so they are recaptured right after it. Known residual
+    // (round-10 review m1): an ORPHAN candidate — its durable session JSON
+    // already gone — is recaptured by neither pass (the metadata loop's
+    // orphan arm continues before the in-loop recapture, and the post-loop
+    // pass skips every metadata_targets member). That is accepted, not an
+    // oversight: with no durable session left, its baseline classifies
+    // nothing, so recapturing it would only write a dangling sidecar.
     let mut code_lane_retry_ids: Vec<(String, PathBuf)> = Vec::new();
     for (session_id, path) in acp_pool.agents().sessions_under_workspace(&to_display) {
         code_lane_retry_ids.push((session_id.clone(), path.clone()));
@@ -582,6 +588,30 @@ pub async fn rebind_workspace_root(
     let plain_rebind = sessions
         .rebind_workspace_bindings(&from, &to_display)
         .map_err(|e| format!("rebind_workspace_root: {e:#}"))?;
+    // Legacy-table gate (round-9 review minor 3) — placed BEFORE the
+    // project-roots commit (round-10 review M1): both gate inputs are final
+    // the moment rebind_workspace_bindings returns and nothing below mutates
+    // them, so checking here is semantically free and strictly dominates. If
+    // the legacy global table could not be synced, the next boot migration
+    // would re-bind the old paths over the fresh sidecars, so the run must
+    // fail instead of claiming success (#464 round-5 blocker 1). Failing
+    // HERE keeps the roots registered under the vanished `from`: the
+    // unavailable badge survives as the durable retry affordance, and a
+    // rerun converges the already-rewritten session lanes exactly as the
+    // retry message promises (every step is idempotent). Failing after
+    // rebind_roots instead would discard the whole report AND leave the root
+    // at `to` — available, no badge, nothing to click — the exact
+    // no-durable-re-entry shape the roots-last ordering (review #463 round-8
+    // M3) exists to avoid. The list is driven by the entries the surviving
+    // table would actually resurrect, not by this run's rewrite log: on a
+    // retry nothing is left to rewrite and the rebound set is empty while
+    // the stale table is still there (#464 round-6 blocking 1).
+    if let Some(error) = legacy_sync_failure_gate(
+        plain_rebind.legacy_sync_failed,
+        &plain_rebind.legacy_resurrection_ids,
+    ) {
+        return Err(error);
+    }
     let binding_final_stale: Vec<String> = plain_rebind.failed_session_ids.clone();
     // Finally-stale sidecar list (Major 2): an orphan rewrite failure, or an
     // indexed session whose rewrite + retry passes both failed — no
@@ -681,7 +711,10 @@ pub async fn rebind_workspace_root(
     // so the in-loop recapture skipped them — yet an earlier run may have
     // moved their bindings while its own baseline recapture failed (round-9
     // review minor 2 residual). Recapture them here at their already-
-    // translated paths.
+    // translated paths. The metadata_targets guard also keeps orphan
+    // candidates out (the loop's orphan arm took the early continue before
+    // the in-loop recapture) — deliberately: an orphan has no durable session
+    // left for a baseline to classify (round-10 review m1).
     let metadata_target_ids: std::collections::HashSet<&str> =
         metadata_targets.iter().map(|(id, _)| id.as_str()).collect();
     for (session_id, path) in &code_lane_retry_ids {
@@ -828,19 +861,10 @@ pub async fn rebind_workspace_root(
             }
         }
     }
-    // The plain sidecars and metadata moved, but if the legacy global table
-    // could not be synced, the next boot migration would re-bind the old paths
-    // over the fresh sidecars — the report must not claim success (#464
-    // round-5 blocker 1). The list is driven by the entries the surviving
-    // table would actually resurrect, not by this run's rewrite log: on a
-    // retry nothing is left to rewrite and the rebound set is empty while the
-    // stale table is still there (#464 round-6 blocking 1).
-    if let Some(error) = legacy_sync_failure_gate(
-        plain_rebind.legacy_sync_failed,
-        &plain_rebind.legacy_resurrection_ids,
-    ) {
-        return Err(error);
-    }
+    // The gate above (before the roots commit) already failed the run when
+    // the resurrection set is unknown; here a sync failure with a KNOWN set
+    // stays reportable — every session the stale table would resurrect joins
+    // the failure list so the dialog stays open with an honest retry.
     if plain_rebind.legacy_sync_failed {
         merge_legacy_resurrections_into_failures(
             &mut failed_session_ids,
