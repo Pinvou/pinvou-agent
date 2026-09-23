@@ -924,7 +924,7 @@ const tc = (t) => (t && t.uiToolCommon) || dict.zh.uiToolCommon;
           </div>
           <div className="flex-1 min-w-0 flex flex-col gap-1.5 py-1">
             <div className="flex items-center gap-2 flex-wrap">
-              <h3 className="text-[17px] font-semibold text-slate-900 dark:text-white truncate tracking-tight">{tool.title}</h3>
+              <h2 className="text-[17px] font-semibold text-slate-900 dark:text-white truncate tracking-tight">{tool.title}</h2>
               <span className="px-3 py-1 text-[12px] rounded-full font-bold bg-emerald-50 dark:bg-emerald-500/10 text-emerald-700 dark:text-emerald-300 whitespace-nowrap">{C.readonlyBadge}</span>
             </div>
             {tool.subtitle && <p className="text-[13px] text-slate-500 dark:text-slate-400 font-medium">{tool.subtitle}</p>}
