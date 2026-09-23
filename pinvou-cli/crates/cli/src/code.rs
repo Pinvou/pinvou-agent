@@ -1823,7 +1823,9 @@ fn agents_list(output: OutputMode) -> Result<CliOutcome, CliError> {
                 } else {
                     "not-installed"
                 },
-                probe.version.as_deref().unwrap_or("-"),
+                crate::support::collapse_control_characters(
+                    probe.version.as_deref().unwrap_or("-"),
+                ),
                 if probe.authenticated {
                     "authenticated"
                 } else {
@@ -1855,7 +1857,7 @@ fn agents_status(agent: &str, output: OutputMode) -> Result<CliOutcome, CliError
         } else {
             "no"
         },
-        probe.version.as_deref().unwrap_or("-"),
+        crate::support::collapse_control_characters(probe.version.as_deref().unwrap_or("-")),
         probe.min_version,
         if probe.authenticated { "yes" } else { "no" },
         probe
@@ -2065,7 +2067,7 @@ fn login(
     // fail fast instead of waiting on a pipe that never fills.
     {
         use std::io::Write;
-        let mut stdin = child.stdin.take();
+        let stdin = child.stdin.take();
         let code = code.as_deref().map(str::to_owned);
         std::thread::spawn(move || {
             let Some(mut stdin) = stdin else {
@@ -2378,6 +2380,21 @@ fn providers_save(
     output: OutputMode,
 ) -> Result<CliOutcome, CliError> {
     require_provider_agent(agent)?;
+    // Mirror the lib store's statically reachable validation in English
+    // before any secret resolution (--api-key-stdin blocks on stdin): the
+    // store's own messages for these two rules are Chinese, the same
+    // translation-boundary rule as the marketplace importer.
+    if wire_api == Some("kimi") && agent != "kimi" {
+        return Err(CliError::failed(
+            "the kimi wire protocol only applies to the kimi agent",
+        ));
+    }
+    if provider_id.is_none() && agent == "claude" && model_slots.is_empty() {
+        return Err(CliError::failed(
+            "code providers add: claude requires --model-slot SLOT=MODEL for every Claude \
+             model slot (a missing slot falls back to official traffic)",
+        ));
+    }
     let manager = open_providers()?;
     // Update must refuse an unknown provider before any secret resolution:
     // `--api-key-stdin` blocks on stdin, and piping a key into a typo'd
@@ -2789,7 +2806,7 @@ fn code_sessions_list(output: OutputMode) -> Result<CliOutcome, CliError> {
                 item["agent_id"].as_str().unwrap_or("-"),
                 item["workspace_kind"].as_str().unwrap_or("-"),
                 metadata.updated_at.to_rfc3339(),
-                metadata.title,
+                crate::support::collapse_control_characters(&metadata.title),
                 item["workspace_path"].as_str().unwrap_or("-"),
             )
         })
@@ -3514,8 +3531,7 @@ fn git_output_capped(
         })?;
     let stdout_pipe = child.stdout.take().expect("git stdout is piped");
     let stderr_pipe = child.stderr.take().expect("git stderr is piped");
-    let stderr_thread =
-        std::thread::spawn(move || read_capped_to_eof(stderr_pipe, cap));
+    let stderr_thread = std::thread::spawn(move || read_capped_to_eof(stderr_pipe, cap));
     let (stdout_bytes, stdout_total) = read_capped_to_eof(stdout_pipe, cap);
     let (stderr_bytes, _) = stderr_thread.join().unwrap_or_default();
     let status = child.wait().map_err(|error| {

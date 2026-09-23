@@ -328,8 +328,7 @@ fn model_available() -> bool {
             return *available;
         }
     }
-    let available =
-        meta.len() == spec.expected_size && file_is_sha256(&path, spec.sha256);
+    let available = meta.len() == spec.expected_size && file_is_sha256(&path, spec.sha256);
     *entry = Some((key, available));
     available
 }
@@ -1679,16 +1678,7 @@ fn call_postprocess_model(
     let (tx, rx) = std::sync::mpsc::channel();
     std::thread::spawn(move || {
         let _ = tx.send(postprocess_http_exchange(
-            base_url,
-            api_key,
-            provider,
-            preset,
-            system,
-            user,
-            model_name,
-            mode,
-            retry,
-            timeout,
+            base_url, api_key, provider, preset, system, user, model_name, mode, retry, timeout,
         ));
     });
     // The client's total timeout bounds the thread, so a recv past the

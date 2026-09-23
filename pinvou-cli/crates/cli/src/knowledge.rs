@@ -778,13 +778,13 @@ fn scan_start(root: Option<PathBuf>, output: OutputMode) -> Result<CliOutcome, C
             return Err(CliError::failed(format!(
                 "knowledge scan start: root {} is not a directory",
                 root.display()
-            )))
+            )));
         }
         Err(error) => {
             return Err(CliError::failed(format!(
                 "knowledge scan start: root {} does not exist: {error}",
                 root.display()
-            )))
+            )));
         }
     }
     // Scan never touches the import-job store, so like the other pure L1
@@ -958,8 +958,10 @@ fn search(
 
 /// Parses a UTC `YYYY-MM-DD` date into UNIX seconds for the search DTO's
 /// `mtimeAfter`/`mtimeBefore` (the GUI frontend sends epoch seconds directly;
-/// the CLI has no chrono dependency, so the civil-days conversion is
-/// inlined). Invalid shapes are usage errors, like bad ids.
+/// the civil-days conversion is inlined deliberately — chrono IS a
+/// dependency, but this arithmetic must keep matching the foundation's
+/// day-boundary computation exactly, the same rationale as the scheduled
+/// family's copy). Invalid shapes are usage errors, like bad ids.
 fn parse_date_epoch(value: &str, flag: &str) -> Result<i64, CliError> {
     let invalid = || {
         CliError::usage(format!(
@@ -1247,6 +1249,10 @@ fn collections_add_sources(
 
 /// GUI `kb_documents`: `limit` omitted maps to the GUI's 0 = default page of
 /// 500 (`L1Store::list_documents`).
+/// Page-size cap for `documents list`: matches the store's own search cap
+/// order of magnitude and keeps the i64 cast below safe.
+const DOCUMENTS_LIMIT_CAP: usize = 1000;
+
 fn documents(
     collection_id: i64,
     limit: Option<usize>,
@@ -1255,7 +1261,10 @@ fn documents(
     let service = open_service()?;
     let documents = service
         .l1()
-        .list_documents(collection_id, limit.unwrap_or(0))
+        // Clamp the page size: the caller's usize is cast to i64 downstream,
+        // so usize::MAX would wrap to SQLite's LIMIT -1 (unlimited) and
+        // materialize the whole documents table.
+        .list_documents(collection_id, limit.unwrap_or(0).min(DOCUMENTS_LIMIT_CAP))
         .map_err(|error| feature_error("documents", error))?;
     let human = if documents.is_empty() {
         format!("no documents in collection {collection_id}")

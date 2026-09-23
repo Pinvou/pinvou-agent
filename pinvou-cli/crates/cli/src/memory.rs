@@ -983,6 +983,22 @@ memory profile instead",
 normalization (task-like or punctuation-only text is not stored)",
         ));
     }
+    // The feature caps stored text (120 chars for preference items, 160 for
+    // work context) with a hard truncate during normalization; a longer
+    // input silently loses its tail, so warn before the write. The caps are
+    // GUI-shared store facts, disclosed in docs/pinvou-cli.md.
+    let cap = match kind {
+        AddKind::WorkContext => Some(feature::WORK_CONTEXT_TEXT_MAX_CHARS),
+        AddKind::Preference => Some(120),
+    };
+    if let Some(cap) = cap {
+        if content.chars().count() > cap {
+            crate::note!(
+                "memory add: content exceeds the {cap}-character store cap; the tail was \
+                 truncated"
+            );
+        }
+    }
     // The preference and work-context stores are replace-per-topic: a new
     // item lands in a fixed topic bucket (the CLI adds without a topic, so
     // every add targets the same bucket) and the write deletes that bucket's

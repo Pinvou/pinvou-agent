@@ -1942,6 +1942,14 @@ fn connect(kind: ConnectorKind, timeout: u64, output: OutputMode) -> Result<CliO
             std::fs::create_dir_all(&qr_dir).map_err(|error| {
                 CliError::failed(format!("cannot create the scan QR temp dir: {error}"))
             })?;
+            // The QR encodes a one-scan login grant (credential-equivalent),
+            // so the directory is tightened to owner-only before the vendor
+            // CLI writes the image into it.
+            #[cfg(unix)]
+            {
+                use std::os::unix::fs::PermissionsExt as _;
+                let _ = std::fs::set_permissions(&qr_dir, std::fs::Permissions::from_mode(0o700));
+            }
             // The vendor CLI writes the relative `qr.png` next to its cwd; the
             // GUI redirects it into a temp dir the same way (`wecom.rs` sets
             // `current_dir`), so the user's working directory stays clean.

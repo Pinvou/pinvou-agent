@@ -1116,6 +1116,47 @@ fn import(path: &Path, output: OutputMode) -> Result<CliOutcome, CliError> {
     )))
 }
 
+/// Reserves an export destination atomically: the exclusive create closes
+/// the check-then-use window between the overwrite refusal and the library's
+/// tmp+persist write (a concurrent creator loses the create_new race instead
+/// of clobbering us). The caller removes the empty reservation when its
+/// export fails.
+fn reserve_export_destination(id: &str, dest: &Path, action: &str) -> Result<(), CliError> {
+    let refuse = || {
+        CliError::failed(format!(
+            "{action}({id}): refusing to overwrite {}; choose a destination that does \
+             not exist yet",
+            dest.display()
+        ))
+    };
+    match std::fs::File::create_new(dest) {
+        Ok(marker) => {
+            drop(marker);
+            Ok(())
+        }
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
+            if let Some(parent) = dest.parent() {
+                if !parent.as_os_str().is_empty() {
+                    std::fs::create_dir_all(parent).map_err(|error| {
+                        CliError::failed(format!(
+                            "{action}({id}): cannot create output directory {}: {error}",
+                            parent.display()
+                        ))
+                    })?;
+                }
+            }
+            match std::fs::File::create_new(dest) {
+                Ok(marker) => {
+                    drop(marker);
+                    Ok(())
+                }
+                Err(_) => Err(refuse()),
+            }
+        }
+        Err(_) => Err(refuse()),
+    }
+}
+
 fn export(
     id: &str,
     destination: Option<PathBuf>,
@@ -1142,27 +1183,16 @@ fn export(
     // An existing destination is refused, not overwritten: the default name
     // is `<id>.zip` in the caller's cwd, so a silent overwrite could destroy
     // an unrelated file with exit 0 (the same policy as `sessions export`).
-    // The probe is not atomic with the library's write — a check-then-use
-    // window remains — but it closes the ordinary clobber.
-    if dest.exists() {
-        return Err(CliError::failed(format!(
-            "plugins export({id}): refusing to overwrite {}; choose a destination that does \
-             not exist yet",
-            dest.display()
-        )));
+
+    reserve_export_destination(id, &dest, "plugins export")?;
+    let export_result = package_export::export_installed_plugin(id, &dest)
+        .map_err(|error| feature_error("export", id, error));
+    if export_result.is_err() {
+        // The lib writes through a temp file and persists at the end, so a
+        // failure leaves our empty reservation behind — remove it.
+        let _ = std::fs::remove_file(&dest);
     }
-    if let Some(parent) = dest.parent() {
-        if !parent.as_os_str().is_empty() {
-            std::fs::create_dir_all(parent).map_err(|error| {
-                CliError::failed(format!(
-                    "plugins export({id}): cannot create output directory {}: {error}",
-                    parent.display()
-                ))
-            })?;
-        }
-    }
-    package_export::export_installed_plugin(id, &dest)
-        .map_err(|error| feature_error("export", id, error))?;
+    export_result?;
     let value = serde_json::json!({
         "id": id,
         "output": dest.display().to_string(),
@@ -1272,27 +1302,15 @@ fn recycle_export(
         ));
     }
     // Same no-overwrite policy as `export` (the default is `<id>.zip` in the
-    // caller's cwd); the probe is not atomic with the library's write.
-    if dest.exists() {
-        return Err(CliError::failed(format!(
-            "plugins recycle export({id}): refusing to overwrite {}; choose a destination that \
-             does not exist yet",
-            dest.display()
-        )));
-    }
-    if let Some(parent) = dest.parent() {
-        if !parent.as_os_str().is_empty() {
-            std::fs::create_dir_all(parent).map_err(|error| {
-                CliError::failed(format!(
-                    "plugins recycle export({id}): cannot create output directory {}: {error}",
-                    parent.display()
-                ))
-            })?;
-        }
-    }
-    recycle_bin::RecycleBin::new()
+    // caller's cwd), with the same atomic reservation.
+    reserve_export_destination(id, &dest, "plugins recycle export")?;
+    let export_result = recycle_bin::RecycleBin::new()
         .export_package(id, &dest)
-        .map_err(|error| feature_error("recycle export", id, error))?;
+        .map_err(|error| feature_error("recycle export", id, error));
+    if export_result.is_err() {
+        let _ = std::fs::remove_file(&dest);
+    }
+    export_result?;
     let value = serde_json::json!({
         "id": id,
         "output": dest.display().to_string(),
