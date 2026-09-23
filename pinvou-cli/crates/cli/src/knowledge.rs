@@ -840,10 +840,7 @@ fn stats(output: OutputMode) -> Result<CliOutcome, CliError> {
     let stats = service
         .stats()
         .map_err(|error| feature_error("stats", error))?;
-    let human = format!(
-        "total_files: {}\ntotal_bytes: {}",
-        stats.total_files, stats.total_bytes
-    );
+    let human = format!("total_files: {}", stats.total_files);
     Ok(success(render(
         output,
         human,

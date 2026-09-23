@@ -1114,7 +1114,6 @@ fn update(
     let patch = MemoryTextPatch {
         topic: None,
         text: Some(content.to_owned()),
-        ttl_days: None,
     };
     // The feature layer reports topic-directory cleanup warnings
     // (TopicMutation.cleanup_warning) alongside the write; the GUI surfaces
