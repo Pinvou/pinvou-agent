@@ -616,6 +616,42 @@ fn create_rejects_memory_organize_kind_while_memory_is_disabled() {
 }
 
 #[test]
+/// A run record that is valid JSON but wrong-shaped (a required field
+/// missing, or typed wrong) must fail the listing with the
+/// malformed-record error instead of rendering a phantom run — the
+/// type-check gate implemented by `require_object_run_record`.
+#[test]
+fn runs_listing_refuses_wrong_typed_run_records_as_malformed() {
+    let _env_guard = ENV_LOCK.lock().unwrap_or_else(|error| error.into_inner());
+    let home = TempHome::new("run-record-type");
+    let created = create_task(&home, "Typechecked task");
+    let task_id = created["id"].as_str().unwrap().to_owned();
+
+    // Missing `status` entirely.
+    let runs = home.runs_dir(&task_id);
+    std::fs::create_dir_all(&runs).unwrap();
+    let missing = runs.join("20260923T000000-1.json");
+    std::fs::write(
+        &missing,
+        r#"{"id":"run-1","automation_id":"t","scheduled_for":"2026-09-23T00:00:00Z","created_at":"2026-09-23T00:00:00Z"}"#,
+    )
+    .unwrap();
+    let error = expect_failed(&["scheduled", "runs", &task_id]);
+    assert!(error.contains("is not a well-formed run record"), "{error}");
+    std::fs::remove_file(&missing).unwrap();
+
+    // Wrong-typed `status` (number instead of string) is refused too.
+    let wrong_type = runs.join("20260923T000000-2.json");
+    std::fs::write(
+        &wrong_type,
+        r#"{"id":"run-2","automation_id":"t","scheduled_for":"x","status":3,"created_at":"y"}"#,
+    )
+    .unwrap();
+    let error = expect_failed(&["scheduled", "runs", &task_id]);
+    assert!(error.contains("is not a well-formed run record"), "{error}");
+    let _ = home;
+}
+
 fn chat_kind_run_refuses_headless_execution_with_stable_error() {
     let _env_guard = ENV_LOCK.lock().unwrap_or_else(|error| error.into_inner());
     let home = TempHome::new("chat-run");

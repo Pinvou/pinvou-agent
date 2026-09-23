@@ -1140,25 +1140,28 @@ fn monitor_status_reports_clean_zero_state_without_a_model() {
         outcome.stdout.contains("Online: false"),
         "monitor status output missing the offline line"
     );
-    // The zero state carries the same key set as the model-present branch,
-    // with null values where there is no snapshot, so scripts parse one
-    // stable shape.
+    // The zero state carries the same 9-key set as the model-present branch
+    // (the stale provider/diagnostic keys were dropped with the main-side
+    // field removal), so scripts parse one stable shape.
     let value = run_json(&["pinvou", "monitor", "status"]);
     assert_eq!(value["vllm_online"], false);
     assert_eq!(value["health_status"], "unavailable");
     for key in [
         "max_model_len",
         "status",
-        "provider",
         "model",
         "configured_model",
-        "upstream",
         "target_kind",
-        "diagnostic",
     ] {
         assert!(
             value.get(key).is_some_and(serde_json::Value::is_null),
             "{key} must be present and null in the zero state"
+        );
+    }
+    for stale in ["provider", "diagnostic", "upstream"] {
+        assert!(
+            value.get(stale).is_none(),
+            "{stale} was removed from the stable shape and must stay gone"
         );
     }
 }

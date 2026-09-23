@@ -1182,13 +1182,12 @@ fn whole_workspace_diff_drains_a_diff_exceeding_the_cap_by_more_than_a_pipe() {
         .and_then(|parsed| pinvou_cli::execute(parsed));
         let _ = tx.send(result);
     });
-    let result = rx
-        .recv_timeout(std::time::Duration::from_secs(90))
-        .expect("the diff must finish — a hang here means the capped reader \
-                 stopped draining past the cap and parked git on a full pipe");
+    let result = rx.recv_timeout(std::time::Duration::from_secs(90)).expect(
+        "the diff must finish — a hang here means the capped reader \
+                 stopped draining past the cap and parked git on a full pipe",
+    );
     let outcome = result.expect("over-cap diff executes");
-    let value: serde_json::Value =
-        serde_json::from_str(&outcome.stdout).expect("single-line json");
+    let value: serde_json::Value = serde_json::from_str(&outcome.stdout).expect("single-line json");
     assert_eq!(value["truncated"], serde_json::json!(true));
     // The body is cut at DIFF_LIMIT; the section header rides on top.
     assert!(
