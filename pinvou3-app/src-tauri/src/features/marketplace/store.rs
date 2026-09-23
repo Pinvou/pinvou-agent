@@ -317,19 +317,19 @@ impl BundleStore {
     /// 局部更新：置 `Degraded` 原因（§3.2：登记在、资源缺），供 CLI 修复/断开
     /// 路径用。id 不存在 → Ok(false)；原因未变 → Ok(true) 但不写盘。
     pub fn mark_degraded(&self, id: &str, reason: &str) -> Result<bool, String> {
-        self.set_degraded(id, Some(reason.to_string()))
+        self.set_degraded(id, reason.to_string())
     }
 
-    fn set_degraded(&self, id: &str, reason: Option<String>) -> Result<bool, String> {
+    fn set_degraded(&self, id: &str, reason: String) -> Result<bool, String> {
         let _guard = file_lock();
         let mut file = load_locked(&self.file)?;
         let Some(record) = file.records.iter_mut().find(|r| r.id == id) else {
             return Ok(false);
         };
-        if record.degraded == reason {
+        if record.degraded.as_deref() == Some(reason.as_str()) {
             return Ok(true);
         }
-        record.degraded = reason;
+        record.degraded = Some(reason);
         save_locked(&self.file, &file)?;
         Ok(true)
     }
@@ -639,8 +639,9 @@ fn save_locked(path: &Path, file: &BundlesFile) -> Result<(), String> {
 // 旧布局反推（只读旧文件，不动包内容）
 // ---------------------------------------------------------------------------
 
-/// 安装时间戳：RFC3339/ISO8601 UTC，对齐 SessionMetadata.updated_at 的 chrono 惯例。
-fn now_iso8601() -> String {
+/// 安装/回收时间戳：RFC3339/ISO8601 UTC，对齐 SessionMetadata.updated_at 的 chrono 惯例。
+/// recycle_bin.rs 复用本实现，避免两份时间戳格式各自漂移。
+pub(super) fn now_iso8601() -> String {
     chrono::Utc::now().to_rfc3339()
 }
 
@@ -785,7 +786,7 @@ fn cli_asset_state(bin: &str) -> CliAssetState {
             "lock 表无 {bin} 条目，存量二进制无法校验，待重新下载"
         ));
     };
-    match connector_lock::file_sha256_hex(&path) {
+    match crate::platform::hashing::sha256_file(&path) {
         Ok(actual) if actual == pin.binary_sha256 => CliAssetState::Verified,
         Ok(actual) => CliAssetState::Mismatch(format!(
             "CLI 二进制 SHA-256 与 lock 表不符（expected {}, got {actual}），待重新下载",
@@ -1129,7 +1130,7 @@ mod tests {
     }
 
     #[test]
-    fn mark_and_clear_degraded_roundtrip() {
+    fn mark_degraded_roundtrip() {
         with_temp_home("pinvou3-store-test", || {
             let store = BundleStore::new();
             store
@@ -1141,12 +1142,8 @@ mod tests {
                 store.get("feishu").unwrap().unwrap().degraded,
                 Some("二进制缺失".to_string())
             );
-            // 清除路径走私有 set_degraded(id, None)（公开包装已随死代码清理删除）
-            assert!(store.set_degraded("feishu", None).unwrap());
-            assert_eq!(store.get("feishu").unwrap().unwrap().degraded, None);
             // 不存在的 id：Ok(false)，不误建记录
             assert!(!store.mark_degraded("ghost", "x").unwrap());
-            assert!(!store.set_degraded("ghost", None).unwrap());
             assert!(store.get("ghost").unwrap().is_none());
         });
     }

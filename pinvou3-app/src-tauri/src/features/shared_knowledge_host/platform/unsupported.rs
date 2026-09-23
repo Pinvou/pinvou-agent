@@ -13,7 +13,6 @@ pub async fn status() -> SharedKnowledgeHostStatus {
     SharedKnowledgeHostStatus {
         supported: false,
         installed: false,
-        running: false,
         endpoint: LOCAL_ENDPOINT.to_string(),
         service_version: None,
         app_version: env!("CARGO_PKG_VERSION").to_string(),
@@ -60,7 +59,7 @@ pub async fn backup_host(
     _output: PathBuf,
     _local_recipient: String,
     _recovery_recipient: String,
-) -> Result<serde_json::Value, String> {
+) -> Result<(), String> {
     Err("备份宿主只支持 Linux".to_string())
 }
 

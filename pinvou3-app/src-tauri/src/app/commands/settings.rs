@@ -1278,7 +1278,6 @@ fn apply_general_settings_patch(current: &mut UserPrefs, patch: GeneralSettingsP
         advanced.saved_models = current.advanced.saved_models.clone();
         advanced.active_model_id = current.advanced.active_model_id.clone();
         advanced.local_vllm_bootstrapped = current.advanced.local_vllm_bootstrapped;
-        advanced.local_vllm_setup_declined = current.advanced.local_vllm_setup_declined;
         current.advanced = advanced;
     }
 }
@@ -1336,15 +1335,6 @@ async fn persist_and_restart<S>(
     // processes first.
     crate::prepare_app_restart(&app).await;
     app.restart();
-}
-
-/// Restart the app immediately after saving settings (model/backend switches need a restart to take effect).
-#[tauri::command]
-pub async fn save_settings_and_restart(
-    patch: GeneralSettingsPatch,
-    app: tauri::AppHandle,
-) -> Result<(), String> {
-    persist_and_restart(app, "settings", move || persist_general_settings(patch)).await
 }
 
 /// 仅保存搜索配置后重启，避免搜索设置覆盖同时发生变化的模型列表。

@@ -305,7 +305,6 @@ fn full_l0_l1_e2e() {
     let after = svc.l1().list_documents(cid, 0).expect("docs2");
     assert_eq!(after.len(), 1, "删后应剩 1 文档");
 
-    svc.cancel_scan();
     let _ = fs::remove_dir_all(&root);
     eprintln!(
         "✅ L0+L1 e2e PASS — 扫描 {} 文件 / 知识集 {} 块 / 关键词+语义检索均命中并溯源",

@@ -80,8 +80,8 @@ use super::super::types::{
     UiTreeOptions,
 };
 use super::helpers::{
-    TYPE_CHUNK_CHARS, TypeRun, drag_waypoints, map_scroll, normalize_typed_newlines, sanitize_name,
-    screening_name, split_type_runs,
+    TYPE_CHUNK_CHARS, TypeRun, combine_drag_errors, drag_waypoints, map_scroll,
+    normalize_typed_newlines, sanitize_name, screening_name, split_type_runs,
 };
 
 /// Wait before a click so the previous move has settled (the target process consumes mouse
@@ -699,32 +699,6 @@ fn write_tree_node(
         }
     }
     Ok(())
-}
-
-/// Merge the interpolated-move and button-release results of `drag`. The
-/// release always runs, but `Result::and` kept only the first error: when the
-/// release failed too, callers never learned that the mouse button may still
-/// be pressed (the macOS/Linux backends already surface this signal).
-fn combine_drag_errors(
-    move_result: Result<(), ComputerUseError>,
-    release_result: Result<(), ComputerUseError>,
-) -> Result<(), ComputerUseError> {
-    match (move_result, release_result) {
-        (Ok(()), Ok(())) => Ok(()),
-        // Only the path move failed and the release succeeded: report the
-        // move error unchanged.
-        (Err(move_error), Ok(())) => Err(move_error),
-        // Single-failure cases keep the ORIGINAL error kind: a UIPI-blocked
-        // release is `unavailable` — the "run elevated" classification
-        // upstreams rely on must survive the stranded-button annotation.
-        (Ok(()), Err(release)) => {
-            Err(release.same_kind(format!("{release}; the mouse button may still be pressed")))
-        }
-        (Err(move_error), Err(release)) => Err(move_error.same_kind(format!(
-            "drag move failed ({move_error}); its release also failed ({release}); \
-             the mouse button may still be pressed"
-        ))),
-    }
 }
 
 pub(super) struct WindowsComputerUseBackend {

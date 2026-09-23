@@ -20,6 +20,8 @@ use sha2::{Digest, Sha256};
 use pinvou_knowledge::chunk_text;
 use pinvou_knowledge::embedding::{Embedder, blob_to_vec, cosine, vec_to_blob};
 
+use super::now;
+
 /// chunk 切块参数：~512 token ≈ 中文 600 字符；15% 重叠保留上下文。
 const CHUNK_CHARS: usize = 600;
 const CHUNK_OVERLAP: usize = 90;
@@ -970,10 +972,6 @@ fn upsert_import_document(
         params![collection_id, path],
         |r| r.get(0),
     )
-}
-
-fn now() -> i64 {
-    chrono::Utc::now().timestamp()
 }
 
 /// 空闲卸载时钟用的 UNIX 秒（u64；负数系统时钟截断为 0，只影响判定方向不致误卸载）。

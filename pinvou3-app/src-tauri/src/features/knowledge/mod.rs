@@ -13,8 +13,9 @@ mod exclude;
 mod import_jobs;
 mod kb_tool;
 mod l1;
-/// embedding 模型按需下载命令（pub mod：tauri::command 宏生成的 `__cmd__` 助手需经全路径
-/// `knowledge::model_download::kb_model_*` 引用，`pub use` 重导出函数带不出宏）。
+// Embedding-model on-demand download logic. Plain functions consumed by the
+// app command layer (`app::commands::knowledge` owns the Tauri command
+// wrappers via the passthrough macros).
 pub mod model_download;
 mod query;
 mod scanner;
@@ -44,7 +45,7 @@ use store::{SearchQuery, Store};
 #[serde(rename_all = "camelCase")]
 pub struct ScanState {
     pub running: bool,
-    /// idle / scanning / done / cancelled
+    /// idle / scanning / done
     pub phase: String,
     pub scanned: u64,
     pub finished_at: i64,
@@ -62,26 +63,22 @@ pub struct KnowledgeService {
     /// validate-then-mount race without coupling either domain to the other.
     mount_mutation: Arc<tokio::sync::Mutex<()>>,
     scan_state: Arc<Mutex<ScanState>>,
-    cancel: Arc<AtomicBool>,
     imports: import_jobs::ImportJobStore,
     active_import: Arc<Mutex<Option<String>>>,
     index_cancel: Arc<AtomicBool>,
     /// embedder 空闲卸载巡检任务句柄 + 防振荡时钟。模型常驻 ~570MB 内存；
     /// 巡检在空闲超阈值时 `set_embedder(None)` 卸载，kb_model_status 的热加载
     /// 钩子（用户意图）会自动重载。放 Option 使「未装模型 → 不起巡检」零开销。
-    embedder_reaper: Arc<Mutex<Option<EmbedderReaper>>>,
+    embedder_reaper: Arc<Mutex<Option<EmbedderReaperGuard>>>,
     /// 上次自动卸载 embedding 模型的 UNIX 秒（防振荡）：距上次卸载不足
     /// EMBEDDER_UNLOAD_COOLDOWN_SECS 时不再自动卸载。放在服务级字段（而非
     /// 巡检任务内）是因为卸载/热加载会重启巡检任务，冷却必须跨任务存活。
     embedder_last_unload_epoch: Arc<AtomicI64>,
 }
 
-/// embedder 空闲卸载巡检任务句柄（Drop 即停）。
-struct EmbedderReaper {
-    #[allow(dead_code)]
-    guard: EmbedderReaperGuard,
-}
-
+/// Idle-unload reaper handle for the embedding model: dropping the guard
+/// cancels the inspection task (the semantics used to live in a wrapping
+/// `EmbedderReaper` struct, now inlined into the slot type).
 struct EmbedderReaperGuard {
     cancel: tokio_util::sync::CancellationToken,
     handle: tauri::async_runtime::JoinHandle<()>,
@@ -133,7 +130,6 @@ impl KnowledgeService {
                 finished_at: last_scan_finished_at,
                 ..Default::default()
             })),
-            cancel: Arc::new(AtomicBool::new(false)),
             imports,
             active_import: Arc::new(Mutex::new(None)),
             index_cancel: Arc::new(AtomicBool::new(false)),
@@ -141,7 +137,6 @@ impl KnowledgeService {
             embedder_last_unload_epoch: Arc::new(AtomicI64::new(0)),
         })
     }
-
     /// L1 知识集句柄（命令层直接用）。
     pub fn l1(&self) -> &l1::L1Store {
         &self.l1
@@ -244,9 +239,7 @@ impl KnowledgeService {
                 }
             }
         });
-        *slot = Some(EmbedderReaper {
-            guard: EmbedderReaperGuard { cancel, handle },
-        });
+        *slot = Some(EmbedderReaperGuard { cancel, handle });
     }
 
     /// 后台索引入口的补载：模型被空闲卸载或被首帧门控跳过（deferred）后，导入
@@ -510,7 +503,6 @@ impl KnowledgeService {
             if st.running {
                 return st.clone();
             }
-            self.cancel.store(false, Ordering::Relaxed);
             *st = ScanState {
                 running: true,
                 phase: "scanning".into(),
@@ -520,7 +512,6 @@ impl KnowledgeService {
 
         let store = self.store.clone();
         let scan_state = self.scan_state.clone();
-        let cancel = self.cancel.clone();
 
         thread::spawn(move || {
             let ex = Excluder::default();
@@ -530,49 +521,33 @@ impl KnowledgeService {
             let mut scanned_total = 0u64;
             for root in &roots {
                 let base = scanned_total;
-                let walked =
-                    scanner::scan(root, &store, &ex, &cancel, &existing, &mut visited, |n| {
-                        scan_state.lock().scanned = base + n;
-                    });
+                let walked = scanner::scan(root, &store, &ex, &existing, &mut visited, |n| {
+                    scan_state.lock().scanned = base + n;
+                });
                 scanned_total = base + walked;
                 scan_state.lock().scanned = scanned_total;
-                if cancel.load(Ordering::Relaxed) {
-                    break;
-                }
             }
 
-            // 清理「已消失」的文件（上次在库、本次没遍历到）。取消时不删，避免误删没扫完的部分。
-            if !cancel.load(Ordering::Relaxed) {
-                let stale: Vec<String> = existing
-                    .keys()
-                    .filter(|p| !visited.contains(*p))
-                    .cloned()
-                    .collect();
-                if !stale.is_empty() {
-                    let _ = store.delete_many(&stale);
-                }
+            // 清理「已消失」的文件（上次在库、本次没遍历到）。
+            let stale: Vec<String> = existing
+                .keys()
+                .filter(|p| !visited.contains(*p))
+                .cloned()
+                .collect();
+            if !stale.is_empty() {
+                let _ = store.delete_many(&stale);
             }
 
             // 去重(算 hash)不在扫描里跑——读盘昂贵、百万文件下永远跑不完且拖卡设备。去重功能已下线。
-            let cancelled = cancel.load(Ordering::Relaxed);
             let finished_at = now();
-            if !cancelled {
-                let _ = store.set_last_scan_finished_at(finished_at);
-            }
+            let _ = store.set_last_scan_finished_at(finished_at);
             let mut st = scan_state.lock();
             st.running = false;
             st.finished_at = finished_at;
-            st.phase = if cancelled { "cancelled" } else { "done" }.into();
+            st.phase = "done".into();
         });
 
         self.scan_state.lock().clone()
-    }
-
-    /// 仅测试用：kb_cancel_scan 命令已下线（懒触发扫描无前端取消入口），
-    /// 生产路径不再有调用方；扫描线程内的 cancel 分支保留（语义不变）。
-    #[cfg(test)]
-    pub fn cancel_scan(&self) {
-        self.cancel.store(true, Ordering::Relaxed);
     }
 
     pub fn status(&self) -> ScanState {

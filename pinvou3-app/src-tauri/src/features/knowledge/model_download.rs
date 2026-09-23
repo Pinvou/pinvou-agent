@@ -402,16 +402,10 @@ pub(crate) async fn load_installed_embedder(
 /// 是否存在会用到 embedding 模型的使用迹象：本地有已入库内容，或配置了远程
 /// 知识库连接（与 tool_policy 的 kb_usable 同口径：远程连接存在即视为知识库
 /// 可用，宁可保守加载；远程检索本身在服务端嵌入，本地模型只为挂载校验与
-/// 可能的本地混检兜底）。两者皆无 → 首帧不加载。
+/// 可能的本地混检兜底）。两者皆无 → 首帧不加载。判定复用工具门控的
+/// [`KnowledgeService::kb_tools_usable`]，避免两份谓词各自漂移。
 fn knowledge_usage_present(service: &KnowledgeService) -> bool {
-    usage_present(service.has_indexed_content(), remote_has_connections())
-}
-
-/// usage_present 的纯函数核心（便于单测）：任一使用迹象存在即加载。判定与
-/// 工具门控的 [`KnowledgeService::kb_tools_usable`] 同口径，委托实现避免两份
-/// 谓词各自漂移。
-fn usage_present(indexed_content: bool, remote_connections: bool) -> bool {
-    KnowledgeService::kb_tools_usable(indexed_content, remote_connections)
+    KnowledgeService::kb_tools_usable(service.has_indexed_content(), remote_has_connections())
 }
 
 /// deferred_no_usage 的纯函数核心（便于单测）：只有「已安装、未就绪、最近一次
@@ -579,12 +573,12 @@ mod tests {
     #[test]
     fn first_frame_load_requires_local_content_or_remote_connections() {
         // 两者皆无 → 跳过加载（磁盘目录即使完整也不白占 ~570MB）。
-        assert!(!usage_present(false, false));
+        assert!(!KnowledgeService::kb_tools_usable(false, false));
         // 本地有已入库内容（含曾建库后仍有文档的用户）→ 加载。
-        assert!(usage_present(true, false));
+        assert!(KnowledgeService::kb_tools_usable(true, false));
         // 远程连接存在（远程检索要本地嵌入查询向量）→ 加载。
-        assert!(usage_present(false, true));
-        assert!(usage_present(true, true));
+        assert!(KnowledgeService::kb_tools_usable(false, true));
+        assert!(KnowledgeService::kb_tools_usable(true, true));
     }
 
     #[test]
