@@ -730,7 +730,7 @@ fn load_index(ledger_root: &Path) -> Result<CheckpointIndex> {
     };
     match serde_json::from_slice(&bytes) {
         Ok(index) => Ok(index),
-        Err(parse_error) => {
+        Err(_parse_error) => {
             // 损坏的 index 不得让该会话的 checkpoint 功能永久失效（临时会话的
             // 账本就在 agent 可见的工作目录内，agent 的工具可能写坏它）：隔离
             // 保留现场后从空索引重建——与 sidecar 的损坏处理同款，共用
@@ -747,12 +747,16 @@ fn load_index(ledger_root: &Path) -> Result<CheckpointIndex> {
                         .file_name()
                         .map(|name| name.to_string_lossy().into_owned())
                     {
+                        // The serde message can quote corrupted bytes that
+                        // themselves carry the session id; keep the log to the
+                        // path-free quarantine name (evidence is preserved in
+                        // the quarantined file).
                         Some(name) => eprintln!(
-                            "[checkpoints] checkpoint 索引损坏，隔离为 {name} 后从空索引重建: {parse_error:#}"
+                            "[checkpoints] checkpoint 索引损坏，隔离为 {name} 后从空索引重建"
                         ),
-                        None => eprintln!(
-                            "[checkpoints] checkpoint 索引损坏，已隔离并从空索引重建: {parse_error:#}"
-                        ),
+                        None => {
+                            eprintln!("[checkpoints] checkpoint 索引损坏，已隔离并从空索引重建")
+                        }
                     }
                 }
                 Err(error) => eprintln!("[checkpoints] 隔离损坏索引失败: {error:#}"),
