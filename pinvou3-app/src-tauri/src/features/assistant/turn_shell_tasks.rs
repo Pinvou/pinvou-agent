@@ -23,8 +23,7 @@ const CLEANUP_RETRY_DELAYS: [Duration; 2] = [Duration::from_millis(50), Duration
 const MAX_KILL_ATTEMPTS: u8 = 3;
 const MAX_FAILED_SCOPE_TOMBSTONES: usize = 16;
 
-pub(crate) type TurnShellScopeId = u64;
-type ScopeId = TurnShellScopeId;
+type ScopeId = u64;
 
 #[derive(Clone, Default)]
 pub(crate) struct SessionShellManagers {

@@ -1811,27 +1811,31 @@ impl AppEngine {
         })
     }
 
-    /// 发用户消息给 Engine。Engine 内部自管 session，多轮自然累积。
-    ///
-    /// `mode` + `phase` 由 commands::chat 从 SessionStore 取当前 session 的
-    /// mode_state，注入 Op::SendMessage。底座按 mode 自动切工具白名单 + sandbox。
-    /// M1 弱模型加固:bridge 按 phase 在 user content 前 prepend `<system-reminder>`。
-    pub async fn send_user_message(
+    /// Turn submission for headless harnesses (L1 integration harness, live
+    /// tests). Mirrors the production path: reserve the turn slot first, then
+    /// submit through [`Self::send_reserved_user_message`], the same shape as
+    /// `EnginePool::send_user_message`. Production session turns call the
+    /// reservation API through `EnginePool` instead; the reservation types are
+    /// `pub(crate)`, so the integration-test process goes through this wrapper.
+    #[allow(dead_code)] // headless harnesses are the only callers; no production caller
+    pub async fn send_headless_user_message(
         &self,
         content: String,
         mode: AppMode,
         persona_reminder: Option<String>,
         restrict_tools: bool,
     ) -> Result<()> {
+        let reservation = self.turn_lifecycle.reserve()?;
         let expert_snapshot = self.multi_agent_enabled.then(ExpertRosterSnapshot::capture);
-        let op = self.build_interactive_send_message_op(
+        self.send_reserved_user_message(
             content,
             mode,
             persona_reminder,
             restrict_tools,
             expert_snapshot,
-        )?;
-        self.send_turn_op(op).await
+            reservation,
+        )
+        .await
     }
 
     pub(crate) async fn send_reserved_user_message(
@@ -3902,14 +3906,14 @@ mod live_tests {
 
         // 跑两轮:首轮 = 冷/warmup(A 跳过 TTFT/TPS),二轮 = 暖(记)。
         engine
-            .send_user_message(
+            .send_headless_user_message(
                 prompts[0].to_string(),
                 SerializableMode::Yolo.to_app_mode(),
                 None,
                 false,
             )
             .await
-            .expect("send_user_message #1");
+            .expect("send_headless_user_message #1");
 
         let mut rx = engine.handle.rx_event.write().await;
         let mut turns_done = 0usize;
@@ -3948,14 +3952,14 @@ mod live_tests {
                     turns_done += 1;
                     if turns_done == 1 {
                         engine
-                            .send_user_message(
+                            .send_headless_user_message(
                                 prompts[1].to_string(),
                                 SerializableMode::Yolo.to_app_mode(),
                                 None,
                                 false,
                             )
                             .await
-                            .expect("send_user_message #2");
+                            .expect("send_headless_user_message #2");
                     } else {
                         break;
                     }

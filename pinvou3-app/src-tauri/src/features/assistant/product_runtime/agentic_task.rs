@@ -3,7 +3,8 @@
 //!
 //! Unlike the eval backend in [`super::headless_bridge`], this runs a
 //! **product-equivalent** agentic turn: `TurnInput::eval_tool_policy = None` →
-//! `EnginePool::send_user_message`, i.e. the exact path the GUI uses (Yolo
+//! `EnginePool::send_user_message` (reserve_turn + send_reserved_user_message,
+//! the same submission path the GUI chat command uses; Yolo
 //! mode, product tool allowlist, Bash/File write access, real shell). Eval
 //! read-only isolation is unaffected: the GAIA path still enforces its eval
 //! policy, and this entry never goes through `HeadlessAgentBackend` nor

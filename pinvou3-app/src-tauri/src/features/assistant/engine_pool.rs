@@ -1060,7 +1060,8 @@ impl PreparedRuntimeState {
     }
 
     fn requires_rebuild_from(&self, previous: &Self) -> bool {
-        self != previous
+        self.prepared.model != previous.prepared.model
+            || self.model_update_revision != previous.model_update_revision
     }
 }
 
@@ -1381,8 +1382,8 @@ impl EnginePool {
                 scheduled_unattended,
             )
         })?;
-        // Community 默认准备路径固定 passthrough：模型原样保留，不注入运行时
-        // 凭据/revision；凭据照常走环境变量与本地凭据库（bridge.api_key()）。
+        // Community 默认准备路径固定 passthrough：模型原样保留、直接用于引擎
+        // 配置；凭据照常走环境变量与本地凭据库（bridge.api_key()）。
         let selected = bridge
             .effective_model_owned()
             .context("No effective model is available for runtime preparation")?;
@@ -3823,9 +3824,6 @@ mod scheduled_model_tests {
         let second = identity_for_saved_model(&bridge, &model("second", "raw-two"));
 
         assert_eq!(first, second);
-        assert!(
-            crate::features::assistant::eval::validate_judge_identity(&first, &second).is_err()
-        );
 
         // SAFETY: this test holds platform::paths::tests::ENV_LOCK; env writes are serialized.
         unsafe { std::env::remove_var("DEEPSEEK_MODEL") };

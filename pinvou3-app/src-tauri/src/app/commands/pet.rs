@@ -15,7 +15,6 @@ pub async fn begin_detach_drag(
 }
 
 async_command_passthrough!(pet_domain, set_pet_enabled(enabled: bool, app: AppHandle) -> Result<(), String>);
-async_command_passthrough!(pet_domain, get_pet_scale() -> Result<f64, String>);
 async_command_passthrough!(pet_domain, set_pet_scale(scale: f64, anchor: Option<String>, alignment: Option<String>, vertical_alignment: Option<String>, anchor_x: Option<f64>, anchor_y: Option<f64>, activity_visible: Option<bool>, activity_height: Option<f64>, persist: Option<bool>, app: AppHandle) -> Result<f64, String>);
 async_command_passthrough!(pet_domain, set_pet_activity_visible(visible: bool, activity_height: Option<f64>, alignment: Option<String>, vertical_alignment: Option<String>, app: AppHandle) -> Result<(), String>);
 async_command_passthrough!(pet_domain, save_pet_position(x: i32, y: i32, vertical_alignment: Option<String>) -> Result<(), String>);

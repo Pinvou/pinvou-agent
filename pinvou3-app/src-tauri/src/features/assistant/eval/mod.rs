@@ -2,10 +2,7 @@
 //!
 //! 原 app 侧 smoke 评测栈(runner/cases/mock/report/markdown 报告与 judge
 //! 运行时)已由 `pinvou-cli/crates/adapter-smoke` 统一实现并删除;本模块只
-//! 保留 EnginePool 与 headless 评测宿主仍消费的模型身份、不可变选中快照
-//! 与 judge 身份校验。
-
-use anyhow::{Result, bail};
+//! 保留 EnginePool 与 headless 评测宿主仍消费的模型身份与不可变选中快照。
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) struct ModelIdentity {
@@ -81,29 +78,9 @@ impl EvalSuiteModelSnapshot {
     }
 }
 
-pub(crate) fn validate_judge_identity(tested: &ModelIdentity, judge: &ModelIdentity) -> Result<()> {
-    let tested_provider = tested.provider.trim();
-    let tested_model = tested.model.trim();
-    let judge_provider = judge.provider.trim();
-    let judge_model = judge.model.trim();
-    if tested_provider.is_empty()
-        || tested_model.is_empty()
-        || judge_provider.is_empty()
-        || judge_model.is_empty()
-    {
-        bail!("tested and judge model identities must include provider and model");
-    }
-    if tested_provider.eq_ignore_ascii_case(judge_provider)
-        && tested_model.eq_ignore_ascii_case(judge_model)
-    {
-        bail!("judge model must differ from the tested model");
-    }
-    Ok(())
-}
-
 #[cfg(test)]
 mod tests {
-    use super::{EvalModelSelection, ModelIdentity, validate_judge_identity};
+    use super::{EvalModelSelection, ModelIdentity};
 
     #[test]
     fn selection_is_a_non_sensitive_immutable_snapshot() {
@@ -118,30 +95,5 @@ mod tests {
         assert_eq!(selection.identity().model, "actual-wire-model");
         assert!(!format!("{selection:?}").contains("api_key"));
         assert!(!format!("{selection:?}").contains("base_url"));
-    }
-
-    #[test]
-    fn different_provider_or_model_is_allowed() {
-        let tested = ModelIdentity::new("deepseek", "chat");
-        assert!(validate_judge_identity(&tested, &ModelIdentity::new("openai", "chat")).is_ok());
-        assert!(
-            validate_judge_identity(&tested, &ModelIdentity::new("deepseek", "reasoner")).is_ok()
-        );
-    }
-
-    #[test]
-    fn same_normalized_provider_and_model_is_rejected() {
-        let tested = ModelIdentity::new(" DeepSeek ", " Chat ");
-        let judge = ModelIdentity::new("deepseek", "chat");
-
-        assert!(validate_judge_identity(&tested, &judge).is_err());
-    }
-
-    #[test]
-    fn empty_identity_is_rejected() {
-        let valid = ModelIdentity::new("deepseek", "chat");
-
-        assert!(validate_judge_identity(&ModelIdentity::new(" ", "chat"), &valid).is_err());
-        assert!(validate_judge_identity(&valid, &ModelIdentity::new("deepseek", " ")).is_err());
     }
 }
