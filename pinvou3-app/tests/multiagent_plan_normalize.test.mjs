@@ -820,8 +820,11 @@ test('开关 UI 挂在模型列表下方，经 interaction 桥调后端', () => 
   const materialization = chatBridgeSource2.slice(materializationStart, materializationEnd);
   assert.match(
     materialization,
-    /restoreTaskDraft\(text, draftOwner\);[\s\S]*?return "restored";/,
-    '物化中止必须按原草稿或已创建会话恢复，返回 restored 阻止调用方二次恢复（issue #406）',
+    /const restoredBody = stripMentionBlockForComposerRestore\(text\);[\s\S]*?restoreTaskDraft\(restoredBody, draftOwner\)[\s\S]*?return restored \? "restored" : false;/,
+    '物化中止必须按原草稿或已创建会话恢复、剥离会话引用注入块，返回 restored 阻止调用方二次恢复（issue #406）。round-8 M1：纯引用消息无可恢复文本，返回 false 让调用方的非派发恢复保留 chips，不再谎报 "restored"',
+    // The strip gate must come from the shared helper (round-8 minor 10),
+    // not a per-lane copy.
+
   );
   assert.doesNotMatch(materialization, /prefillComposer\(/, '物化中止不得绕过归属校验直接向当前输入框追加');
   const personasBridgeSource = read('src', 'platform', 'tauri', 'bridge', 'personas.js');
