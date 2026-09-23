@@ -383,7 +383,7 @@ assert.match(remoteControlCommands,
   /impl<'a> WebSavedSession<'a>[\s\S]*?redact_session_metadata_for_web\(session\.metadata\.clone\(\)\)[\s\S]*?web_artifact_storage_path[\s\S]*?ledger_root\(&session_id\)[\s\S]*?session_artifacts_dir\(&session_id\)[\s\S]*?WebSavedSession::project\(&saved, &artifact_roots, &revision\)/,
   'the Web session projection must redact metadata and scope legacy artifact paths before serialization');
 assert.match(webBridge,
-  /IS_WEB \? "web_access_list_sessions" : "list_sessions"[\s\S]*?IS_WEB \? "web_access_list_archived_sessions" : "list_archived_sessions"/,
+  /invoke\("web_access_list_sessions"\)[\s\S]*?"web_access_list_archived_sessions"/,
   'Web history refreshes must use path-redacted session list commands');
 assert.match(remoteControlCommands,
   /fn web_operation_result[\s\S]*?format!\("\{prefix\}_\{operation\}_failed"\)[\s\S]*?fn web_workspace_result[\s\S]*?web_operation_result\([\s\S]*?"web_workspace"[\s\S]*?web_access_list_codex_workspace[\s\S]*?web_workspace_result\(WebWorkspaceOperation::Listing, result\)[\s\S]*?web_access_search_codex_workspace[\s\S]*?web_workspace_result\(WebWorkspaceOperation::Search, result\)[\s\S]*?web_access_preview_codex_workspace_file[\s\S]*?web_workspace_result\(WebWorkspaceOperation::Preview, result\)[\s\S]*?web_access_get_codex_workspace_changes[\s\S]*?web_workspace_result\(WebWorkspaceOperation::Changes, result\)[\s\S]*?web_access_get_codex_workspace_diff[\s\S]*?web_workspace_result\(WebWorkspaceOperation::Diff, result\)/,
@@ -584,7 +584,7 @@ assert.doesNotMatch(webBridge, /async function saveSearchSettingsAndRestart/,
   'the desktop-only restart wrapper must stay off the web bridge');
 assert.match(main, /const saved = isWeb[\s\S]{0,180}saveSearchSettings\(search\)[\s\S]{0,180}saveSearchSettingsAndRestart\(search\)/,
   'the shared UI must save without requesting a desktop restart in WebUI');
-assert.match(webBridge, /state\.settings = await invoke\(IS_WEB \? "web_access_update_settings" : "update_settings"/,
+assert.match(webBridge, /state\.settings = await invoke\("web_access_update_settings"/,
   'WebUI must keep the canonical settings returned by the desktop backend');
 assert.match(webBridge, /web_access_update_settings", \{ patch: \{ (?:search: search|search) \} \}/,
   'WebUI search saves must send a narrow patch instead of a full settings snapshot');

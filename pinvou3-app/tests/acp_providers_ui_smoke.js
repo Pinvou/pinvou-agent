@@ -79,9 +79,6 @@ function injectSource() {
         case 'update_settings':
           settings = Object.assign({}, settings, args.patch || {});
           return Promise.resolve(settings);
-        case 'save_settings_and_restart':
-          settings = Object.assign({}, settings, args.patch || {});
-          return Promise.resolve(null);
         case 'get_platform_capabilities': return Promise.resolve({
           os: 'windows',
           codexAcpSupported: true,

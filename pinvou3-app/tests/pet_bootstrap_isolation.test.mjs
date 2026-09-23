@@ -49,12 +49,11 @@ assert.match(
   'index boot work must return before main-window probes and Bridge initialization',
 );
 assert.match(petIndexSource, /src="\/app\/pet-main\.jsx"/);
-assert.match(petMainSource, /allowResize:\s*false/);
 assert.match(petMainSource, /scale:\s*0\.5/);
 assert.match(petMainSource, /verticalAlignment:\s*query\.get\('verticalAlignment'\)/);
 assert.match(
   petMainSource,
-  /<PetWindow[\s\S]{0,160}?allowResize=\{PET_WINDOW_CONFIG\.allowResize\}[\s\S]{0,160}?configuredScale=\{PET_WINDOW_CONFIG\.scale\}[\s\S]{0,160}?configuredVerticalAlignment=\{PET_WINDOW_CONFIG\.verticalAlignment\}/,
+  /<PetWindow[\s\S]{0,160}?configuredScale=\{PET_WINDOW_CONFIG\.scale\}[\s\S]{0,160}?configuredVerticalAlignment=\{PET_WINDOW_CONFIG\.verticalAlignment\}/,
 );
 assert.doesNotMatch(
   petIndexSource,

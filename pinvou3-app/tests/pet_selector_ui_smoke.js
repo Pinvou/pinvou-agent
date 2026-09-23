@@ -57,7 +57,6 @@ function tauriMockSource({ failImages = false } = {}) {
         case 'check_dependencies': return Promise.resolve([]);
         case 'list_marketplace_tools': return Promise.resolve([]);
         case 'list_scheduled_tasks': return Promise.resolve([]);
-        case 'get_pet_scale': return Promise.resolve(0.5);
         default: return Promise.resolve(null);
       }
     }
@@ -395,7 +394,6 @@ async function main() {
         case 'check_dependencies': return [];
         case 'list_marketplace_tools': return [];
         case 'list_scheduled_tasks': return [];
-        case 'get_pet_scale': return 0.5;
         default: return null;
       }
     };

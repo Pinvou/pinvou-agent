@@ -19,8 +19,10 @@ for (const file of ['conversation-model.js', 'deepseek-conversation.js']) {
   copyFileSync(path.join(root, 'src', 'features', 'conversation', file), path.join(temp, 'features', 'conversation', file));
 }
 copyFileSync(path.join(root, 'src', 'features', 'codex', 'code-native-lane.js'), path.join(temp, 'features', 'codex', 'code-native-lane.js'));
+copyFileSync(path.join(root, 'src', 'features', 'codex', 'acp-state.js'), path.join(temp, 'features', 'codex', 'acp-state.js'));
 copyFileSync(path.join(root, 'src', 'features', 'multiagent', 'spawn-aggregation.mjs'), path.join(temp, 'features', 'multiagent', 'spawn-aggregation.mjs'));
 copyFileSync(path.join(root, 'src', 'shared', 'internal-message.mjs'), path.join(temp, 'shared', 'internal-message.mjs'));
+copyFileSync(path.join(root, 'src', 'shared', 'shell-tools.mjs'), path.join(temp, 'shared', 'shell-tools.mjs'));
 
 try {
   const {

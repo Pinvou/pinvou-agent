@@ -1242,12 +1242,11 @@ async function clickExactButton(page, text) {
   await page.keyboard.type('40');
   await page.keyboard.press('Tab');
   await sleep(350);
-  await page.$eval('[data-testid="design-color-input"]', (input) => {
-    const setter = Object.getOwnPropertyDescriptor(window.HTMLInputElement.prototype, 'value').set;
-    setter.call(input, '#007aff');
-    input.dispatchEvent(new Event('input', { bubbles: true }));
-    input.dispatchEvent(new Event('change', { bubbles: true }));
-  });
+  await page.click('[data-testid="design-color-input-button"]');
+  await sleep(150);
+  await page.$eval('[data-testid="design-color-hex-input"]', (el) => { el.focus(); el.select(); });
+  await page.keyboard.type('#007aff');
+  await page.keyboard.press('Enter');
   await sleep(500);
   await page.click('[data-testid="design-font-family-input"]');
   await sleep(150);
