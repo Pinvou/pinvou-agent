@@ -1,15 +1,15 @@
 #!/usr/bin/env bash
-# CodeWhale v0.9.12 clean re-fork guard: 46 commits above v0.9.12, eight maintained themes (r2 closed at 6f780290f; gitlink pinned to the pinvou3-clean maintenance-branch head).
+# CodeWhale v0.9.12 clean re-fork guard: 49 commits, eight maintained themes (r3 closed at pinvou-v0.9.12-r3).
 set -uo pipefail
 
 REPO="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 CODEWHALE="$REPO/CodeWhale"
 APP="$REPO/pinvou3-app/src-tauri"
 EXPECTED_UPSTREAM="dcd4c200f72f0c1ffd60d8e7f6850313db879fc5"
-EXPECTED_HEAD="ba2243edd56ae6901fc15d70015ee49a609b9f51"
-EXPECTED_COMMITS=46
+EXPECTED_HEAD="61cb769be5b33abc64f64da4272f5b39a8b6c1fd"
+EXPECTED_COMMITS=49
 # r1 收口锚点：不可变 r1 tag 的收口 commit。层 0 断言它是当前 head 的祖先，
-# 即维护分支自 r1 收口线性前进而非另起分叉（r2 已收口，gitlink 钉在维护分支头）。
+# 即维护分支自 r1 收口线性前进而非另起分叉（r3 收口后 gitlink=分支头=tag）。
 R1_CLOSURE="1fafee7e26b60a59457a43bce50c63aa2ad9dbaf"
 FAST_ONLY=0
 
@@ -25,10 +25,10 @@ bold()  { printf '\033[1m%s\033[0m\n' "$*"; }
 
 fail=0
 
-bold "── 第 0 层：v0.9.12 clean re-fork 拓扑（r1 tag 之后 31 个提交＝24 个登记合入＋7 个维护分支合入 #63/#65-squash/#68/#69/#70/#71/#72；r2 tag 已切在 6f780290f，gitlink 钉在维护分支头）──"
+bold "── 第 0 层：v0.9.12 clean re-fork 拓扑（r1 tag 之后 34 个登记提交，r3 已收口）──"
 actual_head="$(git -C "$CODEWHALE" rev-parse HEAD 2>/dev/null || true)"
 if [[ "$actual_head" == "$EXPECTED_HEAD" ]]; then
-  green "  ✓ CodeWhale gitlink 指向登记 head ${EXPECTED_HEAD}（维护分支头；领先 r2 tag 7 个提交，见 fork-policy 第 0 节）"
+  green "  ✓ CodeWhale gitlink 指向登记 head ${EXPECTED_HEAD}（r3 收口：gitlink=维护分支头=pinvou-v0.9.12-r3 三方相等）"
 else
   red "  ✗ CodeWhale HEAD 为 ${actual_head:-<unreadable>}，登记 head 为 $EXPECTED_HEAD"
   fail=1
@@ -42,7 +42,7 @@ else
 fi
 
 if git -C "$CODEWHALE" merge-base --is-ancestor "$R1_CLOSURE" HEAD 2>/dev/null; then
-  green "  ✓ 线性前进成立：r1 收口是当前 head 的祖先（gitlink 即维护分支头）"
+  green "  ✓ 线性前进成立：r1 收口是当前 head 的祖先（r3 收口后 gitlink=分支头=tag）"
 else
   red "  ✗ r1 收口 $R1_CLOSURE 不是当前 head 的祖先，线性前进关系断裂"
   fail=1

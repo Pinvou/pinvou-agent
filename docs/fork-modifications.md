@@ -37,17 +37,17 @@
 - 覆盖：`forkguard_skill_index_usage_names_tool_search_activation`、`forkguard_subagent_skill_catalog_uses_tool_search_discovery`、`forkguard_mcp_discovery_skill_conditions_registry_commands`、`forkguard_registry_first_instruction_names_registered_tool_specs`、`forkguard_bundled_skills_cite_no_hidden_or_retired_tool_names`、`forkguard_best_of_n_goal_tool_is_availability_gated`、`forkguard_subagent_context_hint_names_active_tools`（由既有 `subagent_results_are_summarized_before_parent_context_insertion` 反转钉入 forkguard 集）、`forkguard_goal_continuation_names_tool_search_activation`（第五轮）。省略尾行兜底随去重并入 Usage 单点教学，`forkguard_omitted_skills_line_carries_tool_search_fallback` 随之退役，第五轮以 `forkguard_omitted_skills_line_stays_short` 重建守护（防去重静默回潮）；第六轮新增 `forkguard_registry_first_prompt_teaches_start_tool_activation`、`forkguard_worker_record_hints_teach_handle_read_activation`、`forkguard_slash_agent_dispatch_teaches_handle_read_activation`（另为 registry-first、目标续轮、父上下文提示、bare `/goal` 与 web 溢出测试补断言）；第七轮新增 `forkguard_phantom_denylist_covers_canonical_lists`（slash-agent 与 bare `/goal` 两钉补直呼断言）；fork-guard T3 指纹相应为 33 条（新增 34、随去重退役 1）。
 - 搭车披露（已剥离）：PR 首个提交（`c34c3a430`）曾同时携带基线门禁修复（engine/tests.rs clippy `map(Ok)`、CHANGELOG 切片重同步、v0.9.11→v0.9.12 事实文件刷新）。按 CONTRIBUTING 的 changelog 政策（PR 携带 changelog hunk 会被要求剥离）与车道核查（facts/web 检查只在 master/main 触发），候选第四提交已将其整体剥离，移入专门的 [CodeWhale#60](https://github.com/Pinvou/CodeWhale/pull/60)；#56 净 diff 现为纯主题。已知遗留（第四轮订正描述）：`workflows/stopship.workflow.js` 侦察简报仍引用隐藏别名 `File` 的 `search_content` 动作。实证现状比此前登记的更严重：真实子代理会话的执行入口 `execute_from_surface` 对不在该子代理 policy-filtered 目录中的名字直接失败，而 `File` 因 `model_visible=false` 进不了任何模型可见目录，故该调用在活会话中会被目录闸拒绝（explore gate 首步必失效）；「按别名可分派」仅在绕过目录闸的直接 `registry.resolve` 层（如回放测试）成立。它属仓内发布验收 fixture 而非随附模型文本，修复需协议级重做（教 `tool_search`→`grep_files` 两步激活并重测角色响应预算），已按该口径落地并合入为 `92427bd8d`（[CodeWhale#61](https://github.com/Pinvou/CodeWhale/pull/61)）：侦察轮改为三响应（`tool_search` 激活 → `grep_files` 同 alternation 搜索 → verdict），步数与 token 上限不变，并以两条 forkguard 测试分别钉住 scout 表面的两步激活路径（活动 `tool_search` + deferred 可搜索 `grep_files` + 无 `File`）与 fixture 文本只引用目录可见工具名。
 
-## 0. 当前状态（2026-09-23 · r2 已收口：tag `pinvou-v0.9.12-r2` 切在 `6f780290f`；上游 #65 实际经 squash 合入为 `c5fadb86d`，gitlink 重钉在维护分支 `pinvou3-clean` 头 `ba2243edd`，r1 基线之上 24 个登记提交 + 7 个维护分支合入）
+## 0. 当前状态（2026-09-23 · r3 已收口：tag `pinvou-v0.9.12-r3` 切在 `61cb769be`，三方相等；r1 基线之上 34 个登记提交）
 
 | 项 | 当前值 |
 |---|---|
 | 上游基线 | tag `v0.9.12`，commit `dcd4c200f72f0c1ffd60d8e7f6850313db879fc5` |
-| 维护分支 | `pinvou3-clean` = `6f780290f1c35e8a3c5dff86b4f76da142744b0c`（r1 基线 `1fafee7e2` 之上 24 个 squash 合入：#41/#47/#49、2026-09-10/11 遗留 PR 清理批次 #31/#37/#38/#39/#43/#48/#50/#51/#52/#53、2026-09-17 批次 #56/#58/#59/#60/#61、2026-09-18 批次 #55/#57/#62、2026-09-20 批次 #66 与 2026-09-21 批次 #64/#67）；其上另有 5 个合入：`d349f2537`（#63 有界超时修复）、`c5fadb86d`（#65 squash 合入，即原 T8 波次 `8b132a182`/`9322fc5f6`/`df5df5f24`/`0576deb2c`/`4767c2816` 五提交的内容合集）、`594860ce9`（#68 与上游重叠面评估）、`37c658da7`（#69 MCP boot 流式与 `tool_search` 感知）`7a7f65e8f`（#71 评审收尾）、`7f04c907d`（#70 上下文来源标签相对仓库根化）与 `ba2243edd`（#72 computer-use 截图栅格区域原点绑定）；父仓 gitlink 钉在该分支头 |
-| 发布状态 | r2 已收口（2026-09-21）：不可变 tag `pinvou-v0.9.12-r2` 切在合并头 `6f780290f`，维护分支自此又前进 7 个合入；父仓 gitlink 钉在维护分支头 `ba2243edd`（领先 tag 7 个提交，fork-policy 第 0 节过渡期豁免）。教训登记：#65 原计划保持提交落位以保全波次 SHA 可达性，实际经 squash 合入，曾钉定的波次 head 自公共 refs 悬空、fast-gate 可达性校验红，2026-09-23 重钉分支头恢复 gitlink=公开分支头相等。r1 tag `pinvou-v0.9.12-r1` 仍钉在其收口 `1fafee7e2`（15 个提交）作为回退点 |
+| 维护分支 | `pinvou3-clean` = `61cb769be5b33abc64f64da4272f5b39a8b6c1fd`（r1 基线 `1fafee7e2` 之上 34 个 squash 合入：#41/#47/#49、2026-09-10/11 遗留 PR 清理批次 #31/#37/#38/#39/#43/#48/#50/#51/#52/#53、2026-09-17 批次 #56/#58/#59/#60/#61、2026-09-18 批次 #55/#57/#62、2026-09-20 批次 #66、2026-09-21 批次 #64/#67、2026-09-22/23 批次 #63/#65/#68/#69/#70/#71/#72/#73 与收口追加 #77/#76（替换原 #74）） |
+| 发布状态 | r3 已收口（2026-09-23）：不可变 tag `pinvou-v0.9.12-r3` 切在合并头 `61cb769be`，父仓 gitlink、维护分支与 tag 三方相等；r2 tag `pinvou-v0.9.12-r2` 仍钉在其收口 `6f780290f`（24 个提交）作为回退点。r3 tag 曾短暂钉在 `ba2a07768f`，在父仓引用前因 #77 Windows 编译修复重切至 `61cb769be`（同日完成，未被任何父仓提交引用） |
 | 升级前回退点 | 公开不可变 tag `pinvou-v0.9.5-r13` → `f853f8f1566c57e6be40d5439a222a932aa79ef5`；同 SHA 的本地 `backup/pre-v0.9.12-sync` 仅作便利引用 |
-| 历史组织 | 上游之上 46 个带 DCO sign-off 的提交，归属 4 个长期主题（T1–T4）+ 3 个追加减量主题（T5 会话归档导出、T6 蜂群限流治理、T8 roster 宿主 profiles 呈现，即 Pinvou/CodeWhale#65 提交主题里的 T7，按 #365 先例在父仓登记时重编号）+ 1 个已合入维护分支的主题（T7 压缩检查点角色兼容）；r2 之前 24 个登记提交全部经 PR squash 合入并过五项必需门禁。T8 主题经 Pinvou/CodeWhale#65 落位：原以五个提交随父仓蜂群二期 PR 走保持提交合入以保全钉定 SHA，实际经 squash 合入（`c5fadb86d`）——登记随之改为钉定公开维护分支头，不再钉定合入前的波次 SHA（详见第 13 节教训登记） |
-| drift | `228 files, +29037/-5344`，净增 23693 行（实测于 `ba2243edd` vs 上游 `dcd4c200f`）；r2 为 `190 files, +19135/-2628`，r1 为 `94 files, +5022/-944`，旧 r13 为 `110 files, +10895/-1195` |
-| 守护 | 139 条独立 CodeWhale `forkguard_*` 行为名（guard 下限 64，其中 6 条钉在 `benchmark-eval-controls` 门后）+ 父仓指纹与行为测试 |
+| 历史组织 | 上游之上 49 个带 DCO sign-off 的提交，归属 4 个长期主题（T1–T4）+ 3 个追加减量主题（T5 会话归档导出、T6 蜂群限流治理、T8 roster 宿主 profiles 呈现，即 Pinvou/CodeWhale#65 提交主题里的 T7，按 #365 先例在父仓登记时重编号）+ 1 个已合入维护分支的主题（T7 压缩检查点角色兼容）；r1 之后 34 个提交全部经 PR squash 合入并过五项必需门禁。T8 主题经 Pinvou/CodeWhale#65 落位：原以五个提交随父仓蜂群二期 PR 走保持提交合入以保全钉定 SHA，实际经 squash 合入（`c5fadb86d`）——登记随之改为钉定公开维护分支头（现 `61cb769be`），不再钉定合入前的波次 SHA（详见第 13 节教训登记） |
+| drift | `229 files, +29272/-5352`，净增 23920 行（实测于 `61cb769be` vs 上游 `dcd4c200f`）；r2 为 `190 files, +19135/-2628`（净增 16507），旧 r13 为 `110 files, +10895/-1195` |
+| 守护 | 141 条独立 CodeWhale `forkguard_*` 行为名（guard 下限 64）+ 父仓指纹与行为测试 |
 | 父仓适配 | v0.9.12 EngineConfig、Agent/Plan 模式、逐轮 reasoning/安全、ExtraTools、owner 事件隔离、Automation v3/v4 数据兼容、rusqlite 0.40.2、Shell 任务来源对账；消费方 PR #396（execpolicy）、#408（轮次取消）、#444（蜂群）、#468（computer-use）、#472（一键导出）依赖本批底座能力 |
 
 ### 轮次绑定取消：宿主 stop 按轮身份分派（父仓适配，本 PR）
@@ -127,13 +127,16 @@
 | `c4e6caf94` | T2 修复 | Windows PowerShell 执行策略兼容：所有 dispatcher 构造的 PowerShell 调用统一携带进程级 `-ExecutionPolicy Bypass`，10 条行为回归迁入 `forkguard_` 前缀；`-EncodedCommand` 内联重跑当前仅引擎同步内部分支可达、尚无生产调用方，组策略/AppLocker 场景待重试门接入前台执行车道后覆盖（与插件 `.ps1` 车道同类的后续改动）。父仓 Windows Rust 门禁执行两个 PowerShell 回归过滤器并拒绝零匹配，`fork-guard` 以 15 条源码/行为指纹固定该主题（#66） |
 | `8e5988119` | CI 同步 | CNB 镜像在 `CNB_GIT_TOKEN` 未配置的仓库探针跳过而非红检（#64） |
 | `6f780290f` | T1/T2/T3 修复 | agent/search/vision 工具面与运行时对齐，MCP boot 失败/恢复简报区分处理，直呼兜底话术并入 `HANDLE_READ_ACTIVATION_HINT` 共享常量（#67），fork-guard 两条指纹随之更新 |
-| `d349f2537` | T2 修复 | 有界超时不再误杀长时间合法工作：终轮等待/收尾等有限超时改按剩余预算收敛而非直接判死（#63） |
-| `c5fadb86d` | T8 合入 | Pinvou/CodeWhale#65 经 squash 落位，内容为原五个波次提交的合集——`8b132a182`：`agent action=roster` 额外列出宿主呈现的 prompt-only profiles（增量键 `host_profiles` 按 member id 排序、上限 48、`host_profile_count`、`host_profiles_truncated`，`profile=<member_id>` 与 spawn 解析共用同一宽容准入互钉）；`9322fc5f6`：广告化 `profile_query` 关键词过滤（roster 作用域、大小写不敏感子串、截断前生效、空白输入不过滤，48 条上限无分页下的截断尾部仍可发现，schema 12→13 字段）；`df5df5f24`：评审钉点补测（`FleetRole::from_str`-over-roster 优先级、部分 id 子串匹配、`ROSTER_PROFILE_QUERY_MAX_CHARS` 截断不拒绝约定）；`0576deb2c`：fleet 宿主 id 按 `get()` 解析键确定性去重、保留首中（`from_host_config_collapses_ids_that_get_resolves_together` 钉定）；`4767c2816`：`load` 的 `[fleet.profiles]` 层在 `merge_member` 之前应用同方向可混淆 id 去重，名册列表与 spawn 刷新对 `Expert`/`expert` 类同键变体不再分叉（`agent_roster_listing_and_spawn_agree_on_conflatable_config_ids` 钉定，`ROSTER_HOST_PROFILE_LIMIT=48` 字面钉定）。原五个 SHA 因 squash 不再单独公开可达，内容经本提交保全 |
-| `594860ce9` | 修复 | 评估 #67 与上游重叠面，采纳上游更合理的四处做法（#68） |
-| `37c658da7` | T2 修复 | MCP 会话启动流式化，`tool_search` 感知 boot（#69） |
-| `7a7f65e8f` | 修复 | 评审收尾：rlm、registry 钉点与回显（#71） |
-| `7f04c907d` | 修复 | 上下文来源标签相对仓库根化（#70） |
-| `ba2243edd` | T2 修复 | computer-use：截图栅格坐标按区域原点绑定（#72） |
+| `d349f2537` | T4 修复 | 有限超时治理（21 面审计高影响集）：外部工具审批与 `request_user_input` 人工等待不再 300s 自动拒绝并移出轮墙钟预算，后台空闲判定把运行中工具视为进展，MCP `tools/call` 预算 60s→1800s 且 `read_timeout` 继续约束快速请求，OAuth 回调 300s→900s，审批取消发 `approval.decided{interrupted:true}`（#63） |
+| `c5fadb86d6` | T7 新增 | subagent roster 动作列出宿主呈报的 profile：roster `profile_query` 支持过滤宿主 profiles，修复 `get()` 混同 host id 的去重（#65） |
+| `594860ce9` | T1/T3 修复 | 评估 #67 与上游重叠面并采纳上游四处做法：恢复历史隐藏内部运行时 handoff（保留 MCP system cell 显式例外）、read 结果按预算自限后免二次压缩（metadata 记实际字节为对上游的有意偏离）、行摘要器输出有界 child 路由回执（#68） |
+| `37c658da7` | T1 修复 | MCP boot 流式就绪：pending 连接逐个 settle 即时上架、boot 窗口内 turn catalog `tool_search` 重查、空结果与未配置区分并给 boot-aware 提示，收窄 boot 追加与 pool 诊断（#69） |
+| `7a7f65e8fd` | T3 修复 | fresh-review 残差收口：rlm `handle_read` 配对描述教激活路径（stdout 预览与截断标记同范），registry 上限 pin 列出第四个 eight 侧并加编译期+运行时双钉，submission 回显 forkguard 补齐全部四条自启路径（#71） |
+| `7f04c907d1` | T3 修复 | 祖先链与项目规则来源标签仓库相对化（git root 相对、正斜杠），checkout 移动/大小写改变不再扰动 pinned 系统提示前缀，双 checkout 字节一致回归（#70） |
+| `ba2243edd5` | T2 修复 | computer-use `screenshot(region)` 按裁剪区在返回 raster 上绑定原点：darwin/linux/win32 三后端坐标映射修正，zoom 契约延伸到截图路径（#72） |
+| `ba2a07768f` | T7 重构 | 压缩检查点识别族（摘要标记、provenance 常量、header 谓词、checkpoint 识别）原样迁至 `history_recognition` 叶模块，解除 `compaction`⇄`runtime_handoff` 依赖环，`compaction` re-export 保持路径兼容（#73） |
+| `684a93101c` | T2 修复 | Windows cfg(test) 门控：`tools/process.rs` 的 unix 专属测试 helper（`use super::*` 与 `shell_command`）随唯一 `#[cfg(unix)]` 测试一起门控，修复父仓 windows-rust-test 的 `-D warnings` 编译失败（#77） |
+| `61cb769be` | T7 修复 | restore 载体 provenance 锚定：带戳载体存在时仅锚定/删除真实载体，无戳遗留历史保留松散替换，粘贴摘要不再被误删或窃锚；镜像 wire 侧双序回归测试（#76，替换因服务端分支丢失事故无法合并的 #74） |
 
 所有提交都含 DCO `Signed-off-by`。`b4c02616b` 包含大部分跨主题收口，历史粒度确实不利于 bisect；分支公开进入评审后没有为历史美化 force-push，而是追加带 sign-off 的提交修复评审和发布门禁问题，并用本表、指纹和行为测试弥补审计粒度。不可变 tag 已创建，后续不得重写。
 
@@ -289,6 +292,8 @@
 - 动机：底座契约本就允许宿主呈现 profile id（嵌入方经 `fleet.profiles` 配置注入），但没有面向模型的发现通道，注入的 profiles 因此不可被模型发现；roster 扩展补上这一通道，模型经 `profile=<member_id>` 直接选定；profile 池超过列表上限时，`profile_query` 保证截断尾部仍可发现。
 - 配套消费方为父仓蜂群模式二期（一期为父仓 PR #444）；roster 增量载荷为嵌入方通用能力，适合上游化。
 
+- 落位：本主题原以五个提交随父仓蜂群二期 PR 携带——`8b132a182`（roster 增量载荷键 `host_profiles`）、`9322fc5f6`（广告化 `profile_query` 发现通道）、`df5df5f24`（评审钉点补测）、`0576deb2c`（fleet 宿主 id 按 `get()` 解析键确定性去重）、`4767c2816`（`load` 在 `merge_member` 之前的同键去重对齐）——#65 经 squash 合入为 `c5fadb86d`，波次 SHA 不再单独公开可达（第 13 节教训登记）。
+
 ### 关键测试
 
 - `agent_roster_lists_host_presented_profiles_spawn_resolves`（roster 列出的 member_id 与 `resolve_spawn_role_with_host_profiles` 接受的 `profile=` 逐字配对）
@@ -329,6 +334,8 @@
 ## 13. 发布与回退
 
 - 公开回退点是不可变 tag `pinvou-v0.9.5-r13`；本地 `backup/pre-v0.9.12-sync` 不是发布前提。
-- 不可变 `pinvou-v0.9.12-r1` 停在 r1 收口 `1fafee7e26b60a59457a43bce50c63aa2ad9dbaf`。r2 已收口（2026-09-21）：不可变 `pinvou-v0.9.12-r2` 切在合并头 `6f780290f1c35e8a3c5dff86b4f76da142744b0c`，维护分支其后又前进 7 个合入（#63、#65 squash、#68、#69、#70、#71、#72）；父仓 gitlink 钉在维护分支头 `ba2243edd56ae6901fc15d70015ee49a609b9f51`（领先 r2 tag 7 个提交）。教训登记：#65 原计划随父仓蜂群二期 PR 保持提交落位合入（不 squash），实际经 squash 合入——曾钉定的波次 head `4767c2816` 自公共 refs 悬空、fast-gate 可达性校验红，2026-09-23 重钉到维护分支头恢复 gitlink=公开分支头相等。后续底座合入一律在合入后立即把 gitlink 重钉到公开分支头，不得钉定合入前的波次 SHA。以 `scripts/verify-public-submodule.sh` 验证公开可达性（过渡期断言 gitlink=公开分支头、tag 钉在其收口 commit；依据 `docs/fork-policy.md` 第 0 节过渡期豁免）。
+- r3 已收口（2026-09-23）：不可变 `pinvou-v0.9.12-r3` 切在合并头 `61cb769be5b33abc64f64da4272f5b39a8b6c1fd`，`pinvou3-clean` 与父仓 gitlink 与 tag 三方相等；回退点 `pinvou-v0.9.12-r2` 仍钉在其收口 `6f780290f1c35e8a3c5dff86b4f76da142744b0c`；r3 tag 在父仓引用前因 #77 修复自 `ba2a07768f` 重切。
+- r2 已收口：不可变 `pinvou-v0.9.12-r2` 切在合并头 `6f780290f1c35e8a3c5dff86b4f76da142744b0c`，`pinvou3-clean` 与父仓 gitlink 与 tag 三方相等；回退点 `pinvou-v0.9.12-r1` 仍钉在 r1 收口 `1fafee7e26b60a59457a43bce50c63aa2ad9dbaf`。
+- 教训登记（2026-09-23）：#65 原计划随父仓蜂群二期 PR 保持提交落位合入（不 squash），实际经 squash 合入——曾钉定的波次头 `4767c2816` 自公共 refs 悬空、fast-gate 可达性校验红，蜂群二期分支当日重钉到维护分支头恢复 gitlink=公开分支头相等。后续底座合入一律在合入后立即把 gitlink 重钉到公开分支头，不得钉定合入前的波次 SHA；r3 收口已恢复三方相等，公开可达性继续以 `scripts/verify-public-submodule.sh` 验证。
 - 发布过程中只为精确 head 的受保护分支更新临时移除无法在该维护分支触发的 required status contexts，完成快进后立即恢复原保护配置；未关闭 force-push 防护，也未重写已发布 tag。
 - 后续发布仍不得降低公开校验或把本地 object 当成发布成功。
