@@ -1918,7 +1918,15 @@ const ToolWelcomeCard = ({ toolId, t, onSend }) => {
           return false;
         }
         const outgoing = String(text || '').trim();
-        const matchedPersonalWorkbenchDraft = findPersonalWorkbenchTemplateDraft(outgoing);
+        // The mention injection block is a machine contract, not user body
+        // text: scene template auto-detection (a startsWith match) and the
+        // scene meta embedding run on the stripped body. The block itself is
+        // re-prepended onto pinvouPayloadText below, so a scene send keeps
+        // the read_session contract at the head of the model payload instead
+        // of sandwiching it inside the scene boilerplate.
+        const mentionSplit = splitSessionMentionBlock(outgoing);
+        const sceneBody = mentionSplit.text.trim();
+        const matchedPersonalWorkbenchDraft = findPersonalWorkbenchTemplateDraft(sceneBody);
         const templateId = personalWorkbenchTemplateIdRef.current
           || (matchedPersonalWorkbenchDraft && matchedPersonalWorkbenchDraft.template
             ? matchedPersonalWorkbenchDraft.template.id
@@ -1926,12 +1934,18 @@ const ToolWelcomeCard = ({ toolId, t, onSend }) => {
         const visibleOutgoing = outgoing;
         let meta;
         if (visibleOutgoing || hasReadyAttachment) {
-          const scenePrompt = outgoing || t.uiChatScenes.attachmentPrompt;
+          const scenePrompt = sceneBody || t.uiChatScenes.attachmentPrompt;
           if (visualPosterSceneActive) meta = createVisualPosterMessageMeta(scenePrompt);
           else if (documentWritingSceneActive) meta = createDocumentWritingMessageMeta(scenePrompt);
           else if (personalWorkbenchSceneActive) meta = createPersonalWorkbenchMessageMeta(scenePrompt, templateId);
           else if (dataVisualizationSceneActive) meta = createDataVisualizationMessageMeta(scenePrompt);
           else if (pptDesignSceneActive) meta = createPptDesignMessageMeta(scenePrompt);
+          if (meta && meta.pinvouPayloadText && mentionSplit.refs.length) {
+            meta = {
+              ...meta,
+              pinvouPayloadText: buildSessionMentionBlock(mentionSplit.refs) + meta.pinvouPayloadText,
+            };
+          }
         }
         // The voice task lane hands its operation id in alongside the text; it
         // must ride on meta or the bridge's submission gate never sees it and
