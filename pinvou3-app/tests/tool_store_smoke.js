@@ -54,7 +54,12 @@ function injectSource() {
     };
     window.addEventListener('pinvou:tools-changed',()=>{state.composerChanged++;});
     window.__TAURI_EVENT_HANDLERS__={};
-    const tools=()=>Object.entries(TOOL_META).map(([id,[name,companions]])=>({id,name,description:'test',version:'1.0.0',icon:'',category:'test',installed:!!state.installed[id],companion_skills:companions}));
+    const tools=()=>Object.entries(TOOL_META).map(([id,[name,companions]])=>({id,name,description:'test',version:'1.0.0',icon:'',category:'test',installed:!!state.installed[id],companion_skills:companions}))
+      // Builtin plugins (contract §3.1): entries with builtin===true +
+      // visibility:system go to the read-only "builtin plugins" subpage, not
+      // the regular card flow; the audit fields (tool list/security level/
+      // data access/bundle version) ride along in list_marketplace_tools.
+      .concat([{id:'session-reader',name:'会话读取',description:'只读读取本机其他会话',version:'1.0.0',icon:'',category:'test',installed:true,companion_skills:[],builtin:true,visibility:'system',security_level:'L0',data_access:['sessions.read'],mcp_tools:['mcp_session-reader_read_session','mcp_session-reader_list_sessions'],bundle_version:'8.8.8'}]);
     const skills=()=>[
       // companion 技能安装态 = 所属 MCP 已装 或 技能独立已装（G3 混合态）。
       {id:'government-writing',title:'党政机关公文写作',installed:!!(state.installed.gongwen||state.skills['government-writing']),user_uploaded:false},
@@ -149,6 +154,11 @@ function injectSource() {
           if(id==='visualizer'){
             const c=!!state.skills.visualizer;
             return Promise.resolve(mk(c,true,null,c?[act('uninstall')]:[act('install')]));
+          }
+          // Builtin plugins: no actions (the read-only subpage does not
+          // consume readiness; batch lookups must not error on it either).
+          if(id==='session-reader'){
+            return Promise.resolve(mk(true,true,null,[]));
           }
           if(id==='government-writing'){
             const c=!!(state.installed.gongwen||state.skills['government-writing']);
@@ -638,6 +648,43 @@ async function visibilityBox(page, cardText, modeLabel, click) {
     if(x.args.toolId==='ima')return false;
     return x.args&&x.args.toolId&&!x.args.config;
   }));
+
+  // Built-in plugins subpage (contract §3.1 transparency/audit window):
+  // toolbar entry -> read-only card field assertions -> back to the main list.
+  // session-reader comes from the mocked list_marketplace_tools
+  // (builtin===true + visibility:system); the builtin skill (视觉设计) comes
+  // from tsSkillsData static data — both land on the same subpage.
+  await page.click('[data-testid="tool-store-builtin-plugins"]');
+  await sleep(300);
+  const builtinPage=await page.evaluate(()=>{
+    const list=document.querySelector('[data-testid="builtin-plugin-list"]');
+    if(!list)return {list:false};
+    const cards=[...list.querySelectorAll('[data-testid="builtin-plugin-card"]')];
+    const text=c=>(c&&(c.textContent||''))||'';
+    const sr=cards.find(c=>c.getAttribute('data-tool-id')==='session-reader');
+    return {
+      list:true,
+      sr:!!sr,
+      badge:text(sr).includes('内置 · 始终启用'),
+      tools:text(sr).includes('read_session')&&text(sr).includes('list_sessions'),
+      level:text(sr).includes('L0'),
+      version:text(sr).includes('v8.8.8'),
+      access:text(sr).includes('本机会话存储（只读）'),
+      // Read-only: the card carries no buttons at all (no uninstall/toggle/
+      // configure actions).
+      noAction:!!sr&&sr.querySelector('button')===null,
+      skill:cards.some(c=>text(c).includes('视觉设计')),
+    };
+  });
+  rec('builtin subpage card fields (badge/tool list/security level/version/data access/read-only without buttons)',
+    builtinPage.list&&builtinPage.sr&&builtinPage.badge&&builtinPage.tools&&builtinPage.level&&builtinPage.version&&builtinPage.access&&builtinPage.noAction&&builtinPage.skill,
+    builtinPage.list?'':JSON.stringify(builtinPage));
+  await page.click('[data-testid="builtin-plugins-back"]');
+  await sleep(200);
+  rec('builtin subpage returns to the main list',await page.evaluate((selector)=>(
+    !document.querySelector('[data-testid="builtin-plugin-list"]')
+    &&(!!document.querySelector(selector)||[...document.querySelectorAll('input')].some(el=>(el.getAttribute('placeholder')||'').includes('搜索')))
+  ),TOOL_STORE_SEARCH_SELECTOR));
   rec('页面无未处理 JavaScript 异常',errors.length===0,errors.slice(0,2).join(' | '));
 
   await browser.close();
