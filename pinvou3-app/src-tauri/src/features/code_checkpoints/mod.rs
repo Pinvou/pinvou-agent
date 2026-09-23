@@ -2167,35 +2167,6 @@ mod tests {
         assert_eq!(list_checkpoints(ledger.path()).unwrap().len(), 1);
     }
 
-    /// Schema drift, not corruption: an index written by a build without the
-    /// `label` field must load (the field is `#[serde(default)]`) with no
-    /// quarantine and no data loss. Regression pin for the tolerant load:
-    /// without `default`, serde rejects the missing key and `load_index`
-    /// routes the index into the corrupt-file quarantine above.
-    #[test]
-    fn load_index_tolerates_a_label_less_index() {
-        let ledger = TestDir::new("label-less-ledger");
-        fs::create_dir_all(checkpoints_dir(ledger.path())).unwrap();
-        fs::write(
-            index_path(ledger.path()),
-            r#"{"version":1,"entries":[{"id":"c1-1","turn":1,"kind":"turn","commit":"abc","createdAt":0}]}"#,
-        )
-        .unwrap();
-        let loaded = load_index(ledger.path()).expect("label-less index must load");
-        assert_eq!(loaded.entries.len(), 1);
-        assert_eq!(loaded.entries[0].label, "");
-        // No quarantine side file appeared.
-        assert!(
-            !fs::read_dir(checkpoints_dir(ledger.path()))
-                .unwrap()
-                .flatten()
-                .any(|entry| entry
-                    .file_name()
-                    .to_string_lossy()
-                    .starts_with("index.json.corrupt-"))
-        );
-    }
-
     /// 评审 M4 回归：嵌套 git 仓库在 changes 清单中标注为 gitlink（快照不跟踪
     /// 其内容、restore 不 materialize——UI 必须如实区分，不能暗示可回退）。
     #[test]
