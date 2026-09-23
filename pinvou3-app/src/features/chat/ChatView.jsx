@@ -1704,9 +1704,15 @@ const ToolWelcomeCard = ({ toolId, t, onSend }) => {
         ? Math.min(mentionSelection.index, Math.max(0, mentionCandidates.length - 1))
         : 0;
       const knownSessionMentionIds = useMemo(
-        () => new Set(((bs && bs.sessions) || []).map(session => session.id)),
-        // eslint-disable-next-line react-hooks/exhaustive-deps -- depends only on the session-list slice of the snapshot (stable reference), not on other bs fields
-        [bs && bs.sessions],
+        // Archived sessions are still alive and openable (the card jumps to
+        // them and un-archives on switch), so they count as known; only a
+        // truly deleted session renders the unavailable state.
+        () => new Set(
+          [...((bs && bs.sessions) || []), ...((bs && bs.archivedSessions) || [])]
+            .map(session => session.id),
+        ),
+        // eslint-disable-next-line react-hooks/exhaustive-deps -- depends only on the session-list slices of the snapshot (stable references), not on other bs fields
+        [bs && bs.sessions, bs && bs.archivedSessions],
       );
       const firstTurnPending = !activeSessionId && chatItems.some(item => (
         item && item.type === 'user' && !!item.deliveryState
@@ -3176,6 +3182,7 @@ const ToolWelcomeCard = ({ toolId, t, onSend }) => {
                   />
                 </ComposerPopover>
               </div>
+              {/* biome-ignore lint/a11y/useAriaPropsSupportedByRole: the composer carries the @-mention listbox popup semantics (aria-haspopup/expanded/activedescendant), same contract as the ScheduledTasksView read-only input */}
               <textarea
                 ref={composerRef}
                 data-testid="chat-composer-input"
@@ -3186,6 +3193,13 @@ const ToolWelcomeCard = ({ toolId, t, onSend }) => {
                 maxLength={CHAT_INPUT_MAX_LENGTH}
                 placeholder={composerPlaceholder}
                 rows={1}
+                aria-haspopup="listbox"
+                aria-expanded={mentionMenuOpen}
+                aria-activedescendant={
+                  mentionMenuOpen && mentionCandidates.length > 0
+                    ? `session-mention-option-${mentionCandidates[mentionIndex].sessionId}`
+                    : undefined
+                }
                 className="w-full bg-transparent resize-none outline-none text-gray-800 dark:text-gray-100 text-[16px] leading-relaxed min-h-[48px] overflow-y-auto hide-scrollbar placeholder:text-gray-400 dark:placeholder:text-gray-500"
               />
               <TextareaContextMenu inputRef={composerRef} setValue={setInputText} t={t} />
