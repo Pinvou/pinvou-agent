@@ -474,6 +474,23 @@ enum NeverStartedDisposition {
     LegacyCleanupStarted,
 }
 
+/// The pre-run mode state a failed setup must put back: either the durable
+/// value the session had, or absence (the session was following its resolved
+/// default, so the failed Plan persist added an entry it must not keep).
+enum PlanModeRestore {
+    Value(SerializableMode),
+    Absent,
+}
+
+impl PlanModeRestore {
+    fn apply(self, store: &SessionStore, session_id: &str) -> Result<()> {
+        match self {
+            PlanModeRestore::Value(mode) => store.set_mode_and_persist(session_id, mode),
+            PlanModeRestore::Absent => store.clear_mode_and_persist(session_id),
+        }
+    }
+}
+
 fn never_started_disposition(
     has_messages: Result<bool, ()>,
     keep_session: bool,
@@ -688,7 +705,7 @@ async fn run_turn(
     // submit may already have landed, so the pre-run mode is no longer
     // known to be the truth. Fresh sessions need no restore (the stub
     // cleanup deletes the whole record, mode sidecar included).
-    let mut plan_restore: Option<SerializableMode> = None;
+    let mut plan_restore: Option<PlanModeRestore> = None;
     let setup = async {
         if existing_session {
             // Continue the caller's chat session: never re-create it (session
@@ -710,12 +727,24 @@ async fn run_turn(
             // fatal like the fresh branch; an existing session is never
             // cleaned up, so the caller's record stays untouched.
             if matches!(request.mode, Some(AgenticTaskMode::Plan)) {
-                let previous = store.mode_state(session_id).mode;
+                // Capture the DURABLE entry, not `mode_state`'s resolved
+                // fallback: the fallback is process-relative (this headless
+                // process installs no code-session predicate, so it would
+                // resolve Yolo for a code session the GUI defaults to Plan),
+                // and pinning that misresolution durably is the exact unsafe
+                // reopen divergence the persist below prevents. A session
+                // with no durable entry restores to absent — re-persisting a
+                // resolved default would freeze a value the session was only
+                // borrowing.
+                let previous = store.durable_mode_entry(session_id);
                 store
                     .set_mode_and_persist(session_id, SerializableMode::Plan)
                     .context("persist session mode")?;
-                if previous != SerializableMode::Plan {
-                    plan_restore = Some(previous);
+                if previous.as_ref() != Some(&SerializableMode::Plan) {
+                    plan_restore = Some(match previous {
+                        Some(mode) => PlanModeRestore::Value(mode),
+                        None => PlanModeRestore::Absent,
+                    });
                 }
             }
             crate::features::assistant::timing::register_eval_observation(session_id);
@@ -783,8 +812,8 @@ async fn run_turn(
         Ok(submitted) => match submitted {
             Ok(handle) => handle,
             Err(error) => {
-                if let Some(previous) = plan_restore.take() {
-                    if let Err(restore_error) = store.set_mode_and_persist(session_id, previous) {
+                if let Some(restore) = plan_restore.take() {
+                    if let Err(restore_error) = restore.apply(&store, session_id) {
                         eprintln!(
                             "[pinvou agent run] warning: failed to restore the \
                                  pre-run session mode after the setup failure: {restore_error:#}"

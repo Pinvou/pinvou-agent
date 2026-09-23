@@ -6008,6 +6008,57 @@ fn literal_empty_array_pin_file_is_refused_as_corrupt() {
 }
 
 #[test]
+fn durable_mode_entry_reflects_the_durable_state_not_the_fallback() {
+    let (store, _g) = isolated_store();
+    // No durable entry: `mode_state` still resolves a default, but the
+    // restore capture must see absence — the resolved fallback is
+    // process-relative (a headless process cannot see the GUI's code-session
+    // predicate) and pinning it would freeze a borrowed value.
+    assert_eq!(store.durable_mode_entry("restore-a"), None);
+    assert_ne!(store.mode_state("restore-a").mode, SerializableMode::Plan);
+    store
+        .set_mode_and_persist("restore-a", SerializableMode::Plan)
+        .expect("persist plan");
+    assert_eq!(
+        store.durable_mode_entry("restore-a"),
+        Some(SerializableMode::Plan)
+    );
+}
+
+#[test]
+fn clear_mode_and_persist_restores_entry_absence() {
+    let (store, _g) = isolated_store();
+    let file = paths::sessions_root().join("_session_mode_states.json");
+    store
+        .set_mode_and_persist("restore-b", SerializableMode::Plan)
+        .expect("persist plan");
+    assert!(file.exists(), "the plan persist created the sidecar");
+    store
+        .clear_mode_and_persist("restore-b")
+        .expect("clear the mode entry");
+    assert_eq!(
+        store.durable_mode_entry("restore-b"),
+        None,
+        "the durable entry the failed run added must be gone"
+    );
+    assert!(
+        !file.exists(),
+        "the sidecar goes away with its last entry instead of keeping a shell map"
+    );
+    // The in-memory caches follow: mode_state falls back to the resolved
+    // default again instead of serving the failed run's Plan.
+    assert_ne!(store.mode_state("restore-b").mode, SerializableMode::Plan);
+    // And the sidecar keeps working for other sessions afterwards.
+    store
+        .set_mode_and_persist("restore-c", SerializableMode::Yolo)
+        .expect("persist another mode after the clear");
+    assert_eq!(
+        store.durable_mode_entry("restore-c"),
+        Some(SerializableMode::Yolo)
+    );
+}
+
+#[test]
 fn set_mode_and_persist_fails_loud_on_a_corrupt_mode_file() {
     let (store, _g) = isolated_store();
     let file = paths::sessions_root().join("_session_mode_states.json");
