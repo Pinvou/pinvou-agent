@@ -5795,6 +5795,45 @@ fn retention_aux_activity_protects_main_session_from_eviction() {
     );
 }
 
+/// PR #433 review round-28 (N2): the retention sweep consults the aux mapping
+/// twice — the pair-liveness ordering and the eviction cascade. With the
+/// sidecar unloaded (a transient read fault at boot), the in-memory map is
+/// artificially empty for the whole process: ordering would silently degrade
+/// to main-`updated_at`-only (an active aux send could evict its own main
+/// session) and evicted pairs would strand their aux records as unmapped
+/// orphans. Enforcement must skip, not degrade.
+#[test]
+fn retention_sweep_skips_while_the_aux_sidecar_is_unloaded() {
+    let (store, _g) = unloaded_store();
+    let mut ids = Vec::new();
+    for index in 0..=MAX_SESSIONS_PER_KIND {
+        let session = create_saved_session_with_id_and_mode(
+            format!("unloaded-retention-peer-{index}"),
+            &[],
+            "/retention-model",
+            &std::env::temp_dir(),
+            0,
+            None,
+            None,
+        );
+        store
+            .save_session_atomic(&session)
+            .expect("seed the over-budget session");
+        ids.push(session.metadata.id);
+    }
+
+    store
+        .enforce_session_retention_locked()
+        .expect("the sweep must not fail while the sidecar is unloaded");
+
+    for id in &ids {
+        assert!(
+            store.load(id).is_ok(),
+            "an unloaded aux sidecar must skip enforcement, not evict with main-only ordering: {id}"
+        );
+    }
+}
+
 /// Eviction racing aux creation (round-10 minor-1, actually pinned in round
 /// 12): the retention sweep runs inside the aux record's own `save`, and that
 /// sweep deliberately bypasses the aux-creation lock (the store layer cannot

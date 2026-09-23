@@ -87,6 +87,21 @@ impl SessionStore {
     }
 
     pub(crate) fn enforce_session_retention_locked(&self) -> Result<()> {
+        // The sweep consults the aux mapping twice: the pair-liveness ordering
+        // above and the eviction cascade. With the sidecar unloaded (a
+        // transient read fault at boot), the in-memory map is artificially
+        // empty for the whole process — ordering would silently degrade to
+        // main-`updated_at`-only (an active aux send could evict its own main
+        // session) and evicted pairs would strand their aux records as
+        // unmapped orphans. Skip enforcement until the sidecar loads, the
+        // same fail-closed posture as the write API's unloaded refusal
+        // (round-28 N2).
+        if !self
+            .aux_sessions_loaded
+            .load(std::sync::atomic::Ordering::SeqCst)
+        {
+            return Ok(());
+        }
         let sessions = self
             .list_sessions_cached()
             .context("list sessions for retention")?

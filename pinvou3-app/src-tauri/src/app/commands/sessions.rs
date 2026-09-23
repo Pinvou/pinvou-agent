@@ -64,13 +64,16 @@ pub(super) fn ensure_chat_session(
     id: &str,
     action: &str,
 ) -> Result<(), String> {
+    // No raw session ids in these chains (round-28 N7): the rejections are
+    // console.warn-ed by the panel and cross the relay to browser consoles
+    // on the web lane; the action name identifies the failing step.
     match store
         .session_kind(id)
-        .map_err(|error| format!("{action}({id}): {error:#}"))?
+        .map_err(|error| format!("{action}: {error:#}"))?
     {
         SessionKind::Chat => Ok(()),
         SessionKind::ScheduledRun => Err(format!(
-            "{action}({id}): scheduled-run sessions are managed from Scheduled"
+            "{action}: scheduled-run sessions are managed from Scheduled"
         )),
     }
 }
@@ -1008,13 +1011,13 @@ pub async fn get_or_create_aux_session(
     // (delete_scheduled_run only clears the mapping without cascade-deleting
     // the session), so attaching one would leak an orphan aux session.
     ensure_chat_session(&store, &session_id, "get_or_create_aux_session")?;
-    store.load(&session_id).map_err(|e| {
-        format!("get_or_create_aux_session({session_id}): main session not found: {e:#}")
-    })?;
+    store
+        .load(&session_id)
+        .map_err(|e| format!("get_or_create_aux_session: main session not found: {e:#}"))?;
     store
         .get_or_create_aux_session(&session_id)
         .map(|metadata| AuxSessionBinding { id: metadata.id })
-        .map_err(|e| format!("get_or_create_aux_session({session_id}): {e:#}"))
+        .map_err(|e| format!("get_or_create_aux_session: {e:#}"))
 }
 
 /// Discard a main session's auxiliary conversation: reclaim the engine,
@@ -1044,7 +1047,7 @@ pub async fn discard_aux_session(
     // gate here.
     pool.delete_chat_session(&aux_id)
         .await
-        .map_err(|error| format!("discard_aux_session({session_id}): {error:#}"))?;
+        .map_err(|error| format!("discard_aux_session: {error:#}"))?;
     pool.forget_session(&aux_id);
     let payload = serde_json::json!({ "id": &aux_id });
     let _ = app.emit("session:deleted", payload.clone());
