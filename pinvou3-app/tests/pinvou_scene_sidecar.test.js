@@ -250,7 +250,10 @@ function rec(name, pass, detail = '') {
 
   rec('附件-only 发送也会按当前专业子模式创建 scene meta',
     /if \(visibleOutgoing \|\| hasReadyAttachment\)/.test(chatViewSource) &&
-      /const scenePrompt = outgoing \|\| t\.uiChatScenes\.attachmentPrompt;/.test(chatViewSource) &&
+      // The scene prompt is built from the mention-stripped body (the
+      // injection block is a machine contract, re-prepended onto
+      // pinvouPayloadText instead of sandwiching inside scene boilerplate).
+      /const scenePrompt = sceneBody \|\| t\.uiChatScenes\.attachmentPrompt;/.test(chatViewSource) &&
       /\}, \[activeSessionId, dataVisualizationSceneActive, documentWritingSceneActive, hasReadyAttachment, personalWorkbenchSceneActive, pptDesignSceneActive, t, visualPosterSceneActive\]\);/.test(chatViewSource),
     'ChatView sendChatMessage contract');
 
