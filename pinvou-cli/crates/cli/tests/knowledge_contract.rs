@@ -1204,10 +1204,13 @@ fn index_resume_rearms_a_job_stranded_by_a_dead_process() {
     let _ = std::fs::remove_dir_all(&root);
 }
 
-/// The scan state is in-process, but its completion marker
-/// (`last_scan_finished_at`) persists in `index.db` — so `scan status` from a
-/// fresh CLI invocation converges to `done` once the background scan thread
-/// of `scan start` finishes.
+
+/// `scan start` waits for the scan to finish inside the invocation (a
+/// fire-and-forget scan would be killed by process exit before doing any
+/// work), so the returned state is already terminal and the completion
+/// marker (`last_scan_finished_at`) is persisted in `index.db` by the time
+/// the command exits — `scan status` from a fresh CLI invocation reports
+/// `done` deterministically.
 #[test]
 fn scan_start_persists_its_completion_marker() {
     let _env_guard = ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
@@ -1224,34 +1227,81 @@ fn scan_start_persists_its_completion_marker() {
         "--root",
         root.to_str().unwrap(),
     ]);
-    // The background thread may finish before the returned snapshot for a
-    // tiny root, so both phases are valid starts.
+    assert_eq!(started["phase"], serde_json::json!("done"));
+    assert_eq!(started["running"], serde_json::json!(false));
     assert!(
-        started["phase"] == serde_json::json!("scanning")
-            || started["phase"] == serde_json::json!("done"),
-        "scan start must begin scanning or finish immediately"
+        started["finishedAt"].as_i64().unwrap_or(0) > 0,
+        "a completed scan must carry its persisted marker"
     );
 
-    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(30);
-    loop {
-        let state = run_json(&["pinvou", "knowledge", "scan", "status"]);
-        if state["phase"] == serde_json::json!("done") {
-            assert!(
-                state["finishedAt"].as_i64().unwrap_or(0) > 0,
-                "finished scan must persist its marker"
-            );
-            break;
-        }
-        assert!(
-            std::time::Instant::now() < deadline,
-            "scan did not finish in time"
-        );
-        std::thread::sleep(std::time::Duration::from_millis(50));
-    }
+    let state = run_json(&["pinvou", "knowledge", "scan", "status"]);
+    assert_eq!(state["phase"], serde_json::json!("done"));
+    assert!(state["finishedAt"].as_i64().unwrap_or(0) > 0);
 
     // Cancel is a real signal on the service (harmless once the scan is done).
     let cancelled = run_json(&["pinvou", "knowledge", "scan", "cancel"]);
     assert_eq!(cancelled["cancelled"], serde_json::json!(true));
+}
+
+/// A missing or non-directory `--root` is refused before the scan starts:
+/// downstream, a root that walks to nothing makes the incremental sweep
+/// delete the whole index as stale, so the typo must fail loudly instead of
+/// wiping the store and reporting `done`.
+#[test]
+fn scan_start_refuses_a_missing_or_non_directory_root_before_any_wipe() {
+    let _env_guard = ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+    let home = TempHome::new("scan-preflight");
+    let root = home.path().join("docs");
+    std::fs::create_dir_all(&root).unwrap();
+    std::fs::write(root.join("note.txt"), "pinvou scan fixture").unwrap();
+
+    let seeded = run_json(&[
+        "pinvou",
+        "knowledge",
+        "scan",
+        "start",
+        "--root",
+        root.to_str().unwrap(),
+    ]);
+    assert_eq!(seeded["phase"], serde_json::json!("done"));
+
+    let missing = home.path().join("docs-typo");
+    let error = execute_error(&[
+        "pinvou",
+        "knowledge",
+        "scan",
+        "start",
+        "--root",
+        missing.to_str().unwrap(),
+    ]);
+    assert!(
+        error.to_string().contains("does not exist"),
+        "the refusal must name the missing root, got: {error}"
+    );
+
+    let file = home.path().join("plain.txt");
+    std::fs::write(&file, "not a directory").unwrap();
+    let error = execute_error(&[
+        "pinvou",
+        "knowledge",
+        "scan",
+        "start",
+        "--root",
+        file.to_str().unwrap(),
+    ]);
+    assert!(
+        error.to_string().contains("not a directory"),
+        "the refusal must name the non-directory root, got: {error}"
+    );
+
+    // The seeded index must be intact: the refused scans never started, so
+    // the stale sweep never ran.
+    let stats = run_json(&["pinvou", "knowledge", "stats"]);
+    assert_eq!(
+        stats["totalFiles"],
+        serde_json::json!(1),
+        "a refused scan must not wipe the index"
+    );
 }
 
 /// L0 seeding is scan-driven and offline: `scan start` upserts file metadata
