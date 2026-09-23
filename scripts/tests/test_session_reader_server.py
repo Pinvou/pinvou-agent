@@ -374,12 +374,28 @@ class ReadSessionTests(unittest.TestCase):
     def test_deeply_nested_json_reports_unreadable(self):
         # RecursionError from pathologically nested JSON must honor the
         # sanitized `unreadable` contract, not escape as a raw -32603.
-        # (Depth 50000 reliably trips the parser's recursion guard.)
-        (Path(self.dir) / "nested1.json").write_text(
-            "[" * 50000 + "]" * 50000, encoding="utf-8")
-        payload, error = server.read_session_history(self.dir, "nested1")
+        # Whether json.load actually raises RecursionError on deep input is
+        # platform-dependent (interpreter limit / C stack), so drive the
+        # contract deterministically by forcing the raise.
+        import unittest.mock as mock
+
+        (Path(self.dir) / "nested1.json").write_text("{}", encoding="utf-8")
+        with mock.patch.object(
+            server.json, "load", side_effect=RecursionError("too deep")):
+            payload, error = server.read_session_history(self.dir, "nested1")
         self.assertIsNone(payload)
         self.assertIn("unreadable", error)
+        self.assertNotIn(self.dir, error)
+
+        # The real 50000-deep input must never crash or leak paths either;
+        # both parser outcomes (RecursionError, or a successfully parsed
+        # non-dict) land on sanitized errors.
+        (Path(self.dir) / "nested2.json").write_text(
+            "[" * 50000 + "]" * 50000, encoding="utf-8")
+        payload, error = server.read_session_history(self.dir, "nested2")
+        self.assertIsNone(payload)
+        self.assertIsNotNone(error)
+        self.assertNotIn(self.dir, error)
 
     def test_strict_bool_arg_parsing(self):
         # bool("false") would be True; the strict parser must not be fooled.
