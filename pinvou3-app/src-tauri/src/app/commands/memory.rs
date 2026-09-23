@@ -532,11 +532,10 @@ pub async fn organize_memory(
         Some(sid) => pool.fresh_bridge_for(&sid).await.map_err(|error| {
             // The `fresh_bridge_for` error chain can carry endpoint/credential
             // probing details; pass it through `redact_secret` before returning
-            // to the frontend, same policy as `sanitize_command_error` in
-            // settings.rs.
-            format!(
-                "organize memory: resolve bridge for {sid}: {}",
-                crate::platform::credential_store::redact_secret(&format!("{error:#}"))
+            // to the frontend (shared `sanitize_command_error` policy).
+            sanitize_command_error(
+                &format!("organize memory: resolve bridge for {sid}"),
+                format!("{error:#}"),
             )
         })?,
         None => {
@@ -550,12 +549,7 @@ pub async fn organize_memory(
     // the scheduled-task entry point passes a token).
     let report = crate::features::memory::organize_memory_with_llm(&bridge, None)
         .await
-        .map_err(|error| {
-            format!(
-                "organize memory: {}",
-                crate::platform::credential_store::redact_secret(&format!("{error:#}"))
-            )
-        })?;
+        .map_err(|error| sanitize_command_error("organize memory", format!("{error:#}")))?;
     let (runtime, mut warnings) = refresh_memory_runtime_best_effort(None, &store);
     // If the best-effort pre-render already failed, do not let the snapshot
     // refresh retry (avoiding a duplicate same-code warning and a second

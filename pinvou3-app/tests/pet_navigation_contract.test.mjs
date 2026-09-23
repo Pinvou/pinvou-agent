@@ -90,7 +90,7 @@ assert.doesNotMatch(
   'ordinary window focus must not arm the activation click guard',
 );
 assert.match(main, /pet:session_unavailable/);
-assert.match(main, /emitTo\(['"]pet['"],\s*name/);
+assert.match(main, /typeof ev\.emit === 'function'/);
 assert.match(main, /pet:activity_snapshot/);
 assert.match(main, /focusComposerTick=/);
 assert.match(chatView, /focusComposerTick/);

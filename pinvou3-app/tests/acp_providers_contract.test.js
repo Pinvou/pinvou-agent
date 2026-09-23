@@ -407,7 +407,7 @@ assert.match(
 
 // stderr 无有效内容时给出可操作提示（网络检查 + npm/官方脚本手动安装路径）
 assert.ok(
-  MOD.includes('请检查网络连接后重试'),
+  MOD.includes('check the network connection and retry'),
   '安装脚本失败且 stderr 无信息时必须给出可操作提示'
 );
 // 手动安装指引按 Agent 动态生成（不能一律指向 codex）：模板引用 {npm_pkg}

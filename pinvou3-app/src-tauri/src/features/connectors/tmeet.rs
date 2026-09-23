@@ -45,10 +45,6 @@ fn parse_tmeet_version(s: &str) -> Option<(u64, u64, u64)> {
     cc::parse_semver3(version)
 }
 
-fn version_at_least(v: (u64, u64, u64), min: (u64, u64, u64)) -> bool {
-    v >= min
-}
-
 fn tmeet_cli_version() -> Option<(u64, u64, u64)> {
     tmeet_cli_version_probe().ok().flatten()
 }
@@ -67,7 +63,7 @@ fn tmeet_cli_version_probe() -> Result<Option<(u64, u64, u64)>, cc::ProbeError> 
 
 fn tmeet_cli_present() -> bool {
     tmeet_cli_version()
-        .map(|v| version_at_least(v, TMEET_MIN_VERSION))
+        .map(|v| v >= TMEET_MIN_VERSION)
         .unwrap_or(false)
 }
 
@@ -145,15 +141,11 @@ pub async fn tmeet_ensure_cli() -> Result<Value, String> {
 /// (Only called internally by the command layer's `bundle_readiness` CLI dispatch; there is no standalone Tauri command anymore.)
 pub async fn tmeet_status() -> Result<Value, String> {
     tokio::task::spawn_blocking(|| {
+        // Don't spawn auth status when the CLI isn't installed. Overly old versions report installed:true
+        // just like usable ones; upgrade guidance is handled by ensure_cli's version gate (tmeet_cli_present).
         if tmeet_cli_version().is_none() {
             return Ok::<Value, String>(json!({
                 "ok": false, "connected": false, "installed": false
-            }));
-        }
-        let supported = tmeet_cli_present();
-        if !supported {
-            return Ok::<Value, String>(json!({
-                "ok": false, "connected": false, "installed": true, "upgrade_required": true
             }));
         }
         let (ok, so, se) = cc::run(tmeet(&["auth", "status"]))?;
@@ -161,8 +153,7 @@ pub async fn tmeet_status() -> Result<Value, String> {
         Ok::<Value, String>(json!({
             "ok": ok,
             "connected": connected,
-            "installed": true,
-            "upgrade_required": false
+            "installed": true
         }))
     })
     .await
@@ -312,19 +303,15 @@ fn phase_scan(app: &AppHandle) -> Result<(), String> {
         match child.try_wait() {
             Ok(Some(status)) => {
                 conn.set_pid(ID, None);
+                // A single status wait is enough: the already flag is decided from the captured output lines,
+                // with no second 5s polling run just to fill in already:true.
                 if wait_logged_in(Duration::from_secs(5)) {
                     cc::bundle_store_on_connected(ID);
-                    cc::emit(app, "tmeet:connected", json!({ "ok": true }));
-                    return Ok(());
-                }
-                if auth_lines_say_already_logged_in(&auth_lines)
-                    && wait_logged_in(Duration::from_secs(5))
-                {
-                    cc::bundle_store_on_connected(ID);
+                    let already = auth_lines_say_already_logged_in(&auth_lines);
                     cc::emit(
                         app,
                         "tmeet:connected",
-                        json!({ "ok": true, "already": true }),
+                        json!({ "ok": true, "already": already }),
                     );
                     return Ok(());
                 }

@@ -41,8 +41,8 @@ use super::types::{
     PreferenceFile, TimedMemoryItem, WorkContextFile,
 };
 use super::util::{
-    clean_candidate_sentence, clean_id, clean_text, looks_recent_work_status, looks_sensitive,
-    looks_sensitive_or_task_like, looks_task_like, write_json_atomic,
+    clean_candidate_sentence, clean_id, clean_text, contains_memory_block_marker, looks_sensitive,
+    validate_memory_content, write_json_atomic,
 };
 
 const LLM_ORGANIZE_TIMEOUT: StdDuration = StdDuration::from_secs(75);
@@ -478,12 +478,11 @@ pub(super) struct LlmOrganizeAction {
     pub(super) ids: Vec<String>,
     #[serde(default)]
     pub(super) content: String,
-    #[serde(default)]
-    pub(super) reason: String,
     // Note: a "topic" field in the LLM output is silently ignored by serde — organize
     // must not migrate item topics (see `update_organize_item`), which prevents a
     // model-invented topic from folding into the default bucket and silently
-    // overwriting unrelated items in it.
+    // overwriting unrelated items in it. The same applies to the prompt's "reason"
+    // field: it is report-facing only and never stored.
 }
 
 /// A validated action pending execution: ids confirmed to exist in the snapshot,
@@ -598,11 +597,10 @@ pub(super) fn validate_organize_action(
             *skipped_sensitive += 1;
             return None;
         }
-        // Memory-block markers are the render layer's structural boundary (the
-        // <pinvou_user_memory> block in render.rs): content containing one could forge
-        // or prematurely close that boundary inside the runtime memory block, turning
-        // the model-visible "memory" into an injection channel. Always dropped.
-        if content.contains("pinvou_user_memory") {
+        // Memory-block markers are the render layer's structural boundary; content
+        // carrying one could forge or prematurely close that boundary inside the
+        // runtime memory block. Always dropped (same policy as the review sanitizer).
+        if contains_memory_block_marker(&content) {
             return drop_action(
                 "organize: drop content containing memory block markers".to_string(),
             );
@@ -617,10 +615,12 @@ pub(super) fn validate_organize_action(
                 _ => io::TIMED_TEXT_MAX_CHARS,
             },
         );
-        // Per-kind quality filters, same as sanitize_llm_memory_item.
+        // Per-kind quality filters, shared with sanitize_llm_memory_item
+        // (thresholds live in util::validate_memory_content); each kind's
+        // exact drop wording is preserved.
         match kind.as_str() {
             "preference" => {
-                if looks_sensitive_or_task_like(&content) || content.chars().count() < 6 {
+                if !validate_memory_content("preference", &content) {
                     return drop_action(
                         "organize: drop preference content that is task-like or too short"
                             .to_string(),
@@ -628,16 +628,14 @@ pub(super) fn validate_organize_action(
                 }
             }
             "work_context" => {
-                if content.chars().count() < 8 {
+                if !validate_memory_content("work_context", &content) {
                     return drop_action(
                         "organize: drop work_context content that is too short".to_string(),
                     );
                 }
             }
             _ => {
-                // current_focus / recent_activity: one-off task phrasing that is not a
-                // progress/delivery status makes poor memory content.
-                if looks_task_like(&content) && !looks_recent_work_status(&content) {
+                if !validate_memory_content(&kind, &content) {
                     return drop_action(
                         "organize: drop timed content that looks like a one-off task".to_string(),
                     );
@@ -655,7 +653,6 @@ pub(super) fn validate_organize_action(
     // from the topic and migrates the item, silently overwriting unrelated items in
     // the bucket without counting them in the report. Item topics stay as-is (see
     // prompt rule 7).
-    let _reason = clean_text(&raw.reason, 120);
     Some(OrganizeAction {
         op,
         kind,
@@ -1165,7 +1162,6 @@ fn update_organize_item(kind: &str, id: &str, content: &str) -> Result<bool> {
     let patch = MemoryTextPatch {
         topic: None,
         text: Some(content.to_string()),
-        ttl_days: None,
     };
     match kind {
         "preference" => io::update_preference_unlocked(id, patch)

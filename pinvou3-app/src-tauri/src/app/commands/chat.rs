@@ -310,7 +310,6 @@ pub(crate) async fn chat_with_reservation(
             &sid,
             roots.ledger.clone(),
             roots.execution.clone(),
-            display_content.clone(),
             "chat",
         )
         .await;
@@ -373,21 +372,13 @@ pub(crate) async fn chat_with_reservation(
             );
             // 发送失败：作废本轮「未成活」快照（按 id 精确删除），让重试的同号
             // Turn 快照成为 first-wins 对齐锚（清理性质，失败仅记日志）。
-            if let Some(snapshot_id) = created_snapshot_id {
-                let checkpoint_ledger = roots.ledger.clone();
-                let sid_invalidate = sid.clone();
-                let _ = tauri::async_runtime::spawn_blocking(move || {
-                    if let Err(error) = crate::features::code_checkpoints::drop_checkpoint(
-                        &checkpoint_ledger,
-                        &snapshot_id,
-                    ) {
-                        log::warn!(
-                            "[pinvou3][chat] drop unsent-turn checkpoint failed sid={sid_invalidate}: {error:#}"
-                        );
-                    }
-                })
-                .await;
-            }
+            super::checkpoints::drop_unsent_turn_checkpoint(
+                Some(roots.ledger.clone()),
+                created_snapshot_id,
+                &sid,
+                "chat",
+            )
+            .await;
             log::error!(
                 "[pinvou3][chat] engine send failed sid={} send_elapsed_ms={} total_elapsed_ms={} error={:#}",
                 sid,

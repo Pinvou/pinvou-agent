@@ -472,6 +472,32 @@ pub(super) fn looks_sensitive_or_task_like(value: &str) -> bool {
     looks_sensitive(value) || looks_task_like(value)
 }
 
+/// Memory-block markers are the render layer's structural boundary (the
+/// `<pinvou_user_memory>` block in render.rs): content containing one could
+/// forge or prematurely close that boundary inside the runtime memory block,
+/// turning the model-visible "memory" into an injection channel. Shared by
+/// the organize validator and the review sanitizer; matching content is
+/// always dropped.
+pub(super) fn contains_memory_block_marker(content: &str) -> bool {
+    content.contains("pinvou_user_memory")
+}
+
+/// Per-kind memory-content quality gate shared by the review sanitizer
+/// (`sanitize_llm_memory_item`) and the organize validator
+/// (`validate_organize_action`): preference content must not be
+/// sensitive/task-like or too short, work_context content must not be too
+/// short, and timed (`current_focus` / `recent_activity`, plus the default
+/// bucket) content must not be one-off task phrasing without a
+/// progress/delivery status. Thresholds are identical on both call sites;
+/// callers keep their own drop behavior, warnings, and error strings.
+pub(super) fn validate_memory_content(kind: &str, content: &str) -> bool {
+    match kind {
+        "preference" => !(looks_sensitive_or_task_like(content) || content.chars().count() < 6),
+        "work_context" => content.chars().count() >= 8,
+        _ => !(looks_task_like(content) && !looks_recent_work_status(content)),
+    }
+}
+
 pub(super) fn looks_sensitive(value: &str) -> bool {
     let value = clean_text(value, 500);
     let lower = value.to_ascii_lowercase();
@@ -538,10 +564,7 @@ pub(super) fn looks_like_filesystem_path(value: &str) -> bool {
     let lower = value.to_ascii_lowercase();
     let trimmed = lower.trim();
     let unix_roots = ["/home/", "/tmp/", "/users/", "/var/", "/etc/", "/opt/"];
-    if unix_roots
-        .iter()
-        .any(|root| trimmed.starts_with(root) || lower.contains(root))
-    {
+    if unix_roots.iter().any(|root| lower.contains(root)) {
         return true;
     }
     trimmed.starts_with("~/")
@@ -603,22 +626,23 @@ pub(super) fn looks_like_stable_instruction(value: &str) -> bool {
     .any(|needle| value.contains(needle))
 }
 
+/// One-off action verbs shared by the prefix and substring variants of the
+/// task-likeness probe; kept as one const so the two probes cannot drift.
+const ONE_OFF_ACTION_NEEDLES: [&str; 13] = [
+    "写", "查", "生成", "总结", "翻译", "安装", "打开", "搜索", "创建", "修复", "做", "整理",
+    "规划",
+];
+
 pub(super) fn starts_with_one_off_action(value: &str) -> bool {
-    [
-        "写", "查", "生成", "总结", "翻译", "安装", "打开", "搜索", "创建", "修复", "做", "整理",
-        "规划",
-    ]
-    .iter()
-    .any(|prefix| value.starts_with(prefix))
+    ONE_OFF_ACTION_NEEDLES
+        .iter()
+        .any(|prefix| value.starts_with(prefix))
 }
 
 pub(super) fn contains_one_off_action(value: &str) -> bool {
-    [
-        "写", "查", "生成", "总结", "翻译", "安装", "打开", "搜索", "创建", "修复", "做", "整理",
-        "规划",
-    ]
-    .iter()
-    .any(|needle| value.contains(needle))
+    ONE_OFF_ACTION_NEEDLES
+        .iter()
+        .any(|needle| value.contains(needle))
 }
 
 pub(super) fn looks_recent_work_status(value: &str) -> bool {

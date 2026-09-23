@@ -320,7 +320,7 @@ fn finish_turn_internal(
     // serialization), so the finishing turn is always the last one queued;
     // take from the tail. Earlier entries can only be stale ids left by the
     // "canceled before submit" path (start_turn followed by
-    // emit_unsubmitted_interrupted_terminal, no assistant_done) — popping
+    // emit_unsubmitted_interrupted_terminal_for_epoch, no assistant_done) — popping
     // FIFO would attribute assistant_done to the stale turn and leave the
     // real id stuck in the queue forever. Clear the whole queue here;
     // stale turns produce no terminal event.

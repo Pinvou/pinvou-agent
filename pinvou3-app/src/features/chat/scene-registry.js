@@ -9,8 +9,8 @@
 // Pure data, no imports: the scene logic vm tests (pinvou_mode_state /
 // personal_workbench_scene_logic) concatenate this file with the consuming
 // modules, so it must stay dependency-free.
-export const WORK_SCENE_LANE = 'work';
-export const DESIGN_SCENE_LANE = 'design';
+const WORK_SCENE_LANE = 'work';
+const DESIGN_SCENE_LANE = 'design';
 
 export const PERSONAL_WORKBENCH_SCENE_KEY = 'personal-workbench';
 export const DOCUMENT_WRITING_SCENE_KEY = 'document-writing';
@@ -20,7 +20,7 @@ export const PPT_DESIGN_SCENE_KEY = 'ppt';
 
 // Routed scenes in canonical display order. `lane` prefixes the `pinvouScene`
 // tag stamped into message meta and keyed by scene-capabilities.js.
-export const PINVOU_SCENES = Object.freeze([
+const PINVOU_SCENES = Object.freeze([
   Object.freeze({ key: PERSONAL_WORKBENCH_SCENE_KEY, lane: WORK_SCENE_LANE }),
   Object.freeze({ key: DOCUMENT_WRITING_SCENE_KEY, lane: WORK_SCENE_LANE }),
   Object.freeze({ key: POSTER_SCENE_KEY, lane: DESIGN_SCENE_LANE }),

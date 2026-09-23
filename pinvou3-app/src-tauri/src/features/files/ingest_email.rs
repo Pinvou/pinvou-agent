@@ -5,7 +5,7 @@
 //!
 //! .msg 的 HTML 正文与 hex 编码 body 在此做 UTF-16 / HTML-entity 解码。
 
-// architecture-guard: allow-target-cfg -- msg_parser compiles on Windows only (cfg(windows) dependency section in Cargo.toml); the native .msg parsing branch and its decode helpers share that gating
+// architecture-guard: allow-target-cfg -- msg_parser compiles on Windows only (cfg(windows) dependency section in Cargo.toml); the native .msg parsing branch shares that gating, while its pure decode helpers are gated `any(target_os = "windows", test)` so the cross-platform unit tests exercise them off-Windows
 
 use std::path::Path;
 use std::process::Command;
@@ -103,6 +103,7 @@ pub(super) fn ingest_email(
 
 /// Outlook .msg 解析结果格式化为与 .eml 接近的可读邮件文本。
 #[derive(Default)]
+#[cfg(any(target_os = "windows", test))]
 struct MsgMarkdownParts {
     sender: String,
     to: Vec<String>,
@@ -148,6 +149,7 @@ fn parse_msg_via_msg_parser(path: &Path) -> Result<String, String> {
     }
 }
 
+#[cfg(any(target_os = "windows", test))]
 fn format_msg_as_markdown(parts: &MsgMarkdownParts) -> String {
     let mut out = String::new();
     push_mail_line(&mut out, "发件人", &parts.sender);
@@ -174,6 +176,7 @@ fn format_msg_as_markdown(parts: &MsgMarkdownParts) -> String {
     out.trim_end().to_string()
 }
 
+#[cfg(any(target_os = "windows", test))]
 fn push_mail_line(out: &mut String, label: &str, value: &str) {
     let value = value.trim();
     if value.is_empty() {
@@ -212,6 +215,7 @@ fn attachment_to_name(attachment: &msg_parser::Attachment) -> String {
     .unwrap_or_default()
 }
 
+#[cfg(target_os = "windows")]
 fn first_non_empty<'a>(values: impl IntoIterator<Item = &'a str>) -> String {
     values
         .into_iter()
@@ -237,6 +241,7 @@ fn decode_msg_body(outlook: &msg_parser::Outlook) -> String {
     if text.is_empty() { decoded } else { text }
 }
 
+#[cfg(any(target_os = "windows", test))]
 fn clean_msg_text(value: &str) -> String {
     value
         .chars()
@@ -246,6 +251,7 @@ fn clean_msg_text(value: &str) -> String {
         .to_string()
 }
 
+#[cfg(any(target_os = "windows", test))]
 fn decode_msg_html_payload(value: &str) -> String {
     let value = clean_msg_text(value);
     if value.len() < 8
@@ -268,6 +274,7 @@ fn decode_msg_html_payload(value: &str) -> String {
     decode_msg_bytes(&bytes)
 }
 
+#[cfg(any(target_os = "windows", test))]
 fn decode_msg_bytes(bytes: &[u8]) -> String {
     if bytes.starts_with(&[0xFF, 0xFE]) {
         return decode_utf16le(&bytes[2..]);
@@ -286,6 +293,7 @@ fn decode_msg_bytes(bytes: &[u8]) -> String {
     }
 }
 
+#[cfg(any(target_os = "windows", test))]
 fn decode_utf16le(bytes: &[u8]) -> String {
     let units: Vec<u16> = bytes
         .chunks_exact(2)
@@ -294,6 +302,7 @@ fn decode_utf16le(bytes: &[u8]) -> String {
     clean_msg_text(&String::from_utf16_lossy(&units))
 }
 
+#[cfg(any(target_os = "windows", test))]
 fn decode_utf16be(bytes: &[u8]) -> String {
     let units: Vec<u16> = bytes
         .chunks_exact(2)
@@ -302,6 +311,7 @@ fn decode_utf16be(bytes: &[u8]) -> String {
     clean_msg_text(&String::from_utf16_lossy(&units))
 }
 
+#[cfg(any(target_os = "windows", test))]
 fn html_to_text(html: &str) -> String {
     let html = remove_html_section(html, "script");
     let html = remove_html_section(&html, "style");
@@ -331,6 +341,7 @@ fn html_to_text(html: &str) -> String {
     collapse_text(&decode_html_entities(&out))
 }
 
+#[cfg(any(target_os = "windows", test))]
 fn remove_html_section(input: &str, tag: &str) -> String {
     let mut out = input.to_string();
     let open = format!("<{tag}");
@@ -350,6 +361,7 @@ fn remove_html_section(input: &str, tag: &str) -> String {
     out
 }
 
+#[cfg(any(target_os = "windows", test))]
 fn decode_html_entities(value: &str) -> String {
     let mut out = String::with_capacity(value.len());
     let mut rest = value;
@@ -375,6 +387,7 @@ fn decode_html_entities(value: &str) -> String {
     out
 }
 
+#[cfg(any(target_os = "windows", test))]
 fn decode_html_entity(entity: &str) -> Option<char> {
     match entity {
         "amp" => Some('&'),
@@ -393,6 +406,7 @@ fn decode_html_entity(entity: &str) -> Option<char> {
     }
 }
 
+#[cfg(any(target_os = "windows", test))]
 fn collapse_text(value: &str) -> String {
     let mut out = String::new();
     let mut blank_lines = 0;

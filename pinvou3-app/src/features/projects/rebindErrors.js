@@ -59,7 +59,6 @@ function classifyRebindError(error, t) {
 
 export {
   REBIND_MARKER_MESSAGE_KEYS,
-  REBIND_OLD_ROOT_EXISTS,
   REBIND_SESSIONS_BUSY,
   classifyRebindError,
 };

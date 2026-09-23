@@ -87,7 +87,8 @@ import { deptLabelFor, personaText, DEPT_ORDER, ALL_DEPT, DEPT_OPTIONS, deptColo
       const [confirmDel, setConfirmDel] = useState(false);
       const [name, setName] = useState(init.name || '');
       const [dept, setDept] = useState(init.dept && init.dept !== 'tool' ? init.dept : 'specialized');
-      const [emoji] = useState(init.emoji || '🃏');
+      // The emoji is not editable (the editor has no entry point to change it): fixed to the initial value, no state needed.
+      const emoji = init.emoji || '🃏';
       const [description, setDescription] = useState(init.description || '');
       const [body, setBody] = useState(init.body || '');
       const [saving, setSaving] = useState(false);

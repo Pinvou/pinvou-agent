@@ -113,10 +113,13 @@ pub struct L1Store {
 const EMBED_ACTIVITY_NEVER: u64 = u64::MAX;
 
 impl L1Store {
-    pub fn new(conn: Arc<Mutex<Connection>>, embedder: Option<Arc<Embedder>>) -> Self {
+    /// Opens with no embedder installed; the model is attached later via
+    /// [`Self::set_embedder`] / `install_embedder` (hot-swappable across all
+    /// clones), so the constructor never needs one.
+    pub fn new(conn: Arc<Mutex<Connection>>) -> Self {
         Self {
             conn,
-            embedder: Arc::new(RwLock::new(embedder)),
+            embedder: Arc::new(RwLock::new(None)),
             last_embed_activity_epoch: Arc::new(AtomicU64::new(EMBED_ACTIVITY_NEVER)),
             #[cfg(test)]
             checkpoint_gate: Arc::new(RwLock::new(None)),
@@ -1025,7 +1028,7 @@ mod tests {
 
     fn mem() -> L1Store {
         let store = Store::open_in_memory().unwrap();
-        L1Store::new(store.conn_arc(), None) // 单测：纯全文,不接 embedding
+        L1Store::new(store.conn_arc()) // Unit test: plain full-text only, no embedding
     }
 
     #[test]

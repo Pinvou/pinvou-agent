@@ -16,19 +16,24 @@ function createDesignChange({ element, type, property, oldValue, newValue, group
   };
 }
 
+// Whether two design changes are fully equal (same selector/type/property and identical old/new values):
+// add dedup and ChatView's pre-apply check share this one comparison to avoid field drift between the two copies.
+function sameDesignChange(a, b) {
+  return !!a && !!b
+    && a.selector === b.selector
+    && a.type === b.type
+    && a.property === b.property
+    && a.oldValue === b.oldValue
+    && a.newValue === b.newValue;
+}
+
 function reduceDesignChanges(state, action) {
   const current = Array.isArray(state) ? state : [];
   if (!action || typeof action !== 'object') return current;
   switch (action.type) {
     case 'add':
       if (!action.change) return current;
-      if (current.some((change) => (
-        change.selector === action.change.selector &&
-        change.type === action.change.type &&
-        change.property === action.change.property &&
-        change.oldValue === action.change.oldValue &&
-        change.newValue === action.change.newValue
-      ))) return current;
+      if (current.some((change) => sameDesignChange(change, action.change))) return current;
       return [...current, action.change];
     case 'mark-applied':
       return current.map((change) => (
@@ -79,5 +84,6 @@ export {
   createDesignChangeScopeKey,
   reduceDesignChanges,
   reduceScopedDesignChanges,
+  sameDesignChange,
   uniqueDesignChanges,
 };

@@ -73,6 +73,10 @@ impl AgentConfigWriter for KimiConfigWriter {
         if let Some(key) = target.api_key.as_deref() {
             entry.insert("api_key".into(), Value::String(key.into()));
         }
+        // Unlike claude.rs (which mutates a shared `env` object in place and
+        // needs an explicit removal), this writer rebuilds the provider entry
+        // from scratch and replaces it wholesale, so an absent api_key can
+        // never leave a stale key behind.
         providers_table.insert(target.provider_id.clone(), Value::Table(entry));
 
         let models = table
@@ -344,6 +348,28 @@ mod tests {
         assert_eq!(
             config["models"]["pv-aaaaaaaaaaaa-main"]["provider"],
             "pv-aaaaaaaaaaaa".into()
+        );
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn apply_without_key_writes_entry_without_api_key() {
+        let dir = writer_test_dir("kimi-writer-test");
+        let writer = KimiConfigWriter::new(&dir);
+        writer.apply(&target("pv-aaaaaaaaaaaa")).unwrap();
+        // Deleting the key (api_key=None) rewrites the entry from scratch, so
+        // the serialized provider table must not carry an api_key field.
+        let mut no_key = target("pv-aaaaaaaaaaaa");
+        no_key.api_key = None;
+        no_key.base_url = "https://api.example.com/v2".into();
+        writer.apply(&no_key).unwrap();
+        let raw = fs::read_to_string(dir.join("config.toml")).unwrap();
+        let config: Value = toml::from_str(&raw).unwrap();
+        assert!(
+            config["providers"]["pv-aaaaaaaaaaaa"]
+                .get("api_key")
+                .is_none(),
+            "api_key must not survive a writer pass without a key"
         );
         let _ = fs::remove_dir_all(&dir);
     }
