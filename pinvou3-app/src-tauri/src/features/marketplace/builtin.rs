@@ -500,6 +500,54 @@ mod tests {
         });
     }
 
+    /// Concurrency: FEATURE_TOGGLE_LOCK spans validation → prefs commit →
+    /// state-file write, so racing toggles must leave prefs (the authoritative
+    /// store) and the MCP-facing state file in agreement — without the mutex
+    /// the two stores could interleave and persist disagreeing states.
+    #[test]
+    fn concurrent_feature_toggles_leave_consistent_state() {
+        with_temp_home(|| {
+            let mut handles = Vec::new();
+            for thread in 0..8 {
+                handles.push(std::thread::spawn(move || {
+                    for round in 0..25 {
+                        let feature = if (thread + round) % 2 == 0 {
+                            "session-mention"
+                        } else {
+                            "long-memory"
+                        };
+                        set_feature_enabled(feature, (thread + round) % 3 == 0).unwrap();
+                    }
+                }));
+            }
+            for handle in handles {
+                handle.join().unwrap();
+            }
+            let prefs_disabled: BTreeSet<String> = UserPrefs::load()
+                .disabled_builtin_features
+                .into_iter()
+                .collect();
+            let state_path = paths::pinvou3_home()
+                .join("marketplace")
+                .join(BUILTIN_FEATURES_STATE_FILE);
+            let state: serde_json::Value = serde_json::from_str(
+                &std::fs::read_to_string(&state_path)
+                    .expect("the state file should exist after toggles"),
+            )
+            .unwrap();
+            let file_disabled: BTreeSet<String> = state["disabled_features"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .map(|v| v.as_str().unwrap().to_string())
+                .collect();
+            assert_eq!(
+                prefs_disabled, file_disabled,
+                "racing toggles must leave prefs and the state file in agreement"
+            );
+        });
+    }
+
     #[test]
     fn unknown_feature_id_is_rejected() {
         with_temp_home(|| {

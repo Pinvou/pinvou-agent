@@ -1414,6 +1414,92 @@ mod tests {
         let _ = std::fs::remove_dir_all(&dir);
     }
 
+    /// Same trust boundary for the `other_manifests` fallback lane: a claim
+    /// hidden in a secondary manifest (any `manifest.json` other than
+    /// `mcp/manifest.json`, e.g. `extra/manifest.json` discovered by the bare
+    /// MCP fallback) must be rejected just as loudly, naming the offending
+    /// path.
+    #[test]
+    fn import_rejects_builtin_claims_in_secondary_manifests() {
+        use std::io::Write;
+        let _g = crate::platform::paths::tests::ENV_LOCK
+            .lock()
+            .unwrap_or_else(|p| p.into_inner());
+        let dir = std::env::temp_dir().join(format!(
+            "pinvou-builtin-claim-secondary-{}-{}",
+            std::process::id(),
+            crate::platform::paths::tests::unique_suffix()
+        ));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        let prev = std::env::var("PINVOU3_HOME").ok();
+        // SAFETY: platform::paths::tests::ENV_LOCK held; env writes are serialized.
+        unsafe { std::env::set_var("PINVOU3_HOME", &dir) };
+
+        for (id, claim, needle) in [
+            (
+                "claim-secondary-builtin",
+                r#","builtin":true}"#,
+                "builtin: true",
+            ),
+            (
+                "claim-secondary-system",
+                r#","visibility":"system"}"#,
+                "system",
+            ),
+        ] {
+            let zip_path = dir.join(format!("{id}.zip"));
+            {
+                let f = std::fs::File::create(&zip_path).unwrap();
+                let mut zw = zip::ZipWriter::new(f);
+                let opts = zip::write::SimpleFileOptions::default();
+                // The primary MCP manifest is clean...
+                zw.start_file("mcp/manifest.json", opts).unwrap();
+                zw.write_all(
+                    format!(
+                        r#"{{"id":"{id}","name":"n","description":"d","version":"1","icon":"x","category":"c","mcp_tools":[],"command":"python","args":["server.py"]}}"#
+                    )
+                    .as_bytes(),
+                )
+                .unwrap();
+                zw.start_file("mcp/server.py", opts).unwrap();
+                zw.write_all(b"print('hi')").unwrap();
+                // ...but a secondary manifest carries the builtin claim.
+                zw.start_file("extra/manifest.json", opts).unwrap();
+                zw.write_all(
+                    format!(
+                        r#"{{"id":"{id}-extra","name":"n","description":"d","version":"1","icon":"x","category":"c","mcp_tools":[],"command":"python","args":["server.py"]{claim}"#
+                    )
+                    .as_bytes(),
+                )
+                .unwrap();
+                zw.finish().unwrap();
+            }
+            let err = import_plugin_package(&zip_path.to_string_lossy(), &format!("{id}.zip"))
+                .unwrap_err();
+            assert!(
+                err.contains(needle),
+                "rejection should name the claim ({needle}): {err}"
+            );
+            assert!(
+                err.contains("extra/manifest.json"),
+                "rejection should name the offending secondary manifest path: {err}"
+            );
+            assert!(
+                !dir.join("bundles").join(id).exists(),
+                "rejected package must not land on disk"
+            );
+        }
+
+        match prev {
+            // SAFETY: platform::paths::tests::ENV_LOCK held; env writes are serialized.
+            Some(v) => unsafe { std::env::set_var("PINVOU3_HOME", v) },
+            // SAFETY: platform::paths::tests::ENV_LOCK held; env writes are serialized.
+            None => unsafe { std::env::remove_var("PINVOU3_HOME") },
+        }
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
     /// 回退兼容：符合 skills 标准的裸技能包（无 plugin.json，SKILL.md 在命名目录下，
     /// name 取自 frontmatter）→ 规范化为 `skills/<name>/` 布局并识别为纯技能包。
     #[test]
