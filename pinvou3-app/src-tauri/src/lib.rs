@@ -1052,9 +1052,9 @@ pub fn run() {
                             );
                             crate::features::memory::discard_turn_capture(session_id);
                             // Self-metrics accumulate per session key
-                            // (warmed_sessions inserts on every TurnComplete
-                            // and is never reclaimed); clear the keys on
-                            // deletion.
+                            // (inflight entries are inserted on TurnStarted
+                            // and only cleared on TurnComplete/abort); clear
+                            // the key on deletion.
                             if let Some(metrics) = app_for_purge_hook
                                 .try_state::<crate::features::monitor::MonitorState>()
                                 .map(|state| state.self_metrics())
@@ -1276,7 +1276,6 @@ pub fn run() {
             commands::settings::get_effective_model_config,
             commands::settings::update_settings,
             commands::settings::update_search_settings,
-            commands::settings::save_settings_and_restart,
             commands::settings::save_search_settings_and_restart,
             commands::monitor::get_monitor_snapshot,
             commands::monitor::get_backend_status,
@@ -1473,7 +1472,6 @@ pub fn run() {
             commands::artifacts::open_artifact_window,
             commands::pet::begin_detach_drag,
             commands::pet::set_pet_enabled,
-            commands::pet::get_pet_scale,
             commands::pet::set_pet_scale,
             commands::pet::set_pet_activity_visible,
             commands::pet::save_pet_position,

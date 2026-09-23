@@ -313,9 +313,9 @@ async fn run_turn(
     turn_timeout: Duration,
 ) {
     engine
-        .send_user_message(user.to_string(), mode, None, false)
+        .send_headless_user_message(user.to_string(), mode, None, false)
         .await
-        .expect("send_user_message");
+        .expect("send_headless_user_message");
     let (timeline, elapsed, timed_out) = collect_turn_events(engine, turn_timeout).await;
     let summary = summarize(&timeline, elapsed, timed_out);
     eprintln!(
@@ -1434,9 +1434,9 @@ async fn image_vision_analyze() {
     expect.max_duration_s = 120.0; // image_analyze 含 thinking 单次 ~17s,主 loop 多轮留足
 
     engine
-        .send_user_message(user.to_string(), AppMode::Agent, None, false)
+        .send_headless_user_message(user.to_string(), AppMode::Agent, None, false)
         .await
-        .expect("send_user_message");
+        .expect("send_headless_user_message");
     let (timeline, elapsed, timed_out) =
         collect_turn_events(&engine, Duration::from_secs(140)).await;
     let summary = summarize(&timeline, elapsed, timed_out);
