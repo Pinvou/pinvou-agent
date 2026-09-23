@@ -174,8 +174,10 @@ pub(crate) fn current_status(service: &KnowledgeService) -> KbModelStatus {
     }
 }
 
-/// 取消进行中的下载（下次网络数据块或文件校验边界生效）。取消只在下载进行中
-/// 有意义：下次下载启动时会复位该标志，一次取消不会毒化进程内后续的下载。
+/// Cancel an in-progress download (takes effect at the next network chunk or
+/// file-verification boundary). Cancellation only means anything while a
+/// download runs: the flag resets when the next download starts, so one
+/// cancel never poisons the process's later downloads.
 ///
 /// Headless caller (the CLI families stack): the base tree had removed the
 /// cancel entry point along with the `kb_model_cancel` command; this pub
@@ -571,9 +573,11 @@ impl Drop for DownloadGuard {
     }
 }
 
-/// 占住进程级下载槽位并以干净的取消标志开始一次下载；槽位已被占时返回
-/// `Err`。CANCEL 是「停止当前下载」的单次信号，不是持久状态——获取槽位
-/// 成功即复位，一次取消不能毒化进程内后续的每一次下载。
+/// Claim the process-level download slot and start the download with a
+/// clean cancel flag; `Err` when the slot is already taken. CANCEL is a
+/// one-shot "stop the current download" signal, not persistent state — it
+/// resets as soon as the slot is claimed, so one cancel cannot poison any
+/// later download in the process.
 fn begin_download() -> Result<DownloadGuard, String> {
     if DOWNLOADING.swap(true, Ordering::SeqCst) {
         return Err("模型正在下载中".into());

@@ -735,8 +735,9 @@ fn load_index(ledger_root: &Path) -> Result<CheckpointIndex> {
             // 账本就在 agent 可见的工作目录内，agent 的工具可能写坏它）：隔离
             // 保留现场后从空索引重建——与 sidecar 的损坏处理同款，共用
             // platform 的纳秒唯一名原语（秒级后缀在同一秒内的二次损坏会覆盖
-            // 首次取证）。代价：影子仓库里的历史快照失去索引（不可列不可用，
-            // 对象随 gc 回收），此后快照能力恢复。
+            // 首次取证）。代价：影子仓库里的历史快照失去索引（不可列不可用；
+            // 注意其 refs/checkpoints/* 引用并不被本路径清扫，对象因仍可达
+            // 不会被 gc 回收，属已披露的预存在限制），此后快照能力恢复。
             // Neither the quarantine path (it lives inside the session
             // directory) nor the serde message (it can quote the corrupt
             // bytes) may reach stderr — same cleartext-logging surface as the
@@ -762,9 +763,12 @@ fn save_index(ledger_root: &Path, index: &CheckpointIndex) -> Result<()> {
             .with_context(|| format!("创建 checkpoint 目录失败: {}", parent.display()))?;
     }
     let payload = serde_json::to_vec_pretty(index).context("序列化 checkpoint 索引失败")?;
-    // 索引与转录同目录且 label 字段携带用户消息前缀,必须与转录同权(0600):
-    // 走私有原子写,umask 默认 0644 会把每轮输入的前缀暴露给同机其他用户。
-    // 原子替换保住既有语义:任意时刻落盘的都是完整索引(损坏走 quarantine)。
+    // The index lives next to the transcripts and its `label` field carries
+    // user-message prefixes, so it must match the transcripts' privacy
+    // (0600): private atomic write — a umask-default 0644 would expose every
+    // turn's input prefix to other local users. Atomic replace keeps the
+    // existing semantics: whatever lands on disk is always a complete index
+    // (corruption goes through quarantine).
     crate::platform::filesystem::atomic_write_private(&path, &payload)
         .with_context(|| format!("保存 checkpoint 索引失败: {}", path.display()))?;
     Ok(())
@@ -787,8 +791,9 @@ pub fn create_checkpoint(
     create_checkpoint_preserving(ledger_root, execution_root, turn, kind, label, &[])
 }
 
-/// 展示标签落盘前的归一：去首尾空白并截断到 80 字符（按字符不按字节，CJK
-/// 标签不会被腰斩成半个字符）。空标签原样落盘。
+/// Display-label normalization before persisting: trims and caps at 80
+/// characters (by chars, never bytes — a CJK label is never split mid
+/// character). An empty label persists as-is.
 fn normalize_checkpoint_label(label: &str) -> String {
     label.trim().chars().take(80).collect()
 }
@@ -1028,12 +1033,15 @@ fn secret_path_matches(path: &str) -> bool {
     })
 }
 
-/// diff --git 段头是否指向敏感文件。C-quoted 形式（路径含引号/tab/非 ASCII 时
-/// git 输出 `diff --git "a/x" "b/x"`）按引号段提取 a/ 与 b/ 路径；未加引号形式
-/// 的路径可含空格（纯空格不触发 C-quoting），按最后一个 ` b/` 出现位置切分两个
-/// 路径（与 git 消费者同法；即使误切，方向也偏保守——多剔除而非漏剔除）；
-/// 二进制文件的 diff 段没有 ---/+++ 行，段头解析是它们唯一的判定途径，token
-/// 扫描只作最后兜底。
+/// Whether a `diff --git` section header points at a secret file. For the
+/// C-quoted form (git emits `diff --git "a/x" "b/x"` when the path contains
+/// quotes/tabs/non-ASCII) the a/ and b/ paths are extracted by quoted
+/// segment; unquoted paths may contain spaces (plain spaces do not trigger
+/// C-quoting), so both paths are split at the LAST ` b/` occurrence (same
+/// trick git consumers use). A mis-split errs conservative — over-removing
+/// rather than leaking — except for exotic quoted-binary shapes, disclosed.
+/// Binary-file sections have no ---/+++ lines, so the header parse is their
+/// only predicate; the token scan is the final fallback.
 fn diff_section_is_secret(header: &str) -> bool {
     if let Some(rest) = header.strip_prefix("diff --git \"") {
         // C-quoted 形式：按引号段提取 a/ 与 b/ 路径（路径可含空格）。
@@ -1073,9 +1081,11 @@ fn diff_section_is_secret(header: &str) -> bool {
         .any(|token| secret_path_matches(token))
 }
 
-/// `--- a/<path>` / `+++ b/<path>` 行的路径判定（整行剩余部分即路径，容忍空格；
-/// 删除文件的 marker 行尾部带 tab 填充，先剥掉；路径含 tab/引号时 git 用
-/// C-quoting 输出 `--- "a/x"`，剥掉外层引号再判定；/dev/null 如实不命中）。
+/// Path predicate for `--- a/<path>` / `+++ b/<path>` marker lines (the
+/// rest of the line IS the path, spaces tolerated; a deleted file's marker
+/// line carries a trailing tab pad, stripped first; when the path contains
+/// tabs/quotes git C-quotes it as `--- "a/x"` — strip the outer quotes
+/// before matching; /dev/null honestly never matches).
 fn marker_line_is_secret(line: &str) -> bool {
     let path = line
         .strip_prefix("--- a/")
@@ -1088,10 +1098,12 @@ fn marker_line_is_secret(line: &str) -> bool {
     }
 }
 
-/// 从 unified diff 文本剔除命中敏感文件模式的整段文件 diff：迁移前打的旧
-/// 快照 tree 里可能仍有秘密原文（purge 只清 index），预览不得把原文带进 UI。
-/// 按段缓冲后判定（段头或 ---/+++ 行任一命中即整段剔除；二进制段没有
-/// marker 行，全靠段头解析）。
+/// Drops every whole per-file diff section whose path matches a secret
+/// pattern from a unified-diff text: old snapshots taken before a purge may
+/// still carry secret plaintext in their trees (the purge only clears the
+/// index), and the preview must not carry the plaintext into the UI.
+/// Sections are buffered then judged (a header OR marker-line match drops
+/// the whole section; binary sections rely purely on the header parse).
 fn filter_secret_paths_from_patch(patch: &str) -> String {
     let mut out = String::with_capacity(patch.len());
     let mut section: Vec<&str> = Vec::new();

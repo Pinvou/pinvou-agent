@@ -488,10 +488,14 @@ impl Pinvou3Bundle {
                 let uninstall_error = crate::features::marketplace::MarketplaceManager::new()
                     .uninstall(tool_id)
                     .err();
-                // uninstall 成功时其内部清理已覆盖禁用/隐藏集,这次幂等复扫是
-                // 纵深防御;回滚时本步是唯一清理面,不可省——该残留不在事务快照内,
-                // 留着会让未来同名重装被误隐藏(#522)。落盘收敛为单一
-                // disabled_bundles.json 后无需在此整表重写:
+                // When the uninstall itself succeeds its internal cleanup already covers
+                // the disabled/hidden sets — this idempotent re-sweep is
+                // defense in depth; on rollback it is the ONLY cleanup
+                // surface and cannot be skipped — that residue is not part of
+                // the transaction snapshot, and leaving it would hide a
+                // future same-name reinstall (#522). With the on-disk state
+                // consolidated into the single disabled_bundles.json there is
+                // no whole-file rewrite needed here:
                 // The plain disabled list needs no separate whole-file rewrite
                 // here: remove_connector_from_disabled_scopes strips the id
                 // from every scope's disabled AND hidden lists inside the
