@@ -551,7 +551,11 @@ where
     // orphan.
     if let Some(aux_id) = store.aux_session_id(session_id) {
         delete_session(&aux_id).await.map_err(|error| {
-            format!("delete_session({session_id}): cascade delete aux session {aux_id}: {error:#}")
+            // No raw aux id in this chain (round-29 S1, same stance as the
+            // round-28 N7 fix): `delete_session` is on the web allowlist, so
+            // the rejection crosses the relay to browser consoles; the step
+            // name identifies the failing stage.
+            format!("delete_session({session_id}): cascade delete aux session: {error:#}")
         })?;
         forget_session(&aux_id);
         emit_deleted(&aux_id);
