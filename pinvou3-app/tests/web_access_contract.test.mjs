@@ -36,6 +36,10 @@ const desktopSessionsBridge = readSource(
   path.join(bridgeRoot, 'bridge', 'sessions.js'),
   'utf8',
 );
+const desktopAuxChatBridge = readSource(
+  path.join(bridgeRoot, 'bridge', 'aux-chat.js'),
+  'utf8',
+);
 const desktopBridgeSources = [
   readSource(path.join(bridgeRoot, 'bridge.js'), 'utf8'),
   ...fs.readdirSync(path.join(bridgeRoot, 'bridge'))
@@ -665,7 +669,11 @@ assert.match(webBridge, /invoke\("web_access_chat", \{ message, attachmentHandle
 assert.match(webBridge, /invoke\("discard_aux_session", \{ sessionId: task \}\)/);
 assert.match(bridge, /registry\.auxChat = function \(context\)/,
   'the desktop bridge must register the auxChat feature module');
-assert.match(bridge, /invoke\("chat", \{ message, attachments: \[\], sessionId: sid, restrictTools: true \}\)/,
+// Matched against the desktop aux-chat bridge source itself (round-30 B2):
+// the joined `bridge` string also contains the byte-identical literal from
+// the WEB copy (platform/web/bridge.js), which satisfied this pin even with
+// the desktop flag mutated to false.
+assert.match(desktopAuxChatBridge, /invoke\("chat", \{ message, attachments: \[\], sessionId: sid, restrictTools: true \}\)/,
   'desktop aux chat sends must restrict tools and skip attachments');
 assert.match(webBridge, /buf\.composerDraft = state\.composerDraft/,
   'WebUI session switching must save the active composer draft');
