@@ -842,13 +842,18 @@ mod tests {
         assert_eq!(hit, Some(bob.metadata.title.clone()));
     }
 
-    /// 辅助会话（aux-）即使绑定同一执行根且正在流式回答也不拦截（PR #433
-    /// round-20 Major-1）：零工具语义下它不可能往目录写文件，忙碌门的前提对
-    /// 它结构性不成立。注意（round-22 纠正）：生产环境的根解析器对 aux id 恒
-    /// 返回 None（无 codex 记录、也不写 workspace 绑定 sidecar），辅助根的解析
-    /// 结果永远是私有的 `sessions/aux-<id>/workspace`，与主会话同根的场景在生
-    /// 产中不可达——下面的 resolver 绑定是生产中不可能为 aux 产生的假设配置，
-    /// 本测试钉住的是防御性排除本身，而不是一个真实发生过的误锁。
+    /// An aux session (aux-) is not intercepted even when bound to the same
+    /// execution root and streaming an answer (PR #433 round-20 Major-1):
+    /// under zero-tools semantics it cannot write files into the directory,
+    /// so the busy gate's premise structurally does not hold for it. Note
+    /// (round-22 correction): the production root resolver always returns
+    /// None for aux ids (no codex record, and no workspace binding sidecar is
+    /// written), so the aux root always resolves to the private
+    /// `sessions/aux-<id>/workspace`, and the same-root-as-main scenario is
+    /// unreachable in production — the resolver binding below is a
+    /// hypothetical configuration that production could never produce for an
+    /// aux; what this test pins is the defensive exclusion itself, not a
+    /// mis-lock that ever really happened.
     #[test]
     fn busy_gate_ignores_busy_aux_peers_on_same_root() {
         let (store, _g) = isolated_store("aux-peer");
@@ -866,8 +871,10 @@ mod tests {
             .get_or_create_aux_session(&main_id)
             .expect("create aux");
 
-        // 防御性配置：生产根解析器对 aux id 恒返回 None（见测试文档注释），
-        // 这里显式让 aux 与主会话同根，只为钉住排除逻辑本身。
+        // Defensive configuration: the production root resolver always returns
+        // None for aux ids (see the test doc comment); here the aux is
+        // explicitly given the same root as the main session, purely to pin
+        // the exclusion logic itself.
         let bound = project.clone();
         let (m, x) = (main_id.clone(), aux.id.clone());
         store.set_execution_root_resolver(Arc::new(move |id: &str| {
@@ -878,14 +885,15 @@ mod tests {
             }
         }));
 
-        // 辅助会话在流式回答（busy 判定为真）→ 不拦截。
+        // The aux session is streaming an answer (busy evaluates true) -> not intercepted.
         let busy_aux = aux.id.clone();
         let none =
             busy_peer_on_same_execution_root(&store, &main_id, &project, |id| id == busy_aux)
                 .expect("gate");
         assert_eq!(none, None, "busy aux peer must not block the main session");
 
-        // 对照：同根的普通会话忙碌仍然拦截（aux 排除没有削弱既有语义）。
+        // Control: a busy ordinary session on the same root still blocks (the
+        // aux exclusion did not weaken existing semantics).
         let bob = store
             .create_new("/model".into(), None, project.clone())
             .expect("create bob");

@@ -4191,14 +4191,17 @@ fn aux_session_sidecar_round_trips_across_restart() {
     assert_eq!(
         reopened.aux_session_id("main-1").as_deref(),
         Some("aux-1"),
-        "辅助对话映射必须随重启恢复"
+        "aux chat mapping must survive a restart"
     );
 
     reopened
         .set_aux_session("main-1", None)
         .expect("clear aux mapping");
     assert!(reopened.aux_session_id("main-1").is_none());
-    assert!(!sidecar.exists(), "映射清空后 _aux_sessions.json 不得残留");
+    assert!(
+        !sidecar.exists(),
+        "_aux_sessions.json must not remain after the mapping is cleared"
+    );
 }
 
 /// Corrupted-but-parseable sidecar entries (illegal key / value without the
@@ -4234,36 +4237,36 @@ fn load_aux_sessions_drops_invalid_but_parseable_entries() {
     assert_eq!(
         reopened.aux_session_id("main-good").as_deref(),
         Some("aux-good"),
-        "合法映射必须照常恢复"
+        "valid mappings must be restored as usual"
     );
     assert!(
         reopened.aux_session_id("main-self").is_none(),
-        "mainId -> mainId 的自映射必须丢弃"
+        "mainId -> mainId self-mappings must be dropped"
     );
     assert!(
         reopened.aux_session_id("main-nonaux").is_none(),
-        "值不带 aux- 前缀的映射必须丢弃"
+        "mappings whose value lacks the aux- prefix must be dropped"
     );
     assert!(
         reopened.aux_session_id("bad key with spaces").is_none(),
-        "键不是合法会话 id 的映射必须丢弃"
+        "mappings whose key is not a valid session id must be dropped"
     );
     assert!(
         reopened.aux_session_id("main-auxvalue").is_none(),
-        "值不是合法会话 id 的映射必须丢弃"
+        "mappings whose value is not a valid session id must be dropped"
     );
     assert!(
         reopened.aux_session_id("aux-a").is_none(),
-        "键带 aux- 前缀(aux-of-aux 自环)的映射必须丢弃"
+        "mappings whose key carries the aux- prefix (aux-of-aux self-loop) must be dropped"
     );
     assert!(
         reopened.aux_session_id("aux-cycle").is_none()
             && reopened.aux_session_id("aux-b").is_none(),
-        "aux- 键的环映射必须整环丢弃"
+        "cyclic mappings among aux- keys must be dropped as a whole cycle"
     );
     assert!(
         reopened.aux_session_id("sched-x").is_none(),
-        "键带 sched- 前缀的映射必须丢弃"
+        "mappings whose key carries the sched- prefix must be dropped"
     );
 }
 
@@ -4296,12 +4299,12 @@ fn load_aux_sessions_keeps_single_owner_for_duplicate_values() {
     assert_eq!(
         shared_owners.iter().filter(|owner| **owner).count(),
         1,
-        "重复值条目必须恰好保留一条映射(去重后唯一归属)"
+        "duplicate-value entries must keep exactly one mapping (unique ownership after dedupe)"
     );
     assert_eq!(
         reopened.aux_session_id("main-c").as_deref(),
         Some("aux-other"),
-        "无重复的合法条目不受去重影响"
+        "valid entries without duplicates must be unaffected by dedupe"
     );
 }
 
@@ -4320,10 +4323,13 @@ fn set_aux_session_rejects_non_aux_prefixed_values() {
     }
     assert!(
         store.aux_session_id("main-1").is_none(),
-        "被拒的写入不得留下内存映射"
+        "a rejected write must not leave an in-memory mapping"
     );
     let sidecar = paths::sessions_root().join("_aux_sessions.json");
-    assert!(!sidecar.exists(), "被拒的写入不得留下 sidecar");
+    assert!(
+        !sidecar.exists(),
+        "a rejected write must not leave a sidecar"
+    );
 
     store
         .set_aux_session("main-1", Some("aux-ok".to_string()))
@@ -4387,7 +4393,7 @@ fn aux_sessions_are_hidden_from_chat_list() {
     assert!(listed.iter().any(|item| item.id == main.metadata.id));
     assert!(
         !listed.iter().any(|item| item.id == aux.id),
-        "辅助对话不得进入普通会话列表"
+        "aux chats must not enter the ordinary session list"
     );
 
     // The mapping survives restart; the list isolation is unchanged.
@@ -4415,13 +4421,19 @@ fn delete_main_session_cascades_to_aux_session() {
     store.delete(&main.metadata.id).expect("delete main");
 
     assert!(store.load(&main.metadata.id).is_err());
-    assert!(store.load(&aux.id).is_err(), "删主会话必须级联删掉辅助会话");
+    assert!(
+        store.load(&aux.id).is_err(),
+        "deleting the main session must cascade-delete the aux session"
+    );
     assert!(
         store.aux_session_id(&main.metadata.id).is_none(),
-        "级联删除后映射不得残留"
+        "the mapping must not remain after the cascade delete"
     );
     let sidecar = paths::sessions_root().join("_aux_sessions.json");
-    assert!(!sidecar.exists(), "最后一条映射摘掉后 sidecar 应被删除");
+    assert!(
+        !sidecar.exists(),
+        "the sidecar must be deleted once the last mapping is removed"
+    );
 }
 
 /// A failed aux cascade delete aborts the whole delete (round-26 minor
@@ -4454,13 +4466,16 @@ fn delete_aborts_and_preserves_the_pair_when_the_aux_cascade_fails() {
     );
     assert!(
         store.load(&main.metadata.id).is_ok(),
-        "级联失败时主会话必须保留"
+        "the main session must be kept when the cascade fails"
     );
-    assert!(store.load(&aux.id).is_ok(), "级联失败时辅助会话必须保留");
+    assert!(
+        store.load(&aux.id).is_ok(),
+        "the aux session must be kept when the cascade fails"
+    );
     assert_eq!(
         store.aux_session_id(&main.metadata.id).as_deref(),
         Some(aux.id.as_str()),
-        "级联失败后 主→辅 映射必须保留"
+        "the main -> aux mapping must be kept after a failed cascade"
     );
     assert!(
         deletions
@@ -4486,10 +4501,13 @@ fn delete_aux_session_clears_mapping() {
     store.delete(&aux.id).expect("delete aux");
 
     assert!(store.load(&aux.id).is_err());
-    assert!(store.load(&main.metadata.id).is_ok(), "主会话必须保留");
+    assert!(
+        store.load(&main.metadata.id).is_ok(),
+        "the main session must be kept"
+    );
     assert!(
         store.aux_session_id(&main.metadata.id).is_none(),
-        "删辅助会话必须清掉映射条目"
+        "deleting the aux session must remove the mapping entry"
     );
 }
 
@@ -4514,13 +4532,19 @@ fn purge_session_side_maps_clears_aux_bidirectionally() {
     let on_disk: std::collections::HashMap<String, String> =
         serde_json::from_str(&std::fs::read_to_string(&sidecar).expect("sidecar after key purge"))
             .expect("parse sidecar");
-    assert!(!on_disk.contains_key("main-1"), "purge 后必须落盘");
+    assert!(
+        !on_disk.contains_key("main-1"),
+        "must persist to disk after purge"
+    );
     assert_eq!(on_disk.get("main-2").map(String::as_str), Some("aux-2"));
 
     // Value hit: the aux session was deleted.
     store.purge_session_side_maps(&["aux-2".to_string()]);
     assert!(store.aux_session_id("main-2").is_none());
-    assert!(!sidecar.exists(), "映射清空后 sidecar 应被删除");
+    assert!(
+        !sidecar.exists(),
+        "the sidecar must be deleted once the mapping is cleared"
+    );
 
     // No hit: neither memory nor disk is touched (the mapping is already
     // empty — no side effect to assert; only that it does not panic).
@@ -4546,7 +4570,7 @@ fn get_or_create_aux_session_reuses_rebuilds_and_rejects_aux_of_aux() {
         .expect("reuse aux");
     assert_eq!(
         again.id, first.id,
-        "已有映射且目标在盘上时必须复用同一条 aux 会话"
+        "an existing mapping whose target is on disk must reuse the same aux session"
     );
 
     // Ghost mapping: the target was cleaned externally → strip the old
@@ -4559,7 +4583,10 @@ fn get_or_create_aux_session_reuses_rebuilds_and_rejects_aux_of_aux() {
     let rebuilt = store
         .get_or_create_aux_session(&main.metadata.id)
         .expect("rebuild after ghost mapping");
-    assert_ne!(rebuilt.id, first.id, "幽灵映射必须重建新 aux 会话");
+    assert_ne!(
+        rebuilt.id, first.id,
+        "a ghost mapping must rebuild a new aux session"
+    );
     assert_eq!(
         store.aux_session_id(&main.metadata.id).as_deref(),
         Some(rebuilt.id.as_str())
@@ -4570,7 +4597,7 @@ fn get_or_create_aux_session_reuses_rebuilds_and_rejects_aux_of_aux() {
         .expect_err("aux-of-aux must be rejected");
     assert!(
         error.to_string().contains("cannot own an aux session"),
-        "拒绝信息必须明确指出辅助对话不能再挂辅助对话: {error:#}"
+        "the rejection must clearly state an aux chat cannot hang another aux chat: {error:#}"
     );
 }
 
@@ -5571,7 +5598,7 @@ fn aux_session_inherits_parent_model_override() {
     assert_eq!(
         store.session_model_id(&aux.id).as_deref(),
         Some("saved-model-x"),
-        "辅助会话必须继承主会话的 per-session 模型绑定"
+        "the aux session must inherit the main session's per-session model binding"
     );
 
     // With no override on the main session: the aux keeps no sidecar entry
@@ -5640,11 +5667,17 @@ fn retention_evicts_main_session_together_with_its_aux() {
         .enforce_session_retention_locked()
         .expect("enforce retention");
 
-    assert!(store.load(main_id).is_err(), "超帽主会话必须被淘汰");
-    assert!(store.load(&aux.id).is_err(), "辅助会话必须随主会话一起淘汰");
+    assert!(
+        store.load(main_id).is_err(),
+        "over-cap main sessions must be evicted"
+    );
+    assert!(
+        store.load(&aux.id).is_err(),
+        "the aux session must be evicted together with the main session"
+    );
     assert!(
         store.aux_session_id(main_id).is_none(),
-        "淘汰后 主→辅 映射不得残留"
+        "the main -> aux mapping must not remain after eviction"
     );
     let seen = deletions
         .lock()
@@ -5689,11 +5722,17 @@ fn aux_sessions_do_not_consume_chat_retention_budget() {
     assert_eq!(
         store.list().expect("chat list").len(),
         MAX_SESSIONS_PER_KIND,
-        "aux 会话不得占用可见会话的保留预算"
+        "aux sessions must not consume the retention budget of visible sessions"
     );
     for (main_id, aux_id) in &pairs {
-        assert!(store.load(main_id).is_ok(), "主会话 {main_id} 不得被淘汰");
-        assert!(store.load(aux_id).is_ok(), "辅助会话 {aux_id} 不得被淘汰");
+        assert!(
+            store.load(main_id).is_ok(),
+            "main session {main_id} must not be evicted"
+        );
+        assert!(
+            store.load(aux_id).is_ok(),
+            "aux session {aux_id} must not be evicted"
+        );
         assert_eq!(
             store.aux_session_id(main_id).as_deref(),
             Some(aux_id.as_str())
@@ -5737,7 +5776,7 @@ fn retention_aux_activity_protects_main_session_from_eviction() {
     let aux_updated_at = store.load(&aux.id).expect("load aux").metadata.updated_at;
     assert!(
         aux_updated_at > oldest.metadata.updated_at,
-        "辅助会话活动不得回写主会话记录"
+        "aux session activity must not write back to the main session record"
     );
     // The peers fill the remaining budget; peer 0 is the freshest, peer
     // MAX-1 the stalest — the victim once the oldest main is protected.
@@ -5768,20 +5807,20 @@ fn retention_aux_activity_protects_main_session_from_eviction() {
 
     assert!(
         store.load(main_id).is_ok(),
-        "辅助会话活动中的主会话不得被淘汰"
+        "the main session of an active aux session must not be evicted"
     );
     assert!(
         store.load(&aux.id).is_ok(),
-        "活动中的辅助会话不得被连带淘汰"
+        "an active aux session must not be evicted along the way"
     );
     assert_eq!(
         store.aux_session_id(main_id).as_deref(),
         Some(aux.id.as_str()),
-        "受保护会话的 主→辅 映射必须保留"
+        "the main -> aux mapping of a protected session must be kept"
     );
     assert!(
         store.load(&stalest_peer).is_err(),
-        "预算必须落在真正最久未使用的会话上"
+        "the budget must land on the truly least-recently-used sessions"
     );
     let seen = deletions
         .lock()
@@ -6136,18 +6175,21 @@ fn reconcile_aux_sessions_rebuilds_missing_mapping_from_parent_backlink() {
     assert_eq!(
         store.aux_session_id(&main.metadata.id).as_deref(),
         Some(aux.id.as_str()),
-        "主会话活着时缺失的映射必须按 parent_session_id 回指重建"
+        "a missing mapping whose main session is alive must be rebuilt via the parent_session_id back-pointer"
     );
     assert!(
         store.load(&aux.id).is_ok(),
-        "成功重建映射的 aux 记录不得被回收"
+        "an aux record whose mapping was rebuilt must not be reclaimed"
     );
     assert!(
         store.load(&main.metadata.id).is_ok(),
-        "主会话不得受对账影响"
+        "the main session must be unaffected by reconciliation"
     );
     let sidecar = paths::sessions_root().join("_aux_sessions.json");
-    assert!(sidecar.is_file(), "重建出的映射必须落盘");
+    assert!(
+        sidecar.is_file(),
+        "the rebuilt mapping must persist to disk"
+    );
 }
 
 /// Orphan-aux reconciliation (the ambiguity boundary of repair-first): when
@@ -6179,16 +6221,16 @@ fn reconcile_aux_sessions_deletes_ambiguous_duplicate_when_parent_already_bound(
 
     assert!(
         store.load(&first.id).is_err(),
-        "主会话已绑定另一条 aux 的无映射重复记录必须被回收"
+        "an unmapped duplicate record whose main session is already bound to another aux must be reclaimed"
     );
     assert!(
         store.load(&second.id).is_ok(),
-        "既有绑定指向的 aux 记录不得被回收"
+        "the aux record pointed to by the existing binding must not be reclaimed"
     );
     assert_eq!(
         store.aux_session_id(&main.metadata.id).as_deref(),
         Some(second.id.as_str()),
-        "既有绑定必须原样保留"
+        "the existing binding must be kept as-is"
     );
 }
 
@@ -6217,15 +6259,15 @@ fn startup_reconcile_rebuilds_mapping_after_aux_sidecar_corruption() {
     assert_eq!(
         rebooted.aux_session_id(&main.metadata.id).as_deref(),
         Some(aux.id.as_str()),
-        "损坏的 sidecar 启动后必须按 parent_session_id 回指重建映射"
+        "after boot with a corrupted sidecar the mapping must be rebuilt via the parent_session_id back-pointer"
     );
     assert!(
         rebooted.load(&aux.id).is_ok(),
-        "映射重建成功的 aux 记录不得被回收"
+        "an aux record whose mapping was rebuilt must not be reclaimed"
     );
     assert!(
         rebooted.load(&main.metadata.id).is_ok(),
-        "主会话不得受对账影响"
+        "the main session must be unaffected by reconciliation"
     );
 }
 
@@ -6404,14 +6446,17 @@ fn reconcile_aux_sessions_reclaims_orphan_with_dead_parent() {
 
     assert!(
         store.load(&aux.id).is_err(),
-        "主会话已死的 aux 孤儿记录必须被对账回收"
+        "an aux orphan record whose main session is dead must be reclaimed by reconciliation"
     );
     assert!(
         store.aux_session_id(&main.metadata.id).is_none(),
-        "主死辅孤的幽灵映射必须一并摘除"
+        "the ghost mapping of a dead-main/orphan-aux pair must be removed along with it"
     );
     let sidecar = paths::sessions_root().join("_aux_sessions.json");
-    assert!(!sidecar.exists(), "映射清空后 sidecar 应被删除");
+    assert!(
+        !sidecar.exists(),
+        "the sidecar must be deleted once the mapping is cleared"
+    );
 }
 
 /// Orphan-aux reconciliation must not harm a healthy main+aux pair: both
@@ -6429,7 +6474,10 @@ fn reconcile_aux_sessions_leaves_healthy_pair_untouched() {
     store.reconcile_aux_sessions().expect("reconcile aux");
 
     assert!(store.load(&main.metadata.id).is_ok());
-    assert!(store.load(&aux.id).is_ok(), "健康的主+辅对不得被对账误删");
+    assert!(
+        store.load(&aux.id).is_ok(),
+        "a healthy main+aux pair must not be mistakenly deleted by reconciliation"
+    );
     assert_eq!(
         store.aux_session_id(&main.metadata.id).as_deref(),
         Some(aux.id.as_str())
@@ -6469,7 +6517,7 @@ fn get_or_create_aux_session_concurrent_calls_converge_to_one() {
     assert_eq!(
         ids.len(),
         1,
-        "并发 get-or-create 必须收敛到同一条 aux 会话: {ids:?}"
+        "concurrent get-or-create must converge on the same aux session: {ids:?}"
     );
     let aux_id = ids.iter().next().expect("exactly one id");
     assert_eq!(
@@ -6483,7 +6531,10 @@ fn get_or_create_aux_session_concurrent_calls_converge_to_one() {
         .into_iter()
         .filter(|metadata| metadata.id.starts_with("aux-"))
         .count();
-    assert_eq!(aux_records, 1, "盘上必须恰好有一条 aux 会话记录");
+    assert_eq!(
+        aux_records, 1,
+        "there must be exactly one aux session record on disk"
+    );
 }
 
 /// The GUI export wiring store → base `deepseek_tui::session_export` must

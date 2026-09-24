@@ -3605,14 +3605,16 @@ mod scheduled_model_tests {
                 captured.set(Some(turn_tool_restrict));
             });
         }
-        let aux = captured.get().expect("aux 会话必须产出限制令牌");
+        let aux = captured
+            .get()
+            .expect("aux session must yield a restrict token");
         assert!(
             aux.restricts_tools(),
-            "aux 会话即使调用方传 false,组合结果也必须为限制(零工具)"
+            "for an aux session the combined result must restrict (zero tools) even when the caller passes false"
         );
         assert!(
             aux.restricts_tools_for("aux-1"),
-            "aux 会话到达引擎的逐轮 restrict 必须为 true(零工具)"
+            "the per-turn restrict reaching the engine for an aux session must be true (zero tools)"
         );
 
         captured.set(None);
@@ -3622,14 +3624,14 @@ mod scheduled_model_tests {
                 captured.set(Some(turn_tool_restrict));
             });
         }
-        let plain = captured.get().expect("普通会话必须产出令牌");
+        let plain = captured.get().expect("a plain session must yield a token");
         assert!(
             !plain.restricts_tools(),
-            "对照:普通会话调用方不限制、无元卡时,组合结果保持不限制"
+            "control: a plain session with no caller restriction and no meta card stays unrestricted in the combined result"
         );
         assert!(
             !plain.restricts_tools_for("sess-plain"),
-            "对照:普通会话调用方不限制、无元卡时,引擎收到的 restrict 保持 false"
+            "control: a plain session with no caller restriction and no meta card keeps restrict=false at the engine"
         );
 
         captured.set(None);
@@ -3639,10 +3641,12 @@ mod scheduled_model_tests {
                 captured.set(Some(turn_tool_restrict));
             });
         }
-        let caller_forced = captured.get().expect("调用方限制必须产出令牌");
+        let caller_forced = captured
+            .get()
+            .expect("caller-forced restriction must yield a token");
         assert!(
             caller_forced.restricts_tools(),
-            "对照:调用方逐轮要求限制时原样透传"
+            "control: a caller's per-turn restriction request is passed through as-is"
         );
         assert!(caller_forced.restricts_tools_for("sess-plain"));
 
@@ -3657,9 +3661,9 @@ mod scheduled_model_tests {
         assert!(
             captured
                 .get()
-                .expect("纯对话元卡必须产出令牌")
+                .expect("a conversational-only meta card must yield a token")
                 .restricts_tools(),
-            "纯对话元卡(conversational_only)加持期间组合结果必须为限制"
+            "the combined result must restrict while a conversational-only meta card is in effect"
         );
 
         // Even a token minted for another session (wrong/empty id — the
@@ -3669,15 +3673,15 @@ mod scheduled_model_tests {
             super::turn_tool_restrict::TurnToolRestrict::forced("sess-plain", false, false);
         assert!(
             !mismatched.restricts_tools(),
-            "令牌自身的组合值来自铸造时的会话,不因引擎 id 改变"
+            "the token's own combined value comes from the session it was minted for and does not change with the engine id"
         );
         assert!(
             mismatched.restricts_tools_for("aux-1"),
-            "引擎侧 aux 前缀复查必须兜住会话 id 不匹配的令牌"
+            "the engine-side aux prefix re-check must catch tokens whose session id does not match"
         );
         assert!(
             !mismatched.restricts_tools_for(""),
-            "空 id(headless 引擎)不构成 aux 会话,按令牌自身取值"
+            "an empty id (headless engine) is not an aux session; the token's own value applies"
         );
     }
 
@@ -5111,19 +5115,22 @@ mod scheduled_model_tests {
 
         assert!(
             !aux_engine_present.load(Ordering::Acquire),
-            "级联删除必须回收 aux 引擎,不得留无句柄孤儿"
+            "the cascade delete must reclaim the aux engine and must not leave a handle-less orphan"
         );
         assert!(!main_engine_present.load(Ordering::Acquire));
         assert_eq!(
             *order.lock().unwrap(),
             vec!["evict-aux", "evict-main"],
-            "aux 引擎回收必须严格先于主会话删除"
+            "aux engine reclamation must happen strictly before the main session delete"
         );
-        assert!(store.load(&aux_id).is_err(), "aux 会话记录必须删除");
+        assert!(
+            store.load(&aux_id).is_err(),
+            "the aux session record must be deleted"
+        );
         assert!(store.load(&main_id).is_err());
         assert!(
             store.aux_session_id(&main_id).is_none(),
-            "级联删除后 主→辅 映射不得残留"
+            "the main -> aux mapping must not remain after the cascade delete"
         );
 
         match previous_home {

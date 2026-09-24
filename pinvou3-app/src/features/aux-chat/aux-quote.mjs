@@ -1,5 +1,5 @@
 /**
- * Conversation quotes ("划词引用") for the aux chat — pure logic plus a
+ * Conversation quotes (selected-text quoting) for the aux chat — pure logic plus a
  * module-scoped per-task staging store.
  *
  * Closing the loop with the main conversation works the same way as the
@@ -12,7 +12,8 @@
  *
  * The aux session still never reads the main session's transcript by itself:
  * only excerpts the user explicitly selected are pushed, so the ADR-0006
- * isolation promise ("不读不写主任务的执行与上下文" — no session-level
+ * isolation promise ("never reads or writes the main task's execution or
+ * context" — no session-level
  * coupling) keeps its meaning; the pushed excerpt is user-mediated input,
  * the same as pasting the text by hand.
  */

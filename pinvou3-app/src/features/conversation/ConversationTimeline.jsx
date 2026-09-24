@@ -878,7 +878,7 @@ function ConversationTurnView({
       ? c.contextUsage(Number(turnUsage.used || 0).toLocaleString(), Number(turnUsage.size || 0).toLocaleString())
       : '';
   const userAttachments = Array.isArray(turn.userAttachments) ? turn.userAttachments : [];
-  // Aux-chat quote chips ("划词引用"): turns projected by the aux panel carry
+  // Aux-chat quote chips (selected-text quoting): turns projected by the aux panel carry
   // the staged conversation excerpts in userQuotes with the inline
   // userselect block already stripped. Main-chat projections never set the
   // field, so this stays dead code for them.

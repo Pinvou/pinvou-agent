@@ -291,7 +291,7 @@ export function AuxChatPanel({ sessionId, activationKey, t, theme, onClose, onAc
   const [auxId, setAuxId] = useState(null);
   const [snapshot, setSnapshot] = useState(() => normalizeAuxSnapshot(null));
   const [draft, setDraft] = useState('');
-  // Pending conversation quotes staged from the main timeline ("划词引用").
+  // Pending conversation quotes staged from the main timeline (selected-text quoting).
   // Same task-scoped ownership as the draft: a quote selected in the main
   // conversation must survive panel close/reopen and rebinds, and updates
   // arriving while the panel is mounted are delivered through the store's

@@ -1,5 +1,5 @@
 /**
- * CDP-driven E2E for the aux-chat conversation-quote ("划词引用") loop.
+ * CDP-driven E2E for the aux-chat conversation-quote (selected-text quote) loop.
  *
  * Drives a RUNNING dev desktop app through its WebView2 remote-debugging port
  * (launch the app with WEBVIEW2_ADDITIONAL_BROWSER_ARGUMENTS=--remote-debugging-port=9222):
@@ -217,8 +217,8 @@ const HELPERS = `(() => {
     },
     closeAux() {
       // Locate by testid: the close button's aria-label is localized
-      // (关闭 / Close / 閉じる), so matching on the zh string breaks scenario 8
-      // whenever the UI language is en or ja.
+      // (zh / en / ja each have their own close string), so matching on the
+      // zh string breaks scenario 8 whenever the UI language is en or ja.
       const btn = q('[data-testid="aux-chat-close"]');
       if (!btn) return 'no-close-button';
       btn.click();
@@ -251,7 +251,7 @@ async function quoteWithRetry(offset, label) {
     if (typeof selected === 'string' && selected.length > 4) {
       const info = await waitFor(
         '(() => { const i = window.__t.quoteButtonInfo(); return i.visible ? i : null; })()',
-        { timeoutMs: 4000, label: `${label} 按钮出现(第${attempt + 1}次)` },
+        { timeoutMs: 4000, label: `${label} button appeared (attempt ${attempt + 1})` },
       ).catch(() => null);
       if (info) return { selected, info };
     }
@@ -301,79 +301,80 @@ async function waitForStableAux(label) {
   throw new Error(`aux reply never stabilized: ${label}`);
 }
 
-scenario('主对话真实模型往返（生成可划词的长回复）', async () => {
-  const question = `E2E-${NONCE}：请分要点介绍 HTTP 与 HTTPS 的区别（端口、加密、证书、性能），总长度不少于300字。`;
+scenario('main chat real model round trip (generates a long selectable reply)', async () => {
+  const question = `E2E-${NONCE}: explain the differences between HTTP and HTTPS in bullet points (ports, encryption, certificates, performance), at least 300 words in total.`;
   assert(await evaluate(`window.__t.setMain(${JSON.stringify(question)})`) === 'ok');
   const baseline = (await evaluate('window.__t.mainText()')).length;
   assert(await evaluate('window.__t.sendMain()') === 'ok');
   const text = await waitForStableMain(baseline, 'first main reply');
-  assert(text.includes('HTTP'), '回复应包含 HTTP');
-  assert(text.includes(NONCE) || text.length > baseline + 200, '主回复应显著增长');
+  assert(text.includes('HTTP'), 'reply must contain HTTP');
+  assert(text.includes(NONCE) || text.length > baseline + 200, 'main reply must grow significantly');
 });
 
-scenario('划词出现「引用到辅助对话」按钮并打开面板与 chip', async () => {
-  const { selected, info } = await quoteWithRetry('head', '首次划词');
-  assert(selected.length > 10, '应选中一段助手文本');
-  assert(info.text.includes('引用') || info.text.toLowerCase().includes('quote'), `按钮文案异常: ${info.text}`);
+scenario('selecting text shows the "quote to aux chat" button and opens the panel with a chip', async () => {
+  const { selected, info } = await quoteWithRetry('head', 'first selection');
+  assert(selected.length > 10, 'must select a span of assistant text');
+  assert(info.text.includes('引用') || info.text.toLowerCase().includes('quote'), `unexpected button text: ${info.text}`);
   assert(await evaluate('window.__t.clickQuote()') === 'ok');
-  const panel = await waitFor('window.__t.auxPanel() || null', { label: '辅助面板打开' });
-  assert(panel.chips === 1, `应有 1 条引用 chip，实际 ${panel.chips}`);
-  assert(!panel.rawLeak, '面板不得出现裸 userselect 文本');
+  const panel = await waitFor('window.__t.auxPanel() || null', { label: 'aux panel opened' });
+  assert(panel.chips === 1, `expected 1 quote chip, got ${panel.chips}`);
+  assert(!panel.rawLeak, 'panel must not show raw userselect text');
 });
 
-scenario('重复划同一段文字不新增 chip', async () => {
-  await quoteWithRetry('head', '重复划词');
+scenario('re-selecting the same text does not add a chip', async () => {
+  await quoteWithRetry('head', 'repeat selection');
   assert(await evaluate('window.__t.clickQuote()') === 'ok');
   await sleep(800);
   const panel = await evaluate('window.__t.auxPanel()');
-  assert(panel.chips === 1, `重复引用后 chip 应仍为 1，实际 ${panel.chips}`);
+  assert(panel.chips === 1, `chip count must stay 1 after a duplicate quote, got ${panel.chips}`);
 });
 
-scenario('第二段不同引用会累加 chip', async () => {
-  const { selected } = await quoteWithRetry('tail', '第二次划词');
-  assert(selected.length > 5, '应选中第二段文本');
+scenario('a second distinct quote accumulates a chip', async () => {
+  const { selected } = await quoteWithRetry('tail', 'second selection');
+  assert(selected.length > 5, 'must select a second span of text');
   assert(await evaluate('window.__t.clickQuote()') === 'ok');
-  const panel = await waitFor('(() => { const p = window.__t.auxPanel(); return p && p.chips === 2 ? p : null; })()', { label: 'chip 数变为 2' });
-  assert(!panel.rawLeak, '面板不得泄漏 userselect');
+  const panel = await waitFor('(() => { const p = window.__t.auxPanel(); return p && p.chips === 2 ? p : null; })()', { label: 'chip count becomes 2' });
+  assert(!panel.rawLeak, 'panel must not leak userselect');
 });
 
-scenario('移除一条引用 chip', async () => {
+scenario('remove one quote chip', async () => {
   assert(await evaluate(`(() => {
     const panel = document.querySelector('[data-testid="aux-chat-panel"]');
     const btns = panel.querySelectorAll('[data-testid="aux-quote-remove"]');
     btns[btns.length - 1].click();
     return 'ok';
   })()`) === 'ok');
-  await waitFor('window.__t.auxPanel().chips === 1', { label: 'chip 数回到 1' });
+  await waitFor('window.__t.auxPanel().chips === 1', { label: 'chip count back to 1' });
 });
 
-scenario('发送问题+引用：chip 渲染且模型回应引用内容', async () => {
-  assert(await evaluate('window.__t.setAux("上面引用的内容里提到了哪个协议端口？请只回答端口号和协议名。")') === 'ok');
+scenario('send question+quote: chips render and the model engages the quoted content', async () => {
+  assert(await evaluate('window.__t.setAux("Which protocol port is mentioned in the quoted content above? Reply with only the port number and the protocol name.")') === 'ok');
   assert(await evaluate('window.__t.sendAux()') === 'ok');
-  const panel = await waitForStableAux('引用问答');
-  assert(panel.quoteChipsInTimeline >= 1, '发送后用户气泡应渲染引用 chip');
-  assert(!panel.rawLeak, '时间线不得泄漏裸 userselect JSON');
+  const panel = await waitForStableAux('quote Q&A');
+  assert(panel.quoteChipsInTimeline >= 1, 'user bubble must render quote chips after send');
+  assert(!panel.rawLeak, 'timeline must not leak raw userselect JSON');
   const answer = await evaluate('window.__t.auxAssistantText()');
-  assert(answer.length > 4, `辅助回答为空: ${answer.slice(0, 80)}`);
-  assert(/443|80|HTTPS|HTTP/i.test(answer), `回答应涉及端口/协议，实际: ${answer.slice(0, 160)}`);
+  assert(answer.length > 4, `aux answer is empty: ${answer.slice(0, 80)}`);
+  assert(/443|80|HTTPS|HTTP/i.test(answer), `answer must mention the port/protocol, got: ${answer.slice(0, 160)}`);
   const after = await evaluate('window.__t.auxPanel()');
-  assert(after.chips === 0, `发送成功后暂存引用应清空，实际 ${after.chips}`);
+  assert(after.chips === 0, `staged quotes must clear after a successful send, got ${after.chips}`);
 });
 
-scenario('仅引用无正文也可发送并获得回答', async () => {
-  await quoteWithRetry('tail', '仅引用场景');
+scenario('quote-only send without body text is allowed and answered', async () => {
+  await quoteWithRetry('tail', 'quote-only scenario');
   assert(await evaluate('window.__t.clickQuote()') === 'ok');
-  const panel = await waitFor('(() => { const p = window.__t.auxPanel(); return p && p.chips === 1 ? p : null; })()', { label: '面板带 1 chip' });
-  assert(panel.input === '', '草稿应保持为空');
-  assert(panel.sendDisabled === false, '仅有引用时发送按钮应可用');
+  const panel = await waitFor('(() => { const p = window.__t.auxPanel(); return p && p.chips === 1 ? p : null; })()', { label: 'panel has 1 chip' });
+  assert(panel.input === '', 'draft must stay empty');
+  assert(panel.sendDisabled === false, 'send button must be enabled with quotes only');
   assert(await evaluate('window.__t.sendAux()') === 'ok');
-  const done = await waitForStableAux('仅引用发送');
-  assert(done.quoteChipsInTimeline >= 1, '仅引用消息也应渲染 chip');
-  assert(!done.rawLeak, '不得泄漏 userselect');
+  const done = await waitForStableAux('quote-only send');
+  assert(done.quoteChipsInTimeline >= 1, 'quote-only message must also render chips');
+  assert(!done.rawLeak, 'must not leak userselect');
 });
 
-scenario('关闭面板后引用不丢，再划词自动重开面板', async () => {
-  // 清场后再计数：三条互不相同的摘录（head/tail/mid），去重不影响算术
+scenario('closing the panel keeps staged quotes; a new selection re-opens the panel', async () => {
+  // Count after cleanup: three mutually distinct excerpts (head/tail/mid),
+  // so dedupe does not affect the arithmetic
   for (let i = 0; i < 5; i += 1) {
     await evaluate(`(() => {
       const panel = document.querySelector('[data-testid="aux-chat-panel"]');
@@ -384,20 +385,20 @@ scenario('关闭面板后引用不丢，再划词自动重开面板', async () =
     })()`);
     await sleep(200);
   }
-  await quoteWithRetry('head', '持久化场景');
+  await quoteWithRetry('head', 'persistence scenario');
   assert(await evaluate('window.__t.clickQuote()') === 'ok');
-  await waitFor('window.__t.auxPanel().chips === 1', { label: '第 1 条暂存' });
-  await quoteWithRetry('tail', '持久化场景第二条');
+  await waitFor('window.__t.auxPanel().chips === 1', { label: 'first staged quote' });
+  await quoteWithRetry('tail', 'persistence scenario second quote');
   assert(await evaluate('window.__t.clickQuote()') === 'ok');
-  await waitFor('window.__t.auxPanel().chips === 2', { label: '累加到 2 条暂存' });
+  await waitFor('window.__t.auxPanel().chips === 2', { label: 'staged quotes accumulate to 2' });
   assert(await evaluate('window.__t.closeAux()') === 'ok');
-  await waitFor('!window.__t.auxPanel()', { label: '面板关闭' });
+  await waitFor('!window.__t.auxPanel()', { label: 'panel closed' });
   await sleep(600);
-  await quoteWithRetry('mid', '关面板后再划词');
+  await quoteWithRetry('mid', 'select again after closing the panel');
   assert(await evaluate('window.__t.clickQuote()') === 'ok');
-  const panel = await waitFor('(() => { const p = window.__t.auxPanel(); return p && p.chips === 3 ? p : null; })()', { label: '重开面板后暂存累计为 3' });
-  assert(!panel.rawLeak, '不得泄漏 userselect');
-  // 清场：移除全部 chip，避免影响后续场景
+  const panel = await waitFor('(() => { const p = window.__t.auxPanel(); return p && p.chips === 3 ? p : null; })()', { label: 'staged quotes total 3 after panel reopens' });
+  assert(!panel.rawLeak, 'must not leak userselect');
+  // Cleanup: remove all chips so later scenarios are unaffected
   for (let i = 0; i < 3; i += 1) {
     await evaluate(`(() => {
       const panel = document.querySelector('[data-testid="aux-chat-panel"]');
@@ -408,35 +409,37 @@ scenario('关闭面板后引用不丢，再划词自动重开面板', async () =
     await sleep(250);
   }
   const cleared = await evaluate('window.__t.auxPanel()');
-  assert(cleared.chips === 0, `清场失败，剩余 ${cleared.chips}`);
+  assert(cleared.chips === 0, `cleanup failed, ${cleared.chips} chips remain`);
 });
 
-scenario('辅助对话零工具：要求执行命令仍是纯问答', async () => {
-  assert(await evaluate('window.__t.setAux("请帮我运行 shell 命令 echo pinvou-zero-tools 并告诉我输出。如果你无法运行工具，请直接说明。")') === 'ok');
+scenario('aux chat zero-tools: asking to run a command stays pure Q&A', async () => {
+  assert(await evaluate('window.__t.setAux("Please run the shell command echo pinvou-zero-tools and tell me the output. If you cannot run tools, say so directly.")') === 'ok');
   assert(await evaluate('window.__t.sendAux()') === 'ok');
-  await waitForStableAux('零工具验证');
+  await waitForStableAux('zero-tools check');
   const answer = await evaluate('window.__t.auxAssistantText()');
-  assert(answer.length > 4, `零工具回答为空: ${answer.slice(0, 80)}`);
-  // 泄漏回归：零工具下 DeepSeek 会把原生工具调用标记（DSML invoke 块）当正文
-  // 输出 —— 边界提示合并后，回答不得再出现任何工具调用标记。
+  assert(answer.length > 4, `zero-tools answer is empty: ${answer.slice(0, 80)}`);
+  // Leak regression: with zero tools DeepSeek emits native tool-call markers
+  // (DSML invoke blocks) as body text — after the boundary-prompt merge, the
+  // answer must not contain any tool-call markers.
   assert(!/invoke name=|<｜|DSML｜|tool_calls|<tool_call/i.test(answer),
-    `零工具回答泄漏了工具调用标记: ${answer.slice(0, 200)}`);
+    `zero-tools answer leaked tool-call markers: ${answer.slice(0, 200)}`);
   const toolNodes = await evaluate(`(() => {
     const panel = document.querySelector('[data-testid="aux-chat-panel"]');
     return panel ? panel.querySelectorAll('[data-testid="conversation-compact-item-toggle"]').length : 0;
   })()`);
-  assert(toolNodes === 0, `辅助会话不应出现工具执行条目，实际 ${toolNodes}`);
+  assert(toolNodes === 0, `aux session must not show tool execution entries, got ${toolNodes}`);
 });
 
-scenario('主对话工具链路：shell 命令真实执行并返回输出', async () => {
-  assert(await evaluate('window.__t.setMain("请运行 shell 命令 echo pinvou-e2e-tools-ok 并把命令输出原样告诉我。")') === 'ok');
+scenario('main chat tool path: a shell command really executes and returns output', async () => {
+  assert(await evaluate('window.__t.setMain("Please run the shell command echo pinvou-e2e-tools-ok and tell me the command output verbatim.")') === 'ok');
   const baseline = (await evaluate('window.__t.mainText()')).length;
   assert(await evaluate('window.__t.sendMain()') === 'ok');
-  const text = await waitForStableMain(baseline, '工具回合');
-  assert(text.includes('pinvou-e2e-tools-ok'), `主对话应包含命令输出，片段: ${text.slice(-400)}`);
-  // 用户消息(1) + 工具卡命令与输出(2) + 助手复述(1)：标记出现 ≥3 次证明工具卡真实渲染
+  const text = await waitForStableMain(baseline, 'tool turn');
+  assert(text.includes('pinvou-e2e-tools-ok'), `main chat must contain the command output, excerpt: ${text.slice(-400)}`);
+  // user message (1) + tool-card command and output (2) + assistant restating
+  // it (1): the marker appearing >=3 times proves the tool card really rendered
   const occurrences = text.split('pinvou-e2e-tools-ok').length - 1;
-  assert(occurrences >= 3, `工具执行痕迹不足（出现 ${occurrences} 次），片段: ${text.slice(-300)}`);
+  assert(occurrences >= 3, `insufficient tool-execution traces (${occurrences} occurrences), excerpt: ${text.slice(-300)}`);
 });
 
 async function main() {

@@ -15,7 +15,7 @@ import {
 
 const here = path.dirname(fileURLToPath(import.meta.url));
 
-test('normalizeAuxSnapshot 对非法输入返回空结构', () => {
+test('normalizeAuxSnapshot returns an empty structure for invalid input', () => {
   for (const raw of [null, undefined, 42, 'aux-x', { chatItems: 'nope' }]) {
     const snap = normalizeAuxSnapshot(raw);
     assert.deepEqual(snap, { chatItems: [], busy: false, queued: [] });
@@ -26,7 +26,7 @@ test('normalizeAuxSnapshot 对非法输入返回空结构', () => {
   assert.equal(snap.queued.length, 1);
 });
 
-test('auxChatBusy 判定与真实桥 send 的 busy 拒绝分支同口径', () => {
+test('auxChatBusy uses the same criteria as the real bridge send busy-rejection branch', () => {
   assert.equal(auxChatBusy({ chatItems: [], busy: false, queued: [] }), false);
   assert.equal(auxChatBusy({ chatItems: [], busy: true, queued: [] }), true);
   assert.equal(auxChatBusy({ chatItems: [], busy: false, queued: [{ id: 1 }] }), true);
@@ -57,22 +57,22 @@ function loadTauriAuxChatWithBusy({ busyFor, queued }) {
   });
 }
 
-test('真实桥 send 在 busy 或有排队时拒绝（turnAlreadyInProgress）', async () => {
+test('the real bridge send rejects when busy or queued (turnAlreadyInProgress)', async () => {
   const busyChat = loadTauriAuxChatWithBusy({ busyFor: () => true, queued: false });
   await assert.rejects(
     busyChat.send('aux-1', 'q'),
     /turnAlreadyInProgress/u,
-    'busy 会话必须被桥拒绝',
+    'a busy session must be rejected by the bridge',
   );
   const queuedChat = loadTauriAuxChatWithBusy({ busyFor: () => false, queued: true });
   await assert.rejects(
     queuedChat.send('aux-1', 'q'),
     /turnAlreadyInProgress/u,
-    '有排队消息的会话必须被桥拒绝',
+    'a session with queued messages must be rejected by the bridge',
   );
 });
 
-test('auxChatHasContent 只把 user/assistant 条目算作内容', () => {
+test('auxChatHasContent counts only user/assistant items as content', () => {
   assert.equal(auxChatHasContent(null), false);
   assert.equal(auxChatHasContent({ chatItems: [] }), false);
   assert.equal(auxChatHasContent({ chatItems: [{ type: 'system', text: 's' }] }), false);
@@ -80,30 +80,30 @@ test('auxChatHasContent 只把 user/assistant 条目算作内容', () => {
   assert.equal(auxChatHasContent({ chatItems: [{ type: 'assistant', text: 'a' }] }), true);
 });
 
-test('projectAuxChatTurns 把 user+assistant 快照投影成对话 turns', () => {
+test('projectAuxChatTurns projects a user+assistant snapshot into conversation turns', () => {
   const snapshot = {
     chatItems: [
-      { id: 1, type: 'user', text: '什么是辅助对话？' },
-      { id: 2, type: 'assistant', text: '一条独立问答会话。' },
+      { id: 1, type: 'user', text: 'what is the aux chat?' },
+      { id: 2, type: 'assistant', text: 'an independent Q&A session.' },
     ],
     busy: false,
     queued: [],
   };
   const turns = projectAuxChatTurns(snapshot, 'aux-01');
   assert.equal(turns.length, 1);
-  assert.equal(turns[0].userText, '什么是辅助对话？');
+  assert.equal(turns[0].userText, 'what is the aux chat?');
   const assistant = turns[0].items.find((item) => item.type === 'agent_message');
-  assert.ok(assistant, 'assistant 条目应投影为 agent_message');
-  assert.equal(assistant.text, '一条独立问答会话。');
+  assert.ok(assistant, 'assistant items must project to agent_message');
+  assert.equal(assistant.text, 'an independent Q&A session.');
   assert.equal(assistant.status, 'completed');
   assert.equal(turns[0].status, 'completed');
 });
 
-test('projectAuxChatTurns 在 busy 时把末尾 turn 标为 running', () => {
+test('projectAuxChatTurns marks the trailing turn as running while busy', () => {
   const snapshot = {
     chatItems: [
       { id: 1, type: 'user', text: 'q' },
-      { id: 2, type: 'assistant', text: '流式中', streaming: true },
+      { id: 2, type: 'assistant', text: 'streaming', streaming: true },
     ],
     busy: true,
     queued: [],
@@ -114,12 +114,12 @@ test('projectAuxChatTurns 在 busy 时把末尾 turn 标为 running', () => {
   assert.equal(turns[0].completedAt, null);
 });
 
-test('projectAuxChatTurns 对空快照返回空 turns', () => {
+test('projectAuxChatTurns returns empty turns for an empty snapshot', () => {
   assert.deepEqual(projectAuxChatTurns(null, 'aux-01'), []);
   assert.deepEqual(projectAuxChatTurns({ chatItems: [] }, null), []);
 });
 
-test('auxSnapshotsEqual 对内容相同的重拉快照判定相等', () => {
+test('auxSnapshotsEqual judges re-pulled snapshots with identical content as equal', () => {
   const item = { id: 1, type: 'user', text: 'q' };
   const prev = normalizeAuxSnapshot({ chatItems: [{ ...item }], busy: false, queued: [] });
   // The bridge shallow-copies each item on every snapshot() (streaming deltas
@@ -135,7 +135,7 @@ test('auxSnapshotsEqual 对内容相同的重拉快照判定相等', () => {
   assert.equal(auxSnapshotsEqual(null, { chatItems: [] }), true);
 });
 
-test('auxSnapshotsEqual 捕捉流式原地修改与 busy/排队变化', () => {
+test('auxSnapshotsEqual catches streaming in-place mutation and busy/queued changes', () => {
   // Real buffer semantics: the same item object is mutated in place by a
   // streaming delta, and two pulls each go through the bridge's per-item copy
   // and produce new objects with different content — they must compare
@@ -144,44 +144,44 @@ test('auxSnapshotsEqual 捕捉流式原地修改与 busy/排队变化', () => {
   // shortcut would wrongly judge them equal — exactly the point the
   // "bridge must copy per item" behavior test in session_buffer_eviction
   // pins.)
-  const bufferItem = { id: 1, type: 'assistant', text: '流式', streaming: true };
+  const bufferItem = { id: 1, type: 'assistant', text: 'stream', streaming: true };
   const prev = normalizeAuxSnapshot({ chatItems: [{ ...bufferItem }], busy: true, queued: [] });
-  bufferItem.text = '流式中';
+  bufferItem.text = 'streaming';
   const streamed = normalizeAuxSnapshot({ chatItems: [{ ...bufferItem }], busy: true, queued: [] });
   assert.equal(auxSnapshotsEqual(prev, streamed), false);
   assert.equal(auxSnapshotsEqual(prev, normalizeAuxSnapshot({
-    chatItems: [{ id: 1, type: 'assistant', text: '流式', streaming: true }],
+    chatItems: [{ id: 1, type: 'assistant', text: 'stream', streaming: true }],
     busy: false,
     queued: [],
   })), false);
   assert.equal(auxSnapshotsEqual(prev, normalizeAuxSnapshot({
     chatItems: [
-      { id: 1, type: 'assistant', text: '流式', streaming: true },
+      { id: 1, type: 'assistant', text: 'stream', streaming: true },
       { id: 2, type: 'user', text: 'q2' },
     ],
     busy: true,
     queued: [],
   })), false);
   assert.equal(auxSnapshotsEqual(prev, normalizeAuxSnapshot({
-    chatItems: [{ id: 1, type: 'assistant', text: '流式', streaming: true }],
+    chatItems: [{ id: 1, type: 'assistant', text: 'stream', streaming: true }],
     busy: true,
     queued: [{ id: 9 }],
   })), false);
 });
 
-test('auxSnapshotsEqual 捕捉仅键集合不同的快照(增量写入的 html)', () => {
+test('auxSnapshotsEqual catches snapshots differing only in key set (incrementally written html)', () => {
   // The streaming bridge writes `text` and `html` incrementally (round-26
   // minor M10): two pulls can differ ONLY in key set. auxItemsEqual's
   // key-count guard is the single line that catches this — deleting it kept
   // the whole suite green while the panel froze on the first frame, so the
   // case is pinned explicitly here.
   const textOnly = normalizeAuxSnapshot({
-    chatItems: [{ id: 1, type: 'assistant', text: '流式' }],
+    chatItems: [{ id: 1, type: 'assistant', text: 'stream' }],
     busy: true,
     queued: [],
   });
   const withHtml = normalizeAuxSnapshot({
-    chatItems: [{ id: 1, type: 'assistant', text: '流式', html: '<p>流式</p>' }],
+    chatItems: [{ id: 1, type: 'assistant', text: 'stream', html: '<p>stream</p>' }],
     busy: true,
     queued: [],
   });

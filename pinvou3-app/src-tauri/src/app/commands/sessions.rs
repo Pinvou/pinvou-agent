@@ -511,20 +511,26 @@ pub async fn load_session(
     })
 }
 
-/// `delete_session` Chat 分支的可测主体：先回收 ACP 侧，再级联删除辅助会话
-/// （gated delete → forget → `session:deleted` 事件），最后删除主会话并清理
-/// Agent 映射。
+/// Testable body of the `delete_session` Chat branch: evict the ACP side
+/// first, then cascade-delete the aux session (gated delete -> forget ->
+/// `session:deleted` event), and finally delete the main session and clean up
+/// the Agent mapping.
 ///
-/// 命令体依赖 `AppHandle` / `EnginePool` / `AcpPool`（Tauri State，单测不可
-/// 构造），因此把顺序与级联判断抽到这里、副作用经闭包注入——与
-/// `EnginePool::cancel` 抽出 `cancel_turn_with_gates` 同一手法。测试用记录调用
-/// 顺序的假件驱动**本函数**，所以重排下面任何一步都会让顺序断言变红，而不是去
-/// 断言命令体的一份复制（PR #433 review S2(a)：原先那条"顺序测试"只是用测试
-/// 自带的回调重放命令的顺序，真正的级联主体没有被测到）。
+/// The command body depends on `AppHandle` / `EnginePool` / `AcpPool` (Tauri
+/// State, not constructible in unit tests), so the ordering and cascade
+/// decisions are extracted here with side effects injected via closures — the
+/// same technique as `EnginePool::cancel` extracting `cancel_turn_with_gates`.
+/// Tests drive **this function** with fakes that record call order, so
+/// reordering any step below turns the ordering assertions red, instead of
+/// asserting against a copy of the command body (PR #433 review S2(a): the
+/// original "ordering test" merely replayed the command's order with the
+/// test's own callbacks; the real cascade body was never exercised).
 ///
-/// 顺序约束：aux 必须严格先于主会话删除。`SessionStore::delete` 的落盘级联只删
-/// 记录，会把仍在运行的 aux engine 留成无句柄孤儿；主会话先删还会让 aux 的回收
-/// 失去会话上下文。
+/// Ordering constraint: the aux must be deleted strictly before the main
+/// session. `SessionStore::delete`'s on-disk cascade only removes the record,
+/// which would leave a still-running aux engine as a handle-less orphan; and
+/// deleting the main session first would strip the aux teardown of its
+/// session context.
 async fn delete_chat_session_cascade<Ev, EvFut, De, DeFut, F, Em, R>(
     store: &SessionStore,
     session_id: &str,
@@ -609,10 +615,9 @@ pub async fn delete_session(
                 |session_id| pool.forget_session(session_id),
                 emit_deleted,
                 |session_id| {
-                    acp_pool
-                        .agents()
-                        .remove(session_id)
-                        .map_err(|error| format!("清理 Agent 会话映射失败: {error:#}"))
+                    acp_pool.agents().remove(session_id).map_err(|error| {
+                        format!("failed to clean up the Agent session mapping: {error:#}")
+                    })
                 },
             )
             .await
@@ -761,8 +766,9 @@ mod delete_session_cascade_tests {
                 format!("delete:{}", fixture.main_id),
                 format!("remove-agent:{}", fixture.main_id),
             ],
-            "辅助会话的删除/遗忘/事件必须严格先于主会话删除(先删主会话会把 aux engine \
-             留成无句柄孤儿),且 ACP 回收必须最先发生"
+            "the aux session's delete/forget/event must happen strictly before the main session \
+             delete (deleting the main session first would leave the aux engine as a handle-less \
+             orphan), and the ACP eviction must happen first"
         );
     }
 
@@ -803,7 +809,9 @@ mod delete_session_cascade_tests {
             // No session id in the message: `panic!` is a CodeQL
             // cleartext-logging sink, and the assertion is about the event
             // being emitted at all, not about which id it carried.
-            |_session_id| panic!("aux 删除失败时不得发出 session:deleted"),
+            |_session_id| {
+                panic!("no session:deleted event may be emitted when the aux delete fails")
+            },
             move |session_id| {
                 remove_agent
                     .lock()
@@ -817,7 +825,7 @@ mod delete_session_cascade_tests {
 
         assert!(
             error.contains("cascade delete aux session"),
-            "错误必须以 aux 级联上下文收口,实际: {error}"
+            "the error must close with the aux cascade context, got: {error}"
         );
         assert_eq!(
             *log.lock().unwrap(),
@@ -825,7 +833,7 @@ mod delete_session_cascade_tests {
                 format!("evict:{}", fixture.main_id),
                 format!("delete:{}", fixture.aux_id),
             ],
-            "aux 删除失败后不得再动主会话"
+            "the main session must not be touched after the aux delete fails"
         );
     }
 }

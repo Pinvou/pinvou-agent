@@ -628,7 +628,8 @@ assert.match(
   /el\.addEventListener\('scroll', onScroll, \{ passive: true \}\);\s*return \(\) => el\.removeEventListener\('scroll', onScroll\);\s*\}, \[auxId\]\);/,
   'the scroll-follow listener must be keyed on auxId so it attaches once the dock portal exists (round-28 B2)',
 );
-// Conversation quotes ("划词引用"): staged per task through the aux-quote store
+// Conversation quotes (selected-text quoting): staged per task through the
+// aux-quote store
 // (module scope, same ownership as the draft) and appended to the outgoing
 // message as an inline userselect block; a quote-only send is allowed.
 assert.match(auxChatPanel, /const quoteBlock = buildAuxQuoteBlock\(quotes\);/);
@@ -890,7 +891,7 @@ assert.match(
 assert.match(source('features/pet/PetSettingsSection.jsx'), /t\.uiPetSettings/);
 assert.match(conversation, /conversationCopy\(copy\)/);
 assert.doesNotMatch(conversationRaw, />等待授权</);
-// Aux quote chips ("划词引用") in the user bubble: the aux projection strips
+// Aux quote chips (selected-text quoting) in the user bubble: the aux projection strips
 // the inline userselect block from userText and hands the excerpts over as
 // userQuotes, so this render branch is the only place the quoted content is
 // still visible. If it regresses, quotes disappear from the transcript

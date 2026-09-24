@@ -5644,7 +5644,7 @@ mod tests {
         assert_eq!(
             aux_cfg.allowed_tools,
             Some(Vec::new()),
-            "aux 会话 spawn 配置必须零工具(空 allowed_tools),兜住 edit_last_turn 重发"
+            "aux session spawn config must be zero-tools (empty allowed_tools), covering edit_last_turn resends"
         );
 
         // ② per-turn send: a caller restrict=false is still forced to an
@@ -5658,9 +5658,9 @@ mod tests {
             Op::SendMessage { allowed_tools, .. } => assert_eq!(
                 allowed_tools,
                 Some(Vec::new()),
-                "aux 轮必须零工具(空白名单),与调用方传值无关"
+                "aux turns must be zero-tools (empty allowlist), regardless of the caller's value"
             ),
-            other => panic!("期望 SendMessage,得到 {other:?}"),
+            other => panic!("expected SendMessage, got {other:?}"),
         }
 
         // Control: ordinary sessions' spawn config keeps the Pinvou
@@ -5669,7 +5669,7 @@ mod tests {
         assert_eq!(
             normal_cfg.allowed_tools,
             Some(crate::features::assistant::tool_policy::allowed_tool_names()),
-            "普通会话 spawn 配置必须保持 Pinvou 基础白名单"
+            "ordinary sessions' spawn config must keep the Pinvou base allowlist"
         );
         let _ = std::fs::remove_dir_all(root);
     }

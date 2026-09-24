@@ -1,4 +1,4 @@
-/** Conversation-quote ("划词引用") contract: block build/parse round trip, limits, per-task staging store, and the aux turns projection. */
+/** Conversation-quote (selected-text quote) contract: block build/parse round trip, limits, per-task staging store, and the aux turns projection. */
 import assert from 'node:assert/strict';
 import test from 'node:test';
 import {
@@ -14,23 +14,23 @@ import {
 } from '../src/features/aux-chat/aux-quote.mjs';
 import { projectAuxChatTurns } from '../src/features/aux-chat/aux-chat-state.mjs';
 
-test('buildAuxQuoteBlock 与 parseAuxQuotedMessage 往返一致', () => {
-  const quotes = [{ text: '第一段引用' }, { text: 'line1\nline2 with ``` ticks' }];
+test('buildAuxQuoteBlock and parseAuxQuotedMessage round trip consistently', () => {
+  const quotes = [{ text: 'first quote' }, { text: 'line1\nline2 with ``` ticks' }];
   const block = buildAuxQuoteBlock(quotes);
-  assert.ok(block.startsWith('\n\n# userselect:\n```userselect\n'), '块头部格式固定');
-  const { visibleText, quotes: parsed } = parseAuxQuotedMessage('这是什么意思？' + block);
-  assert.equal(visibleText, '这是什么意思？');
+  assert.ok(block.startsWith('\n\n# userselect:\n```userselect\n'), 'block header format is fixed');
+  const { visibleText, quotes: parsed } = parseAuxQuotedMessage('what does this mean?' + block);
+  assert.equal(visibleText, 'what does this mean?');
   assert.deepEqual(parsed, quotes);
 });
 
-test('buildAuxQuoteBlock 对空/无效输入返回空串', () => {
+test('buildAuxQuoteBlock returns an empty string for empty/invalid input', () => {
   assert.equal(buildAuxQuoteBlock([]), '');
   assert.equal(buildAuxQuoteBlock(null), '');
   assert.equal(buildAuxQuoteBlock([{ text: '   ' }, {}]), '');
 });
 
-test('parseAuxQuotedMessage 只剥离可解析的块，坏 JSON 保持可见', () => {
-  const malformed = '问题\n\n# userselect:\n```userselect\n[not json]\n```';
+test('parseAuxQuotedMessage strips only parseable blocks; bad JSON stays visible', () => {
+  const malformed = 'question\n\n# userselect:\n```userselect\n[not json]\n```';
   const kept = parseAuxQuotedMessage(malformed);
   assert.equal(kept.quotes.length, 0);
   assert.equal(kept.visibleText, malformed.trim());
@@ -40,28 +40,28 @@ test('parseAuxQuotedMessage 只剥离可解析的块，坏 JSON 保持可见', (
   assert.equal(keptObject.visibleText, nonArray);
 });
 
-test('parseAuxQuotedMessage 容忍 CRLF 与仅引用无正文', () => {
-  const block = buildAuxQuoteBlock([{ text: '仅引用' }]).replace(/\n/g, '\r\n');
+test('parseAuxQuotedMessage tolerates CRLF and quote-only messages without body', () => {
+  const block = buildAuxQuoteBlock([{ text: 'quote only' }]).replace(/\n/g, '\r\n');
   const { visibleText, quotes } = parseAuxQuotedMessage(block);
   assert.equal(visibleText, '');
   assert.equal(quotes.length, 1);
-  assert.equal(quotes[0].text, '仅引用');
+  assert.equal(quotes[0].text, 'quote only');
 });
 
-test('addAuxQuote 执行单条/条数/总量/去重限额', () => {
+test('addAuxQuote enforces the single/count/total/dedupe limits', () => {
   assert.equal(addAuxQuote([], '   ').ok, false);
   assert.equal(addAuxQuote([], '   ').reason, 'empty');
   const tooLong = 'x'.repeat(AUX_QUOTE_LIMITS.single + 1);
   assert.equal(addAuxQuote([], tooLong).reason, 'single');
-  // 去重按空白归一化比较,不算重复条数
+  // dedupe compares by whitespace normalization and does not add an entry
   const dup = addAuxQuote([{ text: 'hello  world' }], ' Hello\nWorld ');
   assert.equal(dup.ok, true);
   assert.equal(dup.duplicate, true);
   assert.equal(dup.quotes.length, 1);
-  // 条数上限
+  // count limit
   const eight = Array.from({ length: AUX_QUOTE_LIMITS.count }, (_, i) => ({ text: `q${i}` }));
   assert.equal(addAuxQuote(eight, 'one more').reason, 'count');
-  // 总量上限:8 条逼近 16000 字符
+  // total limit: 8 entries approaching 16000 chars
   const near = Array.from({ length: 7 }, () => ({ text: 'x'.repeat(1990) }));
   const overflow = addAuxQuote(near, 'y'.repeat(AUX_QUOTE_LIMITS.single));
   assert.equal(overflow.reason, 'total');
@@ -70,42 +70,42 @@ test('addAuxQuote 执行单条/条数/总量/去重限额', () => {
   assert.equal(fitting.quotes.length, 8);
 });
 
-test('暂存 store 按任务隔离并广播变更', () => {
+test('staging store isolates per task and broadcasts changes', () => {
   const seen = [];
   const unsubscribe = subscribeAuxQuotes('task-a', (quotes) => seen.push(quotes));
-  const stage = stageAuxQuote('task-a', '第一段');
+  const stage = stageAuxQuote('task-a', 'first excerpt');
   assert.equal(stage.ok, true);
   assert.equal(getAuxQuotes('task-a').length, 1);
-  assert.equal(getAuxQuotes('task-b').length, 0, '任务之间互不影响');
-  assert.equal(seen.length, 1, '暂存成功要广播');
-  // 重复内容不重复暂存也不广播
-  stageAuxQuote('task-a', '第一段');
+  assert.equal(getAuxQuotes('task-b').length, 0, 'tasks must not affect each other');
+  assert.equal(seen.length, 1, 'a successful stage must broadcast');
+  // duplicate content is neither re-staged nor broadcast
+  stageAuxQuote('task-a', 'first excerpt');
   assert.equal(getAuxQuotes('task-a').length, 1);
   assert.equal(seen.length, 1);
-  // 超限内容不落库不广播
+  // over-limit content is neither stored nor broadcast
   const rejected = stageAuxQuote('task-a', 'x'.repeat(AUX_QUOTE_LIMITS.single + 1));
   assert.equal(rejected.ok, false);
   assert.equal(getAuxQuotes('task-a').length, 1);
   assert.equal(seen.length, 1);
   removeAuxQuote('task-a', 0);
   assert.equal(getAuxQuotes('task-a').length, 0);
-  assert.equal(seen.length, 2, '移除要广播');
-  stageAuxQuote('task-a', '再一段');
+  assert.equal(seen.length, 2, 'removal must broadcast');
+  stageAuxQuote('task-a', 'another excerpt');
   dropAuxQuotes('task-a', getAuxQuotes('task-a'));
   assert.equal(getAuxQuotes('task-a').length, 0);
-  assert.equal(seen.length, 4, '按快照整批移除要广播(移除后暂存+移除)');
+  assert.equal(seen.length, 4, 'batch removal by snapshot must broadcast (re-stage + removal after the earlier remove)');
   unsubscribe();
-  stageAuxQuote('task-a', '退订后');
-  assert.equal(seen.length, 4, '退订后不再广播');
+  stageAuxQuote('task-a', 'after unsubscribe');
+  assert.equal(seen.length, 4, 'no more broadcasts after unsubscribe');
   dropAuxQuotes('task-a', getAuxQuotes('task-a'));
-  // getAuxQuotes 的返回是防御性拷贝:外部修改不污染 store
+  // getAuxQuotes returns a defensive copy: external mutation must not pollute the store
   const copy = getAuxQuotes('task-a');
   copy.push({ text: 'injected' });
   assert.equal(getAuxQuotes('task-a').length, 0);
   dropAuxQuotes('task-b', [{ text: 'ghost' }]);
 });
 
-test('removeAuxQuote 对非法下标是 no-op', () => {
+test('removeAuxQuote is a no-op for invalid indexes', () => {
   stageAuxQuote('task-idx', 'only');
   removeAuxQuote('task-idx', 5);
   removeAuxQuote('task-idx', -1);
@@ -114,33 +114,33 @@ test('removeAuxQuote 对非法下标是 no-op', () => {
   dropAuxQuotes('task-idx', getAuxQuotes('task-idx'));
 });
 
-test('dropAuxQuotes 只移除发送开始时的快照，在途新暂存保留', () => {
+test('dropAuxQuotes removes only the send-time snapshot; quotes staged in flight are kept', () => {
   const seen = [];
   const unsubscribe = subscribeAuxQuotes('task-drop', (quotes) => seen.push(quotes));
-  stageAuxQuote('task-drop', '引用 A');
-  stageAuxQuote('task-drop', '引用 B');
-  // 发送开始时捕获的快照只含 A:B 是发送在途期间新暂存的
-  dropAuxQuotes('task-drop', [{ text: '引用 A' }]);
-  assert.deepEqual(getAuxQuotes('task-drop'), [{ text: '引用 B' }]);
-  assert.equal(seen.length, 3, '两次暂存+一次移除共广播三次');
-  // 快照未命中任何现存条目:无变化不广播(与重复暂存分支一致)
-  dropAuxQuotes('task-drop', [{ text: '引用 A' }]);
-  assert.equal(seen.length, 3, '无变化不广播');
+  stageAuxQuote('task-drop', 'quote A');
+  stageAuxQuote('task-drop', 'quote B');
+  // the snapshot captured at send start contains only A: B was staged while the send was in flight
+  dropAuxQuotes('task-drop', [{ text: 'quote A' }]);
+  assert.deepEqual(getAuxQuotes('task-drop'), [{ text: 'quote B' }]);
+  assert.equal(seen.length, 3, 'two stages + one removal broadcast three times in total');
+  // snapshot matching no existing entry: no change, no broadcast (same as the duplicate-stage branch)
+  dropAuxQuotes('task-drop', [{ text: 'quote A' }]);
+  assert.equal(seen.length, 3, 'no change, no broadcast');
   unsubscribe();
   dropAuxQuotes('task-drop', getAuxQuotes('task-drop'));
 });
 
-test('dropAuxQuotes 按空白/大小写归一化命中', () => {
+test('dropAuxQuotes matches by whitespace/case normalization', () => {
   stageAuxQuote('task-norm', 'Hello  World');
   stageAuxQuote('task-norm', 'Another');
-  // 与 'Hello  World' 归一化等价的空白/大小写变体也能命中
+  // whitespace/case variants normalization-equivalent to 'Hello  World' also match
   dropAuxQuotes('task-norm', [{ text: ' hello\nworld ' }]);
   assert.deepEqual(getAuxQuotes('task-norm'), [{ text: 'Another' }]);
   dropAuxQuotes('task-norm', [{ text: 'ANOTHER' }]);
-  assert.equal(getAuxQuotes('task-norm').length, 0, '大小写不同仍命中,清到零');
+  assert.equal(getAuxQuotes('task-norm').length, 0, 'different case still matches; cleared to zero');
 });
 
-test('dropAuxQuotes 空 taskId/不存在任务/空入参是 no-op', () => {
+test('dropAuxQuotes is a no-op for empty taskId/missing task/empty input', () => {
   stageAuxQuote('task-safe', 'kept');
   dropAuxQuotes('', [{ text: 'kept' }]);
   dropAuxQuotes(null, [{ text: 'kept' }]);
@@ -153,33 +153,33 @@ test('dropAuxQuotes 空 taskId/不存在任务/空入参是 no-op', () => {
   dropAuxQuotes('task-safe', getAuxQuotes('task-safe'));
 });
 
-test('projectAuxChatTurns 剥离引用块并挂 userQuotes', () => {
-  const message = '帮我解释这段' + buildAuxQuoteBlock([{ text: '引用内容 A' }, { text: '引用内容 B' }]);
+test('projectAuxChatTurns strips the quote block and attaches userQuotes', () => {
+  const message = 'explain this for me' + buildAuxQuoteBlock([{ text: 'quoted content A' }, { text: 'quoted content B' }]);
   const snapshot = {
     chatItems: [
       { id: 1, type: 'user', text: message },
-      { id: 2, type: 'assistant', text: '解释如下。' },
-      { id: 3, type: 'user', text: '没有引用的普通问题' },
+      { id: 2, type: 'assistant', text: 'explanation follows.' },
+      { id: 3, type: 'user', text: 'a plain question without quotes' },
     ],
     busy: false,
     queued: [],
   };
   const turns = projectAuxChatTurns(snapshot, 'aux-q1');
   assert.equal(turns.length, 2);
-  assert.equal(turns[0].userText, '帮我解释这段');
-  assert.deepEqual(turns[0].userQuotes, [{ text: '引用内容 A' }, { text: '引用内容 B' }]);
-  assert.equal(turns[1].userText, '没有引用的普通问题');
+  assert.equal(turns[0].userText, 'explain this for me');
+  assert.deepEqual(turns[0].userQuotes, [{ text: 'quoted content A' }, { text: 'quoted content B' }]);
+  assert.equal(turns[1].userText, 'a plain question without quotes');
   assert.equal(turns[1].userQuotes, undefined);
 });
 
-test('projectAuxChatTurns 仅引用消息投影为空正文 + 引用 chips', () => {
+test('projectAuxChatTurns projects a quote-only message as empty body + quote chips', () => {
   const snapshot = {
-    chatItems: [{ id: 1, type: 'user', text: buildAuxQuoteBlock([{ text: '只有引用' }]).trim() }],
+    chatItems: [{ id: 1, type: 'user', text: buildAuxQuoteBlock([{ text: 'only a quote' }]).trim() }],
     busy: false,
     queued: [],
   };
   const turns = projectAuxChatTurns(snapshot, 'aux-q2');
   assert.equal(turns.length, 1);
   assert.equal(turns[0].userText, '');
-  assert.deepEqual(turns[0].userQuotes, [{ text: '只有引用' }]);
+  assert.deepEqual(turns[0].userQuotes, [{ text: 'only a quote' }]);
 });
