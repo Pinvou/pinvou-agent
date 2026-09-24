@@ -411,6 +411,7 @@ export const dictZh = {
           quoteLimitSingle:'单次划词最多 8,000 字符',
           quoteLimitCount:'最多同时引用 8 段内容',
           quoteLimitTotal:'引用总字数不能超过 16,000 字符',
+          quoteDuplicate:'这段内容已在引用列表中，不会重复添加',
         },
         uiHomeMode: { work:'工作', code:'代码', providerSettings:'Provider 配置' },
         uiAttachments: { parsing:'解析中', failed:'失败', remove:name=>`移除附件 ${name}`, dropRelease:'松开即可添加', dropWebTitle:'添加任意内容', dropWebHint:'将任意文件拖放到此处，以将其添加到对话中', fileTooLarge:'文件超过 20 MB 附件上限，无法添加', archiveTooManyEntries:'压缩包包含超过 50 个条目，无法添加', archiveExpandedTooLarge:'压缩包解压后超过 100 MB，无法添加', archiveUnsafeEntry:'压缩包包含不安全的链接或路径，无法添加' },

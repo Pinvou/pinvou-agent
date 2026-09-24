@@ -69,17 +69,18 @@ for (const language of ['zh', 'en', 'ja']) {
   ]) {
     assert.ok(dict[language][section], `${language}.${section} must exist`);
   }
-  // All 22 uiAuxChat keys are pinned (round-14 minor-3: the list previously
+  // All 23 uiAuxChat keys are pinned (round-14 minor-3: the list previously
   // covered 13, so sendingHint/bindingHint and the six quote* keys could be
   // deleted from every dictionary with the suite green — and quoteChipCount's
   // absence renders `undefined` at runtime; round-22 Major added discardStuck
-  // for the discard settle-watchdog).
+  // for the discard settle-watchdog; round-30 D5 added quoteDuplicate for the
+  // exact-duplicate notice).
   for (const key of [
     'openLabel', 'panelTitle', 'landingHint', 'emptyState', 'inputPlaceholder',
     'send', 'busyHint', 'bindingHint', 'sendingHint', 'newTopic', 'newTopicConfirm',
     'sendFailed', 'ensureFailed', 'discardFailed', 'discardStuck', 'close',
     'quoteAction', 'quoteChipCount', 'quoteRemove',
-    'quoteLimitSingle', 'quoteLimitCount', 'quoteLimitTotal',
+    'quoteLimitSingle', 'quoteLimitCount', 'quoteLimitTotal', 'quoteDuplicate',
   ]) {
     assert.ok(dict[language].uiAuxChat[key], `${language}.uiAuxChat.${key} must exist`);
   }
@@ -642,6 +643,30 @@ assert.match(auxChatPanel, /data-testid="aux-quote-remove"/);
 // even while the draft is empty (E2E scenario 7 covers it, but that does not
 // run in CI).
 assert.match(auxChatPanel, /disabled=\{composerDisabled \|\| \(!draft\.trim\(\) && quotes\.length === 0\)\}/);
+// Quote identity is exact (round-30 D5): case folding or whitespace collapse
+// silently merged distinct quotes (`const x = 1;` vs `CONST X = 1;`,
+// `line1\nline2` vs `line1 line2`) while reporting success — in a coding
+// agent both are semantic. Only a trailing-edge trim normalizes, and the
+// caller must surface the duplicate outcome instead of letting the opening
+// panel read as a silent success (aux_quote.test.mjs executes the identity
+// matrix; this pins the wiring the executing test cannot see).
+const auxQuoteStore = stripComments(source('features/aux-chat/aux-quote.mjs'));
+const auxQuoteSelection = stripComments(source('features/aux-chat/AuxQuoteSelection.jsx'));
+assert.match(
+  auxQuoteStore,
+  /function quoteIdentity\(text\) \{\s*return String\(text \|\| ''\)\.trim\(\);\s*\}/,
+  'quote identity must be exact after a trailing-edge trim (round-30 D5)',
+);
+assert.doesNotMatch(
+  source('features/aux-chat/aux-quote.mjs'),
+  /toLowerCase\(\)|replace\(\/\\s\+\//,
+  'quote identity must not fold case or collapse internal whitespace (round-30 D5)',
+);
+assert.match(
+  auxQuoteSelection,
+  /if \(result\.duplicate\) \{[\s\S]{0,300}?copy\.quoteDuplicate[\s\S]{0,300}?if \(onQuote\) onQuote\(\);\s*return;\s*\}/,
+  'a duplicate quote must surface the trilingual notice instead of reporting silent success (round-30 D5)',
+);
 // Stale send outcomes (round-12 UX): a restart on the same task re-binds to a
 // new aux, so a send issued before it must neither re-latch sendFailed next to
 // ensureFailed ("double banner") nor clear text typed since. Since round-24

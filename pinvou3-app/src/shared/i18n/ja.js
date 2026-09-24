@@ -409,6 +409,7 @@ const jaBase = {
           quoteLimitSingle:'1 回の選択は最大 8,000 文字です',
           quoteLimitCount:'同時に引用できるのは 8 件までです',
           quoteLimitTotal:'引用の合計は 16,000 文字を超えられません',
+          quoteDuplicate:'この内容はすでに引用リストにあります。重複して追加されません',
         },
         uiHomeMode: { work:'作業', code:'コード', providerSettings:'プロバイダー設定' },
         uiAttachments: { parsing:'解析中', failed:'失敗', remove:name=>`添付ファイル ${name} を削除`, dropRelease:'ドロップして添付', dropWebTitle:'あらゆる内容を追加', dropWebHint:'ファイルをここにドロップして会話に追加できます', fileTooLarge:'ファイルが添付上限の 20 MB を超えているため追加できません', archiveTooManyEntries:'圧縮ファイルに 50 件を超える項目が含まれているため追加できません', archiveExpandedTooLarge:'展開後のサイズが 100 MB を超えるため追加できません', archiveUnsafeEntry:'圧縮ファイルに安全でないリンクまたはパスが含まれているため追加できません' },

@@ -33,8 +33,13 @@ const QUOTE_BLOCK_FENCE = 'userselect';
 // with malformed JSON stays visible instead of silently eating text.
 const QUOTE_BLOCK_PATTERN = /(?:^|\r?\n)# userselect:\r?\n```userselect\r?\n([\s\S]*?)\r?\n```(?:\r?\n|$)/g;
 
+// Identity is EXACT after a trailing-edge trim (round-30 D5): no case
+// folding, no internal-whitespace collapse. In a coding agent both are
+// semantic — `const x = 1;` vs `CONST X = 1;` and `line1\nline2` vs
+// `line1 line2` are different quotes, and collapsing them silently dropped
+// a selection the user believed was staged. Exact duplicates still dedupe.
 function quoteIdentity(text) {
-  return String(text || '').replace(/\s+/g, ' ').trim().toLowerCase();
+  return String(text || '').trim();
 }
 
 /**
@@ -166,9 +171,11 @@ export function removeAuxQuote(taskId, index) {
  * The send only owns the quotes captured when it started: quotes staged from
  * the main view while the send was in flight belong to the next message and
  * must survive the success callback. Entries are matched by quoteIdentity
- * (whitespace/case-insensitive), so the send-time snapshot lands regardless
- * of normalization drift; every staged entry whose identity matches is
- * removed. Nothing matching means no change and no broadcast.
+ * (exact text after a trailing-edge trim — case and line structure are
+ * semantic, round-30 D5); the staged entries and the send-time capture both
+ * passed through the same staging trim, so the snapshot lands exactly, and
+ * every staged entry whose identity matches is removed. Nothing matching
+ * means no change and no broadcast.
  *
  * @param {string} taskId - main session id
  * @param {{ text: string }[]} quotesToRemove - staged-quote snapshot taken at send time

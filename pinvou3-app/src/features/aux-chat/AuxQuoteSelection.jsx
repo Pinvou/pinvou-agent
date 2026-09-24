@@ -175,6 +175,18 @@ export function AuxQuoteSelection({ containerRef, sessionId, copy, onQuote }) {
       hideTimerRef.current = setTimeout(hidePopover, 1800);
       return;
     }
+    if (result.duplicate) {
+      // The exact excerpt is already staged: adding it would be a no-op, so
+      // say so instead of letting the opening panel read as "added a second
+      // chip" (round-30 D5). The panel still opens — the quote IS part of
+      // the next message — and the notice explains why the count did not
+      // change.
+      setPopover({ ...popover, error: copy.quoteDuplicate });
+      if (hideTimerRef.current) clearTimeout(hideTimerRef.current);
+      hideTimerRef.current = setTimeout(hidePopover, 1800);
+      if (onQuote) onQuote();
+      return;
+    }
     hidePopover();
     if (onQuote) onQuote();
   }, [copy, hidePopover, onQuote, popover, sessionId]);

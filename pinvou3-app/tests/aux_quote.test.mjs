@@ -53,11 +53,13 @@ test('addAuxQuote enforces the single/count/total/dedupe limits', () => {
   assert.equal(addAuxQuote([], '   ').reason, 'empty');
   const tooLong = 'x'.repeat(AUX_QUOTE_LIMITS.single + 1);
   assert.equal(addAuxQuote([], tooLong).reason, 'single');
-  // dedupe compares by whitespace normalization and does not add an entry
-  const dup = addAuxQuote([{ text: 'hello  world' }], ' Hello\nWorld ');
+  // dedupe compares by exact identity (trailing-edge trim only) and does not add an entry
+  const dup = addAuxQuote([{ text: 'hello  world' }], 'hello  world');
   assert.equal(dup.ok, true);
   assert.equal(dup.duplicate, true);
   assert.equal(dup.quotes.length, 1);
+  const dupTrimmed = addAuxQuote([{ text: 'hello  world' }], '  hello  world  ');
+  assert.equal(dupTrimmed.duplicate, true, 'edge whitespace still trims away');
   // count limit
   const eight = Array.from({ length: AUX_QUOTE_LIMITS.count }, (_, i) => ({ text: `q${i}` }));
   assert.equal(addAuxQuote(eight, 'one more').reason, 'count');
@@ -68,6 +70,33 @@ test('addAuxQuote enforces the single/count/total/dedupe limits', () => {
   const fitting = addAuxQuote(near, 'y'.repeat(AUX_QUOTE_LIMITS.total - 7 * 1990));
   assert.equal(fitting.ok, true);
   assert.equal(fitting.quotes.length, 8);
+});
+
+test('quote identity is exact: case and line structure are semantic (round-30 D5)', () => {
+  // The old whitespace/case-collapsing identity merged each of these pairs
+  // into one quote and reported success — silently dropping a selection.
+  const pairs = [
+    ['const x = 1;', 'CONST X = 1;'],
+    ['line1\nline2', 'line1 line2'],
+    ['foo', 'Foo'],
+    ['hello  world', 'hello world'],
+  ];
+  for (const [first, second] of pairs) {
+    const result = addAuxQuote([{ text: first }], second);
+    assert.equal(result.ok, true, `"${second}" must stage alongside "${first}"`);
+    assert.equal(result.duplicate, false, `"${second}" is not a duplicate of "${first}"`);
+    assert.equal(result.quotes.length, 2);
+  }
+  // staging store: distinct variants are kept separately, exact duplicates dedupe
+  stageAuxQuote('task-exact', 'const x = 1;');
+  const variant = stageAuxQuote('task-exact', 'CONST X = 1;');
+  assert.equal(variant.duplicate, false);
+  assert.equal(getAuxQuotes('task-exact').length, 2, 'case variants must coexist');
+  const exact = stageAuxQuote('task-exact', 'const x = 1;');
+  assert.equal(exact.ok, true);
+  assert.equal(exact.duplicate, true, 'exact duplicates still dedupe');
+  assert.equal(getAuxQuotes('task-exact').length, 2);
+  dropAuxQuotes('task-exact', getAuxQuotes('task-exact'));
 });
 
 test('staging store isolates per task and broadcasts changes', () => {
@@ -130,14 +159,22 @@ test('dropAuxQuotes removes only the send-time snapshot; quotes staged in flight
   dropAuxQuotes('task-drop', getAuxQuotes('task-drop'));
 });
 
-test('dropAuxQuotes matches by whitespace/case normalization', () => {
+test('dropAuxQuotes matches by exact identity after an edge trim (round-30 D5)', () => {
   stageAuxQuote('task-norm', 'Hello  World');
   stageAuxQuote('task-norm', 'Another');
-  // whitespace/case variants normalization-equivalent to 'Hello  World' also match
-  dropAuxQuotes('task-norm', [{ text: ' hello\nworld ' }]);
+  // only the exact text (up to trailing-edge whitespace) matches; case or
+  // internal-whitespace variants must NOT remove a staged quote
+  dropAuxQuotes('task-norm', [{ text: ' Hello  World ' }]);
   assert.deepEqual(getAuxQuotes('task-norm'), [{ text: 'Another' }]);
-  dropAuxQuotes('task-norm', [{ text: 'ANOTHER' }]);
-  assert.equal(getAuxQuotes('task-norm').length, 0, 'different case still matches; cleared to zero');
+  stageAuxQuote('task-norm', 'Keep Me');
+  dropAuxQuotes('task-norm', [{ text: 'keep me' }]);
+  dropAuxQuotes('task-norm', [{ text: 'Another ' }]);
+  assert.deepEqual(
+    getAuxQuotes('task-norm'),
+    [{ text: 'Keep Me' }],
+    'lowercase variant must not match; exact text with an edge trim does',
+  );
+  dropAuxQuotes('task-norm', getAuxQuotes('task-norm'));
 });
 
 test('dropAuxQuotes is a no-op for empty taskId/missing task/empty input', () => {

@@ -411,6 +411,7 @@ export const dictEn = {
           quoteLimitSingle:'A selection can contain at most 8,000 characters',
           quoteLimitCount:'At most 8 selections can be quoted at once',
           quoteLimitTotal:'Quoted selections cannot exceed 16,000 characters in total',
+          quoteDuplicate:'This selection is already quoted and will not be added again',
         },
         uiHomeMode: { work:'Work', code:'Code', providerSettings:'Provider settings' },
         uiAttachments: { parsing:'Parsing', failed:'Failed', remove:name=>`Remove attachment ${name}`, dropRelease:'Drop to attach', dropWebTitle:'Add anything', dropWebHint:'Drop any file here to add it to the conversation', fileTooLarge:'The file exceeds the 20 MB attachment limit and cannot be added', archiveTooManyEntries:'The archive contains more than 50 entries and cannot be added', archiveExpandedTooLarge:'The archive expands beyond 100 MB and cannot be added', archiveUnsafeEntry:'The archive contains unsafe links or paths and cannot be added' },
