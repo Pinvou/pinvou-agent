@@ -1010,6 +1010,20 @@ pub async fn get_or_create_aux_session(
     session_id: String,
     store: State<'_, SessionStore>,
 ) -> Result<AuxSessionBinding, String> {
+    // Every error path folds into the stable web_session code (round-30 B7):
+    // the command is web-allowlisted and the native chains embed host paths
+    // (sessions-root EACCES/EIO), which must not cross the relay to browser
+    // consoles; the detail stays in the desktop log via web_session_result.
+    super::remote_control::web_session_result(
+        super::remote_control::WebSessionOperation::GetOrCreateAuxSession,
+        get_or_create_aux_session_inner(session_id, store).await,
+    )
+}
+
+async fn get_or_create_aux_session_inner(
+    session_id: String,
+    store: State<'_, SessionStore>,
+) -> Result<AuxSessionBinding, String> {
     // Auxiliary conversations may only hang off ordinary chat sessions:
     // scheduled sessions go through their own delete path
     // (delete_scheduled_run only clears the mapping without cascade-deleting
@@ -1029,6 +1043,21 @@ pub async fn get_or_create_aux_session(
 /// idempotent (no mapping counts as already discarded).
 #[tauri::command]
 pub async fn discard_aux_session(
+    session_id: String,
+    app: AppHandle,
+    store: State<'_, SessionStore>,
+    pool: State<'_, EnginePool>,
+) -> Result<(), String> {
+    // Same folding as get_or_create_aux_session (round-30 B7): the native
+    // chain (e.g. "remove stale session dir /Users/<name>/...") must not
+    // cross the relay.
+    super::remote_control::web_session_result(
+        super::remote_control::WebSessionOperation::DiscardAuxSession,
+        discard_aux_session_inner(session_id, app, store, pool).await,
+    )
+}
+
+async fn discard_aux_session_inner(
     session_id: String,
     app: AppHandle,
     store: State<'_, SessionStore>,

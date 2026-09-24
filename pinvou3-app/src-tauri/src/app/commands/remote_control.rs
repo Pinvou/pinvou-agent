@@ -112,11 +112,13 @@ impl WebWorkspaceOperation {
 /// session store may embed host paths; folding them keeps Relay responses
 /// controlled.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-enum WebSessionOperation {
+pub(super) enum WebSessionOperation {
     ListSessions,
     ListArchivedSessions,
     CreateSession,
     LoadSessionChunk,
+    GetOrCreateAuxSession,
+    DiscardAuxSession,
 }
 
 impl WebSessionOperation {
@@ -126,6 +128,8 @@ impl WebSessionOperation {
             Self::ListArchivedSessions => "list_archived_sessions",
             Self::CreateSession => "create_session",
             Self::LoadSessionChunk => "load_session_chunk",
+            Self::GetOrCreateAuxSession => "get_or_create_aux_session",
+            Self::DiscardAuxSession => "discard_aux_session",
         }
     }
 }
@@ -145,7 +149,7 @@ fn web_operation_result<T, E: std::fmt::Display>(
     })
 }
 
-fn web_session_result<T, E: std::fmt::Display>(
+pub(super) fn web_session_result<T, E: std::fmt::Display>(
     operation: WebSessionOperation,
     result: Result<T, E>,
 ) -> Result<T, String> {
@@ -1739,6 +1743,16 @@ mod tests {
         assert_eq!(
             web_session_result(WebSessionOperation::LoadSessionChunk, error).unwrap_err(),
             "web_session_load_session_chunk_failed"
+        );
+        // Round-30 B7: the two aux commands are web-allowlisted; their chains
+        // fold into stable codes too, never leaking host paths across Relay.
+        assert_eq!(
+            web_session_result(WebSessionOperation::GetOrCreateAuxSession, error).unwrap_err(),
+            "web_session_get_or_create_aux_session_failed"
+        );
+        assert_eq!(
+            web_session_result(WebSessionOperation::DiscardAuxSession, error).unwrap_err(),
+            "web_session_discard_aux_session_failed"
         );
     }
 
