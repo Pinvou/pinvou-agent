@@ -145,7 +145,13 @@ const sentQuotesByTask = new Map();
 // false, and an ack settling under this marker must fall through to normal
 // consumption. Set when the failed-discard restore re-binds, cleared at
 // restart entry (a fresh discard destroys the transcript unless it fails
-// again) and single-shot when an ack consumes under it.
+// again) and single-shot when an ack consumes under it. "Latest" is enforced
+// at every add site by the restart-epoch gate (round-30 D1): the round-22
+// stuck-escape lets a newer restart enter (and clear the marker) BEFORE an
+// orphaned older discard's rejection continuation runs, so an ungated add
+// would resurrect the marker against a transcript the newer restart already
+// destroyed and misclassify the fresh window's next kept ack as delivered,
+// deleting the draft from both transcript and composer.
 const restartDiscardFailedByTask = new Set();
 
 // taskId set: an ack settled inside this task's CURRENT restart window and
@@ -311,6 +317,10 @@ export function AuxChatPanel({ sessionId, activationKey, t, theme, onClose, onAc
   // renders the "nothing here yet" landing during ensure — a false empty state
   // for a conversation that is merely being prepared.
   const [bindingPending, setBindingPending] = useState(false);
+  // Re-run token for the bind effect (round-30 D2): the stuck-notify listener
+  // bumps it when a stuck discard settles with nothing left to re-bind the
+  // panel, so the effect's ensure runs again — see the listener below.
+  const [bindingRetryTick, setBindingRetryTick] = useState(0);
   // Mirrors sendingRef for rendering: the in-flight send window has no visible
   // feedback of its own (snapshot-busy only lands with the backend
   // turn_started), so the composer looked idle while the message was gone.
@@ -353,7 +363,9 @@ export function AuxChatPanel({ sessionId, activationKey, t, theme, onClose, onAc
   // First open and main-session rebind: drop the old binding and idempotently
   // ensure the new task's aux session. The generation guard stops a
   // late-arriving ensure result from binding the panel back to the previous
-  // task.
+  // task. bindingRetryTick re-runs the same bind when the stuck-notify
+  // listener detects a stuck discard that settled with nothing left to
+  // re-bind the panel (round-30 D2).
   useEffect(() => {
     const generation = generationRef.current + 1;
     generationRef.current = generation;
@@ -403,6 +415,11 @@ export function AuxChatPanel({ sessionId, activationKey, t, theme, onClose, onAc
     // re-armed New Topic is the recovery (fresh discard, awaited, before its
     // ensure).
     const pendingDiscard = discardInFlightByTask.get(sessionId);
+    // The restart that issued the awaited discard bumped the task's restart
+    // epoch before dispatching it; the rejection arm below compares against
+    // this capture to tell "the task's LATEST restart failed its discard"
+    // from a stale orphan (round-30 D1, see restartDiscardFailedByTask).
+    const awaitedDiscardEpoch = restartEpochByTask.get(sessionId) || 0;
     const ensureAfterDiscard = () => {
       if (disposed || generationRef.current !== generation) return Promise.resolve();
       // The chain is returned so the awaited-discard rejection arm can run
@@ -449,10 +466,20 @@ export function AuxChatPanel({ sessionId, activationKey, t, theme, onClose, onAc
         // must be consumed by the restore fixup — omitting either here
         // re-opened the duplicate-send class through the rebind arm. The
         // marker is task-level state, so it is added even when this
-        // instance's generation went stale (a newer restart clears it at
-        // entry; a later restart clears it at entry); the fixup is chained
-        // behind this arm's ensure and generation-gated like the bind.
-        restartDiscardFailedByTask.add(sessionId);
+        // instance's generation went stale — but only while the epoch
+        // captured before the await still stands (round-30 D1): the
+        // round-22 stuck-escape lets a newer restart enter and COMPLETE
+        // before this orphaned discard's rejection lands, and the newer
+        // restart's entry already cleared the marker — an ungated re-add
+        // would misclassify the fresh window's next kept ack as delivered
+        // and delete the draft the restart kept as recovery material. The
+        // fixup needs no such gate of its own: it is chained behind this
+        // arm's ensure and generation-gated like the bind (a newer restart
+        // on this instance bumped the generation; on another instance this
+        // one is disposed).
+        if ((restartEpochByTask.get(sessionId) || 0) === awaitedDiscardEpoch) {
+          restartDiscardFailedByTask.add(sessionId);
+        }
         Promise.resolve(ensureAfterDiscard()).then(
           () => {
             if (!disposed && generationRef.current === generation) {
@@ -466,7 +493,10 @@ export function AuxChatPanel({ sessionId, activationKey, t, theme, onClose, onAc
       ensureAfterDiscard();
     }
     return () => { disposed = true; };
-  }, [auxChat, sessionId, pullSnapshot]);
+    // bindingRetryTick is not read inside the effect: it only re-runs the
+    // bind when the stuck-notify listener detects the settled-stuck-discard
+    // dead end (round-30 D2).
+  }, [auxChat, sessionId, pullSnapshot, bindingRetryTick]);
 
   // Composer auto-grow, same mechanism as the main conversation composer:
   // grow with the content up to the max-h-32 cap (then scroll internally) and
@@ -525,6 +555,22 @@ export function AuxChatPanel({ sessionId, activationKey, t, theme, onClose, onAc
       if (stuck) {
         setRestarting(false);
         setBindingPending(false);
+        return;
+      }
+      // Round-30 D2: the marker was just CLEARED. A re-armed restart clears
+      // it right after registering its fresh discard and owns the re-ensure
+      // itself — but when the notification is the orphaned stuck discard's
+      // late SETTLE, the restart's own re-ensure is unreachable whenever a
+      // rebind/remount intervened (its generation went stale at :1072's
+      // gate, or its instance is dead), while the settle finally just
+      // removed the one banner that told the user how to recover. The panel
+      // would end with a null binding, no banner and an emptyState inviting
+      // an Enter that silently no-ops. The settle deletes the registry
+      // entry before clearing the marker and notifying, so "no discard in
+      // flight" here means exactly that case: re-run the bind effect, whose
+      // ensure (or its honest ensureFailed surface) recovers the panel.
+      if (!discardInFlightByTask.has(sessionId)) {
+        setBindingRetryTick((tick) => tick + 1);
       }
     });
   }, [sessionId]);
@@ -949,7 +995,11 @@ export function AuxChatPanel({ sessionId, activationKey, t, theme, onClose, onAc
     // entry block, before the discard is issued, so every ack continuation —
     // which can only run once this block yields — reads "restarted". Module-
     // scoped with the registries so the signal survives rebinds and remounts.
-    restartEpochByTask.set(sessionId, (restartEpochByTask.get(sessionId) || 0) + 1);
+    // The new value is captured: the failed-discard restore below may only
+    // re-mark survival while THIS restart is still the task's latest
+    // (round-30 D1).
+    const restartEpoch = (restartEpochByTask.get(sessionId) || 0) + 1;
+    restartEpochByTask.set(sessionId, restartEpoch);
     try {
       try {
         // Register the in-flight discard by task id: while its backend turn
@@ -1055,9 +1105,18 @@ export function AuxChatPanel({ sessionId, activationKey, t, theme, onClose, onAc
           // holds for an ack settling under the restart's changed epoch
           // (round-25 MAJOR-24-3). The single-shot marker falls that ack
           // through to normal consumption; with no ack pending, the
-          // delivered draft is consumed right here instead.
-          restartDiscardFailedByTask.add(sessionId);
-          consumeDeliveredDraftAfterFailedRestart(sessionId);
+          // delivered draft is consumed right here instead. Both steps are
+          // gated on this restart still being the task's LATEST (round-30
+          // D1): the generation gates above are per-instance, so a newer
+          // restart that ran on a REMOUNTED panel (the round-22 stuck-escape
+          // makes that window reachable) leaves this stale continuation
+          // live — its ungated marker add would stand against a transcript
+          // the newer restart already destroyed, and its fixup could consume
+          // the newer window's kept ack.
+          if (restartEpochByTask.get(sessionId) === restartEpoch) {
+            restartDiscardFailedByTask.add(sessionId);
+            consumeDeliveredDraftAfterFailedRestart(sessionId);
+          }
         } catch (restoreError) {
           console.warn('[pinvou3][aux-chat] restore after discard failure failed', restoreError);
           if (generationRef.current !== generation) return;

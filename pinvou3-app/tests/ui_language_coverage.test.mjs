@@ -584,8 +584,8 @@ assert.match(auxChatPanel, /const restartEpochByTask = new Map\(\);/);
 assert.match(auxChatPanel, /const sentEpoch = restartEpochByTask\.get\(sentTaskId\) \|\| 0;/);
 assert.match(
   restartBlock,
-  /generationRef\.current \+= 1;\s*const generation = generationRef\.current;[\s\S]{0,400}?restartEpochByTask\.set\(sessionId, \(restartEpochByTask\.get\(sessionId\) \|\| 0\) \+ 1\);[\s\S]{0,400}?try \{/,
-  'the restart epoch must be bumped in the restart-entry block, before the discard is issued',
+  /generationRef\.current \+= 1;\s*const generation = generationRef\.current;[\s\S]{0,500}?const restartEpoch = \(restartEpochByTask\.get\(sessionId\) \|\| 0\) \+ 1;\s*restartEpochByTask\.set\(sessionId, restartEpoch\);[\s\S]{0,400}?try \{/,
+  'the restart epoch must be bumped in the restart-entry block, before the discard is issued, and captured for the latest-restart gate (round-30 D1)',
 );
 // The UI-touching part (visible draft clear, snapshot pull) stays
 // binding-gated after the store-map consumption.
@@ -707,7 +707,7 @@ assert.match(auxChatPanel, /if \(event\.repeat\) return;/);
 // by handleRestart's own copies. Anchor to the effect's closing deps line
 // and assert the anchors resolve, so a future rename fails loudly.
 const rebindStart = auxChatPanel.indexOf('const generation = generationRef.current + 1;');
-const rebindEnd = auxChatPanel.indexOf('}, [auxChat, sessionId, pullSnapshot]);');
+const rebindEnd = auxChatPanel.indexOf('}, [auxChat, sessionId, pullSnapshot, bindingRetryTick]);');
 assert.ok(
   rebindStart >= 0 && rebindEnd > rebindStart,
   'rebind effect anchors must resolve (a vacuous slice would pass on handleRestart copies)',
@@ -808,11 +808,15 @@ assert.match(
 // MAJOR-24-3: the survival marker is set by the failed-discard restore
 // (generation-gated), and the restore consumes the delivered draft itself
 // when no ack is pending — precisely, only while the stored draft still
-// equals the recorded sent text.
+// equals the recorded sent text. Round-30 D1: both steps are additionally
+// gated on this restart still being the task's latest — the generation
+// gates are per-instance, so a newer restart on a remounted panel (the
+// round-22 stuck-escape window) would otherwise leave this stale
+// continuation resurrecting the marker against a destroyed transcript.
 assert.match(
   restartBlock,
-  /pullSnapshot\(restoredAuxId\);[\s\S]{0,300}?restartDiscardFailedByTask\.add\(sessionId\);\s*consumeDeliveredDraftAfterFailedRestart\(sessionId\);/,
-  'the failed-discard restore must mark survival and run the delivered-draft fixup',
+  /pullSnapshot\(restoredAuxId\);[\s\S]{0,300}?if \(restartEpochByTask\.get\(sessionId\) === restartEpoch\) \{\s*restartDiscardFailedByTask\.add\(sessionId\);\s*consumeDeliveredDraftAfterFailedRestart\(sessionId\);\s*\}/,
+  'the failed-discard restore must mark survival and run the delivered-draft fixup only while it is still the task\'s latest restart (round-30 D1)',
 );
 assert.match(
   auxChatPanel,
@@ -872,6 +876,27 @@ assert.match(
   /subscribeTaskListeners\(discardStuckListenersByTask, sessionId, \(\) => \{\s*if \(sessionIdRef\.current !== sessionId\) return;\s*const stuck = discardStuckByTask\.has\(sessionId\);\s*[\s\S]{0,300}?setDiscardStuck\(stuck\);\s*if \(stuck\) \{\s*setRestarting\(false\);\s*setBindingPending\(false\);/,
   'the stuck-notify listener must re-mirror the marker and apply the watchdog latch releases',
 );
+// Round-30 D2: when the notification is the orphaned stuck discard's late
+// SETTLE (not a re-arm — that registers a fresh discard before clearing the
+// marker and owns the re-ensure itself), the restart's own re-ensure is
+// unreachable past a rebind/remount (generation gate or dead instance) and
+// the settle finally just removed the recovery banner — the panel would sit
+// with a null binding, no banner and an Enter that silently no-ops. The
+// listener must re-arm the bind effect, keyed on "no discard in flight"
+// (the settle deletes the registry entry before clearing the marker and
+// notifying, so this distinguishes settle from re-arm), and the effect must
+// depend on the token.
+assert.match(
+  auxChatPanel,
+  /if \(stuck\) \{\s*setRestarting\(false\);\s*setBindingPending\(false\);\s*return;\s*\}\s*[\s\S]{0,200}?if \(!discardInFlightByTask\.has\(sessionId\)\) \{\s*setBindingRetryTick\(\(tick\) => tick \+ 1\);\s*\}/,
+  'the stuck-notify listener must re-arm the bind effect when a stuck discard settles with nothing left to re-bind the panel (round-30 D2)',
+);
+assert.match(auxChatPanel, /const \[bindingRetryTick, setBindingRetryTick\] = useState\(0\);/);
+assert.match(
+  auxChatPanel,
+  /\}, \[auxChat, sessionId, pullSnapshot, bindingRetryTick\]\);/,
+  'the bind effect must re-run on the bindingRetryTick token (round-30 D2)',
+);
 // Round-25 minor: both restart-stage ensures carry the same settle bound as
 // the registries; a hung ensure must not latch restarting forever.
 assert.match(auxChatPanel, /const ENSURE_WATCHDOG_MS = 180_000;/);
@@ -883,10 +908,20 @@ assert.equal(
 // Round-25 minor: a discard rejection awaited across a task round trip must
 // surface discardFailed on the rebind instead of silently re-binding the old
 // transcript (the restart catch is generation-gated and can no longer see it).
+// Round-30 D1: the bookkeeping marker add must be epoch-gated — the round-22
+// stuck-escape lets a newer restart enter and complete before this orphaned
+// discard's rejection lands, and its entry already cleared the marker; an
+// ungated re-add misclassifies the fresh window's next kept ack as delivered
+// and deletes the draft kept as recovery material.
 assert.match(
   auxChatPanel,
-  /pendingDiscard\.then\(ensureAfterDiscard, \(error\) => \{[\s\S]{0,400}?setDiscardFailed\(true\);\s*restartDiscardFailedByTask\.add\(sessionId\);[\s\S]{0,400}?consumeDeliveredDraftAfterFailedRestart\(sessionId\);/,
-  'the rebind must surface an awaited-discard rejection AND carry the failed-restart bookkeeping (round-28 B1: marker + restore fixup, parity with the restart catch)',
+  /const awaitedDiscardEpoch = restartEpochByTask\.get\(sessionId\) \|\| 0;/,
+  'the rebind must capture the restart epoch before awaiting a pending discard (round-30 D1)',
+);
+assert.match(
+  auxChatPanel,
+  /pendingDiscard\.then\(ensureAfterDiscard, \(error\) => \{[\s\S]{0,400}?setDiscardFailed\(true\);\s*if \(\(restartEpochByTask\.get\(sessionId\) \|\| 0\) === awaitedDiscardEpoch\) \{\s*restartDiscardFailedByTask\.add\(sessionId\);\s*\}[\s\S]{0,400}?consumeDeliveredDraftAfterFailedRestart\(sessionId\);/,
+  'the rebind must surface an awaited-discard rejection AND carry the failed-restart bookkeeping (round-28 B1: marker + restore fixup, parity with the restart catch), with the marker add epoch-gated against newer restarts (round-30 D1)',
 );
 assert.match(source('features/pet/PetSettingsSection.jsx'), /t\.uiPetSettings/);
 assert.match(conversation, /conversationCopy\(copy\)/);
