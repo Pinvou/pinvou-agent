@@ -263,9 +263,15 @@ const removeSendIfOwner = (taskId, sendPromise) => {
   if (sendInFlightByTask.get(taskId) === sendPromise) sendInFlightByTask.delete(taskId);
 };
 
+// Round-29 B1: the failsafe must also run after the invoke settles — the
+// coalesced-turn case it was built for (turn_started and the turn-terminal
+// events landing in one render batch, so busy is never observed) still
+// resolves the dispatch ack, so gating the callback on the registry entry
+// left exactly that case with zero recovery. The entry delete stays
+// identity-gated (only a never-settling invoke can still own it here); the
+// latch release is the callback's own responsibility, guarded there.
 const armSendWatchdog = (taskId, sendPromise, onFailsafe) => setTimeout(() => {
-  if (sendInFlightByTask.get(taskId) !== sendPromise) return;
-  sendInFlightByTask.delete(taskId);
+  if (sendInFlightByTask.get(taskId) === sendPromise) sendInFlightByTask.delete(taskId);
   onFailsafe();
 }, SEND_WATCHDOG_MS);
 
@@ -643,6 +649,10 @@ export function AuxChatPanel({ sessionId, activationKey, t, theme, onClose, onAc
     // initiated for this task since this dispatch", not binding equality
     // (round-23 MAJOR-4).
     const sentEpoch = restartEpochByTask.get(sentTaskId) || 0;
+    // Failsafe ownership token (round-29 B1): a rebind or restart resets the
+    // send latch, so the watchdog may only release it while the generation
+    // and binding captured here still own the panel.
+    const sendGeneration = generationRef.current;
     if (!auxChat || !sentAuxId || !hasSendContent(text, quoteBlock) || busy || restarting || sendingRef.current) return;
     // The registry is the guard that survives rebinds: the rebind effect
     // resets sendingRef on every task switch, so a switch away and back while
@@ -671,17 +681,28 @@ export function AuxChatPanel({ sessionId, activationKey, t, theme, onClose, onAc
     // survived.
     sentTextByTask.set(sentTaskId, text);
     sentQuotesByTask.set(sentTaskId, quotes);
-    // Send-latch failsafe (round-23 should-fix 1), the send-side twin of the
-    // discard watchdog: the busy-gated latch release above the timeline only
-    // fires if a render observes busy=true — when turn_started and the
-    // turn-terminal events coalesce into one render batch (fast-failing
-    // turns, relay event bursts), busy is never true and the latch and this
-    // registry entry would stick with no recovery path. Past the bound (the
-    // web lane's invoke timeout, same as the discard watchdog), release both:
-    // a still-running turn makes the next dispatch surface the backend's
-    // honest busy rejection, a finished one just un-deads the composer; New
-    // Topic remains the recovery for the never-settling invoke itself.
-    const sendWatchdog = armSendWatchdog(sentTaskId, sendPromise, () => {
+    // Send-latch failsafe (round-23 should-fix 1, round-29 B1), the send-side
+    // twin of the discard watchdog: the busy-gated latch release above the
+    // timeline only fires if a render observes busy=true — when turn_started
+    // and the turn-terminal events coalesce into one render batch
+    // (fast-failing turns, relay event bursts), busy is never true and the
+    // latch and this registry entry would stick with no recovery path. The
+    // timer is NOT cancelled when the invoke settles: the coalesced case
+    // resolves the dispatch ack like any other, so cancelling on settle left
+    // exactly the named case dead (round-29 B1). At the bound (the web
+    // lane's invoke timeout, same as the discard watchdog) the failsafe
+    // releases the latch only while this send still owns it — same
+    // generation and binding, latch still held, and the snapshot not busy
+    // (a busy snapshot means turn_started did land and the busy-gated
+    // release owns the latch). A still-running turn makes the next dispatch
+    // surface the backend's honest busy rejection, a finished one just
+    // un-deads the composer; New Topic remains the recovery for the
+    // never-settling invoke itself (whose registry entry the watchdog
+    // deletes by identity inside armSendWatchdog).
+    armSendWatchdog(sentTaskId, sendPromise, () => {
+      if (!sendingRef.current) return;
+      if (generationRef.current !== sendGeneration || auxIdRef.current !== sentAuxId) return;
+      if (auxChatBusy(normalizeAuxSnapshot(auxChat.snapshot(sentAuxId)))) return;
       sendingRef.current = false;
       setSending(false);
     });
@@ -780,7 +801,11 @@ export function AuxChatPanel({ sessionId, activationKey, t, theme, onClose, onAc
         setSending(false);
       }
     } finally {
-      clearTimeout(sendWatchdog);
+      // The watchdog is deliberately NOT cancelled here (round-29 B1): this
+      // resolve is only the dispatch ack, and the coalesced turn-events case
+      // the failsafe covers settles the same way — cancelling re-deadened
+      // exactly that path. The fired failsafe no-ops once the latch has been
+      // released by the busy-gated effect or the failure path above.
       // The registry entry is removed by the exact send that registered it,
       // unconditionally — unlike the component latch it must not depend on
       // the binding state, or a send settling after a rebind would leak the
@@ -1085,7 +1110,10 @@ export function AuxChatPanel({ sessionId, activationKey, t, theme, onClose, onAc
   // oxlint-disable-next-line react/memo-dependencies -- referenced in the discard-failure restore
   }, [auxChat, sessionId, restartArmed, restarting, pullSnapshot]);
 
-  const composerDisabled = !auxChat || !auxId || busy || restarting;
+  // sendInFlight included (round-29 M2): the send latch already makes Enter
+  // a silent no-op through the dispatch window; an enabled-looking button
+  // doing the same just hid that state.
+  const composerDisabled = !auxChat || !auxId || busy || restarting || sendInFlight;
 
   return (
     <RightDockPanel

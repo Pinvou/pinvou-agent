@@ -752,27 +752,34 @@ assert.match(auxChatPanel, /if \(sendInFlightByTask\.has\(sentTaskId\)\) return;
 assert.match(auxChatPanel, /sendInFlightByTask\.set\(sentTaskId, sendPromise\);/);
 assert.match(auxChatPanel, /finally \{[\s\S]{0,700}?removeSendIfOwner\(sentTaskId, sendPromise\);/);
 assert.match(auxChatPanel, /const removeSendIfOwner = \(taskId, sendPromise\) => \{\s*if \(sendInFlightByTask\.get\(taskId\) === sendPromise\) sendInFlightByTask\.delete\(taskId\);\s*\};/);
-// Send-latch failsafe (round-23 should-fix 1): the busy-gated release only
-// fires if a render observes busy=true — turn_started and the turn-terminal
-// events coalescing into one render batch (fast-failing turns, relay bursts)
-// never do, and the latch and the registry entry would stick with no
-// recovery. A dispatch outliving SEND_WATCHDOG_MS (the web lane's invoke
-// timeout, same bound as the discard watchdog) releases both, gated on
-// registry-entry identity so a settled or replaced send is never touched.
+// Send-latch failsafe (round-23 should-fix 1, round-29 B1): the busy-gated
+// release only fires if a render observes busy=true — turn_started and the
+// turn-terminal events coalescing into one render batch (fast-failing
+// turns, relay bursts) never do, and the latch and the registry entry would
+// stick with no recovery. A dispatch outliving SEND_WATCHDOG_MS (the web
+// lane's invoke timeout, same bound as the discard watchdog) releases both.
+// Round-29 B1: the timer must NOT be cancelled on settle — the coalesced
+// case resolves the dispatch ack like any other, so cancelling left exactly
+// the named case with zero recovery. The entry delete stays gated on
+// registry-entry identity; the latch release is guarded inside the failsafe
+// (latch still held, same generation and binding, snapshot not busy) so it
+// can only release this send's own latch.
 assert.match(auxChatPanel, /const SEND_WATCHDOG_MS = 180_000;/);
 assert.match(
   auxChatPanel,
-  /const armSendWatchdog = \(taskId, sendPromise, onFailsafe\) => setTimeout\(\(\) => \{\s*if \(sendInFlightByTask\.get\(taskId\) !== sendPromise\) return;\s*sendInFlightByTask\.delete\(taskId\);\s*onFailsafe\(\);\s*\}, SEND_WATCHDOG_MS\);/,
-  'the send watchdog must release the registry entry by promise identity and hand the latch release to the owner',
+  /const armSendWatchdog = \(taskId, sendPromise, onFailsafe\) => setTimeout\(\(\) => \{\s*if \(sendInFlightByTask\.get\(taskId\) === sendPromise\) sendInFlightByTask\.delete\(taskId\);\s*onFailsafe\(\);\s*\}, SEND_WATCHDOG_MS\);/,
+  'the send watchdog must delete the registry entry by promise identity and ALWAYS run the failsafe (round-29 B1: gating the callback on the entry deadened the coalesced-turn case)',
 );
 assert.match(
   auxChatPanel,
-  /const sendWatchdog = armSendWatchdog\(sentTaskId, sendPromise, \(\) => \{\s*sendingRef\.current = false;\s*setSending\(false\);\s*\}\);/,
+  /armSendWatchdog\(sentTaskId, sendPromise, \(\) => \{\s*if \(!sendingRef\.current\) return;\s*if \(generationRef\.current !== sendGeneration \|\| auxIdRef\.current !== sentAuxId\) return;\s*if \(auxChatBusy\(normalizeAuxSnapshot\(auxChat\.snapshot\(sentAuxId\)\)\)\) return;\s*sendingRef\.current = false;\s*setSending\(false\);\s*\}\);/,
+  'the settled-send failsafe must release only this send\'s latch: latch-held, generation, binding and not-busy guards (round-29 B1)',
 );
-assert.match(
+assert.match(auxChatPanel, /const sendGeneration = generationRef\.current;/);
+assert.doesNotMatch(
   auxChatPanel,
-  /\} finally \{\s*clearTimeout\(sendWatchdog\);/,
-  'the send watchdog must be cancelled when the send settles',
+  /clearTimeout\(sendWatchdog\)/,
+  'the send watchdog must NOT be cancelled when the send settles (round-29 B1: the coalesced-turn case resolves the dispatch ack too)',
 );
 // Double-banner guard (round-9 minor-1): entering the restart flow must
 // clear a stale sendFailed too, or a failed send's "retry" banner renders
