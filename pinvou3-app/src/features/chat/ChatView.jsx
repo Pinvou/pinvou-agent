@@ -1418,6 +1418,16 @@ const ToolWelcomeCard = ({ toolId, t, onSend }) => {
         // eslint-disable-next-line react-hooks/set-state-in-effect -- synchronously reset dock highlight when the panel unmounts; one-shot mirror, same pattern as CodexAcpView
         setAuxChatDockActive(false);
       }, [auxChatPanel, activeSessionId]);
+      // The panel stays mounted across main-session switches (it rebinds), but
+      // the recorded dock-restore target must not: it was captured against the
+      // PREVIOUS task's dock context, so applying it to the new task pops a
+      // stale panel (the native browser webview included) over whatever the
+      // user is on (round-30 D3). The subagent panel gets the same reset by
+      // closing outright on the switch.
+      useEffect(() => {
+        // eslint-disable-next-line react-hooks/set-state-in-effect -- one-shot reset of the restore target on session switch; the subagent panel's close-on-switch is the same mirror
+        setAuxChatPanel((current) => (current ? { ...current, restorePanelId: null } : current));
+      }, [activeSessionId]);
       const rememberScrollBeforeSubagentPanelChange = useCallback(() => {
         subagentPanelScrollRef.current = captureConversationScrollPosition(
           scrollRef.current,
@@ -1590,10 +1600,10 @@ const ToolWelcomeCard = ({ toolId, t, onSend }) => {
           setAuxChatPanel(null);
           return true;
         };
-        if (browserDockOpen && onRightDockPanelSelectionChange) {
+        if (browserDockOpen && restorePanelId && onRightDockPanelSelectionChange) {
           return invokeObservedPanelSelection(
             onRightDockPanelSelectionChange,
-            [restorePanelId || 'browser', requestedSessionId, publishClose],
+            [restorePanelId, requestedSessionId, publishClose],
             reportRightDockSelectionFailure,
           );
         }

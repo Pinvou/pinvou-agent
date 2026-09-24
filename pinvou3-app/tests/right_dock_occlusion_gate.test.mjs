@@ -11,6 +11,7 @@ const read = (path) => readFileSync(new URL(path, import.meta.url), 'utf8');
 const rightDock = read('../src/components/layout/RightDock.jsx');
 const composerPopover = read('../src/components/ComposerPopover.jsx');
 const attachmentDrop = read('../src/features/attachments/AttachmentDropOverlay.jsx');
+const auxQuoteSelection = read('../src/features/aux-chat/AuxQuoteSelection.jsx');
 const chatView = read('../src/features/chat/ChatView.jsx');
 const main = read('../src/app/main.jsx');
 
@@ -25,6 +26,12 @@ test('RightDock occlusion is a publication permit rather than a post-commit noti
 test('every child overlay that can cover the native browser waits for the permit', () => {
   assert.match(composerPopover, /if \(!open \|\| !publicationReady\) return null/);
   assert.match(attachmentDrop, /if \(active && !publicationReady\) return null/);
+  // The aux quote popover portals a `fixed` viewport-clamped button to <body>
+  // (round-30 D4): with the dock open it can land inside the native surface,
+  // and its zero-rect fallback centers on the viewport — so it must hold the
+  // same occlusion permit as the other overlays before painting.
+  assert.match(auxQuoteSelection, /useRightDockOcclusion\(\s*'aux-quote-selection',[\s\S]*?!!popover\s*\)/);
+  assert.match(auxQuoteSelection, /if \(!popover \|\| !publicationReady\) return null/);
   assert.match(chatView, /voiceAsrSetupPublicationReady && \(\(\) =>/);
   assert.match(chatView, /data-testid="voice-asr-setup-dialog"/);
   assert.match(
@@ -61,12 +68,14 @@ test('subagent selection and its first render share the App ACK-gated publicatio
 });
 
 test('closing the aux chat panel restores the dock panel recorded at open', () => {
-  // Same parity intent as the subagent panel: the first open records
+  // Full parity with the subagent panel (round-30 D3): the first open records
   // restorePanelId (repeat opens keep the first record) and close jumps back
-  // to the recorded panel. Unlike the subagent panel, an unrecorded close
-  // still falls back to 'browser' — deliberate divergence: when the aux panel
-  // was opened with the dock closed, falling back to the dock's default pane
-  // beats leaving the dock with no selection.
+  // to the recorded panel — and ONLY to a recorded panel. The earlier aux
+  // copy dropped the `restorePanelId &&` guard and fell back to 'browser',
+  // so any close without a record (aux opened with the dock closed, or after
+  // a session switch) popped the native browser webview over the panel the
+  // user was actually on — and its own rationale contradicted the
+  // `browserDockOpen === true` guard the branch sits behind.
   // Anchor-resolution guards (the vacuous-slice class ui_language_coverage
   // fixed for its own slices): a renamed anchor would make indexOf return -1
   // and the pair-slice run to near-EOF, letting these assertions pass on
@@ -82,7 +91,28 @@ test('closing the aux chat panel restores the dock panel recorded at open', () =
   const closeBlock = chatView.slice(closeStart, closeEnd);
   assert.match(openBlock, /restorePanelId: current[\s\S]*?current\.restorePanelId[\s\S]*?rightDockActivePanelId/);
   assert.match(closeBlock, /const restorePanelId = auxChatPanel\?\.restorePanelId \|\| null/);
-  assert.match(closeBlock, /\[restorePanelId \|\| 'browser', requestedSessionId, publishClose\]/);
+  // Subagent-pattern parity: the dock restore runs only with a recorded
+  // target (no 'browser' fallback), matching closeSubagentPanel exactly.
+  assert.match(
+    closeBlock,
+    /if \(browserDockOpen && restorePanelId && onRightDockPanelSelectionChange\) \{/,
+    'closeAuxChatPanel must gate the dock restore on a recorded target (round-30 D3: the dropped guard popped the native browser webview over the current panel)',
+  );
+  assert.match(closeBlock, /\[restorePanelId, requestedSessionId, publishClose\]/);
+  assert.doesNotMatch(
+    closeBlock,
+    /restorePanelId \|\| 'browser'/,
+    'no browser fallback: an unrecorded close must leave the dock selection alone (round-30 D3)',
+  );
+  // The recorded target must not outlive a session switch (round-30 D3): the
+  // aux panel rebinds instead of closing, so without an explicit reset task
+  // A's recorded target would apply to task B (the subagent panel gets the
+  // same reset by closing outright).
+  assert.match(
+    chatView,
+    /setAuxChatPanel\(\(current\) => \(current \? \{ \.\.\.current, restorePanelId: null \} : current\)\);\s*\}, \[activeSessionId\]\);/,
+    'restorePanelId must reset on session switch (round-30 D3)',
+  );
   // Round-26 minor M5: the close publishes through the same currency guard as
   // closeSubagentPanel — a rapid close→open must invalidate the stale close's
   // dock restore, or it settles out of order and leaves the dock on the

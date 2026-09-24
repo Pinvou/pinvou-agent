@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useRef, useState } from 'react';
 import { createPortal } from 'react-dom';
 import { Quote } from '../../components/icons.jsx';
+import { useRightDockOcclusion } from '../../components/layout/RightDock.jsx';
 import { stageAuxQuote } from './aux-quote.mjs';
 
 /**
@@ -19,6 +20,13 @@ const POPOVER_ESTIMATED_WIDTH = 168;
 
 export function AuxQuoteSelection({ containerRef, sessionId, copy, onQuote }) {
   const [popover, setPopover] = useState(null);
+  // Same native-surface permit as every other overlay that can cover the
+  // dock's browser WebView (round-30 D4): the button portals to <body> with
+  // `fixed` viewport-clamped coordinates, so with the dock open it can land
+  // inside the native surface (and the zero-rect fallback centers on the
+  // viewport, which a wide dock always contains) — paint it only once the
+  // occlusion publication owns the native hide ACK.
+  const publicationReady = useRightDockOcclusion('aux-quote-selection', !!popover);
   const hideTimerRef = useRef(null);
   // The mouseup/keyup evaluation is deferred by one macrotask; without
   // tracking that timer, the mouseup that clicked the quote button schedules
@@ -171,7 +179,7 @@ export function AuxQuoteSelection({ containerRef, sessionId, copy, onQuote }) {
     if (onQuote) onQuote();
   }, [copy, hidePopover, onQuote, popover, sessionId]);
 
-  if (!popover) return null;
+  if (!popover || !publicationReady) return null;
   return createPortal(
     <button
       type="button"
