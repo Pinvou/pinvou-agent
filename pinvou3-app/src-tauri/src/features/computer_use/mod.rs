@@ -41,8 +41,16 @@ mod tool;
 mod types;
 
 // ---- Tool and shared state (tool / guard): consumed by the composition root and Tauri commands ----
-// `remove_session_audit` is the session-deletion hook: the audit trail is the
-// one computer-use artifact that outlives the session that produced it.
+// `remove_session_audit` is the session-deletion hook. It covers the audit
+// trail, which lives outside the session directory (`~/.pinvou3/computer-use/`)
+// and is therefore not reached by the session wipe.
+//
+// Screenshots are deliberately NOT covered. A session with no bound workspace
+// keeps them under its own session directory, which goes with the session; a
+// workspace-bound session wrote them into the directory the *user* chose,
+// where they are ordinary artifacts of their project. Deleting from there
+// because a chat session was removed would be the tool reaching outside its
+// own storage. The per-directory retention cap is what bounds those.
 pub use self::audit::remove_session_audit;
 pub use self::guard::{ComputerUseShared, GrantOutcome};
 pub use self::tool::ComputerUseTool;
