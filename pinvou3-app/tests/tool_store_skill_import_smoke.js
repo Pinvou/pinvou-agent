@@ -40,7 +40,6 @@ function injectSource() {
       check_for_update:function(){return {available:false};},
       get_mode_state:function(){return {mode:'yolo',plan_phase:'none'};},
       get_super_permission_status:function(){return false;},
-      detect_local_vllm_setup:function(){return {eligible:false};},
       list_marketplace_tools:function(){return [];},
       get_marketplace_tool_auth_status:function(){return {status:'not_installed'};},
       list_marketplace_skills:function(){return [

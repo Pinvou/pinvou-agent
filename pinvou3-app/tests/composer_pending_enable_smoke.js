@@ -77,7 +77,6 @@ function injectSource() {
         case 'list_workspace_files': case 'get_session_persona_events': case 'get_session_pinvou_reviews': case 'get_session_timeline': return Promise.resolve([]);
         case 'get_mode_state': return Promise.resolve({mode:'yolo',plan_phase:'none'});
         case 'get_active_persona': return Promise.resolve(null);
-        case 'detect_local_vllm_setup': return Promise.resolve({eligible:false});
         case 'list_marketplace_tools': return Promise.resolve([]);
         case 'list_marketplace_skills': return Promise.resolve([
           {id:'visualizer',title:'数据分析可视化',description:'Chart.js 仪表盘',installed:true,user_uploaded:false},

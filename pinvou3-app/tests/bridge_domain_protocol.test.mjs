@@ -221,7 +221,10 @@ const expectedProtocolHashes = {
   // Recomputed for the dead-code cleanup: the dead saveSettingsAndRestart
   // wrapper (save_settings_and_restart invoke) was removed — no production
   // caller; the plain saveSettings + restart_app path stays the update route.
-  settings: '6ec54b363e711927cb1ac65fbb9c468fa8255c89ad49e7c1e695acca131fcb3a',
+  // Recomputed for the preinstalled-model startup removal: the
+  // detect_local_vllm_setup / bootstrap_local_vllm / decline_local_vllm_setup
+  // invokes left with the dead one-click setup chain.
+  settings: '2ceb4dabd59dc3c2eec0046915ccb04d7003035040511f961e15409fc4eb990a',
   // Recomputed for the dead-code cleanup: the never-emitted
   // remote_control:status / remote_control:session_created listeners were
   // removed, and the update:progress listener plus its coalescing timer
