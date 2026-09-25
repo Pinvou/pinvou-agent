@@ -2669,8 +2669,11 @@ const NAV_PREFETCH = {
           // `color_scheme` is the authoritative preference (system/light/dark);
           // `theme` mirrors the resolved value so consumers that only know the
           // legacy field (e.g. an older build running after a downgrade) keep rendering.
+          // Resolve against the current OS snapshot rather than the React hook:
+          // the media-query change event may not have reached `systemDark` yet
+          // when the user picks "system", which would persist a stale appearance.
           bridge.settings.saveSettings({
-            theme: resolveTheme(scheme, systemDark) === 'dark' ? 'genesis' : 'liquid-light',
+            theme: resolveTheme(scheme) === 'dark' ? 'genesis' : 'liquid-light',
             color_scheme: scheme,
           });
         }
