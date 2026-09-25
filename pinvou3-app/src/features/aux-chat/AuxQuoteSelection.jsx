@@ -1,39 +1,42 @@
 import { useCallback, useEffect, useRef, useState } from 'react';
-import { createPortal } from 'react-dom';
 import { Quote } from '../../components/icons.jsx';
-import { useRightDockOcclusion } from '../../components/layout/RightDock.jsx';
 import { stageAuxQuote } from './aux-quote.mjs';
+import {
+  quoteChipPosition,
+  resolveDismissedSelection,
+  selectionRangeDescriptor,
+} from './aux-quote-selection-state.mjs';
 
 /**
  * Selection-to-quote bridge on the MAIN conversation timeline: selecting text
  * inside `containerRef` surfaces a small floating action that stages the
  * excerpt as a pending aux-chat quote for this task and opens the aux panel.
  *
- * Rendering mirrors the existing SelectionCopyButton vocabulary (absolute
- * floating chip, fixed positioning through a body portal so scroll containers
- * cannot clip it). The button is suppressed entirely while the task has no
- * aux chat (null sessionId: no session / sched- runs / external ACP).
+ * Rendering mirrors the existing SelectionCopyButton vocabulary: an absolute
+ * floating chip positioned INSIDE the conversation column, clamped to the
+ * container's rect (the mount sites mark the container `relative`). A
+ * text-selection affordance is not modal and never covers the right dock, so
+ * it deliberately stays out of the dock-occlusion registry — registering
+ * would hide every dock panel for the duration of a selection. The button is
+ * suppressed entirely while the task has no aux chat (null sessionId: no
+ * session / sched- runs / external ACP).
  */
-
-const POPOVER_GAP = 8;
-const POPOVER_ESTIMATED_WIDTH = 168;
 
 export function AuxQuoteSelection({ containerRef, sessionId, copy, onQuote }) {
   const [popover, setPopover] = useState(null);
-  // Same native-surface permit as every other overlay that can cover the
-  // dock's browser WebView (round-30 D4): the button portals to <body> with
-  // `fixed` viewport-clamped coordinates, so with the dock open it can land
-  // inside the native surface (and the zero-rect fallback centers on the
-  // viewport, which a wide dock always contains) — paint it only once the
-  // occlusion publication owns the native hide ACK.
-  const publicationReady = useRightDockOcclusion('aux-quote-selection', !!popover);
   const hideTimerRef = useRef(null);
   // The mouseup/keyup evaluation is deferred by one macrotask; without
   // tracking that timer, the mouseup that clicked the quote button schedules
   // an evaluation which runs AFTER handleQuote's hide/error state and
   // resurrects the popover over a successful quote (or overwrites the
-  // over-limit error before its window, round-28 minor N8).
+  // over-limit error before its window).
   const evaluateTimerRef = useRef(null);
+  // Escape dismiss latch: Escape does not collapse the DOM selection, so the
+  // always-live keyup evaluation would re-derive the popover from the
+  // unchanged selection one macrotask after hidePopover(). The descriptor of
+  // the dismissed range suppresses that re-derivation until the selection
+  // genuinely changes or collapses (see aux-quote-selection-state.mjs).
+  const dismissedRangeRef = useRef(null);
 
   const hidePopover = useCallback(() => {
     if (hideTimerRef.current) {
@@ -53,13 +56,17 @@ export function AuxQuoteSelection({ containerRef, sessionId, copy, onQuote }) {
   }, []);
 
   // Evaluate the live selection against the timeline container. Everything
-  // runs in a rAF after mouseup/keyup so the browser has already settled the
-  // final selection range.
+  // runs in a macrotask after mouseup/keyup so the browser has already
+  // settled the final selection range.
   const evaluateSelection = useCallback(() => {
     const container = containerRef && containerRef.current;
     if (!sessionId || !container || typeof window === 'undefined' || !window.getSelection) return;
     const selection = window.getSelection();
-    if (!selection || selection.rangeCount === 0 || selection.isCollapsed) {
+    const descriptor = selectionRangeDescriptor(selection);
+    const latch = resolveDismissedSelection(dismissedRangeRef.current, descriptor);
+    dismissedRangeRef.current = latch.dismissed;
+    if (latch.suppress) return;
+    if (!descriptor) {
       hidePopover();
       return;
     }
@@ -72,57 +79,52 @@ export function AuxQuoteSelection({ containerRef, sessionId, copy, onQuote }) {
       hidePopover();
       return;
     }
-    const { anchorNode, focusNode } = selection;
-    if (!anchorNode || !focusNode || !container.contains(anchorNode) || !container.contains(focusNode)) {
+    if (!container.contains(descriptor.anchorNode) || !container.contains(descriptor.focusNode)) {
       hidePopover();
       return;
     }
-    const range = selection.getRangeAt(0);
-    const rect = range.getBoundingClientRect();
+    const rect = selection.getRangeAt(0).getBoundingClientRect();
     if (!rect) {
       hidePopover();
       return;
     }
-    // A hidden/unlaid-out window (minimized, WebView suspended) reports a
-    // zero-size rect; the selection itself is still valid, so fall back to a
-    // viewport-clamped anchor instead of dropping the quote action.
-    const anchorWidth = rect.width > 0 ? rect.width : 120;
-    const anchorLeft = rect.width > 0 ? rect.left : window.innerWidth / 2 - anchorWidth / 2;
-    const anchorTop = rect.height > 0 ? rect.top : Math.min(window.innerHeight - 60, 120);
-    const left = Math.max(
-      POPOVER_GAP,
-      Math.min(anchorLeft + anchorWidth / 2 - POPOVER_ESTIMATED_WIDTH / 2, window.innerWidth - POPOVER_ESTIMATED_WIDTH - POPOVER_GAP),
-    );
-    const top = Math.max(POPOVER_GAP, anchorTop - 36 - POPOVER_GAP);
+    const containerRect = container.getBoundingClientRect();
+    if (!containerRect) {
+      hidePopover();
+      return;
+    }
+    const { left, top } = quoteChipPosition(containerRect, rect);
     setPopover({ text: text.trim(), left, top });
   }, [containerRef, hidePopover, sessionId]);
 
   useEffect(() => {
+    dismissedRangeRef.current = null;
     // eslint-disable-next-line react-hooks/set-state-in-effect -- one-shot mirror: dismiss the popover synchronously whenever the task changes, so no stale selection from the previous task outlives the switch
     hidePopover();
     if (!sessionId) return;
-    const onMouseUp = (event) => {
-      if (event.button !== 0) return;
+    const scheduleEvaluation = () => {
       // setTimeout, not rAF: the WebView suspends animation frames while its
       // window is hidden, and a selection made headlessly (automation) would
       // never surface the action; a macrotask fires in every visibility state.
       // The timer is tracked so hidePopover can cancel a pending evaluation
-      // that would resurrect the popover (round-28 minor N8).
+      // that would resurrect the popover.
       evaluateTimerRef.current = setTimeout(() => {
         evaluateTimerRef.current = null;
         evaluateSelection();
       }, 0);
+    };
+    const onMouseUp = (event) => {
+      if (event.button !== 0) return;
+      scheduleEvaluation();
     };
     const onKeyUp = () => {
       // No key whitelist: a whitelist misses selection-changing keys outside
       // the shift/arrow family — most importantly Ctrl+A ("a"), the standard
       // keyboard path to select a whole assistant reply. Evaluating on every
       // keyup mirrors the unconditional mouseup handler and is cheap: a
-      // collapsed selection just hides (or no-ops) the popover.
-      evaluateTimerRef.current = setTimeout(() => {
-        evaluateTimerRef.current = null;
-        evaluateSelection();
-      }, 0);
+      // collapsed selection just hides (or no-ops) the popover, and a range
+      // the user dismissed with Escape is suppressed by the latch.
+      scheduleEvaluation();
     };
     document.addEventListener('mouseup', onMouseUp);
     document.addEventListener('keyup', onKeyUp);
@@ -141,7 +143,14 @@ export function AuxQuoteSelection({ containerRef, sessionId, copy, onQuote }) {
       hidePopover();
     };
     const onKeyDown = (event) => {
-      if (event.key === 'Escape') hidePopover();
+      if (event.key !== 'Escape') return;
+      // Latch the dismissed range BEFORE hiding: the keyup that follows this
+      // keydown schedules an evaluation, and Escape leaves the DOM selection
+      // intact, so without the latch the chip would reappear immediately.
+      dismissedRangeRef.current = selectionRangeDescriptor(
+        window.getSelection ? window.getSelection() : null,
+      );
+      hidePopover();
     };
     const onSelectionChange = () => {
       const selection = window.getSelection ? window.getSelection() : null;
@@ -178,9 +187,8 @@ export function AuxQuoteSelection({ containerRef, sessionId, copy, onQuote }) {
     if (result.duplicate) {
       // The exact excerpt is already staged: adding it would be a no-op, so
       // say so instead of letting the opening panel read as "added a second
-      // chip" (round-30 D5). The panel still opens — the quote IS part of
-      // the next message — and the notice explains why the count did not
-      // change.
+      // chip". The panel still opens — the quote IS part of the next
+      // message — and the notice explains why the count did not change.
       setPopover({ ...popover, error: copy.quoteDuplicate });
       if (hideTimerRef.current) clearTimeout(hideTimerRef.current);
       hideTimerRef.current = setTimeout(hidePopover, 1800);
@@ -191,8 +199,8 @@ export function AuxQuoteSelection({ containerRef, sessionId, copy, onQuote }) {
     if (onQuote) onQuote();
   }, [copy, hidePopover, onQuote, popover, sessionId]);
 
-  if (!popover || !publicationReady) return null;
-  return createPortal(
+  if (!popover) return null;
+  return (
     <button
       type="button"
       data-aux-quote-selection="true"
@@ -200,16 +208,17 @@ export function AuxQuoteSelection({ containerRef, sessionId, copy, onQuote }) {
       title={popover.error || copy.quoteAction}
       onMouseDown={(event) => { event.preventDefault(); event.stopPropagation(); }}
       onClick={(event) => { event.preventDefault(); event.stopPropagation(); handleQuote(); }}
-      className={`fixed z-40 h-8 max-w-[280px] truncate rounded-[10px] px-3 flex items-center gap-1.5 text-[12px] font-medium shadow-lg backdrop-blur transition-colors ${
+      className={`absolute z-40 h-8 max-w-[280px] truncate rounded-[10px] px-3 flex items-center gap-1.5 text-[12px] font-medium shadow-lg backdrop-blur transition-colors ${
         popover.error
           ? 'bg-white text-red-600 border border-red-500/30 dark:bg-[#2B2C2F] dark:text-red-300 dark:border-red-400/30'
           : 'bg-white text-[#1F1F1F] hover:bg-[#F8FAFF] border border-black/10 dark:bg-[#2B2C2F] dark:text-[#E3E3E3] dark:hover:bg-[#34363A] dark:border-white/10'
       }`}
-      style={{ left: popover.left + 'px', top: popover.top + 'px' }}
+      // margin: 0: the ChatView column is a `space-y-4` stack whose sibling
+      // margin rule also matches absolutely positioned children.
+      style={{ left: popover.left + 'px', top: popover.top + 'px', margin: 0 }}
     >
       <Quote size={13} className="shrink-0" />
       <span className="truncate">{popover.error || copy.quoteAction}</span>
-    </button>,
-    document.body,
+    </button>
   );
 }

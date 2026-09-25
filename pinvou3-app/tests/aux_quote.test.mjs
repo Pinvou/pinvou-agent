@@ -12,6 +12,14 @@ import {
   stageAuxQuote,
   subscribeAuxQuotes,
 } from '../src/features/aux-chat/aux-quote.mjs';
+import {
+  QUOTE_CHIP_ESTIMATED_WIDTH,
+  QUOTE_CHIP_GAP,
+  quoteChipPosition,
+  resolveDismissedSelection,
+  sameRangeDescriptor,
+  selectionRangeDescriptor,
+} from '../src/features/aux-chat/aux-quote-selection-state.mjs';
 import { projectAuxChatTurns } from '../src/features/aux-chat/aux-chat-state.mjs';
 
 test('buildAuxQuoteBlock and parseAuxQuotedMessage round trip consistently', () => {
@@ -219,4 +227,110 @@ test('projectAuxChatTurns projects a quote-only message as empty body + quote ch
   assert.equal(turns.length, 1);
   assert.equal(turns[0].userText, '');
   assert.deepEqual(turns[0].userQuotes, [{ text: 'only a quote' }]);
+});
+
+// ── Selection popover decisions (aux-quote-selection-state.mjs) ──
+//
+// Fake selections: plain objects stand in for DOM nodes (identity comparison
+// only), mirroring the aux-chat-state.mjs pure-helper test pattern.
+
+const fakeSelection = ({ anchor = {}, focus = anchor, anchorOffset = 0, focusOffset = 5, collapsed = false } = {}) => ({
+  rangeCount: 1,
+  isCollapsed: collapsed,
+  anchorNode: anchor,
+  anchorOffset,
+  focusNode: focus,
+  focusOffset,
+});
+
+test('selectionRangeDescriptor captures endpoints and rejects collapsed/invalid selections', () => {
+  assert.equal(selectionRangeDescriptor(null), null);
+  assert.equal(selectionRangeDescriptor({ rangeCount: 0, isCollapsed: false }), null);
+  assert.equal(selectionRangeDescriptor(fakeSelection({ collapsed: true })), null);
+  assert.equal(selectionRangeDescriptor({ rangeCount: 1, isCollapsed: false, anchorNode: null, focusNode: {} }), null);
+  const anchor = {};
+  const focus = {};
+  assert.deepEqual(
+    selectionRangeDescriptor(fakeSelection({ anchor, focus, anchorOffset: 2, focusOffset: 9 })),
+    { anchorNode: anchor, anchorOffset: 2, focusNode: focus, focusOffset: 9 },
+  );
+});
+
+test('sameRangeDescriptor compares by node identity and offsets', () => {
+  const shared = {};
+  const a = { anchorNode: shared, anchorOffset: 0, focusNode: shared, focusOffset: 5 };
+  assert.equal(sameRangeDescriptor(a, { ...a }), true);
+  assert.equal(sameRangeDescriptor(a, { ...a, focusOffset: 6 }), false);
+  // same shape, different node instances: a genuinely new range
+  assert.equal(sameRangeDescriptor(a, { anchorNode: {}, anchorOffset: 0, focusNode: {}, focusOffset: 5 }), false);
+  assert.equal(sameRangeDescriptor(null, a), false);
+  assert.equal(sameRangeDescriptor(a, null), false);
+});
+
+test('Escape latch: the same keypress must not resurrect the dismissed popover (M2)', () => {
+  // Sequence from the bug report: select text → chip appears → Escape keydown
+  // latches the live range and hides → the same keypress's keyup re-evaluates
+  // one macrotask later with the selection UNCHANGED (Escape does not
+  // collapse a DOM selection).
+  const selection = fakeSelection();
+  const dismissed = selectionRangeDescriptor(selection);
+  const afterEscapeKeyup = resolveDismissedSelection(dismissed, selectionRangeDescriptor(selection));
+  assert.equal(afterEscapeKeyup.suppress, true, 'an unchanged selection must stay suppressed after Escape');
+  assert.equal(afterEscapeKeyup.dismissed, dismissed, 'the latch survives while the selection is unchanged');
+  // Any later keypress (e.g. Ctrl+C to copy) re-evaluates the same range and
+  // must stay suppressed too.
+  const afterCopy = resolveDismissedSelection(afterEscapeKeyup.dismissed, selectionRangeDescriptor(selection));
+  assert.equal(afterCopy.suppress, true);
+});
+
+test('Escape latch clears when the selection genuinely changes or collapses (M2)', () => {
+  const dismissed = selectionRangeDescriptor(fakeSelection());
+  // Collapse (click elsewhere): latch clears and nothing is suppressed.
+  const collapsed = resolveDismissedSelection(dismissed, null);
+  assert.deepEqual(collapsed, { dismissed: null, suppress: false });
+  // A new range (even over the same text with fresh node tokens) clears the
+  // latch, so a deliberate re-selection raises the chip again.
+  const reselected = resolveDismissedSelection(dismissed, selectionRangeDescriptor(fakeSelection()));
+  assert.deepEqual(reselected, { dismissed: null, suppress: false });
+  // Extending the same selection (shift+arrow changes the focus offset) is a
+  // genuine change too.
+  const anchor = {};
+  const extended = resolveDismissedSelection(
+    selectionRangeDescriptor(fakeSelection({ anchor, focusOffset: 5 })),
+    selectionRangeDescriptor(fakeSelection({ anchor, focusOffset: 8 })),
+  );
+  assert.deepEqual(extended, { dismissed: null, suppress: false });
+  // No latch → never suppress.
+  assert.deepEqual(resolveDismissedSelection(null, selectionRangeDescriptor(fakeSelection())), {
+    dismissed: null,
+    suppress: false,
+  });
+});
+
+test('quoteChipPosition clamps the chip inside the conversation column (M1)', () => {
+  const containerRect = { left: 200, top: 100, width: 800, height: 2000 };
+  // Centered over the selection, relative to the container.
+  const centered = quoteChipPosition(containerRect, { left: 500, top: 400, width: 100, height: 20 });
+  assert.equal(centered.left, 500 + 50 - QUOTE_CHIP_ESTIMATED_WIDTH / 2 - 200);
+  assert.equal(centered.top, 400 - 100 - 36 - QUOTE_CHIP_GAP);
+  // A selection hugging the right edge clamps to the column's inner right
+  // edge — the chip can never extend past the column into the right dock.
+  const rightEdge = quoteChipPosition(containerRect, { left: 950, top: 400, width: 40, height: 20 });
+  assert.equal(rightEdge.left, 800 - QUOTE_CHIP_ESTIMATED_WIDTH - QUOTE_CHIP_GAP);
+  // Left edge and top edge clamp to the gap.
+  const leftEdge = quoteChipPosition(containerRect, { left: 200, top: 400, width: 10, height: 20 });
+  assert.equal(leftEdge.left, QUOTE_CHIP_GAP);
+  const topEdge = quoteChipPosition(containerRect, { left: 500, top: 104, width: 100, height: 20 });
+  assert.equal(topEdge.top, QUOTE_CHIP_GAP);
+});
+
+test('quoteChipPosition falls back to a container-centered anchor for a zero rect', () => {
+  // Hidden/suspended WebView: the selection is valid but layout reports a
+  // zero-size rect; the quote action must survive at a clamped fallback.
+  const containerRect = { left: 0, top: 0, width: 800, height: 2000 };
+  const fallback = quoteChipPosition(containerRect, { left: 0, top: 0, width: 0, height: 0 });
+  assert.equal(fallback.left, 800 / 2 - 120 / 2 + 120 / 2 - QUOTE_CHIP_ESTIMATED_WIDTH / 2);
+  assert.equal(fallback.top, 120 - 36 - QUOTE_CHIP_GAP);
+  const noRect = quoteChipPosition(containerRect, null);
+  assert.deepEqual(noRect, fallback);
 });

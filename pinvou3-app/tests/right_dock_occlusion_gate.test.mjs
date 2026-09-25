@@ -26,12 +26,6 @@ test('RightDock occlusion is a publication permit rather than a post-commit noti
 test('every child overlay that can cover the native browser waits for the permit', () => {
   assert.match(composerPopover, /if \(!open \|\| !publicationReady\) return null/);
   assert.match(attachmentDrop, /if \(active && !publicationReady\) return null/);
-  // The aux quote popover portals a `fixed` viewport-clamped button to <body>
-  // (round-30 D4): with the dock open it can land inside the native surface,
-  // and its zero-rect fallback centers on the viewport — so it must hold the
-  // same occlusion permit as the other overlays before painting.
-  assert.match(auxQuoteSelection, /useRightDockOcclusion\(\s*'aux-quote-selection',[\s\S]*?!!popover\s*\)/);
-  assert.match(auxQuoteSelection, /if \(!popover \|\| !publicationReady\) return null/);
   assert.match(chatView, /voiceAsrSetupPublicationReady && \(\(\) =>/);
   assert.match(chatView, /data-testid="voice-asr-setup-dialog"/);
   assert.match(
@@ -42,6 +36,27 @@ test('every child overlay that can cover the native browser waits for the permit
     chatView,
     /artifactsVisible && artifactsFullscreen && artifactFullscreenPublicationReady && createPortal/,
   );
+});
+
+test('the aux quote chip is NOT an occlusion consumer: it stays inside the conversation column', () => {
+  // The genuine occlusion users above are all modal or fullscreen overlays
+  // that can cover the dock's native browser WebView. The quote chip is a
+  // text-selection affordance: it renders absolutely positioned INSIDE the
+  // conversation column (no portal) with coordinates clamped to the
+  // container rect, so it can never reach the native surface. Registering an
+  // occlusion here is not a paint permit — rightDockSnapshot computes
+  // activePanelId = null while ANY occlusion is registered, so merely
+  // selecting conversation text collapsed every dock panel and reflowed the
+  // main column. Keep this as a negative pin.
+  assert.doesNotMatch(auxQuoteSelection, /useRightDockOcclusion/);
+  assert.doesNotMatch(auxQuoteSelection, /createPortal/);
+  assert.match(auxQuoteSelection, /quoteChipPosition\(containerRect, rect\)/);
+  assert.match(auxQuoteSelection, /absolute z-40/);
+  // Both mount sites must mark the conversation container `relative` so the
+  // chip's absolute coordinates resolve against the column it is clamped to.
+  assert.match(chatView, /ref=\{conversationContentRef\} className="relative max-w-\[800px\]/);
+  const codexAcp = read('../src/features/codex/CodexAcpView.jsx');
+  assert.match(codexAcp, /ref=\{conversationContentRef\} className="relative w-full max-w-\[920px\]/);
 });
 
 test('App reserves BrowserView suspension in the same gated publication batch', () => {

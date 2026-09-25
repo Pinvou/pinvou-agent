@@ -2657,7 +2657,8 @@ const ToolWelcomeCard = ({ toolId, t, onSend }) => {
             )}
 
             {hasMessages && (
-              <div ref={conversationContentRef} className="max-w-[800px] w-full min-w-0 mx-auto space-y-4">
+              // relative: the AuxQuoteSelection chip is absolutely positioned inside this column, clamped to its rect.
+              <div ref={conversationContentRef} className="relative max-w-[800px] w-full min-w-0 mx-auto space-y-4">
                 <ConversationTimeline
                     turns={conversationProjection.turns}
                     copy={t.uiConversation}
