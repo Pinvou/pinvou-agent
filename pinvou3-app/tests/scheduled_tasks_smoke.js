@@ -515,9 +515,18 @@ async function openScheduledNav(page) {
     rename.click();
   });
   await page.waitForSelector('input', { timeout: 10000 });
-  await page.keyboard.down('Control');
-  await page.keyboard.press('A');
-  await page.keyboard.up('Control');
+  // Select the existing title through the DOM rather than a synthetic Ctrl/Cmd+A:
+  // Chrome does not turn injected modifier chords into its SelectAll editing
+  // command, and on macOS Ctrl+A is "move to line start" rather than select-all
+  // anyway. Without a selection the typed title is appended to the old one, which
+  // only ever passed because CI runs this suite on Linux. scene_cards_smoke.js
+  // uses el.select() for the same reason. The rename field is autoFocus, so
+  // asserting it owns focus also pins that behaviour.
+  await page.evaluate(() => {
+    const input = document.activeElement;
+    if (!input || input.tagName !== 'INPUT') throw new Error('rename input did not take focus');
+    input.select();
+  });
   await page.keyboard.type('重命名后的时尚新闻记录');
   await page.keyboard.press('Enter');
   await page.waitForFunction(() => {
