@@ -1,6 +1,7 @@
+import { createHash } from 'node:crypto';
 import { cpSync, existsSync, mkdirSync, readFileSync, readdirSync } from 'node:fs';
 import { extname, join, resolve } from 'node:path';
-import { defineConfig } from 'vite';
+import { defineConfig, minify } from 'vite';
 import react from '@vitejs/plugin-react';
 
 import {
@@ -99,6 +100,118 @@ function conditionalPlatformScripts(webBuild) {
     name: 'pinvou-conditional-platform-scripts',
     transformIndexHtml(html) {
       return transformIndexHtmlForPlatform(webBuild, html);
+    },
+  };
+}
+
+const startupBundleExcludedScripts = new Set([
+  // legacy-polyfills.js must precede every bundled script on each entry, and
+  // pet.html/reader.html also load it standalone.
+  'shared/legacy-polyfills.js',
+  // The Web bootstrap resolves its policy and WebSocket endpoints relative to
+  // document.currentScript. It must retain its own URL instead of observing a
+  // generated bundle URL.
+  'platform/web/bootstrap.js',
+  // personas-i18n.js has no static tag — it is injected at runtime by the
+  // inline loader in index.html, which the manifest parser skips. Listed so
+  // the never-bundle contract stays explicit if it ever gains a static tag.
+  'features/personas/personas-i18n.js',
+  // update-notice-logic.js carries its own onload/onerror lifecycle marks.
+  'features/updater/update-notice-logic.js',
+]);
+// Static classic tags that intentionally stay unbundled: desktop loads the
+// polyfill and update-notice-logic, web additionally keeps bootstrap.js. The
+// retained-set contract test pins the exact list per platform.
+const unbundledStartupScriptCount = webBuild => webBuild ? 3 : 2;
+
+export function classicStartupBundlePaths(webBuild, indexHtml = readFileSync(join(sourceRoot, 'index.html'), 'utf8')) {
+  return localClassicScriptPaths(indexHtml).filter((relative) => {
+    if (startupBundleExcludedScripts.has(relative)) return false;
+    if (webBuild) return !relative.startsWith('platform/tauri/');
+    return !relative.startsWith('platform/web/');
+  });
+}
+
+export function transformIndexHtmlForClassicBundle(webBuild, html, bundlePaths, bundleFiles) {
+  const remaining = new Set(bundlePaths);
+  let inserted = false;
+  const transformed = html.split('\n').map((line) => {
+    const match = scriptSrcLinePattern.exec(line);
+    if (!match) return line;
+    const source = match[1].split(/[?#]/u, 1)[0];
+    const relative = bundlePaths.find(candidate => source === candidate
+      || source === `%BASE_URL%${candidate}`
+      || source.endsWith(`/${candidate}`));
+    if (!relative) return line;
+    remaining.delete(relative);
+    if (inserted) return '';
+    inserted = true;
+    const prefix = source.slice(0, -relative.length);
+    const indentation = line.match(/^\s*/u)[0];
+    return bundleFiles.map((bundleFile, index) => {
+      const lifecycle = !webBuild && index === bundleFiles.length - 1
+        ? ' onload="__PINVOU_STARTUP__.mark(\'app:tauri_bridge_loaded\')" onerror="__PINVOU_STARTUP__.mark(\'app:tauri_bridge_error\')"'
+        : '';
+      return `${indentation}<script src="${prefix}${bundleFile}"${lifecycle}></script>`;
+    }).join('\n');
+  }).join('\n');
+  if (!inserted || remaining.size > 0) {
+    throw new Error(`Classic startup bundle paths missing from transformed index: ${[...remaining].join(', ')}`);
+  }
+  return transformed;
+}
+
+function bundleClassicStartup(webBuild) {
+  const bundlePaths = classicStartupBundlePaths(webBuild);
+  const bundlePrefix = `startup/pinvou-${webBuild ? 'web' : 'desktop'}-classic`;
+  // Soft per-request cap: a single minified source larger than the cap (e.g.
+  // platform/web/bridge.js) becomes its own oversize bundle instead of being
+  // split — a classic script cannot be divided across load boundaries.
+  const maxBundleBytes = 80_000;
+  let bundles;
+  return {
+    name: 'pinvou-bundle-classic-startup',
+    apply: 'build',
+    async buildStart() {
+      const minifiedSources = [];
+      for (const relative of bundlePaths) {
+        const source = readFileSync(resolveContainedRuntimePath(sourceRoot, relative), 'utf8');
+        const result = await minify(relative, source, {});
+        if (result.errors.length > 0 || typeof result.code !== 'string') {
+          throw new Error(`Could not minify ${relative}: ${result.errors.map(error => error.message).join('; ') || 'minifier returned no code'}`);
+        }
+        minifiedSources.push(result.code);
+      }
+      const groupedSources = [];
+      let current = '';
+      for (const code of minifiedSources) {
+        const next = current ? `${current};\n${code}` : code;
+        if (current && Buffer.byteLength(next) > maxBundleBytes) {
+          groupedSources.push(current);
+          current = code;
+        } else {
+          current = next;
+        }
+      }
+      if (current) groupedSources.push(current);
+      bundles = groupedSources.map((source, index) => ({
+        source,
+        fileName: `${bundlePrefix}-${index + 1}-${createHash('sha256').update(source).digest('hex').slice(0, 8)}.js`,
+      }));
+      const startupScriptCount = bundles.length + unbundledStartupScriptCount(webBuild);
+      if (startupScriptCount > 10) {
+        throw new Error(`Classic startup script budget exceeded: ${startupScriptCount} > 10`);
+      }
+    },
+    transformIndexHtml(html, context) {
+      if (!context.path.endsWith('/index.html')) return html;
+      const bundleFiles = bundles.map(bundle => bundle.fileName);
+      return transformIndexHtmlForClassicBundle(webBuild, html, bundlePaths, bundleFiles);
+    },
+    generateBundle() {
+      bundles.forEach(({ fileName, source }) => {
+        this.emitFile({ type: 'asset', fileName, source });
+      });
     },
   };
 }
@@ -208,7 +321,13 @@ export default defineConfig(({ mode }) => {
     port: Number(process.env.PINVOU3_UI_DEV_PORT || 1420),
     strictPort: true,
   },
-  plugins: [react(), copyRuntimeAssets(), enforceAcpLazyChunk(), conditionalPlatformScripts(webBuild)],
+  plugins: [
+    react(),
+    copyRuntimeAssets(),
+    enforceAcpLazyChunk(),
+    conditionalPlatformScripts(webBuild),
+    bundleClassicStartup(webBuild),
+  ],
   build: {
     outDir: webBuild ? '../../remote-control-relay/web/dist' : '../dist',
     emptyOutDir: true,
