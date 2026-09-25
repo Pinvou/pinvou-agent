@@ -351,17 +351,28 @@ impl SessionStore {
         // cache guard — the file mutex is what keeps the two RMWs from
         // interleaving.
         let _io = self.session_models_io.lock();
-        let mut models = self.session_models.write();
-        let previous = models.get(id).cloned();
-        match model_id {
-            Some(mid) => {
-                models.insert(id.to_string(), mid);
+        // The cache write guard is scoped to the switch, not held across the
+        // durable RMW below (which reads the file, serializes, fsyncs and
+        // renames). `session_model_override` is read on the chat send path, so
+        // holding it across an fsync parks every send behind disk latency —
+        // and it buys nothing: `session_models_io`, already held, is what
+        // serializes this method against itself and against the purge.
+        // Matches the scoping `set_pinned` / `set_hidden` already use.
+        let (previous, desired) = {
+            let mut models = self.session_models.write();
+            let previous = models.get(id).cloned();
+            match model_id {
+                Some(mid) => {
+                    models.insert(id.to_string(), mid);
+                }
+                None => {
+                    models.remove(id);
+                }
             }
-            None => {
-                models.remove(id);
-            }
-        }
-        if let Err(error) = apply_session_model_mutation(id, models.get(id).map(String::as_str)) {
+            (previous, models.get(id).cloned())
+        };
+        if let Err(error) = apply_session_model_mutation(id, desired.as_deref()) {
+            let mut models = self.session_models.write();
             match previous {
                 Some(previous) => {
                     models.insert(id.to_string(), previous);
@@ -425,7 +436,15 @@ impl SessionStore {
         self.pinned_sessions.read().get(id).cloned()
     }
 
-    pub fn set_pinned(&self, id: &str, pinned: bool) {
+    /// Pins or unpins the session, durably.
+    ///
+    /// Returns the persist failure rather than only logging it: the caller is
+    /// a user action with an optimistic UI, and a governance write the user
+    /// can see take effect and then silently revert on the next read is
+    /// indistinguishable from a bug. Same contract as
+    /// [`SessionStore::set_session_model_id`] and `set_mode_and_persist`.
+    /// The in-memory cache is rolled back either way.
+    pub fn set_pinned(&self, id: &str, pinned: bool) -> Result<()> {
         // One critical section for the cache switch, the durable id-level
         // RMW and the compensated rollback: without the io mutex two
         // concurrent mutators (or the retention purge) interleave their file
@@ -472,10 +491,11 @@ impl SessionStore {
                     pins.remove(id);
                 }
             }
-            // Session ids stay out of the log line: the failing sidecar
-            // file, named in the error context, identifies the write.
-            eprintln!("[sessions] persist pin state failed: {error:#}");
+            // Session ids stay out of the context: the failing sidecar
+            // file, named in the error chain, identifies the write.
+            return Err(error).context("persist pin state");
         }
+        Ok(())
     }
 
     pub fn save_pinned_sessions(&self) {
@@ -484,30 +504,58 @@ impl SessionStore {
     }
 
     pub fn load_pinned_sessions(&self) {
+        let file = crate::platform::paths::sessions_root().join(PINNED_SESSIONS_FILE);
+        // Absent counts as loaded: the save path deletes the file exactly when
+        // the map empties, so "no file" really is "no pins". Only a file that
+        // is present and unusable leaves the boot map unknown rather than
+        // empty — see `pinned_sessions_loaded`.
+        let absent = !file.exists();
         if let Some(pins) =
             load_timestamped_id_map(PINNED_SESSIONS_FILE, "pinned_at", "load_pinned_sessions")
         {
             *self.pinned_sessions.write() = pins;
+            self.pinned_sessions_loaded
+                .store(true, std::sync::atomic::Ordering::Relaxed);
+        } else if absent {
+            self.pinned_sessions_loaded
+                .store(true, std::sync::atomic::Ordering::Relaxed);
         }
     }
 
     /// Durable pin protection for a retention sweep: the pin file is the
     /// cross-process truth, so the sweep re-reads it instead of trusting the
     /// map loaded at boot — a GUI pin made after this process started must
-    /// still protect the session from this process's sweep. Any missing,
-    /// unreadable, or unparseable file keeps the boot-time map: the save path
-    /// deletes the file exactly when the map empties, and a torn read (an
-    /// externally corrupted or legacy non-atomic file) must never widen the
-    /// eviction set.
-    pub(crate) fn durable_pinned_sessions(&self) -> std::collections::HashSet<String> {
+    /// still protect the session from this process's sweep.
+    ///
+    /// `None` means the exemption set is *unknown*: the file is present but
+    /// unreadable or unparseable, and the boot-time load failed on the same
+    /// condition, so the in-memory map is empty because of the fault rather
+    /// than because there are no pins. Falling back to it there would hand the
+    /// sweep an empty exemption set and delete every pinned session, so the
+    /// caller must refuse to evict instead. When the boot load did succeed the
+    /// map is a trustworthy subset (the file broke after boot) and is returned
+    /// — a subset can only narrow the eviction set, never widen it.
+    pub(crate) fn durable_pinned_sessions(&self) -> Option<std::collections::HashSet<String>> {
         let file = crate::platform::paths::sessions_root().join(PINNED_SESSIONS_FILE);
-        std::fs::read_to_string(&file)
-            .ok()
-            .and_then(|content| {
-                parse_timestamped_id_map(&content, "pinned_at", "load_pinned_sessions")
-            })
-            .map(|pins| pins.into_keys().collect())
-            .unwrap_or_else(|| self.pinned_sessions.read().keys().cloned().collect())
+        let parsed = match std::fs::read_to_string(&file) {
+            Ok(content) => parse_timestamped_id_map(&content, "pinned_at", "load_pinned_sessions"),
+            // Absent is authoritative: the save path removes the file when the
+            // last pin goes away.
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
+                return Some(std::collections::HashSet::new());
+            }
+            Err(_) => None,
+        };
+        if let Some(pins) = parsed {
+            return Some(pins.into_keys().collect());
+        }
+        if self
+            .pinned_sessions_loaded
+            .load(std::sync::atomic::Ordering::Relaxed)
+        {
+            return Some(self.pinned_sessions.read().keys().cloned().collect());
+        }
+        None
     }
 
     pub fn is_hidden(&self, id: &str) -> bool {
@@ -518,7 +566,9 @@ impl SessionStore {
         self.hidden_sessions.read().get(id).cloned()
     }
 
-    pub fn set_hidden(&self, id: &str, hidden: bool) {
+    /// Archives or un-archives the session, durably. Reports the persist
+    /// failure for the same reason as [`SessionStore::set_pinned`].
+    pub fn set_hidden(&self, id: &str, hidden: bool) -> Result<()> {
         // Same single-critical-section contract as `set_pinned` (its own io
         // mutex; the nested `set_pinned` below takes the pin mutex, never the
         // reverse, so the ordering is acyclic).
@@ -534,7 +584,12 @@ impl SessionStore {
             }
         }
         if hidden {
-            self.set_pinned(id, false);
+            // Best-effort: hiding is the user's stated direction and a
+            // session that stays pinned is still hidden. Its own persist
+            // failure is already reported on its own channel.
+            if let Err(error) = self.set_pinned(id, false) {
+                eprintln!("[sessions] clearing the pin while archiving failed: {error:#}");
+            }
         }
         let result = if hidden {
             apply_timestamped_id_mutation_locked(
@@ -567,8 +622,9 @@ impl SessionStore {
                     hidden_sessions.remove(id);
                 }
             }
-            eprintln!("[sessions] persist hidden state failed: {error:#}");
+            return Err(error).context("persist hidden state");
         }
+        Ok(())
     }
 
     pub fn save_hidden_sessions(&self) {

@@ -1429,12 +1429,12 @@ fn scheduled_session_metadata_dispatch_supports_rename_pin_archive() {
     );
 
     // set_session_pinned 路径：共用置顶表。
-    store.set_pinned(&id, true);
+    store.set_pinned(&id, true).expect("pin");
     assert!(store.is_pinned(&id));
     assert!(store.pinned_at(&id).is_some());
 
     // set_session_archived 路径：共用收起表,且归档列表能列出 sched-* 会话。
-    store.set_hidden(&id, true);
+    store.set_hidden(&id, true).expect("archive");
     assert!(store.is_hidden(&id));
     assert!(
         store
@@ -1445,7 +1445,7 @@ fn scheduled_session_metadata_dispatch_supports_rename_pin_archive() {
     );
     // 收起会强制取消置顶(与普通会话一致)。
     assert!(!store.is_pinned(&id));
-    store.set_hidden(&id, false);
+    store.set_hidden(&id, false).expect("restore");
     assert!(!store.is_hidden(&id));
 
     // 删除不允许绕过 automation 联动直删。

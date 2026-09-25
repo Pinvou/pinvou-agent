@@ -5695,13 +5695,9 @@ mod tests {
         );
     }
 
-    /// No host-level tool-call round limit under any feature combination:
-    /// `build_engine_config` must not configure `max_tool_calls` (upstream
-    /// `None` = unbounded, admission gate lazy). Runaway protection stays
-    /// with the foundation's max_steps, per-turn wall clock, bounded retries,
-    /// and cancel boundaries. The removed `PINVOU3_MAX_TOOL_CALLS` env knob
-    /// must stay dead: setting it must not resurrect a cap in either config
-    /// path.
+    /// The migration notice for the removed knob is emitted at most once per
+    /// process: an exported `PINVOU3_MAX_TOOL_CALLS` warns on the first
+    /// engine-config build and stays silent afterwards.
     #[test]
     fn removed_cap_warning_fires_once_per_gate() {
         let gate = std::sync::OnceLock::new();
@@ -5719,8 +5715,21 @@ mod tests {
         assert!(!removed_cap_env_warning(&gate));
     }
 
+    /// No host-level tool-call round limit under any feature combination:
+    /// `build_engine_config` must not configure `max_tool_calls` (upstream
+    /// `None` = unbounded, admission gate lazy). Runaway protection stays
+    /// with the foundation's max_steps, per-turn wall clock, bounded retries,
+    /// and cancel boundaries. The removed `PINVOU3_MAX_TOOL_CALLS` env knob
+    /// must stay dead: setting it must not resurrect a cap in either config
+    /// path. This is the test `scripts/fork-guard.sh` pins by name.
     #[test]
     fn engine_config_has_no_tool_call_cap() {
+        // Taken FIRST, before any `build_engine_config`: that call reads
+        // PINVOU3_MAX_TOOL_CALLS (to warn about it) and the sibling test
+        // above writes the same variable under this lock. Reading it outside
+        // the lock races that `set_var` — the exact unsoundness the env lock
+        // exists to prevent.
+        let (_lock, _env) = locked_env(&["PINVOU3_MAX_TOOL_CALLS"]);
         assert_eq!(
             fixture_bridge().build_engine_config().max_tool_calls,
             None,
@@ -5731,7 +5740,6 @@ mod tests {
             cfg.max_tool_calls, None,
             "per-session configs must not grow a tool-call cap either"
         );
-        let (_lock, _env) = locked_env(&["PINVOU3_MAX_TOOL_CALLS"]);
         // SAFETY: ENV_LOCK held; env writes are serialized across tests.
         unsafe { std::env::set_var("PINVOU3_MAX_TOOL_CALLS", "512") };
         assert_eq!(

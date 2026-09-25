@@ -768,10 +768,12 @@ impl L1Store {
         q: &str,
         lim: usize,
     ) -> rusqlite::Result<Vec<ChunkHit>> {
-        // Clamp before the `lim * 2` doubling below can overflow and before
-        // the SQL cast: usize::MAX would wrap to -1 (unbounded) in SQLite,
-        // and the doubling would panic in debug on huge inputs.
-        let lim = lim.min(crate::features::knowledge::store::SEARCH_LIMIT_CAP / 2);
+        // Defensive second clamp before the SQL cast (`usize::MAX` would wrap
+        // to -1, i.e. unbounded, in SQLite). The doubling that could overflow
+        // happens in the CALLER, so the clamp that prevents it lives there
+        // (`retrieve_for_chat_with_vector`) — a clamp here is reached only
+        // after the multiplication has already been evaluated.
+        let lim = lim.min(super::store::SEARCH_LIMIT_CAP);
         let c = self.conn.lock();
         let map = |r: &rusqlite::Row<'_>| -> rusqlite::Result<ChunkHit> {
             Ok(ChunkHit {
@@ -938,7 +940,14 @@ impl L1Store {
         k: usize,
         query_vector: Option<&[f32]>,
     ) -> rusqlite::Result<Vec<ChunkHit>> {
+        // Clamp here, before the doubling: `k` is caller-supplied, and
+        // `lim * 2` would overflow (debug panic / wrap in release) before
+        // either search function got a chance to bound it. Halving the cap
+        // keeps the doubled value inside it, so both arms of the hybrid merge
+        // are bounded by the same number — clamping only inside `search_fts`
+        // would leave the vector arm unbounded and skew the RRF merge.
         let lim = if k == 0 { 5 } else { k };
+        let lim = lim.min(super::store::SEARCH_LIMIT_CAP / 2);
         let fts = self.search_fts(collection_id, q, lim * 2)?;
         let ranked = if let Some(query_vector) = query_vector {
             let vec = self.search_vec(collection_id, query_vector, lim * 2)?;

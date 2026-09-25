@@ -27,7 +27,7 @@ use parking_lot::Mutex;
 use super::SessionStore;
 use super::scheduled::{SCHEDULED_PROFILE_SCHEMA_VERSION, ScheduledProfileRegistry};
 use super::scheduled::{ScheduledEngineState, ScheduledRunProfile, ScheduledTokenAccounting};
-use super::store::MAX_SESSIONS_PER_KIND;
+use super::store::{HEADLESS_SESSION_PREFIX, MAX_HEADLESS_SESSIONS, MAX_SESSIONS_PER_KIND};
 use super::validators::validate_session_id;
 use super::validators::{
     chat_session_file, scheduled_session_file, validate_scheduled_session_id,
@@ -126,18 +126,26 @@ impl SessionStore {
             .as_ref()
             .clone();
         let mut chat_count = 0usize;
+        let mut headless_count = 0usize;
         let mut deleted_ids = Vec::new();
         let mut delete_error = None;
         // Pinned sessions are the user's explicit "keep forever" mark: they
-        // count against neither the cap nor eviction. A headless `agent run`
-        // shares this 50-cap store by default; without the exemption a single
-        // batch run would silently delete the user's pinned GUI sessions (the
-        // cost is that an all-pinned store disables the cap and may exceed it —
-        // the natural consequence of pin semantics). The sweep consults the
-        // durable pin file, not the boot-time map: the motivating batch-run
-        // scenario has the GUI pinning sessions while this process is alive,
-        // and only the file reflects that.
-        let pinned = self.durable_pinned_sessions();
+        // count against neither the cap nor eviction. The sweep consults the
+        // durable pin file, not the boot-time map: a GUI pinning sessions
+        // while a headless batch is alive only shows up in the file.
+        //
+        // Unknown exemption set (the pin file is present but unusable AND the
+        // boot load failed the same way, so the in-memory map is empty because
+        // of the fault rather than because there are no pins): refuse to
+        // evict. Sitting over the cap is recoverable; deleting the sessions
+        // the user marked keep-forever is not.
+        let Some(pinned) = self.durable_pinned_sessions() else {
+            log::warn!(
+                "[sessions] retention sweep skipped: the pin file is present but unreadable, \
+                 so the keep-forever set is unknown and evicting could delete pinned sessions"
+            );
+            return Ok(());
+        };
         for metadata in sessions {
             // Scheduled sessions own additional records outside sessions/.
             // Generic chat cleanup must not delete only the transcript and
@@ -148,17 +156,36 @@ impl SessionStore {
             if pinned.contains(&metadata.id) {
                 continue;
             }
-            chat_count += 1;
-            if chat_count > MAX_SESSIONS_PER_KIND {
+            // Headless `agent run` sessions get their own budget instead of
+            // competing for the GUI chat budget.
+            //
+            // Sharing it made every default-keep headless run permanently
+            // consume one of the user's 50 chat slots and evict their oldest
+            // conversation — transcript, workspace, artifacts and checkpoints
+            // — with the only notice going to the headless process's stderr,
+            // which the desktop user never sees. Fifty runs erased the whole
+            // history. Separate budgets keep the feature's promise (the runs
+            // persist and are visible) without making a CLI invocation a
+            // destructive operation on GUI data. Same shape as the `sched-`
+            // carve-out above: an id prefix that identifies a non-chat origin.
+            let (count, cap) = if metadata.id.starts_with(HEADLESS_SESSION_PREFIX) {
+                (&mut headless_count, MAX_HEADLESS_SESSIONS)
+            } else {
+                (&mut chat_count, MAX_SESSIONS_PER_KIND)
+            };
+            *count += 1;
+            if *count > cap {
                 // Re-consult the durable pin file immediately before each
                 // delete: a pin landing mid-sweep (the GUI user pinning the
                 // oldest session while a headless batch sweeps) must protect
                 // it — the snapshot taken at sweep start predates it. The
                 // read is a tiny JSON file against an fsync'd record delete,
-                // and it never widens the eviction set (unreadable falls
-                // back to the boot map).
-                if self.durable_pinned_sessions().contains(&metadata.id) {
-                    continue;
+                // and it never widens the eviction set (an unusable file
+                // yields `None`, which we treat as "still protected").
+                match self.durable_pinned_sessions() {
+                    Some(fresh) if fresh.contains(&metadata.id) => continue,
+                    None => continue,
+                    Some(_) => {}
                 }
                 let id = metadata.id;
                 let (committed, result) = self.delete_session_record(&id);

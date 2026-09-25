@@ -517,17 +517,24 @@ fn git_diff_capped(
         .duration_since(UNIX_EPOCH)
         .map(|d| d.as_nanos())
         .unwrap_or(0);
-    let output_path = std::env::temp_dir().join(format!(
-        "pinvou3-checkpoint-diff-{}-{nanos}",
+    // The spill lives beside the shadow repo, not in the shared temp
+    // directory. The git child writes the UNFILTERED diff here, so on a crash
+    // or SIGKILL between the write and `TempDiffFile`'s drop the leftover is
+    // a full plaintext copy of the working tree's changes — including
+    // whatever the secret filter would have dropped. Under the ledger it is
+    // inside the same private tree as the snapshots themselves and goes away
+    // with the session; in `/tmp` it is a world-visible artifact with no
+    // reaper and an unbounded lifetime.
+    let spill_dir = repo.parent().unwrap_or(repo).to_path_buf();
+    let output_path = spill_dir.join(format!(
+        ".checkpoint-diff-{}-{nanos}.tmp",
         std::process::id()
     ));
     let _cleanup = TempDiffFile(&output_path);
-    // Create the spill file ourselves with private permissions: the git
-    // child writes the UNFILTERED diff here (the secret-path filter only
-    // runs after the read-back), and a child-created file would land
-    // world-readable in a shared temp directory. `git diff --output`
+    // Create the spill file ourselves with private permissions: a
+    // child-created file would follow the process umask. `git diff --output`
     // truncates an existing file and keeps its mode, so pre-creating with
-    // 0600 (a no-op constraint on Windows' per-user temp ACLs) is enough.
+    // 0600 is enough.
     crate::platform::filesystem::create_secret_file(&output_path).with_context(|| {
         format!(
             "create private checkpoint diff spill file {}",
@@ -1104,6 +1111,10 @@ fn marker_line_is_secret(line: &str) -> bool {
 /// index), and the preview must not carry the plaintext into the UI.
 /// Sections are buffered then judged (a header OR marker-line match drops
 /// the whole section; binary sections rely purely on the header parse).
+/// Lines are kept verbatim, terminators included: `str::lines` would strip a
+/// trailing `\r`, silently turning a CRLF project's diff into an LF one that
+/// no longer applies, and would append a newline to a patch that ended
+/// without one.
 fn filter_secret_paths_from_patch(patch: &str) -> String {
     let mut out = String::with_capacity(patch.len());
     let mut section: Vec<&str> = Vec::new();
@@ -1112,21 +1123,23 @@ fn filter_secret_paths_from_patch(patch: &str) -> String {
         if !*secret {
             for line in section.drain(..) {
                 out.push_str(line);
-                out.push('\n');
             }
         } else {
             section.clear();
         }
         *secret = false;
     };
-    for line in patch.lines() {
+    for raw_line in patch.split_inclusive('\n') {
+        // Judge on the content, emit the bytes: the predicates below match
+        // path prefixes and would not see through a trailing `\r\n`.
+        let line = raw_line.trim_end_matches('\n').trim_end_matches('\r');
         if line.starts_with("diff --git ") {
             flush(&mut out, &mut section, &mut section_secret);
             section_secret = diff_section_is_secret(line);
         } else if marker_line_is_secret(line) {
             section_secret = true;
         }
-        section.push(line);
+        section.push(raw_line);
     }
     flush(&mut out, &mut section, &mut section_secret);
     out
@@ -1168,11 +1181,30 @@ pub fn diff_checkpoint(
         &[
             "-c",
             "core.quotepath=false",
+            "-c",
+            "diff.noprefix=false",
+            "-c",
+            "diff.mnemonicPrefix=false",
+            // The secret-path filter parses `diff --git a/<p> b/<p>` and the
+            // `--- a/` / `+++ b/` markers, so the prefixes are part of its
+            // contract, not cosmetics. They are configurable
+            // (diff.noprefix, diff.srcPrefix, diff.dstPrefix,
+            // diff.mnemonicPrefix), and `isolated_git_command` only
+            // neutralizes the system and global config — the shadow repo's
+            // OWN config still applies, and for an unbound session that repo
+            // sits inside the directory the agent's own tools can write
+            // (see the ledger note on `restore_checkpoint`). A single
+            // `diff.noprefix = true` line there makes every section
+            // unparseable to the filter and passes `.env` plaintext straight
+            // into the preview. Pin them on the command line, where repo
+            // config cannot reach.
             "diff",
             "--cached",
             "-M",
             "--no-color",
             "--no-ext-diff",
+            "--src-prefix=a/",
+            "--dst-prefix=b/",
             &meta.commit,
         ],
         DIFF_PATCH_LIMIT,
@@ -2252,6 +2284,142 @@ mod tests {
             diff.patch.contains("ok.txt"),
             "正常文件差异必须保留在 patch: {:?}",
             diff.patch
+        );
+    }
+
+    /// The secret filter parses `a/` / `b/` path prefixes, and those prefixes
+    /// are configurable. `isolated_git_command` neutralizes the system and
+    /// global config but not the shadow repo's own, which for an unbound
+    /// session lives inside the directory the agent's tools can write. A
+    /// single `diff.noprefix = true` there used to make every section
+    /// unparseable and pass `.env` plaintext straight into the preview.
+    #[test]
+    fn diff_preview_filters_secrets_even_when_the_repo_config_drops_diff_prefixes() {
+        if !git_available() {
+            eprintln!("[checkpoints] skipping git-dependent test coverage: git is unavailable");
+            return;
+        }
+        let ledger = TestDir::new("noprefix-ledger");
+        let exec = TestDir::new("noprefix-exec");
+        exec.write("ok.txt", "v1\n");
+        exec.write(".env", "SECRET=old\n");
+        let repo = repo_dir(ledger.path());
+        fs::create_dir_all(&repo).unwrap();
+        git_ok(&repo, exec.path(), &["init"]).unwrap();
+        git_ok(&repo, exec.path(), &["config", "core.autocrlf", "false"]).unwrap();
+        // The hostile bit: repo-local config that strips the prefixes.
+        git_ok(&repo, exec.path(), &["config", "diff.noprefix", "true"]).unwrap();
+        git_ok(&repo, exec.path(), &["add", "-f", "ok.txt", ".env"]).unwrap();
+        let tree = git_ok(&repo, exec.path(), &["write-tree"])
+            .unwrap()
+            .trim()
+            .to_string();
+        let commit = git_ok(
+            &repo,
+            exec.path(),
+            &[
+                "-c",
+                "user.name=Pinvou",
+                "-c",
+                "user.email=pinvou@localhost",
+                "commit-tree",
+                &tree,
+                "-m",
+                "legacy snapshot",
+            ],
+        )
+        .unwrap()
+        .trim()
+        .to_string();
+        git_ok(
+            &repo,
+            exec.path(),
+            &["update-ref", "refs/checkpoints/np-1", &commit],
+        )
+        .unwrap();
+        save_index(
+            ledger.path(),
+            &CheckpointIndex {
+                version: 1,
+                entries: vec![CheckpointMeta {
+                    id: "np-1".into(),
+                    turn: Some(1),
+                    kind: CheckpointKind::Turn,
+                    label: String::new(),
+                    commit,
+                    created_at: 0,
+                }],
+            },
+        )
+        .unwrap();
+        exec.write("ok.txt", "v2\n");
+        exec.write(".env", "SECRET=current\n");
+        let diff = diff_checkpoint(ledger.path(), exec.path(), "np-1").unwrap();
+        assert!(
+            !diff.patch.contains("SECRET"),
+            "repo-local diff.noprefix must not defeat the secret filter: {:?}",
+            diff.patch
+        );
+        assert!(
+            !diff.patch.contains(".env"),
+            "repo-local diff.noprefix must not leak the secret path: {:?}",
+            diff.patch
+        );
+        assert!(
+            diff.patch.contains("ok.txt"),
+            "the non-secret section must still be rendered: {:?}",
+            diff.patch
+        );
+    }
+
+    /// The filter rewrites the patch line by line, so it must not silently
+    /// normalize line endings: a CRLF project's diff that comes back LF-only
+    /// no longer applies, and a patch without a trailing newline must not
+    /// grow one.
+    #[test]
+    fn secret_filter_preserves_line_endings_verbatim() {
+        let crlf = "diff --git a/ok.txt b/ok.txt\r\n--- a/ok.txt\r\n+++ b/ok.txt\r\n-a\r\n+b\r\n";
+        assert_eq!(
+            filter_secret_paths_from_patch(crlf),
+            crlf,
+            "CR bytes must survive the filter"
+        );
+        let no_trailing_newline = "diff --git a/ok.txt b/ok.txt\n-a\n+b";
+        assert_eq!(
+            filter_secret_paths_from_patch(no_trailing_newline),
+            no_trailing_newline,
+            "the filter must not append a terminator the input did not have"
+        );
+        // Still filters, with CRLF input.
+        let secret = "diff --git a/.env b/.env\r\n-SECRET=1\r\n";
+        assert_eq!(filter_secret_paths_from_patch(secret), "");
+    }
+
+    /// The checkpoint index carries the first 80 characters of user messages
+    /// as labels, so it must be created private and STAY private when
+    /// rewritten over a world-readable file from an older build.
+    #[test]
+    fn checkpoint_index_is_written_private() {
+        use crate::platform::test_support::{loosen_to_world_readable_for_test, permission_bits};
+        let ledger = TestDir::new("index-perms");
+        let index = CheckpointIndex {
+            version: 1,
+            entries: Vec::new(),
+        };
+        save_index(ledger.path(), &index).unwrap();
+        let path = index_path(ledger.path());
+        let Some(mode) = permission_bits(&path) else {
+            return; // the platform has no POSIX mode bits
+        };
+        assert_eq!(mode, 0o600, "a fresh checkpoint index must be private");
+
+        // An index left behind by a build that used fs::File::create.
+        assert!(loosen_to_world_readable_for_test(&path));
+        save_index(ledger.path(), &index).unwrap();
+        assert_eq!(
+            permission_bits(&path),
+            Some(0o600),
+            "a rewritten index must be tightened to private"
         );
     }
 
