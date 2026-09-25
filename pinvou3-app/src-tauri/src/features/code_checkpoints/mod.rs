@@ -47,9 +47,15 @@ pub use turns::count_user_turns_in_json;
 
 /// 每会话保留的 checkpoint 上限（LRU，超出裁掉最老条目）。
 const MAX_CHECKPOINTS: usize = 20;
-/// diff 预览的 patch 文本上限（超出截断，changes 清单不受影响）。pub 供 CLI
-/// 消费方直接引用本常量而非镜像字面量（与 codex_acp workspace 限值同一契约：
-/// 本处漂移必须断 CLI 的 build）。
+/// Cap on the diff preview's patch text (truncated beyond it; the `changes`
+/// list is unaffected).
+///
+/// `pub` for the stacked CLI families PR, so its renderer references this
+/// constant instead of mirroring the literal. No in-tree consumer today: the
+/// `pinvou-cli` workspace does not depend on this crate, so drift here breaks
+/// no existing build — same status as the `codex_acp::workspace` limits, and
+/// stated the same way now that the "must break the CLI build" claim has been
+/// checked and found untrue.
 pub const DIFF_PATCH_LIMIT: usize = 512 * 1024;
 /// 执行根体积门（对齐底座 snapshot 的 DEFAULT_MAX_WORKSPACE_BYTES_FOR_SNAPSHOT）：
 /// 超过 2GB 的目录不做快照——每轮全量 `add -A` 的 IO/CPU 与影子仓库存储都不
@@ -1202,6 +1208,15 @@ pub fn diff_checkpoint(
             "--cached",
             "-M",
             "--no-color",
+            // Same threat model, second escape hatch: `--no-ext-diff` closes
+            // `diff.external` / `GIT_EXTERNAL_DIFF`, but textconv is a
+            // separate switch and defaults to ON. `[diff "x"] textconv = <cmd>`
+            // in the shadow repo's own config plus one `.gitattributes` line
+            // makes git run an arbitrary command per file and substitute its
+            // stdout as the diff body — arbitrary content reaching the preview
+            // under a path the filter permits, and arbitrary execution in this
+            // process's group.
+            "--no-textconv",
             "--no-ext-diff",
             "--src-prefix=a/",
             "--dst-prefix=b/",
