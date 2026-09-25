@@ -5,11 +5,15 @@
 /// all targets).
 mod helpers;
 pub(crate) use helpers::normalize_typed_newlines;
-// The screening helpers are consumed inside platform/; the re-export exists
+// `sanitize_name` is also the tool layer's display bound for consent target
+// lines: the backends carry raw role/name strings so screening keeps seeing
+// them untruncated, and the bound is applied where the label is rendered.
+pub(crate) use helpers::sanitize_name;
+// The denylist verdict itself is taken inside platform/; this re-export exists
 // for the tool-layer regression test that pins screening against the raw,
 // untruncated accessible name.
 #[cfg(test)]
-pub(crate) use helpers::{sanitize_name, screening_hit};
+pub(crate) use helpers::screening_hit;
 #[cfg(target_os = "linux")]
 mod linux;
 #[cfg(target_os = "macos")]
