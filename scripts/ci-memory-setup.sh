@@ -51,11 +51,14 @@
 #      zero active swap (probe data: some ubuntu-22.04 boots ship /swapfile
 #      but leave it inactive), activate it so a zram or disk-swap failure
 #      degrades to "plain swap" instead of "7.8 GiB RAM and nothing else".
-#   4. zswap in front of whatever swap remains, enabled only when no
-#      /dev/zram swap is active, so the "compress in RAM first" layer
-#      exists exactly once.
+#   4. zswap in front of whatever swap remains: enabled only when no
+#      /dev/zram swap is active, and disabled again when zram is active
+#      (stock Ubuntu kernels ship zswap enabled by default), so the
+#      "compress in RAM first" layer exists exactly once.
 #
-# Environment switches:
+# Environment switches (they survive the workflow wrappers'
+# `sudo --preserve-env` alongside GITHUB_ACTIONS; sudo env_reset would
+# otherwise strip them from the job env, silently no-op'ing the opt-out):
 #   PINVOU3_CI_DISABLE_ZRAM=1      skip zram entirely (explicit opt-out for
 #                                  future incidents; zram has been the
 #                                  default first layer since this script
@@ -94,13 +97,27 @@ set -uo pipefail
 log() { echo "[memory-setup] $*"; }
 # Surface degradation warnings as GitHub step annotations when running in
 # Actions: the workflow-side wrapper only annotates the outer 240s timeout,
-# so an in-script degradation would otherwise be step-log-only. Outside
-# Actions (self-hosted debugging) keep plain stderr text.
+# so an in-script degradation would otherwise be step-log-only. Every call
+# site passes GITHUB_ACTIONS through sudo (--preserve-env) so this branch
+# actually engages; outside Actions (manual or self-hosted debugging runs)
+# keep plain stderr text.
 if [[ ${GITHUB_ACTIONS:-} == true ]]; then
-  warn() { echo "::warning::[memory-setup] $*" >&2; }
+  # Workflow commands are single-line: captured stderr (multi-line tool
+  # output) must be folded or the annotation is cut at the first newline
+  # (a stray CR splits lines too -- the runner's .NET line reader treats
+  # it as a terminator, which could forge a second workflow command).
+  warn() { echo "::warning::[memory-setup] ${*//[$'\r\n']/ }" >&2; }
 else
   warn() { echo "[memory-setup] WARNING: $*" >&2; }
 fi
+
+# Steps that normally recover a few lines later (first modprobe miss on
+# hosted images, the image-swap pre-activation belonging to that same
+# recovery, the as-is swapon retry, and the last-resort image-swapfile
+# attempt after all layers fail) must not burn a standing ::warning
+# annotation on every job; keep them visible in the log only.
+# Unrecovered failures still use warn.
+warn_recoverable() { echo "[memory-setup] WARNING: $*" >&2; }
 
 if [[ ${EUID} -ne 0 ]]; then
   warn "must run as root (invoke as: sudo bash scripts/ci-memory-setup.sh)"
@@ -155,14 +172,14 @@ setup_zram() {
   # in the warning so the actual failure reason survives in the log.
   local modprobe_err
   if ! modprobe_err="$(run_to 60 modprobe zram 2>&1)"; then
-    warn "modprobe zram failed${modprobe_err:+: ${modprobe_err}}; installing linux-modules-extra-$(uname -r) and retrying"
+    warn_recoverable "modprobe zram failed${modprobe_err:+: ${modprobe_err}}; installing linux-modules-extra-$(uname -r) and retrying"
     # The module-install path (apt-get, up to minutes) is the slowest stretch
     # of this script and the only one the workflow-side `timeout 240` can
     # realistically interrupt. Activate the image swapfile BEFORE it, so a
     # mid-apt kill degrades to "plain swap" and never to zero swap; if zram
     # comes up afterwards it simply takes over as the higher-priority layer.
     if ! any_swap_active; then
-      warn "no swap active; activating the image swapfile before the slow module install"
+      warn_recoverable "no swap active; activating the image swapfile before the slow module install"
       activate_image_swap_fallback
     fi
     if ! run_to 120 apt-get update -qq; then
@@ -302,8 +319,10 @@ setup_disk_swap() {
     # swapoff of a large active swapfile can take minutes; the cap keeps it
     # bounded and on timeout the swap simply stays active (kept below).
     if run_to 120 swapoff /mnt/swapfile 2>/dev/null; then
-      rm -f /mnt/swapfile
-      removed_note=" (the previous /mnt/swapfile was removed)"
+      # Only claim removal in removed_note if it actually happened.
+      if rm -f /mnt/swapfile; then
+        removed_note=" (the previous /mnt/swapfile was removed)"
+      fi
     else
       warn "could not swapoff the active /mnt/swapfile; keeping it as is instead of rebuilding"
       return 0
@@ -341,7 +360,7 @@ activate_image_swap_fallback() {
       log "last-resort swap active: ${cand} (image-provided)"
       return 0
     fi
-    warn "swapon ${cand} failed as is; trying chmod 600 + mkswap + swapon once"
+    warn_recoverable "swapon ${cand} failed as is; trying chmod 600 + mkswap + swapon once"
     chmod 600 "${cand}" 2>/dev/null || true
     if run_to 60 mkswap "${cand}" >/dev/null 2>&1 \
       && run_to 60 swapon "${cand}" 2>/dev/null; then
@@ -407,7 +426,11 @@ else
 fi
 
 if ! any_swap_active; then
-  warn "no active swap after all layers; trying the image-provided swapfile"
+  # The last-resort retry usually activates an image swapfile (success logs
+  # its own line) and its terminal failure already annotates inside the
+  # function; annotating here too would leave a standing marker on every
+  # swapless job, against the recoverable-noise policy.
+  warn_recoverable "no active swap after all layers; trying the image-provided swapfile"
   activate_image_swap_fallback
 fi
 
