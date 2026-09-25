@@ -10,8 +10,8 @@
 //! 而不是 panic 或让上层崩。pinvou3 用户可能没装 nvidia-smi，可能没启 vLLM。
 //!
 //! 模块拆分（保持原 pub 面不变）：
-//! - [`self_metrics`]：app 侧自测推理指标累加器（TTFT/TPS/tokens/KV）。
-//! - [`model_probe`]：当前模型健康探测 + 本地 vLLM Prometheus metrics 解析
+//! - `self_metrics`：app 侧自测推理指标累加器（TTFT/TPS/tokens/KV）。
+//! - `model_probe`：当前模型健康探测 + 本地 vLLM Prometheus metrics 解析
 //!   （`VllmSnapshot` / `snapshot_for_model_config`）。
 //! - 本 facade：系统资源采集（GPU/CPU/RAM）+ `sample_all` 聚合 + `MonitorState`。
 

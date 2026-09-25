@@ -414,6 +414,23 @@ fn sanitize_memory_runtime_id(raw: &str) -> String {
     }
 }
 
+/// `~/.pinvou3/feedback/`.
+fn feedback_root() -> PathBuf {
+    pinvou3_home().join("feedback")
+}
+
+/// `~/.pinvou3/feedback/pending/` — where the headless CLI stages a feedback
+/// request while its submission is in flight.
+pub fn feedback_pending_dir() -> PathBuf {
+    feedback_root().join("pending")
+}
+
+/// `~/.pinvou3/feedback/receipts/` — the local receipt the headless CLI
+/// writes for each submission.
+pub fn feedback_receipts_dir() -> PathBuf {
+    feedback_root().join("receipts")
+}
+
 /// `~/.pinvou3/sessions/<session_id>/artifacts/` —— AI 默认产物落地目录。
 /// `$PINVOU3_SESSION_ARTIFACTS` 环境变量注入这个值给 engine + LLM。
 pub fn session_artifacts_dir(session_id: &str) -> PathBuf {

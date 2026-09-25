@@ -27,6 +27,12 @@ use crate::platform::paths;
 /// bundles.json 当前 schema 版本。后续 schema 演进时递增并在读路径做迁移。
 const SCHEMA_VERSION: u32 = 1;
 
+/// [`AssetRef::kind`] of a vendor CLI binary: a versioned external asset that
+/// a package references but does not own (`docs/marketplace-unification.md`
+/// §4, `assets/cli/<name>/<version>/`). The headless CLI writes these refs
+/// when it connects a CLI-backed connector.
+pub const ASSET_KIND_CLI: &str = "cli";
+
 /// 上传包的用户自定义 UI 展示名/说明在记录 `extra` map 里的 key（只改展示，
 /// 机读 id / 目录 / frontmatter name 一律不动；见 docs/plugin-package-spec.md）。
 pub const EXTRA_DISPLAY_NAME: &str = "display_name";
@@ -108,6 +114,31 @@ impl<'de> Deserialize<'de> for BundleSource {
     }
 }
 
+/// External asset reference (`docs/marketplace-unification.md` §3.1: name +
+/// version + sha256). `kind` is a string rather than an enum so a kind this
+/// binary does not know still parses.
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct AssetRef {
+    pub kind: String,
+    pub name: String,
+    pub version: String,
+    pub sha256: String,
+    /// Keys this binary does not model round-trip unchanged.
+    #[serde(flatten)]
+    pub extra: serde_json::Map<String, serde_json::Value>,
+}
+
+/// One `BundleRecord.assets` entry. An entry that does not parse as an
+/// [`AssetRef`] (a shape written by another version, a missing field, a
+/// non-string value) is kept verbatim as `Unrecognized`: it must neither fail
+/// the whole `bundles.json` load nor be dropped by the next write.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(untagged)]
+pub enum AssetEntry {
+    Ref(AssetRef),
+    Unrecognized(serde_json::Value),
+}
+
 /// 存储层包记录（§3.1：bundles.json 里唯一可写的部分）。
 /// `ready` 是派生态，永不进存储；`kind` 由查询层现算，同样不落盘。
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -120,6 +151,10 @@ pub struct BundleRecord {
     /// 由后续完整性校验/统一管线填写。
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub content_fingerprint: Option<String>,
+    /// External asset references (CLI binaries and the like); the package
+    /// references them but does not own them.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub assets: Vec<AssetEntry>,
     /// 安装时间，RFC3339/ISO8601 UTC（对齐 SessionMetadata.updated_at 的 chrono 惯例）
     pub installed_at: String,
     /// `Degraded` 异常态（§3.2：登记在、资源缺）的原因；修复动作统一为按来源
@@ -140,6 +175,7 @@ impl BundleRecord {
             id: id.into(),
             source,
             installed: true,
+            assets: Vec::new(),
             content_fingerprint: None,
             installed_at: now_iso8601(),
             degraded: None,
@@ -258,6 +294,10 @@ impl BundleStore {
     /// `extra`（前向兼容/用户字段）与 `content_fingerprint`（完整性校验层的数据），
     /// 其余字段以新值为准。安装/连接成功的镜像写统一走这里 —— 重装、重复连接
     /// 不应冲掉首次安装时间，也不应丢老版本二进制不认识的字段。
+    /// `assets` takes the new list when it is non-empty and otherwise keeps the
+    /// existing one: a writer that does not track assets (the GUI connector
+    /// mirror always sends none) must not wipe the refs another writer
+    /// recorded, while a writer that does can replace a stale pin.
     pub fn upsert_preserving(&self, record: BundleRecord) -> Result<(), String> {
         let _guard = file_lock();
         let mut file = load_locked(&self.file)?;
@@ -266,6 +306,11 @@ impl BundleStore {
                 id: record.id,
                 source: existing.source.clone(),
                 installed: record.installed,
+                assets: if record.assets.is_empty() {
+                    existing.assets.clone()
+                } else {
+                    record.assets
+                },
                 content_fingerprint: record
                     .content_fingerprint
                     .or_else(|| existing.content_fingerprint.clone()),
@@ -670,6 +715,7 @@ fn legacy_mcp_records() -> Vec<BundleRecord> {
             id,
             source: BundleSource::Preset,
             installed: true,
+            assets: Vec::new(),
             content_fingerprint: None,
             installed_at: now.clone(),
             degraded: None,
@@ -714,6 +760,7 @@ fn legacy_skill_records() -> Vec<BundleRecord> {
             id,
             source,
             installed: true,
+            assets: Vec::new(),
             content_fingerprint: None,
             installed_at: now.clone(),
             degraded: None,
@@ -752,6 +799,7 @@ fn legacy_cli_records() -> Vec<BundleRecord> {
             id: id.to_string(),
             source: BundleSource::Builtin,
             installed: true,
+            assets: Vec::new(),
             content_fingerprint: None,
             installed_at: now.clone(),
             degraded,
@@ -805,6 +853,7 @@ mod tests {
             id: id.to_string(),
             source,
             installed: true,
+            assets: Vec::new(),
             content_fingerprint: None,
             installed_at: "2026-08-14T00:00:00+00:00".to_string(),
             degraded: None,
@@ -1173,6 +1222,90 @@ mod tests {
             assert_eq!(merged.extra.get("future_key"), Some(&serde_json::json!(1)));
             assert_eq!(merged.content_fingerprint, Some("fp-v1".to_string()));
             assert_eq!(store.records().unwrap().len(), 1, "不得产生重复记录");
+        });
+    }
+
+    fn cli_asset(version: &str) -> AssetEntry {
+        AssetEntry::Ref(AssetRef {
+            kind: ASSET_KIND_CLI.to_string(),
+            name: "lark-cli".to_string(),
+            version: version.to_string(),
+            sha256: "ab".repeat(32),
+            ..AssetRef::default()
+        })
+    }
+
+    #[test]
+    fn upsert_preserving_keeps_assets_unless_the_new_record_carries_some() {
+        with_temp_home("pinvou3-store-test", || {
+            let store = BundleStore::new();
+            let mut first = record("feishu", BundleSource::Builtin);
+            first.assets = vec![cli_asset("1.0.0")];
+            store.upsert(first).unwrap();
+
+            // A writer that does not track assets (the GUI connector mirror)
+            // must not wipe them.
+            store
+                .upsert_preserving(BundleRecord::installed_now("feishu", BundleSource::Builtin))
+                .unwrap();
+            assert_eq!(
+                store.get("feishu").unwrap().unwrap().assets,
+                vec![cli_asset("1.0.0")]
+            );
+
+            // A writer that does track them can replace a stale pin.
+            let mut repinned = BundleRecord::installed_now("feishu", BundleSource::Builtin);
+            repinned.assets = vec![cli_asset("1.1.0")];
+            store.upsert_preserving(repinned).unwrap();
+            assert_eq!(
+                store.get("feishu").unwrap().unwrap().assets,
+                vec![cli_asset("1.1.0")]
+            );
+        });
+    }
+
+    #[test]
+    fn unreadable_asset_entries_neither_fail_the_load_nor_get_dropped() {
+        with_temp_home("pinvou3-store-test", || {
+            let store = BundleStore::new();
+            let path = store.file_path();
+            std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+            let assets = serde_json::json!([
+                {"kind": "cli", "name": "lark-cli", "version": "1.0.0",
+                 "sha256": "abc", "platforms": ["darwin"]},
+                {"kind": "cli", "name": "wecom-cli", "version": 2},
+                {"kind": "pip", "name": "requests"},
+                "not-an-object",
+            ]);
+            let file = serde_json::json!({
+                "schema_version": 1,
+                "legacy_imported": true,
+                "records": [{"id": "feishu", "source": "builtin", "installed": true,
+                             "installed_at": "2026-08-14T00:00:00Z", "assets": assets}],
+            });
+            std::fs::write(&path, file.to_string()).unwrap();
+
+            let loaded = store.get("feishu").unwrap().unwrap();
+            let AssetEntry::Ref(first) = &loaded.assets[0] else {
+                panic!("a well-formed entry must parse as a typed ref");
+            };
+            assert_eq!(first.name, "lark-cli");
+            assert_eq!(
+                first.extra.get("platforms"),
+                Some(&serde_json::json!(["darwin"]))
+            );
+            assert!(
+                loaded.assets[1..]
+                    .iter()
+                    .all(|entry| matches!(entry, AssetEntry::Unrecognized(_))),
+                "entries this binary cannot read must stay unrecognized, not fail the load"
+            );
+
+            // A read-modify-write keeps every entry exactly as it was on disk.
+            store.mark_degraded("feishu", "probe").unwrap();
+            let value: serde_json::Value =
+                serde_json::from_str(&std::fs::read_to_string(&path).unwrap()).unwrap();
+            assert_eq!(value["records"][0]["assets"], assets);
         });
     }
 

@@ -6,6 +6,8 @@
 //! 2. **pinvou3 内置卡**（`source="builtin"`）: 目前只有「卡牌制造专家」(见 `builtin_extra`)。
 //! 3. **用户自创卡**（`source="user"`）: 扫 `~/.pinvou3/user/personas/<id>.json`,
 //!    可增删改，永不被 bundle 覆写。改动后 [`reload_user`] 刷新内存缓存。
+//!    Readers also reload when the directory changes underneath the cache,
+//!    because the headless CLI edits the same cards from another process.
 //!
 //! **加持机制**: 正文太长不能每 turn 灌。加持时一次性注入完整 body
 //! ([`equip_body_injection`]) + 每 turn 轻锚点 ([`equip_anchor`])。
@@ -13,8 +15,9 @@
 //! License: agency-agents.json 数据 MIT，见 resources/common/bundle/personas/AGENCY-AGENTS-LICENSE。
 
 use serde::{Deserialize, Serialize};
+use std::path::PathBuf;
 use std::sync::atomic::{AtomicU64, Ordering};
-use std::sync::{OnceLock, RwLock};
+use std::sync::{Mutex, OnceLock, RwLock};
 use std::time::{SystemTime, UNIX_EPOCH};
 
 /// 编译期内嵌的 agency-agents-zh 数据(含完整 body)。
@@ -91,6 +94,58 @@ static USER: OnceLock<RwLock<Vec<PersonaCard>>> = OnceLock::new();
 static USER_OPERATIONS: OnceLock<RwLock<()>> = OnceLock::new();
 /// 用户专家池内存版本；多智能体全局名册以它做增量缓存失效。
 static USER_REVISION: AtomicU64 = AtomicU64::new(0);
+/// Directory stamp the cached user pool was loaded from.
+static USER_STAMP: Mutex<Option<UserDirStamp>> = Mutex::new(None);
+
+/// What the user-card directory looked like when the pool was loaded: its
+/// path plus every `*.json` entry's name, size and mtime. A card created or
+/// deleted by another process always changes the name set; an in-place
+/// rewrite is caught by size or mtime.
+#[derive(Debug, PartialEq, Eq)]
+struct UserDirStamp {
+    dir: PathBuf,
+    entries: Vec<(std::ffi::OsString, u64, Option<SystemTime>)>,
+}
+
+fn user_dir_stamp() -> UserDirStamp {
+    let dir = crate::platform::paths::user_personas_dir();
+    let mut entries: Vec<_> = std::fs::read_dir(&dir)
+        .into_iter()
+        .flatten()
+        .flatten()
+        .filter(|entry| entry.path().extension().and_then(|e| e.to_str()) == Some("json"))
+        .map(|entry| {
+            let meta = entry.metadata().ok();
+            (
+                entry.file_name(),
+                meta.as_ref().map_or(0, std::fs::Metadata::len),
+                meta.and_then(|meta| meta.modified().ok()),
+            )
+        })
+        .collect();
+    entries.sort();
+    UserDirStamp { dir, entries }
+}
+
+fn set_user_stamp(stamp: UserDirStamp) {
+    *USER_STAMP
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner()) = Some(stamp);
+}
+
+/// Reload the user pool when the directory no longer matches the stamp it
+/// was loaded from. Must be called without holding the `USER` lock.
+fn sync_user_from_disk() {
+    let current = user_dir_stamp();
+    let stale = USER_STAMP
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner())
+        .as_ref()
+        != Some(&current);
+    if stale {
+        reload_user();
+    }
+}
 
 fn embedded() -> &'static [PersonaCard] {
     EMBEDDED.get_or_init(|| {
@@ -107,7 +162,14 @@ fn embedded() -> &'static [PersonaCard] {
 }
 
 fn user_lock() -> &'static RwLock<Vec<PersonaCard>> {
-    USER.get_or_init(|| RwLock::new(load_user_cards()))
+    USER.get_or_init(|| {
+        // Stamp before loading: a change that lands in between leaves the
+        // stamp stale, so the next reader reloads instead of missing it.
+        let stamp = user_dir_stamp();
+        let cards = load_user_cards();
+        set_user_stamp(stamp);
+        RwLock::new(cards)
+    })
 }
 
 fn user_operations() -> &'static RwLock<()> {
@@ -142,12 +204,19 @@ fn load_user_cards() -> Vec<PersonaCard> {
 
 /// 重新从磁盘加载用户卡（create/update/delete 后调，让 list/get 立即看到）。
 pub fn reload_user() {
+    let stamp = user_dir_stamp();
+    let cards = load_user_cards();
     // The card pool is replaced wholesale with no partial writes; a panic while
     // holding the lock must not take down sessions: keep the repo-wide lock
-    // poisoning recovery convention.
-    *user_lock()
+    // poisoning recovery convention. The stamp is published under the same
+    // write lock so concurrent reloads cannot pair older cards with a newer
+    // stamp, which would hide the change from every later reader.
+    let mut pool = user_lock()
         .write()
-        .unwrap_or_else(|poisoned| poisoned.into_inner()) = load_user_cards();
+        .unwrap_or_else(|poisoned| poisoned.into_inner());
+    *pool = cards;
+    set_user_stamp(stamp);
+    drop(pool);
     // 卡池内容先发布，再推进版本；Acquire 读取到新版本时必然能看到新卡。
     USER_REVISION.fetch_add(1, Ordering::Release);
 }
@@ -158,11 +227,13 @@ pub fn executable_revision() -> u64 {
     // 确保 USER 首次从磁盘初始化发生在版本读取之前；否则第一次 capture 可能
     // 在旧缓存与惰性初始化之间缺少明确的发布点。
     let _ = user_lock();
+    sync_user_from_disk();
     USER_REVISION.load(Ordering::Acquire)
 }
 
 /// 全部卡的轻量摘要(list_personas 用)。内嵌 + 用户,user 在后。
 pub fn all_summaries() -> Vec<PersonaSummary> {
+    sync_user_from_disk();
     let mut out: Vec<PersonaSummary> = embedded().iter().map(|c| c.summary()).collect();
     out.extend(
         user_lock()
@@ -181,6 +252,7 @@ pub fn all_summaries() -> Vec<PersonaSummary> {
 /// 与实际可派名册错位。这里一次持有用户卡读锁并克隆完整集合，调用方随后可
 /// 在不持锁的情况下构造底座配置和轻量候选索引。
 pub fn executable_cards() -> Vec<PersonaCard> {
+    sync_user_from_disk();
     let mut out: Vec<PersonaCard> = embedded()
         .iter()
         .filter(|card| !card.conversational_only)
@@ -202,6 +274,7 @@ pub fn get(id: &str) -> Option<PersonaCard> {
     if let Some(c) = embedded().iter().find(|c| c.id == id) {
         return Some(c.clone());
     }
+    sync_user_from_disk();
     user_lock()
         .read()
         .unwrap_or_else(|poisoned| poisoned.into_inner())
@@ -218,6 +291,7 @@ pub(crate) fn with_card<T>(id: &str, publish: impl FnOnce(&PersonaCard) -> T) ->
     if let Some(card) = embedded().iter().find(|card| card.id == id) {
         return Some(publish(card));
     }
+    sync_user_from_disk();
     let _operation = user_operations()
         .read()
         .unwrap_or_else(|poisoned| poisoned.into_inner());
@@ -312,6 +386,17 @@ pub fn update_user_persona(mut card: PersonaCard) -> Result<PersonaSummary, Stri
     write_card(&card)?;
     reload_user();
     Ok(card.summary())
+}
+
+/// Delete a user card (only `user-` cards) for a caller outside the desktop
+/// app, such as the headless CLI. Which sessions equip a card is in-memory
+/// state of the running app, so this cannot clear it; the app reconciles on
+/// its own: its readers reload the pool once the file is gone, and the chat
+/// path unequips a card that no longer exists before its next turn. In-app
+/// deletes go through `delete_user_persona_with`, which clears sessions
+/// synchronously.
+pub fn delete_user_persona(id: &str) -> Result<(), String> {
+    delete_user_persona_with(id, || ())
 }
 
 /// Delete a card and run cross-feature cleanup before another operation can
@@ -506,6 +591,70 @@ mod tests {
         let id = gen_user_id("我的专家");
         assert!(id.starts_with("user-"));
         assert!(id_is_safe(&id), "生成的 id 必须只含安全字符: {id}");
+    }
+
+    #[test]
+    fn readers_follow_cards_changed_by_another_process() {
+        let _g = crate::platform::paths::tests::ENV_LOCK
+            .lock()
+            .unwrap_or_else(|p| p.into_inner());
+        let prev = std::env::var("PINVOU3_HOME").ok();
+        let tmp = std::env::temp_dir().join(format!(
+            "pinvou3-persona-external-{}",
+            SystemTime::now()
+                .duration_since(UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        // SAFETY: holding platform::paths::tests::ENV_LOCK; env writes serialized in-process.
+        unsafe { std::env::set_var("PINVOU3_HOME", &tmp) };
+        reload_user();
+
+        // Write and remove card files directly, the way another process
+        // would: no create/update/delete API runs in this one.
+        let dir = crate::platform::paths::user_personas_dir();
+        std::fs::create_dir_all(&dir).unwrap();
+        let card = PersonaCard {
+            id: "user-external-1".to_string(),
+            dept: "specialized".to_string(),
+            name: "External".to_string(),
+            description: String::new(),
+            emoji: "E".to_string(),
+            color: "#000000".to_string(),
+            body: "body".to_string(),
+            source: "user".to_string(),
+            conversational_only: false,
+        };
+        let path = dir.join("user-external-1.json");
+        std::fs::write(&path, serde_json::to_string(&card).unwrap()).unwrap();
+        let before = USER_REVISION.load(Ordering::Acquire);
+        assert!(
+            get(&card.id).is_some(),
+            "a card created elsewhere must appear"
+        );
+        assert!(all_summaries().iter().any(|s| s.id == card.id));
+        assert!(
+            executable_revision() > before,
+            "the multi-agent roster must see a revision change"
+        );
+
+        std::fs::remove_file(&path).unwrap();
+        assert!(
+            get(&card.id).is_none(),
+            "a card deleted elsewhere must vanish"
+        );
+        assert!(!all_summaries().iter().any(|s| s.id == card.id));
+        assert!(!executable_cards().iter().any(|c| c.id == card.id));
+        assert!(with_card(&card.id, |_| ()).is_none());
+
+        match prev {
+            // SAFETY: holding platform::paths::tests::ENV_LOCK; env writes serialized in-process.
+            Some(v) => unsafe { std::env::set_var("PINVOU3_HOME", v) },
+            // SAFETY: holding platform::paths::tests::ENV_LOCK; env writes serialized in-process.
+            None => unsafe { std::env::remove_var("PINVOU3_HOME") },
+        }
+        reload_user();
+        let _ = std::fs::remove_dir_all(&tmp);
     }
 
     #[test]
