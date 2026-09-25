@@ -1047,11 +1047,15 @@ function emit(harness, event, payload) {
 // id too, but the session-less branch only copied enabled/platformSupported.
 // On the draft screen (no active session) the settings page therefore kept
 // showing the "turn it off and back on" hint after a successful resume.
+// `refreshStatus` resolves `sessionId || state.activeSessionId`, so passing
+// null is NOT enough to reach the session-less branch — the harness seeds an
+// active session. Clearing it is what actually exercises the code under test.
 {
   const harness = createHarness({
     initialState: { stopped: true },
     status: { enabled: true, stopped: false, platform_supported: true },
   });
+  harness.state.activeSessionId = null;
   await harness.feature.refreshStatus(null);
   assert.equal(
     harness.state.computerUse.stopped,
@@ -1064,6 +1068,7 @@ function emit(harness, event, payload) {
     initialState: { stopped: false },
     status: { enabled: true, stopped: true, platform_supported: true },
   });
+  harness.state.activeSessionId = null;
   await harness.feature.refreshStatus(null);
   assert.equal(
     harness.state.computerUse.stopped,
@@ -1076,10 +1081,15 @@ function emit(harness, event, payload) {
 // The documented resume path is "turn it off and back on". Keeping `stopped`
 // set through the off step made the settings row tell a user who had just
 // switched the toggle OFF to turn it off — halfway through that same path.
+//
+// The backend lowers the latch in `set_enabled(false)` (guard.rs), so the
+// status this harness answers with is the corrected one. That matters: the
+// local write and the authoritative read have to AGREE, or the next refresh
+// silently re-latches the flag and the hint comes back.
 {
   const harness = createHarness({
     initialState: { enabled: true, stopped: true },
-    status: { enabled: false, stopped: true, platform_supported: true },
+    status: { enabled: false, stopped: false, platform_supported: true },
   });
   await harness.feature.setEnabled(false);
   assert.equal(harness.state.computerUse.enabled, false);
@@ -1087,6 +1097,13 @@ function emit(harness, event, payload) {
     harness.state.computerUse.stopped,
     false,
     'disabling must clear the latched stop: the feature is off, not stopped',
+  );
+  // The status read that follows any `state_changed` must not undo it.
+  await harness.feature.refreshStatus('s1');
+  assert.equal(
+    harness.state.computerUse.stopped,
+    false,
+    'the authoritative refresh must agree, not re-latch the stop',
   );
 }
 

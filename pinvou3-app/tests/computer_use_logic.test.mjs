@@ -769,6 +769,35 @@ try {
   // z-[1200] portal — a security prompt must never lose a same-z DOM-order
   // race (round-17 nit, bumped from z-[1200]).
   assert.match(consentSource, /fixed inset-0 z-\[1210\]/);
+  // Height bound + pinned decision row. An over-tall target label used to push
+  // Deny/Allow out of a panel that did not scroll; capping alone is not the
+  // fix, because buttons left inside the scroll region can still be scrolled
+  // away from. Both panels therefore cap, clip, and give the body its own
+  // scroller with the button row outside it. The harness below stubs the DOM
+  // (it emits `ref: null`), so this can only be pinned at the source level.
+  assert.equal(
+    consentSource.match(/max-h-\[85vh\] flex flex-col overflow-hidden/g)?.length,
+    2,
+    'both dialogs must cap their height and clip at the panel',
+  );
+  assert.equal(
+    consentSource.match(/min-h-0 flex-1 overflow-y-auto/g)?.length,
+    2,
+    'both dialogs must scroll their body, not the whole panel',
+  );
+  assert.equal(
+    consentSource.match(/shrink-0 flex items-center justify-end gap-2/g)?.length,
+    2,
+    'both dialogs must keep the Deny/Allow row outside the scroll region',
+  );
+  // Deny is the last control in the panel, so focusing it without
+  // preventScroll would open a tall dialog already scrolled past the action
+  // the user is being asked to approve.
+  assert.match(
+    consentSource,
+    /target\.focus\(\{ preventScroll: true \}\)/,
+    'initial focus must not scroll the consent body out of view',
+  );
 }
 
 console.log('computer use consent dialog UI tests passed');

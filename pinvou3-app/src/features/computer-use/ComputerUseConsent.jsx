@@ -145,7 +145,14 @@ export function ComputerUseDialogs({ slice, copy }) {
 
   useEffect(() => {
     const target = grantRequest ? grantDenyRef.current : confirmDenyRef.current;
-    if (open && target && typeof target.focus === 'function') target.focus();
+    // `preventScroll` matters because the panel body scrolls: Deny is the last
+    // control in the dialog, so a plain focus() would scroll a tall consent
+    // body to the bottom and open the prompt with the title and the target
+    // line already out of view — asking the user to decide about something
+    // they have to scroll up to read.
+    if (open && target && typeof target.focus === 'function') {
+      target.focus({ preventScroll: true });
+    }
   }, [open, grantRequest, confirmRequest]);
 
   // Esc maps to Deny: the reflexive way out of a machine-control prompt must
@@ -231,14 +238,16 @@ export function ComputerUseDialogs({ slice, copy }) {
           aria-modal="true"
           aria-labelledby="computer-use-grant-title"
           ref={grantDialogRef}
-          className="w-full max-w-[440px] max-h-[85vh] overflow-y-auto rounded-[20px] shadow-2xl p-6 bg-white text-[#1C1C1E] dark:bg-[#1E1F20] dark:text-[#E3E3E3]"
+          className="w-full max-w-[440px] max-h-[85vh] flex flex-col overflow-hidden rounded-[20px] shadow-2xl p-6 bg-white text-[#1C1C1E] dark:bg-[#1E1F20] dark:text-[#E3E3E3]"
         >
-          <h3 id="computer-use-grant-title" className="text-[16px] font-semibold mb-2">{copy.grantTitle}</h3>
-          <p className="text-[13px] leading-relaxed opacity-80 mb-4">{copy.grantDesc}</p>
-          {actionError && actionError.stamp === grantRequest.sessionId && (
-            <div className="text-[13px] text-[#EA4335] mb-3">{actionError.message}</div>
-          )}
-          <div className="flex items-center justify-end gap-2">
+          <div className="min-h-0 flex-1 overflow-y-auto custom-scrollbar">
+            <h3 id="computer-use-grant-title" className="text-[16px] font-semibold mb-2">{copy.grantTitle}</h3>
+            <p className="text-[13px] leading-relaxed opacity-80 mb-4">{copy.grantDesc}</p>
+            {actionError && actionError.stamp === grantRequest.sessionId && (
+              <div className="text-[13px] text-[#EA4335] mb-3">{actionError.message}</div>
+            )}
+          </div>
+          <div className="shrink-0 flex items-center justify-end gap-2 pt-3">
             <button
               type="button"
               ref={grantDenyRef}
@@ -282,40 +291,42 @@ export function ComputerUseDialogs({ slice, copy }) {
         aria-modal="true"
         aria-labelledby="computer-use-confirm-title"
         ref={confirmDialogRef}
-        className="w-full max-w-[440px] max-h-[85vh] overflow-y-auto rounded-[20px] shadow-2xl p-6 bg-white text-[#1C1C1E] dark:bg-[#1E1F20] dark:text-[#E3E3E3]"
+        className="w-full max-w-[440px] max-h-[85vh] flex flex-col overflow-hidden rounded-[20px] shadow-2xl p-6 bg-white text-[#1C1C1E] dark:bg-[#1E1F20] dark:text-[#E3E3E3]"
       >
-        <h3 id="computer-use-confirm-title" className="text-[16px] font-semibold mb-2">{copy.confirmTitle}</h3>
-        <div className="text-[13px] leading-relaxed mb-4 space-y-1.5">
-          <div className="flex gap-2">
-            <span className="shrink-0 opacity-60">{copy.confirmActionLabel}</span>
-            <span className="min-w-0 break-words font-medium">{confirmDetails.description}</span>
-          </div>
-          {confirmRequest.element && (
+        <div className="min-h-0 flex-1 overflow-y-auto custom-scrollbar">
+          <h3 id="computer-use-confirm-title" className="text-[16px] font-semibold mb-2">{copy.confirmTitle}</h3>
+          <div className="text-[13px] leading-relaxed mb-4 space-y-1.5">
             <div className="flex gap-2">
-              <span className="shrink-0 opacity-60">{copy.confirmElementLabel}</span>
-              <span className="min-w-0 break-words">{confirmRequest.element}</span>
+              <span className="shrink-0 opacity-60">{copy.confirmActionLabel}</span>
+              <span className="min-w-0 break-words font-medium">{confirmDetails.description}</span>
+            </div>
+            {confirmRequest.element && (
+              <div className="flex gap-2">
+                <span className="shrink-0 opacity-60">{copy.confirmElementLabel}</span>
+                <span className="min-w-0 break-words">{confirmRequest.element}</span>
+              </div>
+            )}
+          </div>
+          {confirmDetails.previewTooLong && (
+            <div data-testid="computer-use-confirm-text-too-long" className="text-[12px] leading-relaxed text-[#B3261E] dark:text-[#F28B82] mb-2">{copy.textTooLongToPreview}</div>
+          )}
+          {confirmDetails.preview != null && (
+            <div className="mb-4">
+              <div className="text-[12px] leading-relaxed text-[#B3261E] dark:text-[#F28B82] mb-2">{copy.fullTextWarning}</div>
+              <pre
+                data-testid="computer-use-confirm-full-text"
+                className="max-h-40 overflow-auto whitespace-pre-wrap break-words rounded-xl p-3 text-[12px] font-mono bg-[#F1F3F4] dark:bg-[#2A2B2D] select-text"
+                style={{ userSelect: 'text' }}
+              >
+                {confirmDetails.preview}
+              </pre>
             </div>
           )}
+          {actionError && actionError.stamp === confirmRequest.confirmId && (
+            <div className="text-[13px] text-[#EA4335] mb-3">{actionError.message}</div>
+          )}
         </div>
-        {confirmDetails.previewTooLong && (
-          <div data-testid="computer-use-confirm-text-too-long" className="text-[12px] leading-relaxed text-[#B3261E] dark:text-[#F28B82] mb-2">{copy.textTooLongToPreview}</div>
-        )}
-        {confirmDetails.preview != null && (
-          <div className="mb-4">
-            <div className="text-[12px] leading-relaxed text-[#B3261E] dark:text-[#F28B82] mb-2">{copy.fullTextWarning}</div>
-            <pre
-              data-testid="computer-use-confirm-full-text"
-              className="max-h-40 overflow-auto whitespace-pre-wrap break-words rounded-xl p-3 text-[12px] font-mono bg-[#F1F3F4] dark:bg-[#2A2B2D] select-text"
-              style={{ userSelect: 'text' }}
-            >
-              {confirmDetails.preview}
-            </pre>
-          </div>
-        )}
-        {actionError && actionError.stamp === confirmRequest.confirmId && (
-          <div className="text-[13px] text-[#EA4335] mb-3">{actionError.message}</div>
-        )}
-        <div className="flex items-center justify-end gap-2">
+        <div className="shrink-0 flex items-center justify-end gap-2 pt-3">
           <button
             type="button"
             ref={confirmDenyRef}

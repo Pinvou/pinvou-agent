@@ -1164,6 +1164,82 @@ async function subscriptionSnapshotsAvoidTranscriptDeepClone() {
   unsubscribeCombined();
 }
 
+// The multi-domain snapshot is the one `useBridgeState([...])` stores in
+// useState, so its identity is exactly what React's bail-out compares. It used
+// to be rebuilt and re-frozen on every call, which defeated the bail-out for
+// every subscriber — a whole-transcript cost once tool cards began subscribing
+// individually. Both halves need pinning: reuse when nothing changed (or the
+// optimization can be silently reverted), and a fresh object when something
+// did (or a caller would go stale, which is far worse than the re-render).
+// The web bridge already pins the same contract in
+// web_bridge_domain_contract.test.mjs; this is the tauri side of it.
+async function combinedSubscriptionSnapshotsAreIdentityStable() {
+  const harness = createBridgeHarness();
+  const bridge = harness.bridge;
+  // The reported shape exactly: a subscriber watching an unrelated domain
+  // while chat streams. Every tool card in the transcript holds one of these.
+  const unrelated = [];
+  const unsubscribeUnrelated = bridge.state.subscribeMany(["computerUse"], function (snapshot) {
+    unrelated.push(snapshot);
+  });
+
+  bridge.chat.prefillComposer("first");
+  bridge.chat.prefillComposer("second");
+  assert.strictEqual(unrelated.length, 2, "both notifications should reach the subscriber");
+  assert.strictEqual(unrelated[0], unrelated[1],
+    "a notify that changed no watched field must reuse the previous combined snapshot");
+  assert.ok(Object.isFrozen(unrelated[1]), "the reused combined snapshot must stay frozen");
+  unsubscribeUnrelated();
+
+  // The other half: a watched change must NOT be served from the cache. A
+  // stale snapshot is a worse bug than the re-render this cache removes.
+  const watched = [];
+  const unsubscribeWatched = bridge.state.subscribeMany(["sessions", "chat"], function (snapshot) {
+    watched.push(snapshot);
+  });
+  bridge.chat.prefillComposer("third");
+  bridge.chat.prefillComposer("fourth");
+  assert.strictEqual(watched.length, 2);
+  assert.notStrictEqual(watched[0], watched[1],
+    "a real change must produce a new combined snapshot, never a stale reused one");
+  assert.strictEqual(watched[1].composerPrefill.text, "fourth",
+    "the new snapshot must carry the changed value");
+
+  unsubscribeWatched();
+}
+
+// The cache is keyed on the requested domain list. If that key ever collapses,
+// one subscriber silently receives another's snapshot — a whole different data
+// shape, with no error anywhere. Distinct domain sets must stay distinct.
+async function combinedSubscriptionCacheIsolatesDomainSets() {
+  const harness = createBridgeHarness();
+  const bridge = harness.bridge;
+  const chatOnly = [];
+  const sessionsOnly = [];
+  const unsubscribeChat = bridge.state.subscribeMany(["chat"], function (snapshot) {
+    chatOnly.push(snapshot);
+  });
+  const unsubscribeSessions = bridge.state.subscribeMany(["sessions"], function (snapshot) {
+    sessionsOnly.push(snapshot);
+  });
+
+  bridge.chat.prefillComposer("keyed");
+  assert.ok(chatOnly.length > 0 && sessionsOnly.length > 0, "both subscribers should be notified");
+  const chatKeys = Object.keys(chatOnly.at(-1));
+  const sessionKeys = Object.keys(sessionsOnly.at(-1));
+  assert.ok(chatKeys.includes("composerPrefill"),
+    "the ['chat'] subscriber must receive chat fields");
+  assert.ok(!chatKeys.includes("sessions"),
+    "the ['chat'] subscriber must not receive the ['sessions'] snapshot");
+  assert.ok(sessionKeys.includes("sessions"),
+    "the ['sessions'] subscriber must receive session fields");
+  assert.ok(!sessionKeys.includes("composerPrefill"),
+    "the ['sessions'] subscriber must not receive the ['chat'] snapshot");
+
+  unsubscribeChat();
+  unsubscribeSessions();
+}
+
 async function reentrantSubscriptionNotificationsStayOrdered() {
   const harness = createBridgeHarness();
   const bridge = harness.bridge;
@@ -8650,6 +8726,8 @@ async function draftKnowledgeQueueStaysOnMaterializedSessionAfterSwitch() {
 
 Promise.resolve()
   .then(subscriptionSnapshotsAvoidTranscriptDeepClone)
+  .then(combinedSubscriptionSnapshotsAreIdentityStable)
+  .then(combinedSubscriptionCacheIsolatesDomainSets)
   .then(reentrantSubscriptionNotificationsStayOrdered)
   .then(persistentSubscriptionSnapshotsPreserveJsonEdges)
   .then(persistentSubscriptionSnapshotsRejectUnsupportedValues)
