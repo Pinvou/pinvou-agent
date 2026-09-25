@@ -308,12 +308,31 @@ pub async fn run_agentic_task(
     };
     // The resolver owns its copy (it must be 'static); run_turn persists the
     // same validated string as the durable binding (passed below).
+    //
+    // It CHAINS to the durable binding rather than replacing it, mirroring
+    // the GUI composition root (`lib.rs`, `code_project_workspace(id)
+    // .or_else(|| store.session_workspace_binding(id))`). Replacing it would
+    // make a caller-provided session that is already bound to a project
+    // resolve to `None` here: `SessionStore::session_roots` has its own
+    // binding fallback and would still report `bound = true` with the project
+    // root, while `Pinvou3Bridge::session_roots` has none and would run the
+    // engine, the shell and the prompt's working-directory layer in the
+    // session's private scratch. Two answers to one question inside a single
+    // run, and the user's files silently untouched.
+    // Read once rather than capturing the store: the resolver is stored back
+    // INTO the store, so holding a clone of it here would be a reference
+    // cycle. Only this run's own session is resolvable, and its binding can
+    // only be changed by this run (which is what `bound_workspace` is).
+    let durable_binding = store.session_workspace_binding(&session_id);
     let resolver_workspace = bound_workspace.clone();
     let matched_session = session_id.clone();
     let resolver: ExecutionRootResolver = Arc::new(move |id: &str| {
-        (id == matched_session)
-            .then(|| resolver_workspace.clone())
-            .flatten()
+        if id != matched_session {
+            return None;
+        }
+        resolver_workspace
+            .clone()
+            .or_else(|| durable_binding.clone())
     });
     let mut pool = pool;
     pool.bridge.set_execution_root_resolver(resolver.clone());
@@ -379,6 +398,14 @@ pub async fn run_agentic_task(
     let keep_session = keep_session_from_env();
     if existing_session {
         crate::features::assistant::timing::unregister_eval_observation(&session_id);
+        // Reclaim the engine like the fresh+keep branch below. The process
+        // exits right after this (`run_windowless_host` calls `exit(0)`), and
+        // without the reclaim there is no shell-scope finalize, no Shutdown
+        // and no forwarder drain: background shell jobs the turn started are
+        // orphaned onto the user's machine, and a pending ledger/artifact
+        // write is dropped mid-flight. The session record is untouched —
+        // eviction only tears down the in-memory engine.
+        runtime.pool.evict(&session_id).await;
     } else if !submitted {
         crate::features::assistant::timing::unregister_eval_observation(&session_id);
         // The submit boundary is not atomic with transcript admission: the
@@ -393,6 +420,7 @@ pub async fn run_agentic_task(
         // unknown state is the unsafe direction).
         match never_started_disposition(
             store.chat_session_has_messages(&session_id).map_err(|_| ()),
+            runtime.is_turn_active(&session_id),
             keep_session,
         ) {
             NeverStartedDisposition::CleanupStub => {
@@ -465,6 +493,16 @@ fn keep_session_from_env() -> bool {
 /// - `Err(_)` — unloadable record: keep (deleting on unknown state is the
 ///   unsafe direction).
 ///
+/// `engine_active` overrides a `Ok(false)` sample. The disk snapshot is
+/// written by the engine's forwarder some time AFTER admission, so a submit
+/// that failed late — or a setup deadline that fired while the op was already
+/// queued — can read "no messages" for a turn the engine is at that moment
+/// running and billing. The engine's own liveness is the authority on whether
+/// a turn started; the file only says whether the first write has landed yet.
+/// Residual, narrow and deliberately erring toward keeping: a turn admitted
+/// and finished between the liveness check and the snapshot read is still
+/// seen as a stub.
+///
 /// `keep_session` only splits the started case: with the legacy one-shot
 /// opt-in (`KEEP_SESSION=0|false|no|off`), a started-but-unsubmitted run is
 /// still cleaned up per the old contract.
@@ -493,13 +531,19 @@ impl PlanModeRestore {
 
 fn never_started_disposition(
     has_messages: Result<bool, ()>,
+    engine_active: bool,
     keep_session: bool,
 ) -> NeverStartedDisposition {
-    match has_messages {
-        Ok(false) => NeverStartedDisposition::CleanupStub,
-        Ok(true) if keep_session => NeverStartedDisposition::KeepInspectable,
-        Ok(true) => NeverStartedDisposition::LegacyCleanupStarted,
-        Err(_) => NeverStartedDisposition::KeepInspectable,
+    let started = match has_messages {
+        Ok(has) => has || engine_active,
+        // Unloadable record: keep (deleting on unknown state is the unsafe
+        // direction), and the legacy opt-in must not override that.
+        Err(_) => return NeverStartedDisposition::KeepInspectable,
+    };
+    match (started, keep_session) {
+        (false, _) => NeverStartedDisposition::CleanupStub,
+        (true, true) => NeverStartedDisposition::KeepInspectable,
+        (true, false) => NeverStartedDisposition::LegacyCleanupStarted,
     }
 }
 
@@ -615,8 +659,10 @@ fn ensure_model_exists(model_id: &str) -> Result<()> {
 
 /// Validate a caller-provided session target: it must exist in the store and
 /// be an ordinary chat session. Scheduled-run sessions have their own
-/// automation authority and never host external agentic turns; ACP sessions
-/// do not live in this store, so they fail the existence check first.
+/// automation authority and never host external agentic turns; native code
+/// sessions are rejected on their durable sidecar (see below) because this
+/// host cannot resolve their scope; ACP sessions do not live in this store
+/// and fail the existence check first.
 fn ensure_existing_chat_session(store: &SessionStore, session_id: &str) -> Result<()> {
     if !store.chat_session_record_exists(session_id) {
         anyhow::bail!("agent_session_not_found: session '{session_id}' does not exist");
@@ -628,6 +674,20 @@ fn ensure_existing_chat_session(store: &SessionStore, session_id: &str) -> Resul
     if let Err(error) = store.load(session_id) {
         anyhow::bail!(
             "agent_session_unreadable: session '{session_id}' exists but could not be loaded: {error:#}"
+        );
+    }
+    // A native code session is an ordinary `sessions/<id>.json` record with a
+    // `code-session.json` sidecar, so `session_kind` classifies it as Chat.
+    // It must still be refused here: this host registers no code-session
+    // predicate, so the bridge would resolve the session to the permissive
+    // `Plain` scope for both the tool allowlist and the execpolicy deny
+    // ruleset, and run the code lane's transcript under the plain
+    // instruction layer. Running someone's code session with the wrong
+    // consent scope is worse than refusing it.
+    if store.has_code_session_marker(session_id) {
+        anyhow::bail!(
+            "agent_session_not_chat: session '{session_id}' is a native code session; \
+             headless runs cannot resolve its scope"
         );
     }
     match store.session_kind(session_id)? {
@@ -706,6 +766,14 @@ async fn run_turn(
     // known to be the truth. Fresh sessions need no restore (the stub
     // cleanup deletes the whole record, mode sidecar included).
     let mut plan_restore: Option<PlanModeRestore> = None;
+    // Same reasoning as `plan_restore`, for the model pin: `--model` on a
+    // caller-provided session rewrites that session's durable model sidecar
+    // before the turn exists, and the field is documented as pinning the
+    // model "for this run". A setup failure must therefore put the user's
+    // model back, or a run that never happened leaves their session
+    // permanently repinned. Restored on the same arm as the mode, and
+    // likewise never on the timeout arm (the submit may already have landed).
+    let mut model_restore: Option<Option<String>> = None;
     let setup = async {
         if existing_session {
             // Continue the caller's chat session: never re-create it (session
@@ -714,11 +782,15 @@ async fn run_turn(
             // engine evict); the engine itself lazily spawns on submit,
             // exactly like a GUI send.
             if let Some(model_id) = request.model_id.as_deref() {
+                let previous = store.session_model_id(session_id);
                 runtime
                     .pool
                     .switch_session_model(session_id, Some(model_id.to_owned()))
                     .await
                     .context("pin session model")?;
+                if previous.as_deref() != Some(model_id) {
+                    model_restore = Some(previous);
+                }
             }
             // Mirror the fresh branch below: an explicit Plan request must
             // persist on a caller-provided session too, or the session
@@ -792,8 +864,9 @@ async fn run_turn(
                     .context("persist session mode")?;
             }
         }
-        let content = prompt_with_attachments(store, session_id, request, existing_session).await?;
-        runtime
+        let (content, consumed_sources) =
+            prompt_with_attachments(store, session_id, request, existing_session).await?;
+        let handle = runtime
             .submit(&TurnInput {
                 session_id: session_id.to_owned(),
                 content,
@@ -802,7 +875,13 @@ async fn run_turn(
                 eval_tool_policy: None,
             })
             .await
-            .context("submit agentic turn")
+            .context("submit agentic turn")?;
+        // Only now: the turn is admitted, so the staged copies belong to a
+        // transcript that outlives this function. Consuming the caller's
+        // originals any earlier can leave the user with neither copy when the
+        // submit fails and the never-started stub is cleaned up.
+        remove_consumed_sources(&consumed_sources);
+        Ok(handle)
     };
     // Bound separately: a match scrutinee temporary would keep the future
     // (and its mutable borrow of `plan_restore`) alive into the arms.
@@ -817,6 +896,18 @@ async fn run_turn(
                         eprintln!(
                             "[pinvou agent run] warning: failed to restore the \
                                  pre-run session mode after the setup failure: {restore_error:#}"
+                        );
+                    }
+                }
+                if let Some(previous) = model_restore.take() {
+                    if let Err(restore_error) = runtime
+                        .pool
+                        .switch_session_model(session_id, previous)
+                        .await
+                    {
+                        eprintln!(
+                            "[pinvou agent run] warning: failed to restore the \
+                                 pre-run session model after the setup failure: {restore_error:#}"
                         );
                     }
                 }
@@ -1006,9 +1097,9 @@ async fn prompt_with_attachments(
     session_id: &str,
     request: &AgenticTaskRequest,
     existing_session: bool,
-) -> Result<String> {
+) -> Result<(String, Vec<std::path::PathBuf>)> {
     if request.attachments.is_empty() {
-        return Ok(request.prompt.clone());
+        return Ok((request.prompt.clone(), Vec::new()));
     }
     let roots = store
         .session_roots(session_id)
@@ -1026,75 +1117,92 @@ async fn prompt_with_attachments(
     let attachments = request.attachments.clone();
     let prompt = request.prompt.clone();
     let staging_root = ledger_root.clone();
-    let ingested = tokio::task::spawn_blocking(move || -> Result<Vec<IngestResult>> {
-        let mut results = Vec::with_capacity(attachments.len());
-        // Sources marked remove_after_ingest are deleted only after the whole
-        // batch ingests successfully — deleting per-attachment would destroy
-        // a caller file and then abort the run on a later failure.
-        let mut consumed_sources: Vec<std::path::PathBuf> = Vec::new();
-        let batch = (|| -> Result<Vec<IngestResult>> {
-            // Re-stat at staging time: the caps were enforced at validation,
-            // but the sources are caller-owned and can grow or be swapped
-            // between validation and this copy — the enforced cap must be
-            // the staged size, not the validated one.
-            let mut staged_total = 0_u64;
-            for attachment in attachments {
-                let basename = attachment
-                    .path
-                    .file_name()
-                    .and_then(|name| name.to_str())
-                    .map(str::to_owned)
-                    .context(anyhow::anyhow!(
-                        "agent_attachment_invalid_name: {}",
-                        attachment.path.display()
-                    ))?;
-                staged_total = ensure_stage_size(&attachment.path, staged_total)?;
-                // The re-stat above caps the validated size, but the source
-                // can still grow while the copy streams — bound the staged
-                // bytes too, exactly like the eval pipeline's staging.
-                let relative = stage_file_in_workspace_with_copier(
-                    &attachment.path.to_string_lossy(),
-                    &basename,
-                    &staging_root,
-                    "attachments",
-                    |source, destination| copy_bounded(source, destination, MAX_ATTACHMENT_BYTES),
-                )
-                .context(
-                    "agent_attachment_stage_failed: staging into the session workspace failed",
-                )?;
-                let result = crate::features::files::file_ingest::ingest_attachment(
-                    &staging_root.join(&relative),
-                )
-                .map_err(|code| anyhow::anyhow!("agent_attachment_ingest_failed: {code}"))?;
-                if attachment.remove_after_ingest {
-                    consumed_sources.push(attachment.path.clone());
+    let staged = tokio::task::spawn_blocking(
+        move || -> Result<(Vec<IngestResult>, Vec<std::path::PathBuf>)> {
+            let mut results = Vec::with_capacity(attachments.len());
+            // Sources marked remove_after_ingest are reported to the caller, not
+            // deleted here. Deleting at ingest time destroys the only remaining
+            // copy whenever the run does not go on to start: the staged copy
+            // lives under the session directory, and a submit failure or a setup
+            // timeout on a fresh run classifies the record as a never-started
+            // stub, whose cleanup removes that directory. Source gone, staged
+            // copy gone, no turn. The caller deletes them once the turn is
+            // admitted, which is the first moment the staged copy is part of
+            // something durable.
+            let mut consumed_sources: Vec<std::path::PathBuf> = Vec::new();
+            let batch = (|| -> Result<Vec<IngestResult>> {
+                // Re-stat at staging time: the caps were enforced at validation,
+                // but the sources are caller-owned and can grow or be swapped
+                // between validation and this copy — the enforced cap must be
+                // the staged size, not the validated one.
+                let mut staged_total = 0_u64;
+                for attachment in attachments {
+                    let basename = attachment
+                        .path
+                        .file_name()
+                        .and_then(|name| name.to_str())
+                        .map(str::to_owned)
+                        .context(anyhow::anyhow!(
+                            "agent_attachment_invalid_name: {}",
+                            attachment.path.display()
+                        ))?;
+                    staged_total = ensure_stage_size(&attachment.path, staged_total)?;
+                    // The re-stat above caps the validated size, but the source
+                    // can still grow while the copy streams — bound the staged
+                    // bytes too, exactly like the eval pipeline's staging.
+                    let relative = stage_file_in_workspace_with_copier(
+                        &attachment.path.to_string_lossy(),
+                        &basename,
+                        &staging_root,
+                        "attachments",
+                        |source, destination| {
+                            copy_bounded(source, destination, MAX_ATTACHMENT_BYTES)
+                        },
+                    )
+                    .context(
+                        "agent_attachment_stage_failed: staging into the session workspace failed",
+                    )?;
+                    let result = crate::features::files::file_ingest::ingest_attachment(
+                        &staging_root.join(&relative),
+                    )
+                    .map_err(|code| anyhow::anyhow!("agent_attachment_ingest_failed: {code}"))?;
+                    if attachment.remove_after_ingest {
+                        consumed_sources.push(attachment.path.clone());
+                    }
+                    results.push(result);
                 }
-                results.push(result);
-            }
-            Ok(results)
-        })();
-        if batch.is_err() {
-            return batch;
-        }
-        for source in &consumed_sources {
-            if let Err(error) = std::fs::remove_file(source) {
-                eprintln!(
-                    "[pinvou agent run] remove_after_ingest could not delete {}: {error}",
-                    source.display()
-                );
-            }
-        }
-        Ok(batch?)
-    })
+                Ok(results)
+            })();
+            Ok((batch?, consumed_sources))
+        },
+    )
     .await
     .context("attachment staging task")??;
-    Ok(build_message_with_attachments_in_dir(
-        prompt,
-        ingested,
-        &ledger_root,
-        "attachments",
-        reference_absolute,
+    let (ingested, consumed_sources) = staged;
+    Ok((
+        build_message_with_attachments_in_dir(
+            prompt,
+            ingested,
+            &ledger_root,
+            "attachments",
+            reference_absolute,
+        ),
+        consumed_sources,
     ))
+}
+
+/// Deletes the `remove_after_ingest` sources once the turn has been admitted.
+/// Best-effort: the staged copies are already in the transcript, so a source
+/// that cannot be removed is a cosmetic leftover, not a lost file.
+fn remove_consumed_sources(sources: &[std::path::PathBuf]) {
+    for source in sources {
+        if let Err(error) = std::fs::remove_file(source) {
+            eprintln!(
+                "[pinvou agent run] remove_after_ingest could not delete {}: {error}",
+                source.display()
+            );
+        }
+    }
 }
 
 /// Best-effort salvage of the assistant text and tool events already recorded
@@ -1176,35 +1284,57 @@ mod tests {
     #[test]
     fn never_started_disposition_branch_order_is_pinned() {
         use super::{NeverStartedDisposition::*, never_started_disposition};
-        // Zero-message stub: cleanup-eligible regardless of KEEP_SESSION.
+        // Zero-message stub with a dead engine: cleanup-eligible regardless
+        // of KEEP_SESSION.
         assert!(matches!(
-            never_started_disposition(Ok(false), true),
+            never_started_disposition(Ok(false), false, true),
             CleanupStub
         ));
         assert!(matches!(
-            never_started_disposition(Ok(false), false),
+            never_started_disposition(Ok(false), false, false),
             CleanupStub
         ));
         // Started transcript (durable record carries admitted messages):
         // stays inspectable under the default, legacy-cleanup only on the
         // explicit falsy opt-in.
         assert!(matches!(
-            never_started_disposition(Ok(true), true),
+            never_started_disposition(Ok(true), false, true),
             KeepInspectable
         ));
         assert!(matches!(
-            never_started_disposition(Ok(true), false),
+            never_started_disposition(Ok(true), false, false),
             LegacyCleanupStarted
         ));
         // Unloadable record: keep — deleting on unknown state is the unsafe
         // direction, regardless of KEEP_SESSION.
         assert!(matches!(
-            never_started_disposition(Err(()), true),
+            never_started_disposition(Err(()), false, true),
             KeepInspectable
         ));
         assert!(matches!(
-            never_started_disposition(Err(()), false),
+            never_started_disposition(Err(()), false, false),
             KeepInspectable
+        ));
+    }
+
+    /// A live engine outranks a "no messages yet" disk sample: the forwarder
+    /// writes the admitted prompt asynchronously, so a submit that failed
+    /// late (or a setup deadline that fired after the op was queued) can read
+    /// zero messages for a turn the engine is running and billing right now.
+    /// Deleting that record destroys the only copy of a started turn.
+    #[test]
+    fn never_started_disposition_keeps_a_record_whose_engine_is_still_running() {
+        use super::{NeverStartedDisposition::*, never_started_disposition};
+        assert!(matches!(
+            never_started_disposition(Ok(false), true, true),
+            KeepInspectable
+        ));
+        // The legacy one-shot opt-in still cleans up a started turn, but it
+        // is classified as STARTED (LegacyCleanupStarted), not as a stub —
+        // the two arms differ for `KEEP_SESSION` unset, which is the default.
+        assert!(matches!(
+            never_started_disposition(Ok(false), true, false),
+            LegacyCleanupStarted
         ));
     }
 
