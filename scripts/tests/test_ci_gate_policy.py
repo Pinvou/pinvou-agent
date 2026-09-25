@@ -668,6 +668,20 @@ class CiGatePolicyTests(unittest.TestCase):
         )
         self.assertNotIn("keeping the existing swap configuration", source)
 
+    def test_memory_setup_disk_swap_is_mandatory(self):
+        # Disk swap is mandatory (2026-09-19): with the zram pool capped at
+        # 70% of RAM, the 8G /mnt swapfile is the only unbounded overflow
+        # layer. A leftover opt-in switch turns this red; the main flow must
+        # call setup_disk_swap unconditionally (top level, no indentation)
+        # and the 8G size is pinned.
+        source = (ROOT / "scripts" / "ci-memory-setup.sh").read_text(encoding="utf-8")
+        self.assertNotIn("PINVOU3_CI_ENABLE_DISK_SWAP", source)
+        self.assertIn("DISK_SWAP_SIZE_KIB=$((8 * 1024 * 1024))", source)
+        self.assertIn(
+            'log "provisioning the mandatory /mnt disk swap"\nsetup_disk_swap',
+            source,
+        )
+
     def test_fetch_connectors_verifies_checksums_with_loud_diagnostics(self):
         # verify_file is called bare under `set -e` from three places (the
         # --check gate, the post-download recheck and the pre-install binary
