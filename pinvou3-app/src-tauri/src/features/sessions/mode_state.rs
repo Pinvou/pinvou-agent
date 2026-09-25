@@ -187,14 +187,41 @@ fn folded_collections(state: &SessionModeState) -> Vec<MountedCollection> {
 // ── SessionStore 行为 impl ──
 
 impl SessionStore {
-    /// The session's entry in the durable `_session_mode_states.json` read
-    /// cache, if any. This — not [`Self::mode_state`]'s resolved fallback —
-    /// is what a failed run's mode restore must put back: the fallback is
-    /// process-relative (a headless process installs no code-session
-    /// predicate, so it resolves Yolo for a code session whose GUI default
-    /// is Plan), and durably pinning that misresolution is exactly the
-    /// unsafe reopen divergence the Plan persist exists to prevent.
+    /// The session's entry in the durable `_session_mode_states.json`, if any.
+    ///
+    /// This — not [`Self::mode_state`]'s resolved fallback — is what a failed
+    /// run's mode restore must put back: the fallback is process-relative (a
+    /// headless process installs no code-session predicate, so it resolves
+    /// Yolo for a code session whose GUI default is Plan), and durably pinning
+    /// that misresolution is exactly the unsafe reopen divergence the Plan
+    /// persist exists to prevent.
+    ///
+    /// Reads the FILE, not the boot-time cache. The cache is this process's
+    /// view from startup, so against a live GUI it goes stale the moment the
+    /// user switches a mode — and the restore would then write that stale
+    /// value back over the newer one, or (when the cache never had an entry)
+    /// clear a mode the GUI had just set. Both are the divergence above, only
+    /// caused by the code meant to prevent it. The cache remains the fallback
+    /// for an unreadable file, where a stale answer still beats inventing an
+    /// absence.
     pub fn durable_mode_entry(&self, id: &str) -> Option<SerializableMode> {
+        let file = crate::platform::paths::sessions_root().join("_session_mode_states.json");
+        match std::fs::read_to_string(&file) {
+            // A parse failure falls through to the cache rather than
+            // reporting an absence the file does not actually state.
+            Ok(content) => {
+                if let Ok(mut entries) = serde_json::from_str::<
+                    std::collections::HashMap<String, SerializableMode>,
+                >(&content)
+                {
+                    return entries.remove(id);
+                }
+            }
+            // Absent is authoritative — the mutation path removes the file
+            // when its last entry goes away.
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => return None,
+            Err(_) => {}
+        }
         self.session_mode_states.read().get(id).cloned()
     }
 

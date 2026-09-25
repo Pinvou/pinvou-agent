@@ -23,7 +23,7 @@
 
 use std::path::PathBuf;
 use std::sync::Arc;
-use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::time::{Duration, Instant};
 
 use anyhow::{Context, Result};
@@ -42,7 +42,7 @@ use crate::features::assistant::product_runtime::{
 };
 use crate::features::files::file_ingest::IngestResult;
 use crate::features::sessions::{
-    ExecutionRootResolver, MAX_SESSIONS_PER_KIND, SessionKind, SessionStore,
+    ExecutionRootResolver, MAX_HEADLESS_SESSIONS, SessionKind, SessionStore,
     validate_user_workspace_path,
 };
 use crate::platform::prefs::UserPrefs;
@@ -262,6 +262,7 @@ pub async fn run_agentic_task(
 ) -> Result<AgenticTaskReport> {
     let timeout_secs = request.timeout_secs.clamp(1, MAX_TIMEOUT_SECS);
     validate_attachments(&request.attachments)?;
+    refuse_ingest_without_a_surviving_copy(&request.attachments, keep_session_from_env())?;
     if let Some(model_id) = request.model_id.as_deref() {
         ensure_model_exists(model_id)?;
     }
@@ -341,7 +342,7 @@ pub async fn run_agentic_task(
 
     // Retention-eviction observation: the prepare-time save inside the turn
     // lands in the same 50-session store the GUI reads, and a fresh save at
-    // the cap evicts the oldest unpinned chat session(s) (pinned sessions are
+    // the cap evicts the oldest unpinned headless session(s) (pinned sessions are
     // exempt from retention). The store reports its real sweep deletions into
     // this receiver, so the warning keys on the eviction event itself: a run
     // that errors after the save (attachment staging, submit) must still
@@ -558,9 +559,11 @@ fn retention_eviction_warning(evicted: &[String]) -> Option<String> {
     (!evicted.is_empty()).then(|| {
         format!(
             "[pinvou agent run] warning: persisting this run's session evicted \
-             {} unpinned chat session(s) at the {MAX_SESSIONS_PER_KIND}-session \
-             retention cap (pinned sessions are exempt). Point PINVOU3_HOME at \
-             a sandbox or prune the session store (PINVOU3_AGENT_TASK_KEEP_\
+             {} unpinned headless run session(s) at the \
+             {MAX_HEADLESS_SESSIONS}-session headless retention cap (pinned \
+             sessions are exempt, and the desktop app's own chat sessions are \
+             on a separate budget this never touches). Point PINVOU3_HOME at a \
+             sandbox or prune the session store (PINVOU3_AGENT_TASK_KEEP_\
              SESSION=0 only removes this run's session afterwards; the \
              save-time eviction still happens).",
             evicted.len()
@@ -573,6 +576,42 @@ fn retention_eviction_warning(evicted: &[String]) -> Option<String> {
 /// [`MAX_ATTACHMENT_BYTES`] bytes (the staged attachment caps shared with
 /// `ProductHeadlessBackend`). Symlinks to regular files are accepted,
 /// matching the GUI staging path (`stage_file_in_workspace` copies content).
+/// Refuses `remove_after_ingest` when the run is also configured to delete its
+/// own session afterwards, because together they destroy both copies of the
+/// caller's file.
+///
+/// `remove_after_ingest` is safe only because the staged copy outlives the
+/// call: staging writes into `sessions/<id>/workspace/attachments/`, and the
+/// source is unlinked *after* submit returns, so the file still exists inside
+/// a transcript the caller can open. Under the legacy one-shot cleanup
+/// (`PINVOU3_AGENT_TASK_KEEP_SESSION` falsy — the setting batch runs are told
+/// to use) that premise is false: the `submitted && !keep_session` arm
+/// `remove_dir_all`s the whole session directory, taking the staged copy with
+/// it moments after the source was deleted. The file is then gone from both
+/// places, unrecoverably.
+///
+/// The two flags express contradictory intents — "hand this file over and keep
+/// only your copy" versus "keep nothing" — so this refuses up front rather
+/// than picking one silently. Checked before anything is staged or deleted.
+fn refuse_ingest_without_a_surviving_copy(
+    attachments: &[AgenticTaskAttachment],
+    keep_session: bool,
+) -> Result<()> {
+    if keep_session {
+        return Ok(());
+    }
+    if let Some(attachment) = attachments.iter().find(|a| a.remove_after_ingest) {
+        anyhow::bail!(
+            "agent_attachment_ingest_would_lose_the_file: '{}' sets remove_after_ingest, but \
+             PINVOU3_AGENT_TASK_KEEP_SESSION is falsy, so this run deletes its own session \
+             (and the staged copy) right after the turn — the source and the copy would both \
+             be destroyed. Drop remove_after_ingest, or let the session persist.",
+            attachment.path.display()
+        );
+    }
+    Ok(())
+}
+
 fn validate_attachments(attachments: &[AgenticTaskAttachment]) -> Result<()> {
     if attachments.len() > MAX_ATTACHMENTS {
         anyhow::bail!(
@@ -774,6 +813,11 @@ async fn run_turn(
     // permanently repinned. Restored on the same arm as the mode, and
     // likewise never on the timeout arm (the submit may already have landed).
     let mut model_restore: Option<Option<String>> = None;
+    // Set immediately before `runtime.submit`; read by the timeout arm to tell
+    // "the deadline hit while staging attachments" (nothing ran, restore the
+    // pins) from "the deadline hit around the submit" (a turn may have been
+    // admitted, leave them).
+    let submit_entered = AtomicBool::new(false);
     let setup = async {
         if existing_session {
             // Continue the caller's chat session: never re-create it (session
@@ -866,6 +910,13 @@ async fn run_turn(
         }
         let (content, consumed_sources) =
             prompt_with_attachments(store, session_id, request, existing_session).await?;
+        // Marks the point past which a deadline hit is genuinely ambiguous:
+        // the submit may already have admitted the turn, so the timeout arm
+        // must not roll the mode/model pins back. Everything before this —
+        // the pins themselves, the bind, and attachment staging, which is the
+        // slow part and the usual reason a small timeout fires — provably
+        // never reached the submit, and there the pins must be restored.
+        submit_entered.store(true, Ordering::SeqCst);
         let handle = runtime
             .submit(&TurnInput {
                 session_id: session_id.to_owned(),
@@ -915,6 +966,34 @@ async fn run_turn(
             }
         },
         Err(_elapsed) => {
+            // A deadline that fired BEFORE the submit was entered provably
+            // never ran a turn, so leaving the caller's session durably
+            // repinned to this run's mode and model would be wrong — that is
+            // the user's session, permanently altered by a run that did
+            // nothing. Past the submit the outcome is genuinely ambiguous
+            // (the turn may have been admitted), and there the pins stay.
+            if !submit_entered.load(Ordering::SeqCst) {
+                if let Some(restore) = plan_restore.take() {
+                    if let Err(restore_error) = restore.apply(&store, session_id) {
+                        eprintln!(
+                            "[pinvou agent run] warning: failed to restore the pre-run \
+                             session mode after the setup timeout: {restore_error:#}"
+                        );
+                    }
+                }
+                if let Some(previous) = model_restore.take() {
+                    if let Err(restore_error) = runtime
+                        .pool
+                        .switch_session_model(session_id, previous)
+                        .await
+                    {
+                        eprintln!(
+                            "[pinvou agent run] warning: failed to restore the pre-run \
+                             session model after the setup timeout: {restore_error:#}"
+                        );
+                    }
+                }
+            }
             return (
                 false,
                 Ok(AgenticTaskReport {
@@ -1146,7 +1225,11 @@ async fn prompt_with_attachments(
                             "agent_attachment_invalid_name: {}",
                             attachment.path.display()
                         ))?;
+                    let before = staged_total;
                     staged_total = ensure_stage_size(&attachment.path, staged_total)?;
+                    // What the pre-copy stat predicted this file would add;
+                    // swapped for the landed size once the copy finishes.
+                    let predicted = staged_total.saturating_sub(before);
                     // The re-stat above caps the validated size, but the source
                     // can still grow while the copy streams — bound the staged
                     // bytes too, exactly like the eval pipeline's staging.
@@ -1162,10 +1245,38 @@ async fn prompt_with_attachments(
                     .context(
                         "agent_attachment_stage_failed: staging into the session workspace failed",
                     )?;
-                    let result = crate::features::files::file_ingest::ingest_attachment(
-                        &staging_root.join(&relative),
-                    )
-                    .map_err(|code| anyhow::anyhow!("agent_attachment_ingest_failed: {code}"))?;
+                    // The aggregate budget must count what actually landed,
+                    // not what the pre-copy stat predicted. `copy_bounded`
+                    // binds each file on its own, but a caller-owned source
+                    // that is tiny at `ensure_stage_size` and large by the
+                    // time the copy streams contributes its stat'ed size to
+                    // the running total — sixteen of those pass a 100 MiB
+                    // budget while writing 320 MiB into the session. Re-stat
+                    // the destination and charge the real figure.
+                    let staged_path = staging_root.join(&relative);
+                    let landed = std::fs::metadata(&staged_path)
+                        .with_context(|| {
+                            format!(
+                                "agent_attachment_stage_failed: cannot stat the staged copy of {}",
+                                attachment.path.display()
+                            )
+                        })?
+                        .len();
+                    staged_total = staged_total
+                        .saturating_sub(predicted)
+                        .saturating_add(landed);
+                    if staged_total > MAX_ATTACHMENTS_TOTAL_BYTES {
+                        let _ = std::fs::remove_file(&staged_path);
+                        anyhow::bail!(
+                            "agent_attachment_total_too_large: staged attachments exceed \
+                             {MAX_ATTACHMENTS_TOTAL_BYTES} bytes in total"
+                        );
+                    }
+                    let result =
+                        crate::features::files::file_ingest::ingest_attachment(&staged_path)
+                            .map_err(|code| {
+                                anyhow::anyhow!("agent_attachment_ingest_failed: {code}")
+                            })?;
                     if attachment.remove_after_ingest {
                         consumed_sources.push(attachment.path.clone());
                     }
@@ -1239,10 +1350,17 @@ fn partial_turn_analysis(
     )
 }
 
+/// Mints the id for a fresh headless run.
+///
+/// The prefix comes from `HEADLESS_SESSION_PREFIX` rather than a literal:
+/// retention keys the separate headless eviction budget on it, so changing the
+/// format here without changing the sweep would silently put these sessions
+/// back in competition with the user's GUI chats.
 fn fresh_session_id() -> String {
     static NEXT: AtomicU64 = AtomicU64::new(0);
     format!(
-        "agentic_{}_{}",
+        "{}{}_{}",
+        crate::features::sessions::HEADLESS_SESSION_PREFIX,
         std::process::id(),
         NEXT.fetch_add(1, Ordering::Relaxed)
     )
@@ -1254,14 +1372,14 @@ mod tests {
         AgenticTaskAttachment, AgenticTaskMode, AgenticTaskReport, AgenticTaskRequest,
         AgenticToolEvent, DEFAULT_TIMEOUT_SECS, MAX_ATTACHMENT_BYTES, MAX_ATTACHMENTS,
         MAX_ATTACHMENTS_TOTAL_BYTES, MAX_TIMEOUT_SECS, ensure_existing_chat_session,
-        ensure_model_exists, ensure_stage_size, keep_session_from_env, retention_eviction_warning,
-        validate_attachments,
+        ensure_model_exists, ensure_stage_size, fresh_session_id, keep_session_from_env,
+        refuse_ingest_without_a_surviving_copy, retention_eviction_warning, validate_attachments,
     };
     use crate::features::assistant::attachments::{
         copy_bounded, stage_file_in_workspace_with_copier,
     };
     use crate::features::sessions::{
-        MAX_SESSIONS_PER_KIND, ScheduledRunMode, ScheduledRunProfile, SessionStore,
+        MAX_HEADLESS_SESSIONS, ScheduledRunMode, ScheduledRunProfile, SessionStore,
     };
     use crate::platform::test_support::locked_env;
     use std::path::PathBuf;
@@ -1422,6 +1540,60 @@ mod tests {
             serde_json::from_str(r#"{"path":"/tmp/a.txt"}"#).unwrap();
         assert_eq!(attachment.path, PathBuf::from("/tmp/a.txt"));
         assert!(!attachment.remove_after_ingest);
+    }
+
+    /// `to_app_mode` decides what the headless turn is actually allowed to do,
+    /// and nothing asserted it: `Plan => AppMode::Agent` would silently hand a
+    /// `--mode plan` run full shell and file-write access while every other
+    /// test (which only covers the serde names) stayed green.
+    #[test]
+    fn task_mode_maps_to_the_matching_app_mode() {
+        assert_eq!(
+            AgenticTaskMode::Plan.to_app_mode(),
+            deepseek_tui::AppMode::Plan,
+            "a Plan request must run under the Plan app mode, not an executing one"
+        );
+        assert_eq!(
+            AgenticTaskMode::Agent.to_app_mode(),
+            deepseek_tui::AppMode::Agent
+        );
+    }
+
+    /// The headless retention budget is keyed on the id prefix, so the runner's
+    /// id format and the sweep's predicate must not drift into two literals.
+    #[test]
+    fn fresh_ids_carry_the_prefix_retention_buckets_on() {
+        assert!(
+            fresh_session_id().starts_with(crate::features::sessions::HEADLESS_SESSION_PREFIX),
+            "retention buckets headless sessions by this prefix; a format change here \
+             silently puts them back in competition with the user's GUI chats"
+        );
+    }
+
+    /// `remove_after_ingest` is only safe because the staged copy survives in
+    /// the transcript. Under the legacy one-shot cleanup the session directory
+    /// is deleted right after the turn, so the source and the copy both go —
+    /// the combination must be refused before anything is staged or unlinked.
+    #[test]
+    fn ingest_that_would_lose_both_copies_is_refused() {
+        let file = tempfile::NamedTempFile::new().unwrap();
+        let attachments = vec![AgenticTaskAttachment {
+            path: file.path().to_path_buf(),
+            remove_after_ingest: true,
+        }];
+        let error = refuse_ingest_without_a_surviving_copy(&attachments, false)
+            .expect_err("remove_after_ingest + one-shot cleanup destroys both copies");
+        assert!(
+            format!("{error}").contains("agent_attachment_ingest_would_lose_the_file"),
+            "unexpected error: {error}"
+        );
+        // Either half alone is fine.
+        refuse_ingest_without_a_surviving_copy(&attachments, true).unwrap();
+        let keepers = vec![AgenticTaskAttachment {
+            path: file.path().to_path_buf(),
+            remove_after_ingest: false,
+        }];
+        refuse_ingest_without_a_surviving_copy(&keepers, false).unwrap();
     }
 
     #[test]
@@ -1698,6 +1870,12 @@ mod tests {
     /// cap records nothing. The runner's own arm/report half is pinned by
     /// `retention_eviction_warning_keys_on_the_record_regardless_of_outcome`
     /// below.
+    ///
+    /// Seeds HEADLESS sessions, because headless runs are evicted against
+    /// their own budget: a run can no longer delete one of the user's GUI
+    /// chats (`headless_sessions_do_not_evict_gui_chats` pins that side), so
+    /// filling the chat bucket here would evict nothing and the observer
+    /// contract would go untested.
     #[test]
     fn retention_sweep_records_real_evictions_and_below_cap_stays_silent() {
         let (_lock, _env) = locked_env(&["PINVOU3_HOME"]);
@@ -1713,19 +1891,21 @@ mod tests {
         let store = SessionStore::boot_with_scheduled_root(tmp.join("scheduled")).expect("boot");
 
         let mut ids = Vec::new();
-        for _ in 0..MAX_SESSIONS_PER_KIND {
-            let session = store
-                .create_new("test-model".to_string(), None, tmp.clone())
+        for index in 0..MAX_HEADLESS_SESSIONS {
+            let id = format!("agentic_seed_{index}");
+            store
+                .create_empty_with_id(id.clone(), "test-model".to_string(), None, tmp.clone())
                 .unwrap();
-            ids.push(session.metadata.id);
+            ids.push(id);
         }
 
         // Arm the same receiver `run_agentic_task` installs around the turn.
         let evictions = std::sync::Arc::new(parking_lot::Mutex::new(Vec::new()));
         store.set_retention_eviction_observer(Some(evictions.clone()));
 
-        // The prepare-time save of a fresh run at the cap — the exact call
-        // `prepare_eval_session` makes — evicts the oldest session...
+        // The prepare-time save of a fresh run at the headless cap — the
+        // exact call `prepare_eval_session` makes — evicts the oldest
+        // headless session...
         let oldest = ids[0].clone();
         store
             .create_empty_with_id(
@@ -1749,7 +1929,7 @@ mod tests {
         assert_eq!(evicted.lock().as_slice(), &[ids[0].clone()]);
 
         // Below the cap a fresh save evicts nothing and records nothing.
-        store.delete(&ids[MAX_SESSIONS_PER_KIND - 1]).unwrap();
+        store.delete(&ids[MAX_HEADLESS_SESSIONS - 1]).unwrap();
         let evictions = std::sync::Arc::new(parking_lot::Mutex::new(Vec::new()));
         store.set_retention_eviction_observer(Some(evictions.clone()));
         store
@@ -1781,7 +1961,10 @@ mod tests {
     fn retention_eviction_warning_keys_on_the_record_regardless_of_outcome() {
         let warning = retention_eviction_warning(&["evicted-id".to_string()])
             .expect("a non-empty eviction record must warn");
-        assert!(warning.contains("1 unpinned chat session"), "{warning}");
+        assert!(
+            warning.contains("1 unpinned headless run session"),
+            "{warning}"
+        );
         assert!(warning.contains("pinned sessions are exempt"), "{warning}");
         assert!(
             warning.contains("PINVOU3_AGENT_TASK_KEEP_SESSION=0"),
