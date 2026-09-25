@@ -668,6 +668,62 @@ class CiGatePolicyTests(unittest.TestCase):
         )
         self.assertNotIn("keeping the existing swap configuration", source)
 
+    def test_windows_rust_test_parallel_phases_preserve_routing_and_coverage(self):
+        # The all-target check and the linked regressions run as two matrix
+        # legs of one required job. Splitting the compile graphs must not
+        # turn either leg into an optional check, add a cache writer, or drop
+        # a step from its leg.
+        windows_rust_test = _without_yaml_comments(
+            self.pr_workflow.split("\n  windows-rust-test:", maxsplit=1)[1].split(
+                "\n  macos-rust-check:", maxsplit=1
+            )[0]
+        )
+        self.assertIn("name: windows-rust-test (${{ matrix.phase }})", windows_rust_test)
+        self.assertIn("fail-fast: false", windows_rust_test)
+        self.assertIn("max-parallel: 2", windows_rust_test)
+        self.assertIn("phase: [all-targets-check, regression]", windows_rust_test)
+        # Routing is job level, so it applies to both legs unchanged.
+        job_if = windows_rust_test.split("\n    if: >-", 1)[1].split("\n    strategy:", 1)[0]
+        self.assertNotIn("matrix.phase", job_if)
+
+        steps = re.split(r"\n      - name: ", windows_rust_test)[1:]
+        phase_of = {}
+        for step in steps:
+            name = step.split("\n", 1)[0].strip()
+            match = re.search(r"\n        if: \$\{\{ matrix\.phase == '([a-z-]+)' \}\}", step)
+            phase_of[name] = match.group(1) if match else None
+        expected = {
+            "Windows Rust 全目标检查": "all-targets-check",
+            "pinvou-cli Windows compile check": "all-targets-check",
+            "Windows Rust 单元测试链接检查": "regression",
+            "Windows 测试 exe 嵌入 Common-Controls v6 清单": "regression",
+            "Windows 测试二进制导入诊断": "regression",
+            "CodeWhale Windows PowerShell regressions": "regression",
+            "Windows 原子替换状态机回归": "regression",
+            # Shared setup runs on both legs.
+            "初始化公共底座 submodule": None,
+            "Cargo cache": None,
+        }
+        for name, phase in expected.items():
+            with self.subTest(step=name):
+                self.assertIn(name, phase_of)
+                self.assertEqual(phase_of[name], phase)
+        self.assertIn("--all-targets --features dev-tools", windows_rust_test)
+        self.assertIn("--lib --no-run --message-format=json", windows_rust_test)
+
+        # Both legs restore one established namespace; only regression on
+        # main may save, so there is no second writer or new key.
+        self.assertEqual(windows_rust_test.count("shared-key:"), 1)
+        self.assertIn("shared-key: windows-rust-test", windows_rust_test)
+        self.assertIn(
+            "save-if: ${{ matrix.phase == 'regression' && "
+            "github.ref == 'refs/heads/main' }}",
+            windows_rust_test,
+        )
+        self.assertIn("WINDOWS_RUST_CACHE", windows_rust_test)
+        self.assertIn("WINDOWS_RUST_TIMING", windows_rust_test)
+        self.assertNotIn("actions/setup-node", windows_rust_test)
+
     def test_memory_setup_disk_swap_is_mandatory(self):
         # Disk swap is mandatory (2026-09-19): with the zram pool capped at
         # 70% of RAM, the 8G /mnt swapfile is the only unbounded overflow
@@ -742,12 +798,14 @@ class CiGatePolicyTests(unittest.TestCase):
         )
         self.assertIn(
             "- name: Windows 原子替换状态机回归\n"
+            "        if: ${{ matrix.phase == 'regression' }}\n"
             "        shell: bash\n"
             "        run: |",
             windows_rust_test,
         )
         self.assertIn(
             "- name: Windows 测试 exe 嵌入 Common-Controls v6 清单\n"
+            "        if: ${{ matrix.phase == 'regression' }}\n"
             "        shell: pwsh\n"
             "        run: |",
             windows_rust_test,
