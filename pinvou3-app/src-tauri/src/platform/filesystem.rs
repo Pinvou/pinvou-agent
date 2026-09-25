@@ -3030,12 +3030,11 @@ pub(crate) mod tests {
         ));
         std::fs::create_dir_all(&root).unwrap();
         let first = root.join("state.json");
-        let second = root.join("other.json");
         std::fs::write(&first, b"corrupt A").unwrap();
-        std::fs::write(&second, b"corrupt B").unwrap();
         let first_quarantine = quarantine_corrupt_file(&first).unwrap();
-        let second_quarantine = quarantine_corrupt_file(&second).unwrap();
-        assert_ne!(first_quarantine, second_quarantine);
+        // (Comparing two DIFFERENT stems would prove nothing about the
+        // timestamp suffix — different names differ regardless. The
+        // same-stem re-quarantine below is the discriminator.)
         assert!(
             first_quarantine
                 .to_string_lossy()
