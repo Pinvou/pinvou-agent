@@ -2590,8 +2590,7 @@ impl EnginePool {
             baseline_revision,
         )?;
         let scheduled_profile = self.store.scheduled_profile(session_id);
-        if scheduled_profile.is_none() && crate::features::sessions::is_sched_session_id(session_id)
-        {
+        if scheduled_profile.is_none() && session_id.starts_with("sched-") {
             bail!("Scheduled session '{session_id}' no longer exists");
         }
         let turn_lock = self.turn_locks.for_session(session_id).await;
@@ -3064,8 +3063,7 @@ impl EnginePool {
             baseline_revision,
         )?;
         let scheduled_profile = self.store.scheduled_profile(session_id);
-        if scheduled_profile.is_none() && crate::features::sessions::is_sched_session_id(session_id)
-        {
+        if scheduled_profile.is_none() && session_id.starts_with("sched-") {
             bail!("Scheduled session '{session_id}' no longer exists");
         }
         let turn_lock = self.turn_locks.for_session(session_id).await;

@@ -1103,7 +1103,7 @@ pub async fn save_session_artifacts(
     ensure_chat_session(&store, &id, "save_session_artifacts")?;
     store
         .update_artifacts(&id, paths)
-        .map_err(|e| format!("save_session_artifacts({id}): {e:#}"))
+        .map_err(|e| format!("save_session_artifacts: {e:#}"))
 }
 
 /// Shared skeleton for the two position-keyed sidecar normalizers

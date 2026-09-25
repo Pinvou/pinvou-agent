@@ -339,14 +339,19 @@ impl SessionStore {
             .manager
             .load_session_snapshot(id)
             .with_context(context)?;
-        // Fail closed on case-variant aliases: on case-insensitive
-        // filesystems `AUX-<suffix>.json` resolves to the real `aux-…` record
-        // while case-sensitive identity tests miss the mismatch, so a caller
-        // holding an alias would operate on a different session than the id
-        // claims. Requiring the loaded metadata id to equal the requested id
-        // makes every downstream prefix/identity decision trustworthy
-        // regardless of filesystem case semantics.
-        if session.metadata.id != id {
+        // Fail closed on case-variant aliases of AUX records: on
+        // case-insensitive filesystems `AUX-<suffix>.json` resolves to the
+        // real `aux-…` record while case-sensitive identity tests miss the
+        // mismatch, so a caller holding an alias would operate on a
+        // different session than the id claims. Requiring the loaded
+        // metadata id to equal the requested id makes every downstream
+        // prefix/identity decision trustworthy regardless of filesystem
+        // case semantics. The check is scoped to aux-prefixed ids (round-31
+        // M10): the case-alias concern it covers is aux-only, and a global
+        // check would change behavior for any non-aux session whose on-disk
+        // metadata.id differs from its filename — previously loadable, now
+        // a hard error.
+        if super::validators::is_aux_session_id(id) && session.metadata.id != id {
             return Err(anyhow::Error::new(SessionIdMismatch {
                 requested: id.to_string(),
                 actual: session.metadata.id,
@@ -586,8 +591,8 @@ impl SessionStore {
     /// store ([`SessionStore::delete`] and deep paths without an app handle
     /// such as retention policy/scheduled cleanup). Failures are silent
     /// (hook implementations own their idempotency) and must not block the
-    /// deletion path. Callers should fire this after store-side locks are
-    /// released where possible.
+    /// deletion path; callers must fire this only after all store-side
+    /// locks are released.
     pub(crate) fn notify_session_purged(&self, id: &str) {
         let hooks = self.session_purged_hooks.read().clone();
         for hook in hooks {

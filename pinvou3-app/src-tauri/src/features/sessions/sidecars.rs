@@ -1,7 +1,7 @@
 //! Sidecar persistence for per-session auxiliary state.
 //!
 //! The durable `SavedSession` cannot grow new fields without changing the
-//! upstream schema, so three independent JSON sidecars under
+//! upstream schema, so four independent JSON sidecars under
 //! `~/.pinvou3/sessions/` capture cross-restart runtime state that must
 //! survive a process bounce:
 //!

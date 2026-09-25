@@ -74,13 +74,8 @@ impl SessionStore {
             .sessions_dir()
             .join(format!("{}.json", session.metadata.id));
         let payload = serde_json::to_vec_pretty(session).context("serialize saved session")?;
-        // Name the record, never the absolute path (round-23 should-fix 4):
-        // the sessions root embeds the host home directory, and this context
-        // rides error chains that surface in the browser (the aux create leg
-        // through get_or_create_aux_session) — the same no-host-paths stance
-        // as the sidecar persistence errors.
         deepseek_tui::utils::write_atomic(&path, &payload)
-            .with_context(|| format!("write session {}", session.metadata.id))?;
+            .with_context(|| format!("write session {}", path.display()))?;
         // 会话 JSON 落盘后列表快照即过期(标题/更新时间/新会话都可能变)
         self.invalidate_list_cache();
         Ok(path)

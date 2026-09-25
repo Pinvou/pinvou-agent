@@ -172,7 +172,7 @@ pub async fn move_session_to_project(
     // chat 会话)——兄弟元数据命令(delete/rename/pin)并不拒绝
     // scheduled-run,此处不与它们同口径。
     ensure_chat_session(&sessions, &session_id, "move_session_to_project")
-        .map_err(|e| format!("move_session_to_project({session_id}): {e}"))?;
+        .map_err(|e| format!("move_session_to_project: {e}"))?;
     sessions
         .load(&session_id)
         .map_err(|e| format!("move_session_to_project({session_id}): {e:#}"))?;
