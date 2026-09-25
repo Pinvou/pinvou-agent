@@ -312,6 +312,7 @@ pub(crate) async fn chat_with_reservation(
             &sid,
             roots.ledger.clone(),
             roots.execution.clone(),
+            display_content.clone(),
             "chat",
         )
         .await;
