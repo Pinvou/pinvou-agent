@@ -853,6 +853,13 @@ function pinvouSceneStorageKey(sid) { return pinvouSharedweb().pinvouSceneStorag
 function normalizePinvouSceneEvents(events) { return pinvouSharedweb().normalizePinvouSceneEvents(events); }
 function loadPinvouSceneEventsForSession(sid) { return pinvouSharedweb().loadPinvouSceneEventsForSession(sid); }
 function savePinvouSceneEventsForSession(sid, events) { return pinvouSharedweb().savePinvouSceneEventsForSession(sid, events); }
+  // Mirrors the Tauri bridge: a missing sidecar is a normal empty result, and only
+  // unreadable/malformed durable data reaches the catch. Scene tags are decorative,
+  // so a bad sidecar must not make the session unopenable — but reporting it keeps a
+  // durable-data defect from looking like "no tags".
+  function reportSidecarReadFailure(kind, sid, error) {
+    console.warn(`[sidecar] ${kind} read failed for session ${sid}; falling back to the local cache`, error);
+  }
   async function syncPinvouSceneEventsForSession(sid) {
     const cached = loadPinvouSceneEventsForSession(sid);
     if (!sid) return cached;
@@ -870,7 +877,8 @@ function savePinvouSceneEventsForSession(sid, events) { return pinvouSharedweb()
         await invoke("save_session_pinvou_scene_events", { sessionId: sid, events: cached });
       }
       return cached;
-    } catch {
+    } catch (error) {
+      reportSidecarReadFailure("pinvou scene", sid, error);
       return cached;
     }
   }
@@ -1850,10 +1858,6 @@ function upsertScheduledTask(task) { return pinvouSharedweb().upsertScheduledTas
 function applyScheduledRunViewed(automationId, runId, receipt) { return pinvouSharedweb().applyScheduledRunViewed(automationId, runId, receipt); }
 
 function invalidateScheduledTaskReads(automationId) { return pinvouSharedweb().invalidateScheduledTaskReads(automationId); }
-
-
-
-function invalidateScheduledRecentRunsForSession(id) { return pinvouSharedweb().invalidateScheduledRecentRunsForSession(id); }
 
 function scheduleScheduledRunRefresh() { return pinvouSharedweb().scheduleScheduledRunRefresh(); }
 
@@ -6192,7 +6196,9 @@ function currentMemoryArtifacts() { return pinvouSharedweb().currentMemoryArtifa
 
   // ── 附件 ────────────────────────────────────────────────────────
 function conversationAttachmentArgs(reference) { return pinvouSharedweb().conversationAttachmentArgs(reference); }
-  function resolveConversationAttachment(reference) {
+  // The web host has no local filesystem path for a conversation attachment, so this
+  // rejects for every reference; the parameter is intentionally not read.
+  function resolveConversationAttachment() {
     return Promise.reject(new Error(bt("attachPathUnavailable")));
   }
   async function downloadConversationAttachment(reference) {

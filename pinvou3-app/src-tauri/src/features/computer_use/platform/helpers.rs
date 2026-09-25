@@ -34,9 +34,14 @@ pub(crate) fn combine_drag_errors(
         // Only the path move failed and the release succeeded: report the
         // move error unchanged.
         (Err(move_error), Ok(())) => Err(move_error),
-        (Ok(()), Err(release)) => {
-            Err(release.same_kind(format!("{release}; the mouse button may still be pressed")))
-        }
+        // The step label is written here rather than assumed to live inside the inner
+        // error: the Windows and Linux backends tag their release errors ("drag
+        // release", "portal NotifyPointerButton"), but the macOS release path returns
+        // bare accessibility/CGEvent errors, so without this the caller cannot tell
+        // which half of the drag failed.
+        (Ok(()), Err(release)) => Err(release.same_kind(format!(
+            "drag release failed ({release}); the mouse button may still be pressed"
+        ))),
         (Err(move_error), Err(release)) => Err(move_error.same_kind(format!(
             "drag move failed ({move_error}); its release also failed ({release}); \
              the mouse button may still be pressed"
@@ -228,6 +233,91 @@ pub(crate) fn char_chunks(text: &str, chunk_chars: usize) -> Vec<&str> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// A move-failure sample for [`combine_drag_errors`].
+    fn failed_move() -> ComputerUseError {
+        ComputerUseError::failed("move aborted")
+    }
+
+    /// A release-failure sample for [`combine_drag_errors`] (map_input_err-style context).
+    fn failed_release() -> ComputerUseError {
+        ComputerUseError::failed("drag release: injected 0/1 events")
+    }
+
+    /// Lives here rather than in `windows.rs` so every target runs it: the merge is
+    /// shared by all three backends, and the kind-preservation contract below is
+    /// specifically about the macOS path (accessibility revoked mid-drag).
+    #[test]
+    fn drag_error_merging_surfaces_stranded_button() {
+        // Both succeed: nothing to merge.
+        assert!(combine_drag_errors(Ok(()), Ok(())).is_ok());
+        // Only the move failed: the move error passes through unchanged.
+        assert_eq!(
+            combine_drag_errors(Err(failed_move()), Ok(()))
+                .unwrap_err()
+                .to_string(),
+            "failed: move aborted"
+        );
+        // Only the release failed: the stranded-button warning and the step label
+        // must both surface, so the caller can tell which half of the drag failed.
+        let only_release = combine_drag_errors(Ok(()), Err(failed_release()))
+            .unwrap_err()
+            .to_string();
+        assert!(
+            only_release.contains("the mouse button may still be pressed"),
+            "{only_release}"
+        );
+        assert!(
+            only_release.contains("drag release failed"),
+            "{only_release}"
+        );
+        // Both fail: the move failure AND the stranded-button warning must both be
+        // present (`result.and(release)` used to drop the latter).
+        let both = combine_drag_errors(Err(failed_move()), Err(failed_release()))
+            .unwrap_err()
+            .to_string();
+        assert!(
+            both.contains("drag move failed (failed: move aborted)"),
+            "{both}"
+        );
+        assert!(both.contains("its release also failed"), "{both}");
+        assert!(
+            both.contains("the mouse button may still be pressed"),
+            "{both}"
+        );
+    }
+
+    /// The reason the per-platform copies were unified: macOS re-wrapped every
+    /// teardown failure as `failed`, destroying the `Unavailable` classification that
+    /// "regrant accessibility / run elevated" handling keys on. Annotating the
+    /// stranded button must not change the error kind.
+    #[test]
+    fn drag_error_merging_preserves_the_unavailable_kind() {
+        let denied = || ComputerUseError::unavailable("accessibility_denied");
+
+        let release_only = combine_drag_errors(Ok(()), Err(denied())).unwrap_err();
+        assert!(
+            matches!(release_only, ComputerUseError::Unavailable { .. }),
+            "a release blocked by TCC/UIPI must stay Unavailable, got {release_only}"
+        );
+        assert!(
+            release_only
+                .to_string()
+                .contains("the mouse button may still be pressed"),
+            "{release_only}"
+        );
+
+        // Both failed: the merged error takes the MOVE error's kind.
+        let both = combine_drag_errors(Err(denied()), Err(failed_release())).unwrap_err();
+        assert!(
+            matches!(both, ComputerUseError::Unavailable { .. }),
+            "the merged error must keep the move error's kind, got {both}"
+        );
+
+        // A move-only failure is returned verbatim, kind included.
+        let move_only = combine_drag_errors(Err(denied()), Ok(())).unwrap_err();
+        assert!(matches!(move_only, ComputerUseError::Unavailable { .. }));
+    }
 
     #[test]
     fn drag_waypoints_interpolates_and_excludes_start() {

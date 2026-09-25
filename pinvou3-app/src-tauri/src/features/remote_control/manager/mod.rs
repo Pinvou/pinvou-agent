@@ -3308,7 +3308,6 @@ mod tests {
             "uninstall_marketplace_skill",
             "uninstall_marketplace_tool",
             "install_voice_asr",
-            "save_settings_and_restart",
             "artifact_info",
             "read_artifact_text",
             "write_artifact_text",

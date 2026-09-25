@@ -760,12 +760,26 @@ function pinvouSceneStorageKey(sid) { return pinvouSharedtauriMain().pinvouScene
 function normalizePinvouSceneEvents(events) { return pinvouSharedtauriMain().normalizePinvouSceneEvents(events); }
 function loadPinvouSceneEventsForSession(sid) { return pinvouSharedtauriMain().loadPinvouSceneEventsForSession(sid); }
 
+  // A missing sidecar is a normal empty result (the backend returns []); only
+  // unreadable/malformed/schema-invalid durable data reaches the catch. Scene tags
+  // are decorative metadata, so a bad sidecar must not make the session unopenable —
+  // but it must not be silent either, or a durable-data defect looks like "no tags".
+  // Report it, then degrade to the local migration cache.
+  function reportSidecarReadFailure(kind, sid, error) {
+    console.warn(`[sidecar] ${kind} read failed for session ${sid}; falling back to the local cache`, error);
+  }
   async function syncPinvouSceneEventsForSession(sid) {
     const cached = loadPinvouSceneEventsForSession(sid);
     if (!sid) return cached;
-    const remote = normalizePinvouSceneEvents(
-      await invoke("get_session_pinvou_scene_events", { sessionId: sid })
-    );
+    let remote;
+    try {
+      remote = normalizePinvouSceneEvents(
+        await invoke("get_session_pinvou_scene_events", { sessionId: sid })
+      );
+    } catch (error) {
+      reportSidecarReadFailure("pinvou scene", sid, error);
+      return cached;
+    }
     if (remote.length) {
       try {
         window.localStorage.setItem(pinvouSceneStorageKey(sid), JSON.stringify(remote));
@@ -828,9 +842,15 @@ function pinvouSceneForMessagePos(pos) { return pinvouSharedtauriMain().pinvouSc
   async function syncSteeredMessagesForSession(sid) {
     const cached = loadSteeredMessagesForSession(sid);
     if (!sid) return cached;
-    const remote = normalizeSteeredMessages(
-      await invoke("get_session_steered_messages", { sessionId: sid })
-    );
+    let remote;
+    try {
+      remote = normalizeSteeredMessages(
+        await invoke("get_session_steered_messages", { sessionId: sid })
+      );
+    } catch (error) {
+      reportSidecarReadFailure("steered messages", sid, error);
+      return cached;
+    }
     if (remote.length) {
       try {
         window.localStorage.setItem(steeredMessagesStorageKey(sid), JSON.stringify(remote));

@@ -563,8 +563,7 @@ export default function PetWindow({
   useEffect(() => {
     if (!isTauriAvailable()) return;
     // pet-main.jsx 恒定传入 configuredScale(固定 0.5),窗口总是以启动缩放
-    // 初始化原生侧;get_pet_scale 读取分支不可达,已删(Rust 命令保留,由
-    // 协议测试钉住)。
+    // 初始化原生侧;不再从原生侧回读缩放(get_pet_scale 命令已随读取分支一并删除)。
     const scaleRequest = invokeTauri('set_pet_scale', {
       scale: startupScale,
       activityVisible: activityVisibleRef.current,

@@ -839,8 +839,10 @@ function hasStoredCredential(record) {
         <div className={withBorder ? `min-h-[54px] flex items-center gap-3 px-4 py-2.5 border-b last:border-b-0 ${formDivider}` : 'min-h-[54px] flex items-center gap-3 px-4 py-2.5'}>
           {/* biome-ignore lint/a11y/noLabelWithoutControl: field label and input are siblings; the label has no htmlFor association, switching to span would deviate from the existing structure */}
           <label className={`shrink-0 text-[14px] leading-5 text-[#1C1C1E] dark:text-[#F2F2F7]`}>API Key</label>
-          {/* Always type="text" + WebkitTextSecurity masking: type=password triggers the WebView2 built-in eye button (duplicating the show/hide toggle), same as ProviderFormModal. */}
-          <input type="text" autoComplete="off" value={apiKey} onChange={e => { setApiKey(e.target.value); if (e.target.value.trim()) setKeyAction('replace'); }}
+          {/* Always type="text" + WebkitTextSecurity masking: type=password triggers the WebView2 built-in eye button (duplicating the show/hide toggle), same as ProviderFormModal.
+              type=password implied autoCorrect/autoCapitalize/spellCheck off; type=text does not, and handing a secret to the platform spellchecker (or letting autocapitalize mangle a pasted key) is not acceptable — so they are set explicitly, matching ProviderFormModal. */}
+          <input type="text" autoComplete="off" autoCorrect="off" autoCapitalize="off" spellCheck={false}
+            value={apiKey} onChange={e => { setApiKey(e.target.value); if (e.target.value.trim()) setKeyAction('replace'); }}
             style={showKey ? undefined : { WebkitTextSecurity: 'disc' }}
             placeholder={hasSavedKey ? '••••••••' : settingsCopy.apiKeyPlaceholder}
             className={`min-w-0 flex-1 bg-transparent text-right text-[14px] leading-5 outline-none text-[#1C1C1E] placeholder:text-[#8A8A8E] dark:text-[#F2F2F7] dark:placeholder:text-[#636366]`} />

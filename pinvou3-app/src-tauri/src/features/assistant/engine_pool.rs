@@ -1059,9 +1059,12 @@ impl PreparedRuntimeState {
         }
     }
 
+    /// Whole-struct equality on purpose: the derived `PartialEq` makes every field of
+    /// `PreparedRuntimeState` participate automatically, so a field added later cannot be
+    /// forgotten here and silently leave a session running on a stale engine (#253/#385).
+    /// A hand-written field list would have to be kept in sync by review alone.
     fn requires_rebuild_from(&self, previous: &Self) -> bool {
-        self.prepared.model != previous.prepared.model
-            || self.model_update_revision != previous.model_update_revision
+        self != previous
     }
 }
 
@@ -4164,6 +4167,23 @@ mod scheduled_model_tests {
         assert!(
             next_turn_state.requires_rebuild_from(&entry_state),
             "saved-model revision must force the next turn to rebuild the engine"
+        );
+
+        // The other half of the predicate: switching to a different model at an
+        // unchanged revision must rebuild too. Without this, dropping the model
+        // comparison from requires_rebuild_from would leave the session running on
+        // the previous model's engine and no test would notice.
+        let other_model_state = PreparedRuntimeState::new(
+            PreparedRuntimeModel::unchanged(model("model-2", "wire-model-2")),
+            revisions.current("model-1"),
+        );
+        assert!(
+            other_model_state.requires_rebuild_from(&next_turn_state),
+            "a different runtime model must force a rebuild even at the same revision"
+        );
+        assert!(
+            !next_turn_state.requires_rebuild_from(&next_turn_state.clone()),
+            "an unchanged model at an unchanged revision must reuse the engine"
         );
 
         // The get_or_spawn rebuild path touches two lifecycle write points:

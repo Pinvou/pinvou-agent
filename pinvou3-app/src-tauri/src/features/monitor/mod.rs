@@ -126,12 +126,13 @@ async fn sample_all_with_cpu(state: &MonitorState, cpu: Option<CpuSnapshot>) -> 
     // 拿到的是新采样而非缓存旧值。
     let gpu_task = tokio::task::spawn_blocking(gpu_snapshot);
     let ram = platform::ram_snapshot();
-    // Active-model snapshot only. The old fallback re-probed the active URL
-    // with the hardcoded LocalVllm preset, which mislabeled a key-less cloud
-    // endpoint as a verified *local* model (target_kind="local") while
-    // get_backend_status — the authoritative source for the chat live-dot —
-    // reported it unavailable. All model monitoring derives from the active
-    // user model now, so both surfaces agree.
+    // Active-model snapshot only. The removed `None` fallback re-probed the same URL
+    // through `vllm_snapshot` with a hardcoded LocalVllm preset, but both paths bottom
+    // out in `snapshot_for_model_config`, whose only `None` exit is the process-wide
+    // `shared_probe_client()` OnceLock — so the fallback returned `None` in exactly the
+    // cases it was reached, and was dead. `get_backend_status` (the authoritative source
+    // for the chat live-dot) already used `active_model_snapshot` alone, so dropping it
+    // also removes two `UserPrefs::load()` calls per poll.
     let vllm = active_model_snapshot().await;
     MonitorSnapshot {
         generated_at_ms: now_ms,
