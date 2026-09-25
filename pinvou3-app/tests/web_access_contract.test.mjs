@@ -678,6 +678,17 @@ assert.match(webBridge, /invoke\("reset_aux_session", \{ sessionId: task \}\)/,
   'WebUI aux chat restart must ride the atomic reset command (M6)');
 assert.match(desktopAuxChatBridge, /invoke\("reset_aux_session", \{ sessionId: task \}\)/,
   'desktop aux chat restart must ride the atomic reset command (M6)');
+// M5: the aux id is a pure function of the task id (aux-<taskId>, round-30
+// B8), so both lanes derive it at the purge site — the redundant, never-pruned
+// auxIdByTask maps are gone.
+assert.doesNotMatch(webBridge, /auxIdByTask/,
+  'the WebUI aux id must be derived, not stored in an unbounded per-task map (M5)');
+assert.doesNotMatch(desktopAuxChatBridge, /auxIdByTask/,
+  'the desktop aux id must be derived, not stored in an unbounded per-task map (M5)');
+assert.match(webBridge, /purgeSessionBuffer\(`aux-\$\{task\}`\)/,
+  'WebUI discard/reset must purge the derived aux buffer id');
+assert.match(desktopAuxChatBridge, /purgeSessionBuffer\(`aux-\$\{task\}`\)/,
+  'desktop discard/reset must purge the derived aux buffer id');
 assert.match(bridge, /registry\.auxChat = function \(context\)/,
   'the desktop bridge must register the auxChat feature module');
 // Matched against the desktop aux-chat bridge source itself (round-30 B2):

@@ -197,6 +197,22 @@ export function dropAuxQuotes(taskId, quotesToRemove) {
 }
 
 /**
+ * Drop every staged quote for a task (M5). Wired to the sessions domain's
+ * task-deleted purge (AuxChatPanel's wireAuxSessionPurge → controller
+ * purgeTask): pendingQuotesByTask is module-scoped for the SPA's lifetime
+ * and has no natural delete site of its own, so a deleted task's staged
+ * excerpts would otherwise leak per task.
+ *
+ * @param {string} taskId - main session id
+ */
+export function clearAuxQuotes(taskId) {
+  const key = String(taskId || '');
+  if (!key || !pendingQuotesByTask.has(key)) return;
+  pendingQuotesByTask.delete(key);
+  publishQuotes(key, []);
+}
+
+/**
  * Subscribe to staged-quote changes for one task.
  *
  * @param {string} taskId - main session id

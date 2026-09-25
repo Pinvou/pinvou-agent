@@ -5,6 +5,7 @@ import {
   AUX_QUOTE_LIMITS,
   addAuxQuote,
   buildAuxQuoteBlock,
+  clearAuxQuotes,
   dropAuxQuotes,
   getAuxQuotes,
   parseAuxQuotedMessage,
@@ -333,4 +334,19 @@ test('quoteChipPosition falls back to a container-centered anchor for a zero rec
   assert.equal(fallback.top, 120 - 36 - QUOTE_CHIP_GAP);
   const noRect = quoteChipPosition(containerRect, null);
   assert.deepEqual(noRect, fallback);
+});
+
+test('clearAuxQuotes drops every staged quote for the task and notifies listeners (M5)', () => {
+  stageAuxQuote('clear-task', 'one');
+  stageAuxQuote('clear-task', 'two');
+  stageAuxQuote('clear-other-task', 'kept');
+  const seen = [];
+  const unsubscribe = subscribeAuxQuotes('clear-task', (quotes) => seen.push(quotes.length));
+  clearAuxQuotes('clear-task');
+  assert.equal(getAuxQuotes('clear-task').length, 0, 'the task store is emptied');
+  assert.equal(getAuxQuotes('clear-other-task').length, 1, 'other tasks are untouched');
+  assert.deepEqual(seen, [0], 'the clear publishes to subscribers');
+  clearAuxQuotes('clear-task');
+  assert.deepEqual(seen, [0], 'a repeat clear is a no-op (no duplicate publish)');
+  unsubscribe();
 });

@@ -27,11 +27,6 @@
     const isBusyFor = context.isBusyFor;
 
     const AUX_SESSION_ID_PATTERN = /^aux-/;
-    // Domain-private index (not a second copy of global state): discard only
-    // knows the taskId, and purging the local buffer needs the auxId. The
-    // session:deleted event fired by backend deletion is handled by the
-    // sessions domain as a fallback — belt and suspenders, and idempotent.
-    const auxIdByTask = Object.create(null);
 
     function isAuxSession(id) {
       return typeof id === "string" && AUX_SESSION_ID_PATTERN.test(id);
@@ -47,7 +42,6 @@
       const metadata = await invoke("get_or_create_aux_session", { sessionId: task });
       const auxId = metadata && typeof metadata.id === "string" ? metadata.id : "";
       if (!isAuxSession(auxId)) throw new Error(bt("sessionDataInvalid"));
-      auxIdByTask[task] = auxId;
       // Aux sessions never become active: they use the background-buffer
       // load_session(setActive:false) path.
       await ensureSessionBufferLoaded(auxId);
@@ -109,16 +103,19 @@
       const task = String(taskId || "").trim();
       if (!task) throw new Error(bt("targetSessionMissing"));
       await invoke("discard_aux_session", { sessionId: task });
-      const auxId = auxIdByTask[task];
-      delete auxIdByTask[task];
-      if (auxId) purgeSessionBuffer(auxId);
+      // The aux id is a pure function of the task id (aux-<taskId>, round-30
+      // B8), so the buffer purge derives it — the old per-task id map was
+      // redundant state that was never pruned (M5). The session:deleted event
+      // fired by backend deletion is handled by the sessions domain as a
+      // fallback — belt and suspenders, and idempotent.
+      purgeSessionBuffer(`aux-${task}`);
     }
 
     // Atomic restart (M6): one backend command discards the old aux session
     // (gated against its turns) and creates the fresh one — no two-invoke
     // window for an orphaned discard to land in. The aux id is derived
     // (aux-<taskId>, round-30 B8), so the stale buffer purge needs no
-    // auxIdByTask lookup; the backend's session:deleted also purges through
+    // per-task id map; the backend's session:deleted also purges through
     // the sessions domain as a fallback.
     async function reset(taskId) {
       const task = String(taskId || "").trim();

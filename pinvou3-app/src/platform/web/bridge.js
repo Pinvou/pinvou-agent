@@ -3525,7 +3525,6 @@ function rebuiltQueuedMetaPayload(item, userText) { return pinvouSharedweb().reb
   // state.sessions), so sendMessageToSession cannot be reused; turn events are
   // still routed into the per-session buffer by the existing chat:* listeners
   // keyed on session_id.
-  const auxIdByTask = Object.create(null); // domain-private index: discard purges the local buffer by auxId
   function auxChatIsAuxSession(id) {
     return typeof id === "string" && id.indexOf("aux-") === 0;
   }
@@ -3538,7 +3537,6 @@ function rebuiltQueuedMetaPayload(item, userText) { return pinvouSharedweb().reb
     const metadata = await invoke("get_or_create_aux_session", { sessionId: task });
     const auxId = metadata && typeof metadata.id === "string" ? metadata.id : "";
     if (!auxChatIsAuxSession(auxId)) throw new Error(bt("sessionDataInvalid"));
-    auxIdByTask[task] = auxId;
     await ensureSessionBufferLoaded(auxId);
     return auxId;
   }
@@ -3607,14 +3605,16 @@ function rebuiltQueuedMetaPayload(item, userText) { return pinvouSharedweb().reb
     const task = String(taskId || "").trim();
     if (!task) throw new Error(bt("targetSessionMissing"));
     await invoke("discard_aux_session", { sessionId: task });
-    const auxId = auxIdByTask[task];
-    delete auxIdByTask[task];
-    if (auxId) purgeSessionBuffer(auxId);
+    // Same shape as desktop aux-chat.js: the aux id is a pure function of the
+    // task id (aux-<taskId>, round-30 B8), so the buffer purge derives it —
+    // the old per-task id map was redundant state that was never pruned (M5).
+    // applyDeletedSession handles the backend's session:deleted as a fallback.
+    purgeSessionBuffer(`aux-${task}`);
   }
   // Atomic restart (M6), same shape as desktop aux-chat.js reset(): one
   // backend command discards the old aux session (gated against its turns)
   // and creates the fresh one. The aux id is derived (aux-<taskId>,
-  // round-30 B8), so the stale buffer purge needs no auxIdByTask lookup; the
+  // round-30 B8), so the stale buffer purge needs no per-task id map; the
   // backend's session:deleted also purges through applyDeletedSession as a
   // fallback.
   async function auxChatReset(taskId) {

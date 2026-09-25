@@ -37,7 +37,14 @@ const auxQuoteSelection = stripComments(source('features/aux-chat/AuxQuoteSelect
 // track backend-scoped operations that outlive any panel instance, so all
 // mounted panels must share one controller.
 assert.match(auxChatPanel, /const auxChatController = createAuxChatController\(\);/);
-assert.match(auxChatPanel, /import \{ createAuxChatController, removeAuxQuote \} from '\.\/aux-chat-controller\.mjs';/);
+assert.match(auxChatPanel, /import \{ createAuxChatController, reconcileLiveTaskIds, removeAuxQuote \} from '\.\/aux-chat-controller\.mjs';/);
+// M5: the per-task registries (restart epochs, unsent drafts) and staged
+// quotes purge when the sessions domain reports the task deleted — wired
+// once at module scope, armed from the bind effect.
+assert.match(auxChatPanel, /wireAuxSessionPurge\(\);/);
+assert.match(auxChatPanel, /bridge\.state\.subscribeMany\(\['sessions'\]/);
+assert.match(auxChatPanel, /reconcileLiveTaskIds\(knownTaskIds, liveTaskIds/);
+assert.match(auxChatPanel, /auxChatController\.purgeTask\(taskId\)/);
 // One controller panel per mounted instance, stable across renders, with the
 // view mirrored into React state and every subscription disposed on unmount.
 assert.match(auxChatPanel, /const \[panel\] = useState\(\(\) => auxChatController\.createPanel\(\)\);/);

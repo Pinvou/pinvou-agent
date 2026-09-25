@@ -19,6 +19,7 @@ import {
   clearedIfSent,
   createAuxChatController,
   hasSendContent,
+  reconcileLiveTaskIds,
 } from '../src/features/aux-chat/aux-chat-controller.mjs';
 import {
   getAuxQuotes,
@@ -628,6 +629,66 @@ test('hasSendContent accepts text-only, quote-only and both — and only those (
   assert.equal(panel.view.quotes.length, 0);
   void panel.send();
   assert.equal(h.auxChat.calls.send.length, 2, 'an empty composer never dispatches');
+});
+
+test('M5: purgeTask drops the restart epoch, the stored draft and the staged quotes of a deleted task', async () => {
+  const h = createHarness();
+  stageAuxQuote('purge-task', 'staged excerpt');
+  const panel = await mountBoundPanel(h, 'purge-task');
+  panel.setDraftText('unsent draft');
+  confirmRestart(panel);
+  h.auxChat.calls.reset[0].resolve('aux-purge-task');
+  await h.flush();
+  assert.equal(panel.view.quotes.length, 1);
+  // Sanity: a task round trip restores both the draft and the quotes.
+  panel.bind('purge-other');
+  await h.flush();
+  panel.bind('purge-task');
+  await h.flush();
+  assert.equal(panel.view.draft, 'unsent draft');
+  assert.equal(panel.view.quotes.length, 1);
+  // The sessions domain reports the task deleted: every per-task registry
+  // entry goes (restart epoch, stored draft, staged quotes).
+  h.controller.purgeTask('purge-task');
+  panel.bind('purge-other');
+  await h.flush();
+  panel.bind('purge-task');
+  await h.flush();
+  assert.equal(panel.view.draft, '', 'the stored draft is purged');
+  assert.equal(panel.view.quotes.length, 0, 'the staged quotes are purged');
+  // The epoch purge is observable in the ack classification: a send
+  // dispatched BEFORE a restart, whose task was then purged, classifies
+  // against a fresh epoch — the keep-draft skip no longer fires (the
+  // recreated task starts at epoch 0 like any new task). Without the purge
+  // the stale epoch would keep this ack's draft.
+  panel.setDraftText('in flight');
+  void panel.send();
+  confirmRestart(panel);
+  h.controller.purgeTask('purge-task');
+  panel.setDraftText('in flight');
+  h.auxChat.calls.send[0].resolve({});
+  await h.flush();
+  assert.equal(panel.view.draft, '', 'the purged epoch reads as a fresh task: the ack consumes normally');
+  h.auxChat.calls.reset[1].resolve('aux-purge-task');
+  await h.flush();
+});
+
+test('M5: reconcileLiveTaskIds purges only ids that disappeared after being seen', () => {
+  const known = new Set();
+  const purged = [];
+  const purge = (taskId) => purged.push(taskId);
+  // The initial empty snapshot is "never seen", not "everything deleted":
+  // ids are only registered as they appear.
+  reconcileLiveTaskIds(known, new Set(['a', 'b']), purge);
+  assert.deepEqual(purged, []);
+  assert.deepEqual([...known], ['a', 'b']);
+  // 'a' disappears (deleted), 'c' appears: only 'a' is purged.
+  reconcileLiveTaskIds(known, new Set(['b', 'c']), purge);
+  assert.deepEqual(purged, ['a']);
+  assert.deepEqual([...known], ['b', 'c']);
+  // A steady state purges nothing, and a purged id stays forgotten.
+  reconcileLiveTaskIds(known, new Set(['b', 'c']), purge);
+  assert.deepEqual(purged, ['a']);
 });
 
 test('clearedIfSent clears only a composer that still equals the sent text', () => {

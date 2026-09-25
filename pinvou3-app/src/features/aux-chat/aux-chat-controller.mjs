@@ -5,6 +5,7 @@ import {
 } from './aux-chat-state.mjs';
 import {
   buildAuxQuoteBlock,
+  clearAuxQuotes,
   dropAuxQuotes,
   getAuxQuotes,
   subscribeAuxQuotes,
@@ -95,11 +96,29 @@ export const hasSendContent = (text, quoteBlock) => Boolean(text || quoteBlock);
 // message; anything typed since the dispatch belongs to the next one.
 export const clearedIfSent = (current, text) => (current.trim() === text ? '' : current);
 
+// Diff helper for the session-deletion purge wiring (M5): ids present in the
+// previously observed live set but absent from the current one were deleted,
+// so their per-task registries are purged. The known set is mutated in place
+// (deleted ids dropped, new ids added), which is what makes the initial
+// empty sessions snapshot safe — "never seen" is not "deleted".
+export const reconcileLiveTaskIds = (knownIds, liveIds, purgeTask) => {
+  // Deleting from a Set mid-iteration is specified-safe (the iterator simply
+  // skips removed entries), so no snapshot copy is needed here.
+  for (const taskId of knownIds) {
+    if (!liveIds.has(taskId)) {
+      knownIds.delete(taskId);
+      purgeTask(taskId);
+    }
+  }
+  for (const taskId of liveIds) knownIds.add(taskId);
+};
+
 export function createAuxChatController(options = {}) {
   const {
     setTimeout: setTimeoutFn = setTimeout,
     clearTimeout: clearTimeoutFn = clearTimeout,
     buildQuoteBlock = buildAuxQuoteBlock,
+    clearQuotes = clearAuxQuotes,
     dropQuotes = dropAuxQuotes,
     getQuotes = getAuxQuotes,
     subscribeQuotes = subscribeAuxQuotes,
@@ -191,6 +210,19 @@ export function createAuxChatController(options = {}) {
   const deleteDraftAndNotify = (taskId) => {
     draftByTask.delete(taskId);
     notifyTaskListeners(draftDeleteListenersByTask, taskId);
+  };
+
+  // Drop every per-task registry entry when the sessions domain reports the
+  // task deleted (M5): restartEpochByTask has no natural delete site of its
+  // own, and draftByTask would otherwise keep a deleted task's unsent text
+  // for the SPA's lifetime. The staged conversation quotes go through the
+  // same purge. The in-flight registries (send/reset) are deliberately NOT
+  // touched: their entries belong to the exact operation that registered
+  // them and leave through the identity-gated settle paths.
+  const purgeTask = (taskId) => {
+    restartEpochByTask.delete(taskId);
+    if (draftByTask.has(taskId)) deleteDraftAndNotify(taskId);
+    clearQuotes(taskId);
   };
 
   // Consume what the delivered send owned: the stored draft only when it
@@ -805,5 +837,5 @@ export function createAuxChatController(options = {}) {
     };
   };
 
-  return { createPanel };
+  return { createPanel, purgeTask };
 }

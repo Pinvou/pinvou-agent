@@ -11,7 +11,7 @@ import {
   auxChatHasContent,
   projectAuxChatTurns,
 } from './aux-chat-state.mjs';
-import { createAuxChatController, removeAuxQuote } from './aux-chat-controller.mjs';
+import { createAuxChatController, reconcileLiveTaskIds, removeAuxQuote } from './aux-chat-controller.mjs';
 
 /**
  * Auxiliary chat panel (right-side RightDock): each main task gets one
@@ -37,6 +37,30 @@ import { createAuxChatController, removeAuxQuote } from './aux-chat-controller.m
  */
 const auxChatController = createAuxChatController();
 
+// M5: the controller's per-task registries (restart epochs, unsent drafts)
+// and the staged conversation quotes have no natural delete site of their
+// own, so they purge when the sessions domain reports the task deleted. The
+// wiring lives once per app lifetime next to the singleton (the registries
+// are module-scoped too) and is armed by the first bind effect that finds a
+// live bridge — quote staging always opens this panel, so the subscription
+// exists before any entry can accumulate.
+let sessionPurgeWired = false;
+const knownTaskIds = new Set();
+const wireAuxSessionPurge = () => {
+  if (sessionPurgeWired || !bridge.available || !bridge.state) return;
+  sessionPurgeWired = true;
+  bridge.state.subscribeMany(['sessions'], (slice) => {
+    const liveTaskIds = new Set();
+    for (const session of slice.sessions || []) {
+      if (session && session.id) liveTaskIds.add(session.id);
+    }
+    for (const session of slice.archivedSessions || []) {
+      if (session && session.id) liveTaskIds.add(session.id);
+    }
+    reconcileLiveTaskIds(knownTaskIds, liveTaskIds, (taskId) => auxChatController.purgeTask(taskId));
+  });
+};
+
 export function AuxChatPanel({ sessionId, activationKey, t, theme, onClose, onActiveChange }) {
   const copy = t.uiAuxChat;
   const conversationCopy = t.uiConversation;
@@ -54,6 +78,7 @@ export function AuxChatPanel({ sessionId, activationKey, t, theme, onClose, onAc
   // flips once at bootstrap, and the controller's chat-domain subscription
   // re-runs with it) and bind the new task's aux session.
   useEffect(() => {
+    wireAuxSessionPurge();
     panel.setBridge(
       auxChat,
       (callback) => bridge.state.subscribeMany(['chat'], callback),
