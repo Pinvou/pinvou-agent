@@ -40,7 +40,19 @@ esac
 lock="$repo_root/pinvou3-app/src-tauri/resources/platforms/$platform_resources/bundle/connectors/connectors.lock.json"
 destination="$(dirname "$lock")/$platform/bin"
 
-for command_name in node curl tar install mktemp; do
+if [[ ! -f "$lock" ]]; then
+  echo "missing connector lock: $lock" >&2
+  exit 1
+fi
+
+required_commands=(node curl tar install mktemp)
+# ZIP artifacts exist only for windows-x64, and GNU tar cannot read them; check
+# unzip up front with the other dependencies rather than after the download.
+# --check only re-hashes files already on disk, so it never needs an extractor.
+if ! "$check_only" && grep -q '\.zip"' "$lock"; then
+  required_commands+=(unzip)
+fi
+for command_name in "${required_commands[@]}"; do
   command -v "$command_name" >/dev/null || {
     echo "missing required command: $command_name" >&2
     exit 1
@@ -106,11 +118,7 @@ extract_archive() {
   local archive="$1" dest="$2"
   mkdir -p "$dest"
   if [[ "$archive" == *.zip ]]; then
-    if command -v unzip >/dev/null 2>&1; then
-      unzip -q -o "$archive" -d "$dest"
-    else
-      tar -xf "$archive" -C "$dest"
-    fi
+    unzip -q -o "$archive" -d "$dest"
   else
     tar xzf "$archive" -C "$dest"
   fi
