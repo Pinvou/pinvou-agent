@@ -203,6 +203,17 @@ pub fn discover_folder_files(roots: &[String]) -> Result<RemoteFolderDiscovery, 
     })
 }
 
+/// Probe a shared-knowledge endpoint's identity exactly as the GUI's
+/// `remote_kb_probe_private_endpoint` does. The first request accepts any
+/// certificate to learn the server's CA, and a second request pinned to that
+/// CA checks that the identity did not change mid-probe. The returned CA is
+/// still untrusted: the caller must show its fingerprint and get explicit
+/// confirmation before joining. A free function because the headless CLI
+/// depends on this crate but not on `pinvou_knowledge`.
+pub async fn probe_private_identity(source: &str) -> Result<RemoteKnowledgeProbe, String> {
+    KnowledgeClient::probe_private_identity(source).await
+}
+
 fn keep_folder_entry(entry: &DirEntry) -> bool {
     if entry.depth() == 0 || !entry.file_type().is_dir() {
         return true;
