@@ -54,6 +54,11 @@ pub(crate) const MAX_SESSIONS_PER_KIND: usize = 50;
 /// the history list.
 pub(crate) const NEW_CHAT_TITLE: &str = "新对话";
 
+/// Marker file the code-session feature writes inside a session's directory
+/// (`sessions/<id>/code-session.json`). Named here because the probe below
+/// lives here; the writer and the format stay owned by that feature.
+const CODE_SESSION_MARKER_FILE: &str = "code-session.json";
+
 impl SessionStore {
     /// Repair persisted tool histories only at process boot, before any
     /// session engine can own an in-flight tool call. Runtime reads use the
@@ -498,6 +503,25 @@ impl SessionStore {
         }
     }
 
+    /// Whether the session directory carries the native code-session marker.
+    ///
+    /// Durable, host-independent counterpart of the registered code-session
+    /// predicate: that predicate answers from an index the host has loaded,
+    /// so a host which never registers one (the headless runner) reads every
+    /// code session as an ordinary plain chat — and then resolves it to the
+    /// wrong consent scope and the wrong instruction layer. The marker file
+    /// is written beside the transcript precisely for index-less recovery,
+    /// and both live under this store's session directory, so the probe
+    /// belongs here rather than reaching across into the code-session
+    /// feature (which would close a dependency cycle).
+    pub fn has_code_session_marker(&self, id: &str) -> bool {
+        self.manager
+            .sessions_dir()
+            .join(id)
+            .join(CODE_SESSION_MARKER_FILE)
+            .is_file()
+    }
+
     pub fn set_execution_root_resolver(&self, resolver: ExecutionRootResolver) {
         *self.execution_root_resolver.write() = Some(resolver);
     }
@@ -527,8 +551,16 @@ impl SessionStore {
     /// store ([`SessionStore::delete`] and deep paths without an app handle
     /// such as retention policy/scheduled cleanup). Failures are silent
     /// (hook implementations own their idempotency) and must not block the
-    /// deletion path; callers must fire this only after all store-side
-    /// locks are released.
+    /// deletion path.
+    ///
+    /// Locking contract, stated precisely because it is narrower than "all
+    /// store-side locks are released": every sidecar io mutex IS released
+    /// before this fires (the purge scopes each guard for exactly that
+    /// reason), but `delete` holds `scheduled_mutation` across the whole
+    /// path, so a hook runs with that one held. `parking_lot::Mutex` is not
+    /// reentrant, so a hook that calls back into `delete`, or into any other
+    /// entry point that takes `scheduled_mutation`, self-deadlocks. Hooks
+    /// must treat the store as read-only.
     pub(crate) fn notify_session_purged(&self, id: &str) {
         let hooks = self.session_purged_hooks.read().clone();
         for hook in hooks {

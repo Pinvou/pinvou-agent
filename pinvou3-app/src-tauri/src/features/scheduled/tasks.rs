@@ -4113,16 +4113,16 @@ mod tests {
             &read_state
         ));
 
-        sessions.set_hidden(&session_1, true);
-        sessions.set_hidden(&session_2, true);
+        sessions.set_hidden(&session_1, true).expect("archive");
+        sessions.set_hidden(&session_2, true).expect("archive");
         assert!(!scheduled_run_is_unread(&run_1, &sessions, &read_state));
         assert!(!has_unread_scheduled_runs(
             &[run_1.clone(), run_2.clone()],
             &sessions,
             &read_state
         ));
-        sessions.set_hidden(&session_1, false);
-        sessions.set_hidden(&session_2, false);
+        sessions.set_hidden(&session_1, false).expect("restore");
+        sessions.set_hidden(&session_2, false).expect("restore");
 
         read_state
             .mark_viewed("automation-1", "run-1")

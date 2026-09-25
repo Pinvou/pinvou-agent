@@ -312,10 +312,16 @@ impl SessionStore {
     /// not even see the GUI's code-session default), so restoring the
     /// pre-run state means removing the entry the failed run added.
     pub fn clear_mode_and_persist(&self, id: &str) -> Result<()> {
+        // Resolved BEFORE the io lock: `resolved_default_mode` invokes the
+        // host-registered code-session predicate and reads the workspace
+        // binding sidecar, so computing it under the mode-states lock would
+        // hold that lock across an extension callback and disk I/O — and a
+        // predicate that ever touches a mode writer would deadlock on a
+        // non-reentrant mutex. The value does not depend on the removal.
+        let default = self.resolved_default_mode(id);
         let _io = self.session_mode_states_io.lock();
         Self::apply_session_mode_mutation_locked(&[], &[id.to_string()])
             .context("persist session mode states")?;
-        let default = self.resolved_default_mode(id);
         if let Some(entry) = self.mode_states.write().get_mut(id) {
             entry.mode = default.clone();
             entry.pending_plan_id = None;
@@ -987,15 +993,29 @@ impl SessionStore {
 
     /// 启动时恢复所有会话的 per-session mode：合并进 `mode_states`，
     /// 重开某个会话即恢复它自己上次显式使用的 mode。
+    ///
     /// 兼容：新文件不存在时回退读旧的 `_code_mode_states.json`（只含 code 会话
-    /// 的时代产物），下次保存自然写到新文件，旧文件不删。
+    /// 的时代产物），并**立即把它落到新文件**完成迁移，旧文件不删。
+    ///
+    /// Materializing the legacy map here is load-bearing, not tidiness. Every
+    /// durable mode write is now an id-level read-modify-write against
+    /// `_session_mode_states.json` (`apply_session_mode_mutation_locked`),
+    /// and an absent file starts that RMW from an empty map. So without this
+    /// step the first mode switch after an upgrade would write a single-entry
+    /// file, and because the legacy fallback above is keyed on the new file
+    /// being absent, it would never be consulted again: every pre-upgrade
+    /// per-session mode silently lost, and a session the user had pinned to
+    /// Plan reopening under `resolved_default_mode` — the exact reopen
+    /// divergence this persistence exists to prevent. (The whole-map writer
+    /// this replaced completed the migration implicitly by rewriting the
+    /// in-memory map on every save.)
     pub fn load_session_mode_states(&self) {
         let states_file = crate::platform::paths::sessions_root().join("_session_mode_states.json");
         let legacy_file = crate::platform::paths::sessions_root().join("_code_mode_states.json");
-        let source = if states_file.exists() {
-            states_file
+        let (source, from_legacy) = if states_file.exists() {
+            (states_file, false)
         } else if legacy_file.exists() {
-            legacy_file
+            (legacy_file, true)
         } else {
             return;
         };
@@ -1011,6 +1031,20 @@ impl SessionStore {
                     return;
                 }
             };
+        if from_legacy && !modes.is_empty() {
+            let upserts: Vec<(String, SerializableMode)> = modes
+                .iter()
+                .map(|(id, mode)| (id.clone(), mode.clone()))
+                .collect();
+            // Boot-time, before any writer can race: the io mutex exists for
+            // concurrent mutators and there are none yet.
+            if let Err(error) = Self::apply_session_mode_mutation_locked(&upserts, &[]) {
+                // Keep booting with the in-memory map: the modes are still
+                // correct for this run, and the next boot retries the
+                // migration because the new file still does not exist.
+                eprintln!("[sessions] migrate _code_mode_states.json failed: {error:#}");
+            }
+        }
         {
             let mut persisted = self.session_mode_states.write();
             *persisted = modes.clone();
