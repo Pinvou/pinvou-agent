@@ -663,18 +663,27 @@ async function modalWidth(page, headingText) {
 
   await clickRowAction(page, 'deepseek-v4-flash', '编辑');
   await sleep(250);
-  const maskedSavedKey = await page.evaluate(() => ({
-    maskedPlaceholder: [...document.querySelectorAll('input')].some(node => node.placeholder === '••••••••'),
-    noConfiguredText: !document.body.innerText.includes('已配置'),
-  }));
+  const maskedSavedKey = await page.evaluate(() => {
+    const keyInput = document.querySelector('[data-testid="model-form-dialog"] [data-testid="model-api-key-input"]');
+    return {
+      maskedPlaceholder: [...document.querySelectorAll('input')].some(node => node.placeholder === '••••••••'),
+      noConfiguredText: !document.body.innerText.includes('已配置'),
+      // 掩码不变量:输入框是 type=text,遮挡完全来自 -webkit-text-security。
+      // 没有这条断言,删掉那行 style 就会让 Key 明文渲染而所有门禁照样全绿。
+      maskedByTextSecurity: !!keyInput && window.getComputedStyle(keyInput).webkitTextSecurity === 'disc',
+    };
+  });
   await clickExact(page, '显示');
   await sleep(350);
   const editModelBehavior = await page.evaluate(() => {
     const text = document.body.innerText;
     const input = [...document.querySelectorAll('input')].find(node => node.value === 'sk-saved-deepseek');
+    const keyInput = document.querySelector('[data-testid="model-form-dialog"] [data-testid="model-api-key-input"]');
     return {
       revealCall: window.__SETTINGS_TEST__.calls.some(call => call.cmd === 'reveal_model_api_key' && call.args.id === 'cloud-deepseek'),
       keyRevealed: !!input,
+      // 「显示」必须真正撤掉掩码,而不仅仅是把值取回来。
+      unmaskedAfterReveal: !!keyInput && window.getComputedStyle(keyInput).webkitTextSecurity === 'none',
       sameProviderOnlyClosed: !text.includes('kimi-k3') && !text.includes('glm-5.2'),
       // 带 provider_kind 的官方模型必须仍能找到目录组,配置区与测试连接不被隐藏。
       testConnectionVisible: text.includes('测试连接'),
