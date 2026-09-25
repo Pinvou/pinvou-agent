@@ -79,11 +79,18 @@ impl ConnectorGate {
             // an initialized DenyAll scope with no deny entry — callable
             // without the user having enabled them, after an operation the
             // user was told had failed.
-            let synced = tokio::task::spawn_blocking(move || {
+            // A panicked sync task is the same fail-open shape as a refused
+            // one: the skill files are on disk and no deny entry was written.
+            // Flattening the join error into the same `Err` routes it through
+            // the retract below instead of `?`-returning past it.
+            let synced = match tokio::task::spawn_blocking(move || {
                 crate::features::marketplace::sync_deny_all_scopes_after_install(self.id)
             })
             .await
-            .map_err(|e| format!("sync_deny_all join: {e}"))?;
+            {
+                Ok(result) => result,
+                Err(join_error) => Err(format!("sync_deny_all join: {join_error}")),
+            };
             if let Err(error) = synced {
                 match tokio::task::spawn_blocking(move || self.apply_skills(false)).await {
                     Ok(Ok(())) => {}

@@ -185,6 +185,20 @@ pub async fn install_marketplace_tool(
 ) -> Result<(), String> {
     let user_config = config.unwrap_or_default();
     let install_tool_id = tool_id.clone();
+    // Captured before the install, which overwrites in place: afterwards an
+    // upgrade is indistinguishable from a first install, and the consent
+    // rollback further down would uninstall the copy the user already had.
+    let tool_preexisting = {
+        let probe_id = tool_id.clone();
+        tokio::task::spawn_blocking(move || {
+            crate::features::marketplace::MarketplaceManager::new()
+                .installed_ids()
+                .iter()
+                .any(|id| id == &probe_id)
+        })
+        .await
+        .map_err(|e| format!("任务执行失败: {e}"))?
+    };
     tokio::task::spawn_blocking(move || {
         let mgr = crate::features::marketplace::MarketplaceManager::new();
         mgr.install(&install_tool_id, &user_config)
@@ -222,6 +236,13 @@ pub async fn install_marketplace_tool(
         // consent 禁用集没跟上」的 fail-open 半态;收集齐再统一上抛。
         let mut sync_errors: Vec<String> = Vec::new();
         for sid in mgr.companion_skills(&companion_tool_id) {
+            // Captured BEFORE the install: `install` overwrites in place, so
+            // afterwards there is no way to tell an upgrade from a first
+            // install — and the rollback below would delete a skill the user
+            // already had.
+            let skill_preexisting =
+                crate::features::marketplace::skill_marketplace::SkillMarketplaceManager::new()
+                    .skill_is_installed(&sid);
             if let Err(e) =
                 crate::features::marketplace::skill_marketplace::SkillMarketplaceManager::new()
                     .install(&sid)
@@ -233,7 +254,7 @@ pub async fn install_marketplace_tool(
             // （外部能力显式开启，与独立技能安装 install_marketplace_skill_sync 同语义）。
             // 同步失败即回滚这枚 companion 的安装：留着它就是一枚用户没同意、
             // 却已可被模型调用的外部能力（见 register_install_consent_or_rollback）。
-            if let Err(e) = register_install_consent_or_rollback(&sid, || {
+            if let Err(e) = register_install_consent_or_rollback(&sid, skill_preexisting, || {
                 crate::features::marketplace::skill_marketplace::SkillMarketplaceManager::new()
                     .uninstall(&sid)
             }) {
@@ -241,9 +262,11 @@ pub async fn install_marketplace_tool(
             }
         }
         // DenyAll 模式的 scope(如 code)已初始化时,新装的连接器默认仍关闭(显式开启)。
-        if let Err(e) = register_install_consent_or_rollback(&companion_tool_id, || {
-            uninstall_marketplace_tool_sync(&companion_tool_id)
-        }) {
+        if let Err(e) =
+            register_install_consent_or_rollback(&companion_tool_id, tool_preexisting, || {
+                uninstall_marketplace_tool_sync(&companion_tool_id)
+            })
+        {
             sync_errors.push(e);
         }
         if sync_errors.is_empty() {
@@ -613,6 +636,27 @@ fn log_scope_residue_failure(id: &str, result: Result<(), String>) {
     }
 }
 
+/// Ids already on disk, across both registries (MCP packages and skills).
+///
+/// The import channels only learn the installed id from the import report, by
+/// which point the overwrite-in-place pipeline has already replaced whatever
+/// was there. Snapshotting the ids first is therefore the only way those paths
+/// can tell a first import from an upgrade — which is what decides whether a
+/// refused consent write may uninstall (see
+/// [`register_install_consent_or_rollback`]). Blocking I/O: call it from a
+/// blocking context.
+fn installed_bundle_id_snapshot() -> Vec<String> {
+    let mut ids = crate::features::marketplace::MarketplaceManager::new().installed_ids();
+    for id in crate::features::marketplace::skill_marketplace::SkillMarketplaceManager::new()
+        .installed_skill_ids_cheap()
+    {
+        if !ids.iter().any(|known| known == &id) {
+            ids.push(id);
+        }
+    }
+    ids
+}
+
 /// Registers a freshly installed package's default-off consent, undoing the
 /// install if that registration is refused.
 ///
@@ -631,10 +675,24 @@ fn log_scope_residue_failure(id: &str, result: Result<(), String>) {
 /// install-side mirror of [`log_scope_residue_failure`] — on teardown the
 /// leftover entry is fail-closed and may be deferred; on install the missing
 /// entry is fail-open and may not.
+///
+/// `preexisting` is the whole safety of that argument. Installs and imports
+/// overwrite in place, and the rollback is `uninstall`, which deletes
+/// *whatever is there now* — so for an upgrade, a re-import, or a companion
+/// skill the user already had, a refused consent write would destroy the copy
+/// the user owned before this operation started. A package that was already
+/// installed also already has its recorded consent (possibly an explicit
+/// enable the user chose), and re-registering the default-off would silently
+/// revoke that enable. Both are wrong, so a pre-existing install registers
+/// nothing and rolls back nothing.
 fn register_install_consent_or_rollback(
     id: &str,
+    preexisting: bool,
     rollback: impl FnOnce() -> Result<(), String>,
 ) -> Result<(), String> {
+    if preexisting {
+        return Ok(());
+    }
     let error = match crate::features::marketplace::scope::sync_deny_all_scopes_after_install(id) {
         Ok(()) => return Ok(()),
         Err(error) => error,
@@ -692,12 +750,19 @@ pub async fn install_marketplace_skill(
 }
 
 pub(super) fn install_marketplace_skill_sync(skill_id: &str) -> Result<(), String> {
+    // Probed before the overwrite-in-place install: a re-install of a skill
+    // the user already had must neither reset its recorded consent nor be
+    // "rolled back" by deleting it. Matches the contract the sibling
+    // `update_marketplace_skill` already documents below.
+    let preexisting =
+        crate::features::marketplace::skill_marketplace::SkillMarketplaceManager::new()
+            .skill_is_installed(skill_id);
     crate::features::marketplace::skill_marketplace::SkillMarketplaceManager::new()
         .install(skill_id)?;
     // 新装技能默认加入 DenyAll scope（当前 code）禁用集（与连接器同语义：
     // 外部能力显式开启）；组合目录由调用方在命令层重写（install_marketplace_skill）。
     // 同步失败回滚安装，不留「已装但未记入禁用集」的 fail-open 半态。
-    register_install_consent_or_rollback(skill_id, || {
+    register_install_consent_or_rollback(skill_id, preexisting, || {
         crate::features::marketplace::skill_marketplace::SkillMarketplaceManager::new()
             .uninstall(skill_id)
     })
@@ -854,6 +919,11 @@ pub async fn import_plugin_package_cmd(
         .map(|e| e.eq_ignore_ascii_case("md") || e.eq_ignore_ascii_case("markdown"))
         .unwrap_or(false);
 
+    // Snapshotted before the overwrite-in-place import so the consent step
+    // below can tell a first import from an upgrade.
+    let installed_before = tokio::task::spawn_blocking(installed_bundle_id_snapshot)
+        .await
+        .map_err(|e| format!("任务执行失败: {e}"))?;
     let report = tokio::task::spawn_blocking(move || {
         if is_md {
             let md = std::fs::read_to_string(&path)
@@ -877,8 +947,11 @@ pub async fn import_plugin_package_cmd(
     tokio::task::spawn_blocking(move || {
         // Refused consent rolls the import back: an imported package absent
         // from an initialized DenyAll scope's deny list is callable without
-        // the user ever enabling it.
-        register_install_consent_or_rollback(&installed_id, || {
+        // the user ever enabling it. An import that REPLACED an existing id
+        // is exempt — rolling that back would delete the version the user had
+        // before this import, and its consent is already recorded.
+        let preexisting = installed_before.iter().any(|id| id == &installed_id);
+        register_install_consent_or_rollback(&installed_id, preexisting, || {
             uninstall_marketplace_tool_sync(&installed_id)
         })
     })
@@ -932,6 +1005,11 @@ pub async fn import_plugin_package_bytes_cmd(
             .unwrap_or(0)
     ));
     std::fs::write(&tmp, &bytes).map_err(|e| format!("写临时文件: {e}"))?;
+    // Snapshotted before the overwrite-in-place import so the consent step
+    // below can tell a first import from an upgrade.
+    let installed_before = tokio::task::spawn_blocking(installed_bundle_id_snapshot)
+        .await
+        .map_err(|e| format!("任务执行失败: {e}"))?;
     let tmp_for_import = tmp.clone();
     let report = tokio::task::spawn_blocking(move || {
         crate::features::marketplace::plugin_import::import_plugin_package(
@@ -950,8 +1028,11 @@ pub async fn import_plugin_package_bytes_cmd(
     tokio::task::spawn_blocking(move || {
         // Refused consent rolls the import back: an imported package absent
         // from an initialized DenyAll scope's deny list is callable without
-        // the user ever enabling it.
-        register_install_consent_or_rollback(&installed_id, || {
+        // the user ever enabling it. An import that REPLACED an existing id
+        // is exempt — rolling that back would delete the version the user had
+        // before this import, and its consent is already recorded.
+        let preexisting = installed_before.iter().any(|id| id == &installed_id);
+        register_install_consent_or_rollback(&installed_id, preexisting, || {
             uninstall_marketplace_tool_sync(&installed_id)
         })
     })
@@ -992,6 +1073,11 @@ pub async fn import_skill_md_bytes(
         ));
     }
     let md = String::from_utf8(bytes).map_err(|e| format!("技能文件须为 UTF-8 文本: {e}"))?;
+    // Snapshotted before the overwrite-in-place import so the consent step
+    // below can tell a first import from an upgrade.
+    let installed_before = tokio::task::spawn_blocking(installed_bundle_id_snapshot)
+        .await
+        .map_err(|e| format!("任务执行失败: {e}"))?;
     let filename_for_import = filename.clone();
     let report =
         tokio::task::spawn_blocking(move || import_skill_md_content(md, &filename_for_import))
@@ -1004,8 +1090,11 @@ pub async fn import_skill_md_bytes(
     tokio::task::spawn_blocking(move || {
         // Refused consent rolls the import back: an imported package absent
         // from an initialized DenyAll scope's deny list is callable without
-        // the user ever enabling it.
-        register_install_consent_or_rollback(&installed_id, || {
+        // the user ever enabling it. An import that REPLACED an existing id
+        // is exempt — rolling that back would delete the version the user had
+        // before this import, and its consent is already recorded.
+        let preexisting = installed_before.iter().any(|id| id == &installed_id);
+        register_install_consent_or_rollback(&installed_id, preexisting, || {
             uninstall_marketplace_tool_sync(&installed_id)
         })
     })
@@ -1371,7 +1460,7 @@ mod tests {
             std::fs::write(&consent, "{ not json").unwrap();
 
             let rolled_back = std::cell::Cell::new(false);
-            let result = register_install_consent_or_rollback("weather", || {
+            let result = register_install_consent_or_rollback("weather", false, || {
                 rolled_back.set(true);
                 Ok(())
             });
@@ -1388,7 +1477,7 @@ mod tests {
             // than hide behind the original error: this is the one path where
             // the user has to intervene.
             std::fs::write(&consent, "{ not json either").unwrap();
-            let error = register_install_consent_or_rollback("weather", || {
+            let error = register_install_consent_or_rollback("weather", false, || {
                 Err("uninstall exploded".to_string())
             })
             .expect_err("still a failure");
@@ -1399,12 +1488,43 @@ mod tests {
         });
     }
 
+    /// A refused consent write must never uninstall a package the user
+    /// already had.
+    ///
+    /// Installs and imports overwrite in place, and the rollback is
+    /// `uninstall`, which deletes *whatever is there now*. For an upgrade, a
+    /// re-import, or a companion skill the user already owned, rolling back
+    /// therefore destroys the copy that existed before the operation started.
+    /// The registration is wrong for the same case too: re-registering the
+    /// default-off silently revokes an enable the user had chosen.
+    #[test]
+    fn a_preexisting_install_is_neither_registered_nor_rolled_back() {
+        crate::platform::test_support::with_temp_home("pinvou3-install-consent-upgrade", || {
+            // The same corrupt consent file that makes the sync refuse in the
+            // first-install test above.
+            let consent = crate::platform::paths::pinvou3_home().join("disabled_bundles.json");
+            std::fs::create_dir_all(consent.parent().unwrap()).unwrap();
+            std::fs::write(&consent, "{ not json").unwrap();
+
+            let rolled_back = std::cell::Cell::new(false);
+            register_install_consent_or_rollback("weather", true, || {
+                rolled_back.set(true);
+                Ok(())
+            })
+            .expect("an upgrade must not fail on a consent write it should never attempt");
+            assert!(
+                !rolled_back.get(),
+                "rolling back an upgrade uninstalls the version the user already had"
+            );
+        });
+    }
+
     /// The happy path must not roll anything back.
     #[test]
     fn a_successful_consent_write_keeps_the_install() {
         crate::platform::test_support::with_temp_home("pinvou3-install-consent-ok", || {
             let rolled_back = std::cell::Cell::new(false);
-            register_install_consent_or_rollback("weather", || {
+            register_install_consent_or_rollback("weather", false, || {
                 rolled_back.set(true);
                 Ok(())
             })

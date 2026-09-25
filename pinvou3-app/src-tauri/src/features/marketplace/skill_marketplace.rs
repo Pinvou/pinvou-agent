@@ -371,6 +371,15 @@ impl SkillMarketplaceManager {
             .is_some_and(|d| d.join("SKILL.md").is_file())
     }
 
+    /// Whether the skill is already on disk, for callers that must tell a
+    /// first install from an overwrite-in-place re-install *before* running
+    /// `install`. The consent registration in the commands layer rolls back by
+    /// uninstalling, which on a re-install would delete the copy the user
+    /// already had. Same predicate as the internal `is_installed`.
+    pub(crate) fn skill_is_installed(&self, skill_name: &str) -> bool {
+        self.is_installed(skill_name)
+    }
+
     /// 预置技能"可更新"检测（刀十起基于内容指纹）：
     /// - 记录指纹 ≠ 当前嵌入资源指纹 → 上游更新（App 升级带入新版）；
     /// - 磁盘指纹 ≠ 记录指纹 → 本地被改过（完整性视角，重装即复原）；
