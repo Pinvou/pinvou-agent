@@ -1,6 +1,7 @@
 const assert = require("node:assert/strict");
 const { EventEmitter } = require("node:events");
 const fs = require("node:fs");
+const os = require("node:os");
 const path = require("node:path");
 const test = require("node:test");
 
@@ -9,6 +10,7 @@ const {
   ensureWindowsRustToolchain,
   formatElapsed,
   pinnedRustToolchainChannel,
+  prepareWindowsRustcStackWrapper,
   windowsRustHostTriple,
 } = require("../scripts/tauri/build.js");
 const { APP_ROOT } = require("../scripts/tauri/platform-config.js");
@@ -199,5 +201,140 @@ test("the native repair smoke corrupts only its own temporary toolchain", () => 
   assert.match(
     packageJson.scripts["test:windows-rustup-repair"],
     /tests\/windows_rustup_repair_smoke\.ps1/u,
+  );
+});
+
+test("the Windows rustc stack wrapper is compiled once and then reused", (t) => {
+  const scriptsPath = fs.mkdtempSync(path.join(os.tmpdir(), "pinvou-rustc-stack-wrapper-"));
+  t.after(() => fs.rmSync(scriptsPath, { recursive: true, force: true }));
+  const sourcePath = path.join(scriptsPath, "rustc-stack-wrapper.rs");
+  const wrapperPath = path.join(scriptsPath, "rustc-stack-wrapper.exe");
+  fs.writeFileSync(sourcePath, "fn main() {}\n");
+  // Keep the source strictly older than the fake executable written below.
+  const past = new Date(Date.now() - 60_000);
+  fs.utimesSync(sourcePath, past, past);
+
+  const compileInvocations = [];
+  const environment = { RUSTUP_TOOLCHAIN: "fixture-toolchain" };
+  const prepared = prepareWindowsRustcStackWrapper({
+    environment,
+    platform: "win32",
+    scriptsPath,
+    log: () => {},
+    spawnCompiler: (command, args, options) => {
+      compileInvocations.push({ command, args, options });
+      fs.writeFileSync(wrapperPath, "fixture executable");
+      return { status: 0 };
+    },
+  });
+  assert.deepEqual(prepared, { path: wrapperPath, source: "compiled" });
+  assert.equal(environment.RUSTC_WRAPPER, wrapperPath);
+  assert.equal(compileInvocations.length, 1);
+  assert.equal(compileInvocations[0].command, "rustc");
+  assert.deepEqual(compileInvocations[0].args, ["-O", sourcePath, "-o", wrapperPath]);
+  assert.equal(compileInvocations[0].options.env.RUSTUP_TOOLCHAIN, "fixture-toolchain");
+  assert.equal(compileInvocations[0].options.windowsHide, true);
+
+  const cachedEnvironment = {};
+  const cached = prepareWindowsRustcStackWrapper({
+    environment: cachedEnvironment,
+    platform: "win32",
+    scriptsPath,
+    log: () => {},
+    spawnCompiler: () => {
+      throw new Error("a fresh wrapper must not be rebuilt");
+    },
+  });
+  assert.deepEqual(cached, { path: wrapperPath, source: "cached" });
+  assert.equal(cachedEnvironment.RUSTC_WRAPPER, wrapperPath);
+
+  const future = new Date(Date.now() + 60_000);
+  fs.utimesSync(sourcePath, future, future);
+  let rebuilt = false;
+  const stale = prepareWindowsRustcStackWrapper({
+    environment: {},
+    platform: "win32",
+    scriptsPath,
+    log: () => {},
+    spawnCompiler: () => {
+      rebuilt = true;
+      fs.writeFileSync(wrapperPath, "rebuilt fixture executable");
+      return { status: 0 };
+    },
+  });
+  assert.equal(rebuilt, true, "a wrapper older than its source must be rebuilt");
+  assert.equal(stale.source, "compiled");
+});
+
+test("an explicit RUSTC_WRAPPER wins and non-Windows hosts are untouched", () => {
+  const configuredEnvironment = { RUSTC_WRAPPER: "  C:\\custom\\rustc-wrapper.exe  " };
+  const configured = prepareWindowsRustcStackWrapper({
+    environment: configuredEnvironment,
+    platform: "win32",
+    scriptsPath: path.join(os.tmpdir(), "pinvou-missing-wrapper-scripts"),
+    log: () => {},
+    spawnCompiler: () => {
+      throw new Error("an explicit wrapper must not be rebuilt");
+    },
+  });
+  assert.deepEqual(configured, {
+    path: "C:\\custom\\rustc-wrapper.exe",
+    source: "environment",
+  });
+  assert.equal(configuredEnvironment.RUSTC_WRAPPER, "C:\\custom\\rustc-wrapper.exe");
+
+  for (const platform of ["linux", "darwin"]) {
+    const environment = {};
+    assert.equal(
+      prepareWindowsRustcStackWrapper({ environment, platform, log: () => {} }),
+      null,
+    );
+    assert.equal(environment.RUSTC_WRAPPER, undefined);
+  }
+});
+
+test("a missing or failed wrapper build stops before Cargo can overflow", (t) => {
+  const scriptsPath = fs.mkdtempSync(path.join(os.tmpdir(), "pinvou-rustc-stack-wrapper-"));
+  t.after(() => fs.rmSync(scriptsPath, { recursive: true, force: true }));
+  assert.throws(
+    () => prepareWindowsRustcStackWrapper({
+      environment: {},
+      platform: "win32",
+      scriptsPath,
+      log: () => {},
+    }),
+    /Windows rustc stack wrapper source is missing/u,
+  );
+
+  fs.writeFileSync(path.join(scriptsPath, "rustc-stack-wrapper.rs"), "fn main() {}\n");
+  const environment = {};
+  assert.throws(
+    () => prepareWindowsRustcStackWrapper({
+      environment,
+      platform: "win32",
+      scriptsPath,
+      log: () => {},
+      spawnCompiler: () => ({ status: 1 }),
+    }),
+    /Failed to compile Windows rustc stack wrapper \(exit 1\)/u,
+  );
+  assert.equal(environment.RUSTC_WRAPPER, undefined);
+  assert.throws(
+    () => prepareWindowsRustcStackWrapper({
+      environment: {},
+      platform: "win32",
+      scriptsPath,
+      log: () => {},
+      spawnCompiler: () => ({ error: new Error("rustc not found") }),
+    }),
+    /Failed to compile Windows rustc stack wrapper: rustc not found/u,
+  );
+});
+
+test("the npm/Tauri entry injects the wrapper into the Tauri child environment", () => {
+  assert.match(
+    buildScript,
+    /prepareWindowsRustcStackWrapper\(\{ environment: tauriEnvironment \}\);\s*process\.exitCode = await runTauri\(preparedArgs, \{ environment: tauriEnvironment \}\);/u,
+    "dev and build must both go through the Windows compiler stack wrapper",
   );
 });
