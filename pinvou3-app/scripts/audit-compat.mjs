@@ -15,6 +15,12 @@
 //   3. Runtime member/global APIs added after Safari 14.0 (.at(), findLast,
 //      copy-methods, Object.hasOwn, structuredClone, ...; Error `cause` needs
 //      Safari 15.0): parse-time clean but a TypeError the moment a code path runs.
+//   4. Compiled CSS assets: Tailwind's JIT and hand-written rules emit the
+//      `inset: <value>` shorthand (Safari 14.1+), and only the build's
+//      target-aware lightningcss pass expands it back to physical
+//      top/right/bottom/left properties. No source-level check can prove
+//      that pass ran with `cssTarget: 'safari14'` — a config change is
+//      silent — so the built artifact itself is what gets audited.
 //
 // Inputs: built chunks under dist/assets, plus the verbatim-copied static
 // runtime scripts and the inline <script> blocks of the HTML entries (the
@@ -258,6 +264,30 @@ function collectStaticRuntimeScripts() {
   return files;
 }
 
+// Minified dist CSS is one huge line, so line numbers are useless; report a
+// whitespace-collapsed excerpt around each match instead. The match must be
+// a *declaration*: anchored to a declaration start (`{`, `;`, whitespace, or
+// string start), so the `--tw-ring-inset:` custom property and the
+// `.ring-inset` class name that Tailwind emits don't phantom-match.
+// `inset(` (clip-path function) and logical properties (`inset-inline:`)
+// don't match either: in both, `inset` is not followed by `:`.
+function auditDistCss(assetsDir) {
+  const violations = [];
+  for (const name of readdirSync(assetsDir)) {
+    if (!name.endsWith('.css')) continue;
+    const code = readFileSync(join(assetsDir, name), 'utf8');
+    const pattern = /(^|[{};\s])inset\s*:/g;
+    let match;
+    while ((match = pattern.exec(code)) !== null) {
+      const excerpt = code.slice(Math.max(0, match.index - 40), match.index + 50).replaceAll(/\s+/g, ' ');
+      violations.push(
+        `dist:${name}:${lineOfOffset(code, match.index).line}: inset shorthand survives the build — Safari 14.0 cannot parse it (needs 14.1); context: …${excerpt}…`,
+      );
+    }
+  }
+  return violations;
+}
+
 export function runAudit({ distDir = distRoot } = {}) {
   const violations = [];
 
@@ -281,6 +311,7 @@ export function runAudit({ distDir = distRoot } = {}) {
       if (!name.endsWith('.js')) continue;
       violations.push(...auditSource(`dist:${name}`, readFileSync(join(assetsDir, name), 'utf8')));
     }
+    violations.push(...auditDistCss(assetsDir));
   }
 
   return violations;
@@ -288,18 +319,27 @@ export function runAudit({ distDir = distRoot } = {}) {
 
 if (process.argv[1] && resolve(process.argv[1]) === fileURLToPath(import.meta.url)) {
   const violations = runAudit();
-  if (!existsSync(join(distRoot, 'assets'))) {
+  const distAssetsDir = join(distRoot, 'assets');
+  if (!existsSync(distAssetsDir)) {
     // Fail closed: the dist layer is the one that catches a marked@16-style
     // parse-time regression, so silently green-lighting without it would
     // defeat the gate. The static/inline layers were still audited above.
     console.error('audit-compat: dist/assets not found — run `npm run build:ui` first');
     process.exitCode = 1;
+  } else {
+    // Same fail-closed principle for the CSS layer: a dist without CSS assets
+    // predates the current build and would silently skip the inset scan.
+    const hasCssAssets = readdirSync(distAssetsDir).some((name) => name.endsWith('.css'));
+    if (!hasCssAssets) {
+      console.error('audit-compat: no CSS assets found in dist/assets — run `npm run build:ui` first');
+      process.exitCode = 1;
+    }
   }
   if (violations.length) {
     console.error(`audit-compat: ${violations.length} violation(s) against the Safari 14 baseline:`);
     for (const violation of violations) console.error(`  ${violation}`);
     process.exitCode = 1;
-  } else {
+  } else if (!process.exitCode) {
     console.log('audit-compat: clean against the Safari 14 baseline');
   }
 }

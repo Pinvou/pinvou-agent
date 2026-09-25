@@ -31,7 +31,6 @@ export const staticRuntimeScripts = new Set([
   'shared/legacy-polyfills.js',
   'shared/markdown-bridge-fallback.js',
   'shared/model-service-errors.js',
-  'vendor/tailwind.js',
 ]);
 export const staticRuntimeScriptPrefixes = ['platform/tauri/bridge/', 'platform/web/bridge/'];
 
@@ -215,8 +214,12 @@ export default defineConfig(({ mode }) => {
     emptyOutDir: true,
     // Minimum supported WebViews: macOS 11 WKWebView is Safari 14.0 — the
     // default "baseline-widely-available" target emits syntax it cannot parse
-    // and older macOS builds render a blank window. Keep in sync with
-    // .browserslistrc; scripts/audit-compat.mjs verifies the output.
+    // and older macOS builds render a blank window. cssTarget matters beyond
+    // minification: Tailwind emits the inset shorthand (Safari 14.1+) and
+    // only target-aware lightningcss expands it to physical properties; the
+    // dist CSS scan in scripts/audit-compat.mjs pins this. Keep in sync with
+    // .browserslistrc; scripts/audit-compat.mjs audits the built JS chunks
+    // and CSS assets.
     target: 'safari14',
     cssTarget: 'safari14',
     rolldownOptions: {
