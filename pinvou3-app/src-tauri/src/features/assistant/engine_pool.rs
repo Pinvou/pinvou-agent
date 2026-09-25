@@ -1954,10 +1954,18 @@ impl EnginePool {
         // 底座取消子智能体后的后台 ledger 写
         // （write_json_atomic 重建父目录）可能复活刚删的 sessions/<id>/。
         // 目录不存在是常态零成本，Shutdown 处理完后不再有新写入，必然收敛。
-        Self::schedule_late_sweep(
-            crate::platform::paths::sessions_root().join(session_id),
-            "late sweep of deleted chat",
-        );
+        // Aux sessions skip the sweep (round-30 B8): their id is derived
+        // (`aux-{parent_id}`), so a 重开话题 recreate within the 2s/6s delay
+        // window reuses the same directory the stale sweep would remove — and
+        // the sweep's premise is structurally false for aux anyway (zero
+        // tools ⇒ no subagents, no shell, no background ledger writer that
+        // could resurrect the directory).
+        if !crate::features::sessions::is_aux_session_id(session_id) {
+            Self::schedule_late_sweep(
+                crate::platform::paths::sessions_root().join(session_id),
+                "late sweep of deleted chat",
+            );
+        }
         Ok(())
     }
 
@@ -5042,9 +5050,8 @@ mod scheduled_model_tests {
     /// Tauri-free `delete_chat_session_cascade` pins the command's exact
     /// order at the command layer. This test keeps its own value: it drives
     /// the pool side (`delete_chat_session_with_gate`) over a real store and
-    /// engine, verifying the pool delete path reclaims the aux engine,
-    /// deletes the aux record, and strips the mapping, strictly before the
-    /// main session's deletion.
+    /// engine, verifying the pool delete path reclaims the aux engine and
+    /// deletes the aux record, strictly before the main session's deletion.
     #[tokio::test]
     async fn chat_delete_cascades_aux_engine_reclaim_before_main_delete() {
         let _env_guard = crate::platform::paths::tests::ENV_LOCK

@@ -1034,8 +1034,8 @@ async fn get_or_create_aux_session_inner(
 ) -> Result<AuxSessionBinding, String> {
     // Auxiliary conversations may only hang off ordinary chat sessions:
     // scheduled sessions go through their own delete path
-    // (delete_scheduled_run only clears the mapping without cascade-deleting
-    // the session), so attaching one would leak an orphan aux session.
+    // (delete_scheduled_run has no aux cascade), so attaching one would leak
+    // an orphan aux session.
     ensure_chat_session(&store, &session_id, "get_or_create_aux_session")?;
     store
         .load(&session_id)
@@ -1071,21 +1071,16 @@ async fn discard_aux_session_inner(
     store: State<'_, SessionStore>,
     pool: State<'_, EnginePool>,
 ) -> Result<(), String> {
+    // The derived-id forward query (round-30 B8): None only when the aux
+    // record is genuinely absent (NotFound-only probe), so an absent aux is
+    // the idempotent already-discarded case, and a transient stat fault reads
+    // as "present" and flows into the gated delete, which surfaces the real
+    // error instead of treating "unknown" as "nothing to discard".
     let Some(aux_id) = store.aux_session_id(&session_id) else {
         return Ok(());
     };
     // Same path as delete_session's Chat branch: delete_chat_session reclaims
-    // the engine inside the turn gate and calls store.delete; store.delete's
-    // purge cleanup removes the main→aux mapping in both directions, so it
-    // must not be cleared again here (a concurrent recreate could lose its
-    // new mapping).
-    // The mapping lookup above runs outside the aux_sessions_io lock: a
-    // concurrent get_or_create can insert a fresh mapping after this read,
-    // and the gated delete below would then reclaim a session the caller
-    // never saw. The window is millisecond-scale and self-healing — the
-    // loser is recreated on the next ensure — so the atomic
-    // resolve-and-remove variant is follow-up hardening, not a correctness
-    // gate here.
+    // the engine inside the turn gate and calls store.delete.
     pool.delete_chat_session(&aux_id)
         .await
         .map_err(|error| format!("discard_aux_session: {error:#}"))?;

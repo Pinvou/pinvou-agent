@@ -146,39 +146,6 @@ pub struct SessionStore {
     /// 从左侧任务列表收起的会话:session_id -> hidden_at。独立落盘到
     /// `_hidden_sessions.json`,不改 SavedSession 结构。
     pub(crate) hidden_sessions: Arc<RwLock<HashMap<String, String>>>,
-    /// Auxiliary-conversation mapping: main session_id -> aux session_id
-    /// (`aux-` prefix). Persisted to `_aux_sessions.json`; aux sessions never
-    /// enter the regular session list and are cascade-deleted with their main
-    /// session (see store.rs `delete`); orphan records with a missing mapping
-    /// or a dead main session are reclaimed by the startup-path
-    /// `reconcile_aux_sessions` (retention.rs).
-    pub(crate) aux_sessions: Arc<RwLock<HashMap<String, String>>>,
-    /// Whether the aux sidecar was actually read this boot. A transient read
-    /// failure (AV/backup lock, EIO after exists() returned true) used to
-    /// silently leave an empty in-memory map, and the next set_aux_session
-    /// then overwrote the sidecar with only the fresh mapping — destroying
-    /// every pre-existing binding and feeding the startup reconciliation a
-    /// real orphan it would delete. Consumers that write mappings or run the
-    /// reconciliation must fail closed / skip when this is false.
-    pub(crate) aux_sessions_loaded: Arc<std::sync::atomic::AtomicBool>,
-    /// Whether this boot's aux reconciliation FAILED (round-23 MAJOR-1). A
-    /// transient fault aborts the pass mid-repair while boot continues, so
-    /// unmapped, backlink-carrying aux records may linger that this boot
-    /// could not classify; get_or_create must then refuse the creation leg —
-    /// minting a fresh aux under a parent whose original record is
-    /// unmapped-but-alive feeds the next boot's reconcile an ambiguous
-    /// duplicate it reclaims, losing that transcript. The refusal surfaces as
-    /// ensureFailed; the next successful boot recovers automatically (the
-    /// flag is per-process and starts false).
-    pub(crate) aux_reconcile_failed: Arc<std::sync::atomic::AtomicBool>,
-    /// Mutex for aux-session get-or-create: the mapping lookup and creation
-    /// must run in one critical section, or two concurrent calls each create a
-    /// session and the later write overwrites the mapping, leaving the first
-    /// aux session as an un-reclaimable orphan. Also held across main-session
-    /// deletes (mapping resolution + cascade), making delete-vs-create atomic.
-    /// Lock order is always `aux_sessions_io` → `scheduled_mutation` (create/
-    /// save take the latter internally), with no reverse acquisition path.
-    pub(crate) aux_sessions_io: Arc<Mutex<()>>,
     /// Session execution-root resolver, injected by the app composition root
     /// (lib.rs) once the AcpPool is ready — the production implementation covers
     /// both sources: codex_acp native code sessions' project bindings plus plain
