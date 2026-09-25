@@ -21,7 +21,9 @@ use std::sync::Mutex;
 use std::sync::atomic::{AtomicBool, Ordering};
 
 use crate::core::session_mode::{PackDefaultPolicy, SessionMode};
-use crate::features::marketplace::bundle::{builtin_cli_bundle_ids, skill_owner_package};
+use crate::features::marketplace::bundle::{
+    SkillOwnerResolver, builtin_cli_bundle_ids, skill_owner_package,
+};
 use crate::features::marketplace::skill_marketplace::SkillMarketplaceManager;
 use crate::features::marketplace::{ConnectorScope, MarketplaceManager};
 use crate::platform::paths;
@@ -47,6 +49,18 @@ pub struct DisabledBundlesFile {
     /// 未知键原样保留（前向兼容）。
     #[serde(flatten)]
     pub extra: std::collections::BTreeMap<String, serde_json::Value>,
+    /// Set when this value is a *degraded* stand-in rather than the user's
+    /// recorded consent: the file exists but could not be read or parsed.
+    /// Never serialized — a writer refuses on the same condition, so a
+    /// degraded value can never be persisted.
+    ///
+    /// Resolution treats a degraded read as "deny everything installed" in
+    /// every scope (see [`resolve_scope_disabled_ids_with`]). Returning the
+    /// empty default instead would silently re-enable every tool, connector
+    /// and skill the user had switched off — an unreadable consent file must
+    /// not widen what the model may call.
+    #[serde(skip)]
+    pub degraded: bool,
 }
 
 fn disabled_bundles_path() -> PathBuf {
@@ -66,11 +80,17 @@ static DISABLED_BUNDLES_FILE_LOCK: Mutex<()> = Mutex::new(());
 /// and the same fd-lock crate as remote_control's process lock, and fails
 /// closed like it: an unavailable lock returns `Err` instead of running the
 /// write unserialized, because silently proceeding would reintroduce exactly
-/// the lost-update this lock exists to prevent. The critical section only
-/// reads/writes a file-sized payload — the DenyAll expansion enumerates the
-/// packages root OUTSIDE the lock (`sample_denyall_expansion` is taken by
-/// every RMW writer before acquiring it, see `update_disabled_bundles_for`)
-/// — so blocking is preferable to retry loops.
+/// the lost-update this lock exists to prevent. The critical section's cost
+/// is bounded and independent of how much the user has disabled: the DenyAll
+/// expansion enumerates the packages root OUTSIDE the lock
+/// (`sample_denyall_expansion` is taken by every RMW writer before acquiring
+/// it, see `update_disabled_bundles_for`), the plain writers resolve their
+/// ids to package ids outside it too, and the RMW's own write-back
+/// normalization is batched into a single manifest snapshot
+/// (`to_package_ids`) rather than one package-tree walk per id. Waiting for a
+/// peer is therefore short in the normal case, and the wait is bounded
+/// anyway (`LOCK_ACQUIRE_TIMEOUT`) because the peer is a process we do not
+/// control.
 ///
 /// Accepted residuals, matching remote_control's process lock: the lock file
 /// holds nothing and is never written, but if it is deleted or replaced
@@ -107,21 +127,36 @@ fn warn_corrupt_read_once(message: &str) {
     }
 }
 
-/// Read section of the consent file: in-process serialization only. Reads are
-/// persistence-free (they pair with
+/// Read section of the consent file: in-process serialization only, and only
+/// when it is free. Reads are persistence-free (they pair with
 /// [`load_disabled_bundles_file_readonly_locked`]) and writers replace the
 /// whole file atomically, so a reader always observes one complete version —
-/// either the pre-write or the post-write file — without any cross-process
-/// coordination. That is deliberate: gating reads run on every prompt, tool
-/// listing and the per-turn send path, and the writers' flock blocks without
-/// a timeout, so taking it here would let a stalled foreign process freeze
-/// every turn submission. Writers must not use this wrapper: they refuse
-/// without the flock (see `with_disabled_bundles_lock`).
+/// either the pre-write or the post-write file — without any coordination at
+/// all. The mutex is therefore an optimization, not a correctness
+/// requirement, and it is taken with `try_lock`.
+///
+/// Blocking on it would defeat the reason reads skip the flock. Gating reads
+/// run on every prompt, tool listing and turn submission, while a writer
+/// holds this very mutex across `attempt_cross_process_lock`, whose flock
+/// blocks without a timeout. Taking the mutex unconditionally would let a
+/// stalled foreign process freeze every turn submission *transitively*
+/// through the local writer parked in its critical section — exactly the
+/// hang skipping the flock was meant to avoid. Degrading to an unserialized
+/// read costs nothing: the file is replaced by rename.
+///
+/// Writers must not use this wrapper: they refuse without the flock (see
+/// [`with_disabled_bundles_lock`]).
 fn with_disabled_bundles_lock_read<T>(f: impl FnOnce() -> T) -> T {
-    let _guard = DISABLED_BUNDLES_FILE_LOCK
-        .lock()
-        .unwrap_or_else(|poisoned| poisoned.into_inner());
-    f()
+    match DISABLED_BUNDLES_FILE_LOCK.try_lock() {
+        Ok(_guard) => f(),
+        Err(std::sync::TryLockError::Poisoned(poisoned)) => {
+            let _guard = poisoned.into_inner();
+            f()
+        }
+        // A local writer is inside its critical section, possibly parked on a
+        // foreign process's flock. Read without the mutex.
+        Err(std::sync::TryLockError::WouldBlock) => f(),
+    }
 }
 
 /// Lock-acquisition half of the writer path; the caller must already hold
@@ -158,19 +193,44 @@ fn attempt_cross_process_lock<T>(f: impl FnOnce() -> T) -> Result<T, String> {
         }
     };
     let mut rw = fd_lock::RwLock::new(file);
-    // fd-lock 4's write() returns a borrowing guard (no closure form); the
-    // named binding keeps the guard alive until `f()` has returned, and
-    // dropping it releases the flock.
+    // fd-lock 4's guards borrow the lock (no closure form); the named binding
+    // keeps the guard alive until `f()` has returned, and dropping it
+    // releases the flock.
+    //
+    // Bounded wait, not `write()`'s indefinite block. Writers run on paths a
+    // user is waiting on — a composer toggle, an install, and the boot-time
+    // residue sweep inside Tauri's synchronous `setup` — and the peer holding
+    // this lock is another OS process we do not control (a headless
+    // `agent run`, or a stale one on a wedged network home). An indefinite
+    // block there is an app that never finishes launching, with no window, no
+    // progress and no cancel. Every writer already fails closed on an
+    // unavailable lock and every caller handles that, so expiring is the
+    // strictly better failure: the user sees an error they can retry and the
+    // idempotent boot sweep simply runs again next launch.
+    let deadline = std::time::Instant::now() + LOCK_ACQUIRE_TIMEOUT;
     let _flock_guard = loop {
-        match rw.write() {
+        match rw.try_write() {
             Ok(guard) => break guard,
-            Err(error) => {
-                // A caught signal delivered while blocked in flock aborts the
-                // wait with EINTR; retrying is the standard convention and
-                // keeps a stray signal from failing the write.
-                if error.kind() == std::io::ErrorKind::Interrupted {
-                    continue;
+            // `WouldBlock` is the peer holding it; `Interrupted` is a caught
+            // signal delivered during the attempt. Both are retried until the
+            // deadline — a stray signal must not fail the write.
+            Err(error)
+                if matches!(
+                    error.kind(),
+                    std::io::ErrorKind::WouldBlock | std::io::ErrorKind::Interrupted
+                ) =>
+            {
+                if std::time::Instant::now() >= deadline {
+                    return Err(format!(
+                        "[marketplace] cross-process lock {} is held by another process \
+                         (waited {}s); the write was refused, retry once it finishes",
+                        lock_path.display(),
+                        LOCK_ACQUIRE_TIMEOUT.as_secs()
+                    ));
                 }
+                std::thread::sleep(LOCK_POLL_INTERVAL);
+            }
+            Err(error) => {
                 return Err(format!(
                     "[marketplace] acquire cross-process lock {}: {error}; \
                      cross-process lock unavailable",
@@ -181,6 +241,13 @@ fn attempt_cross_process_lock<T>(f: impl FnOnce() -> T) -> Result<T, String> {
     };
     Ok(f())
 }
+
+/// How long a writer waits for the cross-process lock before failing closed.
+/// Generous enough that ordinary contention (another process mid-write) is
+/// invisible, short enough that a wedged peer cannot hold app startup or a
+/// GUI toggle hostage.
+const LOCK_ACQUIRE_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(10);
+const LOCK_POLL_INTERVAL: std::time::Duration = std::time::Duration::from_millis(25);
 
 /// Reads the whole file under the in-process read section. Reads never
 /// persist anything — a missing file's legacy merge and `skill:` prefix
@@ -201,21 +268,40 @@ pub(crate) fn load_disabled_bundles_file() -> DisabledBundlesFile {
 fn load_disabled_bundles_file_readonly_locked() -> DisabledBundlesFile {
     let path = disabled_bundles_path();
     let content = match std::fs::read_to_string(&path) {
-        Ok(c) => c,
-        Err(_) => return migrate_from_legacy_files(),
+        // Only an absent file is the fresh-install/legacy path. Any other
+        // error (EACCES, EIO, a directory in its place) means the user's
+        // recorded consent exists but is unreadable, which must degrade
+        // closed rather than masquerade as "nothing was ever disabled".
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
+            return migrate_from_legacy_files();
+        }
+        Err(error) => {
+            warn_corrupt_read_once(&format!(
+                "[marketplace] {} is unreadable ({error}); denying every installed package \
+                 until it can be read again",
+                path.display()
+            ));
+            return DisabledBundlesFile {
+                degraded: true,
+                ..Default::default()
+            };
+        }
+        Ok(content) => content,
     };
     let mut file: DisabledBundlesFile = match serde_json::from_str(&content) {
         Ok(file) => file,
         Err(error) => {
             // Reads must never write, so the corrupt file cannot be
-            // quarantined here — degrade to the default loudly, once per
-            // process.
+            // quarantined here — degrade closed loudly, once per process.
             warn_corrupt_read_once(&format!(
-                "[marketplace] {} is corrupt ({error}); proceeding with the default \
-                     consent state until a writer quarantines it",
+                "[marketplace] {} is corrupt ({error}); denying every installed package \
+                 until a writer quarantines it",
                 path.display()
             ));
-            Default::default()
+            return DisabledBundlesFile {
+                degraded: true,
+                ..Default::default()
+            };
         }
     };
     strip_skill_prefixes(&mut file);
@@ -238,6 +324,16 @@ fn load_disabled_bundles_file_locked() -> Result<DisabledBundlesFile, String> {
     let path = disabled_bundles_path();
     let content = match std::fs::read_to_string(&path) {
         Ok(c) => c,
+        // Only an absent file may be rebuilt from the legacy migration. An
+        // unreadable-but-present file must refuse: saving the migration
+        // default over it would destroy consent state that is merely
+        // temporarily out of reach (EACCES on a locked-down home, EIO).
+        Err(error) if error.kind() != std::io::ErrorKind::NotFound => {
+            return Err(format!(
+                "[scope] {} is unreadable ({error}); refusing to overwrite the consent state",
+                path.display()
+            ));
+        }
         Err(_) => {
             let file = migrate_from_legacy_files();
             if !file.scopes.is_empty() || file.initialized.iter().any(|k| !k.is_empty()) {
@@ -303,6 +399,20 @@ fn to_package_id(raw: &str) -> String {
     skill_owner_package(stripped)
 }
 
+/// Batch form of [`to_package_id`]: one manifest/install-state snapshot for a
+/// whole list. The single-id form walks the package tree per id, so mapping a
+/// stored list with it costs O(ids x packages) filesystem work on a path that
+/// runs per turn.
+fn to_package_ids(raws: &[String]) -> Vec<String> {
+    if raws.is_empty() {
+        return Vec::new();
+    }
+    let resolver = SkillOwnerResolver::new();
+    raws.iter()
+        .map(|raw| resolver.owner_of(raw.strip_prefix("skill:").unwrap_or(raw)))
+        .collect()
+}
+
 /// Maps a user-supplied raw id to the package id the persisted list stores,
 /// for headless callers (the CLI's toggle read-back verification). A raw
 /// skill id is conditionally re-claimed to its owner package, so verifying
@@ -317,8 +427,7 @@ pub fn package_id_for(raw: &str) -> String {
 /// 「关/隐藏」在认领翻转后静默失效（F4）；读时归一让门控跟随技能本体。
 fn normalize_stored_pkg_ids(ids: &[String]) -> Vec<String> {
     let mut out: Vec<String> = Vec::with_capacity(ids.len());
-    for id in ids {
-        let pkg = to_package_id(id);
+    for pkg in to_package_ids(ids) {
         if !out.iter().any(|x| x == &pkg) {
             out.push(pkg);
         }
@@ -518,9 +627,13 @@ struct DenyAllExpansionSample {
 fn sample_denyall_expansion() -> DenyAllExpansionSample {
     let skill_market = SkillMarketplaceManager::new();
     let (skill_ids, skill_scan_degraded) = skill_market.installed_skill_ids_strict();
+    // One manifest/install-state snapshot for every owner lookup below: the
+    // per-id form walks the package tree each time, which made the sample
+    // itself O(skills x packages).
+    let owners = SkillOwnerResolver::new();
     let mut skill_owner_packages = Vec::new();
     for skill_id in &skill_ids {
-        let pkg = skill_owner_package(skill_id);
+        let pkg = owners.owner_of(skill_id);
         if !skill_owner_packages.contains(&pkg) {
             skill_owner_packages.push(pkg);
         }
@@ -530,7 +643,7 @@ fn sample_denyall_expansion() -> DenyAllExpansionSample {
         let mut blanket: Vec<String> = SkillMarketplaceManager::preset_skill_ids().collect();
         blanket.extend(skill_market.uploaded_skill_ids().iter().cloned());
         for skill_id in blanket {
-            let pkg = skill_owner_package(&skill_id);
+            let pkg = owners.owner_of(&skill_id);
             if !blanket_owner_packages.contains(&pkg) {
                 blanket_owner_packages.push(pkg);
             }
@@ -589,11 +702,26 @@ fn expand_denyall_sample(sample: &DenyAllExpansionSample) -> Vec<String> {
 /// `load_disabled_bundles_for`、`unavailable_bundles_for` 与 RMW 写方共用，
 /// 口径一致；RMW 写方传入临界区**之前**采样的环境（见
 /// [`update_disabled_bundles_for`]），本入口在锁外现采样。
-fn resolve_scope_disabled_ids_with_sample(
+///
+/// `denyall_default` is a **closure** on purpose: producing it enumerates the
+/// packages root per installed skill, and only the uninitialized-DenyAll arm
+/// consumes it. An initialized scope, and every AllowAll scope (which is what
+/// ordinary chat resolves to), must not pay a filesystem scan for a value
+/// they discard — this resolution runs on every prompt, tool listing and turn
+/// submission.
+fn resolve_scope_disabled_ids_with<F>(
     file: &DisabledBundlesFile,
     scope: ConnectorScope,
-    sample: &DenyAllExpansionSample,
-) -> Vec<String> {
+    denyall_default: F,
+) -> Vec<String>
+where
+    F: FnOnce() -> Vec<String>,
+{
+    // An unreadable/corrupt consent file is not "nothing was disabled": deny
+    // every installed package in every scope until it can be read again.
+    if file.degraded {
+        return denyall_default();
+    }
     let key = scope.as_str();
     if file.initialized.contains(key) {
         return normalize_stored_pkg_ids(&file.scopes.get(key).cloned().unwrap_or_default());
@@ -602,16 +730,29 @@ fn resolve_scope_disabled_ids_with_sample(
         PackDefaultPolicy::AllowAll => {
             normalize_stored_pkg_ids(&file.scopes.get(key).cloned().unwrap_or_default())
         }
-        PackDefaultPolicy::DenyAll => expand_denyall_sample(sample),
+        PackDefaultPolicy::DenyAll => denyall_default(),
     }
 }
 
-/// Same as [`resolve_scope_disabled_ids_with_sample`] with a freshly taken
-/// sample; for lock-free read paths only — the RMW writer must sample before
-/// its critical section instead of calling this inside it.
+/// [`resolve_scope_disabled_ids_with`] over an already-taken sample; the RMW
+/// writer uses this so the expansion it persists is the environment it froze
+/// before entering the critical section.
+fn resolve_scope_disabled_ids_with_sample(
+    file: &DisabledBundlesFile,
+    scope: ConnectorScope,
+    sample: &DenyAllExpansionSample,
+) -> Vec<String> {
+    resolve_scope_disabled_ids_with(file, scope, || expand_denyall_sample(sample))
+}
+
+/// Same as [`resolve_scope_disabled_ids_with_sample`] but samples lazily, and
+/// only if the resolution actually needs the DenyAll default; for lock-free
+/// read paths only — the RMW writer must sample before its critical section
+/// instead of calling this inside it.
 fn resolve_scope_disabled_ids(file: &DisabledBundlesFile, scope: ConnectorScope) -> Vec<String> {
-    let sample = sample_denyall_expansion();
-    resolve_scope_disabled_ids_with_sample(file, scope, &sample)
+    resolve_scope_disabled_ids_with(file, scope, || {
+        expand_denyall_sample(&sample_denyall_expansion())
+    })
 }
 
 /// 写某 scope 被禁用的包 id 列表（写入即标记该 scope 已初始化）。入参统一归一为包
@@ -621,8 +762,10 @@ fn resolve_scope_disabled_ids(file: &DisabledBundlesFile, scope: ConnectorScope)
 /// is refused with `Err` instead of running unserialized (writers from the
 /// GUI and the CLI processes would overwrite each other whole-file).
 pub fn save_disabled_bundles_for(scope: ConnectorScope, ids: &[String]) -> Result<(), String> {
-    with_disabled_bundles_writer(|| {
-        let normalized: Vec<String> = ids.iter().map(|id| to_package_id(id)).collect();
+    // Resolved before the lock: id normalization walks the package manifests,
+    // and the critical section is the GUI/CLI serialization point.
+    let normalized = to_package_ids(ids);
+    with_disabled_bundles_writer(move || {
         let mut file = load_disabled_bundles_file_locked()?;
         let key = scope.as_str().to_string();
         file.scopes.insert(key.clone(), normalized);
@@ -675,7 +818,12 @@ pub fn update_disabled_bundles_for(
         let file = load_disabled_bundles_file_locked()?;
         let mut ids = resolve_scope_disabled_ids_with_sample(&file, scope, &sample);
         update(&mut ids);
-        let normalized: Vec<String> = ids.iter().map(|id| to_package_id(id)).collect();
+        // Batch-resolved: one manifest snapshot for the whole list rather
+        // than one package-tree walk per id. The closure's newly added id is
+        // only knowable here, so this resolution cannot be hoisted with the
+        // sample — bounding it at one scan is what keeps the critical section
+        // independent of how many packages the scope has disabled.
+        let normalized = to_package_ids(&ids);
         let mut file = file;
         let key = scope.as_str().to_string();
         file.scopes.insert(key.clone(), normalized);
@@ -710,8 +858,9 @@ fn resolve_scope_hidden_ids(file: &DisabledBundlesFile, scope: ConnectorScope) -
 /// Fails closed like the other writers: an unavailable cross-process lock
 /// refuses the write with `Err`.
 pub fn save_hidden_bundles_for(scope: ConnectorScope, ids: &[String]) -> Result<(), String> {
-    with_disabled_bundles_writer(|| {
-        let normalized: Vec<String> = ids.iter().map(|id| to_package_id(id)).collect();
+    // Resolved before the lock, like the disabled-set writer.
+    let normalized = to_package_ids(ids);
+    with_disabled_bundles_writer(move || {
         let mut file = load_disabled_bundles_file_locked()?;
         file.hidden_scopes
             .insert(scope.as_str().to_string(), normalized);
@@ -938,11 +1087,14 @@ mod tests {
         });
     }
 
-    /// Writers go through the cross-process lock file: the GUI app and the
-    /// headless CLI are two processes whose in-process mutexes cannot see each
-    /// other, so the flock on `disabled_bundles.lock` (same primitive as
-    /// remote_control's process lock) is the only serialization point they
-    /// share. The lock file must be created with the first write.
+    /// Writers go through the cross-process lock file and the write survives
+    /// the double critical section.
+    ///
+    /// Note what this does NOT prove: the lock file is created by the
+    /// `OpenOptions::create` that precedes the flock, so its existence says
+    /// nothing about the flock being taken. `cross_process_lock_blocks_a_
+    /// concurrent_writer` is the test that discriminates that; this one
+    /// covers the round-trip through the wrapper.
     #[test]
     fn writers_hold_the_cross_process_lock_file() {
         with_temp_home("pinvou3-scope", || {
@@ -1009,10 +1161,13 @@ mod tests {
         });
     }
 
-    /// Fail-closed covers persistence too: a write entry point returning `Ok`
-    /// means the change landed on disk. Replacing the data file with a
-    /// directory makes the atomic replace fail, so the writer must return
-    /// `Err` instead of reporting success from stale state.
+    /// Fail-closed covers the whole store access, not just the lock: a write
+    /// entry point returning `Ok` means the change landed on disk. With a
+    /// directory where the data file belongs, the writer must return `Err`
+    /// naming that file instead of reporting success from stale state — the
+    /// refusal now happens at the read (an unreadable-but-present consent
+    /// file must never be overwritten from the migration default), which is
+    /// strictly earlier than the failed atomic replace it used to be.
     #[test]
     fn write_entry_points_propagate_persistence_failures() {
         with_temp_home("pinvou3-scope", || {
@@ -1022,8 +1177,8 @@ mod tests {
             let error = save_disabled_bundles_for(ConnectorScope::Plain, &["weather".to_string()])
                 .unwrap_err();
             assert!(
-                error.contains("write disabled_bundles.json failed"),
-                "the error must name the failed write: {error}"
+                error.contains("disabled_bundles.json"),
+                "the error must name the consent file it refused: {error}"
             );
             assert!(
                 update_disabled_bundles_for(ConnectorScope::Plain, |_| {}).is_err(),
@@ -1497,6 +1652,132 @@ mod tests {
             drop(guard);
             reader.join().unwrap();
         });
+    }
+
+    /// The discriminator the test above cannot be: a read must survive a
+    /// LOCAL writer that is parked inside its critical section waiting on a
+    /// foreign process's flock.
+    ///
+    /// The writer holds `DISABLED_BUNDLES_FILE_LOCK` for the whole time it
+    /// waits, so a read that takes that mutex unconditionally inherits the
+    /// foreign process's stall — and gating reads run on every prompt, tool
+    /// listing and turn submission, i.e. the GUI stops being able to send.
+    /// Revert `with_disabled_bundles_lock_read` to `lock()` and this hangs
+    /// until the receive times out.
+    #[test]
+    fn hot_read_degrades_while_a_local_writer_parks_in_its_critical_section() {
+        with_temp_home("pinvou3-scope-read-degrade", || {
+            save_disabled_bundles_for(ConnectorScope::Plain, &["weather".to_string()]).unwrap();
+            // A foreign process holding the flock.
+            let lock_path = paths::pinvou3_home().join("disabled_bundles.lock");
+            let stand_in = std::fs::OpenOptions::new()
+                .read(true)
+                .write(true)
+                .create(true)
+                .truncate(false)
+                .open(&lock_path)
+                .unwrap();
+            let mut rw = fd_lock::RwLock::new(stand_in);
+            let guard = rw.write().expect("hold the stand-in process lock");
+
+            // A local writer, which takes the in-process mutex and then parks
+            // on that flock.
+            let (writer_started_tx, writer_started_rx) = std::sync::mpsc::channel::<()>();
+            let writer = std::thread::spawn(move || {
+                let _ = writer_started_tx.send(());
+                let _ = save_disabled_bundles_for(ConnectorScope::Code, &["feishu".to_string()]);
+            });
+            writer_started_rx
+                .recv_timeout(std::time::Duration::from_secs(5))
+                .expect("writer thread must start");
+            // Give it time to reach the flock wait while holding the mutex.
+            std::thread::sleep(std::time::Duration::from_millis(200));
+
+            let (tx, rx) = std::sync::mpsc::channel::<Vec<String>>();
+            let reader = std::thread::spawn(move || {
+                let _ = tx.send(load_disabled_bundles_for(ConnectorScope::Plain));
+            });
+            let loaded = rx.recv_timeout(std::time::Duration::from_secs(5)).expect(
+                "a read must not wait behind a local writer parked on a foreign process's lock",
+            );
+            assert_eq!(loaded, vec!["weather".to_string()]);
+            reader.join().unwrap();
+            drop(guard);
+            writer.join().unwrap();
+        });
+    }
+
+    /// An unreadable or corrupt consent file must deny every installed
+    /// package in every scope, not read as "nothing was ever disabled".
+    ///
+    /// `plain` is an AllowAll scope, so the default-value degrade this
+    /// replaces produced an EMPTY deny set: one unreadable file silently
+    /// re-enabled every tool, connector and skill the user had switched off.
+    #[test]
+    fn a_corrupt_consent_file_denies_installed_packages_in_every_scope() {
+        with_temp_home("pinvou3-scope-degraded-read", || {
+            let path = disabled_bundles_path();
+            std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+            std::fs::write(&path, "{not json").unwrap();
+            let file = load_disabled_bundles_file();
+            assert!(file.degraded, "an unparseable consent file reads degraded");
+            // Every builtin CLI package is denied in the AllowAll plain scope
+            // — the fail-open direction would have returned an empty list.
+            let denied = load_disabled_bundles_for(ConnectorScope::Plain);
+            for builtin in builtin_cli_bundle_ids() {
+                assert!(
+                    denied.iter().any(|id| id == builtin),
+                    "degraded read must deny '{builtin}' in the plain scope, got {denied:?}"
+                );
+            }
+            assert!(
+                !load_disabled_bundles_for(ConnectorScope::Code).is_empty(),
+                "degraded read must deny in DenyAll scopes too"
+            );
+        });
+    }
+
+    /// The DenyAll expansion enumerates the packages root per installed
+    /// skill, and resolution runs on every prompt and turn submission. It
+    /// must not be computed for the two arms that discard it: an initialized
+    /// scope, and any AllowAll scope (which is what ordinary chat resolves
+    /// to). Making the sample eager is a per-turn filesystem scan for nobody.
+    #[test]
+    fn resolution_does_not_sample_the_environment_when_it_cannot_use_it() {
+        let mut file = DisabledBundlesFile::default();
+        file.scopes
+            .insert("plain".to_string(), vec!["weather".to_string()]);
+
+        let mut sampled = false;
+        let ids = resolve_scope_disabled_ids_with(&file, ConnectorScope::Plain, || {
+            sampled = true;
+            Vec::new()
+        });
+        assert!(!sampled, "an AllowAll scope must not sample");
+        assert_eq!(ids, vec!["weather".to_string()]);
+
+        file.initialized.insert("code".to_string());
+        file.scopes
+            .insert("code".to_string(), vec!["feishu".to_string()]);
+        let mut sampled = false;
+        let ids = resolve_scope_disabled_ids_with(&file, ConnectorScope::Code, || {
+            sampled = true;
+            Vec::new()
+        });
+        assert!(!sampled, "an initialized scope must not sample");
+        assert_eq!(ids, vec!["feishu".to_string()]);
+
+        // The one arm that genuinely needs it still gets it.
+        let fresh = DisabledBundlesFile::default();
+        let mut sampled = false;
+        let _ = resolve_scope_disabled_ids_with(&fresh, ConnectorScope::Code, || {
+            sampled = true;
+            Vec::new()
+        });
+        assert!(
+            sampled,
+            "an uninitialized DenyAll scope needs the expansion"
+        );
     }
 
     /// Physically install the preset skill government-writing (its owner is
