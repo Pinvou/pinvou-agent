@@ -3,8 +3,8 @@ import { createPortal } from 'react-dom';
 import { createRoot } from 'react-dom/client';
 import '../styles/base.css';
 import '../styles/tailwind.css';
-import { Edit2, BarChart2, Settings, Smartphone, Clock, Package, Search, ChevronDown, Menu, MoreHorizontal, Check, Filter, Layers, MessageSquare, X, XIcon, Globe, BookOpen, Puzzle, PetPawIcon } from '../components/icons.jsx';
-import { ArchiveConfirmDialog, ArchiveToast, NavItem, RecentItem } from '../components/layout/NavigationComponents.jsx';
+import { Edit2, BarChart2, Settings, Smartphone, Clock, Package, Search, ChevronDown, Menu, MoreHorizontal, Check, Filter, Layers, MessageSquare, XIcon, Globe, BookOpen, Puzzle, PetPawIcon } from '../components/icons.jsx';
+import { NavItem, RecentItem } from '../components/layout/NavigationComponents.jsx';
 import { SidePanelLayoutProvider } from '../components/layout/ResizableSidePanel.jsx';
 import {
   RightDockHost,
@@ -24,8 +24,6 @@ import { DEFAULT_CHAT_TITLES, dict, createLatestLanguageGate, ensureLanguage, LA
 import { formatSessionDate, localDateKey, formatDateGroupLabel } from '../shared/date-utils.js';
 import { groupSessionsWithProjects, resolveSessionProjectId, needsAddFolderConfirm, WORKSPACE_KIND_BOUND } from '../features/projects/projectGrouping.js';
 import { ProjectGroupHeader } from '../features/projects/ProjectGroupHeader.jsx';
-import { MoveToProjectDialog } from '../features/projects/MoveToProjectDialog.jsx';
-import { RebindFolderDialog } from '../features/projects/RebindFolderDialog.jsx';
 import { classifyRebindError } from '../features/projects/rebindErrors.js';
 import { runSessionBatch } from '../shared/session-management.js';
 import { filterSessionsByTab, groupSessionsByLocalDate, sessionListComparator } from '../shared/session-list-pipeline.js';
@@ -95,9 +93,6 @@ function scheduledRunIcon(run, activeTheme) {
     </span>
   );
 }
-import { PinvouSummonCard } from '../features/tools/tool-renderers.jsx';
-import { SearchOverlay } from '../features/search/SearchOverlay.jsx';
-import { UpdateNoticeButton } from '../features/updater/UpdateNoticeButton.jsx';
 import { Lanyard } from '../features/personas/persona-shared.jsx';
 import { VIEW_LOADERS, prefetchView } from './view-loaders.js';
 // Low-traffic views are lazy-loaded: VIEW_LOADERS (see view-loaders.js) is the
@@ -114,6 +109,15 @@ const LazyScheduledTasksView = lazy(() => VIEW_LOADERS.scheduled().then(m => ({ 
 const LazyKnowledgeView = lazy(() => VIEW_LOADERS.knowledge().then(m => ({ default: m.KnowledgeView })));
 const LazyMonitorView = lazy(() => VIEW_LOADERS.monitor().then(m => ({ default: m.MonitorView })));
 const LazySearchView = lazy(() => VIEW_LOADERS.search().then(m => ({ default: m.SearchView })));
+const LazySearchOverlay = lazy(() => VIEW_LOADERS.searchOverlay().then(m => ({ default: m.SearchOverlay })));
+const LazyMoveToProjectDialog = lazy(() => VIEW_LOADERS.moveToProjectDialog().then(m => ({ default: m.MoveToProjectDialog })));
+const LazyRebindFolderDialog = lazy(() => VIEW_LOADERS.rebindFolderDialog().then(m => ({ default: m.RebindFolderDialog })));
+const LazyPinvouSummonModal = lazy(() => VIEW_LOADERS.pinvouSummon().then(m => ({ default: m.PinvouSummonModal })));
+const LazyUpdateNoticeButton = lazy(() => VIEW_LOADERS.updateNotice().then(m => ({ default: m.UpdateNoticeButton })));
+const LazySavedPersonaConfirmDialog = lazy(() => VIEW_LOADERS.savedPersonaConfirmDialog().then(m => ({ default: m.SavedPersonaConfirmDialog })));
+const LazyApiKeyGateDialog = lazy(() => VIEW_LOADERS.apiKeyGateDialog().then(m => ({ default: m.ApiKeyGateDialog })));
+const LazyArchiveConfirmDialog = lazy(() => VIEW_LOADERS.archiveConfirmDialog().then(m => ({ default: m.ArchiveConfirmDialog })));
+const LazyArchiveToast = lazy(() => VIEW_LOADERS.archiveConfirmDialog().then(m => ({ default: m.ArchiveToast })));
 const LazyPersonaEditorModal = lazy(() => VIEW_LOADERS.cardpool().then(m => ({ default: m.PersonaEditorModal })));
 const LazyWebAccessModal = lazy(() => VIEW_LOADERS.settings().then(m => ({ default: m.WebAccessModal })));
 const LazyDetachedShell = lazy(() => import('./DetachedShell.jsx').then(m => ({ default: m.DetachedShell })));
@@ -197,6 +201,7 @@ const NAV_ICON_CURRENT_CHAT = <MessageSquare size={18} />;
 const NAV_PREFETCH = {
   scheduled: () => prefetchView('scheduled'),
   knowledge: () => prefetchView('knowledge'),
+  outputs: () => prefetchView('knowledge'),
   monitor: () => prefetchView('monitor'),
   toolStore: () => prefetchView('toolStore'),
   cardpool: () => prefetchView('cardpool'),
@@ -1165,6 +1170,8 @@ const NAV_PREFETCH = {
       }, [t]);
       // 有可用新版 → 侧边栏设置图标亮红点（不弹窗不打断）
       const hasUpdate = !!(bs && bs.updateInfo && bs.updateInfo.available);
+      const updateNoticePreviewEnabled = !bridge.available
+        && !!window.UpdateNoticeLogic?.previewEnabled?.(window.location);
       const isWebAccessConnected = !!(bs && bs.webAccess && bs.webAccess.web_client_connected);
       function handleOpenWebAccess() {
         if (!can('webAccessAdmin')) return;
@@ -1567,6 +1574,7 @@ const NAV_PREFETCH = {
       // (finding 7;setState 引用稳定,不影响本回调的 identity)。
       const movePickerRestoreRef = useRef(null);
       const openMovePicker = useCallback((target) => {
+        prefetchView('moveToProjectDialog');
         movePickerRestoreRef.current = null;
         setMoveToPresetProject(null);
         setMoveToProjectSession(target);
@@ -1841,6 +1849,7 @@ const NAV_PREFETCH = {
       // identity. bs is read through a latest-ref — a click sees the most
       // recently rendered snapshot, matching closure-capture semantics.
       const navigateFromScheduledRun = useCallback(async (nextView, beforeNavigate) => {
+        NAV_PREFETCH[nextView]?.();
         const bs = bsRef.current;
         const context = browserSurfaceTransitionContextRef.current;
         const keepsDesktopBrowserVisible = !context.compact && (
@@ -2454,6 +2463,7 @@ const NAV_PREFETCH = {
         // 拖回当前所属项目 = 选择器里禁用当前项的同一语义,直接忽略。
         if (resolveSessionProjectId(chat, projects, sidebarProjectsData ? sidebarProjectsData.assignments : {}) === projectId) return;
         if (needsAddFolderConfirm(chat, target)) {
+          prefetchView('moveToProjectDialog');
           setMoveToPresetProject(projectId);
           setMoveToProjectSession(chat);
           return;
@@ -2470,6 +2480,7 @@ const NAV_PREFETCH = {
         // the badge, pressing Enter re-triggers onRebind (review #463 minor),
         // and the projectOpsBusy guard does not cover that window.
         if (!bridge.files || !bridge.files.pickRebindFolder || projectOpsBusy || rebindDraft) return;
+        prefetchView('rebindFolderDialog');
         try {
           // Single folder, with a title matching the rebind semantics
           // (review #463 Minor 6): no longer borrowing KB's multi-select
@@ -2893,7 +2904,10 @@ const NAV_PREFETCH = {
         cardpool: (geom) => beginTearOff('cardpool', undefined, t.cardPool, geom),
         knowledge: (geom) => beginTearOff('knowledge', undefined, t.knowledge, geom),
       }), [t, beginTearOff]);
-      const openSearchOverlay = useCallback(() => setSearchOverlayOpen(true), []);
+      const openSearchOverlay = useCallback(() => {
+        prefetchView('searchOverlay');
+        setSearchOverlayOpen(true);
+      }, []);
       const apiKeyGateOpen = shouldShowApiKeyGate(bs, currentView, bridge.available);
       const vllmSetupModalOpen = !!(
         can('localModelSetup')
@@ -3066,25 +3080,33 @@ const NAV_PREFETCH = {
           )}
 
           {archiveConfirm && browserOverlayPublicationReady && createPortal(
-            <ArchiveConfirmDialog
-              theme={activeTheme}
-              t={t}
-              onCancel={() => setArchiveConfirm(null)}
-              onConfirm={confirmArchiveSession}
-            />,
+            <ViewErrorBoundary t={t}>
+              <Suspense fallback={null}>
+                <LazyArchiveConfirmDialog
+                  theme={activeTheme}
+                  t={t}
+                  onCancel={() => setArchiveConfirm(null)}
+                  onConfirm={confirmArchiveSession}
+                />
+              </Suspense>
+            </ViewErrorBoundary>,
             document.body
           )}
 
           {archiveToast && createPortal(
-            <ArchiveToast
-              t={t}
-              onClose={() => setArchiveToast(false)}
-              onView={() => {
-                setArchiveToast(false);
-                setSearchShowArchived(true);
-                navigateFromScheduledRun('search');
-              }}
-            />,
+            <ViewErrorBoundary t={t}>
+              <Suspense fallback={null}>
+                <LazyArchiveToast
+                  t={t}
+                  onClose={() => setArchiveToast(false)}
+                  onView={() => {
+                    setArchiveToast(false);
+                    setSearchShowArchived(true);
+                    navigateFromScheduledRun('search');
+                  }}
+                />
+              </Suspense>
+            </ViewErrorBoundary>,
             document.body
           )}
 
@@ -3099,48 +3121,62 @@ const NAV_PREFETCH = {
           )}
 
           {rebindDraft && (
-            <RebindFolderDialog
-              from={rebindDraft.from}
-              to={rebindDraft.to}
-              warnExisting={rebindDraft.warnExisting}
-              errorMessage={rebindDraft.error}
-              partial={rebindDraft.partial || null}
-              busySessionIds={rebindDraft.busySessionIds || null}
-              t={t}
-              busy={projectOpsBusy}
-              onCancel={() => setRebindDraft(null)}
-              onConfirm={confirmRebindWorkspace}
-            />
+            <ViewErrorBoundary t={t}>
+              <Suspense fallback={null}>
+                <LazyRebindFolderDialog
+                  from={rebindDraft.from}
+                  to={rebindDraft.to}
+                  warnExisting={rebindDraft.warnExisting}
+                  errorMessage={rebindDraft.error}
+                  partial={rebindDraft.partial || null}
+                  busySessionIds={rebindDraft.busySessionIds || null}
+                  t={t}
+                  busy={projectOpsBusy}
+                  onCancel={() => setRebindDraft(null)}
+                  onConfirm={confirmRebindWorkspace}
+                />
+              </Suspense>
+            </ViewErrorBoundary>
           )}
 
           {moveToProjectSession && browserOverlayPublicationReady && (
-            <MoveToProjectDialog
-              session={moveToProjectSession}
-              projects={sidebarProjectsData ? sidebarProjectsData.projects : []}
-              currentProjectId={resolveSessionProjectId(
-                moveToProjectSession,
-                sidebarProjectsData ? sidebarProjectsData.projects : [],
-                sidebarProjectsData ? sidebarProjectsData.assignments : {},
-              )}
-              presetProjectId={moveToPresetProject}
-              t={t}
-              busy={projectOpsBusy}
-              restoreTargetRef={movePickerRestoreRef}
-              onClose={() => { setMoveToPresetProject(null); setMoveToProjectSession(null); }}
-              onMove={(projectId, addWorkspaceRoot) => handleMoveSessionToProject(
-                moveToProjectSession.id, projectId, addWorkspaceRoot)}
-            />
+            <ViewErrorBoundary t={t}>
+              <Suspense fallback={null}>
+                <LazyMoveToProjectDialog
+                  session={moveToProjectSession}
+                  projects={sidebarProjectsData ? sidebarProjectsData.projects : []}
+                  currentProjectId={resolveSessionProjectId(
+                    moveToProjectSession,
+                    sidebarProjectsData ? sidebarProjectsData.projects : [],
+                    sidebarProjectsData ? sidebarProjectsData.assignments : {},
+                  )}
+                  presetProjectId={moveToPresetProject}
+                  t={t}
+                  busy={projectOpsBusy}
+                  restoreTargetRef={movePickerRestoreRef}
+                  onClose={() => { setMoveToPresetProject(null); setMoveToProjectSession(null); }}
+                  onMove={(projectId, addWorkspaceRoot) => handleMoveSessionToProject(
+                    moveToProjectSession.id, projectId, addWorkspaceRoot)}
+                />
+              </Suspense>
+            </ViewErrorBoundary>
           )}
 
-          {searchOverlayOpen && browserOverlayPublicationReady && createPortal(
-            <SearchOverlay
-              theme={activeTheme}
-              history={chatHistory}
-              t={t}
-              onSelect={handleSearchSelect}
-              onClose={() => setSearchOverlayOpen(false)}
-            />,
-            document.body
+          {searchOverlayOpen && browserOverlayPublicationReady && (
+            <ViewErrorBoundary t={t}>
+              {createPortal(
+                <Suspense fallback={null}>
+                  <LazySearchOverlay
+                    theme={activeTheme}
+                    history={chatHistory}
+                    t={t}
+                    onSelect={handleSearchSelect}
+                    onClose={() => setSearchOverlayOpen(false)}
+                  />
+                </Suspense>,
+                document.body,
+              )}
+            </ViewErrorBoundary>
           )}
 
           {can('desktopChrome') && <TitleBar t={t} sidebarOpen={isSidebarOpen} />}
@@ -3209,7 +3245,7 @@ const NAV_PREFETCH = {
               {isSidebarOpen && !isCompactShell && (
                 <button
                   type="button"
-                  onClick={() => setSearchOverlayOpen(true)}
+                  onClick={openSearchOverlay}
                   title={t.searchChats}
                   aria-label={t.searchChats}
                   className={`ml-auto w-10 h-10 shrink-0 rounded-full flex items-center justify-center transition-colors ${
@@ -3770,50 +3806,36 @@ const NAV_PREFETCH = {
               </ViewErrorBoundary>
             )}
 
-            {/* 存入成功 → iOS 确认窗:去查看我的卡牌 / 暂不 */}
             {savedConfirm && browserOverlayPublicationReady && (
-              // biome-ignore lint/a11y/useKeyWithClickEvents: keyboard users close the dialog through its real buttons
-              // biome-ignore lint/a11y/noStaticElementInteractions: this is a pointer-only backdrop around an accessible dialog card
-              <div className="fixed inset-0 z-[80] flex items-center justify-center p-4" style={{ background:'rgba(0,0,0,.4)' }} onClick={() => setSavedConfirm(null)}>
-                {/* biome-ignore lint/a11y/useKeyWithClickEvents: background click-to-close layer; keyboard path handled by real buttons inside the card */}
-                {/* biome-ignore lint/a11y/noStaticElementInteractions: background click-to-close layer; non-interactive container */}
-                <div onClick={(e) => e.stopPropagation()} className="w-[270px] rounded-[14px] overflow-hidden text-center"
-                  style={{ background: activeTheme === 'dark' ? 'rgba(44,44,46,.95)' : 'rgba(250,250,250,.95)', backdropFilter:'blur(20px)', WebkitBackdropFilter:'blur(20px)', fontFamily:'-apple-system, BlinkMacSystemFont, "SF Pro Text", "PingFang SC", "Microsoft YaHei", sans-serif' }}>
-                  <div className="px-4 pt-5 pb-4">
-                    <div className="text-[17px] font-semibold" style={{ color: activeTheme === 'dark' ? '#fff' : '#000' }}>{t.cpSavedTitle}</div>
-                    <div className="text-[13px] mt-1.5" style={{ color: activeTheme === 'dark' ? 'rgba(235,235,245,.6)' : 'rgba(60,60,67,.6)' }}>{t.cpSavedDesc(savedConfirm.name || '')}</div>
-                  </div>
-                  <div className="flex" style={{ borderTop: '0.5px solid ' + (activeTheme === 'dark' ? 'rgba(84,84,88,.65)' : 'rgba(60,60,67,.29)') }}>
-                    <button type="button" onClick={() => setSavedConfirm(null)} className="flex-1 h-11 text-[17px]" style={{ color: activeTheme === 'dark' ? '#0A84FF' : '#007AFF' }}>{t.cpSavedLater}</button>
-                    <div style={{ width:'0.5px', background: activeTheme === 'dark' ? 'rgba(84,84,88,.65)' : 'rgba(60,60,67,.29)' }} />
-                    <button type="button" onClick={() => { setPoolMyOnly(true); setSavedConfirm(null); setCurrentView('cardpool'); }} className="flex-1 h-11 text-[17px] font-semibold" style={{ color: activeTheme === 'dark' ? '#0A84FF' : '#007AFF' }}>{t.cpSavedView}</button>
-                  </div>
-                </div>
-              </div>
+              <ViewErrorBoundary t={t}>
+                <Suspense fallback={null}>
+                  <LazySavedPersonaConfirmDialog
+                    savedConfirm={savedConfirm}
+                    theme={activeTheme}
+                    t={t}
+                    onClose={() => setSavedConfirm(null)}
+                    onView={() => { setPoolMyOnly(true); setSavedConfirm(null); setCurrentView('cardpool'); }}
+                  />
+                </Suspense>
+              </ViewErrorBoundary>
             )}
 
-            {/* API Key 拦截遮罩 —— 云端模型未配 key 时只盖住聊天界面,强制先配置。
-                根因:此前前后端都无 key gate,空 key 打云端 → 401 静默无回应。
-                设置页必须保持可操作,否则“去配置”后遮罩仍在,用户反而无法录入 Key。
-                条件:credential_state 为 missing 或 unavailable 且非本地模型。本地 vLLM
-                和 loopback OpenAI-compatible 端点允许无鉴权。unavailable 同样需拦截:macOS 上用户在 Keychain
-                授权弹窗点"拒绝"时 credential_state 变 unavailable(见 prefs.rs:785),
-                此时不盖遮罩用户仍可发消息 → 命中 Keychain 错误,与 missing 同等后果。 */}
             {apiKeyGateOpen && browserOverlayPublicationReady && (
-              <div className="fixed inset-0 z-[57] flex items-center justify-center p-6" style={{ background: 'rgba(0,0,0,.5)' }}>
-                <div className="w-full max-w-[400px] rounded-2xl p-6 ts-modal-in"
-                     style={{ background: activeTheme === 'dark' ? '#1E1F20' : '#FFFFFF', color: activeTheme === 'dark' ? '#E3E3E3' : '#1F1F1F', boxShadow: '0 12px 48px rgba(0,0,0,.35)' }}>
-                  <div className="flex items-center gap-2 mb-3">
-                    <PinvouLogo className="h-[22px] w-[22px] select-none" />
-                    <div className="text-[17px] font-semibold">{t.apiKeyGateTitle}</div>
-                  </div>
-                  <div className="text-[14px] leading-relaxed mb-4" style={{ opacity: .85 }}>{t.apiKeyGateDesc}</div>
-                  <div className="flex justify-end">
-                    <button type="button" onClick={() => openSettingsSection('model')}
-                      className="h-9 px-4 rounded-lg text-[14px] font-medium text-white" style={{ background: '#0A84FF' }}>{t.apiKeyGateBtn}</button>
-                  </div>
-                </div>
-              </div>
+              <ViewErrorBoundary t={t}>
+                <Suspense fallback={(
+                  <div
+                    className="fixed inset-0 z-[57]"
+                    style={{ background: 'rgba(0,0,0,.5)' }}
+                    aria-busy="true"
+                  />
+                )}>
+                  <LazyApiKeyGateDialog
+                    theme={activeTheme}
+                    t={t}
+                    onOpenModelSettings={() => openSettingsSection('model')}
+                  />
+                </Suspense>
+              </ViewErrorBoundary>
             )}
 
             {/* 厂商预装本地大模型一键引导 —— 全局首屏弹窗;引导中禁止背景关窗 */}
@@ -3882,29 +3904,11 @@ const NAV_PREFETCH = {
 
             {/* Pinvou 检阅弹窗(品/悟) —— 居中弹窗 + 毛玻璃背景(虚化身后 app);全局,任何视图都能弹;点背景或卡内「跳过」关闭 */}
             {bs && bs.pinvouModal && browserOverlayPublicationReady && (
-              // biome-ignore lint/a11y/useKeyWithClickEvents: keyboard users close the dialog through its real close button
-              // biome-ignore lint/a11y/noStaticElementInteractions: this is a pointer-only backdrop around an accessible dialog card
-              <div className="fixed inset-0 z-[55] flex items-center justify-center p-6"
-                   style={{ background: activeTheme === 'dark' ? 'rgba(0,0,0,.45)' : 'rgba(255,255,255,.35)', backdropFilter: 'blur(20px) saturate(140%)', WebkitBackdropFilter: 'blur(20px) saturate(140%)' }}
-                   onClick={() => { if (!bs.pinvouModal.loading) bridge.interaction.dismissPinvouReview(); }}>
-                {/* loading 期间禁止背景点击关窗:召唤(直连 vLLM,5-30s)仍在后台跑、守卫仍 held,
-                    点背景误关会表现为"闪一下没反应、要等一会才能再点"。锁住后 spinner 全程可见,
-                    出结果/错误后才可点背景关。 */}
-                {/* biome-ignore lint/a11y/useKeyWithClickEvents: background click-to-close layer; keyboard path handled by the top-right close button (a real button below) */}
-                {/* biome-ignore lint/a11y/noStaticElementInteractions: background click-to-close layer; non-interactive container */}
-                <div className="relative w-full max-w-[720px] overflow-hidden bg-white dark:bg-[#1C1C1E] rounded-[20px] shadow-[0_20px_60px_rgba(0,0,0,0.28)] ts-modal-in"
-                     onClick={(e) => e.stopPropagation()}
-                     style={{ fontFamily:'-apple-system, BlinkMacSystemFont, "SF Pro Text", "PingFang SC", "Microsoft YaHei", sans-serif' }}>
-                  {/* 关闭按钮：所有状态(含 loading)常驻;loading 时点它=取消等待并关窗,in-flight 结果由守卫丢弃 */}
-                  <button type="button" onClick={() => bridge.available && bridge.interaction.dismissPinvouReview()} aria-label={t.pvSkip}
-                    className="absolute top-3.5 right-3.5 z-10 w-7 h-7 flex items-center justify-center rounded-full bg-black/[0.06] dark:bg-white/10 text-[#8E8E93] hover:bg-black/10 dark:hover:bg-white/15 active:scale-90 transition-colors">
-                    <X size={16} />
-                  </button>
-                  <div className="max-h-[90vh] overflow-y-auto custom-scrollbar px-5 pt-5 pb-6">
-                    <PinvouSummonCard item={bs.pinvouModal} theme={activeTheme} t={t} isLocal={activeModelIsLocal(bs)} />
-                  </div>
-                </div>
-              </div>
+              <ViewErrorBoundary t={t}>
+                <Suspense fallback={null}>
+                  <LazyPinvouSummonModal item={bs.pinvouModal} theme={activeTheme} t={t} isLocal={activeModelIsLocal(bs)} />
+                </Suspense>
+              </ViewErrorBoundary>
             )}
 
             </div>
@@ -4030,17 +4034,23 @@ const NAV_PREFETCH = {
             ]} />
           )}
 
-          <UpdateNoticeButton
-            theme={activeTheme}
-            bs={bs}
-            t={t}
-            onShowChangelog={() => {
-              // Same settings entry path as the sidebar gear (openSettingsSection records the
-              // return view and lets navigateFromScheduledRun own the view transition).
-              openSettingsSection('update');
-              setSettingsUpdateFocusTick(v => v + 1);
-            }}
-          />
+          {(hasUpdate || updateNoticePreviewEnabled) && (
+            <ViewErrorBoundary t={t}>
+              <Suspense fallback={null}>
+                <LazyUpdateNoticeButton
+                  theme={activeTheme}
+                  bs={bs}
+                  t={t}
+                  onShowChangelog={() => {
+                    // Same settings entry path as the sidebar gear (openSettingsSection records the
+                    // return view and lets navigateFromScheduledRun own the view transition).
+                    openSettingsSection('update');
+                    setSettingsUpdateFocusTick(v => v + 1);
+                  }}
+                />
+              </Suspense>
+            </ViewErrorBoundary>
+          )}
         </div>
       );
     };
