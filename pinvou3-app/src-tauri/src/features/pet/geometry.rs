@@ -104,61 +104,8 @@ pub(crate) fn activity_content_height(activity_height: Option<f64>) -> f64 {
     }
 }
 
-pub(crate) fn character_local_top_left(
-    scale: f64,
-    activity_visible: bool,
-    activity_height: Option<f64>,
-    alignment: &str,
-    vertical_alignment: PetVerticalAlignment,
-) -> (f64, f64) {
-    let scale = clamp_scale(scale);
-    let (window_width, window_height) =
-        pet_window_effective_size(scale, activity_visible, activity_height);
-    let character_width = PET_FRAME_W * scale;
-    let character_height = PET_FRAME_H * scale;
-    let x = if alignment == "left" {
-        PET_HORIZONTAL_PADDING / 2.0
-    } else {
-        window_width - PET_HORIZONTAL_PADDING / 2.0 - character_width
-    };
-    let y = match vertical_alignment {
-        PetVerticalAlignment::Top => 0.0,
-        PetVerticalAlignment::Bottom => window_height - PET_CHARACTER_BOTTOM - character_height,
-    };
-    (x, y)
-}
-
-pub(crate) fn clamp_scale_to_character_work_area(
-    scale: f64,
-    anchor: (f64, f64),
-    scale_factor: f64,
-    work_area: Option<(i32, i32, u32, u32)>,
-) -> f64 {
-    let scale = clamp_scale(scale);
-    let Some((left, top, width, height)) = work_area else {
-        return scale;
-    };
-    if !scale_factor.is_finite()
-        || scale_factor <= 0.0
-        || !anchor.0.is_finite()
-        || !anchor.1.is_finite()
-    {
-        return scale;
-    }
-    let right = left as f64 + width as f64;
-    let bottom = top as f64 + height as f64;
-    let max_horizontal = (right - anchor.0) / (PET_FRAME_W * scale_factor);
-    let max_vertical = (bottom - anchor.1) / (PET_FRAME_H * scale_factor);
-    let maximum = max_horizontal.min(max_vertical);
-    if maximum.is_finite() {
-        scale.min(maximum.max(MIN_SCALE))
-    } else {
-        scale
-    }
-}
-
-pub(crate) fn scale_resize_required(current: f64, next: f64, has_explicit_anchor: bool) -> bool {
-    has_explicit_anchor || (current - next).abs() > 1e-9
+pub(crate) fn scale_resize_required(current: f64, next: f64) -> bool {
+    (current - next).abs() > 1e-9
 }
 
 /// 点 (cx,cy) 是否落在任一显示器矩形内。恢复保存位置前用窗口中心点判定——
@@ -253,26 +200,6 @@ pub(crate) fn edge_anchor(
     }
 }
 
-/// 人物锚点靠近工作区左/上边时,窗口左上角会被算成负坐标(活动卡展开且人物
-/// 右对齐时人物局部横坐标可达 230px),活动卡整块跑到屏幕外。clamp_scale_to_
-/// character_work_area 只按右/下距离限制缩放,管不到这一侧,所以位置这里再钳一次。
-pub(crate) fn character_anchor_position(
-    position: (i32, i32),
-    size: (u32, u32),
-    work_area: Option<(i32, i32, u32, u32)>,
-) -> (i32, i32) {
-    let (mut x, mut y) = position;
-    if let Some((left, top, width, height)) = work_area {
-        let right = left + width as i32;
-        let bottom = top + height as i32;
-        let max_x = (right - size.0 as i32).max(left);
-        let max_y = (bottom - size.1 as i32).max(top);
-        x = x.clamp(left, max_x);
-        y = y.clamp(top, max_y);
-    }
-    (x, y)
-}
-
 /// [`super::pet_window::PetWindowState`] serde default 用的最小缩放。
 pub(super) fn default_scale() -> f64 {
     MIN_SCALE
@@ -332,43 +259,6 @@ mod tests {
     }
 
     #[test]
-    fn character_top_left_tracks_the_real_flex_layout() {
-        // 贴底布局:y = 窗高 - 8 - 人物高,与卡片存在与否无关。
-        // 紧凑 0.5 档在 Linux 上按 200x200 生效尺寸计算(WebKitGTK 最小内容
-        // 尺寸,见 pet_window_effective_size),局部坐标随之不同。
-        let effective_size = super::super::platform::effective_window_size((144.0, 165.0));
-        assert_eq!(
-            character_local_top_left(0.5, false, None, "right", PetVerticalAlignment::Bottom,),
-            (
-                effective_size.0 - PET_HORIZONTAL_PADDING / 2.0 - PET_FRAME_W * 0.5,
-                effective_size.1 - PET_CHARACTER_BOTTOM - PET_FRAME_H * 0.5,
-            )
-        );
-        assert_eq!(
-            character_local_top_left(1.0, false, None, "left", PetVerticalAlignment::Bottom,),
-            (24.0, 8.0)
-        );
-        assert_eq!(
-            character_local_top_left(
-                0.5,
-                true,
-                Some(112.0),
-                "right",
-                PetVerticalAlignment::Bottom,
-            ),
-            (230.0, 116.0)
-        );
-        assert_eq!(
-            character_local_top_left(0.5, true, Some(112.0), "left", PetVerticalAlignment::Bottom,),
-            (24.0, 116.0)
-        );
-        assert_eq!(
-            character_local_top_left(0.5, true, Some(112.0), "left", PetVerticalAlignment::Top,),
-            (24.0, 0.0)
-        );
-    }
-
-    #[test]
     fn effective_size_floors_to_webview_min_on_linux_only() {
         assert_eq!(
             pet_window_effective_size(0.5, false, None),
@@ -380,55 +270,9 @@ mod tests {
 
     #[test]
     fn unchanged_scale_does_not_race_activity_resize() {
-        assert!(!scale_resize_required(0.5, 0.5, false));
-        assert!(!scale_resize_required(0.5, 0.5 + 1e-10, false));
-        assert!(scale_resize_required(0.5, 0.6, false));
-        assert!(scale_resize_required(0.5, 0.5, true));
-    }
-
-    #[test]
-    fn character_anchor_caps_scale_instead_of_moving_the_anchor() {
-        let clamped =
-            clamp_scale_to_character_work_area(1.2, (100.0, 100.0), 1.0, Some((0, 0, 300, 300)));
-        assert!((clamped - (200.0 / PET_FRAME_H)).abs() < 1e-9);
-        assert_eq!(
-            clamp_scale_to_character_work_area(1.2, (100.0, 100.0), 1.0, None),
-            1.2
-        );
-    }
-
-    #[test]
-    fn character_anchor_position_keeps_window_inside_work_area() {
-        // 人物锚点靠屏幕左上角:窗口左上角本会被算成负坐标,活动卡跑到屏幕外。
-        assert_eq!(
-            character_anchor_position((-130, -40), (350, 332), Some((0, 0, 1920, 1080))),
-            (0, 0)
-        );
-        // 靠右下角:同样要收回工作区内。
-        assert_eq!(
-            character_anchor_position((1800, 900), (350, 332), Some((0, 0, 1920, 1040))),
-            (1570, 708)
-        );
-        // 工作区带偏移(副屏 / 任务栏在左侧)时按该工作区钳制,不是按 (0,0)。
-        assert_eq!(
-            character_anchor_position((1900, -20), (350, 332), Some((1920, 0, 1920, 1080))),
-            (1920, 0)
-        );
-        // 已经在工作区内的位置不动。
-        assert_eq!(
-            character_anchor_position((400, 300), (350, 332), Some((0, 0, 1920, 1080))),
-            (400, 300)
-        );
-        // 窗口比工作区还大时,左/上优先,不产生反向越界。
-        assert_eq!(
-            character_anchor_position((-50, -50), (400, 400), Some((0, 0, 300, 300))),
-            (0, 0)
-        );
-        // 拿不到工作区就别瞎猜。
-        assert_eq!(
-            character_anchor_position((-130, -40), (350, 332), None),
-            (-130, -40)
-        );
+        assert!(!scale_resize_required(0.5, 0.5));
+        assert!(!scale_resize_required(0.5, 0.5 + 1e-10));
+        assert!(scale_resize_required(0.5, 0.6));
     }
 
     #[test]

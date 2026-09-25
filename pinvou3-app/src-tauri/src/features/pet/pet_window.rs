@@ -16,7 +16,6 @@ use tauri::{AppHandle, Emitter, Manager, State, WebviewUrl, WebviewWindowBuilder
 use super::geometry::{PET_LABEL, PetVerticalAlignment, clamp_scale, point_on_any_monitor};
 pub(crate) use super::geometry::{ScaleAnchor, edge_anchor, resized_position};
 use super::geometry::{
-    character_anchor_position, character_local_top_left, clamp_scale_to_character_work_area,
     default_scale, legacy_frame_position_to_client, pet_window_effective_size,
     scale_resize_required,
 };
@@ -426,96 +425,18 @@ fn resize_pet_window(win: &tauri::WebviewWindow, logical_size: (f64, f64), ancho
     super::platform::resize_pet_window(win, logical_size, anchor);
 }
 
-fn resize_pet_window_at_character_anchor(
-    win: &tauri::WebviewWindow,
-    logical_size: (f64, f64),
-    scale: f64,
-    activity_visible: bool,
-    activity_height: Option<f64>,
-    alignment: &str,
-    vertical_alignment: PetVerticalAlignment,
-    screen_anchor: (f64, f64),
-) {
-    let sf = win.scale_factor().unwrap_or(1.0);
-    let (local_x, local_y) = character_local_top_left(
-        scale,
-        activity_visible,
-        activity_height,
-        alignment,
-        vertical_alignment,
-    );
-    let width = (logical_size.0 * sf).round() as u32;
-    let height = (logical_size.1 * sf).round() as u32;
-    let work_area = win.current_monitor().ok().flatten().map(|monitor| {
-        let area = monitor.work_area();
-        (
-            area.position.x,
-            area.position.y,
-            area.size.width,
-            area.size.height,
-        )
-    });
-    // 定位一律用请求值:请求值已经过 pet_window_effective_size 与 GTK 真实
-    // 钳制对齐;X11 resize 异步生效,此刻回读多为旧值,不能参与定位数学。
-    let _ = win.set_size(tauri::PhysicalSize::new(width, height));
-    if let Ok(size) = win.inner_size() {
-        if (size.width, size.height) != (width, height) {
-            eprintln!(
-                "[pet resize] requested {width}x{height} readback {}x{} (async, stale ok)",
-                size.width, size.height
-            );
-        }
-    }
-    let (x, y) = character_anchor_position(
-        (
-            (screen_anchor.0 - local_x * sf).round() as i32,
-            (screen_anchor.1 - local_y * sf).round() as i32,
-        ),
-        (width, height),
-        work_area,
-    );
-    let _ = win.set_position(tauri::PhysicalPosition::new(x, y));
-}
-
-/// 缩放桌宠:唯一生产调用方是 PetWindow 启动时的缩放初始化(不传 anchor)。
-/// `character_top_left` anchor 路径保留给未来的定点缩放,当前无调用方。
-/// 所有路径都会钳制在当前显示器工作区内。返回 clamp 后的实际值。
+/// 缩放桌宠:唯一调用方是 PetWindow 启动时的缩放初始化。返回 clamp 后的实际值。
 pub async fn set_pet_scale(
     scale: f64,
-    anchor: Option<String>,
-    alignment: Option<String>,
     vertical_alignment: Option<String>,
-    anchor_x: Option<f64>,
-    anchor_y: Option<f64>,
     activity_visible: Option<bool>,
     activity_height: Option<f64>,
-    persist: Option<bool>,
     app: AppHandle,
 ) -> Result<f64, String> {
     let win = app.get_webview_window(PET_LABEL);
-    let character_anchor = match (anchor.as_deref(), anchor_x, anchor_y) {
-        (Some("character_top_left"), Some(x), Some(y)) if x.is_finite() && y.is_finite() => {
-            Some((x, y))
-        }
-        _ => None,
-    };
-    let mut scale = clamp_scale(scale);
-    if let (Some(win), Some(character_anchor)) = (win.as_ref(), character_anchor) {
-        let scale_factor = win.scale_factor().unwrap_or(1.0);
-        let work_area = win.current_monitor().ok().flatten().map(|monitor| {
-            let area = monitor.work_area();
-            (
-                area.position.x,
-                area.position.y,
-                area.size.width,
-                area.size.height,
-            )
-        });
-        scale =
-            clamp_scale_to_character_work_area(scale, character_anchor, scale_factor, work_area);
-    }
+    let scale = clamp_scale(scale);
     let mut st = load_state();
-    let resize_required = scale_resize_required(st.scale, scale, anchor.is_some());
+    let resize_required = scale_resize_required(st.scale, scale);
     st.scale = scale;
     let activity_visible = activity_visible.unwrap_or(st.activity_visible);
     let vertical_alignment = vertical_alignment
@@ -524,38 +445,21 @@ pub async fn set_pet_scale(
         .unwrap_or(st.vertical_alignment);
     st.activity_visible = activity_visible;
     st.vertical_alignment = vertical_alignment;
-    if persist.unwrap_or(true) {
-        save_state(st)?;
-    }
+    save_state(st)?;
     // 启动时活动可见性和缩放状态会由两个 React effect 紧邻上报。X11 resize
     // 异步生效，如果缩放值根本没变却再次按旧尺寸改位置，两次锚定会竞态，
     // 让右侧公仔每次启动随机横移半个宽差。活动显隐由专用命令负责；这里
     // 只有真实缩放变化（或显式锚点）才修改原生窗口几何。
     if let Some(win) = win.filter(|_| resize_required) {
         let logical_size = pet_window_effective_size(scale, activity_visible, activity_height);
-        if let Some(character_anchor) = character_anchor {
-            resize_pet_window_at_character_anchor(
-                &win,
-                logical_size,
-                scale,
-                activity_visible,
-                activity_height,
-                alignment.as_deref().unwrap_or("right"),
-                vertical_alignment,
-                character_anchor,
-            );
+        let scale_anchor = if activity_visible {
+            window_edge_anchor(&win, vertical_alignment)
+        } else if vertical_alignment == PetVerticalAlignment::Top {
+            ScaleAnchor::TopCenter
         } else {
-            let scale_anchor = if anchor.as_deref() == Some("top_left") {
-                ScaleAnchor::TopLeft
-            } else if activity_visible {
-                window_edge_anchor(&win, vertical_alignment)
-            } else if vertical_alignment == PetVerticalAlignment::Top {
-                ScaleAnchor::TopCenter
-            } else {
-                ScaleAnchor::BottomCenter
-            };
-            resize_pet_window(&win, logical_size, scale_anchor);
-        }
+            ScaleAnchor::BottomCenter
+        };
+        resize_pet_window(&win, logical_size, scale_anchor);
     }
     Ok(scale)
 }
