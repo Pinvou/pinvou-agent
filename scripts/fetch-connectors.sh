@@ -49,7 +49,9 @@ required_commands=(node curl tar install mktemp)
 # ZIP artifacts exist only for windows-x64, and GNU tar cannot read them; check
 # unzip up front with the other dependencies rather than after the download.
 # --check only re-hashes files already on disk, so it never needs an extractor.
-if ! "$check_only" && grep -q '\.zip"' "$lock"; then
+# Scope the probe to the url field, which is what extract_archive keys off; any
+# other value ending in .zip (a name, a version) must not demand an extractor.
+if ! "$check_only" && grep -qE '"url"[[:space:]]*:[[:space:]]*"[^"]*\.zip"' "$lock"; then
   required_commands+=(unzip)
 fi
 for command_name in "${required_commands[@]}"; do

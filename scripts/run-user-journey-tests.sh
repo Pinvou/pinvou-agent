@@ -52,6 +52,12 @@ run_optional_skip2() {
   return "$rc"
 }
 
+# Sourcing this file yields the helpers above without running the suite, so the
+# marker-gated skip contract can be exercised directly by scripts/tests.
+if [ "${BASH_SOURCE[0]}" != "$0" ]; then
+  return 0
+fi
+
 run_required node pinvou3-app/tests/markdown_syntax_highlight.test.mjs
 run_required node pinvou3-app/tests/windows_runtime_packaging_contract.test.js
 run_required python3 -m unittest discover -s scripts/tests -p 'test_*.py'

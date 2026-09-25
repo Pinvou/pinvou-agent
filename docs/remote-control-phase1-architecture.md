@@ -248,4 +248,5 @@ npm --prefix pinvou3-app run test:webui
 
 该 smoke 构建真实共享 WebUI，启动真实本地 Relay，用 WebSocket 模拟桌面 endpoint，并验证
 1440×900 与 390×844 渲染、fragment 凭据隔离、单客户端接管、RPC 往返以及事件游标重连。
-缺少 Chromium/Edge 时按统一 runner 约定以 exit 2 跳过。
+缺少 Chromium/Edge 时按统一 runner 约定打印一行以 `SKIP:` 开头的说明并以退出码 2 结束；
+`scripts/run-user-journey-tests.sh` 只在这两者同时成立时才计为 skip。

@@ -6,7 +6,10 @@
  * boundary and the endpoint-scoped Relay protocol used by both desktop-sized and
  * mobile-sized browsers.
  *
- * exit 0 = PASS, exit 1 = FAIL, exit 2 = Chromium/puppeteer unavailable.
+ * exit 0 = PASS, exit 1 = FAIL, exit 2 = Chromium/puppeteer unavailable. An
+ * exit 2 must be preceded by a line that starts with `SKIP:` at column 0;
+ * scripts/run-user-journey-tests.sh only counts an exit 2 as skipped when that
+ * line is present, and treats a bare exit 2 as a failure.
  */
 const assert = require('node:assert/strict');
 const fs = require('node:fs');

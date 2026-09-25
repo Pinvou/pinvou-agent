@@ -13,9 +13,11 @@ gh release view "$TAG" >/dev/null
 (cd "$APP_DIR" && npm ci --prefer-offline --no-audit && npm run build)
 
 # Take the architecture from the artifact the bundler actually produced. The
-# build target comes from the host's node/Rust triple, never from dpkg, so
-# consulting dpkg only to rebuild a filename made it a hard prerequisite for
-# every non-Debian Linux host that can otherwise build this package.
+# build target comes from the host's node/Rust triple, never from dpkg, so dpkg
+# was consulted only to rebuild a filename that is already on disk. Where dpkg
+# was absent the old `2>/dev/null || echo amd64` default silently guessed amd64,
+# and an arm64 non-Debian host then failed here with a misleading
+# "Community deb not found" naming a file the build never intended to produce.
 DEB_DIR="$APP_DIR/src-tauri/target/release/bundle/deb"
 shopt -s nullglob
 BUILT=("$DEB_DIR/pinvou3_${VERSION}_"*.deb)
