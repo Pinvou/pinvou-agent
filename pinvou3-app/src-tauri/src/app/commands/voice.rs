@@ -927,21 +927,19 @@ async fn voice_postprocess_bridge(
     store: &SessionStore,
 ) -> AnyResult<crate::features::assistant::platform::bridge::Pinvou3Bridge> {
     if let Some(sid) = session_id.filter(|sid| !sid.trim().is_empty()) {
+        crate::features::sessions::validate_session_id(sid)?;
+        store.load(sid)?;
         return pool
             .fresh_bridge_for(sid)
             .await
             .context("prepare session model for voice postprocess");
     }
-    if let Some(sid) = store.active_id() {
-        return pool
-            .fresh_bridge_for(&sid)
-            .await
-            .context("prepare active session model for voice postprocess");
-    }
-    let mut bridge = pool.bridge.clone();
-    bridge.prefs = UserPrefs::load();
-    bridge.session_model = bridge.prefs.active_model().cloned();
-    Ok(bridge)
+    // No session yet (an unsent draft): prepare the default model through the
+    // same runtime path as chat instead of borrowing whichever session the
+    // backend last marked active, which may bind a different model.
+    pool.fresh_bridge_for_draft()
+        .await
+        .context("prepare draft model for voice postprocess")
 }
 
 /// Returns (sanitized text, whether truncated by max_tokens). Truncation
@@ -1124,29 +1122,20 @@ pub async fn postprocess_voice_text(
             ));
         }
     };
-    // vllm's /v1/models probe carries its own 3s timeout; both attempts share
-    // this one probe result, so the retry does not pay another 3s.
-    let model_name = if bridge.provider() == "vllm" {
-        // The served-name probe uses an inference-same-origin key:
-        // authenticated vLLM 401s on /v1/models.
-        crate::features::monitor::probe_vllm_model_info(
-            &bridge.base_url(),
-            Some(bridge.api_key().as_str()),
-        )
-        .await
-        .0
-        .unwrap_or_else(|| bridge.model())
-    } else {
-        bridge.model()
-    };
+    // EnginePool already resolved the served model while preparing this bridge
+    // (resolve_served_model keeps a configured name the server lists). Keep
+    // that effective choice for both attempts: probing /v1/models again and
+    // taking its first entry would replace the user's model B with an
+    // unrelated model A on multi-model servers (LM Studio / Ollama).
+    let model_name = bridge.model();
     // The frontend times the whole invoke against the same
     // voice_postprocess_timeout budget; both Rust attempts share that budget,
     // each taking only the remaining headroom, so the total latency does not
     // double from each attempt spending the full budget.
     let budget = voice_postprocess_timeout(mode, &raw_text);
     if started_at.elapsed() >= budget {
-        // Symmetric with the retry guard below: bridge preparation and the
-        // vllm model probe can consume the whole budget, and handing a zero
+        // Symmetric with the retry guard below: bridge preparation and
+        // model resolution can consume the whole budget, and handing a zero
         // timeout to the first request would guarantee an instant timeout
         // failure.
         log::warn!(

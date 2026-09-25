@@ -12,6 +12,25 @@ const dialectSource = fs.readFileSync(path.join(__dirname, "..", "src-tauri", "s
 // reasoning dialect 写 body 的 match 已收敛到 core/reasoning_dialect.rs（去重）；
 // voice.rs 保留构造入口。契约跨两个文件断言。
 const voiceReasoningSource = rustVoiceSource + dialectSource;
+// Multi-model servers may list model A before the selected model B. Runtime
+// preparation already keeps B; voice postprocessing must reuse that resolved
+// name for both attempts and never re-run the first-entry-only probe.
+const postprocessCommand = rustVoiceSource.slice(rustVoiceSource.indexOf("pub async fn postprocess_voice_text("));
+assert.match(postprocessCommand, /let bridge = match voice_postprocess_bridge\([\s\S]*?let model_name = bridge\.model\(\);/);
+assert.doesNotMatch(rustVoiceSource, /probe_vllm_model_info/);
+assert.strictEqual((postprocessCommand.match(/&model_name,/g) || []).length, 2,
+  "initial and retry requests must share the prepared user-selected model, not the server's first entry");
+// Without a session the draft model goes through the pool's runtime
+// preparation instead of borrowing the backend's last active session.
+const postprocessBridge = rustVoiceSource.slice(
+  rustVoiceSource.indexOf("async fn voice_postprocess_bridge("),
+  rustVoiceSource.indexOf("async fn call_voice_postprocess_model("),
+);
+assert.match(postprocessBridge, /pool\.fresh_bridge_for_draft\(\)/);
+assert.doesNotMatch(postprocessBridge, /store\.active_id\(\)/);
+const enginePoolSource = fs.readFileSync(path.join(__dirname, "..", "src-tauri", "src", "features", "assistant", "engine_pool.rs"), "utf8");
+assert.match(enginePoolSource, /resolve_served_model\([\s\S]*?&model\.model,/);
+assert.match(enginePoolSource, /fn fresh_bridge_for_draft\([\s\S]*?finalize_runtime_bridge\(bridge, &prepared, false\)/);
 const rustVoiceTempWavPath = path.join(__dirname, "..", "src-tauri", "src", "features", "voice", "temp_wav.rs");
 const rustVoiceTempWavSource = fs.readFileSync(rustVoiceTempWavPath, "utf8");
 const chatPath = path.join(__dirname, "..", "src", "features", "chat", "ChatView.jsx");
@@ -303,7 +322,7 @@ assert.match(
 // through and never reach gesture handling.
 assert.match(
   rustShortcutPlatformSource,
-  /fn keyboard_hook_proc[\s\S]*?if !shortcut_enabled\(\) \{[\s\S]*?return call_next_hook[\s\S]*?handle_voice_shortcut_key\(/,
+  /fn keyboard_hook_proc[\s\S]*?if !shortcut_enabled\(\) \{[\s\S]*?return call_next_hook[\s\S]*?handle_voice_shortcut_with_modifiers\(/,
   "native voice shortcut hook must gate all keystrokes by the synced settings state before gesture handling",
 );
 // Cross-window recording mutual exclusion: the trigger target resolves to the recording window first.

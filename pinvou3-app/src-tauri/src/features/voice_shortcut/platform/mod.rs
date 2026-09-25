@@ -1,7 +1,7 @@
 #[cfg(target_os = "windows")]
 use super::{
     AltSide, VoiceShortcutDecision, VoiceShortcutEvent, VoiceShortcutKey, VoiceShortcutState,
-    emit_shortcut_event, handle_voice_shortcut_key, is_voice_shortcut_router_window,
+    emit_shortcut_event, handle_voice_shortcut_with_modifiers, is_voice_shortcut_router_window,
     recording_label, resolve_trigger_target,
 };
 #[cfg(target_os = "windows")]
@@ -19,8 +19,8 @@ use tauri::Manager;
 use windows_sys::Win32::Foundation::{GetLastError, HINSTANCE, HWND, LPARAM, LRESULT, WPARAM};
 #[cfg(target_os = "windows")]
 use windows_sys::Win32::UI::Input::KeyboardAndMouse::{
-    INPUT, INPUT_0, INPUT_KEYBOARD, KEYBDINPUT, SendInput, VIRTUAL_KEY, VK_ESCAPE, VK_LMENU,
-    VK_MENU, VK_RMENU, VK_SPACE,
+    GetAsyncKeyState, INPUT, INPUT_0, INPUT_KEYBOARD, KEYBDINPUT, SendInput, VIRTUAL_KEY,
+    VK_CONTROL, VK_ESCAPE, VK_LMENU, VK_LWIN, VK_MENU, VK_RMENU, VK_RWIN, VK_SHIFT, VK_SPACE,
 };
 #[cfg(target_os = "windows")]
 use windows_sys::Win32::UI::WindowsAndMessaging::{
@@ -256,13 +256,21 @@ unsafe extern "system" fn keyboard_hook_proc(
             Ok(guard) => guard,
             Err(_) => return call_next_hook(code, w_param, l_param),
         };
-        let decision = handle_voice_shortcut_key(
+        // Shift/Ctrl/Win already held means this Alt belongs to a system
+        // chord; the state machine lets that whole Alt press pass through.
+        let other_modifier_down = [VK_SHIFT, VK_CONTROL, VK_LWIN, VK_RWIN].iter().any(|vk| {
+            // SAFETY: GetAsyncKeyState takes a plain virtual-key code and no
+            // pointer arguments; it is safe to call from the hook callback.
+            unsafe { GetAsyncKeyState(i32::from(*vk)) < 0 }
+        });
+        let decision = handle_voice_shortcut_with_modifiers(
             &mut state,
             key,
             key_down,
             target.is_some(),
             foreground as isize,
             info.time,
+            other_modifier_down,
         );
         if decision.inject_alt_down {
             // The combo down was swallowed: replay [Alt↓, combo↓] in order
